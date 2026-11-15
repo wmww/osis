@@ -1325,6 +1325,19 @@ impl Engine {
     /// write not applied (`judged_valid`) keeps nothing, as if never received (`None`), and so
     /// does one this build would park.
     pub fn ingest_valid(&mut self, bytes: &[u8]) -> Result<Option<Ingested>> {
+        self.ingest_kept(bytes, |core, id, ais, out| matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::labeling::judged_valid(core, id, ais)))
+    }
+
+    /// `ingest` of a commit nothing carries (a Prove's rotation, spec/sync-opens.md §2): one that
+    /// would pend or park keeps nothing, as if never received (`None`); decided in the one
+    /// transaction, so nothing of it is written.
+    pub(crate) fn ingest_uncarried(&mut self, bytes: &[u8]) -> Result<Option<Ingested>> {
+        self.ingest_kept(bytes, |_, _, _, out| matches!(out, Ingested::Parked(_) | Ingested::Pending(..)))
+    }
+
+    /// `ingest` keeping nothing of a commit `refuse` objects to (its outcome, judged in the
+    /// transaction, which is then rolled back): `None` for those.
+    fn ingest_kept(&mut self, bytes: &[u8], refuse: impl Fn(&crate::engine::Core, &CommitId, &[usize], &Ingested) -> bool) -> Result<Option<Ingested>> {
         let blob = match CommitBlob::decode(bytes) {
             Ok(b) if b.header.ephemeral.is_none() => b,
             Ok(_) => return Err(Error::BadInput("an ephemeral commit on the durable path")),
@@ -1338,7 +1351,7 @@ impl Engine {
         let r = self.run(|tx| {
             rotation = hold_rotation_lists(tx, &blob, &[])?;
             let out = ingest_blob(tx, blob, Origin::Remote)?;
-            refused = matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::labeling::judged_valid(tx.core, &id, &ais));
+            refused = refuse(tx.core, &id, &ais, &out);
             if refused {
                 // rolled back
                 return Err(Error::Misuse("refused"));

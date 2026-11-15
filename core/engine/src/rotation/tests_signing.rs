@@ -1927,3 +1927,31 @@ fn a_removed_nodes_grant_counted_while_waiting_reaches_no_one_spec_permissions_5
         }
     }
 }
+
+// spec/sync-opens.md §2 (its account, with the signed rotations the verifier lacks): a node's
+// Prove carries what holding the epoch it proves at needs, each after what it needs, never a
+// removed node's forks it holds (they would crowd the message's room: each a header with a KEM
+// key); a verifier holding only the account's record takes them and the node's key is open there
+#[test]
+fn a_prove_carries_no_removed_nodes_fork_spec_sync_opens_2() {
+    let (mut lp, a, _) = world(4, 3);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    let r = done.commits[1];
+    let forks: Vec<CommitId> = [80u8, 81, 82].into_iter().map(|s| {
+        let f = refork(&mut lp, 2, &a, s);
+        give(&mut lp, &f, &[0])
+    }).collect();
+    let v = lp.peers[0].engine.core.account_view(&a.account).unwrap();
+    assert!(forks.iter().all(|f| v.holds(f) && !v.rotation_counts(f)), "held, disregarded");
+    let given = lp.peers[0].engine.prove_rotations().unwrap();
+    let ids: Vec<CommitId> = given.iter().map(|x| osis_commit::CommitBlob::decode(&osis_base::cbor::encode(x)).unwrap().id()).collect();
+    assert!(ids.contains(&r), "the removal's rotation");
+    assert!(!ids.iter().any(|i| forks.contains(i)), "no fork: {ids:?}");
+    let record = lp.peers[0].engine.core.created(&a.account).cloned().unwrap();
+    let key = lp.peers[0].engine.account_open_key().unwrap();
+    let mut fresh = LocalPeer::new_bare(1, 7, WallMs(1_700_000_000_000)).unwrap();
+    let e = &mut fresh.peers[0].engine;
+    e.learn_records(vec![record.clone()]).unwrap();
+    e.take_rotations(given).unwrap();
+    assert!(e.key_open(&record, &key), "the node's key open at the verifier");
+}

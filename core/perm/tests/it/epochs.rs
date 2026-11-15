@@ -123,6 +123,19 @@ fn a_node_of_the_account_waits_for_the_devices_list() {
     assert!(!outsider.counts(&100), "anyone else waits for nothing");
 }
 
+// spec/permissions.md §5.5 (Waiting): a list of D decides only the epochs its rotation
+// supersedes. Rotations 1 (closing 0) and 2 (closing 1): holding 2's list, the commit at 0 still
+// waits; holding 1's, it is judged (unnamed here).
+#[test]
+fn only_a_list_of_a_rotation_superseding_the_epoch_ends_waiting() {
+    let commits = [c(100, 0)];
+    let rots = [rot(1, 0, &[0], &[]), rot(2, 1, &[1], &[])];
+    let received = [1, 2];
+    let at = |deciding: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, &[], &[], Some(osis_perm::Awaited { thing: 0, deciding: set(deciding) })), commits.to_vec(), Vec::new());
+    assert!(at(&[2]).counts(&100), "the later list names nothing at epoch 0: waiting");
+    assert!(!at(&[1]).counts(&100), "the superseding rotation's list judges");
+}
+
 /// A witness received X's write (100) in time and the rotator did not: its addendum against
 /// the rotation saves the plain delta on its thing, nothing else.
 #[test]

@@ -107,8 +107,10 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
     }
     // after the heads' seeds are known held: rotating D first signs as the account
     let Some(under) = seed_under(tx, &p, &held.devices, done)? else { return Ok(None) };
-    // per thing: role-class and purge-request commits, then plain ones by receipt
-    let mut per: BTreeMap<Tid, PerThing> = BTreeMap::new();
+    // per thing: role-class and purge-request commits, then plain ones by receipt; D's list is
+    // written even naming nothing, so a node of the account holding it knows D's word is in
+    // (spec/permissions.md §5.5 Waiting)
+    let mut per: BTreeMap<Tid, PerThing> = BTreeMap::from([(held.devices, PerThing::default())]);
     let mut listed = nameable(tx, &p, &v, &closes, true)?;
     for c in also {
         if !listed.iter().any(|x| x.0 == *c)
@@ -298,7 +300,8 @@ fn nameable(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, epochs: &
         let at: Vec<CommitId> = tx.core.ix.by_epoch.get(&(*p, *e)).into_iter().flatten().copied().collect();
         for c in at {
             let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
-            if v.is_rotation(&c) || !open && tx.core.standing(&c, &m.view) == osis_perm::EpochStanding::Counts {
+            // one counting only while it waits for D's list is named by no word yet
+            if v.is_rotation(&c) || !open && tx.core.standing(&c, &m.view) == osis_perm::EpochStanding::Counts && !tx.core.waits(&c, p) {
                 continue;
             }
             let cut = closers.is_empty() || earliest.is_some_and(|x| m.received < x);

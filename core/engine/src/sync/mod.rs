@@ -957,11 +957,13 @@ impl Engine {
 
     /// The signed rotations of this node's account a verifier may lack, each a header-only copy
     /// (a `CommitBlobPlaintext` value with no sections), for a Prove (spec/sync-opens.md §2):
-    /// every held one, every line, each epoch's minting rotation before it, so a verifier takes
-    /// them in one pass (`take_rotations`) and the prefix a message fits is a chain.
+    /// what holding the epoch it proves at needs (`AccountView::proving_chain`), each after what
+    /// it needs, so a verifier takes them in one pass (`take_rotations`) and the prefix a message
+    /// fits is a chain. Never a line beside it: a removed node's forks, held here, would crowd
+    /// the message's room.
     pub fn prove_rotations(&mut self) -> Result<Vec<osis_base::Value>> {
         let Some(p) = self.core.account.get() else { return Ok(Vec::new()) };
-        let rots = self.core.account_view(&p).map(|v| v.rotations_in_order()).unwrap_or_default();
+        let rots = self.core.account_view(&p).map(|v| v.proving_chain()).unwrap_or_default();
         let mut out = Vec::new();
         for r in rots {
             let Some(c) = self.read(|tx| tx.get_commit(&r))? else { continue };
@@ -975,24 +977,18 @@ impl Engine {
     /// commits), judged by spec/permissions.md §5.4 like any received, in the order given,
     /// before its proofs are judged. One that would pend here (an epoch it is signed at not
     /// held, its account's record not held) keeps nothing, as if never received: nothing carries
-    /// it (spec/commits.md §4 Pending storage). Anything else (not a rotation, a part carried, bad
-    /// input) is skipped.
+    /// it (spec/commits.md §4 Pending storage); that is decided before anything is written
+    /// (`ingest_uncarried`). Anything else (not a rotation, a part carried, bad input) is skipped.
     pub fn take_rotations(&mut self, rotations: Vec<osis_base::Value>) -> Result<()> {
         for v in rotations {
             let b = osis_base::cbor::encode(&v);
             let Ok(c) = osis_commit::CommitBlob::decode(&b) else { continue };
-            let id = c.id();
-            if c.header.rotation.is_none() || !c.parts.is_empty() || self.core.ix.commits.contains_key(&id) {
+            if c.header.rotation.is_none() || !c.parts.is_empty() || self.core.ix.commits.contains_key(&c.id()) {
                 continue;
             }
-            let pended = self.pends(&id);
-            match self.ingest(&b, Vec::new()) {
-                Ok(crate::Ingested::Pending(..)) if !pended => {
-                    self.forget_pending(&id)?;
-                }
-                Ok(_) => {}
+            match self.ingest_uncarried(&b) {
                 Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
-                Err(_) => {}
+                _ => {}
             }
         }
         Ok(())

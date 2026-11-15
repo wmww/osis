@@ -320,7 +320,7 @@ pub(crate) mod tests {
         let (a, b) = (counts(3), counts(30));
         assert_eq!(a, b, "work grows with the rotations held");
         assert_eq!(a.0, (0, 0), "a plain commit touches no row, settles no carried things");
-        assert_eq!(a.1.0, 1, "the rotation's own row");
+        assert_eq!(a.1.0, 2, "the rotation's own rows: its lists of g and of D (written for every rotation)");
     }
 
     /// Files `x` in group `g`'s items (`add`) or takes it out.
