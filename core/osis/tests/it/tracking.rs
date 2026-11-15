@@ -248,6 +248,34 @@ fn role_on_hears_roles_and_compares() {
     assert_eq!(fired(&b, &n), 0, "another thing's roster: the answer here is unchanged");
 }
 
+// spec/permissions.md §2 (until), notes/api.md Watching: a grant's `until` passing ends a role
+// with no commit (a reader cannot finalize it); a tracked `role_on` and `holders` hear it then (the
+// node wakes at the `until`), with no grants watch anywhere, and nothing before it.
+#[test]
+fn an_until_passing_tells_tracked_role_reads_spec_permissions_2() {
+    let c = clock();
+    let net = osis::internals::ManualNet::new(c.clone());
+    let mut o = cfg(2, MemStore::new(), &c);
+    o.app.dispatch = Dispatcher::Pump(Arc::new(|| {}));
+    o.app.internals.net = Some(net.clone());
+    let bob = osis::internals::create(o).unwrap();
+    let alice = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
+    deliver(&bob, &alice);
+    let g = thing(&alice);
+    let until = osis::GrantOpts { until: Some(osis::Time(T0 + 60_000)), ..Default::default() };
+    alice.grant(g, bob.me(), osis::Role::Read, until).unwrap();
+    deliver(&alice, &bob);
+    let ((_s1, roles, h1), (_s2, holders, h2)) = (tracked(&bob), tracked(&bob));
+    assert_eq!(h1.role_on(g).unwrap(), Some(osis::Role::Read));
+    assert!(h2.holders(g).unwrap().iter().any(|x| x.actor == bob.me()));
+    net.advance(30_000);
+    assert_eq!((fired(&bob, &roles), fired(&bob, &holders)), (0, 0), "nothing ended yet");
+    net.advance(60_000);
+    assert_eq!((fired(&bob, &roles), fired(&bob, &holders)), (1, 1), "the until passed");
+    assert_eq!(h1.role_on(g).unwrap(), None);
+    assert!(!h2.holders(g).unwrap().iter().any(|x| x.actor == bob.me()));
+}
+
 // `members` is a tracked aspect read: the group's own `group.0`.
 #[test]
 fn members_is_heard() {

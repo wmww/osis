@@ -269,7 +269,7 @@ fn an_until_passing_tells_a_roster_watcher_spec_permissions_2() {
     net.advance(30_000);
     carol.settle();
     assert_eq!(rx.try_iter().count(), 0, "nothing ended yet");
-    let read = |cs: &[(&str, Duration, u64)]| cs.iter().find(|x| x.0 == "watch: rosters").map_or(0, |x| x.2);
+    let read = |cs: &[(&str, Duration, u64)]| cs.iter().find(|x| x.0 == "watch: follows").map_or(0, |x| x.2);
     assert_eq!(read(&osis::internals::costs::take()), 0, "no watched roster read again");
     net.advance(60_000);
     carol.settle();

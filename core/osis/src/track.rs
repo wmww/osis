@@ -108,8 +108,8 @@ impl Osis {
 
 impl ReadOnly {
     /// Registers (or re-arms) the set's listener for `key` under the node lock `l` taken by the
-    /// read. `make` gives its filter and callback, once.
-    fn track_in(&self, l: &mut Locked, set: &Arc<SetInner>, key: String, last: Option<Digest>, make: impl FnOnce(Arc<Gate>) -> (Filter, Callback)) {
+    /// read. `make` gives its filter and callback, once. The subscription made, if it is new.
+    fn track_in(&self, l: &mut Locked, set: &Arc<SetInner>, key: String, last: Option<Digest>, make: impl FnOnce(Arc<Gate>) -> (Filter, Callback)) -> Option<u64> {
         let pass = set.pass.load(Ordering::Acquire);
         let since = l.seq + 1;
         let mut g = lock(&set.listeners);
@@ -120,14 +120,16 @@ impl ReadOnly {
                 self.inner.dispatch.since(id, since);
             }
             li.read(pass);
-            return;
+            return None;
         }
         let gate = Gate::new(last);
         let (filter, cb) = make(gate.clone());
         let sub = self.subscribe_in(l, filter, false, cb);
+        let id = sub.id();
         let old = g.insert(key, Listener { sub, gate, pass, reads: 1 });
         drop(g);
         drop(old);
+        id
     }
 
     /// Listens at `w` for what names no value (`Delivery::Due` calls `on_change`), under the
@@ -159,18 +161,25 @@ impl ReadOnly {
     }
 
     /// The answer of `read`, listened to at `at` on a tracking handle: an event there reads it
-    /// again and compares with the last read.
+    /// again and compares with the last read. One the role graph decides is followed too
+    /// (`Filter::follows`), so a change no event tells (an `until` passing) reaches it.
     pub(crate) fn read_answer<A: std::fmt::Debug>(&self, key: impl FnOnce() -> String, at: Filter, read: impl Fn(&mut Reader<'_>) -> A + Send + Sync + 'static) -> A {
         let Some(set) = self.tracking.clone() else { return self.read_local(|r| read(r)) };
         let (limit, actor) = (self.inner.limit, self.acting);
+        let read = Arc::new(read);
         self.locked(|l| {
             drop(osis_base::costs::span("read: engine"));
             let a = read(&mut Reader { e: l.engine(), limit, actor });
             let last = Some(answer_digest(&a));
             let w = Arc::downgrade(&set);
-            self.track_in(l, &set, key(), last, move |gate| {
-                (at, answer_callback(gate, w, move |r| answer_digest(&read(r)), limit, actor))
+            let follows = at.follows();
+            let again = read.clone();
+            let id = self.track_in(l, &set, key(), last, move |gate| {
+                (at, answer_callback(gate, w, move |r| answer_digest(&again(r)), limit, actor))
             });
+            if let Some(id) = id.filter(|_| follows) {
+                self.inner.dispatch.follow(id, Box::new(move |e| answer_digest(&read(&mut Reader { e, limit, actor }))));
+            }
             a
         })
     }
@@ -234,7 +243,7 @@ fn answer_callback(gate: Arc<Gate>, set: Weak<SetInner>, read: impl Fn(&mut Read
 
 /// A digest of an answer no listener delivers: from its `Debug` text, which shows everything a
 /// `Grants`, a `GroupsOf`, a stamp or a role holds.
-fn answer_digest<A: std::fmt::Debug>(a: &A) -> Digest {
+pub(crate) fn answer_digest<A: std::fmt::Debug>(a: &A) -> Digest {
     *blake3::hash(format!("{a:?}").as_bytes()).as_bytes()
 }
 

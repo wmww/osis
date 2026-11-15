@@ -777,10 +777,10 @@ impl ReadOnly {
             g.handle(osis_sync::Input::Wrote);
         }
         // read before `carry` takes the node's wake: it holds the next `until` they read
-        let rosters = self.inner.dispatch.rosters_moved(g.engine());
+        let moved = self.inner.dispatch.moved(g.engine());
         self.inner.net.carry(&mut g);
         let stepped = g.stepped;
-        self.drain(&mut g, rosters);
+        self.drain(&mut g, moved);
         if stepped && self.inner.dispatch.status_listened() {
             g.seq += 1;
             self.inner.dispatch.send(g.seq, Msg::Status);
@@ -815,19 +815,30 @@ impl ReadOnly {
         crate::port::serve(&self.inner, port);
     }
 
-    /// Queues the engine's events for the dispatcher, then a roster event for each of `rosters`
-    /// (watched rosters that read otherwise, `Dispatch::rosters_moved`) none of them told.
-    fn drain(&self, l: &mut Locked, mut rosters: Vec<Tid>) {
+    /// Queues the engine's events for the dispatcher, then what `moved` names that none of them
+    /// told (`Dispatch::moved`): a roster event for each watched roster that reads otherwise, and
+    /// for each followed tracked read that does, a call, unless a roster event reaches it
+    /// (every such read listens at `Slot::Roles`).
+    fn drain(&self, l: &mut Locked, (mut rosters, ids): (Vec<Tid>, Vec<u64>)) {
+        let mut roles_told = false;
         while let Ok(e) = l.events.try_recv() {
-            if let Event::Roster { thing } = &e {
+            if let Event::Roster { thing } | Event::Created { thing } = &e {
                 rosters.retain(|t| t != thing);
+                roles_told = true;
             }
             l.seq += 1;
             self.inner.dispatch.send(l.seq, Msg::Event(e));
         }
+        roles_told |= !rosters.is_empty();
         for thing in rosters {
             l.seq += 1;
             self.inner.dispatch.send(l.seq, Msg::Event(Event::Roster { thing }));
+        }
+        if !roles_told {
+            for id in ids {
+                l.seq += 1;
+                self.inner.dispatch.send(l.seq, Msg::Deliver(id, crate::watch::Delivery::Due));
+            }
         }
     }
 }

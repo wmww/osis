@@ -171,6 +171,13 @@ impl Filter {
         }
     }
 
+    /// Whether a tracked read heard here is followed as an `Effects` value too (`Dispatch::follow`):
+    /// one the role graph decides (`Slot::Roles`), which the clock moves with no event; a grants
+    /// read is followed per thing (`Filter::Grants`).
+    pub(crate) fn follows(&self) -> bool {
+        matches!(self, Filter::Due(Watch::Roles | Watch::Backlinks(_, true)))
+    }
+
     /// The things a commit listener is on, for the engine (`Engine::listen_commits`).
     fn commit_things(&self) -> Vec<Tid> {
         match self {
@@ -352,22 +359,36 @@ impl std::fmt::Debug for Dispatcher {
     }
 }
 
-/// The watched rosters' grants (`Filter::Grants`, one key per thing watched), followed so that a
-/// change no event tells (an `until` passing: the roster read follows the memo clock up to its
-/// next `until`, `Engine::clock_next`) is told as `Event::Roster` (`Dispatch::rosters_moved`).
-struct Rosters(Effects<Tid, crate::read::Grants>);
+/// What the watch layer follows as `Effects` values, so that a change no event tells (an `until`
+/// passing: a role or roster read follows the memo clock up to its next `until`,
+/// `Engine::clock_next`) is told (`Dispatch::moved`): each watched roster's grants
+/// (`Filter::Grants`, one key per thing watched) and each tracked read the role graph decides
+/// (`Filter::follows`, one key per listener, its read in `answers`).
+struct Follows {
+    fx: Effects<Followed, Digest>,
+    answers: HashMap<u64, Follow>,
+}
 
-impl Default for Rosters {
-    fn default() -> Rosters {
-        Rosters(Effects::new("watch: rosters"))
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Followed {
+    Grants(Tid),
+    Answer(u64),
+}
+
+/// A tracked read's answer, read again when `Follows` finds it due.
+pub(crate) type Follow = Box<dyn Fn(&mut osis_engine::Engine) -> Digest + Send>;
+
+impl Default for Follows {
+    fn default() -> Follows {
+        Follows { fx: Effects::new("watch: follows"), answers: HashMap::new() }
     }
 }
 
 /// State shared by the node, the dispatcher and subscriptions. Locks are taken in the order
-/// engine, `rosters`, `registry`.
+/// engine, `follows`, `registry`.
 #[derive(Default)]
 pub(crate) struct Shared {
-    rosters: Mutex<Rosters>,
+    follows: Mutex<Follows>,
     registry: Mutex<Registry>,
     /// The thread holding the engine lock, if any (a subscription dropped there must not wait
     /// for an in-flight call: that call may be waiting for the engine lock).
@@ -466,29 +487,49 @@ impl Dispatch {
 
     /// Registers a callback for messages from sequence `since` on.
     pub fn register(&self, since: u64, filter: Filter, cb: Callback) -> Subscription {
-        let mut rosters = lock(&self.shared.rosters);
+        let mut follows = lock(&self.shared.follows);
         let mut r = lock(&self.shared.registry);
         r.next += 1;
         let id = r.next;
         if let Filter::Grants(t) = filter {
-            rosters.0.want(t);
+            follows.fx.want(Followed::Grants(t));
         }
         r.insert(Arc::new(Sub { id, since: AtomicU64::new(since), filter, removed: AtomicBool::new(false), cb: Mutex::new(cb) }));
         Subscription { shared: Arc::downgrade(&self.shared), id: Some(id) }
     }
 
-    /// The watched rosters whose grants read otherwise since last asked, under the engine lock:
-    /// those a change told by no event moved too (an `until` passing). Work in proportion to what
-    /// moved what the watched grants read; a key just watched is read, not told.
-    pub fn rosters_moved(&self, e: &mut osis_engine::Engine) -> Vec<Tid> {
-        let mut fx = lock(&self.shared.rosters);
-        let mut out = Vec::new();
-        for t in fx.0.due() {
-            if let Some((Some(_), _)) = fx.0.settle(&t, || crate::read::Reader { e: &mut *e, limit: 0, actor: None }.grants(t)) {
-                out.push(t);
+    /// Follows tracked read `id`'s answer (`Filter::follows`), read by `read`, under the engine
+    /// lock of the read it goes with: its first `moved` reads it, unchanged since.
+    pub fn follow(&self, id: u64, read: Follow) {
+        let mut f = lock(&self.shared.follows);
+        f.fx.want(Followed::Answer(id));
+        f.answers.insert(id, read);
+    }
+
+    /// What `Follows` follows that reads otherwise since last asked, under the engine lock: the
+    /// watched rosters, and the tracked reads, a change told by no event moved too (an `until`
+    /// passing). Work in proportion to what moved what they read; a key just followed is read,
+    /// not told.
+    pub fn moved(&self, e: &mut osis_engine::Engine) -> (Vec<Tid>, Vec<u64>) {
+        let mut guard = lock(&self.shared.follows);
+        let f = &mut *guard;
+        let (mut things, mut ids) = (Vec::new(), Vec::new());
+        for k in f.fx.due() {
+            let moved = match &k {
+                Followed::Grants(t) => f.fx.settle(&k, || crate::track::answer_digest(&crate::read::Reader { e: &mut *e, limit: 0, actor: None }.grants(*t))),
+                Followed::Answer(id) => match f.answers.get(id) {
+                    Some(read) => f.fx.settle(&k, || read(&mut *e)),
+                    None => None,
+                },
+            };
+            if let Some((Some(_), _)) = moved {
+                match k {
+                    Followed::Grants(t) => things.push(t),
+                    Followed::Answer(id) => ids.push(id),
+                }
             }
         }
-        out
+        (things, ids)
     }
 
     /// Whether subscription `id` is still registered.
@@ -841,15 +882,18 @@ impl Subscription {
 impl Drop for Subscription {
     fn drop(&mut self) {
         let (Some(id), Some(sh)) = (self.id, self.shared.upgrade()) else { return };
-        let mut rosters = lock(&sh.rosters);
+        let mut follows = lock(&sh.follows);
         let mut r = lock(&sh.registry);
         let Some(s) = r.remove(id) else { return };
         if let Filter::Grants(t) = s.filter
             && !r.index.contains_key(&Slot::Grants(t))
         {
-            rosters.0.unwant(&t);
+            follows.fx.unwant(&Followed::Grants(t));
         }
-        drop((r, rosters));
+        if follows.answers.remove(&id).is_some() {
+            follows.fx.unwant(&Followed::Answer(id));
+        }
+        drop((r, follows));
         s.removed.store(true, Ordering::Release);
         let me = std::thread::current().id();
         if !sh.on_dispatcher() && *lock(&sh.holder) != Some(me) {
