@@ -572,7 +572,7 @@ pub(crate) fn freed(g: &mut impl Ground, b: &BlobId, t: &Tid) -> Result<Freed> {
 pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId, at: &Source) -> Result<Toward> {
     osis_base::costs::count("read: toward", 1);
     let mut t = Toward::default();
-    if g.kept_at(s, at)? == Some(false) {
+    if !g.kept_at(s, at)? {
         t.idle = true;
         return Ok(t);
     }

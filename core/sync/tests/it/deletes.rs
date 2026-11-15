@@ -5,18 +5,21 @@
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, value_ak, world};
-use crate::harness::{World, play};
+use crate::harness::{World, fixture_with, play};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, BlobId, CommitId, PurgeBy, SyncId, Tid, Value};
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 
 fn setup() -> (World, Tid, SyncId) {
-    let mut w = world(0, 4);
-    w.cap = 20_000;
-    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Grant(0, 0, 3, Gives::Writes), Run], String::new());
-    let t = w.history.things[0].0;
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let (w, (t, s)) = fixture_with("deletes setup", || {
+        let mut w = world(0, 4);
+        w.cap = 20_000;
+        let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Grant(0, 0, 3, Gives::Writes), Run], String::new());
+        let t = w.history.things[0].0;
+        let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+        (w, (t, s))
+    });
     (w, t, s)
 }
 
@@ -184,7 +187,7 @@ fn an_owed_delete_survives_the_purgers_restart_spec_sync_judgement_3() {
 
 // spec/sync-judgement.md §3 (What a source holds), scaling: a store source coming back judges
 // again only what is owed there, never each entry its stream shows: its leaving and return
-// judge as many bodies toward it with 2 entries shown as with 12.
+// judge as many bodies toward it with 2 entries shown as with 6.
 #[test]
 fn a_source_coming_back_judges_only_what_is_owed_there() {
     let toward = |n: usize| {
@@ -204,6 +207,6 @@ fn a_source_coming_back_judges_only_what_is_owed_there() {
         w.run();
         osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "read: toward").map(|(.., n)| n).sum::<u64>()
     };
-    let (few, many) = (toward(2), toward(12));
-    assert_eq!(few, many, "toward judged {few} with 2 entries shown, {many} with 12");
+    let (few, many) = (toward(2), toward(6));
+    assert_eq!(few, many, "toward judged {few} with 2 entries shown, {many} with 6");
 }

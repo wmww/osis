@@ -97,13 +97,15 @@ pub(crate) mod tag {
     // streams: the stream's cursor (record-wide), a member at it, where a member not at it
     // joins from (joining, or stopped where it left: one row, so a member leaving one connection
     // and joining another from where it stood writes nothing); what the source showed: an entry
-    // present, its head, a refusal standing; the head this node last told it a refusal of S under
+    // present, its head, a refusal standing, whether it keeps S unread as it last joined; the
+    // head this node last told it a refusal of S under
     pub(crate) const CURSOR: u8 = b'c';
     pub(crate) const AT_STREAM: u8 = b'a';
     pub(crate) const JOIN_FROM: u8 = b'j';
     pub(crate) const PRESENT: u8 = b'k';
     pub(crate) const HEAD: u8 = b'h';
     pub(crate) const REFUSED: u8 = b'r';
+    pub(crate) const KEPT: u8 = b'u';
     pub(crate) const TOLD: u8 = b't';
     // streams: a member closed on the connection up, its place kept while that connection lasts
     pub(crate) const CLOSED: u8 = b'l';

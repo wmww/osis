@@ -185,9 +185,9 @@ pub trait Ground {
     /// Commit `c` is held here (applied or judged): one that is not is not judged (spec/sync-judgement.md
     /// §1 Unjudged blobs).
     fn holds(&mut self, c: &CommitId) -> Result<bool>;
-    /// Whether source `at` keeps S unread, as it last joined, up now or away (`None`: unknown, not
-    /// joined since this node started). Moves only when that changes, never as it comes and goes.
-    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<bool>>;
+    /// Whether source `at` keeps S unread, as it last joined S, up now or away (kept with what its
+    /// stream showed). Moves only when that changes, never as it comes and goes.
+    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<bool>;
     /// The source's head for S, as its stream last named it, up now or away.
     fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>>;
     /// The sources, up now or away, whose stream shows an entry of `c` under S present.

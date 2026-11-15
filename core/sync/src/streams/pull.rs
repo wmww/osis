@@ -8,7 +8,7 @@ use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, Rank
 use crate::opens::{Leaving, Rejoin};
 use crate::store::rows::tag::{AT_STREAM, CLOSED, CURSOR, JOIN_FROM, TOLD};
 use crate::store::{Source, Store};
-use crate::types::{ConnId, Cursor, Entry, RESYNC_MS, RecordId};
+use crate::types::{ConnId, Cursor, Entry, RESYNC_MS, RecordId, SourceClass};
 use osis_store::Transaction;
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, WallMs};
@@ -409,6 +409,12 @@ impl Streams {
         let src = self.source(ctx.shared, conn);
         let cursor = self.place(ctx.store, src).cursor.clone();
         self.pull.entry(conn).or_insert_with(|| Pulling::new(src, cursor));
+        // whether it keeps S unread, as it joined: kept with what its stream shows (read judges what
+        // is owed there by it while the source is away); the same class again writes nothing
+        let kept = ctx.shared.members(conn).get(&s).is_some_and(|m| m.class == SourceClass::Store);
+        if self.known.kept(src, &s) != kept {
+            self.save(ctx, src, &[], false, vec![(src, Op::Kept(s, kept))]);
+        }
         // full for S: told on each connection S joins
         if ctx.store.waits_room(&s) {
             self.tell_full(conn, s, true);

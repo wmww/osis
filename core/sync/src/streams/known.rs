@@ -10,7 +10,7 @@
 //! the source: it ends with `full` false, S leaving the connection, or the connection.
 //!
 //! A source is a peer's record, or the connection for a peer with none (`store::Source`). A
-//! record's word is durable: rows of the record (`store::rows::tag` PRESENT, HEAD, REFUSED),
+//! record's word is durable: rows of the record (`store::rows::tag` PRESENT, HEAD, KEPT, REFUSED),
 //! written by the transaction that applies what showed it (`Op`, `write`), lost with the record
 //! (a lost record is a first contact) and stamped by the store. A connection's is in memory and
 //! goes with it; ephemeral entries are known only so (they have no log position and are lost at
@@ -23,7 +23,7 @@
 
 use crate::store::Source;
 use crate::store::Store;
-use crate::store::rows::tag::{HEAD, PRESENT, REFUSED};
+use crate::store::rows::tag::{HEAD, KEPT, PRESENT, REFUSED};
 use crate::types::{ConnId, RecordId};
 use osis_base::memo::{Feed, Stamps};
 use osis_base::{BlobId, SyncId};
@@ -38,6 +38,8 @@ pub(super) enum Op {
     Add(SyncId, BlobId),
     Remove(SyncId, BlobId),
     Head(SyncId, StepId),
+    /// The source joined S keeping it unread (a store source, spec/sync-opens.md §4) or not.
+    Kept(SyncId, bool),
     /// Told on a connection (under `Source::Conn` only).
     Full(SyncId, bool),
     Refused(SyncId, BlobId, Code),
@@ -72,6 +74,10 @@ pub(super) fn write(t: &mut Transaction<'_>, rec: &RecordId, op: &Op) -> Result<
                 t.record_put_row(rec, HEAD, s, b"", h.0.to_vec())
             }
         },
+        Op::Kept(s, k) => match t.record_get_row(rec, KEPT, s, b"")? {
+            Some(v) if v == [*k as u8] => Ok(()),
+            _ => t.record_put_row(rec, KEPT, s, b"", vec![*k as u8]),
+        },
         Op::Full(..) => Ok(()),
         Op::Refused(s, b, c) => t.record_put_row(rec, REFUSED, s, &b.0, c.0.to_be_bytes().to_vec()),
         Op::Lift(s, Some(b)) => t.record_remove_row(rec, REFUSED, s, &b.0).map(drop),
@@ -81,6 +87,7 @@ pub(super) fn write(t: &mut Transaction<'_>, rec: &RecordId, op: &Op) -> Result<
             for (k, _) in t.record_rows(rec, PRESENT, s, b"", usize::MAX)? {
                 t.record_remove_row(rec, PRESENT, s, &k)?;
             }
+            t.record_remove_row(rec, KEPT, s, b"")?;
             t.record_remove_row(rec, HEAD, s, b"").map(drop)
         }
     }
@@ -92,6 +99,7 @@ pub struct Known {
     by_src: BTreeMap<(Source, SyncId), BTreeSet<BlobId>>,
     by_blob: BTreeMap<(SyncId, BlobId), BTreeSet<Source>>,
     heads: BTreeMap<(Source, SyncId), StepId>,
+    kept: BTreeMap<(Source, SyncId), bool>,
     full: BTreeSet<(Source, SyncId)>,
     /// Refusals kept in memory: a connection's source's, and an ephemeral entry's whatever the
     /// source (they go with the entry: none outlives a restart); by entry in `refused_by`.
@@ -111,7 +119,7 @@ pub type Row = (Source, SyncId, BlobId);
 impl Known {
     pub(super) fn new(store: Store) -> Known {
         let entries = store.entry_feed();
-        Known { store, by_src: BTreeMap::new(), by_blob: BTreeMap::new(), heads: BTreeMap::new(), full: BTreeSet::new(), refused: BTreeMap::new(), refused_by: BTreeMap::new(), entries, stamps: Stamps::named("streams: known"), log: Stamps::named("streams: known rows") }
+        Known { store, by_src: BTreeMap::new(), by_blob: BTreeMap::new(), heads: BTreeMap::new(), kept: BTreeMap::new(), full: BTreeSet::new(), refused: BTreeMap::new(), refused_by: BTreeMap::new(), entries, stamps: Stamps::named("streams: known"), log: Stamps::named("streams: known rows") }
     }
 
     /// Tests only (world copies): the copy's store.
@@ -163,6 +171,11 @@ impl Known {
                         }
                     }
                 },
+                Op::Kept(s, k) => {
+                    if self.kept.insert((src, *s), *k) != Some(*k) {
+                        self.stamps.wrote(&("u", src, s), true);
+                    }
+                }
                 Op::Full(s, full) => {
                     let changed = if *full { self.full.insert((src, *s)) } else { self.full.remove(&(src, *s)) };
                     if changed {
@@ -236,6 +249,9 @@ impl Known {
         if self.heads.remove(&(src, s)).is_some() {
             self.stamps.wrote(&("h", src, s), false);
         }
+        if self.kept.remove(&(src, s)).is_some() {
+            self.stamps.wrote(&("u", src, s), false);
+        }
         self.lift_all(src, s);
     }
 
@@ -261,7 +277,7 @@ impl Known {
     /// What every connection's source showed of S goes (S shredded here; a record's rows went
     /// with it). O(what connections showed in memory): S leaving is rare.
     pub(super) fn forget_conns(&mut self, s: &SyncId) {
-        let srcs: BTreeSet<Source> = self.by_src.keys().filter(|(_, x)| x == s).map(|(src, _)| *src).chain(self.full.iter().filter(|(_, x)| x == s).map(|(src, _)| *src)).chain(self.heads.keys().filter(|(_, x)| x == s).map(|(src, _)| *src)).chain(self.refused.keys().filter(|(_, x, _)| x == s).map(|(src, ..)| *src)).collect();
+        let srcs: BTreeSet<Source> = self.by_src.keys().filter(|(_, x)| x == s).map(|(src, _)| *src).chain(self.full.iter().filter(|(_, x)| x == s).map(|(src, _)| *src)).chain(self.heads.keys().filter(|(_, x)| x == s).map(|(src, _)| *src)).chain(self.kept.keys().filter(|(_, x)| x == s).map(|(src, _)| *src)).chain(self.refused.keys().filter(|(_, x, _)| x == s).map(|(src, ..)| *src)).collect();
         for src in srcs {
             self.forget_conn(src, *s);
         }
@@ -270,7 +286,7 @@ impl Known {
     /// Everything a connection's source showed goes with it (its ephemeral entries and what a
     /// peer with no record showed).
     pub fn forget_source(&mut self, src: Source) {
-        let ids: BTreeSet<SyncId> = self.by_src.range((src, SyncId([0; 16]))..=(src, SyncId([0xff; 16]))).map(|((_, s), _)| *s).chain(self.full.iter().filter(|(x, _)| *x == src).map(|(_, s)| *s)).chain(self.heads.keys().filter(|(x, _)| *x == src).map(|(_, s)| *s)).chain(self.refused.keys().filter(|(x, ..)| *x == src).map(|(_, s, _)| *s)).collect();
+        let ids: BTreeSet<SyncId> = self.by_src.range((src, SyncId([0; 16]))..=(src, SyncId([0xff; 16]))).map(|((_, s), _)| *s).chain(self.full.iter().filter(|(x, _)| *x == src).map(|(_, s)| *s)).chain(self.heads.keys().filter(|(x, _)| *x == src).map(|(_, s)| *s)).chain(self.kept.keys().filter(|(x, _)| *x == src).map(|(_, s)| *s)).chain(self.refused.keys().filter(|(x, ..)| *x == src).map(|(_, s, _)| *s)).collect();
         for s in ids {
             self.forget_conn(src, s);
         }
@@ -344,6 +360,18 @@ impl Known {
             Source::Conn(_) => {
                 self.stamps.read(&("h", src, s));
                 self.heads.get(&(src, *s)).copied()
+            }
+        }
+    }
+
+    /// Whether the source keeps S unread, as it last joined S (`Op::Kept`): kept with what its
+    /// stream showed, so it reads alike while the source is away and after a restart.
+    pub fn kept(&self, src: Source, s: &SyncId) -> bool {
+        match src {
+            Source::Record(rec) => self.read(|t| Ok(t.record_get_row(&rec, KEPT, s, b"")? == Some(vec![1]))),
+            Source::Conn(_) => {
+                self.stamps.read(&("u", src, s));
+                self.kept.get(&(src, *s)) == Some(&true)
             }
         }
     }

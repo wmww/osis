@@ -808,6 +808,36 @@ fn what_a_source_showed_lasts_with_its_stop_spec_sync_opens_6() {
     assert!(!knows(&p.b, src, s, x), "gone with the connection");
 }
 
+// spec/sync-opens.md §3 (a record keeps what this node read of the peer as a source),
+// spec/sync-judgement.md §3 (Deletes: judged from `known` alone, connected or not): whether a
+// source keeps S unread, as it last joined S, lasts with what its stream showed: past its leaving
+// and a restart, moved by a join in the other class, gone with what it showed.
+#[test]
+fn the_class_a_source_joined_lasts_with_what_it_showed_spec_sync_opens_3() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.shared_read(s);
+    let src = p.b.src();
+    let join = |side: &mut Side, now: u64, class: SourceClass| {
+        side.open.members.entry(C).or_default().insert(s, Member { class, by: Credential::J, until: None });
+        side.with(now, |st, ctx| st.member_moved(ctx, Moved::Joined(C, s, Rejoin::Held)));
+    };
+    assert!(!p.b.streams.known().kept(src, &s), "joined as a reader");
+    p.b.leave(p.now, s);
+    join(&mut p.b, p.now, SourceClass::Store);
+    assert!(p.b.streams.known().kept(src, &s), "joined keeping S unread");
+    p.b.leave(p.now, s);
+    assert!(p.b.streams.known().kept(src, &s), "away");
+    p.b.restart_all(7);
+    assert!(p.b.streams.known().kept(src, &s), "after a restart");
+    join(&mut p.b, p.now, SourceClass::Reader);
+    assert!(!p.b.streams.known().kept(src, &s), "joined again as a reader");
+    p.b.leave(p.now, s);
+    join(&mut p.b, p.now, SourceClass::Store);
+    p.b.leave_as(p.now, s, Leaving::Forgot);
+    assert!(!p.b.streams.known().kept(src, &s), "gone with what it showed");
+}
+
 // spec/sync-opens.md §6 (Where it stopped: a pull of S from the start at that source meanwhile
 // stands over where it stopped), spec/sync-judgement.md §6 (Stops): S closed keeping its stop is
 // pulled anew (kept again after its copy dropped) before it opens again: the rejoin is from the

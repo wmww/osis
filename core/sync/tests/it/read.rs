@@ -423,8 +423,8 @@ impl Ground for Fake {
     fn holds(&mut self, c: &CommitId) -> Result<bool> {
         Ok(self.bodies.get(c).is_some())
     }
-    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<bool>> {
-        Ok(self.srcs.get(&(*s, *at)).map(|v| v.store))
+    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<bool> {
+        Ok(self.srcs.get(&(*s, *at)).is_some_and(|v| v.store))
     }
     fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>> {
         Ok(self.srcs.get(&(*s, *at)).and_then(|v| v.head))

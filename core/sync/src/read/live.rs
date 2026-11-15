@@ -361,8 +361,8 @@ impl Ground for Live<'_, '_> {
     fn holds(&mut self, c: &CommitId) -> Result<bool> {
         Ok(self.cx.engine.holds_commit(c))
     }
-    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<bool>> {
-        Ok(self.views.kept(s, at))
+    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<bool> {
+        Ok(self.streams.known().kept(*at, s))
     }
     fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>> {
         Ok(self.streams.known().head(*at, s))
