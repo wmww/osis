@@ -61,12 +61,17 @@ pub(super) fn write(t: &mut Transaction<'_>, rec: &RecordId, op: &Op) -> Result<
             t.record_put_row(rec, PRESENT, s, &b.0, Vec::new())
         }
         Op::Remove(s, b) => t.record_remove_row(rec, PRESENT, s, &b.0).map(drop),
-        Op::Head(s, h) => {
-            if t.record_get_row(rec, HEAD, s, b"")?.is_some_and(|v| v != h.0) {
-                lift_all(t, s)?;
+        // the same head named again writes nothing: what read it does not move as a stream
+        // rejoins
+        Op::Head(s, h) => match t.record_get_row(rec, HEAD, s, b"")? {
+            Some(v) if v == h.0 => Ok(()),
+            old => {
+                if old.is_some() {
+                    lift_all(t, s)?;
+                }
+                t.record_put_row(rec, HEAD, s, b"", h.0.to_vec())
             }
-            t.record_put_row(rec, HEAD, s, b"", h.0.to_vec())
-        }
+        },
         Op::Full(..) => Ok(()),
         Op::Refused(s, b, c) => t.record_put_row(rec, REFUSED, s, &b.0, c.0.to_be_bytes().to_vec()),
         Op::Lift(s, Some(b)) => t.record_remove_row(rec, REFUSED, s, &b.0).map(drop),
@@ -286,6 +291,35 @@ impl Known {
     pub fn present(&self, s: &SyncId, b: &BlobId) -> bool {
         self.stamps.read(&("p", s, b));
         self.by_blob.contains_key(&(*s, *b)) || self.read(|t| Ok(!t.records_with_row(s, PRESENT, &b.0, 1)?.is_empty()))
+    }
+
+    /// Every presence row, of every source (a start judges what each shows; O(rows)).
+    pub fn rows_all(&self) -> Result<Vec<Row>, osis_store::Error> {
+        let mut out: Vec<Row> = self.by_src.iter().flat_map(|((src, s), bs)| bs.iter().map(move |b| (*src, *s, *b))).collect();
+        let recs = self.store.with_read(|t| {
+            let mut rows = Vec::new();
+            for r in t.records_all()? {
+                for (s, k, _) in t.record_tag_rows(&r.id, PRESENT)? {
+                    if let Ok(b) = <[u8; 32]>::try_from(k.as_slice()) {
+                        rows.push((Source::Record(r.id), s, BlobId(b)));
+                    }
+                }
+            }
+            Ok(rows)
+        });
+        out.extend(recs.map_err(|e| match e {
+            crate::types::Error::Store(e) => e,
+            _ => osis_store::Error::Corrupt("streams: known"),
+        })?);
+        Ok(out)
+    }
+
+    /// The sources whose stream showed `b` present under S.
+    pub fn shown_at(&self, s: &SyncId, b: &BlobId) -> BTreeSet<Source> {
+        self.stamps.read(&("p", s, b));
+        let mut out = self.by_blob.get(&(*s, *b)).cloned().unwrap_or_default();
+        out.extend(self.read(|t| t.records_with_row(s, PRESENT, &b.0, usize::MAX)).into_iter().map(Source::Record));
+        out
     }
 
     /// What `src`'s stream showed present under S, or the store's failure: a listing replacing

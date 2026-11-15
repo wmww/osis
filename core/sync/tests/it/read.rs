@@ -13,7 +13,7 @@ use osis_crypto::{RoleKey, Secret32, Signature, SigningSecret, role_key};
 use osis_engine::sync_ids::HeadKeys;
 use osis_engine::retention::{End, Minting, Standing};
 use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, Destruction, ReadCredentials};
-use osis_blob::{Class, Step, StepKeys};
+use osis_blob::{Class, Step, StepId, StepKeys};
 use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, Verdict, Why};
 use osis_engine::sync::PieceLink;
 use osis_base::Tid;
@@ -419,6 +419,18 @@ impl Ground for Fake {
     }
     fn source(&mut self, s: &SyncId, at: &Source) -> Result<Option<SrcView>> {
         Ok(self.srcs.get(&(*s, *at)).cloned())
+    }
+    fn holds(&mut self, c: &CommitId) -> Result<bool> {
+        Ok(self.bodies.get(c).is_some())
+    }
+    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<bool>> {
+        Ok(self.srcs.get(&(*s, *at)).map(|v| v.store))
+    }
+    fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>> {
+        Ok(self.srcs.get(&(*s, *at)).and_then(|v| v.head))
+    }
+    fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>> {
+        Ok(self.seen.iter().filter(|((_, x, y), v)| x == s && y == c && !v.present.is_empty()).map(|((at, ..), _)| *at).collect())
     }
     fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {
         Ok(std::mem::take(&mut self.src_feed))

@@ -20,6 +20,10 @@ pub struct Views {
     open: BTreeMap<SyncId, BTreeMap<Source, BTreeMap<ConnId, bool>>>,
     /// Where each (connection, S) member's rows live, as it joined.
     by_conn: BTreeMap<(ConnId, SyncId), Source>,
+    /// Per (S, source), whether it kept S unread as it last joined: a record's lasts past its
+    /// leaving (as what its stream showed does), so what reads it does not move as the source
+    /// comes and goes; a connection's goes with it.
+    kept: BTreeMap<(SyncId, Source), bool>,
     stamps: Stamps,
 }
 
@@ -38,13 +42,33 @@ impl Views {
                 }
                 self.open.entry(*s).or_default().entry(at).or_default().insert(*conn, store);
                 self.wrote(*s, at);
+                self.set_kept(*s, at, Some(store));
             }
             Moved::Left(conn, s, _) => {
                 if let Some(at) = self.by_conn.remove(&(*conn, *s)) {
                     self.drop_conn(*s, at, *conn);
+                    if let Source::Conn(_) = at {
+                        self.set_kept(*s, at, None);
+                    }
                 }
             }
-            Moved::Until(..) | Moved::Forgot(..) => {}
+            // what the record's source showed of S goes
+            Moved::Forgot(conn, s) => {
+                if let Some(rec) = opens.record(*conn) {
+                    self.set_kept(*s, Source::Record(rec), None);
+                }
+            }
+            Moved::Until(..) => {}
+        }
+    }
+
+    fn set_kept(&mut self, s: SyncId, at: Source, kept: Option<bool>) {
+        let was = match kept {
+            Some(k) => self.kept.insert((s, at), k),
+            None => self.kept.remove(&(s, at)),
+        };
+        if was != kept {
+            self.stamps.wrote(&("c", s, at), kept.is_some());
         }
     }
 
@@ -75,6 +99,13 @@ impl Views {
         self.stamps.read(&("v", *s, *at));
         let (conn, store) = self.open.get(s)?.get(at)?.iter().next().map(|(c, x)| (*c, *x))?;
         Some(SrcView { at: *at, conn, store, head: None, full: false, role_unheld: false })
+    }
+
+    /// Whether source `at` keeps S unread, as it last joined (up now or not); `None` when it has
+    /// not joined since this node started. Moves only when that changes.
+    pub fn kept(&self, s: &SyncId, at: &Source) -> Option<bool> {
+        self.stamps.read(&("c", *s, *at));
+        self.kept.get(&(*s, *at)).copied()
     }
 
     /// Every source of S up now.

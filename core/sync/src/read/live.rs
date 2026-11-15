@@ -167,8 +167,7 @@ impl Live<'_, '_> {
 impl Ground for Live<'_, '_> {
     fn commits_added(&mut self) -> Result<Vec<CommitId>> {
         // the feeds start with the first settle: what each covers before is judged then
-        if self.feeds.known.is_none() {
-            self.feeds.known = Some(self.streams.known().feed());
+        if self.feeds.views.is_none() {
             self.feeds.views = Some(self.views.feed());
             self.feeds.syncs = Some(self.cx.store.syncs_feed());
         }
@@ -359,14 +358,35 @@ impl Ground for Live<'_, '_> {
         v.full = known.full(v.conn, s);
         Ok(Some(v))
     }
+    fn holds(&mut self, c: &CommitId) -> Result<bool> {
+        Ok(self.cx.engine.holds_commit(c))
+    }
+    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<bool>> {
+        Ok(self.views.kept(s, at))
+    }
+    fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>> {
+        Ok(self.streams.known().head(*at, s))
+    }
+    fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>> {
+        let known = self.streams.known();
+        Ok(self.cx.engine.commit_blobs(c)?.iter().flat_map(|b| known.shown_at(s, b)).collect())
+    }
     fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {
         Ok(self.feeds.views.as_mut().map(|f| f.added()).unwrap_or_default().into_iter().map(|(_, s, at)| (s, at)).collect())
     }
     fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>> {
         let mut out = Vec::new();
+        let rows = match self.feeds.known.as_mut() {
+            Some(f) => f.added(),
+            // a start: every row each source showed
+            None => {
+                self.feeds.known = Some(self.streams.known().feed());
+                self.streams.known().rows_all()?
+            }
+        };
         // a blob this node never opened or sealed names no commit here: it is pulled, and its
         // commit known, once opened
-        for (at, s, b) in self.feeds.known.as_mut().map(|f| f.added()).unwrap_or_default() {
+        for (at, s, b) in rows {
             if let Some(c) = self.cx.engine.blob_commit(&b)? {
                 out.push((at, s, c));
             }

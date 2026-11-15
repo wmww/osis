@@ -564,20 +564,23 @@ pub(crate) fn freed(g: &mut impl Ground, b: &BlobId, t: &Tid) -> Result<Freed> {
 
 /// What a body at S calls for at the source at `at` (§3 At a source keeping S unread; §4).
 /// Between readers nothing but streams: a source reading S calls for nothing.
+///
+/// What it owes there is judged from what that source's stream shows (`known`, kept while it is
+/// away), whether it is up now or not: a delete owed stays owed until its stream no longer shows
+/// the entry. Only a body owing something reads whether the source is up (to carry it out on
+/// that connection), so a source coming back judges again what is owed there, nothing else.
 pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId, at: &Source) -> Result<Toward> {
     osis_base::costs::count("read: toward", 1);
     let mut t = Toward::default();
-    let src = match g.source(s, at)? {
-        Some(src) if src.store => src,
-        _ => {
-            t.idle = true;
-            return Ok(t);
-        }
-    };
+    if g.kept_at(s, at)? == Some(false) {
+        t.idle = true;
+        return Ok(t);
+    }
     let seen = g.seen(at, s, c)?;
     let verdict = mine.verdicts.get(&(*s, *c)).cloned().unwrap_or(Verdict::Unjudged);
     let creds = g.credentials(s)?;
-    let keys = src.head.and_then(|h| creds.as_ref()?.keys.get(&h).cloned());
+    let head = g.head_at(s, at)?;
+    let keys = head.and_then(|h| creds.as_ref()?.keys.get(&h).cloned());
     let writer = keys.as_ref().is_some_and(|k| k.write.is_some());
     let quiet = seen.present.is_empty() && seen.deleted.is_empty();
     t.idle = quiet && (writer || verdict != Verdict::Must);
@@ -585,17 +588,34 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
     if matches!(verdict, Verdict::Unjudged | Verdict::MustNot(Why::Emptied)) {
         return Ok(t);
     }
-    let (Some(head), Some(creds)) = (src.head, creds.as_deref()) else { return Ok(t) };
+    let (Some(head), Some(creds)) = (head, creds.as_deref()) else { return Ok(t) };
     let f = match mine.meta(s, c).is_some() {
         true => Some(g.facts(s, c)?),
         false => None,
     };
-    if f.is_some() {
-        at_source(g, mine, &mut t, &src, &seen, s, c, &verdict, head, creds, writer, f.as_ref().is_some_and(|f| f.role))?;
+    let calls = |g: &mut _, t: &mut Toward, src: &SrcView| -> Result<()> {
+        if f.is_some() {
+            at_source(g, mine, t, src, &seen, s, c, &verdict, head, creds, writer, f.as_ref().is_some_and(|f| f.role))?;
+        }
+        if keys.is_some() && !seen.present.is_empty() {
+            deletes(g, mine, t, src, &seen, s, c, f.as_ref(), &verdict, head, creds)?;
+        }
+        Ok(())
+    };
+    // owed there as if up and full (what full and the connection add only lets more go): nothing
+    // owed reads nothing of the connection
+    let mut owed = Toward::default();
+    calls(g, &mut owed, &SrcView { at: *at, conn: ConnId(0), store: true, head: Some(head), full: true, role_unheld: false })?;
+    if owed.acts.is_empty() {
+        return Ok(t);
     }
-    if keys.is_some() && !seen.present.is_empty() {
-        deletes(g, mine, &mut t, &src, &seen, s, c, f.as_ref(), &verdict, head, creds)?;
+    // away, it stays owed (followed while its stream shows the body) until it is up again
+    let Some(src) = g.source(s, at)? else { return Ok(t) };
+    if !src.store {
+        t.idle = true;
+        return Ok(t);
     }
+    calls(g, &mut t, &src)?;
     t.idle &= t.acts.is_empty();
     Ok(t)
 }

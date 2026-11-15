@@ -258,11 +258,24 @@ impl Read {
         }
         // every entry held under S is judged under S, a body there or not (spec/sync-judgement.md
         // §2: one of a commit S carries no body of is outside the required set)
-        for k in g.entries_added()? {
+        // and every entry a source's stream shows (spec/sync-judgement.md §3 What a source
+        // holds): what it calls for there is that source's (`toward`), and its own judgement
+        // keeps it (a start replays every row, so what is owed at a source away is owed again)
+        let seen: Vec<(Source, SyncId, CommitId)> = g.seen_added()?;
+        let mut shown = Vec::new();
+        for (_, s, c) in &seen {
+            if g.holds(c)? {
+                shown.push((*s, *c));
+            }
+        }
+        for k in g.entries_added()?.into_iter().chain(shown) {
             if self.arrived.get(&k) != Some(&place) {
                 self.arrived.insert(k, place);
             }
             self.judged.want(k);
+        }
+        for (at, s, c) in seen {
+            self.toward.want((s, c, at));
         }
         // a sync ID coming to be read: a judgement while it was not (it joined the engine's sync
         // set before the store's holdings) left its keys unfollowed
@@ -380,6 +393,11 @@ impl Read {
                 let Some((was, now)) = self.judged.try_settle(&k, || judge::body(g, &mine, &s, &c))? else { continue };
                 if self.verdicts.get(&k) != Some(&now.verdict) {
                     self.verdicts.insert(k, now.verdict.clone());
+                    // what it calls for at each source whose stream shows it, up now or away (a
+                    // start judges every body: what the sources showed before is judged then)
+                    for at in g.shown_at(&s, &c)? {
+                        self.toward.want((s, c, at));
+                    }
                     // a non-writer gives a must-hold body to each store source lacking it
                     if now.verdict == Verdict::Must {
                         for at in self.giving_to(g, &s)? {
@@ -438,9 +456,6 @@ impl Read {
         }
         // what each body calls for at each source keeping S unread: the rows a source's stream
         // wrote, and a source joining or moving (a non-writer there gives every must-hold body)
-        for (at, s, c) in g.seen_added()? {
-            self.toward.want((s, c, at));
-        }
         for (s, at) in g.sources_added()? {
             if self.giving_to(g, &s)?.contains(&at) {
                 let must: Vec<CommitId> = self.verdicts.range((s, CommitId([0; 32]))..=(s, CommitId([0xff; 32]))).filter(|(_, v)| **v == Verdict::Must).map(|((_, c), _)| *c).collect();

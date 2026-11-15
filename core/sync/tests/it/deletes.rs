@@ -137,3 +137,73 @@ fn a_writer_deletes_only_what_it_may_purge_spec_sync_judgement_3() {
     assert!(!held(&mut w, &anyone), "the writer deleted the replaced write any writer may purge");
     assert!(held(&mut w, &authors), "the writer deleted a write only its author or an admin may purge");
 }
+
+/// Node 2 writes thing `t`'s value (purgeable by its author or an admin); node 1 goes away and
+/// `purger` (0 the admin, or 2 the author) purges it with the other one away, so the purger's
+/// Delete is the only one; `restart` restarts the purger while node 1 is still away. Node 1 comes
+/// back: whether every entry of the commit left it.
+fn purged_while_away(purger: usize, restart: bool) -> bool {
+    let (mut w, t, s) = setup();
+    let c = write(&mut w, 2, t, &value_ak(), PurgeBy::AuthorOrAdmin);
+    w.run();
+    let held = at_unread(&mut w, 2, &s, &c);
+    assert!(!held.is_empty(), "{purger}: node 1 holds the write");
+    w.power_off(1);
+    w.power_off(2 - purger);
+    purge(&mut w, purger, t, c);
+    w.run();
+    if restart {
+        w.power_off(purger);
+        w.power_on(purger);
+        w.run();
+    }
+    w.power_on(1);
+    w.run();
+    held.iter().all(|b| w.store(1).entry(&s, b).unwrap().is_none())
+}
+
+// spec/sync-judgement.md §3 (Deletes; What a source holds): a delete owed at a source keeping S
+// unread is owed while its stream shows the entry, up or away: a purge (by the admin's delete key
+// or the writer's level key) made while node 1 is away deletes the entry there once it is back.
+#[test]
+fn a_purge_made_while_the_unread_store_is_away_deletes_there_on_return_spec_sync_judgement_3() {
+    for purger in [0, 2] {
+        assert!(purged_while_away(purger, false), "{purger}: the purge deleted it at node 1 on return");
+    }
+}
+
+// spec/sync-judgement.md §3 (Deletes; Dropped bodies): the owed delete survives a restart of the
+// purger while node 1 is away; the writer signs it from the prefix salt and aspects it kept of
+// the dropped blob (`BlobOf`), its bytes gone.
+#[test]
+fn an_owed_delete_survives_the_purgers_restart_spec_sync_judgement_3() {
+    for purger in [0, 2] {
+        assert!(purged_while_away(purger, true), "{purger}: the purge deleted it at node 1 after the purger's restart");
+    }
+}
+
+// spec/sync-judgement.md §3 (What a source holds), scaling: a store source coming back judges
+// again only what is owed there, never each entry its stream shows: its leaving and return
+// judge as many bodies toward it with 2 entries shown as with 12.
+#[test]
+fn a_source_coming_back_judges_only_what_is_owed_there() {
+    let toward = |n: usize| {
+        let (mut w, t, _) = setup();
+        for i in 0..n {
+            write(&mut w, 2, t, &Ak::new(format!("u:n.{i}")).unwrap(), PurgeBy::Writer);
+        }
+        w.run();
+        osis_base::costs::take();
+        for j in [0, 2, 3] {
+            w.partition(1, j);
+        }
+        w.run();
+        for j in [0, 2, 3] {
+            w.rejoin(1, j);
+        }
+        w.run();
+        osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "read: toward").map(|(.., n)| n).sum::<u64>()
+    };
+    let (few, many) = (toward(2), toward(12));
+    assert_eq!(few, many, "toward judged {few} with 2 entries shown, {many} with 12");
+}

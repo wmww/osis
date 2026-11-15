@@ -182,11 +182,21 @@ pub trait Ground {
     }
     /// One source of S, if up now (read per source, so a source's change moves its rows alone).
     fn source(&mut self, s: &SyncId, at: &Source) -> Result<Option<SrcView>>;
+    /// Commit `c` is held here (applied or judged): one that is not is not judged (spec/sync-judgement.md
+    /// §1 Unjudged blobs).
+    fn holds(&mut self, c: &CommitId) -> Result<bool>;
+    /// Whether source `at` keeps S unread, as it last joined, up now or away (`None`: unknown, not
+    /// joined since this node started). Moves only when that changes, never as it comes and goes.
+    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<bool>>;
+    /// The source's head for S, as its stream last named it, up now or away.
+    fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>>;
+    /// The sources, up now or away, whose stream shows an entry of `c` under S present.
+    fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>>;
     /// Sources of S whose view was written (joined or changed) since the last call.
     fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>>;
     fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen>;
     /// `known` rows written since the last call (a source's stream showed an entry of the commit,
-    /// or its removal).
+    /// or its removal); every row at the first call (a start).
     fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>>;
     /// Some source's stream shows an entry of `c` under S present.
     fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool>;
