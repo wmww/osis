@@ -863,34 +863,106 @@ fn a_body_held_under_another_sync_id_is_taken_spec_sync_streams_4() {
 }
 
 // spec/sync-streams.md §4 (Full): a node keeping S unread refusing a pulled entry for room tells
-// the peer `full` once, fetches no entry it refused while full, and once room grew says `full`
-// false and pulls S again from the start.
+// the peer `full` once, and once room grew says `full` false and pulls S again from the start. A
+// restart while full changes nothing: the wait is durable, `full` is told again on the new
+// connection, and room growing after it still pulls S anew.
 #[test]
 fn full_told_then_room_again_spec_sync_streams_4() {
+    for restart in [false, true] {
+        let mut p = Pair::new();
+        let k = Sid::new(10);
+        k.keep(&mut p.a);
+        k.keep(&mut p.b);
+        let x = k.stamped(&mut p.a, 3000, true);
+        let y = k.stamped(&mut p.a, 3001, true);
+        p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+        p.a.join(p.now, k.id);
+        p.b.join(p.now, k.id);
+        p.run();
+        assert!(p.a.streams.known().full(C, &k.id), "b told it is full");
+        let fulls = |p: &Pair| p.sent_by_b(43).iter().filter(|m| matches!(m, Msg::Stream(st) if st.events.iter().any(|(_, e)| *e == Event::Full(true)))).count();
+        assert_eq!(fulls(&p), 1);
+        let taken = [x, y].iter().filter(|b| p.b.store.entry(&k.id, b).unwrap().is_some()).count();
+        assert_eq!(taken, 1);
+        if restart {
+            p.b.restart_all(7);
+            p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+            p.a.streams.closed(C);
+            assert!(!p.a.streams.known().full(C, &k.id), "full lasts with its connection");
+            p.a.join(p.now, k.id);
+            p.b.join(p.now, k.id);
+            p.run();
+            assert!(p.a.streams.known().full(C, &k.id), "told again on the new connection");
+            assert_eq!(fulls(&p), 2);
+        }
+        // room grows: b drops what it took
+        let held = if p.b.store.entry(&k.id, &x).unwrap().is_some() { x } else { y };
+        p.b.store.drop_entry(&k.id, &held, Vec::new()).unwrap();
+        p.run();
+        assert!(!p.a.streams.known().full(C, &k.id));
+        assert!(matches!(p.sent_by_b(41).last().unwrap(), Msg::Pull(q) if q.joins == vec![(k.id, None)]), "pulled again from the start");
+        let refused = if held == x { y } else { x };
+        assert!(p.b.store.entry(&k.id, &refused).unwrap().is_some(), "what it refused for room taken once room grew (restart: {restart})");
+    }
+}
+
+// spec/sync-streams.md §4 (Full: the room of the cap that refused): a node refusing an entry by
+// the store's total is full for S until the total's room grows (here the cap rises; S's own usage
+// never moves), across a restart.
+#[test]
+fn a_total_cap_refusal_ends_when_the_total_grows_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    let total = |n: u64| Caps { policy: BTreeMap::from([("total_bytes".to_string(), n)]), ..Caps::default() };
+    p.b.store.set_caps(&total(3000));
+    let x = k.stamped(&mut p.a, 3001, true);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    assert!(p.b.store.entry(&k.id, &x).unwrap().is_none(), "refused by the total");
+    assert!(p.a.streams.known().full(C, &k.id));
+    p.b.restart_all(7);
+    p.b.store.set_caps(&total(3000));
+    p.a.streams.closed(C);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    assert!(p.a.streams.known().full(C, &k.id), "still full after the restart");
+    p.b.store.set_caps(&total(10_000));
+    p.run();
+    assert!(p.b.store.entry(&k.id, &x).unwrap().is_some(), "taken once the total's room grew");
+    assert!(!p.a.streams.known().full(C, &k.id));
+}
+
+// spec/sync-judgement.md §6 (Stops: a restart between the drop and its regain changes nothing):
+// a head move while S's copy is dropped pulls nothing and keeps the drop's mark, so after a
+// restart S is still to be judged again, and judged back within its keys it is fetched anew.
+#[test]
+fn a_head_move_while_dropped_keeps_the_fetch_anew_spec_sync_judgement_6() {
     let mut p = Pair::new();
     let k = Sid::new(10);
     k.keep(&mut p.a);
     k.keep(&mut p.b);
     let x = k.stamped(&mut p.a, 3000, true);
-    let y = k.stamped(&mut p.a, 3001, true);
-    p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
     p.a.join(p.now, k.id);
     p.b.join(p.now, k.id);
     p.run();
-    let a_src = p.a.src();
-    assert!(p.a.streams.known().full(a_src, &k.id), "b told it is full");
-    let fulls = p.sent_by_b(43).iter().filter(|m| matches!(m, Msg::Stream(st) if st.events.iter().any(|(_, e)| *e == Event::Full(true)))).count();
-    assert_eq!(fulls, 1);
-    let taken = [x, y].iter().filter(|b| p.b.store.entry(&k.id, b).unwrap().is_some()).count();
-    assert_eq!(taken, 1);
-    // room grows: b drops what it took
-    let held = if p.b.store.entry(&k.id, &x).unwrap().is_some() { x } else { y };
-    p.b.store.drop_entry(&k.id, &held, Vec::new()).unwrap();
+    p.b.store.set_unheld(&k.id, true).unwrap();
+    // a step under the same write key: x verifies under it
+    let one = k.child(&k.genesis.0, 1, 11);
+    assert_eq!(p.b.store.take_register(&k.id, &one.0, Some(&one.1)).unwrap(), Code::OK);
     p.run();
-    assert!(!p.a.streams.known().full(a_src, &k.id));
-    assert!(matches!(p.sent_by_b(41).last().unwrap(), Msg::Pull(q) if q.joins == vec![(k.id, None)]), "pulled again from the start");
-    let refused = if held == x { y } else { x };
-    assert!(p.b.store.entry(&k.id, &refused).unwrap().is_some(), "what it refused for room taken once room grew");
+    assert!(p.b.store.entry(&k.id, &x).unwrap().is_none(), "dropped");
+    p.b.restart_all(7);
+    assert!(p.b.store.unheld(&k.id), "still to be judged again after the restart");
+    p.a.streams.closed(C);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.b.store.set_unheld(&k.id, false).unwrap();
+    p.run();
+    assert!(p.b.store.entry(&k.id, &x).unwrap().is_some(), "fetched anew");
 }
 
 // spec/sync-judgement.md §6 (Stops: a box of its head's sync secret keeps S again, and it fetches
@@ -958,7 +1030,7 @@ fn a_raise_to_read_fetches_anew_after_a_restart_spec_sync_judgement_6() {
 }
 
 // spec/sync-streams.md §4 (Refused): an entry refused for anything but room is told with its code;
-// the peer keeps the refusal with the entry's stamp and head, and counts code 6 as deleted there.
+// the peer keeps the refusal, and counts code 6 as deleted there.
 #[test]
 fn refusals_told_and_kept_spec_sync_streams_4() {
     let mut p = Pair::new();
@@ -972,11 +1044,61 @@ fn refusals_told_and_kept_spec_sync_streams_4() {
     p.b.join(p.now, k.id);
     p.run();
     let src = p.a.src();
-    let r = p.a.streams.known().refusal(src, &k.id, &bad).unwrap();
-    assert_eq!(r.code, Code::REFUSED);
-    assert!(r.stamp.is_some());
+    assert_eq!(p.a.streams.known().refusal(src, &k.id, &bad), Some(Code::REFUSED));
     assert!(p.sent_by_b(43).iter().any(|m| matches!(m, Msg::Stream(st) if st.cursor.is_none() && st.events.contains(&(k.id, Event::Refused(good, Code::TOMBSTONED))))));
     assert!(!p.a.streams.known().knows(src, &k.id, &good), "6 counts as deleted there");
+}
+
+// spec/sync-streams.md §4 (Refused: the refusal stands until the entry is offered again, the
+// refusing node's stream shows it present, or the head it names moves), a refusing node being
+// the peer's only source: each ground going ends the refusal, and the peer is then caught up
+// with it (status waits on it again: spec/sync-status.md §1).
+#[test]
+fn a_refusal_ends_with_its_ground_spec_sync_streams_4() {
+    let refused = |p: &Pair, k: &Sid| p.a.streams.known().refusing(p.a.src(), &k.id);
+    // the head b's stream names moves (b's own pull anew held back: it would refuse again)
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    k.stamped(&mut p.a, 500, false);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    assert!(refused(&p, &k), "refused under its head");
+    let one = k.child(&k.genesis.0, 1, 0xf0);
+    assert_eq!(p.b.store.take_register(&k.id, &one.0, Some(&one.1)).unwrap(), Code::OK);
+    p.run_with(|ab, m| !ab && m.kind() == 41);
+    assert!(!refused(&p, &k), "b's head moved");
+    assert!(p.a.streams.caught_up(C, &k.id));
+    // the entry offered again: it leaves the peer (its deletion served)
+    let mut p = Pair::new();
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    let x = k.stamped(&mut p.a, 500, false);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    assert!(refused(&p, &k));
+    p.a.store.drop_entry(&k.id, &x, Vec::new()).unwrap();
+    p.run();
+    assert!(!refused(&p, &k), "offered again: its deletion");
+    assert!(p.a.streams.caught_up(C, &k.id));
+    // b's stream shows it present (a refusal arriving after b took it)
+    let mut p = Pair::new();
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    let y = k.stamped(&mut p.a, 501, true);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    let st = osis_proto::Stream { events: vec![(k.id, Event::Refused(y, Code::REFUSED))], cursor: None, report: false, seq: 0 };
+    p.a.with(p.now, |t, c| t.message(c, C, Incoming::Push(Msg::Stream(Box::new(st)))));
+    assert!(refused(&p, &k));
+    p.a.leave(p.now, k.id);
+    p.a.join_on(p.now, C, k.id, Rejoin::From(None));
+    p.run();
+    assert!(!refused(&p, &k), "b's stream shows it present");
 }
 
 // spec/sync-streams.md §4 (Refused): a node keeping S unread refuses an entry stamped under no key
@@ -996,7 +1118,7 @@ fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
     let held = |p: &Pair, b: &BlobId| p.b.store.entry(&k.id, b).unwrap().is_some();
     let anew = |p: &Pair, from: usize| p.sent_by_b(41).iter().skip(from).filter(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])).count();
     assert!(!held(&p, &x), "refused under its head");
-    assert_eq!(p.a.streams.known().refusal(p.a.src(), &k.id, &x).unwrap().code, Code::REFUSED);
+    assert_eq!(p.a.streams.known().refusal(p.a.src(), &k.id, &x), Some(Code::REFUSED));
     let pulls = p.sent_by_b(41).len();
     let one = k.child(&k.genesis.0, 1, 0xee);
     assert_eq!(p.b.store.take_register(&k.id, &one.0, Some(&one.1)).unwrap(), Code::OK);

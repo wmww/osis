@@ -25,8 +25,12 @@
 //!   unread (`Store::set_unheld`, written with the drop; it takes nothing until judged again);
 //!   `ANEW_RAISED`, S was raised from kept unread to read (`Store::set_holdings`); `ANEW_HEAD`,
 //!   S's head moved kept unread over a refusal told to a record's source (`path::register`): pulled from the start only at the sources
-//!   told a refusal of S under another head (spec/sync-streams.md §4 Refused). A mark there
-//!   already stands (it pulls from every source).
+//!   told a refusal of S under another head (spec/sync-streams.md §4 Refused); `ANEW_ROOM`, S
+//!   was full and its room grew (`Store::room_grew`; over a head move's mark, which it covers).
+//!   A head move's mark is not written over another mark (that one pulls from every source).
+//! - `R/ s cap` S kept unread is full (spec/sync-streams.md §4 Full): a pulled entry was refused
+//!   for room by `cap` (`store::Cap`); value that cap's least room at its refusals, entries and
+//!   bytes (`Store::room_grew`).
 //! - `F/ s` S's first sync here ended (spec/sync-streams.md §5): a source's stream of S stood at
 //!   the end of a listing from the start; gone with S (`shred`).
 
@@ -61,6 +65,9 @@ pub(crate) const ANEW: &[u8] = b"N/";
 pub(crate) const ANEW_RAISED: &[u8] = &[1];
 /// `ANEW`'s value for a head move kept unread.
 pub(crate) const ANEW_HEAD: &[u8] = &[2];
+/// `ANEW`'s value for room grown at a full S.
+pub(crate) const ANEW_ROOM: &[u8] = &[3];
+pub(crate) const ROOM: &[u8] = b"R/";
 pub(crate) const FIRST: &[u8] = b"F/";
 
 /// The tags of the rows each module keeps in a peer's record (`osis_store::Transaction::
@@ -82,13 +89,12 @@ pub(crate) mod tag {
     // streams: the stream's cursor (record-wide), a member at it, where a member not at it
     // joins from (joining, or stopped where it left: one row, so a member leaving one connection
     // and joining another from where it stood writes nothing); what the source showed: an entry
-    // present, its head, full, a refusal; the head this node last told it a refusal of S under
+    // present, its head, a refusal standing; the head this node last told it a refusal of S under
     pub(crate) const CURSOR: u8 = b'c';
     pub(crate) const AT_STREAM: u8 = b'a';
     pub(crate) const JOIN_FROM: u8 = b'j';
     pub(crate) const PRESENT: u8 = b'k';
     pub(crate) const HEAD: u8 = b'h';
-    pub(crate) const FULL: u8 = b'f';
     pub(crate) const REFUSED: u8 = b'r';
     pub(crate) const TOLD: u8 = b't';
 }

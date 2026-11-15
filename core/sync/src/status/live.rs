@@ -26,8 +26,8 @@ impl Net for NetView<'_> {
     fn pull_seq(&self) -> u64 {
         self.streams.pull_seq()
     }
-    fn full(&self, at: Source, s: &SyncId) -> bool {
-        self.streams.known().full(at, s)
+    fn full(&self, conn: ConnId, s: &SyncId) -> bool {
+        self.streams.known().full(conn, s)
     }
     fn refusing(&self, at: Source, s: &SyncId) -> bool {
         self.streams.known().refusing(at, s)
@@ -59,8 +59,8 @@ impl Net for Live<'_, '_> {
     fn pull_seq(&self) -> u64 {
         self.net().pull_seq()
     }
-    fn full(&self, at: Source, s: &SyncId) -> bool {
-        self.net().full(at, s)
+    fn full(&self, conn: ConnId, s: &SyncId) -> bool {
+        self.net().full(conn, s)
     }
     fn refusing(&self, at: Source, s: &SyncId) -> bool {
         self.net().refusing(at, s)

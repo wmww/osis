@@ -141,7 +141,8 @@ pub trait Net {
     /// The Pulls sent so far (`Streams::pull_seq`): a pass begun now counts only a Pull sent
     /// after it, whatever the clock reads.
     fn pull_seq(&self) -> u64;
-    fn full(&self, at: Source, s: &SyncId) -> bool;
+    /// The peer on `conn` told on it that it is full for S (spec/sync-streams.md §4 Full).
+    fn full(&self, conn: ConnId, s: &SyncId) -> bool;
     fn refusing(&self, at: Source, s: &SyncId) -> bool;
     fn stranded(&self, s: &SyncId) -> bool;
 }
@@ -453,7 +454,7 @@ impl Status {
                         None => Ok(None),
                     };
                 }
-                let heard = heard_out(srcs.iter().map(|(c, src)| (!g.full(src.at, &s) && !g.refusing(src.at, &s), g.caught_since(*c, &s).is_some())));
+                let heard = heard_out(srcs.iter().map(|(c, src)| (!g.full(*c, &s) && !g.refusing(src.at, &s), g.caught_since(*c, &s).is_some())));
                 if heard { g.stranding(&s) } else { Ok(None) }
             })?;
             match r {
@@ -696,7 +697,7 @@ impl Status {
             .iter()
             .map(|(c, src)| {
                 let lacking = self.lacking.get(&(*s, *c)).copied().unwrap_or(0);
-                (*c, SourceStatus { src: *src, caught_up: net.caught_since(*c, s).is_some(), lacking, full: net.full(src.at, s), refusing: net.refusing(src.at, s) })
+                (*c, SourceStatus { src: *src, caught_up: net.caught_since(*c, s).is_some(), lacking, full: net.full(*c, s), refusing: net.refusing(src.at, s) })
             })
             .collect();
         let unheld = match holding {
@@ -718,7 +719,7 @@ impl Status {
     /// O(sources of S).
     pub fn heard_out(&self, s: &SyncId, net: &impl Net) -> bool {
         let srcs = self.sources.get(s).map_or(&NO_SOURCES, |x| &**x);
-        heard_out(srcs.iter().map(|(c, src)| (!net.full(src.at, s) && !net.refusing(src.at, s), net.caught_since(*c, s).is_some())))
+        heard_out(srcs.iter().map(|(c, src)| (!net.full(*c, s) && !net.refusing(src.at, s), net.caught_since(*c, s).is_some())))
     }
 
     /// S heard out for what waits on it (a lifecycle duty, emptying a destroyed thing's sync ID):
@@ -839,7 +840,7 @@ fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: 
             if let Some(r) = src.record().filter(|r| p.waits.contains(r)) {
                 read.insert(r);
             }
-        } else if !g.full(src.at, s) && !g.refusing(src.at, s) {
+        } else if !g.full(*conn, s) && !g.refusing(src.at, s) {
             fresh_all = false;
         }
     }

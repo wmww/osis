@@ -53,7 +53,7 @@ struct Fake {
     now: u64,
     set: Stamped<(), Arc<SyncSet>>,
     caught: Stamped<(ConnId, SyncId), WallMs>,
-    full: StampedSet<(Source, SyncId)>,
+    full: StampedSet<(ConnId, SyncId)>,
     refused: StampedSet<(Source, SyncId, BlobId)>,
     stranded: StampedSet<SyncId>,
     stamped: Stamped<SyncId, Vec<BlobId>>,
@@ -93,8 +93,8 @@ impl Net for Fake {
     fn pull_seq(&self) -> u64 {
         self.now.saturating_sub(1)
     }
-    fn full(&self, at: Source, s: &SyncId) -> bool {
-        self.full.contains(&(at, *s))
+    fn full(&self, conn: ConnId, s: &SyncId) -> bool {
+        self.full.contains(&(conn, *s))
     }
     fn refusing(&self, at: Source, s: &SyncId) -> bool {
         self.refused.iter().any(|(a, x, _)| *a == at && x == s)
@@ -288,12 +288,12 @@ fn full_or_refusing_source_named_not_waited_on() {
     t.join(S, B, store(RB));
     t.caught(A, S, 0);
     assert!(!t.heard_out(S));
-    t.g.full.insert((Source::Record(RB), S));
+    t.g.full.insert((B, S));
     t.settle();
     assert!(t.heard_out(S), "a full source is not waited on");
     let st = t.st.of(&S, &t.g).unwrap();
     assert!(st.sources[&B].full && !st.sources[&B].caught_up);
-    t.g.full.remove(&(Source::Record(RB), S));
+    t.g.full.remove(&(B, S));
     t.g.refused.insert((Source::Record(RB), S, blob(1)));
     t.settle();
     assert!(t.heard_out(S) && t.st.of(&S, &t.g).unwrap().sources[&B].refusing);
@@ -385,11 +385,11 @@ fn store_source_counts_by_its_stream() {
     t.join(S, B, store(RB));
     t.caught(B, S, 0);
     t.own(S, cid(1), blob(1), 3);
-    t.g.full.insert((Source::Record(RB), S));
+    t.g.full.insert((B, S));
     t.g.reported.insert((B, S), 10);
     t.settle();
     assert!(!t.st.held(&cid(1)), "a full store applied past it");
-    t.g.full.remove(&(Source::Record(RB), S));
+    t.g.full.remove(&(B, S));
     t.settle();
     assert!(!t.st.held(&cid(1)) && !t.wait(S), "its position alone");
     t.g.knows.insert((Source::Record(RB), S, blob(1)));

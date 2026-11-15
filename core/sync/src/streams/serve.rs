@@ -3,6 +3,7 @@
 //! now, pages by `max_reply`, joins in pages, ephemeral listings, pushes under `follow` with
 //! `seq`, Fetches, and the reported positions a requester gives.
 
+use super::known::Op;
 use super::{Ctx, Streams};
 use crate::opens::Reported;
 use crate::store::Members;
@@ -236,6 +237,8 @@ impl Streams {
         if report {
             serve.served = Some(read.pos);
         }
+        let from_start: Vec<SyncId> = if whole { members.keys().copied().collect() } else { p.joins.iter().filter(|(s, c)| c.is_none() && members.contains_key(s)).map(|(s, _)| *s).collect() };
+        self.offered(ctx, conn, &page.events, &from_start);
         Ok(PullReply { id, events: page.events, cursor, whole, trimmed, more: read.more, report, joins: reply_joins })
     }
 
@@ -288,6 +291,30 @@ impl Streams {
             NodeEvent::Deleted { label, blob, .. } => Some((label, Event::Deleted(blob), false)),
             NodeEvent::Head(s) => ctx.store.head(&s)?.map(|st| (s, Event::Head(st), false)),
         })
+    }
+
+    /// What a message served on `conn` offers its peer again (spec/sync-streams.md §4 Refused):
+    /// the refusals the peer's source sent of each entry it carries an event of, and of every
+    /// entry of each member listed from the start (`from_start`), end. Reads one row per sync
+    /// ID it carries; writes only where a refusal stood.
+    fn offered(&mut self, ctx: &mut Ctx, conn: ConnId, events: &[(SyncId, Event)], from_start: &[SyncId]) {
+        let src = self.source(ctx.shared, conn);
+        let mut refusing: BTreeMap<SyncId, bool> = BTreeMap::new();
+        let mut ops = Vec::new();
+        for s in from_start {
+            if *refusing.entry(*s).or_insert_with(|| self.known.refusing(src, s)) {
+                ops.push((src, Op::Lift(*s, None)));
+            }
+        }
+        for (s, e) in events {
+            let (Event::Added { blob_id: b, .. } | Event::Deleted(b)) = e else { continue };
+            if !from_start.contains(s) && *refusing.entry(*s).or_insert_with(|| self.known.refusing(src, s)) {
+                ops.push((src, Op::Lift(*s, Some(*b))));
+            }
+        }
+        if !ops.is_empty() {
+            self.save(ctx, src, &[], false, ops);
+        }
     }
 
     /// Whether the peer on `conn` showed entry `b` of S present on its own stream (`known`): its
@@ -358,10 +385,12 @@ impl Streams {
                 }
                 s.eph.extend(page.eph);
             } else {
+                let events = page.events.clone();
                 let st = Stream { events: page.events, cursor: wire_cursor(&read.cursor), report: true, seq: f.seq };
                 if !ctx.wire.push(conn, Msg::Stream(Box::new(st))) {
                     return Ok(false);
                 }
+                self.offered(ctx, conn, &events, &[]);
                 let s = self.serve.entry(conn).or_default();
                 s.follow = Some(Follow { cursor: read.cursor, pos: read.pos, seq: f.seq + 1 });
                 s.served = Some(read.pos);

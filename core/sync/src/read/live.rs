@@ -348,7 +348,7 @@ impl Ground for Live<'_, '_> {
         let Some(mut v) = self.views.get(s, at) else { return Ok(None) };
         let known = self.streams.known();
         v.head = known.head(*at, s);
-        v.full = known.full(*at, s);
+        v.full = known.full(v.conn, s);
         Ok(Some(v))
     }
     fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {

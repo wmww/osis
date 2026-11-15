@@ -3,8 +3,14 @@
 //! §4 Full, Refused). Every read and write is stamped, so a memo or `Effects` reading it is moved
 //! by exactly the source, sync ID and entry that changed.
 //!
+//! A refusal stands only while its ground does: it goes when the entry is offered again to that
+//! source (`Op::Lift`, from serving), when the source's stream shows the entry present, and with
+//! every refusal of S there when the head its stream names moves. `full` is a fact of the
+//! connection it was told on (spec/sync-streams.md §4 Full), kept under `Source::Conn` whatever
+//! the source: it ends with `full` false, S leaving the connection, or the connection.
+//!
 //! A source is a peer's record, or the connection for a peer with none (`store::Source`). A
-//! record's word is durable: rows of the record (`store::rows::tag` PRESENT, HEAD, FULL, REFUSED),
+//! record's word is durable: rows of the record (`store::rows::tag` PRESENT, HEAD, REFUSED),
 //! written by the transaction that applies what showed it (`Op`, `write`), lost with the record
 //! (a lost record is a first contact) and stamped by the store. A connection's is in memory and
 //! goes with it; ephemeral entries are known only so (they have no log position and are lost at
@@ -17,60 +23,14 @@
 
 use crate::store::Source;
 use crate::store::Store;
-use crate::store::rows::tag::{FULL, HEAD, PRESENT, REFUSED};
-use crate::types::RecordId;
+use crate::store::rows::tag::{HEAD, PRESENT, REFUSED};
+use crate::types::{ConnId, RecordId};
 use osis_base::memo::Stamps;
 use osis_base::{BlobId, SyncId};
 use osis_label::StepId;
-use osis_proto::{Code, Stamp};
+use osis_proto::Code;
 use osis_store::Transaction;
 use std::collections::{BTreeMap, BTreeSet};
-
-/// A refusal a source sent for one entry, and the ground it holds on: the entry's stamp and the
-/// source's head when it arrived (spec/sync-streams.md §4 Refused).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Refusal {
-    pub code: Code,
-    pub stamp: Option<Stamp>,
-    pub head: Option<StepId>,
-}
-
-impl Refusal {
-    fn encode(&self) -> Vec<u8> {
-        let mut w = self.code.0.to_be_bytes().to_vec();
-        match &self.stamp {
-            Some(s) => {
-                w.push(1);
-                w.extend_from_slice(&s.0);
-            }
-            None => w.push(0),
-        }
-        match &self.head {
-            Some(h) => {
-                w.push(1);
-                w.extend_from_slice(&h.0);
-            }
-            None => w.push(0),
-        }
-        w
-    }
-
-    fn decode(v: &[u8]) -> Option<Refusal> {
-        let (code, rest) = v.split_first_chunk::<8>()?;
-        let (stamp, rest) = match rest.split_first()? {
-            (1, r) => {
-                let (s, r) = r.split_first_chunk::<64>()?;
-                (Some(osis_crypto::Signature(*s)), r)
-            }
-            (_, r) => (None, r),
-        };
-        let head = match rest.split_first()? {
-            (1, r) => Some(StepId(*r.first_chunk::<32>()?)),
-            _ => None,
-        };
-        Some(Refusal { code: Code(u64::from_be_bytes(*code)), stamp, head })
-    }
-}
 
 /// A change of what a source showed of S.
 #[derive(Clone, Debug)]
@@ -78,29 +38,45 @@ pub(super) enum Op {
     Add(SyncId, BlobId),
     Remove(SyncId, BlobId),
     Head(SyncId, StepId),
+    /// Told on a connection (under `Source::Conn` only).
     Full(SyncId, bool),
-    Refused(SyncId, BlobId, Refusal),
+    Refused(SyncId, BlobId, Code),
+    /// The source's refusal of one entry of S, or of every entry of S, ends: offered to it again.
+    Lift(SyncId, Option<BlobId>),
     /// Everything shown of S goes.
     Forget(SyncId),
 }
 
 /// Writes `op` into record `rec`'s rows.
 pub(super) fn write(t: &mut Transaction<'_>, rec: &RecordId, op: &Op) -> Result<(), osis_store::Error> {
+    let lift_all = |t: &mut Transaction<'_>, s: &SyncId| -> Result<(), osis_store::Error> {
+        for (k, _) in t.record_rows(rec, REFUSED, s, b"", usize::MAX)? {
+            t.record_remove_row(rec, REFUSED, s, &k)?;
+        }
+        Ok(())
+    };
     match op {
-        Op::Add(s, b) => t.record_put_row(rec, PRESENT, s, &b.0, Vec::new()),
+        Op::Add(s, b) => {
+            t.record_remove_row(rec, REFUSED, s, &b.0)?;
+            t.record_put_row(rec, PRESENT, s, &b.0, Vec::new())
+        }
         Op::Remove(s, b) => t.record_remove_row(rec, PRESENT, s, &b.0).map(drop),
-        Op::Head(s, h) => t.record_put_row(rec, HEAD, s, b"", h.0.to_vec()),
-        Op::Full(s, true) => t.record_put_row(rec, FULL, s, b"", Vec::new()),
-        Op::Full(s, false) => t.record_remove_row(rec, FULL, s, b"").map(drop),
-        Op::Refused(s, b, r) => t.record_put_row(rec, REFUSED, s, &b.0, r.encode()),
-        Op::Forget(s) => {
-            for tag in [PRESENT, REFUSED] {
-                for (k, _) in t.record_rows(rec, tag, s, b"", usize::MAX)? {
-                    t.record_remove_row(rec, tag, s, &k)?;
-                }
+        Op::Head(s, h) => {
+            if t.record_get_row(rec, HEAD, s, b"")?.is_some_and(|v| v != h.0) {
+                lift_all(t, s)?;
             }
-            t.record_remove_row(rec, HEAD, s, b"")?;
-            t.record_remove_row(rec, FULL, s, b"").map(drop)
+            t.record_put_row(rec, HEAD, s, b"", h.0.to_vec())
+        }
+        Op::Full(..) => Ok(()),
+        Op::Refused(s, b, c) => t.record_put_row(rec, REFUSED, s, &b.0, c.0.to_be_bytes().to_vec()),
+        Op::Lift(s, Some(b)) => t.record_remove_row(rec, REFUSED, s, &b.0).map(drop),
+        Op::Lift(s, None) => lift_all(t, s),
+        Op::Forget(s) => {
+            lift_all(t, s)?;
+            for (k, _) in t.record_rows(rec, PRESENT, s, b"", usize::MAX)? {
+                t.record_remove_row(rec, PRESENT, s, &k)?;
+            }
+            t.record_remove_row(rec, HEAD, s, b"").map(drop)
         }
     }
 }
@@ -112,7 +88,7 @@ pub struct Known {
     by_blob: BTreeMap<(SyncId, BlobId), BTreeSet<Source>>,
     heads: BTreeMap<(Source, SyncId), StepId>,
     full: BTreeSet<(Source, SyncId)>,
-    refused: BTreeMap<(Source, SyncId, BlobId), Refusal>,
+    refused: BTreeMap<(Source, SyncId, BlobId), Code>,
     stamps: Stamps,
     /// Every presence row written (shown present or removed, any source): `feed` readers take
     /// each (read, judging what a source showed of a commit).
@@ -159,28 +135,35 @@ impl Known {
         for op in ops {
             match op {
                 Op::Add(s, b) => {
+                    self.lift(src, *s, b);
                     if self.by_src.entry((src, *s)).or_default().insert(*b) {
                         self.by_blob.entry((*s, *b)).or_default().insert(src);
                         self.wrote(src, s, b);
                     }
                 }
                 Op::Remove(s, b) => self.remove_conn(src, *s, b),
-                Op::Head(s, h) => {
-                    if self.heads.insert((src, *s), *h) != Some(*h) {
+                Op::Head(s, h) => match self.heads.insert((src, *s), *h) {
+                    Some(old) if old == *h => {}
+                    old => {
                         self.stamps.wrote(&("h", src, s), true);
+                        if old.is_some() {
+                            self.lift_all(src, *s);
+                        }
                     }
-                }
+                },
                 Op::Full(s, full) => {
                     let changed = if *full { self.full.insert((src, *s)) } else { self.full.remove(&(src, *s)) };
                     if changed {
                         self.stamps.wrote(&("f", src, s), *full);
                     }
                 }
-                Op::Refused(s, b, r) => {
-                    self.stamps.wrote(&("r", (src, *s, *b)), true);
-                    self.stamps.wrote(&("rs", src, *s), true);
-                    self.refused.insert((src, *s, *b), r.clone());
+                Op::Refused(s, b, c) => {
+                    if self.refused.insert((src, *s, *b), *c).is_none() {
+                        self.stamps.wrote(&("rs", src, *s), true);
+                    }
                 }
+                Op::Lift(s, Some(b)) => self.lift(src, *s, b),
+                Op::Lift(s, None) => self.lift_all(src, *s),
                 Op::Forget(s) => self.forget_conn(src, *s),
             }
         }
@@ -213,11 +196,19 @@ impl Known {
         if self.heads.remove(&(src, s)).is_some() {
             self.stamps.wrote(&("h", src, s), false);
         }
+        self.lift_all(src, s);
+    }
+
+    fn lift(&mut self, src: Source, s: SyncId, b: &BlobId) {
+        if self.refused.remove(&(src, s, *b)).is_some() {
+            self.stamps.wrote(&("rs", src, s), false);
+        }
+    }
+
+    fn lift_all(&mut self, src: Source, s: SyncId) {
         let gone: Vec<_> = self.refused.range((src, s, BlobId([0; 32]))..=(src, s, BlobId([0xff; 32]))).map(|(k, _)| *k).collect();
-        for k in gone {
-            self.refused.remove(&k);
-            self.stamps.wrote(&("r", k), false);
-            self.stamps.wrote(&("rs", k.0, k.1), false);
+        for (_, _, b) in gone {
+            self.lift(src, s, &b);
         }
     }
 
@@ -282,18 +273,14 @@ impl Known {
         }
     }
 
-    /// Whether the source told it is full for S.
-    pub fn full(&self, src: Source, s: &SyncId) -> bool {
-        match src {
-            Source::Record(rec) => self.read(|t| Ok(t.record_get_row(&rec, FULL, s, b"")?.is_some())),
-            Source::Conn(_) => {
-                self.stamps.read(&("f", src, s));
-                self.full.contains(&(src, *s))
-            }
-        }
+    /// Whether the peer on `conn` told on it that it is full for S.
+    pub fn full(&self, conn: ConnId, s: &SyncId) -> bool {
+        let src = Source::Conn(conn);
+        self.stamps.read(&("f", src, s));
+        self.full.contains(&(src, *s))
     }
 
-    /// Whether the source refused some entry of S it was offered (spec/sync-streams.md §4
+    /// Whether a refusal the source sent of some entry of S stands (spec/sync-streams.md §4
     /// Refused): status names it among those that do not take S.
     pub fn refusing(&self, src: Source, s: &SyncId) -> bool {
         match src {
@@ -305,12 +292,13 @@ impl Known {
         }
     }
 
-    pub fn refusal(&self, src: Source, s: &SyncId, b: &BlobId) -> Option<Refusal> {
+    /// The code of the source's standing refusal of entry `b` of S.
+    pub fn refusal(&self, src: Source, s: &SyncId, b: &BlobId) -> Option<Code> {
         match src {
-            Source::Record(rec) => self.read(|t| Ok(t.record_get_row(&rec, REFUSED, s, &b.0)?.and_then(|v| Refusal::decode(&v)))),
+            Source::Record(rec) => self.read(|t| Ok(t.record_get_row(&rec, REFUSED, s, &b.0)?.and_then(|v| Some(Code(u64::from_be_bytes(v.try_into().ok()?)))))),
             Source::Conn(_) => {
-                self.stamps.read(&("r", (src, *s, *b)));
-                self.refused.get(&(src, *s, *b)).cloned()
+                self.stamps.read(&("rs", src, *s));
+                self.refused.get(&(src, *s, *b)).copied()
             }
         }
     }

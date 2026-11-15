@@ -4,11 +4,11 @@
 //! `seq` checked and a gap read again, bodies fetched one source at a time in the fill order.
 
 use super::known::{self, Op};
-use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, Rank, Refusal, Streams};
+use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, Rank, Streams};
 use crate::opens::Rejoin;
 use crate::store::rows::tag::{AT_STREAM, CURSOR, JOIN_FROM, TOLD};
 use crate::store::{Source, Store};
-use crate::types::{ConnId, Cursor, Entry, RESYNC_MS, RecordId, Result};
+use crate::types::{ConnId, Cursor, Entry, RESYNC_MS, RecordId};
 use osis_store::Transaction;
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, WallMs};
@@ -198,6 +198,7 @@ pub(super) struct Pulling {
     join_listing: BTreeMap<SyncId, BTreeSet<BlobId>>,
     /// Full and Refused events to tell the source.
     tell: Vec<(SyncId, Event)>,
+    /// The members this side told `full` true on this connection and not false since.
     told_full: BTreeSet<SyncId>,
     applied_owed: Option<Cursor>,
     /// The places (`Streams::pull_seq`) of the Pull out and of the one the last reply answered:
@@ -376,6 +377,10 @@ impl Streams {
         let src = self.source(ctx.shared, conn);
         let cursor = self.place(ctx.store, src).cursor.clone();
         self.pull.entry(conn).or_insert_with(|| Pulling::new(src, cursor));
+        // full for S: told on each connection S joins
+        if ctx.store.waits_room(&s) {
+            self.tell_full(conn, s, true);
+        }
         let place = self.place(ctx.store, src);
         let from = match rejoin {
             Rejoin::From(c) => Some(c),
@@ -421,6 +426,11 @@ impl Streams {
         let Some(p) = self.pull.get_mut(&conn) else { return };
         p.joins.remove(&s);
         p.rejoin_at.remove(&s);
+        // `full` both ways is a fact of S on this connection: told again at a rejoin
+        p.told_full.remove(&s);
+        p.tell.retain(|(x, e)| *x != s || !matches!(e, Event::Full(_)));
+        self.known.apply_conn(Source::Conn(conn), &[Op::Full(s, false)]);
+        let Some(p) = self.pull.get(&conn) else { return };
         let src = p.src;
         let held = ctx.store.holding(&s).is_some();
         let place = self.place(ctx.store, src);
@@ -601,7 +611,8 @@ impl Streams {
                     continue;
                 }
                 match e {
-                    Event::Full(f) => ops.push((src, Op::Full(s, f))),
+                    // a fact of this connection, whatever the source (`known`)
+                    Event::Full(f) => ops.push((Source::Conn(conn), Op::Full(s, f))),
                     // code 6 counts as the entry deleted there
                     Event::Refused(b, Code::TOMBSTONED) => {
                         ops.push((src, Op::Remove(s, b)));
@@ -611,9 +622,9 @@ impl Streams {
                         }
                     }
                     Event::Refused(b, code) => {
-                        let Ok(Some(e)) = ctx.store.entry(&s, &b) else { continue };
-                        let head = self.known.head(src, &s);
-                        ops.push((src, Op::Refused(s, b, Refusal { code, stamp: e.stamp, head })));
+                        if let Ok(Some(_)) = ctx.store.entry(&s, &b) {
+                            ops.push((src, Op::Refused(s, b, code)));
+                        }
                     }
                     // a relay-only entry (spec/sync-streams.md §4 Relay-only entries); any other
                     // announcement with no cursor is ignored
@@ -681,11 +692,8 @@ impl Streams {
         let tomb = ctx.store.tombstone(s, b).ok().flatten().is_some();
         match holding {
             Holding::Unread => {
-                // a node keeping S unread takes stamped entries only, never one refused while full
+                // a node keeping S unread takes stamped entries only
                 let stamp = stamp?;
-                if self.room.get(s).is_some_and(|(_, r)| r.contains(b)) {
-                    return None;
-                }
                 if tomb {
                     self.tell(conn, *s, Event::Refused(*b, Code::TOMBSTONED));
                     return None;
@@ -753,6 +761,26 @@ impl Streams {
     fn tell(&mut self, conn: ConnId, s: SyncId, e: Event) {
         if let Some(p) = self.pull.get_mut(&conn) {
             p.tell.push((s, e));
+        }
+    }
+
+    /// `full` told on `conn` for S as it now stands, once per change (spec/sync-streams.md §4
+    /// Full: once per connection while full).
+    fn tell_full(&mut self, conn: ConnId, s: SyncId, full: bool) {
+        if let Some(p) = self.pull.get_mut(&conn) {
+            let changed = if full { p.told_full.insert(s) } else { p.told_full.remove(&s) };
+            if changed {
+                p.tell.push((s, Event::Full(full)));
+            }
+        }
+    }
+
+    /// `full` false on each connection told it for an S that is full no longer (its room grew,
+    /// or it is no longer kept unread). O(the members told full).
+    pub(super) fn untell_full(&mut self, ctx: &mut Ctx) {
+        let ended: Vec<(ConnId, SyncId)> = self.pull.iter().flat_map(|(c, p)| p.told_full.iter().map(move |s| (*c, *s))).filter(|(_, s)| !ctx.store.waits_room(s)).collect();
+        for (c, s) in ended {
+            self.tell_full(c, s, false);
         }
     }
 
@@ -845,17 +873,8 @@ impl Streams {
     fn refused(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, b: BlobId, code: Code) {
         match code {
             Code::OK | Code::DECLINED => {}
-            Code::STORAGE_CAP => {
-                let bytes = ctx.store.usage(&s).map_or(0, |(d, m)| d.bytes + m.bytes);
-                let r = self.room.entry(s).or_default();
-                r.0 = bytes;
-                r.1.insert(b);
-                if let Some(p) = self.pull.get_mut(&conn)
-                    && p.told_full.insert(s)
-                {
-                    p.tell.push((s, Event::Full(true)));
-                }
-            }
+            // the store keeps S full (`Store::waits_room`)
+            Code::STORAGE_CAP => self.tell_full(conn, s, true),
             c => {
                 self.tell(conn, s, Event::Refused(b, c));
                 if head_may_lift(c) {
@@ -884,39 +903,16 @@ impl Streams {
         }
     }
 
-    /// Room grew under a sync ID this node is full for (an entry left): `full` false where it
-    /// told, and S pulled again from the start from each source.
-    pub(super) fn room_grew(&mut self, ctx: &mut Ctx) -> Result<bool> {
-        let mut grew = Vec::new();
-        for (s, (at, _)) in &self.room {
-            let (d, m) = ctx.store.usage(s)?;
-            if d.bytes + m.bytes < *at {
-                grew.push(*s);
-            }
-        }
-        for s in &grew {
-            self.room.remove(s);
-            for c in self.holders.get(s).cloned().unwrap_or_default() {
-                if let Some(p) = self.pull.get_mut(&c)
-                    && p.told_full.remove(s)
-                {
-                    p.tell.push((*s, Event::Full(false)));
-                }
-            }
-            self.pull_anew(ctx, *s, true);
-        }
-        Ok(!grew.is_empty())
-    }
-
     /// S kept unread whose dropped copy is fetched anew (spec/sync-judgement.md §6 Stops: a box
-    /// of its head's sync secret keeps S again), or raised to read (§6 Read and unread move):
-    /// pulled again from the start at every source; S whose head moved kept unread: at each
-    /// source told a refusal of S under another head (spec/sync-streams.md §4 Refused).
+    /// of its head's sync secret keeps S again), raised to read (§6 Read and unread move), or
+    /// full whose room grew (spec/sync-streams.md §4 Full): pulled again from the start at every
+    /// source; S whose head moved kept unread: at each source told a refusal of S under another
+    /// head (spec/sync-streams.md §4 Refused).
     pub(super) fn fetch_anew(&mut self, ctx: &mut Ctx) -> bool {
         // once each, written twice or not (a raise to read off a dropped copy)
         let anew: BTreeSet<SyncId> = self.anew.added().into_iter().collect();
         for s in &anew {
-            self.pull_anew(ctx, *s, false);
+            self.pull_anew(ctx, *s);
         }
         !anew.is_empty()
     }
@@ -924,13 +920,18 @@ impl Streams {
     /// S pulled from the start: from each source pulling it now, and from the start at its next
     /// join at every source whose place passed it, those only stored included (a restart since),
     /// in one transaction with clearing the store's durable mark (`N/`, `Store::clear_anew`).
-    /// `everywhere` (room grown), or the store's mark says so (`Store::anew_everywhere`: a
-    /// dropped copy, a raise); else (a head move's mark, or none) only at the sources told a
-    /// refusal of S under a head other than S's now. O(the sources holding a place of S).
-    fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId, everywhere: bool) {
+    /// Everywhere when the store's mark says so (`Store::anew_everywhere`: a dropped copy, a
+    /// raise, room grown); else (a head move's mark, or none) only at the sources told a
+    /// refusal of S under a head other than S's now. Nothing while S takes nothing
+    /// (`Store::unheld`): its mark stands until it is judged again. O(the sources holding a
+    /// place of S).
+    fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId) {
+        if ctx.store.unheld(&s) {
+            return;
+        }
         let pulling: BTreeMap<Source, ConnId> = self.holders.get(&s).into_iter().flatten().filter_map(|c| self.pull.get(c).map(|p| (p.src, *c))).collect();
         let read = ctx.store.with_read(|t| {
-            let everywhere = everywhere || Store::anew_everywhere(t, &s)?;
+            let everywhere = Store::anew_everywhere(t, &s)?;
             let mut out = BTreeSet::new();
             let tags: &[u8] = if everywhere { &[AT_STREAM, JOIN_FROM, TOLD] } else { &[TOLD] };
             for tag in tags {

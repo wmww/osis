@@ -40,7 +40,7 @@ mod pull;
 mod relay;
 mod serve;
 
-pub use known::{Known, Refusal, Row as KnownRow};
+pub use known::{Known, Row as KnownRow};
 
 use crate::opens::{Member, Moved, Opens, Reported};
 use crate::session::{Incoming, Sessions, To};
@@ -196,8 +196,6 @@ pub struct Streams {
     asked: BTreeMap<BlobId, (ConnId, WallMs)>,
     /// The connections each sync ID is a member on (its sources).
     holders: BTreeMap<SyncId, BTreeSet<ConnId>>,
-    /// Kept unread: entries refused for room per S, with S's bytes when the last was refused.
-    room: BTreeMap<SyncId, (u64, BTreeSet<BlobId>)>,
     /// The connections whose stream is caught up both ways (this side applied the peer's to its
     /// end, the peer applied every message served to it): what read and status follow per
     /// connection (`caught_up`).
@@ -220,7 +218,7 @@ impl Streams {
     /// A store failure reading what it owes fails its first step (`fault`).
     pub fn new(store: Store) -> Streams {
         let (anew, owed) = store.anew_feed();
-        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: StampedSet::default(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default() };
+        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), caught: StampedSet::default(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default() };
         st.failed(owed);
         st
     }
@@ -426,7 +424,8 @@ impl Streams {
     pub fn tick(&mut self, ctx: &mut Ctx) -> Result<bool> {
         self.forget_shredded();
         let mut acted = self.send_relays(ctx)?;
-        acted |= self.room_grew(ctx)?;
+        acted |= ctx.store.room_grew()?;
+        self.untell_full(ctx);
         acted |= self.fetch_anew(ctx);
         let conns: BTreeSet<ConnId> = self.serve.keys().chain(self.pull.keys()).copied().collect();
         for c in conns {
