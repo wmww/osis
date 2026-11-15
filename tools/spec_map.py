@@ -257,8 +257,12 @@ def stray_anchors(tests, sents, rule_keys):
     out = []
     for t in tests:
         for f, s, a in sorted(set(t["cites"]), key=str):
-            if a and (f, s, a) not in rule_keys and not all(norm(n.split(":")[0]) in text.get((f, s), "") for n in a.split(";")):
-                out.append(f"stray anchor: `{t['id']}` cites {f} §{s} ({a}), which names no rule there")
+            if not a or (f, s, a) in rule_keys:
+                continue
+            missing = [n.split(":")[0].strip() for n in a.split(";") if norm(n.split(":")[0]) not in text.get((f, s), "")]
+            if missing:
+                names = "; ".join(f"`{n}`" for n in missing)
+                out.append(f"stray anchor: `{t['id']}` cites {f} §{s} ({a}): {names} is no text of §{s} (each `;` piece's name, before any `:`, must be)")
     return out
 
 

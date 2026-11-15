@@ -39,6 +39,11 @@ for cite, want in CASES:
     if bool(got) != want:
         print(f"FAIL {cite}: {'reported' if got else 'passed'}")
         fails = 1
+# The report names the `;` piece that matched nothing, not the ones that did.
+got = spec_map.stray_anchors([{"id": "t", "cites": [("spec/sync-ids.md", "6", "relay-only; floor: a gloss")]}], SENTS, RULES)
+if len(got) != 1 or ": `floor` is no text of §6" not in got[0] or "`relay-only`" in got[0]:
+    print(f"FAIL stray message {got}")
+    fails = 1
 # A section of a note is no spec citation, nor is one of an outside standard.
 for text, want in [("notes/x.md §3 (y)", []), ("RFC 8949 §4.2", []), ("spec/crdt.md §2, notes/x.md §3 (y), §4 (z)", [("spec/crdt.md", "2", None), ("spec/crdt.md", "4", "z")])]:
     got = spec_map.citations(text, "spec/commits.md")

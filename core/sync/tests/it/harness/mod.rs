@@ -696,7 +696,11 @@ impl World {
         }
         if self.deliveries > self.cap {
             let flowing: Vec<Seen> = self.net.queue.iter().take(8).map(|(n, x)| Seen::of(*n, x)).collect();
-            panic!("storm: past {} deliveries; still flowing (first 8 of {}): {flowing:?}; wakes {:?}", self.cap, self.net.queue.len(), self.net.wakes);
+            let off: Vec<usize> = (0..self.net.online.len()).filter(|n| !self.online(*n)).collect();
+            panic!(
+                "storm: past the cap of {} deliveries over this world's whole run (not one `run`: a long test or the dial ticks toward a partitioned or powered-off peer add up; `World::cap` raises it, `flush()` delivers without firing wakes); partitioned {:?}, powered off {off:?}; still flowing (first 8 of {}): {flowing:?}; wakes {:?}",
+                self.cap, self.net.cut_off, self.net.queue.len(), self.net.wakes
+            );
         }
         let seen = Seen::of(i, &input);
         if self.trace {

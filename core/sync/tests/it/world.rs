@@ -110,7 +110,7 @@ fn a_shrink_finds_a_planted_failure_in_few_candidates() {
 
 // spec: none (test harness): a shrink candidate past its delivery cap stops and counts as not
 // failing (`capped`); under the cap it runs as ever, and a world's own lower cap still panics as
-// a storm.
+// a storm, its message naming the cap and that it counts the world's whole run.
 #[test]
 fn a_shrink_candidate_past_its_cap_does_not_fail() {
     use crate::harness::{Step::*, capped, contacts, play};
@@ -132,5 +132,6 @@ fn a_shrink_candidate_past_its_cap_does_not_fail() {
         })
     });
     let e = storm.expect_err("the world's own cap");
-    assert!(e.downcast_ref::<String>().is_some_and(|m| m.contains("storm")));
+    let m = e.downcast_ref::<String>().expect("a message");
+    assert!(m.contains("storm: past the cap of 2 deliveries over this world's whole run"), "{m}");
 }
