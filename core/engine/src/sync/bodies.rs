@@ -301,14 +301,15 @@ impl Engine {
         Ok(this)
     }
 
-    /// This node's commits (written here) and the own self-removals sync waits on
+    /// This node's commits (written here, as its account, itself or the link key of a link it
+    /// follows: a join, spec/permissions.md §7) and the own self-removals sync waits on
     /// (`waiting_removals`, a sibling's among them) with a body under `s` (spec/sync-status.md
-    /// §2): O(things on `s`'s closure + its account's and node's commits on them + removals
-    /// waiting).
+    /// §2): O(things on `s`'s closure + its authors' commits on them + removals waiting).
     pub(crate) fn own_commits_now(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
         let Some(t) = self.read_thing(s)? else { return Ok(Arc::new(BTreeSet::new())) };
         let closure = self.closure(&t);
-        let authors: Vec<Tid> = self.core.me().into_iter().chain([self.core.id.tid()]).collect();
+        let links = self.core.followed_links.values().map(|(_, l)| *l);
+        let authors: Vec<Tid> = self.core.me().into_iter().chain([self.core.id.tid()]).chain(links).collect();
         let ix = &self.core.ix;
         let mut own = BTreeSet::new();
         for x in closure.iter() {

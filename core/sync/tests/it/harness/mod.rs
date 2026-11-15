@@ -855,6 +855,18 @@ impl World {
         true
     }
 
+    /// One input: the next in flight, else the earliest wake or held-back input within the
+    /// horizon (`run`'s order, one at a time). False at quiet.
+    pub fn step_or_wake(&mut self) -> bool {
+        if self.step() {
+            return true;
+        }
+        let horizon = WallMs(self.now().0.saturating_add(self.horizon_ms));
+        let Some(at) = self.net.next_due(horizon) else { return false };
+        self.fire(at);
+        true
+    }
+
     /// Delivers what is in flight now, in order.
     pub fn flush(&mut self) {
         while let Some((i, input)) = self.net.queue.pop_front() {

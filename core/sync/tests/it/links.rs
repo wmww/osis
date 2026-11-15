@@ -415,7 +415,7 @@ fn a_sharer_answering_before_the_follow_time_is_joined_spec_sync_inbox_6() {
 // spec/sync-inbox.md §6 (A redeemer not joined: only it stops at its node's follow time): a join
 // written just before the follow time, its sharer gone before taking it, keeps the link followed
 // past it (given up, the join could never reach a source, and redeeming again joins nothing);
-// with node 0 back, the join is held there.
+// with node 0 back, the join is held there and the link forgotten.
 #[test]
 fn a_joined_redeem_is_followed_past_the_follow_time_until_its_join_is_held_spec_permissions_7() {
     use osis_sync::types::FOLLOW_LINK_MS;
@@ -427,22 +427,75 @@ fn a_joined_redeem_is_followed_past_the_follow_time_until_its_join_is_held_spec_
     w.advance(FOLLOW_LINK_MS - 60_000);
     w.heal();
     // one input at a time, so node 0 is cut off right after node 1 writes the join
-    for _ in 0..100_000 {
-        if w.engine(1).role_on(&p0).is_some() {
-            break;
-        }
-        if !w.step() {
-            w.advance(1_000);
-        }
-    }
-    assert!(w.engine(1).role_on(&p0).is_some(), "joined within the follow time");
+    let a1 = w.node(1).account.unwrap();
+    while !w.engine(1).roster(&link.k).contains_key(&a1) && w.step_or_wake() {}
     w.partition(0, 1);
+    assert!(w.engine(1).role_on(&link.k).is_some(), "joined within the follow time");
+    assert!(!w.engine(0).roster(&link.k).contains_key(&a1), "the join not at the sharer");
     w.advance(2 * FOLLOW_LINK_MS);
     assert!(w.node(1).node.redeeming(&link.k), "joined, the join not held: followed on");
     assert!(w.engine(1).sync_holder(&link.k_sync_id).unwrap().is_some(), "K's sync ID followed");
     w.heal();
     w.run();
-    let a1 = w.node(1).account.unwrap();
     assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
-    // forgotten once held: not yet (issues/sync-link-join-never-held.md)
+    assert!(!w.node(1).node.redeeming(&link.k), "forgotten once held");
+}
+
+// spec/permissions.md §7 (Redeem: a redeemer keeps the seed until its grant is at a source and
+// SHOULD discard it then), spec/sync-set.md §4 (A redeem is an accept), spec/sync-ids.md §2
+// (One sync ID per actor: every holder of a role on it syncs it through its home sync ID):
+// node 1 redeems node 0's single-use link; once node 0 holds the join, node 1 forgets the link (L
+// acted for no more) and syncs K by its filing: what node 0 writes
+// on K after reaches it. Redeeming the link again, L long gone, is done and writes no second join.
+#[test]
+fn a_held_join_forgets_the_link_and_k_syncs_by_its_filing_spec_permissions_7() {
+    let mut w = two_nodes();
+    let (p0, a0, a1) = (w.node(0).profile.unwrap(), w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let peer = osis_label::Peer { dialable: w.node(0).key.0, relays: w.net.reach.items(0) };
+    let spec = osis_engine::flows::LinkSpec { target: p0, role: Role::Read, until: None, hosts: Vec::new(), peers: vec![peer], single_use: true };
+    let link = w.write(0, |e| e.create_link(&a0, &spec)).unwrap().0;
+    assert_eq!(w.redeem(1, &link), Waiting::Pending);
+    w.run();
+    assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
+    assert!(!w.node(1).node.redeeming(&link.k), "forgotten once held");
+    let s = link.k_label;
+    assert!(w.engine(1).read_credentials(&s).unwrap().is_some_and(|c| c.acting.is_empty()), "K read, L acted for no more");
+    assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == link.k), "K syncs by its filing");
+    let on_k = w.engine(1).core.on_thing(&link.k).count();
+    assert_eq!(w.redeem(1, &link), Waiting::Done, "joined: done");
+    w.run();
+    assert_eq!(w.engine(1).core.on_thing(&link.k).count(), on_k, "no second join");
+    let ak = osis_base::Ak::new("t:reg.0").unwrap();
+    w.write(0, |e| {
+        let mut m = osis_engine::Mutation::new();
+        m.set(link.k, &ak, &osis_base::Value::Int(7)).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert_eq!(w.engine(1).get(&link.k, &ak).unwrap(), Some(osis_base::Value::Int(7)), "K synced after the link");
+}
+
+// spec/permissions.md §7 (Redeem), spec/sync-set.md §4 (A redeem is an accept): node 2 redeems
+// node 0's link while cut off, after its sibling node 1 joined by it; once node 2 reaches node 1
+// (never node 0) it holds the account's join, stops redeeming and writes no second join.
+#[test]
+fn a_siblings_join_ends_a_redeem_spec_permissions_7() {
+    let mut w = crate::harness::siblings();
+    let p0 = w.node(0).profile.unwrap();
+    let link = w.make_link(0, p0, Role::Read);
+    let l = osis_engine::identity::key_actor_tid(&link.seed);
+    w.partition(0, 2);
+    w.partition(1, 2);
+    assert_eq!(w.redeem(1, &link), Waiting::Pending);
+    w.run();
+    assert_eq!(w.redeem(1, &link), Waiting::Done, "node 1 joined");
+    assert_eq!(w.redeem(2, &link), Waiting::Pending, "node 2 holds nothing of it yet");
+    w.heal();
+    w.partition(0, 2);
+    w.run();
+    assert!(!w.node(2).node.redeeming(&link.k), "node 2 stopped redeeming");
+    for i in 0..3 {
+        assert_eq!(w.engine(i).core.ix.by_thing.get(&(link.k, l)).map_or(0, |x| x.len()), 1, "node {i}: one join");
+    }
+    assert_eq!(w.redeem(2, &link), Waiting::Done);
 }

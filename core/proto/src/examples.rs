@@ -161,7 +161,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("suspect", Msg::Suspect { id: 31, sync_id: l, entries: vec![SuspectEntry { thing: Tid::from_bytes([0x0c; 15]), ak: osis_base::Ak::new("t:reg.0").expect("an AK"), digest: [0x0d; 16] }] }),
         ("prove", Msg::Prove { id: 32, proofs: vec![proof(0x32), proof(0x33)], rotations: None }),
         ("prove with rotations", Msg::Prove { id: 32, proofs: vec![proof(0x32)], rotations: Some(vec![rotation()]) }),
-        ("proved", Msg::Proved { id: 32, proofs: vec![] }),
+        ("proved", Msg::Proved { id: 32, proofs: vec![], rotations: None }),
         ("resume", Msg::Resume { id: 34, nonce: [0x34; 32], tags: vec![[0x35; 32], [0x36; 32]] }),
         ("resumed", Msg::Resumed { id: 34, nonce: [0x37; 32], tag: Some([0x35; 32]) }),
         ("beacons", Msg::Beacons { id: top(36), generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs, more: false }),

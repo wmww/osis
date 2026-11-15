@@ -242,7 +242,7 @@ pub enum Msg {
     /// `rotations`: the account's signed rotations the verifier may lack, as header-only copies
     /// (spec/sync-opens.md §2), each a `CommitBlobPlaintext` value the engine judges.
     Prove { id: Id, proofs: Vec<ActorProof>, rotations: Option<Vec<Value>> },
-    Proved { id: Id, proofs: Vec<ActorProof> },
+    Proved { id: Id, proofs: Vec<ActorProof>, rotations: Option<Vec<Value>> },
     Resume { id: Id, nonce: [u8; 32], tags: Vec<[u8; 32]> },
     Resumed { id: Id, nonce: [u8; 32], tag: Option<[u8; 32]> },
     /// One page of generation `generation` of a side's filter; `base` present: additions to it.
@@ -456,7 +456,7 @@ impl Msg {
             }
             M::Suspect { sync_id, entries, .. } => vec![k, id, s(sync_id), Value::List(entries.iter().map(|e| Value::List(vec![Value::bytes(e.thing.as_bytes()), Value::Str(e.ak.as_str().to_string()), Value::bytes(&e.digest)])).collect())],
             M::Prove { proofs, rotations, .. } => vec![k, id, proofs_value(proofs), Value::opt(rotations.as_ref().map(|r| Value::List(r.clone())))],
-            M::Proved { proofs, .. } => vec![k, id, proofs_value(proofs)],
+            M::Proved { proofs, rotations, .. } => vec![k, id, proofs_value(proofs), Value::opt(rotations.as_ref().map(|r| Value::List(r.clone())))],
             M::Resume { nonce, tags, .. } => vec![k, id, Value::bytes(nonce), Value::List(tags.iter().map(|t| Value::bytes(t)).collect())],
             M::Resumed { nonce, tag, .. } => vec![k, id, Value::bytes(nonce), Value::opt(tag.as_ref().map(|t| Value::bytes(t)))],
             M::Beacons { generation, base, f, lo, hi, gcs, more, .. } => vec![k, id, Value::uint(*generation), Value::opt(base.map(Value::uint)), Value::uint(u64::from(*f)), Value::uint(*lo), Value::uint(*hi), Value::bytes(gcs), Value::Bool(*more)],
@@ -568,7 +568,7 @@ fn decode_body(kind: u64, id: Id, v: Value, n: &Items) -> Result<Msg, Error> {
         }
         31 => Msg::Suspect { id, sync_id: sync_id(&mut f)?, entries: f.list(1, usize::MAX, "suspect entries")?.into_iter().map(suspect_entry).collect::<Result<_, _>>()? },
         32 => Msg::Prove { id, proofs: proofs(&mut f)?, rotations: f.opt()?.map(rotations).transpose()? },
-        33 => Msg::Proved { id, proofs: proofs(&mut f)? },
+        33 => Msg::Proved { id, proofs: proofs(&mut f)?, rotations: f.opt()?.map(rotations).transpose()? },
         34 => Msg::Resume { id, nonce: f.fixed()?, tags: f.list(0, MAX_RESUME_TAGS, "resume tags")?.into_iter().map(|v| dec::fixed(v, "tag")).collect::<Result<_, _>>()? },
         35 => Msg::Resumed { id, nonce: f.fixed()?, tag: f.opt()?.map(|v| dec::fixed(v, "tag")).transpose()? },
         36 => beacons(id, &mut f)?,

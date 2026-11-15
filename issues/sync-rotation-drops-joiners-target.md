@@ -1,0 +1,8 @@
+# A sharer's account rotation drops its target's commits at a joiner
+> Summary: node 0 joined node 1's card (K1 on profile p1); when node 1 rotates its account and node 0 takes the rotation (from a Prove, `Engine::take_rotations`), node 0 drops two commits a1 wrote on p1 and with them its role on p1, K1's roster entries for a0 and L, and K1/p1 from its sync set, so nothing fetches them again: the joiner loses the target. Masked while a redeemer followed its link forever (K1's sync ID kept regardless, which refetched them).
+> Priority: critical
+> Tags: engine, sync, tests
+
+- Seen: `driver::a_sibling_rotation_proves_again_spec_sync_opens_1` (siblings fixture, `history::introduce`): after `rotate_account(a1)` at node 1, node 0's trace shows `+commit` of the rotation's commits and `-commit` of two commits on p1 authored by a1; afterwards `role_on(p1)` is None at node 0, `roster(K1)` holds a1 only, and neither K1's nor p1's sync ID is in node 0's sync set. With no shared sync ID left node 0 never dials node 2, so the test's last asserts fail. Before link-join-held the same two commits dropped too and came back a few deliveries later under K1's sync ID, which the never-forgotten link kept in the sync set.
+- Likely in the history-less re-placing of an actor's role commits by a rotation (issues/history-less-grant.md, Fathom's lane): taking a1's rotation re-places p1's commits, but the copies that should stand in for them are not where node 0 still syncs (or node 0 loses the read secrets that would keep p1 and K1 synced first).
+- Fix and test: a joiner keeps its role on the target and K across the sharer's account rotation, whatever it follows.

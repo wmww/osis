@@ -119,7 +119,7 @@ impl Engine {
         let target = link.target;
         // L signs with its own role, so the grant deposits only below write; a redeem for the
         // account is an accept (spec/sync-set.md §4), in the join's transaction
-        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, |tx| crate::sync::inbox::accept_redeemed(tx, &grantee, &target))
+        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, |tx| crate::sync::inbox::accept_redeemed(tx, &grantee, &k, &target))
     }
 
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or
@@ -147,15 +147,23 @@ impl Engine {
     /// creator wrote that target, and it may remove any joiner anyway. Reads the clock up to the
     /// next `until` or role commit of K's and the target's components.
     pub fn joined_link_ended(&mut self, k: &Tid) -> bool {
-        let Some(me) = self.core.me() else { return false };
         let Some(target) = self.core.created(k).and_then(|r| r.link_target()) else { return false };
+        self.core.time.until(self.core.horizon([*k, target].into_iter()));
+        self.joined_link(k) && self.edge_gone(&target, k)
+    }
+
+    /// Whether this account holds link actor `k` by a live grant (a join, its own or a sibling's;
+    /// K's first admin holds it by K's record): a redeem of its link writes no other
+    /// (spec/permissions.md §7). Reads the clock up to that grant's `until`.
+    pub fn joined_link(&mut self, k: &Tid) -> bool {
+        let Some(me) = self.core.me() else { return false };
         if self.first_admin(k) == Some(me) {
             return false;
         }
-        self.core.time.until(self.core.horizon([*k, target].into_iter()));
         let ts = super::now_ts(&self.core);
-        let granted = self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(&me, k).is_some_and(|e| e.alive_at(Some(ts))));
-        granted && self.edge_gone(&target, k)
+        let edge = self.core.timelines.get(k).and_then(|tl| tl.edges_at(None).get(&me, k).copied());
+        self.core.time.until(edge.and_then(|e| e.until).map(|u| u.0));
+        edge.is_some_and(|e| e.alive_at(Some(ts)))
     }
 
     /// This account's leave of link actor `k` (`joined_link_ended`): a self-removal of its grant

@@ -2,22 +2,29 @@
 //!
 //! `redeem` keeps the link durably (store rows `I/r/`, shredded: they hold the seed) and follows
 //! it in the engine for this start (`Engine::follow_link`: L held, K's sync ID read in the sync
-//! set), so the node proves L, opens K by L's static entry (opens) and its boxes open; the link's peers are dial hints. Once the join can be written
-//! (`Engine::redeemable`: the target's roster lists K, K's lists L, K's keyset is held) it is written (`Engine::redeem`, which files the target under D: a redeem is an accept), once; the link is kept, and L held at every start,
-//! until the join is held at a source (a redeemer proves L until its join is there); then it is
-//! unfollowed and L forgotten. So a redeem
-//! dropped or a restart before the join reached the sharer's node still completes
-//! (`redeem-dropped-before-delivery`). "Held at a source" is status's view (spec/sync-status.md
-//! §2). A link that ends before the join (the held role history shows L's edge on K, or K's on the
-//! target, removed or past `until`) is forgotten the same way, and redeeming it again answers
-//! `Never`. So is a link not joined within the node's follow time (`Policy::follow_link_ms`, from
-//! the redeem's start kept in its row, judged on the engine's clock, whose wake comes through
-//! `Engine::clock_next`): a sharer that never answers is followed no longer (spec/sync-inbox.md
-//! §6); the user may redeem it again. A joined link has no follow time: its join is an own write
-//! waiting for a source like any other, and the seed is its only way there (spec/permissions.md
-//! §7); given up, the join would never reach one and redeeming again joins nothing. Not built:
-//! the other end, every route refusing L's static entry (a link revoked before its join was
-//! taken is followed until then).
+//! set), so the node proves L, opens K by L's static entry (opens) and its boxes open; the
+//! link's peers are dial hints. Once the join can be written
+//! (`Engine::redeemable`: the target's roster lists K, K's lists L, K's keyset is held) it is
+//! written (`Engine::redeem`, which files K and the target under D: a redeem is an accept, so
+//! both sync by the sync set from then on, link or not), once; the link is kept, and L held at
+//! every start, until the join is held at a source of K's sync ID (status's view, spec/sync-
+//! status.md §2: the join is an own commit while L is followed, `Engine::own_commits`); then it
+//! is unfollowed and L forgotten (spec/permissions.md §7). So a redeem dropped or a restart before
+//! the join reached the sharer's node still completes (`redeem-dropped-before-delivery`).
+//!
+//! One rule says whether there is anything to write: the account holding K by a grant
+//! (`Engine::joined_link`, a join by this node or a sibling). Then `redeem` answers `Done` at once,
+//! with no row, and a redeem under way is forgotten. A link that ends before the join (the held
+//! role history shows L's edge on K, or K's on the target, removed or past `until`) is forgotten
+//! the same way, and redeeming it again answers `Never`. So is a link not joined within the node's
+//! follow time (`Policy::follow_link_ms`, from the redeem's start kept in its row, judged on the
+//! engine's clock, whose wake comes through `Engine::clock_next`): a sharer that never answers is
+//! followed no longer (spec/sync-inbox.md §6); the user may redeem it again. A joined link has no
+//! follow time: its join is an own write waiting for a source like any other, and the seed is its
+//! only way there (spec/permissions.md §7). Limit: a node stopping between the join's write and
+//! its row's forgets the link at its next start (the join is the account's), so that join waits
+//! for a source by K's filing alone. Not built: the other end, every route refusing L's static
+//! entry (a link revoked before its join was taken is followed until then).
 //!
 //! Finalize is the sharer's engine's, on a complete pass of K's sync ID (status tells it).
 
@@ -75,6 +82,9 @@ enum Stage {
     Ready,
     /// The link has ended (`Engine::link_ended`): the redeemer stops.
     Ended,
+    /// The account holds K by a join another node wrote (`Engine::joined_link`): held here, so at
+    /// a source; the redeemer stops.
+    Joined,
     /// Not joined within the node's follow time: the redeemer stops.
     GaveUp,
 }
@@ -129,6 +139,10 @@ impl Redemptions {
         if let Some(p) = self.pending.get(&link.k) {
             return Ok(if p.joined.is_some() { Waiting::Done } else { Waiting::Pending });
         }
+        // joined (here or at a sibling), the link forgotten or never followed here: nothing to write
+        if h.engine.joined_link(&link.k) {
+            return Ok(Waiting::Done);
+        }
         if h.engine.link_ended(link) {
             return Ok(Waiting::Never("the link has ended"));
         }
@@ -152,7 +166,7 @@ impl Redemptions {
             if stage == Stage::Waiting {
                 continue;
             }
-            if matches!(stage, Stage::Ended | Stage::GaveUp) {
+            if matches!(stage, Stage::Ended | Stage::Joined | Stage::GaveUp) {
                 self.ready.unwant(&k);
                 self.forget(h, &k)?;
                 acted = true;
@@ -171,12 +185,14 @@ impl Redemptions {
             acted = true;
         }
         for k in self.held.due() {
-            let Some(c) = self.pending.get(&k).and_then(|p| p.joined) else {
+            let Some((s, c)) = self.pending.get(&k).and_then(|p| Some((p.link.k_label, p.joined?))) else {
                 self.held.unwant(&k);
                 continue;
             };
+            // at a source of K's sync ID (spec/permissions.md §7), whatever else it is under (D,
+            // which files K, has no source while the account has one node)
             let status = h.status;
-            let Some((_, true)) = self.held.settle(&k, || status.is_some_and(|st| st.held(&c))) else { continue };
+            let Some((_, true)) = self.held.settle(&k, || status.is_some_and(|st| st.held_under(&s, &c))) else { continue };
             self.held.unwant(&k);
             self.forget(h, &k)?;
             acted = true;
@@ -206,9 +222,12 @@ impl Redemptions {
     }
 }
 
-/// The link has ended, the join can be written (`Engine::redeemable`), or the follow time ran out
+/// The account joined K already, the link has ended, the join can be written (`Engine::redeemable`), or the follow time ran out
 /// at `until` (the engine's clock read up to `until`, so its passing moves this).
 fn link_stage(engine: &mut Engine, link: &ShareLink, until: WallMs) -> Result<Stage> {
+    if engine.joined_link(&link.k) {
+        return Ok(Stage::Joined);
+    }
     if engine.link_ended(link) {
         return Ok(Stage::Ended);
     }

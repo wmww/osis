@@ -561,13 +561,7 @@ impl Session {
         } else {
             Vec::new()
         };
-        let rotations = if proofs.iter().any(|p| p.record.is_account()) {
-            // the room the proofs leave, less the list's head (at most 9 bytes)
-            let bare = Msg::Prove { id: MAX_ID as RequestId, proofs: proofs.clone(), rotations: Some(Vec::new()) }.encode().len();
-            Some(rotations(cx, MAX_MESSAGE.saturating_sub(bare + 9))?)
-        } else {
-            None
-        };
+        let rotations = with_rotations(cx, &proofs, |r| Msg::Prove { id: MAX_ID as RequestId, proofs: proofs.clone(), rotations: r })?;
         self.send_request(None, Msg::Prove { id: 0, proofs, rotations });
         Ok(())
     }
@@ -660,9 +654,10 @@ impl Session {
         let mine = cx.engine.account_tid();
         let own = proven.node.is_some() || (mine.is_some() && proven.account() == mine);
         let proofs = if cx.policy.identify(Some(&proven)) { self.signed(cx, own, true, &b.dialer_challenge)? } else { Vec::new() };
+        let rotations = with_rotations(cx, &proofs, |r| Msg::Proved { id: MAX_ID as RequestId, proofs: proofs.clone(), rotations: r })?;
         self.proven = proven;
         self.proofs = Proofs::Done;
-        self.answer(id, Msg::Proved { id, proofs });
+        self.answer(id, Msg::Proved { id, proofs, rotations });
         ins.push(Incoming::Proved);
         Ok(())
     }
@@ -698,8 +693,11 @@ impl Session {
     /// The answer to the session's own Prove or Ping.
     fn own_reply(&mut self, kind: u64, m: Msg, cx: &mut Cx, ins: &mut Vec<Incoming>) -> Result<(), Close> {
         match (kind, m) {
-            (32, Msg::Proved { proofs, .. }) => {
+            (32, Msg::Proved { proofs, rotations, .. }) => {
                 let Some(b) = self.binding else { return Ok(()) };
+                if let Some(r) = rotations {
+                    cx.engine.take_rotations(r).map_err(|_| Close("engine"))?;
+                }
                 self.proven = self.judge(cx, verified(proofs, true, &b.dialer_challenge, &b.listener_key));
                 if !cx.policy.sync_with(&self.proven) {
                     return Err(Close("policy"));
@@ -766,9 +764,20 @@ fn allowance(m: &Msg) -> u64 {
     }
 }
 
-/// The account's rotations for a Prove, in the engine's order: the newest that fit `room` bytes
-/// (what the proofs leave of one message), at most `MAX_ROTATIONS`. A verifier holding the
-/// chain up to them takes them all; the oldest it more likely holds already.
+/// The account's rotations a Prove or Proved carries beside `proofs` (`msg` with the given
+/// rotations: its size with none): absent unless an account is proved (spec/wire.md §11.2).
+fn with_rotations(cx: &mut Cx, proofs: &[ActorProof], msg: impl Fn(Option<Vec<osis_base::Value>>) -> Msg) -> Result<Option<Vec<osis_base::Value>>, Close> {
+    if !proofs.iter().any(|p| p.record.is_account()) {
+        return Ok(None);
+    }
+    // the room the proofs leave, less the list's head (at most 9 bytes)
+    let bare = msg(Some(Vec::new())).encode().len();
+    Ok(Some(rotations(cx, MAX_MESSAGE.saturating_sub(bare + 9))?))
+}
+
+/// The account's rotations for a Prove or Proved, in the engine's order: the newest that fit
+/// `room` bytes (what the proofs leave of one message), at most `MAX_ROTATIONS`. A verifier
+/// holding the chain up to them takes them all; the oldest it more likely holds already.
 fn rotations(cx: &mut Cx, mut room: usize) -> Result<Vec<osis_base::Value>, Close> {
     let all = cx.engine.prove_rotations().map_err(|_| Close("engine"))?;
     let mut out = Vec::new();

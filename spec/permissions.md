@@ -376,6 +376,7 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
   3. Wait until the held role history shows K's grant on the target (a client making a link delivers that grant under K's sync ID), and grant nothing without it: the target is the link text's word, unsigned.
   4. Then, signing as L, invite-grant the redeemer's actor (its account, or a fresh account) to K with role r and seal K's secrets to it. L writes in commit form and deposits the commit under K's sync ID (spec/sync-inbox.md §3) unless r is write or above.
   - A redeemer keeps the seed until its grant is at a source of K's sync ID (a peer holds it, or the sharer's node applied it), proving L on every connection to the sharer's node until then (that node opens K toward the redeemer by L until it holds the grant), and SHOULD discard it then.
+  - An account holding K by a grant (a join by any of its nodes) writes no other: a redeem of the link then is done at once, and one under way stops.
   - A rotation of K by a holder's departure (a joiner's leave, a node removal) changes nothing for the link: L stays a holder and the next step lists it.
   - The link has ended, and the redeemer stops there, when either holds:
     - every route of K's sync ID (the link's node and the peers it shares K with, as known) has failed to open it, at least one by refusing L's static entry;

@@ -1012,7 +1012,7 @@ impl Engine {
     }
 
     /// The signed rotations of this node's account a verifier may lack, each a header-only copy
-    /// (a `CommitBlobPlaintext` value with no sections), for a Prove (spec/sync-opens.md §2):
+    /// (a `CommitBlobPlaintext` value with no sections), for a Prove or Proved (spec/sync-opens.md §2):
     /// what holding the epoch it proves at needs (`AccountView::proving_chain`), each after what
     /// it needs, so a verifier takes them in one pass (`take_rotations`); a session sends the
     /// newest a message fits. Never a line beside it: a removed node's forks, held here, would
@@ -1029,7 +1029,7 @@ impl Engine {
         Ok(out)
     }
 
-    /// Takes the rotations a peer's Prove carried (header-only copies of account rotation
+    /// Takes the rotations a peer's Prove or Proved carried (header-only copies of account rotation
     /// commits), judged by spec/permissions.md §5.4 like any received, in the order given,
     /// before its proofs are judged. Nothing carries them (spec/commits.md §4 Pending storage),
     /// so of an account a node keeps only what it holds the account's chain by: the rotations

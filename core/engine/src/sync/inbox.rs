@@ -507,18 +507,30 @@ pub(crate) fn accept_in(tx: &mut Tx<'_>, thing: &Tid, into: &Tid) -> Result<()> 
 }
 
 /// A link's join for `grantee` is an accept (spec/sync-set.md §4, A redeem is an accept): where
-/// `grantee` is this node's account and no synced group's closure holds `target`, it is accepted
-/// into D (`accept_in`). Walks up from `target` (`Groups::under`), never a whole closure.
-pub(crate) fn accept_redeemed(tx: &mut Tx<'_>, grantee: &Tid, target: &Tid) -> Result<()> {
+/// `grantee` is this node's account, K (the role the join gives) and the target (what K reads)
+/// are each accepted into D unless a synced group's closure holds it, in one commit. So K syncs
+/// by its filing (spec/sync-ids.md §2: every holder of a role on it), not by the link. Walks up
+/// from each (`Groups::under`), never a whole closure.
+pub(crate) fn accept_redeemed(tx: &mut Tx<'_>, grantee: &Tid, k: &Tid, target: &Tid) -> Result<()> {
     let Some((p, d)) = tx.core.account_devices() else { return Ok(()) };
     if p != *grantee {
         return Ok(());
     }
     let roots = synced_roots(tx, d)?;
-    if tx.core.ix.groups.under(target, &roots) {
+    let things: Vec<Tid> = [*k, *target].into_iter().filter(|t| !tx.core.ix.groups.under(t, &roots)).collect();
+    if things.is_empty() {
         return Ok(());
     }
-    accept_in(tx, target, &d)
+    let mut m = crate::Mutation::new();
+    for t in &things {
+        m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::SUBGROUPS)], op: osis_crdt::Op::Add(Value::Tid(*t)) })?;
+    }
+    crate::engine::write::commit_in(tx, m)?;
+    let now = tx.now();
+    for t in &things {
+        keep_offered(tx, t, now)?;
+    }
+    mark_acted(tx)
 }
 
 /// Keeps in the account's sync record the sync IDs the boxes payloads held unexpired at `now`

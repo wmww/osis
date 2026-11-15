@@ -189,7 +189,7 @@ fn item(v: &Value) -> R {
     let a = arr(v)?;
     match (a.first().and_then(uint), a.len()) {
         (Some(0), 3) => b(&a[1], 32).and(opt_of(&a[2], |s| b(s, 64))),
-        (Some(1), 3) => b(&a[1], 16).and(list(&a[2], 1, 256, |h| b(h, 32))),
+        (Some(1), 3) => b(&a[1], 16).and(list(&a[2], 0, 256, |h| b(h, 32))),
         (Some(2), 5) => b(&a[1], 16).and(bmax(&a[2], MAX_BLOB)).and(b(&a[3], 57)).and(b(&a[4], 64)),
         (Some(3), 5) => b(&a[1], 16).and(opt_of(&a[2], |s| b(s, 32))).and(b(&a[3], 32)).and(b(&a[4], 64)),
         (Some(4), 4) => b(&a[1], 32).and(b(&a[2], 32)).and(b(&a[3], 64)),
@@ -353,7 +353,7 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
                     b(&p[2], 64)
                 })
             };
-            if kind == 32 { n(2).and_then(|_| proofs(&a[0])).and_then(|_| opt_of(&a[1], |r| list(r, 0, 256, rotation))) } else { n(1).and_then(|_| proofs(&a[0])) }
+            n(2).and_then(|_| proofs(&a[0])).and_then(|_| opt_of(&a[1], |r| list(r, 0, 256, rotation)))
         }
         34 => n(2).and_then(|_| b(&a[0], 32)).and_then(|_| list(&a[1], 0, (MAX_MESSAGE - 64) / 34, |t| b(t, 32))),
         35 => n(2).and_then(|_| b(&a[0], 32)).and_then(|_| opt_of(&a[1], |t| b(t, 32))),

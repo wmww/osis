@@ -736,6 +736,12 @@ impl Status {
         self.held.contains(c)
     }
 
+    /// Whether own commit `c` is held elsewhere under read sync ID `s` (§2); false while it has
+    /// no body under `s` here. Stamped: `by_commit` changes for `s` write `unheld` of `s`.
+    pub fn held_under(&self, s: &SyncId, c: &CommitId) -> bool {
+        self.unheld.get(s).is_some_and(|u| !u.contains(c)) && self.by_commit.get(c).is_some_and(|ids| ids.contains(s))
+    }
+
     /// Where a wait on `scope`'s sync IDs stands (§3): each heard out with its own commits held
     /// elsewhere, or held by no other node (nothing anyone else holds to wait for); never while
     /// one some other node may hold is unconnected; failed `Stranded` while one is stranded here

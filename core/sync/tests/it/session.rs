@@ -272,9 +272,10 @@ fn strangers_prove_to_each_other_spec_sync_opens_2() {
     assert_eq!(p.ls.proved().iter().map(|x| x.0).collect::<Vec<_>>(), [p.l.account().expect("account")]);
 }
 
-// spec/sync-opens.md §2 (its own node key only to nodes of its own account): a listener whose
-// dialer proved the listener's own account answers with its node key first, then its account,
-// each signed as the listener's over the dialer's challenge.
+// spec/sync-opens.md §2 (its own node key only to nodes of its own account;
+// with the signed rotations of that account the verifier lacks): a listener whose dialer proved
+// the listener's own account answers with its node key first, then its account, each signed as
+// the listener's over the dialer's challenge, with its account's rotations beside them.
 #[test]
 fn own_account_dialer_gets_the_node_key_spec_sync_opens_2() {
     let (_, mut l, mut ls, _) = listener_with_scripted_dialer();
@@ -285,7 +286,8 @@ fn own_account_dialer_gets_the_node_key_spec_sync_opens_2() {
     assert!(matches!(ins.as_slice(), [Incoming::Proved]));
     assert_eq!(ls.proven().account(), l.account());
     let (_, ms) = frames(&ls.take_bytes(), false);
-    let [Msg::Proved { id: 4, proofs }] = ms.as_slice() else { panic!("{ms:?}") };
+    let [Msg::Proved { id: 4, proofs, rotations }] = ms.as_slice() else { panic!("{ms:?}") };
+    assert!(rotations.is_some(), "an account proved: its rotations go beside it");
     assert_eq!(proofs.len(), 2);
     assert!(!proofs[0].record.is_account() && proofs[1].actor() == l.account().expect("account"), "node key first, then the account");
     assert!(proofs.iter().all(|p| p.verify(true, &b.dialer_challenge, &LISTEN.0)));

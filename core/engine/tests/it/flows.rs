@@ -1111,9 +1111,9 @@ fn a_link_naming_another_target_grants_nothing_spec_permissions_7() {
     lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
 }
 
-// spec/sync-set.md §4 (A redeem is an accept): a redeem for the account lists the target as a
-// subgroup of D in the join's transaction; a target a synced group's closure holds already (under
-// a group of D's) is listed nowhere new; a redeem for the node accepts nothing.
+// spec/sync-set.md §4 (A redeem is an accept): a redeem for the account lists K and the target as
+// subgroups of D in the join's transaction; a target a synced group's closure holds already (under
+// a group of D's) is listed nowhere new (its K is); a redeem for the node accepts nothing.
 #[test]
 fn a_redeem_files_its_target_unless_synced_spec_sync_set_4() {
     let (mut lp, ps) = people(2);
@@ -1137,8 +1137,8 @@ fn a_redeem_files_its_target_unless_synced_spec_sync_set_4() {
     e.redeem(&links[2], &node, false).unwrap();
     assert_eq!(e.role_on(&u), Some(Role::Read));
     let mut want = before;
-    want.insert(t);
-    assert_eq!(subs(e), want, "t filed; u under x already; v redeemed for the node");
+    want.extend([t, links[0].k, links[1].k]);
+    assert_eq!(subs(e), want, "t and its K filed; u under x already, its K filed; v redeemed for the node");
 }
 
 // spec/permissions.md §7: a stranger redeems a read link: signing as L it invite-grants its
