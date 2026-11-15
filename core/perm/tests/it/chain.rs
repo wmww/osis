@@ -276,10 +276,11 @@ fn a_chosen_line_is_placed_with_what_it_takes() {
 }
 
 /// At a node of the account, `n` rounds from creation device 1: a pairing adding a device, that
-/// device and the pairer rotating at once from it, and the pairer's merge joining both; three
-/// rounds also remove the device paired the round before. Every rotation counts; the line ends
-/// in one head. The work judging it (osis_base::costs, `chain:`).
-fn rounds_judged(n: u32) -> u64 {
+/// device and the pairer rotating at once from it, and the pairer's merge joining both; every
+/// fifth round's pairing also removes the device paired the round before, so removals grow with
+/// the rotations. Every rotation counts; the line ends in one head. The work judging it at the
+/// node and outside the account (osis_base::costs, `chain:`).
+fn rounds_judged(n: u32) -> (u64, u64) {
     let mut rots = Vec::new();
     let mut d: Devices<u32, u32> = Devices { first: [1].into(), ..Devices::default() };
     let (mut head, mut id) = (0u32, 0u32);
@@ -287,13 +288,14 @@ fn rounds_judged(n: u32) -> u64 {
         id += 1;
         id
     };
+    let removed = |i: u32| i > 0 && i.is_multiple_of(5);
     for i in 0..n {
         let dev = 100 + i;
         let p = next();
         rots.push(rot(p, head, &[head], &[]));
         d.minter.insert(p, 1);
         d.adds.insert(p, [dev].into());
-        if [n / 4, n / 2, 3 * n / 4].contains(&i) && i > 0 {
+        if removed(i) {
             d.removes.insert(p, [dev - 1].into());
         }
         let (x, y) = (next(), next());
@@ -307,21 +309,28 @@ fn rounds_judged(n: u32) -> u64 {
         head = m;
     }
     let received: Vec<u32> = rots.iter().map(|r| r.id).collect();
+    let work = || osis_base::costs::take().iter().filter(|(k, _, _)| k.starts_with("chain:")).map(|(_, _, n)| n).sum::<u64>();
     osis_base::costs::take();
     let c = Chain::new(0, rots.clone(), None, &received, Some(&d));
-    let work = osis_base::costs::take().iter().filter(|(k, _, _)| k.starts_with("chain:")).map(|(_, _, n)| n).sum();
+    let node = work();
     assert!(rots.iter().all(|r| c.counts(&r.id)), "every rotation counts");
     assert_eq!(c.heads(), &set(&[head]));
-    assert_eq!(c.roster(&head, &d), (100..100 + n).filter(|x| ![n / 4 - 1, n / 2 - 1, 3 * n / 4 - 1].contains(&(x - 100))).chain([1]).collect());
-    work
+    assert_eq!(c.roster(&head, &d), (0..n).filter(|i| !(i + 1 < n && removed(i + 1))).map(|i| 100 + i).chain([1]).collect());
+    osis_base::costs::take();
+    let o = Chain::new(0, rots.clone(), None, &received, None::<&Devices<u32, u32>>);
+    let outside = work();
+    assert!(rots.iter().all(|r| o.counts(&r.id)) && o.heads() == &set(&[head]), "outside: every rotation counts");
+    (node, outside)
 }
 
-// spec/requirements.md Scale (no operation O(history)), spec/permissions.md §5.4 (Following, at
-// a node of P): judging who is a node, and so what stands, reads each rotation once along the
-// lines, a merge its branches: the work at 10n rotations is near 10 times that at n, never a
-// walk of the line per rotation.
+// spec/requirements.md Scale (no operation O(history)), spec/permissions.md §5.4 (Following):
+// judging the chain, who is a node and so what stands, places each rotation once, shares each
+// line with its parents' and reads each rotation once along the lines, a merge its branches:
+// the work at 10n rotations and removals is near 10 times that at n, at a node of the account
+// and outside it, never a walk of the line (or of the removals) per rotation.
 #[test]
 fn judging_the_roster_grows_with_the_rotations_spec_permissions_5_4() {
-    let (small, large) = (rounds_judged(20), rounds_judged(200));
+    let ((small, out_small), (large, out_large)) = (rounds_judged(20), rounds_judged(200));
+    assert!(out_large <= 13 * out_small, "outside, work at 10n: {out_large}, at n: {out_small}");
     assert!(large <= 13 * small, "work at 10n: {large}, at n: {small}");
 }

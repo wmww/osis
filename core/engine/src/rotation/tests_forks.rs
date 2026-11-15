@@ -157,7 +157,7 @@ impl Run {
         let seen = (0..N).flat_map(|i| lp.peers[i].engine.commit_ids()).collect();
         let va = lp.peers[A].engine.core.account_view(&p).unwrap();
         let base_epoch = va.preferred();
-        let setup_chain = va.line(&base_epoch).cloned().unwrap_or_default();
+        let setup_chain = va.line(&base_epoch).unwrap_or_default();
         Run {
             base_epoch,
             setup_chain,
@@ -876,7 +876,7 @@ impl Run {
             }
             let v = self.view(n);
             let pref = v.preferred();
-            if pref != e && !v.line(&pref).is_some_and(|l| l.contains(&e)) {
+            if pref != e && !v.on_line(&e, &pref) {
                 self.fail(&format!("t{} node {n}: chose #{c}, preferred head {:?} is not on its line", self.tick, self.mid.get(&pref)));
             }
             if self.lp.peers[n].engine.core.account_signing(&self.p).ok().flatten().is_none() {

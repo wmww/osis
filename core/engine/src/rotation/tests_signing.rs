@@ -1445,7 +1445,7 @@ fn a_rotation_taking_the_thiefs_revocation_is_that_side_spec_permissions_5_4() {
     let s3 = lp.peers[s].engine.signing_due().unwrap().commits;
     assert_eq!(s3.len(), 1, "S answers R's line once");
     let rh = lp.peers[s].engine.header(&s3[0]).unwrap().rotation.clone().unwrap();
-    let line = lp.peers[s].engine.core.account_view(&p).unwrap().line(&s3[0]).cloned().unwrap_or_default();
+    let line = lp.peers[s].engine.core.account_view(&p).unwrap().line(&s3[0]).unwrap_or_default();
     assert!(rh.supersedes.contains(&m[0]) && (rh.takes == vec![xr] || line.contains(&xr)), "{rh:?}");
     send(&mut lp, s, r, &s3);
     assert!(lp.peers[r].engine.signing_due().unwrap().commits.is_empty(), "R answers no answer");
@@ -1724,7 +1724,7 @@ fn sibling_removals_apart_both_hold_spec_permissions_3() {
             let roster = lp.peers[k].engine.roster(&a.devices);
             assert!(gone.iter().all(|n| !roster.contains_key(n)), "{case}: node {k} keeps a removed node on D");
             let v = lp.peers[k].engine.core.account_view(&p).unwrap();
-            let setup = v.rotation_ids().iter().filter(|r| v.line(&setup_head(&lp, &a)).is_some_and(|l| l.contains(r))).count();
+            let setup = v.rotation_ids().iter().filter(|r| v.on_line(r, &setup_head(&lp, &a))).count();
             assert_eq!(v.rotation_ids().len() - setup, 3, "{case}: node {k}: the two removals' rotations and one merge");
             for w in [w0, w1] {
                 let m = lp.peers[k].engine.core.ix.commits.get(&w).cloned();

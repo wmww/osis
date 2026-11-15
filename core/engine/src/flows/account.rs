@@ -103,7 +103,7 @@ impl AccountView {
     /// Whether the counting epoch named `name` is held and descends from counting rotation `s`:
     /// an account epoch covers a removal `s` carries (spec/crypto.md §4, Encrypting under).
     pub(crate) fn descends_counting(&self, name: &Epoch, s: &CommitId) -> bool {
-        self.rotation_counts(s) && self.named(name).is_some_and(|(id, _)| self.rule.chain().line(id).is_some_and(|l| l.contains(s)))
+        self.rotation_counts(s) && self.named(name).is_some_and(|(id, _)| self.rule.chain().on_line(s, id))
     }
 
     /// Whether a counting epoch named `name` is held.
@@ -160,8 +160,19 @@ impl AccountView {
     }
 
     /// Held rotation `r`'s line: itself and every held rotation it descends from.
-    pub(crate) fn line(&self, r: &CommitId) -> Option<&BTreeSet<CommitId>> {
+    pub(crate) fn line(&self, r: &CommitId) -> Option<BTreeSet<CommitId>> {
         self.rule.chain().line(r)
+    }
+
+    /// Whether held rotation `x` is on held rotation `r`'s line (`osis_perm::Chain::on_line`).
+    pub(crate) fn on_line(&self, x: &CommitId, r: &CommitId) -> bool {
+        self.rule.chain().on_line(x, r)
+    }
+
+    /// Of the held rotations `among` tells, those no other of them descends from
+    /// (`osis_perm::Chain::tips`).
+    pub(crate) fn tips(&self, among: impl Fn(&CommitId) -> bool) -> BTreeSet<CommitId> {
+        self.rule.chain().tips(among)
     }
 
     /// This node's account: the revocations it takes, in the order taken (`osis_perm::Chain::taken`).

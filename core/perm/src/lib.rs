@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod cache;
+mod pset;
 pub mod cert;
 pub mod chain;
 pub mod content;

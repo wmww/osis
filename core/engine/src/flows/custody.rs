@@ -162,7 +162,7 @@ pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> 
         let epoch = keys.signing.verifying_key();
         // the head's seed, then the seeds of its line held here: a device reads who minted each
         // rotation on the line with the seed of the epoch it is signed at
-        let line: Vec<Secret32> = v.line(&h).into_iter().flatten().chain([&osis_commit::FIRST_EPOCH]).filter(|r| **r != h).filter_map(|r| v.keys_of(r, &held)).map(|k| k.seed().clone()).collect();
+        let line: Vec<Secret32> = v.line(&h).into_iter().flatten().chain([osis_commit::FIRST_EPOCH]).filter(|r| *r != h).filter_map(|r| v.keys_of(&r, &held)).map(|k| k.seed().clone()).collect();
         let payload: Vec<&Secret32> = std::iter::once(&seed).chain(line.iter()).collect();
         let mut seeds = Vec::new();
         for m in &lacking {

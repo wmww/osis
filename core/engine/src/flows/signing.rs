@@ -85,9 +85,9 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     // a removal hits every rotation its node minted off its line (spec/permissions.md §5.4): a
     // rotation removing a node merges no head whose line holds such a rotation
     if !members.removes.is_empty()
-        && let Some(pref) = heads.first().map(|h| v.line(&h.0).cloned().unwrap_or_default())
+        && let Some(pref) = heads.first().map(|h| h.0)
     {
-        heads.retain(|(h, _)| v.line(h).into_iter().flatten().all(|q| pref.contains(q) || v.minter(q).is_none_or(|m| !members.removes.contains(&m))));
+        heads.retain(|(h, _)| v.line(h).into_iter().flatten().all(|q| v.on_line(&q, &pref) || v.minter(&q).is_none_or(|m| !members.removes.contains(&m))));
     }
     let (at, supersedes, merge_keys, closes) = match signing {
         Some((e, _)) if heads.len() < 2 => (None, vec![e], Vec::new(), vec![e]),
@@ -107,7 +107,7 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     };
     // the revocations this node took off the new rotation's line: it stands with them
     // (spec/permissions.md §5.4), so a node that took another revocation reads it as that side
-    let on_line = |t: &CommitId| supersedes.iter().any(|b| b == t || v.line(b).is_some_and(|l| l.contains(t)));
+    let on_line = |t: &CommitId| supersedes.iter().any(|b| b == t || v.on_line(t, b));
     let mut takes: Vec<CommitId> = v.taken().iter().copied().filter(|t| !on_line(t)).collect();
     takes.sort();
     // the heads it joins (the epoch it is signed at and the forks it names), before what it rejects
@@ -431,9 +431,9 @@ pub(crate) fn leave_if_removed(tx: &mut Tx<'_>) -> Result<()> {
 /// Whether some held line keeps this node a node of its account (`leave_if_removed`).
 pub(crate) fn kept(v: &super::account::AccountView, held: &super::account::HeldAccount) -> bool {
     let rots: Vec<CommitId> = v.rotation_ids().into_iter().filter(|r| v.holds(r) && (v.rotation_counts(r) || v.keys_of(r, held).is_some())).collect();
-    let below: BTreeSet<CommitId> = rots.iter().flat_map(|r| v.line(r).into_iter().flatten().filter(move |x| *x != r)).copied().collect();
-    let mut tips = rots.iter().filter(|r| !below.contains(*r)).peekable();
-    tips.peek().is_none() || tips.any(|t| v.keys_of(t, held).is_some())
+    let set: BTreeSet<CommitId> = rots.into_iter().collect();
+    let mut tips = v.tips(|r| set.contains(r)).into_iter().peekable();
+    tips.peek().is_none() || tips.any(|t| v.keys_of(&t, held).is_some())
 }
 
 /// `leave_if_removed` of account `p` with devices actor `d`.
@@ -460,7 +460,7 @@ impl Departures {
     /// The nodes the rotations on held rotation `r`'s line remove that D's roster does not hold
     /// again (a re-added node's removal ends nothing); none for the first epoch.
     fn removed(&self, v: &super::account::AccountView, r: &CommitId) -> BTreeSet<Tid> {
-        v.line(r).into_iter().flatten().filter_map(|s| self.named.get(s)).flatten().filter(|n| !self.back.contains(n)).copied().collect()
+        v.line(r).into_iter().flatten().filter_map(|s| self.named.get(&s)).flatten().filter(|n| !self.back.contains(n)).copied().collect()
     }
 }
 
@@ -485,7 +485,7 @@ fn departures(v: &super::account::AccountView) -> Departures {
 /// D's lists (a witness) every closer ends it.
 fn ends(v: &super::account::AccountView, departures: Option<&Departures>, e: &CommitId, c: &CommitId) -> bool {
     let Some(dep) = departures else { return true };
-    if *e == osis_commit::FIRST_EPOCH || v.line(c).is_some_and(|l| l.contains(e)) {
+    if *e == osis_commit::FIRST_EPOCH || v.on_line(e, c) {
         return true;
     }
     let mine = dep.removed(v, e);
@@ -511,7 +511,7 @@ fn mergeable(v: &super::account::AccountView, held: &super::account::HeldAccount
 /// signed at the answer's epoch that puts the rejected one on a line through it ends that
 /// rejection, and is answered in turn.
 fn unanswered(v: &super::account::AccountView, me: &Tid) -> Vec<CommitId> {
-    v.rotation_ids().into_iter().filter(|r| v.disregarded(r) && !v.superseded_by(r, me) && !v.line(r).into_iter().flatten().any(|q| v.rejected(q))).collect()
+    v.rotation_ids().into_iter().filter(|r| v.disregarded(r) && !v.superseded_by(r, me) && !v.line(r).into_iter().flatten().any(|q| v.rejected(&q))).collect()
 }
 
 /// What a node of the account owes its signing chain (spec/permissions.md §5.5), made now. Any
@@ -535,7 +535,7 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<C
     let held = tx.core.accounts.get(&p).cloned().ok_or(Error::Misuse("not an account held here"))?;
     let fork = mergeable(&v, &held).len() > 1;
     let pref = v.preferred();
-    let line: BTreeSet<CommitId> = v.line(&pref).cloned().unwrap_or_default();
+    let line: BTreeSet<CommitId> = v.line(&pref).unwrap_or_default();
     let carried = |t: &CommitId| line.contains(t) || line.iter().any(|q| v.takes_of(q).contains(t));
     let untaken = !fork && v.taken().iter().any(|t| !carried(t));
     if !fork && !untaken && unanswered(&v, &tx.core.id.tid()).is_empty() {

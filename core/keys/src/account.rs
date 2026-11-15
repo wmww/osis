@@ -25,7 +25,7 @@ pub fn account_keysets<E: Ord + Copy>(chain: &Chain<E>, named: &BTreeMap<E, Epoc
     let mut out = Keysets { heads: true, ..Keysets::default() };
     for (e, name) in named {
         if chain.open(e) {
-            let line = chain.line(e).into_iter().flatten().filter(|x| *x != e).filter_map(|x| named.get(x)).copied().collect();
+            let line = chain.line(e).into_iter().flatten().filter(|x| x != e).filter_map(|x| named.get(&x)).copied().collect();
             out.valid.insert(*name, line);
         } else if revoked(e) || !chain.epoch_counts(e) {
             out.invalid.insert(*name);
