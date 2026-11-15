@@ -255,3 +255,49 @@ fn a_quiet_start_commits_nothing_at_n_and_10n() {
     let (a, b) = (quiet_starts(1), quiet_starts(10));
     assert!(a.iter().chain(&b).all(|x| *x == (0, 0)), "(engine, store) commits per node's start: {a:?} at n, {b:?} at 10n");
 }
+
+// spec/permissions.md §6 (Invalid deltas: valid again, received again from any holder),
+// spec/commits.md §5 (Forgetting: an invalid commit carrying a request goes only where the
+// request holds the right over nothing): node 1's account, lowered to read on things 0 and 1,
+// writes on thing 0 and purges its own write on thing 1. Node 0 judges it invalid and its request
+// void, and forgets it; a re-grant of write on thing 1 alone gives the request force while the
+// commit's part on thing 0 stays invalid: every node reads the purge.
+#[test]
+fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
+    let mut w = world(0, 2);
+    let _ = play(&mut w, &[New(0), New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 1, 1, Gives::Writes), Run], String::new());
+    let (t, u) = (w.history.things[0].0, w.history.things[1].0);
+    let y = Ak::new("u:y.0").unwrap();
+    let mine = Some(Value::Str("mine".into()));
+    let own = w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(u, &y, &Value::Str("mine".into())).unwrap().retention(u, &y, osis_schema::Retention { by: osis_schema::PurgeBy::Writer }).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    w.partition(0, 1);
+    let a1 = w.node(1).account.unwrap();
+    let read = || Some(Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None });
+    for x in [t, u] {
+        w.write(0, |e| e.demote(&x, &Demotion { holder: a1, new: read(), retain: None })).unwrap();
+    }
+    w.run();
+    w.advance(1_000);
+    let q = w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str("late".into())).unwrap();
+        m.purge_commit(own, u, y.clone());
+        e.commit(m).unwrap().unwrap()
+    });
+    w.heal();
+    w.run();
+    w.advance(TOMBSTONE_LIFETIME_MS + 2 * DAY_MS);
+    w.run();
+    assert!(!w.engine(0).holds_commit(&q), "node 0 forgot the invalid commit");
+    assert_eq!(w.engine(0).get(&u, &y).unwrap(), mine, "its request void at node 0");
+    w.write(0, |e| e.grant(&u, &a1, &Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None })).unwrap();
+    w.run();
+    for i in 0..2 {
+        assert_eq!(w.engine(i).get(&u, &y).unwrap(), None, "node {i} reads the purge given force");
+    }
+}

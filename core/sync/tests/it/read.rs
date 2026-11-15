@@ -1126,7 +1126,7 @@ fn missing_body_is_fetched_where_present() {
 }
 
 // spec/sync-judgement.md §3 (Dropped bodies: fetched again where present): a body counting missing
-// whose entry this node still holds (a body dropped as invalid keeps its entries) takes it again
+// whose entry this node still holds (its cover or purge fell before the entry left) takes it again
 // from its own store, and fetches only the entries of it it lacks. Fails without `Act::Take`
 // (the held blob is never fetched: its bytes are here).
 #[test]

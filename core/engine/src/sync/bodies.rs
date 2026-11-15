@@ -224,7 +224,9 @@ impl Engine {
         // body judged by what is held)
         let dropped = if b.parts.iter().all(|ai| m.dropped(*ai).is_some()) { b.parts.iter().find_map(|ai| m.dropped(*ai).map(|d| d.why)) } else { None };
         let bad = |ai: usize| m.dropped_invalid(ai) || (m.holds(ai) && !m.valid_at(ai));
-        let invalid = !m.view.kind.is_role() && b.parts.iter().any(|ai| bad(*ai)) && b.parts.iter().all(|ai| bad(*ai) || m.dropped(*ai).is_some_and(|d| d.why == DropFor::Cover));
+        // a request holding a right over some delta is in force whatever its parts are
+        // (`Engine::forgettable`): a re-grant gives it force with its parts still invalid
+        let invalid = !m.view.kind.is_role() && b.parts.iter().any(|ai| bad(*ai)) && b.parts.iter().all(|ai| bad(*ai) || m.dropped(*ai).is_some_and(|d| d.why == DropFor::Cover)) && (!m.view.purges || crate::retention::purge::drops_nothing(&self.core, c, &h));
         let keeps = self.part_keeps(c)?;
         // a bound still ahead wakes the judgement when it passes
         let kept = b.parts.iter().any(|ai| keeps.get(*ai).is_some_and(|k| self.core.time.until(Some(*k)) < *k));

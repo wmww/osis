@@ -165,7 +165,8 @@ pub struct BodyFacts {
     pub dropped: Option<DropFor>,
     /// Judged invalid here: no part of it valid, each invalid (dropped as invalid, or held: an own
     /// commit) or dropped as covered, one at least invalid; never a role commit's (the timeline
-    /// reads edge writes of any validity). Its entries leave the own store with no tombstone and
+    /// reads edge writes of any validity), nor one carrying a request in force
+    /// (`purge::drops_nothing`). Its entries leave the own store with no tombstone and
     /// are never deleted at a peer (spec/sync-judgement.md §3 Own store, Deletes).
     pub invalid: bool,
     /// A delta of it is kept (before its keep-at-least bound).

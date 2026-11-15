@@ -329,9 +329,8 @@ pub(crate) fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
 
 /// Parts on `(tid, ak)` dropped as covered that no coverer carries any more (no coverer, or
 /// one covering a coverer and so on, is held and valid: each turned invalid, went missing or was
-/// dropped other than as covered, by a purge) are missing again (spec/permissions.md §5.2), but
-/// one invalid here, which goes on dropped as invalid (spec/permissions.md §6): they
-/// give nothing, as at a node that never held them, until the body arrives again (a node still
+/// dropped other than as covered, by a purge) are missing again (spec/permissions.md §5.2), or
+/// dropped as invalid where judged so (`reopen_to_fetch`): they give nothing, as at a node that never held them, until the body arrives again (a node still
 /// holding it finds it uncovered and re-uploads it, spec/sync-judgement.md §2; sync fetches it again). The caller rebuilds the aspect. Whether any part went missing.
 pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     let core = &*tx.core;
@@ -355,26 +354,11 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
         }
     }
     let any = !lost.is_empty();
-    // one invalid here (judged when it dropped as covered) goes on dropped, as invalid: a copy
-    // would drop so on arrival, valid again it is fetched (`valid_again`), and missing, its
-    // commit would wait for it for good
-    let (invalid, lost): (Vec<_>, Vec<_>) = lost.into_iter().partition(|(c, ai)| core.ix.commits.get(c).is_some_and(|m| !m.valid_at(*ai) && kept_if_invalid(core, m)));
-    for (c, ai) in &invalid {
-        let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { continue };
-        if let Some(d) = m.dropped_mut(*ai) {
-            *d = Dropped { why: DropFor::Invalid, role: d.role, overreach: d.overreach, keysets: std::mem::take(&mut d.keysets), ..Dropped::default() };
-        }
-        tx.in_class(m.view.memory, |tx| {
-            if let Some(blob) = tx.get_commit(c)? {
-                tx.put_commit(c, &blob, &m, Shred::No, None)?;
-            }
-            Ok(())
-        })?;
-        tx.core.put_meta(*c, m);
-    }
-    if !lost.is_empty() {
-        // until each comes back, this node may read less than one that kept it
-        suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &lost)?;
+    // until each valid one comes back, this node may read less than one that kept it (an invalid
+    // one goes on dropped as invalid, `reopen_to_fetch`)
+    let missing: Vec<(CommitId, usize)> = lost.iter().filter(|(c, ai)| !core.ix.commits.get(c).is_some_and(|m| drops_invalid(core, m, *ai))).cloned().collect();
+    if !missing.is_empty() {
+        suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &missing)?;
     }
     for (c, ai) in lost {
         // dropped as covered: nothing in `dropped_snapshots` (`Dropped::stands_in`);
@@ -394,12 +378,13 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
 /// refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`). A memory part
 /// goes as a durable one: its commit stays known while an entry of it is (`forgettable`).
 fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && m.holds(ai) && kept_if_invalid(core, m)
+    m.holds(ai) && drops_invalid(core, m, ai)
 }
 
-/// Whether `m` keeps no part judged invalid here: neither a role commit nor this node's own.
-fn kept_if_invalid(core: &Core, m: &crate::engine::Meta) -> bool {
-    Some(m.view.author) != core.me() && !m.view.kind.is_role()
+/// Whether part `ai` of `m` is judged invalid here and so is not held, nor missing: invalid,
+/// and neither a role commit's nor this node's own (`goes_invalid`).
+fn drops_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
+    !m.valid_at(ai) && Some(m.view.author) != core.me() && !m.view.kind.is_role()
 }
 
 /// Whether commit `m` holds no part and is known only for a part dropped while invalid (its
@@ -554,14 +539,49 @@ pub(super) fn reopen_in(tx: &mut Tx<'_>, c: &CommitId, m: &mut crate::engine::Me
 }
 
 /// `reopen`, and sync fetches it again. A memory commit stays known
-/// while the part is to come (`Missing::ToFetch`).
+/// while the part is to come (`Missing::ToFetch`). A dropped part judged invalid here
+/// (`drops_invalid`) is dropped as invalid instead (spec/permissions.md §6): a copy would drop so
+/// on arrival, and missing, its commit would wait for good for a body no honest node logs while
+/// invalid (spec/sync-judgement.md §2 Judged invalid). It is judged again with the rest: valid,
+/// `valid_again` reopens it.
 fn reopen_to_fetch(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
+    if tx.core.ix.commits.get(c).is_some_and(|m| m.is_dropped(ai) && drops_invalid(tx.core, m, ai)) {
+        return drop_as_invalid(tx, c, ai);
+    }
     let mut m = reopen(tx, c, ai)?;
     if let Some(m) = m.as_mut().filter(|m| m.view.memory) {
         m.set_hold(ai, Hold::Missing(Missing::ToFetch));
         tx.core.put_meta(*c, m.clone());
     }
     Ok(m)
+}
+
+/// Dropped part `ai` of `c` (as covered, purged, its thing destroyed) is dropped as invalid in
+/// place, keeping the judgments its body made (`Dropped::role`); judged again (`stale_commits`).
+fn drop_as_invalid(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
+    let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    let view = m.view.clone();
+    let Some(d) = m.dropped_mut(ai) else { return Ok(None) };
+    if d.why == DropFor::Invalid {
+        return Ok(Some(m));
+    }
+    tx.core.touch();
+    // an invalid snapshot settles nothing (`drop_part_for`)
+    if d.stands_in
+        && let Some(a) = view.aspects.get(ai)
+    {
+        tx.core.ix.dropped_snapshots.remove(&(a.tid, a.ak.clone()), c);
+    }
+    *d = Dropped { why: DropFor::Invalid, role: d.role, overreach: d.overreach, keysets: std::mem::take(&mut d.keysets), ..Dropped::default() };
+    tx.core.stale_commits.insert(*c);
+    tx.in_class(m.view.memory, |tx| {
+        if let Some(blob) = tx.get_commit(c)? {
+            tx.put_commit(c, &blob, &m, Shred::No, None)?;
+        }
+        Ok(())
+    })?;
+    tx.core.put_meta(*c, m.clone());
+    Ok(Some(m))
 }
 
 /// Whether a late copy of part `ai` of `c`, dropped or stripped, joins (`reopen_late` makes
@@ -2343,6 +2363,50 @@ mod tests {
         assert!(!e.forgettable(&q_u).unwrap(), "a demotion whose frontier lists it leaves the purge standing: still kept");
         e.forget_commits(&[q_t]).unwrap();
         assert_eq!(e.get(&u, &y).unwrap(), None, "forgetting the request that dropped nothing changes no read");
+        e.check_index();
+    }
+
+    // spec/permissions.md §6 (Invalid deltas: dropped as invalid, whatever else asks),
+    // spec/commits.md §5 (Forgetting): peer 2 takes a lowered writer's write and its purge of it
+    // before the demotion; with the demotion both are invalid and the purge falls, yet the write
+    // stays dropped as invalid, not missing (no honest node logs it while invalid, so missing it
+    // was kept for good): both are forgettable and forgetting them changes no read.
+    #[test]
+    fn an_invalid_write_whose_purge_falls_stays_dropped_as_invalid_spec_perm_6() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let a = lp.peers[0].engine.me();
+        let r = lp.peers[1].engine.me();
+        let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
+        lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
+        let r2 = lp.peers[2].engine.me();
+        lp.peers[0].engine.grant(&t, &r2, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        lp.peers[0].engine.demote(&t, &Demotion { holder: r, new: Some(edge(Role::Read)), retain: None }).unwrap();
+        lp.advance(10);
+        let (x, z) = (Ak::new("x:m.0").unwrap(), Ak::new("x:z.0").unwrap());
+        let mut m = Mutation::new();
+        m.set(t, &x, &Value::Int(1)).unwrap().retention(t, &x, osis_schema::Retention { by: osis_schema::PurgeBy::Writer }).unwrap();
+        let c1 = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        m.set(t, &z, &Value::Int(2)).unwrap();
+        m.purge_commit(c1, t, x.clone());
+        let p = lp.peers[1].commit(m).unwrap().unwrap();
+        for c in [c1, p] {
+            let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+            lp.deliver(2, &pk).unwrap();
+        }
+        assert_eq!(lp.peers[2].engine.get(&t, &x).unwrap(), None, "purged at peer 2");
+        lp.sync(0, 2).unwrap();
+        let e = &mut lp.peers[2].engine;
+        assert!(e.kept_invalid(&c1) && e.forgettable(&c1).unwrap(), "the write: dropped as invalid");
+        assert!(e.kept_invalid(&p) && e.forgettable(&p).unwrap(), "the purge: dropped as invalid");
+        let before = (e.state_digest(&t, &x).unwrap(), e.state_digest(&t, &z).unwrap());
+        e.forget_commits(&[c1, p]).unwrap();
+        assert_eq!((e.state_digest(&t, &x).unwrap(), e.state_digest(&t, &z).unwrap()), before, "no read changed");
         e.check_index();
     }
 }
