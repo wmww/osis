@@ -134,4 +134,4 @@ The app, CLI and chat go through the osis API, which now runs the new sync; chec
 - Phases 0-2: done. Spec: spec/sync.md (overview) and spec/sync-*.md, spec/sync-transport.md; models in core/test/tla/net (NetOpen, NetHold, NetDestroy, NetKeep) pass with every control failing for its reason. The interface lives on as notes/sync.md and the module notes.
 - Phase 3: done; the rebuilt osis-sync and its engine facade are on main. What is stubbed or missing: issues/sync-unbuilt.md; reversible choices: issues/sync-tess-calls.md.
 - Phase 4: the lists above are what is left (each line drops when its test lands).
-- Phase 5: notes sweep done (notes/sync.md and one note per module). Left: issues/cli-delivering-commands.md, the dogfood rebuild, issues/deprecated-terms.md.
+- Phase 5: notes sweep done (notes/sync.md and one note per module). Left: the dogfood rebuild, issues/deprecated-terms.md.

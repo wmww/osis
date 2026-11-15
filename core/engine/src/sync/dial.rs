@@ -112,10 +112,33 @@ impl Engine {
         Ok(self.core.key_holders(&d).into_iter().map(|(n, _)| n).filter(|n| self.core.own_node(n) && self.closure(synced.get(n).unwrap_or(&d)).contains(t)).collect())
     }
 
+    /// Whether a node other than this one may take a delivery to `holder` (spec/sync-status.md §3:
+    /// as for a sync ID, what no other node may take holds no wait): another node of this
+    /// account, another account, this account while it has another node, or an actor another
+    /// account or another node of this account holds, by the rosters held here.
+    pub fn delivery_awaited(&mut self, holder: &Tid) -> Result<bool> {
+        let own = self.core.account_devices();
+        if self.core.own_node(holder) {
+            return Ok(true);
+        }
+        if self.core.is_account(holder) {
+            return Ok(match own {
+                Some((p, d)) if p == *holder => self.core.key_holders(&d).into_iter().any(|(n, _)| self.core.own_node(&n)),
+                _ => true,
+            });
+        }
+        let others = self.holders_from(*holder).into_iter().any(|a| own.is_none_or(|(p, _)| p != a));
+        Ok(others || !self.own_nodes_syncing(holder)?.is_empty())
+    }
+
     /// The accounts holding a role on `t`'s reader actor, directly or through the actors holding
     /// it (every role is sync or above), by the rosters held here.
     fn holder_accounts(&self, t: &Tid) -> BTreeSet<Tid> {
-        let start = self.core.reader_of(t);
+        self.holders_from(self.core.reader_of(t))
+    }
+
+    /// The accounts holding a role on actor `start`, directly or through the actors holding it.
+    fn holders_from(&self, start: Tid) -> BTreeSet<Tid> {
         let mut seen = BTreeSet::from([start]);
         let mut todo = vec![start];
         let mut out = BTreeSet::new();

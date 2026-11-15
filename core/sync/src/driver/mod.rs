@@ -430,7 +430,8 @@ impl Node {
         // by the rosters, not by who has S open: a sync ID just joined is open at no peer yet;
         // a failed read keeps the wait waiting
         let w = self.status.wait(&net, scope, |_| carrying, |s| engine.roster_holders(s).map_or(true, |r| r.any()));
-        let mut owes = || engine.deliveries().map_or(true, |d| !d.is_empty());
+        // a delivery no other node may take holds nothing up, as a sync ID no other node may hold
+        let mut owes = || engine.deliveries().and_then(|d| d.iter().try_fold(false, |any, (_, h)| Ok(any || engine.delivery_awaited(h)?))).unwrap_or(true);
         match (w, scope) {
             (Waiting::Done, Scope::All | Scope::Deliveries) if owes() => Waiting::Pending,
             (w, _) => w,

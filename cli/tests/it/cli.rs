@@ -280,12 +280,16 @@ fn untyped_index_paths_notes_cli() {
     assert_eq!(s.ok(&["writes", "--group", "home"]).out, before);
 }
 
-// notes/cli.md Design `--timeout` parses (`0` is no timeout: `deadline_never_overflows_plan_cli_2`).
+// notes/cli.md Design `--timeout` parses (`0` is no timeout: `deadline_never_overflows_plan_cli_2`); a wait past it exits 6.
 #[test]
 fn timeout_zero_plan_cli_2() {
     let s = S::mem();
     assert_eq!(s.code(&["--timeout", "5x", "wait"]), 2);
     assert_eq!(s.code(&["diag", "--since", "0"]), 2, "--since is gone");
+    // a wait past its `--timeout`: a thing never known here is never synced here
+    let never = S::mem().thing();
+    let o = s.call(&["--timeout", "1ms", "sync", "--group", &never], "");
+    assert_eq!(o.code, 6, "{}", o.err);
 }
 
 /// The commit id in a line `writes` or `fired` prints (its place `TS/ID` first).
@@ -394,7 +398,7 @@ fn an_untyped_index_past_the_limit_says_so() {
 
 // CLI Sharing and roles, Sync, Identity and nodes: the local half of the
 // sharing commands on one store (nobody to dial): links, cards, nodes, grants by error
-// category, status.
+// category, status. The delivering ones (notes/cli.md) wait on nothing on a node alone.
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
@@ -685,8 +689,9 @@ fn clients_commands_plan_cli() {
 // (as `diag --follow`); without `-v`, or on a local command, none. The diagnostic: a thing
 // only in groups no synced group holds (`NotSynced`), by `add-with-grant` (it syncs), for its
 // membership commit, before its grant gives the thing a sync ID, and by `group add` (local).
+// `add-with-grant` delivers (notes/cli.md Delivering commands): on a node alone nothing it
+// gives may reach another node, so it ends at once (exit 0).
 #[test]
-#[ignore = "issues/cli-delivering-commands.md: add-with-grant runs local, so -v prints nothing for it"]
 fn verbose_prints_diagnostics_plan_cli_4() {
     let s = S::mem();
     let group = || s.ok(&["create", "t:made.0", "true"]).line().to_string();
@@ -816,16 +821,12 @@ fn group_and_splice_commands() {
     assert_eq!(s.code(&["op", &schema, "t:made.0", "", "splice"]), 2, "a range");
 }
 
-// No-server audit rows 3 and 12 (issues/sync-rewrite.md Phase 4), spec/permissions.md §7: with no peer to dial
-// the CLI still makes a link, a chat link and a contact card; a store with no peers is not a dead end.
+// spec/permissions.md §7, notes/cli.md Delivering commands: with no peer to dial the CLI still
+// makes a chat link (a link and a card: `sharing_commands_local_plan_cli_4`); its wait ends at
+// once on a node alone, so a store with no peers is not a dead end.
 #[test]
-#[ignore = "issues/sync-rewrite.md"]
-fn repro_row3_row12_links_and_cards_on_a_store_with_no_peer() {
+fn a_chat_link_on_a_store_with_no_peer() {
     let s = S::mem();
-    let g = s.ok(&["create", "--in", "home", "t:made.0", "true"]).line().to_string();
-    s.ok(&["group", "sync", &g]);
-    assert_eq!(s.code(&["link", "make", &g, "write"]), 0, "link make");
-    assert_eq!(s.code(&["card", "show"]), 0, "card show");
     let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
-    assert_eq!(s.code(&["chat", "link", &c, "write"]), 0, "chat link");
+    assert!(s.ok(&["chat", "link", &c]).line().starts_with("osis://link/"));
 }

@@ -153,12 +153,13 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         ChatCmd::Add { chat, account, role } => {
             let t = ctx.tid(&chat)?;
             db.grant(t, ctx.tid(&account)?, parse_role(&role)?, GrantOpts::default())?;
-            Ok(())
+            crate::cmd::delivered(ctx, &crate::cmd::granted(t))
         }
         ChatCmd::Link { chat, role, single_use } => {
             let t = ctx.tid(&chat)?;
             let l = db.make_link(t, parse_role(&role)?, LinkOpts { until: None, single_use })?;
-            ctx.one("link", l)
+            ctx.one("link", l)?;
+            crate::cmd::delivered(ctx, &[osis::SyncScope::Thing(t)])
         }
         ChatCmd::Join { link } => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
@@ -167,7 +168,13 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         }
         ChatCmd::Relay { chat, account } => {
             let granted = osis_chat::relay(&db, ctx.tid(&chat)?, ctx.tid(&account)?)?;
-            ctx.list(&granted.iter().map(Tid::to_uri).collect::<Vec<_>>())
+            ctx.list(&granted.iter().map(Tid::to_uri).collect::<Vec<_>>())?;
+            // each grant as `grant` waits on it; nothing granted waits for nothing
+            let mut waits: Vec<osis::SyncScope> = granted.iter().map(|t| osis::SyncScope::Thing(*t)).collect();
+            if !waits.is_empty() {
+                waits.push(osis::SyncScope::Deliveries);
+            }
+            crate::cmd::delivered(ctx, &waits)
         }
         ChatCmd::Kick { chat, account, erase, retain_copy, purge } => {
             let (t, p) = (ctx.tid(&chat)?, ctx.tid(&account)?);

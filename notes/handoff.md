@@ -15,7 +15,6 @@ Her target state: the sync rework on main; no extremely critical open issue and 
 ## Next, in order
 1. Revoke and lowered-grant certificates (issues/sync-unbuilt.md, read): a node that only syncs S may keep accepting a revoked writer's later writes when the revoke travels under another sync ID.
 2. Non-admin deletes by level keys (sync-unbuilt, read: `Act::Delete` signs with the head's delete key only; implementation, not protocol).
-3. issues/cli-delivering-commands.md (CLI commands that waited for delivery were never rebuilt).
 4. Designs for Tess to iterate: issues/refs-graph-lifetime.md (strong/weak references, root group, release by reachability), issues/storage-follows-groups.md (storage attributable to synced groups; purge tombstones leave with the last carrying group).
 5. Test cost: issues/sync-test-cost.md, issues/tests-4x.md (no test-speed work for its own sake unless easy).
 

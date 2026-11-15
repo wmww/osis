@@ -49,7 +49,8 @@ fn wait_synced_with_no_network_fails_network_spec_sync_status_3() {
 // spec/sync-status.md §3 (waits): a sync ID no peer shares holds no wait: a node alone (a
 // one-node account) ends a wait on all, on home and on a thing filed under home at once,
 // connected to nobody; a wait on a thing never known here runs on (to the caller's timeout);
-// a wait on deliveries with none owed ends at once.
+// a wait on deliveries ends at once with none owed or only one no other node may take (a grant
+// to a group of this account's that no other node holds).
 #[test]
 fn a_node_alone_waits_on_nothing_spec_sync_status_3() {
     let c = clock();
@@ -59,6 +60,14 @@ fn a_node_alone_waits_on_nothing_spec_sync_status_3() {
     let t = w.create().unwrap();
     w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
     w.commit().unwrap();
+    net.run();
+    for scope in [SyncScope::All, SyncScope::Thing(a.home()), SyncScope::Thing(t), SyncScope::Deliveries] {
+        assert!(matches!(now(a.wait_synced(scope)), std::task::Poll::Ready(Ok(()))), "{scope:?}");
+    }
+    let mut w = a.write();
+    let g = w.create().unwrap();
+    w.commit().unwrap();
+    a.add_with_grant(osis::Member::Item(t), g, Role::Read).unwrap();
     net.run();
     for scope in [SyncScope::All, SyncScope::Thing(a.home()), SyncScope::Thing(t), SyncScope::Deliveries] {
         assert!(matches!(now(a.wait_synced(scope)), std::task::Poll::Ready(Ok(()))), "{scope:?}");

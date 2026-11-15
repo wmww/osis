@@ -174,8 +174,8 @@ impl Osis {
     /// waited for) and each commit of this node's on it held elsewhere, and in `All` and
     /// `Deliveries` every delivery taken. A sync ID no other node may hold (no other account has
     /// a role on its thing, no other node of this account syncs it) holds nothing up, so a
-    /// one-node account's home does not; it never resolves while one some other node may hold
-    /// is unconnected.
+    /// one-node account's home does not, and nor does a delivery no other node may take; it never
+    /// resolves while one some other node may hold is unconnected.
     /// It fails `Stranded` while a sync ID in scope is stranded here (naming its things); with no
     /// network (`Runtime::None`) one not done at once fails `Network`.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {

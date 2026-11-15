@@ -72,7 +72,11 @@ fn deadline(d: Option<Duration>) -> Option<Instant> {
 
 /// Polls `f` on this thread until it is ready, or past `limit` drops it: `None`.
 fn race<F: Future>(limit: Option<Duration>, f: F) -> Option<F::Output> {
-    let end = deadline(limit);
+    race_until(deadline(limit), f)
+}
+
+/// `race` to a deadline (`None`: none). `f` is polled once even past it: what is done already is done.
+fn race_until<F: Future>(end: Option<Instant>, f: F) -> Option<F::Output> {
     let mut f = std::pin::pin!(f);
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
@@ -109,13 +113,32 @@ pub(crate) fn confirm<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>
     race(ctx.timeout()?, f).unwrap_or_else(|| Err(Error::Network("could not confirm this link yet; trying again is safe".into()))).map_err(Into::into)
 }
 
-/// `wait_synced` within `limit`; past it `Network`.
-fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, limit: Option<Duration>) -> anyhow::Result<()> {
+/// `wait_synced` on each of `scopes` in turn, all within one `--timeout`: whether all were done
+/// in time. The one wait on other nodes' copies, for `sync` and the delivering commands.
+fn synced(ctx: &Ctx<'_>, scopes: &[SyncScope]) -> anyhow::Result<bool> {
     let db = ctx.db.clone();
-    match race(limit, db.wait_synced(s)) {
-        Some(r) => Ok(r?),
-        None => Err(Error::Network("timed out".into()).into()),
+    let end = deadline(ctx.timeout()?);
+    for s in scopes {
+        match race_until(end, db.wait_synced(*s)) {
+            Some(r) => r?,
+            None => return Ok(false),
+        }
     }
+    Ok(true)
+}
+
+/// The end of a delivering command (notes/cli.md Delivering commands): what it gave another
+/// account a way to is synced within `--timeout`, else `Network`, exit 6, after its output.
+pub(crate) fn delivered(ctx: &Ctx<'_>, scopes: &[SyncScope]) -> anyhow::Result<()> {
+    match synced(ctx, scopes)? {
+        true => Ok(()),
+        false => Err(Error::Network("done here, not yet at its peers: it goes out when this node next syncs (osis sync)".into()).into()),
+    }
+}
+
+/// What a grant of `t` delivers: `t` synced, holding the grant, and the grantee's inbox item taken.
+pub(crate) fn granted(t: Tid) -> [SyncScope; 2] {
+    [SyncScope::Thing(t), SyncScope::Deliveries]
 }
 
 /// `NAME\tTID` lines, each list under its name.
@@ -167,13 +190,18 @@ pub(crate) fn not_built(what: &'static str) -> anyhow::Error {
     exit(1, format!("not built yet: {what}"))
 }
 
-/// Commands that wait for or talk to other nodes: the store opens with sync running. Others stay
-/// local (their writes go out with the next networked command, `sync` or `serve`).
+/// Commands that wait for or talk to other nodes, the delivering ones (`delivered`) included: the
+/// store opens with sync running. Others stay local (their writes go out with the next networked
+/// command, `sync` or `serve`).
 fn needs_net(c: &Cmd) -> bool {
     matches!(
         c,
         Cmd::Node(NodeCmd::Rm { .. })
             | Cmd::SetRole { .. }
+            | Cmd::Grant { .. }
+            | Cmd::AddWithGrant { .. }
+            | Cmd::Link(LinkCmd::Make { .. })
+            | Cmd::Card(CardCmd::Show)
             | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
             | Cmd::Card(CardCmd::Import { .. })
             | Cmd::Chat(_)
@@ -457,7 +485,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 Some(r) => parse_role(&r)?,
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
-            Ok(db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())? })?)
+            db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())? })?;
+            delivered(ctx, &granted(t))
         }
         Cmd::Invitations => {
             let inv = db.invitations()?;
@@ -475,7 +504,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::SetRole { t, holder, role, d } => {
             let role = if role == "none" { None } else { Some(parse_role(&role)?) };
             let (t, m, o) = (ctx.tid(&t)?, ctx.tid(&holder)?, SetRoleOpts { retain_copy: d.retain_copy });
-            Ok(db.set_role(t, m, role, o)?)
+            db.set_role(t, m, role, o)?;
+            // a role given is a grant; a removal gives nobody anything and waits for nothing
+            match role {
+                Some(_) => delivered(ctx, &granted(t)),
+                None => Ok(()),
+            }
         }
         Cmd::Leave { t, holder } => {
             let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
@@ -485,12 +519,16 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Retained { drop: Some(a) } => Ok(db.drop_retained_copy(ctx.tid(&a)?)?),
         Cmd::Retained { drop: None } => ctx.list(&db.retained_copies()?.iter().map(Tid::to_uri).collect::<Vec<_>>()),
         Cmd::AddWithGrant { t, g, role, subgroup } => {
-            Ok(db.add_with_grant(write::member(ctx.tid(&t)?, subgroup), ctx.tid(&g)?, parse_role(&role)?)?)
+            let t = ctx.tid(&t)?;
+            db.add_with_grant(write::member(t, subgroup), ctx.tid(&g)?, parse_role(&role)?)?;
+            delivered(ctx, &granted(t))
         }
         Cmd::Chat(c) => crate::chat::run(ctx, c),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
-            let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use })?;
-            ctx.one("link", l)
+            let t = ctx.tid(&t)?;
+            let l = db.make_link(t, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use })?;
+            ctx.one("link", l)?;
+            delivered(ctx, &[SyncScope::Thing(t)])
         }
         Cmd::Link(LinkCmd::Redeem { link }) => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
@@ -511,8 +549,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             Ok(db.revoke_link(id)?)
         }
         Cmd::Card(CardCmd::Show) => {
+            // a card is a read link to the profile
             let c = db.contact_card()?;
-            ctx.one("card", c)
+            ctx.one("card", c)?;
+            delivered(ctx, &[SyncScope::Thing(db.profile()?)])
         }
         Cmd::Card(CardCmd::Profile { account }) => {
             let p = match account {
@@ -577,8 +617,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 Some(g) => SyncScope::Thing(ctx.tid(&g)?),
                 None => SyncScope::All,
             };
-            let t = ctx.timeout()?;
-            wait_sync(ctx, s, t)
+            match synced(ctx, &[s])? {
+                true => Ok(()),
+                false => Err(Error::Network("timed out".into()).into()),
+            }
         }
         Cmd::Group(GroupCmd::Source { g, to }) => {
             // the source's connection and its secret are in the process that holds the store
@@ -1376,7 +1418,9 @@ mod tests {
         assert!(line.contains("FAKE line"), "{line:?}");
     }
 
-    // notes/cli.md Network: only a command that stays up is on the LAN; a short one never announces.
+    // notes/cli.md Network: only a command that stays up is on the LAN; a short one never
+    // announces. The delivering commands sync (notes/cli.md Delivering commands): with no runtime
+    // their wait would fail at once.
     #[test]
     fn only_commands_that_stay_up_announce_notes_cli() {
         use crate::Network::{Node, None, Sync};
@@ -1388,7 +1432,13 @@ mod tests {
             (&["osis", "status", "--watch"], Node),
             (&["osis", "status"], Sync),
             (&["osis", "diag"], None),
-            (&["osis", "link", "make", "t", "read"], None),
+            (&["osis", "link", "make", "t", "read"], Sync),
+            (&["osis", "grant", "t", "h", "read"], Sync),
+            (&["osis", "set-role", "t", "h", "none"], Sync),
+            (&["osis", "add-with-grant", "t", "g", "read"], Sync),
+            (&["osis", "card", "show"], Sync),
+            (&["osis", "chat", "relay", "c", "a"], Sync),
+            (&["osis", "leave", "t"], None),
             (&["osis", "sync"], Sync),
             (&["osis", "get", "t", "a:b.0"], None),
         ] {

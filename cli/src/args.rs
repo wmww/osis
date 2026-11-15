@@ -315,8 +315,8 @@ pub enum Cmd {
     /// This node's clock
     Now,
     /// Grant HOLDER ROLE (read, write, admin) on T, or change the grant's --until and --may-grant (no
-    /// ROLE: as it is). Never lowers. Records the role only: HOLDER reads T once a synced group it
-    /// reads holds T or T syncs (`group sync`); `status` shows otherwise
+    /// ROLE: as it is). Never lowers. Waits until T's other holders hold the grant and HOLDER took
+    /// it (exit 6 past --timeout: done here, it goes out when this node next syncs)
     Grant {
         t: String,
         holder: String,
@@ -344,7 +344,8 @@ pub enum Cmd {
         #[arg(long, value_name = "G", default_value = "home")]
         into: String,
     },
-    /// Make HOLDER's role on T this one: read, write, admin, or none to remove
+    /// Make HOLDER's role on T this one: read, write, admin, or none to remove. A role waits as
+    /// `grant` does; a removal waits for nothing
     SetRole {
         t: String,
         holder: String,
@@ -368,7 +369,8 @@ pub enum Cmd {
         #[arg(long, value_name = "ACTOR")]
         drop: Option<String>,
     },
-    /// Add T to group G and grant G ROLE on it, tied together: the grant goes when T leaves G
+    /// Add T to group G and grant G ROLE on it, tied together: the grant goes when T leaves G.
+    /// Waits as `grant` does
     AddWithGrant {
         t: String,
         g: String,
@@ -555,7 +557,9 @@ pub enum MemberCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum LinkCmd {
-    /// Make a link giving ROLE (read, write or admin) on T, and sync T if it does not yet; prints the link
+    /// Make a link giving ROLE (read, write or admin) on T, and sync T if it does not yet; prints
+    /// the link, then waits until T's other holders hold what this node wrote to it (exit 6 past
+    /// --timeout: the link works once they do)
     Make {
         t: String,
         role: String,
@@ -591,14 +595,14 @@ pub enum ChatCmd {
         #[arg(long)]
         no_retain_copy: bool,
     },
-    /// Adds an account (a tid from `card import`)
+    /// Adds an account (a tid from `card import`); waits as `grant` does
     Add {
         chat: String,
         account: String,
         #[arg(long, default_value = "write")]
         role: String,
     },
-    /// A link to join by: prints it
+    /// A link to join by: prints it, then waits as `link make` does
     Link {
         chat: String,
         #[arg(long, default_value = "write")]
@@ -610,7 +614,7 @@ pub enum ChatCmd {
     Join { link: String },
     /// Lets ACCOUNT's nodes carry the chat without reading it: sync on it and on the K of each of
     /// its links that works (joiners redeem a link where K syncs). Prints what it granted; ACCOUNT
-    /// then `accept`s each. A link made later needs `relay` again
+    /// then `accept`s each. A link made later needs `relay` again. Waits as `grant` does
     Relay { chat: String, account: String },
     /// Removes a participant
     Kick {
@@ -678,6 +682,8 @@ pub enum ChatCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum CardCmd {
+    /// This account's card (a read link to its profile): prints it, then waits as `link make`
+    /// does on the profile
     Show,
     Import { card: String },
     /// This account's profile thing, or the profile a card import brought for ACCOUNT
