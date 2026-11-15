@@ -167,8 +167,13 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
         let Some(old) = self.followed.get_mut(k) else { return Some((None, now)) };
         let was = old.value.replace(now.clone());
         let old_deps = std::mem::replace(&mut old.deps, frame.deps.clone());
-        self.unindex(k, &old_deps);
-        self.index(k, &frame.deps);
+        if old_deps.len() == frame.deps.len() && old_deps.iter().zip(&frame.deps).all(|(a, b)| a.id() == b.id()) {
+            // the same reads again: the index holds `k` under each already
+            self.reindex_buckets(&frame.deps);
+        } else {
+            self.unindex(k, &old_deps);
+            self.index(k, &frame.deps);
+        }
         self.pending.remove(k);
         // a write between a read and its index here is in no log this reader reads
         if !frame.deps.iter().all(Dep::holds) {
@@ -199,6 +204,18 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
                         ix.buckets.entry(bucket(h)).or_default().insert(h);
                     }
                 }
+            }
+        }
+    }
+
+    /// `index` for reads `k` is indexed under already: only a key read at its bucket's absent
+    /// stamp now joins its bucket (one present at the earlier read was not in it).
+    fn reindex_buckets(&mut self, deps: &[Dep]) {
+        for d in deps {
+            let Some(h) = d.key else { continue };
+            let Some(ix) = self.tables.get_mut(&(Arc::as_ptr(&d.table) as usize)) else { continue };
+            if !lock(&ix.table).keys.contains_key(&h) {
+                ix.buckets.entry(bucket(h)).or_default().insert(h);
             }
         }
     }
