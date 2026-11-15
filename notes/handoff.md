@@ -10,7 +10,7 @@ Her target state: the sync rework on main; no extremely critical open issue and 
 - The sync rewrite is on main (notes/sync.md and the module notes; what is stubbed: issues/sync-unbuilt.md). issues/sync-rewrite.md holds the Phase 4/5 leftovers.
 - One branch open: GitHub `capstan-leave-waits-lists` (tip b03d752a2; reviewed and approved): the sync half of the removal case of the "rotation drops a joiner's target" critical — a sync ID lost for want of thing lists waits for one more pass with a caught-up source, an unsync still ends it. It sits on Fathom's `fathom-joiner-target` 3ecfd08c4 (in its security review). Land both together once that review approves; delete the capstan branch after.
 - Criticals left: the four account-fork issues (account-merge-storm, account-node-switch-back, account-removal-before-its-rotation, sibling-thing-epoch-listing-cycle) and removed-node learning; all wait on custody (Fathom: notes/account-forks-design.md). None reaches an honest single-device account.
-- n² left (engine, Fathom's optimizer round): own_commits_now per pass, issues/sync-set-whole-readers.md, the engine half of issues/leave-forget-per-sync-id.md.
+- n² left: none known in the engine's sync readers or forgetting; forgetting still scans four small tables whole (issues/forget-whole-scans.md).
 
 ## Next, in order
 1. Revoke and lowered-grant certificates (issues/sync-unbuilt.md, read): a node that only syncs S may keep accepting a revoked writer's later writes when the revoke travels under another sync ID.

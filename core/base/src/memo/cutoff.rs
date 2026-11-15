@@ -44,6 +44,16 @@ impl<K: Hash + Eq + Ord + Clone, V: Clone + PartialEq> Cutoff<K, V> {
         failed.map_or(Ok(moved), Err)
     }
 
+    /// The keys followed.
+    pub fn len(&self) -> usize {
+        super::unrecorded(|| self.rows.borrow().len())
+    }
+
+    /// Whether no key is followed.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Stops following `k`: its row goes (a reader of it moves), and a later `get_in` derives it
     /// anew.
     pub fn unfollow(&self, k: &K) {

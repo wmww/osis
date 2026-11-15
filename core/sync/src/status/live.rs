@@ -125,8 +125,8 @@ impl Ground for Live<'_, '_> {
     fn removal_done(&mut self, c: &CommitId) -> Result<()> {
         Ok(self.cx.engine.removal_done(c)?)
     }
-    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
-        Ok(self.cx.engine.passes_wanted()?)
+    fn pass_wanted(&mut self, s: &SyncId) -> Result<Option<u64>> {
+        Ok(self.cx.engine.pass_wanted(s)?)
     }
     fn module_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
         let mut out = self.leave.passes_wanted();

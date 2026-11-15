@@ -183,15 +183,15 @@ pub trait Ground: Net {
     fn waited(&mut self, s: &SyncId, own: bool) -> Result<bool>;
     /// Tells the engine sync is done waiting for a self-removal (it drops the secrets).
     fn removal_done(&mut self, c: &CommitId) -> Result<()>;
-    /// The sync IDs the engine wants a complete pass of, each with the pass place the pass must
-    /// begin after (spec/permissions.md §3 Complete pass: the newest role commit of one of S's
-    /// actors from elsewhere it applied, a tied demotion's scope; spec/sync-status.md §3).
-    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>>;
+    /// Whether the engine wants a complete pass of S, and the pass place the pass must begin
+    /// after (spec/permissions.md §3 Complete pass: the newest role commit of one of S's actors
+    /// from elsewhere it applied, a tied demotion's scope; spec/sync-status.md §3).
+    fn pass_wanted(&mut self, s: &SyncId) -> Result<Option<u64>>;
     /// Begins a pass: the next pass place (`Engine::begin_pass`), one count with role arrivals and
     /// leaves, so a pass counts for a want only when begun above its place.
     fn begin_pass(&mut self) -> u64;
     /// A complete pass of S begun at place `began` ended (the engine drops S from
-    /// `passes_wanted` once `began` is above its place).
+    /// `pass_wanted` once `began` is above its place).
     fn note_complete_pass(&mut self, s: &SyncId, began: u64) -> Result<()>;
     /// Whether this node holds no current read secret of read S's thing though one is known
     /// (`Engine::stranded`), with what its report names.
@@ -277,7 +277,7 @@ pub struct Status {
     removals: StampedSet<CommitId>,
     /// Per self-removal: sync is done waiting for it (held, or not shared, under each read S).
     release_fx: Effects<CommitId, bool>,
-    wanted_fx: Effects<(), Arc<BTreeMap<SyncId, u64>>>,
+    wanted_fx: Effects<SyncId, Option<u64>>,
     passes: Stamped<SyncId, Pass>,
     pass_fx: Effects<SyncId, PassNow>,
     /// Per read S: stranded there (heard out, and the engine's `stranded`).
@@ -417,6 +417,7 @@ impl Status {
             self.holding.remove(&s);
             self.done.remove(&s);
             self.own_fx.unwant(&s);
+            self.wanted_fx.unwant(&s);
             self.forget_own(&s);
             self.unstrand(&s);
         }
@@ -425,9 +426,11 @@ impl Status {
                 self.holding.insert(*s, *h);
                 if *h == Holding::Read {
                     self.own_fx.want(*s);
+                    self.wanted_fx.want(*s);
                     self.stranding_fx.want(*s);
                 } else {
                     self.own_fx.unwant(s);
+                    self.wanted_fx.unwant(s);
                     self.forget_own(s);
                     self.unstrand(s);
                 }
@@ -606,19 +609,16 @@ impl Status {
     /// engine wants one of, each pass's end told.
     fn passes(&mut self, g: &mut impl Ground, pulls: &mut Vec<ConnId>) -> Result<bool> {
         let mut acted = false;
-        self.wanted_fx.want(());
-        if !self.wanted_fx.due().is_empty()
-            && let Some(wanted) = whole(&mut self.wanted_fx, || g.passes_wanted())?
-        {
-            for (s, since) in wanted.iter() {
-                match self.passes.get(s) {
-                    Some(p) if p.noted > *since => {}
-                    // a Pull sent before the moment ends no pass after it: one more once it ends
-                    Some(_) => {
-                        self.again.insert(*s);
-                    }
-                    None => self.begin(g, *s, pulls)?,
+        // per read S: whether the engine wants a pass, moved only when its want does
+        for s in self.wanted_fx.due() {
+            let Some((_, Some(since))) = self.wanted_fx.try_settle(&s, || g.pass_wanted(&s))? else { continue };
+            match self.passes.get(&s) {
+                Some(p) if p.noted > since => {}
+                // a Pull sent before the moment ends no pass after it: one more once it ends
+                Some(_) => {
+                    self.again.insert(s);
                 }
+                None => self.begin(g, s, pulls)?,
             }
         }
         // a pass of each S leave or read wants, begun after its place (crate::leave, read)
@@ -658,7 +658,7 @@ impl Status {
                 // the engine is told of a pass's end only while it wants one of S: what its end
                 // decides (re-seals, history adds, owed rotations) runs on the engine's causes,
                 // not on a pass only leave or read wanted
-                if g.passes_wanted()?.contains_key(&s) {
+                if g.pass_wanted(&s)?.is_some() {
                     g.note_complete_pass(&s, p.noted)?;
                 }
                 acted = true;

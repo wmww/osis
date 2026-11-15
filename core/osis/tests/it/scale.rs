@@ -219,8 +219,10 @@ fn a_new_thing_judges_the_bodies_it_changes() {
 
 /// Over `n` new things: bodies judged, their facts derived (`sync: read facts`), snapshot joins (`covered: join`), forgotten coverers
 /// keeping their covers (`forget: covers kept`, rows written), commits' bodies asked by a sync ID
-/// pass (`pass: bodies of a commit`: sync status's own commits among them) and snapshots written.
-fn listing_work(n: usize) -> [u64; 6] {
+/// pass (`pass: bodies of a commit`: sync status's own commits among them), things' sync rows
+/// settled (`sync: set rows`), snapshots written, and folds of the whole sync set (`sync: set
+/// folded`).
+fn listing_work(n: usize) -> [u64; 8] {
     use osis::internals::costs;
     let db = crate::common::db(0);
     costs::take();
@@ -229,8 +231,8 @@ fn listing_work(n: usize) -> [u64; 6] {
     }
     let cs = costs::take();
     let facts = cs.iter().filter(|c| c.0.starts_with("sync: read facts <- ")).map(|c| c.2).sum();
-    let [judged, joins, kept, bodies, snapshots] = ["read: judged", "covered: join", "forget: covers kept", "pass: bodies of a commit", "compact: snapshots written"].map(|x| cost(&cs, x));
-    [judged, facts, joins, kept, bodies, snapshots]
+    let [judged, joins, kept, bodies, rows, snapshots, folded] = ["read: judged", "covered: join", "forget: covers kept", "pass: bodies of a commit", "sync: set rows", "compact: snapshots written", "sync: set folded"].map(|x| cost(&cs, x));
+    [judged, facts, joins, kept, bodies, rows, snapshots, folded]
 }
 
 // spec/sync.md §2, spec/permissions.md §5.2: covers are transitive along the chain of
@@ -239,15 +241,19 @@ fn listing_work(n: usize) -> [u64; 6] {
 // chain carries it (`Engine::part_covered`), its carriers matter only once its whole body is
 // covered (`read_facts`), and a snapshot forgotten under the next keeps its covers in one row
 // (`retention::handed`) instead of rewriting every body dropped under it. Sync status's own
-// commits under home are rows moved per commit (`sync::own`, spec/sync-status.md §2). n and 10n
+// commits under home are rows moved per commit (`sync::own`, spec/sync-status.md §2), and the
+// engine's readers of the sync set (passes wanted, the read things, a sync ID read) read rows
+// per sync ID and per thing (`sync::rows`), never the whole set folded. n and 10n
 // new things do linearly much of each (every body per snapshot is quadratic: 20 to 200 things
 // judged 538 to 21,830 bodies, joined 330 to 14,310 pairs and rewrote 63 to 3,399 parts' covers;
-// own commits walked whole per pass asked 524 to 25,818 commits' bodies).
+// own commits walked whole per pass asked 524 to 25,818 commits' bodies; the whole sync set
+// folded per change walked 270 to 20,700 things).
 #[test]
 fn snapshots_judge_what_they_newly_cover() {
     let (small, big) = (listing_work(20), listing_work(200));
-    assert!(small[5] > 1, "snapshots written over 20 things: {small:?}");
-    for (i, what) in ["judgements", "facts", "joins", "kept covers", "bodies asked"].iter().enumerate() {
+    assert!(small[6] > 1, "snapshots written over 20 things: {small:?}");
+    assert_eq!((small[7], big[7]), (0, 0), "the whole sync set folded");
+    for (i, what) in ["judgements", "facts", "joins", "kept covers", "bodies asked", "things' sync settled"].iter().enumerate() {
         assert!(small[i] > 0 && big[i] <= 12 * small[i], "{what} over 20 things {}, over 200 {}", small[i], big[i]);
     }
 }

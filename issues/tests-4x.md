@@ -3,6 +3,9 @@
 > Priority: normal
 > Tags: tests, performance
 
+## Profile after incremental forgetting and per-sync-ID rows (fathom-test-opt-13)
+- Whole binaries (`tools/icount BIN -q`), main 2aff498af to now: osis `it` 302.1 to 299.2 G, osis-sync `it` 1,900.8 to 1,871.0 G, osis-engine `it` 1,251.1 to 1,251.1 G (two tests more). The counts the round targeted: a leave's forgetting looks at the commits on what left (2 and 6 at k=1, 3, flat in n; every held commit before: 19, 25, 70) with no reload; osis 20 and 200 new things: bodies asked 210 and 1,882 (524 and 25,818), the whole sync set folded 0 (270 and 20,700 things).
+
 ## Profile after snapshots judge what they newly cover (fathom-test-opt-12)
 - Whole binaries (`tools/icount BIN -q`), main b2cad8f15's engine to now (same tests): osis `it` 331.1 to 280.3 G, osis-sync `it` 1,732.6 to 1,708.0 G, osis-engine `it` 1,245.2 to 1,246.7 G, engine lib 734.4 to 734.7 G.
 - osis `scale::snapshots_judge_what_they_newly_cover` (20 and 200 new things in home): judged 538 and 21,830 bodies before, 132 and 1,132 now; snapshot joins 330 and 14,310, now 51 and 477; parts' covers rewritten at forgets 63 and 3,399, now 6 and 42 kept-covers rows.

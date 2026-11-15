@@ -16,6 +16,7 @@ pub(crate) mod held;
 pub(crate) mod inbox;
 pub(crate) mod listed;
 pub(crate) mod own;
+pub(crate) mod rows;
 pub(crate) mod pieces;
 pub use pieces::PieceLink;
 pub(crate) mod certblobs;
@@ -481,6 +482,8 @@ impl Engine {
     /// (notes/engine.md).
     pub fn follow(&mut self) -> Result<bool> {
         let moved = self.follow_published();
+        self.follow_rows()?;
+        let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.pass_wanted, |e, s| e.pass_wanted_fresh(s))? | moved;
         self.follow_own()?;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.wrap_blocks, |e, (a, walk)| e.wrap_blocked_read(a, *walk))? | moved;
         let moved = self.follow_held_writes()? | moved;
@@ -725,12 +728,8 @@ impl Engine {
         if things.is_empty() {
             return Ok(BTreeSet::new());
         }
-        self.run(|tx| {
-            // the blobs of what may go whole, read before their rows go with it
-            let blobs: BTreeMap<CommitId, Vec<BlobId>> = things.iter().flat_map(|t| tx.core.on_thing(t).collect::<Vec<_>>()).map(|c| (c, tx.core.ix.commit_blobs.get(&c).into_iter().flatten().copied().collect())).collect();
-            let f = crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new())?;
-            Ok(f.commits.iter().flat_map(|c| blobs.get(c).into_iter().flatten().copied()).collect())
-        })
+        let f = self.run(|tx| crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new()))?;
+        Ok(f.commits.iter().flat_map(|c| self.core.ix.commit_blobs.get(c).into_iter().flatten().copied()).collect())
     }
 
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
@@ -1287,6 +1286,12 @@ impl Engine {
     /// (spec/permissions.md §2-§3, spec/sync-status.md §3).
     pub fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
         self.passes_wanted_now()
+    }
+
+    /// The place a complete pass of `s` must begin after while some rule waits on one
+    /// (`passes_wanted`'s entry for `s`): kept per sync ID, moved only when it does.
+    pub fn pass_wanted(&mut self, s: &SyncId) -> Result<Option<u64>> {
+        self.pass_wanted_now(s)
     }
 
     /// Begins a complete pass: the next pass place, one count with the role commits' arrivals

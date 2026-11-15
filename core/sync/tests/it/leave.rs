@@ -447,7 +447,7 @@ fn leave_costs(k: usize, n: usize) -> (u64, u64, u64) {
     w.run();
     let ids = |w: &mut World| w.store(0).syncs().len();
     let before = ids(&mut w);
-    let own_before = w.engine(0).own_commits_kept().0;
+    let kept_before = w.engine(0).kept_per_sync_id();
     osis_base::costs::take();
     w.write(0, |e| {
         let (_, d) = e.account().unwrap().unwrap();
@@ -463,7 +463,8 @@ fn leave_costs(k: usize, n: usize) -> (u64, u64, u64) {
     let costs = osis_base::costs::take();
     assert_eq!(ids(&mut w), before - k, "the {k} sync IDs stopped");
     w.engine(0).check_index();
-    assert_eq!(w.engine(0).own_commits_kept().0, own_before - k, "own commits kept per sync ID read, the {k} gone");
+    let kept = w.engine(0).kept_per_sync_id();
+    assert_eq!((kept.0, kept.2), (kept_before.0 - k, kept_before.2 - k), "own commits and pass wants kept per sync ID read, the {k} gone");
     let sum = |name: &str| costs.iter().filter(|(x, _, _)| *x == name).map(|(_, _, n)| n).sum::<u64>();
     (sum("forget: forgettings"), sum("leave: own entries unlogged"), sum("forget: commits scanned"))
 }

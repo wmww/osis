@@ -161,8 +161,8 @@ impl Ground for Fake {
         self.removals.insert((), Arc::new(r));
         Ok(())
     }
-    fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
-        Ok(self.wanted.get(&()).cloned().unwrap_or_default())
+    fn pass_wanted(&mut self, s: &SyncId) -> Result<Option<u64>> {
+        Ok(self.wanted.get(&()).and_then(|m| m.get(s).copied()))
     }
     fn begin_pass(&mut self) -> u64 {
         self.now

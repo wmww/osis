@@ -1406,8 +1406,14 @@ pub struct Core {
     pub(crate) walks: crate::apply::reach::Walks,
     /// `Engine::owned_sync_ids` per thing (`memo`).
     pub(crate) sync_ids: memo::Memo<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
-    /// `Engine::passes_wanted` (`memo`).
-    pub(crate) passes_wanted: memo::Memo<(), Arc<BTreeMap<SyncId, u64>>>,
+    /// `Engine::sync_roots` (`memo`).
+    pub(crate) sync_roots: memo::Memo<(), [Option<Tid>; 2]>,
+    /// The sync set per sync ID (`sync::rows`), followed per thing.
+    pub(crate) sync_rows: crate::sync::rows::SyncRows,
+    /// `Engine::pass_wanted` per sync ID asked (`memo::Cutoff`), refreshed by `follow`.
+    pub(crate) pass_wanted: memo::Cutoff<SyncId, Option<u64>>,
+    /// The tied grants' pass wants, folded (`memo`).
+    pub(crate) tie_wants: memo::Memo<(), Arc<BTreeMap<SyncId, u64>>>,
     /// `Engine::published_under` for every actor, followed per thing with a sync ID
     /// (`sync_ids::published`).
     pub(crate) published: crate::sync_ids::published::Published,
@@ -1568,7 +1574,10 @@ impl Core {
             memory_waits: self.memory_waits.clone(),
             walks: self.walks.clone(),
             sync_ids: self.sync_ids.clone(),
-            passes_wanted: self.passes_wanted.clone(),
+            sync_roots: self.sync_roots.clone(),
+            sync_rows: self.sync_rows.clone(),
+            pass_wanted: self.pass_wanted.clone(),
+            tie_wants: self.tie_wants.clone(),
             published: self.published.clone(),
             own_commits: self.own_commits.clone(),
             links: self.links.clone(),
@@ -2040,7 +2049,10 @@ impl Core {
             held_writes_rows: _,
             acting_of: _,
             sync_ids: _,
-            passes_wanted: _,
+            sync_roots: _,
+            sync_rows: _,
+            pass_wanted: _,
+            tie_wants: _,
             links: _,
             caught_up: _,
             held_writes: _,
@@ -2367,7 +2379,10 @@ impl Core {
             memory_waits: BTreeSet::new(),
             walks: Default::default(),
             sync_ids: memo::Memo::new("sync IDs of"),
-            passes_wanted: memo::Memo::new("sync: passes wanted"),
+            sync_roots: memo::Memo::new("sync: roots"),
+            sync_rows: Default::default(),
+            pass_wanted: memo::Cutoff::new("sync: pass wanted"),
+            tie_wants: memo::Memo::new("sync: tie wants"),
             published: Default::default(),
             own_commits: Default::default(),
             links: memo::Memo::new("held links"),

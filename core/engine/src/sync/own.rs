@@ -75,12 +75,12 @@ impl OwnCommits {
 }
 
 impl Engine {
-    /// Sync IDs whose own commits are kept, and candidates followed (tests: what unsyncing
-    /// leaves).
+    /// What is kept per sync ID asked (tests: what unsyncing leaves): sync IDs whose own
+    /// commits are kept, own-commit candidates followed, sync IDs whose pass want is kept.
     #[doc(hidden)]
-    pub fn own_commits_kept(&self) -> (usize, usize) {
+    pub fn kept_per_sync_id(&self) -> (usize, usize, usize) {
         let o = &self.core.own_commits;
-        (o.candidates.len(), o.candidates.values().map(|x| x.1.len()).sum())
+        (o.candidates.len(), o.candidates.values().map(|x| x.1.len()).sum(), self.core.pass_wanted.len())
     }
 
     /// `s`'s scope: its read thing's closure and the authors this node writes as (its account,

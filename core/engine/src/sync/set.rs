@@ -81,9 +81,10 @@ impl Engine {
         Ok(ix.groups.sync_enclosing(t).iter().any(|a| Some(*a) == root || Some(*a) == home || ix.shared_here.contains(a)))
     }
 
-    /// The sync root and home (D): the roots of N's closure besides the things shared here.
+    /// The sync root and home (D): the roots of N's closure besides the things shared here. A
+    /// memo: every follow of the sync set's rows asks it, and the synced group is a state read.
     fn sync_roots(&mut self) -> Result<[Option<Tid>; 2]> {
-        Ok([self.sync_root()?, self.core.account_devices().map(|(_, d)| d)])
+        osis_base::memo::Memo::get_in(self, |e| &e.core.sync_roots, &(), |e| Ok([e.sync_root()?, e.core.account_devices().map(|(_, d)| d)]))
     }
 
     /// The things that may have entered `sync_things` since `f`'s last read (its first, and the
@@ -166,15 +167,20 @@ impl Engine {
     }
 
     fn caught_up_fresh(&mut self, g: &Tid) -> Result<bool> {
-        let set = self.sync_set()?;
-        let things = self.sync_things()?;
         // every read sync ID carrying g or a thing of its closure: their own and their enclosing
         // groups', a group outside g listing one of them included
         let mut ids = self.carrying_now(g, true)?;
-        for x in self.closure(g).iter().filter(|x| things.contains(*x)) {
-            ids.extend(self.carrying_now(x, true)?);
+        for x in self.closure(g).iter() {
+            if self.in_sync_things_now(x)? {
+                ids.extend(self.carrying_now(x, true)?);
+            }
         }
-        Ok(ids.iter().filter(|s| set.ids.get(*s).is_some_and(|(_, h)| *h == Holding::Read)).all(|s| self.core.ix.passes.contains_key(s)))
+        for s in ids {
+            if self.sync_held(&s)?.is_some_and(|(_, h)| h == Holding::Read) && !self.core.ix.passes.contains_key(&s) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// How this node syncs thing `t` of `sync_things` (spec/sync-set.md §2): its home sync ID read
@@ -221,7 +227,9 @@ impl Engine {
     /// The sync set, whole (`sync_things` and `thing_sync` of each).
     pub(crate) fn sync_set_now(&mut self) -> Result<Arc<SyncSet>> {
         let mut set = SyncSet::default();
-        for t in self.sync_things_now()?.iter() {
+        let things = self.sync_things_now()?;
+        osis_base::costs::count("sync: set folded", things.len() as u64);
+        for t in things.iter() {
             match self.thing_sync(t)? {
                 ThingSync::Read(ids) => set.ids.extend(ids.into_iter().map(|s| (s, (*t, Holding::Read)))),
                 // a sync ID synced for several things (`kept_things`): the first keeps it

@@ -1681,11 +1681,12 @@ fn a_pass_goes_with_its_sync_id_spec_sync_status_3() {
     assert!(!lp.peers[0].engine.history_complete(&t).unwrap(), "forgotten: wanted again");
 }
 
-// spec/permissions.md §3 Complete pass: `passes_wanted` is a memo value over the engine's stamps,
-// so an `Effects` key over it is due when a role commit arrives from elsewhere, with no polling
-// and no hook, and its new value wants the pass from that arrival.
+// spec/permissions.md §3 Complete pass: `pass_wanted(s)` is a row over the engine's stamps,
+// so an `Effects` key over it is due when a role commit arrives from elsewhere (once `follow`
+// brought the rows up to date, as the driver does before each module), with no polling and no
+// hook, and its new value wants the pass from that arrival.
 #[test]
-fn passes_wanted_moves_with_a_role_commit_spec_perm_3() {
+fn pass_wanted_moves_with_a_role_commit_spec_perm_3() {
     let (mut lp, t) = grantee();
     let e = &mut lp.peers[1].engine;
     let s = e.home_sync_id(&t).unwrap().unwrap();
@@ -1693,17 +1694,18 @@ fn passes_wanted_moves_with_a_role_commit_spec_perm_3() {
     for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
         e.note_complete_pass(&x, now).unwrap();
     }
-    let mut fx: osis_base::memo::Effects<(), std::sync::Arc<std::collections::BTreeMap<osis_base::SyncId, u64>>> = osis_base::memo::Effects::new("test passes");
-    fx.want(());
-    let (_, first) = fx.settle(&(), || lp.peers[1].engine.passes_wanted().unwrap()).unwrap();
-    assert!(first.is_empty() && fx.due().is_empty(), "nothing wanted, nothing due");
+    let mut fx: osis_base::memo::Effects<osis_base::SyncId, Option<u64>> = osis_base::memo::Effects::new("test passes");
+    fx.want(s);
+    let (_, first) = fx.settle(&s, || lp.peers[1].engine.pass_wanted(&s).unwrap()).unwrap();
+    assert!(first.is_none() && fx.due().is_empty(), "nothing wanted, nothing due");
     lp.advance(1000);
     let pb = lp.peers[1].engine.me();
     lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
-    assert_eq!(fx.due(), vec![()], "the role commit's arrival moves the wants");
-    let (_, now) = fx.settle(&(), || lp.peers[1].engine.passes_wanted().unwrap()).unwrap();
-    assert!(now.get(&s).is_some_and(|x| *x > 0));
+    lp.peers[1].engine.follow().unwrap();
+    assert_eq!(fx.due(), vec![s], "the role commit's arrival moves the want");
+    let (_, now) = fx.settle(&s, || lp.peers[1].engine.pass_wanted(&s).unwrap()).unwrap();
+    assert!(now.is_some_and(|x| x > 0));
 }
 
 // spec/permissions.md §2 Tied grants (an explicit demotion of a tied grant held dead waits for a

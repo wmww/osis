@@ -72,8 +72,10 @@ struct Authored {
 /// engine whole).
 #[derive(Clone)]
 struct Followers {
-    /// The things read here (a read sync ID of the sync set).
-    read: Effects<(), Arc<BTreeSet<Tid>>>,
+    /// Per thing that came to hold a read sync ID (`SyncRows::read`'s feed), whether it holds one.
+    read: Effects<Tid, bool>,
+    /// The things coming to hold a read sync ID; `None` until the first follow.
+    read_feed: Option<Feed<Tid>>,
     /// Per read thing, the actors whose inbox it owns.
     inboxes: Effects<Tid, Arc<BTreeSet<Tid>>>,
     /// Per thing with authors (`Indexes::authors_on`), what it gives.
@@ -90,7 +92,7 @@ type Feeds = (Feed<Tid>, Feed<(Tid, Tid)>);
 
 impl Default for Followers {
     fn default() -> Self {
-        Followers { read: Effects::new("sync: certified things"), inboxes: Effects::new("sync: certified inboxes"), authored: Effects::new("sync: certified authored"), pieces: Effects::new("sync: certified pieces"), feeds: None }
+        Followers { read: Effects::new("sync: certified things"), read_feed: None, inboxes: Effects::new("sync: certified inboxes"), authored: Effects::new("sync: certified authored"), pieces: Effects::new("sync: certified pieces"), feeds: None }
     }
 }
 
@@ -276,10 +278,12 @@ impl Certified {
 }
 
 impl Engine {
-    /// The things whose certificates `Certified` keeps: those holding a read sync ID.
+    /// The things whose certificates `Certified` keeps: those holding a read sync ID
+    /// (`SyncRows::read`), whole: for tests.
+    #[cfg(test)]
     pub(crate) fn read_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
-        let set = self.sync_set()?;
-        Ok(Arc::new(set.ids.values().filter(|(_, h)| *h == super::Holding::Read).map(|(t, _)| *t).collect()))
+        self.follow_rows()?;
+        Ok(Arc::new((*self.core.sync_rows.read).clone()))
     }
 
     /// What thing `x` gives the read things (`Authored`): its authors that are no node, and the
@@ -329,24 +333,33 @@ impl Engine {
                 f.authored.want(x);
             }
         }
-        if !f.read.wants(&()) {
-            f.read.want(());
-        }
-        // the read things: each its own piece and inbox actors
-        for k in f.read.due() {
-            let Some((was, now)) = f.read.try_settle(&k, || self.read_things())? else { continue };
-            let was = was.unwrap_or_default();
-            for t in now.difference(&was) {
-                self.core.certified.read.insert(*t);
-                self.core.certified.place(Piece::Own(*t), *t, &mut f.pieces);
-                f.inboxes.want(*t);
+        // the read things, per thing: each its own piece and inbox actors
+        self.follow_rows()?;
+        let came: Vec<Tid> = match f.read_feed.as_mut() {
+            Some(feed) => feed.added(),
+            None => {
+                f.read_feed = Some(self.core.sync_rows.read.feed());
+                self.core.sync_rows.read.iter().copied().collect()
             }
-            for t in was.difference(&now) {
-                self.core.certified.read.remove(t);
-                self.core.certified.unplace(Piece::Own(*t), *t, &mut f.pieces);
-                f.inboxes.unwant(t);
-                let had = self.core.certified.inboxes_of.remove(t).unwrap_or_default();
-                self.set_inboxes(f, t, &had, &BTreeSet::new());
+        };
+        for t in came {
+            f.read.want(t);
+        }
+        for t in f.read.due() {
+            let Some((was, now)) = f.read.settle(&t, || self.core.sync_rows.read.contains(&t)) else { continue };
+            if now {
+                self.core.certified.read.insert(t);
+                self.core.certified.place(Piece::Own(t), t, &mut f.pieces);
+                f.inboxes.want(t);
+                continue;
+            }
+            f.read.unwant(&t);
+            if was == Some(true) {
+                self.core.certified.read.remove(&t);
+                self.core.certified.unplace(Piece::Own(t), t, &mut f.pieces);
+                f.inboxes.unwant(&t);
+                let had = self.core.certified.inboxes_of.remove(&t).unwrap_or_default();
+                self.set_inboxes(f, &t, &had, &BTreeSet::new());
             }
         }
         let (authors, pairs) = f.feeds.as_mut().map(|(a, p)| (a.added(), p.added())).unwrap_or_default();

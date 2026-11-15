@@ -187,7 +187,7 @@ impl Engine {
 
     /// This node reads `s` (its sync set holds it read).
     fn reads_now(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.sync_set()?.ids.get(s).is_some_and(|(_, h)| *h == Holding::Read))
+        Ok(self.sync_held(s)?.is_some_and(|(_, h)| h == Holding::Read))
     }
 
     /// `s` is read here no more: its passes go with it, so a sync ID read again wants a pass of
@@ -195,6 +195,7 @@ impl Engine {
     /// under it (`certblobs`: read logs them again if it reads `s` again).
     pub(crate) fn forget_read_now(&mut self, s: &SyncId) -> Result<()> {
         self.core.own_commits.unfollow(s);
+        self.core.pass_wanted.unfollow(s);
         if !self.core.ix.passes.contains_key(s) && !super::certblobs::any(&self.core, s) {
             return Ok(());
         }
@@ -218,9 +219,25 @@ impl Engine {
         Ok(())
     }
 
-    /// The sync IDs some rule waits on a complete pass of, each with the place the pass must
-    /// begin after; one whose last complete pass began after it is not listed. A memo over the role commits held, the sync set, the ties and the passes noted:
-    /// derived again at an open, so a restart wants what it wanted.
+    /// The sync IDs some rule waits on a complete pass of (`pass_wanted` of each read one), whole:
+    /// for tests and listing; status follows each sync ID it reads.
+    pub(crate) fn passes_wanted_now(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
+        self.follow_rows()?;
+        let read: Vec<SyncId> = self.core.sync_rows.held.iter().filter(|(_, (_, h))| *h == Holding::Read).map(|(s, _)| *s).collect();
+        let mut out = BTreeMap::new();
+        for s in read {
+            if let Some(since) = self.pass_wanted_now(&s)? {
+                out.insert(s, since);
+            }
+        }
+        Ok(Arc::new(out))
+    }
+
+    /// The place a complete pass of `s` must begin after, while some rule waits on one; `None`
+    /// once its last complete pass began after it, or when `s` is not read here. Kept per sync
+    /// ID from its first ask (`Core::pass_wanted`, a `memo::Cutoff` refreshed by `follow`;
+    /// `forget_read` lets it go), derived at an open as before it, so a restart wants what it
+    /// wanted:
     /// - spec/permissions.md §3 Complete pass: the newest role commit applied here from elsewhere
     ///   on S's actor;
     /// - spec/permissions.md §3 Lost access: the loss of S's actor, from when it was judged
@@ -228,45 +245,35 @@ impl Engine {
     /// - spec/permissions.md §2 Tied grants: every sync ID of a tie's demotion scope
     ///   (`tied_wants`), from when the tie was judged dead (`Cause::Tie`);
     /// - spec/sync-status.md §3 History complete: one pass of every sync ID read here.
-    pub(crate) fn passes_wanted_now(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
-        osis_base::memo::Memo::get_in(self, |e| &e.core.passes_wanted, &(), |e| e.passes_wanted_fresh())
+    pub(crate) fn pass_wanted_now(&mut self, s: &SyncId) -> Result<Option<u64>> {
+        self.follow_rows()?;
+        osis_base::memo::Cutoff::get_in(self, |e| &e.core.pass_wanted, s, |e, s| e.pass_wanted_fresh(s))
     }
 
-    fn passes_wanted_fresh(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
-        let mut out: BTreeMap<SyncId, u64> = BTreeMap::new();
-        let mut want = |s: SyncId, since: u64| {
-            let e = out.entry(s).or_insert(since);
-            *e = (*e).max(since);
-        };
-        let set = self.sync_set()?;
-        for (s, (t, holding)) in set.ids.iter() {
-            if *holding != Holding::Read {
-                continue;
+    pub(crate) fn pass_wanted_fresh(&mut self, s: &SyncId) -> Result<Option<u64>> {
+        let Some((t, Holding::Read)) = self.core.sync_rows.held.get(s).copied() else { return Ok(None) };
+        let a = self.core.reader_of(&t);
+        // after the newest role commit on S's actor from elsewhere: what the re-seal trigger
+        // waits on (`complete_pass`); after the loss of S's actor was judged: what the
+        // lost-access drop waits on (`lost_passed`); a stranded report's re-seal ask
+        // (spec/permissions.md §3, §4): met at a pass's end
+        let since = [self.role_arrival(&a), self.cause_place(&Cause::Lost(a)), self.asked_at(&a), self.tie_wants()?.get(s).copied()].into_iter().flatten().max().unwrap_or(0);
+        Ok(self.core.ix.passes.get(s).is_none_or(|b| *b <= since).then_some(since))
+    }
+
+    /// Per sync ID a tie's explicit demotion waits a pass of, the place it must begin after
+    /// (`tied_wants`, folded). A memo: ties are few and change rarely.
+    fn tie_wants(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
+        osis_base::memo::Memo::get_in(self, |e| &e.core.tie_wants, &(), |e| {
+            let mut out: BTreeMap<SyncId, u64> = BTreeMap::new();
+            for (since, ids) in e.tied_wants()? {
+                for s in ids {
+                    let x = out.entry(s).or_insert(since);
+                    *x = (*x).max(since);
+                }
             }
-            want(*s, 0);
-            let a = self.core.reader_of(t);
-            // after the newest role commit on S's actor from elsewhere: what the re-seal trigger
-            // waits on (`complete_pass`)
-            if let Some(at) = self.role_arrival(&a) {
-                want(*s, at);
-            }
-            // after the loss of S's actor was judged: what the lost-access drop waits on
-            // (`lost_passed`)
-            if let Some(at) = self.cause_place(&Cause::Lost(a)) {
-                want(*s, at);
-            }
-            // a stranded report's re-seal ask (spec/permissions.md §3, §4): met at a pass's end
-            if let Some(at) = self.asked_at(&self.core.reader_of(t)) {
-                want(*s, at);
-            }
-        }
-        for (since, ids) in self.tied_wants()? {
-            for s in ids {
-                want(s, since);
-            }
-        }
-        out.retain(|s, since| self.core.ix.passes.get(s).is_none_or(|b| b <= since));
-        Ok(Arc::new(out))
+            Ok(Arc::new(out))
+        })
     }
 
     /// The place the newest role commit on `actor` (`roles.0`, `secrets.0`, `keys.0`) applied
@@ -398,9 +405,13 @@ impl Engine {
                 out.extend(ids);
             }
         }
-        let set = self.sync_set()?;
-        out.retain(|s| set.ids.get(s).is_some_and(|(_, h)| *h == Holding::Read));
-        Ok(out)
+        let mut read = BTreeSet::new();
+        for s in out {
+            if self.sync_held(&s)?.is_some_and(|(_, h)| h == Holding::Read) {
+                read.insert(s);
+            }
+        }
+        Ok(read)
     }
 
     /// Whether each sync ID of `actor` read here had a complete pass begun after the newest role
