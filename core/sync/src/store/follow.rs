@@ -358,7 +358,7 @@ fn charge_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Resul
 /// waits for nothing.
 fn waits(engine: &mut Engine, e: &crate::types::Entry) -> Result<bool> {
     Ok(match engine.blob_commit(&e.blob)? {
-        Some(c) => (!engine.holds_commit(&c) && !engine.pends(&c)) || engine.blob_awaits_secret(&e.blob)?,
+        Some(c) => (!engine.holds_commit(&c) && !engine.pends(&c)) || engine.blob_awaits_secret(&e.blob),
         None => !e.own,
     })
 }
