@@ -46,7 +46,7 @@ fn purge(w: &mut World, i: usize, t: Tid, c: CommitId) {
 /// Node 1's entries of `c` under S (blobs `by` opened to `c`).
 fn at_unread(w: &mut World, by: usize, s: &SyncId, c: &CommitId) -> Vec<BlobId> {
     let es = w.store(1).entries(s).unwrap();
-    es.into_iter().filter(|e| w.engine(by).blob_commit(&e.blob).ok().flatten() == Some(*c)).map(|e| e.blob).collect()
+    es.into_iter().filter(|e| w.engine(by).blob_commit(&e.blob) == Some(*c)).map(|e| e.blob).collect()
 }
 
 // spec/sync-ids.md §6 (Delete), spec/crypto.md §7: a writer's purge of its own write

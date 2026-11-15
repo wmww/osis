@@ -115,8 +115,8 @@ impl Ground for Fake {
     fn passed(&mut self, s: &SyncId, since: u64) -> bool {
         !self.passing.contains(s) || self.passes.get(s).is_some_and(|b| *b > since)
     }
-    fn rooted(&mut self) -> Result<bool> {
-        Ok(self.unrooted.get(&()) != Some(&true))
+    fn rooted(&mut self) -> bool {
+        self.unrooted.get(&()) != Some(&true)
     }
 }
 

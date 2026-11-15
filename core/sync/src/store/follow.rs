@@ -124,7 +124,7 @@ impl Carriers {
             Some(f) => {
                 for b in f.added() {
                     engine.forget_carrier(&b);
-                    if let Some(c) = engine.blob_commit(&b)? {
+                    if let Some(c) = engine.blob_commit(&b) {
                         release(engine, store, &c)?;
                     }
                 }
@@ -295,7 +295,7 @@ impl Follow {
         let mut lost = Vec::new();
         for s in self.read.keys() {
             for e in store.entries(s)? {
-                if engine.blob_commit(&e.blob)?.is_some() && waits(engine, &e)? && !parked.get(s).is_some_and(|p| p.contains(&e.blob)) {
+                if engine.blob_commit(&e.blob).is_some() && waits(engine, &e)? && !parked.get(s).is_some_and(|p| p.contains(&e.blob)) {
                     lost.push((*s, e.blob));
                 }
             }
@@ -330,7 +330,7 @@ fn charge_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Resul
         if e.own || e.stamp.is_none() {
             continue;
         }
-        let carries = match engine.blob_commit(&e.blob)? {
+        let carries = match engine.blob_commit(&e.blob) {
             Some(c) => engine.pends(&c) && !engine.holds_commit(&c),
             None => engine.carries_loose(&e.blob),
         };
@@ -349,7 +349,7 @@ fn charge_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Resul
 /// count). An own entry naming no commit (a certificate blob sealed here from what is held)
 /// waits for nothing.
 fn waits(engine: &mut Engine, e: &crate::types::Entry) -> Result<bool> {
-    Ok(match engine.blob_commit(&e.blob)? {
+    Ok(match engine.blob_commit(&e.blob) {
         Some(c) => (!engine.holds_commit(&c) && !engine.pends(&c)) || engine.blob_awaits_secret(&e.blob),
         None => !e.own,
     })

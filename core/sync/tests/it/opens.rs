@@ -1910,7 +1910,7 @@ fn a_sources_class_follows_what_the_peer_holds_spec_sync_opens_4() {
         e.commit(m).unwrap().unwrap()
     });
     w.run();
-    let at1 = |w: &mut crate::harness::World| w.store(1).entries(&s).unwrap().into_iter().filter(|e| w.engine(2).blob_commit(&e.blob).ok().flatten() == Some(c)).count();
+    let at1 = |w: &mut crate::harness::World| w.store(1).entries(&s).unwrap().into_iter().filter(|e| w.engine(2).blob_commit(&e.blob) == Some(c)).count();
     assert!(at1(&mut w) > 0, "node 1 holds node 2's write");
     w.power_off(0);
     w.write(2, |e| {

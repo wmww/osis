@@ -2934,7 +2934,7 @@ fn a_forged_copy_of_a_held_commit_opens_bad_spec_commits_4() {
     let fwrap = osis_crypto::wrap(&w, &f.id, &f.key, 0).unwrap();
     let got = lp.peers[1].engine.open_entry(&s, &f.id, &fwrap, &f.blob, u64::MAX).unwrap();
     assert!(matches!(got, osis_engine::sync::Opened::Bad), "{got:?}");
-    assert_eq!(lp.peers[1].engine.blob_commit(&f.id).unwrap(), None, "no blob of c");
+    assert_eq!(lp.peers[1].engine.blob_commit(&f.id), None, "no blob of c");
 }
 
 // spec/commits.md §5 Destruction, spec/sync-judgement.md §5: a destroyed thing's secrets are
@@ -3085,7 +3085,7 @@ fn a_section_the_node_cannot_open_goes_as_it_came_spec_sync_judgement_3() {
     let _ = wrap;
     let got = lp.peers[1].engine.open_entry(&s, &id, &fwrap, &blob, u64::MAX).unwrap();
     assert!(matches!(got, osis_engine::sync::Opened::Commit(x, _) if x == c), "{got:?}");
-    assert_eq!(lp.peers[1].engine.blob_commit(&id).unwrap(), Some(c));
+    assert_eq!(lp.peers[1].engine.blob_commit(&id), Some(c));
     let parts = lp.peers[1].engine.blob_parts(&id).expect("opened");
     assert!(parts.iter().all(|i| h.aspects[*i].tid == t) && !parts.is_empty(), "t's part alone: {parts:?}");
 }

@@ -35,7 +35,7 @@ fn setup() -> (World, Tid, SyncId, CommitId) {
 /// Node 1's entries of `c` under S.
 fn at_store(w: &mut World, s: &SyncId, c: &CommitId) -> Vec<BlobId> {
     let es = w.store(1).entries(s).unwrap();
-    es.into_iter().filter(|e| w.engine(0).blob_commit(&e.blob).ok().flatten() == Some(*c)).map(|e| e.blob).collect()
+    es.into_iter().filter(|e| w.engine(0).blob_commit(&e.blob) == Some(*c)).map(|e| e.blob).collect()
 }
 
 /// Node 1's store deletes its entries of `c` (its stream shows them deleted).

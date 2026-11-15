@@ -537,7 +537,7 @@ impl Ground for EngineGround<'_> {
 
     fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {
         self.engine.forget_carrier(b);
-        if let Some(c) = self.engine.blob_commit(b)? {
+        if let Some(c) = self.engine.blob_commit(b) {
             crate::store::release(self.engine, store, &c)?;
         }
         Ok(())

@@ -691,8 +691,8 @@ impl Engine {
     /// or paired). Before (a node pairing), its sync set is empty for want of the group, not
     /// because anything left it, so nothing it holds counts as left; a node removed from its
     /// account since knows no group any more, and everything it held has left.
-    pub fn sync_rooted(&mut self) -> Result<bool> {
-        Ok(self.core.account.get().is_some())
+    pub fn sync_rooted(&mut self) -> bool {
+        self.core.account.get().is_some()
     }
 
     /// The thing owning sync ID `s` here by its `sync.0`.
@@ -960,8 +960,8 @@ impl Engine {
     }
 
     /// The commit a held blob opened or was sealed as (`blob_parts`' row).
-    pub fn blob_commit(&mut self, b: &BlobId) -> Result<Option<CommitId>> {
-        Ok(self.core.ix.blob_parts.get(b).map(|x| x.commit))
+    pub fn blob_commit(&mut self, b: &BlobId) -> Option<CommitId> {
+        self.core.ix.blob_parts.get(b).map(|x| x.commit)
     }
 
     /// Whether commit `c` is held here (applied or judged).

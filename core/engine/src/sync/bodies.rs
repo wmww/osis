@@ -104,8 +104,8 @@ impl Engine {
     /// groups enclosing them, and for a `sync.0` or `created.0` part on a thing with a sync ID its
     /// publisher (`Engine::publisher`, spec/sync-ids.md §2): the one rule `sync_id_bodies_meta`'s
     /// walk of a sync ID follows too.
-    fn body_things(&mut self, c: &CommitId) -> Result<BTreeSet<Tid>> {
-        let Some(v) = self.core.ix.commits.get(c).map(|m| m.view.clone()) else { return Ok(BTreeSet::new()) };
+    fn body_things(&mut self, c: &CommitId) -> BTreeSet<Tid> {
+        let Some(v) = self.core.ix.commits.get(c).map(|m| m.view.clone()) else { return BTreeSet::new() };
         let mut out = BTreeSet::new();
         for a in v.aspects.iter() {
             out.insert(a.tid);
@@ -114,7 +114,7 @@ impl Engine {
                 out.extend(self.publisher(&a.tid));
             }
         }
-        Ok(out)
+        out
     }
 
     /// Per sync ID this node reads whose required set holds a body of commit `c`: that body
@@ -138,7 +138,7 @@ impl Engine {
     /// `sync_bodies` read anew.
     fn sync_bodies_read(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
         let mut out = BTreeMap::new();
-        for g in self.body_things(c)? {
+        for g in self.body_things(c) {
             let ThingSync::Read(ids) = self.thing_sync_now(&g)? else { continue };
             if let Some(meta) = self.closure_body(&g, c)? {
                 for s in &ids {
@@ -161,7 +161,7 @@ impl Engine {
     /// `sync_body_now` read anew.
     fn sync_body_read(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BodyMeta>> {
         let Some(t) = self.read_thing(s)? else { return Ok(None) };
-        if self.body_things(c)?.contains(&t)
+        if self.body_things(c).contains(&t)
             && let Some(meta) = self.closure_body(&t, c)?
         {
             return Ok(Some(meta));

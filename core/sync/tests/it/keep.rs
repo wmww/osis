@@ -336,7 +336,7 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
         e.commit(m).unwrap().unwrap()
     });
     w.run();
-    let pieces = w.store(0).entries(&s).unwrap().into_iter().filter(|e| e.own && w.engine(0).blob_commit(&e.blob).unwrap().is_none()).count();
+    let pieces = w.store(0).entries(&s).unwrap().into_iter().filter(|e| e.own && w.engine(0).blob_commit(&e.blob).is_none()).count();
     assert!(pieces > 2, "pieces and record blobs logged: {pieces}");
     let path = |w: &mut World| w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.clone();
     let before = path(&mut w).steps.len();
@@ -349,7 +349,7 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     let needs = w.engine(0).step_needs(&s, &head.id()).unwrap();
     assert!(!needs.is_empty());
     for e in w.store(0).entries(&s).unwrap().into_iter().filter(|e| e.own) {
-        let c = w.engine(0).blob_commit(&e.blob).unwrap();
+        let c = w.engine(0).blob_commit(&e.blob);
         let key = if c.is_some_and(|c| needs.contains(&c)) { &parent.keys.write } else { &head.keys.write };
         let stamp = e.stamp.expect("stamped");
         assert!(osis_blob::verify_stamp(key, &s, &e.blob, &e.wrap, &stamp).is_ok(), "own entry {:?} of {c:?} stamped under its step", e.blob);
@@ -357,7 +357,7 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     // a rotation the step registers held under no stamp that stands here (a stamp of no key
     // standing in) is stamped in place under the step's parent, not the new head, so a store
     // behind can still take it
-    let (rb, rc) = w.store(0).entries(&s).unwrap().into_iter().find_map(|e| w.engine(0).blob_commit(&e.blob).unwrap().filter(|c| needs.contains(c)).map(|c| (e, c))).expect("an entry of a rotation the step registers");
+    let (rb, rc) = w.store(0).entries(&s).unwrap().into_iter().find_map(|e| w.engine(0).blob_commit(&e.blob).filter(|c| needs.contains(c)).map(|c| (e, c))).expect("an entry of a rotation the step registers");
     w.store(0).clone().log(&s, osis_sync::types::Entry { stamp: Some(osis_crypto::Signature([7; 64])), ..rb }, None, None).unwrap();
     w.power_off(0);
     w.power_on(0);
@@ -366,11 +366,11 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     assert!(e.own && e.stamp.is_some_and(|x| osis_blob::verify_stamp(&parent.keys.write, &s, &e.blob, &e.wrap, &x).is_ok()), "{rc:?} stamped under the parent: {e:?}");
     // node 0's own entries of the writes it still logs (the last; the others are replaced), and
     // node 2's deposits of the writes
-    let logged: Vec<osis_base::BlobId> = w.store(0).entries(&s).unwrap().into_iter().filter(|e| e.own && w.engine(0).blob_commit(&e.blob).unwrap().is_some_and(|c| writes.contains(&c))).map(|e| e.blob).collect();
+    let logged: Vec<osis_base::BlobId> = w.store(0).entries(&s).unwrap().into_iter().filter(|e| e.own && w.engine(0).blob_commit(&e.blob).is_some_and(|c| writes.contains(&c))).map(|e| e.blob).collect();
     assert!(!logged.is_empty());
     let reader_deposits = |w: &mut World| {
         let es: Vec<osis_sync::types::Entry> = w.store(2).entries(&s).unwrap().into_iter().filter(|e| e.own && e.deposited).collect();
-        es.iter().filter(|e| w.engine(2).blob_commit(&e.blob).unwrap().is_some_and(|c| writes.contains(&c))).count()
+        es.iter().filter(|e| w.engine(2).blob_commit(&e.blob).is_some_and(|c| writes.contains(&c))).count()
     };
     assert_eq!(reader_deposits(&mut w), 0);
     w.power_off(0);

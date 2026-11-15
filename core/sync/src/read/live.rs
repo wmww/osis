@@ -74,7 +74,7 @@ impl Live<'_, '_> {
     /// Of `at`, the read sync IDs whose own store holds an entry of blob `b` (all of them when
     /// `None`), each with `b`'s commit where this node holds it (`entries_added`).
     fn entries_of(&mut self, b: &BlobId, at: Option<SyncId>, out: &mut Vec<(SyncId, CommitId)>) -> Result<()> {
-        let Some(c) = self.cx.engine.blob_commit(b)? else { return Ok(()) };
+        let Some(c) = self.cx.engine.blob_commit(b) else { return Ok(()) };
         if !self.cx.engine.holds_commit(&c) {
             return Ok(());
         }
@@ -295,7 +295,7 @@ impl Ground for Live<'_, '_> {
         // a role commit a recorded step registers under the earliest such step's parent whose
         // write key is held (`registers_step`), anything else under the served head
         let mut w = None;
-        if let Some(c) = self.cx.engine.blob_commit(b)? {
+        if let Some(c) = self.cx.engine.blob_commit(b) {
             let creds = self.cx.engine.read_credentials(s)?;
             for p in self.step_parents(s, &c)? {
                 w = w.or_else(|| creds.as_ref().and_then(|cr| cr.keys.get(&p.id())).and_then(|k| k.write.clone()));
@@ -389,7 +389,7 @@ impl Ground for Live<'_, '_> {
         // a blob this node never opened or sealed names no commit here: it is pulled, and its
         // commit known, once opened
         for (at, s, b) in rows {
-            if let Some(c) = self.cx.engine.blob_commit(&b)? {
+            if let Some(c) = self.cx.engine.blob_commit(&b) {
                 out.push((at, s, c));
             }
         }

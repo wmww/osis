@@ -435,7 +435,7 @@ fn stamp(h: &mut Here<'_>, s: &SyncId, b: &BlobId) -> Result<bool> {
 /// The commit deposit `b` of S holds: as opened or sealed here, else opened now (a deposit a
 /// peer left is opened once, under a read S).
 fn deposit_commit(engine: &mut Engine, store: &Store, s: &SyncId, e: &Entry) -> Result<Option<CommitId>> {
-    if let Some(c) = engine.blob_commit(&e.blob)? {
+    if let Some(c) = engine.blob_commit(&e.blob) {
         return Ok(Some(c));
     }
     let Some(bytes) = store.bytes(&e.blob)? else { return Ok(None) };

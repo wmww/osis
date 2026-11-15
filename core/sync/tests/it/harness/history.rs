@@ -492,7 +492,7 @@ fn invalid_clauses(w: &mut World) {
     for i in on {
         for s in w.store(i).held_ids().expect("sync IDs") {
             for e in w.store(i).entries(&s).expect("entries") {
-                let Some(c) = w.engine(i).blob_commit(&e.blob).expect("blob commit") else { continue };
+                let Some(c) = w.engine(i).blob_commit(&e.blob) else { continue };
                 if w.engine(i).holds_commit(&c) {
                     assert!(!w.engine(i).body_facts(&s, &c).expect("facts").invalid, "node {i} keeps an entry of {c:?}, a body it judges invalid, under {s:?}");
                 }

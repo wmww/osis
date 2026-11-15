@@ -70,7 +70,7 @@ pub trait Ground: SetGround {
     fn passed(&mut self, s: &SyncId, since: u64) -> bool;
     /// This node knows the group whose closure it syncs (`Engine::sync_rooted`): before, its sync
     /// set is empty for want of it, and nothing it holds counts as left.
-    fn rooted(&mut self) -> Result<bool>;
+    fn rooted(&mut self) -> bool;
     /// Forgets the local copies of `ts`, every thing whose sync ID stopped in one settle
     /// (`Engine::forget_local`: one forgetting), then unlogs this node's own entries of the
     /// commits that forgot whole, under every sync ID naming their blobs: no judgement reaches a
@@ -238,7 +238,7 @@ fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -
         Some(x) => *x,
         None => {
             let Some(held) = g.synced(s).or(holder) else { return Ok(Wait::Not) };
-            if !g.rooted()? {
+            if !g.rooted() {
                 return Ok(Wait::Not);
             }
             let x = Left { held, since: g.pass_seq(), sourced: false };
@@ -355,8 +355,8 @@ impl Ground for Live<'_, '_> {
     fn pass_seq(&mut self) -> u64 {
         self.cx.engine.pass_place()
     }
-    fn rooted(&mut self) -> Result<bool> {
-        Ok(self.cx.engine.sync_rooted()?)
+    fn rooted(&mut self) -> bool {
+        self.cx.engine.sync_rooted()
     }
     fn passed(&mut self, s: &SyncId, since: u64) -> bool {
         self.status.passed_since(s, since)

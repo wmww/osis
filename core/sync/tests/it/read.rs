@@ -2714,7 +2714,7 @@ fn a_body_is_logged_once_it_can_be_wrapped_spec_sync_judgement_3() {
         let mut out = BTreeSet::new();
         for (s, _) in w.store(i).syncs().into_iter().filter(|(_, (_, h))| *h == osis_engine::sync::Holding::Read) {
             for e in w.store(i).entries(&s).unwrap() {
-                if e.own || w.engine(i).blob_commit(&e.blob).unwrap().is_some() {
+                if e.own || w.engine(i).blob_commit(&e.blob).is_some() {
                     out.insert((s, e.blob));
                 }
             }

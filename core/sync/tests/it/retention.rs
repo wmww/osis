@@ -48,7 +48,7 @@ fn covered_in_history() -> (World, Tid, SyncId, CommitId) {
 
 fn entries_of(w: &mut World, i: usize, s: &SyncId, c: &CommitId) -> Vec<BlobId> {
     let es = w.store(i).entries(s).unwrap();
-    es.into_iter().filter(|e| w.engine(0).blob_commit(&e.blob).ok().flatten() == Some(*c)).map(|e| e.blob).collect()
+    es.into_iter().filter(|e| w.engine(0).blob_commit(&e.blob) == Some(*c)).map(|e| e.blob).collect()
 }
 
 // spec/commits.md §5 (keep at least): before a body leaves history it leaves a node only by purge

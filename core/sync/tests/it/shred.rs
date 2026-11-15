@@ -33,7 +33,7 @@ fn a_purge_leaves_nothing_recoverable_at_synced_nodes_spec_commits_5() {
     for i in [0, 2] {
         assert!(!recoverable(&mut w, i, MARK_B.as_bytes()), "node {i}: purged content recovered");
     }
-    let left: Vec<_> = w.store(1).entries(&s).unwrap().into_iter().filter(|e| w.engine(0).blob_commit(&e.blob).ok().flatten() == Some(b)).collect();
+    let left: Vec<_> = w.store(1).entries(&s).unwrap().into_iter().filter(|e| w.engine(0).blob_commit(&e.blob) == Some(b)).collect();
     assert!(left.is_empty(), "an entry of the purged commit at node 1: {left:?}");
 }
 

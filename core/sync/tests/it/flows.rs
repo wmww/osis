@@ -1005,7 +1005,7 @@ fn repro_a_removal_is_logged_before_what_was_written_before_it_spec_permissions_
     w.run();
     let at = |w: &mut World, x: osis_base::CommitId| {
         let es = w.store(0).entries(&s).unwrap();
-        let b = es.into_iter().find(|e| w.engine(0).blob_commit(&e.blob).ok().flatten() == Some(x)).expect("an own entry under S").blob;
+        let b = es.into_iter().find(|e| w.engine(0).blob_commit(&e.blob) == Some(x)).expect("an own entry under S").blob;
         w.store(0).first_logged(&s, &b).unwrap().expect("logged")
     };
     let (pc, pr) = (at(&mut w, c), at(&mut w, r));
@@ -1190,7 +1190,7 @@ fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2()
         // a line both find unnamed past one pass), each a fresh encryption
         let bodies = |w: &mut World, cs: &std::collections::BTreeSet<osis_base::BlobId>| -> std::collections::BTreeSet<(osis_base::CommitId, Vec<usize>)> {
             let e = w.engine(0);
-            cs.iter().map(|b| (e.blob_commit(b).unwrap().unwrap(), e.blob_parts(b).unwrap_or_default().into_iter().collect())).collect()
+            cs.iter().map(|b| (e.blob_commit(b).unwrap(), e.blob_parts(b).unwrap_or_default().into_iter().collect())).collect()
         };
         let (b0, b1) = (bodies(w, &c0), bodies(w, &c1));
         assert_eq!(b0, b1, "{step}: both stores hold copies of the same certificate bodies");
@@ -1199,7 +1199,7 @@ fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2()
             // one judgement of the blob at both nodes: in S's required set
             for i in 0..2 {
                 let e = w.engine(i);
-                let c = e.blob_commit(b).unwrap().unwrap();
+                let c = e.blob_commit(b).unwrap();
                 assert!(e.body_facts(&s, &c).unwrap().required, "{step}: node {i} judges a copy outside the required set");
                 authors.insert(e.header(&c).unwrap().author);
             }
@@ -1424,7 +1424,7 @@ fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
         let held: Vec<osis_base::BlobId> = w.store(j).entries(&s).unwrap().iter().map(|e| e.blob).collect();
         for r in &rots {
             let e = w.engine(j);
-            let parts: Vec<usize> = held.iter().filter(|b| e.blob_commit(b).unwrap() == Some(*r)).collect::<Vec<_>>().into_iter().map(|b| e.blob_parts(b).map_or(0, |p| p.len())).collect();
+            let parts: Vec<usize> = held.iter().filter(|b| e.blob_commit(b) == Some(*r)).collect::<Vec<_>>().into_iter().map(|b| e.blob_parts(b).map_or(0, |p| p.len())).collect();
             assert!(!parts.is_empty(), "node {j}: a rotation not held under S");
             match current.contains(r) {
                 true => assert!(parts.iter().any(|n| *n > 0), "node {j}: the current rotation without its keys.0 part under S"),
