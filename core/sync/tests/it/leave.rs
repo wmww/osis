@@ -57,7 +57,7 @@ impl Ground for Fake {
     /// and left between two reads).
     fn held_added(&mut self, _: &mut Option<Feed<SyncId>>) -> Result<Vec<SyncId>> {
         let mut ids: BTreeSet<SyncId> = self.closure.get(&()).map(|c| c.iter().map(|t| sid(t.as_bytes()[0])).collect()).unwrap_or_default();
-        ids.extend(self.holders.iter().map(|(s, _)| *s));
+        ids.extend(self.holders.keys().copied());
         Ok(ids.into_iter().collect())
     }
     fn sync_held(&mut self, s: &SyncId) -> Result<Option<Held>> {
