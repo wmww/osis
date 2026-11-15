@@ -776,9 +776,11 @@ impl ReadOnly {
         if g.stepped == stepped && g.engine().store_writes().committed != before {
             g.handle(osis_sync::Input::Wrote);
         }
+        // read before `carry` takes the node's wake: it holds the next `until` they read
+        let rosters = self.inner.dispatch.rosters_moved(g.engine());
         self.inner.net.carry(&mut g);
         let stepped = g.stepped;
-        self.drain(&mut g);
+        self.drain(&mut g, rosters);
         if stepped && self.inner.dispatch.status_listened() {
             g.seq += 1;
             self.inner.dispatch.send(g.seq, Msg::Status);
@@ -813,11 +815,19 @@ impl ReadOnly {
         crate::port::serve(&self.inner, port);
     }
 
-    /// Queues the engine's events for the dispatcher.
-    fn drain(&self, l: &mut Locked) {
+    /// Queues the engine's events for the dispatcher, then a roster event for each of `rosters`
+    /// (watched rosters that read otherwise, `Dispatch::rosters_moved`) none of them told.
+    fn drain(&self, l: &mut Locked, mut rosters: Vec<Tid>) {
         while let Ok(e) = l.events.try_recv() {
+            if let Event::Roster { thing } = &e {
+                rosters.retain(|t| t != thing);
+            }
             l.seq += 1;
             self.inner.dispatch.send(l.seq, Msg::Event(e));
+        }
+        for thing in rosters {
+            l.seq += 1;
+            self.inner.dispatch.send(l.seq, Msg::Event(Event::Roster { thing }));
         }
     }
 }

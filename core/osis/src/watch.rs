@@ -12,6 +12,7 @@
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis};
 use crate::read::Stamp;
+use osis_base::memo::Effects;
 use osis_base::{Ak, Tid, Ts, Value, Time};
 use crate::commit_id::CommitId;
 use osis_engine::{Cause, Diagnostic, DiagnosticKind, Event, Origin as EventOrigin};
@@ -351,9 +352,22 @@ impl std::fmt::Debug for Dispatcher {
     }
 }
 
-/// State shared by the node, the dispatcher and subscriptions.
+/// The watched rosters' grants (`Filter::Grants`, one key per thing watched), followed so that a
+/// change no event tells (an `until` passing: the roster read follows the memo clock up to its
+/// next `until`, `Engine::clock_next`) is told as `Event::Roster` (`Dispatch::rosters_moved`).
+struct Rosters(Effects<Tid, crate::read::Grants>);
+
+impl Default for Rosters {
+    fn default() -> Rosters {
+        Rosters(Effects::new("watch: rosters"))
+    }
+}
+
+/// State shared by the node, the dispatcher and subscriptions. Locks are taken in the order
+/// engine, `rosters`, `registry`.
 #[derive(Default)]
 pub(crate) struct Shared {
+    rosters: Mutex<Rosters>,
     registry: Mutex<Registry>,
     /// The thread holding the engine lock, if any (a subscription dropped there must not wait
     /// for an in-flight call: that call may be waiting for the engine lock).
@@ -452,11 +466,29 @@ impl Dispatch {
 
     /// Registers a callback for messages from sequence `since` on.
     pub fn register(&self, since: u64, filter: Filter, cb: Callback) -> Subscription {
+        let mut rosters = lock(&self.shared.rosters);
         let mut r = lock(&self.shared.registry);
         r.next += 1;
         let id = r.next;
+        if let Filter::Grants(t) = filter {
+            rosters.0.want(t);
+        }
         r.insert(Arc::new(Sub { id, since: AtomicU64::new(since), filter, removed: AtomicBool::new(false), cb: Mutex::new(cb) }));
         Subscription { shared: Arc::downgrade(&self.shared), id: Some(id) }
+    }
+
+    /// The watched rosters whose grants read otherwise since last asked, under the engine lock:
+    /// those a change told by no event moved too (an `until` passing). Work in proportion to what
+    /// moved what the watched grants read; a key just watched is read, not told.
+    pub fn rosters_moved(&self, e: &mut osis_engine::Engine) -> Vec<Tid> {
+        let mut fx = lock(&self.shared.rosters);
+        let mut out = Vec::new();
+        for t in fx.0.due() {
+            if let Some((Some(_), _)) = fx.0.settle(&t, || crate::read::Reader { e: &mut *e, limit: 0, actor: None }.grants(t)) {
+                out.push(t);
+            }
+        }
+        out
     }
 
     /// Whether subscription `id` is still registered.
@@ -809,7 +841,15 @@ impl Subscription {
 impl Drop for Subscription {
     fn drop(&mut self) {
         let (Some(id), Some(sh)) = (self.id, self.shared.upgrade()) else { return };
-        let Some(s) = lock(&sh.registry).remove(id) else { return };
+        let mut rosters = lock(&sh.rosters);
+        let mut r = lock(&sh.registry);
+        let Some(s) = r.remove(id) else { return };
+        if let Filter::Grants(t) = s.filter
+            && !r.index.contains_key(&Slot::Grants(t))
+        {
+            rosters.0.unwant(&t);
+        }
+        drop((r, rosters));
         s.removed.store(true, Ordering::Release);
         let me = std::thread::current().id();
         if !sh.on_dispatcher() && *lock(&sh.holder) != Some(me) {

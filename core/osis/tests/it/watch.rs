@@ -115,7 +115,7 @@ fn subscription_raii_and_detach() {
     db.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx2.send(("kept", c.value)).unwrap()).unwrap().detach();
     db.settle();
     let first: Vec<_> = rx.try_iter().map(|x| x.0).collect();
-    assert_eq!(first.len(), 2);
+    assert_eq!(first.len(), 2, "{first:?}");
     drop(s);
     db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     db.settle();
@@ -228,6 +228,61 @@ fn two_nodes_remote_watch() {
     assert_eq!(c.value, Ok(Some(Value::Int(9))));
     assert!(w.changed_timeout(Duration::from_secs(20)));
     assert_eq!(w.current().unwrap(), Some(Value::Int(9)));
+}
+
+// spec/permissions.md §2 (until), notes/api.md Watching: a grant's `until` passing changes the
+// roster with no commit (a reader cannot finalize it); a watcher there hears it then (the node
+// wakes at the `until`), and a watched roster no `until` ends meanwhile is neither called nor
+// read again, nor one no longer watched.
+#[test]
+fn an_until_passing_tells_a_roster_watcher_spec_permissions_2() {
+    let c = clock();
+    let net = osis::internals::ManualNet::new(c.clone());
+    let mut o = cfg(3, MemStore::new(), &c);
+    o.app.internals.net = Some(net.clone());
+    let carol = osis::internals::create(o).unwrap();
+    let (alice, bob) = (osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap(), osis::internals::create(cfg(2, MemStore::new(), &c)).unwrap());
+    deliver(&bob, &alice);
+    deliver(&carol, &alice);
+    let (g, h, k) = (thing(&alice), thing(&alice), thing(&alice));
+    let until = |ms| osis::GrantOpts { until: Some(osis::Time(T0 + ms)), ..Default::default() };
+    alice.grant(g, bob.me(), osis::Role::Read, until(60_000)).unwrap();
+    alice.grant(k, bob.me(), osis::Role::Read, until(120_000)).unwrap();
+    for t in [g, h, k] {
+        alice.grant(t, carol.me(), osis::Role::Read, osis::GrantOpts::default()).unwrap();
+    }
+    alice.grant(h, bob.me(), osis::Role::Read, osis::GrantOpts::default()).unwrap();
+    deliver(&alice, &carol);
+    let (tx, rx) = channel();
+    let mut subs: Vec<_> = [g, h, k]
+        .into_iter()
+        .map(|t| {
+            let tx = tx.clone();
+            carol.on_grants_change(t, move |_, r| tx.send((t, r.unwrap())).unwrap()).unwrap()
+        })
+        .collect();
+    carol.settle();
+    let first: Vec<_> = rx.try_iter().collect();
+    assert_eq!(first.len(), 3, "{first:?}");
+    assert!(first.iter().all(|(_, r)| r.contains_key(&bob.me())));
+    osis::internals::costs::take();
+    net.advance(30_000);
+    carol.settle();
+    assert_eq!(rx.try_iter().count(), 0, "nothing ended yet");
+    let read = |cs: &[(&str, Duration, u64)]| cs.iter().find(|x| x.0 == "watch: rosters").map_or(0, |x| x.2);
+    assert_eq!(read(&osis::internals::costs::take()), 0, "no watched roster read again");
+    net.advance(60_000);
+    carol.settle();
+    let told: Vec<_> = rx.try_iter().collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0].0, g);
+    assert!(!told[0].1.contains_key(&bob.me()));
+    assert_eq!(read(&osis::internals::costs::take()), 1, "the one roster the until ended");
+    drop(subs.pop());
+    net.advance(60_000);
+    carol.settle();
+    assert_eq!((rx.try_iter().count(), read(&osis::internals::costs::take())), (0, 0), "unwatched");
+    drop(subs);
 }
 
 /// Blocks the dispatcher inside a callback until the returned sender fires.
