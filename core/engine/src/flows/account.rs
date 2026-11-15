@@ -461,7 +461,7 @@ impl Core {
     fn judged_from(&self, p: &Tid) -> JudgedFrom {
         let a = self.accounts.get(p);
         let roster = a.map(|a| self.key_holders(&a.devices).into_iter().map(|(m, _)| m).collect()).unwrap_or_default();
-        let edges = a.and_then(|a| self.ix.by_thing.get(&(a.devices, *p))).map_or(0, |x| x.len());
+        let edges = a.and_then(|a| self.ix.role_on.get(&(a.devices, *p))).map_or(0, |x| x.len());
         (self.ix.rotations.get(p).copied().unwrap_or(0), self.sides.account(p), a.map_or(0, |a| a.keys.len()), roster, edges)
     }
 
@@ -518,9 +518,8 @@ impl Core {
         }
         let created: BTreeSet<CommitId> = osis_base::Ak::new("created.0").ok().and_then(|ak| self.ix.by_aspect.get(&(a.devices, ak))).into_iter().flatten().map(|(_, c)| *c).collect();
         let mut removals: Vec<(CommitId, Tid, CommitId, Tid, BTreeSet<CommitId>)> = Vec::new();
-        for c in self.ix.by_thing.get(&(a.devices, *p)).into_iter().flatten() {
-            let Some(m) = self.ix.commits.get(c).filter(|m| m.view.kind.is_role() && !at.contains_key(c)) else { continue };
-            let Some(e) = m.view.epoch else { continue };
+        for c in self.ix.role_on.get(&(a.devices, *p)).into_iter().flatten().filter(|c| !at.contains_key(*c)) {
+            let Some(e) = self.ix.commits.get(c).and_then(|m| m.view.epoch) else { continue };
             let s = signer(c, &e);
             d.commits.insert(*c, (s, e));
             let Some(rc) = self.ix.held.edge_commit(c).filter(|rc| rc.author == *p) else { continue };

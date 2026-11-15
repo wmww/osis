@@ -39,6 +39,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         }
         core.ix.invalid.remove(&k, id);
         core.ix.by_thing.remove(&(a.tid, v.author), id);
+        core.ix.role_on.remove(&(a.tid, v.author), id);
         if !core.ix.by_thing.contains_key(&(a.tid, v.author)) {
             core.ix.authors_on.remove(&a.tid, &v.author);
         }

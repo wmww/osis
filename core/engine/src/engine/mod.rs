@@ -732,8 +732,9 @@ indexes! {
     /// Per account with a rotation judged, what the epoch rule says of its commits
     /// (`JudgedEpochs`; `Core::refresh_epochs` re-judges what moved). Persisted.
     pub epochs: JMap<Tid, Arc<crate::flows::account::JudgedEpochs>>,
-    /// Per held rotation of an account, its inner and merge signatures (spec/wire.md §4), read
-    /// when the chain is built (`Core::account_view`). Persisted.
+    /// Per held role commit at an epoch, its inner and merge signatures (spec/wire.md §4), read
+    /// when the chain is built (`Core::account_view`; `note_role_sigs`). Not persisted: an open
+    /// reads them from the role commits' records.
     pub role_sigs: JMap<CommitId, Arc<RoleSigs>>,
     /// Held commits of accounts per (account, epoch they are signed at).
     pub by_epoch: JSetMap<(Tid, CommitId), CommitId>,
@@ -780,6 +781,9 @@ indexes! {
     /// author's chain goes under each sync ID carrying it, `Engine::sync_certificates`). Moves
     /// only as an author comes or goes.
     pub authors_on: JSetMap<Tid, Tid>,
+    /// `by_thing` for role commits alone: what an account's chain reads of its role commits on
+    /// its devices actor (`Core::devices_read`), so filing into D moves no account's chain.
+    pub role_on: JSetMap<(Tid, Tid), CommitId>,
     /// Held commits per (header actor, author), where those differ: re-judging
     /// `validity::acts_for` when the actor's timeline changes, a demotion's frontier, the
     /// actors this node acts for (`Core::acting`).
@@ -2227,6 +2231,7 @@ impl Core {
                 sealed: JMap::by_run(|k| actor_run(&k.0)),
                 by_thing: JSetMap::by_run(|k| actor_run(&k.0)),
                 by_actor: JSetMap::by_run(|k| actor_run(&k.0)),
+                role_on: JSetMap::by_run(|k| actor_run(&k.0)),
                 ..Indexes::default()
             },
             waits: crate::apply::Waits::default(),

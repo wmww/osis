@@ -589,6 +589,14 @@ impl Engine {
         Ok(self.blob_of_now(b))
     }
 
+    /// Whether opened blob `b` holds a section not opened here while a part of its held commit
+    /// that this node may come to read counts missing: a read secret arriving may open it
+    /// (spec/sync-streams.md §4 Fill order: the store opens it again as its read secrets gain an
+    /// epoch).
+    pub fn blob_awaits_secret(&mut self, b: &BlobId) -> Result<bool> {
+        self.blob_awaits_secret_now(b)
+    }
+
     /// The parts an opened or sealed blob holds (as opened or sealed here).
     pub fn blob_parts(&mut self, b: &BlobId) -> Result<Option<PartSet>> {
         Ok(self.blob_parts_now(b))

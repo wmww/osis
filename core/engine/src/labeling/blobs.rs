@@ -736,9 +736,21 @@ impl Engine {
     /// secret is held and that no rotation ordered at or after `r` minted (by (`ts`, author,
     /// commit ID), spec/permissions.md §5.1; `r`'s own epoch is not current when it is made), so
     /// a rotation of `g` that `r` caused takes nothing from whoever read `g` before it. Like a
-    /// rotation's own wrap, it is not subject to `wrap_blocked`. `None`: `r` or no such epoch is
-    /// held.
-    pub(crate) fn list_wrap_secret(&mut self, g: &Tid, r: &CommitId) -> Option<Secret32> {
+    /// rotation's own wrap, it is not subject to `wrap_blocked`. An account's rotation at a sync
+    /// ID of its devices actor: the roles secret of its entry's epoch
+    /// (`account_rotation_wrap_epoch`), so its lists open wherever its entry does. `None`: `r` or
+    /// no such epoch is held.
+    pub(crate) fn list_wrap_secret(&mut self, g: &Tid, r: &CommitId) -> Result<Option<Secret32>> {
+        if let Some(ep) = self.account_rotation_wrap_epoch(g, r)?
+            && let Some(s) = self.epochs(g).and_then(|e| e.read.secret(&ep).cloned())
+        {
+            return Ok(Some(osis_crypto::roles_secret(&s)));
+        }
+        Ok(self.list_wrap_under(g, r))
+    }
+
+    /// `list_wrap_secret` for any rotation but an account's at its devices actor's sync IDs.
+    fn list_wrap_under(&mut self, g: &Tid, r: &CommitId) -> Option<Secret32> {
         let a = self.core.secret_actor(g)?;
         let h = self.header(r)?;
         let at = (h.ts, h.author, *r);

@@ -67,15 +67,13 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
     }
 }
 
-/// A rotation's inner and merge signatures, and an account's role commit's on its devices actor
-/// (who made a removal), for the signing chain (`Indexes::role_sigs`). Only the account's nodes
-/// hold its devices actor.
+/// A role commit's inner and merge signatures (`Indexes::role_sigs`), as held facts: every role
+/// commit at an epoch, whatever is known of its author or the things it is on when it applies.
+/// The signing chain decides which are an account's on its devices actor when it reads them
+/// (`Core::devices_read`), so the order commits arrive in records nothing differently.
 pub(crate) fn note_role_sigs(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
-    // the commit writing D's seeds signs as the account itself: D is its devices actor by this
-    // commit, whose record `devices_of` reads is not held yet
-    let seeds_by_author = |a: &osis_commit::AspectEntry| a.ak.as_str() == "account.0" && core.first_admin(&a.tid) == Some(h.author) && core.is_account(&h.author);
-    let on_devices = || h.epoch.is_some() && h.kind == osis_commit::Kind::Role && h.aspects.iter().any(|a| core.devices_of(&a.tid) == Some(h.author) || seeds_by_author(a));
-    if h.rotation.is_some() || on_devices() {
+    let role = h.kind == osis_commit::Kind::Role && h.epoch.is_some();
+    if (role || h.rotation.is_some()) && (sigs.inner.is_some() || !sigs.merge.is_empty()) {
         core.ix.role_sigs.insert(*id, Arc::new(crate::engine::RoleSigs { inner: sigs.inner, merge: sigs.merge.clone() }));
     }
 }
@@ -87,6 +85,9 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
         core.ix.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
         core.ix.aspect_things.insert(a.ak.clone(), a.tid);
         core.ix.by_thing.insert((a.tid, h.author), *id);
+        if h.kind.is_role() {
+            core.ix.role_on.insert((a.tid, h.author), *id);
+        }
         core.ix.authors_on.insert(a.tid, h.author);
         if h.form.counted() && h.kind.has_own_writes() && a.lo < a.hi {
             core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.author, *id)), (a.lo, *id), a.hi);

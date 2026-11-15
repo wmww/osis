@@ -181,7 +181,7 @@ fn a_party_removed_before_the_rotation_cannot_open_its_list_spec_crypto_5() {
     lp.advance(10);
     let done = remove(&mut lp, 0, a.devices, 1);
     let r = done.commits[1];
-    let w = lp.peers[0].engine.list_wrap_secret(&t, &r).expect("a wrap for r's list of t");
+    let w = lp.peers[0].engine.list_wrap_secret(&t, &r).unwrap().expect("a wrap for r's list of t");
     assert!(!held(&lp, 2).contains(w.expose()), "the removed outsider holds the list's epoch");
 }
 
@@ -1880,4 +1880,42 @@ fn a_removed_node_opens_no_keys_of_its_removal_rotation_spec_crypto_5() {
         }
     }
     assert!(!opened.contains(&ai), "the removed node read the account's new keys.0 (D's fresh deposit seed)");
+}
+
+// spec/permissions.md §5.4 (Following, at a node of P: who signed each role commit of P on D):
+// a role commit's signatures are kept as facts of the commit (`note_role_sigs`): a node paired
+// after node 0 removed node 1, given D's commits with those marking D (`account.0`) last, reads
+// node 0 as the removal's maker, and every node's index rebuilt from the records matches. (By
+// arrival order alone nothing on D applies before D's creating commit, which marks D: the order
+// dependence the facts rule out is checked by the index check, `order::held_set_decides`.)
+#[test]
+fn a_node_paired_after_a_removal_reads_its_maker_spec_permissions_5_4() {
+    let mut lp = LocalPeer::new_bare(3, 0, WallMs(1_700_000_000_000)).unwrap();
+    let (a, _) = lp.peers[0].engine.create_account().unwrap();
+    let pair = |lp: &mut LocalPeer, i: usize, marked_last: bool| {
+        let node = lp.peers[i].engine.tid();
+        let ids = lp.peers[i].engine.commit_ids();
+        send(lp, i, 0, &ids);
+        let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
+        let ids: Vec<CommitId> = lp.peers[0].engine.commit_ids();
+        let all: Vec<CommitId> = if marked_last { ids } else { all };
+        let marks = |lp: &LocalPeer, c: &CommitId| lp.peers[0].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == a.devices && x.ak.as_str() == "account.0"));
+        let (late, early): (Vec<CommitId>, Vec<CommitId>) = all.iter().partition(|c| marked_last && marks(lp, c));
+        send(lp, 0, i, &early);
+        send(lp, 0, i, &late);
+        lp.peers[i].engine.paired(&a.account).unwrap();
+    };
+    pair(&mut lp, 1, false);
+    let r = remove(&mut lp, 0, a.devices, 1).commits[0];
+    pair(&mut lp, 2, true);
+    let maker = lp.peers[0].engine.tid();
+    let v = lp.peers[2].engine.core.account_view(&a.account).unwrap();
+    let signed = v.devices.as_ref().and_then(|d| d.commits.get(&r)).and_then(|x| x.0);
+    assert_eq!(signed, Some(maker), "node 2 reads node 0 as the removal's maker");
+    // the signatures kept are facts of the commits held: rebuilt from the commit records alike
+    for k in 0..3 {
+        let d = lp.peers[k].engine.index_digest();
+        lp.peers[k].engine.rebuild_index().unwrap();
+        assert_eq!(d.first_diff(&lp.peers[k].engine.index_digest()), None, "node {k}: rebuilt");
+    }
 }

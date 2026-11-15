@@ -45,11 +45,6 @@ const SNAPSHOTS: &[u8] = b"node/snapshots";
 /// Per account with a rotation judged, what the epoch rule says of its commits
 /// (`Indexes::epochs`): an open builds no signing chain.
 const EPOCHS: &[u8] = b"node/epochs";
-/// Per held rotation of an account, and role commit of an account on its devices actor, its inner
-/// signature and (a rotation) merge signatures as its blob carries them (`Indexes::role_sigs`):
-/// what the signing chain reads (who minted each rotation, who made each removal from the
-/// devices actor), so an open reads no blob.
-const ROLE_SIGS: &[u8] = b"node/role sigs";
 /// What each addendum commit says (`validity::AddendaParts`), by commit ID.
 pub(super) const ADDENDA: &[u8] = b"node/addenda";
 /// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
@@ -925,7 +920,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_map(txn, EPOCHS, &c.ix.epochs, all)?;
-    put_map(txn, ROLE_SIGS, &c.ix.role_sigs, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
     let min = tx.core.walk_cache_min;
@@ -1114,8 +1108,13 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (k, v) in scan::<Tid>(tx, EPOCHS)? {
         tx.core.ix.epochs.insert(k, dec(&v)?);
     }
-    for (k, v) in scan::<CommitId>(tx, ROLE_SIGS)? {
-        tx.core.ix.role_sigs.insert(k, dec(&v)?);
+    // the role commits' signatures from their records (`Indexes::role_sigs`): role commits are
+    // few, and a table of them would cost a store page per role commit applied
+    let role: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind == osis_commit::Kind::Role && m.view.epoch.is_some()).map(|(c, _)| *c).collect();
+    for id in role {
+        if let Some(b) = tx.get_commit(&id)? {
+            crate::apply::note_role_sigs(tx.core, &b.header, &id, &b.sigs);
+        }
     }
     // the epochs as persisted are judged: every change was before the index was written
     let due: Vec<Tid> = tx.core.ix.epochs_due.iter().copied().collect();

@@ -656,6 +656,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("by_thing", &*ix.by_thing),
         ("authors_on", &*ix.authors_on),
         ("by_actor", &*ix.by_actor),
+        ("role_on", &*ix.role_on),
         ("by_aspect", &*ix.by_aspect),
         ("aspect_things", &*ix.aspect_things),
         ("originals", &*ix.originals),
@@ -707,6 +708,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("own_replaces", &*ix.own_replaces),
         ("signed", &*ix.signed),
         ("sealed", &*ix.sealed),
+        ("role_sigs", &*ix.role_sigs),
         ("leaving", &*ix.leaving),
         ("dated", &*ix.dated),
         ("leave_from", &*ix.leave_from),
@@ -983,9 +985,8 @@ mod tests {
         // `hint_candidates`, `cover_waits`); what an open parks anew (`pending`, `pend_on`,
         // `pend_keys`: each examined again); rows not persisted for ephemeral aspects
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
-        // `cause_at`, `reseal_asks`). And `role_sigs`: noted as each commit applies, by arrival
-        // order (issues/sync-fork-sides-merge.md).
-        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "reseal_asks", "hint_candidates", "cover_waits", "role_sigs"];
+        // `cause_at`, `reseal_asks`).
+        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "reseal_asks", "hint_candidates", "cover_waits"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {
