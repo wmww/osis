@@ -196,9 +196,6 @@ pub(super) struct Pulling {
     listing: Option<BTreeMap<SyncId, BTreeSet<BlobId>>>,
     /// Joins from the start under way: what each listed so far.
     join_listing: BTreeMap<SyncId, BTreeSet<BlobId>>,
-    /// The members whose listing from the start under way a pull anew of this node asked
-    /// (`Streams::pull_anew`): it shows nothing that ends full (`Streams::apply`).
-    anew: BTreeSet<SyncId>,
     /// Full and Refused events to tell the source.
     tell: Vec<(SyncId, Event)>,
     /// The members this side told `full` true on this connection and not false since.
@@ -240,7 +237,6 @@ impl Pulling {
             inline_check: false,
             listing: None,
             join_listing: BTreeMap::new(),
-            anew: BTreeSet::new(),
             tell: Vec::new(),
             told_full: BTreeSet::new(),
             applied_owed: None,
@@ -271,7 +267,6 @@ impl Pulling {
         } else {
             self.join_listing.remove(&s);
         }
-        self.anew.remove(&s);
         self.generation += 1;
         self.joins.insert(s, Join { generation: self.generation, cursor });
         self.rejoin_at.remove(&s);
@@ -564,18 +559,20 @@ impl Streams {
     fn on_pull_reply(&mut self, ctx: &mut Ctx, conn: ConnId, r: PullReply, asked: Vec<(SyncId, u64)>) {
         let members = ctx.shared.members(conn);
         let Some(p) = self.pull.get_mut(&conn) else { return };
-        // a listing from the start shows no deletion past the deletion horizon: one a pull anew
-        // of this node did not ask may hide a refused entry gone (spec/sync-streams.md §4 Full);
-        // judged as it starts, before its bodies are judged
+        // a listing from the start shows again what the source holds of S: its room mark goes
+        // as the listing starts, before any of its bodies is judged (spec/sync-streams.md §4
+        // Full); what it refuses again marks it again
         let from_start: Vec<SyncId> = match r.whole {
             true => members.keys().copied().collect(),
             false => asked.iter().filter(|(s, g)| p.joins.get(s).is_some_and(|j| j.generation == *g && j.cursor.is_none())).map(|(s, _)| *s).collect(),
         };
-        for s in from_start.iter().filter(|s| !p.anew.contains(*s)) {
-            if let Err(e) = ctx.store.refused_may_be_gone(s) {
+        let src = p.src;
+        for s in &from_start {
+            if let Err(e) = ctx.store.listed_from_start(s, src) {
                 return self.failed(Err(e));
             }
         }
+        let Some(p) = self.pull.get_mut(&conn) else { return };
         p.seq = 0;
         p.gap = false;
         p.more = r.more;
@@ -779,6 +776,13 @@ impl Streams {
         self.track(ctx, conn);
     }
 
+    /// The sources whose place passes an entry of S once it settles: every connection's holding
+    /// S, and `conn`'s (`take_body` settles it at each).
+    fn settling_at(&self, s: SyncId, conn: ConnId) -> Vec<Source> {
+        let srcs: BTreeSet<Source> = self.holders.get(&s).into_iter().flatten().chain(std::iter::once(&conn)).filter_map(|c| self.pull.get(c).map(|p| p.src)).collect();
+        srcs.into_iter().collect()
+    }
+
     fn tell(&mut self, conn: ConnId, s: SyncId, e: Event) {
         if let Some(p) = self.pull.get_mut(&conn) {
             p.tell.push((s, e));
@@ -823,7 +827,8 @@ impl Streams {
         // a store or engine failure takes nothing: the body stays owed (no cursor passes it) and
         // the step fails
         match ctx.store.holding(&s) {
-            Some(Holding::Unread) if stamp.is_some() => match ctx.store.take_stamped(&s, &e, bytes.to_vec()) {
+            // refused for room, a room mark at each source whose place passes it once settled
+            Some(Holding::Unread) if stamp.is_some() => match ctx.store.take_stamped(&s, &e, bytes.to_vec(), &self.settling_at(s, conn)) {
                 Ok(code) => self.refused(ctx, conn, s, b, code),
                 Err(e) => return self.failed(Err(e)),
             },
@@ -928,10 +933,10 @@ impl Streams {
     }
 
     /// S kept unread whose dropped copy is fetched anew (spec/sync-judgement.md §6 Stops: a box
-    /// of its head's sync secret keeps S again), raised to read (§6 Read and unread move), or
-    /// full with room again (spec/sync-streams.md §4 Full): pulled again from the start at every
-    /// source; S whose head moved kept unread: at each source told a refusal of S under another
-    /// head (spec/sync-streams.md §4 Refused).
+    /// of its head's sync secret keeps S again) or raised to read (§6 Read and unread move):
+    /// pulled again from the start at every source; S whose head moved kept unread: at each
+    /// source told a refusal of S under another head (spec/sync-streams.md §4 Refused); S whose
+    /// room mark is owed somewhere (§4 Full): at each such source.
     pub(super) fn fetch_anew(&mut self, ctx: &mut Ctx) -> bool {
         // once each, written twice or not (a raise to read off a dropped copy)
         let anew: BTreeSet<SyncId> = self.anew.added().into_iter().collect();
@@ -943,13 +948,14 @@ impl Streams {
 
     /// S pulled from the start: from each source pulling it now, and from the start at its next
     /// join at every source whose place passed it, those only stored included (a restart since),
-    /// in one transaction with clearing the store's durable mark (`N/`, `Store::clear_anew`).
-    /// Everywhere when the store's mark says so (`Store::anew_everywhere`: a dropped copy, a
-    /// raise, room grown); else (a head move's mark, or none) only at the sources told a
-    /// refusal of S under a head other than S's now. Nothing while S takes nothing
-    /// (`Store::unheld`): its mark stands until it is judged again. A place it loaded for a
-    /// source no connection pulls from goes once written. O(the sources holding a place of S,
-    /// and the connections).
+    /// in one transaction with clearing the store's durable mark (`N/`) and those sources' room
+    /// marks (`Store::reset_anew`). Everywhere when the store's mark says so
+    /// (`Store::anew_everywhere`: a dropped copy, a raise); else (`ANEW_SOME`, or none) only at
+    /// the sources told a refusal of S under a head other than S's now and those whose room mark
+    /// of S is owed (`Store::room_marks`). Nothing while S takes nothing (`Store::unheld`): its
+    /// mark stands until it is judged again. A place it loaded for a source no connection pulls
+    /// from goes once written. O(the sources holding a place or a room mark of S, and the
+    /// connections).
     fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId) {
         if ctx.store.unheld(&s) {
             return;
@@ -965,23 +971,24 @@ impl Streams {
             Ok((everywhere, out))
         });
         let head = ctx.store.head(&s).map(|h| h.map(|h| h.id()));
-        let ((everywhere, stored), head) = match (read, head) {
-            (Ok(x), Ok(h)) => (x, h),
-            (Err(e), _) | (_, Err(e)) => return self.failed(Err(e)),
+        let marks = ctx.store.room_marks(&s);
+        let ((everywhere, stored), head, marks) = match (read, head, marks) {
+            (Ok(x), Ok(h), Ok(m)) => (x, h, m),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return self.failed(Err(e)),
         };
+        let owed: BTreeSet<Source> = marks.iter().filter(|(_, owed)| *owed).map(|(src, _)| *src).collect();
         let read: BTreeSet<Source> = if everywhere {
-            self.places.iter().filter(|(_, pl)| pl.at_stream.contains(&s) || pl.stopped.contains_key(&s) || pl.joining.contains_key(&s) || pl.told.contains_key(&s)).map(|(src, _)| *src).chain(pulling.keys().copied()).chain(stored.into_iter().map(Source::Record)).collect()
+            self.places.iter().filter(|(_, pl)| pl.at_stream.contains(&s) || pl.stopped.contains_key(&s) || pl.joining.contains_key(&s) || pl.told.contains_key(&s)).map(|(src, _)| *src).chain(pulling.keys().copied()).chain(stored.into_iter().map(Source::Record)).chain(marks.iter().map(|(src, _)| *src)).collect()
         } else {
-            self.places.iter().filter(|(_, pl)| pl.told.contains_key(&s)).map(|(src, _)| *src).chain(stored.into_iter().map(Source::Record)).collect()
+            self.places.iter().filter(|(_, pl)| pl.told.contains_key(&s)).map(|(src, _)| *src).chain(stored.into_iter().map(Source::Record)).chain(owed.iter().copied()).collect()
         };
-        let srcs: BTreeSet<Source> = match everywhere {
-            true => read.clone(),
-            false => read.iter().copied().filter(|src| self.place(ctx.store, *src).told.get(&s).is_some_and(|h| *h != head)).collect(),
+        let srcs: Vec<Source> = match everywhere {
+            true => read.iter().copied().collect(),
+            false => read.iter().copied().filter(|src| owed.contains(src) || self.place(ctx.store, *src).told.get(&s).is_some_and(|h| *h != head)).collect(),
         };
         for src in &srcs {
             if let Some(p) = pulling.get(src).and_then(|c| self.pull.get_mut(c)) {
                 p.join(s, None);
-                p.anew.insert(s);
             }
             let place = self.place(ctx.store, *src);
             place.at_stream.remove(&s);
@@ -991,14 +998,14 @@ impl Streams {
             place.told.remove(&s);
         }
         let places = &self.places;
-        let r = ctx.store.with_tx(|t| {
+        let r = ctx.store.reset_anew(&s, &srcs, |t| {
             for src in &srcs {
                 if let (Source::Record(rec), Some(p)) = (src, places.get(src)) {
                     p.write(t, rec, &s)?;
                     p.write_told(t, rec, &s)?;
                 }
             }
-            Store::clear_anew(t, &s)
+            Ok(())
         });
         self.failed(r);
         // a place is held only while a connection pulls from its source: a record's loaded here
@@ -1142,7 +1149,8 @@ impl Streams {
         let mut listing = p.listing.take();
         let mut join_listing = std::mem::take(&mut p.join_listing);
         let mut ops = Vec::new();
-        // the members a deletion here shows a refused entry of may be gone (`refused_may_be_gone`)
+        // the members a deletion here shows a refused entry of may be gone at this source
+        // (`Store::refused_may_be_gone`)
         let mut gone: BTreeSet<SyncId> = BTreeSet::new();
         for (s, e) in &batch.events {
             if !members.contains(s) {
@@ -1186,9 +1194,9 @@ impl Streams {
                 _ => {}
             }
         }
-        // ended durably before the place passes what showed it
+        // marked durably before the place passes what showed it
         for s in &gone {
-            if let Err(e) = ctx.store.refused_may_be_gone(s) {
+            if let Err(e) = ctx.store.refused_may_be_gone(s, src) {
                 return self.failed(Err(e));
             }
         }
@@ -1261,8 +1269,6 @@ impl Streams {
         if let Some(p) = self.pull.get_mut(&conn) {
             p.listing = listing;
             p.join_listing = join_listing;
-            let Pulling { anew, listing, join_listing, .. } = p;
-            anew.retain(|s| listing.is_some() || join_listing.contains_key(s));
         }
         // only rows that differ from what is stored are written: a reply that moved nothing writes
         // nothing

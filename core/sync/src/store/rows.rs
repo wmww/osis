@@ -20,18 +20,20 @@
 //! - `w/ at s tag key rec` rows a source's record holds of S that age out (stands, deletes seen).
 //! - `S/ s b` a source showed holding entry `b` of S (spec/sync-status.md §2 Held elsewhere),
 //!   kept while the entry is; a row of its own so recording it moves no reader of the entry.
-//! - `N/ s` S is owed a pull from the start at every source, gone once streams set every
-//!   source's place of S back to the start (`clear_anew`): value empty, its copy was dropped kept
+//! - `N/ s` S is owed a pull from the start, gone once streams set the sources' places of S
+//!   back to the start (`Store::reset_anew`): value empty, its copy was dropped kept
 //!   unread (`Store::set_unheld`, written with the drop; it takes nothing until judged again);
-//!   `ANEW_RAISED`, S was raised from kept unread to read (`Store::set_holdings`); `ANEW_HEAD`,
-//!   S's head moved kept unread over a refusal told to a record's source (`path::register`): pulled from the start only at the sources
-//!   told a refusal of S under another head (spec/sync-streams.md §4 Refused); `ANEW_ROOM`, S
-//!   was full and what it refused may fit or be gone (`Store::room_grew`; over a head move's
-//!   mark, which it covers).
-//!   A head move's mark is not written over another mark (that one pulls from every source).
+//!   `ANEW_RAISED`, S was raised from kept unread to read (`Store::set_holdings`); `ANEW_SOME`,
+//!   pulled from the start only at the sources whose rows say so: told a refusal of S under
+//!   another head (spec/sync-streams.md §4 Refused; S's head moved kept unread over a refusal
+//!   told to a record's source, `path::register`), or whose room mark is owed (`Store::room_grew`,
+//!   `Store::refused_may_be_gone`). `ANEW_SOME` is written over no other mark (those pull from
+//!   every source).
 //! - `R/ s cap` S kept unread is full (spec/sync-streams.md §4 Full): a pulled entry was refused
 //!   for room by `cap` (`store::Cap`); value the bytes the least entry it refused needs under it
 //!   and the latest expiry of one (`u64::MAX`: one has none), 8 bytes each (`Store::room_grew`).
+//!   Stands only while some source's room mark of S does (`tag::ROOM_AT`, a connection's in
+//!   memory).
 //! - `F/ s` S's first sync here ended (spec/sync-streams.md §5): a source's stream of S stood at
 //!   the end of a listing from the start; gone with S (`shred`).
 
@@ -64,10 +66,13 @@ pub(crate) const ELSEWHERE: &[u8] = b"S/";
 pub(crate) const ANEW: &[u8] = b"N/";
 /// `ANEW`'s value for a raise to read (empty: a dropped copy).
 pub(crate) const ANEW_RAISED: &[u8] = &[1];
-/// `ANEW`'s value for a head move kept unread.
-pub(crate) const ANEW_HEAD: &[u8] = &[2];
-/// `ANEW`'s value for room grown at a full S.
-pub(crate) const ANEW_ROOM: &[u8] = &[3];
+/// `ANEW`'s value for a pull from the start at some sources only (a head move kept unread, a
+/// room mark owed).
+pub(crate) const ANEW_SOME: &[u8] = &[2];
+/// A room mark's value (`tag::ROOM_AT`): it stands.
+pub(crate) const ROOM_STANDS: u8 = 0;
+/// A room mark's value: S is owed a pull from the start at that source (`ANEW_SOME`).
+pub(crate) const ROOM_OWED: u8 = 1;
 pub(crate) const ROOM: &[u8] = b"R/";
 pub(crate) const FIRST: &[u8] = b"F/";
 
@@ -76,10 +81,13 @@ pub(crate) const FIRST: &[u8] = b"F/";
 /// tag (notes/sync-store.md). All go with the record (`RECORD_BUDGET`), a sync ID's also
 /// with their sync ID.
 pub(crate) mod tag {
-    // store: the peer budget's charges (record-wide), stands, deletes seen
+    // store: the peer budget's charges (record-wide), stands, deletes seen; a room mark: the
+    // source's place passed an entry of S refused for room (spec/sync-streams.md §4 Full), value
+    // `ROOM_STANDS` or `ROOM_OWED` (S is to be pulled from the start there, `ANEW_SOME`)
     pub(crate) const CHARGES: u8 = b'b';
     pub(crate) const STAND: u8 = b's';
     pub(crate) const SEEN: u8 = b'd';
+    pub(crate) const ROOM_AT: u8 = b'f';
     // opens: the record's own state (record-wide), the peer's filter by generation (record-wide),
     // a member of the shared set, where a member that left rejoins, where a walk stopped
     pub(crate) const OPENS: u8 = b'R';

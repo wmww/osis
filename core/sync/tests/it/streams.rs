@@ -443,7 +443,7 @@ impl Sid {
         let e = Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role: false, class: Class::Durable, expires: None };
         // a bad stamp is planted as a read S's own entry would be: the server serves what it holds
         if good {
-            assert_eq!(side.store.take_stamped(&self.id, &e, bytes).unwrap(), Code::OK);
+            assert_eq!(side.store.take_stamped(&self.id, &e, bytes, &[]).unwrap(), Code::OK);
         } else {
             side.hold(self.id, Holding::Read);
             assert_eq!(side.store.log(&self.id, e, Some(bytes), None).unwrap(), Code::OK);
@@ -1045,6 +1045,60 @@ fn a_listing_from_the_start_shows_what_it_refused_left_spec_sync_streams_4() {
     }
 }
 
+// spec/sync-streams.md §4 (Full: per source), cost, hostile: with S full at three sources, each
+// deletion of an entry it never held shown on one source's stream (made up: that source lies)
+// pulls S from the start at that source alone and refetches what it refused there: n deletions,
+// n listings and n fetches at that source, none at the others, S full throughout.
+#[test]
+fn a_sign_at_one_source_pulls_anew_there_alone_spec_sync_streams_4() {
+    const D: ConnId = ConnId(2);
+    const E: ConnId = ConnId(3);
+    for n in [1usize, 10] {
+        let mut p = Pair::new();
+        let k = Sid::new(10);
+        k.keep(&mut p.a);
+        k.keep(&mut p.b);
+        k.stamped(&mut p.a, 3000, true);
+        k.stamped(&mut p.a, 3001, true);
+        p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+        for (c, r) in [(D, 0xd), (E, 0xe)] {
+            let (rb, ra) = (p.b.new_record(r), p.a.new_record(r + 0x10));
+            p.b.open.records.insert(c, rb);
+            p.a.open.records.insert(c, ra);
+        }
+        for c in [C, D, E] {
+            p.a.join_on(p.now, c, k.id, Rejoin::Held);
+            p.b.join_on(p.now, c, k.id, Rejoin::Held);
+        }
+        // per connection: b's pulls of S from the start and its fetches; a's last cursor on C
+        let (pulls, fetches, cursor) = (RefCell::new(BTreeMap::<ConnId, usize>::new()), RefCell::new(BTreeMap::<ConnId, usize>::new()), RefCell::new(None));
+        let mut count = |ab: bool, conn: ConnId, m: &Msg| {
+            match m {
+                Msg::Pull(q) if !ab && q.joins == vec![(k.id, None)] => *pulls.borrow_mut().entry(conn).or_default() += 1,
+                Msg::Fetch { .. } if !ab => *fetches.borrow_mut().entry(conn).or_default() += 1,
+                Msg::PullReply(r) if ab && conn == C && r.cursor.is_some() => *cursor.borrow_mut() = r.cursor.clone(),
+                Msg::Stream(st) if ab && conn == C && st.cursor.is_some() => *cursor.borrow_mut() = st.cursor.clone(),
+                _ => {}
+            }
+            false
+        };
+        p.run_on(&[C, D, E], &mut count);
+        assert!(p.b.store.waits_room(&k.id));
+        assert_eq!(p.b.store.room_marks(&k.id).unwrap().len(), 3, "marked at every source");
+        let (pulls0, fetches0) = (pulls.borrow().clone(), fetches.borrow().clone());
+        for i in 0..n {
+            let st = osis_proto::Stream { events: vec![(k.id, Event::Deleted(BlobId([i as u8; 32])))], cursor: cursor.borrow().clone(), report: false, seq: 0 };
+            p.b.with(p.now, |t, c| t.message(c, C, Incoming::Push(Msg::Stream(Box::new(st)))));
+            p.run_on(&[C, D, E], &mut count);
+            assert!(p.b.store.waits_room(&k.id), "full throughout");
+        }
+        let more = |now: &BTreeMap<ConnId, usize>, then: &BTreeMap<ConnId, usize>, c: ConnId| now.get(&c).unwrap_or(&0) - then.get(&c).unwrap_or(&0);
+        let (pulls, fetches) = (pulls.borrow().clone(), fetches.borrow().clone());
+        assert_eq!([C, D, E].map(|c| more(&pulls, &pulls0, c)), [n, 0, 0], "listings anew (n: {n})");
+        assert_eq!([C, D, E].map(|c| more(&fetches, &fetches0, c)), [n, 0, 0], "fetches (n: {n})");
+    }
+}
+
 // spec/sync-streams.md §4 (Full: the room of the cap that refused): a node refusing an entry by
 // the store's total is full for S until the total's room grows (here the cap rises; S's own usage
 // never moves), across a restart.
@@ -1258,7 +1312,7 @@ fn a_refusal_ends_when_its_entry_leaves_unannounced_spec_sync_streams_4() {
             let w = [3u8; WRAP_LEN];
             let stamp = osis_label::sign_stamp(&label_role_key(LabelRole::Write, &k.write), &k.id, &b, &w, false);
             let e = Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role: false, class, expires: Some(WallMs(exp)) };
-            assert_eq!(p.a.store.take_stamped(&k.id, &e, bytes).unwrap(), Code::OK);
+            assert_eq!(p.a.store.take_stamped(&k.id, &e, bytes, &[]).unwrap(), Code::OK);
             p.b.store.settle_at(WallMs(exp)).unwrap();
             p.a.join(p.now, k.id);
             p.b.join(p.now, k.id);
@@ -1395,9 +1449,9 @@ fn a_held_stamp_under_another_wrap_is_judged_spec_sync_streams_4() {
     let held = p.b.store.entry(&k.id, &b).unwrap().unwrap();
     let (_, bytes) = blob(502, Class::Durable);
     let same = Entry { blob: b, wrap: held.wrap, stamp: held.stamp, deposited: false, own: false, role: false, class: Class::Durable, expires: None };
-    assert_eq!(p.b.store.take_stamped(&k.id, &same, bytes.clone()).unwrap(), Code::OK, "as held: taken");
+    assert_eq!(p.b.store.take_stamped(&k.id, &same, bytes.clone(), &[]).unwrap(), Code::OK, "as held: taken");
     let other = Entry { wrap: [4u8; WRAP_LEN], ..same };
-    assert_eq!(p.b.store.take_stamped(&k.id, &other, bytes).unwrap(), Code::REFUSED, "another wrap: its stamp is judged");
+    assert_eq!(p.b.store.take_stamped(&k.id, &other, bytes, &[]).unwrap(), Code::REFUSED, "another wrap: its stamp is judged");
     assert_eq!(p.b.store.entry(&k.id, &b).unwrap().unwrap().wrap, held.wrap);
 }
 

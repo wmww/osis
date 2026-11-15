@@ -109,6 +109,11 @@ fn holding(sids: &[(&Sid, Holding)]) -> SyncSet {
 }
 
 /// A store holding `s` kept unread, its genesis registered.
+/// A peer record in `st`, as a source.
+fn record(st: &mut Store, b: u8) -> Source {
+    Source::Record(st.with_tx(|t| t.record_create([b; 32], &osis_store::Named::default())).unwrap())
+}
+
 fn unread(dev: &Dev, s: &Sid) -> Store {
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(s, Holding::Unread)])).unwrap();
@@ -367,24 +372,24 @@ fn stamped_entries_refused_and_taken_spec_sync_ids_6() {
     let old = stamped(&s, b, false);
     let (c1, cs1) = s.rotate(60);
     assert_eq!(st.take_register(&s.id, &c1, Some(&cs1)).unwrap(), Code::OK);
-    assert_eq!(st.take_stamped(&s.id, &old, bytes.clone()).unwrap(), Code::NOT_HEAD_KEY, "superseded write key");
+    assert_eq!(st.take_stamped(&s.id, &old, bytes.clone(), &[]).unwrap(), Code::NOT_HEAD_KEY, "superseded write key");
     let mut bad = stamped(&s, b, false);
     bad.wrap = wrap(9);
-    assert_eq!(st.take_stamped(&s.id, &bad, bytes.clone()).unwrap(), Code::REFUSED, "bad stamp");
+    assert_eq!(st.take_stamped(&s.id, &bad, bytes.clone(), &[]).unwrap(), Code::REFUSED, "bad stamp");
     st.settle_at(WallMs(500)).unwrap();
     let (xb, xbytes) = blob(101, Class::Durable, Some(400), &[]);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, xb, false), xbytes).unwrap(), Code::EXPIRED);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, xb, false), xbytes, &[]).unwrap(), Code::EXPIRED);
     let mut big = stamped(&s, b, false);
     big.blob = BlobId([1; 32]);
-    assert_eq!(st.take_stamped(&s.id, &big, vec![0; osis_base::format::MAX_BLOB + 1]).unwrap(), Code::TOO_LARGE);
+    assert_eq!(st.take_stamped(&s.id, &big, vec![0; osis_base::format::MAX_BLOB + 1], &[]).unwrap(), Code::TOO_LARGE);
     let good = stamped(&s, b, false);
-    assert_eq!(st.take_stamped(&s.id, &good, bytes.clone()).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &good, bytes.clone(), &[]).unwrap(), Code::OK);
     assert_eq!(st.entry(&s.id, &b).unwrap().unwrap(), good);
     assert_eq!(st.bytes(&b).unwrap().unwrap(), bytes);
     // a Delete tombstones it: taking it again is 6
     let del = DeleteItem::sign(&s.delete(), &s.id, b);
     assert_eq!(st.take_delete(&s.id, &[del], true).unwrap(), [Code::OK]);
-    assert_eq!(st.take_stamped(&s.id, &good, bytes).unwrap(), Code::TOMBSTONED);
+    assert_eq!(st.take_stamped(&s.id, &good, bytes, &[]).unwrap(), Code::TOMBSTONED);
 }
 
 // spec/sync-judgement.md §6 (stops): at a head whose sync key it holds no box for, a node keeping
@@ -399,8 +404,8 @@ fn a_head_past_its_keys_drops_the_copy_and_takes_nothing_spec_sync_judgement_6()
     let mut st = unread(&dev, &s);
     let (b, bytes) = blob(100, Class::Durable, None, &[]);
     let (e, ebytes) = blob(101, Class::Ephemeral, Some(10_000), &[]);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes.clone()).unwrap(), Code::OK);
-    assert_eq!(st.take_stamped(&s.id, &Entry { class: Class::Ephemeral, expires: Some(WallMs(10_000)), ..stamped(&s, e, false) }, ebytes).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes.clone(), &[]).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &Entry { class: Class::Ephemeral, expires: Some(WallMs(10_000)), ..stamped(&s, e, false) }, ebytes, &[]).unwrap(), Code::OK);
     let events = events_of(&st, &s.id).len();
     st.set_unheld(&s.id, true).unwrap();
     assert!(st.entries(&s.id).unwrap().is_empty() && st.entry(&s.id, &e).unwrap().is_none(), "its copy dropped");
@@ -408,12 +413,12 @@ fn a_head_past_its_keys_drops_the_copy_and_takes_nothing_spec_sync_judgement_6()
     assert!(st.head(&s.id).unwrap().is_some(), "its path stays");
     assert!(events_of(&st, &s.id).len() <= events, "no deletion event");
     let (c, cbytes) = blob(102, Class::Durable, None, &[]);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes.clone()).unwrap(), Code::REFUSED);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes.clone(), &[]).unwrap(), Code::REFUSED);
     assert_eq!(st.take_deposit(&deposit(&s, &cbytes, false), None).unwrap(), Code::RATE_LIMITED);
     assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, c)], true).unwrap(), [Code::UNKNOWN_SYNC_ID]);
     st.set_unheld(&s.id, false).unwrap();
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes).unwrap(), Code::OK, "at a held head again");
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes).unwrap(), Code::OK, "re-fetched");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes, &[]).unwrap(), Code::OK, "at a held head again");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes, &[]).unwrap(), Code::OK, "re-fetched");
 }
 
 // spec/sync-judgement.md §6 (Stops): back within its keys or raised to read, it fetches S anew,
@@ -429,7 +434,7 @@ fn a_dropped_copy_is_fetched_anew_after_a_restart_spec_sync_judgement_6() {
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     let (c, cbytes) = blob(102, Class::Durable, None, &[]);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes).unwrap(), Code::REFUSED, "still dropped after the restart");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes, &[]).unwrap(), Code::REFUSED, "still dropped after the restart");
     let mut anew = st.anew_feed().0;
     st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
     st.set_unheld(&s.id, false).unwrap();
@@ -467,14 +472,14 @@ fn a_stamp_replaces_a_deposit_once_spec_sync_ids_6() {
     assert!(st.entry(&s.id, &b).unwrap().unwrap().deposited);
     assert_eq!(st.usage(&s.id).unwrap().0.deposits, 1);
     let e = stamped(&s, b, false);
-    assert_eq!(st.take_stamped(&s.id, &e, bytes.clone()).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &e, bytes.clone(), &[]).unwrap(), Code::OK);
     assert_eq!(st.entry(&s.id, &b).unwrap().unwrap(), e);
     assert_eq!(st.usage(&s.id).unwrap().0.deposits, 0, "it left the deposit budget");
     let before = st.read_sync(&s.id, None, None, 100).unwrap().events;
     let mut other = e.clone();
     other.wrap = wrap(5);
     other.stamp = Some(osis_label::sign_stamp(&s.write_key(), &s.id, &b, &other.wrap, false));
-    assert_eq!(st.take_stamped(&s.id, &other, bytes.clone()).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &other, bytes.clone(), &[]).unwrap(), Code::OK);
     assert_eq!(st.take_deposit(&deposit(&s, &bytes, false), None).unwrap(), Code::OK, "a deposit of a held blob");
     assert_eq!(st.entry(&s.id, &b).unwrap().unwrap(), e, "wrap and stamp kept");
     assert_eq!(st.read_sync(&s.id, None, None, 100).unwrap().events, before, "no event");
@@ -493,9 +498,9 @@ fn role_entries_pass_the_caps_spec_sync_ids_6() {
     let (b2, x2) = blob(101, Class::Durable, None, &[]);
     let (b3, x3) = blob(102, Class::Durable, None, &[]);
     let (b4, x4) = blob(103, Class::Durable, None, &[]);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b1, false), x1).unwrap(), Code::OK);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), x2).unwrap(), Code::STORAGE_CAP);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b3, true), x3).unwrap(), Code::OK, "a stamped role entry");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b1, false), x1, &[]).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), x2, &[]).unwrap(), Code::STORAGE_CAP);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b3, true), x3, &[]).unwrap(), Code::OK, "a stamped role entry");
     assert_eq!(st.take_deposit(&deposit(&s, &x4, true), None).unwrap(), Code::OK, "a deposited role entry");
     assert_eq!(st.usage(&s.id).unwrap().0.entries, 1, "role entries count toward no cap");
     assert!(st.entry(&s.id, &b4).unwrap().is_some());
@@ -512,13 +517,13 @@ fn a_total_refusal_ends_as_room_for_it_frees_spec_sync_streams_4() {
     let mut st = unread(&dev, &s);
     for n in 0..3 {
         let (b, x) = blob(200 + n, Class::Durable, None, &[]);
-        assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
+        assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK);
         assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap(), [Code::OK]);
     }
     let (b, x) = blob(300, Class::Durable, None, &[]);
     let used = st.usage(&s.id).unwrap().0.bytes;
     st.set_caps(&Caps { policy: BTreeMap::from([("total_bytes".to_string(), used + x.len() as u64)]), ..Caps::default() });
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone()).unwrap(), Code::STORAGE_CAP);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::STORAGE_CAP);
     assert!(st.waits_room(&s.id));
     let judged = || osis_base::costs::take().into_iter().filter(|(n, ..)| *n == "store: room judged").map(|(.., c)| c).sum::<u64>();
     judged();
@@ -531,7 +536,7 @@ fn a_total_refusal_ends_as_room_for_it_frees_spec_sync_streams_4() {
     st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
     assert_eq!(st.room_grew().unwrap(), vec![s.id], "the tombstones left: room for it");
     assert!(!st.waits_room(&s.id));
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK);
 }
 
 // spec/sync-streams.md §4 (Full: once a cap that refused has that room): a total's room counts
@@ -550,19 +555,19 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
     assert_eq!(st.take_register(&o.id, g, Some(c)).unwrap(), Code::OK);
     for n in 0..3 {
         let (b, x) = blob(200 + n, Class::Durable, None, &[]);
-        assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
+        assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK);
         assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap(), [Code::OK]);
     }
     let (b, x) = blob(300, Class::Durable, None, &[]);
     let used = st.usage(&s.id).unwrap().0.bytes + st.usage(&o.id).unwrap().0.bytes;
     let caps = |total: u64, memory: u64| Caps { policy: BTreeMap::from([("total_bytes".to_string(), total), ("memory_total".to_string(), memory)]), ..Caps::default() };
     st.set_caps(&caps(used + x.len() as u64, 1000));
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone()).unwrap(), Code::STORAGE_CAP);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::STORAGE_CAP);
     st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
     let (ob, ox) = blob(150, Class::Durable, None, &[]);
-    assert_eq!(st.take_stamped(&o.id, &stamped(&o, ob, false), ox).unwrap(), Code::OK, "o fills the freed room");
+    assert_eq!(st.take_stamped(&o.id, &stamped(&o, ob, false), ox, &[]).unwrap(), Code::OK, "o fills the freed room");
     assert_eq!(st.room_grew().unwrap(), vec![s.id], "o's entry gives way: room for S's");
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK);
     assert!(st.entry(&o.id, &ob).unwrap().is_none(), "o gave way");
 
     let exp = Some(TOMBSTONE_LIFETIME_MS + 10 * MAX_DRIFT_MS);
@@ -571,27 +576,27 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
         (b, Entry { class: Class::Ephemeral, expires: exp.map(WallMs), ..stamped(sid, b, false) }, x)
     };
     let (_, big, bx) = eph(&s, 1200);
-    assert_eq!(st.take_stamped(&s.id, &big, bx.clone()).unwrap(), Code::STORAGE_CAP, "larger than the memory total");
+    assert_eq!(st.take_stamped(&s.id, &big, bx.clone(), &[]).unwrap(), Code::STORAGE_CAP, "larger than the memory total");
     let (_, small, sx) = eph(&o, 400);
-    assert_eq!(st.take_stamped(&o.id, &small, sx).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&o.id, &small, sx, &[]).unwrap(), Code::OK);
     st.set_caps(&caps(u64::MAX, bx.len() as u64 + 400));
     assert_eq!(st.room_grew().unwrap(), vec![s.id], "o's memory gives way: room for S's");
-    assert_eq!(st.take_stamped(&s.id, &big, bx).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &big, bx, &[]).unwrap(), Code::OK);
 
     // o's tombstone and path, which no give-way frees, leave the durable total as o is held read
     let (ob, ox) = blob(160, Class::Durable, None, &[]);
-    assert_eq!(st.take_stamped(&o.id, &stamped(&o, ob, false), ox).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&o.id, &stamped(&o, ob, false), ox, &[]).unwrap(), Code::OK);
     assert_eq!(st.take_delete(&o.id, &[DeleteItem::sign(&o.delete(), &o.id, ob)], true).unwrap(), [Code::OK]);
     let (b, x) = blob(310, Class::Durable, None, &[]);
     let o_fixed = st.usage(&o.id).unwrap().0.bytes;
     assert!(o_fixed >= 256, "o's path and tombstone");
     let su = st.usage(&s.id).unwrap().0;
     st.set_caps(&caps(su.bytes - su.entry_bytes + o_fixed + x.len() as u64, u64::MAX));
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone()).unwrap(), Code::STORAGE_CAP);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::STORAGE_CAP);
     assert!(st.room_grew().unwrap().is_empty());
     st.set_sync_set(&holding(&[(&s, Holding::Unread), (&o, Holding::Read)])).unwrap();
     assert_eq!(st.room_grew().unwrap(), vec![s.id], "o left the total: room for S's");
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK);
 }
 
 // spec/sync-streams.md §4 (Full: no longer full once the latest expiry of an entry a cap refused
@@ -604,12 +609,13 @@ fn full_ends_once_what_it_refused_expired_spec_sync_streams_4() {
         let dev = Dev::new();
         let s = Sid::new(10);
         let mut st = unread(&dev, &s);
+        let from = [record(&mut st, 1)];
         let used = st.usage(&s.id).unwrap().0.bytes;
         let caps = Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() };
         st.set_caps(&caps);
         for (n, exp) in [(300, Some(20_000)), (301, Some(10_000)), (302, if forever { None } else { Some(15_000) })] {
             let (b, x) = blob(n, Class::Durable, exp, &[]);
-            assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::STORAGE_CAP);
+            assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &from).unwrap(), Code::STORAGE_CAP);
         }
         if restart {
             drop(st);
@@ -627,38 +633,75 @@ fn full_ends_once_what_it_refused_expired_spec_sync_streams_4() {
     }
 }
 
-// spec/sync-streams.md §4 (Full: no longer full once a source's stream shows what it refused
-// may be gone, then pulled anew, marked durably): a sign while S is not full changes nothing; one
-// while full ends it at once, and a restart before the next `room_grew` or the pull anew keeps it
-// ended and the pull anew owed (`anew_feed`).
+// spec/sync-streams.md §4 (Full: per source): a refusal for room marks each source whose place
+// passes the entry; the deletion of what it refused shown at one source owes a pull from the
+// start there alone, durably (`anew_feed` after a restart), S staying full; a source holding no
+// mark shows nothing; a listing from the start drops that source's mark, a connection's goes with
+// it (and at a restart), a record's with the record, and S with no mark left is full no longer.
 #[test]
-fn full_ended_by_a_stream_stays_ended_across_a_restart_spec_sync_streams_4() {
+fn full_is_marked_per_source_spec_sync_streams_4() {
     for restart in [false, true] {
         let dev = Dev::new();
         let s = Sid::new(10);
         let mut st = unread(&dev, &s);
-        let mut anew = st.anew_feed().0;
-        st.refused_may_be_gone(&s.id).unwrap();
-        assert!(st.room_grew().unwrap().is_empty() && anew.added().is_empty(), "not full: nothing");
+        let (r1, r2, r3, c) = (record(&mut st, 1), record(&mut st, 2), record(&mut st, 3), Source::Conn(ConnId(5)));
         let used = st.usage(&s.id).unwrap().0.bytes;
-        st.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() });
+        let caps = Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() };
+        st.set_caps(&caps);
         let (b, x) = blob(300, Class::Durable, None, &[]);
-        assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::STORAGE_CAP);
-        st.refused_may_be_gone(&s.id).unwrap();
-        assert!(!st.waits_room(&s.id));
+        assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[r1, r2, c]).unwrap(), Code::STORAGE_CAP);
+        let mut anew = st.anew_feed().0;
+        st.refused_may_be_gone(&s.id, r3).unwrap();
+        assert!(anew.added().is_empty(), "a source with no mark shows nothing");
+        st.refused_may_be_gone(&s.id, r1).unwrap();
         if restart {
             drop(st);
             st = dev.open();
             st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
+            st.set_caps(&caps);
             anew = st.anew_feed().0;
-            assert!(st.room_grew().unwrap().is_empty(), "no connection was told full since");
-        } else {
-            assert_eq!(st.room_grew().unwrap(), vec![s.id], "reported once");
-            assert!(st.room_grew().unwrap().is_empty());
         }
-        assert!(!st.waits_room(&s.id), "restart: {restart}");
         assert_eq!(anew.added(), vec![s.id], "pulled anew (restart: {restart})");
+        let mut marks = st.room_marks(&s.id).unwrap();
+        marks.sort();
+        let mut want = vec![(r1, true), (r2, false)];
+        if !restart {
+            want.push((c, false));
+        }
+        want.sort();
+        assert_eq!(marks, want, "owed at that source alone (restart: {restart})");
+        st.refused_may_be_gone(&s.id, r1).unwrap();
+        assert!(anew.added().is_empty(), "owed once");
+        st.listed_from_start(&s.id, r2).unwrap();
+        st.gone(c).unwrap();
+        assert!(st.waits_room(&s.id) && st.room_grew().unwrap().is_empty(), "full while a mark stands");
+        // the last mark goes: by a listing, or with its record
+        match (restart, r1) {
+            (false, _) => st.listed_from_start(&s.id, r1).unwrap(),
+            (true, Source::Record(id)) => assert_eq!(st.write_records(u64::MAX, &Default::default(), &[id].into(), |_| Ok(())).unwrap(), vec![id]),
+            _ => unreachable!(),
+        }
+        assert!(!st.waits_room(&s.id) && st.room_marks(&s.id).unwrap().is_empty());
+        assert_eq!(st.room_grew().unwrap(), vec![s.id], "reported once (restart: {restart})");
     }
+}
+
+// spec/sync-streams.md §4 (Full): a full S whose room marks were all connections' is full no
+// longer after a restart (its connections ended with it).
+#[test]
+fn full_by_connections_alone_ends_at_a_restart_spec_sync_streams_4() {
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    let used = st.usage(&s.id).unwrap().0.bytes;
+    st.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() });
+    let (b, x) = blob(300, Class::Durable, None, &[]);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[Source::Conn(ConnId(5))]).unwrap(), Code::STORAGE_CAP);
+    assert!(st.waits_room(&s.id));
+    drop(st);
+    let mut st = dev.open();
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
+    assert!(!st.waits_room(&s.id));
 }
 
 // spec/sync-inbox.md §3 (deposit refusals): 0 taken (and for a held or dropped blob, changing
@@ -709,7 +752,7 @@ fn deposit_budget_spec_sync_inbox_3() {
     let (_, x) = blob(400, Class::Durable, None, &[]);
     assert_eq!(st.take_deposit(&deposit(&s, &x, false), None).unwrap(), Code::DEPOSIT_BUDGET_FULL);
     let (b0, x0) = &taken[0];
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, *b0, false), x0.clone()).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, *b0, false), x0.clone(), &[]).unwrap(), Code::OK);
     assert_eq!(st.take_deposit(&deposit(&s, &x, false), None).unwrap(), Code::OK, "a stamp freed one");
 }
 
@@ -852,7 +895,7 @@ fn delete_needs_a_store_credential_spec_sync_ids_6() {
     let s = Sid::new(10);
     let mut st = unread(&dev, &s);
     let (b, x) = blob(100, Class::Durable, None, &[]);
-    st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap();
+    st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     let del = DeleteItem::sign(&s.delete(), &s.id, b);
     assert_eq!(st.take_delete(&s.id, &[del.clone(), del.clone()], false).unwrap(), [Code::NOT_OPEN, Code::NOT_OPEN]);
     assert!(st.entry(&s.id, &b).unwrap().is_some());
@@ -872,7 +915,7 @@ fn delete_of_an_entry_not_held_changes_nothing_spec_wire_11_2() {
     let mut st = unread(&dev, &s);
     let (b, x) = blob(100, Class::Durable, None, &[]);
     let (never, _) = blob(101, Class::Durable, None, &[]);
-    st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap();
+    st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     let del = |b| DeleteItem::sign(&s.delete(), &s.id, b);
     let before = st.usage(&s.id).unwrap().0;
     assert_eq!(st.take_delete(&s.id, &[del(never)], true).unwrap(), [Code::REFUSED]);
@@ -893,7 +936,7 @@ fn delete_reads_only_the_prefix_spec_sync_ids_6() {
         let s = Sid::new(10);
         let mut st = unread(&dev, &s);
         let (b, x) = blob(n, Class::Durable, None, &[]);
-        st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap();
+        st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
         osis_base::costs::take();
         assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap(), [Code::OK]);
         osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "store blob bytes read").map(|(.., n)| n).sum::<u64>()
@@ -917,7 +960,7 @@ fn delete_by_levels_spec_sync_ids_6() {
     let mut rng = SeededRng::from_u64(3);
     let (_, bytes) = osis_label::frame(&p, b"body", &mut rng).unwrap();
     let b = osis_label::blob_id(&bytes);
-    st.take_stamped(&s.id, &stamped(&s, b, false), bytes).unwrap();
+    st.take_stamped(&s.id, &stamped(&s, b, false), bytes, &[]).unwrap();
     let by = |key: &SigningSecret, dks: &[(u8, &DeleteSecret)]| DeleteItem::sign_by(key, dks, &[5; 16], &[1; 16], &s.id, b).unwrap();
     assert_eq!(st.take_delete(&s.id, &[by(&s.sync_key(), &[(2, &d3)])], true).unwrap(), [Code::REFUSED], "a key the prefix does not commit to");
     assert_eq!(st.take_delete(&s.id, &[by(&s.write_key(), &[(2, &d2)])], true).unwrap(), [Code::REFUSED], "level 2 with the write key");
@@ -934,7 +977,7 @@ fn expiry_leaves_no_tombstone_spec_sync_ids_6() {
     let s = Sid::new(10);
     let mut st = unread(&dev, &s);
     let (b, x) = blob(100, Class::Durable, Some(1000), &[]);
-    st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap();
+    st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     assert_eq!(st.next_wake(), Some(WallMs(1000)));
     st.settle_at(WallMs(1000)).unwrap();
     assert!(st.entry(&s.id, &b).unwrap().is_none());
@@ -952,12 +995,12 @@ fn tombstones_end_after_their_lifetime_spec_sync_ids_5() {
     let mut st = unread(&dev, &s);
     let (b, x) = blob(100, Class::Durable, None, &[]);
     let e = stamped(&s, b, false);
-    st.take_stamped(&s.id, &e, x.clone()).unwrap();
+    st.take_stamped(&s.id, &e, x.clone(), &[]).unwrap();
     st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap();
     st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS - 1)).unwrap();
-    assert_eq!(st.take_stamped(&s.id, &e, x.clone()).unwrap(), Code::TOMBSTONED);
+    assert_eq!(st.take_stamped(&s.id, &e, x.clone(), &[]).unwrap(), Code::TOMBSTONED);
     st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS)).unwrap();
-    assert_eq!(st.take_stamped(&s.id, &e, x).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &e, x, &[]).unwrap(), Code::OK);
 }
 
 // spec/sync-ids.md §5 (Across sync IDs): blob bytes are stored once per node and deleted when no
@@ -1004,21 +1047,21 @@ fn ephemeral_entries_live_in_memory_spec_sync_ids_5() {
     let mut st = unread(&dev, &s);
     let (b, x) = blob(100, Class::Ephemeral, Some(10 * MAX_DRIFT_MS), &[]);
     dev.faults.forbid_writes(true);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone()).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::OK);
     assert_eq!(dev.faults.forbidden(), 0, "no durable write");
     dev.faults.forbid_writes(false);
     assert_eq!(st.read_memory(&s.id, 0, 10).0.len(), 1);
     assert!(st.read_sync(&s.id, None, None, 10).unwrap().events.iter().all(|e| !matches!(e.event, NodeEvent::Added(..))), "no position names it");
     st.drop_entry(&s.id, &b, Vec::new()).unwrap();
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone()).unwrap(), Code::TOMBSTONED);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone(), &[]).unwrap(), Code::TOMBSTONED);
     st.settle_at(WallMs(MAX_DRIFT_MS)).unwrap();
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK, "its tombstone lasted MAX_DRIFT");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK, "its tombstone lasted MAX_DRIFT");
     drop(st);
     let st = dev.open();
     assert!(st.entry(&s.id, &b).unwrap().is_none() && st.bytes(&b).unwrap().is_none(), "lost at a restart");
     let (r, rx) = blob(60, Class::Relay, Some(10), &[]);
     let mut st = unread(&Dev::new(), &s);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, r, false), rx).unwrap(), Code::DECLINED, "relay-only is never held");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, r, false), rx, &[]).unwrap(), Code::DECLINED, "relay-only is never held");
 }
 
 // spec/sync-ids.md §5 (Caps), §6 (Caps at a node keeping S unread): caps count only the sync IDs
@@ -1037,12 +1080,12 @@ fn caps_govern_unread_and_the_largest_gives_way_spec_sync_ids_6() {
     let mut first = None;
     for i in 0..4 {
         let (b, x) = blob(2000 + i, Class::Durable, None, &[]);
-        assert_eq!(st.take_stamped(&s1.id, &stamped(&s1, b, false), x).unwrap(), Code::OK);
+        assert_eq!(st.take_stamped(&s1.id, &stamped(&s1, b, false), x, &[]).unwrap(), Code::OK);
         first.get_or_insert(b);
     }
     let first = first.unwrap();
     let (b, x) = blob(2500, Class::Durable, None, &[]);
-    assert_eq!(st.take_stamped(&s2.id, &stamped(&s2, b, false), x).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s2.id, &stamped(&s2, b, false), x, &[]).unwrap(), Code::OK);
     assert!(st.entry(&s1.id, &first).unwrap().is_none(), "s1, using most, gave way: its oldest entry");
     assert!(st.tombstone(&s1.id, &first).unwrap().is_none(), "with no tombstone");
     // a read sync ID takes nothing from the room
@@ -1051,7 +1094,7 @@ fn caps_govern_unread_and_the_largest_gives_way_spec_sync_ids_6() {
     assert_eq!(st.log(&r.id, e, Some(rx), None).unwrap(), Code::OK);
     assert_eq!(st.entries(&s1.id).unwrap().len(), 3);
     let (eb, ex) = blob(1600, Class::Ephemeral, Some(MAX_DRIFT_MS), &[]);
-    assert_eq!(st.take_stamped(&s1.id, &stamped(&s1, eb, false), ex).unwrap(), Code::STORAGE_CAP, "past S's memory cap");
+    assert_eq!(st.take_stamped(&s1.id, &stamped(&s1, eb, false), ex, &[]).unwrap(), Code::STORAGE_CAP, "past S's memory cap");
     // r kept unread from now: counted again, it passes the total and, using most, gives way
     st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread), (&r, Holding::Unread)])).unwrap();
     assert!(st.settle_at(WallMs(0)).unwrap());
@@ -1099,8 +1142,8 @@ fn log_reads_by_member_and_until_spec_sync_streams_3() {
     let mut bs = Vec::new();
     for i in 0..3 {
         let (b, x) = blob(100 + i, Class::Durable, None, &[]);
-        st.take_stamped(&s1.id, &stamped(&s1, b, false), x.clone()).unwrap();
-        st.take_stamped(&s2.id, &stamped(&s2, b, false), x).unwrap();
+        st.take_stamped(&s1.id, &stamped(&s1, b, false), x.clone(), &[]).unwrap();
+        st.take_stamped(&s2.id, &stamped(&s2, b, false), x, &[]).unwrap();
         bs.push(b);
     }
     let only1 = st.read_log(&BTreeMap::from([(s1.id, None)]), None, 100).unwrap();
@@ -1176,9 +1219,9 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
     let s = Sid::new(10);
     let mut st = unread(&dev, &s);
     let (b, x) = blob(100, Class::Durable, None, &[]);
-    st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap();
+    st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     let (b2, x2) = blob(101, Class::Durable, None, &[]);
-    st.take_stamped(&s.id, &stamped(&s, b2, false), x2).unwrap();
+    st.take_stamped(&s.id, &stamped(&s, b2, false), x2, &[]).unwrap();
     st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b2)], true).unwrap();
     let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
     st.saw_deleted(Source::Record(rec), &s.id, &b2).unwrap();
@@ -1212,7 +1255,7 @@ const OPS: usize = 14;
 fn ops(st: &mut Store, s: &Sid, rec: RecordId, child: &(Step, ClaimSet), step: usize) {
     let b = |i: usize| blob(100 + i, Class::Durable, Some(5_000), &[]);
     let code = match step {
-        0 => st.take_stamped(&s.id, &stamped(s, b(0).0, false), b(0).1).unwrap(),
+        0 => st.take_stamped(&s.id, &stamped(s, b(0).0, false), b(0).1, &[]).unwrap(),
         1 => st.take_deposit(&deposit(s, &b(1).1, false), Some(Source::Record(rec))).unwrap(),
         2 => st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b(0).0)], true).unwrap()[0],
         3 => {
@@ -1224,7 +1267,7 @@ fn ops(st: &mut Store, s: &Sid, rec: RecordId, child: &(Step, ClaimSet), step: u
         6 => code_of(st.uncharge(&s.id, &b(1).0).is_ok()),
         7 => code_of(st.set_stand(Source::Record(rec), &s.id, b"body", Some(&Stand { at: WallMs(0), logged: b(7).0, head: s.head().id(), fall: 0 })).is_ok()),
         8 => code_of(st.saw_deleted(Source::Record(rec), &s.id, &b(8).0).is_ok()),
-        9 => st.take_stamped(&s.id, &stamped(s, b(9).0, false), b(9).1).unwrap(),
+        9 => st.take_stamped(&s.id, &stamped(s, b(9).0, false), b(9).1, &[]).unwrap(),
         10 => {
             // the total cap gives way: S's oldest entries go
             st.set_caps(&Caps { policy: BTreeMap::from([("total_bytes".to_string(), 1)]), ..Caps::default() });
@@ -1340,13 +1383,13 @@ fn filled(n: usize, k: usize) -> (Store, Sid, Option<Vec<u8>>) {
     for (j, o) in others.iter().enumerate() {
         for i in 0..n {
             let (b, x) = blob(1000 + i + j * 100_000, Class::Durable, None, &[]);
-            st.take_stamped(&o.id, &stamped(o, b, false), x).unwrap();
+            st.take_stamped(&o.id, &stamped(o, b, false), x, &[]).unwrap();
         }
     }
     let cursor = st.read_log(&BTreeMap::from([(s.id, None)]), None, usize::MAX - 1).unwrap().cursor;
     for i in 0..k {
         let (b, x) = blob(500_000 + i, Class::Durable, Some(1_000), &[]);
-        st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap();
+        st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     }
     (st, s, cursor)
 }
@@ -1412,19 +1455,19 @@ fn store_values_are_due_when_their_rows_move() {
     settle(&mut heads, &mut lists, &st);
     assert!(heads.due().is_empty() && lists.due().is_empty());
     let (b, x) = blob(100, Class::Durable, None, &[]);
-    st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap();
+    st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap();
     assert_eq!(lists.due(), [s.id], "an entry added under S");
     assert!(heads.due().is_empty(), "an entry moves no head");
     settle(&mut heads, &mut lists, &st);
     let (e, ex) = blob(101, Class::Ephemeral, Some(10 * MAX_DRIFT_MS), &[]);
-    st.take_stamped(&s.id, &stamped(&s, e, false), ex).unwrap();
+    st.take_stamped(&s.id, &stamped(&s, e, false), ex, &[]).unwrap();
     assert_eq!(lists.due(), [s.id], "an ephemeral entry added under S");
     settle(&mut heads, &mut lists, &st);
     let other = Sid::new(40);
     st.set_sync_set(&holding(&[(&s, Holding::Unread), (&other, Holding::Unread)])).unwrap();
     st.take_register(&other.id, &other.steps[0].0, None).unwrap();
     let (o, ox) = blob(102, Class::Durable, None, &[]);
-    st.take_stamped(&other.id, &stamped(&other, o, false), ox).unwrap();
+    st.take_stamped(&other.id, &stamped(&other, o, false), ox, &[]).unwrap();
     assert!(heads.due().is_empty() && lists.due().is_empty(), "writes under another sync ID");
     let (c1, cs1) = s.rotate(60);
     st.take_register(&s.id, &c1, Some(&cs1)).unwrap();
@@ -1463,7 +1506,7 @@ fn held_elsewhere_kept_while_the_entry_is() {
     let s = Sid::new(10);
     let mut st = unread(&dev, &s);
     let (b, bytes) = blob(40, Class::Durable, None, &[]);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes.clone()).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes.clone(), &[]).unwrap(), Code::OK);
     assert!(!st.elsewhere(&s.id, &b).unwrap());
     assert!(st.first_logged(&s.id, &b).unwrap().is_some());
     st.set_elsewhere(&s.id, &b).unwrap();
@@ -1471,7 +1514,7 @@ fn held_elsewhere_kept_while_the_entry_is() {
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     assert!(st.elsewhere(&s.id, &b).unwrap(), "durable");
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes, &[]).unwrap(), Code::OK);
     assert!(st.elsewhere(&s.id, &b).unwrap(), "taking it again keeps the record");
     assert!(st.drop_entry(&s.id, &b, Vec::new()).unwrap());
     assert!(!st.elsewhere(&s.id, &b).unwrap(), "gone with the entry");
@@ -1633,7 +1676,7 @@ fn only_a_writers_stamp_verifies_spec_sync_inbox_2() {
     assert!(!st.entry(&s.id, &b).unwrap().unwrap().deposited, "held unflagged");
     assert!(!st.stamp_verifies(&s.id, &b).unwrap(), "a stamp by no writer");
     let (b2, bytes2) = blob(101, Class::Durable, None, &[]);
-    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), bytes2).unwrap(), Code::OK);
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b2, false), bytes2, &[]).unwrap(), Code::OK);
     assert!(st.stamp_verifies(&s.id, &b2).unwrap());
     let (g, c) = s.rotate(20);
     assert_eq!(st.take_register(&s.id, &g, Some(&c)).unwrap(), Code::OK);

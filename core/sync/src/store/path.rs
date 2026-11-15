@@ -160,7 +160,7 @@ pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId
 /// or a child of the head that is no closing step (else 9; a malformed closing step 2); within
 /// the caps, a child past them without its claim set, and past them even so at most once per
 /// `register_every_ms`. A head moved over a refusal told to a record's source marks S anew
-/// (`rows::ANEW_HEAD`) unless a mark stands: refusals told under the old head are shown again
+/// (`rows::ANEW_SOME`) unless a mark stands: refusals told under the old head are shown again
 /// (spec/sync-streams.md §4 Refused; a connection's are in memory, `Store::take_register`). Answers
 /// the code, whether past the caps, and whether the head moved.
 pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Policy, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, last_past_cap: Option<WallMs>) -> Result<(Code, bool, bool)> {
@@ -196,7 +196,7 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Poli
     append(t, env, s, step, keep_claims)?;
     let mark = [rows::ANEW, &s.0].concat();
     if t.get_local(&mark)?.is_none() && !t.records_with_row(s, rows::tag::TOLD, b"", 1)?.is_empty() {
-        t.put_local(&mark, rows::ANEW_HEAD, Shred::No)?;
+        t.put_local(&mark, rows::ANEW_SOME, Shred::No)?;
     }
     Ok((Code::OK, past, true))
 }
