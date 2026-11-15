@@ -832,7 +832,7 @@ pub(crate) enum Local {
 /// under `at`, the sync IDs carrying a body of it (dropped parts included: `Ground::bodies`), or
 /// any other holding an entry or tombstone of one (`Ground::known_under`: a body whose sync IDs
 /// moved): none in the own store, no own tombstone (it ends `TOMBSTONE_LIFETIME` after the
-/// delete), none a source's stream shows.
+/// delete), none a source's stream shows under a sync ID where its body is not judged invalid.
 pub(crate) fn local(g: &mut impl Ground, c: &CommitId, at: &[SyncId]) -> Result<Local> {
     osis_base::costs::count("read: local judged", 1);
     match g.forgettable(c)? {
@@ -846,7 +846,13 @@ pub(crate) fn local(g: &mut impl Ground, c: &CommitId, at: &[SyncId]) -> Result<
     let mut under: BTreeSet<SyncId> = at.iter().copied().collect();
     under.extend(g.known_under(c)?);
     for s in &under {
-        if !g.own(s, c)?.is_empty() || !g.own_tombstones(s, c)?.is_empty() || g.present_anywhere(s, c)? {
+        if !g.own(s, c)?.is_empty() || !g.own_tombstones(s, c)?.is_empty() {
+            return Ok(Local::Kept);
+        }
+        // a source's entry of a body judged invalid here keeps nothing: this node never deletes
+        // it there (spec/sync-judgement.md §3 Deletes), and valid again the body comes back
+        // from whoever logs it, or from a source showing it anew (spec/commits.md §5 Forgetting)
+        if g.present_anywhere(s, c)? && !g.facts(s, c)?.body.invalid {
             return Ok(Local::Kept);
         }
     }

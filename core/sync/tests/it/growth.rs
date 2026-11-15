@@ -148,9 +148,7 @@ fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
     assert!(ends.len() <= 6, "bytes on one connection per pair: {ends:?}");
 }
 
-/// Node 0 makes thing 0 and grants node 1's account write and node 2's read (no node keeps it
-/// unread: a store keeps what it holds of an invalid body until its expiry,
-/// issues/invalid-junk-kept.md). Cut off from node 0, node 1 is lowered to read there and writes
+/// Node 0 makes thing 0 and grants node 1's account write and node 2's read. Cut off from node 0, node 1 is lowered to read there and writes
 /// `n` values it still believes valid, the first purging its own earlier write (`writer`
 /// retention, so it may as a writer); node 2, cut off from node 0 too, takes them; then nodes 0
 /// and 2 meet, then all: every node judges them invalid. Then a restart of every node and the
@@ -194,8 +192,9 @@ fn lowered_writes(n: usize) -> (World, Tid, Vec<CommitId>, Vec<Held>) {
     w.partition(0, 1);
     w.partition(1, 2);
     w.run();
-    // known while node 1's stream, as node 2 last heard it, shows them
-    assert!(w.engine(2).kept_invalid(&first) && w.engine(2).kept_invalid(&last), "node 2 dropped them as invalid, their headers kept");
+    // forgotten though node 1's stream, as node 2 last heard it, still shows them: a source's
+    // entry of a body judged invalid keeps no header
+    assert!(!w.engine(2).holds_commit(&first) && !w.engine(2).holds_commit(&last), "node 2 dropped them as invalid and forgot them");
     w.heal();
     w.run();
     for i in 0..3 {
@@ -242,6 +241,64 @@ fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_com
         // the author's own replaces cover the rest: never sent again
         assert!(w.engine(i).holds_commit(&bad[0]) && w.engine(i).holds_commit(&bad[19]), "node {i} holds the writes valid again");
         assert_eq!(w.engine(i).get(&t, &note).unwrap(), None, "node {i}: the request valid again purges");
+    }
+}
+
+// spec/commits.md §5 (Forgetting), spec/sync-judgement.md §3 (Deletes: a body judged invalid is
+// never deleted at a peer): node 3 keeps S unread and holds a lowered writer's invalid writes until
+// their expiry, its stream showing them to every reader; nodes 0 and 2 still keep no header of
+// them, across a restart. A re-grant brings them back from the author, and node 2, which forgot
+// them, reads the last write again. Fails if a source's entry of a body judged invalid keeps its
+// commit known.
+#[test]
+fn a_store_holding_invalid_writes_keeps_no_header_at_readers_spec_commits_5() {
+    let mut w = world(0, 4);
+    w.cap = 200_000;
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 3, Gives::Syncs), Run], String::new());
+    let t = w.history.things[0].0;
+    for i in 1..4 {
+        w.partition(0, i);
+    }
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }), retain: None })).unwrap();
+    w.run();
+    // one aspect each: no write covers another
+    let key = |i: usize| Ak::new(format!("u:k{i}.0")).unwrap();
+    let mut bad = Vec::new();
+    for i in 0..3 {
+        w.advance(1_000);
+        bad.push(w.write(1, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &key(i), &Value::Str(format!("w{i}"))).unwrap();
+            e.commit(m).unwrap().unwrap()
+        }));
+    }
+    w.run();
+    assert!(bad.iter().all(|c| w.engine(2).holds_commit(c)), "node 2 took the writes");
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let blobs: std::collections::BTreeSet<_> = bad.iter().flat_map(|c| w.engine(1).commit_blobs(c).unwrap().iter().copied().collect::<Vec<_>>()).collect();
+    let at_store = |w: &mut World| w.store(3).entries(&s).unwrap().iter().filter(|e| blobs.contains(&e.blob)).count();
+    let before = at_store(&mut w);
+    assert!(before >= bad.len(), "node 3 holds the writes");
+    w.heal();
+    w.run();
+    for _ in 0..2 {
+        assert_eq!(at_store(&mut w), before, "node 3 keeps every entry it held (none deleted for being invalid)");
+        for i in [0, 2] {
+            assert!(bad.iter().all(|c| !w.engine(i).holds_commit(c)), "node {i} forgot every invalid write though node 3 shows it");
+        }
+        for i in 0..4 {
+            w.power_off(i);
+            w.power_on(i);
+        }
+        w.run();
+    }
+    w.write(0, |e| e.grant(&t, &a1, &Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None })).unwrap();
+    w.run();
+    for i in 0..3 {
+        for k in 0..3 {
+            assert_eq!(w.engine(i).get(&t, &key(k)).unwrap(), Some(Value::Str(format!("w{k}"))), "node {i} reads the re-granted writer's write {k}");
+        }
     }
 }
 
