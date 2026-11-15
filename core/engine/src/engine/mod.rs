@@ -984,7 +984,7 @@ pub(crate) enum Step {
 impl Step {
     /// Whether the step is one answer the engine writes on its own (`Tx::own`).
     fn answers(self) -> bool {
-        matches!(self, Step::Answer | Step::Cover | Step::Resnapshot | Step::Rotation)
+        matches!(self, Step::Answer | Step::Cover | Step::Resnapshot | Step::Rotation | Step::Dial)
     }
 }
 
