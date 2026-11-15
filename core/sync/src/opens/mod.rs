@@ -503,12 +503,6 @@ impl Opens {
         self.fx = fx;
     }
 
-    /// A connection ended: each of its members left (its record keeps them).
-    pub fn on_closed(&mut self, cx: &mut Cx, conn: ConnId, moved: &mut Vec<Moved>) {
-        let _ = cx;
-        self.closed(conn, moved);
-    }
-
     /// The end of the node's step: what changed of each record is written, records past the
     /// budget go (least recently used first, none a connection holds) with what was charged to
     /// them, in one transaction (`Store::write_records`), and records no connection holds leave
@@ -859,7 +853,7 @@ impl Opens {
         self.run(ctx, conn, moved);
     }
 
-    /// A connection ended.
+    /// A connection ended: each of its members left (its record keeps them).
     pub fn closed(&mut self, conn: ConnId, moved: &mut Vec<Moved>) {
         self.release(conn, moved);
         if let Some(c) = self.conns.remove(&conn) {

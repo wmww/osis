@@ -687,7 +687,7 @@ impl Node {
         }
         self.streams.closed(conn);
         let mut moved = Vec::new();
-        self.opens.on_closed(&mut cx!(self, out), conn, &mut moved);
+        self.opens.closed(conn, &mut moved);
         self.moved(&mut moved, out);
         self.inbox.on_closed(conn);
         self.driver.port.push(PortEvent::Closed(conn));

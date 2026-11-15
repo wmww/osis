@@ -187,7 +187,7 @@ impl Leave {
         for s in self.out.due() {
             self.judged += 1;
             let leaving = &mut self.leaving;
-            let Some((_, now)) = run(&mut self.out, &s, || judge(g, &s, leaving))? else { continue };
+            let Some((_, now)) = self.out.try_settle(&s, || judge(g, &s, leaving))? else { continue };
             let Some(&Left { held: (t, h), .. }) = self.leaving.get(&s) else { continue };
             match now {
                 Wait::Not => {}
@@ -283,23 +283,6 @@ fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -
         Holding::Unread => g.own_present(s)?,
     } || !g.waited(s)?;
     Ok(if done { Wait::Done } else { Wait::Waiting })
-}
-
-/// `Effects::settle` with a failing function: the key stays due, the error goes up.
-fn run<K: std::hash::Hash + Eq + Clone, V: Clone + PartialEq + Default>(fx: &mut Effects<K, V>, k: &K, f: impl FnOnce() -> Result<V>) -> Result<Option<(Option<V>, V)>> {
-    let mut failed = None;
-    let moved = fx.settle(k, || {
-        f().unwrap_or_else(|e| {
-            failed = Some(e);
-            V::default()
-        })
-    });
-    if let Some(e) = failed {
-        fx.unwant(k);
-        fx.want(k.clone());
-        return Err(e);
-    }
-    Ok(moved)
 }
 
 /// The product's ground: the engine's facade, the store and what sources showed (streams).
