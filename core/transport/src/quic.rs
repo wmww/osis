@@ -247,16 +247,23 @@ impl ClientCertVerifier for AnyClientKey {
     raw_ed25519_only!();
 }
 
-/// A listening endpoint's config: its stateless reset key derived from its listening secret
-/// (spec/sync-transport.md §2), and connection IDs it takes as possibly its own whatever run made
-/// them (`AnyCids`), so a restarted node resets the connections of its earlier run at the peer's
-/// next packet instead of leaving them to the idle timeout.
-fn endpoint_config(secret: &[u8; 32]) -> quinn::EndpointConfig {
-    use ring::hmac;
-    let reset = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, secret), b"osis quic stateless reset");
-    let mut c = quinn::EndpointConfig::new(Arc::new(hmac::Key::new(hmac::HMAC_SHA256, reset.as_ref())));
+/// A listening endpoint's config: its stateless reset key derived from its listening secret and
+/// its socket address (spec/sync-transport.md §2), and connection IDs it takes as possibly its own
+/// whatever run made them (`AnyCids`), so a restarted node resets the connections of its earlier
+/// run at the peer's next packet instead of leaving them to the idle timeout. The address keeps
+/// the node's other sockets (one secret) from answering a connection ID seen on this one with its
+/// valid reset token (RFC 9000 §10.3.2).
+fn endpoint_config(secret: &[u8; 32], at: SocketAddr) -> quinn::EndpointConfig {
+    let mut c = quinn::EndpointConfig::new(Arc::new(reset_key(secret, at)));
     c.cid_generator(|| Box::new(AnyCids));
     c
+}
+
+/// The stateless reset key of a listening socket at `at` under `secret` (`endpoint_config`).
+fn reset_key(secret: &[u8; 32], at: SocketAddr) -> ring::hmac::Key {
+    use ring::hmac;
+    let k = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, secret), format!("osis quic stateless reset {at}").as_bytes());
+    hmac::Key::new(hmac::HMAC_SHA256, k.as_ref())
 }
 
 /// Random 8-byte connection IDs, none told apart as another run's: an unknown one is answered
@@ -456,7 +463,7 @@ impl Transport for Quic {
         let (pk, me) = keypair(cfg.secret.as_bytes())?;
         let sc = server_config(me, &[ALPN])?;
         let udp = std::net::UdpSocket::bind(sa)?;
-        let ep = quinn::Endpoint::new(endpoint_config(cfg.secret.as_bytes()), Some(sc), udp, Arc::new(quinn::TokioRuntime)).map_err(|e| Error::Io(e.to_string()))?;
+        let ep = quinn::Endpoint::new(endpoint_config(cfg.secret.as_bytes(), udp.local_addr()?), Some(sc), udp, Arc::new(quinn::TokioRuntime)).map_err(|e| Error::Io(e.to_string()))?;
         let local = ep.local_addr().map_err(|e| Error::Io(e.to_string()))?;
         let rx = accept_loop(ep.clone(), |inc: quinn::Incoming| async move { keyed(inc.await.ok()?) });
         Ok(QuicListener { ep, rx, addr: Address { url: format!("{SCHEME}://{local}"), key: pk } })
@@ -620,7 +627,8 @@ fn bind_sock(at: SocketAddr, secret: Option<&crate::StaticSecret>, serves: &'sta
     raw.bind(&at.into())?;
     let udp: std::net::UdpSocket = raw.into();
     let punch = udp.try_clone()?;
-    let config = secret.map_or_else(quinn::EndpointConfig::default, |s| endpoint_config(s.as_bytes()));
+    let at = udp.local_addr()?;
+    let config = secret.map_or_else(quinn::EndpointConfig::default, |s| endpoint_config(s.as_bytes(), at));
     let ep = quinn::Endpoint::new(config, server, udp, std::sync::Arc::new(quinn::TokioRuntime))?;
     let local = ep.local_addr()?;
     let rx = match secret {
@@ -784,6 +792,18 @@ mod tests {
             c.c.closed().await
         });
         assert!(matches!(why, quinn::ConnectionError::Reset), "{why:?}");
+    }
+
+    // spec/sync-transport.md §2 (stateless reset): the reset key is the same for a socket back at
+    // its address under its secret, and differs between a node's sockets (one secret, other
+    // addresses), so one never answers a connection ID of another with its valid token.
+    #[test]
+    fn the_reset_key_is_of_the_secret_and_the_socket_address() {
+        let tag = |s: u8, at: &str| ring::hmac::sign(&reset_key(&[s; 32], at.parse().unwrap()), b"cid").as_ref().to_vec();
+        assert_eq!(tag(1, "127.0.0.1:4040"), tag(1, "127.0.0.1:4040"));
+        assert_ne!(tag(1, "127.0.0.1:4040"), tag(1, "127.0.0.1:4041"));
+        assert_ne!(tag(1, "127.0.0.1:4040"), tag(1, "[::1]:4040"));
+        assert_ne!(tag(1, "127.0.0.1:4040"), tag(2, "127.0.0.1:4040"));
     }
 
     fn lax_client(early: bool, me: Option<Arc<CertifiedKey>>) -> quinn::ClientConfig {
