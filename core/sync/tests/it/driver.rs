@@ -482,7 +482,7 @@ async fn dial_up<T: osis_transport::Transport>(ta: T, tb: T, url: &str) {
     let (sa, sb) = (StaticSecret::from_bytes([0xa1; 32]), StaticSecret::from_bytes([0xb2; 32]));
     let mut b = real_node(2, sb.public_key());
     let mut lb = TransportLinks::new(Arc::new(tb), clock.clone());
-    let addr_b = lb.listen(&[url.to_string()], &sb).await.unwrap().remove(0);
+    let addr_b = lb.listen(osis_sync::Listening::Urls, &[url.to_string()], &sb).await.unwrap().remove(0);
     let mut a = real_node(1, sa.public_key());
     let mut la = TransportLinks::new(Arc::new(ta), clock.clone());
     let mut cfg = a.config().clone();
@@ -524,6 +524,33 @@ fn transport_links_dial_in_process_spec_sync_transport_1() {
     rt.block_on(async {
         let net = osis_transport::Net::new(0);
         dial_up(net.endpoint("a"), net.endpoint("b"), "mem://b").await;
+    });
+}
+
+// spec/sync-transport.md §5 (Key change: every listener moves to the new key): a listener set
+// listened again at the port it holds, under a new key, finds the port free (its listeners are
+// closed when `listen` returns), over real QUIC and `peer://` sockets on loopback; another set
+// keeps its port meanwhile.
+#[test]
+fn a_listener_set_listens_again_at_its_own_port_spec_sync_transport_5() {
+    use osis_sync::Listening;
+    use osis_transport::StaticSecret;
+    async fn again<T: osis_transport::Transport>(new: impl Fn() -> T, url: &str) {
+        let clock: Arc<dyn osis_base::Clock> = Arc::new(osis_base::SystemClock);
+        let mut l = osis_sync::TransportLinks::new(Arc::new(new()), clock);
+        let (s1, s2) = (StaticSecret::from_bytes([1; 32]), StaticSecret::from_bytes([2; 32]));
+        let kept = l.listen(Listening::Dialable, &[url.to_string()], &s1).await.unwrap().remove(0);
+        let a = l.listen(Listening::Urls, &[url.to_string()], &s1).await.unwrap().remove(0);
+        for _ in 0..3 {
+            let b = l.listen(Listening::Urls, std::slice::from_ref(&a.url), &s2).await.expect("the set's own port is free again").remove(0);
+            assert_eq!(b.url, a.url);
+        }
+        assert!(osis_transport::listen_all(&new(), std::slice::from_ref(&kept.url), &s1).await.is_err(), "the other set still holds its port");
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    rt.block_on(async {
+        again(osis_transport::Quic::new, "quic://127.0.0.1:0").await;
+        again(|| osis_transport::P2p::new(osis_transport::QuicUdp::new()), "peer://127.0.0.1:0").await;
     });
 }
 

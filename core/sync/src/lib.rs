@@ -22,6 +22,6 @@ pub mod unread;
 
 pub use driver::{Links, Node, PortEvent, apply};
 #[cfg(feature = "driver")]
-pub use driver::links::TransportLinks;
+pub use driver::links::{Listening, TransportLinks};
 pub use store::Store;
 pub use types::{ConnId, Error, Input, NodeKey, Out, Policy, Result, SyncConfig};

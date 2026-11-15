@@ -133,6 +133,9 @@ pub trait Internals {
     fn watches(&self) -> usize;
     /// A handle acting as `actor`, as the client port serves a thin client's session.
     fn acting_as(&self, actor: osis_base::Tid) -> Osis;
+    /// Every address the driver listens at now, direct sync's dialable listener included
+    /// (empty without a runtime).
+    fn listening(&self) -> Vec<crate::Address>;
 }
 
 impl Internals for Osis {
@@ -144,6 +147,9 @@ impl Internals for Osis {
     }
     fn acting_as(&self, actor: osis_base::Tid) -> Osis {
         self.act_as(actor)
+    }
+    fn listening(&self) -> Vec<crate::Address> {
+        self.inner.net.listening().into_iter().map(crate::Address).collect()
     }
 }
 

@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::handle::{Locked, WeakOsis};
 use crate::watch::lock;
 use osis_base::{Clock, ManualClock, WallMs};
-use osis_sync::{ConnId, Input, Links, NodeKey, Out, TransportLinks, apply};
+use osis_sync::{ConnId, Input, Links, Listening, NodeKey, Out, TransportLinks, apply};
 use osis_transport::{StaticSecret, Transport};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -59,10 +59,12 @@ pub(crate) fn blocking<R>(f: impl FnOnce() -> R) -> R {
 pub(crate) enum Ctl {
     /// A step's outputs, in step order.
     Out(Vec<Out>),
-    /// Listen under `secret` at `urls` in place of the URLs before (none: the same ones), and at
-    /// the client socket `socket` if given (it stays once given); every listener starts again,
-    /// but for a first socket alone under the same key, which is added.
-    Listen { urls: Option<Vec<String>>, socket: Option<String>, secret: StaticSecret, reply: oneshot::Sender<std::result::Result<Vec<osis_label::Address>, String>> },
+    /// Listener set `set` listens at `urls` under `secret` in place of its URLs before (none:
+    /// its own URLs again); a key other than the one listened under moves every other set to it
+    /// first. No other set is touched (`Listening`: each set is its owner's).
+    Listen { set: Listening, urls: Option<Vec<String>>, secret: StaticSecret, reply: oneshot::Sender<std::result::Result<Vec<osis_label::Address>, String>> },
+    /// Tests: every address listened at now.
+    Listening(oneshot::Sender<Vec<osis_label::Address>>),
 }
 
 /// Where the driver task runs and what it hears from the handle.
@@ -145,21 +147,32 @@ impl Net {
         }
     }
 
-    /// Listens under `secret` (see `Ctl::Listen`); the addresses of `urls`.
-    pub(crate) fn listen(&self, urls: Option<Vec<String>>, socket: Option<String>, secret: StaticSecret) -> Result<Vec<osis_label::Address>> {
+    /// Every address the driver listens at now (`Ctl::Listening`; none off the driver).
+    pub(crate) fn listening(&self) -> Vec<osis_label::Address> {
+        let Net::Driver { ctl, .. } = self else { return Vec::new() };
+        let (tx, rx) = oneshot::channel();
+        if ctl.send(Ctl::Listening(tx)).is_err() {
+            return Vec::new();
+        }
+        blocking(|| rx.blocking_recv()).unwrap_or_default()
+    }
+
+    /// Listener set `set` listens under `secret` (see `Ctl::Listen`); the addresses of `urls`.
+    pub(crate) fn listen(&self, set: Listening, urls: Option<Vec<String>>, secret: StaticSecret) -> Result<Vec<osis_label::Address>> {
         match self {
             Net::Off => Err(Error::Network("no runtime: listening needs one (Config.runtime)".into())),
             Net::Manual { net, index } => {
                 let key = secret.public_key();
                 net.listen(*index, key);
-                if let Some(sock) = socket {
-                    lock(&net.0).sockets.insert(sock, *index);
+                let urls = urls.unwrap_or_default();
+                if set == Listening::Socket {
+                    lock(&net.0).sockets.extend(urls.iter().map(|u| (u.clone(), *index)));
                 }
-                Ok(urls.unwrap_or_default().into_iter().map(|url| osis_label::Address { url, key }).collect())
+                Ok(urls.into_iter().map(|url| osis_label::Address { url, key }).collect())
             }
             Net::Driver { ctl, .. } => {
                 let (tx, rx) = oneshot::channel();
-                ctl.send(Ctl::Listen { urls, socket, secret, reply: tx }).map_err(|_| Error::Network("sync stopped".into()))?;
+                ctl.send(Ctl::Listen { set, urls, secret, reply: tx }).map_err(|_| Error::Network("sync stopped".into()))?;
                 match blocking(|| rx.blocking_recv()) {
                     Ok(r) => r.map_err(Error::Network),
                     Err(_) => Err(Error::Network("sync stopped".into())),
@@ -218,19 +231,20 @@ impl crate::Osis {
         let Some(dir) = &self.inner.store_dir else { return Err(Error::Invalid("a store in memory has no client socket".into())) };
         let url = osis_transport::unix::url_of(&crate::sources::socket_path(dir)?);
         let secret = self.locked(|l| StaticSecret::from_bytes(*l.secret.as_bytes()));
-        self.inner.net.listen(None, Some(url), secret).map(drop)
+        self.inner.net.listen(Listening::Socket, Some(vec![url]), secret).map(drop)
     }
 
     /// Listens at `urls` (`quic://example.org:4040`) under this node's one key: other nodes sync
     /// with it there, and clients use it as actors they authenticate for (`add_client`). Returns
     /// each address (with its real port) to hand out. Replaces the listeners of an earlier call;
-    /// no URL stops them. Needs a runtime. Listening does not last past this process: call it at
-    /// each start.
+    /// no URL stops them. Direct sync's own listener and the client socket are not this call's:
+    /// they stay. Needs a runtime. Listening does not last past this process: call it at each
+    /// start.
     pub fn listen(&self, urls: &[crate::Url]) -> Result<Vec<crate::Address>> {
         self.local("listen")?;
         let secret = self.locked(|l| StaticSecret::from_bytes(*l.secret.as_bytes()));
         let key = secret.public_key();
-        let a = self.inner.net.listen(Some(urls.iter().map(ToString::to_string).collect()), None, secret)?;
+        let a = self.inner.net.listen(Listening::Urls, Some(urls.iter().map(ToString::to_string).collect()), secret)?;
         // the driver publishes what it listens at itself, with the routes out it found
         if let Net::Manual { .. } = &self.inner.net {
             self.publish_reach(key, &a, &[]);
@@ -256,12 +270,13 @@ impl crate::Osis {
         let key = secret.public_key();
         match &self.inner.net {
             Net::Off => Ok(()),
+            // every listener set moves to the new key (`Ctl::Listen`)
             Net::Manual { .. } => {
-                self.inner.net.listen(None, None, secret)?;
+                self.inner.net.listen(Listening::Dialable, None, secret)?;
                 self.publish_reach(key, &[], &[]);
                 Ok(())
             }
-            net => net.listen(None, None, secret).map(drop),
+            net => net.listen(Listening::Dialable, None, secret).map(drop),
         }
     }
 
@@ -302,15 +317,15 @@ fn peer_urls(relays: &[String]) -> Vec<String> {
 /// The driver task: steps the node on each input its links report (blocking work in place, the
 /// lock held only for the step) and carries out what each step gave, until the node goes.
 async fn drive<T: Transport>(db: WeakOsis, mut links: TransportLinks<T>, mut rx: mpsc::UnboundedReceiver<Ctl>, start: Start) {
-    let (mut urls, mut socket, mut key) = (Vec::new(), None::<String>, None);
+    let mut sets = Sets::default();
     // a failed start is the node's to report: it syncs with what it dials meanwhile
     if let Some((candidates, secret)) = start.listen {
-        key = Some(secret.public_key());
+        sets.key = Some(secret.public_key());
         for u in candidates {
-            if let Ok(a) = links.listen(std::slice::from_ref(&u), &secret).await {
-                published(&db, secret.public_key(), &a).await;
-                // listened again as bound, so a later listen (the client socket) keeps the port
-                urls = a.into_iter().map(|a| a.url).collect();
+            if let Ok(a) = links.listen(Listening::Dialable, std::slice::from_ref(&u), &secret).await {
+                // listened again as bound, so a key change keeps the port
+                sets.at.insert(Listening::Dialable, a);
+                sets.publish(&db).await;
                 break;
             }
         }
@@ -328,39 +343,67 @@ async fn drive<T: Transport>(db: WeakOsis, mut links: TransportLinks<T>, mut rx:
             c = rx.recv() => match c {
                 None => return,
                 Some(Ctl::Out(out)) => apply(out, &mut links),
-                // the client socket alone, under the key listened under, is added beside the
-                // listeners up: one just closed may not have freed its port yet
-                Some(Ctl::Listen { urls: None, socket: Some(s), secret, reply }) if socket.is_none() && key == Some(secret.public_key()) => {
-                    let r = links.listen(std::slice::from_ref(&s), &secret).await.map(|_| Vec::new()).map_err(|e| e.to_string());
-                    if r.is_ok() {
-                        socket = Some(s);
+                Some(Ctl::Listening(reply)) => {
+                    let _ = reply.send(sets.at.values().flatten().cloned().collect());
+                }
+                Some(Ctl::Listen { set, urls, secret, reply }) => {
+                    let r = sets.listen(&mut links, set, urls, &secret).await;
+                    if matches!(set, Listening::Dialable | Listening::Urls) || sets.key_moved {
+                        sets.publish(&db).await;
                     }
                     let _ = reply.send(r);
                 }
-                Some(Ctl::Listen { urls: new, socket: sock, secret, reply }) => {
-                    links.stop_background();
-                    key = Some(secret.public_key());
-                    let asked = new.is_some();
-                    if let Some(u) = new {
-                        urls = u;
-                    }
-                    if sock.is_some() {
-                        socket = sock;
-                    }
-                    let mut r = links.listen(&urls, &secret).await.map_err(|e| e.to_string());
-                    if let Ok(a) = &r {
-                        published(&db, secret.public_key(), a).await;
-                    }
-                    if let (Some(s), true) = (&socket, r.is_ok()) {
-                        r = links.listen(std::slice::from_ref(s), &secret).await.map(|_| Vec::<osis_label::Address>::new()).map_err(|e| e.to_string()).and(r);
-                    }
-                    if start.discover {
-                        let _ = links.discover().await;
-                    }
-                    let _ = reply.send(if asked { r } else { r.map(|_| Vec::new()) });
-                }
             },
         }
+    }
+}
+
+/// What the driver listens at: each listener set's addresses as bound (`Listening`), under one key.
+#[derive(Default)]
+struct Sets {
+    key: Option<[u8; 32]>,
+    at: BTreeMap<Listening, Vec<osis_label::Address>>,
+    /// The last `listen` moved every set to a new key.
+    key_moved: bool,
+}
+
+impl Sets {
+    /// `set` listens at `urls` (none: where it is) under `secret`; a new key moves every other
+    /// set to it first, each where it was. The addresses of `set`; a set that fails stays closed.
+    async fn listen<T: Transport>(&mut self, links: &mut TransportLinks<T>, set: Listening, urls: Option<Vec<String>>, secret: &StaticSecret) -> std::result::Result<Vec<osis_label::Address>, String> {
+        let key = secret.public_key();
+        self.key_moved = self.key != Some(key);
+        let mut err = None;
+        if self.key_moved {
+            self.key = Some(key);
+            let others: Vec<Listening> = self.at.keys().copied().filter(|s| *s != set).collect();
+            for o in others {
+                if let Err(e) = self.relisten(links, o, None, secret).await {
+                    err.get_or_insert(e);
+                }
+            }
+        }
+        let r = self.relisten(links, set, urls, secret).await;
+        match err {
+            Some(e) if r.is_ok() => Err(e),
+            _ => r,
+        }
+    }
+
+    async fn relisten<T: Transport>(&mut self, links: &mut TransportLinks<T>, set: Listening, urls: Option<Vec<String>>, secret: &StaticSecret) -> std::result::Result<Vec<osis_label::Address>, String> {
+        let urls = urls.unwrap_or_else(|| self.at.get(&set).into_iter().flatten().map(|a| a.url.clone()).collect());
+        self.at.remove(&set);
+        let a = links.listen(set, &urls, secret).await.map_err(|e| e.to_string())?;
+        self.at.insert(set, a.clone());
+        Ok(a)
+    }
+
+    /// Publishes where the node is dialed: its dialable listener's and the app's `peer://`
+    /// listeners' addresses (`Osis::publish_reach`).
+    async fn publish(&self, db: &WeakOsis) {
+        let Some(key) = self.key else { return };
+        let addrs: Vec<osis_label::Address> = [Listening::Dialable, Listening::Urls].iter().flat_map(|s| self.at.get(s)).flatten().cloned().collect();
+        published(db, key, &addrs).await;
     }
 }
 

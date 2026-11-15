@@ -49,6 +49,18 @@ impl Drop for Live {
     }
 }
 
+/// Who owns a set of listeners (`TransportLinks::listen`): each set is replaced or closed only
+/// by its own owner, never by another's listen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Listening {
+    /// Direct sync's dialable listener (`peer://`), what the node publishes in `reach.0`.
+    Dialable,
+    /// The URLs the app listens at (`Osis::listen`).
+    Urls,
+    /// The client socket (`Osis::listen_socket`).
+    Socket,
+}
+
 /// The product's `Links` over transport `T`.
 pub struct TransportLinks<T: Transport> {
     transport: Arc<T>,
@@ -58,14 +70,16 @@ pub struct TransportLinks<T: Transport> {
     live: BTreeMap<ConnId, Live>,
     /// Dials in flight: one closed before its result came is not here, and its result is dropped.
     dialing: BTreeMap<ConnId, JoinHandle<()>>,
-    background: Vec<JoinHandle<()>>,
+    /// Each listener set's tasks (a listener lives in its task: ended, it closes).
+    listeners: BTreeMap<Listening, Vec<JoinHandle<()>>>,
+    discovery: Vec<JoinHandle<()>>,
     wake: Option<WallMs>,
     accepted: u64,
 }
 
 impl<T: Transport> Drop for TransportLinks<T> {
     fn drop(&mut self) {
-        for t in self.dialing.values().chain(&self.background) {
+        for t in self.dialing.values().chain(self.listeners.values().flatten()).chain(&self.discovery) {
             t.abort();
         }
     }
@@ -75,22 +89,27 @@ impl<T: Transport> TransportLinks<T> {
     /// Links over `transport`, the node's time from `clock` (its engine's).
     pub fn new(transport: Arc<T>, clock: Arc<dyn Clock>) -> TransportLinks<T> {
         let (tx, rx) = mpsc::unbounded_channel();
-        TransportLinks { transport, clock, tx, rx, live: BTreeMap::new(), dialing: BTreeMap::new(), background: Vec::new(), wake: None, accepted: 0 }
+        TransportLinks { transport, clock, tx, rx, live: BTreeMap::new(), dialing: BTreeMap::new(), listeners: BTreeMap::new(), discovery: Vec::new(), wake: None, accepted: 0 }
     }
 
-    /// Listens at every URL of `urls` under `secret`, all or none (spec/sync-transport.md §5 One
-    /// key): each session a listener takes comes up as an accepted connection. Their addresses.
-    pub async fn listen(&mut self, urls: &[String], secret: &StaticSecret) -> Result<Vec<Address>, Error> {
+    /// Replaces listener set `set`: its listeners close first (closed when this returns, so a
+    /// listen at the port one held finds it free), then it listens at every URL of `urls` under
+    /// `secret`, all or none (spec/sync-transport.md §5 One key; none: the set stays closed).
+    /// Each session a listener takes comes up as an accepted connection; the other sets and
+    /// every connection go on. Their addresses.
+    pub async fn listen(&mut self, set: Listening, urls: &[String], secret: &StaticSecret) -> Result<Vec<Address>, Error> {
+        self.close_listeners(set).await;
         let ls = osis_transport::listen_all(&*self.transport, urls, secret).await?;
         let mut out = Vec::new();
+        let tasks = self.listeners.entry(set).or_default();
         for l in ls {
             use osis_transport::Listener;
             let addr = l.address();
             let (stx, mut srx) = mpsc::channel(1);
-            self.background.push(tokio::spawn(link::serve(l, LINGER, LINGER, stx)));
+            tasks.push(tokio::spawn(link::serve(l, LINGER, LINGER, stx)));
             let tx = self.tx.clone();
             let key = addr.key;
-            self.background.push(tokio::spawn(async move {
+            tasks.push(tokio::spawn(async move {
                 while let Some(link) = srx.recv().await {
                     if tx.send(Event::Accepted(link, key)).is_err() {
                         return;
@@ -108,11 +127,12 @@ impl<T: Transport> TransportLinks<T> {
         self.live.get(&conn).is_some_and(|l| l.unix)
     }
 
-    /// Ends every listener `listen` started and the discovery `discover` started (their
-    /// connections go on).
-    pub fn stop_background(&mut self) {
-        for t in self.background.drain(..) {
+    /// Closes listener set `set` (its connections go on), returning once its listeners are
+    /// dropped: their tasks ended, not just told to.
+    pub async fn close_listeners(&mut self, set: Listening) {
+        for t in self.listeners.remove(&set).unwrap_or_default() {
             t.abort();
+            let _ = t.await;
         }
     }
 
@@ -121,7 +141,7 @@ impl<T: Transport> TransportLinks<T> {
     pub async fn discover(&mut self) -> Result<(), Error> {
         let mut d = self.transport.discover().await?;
         let tx = self.tx.clone();
-        self.background.push(tokio::spawn(async move {
+        self.discovery.push(tokio::spawn(async move {
             while let Some(f) = d.next().await {
                 match f {
                     Found::Dial(a) => {

@@ -308,3 +308,40 @@ fn two_accounts_sync_over_loopback_quic_spec_sync_transport_2() {
         assert_eq!(db.close().unwrap(), osis::Close::Closed);
     }
 }
+
+// spec/sync-transport.md §3 (`peer://`: the dialable listener the account publishes), §5 (One
+// key): a node with direct sync that listens at URLs (as `osis serve --listen` does), twice, still
+// takes connections at its dialable listener: a link redeemed by a node dialing only that
+// address carries the thing.
+#[test]
+fn listening_at_urls_keeps_the_dialable_listener_spec_sync_transport_3() {
+    use osis::internals::Internals;
+    let node = |direct: bool, dial: Vec<osis::Address>| {
+        let mut o = osis::internals::Opening::memory();
+        o.runtime = Runtime::Own;
+        o.direct_sync = direct;
+        o.lan = osis::Lan::Off;
+        o.dial = dial;
+        osis::internals::create(o).unwrap()
+    };
+    let a = node(true, Vec::new());
+    for _ in 0..2 {
+        a.listen(&["quic://127.0.0.1:0".parse().unwrap()]).unwrap();
+    }
+    let dialable = a.listening().into_iter().find(|x| x.url().to_string().starts_with("peer://")).expect("the dialable listener is up");
+    let port = dialable.url().to_string().rsplit(':').next().unwrap().to_string();
+    let b = node(false, vec![osis::Address::new(&format!("peer://127.0.0.1:{port}").parse().unwrap(), dialable.key())]);
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
+    w.at(t, osis::core::NAME).set(&"first".to_string()).unwrap();
+    w.commit().unwrap();
+    let link = a.make_link(t, osis::Role::Write, osis::LinkOpts::default()).unwrap();
+    assert_eq!(block_on(b.redeem(&link)).unwrap(), t);
+    b.accept_invite(t, b.home()).unwrap();
+    block_on(b.wait_synced(osis::SyncScope::Thing(t))).unwrap();
+    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("first"));
+    for db in [a, b] {
+        assert_eq!(db.close().unwrap(), osis::Close::Closed);
+    }
+}
