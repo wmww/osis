@@ -29,41 +29,6 @@ fn remove_node(w: &mut World, by: usize, node: usize) -> Vec<osis_base::CommitId
     })
 }
 
-// spec/permissions.md §3 (a node's removal from D: any node of P holding a removal no counting
-// rotation on its line names makes that rotation, deciding at the end of a complete pass of D's
-// sync IDs), §5.4, spec/crypto.md §9: nodes 0 and 1 remove nodes 2 and 3 apart, each with its
-// rotation; node 1's pair reaches node 0 (handed over: issues/sync-sibling-rotation-unopened.md),
-// so node 0 holds a fork whose every line lacks a removal (blocked), and owes a rotation
-// superseding both heads: its step makes it at the end of the pass of D the commits made due
-#[test]
-#[ignore = "a must-hold body unreached after main's fork-sides merge: issues/sync-fork-sides-merge.md"]
-fn a_rotation_owed_by_the_account_is_made_at_a_pass_end_spec_permissions_3() {
-    let mut w = four_siblings();
-    w.cap = 6_000;
-    w.power_off(2);
-    w.power_off(3);
-    w.partition(0, 1);
-    w.run();
-    remove_node(&mut w, 0, 2);
-    let d1 = remove_node(&mut w, 1, 3);
-    // node 1's removal arrives in a later ms than node 0's own (issues/same-ms-merge-rotation.md)
-    w.advance(1);
-    let pks: Vec<_> = d1.iter().map(|c| w.engine(1).package(c).unwrap().unwrap()).collect();
-    w.write(0, |e| {
-        for pk in &pks {
-            e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).unwrap();
-        }
-    });
-    w.heal();
-    w.run();
-    // a pass of D already under way when the removal arrives (read's, judging an entry outside
-    // D) ends before it: the next waits for nodes 2 and 3's records until its deadline
-    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
-    w.run();
-    let owed = w.write(0, |e| e.signing_due()).unwrap();
-    assert!(owed.commits.is_empty(), "the merge rotation was made at the pass end, nothing owed: {owed:?}");
-}
-
 // spec/permissions.md §3 (Lost access: a node that learns it lost read access to an actor MUST drop
 // those role secrets and every local unit it can no longer read by another path): node 0 removes
 // node 1's account from a thing node 1 read; once node 1 holds the removal it holds no read secret
@@ -184,15 +149,17 @@ fn a_node_removed_from_its_account_stops_syncing_spec_sync_set_3() {
     assert!(w.store(2).held_ids().unwrap().is_empty(), "and holds no rows");
 }
 
-// spec/permissions.md §3 (Required rotation: a node's removal from D), spec/crypto.md §4
-// (Established and current): nodes 0 and 1 remove nodes 2 and 3 apart, each with its rotations,
-// and sync alone carries them across the heal: each node then holds the other's removal (the
-// other's removed node holds nothing on D there), every D epoch the other holds, and owes no
-// merge rotation. Fails in the engine: the sibling's removal, held whole, takes effect and
-// establishes its D epoch only once its account rotation is held, whose entry is wrapped under
-// that epoch (issues/sync-sibling-rotation-unopened.md)
+// spec/permissions.md §3 (Required rotation: a node's removal from D: any node of P holding a
+// removal no counting rotation on its line names makes that rotation, at the end of a complete
+// pass of D's sync IDs), §5.4, spec/crypto.md §4 (Established and current), §5 (Who wraps under
+// what: an account's rotation and its list blobs under the pre-removal D epoch), §9,
+// spec/sync-streams.md §4 (Fill order: an entry with a section not opened while a part of its
+// commit counts missing opens again as read secrets gain an epoch): nodes 0 and 1 remove nodes 2
+// and 3 apart, each with its rotations, and sync alone carries them across the heal: each node
+// then holds the other's removal (the other's removed node holds nothing on D there) and every D
+// epoch the other holds, and owes no merge rotation: its step made it at the end of the pass of D
+// the commits made due (that pass waits for nodes 2 and 3's records until its deadline)
 #[test]
-#[ignore = "needs fork-sides"]
 fn sibling_removals_apart_both_hold_through_sync_spec_permissions_3() {
     let mut w = four_siblings();
     w.cap = 6_000;

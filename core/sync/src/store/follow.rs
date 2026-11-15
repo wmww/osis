@@ -351,11 +351,14 @@ fn charge_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Resul
 
 /// Whether entry `b` of S waits for a read secret: one whose commit is neither held nor pending
 /// here (it did not open, what it opened to was thrown out, or, an own log, the commit was
-/// forgotten with lost access and opens again when access returns). An own entry naming no
-/// commit (a certificate blob sealed here from what is held) waits for nothing.
+/// forgotten with lost access and opens again when access returns), or held with a part missing
+/// while a section of the blob did not open (`Engine::blob_awaits_secret`: a sibling's account
+/// rotation, its seed under a D epoch established only once the rotation's header and list
+/// count). An own entry naming no commit (a certificate blob sealed here from what is held)
+/// waits for nothing.
 fn waits(engine: &mut Engine, e: &crate::types::Entry) -> Result<bool> {
     Ok(match engine.blob_commit(&e.blob)? {
-        Some(c) => !engine.holds_commit(&c) && !engine.pends(&c),
+        Some(c) => (!engine.holds_commit(&c) && !engine.pends(&c)) || engine.blob_awaits_secret(&e.blob)?,
         None => !e.own,
     })
 }
