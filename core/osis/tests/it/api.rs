@@ -27,7 +27,7 @@ fn task(title: &str) -> Task {
 }
 
 // notes/api.md Handle and lifecycle: a new node has a node, an account actor and its home
-// group; reopening the store gives the same identity.
+// group, listing its profile; reopening the store gives the same identity.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn create_and_reopen_spec_api_handle() {
@@ -36,7 +36,8 @@ fn create_and_reopen_spec_api_handle() {
     let (node, me) = {
         let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
         assert_ne!(db.me(), db.node());
-        assert_eq!(db.at(db.home(), osis::internals::core_types::GROUP).get().unwrap(), Some(Group::default()));
+        let home = db.at(db.home(), osis::internals::core_types::GROUP).get().unwrap().unwrap();
+        assert!(home.items.contains(&db.profile().unwrap()), "the profile, on every node of the account (spec/sync-set.md §1)");
         assert_eq!(db.role_on(db.me()).unwrap(), Some(Role::Admin));
         (db.node(), db.me())
     };

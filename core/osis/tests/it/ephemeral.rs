@@ -391,7 +391,7 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     let mut w = b.write();
     w.delete(gone).unwrap();
     w.at(b.home(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
-    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:draft+.0") && m.contains("app:kept.0")));
+    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:draft+.0 is ephemeral") && m.contains("is not")));
     let mut w = b.write();
     w.delete(gone).unwrap();
     w.at(gone, osis::DynamicAspectKey::untyped(ak("app:ring+~0"))).fire(&Value::Int(1)).unwrap();

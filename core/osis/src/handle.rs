@@ -10,7 +10,6 @@ use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{OsRng, SeededRng};
 use osis_engine::{Engine, Event};
 use osis_schema::Schema;
-use osis_schema::core_types as ct;
 use osis_store::{MemoryBackend, MemoryRoot};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -598,16 +597,12 @@ pub(crate) fn sync_config(cfg: &Config, key: [u8; 32]) -> osis_sync::SyncConfig 
 }
 
 impl Osis {
-    /// Creates a node and a new account with this node its admin. The account is also its home
-    /// group.
+    /// Creates a node and a new account with this node its admin; `home()` is its devices actor D.
     pub fn create(store: Store, cfg: Config) -> Result<Osis> {
         cfg.check()?;
         let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
         let (a, _) = engine.create_account()?;
         engine.set_app_record(PROFILE, a.profile.as_bytes())?;
-        let mut m = osis_engine::Mutation::new();
-        m.set(a.devices, &ct::GROUP, &ct::Group::default())?;
-        engine.commit(m)?;
         Osis::start(engine, sync, clock, store, &cfg, a.account, a.devices, 0)
     }
 
