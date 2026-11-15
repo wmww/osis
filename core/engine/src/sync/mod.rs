@@ -26,6 +26,7 @@ pub(crate) mod records;
 mod relay;
 pub use relay::{Relay, RelayOpened};
 pub(crate) mod set;
+pub(crate) mod setting;
 mod signing;
 pub(crate) mod stranded;
 pub use stranded::Stranding;
@@ -706,7 +707,7 @@ impl Engine {
     /// closure holds it (its synced group's, another shared thing's), else `t` leaves the sync set by spec/sync-set.md §3.
     /// `false`: it did not share `t`.
     pub fn unshare(&mut self, t: &Tid) -> Result<bool> {
-        if !self.core.ix.shared_here.contains(t) {
+        if !self.shares(t)? {
             return Ok(false);
         }
         self.run(|tx| set::unshare_here(tx, t))?;
@@ -715,14 +716,17 @@ impl Engine {
 
     /// Forgets this node's local copies of `ts`, unsynced (spec/sync-set.md §3 Unsyncing): the
     /// content of each and of each thing whose secrets are one of theirs, but those N's closure
-    /// holds (`node_closure`: its synced group's and its shared things'); their role-class aspects
+    /// holds (`node_closure`: its synced group's and its shared things') and those that stay
+    /// local (`Core::stays_local`: a share ended, unsynced by no one here); their role-class aspects
     /// (`secrets.0` included) and secrets stay, and what arrives again counts as never received.
     /// One forgetting for all of them, however many left at once, in proportion to what it
     /// forgets. The blobs of the commits it deleted whole, whose rows go with them: their entries
     /// anywhere stand for nothing held.
     pub fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<BTreeSet<BlobId>> {
         let closure = self.node_closure()?;
-        let mut things = crate::retention::forget::under(&self.core, ts);
+        // a thing whose share ended unsynced by no one here stays local (`Core::stays_local`)
+        let ts: BTreeSet<Tid> = ts.iter().filter(|t| !self.core.stays_local(t)).copied().collect();
+        let mut things = crate::retention::forget::under(&self.core, &ts);
         things.extend(ts.iter().copied());
         things.retain(|x| !closure.contains(x));
         if things.is_empty() {

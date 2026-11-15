@@ -1799,8 +1799,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     tx.core.ix.destroyed_for_good.extend(destroyed_for_good);
     let destroyed_secrets = tx.scan_keys(records::DESTROYED_SECRETS, "destroyed secrets", Tid::from_bytes)?;
     tx.core.ix.destroyed_secrets.extend(destroyed_secrets);
-    let shared_here = tx.scan_keys(records::SHARED_HERE, "shared here", Tid::from_bytes)?;
-    tx.core.ix.shared_here.extend(shared_here);
     let mut kept = Vec::new();
     tx.scan(records::DESTROYED_SYNC_IDS, |k, v| {
         let t = Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("destroyed sync IDs"))?);
@@ -1819,6 +1817,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::retention::suspect::load(tx)?;
     crate::retention::freed::load(tx)?;
     crate::sync::held::load(tx)?;
+    crate::sync::set::load_unshared(tx)?;
+    crate::sync::setting::load(tx)?;
     crate::sync::stranded::load(tx)?;
     crate::sync::falls::load(tx)?;
     crate::sync::bodies::load(tx)?;

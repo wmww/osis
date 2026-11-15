@@ -77,8 +77,13 @@ impl Engine {
             return Ok(true);
         }
         let [root, home] = self.sync_roots()?;
-        let ix = &self.core.ix;
-        Ok(ix.groups.sync_enclosing(t).iter().any(|a| Some(*a) == root || Some(*a) == home || ix.shared_here.contains(a)))
+        let enclosing = self.core.ix.groups.sync_enclosing(t);
+        for a in enclosing.iter() {
+            if Some(*a) == root || Some(*a) == home || self.shares(a)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The sync root and home (D): the roots of N's closure besides the things shared here. A
@@ -95,14 +100,17 @@ impl Engine {
     pub(crate) fn things_entered_now(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
         let roots = self.sync_roots()?;
         // a reload's fresh index feeds the old cursors nothing: started again, every thing
-        let Some(at) = f.0.as_mut().filter(|at| at.loads == self.loads()) else {
+        let loads = self.loads();
+        let shared = self.shared_here()?;
+        let Some(at) = f.0.as_mut().filter(|at| at.loads == loads) else {
             let ix = &self.core.ix;
-            f.0 = Some(Entered { gained: ix.groups.sync_gained_feed(), destroyed: ix.destroyed_sync_ids.feed(), shared: ix.shared_here.feed(), roots, loads: self.loads() });
+            f.0 = Some(Entered { gained: ix.groups.sync_gained_feed(), destroyed: ix.destroyed_sync_ids.feed(), shared, roots, loads });
             return Ok(self.sync_things_now()?.iter().copied().collect());
         };
         let mut out = at.gained.added();
         out.extend(at.destroyed.added());
-        let mut new: Vec<Tid> = at.shared.added();
+        let mut new: Vec<Tid> = shared.difference(&at.shared).copied().collect();
+        at.shared = shared;
         new.extend(roots.iter().flatten().filter(|r| !at.roots.contains(&Some(**r))));
         at.roots = roots;
         for r in new {
@@ -127,10 +135,11 @@ impl Engine {
             Some(root) => closure(&self.core.ix.groups, &root),
             None => Arc::new(BTreeSet::new()),
         };
+        let shared = self.shared_here()?;
         let groups = &self.core.ix.groups;
         let mut more = BTreeSet::new();
         // a root inside another's closure adds nothing: its own closure is part of that one
-        for t in home.iter().chain(self.core.ix.shared_here.iter()) {
+        for t in home.iter().chain(shared.iter()) {
             if !base.contains(t) && !more.contains(t) {
                 let c = closure(groups, t);
                 osis_base::costs::count("sync: things walked", c.len() as u64);
@@ -388,23 +397,117 @@ impl Engine {
     }
 }
 
-/// `t` joins this node's shared set (spec/sync-set.md §2 Shared here): a grant on it this node
-/// writes as its account to an actor other than the account or a node.
-pub(crate) fn share_here(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
-    if !tx.core.ix.shared_here.contains(t) {
-        tx.core.ix.shared_here.insert(*t);
-        tx.txn.put_local(&[records::SHARED_HERE, t.as_bytes()].concat(), &[], Shred::No)?;
+/// This node stops sharing `t` (spec/sync-set.md §2 Shared here): unsynced here, or forgotten.
+/// The account's grants on it live now are marked, so it is shared again only by a grant not
+/// marked (a new one). Nothing when it is not shared.
+pub(crate) fn unshare_here(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    for c in tx.core.account_shares(t) {
+        if tx.core.ix.unshared.insert(*t, c) {
+            tx.txn.put_local(&[records::UNSHARED, t.as_bytes(), &c.0].concat(), &[], Shred::No)?;
+        }
     }
     Ok(())
 }
 
-/// `t` leaves this node's shared set (spec/sync-set.md §2 Shared here): unsynced here, or
-/// forgotten. Nothing when it is not in it.
-pub(crate) fn unshare_here(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
-    if tx.core.ix.shared_here.remove(t) {
-        tx.txn.remove_local(&[records::SHARED_HERE, t.as_bytes()].concat(), Shred::No)?;
+/// Loads the unshare marks (`unshare_here`).
+pub(crate) fn load_unshared(tx: &mut Tx<'_>) -> Result<()> {
+    let bad = || crate::error::Error::Corrupt("unshared");
+    let mut rows = Vec::new();
+    tx.scan(records::UNSHARED, |k, _| {
+        let (t, c) = k.split_at_checked(15).ok_or_else(bad)?;
+        rows.push((Tid::from_bytes(t.try_into().map_err(|_| bad())?), CommitId(c.try_into().map_err(|_| bad())?)));
+        Ok(())
+    })?;
+    for (t, c) in rows {
+        tx.core.ix.unshared.insert(t, c);
     }
     Ok(())
+}
+
+/// At an open: drops each unshare mark whose grant's commit is held no more, so the marks stay
+/// bounded by the role commits held.
+pub(crate) fn prune_unshared(e: &mut Engine) -> Result<()> {
+    let gone: Vec<(Tid, CommitId)> = e.core.ix.unshared.iter().flat_map(|(t, cs)| cs.iter().map(move |c| (*t, *c))).filter(|(_, c)| e.core.ix.held.edge_commit(c).is_none()).collect();
+    if gone.is_empty() {
+        return Ok(());
+    }
+    e.run(|tx| {
+        for (t, c) in gone {
+            tx.core.ix.unshared.remove(&t, &c);
+            tx.txn.remove_local(&[records::UNSHARED, t.as_bytes(), &c.0].concat(), Shred::No)?;
+        }
+        Ok(())
+    })
+}
+
+impl crate::engine::Core {
+    /// The edge writes in force on `t` that this node's account wrote (header actor), each
+    /// granting a live edge to an actor other than the account or one of its nodes (spec/sync-set.md
+    /// §2 Shared here). Reads `t`'s edges, the holders' standing on D, and the clock up to the
+    /// next `until`.
+    pub(crate) fn account_shares(&self, t: &Tid) -> Vec<CommitId> {
+        let Some(account) = self.me() else { return Vec::new() };
+        let Some(on) = self.timelines.on(t) else { return Vec::new() };
+        let me = self.id.tid();
+        let mut out = Vec::new();
+        for (h, e) in on.holders() {
+            if h == account || h == me || self.own_node(&h) {
+                continue;
+            }
+            if e.until.is_some_and(|u| self.time.until(Some(u.0)) >= u.0) {
+                continue;
+            }
+            if let Some(c) = on.in_force(&h)
+                && self.ix.held.edge_commit(&c).is_some_and(|rc| rc.actor == account)
+            {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Whether `t`, out of N's closure, stays local here rather than being forgotten
+    /// (spec/sync-set.md §3 Unsyncing; spec/requirements.md: shared with no one, it stays local):
+    /// the account wrote a grant on it to an actor other than the account or one of its nodes,
+    /// live or ended, that this node did not stop sharing (`unshare_here` marked none such).
+    pub(crate) fn stays_local(&self, t: &Tid) -> bool {
+        let Some(account) = self.me() else { return false };
+        let me = self.id.tid();
+        let marked = self.ix.unshared.get(t);
+        self.ix.held.commits_on(t).iter().any(|c| {
+            c.actor == account
+                && marked.is_none_or(|m| !m.contains(&c.id))
+                && c.ops.iter().any(|o| o.target == *t && o.edge.is_some() && o.holder != account && o.holder != me && !self.own_node(&o.holder))
+        })
+    }
+}
+
+impl Engine {
+    /// Whether this node shares `t` (spec/sync-set.md §2 Shared here): a grant on it that its
+    /// account wrote is live (`Core::account_shares`) and not marked unshared here. A memo per
+    /// thing, so every node of the account judges it from the role commits it holds alike.
+    pub(crate) fn shares(&mut self, t: &Tid) -> Result<bool> {
+        osis_base::memo::Memo::get_in(self, |e| &e.core.shares, t, |e| {
+            let marked = e.core.ix.unshared.get(t).cloned().unwrap_or_default();
+            Ok(e.core.account_shares(t).iter().any(|c| !marked.contains(c)))
+        })
+    }
+
+    /// The things this node shares (`shares`), among those its account ever granted on
+    /// (`Held::granted_by`). A memo: built again in O(those things), each one's answer a memo.
+    pub(crate) fn shared_here(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
+        osis_base::memo::Memo::get_in(self, |e| &e.core.shared_here, &(), |e| {
+            let Some(account) = e.core.me() else { return Ok(Arc::default()) };
+            let granted: Vec<Tid> = e.core.ix.held.granted_by(&account).copied().collect();
+            let mut out = BTreeSet::new();
+            for t in granted {
+                if e.shares(&t)? {
+                    out.insert(t);
+                }
+            }
+            Ok(Arc::new(out))
+        })
+    }
 }
 
 /// A started `ThingsFeed`: its cursors and the roots it last saw.
@@ -412,7 +515,8 @@ pub(crate) fn unshare_here(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 pub(crate) struct Entered {
     gained: osis_base::memo::Feed<Tid>,
     destroyed: osis_base::memo::Feed<Tid>,
-    shared: osis_base::memo::Feed<Tid>,
+    /// The things shared here when last read.
+    shared: Arc<BTreeSet<Tid>>,
     roots: [Option<Tid>; 2],
     /// The engine's loads when started (`Engine::reload` replaces the index its cursors read).
     loads: u64,

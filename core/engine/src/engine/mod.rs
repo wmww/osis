@@ -826,9 +826,9 @@ indexes! {
     /// Destroyed things' own sync IDs, read from the destruction until emptied
     /// (`records::DESTROYED_SYNC_IDS`, `retention::destroy::keep_sync_ids`).
     pub destroyed_sync_ids: JMap<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
-    /// The things this node shares (`records::SHARED_HERE`, spec/sync-set.md §2 Shared here):
-    /// roots of its closure beside its synced group (`sync::set`).
-    pub shared_here: JSet<Tid>,
+    /// Per thing, the account's grants live on it when this node stopped sharing it
+    /// (`records::UNSHARED`, `sync::set::unshare_here`): it is shared again by another one alone.
+    pub unshared: JSetMap<Tid, CommitId>,
     /// The account's sync records (`kept^.0` on D, by thing; `sync::records::observe`).
     pub sync_kept: JMap<Tid, Arc<osis_schema::core_types::Kept>>,
     /// The boxes payloads held (`sync::records`, persisted), and those offering each thing.
@@ -867,6 +867,9 @@ indexes! {
     /// Per cause a rule waits a complete pass after (`sync::held::Cause`), the place (`Core::place`)
     /// this node first judged it at (`sync::held`): an event, as `passes`.
     pub cause_at: JMap<crate::sync::held::Cause, u64>,
+    /// Per (thing, commit), the wait for a `retention^.0` part not received (`sync::setting`, rows
+    /// `sw/`): an event, as `passes`.
+    pub setting_waits: JMap<(Tid, CommitId), crate::sync::setting::Wait>,
     /// Per (actor, holder), a re-seal a stranded report asked for (`sync::stranded`, rows `rs/`):
     /// an event, so no rebuild compares it.
     pub reseal_asks: JMap<(Tid, Tid), crate::sync::stranded::Ask>,
@@ -1070,6 +1073,10 @@ pub struct Core {
     pub(crate) sync_things: memo::Memo<(), Arc<BTreeSet<Tid>>>,
     /// `Engine::thing_sync` per thing and `Engine::sync_set` (`memo`): sync reads them every step.
     pub(crate) thing_sync: memo::Memo<Tid, crate::sync::ThingSync>,
+    /// `Engine::shares` per thing (`memo`).
+    pub(crate) shares: memo::Memo<Tid, bool>,
+    /// `Engine::shared_here` (`memo`).
+    pub(crate) shared_here: memo::Memo<(), Arc<BTreeSet<Tid>>>,
     pub(crate) sync_set: memo::Memo<(), Arc<crate::sync::SyncSet>>,
     /// `Engine::dial_peers` per sync ID (`memo`): sync's dials read it at each move of what it read.
     pub(crate) dial_peers: memo::Memo<SyncId, Arc<Vec<osis_base::Address>>>,
@@ -1322,6 +1329,11 @@ pub struct Core {
     /// Things whose `retention^.0` deltas arrived, flipped or dropped this transaction: what their
     /// timeline judges is judged again at its end (`retention::settings_changed`).
     pub settings_due: BTreeSet<Tid>,
+    /// Things whose `retention^.0` parts moved in `Indexes::missing` this transaction: their
+    /// setting waits are judged at its end (`sync::setting::judge_due`).
+    pub setting_waits_due: BTreeSet<Tid>,
+    /// `Engine::rejudge_setting_waits` is running: the transactions it runs judge nothing again.
+    pub setting_waits_judging: bool,
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
@@ -1414,6 +1426,8 @@ pub struct Core {
     pub(crate) pass_wanted: memo::Cutoff<SyncId, Option<u64>>,
     /// The tied grants' pass wants, folded (`memo`).
     pub(crate) tie_wants: memo::Memo<(), Arc<BTreeMap<SyncId, u64>>>,
+    /// `Engine::setting_wants` (`memo`).
+    pub(crate) setting_wants: memo::Memo<(), Arc<BTreeMap<SyncId, u64>>>,
     /// `Engine::published_under` for every actor, followed per thing with a sync ID
     /// (`sync_ids::published`).
     pub(crate) published: crate::sync_ids::published::Published,
@@ -1445,6 +1459,8 @@ impl Core {
             read_credentials: self.read_credentials.clone(),
             sync_things: self.sync_things.clone(),
             thing_sync: self.thing_sync.clone(),
+            shares: self.shares.clone(),
+            shared_here: self.shared_here.clone(),
             sync_set: self.sync_set.clone(),
             dial_peers: self.dial_peers.clone(),
             roster_holders: self.roster_holders.clone(),
@@ -1545,6 +1561,8 @@ impl Core {
             timer_floor: self.timer_floor.clone(),
             none_due: self.none_due.clone(),
             settings_due: self.settings_due.clone(),
+            setting_waits_due: self.setting_waits_due.clone(),
+            setting_waits_judging: self.setting_waits_judging,
             drop_due: self.drop_due.clone(),
             freed_due: self.freed_due.clone(),
             forgotten_names_due: self.forgotten_names_due.clone(),
@@ -1578,6 +1596,7 @@ impl Core {
             sync_rows: self.sync_rows.clone(),
             pass_wanted: self.pass_wanted.clone(),
             tie_wants: self.tie_wants.clone(),
+            setting_wants: self.setting_wants.clone(),
             published: self.published.clone(),
             own_commits: self.own_commits.clone(),
             links: self.links.clone(),
@@ -2031,6 +2050,8 @@ impl Core {
             read_credentials: _,
             sync_things: _,
             thing_sync: _,
+            shares: _,
+            shared_here: _,
             sync_set: _,
             dial_peers: _,
             roster_holders: _,
@@ -2053,6 +2074,7 @@ impl Core {
             sync_rows: _,
             pass_wanted: _,
             tie_wants: _,
+            setting_wants: _,
             links: _,
             caught_up: _,
             held_writes: _,
@@ -2088,6 +2110,8 @@ impl Core {
             refold: _,
             none_due: _,
             settings_due: _,
+            setting_waits_due: _,
+            setting_waits_judging: _,
             valueless_dirty: _,
             destroyed_due: _,
             destroyed_kept: _,
@@ -2236,6 +2260,8 @@ impl Core {
             read_credentials: memo::Memo::new("sync: read credentials"),
             sync_things: memo::Memo::new("sync: things"),
             thing_sync: memo::Memo::new("sync: thing sync"),
+            shares: memo::Memo::new("sync: shares"),
+            shared_here: memo::Memo::new("sync: shared here"),
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),
             roster_holders: memo::Memo::new("sync: roster holders"),
@@ -2350,6 +2376,8 @@ impl Core {
             timer_floor: 0,
             none_due: BTreeSet::new(),
             settings_due: BTreeSet::new(),
+            setting_waits_due: BTreeSet::new(),
+            setting_waits_judging: false,
             drop_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
             forgotten_names_due: BTreeSet::new(),
@@ -2383,6 +2411,7 @@ impl Core {
             sync_rows: Default::default(),
             pass_wanted: memo::Cutoff::new("sync: pass wanted"),
             tie_wants: memo::Memo::new("sync: tie wants"),
+            setting_wants: memo::Memo::new("sync: setting wants"),
             published: Default::default(),
             own_commits: Default::default(),
             links: memo::Memo::new("held links"),
@@ -2525,6 +2554,13 @@ impl Core {
 
     /// Moves commit `id` in `Indexes::missing` from aspects `was` to `now` (`missing_of`).
     fn index_missing(&mut self, id: &CommitId, was: &BTreeSet<(Ak, Tid)>, now: &BTreeSet<(Ak, Tid)>) {
+        // a setting part's header, validity or body moved: its wait is judged again
+        // (`sync::setting`); `was` and `now` both hold it when only its validity moved
+        for (ak, t) in was.iter().chain(now) {
+            if ak.as_str() == osis_commit::retention::RETENTION {
+                self.setting_waits_due.insert(*t);
+            }
+        }
         for k in was.difference(now) {
             self.ix.missing.remove(k, id);
         }
@@ -3396,6 +3432,8 @@ impl Engine {
         self.take_account()?;
         self.reexamine()?;
         self.forget_gone_causes()?;
+        crate::sync::set::prune_unshared(self)?;
+        self.rejudge_setting_waits()?;
         // a leftover held from before goes uncovered no longer than a quiet time from here
         // (spec/sync-compaction.md §1 trigger)
         let quiet = self.now().0.saturating_add(crate::retention::compact::QUIET_MS);
@@ -3656,6 +3694,10 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::settings_changed(&mut tx).map(|_| v));
                 }
                 tx.core.settings_due.clear();
+                if r.is_ok() && !tx.core.setting_waits_due.is_empty() {
+                    r = r.and_then(|v| crate::sync::setting::judge_due(&mut tx).map(|_| v));
+                }
+                tx.core.setting_waits_due.clear();
                 if r.is_ok() && !tx.core.ix.cover_waits.is_empty() && !tx.txn.is_memory() {
                     r = r.and_then(|v| crate::retention::replace::wake_covers(&mut tx).map(|_| v));
                 }
@@ -3775,6 +3817,14 @@ impl Engine {
                 self.report_cut(stranded, now);
                 self.core.memory_tx = false;
                 self.core.events.flush();
+                // what the transaction moved may end a setting wait or start one again
+                // (`sync::setting`)
+                if !self.core.setting_waits_judging && !self.core.ix.setting_waits.is_empty() {
+                    self.core.setting_waits_judging = true;
+                    let r = memo::unrecorded(|| self.rejudge_setting_waits());
+                    self.core.setting_waits_judging = false;
+                    r?;
+                }
                 #[cfg(test)]
                 let sample = sample && !self.index_poked;
                 #[cfg(debug_assertions)]

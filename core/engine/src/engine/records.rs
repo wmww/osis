@@ -69,9 +69,10 @@ pub const DESTROYED_SECRETS: &[u8] = b"kd/";
 /// dropped it: `kl/` + tid, until node-sync emptied them (`Engine::sync_ids_emptied`) or the
 /// destruction fell (`retention::destroy::keep_sync_ids`).
 pub const DESTROYED_SYNC_IDS: &[u8] = b"kl/";
-/// The things this node shares (spec/sync-set.md §2 Shared here, `Indexes::shared_here`): `sh/` +
-/// tid, empty; until unsynced here or forgotten.
-pub const SHARED_HERE: &[u8] = b"sh/";
+/// The grants marked when this node stopped sharing a thing (spec/sync-set.md §2 Shared here,
+/// `Indexes::unshared`): `sh/` + tid + commit ID, empty; dropped at an open once the grant's
+/// commit is held no more.
+pub const UNSHARED: &[u8] = b"sh/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
 /// `ad/<commit>`: explicit demotions this node has not answered with addenda yet

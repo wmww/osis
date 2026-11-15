@@ -537,6 +537,169 @@ fn a_grant_to_a_node_shares_nothing_spec_sync_set_2() {
     assert!(!e.unshare(&t).unwrap(), "a grant to a node shares nothing");
 }
 
+/// Node 0 (of `siblings_granted`) makes a thing with a setting, filed in home when `filed`; node 1
+/// takes every new commit with the setting's part left out (its header only), after pass place
+/// `before` was taken. The thing, home's sync ID, the place, and the commits whole.
+fn setting_header_only(filed: bool) -> (LocalPeer, Tid, osis_base::SyncId, u64, Vec<osis_engine::local_peer::Package>) {
+    let (mut lp, a, _) = siblings_granted();
+    let d = lp.peers[0].engine.account().unwrap().unwrap().1;
+    let had: BTreeSet<osis_base::CommitId> = lp.peers[1].engine.commit_ids().into_iter().collect();
+    let t = thing_of(&mut lp, 0, a);
+    let forever = ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(osis_schema::History::FOREVER), ..Default::default() }), ..Default::default() };
+    let mut m = Mutation::new();
+    m.set(t, &ct::RETENTION, &forever).unwrap();
+    lp.peers[0].engine.commit(m).unwrap().unwrap();
+    if filed {
+        add_item(&mut lp, 0, d, t);
+    }
+    let before = lp.peers[1].engine.begin_pass();
+    let mut whole = Vec::new();
+    for c in lp.peers[0].engine.commit_ids().into_iter().filter(|c| !had.contains(c)) {
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let bare = osis_commit::rewrite(&blob, |ai| blob.header.aspects[ai].tid == t && blob.header.aspects[ai].ak.as_str() == osis_commit::retention::RETENTION);
+        lp.peers[1].engine.ingest(&bare.encode(), pk.blobs.clone()).unwrap();
+        whole.push(pk);
+    }
+    let home = lp.peers[1].engine.home_sync_id(&d).unwrap().unwrap();
+    (lp, t, home, before, whole)
+}
+
+fn write_on(e: &mut osis_engine::Engine, t: Tid) -> osis_engine::Result<Option<osis_base::CommitId>> {
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("x")).unwrap();
+    e.commit(m)
+}
+
+// spec/commits.md §5 (Waiting for it: until a complete pass of the thing's sync IDs, begun after
+// it started waiting, brings no body for the part), spec/sync-status.md §1: a node holding a
+// setting's header only waits to write; a pass begun before it started waiting ends nothing; one
+// begun after ends the wait, and the node writes as with no setting; the body arriving later
+// applies.
+#[test]
+fn a_setting_never_received_is_waited_for_one_pass_spec_commits_5() {
+    let (mut lp, t, home, before, whole) = setting_header_only(true);
+    let e = &mut lp.peers[1].engine;
+    assert!(matches!(write_on(e, t), Err(osis_engine::Error::Permission { .. })), "waits for the setting");
+    assert!(e.passes_wanted().unwrap().get(&home).is_some_and(|x| *x >= before), "a pass of home after the wait began wanted");
+    e.note_complete_pass(&home, before).unwrap();
+    assert!(matches!(write_on(e, t), Err(osis_engine::Error::Permission { .. })), "a pass begun before counts for nothing");
+    let after = e.begin_pass();
+    e.note_complete_pass(&home, after).unwrap();
+    assert!(write_on(e, t).unwrap().is_some(), "the pass brought no body: written as with no setting");
+    for pk in &whole {
+        e.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    assert!(e.get_typed(&t, &ct::RETENTION).unwrap().is_some(), "the setting arrived later: it applies");
+}
+
+// spec/commits.md §5 (Waiting for it), spec/sync-status.md §1 (no sync ID: a complete pass of
+// none ends at once): a thing no read sync ID carries waits for nothing.
+#[test]
+fn a_setting_nothing_here_syncs_is_not_waited_for_spec_commits_5() {
+    let (mut lp, t, _, _, _) = setting_header_only(false);
+    assert!(write_on(&mut lp.peers[1].engine, t).unwrap().is_some());
+}
+
+// spec/sync-set.md §2 (Shared here: while a grant its account wrote is live, at every node of the
+// account): a grant node 0 writes shares the thing at node 1 too once node 1 holds the grant;
+// revoking the grantee ends it at both, and the thing stays local (§3 Unsyncing).
+#[test]
+fn a_share_is_the_accounts_and_ends_with_its_grant_spec_sync_set_2() {
+    let (mut lp, a, _) = siblings_granted();
+    let b = lp.peers[2].engine.account().unwrap().unwrap().0;
+    let t = thing_of(&mut lp, 0, a);
+    lp.peers[0].engine.grant(&t, &b, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    for i in [0, 1] {
+        assert!(lp.peers[i].engine.sync_things().unwrap().contains(&t), "node {i}: shared");
+    }
+    lp.peers[1].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    for i in [0, 1] {
+        assert!(!lp.peers[i].engine.sync_things().unwrap().contains(&t), "node {i}: revoked, shared no more");
+    }
+    // spec/sync-set.md §3 (Unsyncing): shared with no one, it stays local
+    let e = &mut lp.peers[0].engine;
+    e.forget_local(&[t].into()).unwrap();
+    assert_eq!(e.get_typed(&t, &REG).unwrap(), Some(s("new")), "kept: no one unsynced it");
+}
+
+// spec/sync-set.md §2 (Shared here: ends when the grantee is removed): the grantee leaving the
+// thing ends the share at every node of the granting account.
+#[test]
+fn a_grantee_leaving_ends_the_share_spec_sync_set_2() {
+    let (mut lp, a, _) = siblings_granted();
+    let b = lp.peers[2].engine.account().unwrap().unwrap().0;
+    let t = thing_of(&mut lp, 0, a);
+    let done = lp.peers[0].engine.grant(&t, &b, &edge_of(Role::Read)).unwrap();
+    for (h, blob) in lp.inbox_blobs(0, &done).unwrap() {
+        if h == b {
+            lp.peers[2].engine.take_inbox_blob(&blob, true).unwrap();
+        }
+    }
+    spread(&mut lp);
+    assert!(lp.peers[1].engine.sync_things().unwrap().contains(&t), "shared");
+    lp.peers[2].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    for i in [0, 1] {
+        assert!(!lp.peers[i].engine.sync_things().unwrap().contains(&t), "node {i}: the grantee left");
+    }
+}
+
+// spec/sync-set.md §2 (Shared here: unsyncing ends it until a new grant): unsynced at node 0, the
+// thing is shared there no more while node 1 still shares it; a new grant shares it again.
+#[test]
+fn unsync_ends_a_share_until_a_new_grant_spec_sync_set_2() {
+    let (mut lp, a, _) = siblings_granted();
+    let b = lp.peers[2].engine.account().unwrap().unwrap().0;
+    let t = thing_of(&mut lp, 0, a);
+    lp.peers[0].engine.grant(&t, &b, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    assert!(lp.peers[0].engine.unshare(&t).unwrap());
+    assert!(!lp.peers[0].engine.sync_things().unwrap().contains(&t), "unsynced here");
+    assert!(lp.peers[1].engine.sync_things().unwrap().contains(&t), "the other node's own choice");
+    let e = &mut lp.peers[0].engine;
+    e.forget_local(&[t].into()).unwrap();
+    assert_eq!(e.get_typed(&t, &REG).unwrap(), None, "unsynced: its copy goes");
+    crate::flows::reopen(&mut lp, 0).unwrap();
+    assert!(!lp.peers[0].engine.sync_things().unwrap().contains(&t), "a restart keeps it unsynced");
+    lp.advance(1000);
+    lp.peers[1].engine.grant(&t, &b, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    assert!(lp.peers[0].engine.sync_things().unwrap().contains(&t), "a new grant shares it again");
+}
+
+// spec/sync-set.md §2 (Shared here: a tied grant ends with its membership's removal): a grant
+// tied to T's placement in group G shares T (listed in no synced group); once the placement goes
+// and the tied grant is removed, T is shared no more.
+#[test]
+fn an_ended_tied_grant_ends_the_share_spec_sync_set_2() {
+    let (mut lp, ps) = people(1);
+    let g = thing_of(&mut lp, 0, ps[0]);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    for x in [g, t] {
+        lp.peers[0].engine.give_own_secrets(&x).unwrap();
+    }
+    add_item(&mut lp, 0, g, t);
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.sync_things().unwrap().contains(&t), "listed in no synced group");
+    let tie = e.placement(&t, &g, false).unwrap().unwrap();
+    e.grant(&t, &g, &ct::Edge { tied: Some(osis_engine::flows::tied::tie_ct(tie)), ..edge_of(Role::Write) }).unwrap();
+    assert!(e.sync_things().unwrap().contains(&t), "shared with G");
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(t)) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    assert!(e.untie_due(&t).unwrap().is_empty(), "judged dead: waits its passes");
+    let now = e.begin_pass();
+    for x in e.passes_wanted().unwrap().keys().copied().collect::<Vec<_>>() {
+        e.note_complete_pass(&x, now).unwrap();
+    }
+    assert_eq!(e.untie_due(&t).unwrap(), [g].into());
+    e.untie(&t, &g).unwrap();
+    assert!(!e.sync_things().unwrap().contains(&t), "the tied grant ended: shared no more");
+}
+
 // spec/sync-set.md §2 (Cost: a thing joining the shared set costs at most work in proportion to
 // N's closure): sharing one more thing listed nowhere walks O(N's closure) once, at 5 and at 50
 // things shared, and a write moving no closure walks nothing.

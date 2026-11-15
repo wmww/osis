@@ -648,17 +648,14 @@ pub(crate) fn holds_delete_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> R
     Ok(holds_listed_keys(tx.core, &created, &published, t))
 }
 
-/// Whether this node knows of a `retention^.0` setting on `t` while it holds none valid: a held
+/// Whether this node waits for a `retention^.0` setting on `t` while it holds none valid: a held
 /// header lists a valid part there not received yet (a record that came as a certificate with its
-/// creating commit as a header only). What it writes is written under the setting (expiry,
-/// a fire's keep, a removal's `retain`, spec/commits.md §5 The setting), so it waits for it
-/// rather than judge the setting absent.
+/// creating commit as a header only), and no complete pass of `t`'s sync IDs begun after this
+/// node started waiting ended without it (`sync::setting`). What it writes is written under the
+/// setting (expiry, a fire's keep, a removal's `retain`, spec/commits.md §5 The setting, Waiting
+/// for it), so it waits for it rather than judge the setting absent, until such a pass.
 pub(crate) fn awaits_setting(core: &Core, t: &Tid) -> bool {
-    let Ok(ak) = osis_base::Ak::new(osis_commit::retention::RETENTION) else { return false };
-    let known = core.ix.missing.get(&(ak.clone(), *t)).into_iter().flatten().any(|c| {
-        core.ix.commits.get(c).and_then(|m| Some((m, m.aspect(t, &ak)?))).is_some_and(|(m, ai)| m.valid_at(ai) && m.missing_as(ai) == Some(crate::engine::Missing::Plain))
-    });
-    known && crate::apply::validity::settings(core, t).is_empty()
+    crate::sync::setting::waiting(core, t) && crate::apply::validity::settings(core, t).is_empty()
 }
 
 /// Whether this node holds what every write on `t` is written under: the delete keys it lists

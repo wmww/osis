@@ -688,10 +688,12 @@ impl Osis {
         Ok(())
     }
 
-    /// Stops this node syncing `thing` for having shared it. The node that grants a role on a
-    /// thing to another account or a group, or makes a link to it, syncs it from then on, wherever it is listed, so
-    /// those it shared with can get it; the account's other nodes sync it only if they would
-    /// anyway. Afterwards `thing` syncs here only while a group this node syncs holds it;
+    /// Stops this node syncing `thing` for having shared it. While a role this account granted on a
+    /// thing to another account or a group (or a link to it) stands, every node of the account
+    /// syncs it, wherever it is listed, so those it shared with can get it; revoking that role,
+    /// the grantee leaving, or a grant tied to a group membership ending with it stops that.
+    /// Unsyncing stops it at this node alone, until the account grants a role on `thing` again.
+    /// Afterwards `thing` syncs here only while a group this node syncs holds it;
     /// otherwise this node keeps syncing it until what it wrote there reached another holder
     /// (or no other holder is left to wait for), then forgets its copy, as moving a thing out of
     /// every synced group does. A thing this node did not share: nothing changes. `Unsupported`

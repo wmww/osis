@@ -244,6 +244,8 @@ impl Engine {
     ///   (`Cause::Lost`);
     /// - spec/permissions.md §2 Tied grants: every sync ID of a tie's demotion scope
     ///   (`tied_wants`), from when the tie was judged dead (`Cause::Tie`);
+    /// - spec/commits.md §5 Waiting for it: every read sync ID carrying a thing whose setting this
+    ///   node waits for, from where the wait began (`sync::setting`);
     /// - spec/sync-status.md §3 History complete: one pass of every sync ID read here.
     pub(crate) fn pass_wanted_now(&mut self, s: &SyncId) -> Result<Option<u64>> {
         self.follow_rows()?;
@@ -256,8 +258,9 @@ impl Engine {
         // after the newest role commit on S's actor from elsewhere: what the re-seal trigger
         // waits on (`complete_pass`); after the loss of S's actor was judged: what the
         // lost-access drop waits on (`lost_passed`); a stranded report's re-seal ask
-        // (spec/permissions.md §3, §4): met at a pass's end
-        let since = [self.role_arrival(&a), self.cause_place(&Cause::Lost(a)), self.asked_at(&a), self.tie_wants()?.get(s).copied()].into_iter().flatten().max().unwrap_or(0);
+        // (spec/permissions.md §3, §4): met at a pass's end; an open setting wait on a thing S
+        // carries (spec/commits.md §5)
+        let since = [self.role_arrival(&a), self.cause_place(&Cause::Lost(a)), self.asked_at(&a), self.tie_wants()?.get(s).copied(), self.setting_wants()?.get(s).copied()].into_iter().flatten().max().unwrap_or(0);
         Ok(self.core.ix.passes.get(s).is_none_or(|b| *b <= since).then_some(since))
     }
 
@@ -267,6 +270,21 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.tie_wants, &(), |e| {
             let mut out: BTreeMap<SyncId, u64> = BTreeMap::new();
             for (since, ids) in e.tied_wants()? {
+                for s in ids {
+                    let x = out.entry(s).or_insert(since);
+                    *x = (*x).max(since);
+                }
+            }
+            Ok(Arc::new(out))
+        })
+    }
+
+    /// Per sync ID an open setting wait wants a pass of (`setting_wait_ids`, folded), the place
+    /// it must begin after. A memo: waits are few, none in the common case.
+    fn setting_wants(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
+        osis_base::memo::Memo::get_in(self, |e| &e.core.setting_wants, &(), |e| {
+            let mut out: BTreeMap<SyncId, u64> = BTreeMap::new();
+            for (since, ids) in e.setting_wait_ids()? {
                 for s in ids {
                     let x = out.entry(s).or_insert(since);
                     *x = (*x).max(since);

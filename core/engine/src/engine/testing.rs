@@ -681,7 +681,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("destroyed_for_good", &*ix.destroyed_for_good),
         ("destroyed_secrets", &*ix.destroyed_secrets),
         ("destroyed_sync_ids", &*ix.destroyed_sync_ids),
-        ("shared_here", &*ix.shared_here),
+        ("unshared", &*ix.unshared),
         ("sync_kept", &*ix.sync_kept),
         ("offers", &*ix.offers),
         ("offered", &*ix.offered),
@@ -989,7 +989,7 @@ mod tests {
         // `pend_keys`: each examined again); rows not persisted for ephemeral aspects
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
         // `cause_at`, `reseal_asks`).
-        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "reseal_asks", "hint_candidates", "cover_waits"];
+        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "hint_candidates", "cover_waits"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {

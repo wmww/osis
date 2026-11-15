@@ -1027,6 +1027,50 @@ fn moving_home_with_the_source_gone_answers_spec_sync_set_5() {
     assert_eq!(b.at(g, v()).get().unwrap(), Some(Value::Int(1)));
 }
 
+// spec/commits.md §5 (Waiting for it), spec/sync-status.md §1 (a complete pass ends by
+// `PASS_WAIT_MS` at the latest): b holds a thing's creating commit with its setting's part left
+// out, the only holder of the body away: b writes nothing there (`role_on` reads `Read`) until a
+// complete pass of home, begun after it started waiting, ends without the body; then it writes as
+// with no setting. The body arriving later applies. (The pass's exact bar: osis-engine
+// `facade::a_setting_never_received_is_waited_for_one_pass_spec_commits_5`.)
+#[test]
+fn a_setting_no_one_serves_is_waited_for_one_complete_pass_spec_commits_5() {
+    use crate::common::TestWrites as _;
+    use osis::internals::Internals;
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (a, b, _) = paired(&net, &c);
+    drive(&net, a.wait_synced(SyncScope::All)).unwrap();
+    drive(&net, b.wait_synced(SyncScope::All)).unwrap();
+    net.set_online(0, false);
+    net.run();
+    assert_eq!(b.status().unwrap().connected, 0, "a away");
+    let x = crate::common::setting(&[("t:log~0", osis::History::FOREVER)]);
+    let t = a.commit_with(|w| {
+        let t = w.create()?;
+        w.group(a.home()).add(osis::Member::Item(t))?;
+        w.at(t, osis::core::RETENTION).set(&x)?;
+        Ok(t)
+    }).unwrap();
+    let pks = a.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
+    for pk in &pks {
+        let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let bare = osis_commit::rewrite(&blob, |ai| blob.header.aspects[ai].tid == t && blob.header.aspects[ai].ak.as_str() == osis_commit::retention::RETENTION);
+        b.engine(|e| e.ingest(&bare.encode(), pk.blobs.clone()).unwrap());
+    }
+    let name = |db: &Osis| db.commit_with(|w| w.at(t, osis::core::NAME).set(&"b".to_string()));
+    assert!(matches!(name(&b), Err(Error::Permission { tid, .. }) if tid == t), "waits for the setting");
+    assert_eq!(b.role_on(t).unwrap(), Some(Role::Read), "a role of no use yet");
+    net.advance(osis::internals::proto::limits::PASS_WAIT_MS + 1);
+    net.run();
+    name(&b).expect("a complete pass brought no setting: written as with none");
+    assert_eq!(b.at(t, osis::core::RETENTION).get().unwrap(), None);
+    for pk in &pks {
+        b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
+    }
+    assert_eq!(b.at(t, osis::core::RETENTION).get().unwrap(), Some(x), "arrived later: it applies");
+}
+
 // spec/sync-set.md §5 (Moving home): a move home dropped before it answers leaves g read at a
 // (syncing here too); moving it home again answers once caught up, as a restart's retry would.
 #[test]
