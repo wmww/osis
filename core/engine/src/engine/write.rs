@@ -819,7 +819,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         }
     };
     if let Some(c) = &id {
-        if tx.answering {
+        if tx.own {
             one_thing(tx.core, c)?;
         }
         check_synced(tx.core, &synced)?;
@@ -865,16 +865,25 @@ fn bodied(core: &Core, c: &CommitId) -> BTreeSet<Tid> {
     meta.view.aspects.iter().filter(|a| !certificate_only(core, &a.tid, &a.ak)).map(|a| a.tid).collect()
 }
 
-/// A commit the engine writes on its own as an answer (`Tx::answering`) holds bodies on one thing
-/// at most, so `check_local` never refuses it whatever the rest of the transaction carries
-/// (spec/sync-set.md §1 Local stays local): an answer breaking this fails its own step (reported
-/// `OwnWriteFailed` by its caller), never the transaction.
+/// A commit the engine writes on its own (`Tx::own`: answers, sync record keeps, inbox marks)
+/// holds bodies on one thing at most, so `check_local` never refuses it whatever the rest of the
+/// transaction carries (spec/sync-set.md §1 Local stays local): an answer breaking this fails its
+/// own step (reported `OwnWriteFailed` by its caller), never the transaction.
 fn one_thing(core: &Core, c: &CommitId) -> Result<()> {
     let on = bodied(core, c);
     match on.len() {
         0 | 1 => Ok(()),
-        n => Err(Error::Clash(format!("an answer the engine writes holds bodies on one thing per commit, this one on {n}: {on:?}"))),
+        n => Err(Error::Clash(format!("a commit the engine writes on its own holds bodies on one thing, this one on {n}: {on:?}"))),
     }
+}
+
+/// `commit_in` for a commit the engine writes on its own outside an answer step (a sync record
+/// keep, an inbox mark): bodies on one thing (`one_thing`).
+pub(crate) fn commit_own(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
+    let own = std::mem::replace(&mut tx.own, true);
+    let r = commit_in(tx, m);
+    tx.own = own;
+    r
 }
 
 /// A key actor's record and keys: they travel only as chain certificates, for verifying

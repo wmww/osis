@@ -974,7 +974,7 @@ pub(crate) enum Step {
 }
 
 impl Step {
-    /// Whether the step is one answer the engine writes on its own (`Tx::answering`).
+    /// Whether the step is one answer the engine writes on its own (`Tx::own`).
     fn answers(self) -> bool {
         matches!(self, Step::Answer | Step::Cover | Step::Resnapshot | Step::Rotation)
     }
@@ -2586,10 +2586,11 @@ pub struct Tx<'a> {
     pub blobs: blobs::Cipher<'a>,
     pub core: &'a mut Core,
     pub rng: &'a mut dyn CryptoRngCore,
-    /// Inside a step answering on the engine's own (`Step::answers`): each commit writes on one
-    /// thing (`write::commit_in`), so the end of the transaction never refuses it (spec/sync-set.md
-    /// §1 Local stays local) and a failing answer is that step's, never the receive's.
-    pub(crate) answering: bool,
+    /// Inside a write the engine makes on its own (an answer step, `Step::answers`, or
+    /// `write::commit_own`): each commit holds bodies on one thing (`write::one_thing`), so the
+    /// end of the transaction never refuses it (spec/sync-set.md §1 Local stays local) and a
+    /// failing answer is that step's, never the receive's.
+    pub(crate) own: bool,
 }
 
 impl Tx<'_> {
@@ -2621,8 +2622,8 @@ impl Tx<'_> {
         let m = self.core.mark();
         let sp = self.txn.savepoint();
         let held = self.blobs.mark();
-        let answering = self.answering;
-        self.answering |= site.answers();
+        let own = self.own;
+        self.own |= site.answers();
         #[cfg(test)]
         let r = match self.core.step_fault.as_mut().filter(|x| x.site == site) {
             Some(x) if x.skip > 0 => {
@@ -2638,7 +2639,7 @@ impl Tx<'_> {
             let _ = site;
             f(self)
         };
-        self.answering = answering;
+        self.own = own;
         match r {
             Ok(v) => {
                 self.txn.release(sp)?;
@@ -3503,7 +3504,7 @@ impl Engine {
         self.core.time.set(now);
         let start = self.core.mark();
         let txn = self.store.transaction(&mut self.store_rng)?;
-        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, answering: false };
+        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, own: false };
         let r = f(&mut tx);
         // a read that changed something would have its change undone, and every cache dropped, at
         // every call
@@ -3560,7 +3561,7 @@ impl Engine {
         let mut sample = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, answering: false };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, own: false };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
                 _after = memo::Unrecorded::start();
@@ -3751,7 +3752,7 @@ impl Engine {
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;
-            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, answering: false };
+            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, own: false };
             crate::apply::load(&mut tx, rebuild)
         };
         crate::apply::load_waits(&mut self.core);
@@ -3800,7 +3801,7 @@ impl Engine {
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<Option<u64>> {
                 let txn = self.store.transaction(&mut store_rng)?;
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, 0), core: &mut fresh, rng: &mut rng, answering: false };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, 0), core: &mut fresh, rng: &mut rng, own: false };
                 // a transaction that left the index stale (`index::invalidate`: commit records
                 // changed outside the in-memory indexes) is followed by a reload
                 if !index::current(&mut tx)? {

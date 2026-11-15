@@ -5,3 +5,6 @@
 
 ## Direction
 One wait for every own write: key the waiting answer (removal or rotation commit) under the record chain of the thing that was `Later`, beside covers (generalise `cover_waits` to a waiter enum), and skip a parked answer until `wake_covers` wakes it; not persisted, so an open tries each due answer once. A rotation also waits while pending or while its epoch's seed is missing: those need their own wake (account commits) or stay retried per transaction.
+
+## Failed answers
+An answer whose step fails (`OwnWriteFailed`) stays due the same way: retried, and reported again, at the end of every later durable transaction. A failure that repeats on the same state (an engine bug, such as a listing breaking `write::one_thing`) never succeeds until the state moves, so it costs a rebuild and a diagnostic per transaction meanwhile. No loop or wake: it runs only when something else commits. The same park fixes it: a failed answer waits for the next change to what it reads (or the next open), not the next transaction.

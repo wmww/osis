@@ -596,6 +596,6 @@ pub(crate) fn mark_acted(tx: &mut Tx<'_>) -> Result<()> {
     for t in acted {
         m.op(d, &ct::ACTED, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Tid(t)) })?;
     }
-    crate::engine::write::commit_in(tx, m)?;
+    crate::engine::write::commit_own(tx, m)?;
     Ok(())
 }

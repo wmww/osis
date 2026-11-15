@@ -319,7 +319,7 @@ fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
 
 /// A node of account `p` answers its rotation `r` with a listing: per thing, the commits of `p`
 /// at the epochs `r` closes that no word held names, this node's own (by inner signature) and
-/// others' by the cutoff (spec/permissions.md §5.5, Listings), one commit per thing (`Tx::answering`).
+/// others' by the cutoff (spec/permissions.md §5.5, Listings), one commit per thing (`Tx::own`).
 /// A listing needs no role on a thing;
 /// one it may write on only later waits whole, one that is gone here is left out.
 fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitId) -> Result<bool> {

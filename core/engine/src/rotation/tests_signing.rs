@@ -1102,3 +1102,26 @@ fn an_answer_mixing_a_local_thing_fails_alone_spec_sync_set_1() {
     let mixed = e.commit_ids().into_iter().filter_map(|c| e.header(&c)).any(|h| h.aspects.iter().any(|y| y.tid == l) && h.aspects.iter().any(|y| y.tid == t));
     assert!(!mixed, "nothing of L beside t");
 }
+
+// spec/sync-set.md §1 (Local stays local): every commit the engine writes on its own outside an
+// answer step (a sync record keep, an inbox mark: `write::commit_own`) holds bodies on one thing,
+// as answers do, and one on a single thing goes. Fails without the check in `commit_own`.
+#[test]
+fn an_own_write_on_two_things_is_refused_spec_sync_set_1() {
+    let (mut lp, a, t) = world(4, 3);
+    let mut m = crate::Mutation::new();
+    let u = lp.peers[2].engine.new_thing(&mut m, a.account);
+    lp.peers[2].commit(m).unwrap().unwrap();
+    let both = || {
+        let mut m = crate::Mutation::new();
+        m.set(t, &x(), &Value::Str("t".into())).unwrap();
+        m.set(u, &x(), &Value::Str("u".into())).unwrap();
+        m
+    };
+    let e = &mut lp.peers[2].engine;
+    let own = e.run(|tx| crate::engine::write::commit_own(tx, both()));
+    assert!(matches!(&own, Err(crate::Error::Clash(x)) if x.contains("on its own")), "{own:?}");
+    let mut one = crate::Mutation::new();
+    one.set(t, &x(), &Value::Str("t".into())).unwrap();
+    assert!(e.run(|tx| crate::engine::write::commit_own(tx, one)).unwrap().is_some(), "one thing goes");
+}

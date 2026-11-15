@@ -267,7 +267,7 @@ pub(crate) fn keep_in(tx: &mut Tx<'_>, t: &Tid, ids: &[SyncId], secrets: impl In
     }
     let mut m = crate::Mutation::new();
     m.op(d, &ct::KEPT, PathOp { path: vec![PathSeg::Key(Value::Tid(*t))], op: Op::Set(k.to_value()) })?;
-    crate::engine::write::commit_in(tx, m)?;
+    crate::engine::write::commit_own(tx, m)?;
     Ok(true)
 }
 
@@ -287,7 +287,7 @@ pub(crate) fn unkeep_in(tx: &mut Tx<'_>, t: &Tid, s: &SyncId) -> Result<bool> {
     }
     let mut m = crate::Mutation::new();
     m.op(d, &ct::KEPT, PathOp { path: vec![PathSeg::Key(Value::Tid(*t))], op: Op::Set(k.to_value()) })?;
-    crate::engine::write::commit_in(tx, m)?;
+    crate::engine::write::commit_own(tx, m)?;
     Ok(true)
 }
 
