@@ -84,6 +84,9 @@ pub(crate) struct AccountView {
     /// Per removal commit, the held rotations carrying it (their headers name it; their minter
     /// signed it at the epoch they rotate).
     carriers: BTreeMap<CommitId, BTreeSet<CommitId>>,
+    /// The signing keys of the held epochs a counting rotation descending from them past them
+    /// carries a removal in (`revoked`).
+    revoked: BTreeSet<[u8; 32]>,
 }
 
 impl AccountView {
@@ -217,6 +220,16 @@ impl AccountView {
     /// stands or falls with it.
     pub(crate) fn carried_uncounted(&self, c: &CommitId) -> bool {
         self.carriers.get(c).is_some_and(|rs| rs.iter().any(|r| !self.rotation_counts(r)))
+    }
+
+    /// [for Fathom's review] Whether the held epoch whose signing key is `key` is superseded by a
+    /// counting rotation descending from it, it excluded, that carries a removal
+    /// (spec/sync-set.md §3 Leaving): at a node of the account, a removal its header names that
+    /// its minter signed at the epoch it rotates (`carriers`); elsewhere every removal its header
+    /// names, but one held here that is no commit of the account at the epoch it rotates. A key
+    /// of no held epoch is not.
+    pub(crate) fn revoked(&self, key: &[u8; 32]) -> bool {
+        self.revoked.contains(key)
     }
 
     /// The order the chain reads receipts in (rotations, D's grants, carried removals).
@@ -628,7 +641,8 @@ impl Core {
                 carriers.entry(*c).or_default().insert(*id);
             }
         }
-        let mut v = AccountView { rule, rotations, chosen, received, devices, authorized, standing, epochs, by_name: BTreeMap::new(), carriers };
+        let mut v = AccountView { rule, rotations, chosen, received, devices, authorized, standing, epochs, by_name: BTreeMap::new(), carriers, revoked: BTreeSet::new() };
+        v.revoked = self.revoked_keys(p, &v, &rots);
         // a name repeated (two rotations minting one key) is read as its lowest ID
         for (id, e) in v.epochs.iter().filter(|(id, _)| v.rule.chain().epoch_counts(id)) {
             if let Some(name) = v.name(e) {
@@ -636,6 +650,30 @@ impl Core {
             }
         }
         Some(v)
+    }
+
+    /// `AccountView::revoked` of account `p`'s chain `v` over its held rotations `rots`: every
+    /// held epoch a counting rotation carrying a removal descends from, that rotation excluded.
+    /// The deepest carriers first, so a carrier already within another's line adds nothing:
+    /// O(the epochs marked) besides the carriers.
+    fn revoked_keys(&self, p: &Tid, v: &AccountView, rots: &[(CommitId, CommitId, osis_commit::RotationHeader)]) -> BTreeSet<[u8; 32]> {
+        let carries = |id: &CommitId, at: &CommitId, r: &osis_commit::RotationHeader| match &v.devices {
+            Some(_) => v.carriers.values().any(|rs| rs.contains(id)),
+            // outside the account a counting rotation is its word for the removals it names, but
+            // one held here must be the account's commit at the epoch the rotation rotates
+            None => r.removals.iter().any(|c| self.ix.commits.get(c).is_none_or(|m| m.view.author == *p && m.view.epoch == Some(*at))),
+        };
+        let mut carriers: Vec<(Option<u64>, CommitId)> = rots.iter().filter(|(id, at, r)| v.rotation_counts(id) && carries(id, at, r)).map(|(id, ..)| (v.epochs.get(id).and_then(|e| e.height), *id)).collect();
+        carriers.sort_by(|a, b| b.cmp(a));
+        let mut marked: BTreeSet<CommitId> = BTreeSet::new();
+        for (_, r) in carriers {
+            if marked.contains(&r) {
+                continue;
+            }
+            marked.insert(FIRST_EPOCH);
+            marked.extend(v.line(&r).into_iter().flatten().filter(|x| **x != r));
+        }
+        marked.iter().filter_map(|e| v.epochs.get(e)).map(|e| e.signing.to_bytes()).collect()
     }
 
     /// What the epoch rule (spec/permissions.md §5.5) says of held commit `id` (`view` its view):

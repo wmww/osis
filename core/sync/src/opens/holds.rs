@@ -38,8 +38,8 @@ pub fn counted(engine: &mut Engine, named: &Named) -> Vec<Tid> {
     v
 }
 
-/// What a record or connection names, the account's key left out: what waits judge (`awaited`),
-/// so a peer's records proved at two epochs of its account are one peer.
+/// What a record or connection names, the account's key left out: who a peer is for its
+/// acknowledgements, so a peer's records proved at two epochs of its account are one peer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Who {
     pub account: Option<Tid>,
@@ -65,16 +65,19 @@ impl Who {
 
 /// Who a peer may be, for what it could still take or tell (spec/sync-set.md §3 to be waited
 /// for, spec/sync-status.md §1), ascending: a node of this account it names while that node is
-/// ours (a removed node takes nothing back), else its account whatever key it proved with (a node
-/// of it away across the account's rotation proves the new key when back and resumes its record;
-/// a removed one is not told from it at rest), and its key actors. Empty where `who` is not: a
-/// removed node of this account, never waited for.
-pub fn awaited(engine: &mut Engine, who: &Who) -> Vec<Tid> {
-    let me = match who.node {
-        Some(n) => engine.own_node(&n).then_some(n),
-        None => who.account,
+/// ours (a removed node takes nothing back), else its account at the key it proved with until
+/// a rotation the chain followed here makes past that key's epoch carries a removal
+/// (`Engine::account_key_revoked`: a node of it away across a plain rotation proves the new key
+/// when back and resumes its record; a removed one is not told from an honest one at rest, so
+/// none proved before such a rotation is waited for until it proves again), and its key actors.
+/// Empty where `named` is not: a removed node of this account, never waited for.
+pub fn awaited(engine: &mut Engine, named: &Named) -> Vec<Tid> {
+    let me = match (named.node, named.account) {
+        (Some(n), _) => engine.own_node(&n).then_some(n),
+        (None, Some((a, k))) => (!engine.account_key_revoked(&a, &k)).then_some(a),
+        (None, None) => None,
     };
-    let mut v: Vec<Tid> = me.into_iter().chain(who.key_actors.iter().copied()).collect();
+    let mut v: Vec<Tid> = me.into_iter().chain(named.key_actors.iter().copied()).collect();
     v.sort();
     v.dedup();
     v

@@ -1011,6 +1011,15 @@ impl Engine {
         }
     }
 
+    /// [for Fathom's review] Whether `key`, with which account `account` proved before, is the
+    /// signing key of an epoch that a counting rotation of the chain this node follows for the
+    /// account supersedes while carrying a removal (spec/sync-set.md §3 Leaving: such a record
+    /// is waited for no more). An account this node holds nothing of: not. O(log) on the
+    /// account's chain, a memo.
+    pub fn account_key_revoked(&mut self, account: &Tid, key: &[u8; 32]) -> bool {
+        self.core.account_view(account).is_some_and(|v| v.revoked(key))
+    }
+
     /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
     /// address it is known by here: of S read, the nodes of each account holding a role on S's
     /// thing by that account's dial list (`dial^.0` on its profile); of S kept unread, its granting

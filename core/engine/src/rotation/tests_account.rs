@@ -636,3 +636,67 @@ fn a_node_of_the_account_waits_for_d_s_list_spec_permissions_5_5() {
     assert!(!counts(e, &x), "the write the rotator never held falls");
     assert!(e.roster(&d).contains_key(&sib));
 }
+
+// spec/sync-set.md §3 (Leaving: a record of a node of another account A proved at epoch E is
+// waited for no more once a rotation of A's chain as this node follows it, past E, carries a
+// removal): at an outsider, a rotation naming no removal revokes nothing; one naming a removal
+// revokes every epoch it descends from, never its own; a named removal held here that is no
+// commit of A at the epoch the rotation rotates is no removal (forged); one not held is A's word;
+// a fork this node does not follow revokes nothing; a removal deeper in the chain revokes the
+// epochs below it.
+#[test]
+fn a_rotation_carrying_a_removal_revokes_the_epochs_below_it_spec_sync_set_3() {
+    let ts_of = |e: &crate::Engine| Ts::make(e.now(), 0).unwrap();
+    let key = |k: &AccountEpochKeys| k.signing.verifying_key().to_bytes();
+    let header = |next: &AccountEpochKeys, sup: CommitId, removals: Vec<CommitId>| RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![sup], names: Vec::new(), takes: Vec::new(), removals, list_root: [0; 32] };
+    let setup = || {
+        let mut lp = peers(2);
+        let (a, bytes) = created(&mut lp);
+        let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
+        let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
+        let e = &mut lp.peers[1].engine;
+        assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
+        let creation = CommitBlob::decode(&bytes).unwrap().id();
+        // a commit held here by another author than A
+        let me = e.me();
+        let mut m = crate::Mutation::new();
+        e.new_thing(&mut m, me);
+        let other = e.commit(m).unwrap().unwrap();
+        (lp, a, first, creation, other)
+    };
+    let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([77; 32]));
+    for (what, pick, revoked) in [("no removal", 0, false), ("A's commit at the epoch", 1, true), ("not held", 2, true), ("another author's commit", 3, false)] {
+        let (mut lp, a, first, creation, other) = setup();
+        let e = &mut lp.peers[1].engine;
+        let rec = e.core.created(&a.account).unwrap().clone();
+        let removals = match pick {
+            0 => Vec::new(),
+            1 => vec![creation],
+            2 => vec![CommitId([0x55; 32])],
+            _ => vec![other],
+        };
+        let r = rotation_at(rec, (FIRST_EPOCH, &first), &[], &next, header(&next, FIRST_EPOCH, removals), ts_of(e));
+        assert!(matches!(e.ingest(&r, Vec::new()).unwrap(), Ingested::Applied(_)));
+        assert_eq!(e.account_key_revoked(&a.account, &key(&first)), revoked, "{what}");
+        assert!(!e.account_key_revoked(&a.account, &key(&next)), "{what}: the rotation's own epoch is not");
+    }
+    // a fork not followed: the rotation held first (an earlier millisecond) names no removal
+    let (mut lp, a, first, creation, _) = setup();
+    let fork = AccountEpochKeys::from_seed(&Secret32::from_bytes([78; 32]));
+    let rec = lp.peers[1].engine.core.created(&a.account).unwrap().clone();
+    let r = rotation_at(rec.clone(), (FIRST_EPOCH, &first), &[], &next, header(&next, FIRST_EPOCH, Vec::new()), ts_of(&lp.peers[1].engine));
+    assert!(matches!(lp.peers[1].engine.ingest(&r, Vec::new()).unwrap(), Ingested::Applied(_)));
+    lp.peers[1].clock.advance(5);
+    let f = rotation_at(rec.clone(), (FIRST_EPOCH, &first), &[], &fork, header(&fork, FIRST_EPOCH, vec![creation]), ts_of(&lp.peers[1].engine));
+    assert!(matches!(lp.peers[1].engine.ingest(&f, Vec::new()).unwrap(), Ingested::Applied(_)));
+    let e = &mut lp.peers[1].engine;
+    assert!(!e.core.account_view(&a.account).unwrap().rotation_counts(&CommitBlob::decode(&f).unwrap().id()), "the fork is not followed");
+    assert!(!e.account_key_revoked(&a.account, &key(&first)), "a fork not followed revokes nothing");
+    // deeper: a plain rotation, then one past it carrying a removal (not held)
+    let third = AccountEpochKeys::from_seed(&Secret32::from_bytes([79; 32]));
+    let r1 = CommitBlob::decode(&r).unwrap().id();
+    let r2 = rotation_at(rec, (r1, &next), &[], &third, header(&third, r1, vec![CommitId([0x56; 32])]), ts_of(e));
+    assert!(matches!(e.ingest(&r2, Vec::new()).unwrap(), Ingested::Applied(_)));
+    assert!(e.account_key_revoked(&a.account, &key(&first)) && e.account_key_revoked(&a.account, &key(&next)), "every epoch below the carrier");
+    assert!(!e.account_key_revoked(&a.account, &key(&third)), "its own epoch is not");
+}
