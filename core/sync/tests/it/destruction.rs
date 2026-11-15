@@ -339,29 +339,19 @@ fn purge_minting_refused(w: &mut World, i: usize, t: Tid, c: CommitId) {
     })
 }
 
-/// Node 1's account grants node 0's account read on its D, which node 0's user accepts: node 0
-/// joins D's sync ID late, holding nothing of t but what D carries. Run to quiet.
-fn contact_joins(w: &mut World) {
-    let holder = w.node(0).account.expect("node 0's account");
-    let d = w.write(1, |e| {
-        let (_, d) = e.account().unwrap().unwrap();
-        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, tied: None, floor: None };
-        e.grant(&d, &holder, &edge).unwrap();
-        d
-    });
-    w.history.accepts.insert((d, 0));
+/// A new device paired into node 1's account joins D's sync ID late, holding nothing of t but
+/// what D carries. Run to quiet. Its node index.
+fn device_joins(w: &mut World) -> usize {
+    let n = w.pair(1);
     w.run();
-    for _ in 0..2 {
-        crate::harness::history::accept(w);
-        w.run();
-    }
+    n
 }
 
 // spec/commits.md §5 (A thing's mintings travel with its record: a kept copy stands in for a
 // dropped one only if it cannot decide the thing's fate any earlier, so a lower copy goes only
 // below one whose purge rights are contained in its own): t (u's first admin, outside D) minted
 // at node 1 purgeable by admins, expiring; node 2 mints it again, durable, purgeable by its
-// author too. Both copies stay under D, so node 0, joining D later, holds both; destroyed, it
+// author too. Both copies stay under D, so a device paired later, joining D, holds both; destroyed, it
 // judges t as nodes 1 and 2 do.
 #[test]
 fn a_remint_wider_to_purge_keeps_the_lower_copy_spec_commits_5() {
@@ -375,11 +365,11 @@ fn a_remint_wider_to_purge_keeps_the_lower_copy_spec_commits_5() {
         assert_eq!(w.engine(i).witness(&t).map(|m| m.commit), Some(again), "node {i}: the durable minting is the witness");
         assert!(holds(&mut w, i, &s, &first), "node {i}: the lower copy kept under D");
     }
-    contact_joins(&mut w);
-    assert!(holds(&mut w, 0, &s, &again) && holds(&mut w, 0, &s, &first), "node 0 holds both copies under D");
+    let n = device_joins(&mut w);
+    assert!(holds(&mut w, n, &s, &again) && holds(&mut w, n, &s, &first), "the new device holds both copies under D");
     purge_thing(&mut w, 2, t);
     w.run();
-    for i in 0..3 {
+    for i in [1, 2, n] {
         assert!(w.engine(i).destroyed(&t), "node {i}: t live");
     }
 }
@@ -388,7 +378,7 @@ fn a_remint_wider_to_purge_keeps_the_lower_copy_spec_commits_5() {
 // mintings travel with its record: a kept copy stands in for a dropped one), spec/wire.md §4:
 // t minted at node 1 expiring at E and again at node 2, durable, both purgeable by admins: the
 // durable copy stands in for the expiring one, which leaves D. Node 1, holding the right over
-// both, cannot end the durable minting alone (refused as bad input), so node 0, joining D later
+// both, cannot end the durable minting alone (refused as bad input), so a device paired later, joining D
 // with the durable copy only, judges t as nodes 1 and 2 do: live past E, then destroyed by one
 // request.
 #[test]
@@ -405,18 +395,18 @@ fn no_request_ends_a_standing_in_minting_alone_spec_commits_5() {
     }
     purge_minting_refused(&mut w, 1, t, again);
     w.run();
-    contact_joins(&mut w);
-    assert!(holds(&mut w, 0, &s, &again) && !holds(&mut w, 0, &s, &first), "node 0 holds the durable copy alone");
+    let n = device_joins(&mut w);
+    assert!(holds(&mut w, n, &s, &again) && !holds(&mut w, n, &s, &first), "the new device holds the durable copy alone");
     w.advance(2 * ROLE_KEEP_MS + 1_000);
     w.run();
-    for i in 0..3 {
+    for i in [1, 2, n] {
         let e = w.engine(i);
         assert!(!e.destroyed(&t), "node {i}: t destroyed past E");
         assert_eq!(e.witness(&t).map(|m| m.commit), Some(again), "node {i}: the durable minting is the witness");
     }
     purge_thing(&mut w, 1, t);
     w.run();
-    for i in 0..3 {
+    for i in [1, 2, n] {
         assert!(w.engine(i).destroyed(&t), "node {i}: t live");
     }
 }
@@ -425,10 +415,10 @@ fn no_request_ends_a_standing_in_minting_alone_spec_commits_5() {
 // expiring no earlier): t (u's first admin, outside D) minted at node 1, durable; node 2 mints it
 // again expiring at E, purgeable by nobody; node 1 purges t, which drops its own minting alone, so the expiring
 // one is the witness. The durable copy stays under D (the expiring one could end it first, were
-// the purge to fall or not reach a node): node 0, joining D later, holds both. Node 1, the remint
+// the purge to fall or not reach a node): a device paired later, joining D, holds both. Node 1, the remint
 // not yet held, destroys t and logs the request under D; node 2, where t never died, pulls it:
 // outside D's required set there (spec/sync-judgement.md §2), it leaves every store of D once t
-// lives at node 1, and node 0 never holds it.
+// lives at node 1, and the late device never holds it.
 #[test]
 fn a_remint_expiring_earlier_keeps_the_lower_copy_spec_commits_5() {
     let mut w = crate::harness::siblings();
@@ -444,10 +434,10 @@ fn a_remint_expiring_earlier_keeps_the_lower_copy_spec_commits_5() {
         assert!(holds(&mut w, i, &s, &first), "node {i}: the lower copy kept under D");
         assert!(!holds(&mut w, i, &s, &q), "node {i}: the request outside D's required set is dropped");
     }
-    contact_joins(&mut w);
-    assert!(holds(&mut w, 0, &s, &again), "node 0 holds the witness's copy under D");
-    assert!(holds(&mut w, 0, &s, &first), "node 0 holds the lower copy under D");
-    for i in 0..3 {
+    let n = device_joins(&mut w);
+    assert!(holds(&mut w, n, &s, &again), "the new device holds the witness's copy under D");
+    assert!(holds(&mut w, n, &s, &first), "the new device holds the lower copy under D");
+    for i in [1, 2, n] {
         assert!(!holds(&mut w, i, &s, &q), "node {i} holds the request under D");
     }
 }
