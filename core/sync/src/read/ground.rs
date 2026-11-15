@@ -105,6 +105,10 @@ pub trait Ground {
     /// Per sync ID of the sync set, `c`'s body there (`Engine::sync_bodies`).
     fn bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>>;
     fn facts(&mut self, s: &SyncId, c: &CommitId) -> Result<Facts>;
+    /// `c`'s judgement under S went idle: what `facts` keeps of it may go (`Engine::unfollow_facts`).
+    fn unfollow_facts(&mut self, s: &SyncId, c: &CommitId) {
+        let _ = (s, c);
+    }
     /// Thing `t`'s held mintings with their standings and expiries (`Engine::mintings_of`,
     /// spec/commits.md §5 A thing's mintings travel with its record).
     fn mintings(&mut self, t: &Tid) -> Result<Arc<Vec<Minting>>>;
@@ -333,6 +337,11 @@ pub trait Ground {
     fn forgettable(&mut self, c: &CommitId) -> Result<Option<bool>> {
         let _ = c;
         Ok(Some(false))
+    }
+    /// `c` left read (no longer held): what `forgettable` and `covered_drops` keep of it may go
+    /// (`Engine::unfollow_fate`).
+    fn unfollow_fate(&mut self, c: &CommitId) {
+        let _ = c;
     }
     /// The sync IDs where an entry or a tombstone of a blob of `c` is held here (`Store::naming`,
     /// `Store::tombstoned_under`), whatever sync IDs carry a body of it now.

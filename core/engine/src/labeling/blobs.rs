@@ -687,14 +687,16 @@ impl Engine {
     /// `wrap_blocked` read anew.
     pub(crate) fn wrap_blocked_read(&mut self, a: &Tid, walk: crate::rotation::Walk) -> Result<bool> {
         let a = *a;
-        // the roles at now it reads (`finalizable`, `may_rotate`) hold until the clock reaches
-        // the next `until` or role commit in the components of `a` and this node's account
-        self.core.time.until(self.core.horizon(std::iter::once(a).chain(self.core.writer().ok())));
+        let encrypt = matches!(walk, crate::rotation::Walk::Encrypt);
         self.read(|tx| {
+            // the roles at now it reads (`finalizable`, `may_rotate`) hold until the clock
+            // reaches the next `until` or role commit in the components of `a` and this
+            // node's account
+            tx.core.time.until(tx.core.horizon(std::iter::once(a).chain(tx.core.writer().ok())));
             // a node removed from its account wraps nothing as it (it may still hold the read
             // secrets through the pass its drop waits for)
             let Ok(who) = tx.core.writer() else { return Ok(true) };
-            if matches!(walk, crate::rotation::Walk::Encrypt) && !crate::flows::edges::finalizable(tx.core, &who, &a).is_empty() {
+            if encrypt && !crate::flows::edges::finalizable(tx.core, &who, &a).is_empty() {
                 return Ok(true);
             }
             let deps = crate::rotation::departures(tx, &a)?;

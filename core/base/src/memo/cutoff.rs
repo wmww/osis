@@ -20,7 +20,7 @@ pub struct Cutoff<K, V> {
 
 impl<K: Hash + Eq + Ord + Clone, V: Clone + PartialEq> Cutoff<K, V> {
     pub fn new(name: &'static str) -> Self {
-        Cutoff { fx: RefCell::new(Effects::new(name)), rows: RefCell::new(Stamped::default()) }
+        Cutoff { fx: RefCell::new(Effects::new(name)), rows: RefCell::new(Stamped::named(name)) }
     }
 
     /// Derives again (by `f`, over all of `ctx`, which holds this cutoff at `me`) every key whose
@@ -42,6 +42,15 @@ impl<K: Hash + Eq + Ord + Clone, V: Clone + PartialEq> Cutoff<K, V> {
             }
         }
         failed.map_or(Ok(moved), Err)
+    }
+
+    /// Stops following `k`: its row goes (a reader of it moves), and a later `get_in` derives it
+    /// anew.
+    pub fn unfollow(&self, k: &K) {
+        self.fx.borrow_mut().unwant(k);
+        if super::unrecorded(|| self.rows.borrow().get(k).is_some()) {
+            self.rows.borrow_mut().remove(k);
+        }
     }
 
     /// Key `k`'s value, up to date (`refresh_in`, `k` followed from now on): a read of its row

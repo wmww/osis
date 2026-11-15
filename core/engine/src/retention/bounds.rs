@@ -173,6 +173,8 @@ pub(super) fn dated_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: u
     if a.ak.signal() {
         return Ok(Some(h.ts));
     }
+    // a date reads its aspect's held writes as a row: up to date before a hit is trusted
+    osis_base::memo::Cutoff::refresh_in(tx, |tx| &tx.core.held_writes_rows, |tx, (t, k)| held_writes_kept(tx, t, k))?;
     osis_base::memo::Memo::get_in(tx, |tx| &tx.core.replaced_dates, &(*c, ai), |tx| judge_replaced_at(tx, h, c, ai))
 }
 
@@ -223,10 +225,17 @@ pub(crate) struct HeldWrites {
     carried: ByWrite<Vec<(Ts, CommitId)>>,
 }
 
-/// `HeldWrites` of `(tid, ak)`, through `Core::held_writes` (a memo): read anew, or, when the
+/// `HeldWrites` of `(tid, ak)`, kept as a row per aspect (`Core::held_writes_rows`, a
+/// `memo::Cutoff`): a reader depends on the row, which moves only when the held writes do, not on
+/// each held body read. Derived through `Core::held_writes` (a memo): read anew, or, when the
 /// aspect only gained bodies since, amended by theirs (`amend_held_writes`), so a join reads its
 /// own body, not the aspect's.
 pub(super) fn held_writes(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<HeldWrites>> {
+    osis_base::memo::Cutoff::get_in(tx, |tx| &tx.core.held_writes_rows, &(*tid, ak.clone()), |tx, (t, k)| held_writes_kept(tx, t, k))
+}
+
+/// `held_writes` through its memo (`Core::held_writes`, amended): what its row is derived by.
+fn held_writes_kept(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Arc<HeldWrites>> {
     osis_base::memo::Memo::get_amended_in(
         tx,
         |tx| &tx.core.held_writes,
@@ -460,10 +469,16 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize
 }
 
 impl Engine {
+    /// Brings each aspect's held writes row (`held_writes`) up to date: whether any moved
+    /// (`Engine::follow`).
+    pub(crate) fn follow_held_writes(&mut self) -> Result<bool> {
+        osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.held_writes_rows, |e, (t, k)| e.read(|tx| held_writes_kept(tx, t, k)))
+    }
+
     /// Keep-at-least bound (wall ms, 0: none) of each part of known commit `c`, by aspect index
     /// (`part_keep`): a commit's judgment costs O(parts) death reads.
     pub fn part_keeps(&mut self, c: &CommitId) -> Result<Vec<u64>> {
-        let b = osis_base::memo::Memo::get_in(self, |e| &e.core.part_bounds, c, |e| e.run(|tx| commit_bounds(tx, c)))?;
+        let b = osis_base::memo::Memo::get_in(self, |e| &e.core.part_bounds, c, |e| e.read(|tx| commit_bounds(tx, c)))?;
         Ok(b.iter().map(|x| at_clock(&self.core, *x)).collect())
     }
 

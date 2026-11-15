@@ -229,6 +229,12 @@ impl Ground for Live<'_, '_> {
         });
         Ok(Facts { body: f.body, must_not, own: f.own, repair_fresh: f.repair_fresh, role: f.role, carriers: f.carriers, later_unheld: f.later_unheld, missing: f.missing })
     }
+    fn unfollow_facts(&mut self, s: &SyncId, c: &CommitId) {
+        self.cx.engine.unfollow_facts(s, c);
+    }
+    fn unfollow_fate(&mut self, c: &CommitId) {
+        self.cx.engine.unfollow_fate(c);
+    }
     fn mintings(&mut self, t: &Tid) -> Result<Arc<Vec<osis_engine::retention::Minting>>> {
         Ok(Arc::new(self.cx.engine.mintings_of(t)))
     }
@@ -648,10 +654,7 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.freed_done(&[(*t, *b)])?)
     }
     fn forgettable(&mut self, c: &CommitId) -> Result<Option<bool>> {
-        if !self.cx.engine.holds_commit(c) {
-            return Ok(None);
-        }
-        Ok(Some(self.cx.engine.forgettable(c)?))
+        Ok(self.cx.engine.held_fate(c)?.map(|f| f.forgettable))
     }
     fn known_under(&mut self, c: &CommitId) -> Result<BTreeSet<SyncId>> {
         let mut out = BTreeSet::new();
@@ -662,7 +665,7 @@ impl Ground for Live<'_, '_> {
         Ok(out)
     }
     fn covered_drops(&mut self, c: &CommitId) -> Result<Vec<(Tid, osis_base::Ak)>> {
-        Ok(self.cx.engine.covered_drops(c)?)
+        Ok(self.cx.engine.held_fate(c)?.map(|f| f.drops.to_vec()).unwrap_or_default())
     }
     fn drop_body(&mut self, c: &CommitId, t: &Tid, ak: &osis_base::Ak) -> Result<()> {
         Ok(self.cx.engine.drop_body(c, t, ak)?)

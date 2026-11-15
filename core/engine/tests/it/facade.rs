@@ -3114,3 +3114,40 @@ fn a_sourced_groups_size_costs_changes_nothing_spec_sync_set_5() {
     assert!(small.0 > 0 && small.1 > 0);
     assert_eq!(small, big, "the work follows the change");
 }
+
+// spec/commits.md §5 Own replaces (a commit drops as covered once two own replaces of it are
+// held valid), notes/engine.md Derived values (`Cutoff`: a reader depends on rows as last
+// refreshed): a follower of a body's facts and of its fate (`read_facts`, `held_fate`, kept per
+// key) is due after `Engine::follow` alone once the second own replace lands, with nothing of
+// the body asked.
+#[test]
+fn a_bodys_facts_and_fate_move_at_a_follow_spec_commits_5() {
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let (_, d) = e.account().unwrap().unwrap();
+    let home = e.home_sync_id(&d).unwrap().unwrap();
+    let t = thing_of(&mut lp, 0, d);
+    add_item(&mut lp, 0, d, t);
+    let e = &mut lp.peers[0].engine;
+    let mut write = |v: i64| {
+        let mut m = Mutation::new();
+        m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(v)).unwrap();
+        e.commit(m).unwrap().unwrap()
+    };
+    let (c, _) = (write(1), write(2));
+    let e = &mut lp.peers[0].engine;
+    let mut facts: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("test facts");
+    let mut fate: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("test fate");
+    facts.want(());
+    fate.want(());
+    facts.settle(&(), || e.read_facts(&home, &c).unwrap().body.covered == Some(true));
+    fate.settle(&(), || e.held_fate(&c).unwrap().is_some_and(|f| !f.drops.is_empty()));
+    assert!(!e.read_facts(&home, &c).unwrap().body.covered.unwrap_or(true), "one own replace covers nothing");
+    let mut m = Mutation::new();
+    m.set(t, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(3)).unwrap();
+    e.commit(m).unwrap().unwrap();
+    e.follow().unwrap();
+    assert_eq!((facts.due(), fate.due()), (vec![()], vec![()]), "the second own replace moved both");
+    assert_eq!(e.read_facts(&home, &c).unwrap().body.covered, Some(true));
+    assert!(e.held_fate(&c).unwrap().is_some_and(|f| f.forgettable || !f.drops.is_empty()), "{:?}", e.held_fate(&c));
+}

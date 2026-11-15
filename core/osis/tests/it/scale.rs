@@ -5,6 +5,7 @@
 
 use crate::common::{cfg, clock};
 use osis::{DynamicAspectKey, MemStore, Osis, Store, Tid, p};
+use std::collections::BTreeSet;
 use std::io::{Read, Seek, SeekFrom};
 
 const MIB: usize = 1 << 20;
@@ -121,3 +122,93 @@ fn multi_gb_value_streams() {
     // Fixed bound, independent of the value size: one chunk (256 KiB max) plus the tree path.
     assert!(peak < 64 * 1024, "peak RSS growth {peak} KiB");
 }
+
+/// The sync judgements (`read: judged`, `read: local judged`) `n` commits by `write` made, and
+/// those one more made.
+fn judgements(n: usize, setup: impl Fn(&Osis) -> Tid, write: impl Fn(&Osis, Tid, usize)) -> [(&'static str, u64, u64); 2] {
+    use osis::internals::costs;
+    let db = crate::common::db(0);
+    let t = setup(&db);
+    db.settle();
+    costs::take();
+    for i in 0..n {
+        write(&db, t, i);
+    }
+    db.settle();
+    let all = costs::take();
+    write(&db, t, n);
+    db.settle();
+    let last = costs::take();
+    let count = |cs: &[(&str, std::time::Duration, u64)], name: &str| cs.iter().find(|c| c.0 == name).map_or(0, |c| c.2);
+    ["read: judged", "read: local judged"].map(|name| (name, count(&all, name), count(&last, name)))
+}
+
+/// `judgements` at n and 10n: linearly many over the commits, as many for the next one at both.
+fn judged_per_commit(what: &str, small: [(&str, u64, u64); 2], big: [(&str, u64, u64); 2]) {
+    for ((name, n_all, n_last), (_, big_all, big_last)) in small.into_iter().zip(big) {
+        assert!(n_all > 0 && big_all <= 12 * n_all, "{what}, {name}: {n_all} judgements over n, {big_all} over 10n");
+        assert_eq!(n_last, big_last, "{what}, {name}: the next one after n and after 10n");
+    }
+}
+
+// spec/requirements.md, Scale (work in proportion to change): sync read judges again only the
+// bodies whose facts a write changes (`Engine::read_facts`, `Engine::held_fate`: kept per body),
+// not every body on the written aspect. Writing n and 10n times on one aspect of a thing keeping
+// its history for good judges linearly many bodies (a few per write; every body per write would
+// be quadratic), and the next write judges as many at both.
+#[test]
+fn a_write_judges_the_bodies_it_changes() {
+    use crate::common::TestWrites as _;
+    let setup = |db: &Osis| {
+        let x = crate::common::setting(&[("t:msg.0", osis::History::FOREVER)]);
+        db.commit_with(|w| {
+            let t = w.create()?;
+            w.at(t, osis::core::RETENTION).set(&x)?;
+            Ok(t)
+        })
+        .unwrap()
+    };
+    let write = |db: &Osis, t: Tid, i: usize| db.commit_set(t, DynamicAspectKey::untyped(crate::common::ak("t:msg.0")), &osis::Value::Int(i as i64)).unwrap();
+    judged_per_commit("writes on one aspect", judgements(10, setup, write), judgements(100, setup, write));
+}
+
+/// `n` new things (each listed in the account's home group), then 8 more: per one of those, the
+/// bodies sync read judged (`read: judged`) and whether it stored a commit more than a new thing
+/// alone does (a compaction snapshot of the home group's `group.0`).
+fn new_things(n: usize) -> Vec<(u64, bool)> {
+    use osis::internals::costs;
+    let db = crate::common::db(0);
+    let create = || {
+        let mut w = db.write();
+        w.create().unwrap();
+        w.commit().unwrap();
+        db.settle();
+    };
+    for _ in 0..n {
+        create();
+    }
+    costs::take();
+    let count = |cs: &[(&str, std::time::Duration, u64)], name: &str| cs.iter().find(|c| c.0 == name).map_or(0, |c| c.2);
+    (0..8)
+        .map(|_| {
+            create();
+            let cs = costs::take();
+            (count(&cs, "read: judged"), count(&cs, "apply: put_commit") > 2)
+        })
+        .collect()
+}
+
+// spec/requirements.md, Scale: a new thing is listed in the account's home group (a write on its
+// `group.0`), which moves no earlier body's facts: after n and 10n new things, each next one that
+// writes no compaction snapshot judges as many bodies (the account's signing chain reads only
+// the account's role commits on home, `Indexes::role_on`: read from all its commits there, each
+// listing moves every judgement reading the chain). Not flat: one that also writes a snapshot of
+// the home group's `group.0` re-judges every body the snapshot covers (their carriers and covers
+// move, issues/tests-4x.md).
+#[test]
+fn a_new_thing_judges_the_bodies_it_changes() {
+    let plain = |v: Vec<(u64, bool)>| v.into_iter().filter(|x| !x.1).map(|x| x.0).collect::<BTreeSet<u64>>();
+    let (small, big) = (plain(new_things(10)), plain(new_things(100)));
+    assert!(!small.is_empty() && small == big, "judgements per new thing writing no snapshot, after 10: {small:?}, after 100: {big:?}");
+}
+

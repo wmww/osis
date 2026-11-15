@@ -188,6 +188,16 @@ pub enum MustNot {
     CardEnded,
 }
 
+/// What forgetting and covers make of a held commit (`Engine::held_fate`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldFate {
+    /// The engine would forget it once no entry of it is known (`Engine::forgettable`).
+    pub forgettable: bool,
+    /// Its held parts that drop as covered now (`Engine::covered_drops`); none asked where
+    /// `forgettable`.
+    pub drops: Arc<Vec<(Tid, Ak)>>,
+}
+
 /// What `read` judges one body at a sync ID on beside `BodyFacts` (`read_facts`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadFacts {
@@ -457,8 +467,9 @@ impl Engine {
     // Held parts and bodies
 
     /// Brings the facade values kept per entry (`Core::published`, per labeled thing;
-    /// `Core::wrap_blocks`, per actor and walk; each read
-    /// thing's certificates per piece and commit, `certified`; its thing lists per rotation, `listed`) up to date with what moved since
+    /// `Core::wrap_blocks`, per actor and walk; `Core::held_writes_rows`, per aspect; each read
+    /// thing's certificates per piece and commit, `certified`; its thing lists per rotation,
+    /// `listed`; `Core::read_facts`, per sync ID and commit; `Core::held_fates`, per commit) up to date with what moved since
     /// the last call: whether any entry moved. Each refreshes itself when asked, but an `Effects`
     /// key that read an entry goes due only once the entry is written, so a module calls this
     /// before its `due()` (the driver, before each module's settle and until it moves nothing).
@@ -468,8 +479,12 @@ impl Engine {
     pub fn follow(&mut self) -> Result<bool> {
         let moved = self.follow_published();
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.wrap_blocks, |e, (a, walk)| e.wrap_blocked_read(a, *walk))? | moved;
+        let moved = self.follow_held_writes()? | moved;
         // `listed` follows `certified` first: one follow of each
-        Ok(self.follow_lists()? | moved)
+        let moved = self.follow_lists()? | moved;
+        // a body's facts read every value above
+        let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_facts, |e, (s, c)| e.read_facts_now(s, c))? | moved;
+        Ok(osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.held_fates, |e, c| e.held_fate_now(c))? | moved)
     }
 
     /// Per sync ID of the sync set whose required set holds a body of `c`: that body.
@@ -481,9 +496,38 @@ impl Engine {
         self.body_facts_now(s, c)
     }
 
-    /// What `read` judges `c`'s body under `s` on beside `BodyFacts` (`ReadFacts`).
+    /// What `read` judges `c`'s body under `s` on beside `BodyFacts` (`ReadFacts`). Kept per
+    /// (sync ID, commit) from its first ask (`Core::read_facts`, a `memo::Cutoff`, refreshed by
+    /// `follow`): a reader moves only when the facts do; `unfollow_facts` lets a key go.
     pub fn read_facts(&mut self, s: &SyncId, c: &CommitId) -> Result<ReadFacts> {
-        self.read_facts_now(s, c)
+        osis_base::memo::Cutoff::get_in(self, |e| &e.core.read_facts, &(*s, *c), |e, (s, c)| e.read_facts_now(s, c))
+    }
+
+    /// Stops keeping `c`'s facts under `s` (`read_facts`): its judgement went idle.
+    pub fn unfollow_facts(&mut self, s: &SyncId, c: &CommitId) {
+        self.core.read_facts.unfollow(&(*s, *c));
+    }
+
+    /// What forgetting and covers make of commit `c` (`HeldFate`): `None` once it is not held.
+    /// Kept per commit from its first ask (`Core::held_fates`, a `memo::Cutoff`, refreshed by
+    /// `follow`), so a reader moves only when the fate does; `unfollow_fate` lets a key go.
+    pub fn held_fate(&mut self, c: &CommitId) -> Result<Option<HeldFate>> {
+        osis_base::memo::Cutoff::get_in(self, |e| &e.core.held_fates, c, |e, c| e.held_fate_now(c))
+    }
+
+    /// Stops keeping `c`'s fate (`held_fate`): it left read.
+    pub fn unfollow_fate(&mut self, c: &CommitId) {
+        self.core.held_fates.unfollow(c);
+    }
+
+    /// `held_fate` derived anew.
+    fn held_fate_now(&mut self, c: &CommitId) -> Result<Option<HeldFate>> {
+        if !self.core.ix.commits.contains_key(c) {
+            return Ok(None);
+        }
+        let forgettable = self.forgettable(c)?;
+        let drops = if forgettable { Vec::new() } else { self.covered_drops(c)? };
+        Ok(Some(HeldFate { forgettable, drops: Arc::new(drops) }))
     }
 
     /// Whether held blob `b` is must-not-hold under `s` as a strict subset of another blob of its

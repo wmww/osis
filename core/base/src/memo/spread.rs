@@ -23,7 +23,7 @@ impl<K: Hash + Eq + Ord + Clone, V: Clone + PartialEq> Spread<K, V> {
     pub fn new(name: &'static str) -> Self {
         let mut fx = Effects::new(name);
         fx.want(());
-        Spread { fx: RefCell::new(fx), values: RefCell::new(Stamped::default()) }
+        Spread { fx: RefCell::new(fx), values: RefCell::new(Stamped::named(name)) }
     }
 
     /// Derives the map again (by `f`, over all of `ctx`, which holds this spread at `me`) if

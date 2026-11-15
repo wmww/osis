@@ -1,14 +1,18 @@
-# The sync test binary costs about three times its budget
-> Summary: osis-sync's `it` binary runs 3,094 G instructions in one process against notes/sync-test-harness.md's 1,200 G; most of it is the differential's fresh world per seed and read's settle (judge::body about a quarter of a history): Fathom's lane for the reads.
+# The sync test binary costs two and a half times its budget
+> Summary: osis-sync's `it` binary runs 2,945 G instructions in one process against notes/sync-test-harness.md's 1,200 G; read's judgements dominate, and about half of them are moved by reads of whole permission timelines (`Core::horizon`, `may_rotate`) whose answers rarely change: Fathom's lane (memo early cutoff, or finer timeline reads).
 > Priority: normal
 > Tags: engine, sync, tests
 
-Measured by `tools/icount` over the binary in one process: 3,094 G; per test alone (`tools/pertest.py`, each test its own process) `convergence::` 1,691 G, `sims::` 1,337 G, `flows::` 685 G, `growth::` 297 G. Defaults are seeds, so cutting them costs coverage, not correctness. Each pair of world nodes keeps one connection (spec/sync-opens.md §1 Twin; `growth::each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1`): a write costs about 29 deliveries in the 3-node world, so delivery count is no longer the lever; the engine reads below are.
+Measured by `tools/icount` over the binary in one process: 2,945 G (per module: `convergence::` 1,242 G, `sims::` 670 G, `flows::` 475 G, `growth::` 260 G, the rest under 90 G each). A 40-step faulted history plays for about 11 G, and a 3-node differential world costs about as much to build (`introduce`); defaults are seeds (notes/sync-test-harness.md, Measured layers), so cutting them costs coverage, not correctness.
 
-Where a history's cost goes (three faulted seeds in one process, cpuprof): read's settle 46%, `judge::body` 26% (`may_log` 12%, of it the sync store's `held_blobs` 8%; `read_facts` 7%), the shared world 31% (`introduce`), `Effects::due`'s log reads 10%, `follow_certificates` 9%. Judgements, by `Effects` causes with `costs` on: building `history::world(0, 3)` judges 4,648 bodies (peer record index rows 518, `commit_blobs` 414, `timelines: into` 396, aspect state rows 369, first judgements 339, `secrets` 257, the store's `X` and `E` local rows 210 and 164); clean seed 0 played twice judges 16,796.
+Where a history's cost goes (faulted seed 1, `tools/cpuprof`): read's settle about half, `judge::body` 29% (`read_facts` 14%, `may_log` 13%), memo bookkeeping (stamp reads, frames, `Effects` index) about a sixth, restarts in place a tenth.
 
-Causes in the engine (`core/engine`):
-- **Timelines stamp every touched thing** (`engine/held.rs` `Timelines::moved`): an edge change on a thing moves whatever read the edges into it (`timelines: into`, 396 of the world's judgements); a whole-component read (`timelines: whole`) moves `life`'s lost-access and role-duty keys at every role change.
+What moves read's judgements (clean seed 9, world build then a 40-step play, `Effects` cause counts with `costs` on, timeline reads split by caller in a probe): of 6,070 judgements in the world build, 1,844 were moved by `Core::horizon` (`engine/mod.rs`, reached from `Engine::wrap_blocked`) and 1,066 by `may_rotate` (`rotation/departures.rs`): both read a thing's whole timeline component (`Timelines::get`, stamped `Read::Whole`), which every update of any held role input in the component moves. Both answers (a time bound, a set of roles) rarely change; the judgements reading them are re-run anyway, because a memo's dependants depend on what the memo read, not on its answer.
+
+Causes in the engine (`core/engine`, `core/base/src/memo`):
+- **No early cutoff in `Memo`**: a memo recomputed to the same answer still moves every key that read it (`memo::depend` passes the memo's reads on). `wrap_blocked` is a `Cutoff` row per (actor, walk) (`Core::wrap_blocks`), so the timeline fanout above stops there; a body's facts and fate are rows too (notes/engine.md, `Cutoff`; General early cutoff).
+- **Whole-component reads for a time bound**: `Core::horizon` reads `Whole` of the actor's and the writer's components to find the next `until`; reading the edges it walks (`Into` per target, as `roles_on` does) would move it only with them.
+- **Absent rows read at a bucket stamp** (issues/absent-stamp-fanout.md): `store: local rows` and `catalog kind` move a further fifth of a play's judgements.
 - **`body_facts_now` tries every snapshot ever held of each aspect** (`sync/bodies.rs`, `ix.snapshots`) against the body judged: one write synced to one reader joins 20 snapshot pairs after 3 earlier writes, 200 after 30.
 - An inbox blob no key here opens (another actor's inbox this node reads, as `introduce`'s profiles give) is tried again at each move of that actor's timeline.
 

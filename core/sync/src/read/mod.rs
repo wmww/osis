@@ -395,6 +395,7 @@ impl Read {
                 }
                 if now.idle {
                     self.judged.unwant(&k);
+                    g.unfollow_facts(&s, &c);
                     self.verdicts.remove(&k);
                     self.arrived.remove(&k);
                 }
@@ -497,6 +498,7 @@ impl Read {
             match now {
                 judge::Local::Gone => {
                     self.local.unwant(&c);
+                    g.unfollow_fate(&c);
                     self.bodies.unwant(&c);
                     self.moved.remove(&c);
                     for s in self.settled.remove(&c).into_iter().flat_map(|m| m.keys().copied().collect::<Vec<_>>()) {

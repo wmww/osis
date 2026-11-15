@@ -979,6 +979,10 @@ impl<'a, K, V> IntoIterator for &'a Stamped<K, V> {
 }
 
 impl<K: Ord + Hash, V> Stamped<K, V> {
+    /// An empty map whose stamps are named `name` (what `Effects` reports a key due by).
+    pub fn named(name: &'static str) -> Self {
+        Stamped { map: BTreeMap::new(), stamps: Stamps::named(name) }
+    }
     pub fn get<Q: Ord + Hash + ?Sized>(&self, k: &Q) -> Option<&V>
     where
         K: Borrow<Q>,

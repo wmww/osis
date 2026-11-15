@@ -1112,6 +1112,12 @@ pub struct Core {
     pub(crate) inboxes: memo::Spread<SyncId, Vec<Tid>>,
     /// `Engine::wrap_blocked` per (actor, walk) (`memo::Cutoff`), refreshed by `Engine::follow`.
     pub(crate) wrap_blocks: memo::Cutoff<(Tid, crate::rotation::Walk), bool>,
+    /// `Engine::read_facts` per (sync ID, commit) (`memo::Cutoff`), refreshed by
+    /// `Engine::follow`: a body's judgement moves only when its facts do, not with every write on
+    /// its aspects.
+    pub(crate) read_facts: memo::Cutoff<(SyncId, CommitId), crate::sync::ReadFacts>,
+    /// `Engine::held_fate` per commit (`memo::Cutoff`), refreshed by `Engine::follow`.
+    pub(crate) held_fates: memo::Cutoff<CommitId, Option<crate::sync::HeldFate>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::StatePages>,
     pub timelines: held::Timelines,
@@ -1276,6 +1282,9 @@ pub struct Core {
     /// What judging when bodies were replaced reads of an aspect's held bodies, per aspect
     /// (`retention::bounds::held_writes`, `memo`).
     pub(crate) held_writes: memo::Memo<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>,
+    /// `held_writes` per aspect as a row (`memo::Cutoff`): a part's date reads the row, not the
+    /// aspect's every body, so it copies one read where the memo would copy one per body.
+    pub(crate) held_writes_rows: memo::Cutoff<(Tid, Ak), Arc<crate::retention::bounds::HeldWrites>>,
     /// When each held part was replaced, per (commit, aspect index)
     /// (`retention::bounds::dated_replaced_at`, `memo`).
     pub(crate) replaced_dates: memo::Memo<(CommitId, usize), Option<osis_base::Ts>>,
@@ -1434,6 +1443,8 @@ impl Core {
             inbox_actors: self.inbox_actors.clone(),
             inboxes: self.inboxes.clone(),
             wrap_blocks: self.wrap_blocks.clone(),
+            read_facts: self.read_facts.clone(),
+            held_fates: self.held_fates.clone(),
             pages: self.pages.clone(),
             timelines: self.timelines.clone(),
             sides: self.sides.clone(),
@@ -1501,6 +1512,7 @@ impl Core {
             batched: self.batched.clone(),
             touches: self.touches.clone(),
             held_writes: self.held_writes.clone(),
+            held_writes_rows: self.held_writes_rows.clone(),
             replaced_dates: self.replaced_dates.clone(),
             waiting_carries: self.waiting_carries.clone(),
             part_bounds: self.part_bounds.clone(),
@@ -2002,6 +2014,9 @@ impl Core {
             inbox_actors: _,
             inboxes: _,
             wrap_blocks: _,
+            read_facts: _,
+            held_fates: _,
+            held_writes_rows: _,
             acting_of: _,
             sync_ids: _,
             passes_wanted: _,
@@ -2205,6 +2220,8 @@ impl Core {
             inbox_actors: memo::Memo::new("inbox actors"),
             inboxes: memo::Spread::new("inboxes"),
             wrap_blocks: memo::Cutoff::new("wrap blocked"),
+            read_facts: memo::Cutoff::new("sync: read facts"),
+            held_fates: memo::Cutoff::new("sync: held fate"),
             pages: HashMap::new(),
             timelines: held::Timelines::default(),
             sides: crate::sides::Sides::default(),
@@ -2288,6 +2305,7 @@ impl Core {
             batched: None,
             touches: Default::default(),
             held_writes: memo::Memo::new("held writes"),
+            held_writes_rows: memo::Cutoff::new("held writes: rows"),
             replaced_dates: memo::Memo::new("replaced at"),
             waiting_carries: memo::Memo::new("waiting snapshot: judged"),
             part_bounds: memo::Memo::new("part bounds"),
