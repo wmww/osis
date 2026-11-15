@@ -11,6 +11,7 @@ use osis_base::{Ak, BlobId, CommitId, PurgeBy, SyncId, Tid, Value};
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 
+/// The common start, built once per process (`fixture_with`).
 fn setup() -> (World, Tid, SyncId) {
     let (w, (t, s)) = fixture_with("deletes setup", || {
         let mut w = world(0, 4);
