@@ -851,6 +851,12 @@ fn another_accounts_devices_reads_as_itself_but_places_chains_as_its_account_spe
     let p1 = &mut lp.peers[1].engine;
     assert!(p1.reads_in(&d1, &g) && p1.cert_reads_in(&d1, &g), "a node's own devices actor reads as its account");
     assert!(p1.may_read(&d1, &g), "by entitlement too (a diagnostic asking it agrees with what sync carries)");
+    // read as the account, D loses nothing D read as itself: D, its synced group, a thing under D
+    let sg = p1.synced_group().unwrap().expect("a synced group");
+    assert!(p1.may_read(&d1, &d1) && p1.may_read(&d1, &sg), "own devices actor reads D and its synced group");
+    let p0 = &mut lp.peers[0].engine;
+    let (_, d0) = p0.core.account_devices().unwrap();
+    assert!(!p0.may_read(&d1, &d0), "another account's devices actor reads nothing of ours");
 }
 
 // notes/engine.md (Roles at now: every role-at-now read goes through `Core::role_now`, on the
