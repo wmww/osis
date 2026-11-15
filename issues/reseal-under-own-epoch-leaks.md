@@ -1,5 +1,5 @@
 # Content another wrote, encrypted again under the sealer's epoch
-> Summary: Built (spec/crypto.md §5 Passing on, `labeling::opened`, Reseal.tla; sync's one caller `Engine::seal_body`): a node encrypts another's part under an epoch it chooses only while an epoch it opened that part (a copy's content, or the header: under which it unwrapped an entry of the commit) under is established there. Left: content read in no section (a plaintext ingest) still passes on.
+> Summary: Built (spec/crypto.md §5 Passing on, `sync_ids::opened`, Reseal.tla; sync's one caller `Engine::seal_body`): a node encrypts another's part under an epoch it chooses only while an epoch it opened that part (a copy's content, or the header: under which it unwrapped an entry of the commit) under is established there. Left: content read in no section (a plaintext ingest) still passes on.
 > Priority: normal
 > Tags: security, keys, engine
 
@@ -8,7 +8,7 @@ The leak (reproduced: `rotation::tests_reseal`): a2 removes reader M (W); R, hol
 The rule and where it lives: notes/crypto.md (Passing on content), notes/sync-facade.md (Sealing). Facade tests: `rotation::tests_reseal::facade_*`.
 
 ## Open
-- **Content read in no section passes on** (`labeling::opened::passes_on`): a part whose openings are empty passes as the node's own, into a fresh encryption or a snapshot. A copy is not such a path (its content counts as opened under its wrap's epoch, of the sync ID's thing: `cross_thing_copy_content_never_resealed_spec_crypto_5`); left are plaintext ingests: an inbox payload (the sender's own flow commit) and LocalPeer's plain delivery (the engine tests' main harness, which carries every commit so; 13 engine tests compact aspects so). Fail closed is safe and live in the model (`RS_closed`); close it once that harness delivers sections.
+- **Content read in no section passes on** (`sync_ids::opened::passes_on`): a part whose openings are empty passes as the node's own, into a fresh encryption or a snapshot. A copy is not such a path (its content counts as opened under its wrap's epoch, of the sync ID's thing: `cross_thing_copy_content_never_resealed_spec_crypto_5`); left are plaintext ingests: an inbox payload (the sender's own flow commit) and LocalPeer's plain delivery (the engine tests' main harness, which carries every commit so; 13 engine tests compact aspects so). Fail closed is safe and live in the model (`RS_closed`); close it once that harness delivers sections.
 - Reseal.tla models section openings only: the header opening by a wrap's epoch (`note_unwrapped`) and a copy's opening by it are not in it.
 
 ## Limits

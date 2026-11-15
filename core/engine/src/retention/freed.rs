@@ -43,7 +43,7 @@ pub struct Freed {
     /// Judged freed at least once: walked, its bytes gone here, kept out of the store.
     judged: bool,
     /// Its bytes were held when judged and their prefix bears its Del under the thing's blind:
-    /// the label delete key may delete it.
+    /// the sync ID delete key may delete it.
     pub borne: bool,
     memory: bool,
 }
@@ -184,7 +184,7 @@ pub struct Judgment {
     pub freed: Vec<Freed>,
     /// Those of `freed` judged freed for the first time (walked, their keys gone) or judged again
     /// as their wait ended: their bytes go here and their entries are judged again (a row judged
-    /// outside its label's pass is deleted by that label's next pass).
+    /// outside its sync ID's pass is deleted by that sync ID's next pass).
     pub fresh: BTreeSet<BlobId>,
 }
 
@@ -239,7 +239,7 @@ fn judge(tx: &mut Tx<'_>, fs: Vec<Freed>) -> Result<Judgment> {
                     match tx.blobs.get(&f.link.blob)? {
                         Some(bytes) => {
                             let blind = f.blinding().1;
-                            if !osis_label::Prefix::parse(&bytes).is_ok_and(|p| osis_label::tree::bears(&p, &f.link.del, &blind)) {
+                            if !osis_blob::Prefix::parse(&bytes).is_ok_and(|p| osis_blob::tree::bears(&p, &f.link.del, &blind)) {
                                 remove(tx, &f)?;
                                 continue;
                             }
@@ -307,7 +307,7 @@ fn judge_blobs(tx: &mut Tx<'_>, blobs: &BTreeSet<BlobId>) -> Result<(Judgment, V
         }
     }
     let mut j = judge(tx, fs)?;
-    // a woken row may be another label's: its entries are judged again (`Judgment::fresh`)
+    // a woken row may be another sync ID's: its entries are judged again (`Judgment::fresh`)
     let again: Vec<BlobId> = j.freed.iter().map(|f| f.link.blob).filter(|b| woken.contains(b)).collect();
     j.fresh.extend(again);
     Ok((j, woke))
@@ -349,7 +349,7 @@ pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid,
                 }
                 let Some(bytes) = tx.blobs.get(&l.blob)? else { continue };
                 let blind = osis_crypto::thing_blind(&osis_crypto::link_blind(&l.key), t.as_bytes());
-                if !osis_label::Prefix::parse(&bytes).is_ok_and(|p| osis_label::tree::bears(&p, &l.del, &blind)) {
+                if !osis_blob::Prefix::parse(&bytes).is_ok_and(|p| osis_blob::tree::bears(&p, &l.del, &blind)) {
                     continue;
                 }
                 if let Some((_, kids)) = crate::engine::large::kids_of(dedup.as_ref(), &l, &bytes) {
@@ -414,7 +414,7 @@ impl Engine {
         self.core.freed_waits.keys()
     }
 
-    /// Freed links gone from every label entry known here: they leave the set.
+    /// Freed links gone from every sync ID entry known here: they leave the set.
     pub fn freed_done(&mut self, done: &[(Tid, BlobId)]) -> Result<()> {
         if done.is_empty() {
             return Ok(());
@@ -588,7 +588,7 @@ mod tests {
 
     // spec/sync-compaction.md §1 freed links: a link judged freed whose next judgment waits for a held
     // source's node (a co-writer's new tree not fetched yet) is handed on again once the node
-    // comes, as one judged anew: its entries are judged again under their own label, whichever
+    // comes, as one judged anew: its entries are judged again under their own sync ID, whichever
     // pass woke it, so its delete at hosts is not stranded.
     #[test]
     fn a_judged_link_woken_from_a_wait_is_handed_on_spec_sync_7() {
@@ -607,7 +607,7 @@ mod tests {
         let j = e.judge_freed(&BTreeSet::new()).unwrap();
         let got: BTreeSet<BlobId> = j.freed.iter().map(|f| f.link.blob).collect();
         assert_eq!(got, freed, "judged again once the node came");
-        assert_eq!(j.fresh, freed, "handed on so their labels judge them again");
+        assert_eq!(j.fresh, freed, "handed on so their sync IDs judge them again");
     }
 
     // spec/crypto.md §7, spec/sync-compaction.md §1 freed links (a link is judged under its own thing; a

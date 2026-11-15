@@ -41,7 +41,7 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
 
 /// The chain commits an inbox payload carries (spec/wire.md §9) that decode as commit blobs, each
 /// cut to its chain deltas. Admission judges the blob's commit, which anyone can name: a box or a
-/// `label.0` here would be an invite nobody was asked about; a bare edge is the limit (a status
+/// `sync.0` here would be an invite nobody was asked about; a bare edge is the limit (a status
 /// row at worst).
 pub fn inbox_chain(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, CommitBlob)> {
     // each value freed before its plaintext decodes: never two decoded copies of a stranger's blob
@@ -124,7 +124,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     }
     let role = tx.core.role_now(&who, &target);
     let admin = crate::engine::secrets::usable_role(tx, &target, role)? == Some(Role::Admin);
-    // a non-writer of the target's label deposits its invite grant (spec/sync-judgement.md §1)
+    // a non-writer of the target's sync ID deposits its invite grant (spec/sync-judgement.md §1)
     let ts = now_ts(tx.core);
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
     let invite = tx.core.timelines.get(&target).and_then(|tl| tl.invite(&who, &target, At::now(ts)));
@@ -315,7 +315,7 @@ fn leaves_no_admin(core: &crate::engine::Core, target: &Tid, lowered: &[(Tid, Op
 /// rotate does), and the leaver drops what it lost. An explicit removal of an absent edge resets
 /// its dead entries (spec/permissions.md §2). With `others`, an explicit removal of those
 /// holders' edges too, under the same frontier and one rotation (spec/commits.md §2). Then the
-/// inbox copy to each holder, and placement before any other upload under every label the
+/// inbox copy to each holder, and placement before any other upload under every sync ID the
 /// removed parties could read.
 pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_base::Value>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.writer()?);

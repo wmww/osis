@@ -366,13 +366,13 @@ fn range_under_removed_key_absent_spec_crdt_5_6() {
     }
 }
 
-// spec/data-model.md §6: role-class values stay inline whatever their size. A label's claim set for
-// 2049-4096 readers passes `CHUNK_THRESHOLD`; its `label.0` write applies at its writer and reader.
+// spec/data-model.md §6: role-class values stay inline whatever their size. A sync ID's claim set for
+// 2049-4096 readers passes `CHUNK_THRESHOLD`; its `sync.0` write applies at its writer and reader.
 #[test]
-fn label_claim_set_above_the_threshold_stays_inline_spec_dm_6() {
+fn sync_id_claim_set_above_the_threshold_stays_inline_spec_dm_6() {
     let mut lp = net(2, 0);
     let t = new_thing(&mut lp, 0);
-    let claims = osis_label::ClaimSet { claims: vec![[1; 32]; 4096], entries: Default::default() }.to_bytes();
+    let claims = osis_blob::ClaimSet { claims: vec![[1; 32]; 4096], entries: Default::default() }.to_bytes();
     assert!(claims.len() > osis_base::format::CHUNK_THRESHOLD);
     let l = ct::SyncEntry { steps: [([9; 32], ct::StepRecord { step: vec![1; 200], claims: Some(claims) })].into_iter().collect() };
     let mut m = Mutation::new();

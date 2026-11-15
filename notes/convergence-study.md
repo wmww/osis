@@ -34,5 +34,5 @@ Classes: **F** forged copies by an authenticated writer (bounded, out of scope b
 - Writes the revoker had not received (unreachable peers, edits not yet synced, in transit): lost alike; a re-grant brings back only those some node still holds (spec/requirements.md Permissions). The designed semantics.
 - Every writer dropped what only a reader kept: lasts to the next write (spec/requirements.md Deterministic; notes/engine-suspects.md Repair).
 
-## 5. Not built: label digests
+## 5. Not built: sync ID digests
 Detection of unknown divergence: a set-hash (XOR of BLAKE3) of the commits applied under a sync ID (`held`) and one over per-aspect state digests of the sync ID's closure (`state`) in a message between connected co-readers; two co-readers with equal `held` and unequal `state` have diverged, reported as a diagnostic only. Cost found: a per-aspect digest kept current means hashing on every state write, page-wise for paged states (the store keeps no per-page hash), plus a per-sync-ID set-hash over the closure that sync keeps as things enter and leave a sync ID; a few hundred lines in the engine's write path and sync's work sets. Suspect entries compute their digest on demand instead. It would be the first field signal for divergences the oracles missed.

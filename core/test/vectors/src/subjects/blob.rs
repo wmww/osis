@@ -7,7 +7,7 @@ use crate::file::{Record, VecFile};
 use crate::hex;
 use osis_base::{Del, Link, Value, WallMs, encode};
 use osis_crypto::{DeleteSecret, SUITE_1, aead, link_blind, link_hash, link_tree_hash, pad, thing_blind};
-use osis_label::{Error, Prefix, frame, open, tree::node_plaintext};
+use osis_blob::{Error, Prefix, frame, open, tree::node_plaintext};
 
 const SPEC: &str = "spec/wire.md §5";
 
@@ -52,8 +52,8 @@ pub fn prefixes() -> VecFile {
     let mut cases = vec![prefix_case("no commitments, no expiry", &Prefix::new(salt, None, vec![]).unwrap())];
     cases.push(prefix_case("one commitment, expiry", &Prefix::new(salt, Some(WallMs(1_700_000_000_000)), vec![vec![c(2, 0x22)]]).unwrap()));
     cases.push(prefix_case("two groups, one empty (a `nobody` delta's)", &Prefix::new(salt, None, vec![vec![c(2, 0x22), c(3, 0x27)], vec![]]).unwrap()));
-    cases.push(prefix_case("ephemeral class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_label::Class::Ephemeral)));
-    cases.push(prefix_case("relay-only class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_label::Class::Relay)));
+    cases.push(prefix_case("ephemeral class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_blob::Class::Ephemeral)));
+    cases.push(prefix_case("relay-only class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_blob::Class::Relay)));
     // Commitments derived from (level, delete key) pairs under the prefix salt.
     let keys: Vec<(u8, osis_crypto::VerifyingKey)> = [(1u8, 0x23u8), (2, 0x24), (3, 0x25)].iter().map(|(l, b)| (*l, DeleteSecret::derive(&s32(*b)).verifying_key())).collect();
     let hb = [0x26u8; 16];
@@ -97,7 +97,7 @@ pub fn prefixes() -> VecFile {
 fn blob_case(name: &str, spec: &str, prefix: &Prefix, del: Del, plaintext: &[u8], key: [u8; 32], hash: [u8; 32]) -> (Record, Link) {
     let (k, blob) = frame(prefix, plaintext, &mut FixedRng::new(&[&key])).unwrap();
     assert_eq!(open(&blob, &k).unwrap().1, plaintext);
-    let id = osis_label::blob_id(&blob);
+    let id = osis_blob::blob_id(&blob);
     let r = case(name, spec)
         .with("prefix", hex(&prefix.to_bytes()))
         .with("plaintext", hex(plaintext))

@@ -1,4 +1,4 @@
-//! Errors of commits, chunk trees and label objects (osis-label uses this type; notes/architecture.md §3).
+//! Errors of commits, chunk trees and sync ID objects (osis-blob uses this type; notes/architecture.md §3).
 
 use osis_base::{Classified, DecodeError, ErrorClass};
 
@@ -15,7 +15,7 @@ pub enum Error {
     /// A blob framing version this build does not know: store and relay it as a blob with no
     /// expiry and no commitments (spec/wire.md §5). Parked.
     UnknownFraming(u8),
-    /// A blob ID, signature or path check of a label object failed. BadInput.
+    /// A blob ID, signature or path check of a sync ID object failed. BadInput.
     Verify(&'static str),
     /// The signature does not verify. BadInput.
     BadSignature,
@@ -87,7 +87,7 @@ impl From<osis_crypto::Error> for Error {
     }
 }
 
-/// Label stores behind osis-crdt's page plugs: what a page read or write of a label blob reports.
+/// Sync ID stores behind osis-crdt's page plugs: what a page read or write of a sync ID blob reports.
 impl From<Error> for osis_crdt::PageError {
     fn from(e: Error) -> osis_crdt::PageError {
         match e {

@@ -6,9 +6,9 @@
 
 use osis_base::{SyncId, Tid};
 use std::sync::Arc;
-use osis_crypto::{Epoch, LabelRole, Secret32, Signature, SigningSecret, label_role_key};
+use osis_crypto::{Epoch, RoleKey, Secret32, Signature, SigningSecret, role_key};
 use osis_engine::sync::{Path, SyncRecord};
-use osis_label::{Step, StepKeys};
+use osis_blob::{Step, StepKeys};
 use osis_sync::unread::{Judged, judge};
 
 
@@ -35,17 +35,17 @@ fn sync_secret(e: u64) -> Secret32 {
 
 /// The delete (admin) key of step `e`.
 fn delete_key(e: u64) -> SigningSecret {
-    label_role_key(LabelRole::Delete, &secret(0xad, e))
+    role_key(RoleKey::Delete, &secret(0xad, e))
 }
 
 /// Step `e` of `s`: epoch `e`'s sync and delete keys (unread checks no step signature: the store
 /// verified the path when it took each Register).
 fn step(s: SyncId, e: u64) -> Step {
-    let other = label_role_key(LabelRole::Write, &secret(0x77, e)).verifying_key();
+    let other = role_key(RoleKey::Write, &secret(0x77, e)).verifying_key();
     Step {
-        label: s,
+        sync_id: s,
         prev: None,
-        keys: StepKeys { sync: label_role_key(LabelRole::Sync, &sync_secret(e)).verifying_key(), write: other, delete: delete_key(e).verifying_key(), deposit: other },
+        keys: StepKeys { sync: role_key(RoleKey::Sync, &sync_secret(e)).verifying_key(), write: other, delete: delete_key(e).verifying_key(), deposit: other },
         step_key: [e as u8; 32],
         claims_hash: [0; 32],
         sig: Signature([0; 64]),
@@ -116,7 +116,7 @@ fn keeps_and_opens_by_head_spec_sync_judgement_6() {
     let c = k.kept().credentials.expect("opens at its head");
     assert_eq!(sync_keys(&c), vec![step(sync_id(0), 0).keys.sync]);
     assert_eq!(c.deposit, Some(step(sync_id(0), 0).keys.deposit));
-    assert_eq!(c.keys[0].1, Secret32::from_bytes(osis_crypto::kdf::sync_proof(&osis_crypto::label_role_seed(LabelRole::Sync, &sync_secret(0)))));
+    assert_eq!(c.keys[0].1, Secret32::from_bytes(osis_crypto::kdf::sync_proof(&osis_crypto::role_key_seed(RoleKey::Sync, &sync_secret(0)))));
     assert!(!k.stranded());
 }
 
@@ -219,12 +219,12 @@ fn a_box_at_a_self_made_epoch_keeps_nothing_spec_sync_hostile_1() {
     assert_eq!(k.shows(), vec![step(sync_id(0), 0).keys.sync]);
     k.register(1);
     assert!(k.stranded(), "removed: its copy goes whatever box it holds");
-    assert_eq!(k.shows(), vec![label_role_key(LabelRole::Sync, &sync_secret(1_000_000)).verifying_key()]);
+    assert_eq!(k.shows(), vec![role_key(RoleKey::Sync, &sync_secret(1_000_000)).verifying_key()]);
 }
 
 /// The sync key of epoch `e`, as bytes.
 fn key_bytes(e: u64) -> [u8; 32] {
-    label_role_key(LabelRole::Sync, &sync_secret(e)).verifying_key().to_bytes()
+    role_key(RoleKey::Sync, &sync_secret(e)).verifying_key().to_bytes()
 }
 
 // spec/sync.md §3 (A recorded secret: a held secret goes to the account's record once a step on
@@ -255,7 +255,7 @@ fn a_sync_id_kept_for_two_things_is_synced_for_the_one_its_path_ties_spec_sync_3
     let s = sync_id(0);
     let u = Tid::from_bytes([1; 15]);
     let t = thing();
-    let none: [(Step, Option<osis_label::ClaimSet>); 0] = [];
+    let none: [(Step, Option<osis_blob::ClaimSet>); 0] = [];
     let path = [(step(s, 0), None)];
     let (rt, ru) = (record(s, &[0], false), record(s, &[9], false));
     for records in [vec![(u, ru.clone()), (t, rt.clone())], vec![(t, rt), (u, ru)]] {

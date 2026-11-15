@@ -8,7 +8,7 @@ use crate::engine::Engine;
 use crate::error::Result;
 use osis_base::{CommitId, Role, SyncId, Tid};
 use osis_crypto::{Epoch, Secret32, SigningSecret, X25519Secret};
-use osis_label::StepId;
+use osis_blob::StepId;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -68,7 +68,7 @@ impl Engine {
         }
         let mut emptying: Vec<Tid> = self.core.ix.destroyed_sync_ids.keys().copied().collect();
         // links being redeemed (spec/sync-set.md §2)
-        emptying.extend(self.core.followed_links.keys().filter(|k| crate::labeling::actors::followable(self, k)).copied());
+        emptying.extend(self.core.followed_links.keys().filter(|k| crate::sync_ids::actors::followable(self, k)).copied());
         if emptying.iter().all(|t| closure.contains(t)) {
             return Ok(closure);
         }
@@ -127,7 +127,7 @@ impl Engine {
         // a link being redeemed: its sync ID read while followed, whatever is held of K yet, while
         // it is K's (`followable`; from the link text until K's own `sync.0` records it)
         if let Some((s, _)) = self.core.followed_links.get(t).copied()
-            && crate::labeling::actors::followable(self, t)
+            && crate::sync_ids::actors::followable(self, t)
             && self.owned_sync_ids(t)?.iter().any(|o| o.id == s)
         {
             return Ok(ThingSync::Read(vec![s]));
@@ -198,7 +198,7 @@ impl Engine {
                 .held_newest_first()
                 .into_iter()
                 .map(|(ep, x)| {
-                    let seed = osis_crypto::label_role_seed(osis_crypto::LabelRole::Sync, x);
+                    let seed = osis_crypto::role_key_seed(osis_crypto::RoleKey::Sync, x);
                     (ep, seed.clone(), SigningSecret::from_seed(&seed))
                 })
                 .collect();

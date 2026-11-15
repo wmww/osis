@@ -1,5 +1,5 @@
 //! `chunker/`: gear table and chunk boundaries (spec/wire.md §6). Generated. Chunk trees and
-//! pages use osis-label and osis-crdt (`chunker/tree.vec`, `chunker/pages.vec`).
+//! pages use osis-blob and osis-crdt (`chunker/tree.vec`, `chunker/pages.vec`).
 
 use super::generated_header;
 use crate::file::{Record, VecFile};
@@ -39,7 +39,7 @@ pub fn gear() -> VecFile {
 /// chunk count, per level the link counts of its nodes in order, root content hash. Dedup
 /// secret `07`.
 pub fn tree() -> VecFile {
-    use osis_label::{HashSink, write_tree};
+    use osis_blob::{HashSink, write_tree};
     let dedup = osis_crypto::Secret32::from_bytes([0x07; 32]);
     let inputs: [(&str, &str, Vec<u8>); 2] =
         [("xof 64 MiB", "xof(\"osis test tree\", 67108864)", xof("osis test tree", 64 << 20)), ("zeros 1 MiB", "zeros(1048576)", vec![0; 1 << 20])];

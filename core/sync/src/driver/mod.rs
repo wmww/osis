@@ -35,7 +35,7 @@ use crate::life::Life;
 use osis_base::{SyncId, Tid, WallMs};
 use osis_crypto::NodeRng;
 use osis_engine::Engine;
-use osis_label::Address;
+use osis_blob::Address;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -383,7 +383,7 @@ impl Node {
 
     /// Redeems a share link (spec/sync-inbox.md §6): first contact, kept until the join is held
     /// elsewhere. `Done` once the join is written.
-    pub fn redeem(&mut self, link: &osis_label::ShareLink) -> Waiting {
+    pub fn redeem(&mut self, link: &osis_blob::ShareLink) -> Waiting {
         // its follow time runs from now (`Policy::follow_link_ms`)
         self.now = self.now.max(self.engine.now());
         let mut out = Vec::new();
@@ -401,22 +401,22 @@ impl Node {
     /// Writes a bundle of the sync IDs `ids` held here (spec/sync-streams.md §6, spec/wire.md
     /// §12): each one's path, then its entries with their blobs, durable ones only.
     pub fn export_bundle(&self, ids: &[SyncId], out: &mut dyn std::io::Write) -> Result<()> {
-        use osis_label::Record;
-        let proto = |e: osis_label::Error| Error::Proto(osis_proto::Error::Label(e));
-        let mut w = osis_label::BundleWriter::new(out).map_err(proto)?;
+        use osis_blob::Record;
+        let proto = |e: osis_blob::Error| Error::Proto(osis_proto::Error::Blob(e));
+        let mut w = osis_blob::BundleWriter::new(out).map_err(proto)?;
         let mut sent = std::collections::BTreeSet::new();
         for s in ids {
             let Some(path) = self.store.path(s)? else { continue };
-            w.record(&Record::Path { label: *s, steps: path.steps.clone() }).map_err(proto)?;
+            w.record(&Record::Path { sync_id: *s, steps: path.steps.clone() }).map_err(proto)?;
             for e in self.store.entries(s)? {
-                if e.class != osis_label::Class::Durable {
+                if e.class != osis_blob::Class::Durable {
                     continue;
                 }
                 if sent.insert(e.blob) {
                     let Some(b) = self.store.bytes(&e.blob)? else { continue };
                     w.record(&Record::Blob(b)).map_err(proto)?;
                 }
-                w.record(&Record::Entry { label: *s, blob: e.blob, wrap: e.wrap, stamp: e.stamp }).map_err(proto)?;
+                w.record(&Record::Entry { sync_id: *s, blob: e.blob, wrap: e.wrap, stamp: e.stamp }).map_err(proto)?;
             }
         }
         w.finish().map_err(proto)?;
@@ -479,7 +479,7 @@ impl Node {
         match input {
             Input::Up { conn, peer, rank, dialed, listener } => {
                 let how = match (dialed, self.driver.dials.dialed_to(conn)) {
-                    (true, Some(to)) => format!("dialed {}", osis_label::address_to_text(&to)),
+                    (true, Some(to)) => format!("dialed {}", osis_blob::address_to_text(&to)),
                     (true, None) => "dialed".into(),
                     (false, _) => "accepted".into(),
                 };
@@ -673,7 +673,7 @@ impl Node {
     fn closed(&mut self, conn: ConnId, why: &str, out: &mut Vec<Out>) {
         // a dial that lost its pair to a live connection is held by it (spec/sync-opens.md §1)
         let lost = self.opens.lost_to(conn).filter(|w| self.driver.sessions.get(*w).is_some());
-        let to = self.driver.dials.dialed_to(conn).map(|a| osis_label::address_to_text(&a));
+        let to = self.driver.dials.dialed_to(conn).map(|a| osis_blob::address_to_text(&a));
         let detail = match (self.driver.sessions.get(conn), to) {
             (Some(s), to) => format!("{} closed: {}{}", conn_name(conn), s.closing().unwrap_or(why), to.map(|t| format!(" (dialed {t})")).unwrap_or_default()),
             (None, Some(to)) => format!("{} dial to {to} failed: {why}", conn_name(conn)),

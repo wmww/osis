@@ -29,9 +29,9 @@ pub(crate) fn parse_step(step: &[u8], claims: Option<&[u8]>) -> Result<(Step, Op
 }
 
 /// The steps of a sync ID by ID, each keyed by its own ID.
-pub fn sync_steps(label: &SyncEntry) -> Result<BTreeMap<StepId, (Step, Option<ClaimSet>)>, Error> {
+pub fn sync_steps(sync_id: &SyncEntry) -> Result<BTreeMap<StepId, (Step, Option<ClaimSet>)>, Error> {
     let mut out = BTreeMap::new();
-    for (id, r) in &label.steps {
+    for (id, r) in &sync_id.steps {
         let (s, c) = parse_record(r)?;
         if s.id().0 != *id {
             return Err(Error::Verify("step record key is not its step ID"));
@@ -59,19 +59,19 @@ mod tests {
         let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
         let (s1, c1) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
         let (s2, _) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e, &g.read), g.sync_at(), &mut rng).unwrap();
-        let mut label = SyncEntry { steps: BTreeMap::new() };
-        label.steps.insert(s0.id().0, step_record(&s0, Some(&c0)));
-        label.steps.insert(s1.id().0, step_record(&s1, Some(&c1)));
-        label.steps.insert(s2.id().0, step_record(&s2, None));
-        let back = SyncEntry::from_value(&label.to_value()).unwrap();
-        assert_eq!(back, label);
-        let steps: BTreeMap<StepId, Step> = sync_steps(&label).unwrap().into_iter().map(|(k, (s, _))| (k, s)).collect();
+        let mut sync_id = SyncEntry { steps: BTreeMap::new() };
+        sync_id.steps.insert(s0.id().0, step_record(&s0, Some(&c0)));
+        sync_id.steps.insert(s1.id().0, step_record(&s1, Some(&c1)));
+        sync_id.steps.insert(s2.id().0, step_record(&s2, None));
+        let back = SyncEntry::from_value(&sync_id.to_value()).unwrap();
+        assert_eq!(back, sync_id);
+        let steps: BTreeMap<StepId, Step> = sync_steps(&sync_id).unwrap().into_iter().map(|(k, (s, _))| (k, s)).collect();
         assert_eq!(crate::step::path_to(&steps, &s1.id()).unwrap(), vec![s0.clone(), s1.clone()]);
         // A claim set of another step, or a record under the wrong key, is rejected.
-        let mut bad = label.clone();
+        let mut bad = sync_id.clone();
         bad.steps.insert(s1.id().0, step_record(&s1, Some(&c0)));
         assert!(sync_steps(&bad).is_err());
-        let mut bad = label;
+        let mut bad = sync_id;
         bad.steps.insert([0; 32], step_record(&s1, None));
         assert!(sync_steps(&bad).is_err());
     }

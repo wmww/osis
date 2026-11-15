@@ -1304,7 +1304,7 @@ fn an_evicted_record_goes_whole_and_is_a_first_contact_spec_sync_opens_3() {
     let mut p = readers();
     let rid = p.a.opens.record(p.ca).unwrap();
     // rows of other modules in the record: a stand (store), a source's word (streams)
-    let stand = osis_sync::store::Stand { at: osis_base::WallMs(1), logged: osis_base::BlobId([1; 32]), head: osis_label::StepId([2; 32]), fall: 0 };
+    let stand = osis_sync::store::Stand { at: osis_base::WallMs(1), logged: osis_base::BlobId([1; 32]), head: osis_blob::StepId([2; 32]), fall: 0 };
     p.a.store.set_stand(Source::Record(rid), &S, b"body", Some(&stand)).unwrap();
     p.a.store.with_tx(|t| t.record_put_row(&rid, b'k', &S, &[3; 32], Vec::new())).unwrap();
     // in use: kept whatever the budget
@@ -1512,28 +1512,28 @@ fn an_unchanged_filter_asks_behind_on_nothing_spec_sync_ids_6() {
 // held sync key no recorded step bears is tested (by no step), one a step bears only at its step.
 #[test]
 fn a_reader_tests_each_held_sync_key_after_its_steps_spec_sync_ids_6() {
-    use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, label_role_key};
-    use osis_engine::labeling::HeadKeys;
+    use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, role_key};
+    use osis_engine::sync_ids::HeadKeys;
     use osis_engine::sync::{Path, ReadCredentials};
-    use osis_label::{Parent, StepKeys};
+    use osis_blob::{Parent, StepKeys};
     use osis_sync::opens::cred::Tested;
     use osis_sync::opens::holds::walk_tests;
     let thing = osis_base::Tid::from_bytes([3; 15]);
     let admin = Secret32::from_bytes([0xab; 32]);
     let (old, new) = (Secret32::from_bytes([1; 32]), Secret32::from_bytes([2; 32]));
-    let id = osis_label::genesis_label(&admin);
+    let id = osis_blob::genesis_sync_id(&admin);
     let keys = StepKeys::derive(&old, &old, &admin, &Secret32::from_bytes([9; 32]), &id);
     let read = Epoch::derive(&thing, osis_base::Role::Read, 0, &old).unwrap();
     let se = |n: u64, x: &Secret32| Epoch::derive(&thing, osis_base::Role::Sync, n, x).unwrap();
-    let d = label_role_key(LabelRole::Delete, &admin);
-    let (genesis, _) = osis_label::register(Parent::Genesis(&d), keys, &[], (&thing, read, &old), (se(0, &old), &old), &mut SeededRng::from_u64(0)).unwrap();
-    let k = |x: &Secret32| label_role_key(LabelRole::Sync, x);
+    let d = role_key(RoleKey::Delete, &admin);
+    let (genesis, _) = osis_blob::register(Parent::Genesis(&d), keys, &[], (&thing, read, &old), (se(0, &old), &old), &mut SeededRng::from_u64(0)).unwrap();
+    let k = |x: &Secret32| role_key(RoleKey::Sync, x);
     let mut rc = ReadCredentials::default();
     rc.keys.insert(genesis.id(), HeadKeys { sync: Some(k(&old)), epochs: [Some(se(0, &old)), None, None], ..HeadKeys::default() });
     rc.sync_keys = vec![(se(1, &new), k(&new)), (se(0, &old), k(&old))];
     let path = Path { steps: vec![(genesis.clone(), None)] };
     let tests = walk_tests(&rc, &path, &mut |_| None);
-    let got: Vec<(Option<osis_label::StepId>, [u8; 32])> = tests
+    let got: Vec<(Option<osis_blob::StepId>, [u8; 32])> = tests
         .iter()
         .map(|(t, _)| match t {
             Tested::SyncKey { step, key } => (*step, key.verifying_key().to_bytes()),
@@ -1549,20 +1549,20 @@ fn a_reader_tests_each_held_sync_key_after_its_steps_spec_sync_ids_6() {
 
 /// S's recorded genesis step (its sync key `st`'s) and a child step under it whose sync key the
 /// reader does not hold, signed by the genesis delete key (`bad`: signed by another key).
-fn path_past(st: &StepKeys, bad: bool) -> (osis_label::Step, osis_label::Step) {
+fn path_past(st: &StepKeys, bad: bool) -> (osis_blob::Step, osis_blob::Step) {
     use osis_crypto::{Domain, Secret32, Signature, SigningSecret};
     let d0 = SigningSecret::from_seed(&Secret32::from_bytes([0xd0; 32]));
-    let keys = |sync: osis_crypto::VerifyingKey, d: &SigningSecret| osis_label::StepKeys { sync, write: d.verifying_key(), delete: d.verifying_key(), deposit: d.verifying_key() };
-    let g0 = osis_label::Step { label: S, prev: None, keys: keys(st.sync.verifying_key(), &d0), step_key: [1; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
+    let keys = |sync: osis_crypto::VerifyingKey, d: &SigningSecret| osis_blob::StepKeys { sync, write: d.verifying_key(), delete: d.verifying_key(), deposit: d.verifying_key() };
+    let g0 = osis_blob::Step { sync_id: S, prev: None, keys: keys(st.sync.verifying_key(), &d0), step_key: [1; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
     let d1 = SigningSecret::from_seed(&Secret32::from_bytes([0xd1; 32]));
-    let mut g1 = osis_label::Step { label: S, prev: Some(g0.id()), keys: keys(StepKeys::new(1, 1).sync.verifying_key(), &d1), step_key: [2; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
+    let mut g1 = osis_blob::Step { sync_id: S, prev: Some(g0.id()), keys: keys(StepKeys::new(1, 1).sync.verifying_key(), &d1), step_key: [2; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
     g1.sig = if bad { &d1 } else { &d0 }.sign(Domain::SyncStep, &g1.digest());
     (g0, g1)
 }
 
 /// A reader at recorded step `st` whose only peer, Adv, J judges a sync holder, its filter
 /// showing nothing of the reader's; Adv answers the reader's first Behind with `answer`.
-fn walk_answered(answer: osis_proto::SharedItem, bad: bool) -> (Side, Adv, osis_label::Step) {
+fn walk_answered(answer: osis_proto::SharedItem, bad: bool) -> (Side, Adv, osis_blob::Step) {
     let st = StepKeys::new(1, 0);
     let (g0, g1) = path_past(&st, bad);
     let mut r = Side::new(1);

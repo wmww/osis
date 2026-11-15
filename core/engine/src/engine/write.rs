@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
 use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, record_chain};
 use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
-use osis_label::{BlobWriter, Framing};
+use osis_blob::{BlobWriter, Framing};
 use osis_perm::At;
 use osis_schema::core_types::{CREATED, is_role_class};
 use osis_schema::{RawKey, Retention, Schema};
@@ -155,7 +155,7 @@ impl Mutation {
     }
 
     /// The commit fails `Error::Unsynced` when, after it, `tid` is durable and in no synced
-    /// (labeled) group's closure while `group` is: a membership in a group that is an item of a
+    /// group's closure while `group` is: a membership in a group that is an item of a
     /// synced group but no subgroup of one (spec/sync-set.md §2).
     pub fn require_synced(&mut self, tid: Tid, group: Tid) -> &mut Self {
         self.synced.push((tid, group));
@@ -444,7 +444,7 @@ pub(crate) struct Resolved {
     /// A snapshot delta's frontiers, absorbed commits and facts (spec/crdt.md §8).
     pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_base::CommitId, Tid>, osis_crdt::Facts)>,
     /// Chunk blobs of large values the delta introduces.
-    pub chunks: Vec<osis_label::Written>,
+    pub chunks: Vec<osis_blob::Written>,
 }
 
 /// Inputs of a commit other than its deltas.
@@ -533,7 +533,7 @@ pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, publishe
     let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published };
     let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
-    let class = if memory { osis_label::Class::Ephemeral } else { osis_label::Class::Durable };
+    let class = if memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable };
     Ok(Framing { thing: *tid, dedup, expiry: plan.expires.map(WallMs), class, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
 }
 
@@ -715,7 +715,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     crate::apply::apply_local(tx, &built.commit, built.signed, received)?;
     // the epoch each content part was made under, where it has a floor (spec/crypto.md §5
     // Passing on)
-    crate::labeling::opened::note_own(tx, &built.commit)?;
+    crate::sync_ids::opened::note_own(tx, &built.commit)?;
     Ok(id)
 }
 
@@ -864,7 +864,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
                 // node granted without history after it lists the edit nowhere, as it holds no
                 // version of the original (spec/commits.md §5 Signals, spec/crypto.md §4)
                 am.original_floor = match tx.core.ix.commits.get(&o).and_then(|m| m.aspect(&tid, &ak)) {
-                    Some(oai) => crate::labeling::opened::part_floor(tx, &o, oai, &tid)?.unwrap_or(0),
+                    Some(oai) => crate::sync_ids::opened::part_floor(tx, &o, oai, &tid)?.unwrap_or(0),
                     None => 0,
                 };
                 #[cfg(test)]
@@ -1005,7 +1005,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     if deltas.is_empty() && plan.purge.is_empty() {
         return Ok(None);
     }
-    // a request is placed under its thing's labels by a delta on the thing (spec/commits.md §5
+    // a request is placed under its thing's sync IDs by a delta on the thing (spec/commits.md §5
     // Purge): in a commit that expires, one of its own writes there (`place_requests`), which may
     // write nothing
     if plan.expires.is_some()

@@ -6,7 +6,7 @@
 //! node drops only what it holds, may destroy, and judges unreachable from what it holds.
 //!
 //! Abstracted: what "references" reads (a tid in the retainer's kept data), validity (only valid
-//! writes reach a view), the right to destroy (a set of things), hearing labels out (a `View` is a
+//! writes reach a view), the right to destroy (a set of things), hearing sync IDs out (a `View` is a
 //! node's data once heard out; `view_of` shows what a part-received commit set does instead).
 use std::collections::BTreeSet;
 

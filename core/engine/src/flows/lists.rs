@@ -211,7 +211,7 @@ impl Engine {
 
     /// The list blob plaintext of rotation `r` for things in `things` (every held one: `None`),
     /// from its certs held here, or `None` when none is held: what a node of the rotation's
-    /// account places under a label holding those things (spec/permissions.md §5.5, Chains
+    /// account places under a sync ID holding those things (spec/permissions.md §5.5, Chains
     /// travel).
     pub fn list_blob(&mut self, r: &CommitId, things: Option<&BTreeSet<Tid>>) -> Result<Option<Vec<u8>>> {
         let r = *r;

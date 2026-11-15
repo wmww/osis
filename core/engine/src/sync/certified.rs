@@ -14,7 +14,7 @@
 use super::ThingSync;
 use crate::Engine;
 use crate::error::Result;
-use crate::labeling::{Certs, Parts};
+use crate::sync_ids::{Certs, Parts};
 use osis_base::memo::{Effects, Feed, Stamped, StampedSet, Unrecorded};
 use osis_base::{CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
@@ -545,7 +545,7 @@ mod tests {
         }
         let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
         // a link's K, written first by the sharer node and then by L (an author that is no node)
-        let link: std::cell::RefCell<Option<osis_label::ShareLink>> = Default::default();
+        let link: std::cell::RefCell<Option<osis_blob::ShareLink>> = Default::default();
         let k = || link.borrow().as_ref().unwrap().k;
         type Step<'a> = (&'a str, Box<dyn Fn(&mut LocalPeer) + 'a>);
         let steps: Vec<Step> = vec![

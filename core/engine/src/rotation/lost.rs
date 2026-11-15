@@ -13,7 +13,7 @@ use osis_schema::core_types::BoxKey;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Actors lost by an `until` passing alone (`lost_by_time`), left to node-sync to hear their
-/// labels out first (spec/permissions.md §2): `T/` + actor; value: when first judged (engine
+/// sync IDs out first (spec/permissions.md §2): `T/` + actor; value: when first judged (engine
 /// ms, u64 BE), from which `LOST_HEARD_WAIT_MS` runs. Goes with the actor's drop, or when it
 /// reads the actor again.
 const TIMED_LOST: &[u8] = b"T/";
@@ -117,7 +117,7 @@ pub(crate) fn may_take(core: &Core, a: &Tid) -> bool {
 
 /// Whether an entry box may give this node secrets of `a` (spec/sync-ids.md §3): as a box
 /// may (`may_take`), or while nothing held says the node lost `a`: no ended edge on it of the node,
-/// a held key actor or an actor it reads (a link's redeemer opens the label before it holds the
+/// a held key actor or an actor it reads (a link's redeemer opens the sync ID before it holds the
 /// grant to its key; the trigger judges `a` once role commits on it apply).
 pub(crate) fn may_learn(core: &Core, a: &Tid) -> bool {
     may_take(core, a) || core.timelines.get(a).is_none_or(|tl| !tl.ended(a, now_ts(core)).keys().any(|h| ours(core, h)))
@@ -144,7 +144,7 @@ pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     core.member().as_ref().is_some_and(role) || core.key_actors.keys().any(role)
 }
 
-/// How long an actor lost by the time alone waits for node-sync to hear its labels out before
+/// How long an actor lost by the time alone waits for node-sync to hear its sync IDs out before
 /// it is dropped anyway (spec/permissions.md §2): a host dead or hostile for good holds no
 /// erasure off beyond it. `ROLE_KEEP_MS`, past which a node offline does not sync cleanly
 /// anyway. Minor consequence: a node out of reach that long loses its unsent writes on what a
@@ -181,7 +181,7 @@ pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_
 }
 
 impl Engine {
-    /// Whether a `keys.0` write deciding `g`'s label keys is held but not applied: a pending
+    /// Whether a `keys.0` write deciding `g`'s role keys is held but not applied: a pending
     /// commit (parked ones aside) writing the `keys.0` of the actor `g`'s secrets derive from,
     /// signed (`authentic`) by an admin of it now, or a held commit whose valid `keys.0` part on
     /// a thing from `g` up to that actor is missing (its body to be fetched: it may give that
@@ -278,7 +278,7 @@ fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>
 /// no explicit write on that edge since: a link race the sharer has not finalized
 /// (spec/permissions.md §3, §7). The finalization may drop the competing redemption and make
 /// ours stand, so until it arrives the loser keeps the secrets (and with them follows the
-/// labels) it would get back. A redemption is a commit removing its signer's own edge on `k`
+/// sync IDs) it would get back. A redemption is a commit removing its signer's own edge on `k`
 /// beside a grant: a plain leave followed by a void grant (a leaver's forgery) defers nothing.
 fn contested(core: &Core, k: &Tid) -> bool {
     let Some(tl) = core.timelines.get(k) else { return false };
@@ -559,7 +559,7 @@ pub struct Leaving {
     /// Each actor lost through own self-removals, and the self-removals behind it.
     pub actors: BTreeMap<Tid, BTreeSet<osis_base::CommitId>>,
     /// Each actor lost by the time alone (`lost_by_time`, no self-removal behind it) and when it
-    /// was first judged so (engine ms): dropped once node-sync has heard its labels out, or
+    /// was first judged so (engine ms): dropped once node-sync has heard its sync IDs out, or
     /// `LOST_HEARD_WAIT_MS` after that time.
     pub timed: BTreeMap<Tid, u64>,
     /// When to look again (engine ms): an actor with a self-removal behind it, kept now by a
@@ -686,7 +686,7 @@ impl Engine {
     }
 
     /// Whether dropping the secrets of `lost` would forget `t` (erase it or keep a copy):
-    /// node-sync hears out the labels whose closure holds such a thing before it drops an actor
+    /// node-sync hears out the sync IDs whose closure holds such a thing before it drops an actor
     /// an `until` ended (`Leaving::timed`).
     pub fn would_forget(&self, lost: &BTreeSet<Tid>, t: &Tid) -> bool {
         crate::retention::forget::would_forget(&self.core, lost, t)
@@ -717,7 +717,7 @@ impl Engine {
         false
     }
 
-    /// Drops lost actors (`scope`), with what was forgotten (node-sync drops its label
+    /// Drops lost actors (`scope`), with what was forgotten (node-sync drops its sync ID
     /// sessions).
     pub fn forget_lost(&mut self, scope: LostScope<'_>) -> Result<Dropped> {
         let r = self.run(|tx| drop_scope(tx, scope))?;

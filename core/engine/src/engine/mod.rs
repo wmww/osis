@@ -945,7 +945,7 @@ indexes! {
     /// epoch a held valid `keys.0` body (a role commit's delta or a compaction snapshot) records
     /// a box at.
     pub sealed: JMap<(Tid, osis_base::Role, osis_crypto::Epoch), SealedAt>,
-    /// Actors lost by an `until` passing alone, waiting for node-sync to hear their labels out
+    /// Actors lost by an `until` passing alone, waiting for node-sync to hear their sync IDs out
     /// (`rotation::lost::TIMED_LOST`): actor -> when first judged (engine ms).
     pub timed_lost: JMap<Tid, u64>,
     /// Kept copies (`rotation::lost`): each lost actor kept and the holders it hangs on.
@@ -1053,7 +1053,7 @@ pub struct Core {
     /// roster.
     pub(crate) secrets_read: memo::Memo<Tid, Arc<osis_schema::core_types::Secrets>>,
     /// `Engine::head_keys` per (group, step) (`memo`): deriving them is some curve work.
-    pub(crate) head_keys: memo::Memo<(Tid, osis_label::StepId), crate::labeling::HeadKeys>,
+    pub(crate) head_keys: memo::Memo<(Tid, osis_blob::StepId), crate::sync_ids::HeadKeys>,
     /// `Engine::read_credentials` per sync ID (`memo`): sync reads them at each entry it judges,
     /// and they derive a key per held sync secret.
     pub(crate) read_credentials: memo::Memo<osis_base::SyncId, Option<Arc<crate::sync::ReadCredentials>>>,
@@ -1337,10 +1337,10 @@ pub struct Core {
     /// (`Indexes::resnapshots_owed`): newly owed, every one at open, and those on a thing that
     /// may be written on now (`replace::wake_covers`).
     pub resnapshots_due: BTreeSet<(Tid, Ak)>,
-    /// Openings of sections not yet written beside their commit (`labeling::opened`): `ou/` rows
+    /// Openings of sections not yet written beside their commit (`sync_ids::opened`): `ou/` rows
     /// by commit, written with its record (`Tx::put_commit`), read as rows until then; a commit
     /// never held (a relay-only one) is judged on them alone.
-    pub openings: BTreeMap<CommitId, crate::labeling::opened::Rows>,
+    pub openings: BTreeMap<CommitId, crate::sync_ids::opened::Rows>,
     /// Aspects (`None`) and commits' parts (`Some`, that change's) a read found a link of whose
     /// blob is not held (`Engine::missed_blob`): the next blob stored re-delivers them to watches
     /// (`Tx::store_blobs`: `Cause::Fetched`, `Event::Commits`). Bounded by the aspects and entries
@@ -1349,8 +1349,8 @@ pub struct Core {
     /// already costs its size).
     pub missed: BTreeSet<(Tid, Ak, Option<CommitId>)>,
     /// `Engine::body` per commit without its plaintext (`commit_bodies_under`, `memo`): the
-    /// label pass asks it per commit.
-    pub(crate) bodies: memo::Memo<CommitId, Option<crate::labeling::Body>>,
+    /// sync ID pass asks it per commit.
+    pub(crate) bodies: memo::Memo<CommitId, Option<crate::sync_ids::Body>>,
     /// `Engine::delta_live` per delta (`memo`).
     pub(crate) live_bodies: memo::Memo<(CommitId, Tid, Ak), bool>,
     /// `retention::snapshot::covered` per (cover, body, aspect) (`memo`).
@@ -1394,9 +1394,9 @@ pub struct Core {
     pub(crate) sync_ids: memo::Memo<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
     /// `Engine::passes_wanted` (`memo`).
     pub(crate) passes_wanted: memo::Memo<(), Arc<BTreeMap<SyncId, u64>>>,
-    /// `Engine::published_under` for every actor, followed per labeled thing
-    /// (`labeling::published`).
-    pub(crate) published: crate::labeling::published::Published,
+    /// `Engine::published_under` for every actor, followed per thing with a sync ID
+    /// (`sync_ids::published`).
+    pub(crate) published: crate::sync_ids::published::Published,
     /// `Engine::held_links` (`memo`).
     pub(crate) links: memo::Memo<(), std::sync::Arc<Vec<crate::flows::HeldLink>>>,
     /// `Engine::caught_up` per group (`memo`).
@@ -1645,7 +1645,7 @@ impl Core {
     }
 
     /// The actors this node has acted for in a held commit: its chain certificates for them go
-    /// under every label it places in (spec/permissions.md §4). O(`by_actor` keys) when the engine
+    /// under every sync ID it places in (spec/permissions.md §4). O(`by_actor` keys) when the engine
     /// moved, so a pass of a quiet node reads no index of every commit's author.
     pub fn acting(&self) -> Arc<Vec<Tid>> {
         self.acting_of.get(&(), || {
@@ -2325,7 +2325,7 @@ impl Core {
             resnapshots_due: BTreeSet::new(),
             openings: BTreeMap::new(),
             missed: BTreeSet::new(),
-            bodies: memo::Memo::new("label body"),
+            bodies: memo::Memo::new("sync ID body"),
             live_bodies: memo::Memo::new("delta live"),
             covers: memo::Memo::new("covered"),
             sync_body: memo::Memo::new("sync body"),
@@ -2940,7 +2940,7 @@ impl Tx<'_> {
     }
 
     /// Whether `(tid, ak)` has a state: a valid write on it applied here. What a thing has is
-    /// read here (or from an index derived from states: `Indexes::labeled`, `groups`),
+    /// read here (or from an index derived from states: `Indexes::sync_recorded`, `groups`),
     /// never from `Indexes::by_aspect`, which any signer's header adds to.
     pub fn has_state(&mut self, tid: &Tid, ak: &Ak) -> Result<bool> {
         self.load_lazy(tid, ak)?;
@@ -3045,7 +3045,7 @@ impl Tx<'_> {
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
-        crate::labeling::opened::prune(self, id, meta)?;
+        crate::sync_ids::opened::prune(self, id, meta)?;
         if meta.header.kind.is_role() {
             // perm's reading of it, persisted beside the record (an open decodes no body)
             match edges {
@@ -3067,7 +3067,7 @@ impl Tx<'_> {
     /// Removes a commit record (shredded) with what the index keeps beside it.
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
-        crate::labeling::opened::forget(self, id)?;
+        crate::sync_ids::opened::forget(self, id)?;
         index::remove_edges(self, id)?;
         index::remove_addenda(self, id)
     }
@@ -3787,7 +3787,7 @@ impl Engine {
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.account.set(self.core.account.get());
-        // caches keyed on it (the sync engine's labels and co-readers) never see an old value again
+        // caches keyed on it (the sync engine's sync IDs and co-readers) never see an old value again
         fresh.generation = self.core.generation.wrapping_add(1);
         #[cfg(test)]
         {
@@ -4128,7 +4128,7 @@ mod tests {
         write(&mut m, g, "new");
         let c = lp.peers[0].commit(m).unwrap().unwrap();
         let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([7; 32])).verifying_key();
-        let hint = osis_label::InboxThing { tid: g, sync_id: None, delete_keys: Some((dk, dk)) };
+        let hint = osis_blob::InboxThing { tid: g, sync_id: None, delete_keys: Some((dk, dk)) };
         let e = &mut lp.peers[1].engine;
         e.note_delete_hints(c, &[hint]).unwrap();
         assert_eq!(e.core.ix.hint_candidates.len(), 1);

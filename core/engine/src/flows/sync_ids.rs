@@ -10,9 +10,9 @@ use crate::error::{Error, Result};
 use crate::Mutation;
 use osis_base::{SyncId, Role, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
-use osis_crypto::{Epoch, KemPublicKey, LabelRole, Secret32, VerifyingKey, label_role_key};
+use osis_crypto::{Epoch, KemPublicKey, RoleKey, Secret32, VerifyingKey, role_key};
 use osis_keys::{ActorEpochs, registration_epochs};
-use osis_label::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_label, sync_steps, register_with, step_record};
+use osis_blob::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_sync_id, sync_steps, register_with, step_record};
 use osis_schema::core_types::{self as ct, KemKey};
 use osis_schema::{RawKey, Codec};
 
@@ -92,8 +92,8 @@ pub(crate) fn deposit_seed_of(tx: &mut Tx<'_>, group: &Tid) -> Result<Option<Sec
 /// from the admin secret of the epoch it registers).
 pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32) -> Result<(Step, ClaimSet)> {
     let [(se, ss), (re, rs), (_, ws), (_, adm)] = registration_epochs(epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
-    let label = parent.map_or_else(|| genesis_label(adm), |(p, _)| p.label);
-    let keys = StepKeys::derive(ss, ws, adm, deposit, &label);
+    let sync_id = parent.map_or_else(|| genesis_sync_id(adm), |(p, _)| p.sync_id);
+    let keys = StepKeys::derive(ss, ws, adm, deposit, &sync_id);
     let rk: Vec<Reader> = readers
         .iter()
         .map(|r| match r {
@@ -101,7 +101,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, parent: 
             ReaderKey::Static(vk, kem) => Reader::Static { signing: *vk, kem },
         })
         .collect();
-    let del = label_role_key(LabelRole::Delete, parent.map_or(adm, |(_, a)| a));
+    let del = role_key(RoleKey::Delete, parent.map_or(adm, |(_, a)| a));
     let p = match parent {
         None => Parent::Genesis(&del),
         Some((step, _)) => Parent::Child { step, delete: &del },
@@ -110,14 +110,14 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, parent: 
 }
 
 /// `sync.0` write: a new sync ID of `group` with its genesis step (`genesis`), or a step added.
-pub(crate) fn put_step(m: &mut Mutation, group: Tid, label: SyncId, step: &Step, set: &ClaimSet, genesis: bool) -> Result<()> {
+pub(crate) fn put_step(m: &mut Mutation, group: Tid, sync_id: SyncId, step: &Step, set: &ClaimSet, genesis: bool) -> Result<()> {
     match genesis {
         true => {
             let l = ct::SyncEntry { steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect() };
-            m.op(group, &ct::SYNC, PathOp { path: vec![PathSeg::Key(label.to_value())], op: Op::Set(l.to_value()) })?;
+            m.op(group, &ct::SYNC, PathOp { path: vec![PathSeg::Key(sync_id.to_value())], op: Op::Set(l.to_value()) })?;
         }
         false => {
-            let path = vec![PathSeg::Key(label.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(step.id().0.to_vec()))];
+            let path = vec![PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(step.id().0.to_vec()))];
             m.op(group, &ct::SYNC, PathOp { path, op: Op::Set(step_record(step, Some(set)).to_value()) })?;
         }
     }
@@ -132,11 +132,11 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> 
     let now = tx.core.now().0;
     let Some(state) = tx.state(&group, &ak("sync.0")?)?.cloned() else { return Ok(()) };
     let ids = state.read().and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
-    for (label, rec) in &ids {
+    for (sync_id, rec) in &ids {
         let Ok(steps) = sync_steps(rec) else { continue };
         // when each step's record was written
         let written = |id: &StepId| {
-            let path = [PathSeg::Key(label.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(0)];
+            let path = [PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(0)];
             state.at(&path).and_then(|f| f.write_stamp().map(|s| s.ts.wall_ms().0))
         };
         for (id, (_, claims)) in &steps {
@@ -145,7 +145,7 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> 
             }
             let superseded = steps.iter().filter(|(_, (c, _))| c.prev == Some(*id)).filter_map(|(c, _)| written(c)).min();
             if superseded.is_some_and(|t| t.saturating_add(osis_base::format::ROLE_KEEP_MS) <= now) {
-                let path = vec![PathSeg::Key(label.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(1)];
+                let path = vec![PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(1)];
                 m.op(group, &ct::SYNC, PathOp { path, op: Op::Replace(None::<Vec<u8>>.to_value()) })?;
             }
         }
@@ -157,9 +157,9 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> 
 /// written to `sync.0` in `m`. Returns the sync ID.
 pub(crate) fn new_sync_id(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32) -> Result<SyncId> {
     let (step, set) = issue(tx, &group, epochs, None, readers, deposit)?;
-    put_step(m, group, step.label, &step, &set, true)?;
+    put_step(m, group, step.sync_id, &step, &set, true)?;
     drop_old_claims(tx, m, group)?;
-    Ok(step.label)
+    Ok(step.sync_id)
 }
 
 /// Names `sync_id` as `actor`'s inbox in its `keys.0`, in `m` (spec/sync-inbox.md §1: in the
@@ -174,11 +174,11 @@ pub(crate) fn takes_inbox(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
     Ok(Core::keys_in(tx, a)?.and_then(|k| k.inbox).is_none())
 }
 
-/// The sync IDs `group`'s `sync.0` records that it owns (`labeling::actors::owns`).
+/// The sync IDs `group`'s `sync.0` records that it owns (`sync_ids::actors::owns`).
 pub(crate) fn owned_in(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::SyncIds> {
-    let mut labels = tx.state(group, &ak("sync.0")?)?.and_then(Fragment::read).and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
-    labels.retain(|id, l| sync_steps(l).is_ok_and(|s| tx.core.owns_sync_id(group, id, &s)));
-    Ok(labels)
+    let mut sync_ids = tx.state(group, &ak("sync.0")?)?.and_then(Fragment::read).and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
+    sync_ids.retain(|id, l| sync_steps(l).is_ok_and(|s| tx.core.owns_sync_id(group, id, &s)));
+    Ok(sync_ids)
 }
 
 /// Whether a child of recorded head `head` is due at an admin holding `epochs`, its actor's
@@ -187,10 +187,10 @@ pub(crate) fn owned_in(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::SyncIds> {
 /// the seed derives another deposit key than the head's, or `fresh`; never while it lacks the
 /// newest secret of a role (it could not sign the step).
 pub(crate) fn due_at(epochs: &ActorEpochs, head: &Step, deposit: &Secret32, fresh: bool) -> Option<Epoch> {
-    let at = LabelRole::ALL.map(|r| osis_keys::registered_epoch(epochs, r, head.keys.get(r)));
+    let at = RoleKey::ALL.map(|r| osis_keys::registered_epoch(epochs, r, head.keys.get(r)));
     let head_admin = at[2].filter(|e| epochs.role(Role::Admin).is_established(e))?;
     registration_epochs(epochs)?;
-    let deposit_key = osis_crypto::deposit_key(deposit, &head.label).verifying_key();
+    let deposit_key = osis_crypto::deposit_key(deposit, &head.sync_id).verifying_key();
     (fresh || osis_keys::newer_than_head(epochs, at) || head.keys.deposit != deposit_key).then_some(head_admin)
 }
 
@@ -216,7 +216,7 @@ pub(crate) fn step_due(tx: &mut Tx<'_>, g: &Tid, l: &SyncId, fresh: bool) -> Res
     let owned = owned_in(tx, g)?;
     let Some(rec) = owned.get(l) else { return Ok(None) };
     let steps = sync_steps(rec)?;
-    let Some((head, _)) = crate::labeling::actors::head_of(&steps).and_then(|h| steps.get(&h).cloned()) else { return Ok(None) };
+    let Some((head, _)) = crate::sync_ids::actors::head_of(&steps).and_then(|h| steps.get(&h).cloned()) else { return Ok(None) };
     let Some(epochs) = tx.core.epochs(g) else { return Ok(None) };
     let Some(deposit) = deposit_seed_of(tx, g)? else { return Ok(None) };
     let Some(head_admin) = due_at(&epochs, &head, &deposit, fresh) else { return Ok(None) };
@@ -237,7 +237,7 @@ fn step_into(tx: &mut Tx<'_>, m: &mut Mutation, g: Tid, l: SyncId, fresh: bool) 
 
 impl Engine {
     /// Refreshes `actor`'s deposit seed (spec/crypto.md §3, a MAY: a departed holder can then no
-    /// longer deposit under its labels, nor can a holder that has not read the new `keys.0`).
+    /// longer deposit under its sync IDs, nor can a holder that has not read the new `keys.0`).
     /// A devices actor's is its account's (`deposit_seed`).
     pub fn refresh_deposit_seed(&mut self, actor: &Tid) -> Result<Done> {
         let a = self.core.home_owner(actor);
@@ -251,13 +251,13 @@ impl Engine {
         Ok(done)
     }
 
-    /// Issues the step of `group`'s sync ID `label` (spec/sync-ids.md §6 Steps): the step due
+    /// Issues the step of `group`'s sync ID `sync_id` (spec/sync-ids.md §6 Steps): the step due
     /// (`step_due`), or with `fresh` one without a rotation (a MAY: to list readers granted since
     /// its parent). `None` when none is due or a role is blocked here (the step comes with the
     /// rotation that is made). Sync calls it once the rotations it registers are logged
     /// (`Engine::due_step`).
-    pub fn issue_step(&mut self, group: &Tid, label: &SyncId, fresh: bool) -> Result<Option<(Step, ClaimSet)>> {
-        let (g, l) = (*group, *label);
+    pub fn issue_step(&mut self, group: &Tid, sync_id: &SyncId, fresh: bool) -> Result<Option<(Step, ClaimSet)>> {
+        let (g, l) = (*group, *sync_id);
         self.run(|tx| {
             let Ok(me) = tx.core.writer() else { return Ok(None) };
             if !rotation::blocked_roles(tx, &me, &g)?.is_empty() {

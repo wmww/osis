@@ -9,7 +9,7 @@ use crate::unread::{Unread, UnreadCredentials};
 use osis_base::{SyncId, Tid};
 use osis_crypto::Epoch;
 use osis_engine::sync::{J, Path, ReadCredentials};
-use osis_label::{Step, StepId};
+use osis_blob::{Step, StepId};
 use osis_proto::{BehindItem, Code, DepositItem, Grant, SharedItem};
 use osis_base::memo::Effects;
 use osis_engine::Engine;
@@ -388,7 +388,7 @@ impl Holds for NodeHolds<'_, '_> {
 
     fn grant(&mut self, s: &SyncId, entry: &[u8; 32]) -> Option<Grant> {
         // the path this node keeps: a reader's recorded one, else the one registered here
-        let steps: Vec<(Step, Option<osis_label::ClaimSet>)> = match self.cx.store.synced(s)? {
+        let steps: Vec<(Step, Option<osis_blob::ClaimSet>)> = match self.cx.store.synced(s)? {
             (_, Holding::Read) => path_of(self.cx, s)?.steps.clone(),
             (_, Holding::Unread) => self.cx.store.path(s).ok()??.steps.clone(),
         };
@@ -458,7 +458,7 @@ impl Holds for NodeHolds<'_, '_> {
 pub fn known_steps<'a>(s: &SyncId, parents: impl Iterator<Item = &'a Step> + Clone, steps: &[Step]) -> Vec<Step> {
     let mut out: Vec<Step> = Vec::new();
     for st in steps {
-        let ok = st.label == *s
+        let ok = st.sync_id == *s
             && match (out.last(), st.prev) {
                 (Some(p), _) => st.verify_child(p).is_ok(),
                 (None, None) => st.verify_genesis().is_ok(),

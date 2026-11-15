@@ -24,7 +24,7 @@ use osis_base::testenv::Script;
 use osis_base::{Clock, ManualClock, Tid, WallMs};
 use osis_crypto::{RngCore, SeededRng};
 use osis_engine::Engine;
-use osis_label::Address;
+use osis_blob::Address;
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
 use osis_sync::{ConnId, Input, Links, Node, NodeKey, Out, Store, SyncConfig, apply};
 use reach::{Reach, Route, Uplink, Who};
@@ -573,15 +573,15 @@ impl World {
 
     /// Node `i`'s read link to `target` as the product's `make_link` makes it (spec/wire.md §10:
     /// the node's dialable key and where it is reached, as first-contact hints).
-    pub fn make_link(&mut self, i: usize, target: Tid, role: osis_base::Role) -> osis_label::ShareLink {
+    pub fn make_link(&mut self, i: usize, target: Tid, role: osis_base::Role) -> osis_blob::ShareLink {
         let me = self.node(i).account.expect("an account");
-        let peer = osis_label::Peer { dialable: self.node(i).key.0, relays: self.net.reach.items(i) };
+        let peer = osis_blob::Peer { dialable: self.node(i).key.0, relays: self.net.reach.items(i) };
         let spec = osis_engine::flows::LinkSpec { target, role, until: None, hosts: Vec::new(), peers: vec![peer], single_use: false };
         self.write(i, |e| e.create_link(&me, &spec)).expect("a link").0
     }
 
     /// Node `i` redeems `link` (`Node::redeem`), then it is stepped.
-    pub fn redeem(&mut self, i: usize, link: &osis_label::ShareLink) -> osis_sync::types::Waiting {
+    pub fn redeem(&mut self, i: usize, link: &osis_blob::ShareLink) -> osis_sync::types::Waiting {
         let w = self.nodes.get_mut(i).expect("no such node").node.redeem(link);
         self.deliver(i, Input::Wrote);
         w
@@ -947,7 +947,7 @@ impl World {
                         let blobs = self.engine(i).commit_blobs(&c).unwrap();
                         // needed: j opens the wrap of an entry of it at i (one under an epoch j
                         // never held, say before a cut, is not j's to read)
-                        let opens = blobs.iter().any(|b| self.store(i).entry(&s, b).unwrap().is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some()));
+                        let opens = blobs.iter().any(|b| self.store(i).entry(&s, b).unwrap().is_some_and(|e| osis_blob::unwrap_any(secrets.iter(), b, &e.wrap).is_some()));
                         if !opens {
                             continue;
                         }

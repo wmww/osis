@@ -81,7 +81,7 @@ pub enum Event {
     /// unknown): a commit answered `Err` may have landed, so any read may answer otherwise.
     Reloaded,
     /// Sync status changed (node-sync fills it).
-    SyncStatus { label: osis_base::SyncId, detail: String },
+    SyncStatus { sync_id: osis_base::SyncId, detail: String },
     /// An admin dispute was detected and a side taken by default (`crate::sides`): `author`'s
     /// edge write `op` of `commit` lowering `holder` on `target`, `trust`: this node sides with it.
     DisputeDetected { commit: CommitId, op: u32, holder: Tid, target: Tid, author: Tid, trust: bool },
@@ -112,7 +112,7 @@ pub enum DiagnosticKind {
     /// in groups none holds (the `osis` API), or a subgroup cut here by any cause, a write here
     /// or elsewhere or an expiry, held it and no synced group carries it now (`Engine::report_cut`).
     NotSynced,
-    /// This node cannot open a label it should read: it waits for a re-seal
+    /// This node cannot open a sync ID it should read: it waits for a re-seal
     /// (spec/permissions.md §3).
     Stranded,
     /// A text session could not commit its edits (the `osis` API: lost write access, storage);
@@ -157,8 +157,8 @@ pub enum DiagnosticKind {
     /// (spec/sync-streams.md §1): one of the two is wrong (`detail`: the peer and the offset).
     ClockSkew,
     /// A bound on unverified input from other nodes (hosts' unvouched entries, peers' uploads)
-    /// was reached under a label: what came past it was not kept, and a real entry among it
-    /// arrives again from its holders (`detail`: the label and the bound).
+    /// was reached under a sync ID: what came past it was not kept, and a real entry among it
+    /// arrives again from its holders (`detail`: the sync ID and the bound).
     InputCapped,
     /// A connection to another node came up or ended, or a dial failed (osis-sync's driver;
     /// `detail`: the connection, the address dialed, why it ended).

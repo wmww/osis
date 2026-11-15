@@ -31,7 +31,7 @@ enum Src {
     Inline(Vec<u8>),
     /// `buf[at..]`: the unread rest of the current chunk, `buf` starting at canonical byte
     /// `start`; `head`: bytes of the string head.
-    Tree { reader: Box<osis_label::TreeReader>, buf: Vec<u8>, start: u64, at: usize, head: u64 },
+    Tree { reader: Box<osis_blob::TreeReader>, buf: Vec<u8>, start: u64, at: usize, head: u64 },
 }
 
 impl std::fmt::Debug for ValueStream {
@@ -44,8 +44,8 @@ fn not_string() -> Error {
     Error::Invalid("not a string or blob".into())
 }
 
-fn tree_reader(link: Link) -> osis_label::TreeReader {
-    osis_label::TreeReader::new(link, osis_label::LargeParams::FORMAT.chunk.min, usize::MAX)
+fn tree_reader(link: Link) -> osis_blob::TreeReader {
+    osis_blob::TreeReader::new(link, osis_blob::LargeParams::FORMAT.chunk.min, usize::MAX)
 }
 
 impl ValueStream {
@@ -57,7 +57,7 @@ impl ValueStream {
                 let mut reader = Box::new(tree_reader(*link));
                 let (mut first, mut chunks) = (Vec::new(), 0);
                 let (len, head) = loop {
-                    if let Some((_, len, n)) = osis_label::string_head(&first).map_err(|_| not_string())? {
+                    if let Some((_, len, n)) = osis_blob::string_head(&first).map_err(|_| not_string())? {
                         break (len, n);
                     }
                     match db.engine(|e| e.next_chunk(&tid, &mut reader))? {

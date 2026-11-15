@@ -655,7 +655,7 @@ fn roles_now_walk_once_until_an_edge_ends() {
 }
 
 /// §4: what a node reaches is walked once for its certificates, however many it asks for: a pass
-/// per label asks for its own (counted).
+/// per sync ID asks for its own (counted).
 #[test]
 fn certificates_walk_the_askers_reach_once() {
     let mut w = World::new();

@@ -369,7 +369,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
 
 /// Whether held part `ai` of `m` goes once judged invalid (spec/permissions.md §6): any but a
 /// role commit's (the role timeline and the possible holders read every held edge write, of any
-/// validity, spec/permissions.md §5.1, spec/commits.md §4; a label holds and promotes the commit
+/// validity, spec/permissions.md §5.1, spec/commits.md §4; a sync ID holds and promotes the commit
 /// whole, spec/sync-inbox.md §4) and a part of this node's own commit (its user is told the write was
 /// refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`). A memory part
 /// goes as a durable one: its commit stays known while an entry of it is (`forgettable`).
@@ -1299,7 +1299,7 @@ impl Engine {
     }
 
     /// Whether commit `c` is held only as purged leftovers (`kept_purged`): a memory one is
-    /// charged its own bytes against its labels' caps until it is forgotten, not through its
+    /// charged its own bytes against its sync IDs' caps until it is forgotten, not through its
     /// entries, which the purger deletes at hosts.
     pub fn kept_purged(&self, c: &CommitId) -> bool {
         self.core.ix.commits.get(c).is_some_and(|m| kept_purged(&self.core, c, m))

@@ -166,7 +166,7 @@ fn blobs_kept_unread_have_padme_lengths_spec_wire_5() {
     assert!(entries.len() >= 4);
     for e in entries {
         let Some(b) = w.store(1).bytes(&e.blob).unwrap() else { continue };
-        let p = osis_label::Prefix::parse(&b).unwrap();
+        let p = osis_blob::Prefix::parse(&b).unwrap();
         let n = b.len() - p.len() - 16;
         assert_eq!(osis_crypto::padme(n), n, "blob {:?}: {n} bytes is not a Padmé length", e.blob);
     }

@@ -522,7 +522,7 @@ fn durable_items(db: &Osis, g: osis::Tid) -> Vec<osis::Tid> {
 }
 
 // spec/permissions.md §4: a memory commit acting for an actor counts among the actors this
-// node acts for (its chain certificates go under every label it places in): the actors cache
+// node acts for (its chain certificates go under every sync ID it places in): the actors cache
 // keyed on the durable generation alone missed it, and the sync driver's check of it died
 #[test]
 fn ephemeral_write_counts_as_acting_spec_permissions_4() {

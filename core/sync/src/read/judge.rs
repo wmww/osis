@@ -11,7 +11,7 @@ use osis_base::memo::{Clock, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid};
 use osis_engine::retention::Minting;
 use osis_engine::sync::{BodyMeta, PieceLink, ReadCredentials};
-use osis_label::StepId;
+use osis_blob::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

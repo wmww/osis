@@ -26,14 +26,14 @@ pub struct Peer {
     pub relays: Vec<String>,
 }
 
-/// `Link := [1, seed, target, k, k_label, [address*], [peer*], ? flags]` (spec/wire.md §10).
+/// `Link := [1, seed, target, k, k_sync_id, [address*], [peer*], ? flags]` (spec/wire.md §10).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShareLink {
     /// L's seed.
     pub seed: Secret32,
     pub target: Tid,
     pub k: Tid,
-    pub k_label: SyncId,
+    pub k_sync_id: SyncId,
     pub hosts: Vec<Address>,
     pub peers: Vec<Peer>,
     /// `flags` bit 0: the redemption removes L's own edge (spec/permissions.md §7).
@@ -91,7 +91,7 @@ impl ShareLink {
             Value::bytes(self.seed.expose()),
             tid(&self.target),
             tid(&self.k),
-            Value::bytes(&self.k_label.0),
+            Value::bytes(&self.k_sync_id.0),
             hosts_value(&self.hosts)?,
             Value::List(peers),
         ];
@@ -116,7 +116,7 @@ impl ShareLink {
             }
             _ => (rest, false),
         };
-        let [seed, target, k, k_label, hosts, Value::List(peers)] = rest else { return Err(Error::Malformed("link")) };
+        let [seed, target, k, k_sync_id, hosts, Value::List(peers)] = rest else { return Err(Error::Malformed("link")) };
         if peers.len() > MAX_PEERS {
             return Err(Error::Malformed("more than 4 peers"));
         }
@@ -142,7 +142,7 @@ impl ShareLink {
             seed: Secret32::from_bytes(get_bytes(seed, "link seed")?),
             target: get_tid(target, "link target")?,
             k: get_tid(k, "link k")?,
-            k_label: SyncId(get_bytes(k_label, "link label")?),
+            k_sync_id: SyncId(get_bytes(k_sync_id, "link sync ID")?),
             hosts: get_hosts(hosts)?,
             peers,
             single_use,
@@ -175,7 +175,7 @@ pub(crate) mod tests {
             seed: Secret32::from_bytes([1; 32]),
             target: Tid::from_bytes([2; 15]),
             k: Tid::from_bytes([3; 15]),
-            k_label: SyncId([4; 16]),
+            k_sync_id: SyncId([4; 16]),
             hosts: vec![Address { url: "quic://a".into(), key: [5; 32] }],
             peers: vec![Peer { dialable: [6; 32], relays: vec!["https://relay".into()] }],
             single_use: false,

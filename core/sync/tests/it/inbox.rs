@@ -7,10 +7,10 @@
 use osis_base::format::{DEPOSITS_WAITING, INBOX_LIFETIME_MS};
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
-use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, SigningSecret, deposit_key, label_role_key};
-use osis_engine::labeling::Certs;
+use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, SigningSecret, deposit_key, role_key};
+use osis_engine::sync_ids::Certs;
 use osis_engine::sync::{Holding, InboxOpened, Path, Promote, SyncSet, Taken};
-use osis_label::{ClaimSet, Class, Parent, Prefix, Step, StepId, StepKeys};
+use osis_blob::{ClaimSet, Class, Parent, Prefix, Step, StepId, StepKeys};
 use osis_proto::{Code, Msg, OfferItem, SharedItem};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Result;
@@ -56,8 +56,8 @@ fn deposit_seed(n: u8) -> Secret32 {
 fn blob(tag: u64, n: usize, expiry: Option<u64>) -> (BlobId, Vec<u8>) {
     let mut rng = SeededRng::from_u64(tag ^ 0x5eed);
     let p = Prefix::new(Prefix::random_salt(&mut rng), expiry.map(WallMs), vec![]).unwrap();
-    let (_, bytes) = osis_label::frame(&p, &vec![tag as u8; n], &mut rng).unwrap();
-    (osis_label::blob_id(&bytes), bytes)
+    let (_, bytes) = osis_blob::frame(&p, &vec![tag as u8; n], &mut rng).unwrap();
+    (osis_blob::blob_id(&bytes), bytes)
 }
 
 /// Peers as inbox sees them, and what it sent.
@@ -181,7 +181,7 @@ impl T {
             .iter()
             .filter_map(|(c, id, m)| match m {
                 Msg::Offer { items, .. } => match items.as_slice() {
-                    [OfferItem::Deposit(d)] => Some((*c, *id, d.sync_id, osis_label::blob_id(&d.blob))),
+                    [OfferItem::Deposit(d)] => Some((*c, *id, d.sync_id, osis_blob::blob_id(&d.blob))),
                     _ => None,
                 },
                 _ => None,
@@ -208,7 +208,7 @@ fn inbox_blob_offered_to_recipient_spec_sync_inbox_3() {
     let Msg::Offer { items, .. } = &t.net.requests[0].2 else { panic!() };
     let [OfferItem::Deposit(d)] = items.as_slice() else { panic!() };
     let head = deposit_key(&deposit_seed(s.0[0]), &s).verifying_key();
-    assert!(osis_label::verify_deposit(&head, &d.sync_id, &b, &d.wrap, &d.sig).is_ok());
+    assert!(osis_blob::verify_deposit(&head, &d.sync_id, &b, &d.wrap, &d.sig).is_ok());
 }
 
 // spec/sync-inbox.md §3 (sending): an inbox blob also goes to a peer whose filter shows the
@@ -467,8 +467,8 @@ struct Steps {
 impl Steps {
     fn new(n: usize) -> Steps {
         let admin = Secret32::from_bytes([0xab; 32]);
-        let id = osis_label::genesis_label(&admin);
-        let d = label_role_key(LabelRole::Delete, &admin);
+        let id = osis_blob::genesis_sync_id(&admin);
+        let d = role_key(RoleKey::Delete, &admin);
         let mut steps: Vec<(Step, ClaimSet)> = Vec::new();
         for i in 0..n {
             let (sync, write) = (Secret32::from_bytes([i as u8; 32]), Secret32::from_bytes([i as u8 + 0x40; 32]));
@@ -480,7 +480,7 @@ impl Steps {
                 Some((p, _)) => Parent::Child { step: p, delete: &d },
             };
             let mut rng = SeededRng::from_u64(i as u64);
-            steps.push(osis_label::register(parent, keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap());
+            steps.push(osis_blob::register(parent, keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap());
         }
         Steps { steps }
     }

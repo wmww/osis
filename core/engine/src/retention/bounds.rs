@@ -524,7 +524,7 @@ impl Engine {
 
     /// Whether a write of `c`'s delta on `(tid, ak)` is still in this node's state (a dot it owns
     /// survives there; unknown counts as live): what only a blob of `c` can carry (spec/sync.md
-    /// §6, §7). A delta without one needs no carrier before it leaves a label (spec/sync-compaction.md §1);
+    /// §6, §7). A delta without one needs no carrier before it leaves a sync ID (spec/sync-compaction.md §1);
     /// one with one goes only after its carrier (spec/commits.md §5). Writes the state does not
     /// hold count dead: superseded, purged or expired ones, and those of deltas invalid here or
     /// undone (stripped from the state; live again once a validity flip or a redo puts them

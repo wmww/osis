@@ -114,13 +114,13 @@ pub(crate) fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 /// tree is not held (not fetched yet, or named by no blob) or fails verification (another
 /// thing's dedup secret, bad bytes, an unknown format). The bound and local storage failures
 /// stay errors.
-fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budget: &mut usize, bad: &mut Vec<osis_label::Error>) -> Result<Option<Value>> {
+fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budget: &mut usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
     use osis_base::{Classified, ErrorClass};
     let too_large = Error::TooLarge { limit };
     let x = match e.read_large_max(tid, l, *budget) {
         Ok(x) => x,
-        Err(osis_engine::Error::Data(osis_label::Error::TooLarge(_))) => return Err(too_large),
-        Err(osis_engine::Error::Data(err)) if err == osis_label::Error::Missing || err.class() != ErrorClass::Local => {
+        Err(osis_engine::Error::Data(osis_blob::Error::TooLarge(_))) => return Err(too_large),
+        Err(osis_engine::Error::Data(err)) if err == osis_blob::Error::Missing || err.class() != ErrorClass::Local => {
             bad.push(err);
             return Ok(None);
         }
@@ -134,7 +134,7 @@ fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budge
 /// `v` with its links replaced; `None` when `v` itself is gone. An unreadable link (`read_link`)
 /// is gone, and with it the list or set element, map entry (struct field) or enum it is in or
 /// is; the rest stays.
-fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mut usize, bad: &mut Vec<osis_label::Error>) -> Result<Option<Value>> {
+fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mut usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
     if let Value::Link(l) = v {
         return read_link(e, tid, &l, limit, budget, bad);
     }
@@ -162,7 +162,7 @@ fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mu
 
 /// Replaces every link by its value, dropping unreadable ones into `bad` (`materialize_in`);
 /// fails `TooLarge` past `limit` canonical bytes.
-fn materialize(e: &mut Engine, tid: &Tid, v: Value, limit: usize, bad: &mut Vec<osis_label::Error>) -> Result<Option<Value>> {
+fn materialize(e: &mut Engine, tid: &Tid, v: Value, limit: usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
     let mut budget = limit;
     let v = materialize_in(e, tid, v, limit, &mut budget, bad)?;
     if v.as_ref().is_some_and(|v| osis_base::cbor::encoded_len(v) > limit) {
@@ -223,7 +223,7 @@ impl Reader<'_> {
     fn materialize(&mut self, tid: &Tid, ak: &Ak, v: Value) -> Result<Option<Value>> {
         let mut bad = Vec::new();
         let v = materialize(self.e, tid, v, self.limit, &mut bad)?;
-        if bad.contains(&osis_label::Error::Missing) {
+        if bad.contains(&osis_blob::Error::Missing) {
             self.e.missed_blob(*tid, ak.clone(), None);
         }
         if !bad.is_empty() {
@@ -240,7 +240,7 @@ impl Reader<'_> {
     pub(crate) fn materialized(&mut self, tid: &Tid, ak: &Ak, id: osis_base::CommitId, v: Value, limit: usize) -> Result<Value> {
         let mut bad = Vec::new();
         let v = materialize(self.e, tid, v, limit, &mut bad)?;
-        if bad.contains(&osis_label::Error::Missing) {
+        if bad.contains(&osis_blob::Error::Missing) {
             self.e.missed_blob(*tid, ak.clone(), Some(id));
         }
         match (bad.into_iter().next(), v) {

@@ -407,7 +407,7 @@ impl Run {
     }
 
     /// Node n takes up the seeds D holds for it, as its signing pass at the end of every pass of
-    /// D's labels does (`rotations_due`), without rotating.
+    /// D's sync IDs does (`rotations_due`), without rotating.
     fn take_up(&mut self, n: usize) {
         if self.left[n] || !self.lp.peers[n].engine.core.accounts.contains_key(&self.p) {
             return;

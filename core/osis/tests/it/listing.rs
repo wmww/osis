@@ -505,7 +505,7 @@ fn settings_are_one_aspect_under_both_keys() {
 // spec/commits.md §5 Purge: a request rides a delta on its thing. In a commit that expires it
 // reaches only what expires no later, so a writer refuses one naming more, never writing a purge
 // that drops less than it says; and a write that turns out to write nothing on the thing still
-// places the request there (`purge.0`), never only under another thing's labels.
+// places the request there (`purge.0`), never only under another thing's sync IDs.
 #[test]
 fn purge_goes_under_its_thing_and_reaches_what_it_names_spec_commits_5() {
     let db = db(0);

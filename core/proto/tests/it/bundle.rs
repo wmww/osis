@@ -3,7 +3,7 @@
 
 use osis_base::{Value, cbor};
 use osis_crypto::{Secret32, SigningSecret};
-use osis_label::{BundleWriter, Record, sign_stamp};
+use osis_blob::{BundleWriter, Record, sign_stamp};
 use osis_proto::bundle::{BundleImport, Imported};
 use osis_proto::examples::Fixture;
 use osis_proto::{Event, encode_frame};
@@ -22,20 +22,20 @@ fn import(file: &[u8]) -> Vec<Imported> {
 fn import_replays_records() {
     let f = Fixture::new(0x20);
     let (b1, b2) = (Fixture::blob(1), Fixture::blob(2));
-    let (id1, id2) = (osis_label::blob_id(&b1), osis_label::blob_id(&b2));
+    let (id1, id2) = (osis_blob::blob_id(&b1), osis_blob::blob_id(&b2));
     let wrap = [9u8; osis_crypto::WRAP_LEN];
     let stamp = sign_stamp(&f.write, &f.sync_id, &id1, &wrap, false);
     let forged = sign_stamp(&SigningSecret::from_seed(&Secret32::from_bytes([99; 32])), &f.sync_id, &id2, &wrap, false);
     let mut w = BundleWriter::new(Vec::new()).unwrap();
     let l = f.sync_id;
     for r in [
-        Record::Path { label: l, steps: vec![(f.genesis.clone(), Some(f.genesis_claims.clone())), (f.child.clone(), None)] },
+        Record::Path { sync_id: l, steps: vec![(f.genesis.clone(), Some(f.genesis_claims.clone())), (f.child.clone(), None)] },
         Record::Blob(b1.clone()),
         Record::Blob(b2.clone()),
-        Record::Entry { label: l, blob: id1, wrap, stamp: Some(stamp) },
-        Record::Entry { label: l, blob: id2, wrap, stamp: None },
-        Record::Entry { label: l, blob: id2, wrap, stamp: Some(forged) },
-        Record::Delete { label: l, blob: id1 },
+        Record::Entry { sync_id: l, blob: id1, wrap, stamp: Some(stamp) },
+        Record::Entry { sync_id: l, blob: id2, wrap, stamp: None },
+        Record::Entry { sync_id: l, blob: id2, wrap, stamp: Some(forged) },
+        Record::Delete { sync_id: l, blob: id1 },
     ] {
         w.record(&r).unwrap();
     }
@@ -70,8 +70,8 @@ fn import_rejects() {
     assert!(BundleImport::new(&b"osisbndX"[..]).is_err());
     let f = Fixture::new(0x20);
     let mut w = BundleWriter::new(Vec::new()).unwrap();
-    w.record(&Record::Path { label: f.sync_id, steps: vec![(f.genesis.clone(), None), (f.child.clone(), None)] }).unwrap();
-    w.record(&Record::Path { label: f.sync_id, steps: vec![(f.genesis.clone(), None)] }).unwrap();
+    w.record(&Record::Path { sync_id: f.sync_id, steps: vec![(f.genesis.clone(), None), (f.child.clone(), None)] }).unwrap();
+    w.record(&Record::Path { sync_id: f.sync_id, steps: vec![(f.genesis.clone(), None)] }).unwrap();
     let ev = import(&w.finish().unwrap());
     assert!(matches!(&ev[..], [Imported::Path { .. }, Imported::Refused(_)]), "{ev:?}");
 }

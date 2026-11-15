@@ -27,7 +27,7 @@ fn held(lp: &LocalPeer, i: usize, ids: &[CommitId]) -> usize {
     ids.iter().filter(|c| lp.peers[i].engine.header(c).is_some()).count()
 }
 
-fn ids_of(keys: &osis_label::HolderKeys) -> Vec<CommitId> {
+fn ids_of(keys: &osis_blob::HolderKeys) -> Vec<CommitId> {
     keys.commits.iter().map(|v| osis_commit::CommitBlob::decode(&osis_base::encode(v)).unwrap().id()).collect()
 }
 
@@ -88,7 +88,7 @@ fn holder_keys_take_no_edge_write_off_the_chain_spec_permissions_4() {
     let c = lp.peers[2].engine.grant(&x, &p1, &edge(Role::Read)).unwrap().commits[0];
     let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB };
     let v = osis_base::decode(&lp.peers[2].engine.run(|tx| tx.get_commit(&c)).unwrap().unwrap().encode(), &limits).unwrap();
-    let keys = osis_label::HolderKeys { commits: vec![v], records: Vec::new() };
+    let keys = osis_blob::HolderKeys { commits: vec![v], records: Vec::new() };
     assert_eq!(lp.peers[0].engine.take_holder_keys(&t, &keys).unwrap(), 0);
     assert!(lp.peers[0].engine.header(&c).is_none(), "the grant on X not kept");
 }
@@ -101,7 +101,7 @@ fn asks(lp: &mut LocalPeer, g: Tid) -> Vec<(Tid, bool)> {
 /// Peer 0 takes a report from holder `m` on `g` (no keys) and runs a pass end's re-seals.
 fn report_and_pass(lp: &mut LocalPeer, g: Tid, m: Tid) {
     let s = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
-    assert!(lp.peers[0].engine.take_stranded(&s, &m, &osis_label::HolderKeys::default()).unwrap(), "asked");
+    assert!(lp.peers[0].engine.take_stranded(&s, &m, &osis_blob::HolderKeys::default()).unwrap(), "asked");
     lp.peers[0].engine.reseal_run(&g).unwrap();
 }
 

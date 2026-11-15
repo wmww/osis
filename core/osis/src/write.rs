@@ -619,10 +619,10 @@ fn not_synced(e: &mut osis_engine::Engine, added: &[(Tid, Tid)], sharing: bool) 
     if added.is_empty() {
         return;
     }
-    let labeled = e.things_with_sync_ids();
+    let with_sync_ids = e.things_with_sync_ids();
     for (t, g) in added {
         // entitlement (spec/sync-judgement.md §1): the group's holders read what is under it or was given
-        if labeled.contains(g) && !e.may_read(&e.group_actor(g), t) {
+        if with_sync_ids.contains(g) && !e.may_read(&e.group_actor(g), t) {
             if sharing {
                 continue;
             }

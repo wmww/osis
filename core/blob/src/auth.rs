@@ -1,5 +1,5 @@
-//! Signatures of label operations and their checks at a node that cannot read the label
-//! (spec/sync-ids.md §6, spec/wire.md §9, §11.2): stamps, deposits, deletes by the label delete key
+//! Signatures of sync ID operations and their checks at a node that cannot read the sync ID
+//! (spec/sync-ids.md §6, spec/wire.md §9, §11.2): stamps, deposits, deletes by the sync ID delete key
 //! or by a delete-key signature.
 
 use crate::blob::{Level, Prefix};
@@ -9,24 +9,24 @@ use crate::Error;
 use osis_base::cbor::encode;
 use osis_base::format::{DELETE_ADMIN, DELETE_WRITER};
 use osis_base::{BlobId, SyncId, Value};
-use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, verify_delete};
+use osis_crypto::{DeleteSecret, Domain, RoleKey, Signature, SigningSecret, VerifyingKey, verify_delete};
 
 /// Digest of a stamp, deposit or publish authorization: BLAKE3 of canonical
 /// `[sync_id, blob_id, wrap]`.
-pub fn entry_digest(label: &SyncId, blob: &BlobId, wrap: &[u8]) -> [u8; 32] {
-    osis_base::hash::hash(&encode(&Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::bytes(wrap)])))
+pub fn entry_digest(sync_id: &SyncId, blob: &BlobId, wrap: &[u8]) -> [u8; 32] {
+    osis_base::hash::hash(&encode(&Value::List(vec![Value::bytes(&sync_id.0), Value::bytes(&blob.0), Value::bytes(wrap)])))
 }
 
-/// A stamp: the label write key's signature under `"osis v1 stamp"`, or `"osis v1 role
+/// A stamp: the sync ID write key's signature under `"osis v1 stamp"`, or `"osis v1 role
 /// entry"` for an entry deletes are judged by (`role`: a role commit or a request).
-pub fn sign_stamp(write: &SigningSecret, label: &SyncId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
-    write.sign(entry_domain(Domain::Stamp, role), &entry_digest(label, blob, wrap))
+pub fn sign_stamp(write: &SigningSecret, sync_id: &SyncId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
+    write.sign(entry_domain(Domain::Stamp, role), &entry_digest(sync_id, blob, wrap))
 }
 
 /// Checks a stamp against the head's write key, under either domain; an altered wrap fails.
 /// Whether it is a role entry's (`"osis v1 role entry"`).
-pub fn verify_stamp(head_write: &VerifyingKey, label: &SyncId, blob: &BlobId, wrap: &[u8], stamp: &Signature) -> Result<bool, Error> {
-    verify_entry(head_write, Domain::Stamp, &entry_digest(label, blob, wrap), stamp).ok_or(Error::Verify("stamp"))
+pub fn verify_stamp(head_write: &VerifyingKey, sync_id: &SyncId, blob: &BlobId, wrap: &[u8], stamp: &Signature) -> Result<bool, Error> {
+    verify_entry(head_write, Domain::Stamp, &entry_digest(sync_id, blob, wrap), stamp).ok_or(Error::Verify("stamp"))
 }
 
 /// Which domain of an entry's signature verifies: `Some(true)` a role entry's.
@@ -39,14 +39,14 @@ fn verify_entry(key: &VerifyingKey, plain: Domain, d: &[u8; 32], sig: &Signature
 
 /// A deposit signature by the deposit key under `"osis v1 deposit"`, or `"osis v1 role entry"`
 /// for a request (`role`).
-pub fn sign_deposit(deposit: &SigningSecret, label: &SyncId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
-    deposit.sign(entry_domain(Domain::Deposit, role), &entry_digest(label, blob, wrap))
+pub fn sign_deposit(deposit: &SigningSecret, sync_id: &SyncId, blob: &BlobId, wrap: &[u8], role: bool) -> Signature {
+    deposit.sign(entry_domain(Domain::Deposit, role), &entry_digest(sync_id, blob, wrap))
 }
 
 /// Checks a deposit's signature against the head's deposit key, under either domain; an
 /// altered wrap fails. Whether it is a role entry's.
-pub fn verify_deposit(head_deposit: &VerifyingKey, label: &SyncId, blob: &BlobId, wrap: &[u8], sig: &Signature) -> Result<bool, Error> {
-    verify_entry(head_deposit, Domain::Deposit, &entry_digest(label, blob, wrap), sig).ok_or(Error::Verify("deposit"))
+pub fn verify_deposit(head_deposit: &VerifyingKey, sync_id: &SyncId, blob: &BlobId, wrap: &[u8], sig: &Signature) -> Result<bool, Error> {
+    verify_entry(head_deposit, Domain::Deposit, &entry_digest(sync_id, blob, wrap), sig).ok_or(Error::Verify("deposit"))
 }
 
 /// The signing domain of an entry's stamp or deposit signature (`plain`: `Stamp` or
@@ -55,18 +55,18 @@ fn entry_domain(plain: Domain, role: bool) -> Domain {
     if role { Domain::RoleEntry } else { plain }
 }
 
-/// The label key a delete by delete keys at `levels` needs beside them (spec/sync-ids.md §6): the
+/// The role key a delete by delete keys at `levels` needs beside them (spec/sync-ids.md §6): the
 /// write key when any is level 3, else the sync key; the delete key with no level.
-pub fn key_for_levels(levels: &[Level]) -> Result<LabelRole, Error> {
+pub fn key_for_levels(levels: &[Level]) -> Result<RoleKey, Error> {
     if levels.iter().any(|l| !(DELETE_ADMIN..=DELETE_WRITER).contains(l)) {
         return Err(Error::Malformed("delete level"));
     }
     Ok(if levels.is_empty() {
-        LabelRole::Delete
+        RoleKey::Delete
     } else if levels.contains(&DELETE_WRITER) {
-        LabelRole::Write
+        RoleKey::Write
     } else {
-        LabelRole::Sync
+        RoleKey::Sync
     })
 }
 
@@ -75,35 +75,35 @@ pub fn key_for_levels(levels: &[Level]) -> Result<LabelRole, Error> {
 pub struct DeleteItem {
     pub blob: BlobId,
     /// Signatures by delete keys, each under the blob's blinded key at its level in a commitment
-    /// group (spec/crypto.md §7); levels ascending, distinct. Empty: by the label delete key.
+    /// group (spec/crypto.md §7); levels ascending, distinct. Empty: by the sync ID delete key.
     pub by: Vec<(Level, Signature)>,
     pub sig: Signature,
 }
 
 /// Digest of a delete: BLAKE3 of canonical `[sync_id, blob_id, [level*]]`.
-pub fn delete_digest(label: &SyncId, blob: &BlobId, levels: &[Level]) -> [u8; 32] {
-    let v = Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::List(levels.iter().map(|l| Value::Int(i64::from(*l))).collect())]);
+pub fn delete_digest(sync_id: &SyncId, blob: &BlobId, levels: &[Level]) -> [u8; 32] {
+    let v = Value::List(vec![Value::bytes(&sync_id.0), Value::bytes(&blob.0), Value::List(levels.iter().map(|l| Value::Int(i64::from(*l))).collect())]);
     osis_base::hash::hash(&encode(&v))
 }
 
 impl DeleteItem {
     /// Signed by the head's delete key alone.
-    pub fn sign(delete: &SigningSecret, label: &SyncId, blob: BlobId) -> DeleteItem {
-        let sig = delete.sign(Domain::Delete, &delete_digest(label, &blob, &[]));
+    pub fn sign(delete: &SigningSecret, sync_id: &SyncId, blob: BlobId) -> DeleteItem {
+        let sig = delete.sign(Domain::Delete, &delete_digest(sync_id, &blob, &[]));
         DeleteItem { blob, by: Vec::new(), sig }
     }
 
     /// Signed by the delete keys `dks` (one per level used, levels distinct) under the blob's
     /// prefix `salt` and its blind `hb` (a commit blob's header blind, a linked blob's link
-    /// blind), and by the label key `key_for_levels` names.
-    pub fn sign_by(key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16], label: &SyncId, blob: BlobId) -> Result<DeleteItem, Error> {
+    /// blind), and by the role key `key_for_levels` names.
+    pub fn sign_by(key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16], sync_id: &SyncId, blob: BlobId) -> Result<DeleteItem, Error> {
         let mut dks: Vec<(Level, &DeleteSecret)> = dks.to_vec();
         dks.sort_by_key(|(l, _)| *l);
         let levels: Vec<Level> = dks.iter().map(|(l, _)| *l).collect();
         if !levels.is_sorted_by(|a, b| a < b) || levels.is_empty() {
             return Err(Error::Malformed("delete levels"));
         }
-        let d = delete_digest(label, &blob, &levels);
+        let d = delete_digest(sync_id, &blob, &levels);
         let by = dks.iter().map(|(l, dk)| (*l, dk.sign(salt, hb, &d))).collect();
         Ok(DeleteItem { blob, by, sig: key.sign(Domain::Delete, &d) })
     }
@@ -113,13 +113,13 @@ impl DeleteItem {
         self.by.iter().map(|(l, _)| *l).collect()
     }
 
-    /// The check at a node that cannot read the label, against its head and the entry's blob prefix (none: unknown framing, no
+    /// The check at a node that cannot read the sync ID, against its head and the entry's blob prefix (none: unknown framing, no
     /// commitments): without levels the delete key; with them, each delete-key signature under
-    /// a group's commitment at its level, every group covered by one, and the label key the
+    /// a group's commitment at its level, every group covered by one, and the role key the
     /// levels need (spec/sync-ids.md §6).
     pub fn verify(&self, head: &Step, prefix: Option<&Prefix>) -> Result<(), Error> {
         let levels = self.levels();
-        let d = delete_digest(&head.label, &self.blob, &levels);
+        let d = delete_digest(&head.sync_id, &self.blob, &levels);
         let role = key_for_levels(&levels)?;
         if !self.by.is_empty() {
             if !levels.is_sorted_by(|a, b| a < b) {
@@ -187,7 +187,7 @@ mod tests {
     use super::*;
     use crate::step::tests::{Group, TG};
     use crate::step::{Parent, register};
-    use osis_crypto::{Epoch, SeededRng, Secret32, label_role_key};
+    use osis_crypto::{Epoch, SeededRng, Secret32, role_key};
     use proptest::prelude::*;
 
     fn epoch(n: u64) -> Epoch {
@@ -201,8 +201,8 @@ mod tests {
         let g = Group::new(30);
         let mut rng = SeededRng::from_u64(0);
         let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
-        let (l, b, w) = (s0.label, BlobId([1; 32]), [2u8; 49]);
-        let write = label_role_key(LabelRole::Write, &g.write);
+        let (l, b, w) = (s0.sync_id, BlobId([1; 32]), [2u8; 49]);
+        let write = role_key(RoleKey::Write, &g.write);
         let stamp = sign_stamp(&write, &l, &b, &w, false);
         assert!(!verify_stamp(&s0.keys.write, &l, &b, &w, &stamp).unwrap());
         assert!(verify_stamp(&s0.keys.write, &l, &b, &w, &sign_stamp(&write, &l, &b, &w, true)).unwrap(), "a role entry's stamp says so");
@@ -213,16 +213,16 @@ mod tests {
         s0.keys.deposit.verify(Domain::Deposit, &digest, &sign_deposit(&dep, &l, &b, &w, false)).unwrap();
     }
 
-    // spec/sync-ids.md §6, spec/crypto.md §7: delete by the label delete key; by a level's delete
-    // key with the label key the level needs; a wrong level, a forged or unblinded key, a
+    // spec/sync-ids.md §6, spec/crypto.md §7: delete by the sync ID delete key; by a level's delete
+    // key with the role key the level needs; a wrong level, a forged or unblinded key, a
     // missing commitment fail; layouts round trip.
     #[test]
     fn deletes() {
         let g = Group::new(40);
         let mut rng = SeededRng::from_u64(0);
         let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
-        let l = s0.label;
-        let (sync, write) = (label_role_key(LabelRole::Sync, &g.sync), label_role_key(LabelRole::Write, &g.write));
+        let l = s0.sync_id;
+        let (sync, write) = (role_key(RoleKey::Sync, &g.sync), role_key(RoleKey::Write, &g.write));
         let salt = [5u8; 16];
         let (d2, d3) = (DeleteSecret::derive(&Secret32::from_bytes([1; 32])), DeleteSecret::derive(&Secret32::from_bytes([2; 32])));
         let hb = [7u8; 16];
@@ -249,7 +249,7 @@ mod tests {
         let mut extra = by(&sync, &[(2, &d2)], &salt, &hb);
         extra.by.push((3, forged.sign(&salt, &hb, &[0; 32])));
         assert!(extra.verify(&s0, Some(&prefix)).is_err());
-        // the label-key signature binds the levels: moved to level 3 it fails
+        // the sync-ID-key signature binds the levels: moved to level 3 it fails
         let mut moved = by(&sync, &[(2, &d2)], &salt, &hb);
         moved.by = moved.by.iter().map(|(_, s)| (3, *s)).collect();
         assert!(moved.verify(&s0, Some(&prefix)).is_err());
@@ -285,7 +285,7 @@ mod tests {
         // spec/sync-ids.md §6: a stamp binds the wrap: any altered wrap byte fails.
         #[test]
         fn stamp_binds_wrap(i in 0usize..49, x in 1u8..=255) {
-            let write = label_role_key(LabelRole::Write, &Secret32::from_bytes([1; 32]));
+            let write = role_key(RoleKey::Write, &Secret32::from_bytes([1; 32]));
             let (l, b, w) = (SyncId([1; 16]), BlobId([2; 32]), [3u8; 49]);
             let stamp = sign_stamp(&write, &l, &b, &w, false);
             let mut w2 = w;

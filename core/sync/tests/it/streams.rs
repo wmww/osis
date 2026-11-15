@@ -6,9 +6,9 @@
 
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, SyncId, Tid, WallMs};
-use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, WRAP_LEN, label_role_key};
+use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, WRAP_LEN, role_key};
 use osis_engine::sync::{Caps, Holding, SyncSet};
-use osis_label::{ClaimSet, Class, Parent, Prefix, Step, StepKeys};
+use osis_blob::{ClaimSet, Class, Parent, Prefix, Step, StepKeys};
 use osis_proto::limits::{REPLY_BUDGET, SMALL_REPLY, TOP_BIT};
 use osis_proto::{Code, Event, Id, Msg, Pull};
 use osis_store::{MemoryBackend, MemoryRoot, RecordId};
@@ -364,8 +364,8 @@ fn sid(b: u8) -> SyncId {
 fn blob(n: usize, class: Class) -> (BlobId, Vec<u8>) {
     let mut rng = SeededRng::from_u64(n as u64 ^ 0x5eed);
     let p = Prefix::for_keys([n as u8; 16], &[1; 16], None, &[]).unwrap().with_class(class);
-    let (_, bytes) = osis_label::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
-    (osis_label::blob_id(&bytes), bytes)
+    let (_, bytes) = osis_blob::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
+    (osis_blob::blob_id(&bytes), bytes)
 }
 
 fn knows(side: &Side, from: Source, s: SyncId, b: BlobId) -> bool {
@@ -406,13 +406,13 @@ struct Sid {
 impl Sid {
     fn new(b: u8) -> Sid {
         let (sync, write, admin, deposit) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
-        let id = osis_label::genesis_label(&admin);
+        let id = osis_blob::genesis_sync_id(&admin);
         let keys = StepKeys::derive(&sync, &write, &admin, &deposit, &id);
         let mut rng = SeededRng::from_u64(99);
         let read = Epoch::derive(&THING, osis_base::Role::Read, 0, &write).unwrap();
         let se = Epoch::derive(&THING, osis_base::Role::Sync, 0, &sync).unwrap();
-        let d = label_role_key(LabelRole::Delete, &admin);
-        let genesis = osis_label::register(Parent::Genesis(&d), keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap();
+        let d = role_key(RoleKey::Delete, &admin);
+        let genesis = osis_blob::register(Parent::Genesis(&d), keys, &[], (&THING, read, &write), (se, &sync), &mut rng).unwrap();
         Sid { id, sync, write, admin, deposit, genesis }
     }
 
@@ -429,8 +429,8 @@ impl Sid {
         let keys = StepKeys::derive(&self.sync, &write, &self.admin, &self.deposit, &self.id);
         let read = Epoch::derive(&THING, osis_base::Role::Read, n, &write).unwrap();
         let se = Epoch::derive(&THING, osis_base::Role::Sync, n, &self.sync).unwrap();
-        let d = label_role_key(LabelRole::Delete, &self.admin);
-        osis_label::register(Parent::Child { step: parent, delete: &d }, keys, &[], (&THING, read, &write), (se, &self.sync), &mut SeededRng::from_u64(99 + n)).unwrap()
+        let d = role_key(RoleKey::Delete, &self.admin);
+        osis_blob::register(Parent::Child { step: parent, delete: &d }, keys, &[], (&THING, read, &write), (se, &self.sync), &mut SeededRng::from_u64(99 + n)).unwrap()
     }
 
     /// A stamped entry of a fresh blob taken into `side`'s store.
@@ -443,8 +443,8 @@ impl Sid {
         let good = write.expose() == self.write.expose();
         let (b, bytes) = blob(n, Class::Durable);
         let w = [3u8; WRAP_LEN];
-        let key = label_role_key(LabelRole::Write, &write);
-        let stamp = osis_label::sign_stamp(&key, &self.id, &b, &w, false);
+        let key = role_key(RoleKey::Write, &write);
+        let stamp = osis_blob::sign_stamp(&key, &self.id, &b, &w, false);
         let e = Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role: false, class: Class::Durable, expires: None };
         // a bad stamp is planted as a read S's own entry would be: the server serves what it holds
         if good {
@@ -1447,10 +1447,10 @@ fn a_refusal_ends_when_its_entry_leaves_unannounced_spec_sync_streams_4() {
             k.keep(&mut p.b);
             let exp = 50_000;
             let pre = Prefix::for_keys([9; 16], &[1; 16], Some(WallMs(exp)), &[]).unwrap().with_class(class);
-            let (_, bytes) = osis_label::frame(&pre, &[9; 300], &mut SeededRng::from_u64(9)).unwrap();
-            let b = osis_label::blob_id(&bytes);
+            let (_, bytes) = osis_blob::frame(&pre, &[9; 300], &mut SeededRng::from_u64(9)).unwrap();
+            let b = osis_blob::blob_id(&bytes);
             let w = [3u8; WRAP_LEN];
-            let stamp = osis_label::sign_stamp(&label_role_key(LabelRole::Write, &k.write), &k.id, &b, &w, false);
+            let stamp = osis_blob::sign_stamp(&role_key(RoleKey::Write, &k.write), &k.id, &b, &w, false);
             let e = Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role: false, class, expires: Some(WallMs(exp)) };
             assert_eq!(p.a.store.take_stamped(&k.id, &e, bytes, &[]).unwrap(), Code::OK);
             p.b.store.settle_at(WallMs(exp)).unwrap();
@@ -2275,10 +2275,10 @@ fn relay_side(x: &Sid, h: Holding) -> (Side, ConnId) {
 fn relay_stream(x: &Sid, n: usize, expiry: u64, stamp: Option<&Secret32>) -> (BlobId, Msg) {
     let mut rng = SeededRng::from_u64(n as u64);
     let p = Prefix::for_keys([n as u8; 16], &[1; 16], Some(WallMs(expiry)), &[]).unwrap().with_class(Class::Relay);
-    let (_, bytes) = osis_label::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
-    let b = osis_label::blob_id(&bytes);
+    let (_, bytes) = osis_blob::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
+    let b = osis_blob::blob_id(&bytes);
     let wrap = [0; WRAP_LEN];
-    let stamp = stamp.map(|w| osis_label::sign_stamp(&label_role_key(LabelRole::Write, w), &x.id, &b, &wrap, false));
+    let stamp = stamp.map(|w| osis_blob::sign_stamp(&role_key(RoleKey::Write, w), &x.id, &b, &wrap, false));
     let ev = Event::Added { blob_id: b, blob: Some(bytes), wrap, stamp };
     (b, Msg::Stream(Box::new(osis_proto::Stream { events: vec![(x.id, ev)], cursor: None, report: false, seq: 0 })))
 }

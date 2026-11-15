@@ -174,7 +174,7 @@ pub(crate) fn low_floor_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<bool>
     Ok(boxing.holders.iter().any(|h| h.role >= Role::Read && h.floor > low))
 }
 
-/// The bodies of `(tid, ak)` held here with content whose floor (`labeling::opened::part_floor`)
+/// The bodies of `(tid, ak)` held here with content whose floor (`sync_ids::opened::part_floor`)
 /// is below `f`, or unknown where `unknown` counts them.
 fn below(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_base::Ak, f: u64, unknown: bool) -> Result<BTreeSet<osis_base::CommitId>> {
     let held: Vec<(osis_base::CommitId, usize)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
@@ -184,7 +184,7 @@ fn below(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_base::Ak, f: u64, unknown: bool) 
     }).collect();
     let mut out = BTreeSet::new();
     for (c, ai) in held {
-        if crate::labeling::opened::part_floor(tx, &c, ai, tid)?.map_or(unknown, |x| x < f) {
+        if crate::sync_ids::opened::part_floor(tx, &c, ai, tid)?.map_or(unknown, |x| x < f) {
             out.insert(c);
         }
     }
@@ -244,7 +244,7 @@ pub(crate) fn late_part(tx: &mut Tx<'_>, c: &osis_base::CommitId, h: &osis_commi
     }
     // the memoized view: 0 on every actor never cut, so a part pays nothing more there
     let Some((_, f)) = tx.core.seal_epoch(&x.tid) else { return Ok(()) };
-    if f == 0 || !crate::labeling::opened::part_floor(tx, c, ai, &x.tid)?.is_some_and(|p| p < f) {
+    if f == 0 || !crate::sync_ids::opened::part_floor(tx, c, ai, &x.tid)?.is_some_and(|p| p < f) {
         return Ok(());
     }
     crate::retention::purge::owe_resnapshot(tx, &x.tid, &x.ak, BTreeSet::from([*c]), false)

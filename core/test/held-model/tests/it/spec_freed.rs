@@ -1,5 +1,5 @@
 //! Deleting by link (notes/chunk-links.md): the freed judgment over random small
-//! worlds (reuse across authors and epochs, two labels, forged cross-thing links, false Del,
+//! worlds (reuse across authors and epochs, two sync IDs, forged cross-thing links, false Del,
 //! nodes lacking node blobs), drops interleaved with judging, and scripted cases.
 use held_model::freed::*;
 use held_model::gen::Rng;
@@ -50,8 +50,8 @@ fn run(w: &mut World, rng: &mut Rng, drops: &mut Vec<(usize, usize)>) {
 }
 
 /// P2: once settled, a piece no node's held source of its thing reaches is gone, under each
-/// label, wherever a node that held a source reaching it (`before`: per node, the (thing, piece)
-/// pairs its sources reached at the start) and has nothing left waiting holds that label's key and
+/// sync ID, wherever a node that held a source reaching it (`before`: per node, the (thing, piece)
+/// pairs its sources reached at the start) and has nothing left waiting holds that sync ID's key and
 /// a key the blob bears that its links named.
 fn check_gone(w: &World, before: &[BTreeSet<(Thing, Pid)>]) {
     for (pid, p) in w.pieces.iter().enumerate() {
@@ -63,8 +63,8 @@ fn check_gone(w: &World, before: &[BTreeSet<(Thing, Pid)>]) {
             if !before[n].contains(&(p.thing, pid)) || !s.freed.is_empty() {
                 continue;
             }
-            for g in &w.labels[&p.thing] {
-                if !s.labels.contains(g) || !w.entries.contains(&(*g, pid)) {
+            for g in &w.sync_ids[&p.thing] {
+                if !s.sync_ids.contains(g) || !w.entries.contains(&(*g, pid)) {
                     continue;
                 }
                 // a key its link named, it holds and the blob bears: walked links of it
@@ -72,7 +72,7 @@ fn check_gone(w: &World, before: &[BTreeSet<(Thing, Pid)>]) {
                 let could = links.iter().any(|l| l.del.iter().any(|k| s.keys.contains(k) && p.group.contains(k)));
                 // only honest links (Del as the blob bears) promise the delete
                 let honest = links.iter().all(|l| l.del.iter().copied().collect::<BTreeSet<_>>() == p.group);
-                assert!(!(could && honest), "P2: piece {pid} of thing {} freed everywhere, walked by node {n} with the right, still under label {g}", p.thing);
+                assert!(!(could && honest), "P2: piece {pid} of thing {} freed everywhere, walked by node {n} with the right, still under sync ID {g}", p.thing);
             }
         }
     }
@@ -108,7 +108,7 @@ fn freed_judgment_random_worlds() {
 fn piece(w: &mut World, thing: Thing, group: &[DelKey], kids: Vec<Link>) -> Link {
     let id = w.pieces.len();
     w.pieces.push(Piece { thing, group: group.iter().copied().collect(), kids });
-    for g in w.labels[&thing].clone() {
+    for g in w.sync_ids[&thing].clone() {
         w.entries.insert((g, id));
     }
     Link { piece: id, del: group.to_vec() }
@@ -116,13 +116,13 @@ fn piece(w: &mut World, thing: Thing, group: &[DelKey], kids: Vec<Link>) -> Link
 
 fn base() -> World {
     let mut w = World::default();
-    w.labels.insert(1, vec![1, 2]);
-    w.labels.insert(2, vec![1]);
+    w.sync_ids.insert(1, vec![1, 2]);
+    w.sync_ids.insert(2, vec![1]);
     w
 }
 
-fn node(w: &World, held: &[usize], keys: &[DelKey], labels: &[SyncId]) -> NodeState {
-    let mut s = NodeState { held: held.iter().copied().collect(), keys: keys.iter().copied().collect(), labels: labels.iter().copied().collect(), ..Default::default() };
+fn node(w: &World, held: &[usize], keys: &[DelKey], sync_ids: &[SyncId]) -> NodeState {
+    let mut s = NodeState { held: held.iter().copied().collect(), keys: keys.iter().copied().collect(), sync_ids: sync_ids.iter().copied().collect(), ..Default::default() };
     s.blobs = w.pieces.iter().enumerate().filter(|(_, p)| !p.kids.is_empty()).map(|(i, _)| i).collect();
     s
 }
@@ -172,7 +172,7 @@ fn forged_cross_thing_link_deletes_and_keeps_nothing() {
     let mut w = base();
     let k2 = [(1, 20)];
     let c = piece(&mut w, 2, &k2, vec![]);
-    w.entries.insert((2, c.piece)); // uploaded under thing 1's other label too
+    w.entries.insert((2, c.piece)); // uploaded under thing 1's other sync ID too
     w.sources = vec![Source { thing: 2, links: vec![c.clone()] }, Source { thing: 1, links: vec![c.clone()] }];
     w.nodes = vec![node(&w, &[0, 1], &[(1, 20)], &[1, 2])];
     w.drop_source(0, 1);
@@ -182,13 +182,13 @@ fn forged_cross_thing_link_deletes_and_keeps_nothing() {
     w.nodes[0].held.insert(1); // the forged body held again: keeps nothing of thing 2
     w.settle(&mut Rng::new(1));
     assert!(!w.entries.contains(&(1, c.piece)));
-    assert!(w.entries.contains(&(2, c.piece)), "no thing-2 commitment under thing 1's label: stays (junk a writer could upload anyway)");
+    assert!(w.entries.contains(&(2, c.piece)), "no thing-2 commitment under thing 1's sync ID: stays (junk a writer could upload anyway)");
 }
 
-// Thing 1 under labels 1 and 2: a node holding label 1 only deletes label 1's entry; label 2's
-// stays until a holder of label 2 walks it.
+// Thing 1 under sync IDs 1 and 2: a node holding sync ID 1 only deletes sync ID 1's entry; sync ID 2's
+// stays until a holder of sync ID 2 walks it.
 #[test]
-fn delete_is_per_label_entry() {
+fn delete_is_per_sync_id_entry() {
     let mut w = base();
     let k = [(1, 10)];
     let c = piece(&mut w, 1, &k, vec![]);

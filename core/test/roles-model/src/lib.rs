@@ -26,7 +26,7 @@
 //! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes-plan.md
 //!   step 3), below.
 //! - `epochs`: account signing epochs (issues/account-signing.md): node removal as
-//!   rotation, per-label list parts and per-thing lists, listings, witnesses' addenda,
+//!   rotation, per-sync-ID list parts and per-thing lists, listings, witnesses' addenda,
 //!   successive removals, re-adds, the part bound, forks and thieves (README.md, results).
 //! - `forks`: an account's forked signing chain, the first-seen rule (§5.4).
 //! - `custody`: notes/account-forks-design.md, greenfield: seed custody follows holding, the

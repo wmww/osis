@@ -740,7 +740,7 @@ fn forged_keyset_invalid_where_removal_arrived_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (Carried), model `Carry`: a node learning an epoch learns the keysets its boxes name with it: peer 0 seals A's holder M at m1's knowing keyset kk and places kk's
-// commit under A's label with its rotation. W (peer 4, A's other admin) gets peer 0's commits
+// commit under A's sync ID with its rotation. W (peer 4, A's other admin) gets peer 0's commits
 // but not kk's (a host withholding the carried commit): kk is no anchor there (not held), so W's
 // next rotation of A seals M at k0, which D opens (the stated limit: W holds no knowing keyset
 // of M). Peer 0 finds that box stale and moves A back to kk; once kk's commit reaches W, W
@@ -1300,7 +1300,7 @@ fn own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4() {
     assert_eq!(sealed_at(&mut lp, 2, x, t), Some(t1), "T sealed at the keyset C holds");
     lp.sync(2, 1).unwrap();
     assert_eq!(newest_read(&lp, 1, x), newest_read(&lp, 2, x), "B reads X's new epoch");
-    // T's new keyset reaches B, and C (as a certificate under X's labels): the box is stale
+    // T's new keyset reaches B, and C (as a certificate under X's sync IDs): the box is stale
     lp.sync(0, 1).unwrap();
     deliver_without_secrets(&mut lp, 0, 2, t);
     let t2 = newest_read(&lp, 0, t).unwrap();
@@ -2020,7 +2020,7 @@ fn every_box_recorded(seed: u64) -> Vec<String> {
 // Randomized: grants, removals, rotations and re-seals of A's holder actors (teams and accounts),
 // and removals inside the teams; after each step W, G's admin, holds a record of every box at A's
 // current epochs naming the keysets the box names. Fails where a grant or re-seal records
-// nothing. (Which labels carry the records is the osis `sharing` tests': LocalPeer delivers every
+// nothing. (Which sync IDs carry the records is the osis `sharing` tests': LocalPeer delivers every
 // commit.)
 #[test]
 fn every_box_is_recorded_beside_it_spec_crypto_4() {
@@ -2094,7 +2094,7 @@ fn a_grants_records_do_not_grow_with_the_actor_spec_crypto_4() {
 // records; Stale): G's grant boxing A at its epoch e is logged (the sync facade's
 // `logged_with`), beside e's rotation commit, with the commit recording A's box to team M at e
 // (M's grant on A), whose `keys.0` holds a box record and no keyset. A node reading
-// G's labels but none of A's holds e's records so. Certificates carry A's newest keysets only, so
+// G's sync IDs but none of A's holds e's records so. Certificates carry A's newest keysets only, so
 // for a keyset of A below its newest n (a fork G seals jointly) this is the one way they arrive.
 #[test]
 fn a_keysets_records_travel_with_it_spec_crypto_4() {

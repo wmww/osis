@@ -6,7 +6,7 @@ use super::Signers;
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_base::{CommitId, Role, SyncId, Tid};
-use osis_label::StepId;
+use osis_blob::StepId;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 

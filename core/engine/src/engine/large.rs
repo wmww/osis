@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use osis_base::{Ak, BlobId, ChunkParams, CommitId, Link, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
-use osis_label::{BlobFetch, BlobReader, BlobWriter, Framing, HashSink, LargeParams, Reuse, Written};
+use osis_blob::{BlobFetch, BlobReader, BlobWriter, Framing, HashSink, LargeParams, Reuse, Written};
 use osis_schema::{Large, Path, Schema, Step, Type, large_positions, type_at};
 use osis_schema::core_types::is_role_class;
 use std::collections::{BTreeSet, HashMap};
@@ -161,7 +161,7 @@ impl ListEdit {
 
 /// `v` chunked without writing blobs: a large value as the link (content hash) a write gives it.
 fn hashed(v: &Value, dedup: &Secret32) -> Result<Value> {
-    Ok(osis_label::chunk_value(&mut HashSink::new(dedup.clone()), LargeParams::FORMAT, v)?)
+    Ok(osis_blob::chunk_value(&mut HashSink::new(dedup.clone()), LargeParams::FORMAT, v)?)
 }
 
 /// The `ListEdit` of each op that is a list `edit` (others `None`), large parts hashed under
@@ -379,7 +379,7 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
             Some(r) => BlobWriter::reusing(r, &mut blobs, rng),
             None => BlobWriter::new(framing, &mut blobs, rng),
         };
-        let out = osis_label::chunk_value(&mut bw, LargeParams::FORMAT, v)?;
+        let out = osis_blob::chunk_value(&mut bw, LargeParams::FORMAT, v)?;
         written.extend_from_slice(bw.written());
         Ok(out)
     };
@@ -435,12 +435,12 @@ pub(crate) fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) 
 /// node or page the link names (its content hash under `dedup`, unchecked without one: a thing
 /// forgotten here, whose pieces are only deleted).
 pub(crate) fn kids_of(dedup: Option<&Secret32>, link: &Link, blob: &[u8]) -> Option<(bool, Vec<Link>)> {
-    if osis_label::blob_id(blob) != link.blob {
+    if osis_blob::blob_id(blob) != link.blob {
         return None;
     }
-    let (_, pt) = osis_label::open(blob, &Secret32::from_bytes(link.key)).ok()?;
-    if let Ok((level, kids)) = osis_label::tree::parse_node(&pt)
-        && dedup.is_none_or(|d| osis_label::tree::node_hash(d, level, &kids) == link.hash)
+    let (_, pt) = osis_blob::open(blob, &Secret32::from_bytes(link.key)).ok()?;
+    if let Ok((level, kids)) = osis_blob::tree::parse_node(&pt)
+        && dedup.is_none_or(|d| osis_blob::tree::node_hash(d, level, &kids) == link.hash)
     {
         return Some((level <= 1, kids.into_iter().map(|(l, _)| l).collect()));
     }
@@ -528,9 +528,9 @@ impl Engine {
         self.read(|tx| crate::engine::tree_refs::live_trees_in(tx, &tid))
     }
 
-    /// Chunks or tree nodes `lost`, gone from every host of a label, that this node's own
+    /// Chunks or tree nodes `lost`, gone from every host of a sync ID, that this node's own
     /// commit links (spec/sync-ids.md §1: a purger that had not seen this node's reuse judged them
-    /// dead), looked for among `things` (the label's closure: those whose live states link a
+    /// dead), looked for among `things` (the sync ID's closure: those whose live states link a
     /// held one). For each aspect whose newest own commit linking one is held: every large position
     /// of the current value whose tree holds one is written again (`Op::Put` at that position:
     /// no reset, so every other write stays), with the lost blobs re-encrypted and the own
@@ -715,14 +715,14 @@ impl Engine {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
             let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
             let mut r = BlobReader::new(&dedup, &mut blobs);
-            Ok(osis_label::read_value(link, &dedup, &mut r, LargeParams::FORMAT, max_len)?)
+            Ok(osis_blob::read_value(link, &dedup, &mut r, LargeParams::FORMAT, max_len)?)
         })
     }
 
     /// One step of a streaming read of a large value of `tid` (the API's `stream`): the next
     /// plaintext chunk of the canonical bytes `r` walks (`TreeReader::new(link, CHUNK_MIN, ..)`),
     /// `None` at the end. Memory: one chunk plus the tree path.
-    pub fn next_chunk(&mut self, tid: &Tid, r: &mut osis_label::TreeReader) -> Result<Option<Vec<u8>>> {
+    pub fn next_chunk(&mut self, tid: &Tid, r: &mut osis_blob::TreeReader) -> Result<Option<Vec<u8>>> {
         let tid = *tid;
         self.read(|tx| {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;

@@ -1,5 +1,5 @@
 //! Judgment conformance vectors (core/test/vectors/README.md, `judgment/`): histories played by
-//! the order harness (`order::play`), carried in a bundle as one label's host holds them, judged
+//! the order harness (`order::play`), carried in a bundle as one sync ID's host holds them, judged
 //! by a fresh node in a given arrival order; the expected verdicts are what this engine judges.
 //! `judgment_vectors_spec_permissions_5_2` replays every generated case (its inputs only) through
 //! a fresh engine and compares; `judgment_vectors_can_fail` (ignored) checks a changed verdict
@@ -7,8 +7,8 @@
 
 use crate::order::{Played, Step, play};
 use osis_base::{CommitId, Role, Tid, WallMs};
-use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, label_role_key};
-use osis_label::{BundleReader, BundleWriter, Importer, Parent, Record, StepKeys, genesis_label, register, sign_stamp};
+use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, role_key};
+use osis_blob::{BundleReader, BundleWriter, Importer, Parent, Record, StepKeys, genesis_sync_id, register, sign_stamp};
 use osis_engine::local_peer::{LocalPeer, Peer};
 use osis_vectors::file::{Record as Rec, VecFile};
 use std::collections::{BTreeMap, BTreeSet};
@@ -52,7 +52,7 @@ fn parse_order(s: &str) -> Vec<Tok> {
     }).collect()
 }
 
-/// One label of a bundle: its genesis path record, stamp key and read secret.
+/// One sync ID of a bundle: its genesis path record, stamp key and read secret.
 struct Lab {
     path: Record,
     id: osis_base::SyncId,
@@ -60,15 +60,15 @@ struct Lab {
     stamp: osis_crypto::SigningSecret,
 }
 
-/// A label's genesis path from group secrets all but the deposit seed named `base`: read
+/// A sync ID's genesis path from group secrets all but the deposit seed named `base`: read
 /// `base`, write `base + 1`, admin `base - 1`, deposit seed `base + 2`.
-fn label(base: u8, rng: &mut SeededRng) -> Lab {
+fn sync_id(base: u8, rng: &mut SeededRng) -> Lab {
     let (r, w, a) = (s32(base), s32(base + 1), s32(base - 1));
-    let id = genesis_label(&a);
+    let id = genesis_sync_id(&a);
     let keys = StepKeys::derive(&r, &w, &a, &s32(base + 2), &id);
-    let delete = label_role_key(LabelRole::Delete, &a);
+    let delete = role_key(RoleKey::Delete, &a);
     let (step, claims) = register(Parent::Genesis(&delete), keys, &[], (&Tid::from_bytes([base - 3; 15]), Epoch::new(0, [0; 32]).unwrap(), &r), (Epoch::new(0, [0; 32]).unwrap(), &r), rng).unwrap();
-    Lab { id: step.label, path: Record::Path { label: step.label, steps: vec![(step, Some(claims))] }, read: r, stamp: label_role_key(LabelRole::Write, &w) }
+    Lab { id: step.sync_id, path: Record::Path { sync_id: step.sync_id, steps: vec![(step, Some(claims))] }, read: r, stamp: role_key(RoleKey::Write, &w) }
 }
 
 /// What `bundle` lays out: the bytes, each entry's commit index, the entries that are referenced
@@ -80,17 +80,17 @@ struct Laid {
     setup: usize,
 }
 
-/// A played history as a bundle as the hosts hold it: the genesis path of the first label (group
+/// A played history as a bundle as the hosts hold it: the genesis path of the first sync ID (group
 /// secrets read `0a`, write `0b`, admin `09`, deposit seed `0c`), then per commit the blobs it
 /// references, each under a filler wrap (left out where the case needs no bytes of them: the
 /// chunks of `t:blob.0`, which nothing waits for), and its
-/// one blob (sections per label, each under that label's read secret, spec/wire.md §4) sealed
-/// and stamped under every label with a part of it, each blob before its entry. With `second`,
-/// every thing but G is under a second label (read `1a`, write `1b`, admin `19`, deposit seed
+/// one blob (sections per sync ID, each under that sync ID's read secret, spec/wire.md §4) sealed
+/// and stamped under every sync ID with a part of it, each blob before its entry. With `second`,
+/// every thing but G is under a second sync ID (read `1a`, write `1b`, admin `19`, deposit seed
 /// `1c`), its path before its first entry.
 fn bundle(played: &Played, second: bool) -> Laid {
     let mut rng = SeededRng::from_u64(0);
-    let first = label(0x0a, &mut rng);
+    let first = sync_id(0x0a, &mut rng);
     let mut recs = vec![first.path.clone()];
     let mut of = Vec::new();
     let mut refs = BTreeSet::new();
@@ -103,12 +103,12 @@ fn bundle(played: &Played, second: bool) -> Laid {
         let under = |ai: usize| second && cb.header.aspects[ai].tid != played.things[0] && played.things.contains(&cb.header.aspects[ai].tid);
         let readers: Vec<bool> = cb.parts.iter().map(|p| under(p.ai)).collect::<BTreeSet<_>>().into_iter().collect();
         if readers.contains(&true) && other.is_none() {
-            let l = label(0x1a, &mut rng);
+            let l = sync_id(0x1a, &mut rng);
             recs.push(l.path.clone());
             other = Some(l);
         }
         let lab_of = |second: bool| if second { other.as_ref().unwrap() } else { &first };
-        // the referenced blobs under the first label the commit has a part under
+        // the referenced blobs under the first sync ID the commit has a part under
         if let Some(r0) = readers.first().copied()
             && !cb.header.aspects.iter().any(|a| a.ak.as_str() == "t:blob.0")
         {
@@ -118,7 +118,7 @@ fn bundle(played: &Played, second: bool) -> Laid {
                     let wrap = osis_crypto::filler_wrap(&mut rng);
                     let stamp = sign_stamp(&lab.stamp, &lab.id, id, &wrap, false);
                     recs.push(Record::Blob(b.clone()));
-                    recs.push(Record::Entry { label: lab.id, blob: *id, wrap, stamp: Some(stamp) });
+                    recs.push(Record::Entry { sync_id: lab.id, blob: *id, wrap, stamp: Some(stamp) });
                     refs.insert(of.len());
                     of.push(ci);
                 }
@@ -126,13 +126,13 @@ fn bundle(played: &Played, second: bool) -> Laid {
         }
         if !cb.parts.is_empty() {
             let env = osis_commit::seal_commit(&cb, under, |r, _| Some((lab_of(*r).read.clone(), vec![])), &[], &mut rng).unwrap();
-            let sealed = osis_engine::labeling::frame_envelope(&env, &cb.header, osis_label::Class::Durable, &mut rng, &cb).unwrap();
+            let sealed = osis_engine::sync_ids::frame_envelope(&env, &cb.header, osis_blob::Class::Durable, &mut rng, &cb).unwrap();
             recs.push(Record::Blob(sealed.blob));
             for r in readers {
                 let lab = lab_of(r);
                 let wrap = osis_crypto::wrap(&lab.read, &sealed.id, &sealed.key, 1).unwrap();
                 let stamp = sign_stamp(&lab.stamp, &lab.id, &sealed.id, &wrap, false);
-                recs.push(Record::Entry { label: lab.id, blob: sealed.id, wrap, stamp: Some(stamp) });
+                recs.push(Record::Entry { sync_id: lab.id, blob: sealed.id, wrap, stamp: Some(stamp) });
                 of.push(ci);
             }
         }
@@ -163,7 +163,7 @@ fn entries(bytes: &[u8]) -> Vec<(osis_base::BlobId, [u8; osis_crypto::WRAP_LEN],
         imp.import(r.clone()).unwrap().unwrap();
         match r {
             Record::Blob(b) => {
-                blobs.insert(osis_label::blob_id(&b), b);
+                blobs.insert(osis_blob::blob_id(&b), b);
             }
             Record::Entry { blob, wrap, .. } => out.push((blob, wrap, blobs[&blob].clone())),
             _ => {}
@@ -207,12 +207,12 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
     let mut p = LocalPeer::cached(&format!("judgment::fresh/{}", now.0), || (LocalPeer::of(vec![Peer::new(FRESH, now).unwrap()], 0), ())).0.peers.remove(0);
     let mut ids = BTreeSet::new();
     // a filler wrap opens under no read secret (spec/crypto.md §5)
-    // an entry delivers its label's section: the one sealed under the read secret its wrap
-    // opened with (a node holding one label's secret reads that label's parts)
+    // an entry delivers its sync ID's section: the one sealed under the read secret its wrap
+    // opened with (a node holding one sync ID's secret reads that sync ID's parts)
     let open = |i: usize| {
         let (id, wrap, blob) = &ents[i];
-        osis_label::unwrap_any(reads, id, wrap).map(|(ri, key)| {
-            let (_, pt) = osis_label::open(blob, &key).unwrap();
+        osis_blob::unwrap_any(reads, id, wrap).map(|(ri, key)| {
+            let (_, pt) = osis_blob::open(blob, &key).unwrap();
             let env = osis_commit::Envelope::decode(&pt).unwrap();
             let o = env.open(|_| vec![reads[ri].clone()]).unwrap();
             (o.commit.encode(), o.commit)
@@ -329,7 +329,7 @@ fn read_secrets(second: bool) -> Vec<Secret32> {
     r
 }
 
-/// `second`: every thing but G under a second label (`bundle`).
+/// `second`: every thing but G under a second sync ID (`bundle`).
 fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
     let mut setup: Option<Vec<u8>> = None;
     let mut cases = Vec::new();
@@ -369,7 +369,7 @@ fn files() -> Vec<(&'static str, String)> {
     vec![
         ("judgment/models.vec", generate("spec/permissions.md §5", models(), false).render()),
         ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(invites()).chain(remerges()).chain(bounds()).collect(), false).render()),
-        ("judgment/labels.vec", generate("spec/commits.md §4, spec/sync-judgement.md §1, spec/wire.md §12", labels(), true).render()),
+        ("judgment/sync IDs.vec", generate("spec/commits.md §4, spec/sync-judgement.md §1, spec/wire.md §12", sync_ids(), true).render()),
         ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false).render()),
     ]
 }
@@ -638,31 +638,31 @@ fn remerges() -> Vec<Scenario> {
     }]
 }
 
-/// One history over two labels (`bundle`'s `second`): one commit, a part under each. H's first admin
+/// One history over two sync IDs (`bundle`'s `second`): one commit, a part under each. H's first admin
 /// is 0, so only H's own edge gives 1 a role on it.
-fn labels() -> Vec<Scenario> {
+fn sync_ids() -> Vec<Scenario> {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
-    /// The entries before the last commit (its parts span both labels, `two`) that come after
+    /// The entries before the last commit (its parts span both sync IDs, `two`) that come after
     /// the setup, and the setup.
     fn entries(played: &Played, of: &[usize]) -> (Vec<usize>, Vec<Tok>, Vec<usize>) {
         let b = played.base;
         let two: Vec<usize> = (0..of.len()).filter(|e| of[*e] == played.packs.len() - 1).collect();
-        assert_eq!(two.len(), 2, "a part under each label");
+        assert_eq!(two.len(), 2, "a part under each sync ID");
         let k = of.iter().position(|x| *x == b).unwrap();
         ((k..two[0]).collect(), (0..k).map(Tok::In).collect(), two)
     }
     fn orders(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
         let (c, setup, two) = entries(played, of);
         let list = |post: &[usize]| setup.iter().copied().chain(c.iter().chain(post).map(|e| Tok::In(*e))).collect();
-        vec![("both labels", list(&two)), ("one label", list(&two[..1]))]
+        vec![("both sync IDs", list(&two)), ("one sync ID", list(&two[..1]))]
     }
     /// The two parts in both orders, before or after the rest, and the withheld edge last.
     fn chainless(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
         let (edge, last) = (played.base + 1, played.packs.len() - 1);
         let rest: Vec<usize> = (0..of.len()).filter(|e| of[*e] != edge && of[*e] != last).collect();
         let two: Vec<usize> = (0..of.len()).filter(|e| of[*e] == last).collect();
-        assert_eq!(two.len(), 2, "a part under each label");
+        assert_eq!(two.len(), 2, "a part under each sync ID");
         let edges: Vec<usize> = (0..of.len()).filter(|e| of[*e] == edge).collect();
         let list = |post: &[usize]| rest.iter().chain(post).map(|e| Tok::In(*e)).collect::<Vec<Tok>>();
         let (gh, hg) = ([two[0], two[1]], [two[1], two[0]]);
@@ -680,14 +680,14 @@ fn labels() -> Vec<Scenario> {
     }
     vec![
         Scenario {
-            name: "content commit over two labels",
+            name: "content commit over two sync IDs",
             spec: "spec/commits.md §4, spec/sync-judgement.md §1",
             source: "hand-built: 1 writes both G (it holds write) and H (it holds read) in one commit: each delta judged alone; nothing waits for a part",
             steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
             orders: Some(orders),
         },
         Scenario {
-            name: "role commit over two labels",
+            name: "role commit over two sync IDs",
             spec: "spec/commits.md §4, spec/permissions.md §5.1",
             source: "hand-built: 0 grants 1 read on both G and H in one role commit: a role commit never waits for its other deltas",
             steps: vec![NewTop { by: 0 }, tick.clone(), TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Read }],

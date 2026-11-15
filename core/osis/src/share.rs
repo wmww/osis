@@ -186,7 +186,7 @@ pub struct Invitation {
     pub acted: bool,
 }
 
-fn bad(what: &str) -> impl Fn(osis_label::Error) -> Error + '_ {
+fn bad(what: &str) -> impl Fn(osis_blob::Error) -> Error + '_ {
     move |e| Error::Invalid(format!("{what}: {e}"))
 }
 
@@ -229,7 +229,7 @@ pub(crate) use secret_text;
 secret_text!(
     /// A share link (`osis://link/...`): whoever holds this text can redeem it, so hand it over as a
     /// secret.
-    ShareLink, osis_label::ShareLink, |s| osis_label::ShareLink::from_text(s).map_err(bad("link"))
+    ShareLink, osis_blob::ShareLink, |s| osis_blob::ShareLink::from_text(s).map_err(bad("link"))
 );
 impl ShareLink {
     /// The thing the link shares.
@@ -239,7 +239,7 @@ impl ShareLink {
 }
 secret_text!(
     /// A contact card: a read link to an account's profile.
-    ContactCard, osis_label::ShareLink, |s| osis_label::ShareLink::from_text(s).map_err(bad("contact card"))
+    ContactCard, osis_blob::ShareLink, |s| osis_blob::ShareLink::from_text(s).map_err(bad("contact card"))
 );
 
 /// A transport URL, such as `quic://example.org:4040`: where something listens or is dialed.
@@ -282,13 +282,13 @@ impl std::fmt::Display for Url {
 
 /// How to reach a node: a transport URL and the node's key (`<url>#<base64url key>`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Address(pub(crate) osis_label::Address);
+pub struct Address(pub(crate) osis_blob::Address);
 
 impl std::str::FromStr for Address {
     type Err = Error;
     /// A `quic://` URL without a port gets `:4040` spelled out, so one node has one address.
     fn from_str(s: &str) -> Result<Address> {
-        let mut a = osis_label::address_from_text(s.trim()).map_err(bad("address"))?;
+        let mut a = osis_blob::address_from_text(s.trim()).map_err(bad("address"))?;
         a.url = osis_transport::quic::explicit_port(&a.url);
         if a.url.len() > osis_base::format::MAX_URL_BYTES {
             return Err(Error::Invalid(format!("address: URL over {} bytes", osis_base::format::MAX_URL_BYTES)));
@@ -299,14 +299,14 @@ impl std::str::FromStr for Address {
 
 impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&osis_label::address_to_text(&self.0))
+        f.write_str(&osis_blob::address_to_text(&self.0))
     }
 }
 
 impl Address {
     /// From a transport URL and the node's 32-byte key.
     pub fn new(url: &Url, key: [u8; 32]) -> Address {
-        Address(osis_label::Address { url: url.0.clone(), key })
+        Address(osis_blob::Address { url: url.0.clone(), key })
     }
 
     /// This address as a `peer://` relay item (`<hex key>@<socket address>`), when its URL is
@@ -722,9 +722,9 @@ impl Osis {
     }
 
     /// This node's first-contact reach (spec/wire.md §10): its dialable key and relays.
-    fn own_peer(&self) -> osis_label::Peer {
+    fn own_peer(&self) -> osis_blob::Peer {
         let key = self.locked(|l| l.secret.public_key());
-        osis_label::Peer { dialable: key, relays: self.inner.relays.clone() }
+        osis_blob::Peer { dialable: key, relays: self.inner.relays.clone() }
     }
 
     /// Redeems a link: reaches what it names and joins it, returning the thing. The join lists the
@@ -995,7 +995,7 @@ const CONTACT: &str = "contact";
 /// A redeem with no role on its target yet (`redeem`, `import_contact`) whose node stopped
 /// redeeming the link: it ended (`Invalid`), or the sharer never answered within the node's
 /// follow time (`Network`, `osis_sync::Policy::follow_link_ms`). `None` while it is redeemed.
-fn redeem_over<R>(db: &Osis, link: &osis_label::ShareLink, what: &str) -> Option<Result<R>> {
+fn redeem_over<R>(db: &Osis, link: &osis_blob::ShareLink, what: &str) -> Option<Result<R>> {
     if db.locked(|l| l.node.redeeming(&link.k)) {
         return None;
     }

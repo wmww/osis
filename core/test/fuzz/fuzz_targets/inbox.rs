@@ -4,7 +4,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use osis_base::{Limits, decode};
-use osis_label::Inbox;
+use osis_blob::Inbox;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(v) = decode(data, &Limits { max_depth: 512, max_bytes: 1 << 23 }) else { return };

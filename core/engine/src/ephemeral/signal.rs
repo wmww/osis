@@ -46,7 +46,7 @@ type Signal = (Tid, Ak, Fragment);
 impl Engine {
     /// Fires `signals`, one write's ephemeral signal writes (spec/sync-compaction.md §2): one relay-only
     /// commit, built and signed now, so the write is named by it; queued for sync when a thing of
-    /// it is in a labeled closure; told to commit listeners here as it is (`CommitChange::fired`).
+    /// it is in the closure of a sync ID; told to commit listeners here as it is (`CommitChange::fired`).
     pub(super) fn fire(&mut self, signals: Vec<(Tid, Ak, Value)>, ts: Ts, actor: Tid) -> Result<Written> {
         let src = Source::session(self.core.session);
         let mut deltas: Vec<Signal> = Vec::with_capacity(signals.len());

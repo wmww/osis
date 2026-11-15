@@ -7,9 +7,9 @@
 
 use osis_base::{SyncId, Tid, WallMs};
 use osis_crypto::kdf::{beacon, sync_proof};
-use osis_crypto::{Epoch, LabelRole, NodeRng, Secret32, SeededRng, SigningSecret, label_role_key, label_role_seed, static_entry};
+use osis_crypto::{Epoch, RoleKey, NodeRng, Secret32, SeededRng, SigningSecret, role_key, role_key_seed, static_entry};
 use osis_engine::sync::J;
-use osis_label::StepId;
+use osis_blob::StepId;
 use osis_proto::{BehindItem, Code, DepositItem, Flow, Grant, Id, Msg, SharedItem};
 use osis_sync::opens::cred::{Bind, Shown, Tested};
 use osis_sync::opens::holds::{Creds, Holds};
@@ -34,8 +34,8 @@ impl StepKeys {
     /// Step `n` of a sync ID, its sync secret drawn from `seed` and `n`.
     pub fn new(seed: u8, n: u8) -> StepKeys {
         let secret = Secret32::from_bytes([seed ^ 0x5a, n, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let s = label_role_seed(LabelRole::Sync, &secret);
-        StepKeys { id: StepId([seed.wrapping_add(n); 32]), epoch: epoch(n), sync: label_role_key(LabelRole::Sync, &secret), proof: sync_proof(&s) }
+        let s = role_key_seed(RoleKey::Sync, &secret);
+        StepKeys { id: StepId([seed.wrapping_add(n); 32]), epoch: epoch(n), sync: role_key(RoleKey::Sync, &secret), proof: sync_proof(&s) }
     }
 
     pub fn pk(&self) -> [u8; 32] {
@@ -109,7 +109,7 @@ pub struct Table {
     /// The sync IDs whose grant was taken (its secrets learned).
     pub taken: BTreeSet<SyncId>,
     /// The recorded path per S: what a source's steps verify under.
-    pub recorded: BTreeMap<SyncId, Vec<osis_label::Step>>,
+    pub recorded: BTreeMap<SyncId, Vec<osis_blob::Step>>,
 }
 
 impl Table {
@@ -175,8 +175,8 @@ impl Holds for Table {
     fn grant(&mut self, s: &SyncId, _entry: &[u8; 32]) -> Option<Grant> {
         // a path of one step (its bytes are never verified here: `take_grant` is the table's)
         let k = link_key(1).verifying_key();
-        let keys = osis_label::StepKeys { sync: k, write: k, delete: k, deposit: k };
-        let step = osis_label::Step { label: *s, prev: None, keys, step_key: [0; 32], claims_hash: [0; 32], sig: osis_crypto::Signature([0; 64]) };
+        let keys = osis_blob::StepKeys { sync: k, write: k, delete: k, deposit: k };
+        let step = osis_blob::Step { sync_id: *s, prev: None, keys, step_key: [0; 32], claims_hash: [0; 32], sig: osis_crypto::Signature([0; 64]) };
         self.gives_grant.then(|| Grant { entry_box: None, steps: vec![step] })
     }
     fn take_grant(&mut self, s: &SyncId, _entry: &[u8; 32], _grant: &Grant, signed: &dyn Fn(&[u8; 32]) -> bool) -> bool {
@@ -195,13 +195,13 @@ impl Holds for Table {
     fn deposit(&mut self, _src: osis_sync::store::Source, _item: &DepositItem) -> Code {
         Code::DECLINED
     }
-    fn verify_steps(&mut self, s: &SyncId, known: &[osis_label::Step], steps: &[osis_label::Step]) -> Vec<osis_label::Step> {
+    fn verify_steps(&mut self, s: &SyncId, known: &[osis_blob::Step], steps: &[osis_blob::Step]) -> Vec<osis_blob::Step> {
         let recorded = self.recorded.get(s).cloned().unwrap_or_default();
         let mut out = osis_sync::opens::holds::known_steps(s, recorded.iter().chain(known), steps);
         out.retain(|st| !recorded.iter().any(|r| r.id() == st.id()));
         out
     }
-    fn step_creds(&mut self, s: &SyncId, step: &osis_label::Step) -> Vec<(Tested, Option<Epoch>)> {
+    fn step_creds(&mut self, s: &SyncId, step: &osis_blob::Step) -> Vec<(Tested, Option<Epoch>)> {
         let pk = step.keys.sync.to_bytes();
         let held = self.creds.get(s).and_then(|c| c.tests.iter().find_map(|(t, e)| match t {
             Tested::SyncKey { key, .. } if key.verifying_key().to_bytes() == pk => Some((key.clone(), *e)),

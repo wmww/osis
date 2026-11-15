@@ -155,7 +155,7 @@ fn a_sync_grant_is_held_as_an_offer_spec_sync_inbox_2() {
 /// The aspects of the parts an inbox blob's commit carries to peer `to`, with the header's
 /// things and the payload's chain and records counts.
 fn inbox_parts(lp: &mut LocalPeer, to: usize, blob: &[u8]) -> (BTreeSet<String>, BTreeSet<Tid>, usize) {
-    let Some(osis_label::Inbox::Payload(p)) = lp.peers[to].engine.open_inbox_blob(blob) else { panic!("an inbox payload") };
+    let Some(osis_blob::Inbox::Payload(p)) = lp.peers[to].engine.open_inbox_blob(blob) else { panic!("an inbox payload") };
     let (plain, rest) = p.split();
     let c = osis_commit::CommitBlob::decode(&plain).unwrap();
     let aks = c.parts.iter().map(|p| c.header.aspects[p.ai].ak.as_str().to_string()).collect();
@@ -164,8 +164,8 @@ fn inbox_parts(lp: &mut LocalPeer, to: usize, blob: &[u8]) -> (BTreeSet<String>,
 }
 
 /// The boxes payload of an inbox blob to peer `to`, and its canonical bytes.
-fn boxes_of(lp: &mut LocalPeer, to: usize, blob: &[u8]) -> (osis_label::BoxesPayload, Vec<u8>) {
-    let Some(osis_label::Inbox::Boxes(p)) = lp.peers[to].engine.open_inbox_blob(blob) else { panic!("a boxes payload") };
+fn boxes_of(lp: &mut LocalPeer, to: usize, blob: &[u8]) -> (osis_blob::BoxesPayload, Vec<u8>) {
+    let Some(osis_blob::Inbox::Boxes(p)) = lp.peers[to].engine.open_inbox_blob(blob) else { panic!("a boxes payload") };
     let bytes = osis_base::encode(&p.to_value());
     (p, bytes)
 }
@@ -215,13 +215,13 @@ fn a_sync_holder_is_sent_its_boxes_only_spec_sync_inbox_2() {
 }
 
 /// `p` sealed to peer `to`'s account by hand.
-fn boxes_by_hand(lp: &mut LocalPeer, to: usize, p: &osis_label::BoxesPayload) -> Vec<u8> {
+fn boxes_by_hand(lp: &mut LocalPeer, to: usize, p: &osis_blob::BoxesPayload) -> Vec<u8> {
     let e = &mut lp.peers[to].engine;
     let a = e.me();
     let Some(ct::KemKey::X25519MlKem768(k)) = e.get_typed(&a, &ct::KEYS).unwrap().and_then(|k| k.key) else { panic!("the account's KEM key") };
     let kem = osis_crypto::KemPublicKey::from_slice(&k).unwrap();
     let now = e.now();
-    osis_label::seal_boxes_payload(&a, &kem, p, now, &mut SeededRng::from_u64(12)).unwrap()
+    osis_blob::seal_boxes_payload(&a, &kem, p, now, &mut SeededRng::from_u64(12)).unwrap()
 }
 
 /// The user's accept of `t` as the product writes it (`Engine::write`): filed in D, the synced
@@ -235,7 +235,7 @@ pub(crate) fn accept(lp: &mut LocalPeer, i: usize, t: Tid) {
 
 /// The sync keys of `r`'s held secrets.
 fn keys_of(r: &osis_engine::sync::SyncRecord) -> BTreeSet<[u8; 32]> {
-    r.secrets.values().map(|x| osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, x).verifying_key().to_bytes()).collect()
+    r.secrets.values().map(|x| osis_crypto::role_key(osis_crypto::RoleKey::Sync, x).verifying_key().to_bytes()).collect()
 }
 
 /// Peer 1 offered a sync grant on a thing of peer 0's and accepted it, its secret recorded as a
@@ -265,7 +265,7 @@ fn an_accept_keeps_the_offered_sync_id_spec_sync_3() {
     let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
     // the sender's dial hint: dialed only once its sync ID is kept (spec/sync-inbox.md §2)
     let (mut p, _) = boxes_of(&mut lp, 1, &blob);
-    p.dial = Some(osis_label::DialHint { dialable: [0x44; 32], urls: vec!["quic://granter".into()] });
+    p.dial = Some(osis_blob::DialHint { dialable: [0x44; 32], urls: vec!["quic://granter".into()] });
     let blob = boxes_by_hand(&mut lp, 1, &p);
     assert!(lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap().dial.is_none(), "not kept: no dial hint");
     accept(&mut lp, 1, t);
@@ -330,15 +330,15 @@ fn an_offer_after_the_accept_attaches_nothing_spec_sync_3() {
         blob_to(&mut lp, &done, ps[1])
     };
     let (real, _) = boxes_of(&mut lp, 1, &blob);
-    let dial = Some(osis_label::DialHint { dialable: [0x66; 32], urls: vec!["quic://forger".into()] });
+    let dial = Some(osis_blob::DialHint { dialable: [0x66; 32], urls: vec!["quic://forger".into()] });
     // another thing's genuine box relabelled t, under the forger's sync ID or the genuine one
-    let relabel = |sid: osis_base::SyncId| vec![osis_label::BoxedThing::new(t, Some(sid), real.things[0].boxes.clone())];
+    let relabel = |sid: osis_base::SyncId| vec![osis_blob::BoxedThing::new(t, Some(sid), real.things[0].boxes.clone())];
     let forger = osis_base::SyncId([0x66; 16]);
     let k = stranger_key(6);
     let offers = [
-        osis_label::BoxesPayload::new(&ps[1], relabel(forger), dial.clone(), None),
-        osis_label::BoxesPayload::new(&ps[1], relabel(forger), dial.clone(), Some((ps[0], real.grant.as_ref().unwrap().epoch, &k))),
-        osis_label::BoxesPayload::new(&ps[1], relabel(s), dial.clone(), None),
+        osis_blob::BoxesPayload::new(&ps[1], relabel(forger), dial.clone(), None),
+        osis_blob::BoxesPayload::new(&ps[1], relabel(forger), dial.clone(), Some((ps[0], real.grant.as_ref().unwrap().epoch, &k))),
+        osis_blob::BoxesPayload::new(&ps[1], relabel(s), dial.clone(), None),
     ];
     for p in offers {
         let b = boxes_by_hand(&mut lp, 1, &p);
@@ -396,12 +396,12 @@ fn a_grant_names_its_granter_only_where_its_key_is_held_spec_sync_inbox_2() {
     assert_eq!(from(&mut lp, &blob), None, "unknown");
     let (p, _) = boxes_of(&mut lp, 2, &blob);
     let mut resigned = p.clone();
-    resigned.grant = osis_label::BoxesPayload::new(&b, p.things.clone(), None, Some((a, p.grant.as_ref().unwrap().epoch, &stranger_key(7)))).grant;
+    resigned.grant = osis_blob::BoxesPayload::new(&b, p.things.clone(), None, Some((a, p.grant.as_ref().unwrap().epoch, &stranger_key(7)))).grant;
     let resigned = boxes_by_hand(&mut lp, 2, &resigned);
     let ids = lp.peers[0].engine.commit_ids();
     crate::flows::send(&mut lp, 0, 2, &ids);
     assert_eq!(from(&mut lp, &resigned), None, "another key's signature");
-    let closed = boxes_by_hand(&mut lp, 2, &osis_label::BoxesPayload::new(&b, p.things.clone(), None, Some((a, Some(osis_commit::FIRST_EPOCH), &old))));
+    let closed = boxes_by_hand(&mut lp, 2, &osis_blob::BoxesPayload::new(&b, p.things.clone(), None, Some((a, Some(osis_commit::FIRST_EPOCH), &old))));
     assert_eq!(from(&mut lp, &closed), None, "a removed node's key at the closed epoch");
     assert_eq!(from(&mut lp, &blob), Some(a), "the author's chain held: verified");
 }
@@ -467,7 +467,7 @@ fn an_accept_takes_the_waiting_blob_spec_sync_set_4() {
     assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().unwrap().sync_ids, vec![s]);
     let mut things = real.things.clone();
     things[0].sync_id = Some(osis_base::SyncId([0x77; 16]));
-    let late = boxes_by_hand(&mut lp, 1, &osis_label::BoxesPayload::new(&b, things, None, None));
+    let late = boxes_by_hand(&mut lp, 1, &osis_blob::BoxesPayload::new(&b, things, None, None));
     assert_eq!(lp.peers[1].engine.take_inbox_blob(&late, false).unwrap().unwrap().taken, Taken::Offered);
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.sync_record(&t).unwrap().unwrap().sync_ids, vec![s]);
@@ -513,7 +513,7 @@ fn a_step_is_due_after_a_rotation_spec_sync_ids_6() {
     let step = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("issued");
     assert_eq!((step.prev, head(&mut lp).id()), (Some(before.id()), step.id()), "a child of the recorded head, recorded");
     let sync = lp.peers[0].engine.epochs(&t).unwrap().sync.newest_held().map(|(_, x)| x.clone()).unwrap();
-    assert_eq!(step.keys.sync, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &sync).verifying_key(), "at the new sync epoch");
+    assert_eq!(step.keys.sync, osis_crypto::role_key(osis_crypto::RoleKey::Sync, &sync).verifying_key(), "at the new sync epoch");
     assert!(lp.peers[0].engine.due_step(&s).unwrap().is_none(), "nothing due after it");
     let (fresh, _) = lp.peers[0].engine.issue_step(&t, &s, true).unwrap().expect("a fresh step");
     assert_eq!((fresh.prev, head(&mut lp).id()), (Some(step.id()), fresh.id()));
@@ -850,13 +850,13 @@ fn seal_body_seals_an_own_commit_spec_crypto_5() {
     let (sealed, wrap) = lp.peers[0].engine.seal_body(&home, &c, &[], &mut rng).unwrap().expect("an own commit seals");
     assert_eq!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().map(|p| p.into_iter().collect::<Vec<_>>()), Some(sealed.parts.clone()));
     let rc = lp.peers[0].engine.read_credentials(&home).unwrap().unwrap();
-    assert!(osis_label::unwrap_any(rc.read_secrets.iter().map(|x| &x.1), &sealed.id, &wrap).is_some(), "the wrap opens under home's read secret");
+    assert!(osis_blob::unwrap_any(rc.read_secrets.iter().map(|x| &x.1), &sealed.id, &wrap).is_some(), "the wrap opens under home's read secret");
 }
 
 /// The parts of `bytes` (blob `id`, `wrap` under a sync ID of `t`) that open at peer `i`.
 fn parts_opened(lp: &mut LocalPeer, i: usize, t: &Tid, id: &osis_base::BlobId, bytes: &[u8], wrap: &[u8]) -> Vec<usize> {
     let e = &mut lp.peers[i].engine;
-    let key = osis_label::unwrap_any(e.read_secrets(t).iter(), id, wrap).expect("the wrap opens").1;
+    let key = osis_blob::unwrap_any(e.read_secrets(t).iter(), id, wrap).expect("the wrap opens").1;
     let o = e.open_commit(bytes, &key).unwrap();
     let c = o.commit.id();
     e.openings_done(&c);
@@ -916,15 +916,15 @@ fn commit_of(lp: &mut LocalPeer, i: usize, c: &osis_base::CommitId) -> osis_comm
 
 /// An inbox blob to peer `to`'s account carrying `commit` with `things`, sealed by hand (a
 /// sender's own payload: its sync IDs and its commit's header are its word).
-fn inbox_by_hand(lp: &mut LocalPeer, to: usize, commit: &osis_commit::CommitBlob, things: Vec<osis_label::InboxThing>) -> Vec<u8> {
+fn inbox_by_hand(lp: &mut LocalPeer, to: usize, commit: &osis_commit::CommitBlob, things: Vec<osis_blob::InboxThing>) -> Vec<u8> {
     let e = &mut lp.peers[to].engine;
     let a = e.me();
     let Some(ct::KemKey::X25519MlKem768(k)) = e.get_typed(&a, &ct::KEYS).unwrap().and_then(|k| k.key) else { panic!("the account's KEM key") };
     let kem = osis_crypto::KemPublicKey::from_slice(&k).unwrap();
     let v = osis_base::decode(&commit.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).unwrap();
-    let payload = osis_label::InboxPayload { commit: v, things, chain: Vec::new(), records: Vec::new(), dial: None };
+    let payload = osis_blob::InboxPayload { commit: v, things, chain: Vec::new(), records: Vec::new(), dial: None };
     let now = e.now();
-    osis_label::seal_inbox_blob(&a, &kem, &payload, now, &mut SeededRng::from_u64(11)).unwrap()
+    osis_blob::seal_inbox_blob(&a, &kem, &payload, now, &mut SeededRng::from_u64(11)).unwrap()
 }
 
 // spec/sync-inbox.md §2 Taking, spec/sync.md §3: a commit blob boxing sync alone is held as an
@@ -936,7 +936,7 @@ fn a_forged_author_names_nobody_spec_sync_inbox_2() {
     let mut forged = commit_of(&mut lp, 0, &g);
     forged.header.author = pb;
     let s = lp.peers[0].engine.home_sync_id(&t).unwrap();
-    let blob = inbox_by_hand(&mut lp, 1, &forged, vec![osis_label::InboxThing { tid: t, sync_id: s, delete_keys: None }]);
+    let blob = inbox_by_hand(&mut lp, 1, &forged, vec![osis_blob::InboxThing { tid: t, sync_id: s, delete_keys: None }]);
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.take_inbox_blob(&blob, false).unwrap().expect("opens").taken, Taken::Offered);
     assert!(e.sync_record(&t).unwrap().is_none());
@@ -952,7 +952,7 @@ fn a_payload_sync_id_of_another_thing_is_not_kept_unread_spec_sync_inbox_2() {
     let (_, d1) = lp.peers[1].engine.account().unwrap().unwrap();
     let home1 = lp.peers[1].engine.home_sync_id(&d1).unwrap().unwrap();
     let commit = commit_of(&mut lp, 0, &g);
-    let blob = inbox_by_hand(&mut lp, 1, &commit, vec![osis_label::InboxThing { tid: t, sync_id: Some(home1), delete_keys: None }]);
+    let blob = inbox_by_hand(&mut lp, 1, &commit, vec![osis_blob::InboxThing { tid: t, sync_id: Some(home1), delete_keys: None }]);
     lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
     accept(&mut lp, 1, t);
     let e = &mut lp.peers[1].engine;
@@ -1119,7 +1119,7 @@ fn read_facts_of_own_and_role_commits_spec_sync_judgement_3() {
     // the held blob logged verbatim under the same sync ID: a wrap of the same key
     let again = e.rewrap(&c, &sealed.id, &s, &wrap, &s).unwrap().expect("its epoch is held");
     let rc = e.read_credentials(&s).unwrap().unwrap();
-    let key = |w: &[u8]| osis_label::unwrap_any(rc.read_secrets.iter().map(|x| &x.1), &sealed.id, w).map(|x| *x.1.expose());
+    let key = |w: &[u8]| osis_blob::unwrap_any(rc.read_secrets.iter().map(|x| &x.1), &sealed.id, w).map(|x| *x.1.expose());
     assert_eq!(key(&again), key(&wrap));
 }
 
@@ -1188,7 +1188,7 @@ fn a_hint_is_no_recorded_sync_id_and_ends_with_its_blob_spec_sync_inbox_2() {
     let home1 = lp.peers[1].engine.home_sync_id(&d1).unwrap().unwrap();
     let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
     let commit = commit_of(&mut lp, 0, &g);
-    let forged = inbox_by_hand(&mut lp, 1, &commit, vec![osis_label::InboxThing { tid: t, sync_id: Some(home1), delete_keys: None }]);
+    let forged = inbox_by_hand(&mut lp, 1, &commit, vec![osis_blob::InboxThing { tid: t, sync_id: Some(home1), delete_keys: None }]);
     let o = lp.peers[1].engine.take_inbox_blob(&forged, true).unwrap().expect("opens");
     assert_eq!(o.taken, Taken::Applied);
     assert!(o.hints.is_empty(), "home1 is recorded by D's sync.0: no hint");
@@ -1320,9 +1320,9 @@ fn a_followed_link_stays_across_a_reload_spec_sync_set_2() {
     let link = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
     let e = &mut lp.peers[1].engine;
     e.follow_link(&link).unwrap();
-    assert!(e.sync_set().unwrap().ids.contains_key(&link.k_label), "K's sync ID followed");
+    assert!(e.sync_set().unwrap().ids.contains_key(&link.k_sync_id), "K's sync ID followed");
     e.reload().unwrap();
-    assert!(e.sync_set().unwrap().ids.contains_key(&link.k_label), "still followed after a reload");
+    assert!(e.sync_set().unwrap().ids.contains_key(&link.k_sync_id), "still followed after a reload");
 }
 
 // spec/permissions.md §3 (When it learns it: a node syncing a sync ID of the actor keeps syncing it,
@@ -1794,9 +1794,9 @@ fn a_rotation_logs_with_it_the_commits_it_names_spec_crypto_4() {
 fn record_blob_by_hand(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_base::CreationRecord]) -> (osis_base::BlobId, Vec<u8>, osis_engine::sync::Wrap) {
     let mut rng = SeededRng::from_u64(17);
     let plain = osis_commit::record_blob::encode_record_blob(records);
-    let prefix = osis_label::Prefix::for_groups(osis_label::Prefix::random_salt(&mut rng), &[7; 16], None, &[]).unwrap().with_class(osis_label::Class::Durable);
-    let (key, blob) = osis_label::frame(&prefix, &plain, &mut rng).unwrap();
-    let id = osis_label::blob_id(&blob);
+    let prefix = osis_blob::Prefix::for_groups(osis_blob::Prefix::random_salt(&mut rng), &[7; 16], None, &[]).unwrap().with_class(osis_blob::Class::Durable);
+    let (key, blob) = osis_blob::frame(&prefix, &plain, &mut rng).unwrap();
+    let id = osis_blob::blob_id(&blob);
     let w = lp.peers[i].engine.wrap_secret(t, None).unwrap().expect("a read epoch");
     let wrap = osis_crypto::wrap(&w, &id, &key, 0).unwrap();
     (id, blob, wrap)
@@ -2203,7 +2203,7 @@ fn marking_an_add_costs_its_size_spec_sync_set_2() {
 }
 
 /// The aspects of the parts `copy` names of commit `c`.
-fn copied_aks(lp: &mut LocalPeer, c: &osis_base::CommitId, copy: &osis_engine::labeling::Certs) -> BTreeSet<String> {
+fn copied_aks(lp: &mut LocalPeer, c: &osis_base::CommitId, copy: &osis_engine::sync_ids::Certs) -> BTreeSet<String> {
     let h = commit_of(lp, 0, c).header;
     copy.commits.get(c).into_iter().flatten().map(|ai| h.aspects[*ai].ak.as_str().to_string()).collect()
 }
@@ -2415,7 +2415,7 @@ fn an_accept_with_a_forgers_offer_held_keeps_the_genuine_too_spec_sync_3() {
     let forger = osis_base::SyncId([0x55; 16]);
     let mut things = real.things.clone();
     things[0].sync_id = Some(forger);
-    let forged = boxes_by_hand(&mut lp, 1, &osis_label::BoxesPayload::new(&b, things, None, None));
+    let forged = boxes_by_hand(&mut lp, 1, &osis_blob::BoxesPayload::new(&b, things, None, None));
     lp.peers[1].engine.take_inbox_blob(&forged, false).unwrap();
     lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
     accept(&mut lp, 1, t);
@@ -2457,13 +2457,13 @@ fn a_thing_accepted_under_a_sync_id_tied_to_another_is_not_synced_under_it_spec_
 fn an_accepted_forgers_dial_hint_hides_no_granter_spec_sync_inbox_2() {
     let (mut lp, t, _, _, blob) = granted(Role::Sync);
     let (mut p, _) = boxes_of(&mut lp, 1, &blob);
-    let granter = osis_label::DialHint { dialable: [0x44; 32], urls: vec!["quic://granter".into()] };
+    let granter = osis_blob::DialHint { dialable: [0x44; 32], urls: vec!["quic://granter".into()] };
     p.dial = Some(granter.clone());
     let genuine = boxes_by_hand(&mut lp, 1, &p);
     lp.peers[1].engine.take_inbox_blob(&genuine, false).unwrap();
     accept(&mut lp, 1, t);
-    let forger = osis_label::DialHint { dialable: [0x66; 32], urls: vec!["quic://forger".into()] };
-    let f = osis_label::BoxesPayload::new(&lp.peers[1].engine.me(), vec![osis_label::BoxedThing::new(t, Some(osis_base::SyncId([0x66; 16])), p.things[0].boxes.clone())], Some(forger.clone()), None);
+    let forger = osis_blob::DialHint { dialable: [0x66; 32], urls: vec!["quic://forger".into()] };
+    let f = osis_blob::BoxesPayload::new(&lp.peers[1].engine.me(), vec![osis_blob::BoxedThing::new(t, Some(osis_base::SyncId([0x66; 16])), p.things[0].boxes.clone())], Some(forger.clone()), None);
     lp.advance(1000);
     let f = boxes_by_hand(&mut lp, 1, &f);
     assert_eq!(lp.peers[1].engine.take_inbox_blob(&f, false).unwrap().unwrap().taken, Taken::Offered);
@@ -2568,7 +2568,7 @@ fn a_forged_copy_of_a_held_commit_opens_bad_spec_commits_4() {
     for p in &mut forged.parts {
         p.delta = osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![1; 40])]));
     }
-    let f = osis_engine::labeling::seal_plain(&forged.encode(), osis_label::Class::Durable, &mut rng).unwrap();
+    let f = osis_engine::sync_ids::seal_plain(&forged.encode(), osis_blob::Class::Durable, &mut rng).unwrap();
     let w = lp.peers[0].engine.wrap_secret(&t, None).unwrap().expect("a read epoch");
     let fwrap = osis_crypto::wrap(&w, &f.id, &f.key, 0).unwrap();
     let got = lp.peers[1].engine.open_entry(&s, &f.id, &fwrap, &f.blob, u64::MAX).unwrap();
@@ -2712,13 +2712,13 @@ fn a_section_the_node_cannot_open_goes_as_it_came_spec_sync_judgement_3() {
     let mut rng = SeededRng::from_u64(9);
     let (sealed, wrap) = lp.peers[0].engine.seal_body(&s, &c, &[], &mut rng).unwrap().expect("peer 0 seals its own");
     let h = lp.peers[0].engine.header(&c).unwrap();
-    let (prefix, pt) = osis_label::open(&sealed.blob, &sealed.key).unwrap();
+    let (prefix, pt) = osis_blob::open(&sealed.blob, &sealed.key).unwrap();
     let mut env = osis_commit::Envelope::decode(&pt).unwrap();
     let sec = env.sections.iter_mut().find(|x| x.ais.iter().any(|ai| h.aspects[*ai].tid == u)).expect("a section of u");
     let n = sec.ciphertext.len();
     sec.ciphertext[n / 2] ^= 1;
-    let (key, blob) = osis_label::frame_under(osis_crypto::BlobKey::fresh(&mut rng), &prefix, &env.encode()).unwrap();
-    let id = osis_label::blob_id(&blob);
+    let (key, blob) = osis_blob::frame_under(osis_crypto::BlobKey::fresh(&mut rng), &prefix, &env.encode()).unwrap();
+    let id = osis_blob::blob_id(&blob);
     let w = lp.peers[0].engine.wrap_secret(&t, None).unwrap().expect("a read epoch");
     let fwrap = osis_crypto::wrap(&w, &id, &key, 0).unwrap();
     let _ = wrap;
@@ -2761,8 +2761,8 @@ fn two_things() -> (LocalPeer, Tid, Tid, osis_base::SyncId, osis_base::CommitId,
 
 /// A blob of commit `c` framed from `env` (the header and signatures of `from`), wrapped for
 /// `t`'s sync IDs by peer 0.
-fn framed(lp: &mut LocalPeer, t: &Tid, from: &osis_commit::CommitBlob, env: &osis_commit::Envelope, rng: &mut SeededRng) -> (osis_engine::labeling::Sealed, osis_engine::sync::Wrap) {
-    let f = osis_engine::labeling::frame_envelope(env, &from.header, osis_label::Class::Durable, rng, from).unwrap();
+fn framed(lp: &mut LocalPeer, t: &Tid, from: &osis_commit::CommitBlob, env: &osis_commit::Envelope, rng: &mut SeededRng) -> (osis_engine::sync_ids::Sealed, osis_engine::sync::Wrap) {
+    let f = osis_engine::sync_ids::frame_envelope(env, &from.header, osis_blob::Class::Durable, rng, from).unwrap();
     let w = lp.peers[0].engine.wrap_secret(t, None).unwrap().expect("a read epoch");
     let wrap = osis_crypto::wrap(&w, &f.id, &f.key, 0).unwrap();
     (f, wrap)
@@ -2779,9 +2779,9 @@ fn an_unopened_section_counts_by_its_bytes_spec_sync_compaction_1() {
     let mut rng = SeededRng::from_u64(4);
     let e0 = &mut lp.peers[0].engine;
     let body = e0.body(&c).unwrap().unwrap();
-    let genuine = e0.seal(&body, osis_label::Class::Durable, &[], &mut rng).unwrap().unwrap();
+    let genuine = e0.seal(&body, osis_blob::Class::Durable, &[], &mut rng).unwrap().unwrap();
     let from = osis_commit::CommitBlob::decode(&e0.commit_bytes(&c).unwrap().unwrap()).unwrap();
-    let env = osis_commit::Envelope::decode(&osis_label::open(&genuine.blob, &genuine.key).unwrap().1).unwrap();
+    let env = osis_commit::Envelope::decode(&osis_blob::open(&genuine.blob, &genuine.key).unwrap().1).unwrap();
     assert_eq!(env.sections.len(), 2, "a section per thing");
     let secret = e0.epochs(&u).unwrap().read.newest_held().unwrap().1.clone();
     let mut junk_env = env.clone();
@@ -2840,9 +2840,9 @@ fn a_part_unchecked_for_want_of_its_record_opens_again_spec_sync_compaction_1() 
     m.set(t2, &REG, &s("w")).unwrap();
     let c = e0.commit(m).unwrap().unwrap();
     let body = e0.body(&c).unwrap().unwrap();
-    let genuine = e0.seal(&body, osis_label::Class::Durable, &[], &mut rng).unwrap().unwrap();
+    let genuine = e0.seal(&body, osis_blob::Class::Durable, &[], &mut rng).unwrap().unwrap();
     let from = osis_commit::CommitBlob::decode(&e0.commit_bytes(&c).unwrap().unwrap()).unwrap();
-    let env = osis_commit::Envelope::decode(&osis_label::open(&genuine.blob, &genuine.key).unwrap().1).unwrap();
+    let env = osis_commit::Envelope::decode(&osis_blob::open(&genuine.blob, &genuine.key).unwrap().1).unwrap();
     let ai = from.header.aspect_index(&t2, "t:reg.0").unwrap();
     let secret = e0.epochs(&t).unwrap().read.newest_held().unwrap().1.clone();
     let mut junk_env = env.clone();
@@ -2893,9 +2893,9 @@ fn a_held_commits_part_unchecked_for_want_of_its_record_opens_again_spec_sync_co
     m.set(t2, &REG, &s("w")).unwrap();
     let c = e0.commit(m).unwrap().unwrap();
     let body = e0.body(&c).unwrap().unwrap();
-    let genuine = e0.seal(&body, osis_label::Class::Durable, &[], &mut rng).unwrap().unwrap();
+    let genuine = e0.seal(&body, osis_blob::Class::Durable, &[], &mut rng).unwrap().unwrap();
     let from = osis_commit::CommitBlob::decode(&e0.commit_bytes(&c).unwrap().unwrap()).unwrap();
-    let env = osis_commit::Envelope::decode(&osis_label::open(&genuine.blob, &genuine.key).unwrap().1).unwrap();
+    let env = osis_commit::Envelope::decode(&osis_blob::open(&genuine.blob, &genuine.key).unwrap().1).unwrap();
     let (at, a2) = (from.header.aspect_index(&t, "t:reg.0").unwrap(), from.header.aspect_index(&t2, "t:reg.0").unwrap());
     let secret = e0.epochs(&t).unwrap().read.newest_held().unwrap().1.clone();
     let derived = e0.read_secrets(&t2).first().cloned().unwrap_or(secret);
@@ -2943,9 +2943,9 @@ fn a_fresh_encryption_carries_no_section_it_never_opened_for_a_held_part_spec_sy
     let mut rng = SeededRng::from_u64(8);
     let e0 = &mut lp.peers[0].engine;
     let body = e0.body(&c).unwrap().unwrap();
-    let genuine = e0.seal(&body, osis_label::Class::Durable, &[], &mut rng).unwrap().unwrap();
+    let genuine = e0.seal(&body, osis_blob::Class::Durable, &[], &mut rng).unwrap().unwrap();
     let from = osis_commit::CommitBlob::decode(&e0.commit_bytes(&c).unwrap().unwrap()).unwrap();
-    let env = osis_commit::Envelope::decode(&osis_label::open(&genuine.blob, &genuine.key).unwrap().1).unwrap();
+    let env = osis_commit::Envelope::decode(&osis_blob::open(&genuine.blob, &genuine.key).unwrap().1).unwrap();
     let mut junk_env = env.clone();
     let sec = junk_env.sections.iter_mut().find(|x| x.ais.contains(&at)).unwrap();
     let junk = osis_commit::Part { ai: at, delta: osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![1; 40])])) };
@@ -2959,8 +2959,8 @@ fn a_fresh_encryption_carries_no_section_it_never_opened_for_a_held_part_spec_sy
     }
     let rg = e1.blob_of(&g.id).unwrap().unwrap();
     assert!(rg.parts.contains(&at) && e1.blob_of(&f.id).unwrap().unwrap().sealed.contains(&junk_t), "t's section opened in g alone");
-    let held = |x: &osis_engine::labeling::Sealed, w| osis_engine::sync::HeldBlob { sync_id: s, wrap: w, bytes: x.blob.clone() };
-    let sections = |x: &osis_engine::labeling::Sealed| -> BTreeSet<[u8; 32]> { osis_commit::Envelope::decode(&osis_label::open(&x.blob, &x.key).unwrap().1).unwrap().sections.iter().map(|x| x.digest()).collect() };
+    let held = |x: &osis_engine::sync_ids::Sealed, w| osis_engine::sync::HeldBlob { sync_id: s, wrap: w, bytes: x.blob.clone() };
+    let sections = |x: &osis_engine::sync_ids::Sealed| -> BTreeSet<[u8; 32]> { osis_commit::Envelope::decode(&osis_blob::open(&x.blob, &x.key).unwrap().1).unwrap().sections.iter().map(|x| x.digest()).collect() };
     for hs in [vec![held(&f, fw), held(&g, gw)], vec![held(&f, fw)]] {
         let (x, _) = e1.seal_body(&s, &c, &hs, &mut rng).unwrap().expect("sealed");
         assert!(!sections(&x).contains(&junk_t), "the junk section copied");

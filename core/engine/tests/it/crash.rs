@@ -297,7 +297,7 @@ fn crash_every_write_of_a_chunked_commit() {
 fn crash_every_write_of_a_hold_and_release() {
     let blob = |n: u8| {
         let b = vec![n; 512];
-        (osis_label::blob_id(&b), b)
+        (osis_blob::blob_id(&b), b)
     };
     let ((a, ab), (c, cb)) = (blob(1), blob(2));
     for n in 0.. {

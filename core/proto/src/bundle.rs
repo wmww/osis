@@ -1,4 +1,4 @@
-//! Bundle import (spec/sync-streams.md §6, spec/wire.md §12): osis-label's reader and importer (paths,
+//! Bundle import (spec/sync-streams.md §6, spec/wire.md §12): osis-blob's reader and importer (paths,
 //! stamps and blob IDs verified as a store does), yielding paths and log events as a peer's
 //! stream would, with no cursor.
 
@@ -6,8 +6,8 @@ use crate::Error;
 use crate::msg::Event;
 use crate::SyncId;
 use osis_base::BlobId;
-use osis_label::Step;
-use osis_label::{BundleEvent, BundleReader, Importer};
+use osis_blob::Step;
+use osis_blob::{BundleEvent, BundleReader, Importer};
 use std::collections::HashMap;
 use std::io::Read;
 
@@ -48,13 +48,13 @@ impl<R: Read> BundleImport<R> {
             Ok(Some(ev)) => ev,
         };
         Ok(Some(match ev {
-            BundleEvent::Path { label, steps } => Some(Imported::Path { sync_id: label, steps: steps.into_iter().map(|(s, _)| s).collect() }),
+            BundleEvent::Path { sync_id, steps } => Some(Imported::Path { sync_id, steps: steps.into_iter().map(|(s, _)| s).collect() }),
             BundleEvent::Blob { id, blob } => {
                 self.blobs.insert(id, blob);
                 None
             }
-            BundleEvent::Add { label, blob, wrap, stamp } => Some(Imported::Event { sync_id: label, event: Event::Added { blob_id: blob, blob: self.blobs.remove(&blob), wrap, stamp } }),
-            BundleEvent::Deleted { label, blob } => Some(Imported::Event { sync_id: label, event: Event::Deleted(blob) }),
+            BundleEvent::Add { sync_id, blob, wrap, stamp } => Some(Imported::Event { sync_id, event: Event::Added { blob_id: blob, blob: self.blobs.remove(&blob), wrap, stamp } }),
+            BundleEvent::Deleted { sync_id, blob } => Some(Imported::Event { sync_id, event: Event::Deleted(blob) }),
         }))
     }
 }

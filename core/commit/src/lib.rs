@@ -1,6 +1,6 @@
 //! osis-commit: commit headers and blobs, kinds, retention, delete keys, signatures, the
 //! builder, delta verification, sections, prefix groups and the purge rewrite, chunk trees (`tree`: the one
-//! writer and reader, osis-label re-exports it) and linked header lists
+//! writer and reader, osis-blob re-exports it) and linked header lists
 //! (spec/commits.md, spec/wire.md §4, §6).
 //! Layer 3 (notes/architecture.md). Notes: notes/crdt.md (Implementation (`osis-commit`)).
 #![forbid(unsafe_code)]

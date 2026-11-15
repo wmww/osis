@@ -26,7 +26,7 @@ use crate::types::{Result, Waiting};
 use osis_base::memo::{Effects, Stamped};
 use osis_base::{CommitId, Tid, WallMs};
 use osis_engine::Engine;
-use osis_label::ShareLink;
+use osis_blob::ShareLink;
 use osis_store::Shred;
 use std::collections::BTreeMap;
 

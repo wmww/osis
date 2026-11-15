@@ -324,7 +324,7 @@ impl Engine {
         if !r.sync_ids.contains(s) {
             return Ok(false);
         }
-        let bears = |x: &Secret32| borne.contains(&osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, x).verifying_key().to_bytes());
+        let bears = |x: &Secret32| borne.contains(&osis_crypto::role_key(osis_crypto::RoleKey::Sync, x).verifying_key().to_bytes());
         let new: Vec<(Epoch, Secret32)> = r.secrets.iter().filter(|(e, x)| !r.recorded.contains(e) && bears(x)).map(|(e, x)| (*e, x.clone())).collect();
         let tie = !r.tied.contains(s) && r.secrets.values().any(bears);
         if new.is_empty() && !tie {

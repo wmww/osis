@@ -29,11 +29,11 @@
 
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
-use crate::labeling::Certs;
+use crate::sync_ids::Certs;
 use osis_base::{CommitId, CreationRecord, Role, SyncId, Tid, Value};
 use osis_commit::CommitBlob;
 use osis_crypto::NodeRng;
-use osis_label::{HolderKeys, StrandedNotice};
+use osis_blob::{HolderKeys, StrandedNotice};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -206,11 +206,11 @@ impl Engine {
     pub fn stranded_notice(&mut self, s: &SyncId, holder: &Tid, admin: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
         let a = *admin;
         let Some(kem) = self.read(|tx| crate::flows::edges::inbox_kem(tx, &a))? else { return Ok(None) };
-        let notice = StrandedNotice { label: *s, holder: *holder, keys: self.holder_keys(holder)? };
+        let notice = StrandedNotice { sync_id: *s, holder: *holder, keys: self.holder_keys(holder)? };
         let now = self.now();
-        match osis_label::seal_stranded_notice(admin, &kem, &notice, now, rng) {
+        match osis_blob::seal_stranded_notice(admin, &kem, &notice, now, rng) {
             Ok(b) => Ok(Some(b)),
-            Err(osis_label::Error::TooLarge(_)) => Ok(Some(osis_label::seal_stranded_notice(admin, &kem, &StrandedNotice { keys: HolderKeys::default(), ..notice }, now, rng)?)),
+            Err(osis_blob::Error::TooLarge(_)) => Ok(Some(osis_blob::seal_stranded_notice(admin, &kem, &StrandedNotice { keys: HolderKeys::default(), ..notice }, now, rng)?)),
             Err(e) => Err(e.into()),
         }
     }

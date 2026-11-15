@@ -395,7 +395,7 @@ mod tests {
         fn member(&self, conn: ConnId, s: &SyncId) -> Option<crate::opens::Member> {
             self.0.get(&(conn, *s)).map(|class| crate::opens::Member { class: *class, by: crate::types::Credential::SyncKey, until: None })
         }
-        fn head(&self, _: ConnId, _: &SyncId) -> Option<osis_label::StepId> {
+        fn head(&self, _: ConnId, _: &SyncId) -> Option<osis_blob::StepId> {
             None
         }
         fn present(&self, _: ConnId, _: &SyncId, _: &osis_base::BlobId) -> bool {

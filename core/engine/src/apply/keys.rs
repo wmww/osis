@@ -592,7 +592,7 @@ pub(crate) fn sealed_key(c: &CommitId, a: &Tid) -> Vec<u8> {
 /// Opens, read-only, the boxes of a pending role commit addressed to this node or an actor
 /// it holds (spec/crypto.md §4: such secrets are "kept for
 /// reading"): the epochs are recorded unestablished, so a grantee whose grant waits for the
-/// target's `created.0` and chain can open the target's label and download them. Parts are
+/// target's `created.0` and chain can open the target's sync ID and download them. Parts are
 /// decoded unverified, so what they yield is reading-only: never encrypted under, and replaced
 /// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
@@ -821,7 +821,7 @@ mod tests {
     // spec/crypto.md §4: boxes of pending commits are read, but the node holds a bounded number
     // of actors through reading-only secrets alone; past it a pending grant's boxes are not read.
     // A genuine grant past the cap reads its boxes once an applied one frees a place, or it waits
-    // for good on the label those secrets open.
+    // for good on the sync ID those secrets open.
     #[test]
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
@@ -1026,7 +1026,7 @@ mod tests {
         lp.peers[1].engine.check_index();
     }
 
-    // spec/crypto.md §4, spec/sync-ids.md §3: a read secret from a label's entry box (written by
+    // spec/crypto.md §4, spec/sync-ids.md §3: a read secret from a sync ID's entry box (written by
     // whoever holds the head's step key: a removed admin before the remover re-registers) is
     // held only when it is the secret of the epoch it names; it establishes nothing, so the
     // node encrypts under it once the epoch's rotation commit applies.
@@ -1401,14 +1401,14 @@ mod tests {
             lp.peers[i].engine.rebuild_index().unwrap();
             assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
         }
-        // spec/permissions.md §3: at the end of a complete pass of G's labels, each admin (the
+        // spec/permissions.md §3: at the end of a complete pass of G's sync IDs, each admin (the
         // first admin's node, B) gives T secrets of its own again, boxing Z (concurrently: a fork at
         // one n); A (removed), X and Z (readers) do nothing; nothing more once T has them
         let runs: Vec<(usize, Owed)> = (0..5).map(|i| own_due_done(&mut lp, i, &g, &t)).collect();
         assert_eq!(runs.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 0, 0, 1, 0]);
         // each admin's rotation goes to every holder it boxes, none holding a box at a current
         // epoch of T: Z directly, T's first admin G by its inbox like any holder (spec/permissions.md
-        // §3, Own secrets add only), and first under T's labels; Z, given only B's, holds T's new epochs
+        // §3, Own secrets add only), and first under T's sync IDs; Z, given only B's, holds T's new epochs
         for i in [0usize, 3] {
             let ds = &runs[i].1;
             let to: std::collections::BTreeSet<Tid> = ds.iter().map(|(to, _)| *to).collect();

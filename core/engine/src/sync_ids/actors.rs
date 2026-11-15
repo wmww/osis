@@ -7,9 +7,9 @@ use crate::engine::{Core, Engine};
 use crate::error::Result;
 use osis_base::{ChainStep, SyncId, Role, Tid};
 use crate::sync::{OwnedSyncId, Path};
-use osis_crypto::{LabelRole, label_role_key};
+use osis_crypto::{RoleKey, role_key};
 use osis_keys::ActorEpochs;
-use osis_label::{ClaimSet, Step, StepId};
+use osis_blob::{ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// secrets, which no step bears) the entries are hints (`OwnedSyncId::hint`).
 pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &SyncId, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> bool {
     let Some(e) = epochs else { return false };
-    let held: BTreeSet<[u8; 32]> = e.sync.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s).verifying_key().to_bytes()).collect();
+    let held: BTreeSet<[u8; 32]> = e.sync.held_newest_first().into_iter().map(|(_, s)| role_key(RoleKey::Sync, s).verifying_key().to_bytes()).collect();
     // the genesis first (every holder holds the older secrets, so usually it bears one): one
     // step verified, not a path per bearing step
     let mut bearing: Vec<(bool, &StepId)> = steps.iter().filter(|(_, (s, _))| held.contains(&s.keys.sync.to_bytes())).map(|(k, (s, _))| (s.prev.is_some(), k)).collect();
@@ -36,7 +36,7 @@ pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &SyncId, steps: &BTreeMap<S
     }
     bearing.sort();
     let plain: BTreeMap<StepId, Step> = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-    bearing.into_iter().any(|(_, k)| osis_label::path_to(&plain, k).is_ok_and(|p| p.first().is_some_and(|g| g.label == *id)))
+    bearing.into_iter().any(|(_, k)| osis_blob::path_to(&plain, k).is_ok_and(|p| p.first().is_some_and(|g| g.sync_id == *id)))
 }
 
 /// The recorded path of a sync ID from its steps (spec/sync-ids.md §5 Path): genesis to head, the
@@ -44,7 +44,7 @@ pub(crate) fn owns(epochs: Option<&ActorEpochs>, id: &SyncId, steps: &BTreeMap<S
 pub(crate) fn recorded_path(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<Path> {
     let head = head_of(steps)?;
     let plain: BTreeMap<StepId, Step> = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-    let path = osis_label::path_to(&plain, &head).ok()?;
+    let path = osis_blob::path_to(&plain, &head).ok()?;
     Some(Path { steps: path.into_iter().map(|s| { let c = steps.get(&s.id()).and_then(|(_, c)| c.clone()); (s, c) }).collect() })
 }
 
@@ -55,7 +55,7 @@ pub(crate) fn recorded_path(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) 
 pub(crate) fn head_of(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<StepId> {
     let parents: BTreeSet<StepId> = steps.values().filter_map(|(s, _)| s.prev).collect();
     let plain: BTreeMap<StepId, Step> = steps.iter().map(|(k, (s, _))| (*k, s.clone())).collect();
-    steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((osis_label::path_to(&plain, k).ok()?.len(), *k))).min_by_key(|(n, k)| (std::cmp::Reverse(*n), *k)).map(|(_, k)| k)
+    steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((osis_blob::path_to(&plain, k).ok()?.len(), *k))).min_by_key(|(n, k)| (std::cmp::Reverse(*n), *k)).map(|(_, k)| k)
 }
 
 /// The sync IDs a destroyed thing `g`'s kept `sync.0` value `v` records that `g` owns here
@@ -75,7 +75,7 @@ pub(crate) fn owned_in(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId
     let hint = !core.holds_own_sync(g);
     m.iter()
         .filter_map(|(id, l)| {
-            let steps = osis_label::sync_steps(l).ok()?;
+            let steps = osis_blob::sync_steps(l).ok()?;
             if !core.owns_sync_id(g, id, &steps) {
                 return None;
             }

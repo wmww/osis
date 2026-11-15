@@ -5,7 +5,7 @@
 
 use crate::file::VecFile;
 use crate::unhex;
-use osis_label::{BundleReader, Importer, Record};
+use osis_blob::{BundleReader, Importer, Record};
 
 pub fn check(f: &VecFile) -> Result<(), String> {
     let setup = unhex(f.header.req("setup")?)?;

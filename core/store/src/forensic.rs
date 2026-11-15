@@ -12,7 +12,7 @@
 //!   each on every blob (link keys, node-sync's blob keys, anything else);
 //! - reads table pages as entries (overflow values joined from their units) and, for each entry
 //!   whose key holds a blob's ID, tries the start of its value as that blob's wrap (hub store and
-//!   node-sync entries) under every candidate key as a label read secret, opening the blob with
+//!   node-sync entries) under every candidate key as a sync ID read secret, opening the blob with
 //!   what unwraps;
 //! - tries every candidate on every section of an opened commit blob, as its wrap's read secret
 //!   or as its key.
@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 pub struct Evidence {
     /// Every key the current store tree yields (`Store::forensic_keys`).
     pub store_keys: Vec<[u8; 32]>,
-    /// Secrets the node's own code computes from the device now (derived label read secrets).
+    /// Secrets the node's own code computes from the device now (derived sync ID read secrets).
     pub secrets: Vec<[u8; 32]>,
     /// Every row ever written (`MemoryBackend::history`).
     pub rows: Vec<KeyValue>,
@@ -73,7 +73,7 @@ pub trait Section: Send + Sync {
 /// The sections of an opened commit blob plaintext; none for any other plaintext.
 pub type Sections = fn(&[u8]) -> Vec<Box<dyn Section>>;
 
-/// How blobs and sections open: the layers above the store define them (osis-label's frame,
+/// How blobs and sections open: the layers above the store define them (osis-blob's frame,
 /// osis-commit's sections). A blob is a clear prefix and a ciphertext as
 /// `osis_crypto::encrypt_blob` seals it; a wrap is `osis_crypto::wrap`'s.
 pub struct Ciphers {

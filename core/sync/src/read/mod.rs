@@ -526,7 +526,7 @@ impl Read {
     /// must hold; a writer's store is pulled).
     fn giving_to(&self, g: &mut impl Ground, s: &SyncId) -> Result<Vec<Source>> {
         let creds = g.credentials(s)?;
-        let writer = |h: &osis_label::StepId| creds.as_ref().and_then(|c| c.keys.get(h)).is_some_and(|k| k.write.is_some());
+        let writer = |h: &osis_blob::StepId| creds.as_ref().and_then(|c| c.keys.get(h)).is_some_and(|k| k.write.is_some());
         Ok(g.sources(s)?.iter().filter(|x| x.store && !x.head.is_some_and(|h| writer(&h))).map(|x| x.at).collect())
     }
 

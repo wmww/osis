@@ -33,33 +33,33 @@ pub fn seed() -> VecFile {
     c = c.with("read-kem-public", hex(role_kem(&thing_role_secret(&seed, Role::Read, &tid)).public().as_bytes()));
     cases.push(c);
 
-    let label = SyncId([0x0a; 16]);
+    let sync_id = SyncId([0x0a; 16]);
     let step = X25519Secret::from_secret(&s32(0x06));
-    let claim = claim_key(&step, &k.kem.public().x25519(), &label, &step.public()).unwrap();
-    let by_holder = claim_key(k.kem.x25519(), &step.public(), &label, &step.public()).unwrap();
+    let claim = claim_key(&step, &k.kem.public().x25519(), &sync_id, &step.public()).unwrap();
+    let by_holder = claim_key(k.kem.x25519(), &step.public(), &sync_id, &step.public()).unwrap();
     assert_eq!(claim.verifying_key(), by_holder.verifying_key(), "both sides derive one claim key");
     cases.push(
         case("claim key", "spec/sync-ids.md §3")
             .with("holder-seed", hex(seed.expose()))
             .with("step-private", hex(s32(0x06).expose()))
             .with("step-key", hex(&step.public()))
-            .with("label-id", hex(&label.0))
+            .with("sync-id", hex(&sync_id.0))
             .with("claim-public", hex(&claim.verifying_key().to_bytes())),
     );
     cases.push(
         case("static entry", "spec/wire.md §8")
-            .with("label-id", hex(&label.0))
+            .with("sync-id", hex(&sync_id.0))
             .with("signing-key", hex(&k.signing.verifying_key().to_bytes()))
-            .with("entry", hex(&static_entry(&label, &k.signing.verifying_key()))),
+            .with("entry", hex(&static_entry(&sync_id, &k.signing.verifying_key()))),
     );
     {
-        let mut c = case("label keys", "spec/sync-ids.md §2").with("secret", hex(seed.expose()));
-        for (n, r) in [("sync", LabelRole::Sync), ("write", LabelRole::Write), ("delete", LabelRole::Delete)] {
-            c = c.with(&format!("{n}-public"), hex(&label_role_key(r, &seed).verifying_key().to_bytes()));
+        let mut c = case("role keys", "spec/sync-ids.md §2").with("secret", hex(seed.expose()));
+        for (n, r) in [("sync", RoleKey::Sync), ("write", RoleKey::Write), ("delete", RoleKey::Delete)] {
+            c = c.with(&format!("{n}-public"), hex(&role_key(r, &seed).verifying_key().to_bytes()));
         }
-        c = c.with("sync-proof", hex(&osis_crypto::kdf::sync_proof(&osis_crypto::label_role_seed(LabelRole::Sync, &seed))));
-        let id = sync_id(&label_role_key(LabelRole::Delete, &seed).verifying_key());
-        c = c.with("label-id-from-delete", hex(&id.0)).with("deposit-seed", hex(seed.expose())).with("deposit-public", hex(&deposit_key(&seed, &id).verifying_key().to_bytes()));
+        c = c.with("sync-proof", hex(&osis_crypto::kdf::sync_proof(&osis_crypto::role_key_seed(RoleKey::Sync, &seed))));
+        let id = osis_crypto::sync_id(&role_key(RoleKey::Delete, &seed).verifying_key());
+        c = c.with("sync-id-from-delete", hex(&id.0)).with("deposit-seed", hex(seed.expose())).with("deposit-public", hex(&deposit_key(&seed, &id).verifying_key().to_bytes()));
         cases.push(c);
     }
 

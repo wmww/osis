@@ -1,14 +1,14 @@
 //! Bodies, sealing, wraps, stamps, deposits and delete keys (spec/sync-ids.md §1-§3, §5;
-//! spec/crypto.md §5, §7): what a commit becomes under a label, and the label keys a host's head calls for.
+//! spec/crypto.md §5, §7): what a commit becomes under a sync ID, and the role keys a host's head calls for.
 
 use osis_base::memo::Memo;
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use osis_commit::{CommitBlob, Envelope, Section};
 use osis_base::{BlobId, CommitId, Role, Tid, WallMs};
-use osis_crypto::{CryptoRngCore, Epoch, LabelRole, Secret32, SigningSecret, deposit_key};
+use osis_crypto::{CryptoRngCore, Epoch, RoleKey, Secret32, SigningSecret, deposit_key};
 use osis_keys::ActorEpochs;
-use osis_label::Step;
+use osis_blob::Step;
 use osis_schema::RawKey;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
@@ -20,23 +20,23 @@ use std::sync::Arc;
 pub struct Body {
     pub commit: CommitId,
     /// Aspect indices, sorted: the parts a judgment reads. From `commit_bodies_under` those the
-    /// label's actor may read; from `body` every held part; from `part_bodies` the copied ones.
+    /// sync ID's actor may read; from `body` every held part; from `part_bodies` the copied ones.
     pub parts: Vec<usize>,
     pub expires: Option<u64>,
     /// The header's blind (spec/crypto.md §7).
     pub blind: [u8; 16],
     /// The opened form `[Header, signature, [Part*]]` of what the blob carries (every held part
-    /// of the commit, or a copy's parts); empty from `label_bodies_meta` (`body_plaintext`).
+    /// of the commit, or a copy's parts); empty from `sync_id_bodies_meta` (`body_plaintext`).
     pub plaintext: Vec<u8>,
     pub role_commit: bool,
     /// Its wrap's fetch order (`fetch_order`).
     pub order: u64,
-    /// A per-label copy: `parts` in one section under the blob key (`Engine::seal_to`), never
-    /// shared with another label (spec/sync-judgement.md §1): a role commit with a part on a thing other
+    /// A per-sync-ID copy: `parts` in one section under the blob key (`Engine::seal_to`), never
+    /// shared with another sync ID (spec/sync-judgement.md §1): a role commit with a part on a thing other
     /// than the actor (its boxes give the readers that thing's secrets), or a part whose thing's
     /// read secret derives from neither the actor nor an actor of its closure (a cross-published
     /// `created.0`, a thing added from another actor's tree, read by role).
-    pub to_label: bool,
+    pub to_sync_id: bool,
 }
 
 /// A wrap's fetch order (spec/crypto.md §5): 0 for a commit a judgment of other commits needs or a
@@ -85,7 +85,7 @@ impl OpenedBlob {
 
 /// Frames the opened form of a commit as a copy: every part in one section under the blob key
 /// (tests and tools: a node seals with `Engine::seal`, per reader actor, or `Engine::seal_to`).
-pub fn seal_plain(plaintext: &[u8], class: osis_label::Class, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
+pub fn seal_plain(plaintext: &[u8], class: osis_blob::Class, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
     let c = CommitBlob::decode(plaintext)?;
     let key = osis_crypto::BlobKey::fresh(rng);
     let env = osis_commit::seal_commit(&c, |_| (), |_, _| Some((key.secret().clone(), Vec::new())), &[], rng)?;
@@ -94,20 +94,20 @@ pub fn seal_plain(plaintext: &[u8], class: osis_label::Class, rng: &mut dyn Cryp
 
 /// Frames an envelope: random salt and key, prefix from the header and the sections' aspects
 /// (spec/sync-ids.md §1, spec/wire.md §5).
-pub fn frame_envelope(env: &Envelope, resolved: &osis_commit::Header, class: osis_label::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob) -> Result<Sealed> {
+pub fn frame_envelope(env: &Envelope, resolved: &osis_commit::Header, class: osis_blob::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob) -> Result<Sealed> {
     framed(osis_crypto::BlobKey::fresh(rng), env, resolved, class, rng, from)
 }
 
 /// `frame_envelope` under `key`.
-fn framed(key: osis_crypto::BlobKey, env: &Envelope, resolved: &osis_commit::Header, class: osis_label::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob) -> Result<Sealed> {
+fn framed(key: osis_crypto::BlobKey, env: &Envelope, resolved: &osis_commit::Header, class: osis_blob::Class, rng: &mut dyn CryptoRngCore, from: &CommitBlob) -> Result<Sealed> {
     let ais = env.ais();
     let groups = osis_commit::prefix_groups(resolved, ais.iter().copied())?;
-    let salt = osis_label::Prefix::random_salt(rng);
-    let prefix = osis_label::Prefix::for_delete_keys(salt, &env.header.blind, osis_commit::prefix_expiry(resolved, &ais).map(WallMs), &groups)?.with_class(class);
-    let (key, blob) = osis_label::frame_under(key, &prefix, &env.encode())?;
+    let salt = osis_blob::Prefix::random_salt(rng);
+    let prefix = osis_blob::Prefix::for_delete_keys(salt, &env.header.blind, osis_commit::prefix_expiry(resolved, &ais).map(WallMs), &groups)?.with_class(class);
+    let (key, blob) = osis_blob::frame_under(key, &prefix, &env.encode())?;
     let parts: Vec<usize> = from.parts.iter().filter(|p| ais.contains(&p.ai)).map(|p| p.ai).collect();
     let unopened = env.sections.iter().filter(|s| !s.ais.iter().any(|ai| parts.contains(ai))).map(|s| s.digest()).collect();
-    Ok(Sealed { id: osis_label::blob_id(&blob), blob, key, salt, ais, parts, unopened })
+    Ok(Sealed { id: osis_blob::blob_id(&blob), blob, key, salt, ais, parts, unopened })
 }
 
 /// A group as `Engine::commit_bodies_under` sees it.
@@ -118,13 +118,13 @@ pub struct BodyCtx {
 }
 
 impl BodyCtx {
-    /// Whether a commit (its `View`) may have bodies under the group's labels.
+    /// Whether a commit (its `View`) may have bodies under the group's sync IDs.
     pub(crate) fn touches(&self, v: &crate::engine::View) -> bool {
         v.aspects.iter().any(|a| self.closure.contains(&a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"))
     }
 }
 
-/// The label keys this node holds for a host's head (spec/sync-ids.md §2, spec/sync-ids.md §6).
+/// The role keys this node holds for a host's head (spec/sync-ids.md §2, spec/sync-ids.md §6).
 #[derive(Clone, Default)]
 pub struct HeadKeys {
     /// Opens (any held secret, spec/crypto.md §4: opening is not encrypting under).
@@ -133,10 +133,10 @@ pub struct HeadKeys {
     pub sync_established: bool,
     /// Stamps and level-3 deletes (an established epoch).
     pub write: Option<SigningSecret>,
-    /// Label-wide deletes and child steps (an established epoch).
+    /// Sync-ID-wide deletes and child steps (an established epoch).
     pub delete: Option<SigningSecret>,
     pub deposit: Option<SigningSecret>,
-    /// The head's epoch per label role (`LabelRole::ALL`: sync, write, delete) where held.
+    /// The head's epoch per role key (`RoleKey::ALL`: sync, write, delete) where held.
     pub epochs: [Option<Epoch>; 3],
 }
 
@@ -159,9 +159,9 @@ impl std::fmt::Debug for HeadKeys {
     }
 }
 
-/// The held epoch of `l`'s group role whose label key is `pk`, with that key and
+/// The held epoch of `l`'s group role whose role key is `pk`, with that key and
 /// whether that secret may be encrypted under (not reading-only, spec/crypto.md §4).
-fn matching(e: &ActorEpochs, l: LabelRole, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, SigningSecret, bool)> {
+fn matching(e: &ActorEpochs, l: RoleKey, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, SigningSecret, bool)> {
     let (ep, k) = osis_keys::registered_key(e, l, pk)?;
     Some((ep, k, e.role(l.role()).secret(&ep).is_some()))
 }
@@ -174,7 +174,7 @@ impl Engine {
         self.body_with(c, true)
     }
 
-    /// `body`, with the plaintext only if `plaintext` (a label pass projects it only to seal).
+    /// `body`, with the plaintext only if `plaintext` (a sync ID pass projects it only to seal).
     pub(crate) fn body_with(&mut self, c: &CommitId, plaintext: bool) -> Result<Option<Body>> {
         let id = *c;
         let Some(blob) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
@@ -190,7 +190,7 @@ impl Engine {
             plaintext: if plaintext { blob.encode() } else { Vec::new() },
             role_commit: blob.header.kind.is_role(),
             order: fetch_order(&resolved),
-            to_label: false,
+            to_sync_id: false,
         }))
     }
 
@@ -205,9 +205,9 @@ impl Engine {
 
     /// Seals a body's parts (`b.parts` alone) as a copy (spec/sync-judgement.md §1): a fresh blob of one
     /// section under its own blob key (spec/wire.md §4), so whoever opens a wrap of it reads it: a
-    /// certificate copy, wrapped under every label needing exactly those parts, or a per-label
-    /// copy (`Body::to_label`).
-    pub fn seal_to(&mut self, b: &Body, class: osis_label::Class, rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
+    /// certificate copy, wrapped under every sync ID needing exactly those parts, or a per-sync-ID
+    /// copy (`Body::to_sync_id`).
+    pub fn seal_to(&mut self, b: &Body, class: osis_blob::Class, rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
         let pt = self.body_plaintext(b)?;
         if pt.is_empty() {
             return Ok(None);
@@ -294,7 +294,7 @@ impl Engine {
     /// certificate copy), unless the body needs it (`b.parts`): then `None`, nothing is sealed
     /// now. A plain thing's derived epoch sealed under is noted (`note_sealed`, spec/crypto.md
     /// §4 Current).
-    pub fn seal(&mut self, b: &Body, class: osis_label::Class, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
+    pub fn seal(&mut self, b: &Body, class: osis_blob::Class, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Option<Sealed>> {
         let pt = self.body_plaintext(b)?;
         if pt.is_empty() {
             return Ok(None);
@@ -363,7 +363,7 @@ impl Engine {
     /// the blob key (a copy's, `seal_to`), the rest left sealed; checks the prefix against the
     /// header and the sections' aspects (spec/commits.md §4).
     pub fn open_commit(&mut self, blob: &[u8], key: &Secret32) -> Result<OpenedBlob> {
-        let (prefix, pt) = osis_label::open(blob, key)?;
+        let (prefix, pt) = osis_blob::open(blob, key)?;
         let env = Envelope::decode(&pt)?;
         let id = env.id();
         // linked header lists: resolved from held blobs when they are here, else the sections
@@ -393,7 +393,7 @@ impl Engine {
         }
         if let Some(h) = &header {
             let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
-            if !prefix.agrees(osis_commit::prefix_expiry(h, &ais).map(WallMs), &h.blind, &groups, osis_label::Class::of_marker(h.ephemeral)) {
+            if !prefix.agrees(osis_commit::prefix_expiry(h, &ais).map(WallMs), &h.blind, &groups, osis_blob::Class::of_marker(h.ephemeral)) {
                 return Err(Error::BadInput("blob prefix disagrees with its header"));
             }
         }
@@ -413,7 +413,7 @@ impl Engine {
             v.push(key.clone());
             v
         })?;
-        // the epoch each section under a read secret opened under (`labeling::opened`)
+        // the epoch each section under a read secret opened under (`sync_ids::opened`)
         if let Some(h) = &header {
             let mut under = Vec::new();
             for sec in &env.sections {
@@ -429,7 +429,7 @@ impl Engine {
         Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, sealed: opened.sealed, sections: env.sections, copy })
     }
 
-    /// The plaintext of a body (`label_bodies_meta` leaves it out): the opened form of every
+    /// The plaintext of a body (`sync_id_bodies_meta` leaves it out): the opened form of every
     /// held part of the commit; empty when the commit is not held any more.
     pub fn body_plaintext(&mut self, b: &Body) -> Result<Vec<u8>> {
         if !b.plaintext.is_empty() {
@@ -444,15 +444,15 @@ impl Engine {
         Ok(c.encode())
     }
 
-    /// The bodies a group's label must hold from its closure (spec/sync-judgement.md §1): held commits
-    /// touching the closure with a part the group's actor may read. A home label (an actor
-    /// synced as a group of itself) also carries the `label.0` and `created.0` writes of the
-    /// labeled groups it is the nearest labeled record-chain actor of (spec/sync-ids.md §2).
+    /// The bodies a group's sync ID must hold from its closure (spec/sync-judgement.md §1): held commits
+    /// touching the closure with a part the group's actor may read. A home sync ID (an actor
+    /// synced as a group of itself) also carries the `sync.0` and `created.0` writes of the
+    /// groups with a sync ID it is the nearest record-chain actor with a sync ID of (spec/sync-ids.md §2).
     /// Without plaintexts (`body_plaintext`), from a memo per commit (`Core::bodies`): a pass after a
     /// change looks at only the commits it changed. The commits are found through `on_thing` and
     /// `by_aspect` (O(the closure's commits), no header decoded when the memo holds them), in ID
     /// order.
-    pub fn label_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
+    pub fn sync_id_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let ctx = self.body_ctx(g);
         let core = &self.core;
         let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.on_thing(t)).collect();
@@ -463,7 +463,7 @@ impl Engine {
             }
         }
         #[cfg(debug_assertions)]
-        debug_assert_eq!(ids, core.ix.commits.iter().filter(|(_, m)| ctx.touches(&m.view)).map(|(id, _)| *id).collect::<BTreeSet<_>>(), "label commits by index");
+        debug_assert_eq!(ids, core.ix.commits.iter().filter(|(_, m)| ctx.touches(&m.view)).map(|(id, _)| *id).collect::<BTreeSet<_>>(), "sync ID commits by index");
         let mut out = Vec::new();
         for id in ids {
             out.extend(self.commit_bodies_under(&ctx, &id)?);
@@ -472,7 +472,7 @@ impl Engine {
     }
 
     /// What `commit_bodies_under` needs of a group: its closure, actor and the things its home
-    /// label publishes.
+    /// sync ID publishes.
     pub fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
         BodyCtx { closure: self.core.ix.groups.closure_of(g), actor: self.group_actor(g), published: self.published_view(g) }
     }
@@ -494,7 +494,7 @@ impl Engine {
     /// their own thing's sync ID, which read fetches as missing once this node may hold it.
     /// Invariant: no part taken from a copy gives a node anything of an actor it cannot read now.
     /// Content is left out here; a role-class part is taken because each is judged as it is used:
-    /// `secrets.0` boxes by `rotation::may_take` as they open, `label.0` entry boxes by
+    /// `secrets.0` boxes by `rotation::may_take` as they open, `sync.0` entry boxes by
     /// `may_learn`, `account.0` seeds only under a devices epoch held for use
     /// (`signing::usable_seeds`); `roles.0`, `keys.0` and `listing.0` are certificate material.
     pub fn copy_stale(&self, g: &Tid, c: &CommitBlob) -> BTreeSet<usize> {
@@ -531,14 +531,14 @@ impl Engine {
         self.core.may_read(&reader, &self.core.reader_of(t))
     }
 
-    /// The parts of `h` a label of `ctx`'s group carries in its bodies (spec/sync-judgement.md §1): those on
+    /// The parts of `h` a sync ID of `ctx`'s group carries in its bodies (spec/sync-judgement.md §1): those on
     /// things of its closure its actor may read. A chain certificate's part on any other thing goes
     /// there as a certificate copy (spec/permissions.md §4).
     pub fn body_carried(&self, ctx: &BodyCtx, h: &osis_commit::Header) -> std::collections::BTreeSet<usize> {
         h.aspects.iter().enumerate().filter(|(_, a)| ctx.closure.contains(&a.tid) && self.reads(ctx, &a.tid)).map(|(i, _)| i).collect()
     }
 
-    /// The body of commit `id` a label of the group of `ctx` must hold (`label_bodies_meta`):
+    /// The body of commit `id` a sync ID of the group of `ctx` must hold (`sync_id_bodies_meta`):
     /// with the parts its actor may read among those inside the closure (or published there),
     /// when there are any; else, for a lasting commit, its header alone.
     pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
@@ -569,7 +569,7 @@ impl Engine {
                     b.parts.dedup();
                     Some(b)
                 }
-                None => self.header(&id).map(|full| Body { commit: id, parts: gone, expires: osis_commit::blob_expiry(&full), blind: full.blind, plaintext: Vec::new(), role_commit: full.kind.is_role(), order: fetch_order(&full), to_label: false }),
+                None => self.header(&id).map(|full| Body { commit: id, parts: gone, expires: osis_commit::blob_expiry(&full), blind: full.blind, plaintext: Vec::new(), role_commit: full.kind.is_role(), order: fetch_order(&full), to_sync_id: false }),
             };
         }
         let mut out = Vec::new();
@@ -580,9 +580,9 @@ impl Engine {
             let readable = self.readable_parts(ctx, &id, &parts);
             if !readable.is_empty() {
                 // judged on what the actor reads; the blob carries every held part (`body_plaintext`),
-                // unless the label's readers could not open a section of it: a per-label copy
-                // (spec/sync-judgement.md §1, `Body::to_label`): a role commit on another thing (its
-                // rotation, its grants, a cross-published `label.0`), whose boxes are what gives
+                // unless the sync ID's readers could not open a section of it: a per-sync-ID copy
+                // (spec/sync-judgement.md §1, `Body::to_sync_id`): a role commit on another thing (its
+                // rotation, its grants, a cross-published `sync.0`), whose boxes are what gives
                 // the readers that thing's secrets, so its own section cannot be under them
                 // (certificate blobs are copies for the same reason), or a part whose thing's
                 // secret neither derives from the actor's nor comes through the closure (a destroyed
@@ -590,12 +590,12 @@ impl Engine {
                 let derivable = |ai: usize| h.aspects.get(ai).is_some_and(|a| self.core.secret_actor(&a.tid).is_some_and(|x| x == ctx.actor || (ctx.closure.contains(&x) && !self.core.destroyed(&x))));
                 // (a `created.0` part carries no boxes: a records-only role commit is shared)
                 let role_elsewhere = h.kind.is_role() && readable.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid != ctx.actor && a.ak.as_str() != "created.0"));
-                b.to_label = role_elsewhere || readable.iter().any(|ai| !derivable(*ai));
+                b.to_sync_id = role_elsewhere || readable.iter().any(|ai| !derivable(*ai));
                 b.parts = readable;
                 out.push(b);
             }
         }
-        // nothing of it here and a lasting header on the label's things: its header alone
+        // nothing of it here and a lasting header on the sync ID's things: its header alone
         // (spec/commits.md §5, spec/sync-judgement.md §2)
         let now = self.now().0;
         let forever = |a: &crate::engine::AspectView| !h.memory && osis_commit::retention::fixed_retention(a.ak.as_str()).is_none() && crate::retention::history::of(&self.core, &a.tid, &a.ak).forever(now);
@@ -604,13 +604,13 @@ impl Engine {
             if self.run(|tx| crate::retention::lasting(tx, &id, &on))?
                 && let Some(blind) = self.core.ix.commits.get(&id).map(|m| m.header.blind)
             {
-                out.push(Body { commit: id, parts: Vec::new(), expires: None, blind, plaintext: Vec::new(), role_commit: false, order: h.ts.to_u64().max(1), to_label: false });
+                out.push(Body { commit: id, parts: Vec::new(), expires: None, blind, plaintext: Vec::new(), role_commit: false, order: h.ts.to_u64().max(1), to_sync_id: false });
             }
         }
         Ok(out)
     }
 
-    /// The read secret a commit is wrapped under at a label of `g` (spec/crypto.md §5): the
+    /// The read secret a commit is wrapped under at a sync ID of `g` (spec/crypto.md §5): the
     /// newest current read epoch held, except a rotation commit of the actor `g`'s secrets
     /// derive from, which goes under the newest epoch its rotation supersedes, never another.
     /// `None`: no current secret held (stranded: nothing is placed), no superseded secret of a
@@ -821,7 +821,7 @@ impl Engine {
         self.read(|tx| crate::flows::sync_ids::deposit_seed_of(tx, g))
     }
 
-    /// The keys this node holds for `head` of a label of `g` (spec/sync-ids.md §2, spec/sync-ids.md §6): any
+    /// The keys this node holds for `head` of a sync ID of `g` (spec/sync-ids.md §2, spec/sync-ids.md §6): any
     /// held secret opens; stamps and deletes need an established epoch (spec/crypto.md §4), but for
     /// the delete key of a destroyed thing whose secrets are held for deletes alone
     /// (`retention::destroy::hold_secrets`): what established them went with it, and the step
@@ -835,19 +835,19 @@ impl Engine {
     fn head_keys_derived(&mut self, g: &Tid, head: &Step) -> Result<HeadKeys> {
         let mut k = HeadKeys::default();
         if let Some(e) = self.epochs(g) {
-            if let Some((ep, s, _)) = matching(&e, LabelRole::Sync, &head.keys.sync) {
+            if let Some((ep, s, _)) = matching(&e, RoleKey::Sync, &head.keys.sync) {
                 k.sync = Some(s);
                 k.sync_established = self.established(g, &e, Role::Sync, &ep);
                 k.epochs[0] = Some(ep);
             }
             // stamps and deletes are encrypting under: never from a reading-only secret
-            if let Some((ep, s, checked)) = matching(&e, LabelRole::Write, &head.keys.write) {
+            if let Some((ep, s, checked)) = matching(&e, RoleKey::Write, &head.keys.write) {
                 if checked && self.established(g, &e, Role::Write, &ep) {
                     k.write = Some(s);
                 }
                 k.epochs[1] = Some(ep);
             }
-            if let Some((ep, s, checked)) = matching(&e, LabelRole::Delete, &head.keys.delete) {
+            if let Some((ep, s, checked)) = matching(&e, RoleKey::Delete, &head.keys.delete) {
                 if checked && (self.established(g, &e, Role::Admin, &ep) || self.core.ix.destroyed_secrets.contains(g)) {
                     k.delete = Some(s);
                 }
@@ -855,7 +855,7 @@ impl Engine {
             }
         }
         if let Some(seed) = self.deposit_seed(g)? {
-            let d = deposit_key(&seed, &head.label);
+            let d = deposit_key(&seed, &head.sync_id);
             if d.verifying_key() == head.keys.deposit {
                 k.deposit = Some(d);
             }
@@ -875,11 +875,11 @@ impl Engine {
     }
 }
 
-/// The label key of `keys` that signs `item` (the delete key, or the key its levels need).
-pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Option<&'a SigningSecret> {
-    match osis_label::key_for_levels(&item.levels()) {
-        Ok(LabelRole::Delete) => keys.delete.as_ref(),
-        Ok(LabelRole::Write) => keys.write.as_ref(),
+/// The role key of `keys` that signs `item` (the delete key, or the key its levels need).
+pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_blob::DeleteItem) -> Option<&'a SigningSecret> {
+    match osis_blob::key_for_levels(&item.levels()) {
+        Ok(RoleKey::Delete) => keys.delete.as_ref(),
+        Ok(RoleKey::Write) => keys.write.as_ref(),
         Ok(_) => keys.sync.as_ref().filter(|_| keys.sync_established),
         Err(_) => None,
     }
@@ -927,7 +927,7 @@ mod tests {
     // projected per commit once and kept until what they read changes, so one more commit
     // leaves every other commit's bodies kept.
     #[test]
-    fn label_bodies_cached_per_commit_spec_sync_6() {
+    fn sync_id_bodies_cached_per_commit_spec_sync_6() {
         use crate::Mutation;
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
@@ -948,14 +948,14 @@ mod tests {
         for _ in 0..30 {
             add(e, &mut group);
         }
-        let runs = || osis_base::costs::take().iter().filter(|x| x.0 == "label body").map(|x| x.2).sum::<u64>();
+        let runs = || osis_base::costs::take().iter().filter(|x| x.0 == "sync ID body").map(|x| x.2).sum::<u64>();
         osis_base::costs::take();
-        let first = e.label_bodies_meta(&g).unwrap();
+        let first = e.sync_id_bodies_meta(&g).unwrap();
         assert!(first.len() >= 30 && first.iter().all(|b| b.plaintext.is_empty()));
         assert!(runs() >= 30);
         let c = add(e, &mut group);
         osis_base::costs::take();
-        let again = e.label_bodies_meta(&g).unwrap();
+        let again = e.sync_id_bodies_meta(&g).unwrap();
         assert!(again.iter().any(|b| b.commit == c));
         assert_eq!(runs(), 1, "a new commit leaves the others' bodies kept");
         let b = again.iter().find(|b| b.commit == c).unwrap();
@@ -972,10 +972,10 @@ mod tests {
         let mut a = ActorEpochs::default();
         a.write.set_reading_secret(e, s.clone(), osis_keys::Unchecked { author: Tid::from_bytes([1; 15]), commit: CommitId([1; 32]) });
         a.write.set_established(e, osis_keys::Provenance::Rotated);
-        let pk = osis_crypto::label_role_key(LabelRole::Write, &s).verifying_key();
-        let (ep, got, checked) = matching(&a, LabelRole::Write, &pk).unwrap();
+        let pk = osis_crypto::role_key(RoleKey::Write, &s).verifying_key();
+        let (ep, got, checked) = matching(&a, RoleKey::Write, &pk).unwrap();
         assert_eq!((ep, got.verifying_key(), checked), (e, pk, false));
         a.write.set_secret(e, s.clone());
-        assert!(matching(&a, LabelRole::Write, &pk).unwrap().2);
+        assert!(matching(&a, RoleKey::Write, &pk).unwrap().2);
     }
 }

@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_label::{ClaimSet, Step};
+use osis_blob::{ClaimSet, Step};
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = Step::parse(data) {

@@ -1,6 +1,6 @@
 //! Share links (spec/permissions.md §7, spec/wire.md §10): K an actor whose first admin is the sharer's actor, with
 //! secrets of its own, a holder of the target with the link's role; L a key actor from the
-//! link's seed with (r, invite r) on K, listed in K's label steps by static entry. Redeem (an
+//! link's seed with (r, invite r) on K, listed in K's sync ID steps by static entry. Redeem (an
 //! invite grant signed as L, single use with L's self-removal in the same commit), bearer use,
 //! finalization and revoking a joiner are demotions by a sharer node.
 
@@ -16,7 +16,7 @@ use osis_base::{Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp};
 use osis_crypto::{KeyActorKeys, Secret32};
 use osis_keys::{HolderKeys, Recipient, box_holder, roles_up_to};
-use osis_label::{Address, ShareLink};
+use osis_blob::{Address, ShareLink};
 use osis_schema::core_types::{self as ct, Edge};
 use std::sync::Arc;
 
@@ -45,7 +45,7 @@ pub struct LinkSpec {
     pub role: Role,
     pub until: Option<WallMs>,
     pub hosts: Vec<Address>,
-    pub peers: Vec<osis_label::Peer>,
+    pub peers: Vec<osis_blob::Peer>,
     /// The link's `flags` bit 0: its redemption removes L (spec/permissions.md §7).
     pub single_use: bool,
 }
@@ -57,7 +57,7 @@ impl Engine {
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
     /// sharer-only thing keeping the seed. Returns the link and the seed thing.
     pub fn create_link(&mut self, sharer: &Tid, spec: &LinkSpec) -> Result<(ShareLink, Tid, Done)> {
-        // redeeming reads K's label as L (its roster shows K's grant on the target), which a
+        // redeeming reads K's sync ID as L (its roster shows K's grant on the target), which a
         // role below read does not give (spec/permissions.md §7)
         if spec.role < Role::Read {
             return Err(Error::Misuse("a link gives read or above: grant sync to the holder's account instead"));
@@ -67,14 +67,14 @@ impl Engine {
         let l = self.hold_key_actor(seed.clone())?;
         let res = self.run(|tx| create_link_in(tx, *sharer, spec, l, &seed));
         self.drop_key_actor(&l);
-        let (k, k_label, keep, done) = res?;
-        Ok((ShareLink { seed, target: spec.target, k, k_label, hosts: spec.hosts.clone(), peers: spec.peers.clone(), single_use: spec.single_use }, keep, done))
+        let (k, k_sync_id, keep, done) = res?;
+        Ok((ShareLink { seed, target: spec.target, k, k_sync_id, hosts: spec.hosts.clone(), peers: spec.peers.clone(), single_use: spec.single_use }, keep, done))
     }
 
-    /// Redeems a link once K's label was claimed by L's static entry and downloaded (node-sync;
+    /// Redeems a link once K's sync ID was claimed by L's static entry and downloaded (node-sync;
     /// `hold_key_actor(link.seed)` came first so L's boxes open): signing as L, an invite grant
     /// of `grantee` (this node's actor, or this node) to K with the link's role and K's boxes;
-    /// `single_use` also removes L's own edge in the same commit. Deposited under K's label
+    /// `single_use` also removes L's own edge in the same commit. Deposited under K's sync ID
     /// unless the role is write or above. Redeemed for the account, the same transaction files the
     /// target as a subgroup of D (an accept, spec/sync-set.md §4) unless a synced group's closure
     /// holds it already. Leaves the seed held as it was: a caller holding it
@@ -204,7 +204,7 @@ impl Engine {
     /// The links this node should finalize now (spec/permissions.md §7): it holds the seed and
     /// admin on K, and L's edge on K expired (`until`, given) or was removed by a single-use
     /// redemption, with no explicit write on it since. The caller finalizes each after a
-    /// complete pass of K's labels, so the frontier covers the grants made while the link
+    /// complete pass of K's sync IDs, so the frontier covers the grants made while the link
     /// worked that reached them. Idempotent across nodes: a finalization by any of them is
     /// that explicit write.
     pub fn links_due(&mut self) -> Result<Vec<(HeldLink, Option<WallMs>)>> {
@@ -259,7 +259,7 @@ impl Engine {
     }
 
     /// Bearer use (spec/permissions.md §7): act as L without writing anything; reads open
-    /// through L's boxes once K's label is downloaded. Returns L.
+    /// through L's boxes once K's sync ID is downloaded. Returns L.
     pub fn bear(&mut self, link: &ShareLink) -> Result<Tid> {
         self.hold_key_actor(link.seed.clone())
     }
@@ -290,7 +290,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let mut m = Mutation::new();
     let k = m.create(crate::identity::link_record(sharer, spec.target, &mut *tx.rng));
     done.add(Engine::commit_tx(tx, m)?);
-    // K's secrets, its home label listing L, its inbox: one commit
+    // K's secrets, its home sync ID listing L, its inbox: one commit
     let lvk = lkeys.signing.verifying_key();
     rotation::own_secrets_listing(tx, k, &[ReaderKey::Static(lvk, lkeys.kem.public().clone())], &mut done)?;
     // L's edge (r, invite r, until) with its boxes
@@ -302,7 +302,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), tied: None, floor: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
     done.add(Engine::commit_tx(tx, m)?);
-    let label = super::home_sync_id(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?;
+    let sync_id = super::home_sync_id(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?;
     // a joiner's removal from K reads K's default: the target's now
     if crate::apply::validity::retain_now(tx.core, &spec.target) {
         let mut m = Mutation::new();
@@ -325,5 +325,5 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
         }
     }
     done.add(Engine::commit_tx(tx, m)?);
-    Ok((k, label, keep, done))
+    Ok((k, sync_id, keep, done))
 }

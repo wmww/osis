@@ -1,5 +1,5 @@
 //! Chunk trees (spec/wire.md §6, spec/data-model.md §6, spec/crypto.md §6): the one writer and
-//! reader, used for header lists here (`lists.rs`) and for large values and pages by osis-label
+//! reader, used for header lists here (`lists.rs`) and for large values and pages by osis-blob
 //! (which re-exports these items and adds blob framing). `TreeWriter` streams bytes into a tree
 //! through a `TreeSink`; `TreeReader` streams the chunks back through a `LinkSource`, verifying
 //! every content hash and length, and seeks by the lengths the nodes carry.

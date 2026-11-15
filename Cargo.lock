@@ -2674,7 +2674,7 @@ dependencies = [
  "osis-crdt",
  "osis-crypto",
  "osis-engine",
- "osis-label",
+ "osis-blob",
  "osis-perm",
  "osis-proto",
  "osis-schema",
@@ -2806,7 +2806,7 @@ dependencies = [
  "osis-crdt",
  "osis-crypto",
  "osis-keys",
- "osis-label",
+ "osis-blob",
  "osis-perm",
  "osis-schema",
  "osis-store",
@@ -2840,7 +2840,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "osis-label"
+name = "osis-blob"
 version = "0.1.0"
 dependencies = [
  "osis-base",
@@ -2865,7 +2865,7 @@ version = "0.1.0"
 dependencies = [
  "osis-base",
  "osis-crypto",
- "osis-label",
+ "osis-blob",
  "osis-schema",
  "proptest",
 ]
@@ -2911,7 +2911,7 @@ dependencies = [
  "osis-commit",
  "osis-crypto",
  "osis-engine",
- "osis-label",
+ "osis-blob",
  "osis-proto",
  "osis-schema",
  "osis-store",
@@ -2941,7 +2941,7 @@ dependencies = [
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
- "osis-label",
+ "osis-blob",
  "osis-proto",
  "osis-schema",
  "osis-transport",

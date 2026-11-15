@@ -360,8 +360,8 @@ type Node = (u64, Vec<(Link, u64)>);
 /// content hash: the trigger's estimate.
 fn node_at(tx: &mut Tx<'_>, link: &Link) -> Result<Option<Node>> {
     let Some(blob) = tx.blobs.get(&link.blob)? else { return Ok(None) };
-    let Ok((_, pt)) = osis_label::open(&blob, &osis_crypto::Secret32::from_bytes(link.key)) else { return Ok(None) };
-    Ok(osis_label::tree::parse_node(&pt).ok())
+    let Ok((_, pt)) = osis_blob::open(&blob, &osis_crypto::Secret32::from_bytes(link.key)) else { return Ok(None) };
+    Ok(osis_blob::tree::parse_node(&pt).ok())
 }
 
 /// A root as `unlinked_len` starts from it: its level and the length its node states.
@@ -428,7 +428,7 @@ fn body_bytes(tx: &mut Tx<'_>, blob: &CommitBlob, ai: usize) -> Result<Weighed> 
         sum = sum.saturating_add(p.delta.len());
         let r = each_page(tx, &p.delta, &mut |b, _| {
             sum = sum.saturating_add(b.len());
-            pages.insert(osis_label::blob_id(b));
+            pages.insert(osis_blob::blob_id(b));
             Ok(())
         });
         match r {

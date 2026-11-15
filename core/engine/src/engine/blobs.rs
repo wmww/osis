@@ -1,5 +1,5 @@
 //! Blob ciphertexts in the node's one store (`osis_store::Ciphertext`), behind the traits of
-//! osis-label (pages, chunks) and osis-commit (header-list chunk trees).
+//! osis-blob (pages, chunks) and osis-commit (header-list chunk trees).
 
 use osis_base::{Ak, BlobId, CommitId, Link, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32};
@@ -223,16 +223,16 @@ impl<'t, 'a> TxBlobs<'t, 'a> {
     }
 }
 
-impl osis_label::BlobSink for TxBlobs<'_, '_> {
-    fn put(&mut self, id: BlobId, blob: Vec<u8>) -> Result<(), osis_label::Error> {
-        self.blobs.hold(&id, blob, self.memory).map_err(|_| osis_label::Error::Missing)?;
+impl osis_blob::BlobSink for TxBlobs<'_, '_> {
+    fn put(&mut self, id: BlobId, blob: Vec<u8>) -> Result<(), osis_blob::Error> {
+        self.blobs.hold(&id, blob, self.memory).map_err(|_| osis_blob::Error::Missing)?;
         Ok(())
     }
 }
 
-impl osis_label::BlobFetch for TxBlobs<'_, '_> {
-    fn fetch(&mut self, id: &BlobId) -> Result<Vec<u8>, osis_label::Error> {
-        self.blobs.get(id).ok().flatten().ok_or(osis_label::Error::Missing)
+impl osis_blob::BlobFetch for TxBlobs<'_, '_> {
+    fn fetch(&mut self, id: &BlobId) -> Result<Vec<u8>, osis_blob::Error> {
+        self.blobs.get(id).ok().flatten().ok_or(osis_blob::Error::Missing)
     }
 }
 
@@ -245,11 +245,11 @@ pub struct ListBlobs<'t, 'a, 'r> {
 
 impl osis_commit::BlobSink for ListBlobs<'_, '_, '_> {
     fn put(&mut self, prefix: &osis_commit::Prefix, plaintext: &[u8]) -> Result<(BlobId, [u8; 32]), osis_commit::Error> {
-        let (_, key, blind) = osis_label::linked_prefix_inputs(self.rng);
-        let p = osis_label::Prefix::for_delete_keys(prefix.salt, &osis_crypto::thing_blind(&blind, prefix.thing.as_bytes()), prefix.expiry.map(WallMs), std::slice::from_ref(&prefix.keys)).map_err(|_| osis_commit::Error::Storage("prefix"))?;
-        let (key, blob) = osis_label::frame_under(key, &p, plaintext).map_err(|_| osis_commit::Error::Storage("frame"))?;
-        let id = osis_label::blob_id(&blob);
-        osis_label::BlobSink::put(&mut self.blobs, id, blob).map_err(|_| osis_commit::Error::Storage("blob"))?;
+        let (_, key, blind) = osis_blob::linked_prefix_inputs(self.rng);
+        let p = osis_blob::Prefix::for_delete_keys(prefix.salt, &osis_crypto::thing_blind(&blind, prefix.thing.as_bytes()), prefix.expiry.map(WallMs), std::slice::from_ref(&prefix.keys)).map_err(|_| osis_commit::Error::Storage("prefix"))?;
+        let (key, blob) = osis_blob::frame_under(key, &p, plaintext).map_err(|_| osis_commit::Error::Storage("frame"))?;
+        let id = osis_blob::blob_id(&blob);
+        osis_blob::BlobSink::put(&mut self.blobs, id, blob).map_err(|_| osis_commit::Error::Storage("blob"))?;
         Ok((id, *key.expose()))
     }
 }
@@ -257,10 +257,10 @@ impl osis_commit::BlobSink for ListBlobs<'_, '_, '_> {
 impl osis_commit::BlobSource for TxBlobs<'_, '_> {
     fn get(&mut self, link: &Link) -> Result<Vec<u8>, osis_commit::Error> {
         let blob = self.blobs.get(&link.blob).map_err(|_| osis_commit::Error::Storage("blob"))?.ok_or(osis_commit::Error::Missing)?;
-        if osis_label::blob_id(&blob) != link.blob {
+        if osis_blob::blob_id(&blob) != link.blob {
             return Err(osis_commit::Error::Corrupt);
         }
-        let (_, pt) = osis_label::open(&blob, &Secret32::from_bytes(link.key)).map_err(|_| osis_commit::Error::Corrupt)?;
+        let (_, pt) = osis_blob::open(&blob, &Secret32::from_bytes(link.key)).map_err(|_| osis_commit::Error::Corrupt)?;
         Ok(pt)
     }
 }
@@ -321,7 +321,7 @@ impl crate::engine::Tx<'_> {
         let mut stored = Vec::new();
         let memory = self.txn.is_memory();
         for (id, b) in blobs {
-            if osis_label::blob_id(&b) == id && self.blobs.hold(&id, b, memory)? {
+            if osis_blob::blob_id(&b) == id && self.blobs.hold(&id, b, memory)? {
                 stored.push(id);
             }
         }
@@ -349,7 +349,7 @@ mod tests {
 
     fn blob(n: u8) -> (BlobId, Vec<u8>) {
         let b = vec![n; 64];
-        (osis_label::blob_id(&b), b)
+        (osis_blob::blob_id(&b), b)
     }
     use osis_base::BlobId;
 

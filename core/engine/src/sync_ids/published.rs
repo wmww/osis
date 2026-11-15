@@ -1,7 +1,7 @@
-//! The labeled things each actor's home label publishes (spec/sync-ids.md §4, `published_under`),
-//! kept per labeled thing (`Published`): each one's publisher is followed alone, so a thing
+//! The things with a sync ID each actor's home sync ID publishes (spec/sync-ids.md §4, `published_under`),
+//! kept per thing with a sync ID (`Published`): each one's publisher is followed alone, so a thing
 //! coming to be published moves its own row and the actor's whole set, never another thing's.
-//! A body judgement asks per thing (`PublishedView::contains`); the walk of what a label carries
+//! A body judgement asks per thing (`PublishedView::contains`); the walk of what a sync ID carries
 //! reads the actor's set whole (`PublishedView::iter`).
 
 use crate::Engine;
@@ -10,13 +10,13 @@ use osis_base::memo::{Effects, Feed, Reader, Stamped, StampedSet, Unrecorded};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Each labeled thing's publisher, followed, with the sets per actor it makes. Bounded by the
-/// labeled things held: one key and at most one row each.
+/// The publisher of each thing with a sync ID, followed, with the sets per actor it makes. Bounded by the
+/// things with a sync ID held: one key and at most one row each.
 #[derive(Clone)]
 pub(crate) struct Published {
-    /// Per labeled thing (`Indexes::sync_recorded`), the actor publishing it.
+    /// Per thing with a sync ID (`Indexes::sync_recorded`), the actor publishing it.
     by: Effects<Tid, Option<Tid>>,
-    /// Things labeled from now on; `None` until the first follow.
+    /// Things given a sync ID from now on; `None` until the first follow.
     feed: Option<Feed<Tid>>,
     /// Each followed thing's publisher, as placed.
     placed: BTreeMap<Tid, Tid>,
@@ -32,7 +32,7 @@ impl Default for Published {
     }
 }
 
-/// What an actor's home label publishes, as a body judgement reads it (`BodyCtx::published`): per
+/// What an actor's home sync ID publishes, as a body judgement reads it (`BodyCtx::published`): per
 /// thing asked (`contains`), whole when walked (`iter`).
 pub struct PublishedView {
     actor: Tid,
@@ -53,10 +53,10 @@ impl PublishedView {
 }
 
 impl Engine {
-    /// The actor whose home label publishes labeled thing `h` (spec/sync-ids.md §2, §4): the
-    /// nearest labeled actor with secrets of its own up `h`'s record chain whose record edges up
-    /// to it stand here (`Core::standing_chain`); an account has no label, so what is under it
-    /// publishes under its devices actor's. `None` for a thing not labeled.
+    /// The actor whose home sync ID publishes thing with a sync ID `h` (spec/sync-ids.md §2, §4): the
+    /// nearest actor with a sync ID with secrets of its own up `h`'s record chain whose record edges up
+    /// to it stand here (`Core::standing_chain`); an account has no sync ID, so what is under it
+    /// publishes under its devices actor's. `None` for a thing without a sync ID.
     pub(crate) fn publisher(&self, h: &Tid) -> Option<Tid> {
         let core = &self.core;
         if !core.ix.sync_recorded.contains(h) {
@@ -67,7 +67,7 @@ impl Engine {
     }
 
     /// Brings `Published` up to date with what moved since the last call: work in proportion to
-    /// the labeled things whose publisher's reads moved. Whether a set moved.
+    /// the things with a sync ID whose publisher's reads moved. Whether a set moved.
     pub(crate) fn follow_published(&mut self) -> bool {
         let _u = Unrecorded::start();
         let mut p = std::mem::take(&mut self.core.published);
@@ -84,7 +84,7 @@ impl Engine {
         for h in p.by.due() {
             let Some((_, now)) = p.by.settle(&h, || self.publisher(&h)) else { continue };
             if !self.core.ix.sync_recorded.contains(&h) {
-                // labeled again: the feed gives it
+                // given a sync ID again: the feed gives it
                 p.by.unwant(&h);
             }
             moved = true;
@@ -108,8 +108,8 @@ impl Engine {
         moved
     }
 
-    /// Labeled groups whose nearest labeled record-chain actor is `g` (its home label publishes
-    /// their `label.0`, spec/sync-ids.md §4). Empty unless `g` is an actor with secrets of its
+    /// Groups with a sync ID whose nearest record-chain actor with a sync ID is `g` (its home sync ID publishes
+    /// their `sync.0`, spec/sync-ids.md §4). Empty unless `g` is an actor with secrets of its
     /// own. A read of `g`'s whole set.
     pub fn published_under(&mut self, g: &Tid) -> Arc<BTreeSet<Tid>> {
         self.follow_published();

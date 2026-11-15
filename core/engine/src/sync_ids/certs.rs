@@ -1,7 +1,7 @@
 //! Certificate blobs (spec/permissions.md §4; spec/sync-judgement.md §1): this node's chain certificates
 //! for a group and its node card as (commit, parts) to place, partial bodies of a commit and the
 //! blobs its parts link.
-//! Labels come with secrets of their own (`rotation::own_secrets`), steps by sync once their rotations are logged (`Engine::due_step`, `issue_due_step`).
+//! Sync IDs come with secrets of their own (`rotation::own_secrets`), steps by sync once their rotations are logged (`Engine::due_step`, `issue_due_step`).
 
 use super::blobs::Body;
 use osis_base::memo::Memo;
@@ -192,9 +192,9 @@ impl Engine {
     fn shared_certificates(&mut self, g: &Tid, out: &mut Certs) {
         // the record chain's records
         out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
-        // the destroyed things the label's closure needs told destroyed: on an authority path into it,
+        // the destroyed things the sync ID's closure needs told destroyed: on an authority path into it,
         // or listed or referenced there; their records and frozen permission history, which no
-        // body under the label carries once their destruction dropped their own (spec/permissions.md
+        // body under the sync ID carries once their destruction dropped their own (spec/permissions.md
         // §4, spec/commits.md §5 Destruction)
         let needed = self.destroyed_needed(g).unwrap_or_else(|_| self.destroyed_upstream(g));
         for e in needed {
@@ -204,7 +204,7 @@ impl Engine {
             self.cert_parts(&certs, out);
         }
         // the cards of the key actors holding `g` that are neither node nor account (a link key:
-        // its writes under the label verify by its card, which no chain carries; a node places
+        // its writes under the sync ID verify by its card, which no chain carries; a node places
         // its own under D's home alone; an account's goes with its signing chain)
         let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_key_actor(k) && !self.core.is_account(k)).collect();
         for k in keys.into_iter().filter(|k| self.latest_on(k, "node.0").is_none()) {
@@ -758,7 +758,7 @@ impl Engine {
             plaintext: cut.encode(),
             role_commit: cut.header.kind.is_role(),
             order: super::fetch_order(&resolved),
-            to_label: false,
+            to_sync_id: false,
         }))
     }
 

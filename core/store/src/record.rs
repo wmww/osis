@@ -7,12 +7,12 @@
 //! else is rows the modules of osis-sync keep in it (`record_put_row`), each module under its
 //! own tags and each row written by the transaction that makes it true. A record and every row
 //! of it go together (`records_evict`), and a sync ID leaving the node leaves every record
-//! (`records_forget_label`).
+//! (`records_forget_sync_id`).
 //!
 //! Rows, all catalog rows under `kind::RECORD`, keyed by a random ID so no row key holds r:
 //! `m` meta (total bytes, LRU sequence); `c id` the record; `a actor id` the actor index;
-//! `u seq id` least recently used first; `x id tag label key` a module's row about a sync ID;
-//! `X label tag key id` its index: what leaves with the sync ID, and which records hold a row
+//! `u seq id` least recently used first; `x id tag sync_id key` a module's row about a sync ID;
+//! `X sync_id tag key id` its index: what leaves with the sync ID, and which records hold a row
 //! (`records_with_row`); `w id tag key` a module's row about the record as a whole (no sync ID,
 //! no index).
 
@@ -102,7 +102,7 @@ fn wide_key(id: &RecordId, tag: u8, key: &[u8]) -> Vec<u8> {
     [WIDE, id, &[tag], key].concat()
 }
 
-/// A row key's parts after `ROW id`: its tag, label and key.
+/// A row key's parts after `ROW id`: its tag, sync ID and key.
 fn row_parts(rest: &[u8]) -> Result<(u8, SyncId, &[u8]), Error> {
     let (tag, rest) = rest.split_first().ok_or(Error::Corrupt("peer record row"))?;
     let (l, key) = rest.split_first_chunk::<16>().ok_or(Error::Corrupt("peer record row"))?;
@@ -386,7 +386,7 @@ impl Transaction<'_> {
 
     /// The node stopped holding `l`: every module row about it leaves every record, in this one
     /// transaction. O(rows about it).
-    pub(crate) fn records_forget_label(&mut self, l: &SyncId) -> Result<(), Error> {
+    pub(crate) fn records_forget_sync_id(&mut self, l: &SyncId) -> Result<(), Error> {
         let prefix = [ROW_INDEX, &l.0].concat();
         self.cat_each(&prefix, |t, k, _| {
             let rest = k.get(prefix.len()..).ok_or(Error::Corrupt("peer record row index"))?;

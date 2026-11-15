@@ -7,7 +7,7 @@ use osis_base::SyncId;
 use osis_crypto::kdf::{beacon, beacon_hit, beacon_reply};
 use osis_crypto::{sign_open, static_entry, verify_open};
 use osis_crypto::{Epoch, Secret32, Signature, SigningSecret, VerifyingKey};
-use osis_label::StepId;
+use osis_blob::StepId;
 
 /// One connection as opens binds to it (spec/wire.md §11.1-§11.2): this side's role, both Hello
 /// challenges and the listener's static key.

@@ -533,7 +533,7 @@ impl Ground for EngineGround<'_> {
 
     fn stamp(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Option<osis_proto::Stamp> {
         let w = self.engine.signers(s, None).ok()?.stamp?;
-        Some(osis_label::sign_stamp(&w, s, b, wrap, false))
+        Some(osis_blob::sign_stamp(&w, s, b, wrap, false))
     }
 
     fn unkept(&mut self, store: &crate::store::Store, b: &BlobId) -> Result<()> {
@@ -550,7 +550,7 @@ impl Ground for EngineGround<'_> {
 
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank {
         let Ok(Some(c)) = self.engine.read_credentials(s) else { return Rank::Unopened };
-        match osis_label::wrap_order(c.read_secrets.iter().map(|(_, k)| k), b, wrap) {
+        match osis_blob::wrap_order(c.read_secrets.iter().map(|(_, k)| k), b, wrap) {
             Some(o) => Rank::Order(o),
             None => Rank::Unopened,
         }

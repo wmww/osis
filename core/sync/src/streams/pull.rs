@@ -13,7 +13,7 @@ use osis_store::Transaction;
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::sync::Holding;
-use osis_label::{Class, Prefix, StepId};
+use osis_blob::{Class, Prefix, StepId};
 use osis_proto::limits::{MAX_FETCH_IDS, REPLY_BUDGET};
 use osis_proto::{Code, Event, Fetched, Id, Msg, Pull, PullReply, Stamp, Stream, Wrap};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -888,7 +888,7 @@ impl Streams {
     /// (read); settled for every stream owing it. Wrong bytes count as this source lacking it.
     #[allow(clippy::too_many_arguments)]
     fn take_body(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, b: BlobId, wrap: Wrap, stamp: Option<Stamp>, bytes: &[u8]) {
-        if osis_label::blob_id(bytes) != b {
+        if osis_blob::blob_id(bytes) != b {
             if let Some(p) = self.pull.get_mut(&conn) {
                 p.failed.insert(b);
             }

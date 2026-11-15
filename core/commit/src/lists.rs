@@ -1,6 +1,6 @@
 //! Linked header lists and frontiers (spec/wire.md §4 "Inline or link"): chunk trees written and
 //! read through the tree module, over blob plugs that take prefix inputs and return plaintext
-//! (osis-label frames, encrypts and stores the blobs).
+//! (osis-blob frames, encrypts and stores the blobs).
 
 use crate::header::{Header, ListField};
 use crate::keys::Prefix;
@@ -11,7 +11,7 @@ use osis_base::{BlobId, ChunkParams, Del, Link};
 use osis_crypto::{Secret32, link_hash};
 use std::collections::HashMap;
 
-/// Writes one blob (osis-label frames, encrypts and stores it) and returns its ID and key.
+/// Writes one blob (osis-blob frames, encrypts and stores it) and returns its ID and key.
 pub trait BlobSink {
     fn put(&mut self, prefix: &Prefix, plaintext: &[u8]) -> Result<(BlobId, [u8; 32]), Error>;
 }

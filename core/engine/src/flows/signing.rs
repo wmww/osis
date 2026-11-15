@@ -374,7 +374,7 @@ fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
 
 /// A writer of a thing answers another account's rotation `r` with an addendum on each thing it
 /// writes: the account's plain-content commits there it names by the cutoff (spec/permissions.md
-/// §5.5, Addenda against a rotation), one addendum per thing, so none crosses a label. Waits whole
+/// §5.5, Addenda against a rotation), one addendum per thing, so none crosses a sync ID. Waits whole
 /// for a thing it may write on only later (`write::may_write`).
 fn witness(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitId) -> Result<bool> {
     let Some(me) = tx.core.member().filter(|_| tx.core.addenda_on) else { return Ok(true) };
@@ -596,7 +596,7 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<C
 
 impl Engine {
     /// What this node owes its account's signing chain (`rotations_due`), decided at the end
-    /// of a complete pass of its devices actor's labels (node-sync), so a removal and its
+    /// of a complete pass of its devices actor's sync IDs (node-sync), so a removal and its
     /// rotation that arrive apart, or two forks and the merge of another node, are both in.
     pub fn signing_due(&mut self) -> Result<Done> {
         let mut done = Done::default();

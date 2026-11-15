@@ -1,4 +1,4 @@
-//! Labels: role keys, registration steps, step IDs and paths, claim sets with claim keys and
+//! Sync IDs: role keys, registration steps, step IDs and paths, claim sets with claim keys and
 //! static entries, entry boxes (spec/sync-ids.md §2, §3, spec/wire.md §8, §7).
 
 use crate::cbor::{get_bytes, get_key};
@@ -7,8 +7,8 @@ use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::{MAX_CLAIMS, MAX_MESSAGE, MAX_OBJECT_DEPTH};
 use osis_base::{SyncId, Tid, Value};
 use osis_crypto::{
-    BoxForm, BoxSlot, CryptoRngCore, Domain, EntryItem, Epoch, KemPublicKey, KemSecret, LabelRole, Secret32, Signature, SigningSecret,
-    VerifyingKey, X25519Secret, claim_key, deposit_key, label_role_key, open_entry, seal_entry, static_entry, sync_id,
+    BoxForm, BoxSlot, CryptoRngCore, Domain, EntryItem, Epoch, KemPublicKey, KemSecret, RoleKey, Secret32, Signature, SigningSecret,
+    VerifyingKey, X25519Secret, claim_key, deposit_key, role_key, open_entry, seal_entry, static_entry, sync_id,
 };
 use osis_schema::Codec;
 use osis_schema::core_types::{SealedBox, SecretBox, Sealed};
@@ -21,7 +21,7 @@ pub struct StepId(pub [u8; 32]);
 /// A registration step (spec/wire.md §8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
-    pub label: SyncId,
+    pub sync_id: SyncId,
     pub prev: Option<StepId>,
     pub keys: StepKeys,
     /// Raw X25519 public key.
@@ -43,27 +43,27 @@ pub struct StepKeys {
 impl StepKeys {
     /// Role public keys from the group's role secrets, deposit key from the actor's
     /// deposit seed (spec/sync-ids.md §2).
-    pub fn derive(sync: &Secret32, write: &Secret32, admin: &Secret32, deposit_seed: &Secret32, label: &SyncId) -> StepKeys {
+    pub fn derive(sync: &Secret32, write: &Secret32, admin: &Secret32, deposit_seed: &Secret32, sync_id: &SyncId) -> StepKeys {
         StepKeys {
-            sync: label_role_key(LabelRole::Sync, sync).verifying_key(),
-            write: label_role_key(LabelRole::Write, write).verifying_key(),
-            delete: label_role_key(LabelRole::Delete, admin).verifying_key(),
-            deposit: deposit_key(deposit_seed, label).verifying_key(),
+            sync: role_key(RoleKey::Sync, sync).verifying_key(),
+            write: role_key(RoleKey::Write, write).verifying_key(),
+            delete: role_key(RoleKey::Delete, admin).verifying_key(),
+            deposit: deposit_key(deposit_seed, sync_id).verifying_key(),
         }
     }
 
-    pub fn get(&self, role: LabelRole) -> &VerifyingKey {
+    pub fn get(&self, role: RoleKey) -> &VerifyingKey {
         match role {
-            LabelRole::Sync => &self.sync,
-            LabelRole::Write => &self.write,
-            LabelRole::Delete => &self.delete,
+            RoleKey::Sync => &self.sync,
+            RoleKey::Write => &self.write,
+            RoleKey::Delete => &self.delete,
         }
     }
 }
 
-/// Label ID of the label whose genesis derives from `admin` (spec/sync-ids.md §2).
-pub fn genesis_label(admin: &Secret32) -> SyncId {
-    sync_id(&label_role_key(LabelRole::Delete, admin).verifying_key())
+/// Sync ID of the sync ID whose genesis derives from `admin` (spec/sync-ids.md §2).
+pub fn genesis_sync_id(admin: &Secret32) -> SyncId {
+    sync_id(&role_key(RoleKey::Delete, admin).verifying_key())
 }
 
 /// Limits for steps, claim sets and the structures holding them (spec/wire.md §13).
@@ -84,7 +84,7 @@ impl Step {
     fn unsigned(&self) -> Vec<Value> {
         let k = &self.keys;
         vec![
-            Value::bytes(&self.label.0),
+            Value::bytes(&self.sync_id.0),
             Value::List(self.prev.iter().map(|p| Value::bytes(&p.0)).collect()),
             Value::bytes(&k.sync.to_bytes()),
             Value::bytes(&k.write.to_bytes()),
@@ -120,7 +120,7 @@ impl Step {
 
     pub fn from_value(v: &Value) -> Result<Step, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("step")) };
-        let [label, prev, sync, write, delete, deposit, step_key, claims_hash, sig] = items.as_slice() else {
+        let [sync_id, prev, sync, write, delete, deposit, step_key, claims_hash, sig] = items.as_slice() else {
             return Err(Error::Malformed("step"));
         };
         let prev = match prev {
@@ -132,7 +132,7 @@ impl Step {
             _ => return Err(Error::Malformed("step prev")),
         };
         Ok(Step {
-            label: SyncId(get_bytes(label, "step label")?),
+            sync_id: SyncId(get_bytes(sync_id, "step sync ID")?),
             prev,
             keys: StepKeys {
                 sync: get_key(sync, "step sync key")?,
@@ -146,20 +146,20 @@ impl Step {
         })
     }
 
-    /// A genesis step: no `prev`, signed by its own delete key, which hashes to the label ID.
+    /// A genesis step: no `prev`, signed by its own delete key, which hashes to the sync ID.
     pub fn verify_genesis(&self) -> Result<(), Error> {
         if self.prev.is_some() {
             return Err(Error::Verify("genesis step has prev"));
         }
-        if sync_id(&self.keys.delete) != self.label {
-            return Err(Error::Verify("genesis delete key does not hash to the label ID"));
+        if sync_id(&self.keys.delete) != self.sync_id {
+            return Err(Error::Verify("genesis delete key does not hash to the sync ID"));
         }
         self.keys.delete.verify(Domain::SyncStep, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
     }
 
-    /// A child of `parent`: same label, `prev` its ID, signed by its delete key.
+    /// A child of `parent`: same sync ID, `prev` its ID, signed by its delete key.
     pub fn verify_child(&self, parent: &Step) -> Result<(), Error> {
-        if self.label != parent.label || self.prev != Some(parent.id()) {
+        if self.sync_id != parent.sync_id || self.prev != Some(parent.id()) {
             return Err(Error::Verify("step is not a child"));
         }
         parent.keys.delete.verify(Domain::SyncStep, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
@@ -168,7 +168,7 @@ impl Step {
     /// The closing step under `self` (spec/wire.md §8), signed by `delete`, `self`'s delete key:
     /// its keys are `self`'s, its step key and claims hash zero, and it carries no claim set.
     pub fn closing(&self, delete: &SigningSecret) -> Step {
-        let mut step = Step { label: self.label, prev: Some(self.id()), keys: self.keys, step_key: [0; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
+        let mut step = Step { sync_id: self.sync_id, prev: Some(self.id()), keys: self.keys, step_key: [0; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
         step.sig = delete.sign(Domain::SyncStep, &step.digest());
         step
     }
@@ -188,16 +188,16 @@ impl Step {
     /// The claim key a reader derives from its X25519 private key (spec/sync-ids.md §3); try each
     /// keyset epoch held.
     pub fn claim_key(&self, own: &X25519Secret) -> Result<SigningSecret, Error> {
-        Ok(claim_key(own, &self.step_key, &self.label, &self.step_key)?)
+        Ok(claim_key(own, &self.step_key, &self.sync_id, &self.step_key)?)
     }
 }
 
-/// Verifies a registration path: the genesis step of `label`, then each step a child of the one
+/// Verifies a registration path: the genesis step of `sync_id`, then each step a child of the one
 /// before (spec/sync-ids.md §3).
-pub fn verify_path(label: &SyncId, path: &[Step]) -> Result<(), Error> {
+pub fn verify_path(sync_id: &SyncId, path: &[Step]) -> Result<(), Error> {
     let (first, rest) = path.split_first().ok_or(Error::Verify("empty path"))?;
-    if first.label != *label {
-        return Err(Error::Verify("path of another label"));
+    if first.sync_id != *sync_id {
+        return Err(Error::Verify("path of another sync ID"));
     }
     first.verify_genesis()?;
     let mut parent = first;
@@ -209,7 +209,7 @@ pub fn verify_path(label: &SyncId, path: &[Step]) -> Result<(), Error> {
 }
 
 /// The verified path from the genesis step to `head` through a set of steps (the tree by
-/// `prev`, as `label.0` holds it).
+/// `prev`, as `sync.0` holds it).
 pub fn path_to(steps: &BTreeMap<StepId, Step>, head: &StepId) -> Result<Vec<Step>, Error> {
     let mut path = Vec::new();
     let mut at = Some(*head);
@@ -225,8 +225,8 @@ pub fn path_to(steps: &BTreeMap<StepId, Step>, head: &StepId) -> Result<Vec<Step
         path.push(s.clone());
     }
     path.reverse();
-    let label = path.first().map(|s| s.label).ok_or(Error::Verify("empty path"))?;
-    verify_path(&label, &path)?;
+    let sync_id = path.first().map(|s| s.sync_id).ok_or(Error::Verify("empty path"))?;
+    verify_path(&sync_id, &path)?;
     Ok(path)
 }
 
@@ -289,8 +289,8 @@ impl ClaimSet {
     }
 
     /// The entry box of a key actor's static entry.
-    pub fn entry_box(&self, label: &SyncId, signing: &VerifyingKey) -> Option<&SecretBox> {
-        self.entries.get(&static_entry(label, signing))
+    pub fn entry_box(&self, sync_id: &SyncId, signing: &VerifyingKey) -> Option<&SecretBox> {
+        self.entries.get(&static_entry(sync_id, signing))
     }
 }
 
@@ -328,7 +328,7 @@ pub enum Parent<'a> {
 /// Issues a step with a fresh step key, its claim set and entry boxes (spec/sync-ids.md §3): one
 /// claim key per DH reader (a non-contributory result omits it), one static entry and entry box
 /// per key actor, padded with random public keys to a power of two, shuffled. `read` is the
-/// label's group thing, the registered read epoch and its secret; `sync` the sync epoch and
+/// sync ID's group thing, the registered read epoch and its secret; `sync` the sync epoch and
 /// secret its sync key derives from. The step private key is dropped (zeroized) on return.
 /// A step without rotation passes the parent's keys. Randomness in draw order: the step key
 /// (32 bytes), per sealed entry box the seal's ephemeral key and ML-KEM randomness (32 + 32), 32
@@ -340,7 +340,7 @@ pub fn register(parent: Parent, keys: StepKeys, readers: &[Reader], read: (&Tid,
 /// `register` with the entry boxes also carrying `earlier`, the read epoch the registered one's
 /// rotation commit is wrapped under (spec/sync-ids.md §3).
 pub fn register_with(parent: Parent, keys: StepKeys, readers: &[Reader], read: (&Tid, Epoch, &Secret32), sync: (Epoch, &Secret32), earlier: Option<(Epoch, &Secret32)>, rng: &mut dyn CryptoRngCore) -> Result<(Step, ClaimSet), Error> {
-    let (label, prev, signer) = match parent {
+    let (sync_id, prev, signer) = match parent {
         Parent::Genesis(own) => {
             if own.verifying_key() != keys.delete {
                 return Err(Error::Verify("genesis signer is not the step's delete key"));
@@ -351,24 +351,24 @@ pub fn register_with(parent: Parent, keys: StepKeys, readers: &[Reader], read: (
             if delete.verifying_key() != step.keys.delete {
                 return Err(Error::Verify("signer is not the parent's delete key"));
             }
-            (step.label, Some(step.id()), delete)
+            (step.sync_id, Some(step.id()), delete)
         }
     };
     let step_secret = X25519Secret::random(rng);
     let step_key = step_secret.public();
-    let slot = BoxSlot::Entry { label, step_key, group: *read.0 };
+    let slot = BoxSlot::Entry { sync_id, step_key, group: *read.0 };
     let item = EntryItem { epoch: read.1, secret: read.2.clone(), earlier: earlier.map(|(e, s)| (e, s.clone())), sync: (sync.0, sync.1.clone()) };
     let mut claims = Vec::new();
     let mut entries = BTreeMap::new();
     for r in readers {
         match r {
             Reader::Dh(pk) => {
-                if let Ok(k) = claim_key(&step_secret, pk, &label, &step_key) {
+                if let Ok(k) = claim_key(&step_secret, pk, &sync_id, &step_key) {
                     claims.push(k.verifying_key().to_bytes());
                 }
             }
             Reader::Static { signing, kem } => {
-                let e = static_entry(&label, signing);
+                let e = static_entry(&sync_id, signing);
                 claims.push(e);
                 entries.insert(e, seal_entry_box(&slot, kem, &item, rng)?);
             }
@@ -385,7 +385,7 @@ pub fn register_with(parent: Parent, keys: StepKeys, readers: &[Reader], read: (
     shuffle(&mut claims, rng);
     let set = ClaimSet { claims, entries };
     check_claim_set_size(set.to_bytes().len())?;
-    let mut step = Step { label, prev, keys, step_key, claims_hash: set.hash(), sig: Signature([0; 64]) };
+    let mut step = Step { sync_id, prev, keys, step_key, claims_hash: set.hash(), sig: Signature([0; 64]) };
     step.sig = signer.sign(Domain::SyncStep, &step.digest());
     Ok((step, set))
 }
@@ -406,10 +406,10 @@ fn seal_entry_box(slot: &BoxSlot, kem: &KemPublicKey, item: &EntryItem, rng: &mu
     Ok(SecretBox::Sealed(SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: Sealed::X25519MlKem768(sealed) }))
 }
 
-/// Opens an entry box of `step` of `group`'s label with the key actor's KEM key: the read
+/// Opens an entry box of `step` of `group`'s sync ID with the key actor's KEM key: the read
 /// secrets it carries, with the epochs of `group` they name (spec/sync-ids.md §3).
 pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, group: &Tid) -> Result<EntryItem, Error> {
-    let slot = BoxSlot::Entry { label: step.label, step_key: step.step_key, group: *group };
+    let slot = BoxSlot::Entry { sync_id: step.sync_id, step_key: step.step_key, group: *group };
     let SecretBox::Sealed(sb) = b else { return Err(Error::Malformed("entry box form")) };
     let keyset = sb.keyset.as_ref().map(|e| Epoch::new(e.n, e.nonce)).transpose()?;
     let Sealed::X25519MlKem768(sealed) = &sb.sealed;
@@ -436,18 +436,18 @@ pub(crate) mod tests {
             Group { read: Secret32::from_bytes([b; 32]), write: Secret32::from_bytes([b + 1; 32]), admin: Secret32::from_bytes([b + 2; 32]), deposit: Secret32::from_bytes([b + 3; 32]), sync: Secret32::from_bytes([b + 4; 32]) }
         }
         pub fn keys(&self) -> StepKeys {
-            StepKeys::derive(&self.sync, &self.write, &self.admin, &self.deposit, &genesis_label(&self.admin))
+            StepKeys::derive(&self.sync, &self.write, &self.admin, &self.deposit, &genesis_sync_id(&self.admin))
         }
         /// The sync epoch (n 0) of the test group thing and its secret.
         pub fn sync_at(&self) -> (Epoch, &Secret32) {
             (Epoch::derive(&TG, osis_base::Role::Sync, 0, &self.sync).unwrap_or(Epoch::ZERO), &self.sync)
         }
         pub fn delete(&self) -> SigningSecret {
-            label_role_key(LabelRole::Delete, &self.admin)
+            role_key(RoleKey::Delete, &self.admin)
         }
     }
 
-    /// The group thing of test labels.
+    /// The group thing of test sync IDs.
     pub(crate) const TG: Tid = Tid::from_bytes([0x47; 15]);
 
     fn epoch(n: u64) -> Epoch {
@@ -455,14 +455,14 @@ pub(crate) mod tests {
     }
 
     // spec/wire.md §8, spec/sync-ids.md §3: genesis step bytes round trip; the ID is BLAKE3 of the
-    // bytes; the label ID hashes the genesis delete key; a child verifies under the parent's
+    // bytes; the sync ID hashes the genesis delete key; a child verifies under the parent's
     // delete key only; paths verify step by step.
     #[test]
     fn steps_and_paths() {
         let mut rng = SeededRng::from_u64(0);
         let g = Group::new(10);
         let (s0, c0) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
-        assert_eq!(s0.label, genesis_label(&g.admin));
+        assert_eq!(s0.sync_id, genesis_sync_id(&g.admin));
         assert_eq!(Step::parse(&s0.to_bytes()).unwrap(), s0);
         assert_eq!(s0.id().0, osis_base::hash::hash(&s0.to_bytes()));
         assert_eq!(s0.claims_hash, c0.hash());
@@ -470,7 +470,7 @@ pub(crate) mod tests {
         s0.verify_genesis().unwrap();
         // Rotation: new admin secret, step signed by the old delete key.
         let g2 = Group::new(20);
-        let k1 = StepKeys::derive(&g2.sync, &g2.write, &g2.admin, &g.deposit, &s0.label);
+        let k1 = StepKeys::derive(&g2.sync, &g2.write, &g2.admin, &g.deposit, &s0.sync_id);
         let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete() }, k1, &[], (&TG, epoch(1), &g2.read), g2.sync_at(), &mut rng).unwrap();
         s1.verify_child(&s0).unwrap();
         assert!(s1.verify_genesis().is_err());
@@ -478,9 +478,9 @@ pub(crate) mod tests {
         let (s2, _) = register(Parent::Child { step: &s1, delete: &g2.delete() }, s1.keys, &[], (&TG, epoch(1), &g2.read), g2.sync_at(), &mut rng).unwrap();
         assert_eq!(s2.keys, s1.keys);
         assert_ne!(s2.step_key, s1.step_key);
-        verify_path(&s0.label, &[s0.clone(), s1.clone(), s2.clone()]).unwrap();
-        assert!(verify_path(&s0.label, &[s0.clone(), s2.clone()]).is_err());
-        assert!(verify_path(&s0.label, std::slice::from_ref(&s1)).is_err());
+        verify_path(&s0.sync_id, &[s0.clone(), s1.clone(), s2.clone()]).unwrap();
+        assert!(verify_path(&s0.sync_id, &[s0.clone(), s2.clone()]).is_err());
+        assert!(verify_path(&s0.sync_id, std::slice::from_ref(&s1)).is_err());
         assert!(verify_path(&SyncId([0; 16]), std::slice::from_ref(&s0)).is_err());
         let map: BTreeMap<StepId, Step> = [&s0, &s1, &s2].into_iter().map(|s| (s.id(), s.clone())).collect();
         assert_eq!(path_to(&map, &s2.id()).unwrap(), vec![s0.clone(), s1.clone(), s2.clone()]);
@@ -544,7 +544,7 @@ pub(crate) mod tests {
         }
         let outsider = KeyActorKeys::from_seed(&Secret32::from_bytes([6; 32]));
         assert!(!c0.contains(&s0.claim_key(outsider.kem.x25519()).unwrap().verifying_key().to_bytes()));
-        let b = c0.entry_box(&s0.label, &card.signing.verifying_key()).unwrap();
+        let b = c0.entry_box(&s0.sync_id, &card.signing.verifying_key()).unwrap();
         let want = EntryItem { epoch: e3, secret: g.read.clone(), earlier: None, sync: (g.sync_at().0, g.sync.clone()) };
         assert_eq!(open_entry_box(b, &s0, &card.kem, &TG).unwrap(), want);
         // read as another group's, the secret names that group's epoch (spec/crypto.md §4)
@@ -552,17 +552,17 @@ pub(crate) mod tests {
         assert_ne!(open_entry_box(b, &s0, &card.kem, &other).unwrap().epoch, e3);
         // a registrar naming an epoch the secret does not name boxes nothing
         assert!(register(Parent::Genesis(&g.delete()), g.keys(), &readers, (&TG, epoch(3), &g.read), g.sync_at(), &mut rng).is_err());
-        let b = c0.entry_box(&s0.label, &link.signing.verifying_key()).unwrap();
+        let b = c0.entry_box(&s0.sync_id, &link.signing.verifying_key()).unwrap();
         assert_eq!(open_entry_box(b, &s0, &link.kem, &TG).unwrap(), want);
         assert!(open_entry_box(b, &s0, &card.kem, &TG).is_err());
         // Another step's slot does not open it.
         let (s1, _) = register(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &[], (&TG, e3, &g.read), g.sync_at(), &mut rng).unwrap();
-        let b = c0.entry_box(&s0.label, &card.signing.verifying_key()).unwrap();
+        let b = c0.entry_box(&s0.sync_id, &card.signing.verifying_key()).unwrap();
         assert!(open_entry_box(b, &s1, &card.kem, &TG).is_err());
         // the earlier read secret travels with it (spec/sync-ids.md §3)
         let e2 = Epoch::derive(&TG, osis_base::Role::Read, 2, &g.write).unwrap();
         let (s2, c2) = register_with(Parent::Child { step: &s0, delete: &g.delete() }, s0.keys, &readers, (&TG, e3, &g.read), g.sync_at(), Some((e2, &g.write)), &mut rng).unwrap();
-        let b = c2.entry_box(&s2.label, &card.signing.verifying_key()).unwrap();
+        let b = c2.entry_box(&s2.sync_id, &card.signing.verifying_key()).unwrap();
         assert_eq!(open_entry_box(b, &s2, &card.kem, &TG).unwrap(), EntryItem { earlier: Some((e2, g.write.clone())), ..want });
     }
 

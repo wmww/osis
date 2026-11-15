@@ -62,7 +62,7 @@ pub const HISTORY: &str = "history";
 pub const EPOCH: &str = "epoch";
 /// A read epoch's roles secret from its secret (spec/crypto.md §4, Roles secrets).
 pub const ROLES: &str = "roles";
-/// Wrap key from a label read secret (spec/crypto.md §5).
+/// Wrap key from a sync ID read secret (spec/crypto.md §5).
 pub const WRAP: &str = "wrap";
 /// Section wrap key from a reader actor's read secret (spec/wire.md §4).
 pub const SECTION: &str = "section";
@@ -80,12 +80,12 @@ pub const DELETE_NONCE: &str = "delete nonce";
 pub const LINK_BLIND: &str = "link blind";
 /// A linked blob's commitments' blind, from its link blind and its thing (spec/crypto.md §7).
 pub const THING_BLIND: &str = "thing blind";
-/// Label role keys (spec/sync-ids.md §2).
-pub const LABEL_SYNC: &str = "label sync";
-pub const LABEL_WRITE: &str = "label write";
-pub const LABEL_DELETE: &str = "label delete";
-pub const LABEL_DEPOSIT: &str = "label deposit";
-pub const LABEL_CLAIM: &str = "label claim";
+/// Sync ID role keys (spec/sync-ids.md §2).
+pub const SYNC_KEY: &str = "sync key";
+pub const SYNC_WRITE: &str = "sync write";
+pub const SYNC_DELETE: &str = "sync delete";
+pub const SYNC_DEPOSIT: &str = "sync deposit";
+pub const SYNC_CLAIM: &str = "sync claim";
 /// The pair key of a record, or of a connection with none (`pair_key`).
 pub const PAIR_KEY: &str = "pair key";
 /// A beacon's key over its match value and sync ID (issues/sync-rewrite.md).
@@ -100,7 +100,7 @@ pub const SYNC_PROOF: &str = "sync proof";
 /// Every kdf purpose, for distinctness checks and vectors.
 pub const PURPOSES: [&str; 36] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
-    DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM,
+    DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM,
     INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF,
 ];
 
@@ -111,9 +111,9 @@ pub const DEDUP: &str = "osis v1 dedup";
 pub const HYBRID_KEM: &str = "osis v1 hybrid kem";
 
 // Unkeyed hash prefixes.
-/// Label ID = BLAKE3(LABEL_ID || genesis delete key)[..16] (spec/wire.md §8).
-pub const LABEL_ID: &str = "osis v1 label id";
-/// Static entry = BLAKE3(STATIC_CLAIM || label ID || signing key) (spec/wire.md §8).
+/// Sync ID = BLAKE3(SYNC_ID || genesis delete key)[..16] (spec/wire.md §8).
+pub const SYNC_ID: &str = "osis v1 sync id";
+/// Static entry = BLAKE3(STATIC_CLAIM || sync ID || signing key) (spec/wire.md §8).
 pub const STATIC_CLAIM: &str = "osis v1 static claim";
 
 pub fn thing_purpose(role: Role) -> &'static str {
@@ -166,12 +166,12 @@ pub fn twinned_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[
 
 /// A beacon: `BLAKE3(key = kdf("beacon", match, L), r)` (issues/sync-rewrite.md): the
 /// value both sides compute for one credential, so a filter entry is its first bits.
-pub fn beacon(match_value: &[u8; 32], label: &[u8; 16], r: &[u8; 32]) -> [u8; 32] {
-    *blake3::keyed_hash(kdf(BEACON, match_value, label).expose(), r).as_bytes()
+pub fn beacon(match_value: &[u8; 32], sync_id: &[u8; 16], r: &[u8; 32]) -> [u8; 32] {
+    *blake3::keyed_hash(kdf(BEACON, match_value, sync_id).expose(), r).as_bytes()
 }
 
 /// The match value of a proof of a sync secret (spec/sync-opens.md §4, admissible):
-/// `kdf("sync proof", seed, "")`, `seed` the sync key's (`label::label_role_seed`). Invariant:
+/// `kdf("sync proof", seed, "")`, `seed` the sync key's (`sync_id::role_key_seed`). Invariant:
 /// only a holder of that sync secret computes it, so its beacon, Hit and tag prove the secret as
 /// a read secret's do, and a node holding only L's public keys finds no proof in a filter (model
 /// `ON_proofpub`).
@@ -191,15 +191,15 @@ fn bound(side: Side<'_>, beacon: &[u8; 32]) -> Vec<u8> {
 /// A Hit (spec/wire.md §11.2): a beacon as one side shows it on one connection. A beacon is the same
 /// value on both sides, so a Hit carries its sender's side, the listener's key and both challenges:
 /// a peer that reflects one to its sender, or carries it to another connection, shows nothing.
-pub fn beacon_hit(match_value: &[u8; 32], label: &[u8; 16], beacon: &[u8; 32], side: Side<'_>) -> [u8; 32] {
+pub fn beacon_hit(match_value: &[u8; 32], sync_id: &[u8; 16], beacon: &[u8; 32], side: Side<'_>) -> [u8; 32] {
     let input = bound(side, beacon);
-    *kdf(BEACON_HIT, &[&match_value[..], &label[..]].concat(), &input).expose()
+    *kdf(BEACON_HIT, &[&match_value[..], &sync_id[..]].concat(), &input).expose()
 }
 
 /// The tag answering a Hit, by the replier's side: computable only with the credential.
-pub fn beacon_reply(match_value: &[u8; 32], label: &[u8; 16], beacon: &[u8; 32], side: Side<'_>) -> [u8; 32] {
+pub fn beacon_reply(match_value: &[u8; 32], sync_id: &[u8; 16], beacon: &[u8; 32], side: Side<'_>) -> [u8; 32] {
     let input = bound(side, beacon);
-    *kdf(BEACON_REPLY, &[&match_value[..], &label[..]].concat(), &input).expose()
+    *kdf(BEACON_REPLY, &[&match_value[..], &sync_id[..]].concat(), &input).expose()
 }
 
 /// A connection's place among the connections of one record (spec/sync-opens.md §3, pair key): the
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn strings_distinct() {
         let mut all: Vec<String> = PURPOSES.iter().map(|p| format!("{PREFIX}{p}")).collect();
-        all.extend([DEDUP, HYBRID_KEM, LABEL_ID, STATIC_CLAIM, "osis v1 gear table"].map(String::from));
+        all.extend([DEDUP, HYBRID_KEM, SYNC_ID, STATIC_CLAIM, "osis v1 gear table"].map(String::from));
         all.extend(Domain::ALL.iter().map(|d| d.as_str().to_string()));
         let set: BTreeSet<&String> = all.iter().collect();
         assert_eq!(set.len(), all.len());

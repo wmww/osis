@@ -1,5 +1,5 @@
 //! Blob encryption with Padmé padding, wraps and inbox blobs (spec/crypto.md §5, spec/wire.md §5,
-//! §9). The clear prefix layout is osis-label's: this module takes its bytes.
+//! §9). The clear prefix layout is osis-blob's: this module takes its bytes.
 
 use crate::aead::{self, TAG_LEN, ZERO_NONCE};
 use crate::kdf::{self, kdf};
@@ -97,7 +97,7 @@ pub fn decrypt_blob(blob: &[u8], prefix_len: usize, key: &Secret32) -> Result<Ve
 /// A wrap: `suite (1) || blob key (32) || order (8)` sealed (spec/wire.md §5).
 pub const WRAP_LEN: usize = 1 + 32 + 8 + TAG_LEN;
 
-/// Wrap of a blob key under a label read secret: nonce = blob ID[..24], empty AD (spec/wire.md §5).
+/// Wrap of a blob key under a sync ID read secret: nonce = blob ID[..24], empty AD (spec/wire.md §5).
 /// `order` is the fetch order (spec/crypto.md §5).
 pub fn wrap(read_secret: &Secret32, blob: &BlobId, blob_key: &Secret32, order: u64) -> Result<[u8; WRAP_LEN], Error> {
     let mut pt = Zeroizing::new([SUITE_1; 41]);

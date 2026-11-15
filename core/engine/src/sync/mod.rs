@@ -31,16 +31,16 @@ pub use stranded::Stranding;
 mod tests_facts;
 
 pub use inbox::WaitingBlob;
-pub use osis_label::DialHint;
+pub use osis_blob::DialHint;
 
 use crate::apply::reach::Wants;
 use crate::engine::DropFor;
 use crate::error::{Error, Result};
-use crate::labeling::{Certs, HeadKeys, Sealed};
+use crate::sync_ids::{Certs, HeadKeys, Sealed};
 use crate::{Engine, Ingested};
 use osis_base::{Ak, BlobId, CommitId, CreationRecord, Role, SyncId, Tid, WallMs};
 use osis_crypto::{Epoch, NodeRng, Secret32, SigningSecret, WRAP_LEN};
-use osis_label::{Address, Step, StepId};
+use osis_blob::{Address, Step, StepId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -83,7 +83,7 @@ pub struct HeldBlob {
 /// (spec/sync-ids.md §5 Path).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Path {
-    pub steps: Vec<(Step, Option<osis_label::ClaimSet>)>,
+    pub steps: Vec<(Step, Option<osis_blob::ClaimSet>)>,
 }
 
 /// What `open_entry` did with an entry's blob.
@@ -466,7 +466,7 @@ impl Engine {
 
     // Held parts and bodies
 
-    /// Brings the facade values kept per entry (`Core::published`, per labeled thing;
+    /// Brings the facade values kept per entry (`Core::published`, per thing with a sync ID;
     /// `Core::wrap_blocks`, per actor and walk; `Core::held_writes_rows`, per aspect; each read
     /// thing's certificates per piece and commit, `certified`; its thing lists per rotation,
     /// `listed`; `Core::read_facts`, per sync ID and commit; `Core::held_fates`, per commit) up to date with what moved since
@@ -744,7 +744,7 @@ impl Engine {
     /// Takes a piece's bytes (a blob a held body links, `pieces`' missing) from a store entry:
     /// held here from now on (`put_blobs`).
     pub fn take_piece(&mut self, b: &BlobId, bytes: Vec<u8>) -> Result<()> {
-        if osis_label::blob_id(&bytes) != *b {
+        if osis_blob::blob_id(&bytes) != *b {
             return Ok(());
         }
         self.put_blobs(vec![(*b, bytes)])
@@ -860,7 +860,7 @@ impl Engine {
     /// caller verifies the answer's signature under the key, then `learn_grant`. `None` when any
     /// check fails or S is no sync ID this node reads.
     pub fn open_grant(&mut self, s: &SyncId, entry: &[u8; 32], steps: &[Step], b: &osis_schema::core_types::SecretBox) -> Result<Option<OpenedGrant>> {
-        if osis_label::verify_path(s, steps).is_err() {
+        if osis_blob::verify_path(s, steps).is_err() {
             return Ok(None);
         }
         let Some(head) = steps.last() else { return Ok(None) };
@@ -874,8 +874,8 @@ impl Engine {
         let Some((thing, _)) = self.sync_holder(s)? else { return Ok(None) };
         let ids: Vec<Arc<crate::identity::Identity>> = self.core.key_actors.values().cloned().collect();
         let Some(id) = ids.iter().find(|id| osis_crypto::static_entry(s, &id.keys().signing.verifying_key()) == *entry) else { return Ok(None) };
-        let Ok(item) = osis_label::open_entry_box(b, head, &id.keys().kem, &thing) else { return Ok(None) };
-        let key = osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &item.sync.1).verifying_key().to_bytes();
+        let Ok(item) = osis_blob::open_entry_box(b, head, &id.keys().kem, &thing) else { return Ok(None) };
+        let key = osis_crypto::role_key(osis_crypto::RoleKey::Sync, &item.sync.1).verifying_key().to_bytes();
         if key != head.keys.sync.to_bytes() {
             return Ok(None);
         }
@@ -941,10 +941,10 @@ impl Engine {
         let Some(t) = self.sync_owner_of(s)? else { return Ok(J::Unknown) };
         let reader = self.core.reader_of(&t);
         Ok(match self.core.judge(proven.iter().copied()).of(&t) {
-            crate::labeling::Judgment::Holder => J::Reader,
-            crate::labeling::Judgment::Departed => J::Departed,
-            crate::labeling::Judgment::Unknown if proven.iter().any(|x| self.core.role_now(x, &reader) == Some(osis_base::Role::Sync)) => J::SyncHolder,
-            crate::labeling::Judgment::Unknown => J::Unknown,
+            crate::sync_ids::Judgment::Holder => J::Reader,
+            crate::sync_ids::Judgment::Departed => J::Departed,
+            crate::sync_ids::Judgment::Unknown if proven.iter().any(|x| self.core.role_now(x, &reader) == Some(osis_base::Role::Sync)) => J::SyncHolder,
+            crate::sync_ids::Judgment::Unknown => J::Unknown,
         })
     }
 

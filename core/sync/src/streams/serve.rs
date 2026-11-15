@@ -288,7 +288,7 @@ impl Streams {
                 let inlined = blob.is_some();
                 Some((s, Event::Added { blob_id: b, blob, wrap: entry.wrap, stamp: entry.stamp }, inlined))
             }
-            NodeEvent::Deleted { label, blob, .. } => Some((label, Event::Deleted(blob), false)),
+            NodeEvent::Deleted { sync_id, blob, .. } => Some((sync_id, Event::Deleted(blob), false)),
             NodeEvent::Head(s) => ctx.store.head(&s)?.map(|st| (s, Event::Head(st), false)),
         })
     }

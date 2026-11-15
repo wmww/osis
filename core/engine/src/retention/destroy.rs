@@ -20,7 +20,7 @@
 //! secrets, if it had any, stay only while node-sync may still delete an entry of its commits
 //! (`hold_secrets`).
 //! What a dependent needs travels with the dependent: its holders place the record and frozen
-//! history under its labels (`Engine::destroyed_upstream`), and a node that kept nothing takes them
+//! history under its sync IDs (`Engine::destroyed_upstream`), and a node that kept nothing takes them
 //! again when it opens them (`takes_late`), so it judges a dependent reaching it later as the
 //! others do: the keep is per node, but no verdict depends on it.
 //! `Core::exists` says the thing is gone all the same. A later write on it is a write on an
@@ -229,7 +229,7 @@ pub(crate) fn released(core: &Core, t: &Tid, now: u64) -> bool {
 /// `retainers^.0` or referencing it in a live durable value other than `group.0` (the
 /// reference index, `needs_from`). One rule
 /// for every destruction: while it holds, `t`'s record, value-less creation, `roles.0` and destruction
-/// request parts stay and travel under that thing's labels (`Engine::certificates`).
+/// request parts stay and travel under that thing's sync IDs (`Engine::certificates`).
 pub(crate) fn needs_evidence(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     if dependents(tx.core, t) {
         return Ok(true);
@@ -337,7 +337,7 @@ fn reopen_fallen(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         crate::apply::keys::rebuild_keysets(tx, &BTreeSet::from([*t]))?;
     }
     unhold_secrets(tx, t)?;
-    // its `label.0` parts come back with the rest
+    // its `sync.0` parts come back with the rest
     unkeep_sync_ids(tx, t)?;
     // reads of the thing and its roles move, and whatever waited on the thing is judged again
     tx.core.ix.held.record_back(*t);
@@ -582,7 +582,7 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 /// and, once it keeps nothing, exactly while this node may still delete something by the delete
 /// keys `Core::delete_chain` derives from them, of a commit **keyed by it** (a part on it: levels 1
 /// and 3; acting for it: level 2, the author chain, spec/crypto.md §7): a freed link of its thing
-/// or author (judged here), or, under a label node-sync syncs, an entry of such a commit whose
+/// or author (judged here), or, under a sync ID node-sync syncs, an entry of such a commit whose
 /// sections list a part on it (any, of one acting for it) or a delete of one within its tombstone
 /// (judged by sync, `Engine::drop_destroyed_secrets`, when the thing is noted here, after
 /// each start, and when such an entry, delete or freed link goes). Nothing else needs them: the
@@ -604,9 +604,9 @@ fn hold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 /// its destruction, keeping or not, carrying the requests destroying it (spec/sync-judgement.md
 /// §5 Telling), until sync empties them once it keeps nothing.
 ///
-/// Invariant: once a destroyed thing keeps nothing here, everything under its own labels is
+/// Invariant: once a destroyed thing keeps nothing here, everything under its own sync IDs is
 /// must-not-hold for every holder: nothing it keeps lives there (what its dependents need of it
-/// travels under their labels, spec/commits.md §5 Destruction), and its closure, its required set
+/// travels under their sync IDs, spec/commits.md §5 Destruction), and its closure, its required set
 /// there, is empty. So while it keeps nothing and this node holds its secrets
 /// (`Engine::destruction`), sync empties those sync IDs (spec/sync-judgement.md §5), and once
 /// they are emptied the row goes, and only then its secrets, which derive those keys
@@ -618,7 +618,7 @@ fn keep_sync_ids(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     }
     let Some(v) = tx.state(t, &crate::flows::ak(SYNC)?)?.and_then(osis_crdt::Fragment::read) else { return Ok(()) };
     // the sync IDs it owns (`Core::owns_sync_id`): emptying another's would drop its state here
-    let ls = crate::labeling::actors::owned_in_value(tx.core, t, &v);
+    let ls = crate::sync_ids::actors::owned_in_value(tx.core, t, &v);
     if ls.is_empty() {
         return Ok(());
     }
@@ -683,7 +683,7 @@ impl crate::engine::Engine {
     /// (sync calls `forget_destroyed` again as those go). One whose record is held again keeps
     /// them as its own.
     pub(crate) fn drop_destroyed_secrets(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
-        // one whose labels node-sync still empties stays: the delete keys derive from them
+        // one whose sync IDs node-sync still empties stays: the delete keys derive from them
         let ts: Vec<Tid> = ts.iter().copied().filter(|t| self.core.ix.destroyed_secrets.contains(t) && self.core.ix.destroyed_sync_ids.get(t).is_none()).collect();
         if ts.is_empty() {
             return Ok(());

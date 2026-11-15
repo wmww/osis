@@ -633,26 +633,26 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     assert!(lp.peers[2].engine.epochs(&d).is_none(), "Carol kept D's secrets");
 }
 
-// spec/permissions.md §1 (role-class by admins): a writer's `label.0` write, forged past its own node's writer-side refusal, is invalid where it is received (the
+// spec/permissions.md §1 (role-class by admins): a writer's `sync.0` write, forged past its own node's writer-side refusal, is invalid where it is received (the
 // same write by its author once an admin applies).
 #[test]
 fn forged_role_class_unmerged_spec_perm_1() {
     use osis_schema::{RawKey, core_types as ct};
     let (mut lp, d, _, _) = setup();
-    let label = ct::SyncEntry { steps: BTreeMap::new() };
-    let labels: ct::SyncIds = BTreeMap::from([(osis_base::SyncId([5; 16]), label)]);
+    let sync_id = ct::SyncEntry { steps: BTreeMap::new() };
+    let sync_ids: ct::SyncIds = BTreeMap::from([(osis_base::SyncId([5; 16]), sync_id)]);
     let a = ak(ct::SYNC.ak());
     let before = lp.peers[0].engine.get(&d, &a).unwrap();
-    let forged = forge_role_commit(&mut lp, 1, d, &a, &labels.to_value(), 1);
+    let forged = forge_role_commit(&mut lp, 1, d, &a, &sync_ids.to_value(), 1);
     lp.peers[0].receive(&forged, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), before, "a writer's role-class write applied");
     // control: the same write by the same key applies once its author is an admin
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
     lp.advance(1_000);
-    let honest = forge_role_commit(&mut lp, 1, d, &a, &labels.to_value(), 100);
+    let honest = forge_role_commit(&mut lp, 1, d, &a, &sync_ids.to_value(), 100);
     lp.peers[0].receive(&honest, Vec::new()).unwrap();
-    assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), Some(labels.to_value()));
+    assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), Some(sync_ids.to_value()));
 }
 
 // spec/permissions.md §5.2 (admin-only): a writer's node refuses its write of a `^` aspect,
@@ -3444,11 +3444,11 @@ fn stranger_card_makes_no_node_spec_perm_4() {
     }
 }
 
-// spec/sync-ids.md §4 (owner): a group's labels are its `label.0` state: a stranger's header-only commit
-// listing `label.0` on a thing (it applies, its part invalid) gives the thing no label here:
-// it is not a labeled group, nor published under its first admin's home label.
+// spec/sync-ids.md §4 (owner): a group's sync IDs are its `sync.0` state: a stranger's header-only commit
+// listing `sync.0` on a thing (it applies, its part invalid) gives the thing no sync ID here:
+// it is not a group with a sync ID, nor published under its first admin's home sync ID.
 #[test]
-fn stranger_label_listing_labels_nothing_spec_sync_2() {
+fn stranger_sync_id_listing_sync_ids_nothing_spec_sync_2() {
     let mut lp = net_bare(2, 0);
     lp.sync_all().unwrap();
     let (p, _) = lp.peers[0].engine.create_account().unwrap();
@@ -3456,14 +3456,14 @@ fn stranger_label_listing_labels_nothing_spec_sync_2() {
     let t = lp.peers[0].engine.new_thing(&mut m, p.account);
     lp.peers[0].commit(m).unwrap();
     let e = &mut lp.peers[0].engine;
-    assert!(e.things_with_sync_ids().contains(&p.devices), "the account's home label");
+    assert!(e.things_with_sync_ids().contains(&p.devices), "the account's home sync ID");
     let before = e.published_under(&p.devices);
     let mut blob = forge_on(&mut lp, t, "sync.0");
     blob.parts.clear();
     let id = blob.id();
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id));
-    assert!(!e.things_with_sync_ids().contains(&t), "a listing labels nothing");
+    assert!(!e.things_with_sync_ids().contains(&t), "a listing sync IDs nothing");
     assert!(!e.published_under(&p.devices).contains(&t));
     assert_eq!(e.published_under(&p.devices), before);
     // nor after a reopen

@@ -39,7 +39,7 @@ use osis_base::{SyncId, WallMs};
 use osis_crypto::NodeRng;
 use osis_crypto::kdf::{members_digest, pair_key, resume_tag, resumed_tag};
 use osis_engine::sync::J;
-use osis_label::StepId;
+use osis_blob::StepId;
 use osis_proto::filter::{beacon_value, decode_gcs, filter_width, pages};
 use osis_proto::limits::{MAX_FILTER_ENTRIES, MAX_FILTER_WIDTH, MAX_MEMBERS, MAX_OFFER_ITEMS, MAX_RESUME_TAGS, MIN_FILTER_WIDTH, NO_RECORD_ID, REPLY_BUDGET};
 use osis_proto::{Code, Id, Msg, OfferItem, SharedItem};
@@ -263,7 +263,7 @@ struct PeerGen {
 #[derive(Clone, Debug, Default)]
 struct WalkState {
     /// Steps the source gave, verified (spec/sync-ids.md §6 Known steps).
-    known: Vec<osis_label::Step>,
+    known: Vec<osis_blob::Step>,
     /// Steps a Behind was refused on, this walk.
     refused: BTreeSet<Option<StepId>>,
     asked: bool,

@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use osis_base::{CommitId, Role, Tid, Value};
 use osis_commit::CommitBlob;
 use osis_crypto::NodeRng;
-use osis_label::{BoxedThing, BoxesPayload, DialHint, InboxPayload, InboxThing, seal_boxes_payload, seal_inbox_blob};
+use osis_blob::{BoxedThing, BoxesPayload, DialHint, InboxPayload, InboxThing, seal_boxes_payload, seal_inbox_blob};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -119,7 +119,7 @@ impl Engine {
             }
             let current: Vec<osis_crypto::Epoch> = self.current_read_secrets(&t).into_iter().map(|(e, _)| e).collect();
             for x in later {
-                if self.read(|tx| crate::labeling::opened::opened_epochs(tx, &x, &t))?.iter().any(|e| current.contains(e)) {
+                if self.read(|tx| crate::sync_ids::opened::opened_epochs(tx, &x, &t))?.iter().any(|e| current.contains(e)) {
                     return Ok(true);
                 }
             }
@@ -296,7 +296,7 @@ impl Engine {
     /// When the commit boxes the recipient, also the current `keys.0` commit of each thing it boxes
     /// it on, projected to that delta (spec/wire.md §9 position 2).
     fn chain_values(&mut self, c: &CommitId, blob: &CommitBlob, holder: &Tid) -> Result<(Vec<Value>, Vec<osis_base::CreationRecord>)> {
-        let parts: crate::labeling::Parts = blob.parts.iter().map(|p| p.ai).collect();
+        let parts: crate::sync_ids::Parts = blob.parts.iter().map(|p| p.ai).collect();
         let boxed: BTreeSet<Tid> = crate::apply::keys::pending_secrets_writes(blob, c).into_iter().filter(|(_, w)| w.boxes.keys().any(|k| k.holder == *holder)).map(|(t, _)| t).collect();
         let Some(certs) = self.carried_chain(c, &parts, &boxed) else { return Ok((Vec::new(), Vec::new())) };
         let mut out = Vec::new();

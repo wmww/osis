@@ -15,7 +15,7 @@
 //!
 //! Scope (held-model ASSUMPTIONS.md): every content aspect (`core_types::is_content`), of every
 //! encoding, and every known thing's roster; the others count through the validity and edges they
-//! decide (`keys.0`, `secrets.0`, `label.0`: outside the model; `created.0`: its input;
+//! decide (`keys.0`, `secrets.0`, `sync.0`: outside the model; `created.0`: its input;
 //! `addenda.0`: fed as entries, issues/held-model-setting-reads.md). A content aspect is not compared
 //! (`Coverage::skipped`, by reason) when a commit on it is outside the model (paged, ephemeral,
 //! waiting for blobs or parked). No aspect is compared when the role input is
@@ -90,8 +90,8 @@ impl Coverage {
 /// range per aspect say who made which dots).
 pub(crate) struct History {
     headers: BTreeMap<CommitId, Arc<Header>>,
-    /// Commit labels, in dot order.
-    labels: BTreeMap<CommitId, u32>,
+    /// Commit sync IDs, in dot order.
+    sync_ids: BTreeMap<CommitId, u32>,
     /// The model's judgment of each held set judged so far: a pure function of its input, and
     /// the arrival orders of one history mostly end on the same few (`judged`).
     judged: std::sync::Mutex<Vec<(hm::Held, Arc<Judged>)>>,
@@ -129,8 +129,8 @@ impl History {
             })
             .collect();
         order.sort();
-        let labels = order.iter().enumerate().map(|(i, x)| (x.3, i as u32 + 1)).collect();
-        History { headers, labels, judged: Default::default(), paged: Default::default(), frags: Default::default() }
+        let sync_ids = order.iter().enumerate().map(|(i, x)| (x.3, i as u32 + 1)).collect();
+        History { headers, sync_ids, judged: Default::default(), paged: Default::default(), frags: Default::default() }
     }
 
     /// Whether a delta of commit `c` as `e` holds it links a blob (a large value's tree): a
@@ -260,7 +260,7 @@ fn removals(f: &hm::Frag, out: &mut BTreeSet<&'static str>) {
     }
 }
 
-/// Labels of one conversion.
+/// Sync IDs of one conversion.
 struct Conv<'h> {
     hist: &'h History,
     /// Actors and things: one id space.
@@ -280,7 +280,7 @@ impl Conv<'_> {
         *self.extra.entry(k).or_insert(1_000_000 + n)
     }
     fn commit(&mut self, c: &CommitId) -> hm::CommitId {
-        match self.hist.labels.get(c) {
+        match self.hist.sync_ids.get(c) {
             Some(l) => *l,
             None => self.extra(Ok(*c)),
         }
@@ -364,7 +364,7 @@ struct Input {
     /// In-scope aspects by thing and AK, with their model keys.
     inside: BTreeMap<(Tid, Ak), (hm::ThingId, hm::Aspect)>,
     skipped: BTreeMap<(Tid, Ak), &'static str>,
-    /// Held commits by label: ID, applied here.
+    /// Held commits by sync ID: ID, applied here.
     commits: BTreeMap<hm::CommitId, (CommitId, bool)>,
     /// Actors and things by model id.
     ids: BTreeMap<hm::NodeId, Tid>,
@@ -462,13 +462,13 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         }
     }
     let mut commits = Vec::new();
-    let mut labels = BTreeMap::new();
+    let mut sync_ids = BTreeMap::new();
     let mut inside = BTreeMap::new();
     // held leftovers: their value-less carriers are taken as stripped once the input is whole
     let mut leftovers = Vec::new();
     for (id, h, applied) in &held {
-        let label = cv.commit(id);
-        labels.insert(label, (*id, *applied));
+        let sync_id = cv.commit(id);
+        sync_ids.insert(sync_id, (*id, *applied));
         let meta = e.core.ix.commits.get(id).cloned();
         let waiting = if *applied { None } else { e.pending_parts(id).unwrap() };
         let edges = if *applied && h.kind == Kind::Role { e.core.ix.held.edge_commit(id).cloned() } else { None };
@@ -509,7 +509,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             }
             match h.kind {
                 _ if aspect == hm::Aspect::CREATED => parts.push(part(created(e, &mut cv, id, &a.tid))),
-                // a role commit's parts off `roles.0` (`keys.0`, `secrets.0`, `label.0`) change no
+                // a role commit's parts off `roles.0` (`keys.0`, `secrets.0`, `sync.0`) change no
                 // role: placeholders
                 Kind::Role if a.ak.as_str() != "roles.0" => parts.push(part(hm::Body::Held(hm::Delta::Writes(hm::Frag::empty(0))))),
                 Kind::Role => {
@@ -535,7 +535,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                 _ => {
                     let f = if ok { bodies.remove(&(*id, ai)).unwrap_or_else(|| hm::Frag::empty(0)) } else { hm::Frag::empty(0) };
                     if meta.as_ref().is_some_and(|m| m.stripped(ai)) {
-                        leftovers.push((label, parts.len()));
+                        leftovers.push((sync_id, parts.len()));
                     }
                     parts.push(part(hm::Body::Held(hm::Delta::Writes(f))));
                 }
@@ -569,7 +569,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             .collect();
         let (author, actor) = (cv.id(&h.author), cv.id(&h.actor));
         let undoes = h.undoes.as_ref().map(|c| cv.commit(c));
-        commits.push(hm::Commit { id: label, author, actor, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, boxes: vec![] });
+        commits.push(hm::Commit { id: sync_id, author, actor, ts: h.ts.to_u64(), expires: h.expires, kind, parts, purge, frontier, undoes, boxes: vec![] });
     }
     let me = cv.id(&e.me());
     // every record the node holds of an id named, first admins naming more
@@ -602,8 +602,8 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
     let dots = cv.dots();
     let mut held = hm::Held { now: e.now().0, me, records, commits, dots };
     let ds = hm::Dots::new(&held);
-    for (label, i) in leftovers {
-        let c = held.commits.iter_mut().find(|c| c.id == label).unwrap();
+    for (sync_id, i) in leftovers {
+        let c = held.commits.iter_mut().find(|c| c.id == sync_id).unwrap();
         let p = &mut c.parts[i];
         if let hm::Body::Held(hm::Delta::Writes(f)) = &p.body {
             p.stripped = ds.valueless(p.thing, p.aspect, f);
@@ -611,7 +611,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
     }
     held.commits.sort_by_key(|c| c.id);
     let ids = cv.ids.iter().map(|(t, i)| (*i, *t)).collect();
-    Input { held, inside, skipped, commits: labels, ids }
+    Input { held, inside, skipped, commits: sync_ids, ids }
 }
 
 /// A creation part of commit `c` as the record it mints, when the node holds it.
@@ -938,7 +938,7 @@ fn reach_n(cov: &mut Coverage, k: &'static str, n: usize) {
     *cov.reached.entry(k).or_default() += n as u64;
 }
 
-/// The node's applied role commits with a part on `t`: label-free, for a mismatch report.
+/// The node's applied role commits with a part on `t`: sync-ID-free, for a mismatch report.
 fn role_commits(e: &mut Engine, t: &Tid) -> Vec<String> {
     let mut out = Vec::new();
     for id in e.commit_ids() {

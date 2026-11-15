@@ -2,7 +2,7 @@
 
 use crate::harness::{Seen, World, two_nodes};
 use osis_base::WallMs;
-use osis_label::Address;
+use osis_blob::Address;
 use osis_sync::{ConnId, Links, Out, apply};
 
 // spec: none (test harness): a world of two nodes, each with its account, runs to quiet: nothing

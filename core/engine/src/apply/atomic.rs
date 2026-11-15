@@ -232,7 +232,7 @@ impl osis_crdt::PageSource for SharedPages<'_, '_, '_> {
         let mut tx = self.tx.try_borrow_mut().map_err(|_| osis_crdt::PageError::Storage)?;
         let tx = &mut **tx;
         let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-        let page = osis_label::BlobReader::new(self.dedup, &mut blobs).get(link)?;
+        let page = osis_blob::BlobReader::new(self.dedup, &mut blobs).get(link)?;
         // counted: tests read how many stored bytes a stream decoded
         osis_base::costs::count("stream: bytes", page.len() as u64);
         Ok(page)

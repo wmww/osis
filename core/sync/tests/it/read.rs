@@ -9,11 +9,11 @@
 
 use osis_base::memo::Stamped;
 use osis_base::{BlobId, CommitId, SyncId, WallMs};
-use osis_crypto::{LabelRole, Secret32, Signature, SigningSecret, label_role_key};
-use osis_engine::labeling::HeadKeys;
+use osis_crypto::{RoleKey, Secret32, Signature, SigningSecret, role_key};
+use osis_engine::sync_ids::HeadKeys;
 use osis_engine::retention::{End, Minting, Standing};
 use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, Destruction, ReadCredentials};
-use osis_label::{Class, Step, StepKeys};
+use osis_blob::{Class, Step, StepKeys};
 use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, Verdict, Why};
 use osis_engine::sync::PieceLink;
 use osis_base::Tid;
@@ -33,18 +33,18 @@ fn cid(i: u8) -> CommitId {
     CommitId([i; 32])
 }
 
-fn key(role: LabelRole, e: u64) -> SigningSecret {
+fn key(role: RoleKey, e: u64) -> SigningSecret {
     let mut b = [role as u8 + 9; 32];
     b[..8].copy_from_slice(&e.to_le_bytes());
-    label_role_key(role, &Secret32::from_bytes(b))
+    role_key(role, &Secret32::from_bytes(b))
 }
 
 fn step(e: u64) -> Step {
     let vk = |r| key(r, e).verifying_key();
     Step {
-        label: S,
+        sync_id: S,
         prev: None,
-        keys: StepKeys { sync: vk(LabelRole::Sync), write: vk(LabelRole::Write), delete: vk(LabelRole::Delete), deposit: vk(LabelRole::Write) },
+        keys: StepKeys { sync: vk(RoleKey::Sync), write: vk(RoleKey::Write), delete: vk(RoleKey::Delete), deposit: vk(RoleKey::Write) },
         step_key: [e as u8; 32],
         claims_hash: [0; 32],
         sig: Signature([0; 64]),
@@ -58,7 +58,7 @@ fn stamp_at(e: u64) -> Signature {
 
 /// A reader's credentials at head step `e`: a writer, with the delete key when `delete`.
 fn creds(e: u64, writer: bool, delete: bool) -> Arc<ReadCredentials> {
-    let hk = HeadKeys { sync: None, sync_established: true, write: writer.then(|| key(LabelRole::Write, e)), delete: delete.then(|| key(LabelRole::Delete, e)), deposit: None, epochs: [None; 3] };
+    let hk = HeadKeys { sync: None, sync_established: true, write: writer.then(|| key(RoleKey::Write, e)), delete: delete.then(|| key(RoleKey::Delete, e)), deposit: None, epochs: [None; 3] };
     let mut keys = BTreeMap::new();
     for i in 0..=e {
         keys.insert(step(i).id(), hk.clone());
@@ -275,7 +275,7 @@ impl Ground for Fake {
         }
         Ok(())
     }
-    fn delete_freed(&mut self, at: &SrcView, _s: &SyncId, _head: &osis_label::StepId, b: &BlobId, _t: &Tid) -> Result<()> {
+    fn delete_freed(&mut self, at: &SrcView, _s: &SyncId, _head: &osis_blob::StepId, b: &BlobId, _t: &Tid) -> Result<()> {
         self.sent.push(Sent::DeleteFreed(at.conn, *b));
         Ok(())
     }
@@ -477,7 +477,7 @@ impl Ground for Fake {
         self.sent.push(Sent::Delete(at.conn, *b));
         Ok(())
     }
-    fn close(&mut self, at: &SrcView, s: &SyncId, _head: &osis_label::StepId, key: &SigningSecret) -> Result<()> {
+    fn close(&mut self, at: &SrcView, s: &SyncId, _head: &osis_blob::StepId, key: &SigningSecret) -> Result<()> {
         let _ = (s, key);
         self.sent.push(Sent::Close(at.conn));
         Ok(())
@@ -1304,7 +1304,7 @@ fn released(request_at_k: bool) -> W {
     w
 }
 
-// spec/sync-judgement.md §5 (told) (destroyed-label): nothing is deleted at K before the destroying
+// spec/sync-judgement.md §5 (told) (destroyed-sync-id): nothing is deleted at K before the destroying
 // request is held there (DN_told).
 #[test]
 fn nothing_emptied_before_told() {
@@ -2120,8 +2120,8 @@ fn a_freed_link_is_dropped_deleted_at_stores_then_done_spec_sync_compaction_1() 
 }
 
 /// The bodies and judgements read settles (`read: bodies`, `read: judged`) and the engine's settles of what is published and certified
-/// (`labeling::published`, `sync::certified`) node 0 makes for one more thing published under an
-/// actor G of its account (a labeled thing whose first admin is G, in no group: its `sync.0` and
+/// (`sync_ids::published`, `sync::certified`) node 0 makes for one more thing published under an
+/// actor G of its account (a thing with a sync ID whose first admin is G, in no group: its `sync.0` and
 /// `created.0` commits go under G's sync IDs as published), after `n` such things, run to quiet.
 fn judged_per_publish(n: usize) -> u64 {
     let mut w = crate::harness::history::world(0, 1);

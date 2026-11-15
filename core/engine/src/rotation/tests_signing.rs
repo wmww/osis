@@ -89,7 +89,7 @@ fn removal_rotates_the_account_and_its_lists_keep_its_writes_spec_permissions_5_
     let deposit = lp.peers[0].engine.deposit_seed(&a.devices).unwrap().unwrap();
     let done = remove(&mut lp, 0, a.devices, 1);
     assert_eq!(done.commits.len(), 2, "the removal, then the rotation");
-    // D's labels derive deposit keys from the account's seed, fresh with the rotation, so the
+    // D's sync IDs derive deposit keys from the account's seed, fresh with the rotation, so the
     // removed node deposits under them no more (spec/crypto.md §3)
     assert_ne!(lp.peers[0].engine.deposit_seed(&a.devices).unwrap().unwrap().expose(), deposit.expose(), "a fresh deposit seed");
     let rot = lp.peers[0].engine.header(&done.commits[1]).unwrap();
@@ -1679,7 +1679,7 @@ fn pair(lp: &mut LocalPeer, a: &CreatedAccount, i: usize) {
     lp.peers[i].engine.paired(&a.account).unwrap();
 }
 
-/// Carries what `from` holds that `to` does not hold whole as labels do: sealed (`LocalPeer::
+/// Carries what `from` holds that `to` does not hold whole as sync IDs do: sealed (`LocalPeer::
 /// sealed`, after the rotations due before it encrypts), each opened at `to` with the read secrets
 /// it holds and ingested as far as it opens (its header and the sections it opens), with its
 /// thing lists; again while anything new opens. The commits none of whose wraps opened at `to`.
@@ -1697,7 +1697,7 @@ fn carry_sealed(lp: &mut LocalPeer, from: usize, to: usize) -> Vec<CommitId> {
             lp.advance(1);
             let e = &sp.entries[0];
             let eng = &mut lp.peers[to].engine;
-            let Some(key) = e.wraps.iter().find_map(|(a, w)| osis_label::unwrap_any(eng.read_secrets(a).iter(), &e.id, w).map(|x| x.1)) else {
+            let Some(key) = e.wraps.iter().find_map(|(a, w)| osis_blob::unwrap_any(eng.read_secrets(a).iter(), &e.id, w).map(|x| x.1)) else {
                 shut.push(id);
                 continue;
             };
@@ -1728,7 +1728,7 @@ fn pass_end(lp: &mut LocalPeer, k: usize) -> Vec<CommitId> {
 
 // spec/permissions.md §3 (Required rotation), §5.5, spec/crypto.md §5 (Exception: an account's
 // rotation is wrapped under the D epoch its seed's `under` supersedes): nodes 0 and 1 of four remove nodes 2 and 3 while
-// apart, each writing after, and heal as labels carry commits, in either order, with or without
+// apart, each writing after, and heal as sync IDs carry commits, in either order, with or without
 // each having been handed the other's removal and rotation first; then the two act in turn, each
 // at the end of a pass. A sibling's removal R counts at the other only once its rotation Q (whose
 // thing list for D names R) is held, so Q opens without R's new D epoch. Both removals hold at
@@ -1819,7 +1819,7 @@ fn a_removed_node_opens_no_keys_of_its_removal_rotation_spec_crypto_5() {
     let mut opened = Vec::new();
     for pk in &pks {
         for en in &pk.entries {
-            let Some(key) = en.wraps.iter().find_map(|(g, w)| osis_label::unwrap_any(e.read_secrets(g).iter(), &en.id, w).map(|x| x.1)) else { continue };
+            let Some(key) = en.wraps.iter().find_map(|(g, w)| osis_blob::unwrap_any(e.read_secrets(g).iter(), &en.id, w).map(|x| x.1)) else { continue };
             opened.extend(e.open_commit(&en.blob, &key).unwrap().commit.parts.iter().map(|p| p.ai));
         }
     }

@@ -5,7 +5,7 @@ use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
 use osis_base::{SyncId, Tid, Value, encode};
-use osis_label::{Address, Error, Peer, ShareLink};
+use osis_blob::{Address, Error, Peer, ShareLink};
 use osis_schema::Codec;
 
 const SPEC: &str = "spec/wire.md §10";
@@ -16,7 +16,7 @@ pub fn links() -> VecFile {
         seed: s32(0x03),
         target: Tid::from_bytes([0x01; 15]),
         k: Tid::from_bytes([0x02; 15]),
-        k_label: SyncId([0x04; 16]),
+        k_sync_id: SyncId([0x04; 16]),
         hosts: vec![a.clone()],
         peers: vec![Peer { dialable: [0x07; 32], relays: vec!["https://relay.example".into()] }],
         single_use: false,

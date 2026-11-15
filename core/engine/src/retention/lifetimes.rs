@@ -11,7 +11,7 @@
 //! through retainers that reference what is below them, stopping at the first standalone or
 //! unknown thing (`walk`). No liveness is cached: the kept state is the work list (`WORK`: things
 //! a change touched), `HELD` (things whose walk read a thing not heard out, judged again once a
-//! label is newly heard out) and `PENDING`. A walk
+//! sync ID is newly heard out) and `PENDING`. A walk
 //! passes through a pending thing like any known thing: `PENDING` may be stale for a thing the
 //! same run made reachable (held-model `a_stale_pending_thing_is_walked_through`).
 //!
@@ -198,7 +198,7 @@ pub struct Judged {
     pub request: Option<CommitId>,
 }
 
-/// Whether every group holding `t` (itself included) is heard out: a thing under no label is.
+/// Whether every group holding `t` (itself included) is heard out: a thing under no sync ID is.
 fn heard_thing(core: &Core, t: &Tid, heard: &dyn Fn(&Tid) -> bool) -> bool {
     core.ix.groups.enclosing(t).iter().all(heard)
 }
@@ -265,7 +265,7 @@ pub(crate) fn judge(tx: &mut Tx<'_>, heard: &dyn Fn(&Tid) -> bool, held: bool, r
 impl crate::engine::Engine {
     /// Whether the lifetime judgment has work (`judge_lifetimes`): a thing queued, or the role
     /// timelines changed while a thing is pending; and whether a thing is held (waits for a
-    /// label to be heard out). Two store seeks, stamped: an `Effects` value over it is due when
+    /// sync ID to be heard out). Two store seeks, stamped: an `Effects` value over it is due when
     /// its rows or the rights mark move.
     pub fn lifetimes_due(&mut self) -> Result<(bool, bool)> {
         let rights = self.core.lifetimes_rights.get();
@@ -277,8 +277,8 @@ impl crate::engine::Engine {
 
     /// Judges the things changes touched (notes/lifetimes.md, The judgment), and with
     /// `held` the things held at an earlier judgment: each whose walk read only things heard out
-    /// (each group holding it, itself included, `heard` says is: node-sync, every label of the
-    /// group is; a thing under no group is), the rest held. Node-sync passes `held` once a label
+    /// (each group holding it, itself included, `heard` says is: node-sync, every sync ID of the
+    /// group is; a thing under no group is), the rest held. Node-sync passes `held` once a sync ID
     /// is newly heard out, so new work alone does not walk the held things again. The unreachable things this node may
     /// destroy, with what only they kept, it releases in one request (`release`); the others it may
     /// not destroy are pending. A released thing is pending too until the request, applied, destroys it:

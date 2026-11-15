@@ -222,7 +222,7 @@ pub fn port_waits(db: &Osis) -> usize {
 pub use crate::port::method as port_method;
 pub use osis_proto as proto;
 pub use osis_crypto::Secret32;
-pub use osis_label as label;
+pub use osis_blob as blob;
 
 /// The client socket's directory and path rules (`Osis::listen_socket`).
 pub use crate::sources::{socket_dir, socket_path, socket_path_under};

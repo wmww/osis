@@ -240,7 +240,7 @@ fn file_backend_holds_no_plaintext() {
     assert_eq!(t.get_local(b"local/2").unwrap(), Some(b"other local".to_vec()));
 }
 
-/// Blobs as osis-label frames them, without a prefix: enough for the attack's blob paths.
+/// Blobs as osis-blob frames them, without a prefix: enough for the attack's blob paths.
 const CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
     prefix: |_| Some(0),
     open: |blob, key| osis_crypto::decrypt_blob(blob, 0, &osis_crypto::Secret32::from_bytes(*key)).ok(),

@@ -1,11 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Role flows over `LocalPeer`: commits and inbox blobs are
-//! delivered by hand between engines (no labels or hosts).
+//! delivered by hand between engines (no sync IDs or hosts).
 
 use crate::common;
 use common::*;
 use osis_base::{Clock, CommitId, SyncId, Role, Tid, Value};
-use osis_label::Address;
+use osis_blob::Address;
 use osis_engine::flows::{Demotion, Done};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
@@ -44,7 +44,7 @@ pub(crate) fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId])
     }
 }
 
-/// `spread` as labels carry commits (`SealedPackage`): each peer opens only what the read
+/// `spread` as sync IDs carry commits (`SealedPackage`): each peer opens only what the read
 /// secrets it holds unwrap.
 pub(crate) fn spread_sealed(lp: &mut LocalPeer) {
     let n = lp.peers.len();
@@ -138,15 +138,15 @@ fn account_two_nodes_built() -> (LocalPeer, Tid) {
 }
 
 // spec/permissions.md §1, spec/crypto.md §3: an account's devices actor D has secrets of its own and
-// the home label; pairing grants a node on D and the node opens D's secrets.
+// the home sync ID; pairing grants a node on D and the node opens D's secrets.
 #[test]
 fn account_and_pairing_spec_perm_1() {
     let (mut lp, d) = account_two_nodes();
     let e0 = &mut lp.peers[0].engine;
     assert_eq!(e0.role_on(&d), Some(Role::Admin));
-    let labels = e0.get_typed(&d, &ct::SYNC).unwrap().unwrap();
-    assert_eq!(labels.len(), 1);
-    let (step, _) = osis_label::parse_record(labels.values().next().unwrap().steps.values().next().unwrap()).unwrap();
+    let sync_ids = e0.get_typed(&d, &ct::SYNC).unwrap().unwrap();
+    assert_eq!(sync_ids.len(), 1);
+    let (step, _) = osis_blob::parse_record(sync_ids.values().next().unwrap().steps.values().next().unwrap()).unwrap();
     step.verify_genesis().unwrap();
     let read = e0.epochs(&d).unwrap().read.newest_held().unwrap().1.clone();
     let e1 = &mut lp.peers[1].engine;
@@ -229,7 +229,7 @@ pub(crate) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypt
 
 // spec/permissions.md §2, §3; spec/sync-judgement.md §1: a grant gives the thing secrets of its own
 // first, carries the grantee's boxes, and reaches the grantee's nodes as an inbox blob,
-// whose acceptance yields a certificate copy for the grantee's home label.
+// whose acceptance yields a certificate copy for the grantee's home sync ID.
 // spec/permissions.md §2 (edge inbox delivery): grants
 #[test]
 fn grant_by_inbox_spec_perm_2() {
@@ -283,7 +283,7 @@ fn grant_with_chain(lp: &mut LocalPeer, pa: Tid, pb: Tid, role: Role) -> (Tid, C
     (d, keys.expect("d's first keys commit is current"), g, with, without)
 }
 
-/// What peer `i` holds of thing `d` and commit `k`: role, read epochs, `keys.0`, `label.0` and
+/// What peer `i` holds of thing `d` and commit `k`: role, read epochs, `keys.0`, `sync.0` and
 /// the register, what pends, and per part of `k` its verdict and whether it is held.
 type Held = (Option<Role>, BTreeSet<osis_crypto::Epoch>, [Option<Value>; 3], usize, Option<Vec<(bool, bool)>>);
 
@@ -326,7 +326,7 @@ fn a_chain_projection_and_its_commit_join_in_either_order_spec_commits_4() {
     assert_eq!(held_of(&mut last, 1, d, k), want, "the projection after the commit");
 }
 
-// spec/wire.md §9, spec/sync-judgement.md §1: an inbox payload's label is followed only for a thing the
+// spec/wire.md §9, spec/sync-judgement.md §1: an inbox payload's sync ID is followed only for a thing the
 // commit gave this node a read secret of. A sync grant's box gives the sync secret alone: with
 // the chain taken (the thing's `keys.0`, so the grant applies valid), it names no such thing.
 #[test]
@@ -1109,7 +1109,7 @@ fn a_link_naming_another_target_grants_nothing_spec_permissions_7() {
     let other = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
     sync(&mut lp, 0, 1);
-    let forged = osis_label::ShareLink { target: other, ..link.clone() };
+    let forged = osis_blob::ShareLink { target: other, ..link.clone() };
     assert!(!lp.peers[1].engine.redeemable(&forged));
     assert!(lp.peers[1].engine.redeem(&forged, &ps1, true).is_err());
     assert!(lp.peers[1].engine.redeemable(&link));
@@ -1156,10 +1156,10 @@ fn link_redeem_single_use_spec_perm_7() {
     let d = thing_of(&mut lp, 0, pa);
     let (link, keep, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
     let text = link.to_text().unwrap();
-    assert_eq!(osis_label::ShareLink::from_text(&text).unwrap(), link);
+    assert_eq!(osis_blob::ShareLink::from_text(&text).unwrap(), link);
     assert_eq!(lp.peers[0].engine.roster(&link.k).get(&lp.peers[0].engine.tid()), None);
     assert!(lp.peers[0].engine.get(&keep, &ak(osis_engine::flows::LINK_SEED)).unwrap().is_some());
-    // the stranger downloads K's label (here: everything the sharer holds)
+    // the stranger downloads K's sync ID (here: everything the sharer holds)
     sync(&mut lp, 0, 1);
     let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
     assert_eq!(done.commits.len(), 1);
@@ -1208,7 +1208,7 @@ fn single_use_finalization_audits_spec_perm_7() {
 
 // spec/permissions.md §7, §5.1, §3: the race flipped by the finalization. Peer 2 redeems first,
 // peer 1 later; peer 1 sees both and loses by its view, but keeps K's and the target's secrets
-// (so it keeps following their labels) while L's self-removal is not finalized. The sharer saw
+// (so it keeps following their sync IDs) while L's self-removal is not finalized. The sharer saw
 // only peer 1's redemption: its finalization drops peer 2's and peer 1 is in. Peer 2, the loser
 // once the finalization arrives, drops them.
 #[test]
@@ -1576,7 +1576,7 @@ fn raced_then_rotated_built() -> (LocalPeer, Tid, Tid, Done) {
 // spec/permissions.md §3 (rotation), spec/sync-judgement.md §1: a rotation boxing a holder that holds no
 // box at the current read epoch before it (a grant raced by an earlier rotation; the single-use
 // link race's winner) reaches that holder by inbox: it could not open the rotation commit from
-// the label, which is wrapped under that epoch.
+// the sync ID, which is wrapped under that epoch.
 #[test]
 fn rotation_reaches_unboxed_holder_spec_perm_3() {
     let (mut lp, t, pc, r2) = raced_then_rotated();
@@ -1607,7 +1607,7 @@ fn reseal_over_unheld_box_spec_perm_3() {
 
 /// Alice (0) is first admin of C, K1 and K2; K1 and K2 are writers of C; o0 (1) writes K1; late (2)
 /// writes K2 (and reads K1 when `late_reads_k1`). Unless late reads K1 it never gets K1's
-/// `secrets.0` parts (they travel under K1's label only), as with `spread_hiding`. Returns
+/// `secrets.0` parts (they travel under K1's sync ID only), as with `spread_hiding`. Returns
 /// (lp, c, k1, o0).
 fn two_links(late_reads_k1: bool) -> (LocalPeer, Tid, Tid, Tid) {
     let (mut lp, ps) = people(3);
@@ -1761,12 +1761,12 @@ fn plain_first_admin_gets_secrets_before_its_thing_spec_perm_3() {
 fn registration_step_after_rotation_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
-    let labels = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
-    let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
+    let sync_ids = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
+    let genesis = osis_blob::StepId(*sync_ids.get(&card).unwrap().steps.keys().next().unwrap());
     assert!(lp.peers[1].engine.issue_step(&p, &card, false).unwrap().is_none(), "nothing newer");
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
     let (step, set) = lp.peers[1].engine.issue_step(&p, &card, false).unwrap().unwrap();
-    let parent = osis_label::parse_record(&labels.get(&card).unwrap().steps[&genesis.0]).unwrap().0;
+    let parent = osis_blob::parse_record(&sync_ids.get(&card).unwrap().steps[&genesis.0]).unwrap().0;
     step.verify_child(&parent).unwrap();
     let claims = |i: usize| step.claim_key(lp.peers[i].engine.identity().keys().kem.x25519()).unwrap().verifying_key().to_bytes();
     assert!(set.contains(&claims(1)));
@@ -1777,7 +1777,7 @@ fn registration_step_after_rotation_spec_sync_5() {
 
 // spec/crypto.md §3 (fresh deposit seed), spec/sync-ids.md §6: an admin's removal that rotates read writes a fresh
 // deposit seed in its rotation commit, and the step it issues registers the new deposit key, so
-// the removed account can no longer deposit under the thing's labels.
+// the removed account can no longer deposit under the thing's sync IDs.
 #[test]
 fn removal_refreshes_deposit_seed_spec_crypto_3() {
     let (mut lp, p, pa, _) = nodes_and_alice();
@@ -1804,9 +1804,9 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
 #[test]
 fn refreshed_deposit_seed_issues_step_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
-    let labels = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
-    let genesis = osis_label::StepId(*labels.get(&card).unwrap().steps.keys().next().unwrap());
-    let parent = osis_label::parse_record(&labels.get(&card).unwrap().steps[&genesis.0]).unwrap().0;
+    let sync_ids = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
+    let genesis = osis_blob::StepId(*sync_ids.get(&card).unwrap().steps.keys().next().unwrap());
+    let parent = osis_blob::parse_record(&sync_ids.get(&card).unwrap().steps[&genesis.0]).unwrap().0;
     assert!(lp.peers[1].engine.issue_step(&p, &card, false).unwrap().is_none(), "nothing newer");
     lp.peers[1].engine.refresh_deposit_seed(&p).unwrap();
     let new = lp.peers[1].engine.deposit_seed(&p).unwrap().unwrap();
@@ -1989,15 +1989,15 @@ fn issue_step_after_inside_removal_spec_sync_5() {
     lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
     let t0 = newest_read(&lp, 1, t).unwrap();
-    let label = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
+    let sync_id = lp.peers[1].engine.home_sync_id(&t).unwrap().unwrap();
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
-    assert!(lp.peers[1].engine.issue_step(&t, &label, false).unwrap().is_none(), "the team has not rotated: nothing");
+    assert!(lp.peers[1].engine.issue_step(&t, &sync_id, false).unwrap().is_none(), "the team has not rotated: nothing");
     lp.peers[1].engine.ensure_rotated(&t).unwrap();
-    let (step, _) = lp.peers[1].engine.issue_step(&t, &label, false).unwrap().unwrap();
+    let (step, _) = lp.peers[1].engine.issue_step(&t, &sync_id, false).unwrap().unwrap();
     let t1 = newest_read(&lp, 1, t).unwrap();
     assert_ne!(t0, t1);
     let (_, sync) = lp.peers[1].engine.epochs(&t).unwrap().sync.newest_held().map(|(e, s)| (e, s.clone())).unwrap();
-    assert_eq!(step.keys.sync, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &sync).verifying_key());
+    assert_eq!(step.keys.sync, osis_crypto::role_key(osis_crypto::RoleKey::Sync, &sync).verifying_key());
 }
 
 // spec/crypto.md §4 (covers by names), spec/permissions.md §2 (finalize). A node granted write
@@ -2319,7 +2319,7 @@ fn recovered(lp: &mut LocalPeer, d: Tid, holder: Tid) -> osis_crypto::Epoch {
 fn writer_rotating_to_itself_recovered_spec_perm_3() {
     let (mut lp, ps) = people(3);
     let (d, e0, rv) = locked_out(&mut lp, &ps, 1);
-    // labels carry the rotation wrapped under e0: everyone opens it
+    // sync IDs carry the rotation wrapped under e0: everyone opens it
     spread_sealed(&mut lp);
     assert_eq!(newest_read(&lp, 0, d), None, "the admin is locked out");
     assert_eq!(newest_read(&lp, 2, d), None, "the member is locked out");

@@ -1287,7 +1287,7 @@ fn finalize_applies_whole_or_not_spec_permissions_2() {
 // spec/crypto.md §4 (Met): a name is met when its commit is applied: its edge write on the name's
 // thing held: first admin A (0) removes reader M (2) (R_s), then rotates read to e (naming R_s). X
 // (3, an admin) holds R_s without its `roles.0` delta on G (a copy of some parts: a certificate copy or
-// another label's parts), so it still sees M as a reader: e must not be established there.
+// another sync ID's parts), so it still sees M as a reader: e must not be established there.
 // Once R_s arrives whole, e is.
 #[test]
 fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
@@ -1499,7 +1499,7 @@ fn bad_rotation_parts_read_as_missing_spec_commits_4() {
     }
 }
 
-// spec/permissions.md §4, spec/crypto.md §5: a first admin's holder with K's keyset and none of K's secrets has K's derived read epochs, to open its label and nothing more: it wraps nothing, rotates and boxes nothing; a node not holding the first admin has none; K's real box then replaces them
+// spec/permissions.md §4, spec/crypto.md §5: a first admin's holder with K's keyset and none of K's secrets has K's derived read epochs, to open its sync ID and nothing more: it wraps nothing, rotates and boxes nothing; a node not holding the first admin has none; K's real box then replaces them
 #[test]
 fn keyset_before_box_reads_only_spec_permissions_4() {
     let mut lp = synced(3);
@@ -1878,7 +1878,7 @@ fn epochs_are_derived_once_per_change_of_what_they_read() {
     }
     assert_eq!(derived(&mut lp), 0, "content commits, on it and elsewhere");
     lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
-    // derived again during the grant (its labels judged, `labeling::actors::owns`) or at the ask
+    // derived again during the grant (its sync IDs judged, `sync_ids::actors::owns`) or at the ask
     let during: u64 = osis_base::costs::take().iter().filter(|x| x.0 == "epochs").map(|x| x.2).sum();
     assert!(during + derived(&mut lp) > 0, "a grant on it");
 }
@@ -1942,7 +1942,7 @@ pub(super) fn reads_key(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) -> bool {
 }
 
 /// `unmet_epoch_withdrawn_by_its_maker`'s shape with N (4) not yet a holder, settled (e_R
-/// withdrawn), then A writes "after". R's write of "w" under e_R before D reaches it, as its label
+/// withdrawn), then A writes "after". R's write of "w" under e_R before D reaches it, as its sync ID
 /// entry (sealed at writing): made on a copy of the world, so no peer holds it but by this blob.
 /// Returns e_R and that entry. Built once per test process, a copy each call.
 fn withdrawn_shape() -> (LocalPeer, Tid, Vec<Tid>, osis_crypto::Epoch, Vec<crate::local_peer::SealedPackage>) {
@@ -2581,7 +2581,7 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
 // its first admin, peer 1 an admin). Peer 0 gives T secrets of its own by granting t1 (peer 2,
 // no member of F) while peer 1 hears nothing; peer 1 rotates F (removing peer 3) and writes T,
 // its section sealed under the derived secret of F's new epoch, which T's own epochs' history
-// does not carry. Placed later under T's label, a node reuses that blob, wrapped under T's
+// does not carry. Placed later under T's sync ID, a node reuses that blob, wrapped under T's
 // current read secret (node-sync `place`). Once peer 1 holds T's own epochs, that derived
 // epoch is current at it until a rotation carries it: it rotates T, and t1 reads the write.
 #[test]
@@ -2602,7 +2602,7 @@ fn derived_write_after_own_secrets_is_merged_spec_crypto_4() {
     m.set(t, &x, &osis_base::Value::Str("derived".into())).unwrap();
     let w = lp.peers[1].commit(m).unwrap().unwrap();
     let body = lp.peers[1].engine.body(&w).unwrap().unwrap();
-    let sealed = lp.peers[1].engine.seal(&body, osis_label::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
+    let sealed = lp.peers[1].engine.seal(&body, osis_blob::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
     // what it sealed under is kept across a restart
     lp.peers[1].restart(0).unwrap();
     // others get every commit but the write itself, which reaches them only as that blob
@@ -2652,7 +2652,7 @@ fn derived_written_goes_with_its_destroyed_thing() {
     m.expires_all(WallMs(T0.0 + 50_000));
     let w = lp.peers[0].commit(m).unwrap().unwrap();
     let body = lp.peers[0].engine.body(&w).unwrap().unwrap();
-    lp.peers[0].engine.seal(&body, osis_label::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
+    lp.peers[0].engine.seal(&body, osis_blob::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
     let written = |lp: &LocalPeer| lp.peers[0].engine.core.ix.derived_written.get(&t).is_some_and(|s| !s.is_empty());
     assert!(written(&lp), "the seal is noted");
     lp.advance(100_000);

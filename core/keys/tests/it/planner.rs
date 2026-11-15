@@ -1,11 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! What a removal reaches, wrap epochs, label epochs and delete keys (spec/permissions.md §3,
+//! What a removal reaches, wrap epochs, sync ID epochs and delete keys (spec/permissions.md §3,
 //! spec/crypto.md §5, §7, spec/sync-ids.md §2, spec/sync-ids.md §6).
 
 use crate::common;
 use common::*;
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
-use osis_crypto::{Epoch, LabelRole, Secret32, label_role_key};
+use osis_crypto::{Epoch, RoleKey, Secret32, role_key};
 use osis_keys::{
     ActorEpochs, Graph, PermGraph, newer_than_head, reached,
     registered_epoch, registration_epochs, roles_up_to, delete_candidates, delete_key, wrap_epoch,
@@ -29,7 +29,7 @@ impl Graph for MemoryGraph {
     }
 }
 
-// spec/permissions.md §3: `reached` (the labels a removal is placed under) is the fixpoint of
+// spec/permissions.md §3: `reached` (the sync IDs a removal is placed under) is the fixpoint of
 // the things one hop from the start or from a thing reached, never through the avoided holder,
 // on random graphs with cycles and first admins, and stays linear on a lattice with 6^11 paths.
 #[test]
@@ -125,17 +125,17 @@ fn wrap_epochs() {
     assert_eq!(w.wrap_epoch(), None);
 }
 
-// spec/sync-ids.md §2, spec/sync-ids.md §6: label keys come from the sync, write and admin roles' newest epochs (the
+// spec/sync-ids.md §2, spec/sync-ids.md §6: role keys come from the sync, write and admin roles' newest epochs (the
 // read epoch gives the claim set only); a node finds the held epoch a head registered by its key;
 // an admin holding a newer sync, write or admin epoch than the head re-registers, a newer read
 // epoch alone makes no step.
 #[test]
-fn label_epochs() {
+fn sync_id_epochs() {
     let mut a = person(0x20);
     let [s, r, w, ad] = registration_epochs(&a).unwrap();
     assert_eq!((s.0, r.0, w.0, ad.0), (ep(1, 0x20), ep(1, 0x20), ep(1, 0x20), ep(1, 0x20)));
-    let key = label_role_key(LabelRole::Sync, s.1).verifying_key();
-    assert_ne!(label_role_key(LabelRole::Sync, r.1).verifying_key(), key, "the sync key derives from the sync secret");
+    let key = role_key(RoleKey::Sync, s.1).verifying_key();
+    assert_ne!(role_key(RoleKey::Sync, r.1).verifying_key(), key, "the sync key derives from the sync secret");
     let head = [Some(ep(1, 0x20)), Some(ep(1, 0x20)), Some(ep(1, 0x20))];
     a.read.set_history(ep(2, 1), BTreeSet::new(), [ep(1, 0x20)], None);
     a.read.set_established(ep(2, 1), osis_keys::Provenance::Fixed);
@@ -144,8 +144,8 @@ fn label_epochs() {
     a.sync.set_history(ep(2, 1), BTreeSet::new(), [ep(1, 0x20)], None);
     a.sync.set_established(ep(2, 1), osis_keys::Provenance::Fixed);
     a.sync.set_secret(ep(2, 1), Secret32::from_bytes([8; 32]));
-    assert_eq!(registered_epoch(&a, LabelRole::Sync, &key), Some(ep(1, 0x20)));
-    assert_eq!(registered_epoch(&a, LabelRole::Sync, &label_role_key(LabelRole::Sync, &Secret32::from_bytes([8; 32])).verifying_key()), Some(ep(2, 1)));
+    assert_eq!(registered_epoch(&a, RoleKey::Sync, &key), Some(ep(1, 0x20)));
+    assert_eq!(registered_epoch(&a, RoleKey::Sync, &role_key(RoleKey::Sync, &Secret32::from_bytes([8; 32])).verifying_key()), Some(ep(2, 1)));
     assert!(newer_than_head(&a, head));
     assert!(!newer_than_head(&a, [Some(ep(2, 1)), Some(ep(1, 0x20)), Some(ep(1, 0x20))]));
     assert!(!newer_than_head(&a, [None, Some(ep(1, 0x20)), Some(ep(1, 0x20))]));

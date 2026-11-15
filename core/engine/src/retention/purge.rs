@@ -247,7 +247,7 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
     holds_right(core, &sm.header, s, a, &m.header)
 }
 
-/// Whether held commit `id` keeps a blob under a label whose things `on` says, for good (spec/commits.md
+/// Whether held commit `id` keeps a blob under a sync ID whose things `on` says, for good (spec/commits.md
 /// §5, a lasting header): a permanent delta of it on such a thing is dropped, or its purge request
 /// dropped one there (`purge_one` notes it: a new node needs the request to hold a copy of the
 /// delta that comes back as purged). Noted, not walked: a writer's aspect-wide request naming nothing it may purge

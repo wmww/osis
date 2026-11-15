@@ -18,10 +18,10 @@
 //! Rows, all catalog rows under `kind::LOG`:
 //! `m` meta (cursor key, log ID, current incarnation, end position); `n` the ended incarnations;
 //! `z` the deletion horizon (`log_horizon`);
-//! `e pos` an event; `I label pos` the same event indexed by its sync ID, so one sync ID's events
+//! `e pos` an event; `I sync_id pos` the same event indexed by its sync ID, so one sync ID's events
 //! read without the others' (a join from the start costs that sync ID's events, not the log's);
-//! `i label blob` an entry's slot (its latest event's position and the
-//! position it was first logged at); `h label` a head's slot; `d at pos` the deletion events by
+//! `i sync_id blob` an entry's slot (its latest event's position and the
+//! position it was first logged at); `h sync_id` a head's slot; `d at pos` the deletion events by
 //! when they were logged, for the sweep. Whether this open of the store has
 //! drawn is the pager's `Meta::log_drawn`, memory only and carried in the transaction, so a
 //! suspended transaction may append.
@@ -53,7 +53,7 @@ const ENDED: &[u8] = &[kind::LOG, b'n'];
 /// The deletion horizon: the highest position a deletion event the sweep dropped held.
 const HORIZON: &[u8] = &[kind::LOG, b'z'];
 const EVENT: &[u8] = &[kind::LOG, b'e'];
-/// An event by its sync ID: `I label pos`, empty.
+/// An event by its sync ID: `I sync_id pos`, empty.
 const BY_SYNC: &[u8] = &[kind::LOG, b'I'];
 const ENTRY_SLOT: &[u8] = &[kind::LOG, b'i'];
 const HEAD_SLOT: &[u8] = &[kind::LOG, b'h'];
@@ -67,7 +67,7 @@ pub enum NodeEvent {
     /// one that is changed. An entry whose bytes have not arrived has no event: nothing serves it.
     Added(SyncId, BlobId),
     /// An entry left the node. `at` (wall ms) only ages the event.
-    Deleted { label: SyncId, blob: BlobId, at: u64 },
+    Deleted { sync_id: SyncId, blob: BlobId, at: u64 },
     /// The sync ID's head moved.
     Head(SyncId),
 }
@@ -150,7 +150,7 @@ fn slot_pos(v: &[u8]) -> Result<u64, Error> {
 fn encode_event(e: &NodeEvent) -> Vec<u8> {
     match e {
         NodeEvent::Added(l, b) => W::new().u8(0).raw(&l.0).raw(&b.0).take(),
-        NodeEvent::Deleted { label, blob, at } => W::new().u8(1).raw(&label.0).raw(&blob.0).u64(*at).take(),
+        NodeEvent::Deleted { sync_id, blob, at } => W::new().u8(1).raw(&sync_id.0).raw(&blob.0).u64(*at).take(),
         NodeEvent::Head(l) => W::new().u8(2).raw(&l.0).take(),
     }
 }
@@ -159,7 +159,7 @@ fn decode_event(v: &[u8]) -> Result<NodeEvent, Error> {
     let mut r = R::new(v);
     let e = match r.u8()? {
         0 => NodeEvent::Added(SyncId(r.array()?), BlobId(r.array()?)),
-        1 => NodeEvent::Deleted { label: SyncId(r.array()?), blob: BlobId(r.array()?), at: r.u64()? },
+        1 => NodeEvent::Deleted { sync_id: SyncId(r.array()?), blob: BlobId(r.array()?), at: r.u64()? },
         2 => NodeEvent::Head(SyncId(r.array()?)),
         _ => return Err(Error::Corrupt("node log event")),
     };
@@ -172,7 +172,7 @@ impl NodeEvent {
     pub fn sync_id(&self) -> SyncId {
         match self {
             NodeEvent::Added(l, _) | NodeEvent::Head(l) => *l,
-            NodeEvent::Deleted { label, .. } => *label,
+            NodeEvent::Deleted { sync_id, .. } => *sync_id,
         }
     }
 }
@@ -292,8 +292,8 @@ impl Transaction<'_> {
     }
 
     /// Logs that an entry left the node at `at` (wall ms). Returns its position.
-    pub fn log_deleted(&mut self, label: SyncId, blob: BlobId, at: u64) -> Result<u64, Error> {
-        self.log_place(entry_slot(&label, &blob), NodeEvent::Deleted { label, blob, at }, first_logged)
+    pub fn log_deleted(&mut self, sync_id: SyncId, blob: BlobId, at: u64) -> Result<u64, Error> {
+        self.log_place(entry_slot(&sync_id, &blob), NodeEvent::Deleted { sync_id, blob, at }, first_logged)
     }
 
     /// Drops an entry's slot and event with no deletion event: it left by a rule every holder
@@ -364,8 +364,8 @@ impl Transaction<'_> {
                 self.cat_remove(&k, Shred::Yes)?;
                 continue;
             };
-            if let NodeEvent::Deleted { label, blob, .. } = decode_event(&v)? {
-                self.cat_remove(&entry_slot(&label, &blob), Shred::Yes)?;
+            if let NodeEvent::Deleted { sync_id, blob, .. } = decode_event(&v)? {
+                self.cat_remove(&entry_slot(&sync_id, &blob), Shred::Yes)?;
             }
             self.log_drop_event(pos, Shred::Yes)?;
             if pos > self.log_horizon()? {

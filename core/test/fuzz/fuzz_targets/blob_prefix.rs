@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_label::{Prefix, host_prefix};
+use osis_blob::{Prefix, host_prefix};
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(p) = Prefix::parse(data) {

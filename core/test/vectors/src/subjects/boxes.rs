@@ -121,17 +121,17 @@ pub fn boxes() -> VecFile {
     cases.push(case("secrets box symmetric wrong s", "spec/wire.md §7").with("ad", hex(&ad)).with("s", hex(s32(0x0c).expose())).with("wrap", hex(&w)).with("reject", "decrypt"));
 
     // Entry box.
-    let label = SyncId([0x0a; 16]);
+    let sync_id = SyncId([0x0a; 16]);
     let step_key = X25519Secret::from_secret(&s32(0x06)).public();
     let group = Tid::from_bytes([0x07; 15]);
-    let slot = BoxSlot::Entry { label, step_key, group };
+    let slot = BoxSlot::Entry { sync_id, step_key, group };
     let form = BoxForm::Sealed { keyset: None, suite: 1 };
     let ad = slot.ad(form).unwrap();
     let item = EntryItem { epoch: named(&group, Role::Read, 2, &s32(0x08)), secret: s32(0x08), earlier: Some((named(&group, Role::Read, 1, &s32(0x0b)), s32(0x0b))), sync: (named(&group, Role::Sync, 2, &s32(0x0d)), s32(0x0d)) };
     let b = seal_entry(recipient.public(), &slot, &item, &mut FixedRng::new(&[&EPH, &M])).unwrap();
     assert_eq!(open_entry(&recipient, &slot, form, &b).unwrap(), item);
     let entry_payload = encode(&Value::List(vec![Value::Int(role_int(Role::Read)), Value::Int(2), Value::Bytes(item.secret.expose().to_vec()), Value::List(vec![Value::Int(1), Value::Bytes(s32(0x0b).expose().to_vec())]), Value::List(vec![Value::Int(2), Value::Bytes(s32(0x0d).expose().to_vec())])]));
-    let r = case("entry box", "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())).with("label-id", hex(&label.0)).with("step-key", hex(&step_key)).with("group", hex(group.as_bytes()));
+    let r = case("entry box", "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())).with("sync-id", hex(&sync_id.0)).with("step-key", hex(&step_key)).with("group", hex(group.as_bytes()));
     cases.push(randomness(r.with("keyset", "none").with("suite", "1").with("ad", hex(&ad))).with("payload", hex(&entry_payload)).with("sealed", hex(&b)));
 
     // History box.
@@ -165,7 +165,7 @@ pub fn boxes() -> VecFile {
     assert_eq!(open_history(&s32(0x09), &actor, Role::Write, &e3, &h), Err(Error::Decrypt));
     cases.push(case("history box wrong role", "spec/wire.md §7").with("secret", hex(s32(0x09).expose())).with("actor", hex(actor.as_bytes())).with("role", "1").with("n", "3").with("nonce", hex(e3.nonce())).with("box", hex(&h)).with("reject", "decrypt"));
 
-    // Inbox sealed box over an opaque prefix (the prefix layout is osis-label's, inbox/).
+    // Inbox sealed box over an opaque prefix (the prefix layout is osis-blob's, inbox/).
     let prefix = super::PREFIX;
     let r_tid = Tid::from_bytes([0x03; 15]);
     let ib = seal_inbox(&prefix, &r_tid, recipient.public(), b"role commit", &mut FixedRng::new(&[&EPH, &M])).unwrap();

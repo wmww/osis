@@ -6,7 +6,7 @@ use crate::store::Store;
 use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_crypto::{Epoch, NodeRng, Signature};
 use osis_engine::Engine;
-use osis_label::{Address, Class};
+use osis_blob::{Address, Class};
 
 pub use osis_engine::sync::{Holding, Path, Wrap};
 pub use osis_store::RecordId;

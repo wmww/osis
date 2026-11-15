@@ -3,7 +3,7 @@
 //! that node's plain-content commits on the thing (and those acting for it) that it had received
 //! before the demotion's `ts` and the demotion's frontier does not list, as one `addenda.0` entry
 //! on the thing keyed by the demotion's commit ID; every writer does, the demoter's own node for
-//! what its frontier left out. One addendum per thing, so none crosses a label.
+//! what its frontier left out. One addendum per thing, so none crosses a sync ID.
 
 use crate::engine::{Engine, Step, Tx, records};
 use crate::error::Result;

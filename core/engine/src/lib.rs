@@ -1,6 +1,6 @@
 //! osis-engine: the node's engine. Engine (identity, clock, writing, reads), apply (receiving,
 //! pending and parking, apply, validity and un-merge, receipts), retention (when
-//! replaced, bounds, expiry, purge, snapshots), undo, engine events, `labeling`, `flows` and `rotation`
+//! replaced, bounds, expiry, purge, snapshots), undo, engine events, `sync_ids`, `flows` and `rotation`
 //! (role changes), `local_peer` (engines exchanging commits directly), `sync` (the facade sync
 //! reads the engine through). Sync runs above it.
 //! Modules: notes/engine.md. Layer 7 (notes/architecture.md).
@@ -13,7 +13,7 @@ pub mod error;
 pub mod events;
 pub mod flows;
 pub mod identity;
-pub mod labeling;
+pub mod sync_ids;
 pub mod local_peer;
 pub mod retention;
 pub mod rotation;

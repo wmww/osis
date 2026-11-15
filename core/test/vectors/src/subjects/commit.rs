@@ -299,7 +299,7 @@ fn more_accepted() -> Vec<Record> {
         let (p, plain) = &sink.blobs[id];
         // level-2 commitments only (spec/wire.md §5), under the link blind of the blob key the
         // test sink returns (zero), bound to the header's actor
-        let framed = osis_label::Prefix::for_delete_keys(p.salt, &osis_crypto::thing_blind(&osis_crypto::link_blind(&[0; 32]), p.thing.as_bytes()), p.expiry.map(WallMs), std::slice::from_ref(&p.keys)).unwrap();
+        let framed = osis_blob::Prefix::for_delete_keys(p.salt, &osis_crypto::thing_blind(&osis_crypto::link_blind(&[0; 32]), p.thing.as_bytes()), p.expiry.map(WallMs), std::slice::from_ref(&p.keys)).unwrap();
         assert!(framed.commitments().count() == 1 && framed.commitments().all(|x| x[0] == 2));
         r = r.with(&format!("list-blob-{i}"), format!("{} {} {} {}", hex(&id.0), hex(&p.salt), hex(&framed.commitments().copied().collect::<Vec<_>>().concat()), hex(plain)));
     }

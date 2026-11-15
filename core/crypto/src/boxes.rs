@@ -102,9 +102,9 @@ impl BoxForm<'_> {
 pub enum BoxSlot {
     /// A `secrets.0` box of `actor` to `holder` for (role, epoch).
     Secrets { actor: Tid, holder: Tid, role: Role, epoch: Epoch },
-    /// An entry box of a label step; `group`, the label's group thing, is the actor whose epoch
+    /// An entry box of a sync ID step; `group`, the sync ID's group thing, is the actor whose epoch
     /// the payload names (not in the AD).
-    Entry { label: SyncId, step_key: [u8; 32], group: Tid },
+    Entry { sync_id: SyncId, step_key: [u8; 32], group: Tid },
 }
 
 impl BoxSlot {
@@ -135,7 +135,7 @@ impl BoxSlot {
             BoxSlot::Secrets { actor, holder, role, epoch } => {
                 vec![tid(actor), tid(holder), role_value(*role), Value::Int(epoch.n), Value::Bytes(epoch.nonce.to_vec()), form]
             }
-            BoxSlot::Entry { label, step_key, .. } => vec![Value::Bytes(label.0.to_vec()), Value::Bytes(step_key.to_vec()), form],
+            BoxSlot::Entry { sync_id, step_key, .. } => vec![Value::Bytes(sync_id.0.to_vec()), Value::Bytes(step_key.to_vec()), form],
         })
     }
 }
@@ -159,7 +159,7 @@ pub fn seal_box(recipient: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>,
 
 /// What an entry box carries (spec/sync-ids.md §3): the read secret of the epoch its step registers
 /// and, when that epoch supersedes one, the earlier secret its rotation commit is wrapped under;
-/// and the sync secret whose label key the step registers.
+/// and the sync secret whose role key the step registers.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EntryItem {
     pub epoch: Epoch,
@@ -585,7 +585,7 @@ mod tests {
         let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&sec(0x31));
         let g = actor(5);
-        let entry = BoxSlot::Entry { label: SyncId([3; 16]), step_key: [5; 32], group: g };
+        let entry = BoxSlot::Entry { sync_id: SyncId([3; 16]), step_key: [5; 32], group: g };
         let form = BoxForm::Sealed { keyset: None, suite: 1 };
         let read = |n, s: u8| Epoch::derive(&g, Role::Read, n, &sec(s)).unwrap();
         let sync = (Epoch::derive(&g, Role::Sync, 4, &sec(6)).unwrap(), sec(6));
@@ -623,7 +623,7 @@ mod tests {
         expect.extend([4; 32]);
         expect.extend([0x83, 0x00, 0x80, 0x01]);
         assert_eq!(ad, expect);
-        let entry = BoxSlot::Entry { label: SyncId([3; 16]), step_key: [5; 32], group: actor(9) };
+        let entry = BoxSlot::Entry { sync_id: SyncId([3; 16]), step_key: [5; 32], group: actor(9) };
         let sym = entry.ad(BoxForm::Symmetric { epoch_s: Epoch::new(1, [1; 32]).unwrap() }).unwrap();
         assert_eq!(sym[..2], [0x83, 0x50]);
         assert_eq!(sym[sym.len() - 38..sym.len() - 33], [0x82, 0x01, 0x82, 0x01, 0x58]);

@@ -52,7 +52,7 @@ use crate::types::{ConnId, Cx, Entry, Result, Waiting, Wrap};
 use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_crypto::NodeRng;
 use osis_engine::Engine;
-use osis_label::{DialHint, ShareLink, StepId};
+use osis_blob::{DialHint, ShareLink, StepId};
 use osis_proto::Msg;
 use osis_store::Named;
 use std::collections::BTreeSet;
@@ -289,12 +289,12 @@ impl Inbox {
 /// `s`, else deposited (the caller offers it). Its blob ID, prefix expiry and whether it was
 /// deposited; `None` when it was not logged (no key to sign with, or the store refused it).
 fn log_inbox_blob(h: &mut Here<'_>, s: SyncId, recipient: Tid, bytes: Vec<u8>) -> Result<Option<(BlobId, WallMs, bool)>> {
-    let b = osis_label::blob_id(&bytes);
-    let expires = osis_label::Prefix::parse(&bytes).ok().and_then(|p| p.expiry()).unwrap_or(WallMs(h.now.0.saturating_add(osis_base::format::INBOX_LIFETIME_MS)));
+    let b = osis_blob::blob_id(&bytes);
+    let expires = osis_blob::Prefix::parse(&bytes).ok().and_then(|p| p.expiry()).unwrap_or(WallMs(h.now.0.saturating_add(osis_base::format::INBOX_LIFETIME_MS)));
     let keys = h.engine.signers(&s, Some(&recipient))?;
     let wrap = osis_crypto::filler_wrap(&mut *h.rng);
     let (stamp, deposited) = match (&keys.stamp, &keys.deposit) {
-        (Some(w), _) => (Some(osis_label::sign_stamp(w, &s, &b, &wrap, false)), false),
+        (Some(w), _) => (Some(osis_blob::sign_stamp(w, &s, &b, &wrap, false)), false),
         (None, Some(_)) => (None, true),
         // no key to sign with: nothing here reaches the inbox
         (None, None) => return Ok(None),
@@ -307,5 +307,5 @@ fn log_inbox_blob(h: &mut Here<'_>, s: SyncId, recipient: Tid, bytes: Vec<u8>) -
 
 /// An entry this node logs of its own.
 fn own_entry(blob: BlobId, wrap: Wrap, stamp: Option<osis_crypto::Signature>, expires: Option<WallMs>) -> Entry {
-    Entry { blob, wrap, stamp, deposited: stamp.is_none(), own: true, role: false, class: osis_label::Class::Durable, expires }
+    Entry { blob, wrap, stamp, deposited: stamp.is_none(), own: true, role: false, class: osis_blob::Class::Durable, expires }
 }

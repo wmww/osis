@@ -21,7 +21,7 @@ osis-schema.workspace = true
 osis-proto.workspace = true
 osis-crdt.workspace = true
 osis-commit.workspace = true
-osis-label.workspace = true
+osis-blob.workspace = true
 osis-transport.workspace = true
 
 [[bin]]

@@ -34,7 +34,7 @@ Format: `file:line test | action | why safe | confidence`.
 - `rng.rs deterministic` | delete | only rand_chacha's seeding | medium
 
 **others**
-- label `auth.rs stamp_binds_wrap` | delete or one flip | Ed25519/BLAKE3 behaviour; `entry_signatures` and bundle `rejections` cover the binding | medium
+- sync ID `auth.rs stamp_binds_wrap` | delete or one flip | Ed25519/BLAKE3 behaviour; `entry_signatures` and bundle `rejections` cover the binding | medium
 - keys `epoch.rs ordering_keys_match_folds` | delete or shrink | refactor scaffolding comparing against replaced folds; the rule is in `current_and_newest` | medium
 - osis `api.rs:1833` | drop its runtime field-read asserts | keep the compile-time guards | medium
 
@@ -85,7 +85,7 @@ Format: `file:line test | action | why safe | confidence`.
 - transport `p2p.rs peer_*_connects` | one table | medium
 - transport `quic.rs` + `mem.rs`/`manage.rs` | one shared conformance suite, like store's `memory_backend_suite` | medium
 - sim `peers.rs world_*` (4 tests) | one World wiring test | low-medium
-- label `step.rs claim_key_per_step` | one seed | low
+- sync ID `step.rs claim_key_per_step` | one seed | low
 
 ### Category 3: cross-crate duplication
 - keys `props.rs departures_and_current_holders` | maybe delete | a keys-level copy of engine `rotation::tests_property`; its unique part is the `snapshot_keyed` / `unvouched` check | low
@@ -126,7 +126,7 @@ Width, open: crdt `tests_winners` (`seq_winners_from_scratch`, `winners_from_scr
 | one `samples()` | 2 copies | schema `core_types.rs` vs vectors `subjects/schema.rs` |
 
 ## Not covered
-- **Bodies only skimmed** (names and comments only): engine `it` order's scripted bodies, scale, finalize, sessions, crash; osis port, runtime, listing, watch, commits, ephemeral, tracking, undo; engine most rotation files, undo, retention/mod.rs, labeling; perm scale and robust bodies; held-model most `spec_*` bodies; keys `established`/`names`, store `nodelog`/`record`, roles-model addenda/epochs/forget/edges/trust bodies.
+- **Bodies only skimmed** (names and comments only): engine `it` order's scripted bodies, scale, finalize, sessions, crash; osis port, runtime, listing, watch, commits, ephemeral, tracking, undo; engine most rotation files, undo, retention/mod.rs, sync_ids; perm scale and robust bodies; held-model most `spec_*` bodies; keys `established`/`names`, store `nodelog`/`record`, roles-model addenda/epochs/forget/edges/trust bodies.
 - **Not read**: osis-sync's tests (written after this read; issues/sync-test-cost.md).
 - **Not done**: the ephemeral random harnesses; whether `judgment_vectors_spec_permissions_5_2`'s replay repeats `check()`; whether the crdt Slots mode reaches a deleted embedded character.
 - **Doc follow-ups if the removals land**: notes/crdt.md "Beside it" list; notes/engine-validity-rebuild.md (names `unmerge_spec_4_6`).

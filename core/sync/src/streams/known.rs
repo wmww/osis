@@ -27,7 +27,7 @@ use crate::store::rows::tag::{HEAD, PRESENT, REFUSED};
 use crate::types::{ConnId, RecordId};
 use osis_base::memo::{Feed, Stamps};
 use osis_base::{BlobId, SyncId};
-use osis_label::StepId;
+use osis_blob::StepId;
 use osis_proto::Code;
 use osis_store::Transaction;
 use std::collections::{BTreeMap, BTreeSet};

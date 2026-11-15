@@ -455,7 +455,7 @@ impl RoleEpochs {
         self.map.get(e).and_then(EpochInfo::checked)
     }
 
-    /// `e`'s secret for reading, reading-only included (opening a label, unwrapping, opening
+    /// `e`'s secret for reading, reading-only included (opening a sync ID, unwrapping, opening
     /// history boxes).
     pub fn reading_secret(&self, e: &Epoch) -> Option<&Secret32> {
         self.map.get(e).and_then(|i| i.secret.as_ref())
@@ -664,7 +664,7 @@ impl RoleEpochs {
 /// so that a thing's own chain starts at most at `MAX_FREE_N` and a holder holding no secret of
 /// the base actor establishes it within headroom, whatever n a writer of the base actor jumped to. Derived
 /// epochs still order as the base actor's (`EpochInfo::order`): a re-registrar steps a plain group's
-/// labels on each base actor rotation, a writer picks the base actor's newest fork.
+/// sync IDs on each base actor rotation, a writer picks the base actor's newest fork.
 fn derived_n(n: u64) -> u64 {
     n.min(MAX_FREE_N - 1)
 }
@@ -1041,7 +1041,7 @@ mod tests {
     }
 
     // spec/crypto.md §3: derived epochs keep the base actor's n below the cap, so each base actor rotation
-    // gives a newer derived epoch (a plain group's labels are stepped on it, spec/sync-ids.md §6);
+    // gives a newer derived epoch (a plain group's sync IDs are stepped on it, spec/sync-ids.md §6);
     // base epochs past the cap (a writer of the base actor jumped them) all derive at the cap, so a
     // thing's own chain starts at most at `MAX_FREE_N`; placeholders there stay distinct.
     #[test]

@@ -278,7 +278,7 @@ pub(crate) fn header_only_parts(tx: &mut super::Tx<'_>, tid: &Tid, ak: &Ak) -> R
 }
 
 impl Engine {
-    /// Whether a synced group carries `t`: a labeled group's closure holds it (`enclosing`).
+    /// Whether a synced group carries `t`: the closure of a group with a sync ID holds it (`enclosing`).
     pub fn carried(&self, t: &Tid) -> bool {
         self.core.carried(t)
     }

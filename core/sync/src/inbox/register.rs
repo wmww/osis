@@ -28,7 +28,7 @@ use osis_base::memo::{Effects, Stamped};
 use osis_base::{SyncId, WallMs};
 use osis_engine::Engine;
 use osis_engine::sync::Path;
-use osis_label::{ClaimSet, Step, StepId};
+use osis_blob::{ClaimSet, Step, StepId};
 use osis_proto::{Code, Msg};
 use std::collections::{BTreeMap, BTreeSet};
 

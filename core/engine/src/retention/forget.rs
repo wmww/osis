@@ -6,13 +6,13 @@
 //! A thing is forgotten when its secret actor is one of the actors just lost and neither the
 //! node nor a held key actor may read it now. Of a forgotten thing only the certificate material
 //! perm judges others' writes by stays: `created.0`, and the role-class aspects except
-//! `secrets.0` (edges, public keysets, labels). Everything else goes, shredded:
+//! `secrets.0` (edges, public keysets, sync IDs). Everything else goes, shredded:
 //! aspect units (state, tables), the deltas in commit
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
 //! but a re-grant's boxes that may still apply (`rotation::boxes_kept`),
 //! value-less lists, leftovers, purge lists and what they dropped, timers, `secrets.0` waits, the sync records of the
-//! labels of forgotten groups and of the commit blobs holding forgotten parts, and their blob
+//! sync IDs of forgotten groups and of the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
 //!
 //! Forgetting a local copy (spec/sync-set.md §3 Unsyncing, `Engine::forget_local`) goes the same
@@ -20,7 +20,7 @@
 //! so the thing reads again once synced, and what arrives again counts as never received.
 //!
 //! A kept copy (spec/permissions.md §3, Retain) goes the same way but for its content, which stays
-//! whole, state and bodies and timers: only `secrets.0`, the labels' sync records and the blob
+//! whole, state and bodies and timers: only `secrets.0`, the sync IDs' sync records and the blob
 //! ciphertexts nothing still lists go.
 
 use crate::engine::records::{self, Rd};
@@ -61,8 +61,8 @@ enum Fate {
 #[derive(Default)]
 pub struct Forgotten {
     pub things: BTreeSet<Tid>,
-    /// Labels of forgotten groups.
-    pub labels: BTreeSet<SyncId>,
+    /// Sync IDs of forgotten groups.
+    pub sync_ids: BTreeSet<SyncId>,
     /// Commits deleted whole.
     pub commits: BTreeSet<CommitId>,
     /// The forgotten aspect indices of each commit with a forgotten part (those of `commits`
@@ -255,17 +255,17 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         let (c, t) = (CommitId(r.arr()?), r.tid()?);
         Ok(out.commits.contains(&c) || out.things.contains(&t))
     })?;
-    // labels of forgotten groups, from their `label.0` (kept), but those a kept group owns
-    // (`labeling::actors::owns`; the forgotten ones' secrets are gone, so judged from the owner's
-    // side): another's label a forgotten group's admin named takes nothing of its owner's here
+    // sync IDs of forgotten groups, from their `sync.0` (kept), but those a kept group owns
+    // (`sync_ids::actors::owns`; the forgotten ones' secrets are gone, so judged from the owner's
+    // side): another's sync ID a forgotten group's admin named takes nothing of its owner's here
     for g in out.things.clone() {
-        out.labels.extend(crate::flows::sync_ids::recorded_in(tx, &g)?);
+        out.sync_ids.extend(crate::flows::sync_ids::recorded_in(tx, &g)?);
     }
-    if !out.labels.is_empty() {
+    if !out.sync_ids.is_empty() {
         let kept: Vec<Tid> = tx.core.ix.sync_recorded.iter().filter(|g| !out.things.contains(g)).copied().collect();
         for g in kept {
             for l in crate::flows::sync_ids::owned_in(tx, &g)?.keys() {
-                out.labels.remove(l);
+                out.sync_ids.remove(l);
             }
         }
     }
@@ -275,8 +275,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     // bodies leave `sync_bodies`)
     let pieces = super::freed::lost(tx, &out.things, links, &aspects, &parts)?;
     let mut gone = pieces.clone();
-    // a blob of a forgotten label that a kept source of a forgotten thing links stays (a kept
-    // copy's content, an erased thing's kept aspects): its labels gone, nothing fetches it again
+    // a blob of a forgotten sync ID that a kept source of a forgotten thing links stays (a kept
+    // copy's content, an erased thing's kept aspects): its sync IDs gone, nothing fetches it again
     for t in out.things.clone() {
         if gone.is_empty() {
             break;

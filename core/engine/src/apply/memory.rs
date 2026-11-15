@@ -19,7 +19,7 @@ const HELD_COPIES: usize = 2;
 /// header's aspect entry), as the node cap counts it. Resource estimate, measured
 /// (`scale::eph_decoded_memory`, aspects shape: about 2.3 KiB of RSS per part with one small
 /// write, release, x86-64): 0 leaves a commit of many small aspects counted at a tenth of what
-/// it holds; infinity fills the cap with a label's first commit.
+/// it holds; infinity fills the cap with a sync ID's first commit.
 pub const PART_OVERHEAD: usize = 2048;
 
 /// What a held part costs: its decoded heap size (`heap`, at least its encoded `bytes`) in each
@@ -84,7 +84,7 @@ pub(crate) fn new_parts_bound(tx: &mut Tx<'_>, blob: &CommitBlob) -> Result<u64>
 /// holds) within the room node-sync gave (`Core::memory_room`), else `TooLarge` and nothing of
 /// it kept, no chunk of it fetched. Admitted, its value trees are fetched at once
 /// (`reach::Walks::trees_of`). Without a room (a re-examination) it is left waiting: node-sync
-/// applies waiting memory commits itself, each within the room its label has then
+/// applies waiting memory commits itself, each within the room its sync ID has then
 /// (`Engine::apply_waiting_memory`). `None`: go on. `signed`: its signature's verdict, as
 /// reached before (`signature`) and after.
 pub(crate) fn memory_gate(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, signed: &mut Option<osis_commit::Signed>) -> Result<Option<crate::Ingested>> {
@@ -155,7 +155,7 @@ impl Engine {
 
     /// What the parts of `blob` could cost decoded (`part_bound`), from their bytes alone: (the
     /// sum, the largest), a part that is not one CBOR value counting `u64::MAX`. No part past
-    /// the room given is decoded (`ingest_memory`), so one whose bound passes a label's whole
+    /// the room given is decoded (`ingest_memory`), so one whose bound passes a sync ID's whole
     /// cap is never held under it.
     pub fn memory_bound(blob: &CommitBlob) -> (u64, u64) {
         blob.parts.iter().map(|p| part_bound(p).unwrap_or(u64::MAX)).fold((0, 0), |(s, m), b| (s.saturating_add(b), m.max(b)))

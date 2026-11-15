@@ -121,9 +121,9 @@ pub(crate) fn forget_blob(tx: &mut Tx<'_>, s: &SyncId, r: CertKind, b: &BlobId) 
 fn seal_cert_blob(w: &osis_crypto::Secret32, plain: &[u8], rng: &mut dyn NodeRng) -> Result<(BlobId, Vec<u8>, Wrap)> {
     let mut blind = [0u8; 16];
     rng.fill_bytes(&mut blind);
-    let prefix = osis_label::Prefix::for_groups(osis_label::Prefix::random_salt(rng), &blind, None, &[])?.with_class(osis_label::Class::Durable);
-    let (key, blob) = osis_label::frame(&prefix, plain, rng)?;
-    let id = osis_label::blob_id(&blob);
+    let prefix = osis_blob::Prefix::for_groups(osis_blob::Prefix::random_salt(rng), &blind, None, &[])?.with_class(osis_blob::Class::Durable);
+    let (key, blob) = osis_blob::frame(&prefix, plain, rng)?;
+    let id = osis_blob::blob_id(&blob);
     let wrap = osis_crypto::wrap(w, &id, &key, 0)?;
     Ok((id, blob, wrap))
 }

@@ -7,7 +7,7 @@ use crate::file::VecFile;
 use crate::hex;
 use osis_base::{Role, SyncId, Tid, Value, WallMs, encode};
 use osis_crypto::{KemSecret, SigningSecret};
-use osis_label::{BoxedThing, BoxesPayload, DialHint, Inbox, InboxPayload, InboxThing, open_inbox_blob, open_inbox_item, seal_boxes_payload, seal_inbox_blob};
+use osis_blob::{BoxedThing, BoxesPayload, DialHint, Inbox, InboxPayload, InboxThing, open_inbox_blob, open_inbox_item, seal_boxes_payload, seal_inbox_blob};
 use osis_schema::core_types::{Epoch, SecretBox, SymmetricBox};
 
 const SPEC: &str = "spec/wire.md §9";
@@ -38,7 +38,7 @@ pub fn inbox() -> VecFile {
             .with("prefix", hex(&prefix.to_bytes()))
             .with("payload", hex(&encode(&payload.to_value())))
             .with("blob", hex(&blob))
-            .with("blob-id", hex(&osis_label::blob_id(&blob).0)),
+            .with("blob-id", hex(&osis_blob::blob_id(&blob).0)),
     ];
     assert!(open_inbox_blob(&blob, &Tid::from_bytes([0x09; 15]), &kem).is_err());
     cases.push(case("inbox blob for another recipient", SPEC).with("recipient", hex(&[0x09; 15])).with("recipient-kem-seed", hex(kem_seed.expose())).with("blob", hex(&blob)).with("reject", "decrypt"));

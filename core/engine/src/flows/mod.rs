@@ -166,7 +166,7 @@ impl Core {
     /// `a`'s record chain through standing record edges (spec/permissions.md §1): `a`, then its
     /// first admin while `a`'s record edge stands here (any role), and so on up, the top
     /// included (a key actor, or a thing whose record is not held). The one walk for node rules
-    /// that read the record chain as standing: inboxes, `label.0` cross-publishing, hosting
+    /// that read the record chain as standing: inboxes, `sync.0` cross-publishing, hosting
     /// admission, inbox stamps and copies (spec/sync-ids.md §2, spec/sync-judgement.md §1; spec/data-model.md §9).
     /// Derivation and entitlement read the records alone (`record_chain`).
     pub fn standing_chain(&self, a: &Tid) -> Vec<Tid> {
@@ -399,10 +399,10 @@ impl Engine {
     /// Follows a link being redeemed (spec/sync-set.md §2, spec/sync-inbox.md §6): holds its key
     /// L (`hold_key_actor`) and keeps K's sync ID from the link text in the sync set, read,
     /// until `unfollow_link`. Returns L.
-    pub fn follow_link(&mut self, link: &osis_label::ShareLink) -> Result<Tid> {
+    pub fn follow_link(&mut self, link: &osis_blob::ShareLink) -> Result<Tid> {
         let l = self.hold_key_actor(link.seed.clone())?;
-        if self.core.followed_links.get(&link.k) != Some(&(link.k_label, l)) {
-            self.core.followed_links.insert(link.k, (link.k_label, l));
+        if self.core.followed_links.get(&link.k) != Some(&(link.k_sync_id, l)) {
+            self.core.followed_links.insert(link.k, (link.k_sync_id, l));
         }
         Ok(l)
     }

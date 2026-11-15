@@ -12,13 +12,13 @@ const SPEC: &str = "spec/crypto.md §7";
 pub fn keys() -> VecFile {
     let mut cases = Vec::new();
     let hb = [0x12u8; 16];
-    let (label, blob) = (SyncId([0x17; 16]), BlobId([0x18; 32]));
+    let (sync_id, blob) = (SyncId([0x17; 16]), BlobId([0x18; 32]));
     // per level, two prefix salts: the same key commits differently and each signature verifies
     // only under its own commitment
     for (level, secret) in [(1u8, 0x14u8), (2, 0x15), (3, 0x16)] {
         let d = DeleteSecret::derive(&s32(secret));
         let vk = d.verifying_key();
-        let digest = osis_label::auth::delete_digest(&label, &blob, &[level]);
+        let digest = osis_blob::auth::delete_digest(&sync_id, &blob, &[level]);
         let mut seen = Vec::new();
         for salt in [[0x13u8; 16], [0x19; 16]] {
             let c = commitment(level, &vk, &salt, &hb).unwrap();
@@ -37,7 +37,7 @@ pub fn keys() -> VecFile {
                     .with("salt", hex(&salt))
                     .with("header-blind", hex(&hb))
                     .with("commitment", hex(&c))
-                    .with("label-id", hex(&label.0))
+                    .with("sync-id", hex(&sync_id.0))
                     .with("blob-id", hex(&blob.0))
                     .with("digest", hex(&digest))
                     .with("signature", hex(&sig.0)),
@@ -51,7 +51,7 @@ pub fn keys() -> VecFile {
     assert_eq!(d.verifying_key(), KeyActorKeys::from_seed(&seed).signing.verifying_key());
     let salt = [0x1b; 16];
     let c = commitment(1, &d.verifying_key(), &salt, &hb).unwrap();
-    let digest = osis_label::auth::delete_digest(&label, &blob, &[1]);
+    let digest = osis_blob::auth::delete_digest(&sync_id, &blob, &[1]);
     let sig = d.sign(&salt, &hb, &digest);
     verify_delete(&c[1..].try_into().unwrap(), &digest, &sig).unwrap();
     cases.push(
@@ -69,7 +69,7 @@ pub fn keys() -> VecFile {
     let d = DeleteSecret::derive(&s32(0x14));
     let salt = [0x13u8; 16];
     let c = commitment(1, &d.verifying_key(), &salt, &hb).unwrap();
-    let digest = osis_label::auth::delete_digest(&label, &blob, &[1]);
+    let digest = osis_blob::auth::delete_digest(&sync_id, &blob, &[1]);
     let plain = SigningSecret::from_seed(&kdf::kdf(kdf::DELETE_KEY, s32(0x14).expose(), b"")).sign(Domain::Delete, &digest);
     assert!(verify_delete(&c[1..].try_into().unwrap(), &digest, &plain).is_err());
     cases.push(case("unblinded signature", SPEC).with("commitment", hex(&c)).with("digest", hex(&digest)).with("signature", hex(&plain.0)).with("reject", "signature"));

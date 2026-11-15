@@ -11,7 +11,7 @@ use osis_base::format::ROLE_KEEP_MS;
 use osis_base::{SyncId, WallMs};
 use osis_crypto::VerifyingKey;
 use osis_engine::sync::{Holding, Path};
-use osis_label::{ClaimSet, Step, StepId};
+use osis_blob::{ClaimSet, Step, StepId};
 use osis_proto::{Code, Grant};
 use osis_store::{Shred, Transaction};
 
@@ -172,7 +172,7 @@ pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId
 /// (spec/sync-streams.md §4 Refused; a connection's are in memory, `Store::take_register`). Answers
 /// the code, whether past the caps, and whether the head moved.
 pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Policy, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, last_past_cap: Option<WallMs>) -> Result<(Code, bool, bool)> {
-    if step.label != *s || claims.is_some_and(|c| c.hash() != step.claims_hash) {
+    if step.sync_id != *s || claims.is_some_and(|c| c.hash() != step.claims_hash) {
         return Ok((Code::MALFORMED, false, false));
     }
     if env.holding(s) != Some(Holding::Unread) {

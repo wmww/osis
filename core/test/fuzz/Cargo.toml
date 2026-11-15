@@ -18,7 +18,7 @@ osis-base = { path = "../../base" }
 osis-schema = { path = "../../schema" }
 osis-commit = { path = "../../commit" }
 osis-crypto = { path = "../../crypto" }
-osis-label = { path = "../../label" }
+osis-blob = { path = "../../blob" }
 osis-proto = { path = "../../proto" }
 osis-crdt = { path = "../../crdt" }
 

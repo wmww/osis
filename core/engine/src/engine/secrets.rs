@@ -94,9 +94,9 @@ impl Core {
         None
     }
 
-    /// A thing whose keyset came under another label (spec/permissions.md §4) before any secret of
+    /// A thing whose keyset came under another sync ID (spec/permissions.md §4) before any secret of
     /// it: the read epochs the next actor up its record chain derives, reading only. That actor's
-    /// nodes open its label with them; the rotation boxing it is wrapped under them (spec/crypto.md
+    /// nodes open its sync ID with them; the rotation boxing it is wrapped under them (spec/crypto.md
     /// §5).
     fn unboxed_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         if !self.ix.own_keys.contains(tid) || self.ix.secrets.get(tid).is_some() {
@@ -403,7 +403,7 @@ impl Core {
     /// A thing that got secrets of its own keeps its earlier derived epochs (by history box):
     /// those derived from an established epoch of the next actor up its record chain are
     /// established (spec/crypto.md §4), so the rotation from them establishes
-    /// and labels registered under them can be stepped, and supersede what they derive from the
+    /// and sync IDs registered under them can be stepped, and supersede what they derive from the
     /// base actor's (spec/crypto.md §3). A derived epoch's ID names its secret, so only a base
     /// actor epoch whose secret is held matches. Computed whenever the view is (`own_epochs`),
     /// never stored: the base actor's epochs change with what is held. The derived epochs it
@@ -495,7 +495,7 @@ impl NamesHeld<'_> {
 
 impl osis_keys::Held for NamesHeld<'_> {
     /// Applied: the commit held with its `roles.0` part on the actor, if it has one (a copy of
-    /// some of it, a certificate copy or another label's parts, may lack the write), and
+    /// some of it, a certificate copy or another sync ID's parts, may lack the write), and
     /// `resolved`; then judged as its rotator judged it: an applied name only while its write
     /// on its holder's edge stands here (`EdgeWrite::stands`: applies, or would over some edge
     /// before it: a finalize of a grant renewed since is met), a void name only while that
@@ -708,7 +708,7 @@ impl crate::Engine {
 
     /// Notes the delete keys the inbox payload of commit `c` names (spec/wire.md §9) as
     /// candidates: kept only once `c` applies valid ([`Core::promote_hints`]).
-    pub fn note_delete_hints(&mut self, c: CommitId, things: &[osis_label::InboxThing]) -> Result<()> {
+    pub fn note_delete_hints(&mut self, c: CommitId, things: &[osis_blob::InboxThing]) -> Result<()> {
         let hints: Vec<(Tid, Value)> = things.iter().filter_map(|t| t.delete_keys.map(|(a, w)| (t.tid, Value::List(vec![Value::Bytes(a.to_bytes().to_vec()), Value::Bytes(w.to_bytes().to_vec())])))).collect();
         if hints.is_empty() {
             return Ok(());

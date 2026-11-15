@@ -1,13 +1,13 @@
-//! Label keys, label ID, claim keys, static entries and the open signature (spec/sync-ids.md §2, §3, spec/sync-opens.md §4,
+//! Role keys, sync ID, claim keys, static entries and the open signature (spec/sync-ids.md §2, §3, spec/sync-opens.md §4,
 //! spec/wire.md §8, §11.2).
 
-use crate::kdf::{self, LABEL_ID, STATIC_CLAIM, kdf};
+use crate::kdf::{self, SYNC_ID, STATIC_CLAIM, kdf};
 use crate::{Domain, Error, Secret32, Signature, SigningSecret, VerifyingKey, X25519Secret};
 use osis_base::{SyncId, Role, Value, encode};
 
-/// A label role key and the group role secret it derives from (`role`).
+/// A role key and the group role secret it derives from (`role`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LabelRole {
+pub enum RoleKey {
     /// From the sync secret.
     Sync,
     /// From the write secret.
@@ -16,64 +16,64 @@ pub enum LabelRole {
     Delete,
 }
 
-impl LabelRole {
-    pub const ALL: [LabelRole; 3] = [LabelRole::Sync, LabelRole::Write, LabelRole::Delete];
+impl RoleKey {
+    pub const ALL: [RoleKey; 3] = [RoleKey::Sync, RoleKey::Write, RoleKey::Delete];
 
     /// The group role whose secret derives the key.
     pub fn role(self) -> Role {
         match self {
-            LabelRole::Sync => Role::Sync,
-            LabelRole::Write => Role::Write,
-            LabelRole::Delete => Role::Admin,
+            RoleKey::Sync => Role::Sync,
+            RoleKey::Write => Role::Write,
+            RoleKey::Delete => Role::Admin,
         }
     }
 }
 
-/// `kdf("label <role>", secret, "")` as an Ed25519 seed.
-pub fn label_role_key(role: LabelRole, secret: &Secret32) -> SigningSecret {
-    SigningSecret::from_seed(&label_role_seed(role, secret))
+/// `kdf("sync <role>", secret, "")` as an Ed25519 seed.
+pub fn role_key(role: RoleKey, secret: &Secret32) -> SigningSecret {
+    SigningSecret::from_seed(&role_key_seed(role, secret))
 }
 
-/// The seed of `label_role_key`: `kdf("label <role>", secret, "")`. A sync key's seed is what its
+/// The seed of `role_key`: `kdf("sync <role>", secret, "")`. A sync key's seed is what its
 /// proof derives from (`kdf::sync_proof`).
-pub fn label_role_seed(role: LabelRole, secret: &Secret32) -> Secret32 {
+pub fn role_key_seed(role: RoleKey, secret: &Secret32) -> Secret32 {
     let purpose = match role {
-        LabelRole::Sync => kdf::LABEL_SYNC,
-        LabelRole::Write => kdf::LABEL_WRITE,
-        LabelRole::Delete => kdf::LABEL_DELETE,
+        RoleKey::Sync => kdf::SYNC_KEY,
+        RoleKey::Write => kdf::SYNC_WRITE,
+        RoleKey::Delete => kdf::SYNC_DELETE,
     };
     kdf(purpose, secret.expose(), &[])
 }
 
-/// Deposit key `kdf("label deposit", deposit seed, label ID)`.
-pub fn deposit_key(deposit_seed: &Secret32, label: &SyncId) -> SigningSecret {
-    SigningSecret::from_seed(&kdf(kdf::LABEL_DEPOSIT, deposit_seed.expose(), &label.0))
+/// Deposit key `kdf("sync deposit", deposit seed, sync_id ID)`.
+pub fn deposit_key(deposit_seed: &Secret32, sync_id: &SyncId) -> SigningSecret {
+    SigningSecret::from_seed(&kdf(kdf::SYNC_DEPOSIT, deposit_seed.expose(), &sync_id.0))
 }
 
-/// Label ID = BLAKE3("osis v1 label id" || genesis delete key)[..16].
+/// Sync ID = BLAKE3("osis v1 sync id" || genesis delete key)[..16].
 pub fn sync_id(genesis_delete: &VerifyingKey) -> SyncId {
     let mut h = blake3::Hasher::new();
-    h.update(LABEL_ID.as_bytes()).update(&genesis_delete.to_bytes());
+    h.update(SYNC_ID.as_bytes()).update(&genesis_delete.to_bytes());
     let mut id = [0u8; 16];
     id.copy_from_slice(h.finalize().as_bytes().get(..16).unwrap_or(&[0; 16]));
     SyncId(id)
 }
 
-/// Claim key pair: seed `kdf("label claim", DH(own, their), sync_id || step_key)`. The registrar
+/// Claim key pair: seed `kdf("sync claim", DH(own, their), sync_id || step_key)`. The registrar
 /// passes the step private key and M's X25519 key; M passes its private key and the step key.
 /// A non-contributory DH omits M.
-pub fn claim_key(own: &X25519Secret, their: &[u8; 32], label: &SyncId, step_key: &[u8; 32]) -> Result<SigningSecret, Error> {
+pub fn claim_key(own: &X25519Secret, their: &[u8; 32], sync_id: &SyncId, step_key: &[u8; 32]) -> Result<SigningSecret, Error> {
     let dh = own.dh(their)?;
     let mut input = Vec::with_capacity(48);
-    input.extend_from_slice(&label.0);
+    input.extend_from_slice(&sync_id.0);
     input.extend_from_slice(step_key);
-    Ok(SigningSecret::from_seed(&kdf(kdf::LABEL_CLAIM, dh.expose(), &input)))
+    Ok(SigningSecret::from_seed(&kdf(kdf::SYNC_CLAIM, dh.expose(), &input)))
 }
 
-/// Static entry of a key actor: BLAKE3("osis v1 static claim" || label ID || signing key).
-pub fn static_entry(label: &SyncId, signing: &VerifyingKey) -> [u8; 32] {
+/// Static entry of a key actor: BLAKE3("osis v1 static claim" || sync ID || signing key).
+pub fn static_entry(sync_id: &SyncId, signing: &VerifyingKey) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
-    h.update(STATIC_CLAIM.as_bytes()).update(&label.0).update(&signing.to_bytes());
+    h.update(STATIC_CLAIM.as_bytes()).update(&sync_id.0).update(&signing.to_bytes());
     *h.finalize().as_bytes()
 }
 
@@ -82,8 +82,8 @@ pub fn static_entry(label: &SyncId, signing: &VerifyingKey) -> [u8; 32] {
 /// other side's Hello challenge. Invariant, as for `proof_digest`: an open signature made as one
 /// side verifies as no other, so a peer that copies this side's challenge into its own Hello
 /// cannot offer a signature it was sent back as its own (model `ON_side`).
-pub fn open_digest(by_listener: bool, label: &SyncId, challenge: &[u8; 32], static_key: &[u8; 32]) -> [u8; 32] {
-    let v = Value::List(vec![Value::uint(u64::from(by_listener)), Value::Bytes(label.0.to_vec()), Value::Bytes(challenge.to_vec()), Value::Bytes(static_key.to_vec())]);
+pub fn open_digest(by_listener: bool, sync_id: &SyncId, challenge: &[u8; 32], static_key: &[u8; 32]) -> [u8; 32] {
+    let v = Value::List(vec![Value::uint(u64::from(by_listener)), Value::Bytes(sync_id.0.to_vec()), Value::Bytes(challenge.to_vec()), Value::Bytes(static_key.to_vec())]);
     *blake3::hash(&encode(&v)).as_bytes()
 }
 
@@ -98,13 +98,13 @@ pub fn proof_digest(by_listener: bool, challenge: &[u8; 32], listener_key: &[u8;
 
 /// Open signature under `"osis v1 sync open"` by the side `by_listener`, over the other side's
 /// Hello challenge and the listener's static key.
-pub fn sign_open(key: &SigningSecret, by_listener: bool, label: &SyncId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Signature {
-    key.sign(Domain::SyncOpen, &open_digest(by_listener, label, challenge, static_key))
+pub fn sign_open(key: &SigningSecret, by_listener: bool, sync_id: &SyncId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Signature {
+    key.sign(Domain::SyncOpen, &open_digest(by_listener, sync_id, challenge, static_key))
 }
 
 /// Verifies an open signature as made by the side `by_listener` (the peer's, at the verifier).
-pub fn verify_open(key: &VerifyingKey, by_listener: bool, label: &SyncId, challenge: &[u8; 32], static_key: &[u8; 32], sig: &Signature) -> Result<(), Error> {
-    key.verify(Domain::SyncOpen, &open_digest(by_listener, label, challenge, static_key), sig)
+pub fn verify_open(key: &VerifyingKey, by_listener: bool, sync_id: &SyncId, challenge: &[u8; 32], static_key: &[u8; 32], sig: &Signature) -> Result<(), Error> {
+    key.verify(Domain::SyncOpen, &open_digest(by_listener, sync_id, challenge, static_key), sig)
 }
 
 #[cfg(test)]
@@ -112,21 +112,21 @@ mod tests {
     use super::*;
     use crate::{KeyActorKeys, SeededRng};
 
-    // spec/sync-ids.md §2: role keys differ per role and secret; deposit keys per label.
+    // spec/sync-ids.md §2: role keys differ per role and secret; deposit keys per sync ID.
     #[test]
     fn role_keys() {
         let s = Secret32::from_bytes([9; 32]);
-        let pk = |r| label_role_key(r, &s).verifying_key();
-        assert_ne!(pk(LabelRole::Sync), label_role_key(LabelRole::Sync, &Secret32::from_bytes([8; 32])).verifying_key());
-        assert_ne!(pk(LabelRole::Sync), pk(LabelRole::Write));
-        assert_ne!(pk(LabelRole::Delete), pk(LabelRole::Write));
-        let expect = SigningSecret::from_seed(&kdf("label delete", &[9; 32], &[]));
-        assert_eq!(pk(LabelRole::Delete), expect.verifying_key());
+        let pk = |r| role_key(r, &s).verifying_key();
+        assert_ne!(pk(RoleKey::Sync), role_key(RoleKey::Sync, &Secret32::from_bytes([8; 32])).verifying_key());
+        assert_ne!(pk(RoleKey::Sync), pk(RoleKey::Write));
+        assert_ne!(pk(RoleKey::Delete), pk(RoleKey::Write));
+        let expect = SigningSecret::from_seed(&kdf("sync delete", &[9; 32], &[]));
+        assert_eq!(pk(RoleKey::Delete), expect.verifying_key());
         let seed = Secret32::from_bytes([1; 32]);
         assert_ne!(deposit_key(&seed, &SyncId([1; 16])).verifying_key(), deposit_key(&seed, &SyncId([2; 16])).verifying_key());
-        let id = sync_id(&pk(LabelRole::Delete));
+        let id = sync_id(&pk(RoleKey::Delete));
         let mut h = blake3::Hasher::new();
-        h.update(b"osis v1 label id").update(&pk(LabelRole::Delete).to_bytes());
+        h.update(b"osis v1 sync id").update(&pk(RoleKey::Delete).to_bytes());
         assert_eq!(id.0, h.finalize().as_bytes()[..16]);
     }
 
@@ -136,21 +136,21 @@ mod tests {
         let mut rng = SeededRng::from_u64(0);
         let step = X25519Secret::random(&mut rng);
         let m = KeyActorKeys::from_seed(&Secret32::from_bytes([6; 32]));
-        let label = SyncId([7; 16]);
-        let by_registrar = claim_key(&step, &m.kem.public().x25519(), &label, &step.public()).unwrap();
-        let by_holder = claim_key(m.kem.x25519(), &step.public(), &label, &step.public()).unwrap();
+        let sync_id = SyncId([7; 16]);
+        let by_registrar = claim_key(&step, &m.kem.public().x25519(), &sync_id, &step.public()).unwrap();
+        let by_holder = claim_key(m.kem.x25519(), &step.public(), &sync_id, &step.public()).unwrap();
         assert_eq!(by_registrar.verifying_key(), by_holder.verifying_key());
         let other = claim_key(&step, &m.kem.public().x25519(), &SyncId([8; 16]), &step.public()).unwrap();
         assert_ne!(other.verifying_key(), by_holder.verifying_key());
-        assert_eq!(claim_key(&step, &[0; 32], &label, &step.public()).err(), Some(Error::NonContributory));
-        let e = static_entry(&label, &m.signing.verifying_key());
+        assert_eq!(claim_key(&step, &[0; 32], &sync_id, &step.public()).err(), Some(Error::NonContributory));
+        let e = static_entry(&sync_id, &m.signing.verifying_key());
         assert_ne!(e, static_entry(&SyncId([8; 16]), &m.signing.verifying_key()));
     }
 
-    // spec/wire.md §11.2: an open signature binds label, challenge and static key.
+    // spec/wire.md §11.2: an open signature binds sync ID, challenge and static key.
     #[test]
     fn open_signature() {
-        let k = label_role_key(LabelRole::Sync, &Secret32::from_bytes([1; 32]));
+        let k = role_key(RoleKey::Sync, &Secret32::from_bytes([1; 32]));
         let (l, c, s) = (SyncId([1; 16]), [2; 32], [3; 32]);
         let sig = sign_open(&k, false, &l, &c, &s);
         let pk = k.verifying_key();
@@ -159,7 +159,7 @@ mod tests {
         assert!(verify_open(&pk, false, &l, &[9; 32], &s, &sig).is_err());
         assert!(verify_open(&pk, false, &l, &c, &[9; 32], &sig).is_err());
         assert!(pk.verify(Domain::Stamp, &open_digest(false, &l, &c, &s), &sig).is_err());
-        assert_eq!(label_role_key(LabelRole::Sync, &Secret32::from_bytes([1; 32])).verifying_key(), SigningSecret::from_seed(&label_role_seed(LabelRole::Sync, &Secret32::from_bytes([1; 32]))).verifying_key());
+        assert_eq!(role_key(RoleKey::Sync, &Secret32::from_bytes([1; 32])).verifying_key(), SigningSecret::from_seed(&role_key_seed(RoleKey::Sync, &Secret32::from_bytes([1; 32]))).verifying_key());
     }
 
     // spec/wire.md §11.2: an open signature binds its signer's side; one made by either side
@@ -167,7 +167,7 @@ mod tests {
     // (on a connection whose challenges the peer copied, model `ON_side`).
     #[test]
     fn an_open_signature_binds_its_signers_side_spec_wire_11_2() {
-        let k = label_role_key(LabelRole::Sync, &Secret32::from_bytes([1; 32]));
+        let k = role_key(RoleKey::Sync, &Secret32::from_bytes([1; 32]));
         let pk = k.verifying_key();
         let (l, c, s) = (SyncId([1; 16]), [2; 32], [3; 32]);
         for side in [false, true] {

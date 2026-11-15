@@ -1,5 +1,5 @@
 //! Protocol version 1 messages (spec/wire.md §11.2) with their caps and decoder limits (§13).
-//! Steps, claim sets, delete items and holder keys are osis-label's types; the wire carries
+//! Steps, claim sets, delete items and holder keys are osis-blob's types; the wire carries
 //! steps, claim sets and entry boxes as their canonical bytes in byte strings. Decoding takes
 //! only canonical CBOR (spec/data-model.md §5) in each kind's exact layout, so whatever decodes
 //! re-encodes to the bytes it came from.
@@ -11,7 +11,7 @@ use crate::limits::*;
 use crate::{ActorProof, SyncId};
 use osis_base::{Ak, BlobId, Limits, Tid, Value, cbor};
 pub use osis_crypto::Signature;
-pub use osis_label::{ClaimSet, DeleteItem, HolderKeys, Step, StepId};
+pub use osis_blob::{ClaimSet, DeleteItem, HolderKeys, Step, StepId};
 use osis_schema::Codec;
 use std::cell::Cell;
 pub use osis_schema::core_types::SecretBox;
@@ -212,7 +212,7 @@ pub struct SuspectEntry {
     pub digest: [u8; SUSPECT_DIGEST_LEN],
 }
 
-/// `ditem` is osis-label's `DeleteItem`; `actor_proof` is `ActorProof`.
+/// `ditem` is osis-blob's `DeleteItem`; `actor_proof` is `ActorProof`.
 /// Every message after Hello (spec/wire.md §11.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)] // a Register's step carries parsed keys; one per message
@@ -699,7 +699,7 @@ fn step_value(s: &Step) -> Value {
 }
 
 fn claim_set(v: Value, n: &Items) -> Result<ClaimSet, Error> {
-    let bytes = dec::bytes(v, osis_label::step::MAX_CLAIM_SET, "claim set")?;
+    let bytes = dec::bytes(v, osis_blob::step::MAX_CLAIM_SET, "claim set")?;
     Ok(ClaimSet::from_value(&n.decode(&bytes, MAX_OBJECT_DEPTH)?)?)
 }
 
@@ -762,7 +762,7 @@ fn grant(v: Value, n: &Items) -> Result<Grant, Error> {
 /// An entry box: the canonical bytes of a `box` value in the sealed form (spec/wire.md §7).
 fn entry_box(v: Value, n: &Items) -> Result<SecretBox, Error> {
     let bytes = dec::bytes(v, MAX_MESSAGE, "entry box")?;
-    Ok(osis_label::step::entry_box_from_value(&n.decode(&bytes, MAX_VALUE_DEPTH)?)?)
+    Ok(osis_blob::step::entry_box_from_value(&n.decode(&bytes, MAX_VALUE_DEPTH)?)?)
 }
 
 fn fetched(v: Value) -> Result<Fetched, Error> {

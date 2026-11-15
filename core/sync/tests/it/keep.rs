@@ -352,7 +352,7 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
         let c = w.engine(0).blob_commit(&e.blob).unwrap();
         let key = if c.is_some_and(|c| needs.contains(&c)) { &parent.keys.write } else { &head.keys.write };
         let stamp = e.stamp.expect("stamped");
-        assert!(osis_label::verify_stamp(key, &s, &e.blob, &e.wrap, &stamp).is_ok(), "own entry {:?} of {c:?} stamped under its step", e.blob);
+        assert!(osis_blob::verify_stamp(key, &s, &e.blob, &e.wrap, &stamp).is_ok(), "own entry {:?} of {c:?} stamped under its step", e.blob);
     }
     // a rotation the step registers held under no stamp that stands here (a stamp of no key
     // standing in) is stamped in place under the step's parent, not the new head, so a store
@@ -363,7 +363,7 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     w.power_on(0);
     w.run();
     let e = w.store(0).entry(&s, &rb.blob).unwrap().expect("kept");
-    assert!(e.own && e.stamp.is_some_and(|x| osis_label::verify_stamp(&parent.keys.write, &s, &e.blob, &e.wrap, &x).is_ok()), "{rc:?} stamped under the parent: {e:?}");
+    assert!(e.own && e.stamp.is_some_and(|x| osis_blob::verify_stamp(&parent.keys.write, &s, &e.blob, &e.wrap, &x).is_ok()), "{rc:?} stamped under the parent: {e:?}");
     // node 0's own entries of the writes it still logs (the last; the others are replaced), and
     // node 2's deposits of the writes
     let logged: Vec<osis_base::BlobId> = w.store(0).entries(&s).unwrap().into_iter().filter(|e| e.own && w.engine(0).blob_commit(&e.blob).unwrap().is_some_and(|c| writes.contains(&c))).map(|e| e.blob).collect();

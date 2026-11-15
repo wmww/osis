@@ -30,11 +30,11 @@
 //! remover, reading the devices actor's roster). A removed node may fork plainly from its old
 //! epoch again after every merge (`Builder::refork`).
 //!
-//! Labels: things sit in one or more labels (a thing in two groups). Every node opens some
-//! labels and receives what is on a thing in one of them. A rotation's list is one part per
-//! label the rotator opens, each naming the closed-epoch commits with an entry under that
-//! label; within the parts, the list is per thing (`Kind::List`), a chain certificate that
-//! reaches every reader of the thing, also under a label the rotator did not open. Parts are
+//! Sync IDs: things sit in one or more sync IDs (a thing in two groups). Every node opens some
+//! sync IDs and receives what is on a thing in one of them. A rotation's list is one part per
+//! sync ID the rotator opens, each naming the closed-epoch commits with an entry under that
+//! sync ID; within the parts, the list is per thing (`Kind::List`), a chain certificate that
+//! reaches every reader of the thing, also under a sync ID the rotator did not open. Parts are
 //! bounded (`World::bound`, IDs per part): a part whose special commits (anything but plain
 //! content) pass it refuses the rotation (the removal cannot be written); plain content past
 //! it, received last first, goes into the rotator's later listings. A list over the bound is
@@ -80,7 +80,7 @@
 //! A witness's snapshot may fall (`Kind::Fall`, a held event standing for its author's
 //! demotion).
 //!
-//! Every node is also an observer with its own receipts and labels. Judgment is a pure
+//! Every node is also an observer with its own receipts and sync IDs. Judgment is a pure
 //! function of the held set and the side; worlds are checked at every observer and every
 //! prefix of its receipts.
 //!
@@ -93,7 +93,7 @@ use std::collections::HashSet;
 
 /// Epoch ids: 0 the first; rotations mint the rest, increasing.
 pub type Epoch = u32;
-pub type Label = usize;
+pub type SyncId = usize;
 pub type Thing = usize;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -114,7 +114,7 @@ pub enum Kind {
     Rotation { at: Epoch, new: Epoch, supersedes: Vec<Epoch>, names: Vec<u32>, removes: Option<u32> },
     /// Node 0's removal of `node` from the devices actor (with the devices actor's own
     /// rotation), signed at the epoch the following rotation rotates, kept under the
-    /// devices actor's label: only P's nodes receive it. Counts while its epoch is open,
+    /// devices actor's sync ID: only P's nodes receive it. Counts while its epoch is open,
     /// then only if a counting rotation's devices-actor list names it.
     Removal { node: usize },
     /// Rotation `rot`'s list for one thing: P's commits on it at the epochs `rot` closes.
@@ -165,10 +165,10 @@ pub struct World {
     /// P's nodes are 0..np; node 0 the remover, X = 1, Y = 2.
     pub np: usize,
     pub nodes: usize,
-    /// Per thing: the labels it sits in.
-    pub things: Vec<Vec<Label>>,
-    /// Per node: the labels it opens.
-    pub opens: Vec<Vec<Label>>,
+    /// Per thing: the sync IDs it sits in.
+    pub things: Vec<Vec<SyncId>>,
+    /// Per node: the sync IDs it opens.
+    pub opens: Vec<Vec<SyncId>>,
     /// Per node: the thing it writes on, for a writer from another account.
     pub writer: Vec<Option<Thing>>,
     pub admin: Option<usize>,
@@ -293,7 +293,7 @@ impl Roots {
 
 impl World {
     /// The shape of a world with no items yet.
-    pub fn shape(np: usize, things: Vec<Vec<Label>>, opens: Vec<Vec<Label>>, writer: Vec<Option<Thing>>, admin: Option<usize>, bound: Option<usize>, omit_covered: bool) -> World {
+    pub fn shape(np: usize, things: Vec<Vec<SyncId>>, opens: Vec<Vec<SyncId>>, writer: Vec<Option<Thing>>, admin: Option<usize>, bound: Option<usize>, omit_covered: bool) -> World {
         let nodes = opens.len();
         assert_eq!(writer.len(), nodes);
         World { np, nodes, things, opens, writer, admin, left: vec![LATE; nodes], readded: vec![LATE; nodes], bound, items: vec![], omit_covered, refused: 0, overflow: vec![], wait_for_removal: true, waited: 0, gone: LATE }
@@ -333,13 +333,13 @@ impl World {
         n < self.np && self.left[n] < self.readded[n] && self.readded[n] <= t
     }
 
-    /// Node n opens a label of the thing.
+    /// Node n opens a sync ID of the thing.
     pub fn reads(&self, n: usize, thing: Thing) -> bool {
         self.things[thing].iter().any(|l| self.opens[n].contains(l))
     }
 
     /// Item i reaches node n: it is on a thing n reads, or on none (rotations, falls); a
-    /// removal commit reaches P's nodes only (the devices actor's label).
+    /// removal commit reaches P's nodes only (the devices actor's sync ID).
     pub fn reaches(&self, i: usize, n: usize) -> bool {
         match self.items[i].kind {
             Kind::Removal { .. } => n < self.np,
@@ -991,9 +991,9 @@ pub struct Stats {
     /// thing's list yet.
     pub part_pending: u64,
     // New dimensions, counted per world.
-    pub w_multi_label: u64,
+    pub w_multi_sync_id: u64,
     pub w_two_group_thing: u64,
-    pub w_unopened_label: u64,
+    pub w_unopened_sync_id: u64,
     pub w_successive: u64,
     pub w_readd: u64,
     pub w_overflow: u64,
@@ -1014,7 +1014,7 @@ pub struct Stats {
     pub w_bad_list: u64,
     /// Final readings: a listing at a closed epoch counting (listed by ID or named).
     pub closed_listing_counts: u64,
-    /// Final readings: P content on a thing in no label the rotator opened, at a closed
+    /// Final readings: P content on a thing in no sync ID the rotator opened, at a closed
     /// epoch, visible.
     pub unopened_saved: u64,
     /// Final readings: a re-added node's write from while it was removed, visible.
@@ -1030,7 +1030,7 @@ impl Stats {
         macro_rules! add {
             ($($f:ident),*) => { $( self.$f += o.$f; )* };
         }
-        add!(worlds, hostile_valid_owner_sided, hostile_valid_fork_window, hostile_valid_beside_head, thief_head, thief_head_disputed, honest_fork, w_gone, refork_hides, w_refork, hostile_valid_unaware_closer, hostile_valid_concurrent_epoch, hostile_revived_by_readd, hostile_visible_through_witness_snapshot, liveness_fail, upper_fail, saved_by_later_closer, monotone_fail, removal_voided, removal_unlisted, rotation_without_removal, rotation_without_removal_at_p, w_waited, dispute_worlds, thief_sided_observers, side_changes_reading, omit_loses, omit_loses_snapshot_fallen, omit_saves_ids, list_all_ids, part_pending, w_multi_label, w_two_group_thing, w_unopened_label, w_successive, w_readd, w_overflow, w_refused, final_fork_counts, w_sibling_rotation, void_epoch_saved, failed_without_sibling_rotation, unsettled, w_bad_list, closed_listing_counts, unopened_saved, readd_revived, overflow_saved);
+        add!(worlds, hostile_valid_owner_sided, hostile_valid_fork_window, hostile_valid_beside_head, thief_head, thief_head_disputed, honest_fork, w_gone, refork_hides, w_refork, hostile_valid_unaware_closer, hostile_valid_concurrent_epoch, hostile_revived_by_readd, hostile_visible_through_witness_snapshot, liveness_fail, upper_fail, saved_by_later_closer, monotone_fail, removal_voided, removal_unlisted, rotation_without_removal, rotation_without_removal_at_p, w_waited, dispute_worlds, thief_sided_observers, side_changes_reading, omit_loses, omit_loses_snapshot_fallen, omit_saves_ids, list_all_ids, part_pending, w_multi_sync_id, w_two_group_thing, w_unopened_sync_id, w_successive, w_readd, w_overflow, w_refused, final_fork_counts, w_sibling_rotation, void_epoch_saved, failed_without_sibling_rotation, unsettled, w_bad_list, closed_listing_counts, unopened_saved, readd_revived, overflow_saved);
         if self.fail.is_none() {
             self.fail = o.fail;
         }
@@ -1066,11 +1066,11 @@ impl Stats {
         println!("  worlds with a sibling's rotation {}; worlds failing a hard check without one {}", self.w_sibling_rotation, self.failed_without_sibling_rotation);
         println!("  honest content visible at a void epoch {}", self.void_epoch_saved);
         println!(
-            "  dimensions (worlds): several labels {}, a thing in two labels {}, rotator missing a label with P content {}, successive removals {}, re-add {}, part past the bound {}, a rotation refused by the bound {} (unsettled: a fork stands, final readings unchecked {}), thief list over the bound {}",
-            self.w_multi_label, self.w_two_group_thing, self.w_unopened_label, self.w_successive, self.w_readd, self.w_overflow, self.w_refused, self.unsettled, self.w_bad_list
+            "  dimensions (worlds): several sync IDs {}, a thing in two sync IDs {}, rotator missing a sync ID with P content {}, successive removals {}, re-add {}, part past the bound {}, a rotation refused by the bound {} (unsettled: a fork stands, final readings unchecked {}), thief list over the bound {}",
+            self.w_multi_sync_id, self.w_two_group_thing, self.w_unopened_sync_id, self.w_successive, self.w_readd, self.w_overflow, self.w_refused, self.unsettled, self.w_bad_list
         );
         println!(
-            "  final readings: closed-epoch listing counts {}, saved under a label the rotator did not open {}, re-added node's removed-time write revived {}, plain content past the bound saved {}",
+            "  final readings: closed-epoch listing counts {}, saved under a sync ID the rotator did not open {}, re-added node's removed-time write revived {}, plain content past the bound saved {}",
             self.closed_listing_counts, self.unopened_saved, self.readd_revived, self.overflow_saved
         );
         println!(
@@ -1365,7 +1365,7 @@ pub fn check(w: &World, st: &mut Stats) {
     st.unsettled += u64::from(unsettled);
     for o in (0..w.nodes).filter(|&o| !removed(o) && !unsettled) {
         let held = w.held_at(o, LATE - 1);
-        // Everything under its labels that an honest party holds (holders serve it) reaches it.
+        // Everything under its sync IDs that an honest party holds (holders serve it) reaches it.
         let served = |i: usize| !w.items[i].hostile || (0..w.nodes).any(|m| m != o && (m >= w.np || w.final_member(m)) && w.items[i].recv[m] < LATE);
         if (0..n).any(|i| !held[i] && served(i) && w.reaches(i, o)) {
             continue;
@@ -1478,10 +1478,10 @@ fn count_dimensions(w: &World, st: &mut Stats) {
     st.w_waited += u64::from(w.waited > 0);
     st.w_refork += u64::from(w.items.iter().filter(|i| i.hostile && matches!(&i.kind, Kind::Rotation { at, supersedes, .. } if supersedes == &vec![*at])).count() > 1);
     let p_on = |t: Thing| w.items.iter().any(|i| i.epoch.is_some() && matches!(i.kind, Kind::Content { thing, .. } if thing == t));
-    let labels: HashSet<Label> = w.things.iter().flatten().copied().collect();
-    st.w_multi_label += u64::from(labels.len() > 1);
+    let sync_ids: HashSet<SyncId> = w.things.iter().flatten().copied().collect();
+    st.w_multi_sync_id += u64::from(sync_ids.len() > 1);
     st.w_two_group_thing += u64::from((0..w.things.len()).any(|t| w.things[t].len() > 1 && p_on(t)));
-    st.w_unopened_label += u64::from(w.items.iter().any(|r| !r.hostile && r.kind.is_rot() && (0..w.things.len()).any(|t| p_on(t) && !w.reads(r.author, t))));
+    st.w_unopened_sync_id += u64::from(w.items.iter().any(|r| !r.hostile && r.kind.is_rot() && (0..w.things.len()).any(|t| p_on(t) && !w.reads(r.author, t))));
     st.w_successive += u64::from(w.left[..w.np].iter().filter(|&&l| l < LATE).count() > 1);
     st.w_readd += u64::from(w.readded.iter().zip(&w.left).any(|(&a, &l)| l < LATE && a < LATE));
     st.w_overflow += u64::from(!w.overflow.is_empty());
@@ -1529,7 +1529,7 @@ fn rotation_candidates(w: &World, author: usize, t: u32, closing: &[Epoch]) -> V
 
 /// A rotation's lists, per thing the rotator reads (empty ones included), and the plain
 /// content left out past the bound; None when a part's special commits alone pass it (the
-/// rotation is refused). A commit sits in the part of every opened label of its thing; past
+/// rotation is refused). A commit sits in the part of every opened sync ID of its thing; past
 /// the bound, a part leaves out the plain content received last.
 fn rotation_lists(w: &World, author: usize, t: u32, closing: &[Epoch]) -> Option<(Vec<(Thing, Vec<u32>)>, Vec<u32>)> {
     let cands = rotation_candidates(w, author, t, closing);
@@ -2121,9 +2121,9 @@ impl Builder {
     }
 }
 
-fn subset(rng: &mut Rng, of: &[Label]) -> Vec<Label> {
+fn subset(rng: &mut Rng, of: &[SyncId]) -> Vec<SyncId> {
     loop {
-        let s: Vec<Label> = of.iter().copied().filter(|_| rng.below(2) == 0).collect();
+        let s: Vec<SyncId> = of.iter().copied().filter(|_| rng.below(2) == 0).collect();
         if !s.is_empty() {
             return s;
         }
@@ -2133,22 +2133,22 @@ fn subset(rng: &mut Rng, of: &[Label]) -> Vec<Label> {
 /// A random world.
 pub fn random_world(rng: &mut Rng) -> World {
     let np = 2 + rng.below(3);
-    let nlabels = 1 + rng.below(2);
-    let things: Vec<Vec<Label>> = if nlabels == 1 {
+    let n_sync_ids = 1 + rng.below(2);
+    let things: Vec<Vec<SyncId>> = if n_sync_ids == 1 {
         vec![vec![0]; 1 + rng.below(2)]
     } else {
         let pool = [vec![0], vec![1], vec![0, 1]];
-        let mut t: Vec<Vec<Label>> = pool.iter().filter(|_| rng.below(2) == 0).cloned().collect();
+        let mut t: Vec<Vec<SyncId>> = pool.iter().filter(|_| rng.below(2) == 0).cloned().collect();
         if t.is_empty() {
             t.push(pool[rng.below(3)].clone());
         }
         t
     };
-    let labels: Vec<Label> = (0..nlabels).collect();
-    let mut opens: Vec<Vec<Label>> = vec![];
+    let sync_ids: Vec<SyncId> = (0..n_sync_ids).collect();
+    let mut opens: Vec<Vec<SyncId>> = vec![];
     let mut writer: Vec<Option<Thing>> = vec![];
     for _ in 0..np {
-        let mut s = subset(rng, &labels);
+        let mut s = subset(rng, &sync_ids);
         if !things.iter().any(|ls| ls.iter().any(|l| s.contains(l))) {
             s = things[0].clone();
         }
@@ -2167,7 +2167,7 @@ pub fn random_world(rng: &mut Rng) -> World {
     } else {
         None
     };
-    opens.push(subset(rng, &labels));
+    opens.push(subset(rng, &sync_ids));
     writer.push(None);
     let bound = [None, None, Some(1), Some(2)][rng.below(4)];
     let mut w = World::shape(np, things, opens, writer, admin, bound, rng.below(2) == 0);
@@ -2194,7 +2194,7 @@ pub fn random_world(rng: &mut Rng) -> World {
     // A re-added node reads every rotation through the devices actor once back.
     let removable = |n: usize| (n == X && ta == LATE) || (successive && n == Y);
     // Content: any receipt may never come. Honest role changes reach every honest party;
-    // removed nodes' rotations go under P's labels, so P's members get them when they sync.
+    // removed nodes' rotations go under P's sync IDs, so P's members get them when they sync.
     let delay = |rng: &mut Rng| rand_delay(rng, &|_| true);
     let honest_delay = |rng: &mut Rng| rand_delay(rng, &|n| removable(n));
     let thief_delay = |rng: &mut Rng| rand_delay(rng, &|n| n >= np);
@@ -2361,7 +2361,7 @@ pub fn random_world(rng: &mut Rng) -> World {
     b.w
 }
 
-/// Family A, one label and thing: 2 P nodes, 1 witness, 1 outsider, tr = 3, one or two
+/// Family A, one sync ID and thing: 2 P nodes, 1 witness, 1 outsider, tr = 3, one or two
 /// content commits (author, time 1..4, backdated or not, each other node's receipt
 /// immediate, late or never), X's fork before or after the removal or none (the owner merges
 /// out every fork it holds), X's counter-merge or not, or X's plain fork after every merge, a snapshot none / by node 0 / by the
@@ -2467,9 +2467,9 @@ pub fn family_a(shard: usize, shards: usize, f: &mut impl FnMut(World)) -> u64 {
     count
 }
 
-/// Family B, the new dimensions: 3 P nodes (0 the remover, X, Y), labels L0 and L1, things
+/// Family B, the new dimensions: 3 P nodes (0 the remover, X, Y), sync IDs L0 and L1, things
 /// T0 in L0, T1 in both, T2 in L1; X opens both. Node 0 opens L0 or both, Y one or both;
-/// one witness on T1 or T2 opening L1; the outsider one label or both. Scenario: X removed
+/// one witness on T1 or T2 opening L1; the outsider one sync ID or both. Scenario: X removed
 /// at 3 then Y at 6; X removed at 3 and re-added at 6; X removed at 3, Y at 5 and X re-added
 /// at 7. Part bound none or 1. One content commit (author, thing it reads, time 2/4/7, plain
 /// or not, receipts of node 0, the other P node and the witness immediate, late or never),
@@ -2566,7 +2566,7 @@ pub fn family_b(shard: usize, shards: usize, f: &mut impl FnMut(World)) -> u64 {
 
 /// Family C, a sibling rotating after a removal it has not received: 3 P nodes (0 the
 /// remover, X, S = 2), a witness (node 3, writer of the thing), an outsider (node 4), one
-/// label and thing. Node 0 removes X at 3; its rotation and removal commit reach S at 7
+/// sync ID and thing. Node 0 removes X at 3; its rotation and removal commit reach S at 7
 /// and 7, 4 and 7, or 7 and 4, everyone else at 4. S tries to rotate from 3, 4 or 5 while it
 /// does not hold both (boxing X unless it holds the removal commit; waiting while it holds
 /// the rotation alone), reaching node 0 after 1 or 3 ticks, everyone else after 1. X does nothing, forks at 6 from the newest epoch it holds, or also counter-merges
@@ -2716,11 +2716,11 @@ pub fn run(samples: u64, mode: &str) -> u64 {
     let mut fails = vec![];
     if mode == "epochs-exh" {
         let (n, st) = parallel(|th, threads, st| family_a(th, threads, &mut |w| check(&w, st)));
-        println!("family A (one label): {n} worlds");
+        println!("family A (one sync ID): {n} worlds");
         st.print("epochs-exh A");
         fails.push(st);
         let (n, st) = parallel(|th, threads, st| family_b(th, threads, &mut |w| check(&w, st)));
-        println!("family B (labels, successive removals, re-add, bound): {n} worlds");
+        println!("family B (sync IDs, successive removals, re-add, bound): {n} worlds");
         st.print("epochs-exh B");
         fails.push(st);
     } else if mode == "epochs-exh-c" {
@@ -2764,7 +2764,7 @@ pub fn run(samples: u64, mode: &str) -> u64 {
 mod tests {
     use super::*;
 
-    /// 3 P nodes, one witness (node 3, writer of thing 0), one outsider (node 4); one label,
+    /// 3 P nodes, one witness (node 3, writer of thing 0), one outsider (node 4); one sync ID,
     /// one thing.
     fn world(f: impl FnOnce(&mut Builder)) -> World {
         let mut w = World::shape(3, vec![vec![0]], vec![vec![0]; 5], vec![None, None, None, Some(0), None], None, None, false);
@@ -2937,11 +2937,11 @@ mod tests {
         assert!(!v.as_p[4] && !v.valid[0]);
     }
 
-    /// Labels: node 0 opens L0 only. A sibling's write on a thing only in L1 counts only
-    /// once a listing names it (no part for L1); a write on a thing in both labels is named
+    /// Sync IDs: node 0 opens L0 only. A sibling's write on a thing only in L1 counts only
+    /// once a listing names it (no part for L1); a write on a thing in both sync IDs is named
     /// in L0's part, and that per-thing list reaches a reader of L1 alone.
     #[test]
-    fn unopened_label_and_thing_in_two_groups() {
+    fn unopened_sync_id_and_thing_in_two_groups() {
         let things = vec![vec![0], vec![0, 1], vec![1]];
         // node 0 L0, X both, node 2 L1, node 3 an outsider reading L1 only
         let w = World::shape(3, things, vec![vec![0], vec![0, 1], vec![1], vec![1]], vec![None; 4], None, None, false);

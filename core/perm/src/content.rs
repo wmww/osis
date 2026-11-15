@@ -50,7 +50,7 @@ impl Timeline {
     /// §5.2: is a delta on `thing` of the commit at `at` (its author node, `ts` and commit ID)
     /// valid, addenda aside (`Vouching`)? Judged at the start of its `ts` (§5.2, Position).
     /// `required` is the role its aspect needs: write for
-    /// content, the aspect's role for `secrets.0`, `keys.0`, `label.0`. A re-grant (the author
+    /// content, the aspect's role for `secrets.0`, `keys.0`, `sync.0`. A re-grant (the author
     /// holds `required` at the end of the timeline) validates every write; otherwise a write
     /// made while holding the role stands unless a valid explicit demotion below it follows,
     /// and else only if the frontier of such a demotion, in any order, lists its commit.

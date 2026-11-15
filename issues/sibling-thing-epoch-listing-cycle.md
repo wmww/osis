@@ -5,7 +5,7 @@
 
 Design: notes/account-forks-design.md (Custody: Q1's seed boxed to the node directly; boxes at closed or stale epochs and in commits not counting open for reading, so n2 and the listing under it open). Root cause: judgment gates custody.
 
-Shape: `rotation::tests_signing::sibling_removals_apart_both_hold_spec_permissions_3` with `world(5, 4)` (peer 4 an outsider granted write on t) in place of `world(4, 4)`, carried as labels do (`carry_sealed`), acting in turn.
+Shape: `rotation::tests_signing::sibling_removals_apart_both_hold_spec_permissions_3` with `world(5, 4)` (peer 4 an outsider granted write on t) in place of `world(4, 4)`, carried as sync IDs do (`carry_sealed`), acting in turn.
 
 What node 0 holds once settled (first 0; first 1 is symmetric):
 - Node 1's rotation of t to n2, made when node 1 wrote after its removal (the knowing re-key), signed at Q1 and boxing P at Q1: held, not established (`est false`, no secret). The merge M closes Q1; node 0 cannot list it (Q0, made before it arrived, ends Q1 for the cutoff: Q1 is boxed to the node node 0 removed), so it counts only by node 1's listing answering M.

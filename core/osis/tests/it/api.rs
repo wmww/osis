@@ -682,7 +682,7 @@ fn stream_len_set_stream_spec_data_model_6() {
 }
 
 // spec/requirements.md (Offline and network), notes/api.md Diagnostics: a thing added only to a
-// group no synced group holds gets `NotSynced`; one added to the (labeled) home group does not,
+// group no synced group holds gets `NotSynced`; one added to the home group does not,
 // the account's own things included.
 // spec: none (API surface, notes/api.md)
 #[test]

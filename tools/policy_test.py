@@ -54,7 +54,7 @@ PLANTS = [
     ("core/test/crdt-model/src/lib.rs", None, "\n#[cfg(test)]\nmod planted {}\n"),
     ("core/schema/src/lib.rs", None, "\n/// ```\n/// planted();\n/// ```\nfn planted_doc() {}\n"),
     ("core/schema/src/bin/osis-schema-gen.rs", None, "\n#[cfg(test)]\nmod planted {}\n"),
-    ("core/label/src/lib.rs", "#![forbid(unsafe_code)]", ""),
+    ("core/blob/src/lib.rs", "#![forbid(unsafe_code)]", ""),
     ("app/android/src/gpu.rs", None, "\nfn planted() {\n    // SAFETY: planted\n    unsafe { planted() }\n}\n"),
     ("core/crypto/Cargo.toml", "[dependencies]\n", '[dependencies]\nplanted-dep = "1"\n'),
     # env_vars
@@ -119,7 +119,7 @@ EXPECT = [  # regexes the output must hold
     r"core/test/crdt-model: \[lib\] test = false but src/ has #\[cfg\(test\)\]",
     r"core/schema/src/lib\.rs: doctest = false but it has a doctest",
     r"core/schema: bin osis-schema-gen has test = false",
-    r"core/label/src/lib\.rs: crate root lacks #!\[forbid\(unsafe_code\)\]",
+    r"core/blob/src/lib\.rs: crate root lacks #!\[forbid\(unsafe_code\)\]",
     r"app/android: 2 unsafe blocks",
     r"dependency `planted-dep` \(core/crypto\) has no line",
     r"OSIS[_]PROBE_PLANTED is a throwaway probe",

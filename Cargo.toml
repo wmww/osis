@@ -23,7 +23,7 @@ osis-schema = { path = "core/schema" }
 osis-store = { path = "core/store" }
 osis-commit = { path = "core/commit" }
 osis-keys = { path = "core/keys" }
-osis-label = { path = "core/label" }
+osis-blob = { path = "core/blob" }
 osis-proto = { path = "core/proto" }
 osis-transport = { path = "core/transport" }
 osis-engine = { path = "core/engine" }

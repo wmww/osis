@@ -1,4 +1,4 @@
-//! `sign/`: Ed25519 signatures over `domain || digest` for every signature domain, and the label
+//! `sign/`: Ed25519 signatures over `domain || digest` for every signature domain, and the sync ID
 //! open signature (spec/crypto.md §2, spec/wire.md §11.2). Generated.
 
 use super::{case, generated_header, s32};
@@ -32,7 +32,7 @@ pub fn signatures() -> VecFile {
             case(name, "spec/wire.md §11.2")
                 .with("seed", hex(s32(0x08).expose()))
                 .with("side", if by_listener { "1" } else { "0" })
-                .with("label-id", hex(&l.0))
+                .with("sync-id", hex(&l.0))
                 .with("challenge", hex(&c))
                 .with("static-key", hex(&s))
                 .with("digest", hex(&open_digest(by_listener, &l, &c, &s)))

@@ -177,8 +177,8 @@ impl Engine {
 
     /// What an attacker holding this node's device recovers from everything `backend` (the
     /// engine's store) and `blobs` (its ciphertext store's) recorded (`osis_store::attack`): the
-    /// current tree's keys, the label read secrets this node's code computes now, blobs and wraps
-    /// opened as osis-label does. Shredding tests.
+    /// current tree's keys, the sync ID read secrets this node's code computes now, blobs and wraps
+    /// opened as osis-blob does. Shredding tests.
     #[doc(hidden)]
     pub fn forensic(&mut self, backend: &osis_store::MemoryBackend, blobs: &osis_store::MemoryBackend) -> Result<Vec<osis_store::Recovered>> {
         // the one store: the engine's and its ciphertext store's (the hub's, its entry rows)
@@ -917,10 +917,10 @@ impl IndexDigest {
     }
 }
 
-/// How blobs, wraps and sections open, as osis-label and osis-commit open them (`Engine::forensic`).
+/// How blobs, wraps and sections open, as osis-blob and osis-commit open them (`Engine::forensic`).
 const FORENSIC_CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
-    prefix: |blob| osis_label::blob::Prefix::parse(blob).ok().map(|p| p.len()),
-    open: |blob, key| osis_label::open(blob, &osis_crypto::Secret32::from_bytes(*key)).ok().map(|(_, p)| p),
+    prefix: |blob| osis_blob::blob::Prefix::parse(blob).ok().map(|p| p.len()),
+    open: |blob, key| osis_blob::open(blob, &osis_crypto::Secret32::from_bytes(*key)).ok().map(|(_, p)| p),
     sections: |plain| {
         let Ok(env) = osis_commit::Envelope::decode(plain) else { return Vec::new() };
         let id = env.id();
@@ -1012,10 +1012,10 @@ mod tests {
             m.set(many, &Ak::new(format!("x:a{i:02}.0")).unwrap(), &Value::Str(format!("PLANTED-MANY-{i}"))).unwrap();
         }
         let id = e.commit(m).unwrap().unwrap();
-        // the commit blob as labels carry it: its key planted, no wrap or read secret on the device
+        // the commit blob as sync IDs carry it: its key planted, no wrap or read secret on the device
         let body = e.body(&id).unwrap().unwrap();
-        let sealed = e.seal(&body, osis_label::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(0)).unwrap().unwrap();
-        let env = osis_commit::Envelope::decode(&osis_label::open(&sealed.blob, &sealed.key).unwrap().1).unwrap();
+        let sealed = e.seal(&body, osis_blob::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(0)).unwrap().unwrap();
+        let env = osis_commit::Envelope::decode(&osis_blob::open(&sealed.blob, &sealed.key).unwrap().1).unwrap();
         let bk = sealed.key;
         let framed = sealed.blob;
         let reads: Vec<_> = [one, many].iter().flat_map(|t| e.read_secrets(t)).collect();
@@ -1053,8 +1053,8 @@ mod tests {
         let body = e.body(&id).unwrap().unwrap();
         let reads = e.read_secrets(&t);
         let mut seal = |seed| {
-            let sealed = e.seal(&body, osis_label::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(seed)).unwrap().unwrap();
-            let env = osis_commit::Envelope::decode(&osis_label::open(&sealed.blob, &sealed.key).unwrap().1).unwrap();
+            let sealed = e.seal(&body, osis_blob::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(seed)).unwrap().unwrap();
+            let env = osis_commit::Envelope::decode(&osis_blob::open(&sealed.blob, &sealed.key).unwrap().1).unwrap();
             let keys: Vec<[u8; 32]> = env.sections.iter().filter_map(|s| reads.iter().find_map(|r| osis_crypto::unwrap_section(r, &env.id(), &s.wrap).ok())).map(|k| *k.expose()).collect();
             (sealed, env, keys)
         };
@@ -1062,7 +1062,7 @@ mod tests {
         let (b, env_b, keys_b) = seal(1);
         assert_eq!(env_a.id(), env_b.id(), "one commit");
         assert!(!keys_b.is_empty() && keys_b.iter().all(|k| !keys_a.contains(k)), "sealed again under other keys");
-        let attack = |s: &crate::labeling::Sealed, keys: &[[u8; 32]]| {
+        let attack = |s: &crate::sync_ids::Sealed, keys: &[[u8; 32]]| {
             let secrets = [&[*s.key.expose()][..], keys].concat();
             let ev = osis_store::Evidence { secrets, blobs: vec![(s.id, Some(s.blob.clone()))], ..Default::default() };
             osis_store::attack(&ev, Some(&FORENSIC_CIPHERS)).into_iter().any(|r| r.plain.windows(8).any(|w| w == b"RESEALED"))

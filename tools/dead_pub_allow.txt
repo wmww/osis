@@ -66,7 +66,7 @@ osis::rotate_peer_address  public API: fails `NotBuilt` until sync is rebuilt (i
 osis-engine::coverers_of  test hook: retention tests read what covered a dropped part
 osis-engine::body_valid  test hook: validity tests read one body's verdict
 osis-engine::commit_in_memory  test hook: an own memory commit (what write makes of an ephemeral write)
-osis-engine::label_bodies_meta  test hook: the whole walk sync_bodies is checked against
+osis-engine::sync_id_bodies_meta  test hook: the whole walk sync_bodies is checked against
 osis-engine::bear  test hook (tests/it)
 osis-engine::commit_forged  test hook (tests/it)
 osis-engine::damage_edges  test hook (tests/it)

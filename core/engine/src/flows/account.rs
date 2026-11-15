@@ -984,7 +984,7 @@ pub(crate) fn holder_keys(tx: &mut Tx<'_>, p: &Tid) -> Result<HolderKeys> {
     holder_keys_at(tx, p, &name)?.ok_or(Error::Misuse("no keys.0 of the account's epoch held"))
 }
 
-/// The reader key of a label for account `p` (spec/sync-ids.md §3): the X25519 half of its
+/// The reader key of a sync ID for account `p` (spec/sync-ids.md §3): the X25519 half of its
 /// preferred head's KEM key. `None`: its KEM key is not held here.
 pub(crate) fn reader_key(tx: &mut Tx<'_>, p: &Tid) -> Result<Option<ReaderKey>> {
     let Some(v) = tx.core.account_view(p) else { return Ok(None) };
@@ -1135,7 +1135,7 @@ impl Engine {
     /// that is not on the account's devices actor is granted admin there (spec/permissions.md
     /// §1: a grant of read or above on D makes a node of P); one that is (stranded) is re-sealed. Returns the
     /// commits to send it directly: the grant or re-seal, D's and P's certificates and D's
-    /// `label.0` commits (the new node downloads the rest under the home label), and last the
+    /// `sync.0` commits (the new node downloads the rest under the home sync ID), and last the
     /// new node's synced group (spec/sync-set.md §1: a copy of this node's synced group's items
     /// and subgroups) unless the account lists one for it still under home (a re-sealed stranded
     /// node keeps its own; one whose group was cut from home gets a new one: the spec's "until it
@@ -1158,8 +1158,8 @@ impl Engine {
             self.run(|tx| synced_group_in(tx, p, d, n, mine, None))?.1
         };
         let mut all: Vec<CommitId> = self.certificates(&d).commits.into_keys().collect();
-        let label = osis_base::Ak::new("sync.0").map_err(|_| Error::Misuse("ak"))?;
-        all.extend(self.core.ix.by_aspect.get(&(d, label)).into_iter().flatten().map(|(_, c)| *c));
+        let sync_id = osis_base::Ak::new("sync.0").map_err(|_| Error::Misuse("ak"))?;
+        all.extend(self.core.ix.by_aspect.get(&(d, sync_id)).into_iter().flatten().map(|(_, c)| *c));
         // the account's first commit: D's `account.0` and P's creation record; its rotations
         // (with their thing lists, `Package::lists`), so what they name counts at the new node
         let seeds = osis_base::Ak::new("account.0").map_err(|_| Error::Misuse("ak"))?;

@@ -19,7 +19,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 - **osis-sync** (core/sync): the node's connections, its store per sync ID and the judgement over them, as one sans-IO step. Modules, one per area, each owning its state and changing no other's: `session`, `opens`, `store`, `read`, `unread`, `leave`, `streams`, `inbox`, `status`, `driver`; `set` (the engine's sync set followed per key, which `leave` alone follows, and `SyncsFollow`, each module's cursor over the sync IDs this node syncs: the sync set plus leaving ones while they wait, notes/sync-leave.md); `types` (every type two modules share; a type one module owns and others only read lives in that module). A part not built answers `Error::NotBuilt` or does nothing; no path a test reaches panics. The tokio transport glue is behind the default `driver` feature, the crate's one feature set.
 - **osis-engine**'s `sync` module (core/engine/src/sync): the facade.
 - **osis-proto** (core/proto): codecs below sync (frames, Hello, proofs, messages and their limits, filters, relay gate, the client port's messages); no session or store (notes/sync-protocol.md).
-- **osis-label** (core/label): blob prefix and wraps, steps, claim sets, stamps and deposit signatures, inbox blobs, links, bundles.
+- **osis-blob** (core/blob): blob prefix and wraps, steps, claim sets, stamps and deposit signatures, inbox blobs, links, bundles.
 - **osis-store**: the store primitives sync builds on (local rows, per-peer `record` rows under `RECORD_BUDGET`, `nodelog`, `changed`), and `CipherHost`, through which the engine keeps blob bytes in sync's store.
 - **osis-transport**: connections below sync (notes/networking.md).
 - **osis** holds a `Node` per handle and steps it from its driver task (notes/api-implementation.md).
@@ -38,7 +38,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 | spec | code |
 |---|---|
 | spec/sync-set.md (what a node syncs) | engine `sync/set.rs` (`sync_things`, `thing_sync`, `sync_set`, `sync_holder`), `forget_local`; osis-sync `set.rs`; `leave` (what the node syncs, and leaving) |
-| spec/sync-ids.md (sync IDs, steps, the store, Register, Behind, Walk) | engine `labeling` and `sync/records.rs`; `store` (entries, paths, caps, Register, Delete, Behind); `opens` (Walk); `inbox/register.rs` |
+| spec/sync-ids.md (sync IDs, steps, the store, Register, Behind, Walk) | engine `sync_ids` and `sync/records.rs`; `store` (entries, paths, caps, Register, Delete, Behind); `opens` (Walk); `inbox/register.rs` |
 | spec/sync-opens.md (dials, proofs, records, the shared set) | `driver/dials.rs`, `session` (proofs), `opens` |
 | spec/sync-judgement.md, spec/sync-compaction.md | `read` (reader), `unread` (kept unread); engine `sync/facts.rs`, `bodies.rs`, retention |
 | spec/sync-inbox.md | `inbox`; engine `sync/inbox.rs`, `deliveries.rs` |
@@ -52,7 +52,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 - notes/sync-session.md, sync-opens.md, sync-store.md, sync-read.md, sync-unread.md, sync-leave.md, sync-streams.md, sync-inbox.md, sync-status.md, sync-driver.md: one per module (what it owns, its implementation choices, bounds, reasons, what is not built).
 - notes/sync-facade.md: the engine's facade, the memo and `Effects` mechanism, the engine tables kept for sync.
 - notes/sync-test-harness.md: the one harness (worlds of `Node`s, scripted peers, histories, faults).
-- Design reasons: notes/sync-reasons.md (core: blobs, sync IDs, stamps, delete keys, nodes), notes/sync-access.md (steps, claims, re-seal, static entries), notes/sync-convergence.md (judgement and deletion), notes/inbox.md (deposits, inbox), notes/unreadable-data.md (what a node keeping S unread learns), notes/sync-protocol.md (wire, osis-proto, osis-label), notes/networking.md (transports, reachability, first contact), notes/growth.md (permanent growth).
+- Design reasons: notes/sync-reasons.md (core: blobs, sync IDs, stamps, delete keys, nodes), notes/sync-access.md (steps, claims, re-seal, static entries), notes/sync-convergence.md (judgement and deletion), notes/inbox.md (deposits, inbox), notes/unreadable-data.md (what a node keeping S unread learns), notes/sync-protocol.md (wire, osis-proto, osis-blob), notes/networking.md (transports, reachability, first contact), notes/growth.md (permanent growth).
 - Open: issues/sync-unbuilt.md (every stub, per module), issues/sync-tess-calls.md (reversible choices waiting on Tess), and the `sync`-tagged issues.
 
 ## The osis API over sync

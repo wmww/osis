@@ -45,7 +45,7 @@ pub struct InboxPayload {
     pub things: Vec<InboxThing>,
     /// The author's chain certificates for the commit's carried parts (spec/permissions.md §4), as
     /// `CommitBlobPlaintext` values each projected to its chain deltas, so the recipient verifies
-    /// the commit without reading any label of the things it names (spec/wire.md §9).
+    /// the commit without reading any sync ID of the things it names (spec/wire.md §9).
     pub chain: Vec<Value>,
     /// The raw creation records of that chain (spec/permissions.md §4): a record proves itself by
     /// its hash.
@@ -83,8 +83,8 @@ impl InboxPayload {
         let mut out: Vec<InboxThing> = Vec::with_capacity(things.len());
         for t in &things {
             let Value::List(f) = t else { return Err(Error::Malformed("inbox thing")) };
-            let [tid, label, keys] = f.as_slice() else { return Err(Error::Malformed("inbox thing")) };
-            let sync_id = get_opt(label, "inbox sync ID")?.map(|v| get_bytes(v, "inbox sync ID").map(SyncId)).transpose()?;
+            let [tid, sync_id, keys] = f.as_slice() else { return Err(Error::Malformed("inbox thing")) };
+            let sync_id = get_opt(sync_id, "inbox sync ID")?.map(|v| get_bytes(v, "inbox sync ID").map(SyncId)).transpose()?;
             let key = |v: &Value| get_key(v, "inbox delete key");
             let delete_keys = match get_opt(keys, "inbox delete keys")? {
                 None => None,
@@ -140,12 +140,12 @@ pub struct InboxRest {
 }
 
 /// `StrandedNotice := ["stranded", sync_id, holder, [CommitBlobPlaintext*], [creation*]]`
-/// (spec/wire.md §9): holder `holder` is stranded on label `label` (spec/permissions.md §4), with
+/// (spec/wire.md §9): holder `holder` is stranded on sync ID `sync_id` (spec/permissions.md §4), with
 /// the holder's current `keys.0` commits and their authors' chains (`HolderKeys`). It carries no
 /// role commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StrandedNotice {
-    pub label: SyncId,
+    pub sync_id: SyncId,
     pub holder: Tid,
     pub keys: HolderKeys,
 }
@@ -153,7 +153,7 @@ pub struct StrandedNotice {
 /// A stranded report's holder keys (spec/wire.md §9): the holder's current `keys.0` commits, each
 /// projected to that delta, with their authors' chain certificates for them, as
 /// `CommitBlobPlaintext` values projected to their chain deltas, and the raw creation records of
-/// that chain, ascending by tid, distinct. A reader of the label's actor that is gone from the
+/// that chain, ascending by tid, distinct. A reader of the sync ID's actor that is gone from the
 /// holder seals it at its keyset and deposits under its inbox from these alone.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HolderKeys {
@@ -195,16 +195,16 @@ fn records_from(records: &[Value]) -> Result<Vec<CreationRecord>, Error> {
 impl StrandedNotice {
     pub fn to_value(&self) -> Value {
         let [commits, records] = self.keys.to_values();
-        Value::List(vec![Value::Str("stranded".into()), Value::bytes(&self.label.0), tid(&self.holder), commits, records])
+        Value::List(vec![Value::Str("stranded".into()), Value::bytes(&self.sync_id.0), tid(&self.holder), commits, records])
     }
 
     pub fn from_value(v: &Value) -> Result<StrandedNotice, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("stranded notice")) };
-        let [Value::Str(k), label, holder, commits, records] = items.as_slice() else { return Err(Error::Malformed("stranded notice")) };
+        let [Value::Str(k), sync_id, holder, commits, records] = items.as_slice() else { return Err(Error::Malformed("stranded notice")) };
         if k != "stranded" {
             return Err(Error::Malformed("stranded notice"));
         }
-        Ok(StrandedNotice { label: SyncId(get_bytes(label, "stranded label")?), holder: get_tid(holder, "stranded holder")?, keys: HolderKeys::from_values(commits, records)? })
+        Ok(StrandedNotice { sync_id: SyncId(get_bytes(sync_id, "stranded sync ID")?), holder: get_tid(holder, "stranded holder")?, keys: HolderKeys::from_values(commits, records)? })
     }
 }
 
@@ -474,7 +474,7 @@ mod tests {
         let kem = KemSecret::derive(&Secret32::from_bytes([9; 32]));
         let r = Tid::from_bytes([5; 15]);
         let p = payload();
-        let n = StrandedNotice { label: SyncId([3; 16]), holder: Tid::from_bytes([7; 15]), keys: HolderKeys { commits: p.chain, records: p.records } };
+        let n = StrandedNotice { sync_id: SyncId([3; 16]), holder: Tid::from_bytes([7; 15]), keys: HolderKeys { commits: p.chain, records: p.records } };
         let b = seal_stranded_notice(&r, kem.public(), &n, WallMs(1000), &mut rng).unwrap();
         let (p, got) = open_inbox_item(&b, &r, &kem).unwrap();
         assert_eq!(got, Inbox::Stranded(n));

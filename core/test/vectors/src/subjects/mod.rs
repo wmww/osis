@@ -116,7 +116,7 @@ impl Drop for FixedRng {
 }
 
 /// A 26-byte clear prefix, opaque to these vectors: framing version 1, salt 01*16, no expiry,
-/// no commitments (layout spec/wire.md §5, vectors of osis-label).
+/// no commitments (layout spec/wire.md §5, vectors of osis-blob).
 pub const PREFIX: [u8; 26] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 /// 32 repeated bytes (the fixed seeds of the vectors).

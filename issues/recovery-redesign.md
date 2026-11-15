@@ -7,7 +7,7 @@
 
 notes/disputes.md records her direction: no recovery key by default, and a stolen unlocked device accepted. notes/disputes-plan.md makes a recovery card an ordinary key holding an admin role.
 
-Nothing of recovery is in the engine or spec. Accounts (spec/permissions.md §1) have no owner key apart from their epoch seeds on D, so an account with no node left is not recoverable; a design starts from the epoch seeds. One that claims a label by a static entry must handle a head moving while the fresh node reads.
+Nothing of recovery is in the engine or spec. Accounts (spec/permissions.md §1) have no owner key apart from their epoch seeds on D, so an account with no node left is not recoverable; a design starts from the epoch seeds. One that claims a sync ID by a static entry must handle a head moving while the fresh node reads.
 
 ## Questions for the design
 - Is recovery an explicit act after `create`, any time, with or without peers?

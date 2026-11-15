@@ -217,14 +217,14 @@ fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
     let c = e.commit(m).unwrap().unwrap();
     let body = e.body(&c).unwrap().expect("a body");
     let rng = &mut osis_crypto::SeededRng::from_u64(7);
-    let sealed = e.seal(&body, osis_label::Class::Durable, &[], rng).unwrap().expect("sealed");
-    let (prefix, pt) = osis_label::open(&sealed.blob, &sealed.key).unwrap();
+    let sealed = e.seal(&body, osis_blob::Class::Durable, &[], rng).unwrap().expect("sealed");
+    let (prefix, pt) = osis_blob::open(&sealed.blob, &sealed.key).unwrap();
     assert_eq!(prefix.expiry(), Some(expires));
     let env = osis_commit::Envelope::decode(&pt).unwrap();
     let groups = osis_commit::prefix_groups(&env.header, env.ais().iter().copied()).unwrap();
     let mut framed = |at: Option<osis_base::WallMs>| {
-        let p = osis_label::Prefix::for_delete_keys(osis_label::Prefix::random_salt(rng), &env.header.blind, at, &groups).unwrap().with_class(osis_label::Class::Durable);
-        let (key, blob) = osis_label::frame(&p, &pt, rng).unwrap();
+        let p = osis_blob::Prefix::for_delete_keys(osis_blob::Prefix::random_salt(rng), &env.header.blind, at, &groups).unwrap().with_class(osis_blob::Class::Durable);
+        let (key, blob) = osis_blob::frame(&p, &pt, rng).unwrap();
         e.open_commit(&blob, &key)
     };
     assert!(framed(Some(osis_base::WallMs(expires.0 + 1))).is_err(), "a later expiry");

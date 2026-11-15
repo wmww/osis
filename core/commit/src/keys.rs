@@ -37,7 +37,7 @@ pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &Retention) -> Result<Vec<Dele
         .collect()
 }
 
-/// Clear blob prefix inputs of a linked blob (spec/wire.md §5): osis-label commits to `keys`,
+/// Clear blob prefix inputs of a linked blob (spec/wire.md §5): osis-blob commits to `keys`,
 /// each blinded by `salt` and the thing blind of the blob's link blind (spec/crypto.md §7: from
 /// the key it draws), and lays the prefix out.
 #[derive(Clone, Debug, PartialEq, Eq)]

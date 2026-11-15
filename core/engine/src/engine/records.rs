@@ -62,9 +62,9 @@ pub const DESTROYED: &[u8] = b"td/";
 /// held for node-sync's deletes of their commits' entries (`retention::destroy::hold_secrets`):
 /// `kd/` + tid, until `Engine::drop_destroyed_secrets`.
 pub const DESTROYED_SECRETS: &[u8] = b"kd/";
-/// The labels of a destroyed thing with secrets of its own, its `label.0` value as its destruction
-/// dropped it: `kl/` + tid, until node-sync emptied them (`Engine::labels_emptied`) or the
-/// destruction fell (`retention::destroy::keep_labels`).
+/// The sync IDs of a destroyed thing with secrets of its own, its `sync.0` value as its destruction
+/// dropped it: `kl/` + tid, until node-sync emptied them (`Engine::sync_ids_emptied`) or the
+/// destruction fell (`retention::destroy::keep_sync_ids`).
 pub const DESTROYED_SYNC_IDS: &[u8] = b"kl/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
@@ -82,7 +82,7 @@ pub const OWN_KEYS: &[u8] = b"g/";
 /// the epoch's n (8 bytes, big endian) + nonce, empty.
 pub const DERIVED_WRITTEN: &[u8] = b"dw/";
 /// The epochs sections of commits another wrote opened under, per part, and those this node's own
-/// content parts were made under where their floor is above 0 (`labeling::opened`):
+/// content parts were made under where their floor is above 0 (`sync_ids::opened`):
 /// `ou/` + commit ID + aspect index (4 bytes, big endian) + the epoch's n (8 bytes, big endian)
 /// + nonce; the value a byte (1: the delta checked against its header) and the delta's hash.
 pub const OPENED_UNDER: &[u8] = b"ou/";

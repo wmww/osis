@@ -7,8 +7,8 @@ use crate::api::{Outcome, Payload};
 use crate::msg::*;
 use crate::{ActorProof, Prover, SyncId};
 use osis_base::{BlobId, CreationRecord, Tid, Value, WallMs, cbor};
-use osis_crypto::{Epoch, KemSecret, LabelRole, SeededRng, Secret32, SigningSecret, X25519Secret, label_role_key};
-use osis_label::{Parent, Prefix, Reader, StepKeys, genesis_label, register, sign_stamp};
+use osis_crypto::{Epoch, KemSecret, RoleKey, SeededRng, Secret32, SigningSecret, X25519Secret, role_key};
+use osis_blob::{Parent, Prefix, Reader, StepKeys, genesis_sync_id, register, sign_stamp};
 
 /// The listener's static key and the Hello challenge the examples sign opens and proofs for.
 pub const STATIC_KEY: [u8; 32] = [0x5e; 32];
@@ -41,9 +41,9 @@ impl Fixture {
     /// sync secret `b+8`.
     pub fn new(b: u8) -> Fixture {
         let (read, write, admin, dseed, sync) = (s32(b), s32(b + 1), s32(b + 2), s32(b + 3), s32(b + 8));
-        let sync_id = genesis_label(&admin);
+        let sync_id = genesis_sync_id(&admin);
         let keys = StepKeys::derive(&sync, &write, &admin, &dseed, &sync_id);
-        let delete = label_role_key(LabelRole::Delete, &admin);
+        let delete = role_key(RoleKey::Delete, &admin);
         let reader = X25519Secret::from_secret(&s32(b + 4));
         let key_actor = SigningSecret::from_seed(&s32(b + 5));
         let kem = KemSecret::derive(&s32(b + 6));
@@ -60,8 +60,8 @@ impl Fixture {
             genesis_claims,
             child,
             child_claims,
-            sync: label_role_key(LabelRole::Sync, &sync),
-            write: label_role_key(LabelRole::Write, &write),
+            sync: role_key(RoleKey::Sync, &sync),
+            write: role_key(RoleKey::Write, &write),
             delete,
             deposit: osis_crypto::deposit_key(&dseed, &sync_id),
             reader,
@@ -76,13 +76,13 @@ impl Fixture {
 
     pub fn blob_with(n: u8, expiry: Option<u64>, commitments: Vec<[u8; 33]>) -> Vec<u8> {
         let p = Prefix::new([n; 16], expiry.map(WallMs), if commitments.is_empty() { vec![] } else { vec![commitments] }).expect("fixed prefix");
-        osis_label::frame(&p, &[n; 20], &mut SeededRng::from_seed([n; 32])).expect("small blob").1
+        osis_blob::frame(&p, &[n; 20], &mut SeededRng::from_seed([n; 32])).expect("small blob").1
     }
 
     /// A stamped entry of `blob` under the head's write key (wrap: one byte repeated).
     pub fn entry(&self, blob: Vec<u8>) -> Stamped {
         let wrap = [blob.len() as u8; WRAP_LEN];
-        let stamp = sign_stamp(&self.write, &self.sync_id, &osis_label::blob_id(&blob), &wrap, false);
+        let stamp = sign_stamp(&self.write, &self.sync_id, &osis_blob::blob_id(&blob), &wrap, false);
         Stamped { blob, wrap, stamp }
     }
 }
@@ -119,11 +119,11 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
     let id = |b: u8| BlobId([b; 32]);
     let top = |n: u32| crate::limits::TOP_BIT | n;
     let entry = f.entry(Fixture::blob(1));
-    let added = Event::Added { blob_id: osis_label::blob_id(&entry.blob), blob: Some(entry.blob.clone()), wrap: entry.wrap, stamp: Some(entry.stamp) };
+    let added = Event::Added { blob_id: osis_blob::blob_id(&entry.blob), blob: Some(entry.blob.clone()), wrap: entry.wrap, stamp: Some(entry.stamp) };
     let entry_box = f.genesis_claims.entry_box(&l, &f.key_actor.verifying_key()).cloned().expect("the key actor is listed");
     let deposited = Fixture::blob(2);
     let dep_wrap = [0x78; WRAP_LEN];
-    let dep_sig = osis_label::sign_deposit(&f.deposit, &l, &osis_label::blob_id(&deposited), &dep_wrap, false);
+    let dep_sig = osis_blob::sign_deposit(&f.deposit, &l, &osis_blob::blob_id(&deposited), &dep_wrap, false);
     let dk = osis_crypto::DeleteSecret::derive(&s32(0x7a));
     let open = |k: &SigningSecret| osis_crypto::sign_open(k, false, &l, &CHALLENGE, &STATIC_KEY);
     let gcs = crate::filter::encode_gcs(&[3, 200, 201, 511], 0);
@@ -155,7 +155,7 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
                 id: 30,
                 sync_id: l,
                 holder: Tid::from_bytes([0x0d; 15]),
-                keys: osis_label::HolderKeys { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::Thing { admin: Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: None }] },
+                keys: osis_blob::HolderKeys { commits: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])], records: vec![CreationRecord::Thing { admin: Tid::from_bytes([0x0e; 15]), nonce: [0x0f; 32], link: None }] },
             },
         ),
         ("suspect", Msg::Suspect { id: 31, sync_id: l, entries: vec![SuspectEntry { thing: Tid::from_bytes([0x0c; 15]), ak: osis_base::Ak::new("t:reg.0").expect("an AK"), digest: [0x0d; 16] }] }),

@@ -6,7 +6,7 @@ use super::Why;
 use super::ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView};
 use osis_engine::retention::freed::Freed;
 use osis_engine::sync::PieceLink;
-use osis_label::StepId;
+use osis_blob::StepId;
 use crate::opens::Opens;
 use crate::session::{Sessions, To};
 use crate::store::{Source, Stand};
@@ -18,7 +18,7 @@ use osis_base::memo::Feed;
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
 use osis_engine::sync::{BodyMeta, CertKind, Destruction, HeldBlob, MustNot, ReadCredentials};
-use osis_label::{Class, DeleteItem};
+use osis_blob::{Class, DeleteItem};
 use osis_proto::Msg;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -67,7 +67,7 @@ fn stamp_key(cx: &mut Cx, s: &SyncId) -> Result<Option<SigningSecret>> {
 /// The entry this node logs of its own under `s`: stamped where it writes S's served head, else
 /// deposited.
 fn own_entry(cx: &mut Cx, s: &SyncId, blob: BlobId, wrap: crate::types::Wrap, class: Class) -> Result<Entry> {
-    let stamp = stamp_key(cx, s)?.map(|w| osis_label::sign_stamp(&w, s, &blob, &wrap, false));
+    let stamp = stamp_key(cx, s)?.map(|w| osis_blob::sign_stamp(&w, s, &blob, &wrap, false));
     Ok(Entry { blob, wrap, stamp, deposited: stamp.is_none(), own: true, role: false, class, expires: None })
 }
 
@@ -107,7 +107,7 @@ impl Live<'_, '_> {
     /// The parents of the recorded steps of S whose epochs depend on role commit `c`
     /// (`Engine::step_needs`), earliest first: an entry of `c` keeps a stamp under one, so a
     /// source standing there takes it before the step is registered (spec/sync-ids.md §6 Steps).
-    fn step_parents(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<osis_label::Step>> {
+    fn step_parents(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<osis_blob::Step>> {
         if !self.cx.engine.read_facts(s, c)?.role {
             return Ok(Vec::new());
         }
@@ -137,7 +137,7 @@ impl Live<'_, '_> {
     /// with an entry's wrap, tombstoned under `s` or not (spec/crypto.md §5 Passing on: what
     /// this node may not encrypt under an epoch of its choosing goes as the section it came in).
     /// The only place read makes a fresh encryption of a body.
-    fn fresh(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<(osis_engine::labeling::Sealed, crate::types::Wrap)>> {
+    fn fresh(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<(osis_engine::sync_ids::Sealed, crate::types::Wrap)>> {
         let mut held = Vec::new();
         for (b, x, e) in self.held_blobs(c)? {
             let Some(bytes) = self.cx.store.bytes(&b)? else { continue };
@@ -301,7 +301,7 @@ impl Ground for Live<'_, '_> {
             }
         }
         let Some(w) = w.or(stamp_key(self.cx, s)?) else { return Ok(()) };
-        let stamp = osis_label::sign_stamp(&w, s, b, &e.wrap, e.role);
+        let stamp = osis_blob::sign_stamp(&w, s, b, &e.wrap, e.role);
         let own = e.own;
         self.cx.store.log(s, Entry { stamp: Some(stamp), deposited: false, own: true, ..e }, None, None)?;
         if !own {
@@ -632,11 +632,11 @@ impl Ground for Live<'_, '_> {
             (true, Some(d)) => DeleteItem::sign(d, s, blob),
             _ => {
                 let dks = self.cx.engine.freed_delete_secrets(f);
-                let refs: Vec<(osis_label::Level, &osis_crypto::DeleteSecret)> = dks.iter().map(|(l, d)| (*l, d)).collect();
-                let levels: Vec<osis_label::Level> = refs.iter().map(|x| x.0).collect();
-                let key = match osis_label::key_for_levels(&levels) {
-                    Ok(osis_crypto::LabelRole::Write) => keys.write.clone(),
-                    Ok(osis_crypto::LabelRole::Sync) if keys.sync_established => keys.sync.clone(),
+                let refs: Vec<(osis_blob::Level, &osis_crypto::DeleteSecret)> = dks.iter().map(|(l, d)| (*l, d)).collect();
+                let levels: Vec<osis_blob::Level> = refs.iter().map(|x| x.0).collect();
+                let key = match osis_blob::key_for_levels(&levels) {
+                    Ok(osis_crypto::RoleKey::Write) => keys.write.clone(),
+                    Ok(osis_crypto::RoleKey::Sync) if keys.sync_established => keys.sync.clone(),
                     _ => None,
                 };
                 let (Some(key), false) = (key, refs.is_empty()) else { return Ok(()) };

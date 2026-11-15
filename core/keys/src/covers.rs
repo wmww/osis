@@ -197,7 +197,7 @@ pub struct Holder {
 
 /// Re-seal trigger (spec/permissions.md §3): holders lacking a box at a current epoch of a role
 /// they hold, with the roles to re-seal (`box_holder`). The caller decides after a sync pass of
-/// the actor's labels that fetched everything, and only for roles it may rotate.
+/// the actor's sync IDs that fetched everything, and only for roles it may rotate.
 pub fn reseal_needed(secrets: &Secrets, epochs: &ActorEpochs, holders: &[Holder]) -> Vec<(Tid, BTreeSet<Role>)> {
     let mut out = Vec::new();
     for m in holders {

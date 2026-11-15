@@ -14,7 +14,7 @@ use osis_base::{BlobId, CommitId, Role, SyncId, Tid, Value, WallMs};
 use osis_commit::CommitBlob;
 use osis_crypto::KemSecret;
 use osis_keys::Opener;
-use osis_label::{BoxesPayload, Inbox, InboxPayload, InboxRest, open_inbox_item};
+use osis_blob::{BoxesPayload, Inbox, InboxPayload, InboxRest, open_inbox_item};
 use osis_schema::core_types as ct;
 use osis_schema::RawKey;
 use osis_store::Shred;
@@ -190,7 +190,7 @@ impl Engine {
     fn open_inbox_bytes(&mut self, s: &SyncId, bytes: &[u8]) -> Option<(Tid, WallMs, Inbox)> {
         // a blob whose prefix no inbox blob has (a commit's, under the inbox's own sync ID) is
         // opened by no key: told from its bytes alone, so it reads nothing that moves
-        if !osis_label::Prefix::parse(bytes).is_ok_and(|p| p.inbox_shaped()) {
+        if !osis_blob::Prefix::parse(bytes).is_ok_and(|p| p.inbox_shaped()) {
             return None;
         }
         let actors = self.inbox_actors().get(s).cloned().unwrap_or_default();
@@ -320,7 +320,7 @@ impl Engine {
             Inbox::Stranded(n) => {
                 // judged from what this node holds alone (`take_stranded`): taking it again
                 // asks nothing more
-                self.take_stranded(&n.label, &n.holder, &n.keys)?;
+                self.take_stranded(&n.sync_id, &n.holder, &n.keys)?;
                 return Ok(Some(InboxOpened { commit: None, taken: Taken::Refused, hints: Vec::new(), dial: None }));
             }
         };
@@ -407,7 +407,7 @@ impl Engine {
     /// by hand, as sync would take it).
     #[doc(hidden)]
     pub fn take_inbox_blob(&mut self, bytes: &[u8], vouched: bool) -> Result<Option<InboxOpened>> {
-        let b = osis_label::blob_id(bytes);
+        let b = osis_blob::blob_id(bytes);
         let ids: Vec<SyncId> = self.inbox_actors().keys().copied().collect();
         for s in ids {
             if let Some(o) = self.take_inbox_bytes(&s, &b, bytes, vouched)? {

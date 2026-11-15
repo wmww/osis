@@ -5,8 +5,8 @@ use osis_base::{Classified, CommitId, ErrorClass, Tid};
 #[derive(Debug)]
 pub enum Error {
     Store(osis_store::Error),
-    /// A commit, chunk tree, label object or blob failed to decode, verify, read or write
-    /// (osis-commit's error, which osis-label shares).
+    /// A commit, chunk tree, sync ID object or blob failed to decode, verify, read or write
+    /// (osis-commit's error, which osis-blob shares).
     Data(osis_commit::Error),
     Crdt(osis_crdt::Error),
     Keys(osis_keys::Error),

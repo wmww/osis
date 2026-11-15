@@ -1,14 +1,14 @@
 //! `step/`: registration steps and claim sets (spec/wire.md §8, spec/sync-ids.md §3). Generated.
 //! Group `07*15` with secrets: read `0a`, write `0b`, admin `09`, deposit seed `0c`,
-//! read epoch 0 (its nonce by spec/crypto.md §4). Randomness in draw order (`osis_label::register`): `step-secret`, per sealed
+//! read epoch 0 (its nonce by spec/crypto.md §4). Randomness in draw order (`osis_blob::register`): `step-secret`, per sealed
 //! entry box `ephemeral` then `mlkem-m`, 32 bytes per `padding` key, 8 bytes per `shuffle` swap.
 
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
 use osis_base::{SyncId, Value, encode};
-use osis_crypto::{Epoch, KeyActorKeys, LabelRole, X25519Secret, label_role_key, static_entry};
-use osis_label::{ClaimSet, Parent, Reader, Step, StepKeys, genesis_label, open_entry_box, register};
+use osis_crypto::{Epoch, KeyActorKeys, RoleKey, X25519Secret, role_key, static_entry};
+use osis_blob::{ClaimSet, Parent, Reader, Step, StepKeys, genesis_sync_id, open_entry_box, register};
 use osis_schema::Codec;
 
 const SPEC: &str = "spec/wire.md §8";
@@ -18,7 +18,7 @@ fn claims_field(c: &ClaimSet) -> String {
 }
 
 fn step_fields(r: Record, s: &Step, c: &ClaimSet) -> Record {
-    r.with("label-id", hex(&s.label.0))
+    r.with("sync-id", hex(&s.sync_id.0))
         .with("sync-pk", hex(&s.keys.sync.to_bytes()))
         .with("write-pk", hex(&s.keys.write.to_bytes()))
         .with("delete-pk", hex(&s.keys.delete.to_bytes()))
@@ -34,8 +34,8 @@ fn step_fields(r: Record, s: &Step, c: &ClaimSet) -> Record {
 
 pub fn steps() -> VecFile {
     let (read, write, admin, deposit, sync) = (s32(0x0a), s32(0x0b), s32(0x09), s32(0x0c), s32(0x0d));
-    let label = genesis_label(&admin);
-    let keys = StepKeys::derive(&sync, &write, &admin, &deposit, &label);
+    let sync_id = genesis_sync_id(&admin);
+    let keys = StepKeys::derive(&sync, &write, &admin, &deposit, &sync_id);
     let group = osis_base::Tid::from_bytes([0x07; 15]);
     let epoch = Epoch::derive(&group, osis_base::Role::Read, 0, &read).unwrap();
     let sync_epoch = Epoch::derive(&group, osis_base::Role::Sync, 0, &sync).unwrap();
@@ -46,7 +46,7 @@ pub fn steps() -> VecFile {
         Reader::Static { signing: card.signing.verifying_key(), kem: card.kem.public() },
     ];
     let (sk, eph, m, pad, shuf) = ([0x31u8; 32], [0x32u8; 32], [0x33u8; 32], [0x34u8; 32], [0x35u8; 24]);
-    let delete0 = label_role_key(LabelRole::Delete, &admin);
+    let delete0 = role_key(RoleKey::Delete, &admin);
     let mut rng = FixedRng::new(&[&sk, &eph, &m, &pad, &shuf]);
     let (s0, c0) = register(Parent::Genesis(&delete0), keys, &readers, (&group, epoch, &read), (sync_epoch, &sync), &mut rng).unwrap();
     drop(rng);
@@ -54,7 +54,7 @@ pub fn steps() -> VecFile {
     assert_eq!(s0.step_key, X25519Secret::from_secret(&osis_crypto::Secret32::from_bytes(sk)).public());
     let k1 = s0.claim_key(m1.kem.x25519()).unwrap().verifying_key().to_bytes();
     let k2 = s0.claim_key(m2.kem.x25519()).unwrap().verifying_key().to_bytes();
-    let entry = static_entry(&s0.label, &card.signing.verifying_key());
+    let entry = static_entry(&s0.sync_id, &card.signing.verifying_key());
     assert!(c0.contains(&k1) && c0.contains(&k2) && c0.contains(&entry));
     let b = c0.entries.get(&entry).unwrap();
     assert_eq!(open_entry_box(b, &s0, &card.kem, &group).unwrap(), osis_crypto::EntryItem { epoch, secret: read.clone(), earlier: None, sync: (sync_epoch, sync.clone()) });
@@ -87,7 +87,7 @@ pub fn steps() -> VecFile {
     // Child step: a rotation of every role (secrets 1a, 1b, 19, sync 1d), signed by the genesis
     // delete key.
     let (r1, w1, a1, y1) = (s32(0x1a), s32(0x1b), s32(0x19), s32(0x1d));
-    let keys1 = StepKeys::derive(&y1, &w1, &a1, &deposit, &label);
+    let keys1 = StepKeys::derive(&y1, &w1, &a1, &deposit, &sync_id);
     let sk1 = [0x41u8; 32];
     let mut rng = FixedRng::new(&[&sk1]);
     let (s1, c1) = register(Parent::Child { step: &s0, delete: &delete0 }, keys1, &[Reader::Dh(m1.kem.public().x25519())], (&group, Epoch::new(1, [0x0e; 32]).unwrap(), &r1), (Epoch::new(1, [0x0f; 32]).unwrap(), &y1), &mut rng).unwrap();
@@ -114,9 +114,9 @@ pub fn steps() -> VecFile {
     assert!(t.verify_child(&s0).is_err());
     cases.push(case("child step with a wrong signature", SPEC).with("parent", hex(&s0.to_bytes())).with("step", hex(&t.to_bytes())).with("reject", "step-signature"));
     let mut g = s0.clone();
-    g.label = SyncId([0; 16]);
+    g.sync_id = SyncId([0; 16]);
     assert!(g.verify_genesis().is_err());
-    cases.push(case("genesis step of another label ID", SPEC).with("step", hex(&g.to_bytes())).with("reject", "label-id"));
+    cases.push(case("genesis step of another sync ID", SPEC).with("step", hex(&g.to_bytes())).with("reject", "sync-id"));
     let three = encode(&Value::List(vec![Value::List((0..3u8).map(|i| Value::Bytes(vec![i; 32])).collect()), Value::Map(Default::default())]));
     assert!(ClaimSet::parse(&three).is_err());
     cases.push(case("claim set of three", SPEC).with("claim-set", hex(&three)).with("reject", "claim-count"));

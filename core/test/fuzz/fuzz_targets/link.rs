@@ -4,7 +4,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use osis_base::{Limits, decode};
-use osis_label::ShareLink;
+use osis_blob::ShareLink;
 
 fuzz_target!(|data: &[u8]| {
     if let Some((0, text)) = data.split_first() {

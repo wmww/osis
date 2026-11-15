@@ -68,7 +68,7 @@ fn sibling_opens_the_inner_signature_spec_crypto_3() {
     let contains = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
     let clear = lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap();
     assert!(!contains(&clear, sib.as_bytes()), "a commit as a node holds it names no node");
-    // an outsider receives what labels carry: the creation commit sealed, D's seed under D's read secret
+    // an outsider receives what sync IDs carry: the creation commit sealed, D's seed under D's read secret
     let creation = blob.header.id();
     let sealed = lp.sealed(0, &[creation]).unwrap();
     assert!(!sealed.is_empty());

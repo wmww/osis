@@ -216,10 +216,10 @@ fn own_floor(core: &crate::engine::Core, tid: &Tid) -> u64 {
 }
 
 /// Whether held commit `o`'s part on `(tid, ak)` was opened (or, this node's own, written) under
-/// an epoch of floor at least `floor` (`labeling::opened::part_floor`).
+/// an epoch of floor at least `floor` (`sync_ids::opened::part_floor`).
 fn opened_at(tx: &mut Tx<'_>, o: &CommitId, tid: &Tid, ak: &osis_base::Ak, floor: u64) -> Result<bool> {
     let Some(oai) = tx.core.ix.commits.get(o).and_then(|m| m.aspect(tid, ak)) else { return Ok(false) };
-    Ok(crate::labeling::opened::part_floor(tx, o, oai, tid)?.is_some_and(|f| f >= floor))
+    Ok(crate::sync_ids::opened::part_floor(tx, o, oai, tid)?.is_some_and(|f| f >= floor))
 }
 
 /// Whether part `ai` of `c` is listed (`listed`).

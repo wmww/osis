@@ -240,7 +240,7 @@ impl Osis {
     pub async fn connect_socket(store_dir: &Path, cfg: AppConfig) -> Result<Osis> {
         let url = osis_transport::unix::url_of(&socket_path(store_dir)?);
         let uid = osis_transport::unix::own_uid().map_err(|e| Error::Network(e.to_string()))?;
-        let addr = Address(osis_label::Address { url, key: osis_transport::unix::uid_key(uid) });
+        let addr = Address(osis_blob::Address { url, key: osis_transport::unix::uid_key(uid) });
         Osis::thin(&[(addr, None)], cfg).await
     }
 

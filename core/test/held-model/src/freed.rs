@@ -3,8 +3,8 @@
 //! body's links in a durable per-thing **freed set** and, link by link, judges each against the
 //! sources of its thing it still holds (bodies and live states): a piece one of them reaches stays;
 //! an unreached interior node is walked (its plaintext held or fetched) and its links join the set;
-//! an unreached piece is deleted at every host entry of the thing's labels the node holds the
-//! label key of, signed by a key Del names that the node holds. A host accepts a delete only when
+//! an unreached piece is deleted at every host entry of the thing's sync IDs the node holds the
+//! role key of, signed by a key Del names that the node holds. A host accepts a delete only when
 //! the blob's commitments, under the thing it was signed for, bear that key (the thing blind binds
 //! commitments to one thing). A judgment needing a node blob nobody serves waits.
 //!
@@ -53,17 +53,17 @@ pub struct NodeState {
     /// Delete keys the node holds, per thing (a key signs for any thing; listed per thing for
     /// generation only).
     pub keys: BTreeSet<DelKey>,
-    /// Labels whose key the node holds.
-    pub labels: BTreeSet<SyncId>,
+    /// Sync IDs whose key the node holds.
+    pub sync_ids: BTreeSet<SyncId>,
     /// The freed set: (thing, link) still to judge or delete.
     pub freed: BTreeSet<(Thing, Link)>,
 }
 
-/// A delete the host accepted: by `node`, of `piece`'s entry under `label`, signed for `thing`.
+/// A delete the host accepted: by `node`, of `piece`'s entry under `sync_id`, signed for `thing`.
 #[derive(Clone, Debug)]
 pub struct Deleted {
     pub node: usize,
-    pub label: SyncId,
+    pub sync_id: SyncId,
     pub piece: Pid,
     pub thing: Thing,
     pub key: DelKey,
@@ -73,9 +73,9 @@ pub struct Deleted {
 pub struct World {
     pub pieces: Vec<Piece>,
     pub sources: Vec<Source>,
-    /// The labels of each thing.
-    pub labels: BTreeMap<Thing, Vec<SyncId>>,
-    /// Live host entries (label, piece).
+    /// The sync IDs of each thing.
+    pub sync_ids: BTreeMap<Thing, Vec<SyncId>>,
+    /// Live host entries (sync ID, piece).
     pub entries: BTreeSet<(SyncId, Pid)>,
     pub nodes: Vec<NodeState>,
     pub deleted: Vec<Deleted>,
@@ -112,12 +112,12 @@ impl World {
     }
 
     /// Whether node `n` may read interior node `p`: it holds it, or fetches it (a host entry of
-    /// one of its labels, or another node holding it).
+    /// one of its sync IDs, or another node holding it).
     fn fetch(&mut self, n: usize, p: Pid) -> bool {
         if self.nodes[n].blobs.contains(&p) {
             return true;
         }
-        let at_host = self.entries.iter().any(|(g, q)| *q == p && self.nodes[n].labels.contains(g));
+        let at_host = self.entries.iter().any(|(g, q)| *q == p && self.nodes[n].sync_ids.contains(g));
         let at_peer = self.nodes.iter().enumerate().any(|(m, s)| m != n && s.blobs.contains(&p));
         if at_host || at_peer {
             self.nodes[n].blobs.insert(p);
@@ -158,9 +158,9 @@ impl World {
             }
             self.nodes[n].blobs.remove(&l.piece);
         }
-        let labels = self.labels.get(&thing).cloned().unwrap_or_default();
-        for g in labels {
-            if !self.nodes[n].labels.contains(&g) || !self.entries.contains(&(g, l.piece)) {
+        let sync_ids = self.sync_ids.get(&thing).cloned().unwrap_or_default();
+        for g in sync_ids {
+            if !self.nodes[n].sync_ids.contains(&g) || !self.entries.contains(&(g, l.piece)) {
                 continue;
             }
             // sign with a key Del names that the node holds; the host checks the prefix
@@ -168,7 +168,7 @@ impl World {
             let piece = &self.pieces[l.piece];
             if piece.thing == thing && piece.group.contains(&key) {
                 self.entries.remove(&(g, l.piece));
-                self.deleted.push(Deleted { node: n, label: g, piece: l.piece, thing, key });
+                self.deleted.push(Deleted { node: n, sync_id: g, piece: l.piece, thing, key });
             }
         }
         self.nodes[n].freed.remove(&(thing, l.clone()));
@@ -211,15 +211,15 @@ impl Writer {
     }
 }
 
-/// Generates a world: two things (labels 1 and 2 for thing 1, label 1 for thing 2), writers with
+/// Generates a world: two things (sync IDs 1 and 2 for thing 1, sync ID 1 for thing 2), writers with
 /// per-thing level-1 and level-3 keys and author keys, values as trees of depth up to two
 /// reusing earlier pieces of their thing, the odd forged link or false Del, and nodes holding a
-/// subset of the sources, of the node blobs, of the keys and of the labels.
+/// subset of the sources, of the node blobs, of the keys and of the sync IDs.
 pub fn world(seed: u64) -> (World, Rng) {
     let mut rng = Rng::new(seed);
     let mut w = World::default();
-    w.labels.insert(1, vec![1, 2]);
-    w.labels.insert(2, vec![1]);
+    w.sync_ids.insert(1, vec![1, 2]);
+    w.sync_ids.insert(2, vec![1]);
     // thing t: admin key (1, t*10+e), writer key (3, t*10+e) per epoch e; authors (2, 100+a)
     let epoch = |rng: &mut Rng| rng.below(2) as u16;
     let mut known: BTreeMap<Thing, Vec<Link>> = BTreeMap::new();
@@ -247,7 +247,7 @@ pub fn world(seed: u64) -> (World, Rng) {
         if wr.hostile {
             let other = if thing == 1 { 2 } else { 1 };
             if let Some(l) = known.get(&other).and_then(|ls| (!ls.is_empty()).then(|| ls[rng.below(ls.len() as u64) as usize].clone())) {
-                for g in w.labels[&thing].clone() {
+                for g in w.sync_ids[&thing].clone() {
                     w.entries.insert((g, l.piece));
                 }
                 roots.push(l);
@@ -283,7 +283,7 @@ pub fn world(seed: u64) -> (World, Rng) {
         }
         for g in [1, 2] {
             if rng.chance(75) {
-                s.labels.insert(g);
+                s.sync_ids.insert(g);
             }
         }
         w.nodes.push(s);
@@ -303,7 +303,7 @@ fn value(w: &mut World, rng: &mut Rng, wr: &Writer, thing: Thing, known: &BTreeM
     let kids = if depth > 0 && rng.chance(60) { (0..1 + rng.below(3)).map(|_| value(w, rng, wr, thing, known, depth - 1)).collect() } else { Vec::new() };
     let id = w.pieces.len();
     w.pieces.push(Piece { thing, group: wr.keys.clone(), kids });
-    for g in w.labels[&thing].clone() {
+    for g in w.sync_ids[&thing].clone() {
         w.entries.insert((g, id));
     }
     let mut del: Vec<DelKey> = wr.keys.iter().copied().collect();

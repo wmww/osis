@@ -4,9 +4,9 @@
 
 use osis_base::format::{MAX_DRIFT_MS, ROLE_KEEP_MS, TOMBSTONE_LIFETIME_MS};
 use osis_base::{BlobId, SyncId, Tid, WallMs};
-use osis_crypto::{DeleteSecret, Epoch, KemSecret, LabelRole, Secret32, SeededRng, SigningSecret, WRAP_LEN, deposit_key, label_role_key};
+use osis_crypto::{DeleteSecret, Epoch, KemSecret, RoleKey, Secret32, SeededRng, SigningSecret, WRAP_LEN, deposit_key, role_key};
 use osis_engine::sync::{Caps, Holding, SyncSet};
-use osis_label::{ClaimSet, Class, DeleteItem, Parent, Prefix, Reader, Step, StepKeys};
+use osis_blob::{ClaimSet, Class, DeleteItem, Parent, Prefix, Reader, Step, StepKeys};
 use osis_proto::{Code, DepositItem};
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot, NodeEvent, RecordId};
 use osis_sync::store::{Cred, Source, Stand};
@@ -46,7 +46,7 @@ const THING: Tid = Tid::from_bytes([0x51; 15]);
 impl Sid {
     fn new(b: u8) -> Sid {
         let (sync, write, admin, deposit) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
-        let id = osis_label::genesis_label(&admin);
+        let id = osis_blob::genesis_sync_id(&admin);
         let mut s = Sid { id, sync, write, admin, deposit, steps: Vec::new() };
         let g = s.issue(&[]);
         s.steps.push(g);
@@ -56,13 +56,13 @@ impl Sid {
         StepKeys::derive(&self.sync, &self.write, &self.admin, &self.deposit, &self.id)
     }
     fn delete(&self) -> SigningSecret {
-        label_role_key(LabelRole::Delete, &self.admin)
+        role_key(RoleKey::Delete, &self.admin)
     }
     fn write_key(&self) -> SigningSecret {
-        label_role_key(LabelRole::Write, &self.write)
+        role_key(RoleKey::Write, &self.write)
     }
     fn sync_key(&self) -> SigningSecret {
-        label_role_key(LabelRole::Sync, &self.sync)
+        role_key(RoleKey::Sync, &self.sync)
     }
     /// The next step (a child of the last), listing `readers`.
     fn issue(&self, readers: &[Reader]) -> (Step, ClaimSet) {
@@ -78,7 +78,7 @@ impl Sid {
             None => Parent::Genesis(d),
             Some((p, _)) => Parent::Child { step: p, delete: d },
         };
-        osis_label::register(parent, self.keys(), readers, (&THING, read, &self.write), (sync, &self.sync), &mut rng).unwrap()
+        osis_blob::register(parent, self.keys(), readers, (&THING, read, &self.write), (sync, &self.sync), &mut rng).unwrap()
     }
     /// Rotates the write and sync secrets and issues the next step.
     fn rotate(&mut self, b: u8) -> (Step, ClaimSet) {
@@ -126,8 +126,8 @@ fn unread(dev: &Dev, s: &Sid) -> Store {
 fn blob(n: usize, class: Class, expiry: Option<u64>, keys: &[(u8, osis_crypto::VerifyingKey)]) -> (BlobId, Vec<u8>) {
     let mut rng = SeededRng::from_u64(n as u64 ^ 0x5eed ^ expiry.unwrap_or(0));
     let p = Prefix::for_keys([n as u8; 16], &[1; 16], expiry.map(WallMs), keys).unwrap().with_class(class);
-    let (_, bytes) = osis_label::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
-    (osis_label::blob_id(&bytes), bytes)
+    let (_, bytes) = osis_blob::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
+    (osis_blob::blob_id(&bytes), bytes)
 }
 
 fn wrap(n: u8) -> [u8; WRAP_LEN] {
@@ -137,14 +137,14 @@ fn wrap(n: u8) -> [u8; WRAP_LEN] {
 /// A stamped entry of `b` under `s`'s current write key.
 fn stamped(s: &Sid, b: BlobId, role: bool) -> Entry {
     let w = wrap(1);
-    let stamp = osis_label::sign_stamp(&s.write_key(), &s.id, &b, &w, role);
+    let stamp = osis_blob::sign_stamp(&s.write_key(), &s.id, &b, &w, role);
     Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role, class: Class::Durable, expires: None }
 }
 
 fn deposit(s: &Sid, bytes: &[u8], role: bool) -> DepositItem {
-    let b = osis_label::blob_id(bytes);
+    let b = osis_blob::blob_id(bytes);
     let w = wrap(2);
-    let sig = osis_label::sign_deposit(&deposit_key(&s.deposit, &s.id), &s.id, &b, &w, role);
+    let sig = osis_blob::sign_deposit(&deposit_key(&s.deposit, &s.id), &s.id, &b, &w, role);
     DepositItem { sync_id: s.id, blob: bytes.to_vec(), wrap: w, sig }
 }
 
@@ -170,7 +170,7 @@ fn register_takes_genesis_then_children_of_the_head_spec_sync_ids_6() {
     // a genesis naming S, signed by a delete key that does not hash to S (a squat)
     let squat = Sid::new(80);
     let mut sq = squat.steps[0].0.clone();
-    sq.label = s.id;
+    sq.sync_id = s.id;
     sq.sig = squat.delete().sign(osis_crypto::Domain::SyncStep, &sq.digest());
     assert_eq!(st.take_register(&s.id, &sq, None).unwrap(), Code::REFUSED, "a genesis whose delete key is not S's");
     let (g, gc) = s.steps[0].clone();
@@ -478,7 +478,7 @@ fn a_stamp_replaces_a_deposit_once_spec_sync_ids_6() {
     let before = st.read_sync(&s.id, None, None, 100).unwrap().events;
     let mut other = e.clone();
     other.wrap = wrap(5);
-    other.stamp = Some(osis_label::sign_stamp(&s.write_key(), &s.id, &b, &other.wrap, false));
+    other.stamp = Some(osis_blob::sign_stamp(&s.write_key(), &s.id, &b, &other.wrap, false));
     assert_eq!(st.take_stamped(&s.id, &other, bytes.clone(), &[]).unwrap(), Code::OK);
     assert_eq!(st.take_deposit(&deposit(&s, &bytes, false), None).unwrap(), Code::OK, "a deposit of a held blob");
     assert_eq!(st.entry(&s.id, &b).unwrap().unwrap(), e, "wrap and stamp kept");
@@ -958,8 +958,8 @@ fn delete_by_levels_spec_sync_ids_6() {
     let d3 = DeleteSecret::derive(&Secret32::from_bytes([22; 32]));
     let p = Prefix::for_keys([5; 16], &[1; 16], None, &[(2, d2.verifying_key())]).unwrap();
     let mut rng = SeededRng::from_u64(3);
-    let (_, bytes) = osis_label::frame(&p, b"body", &mut rng).unwrap();
-    let b = osis_label::blob_id(&bytes);
+    let (_, bytes) = osis_blob::frame(&p, b"body", &mut rng).unwrap();
+    let b = osis_blob::blob_id(&bytes);
     st.take_stamped(&s.id, &stamped(&s, b, false), bytes, &[]).unwrap();
     let by = |key: &SigningSecret, dks: &[(u8, &DeleteSecret)]| DeleteItem::sign_by(key, dks, &[5; 16], &[1; 16], &s.id, b).unwrap();
     assert_eq!(st.take_delete(&s.id, &[by(&s.sync_key(), &[(2, &d3)])], true).unwrap(), [Code::REFUSED], "a key the prefix does not commit to");
@@ -1155,7 +1155,7 @@ fn log_reads_by_member_and_until_spec_sync_streams_3() {
     st.take_delete(&s1.id, &[DeleteItem::sign(&s1.delete(), &s1.id, bs[0])], true).unwrap();
     let ended = st.read_log(&BTreeMap::from([(s1.id, Some(until))]), None, 100).unwrap();
     let got: Vec<_> = ended.events.iter().map(|e| e.event).collect();
-    assert!(got.contains(&NodeEvent::Deleted { label: s1.id, blob: bs[0], at: 0 }) || got.iter().any(|e| matches!(e, NodeEvent::Deleted { blob, .. } if *blob == bs[0])));
+    assert!(got.contains(&NodeEvent::Deleted { sync_id: s1.id, blob: bs[0], at: 0 }) || got.iter().any(|e| matches!(e, NodeEvent::Deleted { blob, .. } if *blob == bs[0])));
     assert!(!got.contains(&NodeEvent::Added(s1.id, bs[2])));
     let join = st.read_sync(&s2.id, None, None, 100).unwrap();
     assert_eq!(join.events.len(), 4);
@@ -1538,7 +1538,7 @@ fn a_forged_stamp_is_charged_as_unstamped_spec_sync_ids_5() {
     let s = Sid::new(60);
     let mut st = reader(&s, 1500);
     let c = Source::Conn(ConnId(5));
-    let forged = |b: BlobId| Entry { stamp: Some(osis_label::sign_stamp(&label_role_key(LabelRole::Write, &Secret32::from_bytes([3; 32])), &s.id, &b, &wrap(1), false)), ..stamped(&s, b, false) };
+    let forged = |b: BlobId| Entry { stamp: Some(osis_blob::sign_stamp(&role_key(RoleKey::Write, &Secret32::from_bytes([3; 32])), &s.id, &b, &wrap(1), false)), ..stamped(&s, b, false) };
     let (b1, x1) = blob(1000, Class::Durable, None, &[]);
     let (b2, x2) = blob(1001, Class::Durable, None, &[]);
     assert_eq!(st.log(&s.id, forged(b1), Some(x1), Some(c)).unwrap(), Code::OK);
@@ -1671,7 +1671,7 @@ fn only_a_writers_stamp_verifies_spec_sync_inbox_2() {
     let (b, bytes) = blob(100, Class::Durable, None, &[]);
     let mut forged = stamped(&s, b, false);
     let other = SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([9; 32]));
-    forged.stamp = Some(osis_label::sign_stamp(&other, &s.id, &b, &forged.wrap, false));
+    forged.stamp = Some(osis_blob::sign_stamp(&other, &s.id, &b, &forged.wrap, false));
     assert_eq!(st.log(&s.id, forged, Some(bytes.clone()), Some(Source::Conn(ConnId(1)))).unwrap(), Code::OK);
     assert!(!st.entry(&s.id, &b).unwrap().unwrap().deposited, "held unflagged");
     assert!(!st.stamp_verifies(&s.id, &b).unwrap(), "a stamp by no writer");

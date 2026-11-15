@@ -1,4 +1,4 @@
-//! Page storage plugs for paged fragments (spec/crdt.md §8, spec/wire.md §6). osis-label and the
+//! Page storage plugs for paged fragments (spec/crdt.md §8, spec/wire.md §6). osis-blob and the
 //! node implement them over blobs; `MemoryPages` serves tests.
 
 use osis_base::format::{MAX_PAGE_ITEMS, PAGE_TARGET, TREE_FANOUT};

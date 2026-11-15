@@ -1,7 +1,7 @@
 //! osis-keys: per-role epochs with forks, `keys.0` and `secrets.0` writes, box production and
 //! opening, history boxes, derived secrets, the covers rule, holder actors (sealing, staleness, key
 //! access), the things a removal reaches, wrap epoch
-//! choice, label epochs and delete keys (spec/crypto.md §3–§5, §7; spec/permissions.md §3).
+//! choice, sync ID epochs and delete keys (spec/crypto.md §3–§5, §7; spec/permissions.md §3).
 //! Layer 3 (notes/architecture.md). Notes: notes/crypto.md (osis-keys).
 #![forbid(unsafe_code)]
 

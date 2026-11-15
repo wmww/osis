@@ -1504,7 +1504,7 @@ fn later_than(played: &Played) -> WallMs {
 
 /// The sync exchange, as a node's sync makes it: every held
 /// commit the node itself counts a part of missing is fetched again from the host (the history's
-/// packs, which a host holding the label keeps), until none is or a round changes nothing. Only
+/// packs, which a host holding the sync ID keeps), until none is or a round changes nothing. Only
 /// the node's own count decides: a node that fails to count a body missing never gets it back.
 fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
     let missing = |p: &Peer| -> BTreeSet<CommitId> { p.engine.commit_parts_missing().into_iter().filter(|(_, m)| !m.is_empty()).map(|(c, _)| c).collect() };
@@ -2125,7 +2125,7 @@ fn orders(played: &Played, held: &[usize], cfg: Cfg, rng: &mut Rng) -> Vec<Vec<u
 /// `held` as a first sync fetches it (spec/sync-judgement.md §2): what judging needs, then newest first.
 fn fill_order(played: &Played, held: &[usize]) -> Vec<usize> {
     let mut o = held.to_vec();
-    let rank = |i: usize| osis_commit::CommitBlob::decode_stored(&played.packs[i].bytes).map_or(0, |b| osis_engine::labeling::fetch_order(&b.header));
+    let rank = |i: usize| osis_commit::CommitBlob::decode_stored(&played.packs[i].bytes).map_or(0, |b| osis_engine::sync_ids::fetch_order(&b.header));
     o.sort_by_cached_key(|&i| {
         let r = rank(i);
         (r != 0, std::cmp::Reverse(r))

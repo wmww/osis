@@ -6,7 +6,7 @@
 use crate::auth::verify_stamp;
 use crate::cbor::{get_bytes, get_opt, get_uint, uint};
 use crate::blob::{blob_id, check_size};
-use crate::labels::parse_step;
+use crate::sync_ids::parse_step;
 use crate::step::{ClaimSet, OBJECT_LIMITS, Step, verify_path};
 use crate::Error;
 use osis_base::cbor::{decode, encode};
@@ -23,13 +23,13 @@ const FORMAT: u64 = 1;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Record {
     /// `[1, sync_id, [[step, Opt(claim_set)]+]]`: the path from the genesis step to the head.
-    Path { label: SyncId, steps: Vec<(Step, Option<ClaimSet>)> },
+    Path { sync_id: SyncId, steps: Vec<(Step, Option<ClaimSet>)> },
     /// `[2, blob]`: before the first entry naming it, once per bundle.
     Blob(Vec<u8>),
     /// `[3, sync_id, blob_id, wrap, Opt(stamp)]`; no stamp: deposited.
-    Entry { label: SyncId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
+    Entry { sync_id: SyncId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
     /// `[4, sync_id, blob_id]`.
-    Delete { label: SyncId, blob: BlobId },
+    Delete { sync_id: SyncId, blob: BlobId },
     /// A record of a kind this build does not know: skipped.
     Unknown(u64),
 }
@@ -38,15 +38,15 @@ impl Record {
     /// `Unknown` has no encoding.
     pub fn to_value(&self) -> Result<Value, Error> {
         Ok(Value::List(match self {
-            Record::Path { label, steps } => {
+            Record::Path { sync_id, steps } => {
                 let steps = steps.iter().map(|(s, c)| Value::List(vec![Value::bytes(&s.to_bytes()), Value::opt(c.as_ref().map(|c| Value::bytes(&c.to_bytes())))]));
-                vec![Value::Int(1), Value::bytes(&label.0), Value::List(steps.collect())]
+                vec![Value::Int(1), Value::bytes(&sync_id.0), Value::List(steps.collect())]
             }
             Record::Blob(b) => vec![Value::Int(2), Value::bytes(b)],
-            Record::Entry { label, blob, wrap, stamp } => {
-                vec![Value::Int(3), Value::bytes(&label.0), Value::bytes(&blob.0), Value::bytes(wrap), Value::opt(stamp.map(|s| Value::bytes(&s.0)))]
+            Record::Entry { sync_id, blob, wrap, stamp } => {
+                vec![Value::Int(3), Value::bytes(&sync_id.0), Value::bytes(&blob.0), Value::bytes(wrap), Value::opt(stamp.map(|s| Value::bytes(&s.0)))]
             }
-            Record::Delete { label, blob } => vec![Value::Int(4), Value::bytes(&label.0), Value::bytes(&blob.0)],
+            Record::Delete { sync_id, blob } => vec![Value::Int(4), Value::bytes(&sync_id.0), Value::bytes(&blob.0)],
             Record::Unknown(_) => return Err(Error::Malformed("unknown record has no encoding")),
         }))
     }
@@ -54,7 +54,7 @@ impl Record {
     pub fn from_value(v: &Value) -> Result<Record, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("bundle record")) };
         let (kind, rest) = items.split_first().ok_or(Error::Malformed("bundle record"))?;
-        let label = |v: &Value| get_bytes(v, "record label").map(SyncId);
+        let sync_id = |v: &Value| get_bytes(v, "record sync ID").map(SyncId);
         let blob = |v: &Value| get_bytes(v, "record blob id").map(BlobId);
         Ok(match (get_uint(kind, "record kind")?, rest) {
             (1, [l, Value::List(steps)]) => {
@@ -62,19 +62,19 @@ impl Record {
                     return Err(Error::Malformed("empty path"));
                 }
                 let steps = steps.iter().map(path_step).collect::<Result<_, _>>()?;
-                Record::Path { label: label(l)?, steps }
+                Record::Path { sync_id: sync_id(l)?, steps }
             }
             (2, [Value::Bytes(b)]) => {
                 check_size(b)?;
                 Record::Blob(b.clone())
             }
             (3, [l, b, w, s]) => Record::Entry {
-                label: label(l)?,
+                sync_id: sync_id(l)?,
                 blob: blob(b)?,
                 wrap: get_bytes(w, "record wrap")?,
                 stamp: get_opt(s, "record stamp")?.map(|s| get_bytes(s, "record stamp").map(Signature)).transpose()?,
             },
-            (4, [l, b]) => Record::Delete { label: label(l)?, blob: blob(b)? },
+            (4, [l, b]) => Record::Delete { sync_id: sync_id(l)?, blob: blob(b)? },
             (0..=4, _) => return Err(Error::Malformed("bundle record")),
             (k, _) => Record::Unknown(k),
         })
@@ -198,12 +198,12 @@ impl<R: Read> BundleReader<R> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BundleEvent {
     /// A verified registration path; its last step is the head.
-    Path { label: SyncId, steps: Vec<(Step, Option<ClaimSet>)> },
+    Path { sync_id: SyncId, steps: Vec<(Step, Option<ClaimSet>)> },
     /// Blob bytes, ID checked by hashing.
     Blob { id: BlobId, blob: Vec<u8> },
-    /// An entry; a stamp verified against the label's head write key; no stamp: deposited.
-    Add { label: SyncId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
-    Deleted { label: SyncId, blob: BlobId },
+    /// An entry; a stamp verified against the sync ID's head write key; no stamp: deposited.
+    Add { sync_id: SyncId, blob: BlobId, wrap: [u8; WRAP_LEN], stamp: Option<Signature> },
+    Deleted { sync_id: SyncId, blob: BlobId },
 }
 
 /// Verifies bundle records as a peer does: paths step by step, stamps against the path's head,
@@ -219,44 +219,44 @@ impl Importer {
         Importer::default()
     }
 
-    /// The head of a label's imported path.
-    pub fn head(&self, label: &SyncId) -> Option<&Step> {
-        self.heads.get(label)
+    /// The head of a sync ID's imported path.
+    pub fn head(&self, sync_id: &SyncId) -> Option<&Step> {
+        self.heads.get(sync_id)
     }
 
     pub fn import(&mut self, r: Record) -> Result<Option<BundleEvent>, Error> {
         Ok(Some(match r {
-            Record::Path { label, steps } => {
+            Record::Path { sync_id, steps } => {
                 let path: Vec<Step> = steps.iter().map(|(s, _)| s.clone()).collect();
-                verify_path(&label, &path)?;
+                verify_path(&sync_id, &path)?;
                 // Like a peer: a later path must pass through the current head (extend it).
-                if let Some(cur) = self.heads.get(&label) {
+                if let Some(cur) = self.heads.get(&sync_id) {
                     let id = cur.id();
                     if !path.iter().any(|s| s.id() == id) {
                         return Err(Error::Verify("path does not extend the head"));
                     }
                 }
                 if let Some(head) = path.last() {
-                    self.heads.insert(label, head.clone());
+                    self.heads.insert(sync_id, head.clone());
                 }
-                BundleEvent::Path { label, steps }
+                BundleEvent::Path { sync_id, steps }
             }
             Record::Blob(blob) => {
                 let id = blob_id(&blob);
                 self.blobs.insert(id);
                 BundleEvent::Blob { id, blob }
             }
-            Record::Entry { label, blob, wrap, stamp } => {
+            Record::Entry { sync_id, blob, wrap, stamp } => {
                 if !self.blobs.contains(&blob) {
                     return Err(Error::Malformed("entry before its blob"));
                 }
                 if let Some(s) = &stamp {
-                    let head = self.heads.get(&label).ok_or(Error::Malformed("stamped entry before its label's path"))?;
-                    verify_stamp(&head.keys.write, &label, &blob, &wrap, s)?;
+                    let head = self.heads.get(&sync_id).ok_or(Error::Malformed("stamped entry before its sync ID's path"))?;
+                    verify_stamp(&head.keys.write, &sync_id, &blob, &wrap, s)?;
                 }
-                BundleEvent::Add { label, blob, wrap, stamp }
+                BundleEvent::Add { sync_id, blob, wrap, stamp }
             }
-            Record::Delete { label, blob } => BundleEvent::Deleted { label, blob },
+            Record::Delete { sync_id, blob } => BundleEvent::Deleted { sync_id, blob },
             Record::Unknown(_) => return Ok(None),
         }))
     }
@@ -269,9 +269,9 @@ pub(crate) mod tests {
     use crate::blob::{Prefix, frame};
     use crate::step::tests::{Group, TG};
     use crate::step::{Parent, register};
-    use osis_crypto::{Epoch, LabelRole, SeededRng, label_role_key, wrap};
+    use osis_crypto::{Epoch, RoleKey, SeededRng, role_key, wrap};
 
-    /// A bundle: two label paths, two blobs (one under both labels), entries and a deletion.
+    /// A bundle: two sync ID paths, two blobs (one under both sync IDs), entries and a deletion.
     pub(crate) fn sample(rng: &mut SeededRng) -> (Vec<Record>, Vec<u8>) {
         let (g, h) = (Group::new(10), Group::new(20));
         let e = Epoch::new(0, [0; 32]).unwrap();
@@ -283,17 +283,17 @@ pub(crate) mod tests {
         let (i1, i2) = (blob_id(&b1), blob_id(&b2));
         let w1 = wrap(&g.read, &i1, &k1, 1).unwrap();
         let w1h = wrap(&h.read, &i1, &k1, 1).unwrap();
-        let st = sign_stamp(&label_role_key(LabelRole::Write, &g.write), &s0.label, &i1, &w1, false);
-        let sth = sign_stamp(&label_role_key(LabelRole::Write, &h.write), &t0.label, &i1, &w1h, false);
+        let st = sign_stamp(&role_key(RoleKey::Write, &g.write), &s0.sync_id, &i1, &w1, false);
+        let sth = sign_stamp(&role_key(RoleKey::Write, &h.write), &t0.sync_id, &i1, &w1h, false);
         let recs = vec![
-            Record::Path { label: s0.label, steps: vec![(s0.clone(), Some(c0))] },
-            Record::Path { label: t0.label, steps: vec![(t0.clone(), None)] },
+            Record::Path { sync_id: s0.sync_id, steps: vec![(s0.clone(), Some(c0))] },
+            Record::Path { sync_id: t0.sync_id, steps: vec![(t0.clone(), None)] },
             Record::Blob(b1),
-            Record::Entry { label: s0.label, blob: i1, wrap: w1, stamp: Some(st) },
-            Record::Entry { label: t0.label, blob: i1, wrap: w1h, stamp: Some(sth) },
+            Record::Entry { sync_id: s0.sync_id, blob: i1, wrap: w1, stamp: Some(st) },
+            Record::Entry { sync_id: t0.sync_id, blob: i1, wrap: w1h, stamp: Some(sth) },
             Record::Blob(b2),
-            Record::Entry { label: s0.label, blob: i2, wrap: [7; WRAP_LEN], stamp: None },
-            Record::Delete { label: s0.label, blob: BlobId([3; 32]) },
+            Record::Entry { sync_id: s0.sync_id, blob: i2, wrap: [7; WRAP_LEN], stamp: None },
+            Record::Delete { sync_id: s0.sync_id, blob: BlobId([3; 32]) },
         ];
         let mut w = BundleWriter::new(Vec::new()).unwrap();
         for r in &recs {
@@ -340,14 +340,14 @@ pub(crate) mod tests {
         let child = |p: &Step, rng: &mut SeededRng| register(Parent::Child { step: p, delete: &g.delete() }, p.keys, &[], (&TG, e, &g.read), g.sync_at(), rng).unwrap().0;
         let (a, b) = (child(&s0, &mut rng), child(&s0, &mut rng));
         let a2 = child(&a, &mut rng);
-        let path = |steps: &[&Step]| Record::Path { label: s0.label, steps: steps.iter().map(|s| ((*s).clone(), None)).collect() };
+        let path = |steps: &[&Step]| Record::Path { sync_id: s0.sync_id, steps: steps.iter().map(|s| ((*s).clone(), None)).collect() };
         let mut imp = Importer::new();
         imp.import(path(&[&s0, &a])).unwrap();
         assert!(imp.import(path(&[&s0, &b])).is_err());
         assert!(imp.import(path(&[&s0])).is_err());
-        assert_eq!(imp.head(&s0.label), Some(&a));
+        assert_eq!(imp.head(&s0.sync_id), Some(&a));
         imp.import(path(&[&s0, &a, &a2])).unwrap();
-        assert_eq!(imp.head(&s0.label), Some(&a2));
+        assert_eq!(imp.head(&s0.sync_id), Some(&a2));
     }
 
     // spec/wire.md §12, spec/sync-ids.md §6: an altered stamp, an entry before its blob or path, a
@@ -361,9 +361,9 @@ pub(crate) mod tests {
         imp.import(recs[2].clone()).unwrap();
         assert!(imp.import(recs[3].clone()).is_err());
         imp.import(recs[0].clone()).unwrap();
-        let Record::Entry { label, blob, mut wrap, stamp } = recs[3].clone() else { panic!() };
+        let Record::Entry { sync_id, blob, mut wrap, stamp } = recs[3].clone() else { panic!() };
         wrap[0] ^= 1;
-        assert!(imp.import(Record::Entry { label, blob, wrap, stamp }).is_err());
+        assert!(imp.import(Record::Entry { sync_id, blob, wrap, stamp }).is_err());
         let mut bad = bytes.clone();
         bad[0] = b'x';
         assert!(BundleReader::new(&bad[..]).is_err());

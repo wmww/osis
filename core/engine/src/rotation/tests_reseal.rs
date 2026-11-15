@@ -1,4 +1,4 @@
-//! Content another wrote, encrypted again (spec/crypto.md §5 Passing on; `labeling::opened`).
+//! Content another wrote, encrypted again (spec/crypto.md §5 Passing on; `sync_ids::opened`).
 //! Peers: 0 = A (first admin), 1 = a2 (admin), 2 = M (reader), 3 = R (admin), 4 = V (admin).
 //! a2 removes M (W, with its rotation); R, holding W, rotates read (e_R, naming W, boxing V and
 //! not M) and writes "w" under e_R. What M observes: whether it reads "w".
@@ -87,10 +87,10 @@ fn reseal_without_the_removal_leaks_nothing_spec_crypto_5() {
     // a new blob, R's section under e_R, which M does not open
     let e = &entry.iter().find(|p| p.id == w).unwrap().entries[0];
     let v = &mut lp.peers[V].engine;
-    let key = e.wraps.iter().find_map(|(a, wr)| osis_label::unwrap_any(v.read_secrets(a).iter(), &e.id, wr).map(|x| x.1)).unwrap();
+    let key = e.wraps.iter().find_map(|(a, wr)| osis_blob::unwrap_any(v.read_secrets(a).iter(), &e.id, wr).map(|x| x.1)).unwrap();
     let sections = v.open_commit(&e.blob, &key).unwrap().sections;
     let body = v.body(&w).unwrap().unwrap();
-    let again = v.seal(&body, osis_label::Class::Durable, &sections, &mut osis_crypto::SeededRng::from_u64(5)).unwrap().expect("sealed from R's sections");
+    let again = v.seal(&body, osis_blob::Class::Durable, &sections, &mut osis_crypto::SeededRng::from_u64(5)).unwrap().expect("sealed from R's sections");
     assert_ne!(again.id, e.id, "a fresh blob");
     assert!(lp.peers[V].engine.open_commit(&again.blob, &again.key).unwrap().sealed.is_empty(), "V opens it");
     assert!(lp.peers[M].engine.open_commit(&again.blob, &again.key).unwrap().commit.parts.is_empty(), "M opens nothing of it");
@@ -156,7 +156,7 @@ fn withdrawn_epoch_content_never_resealed_spec_crypto_5() {
 
 /// M's forgery of a blob of commit `w`: its header, one section under M's newest read secret of
 /// `g` (an epoch V holds established) carrying the delta of commit `junk` in place of w's.
-fn forged(lp: &mut LocalPeer, g: Tid, w: CommitId, junk: CommitId) -> crate::labeling::Sealed {
+fn forged(lp: &mut LocalPeer, g: Tid, w: CommitId, junk: CommitId) -> crate::sync_ids::Sealed {
     let c = osis_commit::CommitBlob::decode(&lp.peers[R].engine.commit_bytes(&w).unwrap().unwrap()).unwrap();
     let j = osis_commit::CommitBlob::decode(&lp.peers[A].engine.commit_bytes(&junk).unwrap().unwrap()).unwrap();
     let ai = c.header.aspect_index(&g, "x:m.0").unwrap();
@@ -165,7 +165,7 @@ fn forged(lp: &mut LocalPeer, g: Tid, w: CommitId, junk: CommitId) -> crate::lab
     let mut rng = osis_crypto::SeededRng::from_u64(3);
     let sec = osis_commit::Section::seal(&w, &[part], Vec::new(), &secret, &mut rng).unwrap();
     let env = osis_commit::Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections: vec![sec] };
-    crate::labeling::frame_envelope(&env, &c.header, osis_label::Class::Durable, &mut rng, &c).unwrap()
+    crate::sync_ids::frame_envelope(&env, &c.header, osis_blob::Class::Durable, &mut rng, &c).unwrap()
 }
 
 // spec/crypto.md §5 (Passing on: a section counts only for the delta it carried): M, holding an
@@ -191,7 +191,7 @@ fn forged_section_unlocks_no_reseal_spec_crypto_5() {
 // spec/crypto.md §5 (Passing on), randomized: the shape with or without D, W reaching V or
 // not, V reading R's write from R's entry before or after D and W, M
 // forging a section or not, V sealing the write and snapshotting its aspect at random points.
-// The invariant (`labeling::opened`): M never reads "w", which R wrote knowing W under e_R,
+// The invariant (`sync_ids::opened`): M never reads "w", which R wrote knowing W under e_R,
 // which M never held; and once V holds W without D, V seals the write.
 #[test]
 fn reseal_never_hands_m_the_write_randomized_spec_crypto_5() {
@@ -264,18 +264,18 @@ fn reseal_never_hands_m_the_write_randomized_spec_crypto_5() {
     assert!(live > 0, "no world reached e_R established at V");
 }
 
-/// Whether M opens a blob V made of `w` (`sealed`, as a label entry: its header, and a copy's
+/// Whether M opens a blob V made of `w` (`sealed`, as a sync ID entry: its header, and a copy's
 /// content), wrapped for `g` under what `Engine::wrap_secret` gives V, if anything.
-fn m_opens(lp: &mut LocalPeer, g: Tid, w: CommitId, sealed: &crate::labeling::Sealed, parts: &[usize]) -> bool {
+fn m_opens(lp: &mut LocalPeer, g: Tid, w: CommitId, sealed: &crate::sync_ids::Sealed, parts: &[usize]) -> bool {
     let Some(s) = lp.peers[V].engine.wrap_secret(&g, Some((&w, parts))).unwrap() else { return false };
     let wrap = osis_crypto::wrap(&s, &sealed.id, &sealed.key, 1).unwrap();
     let m = &mut lp.peers[M].engine;
-    let Some(key) = osis_label::unwrap_any(m.read_secrets(&g).iter(), &sealed.id, &wrap).map(|x| x.1) else { return false };
+    let Some(key) = osis_blob::unwrap_any(m.read_secrets(&g).iter(), &sealed.id, &wrap).map(|x| x.1) else { return false };
     m.open_commit(&sealed.blob, &key).is_ok()
 }
 
 // spec/crypto.md §5 (Passing on: wraps too): V, lacking W, makes a fresh encryption of R's write
-// from R's own section (verbatim) and a per-label copy of it. The wrap gates the header (and all
+// from R's own section (verbatim) and a per-sync-ID copy of it. The wrap gates the header (and all
 // of a copy): V wraps neither under its epoch, so M opens neither, not even the header.
 #[test]
 fn wrap_of_others_write_withheld_spec_crypto_5() {
@@ -284,12 +284,12 @@ fn wrap_of_others_write_withheld_spec_crypto_5() {
     lp.deliver_sealed(V, &entry).unwrap();
     let e = &entry.iter().find(|p| p.id == w).unwrap().entries[0];
     let v = &mut lp.peers[V].engine;
-    let key = e.wraps.iter().find_map(|(a, wr)| osis_label::unwrap_any(v.read_secrets(a).iter(), &e.id, wr).map(|x| x.1)).unwrap();
+    let key = e.wraps.iter().find_map(|(a, wr)| osis_blob::unwrap_any(v.read_secrets(a).iter(), &e.id, wr).map(|x| x.1)).unwrap();
     let sections = v.open_commit(&e.blob, &key).unwrap().sections;
     let body = v.body(&w).unwrap().unwrap();
     let mut rng = osis_crypto::SeededRng::from_u64(9);
-    let fresh = v.seal(&body, osis_label::Class::Durable, &sections, &mut rng).unwrap().unwrap();
-    let copy = v.seal_to(&body, osis_label::Class::Durable, &mut rng).unwrap().unwrap();
+    let fresh = v.seal(&body, osis_blob::Class::Durable, &sections, &mut rng).unwrap().unwrap();
+    let copy = v.seal_to(&body, osis_blob::Class::Durable, &mut rng).unwrap().unwrap();
     assert!(!m_opens(&mut lp, g, w, &fresh, &body.parts), "M opens the header of V's fresh encryption");
     assert!(!m_opens(&mut lp, g, w, &copy, &body.parts), "M opens V's copy");
     // W arrives: V wraps both, and M still opens neither (V's epoch is e_R now)
@@ -313,7 +313,7 @@ fn opened_after_plain_arrival_counts_spec_crypto_5() {
     lp.deliver_sealed(V, &entry).unwrap();
     assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
     let body = lp.peers[V].engine.body(&w).unwrap().unwrap();
-    let copy = lp.peers[V].engine.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(4)).unwrap().unwrap();
+    let copy = lp.peers[V].engine.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(4)).unwrap().unwrap();
     assert!(!m_opens(&mut lp, g, w, &copy, &body.parts), "M opens V's copy of w");
     let (sealed, leak) = v_reseals_to_m(&mut lp, g, w);
     assert!(!leak, "M reads R's write through V's fresh encryption");
@@ -336,7 +336,7 @@ fn header_only_wrap_withheld_spec_crypto_5() {
     send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
     lp.deliver_sealed(V, &entry).unwrap();
     let body = lp.peers[V].engine.body(&w).unwrap().unwrap();
-    let copy = lp.peers[V].engine.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(4)).unwrap().unwrap();
+    let copy = lp.peers[V].engine.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(4)).unwrap().unwrap();
     assert!(!m_opens(&mut lp, g, w, &copy, &[]), "M opens a blob of w V wrapped as carrying no part");
     for pk in lp.packages(A2).unwrap().into_iter().filter(|p| w_commits.contains(&p.id)) {
         let _ = lp.deliver(V, &pk);
@@ -381,7 +381,7 @@ fn r_held(lp: &mut LocalPeer, g: Tid, w: CommitId, entry: &[SealedPackage]) -> (
 
 /// V takes R's entry through the facade (`open_entry`, as sync takes an entry it pulled).
 fn v_takes(lp: &mut LocalPeer, s: &SyncId, w: CommitId, h: &HeldBlob) {
-    let id = osis_label::blob_id(&h.bytes);
+    let id = osis_blob::blob_id(&h.bytes);
     let o = lp.peers[V].engine.open_entry(s, &id, &h.wrap, &h.bytes, u64::MAX).unwrap();
     assert!(matches!(o, crate::sync::Opened::Commit(c, _) if c == w), "V opens R's entry: {o:?}");
 }
@@ -390,7 +390,7 @@ fn v_takes(lp: &mut LocalPeer, s: &SyncId, w: CommitId, h: &HeldBlob) {
 /// under a read secret M holds (it reads the header), and whether a part of it opens too.
 fn m_opens_entry(lp: &mut LocalPeer, g: Tid, w: CommitId, id: &BlobId, bytes: &[u8], wrap: &crate::sync::Wrap) -> (bool, bool) {
     let m = &mut lp.peers[M].engine;
-    let Some((_, key)) = osis_label::unwrap_any(m.read_secrets(&g).iter(), id, wrap) else { return (false, false) };
+    let Some((_, key)) = osis_blob::unwrap_any(m.read_secrets(&g).iter(), id, wrap) else { return (false, false) };
     let content = m.open_commit(bytes, &key).is_ok_and(|o| !o.commit.parts.is_empty());
     m.openings_done(&w);
     (true, content)
@@ -438,7 +438,7 @@ fn facade_verbatim_wrap_withheld_without_the_removal_spec_crypto_5() {
     send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
     let (s, held) = r_held(&mut lp, g, w, &entry);
     v_takes(&mut lp, &s, w, &held);
-    let id = osis_label::blob_id(&held.bytes);
+    let id = osis_blob::blob_id(&held.bytes);
     if let Some(wrap) = lp.peers[V].engine.rewrap(&w, &id, &s, &held.wrap, &s).unwrap() {
         let (header, content) = m_opens_entry(&mut lp, g, w, &id, &held.bytes, &wrap);
         panic!("V wrapped R's entry lacking W: M opens its header {header}, content {content}");
@@ -460,7 +460,7 @@ fn facade_header_only_wrap_withheld_without_the_removal_spec_crypto_5() {
     let r = &mut lp.peers[R].engine;
     let mut body = r.body(&w).unwrap().unwrap();
     body.parts.clear();
-    let hdr = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(22)).unwrap().unwrap();
+    let hdr = r.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(22)).unwrap().unwrap();
     let k = r.wrap_secret(&g, Some((&w, &[]))).unwrap().expect("R wraps its own");
     let held = HeldBlob { sync_id: lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &hdr.id, &hdr.key, 1).unwrap(), bytes: hdr.blob.clone() };
     let s = held.sync_id;
@@ -489,7 +489,7 @@ fn facade_copy_read_content_withheld_without_the_removal_spec_crypto_5() {
     send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
     let r = &mut lp.peers[R].engine;
     let body = r.body(&w).unwrap().unwrap();
-    let copy = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(24)).unwrap().unwrap();
+    let copy = r.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(24)).unwrap().unwrap();
     let k = r.wrap_secret(&g, Some((&w, &body.parts))).unwrap().expect("R wraps its own");
     let held = HeldBlob { sync_id: lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
     let s = held.sync_id;
@@ -523,7 +523,7 @@ fn cross_thing_copy_content_never_resealed_spec_crypto_5() {
     let sh = lp.peers[V].engine.home_sync_id(&h).unwrap().expect("V syncs h");
     let r = &mut lp.peers[R].engine;
     let body = r.body(&w).unwrap().unwrap();
-    let copy = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(26)).unwrap().unwrap();
+    let copy = r.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(26)).unwrap().unwrap();
     let k = r.wrap_secret(&h, Some((&w, &body.parts))).unwrap().expect("R wraps its own");
     let copied = HeldBlob { sync_id: sh, wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
     v_takes(&mut lp, &sh, w, &copied);
@@ -559,7 +559,7 @@ fn copy_read_content_not_snapshotted_without_the_removal_spec_crypto_5() {
     send_skipping(&mut lp, R, V, &w_commits.iter().copied().chain([w]).collect());
     let r = &mut lp.peers[R].engine;
     let body = r.body(&w).unwrap().unwrap();
-    let copy = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(28)).unwrap().unwrap();
+    let copy = r.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(28)).unwrap().unwrap();
     let k = r.wrap_secret(&g, Some((&w, &body.parts))).unwrap().expect("R wraps its own");
     let held = HeldBlob { sync_id: lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap(), wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
     let s = held.sync_id;
@@ -616,7 +616,7 @@ fn planted_copy_unlocks_no_reseal_spec_crypto_5() {
     let key = osis_crypto::Secret32::random(&mut rng);
     let sec = osis_commit::Section::seal(&w, &[part], Vec::new(), &key, &mut rng).unwrap();
     let env = osis_commit::Envelope { header: c.header.clone(), sigs: c.sigs.clone(), sections: vec![sec] };
-    let f = crate::labeling::frame_envelope(&env, &c.header, osis_label::Class::Durable, &mut rng, &c).unwrap();
+    let f = crate::sync_ids::frame_envelope(&env, &c.header, osis_blob::Class::Durable, &mut rng, &c).unwrap();
     let mk = lp.peers[M].engine.epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
     let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
     let planted = HeldBlob { sync_id: s, wrap: osis_crypto::wrap(&mk, &f.id, &f.key, 1).unwrap(), bytes: f.blob.clone() };
@@ -644,7 +644,7 @@ fn copy_opening_of_a_pending_write_survives_a_restart_spec_crypto_5() {
     let w2 = put(&mut lp, R, g, "w2");
     let r = &mut lp.peers[R].engine;
     let body = r.body(&w2).unwrap().unwrap();
-    let copy = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(32)).unwrap().unwrap();
+    let copy = r.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(32)).unwrap().unwrap();
     let k = r.wrap_secret(&g, Some((&w2, &body.parts))).unwrap().expect("R wraps its own");
     let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
     let held = HeldBlob { sync_id: s, wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
@@ -676,7 +676,7 @@ fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
     let w0 = put(&mut lp, a, g, "w0");
     let ra = &mut lp.peers[a].engine;
     let body = ra.body(&w0).unwrap().unwrap();
-    let copy = ra.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(35)).unwrap().unwrap();
+    let copy = ra.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(35)).unwrap().unwrap();
     let k = ra.wrap_secret(&g, Some((&w0, &body.parts))).unwrap().expect("A wraps its own");
     let entry = lp.sealed(a, &[w0]).unwrap();
     let s = lp.peers[p].engine.home_sync_id(&g).unwrap().unwrap();
@@ -693,7 +693,7 @@ fn copy_read_below_a_cut_keeps_its_floor_spec_crypto_5() {
     for given in [vec![copied.clone()], vec![copied, held]] {
         let Some((sealed, wrap)) = lp.peers[p].engine.seal_body(&s, &w0, &given, &mut rng).unwrap() else { continue };
         let ne = &mut lp.peers[n].engine;
-        let Some((_, key)) = osis_label::unwrap_any(ne.read_secrets(&g).iter(), &sealed.id, &wrap) else { continue };
+        let Some((_, key)) = osis_blob::unwrap_any(ne.read_secrets(&g).iter(), &sealed.id, &wrap) else { continue };
         let content = ne.open_commit(&sealed.blob, &key).is_ok_and(|o| !o.commit.parts.is_empty());
         ne.openings_done(&w0);
         panic!("given {}: N opens P's fresh encryption of w0 from before its cut (content {content})", given.len());
@@ -776,7 +776,7 @@ fn a_stale_copy_gives_no_content_spec_permissions_3() {
     let w = put(&mut lp, 0, t, "w");
     let p0 = &mut lp.peers[0].engine;
     let body = p0.body(&w).unwrap().unwrap();
-    let copy = p0.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(40)).unwrap().unwrap();
+    let copy = p0.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(40)).unwrap().unwrap();
     let k = p0.wrap_secret(&g, Some((&w, &body.parts))).unwrap().expect("peer 0 wraps its own");
     let s = p0.home_sync_id(&g).unwrap().unwrap();
     lp.peers[0].engine.demote(&y, &Demotion { holder: g, new: None, retain: None }).unwrap();

@@ -16,8 +16,8 @@ pub enum Error {
     UnknownKind(u64),
     /// The Hellos share no protocol version.
     NoCommonVersion,
-    /// A label object inside a message (step, claim set, entry box, proof, delete item, bundle).
-    Label(osis_label::Error),
+    /// A sync ID object inside a message (step, claim set, entry box, proof, delete item, bundle).
+    Blob(osis_blob::Error),
 }
 
 osis_base::impl_error!(Error {
@@ -27,14 +27,14 @@ osis_base::impl_error!(Error {
     Cap(what) => ("proto: {what} over its cap"),
     UnknownKind(k) => ("proto: unknown message kind {k}"),
     NoCommonVersion => ("proto: no common protocol version"),
-    Label(e) => ("proto: {e}"),
+    Blob(e) => ("proto: {e}"),
 });
 
 impl Classified for Error {
     fn class(&self) -> ErrorClass {
         match self {
             Error::UnknownKind(_) | Error::NoCommonVersion => ErrorClass::Parked,
-            Error::Label(e) => e.class(),
+            Error::Blob(e) => e.class(),
             _ => ErrorClass::BadInput,
         }
     }
@@ -46,8 +46,8 @@ impl From<DecodeError> for Error {
     }
 }
 
-impl From<osis_label::Error> for Error {
-    fn from(e: osis_label::Error) -> Error {
-        Error::Label(e)
+impl From<osis_blob::Error> for Error {
+    fn from(e: osis_blob::Error) -> Error {
+        Error::Blob(e)
     }
 }

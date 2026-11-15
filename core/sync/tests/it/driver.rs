@@ -6,7 +6,7 @@
 
 use crate::harness::{Seen, World, contacts, siblings, two_nodes};
 use osis_base::{BlobId, SyncId, WallMs};
-use osis_label::{Address, Class, Prefix};
+use osis_blob::{Address, Class, Prefix};
 use osis_store::Fault;
 use osis_sync::driver::dials::{DISCOVERED_KEEP, Dials, Peers, State, Why};
 use osis_sync::driver::{MAX_PEERS, REDIAL_MS};
@@ -224,8 +224,8 @@ fn a_sibling_rotation_proves_again_spec_sync_opens_1() {
 fn blob(n: usize, class: Class, expiry: u64) -> (BlobId, Vec<u8>) {
     let mut rng = osis_crypto::SeededRng::from_u64(n as u64);
     let p = Prefix::for_keys([n as u8; 16], &[1; 16], Some(WallMs(expiry)), &[]).unwrap().with_class(class);
-    let (_, bytes) = osis_label::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
-    (osis_label::blob_id(&bytes), bytes)
+    let (_, bytes) = osis_blob::frame(&p, &vec![n as u8; n], &mut rng).unwrap();
+    (osis_blob::blob_id(&bytes), bytes)
 }
 
 fn own(b: BlobId, class: Class, expiry: u64) -> Entry {

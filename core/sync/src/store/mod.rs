@@ -52,7 +52,7 @@ use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
 use osis_base::memo::{Clock, Effects};
 use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_engine::sync::{Caps, Holding, Path, SyncSet};
-use osis_label::{Class, ClaimSet, DeleteItem, Prefix, Step, StepId};
+use osis_blob::{Class, ClaimSet, DeleteItem, Prefix, Step, StepId};
 use osis_proto::{Code, DepositItem};
 use osis_store::{Ciphertext, LogRead, LoggedEvent, NodeEvent, Shred, Suspended, Transaction};
 use rows::{EntryRow, R, Vouch, W};
@@ -398,13 +398,13 @@ fn check_blob(bytes: &[u8], b: &BlobId) -> std::result::Result<(Class, Option<Wa
     if bytes.len() > MAX_BLOB {
         return Err(Code::TOO_LARGE);
     }
-    if osis_label::blob_id(bytes) != *b {
+    if osis_blob::blob_id(bytes) != *b {
         return Err(Code::MALFORMED);
     }
     match Prefix::parse(bytes) {
         Ok(p) => Ok((p.class(), p.expiry())),
         // a framing this build does not know: parked, no expiry, no commitments
-        Err(osis_label::Error::UnknownFraming(_)) => Ok((Class::Durable, None)),
+        Err(osis_blob::Error::UnknownFraming(_)) => Ok((Class::Durable, None)),
         Err(_) => Err(Code::MALFORMED),
     }
 }
@@ -418,7 +418,7 @@ fn read_prefix(t: &mut Transaction<'_>, b: &BlobId) -> Result<Option<Prefix>> {
         let Some(v) = t.read_blob(b, 0, n)? else { return Ok(None) };
         match Prefix::parse(&v) {
             Ok(p) => return Ok(Some(p)),
-            Err(osis_label::Error::Malformed(_)) if v.len() == n && n < MAX_BLOB => n = n.saturating_mul(2),
+            Err(osis_blob::Error::Malformed(_)) if v.len() == n && n < MAX_BLOB => n = n.saturating_mul(2),
             Err(_) => return Ok(None),
         }
     }
@@ -1152,7 +1152,7 @@ impl Store {
             let Some((_, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(Err(Code::REFUSED)) };
             match rows::verify_stamp(&head.keys.write, s, &b, &e.wrap, &stamp) {
                 Some(ok) => Ok(Ok(ok)),
-                None if path::earlier_write(t, s, |k| osis_label::verify_stamp(k, s, &b, &e.wrap, &stamp).is_ok())? => Ok(Err(Code::NOT_HEAD_KEY)),
+                None if path::earlier_write(t, s, |k| osis_blob::verify_stamp(k, s, &b, &e.wrap, &stamp).is_ok())? => Ok(Err(Code::NOT_HEAD_KEY)),
                 None => Ok(Err(Code::REFUSED)),
             }
         })?;
@@ -1209,7 +1209,7 @@ impl Store {
         let mut g = self.lock();
         let s = d.sync_id;
         let Some(holding) = g.holding(&s) else { return Ok(Code::DECLINED) };
-        let b = osis_label::blob_id(&d.blob);
+        let b = osis_blob::blob_id(&d.blob);
         let (class, expires) = match check_blob(&d.blob, &b) {
             Ok(x) => x,
             Err(_) => return Ok(Code::DECLINED),
@@ -1228,7 +1228,7 @@ impl Store {
             if mem_held || entries::get(t, &s, &b)?.is_some() || entries::tombstone(t, &s, &b)?.is_some() {
                 return Ok(Err(Code::OK));
             }
-            let Ok(role) = osis_label::verify_deposit(&head.keys.deposit, &s, &b, &d.wrap, &d.sig) else { return Ok(Err(Code::DECLINED)) };
+            let Ok(role) = osis_blob::verify_deposit(&head.keys.deposit, &s, &b, &d.wrap, &d.sig) else { return Ok(Err(Code::DECLINED)) };
             let claims = path::claims(t, &s, hi)?.map_or(0, |c| c.claims.len());
             let (be, bb) = deposit_budget(&policy, claims);
             let u = entries::usage(t, &s)?;
@@ -1943,7 +1943,7 @@ fn served(t: &mut Transaction<'_>, e: &LoggedEvent, until: Option<Position>) -> 
         return Ok(true);
     }
     Ok(match e.event {
-        NodeEvent::Added(s, b) | NodeEvent::Deleted { label: s, blob: b, .. } => t.log_entry_first(&s, &b)?.is_some_and(|f| f <= until),
+        NodeEvent::Added(s, b) | NodeEvent::Deleted { sync_id: s, blob: b, .. } => t.log_entry_first(&s, &b)?.is_some_and(|f| f <= until),
         NodeEvent::Head(_) => false,
     })
 }

@@ -267,7 +267,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     };
     let (one, two, whole) = (part(g), part(h), blob.encode());
     let plain = {
-        // G's part is no `secrets.0` (an empty `label.0`): only the waiting part's boxes can be read
+        // G's part is no `secrets.0` (an empty `sync.0`): only the waiting part's boxes can be read
         let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
         let lab = osis_base::Ak::new("sync.0").unwrap();
         let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), r.hi);
@@ -474,7 +474,7 @@ fn expired_part_with_pages_away_order_spec_commits_4() {
 }
 
 /// Every shape of pack `i`'s delivery: one blob; split by aspect, in every order; again whole after
-/// its parts, under a second label; each part twice.
+/// its parts, under a second sync ID; each part twice.
 fn shapes(played: &Played, i: usize) -> Vec<Vec<Vec<u8>>> {
     let whole = played.packs[i].bytes.clone();
     let cut = cuts(played, i);

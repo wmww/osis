@@ -7,7 +7,7 @@ use crate::session::STALL_TIMEOUT_MS;
 use crate::types::{ConnId, Input, NodeKey};
 use crate::Links;
 use osis_base::{Clock, WallMs};
-use osis_label::Address;
+use osis_blob::Address;
 use osis_transport::link::{self, Link, LinkTx};
 use osis_transport::lan::Found;
 use osis_transport::{Error, StaticSecret, Transport};

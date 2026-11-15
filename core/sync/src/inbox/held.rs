@@ -29,7 +29,7 @@ use osis_base::format::{DEPOSITS_WAITING, DEPOSITS_WAITING_BYTES, INBOX_LIFETIME
 use osis_base::memo::{Effects, Feed, Stamped, StampedSet};
 use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_engine::Engine;
-use osis_engine::labeling::Certs;
+use osis_engine::sync_ids::Certs;
 use osis_engine::sync::{InboxOpened, Opened, PartSet, Promote, SealedSet, Taken};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -366,7 +366,7 @@ fn log_chain(h: &mut Here<'_>, s: &SyncId, chain: &Certs) -> Result<bool> {
 fn stamp(h: &mut Here<'_>, s: &SyncId, b: &BlobId) -> Result<bool> {
     let Some(e) = h.store.entry(s, b)? else { return Ok(false) };
     let Some(w) = h.engine.signers(s, None)?.stamp else { return Ok(false) };
-    let stamp = osis_label::sign_stamp(&w, s, b, &e.wrap, e.role);
+    let stamp = osis_blob::sign_stamp(&w, s, b, &e.wrap, e.role);
     let code = h.store.log(s, Entry { stamp: Some(stamp), deposited: false, ..e }, None, None)?;
     Ok(code == osis_proto::Code::OK)
 }

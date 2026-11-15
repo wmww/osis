@@ -297,7 +297,7 @@ pub fn world(seed: u64, n: usize) -> World {
 pub fn introduce(w: &mut World) {
     assert!(w.history.things.is_empty(), "introduce before any history only");
     let n = w.len();
-    let cards: Vec<Option<osis_label::ShareLink>> = (0..n).map(|i| w.node(i).profile.map(|p| w.make_link(i, p, Role::Read))).collect();
+    let cards: Vec<Option<osis_blob::ShareLink>> = (0..n).map(|i| w.node(i).profile.map(|p| w.make_link(i, p, Role::Read))).collect();
     let pairs: Vec<(usize, usize)> = (0..n).flat_map(|j| (0..n).map(move |i| (j, i))).filter(|(j, i)| j != i && w.node(*j).account.is_some()).collect();
     for &(j, i) in &pairs {
         if let Some(c) = &cards[i] {

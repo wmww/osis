@@ -6,7 +6,7 @@ use crate::harness::history::file;
 use crate::harness::{World, fixture_with, contacts};
 use osis_base::{Ak, Role, SyncId, Tid, Value};
 use osis_engine::Mutation;
-use osis_label::Class;
+use osis_blob::Class;
 use osis_schema::core_types as ct;
 
 fn edge(role: Role) -> ct::Edge {

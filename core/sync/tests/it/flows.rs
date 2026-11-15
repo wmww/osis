@@ -261,10 +261,10 @@ fn a_read_secret_arriving_examines_only_what_did_not_open_spec_sync_2() {
         let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
         assert!(w.store(1).entries(&s).unwrap().len() >= n, "node 1 holds every write");
         // a peer's entry no read secret held opens
-        let p = osis_label::Prefix::for_keys([7; 16], &[1; 16], None, &[]).unwrap();
-        let (_, bytes) = osis_label::frame(&p, &[7; 64], &mut osis_crypto::SeededRng::from_u64(7)).unwrap();
-        let b = osis_label::blob_id(&bytes);
-        let e = osis_sync::types::Entry { blob: b, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, deposited: true, own: false, role: false, class: osis_label::Class::Durable, expires: None };
+        let p = osis_blob::Prefix::for_keys([7; 16], &[1; 16], None, &[]).unwrap();
+        let (_, bytes) = osis_blob::frame(&p, &[7; 64], &mut osis_crypto::SeededRng::from_u64(7)).unwrap();
+        let b = osis_blob::blob_id(&bytes);
+        let e = osis_sync::types::Entry { blob: b, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, deposited: true, own: false, role: false, class: osis_blob::Class::Durable, expires: None };
         let mut st = w.store(1).clone();
         st.log(&s, e, Some(bytes), None).unwrap();
         w.run();

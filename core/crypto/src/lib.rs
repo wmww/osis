@@ -12,7 +12,7 @@ mod error;
 pub mod kdf;
 mod kem;
 mod keys;
-mod label;
+mod sync_id;
 mod rng;
 mod secret;
 mod sign;
@@ -23,7 +23,7 @@ pub use boxes::{BoxForm, BoxItem, BoxSlot, EntryItem, Epoch, HistoryEntry, open_
 pub use error::Error;
 pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, SEALED_OVERHEAD, X25519Secret, open_sealed, seal, seal_with, sealed_from_value, sealed_to_value};
 pub use keys::{AccountEpochKeys, INNER_LEN, KeyActorKeys, open_inner, seal_inner, verify_inner, creation_nonce, dedup_secret, delta_hash, key_actor_role_secret, link_hash, link_tree_hash, role_kem, state_digest, thing_role_secret};
-pub use label::{LabelRole, claim_key, deposit_key, label_role_key, label_role_seed, open_digest, proof_digest, sign_open, static_entry, sync_id, verify_open};
+pub use sync_id::{RoleKey, claim_key, deposit_key, role_key, role_key_seed, open_digest, proof_digest, sign_open, static_entry, sync_id, verify_open};
 pub use rng::{NodeRng, SeededRng};
 pub use secret::Secret32;
 pub use sign::{Domain, Signature, SigningSecret, VerifyingKey};

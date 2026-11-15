@@ -766,13 +766,13 @@ dependencies = [
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
- "osis-label",
+ "osis-blob",
  "osis-proto",
  "osis-schema",
 ]
 
 [[package]]
-name = "osis-label"
+name = "osis-blob"
 version = "0.1.0"
 dependencies = [
  "osis-base",
@@ -788,7 +788,7 @@ version = "0.1.0"
 dependencies = [
  "osis-base",
  "osis-crypto",
- "osis-label",
+ "osis-blob",
  "osis-schema",
 ]
 

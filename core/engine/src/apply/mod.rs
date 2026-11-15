@@ -45,7 +45,7 @@ use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{BlobId, ChainStep, Classified, CommitId, CreationRecord, ErrorClass, Tid, Value, WallMs};
 use osis_crdt::Interner;
 use osis_crypto::{VerifyingKey, dedup_secret};
-use osis_label::BlobReader;
+use osis_blob::BlobReader;
 use osis_store::{PendingKind, Shred};
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -962,7 +962,7 @@ fn drop_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     // nothing of it held: no copy of it is needed again
     if !tx.core.ix.commits.contains_key(id) {
         tx.core.redeliver.remove(id);
-        crate::labeling::opened::forget(tx, id)?;
+        crate::sync_ids::opened::forget(tx, id)?;
     }
     Ok(was)
 }
@@ -999,7 +999,7 @@ fn expire_stored(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 
 /// `blob` with the parts the stored pending copy of `id` holds: a slot keeps its first copy, and the
 /// commit its first signature, until they can be checked (`examine`). A differing copy goes, its bytes
-/// still in its label entry; only its boxes are read now (spec/crypto.md §4): the keys in them may open
+/// still in its sync ID entry; only its boxes are read now (spec/crypto.md §4): the keys in them may open
 /// what the commit waits for, and nothing checks whose they are until then. With it, the verdict
 /// on the merged copy's signatures kept with the stored copy or reached here, if any (`signature`).
 fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<(CommitBlob, Option<osis_commit::Signed>)> {
@@ -1265,7 +1265,7 @@ impl Engine {
             return Ok(());
         }
         let id = *id;
-        self.run(|tx| crate::labeling::opened::forget(tx, &id))
+        self.run(|tx| crate::sync_ids::opened::forget(tx, &id))
     }
 
     /// Whether copy `copy` of commit `id` holds a part that went from the node (spec/commits.md §5:
@@ -1325,7 +1325,7 @@ impl Engine {
     /// write not applied (`judged_valid`) keeps nothing, as if never received (`None`), and so
     /// does one this build would park.
     pub fn ingest_valid(&mut self, bytes: &[u8]) -> Result<Option<Ingested>> {
-        self.ingest_kept(bytes, |core, id, ais, out| matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::labeling::judged_valid(core, id, ais)))
+        self.ingest_kept(bytes, |core, id, ais, out| matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::sync_ids::judged_valid(core, id, ais)))
     }
 
     /// `ingest` of a commit nothing carries (a Prove's rotation, spec/sync-opens.md §2): one that
@@ -1356,10 +1356,10 @@ impl Engine {
                 // rolled back
                 return Err(Error::Misuse("refused"));
             }
-            crate::labeling::opened::persist(tx, &id)?;
+            crate::sync_ids::opened::persist(tx, &id)?;
             Ok(out)
         });
-        // written where kept, or nothing of it is kept (`labeling::opened`)
+        // written where kept, or nothing of it is kept (`sync_ids::opened`)
         self.openings_done(&id);
         if refused {
             return Ok(None);
@@ -1423,7 +1423,7 @@ impl Engine {
     }
 
     /// `ingest` of an account's rotation with list blobs that came with it (under the
-    /// same label, spec/sync-judgement.md §1): the thing lists of this rotation among them that verify are
+    /// same sync ID, spec/sync-judgement.md §1): the thing lists of this rotation among them that verify are
     /// held in the same transaction, before it applies, so what they name never reads as
     /// unlisted here. Others are left (`hold_lists`).
     pub fn ingest_with_lists(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, lists: &[Vec<u8>]) -> Result<Ingested> {
@@ -1471,7 +1471,7 @@ impl Engine {
                 Ok(blob) => {
                     let id = blob.id();
                     let out = ingest_blob(tx, blob, Origin::Remote)?;
-                    crate::labeling::opened::persist(tx, &id)?;
+                    crate::sync_ids::opened::persist(tx, &id)?;
                     Ok(out)
                 }
                 Err(e) if e.class() == ErrorClass::Parked => {
@@ -1489,7 +1489,7 @@ impl Engine {
         if let Some(id) = rotation.filter(|_| r.is_ok()) {
             self.loose_lists_held(&id);
         }
-        // written where kept, or nothing of it is kept (`labeling::opened`)
+        // written where kept, or nothing of it is kept (`sync_ids::opened`)
         if let Some(id) = seen {
             self.openings_done(&id);
         }
@@ -1611,7 +1611,7 @@ impl Engine {
     }
 
     /// Applies waiting memory commit `id` (pending for its blobs, its `ts` or an epoch) if its
-    /// wait is over, within `room`, what holding it may cost under its label's cap now
+    /// wait is over, within `room`, what holding it may cost under its sync ID's cap now
     /// (spec/sync-compaction.md §2 caps, `memory::memory_gate`): `TooLarge` when its bound passes it, nothing
     /// of it kept. `None` when it is not waiting here. Waiting memory commits are applied only
     /// so, never by `reexamine`: the room is node-sync's.
@@ -1782,7 +1782,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     for (t, v) in kept {
-        let ids = crate::labeling::actors::owned_in_value(tx.core, &t, &v);
+        let ids = crate::sync_ids::actors::owned_in_value(tx.core, &t, &v);
         tx.core.ix.destroyed_sync_ids.insert(t, std::sync::Arc::new(ids));
     }
     crate::sync::records::load(tx)?;

@@ -1,5 +1,5 @@
 //! `wrap/`: wraps and blob encryption over an opaque clear prefix (spec/crypto.md §5,
-//! spec/wire.md §5). Generated. Prefix layouts and full blobs are osis-label's (`blob/`).
+//! spec/wire.md §5). Generated. Prefix layouts and full blobs are osis-blob's (`blob/`).
 
 use super::{FixedRng, case, generated_header, s32};
 use crate::file::VecFile;

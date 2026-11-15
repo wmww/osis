@@ -63,8 +63,8 @@ impl Aspect {
     }
 }
 
-/// The dot source of commit-form commit `id` (spec/crdt.md §2.1): its ID, here the label in the
-/// last four bytes, so sources order as labels do.
+/// The dot source of commit-form commit `id` (spec/crdt.md §2.1): its ID, here the sync ID in the
+/// last four bytes, so sources order as sync IDs do.
 pub fn commit_source(id: CommitId) -> Source {
     let mut b = [0u8; 32];
     b[28..].copy_from_slice(&id.to_be_bytes());
@@ -255,16 +255,16 @@ pub struct Commit {
     pub boxes: Vec<KeyBox>,
 }
 
-/// A box: on `thing`'s `secrets.0` part, the label key it hands over. Forged boxes name a key no
-/// label has.
+/// A box: on `thing`'s `secrets.0` part, the role key it hands over. Forged boxes name a key no
+/// sync ID has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KeyBox {
     pub thing: ThingId,
-    pub key: Label,
+    pub key: SyncId,
 }
 
-/// A label, and the key that opens it (one id: a node holding a label's key can open its entries).
-pub type Label = u32;
+/// A sync ID, and the key that opens it (one id: a node holding a sync ID's key can open its entries).
+pub type SyncId = u32;
 
 /// A position in the role timeline's order: `(ts, author node, commit ID)` (spec/permissions.md §5.1).
 pub type Key = (u64, NodeId, CommitId);

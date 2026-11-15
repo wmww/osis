@@ -40,7 +40,7 @@
 use crate::types::{Error, Result};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_crypto::{Signature, WRAP_LEN};
-use osis_label::Class;
+use osis_blob::Class;
 use osis_store::RecordId;
 
 pub(crate) const ENTRY: &[u8] = b"E/";
@@ -290,7 +290,7 @@ impl Vouch {
     fn of(key: &osis_crypto::VerifyingKey, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &Signature) -> Vouch {
         let mut v = Vec::with_capacity(32 + 32 + 64);
         v.extend_from_slice(key.as_bytes());
-        v.extend_from_slice(&osis_label::entry_digest(s, b, wrap));
+        v.extend_from_slice(&osis_blob::entry_digest(s, b, wrap));
         v.extend_from_slice(&stamp.0);
         Vouch(osis_base::hash::hash(&v))
     }
@@ -299,7 +299,7 @@ impl Vouch {
 /// Checks `stamp` on entry `b` of S under `wrap` against `key` (either domain): whether it is a
 /// role entry's, and the verdict to keep with the entry, when it verifies.
 pub(crate) fn verify_stamp(key: &osis_crypto::VerifyingKey, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &Signature) -> Option<(bool, Vouch)> {
-    let role = osis_label::verify_stamp(key, s, b, wrap, stamp).ok()?;
+    let role = osis_blob::verify_stamp(key, s, b, wrap, stamp).ok()?;
     Some((role, Vouch::of(key, s, b, wrap, stamp)))
 }
 

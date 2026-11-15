@@ -350,6 +350,6 @@ fn item(store: &Store, keys: &mut DepositKeys, k: &Key, target: &Target) -> Resu
     }
     let Some(blob) = store.bytes(b)? else { return Ok(None) };
     let Some(key) = keys(s, target.actor())? else { return Ok(None) };
-    let sig = osis_label::sign_deposit(&key, s, b, &e.wrap, e.role);
+    let sig = osis_blob::sign_deposit(&key, s, b, &e.wrap, e.role);
     Ok(Some(DepositItem { sync_id: *s, blob, wrap: e.wrap, sig }))
 }

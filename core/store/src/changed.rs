@@ -3,8 +3,8 @@
 //! Only the per-peer records' `acked_pos` (record.rs, the same store) compares
 //! with it; it shares no positions with the node log, which may live in another store.
 //!
-//! Rows, catalog rows under `kind::CHANGED`: `n` the sequence's end; `c label` a sync ID's
-//! `changed_at` and the fingerprint it was computed from; `C pos label` the sync IDs by
+//! Rows, catalog rows under `kind::CHANGED`: `n` the sequence's end; `c sync_id` a sync ID's
+//! `changed_at` and the fingerprint it was computed from; `C pos sync_id` the sync IDs by
 //! `changed_at`. A fingerprint is a keyed hash: it shows nothing to whoever lacks the node's
 //! credentials, so overwrites shred nothing.
 
@@ -73,6 +73,6 @@ impl Transaction<'_> {
             self.cat_remove(&order_key(slot_pos(&v)?, l), Shred::No)?;
             self.cat_remove(&slot, Shred::No)?;
         }
-        self.records_forget_label(l)
+        self.records_forget_sync_id(l)
     }
 }

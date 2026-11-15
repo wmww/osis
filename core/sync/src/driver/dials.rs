@@ -30,7 +30,7 @@ use crate::types::ConnId;
 use osis_base::memo::Effects;
 use osis_base::{SyncId, WallMs};
 use osis_engine::Engine;
-use osis_label::Address;
+use osis_blob::Address;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 

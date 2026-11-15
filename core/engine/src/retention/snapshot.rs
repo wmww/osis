@@ -775,7 +775,7 @@ pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts
 }
 
 /// Whether every write a snapshot of `(tid, ak)` would carry from a held body may go under this
-/// node's epoch (`labeling::opened::passes_on`): a write it read only under an epoch not
+/// node's epoch (`sync_ids::opened::passes_on`): a write it read only under an epoch not
 /// established here waits for that epoch (its withheld removal arriving) or stays uncompacted.
 /// A snapshot carries state, not the commits: the floor clause binds it not, so one written after
 /// a cut carries the state written before it to the cut's holder (spec/crypto.md §4, State at a
@@ -787,7 +787,7 @@ pub(crate) fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<b
         matches!(m.hold.get(ai), Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Leftover { .. })).then_some((*c, ai))
     }).collect();
     for (c, ai) in held {
-        if !crate::labeling::opened::passes_on(tx, &c, ai, tid, ak.as_str(), None)? {
+        if !crate::sync_ids::opened::passes_on(tx, &c, ai, tid, ak.as_str(), None)? {
             return Ok(false);
         }
     }
@@ -893,7 +893,7 @@ fn owed_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Error>>
     for s in tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| super::bounds::valid_snapshot_held(tx.core, s, tid, ak)).collect::<Vec<_>>() {
         let ai = tx.core.ix.commits.get(&s).and_then(|m| m.aspect(tid, ak));
         let reads = floor == 0 || match ai {
-            Some(ai) => crate::labeling::opened::part_floor(tx, &s, ai, tid)?.is_some_and(|f| f >= floor),
+            Some(ai) => crate::sync_ids::opened::part_floor(tx, &s, ai, tid)?.is_some_and(|f| f >= floor),
             None => false,
         };
         if reads {

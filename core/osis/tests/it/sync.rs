@@ -197,7 +197,7 @@ fn a_link_names_its_target_and_this_node_spec_wire_10() {
     let l = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
     assert_eq!(l.target().unwrap(), t);
     let text = l.to_string();
-    let parsed = osis::internals::label::ShareLink::from_text(&text).unwrap();
+    let parsed = osis::internals::blob::ShareLink::from_text(&text).unwrap();
     assert_eq!(parsed.peers.first().map(|p| p.dialable), Some(addr.key()));
     assert!(a.links().unwrap().iter().any(|x| x.target == t && x.role == Role::Read));
     assert!(matches!(a.make_link(t, Role::Sync, LinkOpts::default()), Err(Error::Invalid(_))));

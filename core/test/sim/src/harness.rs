@@ -142,7 +142,7 @@ pub struct Report {
     pub host_crashes: u64,
     pub partitions: u64,
     pub diagnostics: u64,
-    /// Must-hold bodies found at hosts by the quiescent label check.
+    /// Must-hold bodies found at hosts by the quiescent sync ID check.
     pub held_checked: u64,
     /// Holders the liveness check left out at the end: the model keeps them cut off.
     pub unjudged: u64,

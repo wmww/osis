@@ -1,5 +1,5 @@
 [package]
-name = "osis-label"
+name = "osis-blob"
 description = "Blobs, labels, registration steps, stamps, chunk trees"
 version.workspace = true
 edition.workspace = true

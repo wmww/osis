@@ -125,8 +125,8 @@ fn main() -> ExitCode {
     std::panic::set_hook(Box::new(|_| {}));
     let start = Instant::now();
     // a seed past `OSIS_SEED_TIMEOUT_SECS` CPU-seconds is named hung, not waited for
-    let label = |(n, s): &(&'static str, u64)| format!("osis_sim::replay(\"{n}\", {setup}, {s})");
-    let results = run_jobs("sim-sweep", &work, args.jobs, true, label, |&(name, seed)| {
+    let sync_id = |(n, s): &(&'static str, u64)| format!("osis_sim::replay(\"{n}\", {setup}, {s})");
+    let results = run_jobs("sim-sweep", &work, args.jobs, true, sync_id, |&(name, seed)| {
         // past the budget: not started
         if args.budget.is_some_and(|b| start.elapsed() > b) {
             return None;

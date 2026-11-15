@@ -27,9 +27,9 @@ use crate::types::{Cx, Result};
 use osis_base::memo::{Effects, Stamped};
 use osis_base::{SyncId, Tid, WallMs};
 use osis_crypto::kdf::sync_proof;
-use osis_crypto::{LabelRole, Secret32, SigningSecret, VerifyingKey, label_role_key, label_role_seed};
+use osis_crypto::{RoleKey, Secret32, SigningSecret, VerifyingKey, role_key, role_key_seed};
 use osis_engine::sync::{Holding, SyncRecord};
-use osis_label::{ClaimSet, Step, StepId};
+use osis_blob::{ClaimSet, Step, StepId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -97,13 +97,13 @@ pub fn judge(j: &Judged) -> Kept {
     secrets.sort_by(|a, b| b.0.cmp(a.0));
     let mut seen = BTreeSet::new();
     secrets.retain(|(_, x)| seen.insert(*x.expose()));
-    let held: Vec<(SigningSecret, Secret32)> = secrets.into_iter().map(|(_, x)| (label_role_key(LabelRole::Sync, x), Secret32::from_bytes(sync_proof(&label_role_seed(LabelRole::Sync, x))))).collect();
+    let held: Vec<(SigningSecret, Secret32)> = secrets.into_iter().map(|(_, x)| (role_key(RoleKey::Sync, x), Secret32::from_bytes(sync_proof(&role_key_seed(RoleKey::Sync, x))))).collect();
     // of every thing keeping S, what a step of the path bears that its record lacks
     let on_path = |k: &VerifyingKey| j.steps.iter().any(|(st, _)| st.keys.sync == *k);
     let mut borne = BTreeMap::new();
     for (t, r) in j.records {
-        let keys: BTreeSet<[u8; 32]> = r.secrets.values().map(|x| label_role_key(LabelRole::Sync, x).verifying_key()).filter(on_path).map(|k| k.to_bytes()).collect();
-        let lacks = !r.tied.contains(&j.s) || r.secrets.iter().any(|(e, x)| !r.recorded.contains(e) && on_path(&label_role_key(LabelRole::Sync, x).verifying_key()));
+        let keys: BTreeSet<[u8; 32]> = r.secrets.values().map(|x| role_key(RoleKey::Sync, x).verifying_key()).filter(on_path).map(|k| k.to_bytes()).collect();
+        let lacks = !r.tied.contains(&j.s) || r.secrets.iter().any(|(e, x)| !r.recorded.contains(e) && on_path(&role_key(RoleKey::Sync, x).verifying_key()));
         if !keys.is_empty() && lacks {
             borne.insert(*t, keys);
         }

@@ -89,9 +89,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
 
 impl Engine {
     /// The things whose sync IDs may carry a body of commit `c`: those its parts are on, the
-    /// groups enclosing them, and for a `sync.0` or `created.0` part on a labeled thing its
-    /// publisher (`Engine::publisher`, spec/sync-ids.md §2): the one rule `label_bodies_meta`'s
-    /// walk of a label follows too.
+    /// groups enclosing them, and for a `sync.0` or `created.0` part on a thing with a sync ID its
+    /// publisher (`Engine::publisher`, spec/sync-ids.md §2): the one rule `sync_id_bodies_meta`'s
+    /// walk of a sync ID follows too.
     fn body_things(&mut self, c: &CommitId) -> Result<BTreeSet<Tid>> {
         let Some(v) = self.core.ix.commits.get(c).map(|m| m.view.clone()) else { return Ok(BTreeSet::new()) };
         let mut out = BTreeSet::new();
@@ -162,7 +162,7 @@ impl Engine {
     fn closure_body(&mut self, g: &Tid, c: &CommitId) -> Result<Option<BodyMeta>> {
         let ctx = self.body_ctx(g);
         let last = self.bodies_under(&ctx, c, true)?.pop();
-        Ok(last.map(|b| BodyMeta { parts: b.parts.iter().copied().collect(), expires: b.expires.map(WallMs), order: b.order, copy: b.to_label, certificate: false, header_only: b.parts.is_empty(), mints: BTreeSet::new() }))
+        Ok(last.map(|b| BodyMeta { parts: b.parts.iter().copied().collect(), expires: b.expires.map(WallMs), order: b.order, copy: b.to_sync_id, certificate: false, header_only: b.parts.is_empty(), mints: BTreeSet::new() }))
     }
 
     /// Adds to `out` the certificate bodies of commit `c` (spec/sync-judgement.md §1-§2,
@@ -207,7 +207,7 @@ impl Engine {
         if parts.is_empty() && !named.header && named.mints.is_empty() {
             return Ok(None);
         }
-        let (expires, order) = (osis_commit::blob_expiry(&h).map(WallMs), crate::labeling::fetch_order(&h));
+        let (expires, order) = (osis_commit::blob_expiry(&h).map(WallMs), crate::sync_ids::fetch_order(&h));
         let header_only = parts.is_empty();
         // a header copy that is a request goes as one, whatever it mints
         let mints = if header_only && !named.header { named.mints.clone() } else { BTreeSet::new() };
@@ -362,7 +362,7 @@ impl Engine {
     /// `wrap_secret`'s for the parts the blob carries. `None`: nothing may be made now (a part
     /// the body needs, or its header, this node read only under an epoch not established here).
     /// A held blob not tombstoned under `s` is the store's to log verbatim (`rewrap`).
-    pub(crate) fn seal_body_now(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::labeling::Sealed, Wrap)>> {
+    pub(crate) fn seal_body_now(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::sync_ids::Sealed, Wrap)>> {
         let Some(t) = self.read_thing(s)? else { return Ok(None) };
         if let Some(meta) = self.sync_body_now(s, c)?.filter(|m| m.certificate) {
             return self.seal_certificate(&t, c, &meta, rng);
@@ -370,10 +370,10 @@ impl Engine {
         let ctx = self.body_ctx(&t);
         let Some(b) = self.commit_bodies_under(&ctx, c)?.into_iter().next() else { return Ok(None) };
         let class = match self.core.ix.commits.get(c).is_some_and(|m| m.view.memory) {
-            true => osis_label::Class::Ephemeral,
-            false => osis_label::Class::Durable,
+            true => osis_blob::Class::Ephemeral,
+            false => osis_blob::Class::Durable,
         };
-        let (sealed, unopened) = match b.to_label {
+        let (sealed, unopened) = match b.to_sync_id {
             true => (self.seal_to(&b, class, rng)?, SealedSet::new()),
             false => {
                 let (sections, unopened) = self.held_sections(c, held);
@@ -388,9 +388,9 @@ impl Engine {
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, b.order)?;
         // a section copied verbatim that this node never opened counts by its bytes, whatever of
         // its parts it holds from another blob (spec/sync-compaction.md §1 Only what the node checked)
-        let mut row = BlobOf { commit: *c, parts: sealed.parts.iter().copied().collect(), sealed: sealed.unopened.clone(), copy: b.to_label, unchecked: false };
+        let mut row = BlobOf { commit: *c, parts: sealed.parts.iter().copied().collect(), sealed: sealed.unopened.clone(), copy: b.to_sync_id, unchecked: false };
         if !unopened.is_empty() {
-            let env = osis_commit::Envelope::decode(&osis_label::open(&sealed.blob, &sealed.key)?.1)?;
+            let env = osis_commit::Envelope::decode(&osis_blob::open(&sealed.blob, &sealed.key)?.1)?;
             for sec in env.sections.iter().filter(|sec| unopened.contains(&sec.digest())) {
                 row.sealed.insert(sec.digest());
                 row.parts.retain(|ai| !sec.ais.contains(ai));
@@ -436,7 +436,7 @@ impl Engine {
         }
         // a fresh encryption
         let ctx = self.body_ctx(&t);
-        let copy = meta.certificate || self.commit_bodies_under(&ctx, c)?.first().is_some_and(|b| b.to_label);
+        let copy = meta.certificate || self.commit_bodies_under(&ctx, c)?.first().is_some_and(|b| b.to_sync_id);
         let sealed: Vec<usize> = match copy || body.is_empty() {
             // one section of the body's parts under its blob key; a header alone, none
             true => body.clone(),
@@ -479,11 +479,11 @@ impl Engine {
         let mut all = Vec::new();
         let mut opened = SealedSet::new();
         for h in held {
-            let b = osis_label::blob_id(&h.bytes);
+            let b = osis_blob::blob_id(&h.bytes);
             let Some(row) = self.core.ix.blob_parts.get(&b).filter(|x| x.commit == *c && !x.copy).cloned() else { continue };
             let Ok(Some(t)) = self.read_thing(&h.sync_id) else { continue };
-            let Some((_, key)) = osis_label::unwrap_any(self.read_secrets(&t).iter(), &b, &h.wrap) else { continue };
-            let Ok((_, pt)) = osis_label::open(&h.bytes, &key) else { continue };
+            let Some((_, key)) = osis_blob::unwrap_any(self.read_secrets(&t).iter(), &b, &h.wrap) else { continue };
+            let Ok((_, pt)) = osis_blob::open(&h.bytes, &key) else { continue };
             let Ok(env) = osis_commit::Envelope::decode(&pt) else { continue };
             if env.id() != *c {
                 continue;
@@ -509,11 +509,11 @@ impl Engine {
     /// Certificate body `meta` of commit `c` under a sync ID of thing `t`, sealed (spec/sync-
     /// judgement.md §1 Certificate blobs): its parts in one section under the blob key (none: a
     /// header-only copy), wrapped as `wrap_secret` says for those parts (spec/crypto.md §5).
-    fn seal_certificate(&mut self, t: &Tid, c: &CommitId, meta: &BodyMeta, rng: &mut dyn NodeRng) -> Result<Option<(crate::labeling::Sealed, Wrap)>> {
+    fn seal_certificate(&mut self, t: &Tid, c: &CommitId, meta: &BodyMeta, rng: &mut dyn NodeRng) -> Result<Option<(crate::sync_ids::Sealed, Wrap)>> {
         let Some(m) = self.core.ix.commits.get(c).cloned() else { return Ok(None) };
         let parts: Vec<usize> = meta.parts.iter().copied().collect();
-        let b = crate::labeling::Body { commit: *c, parts: parts.clone(), expires: meta.expires.map(|e| e.0), blind: m.header.blind, plaintext: Vec::new(), role_commit: m.header.kind.is_role(), order: meta.order, to_label: true };
-        let class = if m.view.memory { osis_label::Class::Ephemeral } else { osis_label::Class::Durable };
+        let b = crate::sync_ids::Body { commit: *c, parts: parts.clone(), expires: meta.expires.map(|e| e.0), blind: m.header.blind, plaintext: Vec::new(), role_commit: m.header.kind.is_role(), order: meta.order, to_sync_id: true };
+        let class = if m.view.memory { osis_blob::Class::Ephemeral } else { osis_blob::Class::Durable };
         let Some(sealed) = self.seal_to(&b, class, rng)? else { return Ok(None) };
         if parts.iter().any(|p| !sealed.parts.contains(p)) {
             return Ok(None);
@@ -569,7 +569,7 @@ impl Engine {
     }
 
     fn open_entry_once(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
-        if osis_label::blob_id(bytes) != *blob {
+        if osis_blob::blob_id(bytes) != *blob {
             return Ok(Opened::Bad);
         }
         if self.inbox_actors().contains_key(s) && let Some(o) = self.take_inbox_bytes(s, blob, bytes, false)? {
@@ -581,14 +581,14 @@ impl Engine {
             return Ok(Opened::Linked);
         }
         let Some(t) = self.opening_thing(s)? else { return Ok(Opened::NotOpen) };
-        let Some((_, key)) = osis_label::unwrap_any(self.read_secrets(&t).iter(), blob, wrap) else { return Ok(Opened::NotOpen) };
+        let Some((_, key)) = osis_blob::unwrap_any(self.read_secrets(&t).iter(), blob, wrap) else { return Ok(Opened::NotOpen) };
         let opened = match self.open_commit(bytes, &key) {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
             Err(_) => {
                 // a record blob (spec/wire.md §3): its records taken; a list blob (§4): its
                 // thing lists
-                let Ok((_, pt)) = osis_label::open(bytes, &key) else { return Ok(Opened::Bad) };
+                let Ok((_, pt)) = osis_blob::open(bytes, &key) else { return Ok(Opened::Bad) };
                 if let Some(tids) = self.take_record_blob(blob, &pt)? {
                     return Ok(Opened::Records(tids));
                 }
@@ -606,12 +606,12 @@ impl Engine {
             return Ok(Opened::NotOpen);
         }
         // the epoch the wrap opened under: whoever unwraps an entry reads the header
-        // (`labeling::opened::header_passes`)
+        // (`sync_ids::opened::header_passes`)
         if let Some((e, _)) = self.read_epochs(&t, &[]).into_iter().find(|(_, x)| osis_crypto::unwrap(x, blob, wrap).is_ok()) {
             self.note_unwrapped(&id, &t, &e);
             // a copy's content came under that epoch alone (its section opens under the blob
             // key): an opening of each of its parts under that epoch of S's thing, which counts
-            // for a wrap under an epoch of S's thing (`labeling::opened::opened_under_wrap`) and
+            // for a wrap under an epoch of S's thing (`sync_ids::opened::opened_under_wrap`) and
             // never as one of the part's thing
             if opened.copy && opened.commit.header.is_resolved() {
                 self.note_opened(&opened.commit.header, &[(t, e, opened.commit.parts.iter().collect())]);
@@ -681,7 +681,7 @@ impl Engine {
         if crate::engine::write::role_of(&self.core, &h.author, &actor, h.ts) < Some(Role::Write) || !self.judged_valid(c, &b.parts) {
             return Ok(Promote::Never);
         }
-        let parts: crate::labeling::Parts = b.parts.iter().copied().collect();
+        let parts: crate::sync_ids::Parts = b.parts.iter().copied().collect();
         Ok(match self.author_chain(c, &parts) {
             Some(chain) => Promote::Yes { chain },
             None => Promote::NotYet,
@@ -697,10 +697,10 @@ mod tests {
     use crate::sync::ThingSync;
     use osis_base::WallMs;
 
-    // spec/sync-ids.md §2 (The nearest actor with a home sync ID): it carries a labeled thing's
+    // spec/sync-ids.md §2 (The nearest actor with a home sync ID): it carries, for a thing with a sync ID, its
     // `sync.0`, an account counting as its devices actor D; a thing an account owns, given
     // secrets of its own outside D's closure, has its `sync.0` commit's body under D's sync ID,
-    // as D's label walk lists it.
+    // as D's sync ID walk lists it.
     #[test]
     fn an_account_things_sync_0_goes_under_d_spec_sync_ids_2() {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
@@ -712,7 +712,7 @@ mod tests {
         let done = e.give_own_secrets(&t).unwrap();
         assert!(!e.closure(&a.devices).contains(&t));
         let ThingSync::Read(d_ids) = e.thing_sync(&a.devices).unwrap() else { panic!("D read here") };
-        let walked: std::collections::BTreeSet<_> = e.label_bodies_meta(&a.devices).unwrap().into_iter().map(|b| b.commit).collect();
+        let walked: std::collections::BTreeSet<_> = e.sync_id_bodies_meta(&a.devices).unwrap().into_iter().map(|b| b.commit).collect();
         let sync0 = osis_base::Ak::new("sync.0").unwrap();
         let c = *done.commits.iter().find(|c| e.core.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().any(|x| x.tid == t && x.ak == sync0))).unwrap();
         assert!(walked.contains(&c), "D's walk lists the commit");
@@ -808,14 +808,14 @@ mod tests {
         assert!(matches!(lp.peers[V].engine.get(&g, &x).unwrap(), Some(Value::Map(m)) if m.contains_key(&Value::Str("w".into()))), "V reads w");
         let v = &mut lp.peers[V].engine;
         let ctx = v.body_ctx(&h);
-        assert!(matches!(&v.commit_bodies_under(&ctx, &w).unwrap()[..], [b] if b.to_label), "w goes under h's sync ID as a copy");
+        assert!(matches!(&v.commit_bodies_under(&ctx, &w).unwrap()[..], [b] if b.to_sync_id), "w goes under h's sync ID as a copy");
         assert!(lp.peers[V].engine.seal_body(&sh, &w, std::slice::from_ref(&copied), &mut rng).unwrap().is_none(), "V logs w's copy lacking M's removal");
         for pk in lp.packages(A2).unwrap().iter().filter(|p| removal.contains(&p.id)) {
             let _ = lp.peers[V].receive(&pk.bytes, pk.blobs.clone());
         }
         assert!(lp.peers[V].engine.epochs(&h).unwrap().read.is_established(&e_h));
         let (sealed, wrap) = lp.peers[V].engine.seal_body(&sh, &w, std::slice::from_ref(&copied), &mut rng).unwrap().expect("V logs w's copy under h's sync ID");
-        assert!(osis_label::unwrap_any(lp.peers[M].engine.read_secrets(&h).iter(), &sealed.id, &wrap).is_none(), "M unwraps V's copy");
+        assert!(osis_blob::unwrap_any(lp.peers[M].engine.read_secrets(&h).iter(), &sealed.id, &wrap).is_none(), "M unwraps V's copy");
     }
     // spec/crypto.md §5 (Passing on: an epoch of the sync ID's thing counts for a copy
     // only at a floor at least the wrap's), §4 (Floors): g, a thing under actor a, is filed in h,
@@ -867,7 +867,7 @@ mod tests {
         assert!(lp.peers[V].engine.epochs(&h).unwrap().read.newest_held().is_some_and(|(e, _)| lp.peers[V].engine.epochs(&h).unwrap().read.floor(&e) > 0), "a floor on h");
         let logged = lp.peers[V].engine.seal_body(&sh, &w, std::slice::from_ref(&copied), &mut rng).unwrap();
         lp.sync_all().unwrap();
-        let opens = logged.is_some_and(|(sealed, wrap)| osis_label::unwrap_any(lp.peers[N].engine.read_secrets(&h).iter(), &sealed.id, &wrap).is_some());
+        let opens = logged.is_some_and(|(sealed, wrap)| osis_blob::unwrap_any(lp.peers[N].engine.read_secrets(&h).iter(), &sealed.id, &wrap).is_some());
         assert!(!opens, "N unwraps V's copy of a write before its grant");
     }
     // spec/crypto.md §5 (Passing on: for a blob's wrap under an epoch of the sync ID's thing h,
@@ -971,7 +971,7 @@ mod tests {
         assert!(!v.commit_bodies_under(&ctx, &w).unwrap().is_empty(), "w goes under h's sync ID");
         let held = crate::sync::HeldBlob { sync_id: sk, wrap: kw, bytes: kb.blob.clone() };
         let logged = lp.peers[V].engine.seal_body(&sh, &w, std::slice::from_ref(&held), &mut rng).unwrap();
-        let opens = logged.is_some_and(|(sealed, wrap)| osis_label::unwrap_any(lp.peers[H].engine.read_secrets(&h).iter(), &sealed.id, &wrap).is_some());
+        let opens = logged.is_some_and(|(sealed, wrap)| osis_blob::unwrap_any(lp.peers[H].engine.read_secrets(&h).iter(), &sealed.id, &wrap).is_some());
         assert!(!opens, "H unwraps V's entry of w under h");
     }
 }

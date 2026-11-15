@@ -62,9 +62,9 @@ pub(crate) enum Ctl {
     /// Listener set `set` listens at `urls` under `secret` in place of its URLs before (none:
     /// its own URLs again); a key other than the one listened under moves every other set to it
     /// first. No other set is touched (`Listening`: each set is its owner's).
-    Listen { set: Listening, urls: Option<Vec<String>>, secret: StaticSecret, reply: oneshot::Sender<std::result::Result<Vec<osis_label::Address>, String>> },
+    Listen { set: Listening, urls: Option<Vec<String>>, secret: StaticSecret, reply: oneshot::Sender<std::result::Result<Vec<osis_blob::Address>, String>> },
     /// Tests: every address listened at now.
-    Listening(oneshot::Sender<Vec<osis_label::Address>>),
+    Listening(oneshot::Sender<Vec<osis_blob::Address>>),
 }
 
 /// Where the driver task runs and what it hears from the handle.
@@ -148,7 +148,7 @@ impl Net {
     }
 
     /// Every address the driver listens at now (`Ctl::Listening`; none off the driver).
-    pub(crate) fn listening(&self) -> Vec<osis_label::Address> {
+    pub(crate) fn listening(&self) -> Vec<osis_blob::Address> {
         let Net::Driver { ctl, .. } = self else { return Vec::new() };
         let (tx, rx) = oneshot::channel();
         if ctl.send(Ctl::Listening(tx)).is_err() {
@@ -158,7 +158,7 @@ impl Net {
     }
 
     /// Listener set `set` listens under `secret` (see `Ctl::Listen`); the addresses of `urls`.
-    pub(crate) fn listen(&self, set: Listening, urls: Option<Vec<String>>, secret: StaticSecret) -> Result<Vec<osis_label::Address>> {
+    pub(crate) fn listen(&self, set: Listening, urls: Option<Vec<String>>, secret: StaticSecret) -> Result<Vec<osis_blob::Address>> {
         match self {
             Net::Off => Err(Error::Network("no runtime: listening needs one (Config.runtime)".into())),
             Net::Manual { net, index } => {
@@ -168,7 +168,7 @@ impl Net {
                 if set == Listening::Socket {
                     lock(&net.0).sockets.extend(urls.iter().map(|u| (u.clone(), *index)));
                 }
-                Ok(urls.into_iter().map(|url| osis_label::Address { url, key }).collect())
+                Ok(urls.into_iter().map(|url| osis_blob::Address { url, key }).collect())
             }
             Net::Driver { ctl, .. } => {
                 let (tx, rx) = oneshot::channel();
@@ -285,7 +285,7 @@ impl crate::Osis {
     /// `peer://` listener's global addresses (an unspecified one standing for `routes`) and
     /// relays, and its entry in its profile's dial list. A failed write is published again at the
     /// next listen.
-    pub(crate) fn publish_reach(&self, key: [u8; 32], addrs: &[osis_label::Address], routes: &[std::net::IpAddr]) {
+    pub(crate) fn publish_reach(&self, key: [u8; 32], addrs: &[osis_blob::Address], routes: &[std::net::IpAddr]) {
         let items: Vec<String> = addrs.iter().flat_map(|a| osis_transport::p2p::reach_items(&a.url, routes)).collect();
         let _ = self.engine(|e| e.publish_reach(key, items));
     }
@@ -299,7 +299,7 @@ async fn routes() -> Vec<std::net::IpAddr> {
 }
 
 /// The driver's half of `Osis::publish_reach`: after a listen that succeeded.
-async fn published(db: &WeakOsis, key: [u8; 32], addrs: &[osis_label::Address]) {
+async fn published(db: &WeakOsis, key: [u8; 32], addrs: &[osis_blob::Address]) {
     let routes = routes().await;
     if let Some(db) = db.hold() {
         blocking(|| db.publish_reach(key, addrs, &routes));
@@ -362,7 +362,7 @@ async fn drive<T: Transport>(db: WeakOsis, mut links: TransportLinks<T>, mut rx:
 #[derive(Default)]
 struct Sets {
     key: Option<[u8; 32]>,
-    at: BTreeMap<Listening, Vec<osis_label::Address>>,
+    at: BTreeMap<Listening, Vec<osis_blob::Address>>,
     /// The last `listen` moved every set to a new key.
     key_moved: bool,
 }
@@ -370,7 +370,7 @@ struct Sets {
 impl Sets {
     /// `set` listens at `urls` (none: where it is) under `secret`; a new key moves every other
     /// set to it first, each where it was. The addresses of `set`; a set that fails stays closed.
-    async fn listen<T: Transport>(&mut self, links: &mut TransportLinks<T>, set: Listening, urls: Option<Vec<String>>, secret: &StaticSecret) -> std::result::Result<Vec<osis_label::Address>, String> {
+    async fn listen<T: Transport>(&mut self, links: &mut TransportLinks<T>, set: Listening, urls: Option<Vec<String>>, secret: &StaticSecret) -> std::result::Result<Vec<osis_blob::Address>, String> {
         let key = secret.public_key();
         self.key_moved = self.key != Some(key);
         let mut err = None;
@@ -390,7 +390,7 @@ impl Sets {
         }
     }
 
-    async fn relisten<T: Transport>(&mut self, links: &mut TransportLinks<T>, set: Listening, urls: Option<Vec<String>>, secret: &StaticSecret) -> std::result::Result<Vec<osis_label::Address>, String> {
+    async fn relisten<T: Transport>(&mut self, links: &mut TransportLinks<T>, set: Listening, urls: Option<Vec<String>>, secret: &StaticSecret) -> std::result::Result<Vec<osis_blob::Address>, String> {
         let urls = urls.unwrap_or_else(|| self.at.get(&set).into_iter().flatten().map(|a| a.url.clone()).collect());
         self.at.remove(&set);
         let a = links.listen(set, &urls, secret).await.map_err(|e| e.to_string())?;
@@ -402,7 +402,7 @@ impl Sets {
     /// listeners' addresses (`Osis::publish_reach`).
     async fn publish(&self, db: &WeakOsis) {
         let Some(key) = self.key else { return };
-        let addrs: Vec<osis_label::Address> = [Listening::Dialable, Listening::Urls].iter().flat_map(|s| self.at.get(s)).flatten().cloned().collect();
+        let addrs: Vec<osis_blob::Address> = [Listening::Dialable, Listening::Urls].iter().flat_map(|s| self.at.get(s)).flatten().cloned().collect();
         published(db, key, &addrs).await;
     }
 }
@@ -605,7 +605,7 @@ struct FabricLinks<'a> {
 }
 
 impl Links for FabricLinks<'_> {
-    fn dial(&mut self, conn: ConnId, to: &osis_label::Address) {
+    fn dial(&mut self, conn: ConnId, to: &osis_blob::Address) {
         let f = &mut *self.f;
         let socket = f.sockets.get(&to.url).copied();
         let target = socket.or_else(|| f.nodes.iter().position(|n| n.1 == Some(to.key)));

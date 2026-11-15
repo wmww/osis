@@ -101,7 +101,7 @@ fn damaged_caches_are_rebuilt() {
 }
 
 // spec: none (notes/engine-store.md, Open): a reopen of the caches never takes the engine's generation
-// back, so a cache keyed on it (the sync engine's labels) is never taken for current afterwards
+// back, so a cache keyed on it (the sync engine's sync IDs) is never taken for current afterwards
 #[test]
 fn reload_never_takes_generation_back() {
     let mut lp = net(1, 0);

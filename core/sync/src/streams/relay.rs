@@ -8,7 +8,7 @@ use super::{Ctx, Streams};
 use crate::types::{ConnId, Entry};
 use osis_base::{BlobId, SyncId};
 use osis_engine::sync::{Holding, RelayOpened};
-use osis_label::Prefix;
+use osis_blob::Prefix;
 use osis_proto::{Event, Msg, RelaySource, RelayVerdict, Stream};
 
 impl Streams {
@@ -36,7 +36,7 @@ impl Streams {
     /// it on, a node keeping S unread passes on what it takes (spec/sync-ids.md §6 Relay-only).
     pub(super) fn relay_in(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, e: Entry, bytes: Vec<u8>) {
         let Some(holding) = ctx.store.holding(&s) else { return };
-        if osis_label::blob_id(&bytes) != e.blob {
+        if osis_blob::blob_id(&bytes) != e.blob {
             return;
         }
         if holding != Holding::Read {

@@ -10,7 +10,7 @@ use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
 use osis_engine::retention::Minting;
 use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, Destruction, PartSet, PieceLink, ReadCredentials, SealedSet};
-use osis_label::StepId;
+use osis_blob::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

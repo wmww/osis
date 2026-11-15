@@ -4,7 +4,7 @@
 
 use super::ThingSync;
 use crate::error::Result;
-use crate::labeling::Body;
+use crate::sync_ids::Body;
 use crate::Engine;
 use osis_base::{BlobId, SyncId};
 use osis_crypto::NodeRng;
@@ -54,8 +54,8 @@ impl Engine {
                 if parts.is_empty() {
                     continue;
                 }
-                let b = Body { commit: c.id, parts: parts.clone(), expires: osis_commit::blob_expiry(h), blind: h.blind, plaintext: c.blob.encode(), role_commit: false, order: 0, to_label: false };
-                let Some(sealed) = self.seal(&b, osis_label::Class::Relay, &[], rng)? else { continue };
+                let b = Body { commit: c.id, parts: parts.clone(), expires: osis_commit::blob_expiry(h), blind: h.blind, plaintext: c.blob.encode(), role_commit: false, order: 0, to_sync_id: false };
+                let Some(sealed) = self.seal(&b, osis_blob::Class::Relay, &[], rng)? else { continue };
                 let Some(w) = self.wrap_secret(&g, Some((&c.id, &parts)))? else { continue };
                 let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, 0)?;
                 for s in ids {
@@ -70,11 +70,11 @@ impl Engine {
     /// its wrap with a held read secret, verified like an ephemeral commit, its valid signal
     /// parts told to listeners once; nothing of it kept.
     pub fn open_relay(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8]) -> Result<RelayOpened> {
-        if osis_label::blob_id(bytes) != *blob {
+        if osis_blob::blob_id(bytes) != *blob {
             return Ok(RelayOpened::Bad);
         }
         let Some(t) = self.read_thing(s)? else { return Ok(RelayOpened::NotOpen) };
-        let Some((_, key)) = osis_label::unwrap_any(self.read_secrets(&t).iter(), blob, wrap) else { return Ok(RelayOpened::NotOpen) };
+        let Some((_, key)) = osis_blob::unwrap_any(self.read_secrets(&t).iter(), blob, wrap) else { return Ok(RelayOpened::NotOpen) };
         let opened = match self.open_commit(bytes, &key) {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),

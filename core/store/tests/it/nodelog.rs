@@ -264,7 +264,7 @@ fn an_entry_keeps_one_event_and_a_listing_is_the_live_set() {
     t.log_added(l(1), b(2)).unwrap();
     t.log_deleted(l(1), b(2), 50).unwrap();
     t.commit().unwrap();
-    assert_eq!(events(&mut s, &mut rng), [NodeEvent::Added(l(1), b(1)), NodeEvent::Deleted { label: l(1), blob: b(2), at: 50 }]);
+    assert_eq!(events(&mut s, &mut rng), [NodeEvent::Added(l(1), b(1)), NodeEvent::Deleted { sync_id: l(1), blob: b(2), at: 50 }]);
 }
 
 // compaction drops an earlier event but a cursor before the drop still gets the later one
@@ -290,7 +290,7 @@ fn deletion_events_last_the_tombstone_lifetime() {
     assert_eq!(t.log_read(None, 10).unwrap().events.len(), 3);
     assert!(!t.log_sweep(100 + TOMBSTONE_LIFETIME_MS).unwrap());
     let left: Vec<_> = t.log_read(None, 10).unwrap().events.into_iter().map(|e| e.event).collect();
-    assert_eq!(left, [NodeEvent::Deleted { label: l(1), blob: b(2), at: 200 }, NodeEvent::Added(l(1), b(3))]);
+    assert_eq!(left, [NodeEvent::Deleted { sync_id: l(1), blob: b(2), at: 200 }, NodeEvent::Added(l(1), b(3))]);
     t.log_deleted(l(1), b(1), 300).unwrap();
     t.commit().unwrap();
     assert_eq!(events(&mut s, &mut rng).len(), 3, "the swept entry's slot went with its event, so a later deletion logs");
@@ -341,7 +341,7 @@ fn sweep_pages_until_done() {
 }
 
 #[test]
-fn forgetting_a_label_logs_no_deletion_and_keeps_others() {
+fn forgetting_a_sync_id_logs_no_deletion_and_keeps_others() {
     let (_d, mut rng, mut s) = fresh(cfg());
     let mut t = s.transaction(&mut rng).unwrap();
     for n in 0..600 {

@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use osis_label::{BundleReader, Importer, Record};
+use osis_blob::{BundleReader, Importer, Record};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(mut r) = BundleReader::new(data) else { return };

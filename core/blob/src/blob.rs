@@ -1,5 +1,5 @@
 //! Blob framing: the clear prefix (spec/wire.md §5), encryption to a blob and back, blob IDs,
-//! the prefix-versus-header agreement check (spec/commits.md §4) and label wraps (spec/crypto.md §5).
+//! the prefix-versus-header agreement check (spec/commits.md §4) and sync ID wraps (spec/crypto.md §5).
 
 use crate::Error;
 use osis_base::format::{BLOB_FRAMING_VERSION, COMMITMENT_LEN, DELETE_ADMIN, DELETE_WRITER, MAX_BLOB, PREFIX_FIXED_LEN};
@@ -16,7 +16,7 @@ pub type Level = u8;
 
 /// A blob's class (spec/wire.md §5, spec/sync-ids.md §1): what a peer does with it. Durable
 /// blobs are stored; ephemeral ones are held in memory only; relay-only ones are pushed to the
-/// label's current subscribers and held by nobody.
+/// sync ID's current subscribers and held by nobody.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Class {
     #[default]
