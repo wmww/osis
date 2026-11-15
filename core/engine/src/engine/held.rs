@@ -110,6 +110,12 @@ impl Held {
         self.rest.read(&Row::Commits(t));
         self.commits.get(t).map(Vec::as_slice).unwrap_or_default()
     }
+    /// Whether some edge commit with a write on `t` is held but does not count (`set_counted`:
+    /// an account's at a revoked epoch no held word names). Stamped as `commits_on`.
+    pub fn uncounted_on(&self, t: &Tid) -> bool {
+        self.rest.read(&Row::Commits(t));
+        !self.uncounted.is_empty() && self.commits.get(t).is_some_and(|cs| cs.iter().any(|c| self.uncounted.contains(&c.id)))
+    }
     /// Things `holder` is named on as a holder (edge writes, a creation record naming its first admin).
     pub fn named_on(&self, holder: &Tid) -> impl Iterator<Item = &Tid> {
         self.rest.read(&Row::Holder(holder));

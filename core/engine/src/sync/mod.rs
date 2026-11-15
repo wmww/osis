@@ -1310,6 +1310,14 @@ impl Engine {
         self.core.ix.held.holders_of(t).next().is_some()
     }
 
+    /// Whether a role commit on `t` is held here but does not count, its epoch revoked and no
+    /// held word (a thing list, a listing) naming it yet (spec/permissions.md §5.5): what may give
+    /// this node its role on `t` again once the lists arrive (spec/sync-set.md §3 Leaving).
+    /// Stamped per thing: moves as one counts or arrives.
+    pub fn uncounted_role_on(&self, t: &Tid) -> bool {
+        self.core.ix.held.uncounted_on(t)
+    }
+
     /// The pass place the newest role commit on `actor` applied from elsewhere arrived at.
     pub fn role_arrival_place(&self, actor: &Tid) -> Option<u64> {
         self.role_arrival(actor)
