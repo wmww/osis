@@ -872,18 +872,24 @@ fn a_lost_for_an_open_member_is_answered_with_a_lost_spec_sync_opens_6() {
     }
 }
 
-// spec/sync-opens.md §6: a member ended and then judged admissible again is no longer ended.
+// spec/sync-opens.md §6: a member once ended stays ended when judged admissible again: the peer's
+// stream may be served past `until` with S's entries there skipped, so it still closes with a Lost
+// naming `until` once the stream passes it, the peer rejoining from there.
 #[test]
-fn an_ended_member_admissible_again_is_not_ended_spec_sync_opens_6() {
+fn an_ended_member_admissible_again_stays_ended_spec_sync_opens_6() {
     let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
     let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
     adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
     k.table.set(S, Some(store(&s1)));
     k.settle();
-    assert!(k.opens.members(adv.peer)[&S].until.is_some());
+    let until = k.opens.members(adv.peer)[&S].until.expect("ended");
     k.table.set(S, Some(store(&s0)));
     k.settle();
-    assert_eq!(k.opens.members(adv.peer)[&S].until, None);
+    assert_eq!(k.opens.members(adv.peer)[&S].until, Some(until), "still ended");
+    k.sent();
+    k.reported_stream(adv.peer, until + 5);
+    assert!(!k.open(adv.peer, &S));
+    assert!(matches!(&of_kind(&k.sent(), 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(until.to_be_bytes().to_vec()).ok())));
 }
 
 // spec/sync-opens.md §4 (the rule: a secret credential), §5 (ByRole): a Hit or a ByRole Hit on a

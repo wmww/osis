@@ -2154,7 +2154,8 @@ impl Opens {
 
     /// Re-judges member S of `conn` (spec/sync-opens.md §6): J reader or sync holder stays; an
     /// open by a credential stays while it is admissible; one no longer admissible whose peer J
-    /// judges neither holder nor departed is ended (`until`); any other closes at once with a Lost.
+    /// judges neither holder nor departed is ended (`until`), and stays ended until it closes;
+    /// any other closes at once with a Lost.
     fn rejudge(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, moved: &mut Vec<Moved>) {
         let Some(m) = self.member(conn, &s).cloned() else { return };
         self.work.rejudged += 1;
@@ -2169,31 +2170,27 @@ impl Opens {
         let admissible = m.by != Credential::J
             && basis.is_some_and(|b| adm.shows.iter().any(|x| beacon_of(x.matched(), &s, &rr) == b) || adm.tests.iter().any(|t| beacon_of(&t.matched(&s), &s, &rr) == b));
         let stays = holder || admissible;
+        // An ended member judged holder or admissible again stays ended: the peer's stream may be
+        // past `until` already (S's entries since skipped), so it closes there and opens again.
         if stays {
-            // A member ended and then judged holder or admissible again is no longer ended.
-            self.set_until(conn, &s, None, moved);
         } else if m.by == Credential::J || adm.j == J::Departed {
             self.close_member(ctx, conn, s, Close::AtOnce, moved);
         } else if m.until.is_none() {
             let until = ctx.holds.until(&s, &m.by);
-            self.set_until(conn, &s, Some(until), moved);
+            self.set_until(conn, &s, until, moved);
             self.close_if_reached(ctx, conn, s, moved);
         }
     }
 
-    /// Sets or clears member S's `until`; streams hears of it (`Moved::Until`).
-    fn set_until(&mut self, conn: ConnId, s: &SyncId, until: Option<Position>, moved: &mut Vec<Moved>) {
+    /// Ends member S: sets its `until`; streams hears of it (`Moved::Until`).
+    fn set_until(&mut self, conn: ConnId, s: &SyncId, until: Position, moved: &mut Vec<Moved>) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(m) = c.rec.and_then(|r| self.records.get_mut(&r)).and_then(|r| r.members.get_mut(s)) else { return };
-        if m.until == until {
+        if m.until == Some(until) {
             return;
         }
-        m.until = until;
-        if until.is_some() {
-            c.ending.insert(*s);
-        } else {
-            c.ending.remove(s);
-        }
+        m.until = Some(until);
+        c.ending.insert(*s);
         moved.push(Moved::Until(conn, *s));
         self.dirty_member(conn, *s);
     }

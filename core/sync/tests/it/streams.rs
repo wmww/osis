@@ -808,6 +808,33 @@ fn what_a_source_showed_lasts_with_its_stop_spec_sync_opens_6() {
     assert!(!knows(&p.b, src, s, x), "gone with the connection");
 }
 
+// spec/sync-opens.md §6 (Where it stopped: a pull of S from the start at that source meanwhile
+// stands over where it stopped), spec/sync-judgement.md §6 (Stops): S closed keeping its stop is
+// pulled anew (kept again after its copy dropped) before it opens again: the rejoin is from the
+// start, whatever cursor the peer's Lost named (before or after the pull anew alike: opens hands
+// streams the Lost's cursor either way).
+#[test]
+fn a_pull_anew_while_closed_stands_over_a_lost_cursor_spec_sync_opens_6() {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    let x = k.stamped(&mut p.a, 3000, true);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    p.b.leave_as(p.now, k.id, Leaving::Kept);
+    p.b.store.set_unheld(&k.id, true).unwrap();
+    p.run();
+    p.b.store.set_unheld(&k.id, false).unwrap();
+    p.run();
+    let pulls = p.sent_by_b(41).len();
+    p.b.join_on(p.now, C, k.id, Rejoin::From(Some(u64::MAX.to_be_bytes().to_vec())));
+    p.run();
+    assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])), "rejoined from the start");
+    assert!(p.b.store.entry(&k.id, &x).unwrap().is_some(), "what it dropped held again");
+}
+
 // spec/sync-opens.md §6 (Where it stopped: a restart included): a stop kept when the node went
 // down (no connection end handled) goes at its start, with what the source showed.
 #[test]

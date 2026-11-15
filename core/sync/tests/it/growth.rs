@@ -375,44 +375,41 @@ fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
     }
 }
 
-/// Node 0 makes thing 0, node 1's account syncs it (kept unread), nodes 2 and 3 read it; node 0
-/// writes `n` entries (each its own aspect), then removes and grants again node 3's account `k`
-/// times (each removal rotates read and sync: node 1's head moves and ends every open there by
-/// the old sync key). The bytes node 1 and node 2 (a reader, no writer) send each other across
-/// the head moves, each way.
-fn head_moves(n: usize, k: usize) -> (u64, u64) {
-    let mut w = world(0, 4);
-    w.cap = 200_000;
-    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 3, Gives::Reads), Run], String::new());
-    let t = w.history.things[0].0;
-    for i in 0..n {
-        w.write(0, |e| {
-            let mut m = Mutation::new();
-            m.set(t, &Ak::new(format!("u:e{i}.0")).unwrap(), &Value::Int(i as i64)).unwrap();
-            e.commit(m).unwrap();
-        });
-    }
-    w.run();
-    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
-    assert!(w.store(1).entries(&s).unwrap().len() >= n, "the store holds every entry");
-    let steps = |w: &World| w.store(1).path(&s).unwrap().map_or(0, |p| p.steps.len());
-    let sent = |w: &World| (w.net.between.get(&(1, 2)).copied().unwrap_or(0), w.net.between.get(&(2, 1)).copied().unwrap_or(0));
-    let (before, head) = (sent(&w), steps(&w));
-    for _ in 0..k {
-        let _ = play(&mut w, &[Remove(0, 0, 3), Run, Grant(0, 0, 3, Gives::Reads), Run], String::new());
-    }
-    assert_eq!(steps(&w), head + k, "the store's head moved {k} times");
-    let after = sent(&w);
-    (after.0 - before.0, after.1 - before.1)
-}
-
 // spec/sync-opens.md §6 (Where it stopped; Lost: each Lost for a member open at its receiver is
 // answered), spec/sync-streams.md §4 (Joining): a head move at a node keeping S unread ends the
 // readers' opens by the old sync key, and each reader opens S again by the new one: both sides
 // rejoin from where they stopped, so what a reader and the store send each other per head move
 // does not grow with the n entries of S (no listing from the start either way), at n and 10n.
+// Node 0 makes thing 0, node 1's account syncs it (kept unread), nodes 2 and 3 read it; each
+// removal of node 3's account rotates read and sync (node 1's head moves); counted between node 1
+// and node 2 (a reader, no writer), each way, after n entries and again after 10n.
 #[test]
 fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
-    let (a, b) = (head_moves(3, 1), head_moves(30, 1));
+    let mut w = world(0, 4);
+    w.cap = 200_000;
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let mut written = 0;
+    let mut head_move = |w: &mut World, n: usize| {
+        for i in written..n {
+            w.write(0, |e| {
+                let mut m = Mutation::new();
+                m.set(t, &Ak::new(format!("u:e{i}.0")).unwrap(), &Value::Int(i as i64)).unwrap();
+                e.commit(m).unwrap();
+            });
+        }
+        written = n;
+        let _ = play(w, &[Grant(0, 0, 3, Gives::Reads), Run], String::new());
+        assert!(w.store(1).entries(&s).unwrap().len() >= n, "the store holds every entry");
+        let steps = |w: &World| w.store(1).path(&s).unwrap().map_or(0, |p| p.steps.len());
+        let sent = |w: &World| (w.net.between.get(&(1, 2)).copied().unwrap_or(0), w.net.between.get(&(2, 1)).copied().unwrap_or(0));
+        let (before, head) = (sent(w), steps(w));
+        let _ = play(w, &[Remove(0, 0, 3), Run], String::new());
+        assert_eq!(steps(w), head + 1, "the store's head moved");
+        let after = sent(w);
+        (after.0 - before.0, after.1 - before.1)
+    };
+    let (a, b) = (head_move(&mut w, 3), head_move(&mut w, 30));
     assert!(b.0 <= a.0 + 64 && b.1 <= a.1 + 64, "bytes (store to reader, reader to store) across a head move: {a:?} at n, {b:?} at 10n");
 }
