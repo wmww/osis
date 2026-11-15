@@ -1,5 +1,5 @@
 # `osis://` links in text are not references
-> Summary: Tess: a tid spelled as `osis://...` in text should count as a reference (a weak one under issues/refs-graph-lifetime.md), so backlinks find a note that links a thing. Today the reference index skips strings and text. To decide: which text is scanned and how (her lean: plain substring matching over Markdown-link parsing, as simpler and better).
+> Summary: Tess: a tid spelled as `osis://...` in text should count as a reference (a weak one under issues/reference-graph.md), so backlinks find a note that links a thing. Today the reference index skips strings and text. To decide: which text is scanned and how (her lean: plain substring matching over Markdown-link parsing, as simpler and better).
 > Priority: normal
 > Tags: engine, data-model, tess-call
 

@@ -1,17 +1,14 @@
-# Two ways to prove the right to open a sync ID: is by-role needed?
-> Summary: Found by reading (with Tess). A side opens S toward a peer on a secret credential (a read secret, a sync proof, an open signature by the step's key) or on J: a proven actor of the peer holding a role by the rosters held here (spec/sync-opens.md §4; the ByRole item: §5). The secret way works at every peer, a node keeping S unread included, and names no one; by-role works only at readers and needs the peer's identity. To check whether by-role can go, leaving one proof.
-> Priority: normal
+# Opening a sync ID: by role and by secret both carry weight today
+> Summary: Checked against spec and code. An old secret alone opens nothing: a reader that is behind gets back in only by a peer opening on its role (J, ByRole), and a holder that only stores gets every new sync secret by its inbox. So by-role cannot simply go. The simplification on offer: every key change leaves a sealed copy of the new secrets for each holder in the sync ID's own steps, as link keys get today; then an old secret catches up, tickets never go stale, by-role opening and inbox key delivery can go.
+> Priority: low
 > Tags: sync, tess-call
 
-What by-role appears to be for, and why each may not need it:
-- **A first sync before the key is held**: a holder granted a role that has no secret yet. Gone if what tells it of the grant always carries its sealed secret (the invitation redesign, issues/refs-graph-lifetime.md open question 21).
-- **Catching up after a missed rotation**: the new secret is inside S. A holder keeping S unread already follows S's steps by the entry boxes of each claim set (spec/sync-ids.md §2, §6; spec/sync-judgement.md §6), with no roster. If a reader can follow the same path, by-role is not needed here.
-- **Refusing a departed holder that shows an old secret** (§4 Departed): a removal comes in one commit with its rotation, and the departed holder gets no box of the new step, so the newest step's credential already refuses it.
+What holds today:
+- **A holder that only stores** follows no step by itself: entry boxes go to link keys only ("Other readers get none", spec/sync-ids.md §3). When its head moves past its keys it stops, and only a box of the new sync secret restarts it (spec/sync-judgement.md §6 Stops), delivered as an inbox blob (spec/permissions.md §3 Who rotates; engine `rotation/mod.rs`, `sync/deliveries.rs`). It can be behind by zero changes of the sync key.
+- **A reader with an old read secret** matches no credential an up-to-date peer shows (spec/sync-opens.md §4 Admissible: read secrets at a current epoch), and a claim on a newer step needs that step's claim set, which Behind answers do not carry (spec/wire.md §11.2). Once S is open it reads forward (a rotation is wrapped under the epoch it supersedes), unless a rotation was compacted away.
+- **Only by-role** opens: a first sync with no secret; a reader behind, at a reading peer. It does not help a holder that only stores (a store judges J unknown). A holder granted again after a gap opens by role but cannot read its boxes there: its inbox delivers them.
+- The Departed rule (§4) refuses by roster and needs no opening by role.
 
-To verify before removing anything:
-- Can a reader follow the step path as a node keeping S unread does, or does that path assume what only such a node has?
-- Does anything rest on opening by J itself? Rosters stay in use for whom to dial and whom to wait for on leaving (spec/sync-opens.md §1, spec/sync-set.md §3); that is not proof to open.
-- A timing gap by-role may close: a peer that holds a removal before it holds the rotation's step.
-- What ByRole's Offer item, the J classes (reader, sync holder, departed, unknown) and the source classes (§4 "A source") become with one proof.
+What the simplification takes (not costed): an entry box of the read and sync secrets for every reader and sync holder in each step; a way to open at a reading peer by the newest step's claim; or claim sets in Behind answers (helps at storing peers only). Costs to weigh: bytes per key change in proportion to holders, and a node that only stores seeing how many holders there are (spec/requirements.md, what such a node must not learn).
 
-Independent of the reference graph work.
+The reference graph plan keeps both ways (issues/reference-graph.md, Open 1).
