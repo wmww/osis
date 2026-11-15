@@ -9,8 +9,8 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let edits = std::fs::read_to_string(&args[1]).unwrap();
     let final_text = std::fs::read_to_string(&args[2]).unwrap();
-    for batch in [1usize, 10, 100] {
-        let (state, n_edits) = replay(&edits, batch);
+    for per_commit in [1usize, 10, 100] {
+        let (state, n_edits) = replay(&edits, per_commit);
         let got = state.read().unwrap();
         let ok = matches!(&got, crdt_model::value::Value::Str(s) if *s == final_text);
         let Frag::Seq { elems, .. } = &state else { unreachable!() };
@@ -44,7 +44,7 @@ fn main() {
             _ => 0,
         };
         println!(
-            "batch={batch}: edits={n_edits} elements={} deleted={} runs={runs} text={}B snapshot={}B ratio={:.2} final_matches={ok}",
+            "per_commit={per_commit}: edits={n_edits} elements={} deleted={} runs={runs} text={}B snapshot={}B ratio={:.2} final_matches={ok}",
             elems.len(),
             deleted,
             final_text.len(),
@@ -54,10 +54,10 @@ fn main() {
     }
 }
 
-/// Replays with `batch` edits per commit (counter continues across commits as a session's dot does).
+/// Replays with `per_commit` edits per commit (counter continues across commits as a session's dot does).
 /// A commit carries its net effect (spec §4.5): elements inserted and deleted within one commit are omitted, and
 /// all deletions of one commit share one flag write (one stamp).
-fn replay(edits: &str, batch: usize) -> (Frag, usize) {
+fn replay(edits: &str, per_commit: usize) -> (Frag, usize) {
     let src = Source::session(1, 0);
     let mut elems: BTreeMap<Dot, SeqElem> = BTreeMap::new();
     let mut created_in: BTreeMap<Dot, u64> = BTreeMap::new();
@@ -71,7 +71,7 @@ fn replay(edits: &str, batch: usize) -> (Frag, usize) {
     // created and deleted in the current commit, omitted at its end once nothing anchors at them
     let mut pending: Vec<Dot> = Vec::new();
     for (k, line) in edits.lines().enumerate() {
-        let commit = (k / batch) as u64 + 1;
+        let commit = (k / per_commit) as u64 + 1;
         // realistic wall clock: 2 s per commit, ms resolution shifted by 16 bits of logical counter
         let ts = (1_760_000_000_000u64 + commit * 2000) << 16;
         if commit != cur_commit {
@@ -113,7 +113,7 @@ fn replay(edits: &str, batch: usize) -> (Frag, usize) {
             anchor = Anchor::Dot(d);
         }
         n += 1;
-        if k % batch == batch - 1 {
+        if k % per_commit == per_commit - 1 {
             omit(&mut pending, &mut elems, &children);
             ctr = ctr.max(lo_of[&commit] + 1);
         }

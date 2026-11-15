@@ -1,6 +1,6 @@
 //! Ops, diff, net effect and undo (spec/crdt.md §2.3, §4.5, §4.6, §5, §9).
 
-use crate::batch::Batch;
+use crate::delta::DeltaBuilder;
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
 use crate::stamp::{CounterRange, Dot, Source};
@@ -49,7 +49,7 @@ proptest! {
         }
     }
 
-    /// §4.5: a batch of path ops in one commit reads like the same ops committed one by one.
+    /// §4.5: the path ops of one commit reads like the same ops committed one by one.
     #[test]
     fn batch_is_net_effect_spec_4_5(seed in any::<u64>()) {
         let ty = sink_no_seq();
@@ -67,7 +67,7 @@ proptest! {
         let mut seq_state = base.clone();
         let mut lo = 1;
         for (k, op) in ops.iter().enumerate() {
-            let mut b = Batch::new(&seq_state, Writer::new(ts((50 + k as u64) << 16), node.clone(), lo));
+            let mut b = DeltaBuilder::new(&seq_state, Writer::new(ts((50 + k as u64) << 16), node.clone(), lo));
             if b.apply(op, &view).is_err() {
                 continue;
             }
@@ -76,8 +76,8 @@ proptest! {
                 seq_state.join(d);
             }
         }
-        // one batch
-        let mut b = Batch::new(&base, Writer::new(ts(90 << 16), node, 1));
+        // one delta
+        let mut b = DeltaBuilder::new(&base, Writer::new(ts(90 << 16), node, 1));
         for op in &ops {
             let _ = b.apply(op, &view);
         }
@@ -136,7 +136,7 @@ proptest! {
         let mut w = Writer::new(ts(1 << 16), node.clone(), 1);
         let mut state = create(&mut w, &view, &base).unwrap();
         let ops = diff_values(Some(&base), &new, &view).unwrap();
-        let mut b = Batch::new(&state, Writer::new(ts(2 << 16), node, w.range().hi));
+        let mut b = DeltaBuilder::new(&state, Writer::new(ts(2 << 16), node, w.range().hi));
         for op in &ops {
             b.apply(op, &view).unwrap();
         }
@@ -180,7 +180,7 @@ fn created_and_removed_is_omitted_spec_4_5() {
     let state = Fragment::default();
     let node = sess(Tid::from_bytes([2; 15]));
     let view = AnyView;
-    let mut b = Batch::new(&state, Writer::new(ts(1 << 16), node, 1));
+    let mut b = DeltaBuilder::new(&state, Writer::new(ts(1 << 16), node, 1));
     b.apply(&PathOp { path: vec![], op: Op::Set(Value::Set([Value::Int(1)].into_iter().collect())) }, &view).unwrap();
     b.apply(&PathOp { path: vec![], op: Op::Add(Value::Int(2)) }, &view).unwrap();
     b.apply(&PathOp { path: vec![], op: Op::Remove(Value::Int(2)) }, &view).unwrap();
@@ -202,7 +202,7 @@ fn last_write_and_replace_win_spec_4_5() {
     let node = sess(Tid::from_bytes([2; 15]));
     let view = AnyView;
     let m = |kv: &[(i64, i64)]| Value::Map(kv.iter().map(|(k, v)| (Value::Int(*k), Value::Int(*v))).collect());
-    let mut b = Batch::new(&state, Writer::new(ts(1 << 16), node, 1));
+    let mut b = DeltaBuilder::new(&state, Writer::new(ts(1 << 16), node, 1));
     b.apply(&PathOp { path: vec![], op: Op::Set(m(&[(1, 1), (2, 2)])) }, &view).unwrap();
     b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(1))], op: Op::Set(Value::Int(5)) }, &view).unwrap();
     assert_eq!(b.view().read(), Some(m(&[(1, 5), (2, 2)])));
@@ -228,7 +228,7 @@ fn nested_register_replace_decodes_spec_5_1() {
     ];
     for (state, op, want) in cases {
         let view = if matches!(op.path[0], PathSeg::Field(_)) { TyView(Ty::Struct([(0, Ty::Register)].into())) } else { TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))) };
-        let mut b = Batch::new(&state, Writer::new(ts(2 << 16), node.clone(), 5));
+        let mut b = DeltaBuilder::new(&state, Writer::new(ts(2 << 16), node.clone(), 5));
         b.apply(&op, &view).unwrap();
         let (d, range) = b.finish().unwrap();
         let cx = DeltaCtx { ts: ts(2 << 16), own: node.clone(), range, kind: DeltaKind::Writer };
@@ -255,7 +255,7 @@ fn key_writes_follow_what_they_touch_spec_5_6() {
     let list = |xs: &[i64]| Value::List(xs.iter().map(|x| Value::Int(*x)).collect());
     let map = |kv: Vec<(i64, Value)>| Value::Map(kv.into_iter().map(|(k, v)| (Value::Int(k), v)).collect());
     let write = |st: &Fragment, s: u8, t: u64, ops: Vec<PathOp>| {
-        let mut b = Batch::new(st, Writer::new(ts(t << 16), src(s), 1));
+        let mut b = DeltaBuilder::new(st, Writer::new(ts(t << 16), src(s), 1));
         for op in &ops {
             b.apply(op, &view).unwrap();
         }
@@ -292,7 +292,7 @@ fn text_key_writes_follow_what_they_touch_spec_5_6() {
     let view = TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
     let at = |path: Vec<PathSeg>, op: Op| PathOp { path, op };
     let write = |st: &Fragment, s: u8, t: u64, op: PathOp| {
-        let mut b = Batch::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
+        let mut b = DeltaBuilder::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
         b.apply(&op, &view).unwrap();
         b.finish().unwrap().0
     };
@@ -327,7 +327,7 @@ fn path_op_into_absent_key_spec_5_6() {
     let view = AnyView;
     let st = Fragment::default();
     let add = |src: u8, v: i64| {
-        let mut b = Batch::new(&st, Writer::new(ts(1 << 16), sess(Tid::from_bytes([src; 15])), 1));
+        let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 16), sess(Tid::from_bytes([src; 15])), 1));
         b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Add(Value::Int(v)) }, &view).unwrap();
         b.finish().unwrap().0
     };
@@ -335,7 +335,7 @@ fn path_op_into_absent_key_spec_5_6() {
     assert_eq!(s.read(), Some(Value::Map([(Value::Int(0), Value::Set([Value::Int(1)].into_iter().collect()))].into_iter().collect())));
     s.join(add(2, 2));
     assert_eq!(s.read(), Some(Value::Map([(Value::Int(0), Value::Set([Value::Int(1), Value::Int(2)].into_iter().collect()))].into_iter().collect())));
-    let mut b = Batch::new(&st, Writer::new(ts(1 << 16), sess(Tid::from_bytes([3; 15])), 1));
+    let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 16), sess(Tid::from_bytes([3; 15])), 1));
     // untyped, a remove from an absent value fails; typed, it is a no-op: either way no entry
     let _ = b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Remove(Value::Int(1)) }, &view);
     assert!(b.finish().is_none());
@@ -351,7 +351,7 @@ fn absent_key_typed_spec_5_6() {
     let structs = TyView(Ty::Map(Box::new(Ty::Register), Box::new(inner)));
     let st = Fragment::default();
     let node = sess(Tid::from_bytes([4; 15]));
-    let mut b = Batch::new(&st, Writer::new(ts(1 << 16), node.clone(), 1));
+    let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 16), node.clone(), 1));
     b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Remove(Value::Int(1)) }, &sets).unwrap();
     b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Add(Value::Int(2)) }, &sets).unwrap();
     let (d, range) = b.finish().unwrap();
@@ -359,7 +359,7 @@ fn absent_key_typed_spec_5_6() {
     let mut s = st.clone();
     s.join(d);
     assert_eq!(s.read(), Some(Value::Map([(Value::Int(0), Value::Set([Value::Int(2)].into_iter().collect()))].into_iter().collect())));
-    let mut b = Batch::new(&st, Writer::new(ts(1 << 16), node, 1));
+    let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 16), node, 1));
     let partial = PathOp { path: vec![PathSeg::Key(Value::Int(0)), PathSeg::Field(1)], op: Op::Set(Value::Int(5)) };
     assert!(b.apply(&partial, &structs).is_err());
     assert!(b.finish().is_none());
@@ -393,9 +393,9 @@ fn large_values_equal_by_hash_spec_5_5() {
     st2.join(set(&a, 1));
     assert_eq!(blob_of(st.read()), blob_of(lowest.map(|v| Value::Set([v].into_iter().collect()))));
     assert_eq!(blob_of(st.read()), blob_of(st2.read()));
-    let mut batch = Batch::new(&st, Writer::new(ts(5 << 16), a.clone(), 2));
-    batch.apply(&PathOp { path: vec![], op: Op::Add(link(4)) }, &view).unwrap();
-    assert!(batch.finish().is_none());
+    let mut builder = DeltaBuilder::new(&st, Writer::new(ts(5 << 16), a.clone(), 2));
+    builder.apply(&PathOp { path: vec![], op: Op::Add(link(4)) }, &view).unwrap();
+    assert!(builder.finish().is_none());
     // Map: a put under an equal-hash key writes into the live entry.
     let m = |blob: u8, v: i64| Value::Map([(link(blob), Value::Int(v))].into_iter().collect());
     let mut st = create(&mut Writer::new(ts(1 << 16), a.clone(), 1), &view, &m(1, 1)).unwrap();
@@ -412,7 +412,7 @@ fn large_values_equal_by_hash_spec_5_5() {
     assert_eq!(diff(&mut Writer::new(ts(2 << 16), a, 2), Some(&reg), &view, &link(2)).unwrap(), None);
 }
 
-/// spec/crdt.md §5.6, §3.3: a remove and a put of one live map key in one batch (flows rewrite a
+/// spec/crdt.md §5.6, §3.3: a remove and a put of one live map key in one delta (flows rewrite a
 /// history box as remove + put) encodes canonically.
 #[test]
 fn remove_then_put_same_key_round_trips_spec_5_6() {
@@ -426,10 +426,10 @@ fn remove_then_put_same_key_round_trips_spec_5_6() {
     let mut w = Writer::new(ts(1 << 16), a.clone(), 1);
     let st = create(&mut w, &view, &mk(1)).unwrap();
     for (src, lo) in [(a.clone(), 2), (sess(Tid::from_bytes([2; 15])), 1), (Source::commit(osis_base::CommitId([9; 32])), 1)] {
-        let mut batch = Batch::new(&st, Writer::new(ts(5 << 16), src.clone(), lo));
-        batch.apply(&PathOp { path: vec![], op: Op::Remove(key.clone()) }, &view).unwrap();
-        batch.apply(&PathOp { path: vec![PathSeg::Key(key.clone())], op: Op::Set(Value::Bytes(vec![1; 4])) }, &view).unwrap();
-        let (d, range) = batch.finish().unwrap();
+        let mut builder = DeltaBuilder::new(&st, Writer::new(ts(5 << 16), src.clone(), lo));
+        builder.apply(&PathOp { path: vec![], op: Op::Remove(key.clone()) }, &view).unwrap();
+        builder.apply(&PathOp { path: vec![PathSeg::Key(key.clone())], op: Op::Set(Value::Bytes(vec![1; 4])) }, &view).unwrap();
+        let (d, range) = builder.finish().unwrap();
         let cx = DeltaCtx { ts: ts(5 << 16), own: src.clone(), range, kind: DeltaKind::Writer };
         let delta = Delta { nonce: [7; 16], fragment: d };
         let bytes = encode_delta(&delta, &cx, None).unwrap();
@@ -500,15 +500,15 @@ fn map_put_new_spec_5_6() {
     let mut w = Writer::new(ts(1 << 16), a.clone(), 1);
     let mut st = create(&mut w, &view, &one(1)).unwrap();
     for (t, v) in [(2u64, 1i64), (3, 7)] {
-        let mut batch = Batch::new(&st, Writer::new(ts(t << 16), a.clone(), t));
-        batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Put(Value::Int(v)) }, &view).unwrap();
-        let (d, range) = batch.finish().unwrap();
+        let mut builder = DeltaBuilder::new(&st, Writer::new(ts(t << 16), a.clone(), t));
+        builder.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Put(Value::Int(v)) }, &view).unwrap();
+        let (d, range) = builder.finish().unwrap();
         let own = |x: &Dot| x.src == a && range.lo <= x.ctr && x.ctr < range.hi;
         assert!(d.is_put_only_map(&own));
         // a set into the live key writes into an existing entry: not a put
-        let mut batch = Batch::new(&st, Writer::new(ts(t << 16), a.clone(), t));
-        batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(Value::Int(v + 100)) }, &view).unwrap();
-        let (s, range) = batch.finish().unwrap();
+        let mut builder = DeltaBuilder::new(&st, Writer::new(ts(t << 16), a.clone(), t));
+        builder.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(Value::Int(v + 100)) }, &view).unwrap();
+        let (s, range) = builder.finish().unwrap();
         let own = |x: &Dot| x.src == a && range.lo <= x.ctr && x.ctr < range.hi;
         assert!(!s.is_put_only_map(&own));
         st.join(d);
@@ -516,9 +516,9 @@ fn map_put_new_spec_5_6() {
     }
     let Fragment::Map(m) = &st else { panic!("map") };
     assert_eq!(m.entries.len(), 3);
-    let mut batch = Batch::new(&st, Writer::new(ts(4 << 16), a, 4));
-    batch.apply(&PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, &view).unwrap();
-    assert!(!batch.finish().unwrap().0.is_put_only_map(&|_| true));
+    let mut builder = DeltaBuilder::new(&st, Writer::new(ts(4 << 16), a, 4));
+    builder.apply(&PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, &view).unwrap();
+    assert!(!builder.finish().unwrap().0.is_put_only_map(&|_| true));
 }
 
 /// §5.6 `put_new` away from a map key: a register is written again; a composite (it would merge
@@ -528,10 +528,10 @@ fn put_new_register_only_spec_5_6() {
     let view = AnyView;
     let a = sess(Tid::from_bytes([1; 15]));
     let st = Fragment::default();
-    let mut b = Batch::new(&st, Writer::new(ts(1 << 16), a.clone(), 1));
+    let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 16), a.clone(), 1));
     assert!(b.apply(&PathOp { path: vec![], op: Op::Put(Value::Int(3)) }, &view).is_ok());
     for v in [Value::Set([Value::Int(1)].into_iter().collect()), Value::List(vec![Value::Int(1)]), Value::Map([(Value::Int(1), Value::Int(1))].into_iter().collect())] {
-        let mut b = Batch::new(&st, Writer::new(ts(2 << 16), a.clone(), 1));
+        let mut b = DeltaBuilder::new(&st, Writer::new(ts(2 << 16), a.clone(), 1));
         assert!(b.apply(&PathOp { path: vec![], op: Op::Put(v) }, &view).is_err());
     }
 }
@@ -546,7 +546,7 @@ fn concurrent_key() -> Vec<(TyView, Fragment, Value)> {
     let mut w = Writer::new(ts(1 << 16), na.clone(), 1);
     let base = create(&mut w, &view, &Value::Map(Default::default())).unwrap();
     let put = |w: Writer, v: Value| {
-        let mut b = Batch::new(&base, w);
+        let mut b = DeltaBuilder::new(&base, w);
         b.apply(&PathOp { path: vec![PathSeg::Key(k.clone())], op: Op::Set(v) }, &view).unwrap();
         b.finish().unwrap().0
     };
@@ -569,7 +569,7 @@ fn concurrent_key() -> Vec<(TyView, Fragment, Value)> {
 /// returns the undo delta and the state after it.
 fn commit_and_undo(view: &TyView, s: &Fragment, op: PathOp) -> (Fragment, Fragment, Fragment) {
     let node = sess(Tid::from_bytes([1; 15]));
-    let mut b = Batch::new(s, Writer::new(ts(5 << 16), node.clone(), 20));
+    let mut b = DeltaBuilder::new(s, Writer::new(ts(5 << 16), node.clone(), 20));
     b.apply(&op, view).unwrap();
     let (d, range) = b.finish().unwrap();
     let mut s1 = s.clone();
@@ -617,7 +617,7 @@ fn undo_into_a_key_of_two_records_spec_4_6() {
     let key = Value::Int(0);
     let set = |v: Value| PathOp { path: vec![PathSeg::Key(key.clone())], op: Op::Set(v) };
     let write = |st: &Fragment, s: u8, t: u64, v: Value| {
-        let mut b = Batch::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
+        let mut b = DeltaBuilder::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
         b.apply(&set(v), &view).unwrap();
         b.finish().unwrap().0
     };
@@ -689,12 +689,12 @@ fn undo_absent_keeps_seen_other_write_spec_4_6() {
             Op::Insert { at, .. } => Op::Insert { at, items: vec![Value::Str("b".into())] },
             x => x,
         };
-        let mut b = Batch::new(&s, Writer::new(ts(5 << 16), node.clone(), 20));
+        let mut b = DeltaBuilder::new(&s, Writer::new(ts(5 << 16), node.clone(), 20));
         b.apply(&op, &view).unwrap();
         let (d1, range) = b.finish().unwrap();
         let mut s1 = s.clone();
         s1.join(d1.clone());
-        let mut b = Batch::new(&s1, Writer::new(ts(6 << 16), other.clone(), 1));
+        let mut b = DeltaBuilder::new(&s1, Writer::new(ts(6 << 16), other.clone(), 1));
         b.apply(&op_b, &view).unwrap();
         let mut s2 = s1.clone();
         s2.join(b.finish().unwrap().0);
@@ -798,7 +798,7 @@ fn decoded_bound_holds_dense_shapes() {
     for ops in scripts {
         let (mut st, mut lo) = (Fragment::default(), 1);
         for (k, op) in ops.into_iter().enumerate() {
-            let mut b = Batch::new(&st, Writer::new(ts((1 << 30) + k as u64), sess(Tid::from_bytes([1; 15])), lo));
+            let mut b = DeltaBuilder::new(&st, Writer::new(ts((1 << 30) + k as u64), sess(Tid::from_bytes([1; 15])), lo));
             b.apply(&PathOp { path: vec![], op }, &crate::fuzzing::TextView).unwrap();
             let (d, range) = b.finish().unwrap();
             lo = range.hi;
@@ -1012,7 +1012,7 @@ fn values_and_each_value_differ_in_bags_and_uncreated_keys_spec_5_6() {
     let view = TyView(ty);
     let (k, x, y) = (Value::Str("k".into()), Value::Str("x".into()), Value::Str("y".into()));
     let write = |st: &Fragment, s: u8, t: u64, ops: &[PathOp]| {
-        let mut b = Batch::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
+        let mut b = DeltaBuilder::new(st, Writer::new(ts(t << 16), sess(Tid::from_bytes([s; 15])), 1));
         ops.iter().for_each(|op| b.apply(op, &view).unwrap());
         b.finish().unwrap().0
     };

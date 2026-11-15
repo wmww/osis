@@ -725,7 +725,7 @@ pub(crate) fn visible<S: SeqRead + ?Sized>(s: &S) -> Vis {
     Vis(s.placed())
 }
 
-/// What sequence ops read: a `Seq`, or a state's under a batch's records (`Layered`).
+/// What sequence ops read: a `Seq`, or a state's under a delta's records (`Layered`).
 pub(crate) trait SeqRead {
     fn text(&self) -> bool;
     /// The placement (§6).
@@ -762,8 +762,8 @@ impl SeqRead for Seq {
     }
 }
 
-/// A state's sequence with a batch's writes joined over it, without copying the state: what the
-/// batch's next op there resolves against (§4.5). `top` holds the batch's new records and every
+/// A state's sequence with a delta's writes joined over it, without copying the state: what the
+/// delta's next op there resolves against (§4.5). `top` holds the delta's new records and every
 /// state record its writes meet, copied whole, then split where the writes land and joined with
 /// them, so it shadows the state's records it overlaps; `lin` is the state's placement followed
 /// through them.
@@ -777,14 +777,14 @@ pub(crate) struct Layered<'s> {
 }
 
 impl<'s> Layered<'s> {
-    /// `base` ⊔ `d` (a batch's writes, no reset); `None` where the placement cannot follow (the
+    /// `base` ⊔ `d` (a delta's writes, no reset); `None` where the placement cannot follow (the
     /// caller copies instead).
     pub(crate) fn new(base: &'s Seq, d: Seq) -> Option<Layered<'s>> {
         let mut l = Layered { base, top: Elems::new(), w: base.meta.w.clone(), lin: base.lin(), base_written: OnceLock::new() };
         l.join(d).then_some(l)
     }
 
-    /// Joins `d` (more of the batch's writes); `false`: the layer is unusable, drop it.
+    /// Joins `d` (more of the delta's writes); `false`: the layer is unusable, drop it.
     pub(crate) fn join(&mut self, d: Seq) -> bool {
         if d.text != self.base.text || d.meta.reset.is_some() {
             return false;
@@ -867,8 +867,8 @@ impl SeqRead for Layered<'_> {
     }
 }
 
-/// What a batch's kept view of a sequence checks after each op (`Batch::apply`), at the op's
-/// elements only: the batch's records `a` there, pruned under the reset `e` from above and
+/// What a delta's kept view of a sequence checks after each op (`DeltaBuilder::apply`), at the op's
+/// elements only: the delta's records `a` there, pruned under the reset `e` from above and
 /// joined with the op's `d`, equal the net effect's records there; elsewhere the net effect
 /// leaves `a`'s records as they were, unless it omits an element the commit made (§4.5), which
 /// only a removal in `d` (seen here) or a position write of `d` no longer naming such an

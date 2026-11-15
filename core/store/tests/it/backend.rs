@@ -10,7 +10,7 @@ fn suite(b: &mut dyn Backend) {
     assert_eq!(b.get(b"a").unwrap(), None);
     assert!(b.scan(b"", None, 10).unwrap().is_empty());
 
-    // Batch puts, ordered scans, ranges, limits, prefixes.
+    // DeltaBuilder puts, ordered scans, ranges, limits, prefixes.
     let mut w = WriteBatch::new();
     for k in [&b"b"[..], b"a", b"ab", b"c", b"\xff\xff"] {
         w.put(k.to_vec(), [k, b"!"].concat());

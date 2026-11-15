@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod access;
-mod batch;
+mod delta;
 mod changes;
 mod codec;
 mod copies;
@@ -77,7 +77,7 @@ pub use copies::CopyIndex;
 pub use codec::{decoded_bound, decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array, page_items, sources_of};
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Eid, Elem, Encoding, Entry, Key, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
-pub use batch::Batch;
+pub use delta::DeltaBuilder;
 pub use touch::{Pos, Seg, present_at, touches};
 pub use access::value_at;
 pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace, reset_entries};

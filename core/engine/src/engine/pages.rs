@@ -1735,7 +1735,7 @@ mod tests {
     use super::*;
     const SALT: [u8; 32] = [9; 32];
     use osis_base::Ts;
-    use osis_crdt::{AnyView, Batch, Op, PathOp, PathSeg, Source, Writer, create};
+    use osis_crdt::{AnyView, DeltaBuilder, Op, PathOp, PathSeg, Source, Writer, create};
     use osis_store::{MemoryBackend, MemoryRoot, Store, StoreConfig};
 
     /// A session of the made-up node `n` (tid bytes all `n`).
@@ -1766,7 +1766,7 @@ mod tests {
         assert_eq!(rows(&mut txn), 6000);
         let (mut f, mut idx) = open(&unit, &SALT).unwrap();
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-        let mut b = Batch::new(&f, Writer::new(Ts::from_u64(2 << 16).unwrap(), node, w.range().hi));
+        let mut b = DeltaBuilder::new(&f, Writer::new(Ts::from_u64(2 << 16).unwrap(), node, w.range().hi));
         b.apply(&PathOp { path: Vec::new(), op: Op::Remove(Value::Int(5)) }, &AnyView).unwrap();
         let (d, _) = b.finish().unwrap();
         f.join(d);
@@ -1805,10 +1805,10 @@ mod tests {
             assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &p).unwrap());
         }
         assert!(!idx.whole());
-        let mut b = Batch::new(&f, Writer::new(Ts::from_u64(2 << 16).unwrap(), node.clone(), w.range().hi));
+        let mut b = DeltaBuilder::new(&f, Writer::new(Ts::from_u64(2 << 16).unwrap(), node.clone(), w.range().hi));
         b.apply(&op, &AnyView).unwrap();
         let (d, _) = b.finish().unwrap();
-        let mut full = Batch::new(&body, Writer::new(Ts::from_u64(2 << 16).unwrap(), node, w.range().hi));
+        let mut full = DeltaBuilder::new(&body, Writer::new(Ts::from_u64(2 << 16).unwrap(), node, w.range().hi));
         full.apply(&op, &AnyView).unwrap();
         assert_eq!(full.finish().unwrap().0, d);
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
@@ -1878,7 +1878,7 @@ mod tests {
             let wi = r(2) as usize;
             // writer 1 writes against an old snapshot (concurrent), writer 0 against the paged state
             if wi == 1 {
-                let mut b = Batch::new(&old, Writer::new(Ts::from_u64(ts).unwrap(), nodes[1].clone(), ctrs[1]));
+                let mut b = DeltaBuilder::new(&old, Writer::new(Ts::from_u64(ts).unwrap(), nodes[1].clone(), ctrs[1]));
                 if b.apply(&op, &AnyView).is_err() { continue; }
                 let Some((delta, range)) = b.finish() else { continue };
                 ctrs[1] = range.hi;
@@ -1899,8 +1899,8 @@ mod tests {
                 Some(paths) => for p in &paths { ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, p).unwrap(); },
                 None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(),
             }
-            let mut b = Batch::new(&f, Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
-            let mut full = Batch::new(&st, Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
+            let mut b = DeltaBuilder::new(&f, Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
+            let mut full = DeltaBuilder::new(&st, Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
             let (ok, ok_full) = (b.apply(&op, &AnyView).is_ok(), full.apply(&op, &AnyView).is_ok());
             assert_eq!(ok, ok_full);
             if !ok { continue; }
@@ -1981,8 +1981,8 @@ mod tests {
                 }
                 None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(),
             }
-            let mut b = Batch::new(&f, Writer::new(Ts::from_u64(ts).unwrap(), node.clone(), ctr));
-            let mut full = Batch::new(&st, Writer::new(Ts::from_u64(ts).unwrap(), node.clone(), ctr));
+            let mut b = DeltaBuilder::new(&f, Writer::new(Ts::from_u64(ts).unwrap(), node.clone(), ctr));
+            let mut full = DeltaBuilder::new(&st, Writer::new(Ts::from_u64(ts).unwrap(), node.clone(), ctr));
             let (ok, ok_full) = (b.apply(&op, &AnyView).is_ok(), full.apply(&op, &AnyView).is_ok());
             assert_eq!(ok, ok_full, "step {step}");
             if !ok {
@@ -2143,7 +2143,7 @@ mod tests {
             ts += 1 << 16;
             let items = seq_items(text, n, n);
             let v = if text { Value::Str(items.iter().map(|v| if let Value::Str(x) = v { x.as_str() } else { "" }).collect()) } else { Value::List(items) };
-            let mut b = Batch::new(&st, Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
+            let mut b = DeltaBuilder::new(&st, Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
             b.apply(&PathOp { path: field(), op: Op::Replace(v) }, &view).unwrap();
             let (d, range) = b.finish().unwrap();
             ctrs[0] = range.hi;
@@ -2238,7 +2238,7 @@ mod tests {
                     _ => Op::Insert { at: 0, items: seq_items(text, fresh_item, 1) },
                 };
                 let op = PathOp { path: field(), op };
-                let mut b = Batch::new(base, Writer::new(Ts::from_u64(ts).unwrap(), nodes[wi].clone(), ctrs[wi]));
+                let mut b = DeltaBuilder::new(base, Writer::new(Ts::from_u64(ts).unwrap(), nodes[wi].clone(), ctrs[wi]));
                 let Some((delta, range)) = b.apply(&op, &view).ok().and_then(|_| b.finish()) else {
                     session = Some((f, idx));
                     continue;
@@ -2372,7 +2372,7 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn run_cold(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, op: &PathOp, view: &SeqView, w: impl Fn() -> Writer) -> Option<(Fragment, osis_crdt::CounterRange)> {
         for _ in 0..OP_RUNS {
-            let mut b = Batch::new(f, w());
+            let mut b = DeltaBuilder::new(f, w());
             let got = b.apply(op, view).ok().and_then(|_| b.finish());
             match absorb(txn, tid, ak, idx, f).unwrap() {
                 Some(false) => return got,
@@ -2442,7 +2442,7 @@ mod tests {
             let lo = ctrs[wi];
             let w = || Writer::new(Ts::from_u64(ts).unwrap(), nodes[wi].clone(), lo);
             let run = |f: &Fragment| {
-                let mut b = Batch::new(f, w());
+                let mut b = DeltaBuilder::new(f, w());
                 ops.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
             };
             let Some((delta, range)) = run(base) else { continue };
@@ -2495,7 +2495,7 @@ mod tests {
         ts += 1 << 16;
         let w = || Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]);
         let run = |f: &Fragment| {
-            let mut b = Batch::new(f, w());
+            let mut b = DeltaBuilder::new(f, w());
             stale.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
         };
         if Some(Value::Str(x.clone())) != st.at(&field()).and_then(|s| s.read()) {
@@ -2571,7 +2571,7 @@ mod tests {
             let lo = ctr;
             let w = || Writer::new(Ts::from_u64(ts).unwrap(), node.clone(), lo);
             let run = |f: &Fragment| {
-                let mut b = Batch::new(f, w());
+                let mut b = DeltaBuilder::new(f, w());
                 ops.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
             };
             let Some((delta, range)) = run(&st) else { continue };
@@ -2635,7 +2635,7 @@ mod tests {
                 1 => Op::Delete { at: r(len) as usize, len: 3 },
                 _ => Op::Move { at: r(len - 4) as usize, len: 4, to: r(len - 3) as usize },
             };
-            let mut b = Batch::new(&f, Writer::new(Ts::from_u64(ts).unwrap(), me.clone(), ctr));
+            let mut b = DeltaBuilder::new(&f, Writer::new(Ts::from_u64(ts).unwrap(), me.clone(), ctr));
             b.apply(&PathOp { path: field(), op }, &view).unwrap();
             let (delta, range) = b.finish().unwrap();
             ctr = range.hi;
@@ -2650,7 +2650,7 @@ mod tests {
         }
         // hostile: 300 single-element moves to HEAD in one delta, received cold
         let len = st.at(&field()).and_then(|s| s.visible_range(0..usize::MAX)).unwrap().len();
-        let mut b = Batch::new(&st, Writer::new(Ts::from_u64(100 << 16).unwrap(), sess(2), 1));
+        let mut b = DeltaBuilder::new(&st, Writer::new(Ts::from_u64(100 << 16).unwrap(), sess(2), 1));
         for k in 0..300 {
             b.apply(&PathOp { path: field(), op: Op::Move { at: (k * 13) % (len - 1) + 1, len: 1, to: 0 } }, &view).unwrap();
         }
@@ -2670,7 +2670,7 @@ mod tests {
         assert_eq!(f.read(), st.read());
         // a join held in part whose pages do not fit is written whole (`set_state_touched`):
         // the placement written is the joined records', not the one stored before the join
-        let mut b = Batch::new(&st, Writer::new(Ts::from_u64(200 << 16).unwrap(), me.clone(), ctr));
+        let mut b = DeltaBuilder::new(&st, Writer::new(Ts::from_u64(200 << 16).unwrap(), me.clone(), ctr));
         b.apply(&PathOp { path: field(), op: Op::Insert { at: 7, items: seq_items(true, 99, 3) } }, &view).unwrap();
         let (delta, _) = b.finish().unwrap();
         let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), true, &SALT).unwrap();
@@ -2812,7 +2812,7 @@ mod tests {
             let lo = ctr;
             let wr = || Writer::new(Ts::from_u64((2 + damage) << 16).unwrap(), me.clone(), lo);
             let run = |f: &Fragment| {
-                let mut b = Batch::new(f, wr());
+                let mut b = DeltaBuilder::new(f, wr());
                 ops.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
             };
             let want = run(&st).unwrap();
@@ -2833,7 +2833,7 @@ mod tests {
             }
             assert!(got.as_ref() == Some(&want), "damage {damage}: same delta as on the whole state");
             let mut deltas = vec![want.0];
-            let mut b = Batch::new(&st, Writer::new(Ts::from_u64((2 + damage) << 16).unwrap(), sess(2), 1 + 10 * damage));
+            let mut b = DeltaBuilder::new(&st, Writer::new(Ts::from_u64((2 + damage) << 16).unwrap(), sess(2), 1 + 10 * damage));
             b.apply(&PathOp { path: field(), op: Op::Delete { at: 140, len: 20 } }, &view).unwrap();
             deltas.push(b.finish().unwrap().0);
             for d in deltas {

@@ -13,10 +13,10 @@
 //! of which has a model form equals the model's state (read only after a snapshot); and at the
 //! end every replica, given every commit, reads the same (never rebooted: holds the same state).
 //! The debug comparisons inside the crate
-//! (`Batch`'s layered view against state + net effect, the layered placement against a whole
+//! (`DeltaBuilder`'s layered view against state + net effect, the layered placement against a whole
 //! pass, incremental slots join against a whole one) run throughout.
 
-use crate::batch::Batch;
+use crate::delta::DeltaBuilder;
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer};
@@ -536,7 +536,7 @@ impl World {
         self.pasted.borrow_mut().clear();
         for (j, o) in ops.iter().take(MAX_OPS).enumerate() {
             let o = match o {
-                // below stamps already there: inserts only (§2.2's clock rule, checked by `Batch`)
+                // below stamps already there: inserts only (§2.2's clock rule, checked by `DeltaBuilder`)
                 LocalOp::Insert { .. } => o.clone(),
                 LocalOp::Delete { at, len } | LocalOp::Move { at, len, .. } if skew > 0 => LocalOp::Insert { at: *at, item: *len },
                 _ if skew > 0 => LocalOp::Insert { at: 0, item: 0 },
@@ -565,7 +565,7 @@ impl World {
         };
         let w = || Writer::new(ts(t), src.clone(), lo);
         let run = |f: &Fragment, w: Writer| -> Result<Option<(Fragment, CounterRange)>, ()> {
-            let mut b = Batch::new(f, w);
+            let mut b = DeltaBuilder::new(f, w);
             for o in &pops {
                 b.apply(o, &self.view).map_err(|_| ())?;
             }
@@ -592,7 +592,7 @@ impl World {
         if let Some(f) = &mut one {
             let mut l = lo;
             for (j, o) in pops.iter().enumerate() {
-                let mut b = Batch::new(f, Writer::new(ts(t + j as u64), src.clone(), l));
+                let mut b = DeltaBuilder::new(f, Writer::new(ts(t + j as u64), src.clone(), l));
                 if b.apply(o, &self.view).is_err() {
                     one = None;
                     break;

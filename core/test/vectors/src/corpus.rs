@@ -118,7 +118,7 @@ fn delta_seeds() -> Vec<Vec<u8>> {
 fn seq_follow_seeds() -> Vec<Vec<u8>> {
     use osis_base::Value;
     use osis_crdt::fuzzing::{TextView, seq_follow_cx, seq_follow_state};
-    use osis_crdt::{Batch, Delta, Op, PathOp, Writer, encode_delta};
+    use osis_crdt::{DeltaBuilder, Delta, Op, PathOp, Writer, encode_delta};
     let s = |x: &str| vec![Value::Str(x.into())];
     let base = seq_follow_state();
     let n = match base.read() {
@@ -137,7 +137,7 @@ fn seq_follow_seeds() -> Vec<Vec<u8>> {
         let mut input = Vec::new();
         for (i, op) in set.into_iter().enumerate() {
             let cx = seq_follow_cx(i as u8, i as u64);
-            let mut b = Batch::new(&st, Writer::new(cx.ts, cx.own.clone(), cx.range.lo));
+            let mut b = DeltaBuilder::new(&st, Writer::new(cx.ts, cx.own.clone(), cx.range.lo));
             if b.apply(&PathOp { path: vec![], op }, &TextView).is_err() {
                 continue;
             }

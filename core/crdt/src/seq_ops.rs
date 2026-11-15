@@ -322,7 +322,7 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
         let content = match (prev.content, de.content) {
             (_, SeqContent::Frag(b)) if !text && de.deleted.is_some() => SeqContent::Frag(b),
             (_, SeqContent::None) if !text && de.deleted.is_some() => SeqContent::None,
-            (SeqContent::Frag(a), SeqContent::Frag(b)) => SeqContent::Frag(Box::new(crate::batch::overlay(*a, *b, w))),
+            (SeqContent::Frag(a), SeqContent::Frag(b)) => SeqContent::Frag(Box::new(crate::delta::overlay(*a, *b, w))),
             (a, SeqContent::None) => a,
             (_, b) => b,
         };

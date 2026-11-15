@@ -6,7 +6,7 @@ use crate::page::{MemoryPages, PageParams, PageSink};
 use crate::stamp::{CounterRange, Dot, Interner, Source};
 use crate::testutil::{TyView, frag, history, mapply, ostate, sess, sink_no_seq, source, ts};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Received, Snapshot};
-use crate::Batch;
+use crate::DeltaBuilder;
 use crate::ops::{Op, PathOp};
 use crdt_model::r#gen::random_op;
 use crdt_model::ops::Ty;
@@ -227,7 +227,7 @@ pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
     // b edits; a edits concurrently; both exchange
     let view = TyView(ty.clone());
     let v = crate::testutil::value(&crdt_model::r#gen::random_value(&mut r, ty, 0));
-    let mut bb = Batch::new(&b, crate::Writer::new(ts(1 << 30), sess(Tid::from_bytes([9; 15])), 1));
+    let mut bb = DeltaBuilder::new(&b, crate::Writer::new(ts(1 << 30), sess(Tid::from_bytes([9; 15])), 1));
     bb.apply(&PathOp { path: vec![], op: Op::Set(v) }, &view).unwrap();
     let mut mw = crdt_model::ops::Writer::new(MSource::session(1, 0), (1 << 30) + 1, 100);
     mw.next_commit((1 << 30) + 2);
@@ -668,9 +668,9 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
     let (a, b) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
     let k = Value::Str("k".into());
     let w1 = create(&mut Writer::new(ts(1), a, 1), &AnyView, &Value::Map(osis_base::ValueMap::from([(k.clone(), Value::Int(1))]))).unwrap();
-    let mut batch = Batch::new(&w1, Writer::new(ts(2), b.clone(), 1));
-    batch.apply(&PathOp { path: vec![PathSeg::Key(k)], op: Op::Set(Value::Int(2)) }, &AnyView).unwrap();
-    let (w2, _) = batch.finish().unwrap();
+    let mut builder = DeltaBuilder::new(&w1, Writer::new(ts(2), b.clone(), 1));
+    builder.apply(&PathOp { path: vec![PathSeg::Key(k)], op: Op::Set(Value::Int(2)) }, &AnyView).unwrap();
+    let (w2, _) = builder.finish().unwrap();
     let mut snap = w1.clone();
     snap.join(w2.clone());
     let mut stripped = snap.clone();
@@ -744,9 +744,9 @@ fn entry_tombstone_is_no_live_write_spec_commits_5() {
     let mut st = create(&mut Writer::new(ts(1), a.clone(), 1), &AnyView, &Value::Map(osis_base::ValueMap::from([(k.clone(), Value::Int(1))]))).unwrap();
     let owned = |s: &Source, lo: u64, _: u64| *s == a && lo <= 1;
     assert!(st.holds_owned_write(&owned));
-    let mut batch = Batch::new(&st, Writer::new(ts(2), b, 1));
-    batch.apply(&PathOp { path: vec![], op: Op::Remove(k) }, &AnyView).unwrap();
-    let (rm, _) = batch.finish().unwrap();
+    let mut builder = DeltaBuilder::new(&st, Writer::new(ts(2), b, 1));
+    builder.apply(&PathOp { path: vec![], op: Op::Remove(k) }, &AnyView).unwrap();
+    let (rm, _) = builder.finish().unwrap();
     st.join(rm);
     assert!(st.holds_owned(&owned), "the tombstone is keyed by the entry's dot");
     assert!(!st.holds_owned_write(&owned), "but holds no write of its creator");

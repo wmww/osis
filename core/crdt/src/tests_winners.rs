@@ -2,7 +2,7 @@
 //! pairwise definition over every write a fragment holds, and small examples of one write op
 //! stamping many writes of which only some die.
 
-use crate::batch::Batch;
+use crate::delta::DeltaBuilder;
 use crate::fragment::{Elem, Fragment, Key, Meta};
 use crate::ops::{Op, PathOp, Writer};
 use crate::seq::{Seq, SeqContent, SeqElem};
@@ -299,7 +299,7 @@ fn text_view() -> TyView {
 
 /// The delta of `ops` against `st`, written at `t` from counter `lo`.
 fn edit(st: &Fragment, t: u64, lo: u64, ops: Vec<Op>) -> Fragment {
-    let mut b = Batch::new(st, Writer::new(ts(t), x(), lo));
+    let mut b = DeltaBuilder::new(st, Writer::new(ts(t), x(), lo));
     for o in ops {
         b.apply(&PathOp { path: vec![], op: o }, &text_view()).unwrap();
     }

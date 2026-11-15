@@ -415,13 +415,13 @@ fn rejects_fragments_reading_too_deep_spec_3_3() {
 /// counts two levels, a list item one below its list; an enum case above 2^63 - 1.
 #[test]
 fn writer_refuses_out_of_profile_values_spec_3_3() {
-    use crate::batch::Batch;
+    use crate::delta::DeltaBuilder;
     use crate::ops::{Op, PathOp, PathSeg, Writer};
     use crate::view::AnyView;
     let nested = |n: usize| (0..n).fold(i(1), |v, _| l(vec![v]));
     let apply = |path: Vec<PathSeg>, op: Op| {
         let state = crate::Fragment::default();
-        let mut b = Batch::new(&state, Writer::new(ts(5 << 16), sess(tid(1)), 3));
+        let mut b = DeltaBuilder::new(&state, Writer::new(ts(5 << 16), sess(tid(1)), 3));
         b.apply(&PathOp { path, op }, &AnyView).err().map(|e| e.to_string())
     };
     let deep = |e: Option<String>| e.is_some_and(|e| e.contains("MAX_VALUE_DEPTH"));
@@ -439,7 +439,7 @@ fn writer_refuses_out_of_profile_values_spec_3_3() {
 /// below).
 #[test]
 fn writer_and_reader_depth_agree_spec_3_3() {
-    use crate::batch::Batch;
+    use crate::delta::DeltaBuilder;
     use crate::ops::{Op, PathOp, PathSeg, Writer};
     use crate::testutil::TyView;
     let s = |x: &str| Value::Str(x.into());
@@ -460,7 +460,7 @@ fn writer_and_reader_depth_agree_spec_3_3() {
             let want = (0..n).fold(read.clone(), |v, _| Value::Map([(i(1), v)].into_iter().collect())).depth() <= 64;
             let path: Vec<PathSeg> = std::iter::repeat_n(PathSeg::Field(1), n).chain(below.iter().cloned()).collect();
             let state = crate::Fragment::default();
-            let mut b = Batch::new(&state, Writer::new(ts(5 << 16), sess(tid(1)), 3));
+            let mut b = DeltaBuilder::new(&state, Writer::new(ts(5 << 16), sess(tid(1)), 3));
             let r = b.apply(&PathOp { path, op: op.clone() }, &TyView(ty));
             let wrote = match r {
                 Ok(()) => true,

@@ -282,7 +282,7 @@ mod tests {
     // that entry (the stored key wins), overwriting its box: not a put, no invite exemption.
     #[test]
     fn invite_grant_foreign_entry_dot_rejected_spec_perm_2() {
-        use osis_crdt::{Batch, Dot, Encoding, SlotRef, Op, PathOp, PathSeg, Source, Writer};
+        use osis_crdt::{DeltaBuilder, Dot, Encoding, SlotRef, Op, PathOp, PathSeg, Source, Writer};
         use osis_schema::Codec;
         fn box_entries(f: &osis_crdt::Fragment) -> Vec<(Dot, Option<Value>)> {
             let Some(SlotRef::Frag(osis_crdt::Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return Vec::new() };
@@ -305,16 +305,16 @@ mod tests {
         let schema = osis_schema::core_schema();
         let view = schema.view("secrets.0").unwrap();
         let ts = osis_base::Ts::make(WallMs(1_700_000_000_100), 0).unwrap();
-        let mut batch = Batch::new(&st, Writer::new(ts, Source::session(osis_crdt::Session { node: b, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 1));
-        batch.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
-        let (d, range) = batch.finish().unwrap();
+        let mut builder = DeltaBuilder::new(&st, Writer::new(ts, Source::session(osis_crdt::Session { node: b, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 1));
+        builder.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
+        let (d, range) = builder.finish().unwrap();
         let own = crate::engine::Owned::Range { src: Source::session(osis_crdt::Session { node: b, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), lo: range.lo, hi: range.hi };
         let granted = std::collections::BTreeMap::from([((t, g), Role::Read)]);
         assert!(super::super::validity::grantee_boxes_only(&t, "secrets.0", &d, &granted, &own), "an honest put");
         // the same put written at the admin's entry dot
-        let mut batch = Batch::new(&st, Writer::new(ts, a_dot.src.clone(), a_dot.ctr));
-        batch.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
-        let (forged, _) = batch.finish().unwrap();
+        let mut builder = DeltaBuilder::new(&st, Writer::new(ts, a_dot.src.clone(), a_dot.ctr));
+        builder.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
+        let (forged, _) = builder.finish().unwrap();
         assert_eq!(box_entries(&forged).remove(0).0, a_dot);
         assert!(!super::super::validity::grantee_boxes_only(&t, "secrets.0", &forged, &granted, &own), "a write into the admin's entry");
     }
@@ -590,7 +590,7 @@ mod keys_tests {
     // secrets were sealed to the writer.
     #[test]
     fn writer_snapshot_of_keys_invalid_spec_perm_5_2() {
-        use osis_crdt::{Batch, Source, Writer};
+        use osis_crdt::{DeltaBuilder, Source, Writer};
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.me();
@@ -607,9 +607,9 @@ mod keys_tests {
         let st = lp.peers[1].engine.state(&t, &keys_ak).unwrap().unwrap();
         let ts = lp.peers[1].engine.core.hlc.next();
         let view = osis_schema::core_schema().view("keys.0").unwrap();
-        let mut batch = Batch::new(&st, Writer::new(ts, Source::commit(osis_base::CommitId([7; 32])), 1));
-        batch.apply(&PathOp { path: vec![PathSeg::Field(2)], op: Op::Set(Some(forged.clone()).to_value()) }, &view).unwrap();
-        let (d, _) = batch.finish().unwrap();
+        let mut builder = DeltaBuilder::new(&st, Writer::new(ts, Source::commit(osis_base::CommitId([7; 32])), 1));
+        builder.apply(&PathOp { path: vec![PathSeg::Field(2)], op: Op::Set(Some(forged.clone()).to_value()) }, &view).unwrap();
+        let (d, _) = builder.finish().unwrap();
         let mut st = st.clone();
         st.join(d);
         // a state no held body gives (`apply::check_rebuilt` would refuse it)

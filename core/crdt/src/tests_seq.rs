@@ -947,7 +947,7 @@ pub(crate) fn via_snapshot(f: &Fragment) -> Fragment {
 }
 /// `op` applied by node 4 at t = 9: the delta and the joined state.
 fn apply_op(f: &Fragment, op: crate::ops::Op) -> (Fragment, Fragment) {
-    let mut b = crate::batch::Batch::new(f, crate::ops::Writer::new(ts(9 << 16), n(4), 1));
+    let mut b = crate::delta::DeltaBuilder::new(f, crate::ops::Writer::new(ts(9 << 16), n(4), 1));
     b.apply(&crate::ops::PathOp { path: vec![], op }, &crate::testutil::TyView(Ty::Text)).unwrap();
     let (d, _) = b.finish().unwrap();
     let mut s = f.clone();
@@ -1108,11 +1108,11 @@ fn self_anchored_insert_placed_spec_6_2() {
 /// (the whole map had none; fuzz: seq_ops).
 #[test]
 fn empty_placement_held_in_part_follows_spec_6() {
-    use crate::{Batch, Op, PathOp, Writer};
+    use crate::{DeltaBuilder, Op, PathOp, Writer};
     let view = crate::testutil::TyView(Ty::Text);
     let src = sess(osis_base::Tid::from_bytes([1; 15]));
     let e = Fragment::default();
-    let mut b = Batch::new(&e, Writer::new(ts(1 << 16), src, 1));
+    let mut b = DeltaBuilder::new(&e, Writer::new(ts(1 << 16), src, 1));
     b.apply(&PathOp { path: vec![], op: Op::Insert { at: 0, items: vec![Value::Str("ab".into())] } }, &view).unwrap();
     let (d, _) = b.finish().unwrap();
     let Fragment::Seq(d) = d else { panic!("a text delta") };

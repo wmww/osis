@@ -3,7 +3,7 @@
 //! `pos \t del \t "ins"` lines `core/test/crdt-model/src/bin/text_bench.rs` reads).
 
 use osis_base::{Tid, Ts, Value};
-use osis_crdt::{Batch, DeltaCtx, DeltaKind, Fragment, Frontiers, Op, PathOp, Snapshot, Source, View, Writer, encode_snapshot};
+use osis_crdt::{DeltaBuilder, DeltaCtx, DeltaKind, Fragment, Frontiers, Op, PathOp, Snapshot, Source, View, Writer, encode_snapshot};
 
 /// One edit: delete `del` chars at `pos`, then insert `ins` there.
 pub struct Edit {
@@ -121,7 +121,7 @@ pub fn replay(edits: &[Edit], per_commit: usize) -> (Fragment, usize) {
     let mut commits = 0;
     for (k, chunk) in edits.chunks(per_commit.max(1)).enumerate() {
         let ts = Ts::from_u64((1_760_000_000_000u64 + k as u64 * 2000) << 16).unwrap_or_default();
-        let mut b = Batch::new(&state, Writer::new(ts, src.clone(), lo));
+        let mut b = DeltaBuilder::new(&state, Writer::new(ts, src.clone(), lo));
         for e in chunk {
             if e.del > 0 {
                 let _ = b.apply(&PathOp { path: vec![], op: Op::Delete { at: e.pos, len: e.del } }, &TextView);

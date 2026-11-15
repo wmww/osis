@@ -1,7 +1,7 @@
 //! Sequence diff (spec/crdt.md §9 list, text) and the sequence part of `edit(base, new)`
 //! (notes/api.md): Myers over chars or element views, list leftovers paired in order.
 
-use crate::batch::Batch;
+use crate::delta::DeltaBuilder;
 use crate::error::Error;
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer};
@@ -515,7 +515,7 @@ pub(crate) fn edit<V: View>(w: &mut Writer, s: &dyn SeqRead, view: &V, base: &Va
 fn nested_edit<V: View>(w: &mut Writer, cur: Option<&Fragment>, ev: &V, base: &Value, new: &Value) -> Result<Option<Fragment>, Error> {
     let ops = crate::ops::diff_values(Some(base), new, ev)?;
     let empty = Fragment::default();
-    let mut b = Batch::new(cur.unwrap_or(&empty), w.clone());
+    let mut b = DeltaBuilder::new(cur.unwrap_or(&empty), w.clone());
     for op in &ops {
         b.apply(op, ev)?;
     }

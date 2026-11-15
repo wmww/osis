@@ -12,7 +12,7 @@ use crate::subjects::case;
 use crate::{hex, unhex, xof};
 use osis_base::{Classified, CommitId, ErrorClass, Tid, Ts, Value};
 use osis_crdt::{
-    Batch, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Frontiers, Interner, MemoryPages, Op, PageSink, PageSource, PathOp, SESSION_NONCE_LEN, Session, Snapshot, Source, Undone, View, Writer, decode_delta, decode_snapshot,
+    DeltaBuilder, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Frontiers, Interner, MemoryPages, Op, PageSink, PageSource, PathOp, SESSION_NONCE_LEN, Session, Snapshot, Source, Undone, View, Writer, decode_delta, decode_snapshot,
     encode_delta, encode_snapshot, undo,
 };
 use std::borrow::Cow;
@@ -83,7 +83,7 @@ fn writer(n: u8, wall: u64, lo: u64) -> W {
 
 /// Applies `ops` under `view` to `state`; the delta and its range.
 fn write(state: &Fragment, w: &W, view: V, ops: Vec<PathOp>) -> (Fragment, CounterRange) {
-    let mut b = Batch::new(state, Writer::new(w.ts, w.own.clone(), w.lo));
+    let mut b = DeltaBuilder::new(state, Writer::new(w.ts, w.own.clone(), w.lo));
     for op in &ops {
         b.apply(op, &view).unwrap();
     }

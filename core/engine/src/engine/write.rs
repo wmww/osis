@@ -11,7 +11,7 @@ use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
 use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, record_chain};
-use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
+use osis_crdt::{AnyView, DeltaBuilder, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_blob::{BlobWriter, Framing};
 use osis_perm::At;
 use osis_schema::core_types::{CREATED, is_role_class};
@@ -37,13 +37,13 @@ pub(crate) struct AspectMut {
 /// Creation records of a commit by tid (each `tid` is a hash: computed once).
 pub(crate) type Creates = BTreeMap<Tid, CreationRecord>;
 
-/// A batch of writes that becomes one commit.
+/// Writes that become one commit.
 #[derive(Clone, Debug)]
 pub struct Mutation {
     pub(crate) creates: Creates,
     pub(crate) aspects: BTreeMap<(Tid, Ak), AspectMut>,
     pub(crate) actor: Option<Tid>,
-    /// `Engine::write` holds the batch to `actor`'s own rights first (`Mutation::confine`).
+    /// `Engine::write` holds the mutation to `actor`'s own rights first (`Mutation::confine`).
     pub(crate) confined: bool,
     /// Commit-form dots (spec/commits.md §3); else session form.
     pub(crate) commit_form: bool,
@@ -68,10 +68,10 @@ pub struct Mutation {
     pub(crate) sweeps: BTreeSet<(Tid, Ak)>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
     pub(crate) fresh: std::collections::BTreeSet<osis_base::BlobId>,
-    /// Things this batch deletes (`delete`): their ephemeral state is dropped here with the
+    /// Things this mutation deletes (`delete`): their ephemeral state is dropped here with the
     /// durable commit (`Engine::write`).
     pub(crate) deleting: std::collections::BTreeSet<Tid>,
-    /// The commit's `ts`, when taken before the commit (an ephemeral batch's, a revert's).
+    /// The commit's `ts`, when taken before the commit (an ephemeral mutation's, a revert's).
     pub(crate) ts: Option<Ts>,
     /// The header's blind, when taken before the commit (a rotation's departs mark names it).
     pub(crate) blind: Option<[u8; 16]>,
@@ -108,7 +108,7 @@ impl Mutation {
         self
     }
 
-    /// Acts for `actor` holding the batch to `actor`'s own rights, not this node's
+    /// Acts for `actor` holding the mutation to `actor`'s own rights, not this node's
     /// (`Engine::write`, engine/acting.rs).
     pub fn confine(&mut self, actor: Tid) -> &mut Self {
         self.actor = Some(actor);
@@ -147,7 +147,7 @@ impl Mutation {
         Ok(e)
     }
 
-    /// Marks `tid` deleted by this batch (`delete`): the durable commit purges its ephemeral
+    /// Marks `tid` deleted by this mutation (`delete`): the durable commit purges its ephemeral
     /// state (`delete_purges`).
     pub fn deleting(&mut self, tid: Tid) -> &mut Self {
         self.deleting.insert(tid);
@@ -420,7 +420,7 @@ pub(crate) fn is_minting(f: &Fragment, rec: &CreationRecord) -> bool {
 }
 
 pub(crate) fn run_ops<V: View>(state: &Fragment, w: Writer, ops: &[PathOp], view: &V) -> Result<Option<(Fragment, CounterRange)>> {
-    let mut b = Batch::new(state, w);
+    let mut b = DeltaBuilder::new(state, w);
     for op in ops {
         b.apply(op, view)?;
     }

@@ -2,7 +2,7 @@
 //! its seeds (osis-vectors `corpus.rs`), and under `--cfg fuzzing` the `seq_ops` target's script
 //! replay. Not part of the API.
 
-use crate::{Batch, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Interner, Op, PathOp, SESSION_NONCE_LEN, Session, Snapshot, Source, View, Writer, decode_snapshot, encode_snapshot};
+use crate::{DeltaBuilder, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Interner, Op, PathOp, SESSION_NONCE_LEN, Session, Snapshot, Source, View, Writer, decode_snapshot, encode_snapshot};
 use osis_base::{Tid, Ts, Value};
 use std::borrow::Cow;
 
@@ -69,7 +69,7 @@ pub fn seq_follow_state() -> Fragment {
         let i = (k % 2) as usize;
         let ts = Ts::from_u64((1_600_000_000_000 + k) << 16).unwrap_or_default();
         let (Some(src), Some(l)) = (srcs.get(i), lo.get_mut(i)) else { continue };
-        let mut b = Batch::new(&st, Writer::new(ts, src.clone(), *l));
+        let mut b = DeltaBuilder::new(&st, Writer::new(ts, src.clone(), *l));
         if b.apply(&PathOp { path: vec![], op }, &TextView).is_err() {
             continue;
         }

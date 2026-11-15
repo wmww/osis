@@ -1,6 +1,6 @@
 //! Sequence ops, net effect, undo, cut/paste, diff and `edit` (spec/crdt.md §4.5, §4.6, §5.7, §9).
 
-use crate::batch::Batch;
+use crate::delta::DeltaBuilder;
 use crate::codec::{decode_delta, encode_delta};
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
@@ -47,7 +47,7 @@ impl Replica {
     }
     /// Applies `ops` as one commit at time `t`; the delta goes through the wire as a writer's.
     fn commit(&mut self, t: u64, ops: &[PathOp], view: &TyView) -> Option<(Fragment, Source, CounterRange)> {
-        let mut b = Batch::new(&self.state, Writer::new(ts(t << 16), self.src.clone(), self.lo));
+        let mut b = DeltaBuilder::new(&self.state, Writer::new(ts(t << 16), self.src.clone(), self.lo));
         for op in ops {
             b.apply(op, view).unwrap();
         }
@@ -177,11 +177,11 @@ proptest! {
         prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
     }
 
-    /// §4.5, §7 (write into the slot of their schema's encoding), `Batch` layered view: a commit of several text ops on a state from a
+    /// §4.5, §7 (write into the slot of their schema's encoding), `DeltaBuilder` layered view: a commit of several text ops on a state from a
     /// concurrent history (sometimes upgraded from a string, a `Slots` position, and sometimes
     /// bootstrapped from a snapshot, so with range records) reads like the same ops on a plain
-    /// string; the layered view of the state under the batch is checked against state + net
-    /// effect after every op (debug assertion in `Batch`).
+    /// string; the layered view of the state under the delta is checked against state + net
+    /// effect after every op (debug assertion in `DeltaBuilder`).
     #[test]
     fn text_batch_over_history_spec_4_5(seed in any::<u64>()) {
         let mut r = crate::testutil::rng(seed | 1);
@@ -343,7 +343,7 @@ proptest! {
         let new = base.replacen("beta", if r.chance(1, 2) { "BETA!" } else { "bet" }, 1);
         let ops = diff_values(Some(&s(base)), &s(&new), &text_view()).unwrap();
         let mut plain = a.state.clone();
-        let mut b = Batch::new(&plain, Writer::new(ts(3 << 16), session_of(1), a.lo));
+        let mut b = DeltaBuilder::new(&plain, Writer::new(ts(3 << 16), session_of(1), a.lo));
         for o in &ops {
             b.apply(o, &text_view()).unwrap();
         }
@@ -580,8 +580,8 @@ fn cached_placement_follows_typing_spec_6() {
 
 // spec/crdt.md §4.5, §5.7: a commit of hundreds of moves, inserts and deletes on a text of a few
 // thousand chars (with range records, a delete splitting one, and typos deleted in the same
-// commit, so elements are omitted) reads like the same ops on a plain string; `Batch` keeps its layered view through
-// most ops, checked against state + net effect after every op (debug assertion in `Batch`).
+// commit, so elements are omitted) reads like the same ops on a plain string; `DeltaBuilder` keeps its layered view through
+// most ops, checked against state + net effect after every op (debug assertion in `DeltaBuilder`).
 #[test]
 fn large_text_batch_is_net_effect_spec_4_5() {
     for seed in 0..2u64 {
@@ -631,7 +631,7 @@ fn large_text_batch_is_net_effect_spec_4_5() {
             apply_text(&mut model, &o, &base);
             ops.push(op(o));
         }
-        let mut b = Batch::new(&a.state, Writer::new(ts(50 << 16), a.src.clone(), a.lo));
+        let mut b = DeltaBuilder::new(&a.state, Writer::new(ts(50 << 16), a.src.clone(), a.lo));
         let mut kept = 0;
         for o in &ops {
             b.apply(o, &text_view()).unwrap();
@@ -739,7 +739,7 @@ fn paste_refuses_a_range_with_visible_text_spec_5_7() {
     d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()), None)], deleted: None, undel: None, valueless: false, span: 1 });
     b.state.join(Fragment::Seq(d));
     assert_eq!(read_str(&b.state), "aXef");
-    let mut bt = Batch::new(&b.state, Writer::new(ts(5 << 16), session_of(2), 2));
+    let mut bt = DeltaBuilder::new(&b.state, Writer::new(ts(5 << 16), session_of(2), 2));
     assert!(bt.apply(&op(Op::Paste { dots, at: 3 }), &text_view()).is_err());
 }
 
@@ -990,7 +990,7 @@ fn cut_and_paste_keeps_identity_spec_5_7() {
     // a paste whose clipboard no longer matches fails (the caller inserts instead)
     let mut c = Replica::new(3);
     c.commit(1, &[op(Op::Set(s("x")))], &text_view());
-    let mut bt = Batch::new(&c.state, Writer::new(ts(5 << 16), session_of(3), c.lo));
+    let mut bt = DeltaBuilder::new(&c.state, Writer::new(ts(5 << 16), session_of(3), c.lo));
     assert!(bt.apply(&op(Op::Paste { dots, at: 0 }), &text_view()).is_err());
 
 }
@@ -1334,8 +1334,8 @@ fn cached_placement_between_siblings_spec_6() {
     assert_eq!(read_str(&d.state), format!("{}nnnnmmooo{}", "x".repeat(40), "x".repeat(40)));
 }
 
-/// §4.5 (`Batch`): sequence ops at one position resolve against a kept view of it once the
-/// batch has written there; an op elsewhere drops it; the result equals one-by-one commits.
+/// §4.5 (`DeltaBuilder`): sequence ops at one position resolve against a kept view of it once the
+/// delta has written there; an op elsewhere drops it; the result equals one-by-one commits.
 #[test]
 fn batch_keeps_sequence_view_spec_4_5() {
     let ty = Ty::Struct([(1, Ty::Text), (2, Ty::Register)].into_iter().collect());
@@ -1344,9 +1344,9 @@ fn batch_keeps_sequence_view_spec_4_5() {
     let f = |text: &str| Value::Map([(Value::Int(1), s(text)), (Value::Int(2), Value::Int(0))].into_iter().collect());
     a.commit(1, &[op(Op::Set(f("hello world")))], &view);
     let text = |o: Op| PathOp { path: vec![PathSeg::Field(1)], op: o };
-    let mut bt = Batch::new(&a.state, Writer::new(ts(2 << 16), session_of(1), a.lo));
+    let mut bt = DeltaBuilder::new(&a.state, Writer::new(ts(2 << 16), session_of(1), a.lo));
     bt.apply(&text(Op::Insert { at: 5, items: vec![s(",")] }), &view).unwrap();
-    assert!(!bt.keeps_view(), "nothing of the batch there before the first op");
+    assert!(!bt.keeps_view(), "nothing of the delta there before the first op");
     bt.apply(&text(Op::Insert { at: 0, items: vec![s(">")] }), &view).unwrap();
     assert!(bt.keeps_view());
     bt.apply(&text(Op::Delete { at: 8, len: 2 }), &view).unwrap();
@@ -1593,7 +1593,7 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
             multi += usize::from(ops.len() > 1);
             let w = || Writer::new(ts((100 + k) << 16), session_of(9), 1 + 10 * k);
             let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
-                let mut b = Batch::new(f, w());
+                let mut b = DeltaBuilder::new(f, w());
                 for o in &ops {
                     b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).ok()?;
                 }
@@ -1651,7 +1651,7 @@ fn set_on_partial_text_matches_whole_spec_5_7() {
         st.join(create(&mut Writer::new(ts(1 << 16), session_of(1), 1), &view, &s("a")).unwrap());
         let Fragment::Seq(sq) = &st else { panic!() };
         let run = |f: &Fragment| {
-            let mut b = Batch::new(f, Writer::new(ts(2 << 16), session_of(2), 1));
+            let mut b = DeltaBuilder::new(f, Writer::new(ts(2 << 16), session_of(2), 1));
             for o in &ops {
                 b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).ok()?;
             }
@@ -1705,7 +1705,7 @@ fn set_after_op_on_partial_matches_whole_spec_5_7() {
             }
             for first in firsts {
                 let mut mid = st.clone();
-                let mut b = Batch::new(&mid, Writer::new(ts(2 << 16), session_of(2), 1));
+                let mut b = DeltaBuilder::new(&mid, Writer::new(ts(2 << 16), session_of(2), 1));
                 b.apply(&first, &view).unwrap();
                 if let Some((d, _)) = b.finish() {
                     mid.join(d);
@@ -1727,7 +1727,7 @@ fn set_after_op_on_partial_matches_whole_spec_5_7() {
                 for v in targets {
                     let ops = [first.clone(), top(Op::Set(v))];
                     let run = |f: &Fragment| {
-                        let mut b = Batch::new(f, Writer::new(ts(2 << 16), session_of(2), 1));
+                        let mut b = DeltaBuilder::new(f, Writer::new(ts(2 << 16), session_of(2), 1));
                         for o in &ops {
                             b.apply(o, &view).ok()?;
                         }
@@ -1821,7 +1821,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
             let sq = sq.clone();
             let n = full_order(&st).iter().filter(|x| x.1).count();
             // half the time a skewed clock below the history's stamps (inserts only: a move or
-            // delete below the stamps it overwrites breaks §2.2's clock rule, which `Batch` checks)
+            // delete below the stamps it overwrites breaks §2.2's clock rule, which `DeltaBuilder` checks)
             let skew = r.chance(1, 2);
             low += usize::from(skew);
             // above the sequence's reset, which would prune what the commit writes
@@ -1841,7 +1841,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
                 .collect();
             let w = || Writer::new(ts(t << 16), session_of(20 + k as u8), 1);
             let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
-                let mut b = Batch::new(f, w());
+                let mut b = DeltaBuilder::new(f, w());
                 for o in &ops {
                     b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).ok()?;
                 }
@@ -1858,17 +1858,17 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
             }
             if got != want {
                 let f = pg.part();
-                let mut b = Batch::new(&f, w());
+                let mut b = DeltaBuilder::new(&f, w());
                 for o in &ops {
                     eprintln!("op {o:?} -> {:?}", b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).map(|_| ()));
                     eprintln!("misses {:?}", pg.p.misses());
                 }
                 eprintln!("finish none? {:?}", b.finish().is_none());
                 for m in 1..=ops.len() {
-                    let r2 = |f: &Fragment| { let mut b = Batch::new(f, w()); for o in &ops[..m] { if b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).is_err() { return None } } b.finish() };
+                    let r2 = |f: &Fragment| { let mut b = DeltaBuilder::new(f, w()); for o in &ops[..m] { if b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).is_err() { return None } } b.finish() };
                     eprintln!("prefix {m}: equal {}", r2(&st) == r2(&f));
                 }
-                let mut b = Batch::new(&st, w());
+                let mut b = DeltaBuilder::new(&st, w());
                 b.apply(&PathOp { path: Vec::new(), op: ops[0].clone() }, &view).unwrap();
                 let v1 = b.view();
                 b.apply(&PathOp { path: Vec::new(), op: ops[1].clone() }, &view).unwrap();
@@ -1892,7 +1892,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
                 for j in 0..12u64 {
                     let floor = base.reset().map_or(0, |x| (x.ts.to_u64() >> 16) + 1);
                     let t = if r.chance(1, 2) { floor + 1 + r.below(300) as u64 } else { 400 + j };
-                    let mut b = Batch::new(&base, Writer::new(ts((t << 16) + j), session_of(40 + j as u8 + 12 * (k as u8 % 4)), 1 + 100 * k));
+                    let mut b = DeltaBuilder::new(&base, Writer::new(ts((t << 16) + j), session_of(40 + j as u8 + 12 * (k as u8 % 4)), 1 + 100 * k));
                     b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at, items: vec![item(&mut r)] } }, &view).unwrap();
                     ds.extend(b.finish().map(|x| x.0));
                 }
@@ -1925,7 +1925,7 @@ fn edit_on_partial_placement_loads_its_window_spec_5_7() {
     // scattered inserts, so records and blocks are many
     for k in 0..60u64 {
         let n = full_order(&st).iter().filter(|x| x.1).count();
-        let mut b = Batch::new(&st, Writer::new(ts((10 + k) << 16), session_of(2), 1 + 10 * k));
+        let mut b = DeltaBuilder::new(&st, Writer::new(ts((10 + k) << 16), session_of(2), 1 + 10 * k));
         b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at: r.below(n + 1), items: vec![s("xyz")] } }, &view).unwrap();
         st.join(b.finish().unwrap().0);
     }
@@ -1947,7 +1947,7 @@ fn edit_on_partial_placement_loads_its_window_spec_5_7() {
         let op = Op::Edit { base: base.clone(), new };
         let w = || Writer::new(ts((200 + k) << 16), session_of(9), 1000 + 10 * k);
         let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
-            let mut b = Batch::new(f, w());
+            let mut b = DeltaBuilder::new(f, w());
             b.apply(&PathOp { path: Vec::new(), op: op.clone() }, &view).ok()?;
             b.finish()
         };
@@ -1995,7 +1995,7 @@ fn newest_stamp_skips_children_records_spec_6_1() {
     // another writer's chars under many of them
     for k in 0..150u64 {
         let n = full_order(&st).iter().filter(|x| x.1).count();
-        let mut b = Batch::new(&st, Writer::new(ts((10 + k) << 16), session_of(2), 1 + 10 * k));
+        let mut b = DeltaBuilder::new(&st, Writer::new(ts((10 + k) << 16), session_of(2), 1 + 10 * k));
         b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at: r.below(n + 1), items: vec![s("y")] } }, &view).unwrap();
         st.join(b.finish().unwrap().0);
     }
@@ -2003,7 +2003,7 @@ fn newest_stamp_skips_children_records_spec_6_1() {
     for k in 0..40u64 {
         let Fragment::Seq(sq) = &st else { panic!() };
         let n = full_order(&st).iter().filter(|x| x.1).count();
-        let mut b = Batch::new(&st, Writer::new(ts((1000 + k) << 16), session_of(9), 1 + 10 * k));
+        let mut b = DeltaBuilder::new(&st, Writer::new(ts((1000 + k) << 16), session_of(9), 1 + 10 * k));
         b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at: r.below(n + 1), items: vec![s("z")] } }, &view).unwrap();
         let (d, _) = b.finish().unwrap();
         let Fragment::Seq(ds) = &d else { panic!() };
@@ -2025,7 +2025,7 @@ fn newest_move_onto_new_element_spec_6_1() {
     let mut w = Writer::new(ts(1 << 16), session_of(1), 1);
     let text: String = (0..300).map(|i| (b'a' + (i % 26) as u8) as char).collect();
     let st = create(&mut w, &view, &s(&text)).unwrap();
-    let mut b = Batch::new(&st, Writer::new(ts(1000 << 16), session_of(9), 1));
+    let mut b = DeltaBuilder::new(&st, Writer::new(ts(1000 << 16), session_of(9), 1));
     for op in [Op::Insert { at: 10, items: vec![s("x")] }, Op::Move { at: 50, len: 1, to: 11 }, Op::Insert { at: 11, items: vec![s("y")] }] {
         b.apply(&PathOp { path: Vec::new(), op }, &view).unwrap();
     }
@@ -2058,7 +2058,7 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
     let mut st = create(&mut w, &view, &Value::List(items)).unwrap();
     for k in 0..40u64 {
         let n = full_order(&st).iter().filter(|x| x.1).count();
-        let mut b = Batch::new(&st, Writer::new(ts((10 + k) << 16), session_of(2), 1 + 10 * k));
+        let mut b = DeltaBuilder::new(&st, Writer::new(ts((10 + k) << 16), session_of(2), 1 + 10 * k));
         b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at: r.below(n + 1), items: vec![value(&random_value(&mut r, e, 1))] } }, &view).unwrap();
         st.join(b.finish().unwrap().0);
     }
@@ -2075,7 +2075,7 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
         let op = Op::Edit { base: base.clone(), new: new.clone() };
         let w = || Writer::new(ts((200 + k) << 16), session_of(9), 1000 + 10 * k);
         let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
-            let mut b = Batch::new(f, w());
+            let mut b = DeltaBuilder::new(f, w());
             b.apply(&PathOp { path: Vec::new(), op: op.clone() }, &view).ok()?;
             b.finish()
         };
@@ -2176,7 +2176,7 @@ fn edit_window_matches_whole_spec_5_7() {
                 }
                 _ => vec![Op::Insert { at: r.below(len + 1), items: vec![s("ab")] }],
             };
-            let mut b = Batch::new(&st, Writer::new(ts((10 + round * 10 + k as u64) << 16), session_of(2), ctr));
+            let mut b = DeltaBuilder::new(&st, Writer::new(ts((10 + round * 10 + k as u64) << 16), session_of(2), ctr));
             let mut ok = true;
             for o in &ops {
                 ok &= b.apply(&op(o.clone()), &view).is_ok();
@@ -2195,7 +2195,7 @@ fn edit_window_matches_whole_spec_5_7() {
         let o = Op::Edit { base: s(&bs), new: s(&c.iter().collect::<String>()) };
         let run = |whole: bool| {
             crate::seq_diff::WHOLE_ONLY.set(whole);
-            let mut b = Batch::new(&st, Writer::new(ts(1 << 40), session_of(9), 1 << 20));
+            let mut b = DeltaBuilder::new(&st, Writer::new(ts(1 << 40), session_of(9), 1 << 20));
             b.apply(&op(o.clone()), &view).unwrap();
             let got = b.finish().map(|x| x.0);
             crate::seq_diff::WHOLE_ONLY.set(false);
@@ -2272,7 +2272,7 @@ proptest! {
     /// §4.5, §5.7: a commit of 30 ops (inserts, typos deleted again, moves of fresh and older
     /// text, ops at both ends, a reset now and then) on a text with range records and chars
     /// anchored inside them, or on a `Slots` position, encodes and reads like the same ops on a
-    /// plain string and like the ops committed one by one; `Batch`'s kept view and the net
+    /// plain string and like the ops committed one by one; `DeltaBuilder`'s kept view and the net
     /// effect's omissions are checked after every op (debug assertions).
     #[test]
     fn long_text_batch_is_net_effect_spec_4_5(seed in any::<u64>()) {
@@ -2390,7 +2390,7 @@ fn removed_anchor_goes_charless_spec_4_5() {
     let view = text_view();
     let mut a = Replica::new(1);
     a.commit(1, &[op(Op::Set(s("hello")))], &view);
-    let mut bt = Batch::new(&a.state, Writer::new(ts(2 << 16), session_of(1), a.lo));
+    let mut bt = DeltaBuilder::new(&a.state, Writer::new(ts(2 << 16), session_of(1), a.lo));
     bt.apply(&op(Op::Insert { at: 2, items: vec![s("abc")] }), &view).unwrap();
     bt.apply(&op(Op::Delete { at: 2, len: 1 }), &view).unwrap();
     bt.apply(&op(Op::Delete { at: 3, len: 1 }), &view).unwrap();
@@ -2519,6 +2519,6 @@ fn paste_out_of_clipboard_order_fails_spec_5_7() {
     // d hangs below x outside the slice: re-anchored at f, the visible element before x
     a.commit(5, &[op(Op::Paste { dots: xc, at: 0 })], &view);
     assert_eq!(read_str(&a.state), "xcf");
-    let mut b = Batch::new(&a.state, Writer::new(ts(6 << 16), a.src.clone(), a.lo));
+    let mut b = DeltaBuilder::new(&a.state, Writer::new(ts(6 << 16), a.src.clone(), a.lo));
     assert!(b.apply(&op(Op::Paste { dots: qd, at: 3 }), &view).is_err(), "d lies before q");
 }

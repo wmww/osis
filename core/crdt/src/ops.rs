@@ -767,7 +767,7 @@ fn diff_values_at<V: View>(base: Option<&Value>, new: &Value, view: &V, path: &m
     Ok(())
 }
 
-/// Joins `b` into a clone of `a` under `e` (used to see the batch's own writes over the state).
+/// Joins `b` into a clone of `a` under `e` (used to see the delta's own writes over the state).
 /// `a` must be pruned (any state built by join, decode or the ops is): it is pruned again only
 /// when a reset `e` comes from above, which keeps cached placements.
 pub(crate) fn joined(a: Option<&Fragment>, b: Option<&Fragment>, e: Option<&Stamp>) -> Option<Fragment> {

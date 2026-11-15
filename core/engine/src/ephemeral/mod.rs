@@ -43,7 +43,7 @@ impl Engine {
     }
 
     /// Writes `m` as one commit, durable or memory. `Clash` when the ops ask for both (a new
-    /// thing's record is durable, so a `+` write on a thing created in the same batch is one), or
+    /// thing's record is durable, so a `+` write on a thing created in the same mutation is one), or
     /// signals beside either. A delete (`Mutation::deleting`) purges its things' ephemeral state
     /// in its durable commit (`write::delete_purges`), writing no memory commit. When the commit
     /// or any op fails, nothing applies. `None` when no commit is written. A durable write that
@@ -121,7 +121,7 @@ impl Engine {
         // one memory commit (spec/sync-compaction.md §2; spec/crdt.md §2.1: plain writes under this open's
         // session, expiring ones under its second session, so an expired commit leaves no gap in
         // the plain writes' counters)
-        let mut batches: BTreeMap<bool, Mutation> = BTreeMap::new();
+        let mut by_expiry: BTreeMap<bool, Mutation> = BTreeMap::new();
         for (tid, ak, mut am) in eph_ops {
             let expires = am.expires.or_else(|| am.default_expiry.map(|d| ts.wall_ms().0.saturating_add(d)));
             if expires.is_some_and(|t| t <= now.0) {
@@ -129,7 +129,7 @@ impl Engine {
             }
             am.expires = expires;
             am.default_expiry = None;
-            let target = batches.entry(expires.is_some()).or_insert_with(|| {
+            let target = by_expiry.entry(expires.is_some()).or_insert_with(|| {
                 let mut x = Mutation::new();
                 x.act_as(actor);
                 x.ts = Some(ts);
@@ -142,12 +142,12 @@ impl Engine {
                 }
             }
         }
-        if let (Some(p), Some(x)) = (batches.get(&false).and_then(|x| x.aspects.keys().next()), batches.get(&true).and_then(|x| x.aspects.keys().next())) {
+        if let (Some(p), Some(x)) = (by_expiry.get(&false).and_then(|x| x.aspects.keys().next()), by_expiry.get(&true).and_then(|x| x.aspects.keys().next())) {
             return Err(Error::Clash(format!("a commit has one expiry, and this write has two: {} {} does not expire, {} {} does. Write them as separate commits", p.0, p.1, x.0, x.1)));
         }
         let id = self.run(|tx| {
             let mut memory = None;
-            for x in batches.into_values() {
+            for x in by_expiry.into_values() {
                 // a delta past what one unpaged delta may hold is refused (spec/commits.md §2)
                 let c = tx.in_class(true, |tx| commit_in(tx, x)).map_err(|e| match e {
                     Error::Data(osis_commit::Error::Delta(_)) => Error::Misuse("an ephemeral delta does not fit a blob"),

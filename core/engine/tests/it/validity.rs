@@ -367,7 +367,7 @@ fn backdated_frontier_lists_by_cutoff_spec_perm_5_1() {
 #[test]
 fn reused_counters_never_void_a_grant_spec_commits_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{AnyView, Batch, Delta, Op, PathOp, PathSeg, Writer, encode_delta};
+    use osis_crdt::{AnyView, DeltaBuilder, Delta, Op, PathOp, PathSeg, Writer, encode_delta};
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
@@ -382,9 +382,9 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
     let empty = osis_crdt::Fragment::default();
     let form = crate::common::session_of(&lp, 0);
-    let mut batch = Batch::new(&empty, Writer::new(ts, form.own_source(a, osis_base::CommitId([0; 32])), holders.lo));
-    batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Tid(c))], op: Op::Set(edge(Role::Read).to_value()) }, &AnyView).unwrap();
-    let (f, range) = batch.finish().unwrap();
+    let mut builder = DeltaBuilder::new(&empty, Writer::new(ts, form.own_source(a, osis_base::CommitId([0; 32])), holders.lo));
+    builder.apply(&PathOp { path: vec![PathSeg::Key(Value::Tid(c))], op: Op::Set(edge(Role::Read).to_value()) }, &AnyView).unwrap();
+    let (f, range) = builder.finish().unwrap();
     assert!(range.lo < holders.hi && holders.lo < range.hi, "the ranges overlap");
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Role, ts, a, range.lo, range.hi), None).unwrap();
     let mut cb = CommitBuilder::new(Kind::Role, ts, a, a, form);
@@ -404,15 +404,15 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
 #[test]
 fn malformed_frontier_is_bad_input_spec_wire_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Batch, Delta, Op, PathOp, Writer, encode_delta};
+    use osis_crdt::{DeltaBuilder, Delta, Op, PathOp, Writer, encode_delta};
     let (mut lp, d, b, _) = setup();
     let a = lp.peers[0].engine.me();
     let ts = osis_base::Ts::make(WallMs(lp.peers[0].engine.now().0 + 5), 0).unwrap();
     let empty = osis_crdt::Fragment::default();
-    let mut batch = Batch::new(&empty, Writer::new(ts, Form::Commit.own_source(a, osis_base::CommitId([0; 32])), 1).keyed_removals(true));
+    let mut builder = DeltaBuilder::new(&empty, Writer::new(ts, Form::Commit.own_source(a, osis_base::CommitId([0; 32])), 1).keyed_removals(true));
     let view = osis_schema::core_schema().view("roles.0").unwrap();
-    batch.apply(&PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(b))], op: Op::Set(edge(Role::Read).to_value()) }, &view).unwrap();
-    let (f, range) = batch.finish().unwrap();
+    builder.apply(&PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(b))], op: Op::Set(edge(Role::Read).to_value()) }, &view).unwrap();
+    let (f, range) = builder.finish().unwrap();
     let cx = writer_ctx(Form::Commit, Kind::Role, ts, a, range.lo, range.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut cb = CommitBuilder::new(Kind::Role, ts, a, a, Form::Commit);
@@ -2029,7 +2029,7 @@ fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
 // changes nothing: its author could not write the aspect.
 #[test]
 fn snapshot_forging_dropped_commit_dot_changes_nothing_spec_perm_5_2() {
-    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    use osis_crdt::{DeltaBuilder, Op, PathOp, Source, Writer};
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
     let r = lp.peers[1].engine.me();
@@ -2051,9 +2051,9 @@ fn snapshot_forging_dropped_commit_dot_changes_nothing_spec_perm_5_2() {
     let ch = lp.peers[0].engine.header(&c).unwrap();
     let hi = ch.aspects.iter().find(|x| x.tid == t && x.ak == tags).unwrap().hi;
     let cur = lp.peers[1].engine.state(&t, &tags).unwrap().unwrap().clone();
-    let mut batch = Batch::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
-    batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
-    let (extra, _) = batch.finish().unwrap();
+    let mut builder = DeltaBuilder::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
+    builder.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+    let (extra, _) = builder.finish().unwrap();
     let mut f = cur;
     f.join(extra);
     lp.advance(1_000);
@@ -2211,7 +2211,7 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
 // issue snapshot-copy-residue (closed): one held set, two states).
 #[test]
 fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
-    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    use osis_crdt::{DeltaBuilder, Op, PathOp, Source, Writer};
     let mut lp = net(4, 0);
     lp.sync_all().unwrap();
     let w = lp.peers[1].engine.me();
@@ -2235,9 +2235,9 @@ fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
     let ch = lp.peers[0].engine.header(&c).unwrap();
     let hi = ch.aspects.iter().find(|x| x.tid == t && x.ak == tags).unwrap().hi;
     let cur = lp.peers[1].engine.state(&t, &tags).unwrap().unwrap().clone();
-    let mut batch = Batch::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
-    batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
-    let (extra, _) = batch.finish().unwrap();
+    let mut builder = DeltaBuilder::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
+    builder.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+    let (extra, _) = builder.finish().unwrap();
     let mut f = cur;
     f.join(extra);
     lp.advance(1_000);
@@ -2309,7 +2309,7 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
 // held C.
 #[test]
 fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
-    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    use osis_crdt::{DeltaBuilder, Op, PathOp, Source, Writer};
     for forged_first in [false, true] {
         let mut lp = net(3, 0);
         lp.sync_all().unwrap();
@@ -2331,9 +2331,9 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
         let ch = lp.peers[0].engine.header(&c).unwrap();
         let hi = ch.aspects.iter().find(|x| x.tid == t && x.ak == tags).unwrap().hi;
         let cur = lp.peers[1].engine.state(&t, &tags).unwrap().unwrap().clone();
-        let mut batch = Batch::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
-        batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
-        let (extra, _) = batch.finish().unwrap();
+        let mut builder = DeltaBuilder::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
+        builder.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+        let (extra, _) = builder.finish().unwrap();
         let mut f = cur;
         f.join(extra);
         lp.advance(1_000);
@@ -2519,7 +2519,7 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
 // (turned invalid it gives nothing, its copies of shared dots included).
 #[test]
 fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
-    use osis_crdt::{Batch, Op, PathOp, Writer};
+    use osis_crdt::{DeltaBuilder, Op, PathOp, Writer};
     let (mut lp, d, b, c) = setup();
     add_tag(&mut lp, 1, d, "bob");
     lp.sync_all().unwrap();
@@ -2528,9 +2528,9 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
     let bh = lp.peers[1].engine.header(&bob).unwrap();
     let lo = bh.aspects.iter().find(|a| a.ak == tags_ak).unwrap().lo;
     let empty = osis_crdt::Fragment::default();
-    let mut batch = Batch::new(&empty, Writer::new(bh.ts, bh.form.own_source(b, osis_base::CommitId([0; 32])), lo));
-    batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
-    let (evil, _) = batch.finish().unwrap();
+    let mut builder = DeltaBuilder::new(&empty, Writer::new(bh.ts, bh.form.own_source(b, osis_base::CommitId([0; 32])), lo));
+    builder.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+    let (evil, _) = builder.finish().unwrap();
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let forged = forge_snapshot(&mut lp, 2, d, &tags_ak, now, evil);
@@ -3163,12 +3163,12 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
 /// its delta `ops` run from counter `lo` (the record's view, else untyped).
 fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool) -> Result<Vec<u8>, String> {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Batch, Delta, Writer, encode_delta};
+    use osis_crdt::{DeltaBuilder, Delta, Writer, encode_delta};
     let view = osis_schema::core_schema().view("created.0").unwrap();
     let author = lp.peers[by].engine.me();
     let empty = osis_crdt::Fragment::default();
     let form = crate::common::forged_session(author);
-    let mut b = Batch::new(&empty, Writer::new(ts, form.own_source(author, osis_base::CommitId([0; 32])), lo));
+    let mut b = DeltaBuilder::new(&empty, Writer::new(ts, form.own_source(author, osis_base::CommitId([0; 32])), lo));
     for op in ops {
         if typed { b.apply(op, &view) } else { b.apply(op, &osis_crdt::AnyView) }.map_err(|e| format!("{e:?}"))?;
     }

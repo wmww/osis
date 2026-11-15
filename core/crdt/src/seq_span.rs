@@ -62,7 +62,7 @@ pub(crate) fn find<'a>(m: &'a Elems, d: &Dot) -> Option<(&'a Dot, &'a SeqElem)> 
     holds(k, e.span, d).then_some((k, e))
 }
 
-/// Element records looked up by dot: a sequence's own, or a state's under a batch's
+/// Element records looked up by dot: a sequence's own, or a state's under a delta's
 /// (`seq::Layered`).
 pub(crate) trait Recs {
     /// The record holding `d`.

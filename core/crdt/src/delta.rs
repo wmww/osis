@@ -1,6 +1,6 @@
 //! A commit's delta for one aspect as the net effect of its ops (spec/crdt.md §4.5): ops resolve
-//! against the state plus the batch's earlier ops; a later op overrides an earlier one at the
-//! same register; an element created and removed in the batch is omitted.
+//! against the state plus the delta's earlier ops; a later op overrides an earlier one at the
+//! same register; an element created and removed in the delta is omitted.
 
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, Set, Struct};
@@ -69,17 +69,17 @@ fn big_case(v: &Value) -> bool {
 }
 
 /// Builds one aspect's delta from path ops.
-pub struct Batch<'s> {
+pub struct DeltaBuilder<'s> {
     state: &'s Fragment,
     w: Writer,
     acc: Option<Fragment>,
-    /// The batch's view of the sequence position the last op met, if the batch had writes there.
+    /// The delta's view of the sequence position the last op met, if the delta had writes there.
     seen: Option<Seen<'s>>,
 }
 
-/// State joined with the batch's writes at one sequence position, reached through fields and
+/// State joined with the delta's writes at one sequence position, reached through fields and
 /// cases (`at`; `index`: the list an index segment steps into, else the position an op ends at),
-/// under the batch's reset `e` from above: what `resolve` would copy there. Kept across ops at
+/// under the delta's reset `e` from above: what `resolve` would copy there. Kept across ops at
 /// that position while joining each op's delta into it equals the net effect (§4.5), dropped by
 /// any other op.
 struct Seen<'s> {
@@ -88,15 +88,15 @@ struct Seen<'s> {
     frag: Over<'s>,
 }
 
-/// A view of a sequence position: the state's sequence under the batch's records, or (where a
-/// reset of the batch lies above, or the placement cannot follow) a copy of both joined.
+/// A view of a sequence position: the state's sequence under the delta's records, or (where a
+/// reset of the delta lies above, or the placement cannot follow) a copy of both joined.
 enum Over<'s> {
     Layer(Layered<'s>),
     Copy(Fragment),
 }
 
 /// Where `resolve` meets the probed sequence position (`rest` path segments left): it uses
-/// `over` instead of copying state and batch writes there, and hands back what it used in `out`.
+/// `over` instead of copying state and delta writes there, and hands back what it used in `out`.
 struct Probe<'s> {
     rest: usize,
     over: Option<Over<'s>>,
@@ -104,7 +104,7 @@ struct Probe<'s> {
 }
 
 /// What an op at a position resolves against: the fragment there (borrowed from the state where
-/// the batch has no writes) or a layered sequence.
+/// the delta has no writes) or a layered sequence.
 enum Cur<'a> {
     Frag(Option<Cow<'a, Fragment>>),
     Layer(Layered<'a>),
@@ -126,13 +126,13 @@ fn seq_point(path: &[PathSeg], op: &crate::ops::Op) -> Option<(usize, bool)> {
 }
 
 /// The fragment of `f` at a sequence point and the reset from above there, as `resolve` reaches
-/// it (`e` grows with the batch side's resets only).
-fn at_point<'f>(f: Option<&'f Fragment>, at: &[PathSeg], index: bool, batch: bool) -> (Option<&'f Fragment>, Option<Stamp>) {
+/// it (`e` grows with the delta side's resets only).
+fn at_point<'f>(f: Option<&'f Fragment>, at: &[PathSeg], index: bool, delta: bool) -> (Option<&'f Fragment>, Option<Stamp>) {
     let mut f = f;
     let mut e = None;
     let step = |f: Option<&'f Fragment>, enc: Encoding, e: &mut Option<Stamp>| {
         let m = slot(f, enc);
-        if batch {
+        if delta {
             *e = max_opt(e.take(), reset_of(m));
         }
         m
@@ -150,11 +150,11 @@ fn at_point<'f>(f: Option<&'f Fragment>, at: &[PathSeg], index: bool, batch: boo
     (f, e)
 }
 
-impl<'s> Batch<'s> {
+impl<'s> DeltaBuilder<'s> {
     /// Ops resolve against `state` (the aspect's local state, pruned as join and decode leave
-    /// it) and the batch so far.
-    pub fn new(state: &'s Fragment, w: Writer) -> Batch<'s> {
-        Batch { state, w, acc: None, seen: None }
+    /// it) and the delta so far.
+    pub fn new(state: &'s Fragment, w: Writer) -> DeltaBuilder<'s> {
+        DeltaBuilder { state, w, acc: None, seen: None }
     }
 
     /// Applies `op` under the writer's `view` (of the aspect root).
@@ -234,7 +234,7 @@ impl<'s> Batch<'s> {
                             Cow::Owned(Fragment::Seq(l.to_seq()))
                         }
                     };
-                    debug_assert!(whole == *view, "batch view differs from state + net effect");
+                    debug_assert!(whole == *view, "delta view differs from state + net effect");
                 }
                 self.seen = Some(Seen { at, index, frag });
             }
@@ -249,7 +249,7 @@ impl<'s> Batch<'s> {
         self.seen.is_some()
     }
 
-    /// The state as the batch sees it: the local state joined with the batch's writes.
+    /// The state as the delta sees it: the local state joined with the delta's writes.
     pub fn view(&self) -> Fragment {
         joined(Some(self.state), self.acc.as_ref(), None).unwrap_or_default()
     }
@@ -260,7 +260,7 @@ impl<'s> Batch<'s> {
         self.acc.filter(|f| !f.is_empty()).map(|f| (f, range))
     }
 
-    /// The delta and the writer, whose counters continue (a nested batch inside another op).
+    /// The delta and the writer, whose counters continue (a nested delta inside another op).
     pub(crate) fn into_parts(self) -> (Option<Fragment>, Writer) {
         (self.acc.filter(|f| !f.is_empty()), self.w)
     }
@@ -277,7 +277,7 @@ fn reset_of(f: Option<&Fragment>) -> Option<Stamp> {
     f.and_then(|f| f.meta()).and_then(|m| m.reset.clone())
 }
 
-/// The position's state with the batch's writes: borrowed when there are none.
+/// The position's state with the delta's writes: borrowed when there are none.
 fn current<'a>(s: Option<&'a Fragment>, a: Option<&Fragment>, e: Option<&Stamp>) -> Option<Cow<'a, Fragment>> {
     if a.is_none() && e.is_none() {
         return s.map(Cow::Borrowed);
@@ -286,7 +286,7 @@ fn current<'a>(s: Option<&'a Fragment>, a: Option<&Fragment>, e: Option<&Stamp>)
 }
 
 /// `current`, or where the probe meets the path (`left` segments left) its kept view, else the
-/// state's sequence layered under the batch's writes there.
+/// state's sequence layered under the delta's writes there.
 fn point<'a>(probe: &mut Option<&mut Probe<'a>>, left: usize, s: Option<&'a Fragment>, a: Option<&Fragment>, e: Option<&Stamp>) -> Cur<'a> {
     if let Some(p) = probe.as_deref_mut().filter(|p| p.rest == left) {
         match p.over.take() {
@@ -304,7 +304,7 @@ fn point<'a>(probe: &mut Option<&mut Probe<'a>>, left: usize, s: Option<&'a Frag
     Cur::Frag(current(s, a, e))
 }
 
-/// The state's sequence a batch's sequence writes `a` join as they would at the position `s`: at a
+/// The state's sequence a delta's sequence writes `a` join as they would at the position `s`: at a
 /// `Slots` position (§7) its slot of `a`'s encoding when that carries the position's reset
 /// (the join then leaves the other slots as they are), else `s`.
 fn seq_slot<'a>(s: Option<&'a Fragment>, a: Option<&Fragment>) -> Option<&'a Fragment> {
@@ -325,12 +325,12 @@ fn keep<'a>(probe: &mut Option<&mut Probe<'a>>, left: usize, cur: Cur<'a>) {
     }
 }
 
-/// Resolves `op` at `path` below the position whose state is `s` and batch writes `a`; `e` is
-/// the batch's effective reset from above. Returns the root-relative delta.
+/// Resolves `op` at `path` below the position whose state is `s` and delta writes `a`; `e` is
+/// the delta's effective reset from above. Returns the root-relative delta.
 #[allow(clippy::too_many_arguments)]
 fn resolve<'s, V: View>(w: &mut Writer, s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<Stamp>, path: &[PathSeg], op: &PathOp, view: &V, root: bool, mut probe: Option<&mut Probe<'s>>) -> Result<Option<Fragment>, Error> {
     let Some((seg, rest)) = path.split_first() else {
-        // nothing of the batch at this position: resolve against the state itself, no clone
+        // nothing of the delta at this position: resolve against the state itself, no clone
         let cur = point(&mut probe, 0, s, a, e.as_ref());
         let r = match &cur {
             Cur::Frag(c) => leaf(w, c.as_deref(), view, &op.op, root),
@@ -383,7 +383,7 @@ fn resolve<'s, V: View>(w: &mut Writer, s: Option<&'s Fragment>, a: Option<&Frag
             };
             match key_lookup(s, a, e.as_ref(), k).filter(|_| put.is_none()) {
                 Some(ks) => {
-                    // against what the key reads as (batch writes included), written into its
+                    // against what the key reads as (delta writes included), written into its
                     // live records (§5.6)
                     resolve(w, ks.read.as_deref(), None, None, rest, op, &vview, false, None)?.map(|c| {
                         let ids: Vec<&Eid> = ks.ids.iter().collect();
@@ -435,9 +435,9 @@ struct KeyAt<'s> {
 }
 
 /// The live records of key `k` and what the key reads as, at a map position with state `s` and
-/// batch writes `a` under the reset `e` from above (§5.6). Only the records of the dots carrying
+/// delta writes `a` under the reset `e` from above (§5.6). Only the records of the dots carrying
 /// `k` join: records are independent per dot, so this equals a lookup in the whole join, in
-/// O(log n) instead of a copy of the map; a key with one live record the batch has not written
+/// O(log n) instead of a copy of the map; a key with one live record the delta has not written
 /// is read in place (no copy of what it holds).
 fn key_lookup<'s>(s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<&Stamp>, k: &osis_base::Value) -> Option<KeyAt<'s>> {
     fn map(f: Option<&Fragment>) -> Option<&Map> {
@@ -503,15 +503,15 @@ pub(crate) fn overlay(acc: Fragment, d: Fragment, w: &Writer) -> Fragment {
             Fragment::Enum(Enum { meta, case, payloads })
         }
         (Fragment::Map(a), Fragment::Map(b)) => {
-            // the index carries over (a superset stays valid), so a long batch stays linear
+            // the index carries over (a superset stays valid), so a long delta stays linear
             let keys = a.keys;
             let (mut meta, mut entries) = start(a.meta, a.entries, b.meta);
             let mut omitted = false;
             let touched: Vec<Eid> = b.entries.keys().cloned().collect();
             for (id, de) in b.entries {
                 if de.reset.is_some() && id.key.is_none() {
-                    // a keyless removal resets every record of its dot: the batch's earlier
-                    // writes there go (same stamp), all of them if the batch created the dot
+                    // a keyless removal resets every record of its dot: the delta's earlier
+                    // writes there go (same stamp), all of them if the delta created the dot
                     let same: Vec<Eid> = entries.range(Eid::erased(id.dot.clone())..).take_while(|(x, _)| x.dot == id.dot).map(|(x, _)| x.clone()).collect();
                     for x in same {
                         if w.made(&id.dot) {
@@ -546,7 +546,7 @@ pub(crate) fn overlay(acc: Fragment, d: Fragment, w: &Writer) -> Fragment {
     }
 }
 
-/// A later reset drops the batch's earlier content below it (same commit, same stamp).
+/// A later reset drops the delta's earlier content below it (same commit, same stamp).
 fn start<K: Ord, T>(a: Meta, items: BTreeMap<K, T>, b: Meta) -> (Meta, BTreeMap<K, T>) {
     if b.reset.is_some() {
         return (Meta { reset: b.reset, w: b.w, ..Meta::default() }, BTreeMap::new());

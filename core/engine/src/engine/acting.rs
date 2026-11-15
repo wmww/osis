@@ -49,7 +49,7 @@ impl Engine {
     /// every creation (write on the first admin), every thing it deletes. A purge needs write:
     /// what it drops receivers judge by this node's and the actor's rights together
     /// (spec/permissions.md §6). `group.0` gains only what it may
-    /// read or this batch creates (`UnknownThing`, as for a tid nobody knows), by whatever op: else
+    /// read or this mutation creates (`UnknownThing`, as for a tid nobody knows), by whatever op: else
     /// the answer would tell a hidden thing from an unknown one and its name would reach the
     /// group's readers (its data would not: spec/sync-judgement.md §1 entitlement judges the group's actor).
     pub(crate) fn check_confined(&self, m: &Mutation, actor: &Tid) -> Result<()> {
