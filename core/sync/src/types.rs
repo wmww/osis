@@ -6,8 +6,7 @@ use crate::store::Store;
 use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_crypto::{Epoch, NodeRng, Signature};
 use osis_engine::Engine;
-use osis_label::{Address, Class, Step};
-use osis_proto::Code;
+use osis_label::{Address, Class};
 
 pub use osis_engine::sync::{Holding, Path, Wrap};
 pub use osis_store::RecordId;
@@ -77,16 +76,6 @@ pub struct Entry {
     pub role: bool,
     pub class: Class,
     pub expires: Option<WallMs>,
-}
-
-/// What a source's stream showed of S (spec/sync-streams.md §4): what `known` is made of.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SourceEvent {
-    Present(Entry),
-    Gone(BlobId),
-    Head(Box<Step>),
-    Full(bool),
-    Refused(BlobId, Code),
 }
 
 /// A node's input: what its transport, timer and owner tell it.
