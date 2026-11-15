@@ -256,12 +256,10 @@ mod tests {
         s0.keys.deposit.verify(Domain::Deposit, &digest, &sign_deposit(&dep, &l, &b, &w, false)).unwrap();
     }
 
-    // spec/sync-ids.md §6, spec/crypto.md §7: delete by the sync ID delete key; by a level's delete
-    // key with the role key the level needs; a wrong level, a forged or unblinded key, a
-    // missing commitment fail; layouts round trip.
     // spec/sync-ids.md §6 (Delete): the keys `cover_levels` picks sign a Delete the
     // store's check takes (the oracle: `DeleteItem::verify`), whatever subset of the keys is held;
-    // it picks none exactly when no held choice covers every group under a role key held. Two
+    // it picks none exactly when no held choice covers every group under a role key held, else the
+    // best such choice (fewest signatures, then least right). Two
     // groups (two things' writes by one author: level 2 shared, levels 1 and 3 per thing) and an
     // empty one.
     #[test]
@@ -283,8 +281,9 @@ mod tests {
                 let held: Vec<(Level, DeleteSecret)> = all.iter().enumerate().filter(|(i, _)| mask & 1 << i != 0).map(|(_, (l, d))| (*l, dk(*d))).collect();
                 for (role_keys, name) in [(vec![RoleKey::Sync, RoleKey::Write], "both"), (vec![RoleKey::Sync], "sync"), (vec![RoleKey::Write], "write")] {
                     let picked = cover_levels(prefix, &hb, &held, |r| role_keys.contains(&r));
-                    // any covering choice verifies: does one exist among the held keys?
-                    let mut any = false;
+                    // the best verifying choice among the held keys, under a role key held: fewest
+                    // signatures, then the highest levels
+                    let mut best: Option<(usize, std::cmp::Reverse<Vec<Level>>)> = None;
                     for sub in 1u32..1 << held.len() {
                         let dks: Vec<(Level, &DeleteSecret)> = held.iter().enumerate().filter(|(i, _)| sub & 1 << i != 0).map(|(_, (l, d))| (*l, d)).collect();
                         let levels: Vec<Level> = dks.iter().map(|x| x.0).collect();
@@ -293,15 +292,21 @@ mod tests {
                             continue;
                         }
                         let key = if role == RoleKey::Write { &write } else { &sync };
-                        any |= DeleteItem::sign_by(key, &dks, &salt, &hb, &l, b).is_ok_and(|x| x.verify(&s0, Some(prefix)).is_ok());
+                        if DeleteItem::sign_by(key, &dks, &salt, &hb, &l, b).is_ok_and(|x| x.verify(&s0, Some(prefix)).is_ok()) {
+                            let rank = (levels.len(), std::cmp::Reverse(levels));
+                            best = Some(best.map_or(rank.clone(), |b| b.min(rank)));
+                        }
                     }
                     match picked {
                         Some(dks) => {
                             let levels: Vec<Level> = dks.iter().map(|x| x.0).collect();
-                            let key = if key_for_levels(&levels).unwrap() == RoleKey::Write { &write } else { &sync };
+                            let role = key_for_levels(&levels).unwrap();
+                            assert!(role_keys.contains(&role), "held {mask:#b} {name}: picked keys need a role key not held");
+                            let key = if role == RoleKey::Write { &write } else { &sync };
                             assert!(DeleteItem::sign_by(key, &dks, &salt, &hb, &l, b).unwrap().verify(&s0, Some(prefix)).is_ok(), "held {mask:#b} {name}: picked keys refused");
+                            assert_eq!(Some((levels.len(), std::cmp::Reverse(levels))), best, "held {mask:#b} {name}: not the fewest signatures, then least right");
                         }
-                        None => assert!(!any, "held {mask:#b} {name}: a covering choice exists"),
+                        None => assert!(best.is_none(), "held {mask:#b} {name}: a covering choice exists"),
                     }
                 }
             }
@@ -311,6 +316,9 @@ mod tests {
         assert_eq!(cover_levels(&two, &hb, &held, |_| true).map(|d| d.iter().map(|x| x.0).collect::<Vec<_>>()), Some(vec![2]));
     }
 
+    // spec/sync-ids.md §6, spec/crypto.md §7: delete by the sync ID delete key; by a level's delete
+    // key with the role key the level needs; a wrong level, a forged or unblinded key, a
+    // missing commitment fail; layouts round trip.
     #[test]
     fn deletes() {
         let g = Group::new(40);

@@ -73,6 +73,44 @@ fn a_writers_purge_of_its_own_write_deletes_it_at_a_node_keeping_s_unread_spec_s
     }
 }
 
+// spec/sync-ids.md §6 (Delete), spec/crypto.md §7: one commit's two deltas under different
+// retention frame two commitment groups (levels 1, 2 and levels 1, 2, 3); the groups the writer
+// signs for are those the blob's prefix bears, and its purge of both deletes the blob at the node
+// keeping S unread with its level-2 key, which alone covers both.
+#[test]
+fn a_writers_delete_covers_every_commitment_group_spec_sync_ids_6() {
+    let (mut w, t, s) = setup();
+    let other = Ak::new("u:n.0").unwrap();
+    let c = w.write(2, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str("a".into())).unwrap().retention(t, &value_ak(), osis_schema::Retention { by: PurgeBy::AuthorOrAdmin }).unwrap();
+        m.set(t, &other, &Value::Str("b".into())).unwrap().retention(t, &other, osis_schema::Retention { by: PurgeBy::Writer }).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    let held = at_unread(&mut w, 2, &s, &c);
+    assert!(!held.is_empty(), "node 1 holds the write");
+    // the groups the writer signs for are those the blob's prefix bears
+    for b in &held {
+        let bytes = w.store(1).bytes(b).unwrap().unwrap();
+        let real = osis_blob::clear_prefix(&bytes).unwrap().unwrap();
+        let basis = w.engine(2).blob_delete_basis(b).unwrap();
+        let set = |p: &osis_blob::Prefix| p.groups().iter().cloned().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(real.groups().len(), 2, "two groups");
+        assert_eq!(set(&basis.prefix), set(&real), "the writer's groups are the prefix's");
+    }
+    w.power_off(0);
+    w.write(2, |e| {
+        let mut m = Mutation::new();
+        let now = e.now();
+        m.set(t, &ct::PURGE, &now).unwrap();
+        m.purge_commit(c, t, value_ak()).purge_commit(c, t, other.clone());
+        e.commit(m).unwrap().unwrap();
+    });
+    w.run();
+    assert!(held.iter().all(|b| w.store(1).entry(&s, b).unwrap().is_none()), "the writer deleted it at node 1");
+}
+
 // spec/sync-judgement.md §3 (Deletes: a holder of the needed delete key or level keys),
 // spec/sync-ids.md §6: writer 2 replaces two of writer 3's values, one purgeable by any writer, one
 // by its author or an admin only; with the admin and the author away, writer 2 deletes the
