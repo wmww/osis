@@ -420,7 +420,10 @@ impl ReadOnly {
 
     /// Commit `id` as listed at `a` now, wherever it is read; `None` when it is not listed there.
     fn listed_commit(&self, a: &Address, id: CommitId) -> Result<Option<Commit>> {
-        self.local_things(&a.things(), "commits")?;
+        if let Some(at) = self.remote_of(&a.things(), "commit")? {
+            let c: Option<Commit> = self.forward(&at, crate::port::method::LISTED_COMMIT, (a.clone(), id))?;
+            return Ok(c.map(|c| c.reporting(self)));
+        }
         self.track_commits(a, Some(id))?;
         self.commit_told_here(a, id, None)
     }
@@ -429,28 +432,43 @@ impl ReadOnly {
 impl Osis {
     /// Calls `f` for each commit that reads otherwise at `a`, wherever it is read.
     fn on_commits(&self, a: Address, mut f: crate::watch::CallbackOf<CommitEvent>) -> Result<Subscription> {
-        self.local_things(&a.things(), "commit listeners")?;
+        if let Some(at) = self.remote_of(&a.things(), "commit listener")? {
+            return self.remote_commits_watch(&at, &a, f);
+        }
         // the dispatcher's handle acts for no one: read as this one does
         let acting = self.acting;
         Ok(self.subscribe(Filter::Commits(a.clone()), false, move |_| {
-            Box::new(move |db, d| match d {
-                // what it may not read is not told: an event would tell the commit is there
-                Delivery::Commit { tids, .. } if acting.is_some_and(|x| !db.engine(|e| tids.iter().any(|t| e.readable_by(&x, t)))) => {}
-                Delivery::Commit { id, fired, .. } => {
-                    let told = match acting {
-                        Some(x) => db.act_as(x).commit_told_here(&a, id, fired),
-                        None => db.commit_told_here(&a, id, fired),
-                    };
-                    match told {
-                        Ok(commit) => f(db, CommitEvent::Commit { id, commit }),
-                        Err(e) => f(db, CommitEvent::Ended(e)),
-                    }
+            Box::new(move |db, d| {
+                if let Some(e) = commit_event(db, acting, &a, d) {
+                    f(db, e)
                 }
-                Delivery::Reread => f(db, CommitEvent::Reread),
-                _ => {}
             })
         }))
     }
+}
+
+/// What a commit listener at `a` reading as `acting` hears of delivery `d` (`on_write`,
+/// `on_fire`, and their subscriptions through the port).
+pub(crate) fn commit_event(db: &Osis, acting: Option<Tid>, a: &Address, d: Delivery) -> Option<CommitEvent> {
+    match d {
+        // what it may not read is not told: an event would tell the commit is there
+        Delivery::Commit { tids, .. } if acting.is_some_and(|x| !db.engine(|e| tids.iter().any(|t| e.readable_by(&x, t)))) => None,
+        Delivery::Commit { id, fired, .. } => {
+            let told = match acting {
+                Some(x) => db.act_as(x).commit_told_here(a, id, fired),
+                None => db.commit_told_here(a, id, fired),
+            };
+            Some(match told {
+                Ok(commit) => CommitEvent::Commit { id, commit },
+                Err(e) => CommitEvent::Ended(e),
+            })
+        }
+        Delivery::Reread => Some(CommitEvent::Reread),
+        _ => None,
+    }
+}
+
+impl Osis {
 
     /// Calls `f` for each commit that reads otherwise in `scope` (`writes`), one call per commit,
     /// with the commit as it reads then. Subscribe first, then read pages: nothing after the
@@ -618,7 +636,11 @@ impl<K: SignalKey> AspectRef<'_, K> {
 impl crate::handle::ReadOnly {
     /// A page of the commits listed at `a`, wherever it is read.
     pub(crate) fn listing(&self, a: &Address, q: &CommitQuery) -> Result<CommitPage> {
-        self.local_things(&a.things(), "commit listings")?;
+        if let Some(at) = self.remote_of(&a.things(), "commit listing")? {
+            let mut p: CommitPage = self.forward(&at, crate::port::method::LISTING, (a.clone(), q.clone()))?;
+            p.commits = p.commits.into_iter().map(|c| c.reporting(self)).collect();
+            return Ok(p);
+        }
         // a fire's versions change exactly when it is told
         let only = match a {
             Address::Versions(_, _, id) => Some(*id),

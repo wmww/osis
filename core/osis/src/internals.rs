@@ -207,6 +207,11 @@ pub fn port_held(db: &Osis) -> (usize, usize) {
     db.locked(|l| l.port.held())
 }
 
+/// The rows that wait (`wait_synced`, `import_contact`, `redeem`) the port holds for clients.
+pub fn port_waits(db: &Osis) -> usize {
+    db.locked(|l| l.port.waits())
+}
+
 pub use crate::port::method as port_method;
 pub use osis_proto as proto;
 pub use osis_crypto::Secret32;

@@ -789,7 +789,10 @@ impl ReadOnly {
         drop(g);
         self.inner.dispatch.wake();
         if stepped {
-            for w in std::mem::take(&mut *lock(&self.inner.waiters)) {
+            // taken first: a waker may poll its future in place (the port's rows that wait),
+            // which registers again
+            let woken = std::mem::take(&mut *lock(&self.inner.waiters));
+            for w in woken {
                 w.wake();
             }
         }

@@ -666,7 +666,9 @@ impl Osis {
     /// of its node: while it cannot be reached none come, and
     /// `status` says so; a session the node has ended fails as its calls do.
     pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, crate::Diagnostic) + Send + 'static) -> Result<Subscription> {
-        self.local("on_diagnostic")?;
+        if let Some(at) = self.process_at("on_diagnostic")? {
+            return self.remote_diagnostics(&at, f);
+        }
         Ok(self.subscribe(Filter::Diagnostics, false, |_| {
             Box::new(move |db, d| {
                 if let Delivery::Diagnostic(x) = d {

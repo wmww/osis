@@ -226,7 +226,6 @@ fn a_thin_client_answers_nothing_of_its_own_notes_client_port() {
     u(cl.add_client(None).map(drop));
     u(cl.clients().map(drop));
     u(cl.grant(t, w.actor, Role::Read, osis::GrantOpts::default()));
-    u(cl.writes(&osis::Scope::Thing(t), &osis::CommitQuery::default()).map(drop));
     u(cl.on_diagnostic(|_, _| {}).map(drop));
     u(cl.contact_card().map(drop));
     u(cl.profile().map(drop));
@@ -686,7 +685,11 @@ fn a_group_read_at_another_node_spec_sync_set_5() {
     assert_eq!(x.commit().unwrap().unwrap().stamp.actor, w.actor);
     assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(6)));
     assert_eq!(b.grants(w.t).unwrap(), w.a.grants(w.t).unwrap(), "read at the source");
-    assert!(matches!(b.writes(&osis::Scope::Thing(w.t), &osis::CommitQuery::default()), Err(Error::Unsupported(_))));
+    {
+        use osis::internals::Internals as _;
+        let q = osis::CommitQuery::default();
+        assert_eq!(b.writes(&osis::Scope::Thing(w.t), &q), w.a.acting_as(w.actor).writes(&osis::Scope::Thing(w.t), &q), "listed at the source");
+    }
     assert!(b.has_store());
     b.status().unwrap();
     ready(b.group_source(w.t, GroupSource::Local)).unwrap();
@@ -1115,4 +1118,275 @@ fn a_grants_watch_through_a_thin_client_spec_wire_11() {
         assert_eq!(rx.try_recv().unwrap().unwrap(), osis::Grants::new());
         assert!(rx.try_recv().is_err());
     }
+}
+
+// ---- the API's rows that are one call each (notes/client-port.md §2) ----
+
+/// A node on a store directory, at `net`'s `peer://` address and on its own socket, and a client
+/// of it over the socket (the node's main actor, as the CLI beside `osis serve`).
+fn daemon(net: &ManualNet, c: &Arc<ManualClock>, seed: u64, name: &str) -> (Dir, Osis, Osis) {
+    let dir = Dir::new(name);
+    let mut o = osis::internals::Opening::at(osis::Store::Dir(dir.0.clone()));
+    o.app.internals.seed = Some(seed);
+    o.app.internals.clock = Some(c.clone());
+    o.app.internals.net = Some(net.clone());
+    let a = osis::internals::create(o).unwrap();
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    a.listen_socket().unwrap();
+    let cl = ready(Osis::connect_socket(&dir.0, app(net, c))).unwrap();
+    (dir, a, cl)
+}
+
+/// Drives `f` on `net` until it resolves (at most 20 rounds of `run`).
+#[track_caller]
+fn drive<T>(net: &ManualNet, f: impl std::future::Future<Output = T>) -> T {
+    let mut f = std::pin::pin!(f);
+    for _ in 0..20 {
+        if let std::task::Poll::Ready(r) = f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
+            return r;
+        }
+        net.run();
+    }
+    panic!("did not resolve");
+}
+
+fn signal() -> DynamicAspectKey {
+    DynamicAspectKey::untyped(ak("x:log~0"))
+}
+
+fn text(x: &str) -> Value {
+    Value::Str(x.into())
+}
+
+/// A thing keeping its signal's fires and `x:v.0`'s writes for good: `x:v.0` set twice, the
+/// signal fired twice and its first fire replaced; the first fire's id.
+fn history(db: &Osis) -> (Tid, osis::CommitId) {
+    let keep = crate::common::setting(&[("x:log~0", osis::History::FOREVER), ("x:v.0", osis::History::FOREVER)]);
+    let t = crate::common::commit_with(db, |w| {
+        let t = w.create()?;
+        w.at(t, osis::core::RETENTION).set(&keep)?;
+        w.at(t, v()).set(&Value::Int(1))
+    })
+    .parts()
+    .next()
+    .unwrap()
+    .0;
+    crate::common::commit_with(db, |w| w.at(t, v()).set(&Value::Int(2)));
+    let o = crate::common::commit_with(db, |w| w.at(t, signal()).fire(&text("one"))).stamp.id;
+    crate::common::commit_with(db, |w| w.at(t, signal()).fire(&text("other")));
+    crate::common::commit_with(db, |w| w.at(t, signal()).replace(o, &text("two")).map(drop));
+    (t, o)
+}
+
+/// Each listing row, as `db` answers it.
+fn listings(db: &osis::ReadOnly, t: Tid, o: osis::CommitId) -> Vec<osis::Result<osis::CommitPage>> {
+    let q = |from, n| osis::CommitQuery { from, limit: Some(n), ..Default::default() };
+    let content = osis::CommitQuery { kinds: vec![osis::CommitKind::Content], ..Default::default() };
+    vec![
+        db.writes(&osis::Scope::Thing(t), &osis::CommitQuery::default()),
+        db.writes(&osis::Scope::Aspects(vec![(t, ak("x:v.0"))]), &q(osis::CommitFrom::Oldest, 1)),
+        db.at(t, v()).writes(&content),
+        db.at(t, signal()).fired(&osis::CommitQuery::default()),
+        db.at(t, signal()).fired(&q(osis::CommitFrom::Oldest, 1)),
+        db.at(t, signal()).versions(o, &osis::CommitQuery::default()),
+    ]
+}
+
+// notes/client-port.md §2 (rows that are one API call): commit listings, a listed commit, the
+// contact card, the profile, invitations and accepting one answer through a socket client
+// exactly as on the node itself, errors included.
+#[test]
+fn api_rows_read_alike_through_a_socket_notes_client_port() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (_dir, a, cl) = daemon(&net, &c, 1, "port-rows");
+    let (t, o) = history(&a);
+    let mine = listings(&a, t, o);
+    assert!(mine.iter().all(|p| p.as_ref().is_ok_and(|p| !p.commits.is_empty())), "{mine:?}");
+    assert_eq!(listings(&cl, t, o), mine);
+    let value = a.at(t, v()).writes(&osis::CommitQuery::default()).unwrap().commits[0].stamp.id;
+    for id in [o, value] {
+        assert_eq!(cl.at(t, signal()).commit(id), a.at(t, signal()).commit(id), "{id}");
+        assert_eq!(cl.at(t, v()).commit(id), a.at(t, v()).commit(id), "{id}");
+    }
+    assert_eq!(cl.contact_card().unwrap(), a.contact_card().unwrap());
+    assert_eq!(cl.profile(), a.profile());
+    assert_eq!(cl.profile_of(a.me()), a.profile_of(a.me()));
+    assert_eq!(cl.invitations(), a.invitations());
+    let bad = a.accept_invite(t, t);
+    assert!(matches!(bad, Err(Error::Invalid(_))), "{bad:?}");
+    assert_eq!(cl.accept_invite(t, t), bad);
+}
+
+// notes/client-port.md §2: a page through a connection is cut to what one Reply carries,
+// saying `more`; read on from its last commit, the pages together are the node's.
+#[test]
+fn a_listing_page_fits_a_reply_notes_client_port() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (_dir, a, cl) = daemon(&net, &c, 1, "port-page");
+    let (t, _) = history(&a);
+    // past one Reply's bound (`REPLY_BUDGET`) in all, and the bodies a node reads for one page
+    // (up to that bound, then one more) too
+    let big = "x".repeat(3 << 20);
+    for i in 0..4 {
+        crate::common::commit_with(&a, |w| w.at(t, v()).set(&text(&format!("{i}{big}"))));
+    }
+    let all = |db: &Osis| {
+        let (mut got, mut from, mut pages) = (Vec::new(), osis::CommitFrom::Newest, 0);
+        loop {
+            let p = db.at(t, v()).writes(&osis::CommitQuery { from, ..Default::default() }).unwrap();
+            pages += 1;
+            got.extend(p.commits.iter().map(|c| c.stamp.id));
+            match p.commits.last() {
+                Some(l) if p.more => from = osis::CommitFrom::Before(l.pos()),
+                _ => return (got, pages),
+            }
+        }
+    };
+    let (here, one) = all(&a);
+    let (there, several) = all(&cl);
+    assert_eq!(there, here);
+    assert_eq!(one, 1);
+    assert!(several > 1, "{several} pages");
+}
+
+// spec/wire.md §11.2 (A client actor's rights): a client actor lists what it may read, as its
+// actor does on the node, and nothing of a thing it may not read; the node's own state (its
+// card, invitations) is not for it (code 11).
+#[test]
+fn a_client_actor_lists_what_its_actor_reads_spec_wire_11() {
+    use osis::internals::Internals as _;
+    let w = world(Some(Role::Read));
+    let (t, o) = history(&w.a);
+    w.a.grant(t, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
+    let (hidden, h) = history(&w.a);
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    let actor = w.a.acting_as(w.actor);
+    let readable = listings(&actor, t, o);
+    assert!(readable.iter().all(|p| p.as_ref().is_ok_and(|p| !p.commits.is_empty())), "{readable:?}");
+    assert_eq!(listings(&cl, t, o), readable);
+    let none = listings(&actor, hidden, h);
+    assert!(none.iter().all(|p| p.as_ref().is_ok_and(|p| p.commits.is_empty())), "{none:?}");
+    assert_eq!(listings(&cl, hidden, h), none);
+    assert_eq!(cl.at(hidden, signal()).commit(h), Ok(None));
+    // a listener hears a fire on what its actor reads, nothing of one on what it may not
+    let (tx, rx) = channel();
+    let _l = cl.at(hidden, signal()).on_fire(move |_, e| tx.send(e).unwrap()).unwrap();
+    let (txr, rxr) = channel();
+    let _r = cl.at(t, signal()).on_fire(move |_, e| txr.send(e).unwrap()).unwrap();
+    crate::common::commit_with(&w.a, |x| x.at(hidden, signal()).fire(&text("secret")));
+    let shown = crate::common::commit_with(&w.a, |x| x.at(t, signal()).fire(&text("shown"))).stamp.id;
+    cl.settle();
+    assert!(rx.try_recv().is_err());
+    assert!(matches!(rxr.try_iter().collect::<Vec<_>>().as_slice(), [osis::CommitEvent::Commit { id, commit: Some(_) }] if *id == shown));
+    assert!(matches!(cl.contact_card(), Err(Error::Unsupported(_))));
+    assert!(matches!(cl.invitations(), Err(Error::Unsupported(_))));
+    assert!(matches!(drive(&w.net, cl.wait_synced(osis::SyncScope::All)), Err(Error::Unsupported(_))));
+}
+
+/// What a commit listener heard since the last call, as (id, the part's body on `t`'s `k`).
+fn events(db: &Osis, rx: &Receiver<osis::CommitEvent>, t: Tid, k: &str) -> Vec<(osis::CommitId, Option<osis::Body<Value>>)> {
+    db.settle();
+    rx.try_iter()
+        .map(|e| match e {
+            osis::CommitEvent::Commit { id, commit } => (id, commit.map(|c| crate::common::part(&c, t, &ak(k)).body)),
+            e => panic!("{e:?}"),
+        })
+        .collect()
+}
+
+// notes/client-port.md §2 (Commits): `on_fire` and `on_write` through a socket client hear each
+// commit made at the node, as the node's own listeners do; one dropped hears no more.
+#[test]
+fn commit_listeners_through_a_socket_notes_client_port() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (_dir, a, cl) = daemon(&net, &c, 1, "port-listen");
+    let (t, _) = history(&a);
+    let (txf, fires) = channel();
+    let (txw, writes) = channel();
+    let f = cl.at(t, signal()).on_fire(move |_, e| txf.send(e).unwrap()).unwrap();
+    let _w = cl.at(t, v()).on_write(move |_, e| txw.send(e).unwrap()).unwrap();
+    let (txh, here) = channel();
+    let _h = a.at(t, signal()).on_fire(move |_, e| txh.send(e).unwrap()).unwrap();
+    let fired = crate::common::commit_with(&a, |w| w.at(t, signal()).fire(&text("new"))).stamp.id;
+    let set = crate::common::commit_with(&cl, |w| w.at(t, v()).set(&Value::Int(3))).stamp.id;
+    let heard = events(&cl, &fires, t, "x:log~0");
+    assert_eq!(heard, vec![(fired, Some(osis::Body::Held(Some(text("new")))))]);
+    assert_eq!(heard, events(&a, &here, t, "x:log~0"));
+    assert_eq!(events(&cl, &writes, t, "x:v.0"), vec![(set, Some(osis::Body::Held(Some(Value::Int(3)))))]);
+    drop(f);
+    crate::common::commit_with(&a, |w| w.at(t, signal()).fire(&text("later")));
+    // a dropped listener goes at its next Notify, which it does not pass on
+    assert_eq!(events(&cl, &fires, t, "x:log~0"), vec![]);
+}
+
+// notes/client-port.md §2 (Rows that wait), spec/sync-inbox.md §5, spec/sync-set.md §4: through
+// a socket client, the node's card is imported elsewhere, another's card is imported at the
+// node, a grant to the node's account is an invitation there, accepted through the client, and
+// `wait_synced` waits at the node.
+#[test]
+fn cards_invitations_and_waits_through_a_socket_notes_client_port() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (_dir, a, cl) = daemon(&net, &c, 60, "port-cards");
+    let mut o = crate::common::cfg(61, MemStore::new(), &c);
+    o.app.internals.net = Some(net.clone());
+    let b = osis::internals::create(o).unwrap();
+    b.listen(&["peer://127.0.0.1:2".parse().unwrap()]).unwrap();
+    assert_eq!(drive(&net, b.import_contact(&cl.contact_card().unwrap())).unwrap(), a.me());
+    assert_eq!(drive(&net, cl.import_contact(&b.contact_card().unwrap())).unwrap(), b.me());
+    assert_eq!(a.profile_of(b.me()).unwrap(), Some(b.profile().unwrap()));
+    assert_eq!(cl.profile_of(b.me()).unwrap(), Some(b.profile().unwrap()));
+    let t = crate::common::commit_with(&b, |w| w.create().map(drop)).parts().next().unwrap().0;
+    b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    let invited = cl.invitations().unwrap();
+    assert!(invited.iter().any(|i| i.thing == t && !i.acted), "{invited:?}");
+    assert_eq!(invited, a.invitations().unwrap());
+    cl.accept_invite(t, cl.home()).unwrap();
+    assert!(!a.invitations().unwrap().iter().any(|i| i.thing == t));
+    drive(&net, cl.wait_synced(osis::SyncScope::Deliveries)).unwrap();
+    assert_eq!(osis::internals::port_waits(&a), 0, "a wait answered goes");
+}
+
+// notes/client-port.md §2 (Rows that wait): dropping a wait's future ends it at the node, as
+// dropping it locally does.
+#[test]
+fn a_dropped_wait_ends_at_the_node_notes_client_port() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (_dir, a, cl) = daemon(&net, &c, 1, "port-drop-wait");
+    let t = crate::common::commit_with(&a, |w| w.create().map(drop)).parts().next().unwrap().0;
+    {
+        let mut f = std::pin::pin!(cl.wait_synced(osis::SyncScope::Thing(t)));
+        for _ in 0..3 {
+            assert!(f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending(), "nobody else has it open");
+            net.run();
+        }
+        assert_eq!(osis::internals::port_waits(&a), 1);
+    }
+    net.run();
+    assert_eq!(osis::internals::port_waits(&a), 0);
+}
+
+// notes/client-port.md §2: `on_diagnostic` through a socket client hears the node's
+// diagnostics (here: a callback of the node's that panicked).
+#[test]
+fn diagnostics_through_a_socket_notes_client_port() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (_dir, a, cl) = daemon(&net, &c, 1, "port-diag");
+    let (tx, rx) = channel();
+    let _d = cl.on_diagnostic(move |_, d| tx.send(d).unwrap()).unwrap();
+    let t = crate::common::commit_with(&a, |w| w.create().map(drop)).parts().next().unwrap().0;
+    let _p = a.at(t, v()).on_change(|_, ch| assert!(ch.value != Ok(Some(Value::Int(9))), "a callback that panics")).unwrap();
+    crate::common::commit_with(&a, |w| w.at(t, v()).set(&Value::Int(9)));
+    a.settle();
+    cl.settle();
+    let got: Vec<_> = rx.try_iter().collect();
+    assert!(got.iter().any(|d| matches!(d, osis::Diagnostic::Callback { .. })), "{got:?}");
 }

@@ -165,7 +165,15 @@ impl Osis {
     /// `Stranded` while a sync ID in scope is stranded here (naming its things); with no network
     /// (`Runtime::None`) it fails `Network`.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
-        self.local("wait_synced")?;
+        if let Some(at) = self.process_at("wait_synced")? {
+            return self.remote_wait(&at, crate::port::method::WAIT_SYNCED, (scope,))?.await;
+        }
+        self.syncing(scope).await
+    }
+
+    /// `wait_synced` here, as a future holding nothing of the node (the port runs it for a main
+    /// session).
+    pub(crate) fn syncing(&self, scope: SyncScope) -> impl Future<Output = Result<()>> + Send + 'static {
         let s = match scope {
             SyncScope::All => osis_sync::types::Scope::All,
             SyncScope::Thing(t) => osis_sync::types::Scope::Thing(t),
@@ -189,12 +197,11 @@ impl Osis {
             // of it not built yet, never an answer about the thing
             osis_sync::types::Waiting::Never(_) => Some(Err(Error::NotBuilt)),
         })
-        .await
     }
 
     /// A future that asks `check` now and after each sync step until it answers. With no
     /// network anything but success fails `Network` at once: nothing will ever step the node.
-    pub(crate) fn waiting<R>(&self, check: impl FnMut(&Osis) -> Option<Result<R>> + Send + Unpin) -> Waiting<impl FnMut(&Osis) -> Option<Result<R>> + Send + Unpin> {
+    pub(crate) fn waiting<R, F: FnMut(&Osis) -> Option<Result<R>> + Send + Unpin>(&self, check: F) -> Waiting<F> {
         Waiting { db: self.downgrade(), check, online: self.inner.net.online() }
     }
 }

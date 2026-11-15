@@ -169,6 +169,50 @@ fn store_dir_init_lock_plan_cli_2() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+// notes/cli.md Design (daemon), notes/client-port.md §2: beside a node serving the store's
+// socket, commands run there as its main actor: chat read and watch (listings and a commit
+// listener), card show, profile and import (a row that waits), sync (a wait timing out), diag.
+#[test]
+fn commands_run_through_the_daemon_plan_cli() {
+    let d = tmp("daemon");
+    let ds = d.to_str().unwrap();
+    let call = |args: &[&str]| {
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let code = osis_cli::main_with(["osis", "--no-lan", "-s", ds].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
+        (code, String::from_utf8(o).unwrap(), String::from_utf8(e).unwrap())
+    };
+    let ok = |args: &[&str]| {
+        let (c, out, err) = call(args);
+        assert_eq!(c, 0, "{args:?}: {err}");
+        out
+    };
+    ok(&["init"]);
+    let c = ok(&["chat", "create", "--name", "room"]).trim().to_string();
+    let one = ok(&["chat", "post", &c, "one"]).trim().to_string();
+    let mut o = osis::internals::Opening::dir(&d);
+    o.runtime = osis::Runtime::Own;
+    o.direct_sync = false;
+    let held = osis::internals::open(o).unwrap();
+    held.listen_socket().unwrap();
+    let read = ok(&["chat", "read", &c]);
+    assert!(read.contains(&format!("{one} ")) && read.contains(": one"), "{read}");
+    let cursor = read.lines().last().unwrap().strip_prefix("cursor ").unwrap().to_string();
+    let two = ok(&["chat", "post", &c, "two"]).trim().to_string();
+    let after = ok(&["chat", "read", &c, "--after", &cursor]);
+    assert!(after.contains(&format!("{two} ")) && !after.contains(": one"), "{after}");
+    let watched = ok(&["chat", "watch", &c, "--after", &cursor, "--count", "1", "--timeout", "60s"]);
+    assert!(watched.contains(": two"), "{watched}");
+    let card = ok(&["card", "show"]);
+    assert_eq!(card.trim(), held.contact_card().unwrap().to_string());
+    assert_eq!(ok(&["card", "profile"]).trim(), held.profile().unwrap().to_uri());
+    assert_eq!(ok(&["card", "import", card.trim(), "--timeout", "60s"]).trim(), held.me().to_uri());
+    let (code, _, err) = call(&["sync", "--timeout", "1s"]);
+    assert_eq!(code, 6, "nobody connected: the wait at the node times out ({err})");
+    ok(&["diag"]);
+    drop(held);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 // notes/cli.md JSON mapping: --json output carries tids under their API names.
 #[test]
 fn json_output_plan_cli_5() {

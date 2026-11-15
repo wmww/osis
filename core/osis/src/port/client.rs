@@ -20,7 +20,7 @@
 //! a caller blocked on it, so bounded by the callers), the live watches (each a `Subscription`
 //! the app holds; one dropped goes at its next Notify, with an Unsub).
 
-use super::codec::{self, list, read_from, result_of};
+use super::codec::{self, Form, list, outcome_from, read_from, result_of};
 use super::method;
 use crate::error::{Error, Result};
 use crate::handle::{Locked, ReadOnly};
@@ -70,7 +70,15 @@ enum Asked {
     Write(u64),
     /// A watch's subscription, by its local id, and whoever waits for its first Reply.
     Sub(u64, Option<Sender<Result<()>>>),
+    /// A row that waits (`filter::WAIT`), by its local id in `Remote::waits`.
+    Wait(u64),
     Unsub,
+}
+
+/// A row that waits at the node: its subscription's id, and the future waiting for its outcome.
+struct Waiter {
+    sub: RequestId,
+    tx: tokio::sync::oneshot::Sender<Result<Value>>,
 }
 
 /// A write row sent and not answered: its method and args (after the nonce) for a resend.
@@ -118,13 +126,16 @@ pub(crate) struct Remote {
     nonce: u64,
     writes: BTreeMap<u64, Pending>,
     watches: BTreeMap<u64, Watch>,
+    /// The rows that wait, by local id (the last one given in `waited`).
+    waits: BTreeMap<u64, Waiter>,
+    waited: u64,
     /// `add_remote` waiting for it to come up.
     ready: Vec<tokio::sync::oneshot::Sender<Result<()>>>,
 }
 
 impl Remote {
     fn new(addr: Address, secret: Option<crate::ClientSecret>, session: [u8; 16]) -> Remote {
-        Remote { addr, secret, session, conn: None, state: State::Down(Error::Network("not connected".into())), was_up: false, who: None, calls: BTreeMap::new(), nonce: 0, writes: BTreeMap::new(), watches: BTreeMap::new(), ready: Vec::new() }
+        Remote { addr, secret, session, conn: None, state: State::Down(Error::Network("not connected".into())), was_up: false, who: None, calls: BTreeMap::new(), nonce: 0, writes: BTreeMap::new(), watches: BTreeMap::new(), waits: BTreeMap::new(), waited: 0, ready: Vec::new() }
     }
 }
 
@@ -165,11 +176,15 @@ impl Cx<'_> {
 
     /// Sends `m` on `r`'s connection, for `asked`.
     fn send(&mut self, r: &mut Remote, m: Msg, asked: Asked) -> bool {
-        let Some(conn) = r.conn else { return false };
-        let Some((id, out)) = self.node.port_request(conn, m) else { return false };
+        self.send_id(r, m, asked).is_some()
+    }
+
+    /// `send`, giving the request's id.
+    fn send_id(&mut self, r: &mut Remote, m: Msg, asked: Asked) -> Option<RequestId> {
+        let (id, out) = self.node.port_request(r.conn?, m)?;
         self.out.extend(out);
         r.calls.insert(id, asked);
-        true
+        Some(id)
     }
 
     /// `r` is up as `w`: what waited goes, writes without an answer again (marked) and the live
@@ -237,6 +252,10 @@ impl Cx<'_> {
                 }
                 _ => {}
             }
+        }
+        // what was done at the node stays done; the wait is not sent again
+        for (_, w) in std::mem::take(&mut r.waits) {
+            let _ = w.tx.send(Err(e.clone()));
         }
         let told: Vec<u64> = r.watches.iter_mut().filter_map(|(k, w)| w.sub.take().map(|_| *k)).collect();
         for local in told {
@@ -351,6 +370,13 @@ pub(crate) fn reply(db: &ReadOnly, conn: ConnId, id: RequestId, m: Msg) {
                     (Err(e), None) => cx.deliver(r, local, Pushed::Failed(e)),
                 }
             }
+            Asked::Wait(local) => {
+                if let Err(e) = answered(m)
+                    && let Some(w) = r.waits.remove(&local)
+                {
+                    let _ = w.tx.send(Err(e));
+                }
+            }
             Asked::Unsub => {}
         }
     });
@@ -409,6 +435,16 @@ pub(crate) fn notify(db: &ReadOnly, conn: ConnId, m: Msg) {
     // tests count what a node tells (no Notify where nothing the actor reads changed)
     osis_base::costs::count("port: notify", 1);
     on_conn(db, conn, |cx, r| {
+        if let Some(local) = r.waits.iter().find(|(_, w)| w.sub == sub_id).map(|(k, _)| *k) {
+            let got = match payload {
+                Payload::Delivery { value } => outcome_from(value),
+                _ => Err(Error::Network("the node dropped the wait".into())),
+            };
+            if let Some(w) = r.waits.remove(&local) {
+                let _ = w.tx.send(got);
+            }
+            return;
+        }
         let Some((&local, w)) = r.watches.iter().find(|(_, w)| w.sub == Some(sub_id)) else { return };
         let filter = w.filter.clone();
         // a watch the app dropped goes at its next Notify
@@ -450,6 +486,12 @@ impl ReadOnly {
             if cx.send(r, Msg::Call { id: 0, max_reply, method, args }, Asked::Call(tx)) { Ok(()) } else { Err(Error::Network(format!("connection to {at} lost"))) }
         })?;
         self.wait_for(rx)
+    }
+
+    /// API call `method` at the node at `at`: `args` and its result in their `Form`s.
+    pub(crate) fn forward<A: Form, R: Form>(&self, at: &Address, method: u64, args: A) -> Result<R> {
+        let args = list(args.to_wire(), "arguments")?;
+        R::from_wire(self.remote_call(at, method, args, super::VALUE_REPLY)?)
     }
 
     /// Write row `method` at the node at `at` under the next nonce (`args` after it).
@@ -748,6 +790,110 @@ impl crate::Osis {
             if last.as_ref() != Some(&m) {
                 last = Some(m.clone());
                 f(db, m);
+            }
+        })
+    }
+}
+
+/// A row that waits at a node (`ReadOnly::remote_wait`): resolves with its one outcome; dropped
+/// before that, it ends the wait at the node (an Unsub).
+pub(crate) struct RemoteWait<R> {
+    db: crate::WeakOsis,
+    at: Address,
+    local: u64,
+    rx: tokio::sync::oneshot::Receiver<Result<Value>>,
+    done: bool,
+    _r: std::marker::PhantomData<fn() -> R>,
+}
+
+impl<R: Form> std::future::Future for RemoteWait<R> {
+    type Output = Result<R>;
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<R>> {
+        // on a test network nothing moves unless delivered
+        if let Some(db) = self.db.hold()
+            && let crate::net::Net::Manual { net, .. } = &db.inner.net
+        {
+            net.deliver();
+        }
+        let got = match std::pin::Pin::new(&mut self.rx).poll(cx) {
+            std::task::Poll::Pending => return std::task::Poll::Pending,
+            std::task::Poll::Ready(Ok(r)) => r.and_then(R::from_wire),
+            std::task::Poll::Ready(Err(_)) => Err(Error::Network("connection closed".into())),
+        };
+        self.done = true;
+        std::task::Poll::Ready(got)
+    }
+}
+
+impl<R> Drop for RemoteWait<R> {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        let Some(db) = self.db.hold() else { return };
+        let local = self.local;
+        let _ = on_addr(&db, &self.at, |cx, r| {
+            if let Some(Waiter { sub: sub_id, .. }) = r.waits.remove(&local) {
+                cx.send(r, Msg::Unsub { id: 0, sub_id }, Asked::Unsub);
+            }
+            Ok(())
+        });
+    }
+}
+
+impl ReadOnly {
+    /// Row `method` that waits, at the node at `at` (a Sub `[filter::WAIT, method, args]`): its
+    /// outcome once the node has it. A connection lost first is `Network`; what was done at the
+    /// node stays done, and nothing is sent again.
+    pub(crate) fn remote_wait<A: Form, R: Form>(&self, at: &Address, method: u64, args: A) -> Result<RemoteWait<R>> {
+        let filter = Value::List(vec![Value::uint(super::filter::WAIT), Value::uint(method), args.to_wire()]);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let local = on_addr(self, at, |cx, r| {
+            cx.usable(r)?;
+            r.waited += 1;
+            let local = r.waited;
+            // its id known as sent: the Notify is matched to it whatever comes first
+            let Some(sub) = cx.send_id(r, Msg::Sub { id: 0, max_reply: super::SMALL_REPLY, filter }, Asked::Wait(local)) else {
+                return Err(Error::Network(format!("connection to {at} lost")));
+            };
+            r.waits.insert(local, Waiter { sub, tx });
+            Ok(local)
+        })?;
+        Ok(RemoteWait { db: crate::WeakOsis(std::sync::Arc::downgrade(&self.inner)), at: at.clone(), local, rx, done: false, _r: std::marker::PhantomData })
+    }
+}
+
+impl crate::Osis {
+    /// A commit listener at the node at `at` (`on_write`, `on_fire`): each commit event as the
+    /// node tells it; a lost connection and its coming back, a resubscription and a commit too
+    /// large to push are `Reread`; a node refusing the subscription again ends it.
+    pub(crate) fn remote_commits_watch(&self, at: &Address, a: &crate::commits::Address, mut f: crate::watch::CallbackOf<crate::CommitEvent>) -> Result<Subscription> {
+        let filter = Value::List(vec![Value::uint(super::filter::COMMITS), a.to_wire()]);
+        let mut first = true;
+        self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
+            let e = match got {
+                Pushed::Initial(_) if std::mem::take(&mut first) => return,
+                Pushed::Delivery(v) => match crate::CommitEvent::from_wire(v) {
+                    Ok(crate::CommitEvent::Commit { id, commit }) => crate::CommitEvent::Commit { id, commit: commit.map(|c| c.reporting(db)) },
+                    Ok(e) => e,
+                    Err(_) => crate::CommitEvent::Reread,
+                },
+                Pushed::Initial(_) | Pushed::TooLarge(_) | Pushed::Failed(Error::Network(_)) => crate::CommitEvent::Reread,
+                Pushed::Failed(e) => crate::CommitEvent::Ended(e),
+            };
+            f(db, e);
+        })
+    }
+
+    /// `on_diagnostic` at the node at `at`: each of its diagnostics; none while it cannot be
+    /// reached.
+    pub(crate) fn remote_diagnostics(&self, at: &Address, mut f: impl FnMut(&crate::Osis, crate::Diagnostic) + Send + 'static) -> Result<Subscription> {
+        let filter = Value::List(vec![Value::uint(super::filter::DIAGNOSTICS)]);
+        self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
+            if let Pushed::Delivery(v) = got
+                && let Ok(d) = osis_engine::Diagnostic::from_wire(v)
+            {
+                f(db, d.into());
             }
         })
     }

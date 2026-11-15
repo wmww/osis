@@ -57,6 +57,41 @@ pub mod method {
     pub const STATUS: u64 = 21;
     /// `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`
     pub const HOLDERS: u64 = 22;
+
+    // The rows below are each one API call, its arguments and result in `codec::Form` forms
+    // (`serve::row`, `ReadOnly::forward`).
+
+    /// `[address, query] -> page` (`writes`, `fired`, `versions`): at most what fits the Call's
+    /// `max_reply`, `more` set when it cut the page.
+    pub const LISTING: u64 = 16;
+    /// `[address, commit id] -> Opt(commit)` (`AspectRef::commit`)
+    pub const LISTED_COMMIT: u64 = 17;
+    /// `[] -> card text` (`contact_card`)
+    pub const CONTACT_CARD: u64 = 18;
+    /// `[] -> tid` (`profile`)
+    pub const PROFILE: u64 = 23;
+    /// `[account] -> Opt(tid)` (`profile_of`)
+    pub const PROFILE_OF: u64 = 24;
+    /// `[] -> [[thing, role, Opt(from), taken, acted]*]` (`invitations`)
+    pub const INVITATIONS: u64 = 25;
+    /// `[thing, into] -> []` (`accept_invite`)
+    pub const ACCEPT_INVITE: u64 = 26;
+
+    // Rows that wait: never a Call, only as a Sub `[filter::WAIT, method, [arg*]]`.
+
+    /// `[sync scope] -> []` (`wait_synced`), scope `[0]` all, `[1, tid]`, `[2]` deliveries.
+    pub const WAIT_SYNCED: u64 = 27;
+    /// `[card text] -> account` (`import_contact`)
+    pub const IMPORT_CONTACT: u64 = 28;
+    /// `[link text] -> tid` (`redeem`)
+    pub const REDEEM: u64 = 29;
+
+    /// Whether a client-actor session may call `m`: a row on things the actor may read. The
+    /// others carry the node's own state (spec/wire.md §11.2), so a new row is main only unless
+    /// listed here.
+    pub fn for_client(m: u64) -> bool {
+        m <= REDO_TARGET || matches!(m, SETTLE | NOW | STATUS | HOLDERS | LISTING | LISTED_COMMIT)
+    }
 }
 
 /// The Sub filters (notes/client-port.md §2).
@@ -72,6 +107,16 @@ pub mod filter {
     pub const GRANTS: u64 = 2;
     /// `[3]`: the status, as `STATUS` answers; a Notify when it reads otherwise.
     pub const STATUS: u64 = 3;
+    /// `[4]`: each diagnostic of the node (`on_diagnostic`); the Reply `[]`. Main only.
+    pub const DIAGNOSTICS: u64 = 4;
+    /// `[5, method, [arg*]]`: a row that waits, run at the node; the Reply `[]`, then one Notify
+    /// with its outcome (`[0, value]` or `[1, code, detail*]`). An Unsub or the connection's end
+    /// drops it, as dropping the future does locally. Main only.
+    pub const WAIT: u64 = 5;
+    /// `[6, address]`: the commits listed at a `LISTING` address (`on_write`, `on_fire`); the
+    /// Reply `[]`, each Notify a commit event `[0, commit id, Opt(commit)]`, `[1]` (read again)
+    /// or `[2, code, detail*]` (ended).
+    pub const COMMITS: u64 = 6;
 }
 
 /// Ops of one write through another node (notes/client-port.md §2 Decoder limits): a write's

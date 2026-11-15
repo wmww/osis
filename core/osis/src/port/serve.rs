@@ -11,7 +11,8 @@
 //! recently used going. Each Auth first drops the sessions that ended and the outcomes of every
 //! client that can no longer authenticate, so the whole is bounded by the clients that can.
 
-use super::codec::{self, bad, list, opt, outcome_of, read_to, tid};
+use super::codec::{self, Form, bad, list, opt, outcome_of, read_to, tid};
+use crate::commits::Address;
 use super::{MAX_CLIENTS, WRITE_NONCES, filter, method};
 use crate::error::{Error, Result};
 use crate::handle::{Locked, ReadOnly};
@@ -52,6 +53,26 @@ struct Session {
     who: Who,
     id: [u8; 16],
     subs: BTreeMap<u32, Subscription>,
+    /// The rows that wait (`filter::WAIT`), by subscription id; with `subs` at most `MAX_SUBS`.
+    waits: BTreeMap<u32, Task>,
+}
+
+impl Session {
+    /// Drops subscription or wait `id`; what goes is returned, to drop off the lock.
+    fn unsub(&mut self, id: u32) -> (Option<Subscription>, Option<Task>) {
+        (self.subs.remove(&id), self.waits.remove(&id))
+    }
+}
+
+/// The future of a row that waits: its result in its `Form`.
+type Pending = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send>>;
+
+/// A row that waits, held for its session until it resolves (its one Notify), is dropped by an
+/// Unsub or goes with its connection. `fut` is out while it is polled (`poll_task`); `again`:
+/// woken meanwhile, so polled again.
+struct Task {
+    fut: Option<Pending>,
+    again: bool,
 }
 
 /// One session's write outcomes (spec/wire.md §11.2 Write nonces).
@@ -112,6 +133,11 @@ impl Port {
     /// Tests: the sessions and the nonce sessions held.
     pub fn held(&self) -> (usize, usize) {
         (self.sessions.len(), self.nonces.len())
+    }
+
+    /// Tests: the rows that wait held, all sessions together.
+    pub fn waits(&self) -> usize {
+        self.sessions.values().map(|s| s.waits.len()).sum()
     }
 
     /// The write outcomes of `who`'s session `id`, made if `make`; the identity's least recently
@@ -184,7 +210,7 @@ fn request(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, m: Ms
         Msg::Auth { secret, session_id, .. } => auth(db, conn, secret.as_ref().map(|s| *s.expose()), session_id),
         Msg::Call { max_reply, method, args, .. } => call(db, conn, max_reply, method, args),
         Msg::Unsub { sub_id, .. } => {
-            let gone = db.locked(|l| l.port.sessions.get_mut(&conn).and_then(|s| s.subs.remove(&sub_id)));
+            let gone = db.locked(|l| l.port.sessions.get_mut(&conn).map(|s| s.unsub(sub_id)));
             drop(gone);
             Msg::Ok { id: 0 }
         }
@@ -220,7 +246,7 @@ fn auth(db: &ReadOnly, conn: ConnId, secret: Option<[u8; 32]>, id: [u8; 16]) -> 
         }
         _ => return error(Code::REFUSED),
     };
-    db.locked(|l| l.port.sessions.insert(conn, Session { who, id, subs: BTreeMap::new() }));
+    db.locked(|l| l.port.sessions.insert(conn, Session { who, id, subs: BTreeMap::new(), waits: BTreeMap::new() }));
     reply(Outcome::Ok { value: Value::List(Vec::new()) })
 }
 
@@ -272,15 +298,17 @@ fn handle(db: &ReadOnly, who: Who) -> crate::Osis {
 fn call(db: &ReadOnly, conn: ConnId, max_reply: u64, method: u64, args: Vec<Value>) -> Msg {
     let Some((who, id)) = session(db, conn) else { return error(Code::REFUSED) };
     let h = handle(db, who);
-    let outcome = if matches!(method, method::WRITE | method::UNDO | method::REDO | method::REVERT) {
+    let limit = usize::try_from(max_reply).unwrap_or(usize::MAX);
+    let outcome = if who != Who::Main && !method::for_client(method) {
+        outcome_of(&main_only())
+    } else if matches!(method, method::WRITE | method::UNDO | method::REDO | method::REVERT) {
         write(db, &h, who, id, method, args)
     } else {
-        match run(&h, method, args) {
+        match run(&h, method, args, limit) {
             Ok(v) => Outcome::Ok { value: v },
             Err(e) => outcome_of(&e),
         }
     };
-    let limit = usize::try_from(max_reply).unwrap_or(usize::MAX);
     if reply(outcome.clone()).encode().len() > limit {
         return reply(Outcome::too_large(limit));
     }
@@ -310,8 +338,19 @@ fn one_tid(args: &[Value]) -> Result<Tid> {
     }
 }
 
-/// Runs method `method` on `h`.
-fn run(h: &crate::Osis, method: u64, args: Vec<Value>) -> Result<Value> {
+/// What a client-actor session asking for a row of the node's own state hears (spec/wire.md
+/// §11.2: code 11).
+fn main_only() -> Error {
+    Error::Unsupported("not for a client actor: the node's own state".into())
+}
+
+/// `here` for each of `things`.
+fn here_all(h: &crate::Osis, things: &[Tid]) -> Result<()> {
+    things.iter().try_for_each(|t| here(h, *t).map(drop))
+}
+
+/// Runs method `method` on `h`, its reply at most `limit` bytes.
+fn run(h: &crate::Osis, method: u64, args: Vec<Value>, limit: usize) -> Result<Value> {
     match method {
         method::WHOAMI => Ok(Value::List(vec![Value::Tid(h.me()), Value::Tid(h.node()), Value::Tid(h.home())])),
         method::GET => {
@@ -368,7 +407,137 @@ fn run(h: &crate::Osis, method: u64, args: Vec<Value>) -> Result<Value> {
             h.settle_here();
             Ok(Value::List(Vec::new()))
         }
+        m => row(h, m, Value::List(args), limit),
+    }
+}
+
+/// Runs `f` on `args` decoded as its arguments; its result encoded.
+fn on<A: Form, R: Form>(args: Value, f: impl FnOnce(A) -> Result<R>) -> Result<Value> {
+    f(A::from_wire(args)?).map(|r| r.to_wire())
+}
+
+/// A row that is one API call (notes/client-port.md §2): the call run on `h`, its arguments and
+/// result in their `Form`s, so the port serves exactly what the API answers in process.
+fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value> {
+    match method {
+        method::LISTING => on(args, |(a, q): (Address, crate::CommitQuery)| {
+            here_all(h, &a.things())?;
+            Ok(fitted(h.listing_here(&a, &q, limit)?, limit))
+        }),
+        method::LISTED_COMMIT => on(args, |(a, id): (Address, crate::CommitId)| {
+            here_all(h, &a.things())?;
+            h.commit_told_here(&a, id, None)
+        }),
+        method::CONTACT_CARD => on(args, |()| h.contact_card()),
+        method::PROFILE => on(args, |()| h.profile()),
+        method::PROFILE_OF => on(args, |(a,)| h.profile_of(a)),
+        method::INVITATIONS => on(args, |()| h.invitations()),
+        method::ACCEPT_INVITE => on(args, |(t, into)| h.accept_invite(t, into)),
         m => Err(Error::Unsupported(format!("unknown method {m}"))),
+    }
+}
+
+/// `p` cut to what a Reply of at most `limit` bytes carries, `more` set when cut (a single
+/// commit past it still goes: the Reply is then `TooLarge`).
+fn fitted(mut p: crate::CommitPage, limit: usize) -> crate::CommitPage {
+    let empty = crate::CommitPage { commits: Vec::new(), more: true, complete: p.complete };
+    // the Reply around the page, and the list header growing with its length
+    let mut used = reply(Outcome::Ok { value: empty.to_wire() }).encode().len() + 9;
+    let mut keep = 0;
+    for c in &p.commits {
+        used = used.saturating_add(osis_base::cbor::encoded_len(&c.to_wire()));
+        if used > limit && keep > 0 {
+            break;
+        }
+        keep += 1;
+    }
+    if keep < p.commits.len() {
+        p.commits.truncate(keep);
+        p.more = true;
+    }
+    p
+}
+
+/// A row that waits (`filter::WAIT`), as a future holding nothing of the node: the API call's
+/// own (`syncing`, `importing`, `redeeming`), run on `h`.
+fn wait_row(h: &crate::Osis, method: u64, args: Value) -> Result<Pending> {
+    fn boxed<R: Form>(f: impl std::future::Future<Output = Result<R>> + Send + 'static) -> Pending {
+        Box::pin(async move { f.await.map(|r| r.to_wire()) })
+    }
+    match method {
+        method::WAIT_SYNCED => {
+            let (s,) = Form::from_wire(args)?;
+            Ok(boxed(h.syncing(s)))
+        }
+        method::IMPORT_CONTACT => {
+            let (c,): (crate::ContactCard,) = Form::from_wire(args)?;
+            Ok(boxed(h.importing(&c)?))
+        }
+        method::REDEEM => {
+            let (l,): (crate::ShareLink,) = Form::from_wire(args)?;
+            Ok(boxed(h.redeeming(&l)?))
+        }
+        m => Err(Error::Unsupported(format!("no row that waits {m}"))),
+    }
+}
+
+/// Wakes a row that waits: polls it again (`poll_task`).
+struct TaskWake {
+    db: std::sync::Weak<crate::handle::Inner>,
+    conn: ConnId,
+    id: osis_sync::session::RequestId,
+}
+
+impl std::task::Wake for TaskWake {
+    fn wake(self: std::sync::Arc<Self>) {
+        poll_task(&self);
+    }
+}
+
+/// Polls the row that waits `w` names, where its waker fires (after the sync step that may
+/// answer it, off the node lock); once resolved, its outcome goes as its one Notify, pushed
+/// whatever the room (it is small, and at most `MAX_SUBS` wait per connection). A wake while it
+/// is out being polled polls it again after.
+fn poll_task(w: &std::sync::Arc<TaskWake>) {
+    let Some(db) = crate::WeakOsis(w.db.clone()).hold() else { return };
+    let waker = std::task::Waker::from(w.clone());
+    loop {
+        let out = db.locked(|l| {
+            let t = l.port.sessions.get_mut(&w.conn)?.waits.get_mut(&w.id)?;
+            t.again = t.fut.is_none();
+            t.fut.take()
+        });
+        let Some(mut fut) = out else { return };
+        let got = match fut.as_mut().poll(&mut std::task::Context::from_waker(&waker)) {
+            std::task::Poll::Ready(r) => r,
+            std::task::Poll::Pending => {
+                let again = db.locked(|l| match l.port.sessions.get_mut(&w.conn).and_then(|s| s.waits.get_mut(&w.id)) {
+                    Some(t) => {
+                        t.fut = Some(fut);
+                        std::mem::take(&mut t.again)
+                    }
+                    // dropped meanwhile (an Unsub, the connection's end)
+                    None => false,
+                });
+                if again {
+                    continue;
+                }
+                return;
+            }
+        };
+        let value = match got {
+            Ok(v) => Outcome::Ok { value: v },
+            Err(e) => outcome_of(&e),
+        }
+        .to_value();
+        let gone = db.locked(|l| {
+            let gone = l.port.sessions.get_mut(&w.conn)?.waits.remove(&w.id)?;
+            let o = l.node.port_push(w.conn, Msg::Notify { sub_id: w.id, payload: Payload::Delivery { value } }, true).unwrap_or_default();
+            l.out.extend(o);
+            Some(gone)
+        });
+        drop(gone);
+        return;
     }
 }
 
@@ -428,6 +597,10 @@ enum Watched {
     Thing(Tid),
     Grants(Tid),
     Status,
+    Diagnostics,
+    Commits(Address),
+    /// A row that waits: its method and arguments.
+    Wait(u64, Value),
 }
 
 fn watched(f: Value) -> Result<Watched> {
@@ -440,6 +613,13 @@ fn watched(f: Value) -> Result<Watched> {
         Some(filter::GRANTS) => one_tid(&rest).map(Watched::Grants),
         Some(filter::STATUS) if rest.is_empty() => Ok(Watched::Status),
         Some(filter::STATUS) => Err(bad("filter")),
+        Some(filter::DIAGNOSTICS) if rest.is_empty() => Ok(Watched::Diagnostics),
+        Some(filter::COMMITS) => <(Address,)>::from_wire(Value::List(rest)).map(|(a,)| Watched::Commits(a)),
+        Some(filter::WAIT) => match <[Value; 2]>::try_from(rest) {
+            Ok([m, args]) => Ok(Watched::Wait(codec::uint(&m, "method")?, args)),
+            Err(_) => Err(bad("filter")),
+        },
+        Some(filter::DIAGNOSTICS) => Err(bad("filter")),
         _ => Err(Error::Unsupported("no such filter".into())),
     }
 }
@@ -547,6 +727,20 @@ fn watch(l: &mut Locked, read_limit: usize, actor: Option<Tid>, w: Watched, limi
             });
             (first, Filter::Status, tell)
         }
+        Watched::Diagnostics => {
+            let tell: Tell = Box::new(move |_, d| match d {
+                Delivery::Diagnostic(x) => vec![(x.to_wire(), Value::List(Vec::new()))],
+                _ => Vec::new(),
+            });
+            (Value::List(Vec::new()), Filter::Diagnostics, tell)
+        }
+        Watched::Commits(a) => {
+            let at = a.clone();
+            let tell: Tell = Box::new(move |db, d| crate::commits::commit_event(db, actor, &at, d).map(|e| (e.to_wire(), Value::List(Vec::new()))).into_iter().collect());
+            (Value::List(Vec::new()), Filter::Commits(a), tell)
+        }
+        // started by `sub` itself: no dispatcher filter
+        Watched::Wait(..) => return Err(Error::Unsupported("a row that waits".into())),
     })
 }
 
@@ -604,20 +798,27 @@ fn sub(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, max_reply
         Err(e) => return refuse(reply(outcome_of(&e))),
     };
     let h = handle(db, who);
-    if let Watched::Value(t, ..) | Watched::Thing(t) | Watched::Grants(t) = &w
-        && let Err(e) = here(&h, *t)
-    {
+    let checked = match &w {
+        Watched::Value(t, ..) | Watched::Thing(t) | Watched::Grants(t) => here(&h, *t).map(drop),
+        Watched::Commits(a) => here_all(&h, &a.things()),
+        Watched::Diagnostics | Watched::Wait(..) if who != Who::Main => Err(main_only()),
+        _ => Ok(()),
+    };
+    if let Err(e) = checked {
         return refuse(reply(outcome_of(&e)));
+    }
+    if let Watched::Wait(m, args) = w {
+        return start_wait(db, conn, id, &h, m, args, answer);
     }
     let acting = h.acting;
     let limit = usize::try_from(max_reply).unwrap_or(usize::MAX);
     db.locked(|l| {
         let Some(s) = l.port.sessions.get(&conn) else { return answer(l, error(Code::REFUSED)) };
-        if s.subs.contains_key(&id) {
+        if s.subs.contains_key(&id) || s.waits.contains_key(&id) {
             // a Sub reusing a live subscription's id (spec/wire.md §11.1)
             return answer(l, error(Code::MALFORMED));
         }
-        if s.subs.len() >= MAX_SUBS {
+        if s.subs.len() + s.waits.len() >= MAX_SUBS {
             return answer(l, error(Code::RATE_LIMITED));
         }
         let (first, filter, mut tell) = match watch(l, db.inner.limit, acting, w, limit) {
@@ -646,6 +847,35 @@ fn sub(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, max_reply
         }
         answer(l, initial);
     });
+}
+
+/// A row that waits (`filter::WAIT`): its future made and held for the session, the Reply `[]`
+/// under the same hold, then polled; its outcome comes as one Notify (`poll_task`).
+fn start_wait(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, h: &crate::Osis, m: u64, args: Value, answer: &mut dyn FnMut(&mut Locked, Msg)) {
+    let fut = match wait_row(h, m, args) {
+        Ok(f) => f,
+        Err(e) => return db.locked(|l| answer(l, reply(outcome_of(&e)))),
+    };
+    let held = db.locked(|l| {
+        let Some(s) = l.port.sessions.get_mut(&conn) else {
+            answer(l, error(Code::REFUSED));
+            return false;
+        };
+        if s.subs.contains_key(&id) || s.waits.contains_key(&id) {
+            answer(l, error(Code::MALFORMED));
+            return false;
+        }
+        if s.subs.len() + s.waits.len() >= MAX_SUBS {
+            answer(l, error(Code::RATE_LIMITED));
+            return false;
+        }
+        s.waits.insert(id, Task { fut: Some(fut), again: false });
+        answer(l, reply(Outcome::Ok { value: Value::List(Vec::new()) }));
+        true
+    });
+    if held {
+        poll_task(&std::sync::Arc::new(TaskWake { db: std::sync::Arc::downgrade(&db.inner), conn, id }));
+    }
 }
 
 /// Tests: answers `msgs` as the port does on one connection (`main`: over the unix transport),

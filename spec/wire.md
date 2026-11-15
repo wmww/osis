@@ -364,10 +364,22 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 13 | revert | `[nonce, commit id] -> commit` |
     | 14 | undo target | `[scope] -> Opt(commit)` |
     | 15 | redo target | `[scope] -> Opt(commit)` |
+    | 16 | listing | `[address, query] -> [[commit*], more, complete]`, address `[0, scope]` a scope's writes, `[1, tid, ak]` a signal's fires, `[2, tid, ak, commit id]` a fire's versions; query `[from, Opt(limit), [actor*], [kind*], Opt(reverts), Opt(reverted_by), Opt(in_effect)]`, from `[0]` newest, `[1]` oldest, `[2, position]` before, `[3, position]` after; kind 0 content, 1 revert, 2 role, 3 snapshot; at most what fits `max_reply`, `more` set when cut |
+    | 17 | listed commit | `[address, commit id] -> Opt(commit)` |
+    | 18 | contact card | `[] -> text`; main only |
     | 19 | settle | `[] -> []`, after every Notify for changes before it |
     | 20 | now | `[] -> wall ms` |
     | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; for a client actor only the things it may read, `connected` the connections with one of them open |
     | 22 | holders | `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`, kind 0 actor, 1 link, 2 key; nothing behind an actor the actor may not read |
+    | 23 | profile | `[] -> tid`; main only |
+    | 24 | profile of | `[account] -> Opt(tid)`; main only |
+    | 25 | invitations | `[] -> [[thing, role, Opt(from), taken, acted]*]`; main only |
+    | 26 | accept invite | `[thing, into] -> []`; main only |
+    | 27 | wait synced | `[scope] -> []`, scope `[0]` all, `[1, tid]` a thing, `[2]` deliveries; waits; main only |
+    | 28 | import contact | `[card text] -> account`; waits; main only |
+    | 29 | redeem | `[link text] -> tid`; waits; main only |
+
+    A row that waits is a Sub with filter 5, never a Call (a Call naming one is code 11).
 
     | filter | Reply | Notify `[0, value]` |
     |---|---|---|
@@ -375,8 +387,11 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | `[1, tid]` | `[[ak, read result]*]`, the aspects present | `[ak, read result, origin]`; `[2, [ak, max_reply]]` above it |
     | `[2, tid]` | as row 6 | as row 6 |
     | `[3]` | as row 21 | as row 21 |
+    | `[4]` | `[]` | `[kind, [tid*], Opt(commit id), Opt(peer), detail]`, one per diagnostic of the node, kind 0 bad input, 1 colliding record, 2 parked, 3 pending, 4 overlapping counters, 5 removed, 6 callback, 7 not synced, 8 stranded, 9 uncommitted, 10 ephemeral refused, 11 mismatch, 12 storage, 13 repair, 14 own write invalid, 15 unreadable, 16 disputes unexamined, 17 own write failed, 18 sync stopped, 19 clock skew, 20 input capped (an unknown kind reads as 0); main only |
+    | `[5, method, [arg*]]` | `[]` | `[0, value]` or `[1, code, detail*]`: the row's outcome, once, whatever the room; an Unsub or the connection's end cancels it; main only |
+    | `[6, address]` | `[]` | `[0, commit id, Opt(commit)]` a commit reading otherwise at the address (as row 17 reads it then), `[1]` read the address again, `[2, code, detail*]` ended |
 
-    A Notify goes only when its value reads otherwise than the last one sent (an error read always goes), read as the actor when it is sent.
+    A Notify of filters 0-3 goes only when its value reads otherwise than the last one sent (an error read always goes); every Notify is read as the actor when it is sent. A Sub of a filter marked main only, from a client-actor session, is answered `[1, 11, text]`.
   - **Outcome error codes**: an unknown method is `[1, 11, text]`.
 
     | code | meaning | detail |

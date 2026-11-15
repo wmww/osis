@@ -10,6 +10,7 @@ osis::stream_work  test hook (internals)
 osis::faulty_store  test hook (internals)
 osis::port_answers  test hook (internals): the client port's answers without a transport
 osis::port_held  test hook (internals): the client port's sessions and nonce sessions held
+osis::port_waits  test hook (internals): the rows that wait the client port holds
 osis::set_online  test hook (internals): `ManualNet` cuts a node off
 osis::lose_next_bytes_to  test hook (internals): `ManualNet` loses a reply on the way
 

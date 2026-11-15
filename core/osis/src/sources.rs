@@ -151,15 +151,41 @@ impl ReadOnly {
         Ok(at)
     }
 
+    /// Where a process-wide call (`what`) goes: `None` here, in the process holding the store; on
+    /// a thin client its node, which answers it for a main session alone (a client actor's is
+    /// `Unsupported` there). A thin client of several nodes has no one node to ask: `Unsupported`.
+    pub(crate) fn process_at(&self, what: &str) -> Result<Option<Address>> {
+        if self.has_store() {
+            return Ok(None);
+        }
+        match self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect::<Vec<_>>()).as_slice() {
+            [one] => Ok(Some(one.clone())),
+            _ => Err(Error::Unsupported(format!("{what} through several nodes"))),
+        }
+    }
+
+    /// Where a read over `things` goes when not here: the one node they are all read at
+    /// (`Invalid` when at two sources). A handle acting for a client of this node always reads
+    /// here (notes/client-port.md §8 Catching up); a tracked read at another node is
+    /// `Unsupported`, named `what`.
+    pub(crate) fn remote_of(&self, things: &[Tid], what: &str) -> Result<Option<Address>> {
+        if self.acting.is_some() {
+            return Ok(None);
+        }
+        let mut at: Option<Option<Address>> = None;
+        for t in things {
+            let s = self.remote(*t, what)?;
+            if at.as_ref().is_some_and(|a| *a != s) {
+                return Err(Error::Invalid(format!("{what}: its things are read at two sources")));
+            }
+            at = Some(s);
+        }
+        Ok(at.flatten())
+    }
+
     /// `Unsupported` on a thin client: `what` needs this process to be the node.
     pub(crate) fn local(&self, what: &str) -> Result<()> {
         if self.has_store() { Ok(()) } else { Err(Error::Unsupported(format!("{what}: not through a connection to a node"))) }
-    }
-
-    /// `local_at` for each of `things`.
-    pub(crate) fn local_things(&self, things: &[Tid], what: &str) -> Result<()> {
-        self.local(what)?;
-        things.iter().try_for_each(|t| self.local_at(*t, what))
     }
 
     /// `Unsupported` when `t` is at another node: `what` is not built through a connection.

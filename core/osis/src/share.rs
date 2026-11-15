@@ -415,7 +415,9 @@ impl ReadOnly {
     /// The profile thing of an account whose card this node imported, if any.
     /// `Unsupported` on a client with its own actor.
     pub fn profile_of(&self, account: Tid) -> Result<Option<Tid>> {
-        self.local("profile_of")?;
+        if let Some(at) = self.process_at("profile_of")? {
+            return self.forward(&at, crate::port::method::PROFILE_OF, (account,));
+        }
         let key = format!("{PROFILE_OF}{account}");
         // written only by `import_contact`: a tracking handle has nothing to listen to here
         let b = self.engine(|e| e.app_record(&key))?;
@@ -730,14 +732,19 @@ impl Osis {
     /// (wrap it in a timeout). A link this account already reaches the thing by joins nothing.
     /// What the link holds is kept until the join is held elsewhere, a dropped call included.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
-        self.local("redeem")?;
+        if let Some(at) = self.process_at("redeem")? {
+            return self.remote_wait(&at, crate::port::method::REDEEM, (link.clone(),))?.await;
+        }
+        self.redeeming(link)?.await
+    }
+
+    /// `redeem` here, as a future holding nothing of the node (the port runs it for a main
+    /// session).
+    pub(crate) fn redeeming(&self, link: &ShareLink) -> Result<impl std::future::Future<Output = Result<Tid>> + Send + 'static> {
         let link = link.parse()?;
         let target = link.target;
-        if self.engine(|e| e.role_on(&target).is_some()) {
-            return Ok(target);
-        }
         let mut started = false;
-        self.waiting(move |db| {
+        Ok(self.waiting(move |db| {
             if db.engine(|e| e.role_on(&target).is_some()) {
                 return Some(Ok(target));
             }
@@ -752,8 +759,7 @@ impl Osis {
                 }
             }
             None
-        })
-        .await
+        }))
     }
 
     /// The account's links that still work, whichever node made them (one that has not yet synced here
@@ -809,7 +815,9 @@ impl Osis {
     /// others need to grant this account a role. Made once per node; later calls return the
     /// same card.
     pub fn contact_card(&self) -> Result<ContactCard> {
-        self.local("contact_card")?;
+        if let Some(at) = self.process_at("contact_card")? {
+            return self.forward(&at, crate::port::method::CONTACT_CARD, ());
+        }
         if let Some(b) = self.engine(|e| e.app_record(CONTACT))? {
             return Ok(ContactCard(String::from_utf8(b).map_err(|_| Error::Storage("contact record".into()))?));
         }
@@ -825,7 +833,9 @@ impl Osis {
     /// card reads them. Every node of the account knows it (a new node from its pairing
     /// offer), though a node paired a moment ago may not hold the thing yet.
     pub fn profile(&self) -> Result<Tid> {
-        self.local("profile")?;
+        if let Some(at) = self.process_at("profile")? {
+            return self.forward(&at, crate::port::method::PROFILE, ());
+        }
         let b = self.engine(|e| e.app_record(crate::handle::PROFILE))?.ok_or_else(|| Error::Storage("no profile record".into()))?;
         Ok(Tid::from_bytes(b.as_slice().try_into().map_err(|_| Error::Storage("profile record".into()))?))
     }
@@ -834,37 +844,43 @@ impl Osis {
     /// the account once its keys are here, usable in `grant`. Waits for the card's node
     /// meanwhile (wrap it in a timeout).
     pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
-        self.local("import_contact")?;
+        if let Some(at) = self.process_at("import_contact")? {
+            return self.remote_wait(&at, crate::port::method::IMPORT_CONTACT, (card.clone(),))?.await;
+        }
+        self.importing(card)?.await
+    }
+
+    /// `import_contact` here, as a future holding nothing of the node (the port runs it for a
+    /// main session).
+    pub(crate) fn importing(&self, card: &ContactCard) -> Result<impl std::future::Future<Output = Result<Tid>> + Send + 'static> {
         let link = card.parse()?;
         let p = link.target;
         let mut started = false;
-        let who = self
-            .waiting(move |db| {
-                let found = db.engine(|e| e.first_admin(&p).filter(|a| e.account_holder_keys(a).is_ok()));
-                if let Some(a) = found {
-                    return Some(Ok(a));
+        Ok(self.waiting(move |db| {
+            let found = db.engine(|e| e.first_admin(&p).filter(|a| e.account_holder_keys(a).is_ok()));
+            if let Some(a) = found {
+                return Some(db.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{a}"), p.to_string().as_bytes())).map(|()| a).map_err(Into::into));
+            }
+            if !started {
+                started = true;
+                if let osis_sync::types::Waiting::Never(why) = db.locked(|l| {
+                    let w = l.node.redeem(&link);
+                    l.handle(osis_sync::Input::Wrote);
+                    w
+                }) {
+                    return Some(Err(Error::Invalid(format!("contact card: {why}"))));
                 }
-                if !started {
-                    started = true;
-                    if let osis_sync::types::Waiting::Never(why) = db.locked(|l| {
-                        let w = l.node.redeem(&link);
-                        l.handle(osis_sync::Input::Wrote);
-                        w
-                    }) {
-                        return Some(Err(Error::Invalid(format!("contact card: {why}"))));
-                    }
-                }
-                None
-            })
-            .await?;
-        self.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{who}"), p.to_string().as_bytes()))?;
-        Ok(who)
+            }
+            None
+        }))
     }
 
     /// The things this account was given a role on that no node of it syncs yet (spec/sync-set.md
     /// §4), newest grant last.
     pub fn invitations(&self) -> Result<Vec<Invitation>> {
-        self.local("invitations")?;
+        if let Some(at) = self.process_at("invitations")? {
+            return self.forward(&at, crate::port::method::INVITATIONS, ());
+        }
         let v = self.engine(|e| e.invitations())?;
         Ok(v.iter().map(|i| Invitation { thing: i.thing, role: i.role, from: i.from, taken: i.taken, acted: i.acted }).collect())
     }
@@ -874,7 +890,9 @@ impl Osis {
     /// as `w.group(into).add(Member::Subgroup(thing))`, but also an accept where `into` lists
     /// `thing` already (a sync grant on a thing filed here before).
     pub fn accept_invite(&self, thing: Tid, into: Tid) -> Result<()> {
-        self.local("accept_invite")?;
+        if let Some(at) = self.process_at("accept_invite")? {
+            return self.forward(&at, crate::port::method::ACCEPT_INVITE, (thing, into));
+        }
         let synced = self.engine(|e| -> Result<bool> {
             let set = e.sync_set()?;
             Ok(set.ids.values().any(|(t, _)| *t == into))

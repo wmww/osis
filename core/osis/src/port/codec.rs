@@ -3,16 +3,17 @@
 //! API error maps onto a Reply's outcome and back (spec/wire.md §11.2 Outcome error codes). One
 //! encoder and one decoder per form, used by both sides.
 
-use crate::commit_id::{CommitId, CommitPos};
-use crate::commits::{Body, Commit, CommitKind, NotUndoableReason, Part, Scope};
+use crate::commit_id::{CommitFrom, CommitId, CommitPos};
+use crate::commits::{Address, Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
-use crate::share::{Holder, HolderKind};
-use crate::syncing::{GroupSync, Status, SyncState};
+use crate::share::{ContactCard, Holder, HolderKind, Invitation, ShareLink};
+use crate::syncing::{GroupSync, Status, SyncScope, SyncState};
 use crate::watch::{DerivedFrom, Origin};
 use crate::write::WriteOp;
 use osis_base::{Ak, CommitId as RawCommitId, CreationRecord, Role, Tid, Time, Ts, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
+use osis_engine::DiagnosticKind;
 use osis_proto::api::{ApiCode, Outcome};
 use osis_schema::{Path, Retention, Step};
 
@@ -606,6 +607,17 @@ pub(crate) fn error_of(code: u64, detail: &[Value]) -> Error {
     }
 }
 
+/// An outcome carried as a value (`[0, value]` or `[1, code, detail*]`, a wait's Notify) as a
+/// call's result.
+pub(crate) fn outcome_from(v: Value) -> Result<Value> {
+    let mut a = list(v, "outcome")?.into_iter();
+    match (a.next().and_then(|c| c.as_uint()), a.next()) {
+        (Some(0), Some(v)) if a.len() == 0 => Ok(v),
+        (Some(1), Some(code)) => Err(error_of(uint(&code, "error code")?, &a.collect::<Vec<_>>())),
+        _ => Err(bad("outcome")),
+    }
+}
+
 /// A Reply's outcome as a call's result.
 pub(crate) fn result_of(o: Outcome) -> Result<Value> {
     match o {
@@ -614,3 +626,347 @@ pub(crate) fn result_of(o: Outcome) -> Result<Value> {
     }
 }
 
+/// A method row's argument list or result as it travels (`port::serve::row`,
+/// `ReadOnly::forward`): one encoder and one decoder per type, used by both sides, so a row is
+/// its API call with nothing hand-written per side.
+pub(crate) trait Form: Sized {
+    fn to_wire(&self) -> Value;
+    fn from_wire(v: Value) -> Result<Self>;
+}
+
+impl Form for Value {
+    fn to_wire(&self) -> Value {
+        self.clone()
+    }
+    fn from_wire(v: Value) -> Result<Value> {
+        Ok(v)
+    }
+}
+
+impl Form for () {
+    fn to_wire(&self) -> Value {
+        Value::List(Vec::new())
+    }
+    fn from_wire(v: Value) -> Result<()> {
+        if list(v, "nothing")?.is_empty() { Ok(()) } else { Err(bad("nothing")) }
+    }
+}
+
+impl Form for bool {
+    fn to_wire(&self) -> Value {
+        Value::Bool(*self)
+    }
+    fn from_wire(v: Value) -> Result<bool> {
+        bool_from(&v, "bool")
+    }
+}
+
+impl Form for Tid {
+    fn to_wire(&self) -> Value {
+        Value::Tid(*self)
+    }
+    fn from_wire(v: Value) -> Result<Tid> {
+        tid(&v)
+    }
+}
+
+impl Form for Role {
+    fn to_wire(&self) -> Value {
+        role_to(*self)
+    }
+    fn from_wire(v: Value) -> Result<Role> {
+        role_from(&v)
+    }
+}
+
+impl Form for Ak {
+    fn to_wire(&self) -> Value {
+        ak_to(self)
+    }
+    fn from_wire(v: Value) -> Result<Ak> {
+        ak(&v)
+    }
+}
+
+impl Form for CommitId {
+    fn to_wire(&self) -> Value {
+        commit_ref_to(*self)
+    }
+    fn from_wire(v: Value) -> Result<CommitId> {
+        commit_ref_from(&v)
+    }
+}
+
+impl<T: Form> Form for Option<T> {
+    fn to_wire(&self) -> Value {
+        opt(self.as_ref().map(T::to_wire))
+    }
+    fn from_wire(v: Value) -> Result<Option<T>> {
+        opt_from(v, "option")?.map(T::from_wire).transpose()
+    }
+}
+
+impl<T: Form> Form for Vec<T> {
+    fn to_wire(&self) -> Value {
+        Value::List(self.iter().map(T::to_wire).collect())
+    }
+    fn from_wire(v: Value) -> Result<Vec<T>> {
+        list(v, "list")?.into_iter().map(T::from_wire).collect()
+    }
+}
+
+/// An argument list: `[a, ..]`.
+macro_rules! form_tuple {
+    ($n:literal; $($t:ident $v:ident),+) => {
+        impl<$($t: Form),+> Form for ($($t,)+) {
+            fn to_wire(&self) -> Value {
+                let ($($v,)+) = self;
+                Value::List(vec![$($v.to_wire()),+])
+            }
+            fn from_wire(v: Value) -> Result<Self> {
+                let [$($v),+] = <[Value; $n]>::try_from(list(v, "arguments")?).map_err(|_| bad("arguments"))?;
+                Ok(($($t::from_wire($v)?,)+))
+            }
+        }
+    };
+}
+form_tuple!(1; A a);
+form_tuple!(2; A a, B b);
+form_tuple!(3; A a, B b, C c);
+
+impl Form for Commit {
+    fn to_wire(&self) -> Value {
+        commit_to(self)
+    }
+    fn from_wire(v: Value) -> Result<Commit> {
+        commit_from(v)
+    }
+}
+
+impl Form for Scope {
+    fn to_wire(&self) -> Value {
+        scope_to(self)
+    }
+    fn from_wire(v: Value) -> Result<Scope> {
+        scope_from(v)
+    }
+}
+
+/// A listing's address: `[0, scope]` a scope's writes, `[1, tid, ak]` a signal's fires, `[2,
+/// tid, ak, commit id]` a fire's versions.
+impl Form for Address {
+    fn to_wire(&self) -> Value {
+        Value::List(match self {
+            Address::Writes(s) => vec![Value::uint(0), scope_to(s)],
+            Address::Fired(t, a) => vec![Value::uint(1), Value::Tid(*t), ak_to(a)],
+            Address::Versions(t, a, c) => vec![Value::uint(2), Value::Tid(*t), ak_to(a), commit_ref_to(*c)],
+        })
+    }
+    fn from_wire(v: Value) -> Result<Address> {
+        let mut a = list(v, "address")?.into_iter();
+        let case = uint(&a.next().ok_or_else(|| bad("address"))?, "address")?;
+        let rest: Vec<Value> = a.collect();
+        Ok(match (case, rest.as_slice()) {
+            (0, [s]) => Address::Writes(scope_from(s.clone())?),
+            (1, [t, k]) => Address::Fired(tid(t)?, ak(k)?),
+            (2, [t, k, c]) => Address::Versions(tid(t)?, ak(k)?, commit_ref_from(c)?),
+            _ => return Err(bad("address")),
+        })
+    }
+}
+
+/// `[0]` newest, `[1]` oldest, `[2, position]` before it, `[3, position]` after it.
+impl Form for CommitFrom {
+    fn to_wire(&self) -> Value {
+        Value::List(match self {
+            CommitFrom::Newest => vec![Value::uint(0)],
+            CommitFrom::Oldest => vec![Value::uint(1)],
+            CommitFrom::Before(p) => vec![Value::uint(2), pos_to(p)],
+            CommitFrom::After(p) => vec![Value::uint(3), pos_to(p)],
+        })
+    }
+    fn from_wire(v: Value) -> Result<CommitFrom> {
+        let a = list(v, "from")?;
+        Ok(match a.as_slice() {
+            [c] if c.as_uint() == Some(0) => CommitFrom::Newest,
+            [c] if c.as_uint() == Some(1) => CommitFrom::Oldest,
+            [c, p] if c.as_uint() == Some(2) => CommitFrom::Before(pos_from(p.clone())?),
+            [c, p] if c.as_uint() == Some(3) => CommitFrom::After(pos_from(p.clone())?),
+            _ => return Err(bad("from")),
+        })
+    }
+}
+
+impl Form for CommitKind {
+    fn to_wire(&self) -> Value {
+        Value::uint(KINDS.iter().position(|k| k == self).unwrap_or(0) as u64)
+    }
+    fn from_wire(v: Value) -> Result<CommitKind> {
+        KINDS.get(usize_from(&v)?).copied().ok_or_else(|| bad("commit kind"))
+    }
+}
+
+/// `[from, Opt(limit), [actor*], [kind*], Opt(reverts), Opt(reverted_by), Opt(in_effect)]`.
+impl Form for CommitQuery {
+    fn to_wire(&self) -> Value {
+        Value::List(vec![
+            self.from.to_wire(),
+            opt(self.limit.map(usize_to)),
+            self.actors.to_wire(),
+            self.kinds.to_wire(),
+            self.reverts.to_wire(),
+            self.reverted_by.to_wire(),
+            self.in_effect.to_wire(),
+        ])
+    }
+    fn from_wire(v: Value) -> Result<CommitQuery> {
+        let [from, limit, actors, kinds, reverts, reverted_by, in_effect] = <[Value; 7]>::try_from(list(v, "query")?).map_err(|_| bad("query"))?;
+        Ok(CommitQuery {
+            from: Form::from_wire(from)?,
+            limit: opt_from(limit, "query")?.map(|n| usize_from(&n)).transpose()?,
+            actors: Form::from_wire(actors)?,
+            kinds: Form::from_wire(kinds)?,
+            reverts: Form::from_wire(reverts)?,
+            reverted_by: Form::from_wire(reverted_by)?,
+            in_effect: Form::from_wire(in_effect)?,
+        })
+    }
+}
+
+/// `[[commit*], more, complete]`.
+impl Form for CommitPage {
+    fn to_wire(&self) -> Value {
+        Value::List(vec![self.commits.to_wire(), Value::Bool(self.more), Value::Bool(self.complete)])
+    }
+    fn from_wire(v: Value) -> Result<CommitPage> {
+        let (commits, more, complete) = Form::from_wire(v)?;
+        Ok(CommitPage { commits, more, complete })
+    }
+}
+
+/// A commit listener's event: `[0, commit id, Opt(commit)]`, `[1]` read again, `[2, code,
+/// detail*]` ended.
+impl Form for CommitEvent {
+    fn to_wire(&self) -> Value {
+        match self {
+            CommitEvent::Commit { id, commit } => Value::List(vec![Value::uint(0), commit_ref_to(*id), commit.to_wire()]),
+            CommitEvent::Reread => Value::List(vec![Value::uint(1)]),
+            CommitEvent::Ended(e) => {
+                let Outcome::Err { code, detail } = outcome_of(e) else { return Value::List(vec![Value::uint(1)]) };
+                let mut v = vec![Value::uint(2), Value::uint(code)];
+                v.extend(detail);
+                Value::List(v)
+            }
+        }
+    }
+    fn from_wire(v: Value) -> Result<CommitEvent> {
+        let a = list(v, "commit event")?;
+        Ok(match a.as_slice() {
+            [c, id, commit] if c.as_uint() == Some(0) => CommitEvent::Commit { id: commit_ref_from(id)?, commit: Form::from_wire(commit.clone())? },
+            [c] if c.as_uint() == Some(1) => CommitEvent::Reread,
+            [c, code, detail @ ..] if c.as_uint() == Some(2) => CommitEvent::Ended(error_of(uint(code, "error code")?, detail)),
+            _ => return Err(bad("commit event")),
+        })
+    }
+}
+
+/// A text form (a card, a link) as its text.
+macro_rules! form_text {
+    ($($t:ty),+) => {$(
+        impl Form for $t {
+            fn to_wire(&self) -> Value {
+                Value::Str(self.to_string())
+            }
+            fn from_wire(v: Value) -> Result<$t> {
+                match v {
+                    Value::Str(s) => s.parse(),
+                    _ => Err(bad("text")),
+                }
+            }
+        }
+    )+};
+}
+form_text!(ContactCard, ShareLink);
+
+/// `[thing, role, Opt(from), taken, acted]`.
+impl Form for Invitation {
+    fn to_wire(&self) -> Value {
+        Value::List(vec![Value::Tid(self.thing), role_to(self.role), self.from.to_wire(), Value::Bool(self.taken), Value::Bool(self.acted)])
+    }
+    fn from_wire(v: Value) -> Result<Invitation> {
+        let [thing, role, from, taken, acted] = <[Value; 5]>::try_from(list(v, "invitation")?).map_err(|_| bad("invitation"))?;
+        Ok(Invitation { thing: tid(&thing)?, role: role_from(&role)?, from: Form::from_wire(from)?, taken: bool_from(&taken, "invitation")?, acted: bool_from(&acted, "invitation")? })
+    }
+}
+
+/// `[0]` all, `[1, tid]` a thing, `[2]` deliveries.
+impl Form for SyncScope {
+    fn to_wire(&self) -> Value {
+        Value::List(match self {
+            SyncScope::All => vec![Value::uint(0)],
+            SyncScope::Thing(t) => vec![Value::uint(1), Value::Tid(*t)],
+            SyncScope::Deliveries => vec![Value::uint(2)],
+        })
+    }
+    fn from_wire(v: Value) -> Result<SyncScope> {
+        let a = list(v, "sync scope")?;
+        Ok(match a.as_slice() {
+            [c] if c.as_uint() == Some(0) => SyncScope::All,
+            [c, t] if c.as_uint() == Some(1) => SyncScope::Thing(tid(t)?),
+            [c] if c.as_uint() == Some(2) => SyncScope::Deliveries,
+            _ => return Err(bad("sync scope")),
+        })
+    }
+}
+
+const DIAGNOSTICS: [DiagnosticKind; 21] = {
+    use DiagnosticKind as K;
+    [
+        K::BadInput,
+        K::CollidingRecord,
+        K::Parked,
+        K::Pending,
+        K::OverlappingCounters,
+        K::Removed,
+        K::Callback,
+        K::NotSynced,
+        K::Stranded,
+        K::Uncommitted,
+        K::EphemeralRefused,
+        K::Mismatch,
+        K::Storage,
+        K::Repair,
+        K::OwnWriteInvalid,
+        K::Unreadable,
+        K::DisputesUnexamined,
+        K::OwnWriteFailed,
+        K::SyncStopped,
+        K::ClockSkew,
+        K::InputCapped,
+    ]
+};
+
+/// A diagnostic: `[kind, [tid*], Opt(commit id), Opt(peer), detail]`, kind by its place in
+/// `DIAGNOSTICS`; one of a kind this side does not know reads as `BadInput` (told as handled).
+impl Form for osis_engine::Diagnostic {
+    fn to_wire(&self) -> Value {
+        Value::List(vec![
+            Value::uint(DIAGNOSTICS.iter().position(|k| *k == self.kind).unwrap_or(0) as u64),
+            tids_to(&self.tids),
+            opt(self.commit.as_ref().map(commit_id_to)),
+            self.peer.to_wire(),
+            Value::Str(self.detail.clone()),
+        ])
+    }
+    fn from_wire(v: Value) -> Result<osis_engine::Diagnostic> {
+        let [kind, tids, commit, peer, detail] = <[Value; 5]>::try_from(list(v, "diagnostic")?).map_err(|_| bad("diagnostic"))?;
+        let Value::Str(detail) = detail else { return Err(bad("diagnostic")) };
+        Ok(osis_engine::Diagnostic {
+            kind: DIAGNOSTICS.get(usize_from(&kind)?).copied().unwrap_or(DiagnosticKind::BadInput),
+            tids: tids_from(tids, "diagnostic")?,
+            commit: opt_from(commit, "diagnostic")?.map(|c| commit_id_from(&c)).transpose()?,
+            peer: Form::from_wire(peer)?,
+            detail,
+        })
+    }
+}
