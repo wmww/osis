@@ -336,10 +336,13 @@ impl Store {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
         let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new() };
         inner.write(|t, env| {
+            let mut conns = BTreeSet::new();
             for (k, _) in t.scan_local(&[rows::CHARGED, &[0]].concat(), b"", usize::MAX)? {
-                let (s, b) = rows::tail_ids(&k)?;
-                t.remove_local(&k, Shred::No)?;
-                entries::remove(t, env, &s, &b, Removal::Untombed)?;
+                let id = k.get(3..11).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("charged row")))?;
+                conns.insert(crate::types::ConnId(u64::from_be_bytes(id)));
+            }
+            for c in conns {
+                Self::gone_durable(t, env, Source::Conn(c))?;
             }
             Ok(())
         })?;
@@ -1481,9 +1484,9 @@ impl Store {
     }
 
     /// A source went: a connection closed, or a peer's record was dropped (spec/sync-ids.md §5
-    /// Peer budget: a lost record is a first contact). The entries charged to it, those that
-    /// still give nothing held, go (fetched again where present), and what was kept for a
-    /// connection alone. One transaction.
+    /// Peer budget: a lost record is a first contact). Each entry charged to it that still gives
+    /// nothing held moves to a record whose stream showed it present (`heir`), else goes (fetched
+    /// again where present), and what was kept for a connection alone goes. One transaction.
     pub fn gone(&mut self, src: Source) -> Result<()> {
         let mut g = self.lock();
         Self::gone_memory(&mut g, src);
@@ -1492,9 +1495,9 @@ impl Store {
 
     /// Writes `f` (opens' rows of the records in use), then drops the records `dropped` (a
     /// twinned connection's, spec/sync-opens.md §1 Twin) and those past `budget` that are not
-    /// `in_use` (`osis_store::Transaction::records_evict`) with what was charged to each
-    /// (as `gone`), all in one transaction: a record never goes leaving its peer's entries
-    /// charged to nobody. The records that went.
+    /// `in_use` (`osis_store::Transaction::records_evict`), each passing what was charged to it
+    /// on or dropping it (as `gone`), all in one transaction: a record never goes leaving its
+    /// peer's entries charged to nobody. The records that went.
     pub fn write_records(&mut self, budget: u64, in_use: &BTreeSet<RecordId>, dropped: &BTreeSet<RecordId>, f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<(), osis_store::Error>) -> Result<Vec<RecordId>> {
         let mut g = self.lock();
         let evicted = g.write(|t, env| {
@@ -1532,13 +1535,18 @@ impl Store {
     fn gone_durable(t: &mut Transaction<'_>, env: &mut Env<'_>, src: Source) -> Result<()> {
         for (k, _) in t.scan_local(&[rows::CHARGED, &rows::source_bytes(src)].concat(), b"", usize::MAX)? {
             let (s, b) = rows::tail_ids(&k)?;
-            entries::remove(t, env, &s, &b, Removal::Untombed)?;
+            let Some(old) = entries::get(t, &s, &b)? else { continue };
+            match heir(t, env, src, &s, &b, Some(old.size))? {
+                Some(to) => entries::change(t, env, &s, &b, &old.clone(), EntryRow { charged: Some(to), ..old })?,
+                None => drop(entries::remove(t, env, &s, &b, Removal::Untombed)?),
+            }
         }
-        // what it brought uncharged names no bringer any more
+        // what it brought uncharged names another bringer that showed it, or none
         for (k, _) in t.scan_local(&[rows::BROUGHT, &rows::source_bytes(src)].concat(), b"", usize::MAX)? {
             let (s, b) = rows::tail_ids(&k)?;
             if let Some(old) = entries::get(t, &s, &b)? {
-                entries::change(t, env, &s, &b, &old.clone(), EntryRow { brought: None, ..old })?;
+                let brought = heir(t, env, src, &s, &b, None)?;
+                entries::change(t, env, &s, &b, &old.clone(), EntryRow { brought, ..old })?;
             }
         }
         Ok(())
@@ -1740,6 +1748,26 @@ fn served(t: &mut Transaction<'_>, e: &LoggedEvent, until: Option<Position>) -> 
 fn head_vouch(t: &mut Transaction<'_>, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &osis_crypto::Signature, kept: Option<Vouch>) -> Result<Option<Vouch>> {
     let Some((_, head)) = path::head(t, s)? else { return Ok(None) };
     Ok(rows::check_stamp(&head.keys.write, s, b, wrap, stamp, kept))
+}
+
+/// Where entry `b` of S that `src` brought goes when `src` does (spec/sync-ids.md §5 Peer budget):
+/// a peer's record, not `src`, whose stream showed it present, with room for its `size` when it
+/// is charged. Else nobody: the entry goes, and a stream that passed it would not bring it
+/// again. O(records that showed it).
+fn heir(t: &mut Transaction<'_>, env: &Env<'_>, src: Source, s: &SyncId, b: &BlobId, size: Option<u64>) -> Result<Option<Source>> {
+    for rec in t.records_with_row(s, rows::tag::PRESENT, &b.0, usize::MAX)? {
+        let to = Source::Record(rec);
+        if to == src {
+            continue;
+        }
+        if let Some(n) = size
+            && over_peer_budget(t, env, to, n)?
+        {
+            continue;
+        }
+        return Ok(Some(to));
+    }
+    Ok(None)
 }
 
 /// Whether `size` more bytes charged to `src` pass its peer budget (spec/sync-ids.md §5 Peer

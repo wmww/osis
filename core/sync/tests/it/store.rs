@@ -588,6 +588,58 @@ fn an_evicted_record_takes_its_charges_at_once_spec_sync_opens_3() {
     assert!(st.entry(&s.id, &b).unwrap().is_none(), "what the peer brought went with its record");
 }
 
+// spec/sync-ids.md §5 (Peer budget): a source going hands each entry charged to it to a peer's
+// record whose stream showed it present and has room, else the entry goes. Twin's case
+// (spec/sync-opens.md §1): an entry both connections brought during the round trip, charged to
+// the loser's record (a duplicate keeps its first charge), stays charged to the survivor's, whose
+// stream passed it and would not bring it again; likewise an eviction and a recordless
+// connection closing. A record that showed nothing, or one without room, takes nothing.
+#[test]
+fn a_gone_sources_charges_pass_to_a_record_that_showed_them_spec_sync_ids_5() {
+    // the record row of what a source's stream showed present (osis-sync's `rows::tag::PRESENT`)
+    const PRESENT: u8 = b'k';
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 600)]), ..Caps::default() });
+    let rec = |st: &mut Store, k: u8| st.with_tx(|t| t.record_create([k; 32], &osis_store::Named::default())).unwrap();
+    let (loser, survivor, silent) = (rec(&mut st, 1), rec(&mut st, 2), rec(&mut st, 3));
+    let none = std::collections::BTreeSet::new();
+    let showed = |st: &mut Store, r: RecordId, b: BlobId| st.with_tx(|t| t.record_put_row(&r, PRESENT, &s.id, &b.0, Vec::new())).unwrap();
+    let brought = |st: &mut Store, i: usize, from: Source| {
+        let (b, x) = blob(i, Class::Durable, None, &[]);
+        assert_eq!(st.take_deposit(&deposit(&s, &x, false), Some(from)).unwrap(), Code::OK);
+        b
+    };
+    // Twin: brought on the loser first, then on the survivor
+    let b1 = brought(&mut st, 200, Source::Record(loser));
+    brought(&mut st, 200, Source::Record(survivor));
+    showed(&mut st, survivor, b1);
+    let dropped = std::collections::BTreeSet::from([loser]);
+    assert_eq!(st.write_records(u64::MAX, &none, &dropped, |_| Ok(())).unwrap(), [loser]);
+    assert!(st.entry(&s.id, &b1).unwrap().is_some(), "held: the survivor's stream passed it");
+    // a recordless connection closing: the record that showed it takes it
+    let c = Source::Conn(ConnId(7));
+    let b2 = brought(&mut st, 201, c);
+    let b3 = brought(&mut st, 202, c);
+    showed(&mut st, survivor, b2);
+    st.gone(c).unwrap();
+    assert!(st.entry(&s.id, &b2).unwrap().is_some(), "held: a record showed it");
+    assert!(st.entry(&s.id, &b3).unwrap().is_none(), "shown by no record: gone");
+    // the survivor's budget is full now (b1, b2): what it showed past it goes
+    let b4 = brought(&mut st, 203, Source::Record(silent));
+    showed(&mut st, survivor, b4);
+    let b5 = brought(&mut st, 204, Source::Record(silent));
+    // eviction: `silent` alone is not in use and goes past the budget
+    let in_use = std::collections::BTreeSet::from([survivor]);
+    assert_eq!(st.write_records(0, &in_use, &none, |_| Ok(())).unwrap(), [silent]);
+    assert!(st.entry(&s.id, &b4).unwrap().is_none(), "the survivor has no room: gone");
+    assert!(st.entry(&s.id, &b5).unwrap().is_none(), "shown by no record: gone");
+    // what the survivor took is charged to it: it goes with the survivor
+    st.gone(Source::Record(survivor)).unwrap();
+    assert!(st.entry(&s.id, &b1).unwrap().is_none() && st.entry(&s.id, &b2).unwrap().is_none(), "charged to the survivor");
+}
+
 // spec/sync-ids.md §5 (Peer budget): unstamped entries giving nothing held count against the
 // peer that brought them, within a bound; past it they are not kept. A peer with no record is
 // charged per connection, and what it brought goes when the connection closes.
@@ -1292,6 +1344,26 @@ fn a_forged_stamp_is_charged_as_unstamped_spec_sync_ids_5() {
     // a forged stamp brought again replaces no stamp held
     assert_eq!(st.log(&s.id, forged(b2), None, Some(c)).unwrap(), Code::OK);
     assert_eq!(st.entry(&s.id, &b2).unwrap().unwrap().stamp, stamped(&s, b2, false).stamp);
+}
+
+// spec/sync-ids.md §5 (Peer budget): a vouched entry's bringer, gone, hands it to a record whose
+// stream showed it; once the head moves past its stamp it is charged to that record and kept,
+// and goes with it.
+#[test]
+fn a_gone_bringer_passes_its_vouched_entries_on_spec_sync_ids_5() {
+    const PRESENT: u8 = b'k';
+    let mut s = Sid::new(70);
+    let (b, x) = blob(100, Class::Durable, None, &[]);
+    let mut st = reader(&s, 10_000);
+    let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
+    assert_eq!(st.log(&s.id, stamped(&s, b, false), Some(x), Some(Source::Conn(ConnId(7)))).unwrap(), Code::OK);
+    st.with_tx(|t| t.record_put_row(&rec, PRESENT, &s.id, &b.0, Vec::new())).unwrap();
+    st.gone(Source::Conn(ConnId(7))).unwrap();
+    s.rotate(80);
+    st.serve_path(&s.id, &osis_engine::sync::Path { steps: s.steps.iter().map(|(p, cs)| (p.clone(), Some(cs.clone()))).collect() }).unwrap();
+    assert!(st.charge_unvouched(&s.id, &b).unwrap(), "charged to the record that showed it: kept");
+    st.gone(Source::Record(rec)).unwrap();
+    assert!(st.entry(&s.id, &b).unwrap().is_none(), "gone with that record");
 }
 
 /// A reader holding `n` entries stamped under S's first head, brought by one peer, one entry that
