@@ -1270,7 +1270,8 @@ fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2()
 // account rotates twice, every node reading S holds the old rotation under S as header-only
 // copies alone and the current one with its `keys.0` part (no old epoch's deposit seed under S;
 // a copy logged while its rotation was current leaves once it is not), a fresh reader of S among
-// them; it verifies the rotation signed at the closed epoch.
+// them, cut off while the rotations were current; it verifies the rotation signed at the closed
+// epoch and holds no old rotation's `keys.0` part (no old deposit seed reaches a non-member).
 #[test]
 fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
     let mut w = crate::harness::history::world(0, 3);
@@ -1291,13 +1292,17 @@ fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
     // two rotations, the second signed at the epoch the first mints; each goes under every sync
     // ID the account acts in, streamed by every node on both connections of each pair (about
     // 1 000 deliveries each)
-    w.cap = 3 * crate::harness::RULE_CAP / 2;
+    // node 2, cut off meanwhile, sees none of them while current (its dials toward both add up)
+    w.cap = 5 * crate::harness::RULE_CAP;
+    w.partition(0, 2);
+    w.partition(1, 2);
     for _ in 0..2 {
         w.write(1, |e| e.rotate_account(&a1)).unwrap().expect("rotated");
         w.run();
     }
     w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
     w.run();
+    w.heal();
     let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
     let rots = w.engine(1).account_rotations(&a1);
     let current = w.engine(1).current_keys(&a1);
@@ -1314,6 +1319,15 @@ fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
     for r in &rots {
         let e = w.engine(2);
         assert!(e.header(r).is_some() && !pending.contains(r), "a rotation signed at an old epoch verifies at a fresh reader");
+    }
+    // the fresh reader, no node of the account, holds the current deposit seed and no old one:
+    // an old rotation's `keys.0` part never reached it
+    let missing = w.engine(2).commit_parts_missing();
+    for r in &rots {
+        let h = w.engine(2).header(r).unwrap();
+        let ai = h.aspects.iter().position(|x| x.tid == a1 && x.ak.as_str() == "keys.0").expect("a rotation writes keys.0");
+        let held = !missing.get(r).is_some_and(|m| m.contains(&ai));
+        assert_eq!(held, current.contains(r), "fresh reader: {r:?}'s keys.0 part held iff the rotation is current");
     }
     w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
     w.run();

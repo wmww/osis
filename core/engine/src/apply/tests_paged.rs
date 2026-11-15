@@ -470,6 +470,47 @@ fn snapshot_root_reset_prunes_pages_spec_crdt_8() {
     assert!(c.get("reset: by pages").is_some_and(|n| *n > 0) && c.get("apply: piece").is_some_and(|n| *n > 2), "{c:?}");
 }
 
+/// What a commit listener on node 3 hears of `big` once the keep bound (an hour after replaced)
+/// passes (and as it applies), after node 3, holding node 0's fill, gets the snapshot of node 0's replace: the
+/// replaced fill leaves history, and the snapshot's apply judged what it killed as a whole join
+/// does, so the same is told whether the reset joined by pages or whole (notes/engine-paged.md).
+#[test]
+fn leaving_told_alike_paged_or_whole_spec_commits_5() {
+    let told = |whole: bool| {
+        let mut w = world(whole);
+        let (t, a) = (w.t, aks()[0].clone());
+        let mut m = Mutation::new();
+        m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap();
+        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = packages(&mut w, 0, &[fill]);
+        w.lp.deliver(3, &pk[0]).unwrap();
+        let mut m = Mutation::new();
+        m.replace(t, &a, &fat_map(ENTRIES, 1)).unwrap();
+        w.lp.peers[0].commit(m).unwrap().unwrap();
+        let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+        let pk = packages(&mut w, 0, &[snap]);
+        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[t]).unwrap();
+        let heard = |w: &mut World| {
+            let mut told = std::collections::BTreeSet::new();
+            for e in w.lp.peers[3].drain_events() {
+                if let crate::Event::Commits(ch) = e {
+                    told.extend(ch.iter().filter(|x| x.tid == t && x.ak == a).map(|x| x.id));
+                }
+            }
+            told
+        };
+        heard(&mut w);
+        w.lp.deliver(3, &pk[0]).unwrap();
+        let applied = heard(&mut w);
+        w.lp.advance(2 * 3_600_000);
+        w.lp.peers[3].tick().unwrap();
+        let left = heard(&mut w);
+        assert!(left.contains(&fill), "{whole}: the replaced fill is told as it leaves: {left:?}");
+        (applied, left)
+    };
+    assert_eq!(told(false), told(true));
+}
+
 /// One commit with a paged map and a small entry in one aspect and a register in another,
 /// into a node holding that map paged: the second wire page joins state pages the first
 /// loaded, wrote and dropped.

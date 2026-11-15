@@ -134,7 +134,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 /// copy, a snapshot's); the same predicate ends every rebuild.
 /// A paged state loads only the pages the join touches, or where it resets or re-encodes a
 /// paged collection joins it a page at a time (`Tx::join_reset`).
-pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, dead: Option<&mut Killed>) -> Result<Changes> {
+pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, mut dead: Option<&mut Killed>) -> Result<Changes> {
     let _s = osis_base::costs::span("apply: join");
     tx.load_lazy(tid, ak)?;
     // the state is held stripped and stripping commutes with join (spec/crdt.md §4.7): the
@@ -143,11 +143,8 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     // a paged state loads only the pages the join touches
     let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
     if touch.is_none()
-        && let Some(ch) = tx.join_reset(tid, ak, &delta)?
+        && let Some(ch) = tx.join_reset(tid, ak, &delta, dead.as_deref_mut())?
     {
-        if let Some(dead) = dead {
-            dead.all = true;
-        }
         return Ok(ch);
     }
     tx.ensure_touch(tid, ak, &touch)?;

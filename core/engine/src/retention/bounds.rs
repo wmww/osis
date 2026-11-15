@@ -333,14 +333,15 @@ fn bounded_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> 
     held_part(core, c, tid, ak).filter(|ai| core.ix.commits.get(c).is_some_and(|m| !m.bare(*ai)))
 }
 
-/// The writes joins on an aspect superseded (spec/crdt.md §4.8), for `mark_killed`: by dot, or
-/// `all` when a join is not judged write by write (a reset joined by pages); `at`, the latest
-/// stamp among the writes winning where one died: no earlier than any of their deaths (each dead
-/// write's superseder wins there, or is beaten by a later winner), so a date never early.
+/// The writes joins on an aspect superseded (spec/crdt.md §4.8), for `mark_killed`, by dot;
+/// `at`, the latest stamp among the writes winning, after each join, at its reach: no earlier
+/// than any death (each dead write's superseder wins there, or is beaten by a later winner), so
+/// a date never early. Noted join by join (a whole delta, each of its pieces, a paged reset's
+/// skeleton and each page): the reaches together are the whole join's, so how a delta was
+/// split never shows.
 #[derive(Debug, Default)]
 pub(crate) struct Killed {
     pub dots: BTreeSet<osis_crdt::Dot>,
-    pub all: bool,
     pub at: Option<Ts>,
 }
 
@@ -349,11 +350,9 @@ impl Killed {
     /// `d`'s reach and of `d` (`Killed::before`), against `st` after the join.
     pub(crate) fn note(&mut self, before: &Winners, st: &Fragment, d: &Fragment) {
         let after = st.reach(d).winners();
+        self.at = self.at.max(after.iter().map(|w| w.stamp.ts).max());
         let dead = before.minus(&after);
-        if !dead.is_empty() {
-            self.at = self.at.max(after.iter().map(|w| w.stamp.ts).max());
-            self.dots.extend(dead.into_iter().map(|w| w.stamp.dot));
-        }
+        self.dots.extend(dead.into_iter().map(|w| w.stamp.dot));
     }
     /// What `note` compares with: the winners `st ⊔ d` may supersede.
     pub(crate) fn before(st: &Fragment, d: &Fragment) -> Winners {
@@ -367,15 +366,10 @@ impl Killed {
 /// replaced (the dying writes' own commits, and the aspect's snapshots, which may carry them) are
 /// judged again by sync, and the history row of each is set no earlier
 /// than `Killed::at` (`Core::to_date`, `Dating::Killed`: no body read; a snapshot whether or not it
-/// carries a dying write, as telling which would read it); with `Killed::all`, every one dated
-/// whole (`mark_bounded`).
+/// carries a dying write, as telling which would read it).
 /// On any aspect the dying writes' own commits are marked and become cover candidates: a body
-/// kept while live may not be now (`live_keep`); with `Killed::all`, every held body of the
-/// aspect (a reset joined by pages: rare).
+/// kept while live may not be now (`live_keep`).
 pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
-    if dead.all {
-        return mark_bounded(tx, tid, ak);
-    }
     if dead.dots.is_empty() {
         return;
     }

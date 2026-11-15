@@ -11,6 +11,7 @@
 use super::state::{decode, encode};
 use super::{clear_table, scan_table};
 use crate::error::{Error, Result};
+use crate::retention::Killed;
 use osis_base::format::PAGE_TARGET;
 use osis_base::{Ak, Tid, Value};
 use osis_crdt::{Changes, Dot, Eid, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace, SourceKind, Step};
@@ -1561,8 +1562,10 @@ fn set_rows(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Ve
 /// sequence (its placement follows a join whole), a collection paged inside another's elements
 /// (its path runs through pages) or `d` changing an encoding above a paged collection: `Whole`.
 /// `moved`: the tids it adds and removes, for the reference index (meaningful for `Paged`; the
-/// others write a whole state, which the index follows whole).
-pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &Fragment, d: &Fragment, moved: &mut super::refs::Delta) -> Result<Reset> {
+/// others write a whole state, which the index follows whole). `dead`: the writes it superseded,
+/// noted per join as a whole join notes them (the skeleton's, then each page's).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &Fragment, d: &Fragment, moved: &mut super::refs::Delta, mut dead: Option<&mut Killed>) -> Result<Reset> {
     let nested = idx.sets.keys().any(|p| idx.sets.keys().any(|q| q.len() < p.len() && p.starts_with(q)));
     if nested || idx.sets.values().any(is_seq) || !idx.sets.keys().all(|p| d.steps_through(p)) {
         return Ok(Reset::Whole);
@@ -1570,7 +1573,11 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut State
     let s0 = f.reduced(&idx.paths);
     moved.add(&s0, -1);
     let mut j = s0.clone();
+    let before = dead.as_ref().map(|_| Killed::before(&j, d));
     let mut changes = j.join(d.clone());
+    if let (Some(k), Some(w)) = (dead.as_deref_mut(), before) {
+        k.note(&w, &j, d);
+    }
     let t = table(txn, tid, ak)?;
     let kt = txn.create_table(tid, ak, KEY_TABLE)?;
     let none = Paths::default();
@@ -1595,7 +1602,12 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut State
             if let Some(x) = g.at_steps(p) {
                 moved.add(x, -1);
             }
-            let ch = g.join(d.spine(p, Some((r.0.as_ref(), r.1.as_ref()))));
+            let dp = d.spine(p, Some((r.0.as_ref(), r.1.as_ref())));
+            let before = dead.as_ref().map(|_| Killed::before(&g, &dp));
+            let ch = g.join(dp.clone());
+            if let (Some(k), Some(w)) = (dead.as_deref_mut(), before) {
+                k.note(&w, &g, &dp);
+            }
             if let Some(x) = g.at_steps(p) {
                 moved.add(x, 1);
             }

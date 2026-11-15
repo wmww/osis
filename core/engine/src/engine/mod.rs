@@ -2867,19 +2867,18 @@ impl Tx<'_> {
 
     /// Joins `delta` into the paged state of `(tid, ak)` a page at a time where it may reset a
     /// paged collection or change its encoding (`pages::join_reset`); `None`: not paged, or it
-    /// does not fit (join whole). The state is noted written.
-    pub fn join_reset(&mut self, tid: &Tid, ak: &Ak, delta: &osis_crdt::Fragment) -> Result<Option<osis_crdt::Changes>> {
+    /// does not fit (join whole, nothing noted in `dead`). The state is noted written.
+    pub(crate) fn join_reset(&mut self, tid: &Tid, ak: &Ak, delta: &osis_crdt::Fragment, dead: Option<&mut crate::retention::Killed>) -> Result<Option<osis_crdt::Changes>> {
         let k = (*tid, ak.clone());
         if !self.core.pages.contains_key(&k) {
             return Ok(None);
         }
-        listing::before_rebuild(self, tid, ak)?;
         // noted first: a failure midway evicts what it changed
         self.core.touch();
         self.core.wrote(k.clone());
         let (Some(idx), Some(Some(f))) = (self.core.pages.get_mut(&k), self.core.states.get(&k)) else { return Ok(None) };
         let mut moved = refs::Delta::default();
-        match pages::join_reset(&mut self.txn, tid, ak, idx, f, delta, &mut moved)? {
+        match pages::join_reset(&mut self.txn, tid, ak, idx, f, delta, &mut moved, dead)? {
             pages::Reset::Whole => {
                 let _s = osis_base::costs::span("reset: whole");
                 Ok(None)

@@ -301,7 +301,7 @@ pub(crate) fn listened(core: &crate::engine::Core, tid: &Tid, ak: &Ak) -> bool {
     on(tid) || core.ix.groups.groups_of(tid).iter().any(|g| on(g))
 }
 
-/// Before the state of `(tid, ak)` is written whole (a rebuild, a reset by pages): the commits
+/// Before the state of `(tid, ak)` is written whole (a rebuild): the commits
 /// listed there by it, when a commit listener may be on it (`listing_moved` compares them at the
 /// end). The rare path, O(commits held there), as the rebuild itself is.
 pub(crate) fn before_rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
