@@ -67,6 +67,8 @@ pub struct OpenedBlob {
     pub plaintext: Vec<u8>,
     pub commit: CommitBlob,
     pub ais: Vec<usize>,
+    /// Its prefix salt.
+    pub salt: [u8; 16],
     pub sealed: Vec<Section>,
     /// Every section as it came, opened or not: what a fresh encryption of the commit copies
     /// verbatim (`Engine::seal`'s `extra`, spec/crypto.md §5 Passing on).
@@ -426,7 +428,7 @@ impl Engine {
             }
             self.note_opened(h, &under);
         }
-        Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, sealed: opened.sealed, sections: env.sections, copy })
+        Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, salt: *prefix.salt(), sealed: opened.sealed, sections: env.sections, copy })
     }
 
     /// The plaintext of a body (`sync_id_bodies_meta` leaves it out): the opened form of every

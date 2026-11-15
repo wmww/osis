@@ -211,8 +211,12 @@ pub trait Ground {
     /// Entry `b` of S fetched from the source (streams' Fetch, spec/sync-judgement.md §3 Dropped
     /// bodies): a body counting missing again.
     fn fetch(&mut self, at: &SrcView, s: &SyncId, b: &BlobId) -> Result<()>;
-    /// A Delete of `b` at the source, signed by `key` (its head's delete key).
-    fn delete(&mut self, at: &SrcView, s: &SyncId, b: &BlobId, key: &SigningSecret) -> Result<()>;
+    /// The Delete of commit blob `b` this node can sign for a source on `head` (`Live::delete_item`):
+    /// by the head's delete key, else by the delete keys of levels it holds. `None`: it holds
+    /// neither, and the entry stays there until a holder connects or it expires.
+    fn delete_item(&mut self, s: &SyncId, head: &StepId, b: &BlobId) -> Result<Option<osis_blob::DeleteItem>>;
+    /// A Delete of `b` at the source (`delete_item`).
+    fn delete(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId) -> Result<()>;
     /// Registers at the source the closing step of its head `head` (spec/wire.md §8), signed by
     /// `key`, that head's delete key (spec/sync-judgement.md §5 Emptying).
     fn close(&mut self, at: &SrcView, s: &SyncId, head: &StepId, key: &SigningSecret) -> Result<()>;

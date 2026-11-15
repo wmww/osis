@@ -4,7 +4,6 @@
 
 use super::Why;
 use super::ground::{BlobInfo, CertBlobsMissing, Facts, Ground, PieceAt, Seen, SrcView};
-use osis_engine::retention::freed::Freed;
 use osis_engine::sync::PieceLink;
 use osis_blob::StepId;
 use crate::opens::Opens;
@@ -434,9 +433,17 @@ impl Ground for Live<'_, '_> {
         self.fetches.push((at.conn, *s, *b));
         Ok(())
     }
-    fn delete(&mut self, at: &SrcView, s: &SyncId, b: &BlobId, key: &SigningSecret) -> Result<()> {
+    fn delete_item(&mut self, s: &SyncId, head: &StepId, b: &BlobId) -> Result<Option<DeleteItem>> {
+        let Some(keys) = self.cx.engine.read_credentials(s)?.and_then(|c| c.keys.get(head).cloned()) else { return Ok(None) };
+        if keys.delete.is_some() {
+            return Ok(delete_item(&keys, s, *b, true, None));
+        }
+        Ok(delete_item(&keys, s, *b, false, self.cx.engine.blob_delete_basis(b).as_ref()))
+    }
+    fn delete(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId) -> Result<()> {
+        let Some(item) = self.delete_item(s, head, b)? else { return Ok(()) };
         if let Some(session) = self.sessions.get_mut(at.conn) {
-            session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![DeleteItem::sign(key, s, *b)] });
+            session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![item] });
         }
         Ok(())
     }
@@ -629,26 +636,8 @@ impl Ground for Live<'_, '_> {
     }
     fn delete_freed(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId, t: &Tid) -> Result<()> {
         let Some(f) = self.cx.engine.freed_link(b, t) else { return Ok(()) };
-        let f: &Freed = &f;
         let Some(keys) = self.cx.engine.read_credentials(s)?.and_then(|c| c.keys.get(head).cloned()) else { return Ok(()) };
-        let blob = f.link.blob;
-        let item = match (f.borne, &keys.delete) {
-            (true, Some(d)) => DeleteItem::sign(d, s, blob),
-            _ => {
-                let dks = self.cx.engine.freed_delete_secrets(f);
-                let refs: Vec<(osis_blob::Level, &osis_crypto::DeleteSecret)> = dks.iter().map(|(l, d)| (*l, d)).collect();
-                let levels: Vec<osis_blob::Level> = refs.iter().map(|x| x.0).collect();
-                let key = match osis_blob::key_for_levels(&levels) {
-                    Ok(osis_crypto::RoleKey::Write) => keys.write.clone(),
-                    Ok(osis_crypto::RoleKey::Sync) if keys.sync_established => keys.sync.clone(),
-                    _ => None,
-                };
-                let (Some(key), false) = (key, refs.is_empty()) else { return Ok(()) };
-                let (salt, blind) = f.blinding();
-                let Ok(item) = DeleteItem::sign_by(&key, &refs, &salt, &blind, s, blob) else { return Ok(()) };
-                item
-            }
-        };
+        let Some(item) = delete_item(&keys, s, f.link.blob, f.borne, self.cx.engine.freed_delete_basis(&f).as_ref()) else { return Ok(()) };
         if let Some(session) = self.sessions.get_mut(at.conn) {
             session.request(To::Read, Msg::Delete { id: 0, sync_id: *s, items: vec![item] });
         }
@@ -685,4 +674,25 @@ impl Ground for Live<'_, '_> {
         }
         Ok(())
     }
+}
+
+/// A Delete of blob `b` at a source on head keys `keys` (spec/sync-ids.md §6 Delete): by the
+/// head's delete key where held and `by_key` (it deletes every entry there), else by levels over
+/// `basis` with the role key they need (`osis_blob::cover_levels`; the sync key only of an
+/// established epoch). One rule for every blob a node deletes at a source keeping S unread:
+/// commit blobs and freed links alike.
+fn delete_item(keys: &osis_engine::sync_ids::HeadKeys, s: &SyncId, b: BlobId, by_key: bool, basis: Option<&osis_engine::sync::DeleteBasis>) -> Option<DeleteItem> {
+    if by_key && let Some(d) = &keys.delete {
+        return Some(DeleteItem::sign(d, s, b));
+    }
+    let basis = basis?;
+    let role = |r: osis_crypto::RoleKey| match r {
+        osis_crypto::RoleKey::Write => keys.write.clone(),
+        osis_crypto::RoleKey::Sync if keys.sync_established => keys.sync.clone(),
+        _ => None,
+    };
+    let dks = osis_blob::cover_levels(&basis.prefix, &basis.blind, &basis.held, |r| role(r).is_some())?;
+    let levels: Vec<osis_blob::Level> = dks.iter().map(|x| x.0).collect();
+    let key = role(osis_blob::key_for_levels(&levels).ok()?)?;
+    DeleteItem::sign_by(&key, &dks, basis.prefix.salt(), &basis.blind, s, b).ok()
 }

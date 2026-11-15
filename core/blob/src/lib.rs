@@ -19,7 +19,7 @@ pub mod step;
 pub mod tree;
 
 pub use addr::{Address, address_from_text, address_to_text};
-pub use auth::{DeleteItem, delete_digest, entry_digest, key_for_levels, sign_deposit, sign_stamp, verify_deposit, verify_stamp};
+pub use auth::{DeleteItem, cover_levels, delete_digest, entry_digest, key_for_levels, sign_deposit, sign_stamp, verify_deposit, verify_stamp};
 pub use blob::{Class, Group, Level, Prefix, blob_id, check_size, frame, frame_under, open, clear_prefix, unwrap_any, wrap_order};
 pub use chunks::{LargeParams, chunk_value, read_value, string_head};
 pub use error::Error;

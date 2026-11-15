@@ -593,7 +593,7 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
     if f.is_some() {
         at_source(g, mine, &mut t, &src, &seen, s, c, &verdict, head, creds, writer, f.as_ref().is_some_and(|f| f.role))?;
     }
-    if keys.is_some_and(|k| k.delete.is_some()) && !seen.present.is_empty() {
+    if keys.is_some() && !seen.present.is_empty() {
         deletes(g, mine, &mut t, &src, &seen, s, c, f.as_ref(), &verdict, head, creds)?;
     }
     t.idle &= t.acts.is_empty();
@@ -621,7 +621,7 @@ fn role_wait(g: &mut impl Ground, mine: &Mine, src: &SrcView, s: &SyncId, c: &Co
 }
 
 /// Deletes at a source keeping S unread (§3 Deletes, Agreement of grounds; compaction §1
-/// Carriers, Duplicates), while no role entry of this node's is lacking there and its stream
+/// Carriers, Duplicates) of the entries this node can sign a Delete of, while no role entry of this node's is lacking there and its stream
 /// shows no role commit this node does not hold.
 #[allow(clippy::too_many_arguments)]
 fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen: &Seen, s: &SyncId, c: &CommitId, f: Option<&Facts>, verdict: &Verdict, head: StepId, creds: &ReadCredentials) -> Result<()> {
@@ -669,7 +669,13 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
     if blobs.is_empty() || src.role_unheld || role_wait(g, mine, src, s, c, creds)? {
         return Ok(());
     }
-    t.acts.extend(blobs.into_iter().map(|blob| Act::Delete { at: src.at, conn: src.conn, head, blob }));
+    // each by the delete key or the level keys held for it (spec/sync-ids.md §6 Delete); without
+    // them nothing is sent
+    for blob in blobs {
+        if g.delete_item(s, &head, &blob)?.is_some() {
+            t.acts.insert(Act::Delete { at: src.at, conn: src.conn, head, blob });
+        }
+    }
     Ok(())
 }
 

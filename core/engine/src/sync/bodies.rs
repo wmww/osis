@@ -14,8 +14,10 @@ use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// `bp/` + commit ID + blob ID: flags (one byte: 1 a per-sync-ID copy, 2 unchecked), the count of parts it holds (u32), those parts (u32 each), then the digest of
-/// each section it holds that this node did not open (32 bytes each; `BlobOf`).
+/// `bp/` + commit ID + blob ID: flags (one byte: 1 a per-sync-ID copy, 2 unchecked), its prefix
+/// salt (16 bytes), the count of aspects its sections list (u32) and those (u32 each), the count of
+/// parts it holds (u32) and those, then the digest of each section it holds that this node did not
+/// open (32 bytes each; `BlobOf`).
 pub(crate) const BLOB_PARTS: &[u8] = b"bp/";
 
 /// Loads the blob parts (an open or reload).
@@ -26,11 +28,11 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         let c = CommitId(k.get(..32).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
         let b = BlobId(k.get(32..).ok_or_else(bad)?.try_into().map_err(|_| bad())?);
         let (copy, rest) = v.split_first().ok_or_else(bad)?;
-        let (n, rest) = rest.split_first_chunk::<4>().ok_or_else(bad)?;
-        let (ps, sealed) = rest.split_at_checked(u32::from_be_bytes(*n) as usize * 4).ok_or_else(bad)?;
-        let ps: PartSet = ps.chunks(4).map(|x| x.try_into().map(u32::from_be_bytes).map(|n| n as usize).map_err(|_| bad())).collect::<Result<_>>()?;
+        let (salt, rest) = rest.split_first_chunk::<16>().ok_or_else(bad)?;
+        let (ais, rest) = indices(rest).ok_or_else(bad)?;
+        let (ps, sealed) = indices(rest).ok_or_else(bad)?;
         let sealed: SealedSet = sealed.chunks(32).map(|x| x.try_into().map_err(|_| bad())).collect::<Result<_>>()?;
-        parts.push((b, BlobOf { commit: c, parts: ps, sealed, copy: copy & 1 != 0, unchecked: copy & 2 != 0 }));
+        parts.push((b, BlobOf { commit: c, parts: ps, sealed, copy: copy & 1 != 0, unchecked: copy & 2 != 0, salt: *salt, ais }));
         Ok(())
     })?;
     for (b, row) in parts {
@@ -38,6 +40,13 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.ix.blob_parts.insert(b, Arc::new(row));
     }
     Ok(())
+}
+
+/// A count (u32) of indices (u32 each) at the start of `rest`, and what follows.
+fn indices(rest: &[u8]) -> Option<(PartSet, &[u8])> {
+    let (n, rest) = rest.split_first_chunk::<4>()?;
+    let (xs, rest) = rest.split_at_checked(u32::from_be_bytes(*n) as usize * 4)?;
+    Some((xs.as_chunks::<4>().0.iter().map(|x| u32::from_be_bytes(*x) as usize).collect(), rest))
 }
 
 /// Notes blob `b` as this node opened or sealed it (`row`), in place of what an earlier opening
@@ -50,6 +59,9 @@ pub(super) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, row: BlobOf) -> Result<()> 
     }
     // a memory commit's rows are memory, gone with it at a restart
     let mut v = vec![u8::from(row.copy) | u8::from(row.unchecked) << 1];
+    v.extend(row.salt);
+    v.extend((row.ais.len() as u32).to_be_bytes());
+    v.extend(row.ais.iter().flat_map(|p| (*p as u32).to_be_bytes()));
     v.extend((row.parts.len() as u32).to_be_bytes());
     v.extend(row.parts.iter().flat_map(|p| (*p as u32).to_be_bytes()));
     v.extend(row.sealed.iter().flatten());
@@ -367,7 +379,7 @@ impl Engine {
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, b.order)?;
         // a section copied verbatim that this node never opened counts by its bytes, whatever of
         // its parts it holds from another blob (spec/sync-compaction.md §1 Only what the node checked)
-        let mut row = BlobOf { commit: *c, parts: sealed.parts.iter().copied().collect(), sealed: sealed.unopened.clone(), copy: b.to_sync_id, unchecked: false };
+        let mut row = BlobOf { commit: *c, parts: sealed.parts.iter().copied().collect(), sealed: sealed.unopened.clone(), copy: b.to_sync_id, unchecked: false, salt: sealed.salt, ais: sealed.ais.iter().copied().collect() };
         if !unopened.is_empty() {
             let env = osis_commit::Envelope::decode(&osis_blob::open(&sealed.blob, &sealed.key)?.1)?;
             for sec in env.sections.iter().filter(|sec| unopened.contains(&sec.digest())) {
@@ -499,7 +511,7 @@ impl Engine {
         }
         let Some(w) = self.wrap_secret(t, Some((c, &parts)))? else { return Ok(None) };
         let wrap = osis_crypto::wrap(&w, &sealed.id, &sealed.key, meta.order)?;
-        let row = BlobOf { commit: *c, parts: meta.parts.clone(), sealed: SealedSet::new(), copy: true, unchecked: false };
+        let row = BlobOf { commit: *c, parts: meta.parts.clone(), sealed: SealedSet::new(), copy: true, unchecked: false, salt: sealed.salt, ais: sealed.ais.iter().copied().collect() };
         let bid = sealed.id;
         self.run(|tx| note_blob(tx, &bid, row))?;
         Ok(Some((sealed, wrap)))
@@ -637,7 +649,7 @@ impl Engine {
             sealed.insert(sec.digest());
             parts.retain(|ai| !sec.ais.contains(ai));
         }
-        let row = BlobOf { commit: id, parts, sealed, copy: opened.copy, unchecked: !unchecked.is_empty() };
+        let row = BlobOf { commit: id, parts, sealed, copy: opened.copy, unchecked: !unchecked.is_empty(), salt: opened.salt, ais: opened.ais.iter().copied().collect() };
         let b = *blob;
         self.run(|tx| note_blob(tx, &b, row))?;
         Ok(Opened::Commit(id, ingested))

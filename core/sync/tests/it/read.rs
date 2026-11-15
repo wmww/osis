@@ -478,9 +478,14 @@ impl Ground for Fake {
         self.sent.push(Sent::Fetch(at.conn, *b));
         Ok(())
     }
-    fn delete(&mut self, at: &SrcView, s: &SyncId, b: &BlobId, key: &SigningSecret) -> Result<()> {
-        let _ = (s, key);
-        self.sent.push(Sent::Delete(at.conn, *b));
+    /// By the head's delete key alone (levels: the World tests, `deletes::`).
+    fn delete_item(&mut self, s: &SyncId, head: &osis_blob::StepId, b: &BlobId) -> Result<Option<osis_blob::DeleteItem>> {
+        Ok(self.creds.get(s).and_then(|c| c.keys.get(head)?.delete.as_ref().map(|d| osis_blob::DeleteItem::sign(d, s, *b))))
+    }
+    fn delete(&mut self, at: &SrcView, s: &SyncId, head: &osis_blob::StepId, b: &BlobId) -> Result<()> {
+        if self.delete_item(s, head, b)?.is_some() {
+            self.sent.push(Sent::Delete(at.conn, *b));
+        }
         Ok(())
     }
     fn close(&mut self, at: &SrcView, s: &SyncId, _head: &osis_blob::StepId, key: &SigningSecret) -> Result<()> {

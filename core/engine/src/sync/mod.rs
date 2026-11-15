@@ -71,6 +71,25 @@ pub struct BlobOf {
     /// A section is in `sealed` only for want of a record: the blob opens again once its
     /// commit stops pending (`apply::unpend`, through `take_redeliver`).
     pub unchecked: bool,
+    /// Its prefix salt and the aspects its sections list: with the header, the commitments its
+    /// prefix bears, kept past its bytes for a Delete by levels (spec/sync-judgement.md §3
+    /// Dropped bodies).
+    pub salt: [u8; 16],
+    pub ais: PartSet,
+}
+
+/// A commitment group's delete keys (level, key), with the thing whose chain holds its level-1
+/// and level-3 secrets.
+pub(crate) type DeleteGroup = (Tid, Vec<(u8, [u8; 32])>);
+
+/// What a Delete by levels of a blob signs for (spec/crypto.md §7, spec/sync-ids.md §6): the
+/// commitments its prefix bears as this node computes them (from the keys its header or link
+/// names; a blob framed otherwise refuses the signature), its blind, and the delete secrets held
+/// here for those keys, with their levels.
+pub struct DeleteBasis {
+    pub prefix: osis_blob::Prefix,
+    pub blind: [u8; 16],
+    pub held: Vec<(u8, osis_crypto::DeleteSecret)>,
 }
 
 /// A blob of a commit held in the sync store, with an entry's wrap of it under a sync ID: what a
@@ -783,6 +802,44 @@ impl Engine {
     /// A cursor over the freed links judged from now on (`memo::Feed`).
     pub fn freed_feed(&self) -> osis_base::memo::Feed<(BlobId, Tid)> {
         self.core.ix.freed.feed()
+    }
+
+    /// What a Delete by levels of commit blob `b` signs for (`DeleteBasis`): the groups of the
+    /// aspects its sections list, under its salt and its header's blind. `None`: `b` names no
+    /// commit held here.
+    pub fn blob_delete_basis(&mut self, b: &BlobId) -> Option<DeleteBasis> {
+        let row = self.core.ix.blob_parts.get(b)?.clone();
+        let h = self.header(&row.commit)?;
+        let mut groups: Vec<DeleteGroup> = Vec::new();
+        for a in row.ais.iter().filter_map(|ai| h.aspects.get(*ai)) {
+            let keys: Vec<(u8, [u8; 32])> = a.keys.iter().filter_map(|i| h.keys.get(*i)).map(|k| (k.level, k.key)).collect();
+            if !groups.iter().any(|(_, g)| *g == keys) {
+                groups.push((a.tid, keys));
+            }
+        }
+        self.delete_basis(row.salt, h.blind, &h.actor, &groups)
+    }
+
+    /// A `DeleteBasis` of a blob with prefix `salt` and blind `blind` whose groups are `groups`
+    /// (each with the thing whose chain holds its level-1 and level-3 secrets), `author` the actor
+    /// whose chain holds level 2 (spec/crypto.md §7). `None`: a key that is no Ed25519 point.
+    pub(crate) fn delete_basis(&self, salt: [u8; 16], blind: [u8; 16], author: &Tid, groups: &[DeleteGroup]) -> Option<DeleteBasis> {
+        let mut keyed = Vec::with_capacity(groups.len());
+        for (_, keys) in groups {
+            keyed.push(keys.iter().map(|(l, k)| Some((*l, osis_crypto::VerifyingKey::from_bytes(k).ok()?))).collect::<Option<Vec<_>>>()?);
+        }
+        let prefix = osis_blob::Prefix::for_groups(salt, &blind, None, &keyed).ok()?;
+        let author = self.core.delete_chain(author);
+        let mut held: Vec<(u8, osis_crypto::DeleteSecret)> = Vec::new();
+        for (t, keys) in groups {
+            let thing = self.core.delete_chain(t);
+            for (l, k) in keys {
+                if !held.iter().any(|(hl, d)| hl == l && d.verifying_key().to_bytes() == *k) {
+                    held.extend(crate::engine::Core::delete_secret(*l, k, &thing, &author).map(|d| (*l, d)));
+                }
+            }
+        }
+        Some(DeleteBasis { prefix, blind, held })
     }
 
     /// Freed link `b` of thing `t`, while judged freed and in the set (stamped).

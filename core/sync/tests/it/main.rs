@@ -28,6 +28,7 @@ mod opens;
 mod pieces;
 mod streams;
 mod world;
+mod deletes;
 mod demotions;
 mod destruction;
 mod driver;

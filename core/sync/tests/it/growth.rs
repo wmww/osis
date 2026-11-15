@@ -136,8 +136,9 @@ fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
         }
         w.deliveries - d
     };
-    // the first write after setup carries the grants' tail; after it deliveries repeat every 3 writes
-    writes(&mut w, 1);
+    // the first two writes after setup carry the grants' tail; after them deliveries repeat every
+    // 3 writes (the writer node 2 deletes some replaced bodies at node 1 beside the admin)
+    writes(&mut w, 2);
     w.trace = true;
     let (a, b) = (writes(&mut w, 3), writes(&mut w, 30));
     assert_eq!(b, 10 * a, "deliveries per write at n and 10n");

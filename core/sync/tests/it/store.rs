@@ -969,6 +969,57 @@ fn delete_by_levels_spec_sync_ids_6() {
     assert!(st.entry(&s.id, &b).unwrap().is_none());
 }
 
+// spec/sync-ids.md §6 (Delete), spec/crypto.md §7, by who writes each input: a
+// writer's delete reaches only what the blob's prefix commits to its level keys, under the head's
+// current role keys. Writer X's two entries: one purgeable by its author or an admin (levels 1, 2),
+// one by any writer (1, 2, 3). Hostile writer Y (no admin) holds its own level-2 key and the
+// thing's level-3 key: it deletes nothing of X's author-only entry; once demoted (the head's
+// write key rotates) its level-3 key deletes nothing either; once X is removed (the sync key
+// rotates too) X's own level-2 key deletes nothing under its old sync key.
+#[test]
+fn deletes_by_levels_reach_only_the_signers_right_spec_sync_ids_6() {
+    let dev = Dev::new();
+    let mut s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    let dk = |b: u8| DeleteSecret::derive(&Secret32::from_bytes([b; 32]));
+    let (admin, x, y, w3) = (dk(31), dk(32), dk(33), dk(34));
+    let mut rng = SeededRng::from_u64(3);
+    let mut entry = |st: &mut Store, s: &Sid, keys: &[(u8, &DeleteSecret)]| {
+        let keys: Vec<(u8, osis_crypto::VerifyingKey)> = keys.iter().map(|(l, d)| (*l, d.verifying_key())).collect();
+        let p = Prefix::for_keys([5; 16], &[1; 16], None, &keys).unwrap();
+        let (_, bytes) = osis_blob::frame(&p, b"body", &mut rng).unwrap();
+        let b = osis_blob::blob_id(&bytes);
+        assert_eq!(st.take_stamped(&s.id, &stamped(s, b, false), bytes, &[]).unwrap(), Code::OK);
+        b
+    };
+    let authors = entry(&mut st, &s, &[(1, &admin), (2, &x)]);
+    let writers = entry(&mut st, &s, &[(1, &admin), (2, &x), (3, &w3)]);
+    let id = s.id;
+    let by = |b: BlobId, key: &SigningSecret, dks: &[(u8, &DeleteSecret)]| DeleteItem::sign_by(key, dks, &[5; 16], &[1; 16], &id, b).unwrap();
+    let refused = |st: &mut Store, item: DeleteItem, code: Code, why: &str| {
+        let b = item.blob;
+        assert_eq!(st.take_delete(&id, &[item], true).unwrap(), [code], "{why}");
+        assert!(st.entry(&id, &b).unwrap().is_some(), "{why}: deleted");
+    };
+    refused(&mut st, by(authors, &s.sync_key(), &[(2, &y)]), Code::REFUSED, "Y's own level-2 key on X's entry");
+    refused(&mut st, by(authors, &s.write_key(), &[(3, &w3)]), Code::REFUSED, "a level the prefix does not list");
+    // Y demoted: the head's write key rotates
+    let (old_write, old_sync) = (s.write_key(), s.sync_key());
+    s.write = Secret32::from_bytes([60; 32]);
+    let st1 = s.issue(&[]);
+    s.steps.push(st1.clone());
+    assert_eq!(st.take_register(&s.id, &st1.0, Some(&st1.1)).unwrap(), Code::OK);
+    refused(&mut st, by(writers, &old_write, &[(3, &w3)]), Code::NOT_HEAD_KEY, "the demoted writer's level-3 key under its old write key");
+    // X removed: write and sync rotate
+    let (c2, cs2) = s.rotate(70);
+    assert_eq!(st.take_register(&s.id, &c2, Some(&cs2)).unwrap(), Code::OK);
+    refused(&mut st, by(authors, &old_sync, &[(2, &x)]), Code::NOT_HEAD_KEY, "the removed author's level-2 key under its old sync key");
+    // under the current head the same keys delete
+    assert_eq!(st.take_delete(&s.id, &[by(authors, &s.sync_key(), &[(2, &x)])], true).unwrap(), [Code::OK]);
+    assert_eq!(st.take_delete(&s.id, &[by(writers, &s.write_key(), &[(3, &w3)])], true).unwrap(), [Code::OK]);
+    assert!(st.entry(&s.id, &authors).unwrap().is_none() && st.entry(&s.id, &writers).unwrap().is_none());
+}
+
 // spec/sync-ids.md §6 (Expiry): at the prefix's expiry every node deletes the entry outright: no
 // tombstone, and no event in the log (spec/wire.md §11.2: expiry produces no event).
 #[test]

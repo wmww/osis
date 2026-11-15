@@ -607,10 +607,7 @@ impl Read {
             }
             (Act::Delete { at, conn, head, blob }, _) => {
                 let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };
-                let key = g.credentials(s)?.and_then(|cr| cr.keys.get(&head).and_then(|k| k.delete.clone()));
-                if let Some(key) = key {
-                    g.delete(&src, s, &blob, &key)?;
-                }
+                g.delete(&src, s, &head, &blob)?;
             }
             (Act::Close { at, conn, head }, _) => {
                 let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };

@@ -70,6 +70,49 @@ pub fn key_for_levels(levels: &[Level]) -> Result<RoleKey, Error> {
     })
 }
 
+/// The delete keys among `held` that a Delete by levels of a blob with `prefix` and blind `hb`
+/// signs with (spec/sync-ids.md §6, spec/crypto.md §7): one per level, each matching a
+/// commitment at its level, every group covered, the role key their levels need (`key_for_levels`)
+/// one `may` holds; of such choices the fewest signatures, then the highest levels (the least
+/// right). `None`: no such choice (a group none of `held` matches, an empty group, no role key).
+/// Brute force over the held keys matching at each level: a rare path.
+pub fn cover_levels<'a>(prefix: &Prefix, hb: &[u8; 16], held: &'a [(Level, DeleteSecret)], may: impl Fn(RoleKey) -> bool) -> Option<Vec<(Level, &'a DeleteSecret)>> {
+    let groups = prefix.groups().len();
+    // per level, each held key matching a commitment there with the groups it covers
+    let mut opts: [Vec<(&'a DeleteSecret, Vec<bool>)>; 3] = Default::default();
+    for (level, d) in held {
+        let Some(slot) = (DELETE_ADMIN..=DELETE_WRITER).contains(level).then(|| usize::from(level - DELETE_ADMIN)).and_then(|i| opts.get_mut(i)) else { continue };
+        let blinded = osis_crypto::blind(&d.verifying_key(), prefix.salt(), hb).to_bytes();
+        let covers: Vec<bool> = (0..groups).map(|gi| prefix.key_at(gi, *level) == Some(blinded)).collect();
+        if covers.iter().any(|c| *c) && !slot.iter().any(|(_, c)| *c == covers) {
+            slot.push((d, covers));
+        }
+    }
+    let pick = |l: usize, i: usize| -> Option<(Level, &'a DeleteSecret, &Vec<bool>)> { i.checked_sub(1).and_then(|i| opts.get(l)?.get(i)).map(|(d, c)| (DELETE_ADMIN + l as u8, *d, c)) };
+    let n = |l: usize| opts.get(l).map_or(0, Vec::len) + 1;
+    let mut best: Option<Vec<(Level, &'a DeleteSecret)>> = None;
+    for a in 0..n(0) {
+        for b in 0..n(1) {
+            for c in 0..n(2) {
+                let chosen: Vec<_> = [pick(0, a), pick(1, b), pick(2, c)].into_iter().flatten().collect();
+                let covered = (0..groups).all(|gi| chosen.iter().any(|(_, _, cov)| cov.get(gi).copied().unwrap_or(false)));
+                let levels: Vec<Level> = chosen.iter().map(|x| x.0).collect();
+                if groups == 0 || !covered || !key_for_levels(&levels).is_ok_and(&may) {
+                    continue;
+                }
+                let better = best.as_ref().is_none_or(|b| {
+                    let bl: Vec<Level> = b.iter().map(|x| x.0).collect();
+                    (levels.len(), std::cmp::Reverse(levels.clone())) < (bl.len(), std::cmp::Reverse(bl))
+                });
+                if better {
+                    best = Some(chosen.iter().map(|(l, d, _)| (*l, *d)).collect());
+                }
+            }
+        }
+    }
+    best
+}
+
 /// A delete item `[blob_id, [[level, dsig]*], sig]` (spec/wire.md §11.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteItem {
@@ -216,6 +259,58 @@ mod tests {
     // spec/sync-ids.md §6, spec/crypto.md §7: delete by the sync ID delete key; by a level's delete
     // key with the role key the level needs; a wrong level, a forged or unblinded key, a
     // missing commitment fail; layouts round trip.
+    // spec/sync-ids.md §6 (Delete): the keys `cover_levels` picks sign a Delete the
+    // store's check takes (the oracle: `DeleteItem::verify`), whatever subset of the keys is held;
+    // it picks none exactly when no held choice covers every group under a role key held. Two
+    // groups (two things' writes by one author: level 2 shared, levels 1 and 3 per thing) and an
+    // empty one.
+    #[test]
+    fn cover_levels_signs_what_the_store_takes() {
+        let g = Group::new(40);
+        let mut rng = SeededRng::from_u64(0);
+        let (s0, _) = register(Parent::Genesis(&g.delete()), g.keys(), &[], (&TG, epoch(0), &g.read), g.sync_at(), &mut rng).unwrap();
+        let l = s0.sync_id;
+        let (sync, write) = (role_key(RoleKey::Sync, &g.sync), role_key(RoleKey::Write, &g.write));
+        let dk = |b: u8| DeleteSecret::derive(&Secret32::from_bytes([b; 32]));
+        let (a1, b1, author, a3, b3) = (dk(1), dk(2), dk(3), dk(4), dk(5));
+        let (salt, hb, b) = ([5u8; 16], [7u8; 16], BlobId([9; 32]));
+        let vk = |l: u8, d: &DeleteSecret| (l, d.verifying_key());
+        let two = Prefix::for_groups(salt, &hb, None, &[vec![vk(1, &a1), vk(2, &author), vk(3, &a3)], vec![vk(1, &b1), vk(2, &author), vk(3, &b3)]]).unwrap();
+        let empty = Prefix::for_groups(salt, &hb, None, &[vec![vk(2, &author)], vec![]]).unwrap();
+        let all: [(Level, u8); 5] = [(1, 1), (1, 2), (2, 3), (3, 4), (3, 5)];
+        for prefix in [&two, &empty] {
+            for mask in 0u32..1 << all.len() {
+                let held: Vec<(Level, DeleteSecret)> = all.iter().enumerate().filter(|(i, _)| mask & 1 << i != 0).map(|(_, (l, d))| (*l, dk(*d))).collect();
+                for (role_keys, name) in [(vec![RoleKey::Sync, RoleKey::Write], "both"), (vec![RoleKey::Sync], "sync"), (vec![RoleKey::Write], "write")] {
+                    let picked = cover_levels(prefix, &hb, &held, |r| role_keys.contains(&r));
+                    // any covering choice verifies: does one exist among the held keys?
+                    let mut any = false;
+                    for sub in 1u32..1 << held.len() {
+                        let dks: Vec<(Level, &DeleteSecret)> = held.iter().enumerate().filter(|(i, _)| sub & 1 << i != 0).map(|(_, (l, d))| (*l, d)).collect();
+                        let levels: Vec<Level> = dks.iter().map(|x| x.0).collect();
+                        let Ok(role) = key_for_levels(&levels) else { continue };
+                        if !role_keys.contains(&role) || levels.windows(2).any(|w| w[0] == w[1]) {
+                            continue;
+                        }
+                        let key = if role == RoleKey::Write { &write } else { &sync };
+                        any |= DeleteItem::sign_by(key, &dks, &salt, &hb, &l, b).is_ok_and(|x| x.verify(&s0, Some(prefix)).is_ok());
+                    }
+                    match picked {
+                        Some(dks) => {
+                            let levels: Vec<Level> = dks.iter().map(|x| x.0).collect();
+                            let key = if key_for_levels(&levels).unwrap() == RoleKey::Write { &write } else { &sync };
+                            assert!(DeleteItem::sign_by(key, &dks, &salt, &hb, &l, b).unwrap().verify(&s0, Some(prefix)).is_ok(), "held {mask:#b} {name}: picked keys refused");
+                        }
+                        None => assert!(!any, "held {mask:#b} {name}: a covering choice exists"),
+                    }
+                }
+            }
+        }
+        // the author's own key covers both groups in one signature, with the sync key alone
+        let held = vec![(2, dk(3)), (3, dk(4)), (3, dk(5))];
+        assert_eq!(cover_levels(&two, &hb, &held, |_| true).map(|d| d.iter().map(|x| x.0).collect::<Vec<_>>()), Some(vec![2]));
+    }
+
     #[test]
     fn deletes() {
         let g = Group::new(40);

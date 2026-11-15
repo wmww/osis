@@ -24,7 +24,6 @@ use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, BlobId, CommitId, Link, Tid, Value};
-use osis_crypto::DeleteSecret;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -440,12 +439,11 @@ impl Engine {
         self.read(|tx| rows(tx, records::FREED))
     }
 
-    /// The delete secrets this node holds for the keys freed link `f` names (spec/crypto.md §7:
-    /// levels 1 and 3 along its thing's chain, level 2 along its author's), with their levels.
-    pub fn freed_delete_secrets(&self, f: &Freed) -> Vec<(u8, DeleteSecret)> {
-        let thing = self.core.delete_chain(&f.tid);
-        let author = self.core.delete_chain(&f.author);
-        f.link.del.iter().filter_map(|(level, k)| crate::engine::Core::delete_secret(level, &k, &thing, &author).map(|d| (level, d))).collect()
+    /// What a Delete by levels of freed link `f` signs for (`DeleteBasis`): one group, the keys
+    /// its link names (levels 1 and 3 along its thing's chain, level 2 along its author's).
+    pub fn freed_delete_basis(&self, f: &Freed) -> Option<crate::sync::DeleteBasis> {
+        let (salt, blind) = f.blinding();
+        self.delete_basis(salt, blind, &f.author, &[(f.tid, f.link.del.iter().collect())])
     }
 }
 
@@ -522,7 +520,7 @@ mod tests {
         assert_eq!(e.freed_wants().count(), 0);
         assert!(want.iter().all(|b| e.is_freed(b).unwrap()), "freed as judged (`Engine::freed`)");
         assert!(j.freed.iter().all(|f| f.borne && f.tid == t && !f.link.del.is_empty()), "held, borne, deletable by its keys");
-        assert!(j.freed.iter().all(|f| e.freed_delete_secrets(f).len() == f.link.del.len()), "the writer holds every key its links name");
+        assert!(j.freed.iter().all(|f| e.freed_delete_basis(f).is_some_and(|d| d.held.len() == f.link.del.len())), "the writer holds every key its links name");
         // judged again: the same set
         assert_eq!(judge_all(e).freed.len(), want.len());
         for b in &want {
