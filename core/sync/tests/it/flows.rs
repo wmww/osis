@@ -1153,49 +1153,102 @@ fn keep_arriving(as_item: bool) {
     assert!(reads(&mut w, ["x2", "c2"]), "both arrive after X has secrets of its own (Y an item: {as_item})");
 }
 
-// spec/sync-judgement.md §2 (the certificate blobs of spec/permissions.md §4, judged by the deltas
-// a blob holds), spec/permissions.md §4: writers of two accounts each log
-// their own chain certificates under the thing's sync ID as copies; through complete passes
-// neither drops or deletes the other's (no tombstone of one at either node), and each holds
-// every one of them under the sync ID.
+// spec/sync-judgement.md §2 (required set: a certificate blob is in it by the chain certificates
+// of an author of a body under S it carries, the same at every node), spec/permissions.md §4
+// (Chain certificates: every line of an account's signing chain): writers of two accounts each
+// log their own account's certificates under the thing's sync ID as copies; through role
+// changes, each account's rotation (a node paired and removed) and the thing filed in a group
+// and out again, each followed by complete passes, neither node drops or deletes a copy of the
+// other's (no tombstone of one at either node), both judge every copy either holds, of both
+// accounts, inside S's required set, and both stores hold the same copies, each account's
+// rotations among them.
 #[test]
 fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2() {
     let (mut w, t, ak) = granted_and_read(Role::Write);
     let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
-    w.write(1, |e| {
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let write = |w: &mut World, i: usize, v: &str| {
+        w.write(i, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &ak, &Value::Str(v.into())).unwrap();
+            e.commit(m).unwrap();
+        })
+    };
+    // the certificate copies node i holds under S, whoever logged them (a copy as the node that
+    // opened or sealed it knows it)
+    let copies = |w: &mut World, i: usize| -> std::collections::BTreeSet<osis_base::BlobId> {
+        let held: Vec<osis_base::BlobId> = w.store(i).entries(&s).unwrap().iter().map(|e| e.blob).collect();
+        held.into_iter().filter(|b| (0..2).any(|j| w.engine(j).blob_of(b).unwrap().is_some_and(|x| x.copy))).collect()
+    };
+    let mut ever = std::collections::BTreeSet::new();
+    let mut settle = |w: &mut World, step: &str| {
+        w.run();
+        w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+        w.run();
+        let (c0, c1) = (copies(w, 0), copies(w, 1));
+        ever.extend(c0.iter().chain(&c1).copied());
+        assert_eq!(c0, c1, "{step}: both stores hold the same certificate copies");
+        let mut authors = std::collections::BTreeSet::new();
+        for b in c0.iter().chain(&c1) {
+            // one judgement of the blob at both nodes: in S's required set
+            for i in 0..2 {
+                let e = w.engine(i);
+                let c = e.blob_commit(b).unwrap().unwrap();
+                assert!(e.body_facts(&s, &c).unwrap().required, "{step}: node {i} judges a copy outside the required set");
+                authors.insert(e.header(&c).unwrap().author);
+            }
+        }
+        assert!(authors.contains(&a0) && authors.contains(&a1), "{step}: copies of both accounts' chains: {authors:?}");
+        for b in &ever {
+            for j in 0..2 {
+                assert!(w.store(j).tombstone(&s, b).unwrap().is_none(), "{step}: node {j} dropped or deleted a certificate copy");
+            }
+        }
+    };
+    write(&mut w, 1, "y");
+    settle(&mut w, "both written");
+    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(edge(Role::Read)), retain: None })).unwrap();
+    w.run();
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Write))).unwrap();
+    w.run();
+    write(&mut w, 1, "z");
+    settle(&mut w, "lowered and raised");
+    for i in [1, 0] {
+        let n = w.pair(i);
+        w.run();
+        let (node, d) = (w.engine(n).tid(), w.engine(i).account().unwrap().unwrap().1);
+        w.write(i, |e| e.demote(&d, &Demotion { holder: node, new: None, retain: None })).unwrap();
+        w.power_off(n);
+        write(&mut w, i, &format!("after {i} rotated"));
+        settle(&mut w, &format!("account {i} rotated"));
+    }
+    // every line of each writer's signing chain is in S's required set at both nodes, whichever
+    // account's it is
+    for (a, i) in [(a0, 0), (a1, 1)] {
+        for r in w.engine(i).account_rotations(&a) {
+            for j in 0..2 {
+                assert!(w.engine(j).body_facts(&s, &r).unwrap().required, "node {j}: a rotation of account {i} outside S's required set");
+                let blobs: Vec<osis_base::BlobId> = (0..2).flat_map(|k| w.engine(k).commit_blobs(&r).unwrap().iter().copied().collect::<Vec<_>>()).collect();
+                assert!(blobs.iter().any(|b| w.store(j).entry(&s, b).ok().flatten().is_some()), "node {j}: a rotation of account {i} not held under S");
+            }
+        }
+    }
+    let rots = [w.engine(0).account_rotations(&a1).len(), w.engine(1).account_rotations(&a0).len(), w.engine(1).account_rotations(&a1).len(), w.engine(0).account_rotations(&a0).len()];
+    assert!(rots[0] >= 1 && rots[0] == rots[2] && rots[1] >= 1 && rots[1] == rots[3], "each account rotated, seen at the other: {rots:?}");
+    let g = w.write(0, |e| {
         let mut m = Mutation::new();
-        m.set(t, &ak, &Value::Str("y".into())).unwrap();
+        let g = e.new_thing(&mut m, a0);
+        m.set(g, &ct::GROUP, &ct::Group { items: [t].into(), ..Default::default() }).unwrap();
+        e.commit(m).unwrap();
+        g
+    });
+    file(&mut w, 0, vec![g], Vec::new());
+    write(&mut w, 1, "in a group");
+    settle(&mut w, "filed in a group");
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
         e.commit(m).unwrap();
     });
-    w.run();
-    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
-    w.run();
-    // every certificate copy either node holds under S, whoever logged it
-    let mut copies = std::collections::BTreeSet::new();
-    for i in 0..2 {
-        let held: Vec<osis_base::BlobId> = w.store(i).entries(&s).unwrap().iter().map(|e| e.blob).collect();
-        copies.extend(held.into_iter().filter(|b| w.engine(i).blob_of(b).unwrap().is_some_and(|x| x.copy)));
-    }
-    let mut authors = std::collections::BTreeSet::new();
-    for b in &copies {
-        let e = w.engine(0);
-        if let Some(h) = e.blob_commit(b).unwrap().and_then(|c| e.header(&c)) {
-            authors.insert(h.author);
-        }
-    }
-    assert!(authors.len() >= 2, "copies of both accounts' chains: {authors:?}");
-    for b in &copies {
-        for j in 0..2 {
-            assert!(w.store(j).tombstone(&s, b).unwrap().is_none(), "node {j} dropped or deleted a certificate copy");
-        }
-    }
-    // and each node holds an entry of every such commit under S: one the other logged is pulled,
-    // its bytes held under another sync ID or not
-    let commits: std::collections::BTreeSet<_> = copies.iter().filter_map(|b| (0..2).find_map(|i| w.engine(i).blob_commit(b).unwrap())).collect();
-    for c in &commits {
-        for j in 0..2 {
-            let blobs = w.engine(j).commit_blobs(c).unwrap();
-            assert!(w.store(j).entries(&s).unwrap().iter().any(|e| blobs.contains(&e.blob)), "node {j} holds no entry of certificate {c:?} under S");
-        }
-    }
+    settle(&mut w, "unfiled");
 }

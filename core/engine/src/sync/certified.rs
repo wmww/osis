@@ -201,7 +201,7 @@ impl Certified {
             }
             self.wrote = true;
             if was.is_some() != union.is_some() {
-                let mut naming = self.naming.remove(c).unwrap_or_default();
+                    let mut naming = self.naming.remove(c).unwrap_or_default();
                 let set = Arc::make_mut(&mut naming);
                 match union.is_some() {
                     true => set.insert(t),
@@ -629,6 +629,179 @@ mod tests {
         e.set_now(now);
         check(e, "until passed");
         assert!(!e.reads_in(&g, &x) && !under_g(e), "the chain to X left G");
+    }
+
+    /// Thing `t`'s certificates as `e`'s rows keep them.
+    fn rows_of(e: &mut Engine, t: &Tid) -> Certs {
+        e.follow_certificates().unwrap();
+        let mut got = Certs::default();
+        for ((c, x), n) in e.core.certified.of.iter() {
+            if x != t {
+                continue;
+            }
+            if !n.parts.is_empty() {
+                got.commits.insert(*c, n.parts.clone());
+            }
+            if n.header {
+                got.headers.insert(*c);
+            }
+            if !n.mints.is_empty() {
+                got.mintings.insert(*c, n.mints.clone());
+            }
+        }
+        got.records = (*e.core.certified.records.get(t).cloned().unwrap_or_default()).clone();
+        got
+    }
+
+    // spec/sync-judgement.md §2 (required set: a certificate blob is in it by the chain
+    // certificates it carries, the same at every node), spec/permissions.md §4 (Chain
+    // certificates: an account's signing chain, every line): writers of two accounts on T, through
+    // account rotations of both, a role change and T filed in a group and out again, name the
+    // same certificates of T at both nodes, each account's own (its every rotation line among
+    // them) included at the other; a chain certificate of a writer that is none of T's (its edge
+    // on an unrelated group) is named at neither.
+    #[test]
+    fn two_nodes_name_the_same_certificates_whoever_logs_them_spec_sync_judgement_2() {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        let a0 = lp.peers[0].engine.create_account().unwrap().0;
+        let a1 = lp.peers[1].engine.create_account().unwrap().0;
+        lp.sync_all().unwrap();
+        let ak = Ak::new("x:a.0").unwrap();
+        let mut made = Vec::new();
+        for i in 0..3 {
+            let e = &mut lp.peers[0].engine;
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a0.account);
+            m.set(t, &ak, &Value::Int(i)).unwrap();
+            e.commit(m).unwrap();
+            made.push(t);
+        }
+        let (t, g, y) = (made[0], made[1], made[2]);
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
+        let rotate = |lp: &mut LocalPeer, i: usize, p: Tid| {
+            let e = &mut lp.peers[i].engine;
+            e.run(|tx| crate::flows::signing::rotate_in(tx, p, &[], &mut crate::flows::Done::default())).unwrap().unwrap();
+        };
+        let write = |lp: &mut LocalPeer, i: usize, v: i64| {
+            let mut m = Mutation::new();
+            m.set(t, &ak, &Value::Int(v)).unwrap();
+            lp.peers[i].commit(m).unwrap();
+        };
+        type Step<'a> = (&'a str, Box<dyn Fn(&mut LocalPeer) + 'a>);
+        let steps: Vec<Step> = vec![
+            ("grant write", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.grant(&t, &a1.account, &edge(Role::Write)).unwrap()))),
+            ("filed in each D", Box::new(|lp: &mut LocalPeer| {
+                lp.sync_all().unwrap();
+                for (i, d, items) in [(0, a0.devices, vec![t, g]), (1, a1.devices, vec![t])] {
+                    let mut m = Mutation::new();
+                    m.set(d, &ct::GROUP, &ct::Group { items: items.into_iter().collect(), ..Default::default() }).unwrap();
+                    lp.peers[i].commit(m).unwrap();
+                }
+            })),
+            ("both write", Box::new(|lp: &mut LocalPeer| {
+                lp.sync_all().unwrap();
+                write(lp, 0, 1);
+                write(lp, 1, 2);
+            })),
+            ("an unrelated group", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.grant(&y, &a1.account, &edge(Role::Write)).unwrap()))),
+            ("a1 rotates", Box::new(|lp: &mut LocalPeer| rotate(lp, 1, a1.account))),
+            ("a1 rotates again and writes", Box::new(|lp: &mut LocalPeer| {
+                rotate(lp, 1, a1.account);
+                write(lp, 1, 3);
+            })),
+            ("a0 rotates twice", Box::new(|lp: &mut LocalPeer| {
+                rotate(lp, 0, a0.account);
+                rotate(lp, 0, a0.account);
+            })),
+            ("lowered", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.demote(&t, &Demotion { holder: a1.account, new: Some(edge(Role::Read)), retain: None }).unwrap()))),
+            ("raised", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.grant(&t, &a1.account, &edge(Role::Write)).unwrap()))),
+            ("filed in a group", Box::new(|lp: &mut LocalPeer| {
+                let mut m = Mutation::new();
+                m.set(g, &ct::GROUP, &ct::Group { items: [t].into(), ..Default::default() }).unwrap();
+                lp.peers[0].engine.commit(m).unwrap();
+            })),
+            ("a1 writes again", Box::new(|lp: &mut LocalPeer| write(lp, 1, 4))),
+            ("unfiled", Box::new(|lp: &mut LocalPeer| {
+                let mut m = Mutation::new();
+                m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+                lp.peers[0].engine.commit(m).unwrap();
+            })),
+        ];
+        let lines = |e: &Engine, p: &Tid| e.account_rotations(p);
+        for (k, (name, f)) in steps.iter().enumerate() {
+            f(&mut lp);
+            lp.sync_all().unwrap();
+            if k > 0 {
+                assert!(lp.peers.iter_mut().all(|p| p.engine.read_things().unwrap().contains(&t)), "{name}: T read at both");
+            }
+            let r0 = rows_of(&mut lp.peers[0].engine, &t);
+            let r1 = rows_of(&mut lp.peers[1].engine, &t);
+            assert_eq!(r0, r1, "{name}: T's certificates differ between the nodes");
+            check(&mut lp.peers[0].engine, name);
+            check(&mut lp.peers[1].engine, name);
+            // y's edge naming a1: a chain certificate of a1, but none of T's
+            let on_y = |e: &Engine| e.core.ix.by_aspect.get(&(y, Ak::new("roles.0").unwrap())).into_iter().flatten().map(|x| x.1).collect::<Vec<_>>();
+            for c in on_y(&lp.peers[0].engine) {
+                assert!(!r0.commits.contains_key(&c), "{name}: an edge on an unrelated group named");
+            }
+        }
+        let r0 = rows_of(&mut lp.peers[0].engine, &t);
+        for p in [a0.account, a1.account] {
+            let ls = lines(&lp.peers[0].engine, &p);
+            assert!(ls.len() >= 2, "rotations made");
+            for c in ls {
+                assert!(r0.commits.contains_key(&c), "every line of each writer's signing chain named");
+            }
+        }
+    }
+
+    // spec/sync-judgement.md §2 (required set: certificates the same at every node), counted at n
+    // and 10n lines of a writer's signing chain: after another account's rotation, and after a
+    // plain write by it, the reader derives the same number of pieces at both sizes.
+    #[test]
+    fn another_accounts_rotation_derives_pieces_in_proportion_to_change_spec_sync_judgement_2() {
+        let derived = |n: usize| -> (u64, u64) {
+            let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+            let a0 = lp.peers[0].engine.create_account().unwrap().0;
+            let a1 = lp.peers[1].engine.create_account().unwrap().0;
+            lp.sync_all().unwrap();
+            let ak = Ak::new("x:a.0").unwrap();
+            let e = &mut lp.peers[0].engine;
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a0.account);
+            m.set(t, &ak, &Value::Int(0)).unwrap();
+            m.set(a0.devices, &ct::GROUP, &ct::Group { items: [t].into(), ..Default::default() }).unwrap();
+            e.commit(m).unwrap();
+            e.grant(&t, &a1.account, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
+            lp.sync_all().unwrap();
+            let write = |lp: &mut LocalPeer, v: i64| {
+                let mut m = Mutation::new();
+                m.set(t, &ak, &Value::Int(v)).unwrap();
+                lp.peers[1].commit(m).unwrap();
+                lp.sync_all().unwrap();
+            };
+            let rotate = |lp: &mut LocalPeer| {
+                lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, a1.account, &[], &mut crate::flows::Done::default())).unwrap().unwrap();
+                lp.sync_all().unwrap();
+            };
+            write(&mut lp, 1);
+            for _ in 0..n {
+                rotate(&mut lp);
+            }
+            lp.peers[0].engine.follow_certificates().unwrap();
+            let pieces = || osis_base::costs::take().iter().filter(|x| x.0 == "sync: certificate pieces derived").map(|x| x.2).sum::<u64>();
+            osis_base::costs::take();
+            rotate(&mut lp);
+            lp.peers[0].engine.follow_certificates().unwrap();
+            let rotated = pieces();
+            write(&mut lp, 2);
+            osis_base::costs::take();
+            lp.peers[0].engine.follow_certificates().unwrap();
+            (rotated, pieces())
+        };
+        let (small, big) = (derived(2), derived(20));
+        assert!(small.0 > 0, "the rotation re-derives the pieces naming the account");
+        assert_eq!(small, big, "pieces derived (after the rotation, after the write) at n and 10n lines");
     }
 
     // spec/permissions.md §4, spec/sync-judgement.md §1 (List blobs), as above: random histories

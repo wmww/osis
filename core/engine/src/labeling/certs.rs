@@ -142,9 +142,10 @@ impl Engine {
 
     /// This node's chain certificates for `g`, its node card and the cards of the key actors
     /// holding `g` (spec/permissions.md §4): the commits with the parts to carry, and the records.
+    /// What this node would log of its own; never what S's required set holds (`own_piece`).
     pub fn certificates(&mut self, g: &Tid) -> Certs {
         let Some(me) = self.core.me() else { return Certs::default() };
-        let mut out = Certs::default();
+        let mut out = self.shared_certificates(g);
         // the account's card (the author of every commit but the node's own) and, under D's
         // home alone, the node's (nothing of a node goes under another sync ID)
         let under_d = self.core.account_devices().is_some_and(|(_, d)| d == *g);
@@ -158,15 +159,25 @@ impl Engine {
             }
         }
         // the account's signing chain, every line (spec/permissions.md §5.5, Chains travel)
-        if self.core.is_account(&me)
-            && let Ok(keys) = osis_base::Ak::new("keys.0")
-        {
-            let rots: Vec<CommitId> = self.core.ix.by_aspect.get(&(me, keys)).into_iter().flatten().map(|(_, c)| *c).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == me && m.view.epoch.is_some()) && self.header(c).is_some_and(|h| h.rotation.is_some())).collect();
-            let mine = BTreeSet::from([me]);
-            for c in rots {
-                out.add(c, self.parts_of(&c, &mine, &["keys.0"]));
-            }
+        self.account_chain(&me, &mut out);
+        let certs = self.core.timelines.certificates(&me, g);
+        self.cert_parts(&certs, &mut out);
+        // and to each actor it has acted for (`validity::acts_for`): usually on the chain to
+        // `g` already, the node reaching `g` through it
+        for a in self.core.acting().iter() {
+            let certs = self.chain_to(&me, a);
+            self.cert_parts(&certs, &mut out);
         }
+        self.close_records(&mut out);
+        out
+    }
+
+    /// What any node logs under `g` beside chains (spec/permissions.md §4): the records up `g`'s
+    /// record chain, the destroyed things its closure needs with their frozen permission history,
+    /// and the cards of the key actors holding `g` that are no node. Nothing here depends on which
+    /// node asks.
+    fn shared_certificates(&mut self, g: &Tid) -> Certs {
+        let mut out = Certs::default();
         // the record chain's records
         out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
         // the destroyed things the label's closure needs told destroyed: on an authority path into it,
@@ -183,28 +194,43 @@ impl Engine {
         // the cards of the key actors holding `g` that are no node (a link key: its writes
         // under the label verify by its card, which no chain of this node's carries; a node
         // places its own)
-        let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| *k != me && self.core.is_key_actor(k)).collect();
+        let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_key_actor(k)).collect();
         for k in keys.into_iter().filter(|k| self.latest_on(k, "node.0").is_none()) {
             out.records.insert(k);
             if let Some(c) = self.latest_on(&k, "keys.0") {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([k]), &["keys.0"]));
             }
         }
-        let certs = self.core.timelines.certificates(&me, g);
-        self.cert_parts(&certs, &mut out);
-        // and to each actor it has acted for (`validity::acts_for`): usually on the chain to
-        // `g` already, the node reaching `g` through it
-        for a in self.core.acting().iter() {
-            let certs = self.chain_to(&me, a);
-            self.cert_parts(&certs, &mut out);
-        }
-        // every thing whose record goes, with its mintings (and a destroyed one's destruction)
+        out
+    }
+
+    /// Every thing whose record `out` carries gets its mintings (and a destroyed one's
+    /// destruction); records not held leave.
+    fn close_records(&mut self, out: &mut Certs) {
         let records: Vec<Tid> = out.records.iter().copied().collect();
         for t in records {
-            self.minting_evidence(&t, &mut out);
+            self.minting_evidence(&t, out);
         }
         out.records.retain(|t| self.core.created(t).is_some());
-        out
+    }
+
+    /// Account `p`'s record, card and signing chain, every line held (spec/permissions.md §4,
+    /// §5.5 Chains travel): its newest valid `keys.0` commit and its rotations, each projected to
+    /// `keys.0`, added to `out`. Nothing for an actor that is no account.
+    pub(crate) fn account_chain(&mut self, p: &Tid, out: &mut Certs) {
+        if !self.core.is_account(p) {
+            return;
+        }
+        out.records.insert(*p);
+        let on = BTreeSet::from([*p]);
+        if let Some(c) = self.latest_on(p, "keys.0") {
+            out.add(c, self.parts_of(&c, &on, &["keys.0"]));
+        }
+        let Ok(keys) = osis_base::Ak::new("keys.0") else { return };
+        let rots: Vec<CommitId> = self.core.ix.by_aspect.get(&(*p, keys)).into_iter().flatten().map(|(_, c)| *c).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == *p && m.view.epoch.is_some()) && self.header(c).is_some_and(|h| h.rotation.is_some())).collect();
+        for c in rots {
+            out.add(c, self.parts_of(&c, &on, &["keys.0"]));
+        }
     }
 
     /// What a sync ID of `g` holds as certificates, whoever logs them (spec/permissions.md §4,
@@ -231,20 +257,24 @@ impl Engine {
         out
     }
 
-    /// `g`'s own certificates as a read thing (`sync_certificates`): this node's own
-    /// (`certificates`); every node's chain certificates for `g`, which each node syncing it logs
-    /// (`Timelines::certificates_into` `g`: what ever reaches it); and under D's home every card
-    /// commit of D's other nodes. Reads role commits, records and cards, never content.
+    /// `g`'s own certificates as a read thing (`sync_certificates`): `shared_certificates`, every
+    /// actor's chain certificates for `g` (`Timelines::certificates_into`: what ever reaches it,
+    /// each account with its signing chain), and under D's home every node's card commits (each
+    /// node of D logs its own there). The same at
+    /// every node judging `g`: what this node logs of its own (`certificates`) decides nothing of
+    /// S's required set, else two honest nodes would delete each other's copies (spec/sync-
+    /// judgement.md §2). Reads role commits, records and cards, never content.
     pub(crate) fn own_piece(&mut self, g: &Tid) -> Certs {
-        let mut out = self.certificates(g);
+        let under_d = self.core.account_devices().is_some_and(|(_, d)| d == *g);
+        let mut out = self.shared_certificates(g);
         let found = self.core.timelines.certificates_into(g);
         self.cert_parts(&found, &mut out);
-        if self.core.account_devices().is_some_and(|(_, d)| d == *g) {
-            let me = self.tid();
+        if under_d {
             for (n, _) in self.core.key_holders(g) {
-                if n == me || !self.is_node(&n).unwrap_or(false) {
+                if !self.is_node(&n).unwrap_or(false) {
                     continue;
                 }
+                out.records.insert(n);
                 for ak in CARD {
                     let Ok(k) = Ak::new(ak) else { continue };
                     let held: Vec<CommitId> = self.core.ix.by_aspect.get(&(n, k)).into_iter().flatten().map(|x| x.1).collect();
@@ -257,6 +287,7 @@ impl Engine {
                 }
             }
         }
+        self.close_records(&mut out);
         out
     }
 
@@ -601,6 +632,15 @@ impl Engine {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
                 self.carried_demotions(t, &c, out);
             }
+        }
+        // each account on the chain or at the root of a record chain on it: its record, card and
+        // signing chain, every line (spec/permissions.md §4)
+        let accounts: BTreeSet<Tid> = certs.created.iter().flat_map(|t| std::iter::once(*t).chain(self.core.record_chain(t).filter_map(|s| match s {
+            ChainStep::Key(y) => Some(y),
+            _ => None,
+        }))).filter(|t| self.core.is_account(t)).collect();
+        for p in &accounts {
+            self.account_chain(p, out);
         }
         for t in &certs.created {
             self.minting_evidence(t, out);
