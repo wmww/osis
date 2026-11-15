@@ -86,6 +86,8 @@ fn a_self_removal_shared_only_with_a_sibling_drops_at_once_spec_perm_3() {
         let mut m = Mutation::new();
         m.set(d, &ct::GROUP, &g).unwrap();
         e.commit(m).unwrap();
+        // its grant made here shared it here too (spec/sync-set.md §2 Shared here)
+        e.unshare(&t).unwrap();
     });
     w.flush();
     assert!(w.store(0).synced(&s).is_none(), "node 0 stopped syncing it");
@@ -417,6 +419,8 @@ fn a_removed_siblings_record_is_no_peer_spec_sync_opens_3() {
         let mut m = Mutation::new();
         m.set(d, &ct::GROUP, &g).unwrap();
         e.commit(m).unwrap();
+        // the link made here shared it here too (spec/sync-set.md §2 Shared here)
+        e.unshare(&t).unwrap();
     });
     w.run();
     assert!(w.store(1).synced(&s).is_none(), "node 1 left S: a removed node is no peer");
@@ -446,7 +450,8 @@ fn shared_then_away(both: bool) -> (World, Tid, Ak, osis_base::SyncId) {
     (w, t, ak, s)
 }
 
-/// Node 0 takes t out of its synced group (unsyncing it) and runs past a pass's wait.
+/// Node 0 takes t out of its synced group and shares it no more (unsyncing it, spec/sync-set.md
+/// §2: its grant made there shared it), and runs past a pass's wait.
 fn unfile_and_wait(w: &mut World, t: Tid) {
     w.write(0, |e| {
         let d0 = e.account().unwrap().unwrap().1;
@@ -455,6 +460,7 @@ fn unfile_and_wait(w: &mut World, t: Tid) {
         let mut m = Mutation::new();
         m.set(d0, &ct::GROUP, &g).unwrap();
         e.commit(m).unwrap();
+        e.unshare(&t).unwrap();
     });
     w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
 }

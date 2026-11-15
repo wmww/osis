@@ -470,6 +470,8 @@ fn a_self_removal_nobody_shares_drops_at_once_spec_perm_3() {
         let mut m = Mutation::new();
         m.set(d, &ct::GROUP, &g).unwrap();
         e.commit(m).unwrap();
+        // its grant made here shared it here too (spec/sync-set.md §2 Shared here)
+        e.unshare(&t).unwrap();
     });
     w.run();
     assert!(w.store(0).synced(&s).is_none(), "node 0 stopped syncing it");
@@ -521,6 +523,7 @@ fn an_unsynced_write_reaches_a_peer_before_the_copy_goes_spec_sync_set_3() {
     assert!(w.store(1).synced(&s).is_none() && !w.store(1).held_ids().unwrap().contains(&s), "stopped and shredded");
 }
 
+/// Node `i` unsyncs `t`: out of its synced group, and shared there no more (spec/sync-set.md §2).
 fn unfile(w: &mut World, i: usize, t: osis_base::Tid) {
     w.write(i, |e| {
         let d = e.account().unwrap().unwrap().1;
@@ -530,6 +533,7 @@ fn unfile(w: &mut World, i: usize, t: osis_base::Tid) {
         let mut m = Mutation::new();
         m.set(d, &ct::GROUP, &g).unwrap();
         e.commit(m).unwrap();
+        e.unshare(&t).unwrap();
     });
 }
 
@@ -551,7 +555,11 @@ fn an_unsynced_write_on_a_sync_id_just_joined_reaches_the_peer_first_spec_sync_s
         e.commit(m).unwrap();
         t
     });
-    w.write(1, |e| e.grant(&t, &a0, &edge(Role::Write))).unwrap();
+    // shared no more at node 1: S joins its sync set only by its filing below
+    w.write(1, |e| {
+        e.grant(&t, &a0, &edge(Role::Write)).unwrap();
+        e.unshare(&t).unwrap();
+    });
     w.run();
     file(&mut w, 0, Vec::new(), vec![t]);
     w.run();
@@ -632,7 +640,11 @@ fn a_peer_acknowledging_a_sync_id_it_does_not_hold_ends_the_wait_spec_sync_set_3
         e.commit(m).unwrap();
         t
     });
-    w.write(1, |e| e.grant(&t, &a0, &edge(Role::Write))).unwrap();
+    // shared no more at node 1: S joins its sync set only by its filing below, apart from node 0
+    w.write(1, |e| {
+        e.grant(&t, &a0, &edge(Role::Write)).unwrap();
+        e.unshare(&t).unwrap();
+    });
     w.run();
     file(&mut w, 0, Vec::new(), vec![t]);
     w.run();

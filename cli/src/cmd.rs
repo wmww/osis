@@ -481,6 +481,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
             Ok(db.leave(holder, ctx.tid(&t)?)?)
         }
+        Cmd::Unsync { t } => Ok(db.unsync(ctx.tid(&t)?)?),
         Cmd::Retained { drop: Some(a) } => Ok(db.drop_retained_copy(ctx.tid(&a)?)?),
         Cmd::Retained { drop: None } => ctx.list(&db.retained_copies()?.iter().map(Tid::to_uri).collect::<Vec<_>>()),
         Cmd::AddWithGrant { t, g, role, subgroup } => {

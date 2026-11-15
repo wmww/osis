@@ -428,6 +428,74 @@ fn a_thing_listed_nowhere_stays_on_its_node_spec_sync_set_2() {
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("t"), "listed in home later: reaches b");
 }
 
+// spec/sync-set.md §2 (Shared here), §3 (Unsyncing): a thing listed nowhere, granted
+// to another account, syncs at the granting node: the grantee accepts and gets it from there,
+// and its writes come back; the account's other node does not sync it. Unsynced at the granting
+// node, once its writes are held elsewhere it leaves there and its copy goes; the grantee keeps
+// it, and what it writes later stays off that node.
+#[test]
+fn a_shared_thing_syncs_at_the_sharing_node_spec_sync_set_2() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (a, a2, _) = paired(&net, &c);
+    let o = on(&net, 56, &c);
+    drive(&net, o.import_contact(&a.contact_card().unwrap())).unwrap();
+    drive(&net, a.import_contact(&o.contact_card().unwrap())).unwrap();
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.at(t, osis::core::NAME).set(&"shared".to_string()).unwrap();
+    w.commit().unwrap();
+    a.grant(t, o.me(), Role::Write, osis::GrantOpts::default()).unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    o.accept_invite(t, o.home()).unwrap();
+    drive(&net, o.wait_synced(SyncScope::Thing(t))).unwrap();
+    assert_eq!(name(&o, t).as_deref(), Some("shared"), "the grantee got it from the sharing node");
+    let mut w = o.write();
+    w.at(t, osis::core::NAME).set(&"from o".to_string()).unwrap();
+    w.commit().unwrap();
+    drive(&net, o.wait_synced(SyncScope::Thing(t))).unwrap();
+    net.run();
+    assert_eq!(name(&a, t).as_deref(), Some("from o"), "and its writes came back");
+    assert!(a.status().unwrap().groups.contains_key(&t));
+    assert!(!a2.status().unwrap().groups.contains_key(&t), "the account's other node does not sync it");
+    assert_eq!(name(&a2, t), None);
+    a.unsync(t).unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    assert!(!a.status().unwrap().groups.contains_key(&t), "left the sharing node");
+    assert_eq!(name(&a, t), None, "its copy went");
+    let mut w = o.write();
+    w.at(t, osis::core::NAME).set(&"later".to_string()).unwrap();
+    w.commit().unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    assert_eq!(name(&o, t).as_deref(), Some("later"));
+    assert_eq!(name(&a, t), None, "what it writes later stays off it");
+}
+
+// spec/sync-set.md §2 (Shared here), spec/sync-inbox.md §6: a link to a thing listed nowhere
+// shares it at the node making it: a redeemer joins through that node and gets the thing.
+#[test]
+fn a_link_to_a_thing_listed_nowhere_is_served_spec_sync_set_2() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 57, &c);
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    let b = on(&net, 58, &c);
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.at(t, osis::core::NAME).set(&"linked".to_string()).unwrap();
+    w.commit().unwrap();
+    let link = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
+    assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
+    drive(&net, b.wait_synced(SyncScope::Thing(t))).unwrap();
+    assert_eq!(name(&b, t).as_deref(), Some("linked"));
+}
+
 // spec/sync-inbox.md §6 (first contact), spec/sync-set.md §4 (A redeem is an accept): a redeemer reaches the
 // sharer node by the link and joins; the redeem files the thing under its home, so it syncs both
 // ways after the join with no other write.
@@ -649,6 +717,8 @@ fn an_unsynced_thing_is_forgotten_here_spec_sync_set_3() {
     let mut w = a.write();
     w.group(a.home()).remove(osis::Member::Item(t)).unwrap();
     w.commit().unwrap();
+    // the link `shared_in` made here shared it here too
+    a.unsync(t).unwrap();
     for _ in 0..5 {
         net.run();
     }
@@ -671,6 +741,8 @@ fn an_unsynced_thing_no_peer_shares_goes_at_once_spec_sync_set_3() {
     let mut w = a.write();
     w.group(a.home()).remove(osis::Member::Item(t)).unwrap();
     w.commit().unwrap();
+    // the link `shared_in` made here shared it here too
+    a.unsync(t).unwrap();
     net.run();
     assert_eq!(name(&a, t), None, "forgotten here");
     assert!(!a.status().unwrap().groups.contains_key(&t), "synced no more");
@@ -699,6 +771,8 @@ fn an_unsynced_write_goes_out_before_the_copy_goes_spec_sync_set_3() {
     let mut w = a.write();
     w.group(a.home()).remove(osis::Member::Item(t)).unwrap();
     w.commit().unwrap();
+    // the link `shared_in` made here shared it here too
+    a.unsync(t).unwrap();
     for _ in 0..5 {
         net.advance(60_000);
     }

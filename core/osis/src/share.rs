@@ -688,6 +688,23 @@ impl Osis {
         Ok(())
     }
 
+    /// Stops this node syncing `thing` for having shared it. The node that grants a role on a
+    /// thing to anyone, or makes a link to it, syncs it from then on, wherever it is listed, so
+    /// those it shared with can get it; the account's other nodes sync it only if they would
+    /// anyway. Afterwards `thing` syncs here only while a group this node syncs holds it;
+    /// otherwise this node keeps syncing it until what it wrote there reached another holder
+    /// (or no other holder is left to wait for), then forgets its copy, as moving a thing out of
+    /// every synced group does. A thing this node did not share: nothing changes. `Unsupported`
+    /// through a connection to a node and on a client with its own actor.
+    pub fn unsync(&self, thing: Tid) -> Result<()> {
+        self.local("unsync")?;
+        if self.acting.is_some() {
+            return Err(Error::Unsupported("unsync: on a client with its own actor".into()));
+        }
+        self.engine(|e| e.unshare(&thing))?;
+        Ok(())
+    }
+
     /// The actors this node retains a read-only copy of after being removed from them (for a client
     /// with its own actor, those it reads). A copy reads as before, and nothing syncs or writes it.
     /// `drop_retained_copy` erases one.

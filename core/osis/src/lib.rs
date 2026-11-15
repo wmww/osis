@@ -304,7 +304,8 @@
 //! A role says who may; sync says where the data goes. `grant` gives an actor a role on a thing and
 //! needs the actor's keys (a contact card, a shared group). The holder reads once a synced group it
 //! reads holds the thing, or the grant gives the thing a sync ID of its own. `set_role` changes or
-//! removes a role. A link needs no keys and syncs its thing. Being in a group grants nothing: `add_with_grant` adds a
+//! removes a role. A link needs no keys and syncs its thing. The node that grants or makes the link
+//! syncs the thing from then on, wherever it is listed, until `unsync` there. Being in a group grants nothing: `add_with_grant` adds a
 //! member and lets the group's holders read it.
 //! ```
 //! # use osis::{Config, GrantOpts, MemStore, Osis, Role, Store};

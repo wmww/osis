@@ -359,6 +359,10 @@ pub enum Cmd {
         #[arg(long, value_name = "ACTOR")]
         holder: Option<String>,
     },
+    /// Stop syncing T here for having shared it (a grant or link made on this node): it still
+    /// syncs while a synced group holds it, else it leaves this node once its writes reached
+    /// another holder
+    Unsync { t: String },
     /// List this node's read-only copies of what it was removed from, or erase ACTOR's
     Retained {
         #[arg(long, value_name = "ACTOR")]
