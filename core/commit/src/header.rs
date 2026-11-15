@@ -421,6 +421,22 @@ impl std::fmt::Debug for SeedBox {
 }
 
 impl RotationHeader {
+    /// Whether it is a merge certificate: it names the tips it joins besides the one it is
+    /// signed at (spec/crypto.md §9, Merges).
+    pub fn is_merge(&self) -> bool {
+        !self.names.is_empty()
+    }
+
+    /// The ID of the epoch it mints (spec/crypto.md §9): a plain rotation's is its commit ID
+    /// `id`; a merge's `BLAKE3("osis v1 merge epoch" || signing key || its tips ascending)`, alike
+    /// in every certificate of it.
+    pub fn mints(&self, id: &CommitId) -> CommitId {
+        if !self.is_merge() {
+            return *id;
+        }
+        merge_epoch(&self.signing_key, &self.supersedes)
+    }
+
     fn put(&self, out: &mut Vec<u8>) {
         let ids = |out: &mut Vec<u8>, v: &[CommitId]| {
             put_array(out, v.len());
@@ -668,9 +684,20 @@ impl Signed {
     }
 }
 
-/// Verifies a merge's signature at a fork's epoch, by the key that fork mints (spec/crypto.md §9).
-pub fn verify_merge(id: &CommitId, sig: &Signature, fork_key: &VerifyingKey) -> bool {
-    fork_key.verify(Domain::Merge, &id.0, sig).is_ok()
+/// A merge epoch's ID from its signing key and its tips, ascending (spec/crypto.md §9).
+pub fn merge_epoch(signing_key: &VerifyingKey, tips: &[CommitId]) -> CommitId {
+    let mut h = osis_base::hash::Hasher::new();
+    h.update(osis_crypto::kdf::MERGE_EPOCH.as_bytes()).update(&signing_key.to_bytes());
+    for t in tips {
+        h.update(&t.0);
+    }
+    CommitId(h.finalize())
+}
+
+/// Verifies a merge certificate's signature by a tip's key over the merge epoch's ID `epoch`
+/// (spec/crypto.md §9).
+pub fn verify_merge(epoch: &CommitId, sig: &Signature, tip_key: &VerifyingKey) -> bool {
+    tip_key.verify(Domain::Merge, &epoch.0, sig).is_ok()
 }
 
 // ---- decode

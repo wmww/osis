@@ -843,7 +843,9 @@ impl Engine {
         let Some(p) = self.core.account.get() else { return Ok(Vec::new()) };
         let rots = self.core.account_view(&p).map(|v| v.proving_chain()).unwrap_or_default();
         let mut out = Vec::new();
-        for r in rots {
+        // a merge goes as one of its certificates
+        let v = self.core.account_view(&p);
+        for r in rots.into_iter().filter_map(|e| v.as_ref().and_then(|v| v.minting(&e).first().copied())) {
             let Some(c) = self.read(|tx| tx.get_commit(&r))? else { continue };
             let pt = osis_commit::rewrite(&c, |_| true).encode();
             out.push(osis_base::cbor::decode(&pt, &osis_base::cbor::Limits::DEFAULT).map_err(|_| Error::Corrupt("rotation header"))?);
@@ -882,12 +884,14 @@ impl Engine {
             let mut out = BTreeSet::new();
             for (p, ids) in &of {
                 let Some(v) = core.account_view(p) else { continue };
-                let mut roots: Vec<CommitId> = ids.iter().filter(|r| v.rotation_counts(r)).copied().collect();
+                // by epoch: a merge certificate is its merge's
+                let epochs: BTreeSet<CommitId> = ids.iter().filter_map(|r| v.epoch_of(r)).collect();
+                let mut roots: Vec<CommitId> = epochs.iter().filter(|r| v.rotation_counts(r)).copied().collect();
                 // the Warning's first rise: once it is told by what was held, a Prove adds no line
-                if !v.rotation_ids().iter().any(|r| !ids.contains(r) && v.contests(r)) {
-                    roots.extend(v.contested().iter().filter(|r| ids.contains(r)));
+                if !v.rotation_ids().iter().any(|r| !epochs.contains(r) && v.contests(r)) {
+                    roots.extend(v.contested().iter().filter(|r| epochs.contains(r)));
                 }
-                out.extend(v.needed(roots).into_iter().filter(|r| ids.contains(r)));
+                out.extend(v.needed(roots).into_iter().flat_map(|e| v.minting(&e)).filter(|r| ids.contains(r)));
             }
             out
         })?;

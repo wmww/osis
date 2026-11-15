@@ -2,11 +2,11 @@
 //! rotations a node follows, the open head, and the warning. A pure function of the held
 //! rotations, the order the node came to hold them, the rotation its user chose and (at a node
 //! of the account) what its devices list says of them; nothing here reads `ts`, counters or
-//! signatures (the caller checks those and states the result in `Rotation::signed` and
-//! `Devices`).
+//! signatures (the caller checks those, and passes a merge only with every one verified, and
+//! states who minted what in `Devices`).
 //!
 //! Principle: the first revocation seen holds. A node places the rotations in the order it came
-//! to hold them (each with its chain, every fork it names and every rotation it takes; ties
+//! to hold them (each with its chain, a merge's tips and every rotation it takes; ties
 //! ancestors first; the chosen line first, at a node of the account with what it stands with).
 //! Outside the account it follows each with its line unless it is beside one already followed
 //! (a removed device's fork looks like any other); a node of the account reads who minted each
@@ -47,24 +47,32 @@ fn ranks<E: Ord + Copy>(received: &[E]) -> BTreeMap<E, usize> {
     received.iter().enumerate().map(|(i, r)| (*r, i)).rev().collect()
 }
 
-/// A held rotation of the account's signing chain. Its ID names the epoch it mints; the first
-/// epoch (the chain's root) is minted by none.
+/// A held epoch of the account's signing chain: a plain rotation, or a merge (one record for
+/// all its certificates, spec/crypto.md §9). Its ID names the epoch it mints; the first epoch
+/// (the chain's root) is minted by none.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rotation<E> {
     pub id: E,
-    /// The epoch it is signed at (the one it rotates).
+    /// The epoch it is signed at: a plain rotation's the one it rotates; a merge's one of its
+    /// tips.
     pub at: E,
-    /// The epochs it supersedes: `at`, and for a merge the fork epochs it ends.
+    /// The epochs it supersedes: a plain rotation's `at` and the rotations it answers; a
+    /// merge's its tips.
     pub supersedes: BTreeSet<E>,
-    /// The fork rotations it names (a merge accepts them).
+    /// A merge's tips other than `at` (every merge signature verified by the caller); empty for
+    /// a plain rotation. A merge is held only when its tips are held plain rotations none on
+    /// another's line.
     pub names: BTreeSet<E>,
-    /// The named forks whose epoch also signed it, as the caller verified (each signature
-    /// checked against the key the named rotation mints). A name without its signature
-    /// accepts nothing.
-    pub signed: BTreeSet<E>,
-    /// The revocations its maker took that are not on its line: it stands with them (read only
-    /// at a node of the account). It is held only once these are, at every node.
+    /// A plain rotation's revocations its maker took that are not on its line: it stands with
+    /// them (read only at a node of the account). It is held only once these are, at every node.
     pub takes: BTreeSet<E>,
+}
+
+impl<E> Rotation<E> {
+    /// Whether it is a merge: it names tips.
+    pub fn is_merge(&self) -> bool {
+        !self.names.is_empty()
+    }
 }
 
 /// What a node of the account reads of its chain as D's roster (spec/permissions.md §5.4,
@@ -73,9 +81,12 @@ pub struct Rotation<E> {
 /// seed of the epoch it is signed at). No removal or addition exists apart from its rotation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Devices<E, M> {
-    /// Per held rotation, the key actor that minted it (one whose inner signature opens to no
-    /// key actor is left out: it stands by none).
+    /// Per held plain rotation, the key actor that minted it (one whose inner signature opens to
+    /// no key actor is left out: it stands by none).
     pub minter: BTreeMap<E, M>,
+    /// Per held merge, the key actors that made a certificate of it (inner signatures as
+    /// `minter`'s): it stands by one that is a node of its line, not hit.
+    pub certifiers: BTreeMap<E, BTreeSet<M>>,
     /// Per held rotation, the devices it removes from D.
     pub removes: BTreeMap<E, BTreeSet<M>>,
     /// Per held rotation, the devices it adds to D (a pairing).
@@ -86,7 +97,7 @@ pub struct Devices<E, M> {
 
 impl<E, M> Default for Devices<E, M> {
     fn default() -> Self {
-        Devices { minter: BTreeMap::new(), removes: BTreeMap::new(), adds: BTreeMap::new(), first: BTreeSet::new() }
+        Devices { minter: BTreeMap::new(), certifiers: BTreeMap::new(), removes: BTreeMap::new(), adds: BTreeMap::new(), first: BTreeSet::new() }
     }
 }
 
@@ -115,7 +126,7 @@ impl<M: Ord + Copy, E: Copy> ByDevice<M, E> {
                 ix.removes_of.entry(*y).or_default().push(*q);
             }
         }
-        let all: BTreeSet<M> = d.first.iter().chain(d.minter.values()).chain(d.adds.values().flatten()).chain(d.removes.values().flatten()).copied().collect();
+        let all: BTreeSet<M> = d.first.iter().chain(d.minter.values()).chain(d.certifiers.values().flatten()).chain(d.adds.values().flatten()).chain(d.removes.values().flatten()).copied().collect();
         for y in all {
             ix.num.insert(y, ix.devs.len() as u32);
             ix.devs.push(y);
@@ -153,8 +164,9 @@ pub struct Chain<E> {
     topo: Vec<E>,
     /// Each held rotation's place in `topo`.
     idx: BTreeMap<E, u32>,
-    /// Per held rotation (by place), its line: itself and every held rotation it descends from,
-    /// by place. Shared along the chain (`PSet`): O(log n) per rotation, not a set each.
+    /// Per held epoch (by place), its line: every held plain rotation it descends from, itself
+    /// included but for a merge, by place (a merge is on a line through its tips, `on`). Shared
+    /// along the chain (`PSet`): O(log n) per rotation, not a set each.
     lines: Vec<PSet>,
     /// (m, r): held rotation m rejects held rotation r.
     rejects: BTreeSet<(E, E)>,
@@ -188,7 +200,7 @@ impl<E: Ord + Copy> Chain<E> {
     /// Judges `rotations` (the held ones, one record each) as a node that holds them in the
     /// order `received` (earliest first; one missing ranks after every one in it) and whose
     /// user chose `chosen`; `devices` at a node of the account (`None` elsewhere). A rotation
-    /// counts as held only with its chain back to the root, every fork it names and every
+    /// counts as held only with its chain back to the root, a merge's tips and every
     /// rotation it takes, each so held (spec/permissions.md §5.4); the rest are pending and take
     /// part in nothing (`holds`).
     pub fn new<M: Ord + Copy>(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, chosen: Option<E>, received: &[E], devices: Option<&Devices<E, M>>) -> Chain<E> {
@@ -220,9 +232,27 @@ impl<E: Ord + Copy> Chain<E> {
         // one it needs is placed first (a receipt millisecond orders its rotations by ID)
         let mut depth: BTreeMap<E, usize> = BTreeMap::new();
         let mut topo: Vec<E> = Vec::new();
+        // each line its parents' joined and, but for a merge, itself: a parent is placed first
+        let mut idx: BTreeMap<E, u32> = BTreeMap::new();
+        let mut lines: Vec<PSet> = Vec::new();
         while let Some(id) = ready.pop_first() {
             let Some(r) = pending.remove(&id) else { continue };
             osis_base::costs::count("chain: placed", 1);
+            let parents: Vec<usize> = std::iter::once(&r.at).chain(&r.names).filter_map(|p| idx.get(p).map(|i| *i as usize)).collect();
+            if r.is_merge() {
+                // a merge's tips: held plain rotations, none on another's line, and all it
+                // supersedes (else it is no epoch and stays pending)
+                let plain = std::iter::once(&r.at).chain(&r.names).all(|t| rots.get(t).is_some_and(|x: &Rotation<E>| !x.is_merge()));
+                let apart = parents.iter().all(|a| parents.iter().all(|b| a == b || !lines.get(*b).is_some_and(|l| l.contains(*a as u32))));
+                let exact = r.supersedes.len() == parents.len() && std::iter::once(&r.at).chain(&r.names).all(|t| r.supersedes.contains(t));
+                if !plain || !apart || !exact || parents.len() != 1 + r.names.len() {
+                    continue;
+                }
+            }
+            let line = parents.iter().filter_map(|p| lines.get(*p)).fold(PSet::new(), |l, p| l.union(p));
+            let place = topo.len() as u32;
+            lines.push(if r.is_merge() { line } else { line.insert(place) });
+            idx.insert(id, place);
             let ns = needs(&r);
             let w = ns.iter().filter_map(|p| when.get(p)).fold(rank_of(&id), |a, b| a.max(*b));
             when.insert(id, w);
@@ -238,13 +268,7 @@ impl<E: Ord + Copy> Chain<E> {
                 }
             }
         }
-        let idx: BTreeMap<E, u32> = topo.iter().enumerate().map(|(i, e)| (*e, i as u32)).collect();
-        let mut c = Chain { root, rots, topo, idx, lines: Vec::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), taken: Vec::new() };
-        // each line its parents' joined and itself: a parent is placed before it
-        for (i, &r) in c.topo.iter().enumerate() {
-            let line = c.parents(r).iter().filter_map(|p| c.place(p).and_then(|p| c.lines.get(p))).fold(PSet::new(), |l, p| l.union(p));
-            c.lines.push(line.insert(i as u32));
-        }
+        let mut c = Chain { root, rots, topo, idx, lines, rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), taken: Vec::new() };
         c.chosen = chosen.filter(|s| c.rots.contains_key(s));
         // the chosen rotation's line first and, at a node of the account, what it stands with
         // (what a rotation on it takes, and that one's line; outside, takes decide nothing more)
@@ -305,7 +329,8 @@ impl<E: Ord + Copy> Chain<E> {
             }
             head = Some(r);
         }
-        self.counting = head.map(|h| self.line_iter(h).collect()).unwrap_or_default();
+        // the followed line: its plain rotations and every held merge on it
+        self.counting = head.map(|h| self.line_iter(h).chain(self.rots.values().filter(|m| m.is_merge() && self.on(m.id, h)).map(|m| m.id)).collect()).unwrap_or_default();
     }
 
     /// At a node of the account, which reads who minted each rotation and whom each removes
@@ -364,8 +389,9 @@ impl<E: Ord + Copy> Chain<E> {
         }
         let fin = self.standing(d, &ix, &hits, Some(&taken_set));
         for &r in order {
+            let parents_count = self.parents(r).iter().all(|p| self.counting.contains(p));
             match self.place(&r) {
-                Some(i) if bad.get(i) == Some(&false) && fin.stands.get(i) == Some(&true) => {
+                Some(i) if parents_count && bad.get(i) == Some(&false) && fin.stands.get(i) == Some(&true) => {
                     self.counting.insert(r);
                 }
                 _ => {
@@ -413,6 +439,12 @@ impl<E: Ord + Copy> Chain<E> {
             return false;
         }
         let all = |e: &E| rs(e) || (d.removes.get(e).is_some_and(|x| !x.is_empty()) && self.on(*e, r));
+        if self.is_merge(&r) {
+            let nodes = self.nodes_on(self.line_iter(r), &|x: &E| self.on(*x, r), &all, d, ix);
+            if !self.certified(r, &|y| nodes.contains(y), &all, d, ix) {
+                return false;
+            }
+        }
         self.line_iter(r).all(|q| {
             osis_base::costs::count("chain: line walked", 1);
             d.minter.get(&q).is_some_and(|m| self.nodes_on(self.line_iter(q).filter(|x| *x != q), &|x: &E| *x != q && self.on(*x, q), &all, d, ix).contains(m)) && !self.hit(q, &all, d, ix)
@@ -445,6 +477,13 @@ impl<E: Ord + Copy> Chain<E> {
                 st.nodes.push(ix.set(&line));
                 continue;
             };
+            if self.is_merge(&r) {
+                // a merge stands by a certificate: no device changes of its own
+                let by = self.certified(r, &|y| nodes.contains(ix.n(y)), &all, d, ix);
+                st.stands.push(ok && by);
+                st.nodes.push(nodes);
+                continue;
+            }
             let hit = self.hit(r, &all, d, ix);
             let minter = d.minter.get(&r);
             st.stands.push(ok && minter.is_some_and(|m| nodes.contains(ix.n(m))) && !hit);
@@ -498,6 +537,12 @@ impl<E: Ord + Copy> Chain<E> {
             }
         }
         Some((ps.iter().all(|p| st.stands.get(*p) == Some(&true)), nodes))
+    }
+
+    /// Whether merge `m` has a certificate by a node of its line (`node`) that no removal of
+    /// `rs` hits: one removing its maker off `m`'s line and not after `m`.
+    fn certified<M: Ord + Copy>(&self, m: E, node: &dyn Fn(&M) -> bool, rs: &dyn Fn(&E) -> bool, d: &Devices<E, M>, ix: &ByDevice<M, E>) -> bool {
+        d.certifiers.get(&m).into_iter().flatten().any(|y| node(y) && !ix.removes_of.get(y).into_iter().flatten().any(|r| rs(r) && !self.on(*r, m) && !self.on(m, *r)))
     }
 
     /// Whether a removal of `rs` hits rotation `q`: it removes `q`'s minter and `q` is not on its
@@ -597,26 +642,34 @@ impl<E: Ord + Copy> Chain<E> {
         self.tips(|x| self.counting.contains(x))
     }
 
-    /// The named forks rotation `m` accepts: held, and signed at their epoch.
-    fn accepts(&self, m: &Rotation<E>) -> Vec<E> {
-        m.names.iter().copied().filter(|n| m.signed.contains(n) && self.rots.contains_key(n)).collect()
-    }
-
-    /// The epochs `m` is signed at: its own, and each fork it accepts.
+    /// The epochs `m` is signed at: its own, and a merge's every tip.
     fn signed_at(&self, m: &Rotation<E>) -> BTreeSet<E> {
-        std::iter::once(m.at).chain(self.accepts(m)).collect()
+        std::iter::once(m.at).chain(m.names.iter().copied()).collect()
     }
 
-    /// Held rotations `x` descends from directly: the one minting the epoch it is signed at, and
-    /// the forks it accepts.
+    /// Held epochs `x` descends from directly: the one a plain rotation is signed at; a merge's
+    /// tips.
     fn parents(&self, x: E) -> Vec<E> {
         let Some(r) = self.rots.get(&x) else { return vec![] };
-        self.rots.contains_key(&r.at).then_some(r.at).into_iter().chain(self.accepts(r)).collect()
+        std::iter::once(r.at).chain(r.names.iter().copied()).filter(|p| self.rots.contains_key(p)).collect()
     }
 
-    /// Whether `x` is on held rotation `r`'s line (the root is on every line).
+    /// Whether held epoch `x` is a merge.
+    fn is_merge(&self, x: &E) -> bool {
+        self.rots.get(x).is_some_and(Rotation::is_merge)
+    }
+
+    /// Whether `x` is on held epoch `r`'s line (the root is on every line; a merge where its
+    /// tips are: its epoch descends from exactly those).
     fn on(&self, x: E, r: E) -> bool {
-        x == self.root || matches!((self.idx.get(&x), self.place(&r)), (Some(xi), Some(ri)) if self.lines.get(ri).is_some_and(|l| l.contains(*xi)))
+        if x == self.root || x == r && self.idx.contains_key(&x) {
+            return true;
+        }
+        let Some(l) = self.place(&r).and_then(|ri| self.lines.get(ri)) else { return false };
+        match self.rots.get(&x) {
+            Some(m) if m.is_merge() => std::iter::once(&m.at).chain(&m.names).all(|t| self.idx.get(t).is_some_and(|ti| l.contains(*ti))),
+            _ => self.idx.get(&x).is_some_and(|xi| l.contains(*xi)),
+        }
     }
 
     /// Held rotation `r`'s line, in the order held (each after what it needs).
@@ -628,7 +681,7 @@ impl<E: Ord + Copy> Chain<E> {
     /// (both among `among`) where m supersedes r's epoch and no rotation among them signed at
     /// `m.at`, m included, shares a line with r (a line is contested only from below: one signed
     /// at e rejects nothing on a line through e; nor its own line, which holds the rotation
-    /// minting `m.at` and every fork m accepts).
+    /// minting `m.at`).
     fn rejections(&self, rej: &Rejecting<E>, among: impl Fn(&E) -> bool) -> BTreeSet<(E, E)> {
         let mut out = BTreeSet::new();
         for (m, r) in rej.pairs.iter().filter(|(m, r)| among(m) && among(r)) {
@@ -707,7 +760,10 @@ impl<E: Ord + Copy> Chain<E> {
                 }
             }
         }
-        self.topo.iter().enumerate().filter(|(i, x)| among(x) && below.get(*i) == Some(&false)).map(|(_, x)| *x).collect()
+        let out: Vec<E> = self.topo.iter().enumerate().filter(|(i, x)| among(x) && below.get(*i) == Some(&false)).map(|(_, x)| *x).collect();
+        // a merge is below an epoch whose line holds its tips without one descending from it
+        // over parents (a merge of more tips): only such tips are compared
+        out.iter().copied().filter(|x| !self.is_merge(x) || !out.iter().any(|y| y != x && self.on(*x, *y))).collect()
     }
 
     /// The tips of the held lines beside the followed one that a counting rotation rejects or

@@ -180,6 +180,38 @@ pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> 
     Ok(out)
 }
 
+/// The roster devices this node sees holding every seed of `tips` (a merge's tip keys): a box of
+/// each tagged for it in a commit counting here (spec/crypto.md §9, Merges: they derive the merge
+/// seed, so its certificate boxes it them not).
+pub(crate) fn derivers(core: &Core, v: &AccountView, d: &Tid, tips: &[Arc<AccountEpochKeys>]) -> BTreeSet<Tid> {
+    let boxed = counting_tags(core, v, d);
+    let roster = core.account_devices().map(|(p, _)| core.devices_roster(&p)).unwrap_or_default();
+    roster.into_iter().filter(|m| tips.iter().all(|k| boxed.contains(&osis_crypto::seed_tag(k.seed(), m)))).collect()
+}
+
+/// Derives the merge seeds of account `p` this node can (spec/crypto.md §9, Merges: a node
+/// holds a merge epoch's seed iff it holds a box of it or every tip's seed) and keeps each
+/// (`keep`). Run as the account's chain is judged; a merge's tips are plain rotations, whose
+/// seeds are boxed, so one round derives every one.
+pub(crate) fn derive_merges(tx: &mut Tx<'_>, p: &Tid) -> Result<()> {
+    let (Some(v), Some(held)) = (tx.core.account_view(p), tx.core.accounts.get(p).cloned()) else { return Ok(()) };
+    let mut found = Vec::new();
+    for e in v.rotation_ids().into_iter().filter(|e| v.is_merge(e) && v.keys_of(e, &held).is_none()) {
+        let tips = v.tips_of(&e);
+        let Some(seeds) = tips.iter().map(|t| v.keys_of(t, &held).map(|k| k.seed().clone())).collect::<Option<Vec<Secret32>>>() else { continue };
+        let refs: Vec<&Secret32> = seeds.iter().collect();
+        let seed = osis_crypto::merge_seed(&refs);
+        // a certificate claiming another key derives nothing (its epoch is not this one)
+        if v.signing_key(&e) == Some(AccountEpochKeys::from_seed(&seed).signing.verifying_key()) {
+            found.push(seed);
+        }
+    }
+    for s in found {
+        keep(tx, p, &s)?;
+    }
+    Ok(())
+}
+
 /// The tags of every seed box in a commit of account `p` on D that counts here: a counting
 /// rotation's, a counting re-seal's (both write D's `account.0`).
 fn counting_tags(core: &Core, v: &AccountView, d: &Tid) -> BTreeSet<[u8; osis_crypto::SEED_TAG_LEN]> {

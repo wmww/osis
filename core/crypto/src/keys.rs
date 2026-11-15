@@ -156,6 +156,17 @@ pub fn first_device_nonce(first_seed: &Secret32, device: &Tid) -> [u8; 32] {
     *kdf(kdf::FIRST_DEVICE, first_seed.expose(), device.as_bytes()).expose()
 }
 
+/// A merge epoch's seed: `kdf("merge seed", its tips' seeds concatenated)`, the tips in ascending
+/// order of their epoch IDs (spec/crypto.md §9, Merges): a function of the tips alone, so every
+/// holder of their seeds derives it and every certificate of the merge mints one epoch.
+pub fn merge_seed(tips: &[&Secret32]) -> Secret32 {
+    let mut cat = zeroize::Zeroizing::new(Vec::with_capacity(32 * tips.len()));
+    for t in tips {
+        cat.extend_from_slice(t.expose());
+    }
+    kdf(kdf::MERGE_SEED, &cat, b"")
+}
+
 /// A key actor's role secret `kdf("role <role>", seed)`, never rotated.
 pub fn key_actor_role_secret(seed: &Secret32, role: Role) -> Secret32 {
     kdf(kdf::role_purpose(role), seed.expose(), b"")

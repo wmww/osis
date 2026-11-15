@@ -26,13 +26,18 @@ impl Core {
     }
 
     /// The rotation of `account`'s signing chain minting epoch `e` (spec/crypto.md §9), if this
-    /// node holds that commit (whole or header only).
+    /// node holds that commit (whole or header only): a plain rotation's commit, or a held
+    /// certificate of a merge (one whose every merge signature verifies, so all carry its keys).
     pub(crate) fn rotation(&self, account: &Tid, e: &CommitId) -> Option<osis_commit::RotationHeader> {
-        let m = self.ix.commits.get(e)?;
+        let Some(m) = self.ix.commits.get(e) else {
+            let v = self.account_view(account)?;
+            let c = v.minting(e).into_iter().next()?;
+            return self.ix.commits.get(&c)?.header.rotation.clone();
+        };
         if m.view.author != *account {
             return None;
         }
-        m.header.rotation.clone()
+        m.header.rotation.clone().filter(|r| !r.is_merge())
     }
 
     pub(crate) fn dedup(&self, tid: &Tid) -> Option<Secret32> {

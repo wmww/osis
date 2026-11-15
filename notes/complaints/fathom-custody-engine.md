@@ -8,3 +8,5 @@
 - `Mutation::set` of an unchanged value writes nothing (`commit_tx` returns `None`): a re-put meant as a carrier silently makes no commit.
 - `LocalPeer` packages hand parts over in the clear, so an engine test of "can it open" must check held secrets, not reads.
 - Phase 2 outgrew a session: D's roster as edges on D is read across engine, sync and osis (role_now/roster/key_holders of nodes on D, own_node, card ends, pairing checks, ~60 engine tests built on separate removal commits). A grep list of every D-role read before starting would have sized it.
+- `wt claim` of an existing branch landed on a stale local copy (pre-rebase history, 62 commits behind its pushed tip): a branch pushed under another ID needs `git reset --hard origin/<branch>` after the claim; nothing warns.
+- Phase 3: `refresh_epochs` building the account view to derive merge seeds at its top broke the "an open builds no chain" invariant in ~800 tests at once; anything done per account belongs inside its per-account loop.

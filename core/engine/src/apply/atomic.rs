@@ -587,6 +587,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     // an account's rotation: this node answers it with its listing or addenda
     crate::flows::custody::take_boxes(tx, &h)?;
+    // (a merge certificate is answered as its epoch: `signing::answer_rotation`)
     if h.rotation.is_some() {
         crate::flows::signing::note_rotation_due(tx, &id)?;
     }

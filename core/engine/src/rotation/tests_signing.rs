@@ -375,31 +375,32 @@ fn a_writers_addendum_keeps_what_it_received_spec_permissions_5_5() {
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("seen outside".into())), "vouched for by the writer");
 }
 
-// spec/crypto.md §9, spec/permissions.md §5.4: two nodes removing a third at once fork the
-// chain; an outsider follows the rotation it held first and is told of nothing. Each head's line
-// lacks the other's removal (blocked), so each node holding both owes a rotation, none
-// designated: both rotate at once, superseding both heads and naming them (signed at each), and
-// their two rotations fork again. Outside the account only one of them is followed, so that fork
-// is owed a merge too: the first node asked makes it, the other then owes nothing. A merge
-// revokes nothing (spec/permissions.md §5.5 Revoked), so every write of the account counts at the
-// outsider throughout, a write at the head it does not follow included
+// spec/crypto.md §9 (Merges), spec/permissions.md §5.4-5.5: two nodes removing a third at once
+// fork the chain; an outsider follows the rotation it held first and is told of nothing. Both
+// nodes then merge the two heads at once, none designated: a merge is a function of its tips, so
+// the two certificates mint one epoch, and once each holds the other's nothing more is owed. A
+// merge revokes nothing (spec/permissions.md §5.5 Revoked), so every write of the account counts
+// at the outsider throughout
 #[test]
-fn concurrent_rotations_fork_and_every_node_supersedes_them_spec_crypto_9() {
+fn concurrent_rotations_fork_and_their_merges_are_one_epoch_spec_crypto_9() {
     let (mut lp, a, t) = world(4, 3);
     let d0 = remove(&mut lp, 0, a.devices, 2);
     let d1 = remove(&mut lp, 1, a.devices, 2);
     let (r0, r1) = (d0.commits[0], d1.commits[0]);
     send(&mut lp, 1, 0, &d1.commits);
     send(&mut lp, 0, 1, &d0.commits);
-    // each holds both forks' seeds (each removal boxed it the epoch its rotation's seed sits under)
     let (m0, m1) = (lp.peers[0].engine.signing_due().unwrap(), lp.peers[1].engine.signing_due().unwrap());
-    assert_eq!((m0.commits.len(), m1.commits.len()), (1, 1), "each node rotates");
+    assert_eq!((m0.commits.len(), m1.commits.len()), (1, 1), "each node merges");
     let (m0, m1) = (m0.commits[0], m1.commits[0]);
+    let mut epochs = std::collections::BTreeSet::new();
     for (k, m) in [(0, m0), (1, m1)] {
         let rh = lp.peers[k].engine.header(&m).unwrap().rotation.clone().unwrap();
         assert_eq!(rh.supersedes.iter().copied().collect::<std::collections::BTreeSet<_>>(), [r0, r1].into());
-        assert_eq!(rh.names.len(), 1);
+        assert!(rh.names.len() == 1 && rh.takes.is_empty() && !rh.revokes, "a merge carries only the join");
+        epochs.insert(rh.mints(&m));
     }
+    assert_eq!(epochs.len(), 1, "two certificates of one merge");
+    let e = *epochs.first().unwrap();
     send(&mut lp, 0, 3, &[r0]);
     send(&mut lp, 1, 3, &[r1]);
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("p".into())), "the account's earlier write counts through the fork");
@@ -408,20 +409,19 @@ fn concurrent_rotations_fork_and_every_node_supersedes_them_spec_crypto_9() {
     assert!(lp.peers[3].engine.account_disputes().is_empty(), "honest concurrent rotations warn of nothing");
     send(&mut lp, 0, 1, &[m0]);
     send(&mut lp, 1, 0, &[m1]);
+    for k in [0, 1] {
+        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), vec![e], "node {k}: one head");
+        assert!(lp.peers[k].engine.signing_due().unwrap().commits.is_empty(), "node {k}: nothing more owed");
+    }
     let w0 = write(&mut lp, 0, t, "after");
+    assert_eq!(lp.peers[0].engine.header(&w0).unwrap().epoch, Some(e), "written at the merge");
     send(&mut lp, 1, 3, &[m1]);
-    send(&mut lp, 0, 3, &[m0, w0]);
-    // node 0 writes at its own rotation, which the outsider holds beside the one it follows
-    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "m1 is followed, and revokes nothing m0 signed");
-    let m2 = lp.peers[0].engine.signing_due().unwrap().commits;
-    assert_eq!(m2.len(), 1, "the fork is owed a merge");
-    send(&mut lp, 0, 1, &m2);
-    assert!(lp.peers[1].engine.signing_due().unwrap().commits.is_empty(), "merged once");
-    // the merge's list names node 0's listing, which names its write
+    send(&mut lp, 0, 3, &[w0]);
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "a write at the merge counts outside, by either certificate");
     let ids = lp.peers[0].engine.commit_ids();
     send(&mut lp, 0, 3, &ids);
-    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "node 0's write counts after the merge");
-    assert_eq!(lp.peers[3].engine.core.account_view(&a.account).unwrap().heads(), m2);
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())));
+    assert_eq!(lp.peers[3].engine.core.account_view(&a.account).unwrap().heads(), vec![e]);
     assert!(lp.peers[3].engine.account_disputes().is_empty());
 }
 
@@ -493,8 +493,9 @@ fn a_removed_nodes_fork_is_rejected_by_every_node_spec_permissions_5_4() {
         send(&mut lp, 0, to, &m);
     }
     assert!(lp.peers[1].engine.signing_due().unwrap().commits.is_empty(), "merged once");
+    let e = lp.peers[0].engine.header(&m[0]).unwrap().rotation.as_ref().unwrap().mints(&m[0]);
     for k in [0, 1] {
-        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), m.clone());
+        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), vec![e]);
     }
     // the write's body dropped with its fall is offered again
     send(&mut lp, 2, 3, &[late]);
@@ -1242,19 +1243,19 @@ fn a_removed_nodes_fork_signed_as_another_key_actor_counts_nowhere_spec_permissi
     }
 }
 
-/// Merge rounds after `nodes` of the account rotate at once (spec/permissions.md §5.5, Limit:
-/// merges made at once fork again). `lockstep`: every node runs its signing pass before any
-/// rotation travels, `rounds` times. Else a random interleaving (seed `seed`) of single
-/// deliveries and single nodes' signing passes, until nothing is owed. Returns the merges made
-/// and whether the account's nodes end on one head.
-fn merge_rounds(nodes: usize, seed: u64, lockstep: Option<usize>) -> (usize, bool) {
+/// Merge rounds after `nodes` of the account rotate at once (spec/permissions.md §5.5, Honest
+/// nodes of P). `lockstep`: every node runs its signing pass before any rotation travels,
+/// `rounds` times. Else a random interleaving (seed `seed`) of single deliveries and single
+/// nodes' signing passes, until nothing is owed. Returns the rotations made after the first ones,
+/// the epochs they mint, and whether the account's nodes end on one head.
+fn merge_rounds(nodes: usize, seed: u64, lockstep: Option<usize>) -> (usize, usize, bool) {
     let (mut lp, a, _) = world(nodes + 1, nodes);
     let mut q: Vec<(usize, usize, CommitId)> = Vec::new();
     for k in 0..nodes {
         let r = lp.peers[k].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
         q.extend((0..=nodes).filter(|to| *to != k).map(|to| (k, to, r)));
     }
-    let mut made = 0;
+    let mut made: Vec<(usize, CommitId)> = Vec::new();
     let mut s = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
     let mut next = |n: usize| {
         s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -1267,7 +1268,7 @@ fn merge_rounds(nodes: usize, seed: u64, lockstep: Option<usize>) -> (usize, boo
             }
             for k in 0..nodes {
                 let c = lp.peers[k].engine.signing_due().unwrap().commits;
-                made += c.len();
+                made.extend(c.iter().map(|x| (k, *x)));
                 q.extend(c.iter().flat_map(|r| (0..=nodes).filter(|to| *to != k).map(move |to| (k, to, *r))));
             }
         }
@@ -1282,7 +1283,7 @@ fn merge_rounds(nodes: usize, seed: u64, lockstep: Option<usize>) -> (usize, boo
             }
             let k = next(nodes);
             let c = lp.peers[k].engine.signing_due().unwrap().commits;
-            made += c.len();
+            made.extend(c.iter().map(|x| (k, *x)));
             if c.is_empty() && q.is_empty() {
                 quiet += 1;
             }
@@ -1290,25 +1291,28 @@ fn merge_rounds(nodes: usize, seed: u64, lockstep: Option<usize>) -> (usize, boo
         }
     }
     let heads: std::collections::BTreeSet<Vec<CommitId>> = (0..nodes).map(|k| lp.peers[k].engine.core.account_view(&a.account).unwrap().heads()).collect();
-    (made, heads.len() == 1 && heads.iter().all(|h| h.len() == 1))
+    let epochs: std::collections::BTreeSet<CommitId> = made.iter().map(|(k, c)| lp.peers[*k].engine.header(c).unwrap().rotation.clone().unwrap().mints(c)).collect();
+    (made.len(), epochs.len(), heads.len() == 1 && heads.iter().all(|h| h.len() == 1))
 }
 
-// By hand (a measurement, not a property): merge rounds after two or three of the account's
-// nodes rotate at once
+// spec/permissions.md §5.5 (Honest nodes of P), spec/crypto.md §9 (Merges): after two or three
+// of the account's nodes rotate at once, the merges settle with bounded rotations under every
+// schedule. In lockstep (every node acts on the same deliveries each round) each node certifies
+// the one merge of all the tips in the first round, and nothing is made after; in random
+// interleavings at most one merge epoch per set of tips, each certified at most once per node. Either way every node ends on one head
 #[test]
-#[ignore = "by hand: prints merge counts"]
-fn merge_rounds_after_concurrent_rotations() {
+fn merges_made_at_once_settle_in_lockstep_spec_permissions_5_5() {
     for nodes in [2, 3] {
-        let (made, one) = merge_rounds(nodes, 0, Some(5));
-        eprintln!("{nodes} nodes, lockstep 5 rounds: {made} merges, one head: {one}");
-        let mut counts = Vec::new();
-        for seed in 0..40 {
-            let (made, one) = merge_rounds(nodes, seed, None);
-            assert!(one, "{nodes} nodes seed {seed}: not one head");
-            counts.push(made);
+        let (made, epochs, one) = merge_rounds(nodes, 0, Some(5));
+        assert!(one, "{nodes} nodes, lockstep: one head");
+        assert_eq!((made, epochs), (nodes, 1), "{nodes} nodes, lockstep: one certificate per node, of one merge");
+        for seed in 0..4 {
+            let (made, epochs, one) = merge_rounds(nodes, seed, None);
+            assert!(one, "{nodes} nodes, seed {seed}: one head");
+            // a merge per set of at least two tips at most, each certified at most once per node
+            let sets = (1 << nodes) - nodes - 1;
+            assert!(made <= nodes * epochs && epochs <= sets, "{nodes} nodes, seed {seed}: {made} rotations, {epochs} merges");
         }
-        counts.sort();
-        eprintln!("{nodes} nodes, random: merges {counts:?}");
     }
 }
 
@@ -1423,7 +1427,8 @@ fn a_rotation_taking_the_thiefs_revocation_is_that_side_spec_permissions_5_4() {
     let s2 = s2[0];
     let h = lp.peers[s].engine.header(&s2).unwrap();
     let rh = h.rotation.clone().unwrap();
-    assert!(h.epoch == Some(s1) && rh.supersedes == { let mut v = vec![s1, xr]; v.sort(); v } && rh.names == vec![xr], "{rh:?}");
+    assert!(rh.supersedes == { let mut v = vec![s1, xr]; v.sort(); v } && rh.names.len() == 1 && rh.takes.is_empty(), "a merge of s1 and xr: {rh:?}");
+    let s2e = rh.mints(&s2);
     for k in [r, t] {
         for c in ra.commits.iter().chain(&rx.commits).chain([&s1, &s2]) {
             let from = if ra.commits.contains(c) { r } else if *c == s1 || *c == s2 { s } else { x };
@@ -1432,25 +1437,29 @@ fn a_rotation_taking_the_thiefs_revocation_is_that_side_spec_permissions_5_4() {
             }
         }
         let v = lp.peers[k].engine.core.account_view(&p).unwrap();
-        assert!(v.rotation_counts(&ra.commits[0]) && v.rotation_counts(&s1) && !v.rotation_counts(&s2), "peer {k}: heads {:?}", v.heads());
+        assert!(v.rotation_counts(&ra.commits[0]) && v.rotation_counts(&s1) && !v.rotation_counts(&s2e), "peer {k}: heads {:?}", v.heads());
     }
+    // R answers S's merge in a plain rotation, then merges its heads (ra's line and s1)
     let m = lp.peers[r].engine.signing_due().unwrap().commits;
-    assert_eq!(m.len(), 1);
+    assert_eq!(m.len(), 2, "R answers, then merges");
     let rh = lp.peers[r].engine.header(&m[0]).unwrap().rotation.clone().unwrap();
-    assert!(rh.names.contains(&s1) && rh.supersedes.contains(&s2) && !rh.names.contains(&s2) && rh.takes.is_empty(), "{rh:?}");
+    assert!(rh.names.is_empty() && rh.supersedes.contains(&s2e) && rh.takes.is_empty(), "{rh:?}");
+    let mh = lp.peers[r].engine.header(&m[1]).unwrap().rotation.clone().unwrap();
+    assert!(mh.supersedes.contains(&s1) && mh.supersedes.contains(&m[0]), "{mh:?}");
+    let me = mh.mints(&m[1]);
     send(&mut lp, r, t, &m);
-    assert_eq!(lp.peers[t].engine.core.account_view(&p).unwrap().heads(), vec![m[0]]);
+    assert_eq!(lp.peers[t].engine.core.account_view(&p).unwrap().heads(), vec![me]);
     send(&mut lp, r, s, &ra.commits);
     send(&mut lp, r, s, &m);
     let s3 = lp.peers[s].engine.signing_due().unwrap().commits;
     assert_eq!(s3.len(), 1, "S answers R's line once");
     let rh = lp.peers[s].engine.header(&s3[0]).unwrap().rotation.clone().unwrap();
     let line = lp.peers[s].engine.core.account_view(&p).unwrap().line(&s3[0]).unwrap_or_default();
-    assert!(rh.supersedes.contains(&m[0]) && (rh.takes == vec![xr] || line.contains(&xr)), "{rh:?}");
+    assert!((rh.supersedes.contains(&m[0]) || rh.supersedes.contains(&me)) && (rh.takes == vec![xr] || line.contains(&xr)), "{rh:?}");
     send(&mut lp, s, r, &s3);
     assert!(lp.peers[r].engine.signing_due().unwrap().commits.is_empty(), "R answers no answer");
     assert!(lp.peers[s].engine.signing_due().unwrap().commits.is_empty(), "nor S");
-    assert_eq!(lp.peers[r].engine.core.account_view(&p).unwrap().heads(), vec![m[0]]);
+    assert_eq!(lp.peers[r].engine.core.account_view(&p).unwrap().heads(), vec![me]);
 }
 
 /// Removed node `by`'s rotation of `a`'s chain to a fresh epoch from `seed`, signed at epoch `at`
@@ -1503,9 +1512,10 @@ fn a_rotation_taking_what_no_one_holds_is_held_nowhere_spec_permissions_5_4() {
 
 // spec/permissions.md §5.5 (Honest nodes of P: one answer per line, as long as that line holds
 // the rejection). B rotated unaware (rb, boxed to X); A removes X; X forks (f), reaching an
-// outsider first. B's merge is signed at rb and rejects f: the outsider is told. X, holding rb's
-// key, signs a rotation at rb accepting f (f2): f is now on a line through rb, so nothing rejects
-// it and the warning goes. f2 is answered, and the outsider is told again
+// outsider first. B answers f in a plain rotation (then merges its heads): the outsider is told.
+// X, holding rb's key, certifies a merge of rb and f (f2): f is on a line through rb, so nothing
+// rejects it and the warning goes. f2's merge stands by no certificate at B (X's), so B answers
+// it, and the outsider is told again
 #[test]
 fn a_rotation_undoing_an_answer_is_answered_spec_permissions_5_5() {
     let (mut lp, a, _) = world(4, 3);
@@ -1513,26 +1523,22 @@ fn a_rotation_undoing_an_answer_is_answered_spec_permissions_5_5() {
     let rb = lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, p, &[], &mut Done::default())).unwrap().unwrap();
     send(&mut lp, 1, 2, &[rb]);
     let done = remove(&mut lp, 0, a.devices, 2);
-    let ra = done.commits[0];
     send(&mut lp, 0, 1, &done.commits);
     let head = setup_head(&lp, &a);
     let fb = forge(&mut lp, 2, &a, head, &[], &[], 80);
     let f = give(&mut lp, &fb, &[3, 1]);
     let h1 = lp.peers[1].engine.signing_due().unwrap().commits;
-    assert_eq!(h1.len(), 1);
-    let h = lp.peers[1].engine.header(&h1[0]).unwrap();
-    let rh = h.rotation.clone().unwrap();
-    assert!(h.epoch == Some(rb) && rh.names == vec![ra] && rh.supersedes.contains(&f), "{h:?}");
+    let answers = |lp: &LocalPeer, cs: &[CommitId], r: CommitId| cs.iter().filter(|c| lp.peers[1].engine.header(c).unwrap().rotation.clone().is_some_and(|rh| rh.names.is_empty() && rh.supersedes.contains(&r))).count();
+    assert_eq!(answers(&lp, &h1, f), 1, "B answers f once, in a plain rotation");
     send(&mut lp, 0, 3, &done.commits[..]);
-    send(&mut lp, 1, 3, &[rb, h1[0]]);
+    send(&mut lp, 1, 3, &[rb]);
+    send(&mut lp, 1, 3, &h1);
     assert_eq!(lp.peers[3].engine.account_disputes().len(), 1, "the outsider is told");
     let f2 = forge(&mut lp, 2, &a, rb, &[(f, 80)], &[], 81);
     let f2 = give(&mut lp, &f2, &[3, 1]);
-    let v = lp.peers[3].engine.core.account_view(&p).unwrap();
-    assert!(v.heads() == vec![f2] && lp.peers[3].engine.account_disputes().is_empty(), "nothing rejects f now: heads {:?}", v.heads());
+    let e2 = lp.peers[1].engine.header(&f2).unwrap().rotation.clone().unwrap().mints(&f2);
     let h2 = lp.peers[1].engine.signing_due().unwrap().commits;
-    assert_eq!(h2.len(), 1, "B answers f2");
-    assert!(lp.peers[1].engine.header(&h2[0]).unwrap().rotation.clone().unwrap().supersedes.contains(&f2));
+    assert_eq!(answers(&lp, &h2, e2), 1, "B answers f2's merge");
     send(&mut lp, 1, 3, &h2);
     assert_eq!(lp.peers[3].engine.account_disputes().len(), 1, "the outsider is told again");
 }

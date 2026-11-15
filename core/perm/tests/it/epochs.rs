@@ -18,7 +18,7 @@ fn set(v: &[u32]) -> BTreeSet<u32> {
 }
 
 fn rot(id: u32, at: u32, sup: &[u32], names: &[u32]) -> Rotation<u32> {
-    Rotation { id, at, supersedes: set(sup), names: set(names), signed: set(names), takes: BTreeSet::new() }
+    Rotation { id, at, supersedes: set(sup), names: set(names), takes: BTreeSet::new() }
 }
 
 /// Commit `id` at `epoch` on thing 0.
@@ -128,25 +128,25 @@ fn write_only_a_witness_received_counts() {
 
 /// Node 2 rotates (1) before X's removal (2) reaches it, boxing X epoch 1. X's later write at
 /// its old epoch (100) falls with the removal; at the sibling's (101) it counts where the
-/// sibling's rotation was held first, until a rotation of P's (4, signed at 2 and at 1) joins
-/// the removal to it; X's fork (3) counts only where it came before that rotation.
+/// sibling's rotation was held first, until P's merge of 1 and 2 (4) and a rotation answering X's
+/// fork (5, at 4); X's fork (3) counts only where it came before them.
 #[test]
 fn later_write_does_not_count_at_its_old_epoch_or_a_siblings() {
     let commits = [c(100, 0), c(101, 1), c(102, 3)];
-    let rots = [rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 1, &[1, 2], &[]), rot(4, 2, &[1, 2, 3], &[1])];
+    let rots = [rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 1, &[1, 2], &[]), rot(4, 2, &[1, 2], &[1]), rot(5, 4, &[4, 3], &[])];
     for (received, sibling) in [([2, 1], false), ([1, 2], true)] {
         let e = judge_as(&rots[..2], &received, &commits, (&[list(1, &[]), list(2, &[])], &[], &[]));
         assert!(!e.counts(&100) && e.counts(&101) == sibling, "the sibling's epoch is open where it was held first");
     }
     let window = judge(&rots[..3], &commits, (&[list(3, &[101])], &[], &[]));
     assert!(window.counts(&101) && window.counts(&102), "the fork window: X's fork rejects the removal");
-    let parts = [list(3, &[101]), list(4, &[])];
-    let merged = judge_as(&rots, &[1, 2, 4, 3], &commits, (&parts, &[], &[]));
-    assert!(merged.chain().counts(&4) && !merged.chain().counts(&3));
+    let parts = [list(3, &[101]), list(5, &[])];
+    let merged = judge_as(&rots, &[1, 2, 4, 5, 3], &commits, (&parts, &[], &[]));
+    assert!(merged.chain().counts(&4) && merged.chain().counts(&5) && !merged.chain().counts(&3));
     assert!(!merged.counts(&100) && !merged.counts(&101) && !merged.counts(&102));
     // held after X's fork, the merge is beside the line followed: told, staying
     let late = judge(&rots, &commits, (&parts, &[], &[]));
-    assert!(late.chain().counts(&3) && !late.chain().counts(&4) && late.chain().warning());
+    assert!(late.chain().counts(&3) && !late.chain().counts(&4) && !late.chain().counts(&5) && late.chain().warning());
 }
 
 /// Node 2's write at the closed epoch (100), which the rotator never received, counts once
@@ -301,7 +301,7 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
                 // A name accepts a fork only when the merge is signed at its epoch (the model's
                 // merges always are).
                 let names: BTreeSet<u32> = names.iter().map(|&id| pid_of(w, id)).collect();
-                rots.push(Rotation { id: *new, at: *at, supersedes: supersedes.iter().copied().collect(), signed: names.clone(), names, takes: BTreeSet::new() });
+                rots.push(Rotation { id: *new, at: *at, supersedes: supersedes.iter().copied().collect(), names, takes: BTreeSet::new() });
                 if removes.is_some() {
                     carriers.insert(*new);
                 }
@@ -401,6 +401,11 @@ fn epochs_run(samples: u64, seed: u64) {
         // included: no rotation of the chain-as-roster rule carries that, so P's nodes judge a
         // re-added node's word otherwise (the roster rule is roles-model `custody`'s)
         let readds = w.readded.iter().any(|t| *t < roles_model::shrink::LATE);
+        // the model's merges name forks and supersede beside them; a merge is now only the join
+        // of its tips (spec/crypto.md §9), roles-model `custody`'s: such worlds check nothing here
+        if w.items.iter().any(|i| matches!(&i.kind, Kind::Rotation { names, .. } if !names.is_empty())) {
+            continue;
+        }
         for o in (0..w.nodes).filter(|o| !readds || *o >= w.np) {
             let mut last: Option<Vec<bool>> = None;
             for &t in &times {

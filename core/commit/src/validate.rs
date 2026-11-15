@@ -151,6 +151,12 @@ impl Header {
             if self.actor != self.author || !self.aspects.iter().any(|a| a.tid == self.author && a.ak.as_str() == "keys.0") {
                 return Err(Error::Invalid("rotation not writing its author's keys.0 as its author"));
             }
+            // a merge certificate carries only the join: it supersedes exactly its tips (the one
+            // it is signed at and those it names), takes nothing, removes and adds no one
+            let tips = r.names.len() + 1;
+            if r.is_merge() && (r.supersedes.len() != tips || self.epoch.is_some_and(|e| r.names.contains(&e)) || !r.names.iter().all(|n| r.supersedes.contains(n)) || !r.takes.is_empty() || r.revokes || !r.devices.is_empty()) {
+                return Err(Error::Invalid("merge certificate carrying more than its join"));
+            }
         }
         // an own cover is a durable content snapshot (spec/wire.md §4 field 17)
         if self.own_cover && (kind != Kind::ContentSnapshot || self.ephemeral.is_some()) {

@@ -66,7 +66,7 @@ pub(crate) fn sample_header() -> Header {
 fn rotation_header_spec_wire_4() {
     use crate::header::RotationHeader;
     let keys = osis_crypto::AccountEpochKeys::from_seed(&Secret32::from_bytes([8; 32]));
-    let rot = RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: vec![crate::FIRST_EPOCH, CommitId([3; 32])], names: vec![CommitId([3; 32])], takes: vec![CommitId([4; 32])], revokes: true, devices: vec![9; 40], list_root: [6; 32], seeds: Vec::new() };
+    let rot = RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: vec![crate::FIRST_EPOCH, CommitId([3; 32])], names: Vec::new(), takes: vec![CommitId([4; 32])], revokes: true, devices: vec![9; 40], list_root: [6; 32], seeds: Vec::new() };
     let mut h = sample_header();
     h.epoch = Some(crate::FIRST_EPOCH);
     assert_eq!(Header::decode(&h.encode()).unwrap(), h);
@@ -91,8 +91,22 @@ fn rotation_header_spec_wire_4() {
     r.epoch = Some(crate::FIRST_EPOCH);
     r.rotation = Some(RotationHeader { takes: vec![CommitId([5; 32]), CommitId([4; 32])], ..rot.clone() });
     assert!(r.validate().is_err(), "takes not ascending");
-    r.rotation = Some(RotationHeader { supersedes: vec![CommitId([3; 32]), crate::FIRST_EPOCH], ..rot });
+    r.rotation = Some(RotationHeader { supersedes: vec![CommitId([3; 32]), crate::FIRST_EPOCH], ..rot.clone() });
     assert!(r.validate().is_err(), "supersedes not ascending");
+    // a merge certificate: exactly its tips, nothing else carried; its epoch is not its commit's
+    let merge = RotationHeader { names: vec![CommitId([3; 32])], takes: Vec::new(), revokes: false, devices: Vec::new(), ..rot.clone() };
+    r.rotation = Some(merge.clone());
+    r.validate().unwrap();
+    assert_eq!(merge.mints(&CommitId([1; 32])), merge.mints(&CommitId([2; 32])), "every certificate mints one epoch");
+    assert_eq!(rot.mints(&CommitId([1; 32])), CommitId([1; 32]));
+    for (bad, why) in [
+        (RotationHeader { takes: vec![CommitId([4; 32])], ..merge.clone() }, "takes"),
+        (RotationHeader { revokes: true, devices: vec![9; 40], ..merge.clone() }, "removes"),
+        (RotationHeader { supersedes: vec![crate::FIRST_EPOCH, CommitId([3; 32]), CommitId([5; 32])], ..merge.clone() }, "answers"),
+    ] {
+        r.rotation = Some(bad);
+        assert!(r.validate().is_err(), "a merge carrying {why}");
+    }
 }
 
 // spec/wire.md §4 field 16: a seed re-seal round-trips; it sits only on an account's role

@@ -82,7 +82,7 @@ pub struct Mutation {
     /// (source, AK, target): the source's aspect must reference the target after the commit
     /// (`require_reference`).
     pub(crate) references: Vec<(Tid, Ak, Tid)>,
-    /// A rotation of the signing account's chain, with the key of each fork it names
+    /// A rotation of the signing account's chain, with the key of each tip a merge names
     /// (spec/crypto.md §9; `flows::signing`).
     pub(crate) rotation: Option<crate::flows::signing::AccountRotation>,
     /// A seed re-seal of an epoch of the signing account's chain (spec/crypto.md §9, Custody).

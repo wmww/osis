@@ -64,8 +64,8 @@ pub struct CommitBuilder {
     /// An account author's epoch and inner signer (spec/wire.md §4): `build`'s key is then the
     /// epoch's signing key.
     pub account: Option<AccountSigner>,
-    /// A rotation of the account's signing chain, with a key per fork it names (in that
-    /// order) signing the merge at that fork's epoch.
+    /// A rotation of the account's signing chain, with, for a merge certificate, a key per tip
+    /// it names (in that order) signing the merge epoch's ID.
     pub rotation: Option<(RotationHeader, Vec<SigningSecret>)>,
     /// The own-cover marker (spec/wire.md §4 field 16).
     pub own_cover: bool,
@@ -170,7 +170,7 @@ impl CommitBuilder {
             reseal: self.reseal.clone(), own_cover: self.own_cover,
         };
         if self.rotation.as_ref().is_some_and(|(r, keys)| r.names.len() != keys.len()) {
-            return Err(Error::Build("a merge signature per named fork"));
+            return Err(Error::Build("a merge signature per named tip"));
         }
         header.validate().map_err(build_err)?;
 
@@ -207,7 +207,11 @@ impl CommitBuilder {
 
         let id = header.id();
         let inner = self.account.as_ref().map(|a| seal_inner(&a.inner, &id.0, &a.node, &a.node_key));
-        let merge = self.rotation.iter().flat_map(|(_, keys)| keys.iter().map(|k| k.sign(Domain::Merge, &id.0))).collect();
+        // a merge certificate's tips sign the epoch it mints, alike in every certificate of it
+        let merge = self.rotation.iter().flat_map(|(r, keys)| {
+            let epoch = r.mints(&id);
+            keys.iter().map(move |k| k.sign(Domain::Merge, &epoch.0))
+        }).collect();
         let sigs = Sigs::signed(&id, key, inner, merge);
         let parts = deltas.into_iter().enumerate().map(|(ai, delta)| Part { ai, delta }).collect();
         let commit = CommitBlob { header, sigs, parts };

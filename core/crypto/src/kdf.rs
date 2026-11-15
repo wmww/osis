@@ -57,6 +57,8 @@ pub const SEED_BOX: &str = "seed box";
 pub const DEVICES: &str = "devices";
 /// An account's creation nonce from its first seed and its creation device (spec/crypto.md §3).
 pub const FIRST_DEVICE: &str = "first device";
+/// A merge epoch's seed from its tips' seeds (spec/crypto.md §9, Merges).
+pub const MERGE_SEED: &str = "merge seed";
 /// KEM key pair from a seed or role secret.
 pub const KEM: &str = "kem";
 /// Link key creation nonce from the seed (spec/wire.md §3).
@@ -105,10 +107,10 @@ pub const BEACON_REPLY: &str = "beacon reply";
 pub const SYNC_PROOF: &str = "sync proof";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 39] = [
+pub const PURPOSES: [&str; 40] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM,
-    INNER_SECRET, INNER, SEED_BOX, DEVICES, FIRST_DEVICE, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF,
+    INNER_SECRET, INNER, SEED_BOX, DEVICES, FIRST_DEVICE, MERGE_SEED, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).
@@ -122,6 +124,8 @@ pub const HYBRID_KEM: &str = "osis v1 hybrid kem";
 pub const SYNC_ID: &str = "osis v1 sync id";
 /// Static entry = BLAKE3(STATIC_CLAIM || sync ID || signing key) (spec/wire.md §8).
 pub const STATIC_CLAIM: &str = "osis v1 static claim";
+/// A merge epoch's ID = BLAKE3(MERGE_EPOCH || signing key || tip IDs ascending) (spec/crypto.md §9).
+pub const MERGE_EPOCH: &str = "osis v1 merge epoch";
 
 pub fn thing_purpose(role: Role) -> &'static str {
     match role {

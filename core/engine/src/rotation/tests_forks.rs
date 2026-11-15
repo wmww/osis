@@ -1089,7 +1089,9 @@ fn replay(s: u64) -> String {
 
 // spec/permissions.md §5.4-§5.5: the account's nodes and readers judge a forked signing chain and
 // owe rotations as roles-model `forks` says (module doc). Quick size: seeds 0..6, no environment.
+// Interim (issues/custody-engine-differential.md): rebuilt against roles-model `custody`
 #[test]
+#[ignore = "the forks model's merges name forks and carry answers; merges only join now"]
 fn engine_agrees_with_forks_model_spec_permissions_5_4() {
     tally(&osis_base::testenv::run_seeds("rotation::tests_forks::engine_agrees_with_forks_model_spec_permissions_5_4", &(0..6).collect::<Vec<u64>>(), false, replay, forks_world));
 }
@@ -1108,7 +1110,9 @@ fn engine_agrees_with_forks_model_large_spec_permissions_5_4() {
 /// settle (the model's settle). A switch takes (custody: the honest line's boxes open whatever
 /// counts), and a head a switched node made while on X's side, boxing no device X revoked, is
 /// re-sealed to them (seed re-seals), so they merge the heads.
+// Interim (issues/custody-engine-differential.md): rebuilt against roles-model `custody`
 #[test]
+#[ignore = "the forks model's merges name forks and carry answers; merges only join now"]
 fn engine_agrees_with_forks_model_switching_back_spec_permissions_5_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_FORKS_START", "OSIS_FORKS_SEEDS", osis_base::testenv::large(0..2_000));
     tally(&s.run("rotation::tests_forks::engine_agrees_with_forks_model_switching_back_spec_permissions_5_4", replay, |seed| play(seed, true)));

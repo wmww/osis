@@ -12,7 +12,7 @@ fn set(v: &[u32]) -> BTreeSet<u32> {
 
 /// Rotation `id` signed at `at`, superseding `sup`, naming `names` each with its signature.
 fn rot(id: u32, at: u32, sup: &[u32], names: &[u32]) -> Rotation<u32> {
-    Rotation { id, at, supersedes: set(sup), names: set(names), signed: set(names), takes: BTreeSet::new() }
+    Rotation { id, at, supersedes: set(sup), names: set(names), takes: BTreeSet::new() }
 }
 
 /// Outside the account, held in the order `received`, `chosen` its user's choice.
@@ -35,7 +35,14 @@ fn devices(minted: &[(u32, char)], removes: &[(u32, char)], adds: &[(u32, char)]
 
 /// At a node of the account (`devices`).
 fn own(rots: &[Rotation<u32>], received: &[u32], minted: &[(u32, char)], removes: &[(u32, char)], adds: &[(u32, char)]) -> Chain<u32> {
-    Chain::new(0, rots.to_vec(), None, received, Some(&devices(minted, removes, adds)))
+    let mut d = devices(minted, removes, adds);
+    // a merge's maker certified it
+    for r in rots.iter().filter(|r| r.is_merge()) {
+        if let Some(m) = d.minter.remove(&r.id) {
+            d.certifiers.entry(r.id).or_default().insert(m);
+        }
+    }
+    Chain::new(0, rots.to_vec(), None, received, Some(&d))
 }
 
 /// A's removal of X (1) and B's of Y (2), made at once at the root.
@@ -64,7 +71,7 @@ fn a_node_of_the_account_follows_its_devices_rotations_made_at_once() {
     }
 }
 
-/// A merge (3, at 1) naming B's rotation 2 brings it back wherever 1 or 2 was followed.
+/// A merge (3) of tips 1 and 2 brings 2 back wherever 1 or 2 was followed.
 #[test]
 fn a_merge_joins_a_fork_back() {
     let mut rots = fork();
@@ -73,13 +80,36 @@ fn a_merge_joins_a_fork_back() {
         let c = outside(&rots, None, &received);
         assert!(c.counts(&1) && c.counts(&2) && c.counts(&3) && c.heads() == &set(&[3]) && !c.warning(), "{received:?}");
     }
-    // a merge waits for every fork it names
+    // a merge waits for every tip
     let c = outside(&[rots[0].clone(), rots[2].clone()], None, &[1, 3]);
     assert!(!c.holds(&3) && c.heads() == &set(&[1]));
-    // a name without its signature accepts nothing: the merge is a plain sibling of 2
-    rots[2].signed.clear();
-    let c = outside(&rots, None, &[2, 1, 3]);
-    assert!(c.counts(&2) && !c.counts(&3) && !c.line(&3).is_some_and(|l| l.contains(&2)));
+}
+
+/// A merge's epoch is its tips': 4 (tips 1, 2) and 6 (tips 1, 2, 5) made apart; 6's line holds
+/// 4's tips, so 4 is below it and 6 is the one head, wherever 4 was held.
+#[test]
+fn a_merge_of_more_tips_is_above_a_merge_of_fewer() {
+    let mut rots = fork();
+    rots.extend([rot(4, 1, &[1, 2], &[2]), rot(5, 0, &[0], &[]), rot(6, 1, &[1, 2, 5], &[2, 5])]);
+    for received in [[1, 2, 4, 5, 6], [1, 2, 5, 6, 4]] {
+        let c = outside(&rots, None, &received);
+        assert!(c.counts(&4) && c.counts(&6) && c.heads() == &set(&[6]), "{received:?}");
+        assert!(c.on_line(&4, &6) && c.closers(&4).contains(&6) && !c.closers(&6).contains(&4));
+        let c = own(&rots, &received, &[(1, 'A'), (2, 'B'), (5, 'T'), (4, 'A'), (6, 'B')], &[], &[]);
+        assert!(c.heads() == &set(&[6]), "{received:?}");
+    }
+}
+
+/// A merge whose tips are not plain rotations apart is no epoch: one tip on another's line, a
+/// merge or the root among them.
+#[test]
+fn a_merge_of_tips_not_apart_is_no_epoch() {
+    let mut rots = fork();
+    rots.extend([rot(3, 1, &[1, 2], &[2]), rot(7, 1, &[1, 7], &[7]), rot(8, 3, &[3, 1], &[1]), rot(9, 0, &[0, 1], &[1]), rot(10, 1, &[1], &[])]);
+    rots.push(rot(11, 10, &[10, 1], &[1]));
+    let received: Vec<u32> = rots.iter().map(|r| r.id).collect();
+    let c = outside(&rots, None, &received);
+    assert!(c.holds(&3) && !c.holds(&8) && !c.holds(&9) && !c.holds(&11));
 }
 
 /// A removes X (1); X forks from the root (2), A rejects it (3), X forks again (4), A rejects
@@ -200,13 +230,16 @@ fn a_key_actor_a_removed_node_makes_up_is_no_node() {
     }
 }
 
-/// X rotated before its removal (2) and A merges it in the rotation carrying the removal (3, at
-/// A's 1, naming 2): 2 is on the removal's line, made before it, so the removal stands.
+/// X rotated before its removal (2); A merges it (4, tips 1 and 2) and removes X at the merge
+/// (3): 2 is on the removal's line, made before it, so the removal stands.
 #[test]
-fn a_removal_merging_its_targets_earlier_rotation_stands() {
-    let rots = vec![rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 1, &[1, 2], &[2])];
-    let c = own(&rots, &[1, 2, 3], &[(1, 'A'), (2, 'X'), (3, 'A')], &[(3, 'X')], &[]);
-    assert!(c.counts(&3) && c.counts(&2) && c.heads() == &set(&[3]));
+fn a_removal_after_merging_its_targets_earlier_rotation_stands() {
+    let rots = vec![rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(4, 1, &[1, 2], &[2]), rot(3, 4, &[4], &[])];
+    let c = own(&rots, &[1, 2, 4, 3], &[(1, 'A'), (2, 'X'), (4, 'A'), (3, 'A')], &[(3, 'X')], &[]);
+    assert!(c.counts(&3) && c.counts(&2) && c.counts(&4) && c.heads() == &set(&[3]));
+    // a certificate by X alone, beside the removal: the merge stands by no certificate
+    let c = own(&rots, &[1, 2, 4, 3], &[(1, 'A'), (2, 'X'), (4, 'X'), (3, 'A')], &[(3, 'X')], &[]);
+    assert!(c.counts(&3), "X certified the merge before its removal: on the removal's line");
 }
 
 /// X's rotation adding itself (4) at B's rotation made unaware of X's removal (2, boxed to X)
@@ -305,7 +338,7 @@ fn rounds_judged(n: u32) -> (u64, u64) {
         d.minter.insert(y, dev);
         let m = next();
         rots.push(rot(m, x, &[x, y], &[y]));
-        d.minter.insert(m, 1);
+        d.certifiers.insert(m, [1].into());
         head = m;
     }
     let received: Vec<u32> = rots.iter().map(|r| r.id).collect();
