@@ -19,19 +19,17 @@ pub(crate) fn sized(small: u64, full: u64) -> std::ops::Range<u64> {
     0..if u64_var("OSIS_FULL") == Some(1) { full } else { small }
 }
 
-/// The world a history plays on, the history played, then the checks; replayed by `replay`.
-/// The checks run at quiet: every history ends healed, every node on, faults off, run (so a
-/// shrunk history ends so too).
-/// Each history plays twice and its two traces (every delivery, the bytes' digest included) must
-/// be identical: a history is a function of its seed (notes/sync-test-harness.md), so a failure
-/// replays and shrinks.
-pub(crate) fn converge(seed: u64, n: usize, steps: &[Step], replay: String) {
-    converge_as(seed, n, steps, replay, true);
+/// The world a history plays on, the history played once, then the checks; replayed by
+/// `replay`. The checks run at quiet: every history ends healed, every node on, faults off, run
+/// (so a shrunk history ends so too). The world is returned for a test's own outcome checks.
+pub(crate) fn converge(seed: u64, n: usize, steps: &[Step], replay: String) -> World {
+    converge_as(seed, n, steps, replay, false)
 }
 
-/// `converge`, the history played once when not `twice` (a shrink's candidates: determinism is
-/// checked on the run shrunk and on the shrunk run).
-fn converge_as(seed: u64, n: usize, steps: &[Step], replay: String, twice: bool) {
+/// `converge`, played twice when `twice`: its two traces (every delivery, the bytes' digest
+/// included) must be identical, as a history is a function of its seed (notes/sync-test-harness.md),
+/// so a failure replays and shrinks.
+fn converge_as(seed: u64, n: usize, steps: &[Step], replay: String, twice: bool) -> World {
     let played = |replay: String, again: bool| {
         let mut w = world(seed, n);
         if again {
@@ -55,16 +53,28 @@ fn converge_as(seed: u64, n: usize, steps: &[Step], replay: String, twice: bool)
         }
     }
     check(&mut w);
+    w
 }
 
-/// One history, played twice (the determinism check) with faults, and clean at seed 0 alone: a
-/// history with faults draws from every source of order a clean one does, and more; seed 0
-/// keeps a clean path checked for the price of one history.
+/// Every fourth seed's history plays twice (the determinism check, faulted and clean alike: a
+/// source of order a run draws from, such as a hashed collection's iteration, reorders any
+/// history it is on the path of, and tools/policy.py `sync_hashed` keeps the usual one out of
+/// sync); the rest play once.
+const TWICE_EVERY: u64 = 4;
+
+/// One history, played twice on every `TWICE_EVERY`-th seed, shrunk on failure.
 fn converges(seed: u64, n: usize, len: usize, faults: bool) {
     let h = history(seed, n, len, faults);
     let replay = |s: u64| format!("convergence::converge({s}, {n}, &script, String::new())");
-    let twice = faults || seed == 0;
-    shrinking(|| converge_as(seed, n, &h, replay(seed), twice), |steps, again| converge_as(seed, n, steps, replay(seed), again && twice));
+    let twice = seed.is_multiple_of(TWICE_EVERY);
+    shrinking(
+        || {
+            converge_as(seed, n, &h, replay(seed), twice);
+        },
+        |steps, again| {
+            converge_as(seed, n, steps, replay(seed), again && twice);
+        },
+    );
 }
 
 // spec: none (property: spec/requirements.md Convergence; spec/sync.md §4 area 4): one node

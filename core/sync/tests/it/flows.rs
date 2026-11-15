@@ -339,13 +339,7 @@ fn a_removed_writers_last_write_reads_alike_at_every_holder_spec_sync_judgement_
     use crate::harness::history::Gives;
     use std::collections::BTreeSet;
     let steps = [New(1), New(0), Write(0, 1), Grant(0, 1, 1, Gives::Writes), Write(0, 1), Grant(0, 1, 2, Gives::Writes), Run, Write(1, 1), Remove(0, 1, 1)];
-    crate::convergence::converge(347110580059, 3, &steps, String::new());
-    let mut w = crate::harness::history::world(347110580059, 3);
-    w.cap = crate::harness::STORM_CAP;
-    let _script = crate::harness::play(&mut w, &steps, String::new());
-    for s in [Lossy(crate::harness::Loss::NONE), Heal, PowerOn(0), PowerOn(1), PowerOn(2), Run] {
-        crate::harness::step(&mut w, &s);
-    }
+    let mut w = crate::convergence::converge(347110580059, 3, &steps, String::new());
     let t = w.history.things[1].0;
     let v5 = w.history.values["v5"];
     let (alice, bob) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
