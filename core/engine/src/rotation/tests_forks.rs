@@ -30,7 +30,7 @@
 
 use crate::flows::Demotion;
 use crate::local_peer::{LocalPeer, Package};
-use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, Tid, Value, WallMs};
 use osis_commit::{CommitBlob, FIRST_EPOCH};
 use osis_crypto::{AccountEpochKeys, Secret32};
 use roles_model::forks::{self, Kind as MK, A, B, N, NEVER, OWN, R1, R2, T, X, Z};

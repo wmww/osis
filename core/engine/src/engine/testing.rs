@@ -38,14 +38,6 @@ impl Engine {
     }
 
     #[cfg(test)]
-    /// Tests only: keeps `seeds` of account `p` in this node's custody, as boxes to its device
-    /// key would (spec/crypto.md §9, Custody), for tests whose subject is not how seeds travel.
-    pub(crate) fn keep_seeds(&mut self, p: &Tid, seeds: &[osis_crypto::Secret32]) -> Result<()> {
-        let p = *p;
-        self.run(|tx| seeds.iter().try_for_each(|s| crate::flows::custody::keep(tx, &p, s)))
-    }
-
-    #[cfg(test)]
     /// Tests only: the seeds of account `p` in this node's custody.
     pub(crate) fn held_seeds(&self, p: &Tid) -> Vec<osis_crypto::Secret32> {
         self.core.accounts.get(p).map(|a| a.keys.values().map(|k| k.seed().clone()).collect()).unwrap_or_default()

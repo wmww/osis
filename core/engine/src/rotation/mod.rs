@@ -217,12 +217,15 @@ fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_cryp
 }
 
 /// The departures from holder actor `x` its keysets must cover, as this node knows them: an
-/// account's are those from its devices actor, which only the account's own nodes hold.
+/// account's are the devices its counting rotations remove that D's roster does not hold again,
+/// which only the account's own nodes read (spec/permissions.md §5.4, Roster).
 pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departure>> {
-    match tx.core.accounts.get(x).map(|h| h.devices) {
-        Some(d) => departures(tx, &d),
-        None => departures(tx, x),
+    if !tx.core.accounts.contains_key(x) {
+        return departures(tx, x);
     }
+    let Some(v) = tx.core.account_view(x) else { return Ok(Vec::new()) };
+    let gone: BTreeSet<Tid> = v.rotation_ids().into_iter().filter(|r| v.rotation_counts(r)).flat_map(|r| v.removes(&r)).filter(|n| !v.roster().contains(n)).collect();
+    Ok(gone.into_iter().map(|holder| Departure { holder, from: Role::Sync, upto: Role::Admin, edge: None }).collect())
 }
 
 /// Whether epoch `k` of role `r` of `x` does not cover one of `deps` as this node can tell
@@ -230,11 +233,9 @@ pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departur
 /// established; else by order: an epoch covers no departure ordered after its minting rotation
 /// (its rotator held none of them), read from the earliest held valid body of the keyset
 /// (`HeldKeyset::since`). An account's epoch, by descent: it covers a removal from its devices
-/// actor D only descending from a rotation D's roster authorizes whose thing list for D names
-/// every write a covering epoch must name (`Departure::needed`); the first epoch covers none,
-/// nor one of which this node holds no counting rotation (not by order: a concurrent rotation
-/// ordered after the removal by a node not holding it sealed its seed under D's epoch the
-/// removed node opens). A departure no keyset of `x` held is known to cover leaves `x` out
+/// actor D only descending from a counting rotation removing that device; the first epoch covers
+/// none, nor one of which this node holds no counting rotation (not by order: a concurrent
+/// rotation by a node not holding the removal boxed its seed to the removed device). A departure no keyset of `x` held is known to cover leaves `x` out
 /// until one is (a stranded report carries it, spec/permissions.md §4).
 pub(crate) fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
     if tx.core.is_account(x) {
