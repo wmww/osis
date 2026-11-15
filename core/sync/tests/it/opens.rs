@@ -103,7 +103,9 @@ fn a_sync_id_just_joined_waits_for_a_peer_the_rosters_name_spec_sync_set_3() {
     p.a.store.with_tx(|t| t.record_create([9; 32], &named(2)).map(drop)).unwrap();
     p.a.restart();
     assert!(!wait(&p, &may), "the same peer, told by its other record");
-    // spec/sync-opens.md §3 (who a peer may be: its account at whatever key)
+    // spec/sync-opens.md §3 (a node of another account whose epoch closed by a rotation carrying
+    // no removal is still that account): a record at another key of its account acknowledging S
+    // tells it
     let other_key = osis_store::Named { account: Some((tid(2), [0x77; 32])), ..osis_store::Named::default() };
     p.a.store.with_tx(|t| t.record_create([7; 32], &other_key).map(drop)).unwrap();
     p.a.restart();
