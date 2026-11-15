@@ -559,29 +559,20 @@ impl JHist {
         e
     }
 
-    /// Every edge chained writes set (spec/permissions.md §4), genesis included: the least set
-    /// of writes whose author reaches the target by admin edges so set (each sets its edge), or
-    /// reaches the holder by them, or, for a removal, the target by edges of write or above
-    /// (those set none).
+    /// Every edge chained writes set (spec/permissions.md §4), genesis included: in one pass in
+    /// key order, each write whose author reaches its target by admin edges set so far (genesis
+    /// and earlier such writes) sets its edge; the other chained writes (by admin on the holder,
+    /// or a removal by write on the target) set none.
     fn chained(&self) -> Vec<Vec<Role>> {
         let mut e = self.genesis.clone();
-        let at = |e: &[Vec<Role>], min: Role| -> Vec<Vec<Role>> { e.iter().map(|row| row.iter().map(|&r| if r >= min { r } else { Role::None }).collect()).collect() };
-        loop {
-            let admins = at(&e, Role::Admin);
-            let set: Vec<usize> = (0..self.writes.len())
-                .filter(|&i| {
-                    let w = &self.writes[i];
-                    w.holder != self.nodes + w.target && w.role > e[w.holder][w.target] && self.reaching(&admins, self.nodes + w.target)[w.author]
-                })
-                .collect();
-            if set.is_empty() {
-                return e;
-            }
-            for i in set {
-                let w = &self.writes[i];
+        for i in self.order() {
+            let w = &self.writes[i];
+            let admins: Vec<Vec<Role>> = e.iter().map(|row| row.iter().map(|&r| if r == Role::Admin { r } else { Role::None }).collect()).collect();
+            if w.role > Role::None && w.holder != self.nodes + w.target && self.reaching(&admins, self.nodes + w.target)[w.author] {
                 e[w.holder][w.target] = e[w.holder][w.target].max(w.role);
             }
         }
+        e
     }
 
     /// Actors reachable from actor `n` by chained edges: what a demotion on `n` puts in

@@ -972,6 +972,37 @@ fn forged_edge_widens_no_seeds_spec_permissions_5_1() {
     }
 }
 
+/// §5.1 Trust, seeds follow chained edges (§4), which follow the walk's order: n1 (H's first
+/// admin) names H admin on T, before or after n0 (T's first admin) makes n1 admin of T. M
+/// (writer of H) holds admin on T from n0 and grants Y write on T, unseen by n1, whose trusted
+/// removal of M from H puts in question what H reaches. Written after its authority, H's edge
+/// on T applies and is chained, so M's grant is a seed and drops; written before, no walk
+/// applies it and it sets no chained edge, so M's grant stands.
+#[test]
+fn edge_written_before_its_authority_seeds_nothing_spec_permissions_5_1() {
+    for late in [false, true] {
+        let mut w = World::new();
+        let n = w.nodes(4);
+        let (m, y) = (n[2], n[3]);
+        let t = w.thing(n[0]);
+        let h = w.thing(n[1]);
+        let all: Vec<(Tid, u64)> = n.iter().map(|a| (*a, 1)).collect();
+        let gh = w.set(n[1], t, h, edge(Admin), if late { 3 } else { 1 }, &all);
+        w.set(n[0], t, n[1], edge(Admin), 2, &all);
+        w.set(n[1], h, m, edge(Write), 2, &all);
+        w.set(n[0], t, m, edge(Admin), 2, &all);
+        let gy = w.set(m, t, y, edge(Write), 5, &[]);
+        let r = w.set(n[1], h, m, None, 10, &[]);
+        let plain = eval(&w);
+        assert_eq!(plain.is_applied(&WriteId(gh, 0)), late, "late {late}");
+        assert!(plain.is_applied(&WriteId(gy, 0)), "late {late}");
+        let side = eval_with(&w, &trust(&[r]));
+        assert_eq!(side.trusted_active().iter().copied().collect::<Vec<_>>(), vec![WriteId(r, 0)], "late {late}");
+        assert_eq!(side.dropped().contains_key(&WriteId(gy, 0)), late, "late {late}: {:?}", side.dropped());
+        assert_eq!(side.is_applied(&WriteId(gy, 0)), !late, "late {late}");
+    }
+}
+
 /// §5.1 Trust, notes/disputes-plan.md step 4 (detection): `Timelines` under `detect`
 /// reports a dispute once, when the removal it voids stops applying (`stood`) or when the
 /// voided removal arrives unapplied; a switch (`set_trust`) detects nothing; `disputes_up_to`
