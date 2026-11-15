@@ -746,7 +746,7 @@ fn a_later_rotations_list_of_d_decides_no_earlier_epoch_spec_permissions_5_5() {
     assert!(e.roster(&d).contains_key(&sib));
 }
 
-// spec/permissions.md §5.5 (Listings, Waiting): a node of the account names its own commits at
+// spec/permissions.md §5.5 (Waiting): a node of the account names its own commits at
 // the epochs a rotation closes that no word names; one counting only while it waits for D's
 // list is named no less. A sibling taking the rotation whole (its seed) before the list answers
 // it naming its own write on D the rotator never held, so the write stands once the list comes.

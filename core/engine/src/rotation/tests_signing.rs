@@ -1928,7 +1928,7 @@ fn a_removed_nodes_grant_counted_while_waiting_reaches_no_one_spec_permissions_5
     }
 }
 
-// spec/sync-opens.md §2 (its account, with the signed rotations the verifier lacks): a node's
+// spec/sync-opens.md §2 (its account by a signature at an epoch, with the signed rotations of that account the verifier lacks): a node's
 // Prove carries what holding the epoch it proves at needs, each after what it needs, never a
 // removed node's forks it holds (they would crowd the message's room: each a header with a KEM
 // key); a verifier holding only the account's record takes them and the node's key is open there

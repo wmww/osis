@@ -151,7 +151,7 @@ fn judged_per_commit(what: &str, small: [(&str, u64, u64); 2], big: [(&str, u64,
     }
 }
 
-// spec/requirements.md, Scale (work in proportion to change): sync read judges again only the
+// spec/sync.md §2 (work in proportion to change): sync read judges again only the
 // bodies whose facts a write changes (`Engine::read_facts`, `Engine::held_fate`: kept per body),
 // not every body on the written aspect. Writing n and 10n times on one aspect of a thing keeping
 // its history for good judges linearly many bodies (a few per write; every body per write would
@@ -164,6 +164,7 @@ fn a_write_judges_the_bodies_it_changes() {
         db.commit_with(|w| {
             let t = w.create()?;
             w.at(t, osis::core::RETENTION).set(&x)?;
+            w.group(db.home()).add(osis::Member::Subgroup(t))?;
             Ok(t)
         })
         .unwrap()
@@ -180,7 +181,8 @@ fn new_things(n: usize) -> Vec<(u64, bool)> {
     let db = crate::common::db(0);
     let create = || {
         let mut w = db.write();
-        w.create().unwrap();
+        let t = w.create().unwrap();
+        w.group(db.home()).add(osis::Member::Subgroup(t)).unwrap();
         w.commit().unwrap();
         db.settle();
     };
@@ -198,7 +200,7 @@ fn new_things(n: usize) -> Vec<(u64, bool)> {
         .collect()
 }
 
-// spec/requirements.md, Scale: a new thing is listed in the account's home group (a write on its
+// spec/sync.md §2 (work in proportion to change): a new thing is listed in the account's home group (a write on its
 // `group.0`), which moves no earlier body's facts: after n and 10n new things, each next one that
 // writes no compaction snapshot judges as many bodies (the account's signing chain reads only
 // the account's role commits on home, `Indexes::role_on`: read from all its commits there, each
