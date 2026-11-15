@@ -181,7 +181,7 @@ fn lowered_writes(n: usize) -> (World, Tid, Vec<CommitId>, Vec<Held>) {
 
 // spec/commits.md §5 (Forgetting: a commit judged invalid goes once no entry of it is known),
 // spec/sync-judgement.md §3 (Own store: a body judged invalid leaves it with no tombstone),
-// spec/permissions.md §6 (an invalid request purges nothing): a lowered writer's invalid writes,
+// spec/permissions.md §6 (A purge request: an invalid one purges nothing): a lowered writer's invalid writes,
 // one carrying a purge request, leave no header at the other nodes, nor a store entry anywhere,
 // the author included (it keeps its own commits for its user): every node's store and the
 // others' engines hold the same at 10 and 20 such writes (both past what arms a compaction of the value), the purge took nothing, and nothing of

@@ -2321,7 +2321,7 @@ mod tests {
     }
 
     // spec/commits.md §5 (Forgetting: a commit judged invalid carrying a purge request goes only
-    // where the request holds the right over nothing), spec/permissions.md §6 (an invalid request
+    // where the request holds the right over nothing), spec/permissions.md §6 (A purge request: an invalid one
     // purges nothing): the lowered writer's invalid commit purging its write on `t` (it lost write
     // there) is forgettable; one purging its write on `u`, where it is still admin, drops that
     // write and is kept, also past a demotion on `u` whose frontier lists it.
