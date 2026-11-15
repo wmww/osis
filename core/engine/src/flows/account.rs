@@ -171,6 +171,11 @@ impl AccountView {
         self.rule.chain().taken()
     }
 
+    /// Whether a counting rotation rejects held rotation `r`.
+    pub(crate) fn rejected(&self, r: &CommitId) -> bool {
+        self.rule.chain().rejected(r)
+    }
+
     /// Whether held rotation `r` was placed in conflict with the line this node follows.
     pub(crate) fn disregarded(&self, r: &CommitId) -> bool {
         self.rule.chain().disregarded(r)

@@ -486,13 +486,14 @@ fn mergeable(v: &super::account::AccountView, held: &super::account::HeldAccount
 
 /// The held rotations of this node's account this node disregards (placed in conflict with the
 /// line it follows: a removed node's fork, one no node of the account minted, another side's)
-/// with no disregarded rotation on their line that a counting rotation D's roster authorizes
-/// supersedes: superseded unnamed by its next rotation, so every reader that followed one is
-/// told (spec/permissions.md §5.4, Warning). One answer per line: a reader following it holds
-/// that rejection already, so two sides never answer each other's answers.
+/// that no counting rotation D's roster authorizes supersedes, with no rotation on their line a
+/// counting one rejects: superseded unnamed by its next rotation, so every reader that followed
+/// one is told (spec/permissions.md §5.4, Warning). One answer per line: a reader following it
+/// holds that rejection already, so two sides never answer each other's answers; a rotation
+/// signed at the answer's epoch that puts the rejected one on a line through it ends that
+/// rejection, and is answered in turn.
 fn unanswered(v: &super::account::AccountView) -> Vec<CommitId> {
-    let answered = |q: &CommitId| v.disregarded(q) && v.superseded_by_authorized(q);
-    v.rotation_ids().into_iter().filter(|r| v.disregarded(r) && !v.line(r).into_iter().flatten().any(answered)).collect()
+    v.rotation_ids().into_iter().filter(|r| v.disregarded(r) && !v.superseded_by_authorized(r) && !v.line(r).into_iter().flatten().any(|q| v.rejected(q))).collect()
 }
 
 /// What a node of this node's account owes its signing chain (spec/permissions.md §3, §5.5),

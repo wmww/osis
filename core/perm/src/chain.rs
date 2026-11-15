@@ -6,7 +6,8 @@
 //! `Devices`).
 //!
 //! Principle: the first revocation seen holds. A node places the rotations in the order it came
-//! to hold them (each with its chain and every fork it names; the chosen rotation's line first).
+//! to hold them (each with its chain, every fork it names and every rotation it takes; the
+//! chosen rotation's line first).
 //! Outside the account it follows each with its line unless it is beside one already followed
 //! (a removed device's fork looks like any other); a node of the account reads who minted each
 //! rotation and whom each removes, takes the revocations first-seen as a consistent set and
@@ -60,8 +61,8 @@ pub struct Rotation<E> {
     /// checked against the key the named rotation mints). A name without its signature
     /// accepts nothing.
     pub signed: BTreeSet<E>,
-    /// The revocations its maker took that are not on its line: it stands with them. Read only
-    /// at a node of the account, where it is held only once these are.
+    /// The revocations its maker took that are not on its line: it stands with them (read only
+    /// at a node of the account). It is held only once these are, at every node.
     pub takes: BTreeSet<E>,
 }
 
@@ -128,8 +129,9 @@ impl<E: Ord + Copy> Chain<E> {
     /// Judges `rotations` (the held ones, one record each) as a node that holds them in the
     /// order `received` (earliest first; one missing ranks after every one in it) and whose
     /// user chose `chosen`; `devices` at a node of the account (`None` elsewhere). A rotation
-    /// counts as held only with its chain back to the root and every fork it names, each so
-    /// held (spec/permissions.md §5.4); the rest are pending and take part in nothing (`holds`).
+    /// counts as held only with its chain back to the root, every fork it names and every
+    /// rotation it takes, each so held (spec/permissions.md §5.4); the rest are pending and take
+    /// part in nothing (`holds`).
     pub fn new<M: Ord + Copy>(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, chosen: Option<E>, received: &[E], devices: Option<&Devices<E, M>>) -> Chain<E> {
         let rank = ranks(received);
         let rank_of = |r: &E| rank.get(r).copied().unwrap_or(usize::MAX);
@@ -141,8 +143,9 @@ impl<E: Ord + Copy> Chain<E> {
         // when each came to be held with its chain: its own receipt or a parent's, the later
         let mut when: BTreeMap<E, usize> = BTreeMap::new();
         let held = |rots: &BTreeMap<E, Rotation<E>>, e: &E| *e == root || rots.contains_key(e);
-        // at a node of the account, also every revocation it takes
-        let needs = |r: &Rotation<E>| -> Vec<E> { std::iter::once(r.at).chain(r.names.iter().copied()).chain(r.takes.iter().copied().filter(|_| devices.is_some())).collect() };
+        // and every revocation it takes, at every node: one taking what no node of the account
+        // holds would otherwise be followed outside unanswered
+        let needs = |r: &Rotation<E>| -> Vec<E> { std::iter::once(r.at).chain(r.names.iter().copied()).chain(r.takes.iter().copied()).collect() };
         while let Some(id) = pending.values().find(|r| needs(r).iter().all(|n| held(&rots, n))).map(|r| r.id) {
             if let Some(r) = pending.remove(&id) {
                 let w = needs(&r).iter().filter_map(|p| when.get(p)).fold(rank_of(&id).max(minter_known(&id)), |a, b| a.max(*b));
@@ -407,6 +410,11 @@ impl<E: Ord + Copy> Chain<E> {
     /// The user's choice, if held.
     pub fn chosen(&self) -> Option<E> {
         self.chosen
+    }
+
+    /// Whether a counting rotation rejects held rotation `r`.
+    pub fn rejected(&self, r: &E) -> bool {
+        self.counting.iter().any(|m| self.rejects.contains(&(*m, *r)))
     }
 
     /// Whether held rotation `r` was placed in conflict with the followed rotations.

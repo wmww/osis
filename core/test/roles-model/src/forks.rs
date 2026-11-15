@@ -4,8 +4,8 @@
 //! their author's own listing, the one word every honest node writes for itself).
 //!
 //! The rule under test. Each node places the held rotations in the order it came to hold them
-//! (a rotation is held only with its chain and every fork it names, so a line is whole when
-//! placed; a rotation the node's user chose has its line placed first). A placed rotation is
+//! (a rotation is held only with its chain, every fork it names and every revocation it takes,
+//! so a line is whole when placed; a rotation the node's user chose has its line placed first). A placed rotation is
 //! **disregarded** when a rotation on its line rejects or is rejected by a followed one, or
 //! when a followed rotation is beside it (neither on the other's line); otherwise it is
 //! followed with its whole line (a merge naming a disregarded fork brings it back). That is
@@ -32,7 +32,8 @@
 //! Parties: account P with nodes A (honest, may rotate at time 0, removes X at time 1), B (honest, may be offline
 //! until it reconnects: unaware of the removal, it writes, rotates, boxes X), X (removed: from
 //! time 1 it forks from any epoch whose seed it holds, any number of times, may revoke A or B
-//! in its forks, may counter-merge, writes and lists its writes; it signs as itself or as Z, a
+//! in its forks, claims to take any revocation or one it keeps to itself, may counter-merge,
+//! writes and lists its writes; it signs as itself or as Z, a
 //! key actor it makes up, and writes D grants at any epoch it holds, backdated or at B's:
 //! pairing Z, re-adding itself, Z re-adding it; in some worlds it paired Z in plain sight
 //! before), T (a node of P that only reads, offline through the fight); outside readers R1, R2
@@ -88,8 +89,8 @@ pub const NEVER: u32 = u32::MAX;
 /// nodes judge as outsiders do (every beside rotation ends another); 3 any key actor that signs
 /// is a node and D's roster reads every grant at a counting epoch (a removed node's own
 /// included); 4 first-seen grants: a removed node's grant is hit only when held after its
-/// removal or signed beside it (notes/engine-validity-epochs.md, Sides: rejected); 5 P's nodes
-/// ignore what a rotation takes (they read only the revocations on its line); 6 a node answers
+/// removal or signed beside it (notes/engine-validity-epochs.md, Sides: rejected); 5 nodes
+/// ignore what a rotation takes (P's read only the revocations on its line); 6 a node answers
 /// every disregarded rotation no counting one rejects, not one per line.
 pub static CONTROL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 const NAMES: [&str; N] = ["A", "B", "X", "T", "R1", "R2", "Z"];
@@ -99,8 +100,8 @@ pub enum Kind {
     /// Signed at `at` (and at each fork it names), superseding `sup`, accepting the forks
     /// `names`, carrying the removal of `removes` from the devices list (signed at `at`) with
     /// its frontier `covers`: the removed node's D commits its remover held. `takes`: the
-    /// revocations its maker took that are not on its line (it stands with them: read only at
-    /// P's nodes).
+    /// revocations its maker took that are not on its line (held only once these are; it stands
+    /// with them, read only at P's nodes).
     Rot { at: u32, names: Vec<u32>, sup: Vec<u32>, removes: Option<usize>, covers: Vec<u32>, takes: Vec<u32> },
     /// A grant of D to `to` (pairing), signed at `epoch` by `signer`.
     Grant { to: usize },
@@ -141,6 +142,9 @@ pub struct World {
     pub b_switch: Option<u32>,
     /// Set by `settle`: an honest node still rotated in its last round.
     pub restless: bool,
+    /// Items X keeps to itself for good (a revocation it claims to take that no one else holds):
+    /// the settle delivers them to no one.
+    pub withheld: BTreeSet<u32>,
 }
 
 impl World {
@@ -264,10 +268,12 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
             }
         }
     }
-    // with its chain (a merge with every fork it names) and, at a node of P, its minter known
-    // and every revocation it takes held so, and when it came to be held so: the latest receipt
-    // on its line, of a revocation it takes or of its minter's grant
-    let reads_takes = own && control != 5;
+    // with its chain (a merge with every fork it names) and every revocation it takes held so
+    // (at every node: one taking what P's nodes never hold would be followed outside, never
+    // answered) and, at a node of P, its minter known; and when it came to be held so: the
+    // latest receipt on its line, of a revocation it takes or of its minter's grant
+    let holds_takes = control != 5;
+    let reads_takes = own && holds_takes;
     let mut when: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
     when.insert(0, (0, 0));
     loop {
@@ -275,7 +281,7 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
             let (at, names, ..) = w.rot(*id)?;
             let i = w.item(*id);
             let first = known.get(&i.signer).map_or((i.recv[v], i.id), |k| (i.recv[v], i.id).max(*k));
-            let takes = if reads_takes { w.takes(*id) } else { &[] };
+            let takes = if holds_takes { w.takes(*id) } else { &[] };
             std::iter::once(&at).chain(names).chain(takes).map(|p| when.get(p).copied()).try_fold(first, |a, t| t.map(|t| a.max(t))).map(|t| (*id, t))
         }).collect();
         if more.is_empty() {
@@ -669,9 +675,17 @@ pub fn random_world(rng: &mut Rng) -> World {
                         let signer = if rng.below(2) == 0 || w.z_paired() { X } else { Z };
                         let covers = removes.map(|y| w.items.iter().filter(|i| i.signer == y && matches!(i.kind, Kind::Grant { .. }) || matches!(i.kind, Kind::Creation { .. })).map(|i| i.id).collect()).unwrap_or_default();
                         // it may claim to take any revocation it holds (A's removal of it
-                        // among them, to pass as the honest side)
+                        // among them, to pass as the honest side), or one it keeps to itself
                         let revs: Vec<u32> = j.chain.iter().copied().filter(|r| matches!(w.rot(*r), Some((_, _, _, Some(_))))).chain([w.removal]).collect();
-                        let takes = if rng.below(3) == 0 { vec![revs[rng.below(revs.len())]] } else { vec![] };
+                        let takes = match rng.below(6) {
+                            0 | 1 => vec![revs[rng.below(revs.len())]],
+                            2 => {
+                                let k = w.add(Kind::Rot { at: e, names: vec![], sup: vec![e], removes: Some(A), covers: vec![], takes: vec![] }, X, e, t, bx);
+                                w.withheld.insert(k);
+                                vec![k]
+                            }
+                            _ => vec![],
+                        };
                         let r = w.add_as(Kind::Rot { at: e, names, sup, removes, covers, takes }, X, signer, e, t, bx);
                         made.push(r);
                         if rng.below(2) == 0 {
@@ -747,7 +761,7 @@ pub const ROUNDS: u32 = 6;
 /// T on X's side switch to A's removal at once, B in round `b_switch` or never: users told)
 /// until none owes anything.
 pub fn settle(w: &mut World, settle: u32) -> u32 {
-    for i in w.items.iter_mut() {
+    for i in w.items.iter_mut().filter(|i| !w.withheld.contains(&i.id)) {
         let d = matches!(i.kind, Kind::Grant { .. } | Kind::Creation { .. });
         for (m, r) in i.recv.iter_mut().enumerate() {
             if m != Z && !(d && m >= OWN) {
@@ -809,19 +823,25 @@ pub struct Stats {
     /// switching after a settle round in which it acted on X's side.
     pub b_stays: u64,
     pub b_late: u64,
+    /// Worlds where X claims to take a revocation it keeps to itself.
+    pub withholding: u64,
 }
 
 pub fn check(w0: &World, st: &mut Stats) {
     let mut w = w0.clone();
     let end = settle(&mut w, 12);
     st.worlds += 1;
-    let x_rot = w.items.iter().any(|i| w.hostile(i.id) && matches!(i.kind, Kind::Rot { .. }));
+    // a rotation X made after its removal that some node but X holds with its chain
+    let x_rot = (0..N).filter(|v| *v != X && *v != Z).any(|v| judge(&w, v, end).chain.iter().any(|r| w.hostile(*r)));
     let x_any_rot = w.items.iter().any(|i| i.author == X && matches!(i.kind, Kind::Rot { .. }));
     if x_rot {
         st.forks += 1;
     }
     if w.items.iter().any(|i| w.hostile(i.id) && matches!(i.kind, Kind::Rot { removes: Some(_), .. })) {
         st.fights += 1;
+    }
+    if !w.withheld.is_empty() {
+        st.withholding += 1;
     }
     if w.items.iter().any(|i| i.signer == Z && w.hostile(i.id)) {
         st.forged += 1;
@@ -1000,6 +1020,7 @@ pub fn run(samples: u64) -> u64 {
         all.taking_x += st.taking_x;
         all.b_stays += st.b_stays;
         all.b_late += st.b_late;
+        all.withholding += st.withholding;
         all.fail.extend(st.fail);
     }
     let fails = all.failures;
@@ -1071,6 +1092,26 @@ mod tests {
         assert!(j.warning && j.counting.contains(&ans[0]));
         // T, a node of P offline through it all, takes the removal too and is warned
         assert!(judge(&w, T, 9).warning && judge(&w, T, 9).counting.contains(&w.removal));
+    }
+
+    // X forks (revoking A) claiming to take a revocation it keeps to itself, and R2 gets the
+    // fork before A's removal. No node holds the fork (it waits for what it takes), so R2 never
+    // follows a line P's nodes never answer: it follows A's removal, and A owes nothing.
+    #[test]
+    fn a_rotation_taking_what_no_one_holds_is_held_nowhere() {
+        let mut w = World::default();
+        let made = act(&mut w, A, 1, Some(X), false);
+        w.removal = made[0];
+        let k = fork(&mut w, 0, 1, Some(B));
+        w.withheld.insert(k);
+        let f = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: Some(A), covers: vec![], takes: vec![k] }, X, 0, 1, [false, false, true, false, false, false, false]);
+        all_at(&mut w, &[f], 2);
+        all_at(&mut w, &made, 3);
+        for n in [A, B, T, R1, R2] {
+            let j = judge(&w, n, 3);
+            assert!(!j.chain.contains(&f) && j.counting.contains(&w.removal) && !j.warning, "{}: {j:?}", NAMES[n]);
+        }
+        assert!(act(&mut w, A, 4, None, false).is_empty(), "nothing to answer");
     }
 
     // R2 holds X's fork (revoking A) before A's removal of X: it stays with X, is warned once
@@ -1287,7 +1328,7 @@ mod tests {
 
     // A rotates (r1), then removes X (r3); B rotated unaware at the first epoch (r10) and takes
     // X's revocation of A (r6) first, so its next rotation (rb) supersedes A's line unnamed: a
-    // rejection. A and T disregard rb (a line at odds with the revocation they took); once B's
+    // rejection. A and T disregard rb (it stands with r6, which they do not take); once B's
     // user switches, B disregards rb too, so its merge names its own r10 only and rejects rb:
     // R1, on A's line, follows the merge and counts B's write at rb by its listing
     #[test]
@@ -1327,7 +1368,7 @@ mod tests {
 
     // B, offline, rotates unaware (rb0), then holds X's revocation of A (f) before A's removal of
     // X, so it takes f, and removes T unaware (rb1, signed at its own rb0, boxing B and X):
-    // rb1 disowns nothing of A's, but it takes f. A and T (on A's side) never follow it, so no
+    // rb1 supersedes nothing of A's, but it takes f. A and T (on A's side) never follow it, so no
     // head of theirs is boxed to X; A answers it once, B answers once, and neither answers an
     // answer again. Once B's user switches, B follows A's line and its listing there saves its write
     // at rb1

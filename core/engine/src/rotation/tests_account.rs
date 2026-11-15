@@ -102,6 +102,14 @@ impl osis_commit::Secrets for Dedup {
 /// A rotation of the account of record `rec` from its first epoch to `next`, superseding that
 /// epoch alone: what a node removed at the first epoch can make after every merge.
 pub(super) fn rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &AccountEpochKeys, ts: Ts) -> Vec<u8> {
+    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), list_root: [0; 32] };
+    rotation_at(rec, (FIRST_EPOCH, first), &[], next, header, ts)
+}
+
+/// A rotation of the account of record `rec` to `next`, signed at epoch `at` (its keys) and at
+/// each fork of `forks` (named in `header`, in its order), sealed as a key actor made up.
+pub(super) fn rotation_at(rec: CreationRecord, at: (CommitId, &AccountEpochKeys), forks: &[&AccountEpochKeys], next: &AccountEpochKeys, header: RotationHeader, ts: Ts) -> Vec<u8> {
+    let (epoch, first) = at;
     let p = rec.tid();
     let ak = Ak::new("keys.0").unwrap();
     let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
@@ -114,8 +122,8 @@ pub(super) fn rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &Acc
     aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
     cb.aspects.push(aw);
     let node = osis_crypto::KeyActorKeys::from_seed(&Secret32::from_bytes([9; 32]));
-    cb.account = Some(AccountSigner { epoch: FIRST_EPOCH, inner: first.inner.clone(), node: Tid::from_bytes([9; 15]), node_key: node.signing });
-    cb.rotation = Some((RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), list_root: [0; 32] }, Vec::new()));
+    cb.account = Some(AccountSigner { epoch, inner: first.inner.clone(), node: Tid::from_bytes([9; 15]), node_key: node.signing });
+    cb.rotation = Some((header, forks.iter().map(|k| k.signing.clone()).collect()));
     cb.build(&first.signing, &Dedup(rec, first.signing.verifying_key()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 

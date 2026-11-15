@@ -251,7 +251,7 @@ fn a_removed_nodes_grant_to_itself_is_no_readd() {
 /// stands with a revocation A does not take: that side, never counting beside 3, though nothing
 /// on its line is X's (spec/permissions.md §5.4, Following, at a node of P). Read without what it
 /// takes, 5 would be an honest fork at A, a head boxed to X. At B once its user chooses 3 the
-/// same holds, so B's merge names its 2 alone. At a node of P, 5 is held only once 4 is.
+/// same holds, so B's merge names its 2 alone. 5 is held only once 4 is, at every node.
 #[test]
 fn a_rotation_taking_a_revocation_not_taken_here_is_the_other_side() {
     let mut r5 = rot(5, 2, &[2], &[]);
@@ -269,7 +269,7 @@ fn a_rotation_taking_a_revocation_not_taken_here_is_the_other_side() {
     let a = Chain::new(0, early, None, &rec(&[1, 3, 2, 5]), Some(&d));
     assert!(!a.holds(&5) && a.holds(&2), "5 waits for 4 at a node of P");
     let outside = Chain::new(0, rots.iter().filter(|r| r.id != 4).cloned(), None, &rec(&[1, 3, 2, 5]), None::<&Devices<u32, char>>);
-    assert!(outside.holds(&5), "outside P what a rotation takes is not read");
+    assert!(!outside.holds(&5), "5 waits for 4 outside P too");
     let b = Chain::new(0, rots.clone(), None, &rec(&[1, 2, 4, 5, 3]), Some(&d));
     assert!(b.counts(&4) && b.counts(&5) && !b.counts(&3), "B before its switch");
     let b = Chain::new(0, rots, Some(3), &rec(&[1, 2, 4, 5, 3]), Some(&d));
