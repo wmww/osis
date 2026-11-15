@@ -8,7 +8,7 @@ announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`t
 vouches for checked delta bytes (`checked_bytes`), and signature verdicts are read back only where kept (`kept_verdicts`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
 and every list under git's union merge has no duplicate line and a stale-line check (`union_lists`),
-and no code names a thing's destruction by the old word "ended" (`ended_names`), and each store's local-row key constants are prefix-free and never written as literals (`row_prefixes`), and sync's peer-record tags are distinct bytes never written as literals (`record_tags`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and no core `pub`
+and no code names a thing's destruction by the old word "ended" (`ended_names`), and no code or comment uses a deprecated sync, host, upload or person term (`old_words`), and each store's local-row key constants are prefix-free and never written as literals (`row_prefixes`), and sync's peer-record tags are distinct bytes never written as literals (`record_tags`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and no core `pub`
 item is used only by its own crate's tests or not at all unless tools/dead_pub_allow.txt lists it (tools/dead_pub.py).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
@@ -404,6 +404,24 @@ def ended_names():
                 n = text.count("\n", 0, a) + 1
                 yield f"{rel}:{n}: `{m.group(0)}`: a thing is destroyed, not ended (issues/deprecated-terms.md)"
 
+# issues/deprecated-terms.md: the old words for sync IDs (label), for a node keeping data unread
+# (host), for logging an entry (upload), for the account actor (person) and for a saved peer list
+# may not come back in code or its comments. The TLA models keep their own vocabulary (a TLC rerun
+# renames them), the transport its network hosts; the GUI's labels are another sense.
+OLD_WORDS = re.compile(
+    r"\bosis[-_]label\b|\bLabel(Role|Id)\b|\blabel_role_\w+|\blabeling\b|\bk_label\b|\bto_label\b"
+    r'|"osis v1 label id"|"label (sync|write|delete|deposit|claim)"'
+    r"|\bhost_prefix\b|\bhosts\b|\b[Uu]pload(s|ed|ing|er|ers)?\b|\bpersons?_\w+|\bpersons\b|\bsaved peers?\b")
+
+def old_words():
+    for path, rel in walk(("core", "cli", "libs/chat", "schema"), (".rs", ".osis", ".sh")):
+        if rel.startswith(("core/test/tla/", "core/transport/")):
+            continue
+        for n, line in enumerate(read(path).split("\n"), 1):
+            m = OLD_WORDS.search(line)
+            if m:
+                yield f"{rel}:{n}: `{m.group(0)}`: a deprecated term (issues/deprecated-terms.md)"
+
 # Local-row keys share one namespace per store (the engine's, sync's): each kind of row is a byte
 # constant, `const NAME: &[u8] = b"...";`, written nowhere else as a literal, and no key constant is
 # a prefix of another (a scan of one would read the other's rows). The engine's `node/` names are
@@ -451,6 +469,7 @@ errs.extend(row_prefixes())
 errs.extend(record_tags())
 errs.extend(doc_refs.check())
 errs.extend(ended_names())
+errs.extend(old_words())
 errs.extend(dead_pub.check())
 errs.extend(known_failures())
 errs.extend(union_lists())

@@ -91,6 +91,9 @@ PLANTS = [
     ("schema/app.osis", None, "\n# EndedIn\n"),
     ("tools/prune-incremental.sh", None, "\n# Status::Ended\n"),
     ("core/test/tla/sync/MC.tla", None, "\n\\* NoLeakEnded"),
+    # old_words
+    ("core/sync/src/life.rs", None, "\n// a node re-uploads it to the hosts\n"),
+    ("core/transport/src/lib.rs", None, "\n// the hosts behind a NAT\n"),
     # row_prefixes
     ("core/sync/src/life.rs", None, '\nconst PLANTED_ROW: &[u8] = b"zq/";\nconst PLANTED_SUB: &[u8] = b"zq/x";\nfn planted_inline() -> &\'static [u8] { b"zr/k" }\n'),
     # record_tags
@@ -148,6 +151,7 @@ EXPECT = [  # regexes the output must hold
     r"schema/app\.osis:\d+: `EndedIn`",
     r"tools/prune-incremental\.sh:\d+: `Status::Ended`",
     r"core/test/tla/sync/MC\.tla:\d+: `NoLeakEnded`",
+    r"core/sync/src/life\.rs:\d+: `uploads`",
     r"sync store: row key 'zq/x' \(core/sync/src/life\.rs:\d+ PLANTED_SUB\) and 'zq/' \(core/sync/src/life\.rs:\d+ PLANTED_ROW\) collide|sync store: row key 'zq/' \(core/sync/src/life\.rs:\d+ PLANTED_ROW\) and 'zq/x' \(core/sync/src/life\.rs:\d+ PLANTED_SUB\) collide",
     r"core/sync/src/life\.rs: a row key `b\"zr/\.\.\.` written as a literal",
     r"core/sync/src/store/rows\.rs: record tags REFUSED and PLANTED_TAG are both b'r'",
@@ -169,6 +173,7 @@ ABSENT = [  # near misses: what the plants show must not be reported
     r"core/sync/tests/it/life\.rs: Lan::bind in a test on a fixed port: fn near_miss",
     r"core/engine/tests/it/groups\.rs:\d+: engine",
     r"osis-crdt::planted_live",
+    r"core/transport/src/lib\.rs:\d+: `hosts`",
 ]
 
 
