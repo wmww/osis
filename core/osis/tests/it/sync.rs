@@ -445,12 +445,12 @@ fn an_accepters_wait_on_the_thing_ends_spec_sync_status_3() {
     w.at(t, osis::core::NAME).set(&"granted".to_string()).unwrap();
     w.commit().unwrap();
     b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
-    for _ in 0..5 {
-        net.run();
-    }
+    net.run();
+    assert!(now(b.wait_synced(SyncScope::Deliveries)).is_pending(), "not taken until accepted");
     a.accept_invite(t, a.home()).unwrap();
     drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
     assert_eq!(a.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("granted"));
+    drive(&net, b.wait_synced(SyncScope::Deliveries)).unwrap();
 }
 
 // spec/sync-inbox.md §5 (contact card), spec/sync-set.md §4: importing a card gives the account,
