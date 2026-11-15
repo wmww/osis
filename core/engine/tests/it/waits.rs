@@ -1023,6 +1023,35 @@ fn pending_commits_wake_only_for_what_they_await_spec_commits_4() {
     }
 }
 
+// spec/commits.md §4 (a commit pending for its `ts` is examined when the clock reaches it) and §6
+// (expiry): the engine's next timer is the earliest of every kind, a pending `ts` and an expiry
+// either side of it.
+#[test]
+fn the_next_timer_is_the_earliest_of_every_kind_spec_commits_4() {
+    let mut lp = net(3, 0);
+    let mine = new_thing(&mut lp, 1);
+    let t2 = new_thing(&mut lp, 2);
+    sync(&mut lp, 2, 1);
+    lp.peers[2].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
+    let mut m = Mutation::new();
+    m.set(t2, &REG, &s("ahead")).unwrap();
+    let c = lp.peers[2].commit(m).unwrap().unwrap();
+    let pk = lp.peers[2].engine.package(&c).unwrap().unwrap();
+    assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Pending(_, Reason::Drift)));
+    let drift = lp.peers[1].engine.next_timer().unwrap().expect("a wake for the drift");
+    let now = lp.peers[1].engine.now().0;
+    let mut expire = |at: u64| {
+        let mut m = Mutation::new();
+        m.set(mine, &REG, &s(&at.to_string())).unwrap();
+        m.expires_all(WallMs(at));
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.peers[1].engine.next_timer().unwrap()
+    };
+    assert_eq!(expire(drift + 1_000), Some(drift), "an expiry after the drift wake");
+    assert!(now + 1_000 < drift);
+    assert_eq!(expire(now + 1_000), Some(now + 1_000), "an expiry before it");
+}
+
 /// Peer 1 holding `n` commits of each of two strangers (peers 2 and 3, never met), pending for
 /// their authors' records: the examinations learning peer 2's records costs, and what pends after.
 fn record_work(n: usize) -> (u64, usize) {

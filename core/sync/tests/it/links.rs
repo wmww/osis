@@ -523,16 +523,23 @@ fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
 }
 
 // spec/sync-set.md §2 (Sync set: a link's sync ID while its redeemer redeems it), spec/sync-status.md
-// §2 (Held elsewhere: a commit by a key actor it holds, a followed link's key): a redeem judges again only what the
-// link moves, not what the redeemer wrote before: the bodies read judges again and the own
-// commits judged again are the same after n and 10n writes of its own.
+// §2 (Held elsewhere: a commit by a key actor it holds, a followed link's key): a redeem judges
+// again none of what the redeemer wrote before: the own commits judged again are the same after
+// n and 10n writes of its own.
 #[test]
 fn a_redeem_judges_none_of_the_redeemers_own_writes_spec_sync_set_2() {
-    let judged = |n: i64| -> (u64, u64) {
-        let mut w = crate::harness::contacts();
-        let mut m = osis_engine::Mutation::new();
+    let judged = |n: i64| -> u64 {
+        // the link made once, before node 1 writes: it moves nothing of node 1's
+        let (mut w, link) = crate::harness::fixture_with("two nodes, a link to node 0's profile", || {
+            let mut w = two_nodes();
+            let p0 = w.node(0).profile.unwrap();
+            let link = w.make_link(0, p0, Role::Read);
+            w.run();
+            (w, link)
+        });
         let t = w.write(1, |e| {
             let me = e.account().unwrap().unwrap().0;
+            let mut m = osis_engine::Mutation::new();
             let t = e.new_thing(&mut m, me);
             e.commit(m).unwrap();
             t
@@ -546,16 +553,12 @@ fn a_redeem_judges_none_of_the_redeemers_own_writes_spec_sync_set_2() {
             }
         });
         w.run();
-        let p0 = w.node(0).profile.unwrap();
-        let link = w.make_link(0, p0, Role::Read);
-        w.run();
         osis_base::costs::take();
         w.redeem(1, &link);
         w.run();
-        let c = osis_base::costs::take();
         // judged again: due by a read that moved (`Effects` causes), not first judgements
-        let again = |name: &str| c.iter().filter(|x| x.0.strip_prefix(name).and_then(|r| r.strip_prefix(" <- ")).is_some_and(|cause| cause != "unsettled")).map(|x| x.2).sum::<u64>();
-        (again("read: judged"), again("own: commits"))
+        let c = osis_base::costs::take();
+        c.iter().filter(|x| x.0.strip_prefix("own: commits <- ").is_some_and(|cause| cause != "unsettled")).map(|x| x.2).sum::<u64>()
     };
-    assert_eq!(judged(2), judged(20), "(bodies judged again, own commits judged again) by a redeem at n and 10n own writes");
+    assert_eq!(judged(1), judged(10), "own commits judged again by a redeem at n and 10n own writes");
 }

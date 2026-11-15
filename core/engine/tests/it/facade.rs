@@ -1645,6 +1645,38 @@ fn a_followed_link_stays_across_a_reload_spec_sync_set_2() {
     assert!(e.sync_set().unwrap().ids.contains_key(&link.k_sync_id), "still followed after a reload");
 }
 
+// spec/sync-set.md §2 (a link text's sync ID is nobody's when another followed link names it):
+// two links followed under one sync ID leave it nobody's; letting either go, or following it
+// again under its own sync ID, gives it back to the other. Asked between steps, so a stale
+// answer kept from before a step shows.
+#[test]
+fn two_followed_links_naming_one_sync_id_own_it_neither_spec_sync_set_2() {
+    let (mut lp, ps) = people(2);
+    let target = thing_of(&mut lp, 0, ps[0]);
+    let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
+    let a = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
+    let b = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
+    let s = a.k_sync_id;
+    // b's text naming a's sync ID
+    let forged = osis_blob::ShareLink { k_sync_id: s, ..b.clone() };
+    let e = &mut lp.peers[1].engine;
+    let owner = |e: &mut osis_engine::Engine| (e.sync_owner(&s).unwrap(), e.sync_set().unwrap().ids.contains_key(&s));
+    e.follow_link(&a).unwrap();
+    assert_eq!(owner(e), (Some(a.k), true), "one link: its sync ID is its K's");
+    e.follow_link(&forged).unwrap();
+    assert_eq!(owner(e), (None, false), "two links naming it: nobody's");
+    e.unfollow_link(&forged.k);
+    assert_eq!(owner(e), (Some(a.k), true), "the other let go: K's again");
+    e.follow_link(&forged).unwrap();
+    assert_eq!(owner(e), (None, false));
+    e.follow_link(&b).unwrap();
+    assert_eq!(owner(e), (Some(a.k), true), "the other followed again under its own sync ID");
+    assert_eq!(e.sync_owner(&b.k_sync_id).unwrap(), Some(b.k));
+    e.follow_link(&forged).unwrap();
+    e.unfollow_link(&a.k);
+    assert_eq!(owner(e), (Some(b.k), true), "a let go: b's text alone names it");
+}
+
 // spec/permissions.md §3 (When it learns it: a node syncing a sync ID of the actor keeps syncing it,
 // and keeps the secrets, until a complete pass of it begun after the role commit ends; then it
 // judges again): peer 1, removed from t, owes the drop (`lost_due`) but keeps t's
