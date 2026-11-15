@@ -124,7 +124,8 @@ impl Engine {
     /// `Core` alone, and following reads the engine whole. Whether a row of either moved.
     pub(crate) fn follow_lists(&mut self) -> Result<bool> {
         let f = &self.core.listed.followers;
-        if f.quiet.holds(f.carried.idle()) {
+        // `certified`'s follow runs inside: at its fixed point too
+        if f.quiet.holds(f.carried.idle()) && self.certificates_quiet() {
             return Ok(false);
         }
         let _u = Unrecorded::start();

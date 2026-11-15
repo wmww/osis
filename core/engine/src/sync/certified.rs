@@ -341,8 +341,7 @@ impl Engine {
     /// the keys whose reads moved and the pieces they place. Read by no caller: what a caller
     /// reads is the rows (`certified`, `certified_records`). Whether a row moved.
     pub(crate) fn follow_certificates(&mut self) -> Result<bool> {
-        let f = &self.core.certified.followers;
-        if f.quiet.holds(f.read.idle() && f.inboxes.idle() && f.authored.idle() && f.pieces.idle()) {
+        if self.certificates_quiet() {
             return Ok(false);
         }
         osis_base::costs::count("certified: follows", 1);
@@ -353,6 +352,13 @@ impl Engine {
         f.quiet.ended(from, r.is_ok());
         self.core.certified.followers = f;
         r
+    }
+
+    /// Whether `follow_certificates` is at its fixed point (`Quiet`), the rows it follows inside
+    /// included: a follow would do nothing.
+    pub(crate) fn certificates_quiet(&self) -> bool {
+        let f = &self.core.certified.followers;
+        f.quiet.holds(f.read.idle() && f.inboxes.idle() && f.authored.idle() && f.pieces.idle()) && self.rows_quiet()
     }
 
     fn follow_with(&mut self, f: &mut Followers) -> Result<bool> {

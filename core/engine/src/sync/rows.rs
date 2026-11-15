@@ -132,8 +132,7 @@ impl Engine {
     /// Brings the sync set's rows up to date: work in proportion to the things that may have
     /// entered and those whose place or keys moved (spec/sync-set.md §2 Cost).
     pub(crate) fn follow_rows(&mut self) -> Result<()> {
-        let r = &self.core.sync_rows;
-        if r.quiet.holds(r.thing.idle()) {
+        if self.rows_quiet() {
             return Ok(());
         }
         osis_base::costs::count("sync set: follows", 1);
@@ -144,6 +143,12 @@ impl Engine {
         r.quiet.ended(from, out.is_ok());
         self.core.sync_rows = r;
         out
+    }
+
+    /// Whether `follow_rows` is at its fixed point (`Quiet`): a follow would do nothing.
+    pub(crate) fn rows_quiet(&self) -> bool {
+        let r = &self.core.sync_rows;
+        r.quiet.holds(r.thing.idle())
     }
 
     fn follow_rows_in(&mut self, r: &mut SyncRows) -> Result<()> {
