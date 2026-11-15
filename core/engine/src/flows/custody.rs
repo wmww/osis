@@ -108,16 +108,15 @@ pub(crate) fn roster(core: &Core, d: &Tid) -> Vec<Tid> {
 /// (`newcomers`: one it adds, one a fork it joins added) also every seed this node holds, so it
 /// reads who minted each rotation on the line (spec/crypto.md §9, Custody). Ascending by tag.
 pub(crate) fn seed_boxes(tx: &mut Tx<'_>, p: &Tid, seed: &Secret32, devices: &BTreeSet<Tid>, newcomers: &BTreeSet<Tid>) -> Result<Vec<SeedBox>> {
-    let adds = newcomers;
     let epoch = AccountEpochKeys::from_seed(seed).signing.verifying_key();
     let held: Vec<Secret32> = tx.core.accounts.get(p).map(|a| a.keys.values().map(|k| k.seed().clone()).collect()).unwrap_or_default();
     let mut out = Vec::new();
-    for m in devices.iter().copied() {
+    for m in devices {
         let mut payload: Vec<&Secret32> = vec![seed];
-        if adds.contains(&m) {
+        if newcomers.contains(m) {
             payload.extend(held.iter().filter(|s| s.expose() != seed.expose()));
         }
-        out.push(seed_box(tx, p, &epoch, &m, &payload)?);
+        out.push(seed_box(tx, p, &epoch, m, &payload)?);
     }
     out.sort_by_key(|b| b.tag);
     Ok(out)

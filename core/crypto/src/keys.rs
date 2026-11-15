@@ -142,11 +142,12 @@ pub fn open_devices(inner: &Secret32, new_epoch: &VerifyingKey, sealed: &[u8]) -
     let (n, rest) = plain.split_at_checked(2)?;
     let n = usize::from(u16::from_le_bytes(n.try_into().ok()?));
     let (tids, extra) = rest.as_chunks::<{ osis_base::format::TID_LEN }>();
-    if !extra.is_empty() || n > tids.len() {
+    if !extra.is_empty() {
         return None;
     }
-    let tids: Vec<Tid> = tids.iter().map(|t| Tid::from_bytes(*t)).collect();
-    Some((tids[..n].to_vec(), tids[n..].to_vec()))
+    let (adds, removes) = tids.split_at_checked(n)?;
+    let tid = |t: &[u8; osis_base::format::TID_LEN]| Tid::from_bytes(*t);
+    Some((adds.iter().map(tid).collect(), removes.iter().map(tid).collect()))
 }
 
 /// An account's creation nonce (spec/crypto.md §3): `kdf("first device", first seed, creation
