@@ -220,7 +220,7 @@ fn a_sibling_rotation_proves_again_spec_sync_opens_1() {
     }
 }
 
-// spec/sync-ids.md §2 (the deposit seed is the actor's `keys.0`): a node paired after its account
+// spec/sync-ids.md §2 (from the deposit seed of the thing's actor): a node paired after its account
 // rotated holds the account's deposit seed and its D's deposit keys, whatever of the earlier
 // rotations it holds only as certificates.
 #[test]

@@ -128,8 +128,8 @@ fn an_outsider_keeps_the_accounts_word_across_a_rotation_revoking_no_one_spec_pe
     assert_eq!(read(&mut lp, 2, t), Some(Value::Str("p".into())), "restarted");
 }
 
-// spec/permissions.md §5.5 (Revoked), spec/wire.md §4 (a header names the removals its list for D
-// names): sibling B holds A's removal of X, not A's rotation, and rotates on it, its list for D
+// spec/permissions.md §5.5 (Revoked), spec/wire.md §4 (the removals it carries: a header
+// names the removals its list for D names): sibling B holds A's removal of X, not A's rotation, and rotates on it, its list for D
 // naming the removal: a revocation, though the removal is not B's. X, removed and unaware, writes
 // at the open epoch it holds, which B's rotation closes. That write counts neither at B nor at an
 // outsider following B's rotation, before A's rotation arrives (were A's never to come, for good)
