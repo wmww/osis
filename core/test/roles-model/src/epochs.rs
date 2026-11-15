@@ -865,7 +865,7 @@ impl World {
         !self.judge_seen(&less, trust, Some(o)).valid[c]
     }
 
-    /// Rotation q stands for D's roster (spec/permissions.md §5.4, Authorizes): for the removal
+    /// Rotation q stands for D's roster (spec/permissions.md §5.4, Roster): for the removal
     /// of its minter `held` holds, q is on the line of the epoch the removal is signed at (made
     /// before it) or descends from the rotation naming it (made after a re-add). A re-add here is
     /// a time with no grant commit, so that rotation stands in for the spec's re-grant epoch: it
@@ -1635,7 +1635,7 @@ impl Builder {
     }
 
     /// Held rotation i stands for the devices actor's roster as member n reads it at `t`
-    /// (spec/permissions.md §5.4, Authorizes): minted by a node whose removal commit n does
+    /// (spec/permissions.md §5.4, Roster): minted by a node whose removal commit n does
     /// not hold (or re-added, or n itself), every rotation on its line standing
     /// (`World::stands`).
     fn authorized(&self, n: usize, t: u32, i: usize) -> bool {
