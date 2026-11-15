@@ -67,7 +67,7 @@ Every rebuild (also O(aspect history): every held body re-joined); a reset of a 
   - Not repaired: set elements and map keys holding links, values whose own delta was compacted, an expired commit's values; with no schema registered for the AK the current value is read untyped (`Type::Any`).
 
 ## Costs counted
-Each at n and 10n (counted again by the sync rewrite's scale tests, issues/sync-rewrite.md Phase 4):
+Each at n and 10n (to count again across sync: issues/sync-tests-owed.md, Scale):
 - A map entry edit (500 / 5000 entries of 200 B, at the root or in a map entry): 30 / 40 KB of store writes; a new session's first read of one key loads 2 pages, its first edit loads 3 and writes 1.
 - Set ops by value, each in a new session (10^3 / 10^4 elements): 1-3 pages loaded, 0-1 written (the value index).
 - A text by index, each op in a new session (80k / 800k chars; by hand): a read of 100 chars 2-3 pages; an insert, a delete, a text session's `Op::Edit`, an undo: 3 pages and placement blocks loaded, 4-5 written, 40 / 70 KB of store writes. A move loads every placement block (issues/text-move-loads-placement.md). Store rows per cold insert: the placement table's leaf with the top and groups (about 5.8 KB) and the block's leaf (4-6 KB), the page, the commit record and index leaves (about 9 KB), the unit, a key-tree node.

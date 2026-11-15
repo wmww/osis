@@ -1,7 +1,7 @@
 //! The driver: whom a node dials and when, the pair rule's held dials, restarts in place after a
 //! store failure, and the one place outputs are applied (spec/sync-opens.md §1,
-//! spec/sync-transport.md; scenarios dial-bound, store-reopen, eph-sim-unlisted and one-wake-last
-//! of the Phase 1 checklist, issues/sync-rewrite.md). World tests run the product's node; the dial rules alone
+//! spec/sync-transport.md; the old sync's scenarios dial-bound, store-reopen, eph-sim-unlisted and
+//! one-wake-last). World tests run the product's node; the dial rules alone
 //! run on `Dials` with a table of dial peers.
 
 use crate::harness::{Seen, World, contacts, siblings, two_nodes};

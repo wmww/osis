@@ -179,7 +179,7 @@ instances=(
   "netblind net MCBlind BN_whole.cfg fail"
   "netblind net MCBlind BN_cover.cfg fail"
   "netblind net MCBlind BN_known.cfg fail"
-  "netopen net MCOpen O_rk.cfg pass"               # issues/sync-rewrite.md, the open rule: a reader and a store
+  "netopen net MCOpen O_rk.cfg pass"               # spec/sync-opens.md §4, the open rule: a reader and a store
   "netopen net MCOpen O_kk.cfg pass"               # ... two stores
   "netopen net MCOpen O_rx.cfg pass"               # ... a reader and a link holder
   "netopen net MCOpen O_pub.cfg pass"              # ... Adv holds only public values

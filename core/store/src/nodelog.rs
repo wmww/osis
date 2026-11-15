@@ -1,4 +1,4 @@
-//! The node log (issues/sync-rewrite.md, One node log): one durable sequence of events over
+//! The node log (spec/sync-streams.md §3): one durable sequence of events over
 //! every sync ID a store holds, written in the transaction that makes each event true.
 //!
 //! The rule: a cursor names a position of this store's own history, and what it covers is
@@ -38,7 +38,7 @@ use osis_base::format::TOMBSTONE_LIFETIME_MS;
 use osis_base::{BlobId, SyncId};
 use osis_crypto::aead::{self, NONCE_LEN, TAG_LEN};
 
-/// Ended incarnations kept, oldest evicted (issues/sync-rewrite.md). Resource
+/// Ended incarnations kept, oldest evicted (spec/wire.md §2 `INCARNATIONS_KEPT`). Resource
 /// bound: 0 makes every cursor from before an appending start no cursor (correct, one listing
 /// per peer), infinity is disk growing with appending starts. 24 bytes each, one per start that
 /// appends: at 50 such starts a day the cap is 82 days and 98 KB.
@@ -285,7 +285,7 @@ impl Transaction<'_> {
 
     /// The position an entry was first logged at, kept while its slot is (its later events move
     /// only the latest): `None` with none in the log. What a member ended at `until` is served
-    /// (issues/sync-rewrite.md).
+    /// (spec/sync-opens.md §6).
     pub fn log_entry_first(&mut self, l: &SyncId, b: &BlobId) -> Result<Option<u64>, Error> {
         let Some(v) = self.cat_get(&entry_slot(l, b))? else { return Ok(None) };
         Ok(Some(pos_value(v.get(8..).ok_or(Error::Corrupt("node log slot"))?)?))
@@ -317,7 +317,7 @@ impl Transaction<'_> {
     }
 
     /// The position of `l`'s last logged head event: none with none in the log. Where an open by
-    /// the sync key of the head before it ends (issues/sync-rewrite.md).
+    /// the sync key of the head before it ends (spec/sync-opens.md §6).
     pub fn log_head_at(&mut self, l: &SyncId) -> Result<Option<u64>, Error> {
         let Some(v) = self.cat_get(&head_slot(l))? else { return Ok(None) };
         Ok(Some(slot_pos(&v)?))
@@ -377,7 +377,7 @@ impl Transaction<'_> {
 
     /// The deletion horizon: a position below it may have had deletion events the sweep has
     /// dropped since, so a reader at such a position does not hear of those deletions by reading
-    /// on (issues/sync-rewrite.md 3h1: a listing from the start, marked trimmed, tells it). 0 while
+    /// on (spec/sync-streams.md §4 Reading: a listing from the start, marked trimmed, tells it). 0 while
     /// none was dropped.
     pub fn log_horizon(&mut self) -> Result<u64, Error> {
         self.cat_get(HORIZON)?.map_or(Ok(0), |v| pos_value(&v))

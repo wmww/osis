@@ -2,7 +2,7 @@
 //! quiet every reader reads as a single engine handed every commit directly, and no needed body
 //! is deleted everywhere. Fresh worlds per seed; `OSIS_SYNC_SEED`/`OSIS_SYNC_SEEDS` pick the
 //! seeds (default: 20 at small size, 1,000 under `OSIS_FULL=1`: what notes/sync-test-harness.md's
-//! differential budget buys, issues/sync-test-cost.md); a failure prints the history as a
+//! differential budget buys, issues/tests-4x.md); a failure prints the history as a
 //! script, `OSIS_SYNC_SHRINK=1` shrinks it.
 
 use crate::harness::history::{Gives, bodies_reading, check, check_readers, hand, hand_all, history, reference, world};
@@ -14,7 +14,7 @@ const NODES: usize = 3;
 const STEPS: usize = 40;
 
 /// A default seed range: `full` seeds under `OSIS_FULL=1`, else `small` (the large size stays the
-/// release checks' while the small one is cut for cost, issues/sync-test-cost.md).
+/// release checks' while the small one is cut for cost, issues/tests-4x.md).
 pub(crate) fn sized(small: u64, full: u64) -> std::ops::Range<u64> {
     0..if u64_var("OSIS_FULL") == Some(1) { full } else { small }
 }

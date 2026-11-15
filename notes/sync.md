@@ -3,6 +3,8 @@
 
 The rules: spec/sync.md (words, the two holdings, one principle per area) and spec/sync-*.md; byte layouts spec/wire.md. The requirements behind them: spec/requirements.md, Data a node cannot read, Deletion, Offline and network.
 
+The code was rebuilt from the spec; the old host-based sync (git 680a85188, `core/node`, `core/host`) is reference only, never to port from. Where the spec is unclear, code the simplest reading behind one named function and write the reading into the spec or the module's note.
+
 ## Principle
 The engine owns plaintext and every judgement of what a thing carries; sync owns ciphertext, connections and what peers showed. Sync reads the engine only through one facade of memo-backed queries and a few commands (`osis_engine::sync`, notes/sync-facade.md); the engine calls nothing of sync's. Every rule is driven by change: each module follows what it reads through `osis_base::memo::Effects` keys and feeds, so an idle node does no per-sync-ID work and a change costs what it touched (spec/sync.md §2 Work in proportion to change).
 
@@ -53,7 +55,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 - notes/sync-facade.md: the engine's facade, the memo and `Effects` mechanism, the engine tables kept for sync.
 - notes/sync-test-harness.md: the one harness (worlds of `Node`s, scripted peers, histories, faults).
 - Design reasons: notes/sync-reasons.md (core: blobs, sync IDs, stamps, delete keys, nodes), notes/sync-access.md (steps, claims, re-seal, static entries), notes/sync-convergence.md (judgement and deletion), notes/inbox.md (deposits, inbox), notes/unreadable-data.md (what a node keeping S unread learns), notes/sync-protocol.md (wire, osis-proto, osis-blob), notes/networking.md (transports, reachability, first contact), notes/growth.md (permanent growth).
-- Open: issues/sync-unbuilt.md (every stub, per module), issues/sync-tess-calls.md (reversible choices waiting on Tess), and the `sync`-tagged issues.
+- Open: issues/sync-unbuilt.md (every stub, per module), issues/sync-tests-owed.md (missing tests), issues/sync-tess-calls.md (reversible choices waiting on Tess), and the `sync`-tagged issues.
 
 ## The osis API over sync
 The handle holds the `Node`. `status`, `on_status_change` (status reads are stamped, so a memo over `Node::status` moves with it), `wait_synced` (`Node::wait`; a `Waiting::Stranded` fails `Error::Stranded`, a `Never` is a part not built and fails `NotBuilt`), links and redeem (`Node::redeem`), contact cards and profiles, invitations and `accept_invite`, `listen`, `rotate_peer_address`, `Config::dial`, the client port (`PortEvent`), and `internals::ManualNet` (the API tests' in-memory fabric, one `Links` per node through `apply`) all run on it (notes/api.md Sync configuration and status). No peer list exists and sync IDs are internal: a thing syncs by being in a synced group's closure, or shared at the node (spec/sync-set.md §2 Shared here).

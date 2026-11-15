@@ -1,4 +1,4 @@
-//! The simulation set (issues/sync-rewrite.md Phase 4; notes/sync-test-harness.md, Layers):
+//! The simulation set (notes/sync-test-harness.md, Layers; those still missing: issues/sync-tests-owed.md):
 //! short scripted scenarios with fault schedules, each over 6 seeds at small size, 80 under
 //! `OSIS_FULL=1` (sized to its share of the test budget, notes/sync-test-harness.md; the seed
 //! draws the world's IDs, keys and the network's faults), checked at quiet by the

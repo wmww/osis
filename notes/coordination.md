@@ -112,7 +112,18 @@ Standard footer: CLAUDE.md, notes/build.md, `claudewait`, no wait loops, start n
 - A reviewer who needs main's behaviour builds main's test binary with `tools/bin-at main <out> -p <crate>` (notes/build.md, Profile and command forms) and runs old and new side by side, comparing CPU seconds, not wall time.
 
 ## Rewriting an area
-The sync rewrite (issues/sync-rewrite.md) replaced an incremental port that had spiralled; spec-first delete-and-rebuild worked far better (Tess).
+The sync rewrite replaced an incremental port that had spiralled (porting in place kept old and new models both working, design decisions surfaced mid-build, tests were tied to the old model); spec-first delete-and-rebuild worked far better (Tess). Tess's direction for it:
+- **The spec is the product.** It must define something useful and implementable. Code and tests are disposable: agents can rebuild all of them from the spec, and may again when better models come.
+- **Delete and rebuild freely**, code and tests alike. Our tests were thought up by agents, never grown from real users; rewriting them from the spec loses nothing we can trust. The constraint on tests is the time to run them, not the cost of writing them.
+
+Building it (Tess):
+- Build in the right abstractions, e.g. for different network transports or ways of using them: sync never cares how a peer is reached.
+- Efficiency is structural, designed in from the start, never profiling and shortcutting hot paths. Agents told to optimize used to add makeshift caches here and there; the real fix was a larger memoization system used everywhere. Each change does work in proportion to what changed.
+- Tests: the trade-off is coverage against runtime, not against writing time (agents write tests cheaply; tests run on every change). Build the harness so the marginal test is cheap, which buys more coverage.
+- Watch for architectural problems and antipatterns; fix them or record them for study. Nothing is right because it exists; a rule that stays has its reason documented.
+- Improve, simplify, rewrite or restructure adjacent code and interfaces as you go, especially where that helps the new code: push good decisions out to the surrounding pieces; never pull in their questionable decisions or vestigial cruft.
+
+How it ran:
 - Spec, then models, then code: the models found about a dozen holes before any code existed.
 - Foundation first: one agent writes the crate skeleton with every module declared and every shared type in one place; a fresh reviewer checks the shapes by walking two end-to-end flows on paper.
 - With slots to spare, an integration agent runs beside the module agents: it drives the merged modules end to end, files what breaks between them and fixes the seams.

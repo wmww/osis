@@ -51,20 +51,20 @@ osis-engine::resign_forged  deferred: no caller since the sync rebuild; flows/ac
 osis-engine::seal_plain  test hook (tests/it facade)
 osis-engine::store_dump  test hook: unit tests compare two nodes' stores
 osis-engine::take_forged  test hook: undo tests forge a commit
-osis-proto::MAX_BEHIND_STEPS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); spec/wire.md §2, §11 values osis-sync uses
-osis-proto::OFFSET_DIAGNOSTIC_MS  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-schema::TID  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::changed_after  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::log_heads  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-store::table_len  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-transport::connections_between  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-transport::lan_lost  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-transport::recheck_relayed  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-transport::relaying  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-transport::run_on_tokio  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-transport::set_dial_ms  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-transport::set_lan_loss  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis::rotate_peer_address  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
+osis-proto::MAX_BEHIND_STEPS  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items); spec/wire.md §2, §11 values
+osis-proto::OFFSET_DIAGNOSTIC_MS  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-schema::TID  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-store::changed_after  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-store::log_heads  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-store::table_len  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-transport::connections_between  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-transport::lan_lost  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-transport::recheck_relayed  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-transport::relaying  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-transport::run_on_tokio  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-transport::set_dial_ms  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis-transport::set_lan_loss  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
+osis::rotate_peer_address  public API: moves every listener to a new key (notes/client-port.md)
 osis-engine::coverers_of  test hook: retention tests read what covered a dropped part
 osis-engine::body_valid  test hook: validity tests read one body's verdict
 osis-engine::commit_in_memory  test hook: an own memory commit (what write makes of an ephemeral write)
@@ -114,7 +114,7 @@ osis-sync::mintings_ranked  test hook: the bound of the minting copies read rank
 osis-sync::ranks_thing  test hook: a thing whose copies left the required set is no longer followed (same test)
 osis-sync::holder_duties_follow  test hook: the holder duties follow a thing only while it is named a holder (life::a_destroyed_thing_is_followed_by_no_holder_duty)
 osis-sync::clock_offset  deferred: status reports a large offset as a diagnostic (spec/sync-streams.md §1; issues/sync-unbuilt.md, status and API)
-osis-sync::status_of  deferred: the osis API reads one sync ID's status (sync rebuild integration, issues/sync-rewrite.md Phase 3)
+osis-sync::status_of  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
 osis-sync::set_record_budget  test hook: a small RECORD_BUDGET to drive eviction
 osis-engine::destructions  facade: osis-sync's modules call it (notes/sync-facade.md)
 osis-engine::logged_with  facade: osis-sync's modules call it (notes/sync-facade.md)

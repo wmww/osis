@@ -40,7 +40,7 @@ Default tests, against spec/requirements.md (Scale): each runs one operation at 
 ## Sync scale checks
 osis-sync's checks (core/sync/tests/it) count module work (`Work` counters, store rows) at n and 10n: `driver::dial_work_follows_change_spec_sync_opens_1`; `opens::a_credential_change_costs_the_same_at_n_and_10n_spec_sync_opens_6`, `a_credential_change_costs_per_connection_not_per_sync_id_spec_sync_opens_6`, `a_reconnect_costs_the_same_at_n_and_10n_spec_sync_opens_3`; `read::work_follows_change`, `work_follows_sources`; `status::work_follows_change`; `store::log_reads_cost_what_they_return_spec_sync_streams_3`, `removal_and_expiry_cost_alike_at_any_size_spec_sync_ids_5`; `streams::push_work_follows_the_events_not_the_log_spec_sync_streams_4`, `a_reconnect_after_a_restart_costs_the_same_at_10n_spec_sync_streams_4`; `flows::a_read_secret_arriving_examines_only_what_did_not_open_spec_sync_2`.
 
-**Checks to restore**: sync-shaped counts with no test yet (issues/sync-rewrite.md, Phase 4; drop an item when its test lands):
+**Checks to restore**: sync-shaped counts with no test yet (issues/sync-tests-owed.md; drop an item when its test lands):
 - a write's judgement flat in history at writer and reader, whatever the sources;
 - a role change judging only the sync IDs it touches;
 - a first sync by a node keeping S unread linear, nothing examined again;

@@ -1,5 +1,5 @@
 ---- MODULE NetOpen ----
-(* Who may open sync ID S on a connection (issues/sync-rewrite.md, the open rule): S is in a
+(* Who may open sync ID S on a connection (spec/sync-opens.md §4, the open rule): S is in a
    connection's shared set exactly while each side syncs S and holds proof, judged by itself on
    what it holds now, that the other may hold S: J (a proven actor holds sync or above), a secret
    credential shown on this connection (the sync-key proof), or an open signature by a credential

@@ -88,7 +88,7 @@ pub const SYNC_DEPOSIT: &str = "sync deposit";
 pub const SYNC_CLAIM: &str = "sync claim";
 /// The pair key of a record, or of a connection with none (`pair_key`).
 pub const PAIR_KEY: &str = "pair key";
-/// A beacon's key over its match value and sync ID (issues/sync-rewrite.md).
+/// A beacon's key over its match value and sync ID (spec/sync-opens.md §5).
 pub const BEACON: &str = "beacon";
 /// A Hit over a beacon, its sender's side and the connection (`beacon_hit`).
 pub const BEACON_HIT: &str = "beacon hit";
@@ -134,7 +134,7 @@ pub fn role_purpose(role: Role) -> &'static str {
     }
 }
 
-/// The pair key from two nodes' nonces (issues/sync-rewrite.md), or from a connection's
+/// The pair key from two nodes' nonces (spec/sync-opens.md §3), or from a connection's
 /// challenges where no record is kept (spec/sync-opens.md §3).
 pub fn pair_key(a: &[u8; 32], b: &[u8; 32]) -> Secret32 {
     kdf(PAIR_KEY, a, b)
@@ -164,7 +164,7 @@ pub fn twinned_tag(r: &[u8; 32], key: &[u8; 32], dialer: &[u8; 32], listener: &[
     resume_hash(r, b"twinned", key, dialer, listener)
 }
 
-/// A beacon: `BLAKE3(key = kdf("beacon", match, L), r)` (issues/sync-rewrite.md): the
+/// A beacon: `BLAKE3(key = kdf("beacon", match, L), r)` (spec/sync-opens.md §5): the
 /// value both sides compute for one credential, so a filter entry is its first bits.
 pub fn beacon(match_value: &[u8; 32], sync_id: &[u8; 16], r: &[u8; 32]) -> [u8; 32] {
     *blake3::keyed_hash(kdf(BEACON, match_value, sync_id).expose(), r).as_bytes()
