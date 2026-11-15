@@ -167,7 +167,23 @@ pub(crate) struct Env<'a> {
     pub policy: &'a Policy,
     pub mem: &'a Memory,
     /// Bytes used by every sync ID kept unread; `None` until counted.
-    pub total: Option<u64>,
+    pub total: Option<Total>,
+}
+
+/// The usage of every sync ID kept unread (`Env::total`): its bytes, and of those the bytes no
+/// give-way frees.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Total {
+    pub bytes: u64,
+    pub fixed: u64,
+}
+
+impl Total {
+    pub(crate) fn add(&mut self, u: &Usage, sign: bool) {
+        let op = |x: &mut u64, n: u64| *x = if sign { x.saturating_add(n) } else { x.saturating_sub(n) };
+        op(&mut self.bytes, u.bytes);
+        op(&mut self.fixed, u.fixed());
+    }
 }
 
 impl Env<'_> {
@@ -184,13 +200,17 @@ impl Env<'_> {
     }
 
     fn total(&mut self, t: &mut Transaction<'_>) -> Result<u64> {
+        Ok(self.totals(t)?.bytes)
+    }
+
+    fn totals(&mut self, t: &mut Transaction<'_>) -> Result<Total> {
         if let Some(n) = self.total {
             return Ok(n);
         }
-        let mut n = 0u64;
+        let mut n = Total::default();
         for (s, (_, h)) in self.holdings {
             if *h == Holding::Unread {
-                n = n.saturating_add(entries::usage(t, s)?.bytes);
+                n.add(&entries::usage(t, s)?, true);
             }
         }
         self.total = Some(n);
@@ -223,7 +243,7 @@ pub(crate) struct Inner {
     caps: Caps,
     policy: Policy,
     mem: Memory,
-    total: Option<u64>,
+    total: Option<Total>,
     /// When each sync ID last took a child step past its caps (spec/sync-ids.md §6).
     past_cap: BTreeMap<SyncId, WallMs>,
     /// The sync IDs kept unread at a head whose sync key this node holds no box for
@@ -443,8 +463,7 @@ impl Store {
             };
         }
         if !recount.is_empty() {
-            g.mem.stamps.wrote(&UNREAD_TOTAL, true);
-            g.mem.stamps.wrote(&memory::MEMORY_TOTAL, true);
+            g.mem.stamps.wrote(&UNREAD_FIXED, true);
         }
         if let Some(total) = g.total
             && !recount.is_empty()
@@ -452,8 +471,7 @@ impl Store {
             let counted = g.read(|t, _| {
                 let mut n = total;
                 for (s, now) in &recount {
-                    let b = entries::usage(t, s)?.bytes;
-                    n = if *now { n.saturating_add(b) } else { n.saturating_sub(b) };
+                    n.add(&entries::usage(t, s)?, *now);
                 }
                 Ok(n)
             });
@@ -1910,9 +1928,9 @@ impl Cap {
 const ROOM_JUDGED: &str = "store: room judged";
 /// The stamp key of the caps and policy (`set_caps`).
 const CAPS: &str = "caps";
-/// The stamp key of the durable bytes of every sync ID kept unread (`entries::put_usage`,
-/// `set_holdings`).
-pub(crate) const UNREAD_TOTAL: &str = "unread total";
+/// The stamp key of the bytes no give-way frees of every sync ID kept unread
+/// (`entries::put_usage`, `set_holdings`): what the durable total's room reads.
+pub(crate) const UNREAD_FIXED: &str = "unread fixed";
 
 /// The stamp key of a full key's least need (`Inner::wait_room`).
 #[derive(Hash)]
@@ -1947,28 +1965,23 @@ fn room_fits(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, cap: Cap, n
     Ok(entries >= 1 && bytes >= need)
 }
 
-/// The room `cap` has for S now: entries and bytes left under it (`u64::MAX` entries for a cap
-/// of bytes alone). Grows when an entry it counts leaves or the cap rises. The totals read their
-/// stamps (the counts themselves are kept, not read by key).
+/// The room `cap` has for S now, as the take judges it (`make_room`, `mem_room`): entries and
+/// bytes left under it (`u64::MAX` entries for a cap of bytes alone). A total's room counts what
+/// give-way frees: the durable total less the bytes no give-way frees (read by its stamp, the
+/// count kept, not read by key); the memory total whole (every byte in memory gives way).
 fn room_now(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, cap: Cap) -> Result<(u64, u64)> {
-    let unread = |x: &SyncId| env.holdings.get(x).is_some_and(|(_, h)| *h == Holding::Unread);
-    match cap {
-        Cap::Total => env.mem.stamps.read(&UNREAD_TOTAL),
-        Cap::MemoryTotal => env.mem.stamps.read(&memory::MEMORY_TOTAL),
-        Cap::Own | Cap::Memory => {}
-    }
     Ok(match cap {
         Cap::Own => {
             let u = entries::usage(t, s)?;
             let (ce, cb) = env.caps_of(s);
             (ce.saturating_sub(u.entries), cb.saturating_sub(u.bytes))
         }
-        Cap::Total => (u64::MAX, env.policy.total_bytes.saturating_sub(env.total(t)?)),
-        Cap::Memory => (u64::MAX, env.policy.memory_bytes.saturating_sub(env.mem.usage(s).bytes)),
-        Cap::MemoryTotal => {
-            let total: u64 = env.mem.usage.iter().filter(|(x, _)| unread(x)).map(|(_, u)| u.bytes).sum();
-            (u64::MAX, env.policy.memory_total.saturating_sub(total))
+        Cap::Total => {
+            env.mem.stamps.read(&UNREAD_FIXED);
+            (u64::MAX, env.policy.total_bytes.saturating_sub(env.totals(t)?.fixed))
         }
+        Cap::Memory => (u64::MAX, env.policy.memory_bytes.saturating_sub(env.mem.usage(s).bytes)),
+        Cap::MemoryTotal => (u64::MAX, env.policy.memory_total),
     })
 }
 

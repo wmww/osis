@@ -908,6 +908,30 @@ fn full_told_then_room_again_spec_sync_streams_4() {
     }
 }
 
+// spec/sync-streams.md §4 (Full: a node stops being full for S when S stops being kept unread
+// there): S shredded while told full says `full` false on each connection still sharing it (here
+// kept again at once, never leaving the connection), so no peer keeps it full.
+#[test]
+fn a_shredded_full_s_untells_full_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    k.stamped(&mut p.a, 3000, true);
+    k.stamped(&mut p.a, 3001, true);
+    p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    assert!(p.a.streams.known().full(C, &k.id));
+    p.b.store.shred(&k.id).unwrap();
+    p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 1_000_000)]), ..Caps::default() });
+    assert_eq!(p.b.store.take_register(&k.id, &k.genesis.0, Some(&k.genesis.1)).unwrap(), Code::OK);
+    p.run();
+    assert!(!p.b.store.waits_room(&k.id));
+    assert!(!p.a.streams.known().full(C, &k.id), "full false told after the shred");
+}
+
 // spec/sync-streams.md §4 (Full: until a cap that refused has room for the least entry it
 // refused): steps with nothing moving judge no room; a cap rise too small for the entry refused
 // keeps S full and pulls nothing; one with room for it ends the wait and pulls S anew once.

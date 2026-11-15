@@ -450,14 +450,17 @@ impl Streams {
     /// S left this node (spec/sync-set.md §3): what places and connections' sources hold of it
     /// in memory goes (its rows went with the shred), so a later join reads it from the start.
     /// Run before any place is read (`place`): a member leaving S later in the step of its shred
-    /// must find no position to keep, else it writes S's rows back after the shred.
+    /// must find no position to keep, else it writes S's rows back after the shred. S full
+    /// (its wait went with the shred) is told full no longer on each connection still sharing it.
     pub(super) fn forget_shredded(&mut self) {
-        for s in self.shreds.added() {
+        let shredded = self.shreds.added();
+        for s in &shredded {
             for place in self.places.values_mut() {
-                place.forget(&s);
+                place.forget(s);
             }
-            self.known.forget_conns(&s);
+            self.known.forget_conns(s);
         }
+        self.untell_full(&shredded);
     }
 
     /// Notes a store failure: the step fails at the next settle.

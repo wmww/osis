@@ -534,6 +534,66 @@ fn a_total_refusal_ends_as_room_for_it_frees_spec_sync_streams_4() {
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
 }
 
+// spec/sync-streams.md §4 (Full: once a cap that refused has that room): a total's room counts
+// what give-way frees, as the take does. S refused by the durable total (tombstones filling it)
+// stays full no longer once they leave, though another sync ID kept unread took entries into the
+// freed room first: S's entry now gives way to them. Likewise the memory total: an ephemeral
+// entry larger than it ends its wait once the total rises past it, whatever other sync IDs
+// hold in memory.
+#[test]
+fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
+    let dev = Dev::new();
+    let (s, o) = (Sid::new(10), Sid::new(11));
+    let mut st = unread(&dev, &s);
+    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&o, Holding::Unread)])).unwrap();
+    let (g, c) = &o.steps[0];
+    assert_eq!(st.take_register(&o.id, g, Some(c)).unwrap(), Code::OK);
+    for n in 0..3 {
+        let (b, x) = blob(200 + n, Class::Durable, None, &[]);
+        assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
+        assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap(), [Code::OK]);
+    }
+    let (b, x) = blob(300, Class::Durable, None, &[]);
+    let used = st.usage(&s.id).unwrap().0.bytes + st.usage(&o.id).unwrap().0.bytes;
+    let caps = |total: u64, memory: u64| Caps { policy: BTreeMap::from([("total_bytes".to_string(), total), ("memory_total".to_string(), memory)]), ..Caps::default() };
+    st.set_caps(&caps(used + x.len() as u64, 1000));
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone()).unwrap(), Code::STORAGE_CAP);
+    st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
+    let (ob, ox) = blob(150, Class::Durable, None, &[]);
+    assert_eq!(st.take_stamped(&o.id, &stamped(&o, ob, false), ox).unwrap(), Code::OK, "o fills the freed room");
+    assert_eq!(st.room_grew().unwrap(), vec![s.id], "o's entry gives way: room for S's");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
+    assert!(st.entry(&o.id, &ob).unwrap().is_none(), "o gave way");
+
+    let exp = Some(TOMBSTONE_LIFETIME_MS + 10 * MAX_DRIFT_MS);
+    let eph = |sid: &Sid, n: usize| {
+        let (b, x) = blob(n, Class::Ephemeral, exp, &[]);
+        (b, Entry { class: Class::Ephemeral, expires: exp.map(WallMs), ..stamped(sid, b, false) }, x)
+    };
+    let (_, big, bx) = eph(&s, 1200);
+    assert_eq!(st.take_stamped(&s.id, &big, bx.clone()).unwrap(), Code::STORAGE_CAP, "larger than the memory total");
+    let (_, small, sx) = eph(&o, 400);
+    assert_eq!(st.take_stamped(&o.id, &small, sx).unwrap(), Code::OK);
+    st.set_caps(&caps(u64::MAX, bx.len() as u64 + 400));
+    assert_eq!(st.room_grew().unwrap(), vec![s.id], "o's memory gives way: room for S's");
+    assert_eq!(st.take_stamped(&s.id, &big, bx).unwrap(), Code::OK);
+
+    // o's tombstone and path, which no give-way frees, leave the durable total as o is held read
+    let (ob, ox) = blob(160, Class::Durable, None, &[]);
+    assert_eq!(st.take_stamped(&o.id, &stamped(&o, ob, false), ox).unwrap(), Code::OK);
+    assert_eq!(st.take_delete(&o.id, &[DeleteItem::sign(&o.delete(), &o.id, ob)], true).unwrap(), [Code::OK]);
+    let (b, x) = blob(310, Class::Durable, None, &[]);
+    let o_fixed = st.usage(&o.id).unwrap().0.bytes;
+    assert!(o_fixed >= 256, "o's path and tombstone");
+    let su = st.usage(&s.id).unwrap().0;
+    st.set_caps(&caps(su.bytes - su.entry_bytes + o_fixed + x.len() as u64, u64::MAX));
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone()).unwrap(), Code::STORAGE_CAP);
+    assert!(st.room_grew().unwrap().is_empty());
+    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&o, Holding::Read)])).unwrap();
+    assert_eq!(st.room_grew().unwrap(), vec![s.id], "o left the total: room for S's");
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
+}
+
 // spec/sync-inbox.md §3 (deposit refusals): 0 taken (and for a held or dropped blob, changing
 // nothing); 4 for a sync ID the node will hold but holds no head of yet; 5 past the budget; 12
 // past a cap; 14 for a bad signature, a relay-only blob, an unknown sync ID; never the head.

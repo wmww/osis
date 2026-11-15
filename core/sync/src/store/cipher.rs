@@ -107,7 +107,7 @@ impl osis_store::CipherHost for Inner {
         // a suspended transaction dropped aborts; the total is counted again
         self.open = None;
         self.total = None;
-        self.mem.stamps.wrote(&super::UNREAD_TOTAL, true);
+        self.mem.stamps.wrote(&super::UNREAD_FIXED, true);
     }
 
     fn forensic_keys(&mut self) -> Res<Vec<[u8; 32]>> {

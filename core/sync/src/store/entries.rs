@@ -55,13 +55,14 @@ pub(crate) fn put_usage(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, 
         t.put_local(&rows::usage_key(s), &new.encode(), Shred::No)?;
         t.put_local(&rows::by_use_key(new.bytes, s), &[], Shred::No)?;
     }
-    if env.holding(s) == Some(Holding::Unread) && old.bytes != new.bytes {
-        env.mem.stamps.wrote(&super::UNREAD_TOTAL, true);
+    if env.holding(s) == Some(Holding::Unread) && old.fixed() != new.fixed() {
+        env.mem.stamps.wrote(&super::UNREAD_FIXED, true);
     }
     if env.holding(s) == Some(Holding::Unread)
         && let Some(total) = env.total.as_mut()
     {
-        *total = total.saturating_sub(old.bytes).saturating_add(new.bytes);
+        total.add(&old, false);
+        total.add(&new, true);
     }
     Ok(())
 }
@@ -81,6 +82,7 @@ fn count(u: &mut Usage, r: &EntryRow, sign: bool) {
     if !r.role {
         op(&mut u.entries, 1);
         op(&mut u.bytes, r.size + ENTRY_OVERHEAD);
+        op(&mut u.entry_bytes, r.size + ENTRY_OVERHEAD);
     }
     if r.deposited {
         op(&mut u.deposits, 1);

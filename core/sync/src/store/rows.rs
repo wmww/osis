@@ -382,23 +382,28 @@ impl Tombstone {
 
 /// What a sync ID uses of the store (spec/sync-ids.md §6 Caps, spec/sync-inbox.md §3 Budget):
 /// entries and bytes outside role entries (each entry's and tombstone's overhead, its blob, its
-/// path's steps and claim sets), and its deposits waiting for a stamp. Kept beside the rows it
-/// counts, in their transaction.
+/// path's steps and claim sets), of those the entries' (what give-way frees), and its deposits
+/// waiting for a stamp. Kept beside the rows it counts, in their transaction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Usage {
     pub entries: u64,
     pub bytes: u64,
+    pub entry_bytes: u64,
     pub deposits: u64,
     pub deposit_bytes: u64,
 }
 
 impl Usage {
+    /// The bytes no give-way frees: tombstones, path steps and claim sets.
+    pub(crate) fn fixed(&self) -> u64 {
+        self.bytes.saturating_sub(self.entry_bytes)
+    }
     pub(crate) fn encode(&self) -> Vec<u8> {
-        W::default().u64(self.entries).u64(self.bytes).u64(self.deposits).u64(self.deposit_bytes).take()
+        W::default().u64(self.entries).u64(self.bytes).u64(self.entry_bytes).u64(self.deposits).u64(self.deposit_bytes).take()
     }
     pub(crate) fn decode(v: &[u8]) -> Result<Usage> {
         let mut r = R::new(v);
-        let u = Usage { entries: r.u64()?, bytes: r.u64()?, deposits: r.u64()?, deposit_bytes: r.u64()? };
+        let u = Usage { entries: r.u64()?, bytes: r.u64()?, entry_bytes: r.u64()?, deposits: r.u64()?, deposit_bytes: r.u64()? };
         r.end()?;
         Ok(u)
     }
