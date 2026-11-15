@@ -283,6 +283,11 @@ impl Engine {
         if a.ak.signal() {
             return Ok(Some(false));
         }
+        // dropped as covered: covered while its chain of covers carries it, else it is missing
+        // again (`retention::uncover`), so no join of a later snapshot is asked
+        if self.core.ix.commits.get(c).and_then(|m| m.dropped(ai)).is_some_and(|d| d.as_cover()) {
+            return Ok(Some(true));
+        }
         // its author's own replaces cover it by the same test (spec/commits.md §5 Own replaces)
         if let Some(q) = crate::retention::snapshot::own_covers(&self.core, c, &a.tid, &a.ak).first().copied()
             && self.covered(&q, c, &a.tid, &a.ak)? == Some(true)

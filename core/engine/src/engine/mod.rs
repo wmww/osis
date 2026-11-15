@@ -140,8 +140,8 @@ pub enum DropFor {
 /// What a dropped part keeps in its commit record (spec/commits.md §5).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dropped {
-    /// The held valid snapshots that covered its body when it dropped, a forgotten one replaced
-    /// by what it dropped under (`apply::unindex::hand_down`): their copies of its
+    /// The held valid snapshots that covered its body when it dropped (a forgotten one carries
+    /// as the covers it dropped under do, `retention::handed`): their copies of its
     /// writes are its writes (`apply::rebuild`); once none carries it, a part dropped as
     /// covered is missing again (`retention::uncover`).
     pub covered_by: BTreeSet<CommitId>,
@@ -769,6 +769,11 @@ indexes! {
     /// derived, as `Core::put_meta` keeps it): what a coverer forgotten hands its own covers
     /// down to (`apply::unindex_commit`).
     pub covered_under: JSetMap<CommitId, CommitId>,
+    /// Per forgotten coverer a held part still names, the covers its parts dropped under
+    /// (`retention::handed`, `records::HANDED`): the chain of covers runs past it.
+    pub handed: JMap<CommitId, Arc<crate::retention::handed::Handed>>,
+    /// Per coverer, the forgotten coverers whose kept covers name it (derived from `handed`).
+    pub handed_under: JSetMap<CommitId, CommitId>,
     /// Per aspect the newest `ts` of a commit forgotten here with a valid part on it
     /// (`apply::unindex_commit`): what stands for the forgotten parts an undo may have replaced
     /// (`undo::replaced_kept`). A durable commit's row persists (`records::FORGOTTEN`).
@@ -1326,6 +1331,9 @@ pub struct Core {
     /// Aspects with a forgotten commit's name (`Indexes::forgotten_names`) whose held snapshots moved this
     /// transaction: judged at its end (`retention::names::settle_due`).
     pub forgotten_names_due: BTreeSet<(Tid, Ak)>,
+    /// Coverers that held parts named less this transaction, or held again: their kept covers
+    /// (`Indexes::handed`) are judged at its end (`retention::handed::settle_due`).
+    pub handed_due: BTreeSet<CommitId>,
     /// Freed rows (thing, blob) whose judgment waits for a node blob not held, by that blob:
     /// judged again once it is (`retention::freed`). Memory only: a start judges every row.
     pub freed_waits: BTreeMap<osis_base::BlobId, BTreeSet<(Tid, osis_base::BlobId)>>,
@@ -1532,6 +1540,7 @@ impl Core {
             drop_due: self.drop_due.clone(),
             freed_due: self.freed_due.clone(),
             forgotten_names_due: self.forgotten_names_due.clone(),
+            handed_due: self.handed_due.clone(),
             freed_waits: self.freed_waits.clone(),
             cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
@@ -2057,6 +2066,7 @@ impl Core {
             drop_due: _,
             freed_due: _,
             forgotten_names_due: _,
+            handed_due: _,
             freed_waits: _,
             cut_subs: _,
             refold: _,
@@ -2327,6 +2337,7 @@ impl Core {
             drop_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
             forgotten_names_due: BTreeSet::new(),
+            handed_due: BTreeSet::new(),
             freed_waits: BTreeMap::new(),
             cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
@@ -2472,6 +2483,10 @@ impl Core {
         self.note_none(&m);
         self.note_rotation(&m);
         self.touches.note(&id, &m);
+        // held again: its meta decides its covers from now on
+        if self.ix.handed.contains_key(&id) {
+            self.handed_due.insert(id);
+        }
         self.ix.commits.insert(id, m);
     }
 
@@ -2502,6 +2517,9 @@ impl Core {
     fn index_covers(&mut self, id: &CommitId, was: &BTreeSet<CommitId>, now: &BTreeSet<CommitId>) {
         for s in was.difference(now) {
             self.ix.covered_under.remove(s, id);
+            if !self.ix.covered_under.contains_key(s) && self.ix.handed.contains_key(s) {
+                self.handed_due.insert(*s);
+            }
         }
         for s in now.difference(was) {
             self.ix.covered_under.insert(*s, *id);
@@ -3646,6 +3664,10 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::names::settle_due(&mut tx).map(|_| v));
                 }
                 tx.core.forgotten_names_due.clear();
+                if r.is_ok() && !tx.core.handed_due.is_empty() {
+                    r = r.and_then(|v| crate::retention::handed::settle_due(&mut tx).map(|_| v));
+                }
+                tx.core.handed_due.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| listing::listing_moved(&mut tx).map(|_| v));
                 }

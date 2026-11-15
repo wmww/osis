@@ -44,6 +44,9 @@ pub const FORGOTTEN: &[u8] = b"f/";
 /// A forgotten commit's name while a held snapshot carries its writes (`retention::names`):
 /// `fn/` + aspect key + commit ID, its stamp and purge facts.
 pub const FORGOTTEN_NAMES: &[u8] = b"fn/";
+/// A forgotten coverer's covers while something names it (`retention::handed`): `cv/` + commit ID,
+/// per aspect the covers its part dropped under; a memory coverer's in memory.
+pub const HANDED: &[u8] = b"cv/";
 /// Freed links (`retention::freed`): `fl/` + blob ID + tid, flags, the author's tid and the link,
 /// in the class of the body that freed them.
 pub const FREED: &[u8] = b"fl/";

@@ -26,7 +26,7 @@ use osis_base::{Ak, CommitId, Tid};
 use osis_crdt::Fragment;
 use osis_schema::core_types::is_role_class;
 use osis_store::Shred;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub(crate) mod bounds;
 pub mod compact;
@@ -48,6 +48,7 @@ pub(crate) mod forget;
 pub mod freed;
 pub(crate) mod memory;
 pub(crate) mod names;
+pub(crate) mod handed;
 pub(crate) use snapshot::{reaches, snapshot_state};
 #[cfg(test)]
 pub(crate) use snapshot::write_snapshot;
@@ -302,22 +303,30 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     crate::apply::rebuild(tx, &a.tid, &a.ak)
 }
 
-/// The snapshots that covered dropped part `ai` of `c` when it dropped, or covered such a
-/// coverer dropped in turn, and so on (`Dropped::covered_by`).
+/// The covers dropped part `ai` of `c` (or forgotten coverer `c`) dropped under on `(tid, ak)`
+/// (`Dropped::covered_by`; a forgotten coverer's kept covers, `retention::handed`).
+fn covers_named(core: &Core, x: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
+    match core.ix.commits.get(x) {
+        Some(m) => m.aspect(tid, ak).and_then(|xai| m.dropped(xai)).map(|d| d.covered_by.iter().copied().collect()).unwrap_or_default(),
+        None => core.ix.handed.get(x).map(|h| h.on(tid, ak).copied().collect()).unwrap_or_default(),
+    }
+}
+
+/// The known commits that covered dropped part `ai` of `c` when it dropped, or covered such a
+/// coverer dropped in turn, and so on (`Dropped::covered_by`), through forgotten coverers
+/// (spec/permissions.md §5.2: one carries as the covers it dropped under do).
 pub(crate) fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
     let Some(a) = core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return Vec::new() };
     let (tid, ak) = (a.tid, a.ak.clone());
-    let direct = |x: &CommitId| -> Vec<CommitId> {
-        let Some(m) = core.ix.commits.get(x) else { return Vec::new() };
-        m.aspect(&tid, &ak).and_then(|xai| m.dropped(xai)).map(|d| d.covered_by.iter().copied().collect()).unwrap_or_default()
-    };
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
-    let mut todo = direct(c);
+    let mut todo = covers_named(core, c, &tid, &ak);
     while let Some(x) = todo.pop() {
-        out.push(x);
         if seen.insert(x) {
-            todo.extend(direct(&x));
+            if core.ix.commits.contains_key(&x) {
+                out.push(x);
+            }
+            todo.extend(covers_named(core, &x, &tid, &ak));
         }
     }
     out
@@ -330,22 +339,44 @@ pub(crate) fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
 /// holding it finds it uncovered and logs it again, spec/sync-judgement.md §2; sync fetches it again). The caller rebuilds the aspect. Whether any part went missing.
 pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     let core = &*tx.core;
+    // a held valid snapshot carrying its part
     let carries = |s: &CommitId| {
         let Some(m) = core.ix.commits.get(s) else { return false };
         let Some(ai) = m.aspect(tid, ak) else { return false };
-        m.valid_at(ai) && !m.is_dropped(ai) && !m.missing(ai)
+        m.view.kind.is_compaction() && m.valid_at(ai) && !m.is_dropped(ai) && !m.missing(ai)
+    };
+    // per commit, whether a carrying snapshot is on its chain of covers, each judged once
+    // however many parts share its chain
+    let mut reached: HashMap<CommitId, bool> = HashMap::new();
+    let mut visiting: HashSet<CommitId> = HashSet::new();
+    let mut reaches = |c: &CommitId| -> bool {
+        let mut stack = vec![(*c, false)];
+        while let Some((x, expanded)) = stack.pop() {
+            if reached.contains_key(&x) {
+                continue;
+            }
+            let ups = covers_named(core, &x, tid, ak);
+            if expanded {
+                let r = ups.iter().any(|y| carries(y) || reached.get(y).copied().unwrap_or(false));
+                reached.insert(x, r);
+                continue;
+            }
+            // a cycle (none: a cover is stamped no earlier) cannot loop
+            if !visiting.insert(x) {
+                continue;
+            }
+            stack.push((x, true));
+            stack.extend(ups.into_iter().filter(|y| !reached.contains_key(y) && !visiting.contains(y)).map(|y| (y, false)));
+        }
+        reached.get(c).copied().unwrap_or(false)
     };
     // the cover test that dropped it (`snapshot::covered`), on what is held now: a carrying
     // snapshot, or two valid held own replaces later than it (any two, recorded or not)
-    let still = |c: &CommitId, ai: usize| {
-        let snapshot = coverers(core, c, ai).iter().any(|s| carries(s) && core.ix.commits.get(s).is_some_and(|m| m.view.kind.is_compaction()));
-        snapshot || snapshot::own_covers(core, c, tid, ak).len() >= 2
-    };
     let mut lost = Vec::new();
     for (_, c) in core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
         let Some(m) = core.ix.commits.get(c) else { continue };
         let Some(ai) = m.aspect(tid, ak) else { continue };
-        if m.dropped(ai).is_some_and(|d| d.as_cover()) && !still(c, ai) {
+        if m.dropped(ai).is_some_and(|d| d.as_cover()) && !reaches(c) && snapshot::own_covers(core, c, tid, ak).len() < 2 {
             lost.push((*c, ai));
         }
     }
@@ -2085,7 +2116,7 @@ mod tests {
     // snapshot falls invalid at R (A removed W not having heard of it): C stays dropped,
     // nothing is fetched, no flag.
     #[test]
-    fn forgotten_coverer_hands_down_its_covers_spec_permissions_5_2() {
+    fn forgotten_coverer_keeps_its_covers_spec_permissions_5_2() {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let (a, w, r) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -2117,7 +2148,7 @@ mod tests {
         e.drop_body(&s1, &t, &reg).unwrap();
         assert!(e.forgettable(&s1).unwrap());
         e.forget_commits(&[s1]).unwrap();
-        // what S1 handed down is stored: the same after a restart
+        // what S1 dropped under is kept: the same after a restart
         lp.peers[2].restart(0).unwrap();
         lp.peers[2].engine.check_index();
         lp.advance(10);
@@ -2139,8 +2170,9 @@ mod tests {
     }
 
     // spec/permissions.md §5.2, scale: a body dropped under a snapshot that drops under the next
-    // and is forgotten, n times over, names the newest alone: each forget hands down to what
-    // dropped under it, O(1) here, and the chain `uncover` walks stays one link, at n and 10n.
+    // and is forgotten, n times over, is carried by the newest alone: each forget writes one row of
+    // kept covers (`retention::handed`: the first S's, then that row spliced past each next),
+    // O(1) whatever is dropped under it, and the chain reaches the newest, at n and 10n.
     #[test]
     fn forgotten_coverers_keep_the_chain_short_spec_permissions_5_2() {
         let work = |n: i64| {
@@ -2170,13 +2202,61 @@ mod tests {
                 }
                 last = Some(s);
             }
-            let handed = osis_base::costs::take().iter().find(|x| x.0 == "forget: handed down").map_or(0, |x| x.2);
+            let handed = osis_base::costs::take().iter().find(|x| x.0 == "forget: covers kept").map_or(0, |x| x.2);
             let e = &mut lp.peers[0].engine;
             assert_eq!(e.coverers_of(&c, &t, &reg), vec![last.unwrap()], "the newest alone");
             e.check_index();
             handed
         };
-        assert_eq!((work(4), work(40)), (3, 39), "one hand-down per forget");
+        assert_eq!((work(4), work(40)), (3, 39), "one row written per forget");
+    }
+
+    // spec/permissions.md §5.2: a forgotten coverer keeps its covers only while a held part names
+    // it, and one no held part names is spliced out of the chain. C drops under S1, D under S2,
+    // S1 under S2 and S2 under S3, each forgotten: C names S1 and D names S2, so both keep their
+    // covers. D forgotten: S2 goes and S1 names S3, so C is still carried by S3. C forgotten:
+    // nothing is kept, before and after a restart.
+    #[test]
+    fn a_forgotten_coverers_covers_go_with_what_names_it_spec_permissions_5_2() {
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let reg = Ak::new("x:a.0").unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.me();
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, me);
+        e.commit(m).unwrap();
+        let step = |lp: &mut LocalPeer, v: i64| {
+            lp.advance(10);
+            let e = &mut lp.peers[0].engine;
+            let mut m = Mutation::new();
+            m.set(t, &reg, &Value::Int(v)).unwrap();
+            let c = e.commit(m).unwrap().unwrap();
+            (c, e.snapshot(&t, &reg).unwrap().unwrap())
+        };
+        let (c, s1) = step(&mut lp, 1);
+        lp.peers[0].engine.drop_body(&c, &t, &reg).unwrap();
+        let (d, s2) = step(&mut lp, 2);
+        let e = &mut lp.peers[0].engine;
+        e.drop_body(&d, &t, &reg).unwrap();
+        e.drop_body(&s1, &t, &reg).unwrap();
+        e.forget_commits(&[s1]).unwrap();
+        let (x, s3) = step(&mut lp, 3);
+        let e = &mut lp.peers[0].engine;
+        e.drop_body(&x, &t, &reg).unwrap();
+        e.forget_commits(&[x]).unwrap();
+        e.drop_body(&s2, &t, &reg).unwrap();
+        e.forget_commits(&[s2]).unwrap();
+        assert_eq!(e.core.ix.handed.keys().copied().collect::<Vec<_>>(), { let mut v = vec![s1, s2]; v.sort(); v }, "C names S1, D names S2");
+        assert!(e.forgettable(&d).unwrap());
+        e.forget_commits(&[d]).unwrap();
+        assert_eq!(e.core.ix.handed.keys().copied().collect::<Vec<_>>(), vec![s1], "S2 spliced out");
+        assert_eq!(e.coverers_of(&c, &t, &reg), vec![s3], "C carried by S3");
+        e.check_index();
+        e.forget_commits(&[c]).unwrap();
+        assert!(e.core.ix.handed.is_empty(), "nothing names S1");
+        e.check_index();
+        lp.peers[0].restart(0).unwrap();
+        assert!(lp.peers[0].engine.core.ix.handed.is_empty(), "nor after a restart");
     }
 
     // spec/commits.md §5 (Forgetting: parts held value-less for a purge request, not past its

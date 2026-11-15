@@ -1890,6 +1890,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         tx.core.ix.forgotten.insert(k, ts);
     }
     crate::retention::names::load(tx)?;
+    crate::retention::handed::load(tx)?;
     let fast = !rebuild && crate::engine::index::current(tx)?;
     let old = if fast { None } else { crate::engine::index::old_judgments(tx) };
     if fast {

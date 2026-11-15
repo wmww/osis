@@ -44,10 +44,11 @@ impl Engine {
     ///   node's card commit superseded (`card_superseded`) or ended (`card_ended`). A strict
     ///   subset is per blob (`strict_subset_now`).
     /// - `own`: written here. `role`: a role commit or a purge request.
-    /// - `carriers`: per part of the body a held valid snapshot under S covers, the snapshots
-    ///   covering it (one of each must be held where the body leaves).
-    /// - `later_unheld`: snapshots of the body's aspects stamped later than it whose part is
-    ///   dropped here, each with whether it was dropped as invalid.
+    /// - `carriers`: for a covered body, per part a held valid snapshot under S covers, the
+    ///   snapshots covering it (one of each must be held where the body leaves); a part dropped
+    ///   as covered, the held valid snapshots of its chain of covers (spec/permissions.md §5.2).
+    /// - `later_unheld`: snapshots stamped later than it whose part is dropped here, each with
+    ///   whether it was dropped as invalid, on the aspects of its parts established uncovered.
     /// - `missing`: a part of the body counts as never received (dropped as covered, its cover
     ///   gone, or found valid again), other than one sealed below this node's floor
     ///   (`rotation::floors::sealed_below_floor`): it never opens here, so it is fetched for
@@ -78,13 +79,35 @@ impl Engine {
         if purged {
             f.must_not = Some(MustNot::Purged);
         }
+        // carriers matter only for a covered body (spec/sync-compaction.md §1), a later snapshot
+        // not held only for a delta otherwise established uncovered (spec/sync-judgement.md §2):
+        // so a snapshot of an aspect moves no fact of a body it cannot drop
+        let covered = f.body.covered == Some(true);
         for ai in &b.parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
+            let dropped = m.dropped(*ai).is_some_and(|d| d.as_cover());
+            if covered && dropped {
+                // the chain of covers it dropped under (spec/permissions.md §5.2): its held valid
+                // snapshots carry it
+                let carries = |x: &CommitId| self.core.ix.commits.get(x).is_some_and(|sm| sm.view.kind.is_compaction() && sm.aspect(&a.tid, &a.ak).is_some_and(|sai| sm.valid_at(sai) && !sm.is_dropped(sai) && !sm.missing(sai)));
+                let covering: BTreeSet<CommitId> = crate::retention::coverers(&self.core, c, *ai).into_iter().filter(|x| carries(x)).collect();
+                if !covering.is_empty() {
+                    f.carriers.push(covering);
+                }
+                continue;
+            }
+            let uncovered = !covered && self.part_covered(c, &h, *ai)? == Some(false);
+            if !covered && !uncovered {
+                continue;
+            }
             let snaps: Vec<CommitId> = self.core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).filter(|x| x != c).collect();
             let mut covering = BTreeSet::new();
             for x in snaps {
-                if self.covered(&x, c, &a.tid, &a.ak)? == Some(true) {
+                if covered && self.covered(&x, c, &a.tid, &a.ak)? == Some(true) {
                     covering.insert(x);
+                }
+                if !uncovered {
+                    continue;
                 }
                 let Some(sm) = self.core.ix.commits.get(&x) else { continue };
                 let later = self.header(&x).is_some_and(|sh| sh.ts > h.ts);

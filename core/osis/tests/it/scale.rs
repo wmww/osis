@@ -173,45 +173,80 @@ fn a_write_judges_the_bodies_it_changes() {
     judged_per_commit("writes on one aspect", judgements(10, setup, write), judgements(100, setup, write));
 }
 
-/// `n` new things (each listed in the account's home group), then 8 more: per one of those, the
-/// bodies sync read judged (`read: judged`) and whether it stored a commit more than a new thing
-/// alone does (a compaction snapshot of the home group's `group.0`).
+/// A new thing listed in the account's home group (a write on its `group.0`).
+fn new_thing(db: &Osis) {
+    let mut w = db.write();
+    let t = w.create().unwrap();
+    w.group(db.home()).add(osis::Member::Subgroup(t)).unwrap();
+    w.commit().unwrap();
+    db.settle();
+}
+
+fn cost(cs: &[(&str, std::time::Duration, u64)], name: &str) -> u64 {
+    cs.iter().find(|c| c.0 == name).map_or(0, |c| c.2)
+}
+
+/// `n` new things, then 8 more: per one of those, the bodies sync read judged (`read: judged`)
+/// and whether it wrote a compaction snapshot of the home group's `group.0`.
 fn new_things(n: usize) -> Vec<(u64, bool)> {
     use osis::internals::costs;
     let db = crate::common::db(0);
-    let create = || {
-        let mut w = db.write();
-        let t = w.create().unwrap();
-        w.group(db.home()).add(osis::Member::Subgroup(t)).unwrap();
-        w.commit().unwrap();
-        db.settle();
-    };
     for _ in 0..n {
-        create();
+        new_thing(&db);
     }
     costs::take();
-    let count = |cs: &[(&str, std::time::Duration, u64)], name: &str| cs.iter().find(|c| c.0 == name).map_or(0, |c| c.2);
     (0..8)
         .map(|_| {
-            create();
+            new_thing(&db);
             let cs = costs::take();
-            (count(&cs, "read: judged"), count(&cs, "apply: put_commit") > 2)
+            (cost(&cs, "read: judged"), cost(&cs, "compact: snapshots written") > 0)
         })
         .collect()
 }
 
-// spec/sync.md §2 (work in proportion to change): a new thing is listed in the account's home group (a write on its
-// `group.0`), which moves no earlier body's facts: after n and 10n new things, each next one that
-// writes no compaction snapshot judges as many bodies (the account's signing chain reads only
-// the account's role commits on home, `Indexes::role_on`: read from all its commits there, each
-// listing moves every judgement reading the chain). Not flat: one that also writes a snapshot of
-// the home group's `group.0` re-judges every body the snapshot covers (their carriers and covers
-// move, issues/tests-4x.md).
+// spec/sync.md §2 (work in proportion to change): a new thing is listed in the account's home
+// group (a write on its `group.0`), which moves no earlier body's facts: after n and 10n new
+// things, each next one that writes no compaction snapshot judges as many bodies (the account's
+// signing chain reads only the account's role commits on home, `Indexes::role_on`: read from all
+// its commits there, each listing moves every judgement reading the chain). One writing a
+// snapshot judges the bodies since the last (`snapshots_judge_what_they_newly_cover`).
 #[test]
-#[ignore = "issues/new-thing-judges-grow.md"]
 fn a_new_thing_judges_the_bodies_it_changes() {
     let plain = |v: Vec<(u64, bool)>| v.into_iter().filter(|x| !x.1).map(|x| x.0).collect::<BTreeSet<u64>>();
     let (small, big) = (plain(new_things(10)), plain(new_things(100)));
     assert!(!small.is_empty() && small == big, "judgements per new thing writing no snapshot, after 10: {small:?}, after 100: {big:?}");
 }
+
+/// Over `n` new things: bodies judged, their facts derived (`sync: read facts`), snapshot joins (`covered: join`), forgotten coverers
+/// keeping their covers (`forget: covers kept`, rows written), and snapshots written.
+fn listing_work(n: usize) -> [u64; 5] {
+    use osis::internals::costs;
+    let db = crate::common::db(0);
+    costs::take();
+    for _ in 0..n {
+        new_thing(&db);
+    }
+    let cs = costs::take();
+    let facts = cs.iter().filter(|c| c.0.starts_with("sync: read facts <- ")).map(|c| c.2).sum();
+    let [judged, joins, kept, snapshots] = ["read: judged", "covered: join", "forget: covers kept", "compact: snapshots written"].map(|x| cost(&cs, x));
+    [judged, facts, joins, kept, snapshots]
+}
+
+// spec/sync.md §2, spec/permissions.md §5.2: covers are transitive along the chain of
+// snapshots, so each compaction snapshot of the home group's `group.0` joins and judges only
+// the bodies the previous one did not cover: a body dropped as covered stays covered while its
+// chain carries it (`Engine::part_covered`), its carriers matter only once its whole body is
+// covered (`read_facts`), and a snapshot forgotten under the next keeps its covers in one row
+// (`retention::handed`) instead of rewriting every body dropped under it. n and 10n new things
+// do linearly much of each (every body per snapshot is quadratic: 20 to 200 things judged 538
+// to 21,830 bodies, joined 330 to 14,310 pairs and rewrote 63 to 3,399 parts' covers).
+#[test]
+fn snapshots_judge_what_they_newly_cover() {
+    let (small, big) = (listing_work(20), listing_work(200));
+    assert!(small[4] > 1, "snapshots written over 20 things: {small:?}");
+    for (i, what) in ["judgements", "facts", "joins", "kept covers"].iter().enumerate() {
+        assert!(small[i] > 0 && big[i] <= 12 * small[i], "{what} over 20 things {}, over 200 {}", small[i], big[i]);
+    }
+}
+
 

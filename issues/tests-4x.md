@@ -1,7 +1,11 @@
 # Tests cost about a hundred times what they should
-> Summary: Target (Tess): default tests 4x faster without losing coverage that matters; a test should cost milliseconds. On the rebuilt sync the default tests ran about 9,400 G instructions alone (each test its own process); body facts kept as `Cutoff` rows took osis-sync `it` from 4,107 G to 2,802 G and osis `it` from 1,848 G to 823 G (whole binaries). Left, biggest first: osis-sync's differential worlds and per-delivery settles, a compaction snapshot re-judging every body it covers, `Effects::due`'s log scans.
+> Summary: Target (Tess): default tests 4x faster without losing coverage that matters; a test should cost milliseconds. On the rebuilt sync the default tests ran about 9,400 G instructions alone (each test its own process); body facts kept as `Cutoff` rows took osis-sync `it` from 4,107 G to 2,802 G and osis `it` from 1,848 G to 823 G (whole binaries). Left, biggest first: osis-sync's differential worlds and per-delivery settles, `Effects::due`'s log scans.
 > Priority: normal
 > Tags: tests, performance
+
+## Profile after snapshots judge what they newly cover (fathom-test-opt-12)
+- Whole binaries (`tools/icount BIN -q`), main b2cad8f15's engine to now (same tests): osis `it` 331.1 to 280.3 G, osis-sync `it` 1,732.6 to 1,708.0 G, osis-engine `it` 1,245.2 to 1,246.7 G, engine lib 734.4 to 734.7 G.
+- osis `scale::snapshots_judge_what_they_newly_cover` (20 and 200 new things in home): judged 538 and 21,830 bodies before, 132 and 1,132 now; snapshot joins 330 and 14,310, now 51 and 477; parts' covers rewritten at forgets 63 and 3,399, now 6 and 42 kept-covers rows.
 
 ## Profile after body facts as rows (fathom-test-opt-11)
 - Whole binaries (`tools/icount BIN -q`), base (capstan-sync-rebuild cfad24ccd plus fathom-test-opt-10) to now: osis-sync `it` 4,107 to 2,802 G, osis `it` 1,848 to 823 G, osis-engine `it` 1,248 to 1,247 G, engine lib 725 to 726 G. osis `listing::page_and_listener` 191.6 to 36.5 G.
@@ -19,9 +23,9 @@
 - CPU seconds move 20-40% between identical runs (load, SMT): compare by `tools/icount`, find where time goes with `tools/cpuprof` over the whole binary.
 
 ## Left, by size
-1. **A compaction snapshot re-judges every body it covers.** Each snapshot of an aspect (home's `group.0` every 3-5 new things) covers every earlier body: the previous snapshot is forgotten and hands its covered bodies down (`apply::unindex` `hand_down`: a `Meta` write per body), each body's carriers move, and each is joined against the new snapshot (`covered` per (snapshot, body), a new key per snapshot). osis `scale::a_new_thing_judges_the_bodies_it_changes` (a new thing writing no snapshot judges 2 bodies at n and 10n) leaves these out: about 6n judgements per snapshot. Levers: covers along the chain (a body covered by S and S covered by S' is covered by S' while both are valid: join-subsumption is transitive), so a new snapshot joins only what the last one did not cover; carriers named so a hand-down moves no body's facts.
-2. **A body's facts are derived again per body whose reads moved.** The judgement moves only with its facts (`Engine::read_facts`, a row), but every write on an aspect re-derives the facts of each body on it: a part's date reads the aspect's state row (`deaths` at its positions), and own covers read the author's newest own replace (`part_covered` checks the newest two own replaces, a new `covered` key per body per write). Cheap per body (O(1) reads each since `held_writes_rows`), O(n) per write. Narrowing: dates stamped by the positions read (issues/derived-state-recomputed.md step 4); own covers checked against the first two covering own replaces after the body (spec/commits.md §5 Own replaces says any two), which is stable as writes land.
+1. **A body's facts are derived again per body whose reads moved.** The judgement moves only with its facts (`Engine::read_facts`, a row), but every write on an aspect re-derives the facts of each body on it: a part's date reads the aspect's state row (`deaths` at its positions), and own covers read the author's newest own replace (`part_covered` checks the newest two own replaces, a new `covered` key per body per write). Cheap per body (O(1) reads each since `held_writes_rows`), O(n) per write (a part dropped as covered derives nothing against later snapshots: `part_covered` answers from its drop). Narrowing: dates stamped by the positions read (issues/derived-state-recomputed.md step 4); own covers checked against the first two covering own replaces after the body (spec/commits.md §5 Own replaces says any two), which is stable as writes land.
 
+2. **Sync status re-walks every own commit per pass**: `Engine::own_commits_now` (spec/sync-status.md §2) walks every commit this node wrote on the sync ID's closure and asks each its bodies, per new thing in home: osis `pass: bodies of a commit` 524 over 20 new things, 25,818 over 200 (quadratic). Lever: keep the own commits per sync ID as rows moved by the commits feed.
 3. **osis-sync's differential and simulations** (3,000 G alone): a fresh world per seed (31% of a seed in one process), then per delivery a settle of every module. `may_log`'s `held_blobs` reads the sync store per judgement; `Effects::due`'s log reads 10%; `follow_certificates` at every follow.
 4. **`order::held_set_decides`** (399 G alone, the costliest engine test): ingest about half, held-model compares a fifth, `check_index` a sixth; every order is ingested from the setup (Properties, below).
 5. **`check_index` has no exact incremental form** (22% of osis-engine `it` inclusive): its halves are two loads from scratch; cheaper loads are the lever, and they are the product's open.
@@ -46,8 +50,8 @@ Rejected levers: `opt-level` 2 for the workspace (3-10% for a full rebuild). Fak
 - Seed counts stay; the time is to come from the work each seed does.
 
 ## Order of work
-1. osis-sync's per-delivery work and the snapshot re-judgement (Left 1, 3).
-2. The facts' reads narrowed (Left 2).
+1. osis-sync's per-delivery work (Left 3).
+2. The facts' reads narrowed (Left 1).
 3. The order tree walk (Properties).
 4. The width rule (Pattern 4), file by file.
 

@@ -618,7 +618,7 @@ pub(crate) fn covered_join(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Ti
     // a memory body not held that the snapshot's frontier (indexed) does not reach: judged
     // before the snapshot is read, as below. A held body is judged by the join alone: a
     // snapshot whose writer held it behind a gap in its session carries its writes past its
-    // own frontier, and saying otherwise here breaks the chain of covers (`hand_down`) a node
+    // own frontier, and saying otherwise here breaks the chain of covers (`retention::coverers`) a node
     // with the body dropped judges by (a holder places it again, every pass, for that node to
     // delete)
     if !m.holds(cai)

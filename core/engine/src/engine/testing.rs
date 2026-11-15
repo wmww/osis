@@ -704,6 +704,8 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("epochs", &*ix.epochs),
         ("by_epoch", &*ix.by_epoch),
         ("covered_under", &*ix.covered_under),
+        ("handed", &*ix.handed),
+        ("handed_under", &*ix.handed_under),
         ("forgotten_names", &*ix.forgotten_names),
         ("own_held", &*ix.own_held),
         ("own_replaces", &*ix.own_replaces),
