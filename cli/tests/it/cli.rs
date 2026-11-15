@@ -385,12 +385,12 @@ fn sharing_commands_local_plan_cli_4() {
 fn backlinks_lists_the_referrers() {
     let s = S::mem();
     let (a, t) = (s.thing(), s.thing());
-    // the group it was created in lists it
+    // the groups listing it (the one it was made in, and home where creating filed it)
     let before = s.ok(&["backlinks", &t]).out;
-    assert!(before.lines().count() == 1 && before.ends_with(" group.0\n"), "{before}");
+    assert!(before.lines().count() >= 1 && before.lines().all(|l| l.ends_with(" group.0")), "{before}");
     s.ok(&["set", &a, "note:link.0", &t]);
     let out = s.ok(&["backlinks", &t]).out;
-    assert!(out.lines().count() == 2 && out.contains(&format!("{a} note:link.0\n")), "{out}");
+    assert!(out.lines().count() == before.lines().count() + 1 && out.contains(&format!("{a} note:link.0\n")), "{out}");
     assert!(s.ok(&["--json", "backlinks", &t]).line().contains(&format!("{{\"tid\":\"{a}\",\"ak\":\"note:link.0\"}}")));
 }
 
