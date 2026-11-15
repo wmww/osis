@@ -62,8 +62,17 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         core.ix.invalid.remove(&k, id);
         core.ix.by_thing.remove(&(a.tid, v.author), id);
         core.ix.role_on.remove(&(a.tid, v.author), id);
-        if !core.ix.by_thing.contains_key(&(a.tid, v.author)) {
-            core.ix.authors_on.remove(&a.tid, &v.author);
+        if v.actor != v.author {
+            core.ix.acting_on.remove(&(a.tid, v.author, v.actor), id);
+        }
+        // a chain goes once no held commit on the thing needs it (`Indexes::chains_on`)
+        let writes = !core.ix.by_thing.contains_key(&(a.tid, v.author));
+        let acts = |to: &Tid| !core.ix.acting_on.contains_key(&(a.tid, v.author, *to));
+        if writes && acts(&a.tid) {
+            core.ix.chains_on.remove(&a.tid, &(v.author, a.tid));
+        }
+        if v.actor != v.author && acts(&v.actor) && (v.actor != a.tid || writes) {
+            core.ix.chains_on.remove(&a.tid, &(v.author, v.actor));
         }
         core.ix.dropped_snapshots.remove(&k, id);
         if v.form.counted() && v.kind.has_own_writes() && a.lo < a.hi {

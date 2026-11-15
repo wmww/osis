@@ -790,10 +790,15 @@ indexes! {
     pub own_replaces: JSetMap<(Tid, Ak, Tid), (Ts, CommitId)>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<(Tid, Tid), CommitId>,
-    /// `by_thing`'s keys per thing: the authors of held commits with a delta on it (a commit's
-    /// author's chain goes under each sync ID carrying it, `Engine::sync_certificates`). Moves
-    /// only as an author comes or goes.
-    pub authors_on: JSetMap<Tid, Tid>,
+    /// Per thing, the chains its held commits' authors' chains are made of (spec/permissions.md
+    /// §4, a commit's author's chain): (author, the thing) for each author of a commit with a
+    /// delta on it, (author, actor) for each such commit acting for another actor (`acting_on`).
+    /// Each goes under every sync ID carrying the thing (`Engine::sync_certificates`). Moves only
+    /// as a chain comes or goes.
+    pub chains_on: JSetMap<Tid, (Tid, Tid)>,
+    /// Held commits per (thing, author, actor) with a delta on the thing whose actor is not their
+    /// author: when the last goes, `chains_on` loses (author, actor).
+    pub acting_on: JSetMap<(Tid, Tid, Tid), CommitId>,
     /// `by_thing` for role commits alone: what an account's chain reads of its role commits on
     /// its devices actor (`Core::devices_read`), so filing into D moves no account's chain.
     pub role_on: JSetMap<(Tid, Tid), CommitId>,
@@ -2302,6 +2307,7 @@ impl Core {
                 sealed: JMap::by_run(|k| actor_run(&k.0)),
                 by_thing: JSetMap::by_run(|k| actor_run(&k.0)),
                 by_actor: JSetMap::by_run(|k| actor_run(&k.0)),
+                acting_on: JSetMap::by_run(|k| actor_run(&k.0)),
                 role_on: JSetMap::by_run(|k| actor_run(&k.0)),
                 ..Indexes::default()
             }

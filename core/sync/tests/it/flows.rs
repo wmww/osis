@@ -1259,6 +1259,80 @@ fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2()
     settle(&mut w, "unfiled");
 }
 
+// spec/permissions.md §4 (a commit's author's chain: to each thing it writes and to its actor),
+// §5.2 (Acting), spec/sync-judgement.md §2 (required set): node 2's team Y grants node 1's
+// account X write; X writes node 0's thing T, on which Y holds no role, acting for Y. Node 0
+// reads T alone (nothing of Y): X's chain to Y travels under T's sync ID, so node 0 reads the
+// write as node 1 does, after a restart too; Y removing X travels the same way and both read
+// the write gone. `late`: node 0 is off while X writes and catches up afterwards.
+fn acting_for_an_actor_off_the_path(late: bool) {
+    let mut w = crate::harness::history::world(0, 3);
+    let (a0, a1, a2) = (w.node(0).account.unwrap(), w.node(1).account.unwrap(), w.node(2).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let new = |w: &mut World, i: usize, a: osis_base::Tid| {
+        w.write(i, |e| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a);
+            m.set(t, &ak, &Value::Str("x".into())).unwrap();
+            e.commit(m).unwrap();
+            t
+        })
+    };
+    let y = new(&mut w, 2, a2);
+    file(&mut w, 2, vec![y], Vec::new());
+    w.write(2, |e| e.grant(&y, &a1, &edge(Role::Write))).unwrap();
+    let t = new(&mut w, 0, a0);
+    file(&mut w, 0, vec![t], Vec::new());
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Write))).unwrap();
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![y, t]);
+    w.run();
+    assert!(!w.engine(0).sync_set().unwrap().ids.values().any(|(x, _)| *x == y), "node 0 syncs nothing of Y");
+    let read = |w: &mut World, i: usize| w.engine(i).get(&t, &ak).unwrap();
+    let settle = |w: &mut World| {
+        w.run();
+        for _ in 0..2 {
+            w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+            w.run();
+        }
+    };
+    if late {
+        w.power_off(0);
+    }
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("as y".into())).unwrap();
+        m.act_as(y);
+        e.commit(m).unwrap();
+    });
+    w.power_on(0);
+    settle(&mut w);
+    let as_y = Some(Value::Str("as y".into()));
+    assert_eq!(read(&mut w, 1), as_y, "node 1 reads X's write for Y");
+    assert_eq!(read(&mut w, 0), as_y, "node 0, reading T alone, judges X's write for Y as node 1 does");
+    w.power_off(0);
+    w.power_on(0);
+    settle(&mut w);
+    assert_eq!(read(&mut w, 0), as_y, "after a restart");
+    w.write(2, |e| e.demote(&y, &Demotion { holder: a1, new: None, retain: None })).unwrap();
+    settle(&mut w);
+    let x = Some(Value::Str("x".into()));
+    assert_eq!(read(&mut w, 1), x, "X acts for Y no more: its write is invalid at node 1");
+    assert_eq!(read(&mut w, 0), x, "and at node 0, by Y's demotion under T's sync ID");
+}
+
+// spec/permissions.md §4, §5.2, spec/sync-judgement.md §2: `acting_for_an_actor_off_the_path`, node 0 online.
+#[test]
+fn a_write_acting_off_the_path_is_judged_alike_spec_permissions_5_2() {
+    acting_for_an_actor_off_the_path(false);
+}
+
+// spec/permissions.md §4, §5.2, spec/sync-judgement.md §2: `acting_for_an_actor_off_the_path`, node 0 off while X writes.
+#[test]
+fn a_write_acting_off_the_path_is_judged_alike_late_spec_permissions_5_2() {
+    acting_for_an_actor_off_the_path(true);
+}
+
 // spec/permissions.md §4 (Chain certificates: an account's current `keys.0` commits with their
 // `keys.0` part, its other rotations, every line, as header-only copies), §5.5 (Chains travel),
 // spec/sync-judgement.md §2 (required set: a header-only copy of a rotation): after a writer's

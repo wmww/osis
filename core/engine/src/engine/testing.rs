@@ -654,7 +654,8 @@ impl<T: std::fmt::Debug + PartialEq + 'static> Table for T {
 fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
     vec![
         ("by_thing", &*ix.by_thing),
-        ("authors_on", &*ix.authors_on),
+        ("chains_on", &*ix.chains_on),
+        ("acting_on", &*ix.acting_on),
         ("by_actor", &*ix.by_actor),
         ("role_on", &*ix.role_on),
         ("by_aspect", &*ix.by_aspect),

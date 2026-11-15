@@ -246,7 +246,7 @@ impl Engine {
     /// What a sync ID of `g` holds as certificates, whoever logs them (spec/permissions.md §4,
     /// spec/sync-judgement.md §2): the union of `g`'s pieces (`Piece`): `g`'s own
     /// (`own_piece`); the author's chain of each held commit on a thing of `g`'s closure its actor
-    /// may read, which goes with the commit (`certificate_authors`, `chain_piece`); and under an
+    /// may read, which goes with the commit (`certificate_chains`, `chain_piece`); and under an
     /// actor's inbox its grant copies (`kept_grant_copy`, one per thing it is named on). Nothing else:
     /// a chain into an item of the closure that no write there needs (a private group's roster
     /// holding a role on an item under S) is none of S's readers'. Parts the closure's bodies carry
@@ -255,7 +255,7 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn sync_certificates(&mut self, g: &Tid) -> Certs {
         let mut out = self.own_piece(g);
-        for (a, x) in self.certificate_authors(g) {
+        for (a, x) in self.certificate_chains(g) {
             out.extend(self.chain_piece(&a, &x));
         }
         self.expand_accounts(&mut out);
@@ -332,16 +332,16 @@ impl Engine {
         }
     }
 
-    /// The (author, thing) pairs whose author's chain goes under a sync ID of `g` with the
-    /// author's writes (spec/permissions.md §4, a commit's author's chain): each author of a held
-    /// commit on a thing of `g`'s closure its actor may read (`Indexes::authors_on`). A commit
-    /// acting for another actor needs no more: the author's chain to the thing runs through it.
-    /// A node author's chain (its card) goes under D's home alone, with D's nodes' cards.
+    /// The (author, target) chains that go under a sync ID of `g` with the author's writes
+    /// (spec/permissions.md §4, a commit's author's chain: everything the commit's validity reads):
+    /// of each held commit on a thing of `g`'s closure its actor may read, its author's chain to
+    /// that thing and, acting for another actor, to that actor (`Indexes::chains_on`). A node
+    /// author's chain (its card) goes under D's home alone, with D's nodes' cards.
     #[cfg(test)]
-    fn certificate_authors(&mut self, g: &Tid) -> Vec<(Tid, Tid)> {
+    fn certificate_chains(&mut self, g: &Tid) -> Vec<(Tid, Tid)> {
         let ctx = self.body_ctx(g);
         let things: Vec<Tid> = ctx.closure.iter().filter(|t| self.cert_reads_in(g, t)).copied().collect();
-        let pairs: Vec<(Tid, Tid)> = things.into_iter().flat_map(|x| self.core.ix.authors_on.get(&x).into_iter().flatten().map(move |a| (*a, x)).collect::<Vec<_>>()).collect();
+        let pairs: Vec<(Tid, Tid)> = things.into_iter().flat_map(|x| self.core.ix.chains_on.get(&x).into_iter().flatten().copied().collect::<Vec<_>>()).collect();
         pairs.into_iter().filter(|(a, _)| !self.is_node(a).unwrap_or(false)).collect()
     }
 

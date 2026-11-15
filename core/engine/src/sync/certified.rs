@@ -6,10 +6,11 @@
 //! changed, so an account named on n things pays for the copy that changed, not for n.
 //!
 //! Which pieces go under which read thing is followed the same way, per key: the read things
-//! (from the sync set), each one's inbox actors, and each thing with authors (its authors and the
-//! read things whose closure holds it). New keys come from feeds (`Indexes::authors_on` gaining a
-//! thing, `Held` naming a holder on a thing), never from a walk of everything; a key whose input
-//! went away settles to nothing and is dropped.
+//! (from the sync set), each one's inbox actors, and each thing with authors (the chains its
+//! commits' authors' chains are made of, and the read things whose closure holds it). New keys
+//! come from feeds (`Indexes::chains_on` gaining a thing, `Held` naming a holder on a thing),
+//! never from a walk of everything; a key whose input went away settles to nothing and is
+//! dropped.
 
 use super::ThingSync;
 use crate::Engine;
@@ -46,7 +47,8 @@ pub(crate) enum Piece {
     /// A read thing's own (`Engine::own_piece`), under it alone.
     Own(Tid),
     /// Author `a`'s chain to `x` (`Engine::chain_piece`), under each read thing whose closure
-    /// holds `x` and whose actor reads it.
+    /// holds, and whose actor reads, a thing with a held commit of `a` writing `x` or acting for
+    /// it (`Indexes::chains_on`): one piece per chain, however many things need it.
     Chain(Tid, Tid),
     /// Actor `a`'s grant copy for `x` (`Engine::kept_grant_copy`), under each read thing owning `a`'s
     /// inbox.
@@ -60,11 +62,12 @@ pub(crate) enum Piece {
 /// `Followers::pieces`.
 type Pieces = Effects<Piece, Option<Arc<Certs>>>;
 
-/// What a thing with authors gives (`Followers::authored`): its authors that are no node, and the
-/// read things whose closure holds it and whose actor reads it.
+/// What a thing with authors gives (`Followers::authored`): the chains of its commits' authors
+/// that are no node (`Indexes::chains_on`), and the read things whose closure holds it and whose
+/// actor reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Authored {
-    authors: BTreeSet<Tid>,
+    chains: BTreeSet<(Tid, Tid)>,
     under: BTreeSet<Tid>,
 }
 
@@ -78,7 +81,7 @@ struct Followers {
     read_feed: Option<Feed<Tid>>,
     /// Per read thing, the actors whose inbox it owns.
     inboxes: Effects<Tid, Arc<BTreeSet<Tid>>>,
-    /// Per thing with authors (`Indexes::authors_on`), what it gives.
+    /// Per thing with authors (`Indexes::chains_on`), what it gives.
     authored: Effects<Tid, Arc<Authored>>,
     /// Per piece placed somewhere, its certificates; `None` for a grant copy of a pair no longer
     /// named (the piece goes).
@@ -112,9 +115,9 @@ struct Inbox {
 }
 
 /// The certificates of the things this node reads, per piece, and indexed by commit and by read
-/// thing. Every map is bounded by what is held: a piece per read thing, per (author, thing written
-/// on) under a read closure and per (inbox actor, thing named on); the rows by the commits and
-/// records those name.
+/// thing. Every map is bounded by what is held: a piece per read thing, per chain of an author
+/// writing under a read closure (to a thing it wrote on, to an actor it acted for there) and per
+/// (inbox actor, thing named on); the rows by the commits and records those name.
 #[derive(Clone, Default)]
 pub(crate) struct Certified {
     followers: Followers,
@@ -126,6 +129,9 @@ pub(crate) struct Certified {
     inboxes: BTreeMap<Tid, Inbox>,
     /// Each followed thing with authors, as placed.
     authored: BTreeMap<Tid, Arc<Authored>>,
+    /// Per (chain piece, read thing), the things with authors that place it there: it goes under
+    /// the read thing while any does.
+    chain_by: BTreeMap<(Piece, Tid), BTreeSet<Tid>>,
     placed: BTreeMap<Piece, Placed>,
     /// Per (commit, read thing), what each piece under the thing names of the commit.
     named: BTreeMap<(CommitId, Tid), BTreeMap<Piece, Named>>,
@@ -155,6 +161,24 @@ impl Certified {
         if placed.under.insert(t) {
             let certs = placed.certs.clone();
             self.apply(t, p, &Certs::default(), &certs, pieces);
+        }
+    }
+
+    /// Thing `x` places chain piece `p` under `t`.
+    fn place_chain(&mut self, p: Piece, t: Tid, x: Tid, pieces: &mut Pieces) {
+        let by = self.chain_by.entry((p, t)).or_default();
+        if by.insert(x) && by.len() == 1 {
+            self.place(p, t, pieces);
+        }
+    }
+
+    /// Thing `x` places chain piece `p` under `t` no more.
+    fn unplace_chain(&mut self, p: Piece, t: Tid, x: Tid, pieces: &mut Pieces) {
+        let k = (p, t);
+        let Some(by) = self.chain_by.get_mut(&k) else { return };
+        if by.remove(&x) && by.is_empty() {
+            self.chain_by.remove(&k);
+            self.unplace(p, t, pieces);
         }
     }
 
@@ -286,17 +310,17 @@ impl Engine {
         Ok(Arc::new((*self.core.sync_rows.read).clone()))
     }
 
-    /// What thing `x` gives the read things (`Authored`): its authors that are no node, and the
-    /// read things whose closure holds it (`Groups::enclosing`) and whose actor reads it (`cert_reads_in`), each
-    /// read per key.
+    /// What thing `x` gives the read things (`Authored`): its chains (`Indexes::chains_on`) of
+    /// authors that are no node, and the read things whose closure holds it
+    /// (`Groups::enclosing`) and whose actor reads it (`cert_reads_in`), each read per key.
     fn authored(&mut self, x: &Tid) -> Arc<Authored> {
-        let authors: Vec<Tid> = self.core.ix.authors_on.get(x).into_iter().flatten().copied().collect();
-        let authors: BTreeSet<Tid> = authors.into_iter().filter(|a| !self.is_node(a).unwrap_or(false)).collect();
-        if authors.is_empty() {
+        let chains: Vec<(Tid, Tid)> = self.core.ix.chains_on.get(x).into_iter().flatten().copied().collect();
+        let chains: BTreeSet<(Tid, Tid)> = chains.into_iter().filter(|(a, _)| !self.is_node(a).unwrap_or(false)).collect();
+        if chains.is_empty() {
             return Arc::default();
         }
         let under = self.core.ix.groups.enclosing(x).into_iter().filter(|t| self.core.certified.read.contains(t) && self.cert_reads_in(t, x)).collect();
-        Arc::new(Authored { authors, under })
+        Arc::new(Authored { chains, under })
     }
 
     /// Piece `p`'s certificates; `None` for a grant copy whose actor is no longer named on the
@@ -327,8 +351,8 @@ impl Engine {
         // the entries the inbox keys read, before they are asked whether they are due
         self.refresh_inboxes();
         if f.feeds.is_none() {
-            f.feeds = Some((self.core.ix.authors_on.feed(), self.core.ix.held.pairs_feed()));
-            let all: Vec<Tid> = self.core.ix.authors_on.keys().copied().collect();
+            f.feeds = Some((self.core.ix.chains_on.feed(), self.core.ix.held.pairs_feed()));
+            let all: Vec<Tid> = self.core.ix.chains_on.keys().copied().collect();
             for x in all {
                 f.authored.want(x);
             }
@@ -378,11 +402,11 @@ impl Engine {
         }
         for x in f.authored.due() {
             let Some((_, now)) = f.authored.settle(&x, || self.authored(&x)) else { continue };
-            let had = match now.authors.is_empty() {
+            let had = match now.chains.is_empty() {
                 true => {
                     // followed while it has any author (one that is no node may come); with none,
                     // again once one comes (the feed)
-                    if self.core.ix.authors_on.get(&x).is_none() {
+                    if self.core.ix.chains_on.get(&x).is_none() {
                         f.authored.unwant(&x);
                     }
                     self.core.certified.authored.remove(&x)
@@ -390,13 +414,13 @@ impl Engine {
                 false => self.core.certified.authored.insert(x, now.clone()),
             }
             .unwrap_or_default();
-            let pairs = |a: &Authored| -> BTreeSet<(Tid, Tid)> { a.authors.iter().flat_map(|au| a.under.iter().map(move |t| (*au, *t))).collect() };
+            let pairs = |a: &Authored| -> BTreeSet<(Piece, Tid)> { a.chains.iter().flat_map(|(au, to)| a.under.iter().map(move |t| (Piece::Chain(*au, *to), *t))).collect() };
             let (old, new) = (pairs(&had), pairs(&now));
-            for (a, t) in old.difference(&new) {
-                self.core.certified.unplace(Piece::Chain(*a, x), *t, &mut f.pieces);
+            for (p, t) in old.difference(&new) {
+                self.core.certified.unplace_chain(*p, *t, x, &mut f.pieces);
             }
-            for (a, t) in new.difference(&old) {
-                self.core.certified.place(Piece::Chain(*a, x), *t, &mut f.pieces);
+            for (p, t) in new.difference(&old) {
+                self.core.certified.place_chain(*p, *t, x, &mut f.pieces);
             }
         }
         // a piece settling may place account pieces (`Certs::accounts`): a second round settles
@@ -850,6 +874,58 @@ mod tests {
         assert!(small.0 > 0, "the rotation re-derives the account's piece");
         assert_eq!(small, derived(20, 1), "pieces derived (after the rotation, after the write) at n and 10n lines");
         assert_eq!(small, derived(2, 10), "pieces derived (after the rotation, after the write) at m and 10m things written on");
+    }
+
+    // spec/permissions.md §4 (a commit's author's chain: to its actor too), spec/sync-judgement.md
+    // §2: X writes T1 and T2 (each read here) acting for Y, which holds no role on either: X's
+    // chain to Y is one piece, under each read thing whose closure holds such a write, however
+    // many writes there are; it leaves a read thing with the thing (unshared); the rows equal the
+    // whole derivation throughout.
+    #[test]
+    fn a_chain_to_an_acted_for_actor_is_one_piece_per_read_thing_spec_permissions_4() {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let a0 = lp.peers[0].engine.create_account().unwrap().0;
+        let a1 = lp.peers[1].engine.create_account().unwrap().0;
+        let a2 = lp.peers[2].engine.create_account().unwrap().0;
+        lp.sync_all().unwrap();
+        let ak = Ak::new("x:a.0").unwrap();
+        let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
+        let new = |lp: &mut LocalPeer, i: usize, a: Tid| {
+            let e = &mut lp.peers[i].engine;
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a);
+            m.set(t, &ak, &Value::Int(0)).unwrap();
+            e.commit(m).unwrap();
+            t
+        };
+        let y = new(&mut lp, 2, a2.account);
+        lp.peers[2].engine.grant(&y, &a1.account, &edge).unwrap();
+        let ts = [new(&mut lp, 0, a0.account), new(&mut lp, 0, a0.account)];
+        for t in &ts {
+            lp.peers[0].engine.grant(t, &a1.account, &edge).unwrap();
+        }
+        lp.sync_all().unwrap();
+        let write = |lp: &mut LocalPeer, t: Tid, v: i64| {
+            let mut m = Mutation::new();
+            m.set(t, &ak, &Value::Int(v)).unwrap();
+            m.act_as(y);
+            lp.peers[1].commit(m).unwrap();
+        };
+        let to_y = |e: &Engine| -> Vec<BTreeSet<Tid>> { e.core.certified.placed.iter().filter(|(p, _)| matches!(p, Piece::Chain(a, x) if *a == a1.account && *x == y)).map(|(_, x)| x.under.clone()).collect() };
+        for v in 1..=6 {
+            write(&mut lp, ts[(v % 2) as usize], v);
+            lp.sync_all().unwrap();
+            check(&mut lp.peers[0].engine, &format!("write {v}"));
+        }
+        let e = &mut lp.peers[0].engine;
+        assert!(e.read_things().unwrap().is_superset(&ts.into_iter().collect()), "T1 and T2 read here");
+        assert_eq!(to_y(e), vec![ts.into_iter().collect::<BTreeSet<Tid>>()], "one piece of X's chain to Y, under T1 and T2");
+        e.unshare(&ts[1]).unwrap();
+        check(e, "T2 unshared");
+        assert_eq!(to_y(e), vec![BTreeSet::from([ts[0]])], "X's chain to Y leaves T2 with it");
+        e.unshare(&ts[0]).unwrap();
+        check(e, "T1 unshared");
+        assert!(to_y(e).is_empty(), "and goes once no read thing needs it");
     }
 
     // spec/permissions.md §4, spec/sync-judgement.md §1 (List blobs), as above: random histories

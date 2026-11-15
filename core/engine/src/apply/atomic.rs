@@ -89,7 +89,11 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
         if h.kind.is_role() {
             core.ix.role_on.insert((a.tid, h.author), *id);
         }
-        core.ix.authors_on.insert(a.tid, h.author);
+        core.ix.chains_on.insert(a.tid, (h.author, a.tid));
+        if h.actor != h.author {
+            core.ix.acting_on.insert((a.tid, h.author, h.actor), *id);
+            core.ix.chains_on.insert(a.tid, (h.author, h.actor));
+        }
         if h.form.counted() && h.kind.has_own_writes() && a.lo < a.hi {
             core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.author, *id)), (a.lo, *id), a.hi);
         }
