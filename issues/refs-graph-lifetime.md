@@ -3,6 +3,9 @@
 > Priority: normal
 > Tags: engine, sync, data-model, tess-call
 
+## For Tess
+- This design decides what a node keeps whole: what its node root reaches. issues/storage-follows-groups.md hangs every other stored row off that set or off the sync IDs it gives, so the two are one mechanism and best decided together; that issue holds the storage decisions.
+
 Only the Decided section is decided. The rest records her design, what it implies under today's permissions and sync specs, and the questions it leaves. Storage side: issues/storage-follows-groups.md.
 
 ## Decided (Tess)
@@ -63,7 +66,7 @@ Defined, changed or removed by this design; used only in these meanings below.
 - **Node roots and the account**: a node root is per node. Whether the account's other nodes read it matters to leaving: the wait rule asks whether another node of the account may hold S (spec/sync-set.md §3 Leaving), which today reads the other synced groups (open question 7).
 - **Account root**: every node closure must hold it, as "Home stays under it" requires of D today (spec/sync-set.md §1); simplest is that the node root references it by rule.
 - **Admin-only aspects** (`^`): strong references there are admin-written; the core's own (`synced^.0`, `acted^.0`, `kept^.0`) each need a fixed strength.
-- **Authority is not reachability**: record chains, `roles.0` holders and signers are not references (role-class aspects are not indexed) and keep nothing. What a held thing needs of its authority chain travels as certificates (spec/permissions.md §4), as for a destroyed thing today; a thing whose first admin is not in the held set still verifies.
+- **Authority is not reachability**: record chains, `roles.0` holders and signers are not references (role-class aspects are not indexed) and keep nothing whole. What a held thing needs of its authority chain travels as certificates (spec/permissions.md §4), as for a destroyed thing today, and is kept while an entry of a synced sync ID carries it (issues/storage-follows-groups.md); a thing whose first admin is not in the held set still verifies.
 - **Disputes and validity**: strength and references are read under the node's trust set like any value. A reference whose write turns invalid stops counting, and the target is released where nothing else reaches it.
 
 ## Costs
@@ -72,7 +75,7 @@ Defined, changed or removed by this design; used only in these meanings below.
 - Adding a strong edge costs the newly reached subtree (as a `group.0` add does, spec/sync-set.md §2 Cost).
 - Removing one is the hard case, as it is for the closure today: is the target still reached by another path? Options: from-scratch walk of the node closure (today's bound for a `group.0` removal: O(closure)); a walk up the backlinks from the target to the root, stopping at the first path (what the lifetime judgment does today, O(depth) typical); a dynamic reachability structure if a measured budget is missed. Per Design principles (fast by construction) the from-scratch walk per removal is not acceptable as the steady path; the backward walk is the starting point.
 - Two reachability questions share the index: each sync ID's thing's closure (what goes under S, the same for all its readers given the same reads) and each node closure (what the node keeps). They should be one memoized computation, not two walkers.
-- No new durable state per thing: no lifetime work rows, `pending` or release evidence.
+- No new durable state per thing: no lifetime work rows, `pending` or release evidence. One departure row per thing whose drop waits on its own writes going out (issues/storage-follows-groups.md, Leaving), gone with the drop.
 
 ## What it removes or changes
 Spec:
