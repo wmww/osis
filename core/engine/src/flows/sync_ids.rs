@@ -113,7 +113,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, parent: 
         None => Parent::Genesis(&del),
         Some((step, _)) => Parent::Child { step, delete: &del },
     };
-    Ok(register_with(p, keys, &rk, (group, re, rs), (se, ss), epochs.read.wrapped_under(&re), &mut *tx.rng)?)
+    Ok(register_with(p, keys, &rk, (group, re, rs), (se, ss), epochs.read.wrapped_under([&re], |s| epochs.read.secret(s).is_some()).and_then(|s| epochs.read.secret(&s).map(|x| (s, x))), &mut *tx.rng)?)
 }
 
 /// `sync.0` write: a new sync ID of `group` with its genesis step (`genesis`), or a step added.

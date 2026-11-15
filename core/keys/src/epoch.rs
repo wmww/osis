@@ -127,6 +127,11 @@ impl EpochInfo {
         self.secret.as_ref().filter(|_| self.reading.is_empty())
     }
 
+    /// Its roles secret when it may be encrypted under (`RoleEpochs::checked_roles`).
+    pub fn checked_roles(&self) -> Option<Secret32> {
+        self.checked().map(osis_crypto::roles_secret).or_else(|| self.roles.clone().filter(|_| self.reading.is_empty()))
+    }
+
     /// A valid rotation commit of it or a `secrets.0` snapshot keying it is held (spec/crypto.md
     /// §4): the base of `Rotated`, before headroom and names.
     pub fn rotated(&self) -> bool {
@@ -285,10 +290,16 @@ impl RoleEpochs {
         i.secret.as_ref().map(osis_crypto::roles_secret).or_else(|| i.roles.clone())
     }
 
+    /// `e`'s roles secret when it may be encrypted under: from its secret (not reading-only), else
+    /// as a history entry opened under a secret not reading-only carried it.
+    pub fn checked_roles(&self, e: &Epoch) -> Option<Secret32> {
+        self.map.get(e).and_then(EpochInfo::checked_roles)
+    }
+
     /// The roles secret of every epoch whose secret (not reading-only) or roles secret is held,
     /// ascending: what a history entry carries of the epochs below its own (spec/crypto.md §4).
     pub fn held_roles(&self) -> Vec<(Epoch, Secret32)> {
-        self.map.iter().filter_map(|(e, i)| i.checked().map(osis_crypto::roles_secret).or_else(|| i.roles.clone().filter(|_| i.reading.is_empty())).map(|r| (*e, r))).collect()
+        self.map.iter().filter_map(|(e, i)| i.checked_roles().map(|r| (*e, r))).collect()
     }
 
     /// Records a secret known only from pending commit `from` (spec/crypto.md §4): reading-only.
@@ -587,11 +598,20 @@ impl RoleEpochs {
         held.max_by_key(|(e, _)| self.by_order(e))
     }
 
-    /// The epoch a rotation to `e` is wrapped under (spec/crypto.md §5): what `e` supersedes whose
-    /// secret is held, the greatest n, ties by lowest nonce.
-    pub fn wrapped_under(&self, e: &Epoch) -> Option<(Epoch, &Secret32)> {
-        let info = self.get(e)?;
-        info.superseded_epochs().iter().filter_map(|s| self.secret(s).map(|x| (*s, x))).max_by_key(|(s, _)| by_n(s))
+    /// What the epochs `given` supersede (spec/crypto.md §4), together; `None` when one of them is
+    /// not held to tell.
+    pub fn superseded_by<'a>(&self, given: impl IntoIterator<Item = &'a Epoch>) -> Option<BTreeSet<Epoch>> {
+        given.into_iter().try_fold(BTreeSet::new(), |mut out, e| {
+            out.extend(self.get(e)?.superseded_iter());
+            Some(out)
+        })
+    }
+
+    /// The epoch a commit giving the epochs `given` is wrapped under (spec/crypto.md §5): of what
+    /// they supersede, among those `keep` keeps (whose secret, or roles secret, is held), the one
+    /// with the greatest n, ties by lowest nonce.
+    pub fn wrapped_under<'a>(&self, given: impl IntoIterator<Item = &'a Epoch>, keep: impl Fn(&Epoch) -> bool) -> Option<Epoch> {
+        self.superseded_by(given)?.into_iter().filter(|s| keep(s)).max_by_key(by_n)
     }
 
     /// The newest current epoch.
