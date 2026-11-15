@@ -292,6 +292,29 @@ pub struct ReadCredentials {
     pub sync_keys: Vec<(Epoch, SigningSecret)>,
 }
 
+impl ReadCredentials {
+    /// What tells two apart, public keys for secrets (`Engine::read_credentials` is a memo).
+    #[allow(clippy::type_complexity)]
+    fn public(&self) -> (Option<StepId>, &BTreeMap<StepId, HeadKeys>, Vec<(Epoch, osis_crypto::VerifyingKey)>, &BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, [u8; 32], &Vec<(StepId, [u8; 32])>, Vec<(Epoch, osis_crypto::VerifyingKey)>) {
+        let read = self.read_secrets.iter().map(|(e, x)| (*e, osis_crypto::SigningSecret::from_seed(x).verifying_key())).collect();
+        let acting = self.acting.iter().map(osis_crypto::SigningSecret::verifying_key).collect();
+        let sync = self.sync_keys.iter().map(|(e, k)| (*e, k.verifying_key())).collect();
+        (self.head.as_ref().map(Step::id), &self.keys, read, &self.statics, acting, self.roster, &self.proofs, sync)
+    }
+}
+
+impl PartialEq for ReadCredentials {
+    fn eq(&self, o: &ReadCredentials) -> bool {
+        self.public() == o.public()
+    }
+}
+
+impl std::fmt::Debug for ReadCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.public().fmt(f)
+    }
+}
+
 /// The secrets an entry box held (spec/sync-ids.md §3 Entry boxes).
 #[derive(Clone)]
 pub struct EntryBoxSecrets {
@@ -719,7 +742,7 @@ impl Engine {
     /// for a sync ID it left while a read secret of its thing is held, which sync keeps syncing
     /// until a complete pass after it left (spec/sync-set.md §3).
     pub fn read_credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
-        self.read_credentials_now(s)
+        osis_base::memo::Memo::get_in(self, |e| &e.core.read_credentials, s, |e| e.read_credentials_now(s))
     }
 
     /// The rotation commits superseding read epoch `e` of read sync ID `s` (spec/sync-opens.md §6:
