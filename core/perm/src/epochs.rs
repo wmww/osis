@@ -52,6 +52,7 @@ pub struct Listing<E, T> {
     pub commits: BTreeSet<E>,
 }
 
+// Interim (issues/account-removal-before-its-rotation.md): replaced by custody phase 2 (D's lists decide no membership).
 /// The thing whose thing lists a node waits for (spec/permissions.md §5.5, Waiting): at a node
 /// of the account, its devices actor D, with the rotations whose thing list of D it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]

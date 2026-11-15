@@ -801,6 +801,8 @@ impl Engine {
     /// at every node that closed R's epoch before receiving R. Only the header goes so (a wrap
     /// gates the header, which readers outside the account hold anyway): the sections, the seed
     /// and the deposit seed with them, stay under the epoch chosen as for any commit.
+    // Interim (issues/account-removal-before-its-rotation.md): replaced by custody phase 2 (the account-rotation wrap
+    /// exception: a P rotation is wrapped under the epoch it is signed at, the general rule).
     fn account_rotation_wrap_epoch(&mut self, g: &Tid, c: &CommitId) -> Result<Option<Epoch>> {
         let Some(d) = self.core.secret_actor(g) else { return Ok(None) };
         let Some(h) = self.header(c) else { return Ok(None) };

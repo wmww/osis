@@ -1823,6 +1823,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     tx.core.ix.addenda_due.extend(addenda_due);
     let rotations_due = tx.scan_keys(records::ROTATIONS_DUE, "listings due", CommitId)?;
     tx.core.ix.rotations_due.extend(rotations_due);
+    let unpublished = tx.scan_keys(records::UNPUBLISHED, "unpublished removals", CommitId)?;
+    tx.core.ix.unpublished.extend(unpublished);
     crate::rotation::merge::load(tx)?;
     crate::retention::load_owed(tx)?;
     let mut vl = Vec::new();

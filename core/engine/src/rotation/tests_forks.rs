@@ -27,9 +27,8 @@
 //! model's roster), and thing lists and listings (the model has none; checked only by the write
 //! rules above). Open issues, excused where computed from the history: a node holding X's removal
 //! whose rotation it does not hold acts on it on D (issues/account-removal-before-its-rotation.md:
-//! no act comparison then, and who takes up the seeds of what it makes is read from the engines);
-//! P's nodes on X's side do not switch back in the settle (issues/account-node-switch-back.md). Not
-//! generated: a commit creating D made again (perm's `chain::forks_model_agrees` covers it), each
+//! no act comparison then, and who takes up the seeds of what it makes is read from the engines).
+//! The switching variant has P's nodes on X's side switch back in the settle. Not generated: a commit creating D made again (perm's `chain::forks_model_agrees` covers it), each
 //! target revoked by X once.
 
 use crate::flows::Demotion;

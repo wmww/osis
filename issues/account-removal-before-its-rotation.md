@@ -3,6 +3,8 @@
 > Priority: critical
 > Tags: security, perm, engine
 
+Phase 2 replaces every site marked `// Interim (issues/account-removal-before-its-rotation.md)` (grep it).
+
 Design: notes/account-forks-design.md (Roster and D: D's secrets derive from P's epochs, removals and additions exist only inside P's rotations, the roster is the chain's). Root cause: D is a second roster source, and the seed sitting under D's re-key is what stalled the chain-only roster.
 
 ## What happens

@@ -103,6 +103,8 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], adds: &[Ti
         }
     }
     // after the heads' seeds are known held: rotating D first signs as the account
+    // Interim (issues/account-removal-before-its-rotation.md): replaced by custody phase 2 (D's keys derive from P's
+    // epochs: no D rotation of its own, no `account.0` entry)
     let Some(under) = seed_under(tx, &p, &held.devices, done)? else { return Ok(None) };
     // per thing: role-class and purge-request commits, then plain ones by receipt; D's list is
     // written even naming nothing, so a node of the account holding it knows D's word is in
@@ -167,9 +169,9 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], adds: &[Ti
     let mut k = crate::engine::Core::keys_in(tx, &p)?.unwrap_or_default();
     let fresh = osis_keys::aspects::account_keys(&keys);
     (k.signing, k.key) = (fresh.signing, fresh.key);
-    // D's deposit seed is the account's: fresh with each rotation, the read rotation of D a
-    // removal makes being one (spec/crypto.md §3), but one adding devices alone: no one leaves
-    if adds.is_empty() || k.deposit_seed.is_none() {
+    // D's deposit seed is the account's: fresh with each rotation carrying a removal (someone
+    // leaves, spec/crypto.md §3); one carrying none (a pairing, a merge) keeps it
+    if !carried.is_empty() || k.deposit_seed.is_none() {
         let mut dep = [0u8; 32];
         tx.rng.fill_bytes(&mut dep);
         k.deposit_seed = Some(dep);
@@ -193,6 +195,7 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], adds: &[Ti
 /// it rotates D first where due
 /// (`ensure_rotated`: a removal from D it knows that D's epoch does not cover, so the removed
 /// node would open the seed); `None` while D's read stays blocked.
+// Interim (issues/account-removal-before-its-rotation.md): replaced by custody phase 2 (D's own key schedule).
 fn seed_under(tx: &mut Tx<'_>, p: &Tid, d: &Tid, done: &mut Done) -> Result<Option<osis_crypto::Epoch>> {
     if crate::rotation::ensure_rotated(tx, *p, *d, done)?.contains(&osis_base::Role::Read) {
         return Ok(None);
@@ -498,7 +501,7 @@ fn ends(v: &super::account::AccountView, departures: Option<&Departures>, e: &Co
 fn mergeable(core: &crate::engine::Core, v: &super::account::AccountView, held: &super::account::HeldAccount) -> Vec<(CommitId, Arc<AccountEpochKeys>)> {
     let mut heads = v.heads();
     heads.sort_by_key(|h| *h != v.preferred());
-    heads.into_iter().filter(|h| v.authorized_by(h).is_some() && v.whole(h, |c| core.ix.commits.contains_key(c))).filter_map(|h| Some((h, v.keys_of(&h, held)?))).collect()
+    heads.into_iter().filter(|h| v.authorized_by(h).is_some() && v.whole(h, core)).filter_map(|h| Some((h, v.keys_of(&h, held)?))).collect()
 }
 
 /// The held rotations of this node's account this node disregards (placed in conflict with the
@@ -585,10 +588,12 @@ pub(crate) fn signs_for(core: &crate::engine::Core, d: &Tid, v: &super::account:
 impl Engine {
     /// What this node owes its account's signing chain, decided at the end of a complete pass
     /// of its devices actor's sync IDs (node-sync), so a removal and its rotation that arrive
-    /// apart, or two forks and the merge of another node, are both in: the rotation due
+    /// apart, or two forks and the merge of another node, are both in: the named removals the
+    /// pass brought no body of waited out (`custody::waited_out`), the rotation due
     /// (`rotations_due`), then the seed re-seals of its heads (`custody::reseal_seeds`).
     pub fn signing_due(&mut self) -> Result<Done> {
         let mut done = Done::default();
+        self.run(super::custody::waited_out)?;
         let c = self.run(|tx| rotations_due(tx, &mut done))?;
         done.add(c);
         done.commits.extend(self.run(super::custody::reseal_seeds)?);

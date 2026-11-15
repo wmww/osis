@@ -93,8 +93,13 @@ pub(crate) fn seeds(tx: &mut Tx<'_>, p: &Tid) -> Result<Seeds> {
     Ok(out)
 }
 
-/// Drops every seed of account `p` in custody here: the node left it.
+/// Drops every seed of account `p` in custody here, and the removals it waited out: the node
+/// left it.
 pub(crate) fn shred(tx: &mut Tx<'_>, p: &Tid) -> Result<()> {
+    for c in tx.core.ix.unpublished.iter().copied().collect::<Vec<_>>() {
+        tx.core.ix.unpublished.remove(&c);
+    }
+    tx.remove_scanned(records::UNPUBLISHED, |_| Ok(true))?;
     tx.remove_scanned(&[records::SEEDS, p.as_bytes().as_slice()].concat(), |_| Ok(true))
 }
 
@@ -160,7 +165,7 @@ pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> 
     let mut out = Vec::new();
     for h in v.heads() {
         let Some(keys) = v.keys_of(&h, &held) else { continue };
-        if !v.whole(&h, |c| tx.core.ix.commits.contains_key(c)) {
+        if !v.whole(&h, tx.core) {
             continue;
         }
         let seed = keys.seed().clone();
@@ -209,4 +214,19 @@ fn counting_tags(core: &Core, v: &AccountView, d: &Tid) -> BTreeSet<[u8; osis_cr
         }
     }
     out
+}
+
+/// At the end of a complete pass of D's sync IDs (spec/crypto.md §9, Custody: the signing guard):
+/// each removal from D a held rotation's header names that the pass brought no body of is waited
+/// for no more (`Indexes::unpublished`), so a device naming a removal it never publishes freezes
+/// no line. The pass began after every role commit on D received, so after each header naming it.
+pub(crate) fn waited_out(tx: &mut Tx<'_>) -> Result<()> {
+    let Some((p, _)) = tx.core.account_devices() else { return Ok(()) };
+    let Some(v) = tx.core.account_view(&p) else { return Ok(()) };
+    let gone: Vec<osis_base::CommitId> = v.unheld_removals(tx.core).filter(|c| !tx.core.ix.unpublished.contains(c)).collect();
+    for c in gone {
+        tx.core.ix.unpublished.insert(c);
+        tx.txn.put_local(&[records::UNPUBLISHED, &c.0[..]].concat(), &[], Shred::No)?;
+    }
+    Ok(())
 }

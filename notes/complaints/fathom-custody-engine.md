@@ -4,3 +4,6 @@
 - osis-sync sibling tests depend on joiner-target (plain rotations revoking at outsiders); couldn't land green alone.
 - Rebasing the 4 branch commits onto joiner-target conflicted per commit; squashing them on their old base first (`merge --squash`) made it one conflict pass.
 - osis-sync failures after a design change are slow to diagnose: no per-node "why did it dial / refuse / re-seal" log; I added throwaway eprintlns each time (dial `Why`, store refusal reason, reseal candidates). A traced reason per act in `OSIS_SYNC_TRACE` would save hours.
+- Phase 1 finish: osis-sync failures took most of the time again: four were unrelated to the re-seal (a rebase onto a moved main, a derived-epoch restart, `core.me()` vs `core.member()`); diagnosing each needed throwaway eprintlns in engine and sync (no per-node "why re-seal / why refuse / why not dial" trace).
+- `Mutation::set` of an unchanged value writes nothing (`commit_tx` returns `None`): a re-put meant as a carrier silently makes no commit.
+- `LocalPeer` packages hand parts over in the clear, so an engine test of "can it open" must check held secrets, not reads.

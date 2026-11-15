@@ -2414,3 +2414,26 @@ fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
         assert_eq!(opened, !shut, "shut {shut}: node 2 holds t's read secret by the box at the revoked epoch");
     }
 }
+
+// spec/crypto.md §9 (Custody: a line held whole, a named removal held or waited out): node 1
+// removes node 2 and node 0 gets the rotation alone, never the removal it names (an unpublished
+// removal). Node 0 does not sign at that head while it may still arrive; once a complete pass of
+// D's sync IDs brought no body of it (its signing pass), node 0 signs there: a device naming a
+// removal it never publishes freezes no line. Fails without the wait's end: node 0 never writes.
+#[test]
+fn a_named_removal_never_published_freezes_no_line_spec_crypto_9() {
+    let (mut lp, a, t) = world(3, 3);
+    let done = remove(&mut lp, 1, a.devices, 2);
+    let rot = *done.commits.iter().find(|c| lp.peers[1].engine.header(c).is_some_and(|h| h.rotation.is_some())).unwrap();
+    send(&mut lp, 1, 0, &[rot]);
+    assert_eq!(lp.peers[0].engine.core.account_view(&a.account).unwrap().preferred(), rot, "node 0 follows the rotation");
+    let try_write = |lp: &mut LocalPeer| {
+        let mut m = crate::Mutation::new();
+        m.set(t, &x(), &Value::Str("0".into())).unwrap();
+        lp.peers[0].commit(m)
+    };
+    assert!(try_write(&mut lp).is_err(), "the named removal may still arrive: no signing at its line");
+    lp.peers[0].engine.signing_due().unwrap();
+    let c = try_write(&mut lp).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.header(&c).unwrap().epoch, Some(rot), "signed at the head once the removal is waited out");
+}

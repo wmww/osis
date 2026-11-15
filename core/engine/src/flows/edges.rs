@@ -623,6 +623,8 @@ impl Engine {
         let Some(tl) = self.core.timelines.get(&target) else { return Ok((None, Vec::new())) };
         let own = tl.certificates(&who, &target).commits;
         let mut scope = tl.demotion_scope(self.demotion_probe(who, ops.clone(), tl.all_held()));
+        // Interim (issues/account-removal-before-its-rotation.md): replaced by custody phase 2 (the D clause of
+        // removal frontiers: a removal exists only inside its rotation).
         // a node's removal from its account's devices actor also lists the removed node's own
         // word on it (inner signature) held here: its commits there it does not list stop
         // counting (spec/permissions.md §5.4, Following, at a node of P)

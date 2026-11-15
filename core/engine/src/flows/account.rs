@@ -241,10 +241,17 @@ impl AccountView {
     }
 
     /// Whether this node holds held epoch `e`'s line whole: every removal from D a rotation on it
-    /// names (`held`). A node signs at or rotates from an epoch only so (spec/crypto.md §9,
-    /// Custody): its roster then lacks every node the line removed, so it boxes none of them.
-    pub(crate) fn whole(&self, e: &CommitId, held: impl Fn(&CommitId) -> bool) -> bool {
-        self.line(e).into_iter().flatten().all(|r| self.removals.get(r).is_none_or(|rs| rs.iter().all(&held)))
+    /// names held, or waited out unpublished (`Indexes::unpublished`). A node signs at or rotates
+    /// from an epoch only so (spec/crypto.md §9, Custody): its roster then lacks every node the
+    /// line removed, so it boxes none of them; a removal never published removes no one, and
+    /// freezes nothing past one complete pass of D's sync IDs.
+    pub(crate) fn whole(&self, e: &CommitId, core: &Core) -> bool {
+        self.line(e).into_iter().flatten().all(|r| self.removals.get(r).is_none_or(|rs| rs.iter().all(|c| core.ix.commits.contains_key(c) || core.ix.unpublished.contains(c))))
+    }
+
+    /// The removals from D the held rotations' headers name that are not held here.
+    pub(crate) fn unheld_removals<'a>(&'a self, core: &'a Core) -> impl Iterator<Item = CommitId> + 'a {
+        self.removals.values().flatten().copied().filter(|c| !core.ix.commits.contains_key(c))
     }
 
     /// The order the chain reads receipts in (rotations, D's grants, carried removals).
@@ -554,6 +561,7 @@ impl Core {
     /// lists in its frontier, so their word on D (and a creating commit made again) stands only
     /// as far as this node held it (spec/permissions.md §5.1, Frontier;
     /// §5.4, Following, at a node of P).
+    // Interim (issues/account-removal-before-its-rotation.md): replaced by custody phase 2 (the D clause of frontiers).
     pub(crate) fn devices_word(&self, d: &Tid, nodes: &BTreeSet<Tid>) -> BTreeSet<CommitId> {
         let Some((p, _)) = self.accounts.iter().find(|(_, a)| a.devices == *d) else { return BTreeSet::new() };
         let Some(dv) = self.account_view(p).and_then(|v| v.devices.clone()) else { return BTreeSet::new() };
@@ -744,7 +752,7 @@ impl Core {
         let v = self.account_view(p).ok_or(Error::Misuse("no signing chain for the account"))?;
         let (id, keys) = v.open_epoch().and_then(|(id, e)| Some((*id, a.keys.get(&e.signing)?.clone()))).ok_or(Error::Misuse("the account's open epoch is not held"))?;
         // its line held whole: else it signs nothing there (spec/crypto.md §9, Custody)
-        if !v.whole(&id, |c| self.ix.commits.contains_key(c)) {
+        if !v.whole(&id, self) {
             return Err(Error::Misuse("a removal the account's open epoch's line names is not held"));
         }
         Ok(Some((id, keys)))
@@ -756,7 +764,7 @@ impl Core {
         let a = self.accounts.get(p)?;
         let v = self.account_view(p)?;
         let (id, e) = v.open_epoch()?;
-        (a.keys.contains_key(&e.signing) && v.whole(id, |c| self.ix.commits.contains_key(c))).then(|| e.signing.to_bytes())
+        (a.keys.contains_key(&e.signing) && v.whole(id, self)).then(|| e.signing.to_bytes())
     }
 
     /// The role epochs of account `p` this node holds seeds of (spec/crypto.md §3), internal to
@@ -908,7 +916,9 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             }
         }
         let listings: Vec<osis_perm::Listing<CommitId, Tid>> = listings.into_iter().filter_map(|((s, t), commits)| Some(osis_perm::Listing { listing: commit_of(&s)?, thing: t, commits })).collect();
-        // a node of the account waits for D's lists (spec/permissions.md §5.5 Waiting): what
+        // Interim (issues/account-removal-before-its-rotation.md): replaced by custody phase 2 (the chain is the
+        // roster: D's lists decide no membership). A node of the account waits for D's lists
+        // (spec/permissions.md §5.5 Waiting): what
         // proves it a node of P is D's roster, so lacking a list of D is never not being one
         let awaited = tx.core.accounts.get(&p).map(|a| osis_perm::Awaited { thing: a.devices, listed: v.rotations.iter().map(|r| r.id).filter(|r| tx.core.ix.lists_on.contains(&(a.devices, *r))).collect() });
         let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), v.chosen, &v.received, v.devices.as_ref(), &v.carrying, &lists, &listings, awaited);
