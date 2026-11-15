@@ -1842,12 +1842,6 @@ impl Store {
         Ok(out)
     }
 
-    /// The records at which this node saw entry `b` of S deleted within `TOMBSTONE_LIFETIME`
-    /// (by the row index: costs what it returns).
-    pub fn deleted_at_records(&self, s: &SyncId, b: &BlobId) -> Result<Vec<RecordId>> {
-        self.lock().read(|t, _| Ok(t.records_with_row(s, SEEN, &b.0, usize::MAX)?))
-    }
-
     /// Whether this node saw entry `b` of S deleted at `src` within `TOMBSTONE_LIFETIME`.
     pub fn seen_deleted(&self, src: Source, s: &SyncId, b: &BlobId) -> Result<bool> {
         Ok(self.source_get(src, s, SEEN, &b.0)?.is_some())

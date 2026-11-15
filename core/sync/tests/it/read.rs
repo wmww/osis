@@ -430,7 +430,7 @@ impl Ground for Fake {
         Ok(self.srcs.get(&(*s, *at)).and_then(|v| v.head))
     }
     fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>> {
-        Ok(self.seen.iter().filter(|((_, x, y), v)| x == s && y == c && !(v.present.is_empty() && v.deleted.is_empty())).map(|((at, ..), _)| *at).collect())
+        Ok(self.seen.iter().filter(|((_, x, y), v)| x == s && y == c && !v.present.is_empty()).map(|((at, ..), _)| *at).collect())
     }
     fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {
         Ok(std::mem::take(&mut self.src_feed))
@@ -1292,6 +1292,23 @@ fn restart_judges_again_and_keeps_the_stand() {
     w.g.added = vec![cid(1)];
     w.settle();
     assert_eq!(w.logs(S, cid(1)), 3);
+}
+
+// spec/sync-judgement.md §4 (logs the body again once): a body K deleted while it was not
+// judged yet here (K's stream shows it deleted only) is logged again there once its verdict turns
+// must-hold: a source showing it deleted is judged as the verdict moves, as one showing it present.
+#[test]
+fn deleted_while_unjudged_is_logged_again_once_must_hold() {
+    let mut w = at_k_must_hold();
+    let mut f = uncovered();
+    f.body.covered = None;
+    w.judge(S, cid(1), f);
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Unjudged));
+    w.k_delete(cid(1));
+    w.exchange();
+    assert_eq!(w.logs(S, cid(1)), 1, "unjudged calls for nothing");
+    w.judge(S, cid(1), uncovered());
+    assert_eq!(w.logs(S, cid(1)), 2, "must-hold: logged again at K");
 }
 
 // spec/sync-judgement.md §3 (reader that is not a writer): a must-hold body K lacks is given as a

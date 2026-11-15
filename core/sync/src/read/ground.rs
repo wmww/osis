@@ -190,8 +190,8 @@ pub trait Ground {
     fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<bool>;
     /// The source's head for S, as its stream last named it, up now or away.
     fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>>;
-    /// The sources, up now or away, whose stream shows an entry of `c` under S present or showed
-    /// one deleted (within `TOMBSTONE_LIFETIME`; a connection's while it is up).
+    /// The sources, up now or away, whose stream shows an entry of `c` under S present (one
+    /// showing it deleted only is never idle there, so its verdict moving judges it again).
     fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>>;
     /// Sources of S whose view was written (joined or changed) since the last call.
     fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>>;
