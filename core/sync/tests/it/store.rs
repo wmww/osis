@@ -594,6 +594,39 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
 }
 
+// spec/sync-streams.md §4 (Full: no longer full once the latest expiry of an entry a cap refused
+// passed): no cap moves, yet S is full no longer once every entry it refused expired, the clock
+// past the latest one a wake (`next_wake`), across a restart; an entry refused with no expiry
+// keeps it full.
+#[test]
+fn full_ends_once_what_it_refused_expired_spec_sync_streams_4() {
+    for (restart, forever) in [(false, false), (true, false), (false, true)] {
+        let dev = Dev::new();
+        let s = Sid::new(10);
+        let mut st = unread(&dev, &s);
+        let used = st.usage(&s.id).unwrap().0.bytes;
+        let caps = Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() };
+        st.set_caps(&caps);
+        for (n, exp) in [(300, Some(20_000)), (301, Some(10_000)), (302, if forever { None } else { Some(15_000) })] {
+            let (b, x) = blob(n, Class::Durable, exp, &[]);
+            assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::STORAGE_CAP);
+        }
+        if restart {
+            drop(st);
+            st = dev.open();
+            st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
+            st.set_caps(&caps);
+        }
+        assert!(st.room_grew().unwrap().is_empty() && st.waits_room(&s.id));
+        assert_eq!(st.next_wake(), (!forever).then_some(WallMs(20_000)), "woken at the latest expiry");
+        st.settle_at(WallMs(19_999)).unwrap();
+        assert!(st.room_grew().unwrap().is_empty(), "one it refused not expired");
+        st.settle_at(WallMs(20_000)).unwrap();
+        assert_eq!(st.room_grew().unwrap(), if forever { vec![] } else { vec![s.id] }, "restart: {restart}, forever: {forever}");
+        assert_eq!(st.waits_room(&s.id), forever);
+    }
+}
+
 // spec/sync-inbox.md §3 (deposit refusals): 0 taken (and for a held or dropped blob, changing
 // nothing); 4 for a sync ID the node will hold but holds no head of yet; 5 past the budget; 12
 // past a cap; 14 for a bad signature, a relay-only blob, an unknown sync ID; never the head.

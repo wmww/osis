@@ -196,6 +196,9 @@ pub(super) struct Pulling {
     listing: Option<BTreeMap<SyncId, BTreeSet<BlobId>>>,
     /// Joins from the start under way: what each listed so far.
     join_listing: BTreeMap<SyncId, BTreeSet<BlobId>>,
+    /// The members whose listing from the start under way a pull anew of this node asked
+    /// (`Streams::pull_anew`): it shows nothing that ends full (`Streams::apply`).
+    anew: BTreeSet<SyncId>,
     /// Full and Refused events to tell the source.
     tell: Vec<(SyncId, Event)>,
     /// The members this side told `full` true on this connection and not false since.
@@ -237,6 +240,7 @@ impl Pulling {
             inline_check: false,
             listing: None,
             join_listing: BTreeMap::new(),
+            anew: BTreeSet::new(),
             tell: Vec::new(),
             told_full: BTreeSet::new(),
             applied_owed: None,
@@ -267,6 +271,7 @@ impl Pulling {
         } else {
             self.join_listing.remove(&s);
         }
+        self.anew.remove(&s);
         self.generation += 1;
         self.joins.insert(s, Join { generation: self.generation, cursor });
         self.rejoin_at.remove(&s);
@@ -559,6 +564,18 @@ impl Streams {
     fn on_pull_reply(&mut self, ctx: &mut Ctx, conn: ConnId, r: PullReply, asked: Vec<(SyncId, u64)>) {
         let members = ctx.shared.members(conn);
         let Some(p) = self.pull.get_mut(&conn) else { return };
+        // a listing from the start shows no deletion past the deletion horizon: one a pull anew
+        // of this node did not ask may hide a refused entry gone (spec/sync-streams.md §4 Full);
+        // judged as it starts, before its bodies are judged
+        let from_start: Vec<SyncId> = match r.whole {
+            true => members.keys().copied().collect(),
+            false => asked.iter().filter(|(s, g)| p.joins.get(s).is_some_and(|j| j.generation == *g && j.cursor.is_none())).map(|(s, _)| *s).collect(),
+        };
+        for s in from_start.iter().filter(|s| !p.anew.contains(*s)) {
+            if let Err(e) = ctx.store.refused_may_be_gone(s) {
+                return self.failed(Err(e));
+            }
+        }
         p.seq = 0;
         p.gap = false;
         p.more = r.more;
@@ -964,6 +981,7 @@ impl Streams {
         for src in &srcs {
             if let Some(p) = pulling.get(src).and_then(|c| self.pull.get_mut(c)) {
                 p.join(s, None);
+                p.anew.insert(s);
             }
             let place = self.place(ctx.store, *src);
             place.at_stream.remove(&s);
@@ -1124,6 +1142,8 @@ impl Streams {
         let mut listing = p.listing.take();
         let mut join_listing = std::mem::take(&mut p.join_listing);
         let mut ops = Vec::new();
+        // the members a deletion here shows a refused entry of may be gone (`refused_may_be_gone`)
+        let mut gone: BTreeSet<SyncId> = BTreeSet::new();
         for (s, e) in &batch.events {
             if !members.contains(s) {
                 continue;
@@ -1154,12 +1174,22 @@ impl Streams {
                 Event::Deleted(b) => {
                     ops.push((src, Op::Remove(*s, *b)));
                     ops.push((Source::Conn(conn), Op::Remove(*s, *b)));
-                    if concerns(ctx, self.pull.get(&conn), s, b) || self.knows(src, Some(conn), s, b) {
+                    let concerned = concerns(ctx, self.pull.get(&conn), s, b);
+                    if concerned || self.knows(src, Some(conn), s, b) {
                         let _ = ctx.store.saw_deleted(src, s, b);
+                    }
+                    if !concerned && listing.is_none() && !join_listing.contains_key(s) {
+                        gone.insert(*s);
                     }
                 }
                 Event::Head(step) => ops.push((src, Op::Head(*s, step.id()))),
                 _ => {}
+            }
+        }
+        // ended durably before the place passes what showed it
+        for s in &gone {
+            if let Err(e) = ctx.store.refused_may_be_gone(s) {
+                return self.failed(Err(e));
             }
         }
         // a listing from the start stores no cursor until it is read to its end: one cut short (a
@@ -1231,6 +1261,8 @@ impl Streams {
         if let Some(p) = self.pull.get_mut(&conn) {
             p.listing = listing;
             p.join_listing = join_listing;
+            let Pulling { anew, listing, join_listing, .. } = p;
+            anew.retain(|s| listing.is_some() || join_listing.contains_key(s));
         }
         // only rows that differ from what is stored are written: a reply that moved nothing writes
         // nothing

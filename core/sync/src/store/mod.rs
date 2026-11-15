@@ -49,7 +49,7 @@ use crate::types::{Cursor, Entry, Position, RecordId, Result};
 use entries::Removal;
 use memory::Memory;
 use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
-use osis_base::memo::Effects;
+use osis_base::memo::{Clock, Effects};
 use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_engine::sync::{Caps, Holding, Path, SyncSet};
 use osis_label::{Class, ClaimSet, DeleteItem, Prefix, Step, StepId};
@@ -250,25 +250,46 @@ pub(crate) struct Inner {
     /// (spec/sync-judgement.md §6): they take no entry, as with no head (`unread` sets them).
     unheld: BTreeSet<SyncId>,
     /// The sync IDs kept unread that are full (spec/sync-streams.md §4 Full): per cap that
-    /// refused, the bytes the least entry it refused needs under it (rows `R/`, loaded at open).
-    room: BTreeMap<(SyncId, Cap), u64>,
-    /// Each key of `room` followed: whether the cap now has room for that least entry (or S is
-    /// no longer kept unread), due only once what that reads moves (`room_fits`).
+    /// refused, what it refused (rows `R/`, loaded at open).
+    room: BTreeMap<(SyncId, Cap), Refused>,
+    /// Each key of `room` followed: whether the cap now has room for that least entry, every
+    /// entry it refused expired, or S is no longer kept unread; due only once what that reads
+    /// moves (`room_fits`).
     room_fx: Effects<(SyncId, Cap), bool>,
+    /// The full sync IDs ended since the last `room_grew` by what showed their refused entries
+    /// may be gone (`Store::refused_may_be_gone`): its rows went then, `room_grew` reports them.
+    room_gone: BTreeSet<SyncId>,
+    /// `now` as read by `room_fits` (an expiry it waits for is a wake, `next_wake`).
+    clock: Clock,
+}
+
+/// What a cap refused of a sync ID kept unread (spec/sync-streams.md §4 Full, row `R/`): the
+/// bytes the least entry it refused needs under it, and the latest expiry of one (`u64::MAX`:
+/// one has none).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Refused {
+    need: u64,
+    expires: u64,
 }
 
 impl Inner {
-    /// S kept unread refused an entry needing `need` bytes under `cap` for room: S is full,
-    /// durably, keeping the least need that cap refused (`Store::room_grew`).
-    fn wait_room(&mut self, s: &SyncId, cap: Cap, need: u64) -> Result<()> {
-        if self.room.get(&(*s, cap)).is_some_and(|n| *n <= need) {
+    /// S kept unread refused an entry needing `need` bytes under `cap` for room, expiring at
+    /// `expires`: S is full, durably, keeping the least need and the latest expiry that cap
+    /// refused (`Store::room_grew`).
+    fn wait_room(&mut self, s: &SyncId, cap: Cap, need: u64, expires: Option<WallMs>) -> Result<()> {
+        let expires = expires.map_or(u64::MAX, |t| t.0);
+        let r = match self.room.get(&(*s, cap)) {
+            Some(r) => Refused { need: r.need.min(need), expires: r.expires.max(expires) },
+            None => Refused { need, expires },
+        };
+        if self.room.get(&(*s, cap)) == Some(&r) {
             return Ok(());
         }
         self.write(|t, _| {
-            t.put_local(&room_key(s, cap), &need.to_be_bytes(), Shred::No)?;
+            t.put_local(&room_key(s, cap), &[r.need.to_be_bytes(), r.expires.to_be_bytes()].concat(), Shred::No)?;
             Ok(())
         })?;
-        self.room.insert((*s, cap), need);
+        self.room.insert((*s, cap), r);
         self.mem.stamps.wrote(&RoomNeed(s, cap), true);
         self.room_fx.want((*s, cap));
         Ok(())
@@ -357,7 +378,7 @@ impl Store {
     /// record brought that still gave nothing held go: every connection ended with the last start.
     pub fn open(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Store> {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
-        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED) };
+        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new(), room_fx: Effects::new(ROOM_JUDGED), room_gone: BTreeSet::new(), clock: Clock::default() };
         inner.write(|t, env| {
             // a start ends every connection: each one charged or bringing goes (connection
             // numbers start again, so none may name the next one given it)
@@ -1060,7 +1081,7 @@ impl Store {
                 return Ok(Code::OK);
             }
             if !role && let Some(cap) = mem_room(&mut g, s, size, now) {
-                g.wait_room(s, cap, size + ENTRY_OVERHEAD)?;
+                g.wait_room(s, cap, size + ENTRY_OVERHEAD, expires)?;
                 return Ok(Code::STORAGE_CAP);
             }
             g.mem.insert(s, &b, row, bytes);
@@ -1081,7 +1102,7 @@ impl Store {
         })?;
         match short {
             Some(cap) => {
-                g.wait_room(s, cap, size + ENTRY_OVERHEAD)?;
+                g.wait_room(s, cap, size + ENTRY_OVERHEAD, expires)?;
                 Ok(Code::STORAGE_CAP)
             }
             None => Ok(Code::OK),
@@ -1391,6 +1412,7 @@ impl Store {
             g.room.remove(k);
             g.room_fx.unwant(k);
         }
+        g.room_gone.remove(s);
         g.mem.forget(s, now);
         g.mem.shreds.wrote_added(s, true, true);
         g.past_cap.remove(s);
@@ -1441,55 +1463,36 @@ impl Store {
     }
 
     /// Each full S that a refusing cap has room for again (`room_fits`: the least entry it
-    /// refused fits) is full no longer and is fetched anew from every source (`anew_feed`), in one
-    /// transaction with its `R/` rows going: a `N/` mark (`ANEW_ROOM`) over none or a head move's
-    /// (which it covers), never over a dropped copy's (S takes nothing until judged again) or a
-    /// raise's. S no longer kept unread is full no longer. O(the full keys whose reads moved since
-    /// the last call: S's usage, the totals a cap counts, the caps, S's holding). The sync IDs
-    /// full no longer.
+    /// refused fits), or whose refused entries all expired, is full no longer and is fetched
+    /// anew from every source (`end_full`); so is each `refused_may_be_gone` ended since the
+    /// last call. S no longer kept unread is full no longer. O(the full keys whose reads moved
+    /// since the last call: S's usage, the totals a cap counts, the caps, S's holding, the clock
+    /// past a latest expiry). The sync IDs full no longer.
     pub fn room_grew(&mut self) -> Result<Vec<SyncId>> {
         let mut g = self.lock();
         let mut fx = std::mem::replace(&mut g.room_fx, Effects::new(ROOM_JUDGED));
         let judged = judge_rooms(&mut g, &mut fx);
         g.room_fx = fx;
         let ended = judged?;
-        if ended.is_empty() {
-            return Ok(Vec::new());
+        end_full(&mut g, &ended)?;
+        let mut out = std::mem::take(&mut g.room_gone);
+        out.extend(ended);
+        Ok(out.into_iter().collect())
+    }
+
+    /// What S refused for room may be gone at a source (spec/sync-streams.md §4 Full: its stream
+    /// showed the deletion of an entry neither held nor tombstoned here outside a listing from
+    /// the start, or listed S from the start other than for a pull anew this node started): a
+    /// full S is full no longer and fetched anew (`end_full`), durably now, before that source's
+    /// place passes what showed it; the next `room_grew` reports it. Nothing while S is not full.
+    pub fn refused_may_be_gone(&mut self, s: &SyncId) -> Result<()> {
+        let mut g = self.lock();
+        if g.room.range((*s, Cap::Own)..=(*s, Cap::MemoryTotal)).next().is_none() {
+            return Ok(());
         }
-        let keys: Vec<(SyncId, Cap)> = ended.iter().flat_map(|s| g.room.range((*s, Cap::Own)..=(*s, Cap::MemoryTotal)).map(|(k, _)| *k).collect::<Vec<_>>()).collect();
-        let wrote = g.write(|t, env| {
-            let mut anew = Vec::new();
-            for k in &keys {
-                t.remove_local(&room_key(&k.0, k.1), Shred::No)?;
-            }
-            for s in &ended {
-                let mark = [rows::ANEW, &s.0].concat();
-                if env.holding(s) == Some(Holding::Unread) && t.get_local(&mark)?.is_none_or(|v| v == rows::ANEW_HEAD) {
-                    t.put_local(&mark, rows::ANEW_ROOM, Shred::No)?;
-                    anew.push(*s);
-                }
-            }
-            Ok(anew)
-        });
-        let anew = match wrote {
-            Ok(a) => a,
-            Err(e) => {
-                // judged again at the next call
-                for k in &keys {
-                    g.room_fx.unwant(k);
-                    g.room_fx.want(*k);
-                }
-                return Err(e);
-            }
-        };
-        for k in &keys {
-            g.room.remove(k);
-            g.room_fx.unwant(k);
-        }
-        for s in &anew {
-            g.mem.anew.wrote_added(s, true, true);
-        }
-        Ok(ended.into_iter().collect())
+        end_full(&mut g, &BTreeSet::from([*s]))?;
+        g.room_gone.insert(*s);
+        Ok(())
     }
 
     /// S kept unread moved to (`true`) or off (`false`) a head whose sync key this node holds no
@@ -1674,6 +1677,8 @@ impl Store {
     pub fn settle_at(&mut self, now: WallMs) -> Result<bool> {
         let mut g = self.lock();
         g.now = WallMs(g.now.0.max(now.0));
+        let at = g.now.0;
+        g.clock.set(at);
         let now = g.now;
         let mut acted = g.mem.sweep(now);
         acted |= g.write(|t, env| {
@@ -1753,7 +1758,7 @@ impl Store {
             })
             .ok()
             .flatten();
-        m.into_iter().chain(d).min()
+        m.into_iter().chain(d).chain(g.clock.next().map(WallMs)).min()
     }
 
     /// Tests only: this store's copy inside a world copy (`osis_base::copying`), the one the
@@ -1936,15 +1941,65 @@ pub(crate) const UNREAD_FIXED: &str = "unread fixed";
 #[derive(Hash)]
 struct RoomNeed<'a>(&'a SyncId, Cap);
 
+/// Each of `ended` full no longer (spec/sync-streams.md §4 Full): its `R/` rows go in one
+/// transaction with a `N/` mark (`ANEW_ROOM`, fetched anew from every source, `anew_feed`) over
+/// none or a head move's (which it covers), never over a dropped copy's (S takes nothing until
+/// judged again) or a raise's. On a failure nothing changes and each key is judged again.
+fn end_full(g: &mut Inner, ended: &BTreeSet<SyncId>) -> Result<()> {
+    if ended.is_empty() {
+        return Ok(());
+    }
+    let keys: Vec<(SyncId, Cap)> = ended.iter().flat_map(|s| g.room.range((*s, Cap::Own)..=(*s, Cap::MemoryTotal)).map(|(k, _)| *k).collect::<Vec<_>>()).collect();
+    let wrote = g.write(|t, env| {
+        let mut anew = Vec::new();
+        for k in &keys {
+            t.remove_local(&room_key(&k.0, k.1), Shred::No)?;
+        }
+        for s in ended {
+            let mark = [rows::ANEW, &s.0].concat();
+            if env.holding(s) == Some(Holding::Unread) && t.get_local(&mark)?.is_none_or(|v| v == rows::ANEW_HEAD) {
+                t.put_local(&mark, rows::ANEW_ROOM, Shred::No)?;
+                anew.push(*s);
+            }
+        }
+        Ok(anew)
+    });
+    let anew = match wrote {
+        Ok(a) => a,
+        Err(e) => {
+            for k in &keys {
+                g.room_fx.unwant(k);
+                g.room_fx.want(*k);
+            }
+            return Err(e);
+        }
+    };
+    for k in &keys {
+        g.room.remove(k);
+        g.room_fx.unwant(k);
+    }
+    for s in &anew {
+        g.mem.anew.wrote_added(s, true, true);
+    }
+    Ok(())
+}
+
 /// Settles each due full key (`room_fits`); the sync IDs one of whose keys fits now.
 fn judge_rooms(g: &mut Inner, fx: &mut Effects<(SyncId, Cap), bool>) -> Result<BTreeSet<SyncId>> {
     let mut ended = BTreeSet::new();
     for k in fx.due() {
-        let Some(need) = g.room.get(&k).copied() else {
+        let Some(r) = g.room.get(&k).copied() else {
             fx.unwant(&k);
             continue;
         };
-        if let Some((_, true)) = fx.try_settle(&k, || g.read(|t, env| room_fits(t, env, &k.0, k.1, need)))? {
+        let fits = || {
+            // every entry it refused expired: none of them is left anywhere to take
+            if r.expires != u64::MAX && g.clock.until(Some(r.expires)) >= r.expires {
+                return Ok(true);
+            }
+            g.read(|t, env| room_fits(t, env, &k.0, k.1, r.need))
+        };
+        if let Some((_, true)) = fx.try_settle(&k, fits)? {
             ended.insert(k.0);
         }
     }
@@ -1990,15 +2045,17 @@ fn room_key(s: &SyncId, cap: Cap) -> Vec<u8> {
 }
 
 /// The full sync IDs' least needs (`R/`).
-fn room_marks(t: &mut Transaction<'_>) -> Result<BTreeMap<(SyncId, Cap), u64>> {
+fn room_marks(t: &mut Transaction<'_>) -> Result<BTreeMap<(SyncId, Cap), Refused>> {
     let bad = || crate::types::Error::Store(osis_store::Error::Corrupt("sync store room mark"));
     let mut out = BTreeMap::new();
     for (k, v) in t.scan_local(rows::ROOM, b"", usize::MAX)? {
         let k = k.get(rows::ROOM.len()..).ok_or_else(bad)?;
         let (id, cap) = k.split_first_chunk::<16>().ok_or_else(bad)?;
         let cap = cap.first().and_then(|c| Cap::of(*c)).ok_or_else(bad)?;
-        let need: [u8; 8] = v.as_slice().try_into().map_err(|_| bad())?;
-        out.insert((SyncId(*id), cap), u64::from_be_bytes(need));
+        let mut r = R::new(&v);
+        let (need, expires) = (r.u64()?, r.u64()?);
+        r.end()?;
+        out.insert((SyncId(*id), cap), Refused { need, expires });
     }
     Ok(out)
 }

@@ -130,6 +130,8 @@ impl osis_store::CipherHost for Inner {
             unheld: self.unheld.clone(),
             room: self.room.clone(),
             room_fx: self.room_fx.clone(),
+            room_gone: self.room_gone.clone(),
+            clock: self.clock.clone(),
         })
     }
 }

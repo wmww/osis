@@ -969,6 +969,82 @@ fn full_ends_only_with_room_for_what_it_refused_spec_sync_streams_4() {
     assert!([x, y].iter().all(|b| p.b.store.entry(&k.id, b).unwrap().is_some()));
 }
 
+// spec/sync-streams.md §4 (Full: no longer full once a source's stream shows the deletion of an
+// entry of S the node neither holds nor holds a tombstone of): with no room growing, a deletion
+// of what it took keeps it full; the deletion of what it refused ends full, told false, and the
+// pull anew finds nothing left to refuse. One entry larger than S's whole cap likewise: full
+// while it exists at the source, never once it left.
+#[test]
+fn full_ends_once_what_it_refused_left_its_source_spec_sync_streams_4() {
+    for oversized in [false, true] {
+        let mut p = Pair::new();
+        let k = Sid::new(10);
+        k.keep(&mut p.a);
+        k.keep(&mut p.b);
+        let x = k.stamped(&mut p.a, 3000, true);
+        let y = k.stamped(&mut p.a, if oversized { 5000 } else { 3001 }, true);
+        p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4500)]), ..Caps::default() });
+        p.a.join(p.now, k.id);
+        p.b.join(p.now, k.id);
+        p.run();
+        assert!(p.a.streams.known().full(C, &k.id) && p.b.store.waits_room(&k.id));
+        let held = if p.b.store.entry(&k.id, &x).unwrap().is_some() { x } else { y };
+        let refused = if held == x { y } else { x };
+        assert!(!oversized || refused == y, "the oversized one refused");
+        let fulls = |p: &Pair| p.sent_by_b(43).iter().filter(|m| matches!(m, Msg::Stream(st) if st.events.iter().any(|(_, e)| *e == Event::Full(true)))).count();
+        let anew = |p: &Pair| p.sent_by_b(41).iter().filter(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])).count();
+        let (told, pulls) = (fulls(&p), anew(&p));
+        // a third entry, taken and then deleted at a: no room grows, nothing refused left
+        let z = k.stamped(&mut p.a, 100, true);
+        p.run();
+        assert!(p.b.store.entry(&k.id, &z).unwrap().is_some());
+        p.a.store.drop_entry(&k.id, &z, Vec::new()).unwrap();
+        p.run();
+        assert!(p.a.streams.known().full(C, &k.id) && p.b.store.waits_room(&k.id), "a deletion of what it holds ends nothing");
+        assert_eq!(anew(&p), pulls);
+        p.a.store.drop_entry(&k.id, &refused, Vec::new()).unwrap();
+        p.run();
+        assert!(!p.a.streams.known().full(C, &k.id) && !p.b.store.waits_room(&k.id), "what it refused left (oversized: {oversized})");
+        assert_eq!(anew(&p), pulls + 1, "pulled anew once");
+        assert_eq!(fulls(&p), told, "nothing refused again");
+        assert!(p.b.store.entry(&k.id, &held).unwrap().is_some());
+    }
+}
+
+// spec/sync-streams.md §4 (Full: no longer full once a source lists S from the start other than
+// for a pull anew of this node's): a source that is a connection (no record) lists S whole at
+// each connection; what it refused deleted there while apart shows only as a deletion inside
+// that listing, yet full ends with it. A listing that still holds the refused entry ends full
+// and refuses it again, full once more.
+#[test]
+fn a_listing_from_the_start_shows_what_it_refused_left_spec_sync_streams_4() {
+    for deleted in [false, true] {
+        let mut p = Pair::new();
+        p.b.open.record = None;
+        let k = Sid::new(10);
+        k.keep(&mut p.a);
+        k.keep(&mut p.b);
+        let x = k.stamped(&mut p.a, 3000, true);
+        let y = k.stamped(&mut p.a, 3001, true);
+        p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+        p.a.join(p.now, k.id);
+        p.b.join(p.now, k.id);
+        p.run();
+        assert!(p.b.store.waits_room(&k.id));
+        let refused = if p.b.store.entry(&k.id, &x).unwrap().is_some() { y } else { x };
+        p.a.streams.closed(C);
+        p.b.streams.closed(C);
+        if deleted {
+            p.a.store.drop_entry(&k.id, &refused, Vec::new()).unwrap();
+        }
+        p.a.join(p.now, k.id);
+        p.b.join(p.now, k.id);
+        p.run();
+        assert_eq!(p.b.store.waits_room(&k.id), !deleted, "full only while what it refused is there (deleted: {deleted})");
+        assert_eq!(p.a.streams.known().full(C, &k.id), !deleted);
+    }
+}
+
 // spec/sync-streams.md §4 (Full: the room of the cap that refused): a node refusing an entry by
 // the store's total is full for S until the total's room grows (here the cap rises; S's own usage
 // never moves), across a restart.
