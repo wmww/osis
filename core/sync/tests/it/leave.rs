@@ -310,7 +310,7 @@ fn a_leaving_sync_id_waits_for_a_complete_pass_spec_sync_set_3() {
     assert!(g.forgot.is_empty() && g.syncs(1).is_none() && l.passes_wanted().is_empty());
 }
 
-// spec/sync-set.md §3 (lacking a list is waiting): a read sync ID whose holder went because a
+// spec/sync-set.md §3 (its list may still come): a read sync ID whose holder went because a
 // role commit on its thing is uncounted for want of its lists (a revocation taken before them)
 // is not judged lost by the pass that saw it go: it waits for one more complete pass, begun at
 // that judgement, that ends only with a source (`pass_sourced`); the lists arriving give S back,
@@ -354,7 +354,7 @@ fn a_loss_waiting_for_lists_waits_for_a_pass_with_a_source_spec_sync_set_3() {
     assert_eq!(g.shredded, vec![sid(1)], "nothing uncounted: lost after the first pass");
 }
 
-// spec/sync-set.md §3 (lacking a list is waiting): a sync
+// spec/sync-set.md §3 (its list may still come): a sync
 // ID waiting for a pass with a source whose thing leaves the closure (the user unsyncs it) stops
 // at once, no pass with a source needed; one already out of the closure waits for none.
 #[test]

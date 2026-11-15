@@ -225,9 +225,8 @@ fn an_own_rotation_proves_again_spec_sync_opens_1() {
 }
 
 // spec/sync-opens.md §1 (proves once), §2 (its account by a signature at an epoch),
-// spec/permissions.md §5.5 (Waiting): when another node of its account rotates it, a node keeps
-// its home throughout (lacking D's list of the rotation is waiting, never being no node of the
-// account), takes the rotation whole and so the new seed, and proves its account again at the
+// spec/permissions.md §5.4 (Roster): when another node of its account rotates it, a node keeps
+// its home throughout (D's roster is the chain's, never D's lists), takes the rotation whole and so the new seed, and proves its account again at the
 // new key.
 #[test]
 fn a_sibling_rotation_proves_again_spec_sync_opens_1() {

@@ -555,7 +555,7 @@ fn complete_pass_with_no_source_waits_for_a_peer_to_be_waited_for() {
     assert_eq!(t.g.passes, vec![(S, 7), (S, 20), (S, 30)], "PASS_WAIT_MS");
 }
 
-// spec/sync-set.md §3 (lacking a list is waiting): a pass leave wants with a source
+// spec/sync-set.md §3 (its list may still come): a pass leave wants with a source
 // (`pass_sourced`) ends neither at once with nobody nor by PASS_WAIT_MS with no source; it ends
 // once a source joins and catches up from a Pull since it began, past PASS_WAIT_MS alike.
 #[test]
@@ -574,7 +574,7 @@ fn a_sourced_pass_ends_only_with_a_caught_up_source() {
     assert_eq!(t.g.passes, vec![(S, 7)]);
 }
 
-// spec/sync-set.md §3 (lacking a list is waiting): one source caught up is what a sourced pass
+// spec/sync-set.md §3 (its list may still come): one source caught up is what a sourced pass
 // needs; another, silent, holds it no longer than PASS_WAIT_MS, as any pass.
 #[test]
 fn a_silent_source_holds_a_sourced_pass_no_past_pass_wait_ms() {

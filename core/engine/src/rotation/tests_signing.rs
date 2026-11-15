@@ -709,7 +709,7 @@ fn a_keyset_boxing_the_account_at_an_epoch_not_held_is_not_sealed_to_spec_crypto
 }
 
 // spec/permissions.md §5.4 (Roster: a removal hits only what its node minted off its line),
-// spec/crypto.md §4 (an account's epoch covers a removal it descends from): N1 (peer 0) removes L
+// spec/crypto.md §4 (Encrypting under): N1 (peer 0) removes L
 // (peer 1, rotation r1); N2 (peer 2) then removes N1 at r1's epoch, so r1, made before N1's
 // removal, stands: L stays removed, nothing more is due, and N2's epoch covers both removals, so
 // N2 seals P at it.
@@ -969,7 +969,7 @@ fn an_honest_write_at_a_removed_nodes_rotation_counts_spec_permissions_5_5() {
     }
 }
 
-// spec/permissions.md §5.4 (Authorizes): a removed node's rotation beside its removal stands
+// spec/permissions.md §5.4 (Roster): a removed node's rotation beside its removal stands
 // for D's roster nowhere, nor does a line built on it. The tablet (node 1) rotates on the
 // laptop's (node 2) rotation before the phone's (node 0) removal of the laptop reaches it: the
 // phone's merge names neither, the tablet follows the merge, and the tablet's write at its own
@@ -1006,7 +1006,7 @@ fn a_line_on_a_removed_nodes_rotation_is_merged_out_spec_permissions_5_4() {
     }
 }
 
-// spec/permissions.md §5.4 (Authorizes): a re-added node's rotations made after its re-add
+// spec/permissions.md §5.4 (Roster): a re-added node's rotations made after its re-add
 // stand for D's roster. Node 0 removes node 2 and pairs it again; node 2 then removes node 1:
 // node 0 follows node 2's rotation, minted by a current node descending from the re-grant
 #[test]
@@ -1032,7 +1032,7 @@ fn a_re_added_nodes_later_rotation_is_authorized_spec_permissions_5_4() {
     assert_eq!(v.preferred(), rot, "node 0 follows it");
 }
 
-// spec/permissions.md §5.4 (Authorizes): only a removal that counts puts its node beside it.
+// spec/permissions.md §5.4 (Roster): only a removal that counts puts its node beside it.
 // The laptop (node 2), not yet holding its own removal, removes the tablet (node 1); the phone
 // (node 0) has removed the laptop and gets that removal alone, after its rotation closed the
 // epoch it is signed at, so it counts for nothing (as one a removed node forges there would),
@@ -1871,11 +1871,11 @@ fn a_node(lp: &mut LocalPeer, k: usize, a: &CreatedAccount) -> bool {
     e.core.accounts.contains_key(&a.account) && e.account().unwrap() == Some((a.account, a.devices)) && e.roster(&a.devices).contains_key(&me)
 }
 
-// spec/permissions.md §5.5 (Waiting: a closer decides on D only once its thing list for D is
-// held): node 1, not removed, takes node 0's rotation removing node 2 from a Prove before the
-// removal and the list reach it, alone or behind two more rotations (an away sibling). It waits:
-// it stays a node of the account (D's roster holds it) through a restart and the settle, which
-// then reads node 2 off D's roster and hands node 1 the newest seed.
+// spec/permissions.md §5.4 (Roster: the chain's alone, never D's lists): node 1, not removed,
+// takes node 0's rotation removing node 2 from a Prove before its lists reach it, alone or behind
+// two more rotations (an away sibling). It stays a node of the account (D's roster holds it)
+// through a restart and the settle, which reads node 2 off D's roster and hands node 1 the
+// newest seed.
 #[test]
 fn a_sibling_taking_a_removals_rotation_before_its_list_stays_spec_permissions_5_5() {
     for more in [0, 2] {
@@ -1900,7 +1900,7 @@ fn a_sibling_taking_a_removals_rotation_before_its_list_stays_spec_permissions_5
     }
 }
 
-// spec/permissions.md §5.5 (Epoch rule; Cutoff; Waiting), §5.4 (Following, at a node of P): what
+// spec/permissions.md §5.5 (Epoch rule; Cutoff), §5.4 (Following, at a node of P): what
 // removed node 2 writes after its removal counts at no reader, whether it holds nothing of the
 // removal or then takes its rotation before the list: a write on a thing of P, a write on D
 // signed as P, a rotation it forks unaware, and one it forks from the first epoch's key it keeps. Siblings 0 and 1 (1 having taken the
@@ -1957,8 +1957,7 @@ fn a_removed_nodes_writes_after_its_removal_count_at_no_reader_spec_permissions_
     }
 }
 
-// spec/permissions.md §5.5 (Waiting: only role commits wait), §5.4 (a removed node's word on D is
-// what its remover held of it): node 2 rotates while a node and withholds the rotation's thing
+// spec/permissions.md §5.5 (Epoch rule), §5.4 (Roster): node 2 rotates while a node and withholds the rotation's thing
 // lists, so its siblings hold it without its list of D; node 0 removes it with a rotation at that
 // epoch, so the epoch before it is decided by node 2's list alone, for good. A write node 2 then
 // signs on D at that earlier epoch (its first epoch's key, kept: a copy of it from before) counts
