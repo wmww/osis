@@ -1,7 +1,7 @@
 # Coordination
 > Summary: How osis is designed and how coordinators run the work: Tess's design principles (principle first, carve-outs are smells, test what users observe, options keep their property, model before building); the task loop (opus worker, fresh opus reviewer who gates, fast-forward main; up to 5 agents for the lead coordinator, 3 for the second); test budget and time limits; briefs; release checks; standing agents and their cadences; complaints; several coordinators.
 
-Build and test mechanics: notes/build.md; the gate: notes/gate.md. Starting a session: read notes/handoff.md when it exists and delete it once its items are taken; a coordinator ending a session with work open writes it. What is in flight is the local task branches (`git branch`) and their worktrees; merges need no progress record.
+Build and test mechanics: notes/build.md; the gate: notes/gate.md. Starting a session: read the handoff note (notes/, named handoff) when one exists and delete it once its items are taken; a coordinator ending a session with work open writes it. What is in flight is the local task branches (`git branch`) and their worktrees; merges need no progress record.
 
 ## Design principles (Tess)
 How osis is meant to be designed. Most fiddly bugs this project has had came from breaking one of these upstream, so apply them before writing code and check them in every review.
