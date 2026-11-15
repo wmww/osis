@@ -399,6 +399,12 @@ pub struct Groups {
     /// `Arc` while unchanged, so node-sync reuses what it derived from it (`Arc::ptr_eq`). One
     /// still held elsewhere is copied by its first change.
     closures: Mutex<BTreeMap<Tid, Arc<BTreeSet<Tid>>>>,
+    /// The groups a sync closure walks no path through (`set_cut`: groups sourced at another
+    /// node, spec/sync-set.md §5). Not journaled: set between transactions.
+    cut: BTreeSet<Tid>,
+    /// Sync closures asked for (`sync_closure`) while `cut` is not empty, edited in place as
+    /// `closures` are; while it is empty a sync closure is the closure.
+    cut_closures: Mutex<BTreeMap<Tid, Arc<BTreeSet<Tid>>>>,
     /// Edits made by the running transaction (`Journaled`).
     log: Vec<Logged>,
     /// Things whose `groups_of` answer the running transaction changed, and groups whose
@@ -419,6 +425,8 @@ enum Row {
     ListedIn(Tid, u64),
     /// A group's closure, read whole.
     Closure(Tid),
+    /// A group's sync closure (`sync_closure`), read whole.
+    SyncClosure(Tid),
     /// Whether a group's closure holds a tid.
     Member(Tid, Tid),
 }
@@ -453,6 +461,8 @@ impl Clone for Groups {
             derived: self.derived.clone(),
             home: self.home.clone(),
             closures: Mutex::new(self.kept().clone()),
+            cut: self.cut.clone(),
+            cut_closures: Mutex::new(self.kept_cut().clone()),
             log: self.log.clone(),
             moved: self.moved.clone(),
             stamps: self.stamps.clone(),
@@ -478,6 +488,19 @@ impl PartialEq for Groups {
 /// Tid -> tids: one direction of a listing.
 type Edges = BTreeMap<Tid, BTreeSet<Tid>>;
 
+/// `x` entered (`on`) or left kept closure `a`, if `a` is kept (one still held elsewhere is
+/// copied first).
+fn edit_kept(kept: &mut BTreeMap<Tid, Arc<BTreeSet<Tid>>>, a: &Tid, x: &Tid, on: bool) {
+    if let Some(c) = kept.get_mut(a) {
+        let c = Arc::make_mut(c);
+        if on {
+            c.insert(*x);
+        } else {
+            c.remove(x);
+        }
+    }
+}
+
 /// The bounds of a range over every tid.
 const TID_MIN: Tid = Tid::from_bytes([0; 15]);
 const TID_MAX: Tid = Tid::from_bytes([0xff; 15]);
@@ -485,6 +508,10 @@ const TID_MAX: Tid = Tid::from_bytes([0xff; 15]);
 impl Groups {
     fn kept(&self) -> MutexGuard<'_, BTreeMap<Tid, Arc<BTreeSet<Tid>>>> {
         self.closures.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn kept_cut(&self) -> MutexGuard<'_, BTreeMap<Tid, Arc<BTreeSet<Tid>>>> {
+        self.cut_closures.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The listing of field `f` (`ITEMS`, `SUBGROUPS` or `DERIVED`): group -> tids, tid -> groups.
@@ -570,10 +597,15 @@ impl Groups {
 
     /// `g` and every group above it through subgroup lists.
     pub(crate) fn above(&self, g: &Tid) -> BTreeSet<Tid> {
+        self.above_avoiding(g, &BTreeSet::new())
+    }
+
+    /// `above`, through no group of `cut` (none when `g` is one).
+    fn above_avoiding(&self, g: &Tid, cut: &BTreeSet<Tid>) -> BTreeSet<Tid> {
         let mut seen = BTreeSet::new();
         let mut stack = vec![*g];
         while let Some(x) = stack.pop() {
-            if seen.insert(x) {
+            if !cut.contains(&x) && seen.insert(x) {
                 self.stamps.read(&Row::ListedIn(x, SUBGROUPS));
                 stack.extend(self.parents.get(&x).into_iter().flatten().copied());
             }
@@ -591,10 +623,22 @@ impl Groups {
     /// The groups whose closure holds `t`: for `t` and each key home up its chain (`homes`),
     /// that thing, the groups containing it and those above them.
     pub(crate) fn enclosing(&self, t: &Tid) -> BTreeSet<Tid> {
+        self.enclosing_avoiding(t, &BTreeSet::new())
+    }
+
+    /// `enclosing` by paths through no thing of `cut`: the groups whose sync closure holds `t`
+    /// (`sync_closure`) when `cut` is the index's.
+    fn enclosing_avoiding(&self, t: &Tid, cut: &BTreeSet<Tid>) -> BTreeSet<Tid> {
         let mut out = BTreeSet::new();
         for h in self.homes(t) {
-            out.extend(self.above(&h));
-            out.extend(self.groups_of(&h));
+            if cut.contains(&h) {
+                break;
+            }
+            out.extend(self.above_avoiding(&h, cut));
+            self.stamps.read(&Row::ListedIn(h, ITEMS));
+            for g in self.item_of.get(&h).into_iter().flatten() {
+                out.extend(self.above_avoiding(g, cut));
+            }
         }
         out
     }
@@ -654,6 +698,14 @@ impl Groups {
         self.reach_by(g, &|x, f| self.listing(x, f).copied().collect())
     }
 
+    /// `reach` through no thing of `cut` (nothing when `g` is one).
+    fn reach_avoiding(&self, g: &Tid, cut: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        if cut.contains(g) {
+            return BTreeSet::new();
+        }
+        self.reach_by(g, &|x, f| self.listing(x, f).filter(|t| !cut.contains(*t)).copied().collect())
+    }
+
     /// The closure of `g`: itself, its subgroups and every thing it contains, transitively.
     /// Derived the first time it is asked for (O(the closure)), then kept.
     pub fn closure(&self, g: &Tid) -> Arc<BTreeSet<Tid>> {
@@ -673,6 +725,54 @@ impl Groups {
         let c = Arc::new(self.reach(g));
         self.kept().insert(*g, c.clone());
         c
+    }
+
+    /// The closure of `g` walked through no group of the cut (`set_cut`; spec/sync-set.md §5: a
+    /// group sourced at another node, and what the closure reaches only through it, is left
+    /// out). The closure itself while nothing is cut; else derived the first time it is asked for
+    /// (O(the closure)), then kept and edited in place as closures are.
+    pub fn sync_closure(&self, g: &Tid) -> Arc<BTreeSet<Tid>> {
+        self.stamps.read(&Row::SyncClosure(*g));
+        if self.cut.is_empty() {
+            return self.kept_closure(g);
+        }
+        if let Some(c) = self.kept_cut().get(g) {
+            return c.clone();
+        }
+        let c = Arc::new(self.reach_avoiding(g, &self.cut));
+        self.kept_cut().insert(*g, c.clone());
+        c
+    }
+
+    /// The groups the sync closure walks no path through (`sync_closure`).
+    pub(crate) fn cut(&self) -> &BTreeSet<Tid> {
+        &self.cut
+    }
+
+    /// Makes `cut` the groups the sync closure walks no path through, moving each sync closure
+    /// it changes: O(what is below each group cut or uncut, times the groups above each).
+    pub(crate) fn set_cut(&mut self, cut: BTreeSet<Tid>) {
+        if cut == self.cut {
+            return;
+        }
+        let mut xs = BTreeSet::new();
+        for y in self.cut.symmetric_difference(&cut) {
+            xs.insert(*y);
+            xs.extend(self.reach(y));
+        }
+        let before: Vec<(Tid, BTreeSet<Tid>)> = xs.into_iter().map(|x| (x, self.enclosing_avoiding(&x, &self.cut))).collect();
+        self.cut = cut;
+        let after: Vec<BTreeSet<Tid>> = before.iter().map(|(x, _)| self.enclosing_avoiding(x, &self.cut)).collect();
+        let kept = self.cut_closures.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if self.cut.is_empty() {
+            kept.clear();
+        }
+        for ((x, was), now) in before.iter().zip(&after) {
+            for a in was.symmetric_difference(now) {
+                self.stamps.wrote(&Row::SyncClosure(*a), true);
+                edit_kept(kept, a, x, now.contains(a));
+            }
+        }
     }
 
     /// The closures of `gs` when the running transaction began (its edits undone), together.
@@ -819,6 +919,9 @@ impl Groups {
             }
         }
         let before: Vec<(Tid, BTreeSet<Tid>)> = xs.into_iter().map(|x| (x, self.enclosing(&x))).collect();
+        // while something is cut, the sync closures move apart from the closures
+        let cut = !self.cut.is_empty();
+        let before_cut: Vec<BTreeSet<Tid>> = if cut { before.iter().map(|(x, _)| self.enclosing_avoiding(x, &self.cut)).collect() } else { Vec::new() };
         for (g, (f, t, on)) in edits {
             // a key home moving changes no `groups_of` answer: only closures it moves tell
             if self.link(*g, *f, *t, *on) && *f != DERIVED {
@@ -834,17 +937,23 @@ impl Groups {
                 moved.extend([*x, *a]);
                 self.stamps.wrote(&Row::Closure(*a), true);
                 self.stamps.wrote(&Row::Member(*a, *x), true);
-                if let Some(c) = kept.get_mut(a) {
-                    let c = Arc::make_mut(c);
-                    if now.contains(a) {
-                        c.insert(*x);
-                    } else {
-                        c.remove(x);
-                    }
+                if !cut {
+                    self.stamps.wrote(&Row::SyncClosure(*a), true);
                 }
+                edit_kept(kept, a, x, now.contains(a));
             }
         }
         self.moved.extend(moved);
+        if cut {
+            let after_cut: Vec<BTreeSet<Tid>> = before.iter().map(|(x, _)| self.enclosing_avoiding(x, &self.cut)).collect();
+            let kept = self.cut_closures.get_mut().unwrap_or_else(PoisonError::into_inner);
+            for (((x, _), was), now) in before.iter().zip(&before_cut).zip(&after_cut) {
+                for a in was.symmetric_difference(now) {
+                    self.stamps.wrote(&Row::SyncClosure(*a), true);
+                    edit_kept(kept, a, x, now.contains(a));
+                }
+            }
+        }
         // every path that edits the index (a refresh, a whole set, a rolled-back step), each
         // group once: a whole set edits it per tid
         #[cfg(debug_assertions)]
@@ -929,6 +1038,10 @@ impl Groups {
         for (a, c) in kept {
             debug_assert_eq!(*c, self.reach(&a), "the kept closure of {a:?} differs from one derived anew");
         }
+        let kept: Vec<(Tid, Arc<BTreeSet<Tid>>)> = self.enclosing_avoiding(g, &self.cut).into_iter().filter_map(|a| self.kept_cut().get(&a).map(|c| (a, c.clone()))).collect();
+        for (a, c) in kept {
+            debug_assert_eq!(*c, self.reach_avoiding(&a, &self.cut), "the kept sync closure of {a:?} differs from one derived anew");
+        }
     }
 }
 
@@ -1010,6 +1123,28 @@ mod tests {
         Naive { closure, of }
     }
 
+    /// Each closure walked through no thing of `cut` (`Groups::sync_closure`), from the
+    /// definitions and key homes alone.
+    fn naive_cut(defs: &BTreeMap<Tid, Def>, homes: &BTreeMap<Tid, Tid>, all: &[Tid], cut: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeSet<Tid>> {
+        let mut out = BTreeMap::new();
+        for a in all {
+            let (mut items, mut seen) = (BTreeSet::new(), BTreeSet::new());
+            let mut stack: Vec<Tid> = (!cut.contains(a)).then_some(*a).into_iter().collect();
+            while let Some(x) = stack.pop() {
+                if seen.insert(x) && let Some((i, s)) = defs.get(&x) {
+                    items.extend(i.iter().filter(|t| !cut.contains(*t)).copied());
+                    stack.extend(s.iter().filter(|t| !cut.contains(*t)).copied());
+                }
+            }
+            items.extend(seen);
+            while let Some(x) = homes.iter().find(|(x, h)| items.contains(*h) && !items.contains(*x) && !cut.contains(*x)).map(|(x, _)| *x) {
+                items.insert(x);
+            }
+            out.insert(*a, items);
+        }
+        out
+    }
+
     /// Every answer of `g` equals the reference's; `moved` holds exactly the things whose
     /// listing or containing groups changed since `was` and the groups whose closure changed.
     fn check(g: &Groups, defs: &BTreeMap<Tid, Def>, homes: &BTreeMap<Tid, Tid>, all: &[Tid], was: &Naive, listed: &BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>) {
@@ -1038,7 +1173,8 @@ mod tests {
     // spec/data-model.md §8, spec/sync-set.md §2: the index kept by edits (whole sets, per-tid edits,
     // key homes moved, rolled-back steps; cycles allowed) answers as a derivation from scratch:
     // `groups.0`, listings, closures (kept ones edited in place; an unchanged one the same `Arc`)
-    // and what a step tells moved.
+    // and what a step tells moved; spec/sync-set.md §5 (Sourced away): sync closures walk no path
+    // through a group cut, as groups are cut and uncut between steps.
     #[test]
     fn incremental_groups_spec_data_model_8() {
         let mut rng = SeededRng::from_u64(0);
@@ -1058,11 +1194,12 @@ mod tests {
                 2 => g.enclosing(a),
                 3 => (*g.closure(a)).clone(),
                 4 => g.is_defined(a).then_some(*a).into_iter().collect(),
+                6 => (*g.sync_closure(a)).clone(),
                 _ => g.listed_in(a).0.union(&g.listed_in(a).1).copied().collect(),
             }
         };
         // membership asked of the groups (`t(0..12)`) alone: a plain thing's closure is itself
-        let keys: Vec<(u8, Tid, Tid)> = all.iter().flat_map(|a| all.iter().filter(|_| *a < t(12)).map(|x| (0, *a, *x)).chain((1..6).map(|k| (k, *a, *a)))).collect();
+        let keys: Vec<(u8, Tid, Tid)> = all.iter().flat_map(|a| all.iter().filter(|_| *a < t(12)).map(|x| (0, *a, *x)).chain((1..7).map(|k| (k, *a, *a)))).collect();
         let mut fx: osis_base::memo::Effects<(u8, Tid, Tid), BTreeSet<Tid>> = osis_base::memo::Effects::new("test groups");
         let mut stamped = |g: &Groups| {
             for k in &keys {
@@ -1082,6 +1219,19 @@ mod tests {
             let (was, listed) = (naive(&defs, &homes, &all), listings(&defs, &all));
             // closures asked for before (kept), some still held
             let held: Vec<(Tid, Arc<BTreeSet<Tid>>)> = (0..3).map(|_| t(n(&mut rng))).map(|a| (a, g.closure(&a))).collect();
+            // sync closures asked for (kept while something is cut)
+            for _ in 0..3 {
+                g.sync_closure(&t(n(&mut rng)));
+            }
+            // between transactions, a group cut or uncut (spec/sync-set.md §5)
+            if step % 5 == 2 {
+                let mut cut = g.cut().clone();
+                let y = t(n(&mut rng));
+                if !cut.remove(&y) {
+                    cut.insert(y);
+                }
+                g.set_cut(cut);
+            }
             g.moved.clear();
             let k = t(n(&mut rng));
             let rollback = step % 7 == 3;
@@ -1136,6 +1286,10 @@ mod tests {
                 }
             }
             assert_eq!(g.defined().copied().collect::<BTreeSet<_>>(), defs.keys().copied().collect());
+            let cut = naive_cut(&defs, &homes, &all, g.cut());
+            for x in &all {
+                assert_eq!(*g.sync_closure(x), cut[x], "the sync closure of {x:?} past {:?}", g.cut());
+            }
         }
     }
 }

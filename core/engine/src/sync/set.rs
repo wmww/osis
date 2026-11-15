@@ -47,13 +47,14 @@ impl Engine {
     }
 
     /// The things the sync set is judged over (spec/sync-set.md §2): the synced group's closure
-    /// (the engine's closure `Arc`, the same while it does not change), with each destroyed thing
+    /// walked through no group sourced at another node (spec/sync-set.md §5, `Groups::
+    /// sync_closure`: the same `Arc` while it does not change), with each destroyed thing
     /// whose own sync IDs are kept (`Indexes::destroyed_sync_ids`: from its destruction until they
     /// are emptied, spec/sync-judgement.md §5). Walked through groups this node reads only: a
     /// thing kept unread lists nothing here.
     pub(crate) fn sync_things_now(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         let closure = match self.sync_root()? {
-            Some(root) => self.closure(&root),
+            Some(root) => self.core.ix.groups.sync_closure(&root),
             None => Arc::new(BTreeSet::new()),
         };
         let mut emptying: Vec<Tid> = self.core.ix.destroyed_sync_ids.keys().copied().collect();
@@ -63,6 +64,36 @@ impl Engine {
             return Ok(closure);
         }
         Ok(Arc::new(closure.iter().copied().chain(emptying).collect()))
+    }
+
+    /// Sets the groups the handle reads and writes at another node (spec/sync-set.md §5):
+    /// `elsewhere`, of which those also in `homing` (moved home, catching up) sync here; the
+    /// others `sync_things` leaves out with what it reaches only through them. A client of this
+    /// node reads nothing of any of them (`readable_by`). Between transactions; cost: what is
+    /// below each group whose state moved.
+    pub(crate) fn set_sourced_now(&mut self, elsewhere: BTreeSet<Tid>, homing: &BTreeSet<Tid>) {
+        self.core.ix.groups.set_cut(elsewhere.difference(homing).copied().collect());
+        self.core.sourced_elsewhere = elsewhere;
+    }
+
+    /// spec/sync-set.md §5 (moving home): history is complete here for group `g` and each thing
+    /// of its closure the sync set holds (spec/sync-status.md §3): each sync ID of the sync set
+    /// carrying one of them, read here, has a complete pass noted. True when none does: nothing
+    /// here syncs it. A memo per group: O(its closure) when something it read moved.
+    pub(crate) fn caught_up_now(&mut self, g: &Tid) -> Result<bool> {
+        osis_base::memo::Memo::get_in(self, |e| &e.core.caught_up, g, |e| e.caught_up_fresh(g))
+    }
+
+    fn caught_up_fresh(&mut self, g: &Tid) -> Result<bool> {
+        let set = self.sync_set()?;
+        let things = self.sync_things()?;
+        let mut ids = self.carrying_now(g, true)?;
+        for x in self.closure(g).iter().filter(|x| things.contains(*x)) {
+            if let ThingSync::Read(v) = self.thing_sync(x)? {
+                ids.extend(v);
+            }
+        }
+        Ok(ids.iter().filter(|s| set.ids.get(*s).is_some_and(|(_, h)| *h == Holding::Read)).all(|s| self.core.ix.passes.contains_key(s)))
     }
 
     /// How this node syncs thing `t` of `sync_things` (spec/sync-set.md §2): its home sync ID read

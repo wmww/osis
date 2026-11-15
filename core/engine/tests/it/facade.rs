@@ -2981,3 +2981,106 @@ fn a_fresh_encryption_carries_no_section_it_never_opened_for_a_held_part_spec_sy
         assert_eq!((&rx.parts, &rx.sealed), (&rg.parts, &rg.sealed), "a duplicate of the genuine blob");
     }
 }
+
+/// Adds `t` to group `g`'s field `f` (0 items, 1 subgroups) at peer `i`.
+fn list_in(lp: &mut LocalPeer, i: usize, g: Tid, f: u64, t: Tid) {
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(f)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).unwrap();
+    lp.peers[i].engine.commit(m).unwrap().unwrap();
+}
+
+/// Peer 0's account with group `g` under D holding `n` plain items, subgroup `h` (secrets of its
+/// own) and `both` (secrets of its own, also an item of D): (peer, D, g, h, both).
+fn sourced_world(n: usize) -> (LocalPeer, Tid, Tid, Tid, Tid) {
+    let (mut lp, ps) = people(1);
+    let d = lp.peers[0].engine.account().unwrap().unwrap().1;
+    let (h, both) = (thing_of(&mut lp, 0, ps[0]), thing_of(&mut lp, 0, ps[0]));
+    let e = &mut lp.peers[0].engine;
+    e.give_own_secrets(&h).unwrap();
+    e.give_own_secrets(&both).unwrap();
+    let mut m = Mutation::new();
+    let g = e.new_thing(&mut m, ps[0]);
+    let add = |m: &mut Mutation, f: u64, t: Tid| m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(f)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).map(drop).unwrap();
+    for _ in 0..n {
+        let x = e.new_thing(&mut m, ps[0]);
+        add(&mut m, 0, x);
+    }
+    add(&mut m, 1, h);
+    add(&mut m, 0, both);
+    e.commit(m).unwrap().unwrap();
+    list_in(&mut lp, 0, d, 1, g);
+    list_in(&mut lp, 0, d, 0, both);
+    (lp, d, g, h, both)
+}
+
+// spec/sync-set.md §5 (Sourced away; Moving home): a group sourced at another node leaves the
+// sync set's closure with what it reaches only through it (its items, a subgroup, their sync
+// IDs); a thing also listed elsewhere stays; moving home brings it back, and it has caught up
+// once each read sync ID carrying it had a complete pass. The closure itself keeps it.
+#[test]
+fn a_sourced_group_leaves_the_sync_set_spec_sync_set_5() {
+    let (mut lp, d, g, h, both) = sourced_world(3);
+    let e = &mut lp.peers[0].engine;
+    let (sh, sb) = (e.home_sync_id(&h).unwrap().unwrap(), e.home_sync_id(&both).unwrap().unwrap());
+    let items: Vec<Tid> = e.closure(&g).iter().copied().collect();
+    assert!(e.sync_set().unwrap().ids.contains_key(&sh));
+    e.set_sourced([g].into(), &BTreeSet::new());
+    let things = e.sync_things().unwrap();
+    assert!(items.iter().all(|x| !things.contains(x) || *x == both), "g and what it alone reaches leave");
+    assert!(things.contains(&both) && things.contains(&d), "a thing listed elsewhere stays");
+    let set = e.sync_set().unwrap();
+    assert!(!set.ids.contains_key(&sh) && set.ids.contains_key(&sb));
+    assert!(e.closure(&d).contains(&h), "still in the closure: nothing unsynced");
+    e.set_sourced([g].into(), &[g].into());
+    assert!(e.sync_set().unwrap().ids.contains_key(&sh), "moving home: synced again");
+    let began = e.begin_pass();
+    for s in e.sync_set().unwrap().ids.keys().copied().filter(|s| *s != sh).collect::<Vec<_>>() {
+        e.note_complete_pass(&s, began).unwrap();
+    }
+    assert!(!e.caught_up(&g).unwrap(), "no complete pass of h's sync ID yet");
+    e.note_complete_pass(&sh, began).unwrap();
+    assert!(e.caught_up(&g).unwrap());
+    e.set_sourced(BTreeSet::new(), &BTreeSet::new());
+    assert!(e.sync_things().unwrap().contains(&h));
+}
+
+/// The group index work (`osis_base::costs`, "group index" rows) of `f`.
+fn index_work(f: impl FnOnce()) -> u64 {
+    osis_base::costs::take();
+    f();
+    osis_base::costs::take().into_iter().filter(|(k, ..)| k.starts_with("group index")).map(|(.., n)| n).sum()
+}
+
+// spec/sync-set.md §5 (Sourced away: Cost), §2 (Cost): with a group of n items sourced away and
+// n more items in D, a `group.0` change outside it and one inside it, each with the sync set's
+// closure asked after, cost the same group index work at n and 10n: never a walk of what is
+// below the group, nor of the rest of the closure.
+#[test]
+fn a_sourced_groups_size_costs_changes_nothing_spec_sync_set_5() {
+    let work = |n: usize| {
+        let (mut lp, d, g, ..) = sourced_world(n);
+        let a = lp.peers[0].engine.account().unwrap().unwrap().0;
+        let e = &mut lp.peers[0].engine;
+        let mut m = Mutation::new();
+        for _ in 0..n {
+            let x = e.new_thing(&mut m, a);
+            m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(osis_base::Value::Tid(x)) }).unwrap();
+        }
+        e.commit(m).unwrap().unwrap();
+        lp.peers[0].engine.set_sourced([g].into(), &BTreeSet::new());
+        lp.peers[0].engine.sync_things().unwrap();
+        let (x, y) = (thing_of(&mut lp, 0, a), thing_of(&mut lp, 0, a));
+        let outside = index_work(|| {
+            list_in(&mut lp, 0, d, 0, x);
+            lp.peers[0].engine.sync_things().unwrap();
+        });
+        let inside = index_work(|| {
+            list_in(&mut lp, 0, g, 0, y);
+            lp.peers[0].engine.sync_things().unwrap();
+        });
+        (outside, inside)
+    };
+    let (small, big) = (work(10), work(100));
+    assert!(small.0 > 0 && small.1 > 0);
+    assert_eq!(small, big, "the work follows the change");
+}

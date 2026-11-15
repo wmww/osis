@@ -47,4 +47,6 @@
 ## 5. Group source
 - A node MAY read and write a group through another node it is a client of (the group's source, spec/sync-transport.md §6).
 - A thing in a group sourced at another node goes there, whatever else holds it; the copy this node holds never answers.
+- **Sourced away**: the sync set's closure (§2) walks no path through a group sourced at another node, so the group and what the closure reaches only through it leave the sync set by §3 (the node's own commits held elsewhere first). The group stays in G_N's closure: nothing of it is unsynced (§3 Unsyncing), and the node holds the copy it had. Cost: the move costs work in proportion to what is below the group; while it is away, a `group.0` change costs as §2 says, never a walk of what is below it.
+- **Moving home**: the group syncs here again and stays read at its source until history is complete here (spec/sync-status.md §3) for it and each thing of its closure the sync set holds: each read sync ID of the sync set carrying one of them has had a complete pass (with none, at once). A complete pass ends by `PASS_WAIT_MS` at the latest, so a source gone holds it no longer. Then it is read here.
 - A write on it is refused while a group carrying it (spec/sync-judgement.md §1) syncs here or is sourced at a second other node (one other than the source the write goes to).

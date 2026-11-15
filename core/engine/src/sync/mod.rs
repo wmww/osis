@@ -735,10 +735,25 @@ impl Engine {
         self.sync_holder_now(s)
     }
 
-    /// The things the sync set is judged over: the synced group's closure (the same `Arc` while
-    /// it does not change) and destroyed things being emptied.
+    /// The things the sync set is judged over: the synced group's closure walked through no
+    /// group sourced at another node (the same `Arc` while it does not change) and destroyed
+    /// things being emptied.
     pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         self.sync_things_now()
+    }
+
+    /// The groups the handle reads and writes at another node (spec/sync-set.md §5): `elsewhere`,
+    /// of which those in `homing` (moved home, catching up) still sync here and the rest leave
+    /// the sync set (by spec/sync-set.md §3); a client of this node reads nothing of any. Between
+    /// transactions.
+    pub fn set_sourced(&mut self, elsewhere: BTreeSet<Tid>, homing: &BTreeSet<Tid>) {
+        self.set_sourced_now(elsewhere, homing);
+    }
+
+    /// Whether group `g` moving home has caught up (spec/sync-set.md §5): history complete here
+    /// for it and each thing of its closure the sync set holds (spec/sync-status.md §3).
+    pub fn caught_up(&mut self, g: &Tid) -> Result<bool> {
+        self.caught_up_now(g)
     }
 
     /// How this node syncs thing `t` (read, kept unread, unsyncable, plain); reads only `t`'s keys.

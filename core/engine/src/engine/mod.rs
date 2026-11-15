@@ -1371,9 +1371,11 @@ pub struct Core {
     pub(crate) published: crate::labeling::published::Published,
     /// `Engine::held_links` (`memo`).
     pub(crate) links: memo::Memo<(), std::sync::Arc<Vec<crate::flows::HeldLink>>>,
+    /// `Engine::caught_up` per group (`memo`).
+    pub(crate) caught_up: memo::Memo<Tid, bool>,
     /// Groups the handle reads and writes at another node (`osis` sources): what is here of them
-    /// may be behind, syncing or not (`readable_by`).
-    pub sourced_elsewhere: BTreeSet<Tid>,
+    /// may be behind, syncing or not (`readable_by`). `Engine::set_sourced` sets it.
+    pub(crate) sourced_elsewhere: BTreeSet<Tid>,
 }
 
 impl Core {
@@ -1515,6 +1517,7 @@ impl Core {
             passes_wanted: self.passes_wanted.clone(),
             published: self.published.clone(),
             links: self.links.clone(),
+            caught_up: self.caught_up.clone(),
             sourced_elsewhere: self.sourced_elsewhere.clone(),
         }
     }
@@ -1984,6 +1987,7 @@ impl Core {
             sync_ids: _,
             passes_wanted: _,
             links: _,
+            caught_up: _,
             held_writes: _,
             replaced_dates: _,
             waiting_carries: _,
@@ -2298,6 +2302,7 @@ impl Core {
             passes_wanted: memo::Memo::new("sync: passes wanted"),
             published: Default::default(),
             links: memo::Memo::new("held links"),
+            caught_up: memo::Memo::new("sync: caught up"),
             sourced_elsewhere: BTreeSet::new(),
         }
     }
@@ -3717,6 +3722,9 @@ impl Engine {
         // a feed of the old index's commits: started again on the fresh one
         fresh.waits.held_feed = None;
         fresh.wakes = self.core.wakes.take();
+        // the group sources are the handle's, set between transactions (`set_sourced`)
+        fresh.sourced_elsewhere = std::mem::take(&mut self.core.sourced_elsewhere);
+        let cut = self.core.ix.groups.cut().clone();
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;
@@ -3724,6 +3732,7 @@ impl Engine {
             crate::apply::load(&mut tx, rebuild)
         };
         crate::apply::load_waits(&mut self.core);
+        self.core.ix.groups.set_cut(cut);
         #[cfg(debug_assertions)]
         self.core.rebuilt_edges.clear();
         self.core.commit_journal();
