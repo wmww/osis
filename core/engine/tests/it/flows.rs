@@ -608,6 +608,58 @@ fn lost_access_trigger_survives_restart_spec_perm_3() {
     assert_forgotten(&mut x);
 }
 
+/// The content values `i` holds of `things` (keys taken from its indexes, so they name what it
+/// held whatever goes later).
+fn content_keys(lp: &LocalPeer, i: usize, things: &[Tid]) -> Vec<(Tid, osis_base::Ak)> {
+    let e = &lp.peers[i].engine;
+    things.iter().flat_map(|t| e.core.aspects_of(t).map(|(k, _)| k.clone()).collect::<Vec<_>>()).filter(|(_, a)| a.as_str().starts_with("t:")).collect()
+}
+
+fn content(lp: &mut LocalPeer, i: usize, keys: &[(Tid, osis_base::Ak)]) -> Vec<Option<Value>> {
+    keys.iter().map(|(t, a)| lp.peers[i].engine.get(t, a).unwrap()).collect()
+}
+
+// spec/permissions.md §3 (Lost access, then a re-grant): bob's drop forgets in place what only d's
+// secrets read, his engine then reading as an open of its store does (values and indexes); a
+// commit on d and on e (still read) keeps its e part; granted d again, bob reads every value he
+// read before, the d part of that commit joining late.
+#[test]
+fn a_regrant_brings_back_what_a_drop_forgot_spec_perm_3() {
+    let (mut lp, ps) = people(2);
+    let (pa, pb) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    let e = thing_of(&mut lp, 0, pa);
+    for t in [d, e] {
+        lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Read)).unwrap();
+    }
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("d alone")).unwrap();
+    lp.peers[0].engine.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(d, &GONE, &s("both: d")).unwrap();
+    m.set(e, &GONE, &s("both: e")).unwrap();
+    lp.peers[0].engine.commit(m).unwrap().unwrap();
+    spread(&mut lp);
+    let keys = content_keys(&lp, 1, &[d, e]);
+    let before = content(&mut lp, 1, &keys);
+    assert_eq!(before, content(&mut lp, 0, &keys), "bob reads what alice wrote");
+    assert!(before.iter().all(Option::is_some) && keys.len() == 4, "{keys:?}");
+    lp.peers[0].engine.demote(&d, &Demotion { holder: pb, new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    let lost = lp.peers[1].engine.drop_lost_secrets().unwrap();
+    assert!(lost.contains(&d) && !lost.contains(&e), "{lost:?}");
+    let after = content(&mut lp, 1, &keys);
+    let kept: Vec<bool> = keys.iter().map(|(t, _)| *t == e).collect();
+    assert_eq!(after.iter().map(Option::is_some).collect::<Vec<_>>(), kept, "d forgotten, e kept: {after:?}");
+    lp.peers[1].engine.check_index();
+    lp.peers[1].engine.reload().unwrap();
+    assert_eq!(content(&mut lp, 1, &keys), after, "as an open reads it");
+    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    assert_eq!(content(&mut lp, 1, &keys), before, "granted again: everything back");
+    lp.peers[1].engine.check_index();
+}
+
 // spec/permissions.md §3: only units the node "can no longer read by another path" go: bob,
 // removed from e, still reads e through d and keeps everything.
 #[test]

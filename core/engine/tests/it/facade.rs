@@ -728,6 +728,26 @@ fn a_self_removal_waits_for_sync_spec_perm_3() {
     assert!(e.waiting_removals().unwrap().is_empty());
 }
 
+// spec/sync-status.md §2: the own commits of each read sync ID, followed from before a
+// self-removal, take it where it has a body, as derived afresh after a reload.
+#[test]
+fn own_commits_follow_a_self_removal_spec_sync_status_2() {
+    let (mut lp, t, pb, _, blob) = granted(Role::Write);
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
+    spread(&mut lp);
+    let (_, d) = lp.peers[1].engine.account().unwrap().unwrap();
+    listing(&mut lp, 1, d, 0, t, true);
+    let e = &mut lp.peers[1].engine;
+    let ids: Vec<osis_base::SyncId> = e.sync_set().unwrap().ids.iter().filter(|(_, (_, h))| *h == Holding::Read).map(|(s, _)| *s).collect();
+    let own = |e: &mut osis_engine::Engine| ids.iter().map(|s| (*e.own_commits(s).unwrap()).clone()).collect::<Vec<_>>();
+    own(e);
+    let c = e.demote(&t, &Demotion { holder: pb, new: None, retain: None }).unwrap().commits[0];
+    let followed = own(e);
+    assert!(followed.iter().any(|x| x.contains(&c)), "the removal is an own commit under t's sync ID");
+    e.reload().unwrap();
+    assert_eq!(own(e), followed, "as derived afresh");
+}
+
 /// Peers 0 and 1 nodes of one account (paired), peer 2 of another, which makes a thing and
 /// grants the first account write on it; everyone holds everything. The account and the thing.
 fn siblings_granted() -> (LocalPeer, Tid, Tid) {
@@ -2214,6 +2234,11 @@ fn forget_local_keeps_a_spanning_commits_synced_part_spec_sync_set_3() {
     assert_eq!(e.get_typed(&v, &ct::NAME).unwrap().as_deref(), Some("kept"), "the synced thing's part stays");
     assert!(e.commit_bytes(&c).unwrap().is_some(), "the commit stays with its other part");
     assert!(e.own_commits(&sv).unwrap().contains(&c), "still an own commit under the synced thing's sync ID");
+    // forgotten in place, as an open of the store reads it
+    e.check_index();
+    e.reload().unwrap();
+    assert_eq!(e.get_typed(&t, &ct::NAME).unwrap(), None);
+    assert_eq!(e.get_typed(&v, &ct::NAME).unwrap().as_deref(), Some("kept"));
     e.ingest(&bytes, Vec::new()).unwrap();
     assert_eq!(e.get_typed(&t, &ct::NAME).unwrap().as_deref(), Some("dropped"), "a late part");
     assert_eq!(e.get_typed(&v, &ct::NAME).unwrap().as_deref(), Some("kept"));
@@ -3203,7 +3228,7 @@ fn things_entered_names_every_thing_entering_the_sync_set_spec_sync_set_2() {
 }
 
 // spec/sync-set.md §2 (Cost; the sync set follows every `group.0` change): a follower's cursor
-// started before a reload (an open's, `forget_local`'s) is named what enters the sync set after.
+// started before a reload (an open's) is named what enters the sync set after.
 #[test]
 fn things_entered_names_what_enters_after_a_reload_spec_sync_set_2() {
     let (mut lp, d, _, _, _) = sourced_world(1);

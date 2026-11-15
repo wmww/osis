@@ -726,8 +726,8 @@ impl Node {
             // a sync ID no peer is to be waited for on is heard out at once (the rule a leave's
             // wait reads)
             acted |= self.life.settle(&mut self.engine, &self.store, |e, s| status.heard_out_or_alone(opens, e, store, s, &net))?;
-            // the engine read its store again (a forgetting drop): every feed followed is stale,
-            // so the settle ends and the step restarts the modules (`engine_reloaded`)
+            // the engine read its store again (a write of unknown outcome): every feed followed is
+            // stale, so the settle ends and the step restarts the modules (`engine_reloaded`)
             if !acted || self.engine.loads() != self.driver.engine_loads {
                 return Ok(());
             }
@@ -788,8 +788,7 @@ impl Node {
     }
 
     /// The engine read its store again since the last look (`Engine::loads`: a write of unknown
-    /// outcome, or a drop that forgot things: lost access, a self-removal placed, unsyncing,
-    /// spec/sync-judgement.md §3), which replaces every index the modules follow (memo feeds,
+    /// outcome), which replaces every index the modules follow (memo feeds,
     /// stamps): every connection closes and the modules start again from the store, as at an open
     /// (spec/sync-ids.md §5: the store is the truth after a failure). One rule for every reload:
     /// the settle ends at the round it happened in (`settle`), and the step restarts here. Whether

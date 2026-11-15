@@ -39,9 +39,6 @@
 //! of what the value read. A thing named a holder no more is followed no more (`untie_due` reads
 //! its holders, so it is due then).
 //!
-//! A duty whose drop forgot things makes the engine read its store again (`Engine::loads`): the
-//! driver ends the settle and restarts the modules (notes/sync-driver.md, Failures).
-//!
 //! State: the sync IDs synced here with their things (`SyncsFollow`), each one's heard-out value
 //! and whether one became heard out since the last judgment. Bounded by the sync IDs synced; the
 //! holder duties, two values per thing named a holder here (unwanted when its last holder goes). A restart settles every key afresh
@@ -173,7 +170,7 @@ impl Life {
     }
 
     /// Drops each held actor whose `lost_due` and `lost_passed` settle true (`Engine::drop_lost`);
-    /// whether one dropped (the engine read its store again: the step restarts the modules).
+    /// whether one dropped (the engine's rows moved: the next round settles them).
     /// O(actors added and keys moved).
     fn drop_lost(&mut self, engine: &mut Engine) -> Result<bool> {
         for a in self.lost.due() {

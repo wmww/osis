@@ -3326,7 +3326,7 @@ fn nonce_count(n: &Nonce) -> u64 {
 impl Engine {
     /// `Store::writes` of the engine's store.
     /// How many times the engine read its indexes from the store again (an open, a reload after
-    /// a write of unknown outcome, a lost-access forget): a follower of its memos (sync's modules)
+    /// a write of unknown outcome): a follower of its memos (sync's modules)
     /// follows them afresh when it moves, as the old stamps and feeds see no further write.
     pub fn loads(&self) -> u64 {
         self.loads
