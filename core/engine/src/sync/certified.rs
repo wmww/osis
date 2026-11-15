@@ -592,7 +592,7 @@ mod tests {
     }
 
     // spec/sync-judgement.md §1 (Entitlement: placing chain certificates by what S's actor may
-    // read), spec/sync-inbox.md §5 (a grant copy while its actor reads the thing),
+    // read), spec/sync-inbox.md §5 (Grant copy: while the actor reads the thing),
     // spec/permissions.md §2 (`until`): G, a group with secrets of its own filed in D, holds X and
     // reads it by a grant with an `until`; the account's chain to X and G's grant copy go under
     // G, and the clock passing the `until` (no commit) moves both, as the whole derivation does,
