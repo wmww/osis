@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: sync, engine, retention
 
-Linked design: issues/refs-graph-lifetime.md (one reference graph for sync, storage and lifetime). The two are likely entangled: under that design "synced group" becomes "what the node group reaches", and the audit's answer for each row is "dropped when it leaves the held set". Terms below are today's (synced group, closure, sync set: spec/sync-set.md).
+Linked design: issues/refs-graph-lifetime.md (one reference graph for sync, storage and lifetime). The two are likely entangled: under that design "synced group" becomes "the node closure", and the audit's answer for each row is "dropped when it leaves the node closure". Terms below are today's (synced group, closure, sync set: spec/sync-set.md).
 
 ## Principle (Tess)
 - A node's storage is attributable to its synced groups: for each byte, some group in the sync set's closure is why it is here, and the user can see per synced group what it costs.
