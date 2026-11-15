@@ -1598,21 +1598,24 @@ fn a_body_waits_for_a_wrap_then_is_logged_spec_sync_judgement_3() {
 }
 
 // spec/sync-judgement.md §3 (own store), spec/permissions.md §4 (Logging certificates): a body
-// and S's missing records judged while S is not yet held read (the engine's sync set lists S
+// and S's missing records and lists judged while S is not yet held read (the engine's sync set lists S
 // before the store's holdings do) are logged once S comes to be read, with no restart.
 #[test]
 fn what_s_carries_is_logged_once_s_comes_to_be_read_spec_sync_judgement_3() {
     let mut w = W::new();
     let r1 = osis_base::Tid::from_bytes([1; 15]);
     w.g.set_reads(S, false);
-    w.g.records.insert(S, CertBlobsMissing { records: [r1].into(), ..Default::default() });
+    let r = cid(100);
+    w.g.records.insert((S, None), CertBlobsMissing { missing: [r1].into(), ..Default::default() });
+    w.g.rotations.insert(S, vec![r]);
+    w.g.records.insert((S, Some(r)), CertBlobsMissing { missing: [r1].into(), ..Default::default() });
     w.hold(cid(1), &[S], uncovered());
     assert_eq!(w.logs(S, cid(1)), 0);
     assert!(w.g.record_logs.is_empty());
     w.g.set_reads(S, true);
     w.settle();
     assert_eq!(w.logs(S, cid(1)), 1, "the body logged");
-    assert_eq!(w.g.record_logs, vec![(S, [r1].into())], "the records logged");
+    assert_eq!(w.g.record_logs, vec![(S, None, [r1].into()), (S, Some(r), [r1].into())], "the record blob and the list blob logged");
 }
 
 // spec/permissions.md §4 (Logging certificates: the records missing go as one record blob of the

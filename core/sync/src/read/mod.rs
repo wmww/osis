@@ -195,6 +195,18 @@ impl Read {
         self.views.moved(m, opens);
     }
 
+    /// Follows S's certificate blobs, its record blob and one list blob per rotation with a list S
+    /// carries, unless already followed.
+    fn follow_cert_blobs(&mut self, g: &mut impl Ground, s: &SyncId) -> Result<()> {
+        if !self.cert_blobs.wants(&(*s, None)) {
+            self.cert_blobs.want((*s, None));
+            for r in g.list_rotations(s)? {
+                self.cert_blobs.want((*s, Some(r)));
+            }
+        }
+        Ok(())
+    }
+
     /// One settle over `g`: whether anything acted. Judging runs to a fixpoint (a verdict moving
     /// the own role commits re-judges what waits on them) before anything acts, so the order the
     /// keys come in (a start judges every one) never lets an act skip a rule.
@@ -239,12 +251,7 @@ impl Read {
             for s in now.keys() {
                 self.judged.want((*s, c));
                 self.dooms.want(*s);
-                if !self.cert_blobs.wants(&(*s, None)) {
-                    self.cert_blobs.want((*s, None));
-                    for r in g.list_rotations(s)? {
-                        self.cert_blobs.want((*s, Some(r)));
-                    }
-                }
+                self.follow_cert_blobs(g, s)?;
                 self.steps.want(*s);
             }
             // a sync ID no longer carrying it stays followed until nothing of it is left there
@@ -267,7 +274,7 @@ impl Read {
                 self.judged.want(*k);
             }
             self.dooms.want(s);
-            self.cert_blobs.want(s);
+            self.follow_cert_blobs(g, &s)?;
             self.steps.want(s);
         }
         let mut acted = false;
