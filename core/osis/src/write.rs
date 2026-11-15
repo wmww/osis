@@ -329,10 +329,11 @@ impl<'d> Write<'d> {
     /// shared. `Invalid` when this write does not create `t`. Only what is named stays: a thing
     /// the write lists in `t` is listed in `home()` unless it is named too. A commit travels
     /// whole, so what any write puts on `t` beside something that syncs (a sibling it lists in
-    /// `home()` included) goes with it: write a local thing in writes of its own.
+    /// `home()` included) goes with it, readable only by `t`'s readers (by default the account's
+    /// nodes) and left stale there: write a local thing in writes of its own.
     pub fn local(&mut self, t: Tid) -> Result<()> {
         if !self.created.contains(&t) {
-            return Err(Error::Invalid("local names a thing the same write creates".into()));
+            return Err(Error::Invalid("local names only a thing this write creates".into()));
         }
         self.ops.push(WriteOp::Local(t));
         Ok(())
@@ -499,7 +500,7 @@ impl<'d> Write<'d> {
                 }
                 WriteOp::Local(t) => {
                     if !created.contains(&t) {
-                        return Err(Error::Invalid("local names a thing the same write creates".into()));
+                        return Err(Error::Invalid("local names only a thing this write creates".into()));
                     }
                     b.m.local(t);
                 }

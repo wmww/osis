@@ -410,6 +410,42 @@ fn a_local_thing_stays_until_listed_somewhere_synced_spec_sync_set_1() {
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("t"), "listed in home: reaches b");
 }
 
+// spec/sync-set.md §1 (Filing, its limit), spec/wire.md §4 (a section sealed to its thing's
+// readers): a local thing written beside a group shared with another account rides that commit's
+// blob to it, sealed to the local thing's readers: the other account reads the group's write and
+// none of the local thing's parts (the header names it, as any thing a commit touches).
+#[test]
+fn a_local_thing_beside_a_shared_group_stays_sealed_spec_sync_set_1() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 54, &c);
+    let o = on(&net, 55, &c);
+    o.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    drive(&net, a.import_contact(&o.contact_card().unwrap())).unwrap();
+    drive(&net, o.import_contact(&a.contact_card().unwrap())).unwrap();
+    let mut w = a.write();
+    let g = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Subgroup(g)).unwrap();
+    w.commit().unwrap();
+    a.grant(g, o.me(), Role::Read, osis::GrantOpts::default()).unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    o.accept_invite(g, o.home()).unwrap();
+    let mut w = a.write();
+    let l = w.create().unwrap();
+    w.local(l).unwrap();
+    w.at(l, osis::core::NAME).set(&"private".to_string()).unwrap();
+    w.at(g, osis::core::NAME).set(&"shared".to_string()).unwrap();
+    w.commit().unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    assert_eq!(name(&o, g).as_deref(), Some("shared"), "the commit reached o");
+    assert_eq!(o.at(l, osis::core::NAME).get().ok().flatten(), None, "no part of the local thing read");
+    assert_eq!(a.at(l, osis::core::NAME).get().unwrap().as_deref(), Some("private"));
+}
+
 // spec/sync-inbox.md §6 (first contact): a redeemer reaches the sharer node by the link and
 // joins; the thing is read there.
 #[test]
