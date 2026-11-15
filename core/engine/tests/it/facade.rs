@@ -80,7 +80,7 @@ fn roster_digest_moves_with_a_grant_spec_sync_opens_4() {
     assert_ne!(before, after);
 }
 
-// spec/sync-opens.md §4, spec/sync-ids.md §6 (a reader's credentials: the recorded head, its
+// spec/sync-opens.md §4, spec/sync-ids.md §6 (Test: a reader's credentials, the recorded head, its
 // keys and proof, current read secrets, held sync keys): asked between changes (a memo, notes/
 // sync-facade.md), they follow a removal's rotation (new read secret and sync key, same head)
 // and the step it makes due (the new head, its keys and proof first).
