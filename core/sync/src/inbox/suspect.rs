@@ -27,7 +27,8 @@
 //! Bounds: a followed key per flagged aspect, and its place in the lists of the sync IDs carrying
 //! it (both go with the flag); the members per S (gone at `Left` or close); one message's entries
 //! waiting per (connection, S), only aspects this node may snapshot (gone at `Left`, close or the
-//! first sync's end); a row per (reporter account, aspect) repaired, replaced by a later state,
+//! first sync's end); a followed key per S listed or with entries waiting (gone with the last of
+//! them, `let_go`); a row per (reporter account, aspect) repaired, replaced by a later state,
 //! dropped when an entry shows it stale; a row of a thing gone stays until then (issue
 //! suspect-rows-of-gone-things). A flood of lists repairs at most once per state per reporter,
 //! and an entry judged again costs a lookup (`Engine::state_digest` is a memo per aspect).
@@ -71,8 +72,9 @@ pub(super) struct Suspects {
     members: BTreeMap<SyncId, BTreeSet<ConnId>>,
     /// Lists owed to a member's peer: at its join, or S's list moved.
     owed: BTreeSet<(ConnId, SyncId)>,
-    /// Entries received before S's first sync here ended: the reporter and its entries.
-    waiting: BTreeMap<(ConnId, SyncId), Waiting>,
+    /// Entries received before S's first sync here ended, per (S, connection): the reporter and
+    /// its entries.
+    waiting: BTreeMap<(SyncId, ConnId), Waiting>,
 }
 
 impl Default for Suspects {
@@ -145,7 +147,9 @@ impl Suspects {
             }
         }
         self.owed.remove(&(conn, *s));
-        self.waiting.remove(&(conn, *s));
+        if self.waiting.remove(&(*s, conn)).is_some() {
+            self.let_go(s);
+        }
     }
 
     pub(super) fn closed(&mut self, conn: ConnId) {
@@ -154,7 +158,19 @@ impl Suspects {
         }
         self.members.retain(|_, m| !m.is_empty());
         self.owed.retain(|(c, _)| *c != conn);
-        self.waiting.retain(|(c, _), _| *c != conn);
+        let gone: Vec<SyncId> = self.waiting.keys().filter(|(_, c)| *c == conn).map(|(s, _)| *s).collect();
+        for s in &gone {
+            self.waiting.remove(&(*s, conn));
+            self.let_go(s);
+        }
+    }
+
+    /// S neither listed nor awaited is followed no more.
+    fn let_go(&mut self, s: &SyncId) {
+        if !self.lists.contains_key(s) && self.waiting.range((*s, ConnId(0))..=(*s, ConnId(u64::MAX))).next().is_none() {
+            self.synced.unwant(s);
+            self.first.remove(s);
+        }
     }
 
     pub(super) fn settle(&mut self, h: &mut Here<'_>, net: &mut impl Net) -> Result<bool> {
@@ -207,7 +223,7 @@ impl Suspects {
             for c in self.members.get(&s).into_iter().flatten() {
                 self.owed.insert((*c, s));
             }
-            let ready: Vec<(ConnId, SyncId)> = self.waiting.keys().filter(|(_, x)| *x == s).copied().collect();
+            let ready: Vec<(SyncId, ConnId)> = self.waiting.range((s, ConnId(0))..=(s, ConnId(u64::MAX))).map(|(k, _)| *k).collect();
             if !ready.is_empty() {
                 moved.insert(s);
             }
@@ -219,11 +235,8 @@ impl Suspects {
                 }
             }
         }
-        // a S neither listed nor awaited is followed no more
-        let idle: Vec<SyncId> = moved.into_iter().filter(|s| !self.lists.contains_key(s) && !self.waiting.keys().any(|(_, x)| x == s)).collect();
-        for s in idle {
-            self.synced.unwant(&s);
-            self.first.remove(&s);
+        for s in &moved {
+            self.let_go(s);
         }
         for (conn, s) in std::mem::take(&mut self.owed) {
             if !self.first.contains(&s) || !self.members.get(&s).is_some_and(|m| m.contains(&conn)) {
@@ -262,9 +275,11 @@ impl Suspects {
                 }
             }
             if keep.is_empty() {
-                self.waiting.remove(&(conn, s));
+                if self.waiting.remove(&(s, conn)).is_some() {
+                    self.let_go(&s);
+                }
             } else {
-                self.waiting.insert((conn, s), (reporter, keep));
+                self.waiting.insert((s, conn), (reporter, keep));
                 self.synced.want(s);
             }
             return Ok(());
@@ -420,6 +435,33 @@ mod tests {
         net.0.insert((reader, s), SourceClass::Store);
         x.joined(reader, s, &net);
         assert!(x.members.is_empty() && x.owed.is_empty());
+    }
+
+    // spec/sync-compaction.md §1 (Repair: a list received mid first sync waits for its end):
+    // a waiting list that leaves before the first sync ended (its member left, its connection
+    // closed, a later list naming nothing this node may repair) takes S's first-sync follow with
+    // it, at n and 10n sync IDs.
+    #[test]
+    fn a_waiting_list_gone_early_follows_nothing_spec_sync_compaction_1() {
+        for n in [3u8, 30] {
+            let mut x = Suspects::default();
+            let (a, b) = (ConnId(1), ConnId(2));
+            let ids: Vec<SyncId> = (0..n).map(|i| SyncId([i; 16])).collect();
+            let entries: BTreeMap<Aspect, [u8; 16]> = [((Tid::from_bytes([1; 15]), Ak::new("t:reg.0").unwrap()), [1; 16])].into();
+            for s in &ids {
+                for c in [a, b] {
+                    x.waiting.insert((*s, c), (Tid::from_bytes([9; 15]), entries.clone()));
+                }
+                x.synced.want(*s);
+                x.first.insert(*s);
+            }
+            for s in &ids {
+                x.left(a, s);
+                assert!(x.synced.wants(s), "another list still waits");
+            }
+            x.closed(b);
+            assert!(ids.iter().all(|s| !x.synced.wants(s)) && x.first.is_empty() && x.waiting.is_empty());
+        }
     }
 
     // spec/permissions.md §4 (Suspect list): the most recently flagged first.

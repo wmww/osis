@@ -1189,6 +1189,41 @@ fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
     assert_eq!(anew(&p, pulls), 0, "nothing refused under the head before: nothing pulled");
 }
 
+// spec/sync-streams.md §4 (Refused), §3 (Durability): n peers each told a code 1 refusal, none
+// connected now: a head move pulls S anew at each from its record's rows and holds no place in
+// memory after (a place lasts while a connection pulls from its source), at n and 10n.
+fn places_after_head_moves(n: u8) -> usize {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    k.stamped(&mut p.a, 500, false);
+    for i in 0..n {
+        let rec = p.b.new_record(100 + i);
+        p.b.open.record = Some(rec);
+        p.a.join(p.now, k.id);
+        p.b.join(p.now, k.id);
+        p.run();
+        p.a.streams.closed(C);
+        p.b.streams.closed(C);
+    }
+    assert_eq!(p.b.streams.places(), 0);
+    let mut parent = k.genesis.0.clone();
+    for h in 1..4u64 {
+        let next = k.child(&parent, h, 0xe0 + h as u8);
+        assert_eq!(p.b.store.take_register(&k.id, &next.0, Some(&next.1)).unwrap(), Code::OK);
+        p.run();
+        parent = next.0;
+    }
+    p.b.streams.places()
+}
+
+#[test]
+fn a_head_move_holds_no_place_of_an_unconnected_peer_spec_sync_streams_4() {
+    assert_eq!(places_after_head_moves(3), 0);
+    assert_eq!(places_after_head_moves(30), 0);
+}
+
 // spec/sync-streams.md §4 (Refused): only a code 1 refusal turns on the refusing node's head: a
 // tombstone refusal (6) told, its head moving pulls nothing from the start.
 #[test]

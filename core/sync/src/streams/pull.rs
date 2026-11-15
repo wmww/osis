@@ -927,8 +927,9 @@ impl Streams {
     /// Everywhere when the store's mark says so (`Store::anew_everywhere`: a dropped copy, a
     /// raise, room grown); else (a head move's mark, or none) only at the sources told a
     /// refusal of S under a head other than S's now. Nothing while S takes nothing
-    /// (`Store::unheld`): its mark stands until it is judged again. O(the sources holding a
-    /// place of S).
+    /// (`Store::unheld`): its mark stands until it is judged again. A place it loaded for a
+    /// source no connection pulls from goes once written. O(the sources holding a place of S,
+    /// and the connections).
     fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId) {
         if ctx.store.unheld(&s) {
             return;
@@ -948,11 +949,14 @@ impl Streams {
             (Ok(x), Ok(h)) => (x, h),
             (Err(e), _) | (_, Err(e)) => return self.failed(Err(e)),
         };
-        let srcs: BTreeSet<Source> = if everywhere {
+        let read: BTreeSet<Source> = if everywhere {
             self.places.iter().filter(|(_, pl)| pl.at_stream.contains(&s) || pl.stopped.contains_key(&s) || pl.joining.contains_key(&s) || pl.told.contains_key(&s)).map(|(src, _)| *src).chain(pulling.keys().copied()).chain(stored.into_iter().map(Source::Record)).collect()
         } else {
-            let told: BTreeSet<Source> = self.places.iter().filter(|(_, pl)| pl.told.contains_key(&s)).map(|(src, _)| *src).chain(stored.into_iter().map(Source::Record)).collect();
-            told.into_iter().filter(|src| self.place(ctx.store, *src).told.get(&s).is_some_and(|h| *h != head)).collect()
+            self.places.iter().filter(|(_, pl)| pl.told.contains_key(&s)).map(|(src, _)| *src).chain(stored.into_iter().map(Source::Record)).collect()
+        };
+        let srcs: BTreeSet<Source> = match everywhere {
+            true => read.clone(),
+            false => read.iter().copied().filter(|src| self.place(ctx.store, *src).told.get(&s).is_some_and(|h| *h != head)).collect(),
         };
         for src in &srcs {
             if let Some(p) = pulling.get(src).and_then(|c| self.pull.get_mut(c)) {
@@ -976,6 +980,12 @@ impl Streams {
             Store::clear_anew(t, &s)
         });
         self.failed(r);
+        // a place is held only while a connection pulls from its source: a record's loaded here
+        // alone is in its rows
+        let pulled: BTreeSet<Source> = self.pull.values().map(|p| p.src).collect();
+        for src in read.iter().filter(|src| !pulled.contains(src)) {
+            self.places.remove(src);
+        }
     }
 
     /// Sends Fetches while fewer than `FETCHES_OUT` are out: one sync ID's bodies of one fill

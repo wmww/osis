@@ -318,6 +318,12 @@ impl Streams {
         self.pull.get(&conn).map_or(0, pull::Pulling::holding)
     }
 
+    /// Tests only: the sources whose place is held in memory.
+    #[doc(hidden)]
+    pub fn places(&self) -> usize {
+        self.places.len()
+    }
+
     /// Tests only: the work counted so far.
     #[doc(hidden)]
     pub fn work(&self) -> Work {
