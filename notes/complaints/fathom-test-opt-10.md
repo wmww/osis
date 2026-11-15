@@ -1,8 +1,4 @@
 # fathom-test-opt-10
-- The brief pointed at Capstan's read_credentials memo "on branch test-cost": no such branch locally or on origin when I looked; it landed on capstan-sync-rebuild mid-task, after I had built the same memo. Name the commit or say "not pushed yet".
-- `Effects` cause labels name a stamp table, not a key: "store: catalog family" lumped every record row together. Splitting the label by family (a throwaway `Box::leak` name per table) found the LRU churn in minutes; a per-table name is now kept (catalog kind, local rows, record rows).
-- The equal-rerun count (an effect giving the answer it replaced) is not counted anywhere; a two-line throwaway counter in `Effects::record` gave it. Worth keeping as a `costs` count if the next optimizer needs it.
-- `scale::group_change_is_flat` cost 1,284 G (half of engine `it`) unnoticed: a debug check ran once per edit of a whole set (O(n²)). A per-test instruction cap in the gate would have flagged it the day it landed.
 - `engine::testing::tables` returns a fixed-size array (`[_; N]`): every branch adding an index conflicts silently on rebase (no text conflict, a type error), and I pushed one such tip before re-running the build. A slice or Vec would rebase cleanly.
 - The heavy lock was held by others for long stretches (pertest and whole-binary runs each waited minutes); a pertest run took 19 min wall with the wait, over the heavy limit's 598 s wall (load 22).
 - `tools/cpuprof_report.py` takes minutes on a whole osis-sync `it` sample file; a 120 s Bash call times out on it.

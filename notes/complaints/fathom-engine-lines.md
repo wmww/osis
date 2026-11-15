@@ -1,4 +1,0 @@
-# fathom-engine-lines
-- The issue's "likely cause" (snapshot not held whole when dated) was wrong: the paged reset set `Killed::all` and Full-dated every body, while a whole join dated by dots. Repro first before trusting an issue's diagnosis.
-- `old_rotation_lines_go_as_headers_alone`: a reader connected while a rotation was current holds its keys.0 part legitimately (card over the direct link), so a "no old seed" check needs the reader cut off meanwhile; dials toward a partitioned peer eat the delivery cap.
-- Review: dating kills by the earliest reached stamp (planted) passed every engine test; nothing checked "never early" for a kill's row until `killed_fill_leaves_an_hour_after_its_overwrite`. Removing `Load::of`'s keep-bound filter also passes every test (rows already narrow the pool).

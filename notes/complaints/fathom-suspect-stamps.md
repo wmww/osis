@@ -1,3 +1,0 @@
-# fathom-suspect-stamps
-- The brief's premise was off: `tx.core.touch()` moves no memo stamp, and an `Effects` key over the whole `Engine::suspects` was already due only on `q/` writes and the flags' snapshot reads (0 dues over 100 unrelated writes, probed). The real cost was per flag moved: the whole list re-judged. And the "one sync caller" named in the brief does not exist on capstan-sync-rebuild (nothing in osis-sync reads the flags yet). A quick probe before building would have reframed the brief.
-- A planted "unstamped flag read" passed the first test: the body coming back also moves the flagged commit's meta, which the dormancy check reads. A plant needs a step where only the planted stamp moves (a raise again on the same body).
