@@ -9,6 +9,8 @@ use osis_base::{BlobId, CommitId, Role, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, Epoch, LabelRole, Secret32, SigningSecret, deposit_key};
 use osis_keys::ActorEpochs;
 use osis_label::Step;
+use osis_schema::RawKey;
+use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -348,7 +350,7 @@ impl Engine {
     /// `opened::passes_on` (its invariant and the floor clause, at that epoch's floor), else as a
     /// held section of it or not at all (`None`). `seal` and `may_log` alike.
     pub(crate) fn section_secret(&mut self, id: &CommitId, h: &osis_commit::Header, t: &Tid, of_thing: &[usize], parts: &[usize]) -> Option<(Epoch, Secret32)> {
-        let (e, s) = self.wrap_under(t, Some((id, of_thing))).ok().flatten()?;
+        let (e, s) = self.wrap_under(t, Some((id, of_thing)), false).ok().flatten()?;
         if !self.passes_on_all(id, h, parts, self.core.read_floor(t, &e)).ok()? {
             return None;
         }
@@ -617,7 +619,7 @@ impl Engine {
     /// roles secret (spec/crypto.md §4, Roles secrets): every holder of the actor opens it.
     pub fn wrap_secret(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<Secret32>> {
         let roles = c.is_some_and(|(c, parts)| self.carries_roles(g, c, parts));
-        Ok(self.wrap_under(g, c)?.map(|(_, s)| if roles { osis_crypto::roles_secret(&s) } else { s }))
+        Ok(self.wrap_under(g, c, true)?.map(|(_, s)| if roles { osis_crypto::roles_secret(&s) } else { s }))
     }
 
     /// Whether these deltas of `c` hold a role part (`osis_keys::under_roles`) of the actor `g`'s
@@ -628,11 +630,12 @@ impl Engine {
         parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|x| x.tid == a && osis_keys::under_roles(x.ak.as_str()))
     }
 
-    /// `wrap_secret` with its epoch.
-    fn wrap_under(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<(Epoch, Secret32)>> {
+    /// `wrap_secret` with its epoch (`entry`: the blob's wrap, else a section's).
+    fn wrap_under(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>, entry: bool) -> Result<Option<(Epoch, Secret32)>> {
         let Some(e) = self.epochs(g) else { return Ok(None) };
         let rotation = match c {
             Some((c, parts)) if self.carries_secrets(g, c, parts) => self.rotation_wrap_epoch(g, c)?.and_then(|ep| e.read.secret(&ep).map(|s| (ep, s.clone()))),
+            Some((c, _)) if entry => self.account_rotation_wrap_epoch(g, c)?.and_then(|ep| e.read.secret(&ep).map(|s| (ep, s.clone()))),
             _ => None,
         };
         let own_wrap = rotation.is_some();
@@ -755,6 +758,32 @@ impl Engine {
         let Some(ks) = crate::apply::keys::keys_write(&f).keysets.remove(&Role::Read) else { return Ok(None) };
         let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) else { return Ok(None) };
         Ok(epochs.read.wrapped_under(&e).map(|(s, _)| s))
+    }
+
+    /// For a rotation of an account (spec/crypto.md §9) at a sync ID whose read secrets are its
+    /// devices actor D's: the newest held D read epoch that the epoch its seed sits under (its
+    /// `account.0` entry's `under`) supersedes, the one D's own rotation made with it is wrapped
+    /// under. Invariant: the rotation that makes a sibling's removal R from D count elsewhere (by
+    /// naming it in its thing list for D, spec/permissions.md §5.5) opens without R's new D epoch,
+    /// which is established there only once R counts; else R and its rotation wait on each other
+    /// at every node that closed R's epoch before receiving R. Only the header goes so (a wrap
+    /// gates the header, which readers outside the account hold anyway): the sections, the seed
+    /// and the deposit seed with them, stay under the epoch chosen as for any commit.
+    fn account_rotation_wrap_epoch(&mut self, g: &Tid, c: &CommitId) -> Result<Option<Epoch>> {
+        let Some(d) = self.core.secret_actor(g) else { return Ok(None) };
+        let Some(h) = self.header(c) else { return Ok(None) };
+        let Some(rot) = h.rotation.as_ref() else { return Ok(None) };
+        if self.core.devices_of(&d) != Some(h.author) {
+            return Ok(None);
+        }
+        let Some(ai) = h.aspect_index(&d, "account.0") else { return Ok(None) };
+        let key = rot.signing_key.to_bytes().to_vec();
+        let id = *c;
+        let Some(f) = self.read(|tx| crate::apply::held_fragment(tx, &id, ai))? else { return Ok(None) };
+        let Some(acct) = f.read().and_then(|x| ct::ACCOUNT.decode(&x).ok()) else { return Ok(None) };
+        let Some(under) = acct.seeds.get(&key).and_then(|s| osis_keys::aspects::from_schema(&s.under).ok()) else { return Ok(None) };
+        let Some(epochs) = self.epochs(&d) else { return Ok(None) };
+        Ok(epochs.read.wrapped_under(&under).map(|(s, _)| s))
     }
 
     /// The deposit seed of `g`'s actor (its `keys.0`; `flows::sync_ids::deposit_seed_of`).

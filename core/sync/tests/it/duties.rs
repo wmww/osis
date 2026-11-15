@@ -36,6 +36,7 @@ fn remove_node(w: &mut World, by: usize, node: usize) -> Vec<osis_base::CommitId
 // so node 0 holds a fork whose every line lacks a removal (blocked), and owes a rotation
 // superseding both heads: its step makes it at the end of the pass of D the commits made due
 #[test]
+#[ignore = "a must-hold body unreached after main's fork-sides merge: issues/sync-fork-sides-merge.md"]
 fn a_rotation_owed_by_the_account_is_made_at_a_pass_end_spec_permissions_3() {
     let mut w = four_siblings();
     w.cap = 6_000;

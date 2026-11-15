@@ -707,7 +707,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("own_replaces", &*ix.own_replaces),
         ("signed", &*ix.signed),
         ("sealed", &*ix.sealed),
-        ("rotation_sigs", &*ix.rotation_sigs),
+        ("role_sigs", &*ix.role_sigs),
         ("leave_from", &*ix.leave_from),
         ("leave_due", &*ix.leave_due),
         ("addenda_due", &*ix.addenda_due),

@@ -71,8 +71,9 @@
 //! per thing it reads a listing at that epoch naming the commits at closed epochs (void ones too)
 //! that no counting list it holds names: its own (judged by inner signature), every commit
 //! of a re-added node, and others' by the cutoff (plain content its own rotation left out
-//! past the bound among them), leaving out commits a snapshot it judges valid covers when
-//! `omit_covered`. A witness writer answers
+//! past the bound among them), leaving out commits a snapshot not of P it judges valid covers
+//! when `omit_covered` (P's own snapshot counts by the side of P's chain the lister follows,
+//! which a reader may not share). A witness writer answers
 //! every rotation whose chain it holds (its receipts are facts, whatever its side) by the
 //! cutoff (a later concurrent closer's window is today's stated limit), again whenever what
 //! it holds changes.
@@ -219,16 +220,74 @@ pub struct Verdict {
     pub as_p: Vec<bool>,
     pub valid: Vec<bool>,
     pub visible: Vec<bool>,
-    /// The side taken (`trust`): the rotation sided with, if any.
-    pub side: Option<usize>,
-    /// Rotations in a mutual contest (`parties`): a dispute when any.
-    pub parties: Vec<usize>,
+    /// The rotation chosen (`trust`), if any.
+    pub chosen: Option<usize>,
+    /// Held rotations not counting that a counting one rejects or that reject one: the
+    /// account has forked, and the observer is told.
+    pub contested: Vec<usize>,
 }
 
 impl Verdict {
-    /// Two held merges reject each other.
-    pub fn dispute(&self) -> bool {
-        !self.parties.is_empty()
+    /// The observer is told the account has forked.
+    pub fn warning(&self) -> bool {
+        !self.contested.is_empty()
+    }
+}
+
+/// Per held rotation of one judgment: its line (itself and every held rotation it descends
+/// from) as a list and as a membership row, the epochs it is signed at, and the held rotation
+/// minting each epoch. Built once per held set, so the rules read membership in constant time.
+pub struct Lines {
+    list: Vec<Vec<usize>>,
+    row: Vec<Vec<bool>>,
+    signed: Vec<Vec<Epoch>>,
+    minted: std::collections::HashMap<Epoch, usize>,
+}
+
+impl Lines {
+    /// `a` is on `b`'s line (`b` a held rotation).
+    fn on(&self, a: usize, b: usize) -> bool {
+        self.row[b].get(a).copied().unwrap_or(false)
+    }
+    /// The held rotation minting epoch e.
+    fn minted(&self, e: Epoch) -> Option<usize> {
+        self.minted.get(&e).copied()
+    }
+    fn of(&self, r: usize) -> &[usize] {
+        &self.list[r]
+    }
+}
+
+/// `World::verified`, memoized over one held set: a rotation is verified iff it is signed at
+/// epoch 0 or the held rotation minting its epoch is verified, and every fork it names is held
+/// and verified (a merge is pending until then).
+struct Roots {
+    minted: std::collections::HashMap<Epoch, usize>,
+    memo: Vec<Option<bool>>,
+}
+
+impl Roots {
+    fn new(w: &World, held: &[bool]) -> Roots {
+        let mut minted = std::collections::HashMap::new();
+        for i in (0..w.items.len()).filter(|&i| held[i]) {
+            if let Kind::Rotation { new, .. } = &w.items[i].kind {
+                minted.entry(*new).or_insert(i);
+            }
+        }
+        Roots { minted, memo: vec![None; w.items.len()] }
+    }
+
+    fn verified(&mut self, w: &World, held: &[bool], i: usize) -> bool {
+        if let Some(v) = self.memo[i] {
+            return v;
+        }
+        // a parent is older than its child, so the recursion ends; mark first all the same
+        self.memo[i] = Some(false);
+        let Kind::Rotation { at, names, .. } = &w.items[i].kind else { return false };
+        let parent = if *at == 0 { true } else { self.minted.get(at).copied().is_some_and(|p| self.verified(w, held, p)) };
+        let v = parent && names.iter().all(|&id| idx(id) < w.items.len() && held[idx(id)] && w.items[idx(id)].kind.is_rot() && self.verified(w, held, idx(id)));
+        self.memo[i] = Some(v);
+        v
     }
 }
 
@@ -300,43 +359,132 @@ impl World {
         self.items.iter().position(|i| matches!(i.kind, Kind::Removal { node } if node == a))
     }
 
-    /// Rotations in a mutual contest among the held ones: a rejects a rotation on b's chain
-    /// and b one on a's.
-    pub fn parties(&self, held: &[bool]) -> Vec<usize> {
-        let held = &self.rooted(held);
-        let n = self.items.len();
-        let lines = self.lines(held);
-        let contests = |a: usize, b: usize| self.line_of(held, b).iter().any(|&c| c != a && self.rejects(held, &lines, a, c));
-        let rots: Vec<usize> = (0..n).filter(|&i| held[i] && self.items[i].kind.is_rot()).collect();
-        rots.iter().copied().filter(|&a| rots.iter().any(|&b| a != b && contests(a, b) && contests(b, a))).collect()
-    }
-
-    /// The line a node of P's roster authorizes: node 0's newest rotation whose chain it holds
-    /// whole (it reads the devices actor's roster). None for anyone else.
-    pub fn roster_side(&self, o: usize, held: &[bool]) -> Option<usize> {
-        let held = &self.rooted(held);
-        (o < self.np).then(|| (0..self.items.len()).filter(|&i| held[i] && self.items[i].author == 0 && self.items[i].kind.is_rot() && self.verified(held, i)).max_by_key(|&i| self.items[i].t)).flatten()
-    }
-
-    /// The side an observer takes: its roster's line (`roster_side`), else in a dispute the
-    /// party it received first.
+    /// The head observer o follows (`judge_at`'s preferred): what its checks read as its side.
     pub fn default_side(&self, o: usize, held: &[bool]) -> Option<usize> {
-        self.roster_side(o, held).or_else(|| {
-            let held = &self.rooted(held);
-            self.first_line(&self.parties(held), &self.lines(held), Some(o))
-        })
+        self.judge_at(o, held).preferred
     }
 
-    /// Of `cands`, the line `seen` received first: c beats d when, of the rotations on
-    /// exactly one of their lines, the earliest received (then the lowest id) is on c's. None
-    /// without candidates. `seen` None: item order.
-    fn first_line(&self, cands: &[usize], lines: &[Vec<usize>], seen: Option<usize>) -> Option<usize> {
-        let rank = |i: usize| (seen.map_or(0, |o| self.items[i].recv[o]), self.items[i].id);
+    /// The rotation minting the epoch node `y`'s re-add is signed at (node 0's newest held
+    /// rotation made before it; None: the first epoch or no re-add): D's grant putting it back.
+    /// The re-add comes first in its tick, so a rotation node 0 makes in that tick is after it.
+    pub fn grant_of(&self, held: &[bool], y: usize) -> Option<usize> {
+        let ta = *self.readded.get(y)?;
+        (ta < LATE).then(|| (0..self.items.len()).filter(|&i| held[i] && self.items[i].author == 0 && self.items[i].kind.is_rot() && self.items[i].t < ta).max_by_key(|&i| self.items[i].t)).flatten()
+    }
+
+    /// The order observer `seen` (None: item order) places the held rotations in: the chosen
+    /// rotation's line first, then by when each came to be held with its line (the latest
+    /// receipt on it, a millisecond's by id), then by depth (one more than the deepest of the
+    /// rotation minting its epoch and the forks it names), then id.
+    fn place_order(&self, held: &[bool], lines: &Lines, chosen: Option<usize>, seen: Option<usize>) -> Vec<usize> {
+        let rank = |i: usize| seen.map_or(self.items[i].id, |o| self.items[i].recv[o]);
+        let mut order: Vec<usize> = (0..self.items.len()).filter(|&i| held[i] && self.items[i].kind.is_rot()).collect();
+        // a parent is an older item than its child: depths build in item order
+        let mut depth = vec![0usize; self.items.len()];
+        for &i in &order {
+            let Kind::Rotation { at, names, .. } = &self.items[i].kind else { continue };
+            let parents = lines.minted(*at).into_iter().chain(names.iter().map(|&id| idx(id)).filter(|&q| q < self.items.len()));
+            depth[i] = 1 + parents.map(|q| depth[q]).max().unwrap_or(0);
+        }
+        order.sort_by_key(|&i| (!chosen.is_some_and(|c| lines.on(i, c)), lines.of(i).iter().map(|&q| (rank(q), self.items[q].id)).max(), depth[i], self.items[i].id));
+        order
+    }
+
+    /// Of `cands`, the one whose line holds the earliest-placed rotation of those on exactly
+    /// one of two lines. None without candidates.
+    fn first_line(&self, cands: &[usize], lines: &Lines, seen: Option<usize>, chosen: Option<usize>) -> Option<usize> {
+        let held: Vec<bool> = (0..self.items.len()).map(|i| !lines.of(i).is_empty()).collect();
+        let order = self.place_order(&held, lines, chosen, seen);
+        let mut pos = vec![usize::MAX; self.items.len()];
+        for (k, &x) in order.iter().enumerate() {
+            pos[x] = k;
+        }
         let beats = |c: usize, d: usize| {
-            let first = lines[c].iter().chain(&lines[d]).copied().filter(|&r| lines[c].contains(&r) != lines[d].contains(&r)).min_by_key(|&r| rank(r));
-            first.map_or(false, |r| lines[c].contains(&r))
+            let first = lines.of(c).iter().chain(lines.of(d)).copied().filter(|&r| lines.on(r, c) != lines.on(r, d)).min_by_key(|&r| (pos[r], self.items[r].id));
+            first.map_or(false, |r| lines.on(r, c))
         };
         cands.iter().copied().find(|&c| cands.iter().all(|&d| d == c || beats(c, d)))
+    }
+
+    /// The rotations observer `seen` follows (spec/permissions.md §5.4, Placing), as
+    /// core/test/roles-model `forks` states the rule: outside P each placed rotation is followed
+    /// with its line unless a followed one is beside it or a rotation on its line rejects or is
+    /// rejected by a followed one; a node of P (`own`) takes the revocations first-seen as a
+    /// consistent set and follows every rotation whose line they leave standing and whose
+    /// revocations are all taken (no rotation here takes a revocation off its line: `forks`
+    /// models what a rotation takes).
+    fn follow(&self, held: &[bool], lines: &Lines, chosen: Option<usize>, seen: Option<usize>, own: bool) -> Vec<usize> {
+        let order = self.place_order(held, lines, chosen, seen);
+        let on = |a: usize, b: usize| lines.on(a, b);
+        let mut followed: Vec<usize> = Vec::new();
+        if own {
+            let rm_of = |r: usize| -> Option<(usize, Epoch)> {
+                match &self.items[r].kind {
+                    Kind::Rotation { at, removes: Some(rc), .. } => match self.items[idx(*rc)].kind {
+                        Kind::Removal { node } => Some((node, *at)),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            };
+            let minted = |e: Epoch| lines.minted(e);
+            let grants: Vec<Option<usize>> = (0..self.np).map(|y| self.grant_of(held, y)).collect();
+            let stands = |r: usize, removed: &[(usize, Epoch)]| {
+                lines.of(r).iter().all(|&q| {
+                    removed.iter().filter(|(y, _)| *y == self.items[q].author).all(|(y, e)| {
+                        *e != 0 && minted(*e).is_some_and(|m| on(q, m))
+                            || grants[*y].is_some_and(|g| q != g && on(g, q) && minted(*e).is_none_or(|m| m != g && on(m, g)))
+                    })
+                })
+            };
+            let mut taken: Vec<usize> = Vec::new();
+            let mut removed: Vec<(usize, Epoch)> = Vec::new();
+            for &r in &order {
+                let Some(mine) = rm_of(r) else { continue };
+                let mut with = removed.clone();
+                with.push(mine);
+                if stands(r, &with) && taken.iter().all(|&q| stands(q, &[mine])) && lines.of(r).iter().all(|&q| q == r || rm_of(q).is_none() || taken.contains(&q)) {
+                    taken.push(r);
+                    removed = with;
+                }
+            }
+            for &r in &order {
+                if stands(r, &removed) && lines.of(r).iter().all(|&q| rm_of(q).is_none() || taken.contains(&q)) {
+                    followed.push(r);
+                }
+            }
+            return followed;
+        }
+        // per held rotation: the epoch it mints
+        let n = self.items.len();
+        let new_of = |i: usize| match &self.items[i].kind {
+            Kind::Rotation { new, .. } => Some(*new),
+            _ => None,
+        };
+        let mut placed = vec![false; n];
+        let mut is_followed = vec![false; n];
+        // m rejects x among the placed (`rejects`, read over what was placed before)
+        let rej = |placed: &[bool], m: usize, x: usize| -> bool {
+            let Kind::Rotation { at, supersedes, .. } = &self.items[m].kind else { return false };
+            m != x && new_of(x).is_some_and(|e| supersedes.contains(&e)) && !(0..n).any(|s| placed[s] && lines.signed[s].contains(at) && (lines.on(x, s) || lines.on(s, x)))
+        };
+        for &r in &order {
+            placed[r] = true;
+            if is_followed[r] {
+                continue;
+            }
+            let rejected = lines.of(r).iter().any(|&q| followed.iter().any(|&k| rej(&placed, q, k) || rej(&placed, k, q)));
+            if rejected || followed.iter().any(|&k| !on(k, r) && !on(r, k)) {
+                continue;
+            }
+            for &q in lines.of(r) {
+                if !is_followed[q] {
+                    is_followed[q] = true;
+                    followed.push(q);
+                }
+            }
+        }
+        followed
     }
 
     /// A rotation and the rotations minting its ancestors, among the held ones.
@@ -363,14 +511,15 @@ impl World {
     /// Rotation s's chain is held back to epoch 0: only then can a node verify it, so nobody
     /// answers, merges out or sides with a rotation before (a witness, node 0, a member).
     pub fn verified(&self, held: &[bool], s: usize) -> bool {
-        self.chain_of(held, s).last().map_or(false, |&c| matches!(self.items[c].kind, Kind::Rotation { at: 0, .. }))
+        Roots::new(self, held).verified(self, held, s)
     }
 
     /// The held set less every rotation whose chain is not held back to epoch 0: such a
     /// rotation is pending (its epoch's minting rotation has not arrived), so it takes part
     /// in nothing (rejects, sides, parties) until it is.
     pub fn rooted(&self, held: &[bool]) -> Vec<bool> {
-        (0..self.items.len()).map(|i| held[i] && (!self.items[i].kind.is_rot() || self.verified(held, i))).collect()
+        let mut memo = Roots::new(self, held);
+        (0..self.items.len()).map(|i| held[i] && (!self.items[i].kind.is_rot() || memo.verified(self, held, i))).collect()
     }
 
     /// A rotation and every held rotation it descends from: through the epoch it is signed
@@ -393,9 +542,41 @@ impl World {
         line
     }
 
-    /// Per item: its line if it is a held rotation, else empty.
-    fn lines(&self, held: &[bool]) -> Vec<Vec<usize>> {
-        (0..self.items.len()).map(|i| if held[i] && self.items[i].kind.is_rot() { self.line_of(held, i) } else { vec![] }).collect()
+    /// Per held rotation its line (as `line_of`), signed-at epochs and minting index.
+    pub fn lines(&self, held: &[bool]) -> Lines {
+        let n = self.items.len();
+        let mut minted: std::collections::HashMap<Epoch, usize> = std::collections::HashMap::new();
+        for i in (0..n).filter(|&i| held[i]) {
+            if let Kind::Rotation { new, .. } = &self.items[i].kind {
+                minted.entry(*new).or_insert(i);
+            }
+        }
+        let mut row: Vec<Vec<bool>> = vec![vec![]; n];
+        let mut doing = vec![false; n];
+        fn go(w: &World, held: &[bool], minted: &std::collections::HashMap<Epoch, usize>, row: &mut Vec<Vec<bool>>, doing: &mut Vec<bool>, i: usize) {
+            if !row[i].is_empty() || doing[i] {
+                return;
+            }
+            doing[i] = true;
+            let Kind::Rotation { at, names, .. } = &w.items[i].kind else { unreachable!() };
+            let mut parents: Vec<usize> = names.iter().map(|&id| idx(id)).filter(|&p| p < w.items.len() && held[p] && w.items[p].kind.is_rot()).collect();
+            parents.extend(minted.get(at).copied());
+            let mut r = vec![false; w.items.len()];
+            r[i] = true;
+            for p in parents {
+                go(w, held, minted, row, doing, p);
+                for (k, on) in row[p].iter().enumerate() {
+                    r[k] |= *on;
+                }
+            }
+            row[i] = r;
+        }
+        for i in (0..n).filter(|&i| held[i] && self.items[i].kind.is_rot()) {
+            go(self, held, &minted, &mut row, &mut doing, i);
+        }
+        let list = row.iter().map(|r| (0..r.len()).filter(|&k| r[k]).collect()).collect();
+        let signed = (0..n).map(|s| if held[s] { self.signed_at(held, s) } else { vec![] }).collect();
+        Lines { list, row, signed, minted }
     }
 
     /// The epochs a rotation is signed at: the one it rotates, and, for a merge, the epoch of
@@ -419,10 +600,10 @@ impl World {
     /// through e: r on the line of a rotation signed at e, or one on r's (forks only fork; a
     /// line is contested from below, by a merge signed under the other fork). m is signed at
     /// e, so it never rejects its own line (what it is signed at and the forks it names).
-    fn rejects(&self, held: &[bool], lines: &[Vec<usize>], m: usize, r: usize) -> bool {
+    fn rejects(&self, held: &[bool], lines: &Lines, m: usize, r: usize) -> bool {
         let (Kind::Rotation { at, supersedes, .. }, Kind::Rotation { new: rnew, .. }) = (&self.items[m].kind, &self.items[r].kind) else { return false };
         supersedes.contains(rnew)
-            && !(0..self.items.len()).any(|s| held[s] && self.items[s].kind.is_rot() && self.signed_at(held, s).contains(at) && (lines[s].contains(&r) || lines[r].contains(&s)))
+            && !(0..self.items.len()).any(|s| held[s] && self.items[s].kind.is_rot() && lines.signed[s].contains(at) && (lines.on(r, s) || lines.on(s, r)))
     }
 
     /// Epoch e descends from held rotation r: r is on the line of e's minting rotation
@@ -474,7 +655,7 @@ impl World {
 
     /// `judge_seen` at observer o under its default side.
     pub fn judge_at(&self, o: usize, held: &[bool]) -> Verdict {
-        self.judge_seen(held, self.default_side(o, held), Some(o))
+        self.judge_seen(held, None, Some(o))
     }
 
     /// Validity as a pure function of the held set, the side (`trust`: the rotation sided
@@ -486,64 +667,28 @@ impl World {
             Kind::Rotation { at, new, supersedes, names, .. } => Some((*at, *new, supersedes, names)),
             _ => None,
         };
-        // Epoch e is minted by this held rotation.
-        let minted = |e: Epoch| (0..n).find(|&i| held[i] && rot(i).map_or(false, |r| r.1 == e));
         let lines = self.lines(held);
+        // Epoch e is minted by this held rotation.
+        let minted = |e: Epoch| lines.minted(e);
         let rejects = |m: usize, r: usize| self.rejects(held, &lines, m, r);
-        // Status: None undetermined, Some(true) counting, Some(false) void. Seeds: siding
-        // with s, whatever rejects a rotation on s's chain is void. Then a rotation is
-        // decided once its parent and every held rotation that rejects it are: void if the
-        // parent is void or a counting one rejects it, else counting. A contest no side
-        // settles stays undetermined, and counts for nothing.
-        let mut status: Vec<Option<bool>> = (0..n).map(|i| if held[i] && rot(i).is_some() { None } else { Some(false) }).collect();
-        if let Some(s) = trust {
-            let chain = self.line_of(held, s);
-            for m in 0..n {
-                if held[m] && rot(m).is_some() && chain.iter().any(|&c| c != m && rejects(m, c)) {
-                    status[m] = Some(false);
-                }
-            }
+        let own = seen.is_some_and(|o| o < self.np);
+        let followed = self.follow(held, &lines, trust, seen, own);
+        let mut counting = vec![false; n];
+        for &i in &followed {
+            counting[i] = held[i] && rot(i).is_some();
         }
-        loop {
-            let mut changed = false;
-            for r in 0..n {
-                if status[r].is_some() {
-                    continue;
-                }
-                let at = rot(r).unwrap().0;
-                let parent = if at == 0 { Some(true) } else { minted(at).map_or(Some(false), |p| status[p]) };
-                if parent == Some(false) {
-                    status[r] = Some(false);
-                    changed = true;
-                    continue;
-                }
-                let rejectors: Vec<usize> = (0..n).filter(|&m| held[m] && m != r && rot(m).is_some() && rejects(m, r)).collect();
-                if rejectors.iter().any(|&m| status[m] == Some(true)) {
-                    status[r] = Some(false);
-                    changed = true;
-                } else if parent == Some(true) && rejectors.iter().all(|&m| status[m] == Some(false)) {
-                    status[r] = Some(true);
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        let counting: Vec<bool> = (0..n).map(|i| held[i] && rot(i).is_some() && status[i] == Some(true)).collect();
         let epoch_counts = |e: Epoch| e == 0 || minted(e).map_or(false, |r| counting[r]);
         // A counting rotation closes every epoch that does not descend from it: its own, the
         // ones it supersedes, and every epoch minted beside it (a concurrent rotation's, which
         // may box the node it removes).
-        let descends = |e: Epoch, r: usize| e != 0 && minted(e).map_or(false, |m| lines[m].contains(&r));
+        let descends = |e: Epoch, r: usize| e != 0 && minted(e).map_or(false, |m| lines.on(r, m));
         let closes = |r: usize, e: Epoch| counting[r] && !descends(e, r);
-        // Forks stand: every counting head is open (epoch 0 when no rotation counts). The
-        // preferred head (of those holding the side, all when none does, the one whose own
-        // rotations it received first) decides nothing here.
-        let heads: Vec<usize> = (0..n).filter(|&h| counting[h] && !(0..n).any(|x| x != h && counting[x] && lines[x].contains(&h))).collect();
-        let on_side: Vec<usize> = heads.iter().copied().filter(|&h| trust.map_or(false, |s| lines[h].contains(&s))).collect();
-        let cands = if on_side.is_empty() { heads.clone() } else { on_side };
-        let preferred = self.first_line(&cands, &lines, seen);
+        // Every counting head is open (epoch 0 when no rotation counts): one outside P, several
+        // at a node of P only for its devices' rotations made at once. The preferred head (the
+        // one whose line holds the earliest placed rotation not on every one's) is where a
+        // node of P signs.
+        let heads: Vec<usize> = (0..n).filter(|&h| counting[h] && !(0..n).any(|x| x != h && counting[x] && lines.on(h, x))).collect();
+        let preferred = self.first_line(&heads, &lines, seen, trust);
         let open = |e: Epoch| if heads.is_empty() { e == 0 } else { heads.iter().any(|&h| rot(h).unwrap().1 == e) };
         let closed_list: Vec<Epoch> = {
             let mut c: Vec<Epoch> = std::iter::once(0).chain((0..n).filter_map(|i| if held[i] { rot(i).map(|r| r.1) } else { None })).filter(|&e| !open(e) && (0..n).any(|r| closes(r, e))).collect();
@@ -551,7 +696,8 @@ impl World {
             c.dedup();
             c
         };
-        let parties = self.parties(held);
+        // told: a held rotation not counting that a counting one rejects or that rejects one
+        let contested: Vec<usize> = (0..n).filter(|&q| held[q] && rot(q).is_some() && !counting[q] && (0..n).any(|m| counting[m] && (rejects(m, q) || rejects(q, m)))).collect();
         // A's demotion (at most one held).
         let dem = (0..n).find(|&i| held[i] && matches!(self.items[i].kind, Kind::Demotion { .. }));
         let thing = |i: usize| self.items[i].kind.thing();
@@ -637,7 +783,7 @@ impl World {
                     && (valid[i] || (0..n).any(|s| valid[s] && matches!(&self.items[s].kind, Kind::Snap { carries, .. } if carries.contains(&self.items[i].id))))
             })
             .collect();
-        Verdict { counting, closed: closed_list, preferred, heads, as_p, valid, visible, side: trust, parties }
+        Verdict { counting, closed: closed_list, preferred, heads, as_p, valid, visible, chosen: trust, contested }
     }
 
 
@@ -714,7 +860,7 @@ impl World {
         !self.judge_seen(&less, trust, Some(o)).valid[c]
     }
 
-    /// Rotation q stands for D's roster (spec/permissions.md §5.4, Nodes of P): for the removal
+    /// Rotation q stands for D's roster (spec/permissions.md §5.4, Authorizes): for the removal
     /// of its minter `held` holds, q is on the line of the epoch the removal is signed at (made
     /// before it) or descends from the rotation naming it (made after a re-add). A re-add here is
     /// a time with no grant commit, so that rotation stands in for the spec's re-grant epoch: it
@@ -972,8 +1118,8 @@ pub fn check(w: &World, st: &mut Stats) {
     for o in (0..w.nodes).filter(|&o| !removed(o)) {
         for &tau in &times {
             let held = w.held_at(o, tau);
-            let trust = w.default_side(o, &held);
-            let v = w.judge_seen(&held, trust, Some(o));
+            let v = w.judge_at(o, &held);
+            let trust = v.preferred;
             // A removed node cannot void its removal where every removed node's rotation it
             // holds is signed at an epoch node 0's line is signed at (the removal's own, or a
             // sibling's fork node 0's merge accepted): it can only fork. Rotations signed at a
@@ -1007,11 +1153,26 @@ pub fn check(w: &World, st: &mut Stats) {
                 if forks.is_empty() || !forks.iter().all(|&h| line0.iter().any(|&m| joined(m, at_of(h)))) {
                     continue;
                 }
+                // The observer follows what it held first: the removal holds where it was held
+                // (with its chain) before every rotation beside it that no merge of node 0's
+                // line held before the removed node's forks takes in.
+                let when = |i: usize| w.line_of(&held, i).iter().map(|&q| (w.items[q].recv[o], w.items[q].id)).max();
+                // a rival a merge of node 0's line took in, the merge held before any rotation
+                // of the removed node's beside the removal (a fork, or its own from before the
+                // removal that extended the rival first: the merge then comes beside a line
+                // already followed)
+                let beside_r0 = |h: usize| !w.line_of(&held, h).contains(&r0) && !w.line_of(&held, r0).contains(&h);
+                let first_fork = (0..n).filter(|&f| held[f] && w.items[f].kind.is_rot() && w.items[f].author == a && w.verified(&held, f) && beside_r0(f)).chain(forks.iter().copied()).map(|f| when(f)).min();
+                let taken_in = |h: usize| line0.iter().any(|&m| w.line_of(&held, m).contains(&h) && first_fork.is_none_or(|f| when(m) < f));
+                let first = (0..n).filter(|&h| held[h] && w.items[h].kind.is_rot() && w.verified(&held, h) && !w.line_of(&held, h).contains(&r0) && !w.line_of(&held, r0).contains(&h) && !taken_in(h)).all(|h| when(h) > when(r0));
+                if !first {
+                    continue;
+                }
                 if !v.counting[r0] {
                     st.removal_voided += 1;
                     failed = true;
                     if debug() {
-                        println!("removal voided: observer n{o} tau {tau} removal #{} side {:?} counting {:?} dispute {}", w.items[r0].id, trust.map(|t| w.items[t].id), v.counting, v.dispute());
+                        println!("removal voided: observer n{o} tau {tau} removal #{} side {:?} counting {:?} dispute {}", w.items[r0].id, trust.map(|t| w.items[t].id), v.counting, v.warning());
                     }
                 }
             }
@@ -1021,7 +1182,7 @@ pub fn check(w: &World, st: &mut Stats) {
             let thief_head = v.heads.iter().any(|&h| w.line_of(&rooted, h).iter().any(|&r| w.items[r].hostile));
             if thief_head {
                 st.thief_head += 1;
-                st.thief_head_disputed += u64::from(v.dispute());
+                st.thief_head_disputed += u64::from(v.warning());
             } else if v.heads.len() > 1 {
                 st.honest_fork += 1;
             }
@@ -1054,13 +1215,13 @@ pub fn check(w: &World, st: &mut Stats) {
                     }
                 }
             }
-            if v.dispute() {
+            if v.warning() {
                 disputed = true;
                 if !w.owner_sided(trust) {
                     st.thief_sided_observers += 1;
                 }
                 // The side decides the reading.
-                let other = w.parties(&held).into_iter().find(|&i| Some(i) != trust && trust.map_or(true, |t| w.items[i].author != w.items[t].author));
+                let other = v.contested.iter().copied().find(|&i| Some(i) != trust);
                 if other.is_some() && w.judge_seen(&held, other, Some(o)) != v {
                     st.side_changes_reading += 1;
                 }
@@ -1089,6 +1250,12 @@ pub fn check(w: &World, st: &mut Stats) {
                         let through: Vec<usize> = v.heads.iter().map(|&h| w.line_of(&rooted, h)).filter(|l| l.contains(&r0)).flatten().collect();
                         if v.heads.iter().all(|&h| through.contains(&h)) {
                             return false;
+                        }
+                        // no head through the removal: the observer follows a line beside it
+                        // it held first (an unaware sibling's rotation, or the removed node's
+                        // own from before it), the stated limit until a merge of P joins them
+                        if through.is_empty() {
+                            return true;
                         }
                         let mut less = held.clone();
                         for l in 0..n {
@@ -1203,8 +1370,8 @@ pub fn check(w: &World, st: &mut Stats) {
         if (0..n).any(|i| !held[i] && served(i) && w.reaches(i, o)) {
             continue;
         }
-        let trust = w.default_side(o, &held);
-        let v = w.judge_seen(&held, trust, Some(o));
+        let v = w.judge_at(o, &held);
+        let trust = v.preferred;
         if !w.owner_sided(trust) {
             continue;
         }
@@ -1390,13 +1557,15 @@ fn rotation_lists(w: &World, author: usize, t: u32, closing: &[Epoch]) -> Option
     Some((lists, dropped))
 }
 
-/// Commits a snapshot `node` holds valid at `t` (received before `t`, by its own judgment
-/// then) carries.
+/// Commits a snapshot not of P that `node` holds valid at `t` (received before `t`, by its own
+/// judgment then) carries.
 fn covered_at(w: &World, node: usize, t: u32) -> HashSet<u32> {
     let held: Vec<bool> = w.items.iter().map(|i| i.recv[node] < t).collect();
     let v = w.judge_at(node, &held);
+    // P's own snapshot counts by the side of P's chain the lister follows, which another
+    // reader may not share (an outsider follows the line it held first): it excuses nothing
     (0..w.items.len())
-        .filter(|&s| held[s] && v.valid[s])
+        .filter(|&s| held[s] && v.valid[s] && !w.is_p(s))
         .flat_map(|s| match &w.items[s].kind {
             Kind::Snap { carries, .. } => carries.clone(),
             _ => vec![],
@@ -1459,7 +1628,7 @@ impl Builder {
     }
 
     /// Held rotation i stands for the devices actor's roster as member n reads it at `t`
-    /// (spec/permissions.md §5.4, Nodes of P): minted by a node whose removal commit n does
+    /// (spec/permissions.md §5.4, Authorizes): minted by a node whose removal commit n does
     /// not hold (or re-added, or n itself), every rotation on its line standing
     /// (`World::stands`).
     fn authorized(&self, n: usize, t: u32, i: usize) -> bool {
@@ -1507,9 +1676,9 @@ impl Builder {
         (a != n && !self.w.readded_by(a, t) || !self.w.stands(&hv, i)) && self.w.removal_commit_of(a).is_some_and(|rc| hv[rc]) && self.w.removal_of(a).is_some_and(|r0| hv[r0] && self.w.verified(&hv, r0))
     }
 
-    /// Member n owes a rotation at `t` (any node of P may make it: forks stand, so none merges
-    /// for a fork alone): it holds a rotation its roster does not authorize (a removed node's
-    /// fork) that no authorized rotation it holds supersedes, or a head blocked at it (the line of a removal rotation it holds with its removal
+    /// Member n owes a rotation at `t` (any node of P may make it, none designated): it holds
+    /// a rotation its roster does not authorize (a removed node's fork) that no authorized
+    /// rotation it holds supersedes, or a head blocked at it (the line of a removal rotation it holds with its removal
     /// commit lacks that removal, so the head may be boxed to the removed node).
     pub fn due(&self, n: usize, t: u32) -> bool {
         if !self.w.member(n, t) || self.w.gone(n, t) || n >= self.w.np {
@@ -1893,7 +2062,7 @@ impl Builder {
             t = t0 + round;
             let before = self.w.items.len();
             for n in 0..self.w.np {
-                if self.due(n, t) {
+                if self.due(n, t) || self.forked(n, t) {
                     self.rotate(n, t, &|_| Some(0), &|_, _| Some(0));
                 }
             }
@@ -1906,6 +2075,18 @@ impl Builder {
             self.refork(X, t + 1, &|_| Some(0));
             self.answer(t + 2, &|_| Some(0), &|_, _| Some(0));
         }
+    }
+
+    /// Member n holds two heads its roster authorizes: outsiders follow one only, so a merge is
+    /// owed. Asked in the settle only, nodes in turn: merges made at once fork again (the
+    /// race, counted in `forks`), which the generator's ticks would repeat without end.
+    pub fn forked(&self, n: usize, t: u32) -> bool {
+        if !self.w.member(n, t) || self.w.gone(n, t) || n >= self.w.np {
+            return false;
+        }
+        let held = self.rotations_held_by(n, t);
+        let v = self.w.judge_at(n, &held);
+        v.heads.iter().filter(|&&h| self.authorized(n, t, h)).count() > 1
     }
 
     /// Member n holds a verified rotation on whose line, as its maker held it, a devices-actor
@@ -2655,9 +2836,9 @@ mod tests {
         assert_eq!(w.items[5].kind, Kind::Addendum { against: 3, thing: 0, lists: vec![1] });
     }
 
-    /// Step 4: the thief's fork counts, open, until a rotation of P's rejects it; two
-    /// merges are a dispute, read by side; the default side is the line holding the first-received contested
-    /// rotation.
+    /// Step 4: the thief's fork is disregarded wherever the removal was held first (item order
+    /// here), counts where it came first or alone; two merges rejecting each other's lines
+    /// are read by the line chosen, and told.
     #[test]
     fn thief_fork_and_dispute() {
         let w = world(|b| {
@@ -2675,20 +2856,21 @@ mod tests {
         });
         let fork_only = vec![true, true, true, false, false, false];
         let v = w.judge(&fork_only, None);
-        assert!(v.counting[0] && v.counting[1] && v.valid[2], "the fork counts, open, until a node of P rejects it (the fork window)");
+        assert!(v.counting[0] && !v.counting[1] && !v.valid[2], "a fork beside the rotation held first never counts");
         assert!(w.judge(&[false, true, true, false, false, false], None).valid[2], "without the removal its write counts (unaware reader)");
         let merged = vec![true, true, true, true, false, false];
-        assert!(!w.judge(&merged, None).valid[2], "a removed node's fork is void once the owner's merge is held");
+        let v = w.judge(&merged, None);
+        assert!(!v.valid[2] && v.warning(), "told once the owner's merge rejects the fork");
         let both = all(&w);
         let v = w.judge(&both, Some(3));
-        assert!(v.dispute() && !v.valid[2] && v.counting[0] && !v.counting[1]);
+        assert!(v.warning() && !v.valid[2] && v.counting[0] && !v.counting[1]);
         let vx = w.judge(&both, Some(4));
-        assert!(vx.dispute() && vx.valid[2] && !vx.counting[3] && vx.counting[1] && vx.counting[4]);
+        assert!(vx.warning() && vx.valid[2] && !vx.counting[3] && vx.counting[1] && vx.counting[4]);
         // The outsider received the owner's merge (6) before the thief's (8).
         assert_eq!(w.default_side(4, &both), Some(3));
     }
 
-    /// Step 4: concurrent rotations at one epoch both count; a merge naming one and
+    /// Step 4: of concurrent rotations at one epoch an outsider follows the one held first; a merge naming one and
     /// superseding the other rejects the unnamed one with its line; a rotation from above
     /// (signed under a line) rejects nothing on it; an ill-formed supersedes entry (an epoch
     /// on its own chain, or one never minted) rejects nothing.
@@ -2704,13 +2886,13 @@ mod tests {
         });
         let held = |ids: &[usize]| -> Vec<bool> { (1..=6).map(|i| ids.contains(&i)).collect() };
         let v = w.judge(&held(&[1, 2]), None);
-        assert!(v.counting[0] && v.counting[1], "fork rotations both count");
+        assert!(v.counting[0] && !v.counting[1] && !v.warning(), "outside P the fork held first is followed, the other disregarded");
         let v = w.judge(&held(&[1, 2, 3]), None);
         assert!(v.counting[2] && !v.counting[1], "the merge rejects the unnamed line");
         let v = w.judge(&held(&[1, 2, 4]), None);
         assert!(v.counting[3] && v.counting[1] && v.closed.contains(&2), "a named fork counts and is closed");
         let v = w.judge(&held(&[1, 2, 5]), None);
-        assert!(v.counting[0] && v.counting[1] && v.counting[4], "a rotation from above rejects nothing");
+        assert!(v.counting[0] && !v.counting[4] && !v.warning(), "a rotation from above rejects nothing: a fork");
         let v = w.judge(&held(&[1, 6]), None);
         assert!(v.counting[0] && v.counting[5], "ill-formed entries are ignored");
     }
@@ -2799,6 +2981,53 @@ mod tests {
         assert!(!w.judge(&[true, true, true, true, false], None).valid[3]);
     }
 
+    /// A lister leaving out covered commits leaves out none a snapshot of P's covers: P's
+    /// snapshot counts by the side of P's chain the lister follows. Here the witness held X's
+    /// own rotation from before its removal first, so X's snapshot at that epoch reads valid
+    /// there; node 0 rejects that rotation, so X's earlier write, which only the witness
+    /// received in time, must be in the witness's addendum.
+    #[test]
+    fn a_cover_by_ps_own_snapshot_excuses_no_listing() {
+        let mut w = World::shape(2, vec![vec![0]], vec![vec![0]; 4], vec![None, None, Some(0), None], None, None, true);
+        w.left[X] = 5;
+        let mut b = Builder::new(w);
+        let c = b.add(Kind::Content { thing: 0, plain: true }, X, Some(0), 2, 2, vec![5, 2, 2, LATE], false);
+        let e = b.fresh();
+        b.add(Kind::Rotation { at: 0, new: e, supersedes: vec![0], names: vec![], removes: None }, X, Some(0), 4, 4, vec![7, 4, 4, LATE], false);
+        let cid = b.w.items[c].id;
+        b.add(Kind::Snap { thing: 0, carries: vec![cid] }, X, Some(e), 5, 5, vec![5, 5, 5, LATE], true);
+        b.remove(X, 5, &|_| Some(3), &|_, _| Some(3), &|_| Some(0));
+        b.addenda(2, 9, &|_| Some(0));
+        let w = b.w;
+        let v = w.judge_at(0, &all(&w));
+        assert!(v.visible[c], "the witness lists X's write: {v:?}");
+    }
+
+    /// A re-add comes first in its tick: node 0's rotation in that tick (Y's removal) is after
+    /// it, so the re-add's grant is signed at the epoch before, and X's rotation from there,
+    /// made at once with node 0's, stands at P's nodes beside it: two heads, a merge owed.
+    /// (With the grant read at node 0's new epoch, X's rotation was beside its own removal at
+    /// P's nodes, owed nothing, and an outsider that held it first lost node 0's later writes.)
+    #[test]
+    fn a_rotation_right_after_a_readd_stands_beside_the_removers() {
+        let mut w = World::shape(3, vec![vec![0]], vec![vec![0]; 4], vec![None; 4], None, None, false);
+        w.left[X] = 3;
+        w.readded[X] = 6;
+        w.left[Y] = 6;
+        let mut b = Builder::new(w);
+        let r1 = b.remove(X, 3, &|_| Some(0), &|_, _| Some(0), &|_| Some(0)).unwrap();
+        for i in 0..b.w.items.len() {
+            b.w.items[i].recv[X] = b.w.items[i].recv[X].min(6);
+        }
+        let rx = b.rotate(X, 6, &|_| Some(1), &|_, _| Some(1)).unwrap();
+        let r2 = b.remove(Y, 6, &|_| Some(1), &|_, _| Some(1), &|_| Some(1)).unwrap();
+        let all = all(&b.w);
+        assert_eq!(b.w.grant_of(&all, X), Some(r1), "the re-add precedes node 0's rotation in its tick");
+        let v = b.w.judge_at(0, &b.w.held_at(0, 7));
+        assert!(v.counting[rx] && v.counting[r2] && v.heads.len() == 2, "X's rotation stands beside node 0's: {v:?}");
+        assert!(b.forked(0, 7), "a merge is owed");
+    }
+
     /// Bound: plain content past a part's bound goes into the rotator's later listing; a
     /// part whose special commits pass it refuses the rotation; a list over the bound is bad
     /// input.
@@ -2854,12 +3083,12 @@ mod tests {
         assert!(v.valid[0]);
     }
 
-    /// Step 4/5: node 2 rotates before X's removal reaches it, boxing X epoch 1. Both heads are
-    /// open, so X's write there after its removal counts until a node of P supersedes epoch 1
-    /// (it is blocked there: its line lacks the removal); node 0's rotation is signed at epoch
-    /// 1 too (it names node 2's fork), so X's fork from epoch 1 cannot reject the removal once
-    /// it is held, and its list leaves out what node 0 received at epoch 1 after the removal
-    /// (the removal ends epoch 1 for its cutoff).
+    /// Step 4/5: node 2 rotates before X's removal reaches it, boxing X epoch 1. An outsider
+    /// that held node 2's rotation first follows it, so X's write there after its removal counts
+    /// until a merge joins the removal's line (and X's fork from epoch 1 extends that line
+    /// there); node 0's rotation is signed at epoch 1 too (it names node 2's fork), and its list
+    /// leaves out what node 0 received at epoch 1 after the removal (the removal ends epoch 1
+    /// for its cutoff).
     #[test]
     fn removed_node_holding_a_sibling_epoch() {
         let mut w = World::shape(3, vec![vec![0]], vec![vec![0]; 5], vec![None, None, None, Some(0), None], None, None, false);
@@ -2870,14 +3099,14 @@ mod tests {
         let x = b.write(X, 0, true, 5, 5, false, &|_| Some(0)); // #6 X, removed, at epoch 1
         assert!(b.w.items[x].hostile && b.w.items[x].epoch == Some(1));
         let alone = b.w.held_at(4, 5);
-        let v = b.w.judge(&alone, Some(r));
-        assert!(v.counting[s] && v.counting[r] && v.heads == vec![s, r] && !v.closed.contains(&1) && !v.closed.contains(&2), "both heads are open: {v:?}");
-        assert!(v.valid[x], "X's write at the sibling's epoch counts until a node of P supersedes it");
+        let v = b.w.judge_at(4, &alone);
+        assert!(v.counting[s] && !v.counting[r] && v.heads == vec![s], "the outsider follows the sibling's rotation, held first: {v:?}");
+        assert!(v.valid[x], "X's write at the sibling's epoch counts there until a merge joins the removal");
         assert!(b.due(0, 6) && !b.due(2, 5), "node 0 holds both heads and the removal; node 2 has neither half of it yet");
         let f = b.rotate_thief(X, 5, &|_| Some(0)); // #7 X's fork from epoch 1, superseding 2 unnamed; #8 its list names #6
         let window = b.w.held_at(4, 5);
-        let v = b.w.judge(&window, None);
-        assert!(v.counting[f] && !v.counting[r] && v.valid[x], "until the merge arrives, X's fork rejects the removal (the fork window)");
+        let v = b.w.judge_at(4, &window);
+        assert!(v.counting[f] && !v.counting[r] && v.valid[x], "X's fork extends the line followed (the fork window)");
         let m = b.rotate(0, 6, &|_| Some(0), &|_, _| Some(0)).unwrap(); // node 0: at 2, names #1, supersedes X's fork
         assert!(matches!(&b.w.items[m].kind, Kind::Rotation { at: 2, names, .. } if names == &vec![1]));
         assert!(b.w.items.iter().all(|i| !matches!(&i.kind, Kind::List { rot, lists, .. } if *rot == b.w.items[m].id && lists.contains(&b.w.items[x].id))), "the merge's list leaves out X's write after the removal");
@@ -2885,9 +3114,16 @@ mod tests {
         b.listings(2, 7, &|_, _| Some(0));
         let w = b.w;
         let all = all(&w);
-        for o in [0, 2, 3, 4] {
-            let v = w.judge(&all, w.default_side(o, &all));
-            assert!(v.counting[r] && v.counting[m] && !v.counting[f] && !v.dispute() && !v.valid[x], "observer {o}: {v:?}");
+        // nodes of P follow the merge
+        for o in [0, 2] {
+            let v = w.judge_at(o, &all);
+            assert!(v.counting[r] && v.counting[m] && !v.counting[f] && !v.valid[x], "observer {o}: {v:?}");
+        }
+        // outsiders that followed X's fork (held before the merge) stay, told once the merge
+        // rejects it
+        for o in [3, 4] {
+            let v = w.judge_at(o, &all);
+            assert!(v.counting[f] && !v.counting[m] && v.warning(), "observer {o}: {v:?}");
         }
     }
 
@@ -2957,9 +3193,10 @@ mod tests {
     }
 
     /// A removed node keeps its old epoch's key and forks plainly from it after every
-    /// rotation: such a fork is a head, open, until a node of P rejects it. Every head is open,
-    /// so it hides nothing, at any reader, whichever it received first; no reader is in doubt
-    /// (no dispute), and the fork is due a rejection from any node of P holding the removal.
+    /// rotation. A reader that held the removal first disregards every such fork, whatever it
+    /// held next: it hides nothing and never counts; a node of P holding the removal owes it a
+    /// rejection, and once one is held the reader is told. A reader that held a fork first
+    /// follows it.
     #[test]
     fn plain_reforks_after_every_merge_hide_nothing() {
         let mut w = World::shape(2, vec![vec![0]], vec![vec![0]; 3], vec![None; 3], None, None, false);
@@ -2980,14 +3217,15 @@ mod tests {
         let all = all(&w);
         for o in [0, 2] {
             let v = w.judge_at(o, &all);
-            assert!(v.counting[l2] && !v.counting[l1] && v.counting[m] && v.counting[r] && !v.dispute(), "observer {o}: {v:?}");
-            assert!(v.heads.contains(&m) && v.heads.contains(&l2) && v.visible[c1] && v.visible[c2], "observer {o}: {v:?}");
+            assert!(!v.counting[l2] && !v.counting[l1] && v.counting[m] && v.counting[r] && v.warning(), "observer {o}: {v:?}");
+            assert!(v.heads == vec![m] && v.visible[c1] && v.visible[c2], "observer {o}: {v:?}");
         }
-        // The outsider received the second fork first: the same reading.
+        // The outsider received the second fork first: it follows that fork, whose epoch closes
+        // the first (the account's earlier write too, which no word the fork's line holds names)
         let mut first = w.clone();
         first.items[l2].recv[2] = 0;
         let v = first.judge_at(2, &all);
-        assert!(v.visible[c1] && v.visible[c2] && !v.dispute(), "{v:?}");
+        assert!(v.counting[l2] && !v.counting[m] && !v.visible[c2], "{v:?}");
         let mut st = Stats::default();
         check(&w, &mut st);
         assert_eq!(st.hard_failures(), 0, "{st:?}");
@@ -3119,3 +3357,5 @@ mod tests {
         assert_eq!(st.hard_failures(), 0, "OSIS_ROLES_START={start}: {st:?}");
     }
 }
+
+

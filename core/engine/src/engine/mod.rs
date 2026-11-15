@@ -409,6 +409,8 @@ pub struct AspectView {
     pub hi: u64,
     /// The fire it claims to replace (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
+    /// That fire's floor as its writer read it (`osis_commit::AspectEntry::original_floor`).
+    pub original_floor: u64,
 }
 
 impl View {
@@ -423,7 +425,7 @@ impl View {
             actor: h.actor,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
-            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces }).collect(),
+            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces, original_floor: a.original_floor }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             purges: h.has_request(),
             epoch: h.epoch,
@@ -573,7 +575,7 @@ fn fallback_header(v: &View) -> Header {
         ts: v.ts,
         form: v.form,
         expires: None,
-        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hash: [0; 32], replaces: a.replaces }).collect(),
+        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hash: [0; 32], replaces: a.replaces, original_floor: a.original_floor }).collect(),
         purge: Vec::new(),
         undoes: None,
         blind: [0; 16],
@@ -732,7 +734,7 @@ indexes! {
     pub epochs: JMap<Tid, Arc<crate::flows::account::JudgedEpochs>>,
     /// Per held rotation of an account, its inner and merge signatures (spec/wire.md §4), read
     /// when the chain is built (`Core::account_view`). Persisted.
-    pub rotation_sigs: JMap<CommitId, Arc<RotationSigs>>,
+    pub role_sigs: JMap<CommitId, Arc<RoleSigs>>,
     /// Held commits of accounts per (account, epoch they are signed at).
     pub by_epoch: JSetMap<(Tid, CommitId), CommitId>,
     /// Held commits of accounts a thing list or listing may name otherwise since they were last
@@ -996,10 +998,11 @@ pub(crate) struct StepFault {
 /// Whether a commit listener is on a thing (`Engine::listen_commits`).
 pub type CommitListeners = Arc<dyn Fn(&Tid) -> bool + Send + Sync>;
 
-/// A held rotation's signatures beyond its outer one (`Indexes::rotation_sigs`): its sealed inner
-/// signature (who minted it, read by the account's nodes) and its merge signatures.
+/// A held role commit's signatures beyond its outer one (`Indexes::role_sigs`): its sealed
+/// inner signature (which node made it, read by the account's nodes) and, a rotation, its merge
+/// signatures.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RotationSigs {
+pub struct RoleSigs {
     pub inner: Option<[u8; osis_crypto::INNER_LEN]>,
     pub merge: Vec<osis_crypto::Signature>,
 }
@@ -1216,6 +1219,9 @@ pub struct Core {
     /// Tests: a listing answering a rotation is one commit over every thing (`flows::signing::listing`).
     #[cfg(test)]
     pub(crate) listing_whole: bool,
+    /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
+    #[cfg(test)]
+    pub(crate) lie_floor: Option<u64>,
     /// Key actors other than the node whose seed this node holds for now (a link key from
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
@@ -1475,6 +1481,8 @@ impl Core {
             lie_facts: self.lie_facts.clone(),
             #[cfg(test)]
             listing_whole: self.listing_whole,
+            #[cfg(test)]
+            lie_floor: self.lie_floor,
             key_actors: self.key_actors.clone(),
             followed_links: self.followed_links.clone(),
             account: self.account.clone(),
@@ -2093,6 +2101,8 @@ impl Core {
             lie_facts: _,
             #[cfg(test)]
             listing_whole: _,
+            #[cfg(test)]
+            lie_floor: _,
         } = c;
     }
 
@@ -2261,6 +2271,8 @@ impl Core {
             lie_facts: None,
             #[cfg(test)]
             listing_whole: false,
+            #[cfg(test)]
+            lie_floor: None,
             key_actors: Default::default(),
             followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),

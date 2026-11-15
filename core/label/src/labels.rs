@@ -41,13 +41,6 @@ pub fn sync_steps(label: &SyncEntry) -> Result<BTreeMap<StepId, (Step, Option<Cl
     Ok(out)
 }
 
-/// Steps no other step of the sync ID names as `prev`: the tips of each branch.
-pub fn tips(label: &SyncEntry) -> Result<Vec<StepId>, Error> {
-    let steps = sync_steps(label)?;
-    let parents: std::collections::BTreeSet<StepId> = steps.values().filter_map(|(s, _)| s.prev).collect();
-    Ok(steps.keys().filter(|k| !parents.contains(k)).copied().collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,7 +50,7 @@ mod tests {
     use osis_schema::Codec;
 
     // spec/sync-ids.md §4, spec/data-model.md §9: `sync.0` holds steps by ID with their claim sets;
-    // records round trip through the `sync_entry` value; paths and tips follow `prev`.
+    // records round trip through the `sync_entry` value; paths follow `prev`.
     #[test]
     fn records() {
         let mut rng = SeededRng::from_u64(0);
@@ -74,11 +67,6 @@ mod tests {
         assert_eq!(back, label);
         let steps: BTreeMap<StepId, Step> = sync_steps(&label).unwrap().into_iter().map(|(k, (s, _))| (k, s)).collect();
         assert_eq!(crate::step::path_to(&steps, &s1.id()).unwrap(), vec![s0.clone(), s1.clone()]);
-        let mut t = tips(&label).unwrap();
-        t.sort();
-        let mut want = vec![s1.id(), s2.id()];
-        want.sort();
-        assert_eq!(t, want);
         // A claim set of another step, or a record under the wrong key, is rejected.
         let mut bad = label.clone();
         bad.steps.insert(s1.id().0, step_record(&s1, Some(&c0)));

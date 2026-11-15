@@ -567,7 +567,7 @@ fn expired_list_element_survives_unmerge_spec_crdt_4_6() {
     assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])), "un-merged");
 }
 
-// spec/crdt.md §4.7 (snapshots carry the delta's value-carrying writes value-less): a snapshot carries the delta's list creations value-less, before and after T,
+// spec/crdt.md §4.7 (Snapshots: one without an expiry carries the delta's value-carrying writes value-less): a snapshot carries the delta's list creations value-less, before and after T,
 // spec/permissions.md §5.2: a snapshot from past T joins at a node before T still holding the body,
 // whose valued copy wins: the element reads there until its own T.
 #[test]

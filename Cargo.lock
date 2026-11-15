@@ -2811,6 +2811,7 @@ dependencies = [
  "osis-schema",
  "osis-store",
  "osis-vectors",
+ "roles-model",
 ]
 
 [[package]]

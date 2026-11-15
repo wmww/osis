@@ -31,3 +31,4 @@ osis-vectors.workspace = true
 # its values are crdt-model fragments, decoded from the engine's wire bytes.
 held-model.workspace = true
 crdt-model.workspace = true
+roles-model.workspace = true

@@ -67,10 +67,16 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
     }
 }
 
-/// A rotation's inner and merge signatures, for the signing chain (`Indexes::rotation_sigs`).
-pub(crate) fn note_rotation_sigs(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
-    if h.rotation.is_some() {
-        core.ix.rotation_sigs.insert(*id, Arc::new(crate::engine::RotationSigs { inner: sigs.inner, merge: sigs.merge.clone() }));
+/// A rotation's inner and merge signatures, and an account's role commit's on its devices actor
+/// (who made a removal), for the signing chain (`Indexes::role_sigs`). Only the account's nodes
+/// hold its devices actor.
+pub(crate) fn note_role_sigs(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
+    // the commit writing D's seeds signs as the account itself: D is its devices actor by this
+    // commit, whose record `devices_of` reads is not held yet
+    let seeds_by_author = |a: &osis_commit::AspectEntry| a.ak.as_str() == "account.0" && core.first_admin(&a.tid) == Some(h.author) && core.is_account(&h.author);
+    let on_devices = || h.epoch.is_some() && h.kind == osis_commit::Kind::Role && h.aspects.iter().any(|a| core.devices_of(&a.tid) == Some(h.author) || seeds_by_author(a));
+    if h.rotation.is_some() || on_devices() {
+        core.ix.role_sigs.insert(*id, Arc::new(crate::engine::RoleSigs { inner: sigs.inner, merge: sigs.merge.clone() }));
     }
 }
 
@@ -575,7 +581,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         );
     }
     index_commit(tx.core, &id, &view);
-    note_rotation_sigs(tx.core, &blob.header, &id, &blob.sigs);
+    note_role_sigs(tx.core, &blob.header, &id, &blob.sigs);
     validity::note_addenda(tx.core, &h, &id, &parts.whole);
     if tx.core.accounts.contains_key(&h.author) && origin == Origin::Remote {
         tx.core.signing_due = true;
@@ -697,18 +703,23 @@ fn observe_all(tx: &mut Tx<'_>, j: &Joins) -> Result<()> {
 }
 
 /// Re-judges held deltas when the held set changed or something is stale
-/// (`validity::rejudge_all`), and observes the aspects that flipped; returns them.
+/// (`validity::rejudge_all`), and observes the aspects that flipped; returns them. Until nothing
+/// is stale: observing may make more so (a devices actor's `account.0` that counts again gives
+/// its nodes seeds, which move the account's epochs; each pass takes some up, or ends).
 pub(crate) fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, Ak)>> {
-    if !held_changed && !tx.core.stale() {
-        return Ok(Vec::new());
+    let mut all = Vec::new();
+    let mut first = held_changed;
+    while first || tx.core.stale() {
+        first = false;
+        let flipped = validity::rejudge_all(tx, true)?;
+        for (tid, ak) in &flipped {
+            observe_state(tx, tid, ak)?;
+        }
+        // roles may have grown: boxes kept out for want of them open now
+        crate::flows::retake(tx)?;
+        all.extend(flipped);
     }
-    let flipped = validity::rejudge_all(tx, true)?;
-    for (tid, ak) in &flipped {
-        observe_state(tx, tid, ak)?;
-    }
-    // roles may have grown: boxes kept out for want of them open now
-    crate::flows::retake(tx)?;
-    Ok(flipped)
+    Ok(all)
 }
 
 /// Joins deltas of an applied commit that arrived later (spec/commits.md §4). Late creation

@@ -12,7 +12,10 @@ fn edge(r: Role) -> ct::Edge {
     ct::Edge { role: r, until: None, invite: None, tied: None, floor: None }
 }
 
+/// Delivers `ids` a millisecond on: what a node received earlier it received in an earlier
+/// millisecond (the signing chain places rotations by receipt, one millisecond's by ID).
 fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
+    lp.advance(1);
     for id in ids {
         if let Some(pk) = lp.peers[from].engine.package(id).unwrap() {
             lp.deliver(to, &pk).unwrap();
@@ -306,11 +309,12 @@ fn a_writers_addendum_keeps_what_it_received_spec_permissions_5_5() {
 }
 
 // spec/crypto.md §9, spec/permissions.md §5.4: two nodes removing a third at once fork the
-// chain; an outsider holding both reads both heads open and is told of nothing. Each head's line
-// lacks the other's removal (blocked: either may be boxed to the removed node), so each node
-// holding both owes a rotation, none designated: both rotate at once, superseding both heads and
-// naming them (signed at each), and their two rotations fork and stand, owing nothing more; the
-// account's next write at either counts at the outsider
+// chain; an outsider follows the rotation it held first and is told of nothing. Each head's line
+// lacks the other's removal (blocked), so each node holding both owes a rotation, none
+// designated: both rotate at once, superseding both heads and naming them (signed at each), and
+// their two rotations fork again. Outside the account only one of them is followed, so that fork
+// is owed a merge too: the first node asked makes it, the other then owes nothing, and every
+// write of the account counts at the outsider
 #[test]
 fn concurrent_rotations_fork_and_every_node_supersedes_them_spec_crypto_9() {
     let (mut lp, a, t) = world(4, 3);
@@ -328,19 +332,31 @@ fn concurrent_rotations_fork_and_every_node_supersedes_them_spec_crypto_9() {
         assert_eq!(rh.supersedes.iter().copied().collect::<std::collections::BTreeSet<_>>(), [r0, r1].into());
         assert_eq!(rh.names.len(), 1);
     }
+    send(&mut lp, 0, 3, &[r0]);
+    send(&mut lp, 1, 3, &[r1]);
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("p".into())), "the account's earlier write counts through the fork");
+    let v = lp.peers[3].engine.core.account_view(&a.account).unwrap();
+    assert_eq!(v.heads(), vec![r0], "the outsider follows the rotation it held first");
+    assert!(lp.peers[3].engine.account_disputes().is_empty(), "honest concurrent rotations warn of nothing");
     send(&mut lp, 0, 1, &[m0]);
     send(&mut lp, 1, 0, &[m1]);
-    send(&mut lp, 0, 3, &[r0, r1]);
-    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("p".into())), "the account's earlier write counts through the fork");
-    assert!(lp.peers[3].engine.account_disputes().is_empty(), "honest concurrent rotations warn of nothing");
     let w0 = write(&mut lp, 0, t, "after");
-    send(&mut lp, 0, 3, &[m0, m1, w0]);
-    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "the rotations' epochs are open");
-    assert_eq!(lp.peers[3].engine.core.account_view(&a.account).unwrap().heads().len(), 2, "their fork stands");
+    send(&mut lp, 1, 3, &[m1]);
+    send(&mut lp, 0, 3, &[m0, w0]);
+    // node 0 writes at its own rotation, which the outsider holds beside the one it follows
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("p".into())), "not yet: m1 is followed");
+    let m2 = lp.peers[0].engine.signing_due().unwrap().commits;
+    assert_eq!(m2.len(), 1, "the fork is owed a merge");
+    send(&mut lp, 0, 1, &m2);
+    assert!(lp.peers[1].engine.signing_due().unwrap().commits.is_empty(), "merged once");
+    // the merge's list names node 0's listing, which names its write
+    let ids = lp.peers[0].engine.commit_ids();
+    send(&mut lp, 0, 3, &ids);
+    // its body, dropped while it did not count, is offered again
+    send(&mut lp, 0, 3, &[w0]);
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "node 0's write counts by its word");
+    assert_eq!(lp.peers[3].engine.core.account_view(&a.account).unwrap().heads(), m2);
     assert!(lp.peers[3].engine.account_disputes().is_empty());
-    for k in [0, 1] {
-        assert!(lp.peers[k].engine.signing_due().unwrap().commits.is_empty(), "peer {k}: a fork alone owes nothing");
-    }
 }
 
 // spec/requirements.md Cost, notes/coordination.md (Check scaling): a removal lists the commits
@@ -373,7 +389,7 @@ fn a_rotation_lists_its_epoch_only() {
 // each node of the account holding the fork owes the rotation (none is designated), which
 // supersedes the fork unnamed (D's roster does not authorize it), so the fork is rejected with
 // its list, and the removed node's write counts for nothing at a sibling or an outsider holding
-// either rotation; the two rotations fork and stand, owing nothing more
+// either rotation; the two rotations fork, and the first node asked merges them
 #[test]
 fn a_removed_nodes_fork_is_rejected_by_every_node_spec_permissions_5_4() {
     let (mut lp, a, t) = world(4, 3);
@@ -403,9 +419,16 @@ fn a_removed_nodes_fork_is_rejected_by_every_node_spec_permissions_5_4() {
             }
         }
     }
+    // the two rotations made at once fork: the first node asked merges them, the other then
+    // owes nothing
+    let m = lp.peers[0].engine.signing_due().unwrap().commits;
+    assert_eq!(m.len(), 1, "the fork is owed a merge");
+    for to in [1, 3] {
+        send(&mut lp, 0, to, &m);
+    }
+    assert!(lp.peers[1].engine.signing_due().unwrap().commits.is_empty(), "merged once");
     for k in [0, 1] {
-        assert!(lp.peers[k].engine.signing_due().unwrap().commits.is_empty(), "peer {k}: the two rotations' fork stands");
-        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads().len(), 2);
+        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), m.clone());
     }
     // the write's body dropped with its fall is offered again
     send(&mut lp, 2, 3, &[late]);
@@ -415,6 +438,8 @@ fn a_removed_nodes_fork_is_rejected_by_every_node_spec_permissions_5_4() {
     let w = write(&mut lp, 1, t, "after");
     send(&mut lp, 1, 3, &[w]);
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "the merge's epoch is open");
+    // told: the account's line rejects a fork
+    assert_eq!(lp.peers[3].engine.account_disputes().len(), 1);
 }
 
 // spec/permissions.md §5.5 (Listings): a listing names what it names only while it counts. A
@@ -677,6 +702,51 @@ fn a_removal_named_by_a_removed_node_is_named_again_spec_permissions_3() {
     assert!(read_box_at(&mut lp, 2, x, p).is_some(), "N2 seals P into its own group");
 }
 
+// spec/permissions.md §5.4 (Following, at a node of P: the removals each rotation carries, those
+// its header names by its minter signed at the epoch it rotates), §5.5 (a counting removal from D no rotation D's roster
+// authorizes names, and no held rotation it does not count carries: named again). As above, but before N2 asks what is due, removed N1, holding r1's keys, forks at
+// r1 sealed as a key actor it makes up (or as itself), its header naming L's removal: that fork
+// carries nothing (its minter or its epoch is not the removal's), so N2's rotation answering it still names
+// L's removal
+#[test]
+fn a_header_naming_anothers_removal_carries_none_spec_permissions_5_4() {
+    header_naming_anothers_removal(false);
+    header_naming_anothers_removal(true);
+}
+
+fn header_naming_anothers_removal(sealed_as_n1: bool) {
+    use osis_crypto::{AccountEpochKeys, Secret32};
+    let (mut lp, a, _) = world(3, 3);
+    let r1 = remove(&mut lp, 0, a.devices, 1);
+    send(&mut lp, 0, 2, &r1.commits);
+    lp.advance(1000);
+    remove(&mut lp, 2, a.devices, 0);
+    let (rem, at) = (r1.commits[0], r1.commits[1]);
+    let fb = {
+        let e = &lp.peers[0].engine;
+        let rec = e.core.created(&a.account).unwrap().clone();
+        let vk = e.header(&at).unwrap().rotation.clone().unwrap().signing_key;
+        let at_keys = AccountEpochKeys::from_seed(e.core.accounts.get(&a.account).unwrap().keys.get(&vk).unwrap().seed());
+        let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([71; 32]));
+        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![at], names: Vec::new(), takes: Vec::new(), removals: vec![rem], list_root: [0; 32] };
+        let made_up = super::tests_account::rotation_at(rec, (at, &at_keys), &[], &next, header, osis_base::Ts::make(e.now(), 0).unwrap());
+        // and the same header sealed as N1 itself: its minter is the removal's, its epoch is not
+        let mut b = osis_commit::CommitBlob::decode(&made_up).unwrap();
+        let id = b.header.id();
+        let inner = osis_crypto::seal_inner(&at_keys.inner, &id.0, &e.core.id.tid(), &e.core.id.keys().signing);
+        b.sigs = osis_commit::Sigs::signed(&id, &at_keys.signing, Some(inner), Vec::new());
+        if sealed_as_n1 { b.encode() } else { made_up }
+    };
+    let f = give(&mut lp, &fb, &[2]);
+    let again = lp.peers[2].engine.signing_due().unwrap();
+    assert_eq!(again.commits.len(), 1, "one rotation");
+    let h = lp.peers[2].engine.header(&again.commits[0]).unwrap().rotation.clone().unwrap();
+    assert!(h.supersedes.contains(&f), "the fork answered");
+    let lists = lp.peers[2].engine.rotation_lists(&again.commits[0]).unwrap();
+    assert!(lists.iter().any(|(_, ids)| ids.contains(&rem)), "L's removal named again");
+    assert!(lp.peers[2].engine.signing_due().unwrap().commits.is_empty(), "nothing more is due");
+}
+
 /// A plain fork of `a`'s chain from its first epoch to a fresh epoch from `seed`, as removed
 /// node `by` (which still holds the first epoch's seed) can sign after every merge.
 fn refork(lp: &mut LocalPeer, by: usize, a: &CreatedAccount, seed: u8) -> Vec<u8> {
@@ -723,12 +793,12 @@ fn merge(lp: &mut LocalPeer, nodes: &[usize], to: &[usize]) -> CommitId {
     m
 }
 
-// spec/permissions.md §5.4 (Open): a removed node keeps its old epoch's key and forks the chain
-// plainly from it after every rotation, a head nothing rejects until a node of the account
-// rotates. Every head is open, so the account's earlier and later writes keep counting through
-// every fork at a reader, it is told of nothing, and each rotation rejecting a fork ends it
+// spec/permissions.md §5.4 (Placing): a removed node keeps its old epoch's key and forks the chain
+// plainly from it after every rotation. A reader that held the removal first disregards every
+// such fork (it is beside the line it follows): the account's writes keep counting, none of the
+// fork's does, and once a node of the account rejects a fork the reader is told
 #[test]
-fn a_removed_nodes_reforks_hide_nothing_spec_permissions_5_4() {
+fn a_removed_nodes_reforks_never_count_after_the_removal_spec_permissions_5_4() {
     let (mut lp, a, t) = world(4, 3);
     let done = remove(&mut lp, 0, a.devices, 2);
     send(&mut lp, 0, 1, &done.commits);
@@ -740,27 +810,25 @@ fn a_removed_nodes_reforks_hide_nothing_spec_permissions_5_4() {
     let mut later = "one".to_string();
     for (round, seed) in [90u8, 91, 92].into_iter().enumerate() {
         let f = refork(&mut lp, 2, &a, seed);
-        give(&mut lp, &f, &[0, 1, 3]);
+        let f = give(&mut lp, &f, &[0, 1, 3]);
         let v = lp.peers[3].engine.core.account_view(&a.account).unwrap();
-        assert_eq!(v.heads().len(), 2, "round {round}: the fork stands until rejected");
+        assert!(v.heads().len() == 1 && !v.rotation_counts(&f), "round {round}: the fork is disregarded");
         says(&mut lp, &later);
-        assert!(lp.peers[3].engine.account_disputes().is_empty(), "round {round}: a lone fork is told of nowhere");
         merge(&mut lp, &[0, 1], &[0, 1, 3]);
         later = format!("after rotation {round}");
         let w = write(&mut lp, 1, t, &later);
         send(&mut lp, 1, 3, &[w]);
         says(&mut lp, &later);
-        assert_eq!(lp.peers[3].engine.core.account_view(&a.account).unwrap().heads().len(), 1, "round {round}: the rotation ends the fork");
+        assert_eq!(lp.peers[3].engine.account_disputes().len(), 1, "round {round}: told once a fork is rejected");
     }
 }
 
-// spec/permissions.md §5.4 (open; doubt): every head is open, so a reader the removed node's
-// fork reached before the removal and the rotation rejecting the earlier fork loses nothing: the
-// account's write on that rotation's line counts there as anywhere, and nothing is told (no
-// dispute, only a fork until a node of the account rejects it). The next rotation rejects the
-// fork at every reader, whatever the order it received things in
+// spec/permissions.md §5.4 (Placing; Warning): a reader the removed node's fork reached before the
+// removal follows the fork; it is told once the account's line rejects it, and stays. Its user's
+// switch to the account's line holds (through a rebuild and later forks), and every write of the
+// account then counts there
 #[test]
-fn a_reader_the_fork_reached_first_loses_nothing_spec_permissions_5_4() {
+fn a_reader_the_fork_reached_first_stays_until_its_user_switches_spec_permissions_5_4() {
     let (mut lp, a, t) = world(6, 3);
     let done = remove(&mut lp, 0, a.devices, 2);
     send(&mut lp, 0, 1, &done.commits);
@@ -775,18 +843,13 @@ fn a_reader_the_fork_reached_first_loses_nothing_spec_permissions_5_4() {
     let f2 = give(&mut lp, &f2b, &[4, 5, 3]);
     let told = |lp: &mut LocalPeer, k: usize| lp.peers[k].drain_events().into_iter().filter(|e| matches!(e, crate::events::Event::AccountDisputed { .. })).count();
     for k in [4, 5] {
-        lp.advance(1);
         send(&mut lp, 0, k, &done.commits[1..]);
-        lp.advance(1);
         send(&mut lp, 3, k, &[f1, m1, w]);
-        assert_eq!(told(&mut lp, k), 0, "peer {k}: a fork is no dispute");
-        assert_eq!(read(&mut lp, k, t), Some(Value::Str("merged".into())), "peer {k} reads every head");
-        assert!(lp.peers[k].engine.account_disputes().is_empty());
-        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), { let mut h = vec![m1, f2]; h.sort(); h });
+        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), vec![f2], "peer {k} follows the fork it held first");
+        assert_ne!(read(&mut lp, k, t), Some(Value::Str("merged".into())), "peer {k}: the account's line is beside it");
+        assert_eq!(told(&mut lp, k), 0, "peer {k}: nothing rejects its fork yet");
     }
-    lp.peers[5].engine.rebuild_index().unwrap();
-    assert_eq!(read(&mut lp, 5, t), Some(Value::Str("merged".into())), "peer 5 after a rebuild");
-    // the next rotation rejects the fork at every reader
+    // the next rotation of the account rejects the fork: told, and staying
     for k in [0, 1] {
         lp.advance(1);
         lp.peers[k].engine.ingest(&f2b, Vec::new()).unwrap();
@@ -794,18 +857,37 @@ fn a_reader_the_fork_reached_first_loses_nothing_spec_permissions_5_4() {
     let m2 = merge(&mut lp, &[0, 1], &[0, 1]);
     let w2 = write(&mut lp, 1, t, "after");
     for k in [3, 4, 5] {
-        lp.advance(1);
         send(&mut lp, 0, k, &[m2]);
         send(&mut lp, 1, k, &[w2]);
-        assert_eq!(read(&mut lp, k, t), Some(Value::Str("after".into())), "peer {k}");
-        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), vec![m2], "peer {k}");
     }
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())));
+    assert_eq!(lp.peers[3].engine.core.account_view(&a.account).unwrap().heads(), vec![m2]);
+    for k in [4, 5] {
+        assert_eq!(told(&mut lp, k), 1, "peer {k} is told");
+        assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), vec![f2], "peer {k} stays");
+        assert_ne!(read(&mut lp, k, t), Some(Value::Str("after".into())));
+        let ds = lp.peers[k].engine.account_disputes();
+        assert!(ds.len() == 1 && ds[0].side == f2 && ds[0].lines.contains(&m2) && !ds[0].chosen);
+    }
+    // peer 5's user switches; a rebuild and a later fork change nothing
+    lp.peers[5].engine.choose_line(a.account, m2).unwrap();
+    // the write's body, dropped while it did not count, is offered again
+    send(&mut lp, 1, 5, &[w2]);
+    assert_eq!(read(&mut lp, 5, t), Some(Value::Str("after".into())), "switched");
+    lp.peers[5].engine.rebuild_index().unwrap();
+    let f3 = refork(&mut lp, 2, &a, 82);
+    give(&mut lp, &f3, &[5]);
+    assert_eq!(read(&mut lp, 5, t), Some(Value::Str("after".into())), "the switch holds");
+    let ds = lp.peers[5].engine.account_disputes();
+    assert!(ds.len() == 1 && ds[0].side == m2 && ds[0].chosen);
+    assert_ne!(read(&mut lp, 4, t), Some(Value::Str("after".into())), "peer 4 stays with the fork");
 }
 
-// spec/permissions.md §5.4 (Nodes of P): a node of the account signs on the line D's roster
-// authorizes. Node 2 rotates while node 0 removes it; node 1 gets node 2's rotation first and
-// holds its seed. The rotation of the account owed then rejects node 2's fork (a removed
-// node's, unnamed): node 1 prefers it, so its next write counts at an outsider
+// spec/permissions.md §5.4 (Following, at a node of P): a removed node's plain rotation never
+// outweighs its removal at the account's nodes. Node 2 rotates while node 0 removes it; node 1
+// gets node 2's rotation first and holds its seed, then the removal: it disregards node 2's
+// rotation. The rotation of the account owed rejects it (unnamed): node 1 follows that, so its
+// next write counts at an outsider
 #[test]
 fn a_node_follows_the_merge_over_a_removed_nodes_earlier_rotation_spec_permissions_5_4() {
     let (mut lp, a, t) = world(4, 3);
@@ -865,7 +947,7 @@ fn an_honest_write_at_a_removed_nodes_rotation_counts_spec_permissions_5_5() {
     }
 }
 
-// spec/permissions.md §5.4 (Nodes of P): a removed node's rotation beside its removal stands
+// spec/permissions.md §5.4 (Authorizes): a removed node's rotation beside its removal stands
 // for D's roster nowhere, nor does a line built on it. The tablet (node 1) rotates on the
 // laptop's (node 2) rotation before the phone's (node 0) removal of the laptop reaches it: the
 // phone's merge names neither, the tablet follows the merge, and the tablet's write at its own
@@ -902,7 +984,7 @@ fn a_line_on_a_removed_nodes_rotation_is_merged_out_spec_permissions_5_4() {
     }
 }
 
-// spec/permissions.md §5.4 (Nodes of P): a re-added node's rotations made after its re-add
+// spec/permissions.md §5.4 (Authorizes): a re-added node's rotations made after its re-add
 // stand for D's roster. Node 0 removes node 2 and pairs it again; node 2 then removes node 1:
 // node 0 follows node 2's rotation, minted by a current node descending from the re-grant
 #[test]
@@ -928,7 +1010,7 @@ fn a_re_added_nodes_later_rotation_is_authorized_spec_permissions_5_4() {
     assert_eq!(v.preferred(), rot, "node 0 follows it");
 }
 
-// spec/permissions.md §5.4 (Nodes of P): only a removal that counts puts its node beside it.
+// spec/permissions.md §5.4 (Authorizes): only a removal that counts puts its node beside it.
 // The laptop (node 2), not yet holding its own removal, removes the tablet (node 1); the phone
 // (node 0) has removed the laptop and gets that removal alone, after its rotation closed the
 // epoch it is signed at, so it counts for nothing (as one a removed node forges there would),
@@ -1124,4 +1206,655 @@ fn an_own_write_on_two_things_is_refused_spec_sync_set_1() {
     let mut one = crate::Mutation::new();
     one.set(t, &x(), &Value::Str("t".into())).unwrap();
     assert!(e.run(|tx| crate::engine::write::commit_own(tx, one)).unwrap().is_some(), "one thing goes");
+}
+
+// spec/permissions.md §5.5 (Nothing waits for a thing list), spec/requirements.md (outsiders
+// never learn the account's devices): an outsider that holds the account's rotation before its
+// thing list reads the account's earlier grant and write as unlisted; once the list arrives, without
+// the removal, the grant counts again and the write's body,
+// dropped while it did not count, counts missing again (`commit_parts_missing`) and reads once offered
+#[test]
+fn a_rotations_late_list_restores_the_accounts_earlier_word_at_an_outsider_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(3, 2);
+    let sib = write(&mut lp, 1, t, "sibling");
+    lp.sync_all().unwrap();
+    let o = lp.peers[2].engine.me();
+    let done = remove(&mut lp, 0, a.devices, 1);
+    let pk = lp.peers[0].engine.package(&done.commits[1]).unwrap().unwrap();
+    lp.advance(1);
+    lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    assert_eq!(lp.peers[2].engine.core.role_now(&o, &t), None, "the grant at the closed epoch is unlisted");
+    assert_eq!(lp.peers[2].engine.hold_lists(&pk.lists[0]).unwrap(), crate::flows::ListsHeld::Held);
+    assert!(lp.peers[2].engine.commit_parts_missing().contains_key(&sib), "the write is asked for again");
+    lp.peers[2].reexamine().unwrap();
+    assert_eq!(lp.peers[2].engine.core.role_now(&o, &t), Some(Role::Write), "the grant counts by the list");
+    send(&mut lp, 1, 2, &[sib]);
+    assert_eq!(read(&mut lp, 2, t), Some(Value::Str("sibling".into())));
+    assert!(lp.peers[2].engine.header(&done.commits[0]).is_none(), "the outsider never holds the removal");
+}
+
+/// Commit `id` of peer `from` as a holder of its epoch's keys `k` re-signs it: its inner signature
+/// sealed as key actor `z` (whose identity `zid` signs), the account's signature over it again.
+fn inner_as(lp: &mut LocalPeer, from: usize, id: &CommitId, k: &osis_crypto::AccountEpochKeys, zid: &crate::identity::Identity) -> crate::local_peer::Package {
+    let mut pk = lp.peers[from].engine.package(id).unwrap().unwrap();
+    let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let inner = osis_crypto::seal_inner(&k.inner, &id.0, &zid.tid(), &zid.keys().signing);
+    b.sigs = osis_commit::Sigs::signed(id, &k.signing, Some(inner), b.sigs.merge.clone());
+    pk.bytes = b.encode();
+    pk
+}
+
+// spec/permissions.md §5.4 (Following, at a node of P): a removed node holds its old epochs'
+// inner key, so it can seal a rotation's inner signature as any key actor it makes (here an
+// outsider's node, standing in for a fresh one). A plain fork it so signs after its removal is
+// no head at a node of the account holding the removal, and its write at the fork counts at none
+// of them nor at an outsider holding the removal's rotation
+#[test]
+fn a_removed_nodes_fork_signed_as_another_key_actor_counts_nowhere_spec_permissions_5_4() {
+    let (mut lp, a, t) = world(4, 3);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 1, &done.commits);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    let z = lp.peers[3].engine.core.id.clone();
+    let (_, k0) = lp.peers[2].engine.core.account_signing(&a.account).unwrap().unwrap();
+    let fork = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    let (_, k1) = lp.peers[2].engine.core.account_signing(&a.account).unwrap().unwrap();
+    let late = write(&mut lp, 2, t, "removed at its fork");
+    let forged = [inner_as(&mut lp, 2, &fork, &k0, &z), inner_as(&mut lp, 2, &late, &k1, &z)];
+    for to in [0, 1, 3] {
+        lp.advance(1);
+        for pk in &forged {
+            lp.deliver(to, pk).unwrap();
+        }
+    }
+    for k in [0, 1] {
+        let v = lp.peers[k].engine.core.account_view(&a.account).unwrap();
+        assert!(!v.heads().contains(&fork), "peer {k}: the forged fork is a head");
+    }
+    for k in [0, 1, 3] {
+        let _ = lp.peers[k].engine.signing_due();
+        assert_ne!(read(&mut lp, k, t), Some(Value::Str("removed at its fork".into())), "peer {k}: the removed node's write counts");
+    }
+}
+
+/// Merge rounds after `nodes` of the account rotate at once (spec/permissions.md §5.5, Limit:
+/// merges made at once fork again). `lockstep`: every node runs its signing pass before any
+/// rotation travels, `rounds` times. Else a random interleaving (seed `seed`) of single
+/// deliveries and single nodes' signing passes, until nothing is owed. Returns the merges made
+/// and whether the account's nodes end on one head.
+fn merge_rounds(nodes: usize, seed: u64, lockstep: Option<usize>) -> (usize, bool) {
+    let (mut lp, a, _) = world(nodes + 1, nodes);
+    let mut q: Vec<(usize, usize, CommitId)> = Vec::new();
+    for k in 0..nodes {
+        let r = lp.peers[k].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+        q.extend((0..=nodes).filter(|to| *to != k).map(|to| (k, to, r)));
+    }
+    let mut made = 0;
+    let mut s = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut next = |n: usize| {
+        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((s >> 33) as usize) % n
+    };
+    if let Some(rounds) = lockstep {
+        for _ in 0..rounds {
+            for (from, to, r) in std::mem::take(&mut q) {
+                send(&mut lp, from, to, &[r]);
+            }
+            for k in 0..nodes {
+                let c = lp.peers[k].engine.signing_due().unwrap().commits;
+                made += c.len();
+                q.extend(c.iter().flat_map(|r| (0..=nodes).filter(|to| *to != k).map(move |to| (k, to, *r))));
+            }
+        }
+    } else {
+        let mut quiet = 0;
+        while quiet < 4 * nodes {
+            if !q.is_empty() && next(2) == 0 {
+                let (from, to, r) = q.swap_remove(next(q.len()));
+                send(&mut lp, from, to, &[r]);
+                quiet = 0;
+                continue;
+            }
+            let k = next(nodes);
+            let c = lp.peers[k].engine.signing_due().unwrap().commits;
+            made += c.len();
+            if c.is_empty() && q.is_empty() {
+                quiet += 1;
+            }
+            q.extend(c.iter().flat_map(|r| (0..=nodes).filter(|to| *to != k).map(move |to| (k, to, *r))));
+        }
+    }
+    let heads: std::collections::BTreeSet<Vec<CommitId>> = (0..nodes).map(|k| lp.peers[k].engine.core.account_view(&a.account).unwrap().heads()).collect();
+    (made, heads.len() == 1 && heads.iter().all(|h| h.len() == 1))
+}
+
+// By hand (a measurement, not a property): merge rounds after two or three of the account's
+// nodes rotate at once
+#[test]
+#[ignore = "by hand: prints merge counts"]
+fn merge_rounds_after_concurrent_rotations() {
+    for nodes in [2, 3] {
+        let (made, one) = merge_rounds(nodes, 0, Some(5));
+        eprintln!("{nodes} nodes, lockstep 5 rounds: {made} merges, one head: {one}");
+        let mut counts = Vec::new();
+        for seed in 0..40 {
+            let (made, one) = merge_rounds(nodes, seed, None);
+            assert!(one, "{nodes} nodes seed {seed}: not one head");
+            counts.push(made);
+        }
+        counts.sort();
+        eprintln!("{nodes} nodes, random: merges {counts:?}");
+    }
+}
+
+// spec/permissions.md §5.4 (Following, at a node of P: a re-add is a grant by a node other than
+// the one removed): a removed node granting itself D again is not put back. Here at the epoch of
+// a sibling's rotation made unaware of the removal and boxed to it, which descends from the
+// removal's epoch, as a re-add's must: the removed node's fork from there is no head at the
+// account's nodes, and its write there counts nowhere the removal is held
+#[test]
+fn a_removed_node_readding_itself_is_not_put_back_spec_permissions_5_4() {
+    let (mut lp, a, t) = world(4, 3);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    // the sibling, unaware, rotates; its epoch's seed is boxed to the removed node
+    let rb = lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    send(&mut lp, 1, 2, &[rb]);
+    let xn = lp.peers[2].engine.tid();
+    let mut sent = vec![rb];
+    sent.extend(lp.peers[2].engine.grant(&a.devices, &xn, &edge(Role::Admin)).unwrap().commits);
+    let fork = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    assert_eq!(lp.peers[2].engine.header(&fork).unwrap().epoch, Some(rb), "the removed node forks from the sibling's epoch");
+    sent.push(fork);
+    sent.push(write(&mut lp, 2, t, "removed"));
+    send(&mut lp, 0, 1, &done.commits);
+    for to in [0, 1, 3] {
+        send(&mut lp, 2, to, &sent);
+    }
+    for k in [0, 1] {
+        let _ = lp.peers[k].engine.signing_due();
+        let v = lp.peers[k].engine.core.account_view(&a.account).unwrap();
+        assert!(!lp.peers[k].engine.roster(&a.devices).contains_key(&xn), "peer {k}: the removed node is back on D");
+        assert!(!v.heads().contains(&fork), "peer {k}: the removed node's fork is a head");
+    }
+    for k in [0, 1, 3] {
+        assert_ne!(read(&mut lp, k, t), Some(Value::Str("removed".into())), "peer {k}: the removed node's write counts");
+    }
+}
+
+/// Pairs peer `new` from node `by` of account `a`; returns the grant.
+fn pair_from(lp: &mut LocalPeer, a: &CreatedAccount, by: usize, new: usize) -> CommitId {
+    let node = lp.peers[new].engine.tid();
+    let ids = lp.peers[new].engine.commit_ids();
+    send(lp, new, by, &ids);
+    let (done, all) = lp.peers[by].engine.pair(&node).unwrap();
+    send(lp, by, new, &all);
+    lp.peers[new].engine.paired(&a.account).unwrap();
+    done.commits[0]
+}
+
+// spec/permissions.md §5.1 (Frontier: a node's removal from D lists its word on D) and §5.4
+// (Following, at a node of P: a removal hits its node's commits on D its frontier does not
+// list). The laptop (node 2) pairs the tablet (peer 3); the phone (node 0) removes the laptop.
+// Holding that grant before, the phone lists it: the tablet stays on D at the phone and at node
+// 1. Holding it only after, the grant counts nowhere the removal is held: the tablet is no node
+#[test]
+fn a_device_a_removed_node_paired_stays_as_its_remover_held_it_spec_permissions_5_4() {
+    for held in [true, false] {
+        let mut lp = LocalPeer::new_bare(4, 0, WallMs(1_700_000_000_000)).unwrap();
+        let (a, _) = lp.peers[0].engine.create_account().unwrap();
+        pair_from(&mut lp, &a, 0, 1);
+        pair_from(&mut lp, &a, 0, 2);
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        let tablet = lp.peers[3].engine.tid();
+        let card = lp.peers[3].engine.commit_ids();
+        let g = pair_from(&mut lp, &a, 2, 3);
+        for k in [0, 1] {
+            send(&mut lp, 3, k, &card);
+        }
+        if held {
+            send(&mut lp, 2, 0, &[g]);
+        }
+        let done = remove(&mut lp, 0, a.devices, 2);
+        send(&mut lp, 0, 1, &done.commits);
+        for k in [0, 1] {
+            send(&mut lp, 2, k, &[g]);
+            let _ = lp.peers[k].engine.signing_due();
+            assert_eq!(lp.peers[k].engine.roster(&a.devices).contains_key(&tablet), held, "peer {k}, held before the removal: {held}");
+        }
+    }
+}
+
+// spec/permissions.md §5.4 (Following, at a node of P): a device that took the other side's
+// revocation is that side, whoever signs. R (peer 1) removes X (peer 2); X, unaware, revokes R.
+// S (peer 3) rotated unaware (s1), then holds X's removal of R and its rotation as a header only
+// (no seed): it takes the revocation, and its next rotation (s2) is signed at its own s1,
+// supersedes nothing of R's and takes X's revocation. R and T (peer 0) never follow s2 (its seed
+// X holds); R's merge takes s1 in and rejects s2; S answers once, and neither answers the
+// other's answer again
+#[test]
+fn a_rotation_taking_the_thiefs_revocation_is_that_side_spec_permissions_5_4() {
+    let (mut lp, a, _) = world(4, 4);
+    let p = a.account;
+    let (r, x, s, t) = (1, 2, 3, 0);
+    let ra = remove(&mut lp, r, a.devices, x);
+    send(&mut lp, r, t, &ra.commits);
+    lp.advance(1000);
+    let rx = remove(&mut lp, x, a.devices, r);
+    let xr = rx.commits[1];
+    let s1 = lp.peers[s].engine.run(|tx| crate::flows::signing::rotate_in(tx, p, &[], &mut Done::default())).unwrap().unwrap();
+    lp.advance(1000);
+    send(&mut lp, x, s, &rx.commits[..1]);
+    let pk = lp.peers[x].engine.package(&xr).unwrap().unwrap();
+    let mut header = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    header.parts.clear();
+    lp.advance(1);
+    lp.peers[s].receive_with(&header.encode(), Vec::new(), &pk.lists).unwrap();
+    let v = lp.peers[s].engine.core.account_view(&p).unwrap();
+    assert!(v.rotation_counts(&xr) && v.taken() == [xr], "S takes X's revocation of R: heads {:?}", v.heads());
+    let s2 = lp.peers[s].engine.signing_due().unwrap().commits;
+    assert_eq!(s2.len(), 1, "S's line lacks the removal of R");
+    let s2 = s2[0];
+    let h = lp.peers[s].engine.header(&s2).unwrap();
+    let rh = h.rotation.clone().unwrap();
+    assert!(h.epoch == Some(s1) && rh.supersedes == vec![s1] && rh.takes == vec![xr], "{rh:?}");
+    for k in [r, t] {
+        for c in ra.commits.iter().chain(&rx.commits).chain([&s1, &s2]) {
+            let from = if ra.commits.contains(c) { r } else if *c == s1 || *c == s2 { s } else { x };
+            if from != k {
+                send(&mut lp, from, k, &[*c]);
+            }
+        }
+        let v = lp.peers[k].engine.core.account_view(&p).unwrap();
+        assert!(v.rotation_counts(&ra.commits[1]) && v.rotation_counts(&s1) && !v.rotation_counts(&s2), "peer {k}: heads {:?}", v.heads());
+    }
+    let m = lp.peers[r].engine.signing_due().unwrap().commits;
+    assert_eq!(m.len(), 1);
+    let rh = lp.peers[r].engine.header(&m[0]).unwrap().rotation.clone().unwrap();
+    assert!(rh.names.contains(&s1) && rh.supersedes.contains(&s2) && !rh.names.contains(&s2) && rh.takes.is_empty(), "{rh:?}");
+    send(&mut lp, r, t, &m);
+    assert_eq!(lp.peers[t].engine.core.account_view(&p).unwrap().heads(), vec![m[0]]);
+    send(&mut lp, r, s, &ra.commits);
+    send(&mut lp, r, s, &m);
+    let s3 = lp.peers[s].engine.signing_due().unwrap().commits;
+    assert_eq!(s3.len(), 1, "S answers R's line once");
+    let rh = lp.peers[s].engine.header(&s3[0]).unwrap().rotation.clone().unwrap();
+    assert!(rh.supersedes.contains(&m[0]) && rh.takes == vec![xr], "{rh:?}");
+    send(&mut lp, s, r, &s3);
+    assert!(lp.peers[r].engine.signing_due().unwrap().commits.is_empty(), "R answers no answer");
+    assert!(lp.peers[s].engine.signing_due().unwrap().commits.is_empty(), "nor S");
+    assert_eq!(lp.peers[r].engine.core.account_view(&p).unwrap().heads(), vec![m[0]]);
+}
+
+/// Removed node `by`'s rotation of `a`'s chain to a fresh epoch from `seed`, signed at epoch `at`
+/// and at each of `forks` (named, each with its seed), taking `takes`: what it can sign with the
+/// keys it still holds, sealed as a key actor it makes up.
+fn forge(lp: &mut LocalPeer, by: usize, a: &CreatedAccount, at: CommitId, forks: &[(CommitId, u8)], takes: &[CommitId], seed: u8) -> Vec<u8> {
+    use osis_crypto::{AccountEpochKeys, Secret32};
+    let e = &lp.peers[by].engine;
+    let rec = e.core.created(&a.account).unwrap().clone();
+    let held = e.core.accounts.get(&a.account).unwrap();
+    let vk = match e.header(&at) {
+        Some(h) => h.rotation.clone().unwrap().signing_key,
+        None => {
+            let osis_base::CreationRecord::KeyActor { public_key, .. } = &rec else { panic!("an account") };
+            osis_crypto::VerifyingKey::from_slice(public_key).unwrap()
+        }
+    };
+    let at_keys = AccountEpochKeys::from_seed(held.keys.get(&vk).unwrap().seed());
+    let fork_keys: Vec<AccountEpochKeys> = forks.iter().map(|(_, s)| AccountEpochKeys::from_seed(&Secret32::from_bytes([*s; 32]))).collect();
+    let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([seed; 32]));
+    let mut supersedes: Vec<CommitId> = std::iter::once(at).chain(forks.iter().map(|f| f.0)).collect();
+    supersedes.sort();
+    let mut names: Vec<CommitId> = forks.iter().map(|f| f.0).collect();
+    names.sort();
+    let fork_keys: Vec<&AccountEpochKeys> = names.iter().map(|n| &fork_keys[forks.iter().position(|f| f.0 == *n).unwrap()]).collect();
+    let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes, names, takes: takes.to_vec(), removals: Vec::new(), list_root: [0; 32] };
+    let ts = osis_base::Ts::make(e.now(), 0).unwrap();
+    super::tests_account::rotation_at(rec, (at, &at_keys), &fork_keys, &next, header, ts)
+}
+
+// spec/permissions.md §5.4: a rotation is held only once every rotation it takes is, at every
+// node. The removed node forks taking a rotation no one holds; a reader it reached before the
+// removal never follows it (the account's nodes hold it pending, so none would answer it)
+#[test]
+fn a_rotation_taking_what_no_one_holds_is_held_nowhere_spec_permissions_5_4() {
+    let (mut lp, a, _) = world(4, 3);
+    let f = forge(&mut lp, 2, &a, osis_commit::FIRST_EPOCH, &[], &[CommitId([0xee; 32])], 70);
+    let fb = f;
+    let f = give(&mut lp, &fb, &[3]);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 1, &done.commits);
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    give(&mut lp, &fb, &[0, 1]);
+    for k in [0, 1, 3] {
+        let v = lp.peers[k].engine.core.account_view(&a.account).unwrap();
+        assert!(!v.rotation_counts(&f) && v.heads() == vec![done.commits[1]], "peer {k}: heads {:?}", v.heads());
+    }
+}
+
+// spec/permissions.md §5.5 (Honest nodes of P: one answer per line, as long as that line holds
+// the rejection). B rotated unaware (rb, boxed to X); A removes X; X forks (f), reaching an
+// outsider first. B's merge is signed at rb and rejects f: the outsider is told. X, holding rb's
+// key, signs a rotation at rb accepting f (f2): f is now on a line through rb, so nothing rejects
+// it and the warning goes. f2 is answered, and the outsider is told again
+#[test]
+fn a_rotation_undoing_an_answer_is_answered_spec_permissions_5_5() {
+    let (mut lp, a, _) = world(4, 3);
+    let p = a.account;
+    let rb = lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, p, &[], &mut Done::default())).unwrap().unwrap();
+    send(&mut lp, 1, 2, &[rb]);
+    let done = remove(&mut lp, 0, a.devices, 2);
+    let ra = done.commits[1];
+    send(&mut lp, 0, 1, &done.commits);
+    let fb = forge(&mut lp, 2, &a, osis_commit::FIRST_EPOCH, &[], &[], 80);
+    let f = give(&mut lp, &fb, &[3, 1]);
+    let h1 = lp.peers[1].engine.signing_due().unwrap().commits;
+    assert_eq!(h1.len(), 1);
+    let h = lp.peers[1].engine.header(&h1[0]).unwrap();
+    let rh = h.rotation.clone().unwrap();
+    assert!(h.epoch == Some(rb) && rh.names == vec![ra] && rh.supersedes.contains(&f), "{h:?}");
+    send(&mut lp, 0, 3, &done.commits[1..]);
+    send(&mut lp, 1, 3, &[rb, h1[0]]);
+    assert_eq!(lp.peers[3].engine.account_disputes().len(), 1, "the outsider is told");
+    let f2 = forge(&mut lp, 2, &a, rb, &[(f, 80)], &[], 81);
+    let f2 = give(&mut lp, &f2, &[3, 1]);
+    let v = lp.peers[3].engine.core.account_view(&p).unwrap();
+    assert!(v.heads() == vec![f2] && lp.peers[3].engine.account_disputes().is_empty(), "nothing rejects f now: heads {:?}", v.heads());
+    let h2 = lp.peers[1].engine.signing_due().unwrap().commits;
+    assert_eq!(h2.len(), 1, "B answers f2");
+    assert!(lp.peers[1].engine.header(&h2[0]).unwrap().rotation.clone().unwrap().supersedes.contains(&f2));
+    send(&mut lp, 1, 3, &h2);
+    assert_eq!(lp.peers[3].engine.account_disputes().len(), 1, "the outsider is told again");
+}
+
+// spec/permissions.md §5.4 (Following, at a node of P: the removals a rotation carries are those
+// its header names). X rotates (x0) before A removes it. X, keeping the first epoch's keys, writes
+// a removal of B on D signed at the first epoch, where x0 was signed: x0 names no removal, so it
+// carries none, and T takes A's removal whether it holds x0, then the removal, then A's removal,
+// or X's removal first (were x0 to carry it, x0 would be a revocation held before A's, and T would
+// side with X)
+#[test]
+fn a_removal_written_later_turns_no_earlier_rotation_into_a_revocation_spec_permissions_5_4() {
+    removal_written_later(false);
+    removal_written_later(true);
+}
+
+fn removal_written_later(removal_first: bool) {
+    let (mut lp, a, _) = world(5, 4);
+    let (r, b, x, t) = (0, 1, 2, 3);
+    let x0 = lp.peers[x].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    // X's removal of B, signed at the first epoch with that epoch's keys
+    let first = {
+        let h = lp.peers[x].engine.core.accounts.get(&a.account).unwrap();
+        h.keys.get(&h.first).unwrap().clone()
+    };
+    let holder = lp.peers[b].engine.tid();
+    lp.peers[x].engine.demote(&a.devices, &Demotion { holder, new: None, retain: None }).unwrap();
+    let c = lp.peers[x].engine.commit_ids().into_iter().find(|c| lp.peers[x].engine.header(c).is_some_and(|h| h.rotation.is_none() && h.aspects.iter().any(|s| s.tid == a.devices && s.ak.as_str() == "roles.0") && h.epoch != Some(osis_commit::FIRST_EPOCH))).unwrap();
+    let mut pk = lp.peers[x].engine.package(&c).unwrap().unwrap();
+    let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    blob.header.epoch = Some(osis_commit::FIRST_EPOCH);
+    let id = blob.header.id();
+    let me = &lp.peers[x].engine.core.id;
+    let inner = osis_crypto::seal_inner(&first.inner, &id.0, &me.tid(), &me.keys().signing);
+    blob.sigs = osis_commit::Sigs::signed(&id, &first.signing, Some(inner), Vec::new());
+    pk.id = id;
+    pk.bytes = blob.encode();
+    if removal_first {
+        lp.advance(5);
+        lp.deliver(t, &pk).unwrap();
+    }
+    send(&mut lp, x, t, &[x0]);
+    lp.advance(5);
+    let done = remove(&mut lp, r, a.devices, x);
+    send(&mut lp, r, t, &done.commits);
+    let ra = done.commits[1];
+    let v = lp.peers[t].engine.core.account_view(&a.account).unwrap();
+    assert!(v.rotation_counts(&ra) && !v.rotation_counts(&x0) && v.taken() == [ra], "removal first {removal_first}: heads {:?} taken {:?}", v.heads(), v.taken());
+    if !removal_first {
+        lp.advance(5);
+        lp.deliver(t, &pk).unwrap();
+        let v = lp.peers[t].engine.core.account_view(&a.account).unwrap();
+        assert!(v.rotation_counts(&ra) && !v.rotation_counts(&x0) && v.taken() == [ra], "T keeps A's removal: heads {:?} taken {:?}", v.heads(), v.taken());
+    }
+}
+
+// spec/permissions.md §5.4 (Placing: no earlier than the removals a rotation carries came to be
+// held). X, not yet told of its removal, revokes A (its removal R on D and rotation q naming R).
+// T gets q alone, then A's removal of X, then R: q is placed when R arrives, after A's removal,
+// so T keeps A's removal (placed at q's own receipt, X's revocation would be held first and T
+// would switch)
+#[test]
+fn a_revocation_is_placed_when_its_removal_arrives_spec_permissions_5_4() {
+    let (mut lp, a, _) = world(5, 4);
+    let (r, x, t) = (0, 2, 3);
+    let rx = remove(&mut lp, x, a.devices, r);
+    let (rem, q) = (rx.commits[0], rx.commits[1]);
+    assert!(lp.peers[x].engine.header(&q).unwrap().rotation.clone().unwrap().removals == vec![rem], "q names its removal");
+    send(&mut lp, x, t, &[q]);
+    lp.advance(5);
+    let done = remove(&mut lp, r, a.devices, x);
+    send(&mut lp, r, t, &done.commits);
+    send(&mut lp, x, t, &[rem]);
+    let v = lp.peers[t].engine.core.account_view(&a.account).unwrap();
+    assert!(v.rotation_counts(&done.commits[1]) && !v.rotation_counts(&q) && v.taken() == [done.commits[1]], "T keeps A's removal: heads {:?} taken {:?}", v.heads(), v.taken());
+}
+
+// spec/permissions.md §5.5 (Honest nodes of P: a disregarded rotation no counting rotation's
+// rejection reaches is answered by each node once). X forks at the first epoch sealed as a key
+// actor it made up (f), reaching B and reader R before A's removal of X does. B, unaware, answers
+// f at the first epoch: f is signed there too, so B's rotation rejects nothing of it (contested
+// from below) and R, following f, is not told. A holds B's answer and still answers f from its
+// removal's epoch, which rejects it: R is told
+#[test]
+fn a_rotation_superseded_without_a_rejection_is_answered_spec_permissions_5_5() {
+    let (mut lp, a, _) = world(5, 4);
+    let (r0, b, x, rd) = (0, 1, 2, 4);
+    let done = remove(&mut lp, r0, a.devices, x);
+    let fb = forge(&mut lp, x, &a, osis_commit::FIRST_EPOCH, &[], &[], 90);
+    let f = give(&mut lp, &fb, &[b, rd]);
+    let hb = lp.peers[b].engine.signing_due().unwrap().commits;
+    assert_eq!(hb.len(), 1, "B answers f");
+    let h = lp.peers[b].engine.header(&hb[0]).unwrap();
+    assert!(h.epoch == Some(osis_commit::FIRST_EPOCH) && h.rotation.clone().unwrap().supersedes.contains(&f));
+    send(&mut lp, r0, rd, &done.commits[1..]);
+    send(&mut lp, b, rd, &hb);
+    assert!(lp.peers[rd].engine.account_disputes().is_empty(), "B's answer rejects nothing of f");
+    give(&mut lp, &fb, &[r0]);
+    send(&mut lp, b, r0, &hb);
+    let ha = lp.peers[r0].engine.signing_due().unwrap().commits;
+    assert!(ha.iter().any(|c| lp.peers[r0].engine.header(c).unwrap().rotation.clone().is_some_and(|rh| rh.supersedes.contains(&f))), "A answers f");
+    send(&mut lp, r0, rd, &ha);
+    assert_eq!(lp.peers[rd].engine.account_disputes().len(), 1, "R is told");
+}
+
+/// A plain rotation of `a` by node `k` at its preferred head; its commit ID.
+fn rotate(lp: &mut LocalPeer, k: usize, a: &CreatedAccount) -> CommitId {
+    lp.peers[k].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap()
+}
+
+// spec/permissions.md §5.4 (Following, at a node of P; Following, outside P): the epoch rule reads D
+// only at a node holding the account, so a node's judgment of its account moves when it leaves
+// it, as a rebuild judges it. Nodes 0 and 2 rotate at once; node 1 holds both (node 0's first),
+// which count there as its devices' rotations made at once. Node 0, not holding node 2's
+// rotation, removes node 1: node 1 leaves and reads the chain as an outsider, where node 2's
+// rotation is beside the line it follows
+#[test]
+fn a_node_leaving_its_account_judges_its_chain_as_an_outsider_spec_permissions_5_4() {
+    let (mut lp, a, _) = world(3, 3);
+    let r0 = rotate(&mut lp, 0, &a);
+    let r2 = rotate(&mut lp, 2, &a);
+    send(&mut lp, 0, 1, &[r0]);
+    send(&mut lp, 2, 1, &[r2]);
+    assert!(lp.peers[1].engine.core.account_view(&a.account).unwrap().rotation_counts(&r2), "inside, node 2's rotation counts");
+    let done = remove(&mut lp, 0, a.devices, 1);
+    // the rotation first: the removal's arrival is the last change
+    send(&mut lp, 0, 1, &[done.commits[1]]);
+    send(&mut lp, 0, 1, &[done.commits[0]]);
+    assert!(!lp.peers[1].engine.core.accounts.contains_key(&a.account), "node 1 left");
+    assert!(!lp.peers[1].engine.core.account_view(&a.account).unwrap().rotation_counts(&r2), "outside, it does not");
+    lp.peers[1].engine.check_index();
+}
+
+// spec/permissions.md §5.4 (Following, at a node of P; Following, outside P): a reader paired into the
+// account reads the chain as a node of it from then on, as a rebuild judges it. Nodes 0 and 1
+// rotate at once; reader 2 holds both (node 0's first), node 1's beside the line it follows.
+// Paired, it holds both as its devices' rotations made at once
+#[test]
+fn a_reader_paired_into_the_account_judges_its_chain_as_a_node_spec_permissions_5_4() {
+    let (lp, a) = LocalPeer::cached("rotation::tests_signing::paired_reader", || {
+        let mut lp = LocalPeer::new_bare(3, 0, WallMs(1_700_000_000_000)).unwrap();
+        let (a, _) = lp.peers[0].engine.create_account().unwrap();
+        pair(&mut lp, &a, 1);
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        (lp, a)
+    });
+    let mut lp = lp;
+    let r0 = rotate(&mut lp, 0, &a);
+    let r1 = rotate(&mut lp, 1, &a);
+    send(&mut lp, 0, 2, &[r0]);
+    send(&mut lp, 1, 2, &[r1]);
+    assert!(!lp.peers[2].engine.core.account_view(&a.account).unwrap().rotation_counts(&r1), "outside, node 1's rotation is beside the line followed");
+    lp.advance(1);
+    pair(&mut lp, &a, 2);
+    assert!(lp.peers[2].engine.core.accounts.contains_key(&a.account), "reader 2 holds the account");
+    assert!(lp.peers[2].engine.core.account_view(&a.account).unwrap().rotation_counts(&r1), "inside, it counts");
+    lp.peers[2].engine.check_index();
+}
+
+/// Node 0 pairs peer `i` into account `a`.
+fn pair(lp: &mut LocalPeer, a: &CreatedAccount, i: usize) {
+    let node = lp.peers[i].engine.tid();
+    let ids = lp.peers[i].engine.commit_ids();
+    send(lp, i, 0, &ids);
+    let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
+    send(lp, 0, i, &all);
+    lp.peers[i].engine.paired(&a.account).unwrap();
+}
+
+/// Carries what `from` holds that `to` does not hold whole as labels do: sealed (`LocalPeer::
+/// sealed`, after the rotations due before it encrypts), each opened at `to` with the read secrets
+/// it holds and ingested as far as it opens (its header and the sections it opens), with its
+/// thing lists; again while anything new opens. The commits none of whose wraps opened at `to`.
+fn carry_sealed(lp: &mut LocalPeer, from: usize, to: usize) -> Vec<CommitId> {
+    loop {
+        let ids: Vec<CommitId> = lp.peers[from].engine.commit_ids().into_iter().filter(|id| !lp.peers[to].engine.holds_whole(id)).collect();
+        let mut opened = false;
+        let mut shut = Vec::new();
+        for sp in lp.sealed(from, &ids).unwrap() {
+            let id = sp.id;
+            if lp.peers[to].engine.holds_whole(&id) {
+                continue;
+            }
+            let lists = lp.peers[from].engine.package(&id).unwrap().unwrap().lists;
+            lp.advance(1);
+            let e = &sp.entries[0];
+            let eng = &mut lp.peers[to].engine;
+            let Some(key) = e.wraps.iter().find_map(|(a, w)| osis_label::unwrap_any(eng.read_secrets(a).iter(), &e.id, w).map(|x| x.1)) else {
+                shut.push(id);
+                continue;
+            };
+            let o = eng.open_commit(&e.blob, &key).unwrap();
+            let before = eng.core.ix.commits.get(&id).map(|m| m.missing_parts().count());
+            if lp.peers[to].receive_with(&o.plaintext, sp.blobs.clone(), &lists).is_ok() {
+                opened |= lp.peers[to].engine.core.ix.commits.get(&id).map(|m| m.missing_parts().count()) != before;
+            }
+        }
+        if !opened {
+            return shut;
+        }
+    }
+}
+
+/// What node `k` makes at the end of a complete pass of every actor it holds secrets of: the
+/// re-seals and rotations due there (`reseal_after_pass`), then its account's signing chain
+/// (`signing_due`).
+fn pass_end(lp: &mut LocalPeer, k: usize) -> Vec<CommitId> {
+    let mut made = Vec::new();
+    let actors: Vec<Tid> = lp.peers[k].engine.core.ix.secrets.keys().copied().collect();
+    for a in actors {
+        made.extend(lp.peers[k].engine.reseal_after_pass(&a).unwrap().commits);
+    }
+    made.extend(lp.peers[k].engine.signing_due().unwrap().commits);
+    made
+}
+
+// spec/permissions.md §3 (Required rotation), §5.5, spec/crypto.md §5 (Exception: an account's
+// rotation is wrapped under the D epoch its seed's `under` supersedes): nodes 0 and 1 of four remove nodes 2 and 3 while
+// apart, each writing after, and heal as labels carry commits, in either order, with or without
+// each having been handed the other's removal and rotation first; then the two act in turn, each
+// at the end of a pass. A sibling's removal R counts at the other only once its rotation Q (whose
+// thing list for D names R) is held, so Q opens without R's new D epoch. Both removals hold at
+// both, they end on one head after one merge, and the writes made apart count at both (the merge
+// comes to count at the non-merger only once its seed is taken up, and is answered then)
+#[test]
+fn sibling_removals_apart_both_hold_spec_permissions_3() {
+    for (first, handed) in [(0, false), (1, false), (0, true), (1, true)] {
+        let (mut lp, a, t) = world(4, 4);
+        let p = a.account;
+        let d0 = remove(&mut lp, 0, a.devices, 2);
+        let d1 = remove(&mut lp, 1, a.devices, 3);
+        let w0 = write(&mut lp, 0, t, "zero");
+        let w1 = write(&mut lp, 1, t, "one");
+        if handed {
+            send(&mut lp, 1, 0, &d1.commits);
+            send(&mut lp, 0, 1, &d0.commits);
+        }
+        let other = 1 - first;
+        let mut quiet = false;
+        for _ in 0..6 {
+            let before = lp.peers[0].engine.commit_ids().len() + lp.peers[1].engine.commit_ids().len();
+            let shut = [carry_sealed(&mut lp, other, first), pass_end(&mut lp, first), carry_sealed(&mut lp, first, other), pass_end(&mut lp, other)];
+            if shut.iter().all(Vec::is_empty) && lp.peers[0].engine.commit_ids().len() + lp.peers[1].engine.commit_ids().len() == before {
+                quiet = true;
+                break;
+            }
+        }
+        let case = format!("first {first}, handed {handed}");
+        assert!(quiet, "{case}: still carrying or acting after 6 rounds");
+        let gone = [lp.peers[2].engine.tid(), lp.peers[3].engine.tid()];
+        let heads: Vec<Vec<CommitId>> = [0, 1].iter().map(|k| lp.peers[*k].engine.core.account_view(&p).unwrap().heads()).collect();
+        assert!(heads[0].len() == 1 && heads[0] == heads[1], "{case}: one head at both: {heads:?}");
+        for k in [0, 1] {
+            let roster = lp.peers[k].engine.roster(&a.devices);
+            assert!(gone.iter().all(|n| !roster.contains_key(n)), "{case}: node {k} keeps a removed node on D");
+            let v = lp.peers[k].engine.core.account_view(&p).unwrap();
+            assert_eq!(v.rotation_ids().len(), 3, "{case}: node {k}: the two removals' rotations and one merge");
+            for w in [w0, w1] {
+                let m = lp.peers[k].engine.core.ix.commits.get(&w).cloned();
+                assert!(m.is_some_and(|m| lp.peers[k].engine.core.standing(&w, &m.view) == osis_perm::EpochStanding::Counts), "{case}: node {k}: a write made apart does not count");
+            }
+        }
+    }
+}
+
+// spec/permissions.md §5.5 (Honest nodes of P: a head it cannot merge is left to a node that can).
+// B, unaware of A's removal of X, removes T; X forks plainly from the first epoch, signed as X (a
+// node to B), with a seed only X holds. B's two heads: its own, naming T's removal, and X's fork,
+// which lacks it and which B cannot merge. B owes nothing: rotating at its own head would leave
+// X's fork as it is, pass after pass
+#[test]
+fn a_head_it_cannot_merge_owes_no_rotation_spec_permissions_5_5() {
+    let (mut lp, a, _) = world(5, 4);
+    let (b, x, t) = (1, 2, 3);
+    let k0 = {
+        let h = lp.peers[x].engine.core.accounts.get(&a.account).unwrap();
+        h.keys.get(&h.first).unwrap().clone()
+    };
+    let q = remove(&mut lp, b, a.devices, t);
+    assert_eq!(q.commits.len(), 2);
+    let fb = forge(&mut lp, x, &a, osis_commit::FIRST_EPOCH, &[], &[], 91);
+    let f = give(&mut lp, &fb, &[x]);
+    let me = lp.peers[x].engine.core.id.clone();
+    let pk = inner_as(&mut lp, x, &f, &k0, &me);
+    lp.advance(1);
+    lp.deliver(b, &pk).unwrap();
+    let v = lp.peers[b].engine.core.account_view(&a.account).unwrap();
+    assert!(v.heads().len() == 2 && v.rotation_counts(&f), "X's fork is a head at B: {:?}", v.heads());
+    for pass in 0..2 {
+        assert!(lp.peers[b].engine.signing_due().unwrap().commits.is_empty(), "pass {pass}: B rotates");
+    }
 }

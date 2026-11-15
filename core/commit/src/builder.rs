@@ -27,12 +27,14 @@ pub struct AspectWrite {
     pub retention: Retention,
     /// The fire this delta claims to replace (spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
+    /// That fire's floor as the writer read it (`AspectEntry::original_floor`).
+    pub original_floor: u64,
 }
 
 impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
-        AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), replaces: None }
+        AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), replaces: None, original_floor: 0 }
     }
 }
 
@@ -130,6 +132,7 @@ impl CommitBuilder {
                 keys: Vec::new(),
                 hash,
                 replaces: a.replaces,
+                original_floor: if a.replaces.is_some() { a.original_floor } else { 0 },
             });
             deltas.push(a.delta);
         }

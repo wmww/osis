@@ -1,0 +1,30 @@
+# fork-sides
+- A python `str.replace` with an empty `old` (an `index` slice that ran backwards) inserted the new text between every character of roles-model epochs.rs (5.6M lines); recovered by replacing the inserted text with nothing. Check slices are non-empty before replacing.
+- roles-model `epochs` hand tests and search take minutes in debug once chain judgment places rotations (`random_worlds_hold` ~7 min single-threaded); it read as a hang.
+- The engine signing tests ran with a frozen clock, so every receipt shared one millisecond and receipt order fell back to commit ID; `send` now advances 1 ms.
+- The osis-level removal scenario reads nothing at an outsider on main too (issues/outsider-reads-nothing-after-node-removal.md); found only by building main's test binary with `tools/bin-at --take`.
+- `roles-model -- 20000 epochs` under `tools/heavy` ran past the heavy wall limit (33 min, stopped) where 600 worlds took 22 s: some worlds are far slower after the first-seen change (not chased; README there says so).
+- Review: the outsider bug's engine half needed `tools/bin-at --patch` builds of main (4 min each); a review that checks "pre-existing on main" twice spends ~10 min building.
+- Review: `tools/heavy` waits silently behind other agents' locked runs; a 3000-world epochs probe sat queued while two other model runs held it.
+- Review: the gate's properties stage has no hung-test watch: a property made slow by a model change ran an hour until stopped by hand.
+- A mutation script that deletes a block (replacement "") cannot restore it (the reverse find of "" fails): the deleted check stayed out through two later mutation runs, which then passed for the wrong reason. Mutate by guarding (`false &&`), never by deleting.
+- A perm test binary copied by `ls -t target/debug/deps/it-*` can be another crate's `it`: check the test name ran.
+- `tools/heavy` queues behind other agents' runs silently; a 5-run model batch waited 15+ min before starting.
+- fork-sides-epochs: the slow `epochs` worlds were not quartic `follow` (judgment was 0.2 s of a 13 s world): an unmemoized `verified` re-walked every merge's named forks per call, exponential in merges. A single-world timer split by function found it in minutes; guessing from the code would have optimized the wrong loop.
+- fork-sides-epochs: with the model too slow for runs past 600 worlds, the branch's new hard failures at 200,000 worlds (oracle readings of the first-seen sides, a model re-add tick bug) stayed hidden until the model was fast.
+- fork-sides-epochs: `tools/heavy` queued 15-30 min at a time behind gates and other models; most of this task's wall time was lock waits.
+- Review 2: a generator dimension left out because it failed (A rotating before the removal) hid the issue's whole class; with it back, a stubborn-user dimension found a second hole (a device kept on the thief's side) in minutes. Leave failing dimensions in under a named mode instead of removing them.
+- Stubborn-device round: an all-core model run started while building roles-model again would swap the binary under a script running `target/debug/roles-model` mode by mode; build first, then hold the lock for the whole batch. The first `forks-stubborn` run waited 10 min for the lock behind another branch's gate.
+- The settle had no quiescence check, so two sides answering each other's answers forever (one rotation each per pass) passed every run unseen; a last-round "still rotating" check found it at once.
+- Review 3: roles-model forks `Stats` fields are summed across threads by a hand list in `run`; a new counter left out of it reads 0 and looks like a generator that never reaches the case.
+- Review 3: the model's honest policy (`act`) is checked only in the model; the engine's `unanswered` drifted from it (supersedes vs rejects) with no differential between them, found by reading.
+- Review 3: the roles-model differentials number items in the order made, so ties broken by ID are always ancestors first there; perm with hash IDs is not, and the first gate's sim (`stranded_reseal`, two removals in one millisecond) was the first to show it. The gate took three runs (sim, then the models' tiebreak) at about 12-20 min each.
+- fork-sides-ix: `check_index` runs on a sample, so where it fires need not be the transaction that diverged; setting `check_every_tx` on every peer (a debug edit in the harness) settles it in one run. The brief had want/got reversed (`first_diff` prints the running index as "want").
+
+## fork-sides-sib (worker)
+- `LocalPeer::deliver` ships plaintext, so the sibling deadlock (a wrap under an epoch not established) does not reproduce through it; `open_package` drops a rotation's list blobs and `seal_package` skips the rotations due first. A label-faithful test helper (`tests_signing::carry_sealed`, `pass_end`) had to be written; it belongs in `LocalPeer`.
+- A lockstep loop (both nodes act on the same receipts each round) looks like a storm in every world; check act-in-turn before calling a merge storm a bug.
+- Final review: the brief named wt2, which was free in `wt list`; another reviewer's `wt claim` took it mid-task and my uncommitted differential vanished from the tree (saved on a side branch). Claim the worktree yourself even when a brief names one, and wip-commit early.
+- Final review: `git cherry-pick` of two branches that each appended tests to tests_signing.rs conflicted on the shared closing `}`; deleting the markers dropped a brace twice. Check a conflict's last lines, not just the markers.
+- Final review: the engine differential's own harness leaked commits as "made here" whenever a forged commit's new ID was not added to the seen set; every mismatch traced to such harness slips first, real findings after.
+- Review 5: mutating a file and running the 200-seed forks property per plant (a python wrapper restoring the file in `finally`) took about a minute each; the engine lib's `rotation::` default tests caught only half the plants (field 15 ignored and the carried placement were caught by the property or one unit test alone).

@@ -7,7 +7,7 @@
 
 use crate::common::seeded;
 use osis_perm::epochs::{fit_list, list_bytes, list_leaf, list_tree};
-use osis_perm::{AccountCommit, EpochStanding, Epochs, ListPath, Listing, Rotation, ThingList};
+use osis_perm::{AccountCommit, Devices, EpochStanding, Epochs, ListPath, Listing, Rotation, ThingList};
 use std::collections::BTreeMap;
 use roles_model::epochs::{self as model, Kind, Verdict, World};
 use roles_model::Rng;
@@ -18,7 +18,7 @@ fn set(v: &[u32]) -> BTreeSet<u32> {
 }
 
 fn rot(id: u32, at: u32, sup: &[u32], names: &[u32]) -> Rotation<u32> {
-    Rotation { id, at, supersedes: set(sup), names: set(names), signed: set(names) }
+    Rotation { id, at, supersedes: set(sup), names: set(names), signed: set(names), takes: BTreeSet::new() }
 }
 
 /// Commit `id` at `epoch` on thing 0.
@@ -89,7 +89,7 @@ fn judge(rots: &[Rotation<u32>], commits: &[AccountCommit<u32, u32>], parts: Par
 }
 
 fn judge_as(rots: &[Rotation<u32>], received: &[u32], commits: &[AccountCommit<u32, u32>], (l, g, a): Parts) -> Judged<u32> {
-    Judged::new(Epochs::new(0, rots.to_vec(), None, received, l, g), commits.to_vec(), a.to_vec())
+    Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, received, None, l, g), commits.to_vec(), a.to_vec())
 }
 
 /// The rotator received X's write (100) and lists it; X's later write at the old epoch (101)
@@ -121,22 +121,26 @@ fn write_only_a_witness_received_counts() {
 }
 
 /// Node 2 rotates (1) before X's removal (2) reaches it, boxing X epoch 1. X's later write at
-/// its old epoch (100) falls with the removal; at the sibling's (101) it counts while that
-/// epoch is a head, whichever arrived first, until a rotation of P's (4, signed at 2 and at 1)
-/// supersedes it; X's fork (3) counts only in the window before it.
+/// its old epoch (100) falls with the removal; at the sibling's (101) it counts where the
+/// sibling's rotation was held first, until a rotation of P's (4, signed at 2 and at 1) joins
+/// the removal to it; X's fork (3) counts only where it came before that rotation.
 #[test]
 fn later_write_does_not_count_at_its_old_epoch_or_a_siblings() {
     let commits = [c(100, 0), c(101, 1), c(102, 3)];
     let rots = [rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 1, &[1, 2], &[]), rot(4, 2, &[1, 2, 3], &[1])];
-    for received in [[2, 1], [1, 2]] {
+    for (received, sibling) in [([2, 1], false), ([1, 2], true)] {
         let e = judge_as(&rots[..2], &received, &commits, (&[list(1, &[]), list(2, &[])], &[], &[]));
-        assert!(!e.counts(&100) && e.counts(&101), "the sibling's epoch is open until it is superseded");
+        assert!(!e.counts(&100) && e.counts(&101) == sibling, "the sibling's epoch is open where it was held first");
     }
     let window = judge(&rots[..3], &commits, (&[list(3, &[101])], &[], &[]));
     assert!(window.counts(&101) && window.counts(&102), "the fork window: X's fork rejects the removal");
-    let merged = judge(&rots, &commits, (&[list(3, &[101]), list(4, &[])], &[], &[]));
+    let parts = [list(3, &[101]), list(4, &[])];
+    let merged = judge_as(&rots, &[1, 2, 4, 3], &commits, (&parts, &[], &[]));
     assert!(merged.chain().counts(&4) && !merged.chain().counts(&3));
     assert!(!merged.counts(&100) && !merged.counts(&101) && !merged.counts(&102));
+    // held after X's fork, the merge is beside the line followed: told, staying
+    let late = judge(&rots, &commits, (&parts, &[], &[]));
+    assert!(late.chain().counts(&3) && !late.chain().counts(&4) && late.chain().warning());
 }
 
 /// Node 2's write at the closed epoch (100), which the rotator never received, counts once
@@ -257,6 +261,9 @@ fn role_part_over_the_bound_is_refused() {
 const D: usize = usize::MAX;
 
 /// Perm's ID of model item `i`: a rotation's is the epoch it mints, others' 1000 past the item ID.
+/// The commit creating D, as the differential names it.
+const CREATED: u32 = u32::MAX - 1_000_000;
+
 fn pid(w: &World, i: usize) -> u32 {
     match &w.items[i].kind {
         Kind::Rotation { new, .. } => *new,
@@ -287,7 +294,7 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
                 // A name accepts a fork only when the merge is signed at its epoch (the model's
                 // merges always are).
                 let names: BTreeSet<u32> = names.iter().map(|&id| pid_of(w, id)).collect();
-                rots.push(Rotation { id: *new, at: *at, supersedes: supersedes.iter().copied().collect(), signed: names.clone(), names });
+                rots.push(Rotation { id: *new, at: *at, supersedes: supersedes.iter().copied().collect(), signed: names.clone(), names, takes: BTreeSet::new() });
                 if let Some(rm) = removes {
                     lists.push(ThingList { rotation: *new, thing: D, commits: ids(&[*rm]) });
                 }
@@ -308,25 +315,45 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
     }
     let mut received: Vec<usize> = (0..w.items.len()).filter(|&i| held[i] && matches!(w.items[i].kind, Kind::Rotation { .. })).collect();
     received.sort_by_key(|&i| (w.items[i].recv[o], w.items[i].id));
-    let received: Vec<u32> = received.into_iter().map(|i| pid(w, i)).collect();
-    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &received, &lists, &listings), commits, addenda)
+    let received: Vec<u32> = std::iter::once(CREATED).chain(received.into_iter().map(|i| pid(w, i))).collect();
+    // a node of P reads who minted each rotation and whom it removes
+    let devices = (o < w.np).then(|| {
+        // P's nodes paired by the commit creating D, held first and on every removal's frontier
+        let mut d = Devices { first: (0..w.np).map(|m| (CREATED, m)).collect(), ..Devices::default() };
+        for (i, it) in w.items.iter().enumerate().filter(|(i, _)| held[*i]) {
+            if let Kind::Rotation { new, removes, .. } = &it.kind {
+                d.minter.insert(*new, it.author);
+                if let Some(Kind::Removal { node }) = removes.map(|rc| &w.items[rc as usize - 1].kind) {
+                    d.removes.insert(*new, [*node].into());
+                    d.covers.insert(*new, [CREATED].into());
+                }
+                let _ = i;
+            }
+        }
+        // D's grant putting a re-added node back, at the epoch the model reads it at
+        let rooted = w.rooted(held);
+        for y in 0..w.np {
+            if let Some(Kind::Rotation { new, .. }) = w.grant_of(&rooted, y).map(|g| &w.items[g].kind) {
+                // by node 0, a commit of its own
+                let g = u32::MAX - y as u32;
+                d.commits.insert(g, (Some(0), *new));
+                d.grants.insert((g, y));
+            }
+        }
+        d
+    });
+    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &received, devices.as_ref(), &lists, &listings), commits, addenda)
 }
 
 /// The first difference between the model's verdict `v` (`judge_at`) and perm at observer `o`
 /// holding `held`.
 fn epochs_diff(w: &World, o: usize, held: &[bool], v: &Verdict) -> Option<String> {
-    let side = v.side;
-    // P's nodes are given their roster's side (the devices actor's line); without one, or for
-    // anyone else, perm takes its default from the receipt order.
-    let e = perm_epochs(w, o, held, w.roster_side(o, held));
-    // Which rotations take part (held with their chain): the disputes, the side, the preferred
-    // head.
-    let parties: BTreeSet<u32> = v.parties.iter().map(|&i| pid(w, i)).collect();
-    if *e.chain().parties() != parties {
-        return Some(format!("observer n{o}: parties model {parties:?}, perm {:?}", e.chain().parties()));
-    }
-    if e.chain().side() != side.map(|s| pid(w, s)) {
-        return Some(format!("observer n{o}: side model {side:?}, perm {:?}", e.chain().side()));
+    let e = perm_epochs(w, o, held, None);
+    // what the observer follows and is told of
+    let rooted = w.rooted(held);
+    let contested: BTreeSet<u32> = v.contested.iter().copied().filter(|&i| !v.contested.iter().any(|&j| j != i && w.line_of(&rooted, j).contains(&i))).map(|i| pid(w, i)).collect();
+    if *e.chain().contested() != contested {
+        return Some(format!("observer n{o}: contested model {contested:?}, perm {:?}", e.chain().contested()));
     }
     if e.chain().preferred() != v.preferred.map_or(0, |f| pid(w, f)) {
         return Some(format!("observer n{o}: preferred model {:?}, perm {:?}", v.preferred, e.chain().preferred()));
@@ -335,7 +362,6 @@ fn epochs_diff(w: &World, o: usize, held: &[bool], v: &Verdict) -> Option<String
     if *e.chain().heads() != heads {
         return Some(format!("observer n{o}: heads model {heads:?}, perm {:?}", e.chain().heads()));
     }
-    let rooted = w.rooted(held);
     let minted = |ep: u32| ep == 0 || (0..w.items.len()).any(|r| rooted[r] && matches!(w.items[r].kind, Kind::Rotation { new, .. } if new == ep));
     for (i, it) in w.items.iter().enumerate() {
         if !held[i] {
@@ -388,29 +414,6 @@ fn epochs_run(samples: u64, seed: u64) {
     eprintln!("epochs model: {samples} worlds, {checked} observer-prefixes ({unrooted} holding a rotation without its chain), {closed_named} closed-epoch commits counting");
     assert!(closed_named > 0, "the run reaches commits named at a closed epoch");
     assert!(unrooted > 0, "the run reaches rotations held without their chain");
-}
-
-/// spec/permissions.md §5.4, Side: a node of P whose roster authorizes no held rotation (here
-/// only removed nodes X and Y rotated) takes a dispute's preferred party, as anyone else does.
-/// X and Y fork from the root (1, 2) and each merges the other out (3, 4); node 3 received Y's
-/// line first.
-#[test]
-fn node_of_p_without_a_roster_line_takes_the_preferred_party() {
-    let mut w = World::shape(4, vec![vec![0]], vec![vec![0]; 4], vec![None; 4], None, None, false);
-    w.left = vec![roles_model::shrink::LATE, 0, 0, roles_model::shrink::LATE];
-    for (id, author, at, new, t, seen) in [(1, 1, 0, 1, 1, 3), (2, 2, 0, 2, 1, 1), (3, 1, 1, 3, 2, 4), (4, 2, 2, 4, 2, 2)] {
-        let mut recv = vec![roles_model::shrink::LATE; 4];
-        recv[1] = t;
-        recv[2] = t;
-        recv[3] = seen;
-        let kind = Kind::Rotation { at, new, supersedes: if at == 0 { vec![0] } else { vec![1, 2] }, names: vec![], removes: None };
-        w.items.push(model::Item { id, kind, author, epoch: Some(at), t, ts: t, recv, hostile: true });
-    }
-    let all = vec![true; 4];
-    assert_eq!(w.parties(&all), vec![2, 3]);
-    assert_eq!((w.roster_side(3, &all), w.default_side(3, &all)), (None, Some(3)));
-    assert_eq!(perm_epochs(&w, 3, &all, None).chain().side(), Some(4));
-    assert_eq!(epochs_diff(&w, 3, &all, &w.judge_at(3, &all)), None);
 }
 
 /// spec/permissions.md §5.4-§5.5: the epoch rule agrees with core/test/roles-model `epochs` at

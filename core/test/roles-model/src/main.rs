@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-cost|epochs|epochs-exh|epochs-exh-c]`.
+//! Search driver for the roles model: `[samples] [forks|forks-stand|forks-blind|forks-anyone|forks-first-grants|forks-no-takes|forks-every-answer|as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-cost|epochs|epochs-exh|epochs-exh-c]`.
 
 use roles_model::{edges, joint, single};
 
@@ -13,6 +13,13 @@ fn main() {
         }
         Some(m @ ("epochs" | "epochs-exh" | "epochs-exh-c")) => {
             if roles_model::epochs::run(samples, m) > 0 {
+                std::process::exit(1);
+            }
+        }
+        Some(m @ ("forks" | "forks-stand" | "forks-blind" | "forks-anyone" | "forks-first-grants" | "forks-no-takes" | "forks-every-answer")) => {
+            let c = match m { "forks-stand" => 1, "forks-blind" => 2, "forks-anyone" => 3, "forks-first-grants" => 4, "forks-no-takes" => 5, "forks-every-answer" => 6, _ => 0 };
+            roles_model::forks::CONTROL.store(c, std::sync::atomic::Ordering::Relaxed);
+            if roles_model::forks::run(samples) > 0 {
                 std::process::exit(1);
             }
         }

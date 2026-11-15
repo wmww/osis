@@ -128,6 +128,9 @@ pub struct AspectEntry {
     pub hash: [u8; 32],
     /// The fire this delta claims to replace (a durable signal's, spec/commits.md §5 Signals).
     pub replaces: Option<CommitId>,
+    /// The floor of that fire as its writer read it (spec/commits.md §5 Signals): a node whose
+    /// own floor on the thing's actor is above it lists the delta nowhere. 0 without `replaces`.
+    pub original_floor: u64,
 }
 
 /// A delete key with its level (spec/crypto.md §7); a valid Ed25519 key once decoded. Its order
@@ -308,8 +311,8 @@ pub struct Header {
 pub const FIRST_EPOCH: CommitId = CommitId([0; 32]);
 
 /// A header's `rotation` (spec/wire.md §4 `Rotation`): the new epoch's public keys, the epochs it
-/// supersedes (the header's `epoch` among them), the fork rotations it names (a merge), and the
-/// root of its list tree.
+/// supersedes (the header's `epoch` among them), the fork rotations it names (a merge), the
+/// revocations its maker took off its line, and the root of its list tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RotationHeader {
     pub signing_key: VerifyingKey,
@@ -318,6 +321,12 @@ pub struct RotationHeader {
     pub supersedes: Vec<CommitId>,
     /// Ascending, distinct.
     pub names: Vec<CommitId>,
+    /// The rotations carrying removals from D its maker took that are not on its line
+    /// (spec/permissions.md §5.4): ascending, distinct.
+    pub takes: Vec<CommitId>,
+    /// The removals from D it carries (spec/permissions.md §5.4): its minter's removal edge writes
+    /// on D signed at the epoch it rotates; ascending, distinct.
+    pub removals: Vec<CommitId>,
     pub list_root: [u8; 32],
 }
 
@@ -327,16 +336,18 @@ impl RotationHeader {
             put_array(out, v.len());
             v.iter().for_each(|c| put_bytes(out, &c.0));
         };
-        put_array(out, 5);
+        put_array(out, 7);
         encode_into(&Value::Enum(SIGNING_KEY_ED25519, Some(Box::new(Value::bytes(&self.signing_key.to_bytes())))), out);
         encode_into(&self.kem_key.to_value(), out);
         ids(out, &self.supersedes);
         ids(out, &self.names);
+        ids(out, &self.takes);
+        ids(out, &self.removals);
         put_bytes(out, &self.list_root);
     }
 
     fn read(v: Item) -> Result<RotationHeader, Error> {
-        let Some([sk, kem, sup, names, root]) = item::list(v)?.tuple() else { return Err(Error::Malformed("rotation arity")) };
+        let Some([sk, kem, sup, names, takes, removals, root]) = item::list(v)?.tuple() else { return Err(Error::Malformed("rotation arity")) };
         let signing_key = match sk.to_value()? {
             Value::Enum(SIGNING_KEY_ED25519, Some(b)) => match b.as_ref() {
                 Value::Bytes(k) => VerifyingKey::from_slice(k).map_err(|_| Error::Malformed("rotation signing key"))?,
@@ -346,7 +357,7 @@ impl RotationHeader {
         };
         let kem_key = KemPublicKey::from_value(&kem.to_value()?).map_err(|_| Error::Malformed("rotation kem key"))?;
         let ids = |v: Item| -> Result<Vec<CommitId>, Error> { item::list(v)?.iter().map(|c| item::bytes(c).map(CommitId)).collect() };
-        Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, list_root: item::bytes(root)? })
+        Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, takes: ids(takes)?, removals: ids(removals)?, list_root: item::bytes(root)? })
     }
 }
 
@@ -370,8 +381,17 @@ fn put_aspect(out: &mut Vec<u8>, a: &AspectEntry) {
     put_uint(out, a.retention.by as u64);
     put_idxs(out, &a.keys);
     put_bytes(out, &a.hash);
-    put_array(out, usize::from(a.replaces.is_some()));
-    a.replaces.iter().for_each(|c| put_bytes(out, &c.0));
+    // `[]`, `[id]`, or `[id, floor]` with the floor above 0 (spec/wire.md §4)
+    match a.replaces {
+        None => put_array(out, 0),
+        Some(c) => {
+            put_array(out, if a.original_floor > 0 { 2 } else { 1 });
+            put_bytes(out, &c.0);
+            if a.original_floor > 0 {
+                put_uint(out, a.original_floor);
+            }
+        }
+    }
 }
 
 fn put_key(out: &mut Vec<u8>, t: &DeleteKey) {
@@ -614,12 +634,19 @@ fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {
     let (tid, ak, lo, hi) = (read_tid(r)?, read_ak(r)?, r.uint()?, r.uint()?);
     let (retention, keys) = (read_retention(r)?, read_idxs(r)?);
     let hash = r.fixed::<32>()?;
-    let replaces = match r.array()? {
-        0 => None,
-        1 => Some(CommitId(r.fixed::<32>()?)),
+    let (replaces, original_floor) = match r.array()? {
+        0 => (None, 0),
+        1 => (Some(CommitId(r.fixed::<32>()?)), 0),
+        2 => {
+            let c = CommitId(r.fixed::<32>()?);
+            match r.uint()? {
+                0 => return Err(Error::Malformed("aspect replaces floor 0")),
+                f => (Some(c), f),
+            }
+        }
         _ => return Err(Error::Malformed("aspect replaces arity")),
     };
-    Ok(AspectEntry { tid, ak, lo, hi, retention, keys, hash, replaces })
+    Ok(AspectEntry { tid, ak, lo, hi, retention, keys, hash, replaces, original_floor })
 }
 
 fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {

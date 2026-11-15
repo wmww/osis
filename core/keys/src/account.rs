@@ -17,9 +17,9 @@ pub fn account_epoch(height: u64, signing: &VerifyingKey) -> Result<Epoch, Error
 /// each open epoch (a head) valid, listing the epochs on its line; every other epoch of `named`
 /// held invalid, so a box naming it is stale and no box is sealed to it. An epoch that counts but
 /// is closed is judged as one held invalid: a rotation closes epochs it does not supersede too.
-/// Forks stand, so the seal goes jointly at every head (`Keysets::heads`): a reader cannot tell
-/// a head boxed to a removed node (a sibling's concurrent rotation) from the others, and only a
-/// node holding every head opens the box.
+/// The seal goes jointly at every head (`Keysets::heads`): one outside the account; at a node of
+/// the account several only for its devices' rotations made at once, which it cannot tell boxed
+/// to a removed node from the others, so only a node holding every head opens the box.
 pub fn account_keysets<E: Ord + Copy>(chain: &Chain<E>, named: &BTreeMap<E, Epoch>) -> Keysets {
     let mut out = Keysets { heads: true, ..Keysets::default() };
     for (e, name) in named {
