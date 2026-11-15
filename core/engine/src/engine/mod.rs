@@ -1302,6 +1302,9 @@ pub struct Core {
     /// held is reported at its end where nothing carries it now (`Core::stranded_by_cut`); forgotten with
     /// the journal.
     pub cut_subs: BTreeSet<Tid>,
+    /// This transaction's own commits, each with the things its writer named local and those
+    /// it writes on that were carried as it began: judged at its end (`write::check_local`).
+    pub local_due: Vec<(CommitId, BTreeSet<Tid>, BTreeSet<Tid>)>,
     /// The commits on durable signal aspects `edits::settle` refolds besides those the journal
     /// names: a keep bound passed with no meta changing (`edits::time_passed`).
     pub refold: BTreeSet<(Tid, Ak, CommitId)>,
@@ -1488,6 +1491,7 @@ impl Core {
             forgotten_names_due: self.forgotten_names_due.clone(),
             freed_waits: self.freed_waits.clone(),
             cut_subs: self.cut_subs.clone(),
+            local_due: self.local_due.clone(),
             refold: self.refold.clone(),
             wakes: self.wakes.clone(),
             resnapshots_due: self.resnapshots_due.clone(),
@@ -1797,6 +1801,7 @@ impl Core {
         self.waits.retake_committed();
         self.written.clear();
         self.cut_subs.clear();
+        self.local_due.clear();
         self.reach_log.clear();
         self.dirty = false;
     }
@@ -2008,6 +2013,7 @@ impl Core {
             forgotten_names_due: _,
             freed_waits: _,
             cut_subs: _,
+            local_due: _,
             refold: _,
             none_due: _,
             cover_candidates: _,
@@ -2268,6 +2274,7 @@ impl Core {
             forgotten_names_due: BTreeSet::new(),
             freed_waits: BTreeMap::new(),
             cut_subs: BTreeSet::new(),
+            local_due: Vec::new(),
             refold: BTreeSet::new(),
             wakes: None,
             resnapshots_due: BTreeSet::new(),
@@ -3477,6 +3484,7 @@ impl Engine {
         drop(tx);
         self.core.rollback_to(start);
         self.core.cut_subs.clear();
+        self.core.local_due.clear();
         r
     }
 
@@ -3585,6 +3593,11 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::leaving::date_due(&mut tx).map(|_| v));
                 }
                 tx.core.to_date.clear();
+                // judged on the state the whole write leaves: its commits' blobs go out after it
+                let local_due = std::mem::take(&mut tx.core.local_due);
+                if r.is_ok() {
+                    r = r.and_then(|v| local_due.iter().try_for_each(|(c, local, was)| write::check_local(tx.core, c, local, was)).map(|_| v));
+                }
                 if r.is_ok() {
                     r = r.and_then(|v| Core::commit_changes(&mut tx).map(|_| v));
                 }
@@ -3674,6 +3687,7 @@ impl Engine {
             Err(e) => {
                 self.core.walks_done = None;
                 self.core.cut_subs.clear();
+                self.core.local_due.clear();
                 self.core.forget_reach_since(start.reached);
                 self.core.rollback_to(start);
                 Err(e)
