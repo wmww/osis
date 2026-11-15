@@ -102,8 +102,20 @@ pub(crate) fn keep_certs(tx: &mut Tx<'_>, certs: &[ThingCert]) -> Result<bool> {
         if let ListIds::Inline(ids) = &c.list.ids {
             put_names(tx, &c.rotation, &c.list.thing, ids.iter().copied())?;
         }
+        waited_list_held(tx, &c.list.thing);
     }
     Ok(new)
+}
+
+/// A list of `t` arrived: where `t` is the devices actor of an account held here, its commits
+/// on `t` stop waiting for the list (spec/permissions.md §5.5 Waiting) and are judged again, by
+/// the lists now held. O(`t`'s commits), once per rotation's list of D.
+fn waited_list_held(tx: &mut Tx<'_>, t: &Tid) {
+    let Some(p) = tx.core.accounts.iter().find(|(_, a)| a.devices == *t).map(|(p, _)| *p) else { return };
+    let on_t: Vec<CommitId> = tx.core.on_thing(t).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.author == p && m.view.epoch.is_some())).collect();
+    for c in on_t {
+        due(tx, &c);
+    }
 }
 
 /// Loads `Indexes::lists_on` from the thing lists held (an open or reload).

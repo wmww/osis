@@ -598,3 +598,41 @@ fn prove_rotations_are_taken_by_a_verifier_spec_sync_opens_2() {
     assert!(e.header(&r1).is_some() && e.header(&r2).is_some(), "both taken");
     assert!(e.key_open(&record, &key), "the account's new key open at the verifier");
 }
+
+// spec/permissions.md §5.5 (Waiting): a node of the account holding a sibling's rotation
+// without its thing list for D keeps every commit of the account on D at the closed epoch (D's
+// roster, so it stays a node of the account); once that list arrives, the lists judge: what
+// the rotator held stands, a write it never held falls.
+#[test]
+fn a_node_of_the_account_waits_for_d_s_list_spec_permissions_5_5() {
+    let mut lp = peers(2);
+    let sib = lp.peers[1].engine.tid();
+    let (a, _) = created(&mut lp);
+    let (p, d) = (a.account, a.devices);
+    let both = |lp: &mut LocalPeer| {
+        lp.sync(0, 1).unwrap();
+        lp.sync(1, 0).unwrap();
+    };
+    both(&mut lp);
+    let g = *lp.peers[0].engine.grant_as(&p, &d, &sib, &edge(Role::Admin)).unwrap().commits.last().unwrap();
+    both(&mut lp);
+    lp.peers[1].engine.hold_account(&p, &d).unwrap();
+    // a write on D the rotator never holds
+    let mut m = crate::Mutation::new();
+    m.sign_as(p);
+    m.set(d, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
+    let x = lp.peers[1].engine.commit(m).unwrap().unwrap();
+    let r = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
+    let lists = lp.peers[0].engine.list_blob(&r, Some(&[d].into())).unwrap().unwrap();
+    let rots = lp.peers[0].engine.prove_rotations().unwrap();
+    let e = &mut lp.peers[1].engine;
+    e.take_rotations(rots).unwrap();
+    assert!(e.header(&r).is_some(), "the rotation held");
+    let counts = |e: &crate::Engine, c: &CommitId| e.core.counts_at_epoch(c, &p, e.header(c).and_then(|h| h.epoch));
+    assert!(counts(e, &g) && counts(e, &x), "waiting for D's list: both stand");
+    assert!(e.roster(&d).contains_key(&sib), "still a node of the account");
+    assert_eq!(e.hold_lists(&lists).unwrap(), crate::flows::lists::ListsHeld::Held);
+    assert!(counts(e, &g), "the list names the grant");
+    assert!(!counts(e, &x), "the write the rotator never held falls");
+    assert!(e.roster(&d).contains_key(&sib));
+}

@@ -592,7 +592,7 @@ impl Core {
         order.dedup();
         let received: Vec<CommitId> = order.into_iter().map(|x| x.1).collect();
         let chosen = self.sides.account(p);
-        let rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, devices.as_ref(), &[], &[]);
+        let rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, devices.as_ref(), &[], &[], None);
         let mut authorized = BTreeMap::new();
         let mut standing = BTreeSet::new();
         if let (Some(a), Some(dv)) = (self.accounts.get(p), devices.as_ref()) {
@@ -821,7 +821,10 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             }
         }
         let listings: Vec<osis_perm::Listing<CommitId, Tid>> = listings.into_iter().filter_map(|((s, t), commits)| Some(osis_perm::Listing { listing: commit_of(&s)?, thing: t, commits })).collect();
-        let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), v.chosen, &v.received, v.devices.as_ref(), &lists, &listings);
+        // a node of the account waits for D's lists (spec/permissions.md §5.5 Waiting): what
+        // proves it a node of P is D's roster, so lacking a list of D is never not being one
+        let awaited = tx.core.accounts.get(&p).map(|a| osis_perm::Awaited { thing: a.devices, listed: v.rotations.iter().map(|r| r.id).filter(|r| tx.core.ix.lists_on.contains(&(a.devices, *r))).collect() });
+        let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), v.chosen, &v.received, v.devices.as_ref(), &lists, &listings, awaited);
         let mut named: BTreeSet<CommitId> = was.as_ref().map(|j| j.named.clone()).unwrap_or_default();
         for c in &cands {
             named.remove(c);

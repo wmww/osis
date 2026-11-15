@@ -47,6 +47,14 @@ pub struct Listing<E, T> {
     pub commits: BTreeSet<E>,
 }
 
+/// The thing whose thing lists a node waits for (spec/permissions.md §5.5, Waiting): at a node
+/// of the account, its devices actor D, with the counting rotations whose list of D it holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Awaited<E, T> {
+    pub thing: T,
+    pub listed: BTreeSet<E>,
+}
+
 /// What the epoch rule says of one held commit of the account, before §5.2 judges it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EpochStanding<E> {
@@ -73,19 +81,21 @@ pub struct Epochs<E, T> {
     closers: BTreeMap<E, BTreeSet<E>>,
     /// (commit, thing): a counting thing list or counting listing names the commit on the thing.
     named: BTreeSet<(E, T)>,
+    awaited: Option<Awaited<E, T>>,
 }
 
 impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     /// Judges the account with first epoch `root`: its held `rotations` as `Chain::new` places
     /// them (`chosen`, `received`, `devices`) and the held thing lists and listings naming its
-    /// commits.
-    pub fn new<M: Ord + Copy>(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, chosen: Option<E>, received: &[E], devices: Option<&Devices<E, M>>, lists: &[ThingList<E, T>], listings: &[Listing<E, T>]) -> Epochs<E, T> {
+    /// commits; `awaited`, at a node of the account, the thing whose lists it waits for.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new<M: Ord + Copy>(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, chosen: Option<E>, received: &[E], devices: Option<&Devices<E, M>>, lists: &[ThingList<E, T>], listings: &[Listing<E, T>], awaited: Option<Awaited<E, T>>) -> Epochs<E, T> {
         let rotations: Vec<Rotation<E>> = rotations.into_iter().collect();
         let held: BTreeSet<E> = rotations.iter().map(|r| r.id).chain([root]).collect();
         let chain = Chain::new(root, rotations, chosen, received, devices);
         let held: Vec<E> = held.into_iter().filter(|e| chain.holds(e)).collect();
         let open = held.iter().filter(|e| chain.open(e)).copied().collect();
-        let mut e = Epochs { chain, open, closers: BTreeMap::new(), named: BTreeSet::new() };
+        let mut e = Epochs { chain, open, closers: BTreeMap::new(), named: BTreeSet::new(), awaited };
         e.closers = held.iter().filter(|x| !e.open.contains(x)).map(|x| (*x, e.chain.closers(x).into_iter().collect())).collect();
         e.named = lists.iter().filter(|l| e.chain.counts(&l.rotation)).flat_map(|l| l.commits.iter().map(|c| (*c, l.thing))).collect();
         // Least fixpoint: a listing at a closed epoch speaks only once it is itself named.
@@ -112,12 +122,13 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
 
     /// Whether `c` counts whole: a held rotation counts by the chain alone; any other commit
     /// iff its epoch is open, or is held and a counting thing list or listing on one of its
-    /// things names it.
+    /// things names it, or it is on the awaited thing and no closer's list of it is held yet.
     pub fn counts(&self, c: &AccountCommit<E, T>) -> bool {
         if self.chain.holds(&c.id) {
             return self.chain.counts(&c.id);
         }
-        self.open.contains(&c.epoch) || self.closers.contains_key(&c.epoch) && c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
+        let Some(closers) = self.closers.get(&c.epoch) else { return self.open.contains(&c.epoch) };
+        c.things.iter().any(|t| self.named.contains(&(c.id, *t))) || self.awaited.as_ref().is_some_and(|w| c.things.contains(&w.thing) && !closers.is_empty() && closers.is_disjoint(&w.listed))
     }
 
     /// What the epoch rule says of `c` (`EpochStanding`).

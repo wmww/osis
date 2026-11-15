@@ -89,7 +89,7 @@ fn judge(rots: &[Rotation<u32>], commits: &[AccountCommit<u32, u32>], parts: Par
 }
 
 fn judge_as(rots: &[Rotation<u32>], received: &[u32], commits: &[AccountCommit<u32, u32>], (l, g, a): Parts) -> Judged<u32> {
-    Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, received, None, l, g), commits.to_vec(), a.to_vec())
+    Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, received, None, l, g, None), commits.to_vec(), a.to_vec())
 }
 
 /// The rotator received X's write (100) and lists it; X's later write at the old epoch (101)
@@ -101,6 +101,26 @@ fn rotator_received_write_counts_later_write_does_not() {
     assert!(e.counts(&100) && !e.counts(&101));
     let before = judge(&[], &commits, (&[], &[], &[]));
     assert!(before.counts(&100) && before.counts(&101), "without the rotation the epoch is open");
+}
+
+// spec/permissions.md §5.5 (Waiting): at a node of P, P's commits on D at a closed epoch count
+// while no closer's thing list for D is held there; once one is, the lists judge them. Another
+// thing's commits are unlisted at once.
+#[test]
+fn a_node_of_the_account_waits_for_the_devices_list() {
+    let mut other = c(102, 0);
+    other.things = set(&[1]);
+    let commits = [c(100, 0), c(101, 0), other];
+    let rots = [rot(1, 0, &[0], &[])];
+    let received = [1];
+    let at = |l: &[ThingList<u32, u32>], listed: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, l, &[], Some(osis_perm::Awaited { thing: 0, listed: set(listed) })), commits.to_vec(), Vec::new());
+    let waiting = at(&[], &[]);
+    assert!(waiting.counts(&100) && waiting.counts(&101), "no list of D held: waiting");
+    assert!(!waiting.counts(&102), "another thing's commits are unlisted");
+    let listed = at(&[list(1, &[100])], &[1]);
+    assert!(listed.counts(&100) && !listed.counts(&101), "the list held judges");
+    let outsider = judge(&rots, &commits, (&[], &[], &[]));
+    assert!(!outsider.counts(&100), "anyone else waits for nothing");
 }
 
 /// A witness received X's write (100) in time and the rotator did not: its addendum against
@@ -342,7 +362,7 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
         }
         d
     });
-    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &received, devices.as_ref(), &lists, &listings), commits, addenda)
+    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &received, devices.as_ref(), &lists, &listings, None), commits, addenda)
 }
 
 /// The first difference between the model's verdict `v` (`judge_at`) and perm at observer `o`
