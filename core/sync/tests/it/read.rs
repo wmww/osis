@@ -2530,19 +2530,19 @@ fn a_move_of_its_bodies_inputs_restarts_the_wait_spec_sync_judgement_2() {
 // spec/sync-judgement.md §3 (own store: must-hold bodies are logged), spec/permissions.md §4
 // (Logging certificates): a body this node could not wrap for S when first judged (no read epoch
 // of S's thing held yet: a contact's profile read through a redeemed link) is logged in the
-// session once it can, so a start logs no body the session left unlogged.
+// session once it can, so a start logs no body or certificate blob the session left unlogged.
 #[test]
 fn a_body_is_logged_once_it_can_be_wrapped_spec_sync_judgement_3() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, world};
     let mut w = world(0, 3);
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
-    // the own entries naming a commit, per sync ID read
+    // the entries naming a commit and the own entries (certificate blobs too), per sync ID read
     let bodies = |w: &mut crate::harness::World, i: usize| -> BTreeSet<(SyncId, BlobId)> {
         let mut out = BTreeSet::new();
         for (s, _) in w.store(i).syncs().into_iter().filter(|(_, (_, h))| *h == osis_engine::sync::Holding::Read) {
             for e in w.store(i).entries(&s).unwrap() {
-                if w.engine(i).blob_commit(&e.blob).unwrap().is_some() {
+                if e.own || w.engine(i).blob_commit(&e.blob).unwrap().is_some() {
                     out.insert((s, e.blob));
                 }
             }
