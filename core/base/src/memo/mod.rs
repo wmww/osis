@@ -1547,4 +1547,86 @@ mod tests {
         let ran = runs("test absent");
         assert!(ran > 0 && ran < 20, "only the removed key's bucket moved: {ran}");
     }
+
+    // spec: none (internal: notes/engine.md, Stamps). Over random writes, removals, opens
+    // (`wrote_all`: rows present with no stamp of their own), undos (a row put back, stamped as a
+    // removal) and whole moves of keys sharing two buckets: a key's stamp equal at two times means
+    // its value is; each memo's answer, and each followed key not due, is what a fresh read gives.
+    #[test]
+    fn stamps_hold_only_over_an_unchanged_value() {
+        let keys: Vec<u8> = {
+            let b = |x: &u8| bucket(hash(x));
+            let (b0, b1) = (b(&0), b(&1));
+            (0..=255u8).filter(|x| b(x) == b0 || b(x) == b1).take(6).collect()
+        };
+        for seed in 1..=300u64 {
+            let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            let mut next = |n: u64| {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                rng % n
+            };
+            let stamps = Stamps::default();
+            let rows: RefCell<HashMap<u8, u8>> = RefCell::default();
+            let memos: Vec<Memo<u8, Option<u8>>> = (0..3).map(|_| Memo::new("test random")).collect();
+            let sum: Memo<(), u64> = Memo::new("test random sum");
+            let mut effects: Effects<u8, Option<u8>> = Effects::new("test random effects");
+            let read = |k: u8| {
+                stamps.read(&k);
+                rows.borrow().get(&k).copied()
+            };
+            let mut seen: HashMap<u8, (u64, Option<u8>)> = HashMap::new();
+            for step in 0..150 {
+                let k = keys[next(keys.len() as u64) as usize];
+                let at = format!("seed {seed} step {step} key {k}");
+                match next(9) {
+                    0 | 1 => {
+                        let v = next(3) as u8;
+                        rows.borrow_mut().insert(k, v);
+                        stamps.wrote(&k, true);
+                    }
+                    2 | 3 => {
+                        rows.borrow_mut().remove(&k);
+                        stamps.wrote(&k, false);
+                    }
+                    4 => stamps.wrote_all(),
+                    5 => {
+                        let v = next(3) as u8;
+                        rows.borrow_mut().insert(k, v);
+                        stamps.wrote(&k, false);
+                    }
+                    6 => stamps.moved(),
+                    7 => {
+                        let total = sum.get(&(), || {
+                            stamps.read_all();
+                            rows.borrow().values().map(|v| u64::from(*v)).sum()
+                        });
+                        assert_eq!(total, rows.borrow().values().map(|v| u64::from(*v)).sum::<u64>(), "{at}: whole");
+                    }
+                    _ => {
+                        let m = &memos[next(3) as usize];
+                        assert_eq!(m.get(&k, || read(k)), rows.borrow().get(&k).copied(), "{at}: memo");
+                        effects.want(k);
+                    }
+                }
+                for x in &keys {
+                    let (now, stamp) = (rows.borrow().get(x).copied(), stamps.stamp(x));
+                    if let Some((s, v)) = seen.insert(*x, (stamp, now)) {
+                        assert!(s != stamp || v == now, "{at}: {x}'s stamp {stamp} held over {v:?} -> {now:?}");
+                    }
+                }
+                let due = effects.due();
+                for x in &keys {
+                    if effects.wants(x) && !due.contains(x) {
+                        let kept = effects.settled_value(x).then(|| effects.settle(x, || read(*x)));
+                        assert_eq!(kept, Some(None), "{at}: followed {x} not due, yet its value moved");
+                    }
+                }
+                for x in due {
+                    effects.settle(&x, || read(x));
+                }
+            }
+        }
+    }
 }
