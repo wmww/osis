@@ -1,7 +1,7 @@
 # A node of the account that sided with the thief cannot come back
 > Summary: A node of P that took a removed device's revocation first (spec/permissions.md §5.4, first-seen) holds no seed of the honest line, so it opens no inner signature there, reads every honest rotation as minted by no node, and a user's choice of the honest line cannot take; one whose own removal it took leaves the account for good. The model (roles-model `forks`) lets such a node switch back; the engine does not.
 > Priority: critical
-> Tags: security, perm, engine, tess-call
+> Tags: security, perm, engine
 
 Design: notes/account-forks-design.md (Custody: seeds boxed to device keys, opened whatever counts; a node removed on the line it follows keeps custody while another held line keeps it). Root cause: judgment gates custody.
 
