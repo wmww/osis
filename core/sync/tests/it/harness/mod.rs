@@ -1013,6 +1013,11 @@ impl World {
         self.net.cut_off.clear();
     }
 
+    /// Ends `partition(a, b)` alone.
+    pub fn rejoin(&mut self, a: usize, b: usize) {
+        self.net.cut_off.remove(&(a.min(b), a.max(b)));
+    }
+
     /// Node `i`'s clock runs `ms` ahead of the world's (behind when negative) from now on.
     pub fn skew(&mut self, i: usize, ms: i64) {
         let old = self.net.skew.insert(i, ms).unwrap_or(0);
