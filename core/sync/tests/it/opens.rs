@@ -1497,7 +1497,8 @@ fn a_walk_stops_past_its_keys_or_refused_spec_sync_ids_6() {
 
 // spec/sync-ids.md §6 (Behind: refused for now, code 4: asked again after a back-off): a
 // Behind answered 4 is not asked again before its back-off, which wakes the node, stops nothing
-// and is not counted off the path; once over it is asked again, and a second 4 backs off longer.
+// and is not counted off the path; once over it is asked again, and a second 4 backs off longer;
+// S opened there meanwhile, the back-off's end leaves no wake due (the node would spin).
 #[test]
 fn a_behind_refused_for_now_is_asked_again_after_a_back_off_spec_sync_ids_6() {
     use osis_base::WallMs;
@@ -1517,6 +1518,14 @@ fn a_behind_refused_for_now_is_asked_again_after_a_back_off_spec_sync_ids_6() {
     let Some(id) = behind(&mut r) else { panic!("asked again once its back-off is over") };
     adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem::code(Code::RATE_LIMITED)] });
     assert_eq!(r.opens.next_wake(), Some(WallMs(r.now.0 + backoff_ms(1))), "a second 4: a longer back-off");
+    // S opened there meanwhile: its back-off ending asks nothing and leaves no wake past
+    let hit = adv.hit_on(read_secret(1, 0).1.expose(), &S);
+    assert_eq!(adv.offer(&mut r, vec![OfferItem::Hit { hit, sig: None }])[0].code, Code::OK);
+    assert!(r.open(adv.peer, &S));
+    r.now = WallMs(r.now.0 + backoff_ms(1));
+    r.settle();
+    assert_eq!(behind(&mut r), None, "S open: no Behind");
+    assert!(r.opens.next_wake().is_none_or(|t| t > r.now), "no wake left due: {:?} at {:?}", r.opens.next_wake(), r.now);
 }
 
 // spec/sync-ids.md §6 (Walk: Stranded there), spec/sync-opens.md §3 (record: it keeps the

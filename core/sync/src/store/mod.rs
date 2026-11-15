@@ -228,9 +228,6 @@ pub(crate) struct Inner {
     /// The sync IDs kept unread at a head whose sync key this node holds no box for
     /// (spec/sync-judgement.md §6): they take no entry, as with no head (`unread` sets them).
     unheld: BTreeSet<SyncId>,
-    /// Sync IDs raised to read before the open whose pull anew is owed (`N/`), until the first
-    /// `anew_feed` announces them.
-    raised: BTreeSet<SyncId>,
 }
 
 impl Inner {
@@ -317,7 +314,7 @@ impl Store {
     /// record brought that still gave nothing held go: every connection ended with the last start.
     pub fn open(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Store> {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
-        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), raised: BTreeSet::new() };
+        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new() };
         inner.write(|t, env| {
             for (k, _) in t.scan_local(&[rows::CHARGED, &[0]].concat(), b"", usize::MAX)? {
                 let (s, b) = rows::tail_ids(&k)?;
@@ -328,14 +325,7 @@ impl Store {
         })?;
         // a copy dropped before the start takes nothing until judged again (`set_unheld`); one
         // raised to read is fetched anew (`anew_feed`)
-        (inner.unheld, inner.raised) = inner.read(|t, _| {
-            let mut out = (BTreeSet::new(), BTreeSet::new());
-            for (k, v) in t.scan_local(rows::ANEW, b"", usize::MAX)? {
-                let id: [u8; 16] = k.get(rows::ANEW.len()..).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("sync store anew mark")))?;
-                if v.is_empty() { &mut out.0 } else { &mut out.1 }.insert(SyncId(id));
-            }
-            Ok(out)
-        })?;
+        inner.unheld = inner.read(|t, _| anew_marks(t, false))?;
         Ok(Store(Arc::new(Mutex::new(inner))))
     }
 
@@ -597,15 +587,19 @@ impl Store {
         self.lock().mem.shreds.feed()
     }
 
-    /// A cursor over the sync IDs to fetch anew from now on (`set_unheld`, `set_holdings`); the
-    /// first one made since the open starts with those raised to read before it (`N/`).
-    pub fn anew_feed(&self) -> osis_base::memo::Feed<SyncId> {
+    /// A cursor over the sync IDs to fetch anew: those raised to read whose pull anew is still
+    /// owed (`N/` `ANEW_RAISED`, a restart's or a module restart's before it included), then
+    /// each one owed from now on (`set_unheld`, `set_holdings`), with whether the marks were
+    /// read (a failure: the caller fails its step). O(the marks) to make.
+    pub fn anew_feed(&self) -> (osis_base::memo::Feed<SyncId>, Result<()>) {
         let mut g = self.lock();
         let feed = g.mem.anew.feed();
-        for s in std::mem::take(&mut g.raised) {
-            g.mem.anew.wrote_added(&s, true, true);
-        }
-        feed
+        let owed = g.read(|t, _| anew_marks(t, true)).map(|owed| {
+            for s in &owed {
+                g.mem.anew.wrote_added(s, true, true);
+            }
+        });
+        (feed, owed)
     }
 
     /// Blob `b`'s bytes, whoever holds them.
@@ -1644,4 +1638,16 @@ fn mem_room(g: &mut Inner, s: &SyncId, size: u64, now: WallMs) -> bool {
         let Some(b) = oldest else { return false };
         g.mem.remove(&most, &b, now, false, false);
     }
+}
+
+/// The sync IDs whose `N/` mark is a raise to read (`raised`) or a dropped copy (`!raised`).
+fn anew_marks(t: &mut Transaction<'_>, raised: bool) -> Result<BTreeSet<SyncId>> {
+    let mut out = BTreeSet::new();
+    for (k, v) in t.scan_local(rows::ANEW, b"", usize::MAX)? {
+        let id: [u8; 16] = k.get(rows::ANEW.len()..).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("sync store anew mark")))?;
+        if v.is_empty() != raised {
+            out.insert(SyncId(id));
+        }
+    }
+    Ok(out)
 }

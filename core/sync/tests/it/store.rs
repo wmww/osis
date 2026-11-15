@@ -430,7 +430,7 @@ fn a_dropped_copy_is_fetched_anew_after_a_restart_spec_sync_judgement_6() {
     st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     let (c, cbytes) = blob(102, Class::Durable, None, &[]);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes).unwrap(), Code::REFUSED, "still dropped after the restart");
-    let mut anew = st.anew_feed();
+    let mut anew = st.anew_feed().0;
     st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
     st.set_unheld(&s.id, false).unwrap();
     assert_eq!(anew.added().into_iter().collect::<std::collections::BTreeSet<_>>(), [s.id].into(), "fetched anew");
@@ -445,7 +445,7 @@ fn a_raise_to_read_fetches_s_anew_spec_sync_judgement_6() {
     let dev = Dev::new();
     let (s, r) = (Sid::new(10), Sid::new(11));
     let mut st = unread(&dev, &s);
-    let mut anew = st.anew_feed();
+    let mut anew = st.anew_feed().0;
     st.set_sync_set(&holding(&[(&s, Holding::Unread), (&r, Holding::Read)])).unwrap();
     assert!(anew.added().is_empty(), "nothing raised");
     st.set_sync_set(&holding(&[(&s, Holding::Read), (&r, Holding::Read)])).unwrap();

@@ -244,6 +244,8 @@ struct WalkState {
     /// Behind answers refused for now (4) in a row: the next ask waits `inbox::backoff_ms` of
     /// it (`Conn::retries`).
     backoffs: u32,
+    /// Its back-off is over (`Conn::retries`, taken at the tick): the next test tests S again.
+    retry: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -921,10 +923,14 @@ impl Opens {
                 k.resync_at = None;
                 k.whole_next = true;
             }
-            if let Some(k) = self.conns.get_mut(&c)
-                && k.retries.first().is_some_and(|(t, _)| *t <= ctx.now)
-            {
-                k.test_due = true;
+            // a back-off over leaves `retries` here, so no wake past stays (whatever the test
+            // then finds, or however long it waits on an Offer out): S joins the next test
+            if let Some(k) = self.conns.get_mut(&c) {
+                while let Some((_, s)) = k.retries.first().copied().filter(|(t, _)| *t <= ctx.now) {
+                    k.retries.pop_first();
+                    k.walks.entry(s).or_default().retry = true;
+                    k.test_due = true;
+                }
             }
             self.run(ctx, c, moved);
         }
@@ -1596,9 +1602,8 @@ impl Opens {
         let (rr, bind, from) = (r.r, c.bind, c.tested_pos);
         let mut pending = self.changed.after(from);
         // a walk Hit refused: S asks Behind (spec/sync-ids.md §6 Walk)
-        let mut missed: Vec<SyncId> = c.walks.iter().filter(|(_, w)| w.missed).map(|(s, _)| *s).collect();
-        // a Behind refused for now, its back-off over: asked again
-        missed.extend(c.retries.iter().take_while(|(t, _)| *t <= ctx.now).map(|(_, s)| *s));
+        // and a Behind refused for now, its back-off over, asked again
+        let missed: Vec<SyncId> = c.walks.iter().filter(|(_, w)| w.missed || w.retry).map(|(s, _)| *s).collect();
         if !missed.is_empty() {
             let have: BTreeSet<SyncId> = pending.iter().copied().collect();
             pending.extend(missed.into_iter().filter(|s| !have.contains(s)));
@@ -1609,7 +1614,10 @@ impl Opens {
         let mut cut = false;
         for s in pending {
             // a refused walk Hit counts as none shown, once
-            let missed = self.conns.get_mut(&conn).and_then(|c| c.walks.get_mut(&s)).is_some_and(|w| std::mem::take(&mut w.missed));
+            let missed = self.conns.get_mut(&conn).and_then(|c| c.walks.get_mut(&s)).is_some_and(|w| {
+                w.retry = false;
+                std::mem::take(&mut w.missed)
+            });
             if self.member(conn, &s).is_some() {
                 continue;
             }
@@ -1695,15 +1703,15 @@ impl Opens {
         }
         // refused for now and backed off, or asked: the stop (if any) stands until an answer
         // says otherwise
-        if self.backed_off(ctx, conn, s) || self.behind_item(ctx, conn, s, adm, items, sent) {
+        if self.backed_off(conn, s) || self.behind_item(ctx, conn, s, adm, items, sent) {
             return self.stops.get(s).and_then(|at| at.get(&conn).copied());
         }
         Some(newest.map(|n| n.keys.sync.to_bytes()))
     }
 
     /// Whether S's Behind toward `conn` was refused for now (4) and waits out its back-off.
-    fn backed_off(&self, ctx: &Ctx, conn: ConnId, s: &SyncId) -> bool {
-        self.conns.get(&conn).is_some_and(|c| c.retries.iter().any(|(t, x)| x == s && *t > ctx.now))
+    fn backed_off(&self, conn: ConnId, s: &SyncId) -> bool {
+        self.conns.get(&conn).is_some_and(|c| c.retries.iter().any(|(_, x)| x == s))
     }
 
     /// A Behind item for S toward a peer J judges a sync holder, when no walk credential was
@@ -1711,7 +1719,6 @@ impl Opens {
     /// of, each step once per walk. Whether one was asked.
     fn behind_item(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, adm: &Adm, items: &mut Vec<OfferItem>, sent: &mut Vec<Sent>) -> bool {
         let Some(c) = self.conns.get_mut(&conn) else { return false };
-        c.retries.retain(|(_, x)| x != s);
         let w = c.walks.entry(*s).or_default();
         let known: Vec<Tested> = w.known.iter().rev().flat_map(|st| ctx.holds.step_creds(s, st)).map(|(t, _)| t).collect();
         let cand = known.iter().chain(adm.tests.iter()).find(|t| matches!(t, Tested::SyncKey { .. } | Tested::Claim { .. } | Tested::Static { .. }) && !w.refused.contains(&t.step()));

@@ -221,8 +221,12 @@ pub struct Streams {
 
 impl Streams {
     /// Streams over the node's store: where a record source's place and word live.
+    /// A store failure reading what it owes fails its first step (`fault`).
     pub fn new(store: Store) -> Streams {
-        Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew: store.anew_feed(), known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: StampedSet::default(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default() }
+        let (anew, owed) = store.anew_feed();
+        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), room: BTreeMap::new(), caught: StampedSet::default(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default() };
+        st.failed(owed);
+        st
     }
 
     /// Tests only (world copies): reads the copy's store.

@@ -903,8 +903,9 @@ fn kept_again_fetches_anew_spec_sync_judgement_6() {
 
 // spec/sync-judgement.md §6 (Read and unread move: a node raised to read pulls S anew), a
 // restart between the raise and the pull changing nothing: the raise is marked durably, so the
-// restarted node pulls S from the start at its reconnect rather than from its stored place, and
-// once it has, a further restart pulls from the stored place again.
+// restarted node (its modules alone, or its store too) pulls S from the start at its reconnect
+// rather than from its stored place, and once it has, a further restart pulls from the stored
+// place again.
 #[test]
 fn a_raise_to_read_fetches_anew_after_a_restart_spec_sync_judgement_6() {
     let mut p = Pair::new();
@@ -916,7 +917,11 @@ fn a_raise_to_read_fetches_anew_after_a_restart_spec_sync_judgement_6() {
     p.b.join(p.now, k.id);
     p.run();
     let reconnect = |p: &mut Pair, seed: u64| {
-        p.b.restart_all(seed);
+        if seed == 0 {
+            p.b.streams = Streams::new(p.b.store.clone());
+        } else {
+            p.b.restart_all(seed);
+        }
         p.a.streams.closed(C);
         p.a.join(p.now, k.id);
         p.b.join(p.now, k.id);
@@ -928,6 +933,10 @@ fn a_raise_to_read_fetches_anew_after_a_restart_spec_sync_judgement_6() {
     p.b.hold(k.id, Holding::Read);
     assert!(reconnect(&mut p, 8), "raised, restarted before the pull: pulled from the start");
     assert!(!reconnect(&mut p, 9), "pulled anew once: from its stored place again");
+    p.b.hold(k.id, Holding::Unread);
+    p.b.hold(k.id, Holding::Read);
+    assert!(reconnect(&mut p, 0), "raised, its modules restarted before the pull: from the start");
+    assert!(!reconnect(&mut p, 10), "from its stored place again");
 }
 
 // spec/sync-streams.md §4 (Refused): an entry refused for anything but room is told with its code;
