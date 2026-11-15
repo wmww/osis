@@ -3,3 +3,4 @@
 - `Effects` cause labels name a stamp table, not a key: "store: catalog family" lumped every record row together. Splitting the label by family (a throwaway `Box::leak` name per table) found the LRU churn in minutes; a per-table name is now kept (catalog kind, local rows, record rows).
 - The equal-rerun count (an effect giving the answer it replaced) is not counted anywhere; a two-line throwaway counter in `Effects::record` gave it. Worth keeping as a `costs` count if the next optimizer needs it.
 - `scale::group_change_is_flat` cost 1,284 G (half of engine `it`) unnoticed: a debug check ran once per edit of a whole set (O(n²)). A per-test instruction cap in the gate would have flagged it the day it landed.
+- `engine::testing::tables` returns a fixed-size array (`[_; N]`): every branch adding an index conflicts silently on rebase (no text conflict, a type error), and I pushed one such tip before re-running the build. A slice or Vec would rebase cleanly.
