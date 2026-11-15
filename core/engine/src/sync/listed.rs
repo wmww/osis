@@ -1,6 +1,6 @@
 //! The thing lists each read thing's sync IDs carry (spec/sync-judgement.md §1 List blobs),
 //! kept per (read thing, rotation) (`Listed`): `certificate_lists(s, r)` reads one row. A read
-//! thing carries the lists of the things of its closure its actor reads and of the things whose
+//! thing carries the lists of the things of its closure and of the things whose
 //! records its certificates name (`Engine::certified_records`); which things it carries is
 //! followed per read thing (`Effects`), the read things are `sync::certified`'s (its set's feed,
 //! so the sync set is followed once), and the lists held come from `Indexes::lists_on`'s feed, so
@@ -89,15 +89,15 @@ impl Listed {
 }
 
 impl Engine {
-    /// The things whose lists read thing `t`'s sync IDs carry: the closure things its actor
-    /// reads, and the things whose records its certificates name; none once `t` is read no more.
+    /// The things whose lists read thing `t`'s sync IDs carry (spec/sync-judgement.md §1 List
+    /// blobs): its closure's things, whatever its actor reads, and the things whose records its
+    /// certificates name; none once `t` is read no more.
     fn carried_lists(&mut self, t: &Tid) -> Result<Arc<BTreeSet<Tid>>> {
         let records = self.certified_records(t)?;
         if !self.core.certified.read.contains(t) {
             return Ok(Arc::default());
         }
-        let closure = self.core.ix.groups.closure_of(t);
-        let mut out: BTreeSet<Tid> = closure.iter().filter(|x| self.reads_in(t, x)).copied().collect();
+        let mut out: BTreeSet<Tid> = self.core.ix.groups.closure_of(t).iter().copied().collect();
         out.extend(records.iter().copied());
         Ok(Arc::new(out))
     }
@@ -351,5 +351,33 @@ pub(crate) mod tests {
         assert!(!listed(&mut lp, x), "x's list left");
         file(&mut lp, g, x, true);
         assert!(listed(&mut lp, x), "x's list carried again");
+    }
+
+    // spec/sync-judgement.md §1 (List blobs: the thing lists of things in the sync ID's closure,
+    // no reads condition): G, a group with secrets of its own filed in D, holds X, which G's
+    // actor does not read; a rotation listing a write on X puts X's list under G's sync IDs.
+    #[test]
+    fn a_closure_thing_its_actor_does_not_read_has_its_list_carried_spec_sync_judgement_1() {
+        let (mut lp, p, d) = rotated(0);
+        let ak = Ak::new("x:a.0").unwrap();
+        let mut m = Mutation::new();
+        let x = lp.peers[0].engine.new_thing(&mut m, p);
+        m.set(x, &ak, &Value::Int(1)).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        let g = lp.peers[0].engine.new_thing(&mut m, p);
+        m.set(g, &ct::GROUP, &ct::Group { items: [x].into(), ..Default::default() }).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.give_own_secrets(&g).unwrap();
+        file(&mut lp, d, g, true);
+        let e = &mut lp.peers[0].engine;
+        assert!(e.read_things().unwrap().contains(&g), "G is read here");
+        assert!(!e.reads_in(&g, &x), "G's actor does not read X");
+        rotate(&mut lp, p, c);
+        let (kept, whole) = rows(&mut lp);
+        assert_eq!(kept, whole);
+        let e = &mut lp.peers[0].engine;
+        let under_g = kept.iter().filter(|((s, _), _)| e.read_thing(s).unwrap() == Some(g)).any(|(_, row)| row.contains(&x));
+        assert!(under_g, "X's list under G's sync IDs: {kept:?}");
     }
 }
