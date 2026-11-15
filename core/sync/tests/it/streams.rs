@@ -1024,6 +1024,30 @@ fn a_shredded_full_s_untells_full_spec_sync_streams_4() {
     assert!(!p.a.streams.known().full(C, &k.id), "full false told after the shred");
 }
 
+// spec/sync-set.md §3 (On stopping: S dropped from every record in the step that stops it): a
+// stop shreds S and closes its member in one step, S held again at once (a sync holder's copy
+// dropped, read granted meanwhile); the member leaving after the shred keeps no position of S, so
+// its next join pulls S from the start.
+#[test]
+fn a_member_leaving_after_its_shred_keeps_no_position_spec_sync_set_3() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.a.log(s, 100);
+    p.shared_read(s);
+    p.run();
+    p.b.store.shred(&s).unwrap();
+    p.b.hold(s, Holding::Read);
+    p.b.leave_as(p.now, s, Leaving::Kept);
+    let pulls = p.sent_by_b(41).len();
+    p.b.join(p.now, s);
+    p.run();
+    let joins: Vec<_> = p.sent_by_b(41)[pulls..].iter().filter_map(|m| match m {
+        Msg::Pull(q) => q.joins.iter().find(|(x, _)| *x == s).cloned(),
+        _ => None,
+    }).collect();
+    assert_eq!(joins.first(), Some(&(s, None)), "joined from the start: {joins:?}");
+}
+
 // spec/sync-streams.md §4 (Full: until a cap that refused has room for the least entry it
 // refused): steps with nothing moving judge no room; a cap rise too small for the entry refused
 // keeps S full and pulls nothing; one with room for it ends the wait and pulls S anew once.

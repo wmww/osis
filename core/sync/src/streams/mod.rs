@@ -501,6 +501,20 @@ fn product(cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, reported: &mut V
     f(&mut ctx);
 }
 
+/// What opening entry `e` of read S with `bytes` does at this node (the product's `Ground::open`,
+/// over `Engine::open_entry`).
+pub fn opening(engine: &mut Engine, store: &crate::store::Store, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening> {
+    match crate::store::open_entry(engine, store, s, &e.blob, &e.wrap, bytes) {
+        Ok(o) if crate::store::pends(engine, &e.blob, &o) => Ok(Opening::Pends),
+        Ok(Opened::Commit(c, _)) if engine.holds_memory(&c) => Ok(Opening::Memory(engine.memory_charge(&c)?)),
+        Ok(Opened::Commit(_, i)) => Ok(Opening::Held { gave: !matches!(i, osis_engine::Ingested::Duplicate(_)) }),
+        Ok(Opened::Linked | Opened::Inbox(_) | Opened::Records(_) | Opened::Lists(_)) => Ok(Opening::Taken),
+        Ok(Opened::NotOpen) | Err(crate::types::Error::Engine(osis_engine::Error::NotBuilt(_))) => Ok(Opening::NotOpen),
+        Ok(Opened::Bad) => Ok(Opening::Bad),
+        Err(e) => Err(e),
+    }
+}
+
 /// The product's `Ground`: the engine's facade.
 struct EngineGround<'a> {
     engine: &'a mut Engine,
@@ -512,15 +526,7 @@ struct EngineGround<'a> {
 
 impl Ground for EngineGround<'_> {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening> {
-        match crate::store::open_entry(self.engine, &self.store, s, &e.blob, &e.wrap, bytes) {
-            Ok(o) if crate::store::pends(self.engine, &e.blob, &o) => Ok(Opening::Pends),
-            Ok(Opened::Commit(c, _)) if self.engine.holds_memory(&c) => Ok(Opening::Memory(self.engine.memory_charge(&c)?)),
-            Ok(Opened::Commit(_, i)) => Ok(Opening::Held { gave: !matches!(i, osis_engine::Ingested::Duplicate(_)) }),
-            Ok(Opened::Linked | Opened::Inbox(_) | Opened::Records(_) | Opened::Lists(_)) => Ok(Opening::Taken),
-            Ok(Opened::NotOpen) | Err(crate::types::Error::Engine(osis_engine::Error::NotBuilt(_))) => Ok(Opening::NotOpen),
-            Ok(Opened::Bad) => Ok(Opening::Bad),
-            Err(e) => Err(e),
-        }
+        opening(self.engine, &self.store, s, e, bytes)
     }
 
     fn own_relays(&mut self) -> Result<Vec<osis_engine::sync::Relay>> {

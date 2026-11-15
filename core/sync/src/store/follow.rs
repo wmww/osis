@@ -215,9 +215,6 @@ impl Follow {
         }
         let moved = self.set.settle(store);
         let mut acted = !moved.is_empty();
-        // kept unread to read opens what is there (spec/sync-judgement.md §6 Read and unread move):
-        // every entry held, once (after a restart, S's start parks what did not open, below)
-        let raised: Vec<SyncId> = moved.iter().filter(|(_, was, now)| matches!(was, Some((_, Holding::Unread))) && matches!(now, Some((_, Holding::Read)))).map(|(s, _, _)| *s).collect();
         for (s, _, now) in &moved {
             if let Some(t) = self.read.remove(s) {
                 self.paths.unwant(&(*s, t));
@@ -235,14 +232,9 @@ impl Follow {
                 self.creds.want(*s);
             }
         }
-        for s in raised {
-            for e in store.entries(&s)? {
-                if let Some(bytes) = store.bytes(&e.blob)? {
-                    open_entry(engine, store, &s, &e.blob, &e.wrap, &bytes)?;
-                }
-            }
-        }
-        // S read from now on (a start, a grant): its entries that did not open are parked once
+        // S read from now on (a start, a grant, raised from kept unread): its entries that did not
+        // open are parked once, and its read secrets' first settle opens them (spec/sync-judgement.md
+        // §6 Read and unread move: raised to read opens what is held)
         for (s, _, now) in &moved {
             if matches!(now, Some((_, Holding::Read))) {
                 let parked = self.parked.entry(*s).or_default();

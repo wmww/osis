@@ -239,6 +239,63 @@ fn a_writer_granted_again_reads_what_it_held_spec_permissions_3() {
     assert_eq!(reads(&mut w, 1, t), Some(Value::Str("y".into())));
 }
 
+// spec/permissions.md §3 (Lost access: a sync holder keeps its store, kept unread),
+// spec/sync-judgement.md §6 (read and unread move: raised to read opens what is held): a writer
+// lowered to sync forgets its own write with the lost access while its store keeps its own entry
+// of it, the only one of that write it holds; raised to read again, that entry opens and it reads
+// the write.
+#[test]
+fn a_writer_lowered_to_sync_and_raised_reads_its_own_write_spec_sync_judgement_6() {
+    let (mut w, t, _) = granted_and_read(Role::Write);
+    set(&mut w, 1, t, "z");
+    w.run();
+    assert_eq!(reads(&mut w, 0, t), Some(Value::Str("z".into())));
+    let holder = w.node(1).account.unwrap();
+    w.write(0, |e| e.demote(&t, &Demotion { holder, new: Some(edge(Role::Sync)), retain: None })).unwrap();
+    w.run();
+    assert_eq!(reads(&mut w, 1, t), None, "lowered to sync: unread");
+    grant(&mut w, 0, t, 1, Role::Read).unwrap();
+    w.run();
+    accept(&mut w, 1, t);
+    assert_eq!(reads(&mut w, 1, t), Some(Value::Str("z".into())));
+}
+
+// spec/commits.md §4 (Pending storage: an entry whose commit pends gives nothing held, so it is its
+// commit's carrier, charged to its bringer), spec/sync-ids.md §5 (Peer budget): node 1, reading
+// t, opens node 0's entry of a write on a thing t2 made under t before the entry of t2's
+// creation: the write pends, and the entry is kept as its carrier (`Opening::Pends`, which streams
+// charges to the peer that brought it: streams::a_flood_of_pending_commits_is_bounded_per_peer).
+// Once the creation's entry opens, the write is held.
+#[test]
+fn an_entry_whose_commit_pends_is_its_carrier_spec_commits_4() {
+    use osis_sync::streams::{Opening, opening};
+    let (mut w, t, ak) = granted_and_read(Role::Read);
+    w.partition(0, 1);
+    let (made, wrote) = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t2 = e.new_thing(&mut m, t);
+        m.set(t2, &ak, &Value::Str("new".into())).unwrap();
+        let made = e.commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        m.set(t2, &ak, &Value::Str("w".into())).unwrap();
+        (made, e.commit(m).unwrap().unwrap())
+    });
+    w.run();
+    let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
+    let entry_of = |w: &mut World, c| {
+        let blobs = w.engine(0).commit_blobs(&c).unwrap();
+        let e = w.store(0).entries(&s).unwrap().into_iter().find(|e| blobs.contains(&e.blob)).expect("an entry of the commit under S");
+        let bytes = w.store(0).bytes(&e.blob).unwrap().unwrap();
+        (e, bytes)
+    };
+    let (we, wb) = entry_of(&mut w, wrote);
+    let (me, mb) = entry_of(&mut w, made);
+    let store = w.store(1).clone();
+    assert_eq!(opening(w.engine(1), &store, &s, &we, &wb).unwrap(), Opening::Pends);
+    assert!(matches!(opening(w.engine(1), &store, &s, &me, &mb).unwrap(), Opening::Held { gave: true }));
+    assert!(w.engine(1).holds_commit(&wrote), "the write applies once its thing's record is held");
+}
+
 // spec/sync-inbox.md §2 (Re-send: an open by a store credential shows a delivery taken only to a
 // holder of sync alone): node 1 keeps S unread, is raised to write and removed; node 0 grants it
 // read, and node 1's take of that grant fails (a failed durable write: it restarts in place and
