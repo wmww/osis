@@ -239,15 +239,11 @@ pub(crate) fn keyset_departures(tx: &mut Tx<'_>, x: &Tid) -> Result<Vec<Departur
 pub(crate) fn uncovered(tx: &mut Tx<'_>, x: &Tid, r: Role, k: &osis_crypto::Epoch, deps: &[Departure]) -> Result<bool> {
     if tx.core.is_account(x) {
         // only the account's own nodes hold D's departures
-        let (Some(d), Some(v)) = (tx.core.accounts.get(x).map(|h| h.devices), tx.core.account_view(x)) else { return Ok(false) };
+        let (Some(_), Some(v)) = (tx.core.accounts.get(x), tx.core.account_view(x)) else { return Ok(false) };
         // an epoch no counting rotation of which is held here shows no line: it covers nothing
         let held = v.holds_name(k);
-        for key in deps.iter().filter(|d| d.concerns(r)).flat_map(|d| d.needed(r)) {
-            if !held || !crate::flows::lists::names_of(tx, &key.commit)?.iter().any(|(t, s)| *t == d && v.descends_authorized(k, s)) {
-                return Ok(true);
-            }
-        }
-        return Ok(false);
+        let covered = |n: &Tid| v.rotation_ids().iter().any(|s| v.removes(s).contains(n) && v.descends_counting(k, s));
+        return Ok(deps.iter().filter(|d| d.concerns(r)).any(|d| !held || !covered(&d.holder)));
     }
     let point = |k: osis_keys::Key| osis_base::Ts::from_u64(k.ts).map(|ts| osis_perm::Point { ts, node: k.node, commit: k.commit });
     let core = &*tx.core;
@@ -863,7 +859,7 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     }
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
-    let holders: Vec<osis_keys::Holder> = tx.core.key_holders(a).into_iter().filter(|(m, _)| tx.core.seals_to(a, m)).map(|(holder, role)| osis_keys::Holder { holder, role }).collect();
+    let holders: Vec<osis_keys::Holder> = tx.core.key_holders(a).into_iter().map(|(holder, role)| osis_keys::Holder { holder, role }).collect();
     let due = osis_keys::reseal_needed(&secrets, &epochs, &holders);
     let ended = ended_holders(tx.core, &me, a);
     let mut out = Vec::new();

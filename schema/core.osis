@@ -228,12 +228,10 @@ aspect secrets.0: struct {
     history 1: map<history_key, blob>,
 };
 
-/// An account's epochs, on its devices actor (spec/data-model.md §9): per epoch, by its 32-byte
-/// signing public key, the read epoch of the devices actor its rotation made the devices actor's
-/// content go under. One entry put per rotation; it marks the devices actor as the account's.
-aspect account.0: struct {
-    under 0: map<blob, epoch> = {},
-};
+/// The account's seed-boxing commits on its devices actor (spec/data-model.md §9): the signing
+/// public key (32 bytes) of the epoch whose seed each boxes, added by the account's creation,
+/// each rotation and each seed re-seal. It marks the devices actor as the account's.
+aspect account.0: set<blob>;
 
 /// An account's listings (spec/permissions.md §5.5): by a rotation's 32-byte commit ID, the
 /// account's own commits at the epochs it closed that this listing names. Entries only put.

@@ -953,10 +953,6 @@ indexes! {
     /// Accounts' rotations applied and not yet answered with this node's listing or addenda
     /// (`flows::signing::answer_rotations`; `records::ROTATIONS_DUE`).
     pub rotations_due: JSet<CommitId>,
-    /// Removals from this node's account's D that a held rotation's header names and that a
-    /// complete pass of D's sync IDs begun after brought no body of (`flows::custody::
-    /// waited_out`; `records::UNPUBLISHED`): signing waits for them no more.
-    pub unpublished: JSet<CommitId>,
     /// The earliest valid held commit writing an epoch's keyset in `keys.0` (its rotation):
     /// (actor, role, epoch) -> (`ts`, commit). Absent: unknown. What a box naming the keyset
     /// carries (spec/crypto.md §4, Carried) and a certificate of the actor's current keys.

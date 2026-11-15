@@ -81,9 +81,6 @@ pub const ADDENDA_DUE: &[u8] = b"ad/";
 /// `rd/<commit>`: accounts' rotations not yet answered with this node's listing (its own
 /// account's) or addenda (another's) (`Indexes::rotations_due`).
 pub const ROTATIONS_DUE: &[u8] = b"rd/";
-/// `up/<commit>`: a removal a held rotation of this node's account names, never published
-/// (`Indexes::unpublished`).
-pub const UNPUBLISHED: &[u8] = b"up/";
 /// Commits whose `keys.0` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
 /// kept while the commit is held, whatever becomes of the body): `g/` + tid + commit ID.
 pub const OWN_KEYS: &[u8] = b"g/";

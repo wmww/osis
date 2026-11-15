@@ -217,8 +217,10 @@ fn departed(tx: &mut Tx<'_>) -> Result<Departed> {
     if list.is_empty() {
         return Ok(Some((profile, BTreeSet::new())));
     }
-    let current: BTreeSet<Tid> = tx.core.key_holders(&d).into_iter().map(|(n, _)| n).collect();
-    let gone: BTreeSet<Tid> = crate::flows::signing::removals(tx.core, &p, &d)?.into_iter().map(|(_, n)| n).filter(|n| !current.contains(n)).collect();
+    let current: BTreeSet<Tid> = tx.core.devices_roster(&p);
+    let v = tx.core.account_view(&p);
+    let gone: BTreeSet<Tid> = v.iter().flat_map(|v| v.rotation_ids().into_iter().filter(|r| v.rotation_counts(r)).flat_map(|r| v.removes(&r))).filter(|n| !current.contains(n)).collect();
+    let _ = d;
     let mut out = BTreeSet::new();
     for n in gone {
         if let Some(r) = typed(tx, &n, &ct::REACH)?.filter(|r| list.contains_key(r.dialable.as_slice())) {

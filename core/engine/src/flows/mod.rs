@@ -219,6 +219,11 @@ impl Core {
     /// holders in their place): every edge on it by `rotation::key_role`, its record edge
     /// included while it stands.
     pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
+        // this node's account's devices actor D: its holders are D's roster, read from the chain
+        // alone (spec/permissions.md §5.4, Roster); D bears no edge write
+        if let Some(p) = self.devices_of(actor).filter(|p| self.accounts.contains_key(p)) {
+            return self.devices_roster(&p).into_iter().map(|m| (m, Role::Admin)).collect();
+        }
         match self.timelines.on(actor) {
             Some(on) => on.holders().into_iter().filter_map(|(m, e)| Some((m, crate::rotation::key_role(Some(&e))?))).collect(),
             None => self.first_admin(actor).map(|a| (a, Role::Admin)).into_iter().collect(),

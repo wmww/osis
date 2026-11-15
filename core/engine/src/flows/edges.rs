@@ -557,6 +557,9 @@ impl Engine {
     /// `grant_signed`, then `then` in the same transaction.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn grant_signed_then(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History, then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
+        if self.core.devices_of(&target).is_some() {
+            return Err(Error::Misuse("D's roster changes only by its account's rotations: pair a device"));
+        }
         let who = signer.unwrap_or(self.core.writer()?);
         let new = Some(perm_edge(edge));
         let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(edge));
@@ -623,13 +626,7 @@ impl Engine {
         let Some(tl) = self.core.timelines.get(&target) else { return Ok((None, Vec::new())) };
         let own = tl.certificates(&who, &target).commits;
         let mut scope = tl.demotion_scope(self.demotion_probe(who, ops.clone(), tl.all_held()));
-        // Interim (issues/account-removal-before-its-rotation.md): replaced by custody phase 2 (the D clause of
-        // removal frontiers: a removal exists only inside its rotation).
-        // a node's removal from its account's devices actor also lists the removed node's own
-        // word on it (inner signature) held here: its commits there it does not list stop
-        // counting (spec/permissions.md §5.4, Following, at a node of P)
-        let removed: BTreeSet<Tid> = ops.iter().filter(|o| o.edge.is_none()).map(|o| o.holder).collect();
-        let mut keep: BTreeSet<CommitId> = own.iter().copied().chain(self.core.devices_word(&target, &removed)).collect();
+        let mut keep: BTreeSet<CommitId> = own.iter().copied().collect();
         let mut f = loop {
             let f = self.frontier_fitted(&scope, as_of, &keep)?;
             let probe = self.demotion_probe(who, ops.clone(), osis_perm::Frontier { commits: f.commits.clone() });
@@ -667,6 +664,13 @@ impl Engine {
     /// `demote` that also removes `others` in the same commit under one rotation
     /// (spec/commits.md §2); `d.new` must then be `None`.
     pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid]) -> Result<Done> {
+        // a device leaves its account's devices actor only by a rotation removing it
+        if self.core.devices_of(target).is_some() {
+            return match d.new {
+                None if others.is_empty() => self.remove_device(&d.holder),
+                _ => Err(Error::Misuse("D's roster changes only by its account's rotations")),
+            };
+        }
         let who = signer.unwrap_or(self.core.writer()?);
         let t = *target;
         let new = match self.core.timelines.get(&t) {

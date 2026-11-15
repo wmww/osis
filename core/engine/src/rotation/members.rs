@@ -258,9 +258,6 @@ pub(crate) fn sealing(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) 
 /// `sealing`, the recipient's floor 0.
 fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<(Sealed, BTreeMap<Role, BTreeSet<Epoch>>)> {
     let mut blocked = BTreeMap::new();
-    if !tx.core.seals_to(a, m) {
-        return Ok((Sealed::Out, blocked));
-    }
     let Some(role) = keyed_role(tx.core, a, m, role) else { return Ok((Sealed::Out, blocked)) };
     if tx.core.is_account(m) {
         return sealed_to_account(tx, who, a, m, role);

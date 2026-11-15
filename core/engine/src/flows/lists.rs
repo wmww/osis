@@ -5,7 +5,6 @@
 //! commit, thing, source; `records::NAMED_BY`: the reverse), which `refresh_epochs` reads for
 //! the commits whose standing may have moved, so a read or an open walks no list.
 
-use super::account::things_of;
 use crate::engine::{Engine, Tx, records};
 use crate::error::{Error, Result};
 use osis_base::{CommitId, Tid, Value};
@@ -103,26 +102,8 @@ pub(crate) fn keep_certs(tx: &mut Tx<'_>, certs: &[ThingCert]) -> Result<bool> {
         if let ListIds::Inline(ids) = &c.list.ids {
             put_names(tx, &c.rotation, &c.list.thing, ids.iter().copied())?;
         }
-        waited_list_held(tx, &c.rotation, &c.list.thing);
     }
     Ok(new)
-}
-
-/// Rotation `r`'s list of `t` arrived: where `t` is the devices actor of an account held here,
-/// its commits on `t` at the epochs `r` lists stop waiting for it (spec/permissions.md §5.5
-/// Waiting) and are judged again, by the lists now held. O(the account's epochs and the commits
-/// at those `r` lists), once per rotation's list of D. A rotation not held lists no epoch: it
-/// judges them on arrival (`put_names` alike).
-fn waited_list_held(tx: &mut Tx<'_>, r: &CommitId, t: &Tid) {
-    let Some(p) = tx.core.accounts.iter().find(|(_, a)| a.devices == *t).map(|(p, _)| *p) else { return };
-    let Some(v) = tx.core.account_view(&p) else { return };
-    let mut on_t = Vec::new();
-    for e in v.listed_by(r) {
-        on_t.extend(tx.core.ix.by_epoch.get(&(p, e)).into_iter().flatten().copied().filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| things_of(&m.view).contains(t))));
-    }
-    for c in on_t {
-        due(tx, &c);
-    }
 }
 
 /// Loads `Indexes::lists_on` from the thing lists held (an open or reload).

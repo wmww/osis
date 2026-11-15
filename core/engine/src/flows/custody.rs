@@ -9,9 +9,8 @@ use crate::error::{Error, Result};
 use osis_base::{Role, Tid};
 use osis_commit::{Header, SeedBox, SeedReseal};
 use osis_schema::core_types as ct;
-use osis_schema::{Codec, RawKey};
 use osis_base::Value;
-use osis_crdt::{Op, PathOp, PathSeg};
+use osis_crdt::{Op, PathOp};
 use super::account::AccountView;
 use osis_crypto::{AccountEpochKeys, Secret32, VerifyingKey};
 use osis_store::Shred;
@@ -93,29 +92,26 @@ pub(crate) fn seeds(tx: &mut Tx<'_>, p: &Tid) -> Result<Seeds> {
     Ok(out)
 }
 
-/// Drops every seed of account `p` in custody here, and the removals it waited out: the node
-/// left it.
+/// Drops every seed of account `p` in custody here: the node left it.
 pub(crate) fn shred(tx: &mut Tx<'_>, p: &Tid) -> Result<()> {
-    for c in tx.core.ix.unpublished.iter().copied().collect::<Vec<_>>() {
-        tx.core.ix.unpublished.remove(&c);
-    }
-    tx.remove_scanned(records::UNPUBLISHED, |_| Ok(true))?;
     tx.remove_scanned(&[records::SEEDS, p.as_bytes().as_slice()].concat(), |_| Ok(true))
 }
 
-/// The devices on D's roster as this node reads it: the key actors holding D (D's first admin,
-/// the account, holds it by its record and is no device).
+/// The devices on D's roster as this node reads it (`Core::devices_roster`).
 pub(crate) fn roster(core: &Core, d: &Tid) -> Vec<Tid> {
-    core.key_holders(d).into_iter().map(|(m, _)| m).filter(|m| core.is_key_actor(m) && !core.is_account(m)).collect()
+    core.devices_of(d).map(|p| core.devices_roster(&p).into_iter().collect()).unwrap_or_default()
 }
 
 /// The seed boxes of a rotation of account `p` minting the epoch with seed `seed`: one to each
-/// device on D's roster here, carrying the new seed, and to each of `adds` (devices it adds)
-/// also every seed this node holds (spec/crypto.md §9, Custody). Ascending by tag.
-pub(crate) fn seed_boxes(tx: &mut Tx<'_>, p: &Tid, d: &Tid, seed: &Secret32, adds: &[Tid]) -> Result<Vec<SeedBox>> {
+/// device on D's roster here after its membership changes `members`, carrying the new seed, and
+/// to each device it adds also every seed this node holds (spec/crypto.md §9, Custody).
+/// Ascending by tag.
+pub(crate) fn seed_boxes(tx: &mut Tx<'_>, p: &Tid, d: &Tid, seed: &Secret32, members: &super::signing::Members) -> Result<Vec<SeedBox>> {
+    let adds = &members.adds;
     let epoch = AccountEpochKeys::from_seed(seed).signing.verifying_key();
     let held: Vec<Secret32> = tx.core.accounts.get(p).map(|a| a.keys.values().map(|k| k.seed().clone()).collect()).unwrap_or_default();
     let mut devices = roster(tx.core, d);
+    devices.retain(|m| !members.removes.contains(m));
     for a in adds {
         if !devices.contains(a) {
             devices.push(*a);
@@ -146,7 +142,7 @@ fn seed_box(tx: &mut Tx<'_>, p: &Tid, epoch: &VerifyingKey, m: &Tid, payload: &[
 }
 
 /// Seed re-seals (spec/crypto.md §9, Custody), at the end of a complete pass of D's sync IDs:
-/// for each head of this node's account whose seed it holds and whose line it holds whole, the
+/// for each head of this node's account whose seed it holds, the
 /// other devices on D's roster no counting box of that seed is tagged for are boxed it, with the seeds
 /// of its line held here, one commit per head. Bounded by structure: once held, a re-seal is a
 /// counting box, so each (head, device) is re-sealed once per node that sees it lacking before it
@@ -165,21 +161,12 @@ pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> 
     let mut out = Vec::new();
     for h in v.heads() {
         let Some(keys) = v.keys_of(&h, &held) else { continue };
-        if !v.whole(&h, tx.core) {
-            continue;
-        }
         let seed = keys.seed().clone();
         let lacking: Vec<Tid> = roster.iter().filter(|m| !boxed.contains(&osis_crypto::seed_tag(&seed, m))).copied().collect();
         if lacking.is_empty() {
             continue;
         }
         let epoch = keys.signing.verifying_key();
-        // Interim (issues/account-removal-before-its-rotation.md): replaced by custody phase 2.
-        // The re-seal writes the epoch's entry in D's `account.0` again (the record its rotation
-        // put on D), as a re-seal of a thing writes its boxes again: a new entry, so it travels
-        // under D's sync IDs to every device.
-        let acct = tx.state(&d, &ct::ACCOUNT.name())?.and_then(osis_crdt::Fragment::read).and_then(|x| ct::ACCOUNT.decode(&x).ok()).unwrap_or_default();
-        let Some(under) = acct.under.get(epoch.to_bytes().as_slice()) else { continue };
         // the head's seed, then the seeds of its line held here: a device reads who minted each
         // rotation on the line with the seed of the epoch it is signed at
         let line: Vec<Secret32> = v.line(&h).into_iter().flatten().chain([&osis_commit::FIRST_EPOCH]).filter(|r| **r != h).filter_map(|r| v.keys_of(r, &held)).map(|k| k.seed().clone()).collect();
@@ -189,11 +176,11 @@ pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> 
             seeds.push(seed_box(tx, &p, &epoch, m, &payload)?);
         }
         seeds.sort_by_key(|b| b.tag);
+        // its carrier: the epoch added to D's `account.0` again, so it travels under D's sync IDs
+        // to every device
         let mut m = crate::Mutation::new();
         m.sign_as(p);
-        let k = Value::bytes(&epoch.to_bytes());
-        m.op(d, &ct::ACCOUNT, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.clone()) })?;
-        m.op(d, &ct::ACCOUNT, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k)], op: Op::Set(under.to_value()) })?;
+        m.op(d, &ct::ACCOUNT, PathOp { path: vec![], op: Op::Add(Value::bytes(&epoch.to_bytes())) })?;
         m.reseal = Some(SeedReseal { signing_key: epoch, seeds });
         out.extend(crate::Engine::commit_tx(tx, m)?);
     }
@@ -216,17 +203,3 @@ fn counting_tags(core: &Core, v: &AccountView, d: &Tid) -> BTreeSet<[u8; osis_cr
     out
 }
 
-/// At the end of a complete pass of D's sync IDs (spec/crypto.md §9, Custody: the signing guard):
-/// each removal from D a held rotation's header names that the pass brought no body of is waited
-/// for no more (`Indexes::unpublished`), so a device naming a removal it never publishes freezes
-/// no line. The pass began after every role commit on D received, so after each header naming it.
-pub(crate) fn waited_out(tx: &mut Tx<'_>) -> Result<()> {
-    let Some((p, _)) = tx.core.account_devices() else { return Ok(()) };
-    let Some(v) = tx.core.account_view(&p) else { return Ok(()) };
-    let gone: Vec<osis_base::CommitId> = v.unheld_removals(tx.core).filter(|c| !tx.core.ix.unpublished.contains(c)).collect();
-    for c in gone {
-        tx.core.ix.unpublished.insert(c);
-        tx.txn.put_local(&[records::UNPUBLISHED, &c.0[..]].concat(), &[], Shred::No)?;
-    }
-    Ok(())
-}

@@ -353,13 +353,9 @@ codec_struct! {
     pub struct Tag { 0 color: Option<String> }
 }
 
-codec_struct! {
-    /// `account.0` on an account's devices actor D (spec/data-model.md §9): per epoch of the
-    /// account, by its signing public key, the read epoch of D its rotation made D's content go
-    /// under (empty when never written, its default in the schema). It marks D as the account's.
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Account { 0 under: BTreeMap<Vec<u8>, Epoch> }
-}
+/// `account.0` on an account's devices actor D (spec/data-model.md §9): the signing keys of the
+/// epochs whose seeds the account's commits on D box. It marks D as the account's.
+pub type Account = BTreeSet<Vec<u8>>;
 
 /// `listing.0`: a rotation's commit ID to the commit IDs a listing names (spec/permissions.md §5.5).
 pub type Listings = BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>;
