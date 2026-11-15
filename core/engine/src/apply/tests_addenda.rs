@@ -402,11 +402,11 @@ fn a_bodiless_addendum_is_judged_by_its_header_spec_perm_5_2() {
     assert_eq!(d1.first_diff(&lp.peers[3].engine.index_digest()), None, "rebuilt with the body");
 }
 
-// spec/commits.md §5 (Forgetting: only where forgetting changes no read, every part covered),
-// spec/permissions.md §5.2 (Addenda): an addendum dropped while invalid lists nothing and is
-// never covered, so it is kept, never forgettable, and judges nothing.
+// spec/commits.md §5 (Forgetting: every part covered or dropped as invalid),
+// spec/permissions.md §5.2 (Addenda): an addendum dropped while invalid lists nothing and judges
+// nothing, kept or forgotten.
 #[test]
-fn an_invalid_addendum_is_kept_spec_commits_5() {
+fn an_invalid_addendum_is_forgettable_spec_commits_5() {
     let (mut lp, t) = world(3, &[Role::Write, Role::Read]);
     let e = write(&mut lp, 1, t, "x:e.0", 7);
     lp.sync(1, 2).unwrap();
@@ -415,9 +415,48 @@ fn an_invalid_addendum_is_kept_spec_commits_5() {
     let forged = forge_addendum(&mut lp, 2, t, r, &[e]);
     lp.sync_all().unwrap();
     let eng = &mut lp.peers[0].engine;
-    assert!(eng.kept_invalid(&forged) && !eng.forgettable(&forged).unwrap(), "dropped while invalid, kept");
+    assert!(eng.kept_invalid(&forged) && eng.forgettable(&forged).unwrap(), "dropped while invalid, forgettable");
     assert!(!valid(&lp, 0, &e, t, "x:e.0"));
     assert_eq!(reads(&mut lp, 0, t, "x:e.0"), None);
+    lp.peers[0].engine.forget_commits(&[forged]).unwrap();
+    assert!(!lp.peers[0].engine.core.ix.commits.contains_key(&forged));
+    assert!(!valid(&lp, 0, &e, t, "x:e.0"));
+    assert_eq!(reads(&mut lp, 0, t, "x:e.0"), None);
+}
+
+/// Bob, removed by Alice without knowing it, writes `n` edits; Alice receives them, judges them
+/// invalid and forgets every commit she may: Alice's rows by kind (count, bytes) and the edits.
+fn removed_writer_writes(n: usize) -> (LocalPeer, Tid, Vec<CommitId>, std::collections::BTreeMap<String, (usize, usize)>) {
+    let (mut lp, t) = world(2, &[Role::Write]);
+    remove(&mut lp, 0, t, 1);
+    let edits: Vec<CommitId> = (0..n).map(|i| write(&mut lp, 1, t, "x:e.0", i64::try_from(i).unwrap())).collect();
+    lp.sync(1, 0).unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(edits.iter().all(|c| e.kept_invalid(c)), "every edit dropped as invalid");
+    let due: Vec<CommitId> = e.commit_ids().into_iter().filter(|c| e.forgettable(c).unwrap()).collect();
+    e.forget_commits(&due).unwrap();
+    assert!(edits.iter().all(|c| !e.core.ix.commits.contains_key(c)), "every edit forgotten");
+    let census = e.local_census().unwrap();
+    (lp, t, edits, census)
+}
+
+// spec/commits.md §5 (Forgetting: every part covered or dropped as invalid), spec/permissions.md
+// §6 (Invalid deltas: a delta dropped so that turns valid again is fetched from any holder),
+// spec/requirements.md Scale: a removed writer's invalid commits leave Alice nothing, the same
+// rows at 3 and 30 of them; a re-grant brings them back from Bob, judged valid.
+#[test]
+fn a_removed_writers_invalid_commits_are_forgotten_spec_commits_5() {
+    let (_, _, _, a) = removed_writer_writes(3);
+    let (mut lp, t, edits, b) = removed_writer_writes(30);
+    let bytes = |c: &std::collections::BTreeMap<String, (usize, usize)>| c.values().map(|v| v.1).sum::<usize>();
+    assert!(b.iter().all(|(k, v)| v.0 <= a.get(k).map_or(0, |x| x.0)) && bytes(&b) <= bytes(&a) + 64, "rows by kind {a:?} at n, {b:?} at 10n");
+    let bob = lp.peers[1].engine.me();
+    lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
+    lp.advance(1000);
+    lp.sync_all().unwrap();
+    let last = *edits.last().unwrap();
+    assert!(valid(&lp, 0, &last, t, "x:e.0"), "received again and judged valid");
+    assert_eq!(reads(&mut lp, 0, t, "x:e.0"), Some(Value::Int(29)));
 }
 
 /// One of the removed writer's writes in

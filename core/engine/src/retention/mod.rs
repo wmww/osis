@@ -1253,13 +1253,16 @@ impl Engine {
 
     /// Whether commit `c` may be forgotten, ID included, once node-sync knows no entry of it
     /// (spec/commits.md §5, Forgetting): only where forgetting changes no read, every part of
-    /// it covered, nothing waiting. A durable content commit or content snapshot every part of
-    /// which dropped as covered, by any writer's cover, no purge request (else each write another
-    /// writer compacts, and each snapshot under a later one, would leave a header for good:
-    /// `growth::several_writers_grow_nothing`); or one held only as purged leftovers
-    /// (`kept_purged`, either class) once each part not dropped as covered is covered here
-    /// (`part_covered`: a valid snapshot past the purge carries its kill). A part dropped while
-    /// invalid is never covered, so its commit stays.
+    /// it covered or dropped as invalid, nothing waiting. A content commit or content snapshot
+    /// every part of which dropped as covered (by any writer's cover) or as invalid, no purge
+    /// request (else each write another writer compacts, and each snapshot under a later one,
+    /// would leave a header for good: `growth::several_writers_grow_nothing`; and a writer,
+    /// removed or not, could pile up invalid headers for good:
+    /// `tests_addenda::a_removed_writers_invalid_commits_are_forgotten_spec_commits_5`; a memory
+    /// one all covered went at once, `forget_if_spent`); or one held only as
+    /// purged leftovers (`kept_purged`, either class) once each part not dropped as covered is
+    /// covered here (`part_covered`: a valid snapshot past the purge carries its kill). An
+    /// invalid part that turns valid later comes back only as a copy arriving again, judged anew.
     pub fn forgettable(&mut self, c: &CommitId) -> Result<bool> {
         // counted: tests read how many commits forgetting looks at
         let _s = osis_base::costs::span("forgettable");
@@ -1268,7 +1271,8 @@ impl Engine {
             return Ok(false);
         }
         let covered = |ai: usize| m.dropped(ai).is_some_and(|d| d.why == DropFor::Cover);
-        if !m.view.memory && matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && (0..m.view.aspects.len()).all(covered) {
+        let gone = |ai: usize| covered(ai) || m.dropped_invalid(ai);
+        if matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && (0..m.view.aspects.len()).all(gone) {
             return Ok(true);
         }
         if !kept_purged(&self.core, c, &m) {
