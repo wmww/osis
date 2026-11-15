@@ -488,7 +488,7 @@ fn late_write_mid_history_keeps_states_exact() {
     assert!(check(&all, &inc, &n).is_none(), "{:?}", check(&all, &inc, &n));
 }
 
-// spec: none (costs, spec/requirements.md Scale): an edge joining a person's component to a chat's
+// spec: none (costs, spec/requirements.md Scale): an edge joining an account's component to a chat's
 // of T things finds the region reading each component's things once: T, not T^2.
 #[test]
 fn region_reads_each_component_once() {
@@ -500,7 +500,7 @@ fn region_reads_each_component_once() {
     for (i, m) in n[1..41].iter().enumerate() {
         w.set(k, g, *m, edge(Write), 10 + i as u64, &[]);
     }
-    // a person of its own, with a commit: not a lone node, so the general path
+    // an account of its own, with a commit: not a lone node, so the general path
     let p = w.thing(y);
     w.set(y, p, y, edge(Admin), 100, &[]);
     let held = w.held();

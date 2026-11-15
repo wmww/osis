@@ -789,7 +789,7 @@ impl Osis {
     /// seed thing in a shared group: it names no link of ours).
     fn held_links(&self) -> Result<Vec<flows::HeldLink>> {
         let me = self.me();
-        self.engine(|e| person_links(e, me))
+        self.engine(|e| account_links(e, me))
     }
 
     /// Link actor `k`'s key L (`held_links`).
@@ -981,7 +981,7 @@ fn retain_only_on_removal(role: Option<Role>, o: SetRoleOpts) -> Result<()> {
 }
 
 /// `Osis::held_links`, on this engine.
-fn person_links(e: &mut osis_engine::Engine, me: Tid) -> Result<Vec<flows::HeldLink>> {
+fn account_links(e: &mut osis_engine::Engine, me: Tid) -> Result<Vec<flows::HeldLink>> {
     let held = e.held_links()?.to_vec();
     Ok(held.into_iter().filter(|h| h.first_admin == me && e.first_admin(&h.k) == Some(me)).collect())
 }

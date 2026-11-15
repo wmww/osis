@@ -13,7 +13,7 @@ use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
 /// A timed share: `t` (first admin: peer 0), write to peers 1 and 3, read to peer 2 until `until`
-/// (`role`: G's role). Returns (lp, t, persons, until).
+/// (`role`: G's role). Returns (lp, t, accounts, until).
 /// Built once per `role` (`LocalPeer::cached`).
 fn shared(role: Role) -> (LocalPeer, Tid, Vec<Tid>, WallMs) {
     let (lp, (t, ps, until)) = LocalPeer::cached(&format!("finalize::shared/{role:?}"), || {

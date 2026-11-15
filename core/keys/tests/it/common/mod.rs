@@ -20,7 +20,7 @@ pub fn rng(seed: u64) -> SeededRng {
 }
 
 /// An actor holding one explicit secret per role at epoch (1, b).
-pub fn person(b: u8) -> ActorEpochs {
+pub fn actor_epochs(b: u8) -> ActorEpochs {
     let mut a = ActorEpochs::default();
     for (i, r) in ROLES.into_iter().enumerate() {
         a.role_mut(r).set_secret(ep(1, b), Secret32::from_bytes([b.wrapping_add(i as u8); 32]));

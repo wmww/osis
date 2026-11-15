@@ -55,7 +55,7 @@ fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient], rg: &mut osis
 fn grant_raced_by_rotation() {
     let rg = &mut rng(0);
     let (a, p, g) = (tid(1), tid(2), tid(5));
-    let (pe, ge) = (person(0x20), person(0x50));
+    let (pe, ge) = (actor_epochs(0x20), actor_epochs(0x50));
     let (view, base) = switched(a, p, &pe, &[], rg);
     let grant = box_holder(&a, &view, &hist(&a, &view, &base), &actor_rcpt(g, Role::Read, &ge), &read(), &mut *rg).unwrap().unwrap();
     let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &osis_keys::Names::default(), &mut *rg).unwrap();
@@ -82,7 +82,7 @@ fn grant_raced_by_rotation() {
 fn rotation_held_before_the_removal() {
     let rg = &mut rng(0);
     let (a, p, m) = (tid(1), tid(2), tid(3));
-    let (pe, me) = (person(0x20), person(0x30));
+    let (pe, me) = (actor_epochs(0x20), actor_epochs(0x30));
     let (view, base) = switched(a, p, &pe, &[actor_rcpt(m, Role::Read, &me)], rg);
     let with_m = [admin_rcpt(p, &pe), actor_rcpt(m, Role::Read, &me)];
     let (dep, removed) = removal(m, 7);
@@ -133,7 +133,7 @@ fn rotation_held_before_the_removal() {
 fn missing_box_covers_nothing() {
     let rg = &mut rng(0);
     let (a, p, m) = (tid(1), tid(2), tid(3));
-    let pe = person(0x20);
+    let pe = actor_epochs(0x20);
     let (view, base) = switched(a, p, &pe, &[], rg);
     let rot = rotate(&a, &read(), &view, &base, &[admin_rcpt(p, &pe)], &Names::default(), &mut *rg).unwrap();
     let v = rot.preview(&view).unwrap();

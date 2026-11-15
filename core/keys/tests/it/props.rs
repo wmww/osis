@@ -59,11 +59,11 @@ struct Sim {
 
 impl Sim {
     fn new() -> Sim {
-        let (a, p, pe) = (tid(1), tid(2), person(0x20));
+        let (a, p, pe) = (tid(1), tid(2), actor_epochs(0x20));
         let pool = (0..POOL)
             .map(|i| {
                 let t = tid(10 + i as u8);
-                let k = if i % 2 == 0 { Kind::Actor(person(0x30 + i as u8)) } else { Kind::Key(Secret32::from_bytes([0x60 + i as u8; 32])) };
+                let k = if i % 2 == 0 { Kind::Actor(actor_epochs(0x30 + i as u8)) } else { Kind::Key(Secret32::from_bytes([0x60 + i as u8; 32])) };
                 (t, k)
             })
             .collect();

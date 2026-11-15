@@ -1280,7 +1280,7 @@ fn edge_change_is_remove_and_put_spec_perm_2() {
 }
 
 /// Account actors for `lp`'s peers, known to all.
-fn persons(lp: &mut LocalPeer) -> Vec<Tid> {
+fn accounts(lp: &mut LocalPeer) -> Vec<Tid> {
     let ps = (0..lp.peers.len()).map(|i| lp.peers[i].engine.create_account().unwrap().0.account).collect();
     lp.sync_all().unwrap();
     ps
@@ -1312,7 +1312,7 @@ fn roles_resets(lp: &mut LocalPeer, d: Tid, done: &osis_engine::flows::Done) -> 
 fn churn_resets(k: usize) -> (usize, usize) {
     use osis_engine::flows::Demotion;
     let mut lp = net(2, 0);
-    let ps = persons(&mut lp);
+    let ps = accounts(&mut lp);
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ps[0]);
     m.set(d, &REG, &s("x")).unwrap();
@@ -1346,7 +1346,7 @@ fn a_removal_ends_both_forked_grants_it_saw_spec_perm_2() {
     // the remover: A, then C (each one's current entry is a different grant)
     for (r, other) in [(0, 2), (2, 0)] {
         let mut lp = net(9, 0);
-        let ps = persons(&mut lp);
+        let ps = accounts(&mut lp);
         let (pb, pc) = (ps[1], ps[2]);
         let mut m = Mutation::new();
         let d = lp.peers[0].engine.new_thing(&mut m, ps[0]);
@@ -1397,7 +1397,7 @@ fn regrant_over_dropped_entry_spec_perm_2() {
     for again in [Role::Write, Role::Admin] {
         use osis_engine::flows::Demotion;
         let mut lp = net(3, 0);
-        let ps = persons(&mut lp);
+        let ps = accounts(&mut lp);
         let (pb, pc) = (ps[1], ps[2]);
         let mut m = Mutation::new();
         let d = lp.peers[0].engine.new_thing(&mut m, ps[0]);

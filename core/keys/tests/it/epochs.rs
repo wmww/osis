@@ -31,7 +31,7 @@ struct World {
 
 impl World {
     fn new() -> World {
-        World { a: tid(1), p: tid(2), m: tid(3), l: tid(4), pe: person(0x20), me: person(0x30), lseed: Secret32::from_bytes([0x40; 32]) }
+        World { a: tid(1), p: tid(2), m: tid(3), l: tid(4), pe: actor_epochs(0x20), me: actor_epochs(0x30), lseed: Secret32::from_bytes([0x40; 32]) }
     }
     /// First admin P (its secrets held: symmetric boxes), read holder M, write key-actor holder L.
     fn holders(&self) -> Vec<Recipient> {

@@ -109,13 +109,13 @@ fn perm_graph() {
 #[test]
 fn wrap_epochs() {
     let rg = &mut rng(0);
-    let mut a = person(0x20);
+    let mut a = actor_epochs(0x20);
     assert_eq!(wrap_epoch(&a.read), Some(ep(1, 0x20)));
     a.read.set_history(ep(2, 5), BTreeSet::new(), [ep(1, 0x20)], None);
     a.read.set_established(ep(2, 5), osis_keys::Provenance::Fixed);
     assert_eq!(wrap_epoch(&a.read), None);
     assert_eq!(wrap_epoch(&ActorEpochs::default().read), None);
-    let pe = person(0x20);
+    let pe = actor_epochs(0x20);
     let mut view = ActorEpochs::derived(&pe, &tid(1));
     let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut *rg).unwrap();
     assert_eq!(r.wrap_epoch(), ActorEpochs::derived(&pe, &tid(1)).read.newest());
@@ -131,7 +131,7 @@ fn wrap_epochs() {
 // epoch alone makes no step.
 #[test]
 fn sync_id_epochs() {
-    let mut a = person(0x20);
+    let mut a = actor_epochs(0x20);
     let [s, r, w, ad] = registration_epochs(&a).unwrap();
     assert_eq!((s.0, r.0, w.0, ad.0), (ep(1, 0x20), ep(1, 0x20), ep(1, 0x20), ep(1, 0x20)));
     let key = role_key(RoleKey::Sync, s.1).verifying_key();
@@ -226,7 +226,7 @@ fn jumped_base_forks_derive_base_newest() {
 #[test]
 fn delete_keys() {
     let dk = |s: &Secret32| osis_crypto::DeleteSecret::derive(s).verifying_key();
-    let (mut thing, author) = (person(0x20), person(0x30));
+    let (mut thing, author) = (actor_epochs(0x20), actor_epochs(0x30));
     assert_eq!(delete_key(1, &thing, Some(&author)), Some(dk(thing.admin.secret(&ep(1, 0x20)).unwrap())));
     assert_eq!(delete_key(2, &thing, Some(&author)), Some(dk(author.write.secret(&ep(1, 0x30)).unwrap())));
     assert_eq!(delete_key(3, &thing, Some(&author)), Some(dk(thing.write.secret(&ep(1, 0x20)).unwrap())));
@@ -241,7 +241,7 @@ fn delete_keys() {
     assert_eq!(c, vec![ep(2, 0), ep(1, 0x20)]);
     assert!(delete_candidates(2, &thing, None).is_empty());
     // no admin secret held, no level-1 key (a writer takes the published one)
-    let mut writer = person(0x40);
+    let mut writer = actor_epochs(0x40);
     writer.admin = Default::default();
     assert_eq!(delete_key(1, &writer, None), None);
 }

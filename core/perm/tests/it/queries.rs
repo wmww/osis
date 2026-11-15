@@ -338,13 +338,13 @@ fn purge_rights() {
     let mut w = World::new();
     let n = w.nodes(5);
     let (o, a, wr, dev, other) = (n[0], n[1], n[2], n[3], n[4]);
-    let person = w.thing(o);
+    let account = w.thing(o);
     let doc = w.thing(o);
     let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
     w.set(o, doc, a, edge(Admin), 0, &all);
     w.set(o, doc, wr, edge(Write), 0, &all);
-    w.set(o, person, dev, edge(Admin), 0, &all);
-    w.set(o, doc, person, edge(Write), 0, &all);
+    w.set(o, account, dev, edge(Admin), 0, &all);
+    w.set(o, doc, account, edge(Write), 0, &all);
     let tl = Timeline::evaluate(&w.held());
     let now = At::now(ts(10));
     for (by, who, expect) in [
@@ -352,22 +352,22 @@ fn purge_rights() {
         (PurgeBy::Admin, a, true),
         (PurgeBy::Admin, wr, false),
         (PurgeBy::Admin, dev, false),
-        (PurgeBy::AuthorOrAdmin, person, true),
+        (PurgeBy::AuthorOrAdmin, account, true),
         (PurgeBy::AuthorOrAdmin, a, true),
         (PurgeBy::AuthorOrAdmin, dev, true),
         (PurgeBy::AuthorOrAdmin, wr, false),
         (PurgeBy::Writer, wr, true),
         (PurgeBy::Writer, other, false),
     ] {
-        assert_eq!(tl.may_purge(&who, &doc, by, &person, now), expect, "{by:?} by {who:?}");
+        assert_eq!(tl.may_purge(&who, &doc, by, &account, now), expect, "{by:?} by {who:?}");
     }
     // The author's actor lost write on the doc: its nodes lose the `author` right.
-    w.set(o, doc, person, edge(Read), 5, &[]);
+    w.set(o, doc, account, edge(Read), 5, &[]);
     let tl = Timeline::evaluate(&w.held());
-    assert!(!tl.may_purge(&dev, &doc, PurgeBy::AuthorOrAdmin, &person, now));
-    assert!(!tl.may_purge(&person, &doc, PurgeBy::AuthorOrAdmin, &person, now));
+    assert!(!tl.may_purge(&dev, &doc, PurgeBy::AuthorOrAdmin, &account, now));
+    assert!(!tl.may_purge(&account, &doc, PurgeBy::AuthorOrAdmin, &account, now));
     // admins always may
-    assert!(tl.may_purge(&a, &doc, PurgeBy::AuthorOrAdmin, &person, now));
+    assert!(tl.may_purge(&a, &doc, PurgeBy::AuthorOrAdmin, &account, now));
     assert_eq!(PurgeBy::from_id(2), Some(PurgeBy::AuthorOrAdmin));
     assert_eq!(PurgeBy::from_id(4), None);
 }

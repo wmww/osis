@@ -77,9 +77,9 @@ pub fn two_nodes(s: Seeds) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc0f1);
     let cfg = Config { nodes: 2, clocks: clocks(&mut d, 2, 30_000, 100), net: lossy(), ..Config::default() };
     let mut sim = Sim::new("two_nodes", seed, cfg)?;
-    let person = sim.create_thing(0, None)?;
-    sim.grant(0, person, 1, Role::Admin)?;
-    sim.create_thing(0, Some(person))?;
+    let account = sim.create_thing(0, None)?;
+    sim.grant(0, account, 1, Role::Admin)?;
+    sim.create_thing(0, Some(account))?;
     sim.run(200)?;
     sim.run_until_quiescent(50)?;
     Ok(sim.report.clone())

@@ -96,7 +96,7 @@ pub(super) fn would_hold_right(core: &Core, who: &Tid, ts: Ts, c: &CommitId, tid
 /// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §6): its author
 /// does, and the actor it acts for, neither by a role a demotion's frontier took from this commit.
 /// The actor holds a client to its own rights in any arrival order: its node's would reach a delta
-/// of the person it acts for that the node did not hold yet. A function of the role timeline, the
+/// of the account it acts for that the node did not hold yet. A function of the role timeline, the
 /// void set and the headers, so any node holding them judges alike, in any arrival order;
 /// `rejudge_purges` follows it when those change.
 pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header) -> bool {

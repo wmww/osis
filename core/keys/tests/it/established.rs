@@ -74,7 +74,7 @@ impl World {
     fn new() -> World {
         let (a, p, a2, m1) = (tid(1), tid(2), tid(3), tid(4));
         let mut g = rng(0);
-        let (pe, a2e, m1e) = (person(0x20), person(0x30), person(0x40));
+        let (pe, a2e, m1e) = (actor_epochs(0x20), actor_epochs(0x30), actor_epochs(0x40));
         let derived = ActorEpochs::derived(&pe, &a);
         let holders = [actor_rcpt(p, Role::Admin, &pe), actor_rcpt(a2, Role::Admin, &a2e), actor_rcpt(m1, Role::Read, &m1e)];
         let r0 = rotate(&a, &roles_up_to(Role::Admin), &derived, &Secrets::default(), &holders, &osis_keys::Names::default(), &mut g).unwrap();
@@ -143,7 +143,7 @@ fn r9_reseal_before_rotation_commit() {
     assert!(!unvouched(&s2, &a2v).unwrap().is_empty());
 
     // In the window a2 re-seals and grants at e0 only.
-    let g = actor_rcpt(tid(5), Role::Read, &person(0x50));
+    let g = actor_rcpt(tid(5), Role::Read, &actor_epochs(0x50));
     for out in [box_holder(&w.a, &a2v, &hist(&w.a, &a2v, &s2), &g, &read(), &mut w.rng), box_holder(&w.a, &a2v, &hist(&w.a, &a2v, &s2), &g, &read(), &mut w.rng)] {
         let out = out.unwrap().unwrap();
         assert!(out.boxes.keys().all(|k| k.epoch == to_schema(&w.e0)));
@@ -246,7 +246,7 @@ fn snapshot_established_needs_departure() {
     let mut w = World::new();
     let (r1, _, s1) = w.remove_m1();
     let e1 = r1.role(Role::Read).unwrap().epoch;
-    let (g, ge) = (tid(5), person(0x50));
+    let (g, ge) = (tid(5), actor_epochs(0x50));
     let mut v = ActorEpochs::default();
     ingest(&w.a, &s1, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut v, None).unwrap();
     assert!(v.read.current().is_empty());
@@ -359,7 +359,7 @@ fn switch_under_jumped_base_establishes_at_holders() {
         pe.role_mut(r).set_secret(ep(high, 0x20), osis_crypto::Secret32::from_bytes([0x20 + i as u8; 32]));
         pe.role_mut(r).set_established(ep(high, 0x20), Provenance::Fixed);
     }
-    let me = person(0x30);
+    let me = actor_epochs(0x30);
     let admin = Recipient { holder: p, role: Role::Admin, keys: osis_keys::HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe), floor: 0 };
     let holders = [admin, actor_rcpt(m, Role::Write, &me)];
     let rot = rotate(&a, &roles_up_to(Role::Admin), &ActorEpochs::derived(&pe, &a), &Secrets::default(), &holders, &osis_keys::Names::default(), &mut rng(0)).unwrap();

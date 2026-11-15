@@ -716,7 +716,7 @@ impl Engine {
         }
         let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.opening_newest_first()).unwrap_or_default();
         // the first admin's epochs; a thing whose `created.0` is not here yet (a link's
-        // person) may have any key actor held as first admin
+        // account) may have any key actor held as first admin
         let firsts: Vec<Arc<osis_keys::ActorEpochs>> = match self.core.created(g).map(osis_base::CreationRecord::first_admin) {
             Some(Some(up)) => self.epochs(&up).or_else(|| self.core.key_actors.get(&up).map(|id| Arc::new(osis_keys::ActorEpochs::key_actor(id.seed())))).into_iter().collect(),
             Some(None) => Vec::new(),

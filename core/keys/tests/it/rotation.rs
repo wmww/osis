@@ -22,7 +22,7 @@ fn admin(p: Tid, pe: &ActorEpochs) -> Recipient {
 
 /// Actor A (first admin P) after its own-secrets switch, boxing `extra` too.
 fn switched(extra: &[Recipient], rg: &mut osis_crypto::SeededRng) -> (Tid, Tid, ActorEpochs, ActorEpochs, Secrets) {
-    let (a, p, pe) = (tid(1), tid(2), person(0x20));
+    let (a, p, pe) = (tid(1), tid(2), actor_epochs(0x20));
     let mut view = ActorEpochs::derived(&pe, &a);
     let mut holders = vec![admin(p, &pe)];
     holders.extend_from_slice(extra);
@@ -218,8 +218,8 @@ fn rotation_boxes_per_role_at_n_and_10n_spec_permissions_3() {
         let mut extra = Vec::new();
         for i in 0..n {
             let b = u8::try_from(3 + 2 * i).unwrap();
-            extra.push(actor_rcpt(tid(b), Role::Read, &person(b)));
-            extra.push(actor_rcpt(tid(b + 1), Role::Sync, &person(b + 1)));
+            extra.push(actor_rcpt(tid(b), Role::Read, &actor_epochs(b)));
+            extra.push(actor_rcpt(tid(b + 1), Role::Sync, &actor_epochs(b + 1)));
         }
         let (a, p, pe, view, s) = switched(&extra, rg);
         let holders: Vec<Recipient> = std::iter::once(admin(p, &pe)).chain(extra.iter().cloned()).collect();
