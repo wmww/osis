@@ -52,6 +52,14 @@ impl Place {
     }
 }
 
+/// Whether this node's head of S moving may lift a refusal of code `c` it told
+/// (spec/sync-streams.md §4 Refused): a stamp under no key it knows (1) may be under a later
+/// head's; an earlier key (9) only grows older, and expiry, malformed bytes and a tombstone do not
+/// turn on the head.
+fn head_may_lift(c: Code) -> bool {
+    c == Code::REFUSED
+}
+
 fn opt_cursor(c: &Option<Cursor>) -> Vec<u8> {
     match c {
         Some(c) => [&[1u8][..], c].concat(),
@@ -850,12 +858,14 @@ impl Streams {
             }
             c => {
                 self.tell(conn, s, Event::Refused(b, c));
-                self.told(ctx, conn, s);
+                if head_may_lift(c) {
+                    self.told(ctx, conn, s);
+                }
             }
         }
     }
 
-    /// A refusal of S told on `conn`: the source's place keeps the head it was told under, so a
+    /// A refusal of S told on `conn` that a head move may lift: the source's place keeps the head it was told under, so a
     /// head move pulls S from the start there (`pull_anew`). One row per (source, S).
     fn told(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
         let Some(src) = self.pull.get(&conn).map(|p| p.src) else { return };

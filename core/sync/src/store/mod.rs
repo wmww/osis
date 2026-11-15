@@ -944,7 +944,7 @@ impl Store {
     /// blob; a relay-only one (14: relay-only rules); its prefix expiry passed (7); its blob ID
     /// tombstoned (6); no stamp or a bad one (1); a stamp under an earlier write key of the path
     /// (9); past S's caps (12) unless a role entry. A deposited entry of its blob ID takes the
-    /// stamp; a stamped one changes nothing, and one held with this stamp is taken (0) unjudged:
+    /// stamp; a stamped one changes nothing, and one held with this wrap and stamp is taken (0) unjudged:
     /// shown again (a pull from the start), it is no refusal under a head that moved since.
     pub fn take_stamped(&mut self, s: &SyncId, e: &Entry, bytes: Vec<u8>) -> Result<Code> {
         let mut g = self.lock();
@@ -966,10 +966,11 @@ impl Store {
         let size = bytes.len() as u64;
         let unheld = g.unheld.contains(s);
         let held = match g.mem.read(s, &b) {
-            Some(r) => Some(r.stamp),
-            None => g.read(|t, _| Ok(entries::get(t, s, &b)?.map(|r| r.stamp)))?,
+            Some(r) => Some((r.wrap, r.stamp)),
+            None => g.read(|t, _| Ok(entries::get(t, s, &b)?.map(|r| (r.wrap, r.stamp))))?,
         };
-        if e.stamp.is_some() && held == Some(e.stamp) {
+        // held as it comes (blob, wrap and stamp): judged when it was taken
+        if e.stamp.is_some() && held == Some((e.wrap, e.stamp)) {
             return Ok(Code::OK);
         }
         let verdict = g.read(|t, _| {

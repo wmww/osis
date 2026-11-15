@@ -1020,6 +1020,46 @@ fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
     assert_eq!(anew(&p, pulls), 0, "nothing refused under the head before: nothing pulled");
 }
 
+// spec/sync-streams.md §4 (Refused): only a code 1 refusal turns on the refusing node's head: a
+// tombstone refusal (6) told, its head moving pulls nothing from the start.
+#[test]
+fn a_moved_head_pulls_nothing_anew_over_a_tombstone_refusal_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    let gone = k.stamped(&mut p.a, 501, true);
+    p.b.store.drop_entry(&k.id, &gone, Vec::new()).unwrap();
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    assert!(p.sent_by_b(43).iter().any(|m| matches!(m, Msg::Stream(st) if st.events.contains(&(k.id, Event::Refused(gone, Code::TOMBSTONED))))));
+    let pulls = p.sent_by_b(41).len();
+    let one = k.child(&k.genesis.0, 1, 0xee);
+    assert_eq!(p.b.store.take_register(&k.id, &one.0, Some(&one.1)).unwrap(), Code::OK);
+    p.run();
+    let anew = p.sent_by_b(41).iter().skip(pulls).filter(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])).count();
+    assert_eq!(anew, 0, "a tombstone refusal is no reason to pull S again");
+}
+
+// spec/sync-streams.md §4 (Refused), spec/sync-judgement.md §3: an entry shown again is taken
+// unjudged only as held (its wrap and stamp); the same stamp under another wrap is judged and
+// refused, and the held entry stays as it was.
+#[test]
+fn a_held_stamp_under_another_wrap_is_judged_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.b);
+    let b = k.stamped(&mut p.b, 502, true);
+    let held = p.b.store.entry(&k.id, &b).unwrap().unwrap();
+    let (_, bytes) = blob(502, Class::Durable);
+    let same = Entry { blob: b, wrap: held.wrap, stamp: held.stamp, deposited: false, own: false, role: false, class: Class::Durable, expires: None };
+    assert_eq!(p.b.store.take_stamped(&k.id, &same, bytes.clone()).unwrap(), Code::OK, "as held: taken");
+    let other = Entry { wrap: [4u8; WRAP_LEN], ..same };
+    assert_eq!(p.b.store.take_stamped(&k.id, &other, bytes).unwrap(), Code::REFUSED, "another wrap: its stamp is judged");
+    assert_eq!(p.b.store.entry(&k.id, &b).unwrap().unwrap().wrap, held.wrap);
+}
+
 // spec/commits.md §4 (Pending storage: what pends from unvouched input is kept only while an entry
 // carries it, within the bounds per source), spec/sync-ids.md §5 (Peer budget): a reader takes
 // unstamped bodies from one peer that open to pending commits, each kept as its commit's carrier
