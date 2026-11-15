@@ -374,11 +374,19 @@ impl World {
 
     /// The order observer `seen` (None: item order) places the held rotations in: the chosen
     /// rotation's line first, then by when each came to be held with its line (the latest
-    /// receipt on it, a millisecond's by id), then id.
+    /// receipt on it, a millisecond's by id), then by depth (one more than the deepest of the
+    /// rotation minting its epoch and the forks it names), then id.
     fn place_order(&self, held: &[bool], lines: &Lines, chosen: Option<usize>, seen: Option<usize>) -> Vec<usize> {
         let rank = |i: usize| seen.map_or(self.items[i].id, |o| self.items[i].recv[o]);
         let mut order: Vec<usize> = (0..self.items.len()).filter(|&i| held[i] && self.items[i].kind.is_rot()).collect();
-        order.sort_by_key(|&i| (!chosen.is_some_and(|c| lines.on(i, c)), lines.of(i).iter().map(|&q| (rank(q), self.items[q].id)).max(), self.items[i].id));
+        // a parent is an older item than its child: depths build in item order
+        let mut depth = vec![0usize; self.items.len()];
+        for &i in &order {
+            let Kind::Rotation { at, names, .. } = &self.items[i].kind else { continue };
+            let parents = lines.minted(*at).into_iter().chain(names.iter().map(|&id| idx(id)).filter(|&q| q < self.items.len()));
+            depth[i] = 1 + parents.map(|q| depth[q]).max().unwrap_or(0);
+        }
+        order.sort_by_key(|&i| (!chosen.is_some_and(|c| lines.on(i, c)), lines.of(i).iter().map(|&q| (rank(q), self.items[q].id)).max(), depth[i], self.items[i].id));
         order
     }
 

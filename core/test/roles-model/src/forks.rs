@@ -277,6 +277,9 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
     let reads_takes = own && holds_takes;
     let mut when: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
     when.insert(0, (0, 0));
+    // and its depth: one more than the deepest of what it needs (ties ancestors first)
+    let mut depth: BTreeMap<u32, usize> = BTreeMap::new();
+    depth.insert(0, 0);
     loop {
         let more: Vec<(u32, (u32, u32))> = j.held.iter().filter(|id| !when.contains_key(id)).filter_map(|id| {
             let (at, names, ..) = w.rot(*id)?;
@@ -287,6 +290,12 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
         }).collect();
         if more.is_empty() {
             break;
+        }
+        for (id, _) in &more {
+            let (at, names, ..) = w.rot(*id).unwrap();
+            let takes = if holds_takes { w.takes(*id) } else { &[] };
+            let d = std::iter::once(&at).chain(names).chain(takes).filter_map(|p| depth.get(p)).max().copied().unwrap_or(0);
+            depth.insert(*id, d + 1);
         }
         when.extend(more);
     }
@@ -314,8 +323,7 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
         m != r && sup.contains(&r) && j0.chain.contains(&r) && !j0.chain.iter().any(|s| signed_at(*s).contains(&at) && (j0.on(r, *s) || j0.on(*s, r)))
     };
     // the chosen rotation's line first and, at a node of P, what it stands with (what a rotation
-    // on it takes, and that one's line). (Items are numbered in the order made, so a rotation's
-    // `when` is past what it needs: no tie to break.)
+    // on it takes, and that one's line); ties by depth, then id
     let mut chosen_needs: BTreeSet<u32> = j.chosen.into_iter().collect();
     let mut work: Vec<u32> = chosen_needs.iter().copied().collect();
     while let Some(x) = work.pop() {
@@ -328,7 +336,7 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
         }
     }
     let mut order: Vec<u32> = j.chain.iter().copied().collect();
-    order.sort_by_key(|r| (!chosen_needs.contains(r), when[r], *r));
+    order.sort_by_key(|r| (!chosen_needs.contains(r), when[r], depth[r], *r));
     // Placed in order. A rotation is held only with every rotation on its line, so lines are
     // whole when placed; rejections read only what was placed before, so a later arrival never
     // reopens an earlier decision.
