@@ -1116,6 +1116,36 @@ fn a_link_naming_another_target_grants_nothing_spec_permissions_7() {
     lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
 }
 
+// spec/sync-set.md §4 (A redeem is an accept): a redeem for the account lists the target as a
+// subgroup of D in the join's transaction; a target a synced group's closure holds already (under
+// a group of D's) is listed nowhere new; a redeem for the node accepts nothing.
+#[test]
+fn a_redeem_files_its_target_unless_synced_spec_sync_set_4() {
+    let (mut lp, ps) = people(2);
+    let (pa, ps1) = (ps[0], ps[1]);
+    let [t, u, v] = [0, 1, 2].map(|_| thing_of(&mut lp, 0, pa));
+    let links = [t, u, v].map(|x| lp.peers[0].engine.create_link(&pa, &link_spec(x, Role::Read, None)).unwrap().0);
+    sync(&mut lp, 0, 1);
+    let e = &mut lp.peers[1].engine;
+    let d = e.account().unwrap().unwrap().1;
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, ps1);
+    m.set(x, &ct::GROUP, &ct::Group { subgroups: [u].into(), ..Default::default() }).unwrap();
+    m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Add(Value::Tid(x)) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let subs = |e: &mut osis_engine::Engine| e.get_typed(&d, &ct::GROUP).unwrap().unwrap_or_default().subgroups;
+    let before = subs(e);
+    assert!(before.contains(&x) && !before.contains(&t));
+    e.redeem(&links[0], &ps1, false).unwrap();
+    e.redeem(&links[1], &ps1, false).unwrap();
+    let node = e.tid();
+    e.redeem(&links[2], &node, false).unwrap();
+    assert_eq!(e.role_on(&u), Some(Role::Read));
+    let mut want = before;
+    want.insert(t);
+    assert_eq!(subs(e), want, "t filed; u under x already; v redeemed for the node");
+}
+
 // spec/permissions.md §7: a stranger redeems a read link: signing as L it invite-grants its
 // own actor to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.

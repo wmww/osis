@@ -648,8 +648,12 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
 // phases and counts, perm's role walks, debug checks' walks included).
 #[test]
 fn commit_work_linear_in_things_spec_requirements_decentralization() {
-    // per kind, over the three steps: a memo one step fills at one size another fills at the other
-    // (things' epochs: derived at b while the create is delivered at n, by the write's apply at 10n)
+    // per kind summed over the three steps: which step does some work depends on size, not on a
+    // per-step cost. At n the create's listing in home passes the compaction trigger (a few
+    // bodies against the snapshot, spec/sync-compaction.md §1), so a snapshot of home's group.0
+    // is written and b derives each listed thing's epochs while it applies it; at 10n the one big
+    // body is within the trigger and b derives them in the write's apply. Once per thing either
+    // way, and a superlinear step still shows in the sum.
     let total = |w: std::collections::BTreeMap<String, u64>| {
         let mut t = std::collections::BTreeMap::<String, u64>::new();
         for (k, n) in w {

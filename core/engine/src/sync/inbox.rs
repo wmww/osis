@@ -489,8 +489,6 @@ impl crate::engine::Core {
     }
 }
 
-/// Keeps in the account's sync record the sync IDs the boxes payloads held unexpired at `now`
-/// name for `t` (an accept, spec/sync.md §3), whatever other thing the record keeps them for.
 /// An accept of `thing` into group `into` (spec/sync-set.md §4 Accepting): written as a subgroup
 /// of `into` where it does not list it yet, the sync IDs the boxes payloads held offering it name
 /// kept in the account's sync record (spec/sync.md §3), and marked acted (`mark_acted`, as any
@@ -506,6 +504,23 @@ pub(crate) fn accept_in(tx: &mut Tx<'_>, thing: &Tid, into: &Tid) -> Result<()> 
     mark_acted(tx)
 }
 
+/// A link's join for `grantee` is an accept (spec/sync-set.md §4, A redeem is an accept): where
+/// `grantee` is this node's account and no synced group's closure holds `target`, it is accepted
+/// into D (`accept_in`). Walks up from `target` (`Groups::under`), never a whole closure.
+pub(crate) fn accept_redeemed(tx: &mut Tx<'_>, grantee: &Tid, target: &Tid) -> Result<()> {
+    let Some((p, d)) = tx.core.account_devices() else { return Ok(()) };
+    if p != *grantee {
+        return Ok(());
+    }
+    let roots = synced_roots(tx, d)?;
+    if tx.core.ix.groups.under(target, &roots) {
+        return Ok(());
+    }
+    accept_in(tx, target, &d)
+}
+
+/// Keeps in the account's sync record the sync IDs the boxes payloads held unexpired at `now`
+/// name for `t` (an accept, spec/sync.md §3), whatever other thing the record keeps them for.
 fn keep_offered(tx: &mut Tx<'_>, t: &Tid, now: WallMs) -> Result<()> {
     let core = &*tx.core;
     let ids: BTreeSet<SyncId> = core.ix.offered.get(t).into_iter().flatten().filter_map(|b| core.ix.offers.get(b)).filter(|o| o.expires > now).flat_map(|o| o.things.iter().filter(|x| x.tid == *t).filter_map(|x| x.sync_id)).collect();

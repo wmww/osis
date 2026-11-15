@@ -117,18 +117,10 @@ impl Engine {
             return Err(Error::Misuse("K's grant on the link's target is not held here"));
         }
         let grant = Edge { role: edge.role, until: None, invite: None, tied: None, floor: None };
-        // a redeem is an accept (spec/sync-set.md §4 Accepting): the account files the target
-        // under D in the join's transaction, unless a synced group's closure holds it already
-        let file = match self.core.account_devices() {
-            Some((p, d)) if p == grantee && !self.synced_closures()?.contains(&link.target) => Some(d),
-            _ => None,
-        };
         let target = link.target;
-        // L signs with its own role, so the grant deposits only below write
-        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, |tx| match file {
-            Some(d) => crate::sync::inbox::accept_in(tx, &target, &d),
-            None => Ok(()),
-        })
+        // L signs with its own role, so the grant deposits only below write; a redeem for the
+        // account is an accept (spec/sync-set.md §4), in the join's transaction
+        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, |tx| crate::sync::inbox::accept_redeemed(tx, &grantee, &target))
     }
 
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or
