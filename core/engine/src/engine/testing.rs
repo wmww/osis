@@ -707,7 +707,6 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("own_replaces", &*ix.own_replaces),
         ("signed", &*ix.signed),
         ("sealed", &*ix.sealed),
-        ("role_sigs", &*ix.role_sigs),
         ("leave_from", &*ix.leave_from),
         ("leave_due", &*ix.leave_due),
         ("addenda_due", &*ix.addenda_due),
@@ -985,7 +984,8 @@ mod tests {
         // `cause_at`, `reseal_asks`). And `leaving`, `dated`: an open and a rebuild agree, but a
         // snapshot applied page by page gets no row where applied whole it does (the paged
         // differential compares these tables: issues/leaving-row-paged-snapshot.md).
-        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "reseal_asks", "hint_candidates", "cover_waits", "leaving", "dated"];
+        // And `role_sigs`: noted as each commit applies, by arrival order (issues/sync-fork-sides-merge.md).
+        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "reseal_asks", "hint_candidates", "cover_waits", "leaving", "dated", "role_sigs"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {
