@@ -24,6 +24,12 @@ fn writes(n: usize) -> Vec<Step> {
     (0..n).flat_map(|i| [Write(i % 2, 0), Run]).collect()
 }
 
+/// Writes by nodes 0 and 1 back to back, one run after them: for a scenario where a peer stays
+/// unreachable or unanswering, each run passes the whole horizon of redials.
+fn writes_then_run(n: usize) -> Vec<Step> {
+    (0..n).map(|i| Write(i % 2, 0)).chain([Run]).collect()
+}
+
 /// Every node on, healed, faults and lies off, run to quiet.
 fn end() -> Vec<Step> {
     vec![Lossy(Loss::NONE), Truth(0), Truth(1), Truth(2), Heal, PowerOn(0), PowerOn(1), PowerOn(2), Run]
@@ -57,7 +63,7 @@ fn lost_and_repeated_messages() {
 #[test]
 fn a_peer_lying_in_its_own_log() {
     for lie in [Lie::Forget, Lie::Withhold] {
-        sim("a_peer_lying_in_its_own_log", |_| [vec![Lies(2, lie), Partition(0, 1)], writes(4), vec![Heal, Run]].concat(), |_| {});
+        sim("a_peer_lying_in_its_own_log", |_| [vec![Lies(2, lie), Partition(0, 1)], writes_then_run(4), vec![Heal, Run]].concat(), |_| {});
     }
 }
 
@@ -80,7 +86,7 @@ fn a_peer_refusing_role_entries() {
 // bound; the readers converge through the others.
 #[test]
 fn a_peer_holding_requests_open() {
-    sim("a_peer_holding_requests_open", |_| [vec![Lies(2, Lie::Hold)], writes(4)].concat(), |_| {});
+    sim("a_peer_holding_requests_open", |_| [vec![Lies(2, Lie::Hold)], writes_then_run(4)].concat(), |_| {});
 }
 
 // spec/sync-ids.md §5 (the store is the truth for ciphertext): after a crash: nodes losing power at a durable

@@ -245,12 +245,23 @@ impl Streams {
     /// of that sync ID alone (its index), else the log.
     #[allow(clippy::too_many_arguments)]
     fn read_into(&mut self, ctx: &mut Ctx, conn: ConnId, page: &mut Page, members: &impl Members, one: Option<SyncId>, from: Option<Cursor>, start: Position) -> Result<Read> {
+        let given = from.clone();
+        // a read that moved no position answers with the cursor it was given: a cursor is sealed
+        // afresh each time, so a new one would read as moved and be stored again
+        let ended = |ctx: &mut Ctx, cursor: Option<Cursor>, pos: Position| -> Result<Read> {
+            let (end, _) = ctx.store.log_bounds()?;
+            let pos = end.max(pos);
+            let cursor = match &given {
+                Some(_) if pos == start => given.clone(),
+                _ if members.is_empty() => ctx.store.cursor_at(end)?.or(cursor),
+                _ => cursor,
+            };
+            Ok(Read { cursor, pos, more: false })
+        };
         let mut cursor = from;
         let mut pos = start;
         if members.is_empty() {
-            let (end, _) = ctx.store.log_bounds()?;
-            let at = ctx.store.cursor_at(end)?;
-            return Ok(Read { cursor: at.or(cursor), pos: end.max(pos), more: false });
+            return ended(ctx, cursor, pos);
         }
         let inline = self.serve.get(&conn).map_or(0, |s| s.inline);
         loop {
@@ -271,8 +282,7 @@ impl Streams {
             }
             cursor = r.cursor;
             if !r.more {
-                let (end, _) = ctx.store.log_bounds()?;
-                return Ok(Read { cursor, pos: end.max(pos), more: false });
+                return ended(ctx, cursor, pos);
             }
         }
     }

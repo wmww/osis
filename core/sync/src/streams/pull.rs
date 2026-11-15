@@ -289,7 +289,7 @@ impl Streams {
             self.known.apply_conn(at, std::slice::from_ref(&op));
             self.known.logged(at, &op);
         }
-        if rec_ops.is_empty() && !matches!(src, Source::Record(_)) {
+        if rec_ops.is_empty() && (!matches!(src, Source::Record(_)) || (ss.is_empty() && !cursor)) {
             return true;
         }
         let place = self.places.get(&src);
@@ -1061,6 +1061,8 @@ impl Streams {
         let mid_listing = batch.reply.as_ref().is_some_and(|r| r.more) && listing.is_some();
         let place = self.place(ctx.store, src);
         let cursor = (batch.cursor.is_some() || batch.reply.as_ref().is_some_and(|r| r.whole)) && !mid_listing;
+        let was_cursor = place.cursor.clone();
+        let was: BTreeMap<SyncId, (bool, Option<Option<Cursor>>)> = batch.reply.iter().flat_map(|r| if r.whole { members.iter().copied().collect::<Vec<_>>() } else { r.asked.iter().map(|(s, _)| *s).collect() }).map(|s| (s, (place.at_stream.contains(&s), place.join_from(&s).cloned()))).collect();
         if cursor {
             place.cursor = batch.cursor.clone();
         }
@@ -1123,8 +1125,13 @@ impl Streams {
             p.listing = listing;
             p.join_listing = join_listing;
         }
+        // only rows that differ from what is stored are written: a reply that moved nothing writes
+        // nothing
+        let place = self.place(ctx.store, src);
+        touched.retain(|s| was.get(s) != Some(&(place.at_stream.contains(s), place.join_from(s).cloned())));
+        let moved_cursor = cursor && place.cursor != was_cursor;
         // an Applied says what is stored: none for what failed to be
-        if !self.save(ctx, src, &touched, cursor, ops) {
+        if !self.save(ctx, src, &touched, moved_cursor, ops) {
             return;
         }
         let Some(p) = self.pull.get_mut(&conn) else { return };

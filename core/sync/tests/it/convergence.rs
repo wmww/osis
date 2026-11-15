@@ -57,10 +57,12 @@ fn converge_as(seed: u64, n: usize, steps: &[Step], replay: String, twice: bool)
     check(&mut w);
 }
 
+/// One history, played twice (the determinism check) only with faults: a history with faults
+/// draws from every source of order a clean one does, and more.
 fn converges(seed: u64, n: usize, len: usize, faults: bool) {
     let h = history(seed, n, len, faults);
     let replay = |s: u64| format!("convergence::converge({s}, {n}, &script, String::new())");
-    shrinking(|| converge(seed, n, &h, replay(seed)), |steps, twice| converge_as(seed, n, steps, replay(seed), twice));
+    shrinking(|| converge_as(seed, n, &h, replay(seed), faults), |steps, twice| converge_as(seed, n, steps, replay(seed), twice && faults));
 }
 
 // spec: none (property: spec/requirements.md Convergence; spec/sync.md §4 area 4): one node

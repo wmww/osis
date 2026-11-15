@@ -1452,7 +1452,7 @@ fn a_restart_at_any_write_of_a_pull_loses_nothing_spec_sync_streams_3() {
 
 /// Both sides read `n` sync IDs with an entry each and are synced; `b` restarts and both rejoin
 /// every member over a new connection. The bytes and the Pulls of the reconnect's streams.
-fn restart_reconnect_streams(n: u8) -> (usize, usize) {
+fn restart_reconnect_streams(n: u8) -> (usize, usize, u64) {
     let mut p = Pair::new();
     for i in 1..=n {
         p.a.log(sid(i), 100 + i as usize);
@@ -1466,22 +1466,25 @@ fn restart_reconnect_streams(n: u8) -> (usize, usize) {
         p.b.join(p.now, sid(i));
     }
     p.seen.clear();
+    let before = p.a.store.committed() + p.b.store.committed();
     p.run();
     let bytes = p.seen.iter().map(|(_, m)| m.encode().len()).sum();
     let pulls = p.seen.iter().filter(|(_, m)| m.kind() == 41).count();
-    (bytes, pulls)
+    (bytes, pulls, p.a.store.committed() + p.b.store.committed() - before)
 }
 
 // spec/sync-streams.md §4 (Costs: an idle reconnect costs a few round trips, and bytes that do
 // not grow with the number of sync IDs shared), after a restart: opens' reconnect (Resume,
 // Digest, an empty filter generation; tests/it/opens.rs) and the streams' (a Pull each way from
-// the stored cursors), at n and 10n shared sync IDs (but for the widths of the integers they
-// name). The session's Hello and proofs cost the same whatever is shared.
+// the stored cursors, no store write), at n and 10n shared sync IDs (but for the widths of the
+// integers they name). The session's Hello and proofs cost the same whatever is shared.
 #[test]
 fn a_reconnect_after_a_restart_costs_the_same_at_10n_spec_sync_streams_4() {
     let at = |n| {
-        let (streams, pulls) = restart_reconnect_streams(n);
+        let (streams, pulls, commits) = restart_reconnect_streams(n);
         assert!(pulls <= 2, "at n = {n}: {pulls} Pulls");
+        // nothing moved: the server answers with the cursor it was given, so nothing is stored
+        assert_eq!(commits, 0, "at n = {n}: {commits} store commits");
         crate::opens::restart_reconnect_bytes(n) + streams
     };
     let (small, large) = (at(10), at(100));
