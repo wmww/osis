@@ -561,3 +561,40 @@ fn a_failed_address_gives_way_to_the_next_spec_sync_opens_1() {
     d.tick(last);
     assert_eq!(d.dial(last, MAX_PEERS).iter().map(|(_, a)| a.url.as_str()).collect::<Vec<_>>(), [configured.url.as_str()], "an address that came up stays");
 }
+
+// spec/sync-opens.md §1 (Redial): a node known at several dead addresses, one of them by many
+// sync IDs, dials one address per `REDIAL_MS`, never sooner, cycling over its distinct addresses
+// (not over its reasons): published addresses add no dials.
+#[test]
+fn dead_addresses_take_turns_at_the_redial_pace_spec_sync_opens_1() {
+    let mut d = Dials::default();
+    let mut t = Table::default();
+    let synced = addr(1);
+    let hint = Address { url: "quic://10.0.0.3:4040".into(), key: synced.key };
+    let configured = Address { url: "quic://10.0.0.2:4040".into(), key: synced.key };
+    for i in 0..50u8 {
+        t.set(SyncId([i; 16]), vec![synced.clone()]);
+    }
+    d.settle_peers(&mut t, T0);
+    d.hint(std::slice::from_ref(&hint), T0);
+    d.configure(std::slice::from_ref(&configured), T0);
+    let mut now = T0;
+    let mut urls = Vec::new();
+    for _ in 0..6 {
+        let due = d.dial(now, MAX_PEERS);
+        assert_eq!(due.len(), 1, "one dial per pause");
+        urls.push(due[0].1.url.clone());
+        d.ended(due[0].0, None, now);
+        d.tick(WallMs(now.0 + REDIAL_MS - 1));
+        assert!(d.dial(WallMs(now.0 + REDIAL_MS - 1), MAX_PEERS).is_empty(), "no dial before the pause ends");
+        now = WallMs(now.0 + REDIAL_MS);
+        d.tick(now);
+    }
+    assert_eq!(urls[0], synced.url, "the best reason's address first");
+    let mut turn: Vec<_> = urls[..3].to_vec();
+    turn.sort();
+    let mut all = vec![synced.url.clone(), hint.url.clone(), configured.url.clone()];
+    all.sort();
+    assert_eq!(turn, all, "each distinct address once per turn");
+    assert_eq!(urls[3..], urls[..3], "then again in the same order");
+}

@@ -8,8 +8,9 @@
 //! discovered nodes. Reasons are priorities, never a filter on what opens: they order the dials,
 //! nothing else.
 //!
-//! A candidate known at several addresses dials them in turn, by priority, the next after each
-//! failed dial (spec/sync-opens.md §1: addresses are priorities, never a filter).
+//! A candidate known at several addresses dials the one of its best reason, then after each
+//! failed dial the next of its others in turn (spec/sync-opens.md §1 Redial); a failed dial
+//! waits `REDIAL_MS` as any other, whatever address comes next.
 //!
 //! One retry rule: a candidate not connected is due again `REDIAL_MS` after its last dial; one
 //! whose connection closed sharing nothing (keep or close) is **quiet**: due only after a change
@@ -88,6 +89,8 @@ pub enum State {
 #[derive(Clone, Debug)]
 struct Cand {
     why: BTreeMap<Why, Address>,
+    /// Its distinct addresses, each with the count of reasons giving it.
+    addrs: BTreeMap<Address, usize>,
     state: State,
     /// Its last dial.
     last: Option<WallMs>,
@@ -117,17 +120,41 @@ impl Cand {
         (self.rank(), self.last.map_or(0, |t| t.0.saturating_add(1)))
     }
 
-    /// Where its next dial goes: its addresses by priority, the next after each failed dial, so
-    /// an address that does not answer (a stale dial list) never hides one that does (a
-    /// configured address).
+    /// Where its next dial goes: the address of its best reason, then after each failed dial the
+    /// next of its other addresses in turn, so an address that does not answer (a stale dial
+    /// list) never hides one that does (a configured address). O(distinct addresses).
     fn address(&self) -> Option<&Address> {
-        let mut addrs: Vec<&Address> = Vec::with_capacity(self.why.len());
-        for a in self.why.values() {
-            if !addrs.contains(&a) {
-                addrs.push(a);
+        let first = self.why.values().next()?;
+        match self.failed % self.addrs.len() {
+            0 => Some(first),
+            turn => self.addrs.keys().filter(|a| *a != first).nth(turn - 1),
+        }
+    }
+
+    /// `why` gives `to`; the address it gave before, if any.
+    fn insert(&mut self, why: Why, to: Address) -> Option<Address> {
+        *self.addrs.entry(to.clone()).or_default() += 1;
+        let old = self.why.insert(why, to);
+        if let Some(a) = &old {
+            self.unlist(a);
+        }
+        old
+    }
+
+    /// `why` gives nothing; whether it gave an address.
+    fn remove(&mut self, why: &Why) -> bool {
+        let Some(a) = self.why.remove(why) else { return false };
+        self.unlist(&a);
+        true
+    }
+
+    fn unlist(&mut self, a: &Address) {
+        if let Some(n) = self.addrs.get_mut(a) {
+            *n -= 1;
+            if *n == 0 {
+                self.addrs.remove(a);
             }
         }
-        addrs.get(self.failed % addrs.len().max(1)).copied()
     }
 }
 
@@ -271,9 +298,9 @@ impl Dials {
             return;
         }
         let key = to.key;
-        let c = self.cands.entry(key).or_insert_with(|| Cand { why: BTreeMap::new(), state: State::Idle, last: None, quiet: false, failed: 0, wait: None });
+        let c = self.cands.entry(key).or_insert_with(|| Cand { why: BTreeMap::new(), addrs: BTreeMap::new(), state: State::Idle, last: None, quiet: false, failed: 0, wait: None });
         let before = c.address().cloned();
-        if c.why.insert(why, to).is_some() && c.address().cloned() == before {
+        if c.insert(why, to).is_some() && c.address().cloned() == before {
             return;
         }
         let changed = c.address().cloned() != before;
@@ -297,7 +324,7 @@ impl Dials {
     /// `key` is no longer a candidate for `why`; one with no reason left is forgotten once idle.
     pub fn withdraw(&mut self, why: &Why, key: &[u8; 32]) {
         let Some(c) = self.cands.get_mut(key) else { return };
-        if c.why.remove(why).is_none() {
+        if !c.remove(why) {
             return;
         }
         if *why == Why::Discovered
