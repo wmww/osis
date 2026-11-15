@@ -243,17 +243,23 @@ impl AccountView {
         self.rotations.iter().map(|r| r.id).collect()
     }
 
-    /// What a verifier needs to hold the preferred head (spec/sync-opens.md §2): the rotations
-    /// it needs held (spec/permissions.md §5.4: the epoch it is signed at, the forks it names,
-    /// the revocations it takes), each with what it needs, each after what it needs. A rotation
-    /// beside it (a removed node's fork, a line not followed) is not among them.
+    /// What a verifier needs to hold the preferred head (spec/sync-opens.md §2): `needed` of it.
+    /// A rotation beside it (a removed node's fork, a line not followed) is not among them.
     pub(crate) fn proving_chain(&self) -> Vec<CommitId> {
+        self.needed([self.preferred()])
+    }
+
+    /// The held rotations `roots` need held (spec/permissions.md §5.4: the epoch each is signed
+    /// at, the forks it names, the revocations it takes, and what those need), roots included,
+    /// each after what it needs.
+    pub(crate) fn needed(&self, roots: impl IntoIterator<Item = CommitId>) -> Vec<CommitId> {
         let by: BTreeMap<CommitId, &osis_perm::Rotation<CommitId>> = self.rotations.iter().map(|r| (r.id, r)).collect();
         let needs = |r: &osis_perm::Rotation<CommitId>| -> Vec<CommitId> { std::iter::once(r.at).chain(r.names.iter().copied()).chain(r.takes.iter().copied()).collect() };
         let mut out = Vec::new();
         let mut seen = BTreeSet::new();
         // iterative post-order: a rotation is pushed once everything it needs is
-        let mut stack = vec![(self.preferred(), false)];
+        let mut stack: Vec<(CommitId, bool)> = roots.into_iter().map(|r| (r, false)).collect();
+        stack.reverse();
         while let Some((id, expanded)) = stack.pop() {
             let Some(r) = by.get(&id) else { continue };
             if expanded {
@@ -267,6 +273,17 @@ impl AccountView {
             stack.extend(needs(r).into_iter().filter(|n| !seen.contains(n)).map(|n| (n, false)));
         }
         out
+    }
+
+    /// Whether held rotation `r` does not count and is in a rejection with a counting rotation
+    /// (spec/permissions.md §5.4, Warning).
+    pub(crate) fn contests(&self, r: &CommitId) -> bool {
+        self.rule.chain().contests(r)
+    }
+
+    /// The tips of the held lines the Warning names (`osis_perm::Chain::contested`).
+    pub(crate) fn contested(&self) -> &BTreeSet<CommitId> {
+        self.rule.chain().contested()
     }
 
     /// Whether `c` is a held rotation.

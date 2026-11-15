@@ -1011,9 +1011,9 @@ impl Engine {
     /// The signed rotations of this node's account a verifier may lack, each a header-only copy
     /// (a `CommitBlobPlaintext` value with no sections), for a Prove (spec/sync-opens.md §2):
     /// what holding the epoch it proves at needs (`AccountView::proving_chain`), each after what
-    /// it needs, so a verifier takes them in one pass (`take_rotations`) and the prefix a message
-    /// fits is a chain. Never a line beside it: a removed node's forks, held here, would crowd
-    /// the message's room.
+    /// it needs, so a verifier takes them in one pass (`take_rotations`); a session sends the
+    /// newest a message fits. Never a line beside it: a removed node's forks, held here, would
+    /// crowd the message's room.
     pub fn prove_rotations(&mut self) -> Result<Vec<osis_base::Value>> {
         let Some(p) = self.core.account.get() else { return Ok(Vec::new()) };
         let rots = self.core.account_view(&p).map(|v| v.proving_chain()).unwrap_or_default();
@@ -1028,18 +1028,49 @@ impl Engine {
 
     /// Takes the rotations a peer's Prove carried (header-only copies of account rotation
     /// commits), judged by spec/permissions.md §5.4 like any received, in the order given,
-    /// before its proofs are judged. One that would pend here (an epoch it is signed at not
-    /// held, its account's record not held) keeps nothing, as if never received: nothing carries
-    /// it (spec/commits.md §4 Pending storage); that is decided before anything is written
-    /// (`ingest_uncarried`). Anything else (not a rotation, a part carried, bad input) is skipped.
+    /// before its proofs are judged. Nothing carries them (spec/commits.md §4 Pending storage),
+    /// so of an account a node keeps only what it holds the account's chain by: the rotations
+    /// that count once all are taken, and, while no rotation held before is in a rejection with
+    /// a counting one, the tips the Warning names (`AccountView::contested`, the versions its
+    /// user may choose); each with what it needs (`AccountView::needed`). Every other one (a
+    /// fork beside the followed line, one that would pend, a second dispute while one is told)
+    /// keeps nothing, as if never received: decided in a trial of all of them together
+    /// (`ingest_trial`) before anything is written. Anything else (not a rotation, a part
+    /// carried, bad input) is skipped.
     pub fn take_rotations(&mut self, rotations: Vec<osis_base::Value>) -> Result<()> {
+        let mut fresh: Vec<(Vec<u8>, osis_commit::CommitBlob)> = Vec::new();
+        let mut of: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
         for v in rotations {
             let b = osis_base::cbor::encode(&v);
             let Ok(c) = osis_commit::CommitBlob::decode(&b) else { continue };
-            if c.header.rotation.is_none() || !c.parts.is_empty() || self.core.ix.commits.contains_key(&c.id()) {
+            let id = c.id();
+            if c.header.rotation.is_none() || !c.parts.is_empty() || self.core.ix.commits.contains_key(&id) || !of.entry(c.header.author).or_default().insert(id) {
                 continue;
             }
-            match self.ingest_uncarried(&b) {
+            fresh.push((b, c));
+        }
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        let blobs: Vec<osis_commit::CommitBlob> = fresh.iter().map(|(_, c)| c.clone()).collect();
+        let kept = self.ingest_trial(&blobs, |core| {
+            let mut out = BTreeSet::new();
+            for (p, ids) in &of {
+                let Some(v) = core.account_view(p) else { continue };
+                let mut roots: Vec<CommitId> = ids.iter().filter(|r| v.rotation_counts(r)).copied().collect();
+                // the Warning's first rise: once it is told by what was held, a Prove adds no line
+                if !v.rotation_ids().iter().any(|r| !ids.contains(r) && v.contests(r)) {
+                    roots.extend(v.contested().iter().filter(|r| ids.contains(r)));
+                }
+                out.extend(v.needed(roots).into_iter().filter(|r| ids.contains(r)));
+            }
+            out
+        })?;
+        for (b, c) in &fresh {
+            if !kept.contains(&c.id()) {
+                continue;
+            }
+            match self.ingest_uncarried(b) {
                 Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
                 _ => {}
             }

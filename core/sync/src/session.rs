@@ -766,12 +766,13 @@ fn allowance(m: &Msg) -> u64 {
     }
 }
 
-/// The account's rotations for a Prove, in the engine's order: as many as fit `room` bytes (what
-/// the proofs leave of one message), at most `MAX_ROTATIONS`.
+/// The account's rotations for a Prove, in the engine's order: the newest that fit `room` bytes
+/// (what the proofs leave of one message), at most `MAX_ROTATIONS`. A verifier holding the
+/// chain up to them takes them all; the oldest it more likely holds already.
 fn rotations(cx: &mut Cx, mut room: usize) -> Result<Vec<osis_base::Value>, Close> {
     let all = cx.engine.prove_rotations().map_err(|_| Close("engine"))?;
     let mut out = Vec::new();
-    for r in all.into_iter().take(MAX_ROTATIONS) {
+    for r in all.into_iter().rev().take(MAX_ROTATIONS) {
         let n = osis_base::cbor::encode(&r).len();
         if n > room {
             break;
@@ -779,6 +780,7 @@ fn rotations(cx: &mut Cx, mut room: usize) -> Result<Vec<osis_base::Value>, Clos
         room -= n;
         out.push(r);
     }
+    out.reverse();
     Ok(out)
 }
 

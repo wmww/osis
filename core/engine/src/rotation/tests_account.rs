@@ -601,6 +601,106 @@ fn prove_rotations_are_taken_by_a_verifier_spec_sync_opens_2() {
     assert!(e.key_open(&record, &key), "the account's new key open at the verifier");
 }
 
+/// Rotation blob `bytes` as a Prove carries it: a header-only copy.
+fn header_only(bytes: &[u8]) -> osis_base::Value {
+    let pt = osis_commit::rewrite(&CommitBlob::decode(bytes).unwrap(), |_| true).encode();
+    osis_base::cbor::decode(&pt, &osis_base::cbor::Limits::DEFAULT).unwrap()
+}
+
+fn rotation_to(next: &AccountEpochKeys, mut supersedes: Vec<CommitId>) -> RotationHeader {
+    supersedes.sort();
+    RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes, names: Vec::new(), takes: Vec::new(), removals: Vec::new(), list_root: [0; 32] }
+}
+
+/// A verifier holding account A's record and its rotation r1 (taken from A's Prove), and a
+/// removed node X holding A's first epoch, which proves to it `n` times: each Prove a plain fork
+/// beside r1, then a line of two whose tip rejects r1 (signed at the fork's epoch, superseding
+/// r1). What the verifier holds after: its local rows by kind, the held rotations of A, and the
+/// ones kept from X's Proves.
+fn forks_proved(n: usize) -> (std::collections::BTreeMap<String, (usize, usize)>, usize, Vec<CommitId>) {
+    let mut lp = peers(2);
+    let (a, bytes) = created(&mut lp);
+    let p = a.account;
+    let held = lp.peers[0].engine.core.accounts.get(&p).unwrap().clone();
+    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
+    let r1 = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
+    let given = lp.peers[0].engine.prove_rotations().unwrap();
+    lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap();
+    lp.peers[1].engine.take_rotations(given).unwrap();
+    // held first: a later millisecond
+    lp.peers[1].clock.advance(5);
+    let e = &mut lp.peers[1].engine;
+    assert!(e.core.account_view(&p).unwrap().rotation_counts(&r1));
+    let rec = e.core.created(&p).unwrap().clone();
+    let mut sent = Vec::new();
+    for i in 0..n {
+        let seed = |j: u8| AccountEpochKeys::from_seed(&Secret32::from_bytes([(i % 200) as u8, (i / 200) as u8, j, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]));
+        let (k1, k2, k3) = (seed(1), seed(2), seed(3));
+        let ts = Ts::make(e.now(), 0).unwrap();
+        let plain = rotation_at(rec.clone(), (FIRST_EPOCH, &first), &[], &k1, rotation_to(&k1, vec![FIRST_EPOCH]), ts);
+        e.take_rotations(vec![header_only(&plain)]).unwrap();
+        let f = rotation_at(rec.clone(), (FIRST_EPOCH, &first), &[], &k2, rotation_to(&k2, vec![FIRST_EPOCH]), ts);
+        let fid = CommitBlob::decode(&f).unwrap().id();
+        let g = rotation_at(rec.clone(), (fid, &k2), &[], &k3, rotation_to(&k3, vec![fid, r1]), ts);
+        e.take_rotations(vec![header_only(&f), header_only(&g)]).unwrap();
+        sent.extend([&plain, &f, &g].map(|b| CommitBlob::decode(b).unwrap().id()));
+    }
+    let v = e.core.account_view(&p).unwrap();
+    assert!(v.rotation_counts(&r1), "the honest rotation still counts");
+    let kept = sent.into_iter().filter(|c| e.header(c).is_some()).collect();
+    (e.local_census().unwrap(), v.rotation_ids().len(), kept)
+}
+
+// spec/sync-opens.md §2 (a verifier takes the rotations a Prove carries; nothing carries them),
+// spec/permissions.md §5.4 (Warning): a removed node holding an old epoch proves forks at every
+// reconnection; the verifier keeps of them only what the Warning's first rise needs (one line
+// whose tip rejects the followed rotation, with what it needs), never a plain fork beside the
+// line it follows, so what it stores is the same at 10 and 100 Proves.
+#[test]
+fn a_removed_nodes_proved_forks_are_bounded_at_n_and_10n_spec_sync_opens_2() {
+    let (c10, n10, k10) = forks_proved(10);
+    let (c100, n100, k100) = forks_proved(100);
+    assert_eq!(k10.len(), 2, "the first rejecting line alone is kept");
+    assert_eq!(k10, k100);
+    assert_eq!((n10, n100), (3, 3), "r1 and that line");
+    assert_eq!(c10, c100, "local rows by kind");
+}
+
+// spec/permissions.md §5.4 (Warning), spec/sync-opens.md §2: a verifier that followed a removed
+// node's fork F (first seen) is told the account forked when an honest node's Prove carries the
+// line answering F (r1 beside F, s signed at r1's epoch superseding F unnamed): the verifier
+// keeps that line, lists the dispute, and its user may choose it, which it then follows.
+#[test]
+fn a_proved_answer_warns_and_can_be_chosen_spec_permissions_5_4() {
+    let mut lp = peers(2);
+    let (a, bytes) = created(&mut lp);
+    let p = a.account;
+    let held = lp.peers[0].engine.core.accounts.get(&p).unwrap().clone();
+    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
+    let (kf, k1, k2) = (AccountEpochKeys::from_seed(&Secret32::from_bytes([81; 32])), AccountEpochKeys::from_seed(&Secret32::from_bytes([82; 32])), AccountEpochKeys::from_seed(&Secret32::from_bytes([83; 32])));
+    let e = &mut lp.peers[1].engine;
+    e.ingest(&bytes, Vec::new()).unwrap();
+    let rec = e.core.created(&p).unwrap().clone();
+    let ts = Ts::make(e.now(), 0).unwrap();
+    let f = rotation_at(rec.clone(), (FIRST_EPOCH, &first), &[], &kf, rotation_to(&kf, vec![FIRST_EPOCH]), ts);
+    let fid = CommitBlob::decode(&f).unwrap().id();
+    e.take_rotations(vec![header_only(&f)]).unwrap();
+    assert!(e.core.account_view(&p).unwrap().rotation_counts(&fid), "F followed, held first");
+    lp.peers[1].clock.advance(5);
+    let e = &mut lp.peers[1].engine;
+    let r1 = rotation_at(rec.clone(), (FIRST_EPOCH, &first), &[], &k1, rotation_to(&k1, vec![FIRST_EPOCH]), ts);
+    let r1id = CommitBlob::decode(&r1).unwrap().id();
+    let s = rotation_at(rec, (r1id, &k1), &[], &k2, rotation_to(&k2, vec![r1id, fid]), ts);
+    let sid = CommitBlob::decode(&s).unwrap().id();
+    e.take_rotations(vec![header_only(&r1), header_only(&s)]).unwrap();
+    assert!(e.header(&r1id).is_some() && e.header(&sid).is_some(), "the answering line kept");
+    let ds = e.account_disputes();
+    assert_eq!(ds.len(), 1, "told the account forked");
+    e.choose_line(p, sid).unwrap();
+    let v = e.core.account_view(&p).unwrap();
+    assert!(v.rotation_counts(&sid) && v.rotation_counts(&r1id) && !v.rotation_counts(&fid), "the chosen line followed");
+}
+
 // spec/permissions.md §5.5 (Waiting): a node of the account holding a sibling's rotation
 // without its thing list for D keeps every commit of the account on D at the closed epoch (D's
 // roster, so it stays a node of the account); once that list arrives, the lists judge: what

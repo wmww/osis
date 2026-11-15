@@ -20,6 +20,7 @@ Linked design: issues/refs-graph-lifetime.md (one reference graph for sync, stor
 ## Candidates (first pass, to verify)
 Removed today by unsyncing or the sync ID leaving (spec/sync-set.md §3): a thing's content and its sync ID's store entries (shredded on stopping), per-S members of peer records, `cp/` passes, `changed_at` rows. Kept or unclear:
 - **Role-class aspects of an unsynced thing**: Unsyncing keeps `secrets.0` and the other role-class aspects (spec/sync-set.md §3 Unsyncing), and records and `roles.0` edges with them. Removed by nothing once unsynced.
+- **Other accounts' chains**: an account's rotations (from sync's certificates or a Prove, `Engine::take_rotations`: what counts plus one dispute's line) and its record stay once no synced group needs the account. Removed by nothing; a Prove's are bounded but not attributable.
 - **Node epoch records** (`k/`), derived epochs (`dw/`), keyset epochs, thing lists (`tl/`, `tn/`, `tb/`), grant names in dropped parts: kept with headers or forever (notes/growth.md).
 - **Commit headers kept after bodies drop** (notes/growth.md row 1), forgotten commits' names (`fn/`).
 - **Purge marks**: `pn/`, `p/` lists, lasting tombstones (header-only blobs), destroyed-for-good marks (`td/`): kept for good. Under the principle: kept while a synced group carries the thing, then dropped.

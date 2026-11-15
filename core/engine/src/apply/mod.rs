@@ -1335,6 +1335,32 @@ impl Engine {
         self.ingest_kept(bytes, |_, _, _, out| matches!(out, Ingested::Parked(_) | Ingested::Pending(..)))
     }
 
+    /// The commits of `blobs` (each decoding, none held) that `keep` chooses once all of them are
+    /// ingested together, in order, in one transaction that is then rolled back: nothing of it
+    /// is written. `keep` reads the core with them held (those that pend or park are not).
+    pub(crate) fn ingest_trial(&mut self, blobs: &[CommitBlob], keep: impl FnOnce(&crate::engine::Core) -> BTreeSet<CommitId>) -> Result<BTreeSet<CommitId>> {
+        let mut out = None;
+        let r: Result<()> = self.run(|tx| {
+            for b in blobs {
+                hold_rotation_lists(tx, b, &[])?;
+                match ingest_blob(tx, b.clone(), Origin::Remote) {
+                    Err(e) if e.class() == ErrorClass::Local => return Err(e),
+                    _ => {}
+                }
+            }
+            out = Some(keep(tx.core));
+            // rolled back
+            Err(Error::Misuse("trial"))
+        });
+        for b in blobs {
+            self.openings_done(&b.id());
+        }
+        match out {
+            Some(k) => Ok(k),
+            None => r.and(Err(Error::Misuse("trial"))),
+        }
+    }
+
     /// `ingest` keeping nothing of a commit `refuse` objects to (its outcome, judged in the
     /// transaction, which is then rolled back): `None` for those.
     fn ingest_kept(&mut self, bytes: &[u8], refuse: impl Fn(&crate::engine::Core, &CommitId, &[usize], &Ingested) -> bool) -> Result<Option<Ingested>> {

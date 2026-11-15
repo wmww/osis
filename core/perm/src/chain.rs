@@ -185,8 +185,7 @@ impl<E: Ord + Copy> Chain<E> {
         c.heads = c.heads_of();
         let pos: BTreeMap<E, usize> = order.iter().enumerate().map(|(i, r)| (*r, i)).collect();
         c.preferred = c.first_line(&c.heads, &pos).unwrap_or(root);
-        let rejected = |x: &E| c.counting.iter().any(|m| c.rejects.contains(&(*m, *x)) || c.rejects.contains(&(*x, *m)));
-        let contested: BTreeSet<E> = c.rots.keys().copied().filter(|x| !c.counting.contains(x) && rejected(x)).collect();
+        let contested: BTreeSet<E> = c.rots.keys().copied().filter(|x| c.contests(x)).collect();
         c.contested = contested.iter().copied().filter(|x| !contested.iter().any(|y| y != x && c.on_line(*x, *y))).collect();
         c
     }
@@ -418,6 +417,12 @@ impl<E: Ord + Copy> Chain<E> {
     /// none.
     pub fn contested(&self) -> &BTreeSet<E> {
         &self.contested
+    }
+
+    /// Whether held rotation `r` does not count and a counting rotation rejects it or it rejects
+    /// one: the Warning's word (spec/permissions.md §5.4); `contested` holds the tips of such.
+    pub fn contests(&self, r: &E) -> bool {
+        !self.counting.contains(r) && self.counting.iter().any(|m| self.rejects.contains(&(*m, *r)) || self.rejects.contains(&(*r, *m)))
     }
 
     /// Whether the node is told the account has forked (`contested` is not empty).
