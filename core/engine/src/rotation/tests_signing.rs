@@ -1859,8 +1859,8 @@ fn a_head_it_cannot_merge_owes_no_rotation_spec_permissions_5_5() {
     }
 }
 
-// spec/crypto.md §5 (Section, Who wraps under what), §3 (an admin writes a fresh deposit seed
-// in each rotation): a node removed from D opens nothing of the account rotation that removes
+// spec/crypto.md §5 (Section; Who wraps under what), §3 (MUST write a fresh one in each
+// rotation): a node removed from D opens nothing of the account rotation that removes
 // it but what readers outside the account hold: never the account's `keys.0` part, which
 // carries D's fresh deposit seed
 #[test]
