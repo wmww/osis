@@ -436,6 +436,24 @@ fn a_dropped_copy_is_fetched_anew_after_a_restart_spec_sync_judgement_6() {
     assert_eq!(anew.added(), vec![s.id], "fetched anew");
 }
 
+// spec/sync-judgement.md §6 (Read and unread move: a node raised to read pulls S anew): an
+// entry it refused keeping S unread (stamped under no key of its head then) its sources show no
+// more, so S raised from kept unread to read is fetched anew (`anew_feed`); a first holding, a
+// lowering or a sync ID read from the start is not.
+#[test]
+fn a_raise_to_read_fetches_s_anew_spec_sync_judgement_6() {
+    let dev = Dev::new();
+    let (s, r) = (Sid::new(10), Sid::new(11));
+    let mut st = unread(&dev, &s);
+    let mut anew = st.anew_feed();
+    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&r, Holding::Read)]));
+    assert!(anew.added().is_empty(), "nothing raised");
+    st.set_sync_set(&holding(&[(&s, Holding::Read), (&r, Holding::Read)]));
+    assert_eq!(anew.added(), vec![s.id], "raised: fetched anew");
+    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&r, Holding::Unread)]));
+    assert!(anew.added().is_empty(), "lowered: nothing");
+}
+
 // spec/sync-ids.md §6 (Taking a stamped entry): a stamped entry of a deposited entry's blob ID
 // replaces its wrap and stamp and clears the flag; a stamped entry's wrap and stamp never change
 // after: taking it again changes nothing and logs no event.

@@ -377,7 +377,8 @@ impl Store {
     /// left it while it waits to stop; `leave` writes them): those whose entry moved, each with its
     /// entry now (`None`: no longer synced), of which thing, read or kept unread. A sync ID moving
     /// between read and kept unread is counted again in the unread total (spec/sync-ids.md §5
-    /// Caps); only the sync IDs whose entry moved stamp.
+    /// Caps); only the sync IDs whose entry moved stamp. One raised from kept unread to read is
+    /// fetched anew (spec/sync-judgement.md §6 Read and unread move).
     pub fn set_holdings(&mut self, moved: &[(SyncId, Option<(Tid, Holding)>)]) {
         let mut g = self.lock();
         let unread = |h: Option<&(Tid, Holding)>| h.is_some_and(|(_, h)| *h == Holding::Unread);
@@ -391,6 +392,11 @@ impl Store {
                 recount.push((*s, unread(now.as_ref())));
             }
             g.mem.syncs.wrote_added(s, true, true);
+            // raised to read: what it refused kept unread (a stamp under no key of its head then)
+            // its sources show no more, so S is pulled anew (`anew_feed`)
+            if unread(was.as_ref()) && now.is_some_and(|(_, h)| h == Holding::Read) {
+                g.mem.anew.wrote_added(s, true, true);
+            }
             match now {
                 Some(h) => g.holdings.insert(*s, *h),
                 None => g.holdings.remove(s),
