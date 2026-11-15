@@ -235,7 +235,7 @@ impl Inbox {
                 self.register.left(conn, &s);
                 self.suspects.left(conn, &s);
             }
-            Moved::Until(..) => {}
+            Moved::Until(..) | Moved::Forgot(..) => {}
         }
     }
 

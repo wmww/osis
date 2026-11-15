@@ -211,6 +211,9 @@ pub struct Streams {
     /// A store failure this step met: `settle` fails the step with it.
     fault: Option<osis_store::Error>,
     work: Work,
+    /// Sources whose connection ended keeping stops of members closed on it, which go at the
+    /// next tick (spec/sync-opens.md §6 Where it stopped).
+    unkept: Vec<(Source, Vec<SyncId>)>,
 }
 
 impl Streams {
@@ -218,8 +221,10 @@ impl Streams {
     /// A store failure reading what it owes fails its first step (`fault`).
     pub fn new(store: Store) -> Streams {
         let (anew, owed) = store.anew_feed();
-        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), caught: StampedSet::default(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default() };
+        let unkept = pull::forget_unkept(store.clone());
+        let mut st = Streams { serve: BTreeMap::new(), pull: BTreeMap::new(), places: BTreeMap::new(), shreds: store.shred_feed(), anew, known: Known::new(store), asked: BTreeMap::new(), holders: BTreeMap::new(), caught: StampedSet::default(), caught_at: Stamped::default(), pulls_sent: 0, relays: osis_proto::RelayGate::default(), fault: None, work: Work::default(), unkept: Vec::new() };
         st.failed(owed);
+        st.failed(unkept);
         st
     }
 
@@ -348,8 +353,7 @@ impl Streams {
 
     /// A member moved.
     pub fn member_moved(&mut self, ctx: &mut Ctx, m: Moved) {
-        let (Moved::Joined(conn, ..) | Moved::Left(conn, ..) | Moved::Until(conn, _)) = &m;
-        let conn = *conn;
+        let conn = m.conn();
         match m {
             Moved::Joined(conn, s, rejoin) => {
                 self.holders.entry(s).or_default().insert(conn);
@@ -363,7 +367,7 @@ impl Streams {
                 }
                 self.run(ctx, conn);
             }
-            Moved::Left(conn, s, _) => {
+            Moved::Left(conn, s, at) => {
                 if let Some(set) = self.holders.get_mut(&s) {
                     set.remove(&conn);
                     if set.is_empty() {
@@ -371,9 +375,10 @@ impl Streams {
                     }
                 }
                 self.served_left(conn, &s);
-                self.left(ctx, conn, s);
+                self.left(ctx, conn, s, at.how);
             }
             Moved::Until(conn, s) => self.served_ending(ctx, conn, s),
+            Moved::Forgot(conn, s) => self.forgot(ctx, conn, s),
         }
         self.track(ctx, conn);
     }
@@ -413,8 +418,12 @@ impl Streams {
         // a record's place is in its rows: held again by the next connection taking it
         if let Some(p) = self.pull.remove(&conn)
             && !self.pull.values().any(|q| q.src == p.src)
+            && let Some(place) = self.places.remove(&p.src)
+            && !place.closed.is_empty()
         {
-            self.places.remove(&p.src);
+            // where members closed on it stopped lasts the connection: gone at the next tick
+            // (a start finds those a crash left)
+            self.unkept.push((p.src, place.closed.into_iter().collect()));
         }
         self.asked.retain(|_, (c, _)| *c != conn);
         self.known.forget_source(Source::Conn(conn));
@@ -429,6 +438,9 @@ impl Streams {
     /// Settles every connection: pushes under `follow`, Pulls and Fetches due, room regained.
     pub fn tick(&mut self, ctx: &mut Ctx) -> Result<bool> {
         self.forget_shredded();
+        for (src, ss) in std::mem::take(&mut self.unkept) {
+            self.forget_stops(ctx, src, &ss);
+        }
         self.known.settle();
         let mut acted = self.send_relays(ctx)?;
         let roomy = ctx.store.room_grew()?;

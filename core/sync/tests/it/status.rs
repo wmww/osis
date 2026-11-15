@@ -336,11 +336,11 @@ fn a_report_counts_when_its_source_leaves_in_the_same_step() {
     t.join(S, A, reader(RA, 1));
     t.own(S, cid(1), blob(1), 5);
     t.own(S, cid(2), blob(2), 7);
-    t.st.left(S, A, LeftAt { reported: Some(6), until: None });
+    t.st.left(S, A, LeftAt { reported: Some(6), until: None, how: osis_sync::opens::Leaving::Connection });
     t.settle();
     assert!(t.st.held(&cid(1)), "reported at 6 as it left");
     assert!(!t.st.held(&cid(2)), "first logged at 7, past the report");
-    t.st.left(S, B, LeftAt { reported: Some(9), until: None });
+    t.st.left(S, B, LeftAt { reported: Some(9), until: None, how: osis_sync::opens::Leaving::Connection });
     t.settle();
     assert!(!t.st.held(&cid(2)), "a leave of no source counts for nothing");
 }

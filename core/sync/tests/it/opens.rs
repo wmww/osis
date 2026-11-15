@@ -7,7 +7,7 @@ use crate::harness::scripted::*;
 use osis_base::SyncId;
 use osis_engine::sync::J;
 use osis_proto::{Code, Msg, OfferItem};
-use osis_sync::opens::{Moved, Peer, Rejoin};
+use osis_sync::opens::{Leaving, Moved, Peer, Rejoin};
 use osis_sync::session::Proven;
 use osis_sync::types::{Credential, SourceClass};
 
@@ -293,21 +293,21 @@ fn a_digest_difference_closes_one_sided_members_spec_sync_opens_3() {
     assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(None))), "rejoined from the start: {:?}", p.b.moved);
 }
 
-// spec/sync-opens.md §6 (Lost): the receiver keeps the Lost's cursor (where the member stopped for
-// it, in the sender's log) and its rejoin reads from there; a member left with its connection
-// rejoins from where its own stream holds it.
+// spec/sync-opens.md §6 (Where it stopped): the receiver keeps the Lost's cursor (where the member
+// stopped for it, in the sender's log) and its rejoin on that connection reads from there; a
+// member left with its connection rejoins from where its own stream holds it.
 #[test]
 fn a_rejoin_reads_from_the_losts_cursor_spec_sync_opens_6() {
     let mut p = readers();
     // b stored a's log at 7 for S (a learns it from b's Applied)
     p.a.reported(p.ca, S, 7);
-    let c = p.a.table.creds[&S].as_ref().clone();
-    p.a.table.set(S, None);
+    p.a.table.judge_as(S, tid(2), J::Departed);
     p.a.settle();
     p.run();
     assert!(!p.b.open(p.cb, &S));
+    assert!(p.b.moved.iter().any(|m| matches!(m, Moved::Left(c, s, at) if *c == p.cb && *s == S && at.how == Leaving::Kept)), "{:?}", p.b.moved);
     p.b.moved.clear();
-    p.a.table.set(S, Some(c));
+    p.a.table.judge_as(S, tid(2), J::Reader);
     p.a.settle();
     p.run();
     assert!(p.b.open(p.cb, &S));
@@ -339,37 +339,6 @@ fn a_shred_drops_where_a_member_stopped_spec_sync_opens_3() {
     p.run();
     assert!(p.b.open(p.cb, &S));
     assert!(p.b.moved.iter().any(|m| matches!(m, Moved::Joined(c, s, r) if *c == p.cb && *s == S && *r != Rejoin::From(Some(7u64.to_be_bytes().to_vec())))), "not from the Lost's cursor: {:?}", p.b.moved);
-}
-
-// spec/sync-opens.md §6 (closed here): a member this side closed rejoins from the start unless it
-// holds the peer's Lost for it. Here the peer's crossed Lost is lost with the connection (this
-// side's own Lost never arrives), so the rejoin reads from the start: nothing the peer logged
-// between its `until` and where this side's stream stood is skipped.
-#[test]
-fn a_member_closed_here_without_the_peers_lost_rejoins_from_the_start_spec_sync_opens_6() {
-    let st = StepKeys::new(1, 0);
-    let mut a = Side::new(1);
-    let mut b = Side::new(2);
-    a.table.set(S, Some(reader(&S, &read_secret(1, 0), &st, &[], &[], &[])));
-    b.table.set(S, Some(reader(&S, &read_secret(9, 0), &StepKeys::new(9, 0), &[], &[], &[])));
-    a.table.judge_as(S, tid(2), J::Reader);
-    b.table.judge_as(S, tid(1), J::Reader);
-    let mut p = Pair::new(a, b, account(1), account(2));
-    p.run();
-    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
-    p.a.reported(p.ca, S, 7);
-    // a judges b departed: S closes there at once with a Lost, which the connection drops
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
-    assert!(!p.a.open(p.ca, &S));
-    p.close();
-    p.a.table.judge_as(S, tid(2), J::Reader);
-    p.a.settle();
-    p.a.moved.clear();
-    p.connect(2, account(1), account(2));
-    p.run();
-    assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
-    assert!(p.a.moved.contains(&Moved::Joined(p.ca, S, Rejoin::From(None))), "from the start: {:?}", p.a.moved);
 }
 
 // spec/sync-opens.md §4 (shared set): a side keeping no shared set yet answers its requests 14.
@@ -451,7 +420,7 @@ fn a_resumed_record_sends_additions_first_spec_sync_opens_5() {
 }
 
 // spec/sync-opens.md §5 (testing): a Hit that opened nothing is tried again on that connection
-// only once something re-marks S (here the peer's Lost).
+// only once something re-marks S or moves `changed_at(S)` (here a credential of S moving).
 #[test]
 fn a_refused_hit_is_tried_again_only_when_remarked_spec_sync_opens_5() {
     let st = StepKeys::new(1, 0);
@@ -475,9 +444,10 @@ fn a_refused_hit_is_tried_again_only_when_remarked_spec_sync_opens_5() {
     let id = adv.id();
     adv.send(&mut r, Msg::Beacons { id, generation: 2, base: Some(1), f: 8, lo: 0, hi: 256, gcs: Vec::new(), more: false });
     assert_eq!(offered_hits(&r.sent()), 0, "not tried again without a re-mark");
-    let id = adv.id();
-    adv.send(&mut r, Msg::Lost { id, items: vec![(S, None)] });
-    assert_eq!(offered_hits(&r.sent()), 1, "a Lost re-marks S");
+    // `changed_at(S)` moving tries it again
+    r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 1), &[], &[], &[])));
+    r.settle();
+    assert_eq!(offered_hits(&r.sent()), 1, "tried again once changed_at(S) moved");
 }
 
 // ---- NetOpen controls (core/test/tla/net/NetOpen.tla, ON_*): the hostile cases ----
@@ -874,22 +844,32 @@ fn a_credential_change_costs_per_connection_not_per_sync_id_spec_sync_opens_6() 
     assert_eq!(change_with_conns(10, 20), 10 * change_with_conns(10, 2));
 }
 
-// spec/sync-opens.md §6 (Lost): a Lost for a member this side is ending closes it, and is
-// answered with this side's own Lost naming where it stopped.
+// spec/sync-opens.md §6 (Lost): a Lost for a member open here closes it, ending or not, and is
+// answered with this side's own Lost naming where it stopped for the peer (its reported position,
+// or `until` where lower); a Lost naming no member open here is not answered.
 #[test]
-fn a_lost_for_an_ending_member_is_answered_with_a_lost_spec_sync_opens_6() {
-    let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
-    let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
-    adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
-    k.table.set(S, Some(store(&s1)));
-    k.settle();
-    k.sent();
-    let id = adv.id();
-    adv.send(&mut k, Msg::Lost { id, items: vec![(S, None)] });
-    let sent = k.sent();
-    assert!(!k.open(adv.peer, &S));
-    assert_eq!(shared(&sent, id).unwrap()[0].code, Code::OK);
-    assert!(matches!(&of_kind(&sent, 38)[..], [Msg::Lost { items, .. }] if items[0].0 == S && items[0].1.is_some()));
+fn a_lost_for_an_open_member_is_answered_with_a_lost_spec_sync_opens_6() {
+    for ending in [false, true] {
+        let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
+        let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
+        adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+        k.reported(adv.peer, S, 3);
+        if ending {
+            k.table.set(S, Some(store(&s1)));
+            k.settle();
+        }
+        k.sent();
+        let id = adv.id();
+        adv.send(&mut k, Msg::Lost { id, items: vec![(S, None)] });
+        let sent = k.sent();
+        assert!(!k.open(adv.peer, &S));
+        assert_eq!(shared(&sent, id).unwrap()[0].code, Code::OK);
+        assert!(matches!(&of_kind(&sent, 38)[..], [Msg::Lost { items, .. }] if items[0] == (S, osis_proto::Cursor::new(3u64.to_be_bytes().to_vec()).ok())), "ending {ending}: {sent:?}");
+        // S closed: the peer's Lost again names no member open here
+        let id = adv.id();
+        adv.send(&mut k, Msg::Lost { id, items: vec![(S, None)] });
+        assert!(of_kind(&k.sent(), 38).is_empty(), "ending {ending}: not answered");
+    }
 }
 
 // spec/sync-opens.md §6: a member ended and then judged admissible again is no longer ended.
@@ -964,10 +944,10 @@ fn a_filter_too_dense_closes_the_connection_spec_wire_11_2() {
 }
 
 // spec/sync-opens.md §5 (testing): a refused Hit is not sent again at its answer (here the peer
-// acknowledged no generation of the tester's filter), and a Lost naming a sync ID this node does
-// not sync re-marks nothing; a Lost naming S re-marks S.
+// acknowledged no generation of the tester's filter), and a Lost naming no member open here (a
+// sync ID this node does not sync, or S not open) re-marks nothing.
 #[test]
-fn a_lost_for_an_unheld_sync_id_remarks_nothing_spec_sync_opens_5() {
+fn a_lost_for_no_member_open_here_remarks_nothing_spec_sync_opens_5() {
     let rs = read_secret(1, 0);
     let mut r = Side::new(1);
     r.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
@@ -983,7 +963,7 @@ fn a_lost_for_an_unheld_sync_id_remarks_nothing_spec_sync_opens_5() {
     assert_eq!(offered_hits(&r.sent()), 0, "not re-marked");
     let id = adv.id();
     adv.send(&mut r, Msg::Lost { id, items: vec![(S, None)] });
-    assert_eq!(offered_hits(&r.sent()), 1, "a Lost for S re-marks it");
+    assert_eq!(offered_hits(&r.sent()), 0, "S not open: not re-marked");
 }
 
 // spec/sync-opens.md §3 (pair key): a dialer the listener proved an actor to sends Resume; a
@@ -1690,4 +1670,133 @@ fn a_walk_stop_is_kept_in_the_record_across_a_restart_spec_sync_ids_6() {
     p.settle();
     assert!(p.a.open(p.ca, &S), "granted the head's key: open");
     assert_eq!(p.a.opens.walk_stop(&S), None, "open: no stop");
+}
+
+// ---- where a closed member stopped (spec/sync-opens.md §6 Where it stopped) ----
+
+fn left_how(moved: &[Moved], c: osis_sync::types::ConnId, s: SyncId) -> Option<Leaving> {
+    moved.iter().rev().find_map(|m| match m {
+        Moved::Left(x, y, at) if *x == c && *y == s => Some(at.how),
+        _ => None,
+    })
+}
+
+fn cursor(p: u64) -> Option<osis_proto::Cursor> {
+    osis_proto::Cursor::new(p.to_be_bytes().to_vec()).ok()
+}
+
+// spec/sync-opens.md §6 (Where it stopped): a side that closed a member at its `until` keeps
+// where its own stream holds it until the peer's Lost, then the position that Lost names: opened
+// again on that connection, it rejoins from there.
+#[test]
+fn a_member_closed_at_its_until_rejoins_from_the_peers_lost_spec_sync_opens_6() {
+    for answered in [false, true] {
+        let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
+        let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
+        adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+        k.table.set(S, Some(store(&s1)));
+        k.settle();
+        k.reported(adv.peer, S, k.table.until);
+        assert!(!k.open(adv.peer, &S));
+        assert_eq!(left_how(&k.moved, adv.peer, S), Some(Leaving::Kept));
+        if answered {
+            let id = adv.id();
+            adv.send(&mut k, Msg::Lost { id, items: vec![(S, cursor(5))] });
+        }
+        k.moved.clear();
+        assert_eq!(adv.offer(&mut k, vec![sync_key_hit(&adv, &s1)])[0].code, Code::OK);
+        let want = if answered { Rejoin::From(Some(5u64.to_be_bytes().to_vec())) } else { Rejoin::Held };
+        assert!(k.moved.contains(&Moved::Joined(adv.peer, S, want.clone())), "answered {answered}: {want:?} in {:?}", k.moved);
+    }
+}
+
+// spec/sync-opens.md §6 (Where it stopped): a side that closed a member at once (J departed)
+// keeps nothing, whatever Lost follows: what its source showed goes and its rejoin is from the
+// start; the side receiving that Lost keeps the position it names.
+#[test]
+fn a_close_for_a_departure_keeps_nothing_here_spec_sync_opens_6() {
+    let mut p = readers();
+    p.b.reported(p.cb, S, 4);
+    p.a.reported(p.ca, S, 7);
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.settle();
+    p.run();
+    assert_eq!(left_how(&p.a.moved, p.ca, S), Some(Leaving::Forgot));
+    assert_eq!(left_how(&p.b.moved, p.cb, S), Some(Leaving::Kept));
+    // b answered with its own Lost naming 4: a keeps nothing still
+    assert!(p.log.iter().any(|(by_a, m)| !*by_a && matches!(m, Msg::Lost { items, .. } if items[0] == (S, cursor(4)))), "b answers");
+    // the Lost re-marked S at b: tested again (its Hit refused while a judges b departed)
+    let after = p.log.iter().position(|(by_a, m)| *by_a && matches!(m, Msg::Lost { .. })).unwrap();
+    assert!(p.log[after..].iter().any(|(by_a, m)| !*by_a && matches!(m, Msg::Offer { .. })), "b tests S again");
+    p.a.moved.clear();
+    p.b.moved.clear();
+    p.a.table.judge_as(S, tid(2), J::Reader);
+    p.a.settle();
+    p.run();
+    assert!(p.a.moved.contains(&Moved::Joined(p.ca, S, Rejoin::From(None))), "{:?}", p.a.moved);
+    assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(Some(7u64.to_be_bytes().to_vec())))), "{:?}", p.b.moved);
+}
+
+// spec/sync-opens.md §6 (Lost; Where it stopped): a Lost for S that left the sender's sync set
+// names no position, and its receiver keeps nothing of where S stopped.
+#[test]
+fn a_lost_for_s_that_left_the_senders_sync_set_names_none_spec_sync_opens_6() {
+    let mut p = readers();
+    p.a.reported(p.ca, S, 7);
+    p.a.table.set(S, None);
+    p.a.settle();
+    p.run();
+    assert!(p.log.iter().any(|(by_a, m)| *by_a && matches!(m, Msg::Lost { items, .. } if items[0] == (S, None))), "{:?}", p.log);
+    assert_eq!(left_how(&p.b.moved, p.cb, S), Some(Leaving::Forgot));
+}
+
+// spec/sync-opens.md §6 (Where it stopped): a kept stop lasts its connection: when it ends, what
+// the source showed goes (`Forgot`) and the next connection's rejoin is from the start.
+#[test]
+fn a_kept_stop_goes_with_its_connection_spec_sync_opens_6() {
+    let mut p = readers();
+    p.a.reported(p.ca, S, 7);
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.settle();
+    p.run();
+    assert_eq!(left_how(&p.b.moved, p.cb, S), Some(Leaving::Kept));
+    p.b.moved.clear();
+    p.close();
+    assert!(p.b.moved.contains(&Moved::Forgot(p.cb, S)), "{:?}", p.b.moved);
+    p.a.table.judge_as(S, tid(2), J::Reader);
+    p.a.settle();
+    p.b.moved.clear();
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert!(p.b.open(p.cb, &S));
+    assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(None))), "{:?}", p.b.moved);
+}
+
+// spec/sync-opens.md §6 (Where it stopped): a node that stops holding S sends a Lost naming S and
+// none on each connection keeping S's stop, and that Lost makes the peer forget its own.
+#[test]
+fn a_node_leaving_s_tells_each_connection_keeping_its_stop_spec_sync_opens_6() {
+    // b's own stop of S is kept (closed at its until, before any Lost): the Lost naming none
+    // forgets it
+    let (s0, s1) = (StepKeys::new(1, 0), StepKeys::new(1, 1));
+    let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
+    adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+    k.table.set(S, Some(store(&s1)));
+    k.settle();
+    k.reported(adv.peer, S, k.table.until);
+    assert_eq!(left_how(&k.moved, adv.peer, S), Some(Leaving::Kept));
+    k.moved.clear();
+    let id = adv.id();
+    adv.send(&mut k, Msg::Lost { id, items: vec![(S, None)] });
+    assert!(k.moved.contains(&Moved::Forgot(adv.peer, S)), "{:?}", k.moved);
+    // and k, leaving S with a stop kept, tells the peer
+    let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
+    adv.offer(&mut k, vec![sync_key_hit(&adv, &s0)]);
+    k.table.set(S, Some(store(&s1)));
+    k.settle();
+    k.reported(adv.peer, S, k.table.until);
+    k.sent();
+    k.table.set(S, None);
+    k.settle();
+    assert!(of_kind(&k.sent(), 38).iter().any(|m| matches!(m, Msg::Lost { items, .. } if items[0] == (S, None))));
 }

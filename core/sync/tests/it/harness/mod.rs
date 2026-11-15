@@ -214,6 +214,8 @@ pub struct Net {
     accepted: Vec<u64>,
     /// Bytes carried so far.
     pub bytes: u64,
+    /// Bytes each node sent each other node, every connection between them summed.
+    pub between: BTreeMap<(usize, usize), u64>,
     /// Bytes each end sent on each connection: the transport takes them at once (no buffer), so
     /// each send is answered `Taken` with the total.
     written: BTreeMap<(usize, ConnId), u64>,
@@ -324,6 +326,7 @@ impl Net {
         // bytes on a connection the peer already closed are lost, as on a transport
         let Some((to, tc)) = self.links.get(&(from, conn)).copied() else { return };
         self.bytes += bytes.len() as u64;
+        *self.between.entry((from, to)).or_default() += bytes.len() as u64;
         let w = self.written.entry((from, conn)).or_default();
         *w += bytes.len() as u64;
         let total = *w;

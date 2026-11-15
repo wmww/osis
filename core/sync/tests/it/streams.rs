@@ -12,7 +12,7 @@ use osis_label::{ClaimSet, Class, Parent, Prefix, Step, StepKeys};
 use osis_proto::limits::{REPLY_BUDGET, SMALL_REPLY, TOP_BIT};
 use osis_proto::{Code, Event, Id, Msg, Pull};
 use osis_store::{MemoryBackend, MemoryRoot, RecordId};
-use osis_sync::opens::{Member, Moved, Positions, Rejoin, Reported};
+use osis_sync::opens::{LeftAt, Leaving, Member, Moved, Positions, Rejoin, Reported};
 use osis_sync::session::{Incoming, To};
 use osis_sync::store::Source;
 use osis_sync::streams::{Ctx, Ground, INLINE_LIMIT, Opening, Rank, Shared, Streams, Wire};
@@ -232,13 +232,18 @@ impl Side {
     }
 
     fn leave(&mut self, now: u64, s: SyncId) {
+        self.leave_as(now, s, Leaving::Connection);
+    }
+
+    /// Member S leaves C as opens says (`how`, spec/sync-opens.md §6 Where it stopped).
+    fn leave_as(&mut self, now: u64, s: SyncId, how: Leaving) {
         if let Some(m) = self.open.members.get_mut(&C) {
             m.remove(&s);
         }
         if let Some(p) = self.open.positions.get_mut(&C) {
             p.forget(&s);
         }
-        self.with(now, |st, ctx| st.member_moved(ctx, Moved::Left(C, s, Default::default())));
+        self.with(now, |st, ctx| st.member_moved(ctx, Moved::Left(C, s, LeftAt { how, ..LeftAt::default() })));
     }
 
     /// Member S's reported position on C.
@@ -736,8 +741,8 @@ fn a_refused_join_is_joined_again_later_spec_sync_streams_4() {
     assert!(p.b.streams.caught_up(C, &t));
 }
 
-// spec/sync-opens.md §3 (Agreement: a member only one side holds closes with no position; its
-// rejoin is from the start), SN_sreconcile: a rejoin opens says is from the start names no cursor,
+// spec/sync-opens.md §3 (Agreement: a member only one side holds closes keeping nothing of where
+// it stopped, so its rejoin is from the start), SN_sreconcile: a rejoin opens says is from the start names no cursor,
 // whatever this side held.
 #[test]
 fn a_rejoin_from_the_start_names_no_cursor_spec_sync_opens_3() {
@@ -757,6 +762,66 @@ fn a_rejoin_from_the_start_names_no_cursor_spec_sync_opens_3() {
     p.run();
     let last = p.sent_by_b(41).into_iter().last().unwrap();
     assert!(matches!(last, Msg::Pull(q) if matches!(q.joins.as_slice(), [(x, Some(_))] if *x == s)));
+}
+
+// spec/sync-opens.md §6 (Where it stopped), spec/sync-judgement.md §3 (`known`): what a source
+// showed of S lasts while S is a member there or its stop is kept. Closed keeping its stop, S
+// keeps it and, opened again, rejoins from where it stood (not from the start); closed keeping
+// nothing, it goes; a kept stop goes once its connection ends (at the next tick), and a start
+// forgets one a crash left.
+#[test]
+fn what_a_source_showed_lasts_with_its_stop_spec_sync_opens_6() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x = p.a.log(s, 100);
+    p.shared_read(s);
+    p.run();
+    let src = p.b.src();
+    assert!(knows(&p.b, src, s, x));
+    // kept: still known; opened again, it reads from where it stood
+    p.b.leave_as(p.now, s, Leaving::Kept);
+    assert!(knows(&p.b, src, s, x), "kept with its stop");
+    let y = p.a.log(s, 101);
+    p.b.join(p.now, s);
+    p.run();
+    let last = p.sent_by_b(41).into_iter().last().unwrap();
+    assert!(matches!(last, Msg::Pull(q) if matches!(q.joins.as_slice(), [(z, Some(_))] if *z == s)), "rejoined from where it stood");
+    assert!(knows(&p.b, src, s, y));
+    // nothing kept: it goes
+    p.b.leave_as(p.now, s, Leaving::Forgot);
+    assert!(!knows(&p.b, src, s, x) && !knows(&p.b, src, s, y), "closed keeping nothing");
+    p.b.join_on(p.now, C, s, Rejoin::From(None));
+    p.run();
+    assert!(knows(&p.b, src, s, x), "listed again");
+    // opens forgets a kept stop (the peer's Lost naming none): it goes at once
+    p.b.leave_as(p.now, s, Leaving::Kept);
+    p.b.with(p.now, |st, ctx| st.member_moved(ctx, Moved::Forgot(C, s)));
+    assert!(!knows(&p.b, src, s, x), "forgotten");
+    p.b.join_on(p.now, C, s, Rejoin::From(None));
+    p.run();
+    assert!(knows(&p.b, src, s, x), "listed again");
+    // a kept stop goes with its connection, at the next tick
+    p.b.leave_as(p.now, s, Leaving::Kept);
+    p.b.streams.closed(C);
+    assert!(knows(&p.b, src, s, x));
+    p.b.with(p.now, |st, ctx| st.tick(ctx)).unwrap();
+    assert!(!knows(&p.b, src, s, x), "gone with the connection");
+}
+
+// spec/sync-opens.md §6 (Where it stopped: a restart included): a stop kept when the node went
+// down (no connection end handled) goes at its start, with what the source showed.
+#[test]
+fn a_start_forgets_a_stop_a_crash_left_spec_sync_opens_6() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    let x = p.a.log(s, 100);
+    p.shared_read(s);
+    p.run();
+    let src = p.b.src();
+    p.b.leave_as(p.now, s, Leaving::Kept);
+    assert!(knows(&p.b, src, s, x));
+    p.b.restart_all(7);
+    assert!(!knows(&p.b, src, s, x), "forgotten at the start");
 }
 
 // spec/sync-streams.md §4 (Applying: a Deleted says only that the source no longer holds the

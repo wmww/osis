@@ -65,6 +65,9 @@ pub enum Moved {
     Left(ConnId, SyncId, LeftAt),
     /// Member S's `until` was set or cleared.
     Until(ConnId, SyncId),
+    /// Where S, closed on `conn` earlier, stopped is no longer kept: what its source showed goes
+    /// (spec/sync-opens.md §6 Where it stopped).
+    Forgot(ConnId, SyncId),
 }
 
 /// Where a member's peer stood as it left: what status still counts it holding (spec/sync-status.md
@@ -75,13 +78,39 @@ pub struct LeftAt {
     pub reported: Option<Position>,
     /// Its `until`, an ended member's.
     pub until: Option<Position>,
+    /// How it left (spec/sync-opens.md §6 Where it stopped).
+    pub how: Leaving,
+}
+
+/// How a member left a connection's shared set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Leaving {
+    /// The connection let its record go: the record keeps the member.
+    #[default]
+    Connection,
+    /// Closed, where it stopped kept while the connection lasts.
+    Kept,
+    /// Closed keeping nothing of where it stopped: what its source showed goes, and its rejoin is
+    /// from the start.
+    Forgot,
+}
+
+/// Why a member closes here (spec/sync-opens.md §6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Close {
+    /// Its `until` reached: where its own stream holds it is kept until the peer's Lost.
+    Until,
+    /// J departed: nothing kept.
+    AtOnce,
+    /// S left this node's sync set: nothing kept, and its Lost names no position.
+    Left,
 }
 
 impl Moved {
     /// The connection it moved on.
     pub fn conn(&self) -> ConnId {
         match self {
-            Moved::Joined(c, ..) | Moved::Left(c, ..) | Moved::Until(c, _) => *c,
+            Moved::Joined(c, ..) | Moved::Left(c, ..) | Moved::Until(c, _) | Moved::Forgot(c, _) => *c,
         }
     }
 }
@@ -133,8 +162,9 @@ struct Record {
     members: BTreeMap<SyncId, Member>,
     /// The beacon each member was opened by (none: by J).
     basis: BTreeMap<SyncId, Option<[u8; 32]>>,
-    /// Where each member that left rejoins: held by this side's stream (the connection ended), a
-    /// Lost's cursor, or from the start (a digest difference, or this side closed it).
+    /// Where each member closed on the connection holding the record stopped (spec/sync-opens.md
+    /// §6 Where it stopped): where this side's stream holds it (closed here at its `until`), or the
+    /// peer's Lost's cursor. Memory only: it goes when that connection lets the record go.
     stopped: BTreeMap<SyncId, Rejoin>,
     /// Where this side's walk of each S stopped at the peer (`Opens::stops`; a kept record only).
     walk: BTreeMap<SyncId, Stop>,
@@ -772,7 +802,7 @@ impl Opens {
     fn close_if_reached(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, moved: &mut Vec<Moved>) {
         let Some(until) = self.member(conn, &s).and_then(|m| m.until) else { return };
         if self.reported_at(conn, &s).is_some_and(|(p, _)| *p >= until) {
-            self.close_member(ctx, conn, s, true, moved);
+            self.close_member(ctx, conn, s, Close::Until, moved);
         }
     }
 
@@ -839,12 +869,16 @@ impl Opens {
         let Some(r) = self.records.get(&rid) else { return };
         let walk: Vec<SyncId> = r.walk.keys().copied().collect();
         for (s, m) in &r.members {
-            moved.push(Moved::Left(conn, *s, LeftAt { reported: c.reported.get(s).map(|(p, _)| *p), until: m.until }));
+            moved.push(Moved::Left(conn, *s, LeftAt { reported: c.reported.get(s).map(|(p, _)| *p), until: m.until, how: Leaving::Connection }));
             if let Some(set) = self.holding.get_mut(s) {
                 set.remove(&conn);
             }
             self.peers.wrote(s, true);
         }
+        // where members closed on this connection stopped lasts the connection
+        moved.extend(r.stopped.keys().map(|s| Moved::Forgot(conn, *s)));
+        let Some(r) = self.records.get_mut(&rid) else { return };
+        r.stopped.clear();
         // a kept one stays in memory until `flush` writes it (or another connection takes it)
         if !r.kept {
             self.records.remove(&rid);
@@ -1035,7 +1069,12 @@ impl Opens {
                 // spec/sync-opens.md §3: a node that stops holding S drops S from every record in
                 // the step that stops it; members on a connection close with a Lost (§6).
                 for c in self.holding.get(&s).cloned().unwrap_or_default() {
-                    self.close_member(ctx, c, s, true, moved);
+                    self.close_member(ctx, c, s, Close::Left, moved);
+                }
+                // a stop kept on a connection: told that nothing of S is kept here
+                let kept: Vec<ConnId> = self.conns.iter().filter(|(_, k)| k.rec.and_then(|r| self.records.get(&r)).is_some_and(|r| r.stopped.contains_key(&s))).map(|(c, _)| *c).collect();
+                for c in kept {
+                    self.send_lost(ctx, c, vec![(s, None)]);
                 }
                 self.peers.wrote(&s, false);
                 for k in self.conns.values_mut() {
@@ -1449,7 +1488,7 @@ impl Opens {
         let Some(rid) = c.rec else { return };
         let mine: BTreeSet<SyncId> = self.records.get(&rid).map(|r| r.members.keys().copied().collect()).unwrap_or_default();
         for s in mine.difference(&theirs) {
-            self.drop_member(conn, *s, false, moved);
+            self.drop_member(conn, *s, None, moved);
         }
         for s in mine.symmetric_difference(&theirs) {
             self.remark(conn, s);
@@ -2105,7 +2144,7 @@ impl Opens {
         let Some(r) = self.records.get_mut(&rid) else { return };
         r.members.insert(s, m);
         r.basis.insert(s, beacon);
-        let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::Held);
+        let rejoin = r.stopped.remove(&s).unwrap_or(Rejoin::From(None));
         self.dirty(rid).members.insert(s);
         self.holding.entry(s).or_default().insert(conn);
         self.peers.wrote(&s, true);
@@ -2121,7 +2160,7 @@ impl Opens {
         self.work.rejudged += 1;
         let Some(adm) = self.admissible(ctx, conn, &s) else {
             // S left the sync set: closes at once.
-            self.close_member(ctx, conn, s, true, moved);
+            self.close_member(ctx, conn, s, Close::Left, moved);
             return;
         };
         let rr = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get(&r)).map(|r| r.r).unwrap_or_default();
@@ -2134,7 +2173,7 @@ impl Opens {
             // A member ended and then judged holder or admissible again is no longer ended.
             self.set_until(conn, &s, None, moved);
         } else if m.by == Credential::J || adm.j == J::Departed {
-            self.close_member(ctx, conn, s, true, moved);
+            self.close_member(ctx, conn, s, Close::AtOnce, moved);
         } else if m.until.is_none() {
             let until = ctx.holds.until(&s, &m.by);
             self.set_until(conn, &s, Some(until), moved);
@@ -2164,38 +2203,45 @@ impl Opens {
         self.reported_at(conn, s).map(|(_, c)| c.clone())
     }
 
-    /// Closes member S of `conn`; with `lost`, back to testing with a Lost naming where it stopped
-    /// (the member is closed before its Lost goes).
-    fn close_member(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, lost: bool, moved: &mut Vec<Moved>) {
+    /// Closes member S of `conn` (spec/sync-opens.md §6), back to testing with a Lost naming where
+    /// it stopped for the peer (the member is closed before its Lost goes); `why` says what of
+    /// where it stopped this side keeps.
+    fn close_member(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, why: Close, moved: &mut Vec<Moved>) {
         let Some(m) = self.member(conn, &s).cloned() else { return };
-        // Where it stopped for the peer: its reported position, or `until` where lower.
-        let mut cursor = self.reported_cursor(conn, &s);
-        if let (Some(u), Some((p, _))) = (m.until, self.reported_at(conn, &s))
-            && u < *p
-        {
-            cursor = ctx.holds.cursor_at(u);
-        }
-        // Closed here with a Lost: it rejoins from the start unless the peer's Lost names where it
-        // stopped (spec/sync-opens.md §6: a crossed Lost lost with its connection skips nothing).
-        self.drop_member(conn, s, !lost, moved);
+        let cursor = match why {
+            Close::Left => None,
+            _ => self.stopped_for_peer(ctx, conn, &s, m.until),
+        };
+        self.drop_member(conn, s, (why == Close::Until).then_some(Rejoin::Held), moved);
         self.remark(conn, &s);
-        if lost {
-            self.send_lost(ctx, conn, vec![(s, cursor)]);
+        self.send_lost(ctx, conn, vec![(s, cursor)]);
+    }
+
+    /// Where member S stopped for the peer (spec/sync-opens.md §6 Lost): its reported position, or
+    /// `until` where lower.
+    fn stopped_for_peer(&self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, until: Option<Position>) -> Option<Cursor> {
+        let reported = self.reported_at(conn, s);
+        match (until, reported) {
+            (Some(u), Some((p, _))) if u < *p => ctx.holds.cursor_at(u),
+            _ => self.reported_cursor(conn, s),
         }
     }
 
-    /// Removes member S from `conn`'s record; `keep`: its rejoin reads from where this side's
-    /// stream holds it, else (a digest difference, or closed here with a Lost) from the start.
-    fn drop_member(&mut self, conn: ConnId, s: SyncId, keep: bool, moved: &mut Vec<Moved>) {
+    /// Removes member S from `conn`'s record, keeping `stop` as where it stopped (none: nothing is
+    /// kept, so what its source showed goes and its rejoin is from the start).
+    fn drop_member(&mut self, conn: ConnId, s: SyncId, stop: Option<Rejoin>, moved: &mut Vec<Moved>) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r)) else { return };
         let Some(m) = r.members.remove(&s) else { return };
-        let at = LeftAt { reported: c.reported.get(&s).map(|(p, _)| *p), until: m.until };
+        let at = LeftAt { reported: c.reported.get(&s).map(|(p, _)| *p), until: m.until, how: if stop.is_some() { Leaving::Kept } else { Leaving::Forgot } };
         c.reported.forget(&s);
         self.reports.wrote(&conn, true);
         c.ending.remove(&s);
         r.basis.remove(&s);
-        r.stopped.insert(s, if keep { Rejoin::Held } else { Rejoin::From(None) });
+        match stop {
+            Some(j) => r.stopped.insert(s, j),
+            None => r.stopped.remove(&s),
+        };
         if let Some(set) = self.holding.get_mut(&s) {
             set.remove(&conn);
         }
@@ -2213,32 +2259,30 @@ impl Opens {
         }
     }
 
-    /// The peer's Lost (spec/sync-opens.md §6): each member named closes, where it stopped kept
-    /// (also when this side closed it first), S re-marked; a member this side was ending is
-    /// answered with its own Lost.
+    /// The peer's Lost (spec/sync-opens.md §6): each member open here named closes, where it
+    /// stopped set to the Lost's cursor (none: nothing kept), S re-marked, and is answered with
+    /// this side's own Lost; a stop this side keeps (closed here first: the two crossed) takes the
+    /// cursor alike.
     fn lost(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, items: Vec<osis_proto::Join>, moved: &mut Vec<Moved>) {
         let n = items.len();
         let mut answer = Vec::new();
         for (s, cur) in items {
-            let cursor = cur.map(osis_proto::Cursor::into_bytes);
-            let ending = self.member(conn, &s).and_then(|m| m.until);
-            // where it stopped for the peer, read before the member goes
-            let (rc, rp) = (self.reported_cursor(conn, &s), self.reported_at(conn, &s).map(|(p, _)| *p));
-            if self.member(conn, &s).is_some() {
-                self.drop_member(conn, s, true, moved);
-            }
-            self.remark(conn, &s);
-            // Kept for a member that left (also one this side closed first: the two crossed);
-            // a Lost naming anything else keeps nothing.
-            if let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get_mut(&r))
-                && let Some(at) = r.stopped.get_mut(&s)
+            let stop = cur.map(|c| Rejoin::From(Some(c.into_bytes())));
+            if let Some(m) = self.member(conn, &s).cloned() {
+                // where it stopped for the peer, read before the member goes
+                answer.push((s, self.stopped_for_peer(ctx, conn, &s, m.until)));
+                self.drop_member(conn, s, stop, moved);
+                self.remark(conn, &s);
+            } else if let Some(r) = self.conns.get(&conn).and_then(|c| c.rec).and_then(|r| self.records.get_mut(&r))
+                && r.stopped.contains_key(&s)
             {
-                *at = Rejoin::From(cursor);
-                self.dirty_member(conn, s);
-            }
-            if let Some(u) = ending {
-                let c = if rp.is_none_or(|p| u < p) { ctx.holds.cursor_at(u).or(rc) } else { rc };
-                answer.push((s, c));
+                match stop {
+                    Some(j) => drop(r.stopped.insert(s, j)),
+                    None => {
+                        r.stopped.remove(&s);
+                        moved.push(Moved::Forgot(conn, s));
+                    }
+                }
             }
         }
         ctx.wire.answer(conn, id, Msg::Shared { id, items: vec![SharedItem::code(Code::OK); n] });

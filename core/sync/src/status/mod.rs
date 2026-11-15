@@ -344,7 +344,7 @@ impl Status {
                 self.joined(s, conn, src);
             }
             Moved::Left(conn, s, at) => self.left(s, conn, at),
-            Moved::Until(..) => {}
+            Moved::Until(..) | Moved::Forgot(..) => {}
         }
     }
 

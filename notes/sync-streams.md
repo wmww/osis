@@ -26,6 +26,9 @@ A listing read from the start to its end (a whole reply and its pages: no cursor
 
 Its end, applied once every body it owed was settled (`drain`), is S's first sync ending here (spec/sync-streams.md §5): `Store::set_first_synced` (row `F/`, stamped, gone with S's shred), read by inbox's suspect lists. Reading: past the first sync once one ended at any source, until S is left (written into the spec).
 
+## Closed members
+What a record source showed of S (presence, head, refusals) goes with its place of S: `left` with `Leaving::Forgot` (or S not held), `Moved::Forgot` (`forgot`), or the connection ending. A member closed keeping its stop (`Leaving::Kept`) stays in the place, marked `closed` (row `CLOSED`, written at once): `closed(conn)` queues the closed stops of a place it drops (`unkept`), and the next tick forgets them (place rows and `known` rows in one transaction); `Moved::Forgot` from opens' `release` comes after `closed(conn)` and finds no pull. A start (`Streams::new`, every record's `CLOSED` rows, O(records)) forgets those a crash left. Rejoining (`joined`) clears the mark. A place moved to joining from the start since (a fetch anew) stands over a Lost's cursor opens names in `Rejoin::From` (convergence seeds 9 and 16 lost a dropped copy's entries otherwise: `keep::a_dropped_copy_granted_read_again_is_fetched_from_the_start_spec_sync_judgement_6`).
+
 ## Failures
 - A store read of a record's rows that fails answers as if nothing were shown, which only holds back acts (held elsewhere, Leave, Register all need presence); the one read whose absence would act, the presence a listing replaces, fails the step (`Known::list`).
 - A body the store or engine fails to take stays owed and fails the step: it is never settled, so no cursor passes it.

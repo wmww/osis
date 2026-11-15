@@ -8,12 +8,12 @@ use osis_base::SyncId;
 use std::collections::BTreeMap;
 
 /// Where a member that joins a connection's stream reads the peer's log from (opens decides: it
-/// saw the peer's Lost and the digest).
+/// saw the peer's Lost and the digest; spec/sync-opens.md §6 Where it stopped).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Rejoin {
     /// From where this side's stream held it when it left (or the record holds it).
     Held,
-    /// From a Lost's cursor (`Some`), or from the start (a digest difference: no position).
+    /// From a Lost's cursor (`Some`), or from the start (nothing kept of where it stopped).
     From(Option<Cursor>),
 }
 

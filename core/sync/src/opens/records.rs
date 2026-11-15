@@ -1,13 +1,14 @@
 //! Opens' rows in a peer's record (spec/sync-opens.md §3): the record's own state (`acked_pos`,
 //! this side's filter generations, the peer's filter's shape), the peer's filter by generation,
-//! each member of the shared set with the beacon it was opened by, where each member that
-//! left rejoins, and where this side's walk of a sync ID stopped at the peer. A record in use is held in memory while a connection holds it; its changes are
+//! each member of the shared set with the beacon it was opened by, and where this side's walk
+//! of a sync ID stopped at the peer. Where a closed member stopped lasts its connection and is
+//! never written. A record in use is held in memory while a connection holds it; its changes are
 //! written at the end of the node's step (`Opens::flush`), after streams wrote the positions
 //! they move, so a crash between the two leaves opens' older word, which streams' rows cover
-//! (a member left is where streams stopped it; a rejoin's cursor is kept until opens' own write).
+//! (a member left is where streams stopped it).
 
-use super::{Member, OwnFilter, PeerFilter, Record, Rejoin};
-use crate::store::rows::tag::{FILTER, MEMBER, OPENS, REJOIN, WALK};
+use super::{Member, OwnFilter, PeerFilter, Record};
+use crate::store::rows::tag::{FILTER, MEMBER, OPENS, WALK};
 use crate::types::{Credential, RecordId, SourceClass};
 use osis_base::SyncId;
 use osis_crypto::Epoch;
@@ -157,30 +158,13 @@ fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
     Ok((Member { class, by, until }, basis))
 }
 
-fn encode_rejoin(j: &Rejoin) -> Vec<u8> {
-    match j {
-        Rejoin::Held => vec![0],
-        Rejoin::From(None) => vec![1],
-        Rejoin::From(Some(c)) => [&[2u8][..], c].concat(),
-    }
-}
-
-fn decode_rejoin(v: &[u8]) -> Res<Rejoin> {
-    match v.split_first() {
-        Some((0, [])) => Ok(Rejoin::Held),
-        Some((1, [])) => Ok(Rejoin::From(None)),
-        Some((2, c)) => Ok(Rejoin::From(Some(c.to_vec()))),
-        _ => Err(corrupt()),
-    }
-}
-
 /// A generation's values as its row holds them (the filter's own coding).
 pub(super) fn encode_values(values: &[u64]) -> Vec<u8> {
     encode_gcs(values, 0)
 }
 
-/// Record `id` as its rows hold it: none once it is gone. O(its members, the members that left
-/// and its filter's entries): what a connection taking it needs.
+/// Record `id` as its rows hold it: none once it is gone. O(its members and its filter's
+/// entries): what a connection taking it needs.
 pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>> {
     let Some(rec) = t.record(id)? else { return Ok(None) };
     let mut r = Record { r: rec.r, named: rec.named, kept: true, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walk: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None };
@@ -210,9 +194,6 @@ pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>
         let (m, basis) = decode_member(&v)?;
         r.members.insert(s, m);
         r.basis.insert(s, basis);
-    }
-    for (s, _, v) in t.record_tag_rows(id, REJOIN)? {
-        r.stopped.insert(s, decode_rejoin(&v)?);
     }
     for (s, _, v) in t.record_tag_rows(id, WALK)? {
         let mut d = Rd(&v);
@@ -252,10 +233,6 @@ pub(super) fn write(t: &mut Transaction<'_>, id: &RecordId, r: &Record, d: Dirty
         match r.members.get(&s) {
             Some(m) => t.record_put_row(id, MEMBER, &s, b"", encode_member(m, r.basis.get(&s).copied().flatten().as_ref()))?,
             None => drop(t.record_remove_row(id, MEMBER, &s, b"")?),
-        }
-        match r.stopped.get(&s) {
-            Some(j) => t.record_put_row(id, REJOIN, &s, b"", encode_rejoin(j))?,
-            None => drop(t.record_remove_row(id, REJOIN, &s, b"")?),
         }
     }
     for s in d.walk {

@@ -89,11 +89,10 @@ pub(crate) mod tag {
     pub(crate) const SEEN: u8 = b'd';
     pub(crate) const ROOM_AT: u8 = b'f';
     // opens: the record's own state (record-wide), the peer's filter by generation (record-wide),
-    // a member of the shared set, where a member that left rejoins, where a walk stopped
+    // a member of the shared set, where a walk stopped
     pub(crate) const OPENS: u8 = b'R';
     pub(crate) const FILTER: u8 = b'F';
     pub(crate) const MEMBER: u8 = b'M';
-    pub(crate) const REJOIN: u8 = b'O';
     pub(crate) const WALK: u8 = b'W';
     // streams: the stream's cursor (record-wide), a member at it, where a member not at it
     // joins from (joining, or stopped where it left: one row, so a member leaving one connection
@@ -106,6 +105,8 @@ pub(crate) mod tag {
     pub(crate) const HEAD: u8 = b'h';
     pub(crate) const REFUSED: u8 = b'r';
     pub(crate) const TOLD: u8 = b't';
+    // streams: a member closed on the connection up, its place kept while that connection lasts
+    pub(crate) const CLOSED: u8 = b'l';
 }
 
 pub(crate) fn head_key(s: &SyncId) -> Vec<u8> {

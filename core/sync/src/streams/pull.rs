@@ -5,8 +5,8 @@
 
 use super::known::{self, Op};
 use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, Rank, Streams};
-use crate::opens::Rejoin;
-use crate::store::rows::tag::{AT_STREAM, CURSOR, JOIN_FROM, TOLD};
+use crate::opens::{Leaving, Rejoin};
+use crate::store::rows::tag::{AT_STREAM, CLOSED, CURSOR, JOIN_FROM, TOLD};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cursor, Entry, RESYNC_MS, RecordId};
 use osis_store::Transaction;
@@ -28,6 +28,9 @@ pub(super) struct Place {
     pub at_stream: StampedSet<SyncId>,
     pub joining: Stamped<SyncId, Option<Cursor>>,
     pub stopped: BTreeMap<SyncId, Option<Cursor>>,
+    /// Members closed on the connection up whose stop is kept (spec/sync-opens.md §6 Where it
+    /// stopped): it lasts that connection. Row `CLOSED`, so a start finds those a crash left.
+    pub closed: BTreeSet<SyncId>,
     /// Members whose rows hold another form of the same position (`effective`): a member at the
     /// stream that left it, stopped at the stream's cursor, still stored as at it. Written with
     /// the next cursor that moves (`Pulling::save`), before it could mean another position.
@@ -47,6 +50,7 @@ impl Place {
             self.joining.remove(s);
         }
         self.stopped.remove(s);
+        self.closed.remove(s);
         self.stale.remove(s);
         self.told.remove(s);
     }
@@ -75,6 +79,23 @@ fn read_cursor(v: &[u8]) -> std::result::Result<Option<Cursor>, osis_store::Erro
     }
 }
 
+/// At a start: where members closed on a connection that ended without letting its record go
+/// (a crash) stopped goes, with what their sources showed (spec/sync-opens.md §6 Where it
+/// stopped: it lasts the connection). O(records), once a start.
+pub(super) fn forget_unkept(mut store: Store) -> crate::types::Result<()> {
+    store.with_tx(|t| {
+        for rec in t.records_all()? {
+            for (s, ..) in t.record_tag_rows(&rec.id, CLOSED)? {
+                for tag in [CLOSED, AT_STREAM, JOIN_FROM] {
+                    t.record_remove_row(&rec.id, tag, &s, b"")?;
+                }
+                known::write(t, &rec.id, &Op::Forget(s))?;
+            }
+        }
+        Ok(())
+    })
+}
+
 impl Place {
     /// Record `rec`'s place as its rows hold it. O(its members and those that left).
     fn load(t: &mut Transaction<'_>, rec: &RecordId) -> std::result::Result<Place, osis_store::Error> {
@@ -88,6 +109,9 @@ impl Place {
         // no connection at a load: a member not at the stream rejoins from where it stood
         for (s, _, v) in t.record_tag_rows(rec, JOIN_FROM)? {
             p.stopped.insert(s, read_cursor(&v)?);
+        }
+        for (s, ..) in t.record_tag_rows(rec, CLOSED)? {
+            p.closed.insert(s);
         }
         for (s, _, v) in t.record_tag_rows(rec, TOLD)? {
             let head = match v.len() {
@@ -113,6 +137,11 @@ impl Place {
             t.record_put_row(rec, AT_STREAM, s, b"", Vec::new())?;
         } else {
             t.record_remove_row(rec, AT_STREAM, s, b"")?;
+        }
+        if self.closed.contains(s) {
+            t.record_put_row(rec, CLOSED, s, b"", Vec::new())?;
+        } else {
+            t.record_remove_row(rec, CLOSED, s, b"")?;
         }
         match self.join_from(s) {
             Some(c) => t.record_put_row(rec, JOIN_FROM, s, b"", opt_cursor(c)),
@@ -386,7 +415,8 @@ impl Streams {
         }
         let place = self.place(ctx.store, src);
         let from = match rejoin {
-            Rejoin::From(c) => Some(c),
+            // a pull from the start since (fetched anew) stands over where a Lost said it stopped
+            Rejoin::From(c) => Some(if place.join_from(&s) == Some(&None) { None } else { c }),
             Rejoin::Held => {
                 if let Some(c) = place.stopped.get(&s) {
                     Some(c.clone())
@@ -403,6 +433,7 @@ impl Streams {
         // rejoin from where it was joining moves nothing, so writes nothing)
         let Some(c) = from else { return };
         let was = place.effective(&s);
+        let reopened = place.closed.remove(&s);
         place.stopped.remove(&s);
         if place.at_stream.contains(&s) {
             place.at_stream.remove(&s);
@@ -418,14 +449,16 @@ impl Streams {
             p.join(s, c);
             p.quiet = false;
         }
-        if moved {
+        if moved || reopened {
             self.save(ctx, src, &[s], false, Vec::new());
         }
     }
 
-    /// A member left: its stream stops where it stands (its stored position kept for its rejoin);
-    /// a sync ID the node no longer holds leaves no position and no `known`.
-    pub(super) fn left(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
+    /// A member left: its stream stops where it stands (its stored position kept for its rejoin,
+    /// a closed one's marked so as long as its connection lasts); one closed keeping nothing of
+    /// where it stopped (spec/sync-opens.md §6 Where it stopped), or a sync ID the node no longer
+    /// holds, leaves no position and no `known`.
+    pub(super) fn left(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, how: Leaving) {
         let Some(p) = self.pull.get_mut(&conn) else { return };
         p.joins.remove(&s);
         p.rejoin_at.remove(&s);
@@ -446,20 +479,46 @@ impl Streams {
             None
         };
         let mut ops = Vec::new();
-        if !held {
+        let mut marked = false;
+        if !held || how == Leaving::Forgot {
             place.stopped.remove(&s);
+            place.closed.remove(&s);
             ops.push((src, Op::Forget(s)));
             ops.push((Source::Conn(conn), Op::Forget(s)));
-        } else if let Some(c) = at {
-            place.stopped.insert(s, c);
+        } else {
+            if let Some(c) = at {
+                place.stopped.insert(s, c);
+            }
+            marked = how == Leaving::Kept && matches!(src, Source::Record(_)) && place.closed.insert(s);
         }
-        if ops.is_empty() && place.effective(&s) == was {
+        if ops.is_empty() && !marked && place.effective(&s) == was {
             if matches!(src, Source::Record(_)) {
                 place.stale.insert(s);
             }
             return;
         }
         self.save(ctx, src, &[s], false, ops);
+    }
+
+    /// Where S, closed on `conn`, stopped is no longer kept (spec/sync-opens.md §6 Where it
+    /// stopped): its stored position and what its source showed go.
+    pub(super) fn forgot(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
+        let Some(src) = self.pull.get(&conn).map(|p| p.src) else { return };
+        self.forget_stops(ctx, src, &[s]);
+        self.known.apply_conn(Source::Conn(conn), &[Op::Forget(s)]);
+    }
+
+    /// The stops `ss` of source `src` go with what it showed of them.
+    pub(super) fn forget_stops(&mut self, ctx: &mut Ctx, src: Source, ss: &[SyncId]) {
+        let held = self.pull.values().any(|p| p.src == src);
+        let place = self.place(ctx.store, src);
+        for s in ss {
+            place.forget(s);
+        }
+        self.save(ctx, src, ss, false, ss.iter().map(|s| (src, Op::Forget(*s))).collect());
+        if !held {
+            self.places.remove(&src);
+        }
     }
 
     /// Whatever is due on a connection: messages applied, fetches and a Pull sent, refusals told.
