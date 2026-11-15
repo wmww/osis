@@ -604,7 +604,11 @@ fn inspect_and_diag_plan_cli_4() {
 fn chat_commands_plan_cli() {
     let s = S::mem();
     let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
+    // an empty chat's cursor is null; given back empty, everything is after it
+    assert!(s.ok(&["--json", "chat", "read", &c]).out.contains("\"cursor\":null"));
     let one = s.ok(&["chat", "post", &c, "--from", "ann", "--subject", "head", "body"]).line().to_string();
+    assert!(s.ok(&["chat", "read", &c, "--after", ""]).out.contains(&format!("{one} ")));
+    assert!(s.ok(&["chat", "watch", &c, "--after", "", "--count", "1", "--timeout", "60s"]).out.contains(&format!("{one} ")));
     let read = s.ok(&["--json", "chat", "read", &c]).out;
     assert!(read.contains(&format!("\"id\":\"{one}\"")) && read.contains("\"name\":\"ann\"") && read.contains("head\\n\\nbody") && read.contains("\"reply_to\":null") && read.contains("\"edited\":false"), "{read}");
     let last = read.lines().last().unwrap();

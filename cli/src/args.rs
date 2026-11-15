@@ -647,7 +647,8 @@ pub enum ChatCmd {
         /// Only older than this message
         #[arg(long, value_name = "ID", conflicts_with = "after")]
         before: Option<String>,
-        /// Only what arrived here after this cursor (printed last, as `cursor CURSOR`)
+        /// Only what arrived here after this cursor (printed last, as `cursor CURSOR`; empty for
+        /// a `null` one: everything)
         #[arg(long, value_name = "CURSOR")]
         after: Option<String>,
     },
@@ -657,6 +658,7 @@ pub enum ChatCmd {
         /// Stop after N
         #[arg(long)]
         count: Option<usize>,
+        /// As `read --after`
         #[arg(long, value_name = "CURSOR")]
         after: Option<String>,
     },

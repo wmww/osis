@@ -106,6 +106,12 @@ fn find(ctx: &Ctx<'_>, c: Tid, i: &str) -> anyhow::Result<Commit> {
     ctx.db.at(c, MSG).commit(parse_id(i)?)?.ok_or_else(|| exit(3, format!("no message {i}")))
 }
 
+/// An `--after` cursor: what a read printed last, empty for the `null` cursor of a chat nothing
+/// had arrived in (every message is after it).
+fn cursor_arg(a: &str) -> anyhow::Result<Option<Cursor>> {
+    Ok(if a.is_empty() { None } else { Some(a.parse()?) })
+}
+
 /// Prints `messages`, then the cursor line: the first line out of the way of a reader of it.
 fn print_since(ctx: &mut Ctx<'_>, t: Tid, s: &osis_chat::Since, from: Option<&Cursor>) -> anyhow::Result<()> {
     let json = ctx.g.json;
@@ -186,9 +192,9 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         ChatCmd::Read { chat, max, before, after } => {
             let t = ctx.tid(&chat)?;
             if let Some(a) = after {
-                let a: Cursor = a.parse()?;
-                let s = osis_chat::since(&db, t, Some(&a), max)?;
-                return print_since(ctx, t, &s, Some(&a));
+                let a = cursor_arg(&a)?;
+                let s = osis_chat::since(&db, t, a.as_ref(), max)?;
+                return print_since(ctx, t, &s, a.as_ref());
             }
             let mut from = match before {
                 Some(b) => CommitFrom::Before(find(ctx, t, &b)?.pos()),
@@ -236,16 +242,16 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             })?;
             // subscribed first: nothing between the page and the stream is missed; a repeat is harmless
             if let Some(a) = after {
-                let mut at: Cursor = a.parse()?;
+                let mut at = cursor_arg(&a)?;
                 loop {
-                    let s = osis_chat::since(&db, t, Some(&at), crate::args::PAGE)?;
+                    let s = osis_chat::since(&db, t, at.as_ref(), crate::args::PAGE)?;
                     for k in &s.messages {
                         if let Some(l) = message_line(&db, t, json, k)? {
                             let _ = wake.send(l);
                         }
                     }
                     match s.cursor {
-                        Some(c) if s.more => at = c,
+                        Some(c) if s.more => at = Some(c),
                         _ => break,
                     }
                 }
