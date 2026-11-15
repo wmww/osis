@@ -26,7 +26,10 @@ const LINGER: Duration = Duration::from_millis(STALL_TIMEOUT_MS);
 /// What the transport's tasks report.
 enum Event {
     Dialed(ConnId, Result<Link, Error>, [u8; 32]),
-    Accepted(Link, [u8; 32]),
+    /// A session a listener took: its set (none: discovery's) and the key it took it under.
+    Accepted(Link, Option<Listening>, [u8; 32]),
+    /// A link this side cut (`TransportLinks::listen`): reported closed.
+    Cut(ConnId),
     Bytes(ConnId, Vec<u8>),
     Ended(ConnId),
     Taken(ConnId, u64),
@@ -38,6 +41,8 @@ struct Live {
     tx: LinkTx,
     /// Over the unix transport (spec/sync-transport.md §6): a main session's.
     unix: bool,
+    /// Accepted by a listener of this set under this key.
+    took: Option<(Listening, [u8; 32])>,
     tasks: [JoinHandle<()>; 2],
 }
 
@@ -107,11 +112,24 @@ impl<T: Transport> TransportLinks<T> {
     /// every URL of `urls` under `secret`, all or none (`osis_transport::listen_all`: a URL a
     /// listener of the set is bound at keeps that listener and its connections, under `secret`;
     /// the set's other listeners close first; none: the set stays closed and the error is
-    /// returned). Each session a listener takes comes up as an accepted connection; the other
-    /// sets and every connection go on. Their addresses.
+    /// returned). Each session a listener takes comes up as an accepted connection. The sessions
+    /// the set's listeners took under a key none of them listens under any more (`secret`'s
+    /// after a failure) close, reported `Closed`: a key change leaves nobody served under the old
+    /// key. The other sets, and every other connection, go on. Their addresses.
     pub async fn listen(&mut self, set: Listening, urls: &[String], secret: &StaticSecret) -> Result<Vec<Address>, Error> {
         let old = self.take_listeners(set).await;
-        let ls = osis_transport::listen_all(&*self.transport, old, urls, secret).await?;
+        let r = osis_transport::listen_all(&*self.transport, old, urls, secret).await;
+        let mut keys = vec![secret.public_key()];
+        if let Ok(ls) = &r {
+            use osis_transport::Listener;
+            keys.extend(ls.iter().map(|l| l.address().key));
+        }
+        let cut: Vec<ConnId> = self.live.iter().filter(|(_, l)| l.took.is_some_and(|(s, k)| s == set && !keys.contains(&k))).map(|(c, _)| *c).collect();
+        for conn in cut {
+            self.live.remove(&conn);
+            let _ = self.tx.send(Event::Cut(conn));
+        }
+        let ls = r?;
         let mut out = Vec::new();
         let served = self.listeners.entry(set).or_default();
         for l in ls {
@@ -123,7 +141,7 @@ impl<T: Transport> TransportLinks<T> {
             let key = addr.key;
             let fwd = tokio::spawn(async move {
                 while let Some(link) = srx.recv().await {
-                    if tx.send(Event::Accepted(link, key)).is_err() {
+                    if tx.send(Event::Accepted(link, Some(set), key)).is_err() {
                         return;
                     }
                 }
@@ -173,7 +191,7 @@ impl<T: Transport> TransportLinks<T> {
                         let tx = tx.clone();
                         tokio::spawn(async move {
                             while let Some(link) = srx.recv().await {
-                                if tx.send(Event::Accepted(link, key)).is_err() {
+                                if tx.send(Event::Accepted(link, None, key)).is_err() {
                                     return;
                                 }
                             }
@@ -215,15 +233,16 @@ impl<T: Transport> TransportLinks<T> {
             Event::Dialed(conn, r, key) => {
                 self.dialing.remove(&conn)?;
                 match r {
-                    Ok(l) => Some(self.up(conn, l, true, key)),
+                    Ok(l) => Some(self.up(conn, l, true, None, key)),
                     Err(e) => Some(Input::Down { conn, error: e.to_string() }),
                 }
             }
-            Event::Accepted(l, key) => {
+            Event::Accepted(l, set, key) => {
                 self.accepted += 1;
                 let conn = ConnId(ConnId::ACCEPTED | self.accepted);
-                Some(self.up(conn, l, false, key))
+                Some(self.up(conn, l, false, set, key))
             }
+            Event::Cut(conn) => Some(Input::Closed { conn }),
             Event::Bytes(conn, bytes) => self.live.contains_key(&conn).then_some(Input::Bytes { conn, bytes }),
             Event::Taken(conn, bytes) => self.live.contains_key(&conn).then_some(Input::Taken { conn, bytes }),
             Event::Ended(conn) => self.live.remove(&conn).map(|_| Input::Closed { conn }),
@@ -231,8 +250,10 @@ impl<T: Transport> TransportLinks<T> {
         }
     }
 
-    /// A link up: its bytes and what the transport took of ours are read into events.
-    fn up(&mut self, conn: ConnId, l: Link, dialed: bool, listener: [u8; 32]) -> Input {
+    /// A link up: its bytes and what the transport took of ours are read into events. `set`:
+    /// the listener set that took it.
+    fn up(&mut self, conn: ConnId, l: Link, dialed: bool, set: Option<Listening>, listener: [u8; 32]) -> Input {
+        let took = set.map(|s| (s, listener));
         let Link { peer_key, rank, tx, mut rx, peer, .. } = l;
         let unix = matches!(peer, osis_transport::Peer::Unix { .. });
         let ev = self.tx.clone();
@@ -254,7 +275,7 @@ impl<T: Transport> TransportLinks<T> {
                 }
             }
         });
-        self.live.insert(conn, Live { tx, unix, tasks: [reader, taken] });
+        self.live.insert(conn, Live { tx, unix, took, tasks: [reader, taken] });
         Input::Up { conn, peer: NodeKey(peer_key), rank, dialed, listener: NodeKey(listener) }
     }
 }

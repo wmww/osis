@@ -555,9 +555,10 @@ fn a_listener_set_listens_again_at_its_own_port_spec_sync_transport_5() {
 }
 
 // spec/sync-transport.md §5 (Key change: rotate_peer_address returns once every listener listens
-// under the new key): a listener set with a live accepted connection listens again at its own
-// port under a new key, over real QUIC and `peer://` sockets on loopback: the listener keeps its
-// socket, so its connection goes on.
+// under the new key, keeping no listener on the old key): a listener set with a live accepted
+// connection listens again at its own port, over real QUIC and `peer://` sockets on loopback: the
+// listener keeps its socket; under the same key its session goes on, under a new key the session
+// taken under the old one closes at both ends.
 #[test]
 fn a_listener_set_with_a_live_connection_listens_again_spec_sync_transport_5() {
     use osis_sync::{Input, Listening};
@@ -572,16 +573,15 @@ fn a_listener_set_with_a_live_connection_listens_again_spec_sync_transport_5() {
         assert!(c.tx.send(b"hi".to_vec(), usize::MAX));
         let up = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Input::Up { .. } = l.next().await {
-                    return;
+                if let Input::Up { conn, .. } = l.next().await {
+                    return conn;
                 }
             }
         });
-        up.await.expect("the listener took the connection");
-        let b = tokio::time::timeout(Duration::from_secs(5), l.listen(Listening::Urls, std::slice::from_ref(&a.url), &s2)).await.expect("relisten ends");
-        let b = b.expect("the set's own port is free again with a connection up").remove(0);
-        assert_eq!((b.url.as_str(), b.key), (a.url.as_str(), s2.public_key()));
-        // the connection goes on; a dial under the new key comes up, under the old one fails
+        let conn = up.await.expect("the listener took the connection");
+        let same = tokio::time::timeout(Duration::from_secs(5), l.listen(Listening::Urls, std::slice::from_ref(&a.url), &s1)).await.expect("relisten ends");
+        assert_eq!(same.expect("the same key listens again").remove(0).key, a.key);
+        // under the same key the session goes on
         assert!(c.tx.send(b"again".to_vec(), usize::MAX));
         let more = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -593,9 +593,29 @@ fn a_listener_set_with_a_live_connection_listens_again_spec_sync_transport_5() {
             }
         });
         more.await.expect("the connection carries bytes after the relisten");
+        let b = tokio::time::timeout(Duration::from_secs(5), l.listen(Listening::Urls, std::slice::from_ref(&a.url), &s2)).await.expect("relisten ends");
+        let b = b.expect("the set's own port is free again with a connection up").remove(0);
+        assert_eq!((b.url.as_str(), b.key), (a.url.as_str(), s2.public_key()));
+        // the session taken under the old key closes here and at the dialer
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Input::Closed { conn: c2 } = l.next().await
+                    && c2 == conn
+                {
+                    return;
+                }
+            }
+        });
+        closed.await.expect("the old key's session is closed");
+        let mut rx = c.rx;
+        let end = tokio::time::timeout(Duration::from_secs(5), async {
+            while rx.recv().await.is_some() {}
+        });
+        end.await.expect("the dialer's session ends");
+        // a dial under the new key comes up, under the old one fails
         assert!(osis_transport::link::dial(&dialer, &b, Duration::from_secs(5)).await.is_ok());
         assert!(osis_transport::link::dial(&dialer, &a, Duration::from_secs(5)).await.is_err(), "nothing under the old key");
-        drop(c);
+        drop(c.tx);
     }
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     rt.block_on(async {

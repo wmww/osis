@@ -448,6 +448,32 @@ fn a_relayed_listener_relistens_under_a_new_key_spec_sync_transport_5() {
     assert!(matches!(stale, Some(Error::Unreachable(_))), "{stale:?}");
 }
 
+// spec/sync-transport.md §5 (Key change), §3 (relays): listening again ends the old key's
+// registrations: after 10n relistens as many tasks wait (target and relay alike) as after n.
+#[test]
+fn relistens_leave_no_registrations_behind_spec_sync_transport_5() {
+    fn tasks_after(n: u8) -> usize {
+        let mut w = world(0, anyone());
+        let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
+        let lb = listen_via(&mut w, b, "10.0.0.2", 2);
+        let url = lb.address().url;
+        let lb = Rc::new(RefCell::new(Some(lb)));
+        for i in 0..n {
+            let (l, url) = (lb.clone(), url.clone());
+            w.sched
+                .block_on(async move {
+                    let mut g = l.borrow_mut().take().unwrap();
+                    assert!(g.relisten(&ListenConfig { url, secret: secret(10 + i) }).await.unwrap());
+                    *l.borrow_mut() = Some(g);
+                })
+                .unwrap();
+            w.sched.run();
+        }
+        w.sched.run()
+    }
+    assert_eq!(tasks_after(10), tasks_after(1));
+}
+
 /// Forwards `r` to `t` until it ends.
 async fn pipe(mut r: impl RecvStream, mut t: impl SendStream) {
     let mut b = [0u8; 4096];
