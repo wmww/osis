@@ -1,6 +1,7 @@
 //! The role timeline (spec/permissions.md §5.1) and its queries: roster, effective role,
 //! effective invite and authority class at a point, the applied and dropped edge writes.
 
+use crate::cert::CertIndex;
 use crate::graph::{Class, Edges, EdgesAt, Records, Standing, View, INITIAL, RECORD_EDGE};
 use crate::held::HeldSet;
 use crate::trust::{self, Detected, Dispute, Trust, TrustIndex};
@@ -122,8 +123,8 @@ pub(crate) struct Memo {
     pub certificates: Mutex<BTreeMap<(Tid, Tid), crate::cert::Certificates>>,
     /// `roles_ever` calls so far (a measure).
     pub ever_walks: std::sync::atomic::AtomicU64,
-    /// The chained edge writes and the edges they set, for certificates.
-    pub certs: std::sync::OnceLock<crate::cert::CertIndex>,
+    /// The chained edge writes and the edges they set, for certificates and trust seeds.
+    pub certs: std::sync::OnceLock<Arc<crate::cert::CertIndex>>,
     /// The edge writes applied, by their target; and the indexes built (a measure).
     pub on_target: std::sync::OnceLock<BTreeMap<Tid, Vec<WriteId>>>,
     pub on_target_built: std::sync::atomic::AtomicU64,
@@ -266,7 +267,7 @@ impl Timeline {
 
     pub(crate) fn from_input(input: Input, trust: &Trust) -> Timeline {
         let mut active: BTreeSet<WriteId> = trust.ops.iter().filter(|w| input.trustable(w).is_some()).copied().collect();
-        let ix = (!active.is_empty()).then(|| TrustIndex::new(&input));
+        let ix = (!active.is_empty()).then(|| TrustIndex::new(&input, Arc::new(CertIndex::of(&input))));
         let mut passes = 0;
         loop {
             let seeds = ix.as_ref().map(|ix| trust::seeds_of(&input, ix, &active)).unwrap_or_default();
@@ -275,6 +276,9 @@ impl Timeline {
             let void: Vec<WriteId> = active.iter().filter(|r| !out.walked.applied.contains_key(r)).copied().collect();
             if void.is_empty() {
                 let mut tl = Timeline::from_outcome(input, out);
+                if let Some(ix) = ix {
+                    let _ = tl.memo.certs.set(ix.chained);
+                }
                 tl.passes = passes;
                 tl.trust = trust.clone();
                 tl.active = active;
@@ -353,7 +357,7 @@ impl Timeline {
             if self.walked.applied.contains_key(id) || self.seeds.contains_key(id) {
                 continue;
             }
-            let ix = ix.get_or_insert_with(|| TrustIndex::new(&self.input));
+            let ix = ix.get_or_insert_with(|| TrustIndex::new(&self.input, self.cert_index().clone()));
             let mut d = self.input.seeds(ix, id);
             if d.is_empty() {
                 continue;

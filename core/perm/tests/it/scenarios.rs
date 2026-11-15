@@ -936,6 +936,42 @@ fn accomplice_seeded_spec_permissions_5_1() {
     assert!(side.disputes().is_empty());
 }
 
+/// §5.1 Trust, seeds follow chained edges (§4): a writer's edge write widens no trusted op's
+/// seeds. n0 (T's first admin) grants M (first admin n1) and X admin on T, and W write on M;
+/// X grants Y write on T, unseen by n0, who then removes M from T (R, trusted). Neither X nor
+/// Z is reached from M or T by a chained edge, so X's grant and n1's grant on Z are no seeds.
+/// W, a writer of M, names X admin on M; Z's writer names T a holder of Z: both writes are
+/// unchained (and unapplied), so neither drops the honest writes.
+#[test]
+fn forged_edge_widens_no_seeds_spec_permissions_5_1() {
+    for forge in ["none", "victim", "below"] {
+        let mut w = World::new();
+        let n = w.nodes(6);
+        let (x, wr, y, zw) = (n[2], n[3], n[4], n[5]);
+        let t = w.thing(n[0]);
+        let m = w.thing(n[1]);
+        let z = w.thing(n[1]);
+        let all: Vec<(Tid, u64)> = n.iter().map(|a| (*a, 1)).collect();
+        w.set(n[0], t, m, edge(Admin), 1, &all);
+        w.set(n[0], t, x, edge(Admin), 1, &all);
+        w.set(n[1], m, wr, edge(Write), 1, &all);
+        w.set(n[1], z, zw, edge(Write), 1, &all);
+        match forge {
+            "victim" => w.set(wr, m, x, edge(Admin), 2, &all),
+            "below" => w.set(zw, z, t, edge(Read), 2, &all),
+            _ => cid(0),
+        };
+        let gx = w.set(x, t, y, edge(Write), 5, &[]);
+        let gz = w.set(n[1], z, y, edge(Read), 5, &[]);
+        let r = w.set(n[0], t, m, None, 10, &[]);
+        let side = eval_with(&w, &trust(&[r]));
+        assert_eq!(side.trusted_active().iter().copied().collect::<Vec<_>>(), vec![WriteId(r, 0)], "forge {forge}");
+        assert!(side.dropped().is_empty(), "forge {forge}: {:?}", side.dropped());
+        assert!(side.is_applied(&WriteId(gx, 0)) && side.is_applied(&WriteId(gz, 0)), "forge {forge}");
+        assert_eq!((role(&side, y, t), role(&side, y, z)), (Some(Write), Some(Read)), "forge {forge}");
+    }
+}
+
 /// §5.1 Trust, notes/disputes-plan.md step 4 (detection): `Timelines` under `detect`
 /// reports a dispute once, when the removal it voids stops applying (`stood`) or when the
 /// voided removal arrives unapplied; a switch (`set_trust`) detects nothing; `disputes_up_to`

@@ -91,8 +91,6 @@ pub(crate) struct Ever {
     pub holders: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Holders of an edge with an invite.
     pub invites: BTreeSet<Tid>,
-    /// Target to the holders of an admin edge on it (`crate::trust`, who a demotion demotes).
-    pub admin_holders: BTreeMap<Tid, BTreeSet<Tid>>,
 }
 
 impl Ever {
@@ -101,9 +99,6 @@ impl Ever {
         self.holders.entry(target).or_default().insert(holder);
         if e.invite.is_some() {
             self.invites.insert(holder);
-        }
-        if e.role == Role::Admin {
-            self.admin_holders.entry(target).or_default().insert(holder);
         }
     }
 }

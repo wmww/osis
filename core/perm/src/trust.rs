@@ -5,9 +5,11 @@
 //!
 //! - A **trusted op** R is a held edge write with a frontier by A on another holder M's edge
 //!   (`Input::trustable`). Its **seeds** (`Input::seeds`): the writes ordered before R, not
-//!   listed in R's frontier, by M or any node that ever reaches M by admin edges (A excepted),
-//!   on R's target or anything it ever reaches, but a node's writes lowering its own edge
-//!   (`lowers_own`: a self-removal never contests R; a self-grant does). The walk starts with
+//!   listed in R's frontier, by M or any node that reaches M by record edges and admin edges
+//!   chained writes set (spec/permissions.md §4; A excepted), on R's target or anything it
+//!   reaches over record and chained edges, but a node's writes lowering its own edge
+//!   (`lowers_own`: a self-removal never contests R; a self-grant does). Chained, not held:
+//!   a write its author had no authority for widens no seeds. The walk starts with
 //!   D at the seeds of the active trusted ops; one the settled walk leaves unapplied is void:
 //!   every void op loses its seeds at once and the walk is redone from scratch
 //!   (`Timeline::evaluate_with`).
@@ -18,6 +20,7 @@
 //!   only ever evaluated from scratch (`Timeline::extend`, `append` and `add_leaves` decline
 //!   it; `Timelines` never saves or restores one).
 
+use crate::cert::CertIndex;
 use crate::graph::{Records, RECORD_EDGE};
 use crate::types::{lowers, Edge, EdgeOp, Point, RoleCommit, WriteId};
 use crate::walk::{Input, Walked};
@@ -89,11 +92,13 @@ pub(crate) struct TrustIndex {
     by_author: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
     /// Per edge, its held writes in order.
     by_edge: BTreeMap<(Tid, Tid), Vec<EdgeWrite>>,
+    /// The held set's chained writes (spec/permissions.md §4): the edges seeds follow.
+    pub(crate) chained: Arc<CertIndex>,
 }
 
 impl TrustIndex {
-    pub(crate) fn new(input: &Input) -> TrustIndex {
-        let mut ix = TrustIndex { by_author: BTreeMap::new(), by_edge: BTreeMap::new() };
+    pub(crate) fn new(input: &Input, chained: Arc<CertIndex>) -> TrustIndex {
+        let mut ix = TrustIndex { by_author: BTreeMap::new(), by_edge: BTreeMap::new(), chained };
         for c in input.commits.values() {
             ix.by_author.entry(c.author).or_default().push(c.clone());
             for (k, o) in c.ops.iter().enumerate() {
@@ -143,9 +148,9 @@ impl Input {
     pub(crate) fn seeds(&self, ix: &TrustIndex, w: &WriteId) -> BTreeMap<WriteId, Point> {
         let Some((r, op)) = self.trustable(w) else { return BTreeMap::new() };
         let point = r.point();
-        let below = self.ever_forward([op.target]);
+        let below = ix.chained.reach(&self.records, [op.target], true);
         let mut out = BTreeMap::new();
-        for x in self.victims(op.holder, r.author) {
+        for x in self.victims(ix, op.holder, r.author) {
             for c in ix.by_author.get(&x).into_iter().flatten() {
                 if c.id == r.id || c.point() >= point || r.frontier.as_ref().is_some_and(|f| f.covers(&c.id)) {
                     continue;
@@ -162,13 +167,13 @@ impl Input {
     }
 
     /// Who a demotion of `holder`'s edge by `author` demotes (the static over-approximation,
-    /// notes/disputes.md Model results): the nodes that ever reach `holder` by admin edges
-    /// (record edges included), `holder` itself when a node, `author` excepted.
-    fn victims(&self, holder: Tid, author: Tid) -> BTreeSet<Tid> {
+    /// notes/disputes.md Model results): the nodes that reach `holder` by record edges and admin
+    /// edges chained writes set, `holder` itself when a node, `author` excepted.
+    fn victims(&self, ix: &TrustIndex, holder: Tid, author: Tid) -> BTreeSet<Tid> {
         let mut seen: BTreeSet<Tid> = BTreeSet::from([holder]);
         let mut stack = vec![holder];
         while let Some(e) = stack.pop() {
-            let next: Vec<Tid> = self.records.first_admin(&e).into_iter().chain(self.ever.admin_holders.get(&e).into_iter().flatten().copied()).collect();
+            let next: Vec<Tid> = self.records.first_admin(&e).into_iter().chain(ix.chained.admins.get(&e).into_iter().flatten().copied()).collect();
             for y in next {
                 if seen.insert(y) {
                     stack.push(y);

@@ -559,10 +559,35 @@ impl JHist {
         e
     }
 
-    /// Actors reachable from actor `n` by edges ever held: what a demotion on `n` puts in
+    /// Every edge chained writes set (spec/permissions.md §4), genesis included: the least set
+    /// of writes whose author reaches the target by admin edges so set (each sets its edge), or
+    /// reaches the holder by them, or, for a removal, the target by edges of write or above
+    /// (those set none).
+    fn chained(&self) -> Vec<Vec<Role>> {
+        let mut e = self.genesis.clone();
+        let at = |e: &[Vec<Role>], min: Role| -> Vec<Vec<Role>> { e.iter().map(|row| row.iter().map(|&r| if r >= min { r } else { Role::None }).collect()).collect() };
+        loop {
+            let admins = at(&e, Role::Admin);
+            let set: Vec<usize> = (0..self.writes.len())
+                .filter(|&i| {
+                    let w = &self.writes[i];
+                    w.holder != self.nodes + w.target && w.role > e[w.holder][w.target] && self.reaching(&admins, self.nodes + w.target)[w.author]
+                })
+                .collect();
+            if set.is_empty() {
+                return e;
+            }
+            for i in set {
+                let w = &self.writes[i];
+                e[w.holder][w.target] = e[w.holder][w.target].max(w.role);
+            }
+        }
+    }
+
+    /// Actors reachable from actor `n` by chained edges: what a demotion on `n` puts in
     /// question.
     pub fn reach(&self, n: usize) -> Vec<bool> {
-        let v = self.reachable(&self.ever(), self.nodes + n);
+        let v = self.reachable(&self.chained(), self.nodes + n);
         (0..self.actors()).map(|x| v[self.nodes + x]).collect()
     }
 
@@ -599,14 +624,14 @@ impl crate::trust::Trusting for JHist {
         let w = &self.writes[i];
         (w.holder != w.author).then_some(w.holder)
     }
-    /// The writes ordered before R, on its target and below it, by nodes other than the
-    /// demoter that ever reach the holder by admin edges, that the demoter had not received
+    /// The writes ordered before R, on its target and below it (`reach`), by nodes other than
+    /// the demoter that reach the holder by chained admin edges, that the demoter had not received
     /// before `t`, but their writes lowering their own edges (`lowers_own`: a self-grant is a
     /// seed, a self-removal not).
     fn seeds(&self, i: usize) -> u64 {
         let Some(m) = self.victim(i) else { return 0 };
         let r = &self.writes[i];
-        let admins: Vec<Vec<Role>> = self.ever().iter().map(|row| row.iter().map(|&r| if r == Role::Admin { r } else { Role::None }).collect()).collect();
+        let admins: Vec<Vec<Role>> = self.chained().iter().map(|row| row.iter().map(|&r| if r == Role::Admin { r } else { Role::None }).collect()).collect();
         let up = self.reaching(&admins, m);
         let below = self.reach(r.target);
         let in_question = |w: &JWrite| below[w.target] || w.holder >= self.nodes && below[w.holder - self.nodes];

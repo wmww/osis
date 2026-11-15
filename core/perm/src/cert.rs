@@ -39,6 +39,9 @@ pub(crate) struct CertIndex {
     /// The edges chained writes set: holder to targets, target to holders.
     targets: BTreeMap<Tid, BTreeSet<Tid>>,
     holders: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Target to the holders of an admin edge a chained write set (`crate::trust`, who a
+    /// demotion demotes).
+    pub(crate) admins: BTreeMap<Tid, BTreeSet<Tid>>,
 }
 
 /// The edges chained writes on their targets set, by target: the holders whose edge some such
@@ -98,7 +101,7 @@ impl CertIndex {
     /// The chained writes of `input`, in one pass in timeline order (§5.1 step 1): each write
     /// whose author could have had the authority it needs over the edges chained writes of
     /// earlier commits set (`could`). O(edge writes × what a search from a target visits).
-    fn of(input: &Input) -> CertIndex {
+    pub(crate) fn of(input: &Input) -> CertIndex {
         let mut list: Vec<&Arc<RoleCommit>> = input.commits.values().collect();
         list.sort_by_key(|c| c.point());
         let (mut g, mut x) = (Chained::default(), CertIndex::default());
@@ -120,6 +123,9 @@ impl CertIndex {
                     g.add(op.holder, op.target, e.role, e.invite.is_some());
                     x.targets.entry(op.holder).or_default().insert(op.target);
                     x.holders.entry(op.target).or_default().insert(op.holder);
+                    if e.role == Role::Admin {
+                        x.admins.entry(op.target).or_default().insert(op.holder);
+                    }
                 }
             }
         }
@@ -128,7 +134,7 @@ impl CertIndex {
 
     /// What any of `seeds` (included) reaches (`forward`) or is reached by over record edges
     /// and the edges chained writes set.
-    fn reach(&self, records: &Records, seeds: impl IntoIterator<Item = Tid>, forward: bool) -> BTreeSet<Tid> {
+    pub(crate) fn reach(&self, records: &Records, seeds: impl IntoIterator<Item = Tid>, forward: bool) -> BTreeSet<Tid> {
         let mut seen: BTreeSet<Tid> = seeds.into_iter().collect();
         let mut stack: Vec<Tid> = seen.iter().copied().collect();
         while let Some(e) = stack.pop() {
@@ -170,8 +176,9 @@ pub fn chain_steps() -> u64 {
 }
 
 impl Timeline {
-    fn cert_index(&self) -> &CertIndex {
-        self.memo.certs.get_or_init(|| CertIndex::of(&self.input))
+    /// The chained writes of this timeline's held set, once while it stands.
+    pub(crate) fn cert_index(&self) -> &Arc<CertIndex> {
+        self.memo.certs.get_or_init(|| Arc::new(CertIndex::of(&self.input)))
     }
 
     /// Whether `w` is a chained write (§4).

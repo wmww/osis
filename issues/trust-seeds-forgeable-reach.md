@@ -1,6 +1,0 @@
-# A forged admin edge widens a trusted write's seeds
-> Summary: trust-set seeds (spec/permissions.md §5.1 Trust set) follow "edges any held write sets" (`Input::ever`, `trust.rs` `victims`, `seeds`' `ever_forward`), so a node that is no admin of M can write X admin on M and make an honest admin X's writes, unlisted by trusted removal R, drop at every node trusting R.
-> Priority: normal
-> Tags: security, perm
-
-Found by reading while fixing chain certificates (not reproduced). The forged write never applies, yet it decides what D starts with: invalid data affecting values. Chain certificates follow chained writes (spec/permissions.md §4: writes whose author could have had the authority they need over earlier chained writes, from the held writes alone), the same superset of every walk's paths without the forger's edges. Seeds over chained edges (victims: who reaches M by admin edges chained writes set; `below`: what T reaches over them) would close it; check `Timeline::append`/`extend` paths, which assume an added commit changes `ever` only by its own edges (a chained set can grow at an earlier write). Test first: a writer of M names X admin on M; X writes on T unseen by A; A's trusted removal of M from T; X's write stays applied.
