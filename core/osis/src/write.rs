@@ -43,7 +43,8 @@ pub enum Purge {
     /// One commit's write. Its part stays listed as `Body::Purged` where it would be. If it is what the aspect
     /// reads now the value goes with it: `set` in the same commit to keep a value. A signal's fire
     /// goes with every replacement of it held here (`replace`): a replacement written meanwhile
-    /// elsewhere, or later, still shows. A commit not known here is refused (`Invalid`).
+    /// elsewhere, or later, still shows. A commit unknown here is refused (`Invalid`): this node
+    /// holds nothing of that commit (never received, or forgotten once nothing of it was left).
     Commit(CommitId),
     /// Every write by this actor stamped before this commit, those arriving later too. What the
     /// actor writes later stays.
