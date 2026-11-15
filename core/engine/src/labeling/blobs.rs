@@ -612,8 +612,9 @@ impl Engine {
 
     /// The read secret a commit is wrapped under at a label of `g` (spec/crypto.md §5): the
     /// newest current read epoch held, except a rotation commit of the actor `g`'s secrets
-    /// derive from, which goes under the newest epoch its rotation supersedes. `None`: no
-    /// current secret held (stranded: nothing is placed), or a part of `c` it carries this node
+    /// derive from, which goes under the newest epoch its rotation supersedes, never another.
+    /// `None`: no current secret held (stranded: nothing is placed), no superseded secret of a
+    /// rotation held (a holder of a floor above them), or a part of `c` it carries this node
     /// may not pass on under an epoch of its choosing (spec/crypto.md §5 Passing on).
     /// A blob carrying a role part of that actor (`osis_keys::under_roles`) goes under the epoch's
     /// roles secret (spec/crypto.md §4, Roles secrets): every holder of the actor opens it.
@@ -634,7 +635,13 @@ impl Engine {
     fn wrap_under(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>, entry: bool) -> Result<Option<(Epoch, Secret32)>> {
         let Some(e) = self.epochs(g) else { return Ok(None) };
         let rotation = match c {
-            Some((c, parts)) if self.carries_secrets(g, c, parts) => self.rotation_wrap_epoch(g, c)?.and_then(|ep| e.read.secret(&ep).map(|s| (ep, s.clone()))),
+            Some((c, parts)) if self.carries_secrets(g, c, parts) => match self.rotation_wrap_epoch(g, c)? {
+                RotationWrap::Plain => None,
+                // a rotation goes under an epoch it supersedes or not at all (a holder of a floor
+                // above them, or one lacking their secrets, may not choose another)
+                RotationWrap::Lacking => return Ok(None),
+                RotationWrap::Under(ep) => e.read.secret(&ep).map(|s| (ep, s.clone())),
+            },
             Some((c, _)) if entry => self.account_rotation_wrap_epoch(g, c)?.and_then(|ep| e.read.secret(&ep).map(|s| (ep, s.clone()))),
             _ => None,
         };
@@ -744,20 +751,21 @@ impl Engine {
     }
 
     /// For a rotation commit of the read role of `g`'s secret actor (its `keys.0` delta writes a
-    /// read keyset): the newest held epoch the new read epoch supersedes.
-    fn rotation_wrap_epoch(&mut self, g: &Tid, c: &CommitId) -> Result<Option<Epoch>> {
-        let Some(a) = self.core.secret_actor(g) else { return Ok(None) };
-        let Some(h) = self.header(c) else { return Ok(None) };
-        let Some(ai) = h.aspect_index(&a, "keys.0") else { return Ok(None) };
+    /// read keyset): the newest held epoch the new read epoch supersedes (spec/crypto.md §5, Who
+    /// wraps under what), `Lacking` where none is held (or the keyset is not held to tell).
+    fn rotation_wrap_epoch(&mut self, g: &Tid, c: &CommitId) -> Result<RotationWrap> {
+        let Some(a) = self.core.secret_actor(g) else { return Ok(RotationWrap::Plain) };
+        let Some(h) = self.header(c) else { return Ok(RotationWrap::Plain) };
+        let Some(ai) = h.aspect_index(&a, "keys.0") else { return Ok(RotationWrap::Plain) };
         if h.aspect_index(&a, "secrets.0").is_none() {
-            return Ok(None);
+            return Ok(RotationWrap::Plain);
         }
         let id = *c;
-        let Some(f) = self.read(|tx| crate::apply::held_fragment(tx, &id, ai))? else { return Ok(None) };
-        let Some(epochs) = self.epochs(&a) else { return Ok(None) };
-        let Some(ks) = crate::apply::keys::keys_write(&f).keysets.remove(&Role::Read) else { return Ok(None) };
-        let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) else { return Ok(None) };
-        Ok(epochs.read.wrapped_under(&e).map(|(s, _)| s))
+        let Some(f) = self.read(|tx| crate::apply::held_fragment(tx, &id, ai))? else { return Ok(RotationWrap::Lacking) };
+        let Some(ks) = crate::apply::keys::keys_write(&f).keysets.remove(&Role::Read) else { return Ok(RotationWrap::Plain) };
+        let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) else { return Ok(RotationWrap::Lacking) };
+        let Some(epochs) = self.epochs(&a) else { return Ok(RotationWrap::Lacking) };
+        Ok(epochs.read.wrapped_under(&e).map_or(RotationWrap::Lacking, |(s, _)| RotationWrap::Under(s)))
     }
 
     /// For a rotation of an account (spec/crypto.md §9) at a sync ID whose read secrets are its
@@ -853,6 +861,16 @@ pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Opti
         Ok(_) => keys.sync.as_ref().filter(|_| keys.sync_established),
         Err(_) => None,
     }
+}
+
+/// The wrap a commit carrying `secrets.0` or `keys.0` of an actor takes (`rotation_wrap_epoch`).
+enum RotationWrap {
+    /// No read rotation: the plain rule.
+    Plain,
+    /// A read rotation, under this superseded epoch.
+    Under(Epoch),
+    /// A read rotation whose superseded epochs this node holds no secret of: not wrapped here.
+    Lacking,
 }
 
 #[cfg(test)]

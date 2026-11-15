@@ -290,17 +290,21 @@ impl Osis {
     /// reached another holder. Moving home answers once this node's copy caught up (a complete
     /// pass of each sync ID carrying the group: at most `PASS_WAIT_MS` past a holder away); until
     /// then the group stays read at its node, and a call dropped before it answers leaves it so,
-    /// syncing here too (moving it again ends that). `Invalid` for a node not connected, or when
-    /// the group moved away again before it caught up.
+    /// syncing here too until a restart (moving it again ends that). `Invalid` for a node not connected, for
+    /// `home()` (it always syncs here), or when the group moved away again before it caught up.
     pub async fn group_source(&self, group: Tid, to: GroupSource) -> Result<()> {
         self.local("group_source")?;
         let homing = self.locked(|l| -> Result<bool> {
             match &to {
                 GroupSource::Node(a) if !l.remotes.iter().any(|r| r.addr == *a) => Err(Error::Invalid(format!("not connected to {a} (connect_node)"))),
+                // the node's own records live on home: it always syncs here (spec/sync-set.md §5)
+                GroupSource::Node(_) if group == self.home() => Err(Error::Invalid("home is never sourced at another node".into())),
                 GroupSource::Node(a) => {
                     l.group_sources.insert(group, a.clone());
                     l.homing.remove(&group);
                     record(self, l)?;
+                    // the sync set moved: sync steps now, as moving home does
+                    l.handle(osis_sync::Input::Wrote);
                     Ok(false)
                 }
                 GroupSource::Local if !l.group_sources.contains_key(&group) => Ok(false),

@@ -1,0 +1,8 @@
+# A removed or reset node of another account holds a sync wait open for good
+> Summary: a kept record of node X of account P holding S as a member makes leave, a self-removal's drop and emptying wait on S until X reconnects or its record is evicted (`RECORD_BUDGET`, count-based); once P removes X, or X is factory reset, neither comes, so the wait is unbounded.
+> Priority: normal
+> Tags: sync, tess-call
+
+Code: `opens::Opens::wait_for` counts every kept record holding S whose `awaited` actors are not skipped; `holds::awaited` maps a node of another account to that account at any key, so X's old record counts while P's other node Y, connected and acknowledging S's credentials without S as a member, releases nothing (the ack path groups by `Who`, the member path does not). Matches spec/sync-set.md §3 ("A peer away keeps it waiting until that peer connects or its record goes"), so the design is the question, not conformance: No designated device (an unbounded stall on one device is not an accepted limit).
+
+Grouping the member path by `Who` (another record of the same account acknowledged S without it) is unsound as it stands: P's nodes have their own synced groups, so Y not sharing S says nothing of X. Candidates: a member record of another account stops counting once that account's roster (its D, where held) no longer lists the node; or a time bound on a member record's wait like the pass wait (`PASS_WAIT_MS`), stated as the limit that X's unsynced copy of N's commits may be the only one. Test sketch: `core/sync/tests/it/opens.rs`, P with nodes X and Y; H shares S with X; X away, P removes X and rotates; H unsyncs S with an own commit held nowhere else; `waited(S)` today stays true forever.

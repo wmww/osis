@@ -1132,6 +1132,9 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
         .text()
     } else {
         let tids: Vec<String> = tids.iter().map(Tid::to_uri).collect();
+        // a detail may quote what a peer wrote (a close reason, a dialed address): its control
+        // characters printed escaped, so it cannot fake a line or drive the terminal
+        let detail: String = detail.chars().flat_map(|c| if c.is_control() { c.escape_default().collect::<Vec<_>>() } else { vec![c] }).collect();
         format!("{kind} {} {detail}", tids.join(","))
     }
 }
@@ -1364,6 +1367,16 @@ fn schema_reg(sel: &Store, file: &std::path::Path, add: bool) -> anyhow::Result<
 
 #[cfg(test)]
 mod tests {
+    // A diagnostic's detail may quote peer-written text: printed as text it is one line with no
+    // control character (no faked line, no terminal escape).
+    #[test]
+    fn a_diagnostic_prints_peer_text_as_one_plain_line() {
+        let d = osis::Diagnostic::Connection { detail: "dial to x failed: \x1b[2J\nFAKE line".into() };
+        let line = super::diag_line(&d, false);
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert!(line.contains("FAKE line"), "{line:?}");
+    }
+
     // notes/cli.md Network: only a command that stays up is on the LAN; a short one never announces.
     #[test]
     fn only_commands_that_stay_up_announce_notes_cli() {

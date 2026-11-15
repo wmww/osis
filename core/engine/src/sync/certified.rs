@@ -129,9 +129,9 @@ pub(crate) struct Certified {
     named: BTreeMap<(CommitId, Tid), BTreeMap<Piece, Named>>,
     /// Per read thing, each record its pieces name, with how many name it.
     record_counts: BTreeMap<Tid, BTreeMap<Tid, usize>>,
-    /// Per (read thing, account), how many pieces under the thing name the account
+    /// Per (read thing, account), the pieces under the thing that name the account
     /// (`Certs::accounts`): its `Piece::Account` goes under the thing while any does.
-    account_counts: BTreeMap<(Tid, Tid), usize>,
+    account_naming: BTreeMap<(Tid, Tid), BTreeSet<Piece>>,
     /// Per (commit, read thing) whose certificates name it, what they name (the union of the
     /// thing's pieces'), read per pair.
     of: Stamped<(CommitId, Tid), Named>,
@@ -186,18 +186,15 @@ impl Certified {
         let (had, has) = (was.accounts.as_ref().unwrap_or(&none), now.accounts.as_ref().unwrap_or(&none));
         for a in had.difference(has) {
             let k = (t, *a);
-            let n = self.account_counts.get(&k).copied().unwrap_or_default().saturating_sub(1);
-            if n == 0 {
-                self.account_counts.remove(&k);
+            let Some(by) = self.account_naming.get_mut(&k) else { continue };
+            if by.remove(&p) && by.is_empty() {
+                self.account_naming.remove(&k);
                 self.unplace(Piece::Account(*a), t, pieces);
-            } else {
-                self.account_counts.insert(k, n);
             }
         }
         for a in has.difference(had) {
-            let n = self.account_counts.entry((t, *a)).or_default();
-            *n += 1;
-            if *n == 1 {
+            let by = self.account_naming.entry((t, *a)).or_default();
+            if by.insert(p) && by.len() == 1 {
                 self.place(Piece::Account(*a), t, pieces);
             }
         }

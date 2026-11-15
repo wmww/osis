@@ -148,6 +148,28 @@ fn fork_beside_the_cut_never_reaches_the_newcomer_spec_crypto_4() {
     }
 }
 
+// spec/crypto.md §5 (Who wraps under what: a rotation goes under an epoch it supersedes): N,
+// granted without history, holds A's rotation before its cut but no epoch it supersedes. Logging
+// it again, N wraps it as A did (what a holder of the superseded epoch opens) or not at all,
+// never under N's own epoch, which a holder still catching up through that rotation lacks.
+#[test]
+fn a_rotation_before_the_cut_wraps_under_what_it_supersedes_or_not_at_all_spec_crypto_5() {
+    let (mut lp, g, _, cut) = cut_world(2);
+    settle_all(&mut lp, g);
+    let at_a = lp.peers[0].engine.epochs(&g).unwrap();
+    let before: Vec<Epoch> = at_a.read.held().map(|x| x.0).filter(|e| e.n() > 0 && e.n() < cut.n()).collect();
+    assert!(!before.is_empty(), "no rotation before the cut");
+    for e in before {
+        let (_, r) = *lp.peers[0].engine.core.ix.epoch_intro.get(&(g, Role::Read, e)).unwrap();
+        assert!(lp.peers[2].engine.core.ix.commits.contains_key(&r), "N lacks the rotation to {e:?}");
+        let parts: Vec<usize> = (0..lp.peers[0].engine.header(&r).unwrap().aspects.len()).collect();
+        let by_a = lp.peers[0].engine.wrap_secret(&g, Some((&r, &parts))).unwrap().expect("A wraps its rotation");
+        if let Some(by_n) = lp.peers[2].engine.wrap_secret(&g, Some((&r, &parts))).unwrap() {
+            assert_eq!(by_n.expose(), by_a.expose(), "N wraps the rotation to {e:?} under an epoch it does not supersede");
+        }
+    }
+}
+
 // spec/crypto.md §4 (the boxing rule; current: model X_cut_nofloor): B holds A's cut but not the
 // rotation before it, so the epoch before that is current at B beside the cut. B's re-seals box
 // N at no epoch below N's floor, and N counts none current; B rotates over it instead (a low

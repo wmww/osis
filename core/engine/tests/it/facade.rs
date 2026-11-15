@@ -3013,6 +3013,20 @@ fn sourced_world(n: usize) -> (LocalPeer, Tid, Tid, Tid, Tid) {
     (lp, d, g, h, both)
 }
 
+// spec/sync-set.md §5 (Home is never sourced away): home (D) asked sourced elsewhere stays in the
+// sync set with its home sync ID and what is filed under it, so the engine's own records on D
+// (sync record keeps, inbox marks, accepts) still leave this node.
+#[test]
+fn home_is_never_sourced_away_spec_sync_set_5() {
+    let (mut lp, d, g, _, both) = sourced_world(1);
+    let e = &mut lp.peers[0].engine;
+    let sd = e.home_sync_id(&d).unwrap().unwrap();
+    e.set_sourced([d].into(), &BTreeSet::new());
+    let things = e.sync_things().unwrap();
+    assert!(things.contains(&d) && things.contains(&both) && things.contains(&g), "home or what is filed under it left: {things:?}");
+    assert!(e.sync_set().unwrap().ids.contains_key(&sd), "home's sync ID left the sync set");
+}
+
 // spec/sync-set.md §5 (Sourced away; Moving home): a group sourced at another node leaves the
 // sync set's closure with what it reaches only through it (its items, a subgroup, their sync
 // IDs); a thing also listed elsewhere stays; moving home brings it back, and it has caught up
@@ -3048,6 +3062,29 @@ fn a_sourced_group_leaves_the_sync_set_spec_sync_set_5() {
     e.set_sourced(BTreeSet::new(), &BTreeSet::new());
     assert!(e.sync_things().unwrap().contains(&h));
     assert!(e.readable_by(&a, &h), "home: read here again");
+}
+
+// spec/sync-set.md §5 (Moving home): a thing of the group also listed in an outside group k:
+// k's sync ID carries it, so the group has caught up only once k's sync ID had a complete pass.
+#[test]
+fn moving_home_waits_for_an_outside_group_carrying_a_thing_of_it_spec_sync_set_5() {
+    let (mut lp, d, g, ..) = sourced_world(1);
+    let a = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let k = thing_of(&mut lp, 0, a);
+    lp.peers[0].engine.give_own_secrets(&k).unwrap();
+    list_in(&mut lp, 0, d, 1, k);
+    let x = *lp.peers[0].engine.closure(&g).iter().find(|x| **x != g && lp.peers[0].engine.home_sync_id(x).unwrap().is_none()).expect("a plain item of g");
+    list_in(&mut lp, 0, k, 0, x);
+    let e = &mut lp.peers[0].engine;
+    let sk = e.home_sync_id(&k).unwrap().unwrap();
+    e.set_sourced([g].into(), &[g].into());
+    let began = e.begin_pass();
+    for s in e.sync_set().unwrap().ids.keys().copied().filter(|s| *s != sk).collect::<Vec<_>>() {
+        e.note_complete_pass(&s, began).unwrap();
+    }
+    assert!(!e.caught_up(&g).unwrap(), "caught up before a complete pass of k's sync ID, which carries an item of g");
+    e.note_complete_pass(&sk, began).unwrap();
+    assert!(e.caught_up(&g).unwrap());
 }
 
 /// The group index work (`osis_base::costs`, "group index" rows) of `f`.
