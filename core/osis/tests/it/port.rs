@@ -3,6 +3,7 @@
 //! (`connect_node`, `group_source`) against nodes on one in-process test network
 //! (`internals::ManualNet`), one manual clock. A call on the test network runs it until quiet.
 
+use crate::common::TestWrites as _;
 use crate::common::{ak, cfg, clock};
 use osis::internals::{ManualClock, ManualNet};
 use osis::{AppConfig, ClientSecret, DynamicAspectKey, Error, GroupSource, MemStore, NodeLogin, Origin, Osis, Role, Tid, Value};
@@ -1181,15 +1182,14 @@ fn text(x: &str) -> Value {
 /// signal fired twice and its first fire replaced; the first fire's id.
 fn history(db: &Osis) -> (Tid, osis::CommitId) {
     let keep = crate::common::setting(&[("x:log~0", osis::History::FOREVER), ("x:v.0", osis::History::FOREVER)]);
-    let t = crate::common::commit_with(db, |w| {
-        let t = w.create()?;
-        w.at(t, osis::core::RETENTION).set(&keep)?;
-        w.at(t, v()).set(&Value::Int(1))
-    })
-    .parts()
-    .next()
-    .unwrap()
-    .0;
+    let t = db
+        .commit_with(|w| {
+            let t = w.create()?;
+            w.at(t, osis::core::RETENTION).set(&keep)?;
+            w.at(t, v()).set(&Value::Int(1))?;
+            Ok(t)
+        })
+        .unwrap();
     crate::common::commit_with(db, |w| w.at(t, v()).set(&Value::Int(2)));
     let o = crate::common::commit_with(db, |w| w.at(t, signal()).fire(&text("one"))).stamp.id;
     crate::common::commit_with(db, |w| w.at(t, signal()).fire(&text("other")));
@@ -1358,7 +1358,7 @@ fn cards_invitations_and_waits_through_a_socket_notes_client_port() {
     assert_eq!(drive(&net, cl.import_contact(&b.contact_card().unwrap())).unwrap(), b.me());
     assert_eq!(a.profile_of(b.me()).unwrap(), Some(b.profile().unwrap()));
     assert_eq!(cl.profile_of(b.me()).unwrap(), Some(b.profile().unwrap()));
-    let t = crate::common::commit_with(&b, |w| w.create().map(drop)).parts().next().unwrap().0;
+    let t = b.commit_with(|w| w.create()).unwrap();
     b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
     for _ in 0..5 {
         net.run();
@@ -1379,7 +1379,7 @@ fn a_dropped_wait_ends_at_the_node_notes_client_port() {
     let c = clock();
     let net = ManualNet::new(c.clone());
     let (_dir, a, cl) = daemon(&net, &c, 1, "port-drop-wait");
-    let t = crate::common::commit_with(&a, |w| w.create().map(drop)).parts().next().unwrap().0;
+    let t = a.commit_with(|w| w.create()).unwrap();
     {
         let mut f = std::pin::pin!(cl.wait_synced(osis::SyncScope::Thing(t)));
         for _ in 0..3 {
@@ -1401,7 +1401,7 @@ fn diagnostics_through_a_socket_notes_client_port() {
     let (_dir, a, cl) = daemon(&net, &c, 1, "port-diag");
     let (tx, rx) = channel();
     let _d = cl.on_diagnostic(move |_, d| tx.send(d).unwrap()).unwrap();
-    let t = crate::common::commit_with(&a, |w| w.create().map(drop)).parts().next().unwrap().0;
+    let t = a.commit_with(|w| w.create()).unwrap();
     let _p = a.at(t, v()).on_change(|_, ch| assert!(ch.value != Ok(Some(Value::Int(9))), "a callback that panics")).unwrap();
     crate::common::commit_with(&a, |w| w.at(t, v()).set(&Value::Int(9)));
     a.settle();
