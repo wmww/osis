@@ -363,18 +363,21 @@ fn a_link_whose_sharer_never_answers_is_given_up_spec_sync_inbox_6() {
     let link = w.make_link(0, p0, Role::Read);
     w.partition(0, 1);
     assert_eq!(w.redeem(1, &link), Waiting::Pending);
-    w.advance(FOLLOW_LINK_MS / 2);
+    // the restart off the redial pace's grid (`REDIAL_MS` from each dial), so only the follow
+    // time's own wake ticks node 1 at it
+    let off = FOLLOW_LINK_MS / 2 + 7_001;
+    w.advance(off);
     w.power_off(1);
     w.power_on(1);
     w.advance(1);
     assert!(w.node(1).node.redeeming(&link.k), "kept across the restart");
     assert!(w.engine(1).sync_holder(&link.k_label).unwrap().is_some(), "K's sync ID followed");
     let before = w.dials(1).work().dials;
-    w.advance(FOLLOW_LINK_MS / 2 - 2);
+    w.advance(FOLLOW_LINK_MS - off - 2);
     assert!(w.node(1).node.redeeming(&link.k), "still redeemed before the follow time from its start");
     assert!(w.dials(1).work().dials > before, "node 0 dialed meanwhile");
     w.advance(2);
-    assert!(!w.node(1).node.redeeming(&link.k), "given up at the follow time from its start");
+    assert!(!w.node(1).node.redeeming(&link.k), "given up at the follow time from its start, woken for it");
     assert_eq!(w.engine(1).sync_holder(&link.k_label).unwrap(), None, "K's sync ID unfollowed");
     let after = w.dials(1).work().dials;
     w.advance(FOLLOW_LINK_MS);
@@ -406,4 +409,40 @@ fn a_sharer_answering_before_the_follow_time_is_joined_spec_sync_inbox_6() {
     assert_eq!(w.redeem(1, &link), Waiting::Done, "joined");
     let a1 = w.node(1).account.unwrap();
     assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
+}
+
+// spec/permissions.md §7 (Redeem: a redeemer keeps the seed until its grant is at a source),
+// spec/sync-inbox.md §6 (A redeemer not joined: only it stops at its node's follow time): a join
+// written just before the follow time, its sharer gone before taking it, keeps the link followed
+// past it (given up, the join could never reach a source, and redeeming again joins nothing);
+// with node 0 back, the join is held there.
+#[test]
+fn a_joined_redeem_is_followed_past_the_follow_time_until_its_join_is_held_spec_permissions_7() {
+    use osis_sync::types::FOLLOW_LINK_MS;
+    let mut w = two_nodes();
+    let p0 = w.node(0).profile.unwrap();
+    let link = w.make_link(0, p0, Role::Read);
+    w.partition(0, 1);
+    assert_eq!(w.redeem(1, &link), Waiting::Pending);
+    w.advance(FOLLOW_LINK_MS - 60_000);
+    w.heal();
+    // one input at a time, so node 0 is cut off right after node 1 writes the join
+    for _ in 0..100_000 {
+        if w.engine(1).role_on(&p0).is_some() {
+            break;
+        }
+        if !w.step() {
+            w.advance(1_000);
+        }
+    }
+    assert!(w.engine(1).role_on(&p0).is_some(), "joined within the follow time");
+    w.partition(0, 1);
+    w.advance(2 * FOLLOW_LINK_MS);
+    assert!(w.node(1).node.redeeming(&link.k), "joined, the join not held: followed on");
+    assert!(w.engine(1).sync_holder(&link.k_label).unwrap().is_some(), "K's sync ID followed");
+    w.heal();
+    w.run();
+    let a1 = w.node(1).account.unwrap();
+    assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
+    // forgotten once held: not yet (issues/sync-link-join-never-held.md)
 }

@@ -13,8 +13,11 @@
 //! `Never`. So is a link not joined within the node's follow time (`Policy::follow_link_ms`, from
 //! the redeem's start kept in its row, judged on the engine's clock, whose wake comes through
 //! `Engine::clock_next`): a sharer that never answers is followed no longer (spec/sync-inbox.md
-//! §6); the user may redeem it again. Not built: the other end, every route refusing L's static
-//! entry.
+//! §6); the user may redeem it again. A joined link has no follow time: its join is an own write
+//! waiting for a source like any other, and the seed is its only way there (spec/permissions.md
+//! §7); given up, the join would never reach one and redeeming again joins nothing. Not built:
+//! the other end, every route refusing L's static entry (a link revoked before its join was
+//! taken is followed until then).
 //!
 //! Finalize is the sharer's engine's, on a complete pass of K's sync ID (status tells it).
 
