@@ -619,7 +619,7 @@ fn content(lp: &mut LocalPeer, i: usize, keys: &[(Tid, osis_base::Ak)]) -> Vec<O
     keys.iter().map(|(t, a)| lp.peers[i].engine.get(t, a).unwrap()).collect()
 }
 
-// spec/permissions.md §3 (Lost access, then a re-grant): bob's drop forgets in place what only d's
+// spec/permissions.md §3 (Lost access), then a re-grant: bob's drop forgets in place what only d's
 // secrets read, his engine then reading as an open of its store does (values and indexes); a
 // commit on d and on e (still read) keeps its e part; granted d again, bob reads every value he
 // read before, the d part of that commit joining late.
