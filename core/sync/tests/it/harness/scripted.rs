@@ -131,15 +131,10 @@ impl Table {
         self.due.extend(self.creds.keys().copied());
     }
 
-    /// J of `actor` for S is now `j`; S's roles moved.
+    /// J of `actor` for S is now `j`. Nothing comes due: J is read when S's credentials move
+    /// (spec/sync-opens.md §6).
     pub fn judge_as(&mut self, s: SyncId, actor: Tid, j: J) {
         self.j.insert((s, actor), j);
-        if let Some(c) = self.creds.get(&s) {
-            let mut c = (**c).clone();
-            c.roles = osis_base::hash::hash(format!("{:?}", self.j.iter().filter(|((x, _), _)| *x == s).collect::<Vec<_>>()).as_bytes());
-            self.creds.insert(s, Arc::new(c));
-        }
-        self.due.insert(s);
     }
 }
 

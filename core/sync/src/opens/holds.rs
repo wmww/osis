@@ -97,9 +97,6 @@ pub struct Creds {
     /// The sync key of this node's step (its step kept unread, its newest recorded step read)
     /// and its epoch: what answers a Hit on a sync key, claim or static entry.
     pub step: Option<(osis_crypto::SigningSecret, Option<Epoch>)>,
-    /// A digest of what moves J for S here (its roster, spec/sync-opens.md §3 `changed_at`):
-    /// two values with equal credentials and equal roles are one value.
-    pub roles: [u8; 32],
 }
 
 impl Creds {
@@ -128,10 +125,10 @@ impl Creds {
         c
     }
 
-    /// The digest `changed_at` compares (spec/sync-opens.md §3): what is shown and tested, the
-    /// step that answers, and the roles. Secrets enter only through a keyed hash.
+    /// The digest `changed_at` compares (spec/sync-opens.md §3): what is shown and tested, and
+    /// the step that answers.
     pub fn digest(&self) -> [u8; 32] {
-        let mut h = osis_base::hash::Hasher::new_keyed(&self.roles);
+        let mut h = osis_base::hash::Hasher::new();
         h.update(&[self.holding.map_or(0, |x| x as u8 + 1)]);
         for (c, e) in &self.shows {
             h.update(b"s").update(c.matched()).update(&epoch_bytes(e));
@@ -242,8 +239,6 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
         match holding {
             Holding::Read => {
                 let rc = cx.engine.read_credentials(s).ok()??;
-                // what moves J (spec/sync-opens.md §3 `changed_at`: a role on S changes)
-                c.roles = rc.roster;
                 for (e, k) in &rc.read_secrets {
                     c.shows.push((Shown::Read(*e, *k.expose()), Some(*e)));
                     c.tests.push((Tested::Read(*e, k.clone()), Some(*e)));

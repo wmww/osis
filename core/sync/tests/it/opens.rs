@@ -28,6 +28,29 @@ fn readers() -> Pair {
     p
 }
 
+/// S's read secret at `side` moves to epoch `n`, covering every departure: J is read when S's
+/// credentials move (spec/sync-opens.md §6), as a removal's rotation moves the remover's and a
+/// grant the grantee's.
+fn rotated(side: &mut Side, n: u8) {
+    let rs = read_secret(1, n);
+    side.table.covering.insert((S, rs.0));
+    side.table.set(S, Some(reader(&S, &rs, &StepKeys::new(1, 0), &[], &[], &[])));
+}
+
+/// `a` removes `b`'s account with its rotation; `b` is granted again later.
+fn departs(p: &mut Pair) {
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    rotated(&mut p.a, 1);
+    p.a.settle();
+}
+
+/// `a` grants `b`'s account again: `b` takes the box of the current epoch.
+fn regranted(p: &mut Pair) {
+    p.a.table.judge_as(S, tid(2), J::Reader);
+    rotated(&mut p.b, 1);
+    p.b.settle();
+}
+
 // spec/sync-opens.md §5 (opening): one Hit and its answer open S both ways.
 #[test]
 fn one_hit_opens_both_ways_spec_sync_opens_5() {
@@ -303,14 +326,12 @@ fn a_rejoin_reads_from_the_losts_cursor_spec_sync_opens_6() {
     let mut p = readers();
     // b stored a's log at 7 for S (a learns it from b's Applied)
     p.a.reported(p.ca, S, 7);
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
+    departs(&mut p);
     p.run();
     assert!(!p.b.open(p.cb, &S));
     assert!(p.b.moved.iter().any(|m| matches!(m, Moved::Left(c, s, at) if *c == p.cb && *s == S && at.how == Leaving::Kept)), "{:?}", p.b.moved);
     p.b.moved.clear();
-    p.a.table.judge_as(S, tid(2), J::Reader);
-    p.a.settle();
+    regranted(&mut p);
     p.run();
     assert!(p.b.open(p.cb, &S));
     assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(Some(7u64.to_be_bytes().to_vec())))), "{:?}", p.b.moved);
@@ -656,28 +677,17 @@ fn reader_judging(j: J) -> (Side, Adv) {
 }
 
 // ON_jnow (spec/sync-opens.md §4 J): J reads the roster held now, not the one the connection
-// started with: Adv's ByRole after its removal opens nothing, and a grant made while connected
-// opens by J (R itself offers ByRole).
+// started with: Adv's ByRole after its removal opens nothing.
 #[test]
 fn j_is_judged_on_the_roster_held_now_spec_sync_opens_4() {
     let (mut r, mut adv) = reader_judging(J::Reader);
     r.table.judge_as(S, tid(9), J::Departed);
-    r.settle();
     assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new() }])[0].code, Code::DECLINED);
     assert!(!r.open(adv.peer, &S));
-    let (mut r, mut adv) = reader_judging(J::Unknown);
-    adv.filter(&mut r, &[], &S);
-    r.sent();
-    r.table.judge_as(S, tid(9), J::Reader);
-    r.settle();
-    let byrole = of_kind(&r.sent(), 37).iter().any(|m| matches!(m, Msg::Offer { items, .. } if items.iter().any(|i| matches!(i, OfferItem::ByRole { sync_id, .. } if *sync_id == S))));
-    assert!(byrole, "ByRole once J judges Adv a reader");
-    assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new() }])[0].code, Code::OK);
-    assert!(r.open(adv.peer, &S));
 }
 
 // ON_endj (spec/sync-opens.md §6): an open by J closes at once with a Lost when J judges the peer
-// departed.
+// departed at the move of S's credentials its removal's rotation makes.
 #[test]
 fn a_j_open_closes_at_a_removal_spec_sync_opens_6() {
     let (mut r, mut adv) = reader_judging(J::Reader);
@@ -685,6 +695,7 @@ fn a_j_open_closes_at_a_removal_spec_sync_opens_6() {
     assert!(r.open(adv.peer, &S));
     r.sent();
     r.table.judge_as(S, tid(9), J::Departed);
+    rotated(&mut r, 1);
     r.settle();
     assert!(!r.open(adv.peer, &S));
     assert_eq!(of_kind(&r.sent(), 38).len(), 1, "a Lost");
@@ -1745,8 +1756,7 @@ fn a_close_for_a_departure_keeps_nothing_here_spec_sync_opens_6() {
     let mut p = readers();
     p.b.reported(p.cb, S, 4);
     p.a.reported(p.ca, S, 7);
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
+    departs(&mut p);
     p.run();
     assert_eq!(left_how(&p.a.moved, p.ca, S), Some(Leaving::Forgot));
     assert_eq!(left_how(&p.b.moved, p.cb, S), Some(Leaving::Kept));
@@ -1757,8 +1767,7 @@ fn a_close_for_a_departure_keeps_nothing_here_spec_sync_opens_6() {
     assert!(p.log[after..].iter().any(|(by_a, m)| !*by_a && matches!(m, Msg::Offer { .. })), "b tests S again");
     p.a.moved.clear();
     p.b.moved.clear();
-    p.a.table.judge_as(S, tid(2), J::Reader);
-    p.a.settle();
+    regranted(&mut p);
     p.run();
     assert!(p.a.moved.contains(&Moved::Joined(p.ca, S, Rejoin::From(None))), "{:?}", p.a.moved);
     assert!(p.b.moved.contains(&Moved::Joined(p.cb, S, Rejoin::From(Some(7u64.to_be_bytes().to_vec())))), "{:?}", p.b.moved);
@@ -1783,15 +1792,13 @@ fn a_lost_for_s_that_left_the_senders_sync_set_names_none_spec_sync_opens_6() {
 fn a_kept_stop_goes_with_its_connection_spec_sync_opens_6() {
     let mut p = readers();
     p.a.reported(p.ca, S, 7);
-    p.a.table.judge_as(S, tid(2), J::Departed);
-    p.a.settle();
+    departs(&mut p);
     p.run();
     assert_eq!(left_how(&p.b.moved, p.cb, S), Some(Leaving::Kept));
     p.b.moved.clear();
     p.close();
     assert!(p.b.moved.contains(&Moved::Forgot(p.cb, S)), "{:?}", p.b.moved);
-    p.a.table.judge_as(S, tid(2), J::Reader);
-    p.a.settle();
+    regranted(&mut p);
     p.b.moved.clear();
     p.connect(2, account(1), account(2));
     p.run();

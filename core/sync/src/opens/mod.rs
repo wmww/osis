@@ -1541,7 +1541,7 @@ impl Opens {
     /// Sends the next generation of this side's filter when none is in flight (spec/sync-opens.md
     /// §5 Filter): the first of a connection with an acknowledged record is additions of the sync
     /// IDs past `acked_pos` (sent even when empty), else whole; later ones additions of the sync
-    /// IDs whose credentials or roster changed; a whole one once additions pass its entries.
+    /// IDs whose credentials changed; a whole one once additions pass its entries.
     fn send_generation(&mut self, ctx: &mut Ctx, conn: ConnId) {
         let Some(c) = self.conns.get(&conn) else { return };
         if c.phase != Phase::Running || c.gen_out.is_some() || c.resync_at.is_some() {

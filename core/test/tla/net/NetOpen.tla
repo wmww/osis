@@ -4,8 +4,10 @@
    what it holds now, that the other may hold S: J (a proven actor holds sync or above), a secret
    credential shown on this connection (the sync-key proof), or an open signature by a credential
    key (sync key, a link key's static entry) of the newest step of S it knows, bound to the
-   signer's side and this connection. Who dialed proves nothing. Opens are re-judged on every
-   change a node learns (roster, head); an open on a basis no longer accepted ends, with a Lost
+   signer's side and this connection. Who dialed proves nothing. Opens are re-judged when a node
+   learns a change of its credentials or sync set (a rotation, its own grant or removal, a grant
+   or removal of a link holder, whose static entry is shown), never at a roster change alone (a
+   grant or removal of another account); an open on a basis no longer accepted ends, with a Lost
    that closes the other side too.
    Honest nodes: readers (hold the roster, every seed of a step they held, show the proof of their
    newest step and the static entries the roster lists; Hit a store's sync key, older steps too
@@ -203,11 +205,12 @@ Happen ==
     /\ happened' = happened + 1
     /\ UNCHANGED <<conns, opens, known, seen, next, know, leak, head>>
 
-\* Honest n learns the next event and re-judges every open it holds on what it holds now; an open
-\* whose basis it no longer accepts ends (with its Lost, both sides). A node that stops syncing S
-\* ends them all.
+\* Honest n learns the next event. When it moves n's credentials or sync set (Moves) n re-judges
+\* every open it holds on what it holds now; an open whose basis it no longer accepts ends (with
+\* its Lost, both sides). A node that stops syncing S ends them all.
 Learn(n) ==
     LET k == know[n] + 1
+        Moves == Events[k].op = "rot" \/ Events[k].n = n \/ Events[k].n \in LinkNodes
         Keep(o) == LET p == Peer(conns[o[1]], n) b == o[3] IN
             /\ n \in Mem[k]
             /\ CASE b.c = "J" -> "J" \notin Rejudge \/ J(n, p, k)
@@ -217,7 +220,7 @@ Learn(n) ==
     IN
     /\ know[n] < happened
     /\ know' = [know EXCEPT ![n] = k]
-    /\ opens' = {o \in opens : o[1] \notin Drop}
+    /\ opens' = IF Moves THEN {o \in opens : o[1] \notin Drop} ELSE opens
     /\ UNCHANGED <<conns, known, seen, next, happened, leak, head>>
 
 \* Honest t Hits v in its peer's filter with a token made over its own side, the peer's challenge
@@ -315,10 +318,12 @@ Safe == \A o \in opens :
 \* Adv holding no value of S learns nothing of S from a Lost: no Lost names S to it.
 Private == ~leak
 
-\* A removal ends at once: no reader opens toward Adv once it knows Adv's removal.
-SafeRm == \A o \in opens :
+\* A removal stops opens at once: no reader opens toward Adv once it knows Adv's removal, rotation
+\* or not (an open made before ends at the rotation: Safe).
+SafeRmStep == \A o \in opens' \ opens :
     LET n == o[2] IN
-    (IsReader(n) /\ Peer(conns[o[1]], n) = Adv) => ~Gone(Adv, know[n])
+    (IsReader(n) /\ Peer(conns'[o[1]], n) = Adv) => ~Gone(Adv, know'[n])
+SafeRm == [][SafeRmStep]_vars
 
 \* Two honest holders connected, every event known to all, end up open both ways, whichever dialed.
 Stable == happened = NE /\ \A n \in Honest : know[n] = NE

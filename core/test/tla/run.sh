@@ -190,11 +190,11 @@ instances=(
   "netopen net MCOpen ON_proofold.cfg fail"        # negative control: an older step's proof counts
   "netopen net MCOpen ON_linkold.cfg fail"         # negative control: a removed static entry counts
   "netopen net MCOpen ON_jnow.cfg fail"            # negative control: J from the roster the node started with
-  "netopen net MCOpen ON_endj.cfg fail"            # negative control: an open by J outlives a removal
+  "netopen net MCOpen ON_endj.cfg fail"            # negative control: an open by J outlives the removal's rotation
   "netopen net MCOpen ON_endsync.cfg fail"         # negative control: an open by sync key outlives the head's event
   "netopen net MCOpen ON_endproof.cfg fail"        # negative control: an open by proof outlives the rotation
   "netopen net MCOpen ON_endlink.cfg fail"         # negative control: an open by static entry outlives its removal
-  "netopen net MCOpen ON_departed.cfg fail"        # finding: without the departed clause a removal does not end opens at once
+  "netopen net MCOpen ON_departed.cfg fail"        # finding: without the departed clause a removal does not stop opens at once
   "netopen net MCOpen ON_dialer.cfg fail"          # negative control: the dialer trusts the key it dialed
   "netopen net MCOpen ON_nolisten.cfg fail"        # negative control (Live): listeners never sign
   "netopen net MCOpen O_none.cfg pass"             # Adv holds no value of S, shows junk: no Lost names S to it (Private)

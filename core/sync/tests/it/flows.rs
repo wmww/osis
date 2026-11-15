@@ -175,8 +175,9 @@ fn reads(w: &mut World, i: usize, t: osis_base::Tid) -> Option<Value> {
     w.engine(i).get(&t, &Ak::new("u:v.0").unwrap()).unwrap()
 }
 
-// spec/sync-opens.md §3 (`changed_at`: advanced when a role on S changes): a reader removed, then
-// granted again after a write it could not read, reads that write.
+// spec/sync-opens.md §3 (`changed_at`: advanced when a credential of S changes, here the
+// grantee's): a reader removed, then granted again after a write it could not read, reads that
+// write.
 #[test]
 fn a_reader_granted_again_reads_the_write_made_while_removed_spec_sync_opens_3() {
     let (mut w, t, _) = granted_and_read(Role::Read);
