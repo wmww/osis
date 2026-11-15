@@ -89,6 +89,36 @@ impl<E, M> Default for Devices<E, M> {
     }
 }
 
+/// Per device, the held rotations minting, adding and removing it.
+struct ByDevice<M, E> {
+    minted_by: BTreeMap<M, Vec<E>>,
+    adds_of: BTreeMap<M, Vec<E>>,
+    removes_of: BTreeMap<M, Vec<E>>,
+}
+
+/// Each held rotation judged under the removals carried on its line (`Chain::standing`).
+struct Standing<E, M> {
+    /// Whether it stands (`Chain::stands_walk` with no removal off its line).
+    stands: BTreeMap<E, bool>,
+    /// The nodes of its line, after its own changes.
+    nodes: BTreeMap<E, BTreeSet<M>>,
+    /// The revocations on its line.
+    revs: BTreeMap<E, BTreeSet<E>>,
+}
+
+impl<E: Ord + Copy, M: Ord + Copy> Standing<E, M> {
+    /// Whether `r` stands under the removals of `rs` and those on its line: its standing, but
+    /// where a removal of `rs` is beside it (one on its line is carried already; one descending
+    /// from it hits nothing on its line, all made before it), then by a walk.
+    fn stands(&self, c: &Chain<E>, r: E, rs: &[E], d: &Devices<E, M>) -> bool {
+        osis_base::costs::count("chain: removals read", rs.len() as u64);
+        if rs.iter().any(|e| c.beside(r, *e)) {
+            return c.stands_walk(r, rs, d);
+        }
+        self.stands.get(&r).copied().unwrap_or(false)
+    }
+}
+
 /// The chain as one node judges it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chain<E> {
@@ -96,6 +126,8 @@ pub struct Chain<E> {
     rots: BTreeMap<E, Rotation<E>>,
     /// Per held rotation, its line: itself and every held rotation it descends from.
     lines: BTreeMap<E, BTreeSet<E>>,
+    /// The held rotations, each after every one it needs (its parents among them).
+    topo: Vec<E>,
     /// (m, r): held rotation m rejects held rotation r.
     rejects: BTreeSet<(E, E)>,
     /// The followed rotations: these count.
@@ -132,6 +164,7 @@ impl<E: Ord + Copy> Chain<E> {
         // and its depth: one more than the deepest of what it needs, so of two held at once the
         // one it needs is placed first (a receipt millisecond orders its rotations by ID)
         let mut depth: BTreeMap<E, usize> = BTreeMap::new();
+        let mut topo: Vec<E> = Vec::new();
         let held = |rots: &BTreeMap<E, Rotation<E>>, e: &E| *e == root || rots.contains_key(e);
         // and every revocation it takes, at every node: one taking what no node of the account
         // holds would otherwise be followed outside unanswered
@@ -142,9 +175,10 @@ impl<E: Ord + Copy> Chain<E> {
                 when.insert(id, w);
                 depth.insert(id, 1 + needs(&r).iter().filter_map(|p| depth.get(p)).max().copied().unwrap_or(0));
                 rots.insert(id, r);
+                topo.push(id);
             }
         }
-        let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), taken: Vec::new() };
+        let mut c = Chain { root, rots, lines: BTreeMap::new(), topo, rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), taken: Vec::new() };
         c.lines = c.rots.keys().map(|&r| (r, c.line_of(r))).collect();
         c.chosen = chosen.filter(|s| c.rots.contains_key(s));
         // the chosen rotation's line first and, at a node of the account, what it stands with
@@ -204,20 +238,26 @@ impl<E: Ord + Copy> Chain<E> {
     /// outweighs the removal, and of two revocations hitting each other the one held first holds.
     fn follow_as_node<M: Ord + Copy>(&mut self, order: &[E], d: &Devices<E, M>) {
         let revocation = |q: &E| d.removes.get(q).is_some_and(|x| !x.is_empty());
-        // the revocations r stands with: those on its line and those a rotation on it takes
-        let with_of = |r: &E| -> BTreeSet<E> {
-            self.lines.get(r).into_iter().flatten().flat_map(|q| std::iter::once(*q).filter(revocation).chain(self.rots.get(q).into_iter().flat_map(|x| x.takes.iter().copied()))).collect()
-        };
+        // the revocations each rotation stands with: those on its line and those a rotation on
+        // it takes, gathered along the lines (a line is itself and its parents' lines)
+        let mut with: BTreeMap<E, BTreeSet<E>> = BTreeMap::new();
+        for &r in &self.topo {
+            let mut w: BTreeSet<E> = self.parents(r).iter().filter_map(|p| with.get(p)).flatten().copied().collect();
+            w.extend(std::iter::once(r).filter(revocation).chain(self.rots.get(&r).into_iter().flat_map(|x| x.takes.iter().copied())));
+            with.insert(r, w);
+        }
+        let with_of = |r: &E| with.get(r).cloned().unwrap_or_default();
+        let s = self.standing(d);
         let mut taken: Vec<E> = Vec::new();
         for r in order.iter().filter(|r| revocation(r)) {
-            let mut with = taken.clone();
-            with.push(*r);
-            if self.stands(*r, &with, d) && taken.iter().all(|q| self.stands(*q, &with, d)) && with_of(r).iter().all(|q| q == r || taken.contains(q)) {
+            let mut w = taken.clone();
+            w.push(*r);
+            if s.stands(self, *r, &w, d) && taken.iter().all(|q| s.stands(self, *q, &w, d)) && with_of(r).iter().all(|q| q == r || taken.contains(q)) {
                 taken.push(*r);
             }
         }
         for &r in order {
-            if self.stands(r, &taken, d) && with_of(&r).iter().all(|q| taken.contains(q)) {
+            if with_of(&r).iter().all(|q| taken.contains(q)) && s.stands(self, r, &taken, d) {
                 self.counting.insert(r);
             } else {
                 self.disregarded.insert(r);
@@ -228,12 +268,121 @@ impl<E: Ord + Copy> Chain<E> {
 
     /// Whether every rotation on `r`'s line is minted by a node of the line before it, and none
     /// is hit by the removals of `rs` or those carried on the line. A rotation whose minter is
-    /// no node stands by none.
-    fn stands<M: Ord + Copy>(&self, r: E, rs: &[E], d: &Devices<E, M>) -> bool {
+    /// no node stands by none. Walks the line: `Standing` answers without, but where a removal
+    /// of `rs` is beside `r`.
+    fn stands_walk<M: Ord + Copy>(&self, r: E, rs: &[E], d: &Devices<E, M>) -> bool {
         let Some(line) = self.lines.get(&r) else { return false };
+        osis_base::costs::count("chain: line walked", line.len() as u64);
         let mut all: Vec<E> = rs.to_vec();
         all.extend(line.iter().copied().filter(|q| d.removes.get(q).is_some_and(|x| !x.is_empty()) && !rs.contains(q)));
         line.iter().all(|q| d.minter.get(q).is_some_and(|m| self.nodes_before(*q, &all, d).contains(m)) && !self.hit(*q, &all, d))
+    }
+
+    /// Whether held rotations `x` and `e` are beside each other: neither on the other's line.
+    fn beside(&self, x: E, e: E) -> bool {
+        !self.on_line(x, e) && !self.on_line(e, x)
+    }
+
+    /// Each held rotation's standing under the removals carried on its own line, gathered along
+    /// the lines in one pass (`stands_walk` with no removal off the line): a rotation with one
+    /// parent stands iff its parent does, its minter is a node of its parent's line and it is
+    /// not hit; its line's nodes are its parent's, with what it adds (not hit) and removes. A
+    /// merge reads its parents' the same way but for the devices the branches it joins add or
+    /// remove, each read from the rotations adding and removing it; where a removal on one branch
+    /// may hit a rotation on another (its target minted there) it walks its line.
+    fn standing<M: Ord + Copy>(&self, d: &Devices<E, M>) -> Standing<E, M> {
+        let revocation = |q: &E| d.removes.get(q).is_some_and(|x| !x.is_empty());
+        let mut ix = ByDevice { minted_by: BTreeMap::new(), adds_of: BTreeMap::new(), removes_of: BTreeMap::new() };
+        for (q, m) in &d.minter {
+            ix.minted_by.entry(*m).or_default().push(*q);
+        }
+        for (q, ys) in &d.adds {
+            for y in ys {
+                ix.adds_of.entry(*y).or_default().push(*q);
+            }
+        }
+        for (q, ys) in &d.removes {
+            for y in ys {
+                ix.removes_of.entry(*y).or_default().push(*q);
+            }
+        }
+        let mut st = Standing { stands: BTreeMap::new(), nodes: BTreeMap::new(), revs: BTreeMap::new() };
+        for &r in &self.topo {
+            osis_base::costs::count("chain: standing", 1);
+            let ps = self.parents(r);
+            let mut revs: BTreeSet<E> = ps.iter().filter_map(|p| st.revs.get(p)).flatten().copied().collect();
+            if revocation(&r) {
+                revs.insert(r);
+            }
+            let all: Vec<E> = revs.iter().copied().collect();
+            let joined = match ps.as_slice() {
+                [] => Some((true, d.first.clone())),
+                [p] => Some((st.stands.get(p).copied().unwrap_or(false), st.nodes.get(p).cloned().unwrap_or_default())),
+                _ => self.joined(&ps, &st, &all, d, &ix),
+            };
+            let Some((ok, mut nodes)) = joined else {
+                st.stands.insert(r, self.stands_walk(r, &all, d));
+                st.nodes.insert(r, self.nodes_on(self.lines.get(&r).unwrap_or(&BTreeSet::new()), &all, d));
+                st.revs.insert(r, revs);
+                continue;
+            };
+            let hit = self.hit(r, &all, d);
+            let minter = d.minter.get(&r);
+            st.stands.insert(r, ok && minter.is_some_and(|m| nodes.contains(m)) && !hit);
+            if !hit {
+                nodes.extend(d.adds.get(&r).into_iter().flatten().filter(|y| minter != Some(*y)));
+            }
+            for y in d.removes.get(&r).into_iter().flatten() {
+                nodes.remove(y);
+            }
+            st.nodes.insert(r, nodes);
+            st.revs.insert(r, revs);
+        }
+        st
+    }
+
+    /// For a merge with parents `ps` judged under `all` (the removals on its line): whether every
+    /// parent stands and the nodes of the line they join, from their standings; `None` where a
+    /// removal on one branch removes the minter of a rotation on another not before it (it may
+    /// hit it: the caller walks).
+    fn joined<M: Ord + Copy>(&self, ps: &[E], st: &Standing<E, M>, all: &[E], d: &Devices<E, M>, ix: &ByDevice<M, E>) -> Option<(bool, BTreeSet<M>)> {
+        let ByDevice { minted_by, adds_of, removes_of } = ix;
+        let in_join = |x: &E| ps.iter().any(|p| self.on_line(*x, *p));
+        for p in ps {
+            let own = st.revs.get(p);
+            for rem in all.iter().filter(|e| !own.is_some_and(|o| o.contains(*e))) {
+                let mut minted = d.removes.get(rem).into_iter().flatten().flat_map(|y| minted_by.get(y).into_iter().flatten());
+                if minted.any(|q| q != rem && self.on_line(*q, *p) && !self.before(*q, *rem)) {
+                    return None;
+                }
+            }
+        }
+        // the rotations on some parent's line but not every one's: what the branches hold
+        let mut branches: BTreeSet<E> = BTreeSet::new();
+        for p in ps {
+            let mut work = vec![*p];
+            while let Some(x) = work.pop() {
+                if ps.iter().all(|o| self.on_line(x, *o)) || !branches.insert(x) {
+                    continue;
+                }
+                work.extend(self.parents(x));
+            }
+        }
+        osis_base::costs::count("chain: branches", branches.len() as u64);
+        let touched: BTreeSet<M> = branches.iter().flat_map(|q| d.adds.get(q).into_iter().flatten().chain(d.removes.get(q).into_iter().flatten())).copied().collect();
+        let first = ps.first().and_then(|p| st.nodes.get(p)).cloned().unwrap_or_default();
+        let mut nodes: BTreeSet<M> = first.into_iter().filter(|y| !touched.contains(y)).collect();
+        for y in touched {
+            let adds = adds_of.get(&y).map(Vec::as_slice).unwrap_or_default();
+            let removes = removes_of.get(&y).map(Vec::as_slice).unwrap_or_default();
+            osis_base::costs::count("chain: device events", (adds.len() + removes.len()) as u64);
+            let valid = |a: &E| in_join(a) && d.minter.get(a) != Some(&y) && !self.hit(*a, all, d);
+            let candidate = d.first.contains(&y) || adds.iter().any(valid);
+            if candidate && removes.iter().filter(|r| in_join(r)).all(|r| adds.iter().any(|a| valid(a) && self.before(*r, *a))) {
+                nodes.insert(y);
+            }
+        }
+        Some((ps.iter().all(|p| st.stands.get(p).copied().unwrap_or(false)), nodes))
     }
 
     /// Whether a removal of `rs` hits rotation `q`: it removes `q`'s minter and `q` is not on its
@@ -248,6 +397,7 @@ impl<E: Ord + Copy> Chain<E> {
     /// Whether a rotation on line `l` adds `y` back after the removal carried by `r` (it
     /// descends from `r`), minted by another node and not hit.
     fn readded<M: Ord + Copy>(&self, y: M, r: E, l: &BTreeSet<E>, rs: &[E], d: &Devices<E, M>) -> bool {
+        osis_base::costs::count("chain: line walked", l.len() as u64);
         l.iter().any(|a| d.adds.get(a).is_some_and(|x| x.contains(&y)) && self.before(r, *a) && d.minter.get(a) != Some(&y) && !self.hit(*a, rs, d))
     }
 
@@ -265,6 +415,7 @@ impl<E: Ord + Copy> Chain<E> {
     /// The nodes on line `l`: the creation devices and those added on it by a rotation not hit,
     /// less every one a rotation on it removes without a re-add after.
     fn nodes_on<M: Ord + Copy>(&self, l: &BTreeSet<E>, rs: &[E], d: &Devices<E, M>) -> BTreeSet<M> {
+        osis_base::costs::count("chain: line walked", l.len() as u64);
         let added = l.iter().filter(|a| !self.hit(**a, rs, d)).flat_map(|a| d.adds.get(a).into_iter().flatten().filter(move |y| d.minter.get(a) != Some(*y)));
         let candidates: BTreeSet<M> = d.first.iter().copied().chain(added.copied()).collect();
         candidates.into_iter().filter(|y| l.iter().filter(|r| d.removes.get(r).is_some_and(|x| x.contains(y))).all(|r| self.readded(*y, *r, l, rs, d))).collect()

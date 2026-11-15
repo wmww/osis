@@ -274,3 +274,54 @@ fn a_chosen_line_is_placed_with_what_it_takes() {
     let a = Chain::new(0, rots, Some(4), &[1, 2, 3, 4], Some(&d));
     assert!(a.counts(&4) && a.counts(&3) && !a.counts(&1), "the choice holds: heads {:?} taken {:?}", a.heads(), a.taken());
 }
+
+/// At a node of the account, `n` rounds from creation device 1: a pairing adding a device, that
+/// device and the pairer rotating at once from it, and the pairer's merge joining both; three
+/// rounds also remove the device paired the round before. Every rotation counts; the line ends
+/// in one head. The work judging it (osis_base::costs, `chain:`).
+fn rounds_judged(n: u32) -> u64 {
+    let mut rots = Vec::new();
+    let mut d: Devices<u32, u32> = Devices { first: [1].into(), ..Devices::default() };
+    let (mut head, mut id) = (0u32, 0u32);
+    let mut next = || {
+        id += 1;
+        id
+    };
+    for i in 0..n {
+        let dev = 100 + i;
+        let p = next();
+        rots.push(rot(p, head, &[head], &[]));
+        d.minter.insert(p, 1);
+        d.adds.insert(p, [dev].into());
+        if [n / 4, n / 2, 3 * n / 4].contains(&i) && i > 0 {
+            d.removes.insert(p, [dev - 1].into());
+        }
+        let (x, y) = (next(), next());
+        rots.push(rot(x, p, &[p], &[]));
+        rots.push(rot(y, p, &[p], &[]));
+        d.minter.insert(x, 1);
+        d.minter.insert(y, dev);
+        let m = next();
+        rots.push(rot(m, x, &[x, y], &[y]));
+        d.minter.insert(m, 1);
+        head = m;
+    }
+    let received: Vec<u32> = rots.iter().map(|r| r.id).collect();
+    osis_base::costs::take();
+    let c = Chain::new(0, rots.clone(), None, &received, Some(&d));
+    let work = osis_base::costs::take().iter().filter(|(k, _, _)| k.starts_with("chain:")).map(|(_, _, n)| n).sum();
+    assert!(rots.iter().all(|r| c.counts(&r.id)), "every rotation counts");
+    assert_eq!(c.heads(), &set(&[head]));
+    assert_eq!(c.roster(&head, &d), (100..100 + n).filter(|x| ![n / 4 - 1, n / 2 - 1, 3 * n / 4 - 1].contains(&(x - 100))).chain([1]).collect());
+    work
+}
+
+// spec/requirements.md Scale (no operation O(history)), spec/permissions.md §5.4 (Following, at
+// a node of P): judging who is a node, and so what stands, reads each rotation once along the
+// lines, a merge its branches: the work at 10n rotations is near 10 times that at n, never a
+// walk of the line per rotation.
+#[test]
+fn judging_the_roster_grows_with_the_rotations_spec_permissions_5_4() {
+    let (small, large) = (rounds_judged(20), rounds_judged(200));
+    assert!(large <= 13 * small, "work at 10n: {large}, at n: {small}");
+}
