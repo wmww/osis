@@ -87,15 +87,18 @@ pub(crate) fn set(core: &Core, a: &Tid, view: &mut ActorEpochs) {
     view.role_mut(Role::Read).set_floors(makers, own);
 }
 
-/// Whether a part on thing `t` of held commit `c`, other than a role part, lies sealed below this node's floor
+/// Whether part `ak` on thing `t` of held commit `c` lies sealed below this node's floor
 /// (spec/crypto.md §4 State at a cut, Roles secrets: a holder of a floor opens a role commit's
-/// role parts from below it, nothing else): it never opens here, so it is no part of a body
-/// this node owes or lacks. Known where `c` is a read rotation of `t`'s secret actor to an epoch
-/// of n at most this node's floor: its sections lie under an epoch it supersedes (spec/wire.md
+/// role parts from below it, nothing else): it never opens here, so missing it is lacking nothing
+/// (spec/sync-judgement.md §1). Known where `c` is a read rotation of `t`'s secret actor to an
+/// epoch of n at most this node's floor: its sections lie under an epoch it supersedes (spec/wire.md
 /// §4), of lower n, so below the floor, and this node holds no read secret of lower n (every read
 /// secret it is handed below its floor is one it read before, a re-add; the module invariant).
 /// Any other commit's section epoch is not known here: its part counts as it is.
-pub(crate) fn sealed_below_floor(core: &Core, c: &osis_base::CommitId, t: &Tid) -> bool {
+pub(crate) fn sealed_below_floor(core: &Core, c: &osis_base::CommitId, t: &Tid, ak: &str) -> bool {
+    if osis_keys::under_roles(ak) {
+        return false;
+    }
     let Some(a) = core.secret_actor(t) else { return false };
     let Some(view) = core.epochs(&a) else { return false };
     let re = view.role(Role::Read);

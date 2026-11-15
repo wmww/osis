@@ -26,7 +26,9 @@ impl Engine {
     /// - `later_unheld`: snapshots of the body's aspects stamped later than it whose part is
     ///   dropped here, each with whether it was dropped as invalid.
     /// - `missing`: a part of the body counts as never received (dropped as covered, its cover
-    ///   gone, or found valid again).
+    ///   gone, or found valid again), other than one sealed below this node's floor
+    ///   (`rotation::floors::sealed_below_floor`): it never opens here, so it is fetched for
+    ///   nothing, and the body is judged with it as every reader judges it.
     pub(crate) fn read_facts_now(&mut self, s: &SyncId, c: &CommitId) -> Result<ReadFacts> {
         let body: BodyFacts = self.body_facts_now(s, c)?;
         let mut f = ReadFacts { body, must_not: None, own: false, repair_fresh: Arc::default(), role: false, carriers: Vec::new(), later_unheld: Vec::new(), missing: false };
@@ -40,7 +42,10 @@ impl Engine {
         f.own = m.origin == crate::events::Origin::Local;
         f.repair_fresh = m.repair.clone().unwrap_or_default();
         f.role = h.kind.is_role() || m.view.purges;
-        f.missing = b.parts.iter().any(|ai| m.missing(*ai));
+        // judged by the shared blob's sections also where S's body is a copy: S's readers make
+        // that copy from what they open, so one sharing this node's floor never has the part
+        let below = |ai: usize| h.aspects.get(ai).is_some_and(|a| crate::rotation::floors::sealed_below_floor(&self.core, c, &a.tid, a.ak.as_str()));
+        f.missing = b.parts.iter().any(|ai| m.missing(*ai) && !below(*ai));
         let (id, parts) = (*c, b.parts.clone());
         let purged = self.read(|tx| {
             for ai in &parts {

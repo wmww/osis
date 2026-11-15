@@ -293,23 +293,26 @@ fn outsider_across_a_node_removal(mut w: World) {
     assert_ne!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("after".into())), "node 2 reads nothing after its removal");
 }
 
+/// Node 1 redeemed node 0's card and filed its profile; node 2 is node 1's sibling.
+fn one_way_contact_siblings() -> World {
+    let mut w = two_nodes();
+    let card = w.make_link(0, w.node(0).profile.expect("a profile"), Role::Read);
+    w.redeem(1, &card);
+    w.run();
+    assert_eq!(w.redeem(1, &card), osis_sync::types::Waiting::Done, "node 1 redeems node 0's card");
+    file(&mut w, 1, Vec::new(), vec![card.target]);
+    w.pair(1);
+    w.run();
+    w
+}
+
 // spec/permissions.md §5.5 (Honest nodes of P: removing a node X from D; Rotation's list: a thing
 // list is a chain certificate of T), spec/sync-judgement.md §1 (List blobs): node 0's account
 // holds nothing of node 1's account but t, so the rotation reaches it under t's sync ID alone,
 // with t's thing list, and t's commits at the closed epoch count there.
 #[test]
 fn an_outsider_reads_the_accounts_writes_across_a_node_removal_spec_permissions_5_5() {
-    let w = fixture("one-way contact siblings", || {
-        let mut w = two_nodes();
-        let card = w.make_link(0, w.node(0).profile.expect("a profile"), Role::Read);
-        w.redeem(1, &card);
-        w.run();
-        assert_eq!(w.redeem(1, &card), osis_sync::types::Waiting::Done, "node 1 redeems node 0's card");
-        file(&mut w, 1, Vec::new(), vec![card.target]);
-        w.pair(1);
-        w.run();
-        w
-    });
+    let w = fixture("one-way contact siblings", one_way_contact_siblings);
     outsider_across_a_node_removal(w);
 }
 
@@ -333,17 +336,7 @@ fn an_outsider_with_the_card_reads_the_accounts_writes_across_a_node_removal_spe
 #[test]
 fn a_from_now_grantee_after_a_removal_holds_the_old_readers_roster_spec_crypto_5() {
     use osis_engine::flows::edges::History;
-    let mut w = fixture("one-way contact siblings", || {
-        let mut w = two_nodes();
-        let card = w.make_link(0, w.node(0).profile.expect("a profile"), Role::Read);
-        w.redeem(1, &card);
-        w.run();
-        assert_eq!(w.redeem(1, &card), osis_sync::types::Waiting::Done, "node 1 redeems node 0's card");
-        file(&mut w, 1, Vec::new(), vec![card.target]);
-        w.pair(1);
-        w.run();
-        w
-    });
+    let mut w = fixture("one-way contact siblings", one_way_contact_siblings);
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let ak = Ak::new("u:v.0").unwrap();
     let t = w.write(1, |e| {
@@ -470,4 +463,58 @@ fn a_peer_away_across_its_accounts_rotation_is_waited_for_spec_sync_set_3() {
     w.run();
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("away".into())), "node 1 took node 0's write");
     assert!(w.store(0).synced(&s).is_none(), "then node 0 left S");
+}
+
+/// spec/sync-judgement.md §1: a part sealed below a node's floor counts missing only once the
+/// node holds a read secret under it; meanwhile its body under S is every reader's (judged with
+/// that part: covered, carriers, purges). Granted history after a from-now grant, the node
+/// fetches and holds what it now opens.
+#[test]
+fn a_from_now_grantee_granted_history_holds_what_was_below_its_floor_spec_sync_judgement_1() {
+    use osis_engine::flows::edges::History;
+    let mut w = fixture("one-way contact siblings", one_way_contact_siblings);
+    let a1 = w.node(1).account.unwrap();
+    let ak = Ak::new("u:v.0").unwrap();
+    let t = w.write(1, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a1);
+        m.set(t, &ak, &Value::Str("before".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    file(&mut w, 1, vec![t], Vec::new());
+    let (n2, d) = (w.engine(2).tid(), w.engine(1).account().unwrap().unwrap().1);
+    w.write(1, |e| e.demote(&d, &Demotion { holder: n2, new: None, retain: None })).unwrap();
+    w.run();
+    let n3 = w.add_node();
+    let a3 = w.node(n3).account.unwrap();
+    let card = w.make_link(n3, w.node(n3).profile.expect("a profile"), Role::Read);
+    w.redeem(1, &card);
+    w.run();
+    w.write(1, |e| e.grant_with(&t, &a3, &edge(Role::Read), History::None)).unwrap();
+    w.run();
+    file(&mut w, n3, Vec::new(), vec![t]);
+    w.run();
+    // below its floor: node 3 lacks a part of a body under some S, and counts nothing missing
+    let lacks = w.engine(n3).commit_parts_missing().into_iter().any(|(c, ps)| w.engine(n3).sync_bodies(&c).unwrap().values().any(|m| m.parts.iter().any(|p| ps.contains(p))));
+    assert!(lacks, "node 3 lacks a part sealed below its floor");
+    for c in w.engine(n3).commit_ids() {
+        let full = w.engine(1).sync_bodies(&c).unwrap();
+        for (s, m) in w.engine(n3).sync_bodies(&c).unwrap().iter() {
+            assert!(!w.engine(n3).read_facts(s, &c).unwrap().missing, "node 3 counts a part of {c:?} under {s:?} missing that is sealed below its floor");
+            if let Some(f) = full.get(s) {
+                assert_eq!(m.parts, f.parts, "node 3 judges {c:?} under {s:?} by node 1's body");
+            }
+        }
+    }
+    w.write(1, |e| e.grant(&t, &a3, &edge(Role::Admin))).unwrap();
+    w.run();
+    assert_eq!(w.engine(n3).get(&t, &ak).unwrap(), Some(Value::Str("before".into())), "node 3 reads what was written before its cut");
+    let missing = w.engine(n3).commit_parts_missing();
+    for c in w.engine(n3).commit_ids() {
+        for (s, m) in w.engine(n3).sync_bodies(&c).unwrap().iter() {
+            assert!(!w.engine(n3).read_facts(s, &c).unwrap().missing, "node 3 counts a part of {c:?} under {s:?} missing");
+            assert!(m.parts.iter().all(|p| missing.get(&c).is_none_or(|x| !x.contains(p))), "node 3 holds every part of {c:?} under {s:?}");
+        }
+    }
 }

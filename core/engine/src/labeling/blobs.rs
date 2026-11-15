@@ -570,10 +570,7 @@ impl Engine {
         }
         let touches = h.aspects.iter().any(|a| ctx.closure.contains(&a.tid));
         let mut body = Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?;
-        // a part missing here that never opens here (sealed below this node's floor; a role part
-        // opens under the roles secret) is none it lacks
-        let below = |ai: usize| h.aspects.get(ai).is_some_and(|a| !osis_keys::under_roles(a.ak.as_str()) && crate::rotation::floors::sealed_below_floor(&self.core, &id, &a.tid));
-        let gone: Vec<usize> = if unheld { self.core.ix.commits.get(&id).map(|m| m.missing_parts().filter(|ai| !below(*ai)).chain(m.dropped_parts().map(|(ai, _)| ai)).collect()).unwrap_or_default() } else { Vec::new() };
+        let gone: Vec<usize> = if unheld { self.core.ix.commits.get(&id).map(|m| m.missing_parts().chain(m.dropped_parts().map(|(ai, _)| ai)).collect()).unwrap_or_default() } else { Vec::new() };
         if !gone.is_empty() {
             body = match body {
                 Some(mut b) => {
