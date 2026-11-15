@@ -402,8 +402,9 @@ impl World {
     /// core/test/roles-model `forks` states the rule: outside P each placed rotation is followed
     /// with its line unless a followed one is beside it or a rotation on its line rejects or is
     /// rejected by a followed one; a node of P (`own`) takes the revocations first-seen as a
-    /// consistent set and follows every rotation whose line they leave standing and that is not
-    /// at odds with a taken one's (a rotation on one disowns one on the other).
+    /// consistent set and follows every rotation whose line they leave standing and whose
+    /// revocations are all taken (no rotation here takes a revocation off its line: `forks`
+    /// models what a rotation takes).
     fn follow(&self, held: &[bool], lines: &Lines, chosen: Option<usize>, seen: Option<usize>, own: bool) -> Vec<usize> {
         let order = self.place_order(held, lines, chosen, seen);
         let on = |a: usize, b: usize| lines.on(a, b);
@@ -428,26 +429,19 @@ impl World {
                     })
                 })
             };
-            // q disowns p: supersedes p's epoch, neither one q is signed at (its own `at`, a fork
-            // it accepts); lines at odds: a rotation on one disowns one on the other
-            let disowns = |q: usize, p: usize| -> bool {
-                let (Kind::Rotation { supersedes, .. }, Kind::Rotation { new, .. }) = (&self.items[q].kind, &self.items[p].kind) else { return false };
-                supersedes.contains(new) && !lines.signed[q].contains(new)
-            };
-            let at_odds = |r: usize, k: usize| lines.of(r).iter().any(|&q| lines.of(k).iter().any(|&p| disowns(q, p) || disowns(p, q)));
             let mut taken: Vec<usize> = Vec::new();
             let mut removed: Vec<(usize, Epoch)> = Vec::new();
             for &r in &order {
                 let Some(mine) = rm_of(r) else { continue };
                 let mut with = removed.clone();
                 with.push(mine);
-                if stands(r, &with) && taken.iter().all(|&q| stands(q, &[mine]) && !at_odds(r, q)) {
+                if stands(r, &with) && taken.iter().all(|&q| stands(q, &[mine])) && lines.of(r).iter().all(|&q| q == r || rm_of(q).is_none() || taken.contains(&q)) {
                     taken.push(r);
                     removed = with;
                 }
             }
             for &r in &order {
-                if stands(r, &removed) && lines.of(r).iter().all(|&q| rm_of(q).is_none() || taken.contains(&q)) && !taken.iter().any(|&k| at_odds(r, k)) {
+                if stands(r, &removed) && lines.of(r).iter().all(|&q| rm_of(q).is_none() || taken.contains(&q)) {
                     followed.push(r);
                 }
             }

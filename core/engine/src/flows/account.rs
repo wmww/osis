@@ -166,6 +166,11 @@ impl AccountView {
         self.rule.chain().line(r)
     }
 
+    /// This node's account: the revocations it takes, in the order taken (`osis_perm::Chain::taken`).
+    pub(crate) fn taken(&self) -> &[CommitId] {
+        self.rule.chain().taken()
+    }
+
     /// Whether held rotation `r` was placed in conflict with the line this node follows.
     pub(crate) fn disregarded(&self, r: &CommitId) -> bool {
         self.rule.chain().disregarded(r)
@@ -527,7 +532,7 @@ impl Core {
             let Some(sigs) = self.ix.role_sigs.get(id) else { return BTreeSet::new() };
             r.names.iter().zip(sigs.merge.iter()).filter(|(n, s)| epochs.get(*n).is_some_and(|e: &EpochPublic| osis_commit::verify_merge(id, s, &e.signing))).map(|(n, _)| *n).collect()
         };
-        let rotations: Vec<Rotation<CommitId>> = rots.iter().map(|(id, at, r)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: signed(id, r) }).collect();
+        let rotations: Vec<Rotation<CommitId>> = rots.iter().map(|(id, at, r)| Rotation { id: *id, at: *at, supersedes: r.supersedes.iter().copied().collect(), names: r.names.iter().copied().collect(), signed: signed(id, r), takes: r.takes.iter().copied().collect() }).collect();
         // a node of the account reads D: who signed each rotation and each commit on D, whom
         // each removal removes and what its frontier covers (spec/permissions.md §5.4, Following,
         // at a node of P)

@@ -1240,3 +1240,64 @@ fn a_device_a_removed_node_paired_stays_as_its_remover_held_it_spec_permissions_
         }
     }
 }
+
+// spec/permissions.md §5.4 (Following, at a node of P): a device that took the other side's
+// revocation is that side, whoever signs. R (peer 1) removes X (peer 2); X, unaware, revokes R.
+// S (peer 3) rotated unaware (s1), then holds X's removal of R and its rotation as a header only
+// (no seed): it takes the revocation, and its next rotation (s2) is signed at its own s1,
+// supersedes nothing of R's and takes X's revocation. R and T (peer 0) never follow s2 (its seed
+// X holds); R's merge takes s1 in and rejects s2; S answers once, and neither answers the
+// other's answer again
+#[test]
+fn a_rotation_taking_the_thiefs_revocation_is_that_side_spec_permissions_5_4() {
+    let (mut lp, a, _) = world(4, 4);
+    let p = a.account;
+    let (r, x, s, t) = (1, 2, 3, 0);
+    let ra = remove(&mut lp, r, a.devices, x);
+    send(&mut lp, r, t, &ra.commits);
+    lp.advance(1000);
+    let rx = remove(&mut lp, x, a.devices, r);
+    let xr = rx.commits[1];
+    let s1 = lp.peers[s].engine.run(|tx| crate::flows::signing::rotate_in(tx, p, &[], &mut Done::default())).unwrap().unwrap();
+    lp.advance(1000);
+    send(&mut lp, x, s, &rx.commits[..1]);
+    let pk = lp.peers[x].engine.package(&xr).unwrap().unwrap();
+    let mut header = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    header.parts.clear();
+    lp.advance(1);
+    lp.peers[s].receive_with(&header.encode(), Vec::new(), &pk.lists).unwrap();
+    let v = lp.peers[s].engine.core.account_view(&p).unwrap();
+    assert!(v.rotation_counts(&xr) && v.taken() == [xr], "S takes X's revocation of R: heads {:?}", v.heads());
+    let s2 = lp.peers[s].engine.signing_due().unwrap().commits;
+    assert_eq!(s2.len(), 1, "S's line lacks the removal of R");
+    let s2 = s2[0];
+    let h = lp.peers[s].engine.header(&s2).unwrap();
+    let rh = h.rotation.clone().unwrap();
+    assert!(h.epoch == Some(s1) && rh.supersedes == vec![s1] && rh.takes == vec![xr], "{rh:?}");
+    for k in [r, t] {
+        for c in ra.commits.iter().chain(&rx.commits).chain([&s1, &s2]) {
+            let from = if ra.commits.contains(c) { r } else if *c == s1 || *c == s2 { s } else { x };
+            if from != k {
+                send(&mut lp, from, k, &[*c]);
+            }
+        }
+        let v = lp.peers[k].engine.core.account_view(&p).unwrap();
+        assert!(v.rotation_counts(&ra.commits[1]) && v.rotation_counts(&s1) && !v.rotation_counts(&s2), "peer {k}: heads {:?}", v.heads());
+    }
+    let m = lp.peers[r].engine.signing_due().unwrap().commits;
+    assert_eq!(m.len(), 1);
+    let rh = lp.peers[r].engine.header(&m[0]).unwrap().rotation.clone().unwrap();
+    assert!(rh.names.contains(&s1) && rh.supersedes.contains(&s2) && !rh.names.contains(&s2) && rh.takes.is_empty(), "{rh:?}");
+    send(&mut lp, r, t, &m);
+    assert_eq!(lp.peers[t].engine.core.account_view(&p).unwrap().heads(), vec![m[0]]);
+    send(&mut lp, r, s, &ra.commits);
+    send(&mut lp, r, s, &m);
+    let s3 = lp.peers[s].engine.signing_due().unwrap().commits;
+    assert_eq!(s3.len(), 1, "S answers R's line once");
+    let rh = lp.peers[s].engine.header(&s3[0]).unwrap().rotation.clone().unwrap();
+    assert!(rh.supersedes.contains(&m[0]) && rh.takes == vec![xr], "{rh:?}");
+    send(&mut lp, s, r, &s3);
+    assert!(lp.peers[r].engine.signing_due().unwrap().commits.is_empty(), "R answers no answer");
+    assert!(lp.peers[s].engine.signing_due().unwrap().commits.is_empty(), "nor S");
+    assert_eq!(lp.peers[r].engine.core.account_view(&p).unwrap().heads(), vec![m[0]]);
+}

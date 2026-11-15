@@ -16,9 +16,10 @@
 //! own line stands (every rotation on it minted by a node, none by a node an earlier revocation
 //! removed, off that removal's rotation's line), and it follows every rotation whose line
 //! stands: two of its devices' rotations made at once both count, and a plain fork of a removed
-//! device never outweighs its removal. A line at odds with a taken revocation's (a rotation on
-//! one supersedes one on the other unnamed: a device that took the other revocation first
-//! disowns what it disregards) is that other side: never followed, its revocations not taken. The nodes: those paired before the world, and every
+//! device never outweighs its removal. A rotation stands with the revocations on its line and
+//! those a rotation on its line takes (its maker took them off its line); one standing with a
+//! revocation not taken is that other side, whoever signed it: never followed, nor taken if it is
+//! a revocation itself (a rotation is held only once what it takes is). The nodes: those paired before the world, and every
 //! holder of a grant by another node no removal hits (a removal hits its node's grants its
 //! frontier does not cover); a rotation counts as held only once its minter is known as a node.
 //! D's roster (whom an honest rotation boxes) is the nodes but the removed. Followed rotations
@@ -40,9 +41,10 @@
 //! acts it rotates if it holds a counting head other than its preferred one whose seed it
 //! holds (naming it: a merge; one it cannot sign at is left to a node that can, as superseding
 //! it unnamed would reject a line it follows) or a rotation that does not count, that no
-//! counting one rejects and that it has not superseded before (superseding it unnamed: a
-//! rejection), and lists its own writes at every other epoch. A node of P on X's side
-//! switches to the honest line in the settle phase (its user, told).
+//! counting one rejects on its line and that it has not superseded before (superseding it
+//! unnamed: a rejection; one answer per line), takes the revocations it took off the new line,
+//! and lists its own writes at every other epoch. A node of P on X's side switches to the honest
+//! line in the settle phase (its user, told): A and T at once, B in a given round or never.
 //!
 //! Properties, at every node and every prefix of its receipts:
 //! - Revocation holds: where A's removal of X counts, no rotation X made after it counts, and
@@ -55,7 +57,8 @@
 //! - Seeds stay away from X: no rotation an honest node of P makes while X's removal counts
 //!   there boxes X or Z (Z paired in plain sight, its grant on the removal's frontier, aside:
 //!   stated limit), and once settled no honest-side head's seed is X's.
-//! - Settled (everything delivered, honest nodes acted in turn): every node but X holds the warning
+//! - Settled (everything delivered, honest nodes acted in turn, none rotating in the last round):
+//!   every node but X holds the warning
 //!   when X made a rotation after its removal; every node on the honest side (A's removal
 //!   counts) has one head, the same one, and counts every honest write (B's writes made
 //!   unaware, at the first epoch and at its own rotation, among them).
@@ -85,19 +88,20 @@ pub const NEVER: u32 = u32::MAX;
 /// nodes judge as outsiders do (every beside rotation ends another); 3 any key actor that signs
 /// is a node and D's roster reads every grant at a counting epoch (a removed node's own
 /// included); 4 first-seen grants: a removed node's grant is hit only when held after its
-/// removal or signed beside it (notes/engine-validity-epochs.md, Sides: rejected).
+/// removal or signed beside it (notes/engine-validity-epochs.md, Sides: rejected); 5 P's nodes
+/// ignore what a rotation takes (they read only the revocations on its line); 6 a node answers
+/// every disregarded rotation no counting one rejects, not one per line.
 pub static CONTROL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-/// `forks-stubborn`: in some worlds B's user never switches (issues/account-side-stubborn-node.md:
-/// fails today).
-pub static STUBBORN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const NAMES: [&str; N] = ["A", "B", "X", "T", "R1", "R2", "Z"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
     /// Signed at `at` (and at each fork it names), superseding `sup`, accepting the forks
     /// `names`, carrying the removal of `removes` from the devices list (signed at `at`) with
-    /// its frontier `covers`: the removed node's D commits its remover held.
-    Rot { at: u32, names: Vec<u32>, sup: Vec<u32>, removes: Option<usize>, covers: Vec<u32> },
+    /// its frontier `covers`: the removed node's D commits its remover held. `takes`: the
+    /// revocations its maker took that are not on its line (it stands with them: read only at
+    /// P's nodes).
+    Rot { at: u32, names: Vec<u32>, sup: Vec<u32>, removes: Option<usize>, covers: Vec<u32>, takes: Vec<u32> },
     /// A grant of D to `to` (pairing), signed at `epoch` by `signer`.
     Grant { to: usize },
     /// A commit creating D that grants it to `to`: the account's first nodes are paired by the
@@ -132,8 +136,11 @@ pub struct World {
     pub switches: Vec<(usize, u32, u32)>,
     /// A's removal of X.
     pub removal: u32,
-    /// B's user never switches: a node of P that took X's side first stays there.
-    pub stubborn: bool,
+    /// The settle round in which B's user switches to A's removal when B took X's side first
+    /// (`None`: never, B stays on X's side for good).
+    pub b_switch: Option<u32>,
+    /// Set by `settle`: an honest node still rotated in its last round.
+    pub restless: bool,
 }
 
 impl World {
@@ -149,6 +156,12 @@ impl World {
     fn covers(&self, id: u32) -> &[u32] {
         match &self.item(id).kind {
             Kind::Rot { covers, .. } => covers,
+            _ => &[],
+        }
+    }
+    fn takes(&self, id: u32) -> &[u32] {
+        match &self.item(id).kind {
+            Kind::Rot { takes, .. } => takes,
             _ => &[],
         }
     }
@@ -201,6 +214,8 @@ pub struct View {
     pub chosen: Option<u32>,
     /// At a node of P: a followed rotation rejects another (a device that sided otherwise).
     pub cross: bool,
+    /// At a node of P: the revocations it takes, in the order taken.
+    pub taken: Vec<u32>,
 }
 
 impl View {
@@ -249,8 +264,10 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
             }
         }
     }
-    // with its chain (a merge with every fork it names) and, at a node of P, its minter known,
-    // and when it came to be held so: the latest receipt on its line or of its minter's grant
+    // with its chain (a merge with every fork it names) and, at a node of P, its minter known
+    // and every revocation it takes held so, and when it came to be held so: the latest receipt
+    // on its line, of a revocation it takes or of its minter's grant
+    let reads_takes = own && control != 5;
     let mut when: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
     when.insert(0, (0, 0));
     loop {
@@ -258,7 +275,8 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
             let (at, names, ..) = w.rot(*id)?;
             let i = w.item(*id);
             let first = known.get(&i.signer).map_or((i.recv[v], i.id), |k| (i.recv[v], i.id).max(*k));
-            std::iter::once(&at).chain(names).map(|p| when.get(p).copied()).try_fold(first, |a, t| t.map(|t| a.max(t))).map(|t| (*id, t))
+            let takes = if reads_takes { w.takes(*id) } else { &[] };
+            std::iter::once(&at).chain(names).chain(takes).map(|p| when.get(p).copied()).try_fold(first, |a, t| t.map(|t| a.max(t))).map(|t| (*id, t))
         }).collect();
         if more.is_empty() {
             break;
@@ -344,38 +362,34 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
                 nodes.contains(&m) && removals.iter().filter(|(y, ..)| *y == m).all(|(_, _, rr)| *q != *rr && j0.on(*q, *rr))
             })
         };
-        // q disowns p: supersedes it unnamed (neither the epoch it is signed at nor a fork it
-        // accepts): its minter disregarded p. An honest rotation disowns only what its minter
-        // disregards, and unlike rejecting this reads no other rotation held
-        let disowns = |q: u32, p: u32| -> bool {
-            let (at, names, sup, _) = w.rot(q).unwrap();
-            p != at && sup.contains(&p) && !(names.contains(&p) && j0.chain.contains(&p))
+        // the revocations r stands with: those on its line and those a rotation on its line
+        // takes (its maker took them; control 5: those on its line only)
+        let revocation = |q: &u32| matches!(w.rot(*q), Some((_, _, _, Some(_))));
+        let with_of = |r: u32| -> BTreeSet<u32> {
+            j0.line(r).iter().flat_map(|q| std::iter::once(*q).filter(|q| revocation(q)).chain(if reads_takes { w.takes(*q).to_vec() } else { vec![] })).collect()
         };
-        // a rotation on r's line disowns or is disowned by one on k's (control 5: never)
-        let at_odds = |r: u32, k: u32| control != 5 && j0.line(r).iter().any(|q| j0.line(k).iter().any(|p| disowns(*q, *p) || disowns(*p, *q)));
         let mut taken: Vec<u32> = Vec::new();
         let mut removals: Vec<(usize, u32, u32)> = Vec::new();
         for &r in &order {
             let Some((at, _, _, Some(y))) = w.rot(r) else { continue };
             let mine = [(y, at, r)];
             let with: Vec<(usize, u32, u32)> = removals.iter().chain(&mine).copied().collect();
-            if stands(r, &with) && taken.iter().all(|q| stands(*q, &mine) && !at_odds(r, *q)) {
+            if stands(r, &with) && taken.iter().all(|q| stands(*q, &mine)) && with_of(r).iter().all(|q| *q == r || taken.contains(q)) {
                 taken.push(r);
                 removals.push((y, at, r));
                 j.removed.insert((y, at));
             }
         }
-        let revocation = |q: &u32| matches!(w.rot(*q), Some((_, _, _, Some(_))));
         for &r in &order {
-            // a line at odds with a taken revocation's is a side taken otherwise (a device that
-            // took another revocation first supersedes what it disregards unnamed): it never
-            // counts beside it
-            if stands(r, &removals) && j0.line(r).iter().filter(|q| revocation(q)).all(|q| taken.contains(q)) && !taken.iter().any(|k| at_odds(r, *k)) {
+            // a rotation standing with a revocation not taken here is a side taken otherwise
+            // (its maker took that revocation): it never counts here
+            if stands(r, &removals) && with_of(r).iter().all(|q| taken.contains(q)) {
                 followed.insert(r);
             } else {
                 j.disregarded.insert(r);
             }
         }
+        j.taken = taken;
     }
     for &r in order.iter().filter(|_| !node_rule) {
         placed.insert(r);
@@ -513,6 +527,13 @@ fn has_seed(w: &World, j: &View, n: usize, e: u32) -> bool {
     e == 0 || j.chain.contains(&e) && (w.item(e).boxed[n] || n == X && w.item(e).boxed[Z])
 }
 
+/// The revocations a rotation of a node judging `j`, signed at `h` and naming `names`, takes:
+/// those it took that are not on that rotation's line.
+pub fn takes_of(j: &View, h: u32, names: &[u32]) -> Vec<u32> {
+    let on = |t: u32| std::iter::once(h).chain(names.iter().copied()).any(|p| j.on(t, p));
+    j.taken.iter().copied().filter(|t| !on(*t)).collect()
+}
+
 /// Honest node `n` acts at `now`: rotates if owed (a removal, a fork among counting heads, an
 /// unanswered rotation that does not count), writes, lists its own writes elsewhere.
 pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool) -> Vec<u32> {
@@ -525,9 +546,11 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
     // a counting head it cannot sign at (its seed not boxed here) is left to a node that can:
     // superseding it unnamed would reject a line this node follows
     let others: Vec<u32> = j.heads.iter().copied().filter(|x| *x != h && *x != 0 && has_seed(w, &j, n, *x)).collect();
-    // answered: a counting rotation rejects it, or this node superseded it already (a
-    // rotation contested from below cannot be rejected from there: once is enough)
-    let unanswered: Vec<u32> = j.chain.iter().copied().filter(|q| !j.counting.contains(q) && !j.rejected.contains(q) && !w.items.iter().any(|i| i.author == n && i.recv[n] <= now && matches!(&i.kind, Kind::Rot { sup, .. } if sup.contains(q)))).collect();
+    // answered: a counting rotation rejects one on its line (every reader following it holds
+    // that rejection: one answer per line, so two sides never answer each other's answers), or
+    // this node superseded it already (a rotation contested from below cannot be rejected from
+    // there: once is enough)
+    let unanswered: Vec<u32> = j.chain.iter().copied().filter(|q| !j.counting.contains(q) && !(if CONTROL.load(std::sync::atomic::Ordering::Relaxed) == 6 { j.rejected.contains(q) } else { j.line(*q).iter().any(|x| j.rejected.contains(x)) }) && !w.items.iter().any(|i| i.author == n && i.recv[n] <= now && matches!(&i.kind, Kind::Rot { sup, .. } if sup.contains(q)))).collect();
     let mut head = h;
     if removes.is_some() || !others.is_empty() || !unanswered.is_empty() {
         let names = others.clone();
@@ -538,7 +561,8 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
         }
         // the removal's frontier: the removed node's D commits held here, and the commits creating D
         let covers = removes.map(|y| w.items.iter().filter(|i| i.recv[n] <= now && (i.signer == y && matches!(i.kind, Kind::Grant { .. }) || matches!(i.kind, Kind::Creation { .. }))).map(|i| i.id).collect()).unwrap_or_default();
-        head = w.add(Kind::Rot { at: h, names, sup, removes, covers }, n, h, now, boxed);
+        let takes = takes_of(&j, h, &names);
+        head = w.add(Kind::Rot { at: h, names, sup, removes, covers, takes }, n, h, now, boxed);
         made.push(head);
     }
     if write {
@@ -576,7 +600,7 @@ pub fn random_world(rng: &mut Rng) -> World {
     let mut w = World::default();
     let all = [true; N];
     let mut floor = [0u32; N];
-    w.stubborn = STUBBORN.load(std::sync::atomic::Ordering::Relaxed) && rng.below(3) == 0;
+    w.b_switch = [None, Some(0), Some(1), Some(3)][rng.below(4)];
     // B offline until it reconnects
     let b_off = rng.below(3) > 0;
     if b_off {
@@ -587,7 +611,7 @@ pub fn random_world(rng: &mut Rng) -> World {
         let mut bx = all;
         bx[R1] = false;
         bx[R2] = false;
-        let id = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, X, 0, 0, bx);
+        let id = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, X, 0, 0, bx);
         deliver(&mut w, &[id], rng, &floor);
     }
     // X pairs Z in plain sight, sometimes (the removal's frontier covers it if A holds it by then)
@@ -601,7 +625,7 @@ pub fn random_world(rng: &mut Rng) -> World {
         bx[R1] = false;
         bx[R2] = false;
         bx[Z] = false;
-        let id = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, A, 0, 0, bx);
+        let id = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, A, 0, 0, bx);
         deliver(&mut w, &[id], rng, &floor);
     }
     // A writes, then removes X at 1
@@ -644,7 +668,11 @@ pub fn random_world(rng: &mut Rng) -> World {
                         // (Z paired in plain sight is a node: what it signs is the stated limit)
                         let signer = if rng.below(2) == 0 || w.z_paired() { X } else { Z };
                         let covers = removes.map(|y| w.items.iter().filter(|i| i.signer == y && matches!(i.kind, Kind::Grant { .. }) || matches!(i.kind, Kind::Creation { .. })).map(|i| i.id).collect()).unwrap_or_default();
-                        let r = w.add_as(Kind::Rot { at: e, names, sup, removes, covers }, X, signer, e, t, bx);
+                        // it may claim to take any revocation it holds (A's removal of it
+                        // among them, to pass as the honest side)
+                        let revs: Vec<u32> = j.chain.iter().copied().filter(|r| matches!(w.rot(*r), Some((_, _, _, Some(_))))).chain([w.removal]).collect();
+                        let takes = if rng.below(3) == 0 { vec![revs[rng.below(revs.len())]] } else { vec![] };
+                        let r = w.add_as(Kind::Rot { at: e, names, sup, removes, covers, takes }, X, signer, e, t, bx);
                         made.push(r);
                         if rng.below(2) == 0 {
                             made.push(w.add(Kind::Content, X, r, t, [false; N]));
@@ -692,7 +720,8 @@ pub fn random_world(rng: &mut Rng) -> World {
                     for m in &j.roster {
                         bx[*m] = true;
                     }
-                    let r = w.add(Kind::Rot { at: h, names: vec![], sup: vec![h], removes: None, covers: vec![] }, B, h, t, bx);
+                    let takes = takes_of(&j, h, &[]);
+                    let r = w.add(Kind::Rot { at: h, names: vec![], sup: vec![h], removes: None, covers: vec![], takes }, B, h, t, bx);
                     let c = w.add(Kind::Content, B, r, t, [false; N]);
                     deliver(&mut w, &[r, c], rng, &floor);
                 }
@@ -710,8 +739,13 @@ pub fn random_world(rng: &mut Rng) -> World {
     w
 }
 
-/// Everything delivered at `settle`, then honest nodes of P act in turn (a node of P on X's
-/// side first switches to A's removal, its user told) until none owes anything.
+/// Rounds of `settle`: enough for B's latest switch and the merges after it, and one more to
+/// see nothing is owed.
+pub const ROUNDS: u32 = 6;
+
+/// Everything delivered at `settle`, then honest nodes of P act in turn, `ROUNDS` rounds (A and
+/// T on X's side switch to A's removal at once, B in round `b_switch` or never: users told)
+/// until none owes anything.
 pub fn settle(w: &mut World, settle: u32) -> u32 {
     for i in w.items.iter_mut() {
         let d = matches!(i.kind, Kind::Grant { .. } | Kind::Creation { .. });
@@ -722,17 +756,21 @@ pub fn settle(w: &mut World, settle: u32) -> u32 {
         }
     }
     let mut t = settle;
-    for _ in 0..4 {
+    for round in 0..ROUNDS {
         for n in [A, B, T] {
             t += 1;
             let j = judge(w, n, t);
-            if !j.counting.contains(&w.removal) && !(n == B && w.stubborn) {
+            let switches = if n == B { w.b_switch.is_some_and(|k| round >= k) } else { true };
+            if !j.counting.contains(&w.removal) && switches {
                 w.switches.push((n, t, w.removal));
             }
             if n == T {
                 continue;
             }
             let made = act(w, n, t, None, false);
+            if round + 1 == ROUNDS && made.iter().any(|id| matches!(w.item(*id).kind, Kind::Rot { .. })) {
+                w.restless = true;
+            }
             for id in made {
                 w.items[id as usize - 1].recv = [t; N];
             }
@@ -764,6 +802,13 @@ pub struct Stats {
     /// A rotation arriving that stops another rejecting (one signed at its epoch on a line
     /// with the rejected): the warning goes until a rotation rejects again.
     pub warning_went: u64,
+    /// Worlds where an honest rotation takes a revocation off its line; of those, one X made.
+    pub taking: u64,
+    pub taking_x: u64,
+    /// Worlds settled with B on X's side for good (its user never switching), and with B
+    /// switching after a settle round in which it acted on X's side.
+    pub b_stays: u64,
+    pub b_late: u64,
 }
 
 pub fn check(w0: &World, st: &mut Stats) {
@@ -793,6 +838,22 @@ pub fn check(w0: &World, st: &mut Stats) {
             st.fail.push((s, w.clone()));
         }
     };
+    let takes_x = |i: &Item| matches!(&i.kind, Kind::Rot { takes, .. } if takes.iter().any(|t| w.item(*t).author == X));
+    if w.items.iter().any(|i| !i.hostile && i.author != X && !w.takes(i.id).is_empty()) {
+        st.taking += 1;
+        if w.items.iter().any(|i| !i.hostile && i.author != X && takes_x(i)) {
+            st.taking_x += 1;
+        }
+    }
+    let b_x_side = |t: u32| !judge(&w, B, t).counting.contains(&w.removal);
+    match w.b_switch {
+        None if b_x_side(end) => st.b_stays += 1,
+        Some(k) if k > 0 && b_x_side(12 + 3 * k) => st.b_late += 1,
+        _ => {}
+    }
+    if w.restless {
+        fail(format!("honest nodes still rotating after {ROUNDS} settle rounds"), st);
+    }
     // seeds stay away from X: a rotation an honest node makes while X's removal counts there
     // boxes neither X nor a key actor X made up (Z paired in plain sight aside: stated limit)
     let leaks = |b: &[bool; N]| b[X] || b[Z] && !w.z_paired();
@@ -935,6 +996,10 @@ pub fn run(samples: u64) -> u64 {
         }
         all.failures += st.failures;
         all.warning_went += st.warning_went;
+        all.taking += st.taking;
+        all.taking_x += st.taking_x;
+        all.b_stays += st.b_stays;
+        all.b_late += st.b_late;
         all.fail.extend(st.fail);
     }
     let fails = all.failures;
@@ -979,7 +1044,7 @@ mod tests {
     fn fork(w: &mut World, at: u32, t: u32, removes: Option<usize>) -> u32 {
         let mut bx = [false; N];
         bx[X] = true;
-        w.add(Kind::Rot { at, names: vec![], sup: vec![at], removes, covers: vec![] }, X, at, t, bx)
+        w.add(Kind::Rot { at, names: vec![], sup: vec![at], removes, covers: vec![], takes: vec![] }, X, at, t, bx)
     }
 
     // A removes X; R1 holds the removal first. X forks from the first epoch again and again,
@@ -1046,7 +1111,7 @@ mod tests {
         let c1 = w.add(Kind::Content, B, 0, 3, [false; N]);
         let mut bx = [false; N];
         bx[..OWN].fill(true);
-        let b = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, B, 0, 4, bx);
+        let b = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, B, 0, 4, bx);
         let c2 = w.add(Kind::Content, B, b, 5, [false; N]);
         all_at(&mut w, &[c1, b, c2], 10);
         let j = judge(&w, R1, 10);
@@ -1097,7 +1162,7 @@ mod tests {
         let g = w.add_as(Kind::Grant { to: Z }, X, X, 0, 2, [false; N]);
         all_at(&mut w, &[g], 3);
         assert!(judge(&w, B, 3).roster.contains(&Z), "before the removal B takes Z as a node");
-        let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: Some(A), covers: vec![] }, X, Z, 0, 6, boxed_to(&[X]));
+        let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: Some(A), covers: vec![], takes: vec![] }, X, Z, 0, 6, boxed_to(&[X]));
         all_at(&mut w, &[f], 7);
         for n in [A, B, T] {
             let j = judge(&w, n, 7);
@@ -1122,7 +1187,7 @@ mod tests {
             to(&mut w, *id, B, 6);
             to(&mut w, *id, X, NEVER);
         }
-        let rb = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, B, 0, 3, boxed_to(&[A, B, X, T]));
+        let rb = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, B, 0, 3, boxed_to(&[A, B, X, T]));
         all_at(&mut w, &[rb], 4);
         let g1 = w.add_as(Kind::Grant { to: X }, X, X, rb, 5, [false; N]);
         let g2 = w.add_as(Kind::Grant { to: X }, X, Z, rb, 5, [false; N]);
@@ -1150,7 +1215,7 @@ mod tests {
             w.removal = made[0];
             all_at(&mut w, &made, 2);
             assert_eq!(w.z_paired(), covered);
-            let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, X, Z, 0, 3, boxed_to(&[X, Z]));
+            let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, X, Z, 0, 3, boxed_to(&[X, Z]));
             all_at(&mut w, &[f], 4);
             for n in [A, B, T] {
                 let j = judge(&w, n, 4);
@@ -1166,8 +1231,8 @@ mod tests {
     #[test]
     fn a_removal_merging_its_targets_earlier_rotation_stands() {
         let mut w = World::default();
-        let a0 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, A, 0, 0, boxed_to(&[A, B, X, T]));
-        let x0 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, X, 0, 0, boxed_to(&[A, B, X, T]));
+        let a0 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, A, 0, 0, boxed_to(&[A, B, X, T]));
+        let x0 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, X, 0, 0, boxed_to(&[A, B, X, T]));
         all_at(&mut w, &[a0, x0], 0);
         let made = act(&mut w, A, 1, Some(X), false);
         w.removal = made[0];
@@ -1191,7 +1256,7 @@ mod tests {
         w.removal = made[0];
         all_at(&mut w, &made, 5);
         to(&mut w, made[0], X, NEVER);
-        let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: Some(A), covers: vec![] }, X, Z, 0, 2, boxed_to(&[X]));
+        let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: Some(A), covers: vec![], takes: vec![] }, X, Z, 0, 2, boxed_to(&[X]));
         all_at(&mut w, &[f], 3);
         let g = w.add_as(Kind::Grant { to: Z }, X, X, 0, 2, [false; N]);
         all_at(&mut w, &[g], 5);
@@ -1212,7 +1277,7 @@ mod tests {
         let c = w.add_as(Kind::Creation { to: Z }, X, Z, 0, 2, [false; N]);
         all_at(&mut w, &[c], 3);
         assert!(judge(&w, B, 3).roster.contains(&Z));
-        let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, X, Z, 0, 6, boxed_to(&[X, Z]));
+        let f = w.add_as(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, X, Z, 0, 6, boxed_to(&[X, Z]));
         all_at(&mut w, &[f], 7);
         for n in [A, B, T] {
             let j = judge(&w, n, 7);
@@ -1228,9 +1293,9 @@ mod tests {
     #[test]
     fn a_device_that_switches_carries_no_rejection_of_its_new_side() {
         let mut w = World::default();
-        let r1 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, A, 0, 0, boxed_to(&[A, B, X, T]));
+        let r1 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, A, 0, 0, boxed_to(&[A, B, X, T]));
         all_at(&mut w, &[r1], 0);
-        let r10 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![] }, B, 0, 1, boxed_to(&[A, B, X, T]));
+        let r10 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, B, 0, 1, boxed_to(&[A, B, X, T]));
         all_at(&mut w, &[r10], 6);
         let made = act(&mut w, A, 2, Some(X), false);
         w.removal = made[0];
@@ -1257,6 +1322,66 @@ mod tests {
         for n in [A, B, T, R1] {
             let j = judge(&w, n, 13);
             assert!(j.counting.contains(&m[0]) && j.valid.contains(&cb) && j.heads.len() == 1, "{}: {j:?}", NAMES[n]);
+        }
+    }
+
+    // B, offline, rotates unaware (rb0), then holds X's revocation of A (f) before A's removal of
+    // X, so it takes f, and removes T unaware (rb1, signed at its own rb0, boxing B and X):
+    // rb1 disowns nothing of A's, but it takes f. A and T (on A's side) never follow it, so no
+    // head of theirs is boxed to X; A answers it once, B answers once, and neither answers an
+    // answer again. Once B's user switches, B follows A's line and its listing there saves its write
+    // at rb1
+    #[test]
+    fn a_device_that_took_the_thiefs_revocation_is_that_side_whoever_signs() {
+        let mut w = World::default();
+        let rb0 = w.add(Kind::Rot { at: 0, names: vec![], sup: vec![0], removes: None, covers: vec![], takes: vec![] }, B, 0, 0, boxed_to(&[A, B, X, T]));
+        all_at(&mut w, &[rb0], 0);
+        let made = act(&mut w, A, 1, Some(X), false);
+        w.removal = made[0];
+        all_at(&mut w, &made, 2);
+        for id in &made {
+            to(&mut w, *id, B, 10);
+            to(&mut w, *id, X, NEVER);
+        }
+        let f = fork(&mut w, 0, 2, Some(A));
+        all_at(&mut w, &[f], 3);
+        let b = act(&mut w, B, 4, Some(T), true);
+        let (rb1, cb) = (b[0], b[1]);
+        assert!(matches!(&w.item(rb1).kind, Kind::Rot { at, sup, takes, .. } if *at == rb0 && *sup == vec![rb0] && *takes == vec![f]), "{:?}", w.item(rb1));
+        assert!(w.item(rb1).boxed[X] && !w.item(rb1).boxed[A]);
+        all_at(&mut w, &b, 5);
+        for n in [A, T] {
+            let j = judge(&w, n, 5);
+            assert!(j.counting.contains(&w.removal) && !j.counting.contains(&rb1) && !j.heads.contains(&rb1), "{}: {j:?}", NAMES[n]);
+        }
+        // the test reaches the case: read without what rb1 takes, A follows it, a head boxed to X
+        let mut blind = w.clone();
+        if let Kind::Rot { takes, .. } = &mut blind.items[rb1 as usize - 1].kind {
+            takes.clear();
+        }
+        assert!(judge(&blind, A, 5).heads.contains(&rb1));
+        let a1 = act(&mut w, A, 6, None, false);
+        assert!(matches!(&w.item(a1[0]).kind, Kind::Rot { sup, names, .. } if sup.contains(&rb1) && names.is_empty()) && !w.item(a1[0]).boxed[X]);
+        all_at(&mut w, &a1, 7);
+        let b2 = act(&mut w, B, 11, None, false);
+        assert!(matches!(&w.item(b2[0]).kind, Kind::Rot { sup, takes, .. } if sup.contains(&a1[0]) && *takes == vec![f]), "{:?}", w.item(b2[0]));
+        all_at(&mut w, &b2, 12);
+        let rots = |w: &World, made: &[u32]| made.iter().filter(|id| matches!(w.item(**id).kind, Kind::Rot { .. })).count();
+        let a2 = act(&mut w, A, 13, None, false);
+        let b3 = act(&mut w, B, 13, None, false);
+        assert_eq!((rots(&w, &a2), rots(&w, &b3)), (0, 0), "one answer per line");
+        for n in [A, T] {
+            let j = judge(&w, n, 13);
+            assert!(j.heads == [a1[0]].into() && j.warning, "{}: {j:?}", NAMES[n]);
+        }
+        w.switches.push((B, 14, w.removal));
+        // A's answer already rejects B's old side: B owes no rotation, only its listing at A's head
+        let m = act(&mut w, B, 15, None, false);
+        assert!(rots(&w, &m) == 0 && m.iter().all(|id| w.item(*id).epoch == a1[0]), "{m:?}");
+        all_at(&mut w, &m, 16);
+        for n in [A, B, T, R1] {
+            let j = judge(&w, n, 16);
+            assert!(j.heads == [a1[0]].into() && j.valid.contains(&cb), "{}: {j:?}", NAMES[n]);
         }
     }
 }

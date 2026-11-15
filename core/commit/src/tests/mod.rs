@@ -65,7 +65,7 @@ pub(crate) fn sample_header() -> Header {
 fn rotation_header_spec_wire_4() {
     use crate::header::RotationHeader;
     let keys = osis_crypto::AccountEpochKeys::from_seed(&Secret32::from_bytes([8; 32]));
-    let rot = RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: vec![crate::FIRST_EPOCH, CommitId([3; 32])], names: vec![CommitId([3; 32])], list_root: [6; 32] };
+    let rot = RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: vec![crate::FIRST_EPOCH, CommitId([3; 32])], names: vec![CommitId([3; 32])], takes: vec![CommitId([4; 32])], list_root: [6; 32] };
     let mut h = sample_header();
     h.epoch = Some(crate::FIRST_EPOCH);
     assert_eq!(Header::decode(&h.encode()).unwrap(), h);
@@ -88,6 +88,8 @@ fn rotation_header_spec_wire_4() {
     r.epoch = Some(CommitId([9; 32]));
     assert!(r.validate().is_err(), "signed at an epoch it does not supersede");
     r.epoch = Some(crate::FIRST_EPOCH);
+    r.rotation = Some(RotationHeader { takes: vec![CommitId([5; 32]), CommitId([4; 32])], ..rot.clone() });
+    assert!(r.validate().is_err(), "takes not ascending");
     r.rotation = Some(RotationHeader { supersedes: vec![CommitId([3; 32]), crate::FIRST_EPOCH], ..rot });
     assert!(r.validate().is_err(), "supersedes not ascending");
 }

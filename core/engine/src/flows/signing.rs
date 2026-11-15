@@ -82,6 +82,11 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
             (Some((first, k)), sup.clone(), heads.iter().skip(1).map(|x| x.1.signing.clone()).collect(), sup)
         }
     };
+    // the revocations this node took off the new rotation's line: it stands with them
+    // (spec/permissions.md §5.4), so a node that took another revocation reads it as that side
+    let on_line = |t: &CommitId| supersedes.iter().any(|b| b == t || v.line(b).is_some_and(|l| l.contains(t)));
+    let mut takes: Vec<CommitId> = v.taken().iter().copied().filter(|t| !on_line(t)).collect();
+    takes.sort();
     let (mut supersedes, mut closes) = (supersedes, closes);
     for r in reject {
         if !supersedes.contains(&r) {
@@ -157,7 +162,7 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
     let lists = leaves.into_iter().zip(paths).map(|((i, l), path)| (i, path.siblings, l)).collect();
     let mut sup = supersedes;
     sup.sort();
-    m.rotation = Some(AccountRotation { header: RotationHeader { signing_key: signing, kem_key: keys.kem.public().clone(), supersedes: sup, names, list_root: root }, merge_keys, lists, at });
+    m.rotation = Some(AccountRotation { header: RotationHeader { signing_key: signing, kem_key: keys.kem.public().clone(), supersedes: sup, names, takes, list_root: root }, merge_keys, lists, at });
     // the new seed is taken up from `account.0` as the commit applies (`take_seeds`)
     Engine::commit_tx(tx, m)
 }
@@ -480,11 +485,14 @@ fn mergeable(v: &super::account::AccountView, held: &super::account::HeldAccount
 }
 
 /// The held rotations of this node's account this node disregards (placed in conflict with the
-/// line it follows: a removed node's fork, one no node of the account minted) that no counting
-/// rotation D's roster authorizes supersedes: superseded unnamed by its next rotation, so every
-/// reader that followed one is told (spec/permissions.md §5.4, Warning).
+/// line it follows: a removed node's fork, one no node of the account minted, another side's)
+/// with no disregarded rotation on their line that a counting rotation D's roster authorizes
+/// supersedes: superseded unnamed by its next rotation, so every reader that followed one is
+/// told (spec/permissions.md §5.4, Warning). One answer per line: a reader following it holds
+/// that rejection already, so two sides never answer each other's answers.
 fn unanswered(v: &super::account::AccountView) -> Vec<CommitId> {
-    v.rotation_ids().into_iter().filter(|r| v.disregarded(r) && !v.superseded_by_authorized(r)).collect()
+    let answered = |q: &CommitId| v.disregarded(q) && v.superseded_by_authorized(q);
+    v.rotation_ids().into_iter().filter(|r| v.disregarded(r) && !v.line(r).into_iter().flatten().any(answered)).collect()
 }
 
 /// What a node of this node's account owes its signing chain (spec/permissions.md §3, §5.5),

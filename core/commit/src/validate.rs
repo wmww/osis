@@ -140,7 +140,7 @@ impl Header {
             if kind != Kind::Role {
                 return Err(Error::Invalid("rotation outside a role commit"));
             }
-            ord(strictly_ascending(&r.supersedes, |c| *c) && strictly_ascending(&r.names, |c| *c), "rotation lists not sorted and distinct")?;
+            ord(strictly_ascending(&r.supersedes, |c| *c) && strictly_ascending(&r.names, |c| *c) && strictly_ascending(&r.takes, |c| *c), "rotation lists not sorted and distinct")?;
             if !self.epoch.is_some_and(|e| r.supersedes.contains(&e)) {
                 return Err(Error::Invalid("rotation not superseding the epoch it is signed at"));
             }

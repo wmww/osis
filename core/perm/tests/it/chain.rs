@@ -13,7 +13,7 @@ fn set(v: &[u32]) -> BTreeSet<u32> {
 
 /// Rotation `id` signed at `at`, superseding `sup`, naming `names` each with its signature.
 fn rot(id: u32, at: u32, sup: &[u32], names: &[u32]) -> Rotation<u32> {
-    Rotation { id, at, supersedes: set(sup), names: set(names), signed: set(names) }
+    Rotation { id, at, supersedes: set(sup), names: set(names), signed: set(names), takes: BTreeSet::new() }
 }
 
 /// Outside the account, held in the order `received`, `chosen` its user's choice.
@@ -247,17 +247,29 @@ fn a_removed_nodes_grant_to_itself_is_no_readd() {
 }
 
 /// A rotates (1) and removes X (3, at 1); B rotated unaware (2) and took X's revocation of A (4)
-/// first, so its next rotation (5, at 2) supersedes A's 1 unnamed: it disowns the line A took.
-/// At A, holding 3 first, 5 is that side and never counts beside it (spec/permissions.md §5.4,
-/// Following, at a node of P); at B once its user chooses 3 the same holds, so B's merge names
-/// its 2 alone and carries no rejection of A's line to readers outside.
+/// first, so its next rotation (5, at 2, superseding only 2) takes 4. At A, holding 3 first, 5
+/// stands with a revocation A does not take: that side, never counting beside 3, though nothing
+/// on its line is X's (spec/permissions.md §5.4, Following, at a node of P). Read without what it
+/// takes, 5 would be an honest fork at A, a head boxed to X. At B once its user chooses 3 the
+/// same holds, so B's merge names its 2 alone. At a node of P, 5 is held only once 4 is.
 #[test]
-fn a_rotation_disowning_a_taken_revocations_line_is_the_other_side() {
-    let rots = vec![rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 1, &[1], &[]), rot(4, 0, &[0], &[]), rot(5, 2, &[2, 1], &[])];
+fn a_rotation_taking_a_revocation_not_taken_here_is_the_other_side() {
+    let mut r5 = rot(5, 2, &[2], &[]);
+    r5.takes = set(&[4]);
+    let rots = vec![rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 1, &[1], &[]), rot(4, 0, &[0], &[]), r5.clone()];
     let minted = [(1, 'A'), (2, 'B'), (3, 'A'), (4, 'X'), (5, 'B')];
     let d = devices(&minted, &[(3, 'X'), (4, 'A')], &[]);
     let a = Chain::new(0, rots.clone(), None, &rec(&[1, 3, 4, 2, 5]), Some(&d));
-    assert!(a.counts(&3) && a.counts(&2) && !a.counts(&4) && !a.counts(&5), "A: heads {:?}", a.heads());
+    assert!(a.counts(&3) && a.counts(&2) && !a.counts(&4) && !a.counts(&5) && a.heads() == &set(&[2, 3]), "A: heads {:?}", a.heads());
+    let mut blind = rots.clone();
+    blind[4].takes.clear();
+    let a = Chain::new(0, blind, None, &rec(&[1, 3, 4, 2, 5]), Some(&d));
+    assert!(a.counts(&5) && a.heads() == &set(&[3, 5]), "without what 5 takes: heads {:?}", a.heads());
+    let early: Vec<Rotation<u32>> = rots.iter().filter(|r| r.id != 4).cloned().collect();
+    let a = Chain::new(0, early, None, &rec(&[1, 3, 2, 5]), Some(&d));
+    assert!(!a.holds(&5) && a.holds(&2), "5 waits for 4 at a node of P");
+    let outside = Chain::new(0, rots.iter().filter(|r| r.id != 4).cloned(), None, &rec(&[1, 3, 2, 5]), None::<&Devices<u32, char>>);
+    assert!(outside.holds(&5), "outside P what a rotation takes is not read");
     let b = Chain::new(0, rots.clone(), None, &rec(&[1, 2, 4, 5, 3]), Some(&d));
     assert!(b.counts(&4) && b.counts(&5) && !b.counts(&3), "B before its switch");
     let b = Chain::new(0, rots, Some(3), &rec(&[1, 2, 4, 5, 3]), Some(&d));
@@ -271,7 +283,7 @@ fn a_rotation_disowning_a_taken_revocations_line_is_the_other_side() {
 fn forks_chain(w: &forks::World, v: usize, now: u32, chosen: Option<u32>) -> Chain<u32> {
     let held: Vec<&forks::Item> = w.items.iter().filter(|i| i.recv[v] <= now).collect();
     let rots: Vec<Rotation<u32>> = held.iter().filter_map(|i| match &i.kind {
-        forks::Kind::Rot { at, names, sup, .. } => Some(Rotation { id: i.id, at: *at, supersedes: sup.iter().copied().collect(), names: names.iter().copied().collect(), signed: names.iter().copied().collect() }),
+        forks::Kind::Rot { at, names, sup, takes, .. } => Some(Rotation { id: i.id, at: *at, supersedes: sup.iter().copied().collect(), names: names.iter().copied().collect(), signed: names.iter().copied().collect(), takes: takes.iter().copied().collect() }),
         _ => None,
     }).collect();
     let mut order: Vec<(u32, u32)> = held.iter().filter(|i| matches!(i.kind, forks::Kind::Rot { .. } | forks::Kind::Grant { .. } | forks::Kind::Creation { .. })).map(|i| (i.recv[v], i.id)).collect();

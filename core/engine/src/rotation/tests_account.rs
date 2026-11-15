@@ -115,7 +115,7 @@ pub(super) fn rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &Acc
     cb.aspects.push(aw);
     let node = osis_crypto::KeyActorKeys::from_seed(&Secret32::from_bytes([9; 32]));
     cb.account = Some(AccountSigner { epoch: FIRST_EPOCH, inner: first.inner.clone(), node: Tid::from_bytes([9; 15]), node_key: node.signing });
-    cb.rotation = Some((RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), list_root: [0; 32] }, Vec::new()));
+    cb.rotation = Some((RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), list_root: [0; 32] }, Vec::new()));
     cb.build(&first.signing, &Dedup(rec, first.signing.verifying_key()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 

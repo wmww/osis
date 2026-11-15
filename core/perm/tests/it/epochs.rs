@@ -18,7 +18,7 @@ fn set(v: &[u32]) -> BTreeSet<u32> {
 }
 
 fn rot(id: u32, at: u32, sup: &[u32], names: &[u32]) -> Rotation<u32> {
-    Rotation { id, at, supersedes: set(sup), names: set(names), signed: set(names) }
+    Rotation { id, at, supersedes: set(sup), names: set(names), signed: set(names), takes: BTreeSet::new() }
 }
 
 /// Commit `id` at `epoch` on thing 0.
@@ -294,7 +294,7 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
                 // A name accepts a fork only when the merge is signed at its epoch (the model's
                 // merges always are).
                 let names: BTreeSet<u32> = names.iter().map(|&id| pid_of(w, id)).collect();
-                rots.push(Rotation { id: *new, at: *at, supersedes: supersedes.iter().copied().collect(), signed: names.clone(), names });
+                rots.push(Rotation { id: *new, at: *at, supersedes: supersedes.iter().copied().collect(), signed: names.clone(), names, takes: BTreeSet::new() });
                 if let Some(rm) = removes {
                     lists.push(ThingList { rotation: *new, thing: D, commits: ids(&[*rm]) });
                 }
