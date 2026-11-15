@@ -7,3 +7,4 @@ props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=38
 validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-depend-on-store-rng.md one rebuild per flipped aspect\s+left: 7\s+right: 5
 rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=916629000175 issues/account-removal-before-its-rotation.md still rotates in the last settle round
 rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=67 issues/forks-model-seed-67-rebuild-differs.md rebuilt from the commit records, the index Commit
+rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=786082893264 issues/forks-model-counting-differs.md counting: engine
