@@ -808,7 +808,7 @@ fn what_a_source_showed_lasts_with_its_stop_spec_sync_opens_6() {
     assert!(!knows(&p.b, src, s, x), "gone with the connection");
 }
 
-// spec/sync-opens.md §3 (a record keeps what this node read of the peer as a source),
+// spec/sync-opens.md §3 (A record keeps),
 // spec/sync-judgement.md §3 (Deletes: judged from `known` alone, connected or not): whether a
 // source keeps S unread, as it last joined S, lasts with what its stream showed: past its leaving
 // and a restart, moved by a join in the other class, gone with what it showed.
