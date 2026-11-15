@@ -39,6 +39,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - A deposit-only step (a refreshed seed, no newer role epoch) is issued without the waits spec/permissions.md §3 and spec/sync-ids.md §6 put on it (every entry it can open opened at the sources it reaches; no valid `keys.0` part of the actor missing; `flows::sync_ids::due_at`).
 
 ## status and API
+- Diagnostics name connections and failed dials only (`DiagnosticKind::Connection`): not an open refused (sync ID, code) nor a grant held but not accepted.
 - Covered by a snapshot at a source (spec/sync-status.md §2): needs the engine's covering snapshots of a commit; a body a source dropped under a snapshot before showing it never counts (an under-claim).
 - `caps()`/`set_caps` in the osis API over `caps^.0` (the engine reads `caps^.0`; nothing writes it but a raw write).
 

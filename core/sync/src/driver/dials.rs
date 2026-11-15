@@ -591,6 +591,11 @@ impl Dials {
         self.conns.keys().copied().collect()
     }
 
+    /// The address a dialed connection went to (while it is up or in flight).
+    pub fn dialed_to(&self, conn: ConnId) -> Option<Address> {
+        self.conns.get(&conn).and_then(|k| self.cands.get(k)).and_then(|c| c.address()).cloned()
+    }
+
     /// The candidate a dialed connection is to.
     pub fn dialed(&self, conn: ConnId) -> Option<[u8; 32]> {
         self.conns.get(&conn).copied()

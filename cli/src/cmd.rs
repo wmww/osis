@@ -1100,6 +1100,7 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
         D::SyncStopped { detail } => ("SyncStopped", vec![], None, None, detail),
         D::ClockSkew { detail } => ("ClockSkew", vec![], None, None, detail),
         D::InputCapped { detail } => ("InputCapped", vec![], None, None, detail),
+        D::Connection { detail } => ("Connection", vec![], None, None, detail),
         D::Parked { things, commit, peer, detail } => ("Parked", things.clone(), *commit, *peer, detail),
         D::Handled { things, commit, peer, detail } => ("Handled", things.clone(), *commit, *peer, detail),
         other => {

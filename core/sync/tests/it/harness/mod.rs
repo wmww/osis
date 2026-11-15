@@ -135,7 +135,7 @@ impl Seen {
             Input::Bytes { conn, bytes } => Seen::Bytes { node, conn: *conn, len: bytes.len(), digest: osis_base::hash::hash(bytes)[..8].try_into().unwrap() },
             Input::Taken { conn, bytes } => Seen::Taken { node, conn: *conn, bytes: *bytes },
             Input::Closed { conn } => Seen::Closed { node, conn: *conn },
-            Input::Down { conn } => Seen::Down { node, conn: *conn },
+            Input::Down { conn, .. } => Seen::Down { node, conn: *conn },
             Input::Tick { now } => Seen::Tick { node, at: *now },
             Input::Wrote => Seen::Wrote { node },
             Input::Discovered { addr } => Seen::Discovered { node, key: addr.key },
@@ -299,7 +299,7 @@ impl Net {
         }
         let route = self.reach.node_of(&to.key).filter(|t| *t != from && self.online.get(*t) == Some(&true)).and_then(|t| Some((t, self.reach.route(from, t, &to.url, |a, b| self.blocked(a, b))?)));
         let Some((target, route)) = route else {
-            self.queue.push_back((from, Input::Down { conn }));
+            self.queue.push_back((from, Input::Down { conn, error: "unreachable".into() }));
             return;
         };
         let rank = match route {
@@ -720,7 +720,7 @@ impl World {
                     let nodes = &self.nodes;
                     l.heard(*conn, bytes, &|s, b| nodes.iter().any(|n| n.node.store().entry(s, b).ok().flatten().is_some_and(|e| e.role)));
                 }
-                Input::Closed { conn } | Input::Down { conn } => l.closed(*conn),
+                Input::Closed { conn } | Input::Down { conn, .. } => l.closed(*conn),
                 _ => {}
             }
         }

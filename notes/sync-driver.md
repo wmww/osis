@@ -44,6 +44,8 @@ Candidates, reasons as priorities (a candidate known at several addresses dials 
 
 ## Links
 `Links { dial, send, close, wake }` is all a node needs of the world. `TransportLinks<T: osis_transport::Transport>` (`driver/links.rs`, behind the default `driver` feature, tokio) is the product's: dials, listeners, discovery, each link's bytes and what the transport took, turned into `Input`s (`TransportLinks::next`); the osis handle's driver task steps the node on them. Tests use a `Links` per node over an in-memory fabric (the harness; `internals::ManualNet` in the osis tests). Sync never learns how a peer is reached: a connection is its key, its rank and its bytes.
+- Listener sets (`Listening`: direct sync's dialable listener, `Osis::listen`'s URLs, the client socket): `listen(set, ..)` replaces that set alone, its old listeners' tasks awaited first so its port is free (a key change relistens at it).
+- **Connection diagnostics**: the driver reports each connection up (dialed address, or accepted) and ended, and each failed dial (address, the transport's error or `dial timed out`), as `DiagnosticKind::Connection` (`osis::Diagnostic::Connection`, printed by `serve`, `-v`, `diag --follow`). The engine's per-kind rate limit bounds a redial loop's lines (64 a minute); dedup is of the same report (detail included), and each names its connection number, so none repeats.
 
 ## Reasons
 - One sans-IO step with one place outputs are carried out: an older wake overwriting a newer nested one once left a node that never ticked after a restart; with `apply` alone carrying out outputs, in order, no call path can reorder them.

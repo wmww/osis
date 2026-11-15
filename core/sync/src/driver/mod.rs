@@ -207,7 +207,7 @@ impl Node {
         self.keep_or_close(&mut out);
         for c in self.driver.sessions.closing() {
             out.push(Out::Close(c));
-            self.closed(c, &mut out);
+            self.closed(c, "closed here", &mut out);
         }
         self.driver.sessions.take_sends(&mut out);
         // a failing stretch wakes no sooner than its retry (a wake due now would fail again)
@@ -327,7 +327,7 @@ impl Node {
         let mut out = Vec::new();
         if self.driver.clients.contains(&conn) {
             out.push(Out::Close(conn));
-            self.closed(conn, &mut out);
+            self.closed(conn, "disconnected by the owner", &mut out);
             self.wake(&mut out);
         }
         out
@@ -461,6 +461,13 @@ impl Node {
     fn step(&mut self, input: Input, out: &mut Vec<Out>) -> Result<()> {
         match input {
             Input::Up { conn, peer, rank, dialed, listener } => {
+                let how = match (dialed, self.driver.dials.dialed_to(conn)) {
+                    (true, Some(to)) => format!("dialed {}", osis_label::address_to_text(&to)),
+                    (true, None) => "dialed".into(),
+                    (false, _) => "accepted".into(),
+                };
+                let detail = format!("{} up: {how}", conn_name(conn));
+                self.report_conn(detail);
                 if dialed {
                     self.driver.dials.up(conn);
                 }
@@ -473,14 +480,15 @@ impl Node {
             }
             Input::Taken { conn, bytes } => self.driver.sessions.taken(conn, bytes),
             Input::Bytes { conn, bytes } => self.bytes(conn, &bytes, out),
-            Input::Closed { conn } | Input::Down { conn } => self.closed(conn, out),
+            Input::Closed { conn } => self.closed(conn, "ended", out),
+            Input::Down { conn, error } => self.closed(conn, &error, out),
             Input::Tick { now } => {
                 self.now = self.now.max(now);
                 self.engine.set_now(self.now);
                 self.engine.tick()?;
-                for (conn, _) in self.driver.sessions.tick(self.now) {
+                for (conn, why) in self.driver.sessions.tick(self.now) {
                     out.push(Out::Close(conn));
-                    self.closed(conn, out);
+                    self.closed(conn, why.0, out);
                 }
             }
             Input::Wrote => {
@@ -507,7 +515,7 @@ impl Node {
         for c in stale {
             self.driver.dials.redial_now(c);
             out.push(Out::Close(c));
-            self.closed(c, out);
+            self.closed(c, "this node acts for an actor it did not prove there", out);
         }
         Ok(())
     }
@@ -559,13 +567,13 @@ impl Node {
         for c in close {
             self.driver.dials.closed_quiet(c, self.now);
             out.push(Out::Close(c));
-            self.closed(c, out);
+            self.closed(c, "shares nothing", out);
         }
     }
 
     fn bytes(&mut self, conn: ConnId, bytes: &[u8], out: &mut Vec<Out>) {
         let Some(s) = self.driver.sessions.get_mut(conn) else { return };
-        let mut close = false;
+        let mut close = None;
         match s.receive(bytes, &mut cx!(self, out)) {
             Ok(ms) => {
                 let mut moved = Vec::new();
@@ -586,7 +594,7 @@ impl Node {
                             _ => {}
                         },
                         None => {
-                            close = true;
+                            close = Some("a message for no module");
                             break;
                         }
                     }
@@ -596,16 +604,16 @@ impl Node {
                     }
                     self.moved(&mut moved, out);
                     if self.driver.sessions.get(conn).is_some_and(|s| s.closing().is_some()) {
-                        close = true;
+                        close = Some("closed here");
                         break;
                     }
                 }
             }
-            Err(_) => close = true,
+            Err(e) => close = Some(e.0),
         }
-        if close {
+        if let Some(why) = close {
             out.push(Out::Close(conn));
-            self.closed(conn, out);
+            self.closed(conn, why, out);
         }
     }
 
@@ -641,9 +649,19 @@ impl Node {
     }
 
     /// A connection ended: its last bytes go (before the close, `apply`), its members leave.
-    fn closed(&mut self, conn: ConnId, out: &mut Vec<Out>) {
+    /// Connection `conn` ended or its dial failed, `why` (a module's own reason first).
+    fn closed(&mut self, conn: ConnId, why: &str, out: &mut Vec<Out>) {
         // a dial that lost its pair to a live connection is held by it (spec/sync-opens.md §1)
         let lost = self.opens.lost_to(conn).filter(|w| self.driver.sessions.get(*w).is_some());
+        let to = self.driver.dials.dialed_to(conn).map(|a| osis_label::address_to_text(&a));
+        let detail = match (self.driver.sessions.get(conn), to) {
+            (Some(s), to) => format!("{} closed: {}{}", conn_name(conn), s.closing().unwrap_or(why), to.map(|t| format!(" (dialed {t})")).unwrap_or_default()),
+            (None, Some(to)) => format!("{} dial to {to} failed: {why}", conn_name(conn)),
+            (None, None) => String::new(),
+        };
+        if !detail.is_empty() {
+            self.report_conn(detail);
+        }
         let s = self.driver.sessions.remove(conn);
         self.driver.dials.ended(conn, lost, self.now);
         if self.driver.clients.remove(&conn) && s.is_none() {
@@ -662,6 +680,12 @@ impl Node {
         self.driver.port.push(PortEvent::Closed(conn));
         // a store failure here reopens the node, whose start drops the same entries
         let _ = self.store.gone(crate::store::Source::Conn(conn));
+    }
+
+    /// A connection came up or ended, or a dial failed (`DiagnosticKind::Connection`): for a log
+    /// (`osis serve`, `diag --follow`), never read back.
+    fn report_conn(&mut self, detail: String) {
+        self.engine.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::Connection, tids: Vec::new(), commit: None, peer: None, detail });
     }
 
     /// Every module settled, again while one acted or the engine's per-entry values moved
@@ -806,7 +830,7 @@ impl Node {
         let conns: Vec<ConnId> = self.driver.sessions.conns().collect();
         for c in conns {
             out.push(Out::Close(c));
-            self.closed(c, out);
+            self.closed(c, "the node restarted", out);
         }
     }
 
@@ -844,4 +868,17 @@ impl Node {
             })
         })
     }
+}
+
+/// How a connection is named in a diagnostic: `d` dialed, `a` accepted, `c` the owner's client
+/// connection, then its number.
+fn conn_name(c: ConnId) -> String {
+    let (tag, n) = if c.accepted() {
+        ("a", c.0 & !ConnId::ACCEPTED)
+    } else if c.0 & ConnId::CLIENT != 0 {
+        ("c", c.0 & !ConnId::CLIENT)
+    } else {
+        ("d", c.0)
+    };
+    format!("connection {tag}{n}")
 }

@@ -387,7 +387,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | `[1, tid]` | `[[ak, read result]*]`, the aspects present | `[ak, read result, origin]`; `[2, [ak, max_reply]]` above it |
     | `[2, tid]` | as row 6 | as row 6 |
     | `[3]` | as row 21 | as row 21 |
-    | `[4]` | `[]` | `[kind, [tid*], Opt(commit id), Opt(peer), detail]`, one per diagnostic of the node, kind 0 bad input, 1 colliding record, 2 parked, 3 pending, 4 overlapping counters, 5 removed, 6 callback, 7 not synced, 8 stranded, 9 uncommitted, 10 ephemeral refused, 11 mismatch, 12 storage, 13 repair, 14 own write invalid, 15 unreadable, 16 disputes unexamined, 17 own write failed, 18 sync stopped, 19 clock skew, 20 input capped (an unknown kind reads as 0); main only |
+    | `[4]` | `[]` | `[kind, [tid*], Opt(commit id), Opt(peer), detail]`, one per diagnostic of the node, kind 0 bad input, 1 colliding record, 2 parked, 3 pending, 4 overlapping counters, 5 removed, 6 callback, 7 not synced, 8 stranded, 9 uncommitted, 10 ephemeral refused, 11 mismatch, 12 storage, 13 repair, 14 own write invalid, 15 unreadable, 16 disputes unexamined, 17 own write failed, 18 sync stopped, 19 clock skew, 20 input capped, 21 connection (an unknown kind reads as 0); main only |
     | `[5, method, [arg*]]` | `[]` | `[0, value]` or `[1, code, detail*]`: the row's outcome, once, whatever the room; an Unsub or the connection's end cancels it; main only |
     | `[6, address]` | `[]` | `[0, commit id, Opt(commit)]` a commit reading otherwise at the address (as row 17 reads it then), `[1]` read the address again, `[2, code, detail*]` ended |
 

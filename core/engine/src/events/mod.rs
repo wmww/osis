@@ -160,6 +160,9 @@ pub enum DiagnosticKind {
     /// was reached under a label: what came past it was not kept, and a real entry among it
     /// arrives again from its holders (`detail`: the label and the bound).
     InputCapped,
+    /// A connection to another node came up or ended, or a dial failed (osis-sync's driver;
+    /// `detail`: the connection, the address dialed, why it ended).
+    Connection,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.
@@ -184,7 +187,7 @@ pub struct Events {
     /// Subscribers; `false`: not sent `Event::Ephemeral` (`subscribe_durable`).
     subs: Vec<(Sender<Event>, bool)>,
     queued: Vec<Event>,
-    seen: VecDeque<(DiagnosticKind, Option<CommitId>, Vec<Tid>)>,
+    seen: VecDeque<(DiagnosticKind, Option<CommitId>, Vec<Tid>, String)>,
     /// Window start and count per bucket: a peer, or a kind of local diagnostic (a flood of
     /// one, e.g. `Mismatch` from a screen of mistyped things, hid `Callback` or `Stranded`).
     per_peer: BTreeMap<(Option<Tid>, Option<DiagnosticKind>), (u64, usize)>,
@@ -248,10 +251,10 @@ impl Events {
         }
     }
 
-    /// A diagnostic, deduped and rate-limited per peer (local ones per kind); sent immediately
-    /// (no durability).
+    /// A diagnostic, deduped (the same report again: kind, commit, things and detail) and
+    /// rate-limited per peer (local ones per kind); sent immediately (no durability).
     pub fn diagnostic(&mut self, d: Diagnostic, now: WallMs) {
-        let key = (d.kind, d.commit, d.tids.clone());
+        let key = (d.kind, d.commit, d.tids.clone(), d.detail.clone());
         if self.seen.contains(&key) {
             return;
         }

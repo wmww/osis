@@ -949,7 +949,7 @@ impl Form for Time {
     }
 }
 
-const DIAGNOSTICS: [DiagnosticKind; 21] = {
+const DIAGNOSTICS: [DiagnosticKind; 22] = {
     use DiagnosticKind as K;
     [
         K::BadInput,
@@ -973,6 +973,7 @@ const DIAGNOSTICS: [DiagnosticKind; 21] = {
         K::SyncStopped,
         K::ClockSkew,
         K::InputCapped,
+        K::Connection,
     ]
 };
 

@@ -42,6 +42,9 @@ pub enum Diagnostic {
     /// the bound was dropped. Real data among it arrives again from the nodes that hold it; a
     /// lasting flood means another node or a host misbehaves.
     InputCapped { detail: String },
+    /// A connection to another node came up or ended, or a dial failed (which address, why):
+    /// for a log, and to tell why nothing syncs.
+    Connection { detail: String },
     /// Background sync died: nothing syncs until the node is opened again, and waits fail
     /// `Network`.
     SyncStopped { detail: String },
@@ -71,6 +74,7 @@ impl From<osis_engine::Diagnostic> for Diagnostic {
             (K::SyncStopped, ..) => Diagnostic::SyncStopped { detail },
             (K::ClockSkew, ..) => Diagnostic::ClockSkew { detail },
             (K::InputCapped, ..) => Diagnostic::InputCapped { detail },
+            (K::Connection, ..) => Diagnostic::Connection { detail },
             (K::Parked, ..) => Diagnostic::Parked { things: tids, commit: commit.map(Into::into), peer, detail },
             _ => Diagnostic::Handled { things: tids, commit: commit.map(Into::into), peer, detail: format!("{kind:?}: {detail}") },
         }
@@ -93,6 +97,7 @@ impl std::fmt::Display for Diagnostic {
             Diagnostic::SyncStopped { detail } => ("sync stopped", detail),
             Diagnostic::ClockSkew { detail } => ("clock skew", detail),
             Diagnostic::InputCapped { detail } => ("unverified input capped", detail),
+            Diagnostic::Connection { detail } => ("connection", detail),
             Diagnostic::Parked { detail, .. } => ("from a newer format", detail),
             Diagnostic::Handled { detail, .. } => ("handled", detail),
         };

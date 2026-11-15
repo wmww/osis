@@ -76,7 +76,7 @@ impl Tracer {
             Input::Up { conn, rank, dialed, .. } => format!("n{i} up{from} {} rank {rank}{}", c(*conn), if *dialed { " dialed" } else { "" }),
             Input::Taken { .. } => return,
             Input::Closed { conn } => format!("n{i} closed{from} {}", c(*conn)),
-            Input::Down { conn } => format!("n{i} down {}", c(*conn)),
+            Input::Down { conn, .. } => format!("n{i} down {}", c(*conn)),
             Input::Tick { .. } => format!("n{i} tick"),
             Input::Wrote => format!("n{i} wrote"),
             Input::Discovered { addr } => format!("n{i} discovered {}", hex(&addr.key)),

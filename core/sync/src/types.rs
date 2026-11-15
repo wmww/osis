@@ -105,8 +105,8 @@ pub enum Input {
     Taken { conn: ConnId, bytes: u64 },
     /// An up connection ended.
     Closed { conn: ConnId },
-    /// A dial failed: the connection never came up.
-    Down { conn: ConnId },
+    /// A dial failed: the connection never came up (`error`: why, as the transport said).
+    Down { conn: ConnId, error: String },
     /// The time is `now` (a `Wake` came due, or any time the driver likes).
     Tick { now: WallMs },
     /// The node's owner wrote through the engine (or changed `SyncConfig`): what the write moved

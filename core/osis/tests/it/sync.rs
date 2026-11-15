@@ -131,6 +131,44 @@ fn a_dial_address_is_dialed_spec_sync_opens_1() {
     assert_eq!(b.status().unwrap().connected, 0);
 }
 
+// spec: none (notes/sync-driver.md, Connection diagnostics: for a log, `osis serve`, `diag
+// --follow`): a node reports each connection up and closed, at both ends, and each failed dial
+// with its address and why.
+#[test]
+fn connections_and_failed_dials_are_diagnostics() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let b = on(&net, 6, &c);
+    let addr = b.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
+    let gone = osis::Address::new(&"peer://127.0.0.1:2".parse().unwrap(), [9; 32]);
+    let mut o = cfg(7, MemStore::new(), &c);
+    o.app.internals.net = Some(net.clone());
+    o.cfg.dial = vec![addr.clone(), gone.clone()];
+    let a = osis::internals::create(o).unwrap();
+    let lines = |db: &Osis| {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s = seen.clone();
+        let sub = db
+            .on_diagnostic(move |_, d| {
+                if let osis::Diagnostic::Connection { detail } = d {
+                    s.lock().unwrap().push(detail);
+                }
+            })
+            .unwrap();
+        (seen, sub)
+    };
+    let ((at_a, _sa), (at_b, _sb)) = (lines(&a), lines(&b));
+    net.run();
+    a.settle();
+    b.settle();
+    let (at_a, at_b) = (at_a.lock().unwrap().clone(), at_b.lock().unwrap().clone());
+    let has = |v: &[String], parts: &[&str]| v.iter().any(|l| parts.iter().all(|p| l.contains(p)));
+    assert!(has(&at_a, &["up: dialed", &addr.to_string()]), "{at_a:?}");
+    assert!(has(&at_a, &["closed: shares nothing"]), "{at_a:?}");
+    assert!(has(&at_a, &["dial to", &gone.to_string(), "failed: unreachable"]), "{at_a:?}");
+    assert!(has(&at_b, &["up: accepted"]) && has(&at_b, &["closed: ended"]), "{at_b:?}");
+}
+
 // spec/sync-opens.md §1 (where to dial), notes/api-design.md (explicit where a wrong default is
 // silent): configured dial candidates with no runtime would never be reached.
 #[test]

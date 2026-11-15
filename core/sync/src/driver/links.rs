@@ -198,7 +198,7 @@ impl<T: Transport> TransportLinks<T> {
                 self.dialing.remove(&conn)?;
                 match r {
                     Ok(l) => Some(self.up(conn, l, true, key)),
-                    Err(_) => Some(Input::Down { conn }),
+                    Err(e) => Some(Input::Down { conn, error: e.to_string() }),
                 }
             }
             Event::Accepted(l, key) => {

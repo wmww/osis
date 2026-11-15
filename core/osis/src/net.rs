@@ -134,7 +134,7 @@ impl Net {
                         }
                     }
                     for conn in downs {
-                        let o = l.node.handle(Input::Down { conn });
+                        let o = l.node.handle(Input::Down { conn, error: "no network (Config.runtime)".into() });
                         l.out.extend(o);
                     }
                 }
@@ -610,7 +610,7 @@ impl Links for FabricLinks<'_> {
         let socket = f.sockets.get(&to.url).copied();
         let target = socket.or_else(|| f.nodes.iter().position(|n| n.1 == Some(to.key)));
         let Some(t) = target.filter(|t| *t != self.node && !f.offline.contains(t) && !f.offline.contains(&self.node)) else {
-            f.queue.push_back((self.node, Input::Down { conn }));
+            f.queue.push_back((self.node, Input::Down { conn, error: "unreachable".into() }));
             return;
         };
         f.accepted += 1;
