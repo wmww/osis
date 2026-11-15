@@ -7,7 +7,7 @@
 use super::{Holding, ThingSync, ThingsFeed};
 use crate::Engine;
 use crate::error::Result;
-use osis_base::memo::{Effects, Feed, Stamped, StampedSet, Unrecorded};
+use osis_base::memo::{Effects, Feed, Quiet, Stamped, StampedSet, Unrecorded};
 use osis_base::{SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,6 +31,8 @@ pub(crate) struct SyncRows {
     /// each holds.
     pub(crate) read: StampedSet<Tid>,
     read_count: BTreeMap<Tid, usize>,
+    /// The follow's fixed point.
+    quiet: Quiet,
     /// Debug builds: the things followed in the closure, and the closure last compared with them.
     #[cfg(debug_assertions)]
     things: BTreeSet<Tid>,
@@ -49,6 +51,7 @@ impl Default for SyncRows {
             ids: StampedSet::default(),
             read: StampedSet::default(),
             read_count: BTreeMap::new(),
+            quiet: Quiet::default(),
             #[cfg(debug_assertions)]
             things: BTreeSet::new(),
             #[cfg(debug_assertions)]
@@ -129,9 +132,16 @@ impl Engine {
     /// Brings the sync set's rows up to date: work in proportion to the things that may have
     /// entered and those whose place or keys moved (spec/sync-set.md §2 Cost).
     pub(crate) fn follow_rows(&mut self) -> Result<()> {
+        let r = &self.core.sync_rows;
+        if r.quiet.holds(r.thing.idle()) {
+            return Ok(());
+        }
+        osis_base::costs::count("sync set: follows", 1);
         let _u = Unrecorded::start();
+        let from = Quiet::begin();
         let mut r = std::mem::take(&mut self.core.sync_rows);
         let out = self.follow_rows_in(&mut r);
+        r.quiet.ended(from, out.is_ok());
         self.core.sync_rows = r;
         out
     }

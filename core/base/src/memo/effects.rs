@@ -79,6 +79,13 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
         self.pending.remove(k);
     }
 
+    /// Whether no key is known due (wanted and never settled, given by `due` and not settled
+    /// since, or moved while its settle read): with nothing written since its last `due`, the
+    /// next is empty.
+    pub fn idle(&self) -> bool {
+        self.pending.is_empty()
+    }
+
     /// Whether `k` is followed.
     pub fn wants(&self, k: &K) -> bool {
         self.followed.contains_key(k)

@@ -273,10 +273,10 @@ pub struct SyncSet {
     pub unsyncable: BTreeSet<Tid>,
 }
 
-/// One follower's cursor over the things that may have entered `Engine::sync_things`
+/// The sync set's rows' cursor over the things that may have entered `Engine::sync_things`
 /// (`Engine::things_entered`); unstarted until its first read.
 #[derive(Clone, Debug, Default)]
-pub struct ThingsFeed(pub(crate) Option<set::Entered>);
+pub(crate) struct ThingsFeed(pub(crate) Option<set::Entered>);
 
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]

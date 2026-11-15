@@ -4,7 +4,7 @@
 
 use crate::common::{REG, s};
 use crate::flows::{edge_of, people, spread, spread_sealed, thing_of};
-use osis_base::{Ak, Role, Tid};
+use osis_base::{Ak, Role, SyncId, Tid};
 use osis_crypto::SeededRng;
 use osis_engine::flows::Demotion;
 use osis_engine::local_peer::LocalPeer;
@@ -3361,85 +3361,118 @@ fn sourced_world(n: usize) -> (LocalPeer, Tid, Tid, Tid, Tid) {
     (lp, d, g, h, both)
 }
 
-/// `things_entered` of `f` now, after checking it names every thing that entered `sync_things`
-/// since `was` (`was` moves to the set now).
+/// The sync set's rows now (`sync_held_added` since `f`'s last read, `sync_held` per sync ID)
+/// against the sync set derived anew (`sync_set`): every sync ID that entered since `was` is
+/// named, each held one reads its entry, each gone one none (`was` moves to the set now).
 #[track_caller]
-fn entered_cover(e: &mut osis_engine::Engine, f: &mut osis_engine::sync::ThingsFeed, was: &mut BTreeSet<Tid>, step: &str) {
-    let got: BTreeSet<Tid> = e.things_entered(f).unwrap().into_iter().collect();
-    let now = e.sync_things().unwrap();
-    let missed: Vec<&Tid> = now.iter().filter(|t| !was.contains(*t) && !got.contains(*t)).collect();
+fn rows_cover(e: &mut osis_engine::Engine, f: &mut Option<osis_base::memo::Feed<SyncId>>, was: &mut BTreeSet<SyncId>, step: &str) {
+    let added: BTreeSet<SyncId> = e.sync_held_added(f).unwrap().into_iter().collect();
+    let set = e.sync_set().unwrap();
+    let missed: Vec<&SyncId> = set.ids.keys().filter(|s| !was.contains(*s) && !added.contains(*s)).collect();
     assert!(missed.is_empty(), "{step}: entered and not named: {missed:?}");
-    for t in now.iter() {
-        assert!(e.in_sync_things(t).unwrap(), "{step}: in_sync_things({t:?}) disagrees");
+    for (s, held) in &set.ids {
+        assert_eq!(e.sync_held(s).unwrap(), Some(*held), "{step}: {s:?}'s row");
     }
-    *was = (*now).clone();
+    for s in was.iter().filter(|s| !set.ids.contains_key(*s)) {
+        assert_eq!(e.sync_held(s).unwrap(), None, "{step}: {s:?} left");
+    }
+    *was = set.ids.keys().copied().collect();
 }
 
-// spec/sync-set.md §2 (Cost; the sync set follows every `group.0` change), §5: a follower of
-// the sync set by `things_entered` is named every thing entering it, however it entered: listed
-// while a group is sourced away, destroyed while listed nowhere (its own sync IDs kept), a root
-// switched to a group populated before (the node's synced group read anew).
+// spec/sync-set.md §2 (Cost; the sync set follows every `group.0` change), §5: the sync set's
+// rows, followed per thing that may have entered it, name every sync ID entering it, however its
+// thing entered: listed while a group is sourced away, destroyed while listed nowhere (its own
+// sync IDs kept), a root switched to a group populated before (the node's synced group read anew).
 #[test]
-fn things_entered_names_every_thing_entering_the_sync_set_spec_sync_set_2() {
+fn the_sync_set_rows_name_every_sync_id_entering_spec_sync_set_2() {
     let (mut lp, d, g, _, _) = sourced_world(1);
     let p = lp.peers[0].engine.account().unwrap().unwrap().0;
     let (y, lone) = (thing_of(&mut lp, 0, p), thing_of(&mut lp, 0, p));
-    let mut f = osis_engine::sync::ThingsFeed::default();
+    let mut f = None;
     let mut was = BTreeSet::new();
     let e = &mut lp.peers[0].engine;
     e.give_own_secrets(&lone).unwrap();
-    entered_cover(e, &mut f, &mut was, "start");
+    rows_cover(e, &mut f, &mut was, "start");
     e.set_sourced([g].into(), &BTreeSet::new());
-    entered_cover(e, &mut f, &mut was, "g sourced away");
+    rows_cover(e, &mut f, &mut was, "g sourced away");
     list_in(&mut lp, 0, d, 0, y);
     let e = &mut lp.peers[0].engine;
-    entered_cover(e, &mut f, &mut was, "listed while g is away");
-    assert!(was.contains(&y));
+    rows_cover(e, &mut f, &mut was, "listed while g is away");
+    let in_set = |e: &mut osis_engine::Engine, t: &Tid| e.sync_things().unwrap().contains(t);
+    assert!(in_set(e, &y));
     e.set_sourced(BTreeSet::new(), &BTreeSet::new());
-    entered_cover(e, &mut f, &mut was, "g home");
-    assert!(!was.contains(&lone));
+    rows_cover(e, &mut f, &mut was, "g home");
+    assert!(!in_set(e, &lone));
     let mut m = Mutation::new();
     let now = e.now();
     m.set(lone, &ct::PURGE, &now).unwrap();
     m.purge(osis_commit::PurgeItem::Aspect { tid: lone, ak: ct::CREATED.name() });
     e.commit(m).unwrap().unwrap();
-    entered_cover(e, &mut f, &mut was, "destroyed, listed nowhere");
-    assert!(was.contains(&lone), "a destroyed thing's kept sync IDs sync");
+    rows_cover(e, &mut f, &mut was, "destroyed, listed nowhere");
+    assert!(in_set(e, &lone), "a destroyed thing's kept sync IDs sync");
     // a group listing D and listed in D, holding z, which the synced group's closure lacks
     let (g2, z) = (thing_of(&mut lp, 0, p), thing_of(&mut lp, 0, p));
     list_in(&mut lp, 0, g2, 0, z);
     list_in(&mut lp, 0, g2, 1, d);
     list_in(&mut lp, 0, d, 0, g2);
     let e = &mut lp.peers[0].engine;
-    entered_cover(e, &mut f, &mut was, "g2 made");
-    assert!(!was.contains(&z));
+    rows_cover(e, &mut f, &mut was, "g2 made");
+    assert!(!in_set(e, &z));
     let me = e.tid();
     let mut synced = e.get_typed(&d, &ct::SYNCED).unwrap().unwrap();
     synced.insert(me, g2);
     let mut m = Mutation::new();
     m.set(d, &ct::SYNCED, &synced).unwrap();
     e.commit(m).unwrap().unwrap();
-    entered_cover(e, &mut f, &mut was, "synced group switched");
-    assert!(was.contains(&z), "the new synced group's things sync");
+    rows_cover(e, &mut f, &mut was, "synced group switched");
+    assert!(in_set(e, &z), "the new synced group's things sync");
 }
 
-// spec/sync-set.md §2 (Cost; the sync set follows every `group.0` change): a follower's cursor
-// started before a reload (an open's) is named what enters the sync set after.
+// spec: none (property: notes/engine.md Derived values, nothing is done twice): the sync set's
+// rows and the certificates follow again only once something is written (`memo::Quiet`): at
+// their fixed point no query follows, and the follows after a write are as many for 10 rounds of
+// queries as for 30. Counted in a child process with one test thread: `memo::writes` counts
+// every thread's writes, so a test running beside it would cost follows here.
 #[test]
-fn things_entered_names_what_enters_after_a_reload_spec_sync_set_2() {
-    let (mut lp, d, _, _, _) = sourced_world(1);
-    let p = lp.peers[0].engine.account().unwrap().unwrap().0;
-    let y = thing_of(&mut lp, 0, p);
-    let mut f = osis_engine::sync::ThingsFeed::default();
-    let mut was = BTreeSet::new();
+fn queries_between_writes_follow_once() {
+    const CHILD: &str = "OSIS_FOLLOW_COUNT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "facade::queries_between_writes_follow_once", "--nocapture", "--test-threads", "1"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && text.contains("1 passed"), "{text}\n{}", String::from_utf8_lossy(&out.stderr));
+        return;
+    }
+    let (mut lp, d, _, h, _) = sourced_world(1);
     let e = &mut lp.peers[0].engine;
-    entered_cover(e, &mut f, &mut was, "start");
-    e.reload().unwrap();
-    entered_cover(e, &mut f, &mut was, "reloaded");
-    list_in(&mut lp, 0, d, 0, y);
-    let e = &mut lp.peers[0].engine;
-    entered_cover(e, &mut f, &mut was, "listed after the reload");
-    assert!(was.contains(&y));
+    let s = e.home_sync_id(&d).unwrap().unwrap();
+    // follows of the rows and of the certificates over `rounds` rounds of queries
+    let follows = |e: &mut osis_engine::Engine, rounds: usize| {
+        osis_base::costs::take();
+        for _ in 0..rounds {
+            e.sync_held(&s).unwrap();
+            e.passes_wanted().unwrap();
+            e.follow().unwrap();
+        }
+        let c = osis_base::costs::take();
+        let n = |name: &str| c.iter().find(|x| x.0 == name).map_or(0, |x| x.2);
+        (n("sync set: follows"), n("certified: follows"))
+    };
+    let write = |e: &mut osis_engine::Engine, v: i64| {
+        let mut m = Mutation::new();
+        m.set(h, &Ak::new("u:v.0").unwrap(), &osis_base::Value::Int(v)).unwrap();
+        e.commit(m).unwrap().unwrap();
+    };
+    follows(e, 1);
+    assert_eq!(follows(e, 10), (0, 0), "at the fixed point no query follows");
+    write(e, 1);
+    let ten = follows(e, 10);
+    assert!(ten.0 > 0 && ten.1 > 0, "a write: followed again");
+    write(e, 2);
+    assert_eq!(follows(e, 30), ten, "more queries between writes cost no more follows");
 }
 
 // spec/sync-set.md §5 (Home is never sourced away): home (D) asked sourced elsewhere stays in the

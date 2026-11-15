@@ -21,7 +21,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 mod cutoff;
@@ -121,8 +121,9 @@ impl Table {
         }
     }
 
-    /// Logs change `e` at `ver`, while some reader holds a mark.
+    /// Logs change `e` at `ver`, while some reader holds a mark; counts it in `writes`.
     fn log(&mut self, e: Logged) {
+        WRITES.fetch_add(1, Ordering::Relaxed);
         if !self.marks.is_empty() {
             self.log.push_back((self.ver, e));
         }
@@ -419,6 +420,10 @@ impl Clone for Stamps {
 
 impl Drop for Stamps {
     fn drop(&mut self) {
+        // a table no reader holds (no memo read it, no `Effects` or `Feed` follows it) moves nothing
+        if Arc::strong_count(&self.0) == 1 {
+            return;
+        }
         let mut t = lock(&self.0);
         t.ver = u64::MAX;
         t.absent = [u64::MAX; ABSENT_BUCKETS];
@@ -516,6 +521,41 @@ impl Frame {
 /// Whether reads now land inside `accounted` in the top frame of `frames`.
 fn accounting(frames: &[Frame]) -> bool {
     ACCOUNTING.get().is_some_and(|at| at + 1 == frames.len())
+}
+
+/// Every change of any container's stamps in the process (`writes`).
+static WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// Counts the changes of every container's stamps in the process (a write, a move, a drop a
+/// reader holds): equal at two times, no stamped container changed between, so a follower at its
+/// fixed point at the first has nothing to do at the second (`Quiet`). Writes on other threads
+/// count too: they cost a follow, never a missed change.
+pub fn writes() -> u64 {
+    WRITES.load(Ordering::Relaxed)
+}
+
+/// A follower's fixed point (`Engine::follow`'s parts, `Cutoff`): `writes` when one of its
+/// follows ended having written nothing. While that stands and the follower has nothing pending
+/// (`Effects::idle`), a follow would find nothing due and write nothing: it may return at once.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Quiet(Option<u64>);
+
+impl Quiet {
+    /// Whether a follow of an `idle` follower has nothing to do.
+    pub fn holds(&self, idle: bool) -> bool {
+        idle && self.0 == Some(writes())
+    }
+
+    /// A follow begins: the mark `ended` compares with.
+    pub fn begin() -> u64 {
+        writes()
+    }
+
+    /// The follow begun at `from` ended, `ok` if it succeeded: a fixed point when nothing was
+    /// written since `from`.
+    pub fn ended(&mut self, from: u64, ok: bool) {
+        self.0 = (ok && writes() == from).then_some(from);
+    }
 }
 
 /// Memos computing, on any thread: reads look at their thread's frames only while it is not 0.

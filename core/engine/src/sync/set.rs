@@ -92,19 +92,17 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_roots, &(), |e| Ok([e.sync_root()?, e.core.account_devices().map(|(_, d)| d)]))
     }
 
-    /// The things that may have entered `sync_things` since `f`'s last read (its first, and the
-    /// first after a reload: every one): each thing that entered a sync closure (`Groups::sync_gained_feed`) or was destroyed
+    /// The things that may have entered `sync_things` since `f`'s last read (its first: every
+    /// one; `f` lives in the core a reload replaces): each thing that entered a sync closure (`Groups::sync_gained_feed`) or was destroyed
     /// since, the sync closure of each root new since (a share; the synced group read first),
     /// and the links being redeemed (followed links, few: whether one is followable moves with
     /// its record, sync record and destruction). Leaving needs no feed: `in_sync_things` moves.
-    pub fn things_entered(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
+    pub(crate) fn things_entered(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
         let roots = self.sync_roots()?;
-        // a reload's fresh index feeds the old cursors nothing: started again, every thing
-        let loads = self.loads();
         let shared = self.shared_here()?;
-        let Some(at) = f.0.as_mut().filter(|at| at.loads == loads) else {
+        let Some(at) = f.0.as_mut() else {
             let ix = &self.core.ix;
-            f.0 = Some(Entered { gained: ix.groups.sync_gained_feed(), destroyed: ix.destroyed_sync_ids.feed(), shared, roots, loads });
+            f.0 = Some(Entered { gained: ix.groups.sync_gained_feed(), destroyed: ix.destroyed_sync_ids.feed(), shared, roots });
             return Ok(self.sync_things()?.iter().copied().collect());
         };
         let mut out = at.gained.added();
@@ -538,8 +536,6 @@ pub(crate) struct Entered {
     /// The things shared here when last read.
     shared: Arc<BTreeSet<Tid>>,
     roots: [Option<Tid>; 2],
-    /// The engine's loads when started (`Engine::reload` replaces the index its cursors read).
-    loads: u64,
 }
 
 /// A thing's home sync ID among those it owns (two admins giving it secrets at once made two: the

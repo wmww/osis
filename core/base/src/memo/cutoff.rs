@@ -1,8 +1,8 @@
 //! Early cutoff per key (`Cutoff`): a value derived per key whose readers move only when it
 //! does, not when what it read moved to the same value.
 
-use super::{Effects, Stamped, Unrecorded, recorded_frame};
-use std::cell::RefCell;
+use super::{Effects, Quiet, Stamped, Unrecorded, recorded_frame};
+use std::cell::{Cell, RefCell};
 use std::hash::Hash;
 
 /// One derivation per key, kept as a stamped row (`Stamped`) and derived again (`Effects`) when
@@ -16,18 +16,25 @@ use std::hash::Hash;
 pub struct Cutoff<K, V> {
     fx: RefCell<Effects<K, V>>,
     rows: RefCell<Stamped<K, V>>,
+    /// The refresh's fixed point.
+    quiet: Cell<Quiet>,
 }
 
 impl<K: Hash + Eq + Ord + Clone, V: Clone + PartialEq> Cutoff<K, V> {
     pub fn new(name: &'static str) -> Self {
-        Cutoff { fx: RefCell::new(Effects::new(name)), rows: RefCell::new(Stamped::named(name)) }
+        Cutoff { fx: RefCell::new(Effects::new(name)), rows: RefCell::new(Stamped::named(name)), quiet: Cell::default() }
     }
 
     /// Derives again (by `f`, over all of `ctx`, which holds this cutoff at `me`) every key whose
     /// reads moved, writing the rows that changed: whether any did. Read by no memo. A failure
     /// leaves its key due and is returned once every other due key is derived.
     pub fn refresh_in<C, E>(ctx: &mut C, me: impl Fn(&C) -> &Self, f: impl Fn(&mut C, &K) -> Result<V, E>) -> Result<bool, E> {
+        let this = me(ctx);
+        if this.quiet.get().holds(this.fx.borrow().idle()) {
+            return Ok(false);
+        }
         let _u = Unrecorded::start();
+        let from = Quiet::begin();
         let due = me(ctx).fx.borrow_mut().due();
         let (mut moved, mut failed) = (false, None);
         for k in due {
@@ -41,6 +48,9 @@ impl<K: Hash + Eq + Ord + Clone, V: Clone + PartialEq> Cutoff<K, V> {
                 Err(e) => failed = failed.or(Some(e)),
             }
         }
+        let mut quiet = me(ctx).quiet.get();
+        quiet.ended(from, failed.is_none());
+        me(ctx).quiet.set(quiet);
         failed.map_or(Ok(moved), Err)
     }
 
@@ -79,7 +89,7 @@ impl<K: Hash + Eq + Ord + Clone, V: Clone + PartialEq> Cutoff<K, V> {
 
 impl<K: Hash + Eq + Ord + Clone, V: Clone> Clone for Cutoff<K, V> {
     fn clone(&self) -> Self {
-        Cutoff { fx: RefCell::new(self.fx.borrow().clone()), rows: RefCell::new(Stamped::clone(&self.rows.borrow())) }
+        Cutoff { fx: RefCell::new(self.fx.borrow().clone()), rows: RefCell::new(Stamped::clone(&self.rows.borrow())), quiet: self.quiet.clone() }
     }
 }
 
@@ -113,5 +123,24 @@ mod tests {
         assert_eq!(Cutoff::get_in(&mut &m, |_| &c, &3, |m, k| big(m, k)), Err(()), "no input: the failure");
         m.insert(3, 9);
         assert_eq!(Cutoff::get_in(&mut &m, |_| &c, &3, |m, k| big(m, k)), Ok(true), "tried again");
+    }
+
+    // spec: none (internal): a refresh at its fixed point (`Quiet`) returns at once, yet a key
+    // wanted since is derived, and a write moves the rows again.
+    #[test]
+    fn a_quiet_cutoff_derives_what_came_since() {
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        m.insert(1, 10);
+        m.insert(2, 1);
+        let c: Cutoff<u8, bool> = Cutoff::new("test cutoff");
+        let big = |m: &Stamped<u8, u8>, k: &u8| -> Result<bool, ()> { m.get(k).map(|v| *v > 5).ok_or(()) };
+        assert_eq!(Cutoff::get_in(&mut &m, |_| &c, &1, |m, k| big(m, k)), Ok(true));
+        for _ in 0..2 {
+            assert!(!Cutoff::refresh_in(&mut &m, |_| &c, |m, k| big(m, k)).unwrap());
+        }
+        assert_eq!(Cutoff::get_in(&mut &m, |_| &c, &2, |m, k| big(m, k)), Ok(false), "wanted since: derived");
+        m.insert(1, 2);
+        assert!(Cutoff::refresh_in(&mut &m, |_| &c, |m, k| big(m, k)).unwrap(), "written since: derived again");
+        assert_eq!(Cutoff::get_in(&mut &m, |_| &c, &1, |m, k| big(m, k)), Ok(false));
     }
 }

@@ -5,7 +5,7 @@
 
 use crate::Engine;
 use crate::error::Result;
-use osis_base::memo::{Effects, Feed, Stamped, Unrecorded};
+use osis_base::memo::{Effects, Feed, Quiet, Stamped, Unrecorded};
 use osis_base::{CommitId, SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -32,11 +32,13 @@ pub(crate) struct OwnCommits {
     feeds: Option<(Feed<CommitId>, Feed<CommitId>)>,
     /// The rows: per followed sync ID, its own commits (read whole).
     rows: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
+    /// The follow's fixed point.
+    quiet: Quiet,
 }
 
 impl Default for OwnCommits {
     fn default() -> Self {
-        OwnCommits { scope: Effects::new("own: scope"), pairs: Effects::new("own: commits"), candidates: BTreeMap::new(), feeds: None, rows: Stamped::default() }
+        OwnCommits { scope: Effects::new("own: scope"), pairs: Effects::new("own: commits"), candidates: BTreeMap::new(), feeds: None, rows: Stamped::default(), quiet: Quiet::default() }
     }
 }
 
@@ -113,9 +115,15 @@ impl Engine {
     /// Brings the own commits of each followed sync ID up to date: work in proportion to the
     /// commits added, the things entering a closure and the candidates whose reads moved.
     pub(crate) fn follow_own(&mut self) -> Result<()> {
+        let o = &self.core.own_commits;
+        if o.quiet.holds(o.scope.idle() && o.pairs.idle()) {
+            return Ok(());
+        }
         let _u = Unrecorded::start();
+        let from = Quiet::begin();
         let mut o = std::mem::take(&mut self.core.own_commits);
         let r = self.follow_own_in(&mut o);
+        o.quiet.ended(from, r.is_ok());
         self.core.own_commits = o;
         r
     }

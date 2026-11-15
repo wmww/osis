@@ -16,7 +16,7 @@ use super::ThingSync;
 use crate::Engine;
 use crate::error::Result;
 use crate::sync_ids::{Certs, Parts};
-use osis_base::memo::{Effects, Feed, Stamped, StampedSet, Unrecorded};
+use osis_base::memo::{Effects, Feed, Quiet, Stamped, StampedSet, Unrecorded};
 use osis_base::{CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -88,6 +88,8 @@ struct Followers {
     pieces: Pieces,
     /// New things with authors, new (holder, thing) pairs; `None` until the first follow.
     feeds: Option<Feeds>,
+    /// The follow's fixed point.
+    quiet: Quiet,
 }
 
 /// `Followers::feeds`.
@@ -95,7 +97,7 @@ type Feeds = (Feed<Tid>, Feed<(Tid, Tid)>);
 
 impl Default for Followers {
     fn default() -> Self {
-        Followers { read: Effects::new("sync: certified things"), read_feed: None, inboxes: Effects::new("sync: certified inboxes"), authored: Effects::new("sync: certified authored"), pieces: Effects::new("sync: certified pieces"), feeds: None }
+        Followers { read: Effects::new("sync: certified things"), read_feed: None, inboxes: Effects::new("sync: certified inboxes"), authored: Effects::new("sync: certified authored"), pieces: Effects::new("sync: certified pieces"), feeds: None, quiet: Quiet::default() }
     }
 }
 
@@ -339,9 +341,16 @@ impl Engine {
     /// the keys whose reads moved and the pieces they place. Read by no caller: what a caller
     /// reads is the rows (`certified`, `certified_records`). Whether a row moved.
     pub(crate) fn follow_certificates(&mut self) -> Result<bool> {
+        let f = &self.core.certified.followers;
+        if f.quiet.holds(f.read.idle() && f.inboxes.idle() && f.authored.idle() && f.pieces.idle()) {
+            return Ok(false);
+        }
+        osis_base::costs::count("certified: follows", 1);
         let _u = Unrecorded::start();
+        let from = Quiet::begin();
         let mut f = std::mem::take(&mut self.core.certified.followers);
         let r = self.follow_with(&mut f);
+        f.quiet.ended(from, r.is_ok());
         self.core.certified.followers = f;
         r
     }

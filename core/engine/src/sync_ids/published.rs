@@ -6,7 +6,7 @@
 
 use crate::Engine;
 use osis_base::Tid;
-use osis_base::memo::{Effects, Feed, Reader, Stamped, StampedSet, Unrecorded};
+use osis_base::memo::{Effects, Feed, Quiet, Reader, Stamped, StampedSet, Unrecorded};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -24,11 +24,13 @@ pub(crate) struct Published {
     under: Stamped<Tid, Arc<BTreeSet<Tid>>>,
     /// (actor, thing) for each thing published, read per pair.
     pairs: StampedSet<(Tid, Tid)>,
+    /// The follow's fixed point.
+    quiet: Quiet,
 }
 
 impl Default for Published {
     fn default() -> Self {
-        Published { by: Effects::new("published"), feed: None, placed: BTreeMap::new(), under: Stamped::default(), pairs: StampedSet::default() }
+        Published { by: Effects::new("published"), feed: None, placed: BTreeMap::new(), under: Stamped::default(), pairs: StampedSet::default(), quiet: Quiet::default() }
     }
 }
 
@@ -69,7 +71,12 @@ impl Engine {
     /// Brings `Published` up to date with what moved since the last call: work in proportion to
     /// the things with a sync ID whose publisher's reads moved. Whether a set moved.
     pub(crate) fn follow_published(&mut self) -> bool {
+        let p = &self.core.published;
+        if p.quiet.holds(p.by.idle()) {
+            return false;
+        }
         let _u = Unrecorded::start();
+        let from = Quiet::begin();
         let mut p = std::mem::take(&mut self.core.published);
         if p.feed.is_none() {
             p.feed = Some(self.core.ix.sync_recorded.feed());
@@ -104,6 +111,7 @@ impl Engine {
                 p.under.insert(a, set);
             }
         }
+        p.quiet.ended(from, true);
         self.core.published = p;
         moved
     }

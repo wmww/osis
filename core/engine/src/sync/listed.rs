@@ -10,7 +10,7 @@
 
 use crate::Engine;
 use crate::error::Result;
-use osis_base::memo::{Effects, Feed, Stamped, Stamps, Unrecorded};
+use osis_base::memo::{Effects, Feed, Quiet, Stamped, Stamps, Unrecorded};
 use osis_base::{CommitId, SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -25,11 +25,13 @@ struct Followers {
     carried: Effects<Tid, Arc<BTreeSet<Tid>>>,
     /// The (thing, rotation) lists held from the first follow on (`Indexes::lists_on`).
     lists: Option<Feed<(Tid, CommitId)>>,
+    /// The follow's fixed point (`certified`'s inside it).
+    quiet: Quiet,
 }
 
 impl Default for Followers {
     fn default() -> Self {
-        Followers { read: None, carried: Effects::new("sync: listed carried"), lists: None }
+        Followers { read: None, carried: Effects::new("sync: listed carried"), lists: None, quiet: Quiet::default() }
     }
 }
 
@@ -121,12 +123,18 @@ impl Engine {
     /// rows and `Engine::follow`; never inside a transaction, by its type: a `Tx` holds the
     /// `Core` alone, and following reads the engine whole. Whether a row of either moved.
     pub(crate) fn follow_lists(&mut self) -> Result<bool> {
+        let f = &self.core.listed.followers;
+        if f.quiet.holds(f.carried.idle()) {
+            return Ok(false);
+        }
         let _u = Unrecorded::start();
+        let from = Quiet::begin();
         // the read things, as `certified` follows them
         let moved = self.follow_certificates()?;
         self.core.listed.wrote = false;
         let mut f = std::mem::take(&mut self.core.listed.followers);
         let r = self.follow_lists_with(&mut f);
+        f.quiet.ended(from, r.is_ok());
         self.core.listed.followers = f;
         r.map(|()| self.core.listed.wrote | moved)
     }
