@@ -833,7 +833,8 @@ fn a_write_after_a_passed_until_waits_for_the_finalize_spec_permissions_2() {
 // reads as its account does at every node; for what a node seals or opens, only its own account's
 // devices actor does. Peer 1's account reads G: at peer 0, peer 1's devices actor places chains on
 // G as its account (`cert_reads_in`) yet reads nothing of G (`reads_in`, `reads`: what a body under
-// its sync ID carries, what a copy there opens to); at peer 1, its own devices actor reads G
+// its sync ID carries, what a copy there opens to) nor by entitlement (`may_read`); at peer 1, its
+// own devices actor reads G, entitlement included
 #[test]
 fn another_accounts_devices_reads_as_itself_but_places_chains_as_its_account_spec_sync_judgement_1() {
     let (mut lp, g, tids) = granted(2, &[(1, Role::Read)]);
@@ -843,11 +844,13 @@ fn another_accounts_devices_reads_as_itself_but_places_chains_as_its_account_spe
     assert_eq!(p0.core.devices_of(&d1), Some(a1), "peer 0 knows peer 1's devices actor");
     assert!(p0.cert_reads_in(&d1, &g), "chains place as the account reads, at every node");
     assert!(!p0.reads_in(&d1, &g), "another account's devices actor reads as itself here");
+    assert!(!p0.may_read(&d1, &g), "nor by entitlement, which every caller shares");
     // what a body under its sync ID carries and what a copy there opens to read `reads`
     let ctx = p0.body_ctx(&d1);
     assert!(!p0.reads(&ctx, &g), "nothing of G sealed or opened for another account's devices");
     let p1 = &mut lp.peers[1].engine;
     assert!(p1.reads_in(&d1, &g) && p1.cert_reads_in(&d1, &g), "a node's own devices actor reads as its account");
+    assert!(p1.may_read(&d1, &g), "by entitlement too (a diagnostic asking it agrees with what sync carries)");
 }
 
 // notes/engine.md (Roles at now: every role-at-now read goes through `Core::role_now`, on the

@@ -520,11 +520,7 @@ impl Engine {
     }
 
     fn actor_reads(&self, actor: &Tid, t: &Tid) -> bool {
-        // the readers of this node's account's devices actor are its nodes: they read what the
-        // account reads. Another account's devices actor reads as itself here: what this node
-        // seals, boxes or opens never reads another account's grants as ours.
-        let reader = self.core.account_devices().filter(|x| x.1 == *actor).map_or(*actor, |x| x.0);
-        self.core.may_read(&reader, &self.core.reader_of(t))
+        self.core.may_read(actor, &self.core.reader_of(t))
     }
 
     /// Whether the actor of group `g` reads `t` as every node judges it, for placing chain

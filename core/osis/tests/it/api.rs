@@ -681,7 +681,8 @@ fn stream_len_set_stream_spec_data_model_6() {
 }
 
 // spec/requirements.md (Offline and network), notes/api.md Diagnostics: a thing added only to a
-// group no synced group holds gets `NotSynced`; one added to the (labeled) home group does not.
+// group no synced group holds gets `NotSynced`; one added to the (labeled) home group does not,
+// the account's own things included.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn not_synced_diagnostic_spec_api_diagnostics() {
@@ -700,11 +701,15 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
     let home_item = w.create_with_content(db.home()).unwrap();
     w.group(db.home()).add(osis::Member::Item(home_item)).unwrap();
     w.group(g).add(osis::Member::Item(lost)).unwrap();
+    // a thing whose admin is the account, an item of home: home's holders (the account's
+    // devices actor) read as the account does (spec/sync-judgement.md §1 Entitlement)
+    let mine = w.create_in(db.me(), &[db.home()]).unwrap();
     w.commit().unwrap();
     db.settle();
     let got: Vec<osis::Tid> = rx.try_iter().flatten().collect();
     assert!(got.contains(&lost), "{got:?}");
     assert!(!got.contains(&home_item));
+    assert!(!got.contains(&mine), "the account's own thing in home: {got:?}");
 }
 
 // notes/api.md Reads (knows), Watching: a deleted thing reads unknown (`created` still reports
