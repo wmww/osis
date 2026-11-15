@@ -183,11 +183,6 @@ impl Mutation {
         self
     }
 
-    /// Whether `local` named `t`.
-    pub fn is_local(&self, t: &Tid) -> bool {
-        self.local.contains(t)
-    }
-
     /// The commit fails `Error::Unsynced` when, after it, `tid` is durable and in no synced
     /// (labeled) group's closure while `group` is: a membership in a group that is an item of a
     /// synced group but no subgroup of one (spec/sync-set.md §2).

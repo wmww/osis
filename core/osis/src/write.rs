@@ -455,7 +455,7 @@ impl<'d> Write<'d> {
             }
             let who = self.actor;
             let sharing = self.sharing;
-            let Built { mut m, added } = self.build(&mut Reader { e, limit, actor }, expires)?;
+            let Built { mut m, added, local } = self.build(&mut Reader { e, limit, actor }, expires)?;
             // whatever actor the write names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
                 m.confine(a);
@@ -463,7 +463,7 @@ impl<'d> Write<'d> {
             let r = match e.write(m)? {
                 Some(w) => {
                     if !e.holds_memory(&w.id) {
-                        not_synced(e, &added, sharing);
+                        not_synced(e, &added, &local, sharing);
                     }
                     Some(crate::commits::written_in(&mut Reader { e, limit, actor }, w, who)?.reporting(db))
                 }
@@ -479,7 +479,7 @@ impl<'d> Write<'d> {
         let (acting, db) = (self.db.acting, self.db);
         let Write { ops, keys, actor, created, .. } = self;
         let gk = DynamicAspectKey { ak: GROUP.name(), schema: Some(crate::keys::core_schema()) };
-        let mut b = Built { m: Mutation::new(), added: Vec::new() };
+        let mut b = Built { m: Mutation::new(), added: Vec::new(), local: Vec::new() };
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
         // a release request carries `released.0` deltas alone (spec/commits.md §5 Destruction)
         let releases = ops.iter().filter(|o| matches!(o, WriteOp::Release(_))).count();
@@ -503,6 +503,7 @@ impl<'d> Write<'d> {
                         return Err(Error::Invalid("local names only a thing this write creates".into()));
                     }
                     b.m.local(t);
+                    b.local.push(t);
                 }
                 WriteOp::Group { add: false, .. } | WriteOp::Delete(_) | WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group, a delete or a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
@@ -617,8 +618,6 @@ impl<'d> Write<'d> {
         // what it creates reaches the account's other nodes unless the write lists it somewhere
         // synced itself (crate docs, Writes)
         b.m.file_created();
-        // kept here on purpose: no report that it stays on this node
-        b.added.retain(|(t, _)| !b.m.is_local(t));
         if let Some(at) = expires {
             b.m.expires_all(at);
         }
@@ -631,6 +630,8 @@ struct Built {
     m: Mutation,
     /// Things added to groups and the group (the `NotSynced` check).
     added: Vec<(Tid, Tid)>,
+    /// Things named `local`: kept here on purpose, so no report that they stay on this node.
+    local: Vec<Tid>,
 }
 
 impl Built {
@@ -646,7 +647,7 @@ impl Built {
 
 /// Reports added things that no synced group holds (spec/requirements.md, Offline
 /// and network).
-fn not_synced(e: &mut osis_engine::Engine, added: &[(Tid, Tid)], sharing: bool) {
+fn not_synced(e: &mut osis_engine::Engine, added: &[(Tid, Tid)], local: &[Tid], sharing: bool) {
     if added.is_empty() {
         return;
     }
@@ -658,7 +659,7 @@ fn not_synced(e: &mut osis_engine::Engine, added: &[(Tid, Tid)], sharing: bool) 
                 continue;
             }
             e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "in a group whose holders may not read it: it does not reach them (add_with_grant)".into() });
-        } else if !e.carried(t) {
+        } else if !e.carried(t) && !local.contains(t) {
             e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "only in groups no synced group holds: it stays on this node".into() });
         }
     }

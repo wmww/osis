@@ -1807,7 +1807,8 @@ fn create_files_what_nothing_synced_holds_spec_sync_set_1() {
 }
 
 // spec/sync-set.md §1 (Filing): a thing the write names `local` is not filed, and no
-// `NotSynced` reports it; beside it a thing not named still is, a thing the write lists only in
+// `NotSynced` says it stays here (one in a group its holders may not read still does); beside it a
+// thing not named still is filed, a thing the write lists only in
 // the local one included; `local` names only what the write creates.
 #[test]
 fn a_local_thing_is_not_filed_spec_sync_set_1() {
@@ -1838,6 +1839,21 @@ fn a_local_thing_is_not_filed_spec_sync_set_1() {
     assert!(!in_home(alone) && made.parts().all(|p| p.0 != home), "no part on home");
     db.settle();
     assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![], "kept here on purpose: no NotSynced");
+    // a group whose holders may not read it is no place it is kept on purpose: still told
+    let mut w = db.write();
+    let shared = w.create_in(db.me(), &[home]).unwrap();
+    w.commit().unwrap();
+    db.make_link(shared, Role::Read, osis::LinkOpts::default()).unwrap();
+    db.settle();
+    // a false alarm on the item of home (issues/notsynced-home-false-alarm.md)
+    let _ = rx.try_iter().count();
+    let mut w = db.write();
+    let hidden = w.create_with_content(db.me()).unwrap();
+    w.local(hidden).unwrap();
+    w.group(shared).add(osis::Member::Item(hidden)).unwrap();
+    w.commit().unwrap();
+    db.settle();
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![hidden], "its holders may not read it");
     let mut w = db.write();
     assert!(matches!(w.local(filed), Err(Error::Invalid(_))), "not created by this write");
 }
