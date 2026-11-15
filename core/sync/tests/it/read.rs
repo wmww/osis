@@ -2647,7 +2647,8 @@ fn a_first_start_after_a_session_commits_the_same_at_n_and_10n() {
 // an account's rotation past its current `keys.0` goes as a header alone): a certificate copy
 // logged while S named its part stays while the body is must-hold as a header alone, until a
 // complete pass after the move; then it leaves the own store with no tombstone, a header-only
-// copy is logged in its place, and the old copy is deleted at K.
+// copy is logged in its place, and the old copy is deleted at K only once K holds another entry
+// of it (never neither there).
 #[test]
 fn a_copy_holding_no_named_delta_leaves_for_a_header_copy_spec_sync_judgement_2() {
     let mut w = W::new();
@@ -2676,7 +2677,14 @@ fn a_copy_holding_no_named_delta_leaves_for_a_header_copy_spec_sync_judgement_2(
     assert_eq!(w.logs(S, c), 2, "a header-only copy logged in its place");
     let new = w.g.logged.last().unwrap().2;
     w.g.blobs.insert(new, Some(BlobInfo { parts: BTreeSet::new(), sealed: Default::default(), copy: true }));
+    // K holding the old copy alone keeps it: never neither the old copy nor its replacement there
+    w.pulls = false;
     w.exchange();
+    assert!(!w.sent().any(|m| *m == Sent::Delete(KC, old)), "the copy deleted at K before K holds the header-only copy");
+    w.pulls = true;
+    w.exchange();
+    w.exchange();
+    assert!(w.g.k.held.contains_key(&(S, new)), "K took the header-only copy");
     assert!(w.sent().any(|m| *m == Sent::Delete(KC, old)), "the copy deleted at K");
     assert!(!w.sent().any(|m| *m == Sent::Delete(KC, new)), "the header-only copy deleted at K");
 }

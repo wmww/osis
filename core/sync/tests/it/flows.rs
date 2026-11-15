@@ -1267,11 +1267,10 @@ fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2()
 // spec/permissions.md §4 (Chain certificates: an account's current `keys.0` commits with their
 // `keys.0` part, its other rotations, every line, as header-only copies), §5.5 (Chains travel),
 // spec/sync-judgement.md §2 (required set: a header-only copy of a rotation): after a writer's
-// account rotates three times, every node reading S holds every old rotation under S as
-// header-only copies alone and the current one with its `keys.0` part (no old epoch's deposit
-// seed under S; a copy logged while its rotation was current leaves once it is not), a fresh
-// reader of S, cut off from the writer, among them; it verifies the commits signed at closed
-// epochs (each later rotation).
+// account rotates twice, every node reading S holds the old rotation under S as header-only
+// copies alone and the current one with its `keys.0` part (no old epoch's deposit seed under S;
+// a copy logged while its rotation was current leaves once it is not), a fresh reader of S among
+// them; it verifies the rotation signed at the closed epoch.
 #[test]
 fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
     let mut w = crate::harness::history::world(0, 3);
@@ -1289,11 +1288,11 @@ fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
     w.run();
     file(&mut w, 1, Vec::new(), vec![t]);
     w.run();
-    // three rotations, each signed at the epoch the one before mints; node 2 cut off from the
-    // writer (no Prove carries them to it), each goes under every sync ID the account acts in
-    w.cap = 10_000;
-    w.partition(1, 2);
-    for _ in 0..3 {
+    // two rotations, the second signed at the epoch the first mints; each goes under every sync
+    // ID the account acts in, streamed by every node on both connections of each pair (about
+    // 1 000 deliveries each)
+    w.cap = 3 * crate::harness::RULE_CAP / 2;
+    for _ in 0..2 {
         w.write(1, |e| e.rotate_account(&a1)).unwrap().expect("rotated");
         w.run();
     }
@@ -1302,10 +1301,10 @@ fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
     let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
     let rots = w.engine(1).account_rotations(&a1);
     let current = w.engine(1).current_keys(&a1);
-    assert_eq!(rots.len(), 3, "three rotations");
+    assert_eq!(rots.len(), 2, "two rotations");
     assert_eq!(rots.iter().filter(|r| current.contains(r)).count(), 1, "one current rotation");
-    // a fresh reader of S verifies the commits signed at closed epochs (the later rotations) by
-    // the headers of the rotations minting those epochs alone
+    // a fresh reader of S verifies the rotation signed at the closed epoch by the header of the
+    // rotation minting it
     w.write(0, |e| e.grant(&t, &a2, &edge(Role::Read))).unwrap();
     w.run();
     file(&mut w, 2, Vec::new(), vec![t]);

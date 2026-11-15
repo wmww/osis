@@ -633,11 +633,12 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
     } else {
         let copy = mine.meta(s, c).is_some_and(|m| m.copy);
         let mut out = duplicates(g, seen, copy)?;
-        // a copy holding none of what S names of it (§2), once final
+        // a copy holding none of what S names of it (§2), once final, and only beside another
+        // entry of it there: the source never holds neither the old copy nor its replacement
         let (unnamed, gone, _) = unnamed_copies(g, mine, s, c, &seen.present)?;
         let mut present = seen.present.clone();
-        if gone {
-            present.retain(|b| !unnamed.contains(b));
+        present.retain(|b| !gone || !unnamed.contains(b));
+        if gone && !present.is_empty() {
             for b in unnamed {
                 if !out.contains(&b) {
                     out.push(b);
