@@ -85,10 +85,6 @@ pub struct Mutation {
     /// A rotation of the signing account's chain, with the key of each fork it names
     /// (spec/crypto.md §9; `flows::signing`).
     pub(crate) rotation: Option<crate::flows::signing::AccountRotation>,
-    /// Lists what it creates under home where nothing synced holds it (`file_created`).
-    pub(crate) file: bool,
-    /// Things it creates that filing skips (`local`).
-    pub(crate) local: BTreeSet<Tid>,
 }
 
 impl Default for Mutation {
@@ -103,7 +99,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None, file: false, local: BTreeSet::new() }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -155,23 +151,6 @@ impl Mutation {
     /// state (`delete_purges`).
     pub fn deleting(&mut self, tid: Tid) -> &mut Self {
         self.deleting.insert(tid);
-        self
-    }
-
-    /// In a commit acting as the account: each thing it creates that, after it, no synced
-    /// group's closure holds other than as a thing home is the key home of, it also lists as a
-    /// subgroup of home (the account's devices actor D), so it reaches the account's other nodes
-    /// (spec/sync-set.md §1 Filing).
-    pub fn file_created(&mut self) -> &mut Self {
-        self.file = true;
-        self
-    }
-
-    /// Filing (`file_created`) skips `t`, a thing this commit creates, and the transaction fails
-    /// `Error::Clash` if it leaves `t` carried: it stays on this node until a later write lists
-    /// it somewhere synced (spec/sync-set.md §1 Filing, Local stays local; `check_local`).
-    pub fn local(&mut self, t: Tid) -> &mut Self {
-        self.local.insert(t);
         self
     }
 
@@ -786,130 +765,8 @@ pub(crate) fn purge_placer(ts: Ts) -> PathOp {
     PathOp { path: Vec::new(), op: Op::Replace(ts.wall_ms().to_value()) }
 }
 
-/// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing. Filing
-/// (`Mutation::file_created`) applies the commit, finds what it created that nothing synced
-/// holds, and, where any is, rolls back and applies it again listing those under home: the
-/// state the commit leaves decides, so a listing anywhere in it counts.
+/// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing.
 pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
-    let synced = std::mem::take(&mut m.synced);
-    let kept = std::mem::take(&mut m.kept);
-    let references = std::mem::take(&mut m.references);
-    let local = m.local.clone();
-    let was = carried_at_start(tx.core, &m);
-    let id = match filing(tx, &m)? {
-        None => apply_in(tx, m)?,
-        Some((d, roots)) => {
-            let created: Vec<Tid> = m.creates.keys().filter(|t| !m.local.contains(t)).copied().collect();
-            let (mut unfiled, mut expires) = (Vec::new(), None);
-            let first = tx.step(super::Step::Filing, |tx| {
-                let id = apply_in(tx, m.clone())?;
-                // the listing expires with the commit (a disappearing thing leaves home with it)
-                expires = id.and_then(|c| tx.core.ix.commits.get(&c)).and_then(|c| c.header.expires);
-                let groups = &tx.core.ix.groups;
-                let left: Vec<Tid> = created.iter().filter(|t| tx.core.created(t).is_some() && !groups.listed_under(t, &roots, &d)).copied().collect();
-                unfiled = groups.to_file(&left);
-                // rolled back and applied again below, never returned
-                if unfiled.is_empty() { Ok(id) } else { Err(Error::Misuse("unfiled")) }
-            });
-            if unfiled.is_empty() {
-                first?
-            } else {
-                for t in unfiled {
-                    m.op(d, &osis_schema::core_types::GROUP, PathOp { path: vec![osis_crdt::PathSeg::Field(super::groups::SUBGROUPS)], op: Op::Add(Value::Tid(t)) })?;
-                }
-                if let (Some(e), Some(am)) = (expires, m.aspects.get_mut(&(d, Ak::new(osis_schema::core_types::GROUP.ak()).map_err(|_| Error::Misuse("ak"))?))) {
-                    am.expires = Some(e);
-                }
-                apply_in(tx, m)?
-            }
-        }
-    };
-    if let Some(c) = &id {
-        if tx.own {
-            one_thing(tx.core, c)?;
-        }
-        check_synced(tx.core, &synced)?;
-        check_lifetimes(tx, &kept, &references)?;
-        // tests let a local writer break this, to test receivers
-        if !tx.core.skip_writer_rules {
-            tx.core.local_due.push((*c, local, was));
-        }
-    }
-    Ok(id)
-}
-
-/// The things `m` writes on (an undo: those of the commit it undoes) that something carries as
-/// it begins (`Core::carried`): a delete or an unlisting is judged by where its thing was.
-fn carried_at_start(core: &Core, m: &Mutation) -> BTreeSet<Tid> {
-    let undone = m.undoes.and_then(|u| core.ix.commits.get(&u)).map(|c| c.view.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()).unwrap_or_default();
-    m.aspects.keys().map(|(t, _)| *t).chain(m.deleting.iter().copied()).chain(undone).filter(|t| core.carried(t)).collect()
-}
-
-/// spec/sync-set.md §1 (Local stays local), at the end of the transaction writing `c`: no thing
-/// named `local` is carried (`Core::carried`), and no body of a thing carried neither before `c`
-/// (`was`) nor after the transaction shares `c` with one of a thing carried then: a commit's blob
-/// goes whole under the sync IDs of what it touches, once the transaction ends. A part going
-/// only as a chain certificate (`certificate_only`) is no body.
-pub(crate) fn check_local(core: &Core, c: &CommitId, local: &BTreeSet<Tid>, was: &BTreeSet<Tid>) -> Result<()> {
-    // a commit a step of the transaction rolled back is no write
-    if !core.ix.commits.contains_key(c) {
-        return Ok(());
-    }
-    if let Some(t) = local.iter().find(|t| core.carried(t)) {
-        return Err(Error::Clash(format!("{t} is made local, yet this write puts it where it syncs: make it local and list it in separate writes")));
-    }
-    let (carried, not): (Vec<Tid>, Vec<Tid>) = bodied(core, c).into_iter().partition(|t| was.contains(t) || core.carried(t));
-    match (carried.first(), not.first()) {
-        (Some(s), Some(t)) => Err(Error::Clash(format!("{t} is local (nothing that syncs holds it), so it cannot share a write with {s}, which syncs: write it apart, or list it somewhere that syncs first"))),
-        _ => Ok(()),
-    }
-}
-
-/// The things commit `c` holds a body on (`certificate_only` parts are none).
-fn bodied(core: &Core, c: &CommitId) -> BTreeSet<Tid> {
-    let Some(meta) = core.ix.commits.get(c) else { return BTreeSet::new() };
-    meta.view.aspects.iter().filter(|a| !certificate_only(core, &a.tid, &a.ak)).map(|a| a.tid).collect()
-}
-
-/// A commit the engine writes on its own (`Tx::own`: answers, sync record keeps, inbox marks)
-/// holds bodies on one thing at most, so `check_local` never refuses it whatever the rest of the
-/// transaction carries (spec/sync-set.md §1 Local stays local): an answer breaking this fails its
-/// own step (reported `OwnWriteFailed` by its caller), never the transaction.
-fn one_thing(core: &Core, c: &CommitId) -> Result<()> {
-    let on = bodied(core, c);
-    match on.len() {
-        0 | 1 => Ok(()),
-        n => Err(Error::Clash(format!("a commit the engine writes on its own holds bodies on one thing, this one on {n}: {on:?}"))),
-    }
-}
-
-/// `commit_in` for a commit the engine writes on its own outside an answer step (a sync record
-/// keep, an inbox mark): bodies on one thing (`one_thing`).
-pub(crate) fn commit_own(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
-    let own = std::mem::replace(&mut tx.own, true);
-    let r = commit_in(tx, m);
-    tx.own = own;
-    r
-}
-
-/// A key actor's record and keys: they travel only as chain certificates, for verifying
-/// signatures (spec/permissions.md §4), never as a body of the commit writing them.
-fn certificate_only(core: &Core, t: &Tid, ak: &Ak) -> bool {
-    core.is_key_actor(t) && (ak.as_str() == CREATED.ak() || ak.as_str() == osis_schema::core_types::KEYS.ak())
-}
-
-/// Home (the account's D) and the account's synced groups, where `m` files what it creates: it
-/// asks to, creates something not `local` and acts as the account.
-fn filing(tx: &mut Tx<'_>, m: &Mutation) -> Result<Option<(Tid, BTreeSet<Tid>)>> {
-    let Some((p, d)) = tx.core.account_devices() else { return Ok(None) };
-    if !m.file || m.creates.keys().all(|t| m.local.contains(t)) || m.actor != Some(p) {
-        return Ok(None);
-    }
-    Ok(Some((d, crate::sync::inbox::synced_roots(tx, d)?)))
-}
-
-/// `commit_in` without the checks over the state it leaves.
-fn apply_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
     let node = match m.signer {
         Some(k) if tx.core.key_actors.contains_key(&k) || tx.core.accounts.contains_key(&k) => k,
         Some(_) => return Err(Error::Misuse("signer not held")),
@@ -1157,6 +1014,8 @@ fn apply_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
         return Err(Error::Clash(format!("a purge goes under a write of its thing, and this commit writes nothing on {}. Write the purge as a commit of its own", p.tid())));
     }
     let id = build_and_apply(tx, plan, deltas)?;
+    check_synced(tx.core, &m.synced)?;
+    check_lifetimes(tx, &m.kept, &m.references)?;
     Ok(Some(id))
 }
 

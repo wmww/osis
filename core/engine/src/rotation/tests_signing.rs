@@ -1128,20 +1128,18 @@ fn a_rotation_waiting_for_a_head_names_nothing_until_held_spec_permissions_5_5()
     assert_eq!(d0.first_diff(&lp.peers[3].engine.index_digest()), None, "rebuilt");
 }
 
-// spec/permissions.md §5.5 (Listings), spec/sync-set.md §1 (Local stays local): a node of the
-// account that wrote on a local thing L and on t, a thing that syncs, before the rotator held
-// either, takes the rotation in and lists both writes, one commit per thing, so nothing of L
-// goes under t's sync IDs. Fails with one listing over every thing (its step fails, nothing listed).
+// spec/permissions.md §5.5 (Listings): a node of the account that wrote on two things, u and t,
+// before the rotator held either, takes the rotation in and lists both writes, one commit per
+// thing, so neither listing goes under the other thing's sync IDs. Fails with one listing over
+// every thing.
 #[test]
-fn a_listing_keeps_a_local_thing_apart_spec_permissions_5_5() {
+fn a_listing_is_one_commit_per_thing_spec_permissions_5_5() {
     let (mut lp, a, t) = world(4, 3);
     let mut m = crate::Mutation::new();
-    let l = lp.peers[2].engine.new_thing(&mut m, a.account);
-    m.local(l);
-    m.set(l, &x(), &Value::Str("mine".into())).unwrap();
-    let made = lp.peers[2].commit(m).unwrap().unwrap();
-    assert!(!lp.peers[2].engine.core.carried(&l) && lp.peers[2].engine.core.carried(&t), "L local, t carried");
-    let w = write(&mut lp, 2, t, "offline");
+    let u = lp.peers[2].engine.new_thing(&mut m, a.account);
+    m.set(u, &x(), &Value::Str("mine".into())).unwrap();
+    lp.peers[2].commit(m).unwrap().unwrap();
+    write(&mut lp, 2, t, "offline");
     let done = remove(&mut lp, 0, a.devices, 1);
     for id in &done.commits {
         let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
@@ -1150,62 +1148,8 @@ fn a_listing_keeps_a_local_thing_apart_spec_permissions_5_5() {
     let e = &lp.peers[2].engine;
     let listings: Vec<std::sync::Arc<osis_commit::Header>> = e.commit_ids().into_iter().filter_map(|c| e.header(&c)).filter(|h| h.aspects.iter().any(|x| x.ak.as_str() == "listing.0")).collect();
     let on = |x: Tid| listings.iter().filter(|h| h.aspects.iter().any(|y| y.tid == x)).collect::<Vec<_>>();
-    assert!(!on(l).is_empty() && !on(t).is_empty(), "both writes listed: {listings:?}");
+    assert!(!on(u).is_empty() && !on(t).is_empty(), "both writes listed: {listings:?}");
     assert!(listings.iter().all(|h| h.aspects.iter().all(|y| y.tid == h.aspects[0].tid)), "one thing per listing");
-    let _ = (made, w);
-}
-
-// spec/sync-set.md §1 (Local stays local): an answer the engine writes on its own holds bodies on
-// one thing per commit (`write::one_thing`), so one that would put a local thing beside a carried
-// one (a listing over every thing, by test hook) fails its own step: the receive applies, the
-// failure is reported (OwnWriteFailed) with the rotation still due, and nothing of L shares a
-// commit with t. Fails without `one_thing` (the receive is refused at its end, naming L).
-#[test]
-fn an_answer_mixing_a_local_thing_fails_alone_spec_sync_set_1() {
-    let (mut lp, a, t) = world(4, 3);
-    let mut m = crate::Mutation::new();
-    let l = lp.peers[2].engine.new_thing(&mut m, a.account);
-    m.local(l);
-    m.set(l, &x(), &Value::Str("mine".into())).unwrap();
-    lp.peers[2].commit(m).unwrap().unwrap();
-    write(&mut lp, 2, t, "offline");
-    lp.peers[2].engine.core.listing_whole = true;
-    let rx = lp.peers[2].engine.subscribe();
-    let done = remove(&mut lp, 0, a.devices, 1);
-    for id in &done.commits {
-        let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
-        lp.deliver(2, &pk).expect("the rotation is taken in");
-    }
-    let e = &mut lp.peers[2].engine;
-    assert!(done.commits.iter().all(|c| e.core.ix.commits.contains_key(c)), "the receive applies");
-    let failed: Vec<_> = rx.try_iter().filter_map(|x| if let crate::events::Event::Diagnostic(d) = x { Some(d) } else { None }).filter(|d| d.kind == crate::events::DiagnosticKind::OwnWriteFailed).collect();
-    assert!(!failed.is_empty() && failed.iter().all(|d| d.commit.is_some_and(|c| e.core.ix.rotations_due.contains(&c))), "reported, still due: {failed:?}");
-    assert!(!e.core.carried(&l), "L stays local");
-    let mixed = e.commit_ids().into_iter().filter_map(|c| e.header(&c)).any(|h| h.aspects.iter().any(|y| y.tid == l) && h.aspects.iter().any(|y| y.tid == t));
-    assert!(!mixed, "nothing of L beside t");
-}
-
-// spec/sync-set.md §1 (Local stays local): every commit the engine writes on its own outside an
-// answer step (a sync record keep, an inbox mark: `write::commit_own`) holds bodies on one thing,
-// as answers do, and one on a single thing goes. Fails without the check in `commit_own`.
-#[test]
-fn an_own_write_on_two_things_is_refused_spec_sync_set_1() {
-    let (mut lp, a, t) = world(4, 3);
-    let mut m = crate::Mutation::new();
-    let u = lp.peers[2].engine.new_thing(&mut m, a.account);
-    lp.peers[2].commit(m).unwrap().unwrap();
-    let both = || {
-        let mut m = crate::Mutation::new();
-        m.set(t, &x(), &Value::Str("t".into())).unwrap();
-        m.set(u, &x(), &Value::Str("u".into())).unwrap();
-        m
-    };
-    let e = &mut lp.peers[2].engine;
-    let own = e.run(|tx| crate::engine::write::commit_own(tx, both()));
-    assert!(matches!(&own, Err(crate::Error::Clash(x)) if x.contains("on its own")), "{own:?}");
-    let mut one = crate::Mutation::new();
-    one.set(t, &x(), &Value::Str("t".into())).unwrap();
-    assert!(e.run(|tx| crate::engine::write::commit_own(tx, one)).unwrap().is_some(), "one thing goes");
 }
 
 // spec/permissions.md §5.5 (Nothing waits for a thing list), spec/requirements.md (outsiders

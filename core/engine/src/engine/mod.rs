@@ -983,17 +983,8 @@ pub(crate) enum Step {
     /// One account rotation answered with this node's listing or addenda
     /// (`flows::signing::answer_rotations`).
     Rotation,
-    /// A commit applied to find what it leaves unfiled (`write::commit_in`).
-    Filing,
     /// This node's account's dial list rid of removed nodes' entries (`sync::dial::drop_departed`).
     Dial,
-}
-
-impl Step {
-    /// Whether the step is one answer the engine writes on its own (`Tx::own`).
-    fn answers(self) -> bool {
-        matches!(self, Step::Answer | Step::Cover | Step::Resnapshot | Step::Rotation | Step::Dial)
-    }
 }
 
 /// Tests: after `skip` more steps of kind `site` run, every later one fails (`BadInput`), before
@@ -1236,9 +1227,6 @@ pub struct Core {
     /// Tests: the facts this node's snapshots state, over the true ones (`snapshot::facts_of`).
     #[cfg(test)]
     pub(crate) lie_facts: Option<osis_crdt::Facts>,
-    /// Tests: a listing answering a rotation is one commit over every thing (`flows::signing::listing`).
-    #[cfg(test)]
-    pub(crate) listing_whole: bool,
     /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
     #[cfg(test)]
     pub(crate) lie_floor: Option<u64>,
@@ -1330,9 +1318,6 @@ pub struct Core {
     /// held is reported at its end where nothing carries it now (`Core::stranded_by_cut`); forgotten with
     /// the journal.
     pub cut_subs: BTreeSet<Tid>,
-    /// This transaction's own commits, each with the things its writer named local and those
-    /// it writes on that were carried as it began: judged at its end (`write::check_local`).
-    pub local_due: Vec<(CommitId, BTreeSet<Tid>, BTreeSet<Tid>)>,
     /// The commits on durable signal aspects `edits::settle` refolds besides those the journal
     /// names: a keep bound passed with no meta changing (`edits::time_passed`).
     pub refold: BTreeSet<(Tid, Ak, CommitId)>,
@@ -1500,8 +1485,6 @@ impl Core {
             #[cfg(test)]
             lie_facts: self.lie_facts.clone(),
             #[cfg(test)]
-            listing_whole: self.listing_whole,
-            #[cfg(test)]
             lie_floor: self.lie_floor,
             key_actors: self.key_actors.clone(),
             followed_links: self.followed_links.clone(),
@@ -1532,7 +1515,6 @@ impl Core {
             forgotten_names_due: self.forgotten_names_due.clone(),
             freed_waits: self.freed_waits.clone(),
             cut_subs: self.cut_subs.clone(),
-            local_due: self.local_due.clone(),
             refold: self.refold.clone(),
             wakes: self.wakes.clone(),
             resnapshots_due: self.resnapshots_due.clone(),
@@ -1837,7 +1819,6 @@ impl Core {
         self.waits.retake_committed();
         self.written.clear();
         self.cut_subs.clear();
-        self.local_due.clear();
         self.reach_log.clear();
         self.dirty = false;
     }
@@ -2055,7 +2036,6 @@ impl Core {
             forgotten_names_due: _,
             freed_waits: _,
             cut_subs: _,
-            local_due: _,
             refold: _,
             none_due: _,
             settings_due: _,
@@ -2116,8 +2096,6 @@ impl Core {
             step_fault: _,
             #[cfg(test)]
             lie_facts: _,
-            #[cfg(test)]
-            listing_whole: _,
             #[cfg(test)]
             lie_floor: _,
         } = c;
@@ -2291,8 +2269,6 @@ impl Core {
             #[cfg(test)]
             lie_facts: None,
             #[cfg(test)]
-            listing_whole: false,
-            #[cfg(test)]
             lie_floor: None,
             key_actors: Default::default(),
             followed_links: Default::default(),
@@ -2326,7 +2302,6 @@ impl Core {
             forgotten_names_due: BTreeSet::new(),
             freed_waits: BTreeMap::new(),
             cut_subs: BTreeSet::new(),
-            local_due: Vec::new(),
             refold: BTreeSet::new(),
             wakes: None,
             resnapshots_due: BTreeSet::new(),
@@ -2621,11 +2596,6 @@ pub struct Tx<'a> {
     pub blobs: blobs::Cipher<'a>,
     pub core: &'a mut Core,
     pub rng: &'a mut dyn CryptoRngCore,
-    /// Inside a write the engine makes on its own (an answer step, `Step::answers`, or
-    /// `write::commit_own`): each commit holds bodies on one thing (`write::one_thing`), so the
-    /// end of the transaction never refuses it (spec/sync-set.md §1 Local stays local) and a
-    /// failing answer is that step's, never the receive's.
-    pub(crate) own: bool,
 }
 
 impl Tx<'_> {
@@ -2657,8 +2627,6 @@ impl Tx<'_> {
         let m = self.core.mark();
         let sp = self.txn.savepoint();
         let held = self.blobs.mark();
-        let own = self.own;
-        self.own |= site.answers();
         #[cfg(test)]
         let r = match self.core.step_fault.as_mut().filter(|x| x.site == site) {
             Some(x) if x.skip > 0 => {
@@ -2674,7 +2642,6 @@ impl Tx<'_> {
             let _ = site;
             f(self)
         };
-        self.own = own;
         match r {
             Ok(v) => {
                 self.txn.release(sp)?;
@@ -3538,7 +3505,7 @@ impl Engine {
         self.core.time.set(now);
         let start = self.core.mark();
         let txn = self.store.transaction(&mut self.store_rng)?;
-        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, own: false };
+        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
         let r = f(&mut tx);
         // a read that changed something would have its change undone, and every cache dropped, at
         // every call
@@ -3552,7 +3519,6 @@ impl Engine {
         drop(tx);
         self.core.rollback_to(start);
         self.core.cut_subs.clear();
-        self.core.local_due.clear();
         r
     }
 
@@ -3595,7 +3561,7 @@ impl Engine {
         let mut sample = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, own: false };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
                 _after = memo::Unrecorded::start();
@@ -3662,11 +3628,6 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::leaving::date_due(&mut tx).map(|_| v));
                 }
                 tx.core.to_date.clear();
-                // judged on the state the whole write leaves: its commits' blobs go out after it
-                let local_due = std::mem::take(&mut tx.core.local_due);
-                if r.is_ok() {
-                    r = r.and_then(|v| local_due.iter().try_for_each(|(c, local, was)| write::check_local(tx.core, c, local, was)).map(|_| v));
-                }
                 if r.is_ok() {
                     r = r.and_then(|v| Core::commit_changes(&mut tx).map(|_| v));
                 }
@@ -3756,7 +3717,6 @@ impl Engine {
             Err(e) => {
                 self.core.walks_done = None;
                 self.core.cut_subs.clear();
-                self.core.local_due.clear();
                 self.core.forget_reach_since(start.reached);
                 self.core.rollback_to(start);
                 Err(e)
@@ -3787,7 +3747,7 @@ impl Engine {
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;
-            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, own: false };
+            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
             crate::apply::load(&mut tx, rebuild)
         };
         crate::apply::load_waits(&mut self.core);
@@ -3836,7 +3796,7 @@ impl Engine {
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<Option<u64>> {
                 let txn = self.store.transaction(&mut store_rng)?;
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, 0), core: &mut fresh, rng: &mut rng, own: false };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, 0), core: &mut fresh, rng: &mut rng };
                 // a transaction that left the index stale (`index::invalidate`: commit records
                 // changed outside the in-memory indexes) is followed by a reload
                 if !index::current(&mut tx)? {

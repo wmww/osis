@@ -335,9 +335,10 @@ fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
 
 /// A node of account `p` answers its rotation `r` with a listing: per thing, the commits of `p`
 /// at the epochs `r` closes that no word held names, this node's own (by inner signature) and
-/// others' by the cutoff (spec/permissions.md §5.5, Listings), one commit per thing (`Tx::own`).
-/// A listing needs no role on a thing;
-/// one it may write on only later waits whole, one that is gone here is left out.
+/// others' by the cutoff (spec/permissions.md §5.5, Listings), one commit per thing: a commit
+/// goes whole under the sync IDs of every thing it touches, so one over every thing would ship
+/// each thing's listing wherever any other thing goes. A listing needs no role on a thing; one
+/// it may write on only later waits whole, one that is gone here is left out.
 fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitId) -> Result<bool> {
     if tx.core.accounts.get(&p).is_none_or(|a| !tx.core.of_devices(&a.devices)) {
         return Ok(true);
@@ -357,17 +358,12 @@ fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
     if on.is_empty() {
         return Ok(true);
     }
-    let each: Vec<BTreeMap<Tid, BTreeSet<CommitId>>> = on.into_iter().map(|x| BTreeMap::from([x])).collect();
-    #[cfg(test)]
-    let each = if tx.core.listing_whole { vec![each.into_iter().flatten().collect()] } else { each };
-    for on in each {
+    for (t, ids) in on {
         let mut m = Mutation::new();
         m.sign_as(p);
         m.unchecked();
-        for (t, ids) in on {
-            let set = Value::Set(ids.iter().map(|c| Value::bytes(&c.0)).collect());
-            m.op(t, &ct::LISTING, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(set) })?;
-        }
+        let set = Value::Set(ids.iter().map(|c| Value::bytes(&c.0)).collect());
+        m.op(t, &ct::LISTING, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(set) })?;
         Engine::commit_tx(tx, m)?;
     }
     Ok(true)

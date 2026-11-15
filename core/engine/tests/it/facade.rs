@@ -886,9 +886,6 @@ fn seal_body_carries_held_sections_verbatim_spec_crypto_5() {
         let (_, d) = lp.peers[i].engine.account().unwrap().unwrap();
         add_item(&mut lp, i, d, t);
     }
-    // U syncs too, so it may share T's commit (spec/sync-set.md §1 Local stays local)
-    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
-    add_item(&mut lp, 0, d, u);
     spread(&mut lp);
     let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
     let mut m = Mutation::new();
@@ -2158,11 +2155,7 @@ fn cutting_a_subgroup_marks_what_it_held_spec_sync_set_4() {
     m.set(t, &REG, &s("x")).unwrap();
     m.op(sub, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).unwrap();
     m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Add(osis_base::Value::Tid(sub)) }).unwrap();
-    // the synced group has no sync ID, so no sync ID carries sub's plain closure: a writer
-    // breaking spec/sync-set.md §1 (Local stays local), to keep this to marking
-    e.core.skip_writer_rules = true;
     e.write(m).unwrap().unwrap();
-    e.core.skip_writer_rules = false;
     e.give_own_secrets(&t).unwrap();
     // listed again inside the synced groups: no change of what is synced
     listing(&mut lp, 0, g, 0, t, true);
@@ -2201,11 +2194,8 @@ fn marking_an_add_costs_its_size_spec_sync_set_2() {
             m.op(sub, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).unwrap();
         }
         m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Add(osis_base::Value::Tid(sub)) }).unwrap();
-        // as in `cutting_a_subgroup_marks_what_it_held_spec_sync_set_4`
-        e.core.skip_writer_rules = true;
         osis_base::costs::take();
         e.write(m).unwrap().unwrap();
-        e.core.skip_writer_rules = false;
         osis_base::costs::take().iter().find(|x| x.0 == "group index: walk up").map_or(0, |x| x.2)
     };
     let (small, big) = (cost(20), cost(200));
@@ -2701,10 +2691,7 @@ fn a_section_the_node_cannot_open_goes_as_it_came_spec_sync_judgement_3() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
     let u = thing_of(&mut lp, 0, ps[0]);
-    // u has a sync ID of its own, so it may share t's commit (spec/sync-set.md §1 Local stays local)
-    for x in [t, u] {
-        lp.peers[0].engine.give_own_secrets(&x).unwrap();
-    }
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
     let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
     for (h, b) in lp.inbox_blobs(0, &done).unwrap() {
         if h == ps[1] {

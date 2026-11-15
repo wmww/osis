@@ -1076,10 +1076,7 @@ fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
     let mut m = Mutation::new();
     m.set(y, &REG, &s("y")).unwrap();
     m.set(x, &REG, &s("x")).unwrap();
-    // x, local, beside y, shared (spec/sync-set.md §1 Local stays local): a writer breaking it
-    lp.peers[0].engine.core.skip_writer_rules = true;
     let c = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[0].engine.core.skip_writer_rules = false;
     let held_back = [grant.id, xc.id, c];
     let pks: Vec<_> = packages(&mut lp, 1).into_iter().chain(packages(&mut lp, 0)).collect();
     for p in pks.iter().filter(|p| !held_back.contains(&p.id)) {
