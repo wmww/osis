@@ -4,6 +4,7 @@
 > Tags: sync, engine, tests
 
 - **Redelivery untested in sync**: `store::follow` opens every entry naming a blob of a commit `take_redeliver` names (`receive::junk_first_while_a_record_is_away_goes_once_it_comes_spec_commits_4` tests the engine side); the harness has no lie that sends a junk copy.
+- **Redelivery is a take-queue**: `Engine::take_redeliver` hands sync a set it drains (`store::follow`), against notes/sync-facade.md's principle (no queue sync must drain) and the rule that derived work follows stamps; a lost take (a store failure after it) loses the reopen. Shape: a stamped set sync follows with a `Feed`, each commit leaving once `redelivered`.
 - `rewrap` refusing a per-sync-ID copy as a certificate of the same parts elsewhere has no test case that reaches it (no fixture found where both bodies hold the same parts).
 - **Coarse wake**: `Wake::Moved` (reach, actor secrets, epoch) is woken by any change of the held role inputs, so k such pending commits (a peer's, within its budget) cost k examinations per role commit applied (spec/commits.md §4 Limits): every reach and epoch waiter wakes, bounded by the pending budget, not in proportion to the change. Keying a reach by the edge targets on its path would need the walk to say which things it read.
 - **Wakes drained before the transaction**: `waits::wake` takes its queues before the reexamine's transaction runs, so a transaction that fails loses them unless a reload (`Wake::Open`) follows.

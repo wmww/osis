@@ -1,5 +1,5 @@
 # Demotion frontiers are replicated as certificates under every sync ID an account writes to, forever
-> Summary: a node removal from account P carries a frontier listing, by commit ID (32 B each), the removed node's received writes the removal puts in question; that commit is a chain certificate of every later node that node granted, so its frontier chunks go under every sync ID those nodes write to (their certificate copies, `Engine::own_certificates_now`), and role history is never compacted. Cost grows as node churn × uncovered commits × sync IDs per account. Not re-measured since frontiers became commit IDs only; measure, then split or close.
+> Summary: a node removal from account P carries a frontier listing, by commit ID (32 B each), the removed node's received writes the removal puts in question; that commit is a chain certificate of every later node that node granted, so its frontier chunks go under every sync ID those nodes write to (certificate copies: `sync::certified`'s chain and account pieces), and role history is never compacted. Cost grows as node churn × uncovered commits × sync IDs per account. Not re-measured since frontiers became commit IDs only; measure, then split or close.
 > Priority: low
 > Tags: performance, permissions, sync, spec
 
