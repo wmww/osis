@@ -1,5 +1,5 @@
 //! The sync set and what a reader of S acts with (spec/sync-set.md §1-§2, spec/sync-ids.md §3,
-//! spec/sync-opens.md §4): the synced group's closure filtered by the secrets held, the recorded
+//! spec/sync-opens.md §4): N's closure filtered by the secrets held, the recorded
 //! path and the keys held per step, current read secrets, static entries, the claim key; and
 //! this node's caps.
 

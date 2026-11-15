@@ -59,7 +59,7 @@ impl Engine {
         }
         let c = self.build_relay(actor, ts, deltas)?;
         let id = c.id;
-        // relayed when the synced group's closure holds a thing it writes (spec/sync-set.md §2)
+        // relayed when N's closure holds a thing it writes (spec/sync-set.md §2)
         let mut synced = false;
         for (t, _, _) in &signals {
             if self.in_sync_things(t)? {

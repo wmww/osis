@@ -248,7 +248,7 @@ pub enum Promote {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyncSet {
     pub ids: BTreeMap<SyncId, (Tid, Holding)>,
-    /// Things in the synced group's closure with no sync ID this node may hold.
+    /// Things in N's closure with no sync ID this node may hold.
     pub unsyncable: BTreeSet<Tid>,
 }
 
@@ -257,7 +257,7 @@ pub struct SyncSet {
 #[derive(Clone, Debug, Default)]
 pub struct ThingsFeed(pub(crate) Option<set::Entered>);
 
-/// How this node syncs one thing of its synced group's closure (spec/sync-set.md §2).
+/// How this node syncs one thing of N's closure (spec/sync-set.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThingSync {
     /// Read: its home sync ID (a destroyed thing being emptied: its own sync IDs).
@@ -702,8 +702,8 @@ impl Engine {
         self.forget_destroyed_now(thing)
     }
 
-    /// This node shares `t` no more (spec/sync-set.md §2 Shared here): it syncs it only while its
-    /// synced group's closure holds it, else `t` leaves the sync set by spec/sync-set.md §3.
+    /// This node shares `t` no more (spec/sync-set.md §2 Shared here): it syncs it only while N's
+    /// closure holds it (its synced group's, another shared thing's), else `t` leaves the sync set by spec/sync-set.md §3.
     /// `false`: it did not share `t`.
     pub fn unshare(&mut self, t: &Tid) -> Result<bool> {
         if !self.core.ix.shared_here.contains(t) {
@@ -788,8 +788,7 @@ impl Engine {
     }
 
     /// Sync ID `s`'s thing and how this node's keys let it hold `s` (read or kept unread),
-    /// whatever lists the thing: `sync_set`'s entry for `s` while the synced group's closure holds
-    /// the thing, and what a sync ID leaving the sync set is held as while it waits
+    /// whatever lists the thing: `sync_set`'s entry for `s` while N's closure holds the thing, and what a sync ID leaving the sync set is held as while it waits
     /// (spec/sync-set.md §3). Reads only `s`'s owner's keys.
     pub fn sync_holder(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
         self.sync_holder_now(s)
