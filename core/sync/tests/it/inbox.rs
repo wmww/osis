@@ -548,49 +548,69 @@ fn register_refusals_spec_sync_ids_6() {
 
 // spec/sync-inbox.md §4 (promotion), §3 (what a node must log under S and cannot stamp, it
 // deposits), spec/sync-ids.md §6 (a stamped entry of a deposited entry's blob ID replaces it):
-// node 0 (admin) rotates S's write secret leaving node 3 (a writer) out, and goes off; node 3,
+// node 0 (admin) rotates S's write secret leaving node 2 (a writer) out, and goes off; node 2,
 // standing at the new head with no write key for it, writes: its entry goes to node 1 (keeping S
 // unread) deposited. Node 0 comes back beside node 1 alone: it takes the deposit and promotes it
-// (stamped in its store under the new head), node 1 takes the stamped entry in place of the
-// deposit, and node 2 (a reader) holds it stamped.
+// (stamped in its store under the new head), and node 1 takes the stamped entry in place of the
+// deposit (what readers pull).
 #[test]
 fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     use crate::harness::Step::*;
     use crate::harness::history::{Gives, value_ak, world};
     use osis_base::{Role, Value};
     use osis_engine::Mutation;
-    let mut w = world(0, 4);
+    let mut w = world(0, 3);
     w.cap = 20_000;
-    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 3, Gives::Writes), Run, Run], String::new());
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some((t, Holding::Unread)));
     w.power_off(2);
-    w.power_off(3);
-    let a3 = w.node(3).account.unwrap();
-    w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Write], &[a3])).unwrap().expect("a rotation");
+    let a2 = w.node(2).account.unwrap();
+    w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Write], &[a2])).unwrap().expect("a rotation");
     w.run();
     let head = w.store(1).head(&s).unwrap().map(|h| h.id());
     w.power_off(0);
-    w.power_on(3);
+    w.power_on(2);
     w.run();
-    assert_eq!(w.store(3).head(&s).unwrap().map(|h| h.id()), head, "node 3 stands at the new head");
-    let c = w.write(3, |e| {
+    assert_eq!(w.store(2).head(&s).unwrap().map(|h| h.id()), head, "node 2 stands at the new head");
+    let c = w.write(2, |e| {
         let mut m = Mutation::new();
         m.set(t, &value_ak(), &Value::Int(7)).unwrap();
         e.commit(m).unwrap().unwrap()
     });
     w.run();
-    let blobs: Vec<BlobId> = w.engine(3).commit_blobs(&c).unwrap().iter().copied().collect();
+    let blobs: Vec<BlobId> = w.engine(2).commit_blobs(&c).unwrap().iter().copied().collect();
     let entry = |w: &crate::harness::World, i: usize| blobs.iter().find_map(|b| w.store(i).entry(&s, b).unwrap());
     assert!(entry(&w, 1).is_some_and(|e| e.deposited), "deposited at node 1: {:?}", entry(&w, 1));
-    w.power_off(3);
+    w.power_off(2);
     w.power_on(0);
     w.run();
     assert!(w.engine(0).holds_commit(&c), "node 0 took it from the deposit");
     assert!(entry(&w, 0).is_some_and(|e| e.stamp.is_some() && !e.deposited), "node 0 promoted it: {:?}", entry(&w, 0));
     assert!(entry(&w, 1).is_some_and(|e| e.stamp.is_some() && !e.deposited), "node 1 holds it stamped: {:?}", entry(&w, 1));
-    w.power_on(2);
-    w.run();
-    assert!(entry(&w, 2).is_some_and(|e| e.stamp.is_some() && !e.deposited), "node 2 holds it stamped: {:?}", entry(&w, 2));
+    // the author's chain under S decides (`inbox::promotion`): with node 0's entries of a chain
+    // commit S carries gone, the entry waits; logged again, it is promoted
+    let b = blobs.iter().copied().find(|b| w.store(0).entry(&s, b).unwrap().is_some()).expect("node 0's entry");
+    let mut st = w.store(0).clone();
+    let promotion = |w: &mut crate::harness::World| {
+        let st = w.store(0).clone();
+        osis_sync::inbox::promotion(w.engine(0), &st, &s, &c, &b).unwrap()
+    };
+    assert_eq!(promotion(&mut w), Promotion::Yes);
+    let osis_engine::sync::Promote::Yes { chain } = w.engine(0).promotable(&s, &c).unwrap() else { panic!("promotable") };
+    let cc = *chain.commits.keys().find(|x| w.engine(0).sync_bodies(x).unwrap().contains_key(&s)).expect("a chain commit S carries");
+    let mut gone = Vec::new();
+    for x in w.engine(0).commit_blobs(&cc).unwrap().iter() {
+        if let Some(e) = st.entry(&s, x).unwrap() {
+            gone.push((e, st.bytes(x).unwrap()));
+            st.unlog_entry(&s, x).unwrap();
+        }
+    }
+    assert!(!gone.is_empty());
+    assert_eq!(promotion(&mut w), Promotion::Wait, "the chain is not under S");
+    for (e, bytes) in gone {
+        st.log(&s, e, bytes, None).unwrap();
+    }
+    assert_eq!(promotion(&mut w), Promotion::Yes, "the chain under S again");
 }
