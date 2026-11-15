@@ -1858,3 +1858,26 @@ fn a_head_it_cannot_merge_owes_no_rotation_spec_permissions_5_5() {
         assert!(lp.peers[b].engine.signing_due().unwrap().commits.is_empty(), "pass {pass}: B rotates");
     }
 }
+
+// spec/crypto.md §5 (Section, Who wraps under what), §3 (an admin writes a fresh deposit seed
+// in each rotation): a node removed from D opens nothing of the account rotation that removes
+// it but what readers outside the account hold: never the account's `keys.0` part, which
+// carries D's fresh deposit seed
+#[test]
+fn a_removed_node_opens_no_keys_of_its_removal_rotation_spec_crypto_5() {
+    let (mut lp, a, _) = world(2, 2);
+    let done = remove(&mut lp, 0, a.devices, 1);
+    let r = done.commits[1];
+    let ai = lp.peers[0].engine.header(&r).unwrap().aspect_index(&a.account, "keys.0").expect("the rotation writes keys.0");
+    let pks = lp.sealed(0, &[r]).unwrap();
+    assert!(!pks.is_empty());
+    let e = &mut lp.peers[1].engine;
+    let mut opened = Vec::new();
+    for pk in &pks {
+        for en in &pk.entries {
+            let Some(key) = en.wraps.iter().find_map(|(g, w)| osis_label::unwrap_any(e.read_secrets(g).iter(), &en.id, w).map(|x| x.1)) else { continue };
+            opened.extend(e.open_commit(&en.blob, &key).unwrap().commit.parts.iter().map(|p| p.ai));
+        }
+    }
+    assert!(!opened.contains(&ai), "the removed node read the account's new keys.0 (D's fresh deposit seed)");
+}

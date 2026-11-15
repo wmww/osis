@@ -751,18 +751,11 @@ impl Engine {
     }
 
     /// For a rotation commit of the read role of `g`'s secret actor (its `keys.0` delta writes a
-    /// read keyset; an account's rotation, whose `keys.0` is its new epoch's): the newest held
-    /// epoch the new read epoch supersedes (spec/crypto.md §5, Who wraps under what), never the
-    /// one it mints, so a node of the account opens it with the seed it carries still to take;
-    /// `Lacking` where none is held (or the keyset is not held to tell).
+    /// read keyset): the newest held epoch the new read epoch supersedes (spec/crypto.md §5, Who
+    /// wraps under what), `Lacking` where none is held (or the keyset is not held to tell).
     fn rotation_wrap_epoch(&mut self, g: &Tid, c: &CommitId) -> Result<RotationWrap> {
         let Some(a) = self.core.secret_actor(g) else { return Ok(RotationWrap::Plain) };
         let Some(h) = self.header(c) else { return Ok(RotationWrap::Plain) };
-        if h.rotation.is_some() && h.author == a && self.core.is_account(&a) {
-            let Some(new) = self.core.account_read_epoch_of(&a, c) else { return Ok(RotationWrap::Lacking) };
-            let Some(epochs) = self.epochs(&a) else { return Ok(RotationWrap::Lacking) };
-            return Ok(epochs.read.wrapped_under(&new).map_or(RotationWrap::Lacking, |(s, _)| RotationWrap::Under(s)));
-        }
         let Some(ai) = h.aspect_index(&a, "keys.0") else { return Ok(RotationWrap::Plain) };
         if h.aspect_index(&a, "secrets.0").is_none() {
             return Ok(RotationWrap::Plain);
