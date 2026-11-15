@@ -54,7 +54,7 @@ use osis_engine::sync::{Caps, Holding, Path, SyncSet};
 use osis_label::{Class, ClaimSet, DeleteItem, Prefix, Step, StepId};
 use osis_proto::{Code, DepositItem};
 use osis_store::{Ciphertext, LogRead, LoggedEvent, NodeEvent, Shred, Suspended, Transaction};
-use rows::{EntryRow, R, W};
+use rows::{EntryRow, R, Vouch, W};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -470,9 +470,25 @@ impl Store {
     /// key is held by whoever was removed since). A peer's stamp is kept unverified (charged as
     /// unstamped), so its being there says nothing.
     pub fn stamp_verifies(&self, s: &SyncId, b: &BlobId) -> Result<bool> {
-        let Some(e) = self.entry(s, b)? else { return Ok(false) };
+        let Some((_, head)) = self.lock().read(|t, _| path::head(t, s))? else { return Ok(false) };
+        self.stamp_under(s, b, &[head.keys.write])
+    }
+
+    /// Whether held entry `b` of S carries a stamp that verifies under one of `keys`, in either
+    /// domain: the one door for checking a held entry's stamp. The verdict kept where it entered
+    /// (`rows::Vouch`) answers when it is one of these checks'; else the stamp is checked, and
+    /// nothing is kept (a read writes nothing, so moves no reader).
+    pub fn stamp_under(&self, s: &SyncId, b: &BlobId, keys: &[osis_crypto::VerifyingKey]) -> Result<bool> {
         let mut g = self.lock();
-        g.read(|t, _| stamp_vouches(t, s, &e))
+        let row = match g.mem.read(s, b).cloned() {
+            Some(r) => r,
+            None => match g.read(|t, _| entries::get(t, s, b))? {
+                Some(r) => r,
+                None => return Ok(false),
+            },
+        };
+        let Some(stamp) = row.stamp else { return Ok(false) };
+        Ok(keys.iter().any(|k| rows::kept_answers(k, s, b, &row.wrap, &stamp, row.vouch)) || keys.iter().any(|k| rows::check_stamp(k, s, b, &row.wrap, &stamp, None).is_some()))
     }
 
     /// Every entry of S, durable then ephemeral (stamped reads: memo-safe). O(entries of S).
@@ -645,7 +661,8 @@ impl Store {
     /// Whether entry `e`'s stamp verifies under S's head write key (a relay-only entry at a
     /// node keeping S unread, spec/sync-ids.md §6 Relay-only).
     pub fn stamp_vouches(&self, s: &SyncId, e: &Entry) -> Result<bool> {
-        self.lock().read(|t, _| stamp_vouches(t, s, e))
+        let Some(stamp) = e.stamp else { return Ok(false) };
+        self.lock().read(|t, _| Ok(head_vouch(t, s, &e.blob, &e.wrap, &stamp, None)?.is_some()))
     }
 
     /// The head S's path ends at.
@@ -667,6 +684,41 @@ impl Store {
     /// blob ID (never logged again under it), an expired or malformed blob, a relay-only one
     /// (never held).
     pub fn log(&mut self, s: &SyncId, e: Entry, bytes: Option<Vec<u8>>, from: Option<Source>) -> Result<Code> {
+        self.log_checked(s, e, bytes, from, None)
+    }
+
+    /// A peer's stamp `stamp` for held entry `b` of S under the same wrap, applied in stream
+    /// order (spec/sync-streams.md §4 Applying): logged on an entry held unstamped, judged as any
+    /// peer's stamp (charged to `from` unless it vouches); one under `head` (the write key of the
+    /// head S's `sync.0` records, which the served path may not follow yet) replaces a held one
+    /// that is not (stamped in place on a head move), vouched by that head. A held stamp's kept
+    /// verdict answers for it, and the new one is checked once.
+    pub fn take_stamp(&mut self, s: &SyncId, b: &BlobId, wrap: &crate::types::Wrap, stamp: &osis_crypto::Signature, head: Option<osis_crypto::VerifyingKey>, from: Source) -> Result<()> {
+        let Some(e) = self.entry(s, b)? else { return Ok(()) };
+        if e.stamp == Some(*stamp) || e.wrap != *wrap || self.bytes(b)?.is_none() {
+            return Ok(());
+        }
+        let at_head = match head {
+            Some(k) if e.stamp.is_some() && self.stamp_under(s, b, &[k])? => return Ok(()),
+            Some(k) => rows::check_stamp(&k, s, b, wrap, stamp, None),
+            None => None,
+        };
+        let e = Entry { stamp: Some(*stamp), deposited: false, ..e };
+        match at_head {
+            Some(v) => self.log_checked(s, e, None, None, Some(Some(v))).map(drop),
+            // a held stamp stays (`log`: one that does not vouch replaces none)
+            None => {
+                // checked under the served head as any peer's stamp: once, where that is `head`
+                let served = self.lock().read(|t, _| path::head(t, s))?.map(|(_, st)| st.keys.write);
+                let checked = (head.is_some() && served == head).then_some(None);
+                self.log_checked(s, e, None, Some(from), checked).map(drop)
+            }
+        }
+    }
+
+    /// `log`, with the verdict on `e`'s stamp under S's head already checked (`checked`), else
+    /// checked here for a peer's stamp.
+    fn log_checked(&mut self, s: &SyncId, e: Entry, bytes: Option<Vec<u8>>, from: Option<Source>, checked: Option<Option<Vouch>>) -> Result<Code> {
         let mut g = self.lock();
         let b = e.blob;
         let (class, expires) = match &bytes {
@@ -684,13 +736,29 @@ impl Store {
         }
         // a peer's stamp vouches only under S's head write key (spec/sync-ids.md §5 Peer budget):
         // one that does not verify there is charged as unstamped, and replaces no stamp held
+        // checked once where it enters, its verdict kept with the entry: one kept with a held copy
+        // of exactly these bytes answers (`Vouch`)
+        let vouch = match (&e.stamp, from, checked) {
+            (_, _, Some(v)) => v,
+            (Some(stamp), _, None) => {
+                let mem = g.mem.read(s, &b).map(|r| r.vouch);
+                g.read(|t, _| {
+                    let kept = match mem {
+                        Some(v) => v,
+                        None => entries::get(t, s, &b)?.and_then(|r| r.vouch),
+                    };
+                    head_vouch(t, s, &b, &e.wrap, stamp, kept)
+                })?
+            }
+            _ => None,
+        };
         let vouched = match (&e.stamp, from) {
             (None, _) => false,
             (Some(_), None) => true,
-            (Some(_), Some(_)) => g.read(|t, _| stamp_vouches(t, s, &e))?,
+            (Some(_), Some(_)) => vouch.is_some(),
         };
         let charged = if vouched { None } else { from };
-        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: e.deposited, own: e.own, role: e.role, class, expires, size: 0, charged, brought: if vouched { from } else { None } };
+        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: e.deposited, own: e.own, role: e.role, class, expires, size: 0, charged, brought: if vouched { from } else { None }, vouch };
         // a vouched copy of a held one: off any charge, its bringer kept for when it stops vouching
         let brought = |old: &EntryRow| if vouched { from.or(old.charged).or(old.brought) } else { old.brought };
         let stamp = |old: &EntryRow| if vouched || old.stamp.is_none() { e.stamp } else { old.stamp };
@@ -699,7 +767,7 @@ impl Store {
                 return Ok(Code::TOMBSTONED);
             }
             if let Some(old) = g.mem.read(s, &b).cloned() {
-                let new = EntryRow { size: old.size, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, brought: brought(&old), own: old.own || e.own, role: old.role || e.role, ..row };
+                let new = EntryRow { size: old.size, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, brought: brought(&old), own: old.own || e.own, role: old.role || e.role, vouch: row.vouch.or(old.vouch), ..row };
                 g.mem.change(s, &b, new);
                 return Ok(Code::OK);
             }
@@ -737,7 +805,7 @@ impl Store {
                         entries::bytes_arrived(t, env, &b)?;
                     }
                     let old = entries::get(t, s, &b)?.unwrap_or(old);
-                    let new = EntryRow { size: old.size, role: old.role || e.role, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, brought: brought(&old), own: old.own || e.own, ..row };
+                    let new = EntryRow { size: old.size, role: old.role || e.role, stamp: stamp(&old), charged: if vouched { None } else { old.charged }, brought: brought(&old), own: old.own || e.own, vouch: row.vouch.or(old.vouch), ..row };
                     entries::change(t, env, s, &b, &old, new)?;
                 }
                 None => entries::insert(t, env, s, &b, row, bytes)?,
@@ -786,8 +854,11 @@ impl Store {
         let mut g = self.lock();
         let now = g.now;
         if let Some(old) = g.mem.read(s, b).cloned() {
-            let e = entries::to_entry(*b, &old);
-            if old.own || old.charged.is_some() || old.stamp.is_none() || g.read(|t, _| stamp_vouches(t, s, &e))? {
+            if old.own || old.charged.is_some() {
+                return Ok(true);
+            }
+            let Some(stamp) = old.stamp else { return Ok(true) };
+            if g.read(|t, _| head_vouch(t, s, b, &old.wrap, &stamp, old.vouch))?.is_some() {
                 return Ok(true);
             }
             if let Some(src) = old.brought
@@ -801,7 +872,11 @@ impl Store {
         }
         g.write(|t, env| {
             let Some(old) = entries::get(t, s, b)? else { return Ok(false) };
-            if old.own || old.charged.is_some() || old.stamp.is_none() || stamp_vouches(t, s, &entries::to_entry(*b, &old))? {
+            if old.own || old.charged.is_some() {
+                return Ok(true);
+            }
+            let Some(stamp) = old.stamp else { return Ok(true) };
+            if head_vouch(t, s, b, &old.wrap, &stamp, old.vouch)?.is_some() {
                 return Ok(true);
             }
             if let Some(src) = old.brought
@@ -894,17 +969,17 @@ impl Store {
             }
             let Some(stamp) = e.stamp else { return Ok(Err(Code::REFUSED)) };
             let Some((_, head)) = path::head(t, s)?.filter(|_| !unheld) else { return Ok(Err(Code::REFUSED)) };
-            match osis_label::verify_stamp(&head.keys.write, s, &b, &e.wrap, &stamp) {
-                Ok(role) => Ok(Ok(role)),
-                Err(_) if path::earlier_write(t, s, |k| osis_label::verify_stamp(k, s, &b, &e.wrap, &stamp).is_ok())? => Ok(Err(Code::NOT_HEAD_KEY)),
-                Err(_) => Ok(Err(Code::REFUSED)),
+            match rows::verify_stamp(&head.keys.write, s, &b, &e.wrap, &stamp) {
+                Some(ok) => Ok(Ok(ok)),
+                None if path::earlier_write(t, s, |k| osis_label::verify_stamp(k, s, &b, &e.wrap, &stamp).is_ok())? => Ok(Err(Code::NOT_HEAD_KEY)),
+                None => Ok(Err(Code::REFUSED)),
             }
         })?;
-        let role = match verdict {
+        let (role, vouch) = match verdict {
             Ok(r) => r,
             Err(c) => return Ok(c),
         };
-        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: false, own: false, role, class, expires, size: 0, charged: None, brought: None };
+        let row = EntryRow { wrap: e.wrap, stamp: e.stamp, deposited: false, own: false, role, class, expires, size: 0, charged: None, brought: None, vouch: Some(vouch) };
         if class == Class::Ephemeral {
             if g.mem.tombstoned(s, &b) {
                 return Ok(Code::TOMBSTONED);
@@ -982,7 +1057,7 @@ impl Store {
             Ok(r) => r,
             Err(c) => return Ok(c),
         };
-        let row = EntryRow { wrap: d.wrap, stamp: None, deposited: true, own: false, role, class, expires, size: 0, charged: from, brought: None };
+        let row = EntryRow { wrap: d.wrap, stamp: None, deposited: true, own: false, role, class, expires, size: 0, charged: from, brought: None, vouch: None };
         let caps = holding == Holding::Unread && !role;
         if class == Class::Ephemeral {
             if caps && !mem_room(&mut g, &s, size, now) {
@@ -1537,11 +1612,11 @@ fn served(t: &mut Transaction<'_>, e: &LoggedEvent, until: Option<Position>) -> 
     })
 }
 
-/// Whether entry `e`'s stamp verifies under S's head write key, in either domain.
-fn stamp_vouches(t: &mut Transaction<'_>, s: &SyncId, e: &Entry) -> Result<bool> {
-    let Some(stamp) = e.stamp else { return Ok(false) };
-    let Some((_, head)) = path::head(t, s)? else { return Ok(false) };
-    Ok(osis_label::verify_stamp(&head.keys.write, s, &e.blob, &e.wrap, &stamp).is_ok())
+/// The verdict on `stamp` of entry `b` of S under `wrap` by S's head write key, in either domain
+/// (`kept` answering when it is this check's, `rows::check_stamp`): none when it does not verify.
+fn head_vouch(t: &mut Transaction<'_>, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &osis_crypto::Signature, kept: Option<Vouch>) -> Result<Option<Vouch>> {
+    let Some((_, head)) = path::head(t, s)? else { return Ok(None) };
+    Ok(rows::check_stamp(&head.keys.write, s, b, wrap, stamp, kept))
 }
 
 /// Whether `size` more bytes charged to `src` pass its peer budget (spec/sync-ids.md §5 Peer

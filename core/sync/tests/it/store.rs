@@ -1365,3 +1365,64 @@ fn a_blobs_tombstones_are_known_by_the_blob_until_they_end_spec_commits_5() {
     st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
     assert!(st.tombstoned_under(&b).unwrap().is_empty(), "ended with its tombstone");
 }
+
+/// Stamp checks (`verify: stamp`) since the last take.
+fn stamp_checks() -> u64 {
+    osis_base::costs::take().into_iter().filter(|(k, ..)| *k == osis_crypto::Domain::Stamp.verify_cost()).map(|(.., n)| n).sum()
+}
+
+// spec/sync-ids.md §5 (Peer budget: a reader checks a peer's stamp at arrival and again on each
+// head move), notes/engine.md (Signature verdicts): a stamp's verdict is kept with its entry, so
+// each (key, blob, wrap, stamp) is checked once per node: at n and 10n entries a peer brought,
+// one check each where the store logs it, none for the reads after (the head's, a step key's), a
+// path served again at the same head or a restart; a head move to another write key checks each
+// once more (another key), and nothing after.
+#[test]
+fn a_stamp_is_checked_once_per_node_spec_sync_ids_5() {
+    for n in [3usize, 30] {
+        let mut s = Sid::new(75);
+        let dev = Dev::new();
+        let path = |s: &Sid| osis_engine::sync::Path { steps: s.steps.iter().map(|(p, c)| (p.clone(), Some(c.clone()))).collect() };
+        let mut st = dev.open();
+        st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
+        st.serve_path(&s.id, &path(&s)).unwrap();
+        let c = Source::Conn(ConnId(5));
+        let blobs: Vec<(BlobId, Vec<u8>)> = (0..n).map(|i| blob(200 + i, Class::Durable, None, &[])).collect();
+        stamp_checks();
+        for (b, x) in &blobs {
+            assert_eq!(st.log(&s.id, stamped(&s, *b, false), Some(x.clone()), Some(c)).unwrap(), Code::OK);
+        }
+        // an own entry (no bringer) is checked where it is logged too
+        let (own, xo) = blob(199, Class::Durable, None, &[]);
+        assert_eq!(st.log(&s.id, Entry { own: true, ..stamped(&s, own, false) }, Some(xo), None).unwrap(), Code::OK);
+        assert_eq!(stamp_checks(), n as u64 + 1, "one where each is logged");
+        assert!(st.stamp_verifies(&s.id, &own).unwrap());
+        let head = s.head().keys.write;
+        for (b, x) in &blobs {
+            assert!(st.stamp_verifies(&s.id, b).unwrap() && st.stamp_under(&s.id, b, &[head]).unwrap());
+            assert!(st.charge_unvouched(&s.id, b).unwrap());
+            // brought again by a peer: the kept verdict answers
+            assert_eq!(st.log(&s.id, stamped(&s, *b, false), Some(x.clone()), Some(c)).unwrap(), Code::OK);
+        }
+        st.serve_path(&s.id, &path(&s)).unwrap();
+        for (b, _) in &blobs {
+            assert!(st.charge_unvouched(&s.id, b).unwrap());
+        }
+        let mut st = dev.open();
+        st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
+        for (b, _) in &blobs {
+            assert!(st.stamp_verifies(&s.id, b).unwrap());
+        }
+        assert_eq!(stamp_checks(), 0, "reads, the same head served again, a restart: none");
+        s.rotate(90);
+        st.serve_path(&s.id, &path(&s)).unwrap();
+        for (b, _) in &blobs {
+            assert!(st.charge_unvouched(&s.id, b).unwrap(), "charged to its peer");
+        }
+        assert_eq!(stamp_checks(), n as u64, "a head move to another key: one each");
+        for (b, _) in &blobs {
+            assert!(st.charge_unvouched(&s.id, b).unwrap());
+        }
+        assert_eq!(stamp_checks(), 0);
+    }
+}

@@ -251,6 +251,48 @@ pub(crate) struct EntryRow {
     /// charged to it once its stamp no longer vouches (`Store::charge_unvouched`); cleared when
     /// that peer goes.
     pub brought: Option<Source>,
+    /// The verdict on its stamp kept where it entered (`Vouch`), under S's head write key then.
+    pub vouch: Option<Vouch>,
+}
+
+/// A stamp verdict kept with its entry (notes/engine.md, Signature verdicts): the hash of the key
+/// a stamp verified under with what it signs (S, the blob, the wrap) and the stamp. A check is a
+/// function of those bytes alone, so it runs once where the entry enters and its verdict answers
+/// every later check of exactly those bytes and that key (`Store::stamp_under`); another key,
+/// wrap or stamp is checked anew. Made only by a check (`check_stamp`, `verify_stamp`), read
+/// back only from this node's rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Vouch([u8; 32]);
+
+impl Vouch {
+    fn of(key: &osis_crypto::VerifyingKey, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &Signature) -> Vouch {
+        let mut v = Vec::with_capacity(32 + 32 + 64);
+        v.extend_from_slice(key.as_bytes());
+        v.extend_from_slice(&osis_label::entry_digest(s, b, wrap));
+        v.extend_from_slice(&stamp.0);
+        Vouch(osis_base::hash::hash(&v))
+    }
+}
+
+/// Checks `stamp` on entry `b` of S under `wrap` against `key` (either domain): whether it is a
+/// role entry's, and the verdict to keep with the entry, when it verifies.
+pub(crate) fn verify_stamp(key: &osis_crypto::VerifyingKey, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &Signature) -> Option<(bool, Vouch)> {
+    let role = osis_label::verify_stamp(key, s, b, wrap, stamp).ok()?;
+    Some((role, Vouch::of(key, s, b, wrap, stamp)))
+}
+
+/// Whether `stamp` on entry `b` of S under `wrap` verifies under `key`: `kept` answers when it is
+/// this check's verdict, else it is checked (`verify_stamp`). The verdict when it verifies.
+pub(crate) fn check_stamp(key: &osis_crypto::VerifyingKey, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &Signature, kept: Option<Vouch>) -> Option<Vouch> {
+    if kept_answers(key, s, b, wrap, stamp, kept) {
+        return kept;
+    }
+    verify_stamp(key, s, b, wrap, stamp).map(|(_, v)| v)
+}
+
+/// Whether `kept` is the verdict that `stamp` on entry `b` of S under `wrap` verifies under `key`.
+pub(crate) fn kept_answers(key: &osis_crypto::VerifyingKey, s: &SyncId, b: &BlobId, wrap: &[u8], stamp: &Signature, kept: Option<Vouch>) -> bool {
+    kept.is_some_and(|k| k == Vouch::of(key, s, b, wrap, stamp))
 }
 
 impl EntryRow {
@@ -266,7 +308,12 @@ impl EntryRow {
             Some(Source::Record(r)) => w.u8(1).raw(&r),
             Some(Source::Conn(c)) => w.u8(2).u64(c.0),
         };
-        src(src(w, self.charged), self.brought).take()
+        let w = src(src(w, self.charged), self.brought);
+        match &self.vouch {
+            Some(v) => w.u8(1).raw(&v.0),
+            None => w.u8(0),
+        }
+        .take()
     }
 
     pub(crate) fn decode(v: &[u8]) -> Result<EntryRow> {
@@ -290,8 +337,13 @@ impl EntryRow {
             })
         };
         let (charged, brought) = (src()?, src()?);
+        let vouch = match r.u8()? {
+            0 => None,
+            1 => Some(Vouch(r.array()?)),
+            _ => return Err(corrupt()),
+        };
         r.end()?;
-        Ok(EntryRow { wrap, stamp, deposited: flags & 2 != 0, own: flags & 4 != 0, role: flags & 8 != 0, class, expires: (t != 0).then_some(WallMs(t)), size, charged, brought })
+        Ok(EntryRow { wrap, stamp, deposited: flags & 2 != 0, own: flags & 4 != 0, role: flags & 8 != 0, class, expires: (t != 0).then_some(WallMs(t)), size, charged, brought, vouch })
     }
 }
 

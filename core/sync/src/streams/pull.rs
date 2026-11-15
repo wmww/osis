@@ -687,25 +687,16 @@ impl Streams {
     }
 
     /// A stamp new to entry `b` of S held here under the same wrap, applied in stream order (the
-    /// step's commit a writer logged before stamping under it is held by then): logged on an
-    /// entry held unstamped (stamped in place at a writer, spec/sync-inbox.md §2), judged as any
-    /// peer's stamp; and one under the head S's `sync.0` records here (`Ground::head_write`, which
-    /// the store's served path follows) replaces a held one that is not (stamped in place on a
-    /// head move, spec/sync-judgement.md §3 Own store), vouched by that head (spec/sync-ids.md §5
-    /// Peer budget: one that does not verify replaces no stamp held).
+    /// step's commit a writer logged before stamping under it is held by then): the store logs it
+    /// on an entry held unstamped (stamped in place at a writer, spec/sync-inbox.md §2), judged as
+    /// any peer's stamp, and replaces a held one not under the head S's `sync.0` records here
+    /// (`Ground::head_write`; the served path may still be the old one) by one that is (stamped in
+    /// place on a head move, spec/sync-judgement.md §3 Own store; spec/sync-ids.md §5 Peer budget:
+    /// one that does not verify replaces no stamp held), each stamp checked once (`Store::take_stamp`).
     fn new_stamp(&mut self, ctx: &mut Ctx, src: Source, s: &SyncId, b: &BlobId, wrap: &Wrap, stamp: &Stamp) {
-        let Ok(Some(e)) = ctx.store.entry(s, b) else { return };
-        if e.stamp == Some(*stamp) || e.wrap != *wrap || ctx.store.bytes(b).ok().flatten().is_none() {
-            return;
-        }
         let head = ctx.ground.head_write(s);
-        let at_head = |x: &Stamp| head.is_some_and(|k| osis_label::verify_stamp(&k, s, b, wrap, x).is_ok());
-        let newer = at_head(stamp) && !e.stamp.as_ref().is_some_and(at_head);
-        if e.stamp.is_none() || newer {
-            let from = if newer { None } else { Some(src) };
-            let r = ctx.store.log(s, Entry { stamp: Some(*stamp), deposited: false, ..e }, None, from).map(|_| ());
-            self.failed(r);
-        }
+        let r = ctx.store.take_stamp(s, b, wrap, stamp, head, src);
+        self.failed(r);
     }
 
     /// Entry `b` of S queued for fetching on `conn` outside any message (`Streams::fetch_again`):

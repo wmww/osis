@@ -117,6 +117,12 @@ pub trait Ground {
     fn open(&mut self, s: &SyncId, e: &Entry, bytes: &[u8]) -> Result<Opening>;
     /// The body's place in the fill order.
     fn rank(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Rank;
+    /// The write key of the head S's `sync.0` records here (`ReadCredentials::head`), which the
+    /// store's served path follows.
+    fn head_write(&mut self, s: &SyncId) -> Option<osis_crypto::VerifyingKey> {
+        let _ = s;
+        None
+    }
     /// This node's own relay-only commits not sent yet, sealed per read sync ID
     /// (`Engine::take_relays`).
     fn own_relays(&mut self) -> Result<Vec<osis_engine::sync::Relay>> {
@@ -130,12 +136,6 @@ pub trait Ground {
     /// A stamp of entry `b` of S under its wrap, where this node writes S's head.
     fn stamp(&mut self, s: &SyncId, b: &BlobId, wrap: &Wrap) -> Option<osis_proto::Stamp> {
         let _ = (s, b, wrap);
-        None
-    }
-    /// The write key of the head S's `sync.0` records here (`ReadCredentials::head`), which the
-    /// store's served path follows.
-    fn head_write(&mut self, s: &SyncId) -> Option<osis_crypto::VerifyingKey> {
-        let _ = s;
         None
     }
     /// An entry that opened to a pending commit was not kept (`store::release`).

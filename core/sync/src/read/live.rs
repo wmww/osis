@@ -101,7 +101,7 @@ impl Live<'_, '_> {
     /// restamped entry stands at once), any entry anywhere else.
     fn under_head(&mut self, s: &SyncId, e: &Entry) -> Result<bool> {
         let Some(w) = stamp_key(self.cx, s)? else { return Ok(true) };
-        Ok(e.stamp.is_some_and(|x| osis_label::verify_stamp(&w.verifying_key(), s, &e.blob, &e.wrap, &x).is_ok()))
+        Ok(e.stamp.is_some() && self.cx.store.stamp_under(s, &e.blob, &[w.verifying_key()])?)
     }
 
     /// The parents of the recorded steps of S whose epochs depend on role commit `c`
@@ -125,8 +125,11 @@ impl Live<'_, '_> {
     /// Entry `e` is of role commit `c` that a recorded step of S registers, stamped under that
     /// step's parent (`step_parents`).
     fn registers_step(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
-        let Some(stamp) = e.stamp else { return Ok(false) };
-        Ok(self.step_parents(s, c)?.iter().any(|p| osis_label::verify_stamp(&p.keys.write, s, &e.blob, &e.wrap, &stamp).is_ok()))
+        if e.stamp.is_none() {
+            return Ok(false);
+        }
+        let keys: Vec<_> = self.step_parents(s, c)?.iter().map(|p| p.keys.write).collect();
+        self.cx.store.stamp_under(s, &e.blob, &keys)
     }
 
     /// `c`'s body under `s` as a fresh encryption (logging again, a deposit, a body with no held
@@ -443,8 +446,9 @@ impl Ground for Live<'_, '_> {
         }
         // stamped under the source's head write key: it pulls it as it is
         let write = at.head.and_then(|h| self.cx.store.path(s).ok().flatten().and_then(|p| p.steps.iter().find(|(st, _)| st.id() == h).map(|(st, _)| st.keys.write)));
-        if let (Some(w), Some(stamp)) = (write, e.stamp)
-            && osis_label::verify_stamp(&w, s, b, &e.wrap, &stamp).is_ok()
+        if let Some(w) = write
+            && e.stamp.is_some()
+            && self.cx.store.stamp_under(s, b, &[w])?
         {
             return Ok(());
         }
