@@ -840,9 +840,11 @@ impl Streams {
     }
 
     /// S kept unread whose dropped copy is fetched anew (spec/sync-judgement.md §6 Stops: a box
-    /// of its head's sync secret keeps S again): pulled again from the start at every source.
+    /// of its head's sync secret keeps S again), or raised to read (§6 Read and unread move):
+    /// pulled again from the start at every source.
     pub(super) fn fetch_anew(&mut self, ctx: &mut Ctx) -> bool {
-        let anew = self.anew.added();
+        // once each, written twice or not (a raise to read off a dropped copy)
+        let anew: BTreeSet<SyncId> = self.anew.added().into_iter().collect();
         for s in &anew {
             self.pull_anew(ctx, *s);
         }

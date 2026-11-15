@@ -433,7 +433,7 @@ fn a_dropped_copy_is_fetched_anew_after_a_restart_spec_sync_judgement_6() {
     let mut anew = st.anew_feed();
     st.set_sync_set(&holding(&[(&s, Holding::Read)]));
     st.set_unheld(&s.id, false).unwrap();
-    assert_eq!(anew.added(), vec![s.id], "fetched anew");
+    assert_eq!(anew.added().into_iter().collect::<std::collections::BTreeSet<_>>(), [s.id].into(), "fetched anew");
 }
 
 // spec/sync-judgement.md §6 (Read and unread move: a node raised to read pulls S anew): an
