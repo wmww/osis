@@ -18,6 +18,8 @@ daemon() { systemd-run --user --unit "$1" "$2" -s "$3/store" --dial "$4" serve >
 case $cmd in
 build)
 	pin=$1
+	# it detaches HEAD: never in the main checkout
+	[ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ] || { echo "build only in a claimed worktree (wt claim)" >&2; exit 1; }
 	git checkout -q --detach "$pin"
 	cargo build -p osis-cli --bin osis
 	mkdir -p "$DF/bin"
@@ -32,8 +34,13 @@ host)
 	# card commands do not run through a daemon: before it starts
 	"$bin" -s "$dir/store" card show > "$dir/card"
 	systemd-run --user --unit "osis-dogfood-host-$s" "$bin" -s "$dir/store" serve --listen "$listen" >/dev/null
-	sleep 2
-	journalctl --user -u "osis-dogfood-host-$s" -o cat | grep -m1 '#' > "$dir/address"
+	# its first line is the address, once it listens
+	i=0
+	until journalctl --user -u "osis-dogfood-host-$s" -o cat | grep -m1 '#' > "$dir/address"; do
+		i=$((i + 1))
+		[ "$i" -lt 30 ] || { echo "no address yet: journalctl --user -u osis-dogfood-host-$s" >&2; exit 1; }
+		sleep 1
+	done
 	echo "$dir"
 	;;
 create)

@@ -536,9 +536,9 @@ fn quic_loopback_smoke() {
     rt.block_on(dial_up(osis_transport::Quic::new(), osis_transport::Quic::new(), "quic://127.0.0.1:0"));
 }
 
-// spec/sync-opens.md §1 (where to dial: addresses are priorities, never a filter): a node known
-// at a dial list's address and a configured one dials the first, and after that dial fails the
-// configured one; it stays at an address that came up.
+// spec/sync-opens.md §1 (where to dial: addresses are priorities, never a filter; Redial): a
+// node known at a dial list's address and a configured one dials the first, and when that dial
+// fails the configured one at once; it stays at an address that came up.
 #[test]
 fn a_failed_address_gives_way_to_the_next_spec_sync_opens_1() {
     let mut d = Dials::default();
@@ -548,23 +548,24 @@ fn a_failed_address_gives_way_to_the_next_spec_sync_opens_1() {
     t.set(SID, vec![stale.clone()]);
     d.settle_peers(&mut t, T0);
     d.configure(std::slice::from_ref(&configured), T0);
-    let first = d.dial(T0, MAX_PEERS);
-    assert_eq!(first.iter().map(|(_, a)| a.url.as_str()).collect::<Vec<_>>(), [stale.url.as_str()]);
+    let urls = |v: Vec<(ConnId, Address)>| v.into_iter().map(|(c, a)| (c, a.url)).collect::<Vec<_>>();
+    let first = urls(d.dial(T0, MAX_PEERS));
+    assert_eq!(first.iter().map(|(_, u)| u.as_str()).collect::<Vec<_>>(), [stale.url.as_str()]);
     d.ended(first[0].0, None, T0);
+    let second = urls(d.dial(T0, MAX_PEERS));
+    assert_eq!(second.iter().map(|(_, u)| u.as_str()).collect::<Vec<_>>(), [configured.url.as_str()], "at once");
+    d.up(second[0].0);
+    d.ended(second[0].0, None, T0);
+    assert!(d.dial(T0, MAX_PEERS).is_empty(), "a connection that ended waits a pause");
     let later = WallMs(T0.0 + REDIAL_MS);
     d.tick(later);
-    let second = d.dial(later, MAX_PEERS);
-    assert_eq!(second.iter().map(|(_, a)| a.url.as_str()).collect::<Vec<_>>(), [configured.url.as_str()]);
-    d.up(second[0].0);
-    d.ended(second[0].0, None, later);
-    let last = WallMs(later.0 + REDIAL_MS);
-    d.tick(last);
-    assert_eq!(d.dial(last, MAX_PEERS).iter().map(|(_, a)| a.url.as_str()).collect::<Vec<_>>(), [configured.url.as_str()], "an address that came up stays");
+    assert_eq!(urls(d.dial(later, MAX_PEERS)).iter().map(|(_, u)| u.as_str()).collect::<Vec<_>>(), [configured.url.as_str()], "an address that came up stays");
 }
 
 // spec/sync-opens.md §1 (Redial): a node known at several dead addresses, one of them by many
-// sync IDs, dials one address per `REDIAL_MS`, never sooner, cycling over its distinct addresses
-// (not over its reasons): published addresses add no dials.
+// sync IDs, dials each distinct address once a turn (not once per reason), its best reason's
+// first, the others at once after each failure, then nothing until `REDIAL_MS` after the turn's
+// last dial: published addresses add no dials past one per address per pause.
 #[test]
 fn dead_addresses_take_turns_at_the_redial_pace_spec_sync_opens_1() {
     let mut d = Dials::default();
@@ -578,23 +579,27 @@ fn dead_addresses_take_turns_at_the_redial_pace_spec_sync_opens_1() {
     d.settle_peers(&mut t, T0);
     d.hint(std::slice::from_ref(&hint), T0);
     d.configure(std::slice::from_ref(&configured), T0);
+    let mut turns = Vec::new();
     let mut now = T0;
-    let mut urls = Vec::new();
-    for _ in 0..6 {
-        let due = d.dial(now, MAX_PEERS);
-        assert_eq!(due.len(), 1, "one dial per pause");
-        urls.push(due[0].1.url.clone());
-        d.ended(due[0].0, None, now);
-        d.tick(WallMs(now.0 + REDIAL_MS - 1));
-        assert!(d.dial(WallMs(now.0 + REDIAL_MS - 1), MAX_PEERS).is_empty(), "no dial before the pause ends");
+    for _ in 0..2 {
+        let mut turn = Vec::new();
+        while let Some((conn, a)) = d.dial(now, MAX_PEERS).pop() {
+            assert!(turn.len() < 3, "a turn dials each address once: {turn:?}");
+            turn.push(a.url);
+            d.ended(conn, None, now);
+        }
+        let quiet = WallMs(now.0 + REDIAL_MS - 1);
+        d.tick(quiet);
+        assert!(d.dial(quiet, MAX_PEERS).is_empty(), "no dial before the pause ends");
         now = WallMs(now.0 + REDIAL_MS);
         d.tick(now);
+        turns.push(turn);
     }
-    assert_eq!(urls[0], synced.url, "the best reason's address first");
-    let mut turn: Vec<_> = urls[..3].to_vec();
-    turn.sort();
+    assert_eq!(turns[0][0], synced.url, "the best reason's address first");
+    let mut seen = turns[0].clone();
+    seen.sort();
     let mut all = vec![synced.url.clone(), hint.url.clone(), configured.url.clone()];
     all.sort();
-    assert_eq!(turn, all, "each distinct address once per turn");
-    assert_eq!(urls[3..], urls[..3], "then again in the same order");
+    assert_eq!(seen, all, "each distinct address once a turn");
+    assert_eq!(turns[1], turns[0], "then again in the same order");
 }

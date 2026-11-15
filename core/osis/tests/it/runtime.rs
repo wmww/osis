@@ -259,3 +259,50 @@ fn two_nodes_of_one_host_listen_spec_sync_transport_3() {
         assert_eq!(db.close().unwrap(), osis::Close::Closed);
     }
 }
+
+// spec/sync-transport.md §2 (`quic://host[:port]`): two nodes of two accounts, each on its own
+// runtime, sync over a real loopback QUIC socket: a link redeemed through the configured
+// address carries the thing, and a write at either end reaches the other.
+#[test]
+fn two_accounts_sync_over_loopback_quic_spec_sync_transport_2() {
+    let node = |dial: Vec<osis::Address>| {
+        let mut o = osis::internals::Opening::memory();
+        o.runtime = Runtime::Own;
+        o.direct_sync = false;
+        o.dial = dial;
+        osis::internals::create(o).unwrap()
+    };
+    let a = node(Vec::new());
+    let addr = a.listen(&["quic://127.0.0.1:0".parse().unwrap()]).unwrap().remove(0);
+    let b = node(vec![addr]);
+    // `db` reads `want` as `t`'s name: at once or at a change it hears (wait_synced would wait on
+    // home too, which no other node of the account holds)
+    let reads = |db: &Osis, t, want: &str| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _s = db.at(t, osis::core::NAME).on_change(move |_, _| tx.send(()).unwrap()).unwrap();
+        while db.at(t, osis::core::NAME).get().unwrap().as_deref() != Some(want) {
+            rx.recv_timeout(Duration::from_secs(120)).expect("never read");
+        }
+    };
+    let set = |db: &Osis, t, s: &str| {
+        let mut w = db.write();
+        w.at(t, osis::core::NAME).set(&s.to_string()).unwrap();
+        w.commit().unwrap();
+    };
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
+    w.at(t, osis::core::NAME).set(&"first".to_string()).unwrap();
+    w.commit().unwrap();
+    let link = a.make_link(t, osis::Role::Write, osis::LinkOpts::default()).unwrap();
+    assert_eq!(block_on(b.redeem(&link)).unwrap(), t);
+    b.accept_invite(t, b.home()).unwrap();
+    reads(&b, t, "first");
+    set(&a, t, "from a");
+    reads(&b, t, "from a");
+    set(&b, t, "from b");
+    reads(&a, t, "from b");
+    for db in [a, b] {
+        assert_eq!(db.close().unwrap(), osis::Close::Closed);
+    }
+}

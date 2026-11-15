@@ -8,9 +8,9 @@
 //! discovered nodes. Reasons are priorities, never a filter on what opens: they order the dials,
 //! nothing else.
 //!
-//! A candidate known at several addresses dials the one of its best reason, then after each
-//! failed dial the next of its others in turn (spec/sync-opens.md §1 Redial); a failed dial
-//! waits `REDIAL_MS` as any other, whatever address comes next.
+//! A candidate known at several addresses dials the one of its best reason, and after a failed
+//! dial the next of its others at once, in turn; once each has failed in a turn the retry rule
+//! applies (spec/sync-opens.md §1 Redial): at most one dial per distinct address per `REDIAL_MS`.
 //!
 //! One retry rule: a candidate not connected is due again `REDIAL_MS` after its last dial; one
 //! whose connection closed sharing nothing (keep or close) is **quiet**: due only after a change
@@ -121,7 +121,7 @@ impl Cand {
     }
 
     /// Where its next dial goes: the address of its best reason, then after each failed dial the
-    /// next of its other addresses in turn, so an address that does not answer (a stale dial
+    /// next of its other addresses (at once, `end`), so an address that does not answer (a stale dial
     /// list) never hides one that does (a configured address). O(distinct addresses).
     fn address(&self) -> Option<&Address> {
         let first = self.why.values().next()?;
@@ -487,6 +487,10 @@ impl Dials {
             (None, Some(c)) => {
                 if c.state == State::Dialing(conn) {
                     c.failed = c.failed.wrapping_add(1);
+                    // the next address of this turn goes at once; the turn's end waits as any
+                    if c.failed % c.addrs.len().max(1) != 0 {
+                        c.last = None;
+                    }
                 }
                 c.quiet = quiet;
                 self.idle(key, now);
