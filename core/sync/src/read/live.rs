@@ -286,6 +286,9 @@ impl Ground for Live<'_, '_> {
     fn stands(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
         Ok(self.under_head(s, e)? || self.registers_step(s, c, e)?)
     }
+    fn promotion(&mut self, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<crate::inbox::Promotion> {
+        crate::inbox::promotion(self.cx.engine, self.cx.store, s, c, b)
+    }
     fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let Some(e) = self.cx.store.entry(s, b)? else { return Ok(()) };
         if stamp_key(self.cx, s)?.is_none() {
@@ -405,7 +408,8 @@ impl Ground for Live<'_, '_> {
                     continue;
                 }
                 for from in &homes {
-                    let Some(e) = self.cx.store.entry(from, b)? else { continue };
+                    // a peer's deposit under S is stamped only as promoted (`Ground::promotion`)
+                    let Some(e) = self.cx.store.entry(from, b)?.filter(|e| from != s || !e.deposited || e.own) else { continue };
                     let Some(wrap) = self.cx.engine.rewrap(c, b, from, &e.wrap, s)? else { continue };
                     let e = own_entry(self.cx, s, *b, wrap, e.class)?;
                     let code = self.cx.store.log(s, e, None, None)?;

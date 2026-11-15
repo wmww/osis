@@ -8,13 +8,12 @@ use osis_base::format::{DEPOSITS_WAITING, INBOX_LIFETIME_MS};
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, SigningSecret, deposit_key, role_key};
-use osis_engine::sync_ids::Certs;
-use osis_engine::sync::{Holding, InboxOpened, Path, Promote, SyncSet, Taken};
+use osis_engine::sync::{Holding, InboxOpened, Path, SyncSet, Taken};
 use osis_blob::{ClaimSet, Class, Parent, Prefix, Step, StepId, StepKeys};
 use osis_proto::{Code, Msg, OfferItem, SharedItem};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Result;
-use osis_sync::inbox::{Act, Facts, Net, Offers, Plan, Progress, Judged, Target, act_of, adds_delta, goes_last, plan, to_clear};
+use osis_sync::inbox::{Act, Facts, Net, Offers, Plan, Progress, Judged, Promotion, Target, act_of, adds_delta, goes_last, plan, to_clear};
 use osis_sync::opens::{Member, Moved};
 use osis_sync::session::RequestId;
 use osis_sync::store::Source;
@@ -346,23 +345,25 @@ fn writer_stamps_taken_inbox_blob_in_place_spec_sync_inbox_2() {
 }
 
 /// A deposit under a read S held by a writer, the engine's word on promoting it.
-fn deposit_facts(promote: Option<(Promote, bool)>, own: bool) -> Facts {
+fn deposit_facts(promote: Option<Promotion>, own: bool) -> Facts {
     let (b, _) = blob(3, 100, None);
     Facts { blob: b, deposited: true, own, expires: None, inbox: None, stamped: None, writer: true, holding: Some(Holding::Read), promote }
 }
 
-// spec/sync-inbox.md §4 (promotion): a writer promotes a deposit the engine judges promotable
-// (with the author's chain); one judged not yet waits; scenario promote-covered-only-deposit: one
-// judged never (its parts a held snapshot carries) stays deposited; a node that does not write S
-// is given no promotion (its facts carry none) and promotes nothing.
+// spec/sync-inbox.md §4 (Promotion; Clearing deposits): a deposit a writer promotes (read stamps it,
+// `promotion`) is no deposit it can do nothing with; one not promoted yet waits; scenario
+// promote-covered-only-deposit: one never promoted (its parts a held snapshot carries) stays
+// deposited; a node that does not write S is given no promotion (its facts carry none); an own
+// deposit is offered until stamped, promotable or not.
 #[test]
 fn writer_promotes_promotable_deposit_spec_sync_inbox_4() {
     let now = WallMs(T0);
-    assert_eq!(act_of(&deposit_facts(Some((Promote::Yes { chain: Certs::default() }, true)), false), now), Act::Promote(Certs::default()));
-    assert_eq!(act_of(&deposit_facts(Some((Promote::NotYet, false)), false), now), Act::Waiting { never: false });
-    assert_eq!(act_of(&deposit_facts(Some((Promote::Never, false)), false), now), Act::Waiting { never: true });
+    assert_eq!(act_of(&deposit_facts(Some(Promotion::Yes), false), now), Act::Promote);
+    assert_eq!(act_of(&deposit_facts(Some(Promotion::Wait), false), now), Act::Waiting { never: false });
+    assert_eq!(act_of(&deposit_facts(Some(Promotion::No), false), now), Act::Waiting { never: true });
     assert_eq!(act_of(&deposit_facts(None, false), now), Act::Waiting { never: false }, "no writer: nothing to promote");
     assert_eq!(act_of(&deposit_facts(None, true), now), Act::Offer, "an own deposit is offered");
+    assert_eq!(act_of(&deposit_facts(Some(Promotion::Yes), true), now), Act::Offer, "an own deposit is offered");
 }
 
 /// A blob as a promoter judges it: the parts it opened and checked, its other sections by
@@ -423,8 +424,6 @@ fn one_stamped_copy_per_delta_spec_sync_inbox_4() {
     assert!(!adds_delta(&need, &opened(&[0, 2], &[]), &stamped), "part 2 is no part S must hold");
     assert!(adds_delta(&need, &opened(&[0, 1], &[]), &stamped), "part 1 not held stamped");
     assert!(adds_delta(&need, &opened(&[0], &[]), &[]), "the first copy");
-    let f = deposit_facts(Some((Promote::Yes { chain: Certs::default() }, false)), false);
-    assert_eq!(act_of(&f, WallMs(T0)), Act::Waiting { never: false }, "promotable but adding no delta: kept deposited");
 }
 
 // spec/sync-inbox.md §4 (clearing): a node holding S's delete key keeps at most
@@ -545,4 +544,53 @@ fn register_refusals_spec_sync_ids_6() {
     let stuck = Progress { stuck: Some(at0), ..Progress::default() };
     assert_eq!(plan_at(&st, at0, stuck, &all), Plan::Wait, "refused: waits");
     assert_eq!(sends(&plan_at(&st, Some(st.id(1)), stuck, &all)), Some(st.id(2)), "the head event moved it");
+}
+
+// spec/sync-inbox.md §4 (promotion), §3 (what a node must log under S and cannot stamp, it
+// deposits), spec/sync-ids.md §6 (a stamped entry of a deposited entry's blob ID replaces it):
+// node 0 (admin) rotates S's write secret leaving node 3 (a writer) out, and goes off; node 3,
+// standing at the new head with no write key for it, writes: its entry goes to node 1 (keeping S
+// unread) deposited. Node 0 comes back beside node 1 alone: it takes the deposit and promotes it
+// (stamped in its store under the new head), node 1 takes the stamped entry in place of the
+// deposit, and node 2 (a reader) holds it stamped.
+#[test]
+fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, value_ak, world};
+    use osis_base::{Role, Value};
+    use osis_engine::Mutation;
+    let mut w = world(0, 4);
+    w.cap = 20_000;
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 3, Gives::Writes), Run, Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some((t, Holding::Unread)));
+    w.power_off(2);
+    w.power_off(3);
+    let a3 = w.node(3).account.unwrap();
+    w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Write], &[a3])).unwrap().expect("a rotation");
+    w.run();
+    let head = w.store(1).head(&s).unwrap().map(|h| h.id());
+    w.power_off(0);
+    w.power_on(3);
+    w.run();
+    assert_eq!(w.store(3).head(&s).unwrap().map(|h| h.id()), head, "node 3 stands at the new head");
+    let c = w.write(3, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Int(7)).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    let blobs: Vec<BlobId> = w.engine(3).commit_blobs(&c).unwrap().iter().copied().collect();
+    let entry = |w: &crate::harness::World, i: usize| blobs.iter().find_map(|b| w.store(i).entry(&s, b).unwrap());
+    assert!(entry(&w, 1).is_some_and(|e| e.deposited), "deposited at node 1: {:?}", entry(&w, 1));
+    w.power_off(3);
+    w.power_on(0);
+    w.run();
+    assert!(w.engine(0).holds_commit(&c), "node 0 took it from the deposit");
+    assert!(entry(&w, 0).is_some_and(|e| e.stamp.is_some() && !e.deposited), "node 0 promoted it: {:?}", entry(&w, 0));
+    assert!(entry(&w, 1).is_some_and(|e| e.stamp.is_some() && !e.deposited), "node 1 holds it stamped: {:?}", entry(&w, 1));
+    w.power_on(2);
+    w.run();
+    assert!(entry(&w, 2).is_some_and(|e| e.stamp.is_some() && !e.deposited), "node 2 holds it stamped: {:?}", entry(&w, 2));
 }

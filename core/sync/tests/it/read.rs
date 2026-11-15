@@ -17,6 +17,7 @@ use osis_blob::{Class, Step, StepKeys};
 use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, Verdict, Why};
 use osis_engine::sync::PieceLink;
 use osis_base::Tid;
+use osis_sync::inbox::Promotion;
 use osis_sync::store::{Source, Stand};
 use osis_sync::types::{ConnId, Entry};
 use osis_sync::Result;
@@ -169,6 +170,8 @@ struct Fake {
     logged: Vec<(SyncId, CommitId, BlobId)>,
     /// Entries stamped in place.
     restamped: Vec<(SyncId, CommitId, BlobId)>,
+    /// Peers' deposits not promoted (`Ground::promotion`; every other one is).
+    promotions: Stamped<BlobId, Promotion>,
     /// Per (S, kind), the records or a rotation's lists it carries that no own certificate blob
     /// does, and own certificate blobs gone.
     records: Stamped<(SyncId, CertKind), CertBlobsMissing>,
@@ -228,6 +231,9 @@ impl Ground for Fake {
     }
     fn stands(&mut self, s: &SyncId, _c: &CommitId, e: &Entry) -> Result<bool> {
         Ok(self.head_stamp(s).is_none_or(|h| e.stamp == Some(h)))
+    }
+    fn promotion(&mut self, _s: &SyncId, _c: &CommitId, b: &BlobId) -> Result<Promotion> {
+        Ok(self.promotions.get(b).copied().unwrap_or(Promotion::Yes))
     }
     fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let Some(h) = self.head_stamp(s) else { return Ok(()) };
@@ -1156,11 +1162,40 @@ fn a_peers_entry_stands_as_the_log_spec_sync_judgement_3() {
         let mut w = W::new();
         w.g.creds.insert(S, creds(0, writer, true));
         w.g.own.insert((S, cid(1)), vec![peer(66, stamped), peer(67, stamped)]);
+        // a deposit duplicating another adds no delta (`inbox::adds_delta`)
+        w.g.promotions.insert(BlobId([67; 32]), Promotion::No);
         let mut f = uncovered();
         f.own = false;
         w.hold(cid(1), &[S], f);
         assert!(w.g.logged.is_empty(), "writer {writer}, stamped {stamped}: nothing encrypted afresh");
         assert_eq!(w.g.restamped, vec![(S, cid(1), BlobId([66; 32]))][..restamps], "writer {writer}, stamped {stamped}");
+    }
+}
+
+// spec/sync-inbox.md §4 (promotion: a writer stamps a deposit in its own store, one stamped copy
+// per delta), spec/sync-judgement.md §3 (Own store): a peer's deposit of a must-hold body is
+// stamped in place only as `promotion` says: promoted beside an entry that stands (it adds a
+// delta), not promoted yet holding the body back from a log of its own, never promoted leaving
+// the body to be logged as any.
+#[test]
+fn a_deposit_is_stamped_only_as_promoted_spec_sync_inbox_4() {
+    let deposit = |b: u8| Entry { blob: BlobId([b; 32]), wrap: [0; osis_crypto::WRAP_LEN], stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: None };
+    let standing = Entry { stamp: Some(stamp_at(0)), deposited: false, ..deposit(65) };
+    for (promotion, beside, restamps, logs) in [(Promotion::Yes, true, 1, 0), (Promotion::Yes, false, 1, 0), (Promotion::Wait, false, 0, 0), (Promotion::No, false, 0, 1), (Promotion::No, true, 0, 0)] {
+        let mut w = W::new();
+        w.g.creds.insert(S, creds(0, true, true));
+        let mut held = vec![deposit(66)];
+        if beside {
+            held.push(standing.clone());
+        }
+        w.g.own.insert((S, cid(1)), held);
+        w.g.promotions.insert(BlobId([66; 32]), promotion);
+        let mut f = uncovered();
+        f.own = false;
+        w.hold(cid(1), &[S], f);
+        let what = format!("{promotion:?}, beside a standing entry {beside}");
+        assert_eq!(w.g.restamped.iter().filter(|x| x.2 == BlobId([66; 32])).count(), restamps, "{what}");
+        assert_eq!(w.g.logged.len(), logs, "{what}");
     }
 }
 

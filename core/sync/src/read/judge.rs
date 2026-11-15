@@ -4,6 +4,7 @@
 
 use super::ground::{Facts, Ground, PieceAt, Seen, SrcView};
 use super::{Verdict, Why};
+use crate::inbox::Promotion;
 use crate::store::{Source, Stand};
 use crate::types::{ConnId, Result};
 use osis_base::format::MAX_DRIFT_MS;
@@ -434,13 +435,24 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     // a body counting missing is logged once it is held again. Where this node writes S's head,
     // an entry stands as its log only stamped under that head (`Ground::stands`): each own entry
     // that does not is stamped in place, and with none of its own and none standing, the lowest
-    // peer's entry is (a head move restamps each body once; peers' duplicates are never stamped)
+    // peer's stamped entry is (a head move restamps each body once; peers' duplicates are never
+    // stamped). A peer's deposit is stamped in place only as promoted (spec/sync-inbox.md §4,
+    // `Ground::promotion`), standing or not, and one promoted later holds the body back from a
+    // log of its own meanwhile.
     if verdict == Verdict::Must && !f.as_ref().is_some_and(|f| f.missing) && g.pullable(s)? {
         let mut stands = false;
         let mut restamp = Vec::new();
         let mut peer = None;
+        let mut promoted = None;
+        let mut waits = false;
         for e in own.iter().filter(|e| live.contains(&e.blob)) {
-            if g.stands(s, c, e)? {
+            if e.deposited && !e.own {
+                match g.promotion(s, c, &e.blob)? {
+                    Promotion::Yes => promoted = promoted.or(Some(e.blob)),
+                    Promotion::Wait => waits = true,
+                    Promotion::No => {}
+                }
+            } else if g.stands(s, c, e)? {
                 stands = true;
             } else if e.own {
                 restamp.push(e.blob);
@@ -451,7 +463,8 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         if !stands && restamp.is_empty() {
             restamp.extend(peer);
         }
-        if !stands && restamp.is_empty() {
+        restamp.extend(promoted);
+        if !stands && restamp.is_empty() && !waits {
             j.acts.insert(Act::Log);
         }
         j.acts.extend(restamp.into_iter().map(Act::Restamp));

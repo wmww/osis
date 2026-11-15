@@ -147,6 +147,12 @@ pub trait Ground {
         let _ = (s, c, e);
         Ok(true)
     }
+    /// Whether a peer's deposited entry `b` of `c` under S is promoted (spec/sync-inbox.md §4,
+    /// `inbox::promotion`): stamped in place as this node's log of the body.
+    fn promotion(&mut self, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<crate::inbox::Promotion> {
+        let _ = (s, c, b);
+        Ok(crate::inbox::Promotion::Yes)
+    }
     /// Entry `b` of S stamped in place under S's head write key: the same blob and wrap, a new
     /// stamp, this node's own from then on (off any peer budget).
     fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
