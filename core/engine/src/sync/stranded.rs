@@ -223,12 +223,12 @@ impl Engine {
         Ok(proven.iter().find(|x| self.core.is_account(x) && self.core.role_now(x, &a) >= Some(Role::Write)).copied())
     }
 
-    /// The account among `proven` holding read or above on read sync ID `s`'s actor, as this
-    /// node judges it: whom a suspect list is judged for (`repair_suspect`).
+    /// The account among `proven` that may read read sync ID `s`'s thing (`Core::may_read`, the
+    /// one access form), as this node judges it: whom a suspect list is judged for
+    /// (`repair_suspect`).
     pub fn reader_account(&mut self, s: &SyncId, proven: &[Tid]) -> Result<Option<Tid>> {
         let Some((t, _)) = self.read_sync_id(s)? else { return Ok(None) };
-        let a = self.core.reader_of(&t);
-        Ok(proven.iter().find(|x| self.core.is_account(x) && self.core.role_now(x, &a) >= Some(Role::Read)).copied())
+        Ok(proven.iter().find(|x| self.core.is_account(x) && self.core.may_read(x, &t)).copied())
     }
 
     /// A stranded report (a Stranded message, or a stranded notice taken from this node's inbox):

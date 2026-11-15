@@ -673,6 +673,10 @@ macro_rules! indexes {
             $($(#[$a])* pub $f: $t,)*
         }
 
+        /// Every index's name, in declaration order (the index check's coverage test).
+        #[cfg(test)]
+        pub(crate) const INDEX_NAMES: &[&str] = &[$(stringify!($f),)*];
+
         /// A point in every index's journal (equal to a later one: nothing changed between).
         #[doc(hidden)]
         #[derive(PartialEq)]

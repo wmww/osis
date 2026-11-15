@@ -989,6 +989,21 @@ mod tests {
         assert_eq!(set.len(), names.len(), "{names:?}");
     }
 
+    // spec: none (test support): every index is in `tables`, compared on its own in
+    // `index_digest`, or listed here as left out of the check, so a new index is placed on purpose.
+    #[test]
+    fn every_index_is_placed_in_the_check() {
+        const OWN: &[&str] = &["held", "commits", "snapshots", "dropped_snapshots", "derived_written"];
+        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "rotation_sigs", "names_due", "forgotten", "own_held", "own_replaces", "signed", "pending", "pend_on", "pend_keys", "bearers", "freed", "falls", "passes", "role_arrivals", "cause_at", "reseal_asks", "delete_hints", "leaving", "dated", "leave_from", "leave_due", "addenda_due", "rotations_due", "sealed", "timed_lost", "kept", "hint_candidates", "cover_waits", "resnapshots_owed"];
+        let ix = super::super::Indexes::default();
+        let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
+        for n in super::super::INDEX_NAMES {
+            let places = [compared.contains(n), OWN.contains(n), LEFT_OUT.contains(n)].into_iter().filter(|x| *x).count();
+            assert_eq!(places, 1, "index {n}: in tables, compared on its own, or left out: exactly one");
+        }
+        assert_eq!(compared.len() + OWN.len() + LEFT_OUT.len(), super::super::INDEX_NAMES.len(), "a listed name that is no index");
+    }
+
     // spec: none (forensic test support): a section key planted on the device opens its section
     // in the attack (`Section::may_open_with` never rules out a real one), for sections of two
     // parts and of more parts than one CBOR head byte counts; without the key it stays shut.
