@@ -48,8 +48,8 @@ Terms:
 - Round trips: a small constant in the common incremental case, logarithmic at worst; a holder that missed k key changes (each removal makes one) may need k.
 - Nothing a node already holds is sent again. A thing in many groups is stored and transferred once per node.
 - Dropping replaced content and deleting cost proportional to what changed, not to group size or history.
-- Removing a holder costs proportional to the rosters of the actors and things it could read, plus 32 bytes for each of its writes the remover and the other writers had received, at each writer that lists them. Limit: removing a holder that made more than about 1.9 million permission-changing and admin-only writes fails.
-- Removing a node costs about the account's recent changes not yet compacted, once per group they are in, plus its permission-changing and purge writes under the limit above.
+- Removing a holder costs in proportion to the rosters of what it could read and to its edits the other writers hold, each writer listing only what it holds; nothing scales with history.
+- Removing a node costs each group it edited in proportion to its edits there since its account's last node removal; no node pays for a group it does not sync, and nothing scales with history.
 - Connected nodes see each other's commits promptly, pushed, not polled.
 
 ## Data a node cannot read

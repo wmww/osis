@@ -4,7 +4,7 @@
 > Tags: engine, spec
 
 ## Decided (Tess)
-- Demotion frontiers by commit ID (32 B per uncompacted commit of the removed node), with the double-removal residual: accepted. A frontier past `MAX_LIST_BYTES` (about 1.9 million commits) cannot be written: a stated limit (spec/requirements.md Cost; issues/long-aspect-cost.md).
+- Demotion frontiers by commit ID (32 B per uncompacted commit of the removed node), with the double-removal residual: accepted. A frontier past `MAX_LIST_BYTES` (about 1.9 million commits) cannot be written: a stated limit (spec/permissions.md §5.1; issues/long-aspect-cost.md).
 - The demoter compacting before an explicit demotion: not built (nothing blinks out, frontiers stay bounded by compaction cadence); revisit if demotion frontiers measure large.
 
 ## Open
