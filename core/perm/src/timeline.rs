@@ -998,17 +998,7 @@ impl Timeline {
         if at.point.is_none()
             && let Some(ts) = at.ts
         {
-            let held = |e: &RolesNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
-            if let Some(r) = self.memo.on_now.lock().ok().and_then(|m| m.get(thing).filter(|e| held(e)).map(|e| e.0.clone())) {
-                return r;
-            }
-            let edges = self.edges_at(None);
-            let (r, expires) = View::at(&edges, Some(ts)).roles_to_expiring(thing, &none);
-            let r = Arc::new(r);
-            if let Ok(mut m) = self.memo.on_now.lock() {
-                m.insert(*thing, (r.clone(), ts, expires));
-            }
-            return r;
+            return self.roles_on_now(thing, ts).0;
         }
         if at != At::END {
             return Arc::new(self.roles_on_without(thing, at, &none));
@@ -1021,6 +1011,22 @@ impl Timeline {
             m.insert(*thing, r.clone());
         }
         r
+    }
+
+    /// `roles_on` on the current edges at `ts`, and the earliest `until` the walk followed: the
+    /// answer holds at any later ts before it. Walked once per thing while it holds.
+    pub fn roles_on_now(&self, thing: &Tid, ts: Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<WallMs>) {
+        let held = |e: &RolesNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
+        if let Some(r) = self.memo.on_now.lock().ok().and_then(|m| m.get(thing).filter(|e| held(e)).map(|e| (e.0.clone(), e.2))) {
+            return r;
+        }
+        let edges = self.edges_at(None);
+        let (r, expires) = View::at(&edges, Some(ts)).roles_to_expiring(thing, &BTreeSet::new());
+        let r = Arc::new(r);
+        if let Ok(mut m) = self.memo.on_now.lock() {
+            m.insert(*thing, (r.clone(), ts, expires));
+        }
+        (r, expires)
     }
 
     /// `roles_on` over the edges not in `skip`, each named (target, holder).

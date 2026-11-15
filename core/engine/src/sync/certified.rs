@@ -591,6 +591,46 @@ mod tests {
         assert!(came && went, "chain pieces placed and taken away");
     }
 
+    // spec/sync-judgement.md §1 (Entitlement: placing chain certificates by what S's actor may
+    // read), spec/sync-inbox.md §5 (a grant copy while its actor reads the thing),
+    // spec/permissions.md §2 (`until`): G, a group with secrets of its own filed in D, holds X and
+    // reads it by a grant with an `until`; the account's chain to X and G's grant copy go under
+    // G, and the clock passing the `until` (no commit) moves both, as the whole derivation does,
+    // with a wake set at it.
+    #[test]
+    fn an_until_passing_moves_chain_and_grant_pieces_spec_sync_judgement_1() {
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let a0 = lp.peers[0].engine.create_account().unwrap().0;
+        let ak = Ak::new("x:a.0").unwrap();
+        let e = &mut lp.peers[0].engine;
+        let mut m = Mutation::new();
+        let x = e.new_thing(&mut m, a0.account);
+        m.set(x, &ak, &Value::Int(1)).unwrap();
+        e.commit(m).unwrap();
+        e.give_own_secrets(&x).unwrap();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, a0.account);
+        m.set(g, &ct::GROUP, &ct::Group { items: [x].into(), ..Default::default() }).unwrap();
+        e.commit(m).unwrap();
+        e.give_own_secrets(&g).unwrap();
+        let until = WallMs(e.now().0 + 10_000);
+        e.grant(&x, &g, &ct::Edge { role: Role::Read, until: Some(until), invite: None, tied: None, floor: None }).unwrap();
+        let mut m = Mutation::new();
+        m.op(a0.devices, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::ITEMS)], op: osis_crdt::Op::Add(Value::Tid(g)) }).unwrap();
+        e.commit(m).unwrap();
+        let under_g = |e: &Engine| e.core.certified.placed.get(&Piece::Chain(a0.account, x)).is_some_and(|p| p.under.contains(&g));
+        check(e, "granted");
+        assert!(e.read_things().unwrap().contains(&g), "G is read here");
+        assert!(e.reads_in(&g, &x) && under_g(e), "the chain to X goes under G");
+        assert_eq!(e.clock_next(), Some(until), "a wake at the until");
+        lp.advance(20_000);
+        let e = &mut lp.peers[0].engine;
+        let now = e.now();
+        e.set_now(now);
+        check(e, "until passed");
+        assert!(!e.reads_in(&g, &x) && !under_g(e), "the chain to X left G");
+    }
+
     // spec/permissions.md §4, spec/sync-judgement.md §1 (List blobs), as above: random histories
     // of grants, lowerings, removals, group filings, own secrets, links, grantee writes, account
     // rotations listing a write and syncs;

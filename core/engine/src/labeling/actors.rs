@@ -123,13 +123,13 @@ impl Core {
 
     /// Whether actor `x` may read thing `t` now: `t`'s secrets derive from `x`'s, or `x` holds
     /// read or above on the actor they derive from (spec/sync-judgement.md §1, entitlement).
+    /// The role is read on the memo clock (`role_now`).
     pub fn may_read(&self, x: &Tid, t: &Tid) -> bool {
         let Some(a) = self.secret_actor(t) else { return false };
         if self.record_chain(&a).filter_map(|s| s.thing()).any(|c| c == *x) {
             return true;
         }
-        let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
-        crate::engine::write::role_of(self, x, &a, ts) >= Some(Role::Read)
+        self.role_now(x, &a) >= Some(Role::Read)
     }
 }
 

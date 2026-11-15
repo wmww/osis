@@ -143,9 +143,13 @@ impl Core {
         Ok(tx.state(tid, &ak("keys.0")?)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()))
     }
 
-    /// Effective role of `node` on `tid` now.
+    /// Effective role of `node` on `tid` now: read on the memo clock up to the first `until` the
+    /// answer depends on (`Timeline::roles_on_now`), so a memo reading it (chain placement, grant
+    /// copies, access) moves when that passes, with a wake then (`Engine::clock_next`).
     pub fn role_now(&self, node: &Tid, tid: &Tid) -> Option<Role> {
-        crate::engine::write::role_of(self, node, tid, now_ts(self))
+        let (role, until) = self.timelines.role_now(node, tid, now_ts(self));
+        self.time.until(until.map(|u| u.0));
+        role
     }
 
     /// The first admin of `tid` (spec/permissions.md §1): the next actor up its record chain,

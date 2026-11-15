@@ -699,6 +699,20 @@ impl Timelines {
         out
     }
 
+    /// `node`'s effective role on `thing` on the current edges at `ts`, and the earliest `until`
+    /// before which the answer holds (`Timeline::roles_on_now`), read as `roles_on` is.
+    pub fn role_now(&self, node: &Tid, thing: &Tid, ts: osis_base::Ts) -> (Option<Role>, Option<osis_base::WallMs>) {
+        let Some(tl) = self.of.get(thing) else {
+            self.stamps.read(&Read::Things);
+            return (None, None);
+        };
+        let (roles, until) = tl.roles_on_now(thing, ts);
+        for t in roles.keys() {
+            self.stamps.read(&Read::Into(*t));
+        }
+        (roles.get(node).copied(), until)
+    }
+
     /// `node`'s effective role on `thing` at `at` (`roles_on`).
     pub fn role(&self, node: &Tid, thing: &Tid, at: osis_perm::At) -> Option<Role> {
         self.roles_on(thing, at, &BTreeSet::new()).get(node).copied()
