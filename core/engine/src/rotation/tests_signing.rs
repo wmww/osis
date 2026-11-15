@@ -1922,3 +1922,64 @@ fn a_node_paired_after_a_removal_reads_its_maker_spec_permissions_5_4() {
         assert_eq!(d.first_diff(&lp.peers[k].engine.index_digest()), None, "node {k}: rebuilt");
     }
 }
+
+// spec/permissions.md §5.5 (Waiting), §5.4 (a removal hits its node's commits on D its frontier
+// does not list): nodes 0, 1, 2; node 0 rotates (r1, unseen by node 1), then removes node 1
+// (r2). Node 1, removed, grants its tablet (peer 3) D, signed at the epoch r1 closes. Node 2 holds
+// r1 without its D list and the grant (which counts while node 2 waits for the list: node 1 is a
+// node there, unaware), acts on what it owes, then gets the list and r2 whole; or gets the grant
+// only after. The grant counts nowhere once the list is held, and nothing anyone writes after
+// (rotations, re-seals, merges) lets the tablet or node 1 open a secret of D sealed after the
+// removal: a commit counting only while a node waits takes no lasting act.
+#[test]
+fn a_removed_nodes_grant_counted_while_waiting_reaches_no_one_spec_permissions_5_5() {
+    for early in [true, false] {
+        let (mut lp, a, _) = world(4, 3);
+        let (p, d) = (a.account, a.devices);
+        let tablet = lp.peers[3].engine.tid();
+        let card = lp.peers[3].engine.commit_ids();
+        for k in [1, 2] {
+            send(&mut lp, 3, k, &card);
+        }
+        let r1 = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
+        let r1_pk = lp.peers[0].engine.package(&r1).unwrap().unwrap();
+        let g = *lp.peers[1].engine.grant(&d, &tablet, &edge(Role::Admin)).unwrap().commits.last().unwrap();
+        let ge = lp.peers[1].engine.header(&g).unwrap().epoch;
+        assert!(ge.is_some() && ge != Some(r1), "signed at the epoch r1 closes");
+        let before: std::collections::BTreeSet<_> = super::tests::held_secrets(&lp.peers[1], &[d]).into_keys().collect();
+        let done = remove(&mut lp, 0, d, 1);
+        lp.advance(1);
+        assert!(matches!(lp.peers[2].receive_with(&r1_pk.bytes, Vec::new(), &[]).unwrap(), crate::Ingested::Applied(_)), "r1 held without its lists");
+        let counts = |lp: &LocalPeer, k: usize| lp.peers[k].engine.core.counts_at_epoch(&g, &p, ge);
+        if early {
+            send(&mut lp, 1, 2, &[g]);
+            assert!(lp.peers[2].engine.header(&g).is_some(), "the grant held");
+            let _ = lp.peers[2].engine.signing_due();
+            let _ = lp.peers[2].engine.reseal_after_pass(&d);
+        }
+        assert_eq!(lp.peers[2].engine.hold_lists(&r1_pk.lists[0]).unwrap(), crate::flows::lists::ListsHeld::Held);
+        send(&mut lp, 0, 2, &done.commits);
+        send(&mut lp, 1, 2, &[g]);
+        assert!(lp.peers[2].engine.core.account_view(&p).unwrap().rotation_counts(&done.commits[1]), "r2 counts at node 2");
+        assert!(!counts(&lp, 2), "early {early}: the removed node's grant counts at node 2");
+        assert!(!lp.peers[2].engine.roster(&d).contains_key(&tablet), "early {early}: the tablet is on D at node 2");
+        for _ in 0..3 {
+            for k in [0, 2] {
+                let _ = lp.peers[k].engine.signing_due();
+                let _ = lp.peers[k].engine.reseal_after_pass(&d);
+            }
+            lp.peers[2].engine.rotate_account(&p).unwrap();
+            lp.sync_all().unwrap();
+        }
+        for k in [0, 2] {
+            assert!(!counts(&lp, k), "early {early}: peer {k} counts the grant");
+            assert!(!lp.peers[k].engine.roster(&d).contains_key(&tablet), "early {early}: peer {k} keeps the tablet on D");
+        }
+        for party in [lp.peers[1].engine.tid(), tablet] {
+            for k in [0, 2] {
+                let new: Vec<_> = super::tests::openable(&mut lp, k, &[d], party, Default::default()).difference(&before).map(|x| (x.1, x.2.n())).collect();
+                assert!(new.is_empty(), "early {early}: {party:?} opens D's secrets {new:?} sealed after the removal from what peer {k} holds");
+            }
+        }
+    }
+}
