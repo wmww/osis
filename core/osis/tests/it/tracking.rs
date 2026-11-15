@@ -65,8 +65,10 @@ fn dispatch_counts_matched_listeners_at_n_and_10n() {
         let t = thing(&db);
         set(&db, t, "t:a.0", 0);
         let mut subs = Vec::new();
+        // the others local: filed in home, each add re-judges every body of home there
+        // (issues/home-add-rejudges-all.md), and dispatch is what this counts
         for i in 0..others {
-            let o = thing(&db);
+            let o = db.commit_with(|w| w.create_local()).unwrap();
             match i % 4 {
                 0 => subs.push(db.at(o, untyped("t:a.0")).on_change(|_, _| {}).unwrap()),
                 1 => subs.push(db.on_thing_change(o, |_, _| {}).unwrap()),
