@@ -230,6 +230,14 @@ impl AccountView {
         self.rotations.iter().map(|r| r.id).collect()
     }
 
+    /// The held rotations each epoch's minting rotation before it: by height (spec/crypto.md
+    /// §3), ties by ID; those with no height yet (an epoch they supersede not held) last.
+    pub(crate) fn rotations_in_order(&self) -> Vec<CommitId> {
+        let mut v: Vec<(u64, CommitId)> = self.rotations.iter().map(|r| (self.epochs.get(&r.id).and_then(|e| e.height).unwrap_or(u64::MAX), r.id)).collect();
+        v.sort();
+        v.into_iter().map(|x| x.1).collect()
+    }
+
     /// Whether `c` is a held rotation.
     pub(crate) fn is_rotation(&self, c: &CommitId) -> bool {
         *c != FIRST_EPOCH && self.epochs.contains_key(c)
@@ -660,6 +668,15 @@ impl Core {
         let v = self.account_view(p).ok_or(Error::Misuse("no signing chain for the account"))?;
         let (id, keys) = v.open_epoch().and_then(|(id, e)| Some((*id, a.keys.get(&e.signing)?.clone()))).ok_or(Error::Misuse("the account's open epoch is not held"))?;
         Ok(Some((id, keys)))
+    }
+
+    /// The public signing key of account `p` at its open epoch while this node holds that
+    /// epoch's seed (`account_signing` without deriving anything).
+    pub(crate) fn account_open_key(&self, p: &Tid) -> Option<[u8; 32]> {
+        let a = self.accounts.get(p)?;
+        let v = self.account_view(p)?;
+        let (_, e) = v.open_epoch()?;
+        a.keys.contains_key(&e.signing).then(|| e.signing.to_bytes())
     }
 
     /// The role epochs of account `p` this node holds seeds of (spec/crypto.md §3), internal to

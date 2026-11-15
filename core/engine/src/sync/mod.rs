@@ -5,9 +5,6 @@
 //! effect that reads one depends on exactly what the engine read; a value derived from one
 //! whose reads move far more often than it does is kept per key instead, brought up to date by
 //! `follow`.
-//!
-//! Not built (each returns `Error::NotBuilt` naming itself): `prove_rotations`,
-//! `take_rotations`.
 
 pub(crate) mod bodies;
 pub(crate) mod certified;
@@ -440,10 +437,6 @@ pub struct ThingCaps {
 pub(crate) fn recorded_ids(f: &osis_crdt::Fragment) -> BTreeSet<SyncId> {
     use osis_schema::RawKey;
     f.read().and_then(|v| osis_schema::core_types::SYNC.decode(&v).ok()).map(|m| m.into_keys().collect()).unwrap_or_default()
-}
-
-fn not_built<T>(what: &'static str) -> Result<T> {
-    Err(Error::NotBuilt(what))
 }
 
 impl Engine {
@@ -953,16 +946,46 @@ impl Engine {
     }
 
     /// The signed rotations of this node's account a verifier may lack, each a header-only copy
-    /// (a `CommitBlobPlaintext` value with no sections), for a Prove (spec/sync-opens.md §2).
+    /// (a `CommitBlobPlaintext` value with no sections), for a Prove (spec/sync-opens.md §2):
+    /// every held one, every line, each epoch's minting rotation before it, so a verifier takes
+    /// them in one pass (`take_rotations`) and the prefix a message fits is a chain.
     pub fn prove_rotations(&mut self) -> Result<Vec<osis_base::Value>> {
-        not_built("prove_rotations")
+        let Some(p) = self.core.account.get() else { return Ok(Vec::new()) };
+        let rots = self.core.account_view(&p).map(|v| v.rotations_in_order()).unwrap_or_default();
+        let mut out = Vec::new();
+        for r in rots {
+            let Some(c) = self.read(|tx| tx.get_commit(&r))? else { continue };
+            let pt = osis_commit::rewrite(&c, |_| true).encode();
+            out.push(osis_base::cbor::decode(&pt, &osis_base::cbor::Limits::DEFAULT).map_err(|_| Error::Corrupt("rotation header"))?);
+        }
+        Ok(out)
     }
 
-    /// Takes the rotations a peer's Prove carried (header-only copies of its account's rotation
-    /// commits), judged by spec/permissions.md §5.4, before its proofs are judged.
+    /// Takes the rotations a peer's Prove carried (header-only copies of account rotation
+    /// commits), judged by spec/permissions.md §5.4 like any received, in the order given,
+    /// before its proofs are judged. One that would pend here (an epoch it is signed at not
+    /// held, its account's record not held) keeps nothing, as if never received: nothing carries
+    /// it (spec/commits.md §4 Pending storage). Anything else (not a rotation, a part carried, bad
+    /// input) is skipped.
     pub fn take_rotations(&mut self, rotations: Vec<osis_base::Value>) -> Result<()> {
-        let _ = rotations;
-        not_built("take_rotations")
+        for v in rotations {
+            let b = osis_base::cbor::encode(&v);
+            let Ok(c) = osis_commit::CommitBlob::decode(&b) else { continue };
+            let id = c.id();
+            if c.header.rotation.is_none() || !c.parts.is_empty() || self.core.ix.commits.contains_key(&id) {
+                continue;
+            }
+            let pended = self.pends(&id);
+            match self.ingest(&b, Vec::new()) {
+                Ok(crate::Ingested::Pending(..)) if !pended => {
+                    self.forget_pending(&id)?;
+                }
+                Ok(_) => {}
+                Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
+                Err(_) => {}
+            }
+        }
+        Ok(())
     }
 
     /// Whether `key` is `record`'s actor's key at an epoch open here (a connection proof's key).

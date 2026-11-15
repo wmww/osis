@@ -572,3 +572,29 @@ fn signal_at_a_closed_epoch_is_not_delivered_spec_permissions_5_5() {
     lp.peers[1].engine.ingest_relay_blob(cs.remove(0).blob).unwrap();
     assert_eq!(fired(&lp), 0, "not once the epoch is closed");
 }
+
+// spec/sync-opens.md §2 (its account by a signature at an epoch), spec/wire.md §11.2 (Prove): a
+// node of an account gives every held rotation as a header-only copy, each epoch's minting
+// rotation first; a verifier holding the account's record takes them, its new key open there; one taken without
+// the rotation minting the epoch it is signed at keeps nothing (nothing carries it).
+#[test]
+fn prove_rotations_are_taken_by_a_verifier_spec_sync_opens_2() {
+    let mut lp = peers(2);
+    let (a, bytes) = created(&mut lp);
+    let p = a.account;
+    let r1 = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
+    let r2 = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
+    let given = lp.peers[0].engine.prove_rotations().unwrap();
+    let ids: Vec<CommitId> = given.iter().map(|v| CommitBlob::decode(&osis_base::cbor::encode(v)).unwrap()).inspect(|c| assert!(c.parts.is_empty(), "a header-only copy")).map(|c| c.id()).collect();
+    assert_eq!(ids, vec![r1, r2], "each minting rotation first");
+    let record = lp.peers[0].engine.core.created(&p).cloned().unwrap();
+    let key = lp.peers[0].engine.account_open_key().unwrap();
+    let e = &mut lp.peers[1].engine;
+    e.ingest(&bytes, Vec::new()).unwrap();
+    e.take_rotations(vec![given[1].clone()]).unwrap();
+    assert!(!e.pends(&r2) && e.header(&r2).is_none(), "one whose minting rotation is not held keeps nothing");
+    assert!(!e.key_open(&record, &key));
+    e.take_rotations(given).unwrap();
+    assert!(e.header(&r1).is_some() && e.header(&r2).is_some(), "both taken");
+    assert!(e.key_open(&record, &key), "the account's new key open at the verifier");
+}

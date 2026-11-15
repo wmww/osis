@@ -11,7 +11,16 @@ impl Engine {
     pub fn account_prover(&self) -> Result<Option<(SigningSecret, CreationRecord)>> {
         let Some(p) = self.core.account.get() else { return Ok(None) };
         let Some(record) = self.core.created(&p).cloned() else { return Ok(None) };
-        Ok(self.core.account_signing(&p)?.map(|(_, keys)| (keys.signing.clone(), record)))
+        // `account_signing` refuses an open epoch whose seed is not held: none then
+        Ok(self.core.account_signing(&p).ok().flatten().map(|(_, keys)| (keys.signing.clone(), record)))
+    }
+
+    /// The public key `account_prover` proves with (`None` where it gives none), read without
+    /// deriving it: what moves when the account's open epoch does, or its seed arrives.
+    pub fn account_open_key(&self) -> Option<[u8; 32]> {
+        let p = self.core.account.get()?;
+        self.core.created(&p)?;
+        self.core.account_open_key(&p)
     }
 
     /// Whether `key` signs for the account `record` creates at an epoch open by the rotations
