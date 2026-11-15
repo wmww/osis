@@ -66,12 +66,11 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
             core.ix.acting_on.remove(&(a.tid, v.author, v.actor), id);
         }
         // a chain goes once no held commit on the thing needs it (`Indexes::chains_on`)
-        let writes = !core.ix.by_thing.contains_key(&(a.tid, v.author));
-        let acts = |to: &Tid| !core.ix.acting_on.contains_key(&(a.tid, v.author, *to));
-        if writes && acts(&a.tid) {
+        // (`acting_on` lies within `by_thing`, so the chain to the thing goes with the last write)
+        if !core.ix.by_thing.contains_key(&(a.tid, v.author)) {
             core.ix.chains_on.remove(&a.tid, &(v.author, a.tid));
         }
-        if v.actor != v.author && acts(&v.actor) && (v.actor != a.tid || writes) {
+        if v.actor != v.author && v.actor != a.tid && !core.ix.acting_on.contains_key(&(a.tid, v.author, v.actor)) {
             core.ix.chains_on.remove(&a.tid, &(v.author, v.actor));
         }
         core.ix.dropped_snapshots.remove(&k, id);

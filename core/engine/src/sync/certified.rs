@@ -876,25 +876,20 @@ mod tests {
         assert_eq!(small, derived(2, 10), "pieces derived (after the rotation, after the write) at m and 10m things written on");
     }
 
-    // spec/permissions.md §4 (a commit's author's chain: to its actor too), spec/sync-judgement.md
-    // §2: X writes T1 and T2 (each read here) acting for Y, which holds no role on either: X's
-    // chain to Y is one piece, under each read thing whose closure holds such a write, however
-    // many writes there are; it leaves a read thing with the thing (unshared); the rows equal the
-    // whole derivation throughout.
-    #[test]
-    fn a_chain_to_an_acted_for_actor_is_one_piece_per_read_thing_spec_permissions_4() {
+    /// Node 2's Y grants node 1's account X write; node 0's T1 and T2 (read at node 0) grant X
+    /// write, Y holding no role on either: (world, X, Y, [T1, T2]).
+    fn acting_world() -> (LocalPeer, Tid, Tid, [Tid; 2]) {
         let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
         let a0 = lp.peers[0].engine.create_account().unwrap().0;
         let a1 = lp.peers[1].engine.create_account().unwrap().0;
         let a2 = lp.peers[2].engine.create_account().unwrap().0;
         lp.sync_all().unwrap();
-        let ak = Ak::new("x:a.0").unwrap();
         let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
         let new = |lp: &mut LocalPeer, i: usize, a: Tid| {
             let e = &mut lp.peers[i].engine;
             let mut m = Mutation::new();
             let t = e.new_thing(&mut m, a);
-            m.set(t, &ak, &Value::Int(0)).unwrap();
+            m.set(t, &acting_ak(), &Value::Int(0)).unwrap();
             e.commit(m).unwrap();
             t
         };
@@ -905,27 +900,75 @@ mod tests {
             lp.peers[0].engine.grant(t, &a1.account, &edge).unwrap();
         }
         lp.sync_all().unwrap();
-        let write = |lp: &mut LocalPeer, t: Tid, v: i64| {
-            let mut m = Mutation::new();
-            m.set(t, &ak, &Value::Int(v)).unwrap();
+        (lp, a1.account, y, ts)
+    }
+
+    fn acting_ak() -> Ak {
+        Ak::new("x:a.0").unwrap()
+    }
+
+    /// X (node 1) writes `v` on `t`, acting for `y` if given.
+    fn acting_write(lp: &mut LocalPeer, t: Tid, v: i64, y: Option<Tid>) -> CommitId {
+        let mut m = Mutation::new();
+        m.set(t, &acting_ak(), &Value::Int(v)).unwrap();
+        if let Some(y) = y {
             m.act_as(y);
-            lp.peers[1].commit(m).unwrap();
-        };
-        let to_y = |e: &Engine| -> Vec<BTreeSet<Tid>> { e.core.certified.placed.iter().filter(|(p, _)| matches!(p, Piece::Chain(a, x) if *a == a1.account && *x == y)).map(|(_, x)| x.under.clone()).collect() };
+        }
+        lp.peers[1].commit(m).unwrap().unwrap()
+    }
+
+    /// Where X's chain to Y is placed: the read things under each such piece.
+    fn chain_under(e: &Engine, x: Tid, y: Tid) -> Vec<BTreeSet<Tid>> {
+        e.core.certified.placed.iter().filter(|(p, _)| **p == Piece::Chain(x, y)).map(|(_, p)| p.under.clone()).collect()
+    }
+
+    // spec/permissions.md §4 (a commit's author's chain: to its actor too), spec/sync-judgement.md
+    // §2: X writes T1 and T2 (each read here) acting for Y, which holds no role on either: X's
+    // chain to Y is one piece, under each read thing whose closure holds such a write, however
+    // many writes there are; it leaves a read thing with the thing (unshared); the rows equal the
+    // whole derivation throughout.
+    #[test]
+    fn a_chain_to_an_acted_for_actor_is_one_piece_per_read_thing_spec_permissions_4() {
+        let (mut lp, x, y, ts) = acting_world();
         for v in 1..=6 {
-            write(&mut lp, ts[(v % 2) as usize], v);
+            acting_write(&mut lp, ts[(v % 2) as usize], v, Some(y));
             lp.sync_all().unwrap();
             check(&mut lp.peers[0].engine, &format!("write {v}"));
         }
         let e = &mut lp.peers[0].engine;
         assert!(e.read_things().unwrap().is_superset(&ts.into_iter().collect()), "T1 and T2 read here");
-        assert_eq!(to_y(e), vec![ts.into_iter().collect::<BTreeSet<Tid>>()], "one piece of X's chain to Y, under T1 and T2");
+        assert_eq!(chain_under(e, x, y), vec![ts.into_iter().collect::<BTreeSet<Tid>>()], "one piece of X's chain to Y, under T1 and T2");
         e.unshare(&ts[1]).unwrap();
         check(e, "T2 unshared");
-        assert_eq!(to_y(e), vec![BTreeSet::from([ts[0]])], "X's chain to Y leaves T2 with it");
+        assert_eq!(chain_under(e, x, y), vec![BTreeSet::from([ts[0]])], "X's chain to Y leaves T2 with it");
         e.unshare(&ts[0]).unwrap();
         check(e, "T1 unshared");
-        assert!(to_y(e).is_empty(), "and goes once no read thing needs it");
+        assert!(chain_under(e, x, y).is_empty(), "and goes once no read thing needs it");
+    }
+
+    // spec/permissions.md §4, spec/sync-judgement.md §2, spec/commits.md §5 (Forgetting): X writes
+    // T1 acting for Y twice, unseen by Y's admin, who removes X meanwhile, and once as itself: the
+    // writes for Y are invalid, and node 0 forgets them while it still reads T1 and holds X's own
+    // write there: X's chain to Y (holding the removal) stays while they are held and leaves T1
+    // with the last of them; X's chain to T1 stays.
+    #[test]
+    fn a_chain_to_an_acted_for_actor_leaves_with_the_last_write_acting_for_it_spec_permissions_4() {
+        let (mut lp, x, y, ts) = acting_world();
+        let acting = [acting_write(&mut lp, ts[0], 1, Some(y)), acting_write(&mut lp, ts[0], 2, Some(y))];
+        let own = acting_write(&mut lp, ts[0], 3, None);
+        lp.peers[2].engine.demote(&y, &Demotion { holder: x, new: None, retain: None }).unwrap();
+        lp.sync_all().unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert!(acting.iter().all(|c| e.kept_invalid(c)), "X's writes for Y are invalid at node 0");
+        check(e, "synced");
+        assert_eq!(chain_under(e, x, y), vec![BTreeSet::from([ts[0]])], "the chain holding the removal stays while they are held");
+        let due: Vec<CommitId> = e.commit_ids().into_iter().filter(|c| e.forgettable(c).unwrap()).collect();
+        assert!(acting.iter().all(|c| due.contains(c)) && !due.contains(&own), "the writes for Y are forgettable, X's own is not");
+        e.forget_commits(&due).unwrap();
+        check(e, "forgotten");
+        assert!(e.read_things().unwrap().contains(&ts[0]), "T1 still read");
+        assert!(chain_under(e, x, y).is_empty(), "X's chain to Y leaves with the last write acting for Y");
+        assert!(e.core.certified.placed.get(&Piece::Chain(x, ts[0])).is_some_and(|p| p.under.contains(&ts[0])), "X's chain to T1 stays, by its own write");
     }
 
     // spec/permissions.md §4, spec/sync-judgement.md §1 (List blobs), as above: random histories
