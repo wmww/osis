@@ -29,8 +29,8 @@
 //! waiting per (connection, S), only aspects this node may snapshot (gone at `Left`, close or the
 //! first sync's end); a row per (reporter account, aspect) repaired, replaced by a later state,
 //! dropped when an entry shows it stale; a row of a thing gone stays until then (issue
-//! suspect-judge-cost). A flood of lists repairs at most once per state per reporter, but each
-//! entry judged costs a digest of this node's state of the aspect: the same issue.
+//! suspect-rows-of-gone-things). A flood of lists repairs at most once per state per reporter,
+//! and an entry judged again costs a lookup (`Engine::state_digest` is a memo per aspect).
 
 use super::{Here, Net};
 use crate::types::{ConnId, Result, SourceClass};

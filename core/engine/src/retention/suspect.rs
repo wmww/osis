@@ -238,7 +238,7 @@ impl Engine {
     /// `DiagnosticKind::Repair`.
     pub fn repair_suspect(&mut self, s: &osis_base::SyncId, tid: &Tid, ak: &Ak, theirs: &[u8; 16], reporter: &Tid, wrote_from: Option<[u8; 16]>) -> Result<Repaired> {
         let (t, a) = (*tid, ak.clone());
-        if !self.may_repair(s, tid, ak)? || self.read(|tx| Ok(tx.state(&t, &a)?.is_none()))? {
+        if !self.may_repair(s, tid, ak)? || !self.read(|tx| tx.has_state(&t, &a))? {
             return Ok(Repaired::Skipped);
         }
         let Some(own) = self.state_digest(tid, ak)? else { return Ok(Repaired::Skipped) };
