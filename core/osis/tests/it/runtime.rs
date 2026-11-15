@@ -262,7 +262,9 @@ fn two_nodes_of_one_host_listen_spec_sync_transport_3() {
 
 // spec/sync-transport.md §2 (`quic://host[:port]`): two nodes of two accounts, each on its own
 // runtime, sync over a real loopback QUIC socket: a link redeemed through the configured
-// address carries the thing, and a write at either end reaches the other.
+// address carries the thing, and a write at either end reaches the other. The redeemer's
+// `wait_synced` on the thing ends though its home, carrying it, is shared by no peer
+// (spec/sync-status.md §3).
 #[test]
 fn two_accounts_sync_over_loopback_quic_spec_sync_transport_2() {
     let node = |dial: Vec<osis::Address>| {
@@ -275,8 +277,7 @@ fn two_accounts_sync_over_loopback_quic_spec_sync_transport_2() {
     let a = node(Vec::new());
     let addr = a.listen(&["quic://127.0.0.1:0".parse().unwrap()]).unwrap().remove(0);
     let b = node(vec![addr]);
-    // `db` reads `want` as `t`'s name: at once or at a change it hears (wait_synced would wait on
-    // home too, which no other node of the account holds)
+    // `db` reads `want` as `t`'s name: at once or at a change it hears
     let reads = |db: &Osis, t, want: &str| {
         let (tx, rx) = std::sync::mpsc::channel();
         let _s = db.at(t, osis::core::NAME).on_change(move |_, _| tx.send(()).unwrap()).unwrap();
@@ -297,7 +298,8 @@ fn two_accounts_sync_over_loopback_quic_spec_sync_transport_2() {
     let link = a.make_link(t, osis::Role::Write, osis::LinkOpts::default()).unwrap();
     assert_eq!(block_on(b.redeem(&link)).unwrap(), t);
     b.accept_invite(t, b.home()).unwrap();
-    reads(&b, t, "first");
+    block_on(b.wait_synced(osis::SyncScope::Thing(t))).unwrap();
+    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("first"));
     set(&a, t, "from a");
     reads(&b, t, "from a");
     set(&b, t, "from b");

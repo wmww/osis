@@ -206,8 +206,8 @@ fn commands_run_through_the_daemon_plan_cli() {
     assert_eq!(card.trim(), held.contact_card().unwrap().to_string());
     assert_eq!(ok(&["card", "profile"]).trim(), held.profile().unwrap().to_uri());
     assert_eq!(ok(&["card", "import", card.trim(), "--timeout", "60s"]).trim(), held.me().to_uri());
-    let (code, _, err) = call(&["sync", "--timeout", "1s"]);
-    assert_eq!(code, 6, "nobody connected: the wait at the node times out ({err})");
+    // a one-node account: nothing it holds is held by another node (spec/sync-status.md §3)
+    ok(&["sync", "--timeout", "60s"]);
     ok(&["diag"]);
     drop(held);
     let _ = std::fs::remove_dir_all(&d);

@@ -29,11 +29,10 @@ use crate::store::Store;
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Error, Input, Out, Result, Scope, SyncConfig, Waiting};
 use dials::{Dials, NodePeers, Why};
-use osis_base::Tid;
 use crate::unread::Unread;
 use crate::leave::Leave;
 use crate::life::Life;
-use osis_base::{SyncId, WallMs};
+use osis_base::{SyncId, Tid, WallMs};
 use osis_crypto::NodeRng;
 use osis_engine::Engine;
 use osis_label::Address;
@@ -420,7 +419,13 @@ impl Node {
     pub fn wait(&mut self, scope: Scope) -> Waiting {
         let net = NetView { streams: &self.streams, unread: &self.unread };
         let engine = &mut self.engine;
-        let w = self.status.wait(&net, scope, |t| Ok(engine.carrying(t)?.into_iter().collect()));
+        let carrying = match scope {
+            Scope::Thing(t) => engine.carrying(&t).map(|x| x.into_iter().collect()).map_err(Into::into),
+            Scope::All | Scope::Deliveries => Ok(Vec::new()),
+        };
+        // by the rosters, not by who has S open: a sync ID just joined is open at no peer yet;
+        // a failed read keeps the wait waiting
+        let w = self.status.wait(&net, scope, |_| carrying, |s| engine.others_hold(s).unwrap_or(true));
         let mut owes = || engine.deliveries().map_or(true, |d| !d.is_empty());
         match (w, scope) {
             (Waiting::Done, Scope::All | Scope::Deliveries) if owes() => Waiting::Pending,

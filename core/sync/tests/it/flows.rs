@@ -397,7 +397,8 @@ pub(crate) fn granted_and_read(role: Role) -> (World, osis_base::Tid, Ak) {
 // spec/sync-status.md §2 (held elsewhere: an entry at a source that reads S, by its stream or a
 // reported position), §3 (synced: heard out and each own commit under S held elsewhere): the
 // writer's sync ID of a thing is not synced while its write is only here, and is once the reader
-// holds it. (A wait on the thing also covers node 0's home, which nobody else opens.)
+// holds it. A wait on the thing also covers each node's home, which no peer shares: it holds
+// neither wait, the granter's nor the accepter's; the peer away, its record holding S does.
 #[test]
 fn a_write_is_synced_once_a_reader_holds_it_spec_sync_status_3() {
     let (mut w, t, ak) = granted_and_read(Role::Read);
@@ -418,7 +419,12 @@ fn a_write_is_synced_once_a_reader_holds_it_spec_sync_status_3() {
     w.run();
     assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("y".into())));
     assert!(synced(&w));
-    assert_eq!(w.wait(0, Scope::Thing(t)), Waiting::Pending, "node 0's home carries it too, unconnected");
+    assert_eq!(w.wait(0, Scope::Thing(t)), Waiting::Done, "node 0's home carries it too, shared by no peer");
+    assert_eq!(w.wait(1, Scope::Thing(t)), Waiting::Done, "the accepter's home, filing it, likewise");
+    w.partition(0, 1);
+    w.run();
+    assert_eq!(w.wait(0, Scope::Thing(t)), Waiting::Pending, "node 1 away: its record holds S");
+    assert_eq!(w.wait(1, Scope::Thing(t)), Waiting::Pending);
 }
 
 // spec/sync-status.md §2 (held elsewhere), spec/permissions.md §3 (Lost access): node 1 leaves a

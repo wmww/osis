@@ -32,9 +32,9 @@ fn status_with_nobody_connected_spec_sync_status_3() {
     assert!(s.groups.values().all(|g| g.state == osis::SyncState::NotConnected || g.state == osis::SyncState::Stranded));
 }
 
-// spec/sync-status.md §3 (waits): a wait never ends while nothing is connected; with no network
-// at all it can never end, so it fails `Network` at once (notes/api-design.md: a wait sure never
-// to finish fails).
+// spec/sync-status.md §3 (waits): with no network a wait not done at once can never end, so it
+// fails `Network` at once (notes/api-design.md: a wait sure never to finish fails); a node alone
+// is done at once.
 #[test]
 fn wait_synced_with_no_network_fails_network_spec_sync_status_3() {
     let db = db(2);
@@ -46,36 +46,27 @@ fn wait_synced_with_no_network_fails_network_spec_sync_status_3() {
     }
 }
 
-// spec/sync-status.md §3 (waits): on a network with nobody connected no wait on sync IDs ends,
-// however long (never a `Stranded` it did not find, notes/api-design.md: never faked); a wait on
-// deliveries with none owed ends at once.
+// spec/sync-status.md §3 (waits): a sync ID no peer shares holds no wait: a node alone (a
+// one-node account) ends a wait on all, on home and on a thing filed under home at once,
+// connected to nobody; a wait on a thing never known here runs on (to the caller's timeout);
+// a wait on deliveries with none owed ends at once.
 #[test]
-fn on_a_network_no_wait_ends_unconnected_spec_sync_status_3() {
+fn a_node_alone_waits_on_nothing_spec_sync_status_3() {
     let c = clock();
     let net = ManualNet::new(c.clone());
     let a = on(&net, 5, &c);
-    net.run();
-    net.advance(60_000);
-    for scope in [SyncScope::All, SyncScope::Thing(a.home())] {
-        assert!(now(a.wait_synced(scope)).is_pending(), "{scope:?}");
-    }
-    assert!(matches!(now(a.wait_synced(SyncScope::Deliveries)), std::task::Poll::Ready(Ok(()))));
-}
-
-// spec/sync-status.md §3 (waits): on a network, a wait on a thing whose sync IDs no node has
-// open stays pending (it runs to the caller's timeout), whatever time passes.
-#[test]
-fn wait_on_a_thing_nobody_has_open_stays_pending_spec_sync_status_3() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let a = on(&net, 3, &c);
     let mut w = a.write();
     let t = w.create().unwrap();
     w.commit().unwrap();
     net.run();
-    assert!(now(a.wait_synced(SyncScope::Thing(t))).is_pending());
+    for scope in [SyncScope::All, SyncScope::Thing(a.home()), SyncScope::Thing(t), SyncScope::Deliveries] {
+        assert!(matches!(now(a.wait_synced(scope)), std::task::Poll::Ready(Ok(()))), "{scope:?}");
+    }
+    let mut w = a.write();
+    let never = w.create().unwrap();
+    drop(w);
     net.advance(60_000);
-    assert!(now(a.wait_synced(SyncScope::Thing(t))).is_pending());
+    assert!(now(a.wait_synced(SyncScope::Thing(never))).is_pending(), "never known here");
 }
 
 // spec/sync-transport.md §5 (One key): a node listens under its one key; with no network it
@@ -406,6 +397,60 @@ fn redeeming_a_link_joins_its_thing_spec_sync_inbox_6() {
     assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
     assert_eq!(b.role_on(t).unwrap(), Some(Role::Read));
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("shared"));
+}
+
+// spec/sync-status.md §3 (waits), spec/sync-inbox.md §6: a redeemer that files the thing under
+// its home waits on the thing (its home carrying it, shared by no peer) until the thing's data
+// is here; the sharer away (its record holding the thing's sync ID), a wait there runs on.
+#[test]
+fn a_redeemers_wait_on_the_thing_ends_spec_sync_status_3() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 42, &c);
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    let b = on(&net, 43, &c);
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
+    w.at(t, osis::core::NAME).set(&"shared".to_string()).unwrap();
+    w.commit().unwrap();
+    let link = a.make_link(t, Role::Write, LinkOpts::default()).unwrap();
+    assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
+    b.accept_invite(t, b.home()).unwrap();
+    drive(&net, b.wait_synced(SyncScope::Thing(t))).unwrap();
+    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("shared"));
+    drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
+    net.set_online(0, false);
+    net.run();
+    let mut w = b.write();
+    w.at(t, osis::core::NAME).set(&"from b".to_string()).unwrap();
+    w.commit().unwrap();
+    net.run();
+    net.advance(60_000);
+    assert!(now(b.wait_synced(SyncScope::Thing(t))).is_pending(), "the sharer away");
+}
+
+// spec/sync-status.md §3 (waits), spec/sync-set.md §4: an account accepting another's grant into
+// its home waits on the thing until the thing's data is here, its home shared by no peer.
+#[test]
+fn an_accepters_wait_on_the_thing_ends_spec_sync_status_3() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 54, &c);
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    let b = on(&net, 55, &c);
+    drive(&net, b.import_contact(&a.contact_card().unwrap())).unwrap();
+    let mut w = b.write();
+    let t = w.create().unwrap();
+    w.at(t, osis::core::NAME).set(&"granted".to_string()).unwrap();
+    w.commit().unwrap();
+    b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    a.accept_invite(t, a.home()).unwrap();
+    drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
+    assert_eq!(a.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("granted"));
 }
 
 // spec/sync-inbox.md §5 (contact card), spec/sync-set.md §4: importing a card gives the account,

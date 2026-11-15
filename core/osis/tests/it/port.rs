@@ -1344,7 +1344,8 @@ fn commit_listeners_through_a_socket_notes_client_port() {
 // notes/client-port.md §2 (Rows that wait), spec/sync-inbox.md §5, spec/sync-set.md §4: through
 // a socket client, the node's card is imported elsewhere, another's card is imported at the
 // node, a grant to the node's account is an invitation there, accepted through the client, and
-// `wait_synced` waits at the node.
+// `wait_synced` waits at the node: on the accepted thing until its data is there
+// (spec/sync-status.md §3, the node's home carrying it held by no other node).
 #[test]
 fn cards_invitations_and_waits_through_a_socket_notes_client_port() {
     let c = clock();
@@ -1359,6 +1360,7 @@ fn cards_invitations_and_waits_through_a_socket_notes_client_port() {
     assert_eq!(a.profile_of(b.me()).unwrap(), Some(b.profile().unwrap()));
     assert_eq!(cl.profile_of(b.me()).unwrap(), Some(b.profile().unwrap()));
     let t = b.commit_with(|w| w.create()).unwrap();
+    crate::common::commit_with(&b, |w| w.at(t, osis::core::NAME).set(&"granted".to_string()));
     b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
     for _ in 0..5 {
         net.run();
@@ -1368,6 +1370,8 @@ fn cards_invitations_and_waits_through_a_socket_notes_client_port() {
     assert_eq!(invited, a.invitations().unwrap());
     cl.accept_invite(t, cl.home()).unwrap();
     assert!(!a.invitations().unwrap().iter().any(|i| i.thing == t));
+    drive(&net, cl.wait_synced(osis::SyncScope::Thing(t))).unwrap();
+    assert_eq!(cl.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("granted"));
     drive(&net, cl.wait_synced(osis::SyncScope::Deliveries)).unwrap();
     assert_eq!(osis::internals::port_waits(&a), 0, "a wait answered goes");
 }
@@ -1379,11 +1383,12 @@ fn a_dropped_wait_ends_at_the_node_notes_client_port() {
     let c = clock();
     let net = ManualNet::new(c.clone());
     let (_dir, a, cl) = daemon(&net, &c, 1, "port-drop-wait");
-    let t = a.commit_with(|w| w.create()).unwrap();
+    // a thing never known there: its wait runs on
+    let t = a.write().create().unwrap();
     {
         let mut f = std::pin::pin!(cl.wait_synced(osis::SyncScope::Thing(t)));
         for _ in 0..3 {
-            assert!(f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending(), "nobody else has it open");
+            assert!(f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending(), "never known there");
             net.run();
         }
         assert_eq!(osis::internals::port_waits(&a), 1);

@@ -529,17 +529,21 @@ fn pass_begun_before_the_moment_counts_for_nothing() {
 }
 
 // spec/sync-status.md §3 (wait): `wait` ends when every sync ID in scope is heard out with its own
-// commits held elsewhere; never while one is unconnected.
+// commits held elsewhere, or shared by no peer; never while one a peer shares is unconnected.
 #[test]
-fn wait_all_follows_every_sync_id() {
+fn wait_all_follows_every_sync_id_spec_sync_status_3() {
     let mut t = T::new(&[(S, Holding::Read), (sid(3), Holding::Unread)]);
-    assert_eq!(t.st.wait(&t.g, Scope::All, |_| unreachable!()), Waiting::Pending);
+    let wait = |t: &T| t.st.wait(&t.g, Scope::All, |_| unreachable!(), |s| t.g.shared.contains(s));
+    assert_eq!(wait(&t), Waiting::Done, "nobody else holds either: nothing to wait for");
+    t.g.shared.insert(S);
+    t.g.shared.insert(sid(3));
+    assert_eq!(wait(&t), Waiting::Pending);
     t.join(S, A, reader(RA, 1));
     t.caught(A, S, 0);
-    assert_eq!(t.st.wait(&t.g, Scope::All, |_| unreachable!()), Waiting::Pending, "the unread one is unconnected");
+    assert_eq!(wait(&t), Waiting::Pending, "the unread one is unconnected");
     t.join(sid(3), B, store(RB));
     t.caught(B, sid(3), 0);
-    assert_eq!(t.st.wait(&t.g, Scope::All, |_| unreachable!()), Waiting::Done);
+    assert_eq!(wait(&t), Waiting::Done);
 }
 
 // spec/sync-status.md §3 (stranded): a node keeping S unread reports S like any sync ID, stranded
@@ -560,10 +564,11 @@ fn a_wait_on_a_stranded_sync_id_fails_spec_sync_status_3() {
     let u = sid(2);
     let mut t = T::new(&[(S, Holding::Unread), (u, Holding::Read)]);
     t.g.stranded.insert(S);
+    t.g.shared.insert(u);
     t.settle();
-    assert_eq!(t.st.wait(&t.g, Scope::All, |_| unreachable!()), Waiting::Stranded(vec![S]));
-    assert_eq!(t.st.wait(&t.g, Scope::Thing(tid(1)), |_| Ok(vec![S])), Waiting::Stranded(vec![S]));
-    assert_eq!(t.st.wait(&t.g, Scope::Thing(tid(1)), |_| Ok(vec![u])), Waiting::Pending, "not stranded: unconnected");
+    assert_eq!(t.st.wait(&t.g, Scope::All, |_| unreachable!(), |s| t.g.shared.contains(s)), Waiting::Stranded(vec![S]));
+    assert_eq!(t.st.wait(&t.g, Scope::Thing(tid(1)), |_| Ok(vec![S]), |s| t.g.shared.contains(s)), Waiting::Stranded(vec![S]));
+    assert_eq!(t.st.wait(&t.g, Scope::Thing(tid(1)), |_| Ok(vec![u]), |s| t.g.shared.contains(s)), Waiting::Pending, "not stranded: unconnected");
 }
 
 /// Work for one source's report on one own commit, at `n` sync IDs each with a source and an
@@ -706,7 +711,7 @@ fn a_read_sync_id_is_stranded_once_heard_out_spec_permissions_4() {
     t.caught(A, S, 0);
     assert!(t.st.of(&S, &t.g).unwrap().stranded);
     assert_eq!(t.st.strandings().keys().copied().collect::<Vec<_>>(), vec![S], "only the read S");
-    assert_eq!(t.st.wait(&t.g, Scope::All, |_| Ok(Vec::new())), Waiting::Stranded(vec![S]));
+    assert_eq!(t.st.wait(&t.g, Scope::All, |_| Ok(Vec::new()), |s| t.g.shared.contains(s)), Waiting::Stranded(vec![S]));
     t.g.strandings.remove(&S);
     t.settle();
     assert!(!t.st.of(&S, &t.g).unwrap().stranded && t.st.strandings().is_empty(), "a current secret held");
