@@ -3,7 +3,7 @@
 //! writes (`Table::log`), never by asking every key; `Feed` is one reader's cursor over the keys
 //! a container added.
 
-use super::{Dep, Logged, Table, bucket, copied, lock, recorded_frame};
+use super::{Dep, Ids, Logged, Table, bucket, copied, lock, recorded_frame};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::marker::PhantomData;
@@ -24,7 +24,7 @@ pub struct Effects<K, V> {
     /// since, or moved while their settle read.
     pending: HashSet<K>,
     /// What the followed keys' last values read, per container (`Arc::as_ptr` of its table).
-    tables: HashMap<usize, Indexed<K>>,
+    tables: HashMap<usize, Indexed<K>, Ids>,
 }
 
 struct Followed<V> {
@@ -43,8 +43,8 @@ struct Indexed<K> {
     whole: HashSet<K>,
     /// Keys that read each key of it (by hash), and the hashes read at their bucket's absent
     /// stamp, by bucket: a removal moves those of its bucket.
-    keys: HashMap<u64, HashSet<K>>,
-    buckets: HashMap<usize, HashSet<u64>>,
+    keys: HashMap<u64, HashSet<K>, Ids>,
+    buckets: HashMap<usize, HashSet<u64, Ids>, Ids>,
     /// Reads indexed here: the mark goes with the last.
     reads: usize,
 }
@@ -57,7 +57,7 @@ impl<K> Drop for Indexed<K> {
 
 impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
     pub fn new(name: &'static str) -> Self {
-        Effects { name, followed: HashMap::new(), seq: 0, pending: HashSet::new(), tables: HashMap::new() }
+        Effects { name, followed: HashMap::new(), seq: 0, pending: HashSet::new(), tables: HashMap::default() }
     }
 
     /// Follows `k`: its next `settle` reports it (nothing was acted on yet). A key followed
@@ -188,7 +188,7 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
                 let mut t = lock(&d.table);
                 let at = t.ver;
                 t.mark(at);
-                Indexed { table: d.table.clone(), at, whole: HashSet::new(), keys: HashMap::new(), buckets: HashMap::new(), reads: 0 }
+                Indexed { table: d.table.clone(), at, whole: HashSet::new(), keys: HashMap::default(), buckets: HashMap::default(), reads: 0 }
             });
             ix.reads += 1;
             match d.key {

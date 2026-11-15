@@ -48,7 +48,7 @@ struct Table {
     /// `ver` at the last write of each key present, by the key's hash, and at the last write
     /// under each prefix read (`Stamps::read_prefix`). Two keys sharing a hash share a stamp: a
     /// write of one moves what read the other, never the reverse of that.
-    keys: HashMap<u64, u64>,
+    keys: HashMap<u64, u64, Ids>,
     /// The prefixes read (`read_prefix`), by length: a byte key's write (`wrote_bytes`) stamps
     /// each of them it starts with.
     prefixes: BTreeMap<usize, std::collections::HashSet<u64>>,
@@ -88,7 +88,7 @@ impl std::fmt::Debug for Logged {
 impl Default for Table {
     #[track_caller]
     fn default() -> Table {
-        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::new(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new(), name: None, born: std::panic::Location::caller() }
+        Table { ver: 0, absent: [0; ABSENT_BUCKETS], keys: HashMap::default(), prefixes: BTreeMap::new(), log: Default::default(), marks: BTreeMap::new(), name: None, born: std::panic::Location::caller() }
     }
 }
 
@@ -444,7 +444,45 @@ impl Dep {
 pub(crate) struct Frame {
     deps: Vec<Dep>,
     /// Each dep's place in `deps`, by `Dep::id`.
-    seen: HashMap<(usize, Option<u64>), usize>,
+    seen: HashMap<(usize, Option<u64>), usize, Ids>,
+}
+
+/// The hasher of the memo's own maps keyed by ids already spread (a table's address, a key's
+/// stamp hash: `Frame::seen`, `Table::keys`, `Effects`' indexes): a multiply-fold, then a mix
+/// under a per-process random seed so a peer choosing keys cannot pick colliding ones; SipHash
+/// there cost a tenth of a sync history (every read inside a memo notes one).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Ids;
+
+impl std::hash::BuildHasher for Ids {
+    type Hasher = IdHasher;
+    fn build_hasher(&self) -> IdHasher {
+        static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        IdHasher(*SEED.get_or_init(|| std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), 0u8)))
+    }
+}
+
+pub(crate) struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        // murmur3's finalizer: every input bit reaches every output bit
+        let mut h = self.0;
+        h = (h ^ (h >> 33)).wrapping_mul(0xff51_afd7_ed55_8ccd);
+        h = (h ^ (h >> 33)).wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+        h ^ (h >> 33)
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.write_u64(u64::from(*b));
+        }
+    }
+    fn write_u64(&mut self, x: u64) {
+        self.0 = (self.0.rotate_left(26) ^ x).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+    fn write_usize(&mut self, x: usize) {
+        self.write_u64(x as u64);
+    }
 }
 
 impl Frame {
