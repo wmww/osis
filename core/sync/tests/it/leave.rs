@@ -464,3 +464,58 @@ fn adding_or_removing_a_thing_costs_the_same_at_any_closure_size_spec_sync_set_2
     }
     assert_eq!(work[0], work[1], "closure work at n and 10n things (add, remove)");
 }
+
+/// Lists (`on`) or unlists group `s` as a subgroup of group `g`.
+fn list_sub(m: &mut osis_engine::Mutation, g: Tid, s: Tid, on: bool) {
+    let v = osis_base::Value::Tid(s);
+    let op = if on { osis_crdt::Op::Add(v) } else { osis_crdt::Op::Remove(v) };
+    m.op(g, &osis_schema::core_types::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op }).unwrap();
+}
+
+/// A thing of `p` with sync IDs of its own, listed in group `s`: (thing, its home sync ID).
+fn owned_in(e: &mut osis_engine::Engine, p: Tid, s: Tid) -> (Tid, SyncId) {
+    let mut m = osis_engine::Mutation::new();
+    let x = e.new_thing(&mut m, p);
+    list(&mut m, s, x, true);
+    e.commit(m).unwrap();
+    e.give_own_secrets(&x).unwrap();
+    let id = e.sync_ids(&x).unwrap().first().unwrap().id;
+    (x, id)
+}
+
+// spec/sync-set.md §2 (the sync set follows every `group.0` change), §5: a thing leaves the
+// followed sync set by a change to what places it, never itself a candidate (a group above it
+// unlisted, sourced away), comes back when that is undone, and a follower started before a
+// reload is told what enters after it.
+#[test]
+fn a_thing_leaves_and_returns_with_what_places_it_spec_sync_set_2() {
+    let (mut e, mut f, p, g) = synced_of(0);
+    let mut m = osis_engine::Mutation::new();
+    let s = e.new_thing(&mut m, p);
+    list_sub(&mut m, g, s, true);
+    e.commit(m).unwrap();
+    let (_, x) = owned_in(&mut e, p, s);
+    f.settle(&mut e).unwrap();
+    assert!(f.holds(&x), "listed under the synced group");
+    let mut m = osis_engine::Mutation::new();
+    list_sub(&mut m, g, s, false);
+    e.commit(m).unwrap();
+    f.settle(&mut e).unwrap();
+    assert!(!f.holds(&x), "the group above it unlisted");
+    let mut m = osis_engine::Mutation::new();
+    list_sub(&mut m, g, s, true);
+    e.commit(m).unwrap();
+    f.settle(&mut e).unwrap();
+    assert!(f.holds(&x), "listed again");
+    e.set_sourced([s].into(), &BTreeSet::new());
+    f.settle(&mut e).unwrap();
+    assert!(!f.holds(&x), "the group above it sourced away");
+    e.set_sourced(BTreeSet::new(), &BTreeSet::new());
+    f.settle(&mut e).unwrap();
+    assert!(f.holds(&x), "home again");
+    e.reload().unwrap();
+    f.settle(&mut e).unwrap();
+    let (_, y) = owned_in(&mut e, p, s);
+    f.settle(&mut e).unwrap();
+    assert!(f.holds(&x) && f.holds(&y), "entered after a reload");
+}

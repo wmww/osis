@@ -86,16 +86,17 @@ impl Engine {
         Ok([self.sync_root()?, self.core.account_devices().map(|(_, d)| d)])
     }
 
-    /// The things that may have entered `sync_things` since `f`'s last read (its first: every
-    /// one): each thing that entered a sync closure (`Groups::sync_gained_feed`) or was destroyed
+    /// The things that may have entered `sync_things` since `f`'s last read (its first, and the
+    /// first after a reload: every one): each thing that entered a sync closure (`Groups::sync_gained_feed`) or was destroyed
     /// since, the sync closure of each root new since (a share; the synced group read first),
     /// and the links being redeemed (followed links, few: whether one is followable moves with
     /// its record, sync record and destruction). Leaving needs no feed: `in_sync_things` moves.
     pub(crate) fn things_entered_now(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
         let roots = self.sync_roots()?;
-        let Some(at) = f.0.as_mut() else {
+        // a reload's fresh index feeds the old cursors nothing: started again, every thing
+        let Some(at) = f.0.as_mut().filter(|at| at.loads == self.loads()) else {
             let ix = &self.core.ix;
-            f.0 = Some(Entered { gained: ix.groups.sync_gained_feed(), destroyed: ix.destroyed_sync_ids.feed(), shared: ix.shared_here.feed(), roots });
+            f.0 = Some(Entered { gained: ix.groups.sync_gained_feed(), destroyed: ix.destroyed_sync_ids.feed(), shared: ix.shared_here.feed(), roots, loads: self.loads() });
             return Ok(self.sync_things_now()?.iter().copied().collect());
         };
         let mut out = at.gained.added();
@@ -416,6 +417,8 @@ pub(crate) struct Entered {
     destroyed: osis_base::memo::Feed<Tid>,
     shared: osis_base::memo::Feed<Tid>,
     roots: [Option<Tid>; 2],
+    /// The engine's loads when started (`Engine::reload` replaces the index its cursors read).
+    loads: u64,
 }
 
 /// A thing's home sync ID among those it owns (two admins giving it secrets at once made two: the

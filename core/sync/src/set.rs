@@ -109,11 +109,14 @@ pub struct SetFollow {
     held: BTreeMap<SyncId, Held>,
     /// Sync IDs whose things moved and whose entry is not judged yet (kept over a failed settle).
     touched: BTreeSet<SyncId>,
+    /// Debug builds: the closure last compared with `things`, compared again once it moves.
+    #[cfg(debug_assertions)]
+    checked: Option<Arc<BTreeSet<Tid>>>,
 }
 
 impl SetFollow {
     pub fn new(name: &'static str) -> SetFollow {
-        SetFollow { entered: ThingsFeed::default(), thing: Effects::new(name), things: BTreeSet::new(), ids_of: BTreeMap::new(), by_sync: BTreeMap::new(), held: BTreeMap::new(), touched: BTreeSet::new() }
+        SetFollow { entered: ThingsFeed::default(), thing: Effects::new(name), things: BTreeSet::new(), ids_of: BTreeMap::new(), by_sync: BTreeMap::new(), held: BTreeMap::new(), touched: BTreeSet::new(), #[cfg(debug_assertions)] checked: None }
     }
 
     /// Whether `s` is in the sync set, as last settled.
@@ -162,10 +165,14 @@ impl SetFollow {
             };
             self.moved(&t, ids, touched);
         }
+        // a thing entering or leaving that no key moved for shows as the closure moving alone
         #[cfg(debug_assertions)]
-        if moved {
+        {
             let all = osis_base::costs::paused(|| g.sync_things())?;
-            debug_assert_eq!(self.things, *all, "the followed sync set differs from the closure derived anew");
+            if moved || !self.checked.as_ref().is_some_and(|c| Arc::ptr_eq(c, &all)) {
+                debug_assert_eq!(self.things, *all, "the followed sync set differs from the closure derived anew");
+                self.checked = Some(all);
+            }
         }
         let mut out = Vec::new();
         for s in std::mem::take(touched) {

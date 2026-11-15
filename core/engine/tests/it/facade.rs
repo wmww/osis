@@ -3186,6 +3186,25 @@ fn things_entered_names_every_thing_entering_the_sync_set_spec_sync_set_2() {
     assert!(was.contains(&z), "the new synced group's things sync");
 }
 
+// spec/sync-set.md §2 (Cost; the sync set follows every `group.0` change): a follower's cursor
+// started before a reload (an open's, `forget_local`'s) is named what enters the sync set after.
+#[test]
+fn things_entered_names_what_enters_after_a_reload_spec_sync_set_2() {
+    let (mut lp, d, _, _, _) = sourced_world(1);
+    let p = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let y = thing_of(&mut lp, 0, p);
+    let mut f = osis_engine::sync::ThingsFeed::default();
+    let mut was = BTreeSet::new();
+    let e = &mut lp.peers[0].engine;
+    entered_cover(e, &mut f, &mut was, "start");
+    e.reload().unwrap();
+    entered_cover(e, &mut f, &mut was, "reloaded");
+    list_in(&mut lp, 0, d, 0, y);
+    let e = &mut lp.peers[0].engine;
+    entered_cover(e, &mut f, &mut was, "listed after the reload");
+    assert!(was.contains(&y));
+}
+
 // spec/sync-set.md §5 (Home is never sourced away): home (D) asked sourced elsewhere stays in the
 // sync set with its home sync ID and what is filed under it, so the engine's own records on D
 // (sync record keeps, inbox marks, accepts) still leave this node.
