@@ -847,7 +847,7 @@ fn caps_govern_unread_and_the_largest_gives_way_spec_sync_ids_6() {
     assert_eq!(st.entries(&s1.id).unwrap().len(), 3, "within the total again: nothing else went");
 }
 
-// spec/sync-compaction.md §2 (Caps, at a node for what it reads): an ephemeral body from another
+// spec/sync-compaction.md §2 (At a node, for what it reads): an ephemeral body from another
 // node counts at what it takes held under every sync ID an entry of it is under, an entry logged
 // before the charge and one logged after alike; the charge goes with the last entry naming it.
 #[test]
