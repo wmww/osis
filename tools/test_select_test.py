@@ -8,7 +8,8 @@ import test_select
 
 TOOL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_select.py")
 
-# base <- mid <- top; model is only a dev-dependency of mid; osis-sim depends on mid; leaf depends on nothing.
+# base <- mid <- top; model is only a dev-dependency of mid, and a fuzzing-only one of fz (base <-
+# fz <- fzuser); osis-sim depends on mid; leaf depends on nothing.
 CRATES = {
     "core/base": ("osis-base", ""),
     "core/mid": ("osis-mid", 'osis-base = { path = "../base" }\n[dev-dependencies]\nheld-model = { path = "../test/model" }\n'),
@@ -16,6 +17,8 @@ CRATES = {
     "core/test/model": ("held-model", ""),
     "core/test/sim": ("osis-sim", 'osis-mid = { path = "../../mid" }\n'),
     "core/leaf": ("osis-leaf", ""),
+    "core/fz": ("osis-fz", "osis-base = { path = \"../base\" }\n[target.'cfg(fuzzing)'.dependencies]\nheld-model = { path = \"../test/model\" }\n"),
+    "core/fzuser": ("osis-fzuser", 'osis-fz = { path = "../fz" }\n'),
 }
 PROP = '#[test]\n#[ignore = "property"]\nfn {}() {{}}\n'
 
@@ -61,6 +64,17 @@ write("core/base/src/lib.rs", PROP.format("base_prop_large") + '#[test] #[ignore
 # a size word in the middle, a repro, an example, a networking test: none are properties
 write("core/mid/src/lib.rs", PROP.format("mid_prop_plain_spec_crdt_4") + PROP.format("quic_large_transfer") + PROP.format("repro_big_large") + "#[test]\nfn mid_quick() {}\n")
 write("core/mid/tests/it/main.rs", PROP.format("mid_it_plain") + PROP.format("mid_it_plain_over_quic"))
+# reaching the dev dependency: naming it, through a module that does (not std's of that name, not
+# another target's), as a child of a module that does
+write("core/mid/tests/it/helper.rs", "use held_model::X;\n" + PROP.format("mid_helper_large"))
+write("core/mid/tests/it/via.rs", "fn f() { crate::helper::g() }\n" + PROP.format("mid_via_helper_large"))
+write("core/mid/tests/it/stdname.rs", "fn f() { std::helper::g() }\n" + PROP.format("mid_std_large"))
+write("core/mid/tests/it/kids/mod.rs", "use held_model::Y;\nmod child;\n")
+write("core/mid/tests/it/kids/child.rs", "use super::*;\n" + PROP.format("mid_child_large"))
+write("core/mid/src/other.rs", "fn f() { helper::g() }\n" + PROP.format("mid_other_target_large"))
+write("core/fz/src/lib.rs", "#[cfg(fuzzing)]\npub use held_model::X;\n")
+write("core/fz/src/a.rs", PROP.format("fz_large"))
+write("core/fzuser/src/lib.rs", PROP.format("fzuser_large"))
 write("core/top/src/lib.rs", PROP.format("top_exhaustive"))
 write("core/test/model/src/lib.rs", PROP.format("model_large"))
 write("core/test/sim/src/lib.rs", "")
@@ -80,28 +94,29 @@ git("remote", "add", "origin", ".")
 git("fetch", "-q", "origin", "main")
 
 t = out("--paths", "notes/a.md")
-check("notes only", t, "selects nothing: notes/a.md", "crates selected: 0 of 6", "nothing to run", absent=["cargo test"])
+check("notes only", t, "selects nothing: notes/a.md", "crates selected: 0 of 8", "nothing to run", absent=["cargo test"])
 
 t = out("--paths", "core/mid/src/lib.rs")
-check("dependents", t, "crates selected: 3 of 6", "osis-mid: mid_it_plain mid_prop_plain_spec_crdt_4", "osis-top: top_exhaustive", "every scenario, 15 seeds from 7", "cargo test --locked --no-fail-fast", absent=["osis-base:", "quic_large_transfer ", "held-model:", "repro_big_large "])
+check("dependents", t, "crates selected: 3 of 8", "mid_it_plain ", "mid_prop_plain_spec_crdt_4", "mid_std_large", "mid_other_target_large", "osis-top: top_exhaustive", "every scenario, 15 seeds from 7", "cargo test --locked --no-fail-fast", absent=["osis-base:", "quic_large_transfer ", "held-model:", "repro_big_large "])
 check("replay line", t, "offset: 7 (replay this selection: tools/test_select.py --offset 7 --paths core/mid/src/lib.rs)")
 check("substring filter", t, "--skip mid_it_plain_over_quic")
 check("env", t, "OSIS_ORDER_START=7", "OSIS_CRDT_SEED=7", absent=["OSIS_ORDER_SEED=", "OSIS_ORDER_SEEDS="])
 
 t = out("--paths", "core/test/model/src/lib.rs")
-check("dev edge selects and stops", t, "crates selected: 2 of 6", "held-model: model_large", "osis-mid:", absent=["osis-top:", "every scenario"])
+check("dev edge selects and stops", t, "crates selected: 3 of 8", "held-model: model_large", "osis-mid: mid_child_large mid_helper_large mid_via_helper_large\n",
+      "osis-mid through dev dependencies only", "osis-fz: fz_large", absent=["osis-top:", "every scenario", "fzuser_large", "mid_it_plain ", "mid_prop_plain", "mid_std_large", "mid_other_target_large"])
 
 t = out("--paths", "core/base/src/lib.rs")
-check("low crate", t, "crates selected: 4 of 6", "(nearly everything", "base_prop_large", "base_inline_large", "base_after_comment_large", "top_exhaustive", "every scenario", absent=["leaf_large", "model_large", "decoy_large"])
+check("low crate", t, "crates selected: 6 of 8", "(nearly everything", "base_prop_large", "fzuser_large", "base_inline_large", "base_after_comment_large", "top_exhaustive", "every scenario", absent=["leaf_large", "model_large", "decoy_large"])
 
 t = out("--paths", "core/base/testenv-known.txt")
 check("pinned by policy.py", t, "selects nothing: core/base/testenv-known.txt (tools/policy.py", "crates touched: none", "nothing to run", absent=["base_prop_large"])
 
 t = out("--paths", "core/base/testenv-known.txt", "core/leaf/src/lib.rs")
-check("pinned beside code", t, "crates touched: osis-leaf", "crates selected: 1 of 6", "leaf_large", absent=["base_prop_large"])
+check("pinned beside code", t, "crates touched: osis-leaf", "crates selected: 1 of 8", "leaf_large", absent=["base_prop_large"])
 
 t = out("--paths", "Cargo.lock")
-check("workspace config", t, "crates selected: 6 of 6", "every crate", "leaf_large", "model_large", "not read: core/leaf/src/lib.rs:5")
+check("workspace config", t, "crates selected: 8 of 8", "every crate", "leaf_large", "model_large", "not read: core/leaf/src/lib.rs:5")
 
 t = out("--paths", "tools/x.sh")
 check("tools", t, "selects nothing: tools/x.sh (the tools' own tests", "nothing to run")
@@ -143,14 +158,14 @@ check("--emit nothing", open(emitted).read(), absent=["build", "run"])
 
 # --all: every crate, whatever the diff
 t = out("--all")
-check("--all", t, "every crate (--all)", "crates selected: 6 of 6", "leaf_large", "model_large")
+check("--all", t, "every crate (--all)", "crates selected: 8 of 8", "leaf_large", "model_large")
 
 # closure, on edges in the order that once lost a dependent: y is reached by a dev edge first
-via = {"x": [("y", {"dev"}), ("z", {"normal"})], "z": [("y", {"normal"})], "y": [("w", {"normal"})]}
-if test_select.closure({"x"}, via) != {"x", "y", "z", "w"}:
+via = {"x": [("y", {"dev"}, "x"), ("z", {"normal"}, "x")], "z": [("y", {"normal"}, "z")], "y": [("w", {"normal"}, "y")]}
+if test_select.closure({"x"}, via) != dict.fromkeys(["x", "y", "z", "w"]):
     print("FAIL closure: a dev edge reached first stopped a normal edge")
     fails = 1
-if test_select.closure({"x"}, {"x": [("y", {"dev"})], "y": [("w", {"normal"})]}) != {"x", "y"}:
+if test_select.closure({"x"}, {"x": [("y", {"dev"}, "x")], "y": [("w", {"normal"}, "y")]}) != {"x": None, "y": {"x"}}:
     print("FAIL closure: a dev edge carried on")
     fails = 1
 

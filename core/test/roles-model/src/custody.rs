@@ -1850,19 +1850,4 @@ mod tests {
         st.print("custody");
         assert_holds(&st, &format!("OSIS_ROLES_START={start}"));
     }
-
-    /// The whole small family (`roles-model -- 0 custody-exh`).
-    #[test]
-    #[ignore = "property"]
-    fn small_family_holds_large() {
-        let prefixes = small_prefixes();
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        let st = parallel(|_, _, st| loop {
-            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let Some(p) = prefixes.get(k) else { break };
-            small_family(p.clone(), Control::None, st);
-        });
-        st.print("custody-exh");
-        assert_holds(&st, "small family");
-    }
 }

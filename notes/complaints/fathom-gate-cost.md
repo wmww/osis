@@ -1,0 +1,1 @@
+- tools/heavy --report and limits.log hold no per-property or per-binary cost: finding where a properties stage went took a by-hand run of every property alone (11 min hold). The gate could print each test target's CPU-s.

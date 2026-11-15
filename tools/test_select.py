@@ -73,8 +73,10 @@ def metadata():
             continue
         for d in node["deps"]:
             if d["pkg"] in names:
-                kinds = {k["kind"] or "normal" for k in d["dep_kinds"]}
-                users[names[d["pkg"]]].append((names[node["id"]], kinds))
+                # a normal edge under cfg(fuzzing) is built only into the fuzz targets (by hand):
+                # to the gate it links test code only, as a dev edge does
+                kinds = {"dev" if k.get("target") == "cfg(fuzzing)" else k["kind"] or "normal" for k in d["dep_kinds"]}
+                users[names[d["pkg"]]].append((names[node["id"]], kinds, d["name"]))
     return dirs, users
 
 
@@ -120,47 +122,94 @@ def classify(paths, dirs):
 
 
 def closure(touched, users):
-    """`touched` and its dependents: normal and build edges propagate, a dev edge selects and stops.
-    A crate reached by a dev edge first and a normal edge later still propagates."""
-    selected, carried, todo = set(touched), set(touched), list(touched)
+    """`touched` and its dependents, as {crate: None (every property) or the extern names of the
+    dev dependencies it was reached through}: normal and build edges propagate, a dev edge selects
+    and stops. A crate reached by a dev edge first and a normal edge later still propagates."""
+    carried, via, todo = set(touched), {}, list(touched)
     while todo:
-        for user, kinds in users.get(todo.pop(), ()):
-            selected.add(user)
-            if kinds != {"dev"} and user not in carried:
+        for user, kinds, name in users.get(todo.pop(), ()):
+            if kinds == {"dev"}:
+                via.setdefault(user, set()).add(name)
+            elif user not in carried:
                 carried.add(user)
                 todo.append(user)
-    return selected
+    return {c: None if c in carried else via[c] for c in carried | set(via)}
 
 
-def ignored_tests(pkg_dir, nested):
-    """(names of the `#[ignore]` tests under a crate, nested crates left to themselves;
-    `file:line` of each `#[ignore]` no name could be read for)."""
-    names, unread = set(), []
-    for f in run("git", "ls-files", "-z", "--", pkg_dir).split("\0"):
-        if not f.endswith(".rs") or any(f.startswith(n + "/") for n in nested):
-            continue
+def reaching(files, idents):
+    """The files of one crate whose tests can call into a dev dependency named in `idents`: those
+    naming it, then, within one test target (a dev dependency is linked only into test code, which
+    no other target sees), those naming (`m::`, not `std::m::`) the module of a file found, and a
+    file's child modules (`super::*` brings its names in unnamed), to a fixed point. None when a
+    crate root (lib.rs, main.rs) names one: its items reach every module unnamed."""
+    text = {f: open(f, encoding="utf-8").read() for f in files}
+    roots = {os.path.dirname(f) for f in files if os.path.basename(f) in ("lib.rs", "main.rs")}
+
+    def target(f):
+        d = os.path.dirname(f)
+        while d and d not in roots:
+            d = os.path.dirname(d)
+        return d or f
+
+    def module(f):
+        """(the module's name, the directory of its children)"""
+        stem = os.path.splitext(f)[0]
+        if os.path.basename(stem) == "mod":
+            return os.path.basename(os.path.dirname(f)), os.path.dirname(f)
+        return os.path.basename(stem), stem
+
+    names = [re.compile(rf"\b{re.escape(i)}\b") for i in idents]
+    found = {f for f, t in text.items() if any(n.search(t) for n in names)}
+    todo = list(found)
+    while todo:
+        f = todo.pop()
+        if os.path.basename(f) in ("lib.rs", "main.rs"):
+            return None
+        name, kids = module(f)
+        used = re.compile(rf"(?<!std::)(?<!core::)(?<!alloc::)\b{re.escape(name)}::")
+        for g, t in text.items():
+            if g not in found and target(g) == target(f) and (used.search(t) or g.startswith(kids + "/")):
+                found.add(g)
+                todo.append(g)
+    return found
+
+
+def crate_files(pkg_dir, nested):
+    """The crate's .rs files, nested crates left to themselves."""
+    return [f for f in run("git", "ls-files", "-z", "--", pkg_dir).split("\0")
+            if f.endswith(".rs") and not any(f.startswith(n + "/") for n in nested)]
+
+
+def ignored_tests(files):
+    """({name of an `#[ignore]` test: its file}, `file:line` of each `#[ignore]` no name could be
+    read for)."""
+    names, unread = {}, []
+    for f in files:
         lines = open(f, encoding="utf-8").read().split("\n")
         for i, line in enumerate(lines):
             if IGNORE.match(line):
                 m = next(filter(None, (FN.search(s) for s in lines[i:i + FN_WITHIN])), None)
                 if m and not m.group(1).startswith("$"):
-                    names.add(m.group(1))
+                    names[m.group(1)] = f
                 else:
                     unread.append(f"{f}:{i + 1}")
     return names, unread
 
 
 def properties(selected, dirs):
-    """({crate: property test names}, other `#[ignore]` names in those crates, unread `#[ignore]`s)."""
+    """({crate: property test names}, other `#[ignore]` names in those crates, unread `#[ignore]`s).
+    A crate reached through dev dependencies only keeps the properties in files reaching them."""
     props, others, unread = {}, set(), []
     for c in sorted(selected):
         nested = [d for n, d in dirs.items() if n != c and d.startswith(dirs[c] + "/")]
-        names, missed = ignored_tests(dirs[c], nested)
+        files = crate_files(dirs[c], nested)
+        names, missed = ignored_tests(files)
         unread += missed
-        chosen = {n for n in names if SIZE_WORD.search(n) and not n.startswith("repro_")}
+        keep = reaching(files, selected[c]) if selected[c] else None
+        chosen = {n for n, f in names.items() if SIZE_WORD.search(n) and not n.startswith("repro_") and (keep is None or f in keep)}
         if chosen:
             props[c] = sorted(chosen)
-        others |= names - chosen
+        others |= set(names) - chosen
     return props, others, unread
 
 
@@ -213,7 +262,7 @@ def main():
     dirs, users = metadata()
     touched, whole, nothing = classify(paths, dirs)
     whole = whole or every
-    selected = set(dirs) if whole else closure(touched, users)
+    selected = dict.fromkeys(dirs) if whole else closure(touched, users)
     props, others, unread = properties(selected, dirs)
     sim = "osis-sim" in selected
 
@@ -237,6 +286,9 @@ def main():
     # more than half: the graph says so, and trimming it by hand would hide a real dependent
     note = " (nearly everything: expected for a crate this far down the graph)" if not whole and len(selected) * 2 > len(dirs) else ""
     print(f"crates selected: {len(selected)} of {len(dirs)}{note}: {', '.join(sorted(selected)) or 'none'}")
+    for c, via in sorted(selected.items()):
+        if via:
+            print(f"  {c} through dev dependencies only: the properties in files reaching {', '.join(sorted(via))}")
     count = sum(len(v) for v in props.values())
     print(f"property tests: {count}")
     for c, names in props.items():
