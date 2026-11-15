@@ -654,11 +654,6 @@ impl RoleEpochs {
         v.into_iter().flat_map(|(_, i)| i.secret.iter().cloned().chain(i.secret.as_ref().map(osis_crypto::roles_secret).or_else(|| i.roles.clone()))).collect()
     }
 
-    /// How many secrets are held, reading-only ones included.
-    pub fn secret_count(&self) -> usize {
-        self.map.values().filter(|i| i.secret.is_some()).count()
-    }
-
     /// Whether any secret is held, reading-only ones included.
     pub fn holds_any(&self) -> bool {
         self.map.values().any(|i| i.secret.is_some())

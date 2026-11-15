@@ -39,10 +39,6 @@ impl Class {
         }
     }
 
-    /// Held in memory as an entry.
-    pub fn in_memory(self) -> bool {
-        self == Class::Ephemeral
-    }
 }
 
 /// One commitment group: the blinded delete keys of one delete-key set, strictly ascending
@@ -231,16 +227,6 @@ fn commitments(salt: &[u8; 16], hb: &[u8; 16], keys: &[(Level, VerifyingKey)]) -
     Ok(ks.iter().map(|(l, k)| commitment(*l, k, salt, hb)).collect::<Result<_, _>>()?)
 }
 
-/// The bytes of a blob's prefix (what a node that cannot read the blob keeps to check delete signatures): the parsed
-/// prefix, or the version byte alone for a framing version this build does not know.
-pub fn prefix_bytes(blob: &[u8]) -> &[u8] {
-    let n = match Prefix::parse(blob) {
-        Ok(p) => p.len(),
-        Err(_) => 1,
-    };
-    blob.get(..n).unwrap_or(blob)
-}
-
 /// A blob as a node that cannot read it sees it: its prefix, or none for an unknown framing version (spec/wire.md
 /// §5: stored and relayed as a blob with no expiry and no commitments). Checks `MAX_BLOB`.
 pub fn host_prefix(blob: &[u8]) -> Result<Option<Prefix>, Error> {
@@ -355,8 +341,6 @@ mod tests {
         let many = Prefix::new([0; 16], None, vec![vec![c(2, 1)]; 300]).unwrap();
         assert_eq!(many.to_bytes()[26..28], [44, 1]);
         assert_eq!(Prefix::parse(&many.to_bytes()).unwrap(), many);
-        assert_eq!(prefix_bytes(&many.to_bytes()), &many.to_bytes()[..]);
-        assert_eq!(prefix_bytes(&[9, 1, 2]), &[9]);
     }
 
     // spec/wire.md §5: rejections: two at one level in a group, unsorted, level 0 or 4, more

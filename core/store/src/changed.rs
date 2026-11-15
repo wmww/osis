@@ -9,7 +9,7 @@
 //! credentials, so overwrites shred nothing.
 
 use crate::codec::{R, W};
-use crate::store::{Shred, Transaction, kind, tail};
+use crate::store::{Shred, Transaction, kind};
 use crate::Error;
 use osis_base::SyncId;
 
@@ -63,16 +63,6 @@ impl Transaction<'_> {
             let mut r = R::new(k.get(2..).ok_or(Error::Corrupt("changed_at index"))?);
             out.push((r.u64()?, SyncId(r.array()?)));
         }
-        Ok(out)
-    }
-
-    /// Every sync ID with a `changed_at`.
-    pub fn changed_labels(&mut self) -> Result<Vec<SyncId>, Error> {
-        let mut out = Vec::new();
-        self.cat_each(SLOT, |_, k, _| {
-            out.push(SyncId(tail(&k)?));
-            Ok(())
-        })?;
         Ok(out)
     }
 

@@ -66,12 +66,6 @@ pub fn genesis_label(admin: &Secret32) -> SyncId {
     sync_id(&label_role_key(LabelRole::Delete, admin).verifying_key())
 }
 
-/// Index into `candidates` of the role secret whose label key is `pk`: which held
-/// epoch a peer's head registers (spec/sync-ids.md §3).
-pub fn match_secret<'a>(pk: &VerifyingKey, role: LabelRole, candidates: impl IntoIterator<Item = &'a Secret32>) -> Option<usize> {
-    candidates.into_iter().position(|s| label_role_key(role, s).verifying_key() == *pk)
-}
-
 /// Limits for steps, claim sets and the structures holding them (spec/wire.md §13).
 pub(crate) const OBJECT_LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_MESSAGE };
 
@@ -497,8 +491,6 @@ pub(crate) mod tests {
         let mut t = s1.clone();
         t.claims_hash[0] ^= 1;
         assert!(t.verify_child(&s0).is_err());
-        // Role key matching.
-        assert_eq!(match_secret(&s1.keys.sync, LabelRole::Sync, [&g.sync, &g2.sync]), Some(1));
     }
 
     // spec/wire.md §8, §1: step decoder rejections: wrong length, bad prev, bad key.
