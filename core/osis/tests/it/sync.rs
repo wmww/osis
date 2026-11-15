@@ -410,8 +410,8 @@ fn a_local_thing_stays_until_listed_somewhere_synced_spec_sync_set_1() {
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("t"), "listed in home: reaches b");
 }
 
-// spec/sync-set.md §1 (Filing, its limit), spec/wire.md §4 (a section sealed to its thing's
-// readers): a local thing written beside a group shared with another account rides that commit's
+// spec/sync-set.md §1 (Filing), spec/wire.md §4 (Commit blob): its limit, a section sealed to
+// its thing's readers: a local thing written beside a group shared with another account rides that commit's
 // blob to it, sealed to the local thing's readers: the other account reads the group's write and
 // none of the local thing's parts (the header names it, as any thing a commit touches).
 #[test]
