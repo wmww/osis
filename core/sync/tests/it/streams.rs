@@ -820,6 +820,32 @@ fn a_body_taken_before_is_not_fetched_again_spec_sync_streams_4() {
     assert!(p.b.streams.caught_up(C, &s));
 }
 
+// spec/sync-streams.md §4 (Bodies: an entry whose blob's bytes it holds under another sync ID is
+// taken with them): a reader holding a blob's bytes under another sync ID (a certificate copy is
+// one blob wrapped under each sync ID needing it, spec/sync-judgement.md §1) takes the entry
+// announced under S with them, under the source's wrap for S, and fetches nothing.
+#[test]
+fn a_body_held_under_another_sync_id_is_taken_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let (s, other) = (sid(1), sid(2));
+    let x = p.a.log(s, 40_001);
+    let e = p.a.store.entry(&s, &x).unwrap().unwrap();
+    let bytes = p.a.store.bytes(&x).unwrap();
+    p.b.hold(other, Holding::Read);
+    p.b.store.log(&other, Entry { own: true, wrap: [9; WRAP_LEN], ..e }, bytes, None).unwrap();
+    p.b.table.held = Some(false);
+    // a second source of S at b: bodies are announced without bytes
+    p.b.hold(s, Holding::Read);
+    p.b.open.members.entry(ConnId(9)).or_default().insert(s, member());
+    p.b.join_on(p.now, ConnId(9), s, Rejoin::Held);
+    p.shared_read(s);
+    p.run();
+    let got = p.b.store.entry(&s, &x).unwrap().expect("the entry under S taken");
+    assert_eq!(got.wrap, e.wrap, "under the source's wrap for S");
+    assert!(p.sent_by_b(19).is_empty(), "nothing fetched");
+    assert!(p.b.streams.caught_up(C, &s));
+}
+
 // spec/sync-streams.md §4 (Full): a node keeping S unread refusing a pulled entry for room tells
 // the peer `full` once, fetches no entry it refused while full, and once room grew says `full`
 // false and pulls S again from the start.

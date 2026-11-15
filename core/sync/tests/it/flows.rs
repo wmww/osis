@@ -999,7 +999,8 @@ fn keep_arriving(as_item: bool) {
 // spec/sync-judgement.md §2 (the certificate blobs of spec/permissions.md §4, judged by the deltas
 // a blob holds), spec/permissions.md §4: writers of two accounts each log
 // their own chain certificates under the thing's sync ID as copies; through complete passes
-// neither drops or deletes the other's (no tombstone of one at either node).
+// neither drops or deletes the other's (no tombstone of one at either node), and each holds
+// every one of them under the sync ID.
 #[test]
 fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2() {
     let (mut w, t, ak) = granted_and_read(Role::Write);
@@ -1029,6 +1030,15 @@ fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2()
     for b in &copies {
         for j in 0..2 {
             assert!(w.store(j).tombstone(&s, b).unwrap().is_none(), "node {j} dropped or deleted a certificate copy");
+        }
+    }
+    // and each node holds an entry of every such commit under S: one the other logged is pulled,
+    // its bytes held under another sync ID or not
+    let commits: std::collections::BTreeSet<_> = copies.iter().filter_map(|b| (0..2).find_map(|i| w.engine(i).blob_commit(b).unwrap())).collect();
+    for c in &commits {
+        for j in 0..2 {
+            let blobs = w.engine(j).commit_blobs(c).unwrap();
+            assert!(w.store(j).entries(&s).unwrap().iter().any(|e| blobs.contains(&e.blob)), "node {j} holds no entry of certificate {c:?} under S");
         }
     }
 }

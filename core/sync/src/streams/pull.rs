@@ -654,7 +654,15 @@ impl Streams {
                 class(Rank::Unopened, false)
             }
             Holding::Read => {
-                if tomb || held.is_some() {
+                if tomb {
+                    return None;
+                }
+                // bytes held under another sync ID (a certificate copy is one blob wrapped under
+                // each sync ID needing it): this entry is taken with them, its wrap for S
+                if let Some(bytes) = held {
+                    if ctx.store.entry(s, b).ok().flatten().is_none() {
+                        self.take_body(ctx, conn, *s, *b, *wrap, stamp, &bytes);
+                    }
                     return None;
                 }
                 class(ctx.ground.rank(s, b, wrap), stamp.is_none())
