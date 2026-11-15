@@ -769,6 +769,11 @@ fn group_and_splice_commands() {
     let gs = s.ok(&["grants", &made]).out;
     assert!(gs.lines().any(|l| l.starts_with(&format!("{g} admin "))), "{gs}");
     assert_ne!(s.code(&["create", "--admin", &g[..g.len() - 1], "t:x.0", "1"]), 0, "a malformed admin");
+    // spec/sync-set.md §1 (Filing): `--local` keeps a new thing out of home
+    let local = s.ok(&["create", "--local", "t:x.0", "1"]).line().to_string();
+    let filed = s.ok(&["create", "t:x.0", "1"]).line().to_string();
+    let home = s.ok(&["members", "home"]).out;
+    assert!(!home.contains(&local) && home.contains(&filed), "{home}");
     let schema = s.ok(&["create", "t:made.0", "true"]).line().to_string();
     assert_eq!(s.code(&["op", &schema, "t:made.0", "", "splice"]), 2, "a range");
 }

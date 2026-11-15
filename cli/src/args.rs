@@ -408,6 +408,9 @@ pub struct CreateArgs {
     /// First admin in place of the acting actor: a thin client's way to create, naming a group that outlives it
     #[arg(long, value_name = "G")]
     pub admin: Option<String>,
+    /// Keep it on this device: not listed in home, so it reaches other nodes only once listed somewhere synced
+    #[arg(long)]
+    pub local: bool,
     #[command(flatten)]
     pub groups: GroupsArgs,
     /// Bind $NAME to the new tid (write scripts)

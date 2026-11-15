@@ -123,6 +123,9 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
         Some(a) => w.create_with_admin(a)?,
         None => w.create()?,
     };
+    if a.local {
+        w.local(t)?;
+    }
     for g in groups {
         w.group(g).add(Member::Item(t))?;
     }

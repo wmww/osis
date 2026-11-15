@@ -280,12 +280,10 @@ impl MembersOf for Osis {
     }
 }
 
-/// `n` new things, then unfiled from home (spec/sync-set.md §1 Filing) in a commit of their own:
-/// listed nowhere, for tests where a home listing would be noise (a backlink, a membership).
+/// `n` new local things (`Write::local`, spec/sync-set.md §1 Filing): listed nowhere, for tests
+/// where a home listing would be noise (a backlink, a membership).
 pub fn unfiled(db: &Osis, n: usize) -> Vec<Tid> {
-    let ts: Vec<Tid> = db.commit_with(|w| (0..n).map(|_| w.create()).collect()).unwrap();
-    db.commit_with(|w| ts.iter().try_for_each(|t| w.group(db.home()).remove(osis::Member::Subgroup(*t)))).unwrap();
-    ts
+    db.commit_with(|w| (0..n).map(|_| { let t = w.create()?; w.local(t)?; Ok(t) }).collect()).unwrap()
 }
 
 pub trait CreateIn {

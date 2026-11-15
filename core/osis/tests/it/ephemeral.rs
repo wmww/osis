@@ -465,7 +465,7 @@ fn delete_of_ephemeral_only_thing_drops_its_values_spec_data_model_1() {
     let (db, _c) = setup(0);
     let key = |k: &str| osis::DynamicAspectKey::untyped(ak(k));
     let cursor = key("app:cursor+.0");
-    // in no group: unfiled from home (spec/sync-set.md §1 Filing)
+    // in no group: made local (spec/sync-set.md §1 Filing)
     let [x, y, keep] = unfiled(&db, 3)[..] else { panic!() };
     db.commit_with(|w| {
         w.at(x, key("app:note.0")).set(&Value::Int(1))?;

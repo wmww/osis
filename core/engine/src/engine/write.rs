@@ -85,6 +85,8 @@ pub struct Mutation {
     pub(crate) rotation: Option<crate::flows::signing::AccountRotation>,
     /// Lists what it creates under home where nothing synced holds it (`file_created`).
     pub(crate) file: bool,
+    /// Things it creates that filing skips (`local`).
+    pub(crate) local: BTreeSet<Tid>,
 }
 
 impl Default for Mutation {
@@ -99,7 +101,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None, file: false }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None, file: false, local: BTreeSet::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -172,6 +174,18 @@ impl Mutation {
     pub fn file_created(&mut self) -> &mut Self {
         self.file = true;
         self
+    }
+
+    /// Filing (`file_created`) skips `t`, a thing this commit creates: it stays on this node
+    /// unless something synced lists it (spec/sync-set.md §1 Filing).
+    pub fn local(&mut self, t: Tid) -> &mut Self {
+        self.local.insert(t);
+        self
+    }
+
+    /// Whether `local` named `t`.
+    pub fn is_local(&self, t: &Tid) -> bool {
+        self.local.contains(t)
     }
 
     /// The commit fails `Error::Unsynced` when, after it, `tid` is durable and in no synced
@@ -792,7 +806,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let id = match filing(tx, &m)? {
         None => apply_in(tx, m)?,
         Some((d, roots)) => {
-            let created: Vec<Tid> = m.creates.keys().copied().collect();
+            let created: Vec<Tid> = m.creates.keys().filter(|t| !m.local.contains(t)).copied().collect();
             let (mut unfiled, mut expires) = (Vec::new(), None);
             let first = tx.step(super::Step::Filing, |tx| {
                 let id = apply_in(tx, m.clone())?;
@@ -825,10 +839,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
 }
 
 /// Home (the account's D) and the account's synced groups, where `m` files what it creates: it
-/// asks to, creates something and acts as the account.
+/// asks to, creates something not `local` and acts as the account.
 fn filing(tx: &mut Tx<'_>, m: &Mutation) -> Result<Option<(Tid, BTreeSet<Tid>)>> {
     let Some((p, d)) = tx.core.account_devices() else { return Ok(None) };
-    if !m.file || m.creates.is_empty() || m.actor != Some(p) {
+    if !m.file || m.creates.keys().all(|t| m.local.contains(t)) || m.actor != Some(p) {
         return Ok(None);
     }
     Ok(Some((d, crate::sync::inbox::synced_roots(tx, d)?)))

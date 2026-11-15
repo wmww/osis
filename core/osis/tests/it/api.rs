@@ -692,7 +692,7 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
             let _ = tx.send(std::iter::once(thing).chain(group).collect::<Vec<_>>());
         }
     }).unwrap();
-    // listed nowhere (unfiled from home, spec/sync-set.md §1 Filing)
+    // listed nowhere (made local, spec/sync-set.md §1 Filing)
     let [g, lost] = unfiled(&db, 2)[..] else { panic!() };
     let mut w = db.write();
     // durable things: an ephemeral membership is no `NotSynced` matter (nothing leaves the
@@ -796,7 +796,7 @@ fn membership_reaching_no_synced_group_fails_spec_api_writes() {
     let mut w = db.write();
     let g = w.create_in(db.me(), &[home]).unwrap();
     w.commit().unwrap();
-    // things listed nowhere (unfiled from home): a new one would be filed (spec/sync-set.md §1 Filing)
+    // things listed nowhere (made local): a new one would be filed (spec/sync-set.md §1 Filing)
     let [x, l, y] = unfiled(&db, 3)[..] else { panic!() };
     let mut w = db.write();
     w.group(g).add(osis::Member::Item(x)).unwrap();
@@ -1804,6 +1804,42 @@ fn create_files_what_nothing_synced_holds_spec_sync_set_1() {
     }
     assert_eq!(in_home(rides), vec![], "carried by the group it is listed in");
     assert!(db.engine(|e| e.closure(&home).contains(&rides)), "which syncs its items");
+}
+
+// spec/sync-set.md §1 (Filing): a thing the write names `local` is not filed, and no
+// `NotSynced` reports it; beside it a thing not named still is, a thing the write lists only in
+// the local one included; `local` names only what the write creates.
+#[test]
+fn a_local_thing_is_not_filed_spec_sync_set_1() {
+    let db = db(0);
+    let home = db.home();
+    let in_home = |t| db.members(home).unwrap().into_iter().any(|m| matches!(m, osis::Member::Item(x) | osis::Member::Subgroup(x) if x == t));
+    let mut w = db.write();
+    let local = w.create().unwrap();
+    w.local(local).unwrap();
+    let inner = w.create().unwrap();
+    w.group(local).add(osis::Member::Item(inner)).unwrap();
+    let filed = w.create().unwrap();
+    let made = w.commit().unwrap().unwrap();
+    assert!(!in_home(local), "named local");
+    assert!(in_home(inner) && in_home(filed), "not named: filed");
+    assert!(made.parts().any(|p| p.0 == home));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _sub = db.on_diagnostic(move |_, d| {
+        if let osis::Diagnostic::NotSynced { thing, .. } = d {
+            let _ = tx.send(thing);
+        }
+    }).unwrap();
+    let mut w = db.write();
+    let alone = w.create_with_content(db.me()).unwrap();
+    w.local(alone).unwrap();
+    w.group(local).add(osis::Member::Item(alone)).unwrap();
+    let made = w.commit().unwrap().unwrap();
+    assert!(!in_home(alone) && made.parts().all(|p| p.0 != home), "no part on home");
+    db.settle();
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![], "kept here on purpose: no NotSynced");
+    let mut w = db.write();
+    assert!(matches!(w.local(filed), Err(Error::Invalid(_))), "not created by this write");
 }
 
 // spec/sync-set.md §1 (Filing): the filing listing is part of the creating commit, with its

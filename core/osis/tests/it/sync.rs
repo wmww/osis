@@ -379,6 +379,37 @@ fn a_thing_listed_nowhere_reaches_the_accounts_other_node_spec_sync_set_1() {
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("t"));
 }
 
+// spec/sync-set.md §1 (Filing): a thing created local is not filed, so it stays off the
+// account's other node; listed in home later, it reaches it, its creation included. (Written
+// beside something that syncs, a commit's parts on it travel with that commit: one blob per
+// commit, spec/sync-judgement.md §1.)
+#[test]
+fn a_local_thing_stays_until_listed_somewhere_synced_spec_sync_set_1() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (a, b) = paired(&net, &c);
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.local(t).unwrap();
+    w.at(t, osis::core::NAME).set(&"t".to_string()).unwrap();
+    w.commit().unwrap();
+    let mut w = a.write();
+    let f = w.create().unwrap();
+    w.at(f, osis::core::NAME).set(&"f".to_string()).unwrap();
+    w.commit().unwrap();
+    drive(&net, a.wait_synced(SyncScope::Thing(f))).unwrap();
+    net.run();
+    assert_eq!(b.at(f, osis::core::NAME).get().unwrap().as_deref(), Some("f"), "filed: reaches b");
+    assert!(b.created(t).unwrap().is_none() && b.at(t, osis::core::NAME).get().unwrap().is_none(), "local: stays on a");
+    let mut w = a.write();
+    w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
+    w.commit().unwrap();
+    drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
+    net.run();
+    assert!(b.created(t).unwrap().is_some());
+    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("t"), "listed in home: reaches b");
+}
+
 // spec/sync-inbox.md §6 (first contact): a redeemer reaches the sharer node by the link and
 // joins; the thing is read there.
 #[test]

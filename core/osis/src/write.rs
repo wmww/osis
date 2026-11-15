@@ -80,6 +80,8 @@ pub(crate) enum WriteOp {
     /// Adds `by` to `thing`'s retainers; `by`'s aspect `key` must reference `thing` after the
     /// commit.
     Retain { by: Tid, key: u32, thing: Tid },
+    /// The thing, created by this write, is not filed under home (`Write::local`).
+    Local(Tid),
 }
 
 /// Writes that become one commit (two: below), all or nothing. Reads meanwhile do not see them. What cannot share
@@ -213,7 +215,7 @@ impl<'d> Write<'d> {
                 },
                 WriteOp::Group { g, member, .. } => vec![*g, *member],
                 WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
-                WriteOp::Delete(t) | WriteOp::PurgeThing(t) | WriteOp::Release(t) => vec![*t],
+                WriteOp::Delete(t) | WriteOp::PurgeThing(t) | WriteOp::Release(t) | WriteOp::Local(t) => vec![*t],
                 WriteOp::Retain { by, thing, .. } => vec![*by, *thing],
             })
             .filter(|t| !self.created.contains(t))
@@ -303,7 +305,7 @@ impl<'d> Write<'d> {
     /// holds in `home()` as a subgroup, in the same commit, so it reaches the account's other
     /// nodes (and, should it become a group, so do its items). A thing the write lists in a
     /// group that syncs, or makes under a thing that syncs other than `home()`, is not listed
-    /// there.
+    /// there, nor is one named in `local`.
     pub fn create(&mut self) -> Result<Tid> {
         self.create_with_admin(self.actor)
     }
@@ -320,6 +322,20 @@ impl<'d> Write<'d> {
         self.ops.push(WriteOp::Create(rec));
         self.created.push(t);
         Ok(t)
+    }
+
+    /// Keeps `t`, a thing this write creates, on this device: it is not listed in `home()`, so it
+    /// reaches the account's other nodes only once something that syncs lists it, or it is
+    /// shared. `Invalid` when this write does not create `t`. Only what is named stays: a thing
+    /// the write lists in `t` is listed in `home()` unless it is named too. A commit travels
+    /// whole, so what any write puts on `t` beside something that syncs (a sibling it lists in
+    /// `home()` included) goes with it: write a local thing in writes of its own.
+    pub fn local(&mut self, t: Tid) -> Result<()> {
+        if !self.created.contains(&t) {
+            return Err(Error::Invalid("local names a thing the same write creates".into()));
+        }
+        self.ops.push(WriteOp::Local(t));
+        Ok(())
     }
 
     /// The members of `group`: what it contains, to add or remove.
@@ -481,6 +497,12 @@ impl<'d> Write<'d> {
                     }
                     b.m.create(rec);
                 }
+                WriteOp::Local(t) => {
+                    if !created.contains(&t) {
+                        return Err(Error::Invalid("local names a thing the same write creates".into()));
+                    }
+                    b.m.local(t);
+                }
                 WriteOp::Group { add: false, .. } | WriteOp::Delete(_) | WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group, a delete or a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
                 // a dynamic key's kind is known only now: a write of the other kind never
@@ -594,6 +616,8 @@ impl<'d> Write<'d> {
         // what it creates reaches the account's other nodes unless the write lists it somewhere
         // synced itself (crate docs, Writes)
         b.m.file_created();
+        // kept here on purpose: no report that it stays on this node
+        b.added.retain(|(t, _)| !b.m.is_local(t));
         if let Some(at) = expires {
             b.m.expires_all(at);
         }
