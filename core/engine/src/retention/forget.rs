@@ -374,5 +374,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         }
     }
     out.parts = parts;
+    // a rotation forgotten whole moves its account's chain: judged again in this transaction
+    if tx.core.stale() {
+        crate::apply::atomic::rejudged(tx, false)?;
+    }
     Ok(out)
 }

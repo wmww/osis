@@ -971,6 +971,8 @@ impl World {
                             blobs.iter().any(|b| self.store(j).entry(&s, b).unwrap().is_some())
                         };
                         if !reached {
+                            let h = self.engine(i).header(&c).unwrap();
+                            eprintln!("DBGM acct_i {:?} acct_j {:?} {c:?} author {} aspects {:?} facts {:?} rf {:?}", self.engine(i).core.account_devices(), self.engine(j).core.account_devices(), h.author, h.aspects.iter().map(|a| (a.tid, a.ak.as_str().to_string())).collect::<Vec<_>>(), self.engine(j).core.ix.commits.get(&c).map(|m| (m.valid.clone(), format!("{:?}", m.hold))), self.engine(j).read_facts(&s, &c).unwrap());
                             lost.push((i, j, s, c));
                         }
                     }
