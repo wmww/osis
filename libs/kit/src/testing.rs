@@ -82,11 +82,8 @@ pub fn check_views(d: &Data) -> Vec<String> {
     };
     // a thing nothing shows: nothing reads it unless the view shows everything, then its address is
     let other = {
-        // made, then filed: a local thing cannot share a write with the group that syncs
         let mut w = d.db.write();
         let t = w.create().unwrap();
-        w.commit().unwrap();
-        let mut w = d.db.write();
         w.group(d.db.me()).add(Member::Item(t)).unwrap();
         w.commit().unwrap();
         t

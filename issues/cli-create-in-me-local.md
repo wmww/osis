@@ -1,6 +1,6 @@
-# `create --in me` keeps data on one node
-> Summary: `osis create --in me ...` succeeds and prints the thing, but the account is no synced group, so the thing never reaches the account's other nodes; only a `NotSynced` diagnostic says so, which a one-shot CLI run does not print (`diag --follow` against a daemon would show it).
+# `create` outside a synced group keeps data on one node, quietly
+> Summary: `osis create ...` with no `--in`, or `--in me`, succeeds and prints the thing, but nothing synced lists it, so it never reaches the account's other nodes; with no `--in` nothing says so, and `--in me`'s `NotSynced` diagnostic is not printed by a one-shot CLI run (`diag --follow` against a daemon would show it).
 > Priority: low
 > Tags: cli
 
-What users see: on node 1, `osis create --in me note:title.0 '"x"'` prints a tid; on node 2 of the same account `osis get TID note:title.0` exits 3 (absent) forever. Nothing on the create's output says the thing stays local; `--in home` was meant. `--in me` is still the right start for a new group (`create --in me` then `group sync`), so refusing it is wrong. Options: `create` prints the diagnostic on stderr when the new thing is in no synced group, or `--in` defaults/aliases steer plain data to `home`.
+What users see: on node 1, `osis create note:title.0 '"x"'` (or `--in me`) prints a tid; on node 2 of the same account `osis get TID note:title.0` exits 3 (absent) forever. `--in home` was meant. Staying local is right (spec/requirements.md, Offline and network), and `create --in me` is still the right start for a new group (then `group sync`), so refusing either is wrong. Option: `create` prints a note on stderr when the new thing is in no synced group.

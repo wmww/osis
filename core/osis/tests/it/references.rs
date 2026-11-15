@@ -19,11 +19,6 @@ fn rows(db: &Osis, source: Tid) -> BTreeSet<Row> {
     db.engine(|e| e.references_from(&source).unwrap()).into_iter().map(|r| (r.target, r.ak.as_str().to_string(), r.count)).collect()
 }
 
-/// Listed nowhere: no home filing among the references (spec/sync-set.md §1 Filing).
-fn things(db: &Osis, n: usize) -> Vec<Tid> {
-    unfiled(db, n)
-}
-
 fn row(t: Tid, k: &str, n: u64) -> (Tid, String, u64) {
     (t, k.to_string(), n)
 }
@@ -34,7 +29,7 @@ fn row(t: Tid, k: &str, n: u64) -> (Tid, String, u64) {
 #[test]
 fn rows_follow_the_values() {
     let db = db(1);
-    let [r, x, y] = things(&db, 3)[..] else { panic!() };
+    let [r, x, y] = new_things(&db, 3)[..] else { panic!() };
     let m = Value::Map([(Value::Tid(x), Value::List(vec![Value::Tid(y), Value::Tid(y)])), (Value::Str("k".into()), Value::Tid(x))].into_iter().collect());
     db.commit_with(|w| {
         w.at(r, key("t:a.0")).set(&m)?;
@@ -69,7 +64,7 @@ fn rows_follow_the_value_in_any_arrival_order() {
     let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
     for order in orders {
         let (a, b, _) = paired();
-        let [r, x, y] = things(&a, 3)[..] else { panic!() };
+        let [r, x, y] = new_things(&a, 3)[..] else { panic!() };
         // kept history: the three writes stay commits of their own (no compaction snapshot)
         a.commit_with(|w| w.at(r, osis::core::RETENTION).set(&crate::common::setting(&[("t:a.0", crate::common::DAY)]))).unwrap();
         let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
@@ -106,7 +101,7 @@ fn rows_follow_the_value_in_any_arrival_order() {
 fn an_expiry_and_a_purge_remove_rows() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
-    let [r, x, y] = things(&db, 3)[..] else { panic!() };
+    let [r, x, y] = new_things(&db, 3)[..] else { panic!() };
     let mut w = db.write();
     w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
     w.at(r, key("t:a.0")).set(&Value::Tid(x)).unwrap();
@@ -127,7 +122,7 @@ fn an_expiry_and_a_purge_remove_rows() {
 fn a_path_write_costs_what_it_writes() {
     fn count(n: i64) -> Vec<(&'static str, u64)> {
         let db = db(1);
-        let [r, x, y] = things(&db, 3)[..] else { panic!() };
+        let [r, x, y] = new_things(&db, 3)[..] else { panic!() };
         let m = Value::Map((0..n).map(|i| (Value::Int(i), Value::Tid(x))).collect());
         db.commit_with(|w| w.at(r, key("t:a.0")).set(&m)).unwrap();
         assert_eq!(rows(&db, r), [row(x, "t:a.0", n as u64)].into());
@@ -156,7 +151,7 @@ fn a_path_write_costs_what_it_writes() {
 fn rows_survive_what_their_states_survive() {
     let (c, store) = (clock(), MemStore::new());
     let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
-    let [r, x] = things(&db, 2)[..] else { panic!() };
+    let [r, x] = new_things(&db, 2)[..] else { panic!() };
     db.commit_with(|w| w.at(r, key("t:a.0")).set(&Value::Tid(x))).unwrap();
     db.commit_with(|w| w.at(r, key("t:e+.0")).set(&Value::Tid(x))).unwrap();
     let both = [row(x, "t:a.0", 1), row(x, "t:e+.0", 1)].into();

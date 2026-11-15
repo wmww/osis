@@ -434,8 +434,8 @@ fn invitations_accept_and_relay_commands() {
     let s = S::mem();
     assert_eq!(s.ok(&["invitations"]).out, "");
     assert_eq!(s.ok(&["--json", "invitations"]).line(), "[]");
-    let g = s.ok(&["create", "--local", "t:made.0", "true"]).line().to_string();
-    let (a, b) = (s.ok(&["create", "--local", "t:made.0", "true"]).line().to_string(), s.ok(&["create", "--local", "t:made.0", "true"]).line().to_string());
+    let g = s.ok(&["create", "t:made.0", "true"]).line().to_string();
+    let (a, b) = (s.ok(&["create", "t:made.0", "true"]).line().to_string(), s.ok(&["create", "t:made.0", "true"]).line().to_string());
     s.ok(&["accept", &a]);
     assert_eq!(s.code(&["accept", &b, "--into", &g]), 7, "G syncs nothing here");
     let home = s.ok(&["--json", "members", "home"]).line().to_string();
@@ -452,7 +452,7 @@ fn invitations_accept_and_relay_commands() {
 fn backlinks_lists_the_referrers() {
     let s = S::mem();
     let (a, t) = (s.thing(), s.thing());
-    // the groups listing it (the one it was made in, and home where creating filed it)
+    // the group listing it (home, where it was made)
     let before = s.ok(&["backlinks", &t]).out;
     assert!(before.lines().count() >= 1 && before.lines().all(|l| l.ends_with(" group.0")), "{before}");
     s.ok(&["set", &a, "note:link.0", &t]);
@@ -792,11 +792,11 @@ fn group_and_splice_commands() {
     let gs = s.ok(&["grants", &made]).out;
     assert!(gs.lines().any(|l| l.starts_with(&format!("{g} admin "))), "{gs}");
     assert_ne!(s.code(&["create", "--admin", &g[..g.len() - 1], "t:x.0", "1"]), 0, "a malformed admin");
-    // spec/sync-set.md §1 (Filing): `--local` keeps a new thing out of home
-    let local = s.ok(&["create", "--local", "t:x.0", "1"]).line().to_string();
-    let filed = s.ok(&["create", "t:x.0", "1"]).line().to_string();
+    // a new thing is listed only where `--in` says
+    let unlisted = s.ok(&["create", "t:x.0", "1"]).line().to_string();
+    let listed = s.ok(&["create", "--in", "home", "t:x.0", "1"]).line().to_string();
     let home = s.ok(&["members", "home"]).out;
-    assert!(!home.contains(&local) && home.contains(&filed), "{home}");
+    assert!(!home.contains(&unlisted) && home.contains(&listed), "{home}");
     let schema = s.ok(&["create", "t:made.0", "true"]).line().to_string();
     assert_eq!(s.code(&["op", &schema, "t:made.0", "", "splice"]), 2, "a range");
 }

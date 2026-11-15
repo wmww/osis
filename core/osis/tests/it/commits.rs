@@ -401,8 +401,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(0);
     typed_any(&db, &["t:x.0", "t:y.0"]);
     let (x, y) = (ak("t:x.0"), ak("t:y.0"));
-    // groups made under the account (filed under home, spec/sync-set.md §1 Filing): t, listed
-    // in f, is not filed itself
+    // groups made under the account
     let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.me())?; keep_all(w, g); Ok(g) }).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
     let t = db.commit_with(|w| { let t = w.create_in(db.me(), &[f])?; keep_all(w, t); w.at(t, kept(&db, &x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
@@ -446,7 +445,7 @@ fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     let db = db(0);
     typed_any(&db, &["t:made.0"]);
     let k = ak("app:draft+.0");
-    // groups made under the account (filed under home, spec/sync-set.md §1 Filing)
+    // groups made under the account
     let mk = |db: &Osis| db.commit_with(|w| { let g = w.create_with_content(db.me())?; keep_all(w, g); Ok(g) }).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
     let e = db
@@ -707,12 +706,10 @@ fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     work
 }
 
-/// A thing made with full history and filed under home (spec/sync-set.md §1 Filing), home
-/// keeping none.
-fn filed_kept(db: &Osis, x: &osis::Ak) -> osis::Tid {
-    let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); w.at(t, kept(db, x)).set(&Value::Int(1))?; Ok(t) }).unwrap();
-    assert!(db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)));
-    t
+/// A thing made with full history and listed as a subgroup of home in its creating commit,
+/// home keeping no history.
+fn kept_in_home(db: &Osis, x: &osis::Ak) -> osis::Tid {
+    db.commit_with(|w| { let t = w.create()?; keep_all(w, t); w.at(t, kept(db, x)).set(&Value::Int(1))?; w.group(db.home()).add(osis::Member::Subgroup(t))?; Ok(t) }).unwrap()
 }
 
 // spec/commits.md §7: undoing a delete puts the thing back in the groups the delete took it
@@ -723,7 +720,7 @@ fn undo_of_delete_relists_without_the_groups_history_spec_commits_7() {
     let db = db(0);
     typed_any(&db, &["t:x.0"]);
     let x = ak("t:x.0");
-    let t = filed_kept(&db, &x);
+    let t = kept_in_home(&db, &x);
     db.commit_with(|w| w.delete(t)).unwrap();
     assert!(!db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)));
     let s = Scope::Thing(t);
@@ -736,14 +733,14 @@ fn undo_of_delete_relists_without_the_groups_history_spec_commits_7() {
     assert!(db.has_content(t).unwrap() && db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)));
 }
 
-// spec/commits.md §7: redoing an undone creation of a thing filed under home lists it there
+// spec/commits.md §7: redoing an undone creation of a thing listed in home lists it there
 // again, with no history of home; undoing the redo takes it out.
 #[test]
 fn redo_of_an_undone_creation_relists_spec_commits_7() {
     let db = db(0);
     typed_any(&db, &["t:x.0"]);
     let x = ak("t:x.0");
-    let t = filed_kept(&db, &x);
+    let t = kept_in_home(&db, &x);
     let made = db.created(t).unwrap().unwrap().id;
     let u = db.revert(made).unwrap();
     assert!(!db.has_content(t).unwrap() && !db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)));
@@ -762,13 +759,13 @@ fn undo_of_delete_relists_only_the_deleted_thing_spec_commits_7() {
     let db = db(0);
     typed_any(&db, &["t:x.0"]);
     let x = ak("t:x.0");
-    let (t, other) = (filed_kept(&db, &x), filed_kept(&db, &x));
+    let (t, other) = (kept_in_home(&db, &x), kept_in_home(&db, &x));
     db.commit_with(|w| { w.delete(t)?; w.group(db.home()).remove(osis::Member::Subgroup(other)) }).unwrap();
     db.undo(&Scope::Thing(t)).unwrap().unwrap();
     let home = db.members(db.home()).unwrap();
     assert!(home.contains(&osis::Member::Subgroup(t)) && !home.contains(&osis::Member::Subgroup(other)), "only t back");
-    let [added] = unfiled(&db, 1)[..] else { panic!() };
-    let u = filed_kept(&db, &x);
+    let [added] = new_things(&db, 1)[..] else { panic!() };
+    let u = kept_in_home(&db, &x);
     let del = commit_with(&db, |w| { w.delete(u)?; w.group(db.home()).add(osis::Member::Item(added)) }).stamp.id;
     assert!(matches!(db.revert(del), Err(Error::NotUndoable { reason: NotUndoableReason::NotKept, .. })), "an add of another member");
 }

@@ -7,7 +7,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::{RETENTION, RetentionEntry, RetentionSetting};
-use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, GrantOpts, History, Osis, Purge, PurgeBy, ReadOnly, Result, Retention, Role, Tid, Time};
+use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, GrantOpts, History, Member, Osis, Purge, PurgeBy, ReadOnly, Result, Retention, Role, Tid, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -54,8 +54,10 @@ impl Default for Options {
 /// A new chat, this account its first admin, its settings written before anyone is granted:
 /// every message kept for good (expiry ends a disappearing one), replacements refused when
 /// editing is off, who may delete a message. One commit makes it whole (record, `retention^.0`,
-/// settings). Changing a setting later writes `retention^.0` whole; a participant who
-/// has not seen it writes as before (its messages keep the expiry they were written with).
+/// settings), filed as a subgroup of `home()` so it reaches this account's other nodes, as an
+/// accept would (spec/sync-set.md §4). Changing a setting later writes `retention^.0` whole; a
+/// participant who has not seen it writes as before (its messages keep the expiry they were
+/// written with).
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let purge = match o.purge {
         PurgeBy::AuthorOrAdmin => None,
@@ -69,6 +71,7 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let c = w.create()?;
     w.at(c, RETENTION).set(&setting)?;
     w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge), purge })?;
+    w.group(db.home()).add(Member::Subgroup(c))?;
     w.commit()?;
     Ok(c)
 }

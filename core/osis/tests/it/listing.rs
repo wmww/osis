@@ -458,12 +458,7 @@ fn delete_under_setting_expiries_says_what_to_do_spec_commits_6() {
     db.commit_set(t, ct::RETENTION, &rules).unwrap();
     db.commit_set(t, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()), &s("z")).unwrap();
     assert!(matches!(db.commit_with(|w| w.delete(t)), Err(Error::Invalid(e)) if e.contains("delete") && e.contains("group.0")));
-    // its home filing too (spec/sync-set.md §1 Filing)
-    db.commit_with(|w| {
-        w.group(g).remove(osis::Member::Item(t))?;
-        w.group(db.home()).remove(osis::Member::Subgroup(t))
-    })
-    .unwrap();
+    db.commit_with(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
     db.commit_with(|w| w.delete(t)).unwrap();
     assert!(!db.has_content(t).unwrap());
 }

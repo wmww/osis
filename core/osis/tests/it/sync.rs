@@ -57,6 +57,7 @@ fn a_node_alone_waits_on_nothing_spec_sync_status_3() {
     let a = on(&net, 5, &c);
     let mut w = a.write();
     let t = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
     w.commit().unwrap();
     net.run();
     for scope in [SyncScope::All, SyncScope::Thing(a.home()), SyncScope::Thing(t), SyncScope::Deliveries] {
@@ -395,102 +396,36 @@ fn a_write_reaches_the_accounts_other_node_spec_sync_set_1() {
     assert_eq!(a.status().unwrap().groups.get(&a.home()).map(|g| g.state), Some(osis::SyncState::Synced));
 }
 
-// spec/sync-set.md §1 (Filing): a thing created and listed nowhere is filed under home, so it
-// reaches the account's other node; a group so made syncs its items there too.
+// spec/sync-set.md §2 (a thing made under an account itself, listed nowhere a node syncs, stays
+// on the nodes holding it): a created thing the write lists nowhere stays off the account's other
+// node while one listed in home reaches it; listed in home later, it reaches it, its creation
+// included.
 #[test]
-fn a_thing_listed_nowhere_reaches_the_accounts_other_node_spec_sync_set_1() {
+fn a_thing_listed_nowhere_stays_on_its_node_spec_sync_set_2() {
     let c = clock();
     let net = ManualNet::new(c.clone());
     let (a, b, _) = paired(&net, &c);
-    let mut w = a.write();
-    let g = w.create().unwrap();
-    w.at(g, osis::core::NAME).set(&"g".to_string()).unwrap();
-    w.commit().unwrap();
     let mut w = a.write();
     let t = w.create().unwrap();
-    w.group(g).add(osis::Member::Item(t)).unwrap();
     w.at(t, osis::core::NAME).set(&"t".to_string()).unwrap();
     w.commit().unwrap();
-    assert!(!a.members(a.home()).unwrap().contains(&osis::Member::Subgroup(t)), "listed in g, which syncs: not filed");
-    drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
-    net.run();
-    assert_eq!(b.at(g, osis::core::NAME).get().unwrap().as_deref(), Some("g"));
-    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("t"));
-}
-
-// spec/sync-set.md §1 (Filing): a thing created local is not filed, so it stays off the
-// account's other node; listed in home later, it reaches it, its creation included.
-#[test]
-fn a_local_thing_stays_until_listed_somewhere_synced_spec_sync_set_1() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let (a, b, _) = paired(&net, &c);
-    let mut w = a.write();
-    let t = w.create_local().unwrap();
-    w.at(t, osis::core::NAME).set(&"t".to_string()).unwrap();
-    w.commit().unwrap();
+    assert!(!a.members(a.home()).unwrap().iter().any(|m| matches!(m, osis::Member::Item(x) | osis::Member::Subgroup(x) if *x == t)), "listed nowhere");
     let mut w = a.write();
     let f = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Item(f)).unwrap();
     w.at(f, osis::core::NAME).set(&"f".to_string()).unwrap();
     w.commit().unwrap();
     drive(&net, a.wait_synced(SyncScope::Thing(f))).unwrap();
     net.run();
-    assert_eq!(b.at(f, osis::core::NAME).get().unwrap().as_deref(), Some("f"), "filed: reaches b");
-    assert!(b.created(t).unwrap().is_none() && b.at(t, osis::core::NAME).get().unwrap().is_none(), "local: stays on a");
+    assert_eq!(b.at(f, osis::core::NAME).get().unwrap().as_deref(), Some("f"), "listed in home: reaches b");
+    assert!(b.created(t).unwrap().is_none() && b.at(t, osis::core::NAME).get().unwrap().is_none(), "listed nowhere: stays on a");
     let mut w = a.write();
     w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
     w.commit().unwrap();
     drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
     net.run();
     assert!(b.created(t).unwrap().is_some());
-    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("t"), "listed in home: reaches b");
-}
-
-// spec/sync-set.md §1 (Local stays local): a write of a local thing beside a group shared with
-// another account is refused (one blob per commit would carry the local thing's parts to it);
-// written alone it reaches nobody; granting it shares it.
-#[test]
-fn a_local_thing_shares_no_write_with_a_shared_group_spec_sync_set_1() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let a = on(&net, 54, &c);
-    let o = on(&net, 55, &c);
-    o.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
-    drive(&net, a.import_contact(&o.contact_card().unwrap())).unwrap();
-    drive(&net, o.import_contact(&a.contact_card().unwrap())).unwrap();
-    let mut w = a.write();
-    let g = w.create().unwrap();
-    w.group(a.home()).add(osis::Member::Subgroup(g)).unwrap();
-    w.commit().unwrap();
-    a.grant(g, o.me(), Role::Read, osis::GrantOpts::default()).unwrap();
-    for _ in 0..5 {
-        net.run();
-    }
-    o.accept_invite(g, o.home()).unwrap();
-    let mut w = a.write();
-    let l = w.create_local().unwrap();
-    w.at(l, osis::core::NAME).set(&"private".to_string()).unwrap();
-    w.commit().unwrap();
-    let mut w = a.write();
-    w.at(l, osis::core::NAME).set(&"private 2".to_string()).unwrap();
-    w.at(g, osis::core::NAME).set(&"shared".to_string()).unwrap();
-    assert!(matches!(w.commit(), Err(osis::Error::Invalid(m)) if m.contains(&l.to_string())), "refused, naming the local thing");
-    let mut w = a.write();
-    w.at(g, osis::core::NAME).set(&"shared".to_string()).unwrap();
-    w.commit().unwrap();
-    for _ in 0..5 {
-        net.run();
-    }
-    assert_eq!(name(&o, g).as_deref(), Some("shared"), "the group's write reached o");
-    assert_eq!(o.created(l).unwrap(), None, "the local thing did not");
-    a.grant(l, o.me(), Role::Read, osis::GrantOpts::default()).expect("granting a local thing shares it");
-    use osis::internals::Internals;
-    assert!(a.engine(|e| e.carried(&l)), "no longer local");
-    let mut w = a.write();
-    w.at(l, osis::core::NAME).set(&"private 2".to_string()).unwrap();
-    w.at(g, osis::core::NAME).set(&"shared 2".to_string()).unwrap();
-    w.commit().expect("shared: written beside what syncs");
-    assert_eq!(a.at(l, osis::core::NAME).get().unwrap().as_deref(), Some("private 2"));
+    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("t"), "listed in home later: reaches b");
 }
 
 // spec/sync-inbox.md §6 (first contact), spec/sync-set.md §4 (A redeem is an accept): a redeemer reaches the
@@ -505,6 +440,7 @@ fn redeeming_a_link_joins_and_files_its_thing_spec_sync_set_4() {
     let b = on(&net, 41, &c);
     let mut w = a.write();
     let t = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
     w.at(t, osis::core::NAME).set(&"shared".to_string()).unwrap();
     w.commit().unwrap();
     let link = a.make_link(t, Role::Write, LinkOpts::default()).unwrap();
@@ -589,6 +525,7 @@ fn an_accepters_wait_on_the_thing_ends_spec_sync_status_3() {
     drive(&net, b.import_contact(&a.contact_card().unwrap())).unwrap();
     let mut w = b.write();
     let t = w.create().unwrap();
+    w.group(b.home()).add(osis::Member::Subgroup(t)).unwrap();
     w.at(t, osis::core::NAME).set(&"granted".to_string()).unwrap();
     w.commit().unwrap();
     b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();

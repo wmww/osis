@@ -49,7 +49,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let made = commit_with(&db, |w| w.create().map(drop));
     let win = db.engine(|e| e.header(&made.stamp.id.raw())).unwrap().aspects.iter().find(|a| a.ak.as_str() == "created.0").unwrap().tid;
     let c = db.created(win).unwrap().unwrap();
-    // the record, filed under home (spec/sync-set.md §1 Filing), acts for the account
+    // a record alone acts for its signer (spec/commits.md §2)
     assert_eq!((c.id, c.ts(), c.actor, c.actor), (made.stamp.id, made.ts(), db.me(), db.me()), "a new thing is durable");
     let before = durable_marks(&db);
     let mut w = db.write();
@@ -465,8 +465,7 @@ fn delete_of_ephemeral_only_thing_drops_its_values_spec_data_model_1() {
     let (db, _c) = setup(0);
     let key = |k: &str| osis::DynamicAspectKey::untyped(ak(k));
     let cursor = key("app:cursor+.0");
-    // in no group: made local (spec/sync-set.md §1 Filing)
-    let [x, y, keep] = unfiled(&db, 3)[..] else { panic!() };
+    let [x, y, keep] = new_things(&db, 3)[..] else { panic!() };
     db.commit_with(|w| {
         w.at(x, key("app:note.0")).set(&Value::Int(1))?;
         w.at(keep, key("app:k.0")).set(&Value::Tid(x))?;
@@ -568,7 +567,7 @@ fn a_thing_with_only_expiring_content_spec_commits_6() {
     let t = w.create().unwrap();
     let kept = w.commit().unwrap().unwrap();
     let h = db.engine(|e| e.header(&kept.stamp.id.raw())).unwrap();
-    assert_eq!(h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), ["created.0", "group.0"], "the record, filed under home (spec/sync-set.md §1 Filing)");
+    assert_eq!(h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), ["created.0"], "the record alone");
     assert_eq!(h.expires, None);
     db.commit_with(|w| { keep_all(w, t); Ok(()) }).unwrap();
     let mut w = db.write();

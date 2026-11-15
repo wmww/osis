@@ -177,7 +177,7 @@ pub enum Cmd {
         #[arg(long, value_name = "URL")]
         listen: Vec<String>,
     },
-    /// Create a thing, optionally setting aspects: create --in home note:title.0 '"x"'
+    /// Create a thing, optionally setting aspects: create --in home note:title.0 '"x"'. Listed nowhere (no --in), it stays on this node
     Create(CreateArgs),
     /// Read an aspect (or a path in it); absent exits 3
     Get {
@@ -420,9 +420,6 @@ pub struct CreateArgs {
     /// First admin in place of the acting actor: a thin client's way to create, naming a group that outlives it
     #[arg(long, value_name = "G")]
     pub admin: Option<String>,
-    /// Keep it on this device: not listed in home, and refused beside or under anything that syncs until a later write lists it somewhere synced
-    #[arg(long, conflicts_with = "admin")]
-    pub local: bool,
     #[command(flatten)]
     pub groups: GroupsArgs,
     /// Bind $NAME to the new tid (write scripts)

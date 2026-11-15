@@ -616,7 +616,7 @@ fn a_socket_client_is_the_main_actor_spec_sync_transport_6() {
         let t = x.create()?;
         x.at(t, v()).set(&Value::Int(5))
     });
-    let t = t.parts().map(|p| p.0).find(|t| *t != a.home()).unwrap();
+    let t = t.parts().next().unwrap().0;
     let cl = ready(Osis::connect_socket(&dir.0, app(&net, &c))).unwrap();
     assert_eq!((cl.me(), cl.home(), cl.node()), (a.me(), a.home(), a.node()));
     assert_eq!(cl.at(t, v()).get().unwrap(), Some(Value::Int(5)));
@@ -774,9 +774,9 @@ fn a_socket_client_over_a_real_socket_spec_sync_transport_6() {
         x.at(t, v()).set(&Value::Int(5))
     })
     .parts()
-    .map(|p| p.0)
-    .find(|t| *t != a.home())
-    .unwrap();
+    .next()
+    .unwrap()
+    .0;
     let cl = crate::common::block_on(Osis::connect_socket(&dir.0, AppConfig::default())).unwrap();
     assert_eq!(cl.me(), a.me());
     assert_eq!(cl.at(t, v()).get().unwrap(), Some(Value::Int(5)));
@@ -820,7 +820,7 @@ fn every_op(db: &Osis, t: Tid) -> Tid {
 fn every_op_reads_alike_through_a_thin_client_notes_client_port() {
     let w = world(Some(Role::Admin));
     w.a.register_schema("t.osis", "revision 1;\naspect x:l.0: list<int>;\n").unwrap();
-    let here = crate::common::commit_with(&w.a, |x| x.create_with_admin(w.t).map(drop)).parts().map(|p| p.0).find(|t| *t != w.a.home()).unwrap();
+    let here = crate::common::commit_with(&w.a, |x| x.create_with_admin(w.t).map(drop)).parts().next().unwrap().0;
     w.a.grant(here, w.actor, Role::Admin, osis::GrantOpts::default()).unwrap();
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
     let n_here = every_op(&w.a, here);
@@ -1032,7 +1032,7 @@ fn a_status_watch_through_a_thin_client_spec_wire_11() {
     cl.settle();
     assert!(!rx.try_recv().unwrap().groups.contains_key(&w.t));
     osis::internals::costs::take();
-    let hidden = crate::common::commit_with(&w.a, |x| x.create().map(drop)).parts().map(|p| p.0).find(|t| *t != w.a.home()).unwrap();
+    let hidden = crate::common::commit_with(&w.a, |x| x.create().map(drop)).parts().next().unwrap().0;
     shared_in_home(&w.a, hidden);
     w.a.settle();
     w.net.run();
@@ -1359,7 +1359,7 @@ fn cards_invitations_and_waits_through_a_socket_notes_client_port() {
     assert_eq!(drive(&net, cl.import_contact(&b.contact_card().unwrap())).unwrap(), b.me());
     assert_eq!(a.profile_of(b.me()).unwrap(), Some(b.profile().unwrap()));
     assert_eq!(cl.profile_of(b.me()).unwrap(), Some(b.profile().unwrap()));
-    let t = b.commit_with(|w| w.create()).unwrap();
+    let t = b.commit_with(|w| { let t = w.create()?; w.group(b.home()).add(osis::Member::Subgroup(t))?; Ok(t) }).unwrap();
     crate::common::commit_with(&b, |w| w.at(t, osis::core::NAME).set(&"granted".to_string()));
     b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
     for _ in 0..5 {

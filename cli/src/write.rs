@@ -121,7 +121,6 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
     }
     let t = match admin {
         Some(a) => w.create_with_admin(a)?,
-        None if a.local => w.create_local()?,
         None => w.create()?,
     };
     for g in groups {

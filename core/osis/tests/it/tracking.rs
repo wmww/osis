@@ -65,10 +65,8 @@ fn dispatch_counts_matched_listeners_at_n_and_10n() {
         let t = thing(&db);
         set(&db, t, "t:a.0", 0);
         let mut subs = Vec::new();
-        // the others local: filed in home, each add re-judges every body of home there
-        // (issues/home-add-rejudges-all.md), and dispatch is what this counts
         for i in 0..others {
-            let o = db.commit_with(|w| w.create_local()).unwrap();
+            let o = thing(&db);
             match i % 4 {
                 0 => subs.push(db.at(o, untyped("t:a.0")).on_change(|_, _| {}).unwrap()),
                 1 => subs.push(db.on_thing_change(o, |_, _| {}).unwrap()),
@@ -292,9 +290,7 @@ fn members_is_heard() {
 #[test]
 fn tracked_backlinks_hear_their_thing() {
     let db = pumped(14);
-    // listed nowhere: no home filing among the backlinks (spec/sync-set.md §1 Filing)
-    let [a, x, y] = unfiled(&db, 3)[..] else { panic!() };
-    db.settle();
+    let (a, x, y) = (thing(&db), thing(&db), thing(&db));
     let (_set, n, h) = tracked(&db);
     assert!(h.backlinks(x, &Default::default()).unwrap().backlinks.is_empty());
     db.commit_with(|w| w.at(a, untyped("t:a.0")).set(&Value::Tid(y))).unwrap();

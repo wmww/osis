@@ -12,11 +12,6 @@ fn key(k: &str) -> DynamicAspectKey {
     DynamicAspectKey::untyped(ak(k))
 }
 
-/// Listed nowhere: no home listing among the backlinks.
-fn things(db: &Osis, n: usize) -> Vec<Tid> {
-    unfiled(db, n)
-}
-
 fn bl(t: Tid, k: &str) -> Backlink {
     Backlink { tid: t, ak: ak(k) }
 }
@@ -59,7 +54,7 @@ impl Heard {
 #[test]
 fn a_reference_shows_and_stops_showing() {
     let db = db(1);
-    let [a, b, g, x] = things(&db, 4)[..] else { panic!() };
+    let [a, b, g, x] = new_things(&db, 4)[..] else { panic!() };
     db.commit_with(|w| {
         w.at(a, key("t:link.0")).set(&Value::Tid(x))?;
         w.at(b, key("t:m.0")).set(&Value::Map([(Value::Int(1), Value::List(vec![Value::Tid(x)]))].into_iter().collect()))?;
@@ -92,7 +87,7 @@ fn backlinks_follow_writes_in_any_arrival_order() {
     let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
     for order in orders {
         let (a, b, _) = paired();
-        let [r, s, x] = things(&a, 3)[..] else { panic!() };
+        let [r, s, x] = new_things(&a, 3)[..] else { panic!() };
         let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
         a.commit_with(|w| w.at(r, key("t:a.0")).set(&Value::Tid(x))).unwrap();
         a.commit_with(|w| w.at(s, key("t:a.0")).set(&Value::Set([Value::Tid(x)].into_iter().collect()))).unwrap();
@@ -124,10 +119,9 @@ fn backlinks_follow_writes_in_any_arrival_order() {
 fn only_what_the_actor_may_read() {
     let db = db(1);
     let (actor, _) = db.add_client(None).unwrap();
-    let [x] = things(&db, 1)[..] else { panic!() };
-    // groups that sync: what is made under them shares a write (spec/sync-set.md §1 Local stays local)
-    let [g, h] = db.commit_with(|w| Ok([w.create()?, w.create()?])).unwrap();
+    let [x] = new_things(&db, 1)[..] else { panic!() };
     let mut w = db.write();
+    let [g, h] = [w.create().unwrap(), w.create().unwrap()];
     // three readable, three not
     let srcs: Vec<(Tid, bool)> = (0..6).map(|i| (w.create_in([g, h][i % 2], &[[g, h][i % 2]]).unwrap(), i % 2 == 0)).collect();
     for (s, _) in &srcs {
@@ -165,8 +159,8 @@ fn only_what_the_actor_may_read() {
 fn paged_at_n_and_10n() {
     fn count(n: usize) -> u64 {
         let db = db(1);
-        let x = things(&db, 1)[0];
-        let srcs = things(&db, n);
+        let x = new_things(&db, 1)[0];
+        let srcs = new_things(&db, n);
         db.commit_with(|w| srcs.iter().try_for_each(|s| w.at(*s, key("t:a.0")).set(&Value::Tid(x)))).unwrap();
         let mut q = BacklinkQuery { after: None, limit: Some(10) };
         let mut got = Vec::new();
@@ -203,7 +197,7 @@ fn paged_at_n_and_10n() {
 fn live_through_add_remove_expiry_purge() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
-    let [a, b, x] = things(&db, 3)[..] else { panic!() };
+    let [a, b, x] = new_things(&db, 3)[..] else { panic!() };
     let heard = Heard::on(&db, x, &BacklinkQuery::default());
     assert_eq!(heard.take(&db), vec![vec![]], "initial, empty");
     db.commit_with(|w| w.at(a, key("t:a.0")).set(&Value::Tid(x))).unwrap();

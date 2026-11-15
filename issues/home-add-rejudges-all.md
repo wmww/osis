@@ -1,9 +1,9 @@
 # Each add to a group re-judges every body under it
-> Summary: n things filed in one group that syncs (home, by create's default): each add re-judges about n of the group's held bodies in read's settle, each judgement reading about n/3 commit `Meta` keys, so the n-th add costs O(n^2) reads (120 adds: 23k judgements, 8 s debug). Found by tracking's dispatch test (now on local things).
+> Summary: n things listed in one group that syncs (home here): each add re-judges about n of the group's held bodies in read's settle, each judgement reading about n/3 commit `Meta` keys, so the n-th add costs O(n^2) reads (120 adds: 23k judgements, 8 s debug). Found by tracking's dispatch test with its things listed in home.
 > Priority: normal
 > Tags: engine, sync, performance
 
-Measured with `costs` on, n `create()` commits in one process (each files the new thing in home):
+Measured with `costs` on, n `create()` commits in one process, each listing the new thing in home:
 
 | n | `read: judged` settles | per add | deps per judgement | most in one table |
 |---|---|---|---|---|

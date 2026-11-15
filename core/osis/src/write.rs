@@ -80,8 +80,6 @@ pub(crate) enum WriteOp {
     /// Adds `by` to `thing`'s retainers; `by`'s aspect `key` must reference `thing` after the
     /// commit.
     Retain { by: Tid, key: u32, thing: Tid },
-    /// The thing, created by this write, is local (`Write::create_local`).
-    Local(Tid),
 }
 
 /// Writes that become one commit (two: below), all or nothing. Reads meanwhile do not see them. What cannot share
@@ -215,7 +213,7 @@ impl<'d> Write<'d> {
                 },
                 WriteOp::Group { g, member, .. } => vec![*g, *member],
                 WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
-                WriteOp::Delete(t) | WriteOp::PurgeThing(t) | WriteOp::Release(t) | WriteOp::Local(t) => vec![*t],
+                WriteOp::Delete(t) | WriteOp::PurgeThing(t) | WriteOp::Release(t) => vec![*t],
                 WriteOp::Retain { by, thing, .. } => vec![*by, *thing],
             })
             .filter(|t| !self.created.contains(t))
@@ -301,27 +299,10 @@ impl<'d> Write<'d> {
     /// commit on a thin client's handle: its actor goes with the client, so what it makes
     /// names who stays (`create_with_admin`).
     ///
-    /// A write acting as the account lists each thing it creates that, after it, no synced group
-    /// holds in `home()` as a subgroup, in the same commit, so it reaches the account's other
-    /// nodes (and, should it become a group, so do its items). A thing the write lists in a
-    /// group that syncs, or makes under a thing that syncs other than `home()`, is not listed
-    /// there. `create_local` makes one that stays on this device.
+    /// It stays on this node until a write lists it in a group that syncs (or under a thing that
+    /// does) or shares it.
     pub fn create(&mut self) -> Result<Tid> {
         self.create_with_admin(self.actor)
-    }
-
-    /// `create`, kept on this device: it is not listed in `home()`. Only what is made local
-    /// stays: a thing the write lists in it is listed in `home()`, unless made local too.
-    ///
-    /// A local thing stays local: a write that leaves it where something syncs holds it (in a
-    /// group that syncs, or under a thing that does), or that writes it beside a thing that
-    /// syncs, fails `Invalid` naming it, whenever the thing was made. To share it later, list
-    /// it somewhere that syncs (or share it) in a later write, which may write it too; from
-    /// then on it syncs with its whole history.
-    pub fn create_local(&mut self) -> Result<Tid> {
-        let t = self.create()?;
-        self.ops.push(WriteOp::Local(t));
-        Ok(t)
     }
 
     /// `create`, with `admin` as the first admin in place of the acting actor: a group or account
@@ -454,7 +435,7 @@ impl<'d> Write<'d> {
             }
             let who = self.actor;
             let sharing = self.sharing;
-            let Built { mut m, added, local } = self.build(&mut Reader { e, limit, actor }, expires)?;
+            let Built { mut m, added } = self.build(&mut Reader { e, limit, actor }, expires)?;
             // whatever actor the write names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
                 m.confine(a);
@@ -462,7 +443,7 @@ impl<'d> Write<'d> {
             let r = match e.write(m)? {
                 Some(w) => {
                     if !e.holds_memory(&w.id) {
-                        not_synced(e, &added, &local, sharing);
+                        not_synced(e, &added, sharing);
                     }
                     Some(crate::commits::written_in(&mut Reader { e, limit, actor }, w, who)?.reporting(db))
                 }
@@ -478,7 +459,7 @@ impl<'d> Write<'d> {
         let (acting, db) = (self.db.acting, self.db);
         let Write { ops, keys, actor, created, .. } = self;
         let gk = DynamicAspectKey { ak: GROUP.name(), schema: Some(crate::keys::core_schema()) };
-        let mut b = Built { m: Mutation::new(), added: Vec::new(), local: Vec::new() };
+        let mut b = Built { m: Mutation::new(), added: Vec::new() };
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
         // a release request carries `released.0` deltas alone (spec/commits.md §5 Destruction)
         let releases = ops.iter().filter(|o| matches!(o, WriteOp::Release(_))).count();
@@ -496,13 +477,6 @@ impl<'d> Write<'d> {
                         return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing of its own: name a group that stays (create_with_admin)".into()));
                     }
                     b.m.create(rec);
-                }
-                WriteOp::Local(t) => {
-                    if !created.contains(&t) {
-                        return Err(Error::Invalid("local names only a thing this write creates".into()));
-                    }
-                    b.m.local(t);
-                    b.local.push(t);
                 }
                 WriteOp::Group { add: false, .. } | WriteOp::Delete(_) | WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group, a delete or a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
@@ -614,9 +588,6 @@ impl<'d> Write<'d> {
             }
         }
         b.m.act_as(actor);
-        // what it creates reaches the account's other nodes unless the write lists it somewhere
-        // synced itself (crate docs, Writes)
-        b.m.file_created();
         if let Some(at) = expires {
             b.m.expires_all(at);
         }
@@ -629,8 +600,6 @@ struct Built {
     m: Mutation,
     /// Things added to groups and the group (the `NotSynced` check).
     added: Vec<(Tid, Tid)>,
-    /// Things named `local`: kept here on purpose, so no report that they stay on this node.
-    local: Vec<Tid>,
 }
 
 impl Built {
@@ -646,7 +615,7 @@ impl Built {
 
 /// Reports added things that no synced group holds (spec/requirements.md, Offline
 /// and network).
-fn not_synced(e: &mut osis_engine::Engine, added: &[(Tid, Tid)], local: &[Tid], sharing: bool) {
+fn not_synced(e: &mut osis_engine::Engine, added: &[(Tid, Tid)], sharing: bool) {
     if added.is_empty() {
         return;
     }
@@ -658,7 +627,7 @@ fn not_synced(e: &mut osis_engine::Engine, added: &[(Tid, Tid)], local: &[Tid], 
                 continue;
             }
             e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "in a group whose holders may not read it: it does not reach them (add_with_grant)".into() });
-        } else if !e.carried(t) && !local.contains(t) {
+        } else if !e.carried(t) {
             e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "only in groups no synced group holds: it stays on this node".into() });
         }
     }

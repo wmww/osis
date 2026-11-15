@@ -218,7 +218,6 @@ pub(crate) fn write_op_to(o: &WriteOp) -> Result<Value> {
         WriteOp::PurgeThing(t) => vec![u(9), Value::Tid(*t)],
         WriteOp::Release(t) => vec![u(10), Value::Tid(*t)],
         WriteOp::Retain { by, key, thing } => vec![u(11), Value::Tid(*by), k(key), Value::Tid(*thing)],
-        WriteOp::Local(t) => vec![u(12), Value::Tid(*t)],
     }))
 }
 
@@ -278,10 +277,6 @@ pub(crate) fn write_op_from(v: Value) -> Result<WriteOp> {
         11 => {
             want(4)?;
             WriteOp::Retain { by: t(1)?, key: k(2)?, thing: t(3)? }
-        }
-        12 => {
-            want(2)?;
-            WriteOp::Local(t(1)?)
         }
         _ => return Err(bad("write op")),
     };
