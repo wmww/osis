@@ -8,3 +8,4 @@ validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-de
 rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=916629000175 issues/account-removal-before-its-rotation.md still rotates in the last settle round
 rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=67 issues/forks-model-seed-67-rebuild-differs.md rebuilt from the commit records, the index Commit
 rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=786082893264 issues/forks-model-counting-differs.md counting: engine
+rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=615470545354 issues/forks-model-hostile-removal-not-rotated.md model rotates Some\(Rot \{.*\}\), engine None
