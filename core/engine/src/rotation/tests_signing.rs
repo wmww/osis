@@ -641,6 +641,40 @@ fn a_removal_named_by_a_removed_node_is_named_again_spec_permissions_3() {
     assert!(read_box_at(&mut lp, 2, x, p).is_some(), "N2 seals P into its own group");
 }
 
+// spec/permissions.md §5.4 (the removals a rotation carries: those its header names, by its minter
+// signed at the epoch it rotates), §5.5 (a removal no held rotation it does not count carries is
+// named again). As above, but before N2 asks what is due, removed N1, holding r1's keys, forks at
+// r1 sealed as a key actor it makes up, its header naming L's removal: that fork carries nothing
+// (neither its minter nor its epoch is the removal's), so N2's rotation answering it still names
+// L's removal
+#[test]
+fn a_header_naming_anothers_removal_carries_none_spec_permissions_5_4() {
+    use osis_crypto::{AccountEpochKeys, Secret32};
+    let (mut lp, a, _) = world(3, 3);
+    let r1 = remove(&mut lp, 0, a.devices, 1);
+    send(&mut lp, 0, 2, &r1.commits);
+    lp.advance(1000);
+    remove(&mut lp, 2, a.devices, 0);
+    let (rem, at) = (r1.commits[0], r1.commits[1]);
+    let fb = {
+        let e = &lp.peers[0].engine;
+        let rec = e.core.created(&a.account).unwrap().clone();
+        let vk = e.header(&at).unwrap().rotation.clone().unwrap().signing_key;
+        let at_keys = AccountEpochKeys::from_seed(e.core.accounts.get(&a.account).unwrap().keys.get(&vk).unwrap().seed());
+        let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([71; 32]));
+        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![at], names: Vec::new(), takes: Vec::new(), removals: vec![rem], list_root: [0; 32] };
+        super::tests_account::rotation_at(rec, (at, &at_keys), &[], &next, header, osis_base::Ts::make(e.now(), 0).unwrap())
+    };
+    let f = give(&mut lp, &fb, &[2]);
+    let again = lp.peers[2].engine.signing_due().unwrap();
+    assert_eq!(again.commits.len(), 1, "one rotation");
+    let h = lp.peers[2].engine.header(&again.commits[0]).unwrap().rotation.clone().unwrap();
+    assert!(h.supersedes.contains(&f), "the fork answered");
+    let lists = lp.peers[2].engine.rotation_lists(&again.commits[0]).unwrap();
+    assert!(lists.iter().any(|(_, ids)| ids.contains(&rem)), "L's removal named again");
+    assert!(lp.peers[2].engine.signing_due().unwrap().commits.is_empty(), "nothing more is due");
+}
+
 /// A plain fork of `a`'s chain from its first epoch to a fresh epoch from `seed`, as removed
 /// node `by` (which still holds the first epoch's seed) can sign after every merge.
 fn refork(lp: &mut LocalPeer, by: usize, a: &CreatedAccount, seed: u8) -> Vec<u8> {

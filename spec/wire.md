@@ -81,7 +81,7 @@ Aspect    := [tid, ak, lo, hi, Retention, keys, hash, replaces]   ; replaces := 
 Retention := by
 DeleteKey := [level, pk]
 PurgeItem := [tid, ak] | [tid, ak, actor] | [tid, ak, ts, source]
-Rotation  := [signing_key, kem_key, [epoch_id+], [commit_id*], [commit_id*], list_root]
+Rotation  := [signing_key, kem_key, [epoch_id+], [commit_id*], [commit_id*], [commit_id*], list_root]   ; supersedes, names, takes, removals
 CommitBlobPlaintext := [Header, signature, Opt(inner), [signature*], [Section*]]
 Section   := [[ai+], [chain*], wrap, ciphertext]
 Part      := [ai, delta]

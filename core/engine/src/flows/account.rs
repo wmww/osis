@@ -81,7 +81,8 @@ pub(crate) struct AccountView {
     /// The counting epochs by name: what a write or seal reads, so neither walks the chain (its
     /// length is the account's to choose).
     by_name: BTreeMap<Epoch, CommitId>,
-    /// Per removal commit, the held rotations whose headers name it.
+    /// Per removal commit, the held rotations carrying it (their headers name it; their minter
+    /// signed it at the epoch they rotate).
     carriers: BTreeMap<CommitId, BTreeSet<CommitId>>,
 }
 
@@ -606,9 +607,13 @@ impl Core {
                 }
             }
         }
+        // a header names the removals its rotation carries, but carries only its minter's signed at
+        // the epoch it rotates (spec/permissions.md §5.4): anyone holding an old epoch's key mints a
+        // rotation there naming whatever it likes
         let mut carriers: BTreeMap<CommitId, BTreeSet<CommitId>> = BTreeMap::new();
-        for (id, _, r) in &rots {
-            for c in &r.removals {
+        for (id, at, r) in &rots {
+            let Some(m) = devices.as_ref().and_then(|d| d.minter.get(id)) else { continue };
+            for c in r.removals.iter().filter(|c| devices.as_ref().and_then(|d| d.commits.get(*c)) == Some(&(Some(*m), *at))) {
                 carriers.entry(*c).or_default().insert(*id);
             }
         }
