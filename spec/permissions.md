@@ -9,7 +9,7 @@
   - The **role timeline** (§5.1) orders edge writes.
   - **Member**, **membership** and **member of a group** mean only being listed in a group (`group.0`, spec/data-model.md §8), which grants no rights.
   - A value in a CRDT set is an **element**.
-- **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. A thing has this capability by having role secrets (spec/crypto.md §3).
+- **Actor**: a thing that can hold roles and act: a thing is an actor exactly while it has role secrets (spec/crypto.md §3).
   - A **key actor** (account, node, link key) also has a signing key committed by its tid and holds admin on itself. No edge write targets a key actor: it has no roster.
   - An **account** P is a key actor with **epochs**, its creation record marked so (spec/wire.md §3): its keys change by rotations of its **signing chain** (spec/crypto.md §3, §9; §5.4, §5.5). Only accounts and key actors other than nodes author commits; every commit a node makes outside its own node thing's aspects (`keys.0`, `node.0`, `reach.0`, §4) is authored by its account.
   - A **node** is a key actor whose seed never leaves it. It is a **node of P** while it holds read or above on P's devices actor D (a sync grant on D, which keeps P's inbox, makes no node). A node acts only as an account it is a node of: it signs as P (spec/crypto.md §3), and every role and authority this spec gives "a node" is its account's. A node that is a node of several accounts signs each commit as one of them.
