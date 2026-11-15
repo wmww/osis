@@ -1476,15 +1476,17 @@ fn restart_reconnect_streams(n: u8) -> (usize, usize, u64) {
 // spec/sync-streams.md §4 (Costs: an idle reconnect costs a few round trips, and bytes that do
 // not grow with the number of sync IDs shared), after a restart: opens' reconnect (Resume,
 // Digest, an empty filter generation; tests/it/opens.rs) and the streams' (a Pull each way from
-// the stored cursors, no store write), at n and 10n shared sync IDs (but for the widths of the
-// integers they name). The session's Hello and proofs cost the same whatever is shared.
+// the stored cursors, a cursor write each side and no member row), at n and 10n shared sync IDs
+// (but for the widths of the integers they name). The session's Hello and proofs cost the same
+// whatever is shared.
 #[test]
 fn a_reconnect_after_a_restart_costs_the_same_at_10n_spec_sync_streams_4() {
     let at = |n| {
         let (streams, pulls, commits) = restart_reconnect_streams(n);
         assert!(pulls <= 2, "at n = {n}: {pulls} Pulls");
-        // nothing moved: the server answers with the cursor it was given, so nothing is stored
-        assert_eq!(commits, 0, "at n = {n}: {commits} store commits");
+        // a fresh cursor each reply (never the one given: equal bytes would tell the requester
+        // the server's log did not move), so each side stores its cursor once
+        assert!(commits <= 2, "at n = {n}: {commits} store commits");
         crate::opens::restart_reconnect_bytes(n) + streams
     };
     let (small, large) = (at(10), at(100));

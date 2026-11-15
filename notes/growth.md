@@ -6,7 +6,7 @@ Tests: `sessions::session_writing_nothing_leaves_nothing`, `sessions::steady_asp
 
 Where: **Node** = a node's own store, **Serving** = what it keeps for sync IDs it keeps unread, **Both** = both. Marks: **M** = measured, **E** = estimated from encodings or spec, **C** = the code says so.
 
-Multi-node growth: osis-sync `growth::single_writer_replace_grows_nothing_spec_commits_5` and `several_writers_grow_nothing_spec_commits_5` (one or two writers replacing a register, a reader and a node keeping it unread, past the tombstone lifetime: rows by kind and blobs at 6 and 60 more writes); osis-sync drops covered bodies and forgets covered commits (notes/sync-read.md, Local). A start with nothing new commits nothing (`growth::a_quiet_start_commits_nothing_at_n_and_10n`); a reconnect with nothing new stores nothing in streams and a constant per connection in opens (notes/sync-streams.md).
+Multi-node growth: osis-sync `growth::single_writer_replace_grows_nothing_spec_commits_5` and `several_writers_grow_nothing_spec_commits_5` (one or two writers replacing a register, a reader and a node keeping it unread, past the tombstone lifetime: rows by kind and blobs at 6 and 60 more writes); osis-sync drops covered bodies and forgets covered commits (notes/sync-read.md, Local). A start with nothing new commits nothing (`growth::a_quiet_start_commits_nothing_at_n_and_10n`); a reconnect with nothing new stores a constant per connection: a cursor row per side in streams and the record in opens (notes/sync-streams.md).
 
 ## Plain data, frequent overwrites (worst first)
 | # | Cause | Where | Grows with, size | Kind | Issue |
