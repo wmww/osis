@@ -536,6 +536,85 @@ fn a_shared_thing_lost_is_shared_no_more_spec_sync_set_2() {
     assert!(!e.sync_things().unwrap().contains(&t), "forgotten: shared no more");
 }
 
+// spec/sync-set.md §2 (Shared here: a grant to an actor other than the account or a node): pairing
+// grants the new node on D and shares nothing; nor does a grant to a node.
+#[test]
+fn a_grant_to_a_node_shares_nothing_spec_sync_set_2() {
+    let (mut lp, d) = crate::flows::account_two_nodes();
+    let n1 = lp.peers[1].engine.tid();
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.unshare(&d).unwrap(), "pairing shares nothing");
+    let p = e.account().unwrap().unwrap().0;
+    let t = {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, p);
+        e.commit(m).unwrap().unwrap();
+        t
+    };
+    e.grant(&t, &n1, &edge_of(Role::Read)).unwrap();
+    assert!(!e.unshare(&t).unwrap(), "a grant to a node shares nothing");
+}
+
+// spec/sync-set.md §2 (Cost: a thing joining the shared set costs at most work in proportion to
+// N's closure): sharing one more thing listed nowhere walks O(N's closure) once, at 5 and at 50
+// things shared, and a write moving no closure walks nothing.
+#[test]
+fn sharing_one_more_thing_walks_the_closure_once_spec_sync_set_2() {
+    let (mut lp, ps) = people(2);
+    let mut shared = 0;
+    let mut cost = |lp: &mut LocalPeer, n: usize| -> (u64, u64) {
+        let walked = |e: &mut osis_engine::Engine| {
+            osis_base::costs::take();
+            e.sync_things().unwrap();
+            osis_base::costs::take().iter().find(|x| x.0 == "sync: things walked").map_or(0, |x| x.2)
+        };
+        let mut last = None;
+        while shared < n {
+            let t = thing_of(lp, 0, ps[0]);
+            lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+            shared += 1;
+            last = Some(t);
+            if shared < n {
+                lp.peers[0].engine.sync_things().unwrap();
+            }
+        }
+        let e = &mut lp.peers[0].engine;
+        let share = walked(e);
+        let mut m = Mutation::new();
+        m.set(last.unwrap(), &REG, &s("again")).unwrap();
+        e.commit(m).unwrap().unwrap();
+        (share, walked(e))
+    };
+    let (small, quiet) = cost(&mut lp, 5);
+    let (big, _) = cost(&mut lp, 50);
+    assert!(small > 0 && big <= 11 * small, "walked {small} at 5 shared, {big} at 50");
+    assert_eq!(quiet, 0, "a write moving no closure: nothing walked");
+}
+
+// spec/sync-set.md §3 (Unsyncing: N forgets each thing under T's secrets that N's closure does not
+// hold), §2 (N's closure: the closure of each thing shared at N): a thing under the unsynced
+// thing's secrets listed only in a group shared here keeps its content.
+#[test]
+fn forget_local_keeps_what_a_shared_thing_holds_spec_sync_set_3() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    let g = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    lp.peers[0].engine.grant(&g, &ps[1], &edge_of(Role::Read)).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let shared = e.new_thing(&mut m, t);
+    let under = e.new_thing(&mut m, t);
+    m.set(shared, &ct::NAME, &"shared".to_string()).unwrap();
+    m.set(under, &ct::NAME, &"under".to_string()).unwrap();
+    e.commit(m).unwrap().unwrap();
+    listing(&mut lp, 0, g, 0, shared, true);
+    let e = &mut lp.peers[0].engine;
+    e.forget_local(&t).unwrap();
+    assert_eq!(e.get_typed(&under, &ct::NAME).unwrap(), None, "under its secrets");
+    assert_eq!(e.get_typed(&shared, &ct::NAME).unwrap().as_deref(), Some("shared"), "in a shared thing's closure");
+}
+
 // spec/sync-ids.md §6 (Steps: an admin issues a step when it holds an epoch newer than its
 // recorded head registers, a child of that head, after logging the rotation commits it registers):
 // nothing is due until a removal rotates; then the step is due, naming the removal's rotation
@@ -2576,6 +2655,7 @@ fn a_destroyed_things_sync_id_stays_read_until_forgotten_spec_sync_judgement_5()
     assert!(matches!(e.open_entry(&s, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::NotOpen), "keeping nothing: an entry under S opens nothing");
     assert!(e.wrap_secret(&t, None).unwrap().is_none(), "keeping nothing: nothing wrapped under S");
     e.forget_destroyed(&t).unwrap();
+    assert!(!e.sync_things().unwrap().contains(&t), "forgotten: shared here no more (spec/sync-set.md §2)");
     assert_ne!(e.thing_sync(&t).unwrap(), ThingSync::Read(vec![s]), "forgotten: S not read");
     assert_eq!(e.sync_holder(&s).unwrap(), None);
     assert!(!e.sync_set().unwrap().ids.contains_key(&s));

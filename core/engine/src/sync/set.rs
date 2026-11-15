@@ -48,57 +48,55 @@ impl Engine {
         self.core.epochs(t).is_some_and(|e| e.role(Role::Read).holds_any())
     }
 
-    /// The things the sync set is judged over (spec/sync-set.md §2): the synced group's closure
+    /// The things the sync set is judged over (spec/sync-set.md §2): N's closure, each closure
     /// walked through no group sourced at another node (spec/sync-set.md §5, `Groups::
-    /// sync_closure`: the same `Arc` while it does not change), with each destroyed thing
-    /// whose own sync IDs are kept (`Indexes::destroyed_sync_ids`: from its destruction until they
-    /// are emptied, spec/sync-judgement.md §5). Walked through groups this node reads only: a
-    /// thing kept unread lists nothing here.
+    /// sync_closure`), with each destroyed thing whose own sync IDs are kept
+    /// (`Indexes::destroyed_sync_ids`: from its destruction until they are emptied,
+    /// spec/sync-judgement.md §5). Walked through groups this node reads only: a thing kept unread
+    /// lists nothing here. A memo: the same `Arc` while nothing it read moved; built again in
+    /// O(N's closure) when one did.
     pub(crate) fn sync_things_now(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
-        let mut closure = match self.sync_root()? {
-            Some(root) => self.core.ix.groups.sync_closure(&root),
-            None => Arc::new(BTreeSet::new()),
-        };
-        // home is never sourced away (spec/sync-set.md §5): D, which `set_sourced_now` never
-        // cuts, roots the walk too, so the engine's own records on it (sync record keeps, inbox
-        // marks, accepts) and what is filed under it sync even where a cut group holds D
-        if let Some((_, d)) = self.core.account_devices()
-            && !closure.contains(&d)
-        {
-            let home = self.core.ix.groups.sync_closure(&d);
-            closure = Arc::new(closure.iter().chain(home.iter()).copied().collect());
-        }
-        // each thing shared here roots the walk too (spec/sync-set.md §2 Shared here)
-        let shared: Vec<Tid> = self.core.ix.shared_here.iter().copied().collect();
-        for t in shared {
-            if !closure.contains(&t) {
-                let c = self.core.ix.groups.sync_closure(&t);
-                closure = Arc::new(closure.iter().chain(c.iter()).copied().collect());
-            }
-        }
-        let mut emptying: Vec<Tid> = self.core.ix.destroyed_sync_ids.keys().copied().collect();
-        // links being redeemed (spec/sync-set.md §2)
-        emptying.extend(self.core.followed_links.keys().filter(|k| crate::sync_ids::actors::followable(self, k)).copied());
-        if emptying.iter().all(|t| closure.contains(t)) {
-            return Ok(closure);
-        }
-        Ok(Arc::new(closure.iter().copied().chain(emptying).collect()))
+        osis_base::memo::Memo::get_in(self, |e| &e.core.sync_things, &(), |e| {
+            let mut emptying: Vec<Tid> = e.core.ix.destroyed_sync_ids.keys().copied().collect();
+            // links being redeemed (spec/sync-set.md §2)
+            emptying.extend(e.core.followed_links.keys().filter(|k| crate::sync_ids::actors::followable(e, k)).copied());
+            // home is never sourced away (spec/sync-set.md §5): D, which `set_sourced_now` never
+            // cuts, roots the walk too, so the engine's own records on it (sync record keeps,
+            // inbox marks, accepts) and what is filed under it sync even where a cut group holds D
+            let home = e.core.account_devices().map(|(_, d)| d);
+            e.rooted(home, emptying, |g, t| g.sync_closure(t))
+        })
     }
 
-    /// N's closure uncut (spec/sync-set.md §2): its sync root's closure with each thing shared
-    /// here and its closure. What unsyncing keeps (`forget_local`).
-    pub(crate) fn node_closure(&mut self) -> Result<BTreeSet<Tid>> {
-        let mut out: BTreeSet<Tid> = match self.sync_root()? {
-            Some(root) => self.closure(&root).iter().copied().collect(),
-            None => BTreeSet::new(),
+    /// N's closure uncut (spec/sync-set.md §2): what unsyncing keeps (`forget_local`).
+    pub(crate) fn node_closure(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
+        self.rooted(None, Vec::new(), |g, t| g.closure(t))
+    }
+
+    /// The sync root's closure by `closure`, with that of `home` and of each thing shared here
+    /// (spec/sync-set.md §2 Shared here), and `extra`: one copy of the root's closure at most.
+    fn rooted(&mut self, home: Option<Tid>, extra: Vec<Tid>, closure: impl Fn(&crate::engine::groups::Groups, &Tid) -> Arc<BTreeSet<Tid>>) -> Result<Arc<BTreeSet<Tid>>> {
+        let base = match self.sync_root()? {
+            Some(root) => closure(&self.core.ix.groups, &root),
+            None => Arc::new(BTreeSet::new()),
         };
-        let shared: Vec<Tid> = self.core.ix.shared_here.iter().copied().collect();
-        for t in shared {
-            if !out.contains(&t) {
-                out.extend(self.closure(&t).iter().copied());
+        let groups = &self.core.ix.groups;
+        let mut more = BTreeSet::new();
+        // a root inside another's closure adds nothing: its own closure is part of that one
+        for t in home.iter().chain(self.core.ix.shared_here.iter()) {
+            if !base.contains(t) && !more.contains(t) {
+                let c = closure(groups, t);
+                osis_base::costs::count("sync: things walked", c.len() as u64);
+                more.extend(c.iter().filter(|x| !base.contains(*x)).copied());
             }
         }
-        Ok(out)
+        more.extend(extra.into_iter().filter(|t| !base.contains(t)));
+        if more.is_empty() {
+            return Ok(base);
+        }
+        osis_base::costs::count("sync: things walked", base.len() as u64);
+        more.extend(base.iter().copied());
+        Ok(Arc::new(more))
     }
 
     /// Sets the groups the handle reads and writes at another node (spec/sync-set.md §5):
@@ -348,7 +346,7 @@ impl Engine {
 }
 
 /// `t` joins this node's shared set (spec/sync-set.md §2 Shared here): a grant on it this node
-/// writes as its account to another actor.
+/// writes as its account to an actor other than the account or a node.
 pub(crate) fn share_here(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     if !tx.core.ix.shared_here.contains(t) {
         tx.core.ix.shared_here.insert(*t);

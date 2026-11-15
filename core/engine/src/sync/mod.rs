@@ -707,9 +707,10 @@ impl Engine {
     }
 
     /// Forgets this node's local copy of `t`, unsynced (spec/sync-set.md §3 Unsyncing): the
-    /// content of `t` and of each thing whose secrets are `t`'s, but those this node's closure
-    /// holds (`node_closure`: its synced group's and its shared things'); their role-class aspects (`secrets.0` included) and secrets stay,
-    /// and what arrives again counts as never received. Decodes every commit header (rare).
+    /// content of `t` and of each thing whose secrets are `t`'s, but those N's closure holds
+    /// (`node_closure`: its synced group's and its shared things'); their role-class aspects
+    /// (`secrets.0` included) and secrets stay, and what arrives again counts as never received.
+    /// Decodes every commit header (rare).
     pub fn forget_local(&mut self, t: &Tid) -> Result<()> {
         let closure = self.node_closure()?;
         let core = &self.core;
@@ -790,9 +791,9 @@ impl Engine {
         self.sync_holder_now(s)
     }
 
-    /// The things the sync set is judged over: the synced group's closure walked through no
-    /// group sourced at another node (the same `Arc` while it does not change) and destroyed
-    /// things being emptied.
+    /// The things the sync set is judged over: N's closure (its synced group's and each shared
+    /// thing's) walked through no group sourced at another node (the same `Arc` while it does not
+    /// change), destroyed things being emptied and links being redeemed.
     pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         self.sync_things_now()
     }

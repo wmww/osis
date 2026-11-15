@@ -1060,6 +1060,9 @@ pub struct Core {
     /// `Engine::read_credentials` per sync ID (`memo`): sync reads them at each entry it judges,
     /// and they derive a key per held sync secret.
     pub(crate) read_credentials: memo::Memo<osis_base::SyncId, Option<Arc<crate::sync::ReadCredentials>>>,
+    /// `Engine::sync_things` (`memo`): asked every sync step and every ephemeral write, built
+    /// again only when a closure, the shared set or the sync root it read moved.
+    pub(crate) sync_things: memo::Memo<(), Arc<BTreeSet<Tid>>>,
     /// `Engine::thing_sync` per thing and `Engine::sync_set` (`memo`): sync reads them every step.
     pub(crate) thing_sync: memo::Memo<Tid, crate::sync::ThingSync>,
     pub(crate) sync_set: memo::Memo<(), Arc<crate::sync::SyncSet>>,
@@ -1424,6 +1427,7 @@ impl Core {
             secrets_read: self.secrets_read.clone(),
             head_keys: self.head_keys.clone(),
             read_credentials: self.read_credentials.clone(),
+            sync_things: self.sync_things.clone(),
             thing_sync: self.thing_sync.clone(),
             sync_set: self.sync_set.clone(),
             dial_peers: self.dial_peers.clone(),
@@ -2003,6 +2007,7 @@ impl Core {
             published: _,
             head_keys: _,
             read_credentials: _,
+            sync_things: _,
             thing_sync: _,
             sync_set: _,
             dial_peers: _,
@@ -2203,6 +2208,7 @@ impl Core {
             secrets_read: memo::Memo::new("secrets: decode"),
             head_keys: memo::Memo::new("head keys: derive"),
             read_credentials: memo::Memo::new("sync: read credentials"),
+            sync_things: memo::Memo::new("sync: things"),
             thing_sync: memo::Memo::new("sync: thing sync"),
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),

@@ -146,9 +146,10 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
         return Err(Error::Misuse("a grant without history is for a holder that holds no role on the target"));
     }
     let mut done = Done::default();
-    // a grant this node writes as its account to another actor shares the target here: this
-    // node syncs it, whatever lists it (spec/sync-set.md §2 Shared here)
-    if signer.is_none() && holder != who {
+    // a grant this node writes as its account to an actor other than the account or a node (a
+    // link's K included) shares the target here: this node syncs it, whatever lists it
+    // (spec/sync-set.md §2 Shared here); pairing's grant on D to a node shares nothing
+    if signer.is_none() && holder != who && !super::is_node(tx, &holder)? {
         crate::sync::set::share_here(tx, &target)?;
     }
     // a thing is made a holder only with secrets of its own; a target gets them on its first
