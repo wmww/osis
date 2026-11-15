@@ -1165,9 +1165,10 @@ fn keep_arriving(as_item: bool) {
 #[test]
 fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2() {
     let (mut w, t, ak) = granted_and_read(Role::Write);
-    // each account rotation closes and redials the rotator's connections (spec/sync-opens.md §1):
-    // node 0's to the removed node of account 1, powered off unseen, then fails and is dialed
-    // again each `REDIAL_MS` for the rest of the run (about 4 000 dials over its world hours)
+    // each account's removed node stays in its profile's dial list, so the other account's node
+    // dials it, powered off, each `REDIAL_MS` for the rest of the run once a rotation's re-prove
+    // (spec/sync-opens.md §1) un-quiets it: about 1 900 failed dials over the run's world hours
+    // (issues/removed-node-stays-in-dial-list.md)
     w.cap = 6 * crate::harness::RULE_CAP;
     let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
@@ -1368,4 +1369,3 @@ fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
         }
     }
 }
-

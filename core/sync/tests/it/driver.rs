@@ -4,7 +4,7 @@
 //! of the Phase 1 checklist, issues/sync-rewrite.md). World tests run the product's node; the dial rules alone
 //! run on `Dials` with a table of dial peers.
 
-use crate::harness::{Seen, World, contacts, two_nodes};
+use crate::harness::{Seen, World, contacts, siblings, two_nodes};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_label::{Address, Class, Prefix};
 use osis_store::Fault;
@@ -183,6 +183,33 @@ fn an_own_rotation_proves_again_spec_sync_opens_1() {
     assert!(w.engine(1).account_rotations(&a0).contains(&r), "the Prove carried the rotation");
     assert!(proven_at(&mut w, 1, 0, new), "proved again at the new epoch");
     assert!(!proven_at(&mut w, 1, 0, old), "no connection left on the closed epoch");
+}
+
+// spec/sync-opens.md §1 (proves once), §2 (its account by a signature at an epoch): a node
+// holding a rotation of its account made by another of its nodes, without that epoch's seed,
+// proves its account at no epoch (its other actors as before) and no connection counts it at
+// the closed one where the rotation is held. issues/sibling-rotation-drops-home.md: the seed
+// never arrives there yet; its fix extends this test to the proof at the new epoch.
+#[test]
+fn a_rotation_without_its_seed_proves_the_account_at_none_spec_sync_opens_2() {
+    let mut w = siblings();
+    let a1 = w.node(1).account.expect("an account");
+    let old = w.engine(2).account_open_key().expect("an open key");
+    w.write(1, |e| e.rotate_account(&a1)).unwrap().expect("rotated");
+    w.run();
+    w.advance(osis_sync::driver::REDIAL_MS + 1);
+    w.run();
+    assert_eq!(w.engine(2).account_rotations(&a1).len(), w.engine(1).account_rotations(&a1).len(), "the rotation reached node 2");
+    let new = w.engine(1).account_open_key();
+    assert_ne!(new, Some(old));
+    let key = w.engine(2).account_open_key();
+    let provers = w.engine(2).provers(false).expect("proves its other actors");
+    let account: Vec<[u8; 32]> = provers.iter().filter(|(_, r)| r.tid() == a1).map(|(k, _)| k.verifying_key().to_bytes()).collect();
+    assert_eq!(account, key.into_iter().collect::<Vec<_>>(), "its account at the open key it holds the seed of, or at none");
+    assert!(key.is_none() || key == new);
+    for j in [0, 1] {
+        assert!(!proven_at(&mut w, j, 2, old), "node {j} counts node 2's account at the closed epoch");
+    }
 }
 
 /// A blob of `class` expiring at `expiry`.
