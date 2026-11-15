@@ -9,8 +9,9 @@
 //! back). A window passing walks the places that leave; a setting change those that leave or come
 //! back; each once, reading no body and walking none that stays.
 //!
-//! Rows only time events, never a read: listing, keep bounds and undo judge history from the held
-//! set when asked (`bounds`). A row is a schedule never earlier than its part's replaced-at, set
+//! Rows only time events: listing, keep bounds, undo and every drop judge history from the held
+//! set when asked (`bounds`); the compaction trigger reads them only to choose which bodies to weigh
+//! (`compact::droppable`). A row is a schedule never earlier than its part's replaced-at, set
 //! where that may move (`date_due`, at a transaction's end, `Dating`): a kill from the killing
 //! writes' stamps, no body read, on the dying writes' own commits and every snapshot of the aspect
 //! (one carrying none of them gets a row it leaves with nothing to tell); a rebuild and an aspect turning dated from the held set; a part's

@@ -511,6 +511,98 @@ fn leaving_told_alike_paged_or_whole_spec_commits_5() {
     assert_eq!(told(false), told(true));
 }
 
+/// As `leaving_told_alike_paged_or_whole_*`, where the snapshot node 3 gets, joined in pieces or whole, kills the fill's
+/// first entry (node 0 overwrote it) in one page while it carries a write half an hour later
+/// in another (past the last entry): the fill is told leaving at the same time whether the
+/// snapshot joined in pieces or whole, though the piece killing it does not reach the later write.
+#[test]
+fn leaving_told_alike_paged_or_whole_later_write_elsewhere_spec_commits_5() {
+    let entry = |k: u64, g: u64| PathOp { path: vec![PathSeg::Key(Value::Int(k as i64))], op: Op::Set(fat(k, g)) };
+    let told = |whole: bool| {
+        let mut w = world(whole);
+        let (t, a) = (w.t, aks()[0].clone());
+        let mut m = Mutation::new();
+        m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap();
+        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = packages(&mut w, 0, &[fill]);
+        w.lp.deliver(3, &pk[0]).unwrap();
+        let mut m = Mutation::new();
+        m.op(t, &a, entry(0, 1)).unwrap();
+        w.lp.peers[0].commit(m).unwrap().unwrap();
+        w.lp.advance(1_800_000);
+        let mut m = Mutation::new();
+        m.op(t, &a, entry(ENTRIES + 10, 1)).unwrap();
+        w.lp.peers[0].commit(m).unwrap().unwrap();
+        let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+        let pk = packages(&mut w, 0, &[snap]);
+        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[t]).unwrap();
+        let heard = |w: &mut World| {
+            let mut told = std::collections::BTreeSet::new();
+            for e in w.lp.peers[3].drain_events() {
+                if let crate::Event::Commits(ch) = e {
+                    told.extend(ch.iter().filter(|x| x.tid == t && x.ak == a).map(|x| x.id));
+                }
+            }
+            told
+        };
+        heard(&mut w);
+        osis_base::costs::take();
+        w.lp.deliver(3, &pk[0]).unwrap();
+        let joins = osis_base::costs::take().iter().find(|x| x.0 == "apply: join").map_or(0, |x| x.2);
+        assert!(whole || joins > 1, "the snapshot joins in pieces where not whole: {joins}");
+        let applied = heard(&mut w);
+        // an hour after the overwrite, then after the later write
+        let mut at = Vec::new();
+        for _ in 0..2 {
+            w.lp.advance(3_600_000 / 2 + 60_000);
+            w.lp.peers[3].tick().unwrap();
+            at.push(heard(&mut w));
+        }
+        w.lp.advance(3_600_000);
+        w.lp.peers[3].tick().unwrap();
+        at.push(heard(&mut w));
+        assert!(at.iter().any(|x| x.contains(&fill)), "{whole}: the replaced fill is told as it leaves: {at:?}");
+        (applied, at)
+    };
+    assert_eq!(told(false), told(true));
+}
+
+/// Node 3 holds node 0's fill; three hours later node 0 overwrites its first entry and
+/// snapshots; node 3 gets the snapshot alone, which also carries the fill's other entries,
+/// stamped at the fill. The fill was replaced by the overwrite, so it stays in history (an hour
+/// after replaced) until an hour after the overwrite, joined in pieces or whole: a kill dates
+/// by the latest writes the join reaches, never the earliest.
+#[test]
+fn killed_fill_leaves_an_hour_after_its_overwrite_spec_commits_5() {
+    for whole in [false, true] {
+        let mut w = world(whole);
+        let (t, a) = (w.t, aks()[0].clone());
+        let mut m = Mutation::new();
+        m.set(t, &a, &fat_map(ENTRIES, 0)).unwrap();
+        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = packages(&mut w, 0, &[fill]);
+        w.lp.deliver(3, &pk[0]).unwrap();
+        w.lp.advance(3 * 3_600_000);
+        let mut m = Mutation::new();
+        m.op(t, &a, PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(fat(0, 1)) }).unwrap();
+        w.lp.peers[0].commit(m).unwrap().unwrap();
+        let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+        let pk = packages(&mut w, 0, &[snap]);
+        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[t]).unwrap();
+        w.lp.peers[3].drain_events();
+        w.lp.deliver(3, &pk[0]).unwrap();
+        let told = |w: &mut World| {
+            w.lp.peers[3].tick().unwrap();
+            w.lp.peers[3].drain_events().into_iter().any(|e| matches!(e, crate::Event::Commits(ch) if ch.iter().any(|x| x.id == fill && x.ak == a)))
+        };
+        told(&mut w);
+        w.lp.advance(3_600_000 - 60_000);
+        assert!(!told(&mut w), "{whole}: the fill is in history until an hour after its overwrite");
+        w.lp.advance(2 * 60_000);
+        assert!(told(&mut w), "{whole}: the fill leaves an hour after its overwrite");
+    }
+}
+
 /// One commit with a paged map and a small entry in one aspect and a register in another,
 /// into a node holding that map paged: the second wire page joins state pages the first
 /// loaded, wrote and dropped.

@@ -624,6 +624,10 @@ fn droppable(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> BTreeSet<CommitId> {
         return ix.by_aspect.get(&key).into_iter().flatten().map(|(_, c)| *c).collect();
     }
     let mut out = BTreeSet::new();
+    // the rows narrow what is weighed, never what goes: a row is a schedule, maybe late or set on
+    // a live part (a kill's row on a snapshot carrying none of the dead writes), and every drop
+    // judges its body's keep bound from the held set (`part_keep`: node-sync's covered drops,
+    // `memory::drop_covered`), as `Load::of` does for what counts; a late row only delays a snapshot
     if let Some((_, Some(last))) = ix.leave_from.get(&key).copied() {
         out.extend(ix.leaving.get(&key).into_iter().flat_map(|s| s.range(..=last)).map(|p| p.1));
     }
