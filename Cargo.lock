@@ -2670,11 +2670,11 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "osis-base",
+ "osis-blob",
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
  "osis-engine",
- "osis-blob",
  "osis-perm",
  "osis-proto",
  "osis-schema",
@@ -2735,6 +2735,18 @@ dependencies = [
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
+]
+
+[[package]]
+name = "osis-blob"
+version = "0.1.0"
+dependencies = [
+ "osis-base",
+ "osis-commit",
+ "osis-crdt",
+ "osis-crypto",
+ "osis-schema",
+ "proptest",
 ]
 
 [[package]]
@@ -2802,11 +2814,11 @@ dependencies = [
  "crdt-model",
  "held-model",
  "osis-base",
+ "osis-blob",
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
  "osis-keys",
- "osis-blob",
  "osis-perm",
  "osis-schema",
  "osis-store",
@@ -2840,18 +2852,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "osis-blob"
-version = "0.1.0"
-dependencies = [
- "osis-base",
- "osis-commit",
- "osis-crdt",
- "osis-crypto",
- "osis-schema",
- "proptest",
-]
-
-[[package]]
 name = "osis-perm"
 version = "0.1.0"
 dependencies = [
@@ -2864,8 +2864,8 @@ name = "osis-proto"
 version = "0.1.0"
 dependencies = [
  "osis-base",
- "osis-crypto",
  "osis-blob",
+ "osis-crypto",
  "osis-schema",
  "proptest",
 ]
@@ -2908,10 +2908,10 @@ name = "osis-sync"
 version = "0.1.0"
 dependencies = [
  "osis-base",
+ "osis-blob",
  "osis-commit",
  "osis-crypto",
  "osis-engine",
- "osis-blob",
  "osis-proto",
  "osis-schema",
  "osis-store",
@@ -2938,10 +2938,10 @@ name = "osis-vectors"
 version = "0.1.0"
 dependencies = [
  "osis-base",
+ "osis-blob",
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
- "osis-blob",
  "osis-proto",
  "osis-schema",
  "osis-transport",
