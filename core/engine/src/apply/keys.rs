@@ -13,7 +13,6 @@ use osis_keys::{KeysWrite, ROLES, SecretsWrite};
 use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, SecretBox};
 use osis_schema::{Codec, Type, typed_read};
 use osis_store::Shred;
-use std::sync::Arc;
 
 fn typed(v: &Value, name: &str) -> Option<Value> {
     typed_read(osis_schema::core_schema(), v, &Type::Named(name.into(), Vec::new())).ok()
@@ -282,12 +281,26 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
         tx.core.touch();
         if own {
             // epochs kept from a rotation found invalid earlier: start again from the derived
-            // ones (`Core::epochs`), so a stale derived epoch stays current nowhere
+            // ones (`Core::epochs`), so a stale derived epoch stays current nowhere; only those
+            // the kept epochs know (its history listed them), never one derived from a base epoch
+            // its rotations never saw (a later rotation of the base actor: no own epoch
+            // supersedes it, so it would stay current, unboxed)
             let derived = |e: &osis_keys::ActorEpochs| {
                 tx.core.base_derived(t).is_some_and(|d| ROLES.iter().any(|r| d.role(*r).epochs().any(|(ep, i)| i.established.is_some() && i.secret.is_some() && e.role(*r).get(ep).is_some())))
             };
             let restart = regain && tx.core.ix.secrets.get(t).is_some_and(derived) && tx.core.own_record(t).is_none();
-            let base = restart.then(|| tx.core.epochs(t)).flatten().map(Arc::unwrap_or_clone);
+            let base = restart.then(|| tx.core.epochs(t)).flatten().map(|view| {
+                let kept = tx.core.ix.secrets.get(t);
+                let mut out = osis_keys::ActorEpochs::default();
+                for r in ROLES {
+                    for (ep, info) in view.role(r).epochs() {
+                        if kept.is_some_and(|k| k.role(r).get(ep).is_some()) {
+                            *out.role_mut(r).observe(*ep) = info.clone();
+                        }
+                    }
+                }
+                out
+            });
             tx.core.ix.own_keys.insert(*t);
             if let Some(b) = base {
                 tx.core.ix.secrets.insert(*t, b.into_record());

@@ -2363,3 +2363,54 @@ fn write_on_d(lp: &mut LocalPeer, peer: usize, p: Tid, d: Tid) -> CommitId {
     m.set(d, &x(), &Value::Int(1)).unwrap();
     lp.peers[peer].engine.commit(m).unwrap().unwrap()
 }
+
+// spec/crypto.md §4 (Account keysets: a box at a revoked epoch is stale, which bars encrypting
+// under it, re-sealing and rotating from it, never reading), §9 (Custody): account Q (peer 3)
+// grants account P read on its thing t, boxed to P at P's head e; P's node 0 then removes node 1,
+// revoking e. Node 2, paired after, holds e's seed from its pairing: it opens the box at the
+// revoked epoch and holds t's read secret before Q re-keys t. Fails with the stale-shut fault.
+#[test]
+fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
+    for shut in [false, true] {
+        let mut lp = LocalPeer::new_bare(4, 0, WallMs(1_700_000_000_000)).unwrap();
+        let (a, _) = lp.peers[0].engine.create_account().unwrap();
+        let node = lp.peers[1].engine.tid();
+        let ids = lp.peers[1].engine.commit_ids();
+        send(&mut lp, 1, 0, &ids);
+        let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
+        send(&mut lp, 0, 1, &all);
+        lp.peers[1].engine.paired(&a.account).unwrap();
+        let (q, _) = lp.peers[3].engine.create_account().unwrap();
+        for (i, j) in [(0, 3), (3, 0)] {
+            let ids = lp.peers[i].engine.commit_ids();
+            send(&mut lp, i, j, &ids);
+        }
+        let mut m = crate::Mutation::new();
+        let t = lp.peers[3].engine.new_thing(&mut m, q.account);
+        lp.peers[3].commit(m).unwrap();
+        lp.peers[3].engine.grant(&t, &a.account, &edge(Role::Read)).unwrap();
+        // written under t's own epoch, which the grant boxes P at e
+        write(&mut lp, 3, t, "q");
+        let ids = lp.peers[3].engine.commit_ids();
+        send(&mut lp, 3, 0, &ids);
+        assert_eq!(read(&mut lp, 0, t), Some(Value::Str("q".into())), "shut {shut}: node 0 reads t");
+        let e = lp.peers[0].engine.core.account_view(&a.account).unwrap().preferred();
+        remove(&mut lp, 0, a.devices, 1);
+        assert!(lp.peers[0].engine.core.account_view(&a.account).unwrap().epoch_revoked(&e), "shut {shut}: the box's epoch is revoked");
+        let n2 = lp.peers[2].engine.tid();
+        let ids = lp.peers[2].engine.commit_ids();
+        send(&mut lp, 2, 0, &ids);
+        let (_, all) = lp.peers[0].engine.pair(&n2).unwrap();
+        lp.peers[2].engine.core.stale_shut = shut;
+        send(&mut lp, 0, 2, &all);
+        lp.peers[2].engine.paired(&a.account).unwrap();
+        // the account's commits first, the removal among them; Q's grant after
+        let qs = lp.peers[3].engine.commit_ids();
+        let ids: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !qs.contains(c)).collect();
+        send(&mut lp, 0, 2, &ids);
+        send(&mut lp, 3, 2, &qs);
+        // the secret held is the point (a package hands its parts over in the clear)
+        let opened = lp.peers[2].engine.core.epochs(&t).is_some_and(|e| e.role(Role::Read).epochs().any(|(_, i)| i.secret.is_some()));
+        assert_eq!(opened, !shut, "shut {shut}: node 2 holds t's read secret by the box at the revoked epoch");
+    }
+}

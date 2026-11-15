@@ -234,6 +234,12 @@ impl AccountView {
         self.revoked.contains(key)
     }
 
+    /// Whether held epoch `e` is revoked (`revoked`).
+    #[cfg(test)]
+    pub(crate) fn epoch_revoked(&self, e: &CommitId) -> bool {
+        self.epochs.get(e).is_some_and(|x| self.revoked(&x.signing.to_bytes()))
+    }
+
     /// Whether this node holds held epoch `e`'s line whole: every removal from D a rotation on it
     /// names (`held`). A node signs at or rotates from an epoch only so (spec/crypto.md §9,
     /// Custody): its roster then lacks every node the line removed, so it boxes none of them.

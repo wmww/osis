@@ -142,7 +142,7 @@ fn seed_box(tx: &mut Tx<'_>, p: &Tid, epoch: &VerifyingKey, m: &Tid, payload: &[
 
 /// Seed re-seals (spec/crypto.md §9, Custody), at the end of a complete pass of D's sync IDs:
 /// for each head of this node's account whose seed it holds and whose line it holds whole, the
-/// devices on D's roster no counting box of that seed is tagged for are boxed it, with the seeds
+/// other devices on D's roster no counting box of that seed is tagged for are boxed it, with the seeds
 /// of its line held here, one commit per head. Bounded by structure: once held, a re-seal is a
 /// counting box, so each (head, device) is re-sealed once per node that sees it lacking before it
 /// holds another's. A box counts only in a commit that counts here, so a holder of an old seed (a
@@ -153,7 +153,9 @@ pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> 
     if !super::signing::signs_for(tx.core, &d, &v) {
         return Ok(Vec::new());
     }
-    let roster = roster(tx.core, &d);
+    // this node holds every seed it re-seals
+    let me = tx.core.id.tid();
+    let roster: Vec<Tid> = roster(tx.core, &d).into_iter().filter(|m| *m != me).collect();
     let boxed = counting_tags(tx.core, &v, &d);
     let mut out = Vec::new();
     for h in v.heads() {

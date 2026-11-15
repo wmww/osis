@@ -136,7 +136,6 @@ fn role_duties_are_judged_once_per_held_actor_at_a_start_spec_permissions_3() {
 // knows no synced group any more, yet everything it synced has left: once its passes end it
 // syncs nothing and holds no rows.
 #[test]
-#[ignore = "issues/sibling-removal-rotation-before-list.md: rows kept after leaving"]
 fn a_node_removed_from_its_account_stops_syncing_spec_sync_set_3() {
     let mut w = crate::harness::siblings();
     w.run();

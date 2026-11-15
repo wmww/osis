@@ -156,6 +156,10 @@ struct Run {
     reached: Reached,
     /// Users of P's nodes on X's side switch to A's removal in the settle, as the model's do.
     p_switch: bool,
+    /// The seeds each node of P held at the last compare (custody only grows but for a leave).
+    seeds: [BTreeSet<[u8; 32]>; N],
+    /// The rotation each node's user chose last (`switch`).
+    chosen: [Option<u32>; N],
 }
 
 impl Run {
@@ -198,6 +202,8 @@ impl Run {
             rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
             reached: Reached::default(),
             p_switch: false,
+            seeds: Default::default(),
+            chosen: [None; N],
         }
     }
 
@@ -790,6 +796,7 @@ impl Run {
             self.take_up(n);
         }
         self.check_left();
+        self.custody();
         self.sync_recv();
         let t = self.tick;
         let now = self.now();
@@ -961,6 +968,33 @@ impl Run {
         }
     }
 
+    /// Custody is monotone (notes/account-forks-design.md, Properties): the seeds a node of P holds
+    /// only grow, but for its own leave. A switch takes: a node whose user chose a held rotation on
+    /// a line it is a node of follows it, its preferred head on that rotation's line, and signs
+    /// there.
+    fn custody(&mut self) {
+        for n in [A, B, T] {
+            let now: BTreeSet<[u8; 32]> = self.lp.peers[n].engine.held_seeds(&self.p).iter().map(|s| *s.expose()).collect();
+            if !self.left[n] && !self.seeds[n].is_subset(&now) {
+                self.fail(&format!("t{} node {n}: held seeds shrank {} -> {}", self.tick, self.seeds[n].len(), now.len()));
+            }
+            self.seeds[n] = now;
+            let Some(c) = self.chosen[n] else { continue };
+            let e = self.e(c);
+            if self.left[n] || !self.view(n).holds(&e) || self.judge(n).removed_node(n) {
+                continue;
+            }
+            let v = self.view(n);
+            let pref = v.preferred();
+            if pref != e && !v.line(&pref).is_some_and(|l| l.contains(&e)) {
+                self.fail(&format!("t{} node {n}: chose #{c}, preferred head {:?} is not on its line", self.tick, self.mid.get(&pref)));
+            }
+            if self.lp.peers[n].engine.core.account_signing(&self.p).ok().flatten().is_none() {
+                self.fail(&format!("t{} node {n}: chose #{c}, signs nowhere", self.tick));
+            }
+        }
+    }
+
     fn switch(&mut self, n: usize, c: u32) {
         let t = self.tick;
         self.lp.advance(1);
@@ -968,6 +1002,7 @@ impl Run {
         self.w.switches.push((n, now, c));
         let e = self.e(c);
         let _ = self.lp.peers[n].engine.choose_line(self.p, e);
+        self.chosen[n] = Some(c);
         self.reached.switched = true;
         self.log.push(format!("t{t} {n} chooses #{c}"));
     }

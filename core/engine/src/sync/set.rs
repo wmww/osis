@@ -78,8 +78,10 @@ impl Engine {
         }
         let [root, home] = self.sync_roots()?;
         let enclosing = self.core.ix.groups.sync_enclosing(t);
+        // shared here only while this node is a node of its account (`shared_here`)
+        let member = self.core.member().is_some();
         for a in enclosing.iter() {
-            if Some(*a) == root || Some(*a) == home || self.shares(a)? {
+            if Some(*a) == root || Some(*a) == home || member && self.shares(a)? {
                 return Ok(true);
             }
         }
@@ -500,7 +502,7 @@ impl Engine {
     /// things, staying local (`Core::stays_local`: a share that ended, unsynced by no one here).
     /// O(things the account ever granted on): for status and an unsync, not per change.
     pub fn kept_local(&mut self) -> Result<BTreeSet<Tid>> {
-        let Some(account) = self.core.me() else { return Ok(BTreeSet::new()) };
+        let Some(account) = self.core.member() else { return Ok(BTreeSet::new()) };
         let granted: Vec<Tid> = self.core.ix.held.granted_by(&account).copied().collect();
         let mut out = BTreeSet::new();
         for t in granted {
@@ -515,7 +517,8 @@ impl Engine {
     /// (`Held::granted_by`). A memo: built again in O(those things), each one's answer a memo.
     pub(crate) fn shared_here(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.shared_here, &(), |e| {
-            let Some(account) = e.core.me() else { return Ok(Arc::default()) };
+            // a node that left its account shares nothing as it (spec/permissions.md §3, Lost access)
+            let Some(account) = e.core.member() else { return Ok(Arc::default()) };
             let granted: Vec<Tid> = e.core.ix.held.granted_by(&account).copied().collect();
             let mut out = BTreeSet::new();
             for t in granted {
