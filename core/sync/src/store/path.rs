@@ -59,6 +59,14 @@ pub(crate) fn head(t: &mut Transaction<'_>, s: &SyncId) -> Result<Option<(u32, S
     Ok(step(t, s, i)?.map(|st| (i, st)))
 }
 
+/// The head's ID, from its stored bytes (`Step::to_bytes`, as `append` stores them) without
+/// parsing the step.
+pub(crate) fn head_id(t: &mut Transaction<'_>, s: &SyncId) -> Result<Option<StepId>> {
+    let n = len(t, s)?;
+    let Some(i) = n.checked_sub(1) else { return Ok(None) };
+    Ok(step_row(t, s, i)?.map(|r| StepId(osis_base::hash::hash(&r.step))))
+}
+
 pub(crate) fn read(t: &mut Transaction<'_>, s: &SyncId) -> Result<Option<Path>> {
     let n = len(t, s)?;
     if n == 0 {

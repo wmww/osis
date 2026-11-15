@@ -836,6 +836,11 @@ impl Store {
         self.lock().read(|t, _| Ok(path::head(t, s)?.map(|(_, st)| st)))
     }
 
+    /// The head's ID (`head`'s `Step::id`, without parsing it).
+    pub fn head_id(&self, s: &SyncId) -> Result<Option<StepId>> {
+        self.lock().read(|t, _| path::head_id(t, s))
+    }
+
     /// S's path from genesis: a kept-unread S's registered one, a read S's served one.
     pub fn path(&self, s: &SyncId) -> Result<Option<Arc<Path>>> {
         self.lock().read(|t, _| Ok(path::read(t, s)?.map(Arc::new)))

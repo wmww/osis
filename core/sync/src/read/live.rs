@@ -60,8 +60,8 @@ pub struct Live<'a, 'b> {
 /// (its head event) before any stamp under it, so a reader that holds the step's commit before
 /// it applies the stamp knows the key.
 fn stamp_key(cx: &mut Cx, s: &SyncId) -> Result<Option<SigningSecret>> {
-    let Some(head) = cx.store.head(s)? else { return Ok(None) };
-    Ok(cx.engine.read_credentials(s)?.and_then(|c| c.keys.get(&head.id()).and_then(|k| k.write.clone())))
+    let Some(head) = cx.store.head_id(s)? else { return Ok(None) };
+    Ok(cx.engine.read_credentials(s)?.and_then(|c| c.keys.get(&head).and_then(|k| k.write.clone())))
 }
 
 /// The entry this node logs of its own under `s`: stamped where it writes S's served head, else

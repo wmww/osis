@@ -930,8 +930,8 @@ impl Streams {
     /// head move pulls S from the start there (`pull_anew`). One row per (source, S).
     fn told(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
         let Some(src) = self.pull.get(&conn).map(|p| p.src) else { return };
-        let head = match ctx.store.head(&s) {
-            Ok(h) => h.map(|h| h.id()),
+        let head = match ctx.store.head_id(&s) {
+            Ok(h) => h,
             Err(e) => return self.failed(Err(e)),
         };
         let place = self.place(ctx.store, src);
@@ -983,7 +983,7 @@ impl Streams {
             }
             Ok((everywhere, out))
         });
-        let head = ctx.store.head(&s).map(|h| h.map(|h| h.id()));
+        let head = ctx.store.head_id(&s);
         let marks = ctx.store.room_marks(&s);
         let ((everywhere, stored), head, marks) = match (read, head, marks) {
             (Ok(x), Ok(h), Ok(m)) => (x, h, m),
