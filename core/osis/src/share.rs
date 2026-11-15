@@ -689,7 +689,7 @@ impl Osis {
     }
 
     /// Stops this node syncing `thing` for having shared it. The node that grants a role on a
-    /// thing to anyone, or makes a link to it, syncs it from then on, wherever it is listed, so
+    /// thing to another account or a group, or makes a link to it, syncs it from then on, wherever it is listed, so
     /// those it shared with can get it; the account's other nodes sync it only if they would
     /// anyway. Afterwards `thing` syncs here only while a group this node syncs holds it;
     /// otherwise this node keeps syncing it until what it wrote there reached another holder
