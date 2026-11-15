@@ -159,39 +159,46 @@ pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId
 /// genesis step that verifies (else 1; a child step 13); else the head again (0, nothing changes)
 /// or a child of the head that is no closing step (else 9; a malformed closing step 2); within
 /// the caps, a child past them without its claim set, and past them even so at most once per
-/// `register_every_ms`.
-pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Policy, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, last_past_cap: Option<WallMs>) -> Result<(Code, bool)> {
+/// `register_every_ms`. A head moved over a refusal told to a record's source marks S anew
+/// (`rows::ANEW_HEAD`) unless a mark stands: refusals told under the old head are shown again
+/// (spec/sync-streams.md §4 Refused; a connection's are in memory, `Store::take_register`). Answers
+/// the code, whether past the caps, and whether the head moved.
+pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Policy, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, last_past_cap: Option<WallMs>) -> Result<(Code, bool, bool)> {
     if step.label != *s || claims.is_some_and(|c| c.hash() != step.claims_hash) {
-        return Ok((Code::MALFORMED, false));
+        return Ok((Code::MALFORMED, false, false));
     }
     if env.holding(s) != Some(Holding::Unread) {
-        return Ok((Code::DECLINED, false));
+        return Ok((Code::DECLINED, false, false));
     }
     let genesis = step.prev.is_none();
     match head(t, s)? {
-        None if !genesis => return Ok((Code::UNKNOWN_SYNC_ID, false)),
-        None if step.verify_genesis().is_err() => return Ok((Code::REFUSED, false)),
+        None if !genesis => return Ok((Code::UNKNOWN_SYNC_ID, false, false)),
+        None if step.verify_genesis().is_err() => return Ok((Code::REFUSED, false, false)),
         None => {}
-        Some((_, h)) if h.id() == step.id() => return Ok((Code::OK, false)),
+        Some((_, h)) if h.id() == step.id() => return Ok((Code::OK, false, false)),
         // nothing is registered after a closing step, and one is as `Step::closing` makes it (spec/wire.md §8)
-        Some((_, h)) if h.is_closing() || step.verify_child(&h).is_err() => return Ok((Code::NOT_HEAD_KEY, false)),
-        Some((_, h)) if step.is_closing() && !step.closes(&h) => return Ok((Code::MALFORMED, false)),
+        Some((_, h)) if h.is_closing() || step.verify_child(&h).is_err() => return Ok((Code::NOT_HEAD_KEY, false, false)),
+        Some((_, h)) if step.is_closing() && !step.closes(&h) => return Ok((Code::MALFORMED, false, false)),
         Some(_) => {}
     }
     let fits = |t: &mut Transaction<'_>, env: &mut Env<'_>, add: u64| -> Result<bool> { env.room(t, s, 0, add) };
     let (keep_claims, past) = if fits(t, env, step_bytes(step, claims))? {
         (claims, false)
     } else if genesis {
-        return Ok((Code::STORAGE_CAP, false));
+        return Ok((Code::STORAGE_CAP, false, false));
     } else if fits(t, env, step_bytes(step, None))? {
         (None, false)
     } else if last_past_cap.is_none_or(|at| env.now.0 >= at.0.saturating_add(policy.register_every_ms)) {
         (None, true)
     } else {
-        return Ok((Code::STORAGE_CAP, false));
+        return Ok((Code::STORAGE_CAP, false, false));
     };
     append(t, env, s, step, keep_claims)?;
-    Ok((Code::OK, past))
+    let mark = [rows::ANEW, &s.0].concat();
+    if t.get_local(&mark)?.is_none() && !t.records_with_row(s, rows::tag::TOLD, b"", 1)?.is_empty() {
+        t.put_local(&mark, rows::ANEW_HEAD, Shred::No)?;
+    }
+    Ok((Code::OK, past, true))
 }
 
 /// The code a Behind of S that carries nothing is answered with, whatever it names or shows

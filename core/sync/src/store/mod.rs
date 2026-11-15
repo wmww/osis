@@ -603,9 +603,10 @@ impl Store {
         self.lock().mem.shreds.feed()
     }
 
-    /// A cursor over the sync IDs to fetch anew: those raised to read whose pull anew is still
-    /// owed (`N/` `ANEW_RAISED`, a restart's or a module restart's before it included), then
-    /// each one owed from now on (`set_unheld`, `set_holdings`), with whether the marks were
+    /// A cursor over the sync IDs to fetch anew: those raised to read or whose head moved kept
+    /// unread whose pull anew is still owed (`N/` `ANEW_RAISED`, `ANEW_HEAD`, a restart's or a
+    /// module restart's before it included), then each one owed from now on (`set_unheld`,
+    /// `set_holdings`, `take_register`), with whether the marks were
     /// read (a failure: the caller fails its step). O(the marks) to make.
     pub fn anew_feed(&self) -> (osis_base::memo::Feed<SyncId>, Result<()>) {
         let mut g = self.lock();
@@ -943,7 +944,8 @@ impl Store {
     /// blob; a relay-only one (14: relay-only rules); its prefix expiry passed (7); its blob ID
     /// tombstoned (6); no stamp or a bad one (1); a stamp under an earlier write key of the path
     /// (9); past S's caps (12) unless a role entry. A deposited entry of its blob ID takes the
-    /// stamp; a stamped one changes nothing.
+    /// stamp; a stamped one changes nothing, and one held with this stamp is taken (0) unjudged:
+    /// shown again (a pull from the start), it is no refusal under a head that moved since.
     pub fn take_stamped(&mut self, s: &SyncId, e: &Entry, bytes: Vec<u8>) -> Result<Code> {
         let mut g = self.lock();
         if g.holding(s) != Some(Holding::Unread) {
@@ -963,6 +965,13 @@ impl Store {
         let now = g.now;
         let size = bytes.len() as u64;
         let unheld = g.unheld.contains(s);
+        let held = match g.mem.read(s, &b) {
+            Some(r) => Some(r.stamp),
+            None => g.read(|t, _| Ok(entries::get(t, s, &b)?.map(|r| r.stamp)))?,
+        };
+        if e.stamp.is_some() && held == Some(e.stamp) {
+            return Ok(Code::OK);
+        }
         let verdict = g.read(|t, _| {
             if entries::tombstone(t, s, &b)?.is_some() {
                 return Ok(Err(Code::TOMBSTONED));
@@ -1154,7 +1163,12 @@ impl Store {
         let mut g = self.lock();
         let last = g.past_cap.get(s).copied();
         let policy = g.policy.clone();
-        let (code, past) = g.write(|t, env| path::register(t, env, &policy, s, step, claims, last))?;
+        let (code, past, moved) = g.write(|t, env| path::register(t, env, &policy, s, step, claims, last))?;
+        // refusals told under the old head are shown again (`anew_feed`), a record's marked durably
+        // (`path::register`)
+        if moved {
+            g.mem.anew.wrote_added(s, true, true);
+        }
         if past {
             let now = g.now;
             g.past_cap.insert(*s, now);
@@ -1331,6 +1345,12 @@ impl Store {
     /// dropped copy is fetched anew, its mark (`set_unheld`) goes.
     pub(crate) fn clear_anew(t: &mut Transaction<'_>, s: &SyncId) -> std::result::Result<(), osis_store::Error> {
         t.remove_local(&[rows::ANEW, &s.0].concat(), Shred::No).map(drop)
+    }
+
+    /// In `t`: whether S's pull anew is owed at every source (a dropped copy, a raise to read)
+    /// rather than only at those told a refusal under another head (`ANEW_HEAD`, or no mark).
+    pub(crate) fn anew_everywhere(t: &mut Transaction<'_>, s: &SyncId) -> std::result::Result<bool, osis_store::Error> {
+        Ok(t.get_local(&[rows::ANEW, &s.0].concat())?.is_some_and(|v| v != rows::ANEW_HEAD))
     }
 
     /// S kept unread moved to (`true`) or off (`false`) a head whose sync key this node holds no
@@ -1715,7 +1735,8 @@ fn mem_room(g: &mut Inner, s: &SyncId, size: u64, now: WallMs) -> bool {
     }
 }
 
-/// The sync IDs whose `N/` mark is a raise to read (`raised`) or a dropped copy (`!raised`).
+/// The sync IDs whose `N/` mark is a raise to read or a head move (`raised`), or a dropped copy
+/// (`!raised`).
 fn anew_marks(t: &mut Transaction<'_>, raised: bool) -> Result<BTreeSet<SyncId>> {
     let mut out = BTreeSet::new();
     for (k, v) in t.scan_local(rows::ANEW, b"", usize::MAX)? {

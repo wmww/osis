@@ -23,7 +23,10 @@
 //! - `N/ s` S is owed a pull from the start at every source, gone once streams set every
 //!   source's place of S back to the start (`clear_anew`): value empty, its copy was dropped kept
 //!   unread (`Store::set_unheld`, written with the drop; it takes nothing until judged again);
-//!   `ANEW_RAISED`, S was raised from kept unread to read (`Store::set_holdings`).
+//!   `ANEW_RAISED`, S was raised from kept unread to read (`Store::set_holdings`); `ANEW_HEAD`,
+//!   S's head moved kept unread over a refusal told to a record's source (`path::register`): pulled from the start only at the sources
+//!   told a refusal of S under another head (spec/sync-streams.md §4 Refused). A mark there
+//!   already stands (it pulls from every source).
 //! - `F/ s` S's first sync here ended (spec/sync-streams.md §5): a source's stream of S stood at
 //!   the end of a listing from the start; gone with S (`shred`).
 
@@ -56,6 +59,8 @@ pub(crate) const ELSEWHERE: &[u8] = b"S/";
 pub(crate) const ANEW: &[u8] = b"N/";
 /// `ANEW`'s value for a raise to read (empty: a dropped copy).
 pub(crate) const ANEW_RAISED: &[u8] = &[1];
+/// `ANEW`'s value for a head move kept unread.
+pub(crate) const ANEW_HEAD: &[u8] = &[2];
 pub(crate) const FIRST: &[u8] = b"F/";
 
 /// The tags of the rows each module keeps in a peer's record (`osis_store::Transaction::
@@ -77,7 +82,7 @@ pub(crate) mod tag {
     // streams: the stream's cursor (record-wide), a member at it, where a member not at it
     // joins from (joining, or stopped where it left: one row, so a member leaving one connection
     // and joining another from where it stood writes nothing); what the source showed: an entry
-    // present, its head, full, a refusal
+    // present, its head, full, a refusal; the head this node last told it a refusal of S under
     pub(crate) const CURSOR: u8 = b'c';
     pub(crate) const AT_STREAM: u8 = b'a';
     pub(crate) const JOIN_FROM: u8 = b'j';
@@ -85,6 +90,7 @@ pub(crate) mod tag {
     pub(crate) const HEAD: u8 = b'h';
     pub(crate) const FULL: u8 = b'f';
     pub(crate) const REFUSED: u8 = b'r';
+    pub(crate) const TOLD: u8 = b't';
 }
 
 pub(crate) fn head_key(s: &SyncId) -> Vec<u8> {

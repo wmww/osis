@@ -6,14 +6,14 @@
 use super::known::{self, Op};
 use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, RESYNC_MS, Rank, Refusal, Streams};
 use crate::opens::Rejoin;
-use crate::store::rows::tag::{AT_STREAM, CURSOR, JOIN_FROM};
+use crate::store::rows::tag::{AT_STREAM, CURSOR, JOIN_FROM, TOLD};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cursor, Entry, RecordId, Result};
 use osis_store::Transaction;
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::sync::Holding;
-use osis_label::{Class, Prefix};
+use osis_label::{Class, Prefix, StepId};
 use osis_proto::limits::{MAX_FETCH_IDS, REPLY_BUDGET};
 use osis_proto::{Code, Event, Fetched, Id, Msg, Pull, PullReply, Stamp, Stream, Wrap};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -32,6 +32,9 @@ pub(super) struct Place {
     /// stream that left it, stopped at the stream's cursor, still stored as at it. Written with
     /// the next cursor that moves (`Pulling::save`), before it could mean another position.
     stale: BTreeSet<SyncId>,
+    /// The head of S this node last told this source a refusal of S under (no head: `None`),
+    /// until S is pulled from the start there (spec/sync-streams.md §4 Refused). Row `TOLD`.
+    pub told: BTreeMap<SyncId, Option<StepId>>,
 }
 
 impl Place {
@@ -45,6 +48,7 @@ impl Place {
         }
         self.stopped.remove(s);
         self.stale.remove(s);
+        self.told.remove(s);
     }
 }
 
@@ -77,7 +81,22 @@ impl Place {
         for (s, _, v) in t.record_tag_rows(rec, JOIN_FROM)? {
             p.stopped.insert(s, read_cursor(&v)?);
         }
+        for (s, _, v) in t.record_tag_rows(rec, TOLD)? {
+            let head = match v.len() {
+                0 => None,
+                _ => Some(StepId(v.try_into().map_err(|_| osis_store::Error::Corrupt("streams told row"))?)),
+            };
+            p.told.insert(s, head);
+        }
         Ok(p)
+    }
+
+    /// Writes member S's told head into record `rec`'s rows as memory holds it.
+    fn write_told(&self, t: &mut Transaction<'_>, rec: &RecordId, s: &SyncId) -> std::result::Result<(), osis_store::Error> {
+        match self.told.get(s) {
+            Some(h) => t.record_put_row(rec, TOLD, s, b"", h.map_or(Vec::new(), |h| h.0.to_vec())),
+            None => t.record_remove_row(rec, TOLD, s, b"").map(drop),
+        }
     }
 
     /// Writes member S's place into record `rec`'s rows as memory holds it.
@@ -829,7 +848,29 @@ impl Streams {
                     p.tell.push((s, Event::Full(true)));
                 }
             }
-            c => self.tell(conn, s, Event::Refused(b, c)),
+            c => {
+                self.tell(conn, s, Event::Refused(b, c));
+                self.told(ctx, conn, s);
+            }
+        }
+    }
+
+    /// A refusal of S told on `conn`: the source's place keeps the head it was told under, so a
+    /// head move pulls S from the start there (`pull_anew`). One row per (source, S).
+    fn told(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId) {
+        let Some(src) = self.pull.get(&conn).map(|p| p.src) else { return };
+        let head = match ctx.store.head(&s) {
+            Ok(h) => h.map(|h| h.id()),
+            Err(e) => return self.failed(Err(e)),
+        };
+        let place = self.place(ctx.store, src);
+        if place.told.get(&s) == Some(&head) {
+            return;
+        }
+        place.told.insert(s, head);
+        if let (Source::Record(rec), Some(place)) = (src, self.places.get(&src)) {
+            let r = ctx.store.with_tx(|t| place.write_told(t, &rec, &s));
+            self.failed(r);
         }
     }
 
@@ -859,7 +900,8 @@ impl Streams {
 
     /// S kept unread whose dropped copy is fetched anew (spec/sync-judgement.md §6 Stops: a box
     /// of its head's sync secret keeps S again), or raised to read (§6 Read and unread move):
-    /// pulled again from the start at every source.
+    /// pulled again from the start at every source; S whose head moved kept unread: at each
+    /// source told a refusal of S under another head (spec/sync-streams.md §4 Refused).
     pub(super) fn fetch_anew(&mut self, ctx: &mut Ctx) -> bool {
         // once each, written twice or not (a raise to read off a dropped copy)
         let anew: BTreeSet<SyncId> = self.anew.added().into_iter().collect();
@@ -872,21 +914,30 @@ impl Streams {
     /// S pulled from the start: from each source pulling it now, and from the start at its next
     /// join at every source whose place passed it, those only stored included (a restart since),
     /// in one transaction with clearing the store's durable mark (`N/`, `Store::clear_anew`).
-    /// O(the sources holding a place of S).
+    /// Under a head move's mark (`Store::anew_everywhere` false) only at the sources told a
+    /// refusal of S under a head other than S's now. O(the sources holding a place of S).
     fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId) {
         let pulling: BTreeMap<Source, ConnId> = self.holders.get(&s).into_iter().flatten().filter_map(|c| self.pull.get(c).map(|p| (p.src, *c))).collect();
-        let stored = ctx.store.with_read(|t| {
+        let read = ctx.store.with_read(|t| {
+            let everywhere = Store::anew_everywhere(t, &s)?;
             let mut out = BTreeSet::new();
-            for tag in [AT_STREAM, JOIN_FROM] {
-                out.extend(t.records_with_row(&s, tag, b"", usize::MAX)?);
+            let tags: &[u8] = if everywhere { &[AT_STREAM, JOIN_FROM, TOLD] } else { &[TOLD] };
+            for tag in tags {
+                out.extend(t.records_with_row(&s, *tag, b"", usize::MAX)?);
             }
-            Ok(out)
+            Ok((everywhere, out))
         });
-        let stored = match stored {
-            Ok(x) => x,
-            Err(e) => return self.failed(Err(e)),
+        let head = ctx.store.head(&s).map(|h| h.map(|h| h.id()));
+        let ((everywhere, stored), head) = match (read, head) {
+            (Ok(x), Ok(h)) => (x, h),
+            (Err(e), _) | (_, Err(e)) => return self.failed(Err(e)),
         };
-        let srcs: BTreeSet<Source> = self.places.iter().filter(|(_, pl)| pl.at_stream.contains(&s) || pl.stopped.contains_key(&s) || pl.joining.contains_key(&s)).map(|(src, _)| *src).chain(pulling.keys().copied()).chain(stored.into_iter().map(Source::Record)).collect();
+        let srcs: BTreeSet<Source> = if everywhere {
+            self.places.iter().filter(|(_, pl)| pl.at_stream.contains(&s) || pl.stopped.contains_key(&s) || pl.joining.contains_key(&s) || pl.told.contains_key(&s)).map(|(src, _)| *src).chain(pulling.keys().copied()).chain(stored.into_iter().map(Source::Record)).collect()
+        } else {
+            let told: BTreeSet<Source> = self.places.iter().filter(|(_, pl)| pl.told.contains_key(&s)).map(|(src, _)| *src).chain(stored.into_iter().map(Source::Record)).collect();
+            told.into_iter().filter(|src| self.place(ctx.store, *src).told.get(&s).is_some_and(|h| *h != head)).collect()
+        };
         for src in &srcs {
             if let Some(p) = pulling.get(src).and_then(|c| self.pull.get_mut(c)) {
                 p.join(s, None);
@@ -896,12 +947,14 @@ impl Streams {
             place.stopped.remove(&s);
             place.joining.insert(s, None);
             place.stale.remove(&s);
+            place.told.remove(&s);
         }
         let places = &self.places;
         let r = ctx.store.with_tx(|t| {
             for src in &srcs {
                 if let (Source::Record(rec), Some(p)) = (src, places.get(src)) {
                     p.write(t, rec, &s)?;
+                    p.write_told(t, rec, &s)?;
                 }
             }
             Store::clear_anew(t, &s)

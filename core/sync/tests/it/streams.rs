@@ -418,11 +418,27 @@ impl Sid {
         assert_eq!(side.store.take_register(&self.id, &self.genesis.0, Some(&self.genesis.1)).unwrap(), Code::OK);
     }
 
+    /// Step `n` (a child of `parent`) whose write secret is `[w; 32]`.
+    fn child(&self, parent: &Step, n: u64, w: u8) -> (Step, ClaimSet) {
+        let write = Secret32::from_bytes([w; 32]);
+        let keys = StepKeys::derive(&self.sync, &write, &self.admin, &self.deposit, &self.id);
+        let read = Epoch::derive(&THING, osis_base::Role::Read, n, &write).unwrap();
+        let se = Epoch::derive(&THING, osis_base::Role::Sync, n, &self.sync).unwrap();
+        let d = label_role_key(LabelRole::Delete, &self.admin);
+        osis_label::register(Parent::Child { step: parent, delete: &d }, keys, &[], (&THING, read, &write), (se, &self.sync), &mut SeededRng::from_u64(99 + n)).unwrap()
+    }
+
     /// A stamped entry of a fresh blob taken into `side`'s store.
     fn stamped(&self, side: &mut Side, n: usize, good: bool) -> BlobId {
+        self.stamped_by(side, n, if good { self.write.clone() } else { Secret32::from_bytes([0xee; 32]) })
+    }
+
+    /// An entry of a fresh blob stamped by write secret `write`, in `side`'s store.
+    fn stamped_by(&self, side: &mut Side, n: usize, write: Secret32) -> BlobId {
+        let good = write.expose() == self.write.expose();
         let (b, bytes) = blob(n, Class::Durable);
         let w = [3u8; WRAP_LEN];
-        let key = if good { label_role_key(LabelRole::Write, &self.write) } else { label_role_key(LabelRole::Write, &Secret32::from_bytes([0xee; 32])) };
+        let key = label_role_key(LabelRole::Write, &write);
         let stamp = osis_label::sign_stamp(&key, &self.id, &b, &w, false);
         let e = Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role: false, class: Class::Durable, expires: None };
         // a bad stamp is planted as a read S's own entry would be: the server serves what it holds
@@ -959,6 +975,49 @@ fn refusals_told_and_kept_spec_sync_streams_4() {
     assert!(r.stamp.is_some());
     assert!(p.sent_by_b(43).iter().any(|m| matches!(m, Msg::Stream(st) if st.cursor.is_none() && st.events.contains(&(k.id, Event::Refused(good, Code::TOMBSTONED))))));
     assert!(!p.a.streams.known().knows(src, &k.id, &good), "6 counts as deleted there");
+}
+
+// spec/sync-streams.md §4 (Refused): a node keeping S unread refuses an entry stamped under no key
+// of its head; once its head moves it pulls S again from the start, once, from the peer it told,
+// and takes the entry with no other trigger. A restart between the head move and the pull changes
+// nothing; a head move with no refusal told under the head before it pulls nothing.
+#[test]
+fn a_moved_head_shows_a_refused_entry_again_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    let x = k.stamped(&mut p.a, 500, false);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    let held = |p: &Pair, b: &BlobId| p.b.store.entry(&k.id, b).unwrap().is_some();
+    let anew = |p: &Pair, from: usize| p.sent_by_b(41).iter().skip(from).filter(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])).count();
+    assert!(!held(&p, &x), "refused under its head");
+    assert_eq!(p.a.streams.known().refusal(p.a.src(), &k.id, &x).unwrap().code, Code::REFUSED);
+    let pulls = p.sent_by_b(41).len();
+    let one = k.child(&k.genesis.0, 1, 0xee);
+    assert_eq!(p.b.store.take_register(&k.id, &one.0, Some(&one.1)).unwrap(), Code::OK);
+    p.run();
+    assert!(held(&p, &x), "taken once its head moved");
+    assert_eq!(anew(&p, pulls), 1, "pulled again from the start once");
+    // refused under the new head, then a head move and a restart before the pull
+    let y = k.stamped_by(&mut p.a, 501, Secret32::from_bytes([0xf0; 32]));
+    p.run();
+    assert!(!held(&p, &y));
+    let two = k.child(&one.0, 2, 0xf0);
+    assert_eq!(p.b.store.take_register(&k.id, &two.0, Some(&two.1)).unwrap(), Code::OK);
+    p.b.restart_all(7);
+    p.a.streams.closed(C);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    assert!(held(&p, &y), "taken after the restart");
+    let pulls = p.sent_by_b(41).len();
+    let three = k.child(&two.0, 3, 0xf1);
+    assert_eq!(p.b.store.take_register(&k.id, &three.0, Some(&three.1)).unwrap(), Code::OK);
+    p.run();
+    assert_eq!(anew(&p, pulls), 0, "nothing refused under the head before: nothing pulled");
 }
 
 // spec/commits.md §4 (Pending storage: what pends from unvouched input is kept only while an entry
