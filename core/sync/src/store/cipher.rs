@@ -107,6 +107,7 @@ impl osis_store::CipherHost for Inner {
         // a suspended transaction dropped aborts; the total is counted again
         self.open = None;
         self.total = None;
+        self.mem.stamps.wrote(&super::UNREAD_TOTAL, true);
     }
 
     fn forensic_keys(&mut self) -> Res<Vec<[u8; 32]>> {
@@ -128,6 +129,7 @@ impl osis_store::CipherHost for Inner {
             past_cap: self.past_cap.clone(),
             unheld: self.unheld.clone(),
             room: self.room.clone(),
+            room_fx: self.room_fx.clone(),
         })
     }
 }

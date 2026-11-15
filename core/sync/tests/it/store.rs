@@ -501,6 +501,39 @@ fn role_entries_pass_the_caps_spec_sync_ids_6() {
     assert!(st.entry(&s.id, &b4).unwrap().is_some());
 }
 
+// spec/sync-streams.md §4 (Full: the room of the cap that refused grows as an entry leaves,
+// under S or another sync ID): S refused by the store's total stays full until the total has
+// room for the entry it refused; here tombstones (which no give-way removes) leaving at their
+// lifetime make it, with no cap moving. Room judged by what moved, not per call.
+#[test]
+fn a_total_refusal_ends_as_room_for_it_frees_spec_sync_streams_4() {
+    let dev = Dev::new();
+    let s = Sid::new(10);
+    let mut st = unread(&dev, &s);
+    for n in 0..3 {
+        let (b, x) = blob(200 + n, Class::Durable, None, &[]);
+        assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
+        assert_eq!(st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b)], true).unwrap(), [Code::OK]);
+    }
+    let (b, x) = blob(300, Class::Durable, None, &[]);
+    let used = st.usage(&s.id).unwrap().0.bytes;
+    st.set_caps(&Caps { policy: BTreeMap::from([("total_bytes".to_string(), used + x.len() as u64)]), ..Caps::default() });
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x.clone()).unwrap(), Code::STORAGE_CAP);
+    assert!(st.waits_room(&s.id));
+    let judged = || osis_base::costs::take().into_iter().filter(|(n, ..)| *n == "store: room judged").map(|(.., c)| c).sum::<u64>();
+    judged();
+    assert!(st.room_grew().unwrap().is_empty(), "no room yet");
+    assert_eq!(judged(), 1, "judged once it is full");
+    for _ in 0..5 {
+        assert!(st.room_grew().unwrap().is_empty());
+    }
+    assert_eq!(judged(), 0, "nothing moved: nothing judged");
+    st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 1)).unwrap();
+    assert_eq!(st.room_grew().unwrap(), vec![s.id], "the tombstones left: room for it");
+    assert!(!st.waits_room(&s.id));
+    assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::OK);
+}
+
 // spec/sync-inbox.md §3 (deposit refusals): 0 taken (and for a held or dropped blob, changing
 // nothing); 4 for a sync ID the node will hold but holds no head of yet; 5 past the budget; 12
 // past a cap; 14 for a bad signature, a relay-only blob, an unknown sync ID; never the head.

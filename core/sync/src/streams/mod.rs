@@ -431,8 +431,9 @@ impl Streams {
         self.forget_shredded();
         self.known.settle();
         let mut acted = self.send_relays(ctx)?;
-        acted |= ctx.store.room_grew()?;
-        self.untell_full(ctx);
+        let roomy = ctx.store.room_grew()?;
+        acted |= !roomy.is_empty();
+        self.untell_full(&roomy);
         acted |= self.fetch_anew(ctx);
         let conns: BTreeSet<ConnId> = self.serve.keys().chain(self.pull.keys()).copied().collect();
         for c in conns {

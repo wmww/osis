@@ -13,6 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// A row a connection's source keeps: (connection, sync ID, owner tag, key).
 pub(crate) type ConnRow = (crate::types::ConnId, SyncId, u8, Vec<u8>);
 
+/// The stamp key of the memory bytes of every sync ID (`count`), what the memory total's room
+/// reads.
+pub(crate) const MEMORY_TOTAL: &str = "memory total";
+
 /// The stamp key of S's listing (any entry of S added or removed).
 #[derive(Hash)]
 struct Listing<'a>(&'a SyncId);
@@ -123,6 +127,7 @@ impl Memory {
 
     fn count(&mut self, s: &SyncId, b: &BlobId, r: &EntryRow, sign: bool) {
         let held = self.estimate.get(b).copied().unwrap_or(0).max(r.size);
+        self.stamps.wrote(&MEMORY_TOTAL, true);
         let u = self.usage.entry(*s).or_default();
         let op = |x: &mut u64, n: u64| *x = if sign { x.saturating_add(n) } else { x.saturating_sub(n) };
         if !r.role {

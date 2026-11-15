@@ -908,6 +908,43 @@ fn full_told_then_room_again_spec_sync_streams_4() {
     }
 }
 
+// spec/sync-streams.md §4 (Full: until a cap that refused has room for the least entry it
+// refused): steps with nothing moving judge no room; a cap rise too small for the entry refused
+// keeps S full and pulls nothing; one with room for it ends the wait and pulls S anew once.
+#[test]
+fn full_ends_only_with_room_for_what_it_refused_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    let x = k.stamped(&mut p.a, 3000, true);
+    let y = k.stamped(&mut p.a, 3001, true);
+    let caps = |n: u64| Caps { policy: BTreeMap::from([("bytes".to_string(), n)]), ..Caps::default() };
+    p.b.store.set_caps(&caps(4000));
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    assert!(p.a.streams.known().full(C, &k.id));
+    let judged = || osis_base::costs::take().into_iter().filter(|(n, ..)| *n == "store: room judged").map(|(.., c)| c).sum::<u64>();
+    let anew = |p: &Pair| p.sent_by_b(41).iter().filter(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])).count();
+    let pulls = anew(&p);
+    judged();
+    for _ in 0..10 {
+        p.b.with(p.now, |s, c| s.tick(c)).unwrap();
+    }
+    assert_eq!(judged(), 0, "nothing moved: no room judged");
+    p.b.store.set_caps(&caps(4100));
+    p.run();
+    assert_eq!(judged(), 1, "the cap moved: judged once");
+    assert!(p.a.streams.known().full(C, &k.id) && p.b.store.waits_room(&k.id), "too little room for what it refused");
+    assert_eq!(anew(&p), pulls, "nothing pulled");
+    p.b.store.set_caps(&caps(10_000));
+    p.run();
+    assert!(!p.a.streams.known().full(C, &k.id));
+    assert_eq!(anew(&p), pulls + 1, "pulled anew once");
+    assert!([x, y].iter().all(|b| p.b.store.entry(&k.id, b).unwrap().is_some()));
+}
+
 // spec/sync-streams.md §4 (Full: the room of the cap that refused): a node refusing an entry by
 // the store's total is full for S until the total's room grows (here the cap rises; S's own usage
 // never moves), across a restart.

@@ -26,11 +26,12 @@
 //!   `ANEW_RAISED`, S was raised from kept unread to read (`Store::set_holdings`); `ANEW_HEAD`,
 //!   S's head moved kept unread over a refusal told to a record's source (`path::register`): pulled from the start only at the sources
 //!   told a refusal of S under another head (spec/sync-streams.md §4 Refused); `ANEW_ROOM`, S
-//!   was full and its room grew (`Store::room_grew`; over a head move's mark, which it covers).
+//!   was full and a refusing cap has room again (`Store::room_grew`; over a head move's mark,
+//!   which it covers).
 //!   A head move's mark is not written over another mark (that one pulls from every source).
 //! - `R/ s cap` S kept unread is full (spec/sync-streams.md §4 Full): a pulled entry was refused
-//!   for room by `cap` (`store::Cap`); value that cap's least room at its refusals, entries and
-//!   bytes (`Store::room_grew`).
+//!   for room by `cap` (`store::Cap`); value the bytes the least entry it refused needs under it
+//!   (`Store::room_grew`).
 //! - `F/ s` S's first sync here ended (spec/sync-streams.md §5): a source's stream of S stood at
 //!   the end of a listing from the start; gone with S (`shred`).
 

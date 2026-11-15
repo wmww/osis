@@ -779,12 +779,15 @@ impl Streams {
         }
     }
 
-    /// `full` false on each connection told it for an S that is full no longer (its room grew,
-    /// or it is no longer kept unread). O(the members told full).
-    pub(super) fn untell_full(&mut self, ctx: &mut Ctx) {
-        let ended: Vec<(ConnId, SyncId)> = self.pull.iter().flat_map(|(c, p)| p.told_full.iter().map(move |s| (*c, *s))).filter(|(_, s)| !ctx.store.waits_room(s)).collect();
-        for (c, s) in ended {
-            self.tell_full(c, s, false);
+    /// `full` false on each connection told it for each of `ended`, full no longer
+    /// (`Store::room_grew`: room for what it refused, or no longer kept unread). O(`ended` times
+    /// the connections pulling).
+    pub(super) fn untell_full(&mut self, ended: &[SyncId]) {
+        let conns: Vec<ConnId> = self.pull.keys().copied().collect();
+        for s in ended {
+            for c in &conns {
+                self.tell_full(*c, *s, false);
+            }
         }
     }
 
@@ -909,7 +912,7 @@ impl Streams {
 
     /// S kept unread whose dropped copy is fetched anew (spec/sync-judgement.md §6 Stops: a box
     /// of its head's sync secret keeps S again), raised to read (§6 Read and unread move), or
-    /// full whose room grew (spec/sync-streams.md §4 Full): pulled again from the start at every
+    /// full with room again (spec/sync-streams.md §4 Full): pulled again from the start at every
     /// source; S whose head moved kept unread: at each source told a refusal of S under another
     /// head (spec/sync-streams.md §4 Refused).
     pub(super) fn fetch_anew(&mut self, ctx: &mut Ctx) -> bool {

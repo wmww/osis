@@ -55,6 +55,9 @@ pub(crate) fn put_usage(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, 
         t.put_local(&rows::usage_key(s), &new.encode(), Shred::No)?;
         t.put_local(&rows::by_use_key(new.bytes, s), &[], Shred::No)?;
     }
+    if env.holding(s) == Some(Holding::Unread) && old.bytes != new.bytes {
+        env.mem.stamps.wrote(&super::UNREAD_TOTAL, true);
+    }
     if env.holding(s) == Some(Holding::Unread)
         && let Some(total) = env.total.as_mut()
     {
