@@ -821,7 +821,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     // together. A leftover holding no value of its own writes is never dropped for keep bounds:
     // past its expiry it drops as covered, purged it does not (spec/commits.md §5 Purge, Dropping
     // a body); a body past its commit's expiry left by expiry, its leftover with it. A part last
-    // seen missing or waiting, or on an aspect out of scope, is not judged
+    // seen missing or waiting, or on an aspect out of scope then or now, is not judged
     if let Some(d) = drops {
         let mut back = input.held.clone();
         let mut fresh = Vec::new();
@@ -835,7 +835,8 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
                     let bare = meta.is_some_and(|m| m.bare(i));
                     let seen = match &p.body {
                         hm::Body::Held(_) if bare => Seen::Bare,
-                        hm::Body::Held(_) if applied => Seen::Held(Box::new(p.body.clone())),
+                        // out of scope its body was not read (fed empty): not judged
+                        hm::Body::Held(_) if applied && by_part.contains_key(&(p.thing, p.aspect)) => Seen::Held(Box::new(p.body.clone())),
                         _ => Seen::Not,
                     };
                     d.seen.insert((id, i), seen);

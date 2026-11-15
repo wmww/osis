@@ -570,8 +570,10 @@ pub(crate) struct Played {
     dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// How many commits were made before each step.
     steps_at: Vec<usize>,
-    /// How many commits were made before each `HeldHere`.
-    held_here: Vec<usize>,
+    /// Held sets of their own: what was made before each `HeldHere`, and the setup with each
+    /// `Removals`' commits (on a thing of its own, so held-model judges its removals whatever
+    /// else of the history waits).
+    own_sets: Vec<Vec<usize>>,
     /// A `settled` history: its settling tail's first commit (`settling`). Every order delivers
     /// the tail last, as made, so each settling compaction counts when it arrives; the node then
     /// shows what the keep-everything node does before the sync exchange too, on `settled_last`.
@@ -759,7 +761,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     // per aspect compacted since the last commit of another step: whether a peer could
     let mut compacted_last: BTreeMap<(String, String), bool> = BTreeMap::new();
     let mut steps_at = Vec::new();
-    let mut held_here = Vec::new();
+    let mut own_sets = Vec::new();
     for st in steps {
         let (old, st) = match st {
             Step::Old(x) => (true, &**x),
@@ -1099,7 +1101,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 None
             }
             Step::HeldHere => {
-                held_here.push(packs.len());
+                own_sets.push((0..packs.len()).collect());
                 None
             }
             Step::RecordOnly { by, under } => {
@@ -1338,6 +1340,9 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
         };
         if let Some(i) = acted {
             collect(&mut lp, i, &mut seen, &mut packs, &mut authors, &mut own);
+            if matches!(st, Step::Removals { .. }) {
+                own_sets.push((0..base).chain(before..packs.len()).collect());
+            }
             let kind = format!("{st:?}");
             let kind = kind.split(' ').next().unwrap().to_string() + if matches!(st, Step::Nested { text: true, .. }) { "(text)" } else if record { "(record)" } else { "" } + if old { "(old)" } else { "" };
             match st {
@@ -1374,7 +1379,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, held_here, settle_from: None, settled_last, withheld: 0, model: None, setups: Setups::default() }
+    Played { packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, setups: Setups::default() }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -2136,7 +2141,7 @@ fn fill_order(played: &Played, held: &[usize]) -> Vec<usize> {
 /// The held sets tried: everything, a first sync part way (the setup and its first half and three
 /// quarters: it reads as if the rest never came), then `subsets` partial ones (alternately without one
 /// writer's commits after the setup, as a node that never heard from it, and without a random
-/// third of them), then what was made before each `HeldHere`; `usize::MAX`: every held set (all
+/// third of them), then the history's own sets (`Played::own_sets`); `usize::MAX`: every held set (all
 /// of the setup, any of the rest).
 fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> {
     let n = played.packs.len();
@@ -2165,10 +2170,9 @@ fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> 
             out.push(keep);
         }
     }
-    for &k in &played.held_here {
-        let keep: Vec<usize> = (0..k).collect();
-        if !out.contains(&keep) {
-            out.push(keep);
+    for keep in &played.own_sets {
+        if !out.contains(keep) {
+            out.push(keep.clone());
         }
     }
     out
@@ -3735,6 +3739,53 @@ fn harness_flags_a_live_drop_before_its_live_bound_spec_commits_5() {
     assert!(d.contains("live") && d.contains(kept.as_str()), "{d}");
     assert_eq!(cov.differs.get("dropped a live body before its live bound"), Some(&1), "{:?}", cov.differs);
     assert_eq!(cov.reached.get("live drops judged"), Some(&2), "{:?}", cov.reached);
+}
+
+// The harness's covered-drop check judges a drop by the body as last seen in scope: a kept
+// register write replaced, then a write by 1 that waits for 1's setup (out of the model, so the
+// aspect is out of scope and its bodies are not read), then 1's setup and a snapshot arrive and
+// the first write, out of history, is dropped by hand. Seen only out of scope, it is not judged
+// (judged by its unread body it read as live, kept for good).
+#[test]
+fn harness_judges_no_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
+    use Step::*;
+    let w = |by, v| Typed { by, t: 0, op: 16, k: 0, v };
+    let h = vec![w(0, 1), Advance { who: None, ms: 10 }, w(0, 2), Advance { who: None, ms: HOUR }, w(1, 3), Compact { by: 0, t: 0, op: 16 }];
+    let played = play(0, &h);
+    let hist = crate::held::History::new(&played.packs);
+    let n = played.packs.len();
+    let (t, a) = (played.things[0], aspect_of(16));
+    let first = played.packs[played.base].id;
+    assert!(osis_commit::CommitBlob::decode(&played.packs[n - 1].bytes).unwrap().header.kind.is_compaction(), "{:?}", played.tally.show());
+    let setup: Vec<usize> = (0..played.base).filter(|&i| played.authors[i] == 1).collect();
+    assert!(!setup.is_empty());
+    let mut p = deliver(&played, &(0..n - 1).filter(|i| !setup.contains(i)).collect::<Vec<_>>());
+    assert!(!p.engine.pending().is_empty(), "1's write waits");
+    let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
+    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)), None);
+    for &i in setup.iter().chain([&(n - 1)]) {
+        p.receive(&played.packs[i].bytes, played.packs[i].blobs.clone()).unwrap();
+    }
+    assert!(p.engine.pending().is_empty());
+    p.engine.drop_body(&first, &t, &a).unwrap();
+    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)), None);
+    assert_eq!(cov.reached.get("covered drops unjudged"), Some(&1), "{:?}", cov.reached);
+}
+
+// The coverage floor's removals are the generator's by construction: a new thing whose creation
+// part is held away for good (`Cfg::away`) leaves its commits, a grant among them, waiting at
+// every node holding them, which takes the role input out of held-model's scope in every held
+// set; the history's `Removals`, held as a set of its own with the setup (`Played::own_sets`),
+// is judged all the same.
+#[test]
+fn removals_judged_whatever_else_waits() {
+    use Step::*;
+    let h = vec![Removals { by: 1, other: 2, v: 5 }, NewTop { by: 0 }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }];
+    let seen = check(0, &h, Cfg { all_up_to: 0, random: 0, subsets: 0, split: Twins::First(0), clock: 0, away: true, ..ORDERS }).unwrap();
+    assert!(seen.pending.contains_key("UnknownCreated"), "{:?}", seen.pending);
+    for k in crate::held::REMOVALS {
+        assert!(seen.model.reached.get(k).is_some_and(|n| *n > 0), "{k}: {:?}", seen.model.reached);
+    }
 }
 
 // spec/commits.md §5 Invalid: 0 lowers 1 to read, 2 (having seen it) grants 1 write again, 1
