@@ -163,26 +163,11 @@ impl Engine {
     /// Whether the thing holds content: some present aspect a content write sets (not
     /// `created.0`, not role-class), durable or ephemeral. Stops at the first.
     pub fn has_content(&mut self, tid: &Tid) -> Result<bool> {
-        let content = |ak: &Ak| ct::deletable(ak.as_str());
         if !self.core.exists(tid) {
             return Ok(false);
         }
         let tid = *tid;
-        self.read(|tx| {
-            let mut aks = Vec::new();
-            let prefix = [records::ASPECTS, tid.as_bytes()].concat();
-            tx.scan(&prefix, |k, _| {
-                let mut r = records::Rd::new(k);
-                aks.push(r.ak()?);
-                Ok(())
-            })?;
-            for ak in aks.iter().filter(|a| content(a)) {
-                if tx.state(&tid, ak)?.is_some_and(Fragment::present) {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        })
+        self.read(|tx| has_content_in(tx, &tid))
     }
 
     /// The role timeline's roster of `thing` (spec/permissions.md §2).
@@ -279,4 +264,24 @@ fn may_hold(tx: &mut super::Tx<'_>, t: &Tid, ephemeral: bool) -> Result<Vec<Ak>>
         }
     }
     Ok(out)
+}
+
+/// `Engine::has_content` in `tx`.
+pub(crate) fn has_content_in(tx: &mut super::Tx<'_>, tid: &Tid) -> Result<bool> {
+    if !tx.core.exists(tid) {
+        return Ok(false);
+    }
+    let mut aks = Vec::new();
+    let prefix = [records::ASPECTS, tid.as_bytes()].concat();
+    tx.scan(&prefix, |k, _| {
+        let mut r = records::Rd::new(k);
+        aks.push(r.ak()?);
+        Ok(())
+    })?;
+    for ak in aks.iter().filter(|a| ct::deletable(a.as_str())) {
+        if tx.state(tid, ak)?.is_some_and(Fragment::present) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

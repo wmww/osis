@@ -347,7 +347,8 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
     // the node holds value-less or what has expired by the undo's `ts`
     let wall = ts.wall_ms().0;
     let mut parts = Vec::new();
-    for (a, delta, source) in undone_parts(tx, &target, ts, writers)? {
+    let (undone, relist) = undone_parts(tx, &target, ts, writers)?;
+    for (a, delta, source) in undone {
         let (tid, ak) = (a.tid, a.ak.clone());
         let strip = move |core: &Core, f: &mut Fragment| {
             crate::apply::strip_valueless(core, &tid, &ak, f);
@@ -361,7 +362,10 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
     let [plain, expiring] = [tx.core.session.nonce, tx.core.expiring.nonce];
     let mut nonce = plain;
     let (mut deltas, expires) = loop {
-        let unmade = unmake_ops(tx, &made, ts, node, writers)?;
+        let mut unmade = unmake_ops(tx, &made, ts, node, writers)?;
+        for (k, ops) in &relist {
+            unmade.entry(k.clone()).or_default().extend(ops.iter().cloned());
+        }
         let (deltas, copies) = inverse(tx, &parts, unmade, ts, nonce)?;
         // tests: a writer predating the undo expiry rule (spec/crdt.md §4.6)
         let expires = if tx.core.skip_writer_rules { None } else { copy_expiry(&copies)? };
@@ -388,12 +392,16 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
 /// writes in effect only list things the commit created (`lists_only`: left out, the deletion
 /// takes them out); or it writes back replaced content (`osis_crdt::restores`) not kept
 /// (`replaced_kept`). A kept part is inverted even when `lists_only`, so the group reads as before
-/// the commit (spec/crdt.md §4.6 SHOULD).
-fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts, writers: &[Tid]) -> Result<Vec<(osis_commit::AspectEntry, Fragment, Source)>> {
+/// the commit (spec/crdt.md §4.6 SHOULD). With them, the `group.0` ops putting back the one
+/// thing the commit deleted (`relisted`), for each group part left out so.
+fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts, writers: &[Tid]) -> Result<(Vec<Inverted>, Relist)> {
     let m = tx.core.ix.commits.get(target).cloned().ok_or(Error::UnknownCommit(*target))?;
     let h = m.header.clone();
     let made = made_by(&h, &m.valid);
     let now = ts.wall_ms().0;
+    // asked only once a group part is out of kept history
+    let mut deleted: Option<Option<Tid>> = None;
+    let mut relist = Relist::new();
     let mut parts = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
         if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || a.ak.as_str() == osis_commit::retention::PURGE || made.contains(&a.tid) {
@@ -406,6 +414,19 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts, writers: &[Tid]) -> 
             if lists_only(tx, &h, target, ai, &made, writers, ts)? {
                 continue;
             }
+            if deleted.is_none() && a.ak.as_str() == GROUP.ak() {
+                deleted = Some(deleted_one(tx, &h, &m, target, &made)?);
+            }
+            if let Some(Some(x)) = deleted
+                && let Some(ops) = relisted(tx, &h, target, ai, x, writers, ts)?
+            {
+                relist.entry((a.tid, a.ak.clone())).or_default().extend(ops);
+                continue;
+            }
+            if let Some(ops) = unrelisted(tx, &h, target, ai, writers, ts)? {
+                relist.entry((a.tid, a.ak.clone())).or_default().extend(ops);
+                continue;
+            }
             return Err(Error::NotKept(*target));
         }
         let Some(Decoded::Delta(d)) = crate::apply::held_part(tx, target, ai)? else { return Err(Error::Corrupt("content part held without its delta")) };
@@ -416,7 +437,113 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts, writers: &[Tid]) -> 
         }
         parts.push((a.clone(), d.fragment, source));
     }
-    Ok(parts)
+    Ok((parts, relist))
+}
+
+/// For `group.0` part `ai` of undo commit `target` (header `h`), on a group other than `x`:
+/// where every write of it in effect in the group's current state creates a live element listing
+/// one thing `x` the commit also writes parts on (an undone delete's or creation's re-listing,
+/// `relisted`), the removals of `x` at those fields, judged from the state alone (its elements
+/// keep their values), so undoing that restore needs no history of the group either. None
+/// otherwise.
+fn unrelisted(tx: &mut Tx<'_>, h: &Header, target: &CommitId, ai: usize, writers: &[Tid], ts: Ts) -> Result<Option<Vec<PathOp>>> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
+    if h.undoes.is_none() || a.ak.as_str() != GROUP.ak() || !writers.iter().all(|w| check_authority(tx.core, *w, &Default::default(), &a.tid, GROUP.ak(), ts).is_ok()) {
+        return Ok(None);
+    }
+    let Some(own) = crate::engine::Owned::of(h, target, ai) else { return Ok(None) };
+    let Some(state) = tx.state(&a.tid, &a.ak)? else { return Ok(None) };
+    let (mut x, mut fields) = (None, BTreeSet::new());
+    for w in state.winners().iter().filter(|w| own.owns(&w.stamp.dot)) {
+        let listed = match w.path.as_slice() {
+            [osis_crdt::Place::Field(f), osis_crdt::Place::Elem(d), osis_crdt::Place::In | osis_crdt::Place::Tid(_)] if w.kind == osis_crdt::Kind::Value && w.stamp.dot == *d && [crate::engine::groups::ITEMS, crate::engine::groups::SUBGROUPS].contains(f) => match state.set_elem_value(*f, d) {
+                Some(Value::Tid(t)) => Some((*f, t)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let Some((f, t)) = listed else { return Ok(None) };
+        if x.is_some_and(|y| y != t) {
+            return Ok(None);
+        }
+        x = Some(t);
+        fields.insert(f);
+    }
+    let Some(x) = x else { return Ok(None) };
+    if x == a.tid || !h.aspects.iter().any(|p| p.tid == x && p.ak.as_str() != GROUP.ak()) {
+        return Ok(None);
+    }
+    Ok(Some(fields.into_iter().map(|f| PathOp { path: vec![PathSeg::Field(f)], op: Op::Remove(Value::Tid(x)) }).collect()))
+}
+
+/// A part an undo inverts: its entry, delta and writer's source.
+type Inverted = (osis_commit::AspectEntry, Fragment, Source);
+
+/// `group.0` ops per `(group, ak)` an undo writes beside its inverse.
+type Relist = BTreeMap<(Tid, Ak), Vec<PathOp>>;
+
+/// The one thing content commit `target` (header `h`) deleted, if it is one (spec/commits.md §7):
+/// it reads no content now, and the commit either undid its creation (`undoes` a commit that
+/// made it alone) or holds parts on it, each a reset of an aspect's root alone (a `delete`, or
+/// an undone creation's deletion), read from their bodies. None when no thing or several are.
+fn deleted_one(tx: &mut Tx<'_>, h: &Header, m: &crate::engine::Meta, target: &CommitId, made: &BTreeSet<Tid>) -> Result<Option<Tid>> {
+    if h.kind != Kind::Content {
+        return Ok(None);
+    }
+    let mut found: BTreeSet<Tid> = BTreeSet::new();
+    if let Some(u) = h.undoes
+        && let Some(um) = tx.core.ix.commits.get(&u)
+        && let Some(uh) = um.header.decoded()
+    {
+        found.extend(made_by(&uh, &um.valid));
+    }
+    let mut on: BTreeMap<Tid, bool> = BTreeMap::new();
+    for (ai, a) in h.aspects.iter().enumerate() {
+        let ak = a.ak.as_str();
+        if !m.valid_at(ai) || a.ak.signal() || ak == CREATED.ak() || ak == osis_commit::retention::RETENTION || ak == osis_commit::retention::PURGE || made.contains(&a.tid) {
+            continue;
+        }
+        let reset = match crate::apply::held_part(tx, target, ai)? {
+            Some(Decoded::Delta(d)) => d.fragment.reset().is_some() && d.fragment.winners().iter().all(|w| w.path.is_empty() && w.kind == osis_crdt::Kind::Reset),
+            _ => false,
+        };
+        // a group part is judged as the group's (`relisted`) unless it is the thing's own reset
+        if ak == GROUP.ak() && !reset {
+            continue;
+        }
+        *on.entry(a.tid).or_insert(true) &= reset;
+    }
+    found.extend(on.into_iter().filter(|(_, r)| *r).map(|(t, _)| t));
+    let [x] = found.into_iter().collect::<Vec<_>>()[..] else { return Ok(None) };
+    Ok((!crate::engine::read::has_content_in(tx, &x)?).then_some(x))
+}
+
+/// For `group.0` part `ai` of `target` (header `h`), on a group other than `x`, the thing it
+/// deleted (`deleted_one`): adds of `x` at each field where the part's writes in effect in the
+/// group's current state removed elements, when every one of them is such a removal and all of
+/// `writers` may write the group at `ts`. Fresh adds, needing nothing of the old elements, so no
+/// history of the group; only `x` ever goes back, whatever else the part removed. Read from the
+/// state, never the part's body. None when the part does anything else there.
+fn relisted(tx: &mut Tx<'_>, h: &Header, target: &CommitId, ai: usize, x: Tid, writers: &[Tid], ts: Ts) -> Result<Option<Vec<PathOp>>> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
+    if a.ak.as_str() != GROUP.ak() || a.tid == x || !writers.iter().all(|w| check_authority(tx.core, *w, &Default::default(), &a.tid, GROUP.ak(), ts).is_ok()) {
+        return Ok(None);
+    }
+    let Some(own) = crate::engine::Owned::of(h, target, ai) else { return Ok(None) };
+    let Some(state) = tx.state(&a.tid, &a.ak)? else { return Ok(Some(Vec::new())) };
+    let mut fields = BTreeSet::new();
+    for w in state.winners().iter().filter(|w| own.owns(&w.stamp.dot)) {
+        match w.path.as_slice() {
+            [osis_crdt::Place::Field(f), osis_crdt::Place::Elem(_)] if w.kind == osis_crdt::Kind::Reset && [crate::engine::groups::ITEMS, crate::engine::groups::SUBGROUPS].contains(f) => {
+                fields.insert(*f);
+            }
+            [osis_crdt::Place::Field(f), osis_crdt::Place::Gone(..)] if [crate::engine::groups::ITEMS, crate::engine::groups::SUBGROUPS].contains(f) => {
+                fields.insert(*f);
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(fields.into_iter().map(|f| PathOp { path: vec![PathSeg::Field(f)], op: Op::Add(Value::Tid(x)) }).collect()))
 }
 
 /// Whether part `ai` of `target` (header `h`) is a `group.0` part the deletion of the things the

@@ -694,3 +694,69 @@ fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     assert_eq!(b.at(things[n - 1], key).get().unwrap(), Some(Value::Int(n as i64 - 1)));
     work
 }
+
+/// A thing made with full history and filed under home (spec/sync-set.md §1 Filing), home
+/// keeping none.
+fn filed_kept(db: &Osis, x: &osis::Ak) -> osis::Tid {
+    let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); w.at(t, kept(db, x)).set(&Value::Int(1))?; Ok(t) }).unwrap();
+    assert!(db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)));
+    t
+}
+
+// spec/commits.md §7: undoing a delete puts the thing back in the groups the delete took it
+// out of, as a fresh add, with no history of the group; redoing the delete takes it out again,
+// and undoing that puts it back.
+#[test]
+fn undo_of_delete_relists_without_the_groups_history_spec_commits_7() {
+    let db = db(0);
+    typed_any(&db, &["t:x.0"]);
+    let x = ak("t:x.0");
+    let t = filed_kept(&db, &x);
+    db.commit_with(|w| w.delete(t)).unwrap();
+    assert!(!db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)));
+    let s = Scope::Thing(t);
+    db.undo(&s).unwrap().unwrap();
+    assert_eq!(db.at(t, kept(&db, &x)).get().unwrap(), Some(Value::Int(1)));
+    assert!(db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)), "back in home");
+    db.redo(&s).unwrap().unwrap();
+    assert!(!db.has_content(t).unwrap() && !db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)), "deleted again");
+    db.undo(&s).unwrap().unwrap();
+    assert!(db.has_content(t).unwrap() && db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)));
+}
+
+// spec/commits.md §7: redoing an undone creation of a thing filed under home lists it there
+// again, with no history of home; undoing the redo takes it out.
+#[test]
+fn redo_of_an_undone_creation_relists_spec_commits_7() {
+    let db = db(0);
+    typed_any(&db, &["t:x.0"]);
+    let x = ak("t:x.0");
+    let t = filed_kept(&db, &x);
+    let made = db.created(t).unwrap().unwrap().id;
+    let u = db.revert(made).unwrap();
+    assert!(!db.has_content(t).unwrap() && !db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)));
+    let r = db.revert(u.stamp.id).unwrap();
+    assert_eq!(db.at(t, kept(&db, &x)).get().unwrap(), Some(Value::Int(1)));
+    assert!(db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)), "back in home");
+    db.revert(r.stamp.id).unwrap();
+    assert!(!db.has_content(t).unwrap() && !db.members(db.home()).unwrap().contains(&osis::Member::Subgroup(t)));
+}
+
+// spec/commits.md §7: only the deleted thing goes back. A delete whose group part also took
+// another member out re-lists only the deleted thing; one whose group part also adds another
+// member needs the group's history (`NotKept`).
+#[test]
+fn undo_of_delete_relists_only_the_deleted_thing_spec_commits_7() {
+    let db = db(0);
+    typed_any(&db, &["t:x.0"]);
+    let x = ak("t:x.0");
+    let (t, other) = (filed_kept(&db, &x), filed_kept(&db, &x));
+    db.commit_with(|w| { w.delete(t)?; w.group(db.home()).remove(osis::Member::Subgroup(other)) }).unwrap();
+    db.undo(&Scope::Thing(t)).unwrap().unwrap();
+    let home = db.members(db.home()).unwrap();
+    assert!(home.contains(&osis::Member::Subgroup(t)) && !home.contains(&osis::Member::Subgroup(other)), "only t back");
+    let [added] = unfiled(&db, 1)[..] else { panic!() };
+    let u = filed_kept(&db, &x);
+    let del = commit_with(&db, |w| { w.delete(u)?; w.group(db.home()).add(osis::Member::Item(added)) }).stamp.id;
+    assert!(matches!(db.revert(del), Err(Error::NotUndoable { reason: NotUndoableReason::NotKept, .. })), "an add of another member");
+}
