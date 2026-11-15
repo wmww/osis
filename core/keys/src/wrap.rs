@@ -5,7 +5,7 @@ use crate::epoch::{ActorEpochs, RoleEpochs};
 use osis_base::Role;
 use osis_crypto::{Epoch, RoleKey, Secret32, SigningSecret, VerifyingKey, role_key};
 
-/// The wrap epoch for an upload: the newest current (established) read epoch whose secret is
+/// The wrap epoch for a fresh encryption: the newest current (established) read epoch whose secret is
 /// held. None: the node is stranded and places nothing (spec/crypto.md §5).
 pub fn wrap_epoch(read: &RoleEpochs) -> Option<Epoch> {
     read.newest_held().map(|(e, _)| e)

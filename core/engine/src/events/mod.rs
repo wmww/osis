@@ -156,7 +156,7 @@ pub enum DiagnosticKind {
     /// A dialed peer's clock differs from this node's by more than `OFFSET_DIAGNOSTIC_MS`
     /// (spec/sync-streams.md §1): one of the two is wrong (`detail`: the peer and the offset).
     ClockSkew,
-    /// A bound on unverified input from other nodes (peers' unvouched entries, peers' uploads)
+    /// A bound on unverified input from other nodes (peers' unvouched entries, peers' entries)
     /// was reached under a sync ID: what came past it was not kept, and a real entry among it
     /// arrives again from its holders (`detail`: the sync ID and the bound).
     InputCapped,

@@ -347,7 +347,7 @@ impl Meta {
     pub fn stripped_parts(&self) -> impl Iterator<Item = usize> + '_ {
         self.hold.iter().enumerate().filter(|(_, h)| matches!(h, Hold::Leftover { .. })).map(|(ai, _)| ai)
     }
-    /// Whether part `ai` has no body to upload or keep at peers: dropped, or held as its leftover
+    /// Whether part `ai` has no body to log or keep at peers: dropped, or held as its leftover
     /// (spec/commits.md §5: purged, expired).
     pub fn body_gone(&self, ai: usize) -> bool {
         matches!(self.hold.get(ai), Some(Hold::Dropped(_) | Hold::Leftover { .. }))

@@ -293,7 +293,7 @@ enum Due {
 /// epoch is not current here and `who` withdraws it, or when a current read epoch's floor is
 /// below a holder's (`floors::low_floor_due`). A fork alone is due nothing else: it stands until
 /// the role next rotates (spec/crypto.md §4). No secret of the role is needed; the commit
-/// must be uploadable (`wrappable`), else the rotation waits for a re-seal.
+/// must be `wrappable`, else the rotation waits for a re-seal.
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
@@ -357,7 +357,7 @@ fn boxes_rotator(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role) -> Result<bool> {
     Ok(boxing.holders.iter().any(|h| h.role >= r && may_rotate(tx.core, &h.holder, a).contains(&r)))
 }
 
-/// Whether a rotation of `roles` can be uploaded (spec/crypto.md §5): rotating read, its commit
+/// Whether a rotation of `roles` can be wrapped (spec/crypto.md §5): rotating read, its commit
 /// wraps under the newest established read secret held (current or not); otherwise under the
 /// newest current read secret held, as any commit. A node holding neither is stranded
 /// (spec/permissions.md §4): it waits for a re-seal.

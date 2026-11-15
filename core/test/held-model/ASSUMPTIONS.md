@@ -2,7 +2,7 @@
 > Summary: What held-model leaves out or simplifies, so a mismatch against the engine in these areas is not a finding.
 
 **Model shape**
-- One node's view, no network: no sync scope (every thing counts as synced), sync IDs, peers, must-hold, lasting headers, header-only blobs, delete keys or uploads. The covering snapshot a writer owes is reported (`Outcome::owed`) and written only by the caller (`cover`); nothing fetches a body again, the caller does from what `Outcome::uncovered` and `Fate::NeverReceived` name.
+- One node's view, no network: no sync scope (every thing counts as synced), sync IDs, peers, must-hold, lasting headers, header-only blobs, delete keys or logging. The covering snapshot a writer owes is reported (`Outcome::owed`) and written only by the caller (`cover`); nothing fetches a body again, the caller does from what `Outcome::uncovered` and `Fate::NeverReceived` name.
 - A body is one part (one delta): each drops alone (spec/commits.md §5), so the blob holding a commit's deltas is not modelled.
 - No suspect flags: a body whose cover fell is never received at once.
 - `history()` is the set of replaced writes of kept bodies (stamp and carrying commit), not an API shape; what it shows for a write replaced several times, or exposes of a snapshot's copies, is not modeled.

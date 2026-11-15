@@ -172,7 +172,7 @@ fn forged_cross_thing_link_deletes_and_keeps_nothing() {
     let mut w = base();
     let k2 = [(1, 20)];
     let c = piece(&mut w, 2, &k2, vec![]);
-    w.entries.insert((2, c.piece)); // uploaded under thing 1's other sync ID too
+    w.entries.insert((2, c.piece)); // logged under thing 1's other sync ID too
     w.sources = vec![Source { thing: 2, links: vec![c.clone()] }, Source { thing: 1, links: vec![c.clone()] }];
     w.nodes = vec![node(&w, &[0, 1], &[(1, 20)], &[1, 2])];
     w.drop_source(0, 1);
@@ -182,7 +182,7 @@ fn forged_cross_thing_link_deletes_and_keeps_nothing() {
     w.nodes[0].held.insert(1); // the forged body held again: keeps nothing of thing 2
     w.settle(&mut Rng::new(1));
     assert!(!w.entries.contains(&(1, c.piece)));
-    assert!(w.entries.contains(&(2, c.piece)), "no thing-2 commitment under thing 1's sync ID: stays (junk a writer could upload anyway)");
+    assert!(w.entries.contains(&(2, c.piece)), "no thing-2 commitment under thing 1's sync ID: stays (junk a writer could log anyway)");
 }
 
 // Thing 1 under sync IDs 1 and 2: a node holding sync ID 1 only deletes sync ID 1's entry; sync ID 2's

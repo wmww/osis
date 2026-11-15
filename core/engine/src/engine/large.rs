@@ -3,7 +3,7 @@
 //! `CHUNK_THRESHOLD`, in `set`/`replace`/`add` values and list `insert` and `edit` items) becomes a link to
 //! a chunk tree written as blob ciphertexts in the store, framed like the delta's pages. A
 //! position holding a large value now reuses that tree (spec/sync-ids.md §1): unchanged chunks keep
-//! their blob and key and are not introduced again, so an edit writes and uploads O(change).
+//! their blob and key and are not introduced again, so an edit writes and logs O(change).
 //! Links compare by content hash, so an unchanged large value diffs as equal. Reads return the
 //! link; `Engine::read_large` materializes it.
 

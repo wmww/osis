@@ -245,7 +245,7 @@ fn list_items_cost_at_most_their_bytes_times_six() {
 
 const CHUNK_THRESHOLD_PLUS: usize = osis_base::format::CHUNK_THRESHOLD + 1;
 
-// spec/wire.md §4: a list's items are sorted and distinct, so a chunk link repeated (a small upload
+// spec/wire.md §4: a list's items are sorted and distinct, so a chunk link repeated (a small blob
 // for a list of any length) is refused at its first repeat; so is a frontier out of order or of any
 // shape but `{0: set<32-byte ID>}`.
 #[test]

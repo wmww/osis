@@ -288,7 +288,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         if r == Role::Read {
             // the greatest n it supersedes whose secret is held: one exists whenever any read
             // secret is held (the rotator may hold no current one). By n, not order n
-            // (spec/crypto.md §5): uploaders judge from the thing's own epochs, where derived
+            // (spec/crypto.md §5): encrypting nodes judge from the thing's own epochs, where derived
             // ones keep no order n
             wrap = newest_of(established.iter().map(|(e, _)| e));
         }

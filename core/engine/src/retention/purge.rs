@@ -474,7 +474,7 @@ impl AspectRequests {
 /// drops is purged as on arrival; one held value-less for a purge that none drops any more
 /// counts as never received from here on: off the value-less list, its leftover set aside
 /// (`unstrip`) and its writes gone from the state until a copy comes (sync fetches it; a holder
-/// uploads it). A body stripped for carrying others' values stays held
+/// logs it). A body stripped for carrying others' values stays held
 /// as its leftover (spec/permissions.md §6); no request names a snapshot (`names`). Cost: the aspect's requests
 /// and what they name, its snapshots' views, and with an aspect-wide request a walk of its parts, as
 /// `validity::rejudge_once` walks them (`scale::purge_rejudge_is_linear_in_requests_spec_permissions_6`).

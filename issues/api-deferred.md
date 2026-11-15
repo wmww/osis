@@ -1,5 +1,5 @@
 # API pieces not built yet
-> Summary: What an app developer cannot do with the `osis` crate yet, and the workaround: list or search things (read the group and every item), restore deleted text or cut/paste it (undo), read a link without an account (redeem it), stream a huge value in (it is read into memory), see pending uploads in status (`wait_synced`), pair over a direct connection (carry three texts). Client conveniences; nothing on the wire depends on them.
+> Summary: What an app developer cannot do with the `osis` crate yet, and the workaround: list or search things (read the group and every item), restore deleted text or cut/paste it (undo), read a link without an account (redeem it), stream a huge value in (it is read into memory), see writes not yet held elsewhere in status (`wait_synced`), pair over a direct connection (carry three texts). Client conveniences; nothing on the wire depends on them.
 > Priority: low
 > Tags: api
 

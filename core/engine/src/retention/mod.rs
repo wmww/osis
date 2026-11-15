@@ -327,7 +327,7 @@ pub(crate) fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
 /// one covering a coverer and so on, is held and valid: each turned invalid, went missing or was
 /// dropped other than as covered, by a purge) are missing again (spec/permissions.md §5.2), or
 /// dropped as invalid where judged so (`reopen_to_fetch`): they give nothing, as at a node that never held them, until the body arrives again (a node still
-/// holding it finds it uncovered and re-uploads it, spec/sync-judgement.md §2; sync fetches it again). The caller rebuilds the aspect. Whether any part went missing.
+/// holding it finds it uncovered and logs it again, spec/sync-judgement.md §2; sync fetches it again). The caller rebuilds the aspect. Whether any part went missing.
 pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
     let core = &*tx.core;
     let carries = |s: &CommitId| {
