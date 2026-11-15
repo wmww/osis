@@ -706,7 +706,11 @@ mod tests {
         };
         type Step<'a> = (&'a str, Box<dyn Fn(&mut LocalPeer) + 'a>);
         let steps: Vec<Step> = vec![
-            ("grant write", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.grant(&t, &a1.account, &edge(Role::Write)).unwrap()))),
+            // shared no more at node 0: T syncs at both only once filed in each D
+            ("grant write", Box::new(|lp: &mut LocalPeer| {
+                lp.peers[0].engine.grant(&t, &a1.account, &edge(Role::Write)).unwrap();
+                lp.peers[0].engine.unshare(&t).unwrap();
+            })),
             ("filed in each D", Box::new(|lp: &mut LocalPeer| {
                 lp.sync_all().unwrap();
                 for (i, d, items) in [(0, a0.devices, vec![t, g]), (1, a1.devices, vec![t])] {

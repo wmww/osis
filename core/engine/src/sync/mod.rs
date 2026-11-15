@@ -23,7 +23,7 @@ pub(crate) use certblobs::with_chains;
 pub(crate) mod records;
 mod relay;
 pub use relay::{Relay, RelayOpened};
-mod set;
+pub(crate) mod set;
 mod signing;
 pub(crate) mod stranded;
 pub use stranded::Stranding;
@@ -695,15 +695,23 @@ impl Engine {
         self.forget_destroyed_now(thing)
     }
 
+    /// This node shares `t` no more (spec/sync-set.md §2 Shared here): it syncs it only while its
+    /// synced group's closure holds it, else `t` leaves the sync set by spec/sync-set.md §3.
+    /// `false`: it did not share `t`.
+    pub fn unshare(&mut self, t: &Tid) -> Result<bool> {
+        if !self.core.ix.shared_here.contains(t) {
+            return Ok(false);
+        }
+        self.run(|tx| set::unshare_here(tx, t))?;
+        Ok(true)
+    }
+
     /// Forgets this node's local copy of `t`, unsynced (spec/sync-set.md §3 Unsyncing): the
-    /// content of `t` and of each thing whose secrets are `t`'s, but those this node's synced
-    /// group's closure holds; their role-class aspects (`secrets.0` included) and secrets stay,
+    /// content of `t` and of each thing whose secrets are `t`'s, but those this node's closure
+    /// holds (`node_closure`: its synced group's and its shared things'); their role-class aspects (`secrets.0` included) and secrets stay,
     /// and what arrives again counts as never received. Decodes every commit header (rare).
     pub fn forget_local(&mut self, t: &Tid) -> Result<()> {
-        let closure = match self.sync_root()? {
-            Some(root) => self.closure(&root),
-            None => Arc::default(),
-        };
+        let closure = self.node_closure()?;
         let core = &self.core;
         let mut things: BTreeSet<Tid> = core.ix.by_aspect.keys().map(|(x, _)| *x).filter(|x| core.secret_actor(x) == Some(*t)).collect();
         things.insert(*t);

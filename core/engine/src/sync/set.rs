@@ -4,12 +4,14 @@
 //! this node's caps.
 
 use super::{Caps, Holding, OwnedSyncId, ReadCredentials, SyncSet, ThingCaps, ThingSync};
-use crate::engine::Engine;
+use crate::engine::records;
+use crate::engine::{Engine, Tx};
 use crate::error::Result;
 use osis_base::{CommitId, Role, SyncId, Tid};
 use osis_crypto::{Epoch, Secret32, SigningSecret, X25519Secret};
 use osis_blob::StepId;
 use osis_schema::core_types as ct;
+use osis_store::Shred;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -66,6 +68,14 @@ impl Engine {
             let home = self.core.ix.groups.sync_closure(&d);
             closure = Arc::new(closure.iter().chain(home.iter()).copied().collect());
         }
+        // each thing shared here roots the walk too (spec/sync-set.md §2 Shared here)
+        let shared: Vec<Tid> = self.core.ix.shared_here.iter().copied().collect();
+        for t in shared {
+            if !closure.contains(&t) {
+                let c = self.core.ix.groups.sync_closure(&t);
+                closure = Arc::new(closure.iter().chain(c.iter()).copied().collect());
+            }
+        }
         let mut emptying: Vec<Tid> = self.core.ix.destroyed_sync_ids.keys().copied().collect();
         // links being redeemed (spec/sync-set.md §2)
         emptying.extend(self.core.followed_links.keys().filter(|k| crate::sync_ids::actors::followable(self, k)).copied());
@@ -73,6 +83,22 @@ impl Engine {
             return Ok(closure);
         }
         Ok(Arc::new(closure.iter().copied().chain(emptying).collect()))
+    }
+
+    /// N's closure uncut (spec/sync-set.md §2): its sync root's closure with each thing shared
+    /// here and its closure. What unsyncing keeps (`forget_local`).
+    pub(crate) fn node_closure(&mut self) -> Result<BTreeSet<Tid>> {
+        let mut out: BTreeSet<Tid> = match self.sync_root()? {
+            Some(root) => self.closure(&root).iter().copied().collect(),
+            None => BTreeSet::new(),
+        };
+        let shared: Vec<Tid> = self.core.ix.shared_here.iter().copied().collect();
+        for t in shared {
+            if !out.contains(&t) {
+                out.extend(self.closure(&t).iter().copied());
+            }
+        }
+        Ok(out)
     }
 
     /// Sets the groups the handle reads and writes at another node (spec/sync-set.md §5):
@@ -319,6 +345,25 @@ impl Engine {
         let c = self.get_typed(&me, &ct::CAPS)?.unwrap_or_default();
         Ok(Arc::new(Caps { policy: c.policy, things: c.things.into_iter().map(|(t, x)| (t, ThingCaps { entries: x.entries, bytes: x.bytes })).collect() }))
     }
+}
+
+/// `t` joins this node's shared set (spec/sync-set.md §2 Shared here): a grant on it this node
+/// writes as its account to another actor.
+pub(crate) fn share_here(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    if !tx.core.ix.shared_here.contains(t) {
+        tx.core.ix.shared_here.insert(*t);
+        tx.txn.put_local(&[records::SHARED_HERE, t.as_bytes()].concat(), &[], Shred::No)?;
+    }
+    Ok(())
+}
+
+/// `t` leaves this node's shared set (spec/sync-set.md §2 Shared here): unsynced here, or
+/// forgotten. Nothing when it is not in it.
+pub(crate) fn unshare_here(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    if tx.core.ix.shared_here.remove(t) {
+        tx.txn.remove_local(&[records::SHARED_HERE, t.as_bytes()].concat(), Shred::No)?;
+    }
+    Ok(())
 }
 
 /// A thing's home sync ID among those it owns (two admins giving it secrets at once made two: the

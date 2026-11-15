@@ -681,6 +681,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("destroyed_for_good", &*ix.destroyed_for_good),
         ("destroyed_secrets", &*ix.destroyed_secrets),
         ("destroyed_sync_ids", &*ix.destroyed_sync_ids),
+        ("shared_here", &*ix.shared_here),
         ("sync_kept", &*ix.sync_kept),
         ("offers", &*ix.offers),
         ("offered", &*ix.offered),

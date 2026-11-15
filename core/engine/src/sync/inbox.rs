@@ -436,7 +436,11 @@ impl Engine {
         for (t, o) in unkept_offers(&self.core, now) {
             out.entry(t).or_insert(Invitation { thing: t, role: o.0, from: o.1, taken: false, acted: acted.contains(&t) });
         }
-        let listed = self.synced_closures()?;
+        // what this node shares it syncs: no invitation here (spec/sync-set.md §4)
+        let mut listed = self.synced_closures()?;
+        for t in self.core.ix.shared_here.iter().copied().collect::<Vec<_>>() {
+            listed.extend(self.closure(&t).iter().copied());
+        }
         for w in self.core.ix.waiting_inbox.values().filter(|w| w.expires > now && !w.accepted) {
             for (t, role) in w.things.iter().filter(|(t, _)| !listed.contains(t)) {
                 out.entry(*t).or_insert(Invitation { thing: *t, role: *role, from: Some(w.from), taken: false, acted: acted.contains(t) });

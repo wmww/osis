@@ -821,6 +821,9 @@ indexes! {
     /// Destroyed things' own sync IDs, read from the destruction until emptied
     /// (`records::DESTROYED_SYNC_IDS`, `retention::destroy::keep_sync_ids`).
     pub destroyed_sync_ids: JMap<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
+    /// The things this node shares (`records::SHARED_HERE`, spec/sync-set.md §2 Shared here):
+    /// roots of its closure beside its synced group (`sync::set`).
+    pub shared_here: JSet<Tid>,
     /// The account's sync records (`kept^.0` on D, by thing; `sync::records::observe`).
     pub sync_kept: JMap<Tid, Arc<osis_schema::core_types::Kept>>,
     /// The boxes payloads held (`sync::records`, persisted), and those offering each thing.

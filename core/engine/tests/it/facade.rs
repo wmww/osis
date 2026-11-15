@@ -492,6 +492,50 @@ fn an_untaken_grant_is_an_invitation_spec_sync_set_4() {
     assert!(!e.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken));
 }
 
+// spec/sync-set.md §2 (Shared here): a grant this node writes as its account to another account
+// shares its thing here: listed nowhere, it is in the sync set read under its home sync ID, no
+// invitation here, and a restart keeps it; the grantee's received grant shares nothing there.
+// Unshared, it leaves the sync set, and a restart keeps that too.
+#[test]
+fn a_grant_shares_its_thing_at_the_granting_node_spec_sync_set_2() {
+    let (mut lp, t, _, _, blob) = granted(Role::Read);
+    let held = |lp: &mut LocalPeer, i: usize| {
+        let e = &mut lp.peers[i].engine;
+        let s = e.home_sync_id(&t).unwrap();
+        (e.sync_things().unwrap().contains(&t), s.is_some_and(|s| e.sync_set().unwrap().ids.get(&s) == Some(&(t, Holding::Read))))
+    };
+    assert_eq!(held(&mut lp, 0), (true, true), "shared: synced here, read");
+    assert!(!lp.peers[0].engine.invitations().unwrap().iter().any(|i| i.thing == t), "synced here: no invitation");
+    crate::flows::reopen(&mut lp, 0).unwrap();
+    assert_eq!(held(&mut lp, 0), (true, true), "a restart keeps it");
+    lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap().unwrap();
+    assert!(!lp.peers[1].engine.sync_things().unwrap().contains(&t), "a received grant shares nothing");
+    let e = &mut lp.peers[0].engine;
+    assert!(e.unshare(&t).unwrap());
+    assert!(!e.unshare(&t).unwrap(), "shared no more");
+    assert!(!held(&mut lp, 0).0, "unshared: out of the sync set");
+    crate::flows::reopen(&mut lp, 0).unwrap();
+    assert!(!held(&mut lp, 0).0, "a restart keeps it out");
+}
+
+// spec/sync-set.md §2 (Shared here: it leaves when N forgets the thing on losing read access):
+// an admin node that shared a thing and is then removed from it forgets it, and shares it no more.
+#[test]
+fn a_shared_thing_lost_is_shared_no_more_spec_sync_set_2() {
+    let (mut lp, ps) = people(3);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    lp.peers[1].engine.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    assert!(lp.peers[1].engine.sync_things().unwrap().contains(&t), "shared at node 1");
+    lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: None, retain: Some(false) }).unwrap();
+    spread(&mut lp);
+    let e = &mut lp.peers[1].engine;
+    assert!(e.drop_lost_secrets().unwrap().contains(&t), "lost");
+    assert!(!e.sync_things().unwrap().contains(&t), "forgotten: shared no more");
+}
+
 // spec/sync-ids.md §6 (Steps: an admin issues a step when it holds an epoch newer than its
 // recorded head registers, a child of that head, after logging the rotation commits it registers):
 // nothing is due until a removal rotates; then the step is due, naming the removal's rotation

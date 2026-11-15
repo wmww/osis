@@ -673,7 +673,11 @@ impl crate::engine::Engine {
     /// its secrets, last (`drop_destroyed_secrets`).
     pub(crate) fn forget_destroyed_now(&mut self, t: &Tid) -> Result<()> {
         let t = *t;
-        self.run(|tx| unkeep_sync_ids(tx, &t))?;
+        // its sync IDs emptied, it is shared here no more (spec/sync-set.md §2)
+        self.run(|tx| {
+            unkeep_sync_ids(tx, &t)?;
+            crate::sync::set::unshare_here(tx, &t)
+        })?;
         self.drop_destroyed_secrets(&BTreeSet::from([t]))
     }
 

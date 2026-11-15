@@ -292,6 +292,12 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         let cause = if matches!(scope, Scope::Local(_)) { Cause::Unsynced } else { Cause::LostAccess };
         tx.core.events.queue(Event::Changed { cause, changed: aspects.into_iter().collect() });
     }
+    // a thing forgotten on losing read access is shared here no more (spec/sync-set.md §2)
+    if matches!(scope, Scope::Lost(_)) {
+        for t in &out.things {
+            crate::sync::set::unshare_here(tx, t)?;
+        }
+    }
     out.parts = parts;
     Ok(out)
 }
