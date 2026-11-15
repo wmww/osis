@@ -503,7 +503,7 @@ fn a_record_of_a_node_its_account_removed_is_waited_for_no_more_spec_sync_set_3(
 
 // spec/sync-set.md §3 (Leaving: an account other than N's holding a role on S's thing while no
 // record N keeps naming its proven actors has acknowledged S's current credentials; each record
-// proved at E or below is no one to wait for): node 0, apart from both siblings of account 1,
+// proved at a revoked epoch is no one to wait for): node 0, apart from both siblings of account 1,
 // grants account 1 a new thing t and writes it; no record of theirs acknowledged t's credentials.
 // Node 0 unsyncs t and waits for account 1 by the rosters; handed the rotation of node 2
 // removing node 1, every record of account 1 was proved below it, so node 0 leaves S.

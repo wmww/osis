@@ -207,6 +207,11 @@ pub trait Ground: Net {
     fn module_passes(&mut self) -> Arc<BTreeMap<SyncId, u64>> {
         Arc::default()
     }
+    /// Whether a pass of S ends only with a source (`Leave::pass_sourced`: S left while a role
+    /// commit on its thing waits for its lists, spec/sync-set.md §3). Stamped.
+    fn pass_sourced(&self, _s: &SyncId) -> bool {
+        false
+    }
 }
 
 /// A complete pass of S under way (§1).
@@ -835,7 +840,8 @@ fn removal_done<'a>(g: &mut impl Ground, c: &CommitId, ids: impl Iterator<Item =
 /// A pass of S as its sources stand: every source waited on caught up from a Pull sent since it
 /// began, each recorded peer read at a connection since, or `PASS_WAIT_MS` past. With no source,
 /// not while some peer is to be waited for on S (`Opens::waited`: a sync ID just joined waits for
-/// its other holders as a leave does).
+/// its other holders as a leave does), nor while S's pass must have one (`pass_sourced`): then
+/// it ends only with a source and every source caught up, whatever the time.
 fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: &Pass, sources: &BTreeMap<ConnId, Src>) -> PassNow {
     let mut fresh_all = true;
     let mut read = BTreeSet::new();
@@ -856,7 +862,11 @@ fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: 
     // its peer judged this node departed)
     let holding = g.records_holding(s).unwrap_or_default();
     let records = p.waits.iter().all(|r| read.contains(r) || !holding.contains(r));
-    let done = timed_out || (fresh_all && records && !(sources.is_empty() && g.waited(s, true).unwrap_or(true)));
+    let done = if g.pass_sourced(s) {
+        !sources.is_empty() && fresh_all && (records || timed_out)
+    } else {
+        timed_out || (fresh_all && records && !(sources.is_empty() && g.waited(s, true).unwrap_or(true)))
+    };
     PassNow { read, done }
 }
 

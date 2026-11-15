@@ -10,7 +10,8 @@
 //! complete pass of it begun after it left (spec/sync-set.md §3: what made it leave may be undone
 //! by what that pass brings, such as a rotation's thing list arriving after the rotation), then
 //! judges again: the node's keys must still let it hold S as it did (`Engine::sync_holder`), else
-//! it stops at once (its secrets lost, a removal); then it waits until what this node logged
+//! it stops at once (its secrets lost, a removal), unless a role commit on its thing waits for
+//! its lists (`Ground::uncounted_role`): then once more, for a pass with a source; then it waits until what this node logged
 //! itself under S is elsewhere (read: each own commit with an entry under S held elsewhere,
 //! status's durable mark, `Store::elsewhere`; kept unread: each own entry present at a source,
 //! `Sources`), or no peer is to be waited for on S (`Opens::waited`: none has S open or in its
@@ -60,6 +61,9 @@ pub trait Ground: SetGround {
     /// nothing could take its own writes.
     fn waited(&mut self, s: &SyncId) -> Result<bool>;
     fn shred(&mut self, s: &SyncId) -> Result<()>;
+    /// Whether a role commit on `t` is held but uncounted, its epoch revoked and no list naming
+    /// it held (`Engine::uncounted_role_on`).
+    fn uncounted_role(&mut self, t: &Tid) -> Result<bool>;
     /// The pass place now (`Engine::pass_place`): when S left, in the order passes begin.
     fn pass_seq(&mut self) -> u64;
     /// A complete pass of S begun after pass place `since` ended (status's, spec/sync-status.md §1).
@@ -73,6 +77,17 @@ pub trait Ground: SetGround {
     /// commit no longer held, and reopened (a start parks every entry not opening to a held
     /// commit) it would come back. O(the blobs of what forgot) beside the engine's forgetting.
     fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<()>;
+}
+
+/// A leaving S: its entry when it left, and the complete pass it waits for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Left {
+    held: Held,
+    /// The pass place a complete pass of S must begin after.
+    since: u64,
+    /// The pass must have a source (`pass_sourced`): S lost its holder while a role commit on
+    /// its thing waits for its lists, so `since` is the place that was seen at.
+    sourced: bool,
 }
 
 /// A sync ID out of the sync set: its judgement.
@@ -100,10 +115,10 @@ pub struct Leave {
     started: bool,
     /// Per sync ID out of the sync set that this node syncs or holds rows of, its judgement.
     out: Effects<SyncId, Wait>,
-    /// Per leaving S, its entry when it left and the pass place it left at
-    /// (`Engine::pass_place`): status runs a complete pass of it begun after (`passes_wanted`),
-    /// which the wait reads. Stamped: status follows it whole.
-    leaving: Stamped<SyncId, (Held, u64)>,
+    /// Per leaving S, its entry when it left and the pass place it waits for a complete pass
+    /// begun after (`Engine::pass_place`): status runs it (`passes_wanted`), which the wait
+    /// reads. Stamped: status follows it whole.
+    leaving: Stamped<SyncId, Left>,
     /// Judgements of a sync ID out of the sync set made (tests: what a change costs).
     judged: u64,
 }
@@ -157,7 +172,7 @@ impl Leave {
             self.judged += 1;
             let leaving = &mut self.leaving;
             let Some((_, now)) = run(&mut self.out, &s, || judge(g, &s, leaving))? else { continue };
-            let Some(&((t, h), _)) = self.leaving.get(&s) else { continue };
+            let Some(&Left { held: (t, h), .. }) = self.leaving.get(&s) else { continue };
             match now {
                 Wait::Not => {}
                 Wait::Waiting => {
@@ -198,7 +213,13 @@ impl Leave {
     /// Per leaving S, the pass place it left at: a complete pass begun after is wanted (status
     /// runs it). A stamped read, whole.
     pub fn passes_wanted(&self) -> BTreeMap<SyncId, u64> {
-        self.leaving.iter().map(|(s, (_, since))| (*s, *since)).collect()
+        self.leaving.iter().map(|(s, l)| (*s, l.since)).collect()
+    }
+
+    /// Whether S's wanted pass must have a source: no pass of S ends with none meanwhile
+    /// (spec/sync-set.md §3: lacking a list is waiting). A stamped read of S.
+    pub fn pass_sourced(&self, s: &SyncId) -> bool {
+        self.leaving.get(s).is_some_and(|l| l.sourced)
     }
 
     /// Tests only: the judgements of a sync ID out of the sync set made so far.
@@ -211,24 +232,31 @@ impl Leave {
 /// S, out of the sync set: whether it left (its entry: as synced, else as this node's keys hold
 /// it; neither, or no synced group known yet: not), noting when it first did; then a complete
 /// pass since it left, then its own keys, then its own writes.
-fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, (Held, u64)>) -> Result<Wait> {
+fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -> Result<Wait> {
     let holder = g.holder(s)?;
-    let (held, since) = match leaving.get(s) {
+    let left = match leaving.get(s) {
         Some(x) => *x,
         None => {
             let Some(held) = g.synced(s).or(holder) else { return Ok(Wait::Not) };
             if !g.rooted()? {
                 return Ok(Wait::Not);
             }
-            let x = (held, g.pass_seq());
+            let x = Left { held, since: g.pass_seq(), sourced: false };
             leaving.insert(*s, x);
             x
         }
     };
-    if !g.passed(s, since)? {
+    let held = left.held;
+    if !g.passed(s, left.since)? {
         return Ok(Wait::Waiting);
     }
     if holder != Some(held) {
+        // a role commit on S's thing uncounted for want of its lists (a revocation taken before
+        // them): one complete pass with a source, begun now, fetches them before S is judged lost
+        if !left.sourced && g.uncounted_role(&held.0)? {
+            leaving.insert(*s, Left { since: g.pass_seq(), sourced: true, ..left });
+            return Ok(Wait::Waiting);
+        }
         return Ok(Wait::Lost);
     }
     let done = match held.1 {
@@ -317,6 +345,9 @@ impl Ground for Live<'_, '_> {
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.cx.store.shred(s)
+    }
+    fn uncounted_role(&mut self, t: &Tid) -> Result<bool> {
+        Ok(self.cx.engine.uncounted_role_on(t))
     }
     fn pass_seq(&mut self) -> u64 {
         self.cx.engine.pass_place()

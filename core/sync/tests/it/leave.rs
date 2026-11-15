@@ -39,6 +39,8 @@ struct Fake {
     passes: Stamped<SyncId, u64>,
     /// Sync IDs whose complete passes are not run here: each passes at once unless listed.
     passing: StampedSet<SyncId>,
+    /// Things with a role commit held but uncounted for want of its lists.
+    uncounted: StampedSet<Tid>,
     /// This node does not know its synced group yet (pairing).
     unrooted: Stamped<(), bool>,
     synced: BTreeMap<SyncId, Held>,
@@ -103,6 +105,9 @@ impl Ground for Fake {
         self.forgot.extend(ts.iter().copied());
         self.forgettings += 1;
         Ok(())
+    }
+    fn uncounted_role(&mut self, t: &Tid) -> Result<bool> {
+        Ok(self.uncounted.contains(t))
     }
     fn pass_seq(&mut self) -> u64 {
         self.clock
@@ -309,6 +314,50 @@ fn a_leaving_sync_id_waits_for_a_complete_pass_spec_sync_set_3() {
     l.settle(&mut g).unwrap();
     assert_eq!(g.shredded, vec![sid(1)]);
     assert!(g.forgot.is_empty() && g.syncs(1).is_none() && l.passes_wanted().is_empty());
+}
+
+// spec/sync-set.md §3 (lacking a list is waiting): a read sync ID whose holder went because a
+// role commit on its thing is uncounted for want of its lists (a revocation taken before them)
+// is not judged lost by the pass that saw it go: it waits for one more complete pass, begun at
+// that judgement, that ends only with a source (`pass_sourced`); the lists arriving give S back,
+// kept as it was; with the role commit still uncounted after that pass, it stops. Without an
+// uncounted role commit the loss stands after the first pass.
+#[test]
+fn a_loss_waiting_for_lists_waits_for_a_pass_with_a_source_spec_sync_set_3() {
+    for given_back in [true, false] {
+        let (mut g, mut l) = settled();
+        g.passing.insert(sid(1));
+        g.clock = 10;
+        g.holders.remove(&sid(1));
+        g.uncounted.insert(tid(1));
+        l.settle(&mut g).unwrap();
+        assert!(!l.pass_sourced(&sid(1)), "the first pass needs no source");
+        g.clock = 12;
+        g.passes.insert(sid(1), 11);
+        l.settle(&mut g).unwrap();
+        assert!(g.shredded.is_empty() && g.syncs(1) == Some(Holding::Read), "a role commit waits for its lists: kept");
+        assert!(l.pass_sourced(&sid(1)), "the next pass needs a source");
+        assert_eq!(l.passes_wanted(), BTreeMap::from([(sid(1), 12)]), "begun after the judgement");
+        if given_back {
+            g.uncounted.remove(&tid(1));
+            g.holders.insert(sid(1), Holding::Read);
+            l.settle(&mut g).unwrap();
+            assert!(g.shredded.is_empty() && !l.waits(&sid(1)) && !l.pass_sourced(&sid(1)), "the lists gave S back");
+            continue;
+        }
+        g.passes.insert(sid(1), 13);
+        l.settle(&mut g).unwrap();
+        assert_eq!(g.shredded, vec![sid(1)], "no list came by the pass with a source: lost");
+        assert!(g.forgot.is_empty() && g.syncs(1).is_none());
+    }
+    let (mut g, mut l) = settled();
+    g.passing.insert(sid(1));
+    g.clock = 10;
+    g.holders.remove(&sid(1));
+    l.settle(&mut g).unwrap();
+    g.passes.insert(sid(1), 11);
+    l.settle(&mut g).unwrap();
+    assert_eq!(g.shredded, vec![sid(1)], "nothing uncounted: lost after the first pass");
 }
 
 // spec/sync-set.md §3 (Before the group is known: nothing counts as having left): a node pairing, its sync set empty for want of its synced group, starts with rows of a sync
