@@ -322,20 +322,7 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.sync_holder(s)?)
     }
     fn own_elsewhere(&mut self, s: &SyncId) -> Result<bool> {
-        for c in self.cx.engine.own_commits(s)?.iter() {
-            let mut entries = 0;
-            let mut held = false;
-            for b in self.cx.engine.commit_blobs(c)?.iter() {
-                if self.cx.store.entry(s, b)?.is_some() {
-                    entries += 1;
-                    held |= self.cx.store.elsewhere(s, b)?;
-                }
-            }
-            if entries > 0 && !held {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        own_elsewhere(self.cx.engine, self.cx.store, s)
     }
     fn own_present(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.cx.store.entries(s)?.into_iter().filter(|e| e.own).all(|e| self.sources.present(s, &e.blob)))
@@ -377,4 +364,24 @@ pub(crate) fn forget_local(engine: &mut osis_engine::Engine, store: &mut crate::
         }
     }
     Ok(())
+}
+
+/// Each of this node's own commits with an entry under read S is held elsewhere: one of its
+/// entries there recorded so (`Store::elsewhere`, status's durable mark, spec/sync-status.md §2).
+/// Stamped reads.
+pub(crate) fn own_elsewhere(engine: &mut osis_engine::Engine, store: &crate::store::Store, s: &SyncId) -> Result<bool> {
+    for c in engine.own_commits(s)?.iter() {
+        let mut entries = 0;
+        let mut held = false;
+        for b in engine.commit_blobs(c)?.iter() {
+            if store.entry(s, b)?.is_some() {
+                entries += 1;
+                held |= store.elsewhere(s, b)?;
+            }
+        }
+        if entries > 0 && !held {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

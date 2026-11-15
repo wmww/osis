@@ -752,7 +752,7 @@ impl Node {
             let (status, opens, store) = (&self.status, &self.opens, &self.store);
             // a sync ID no peer is to be waited for on is heard out at once (the rule a leave's
             // wait reads)
-            acted |= self.life.settle(&mut self.engine, &self.store, |e, s| status.heard_out_or_alone(opens, e, store, s, &net))?;
+            acted |= self.life.settle(&mut self.engine, &self.store, &mut LifeHears { status, opens, store, net })?;
             // the engine read its store again (a write of unknown outcome): every feed followed is
             // stale, so the settle ends and the step restarts the modules (`engine_reloaded`)
             if !acted || self.engine.loads() != self.driver.engine_loads {
@@ -893,4 +893,25 @@ fn conn_name(c: ConnId) -> String {
         ("d", c.0)
     };
     format!("connection {tag}{n}")
+}
+
+/// What life reads of sync (`life::Hears`).
+struct LifeHears<'a> {
+    status: &'a Status,
+    opens: &'a Opens,
+    store: &'a Store,
+    net: NetView<'a>,
+}
+
+impl crate::life::Hears for LifeHears<'_> {
+    fn heard_out(&mut self, engine: &mut Engine, s: &SyncId) -> Result<bool> {
+        self.status.heard_out_or_alone(self.opens, engine, self.store, s, &self.net)
+    }
+
+    fn timed_heard(&mut self, engine: &mut Engine, s: &SyncId, passed: bool) -> Result<bool> {
+        if self.opens.refused(s) || !self.opens.waited(engine, self.store, s, true)? {
+            return Ok(true);
+        }
+        Ok(passed && self.status.sourced(s) && crate::leave::own_elsewhere(engine, self.store, s)?)
+    }
 }

@@ -191,6 +191,7 @@ instances=(
   "netopen net MCOpen ON_linkold.cfg fail"         # negative control: a removed static entry counts
   "netopen net MCOpen ON_jnow.cfg fail"            # negative control: J from the roster the node started with
   "netopen net MCOpen ON_endj.cfg fail"            # negative control: an open by J outlives the removal's rotation
+  "netopen net MCOpen ON_peermoves.cfg fail"       # negative control: an open not re-judged at its peer's removal outlives it until the rotation (SafeGone)
   "netopen net MCOpen ON_endsync.cfg fail"         # negative control: an open by sync key outlives the head's event
   "netopen net MCOpen ON_endproof.cfg fail"        # negative control: an open by proof outlives the rotation
   "netopen net MCOpen ON_endlink.cfg fail"         # negative control: an open by static entry outlives its removal

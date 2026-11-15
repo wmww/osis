@@ -6,9 +6,9 @@
    key (sync key, a link key's static entry) of the newest step of S it knows, bound to the
    signer's side and this connection. Who dialed proves nothing. Opens are re-judged when a node
    learns a change of its credentials or sync set (a rotation, its own grant or removal, a grant
-   or removal of a link holder, whose static entry is shown), never at a roster change alone (a
-   grant or removal of another account); an open on a basis no longer accepted ends, with a Lost
-   that closes the other side too.
+   or removal of a link holder, whose static entry is shown), and an open when the node learns a
+   grant or removal of its peer (what J judges of the peer's proof moved, PeerMoves); an open on
+   a basis no longer accepted ends, with a Lost that closes the other side too.
    Honest nodes: readers (hold the roster, every seed of a step they held, show the proof of their
    newest step and the static entries the roster lists; Hit a store's sync key, older steps too
    by their walk), stores (hold S unread: the head's seed only, show its sync key, its proof and
@@ -56,6 +56,7 @@ CONSTANTS
     JNow,           \* J reads the roster the node holds now (FALSE: the roster it started with)
     Rejudge,        \* the bases ("J", "sync", "proof", "link") an open is re-judged on at a change
     Departed,       \* a credential of a peer J judges departed counts only at a step covering it
+    PeerMoves,      \* an open is re-judged when its node learns a grant or removal of its peer
     DialProves,     \* TRUE: the dialer opens toward the key it dialed (who dialed proves nothing)
     AdvPublic,      \* Adv holds S's public values (each step's sync key, every static entry)
     AdvJunk,        \* Adv's filter may show junk matching any value a tester tests
@@ -218,8 +219,9 @@ Happen ==
     /\ UNCHANGED <<conns, opens, known, seen, next, know, leak, head>>
 
 \* Honest n learns the next event. When it moves n's credentials or sync set (Moves) n re-judges
-\* every open it holds on what it holds now; an open whose basis it no longer accepts ends (with
-\* its Lost, both sides). A node that stops syncing S ends them all.
+\* every open it holds on what it holds now, and when it grants or removes an open's peer
+\* (PeerMoves) that open; an open whose basis it no longer accepts ends (with its Lost, both
+\* sides). A node that stops syncing S ends them all.
 Learn(n) ==
     LET k == know[n] + 1
         Moves == Events[k].op = "rot" \/ Events[k].n = n \/ Events[k].n \in LinkNodes
@@ -228,11 +230,12 @@ Learn(n) ==
             /\ CASE b.c = "J" -> "J" \notin Rejudge \/ J(n, p, k)
                  [] b.c \in {"sync", "proof", "link"} -> b.c \notin Rejudge \/ Accept(n, k, b, p)
                  [] OTHER -> TRUE
-        Drop == {o[1] : o \in {o \in opens : o[2] = n /\ ~Keep(o)}}
+        Touched(o) == Moves \/ (PeerMoves /\ Events[k].n = Peer(conns[o[1]], n))
+        Drop == {o[1] : o \in {o \in opens : o[2] = n /\ Touched(o) /\ ~Keep(o)}}
     IN
     /\ know[n] < happened
     /\ know' = [know EXCEPT ![n] = k]
-    /\ opens' = IF Moves THEN {o \in opens : o[1] \notin Drop} ELSE opens
+    /\ opens' = {o \in opens : o[1] \notin Drop}
     /\ UNCHANGED <<conns, known, seen, next, happened, leak, head>>
 
 \* Honest t Hits v in its peer's filter with a token made over its own side, the peer's challenge
@@ -336,6 +339,12 @@ SafeRmStep == \A o \in opens' \ opens :
     LET n == o[2] IN
     (IsReader(n) /\ Peer(conns'[o[1]], n) = Adv) => ~Gone(Adv, know'[n])
 SafeRm == [][SafeRmStep]_vars
+
+\* A removal ends opens at once: no reader holds an open toward Adv once it knows Adv's removal,
+\* before any rotation (not only that none opens anew: SafeRm).
+SafeGone == \A o \in opens :
+    LET n == o[2] IN
+    (IsReader(n) /\ Peer(conns[o[1]], n) = Adv) => ~Gone(Adv, know[n])
 
 \* An open between honest nodes records the class its peer holds S by, whichever side's Hit opened
 \* it and on whichever credential.

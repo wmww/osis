@@ -4,7 +4,7 @@
 
 use super::cred::{Shown, Tested};
 use crate::session::Proven;
-use crate::types::{Credential, Cursor, Cx, Holding, Position};
+use crate::types::{ConnId, Credential, Cursor, Cx, Holding, Position};
 use crate::unread::{Unread, UnreadCredentials};
 use osis_base::{SyncId, Tid};
 use osis_crypto::Epoch;
@@ -163,6 +163,15 @@ pub trait Holds {
     fn counts(&mut self, named: &Named) -> Vec<Tid>;
     /// J of a peer's actors (`counts`) for S.
     fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J;
+    /// J for S of the peer `named` names, now (`judge` of `counts`), for member S of `conn`,
+    /// which is followed from then on: `standing_due` gives it once anything this read moves
+    /// (the peer's removal or demotion, its account's revocation, an `until` passing;
+    /// spec/sync-opens.md §6).
+    fn standing(&mut self, conn: ConnId, s: &SyncId, named: &Named) -> J;
+    /// The members followed (`standing`) whose J may have moved since the last call.
+    fn standing_due(&mut self) -> Vec<(ConnId, SyncId)>;
+    /// Member S of `conn` is followed no more.
+    fn unfollow(&mut self, conn: ConnId, s: &SyncId);
     /// Whether `epoch` of S's thing covers every departure this node knows of (spec/crypto.md §4).
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool;
     /// An ended member's `until` (spec/sync-opens.md §6): the highest position at which an entry
@@ -203,11 +212,13 @@ pub trait Holds {
 pub struct Fx {
     set: crate::set::SyncsFollow,
     creds: Effects<SyncId, Option<[u8; 32]>>,
+    /// Per member of a connection up, J of its peer for S (`Holds::standing`).
+    standing: Effects<(ConnId, SyncId), J>,
 }
 
 impl Default for Fx {
     fn default() -> Fx {
-        Fx { set: crate::set::SyncsFollow::default(), creds: Effects::new("opens credentials") }
+        Fx { set: crate::set::SyncsFollow::default(), creds: Effects::new("opens credentials"), standing: Effects::new("opens standing") }
     }
 }
 
@@ -366,6 +377,27 @@ impl Holds for NodeHolds<'_, '_> {
 
     fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J {
         self.cx.engine.judge_peer(s, actors).unwrap_or(J::Unknown)
+    }
+
+    fn standing(&mut self, conn: ConnId, s: &SyncId, named: &Named) -> J {
+        let k = (conn, *s);
+        self.fx.standing.want(k);
+        let engine = &mut *self.cx.engine;
+        let mut j = J::Unknown;
+        self.fx.standing.settle(&k, || {
+            let actors = counted(engine, named);
+            j = engine.judge_peer(s, &actors).unwrap_or(J::Unknown);
+            j
+        });
+        j
+    }
+
+    fn standing_due(&mut self) -> Vec<(ConnId, SyncId)> {
+        self.fx.standing.due()
+    }
+
+    fn unfollow(&mut self, conn: ConnId, s: &SyncId) {
+        self.fx.standing.unwant(&(conn, *s));
     }
 
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool {

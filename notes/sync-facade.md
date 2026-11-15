@@ -54,4 +54,4 @@ Certificate blobs (`sync::certblobs`): record blobs and list blobs. `certificate
 ## Open
 - **Sync set rows** (`sync/rows.rs`, `Core::sync_rows`): the sync set followed per thing (`things_entered`, `in_sync_things`, `thing_sync`) and folded per sync ID into stamped rows, refreshed at each ask until their fixed point (`memo::Quiet`, notes/engine.md): `sync_held(s)` and the read things (`SyncRows::read`, a feed for `Certified`). Every per-change reader goes by them (`reads_now`, `pass_wanted`, `caught_up`, a tie's demotion scope, `Certified`'s read things); `sync_set()` folds the whole for listing (`osis` status, invitations, splits). Counted: osis `scale::snapshots_judge_what_they_newly_cover` (no whole fold over n new things; a row settle each).
 - `invitations()` is a whole value recomputed per call (O(things with secrets)).
-- issues/sync-unbuilt.md (facade): the pass want of a role found gone (spec/permissions.md §2, which `lost_leaving` waits on), `SETTLE_MS`, and the rest listed there.
+- issues/sync-unbuilt.md (facade): `SETTLE_MS` and the rest listed there.

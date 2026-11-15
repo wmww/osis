@@ -104,10 +104,8 @@ fn an_until_ending_keeps_a_copy_that_takes_nothing_new_spec_permissions_3() {
     alice.grant(g, bob.me(), Role::Write, osis::GrantOpts { until: Some(until), may_grant: None, reads: osis::Reads::Kept }).unwrap();
     carry(&alice, &bob);
     c.advance(120_000);
-    // lost by the time alone: sync drops it once it has heard the sync IDs out (§2)
-    let leaving = bob.engine(|e| e.lost_leaving().unwrap());
-    assert!(leaving.timed.contains_key(&g), "{leaving:?}");
-    bob.engine(|e| e.forget_lost(osis::internals::engine::rotation::LostScope::Only(&[g])).unwrap());
+    // lost by the time alone: sync drops it once it has heard g's sync ID out (§2), here at once
+    // (no peer is to be waited for on it: alice is reached by hand only)
     assert_eq!(bob.retained_copies().unwrap(), vec![g]);
     alice.commit_set(t, x(), &s("after")).unwrap();
     carry(&alice, &bob);

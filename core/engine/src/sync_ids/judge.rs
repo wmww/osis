@@ -7,7 +7,7 @@ use crate::engine::{Core, Engine};
 use crate::error::Result;
 use osis_base::{CreationRecord, Role, Tid};
 use osis_crypto::VerifyingKey;
-use osis_perm::{At, Timeline};
+use osis_perm::At;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// J(L) for a connection's proven actors (spec/sync-opens.md §4).
@@ -47,20 +47,18 @@ impl Core {
 }
 
 impl Judge<'_> {
-    fn timeline(&self, a: &Tid) -> Option<&Timeline> {
-        self.core.timelines.get(a)
-    }
-
-    /// J of `thing`: the holders of the actor whose read role reads it (`Core::reader_of`).
+    /// J of `thing`: the holders of the actor whose read role reads it (`Core::reader_of`), now
+    /// (spec/permissions.md §2: a grant past its `until` counts as removed): read on the memo
+    /// clock, so a follower of J is due again when an `until` passes.
     pub fn of(&mut self, thing: &Tid) -> Judgment {
         let a = self.core.reader_of(thing);
         for x in &self.actors {
-            if *x == a || self.timeline(x).is_some_and(|tl| tl.role(x, &a, At::KEYS) >= Some(Role::Read)) {
+            if *x == a || self.core.role_now(x, &a) >= Some(Role::Read) {
                 return Judgment::Holder;
             }
         }
         // a holder of a role below read (sync) holds L still: it has not departed
-        if self.actors.iter().any(|x| self.timeline(x).is_some_and(|tl| tl.role(x, &a, At::KEYS).is_some())) {
+        if self.actors.iter().any(|x| self.core.role_now(x, &a).is_some()) {
             return Judgment::Unknown;
         }
         let core = self.core;

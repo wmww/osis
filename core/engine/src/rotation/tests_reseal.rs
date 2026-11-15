@@ -893,6 +893,29 @@ fn roles_at_now_move_at_an_until_spec_permissions_2() {
     assert_eq!(fx.settle(&1, || e1.role_on(&g)), Some((Some(Some(Role::Read)), None)));
 }
 
+// spec/sync-opens.md §4 (judged on the rosters held here now), spec/permissions.md §2 (the grant
+// counts as removed): J of a holder whose grant has an `until` is reader before
+// it and departed after; a follower of J is due when the clock passes it, nothing else moving.
+#[test]
+fn j_moves_at_an_until_spec_sync_opens_4() {
+    let (mut lp, g, tids) = granted(2, &[]);
+    let until = osis_base::WallMs(lp.peers[0].engine.core.now().0 + 1_000);
+    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.sync_all().unwrap();
+    let e0 = &mut lp.peers[0].engine;
+    let s = e0.home_sync_id(&g).unwrap().expect("g's sync ID");
+    let mut fx: osis_base::memo::Effects<(), crate::sync::J> = osis_base::memo::Effects::new("J at now");
+    fx.want(());
+    assert_eq!(fx.settle(&(), || e0.judge_peer(&s, &[tids[1]]).unwrap()), Some((None, crate::sync::J::Reader)));
+    assert!(fx.due().is_empty());
+    lp.peers[0].clock.advance(2_000);
+    let e0 = &mut lp.peers[0].engine;
+    let now = e0.now();
+    e0.set_now(now);
+    assert_eq!(fx.due(), vec![()], "due at the until");
+    assert_eq!(fx.settle(&(), || e0.judge_peer(&s, &[tids[1]]).unwrap()), Some((Some(crate::sync::J::Reader), crate::sync::J::Departed)));
+}
+
 // spec/sync-judgement.md §1 (Entitlement: placing chain certificates and thing lists, any
 // account's devices actor reads as its account does, whichever node judges it; List blobs),
 // spec/permissions.md §5.5 (a thing list is a chain certificate of T): P1 writes G and files it

@@ -9,7 +9,6 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - The node-wide bound on what served connections hold (spec/sync-transport.md §5 Served connections: requests waiting for the bound's room, reading paused, the largest holders closed); needs `Sessions` to hold answers back. Each connection is bounded alone.
 
 ## opens
-- A live connection whose proofs stop counting (spec/sync-opens.md §3) keeps its record; its members are judged again on `opens::counted` only at S's next credentials change (a removed node holds S's current secrets until that rotation anyway, spec/sync-hostile.md: Departed), and inbox offers and deliveries still read its actors as named at the proof.
 - Static entries claimed in the walk's tests (`Tested::Static` always has no step).
 
 ## store and streams
@@ -31,6 +30,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - `Live::fresh` (the held blobs it hands `Engine::seal_body`) has no World test: a mutation passing none fails no osis-sync test; the engine's `rotation::tests_reseal::facade_*` cover the contract. Cheapest found: a purge of one thing's part of a commit spanning two things, the other thing's section then logged again verbatim.
 
 ## inbox
+- Inbox offers and deliveries read a connection's actors as named at its proof, not as counted now (`opens::counted`): a peer whose proofs stop counting (spec/sync-opens.md §3) still gets offers and deliveries meant for those actors while connected.
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
@@ -43,13 +43,11 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - `caps()`/`set_caps` in the osis API over `caps^.0` (the engine reads `caps^.0`; nothing writes it but a raw write).
 
 ## facade
-- The complete-pass want of a role found gone (spec/permissions.md §2, which `lost_leaving` waits on).
 - Nothing calls `history_complete` (spec/sync-status.md §3) from the API.
 - Home stays under it (spec/sync-set.md §1): nothing refuses a write cutting a synced group from D or D from it; a node so cut follows no change of its synced group until paired again (`Engine::pair` then writes it a new one).
 - `SETTLE_MS` (spec/wire.md §2, a MAY wait: spec/permissions.md §3, §4): nothing waits it. Every holder copies another node's demotion or `keys.0` at once (a duplicate copy each, 3.3 KB per holder per removal, notes/permissions.md Certificates), and every admin gives a plain thing with holders secrets of its own at its pass end (`own_secrets_candidates`), concurrent ones forking.
 - A blob's prefix commitment groups are checked against the commit's delete keys only when its header's linked lists resolve here (`Engine::open_commit`; spec/sync-ids.md §1, spec/crypto.md §7); its expiry is checked always. Until the lists resolve, a reader keeps and serves a blob framed under commitments of its framer's choosing: the thing's delete-key holders cannot delete it (their signatures match no commitment) while its framer can, until its expiry (an open after the lists resolve refuses it, but nothing opens it again for that alone). Fix: hold such a blob unopened (not served) until its lists resolve, then check.
 - A stale copy (spec/permissions.md §3: `open_entry` takes none of it, `Opened::NotOpen`) keeps its bytes in the store as an entry that did not open, and is opened again only when S's read secrets move, not when this node gets secrets of the part's actor (the engine names such waits in `Wakes`, `Engine::take_wakes`, which only its test peer takes, nothing in osis-sync).
-- A loss by an `until` alone (`Leaving::timed`, spec/permissions.md §2: dropped once its sync IDs are heard out, or `LOST_HEARD_WAIT_MS` after): the driver's lost-access step (`role_duties`) leaves these, and nothing reads `lost_leaving` for them, so such an actor's secrets are never dropped. Plan: a `Life` key over `lost_leaving().timed` read with the memo clock up to each wait's end and status's heard-out values; the duty drops those heard out or past the wait (`forget_lost(LostScope::Only)`); a reload restarts the modules as any does.
 
 ## Own issues
 issues/sync-link-first-contact.md, issues/sync-pending-leftovers.md, issues/holder-actor-sync-record.md; missing tests: issues/sync-tests-owed.md.

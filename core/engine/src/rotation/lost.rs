@@ -511,6 +511,12 @@ fn due_now(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
     Ok(!own_leaving(tx, a)?.iter().any(|c| tx.core.ix.held_wait.contains(c)))
 }
 
+/// Whether held actor `a` is lost by an `until` passing alone, no own self-removal behind it
+/// (`Leaving::timed`).
+fn timed_now(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
+    Ok(!judge(tx.core, vec![*a]).is_empty() && lost_by_time(tx.core, a) && own_leaving(tx, a)?.is_empty())
+}
+
 /// The held copies' marks judged now differ from the marks kept (`keeps`): a role commit moved
 /// what a copy hangs on, with no drop to judge it.
 fn copies_moved(core: &Core) -> bool {
@@ -565,6 +571,16 @@ pub struct Leaving {
     /// When to look again (engine ms): an actor with a self-removal behind it, kept now by a
     /// pending grant, may become lost as that grant ages out; a timed one's wait ends.
     pub recheck_at: Option<u64>,
+}
+
+/// A loss by an `until` alone, as `Engine::lost_timed` judges it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimedLoss {
+    /// When it drops whatever is heard (`LOST_HEARD_WAIT_MS` after it was first judged).
+    pub wait_end: osis_base::WallMs,
+    /// Each sync ID of the actor read here, and whether a complete pass of it begun after the
+    /// loss was first judged ended.
+    pub ids: Vec<(osis_base::SyncId, bool)>,
 }
 
 impl Engine {
@@ -623,11 +639,35 @@ impl Engine {
         }
         let a = *a;
         let due = self.core.ix.secrets.contains_key(&a) && self.read(|tx| due_now(tx, &a))?;
-        // a loss judged afresh once it ends: a later one waits its own pass (`lost_passed`)
-        if !due {
+        // a loss judged afresh once it ends: a later one waits its own pass (`lost_passed`); a
+        // loss by an `until` alone keeps its place (`lost_timed` waits on its pass too)
+        if !due && !self.read(|tx| timed_now(tx, &a))? {
             self.judge_cause(crate::sync::held::Cause::Lost(a), false)?;
         }
         Ok(due)
+    }
+
+    /// Held actor `a` lost by an `until` passing alone, no own self-removal behind it
+    /// (spec/permissions.md §2, `Leaving::timed`): when it drops anyway (`LOST_HEARD_WAIT_MS`
+    /// after its loss was first judged, the `T/` record), and per sync ID of it read here whether
+    /// a complete pass begun after that ended (`lost_passed`'s place, whose pass this wants).
+    /// A value of the state read with the memo clock up to the next `until` on the actors
+    /// reaching `a`, as `lost_due` is. None for any other actor.
+    pub fn lost_timed(&mut self, a: &Tid) -> Result<Option<TimedLoss>> {
+        for x in reaching(&self.core, a) {
+            self.core.roster_of(&x);
+        }
+        let a = *a;
+        if !self.core.ix.secrets.contains_key(&a) || !self.read(|tx| timed_now(tx, &a))? {
+            return Ok(None);
+        }
+        let since = self.run(|tx| timed_since(tx, a))?;
+        let place = self.judge_cause(crate::sync::held::Cause::Lost(a), true)?;
+        let ids = match self.thing_sync(&a)? {
+            crate::sync::ThingSync::Read(ids) => ids.iter().map(|s| (*s, self.passed_after(std::iter::once(s), place))).collect(),
+            _ => Vec::new(),
+        };
+        Ok(Some(TimedLoss { wait_end: osis_base::WallMs(since.saturating_add(LOST_HEARD_WAIT_MS)), ids }))
     }
 
     /// Whether a complete pass of each sync ID of `a` read here began after the loss

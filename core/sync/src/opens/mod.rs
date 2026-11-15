@@ -149,6 +149,8 @@ pub struct Ctx<'a> {
 pub struct Work {
     /// Members re-judged.
     pub rejudged: u64,
+    /// Members whose standing (`Holds::standing`) came due.
+    pub standing: u64,
     /// Beacons computed (filters and tests).
     pub beacons: u64,
     /// Sync IDs tested against a peer's filter.
@@ -320,6 +322,8 @@ struct Conn {
     /// It lost its record to this connection (spec/sync-opens.md §1 One connection per pair):
     /// it closes, and acts on nothing meanwhile.
     lost_to: Option<ConnId>,
+    /// The sync IDs whose ByRole the peer refused here (`Opens::refused`).
+    refused: BTreeSet<SyncId>,
 }
 
 /// `changed_at` (spec/sync-opens.md §3): per S a position of this node's own sequence, with the
@@ -436,9 +440,16 @@ pub struct Opens {
     /// with the sync key of the step it stopped at (none: this node's recorded head). Goes with
     /// the connection, S opening there, and S leaving the sync set (`walk_stop`: status follows it).
     stops: osis_base::memo::Stamped<SyncId, BTreeMap<ConnId, Stop>>,
+    /// Per S, the connections whose peer, judged a reader here, refused this side's ByRole on S,
+    /// S not open there since (spec/permissions.md §2: a source refuses it). Goes with the
+    /// connection, S opening there, and S leaving the sync set (`refused`: life follows it).
+    refusals: osis_base::memo::Stamped<SyncId, BTreeSet<ConnId>>,
     /// Records of twinned connections that closed (spec/sync-opens.md §1 Twin): removed at
     /// `flush` once no connection holds or lists one.
     dropped: BTreeSet<RecordId>,
+    /// Members that left a connection since the last `tick`, whose J `Holds` still follows
+    /// (`Holds::unfollow` at the tick; one opened again meanwhile is followed still).
+    unfollowed: BTreeSet<(ConnId, SyncId)>,
     work: Work,
 }
 
@@ -461,7 +472,9 @@ impl Default for Opens {
             peers: osis_base::memo::Stamps::named("opens: peers"),
             acks: None,
             stops: osis_base::memo::Stamped::default(),
+            refusals: osis_base::memo::Stamped::default(),
             dropped: BTreeSet::new(),
+            unfollowed: BTreeSet::new(),
             work: Work::default(),
         }
     }
@@ -738,6 +751,34 @@ impl Opens {
     /// no credential of the newest step known there, or Behind refused it), and where: a stop
     /// naming a step it reached before one naming none, the lowest connection first. Stamped
     /// per S. O(connections stopped on S).
+    /// Whether a source refuses S here (spec/permissions.md §2, a loss by an `until` alone): on a
+    /// connection up, a peer this side judged a reader refused its ByRole on S, S not open
+    /// there since; or the walk of S stopped at a source keeping S unread (`walk_stop`).
+    pub fn refused(&self, s: &SyncId) -> bool {
+        self.refusals.get(s).is_some_and(|x| !x.is_empty()) || self.stops.get(s).is_some()
+    }
+
+    /// Sets whether `conn`'s peer refuses S (`refused`).
+    fn index_refusal(&mut self, conn: ConnId, s: SyncId, refuses: bool) {
+        if let Some(c) = self.conns.get_mut(&conn) {
+            if refuses {
+                c.refused.insert(s);
+            } else {
+                c.refused.remove(&s);
+            }
+        }
+        let mut at = self.refusals.get(&s).cloned().unwrap_or_default();
+        let moved = if refuses { at.insert(conn) } else { at.remove(&conn) };
+        if !moved {
+            return;
+        }
+        if at.is_empty() {
+            self.refusals.remove(&s);
+        } else {
+            self.refusals.insert(s, at);
+        }
+    }
+
     pub fn walk_stop(&self, s: &SyncId) -> Option<Stop> {
         let at = self.stops.get(s)?;
         at.values().find(|x| x.is_some()).or_else(|| at.values().next()).copied()
@@ -860,6 +901,9 @@ impl Opens {
             for s in c.walks.keys() {
                 self.index_stop(conn, *s, None);
             }
+            for s in c.refused {
+                self.index_refusal(conn, s, false);
+            }
         }
     }
 
@@ -872,6 +916,7 @@ impl Opens {
         let walk: Vec<SyncId> = r.walk.keys().copied().collect();
         for (s, m) in &r.members {
             moved.push(Moved::Left(conn, *s, LeftAt { reported: c.reported.get(s).map(|(p, _)| *p), until: m.until, how: Leaving::Connection }));
+            self.unfollowed.insert((conn, *s));
             if let Some(set) = self.holding.get_mut(s) {
                 set.remove(&conn);
             }
@@ -1017,6 +1062,20 @@ impl Opens {
             }
             self.moved_creds(ctx, s, now, moved);
         }
+        // spec/sync-opens.md §6: a member is re-judged when the judgement of its peer's proof
+        // moves (its removal or demotion arriving, its account's revocation, an `until`
+        // passing): O(members resting on what moved)
+        for (c, s) in std::mem::take(&mut self.unfollowed) {
+            ctx.holds.unfollow(c, &s);
+        }
+        for (c, s) in ctx.holds.standing_due() {
+            self.work.standing += 1;
+            if self.member(c, &s).is_some() {
+                self.rejudge(ctx, c, s, moved);
+            } else {
+                ctx.holds.unfollow(c, &s);
+            }
+        }
         let conns: Vec<ConnId> = self.conns.keys().copied().collect();
         for c in conns {
             if let Some(k) = self.conns.get_mut(&c)
@@ -1090,6 +1149,12 @@ impl Opens {
                 if self.stops.contains_key(&s) {
                     self.stops.remove(&s);
                 }
+                if self.refusals.contains_key(&s) {
+                    self.refusals.remove(&s);
+                }
+                for k in self.conns.values_mut() {
+                    k.refused.remove(&s);
+                }
                 // the record rows of S go with S in the store
                 for r in self.records.values_mut() {
                     r.walk.remove(&s);
@@ -1148,6 +1213,7 @@ impl Opens {
             walks: BTreeMap::new(),
             retries: BTreeSet::new(),
             lost_to: None,
+            refused: BTreeSet::new(),
         };
         if bind.dialer {
             if !c.named.is_empty() {
@@ -1742,13 +1808,19 @@ impl Opens {
     /// What `conn` may open S by now (spec/sync-opens.md §4 Admissible, Departed): S synced here,
     /// J of the peer, and the credentials at an epoch covering every departure where J is departed.
     fn admissible(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId) -> Option<Adm> {
-        let creds = self.changed.at.get(s).map(|(_, _, c)| c.clone())?;
-        creds.holding?;
         let c = self.conns.get(&conn)?;
         // spec/sync-opens.md §4 J: judged on the rosters held now, from what this connection's
         // proofs count for now.
         let actors = ctx.holds.counts(&c.named);
         let j = ctx.holds.judge(s, &actors);
+        self.admissible_as(ctx, conn, s, j)
+    }
+
+    /// `admissible` with J judged already.
+    fn admissible_as(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, j: J) -> Option<Adm> {
+        let creds = self.changed.at.get(s).map(|(_, _, c)| c.clone())?;
+        creds.holding?;
+        self.conns.get(&conn)?;
         let mut ok = |e: &Option<osis_crypto::Epoch>| j != J::Departed || e.as_ref().is_some_and(|e| ctx.holds.covers_departures(s, e));
         let shows = creds.shows.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
         let tests = creds.tests.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
@@ -1947,13 +2019,19 @@ impl Opens {
                         continue;
                     }
                     let by = cred.credential(&s);
-                    self.open(conn, s, Member { class: SourceClass::declared(a.unread), own, by, until: None }, Some(beacon), moved);
+                    self.open(ctx, conn, s, Member { class: SourceClass::declared(a.unread), own, by, until: None }, Some(beacon), moved);
                 }
                 Sent::ByRole(s, own) if a.code == Code::OK => {
                     accepted.insert(s);
                     // An accepted ByRole opens S at its sender while J is still reader there.
                     if self.member(conn, &s).is_none() && self.admissible(ctx, conn, &s).is_some_and(|a| a.j == J::Reader && a.own == own) {
-                        self.open(conn, s, Member { class: SourceClass::declared(a.unread), own, by: Credential::J, until: None }, None, moved);
+                        self.open(ctx, conn, s, Member { class: SourceClass::declared(a.unread), own, by: Credential::J, until: None }, None, moved);
+                    }
+                }
+                // refused by a peer judged a reader when it went (ByRole goes only then)
+                Sent::ByRole(s, _) => {
+                    if self.member(conn, &s).is_none() {
+                        self.index_refusal(conn, s, true);
                     }
                 }
                 Sent::Behind(s, named) => {
@@ -1990,7 +2068,6 @@ impl Opens {
                         self.remark(conn, &s);
                     }
                 }
-                _ => {}
             }
         }
         // Once all answers are read: Lost each S the peer accepted and this side did not open.
@@ -2104,7 +2181,7 @@ impl Opens {
         };
         if self.member(conn, &s).is_none() {
             let by = shown.credential();
-            self.open(conn, s, Member { class, own: adm.own, by, until: None }, Some(beacon), moved);
+            self.open(ctx, conn, s, Member { class, own: adm.own, by, until: None }, Some(beacon), moved);
         }
         SharedItem { code: Code::OK, tag: Some(bind.tag(shown.matched(), &s, &beacon)), grant, sig: answer_sig, unread: adm.own.unread() }
     }
@@ -2116,7 +2193,7 @@ impl Opens {
         let ok = SharedItem { unread: adm.own.unread(), ..SharedItem::code(Code::OK) };
         if adm.j == J::Reader {
             if self.member(conn, &s).is_none() {
-                self.open(conn, s, Member { class, own: adm.own, by: Credential::J, until: None }, None, moved);
+                self.open(ctx, conn, s, Member { class, own: adm.own, by: Credential::J, until: None }, None, moved);
             }
             return ok;
         }
@@ -2136,7 +2213,7 @@ impl Opens {
             Some((_, sh, b)) => {
                 if self.member(conn, &s).is_none() {
                     let by = sh.credential();
-                    self.open(conn, s, Member { class, own: adm.own, by, until: None }, Some(b), moved);
+                    self.open(ctx, conn, s, Member { class, own: adm.own, by, until: None }, Some(b), moved);
                 }
                 ok
             }
@@ -2150,8 +2227,13 @@ impl Opens {
         self.members(conn).get(s)
     }
 
-    fn open(&mut self, conn: ConnId, s: SyncId, m: Member, beacon: Option<[u8; 32]>, moved: &mut Vec<Moved>) {
-        let Some(rid) = self.conns.get(&conn).and_then(|c| c.rec) else { return };
+    fn open(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, m: Member, beacon: Option<[u8; 32]>, moved: &mut Vec<Moved>) {
+        let Some(c) = self.conns.get(&conn) else { return };
+        let Some(rid) = c.rec else { return };
+        // its standing is followed from here (spec/sync-opens.md §6)
+        let named = c.named.clone();
+        self.unfollowed.remove(&(conn, s));
+        ctx.holds.standing(conn, &s, &named);
         let Some(r) = self.records.get_mut(&rid) else { return };
         r.members.insert(s, m);
         r.basis.insert(s, beacon);
@@ -2161,6 +2243,7 @@ impl Opens {
         self.peers.wrote(&s, true);
         moved.push(Moved::Joined(conn, s, rejoin));
         self.set_stop(conn, s, None);
+        self.index_refusal(conn, s, false);
     }
 
     /// Re-judges member S of `conn` (spec/sync-opens.md §6): J reader or sync holder stays; an
@@ -2172,7 +2255,9 @@ impl Opens {
     fn rejudge(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, moved: &mut Vec<Moved>) {
         let Some(m) = self.member(conn, &s).cloned() else { return };
         self.work.rejudged += 1;
-        let Some(adm) = self.admissible(ctx, conn, &s) else {
+        let Some(named) = self.conns.get(&conn).map(|c| c.named.clone()) else { return };
+        let j = ctx.holds.standing(conn, &s, &named);
+        let Some(adm) = self.admissible_as(ctx, conn, &s, j) else {
             // S left the sync set: closes at once.
             self.close_member(ctx, conn, s, Close::Left, moved);
             return;
@@ -2246,6 +2331,7 @@ impl Opens {
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r)) else { return };
         let Some(m) = r.members.remove(&s) else { return };
+        self.unfollowed.insert((conn, s));
         let at = LeftAt { reported: c.reported.get(&s).map(|(p, _)| *p), until: m.until, how: if stop.is_some() { Leaving::Kept } else { Leaving::Forgot } };
         c.reported.forget(&s);
         self.reports.wrote(&conn, true);

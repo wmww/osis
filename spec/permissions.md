@@ -41,9 +41,10 @@
 - A grant may carry `until: timestamp`: the grant counts as removed from `wall_ms(t) >= until`.
 - A grant **without history** carries `floor`: the n of the read rotation its commit makes (the cut, spec/crypto.md §4 Floors); its holder reads the current state (snapshots, spec/crypto.md §4 State at a cut) and is handed no commit written before it. A change of the grant keeps its `floor` unless its writer shows history (a grant with history, at its author's floor); a grant without history is written by an admin of the target, to a holder holding no role on it.
 - **An `until` passing** is a loss (§3) the node judges by its own clock, with no role commit behind it. A node whose read access only an `until` ended (walked with every grant's time ahead, it has a role):
-  - First hears out the sync IDs it tracks whose closure holds a thing it would forget. For each such sync ID, one of these holds:
-    - with a source: each of its own commits with an entry under it is held elsewhere (spec/sync-status.md §2) and, a complete pass (spec/sync-status.md §1) begun since it found the role gone ended; or
-    - a source refuses it: on a connection whose shared set settled without the sync ID, the peer proved an actor it judges a holder of the sync ID (spec/sync-opens.md §4), or the peer keeps the sync ID unread and refused it (stranded). Limit: a peer that proves nothing to it (one that judges it departed and knows it by nothing else) is no refusal, so with only such peers reachable it keeps what it lost until `LOST_HEARD_WAIT_MS`.
+  - First hears out each sync ID of the actor it reads (as §3, When it learns it). For each, one of these holds:
+    - it has a source, each of its own commits with an entry under it is held elsewhere (spec/sync-status.md §2), and a complete pass (spec/sync-status.md §1) begun since it found the role gone ended; or
+    - no peer is to be waited for on it (spec/sync-set.md §3 Leaving); or
+    - a source refuses it: on a connection up, a peer it judged a reader refused its ByRole on the sync ID, not open there since (spec/sync-opens.md §4-§5), or its walk of the sync ID stopped at a peer keeping it unread (stranded there, spec/sync-ids.md §6). Limit: a peer that proves nothing to it (one that judges it departed and knows it by nothing else) is no refusal, so with only such peers reachable it keeps what it lost until `LOST_HEARD_WAIT_MS`.
   - Meanwhile its writes from before the `until` go out (a peer that judges it departed, or that keeps the sync ID unread under a later sync key, shares nothing with it), and a renewal held by then keeps its role.
   - Then it drops.
   - It drops anyway `LOST_HEARD_WAIT_MS` after it first found the role gone.

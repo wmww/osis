@@ -161,3 +161,69 @@ fn a_destroyed_thing_is_followed_by_no_holder_duty_spec_permissions_2() {
     assert!(!w.engine(0).named_a_holder(&x), "X destroyed");
     assert!(!w.node(0).node.life().holder_duties_follow(&x), "still followed once destroyed");
 }
+
+/// How long node 1's grant in `read_until` lasts: past what a run's dial timers move the clock.
+const UNTIL_MS: u64 = 10 * 86_400_000;
+
+/// `contacts` with node 0's thing t (value "x") granted to node 1's account for reading for
+/// `UNTIL_MS`, filed and read there: (world, t).
+fn read_until() -> (World, Tid) {
+    let (w, t) = fixture_with("life read until", || {
+        let mut w = crate::harness::contacts();
+        let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+        let until = osis_base::WallMs(w.now().0 + UNTIL_MS);
+        let t = w.write(0, |e| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a0);
+            m.set(t, &v(), &Value::Str("x".into())).unwrap();
+            e.commit(m).unwrap();
+            t
+        });
+        file(&mut w, 0, vec![t], Vec::new());
+        w.write(0, |e| e.grant(&t, &a1, &ct::Edge { role: osis_base::Role::Read, until: Some(until), invite: None, tied: None, floor: None })).unwrap();
+        w.run();
+        file(&mut w, 1, Vec::new(), vec![t]);
+        w.run();
+        assert_eq!(w.engine(1).get(&t, &v()).unwrap(), Some(Value::Str("x".into())), "node 1 reads t");
+        (w, t)
+    });
+    (w, t)
+}
+
+/// Whether node `i` still holds secrets of `t`.
+fn holds(w: &mut World, i: usize, t: &Tid) -> bool {
+    w.engine(i).held_actors().contains(t)
+}
+
+// spec/permissions.md §2 (an `until` passing: the node hears out the sync IDs of what it lost,
+// then drops): node 1's read of t ends by its `until` alone while connected to node 0; node 0
+// finalizes it and shares nothing with node 1 from then (it judges it departed), which refuses
+// node 1's ByRole: heard out, node 1 drops t's secrets and forgets t, long before
+// `LOST_HEARD_WAIT_MS`.
+#[test]
+fn a_loss_by_an_until_drops_once_heard_out_spec_permissions_2() {
+    let (mut w, t) = read_until();
+    w.advance(UNTIL_MS);
+    w.run();
+    assert!(!holds(&mut w, 1, &t), "node 1 dropped t");
+    assert_eq!(w.engine(1).get(&t, &v()).unwrap(), None, "and forgot it");
+}
+
+// spec/permissions.md §2 (It drops anyway `LOST_HEARD_WAIT_MS` after it first found the role
+// gone): node 1, cut off from every peer when its `until` passes, hears nothing out and keeps t
+// meanwhile; at the wait's end it drops t. Node 1's clock moves alone (`skew`): the world's dial
+// ticks over the wait would cost minutes.
+#[test]
+fn a_loss_by_an_until_cut_off_drops_at_the_waits_end_spec_permissions_2() {
+    let (mut w, t) = read_until();
+    w.partition(0, 1);
+    w.skew(1, UNTIL_MS as i64);
+    w.run();
+    assert!(holds(&mut w, 1, &t), "kept while not heard out");
+    w.skew(1, (UNTIL_MS + osis_engine::rotation::LOST_HEARD_WAIT_MS / 2) as i64);
+    w.run();
+    assert!(holds(&mut w, 1, &t), "kept within the wait");
+    w.skew(1, (UNTIL_MS + osis_engine::rotation::LOST_HEARD_WAIT_MS) as i64 + 3_600_000);
+    w.run();
+    assert!(!holds(&mut w, 1, &t), "dropped at the wait's end");
+}

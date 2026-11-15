@@ -110,11 +110,14 @@ pub struct Table {
     pub taken: BTreeSet<SyncId>,
     /// The recorded path per S: what a source's steps verify under.
     pub recorded: BTreeMap<SyncId, Vec<osis_blob::Step>>,
+    /// The members whose J is followed (`Holds::standing`), with the actors their peer names.
+    pub followed: BTreeMap<(ConnId, SyncId), Vec<Tid>>,
+    standing_due: BTreeSet<(ConnId, SyncId)>,
 }
 
 impl Table {
     pub fn new(seed: u64) -> Table {
-        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new(), recorded: BTreeMap::new() }
+        Table { rng: SeededRng::from_u64(seed), creds: BTreeMap::new(), due: BTreeSet::new(), j: BTreeMap::new(), covering: BTreeSet::new(), until: 100, grants: BTreeMap::new(), gives_grant: false, taken: BTreeSet::new(), recorded: BTreeMap::new(), followed: BTreeMap::new(), standing_due: BTreeSet::new() }
     }
 
     /// S's credentials are now `c` (none: S left the sync set).
@@ -131,10 +134,12 @@ impl Table {
         self.due.extend(self.creds.keys().copied());
     }
 
-    /// J of `actor` for S is now `j`. Nothing comes due: J is read when S's credentials move
-    /// (spec/sync-opens.md §6).
+    /// J of `actor` for S is now `j`: each member of S whose peer names `actor` comes due
+    /// (spec/sync-opens.md §6), as the engine's memo follows the rosters.
     pub fn judge_as(&mut self, s: SyncId, actor: Tid, j: J) {
         self.j.insert((s, actor), j);
+        let due = self.followed.iter().filter(|((_, x), a)| *x == s && a.contains(&actor)).map(|(k, _)| *k);
+        self.standing_due.extend(due);
     }
 }
 
@@ -157,6 +162,18 @@ impl Holds for Table {
     fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J {
         let js: Vec<J> = actors.iter().filter_map(|a| self.j.get(&(*s, *a)).copied()).collect();
         [J::Reader, J::SyncHolder, J::Departed].into_iter().find(|j| js.contains(j)).unwrap_or(J::Unknown)
+    }
+    fn standing(&mut self, conn: ConnId, s: &SyncId, named: &osis_store::Named) -> J {
+        let actors = self.counts(named);
+        let j = self.judge(s, &actors);
+        self.followed.insert((conn, *s), actors);
+        j
+    }
+    fn standing_due(&mut self) -> Vec<(ConnId, SyncId)> {
+        std::mem::take(&mut self.standing_due).into_iter().collect()
+    }
+    fn unfollow(&mut self, conn: ConnId, s: &SyncId) {
+        self.followed.remove(&(conn, *s));
     }
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool {
         self.covering.contains(&(*s, *epoch))
@@ -281,6 +298,7 @@ impl Side {
         self.pipe = Pipe::default();
         self.moved.clear();
         self.table.redue();
+        self.table.followed.clear();
         self.settle();
     }
 

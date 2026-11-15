@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 pub use departures::{departures_placing, may_rotate};
-pub use lost::{Dropped, Leaving, LostScope, LOST_HEARD_WAIT_MS};
+pub use lost::{Dropped, Leaving, LostScope, TimedLoss, LOST_HEARD_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
 pub(crate) use departures::{departures, key_role, own_self_removal};
 pub(crate) use members::{Boxing, Sealed, grant_keyless, sealed};

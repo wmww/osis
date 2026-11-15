@@ -297,6 +297,27 @@ fn byrole_opens_on_j_spec_sync_opens_5() {
     assert_eq!(p.a.opens.members(p.ca)[&S].by, Credential::J);
 }
 
+// spec/permissions.md §2 (a source refuses it): a loss by an `until` alone: a ByRole refused by
+// a peer this side judges a reader counts as a refusal of S while the connection lasts and S is
+// not open there; an accepted one is none.
+#[test]
+fn a_byrole_refused_by_a_reader_is_a_refusal_spec_permissions_2() {
+    for refuses in [true, false] {
+        let mut a = Side::new(1);
+        let mut b = Side::new(2);
+        a.table.set(S, Some(reader(&S, &read_secret(1, 0), &StepKeys::new(1, 0), &[], &[], &[])));
+        b.table.set(S, Some(reader(&S, &read_secret(9, 0), &StepKeys::new(9, 0), &[], &[], &[])));
+        a.table.judge_as(S, tid(2), J::Reader);
+        b.table.judge_as(S, tid(1), if refuses { J::Departed } else { J::Reader });
+        let mut p = Pair::new(a, b, account(1), account(2));
+        p.run();
+        assert_eq!(p.a.open(p.ca, &S), !refuses);
+        assert_eq!(p.a.opens.refused(&S), refuses);
+        p.close();
+        assert!(!p.a.opens.refused(&S), "goes with the connection");
+    }
+}
+
 // spec/sync-opens.md §3 (agreement): a member only one side's record holds closes there, with
 // no position kept, and is tested again: the two sides open it again.
 #[test]
@@ -686,19 +707,73 @@ fn j_is_judged_on_the_roster_held_now_spec_sync_opens_4() {
     assert!(!r.open(adv.peer, &S));
 }
 
-// ON_endj (spec/sync-opens.md §6): an open by J closes at once with a Lost when J judges the peer
-// departed at the move of S's credentials its removal's rotation makes.
+// ON_endj, ON_peermoves (spec/sync-opens.md §6): an open by J closes at once with a Lost when
+// its peer's standing moves, with no credential of S moving: J judging it departed (its removal
+// held), or unknown (its account's key revoked); one demoted to sync holder stays.
 #[test]
-fn a_j_open_closes_at_a_removal_spec_sync_opens_6() {
-    let (mut r, mut adv) = reader_judging(J::Reader);
-    assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), unread: false }])[0].code, Code::OK);
-    assert!(r.open(adv.peer, &S));
-    r.sent();
-    r.table.judge_as(S, tid(9), J::Departed);
-    rotated(&mut r, 1);
-    r.settle();
-    assert!(!r.open(adv.peer, &S));
-    assert_eq!(of_kind(&r.sent(), 38).len(), 1, "a Lost");
+fn a_j_open_closes_when_its_peer_stops_counting_spec_sync_opens_6() {
+    for (j, stays) in [(J::Departed, false), (J::Unknown, false), (J::SyncHolder, true)] {
+        let (mut r, mut adv) = reader_judging(J::Reader);
+        assert_eq!(adv.offer(&mut r, vec![OfferItem::ByRole { sync_id: S, hits: Vec::new(), unread: false }])[0].code, Code::OK);
+        assert!(r.open(adv.peer, &S));
+        r.sent();
+        r.table.judge_as(S, tid(9), j);
+        r.settle();
+        assert_eq!(r.open(adv.peer, &S), stays, "{j:?}");
+        assert_eq!(of_kind(&r.sent(), 38).len(), usize::from(!stays), "{j:?}: a Lost");
+    }
+}
+
+// ON_peermoves (spec/sync-opens.md §4 Departed, §6): a peer removed while connected, its removal
+// held here before any rotation (no credential of S moves), is no longer served S: its open by
+// S's read secret, at an epoch not covering its departure, closes at once at both ends. Across a
+// restart the record's next connection opens nothing either.
+#[test]
+fn a_removal_held_here_closes_a_credential_open_at_once_spec_sync_opens_6() {
+    let mut p = readers();
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.settle();
+    assert!(!p.a.open(p.ca, &S), "closed at once, before any rotation");
+    p.run();
+    assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S), "b's Hit refused: a judges it departed");
+    // held while away (the record keeps the member), then a restart: the reconnect re-judges it
+    let mut p = readers();
+    p.close();
+    p.a.table.judge_as(S, tid(2), J::Departed);
+    p.a.restart();
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert!(!p.a.open(p.ca, &S) && !p.b.open(p.cb, &S));
+}
+
+// spec/sync-opens.md §6: a move of one peer's standing for one sync ID re-judges that member
+// alone: the same work at n and 10n sync IDs open on the connection.
+fn standing_moves_one_of(n: u8) -> osis_sync::opens::Work {
+    let st = StepKeys::new(1, 0);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
+    for i in 0..n {
+        let rs = read_secret(i, 0);
+        a.table.set(sid(i), Some(reader(&sid(i), &rs, &st, &[], &[], &[])));
+        b.table.set(sid(i), Some(reader(&sid(i), &rs, &st, &[], &[], &[])));
+    }
+    a.settle();
+    b.settle();
+    let mut p = Pair::new(a, b, account(1), account(2));
+    p.run();
+    assert!((0..n).all(|i| p.a.open(p.ca, &sid(i))));
+    let before = p.a.opens.work();
+    p.a.table.judge_as(sid(0), tid(2), J::SyncHolder);
+    p.a.settle();
+    let w = p.a.opens.work();
+    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, standing: w.standing - before.standing, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+}
+
+#[test]
+fn a_standing_move_costs_the_same_at_n_and_10n_spec_sync_opens_6() {
+    let (small, large) = (standing_moves_one_of(10), standing_moves_one_of(100));
+    assert_eq!(small, large);
+    assert_eq!((small.standing, small.rejudged), (1, 1), "{small:?}");
 }
 
 // ON_departed (spec/sync-opens.md §4 (departed)): a side MUST NOT open S toward a peer J judges
@@ -814,7 +889,7 @@ fn change_one_of(n: u8) -> osis_sync::opens::Work {
     p.settle();
     assert!(p.a.open(p.ca, &sid(0)));
     let w = p.a.opens.work();
-    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, standing: w.standing - before.standing, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
 }
 
 // spec/sync-opens.md §6: a change of one sync ID's credentials re-judges, tests and filters that
@@ -1033,7 +1108,7 @@ fn reconnect_with(n: u8) -> osis_sync::opens::Work {
     p.run();
     assert!(p.a.open(p.ca, &sid(0)));
     let w = p.a.opens.work();
-    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
+    osis_sync::opens::Work { rejudged: w.rejudged - before.rejudged, standing: w.standing - before.standing, beacons: w.beacons - before.beacons, tested: w.tested - before.tested, creds: w.creds - before.creds }
 }
 
 // spec/sync-opens.md §3 (records): a peer with a record reconnecting with nothing changed costs the same

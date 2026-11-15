@@ -686,6 +686,11 @@ impl Status {
 
     // ---- reads (stamped: memo-safe; none makes an output) ----
 
+    /// Whether S has a source now (§1).
+    pub fn sourced(&self, s: &SyncId) -> bool {
+        self.sources.get(s).is_some_and(|x| !x.is_empty())
+    }
+
     /// Whether a complete pass of S begun after pass place `seq` (`Engine::pass_place`) ended,
     /// while S is held.
     pub fn passed_since(&self, s: &SyncId, seq: u64) -> bool {

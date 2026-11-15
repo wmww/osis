@@ -22,7 +22,12 @@
 //!   alone; the clock read to the next `until`) and `Engine::lost_passed` (a complete pass of its
 //!   sync IDs begun after the newest role commit that could have caused it: it keeps syncing until
 //!   then, and what that pass brings may give it back) both hold, `Engine::drop_lost` judges
-//!   and drops it. One key over `Engine::copies_due` judges the kept copies again
+//!   and drops it. A loss by an `until` alone (`Engine::lost_timed`, spec/permissions.md §2) on
+//!   the same key drops once each sync ID of the actor read here is heard out for it
+//!   (`Hears::timed_heard`: with a source, a complete pass begun after the loss ended and what
+//!   this node logged itself there is elsewhere; no peer to be waited for on it; or a source
+//!   refuses it), or
+//!   at its wait's end (`LOST_HEARD_WAIT_MS`, read on the memo clock). One key over `Engine::copies_due` judges the kept copies again
 //!   (`Engine::rejudge_copies`) where a role commit moved what one hangs on.
 //! - **Joiner's leave** (spec/permissions.md §7): per thing named a holder, whether it is a link
 //!   this account joined whose K's edge on its target ended (`Engine::joined_link_ended`); one
@@ -51,6 +56,17 @@ use osis_base::memo::{Effects, Feed};
 use osis_base::{SyncId, Tid};
 use osis_engine::Engine;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// What life reads of sync per sync ID: stamped reads, so a duty is due again when one moves.
+pub trait Hears {
+    /// S heard out now (no peer to wait for on S counts as heard out): lifetimes.
+    fn heard_out(&mut self, engine: &mut Engine, s: &SyncId) -> Result<bool>;
+    /// A loss by an `until` alone heard S out (spec/permissions.md §2): with a source of S, a
+    /// complete pass of S begun after the loss ended (`passed`) and each own commit with an
+    /// entry under S is held elsewhere; or no peer is to be waited for on S; or a source refuses
+    /// S.
+    fn timed_heard(&mut self, engine: &mut Engine, s: &SyncId, passed: bool) -> Result<bool>;
+}
 
 #[derive(Clone)]
 pub struct Life {
@@ -104,13 +120,13 @@ impl Life {
     /// Follows what moved; runs each duty when due. `heard_out(s)`: S heard out now (stamped
     /// reads; no peer to wait for on S counts as heard out). Whether one ran (the engine's rows moved:
     /// the next round settles them).
-    pub fn settle(&mut self, engine: &mut Engine, store: &Store, heard_out: impl FnMut(&mut Engine, &SyncId) -> Result<bool>) -> Result<bool> {
+    pub fn settle(&mut self, engine: &mut Engine, store: &Store, hears: &mut impl Hears) -> Result<bool> {
         // the role duties first: a finalize or rotation goes before anything encrypts again,
         // then the lost-access drop
         if self.owe(engine)? {
             return Ok(true);
         }
-        if self.drop_lost(engine)? {
+        if self.drop_lost(engine, hears)? {
             return Ok(true);
         }
         if !self.copies.due().is_empty()
@@ -130,7 +146,7 @@ impl Life {
             }
         }
         let acted = self.holders(engine)?;
-        Ok(self.lifetimes(engine, store, heard_out)? || acted)
+        Ok(self.lifetimes(engine, store, hears)? || acted)
     }
 
     /// Writes the role commits this node owes on each held actor whose `role_duty_due` moved
@@ -169,12 +185,13 @@ impl Life {
         Ok(ran)
     }
 
-    /// Drops each held actor whose `lost_due` and `lost_passed` settle true (`Engine::drop_lost`);
-    /// whether one dropped (the engine's rows moved: the next round settles them).
+    /// Drops each held actor whose drop settles due (`lost_now`: `lost_due` and `lost_passed`, or
+    /// a loss by an `until` alone heard out or past its wait; `Engine::drop_lost`); whether one
+    /// dropped (the engine's rows moved: the next round settles them).
     /// O(actors added and keys moved).
-    fn drop_lost(&mut self, engine: &mut Engine) -> Result<bool> {
+    fn drop_lost(&mut self, engine: &mut Engine, hears: &mut impl Hears) -> Result<bool> {
         for a in self.lost.due() {
-            match self.lost.try_settle(&a, || isolate(lost_now(engine, &a)).map(|v| v.unwrap_or(false)))? {
+            match self.lost.try_settle(&a, || lost_now(engine, hears, &a))? {
                 Some((_, true)) => match isolate(engine.drop_lost(&a)) {
                     Ok(Some(true)) => return Ok(true),
                     Ok(_) => {}
@@ -191,7 +208,7 @@ impl Life {
         Ok(false)
     }
 
-    fn lifetimes(&mut self, engine: &mut Engine, store: &Store, mut heard_out: impl FnMut(&mut Engine, &SyncId) -> Result<bool>) -> Result<bool> {
+    fn lifetimes(&mut self, engine: &mut Engine, store: &Store, hears: &mut impl Hears) -> Result<bool> {
         for (s, was, now) in self.syncs.settle(store) {
             if let Some((t, _)) = was
                 && let Some(ids) = self.ids.get_mut(&t)
@@ -213,7 +230,7 @@ impl Life {
             }
         }
         for s in self.heard.due() {
-            if let Some((was, now)) = self.heard.try_settle(&s, || heard_out(engine, &s))? {
+            if let Some((was, now)) = self.heard.try_settle(&s, || hears.heard_out(engine, &s))? {
                 self.newly |= now && was != Some(true);
                 self.heard_now.insert(s, now);
             }
@@ -289,9 +306,23 @@ impl Life {
     }
 }
 
-/// Held actor `a`'s drop is due and its complete pass done (`Life::drop_lost`).
-fn lost_now(engine: &mut Engine, a: &Tid) -> std::result::Result<bool, osis_engine::Error> {
-    Ok(engine.lost_due(a)? && engine.lost_passed(a)?)
+/// Held actor `a`'s drop is due (`Life::drop_lost`): lost, its complete pass done; or lost by an
+/// `until` alone (spec/permissions.md §2) and past its wait or each sync ID of it heard out. An
+/// engine error but a store failure is this actor's alone (`isolate`: not due).
+fn lost_now(engine: &mut Engine, hears: &mut impl Hears, a: &Tid) -> Result<bool> {
+    if isolate(engine.lost_due(a))? == Some(true) {
+        return Ok(isolate(engine.lost_passed(a))?.unwrap_or(false));
+    }
+    let Some(Some(t)) = isolate(engine.lost_timed(a))? else { return Ok(false) };
+    if engine.reached(t.wait_end) {
+        return Ok(true);
+    }
+    for (s, passed) in &t.ids {
+        if !hears.timed_heard(engine, s, *passed)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// One duty's engine result, isolated: a store failure goes up (the step fails and restarts);
