@@ -127,6 +127,43 @@ fn a_static_grant_is_verified_before_it_is_learned_spec_sync_opens_5() {
     assert!(!learned_nothing(&mut w, &s), "learned once the caller takes it");
 }
 
+// spec/sync-opens.md §1 (where to dial: the granting node of each grant it holds, by the inbox
+// blob's hint), spec/sync-inbox.md §2 (Taking: a blob taken once is judged again from its commit
+// alone): after a link's join, node 0 grants node 1's account read on a thing; once node 1's
+// account leaves K, node 0 stays a dial hint there by the grant's inbox blob, through writes
+// that judge the taken blob again.
+#[test]
+fn a_taken_grants_dial_hint_outlives_the_link_spec_sync_opens_1() {
+    use osis_sync::driver::dials::Why;
+    let (mut w, link) = redeemed();
+    let sharer = w.node(0).key.0;
+    let a1 = w.node(1).account.unwrap();
+    let x = w.write(0, |e| {
+        let me = e.account().unwrap().unwrap().0;
+        let mut m = osis_engine::Mutation::new();
+        let x = e.new_thing(&mut m, me);
+        e.commit(m).unwrap();
+        e.give_own_secrets(&x).unwrap();
+        e.grant(&x, &a1, &osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }).unwrap();
+        x
+    });
+    w.run();
+    assert!(w.engine(1).invitations().unwrap().iter().any(|i| i.thing == x && i.taken), "the grant taken");
+    w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
+    w.run();
+    assert!(!w.engine(1).roster(&link.k).contains_key(&a1), "node 1's account left K");
+    let hinted = |w: &World| w.dials(1).why(&sharer).contains(&Why::Hint);
+    for i in 0..3 {
+        assert!(hinted(&w), "the grant's hint, after {i} writes");
+        w.write(0, |e| {
+            let mut m = osis_engine::Mutation::new();
+            m.set(x, &osis_base::Ak::new("u:v.0").unwrap(), &osis_base::Value::Int(i)).unwrap();
+            e.commit(m).unwrap();
+        });
+        w.run();
+    }
+}
+
 // spec/sync-set.md §2 (Sync set: a link's sync ID while its redeemer redeems it): the link text is untrusted. A link
 // naming a thing node 1 syncs as K, or naming that thing's sync ID as K's, changes nothing of how
 // node 1 syncs it.
