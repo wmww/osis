@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [forks|forks-stand|forks-blind|forks-anyone|forks-first-grants|forks-no-takes|forks-every-answer|as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-cost|epochs|epochs-exh|epochs-exh-c]`.
+//! Search driver for the roles model: `[samples] [forks|forks-stand|forks-blind|forks-anyone|forks-first-grants|forks-no-takes|forks-every-answer|as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-cost|epochs|epochs-exh|epochs-exh-c|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
 
 use roles_model::{edges, joint, single};
 
@@ -20,6 +20,21 @@ fn main() {
             let c = match m { "forks-stand" => 1, "forks-blind" => 2, "forks-anyone" => 3, "forks-first-grants" => 4, "forks-no-takes" => 5, "forks-every-answer" => 6, _ => 0 };
             roles_model::forks::CONTROL.store(c, std::sync::atomic::Ordering::Relaxed);
             if roles_model::forks::run(samples) > 0 {
+                std::process::exit(1);
+            }
+        }
+        Some(m) if m.starts_with("custody") => {
+            use roles_model::custody::{run, Control};
+            let (mode, control) = match m {
+                "custody-exh" => ("exh", Control::None),
+                "custody-judged" => ("random", Control::CustodyJudged),
+                "custody-roster-bare" => ("random", Control::RosterBare),
+                "custody-merge-random" => ("random", Control::MergeRandom),
+                "custody-stale-shut" => ("random", Control::StaleShut),
+                "custody-merge-carries" => ("random", Control::MergeCarries),
+                _ => ("random", Control::None),
+            };
+            if run(samples, mode, control) > 0 {
                 std::process::exit(1);
             }
         }

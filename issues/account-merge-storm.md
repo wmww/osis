@@ -8,4 +8,4 @@
 - Rejected answers (notes/engine-validity-epochs.md, the merge limit under Sides on the fork-sides branch): a deterministic merger designates a device; deferring to a held superset merge stalls on its maker; treating merges of the same heads as one by parents fails for a removed node's fork with the removal's parents (the design keys a merge by its plain tips and derives its seed from theirs, so only holders of every tip's seed can make it).
 
 ## Fix
-notes/account-forks-design.md: merges carry nothing but the join; a merge's seed and epoch name are a function of its tips; plain rotations carry everything else, at most once per node per event. Model first (the `custody` module, lockstep schedule, `merge-random` control).
+notes/account-forks-design.md: merges carry nothing but the join; a merge's seed and epoch name are a function of its tips; plain rotations carry everything else, at most once per node per event. Modelled in roles-model `custody`: lockstep settles, the `merge-random` control storms; the engine build is next.
