@@ -854,7 +854,8 @@ impl Run {
                 // by the epoch rule (a grant at a closed epoch no word names counts for nothing):
                 // the engine boxes no one the model does not, and every honest node it does
                 // (nor one X's removal commit held here removes: D's timeline counts it by the
-                // epoch rule while its rotation may wait, which the model does not read)
+                // epoch rule while its revocation is not taken, pending or held, which the model
+                // does not read: issues/account-removal-before-its-rotation.md)
                 let x_removes = |m: usize| self.w.items.iter().any(|i| i.author == X && i.recv[v] <= now && matches!(i.kind, MK::Rot { removes: Some(y), .. } if y == m));
                 let honest: BTreeSet<usize> = j.roster.iter().copied().filter(|m| [A, B, T].contains(m) && !x_removes(*m)).collect();
                 // (and an honest node X's revocation removes in the chain may stay on D's roster
