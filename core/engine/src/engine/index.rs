@@ -742,7 +742,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         osis_commit::Form::Commit => w.u8(0),
         osis_commit::Form::Session(n) => w.u8(1).raw(&n),
     };
-    w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.epoch.is_some()) << 3));
+    w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2) | (u8::from(v.epoch.is_some()) << 3) | (u8::from(v.own_cover) << 4));
     if let Some(e) = &v.epoch {
         w = w.raw(&e.0);
     }
@@ -785,6 +785,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     let flags = r.u8()?;
     let (linked, memory, purges) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
     let epoch = if flags & 8 != 0 { Some(CommitId(r.arr()?)) } else { None };
+    let own_cover = flags & 16 != 0;
     let mut aspects = Vec::with_capacity(n);
     for _ in 0..n {
         let (tid, ak) = (r.tid()?, r.ak()?);
@@ -805,7 +806,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, purges, epoch }))
+    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, purges, epoch, own_cover }))
 }
 
 /// A commit record's head and its blob bytes.

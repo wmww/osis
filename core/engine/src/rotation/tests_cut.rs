@@ -1672,7 +1672,7 @@ fn forged_expiring_snapshot_ends_no_lasting_value_spec_commits_5() {
         .run(|tx| {
             let st = tx.state(&g, &ak)?.cloned().unwrap();
             let (ts, node) = (tx.core.hlc.next(), tx.core.writer_for(&g)?);
-            crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st, ts, node, Default::default(), Default::default(), Some(t))
+            crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st, ts, node, Default::default(), Default::default(), Some(t), false)
         })
         .unwrap();
     let pk = lp.peers[1].engine.package(&forged).unwrap().unwrap();
@@ -1728,7 +1728,7 @@ fn forged_expiring_snapshot_neither_ends_nor_extends_a_value_at_a_newcomer_spec_
             .run(|tx| {
                 let st = tx.state(&g, on)?.cloned().unwrap();
                 let (ts, node) = (tx.core.hlc.next(), tx.core.writer_for(&g)?);
-                crate::retention::snapshot::build_snapshot(tx, g, on.clone(), st, ts, node, Default::default(), Default::default(), Some(t))
+                crate::retention::snapshot::build_snapshot(tx, g, on.clone(), st, ts, node, Default::default(), Default::default(), Some(t), false)
             })
             .unwrap();
         lp.peers[1].engine.package(&forged).unwrap().unwrap()
@@ -1896,7 +1896,7 @@ fn expiring_snapshots_read_alike_whatever_arrives_and_is_covered_spec_crdt_8() {
                             let Some(st) = tx.state(&g, ak)?.cloned() else { return Ok(None) };
                             let (ts, node) = (tx.core.hlc.next(), tx.core.writer_for(&g)?);
                             let ends = ends.filter(|e| *e > ts.wall_ms().0);
-                            crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st, ts, node, Default::default(), Default::default(), ends).map(Some)
+                            crate::retention::snapshot::build_snapshot(tx, g, ak.clone(), st, ts, node, Default::default(), Default::default(), ends, false).map(Some)
                         })
                         .unwrap();
                 }

@@ -67,6 +67,8 @@ pub struct CommitBuilder {
     /// A rotation of the account's signing chain, with a key per fork it names (in that
     /// order) signing the merge at that fork's epoch.
     pub rotation: Option<(RotationHeader, Vec<SigningSecret>)>,
+    /// The own-cover marker (spec/wire.md §4 field 16).
+    pub own_cover: bool,
     /// The blob bound the commit is checked against: `MAX_BLOB` (tests shrink it).
     pub(crate) max_blob: usize,
 }
@@ -100,7 +102,7 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, author: Tid, actor: Tid, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, author, actor, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, account: None, rotation: None, max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, author, actor, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, account: None, rotation: None, own_cover: false, max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -163,6 +165,7 @@ impl CommitBuilder {
             ephemeral: self.ephemeral,
             epoch: self.account.as_ref().map(|a| a.epoch),
             rotation: self.rotation.as_ref().map(|r| r.0.clone()),
+            own_cover: self.own_cover,
         };
         if self.rotation.as_ref().is_some_and(|(r, keys)| r.names.len() != keys.len()) {
             return Err(Error::Build("a merge signature per named fork"));

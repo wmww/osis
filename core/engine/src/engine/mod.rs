@@ -398,6 +398,8 @@ pub struct View {
     /// The epoch an account's commit is signed at (spec/wire.md §4): what the epoch rule reads
     /// (`Core::standing`); `None` for any other author.
     pub epoch: Option<CommitId>,
+    /// The header's own-cover marker (spec/wire.md §4 field 16; `retention::others_own_cover`).
+    pub own_cover: bool,
 }
 
 /// One aspect entry as `View` keeps it.
@@ -429,6 +431,7 @@ impl View {
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             purges: h.has_request(),
             epoch: h.epoch,
+            own_cover: h.own_cover,
         }
     }
 
@@ -585,6 +588,7 @@ fn fallback_header(v: &View) -> Header {
         ephemeral: None,
         epoch: None,
         rotation: None,
+        own_cover: v.own_cover,
     }
 }
 

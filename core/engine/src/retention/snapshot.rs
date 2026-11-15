@@ -249,7 +249,7 @@ pub(crate) fn write_expiring(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owed: &BTreeSe
         if !any {
             continue;
         }
-        out.push(build_snapshot(tx, *tid, ak.clone(), f, ts, node, Frontiers::default(), Default::default(), Some(t))?);
+        out.push(build_snapshot(tx, *tid, ak.clone(), f, ts, node, Frontiers::default(), Default::default(), Some(t), false)?);
     }
     Ok(out)
 }
@@ -753,18 +753,17 @@ fn holds_valueless(tx: &mut Tx<'_>, s: &CommitId, sai: usize, own: &[Owned], tid
 
 /// Whether the state of `(tid, ak)` holds a live write of a node `of` picks that stands only
 /// through a cover: a session write of such a node, or a commit-form write, whose commit is not
-/// held here (forgotten under a cover, or never received: a snapshot carried it here), stamped
-/// no earlier than `since` (a rotation's: the epochs it closes opened then; an earlier write was
-/// for an earlier rotation's word). What a list can no longer name by ID (spec/permissions.md
-/// §5.1, §5.5, Own cover). Read only where a cover can stand for a commit: a forgotten one
-/// noted, or a snapshot held.
-pub(crate) fn carried_only(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, of: &dyn Fn(&Tid) -> bool, since: Option<Ts>) -> Result<bool> {
+/// held here (forgotten under a cover, or never received: a snapshot carried it here; a
+/// commit-form write's author is unknown without its header, so any such write counts). What a
+/// removal's frontier can no longer name by ID (spec/permissions.md §5.1, Own cover). Read only
+/// where a cover can stand for a commit: a forgotten one noted, or a snapshot held.
+pub(crate) fn carried_only(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, of: &dyn Fn(&Tid) -> bool) -> Result<bool> {
     let k = (*tid, ak.clone());
     if !tx.core.ix.forgotten.contains_key(&k) && tx.core.ix.snapshots.get(&k).is_none_or(|v| v.is_empty()) {
         return Ok(false);
     }
     let live = tx.state(tid, ak)?.map(|st| st.live_writes()).unwrap_or_default();
-    Ok(live.iter().filter(|(_, ts)| since.is_none_or(|x| ts.is_none_or(|ts| ts >= x))).any(|(d, ts)| match d.src.kind() {
+    Ok(live.iter().any(|(d, ts)| match d.src.kind() {
         // a session write's own commit is the held one of its stamp (spec/crdt.md §2.1)
         osis_crdt::SourceKind::Session(s) => of(&s.node) && ts.is_none_or(|ts| held_by_stamp(tx.core, tid, ak, ts, &osis_crdt::fact_source(&d.src)).is_empty()),
         osis_crdt::SourceKind::Commit(c) => !tx.core.ix.commits.contains_key(c),
@@ -818,6 +817,17 @@ pub(crate) fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<b
 /// `Engine::snapshot` in `tx` (`memory`: the aspect is ephemeral, `tx` in the memory class):
 /// a snapshot of `(tid, ak)` from this node's whole state, applied here.
 pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) -> Result<Option<CommitId>> {
+    snapshot_from_state(tx, tid, ak, memory, false)
+}
+
+/// This node's own cover of durable `(tid, ak)` at a removal (spec/permissions.md §5.1, Own
+/// cover): `write_snapshot` marked so (spec/wire.md §4 field 16).
+pub(crate) fn write_own_cover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
+    snapshot_from_state(tx, tid, ak, false, true)
+}
+
+/// `write_snapshot`, an own cover when `own_cover`.
+fn snapshot_from_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, own_cover: bool) -> Result<Option<CommitId>> {
     let (tid, ak) = (*tid, ak.clone());
     // what no write can show any more goes first, by ordinary commits of at most
     // `MAX_DELTA_BARE` content-less elements each: its bodies die and the snapshot does not
@@ -858,22 +868,23 @@ pub(crate) fn write_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool) 
             absorbed.insert(*c, m.header.author);
         }
     }
-    build_snapshot(tx, tid, ak, st, ts, node, frontiers, absorbed, None).map(Some)
+    build_snapshot(tx, tid, ak, st, ts, node, frontiers, absorbed, None, own_cover).map(Some)
 }
 
 /// Writes and applies by `node` at `ts` the snapshot of `(tid, ak)` carrying `st`, its tables
 /// cut to the sources that occur in `st` (spec/crdt.md §8: a reader takes an absent source as
 /// one with no write left, so a frontier never grows with sessions gone by), with the facts of
-/// the commits it carries, expiring at `expires` (an expiring snapshot, `write_expiring`).
+/// the commits it carries, expiring at `expires` (an expiring snapshot, `write_expiring`), an own
+/// cover when `own_cover` (`write_own_cover`).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts: Ts, node: Tid, mut frontiers: Frontiers, mut absorbed: std::collections::BTreeMap<CommitId, Tid>, expires: Option<u64>) -> Result<CommitId> {
+pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts: Ts, node: Tid, mut frontiers: Frontiers, mut absorbed: std::collections::BTreeMap<CommitId, Tid>, expires: Option<u64>, own_cover: bool) -> Result<CommitId> {
     let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
     let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
     frontiers.retain(&traced);
     absorbed.retain(|c, _| traced.contains(&osis_crdt::Source::commit(*c)));
     let facts = facts_of(tx, &tid, &ak, &st)?;
     let retention = osis_commit::retention::snapshot_retention(ak.as_str());
-    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, rotation: None };
+    let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires, restores: false, rotation: None, own_cover };
     let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires, replaces: None, original_floor: 0, frontiers: Some((frontiers, absorbed, facts)), chunks: Vec::new() };
     build_and_apply(tx, plan, vec![d])
 }
@@ -1039,7 +1050,7 @@ impl Engine {
             if hi > 1 {
                 frontiers.insert(&own, hi - 1);
             }
-            build_snapshot(tx, tid, ak, st, ts, node, frontiers, Default::default(), None).map(Some)
+            build_snapshot(tx, tid, ak, st, ts, node, frontiers, Default::default(), None, false).map(Some)
         })
     }
 

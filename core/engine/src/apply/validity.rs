@@ -789,7 +789,7 @@ impl<'a> Judge<'a> {
         if h.kind.is_compaction() {
             let required = crate::engine::write::snapshot_role(ak);
             let point = Point { ts: h.ts, node: h.author, commit: *id };
-            return tl.delta_valid(point, &a.tid, required) == Validity::Valid || tl.own_cover_stands(point, &a.tid, required);
+            return tl.delta_valid(point, &a.tid, required) == Validity::Valid || (h.own_cover && tl.own_cover_stands(point, &a.tid, required));
         }
         // the author's deltas from the first point it held the role on are valid (re-grant),
         // found once per author

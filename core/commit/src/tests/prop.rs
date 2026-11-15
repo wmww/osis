@@ -58,6 +58,7 @@ prop_compose! {
             ephemeral: None,
             epoch: None,
             rotation: None,
+            own_cover: false,
         };
         // the lists' rule: sorted and distinct
         for a in &mut h.aspects {

@@ -77,7 +77,7 @@ Not format constants. A value marked recommended is advice.
 ## 4. Commits
 ```
 Header    := [version, author, actor, kind, ts, form, expires, aspects,
-              purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]
+              purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, own_cover]
 Aspect    := [tid, ak, lo, hi, Retention, keys, hash, replaces]   ; replaces := [] | [commit_id] | [commit_id, floor]
 Retention := by
 DeleteKey := [level, pk]
@@ -102,6 +102,7 @@ Header fields by position:
 13. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one. Present only with `kind` 2 and `form` 0, or `kind` 0, no `purge`, no list by link and no `created.0` aspect; every aspect's retention is `writer`, with the levels it calls for; a relay-only commit is of `kind` 2 with no `expires` and no `undoes`, and a delta of it linking a page is bad input (its deltas never page, spec/commits.md §2). Anything else is bad input.
 14. `epoch`: `Opt(epoch_id)`, the epoch an account author signs at (spec/crypto.md §9; 32 bytes: the minting rotation's commit ID, 32 zero bytes for the first epoch); present iff the author's creation record marks an account, else bad input.
 15. `rotation`: `Opt(Rotation)`, present only on a role commit of an account (else bad input): the new epoch's signing key and KEM key (spec/crypto.md §3); the epochs it supersedes, ascending, distinct, the header's `epoch` among them (else bad input); actor equal to author and a `keys.0` delta on the author (else bad input); the fork rotations it names (a merge), ascending, distinct; the rotations it **takes** (spec/permissions.md §5.4: carrying removals from D its maker took, not on its line; every node holds the rotation only once these are, and only the account's nodes read it further), ascending, distinct; the **removals** it carries (spec/permissions.md §5.5: the removal edge writes on D its thing list for D names, whoever made them, that no rotation it descends from names; §5.4 reads among them its minter's signed at the epoch it rotates), ascending, distinct; `list_root`, 32 bytes, the root of its list tree (below). Its commit ID names the epoch it mints.
+16. `own_cover`: bool, true on its writer's own cover at a removal (spec/permissions.md §5.1, Own cover); true only with `kind` 2 and no `ephemeral`, else bad input.
 
 Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3; else `1 <= lo < hi`); `Retention`: `by`, the purgeable-by class (spec/commits.md §5); `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hash`: the 32-byte delta hash of its one delta. `replaces`: `[]`, `[commit_id]` or `[commit_id, floor]` (`floor` ≥ 1; a floor of 0 is the second form, else bad input), the fire the delta claims to replace and that fire's floor (spec/commits.md §5 Signals), allowed only on a durable signal's delta of a durable commit; anywhere else the part is bad (spec/commits.md §2).
 

@@ -469,6 +469,8 @@ pub(crate) struct CommitPlan {
     pub restores: bool,
     /// The header's rotation of the signer's chain and its merge keys (`Mutation::rotation`).
     pub rotation: Option<crate::flows::signing::AccountRotation>,
+    /// The own-cover marker (`retention::snapshot::write_own_cover`).
+    pub own_cover: bool,
 }
 
 /// A fresh header blind.
@@ -674,6 +676,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     b.frontier = plan.frontier;
     b.blind = Some(plan.blind);
     b.rotation = plan.rotation.as_ref().map(|r| (r.header.clone(), r.merge_keys.clone()));
+    b.own_cover = plan.own_cover;
     // a commit built in a memory transaction is a memory commit (spec/commits.md §2, §3)
     b.ephemeral = tx.txn.is_memory().then_some(osis_commit::EphClass::Plain);
     // a merge is signed at the head it names first (`flows::signing::rotate_in`)
@@ -841,7 +844,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let item = tx.core.purge_item(&c, tid, ak).ok_or(Error::UnknownCommit(c))?;
         m.purge.push(item);
     }
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, rotation: m.rotation.take() };
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, rotation: m.rotation.take(), own_cover: false };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }

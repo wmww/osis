@@ -1113,3 +1113,59 @@ fn own_cover_cost_counts_spec_perm_5_1() {
         assert_eq!(own.len(), if forget { n as usize } else { 0 });
     }
 }
+
+// spec/permissions.md §5.1 (Own cover), spec/commits.md §5 (Covered, Purge on replace): only its
+// writer drops under an own cover, on a purge-on-replace aspect too. Dave covers Bob's edit with
+// his own snapshot and drops its body; Alice forgets the edit under Dave's snapshot, so her
+// removal of Bob names her own cover. Dave keeps his snapshot under it, whether it arrives before
+// the removal or with it (`ahead`); Carol, never
+// holding the removal, removes Alice: the own cover falls, and Dave's snapshot still carries the
+// edit at Dave and Carol.
+#[test]
+fn purge_on_replace_keeps_what_an_own_cover_covers_spec_perm_5_1() {
+    for ahead in [true, false] {
+        let (mut lp, t) = world(4, &[Role::Write, Role::Admin, Role::Write]);
+        let a = ak("x:e.0");
+        let mut m = Mutation::new();
+        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(a.clone(), osis_schema::History::PurgeOnReplace)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1000);
+        let e = write(&mut lp, 1, t, "x:e.0", 7);
+        lp.sync(1, 3).unwrap();
+        let s = lp.peers[3].engine.snapshot(&t, &a).unwrap().unwrap();
+        lp.advance(1000);
+        let d = &mut lp.peers[3].engine;
+        assert_eq!(d.covered(&s, &e, &t, &a).unwrap(), Some(true));
+        d.drop_body(&e, &t, &a).unwrap();
+        for c in [e, s] {
+            let pk = lp.peers[3].engine.package(&c).unwrap().unwrap();
+            lp.deliver(0, &pk).unwrap();
+        }
+        let al = &mut lp.peers[0].engine;
+        assert_eq!(al.covered(&s, &e, &t, &a).unwrap(), Some(true));
+        al.drop_body(&e, &t, &a).unwrap();
+        assert!(al.forgettable(&e).unwrap());
+        al.forget_commits(&[e]).unwrap();
+        lp.advance(1000);
+        let r = remove(&mut lp, 0, t, 1);
+        let (_, own) = frontier_of(&lp, 0, &r);
+        assert_eq!(own.len(), 1, "Alice's own cover");
+        let order = if ahead { [own[0], r] } else { [r, own[0]] };
+        for c in order {
+            let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+            lp.deliver(3, &pk).unwrap();
+            let held = lp.peers[3].engine.core.ix.commits.get(&s).is_some_and(|m| m.holds(0) && !m.is_dropped(0));
+            assert!(held && lp.peers[3].engine.covered_drops(&s).unwrap().is_empty(), "ahead {ahead}: Dave keeps his snapshot under Alice's own cover");
+        }
+        remove(&mut lp, 2, t, 0);
+        for _ in 0..2 {
+            lp.sync(2, 3).unwrap();
+            lp.sync(3, 2).unwrap();
+        }
+        for p in [2, 3] {
+            assert!(!lp.peers[p].engine.core.ix.commits.get(&own[0]).is_some_and(|m| m.valid_at(0)), "ahead {ahead}: peer {p}: the own cover fell with its removal");
+            assert_eq!(reads(&mut lp, p, t, "x:e.0"), Some(Value::Int(7)), "ahead {ahead}: peer {p}: Dave's snapshot carries the edit");
+        }
+    }
+}

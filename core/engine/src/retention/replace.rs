@@ -23,11 +23,15 @@ use std::collections::BTreeSet;
 
 /// The held valid snapshot of `(tid, ak)` that covers held body `c`, holding the right over it
 /// when `right`, latest first (spec/commits.md §5 Covered; of two covered-equal snapshots only the
-/// lower ID covers, spec/sync-compaction.md §1).
+/// lower ID covers, spec/sync-compaction.md §1), never another node's own cover at a removal
+/// (`others_own_cover`: only its writer drops under it).
 fn coverer(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, right: bool) -> Result<Option<CommitId>> {
     let mut snaps: Vec<(Ts, CommitId)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| (x.0, x.1)).filter(|x| x.1 != *c).collect();
     snaps.sort();
     for (_, s) in snaps.into_iter().rev() {
+        if super::others_own_cover(tx.core, &s) {
+            continue;
+        }
         if (!right || super::purge::snapshot_right(tx.core, &s, c, tid, ak)) && super::snapshot::drops_under(tx, &s, c, tid, ak)? {
             return Ok(Some(s));
         }

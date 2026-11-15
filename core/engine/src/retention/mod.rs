@@ -212,17 +212,13 @@ pub(crate) fn own_kept_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &
     Ok(!replace::replaced(tx, c, ai, tid, ak)?)
 }
 
-/// Whether `s` is a compaction snapshot another node wrote as its own cover at a removal: an
-/// explicit demotion by `s`'s author on a thing `s` is on names it (spec/permissions.md §5.1, Own
-/// cover). It stands on that removal, which may fall (its author removed by an admin that never
-/// received it), so only the node that wrote it drops a body under it (spec/commits.md §5
-/// Covered); every other holder keeps what it held as before.
+/// Whether `s` is another node's own cover at a removal (its header's marker, spec/wire.md §4
+/// field 16; spec/permissions.md §5.1, Own cover). It stands on that removal, which may fall (its
+/// author removed by an admin that never received it), so only the node that wrote it drops a
+/// body under it (spec/commits.md §5 Covered), whether or not the removal is held yet: every other
+/// holder keeps what it held as before.
 pub(crate) fn others_own_cover(core: &Core, s: &CommitId) -> bool {
-    let Some(m) = core.ix.commits.get(s) else { return false };
-    if !m.view.kind.is_compaction() || m.origin == crate::events::Origin::Local {
-        return false;
-    }
-    m.view.aspects.iter().any(|a| core.timelines.get(&a.tid).is_some_and(|tl| tl.own_named(&m.view.author, &a.tid).iter().any(|d| d.frontier.as_ref().is_some_and(|f| f.covers(s)))))
+    core.ix.commits.get(s).is_some_and(|m| m.view.own_cover && m.origin != crate::events::Origin::Local)
 }
 
 /// `drop_part`, saying why.

@@ -305,6 +305,9 @@ pub struct Header {
     /// A rotation of the account's signing chain (spec/wire.md §4): only on an account's role
     /// commit. Its commit ID names the epoch it mints.
     pub rotation: Option<RotationHeader>,
+    /// A content snapshot that is its writer's own cover at a removal (spec/permissions.md §5.1,
+    /// Own cover; spec/wire.md §4): only its writer drops a body under it.
+    pub own_cover: bool,
 }
 
 /// The first epoch of every account's signing chain, named by 32 zero bytes (spec/crypto.md §9).
@@ -496,7 +499,7 @@ impl Header {
     }
 
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
-        put_array(out, 16);
+        put_array(out, 17);
         put_uint(out, FORMAT_VERSION);
         put_tid_bytes(out, &self.author);
         put_tid_bytes(out, &self.actor);
@@ -513,6 +516,7 @@ impl Header {
         put_opt(out, self.ephemeral, |out, c| put_uint(out, c as u64));
         put_opt(out, self.epoch, |out, c| put_bytes(out, &c.0));
         put_opt(out, self.rotation.as_ref(), |out, r| r.put(out));
+        osis_base::cbor::put_bool(out, self.own_cover);
     }
 
     /// Commit ID = BLAKE3(canonical header bytes).
@@ -747,7 +751,7 @@ impl Header {
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let Some([_, author, actor, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]) = items.tuple() else {
+        let Some([_, author, actor, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, own_cover]) = items.tuple() else {
             return Err(Error::Malformed("header arity"));
         };
         let mut h = Header {
@@ -767,6 +771,7 @@ impl Header {
             ephemeral: item::opt(ephemeral)?.map(|c| EphClass::from_id(item::uint(c)?).ok_or(Error::Malformed("ephemeral marker"))).transpose()?,
             epoch: item::opt(epoch)?.map(|c| item::bytes(c).map(CommitId)).transpose()?,
             rotation: item::opt(rotation)?.map(RotationHeader::read).transpose()?,
+            own_cover: own_cover.as_bool().ok_or(Error::Malformed("own cover marker"))?,
         };
         h.take_position(ListField::Aspects, aspects, stored)?;
         h.take_position(ListField::Purge, purge, stored)?;
