@@ -158,6 +158,9 @@ pub(super) struct Pulling {
     failed: BTreeSet<BlobId>,
     /// Bodies settled (taken, opened, refused) while messages are in hand.
     pub(super) settled: BTreeSet<(SyncId, BlobId)>,
+    /// Of those, the ones that opened to what no entry keeps (`Opening::Taken`): what the
+    /// source shows of them is kept as of an entry held (`concerns`).
+    taken: BTreeSet<(SyncId, BlobId)>,
     retry_at: Option<WallMs>,
     rejoin_at: BTreeMap<SyncId, WallMs>,
     inline: u64,
@@ -199,6 +202,7 @@ impl Pulling {
             arrivals: 0,
             failed: BTreeSet::new(),
             settled: BTreeSet::new(),
+            taken: BTreeSet::new(),
             retry_at: None,
             rejoin_at: BTreeMap::new(),
             inline: INLINE_LIMIT,
@@ -221,7 +225,7 @@ impl Pulling {
     }
 
     pub(super) fn holding(&self) -> usize {
-        self.pending.len() + self.queue.len() + self.failed.len() + self.settled.len() + self.tell.len()
+        self.pending.len() + self.queue.len() + self.failed.len() + self.settled.len() + self.taken.len() + self.tell.len()
     }
 
     pub(super) fn wake(&self) -> Option<WallMs> {
@@ -251,6 +255,16 @@ fn class(rank: Rank, deposited: bool) -> Option<(u8, u64)> {
         Rank::Unopened => Some((3, 0)),
         Rank::Never => None,
     }
+}
+
+/// Whether what a source shows of entry `b` of S is kept (spec/sync-judgement.md §3 `known`),
+/// once its message's bodies settled: only of an entry this node holds or holds a tombstone of
+/// under S, or one whose body it took while the message was in hand (`taken`: a piece, records,
+/// an inbox blob), so what a source lists costs this node in proportion to what it holds or
+/// took; a store read that fails keeps nothing (a later listing shows it again). Not built: a
+/// body fetched lazily.
+fn concerns(ctx: &mut Ctx, p: Option<&Pulling>, s: &SyncId, b: &BlobId) -> bool {
+    p.is_some_and(|p| p.taken.contains(&(*s, *b))) || ctx.store.entry(s, b).ok().flatten().is_some() || ctx.store.tombstone(s, b).ok().flatten().is_some()
 }
 
 fn entry_of(b: BlobId, wrap: Wrap, stamp: Option<Stamp>, bytes: &[u8]) -> Entry {
@@ -565,7 +579,9 @@ impl Streams {
                     Event::Refused(b, Code::TOMBSTONED) => {
                         ops.push((src, Op::Remove(s, b)));
                         // a store failure loses this row only: the next delete seen there writes it again
-                        let _ = ctx.store.saw_deleted(src, &s, &b);
+                        if concerns(ctx, self.pull.get(&conn), &s, &b) || self.known.knows(src, &s, &b) {
+                            let _ = ctx.store.saw_deleted(src, &s, &b);
+                        }
                     }
                     Event::Refused(b, code) => {
                         let Ok(Some(e)) = ctx.store.entry(&s, &b) else { continue };
@@ -706,6 +722,7 @@ impl Streams {
         // an earlier take of the same body settled it here; it is not held now
         p.failed.remove(&b);
         p.settled.remove(&(s, b));
+        p.taken.remove(&(s, b));
         if !p.queue.values().any(|x| *x == (s, b)) {
             p.arrivals += 1;
             let key = (2, u64::MAX, u64::MAX - p.arrivals);
@@ -731,9 +748,8 @@ impl Streams {
             }
             return;
         }
-        // a body crosses a connection once: its bytes are not sent back on it
-        self.serve.entry(conn).or_default().crossed.insert(b);
         let e = entry_of(b, wrap, stamp, bytes);
+        let mut took = false;
         // a store or engine failure takes nothing: the body stays owed (no cursor passes it) and
         // the step fails
         match ctx.store.holding(&s) {
@@ -786,7 +802,7 @@ impl Streams {
                     }
                     ctx.store.set_memory_charge(&s, &b, n);
                 }
-                Ok(_) => {}
+                Ok(_) => took = true,
                 Err(e) => return self.failed(Err(e)),
             },
             _ => {}
@@ -794,6 +810,9 @@ impl Streams {
         for c in self.holders.get(&s).into_iter().flatten().chain(std::iter::once(&conn)) {
             if let Some(p) = self.pull.get_mut(c) {
                 p.settled.insert((s, b));
+                if took {
+                    p.taken.insert((s, b));
+                }
                 p.queue.retain(|_, x| *x != (s, b));
             }
         }
@@ -1007,6 +1026,7 @@ impl Streams {
         }
         if let Some(p) = self.pull.get_mut(&conn) {
             p.settled.clear();
+            p.taken.clear();
             // what failed here matters only to messages in hand (an announcement again clears it)
             if p.pending.is_empty() {
                 let failed = std::mem::take(&mut p.failed);
@@ -1048,7 +1068,9 @@ impl Streams {
                         None => ctx.store.entry(s, b).ok().flatten().map_or(Class::Durable, |e| e.class),
                     };
                     let at = if class == Class::Ephemeral { Source::Conn(conn) } else { src };
-                    ops.push((at, Op::Add(*s, *b)));
+                    if concerns(ctx, self.pull.get(&conn), s, b) {
+                        ops.push((at, Op::Add(*s, *b)));
+                    }
                     if let Some(l) = listing.as_mut() {
                         l.entry(*s).or_default().insert(*b);
                     }
@@ -1059,7 +1081,9 @@ impl Streams {
                 Event::Deleted(b) => {
                     ops.push((src, Op::Remove(*s, *b)));
                     ops.push((Source::Conn(conn), Op::Remove(*s, *b)));
-                    let _ = ctx.store.saw_deleted(src, s, b);
+                    if concerns(ctx, self.pull.get(&conn), s, b) || self.knows(src, Some(conn), s, b) {
+                        let _ = ctx.store.saw_deleted(src, s, b);
+                    }
                 }
                 Event::Head(step) => ops.push((src, Op::Head(*s, step.id()))),
                 _ => {}

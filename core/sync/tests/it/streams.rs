@@ -763,7 +763,7 @@ fn a_deletion_is_never_a_delete_here_spec_sync_streams_4() {
 }
 
 // spec/sync-streams.md §4 (Bodies: from one source at a time, `inline_limit` 0 with another
-// source, the next source only when one fails; a body crosses a connection once).
+// source, the next source only when one fails).
 #[test]
 fn bodies_one_source_at_a_time_spec_sync_streams_4() {
     let mut p = Pair::new();
@@ -1156,7 +1156,7 @@ fn a_lying_source_leaves_nothing_held_spec_sync_streams_4() {
     assert!(p.held.is_empty(), "not asked there again");
     assert!(p.b.table.opened.is_empty());
     assert!(p.b.streams.caught_up(C, &s), "its messages applied");
-    assert!(x.iter().all(|b| knows(&p.b, p.b.src(), s, *b)), "presence as it listed");
+    assert!(x.iter().all(|b| !knows(&p.b, p.b.src(), s, *b)), "no presence of what it never gave");
     assert_eq!(p.b.streams.holding(C), 0, "nothing kept for it");
     // refusals of entries b never held: nothing kept
     let junk: Vec<(SyncId, Event)> = (0..50u8).map(|i| (s, Event::Refused(BlobId([i; 32]), Code::REFUSED))).collect();
@@ -1164,6 +1164,68 @@ fn a_lying_source_leaves_nothing_held_spec_sync_streams_4() {
     p.b.with(p.now, |t, c| t.message(c, C, Incoming::Push(Msg::Stream(Box::new(st)))));
     let src = p.b.src();
     assert!((0..50u8).all(|i| p.b.streams.known().refusal(src, &s, &BlobId([i; 32])).is_none()));
+}
+
+// spec/sync-judgement.md §3 (`known`: only of entries held or tombstoned here), hostile source:
+// one listing n or 10n bodies it never gives, then deleting and refusing them as tombstoned,
+// leaves this side's state the same size: no presence, no deletion seen, no row more.
+#[test]
+fn a_source_listing_what_it_never_gives_grows_nothing_spec_sync_judgement_3() {
+    let flood = |n: usize| {
+        let mut p = Pair::new();
+        let s = sid(1);
+        let x: Vec<BlobId> = (0..n).map(|i| p.a.log(s, 40_000 + i)).collect();
+        p.shared_read(s);
+        // a answers every Fetch with none
+        p.run_with(|ab, m| ab && m.kind() == 20);
+        while !p.held.is_empty() {
+            for (_, f) in std::mem::take(&mut p.held) {
+                let Frame::Ans(id, _) = f else { continue };
+                p.b.with(p.now, |st, c| st.message(c, C, Incoming::Reply(To::Streams, id, Msg::FetchReply { id, items: Vec::new() })));
+            }
+            p.run_with(|ab, m| ab && m.kind() == 20);
+        }
+        for b in &x {
+            p.a.store.drop_entry(&s, b, Vec::new()).unwrap();
+        }
+        p.run();
+        let refusals: Vec<(SyncId, Event)> = x.iter().map(|b| (s, Event::Refused(*b, Code::TOMBSTONED))).collect();
+        let st = osis_proto::Stream { events: refusals, cursor: None, report: false, seq: 0 };
+        p.b.with(p.now, |t, c| t.message(c, C, Incoming::Push(Msg::Stream(Box::new(st)))));
+        p.run();
+        let src = p.b.src();
+        assert!(p.b.streams.caught_up(C, &s));
+        assert!(x.iter().all(|b| !knows(&p.b, src, s, *b) && !p.b.store.seen_deleted(src, &s, b).unwrap()));
+        assert!(p.b.table.opened.is_empty());
+        (p.b.streams.known().list(src, &s).unwrap().len(), p.b.backend.dump().len())
+    };
+    let (small, large) = (flood(4), flood(40));
+    assert_eq!(small.0, 0);
+    assert_eq!(small, large, "presence rows, then every row of b's store");
+}
+
+// spec/sync-streams.md §4 (Bodies: no body inline that the requester's stream showed present):
+// a body b took inline from a, and logged, goes back to a without its bytes.
+#[test]
+fn a_body_is_not_sent_back_to_the_peer_that_showed_it_spec_sync_streams_4() {
+    let mut p = Pair::new();
+    let s = sid(1);
+    p.b.table.held = Some(true);
+    let x = p.a.log(s, 100);
+    p.shared_read(s);
+    p.run();
+    assert!(p.b.store.entry(&s, &x).unwrap().is_some(), "kept as it came");
+    assert!(knows(&p.a, p.a.src(), s, x), "b's stream shows it to a");
+    let inlined = |m: &&Msg| {
+        let evs = match m {
+            Msg::PullReply(r) => &r.events,
+            Msg::Stream(st) => &st.events,
+            _ => return false,
+        };
+        evs.iter().any(|(_, e)| matches!(e, Event::Added { blob_id, blob: Some(_), .. } if *blob_id == x))
+    };
+    assert!(p.sent_by_a(42).iter().chain(p.sent_by_a(43).iter()).any(inlined), "a sent it inline");
+    assert!(!p.sent_by_b(42).iter().chain(p.sent_by_b(43).iter()).any(inlined), "b never sends it back inline");
 }
 
 // spec/sync-streams.md §4 (Costs): a push costs the events since the cursor, whatever the log

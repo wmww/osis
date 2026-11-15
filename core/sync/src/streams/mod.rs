@@ -17,12 +17,13 @@
 //! opens' shared set as `Shared`), so its rules run against scripted peers; the product's entry
 //! points build it from `Cx`, `Sessions` and `Opens`.
 //!
-//! State: per connection, as server, the follow cursor and `seq`, the blobs that crossed it, the
+//! State: per connection, as server, the follow cursor and `seq`, the
 //! ephemeral listing, the joins awaiting their merge's report; as requester, the Pull out, the
 //! received cursors, `seq` applied, gaps, messages in hand awaiting bodies, the fetch queue and
 //! the fetches out; per source (a peer's record, or the connection) the stored cursor, the members
-//! at the stream, joins in pages and where members that left stopped; `known` per source; the
-//! blobs asked from some source.
+//! at the stream, joins in pages and where members that left stopped; `known` per source (only
+//! of entries held, tombstoned or taken here: what a source lists grows nothing else); the blobs asked
+//! from some source.
 //!
 //! Durable (spec/sync-streams.md §3 Durability): a record source's place (the stream's cursor,
 //! members at it, joins, where members that left stopped) and what it showed (`known`) are rows of

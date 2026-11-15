@@ -34,8 +34,6 @@ pub(super) struct Serve {
     named: BTreeSet<SyncId>,
     /// Joins merged into the stream at a reply's position, awaiting an Applied covering it.
     merging: BTreeMap<SyncId, Position>,
-    /// Blobs whose bytes crossed this connection, either way (spec/wire.md §11.2 Pull).
-    pub(super) crossed: BTreeSet<BlobId>,
     inline: u64,
     /// The ephemeral listing per member: the memory counter read to.
     eph: BTreeMap<SyncId, u64>,
@@ -68,14 +66,15 @@ struct Page {
     /// At `REPLY_BUDGET` a page holds at least one event.
     one: bool,
     full: bool,
-    crossed: Vec<BlobId>,
+    /// Blobs whose bytes this page carries: each goes once.
+    inlined: BTreeSet<BlobId>,
     eph: BTreeMap<SyncId, u64>,
 }
 
 impl Page {
     fn new(max_reply: u64, aside: usize) -> Page {
         let max = (max_reply as usize).min(REPLY_BUDGET);
-        Page { events: Vec::new(), left: max.saturating_sub(OVERHEAD + aside), one: max >= REPLY_BUDGET, full: false, crossed: Vec::new(), eph: BTreeMap::new() }
+        Page { events: Vec::new(), left: max.saturating_sub(OVERHEAD + aside), one: max >= REPLY_BUDGET, full: false, inlined: BTreeSet::new(), eph: BTreeMap::new() }
     }
 
     /// Takes the event if it fits; a page that refused one is full.
@@ -87,7 +86,7 @@ impl Page {
         }
         self.left = self.left.saturating_sub(n);
         if inlined && let Event::Added { blob_id, .. } = &e {
-            self.crossed.push(*blob_id);
+            self.inlined.insert(*blob_id);
         }
         self.events.push((s, e));
         true
@@ -226,7 +225,6 @@ impl Streams {
         }
         self.ephemeral(ctx, conn, &mut page, &members)?;
         let serve = self.serve.entry(conn).or_default();
-        serve.crossed.extend(page.crossed.iter().copied());
         serve.eph.extend(page.eph.iter().map(|(s, n)| (*s, *n)));
         serve.joins_left = joins_left;
         if p.follow && !read.more {
@@ -282,14 +280,21 @@ impl Streams {
         Ok(match *e {
             NodeEvent::Added(s, b) => {
                 let Some(entry) = ctx.store.entry(&s, &b)? else { return Ok(None) };
-                let crossed = self.serve.get(&conn).is_some_and(|x| x.crossed.contains(&b)) || page.crossed.contains(&b);
-                let blob = if inline > 0 && !crossed { ctx.store.bytes(&b)?.filter(|v| v.len() as u64 <= inline) } else { None };
+                let blob = if inline > 0 && !page.inlined.contains(&b) { ctx.store.bytes(&b)?.filter(|v| v.len() as u64 <= inline) } else { None };
+                let blob = blob.filter(|_| !self.shown_by_peer(ctx, conn, &s, &b));
                 let inlined = blob.is_some();
                 Some((s, Event::Added { blob_id: b, blob, wrap: entry.wrap, stamp: entry.stamp }, inlined))
             }
             NodeEvent::Deleted { label, blob, .. } => Some((label, Event::Deleted(blob), false)),
             NodeEvent::Head(s) => ctx.store.head(&s)?.map(|st| (s, Event::Head(st), false)),
         })
+    }
+
+    /// Whether the peer on `conn` showed entry `b` of S present on its own stream (`known`): its
+    /// bytes are not sent to it inline (spec/wire.md §11.2 Pull). Read from what this node keeps
+    /// of held entries, so it needs no memory per body sent.
+    fn shown_by_peer(&self, ctx: &Ctx, conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
+        self.knows(self.source(ctx.shared, conn), Some(conn), s, b)
     }
 
     /// The ephemeral listing (spec/wire.md §11.2 Pull `ephemeral`): each listed member's memory
@@ -309,8 +314,8 @@ impl Streams {
                             at = n;
                             continue;
                         };
-                        let crossed = self.serve.get(&conn).is_some_and(|x| x.crossed.contains(&b));
-                        Event::Added { blob_id: b, blob: (!crossed).then_some(bytes), wrap: entry.wrap, stamp: entry.stamp }
+                        let shown = page.inlined.contains(&b) || self.shown_by_peer(ctx, conn, &s, &b);
+                        Event::Added { blob_id: b, blob: (!shown).then_some(bytes), wrap: entry.wrap, stamp: entry.stamp }
                     } else {
                         Event::Deleted(b)
                     };
@@ -360,7 +365,6 @@ impl Streams {
                 let s = self.serve.entry(conn).or_default();
                 s.follow = Some(Follow { cursor: read.cursor, pos: read.pos, seq: f.seq + 1 });
                 s.served = Some(read.pos);
-                s.crossed.extend(page.crossed);
                 s.eph.extend(page.eph);
                 if !page.full && !read.more {
                     s.mem_mark = mark;
@@ -470,9 +474,6 @@ impl Streams {
                 break;
             }
             left = left.saturating_sub(n);
-            if entry.is_some() {
-                self.serve.entry(conn).or_default().crossed.insert(b);
-            }
             items.push(Fetched { blob_id: b, entry });
         }
         ctx.wire.answer(conn, id, Msg::FetchReply { id, items });
