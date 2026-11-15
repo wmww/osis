@@ -382,8 +382,8 @@ fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
 /// Whether commit `m` holds no part and is known only for a part dropped while invalid (its
 /// header, so a copy is not taken while it stays invalid and valid again it is fetched,
 /// `valid_again`) or, memory class, one reopened to be fetched (`Missing::ToFetch`): durable and
-/// memory alike, node-sync forgets it once it knows no entry of it (`Engine::forgettable`,
-/// spec/permissions.md §6).
+/// memory alike, never forgotten (`Engine::forgettable`: a part dropped as invalid is never
+/// covered, spec/commits.md §5 Forgetting); a memory one goes at a restart.
 pub(crate) fn kept_invalid(m: &crate::engine::Meta) -> bool {
     (0..m.view.aspects.len()).all(|ai| !m.holds(ai)) && (0..m.view.aspects.len()).any(|ai| m.missing_as(ai) == Some(Missing::ToFetch) || m.dropped_invalid(ai))
 }
@@ -392,8 +392,8 @@ pub(crate) fn kept_invalid(m: &crate::engine::Meta) -> bool {
 /// value-less for a purge request, `held_purged`), no permanent delta (a lasting header stays,
 /// spec/commits.md §5) and no `created.0` delta (a thing's first commit stays): kept only so that
 /// a fall of the request finds its writes again (`unstrip`) and a copy is fetched, as one
-/// `kept_invalid` is. Either class: node-sync forgets it by the same rule
-/// (`Engine::forgettable`); a memory one is charged its own bytes until then.
+/// `kept_invalid` is. Either class: node-sync forgets it once each part not dropped as covered
+/// is covered (`Engine::forgettable`); a memory one is charged its own bytes until then.
 pub(crate) fn kept_purged(core: &Core, c: &CommitId, m: &crate::engine::Meta) -> bool {
     if m.stripped_parts().next().is_none() || m.view.purges || m.view.kind != Kind::Content || core.ix.pending.contains_key(c) {
         return false;
