@@ -2612,7 +2612,20 @@ fn derived_write_after_own_secrets_is_merged_spec_crypto_4() {
     assert!(!lp.peers[0].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "peer 0 re-keys T");
     lp.sync(0, 1).unwrap();
     lp.sync(0, 2).unwrap();
+    // judged by a read (`Engine::read` asserts it writes nothing): the derived epoch is current
+    assert!(lp.peers[1].engine.role_duty_due(&t).unwrap(), "the merge is owed, judged without writing");
+    let noted: Vec<osis_crypto::Epoch> = lp.peers[1].engine.core.ix.derived_written.get(&t).unwrap().iter().copied().collect();
     assert!(!lp.peers[1].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "peer 1 merges T");
+    assert!(!lp.peers[1].engine.role_duty_due(&t).unwrap(), "carried by the merge: owed no more");
+    // a noted epoch a rotation carried, not let go yet (as after a rotation from elsewhere):
+    // owed nothing, judged without letting go of it (a read writes nothing); a run lets go
+    lp.peers[1].engine.run(|tx| {
+        tx.core.ix.derived_written.upsert(t, std::collections::BTreeSet::new, |s| s.extend(noted.iter().copied()));
+        Ok(())
+    }).unwrap();
+    assert!(!lp.peers[1].engine.role_duty_due(&t).unwrap(), "a carried epoch is not current");
+    assert!(lp.peers[1].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "nothing to rotate");
+    assert!(lp.peers[1].engine.core.ix.derived_written.get(&t).is_none_or(|s| s.is_empty()), "the run let go of it");
     but_w(&mut lp, 2);
     let secret = lp.peers[1].engine.wrap_secret(&t, None).unwrap().unwrap();
     let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, body.order).unwrap();
