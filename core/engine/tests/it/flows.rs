@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Role flows over `LocalPeer`: commits and inbox blobs are
-//! delivered by hand between engines (no sync IDs or hosts).
+//! delivered by hand between engines (no sync IDs or peers).
 
 use crate::common;
 use common::*;
@@ -925,7 +925,7 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
 
 // spec/crdt.md §8 (frontiers and absorbed are no receipts): absorbed commits count only with a held header, spec/permissions.md §5.1,
 // §5.2 (a valid s vouches for every write it carries): reader M leaves and X rotates M away; X's
-// rotation is compacted away: Alice snapshots `secrets.0` and `keys.0`, so hosts drop its blobs,
+// rotation is compacted away: Alice snapshots `secrets.0` and `keys.0`, so peers drop its blobs,
 // header included, and late joiner Bob gets only the snapshots. Bob cannot tell the absorbed
 // commit from one X signed ahead, so his removal of X does not list it; Alice, still holding it,
 // judges its deltas invalid, but her snapshots vouch for its writes: she, Bob and fresh nodes
@@ -1750,7 +1750,7 @@ fn plain_first_admin_gets_secrets_before_its_thing_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, doc, "by H's writer"), BTreeSet::from([0, 2]), "H's writer writes the doc; its admin and reader read it");
 }
 
-// spec/sync-ids.md §2, spec/sync-ids.md §6: after a rotation an admin issues a child of the host's head at the
+// spec/sync-ids.md §2, spec/sync-ids.md §6: after a rotation an admin issues a child of the peer's head at the
 // newest epochs; the removed node has no claim key in it, the remaining one has.
 #[test]
 fn registration_step_after_rotation_spec_sync_5() {

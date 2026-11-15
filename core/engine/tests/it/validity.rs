@@ -150,7 +150,7 @@ fn unmerge_restores_register_spec_crdt_4_6() {
     assert_eq!(lp.peers[2].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("alice")));
 }
 
-/// Secrets for hand-built commits: dedup, and made-up delete keys (hosts' business).
+/// Secrets for hand-built commits: dedup, and made-up delete keys (peers' business).
 struct Dedup(osis_base::CreationRecord);
 impl osis_commit::Secrets for Dedup {
     fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
@@ -1857,7 +1857,7 @@ fn snapshot_forging_entry_key_changes_nothing_spec_perm_5_2() {
 
 // spec/permissions.md §5.2, spec/commits.md §5 (compaction): Alice's commit C writes `x:m.0` and
 // `t:reg.0` (another retention class, another blob). A node that gets Alice's snapshot of `x:m.0`
-// and the blob of C without its `x:m.0` delta (dropped at the host after compaction) holds C
+// and the blob of C without its `x:m.0` delta (dropped at the peer after compaction) holds C
 // without that delta and takes C's write from the snapshot, in either order; the delta coming
 // late changes nothing. A reader's snapshot copying C's `x:m.0` write with another value counts
 // for nothing where C's delta is held, the delta arriving after the snapshot included.
@@ -3605,7 +3605,7 @@ fn undo_needs_write_spec_crdt_4_6() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("prior")));
 }
 
-// spec/sync-ids.md §1 (repair): a reused chunk a host deleted is written again with the reusing delta's retention and expiry: an invalid commit linking the value (a reader's, expiring soon) lends
+// spec/sync-ids.md §1 (repair): a reused chunk a peer deleted is written again with the reusing delta's retention and expiry: an invalid commit linking the value (a reader's, expiring soon) lends
 // the rewrite nothing.
 #[test]
 fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {

@@ -1,5 +1,5 @@
 # A sequence record holding only others' writes keeps its creator's body live
-> Summary: spec/commits.md §5 counts every sequence element record of a body's deltas the state holds as a live write of that body, "also one holding only others' writes" (`Fragment::live_writes` lists a record's dot whatever it holds). Once the creation is pruned, the creator's body adds nothing to the state (a record with no creation places at END, like a node that never held it), so it should be dead; counting it live keeps the body, and its delete at hosts, longer than needed.
+> Summary: spec/commits.md §5 counts every sequence element record of a body's deltas the state holds as a live write of that body, "also one holding only others' writes" (`Fragment::live_writes` lists a record's dot whatever it holds). Once the creation is pruned, the creator's body adds nothing to the state (a record with no creation places at END, like a node that never held it), so it should be dead; counting it live keeps the body, and its delete at peers, longer than needed.
 > Priority: low
 > Tags: retention, crdt
 

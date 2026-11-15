@@ -225,7 +225,7 @@ impl Engine {
     /// The blobs commits here wait for (spec/sync-streams.md §5, spec/sync-compaction.md §2): of each pending commit waiting
     /// for blobs, its header lists' trees while they do not resolve, then its pages and its
     /// large values' roots; of each memory commit from others applied here, its value trees
-    /// (fetched at once: they are held in memory at hosts). Costs the blobs that arrived since
+    /// (fetched at once: they are held in memory at peers). Costs the blobs that arrived since
     /// the last call, and a whole walk of a commit whose walk lacks nothing while it still waits.
     pub fn blob_wants(&mut self) -> Result<Wants> {
         let waiting: Vec<CommitId> = self.core.ix.pend_on.get(&super::Wake::Blobs).into_iter().flatten().copied().collect();

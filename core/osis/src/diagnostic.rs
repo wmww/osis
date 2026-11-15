@@ -40,7 +40,7 @@ pub enum Diagnostic {
     ClockSkew { detail: String },
     /// Other nodes sent more unverified data under a group than this node keeps: what came past
     /// the bound was dropped. Real data among it arrives again from the nodes that hold it; a
-    /// lasting flood means another node or a host misbehaves.
+    /// lasting flood means another node misbehaves.
     InputCapped { detail: String },
     /// A connection to another node came up or ended, or a dial failed (which address, why):
     /// for a log, and to tell why nothing syncs.

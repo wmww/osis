@@ -267,7 +267,7 @@ impl Engine {
     /// `kdf("state", dedup secret of tid, ak || state bytes)`, the state bytes its encoding as a
     /// snapshot fragment with its pages, none for an aspect holding no state. `None` while the
     /// thing's creation record is unknown. Nodes holding the same bodies get the same digest; a
-    /// host, lacking the dedup secret, learns nothing from it. A memo per aspect
+    /// peer, lacking the dedup secret, learns nothing from it. A memo per aspect
     /// (`Core::state_digests`, stamped by the thing's creation record and the aspect's state): a
     /// suspect list's entry costs a lookup unless its aspect moved, not the aspect's size.
     pub fn state_digest(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<[u8; 16]>> {

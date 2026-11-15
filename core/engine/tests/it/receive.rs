@@ -283,7 +283,7 @@ fn applies_what_is_held_and_late_delta_spec_commits_4() {
     assert!(lp.peers[1].engine.pending().is_empty());
 }
 
-/// Secrets for hand-built commits: dedup, and made-up delete keys (hosts' business).
+/// Secrets for hand-built commits: dedup, and made-up delete keys (peers' business).
 pub(crate) struct Dedup(pub(crate) Vec<osis_base::CreationRecord>);
 impl osis_commit::Secrets for Dedup {
     fn dedup(&self, tid: &Tid) -> Option<Secret32> {

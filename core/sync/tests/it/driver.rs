@@ -1,6 +1,6 @@
 //! The driver: whom a node dials and when, the pair rule's held dials, restarts in place after a
 //! store failure, and the one place outputs are applied (spec/sync-opens.md §1,
-//! spec/sync-transport.md; scenarios dial-bound, store-reopen, eph-sim-unlisted and no-host-chain
+//! spec/sync-transport.md; scenarios dial-bound, store-reopen, eph-sim-unlisted and one-wake-last
 //! of the Phase 1 checklist, issues/sync-rewrite.md). World tests run the product's node; the dial rules alone
 //! run on `Dials` with a table of dial peers.
 
@@ -265,7 +265,7 @@ fn hints_are_followed_after_a_restart_in_place_spec_sync_opens_1() {
 // write closes every connection and restarts the node's modules from the store, once per
 // stretch until a commit lands; the ephemeral entries it holds in memory stay (a store failure
 // judges none); its dials go on (it connects again), and its next wake still comes
-// (no-host-chain: a step's one wake, last).
+// (one-wake-last: a step's one wake, last).
 #[test]
 fn a_store_failure_restarts_in_place_once_per_stretch() {
     let mut w = configured(two_nodes());

@@ -129,7 +129,7 @@ fn r9_reseal_before_rotation_commit() {
     let mut w = World::new();
     let (r1, a1v1, s1) = w.remove_m1();
     let e1 = r1.role(Role::Read).unwrap().epoch;
-    // a2 is stranded at the head (e1 registered, its commit not held at the host); a1 re-seals it.
+    // a2 is stranded at the head (e1 registered, its commit not held at the peer); a1 re-seals it.
     let reseal = box_holder(&w.a, &a1v1, &hist(&w.a, &a1v1, &s1), &w.rcpt(w.a2), &read(), &mut w.rng).unwrap().unwrap();
     assert!(reseal.history.contains_key(&history_key(Role::Read, &e1)));
     let mut s2 = w.s0.clone();

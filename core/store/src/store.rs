@@ -380,7 +380,7 @@ impl Store {
 }
 
 /// A transaction set aside between calls (`Transaction::suspend`, `Store::resume`): the
-/// host store keeps one open across a batch of requests and commits it once. Dropped without
+/// blob area keeps one open across a batch of requests and commits it once. Dropped without
 /// resuming, it aborts. It holds no memory-overlay rows (`suspend` refuses them).
 pub struct Suspended {
     d: Dirty,

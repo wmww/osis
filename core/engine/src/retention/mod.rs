@@ -4,7 +4,7 @@
 //! the held set when asked (for keep-for-D, `bounds`), purge on replace (`replace`: the replacing writer's cover, covered
 //! bodies dropped at every node), expiry at T (the body kept as its leftover), purge requests
 //! judged by perm at the request's time (also against deltas arriving later), compaction
-//! snapshots and the covered test. node-sync judges what to delete at hosts and what to re-snapshot from the commit
+//! snapshots and the covered test. node-sync judges what to delete at peers and what to re-snapshot from the commit
 //! index (parts with no body, `Meta::body_gone`, `covered`), so no queue is kept here.
 //!
 //! Here: bodies dropping and coming back, leftovers, what runs on apply and by timer.
@@ -172,7 +172,7 @@ pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option
 
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
 /// without it (same header), the aspect rebuilt
-/// shredded (node-sync deletes it at hosts, judged from
+/// shredded (node-sync deletes it at peers, judged from
 /// `Meta::body_gone`). A bare leftover stays for un-merge (spec/crdt.md §4.6) but past its
 /// expiry, when a held snapshot covers it (`drops_as_covered`); one holding values
 /// (`Hold::Leftover::valued`) is dropped as a whole body.
@@ -213,7 +213,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
     // a part judged invalid drops as invalid, whatever else asks (spec/permissions.md §6): it
-    // stays at hosts and comes back once valid. As covered, a memory one would be forgotten,
+    // stays at peers and comes back once valid. As covered, a memory one would be forgotten,
     // and a holder judging it valid again would find it gone for good
     let why = if why == DropFor::Cover && goes_invalid(tx.core, &m, ai) { DropFor::Invalid } else { why };
     let invalid = why == DropFor::Invalid;
@@ -223,7 +223,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     if m.is_dropped(ai) || (m.bare(ai) && !leftover) {
         return Ok(());
     }
-    // its keep-at-least bound, judged while it is held: hosts delete it `MAX_DRIFT` past
+    // its keep-at-least bound, judged while it is held: peers delete it `MAX_DRIFT` past
     let keep = if why == DropFor::Cover { bounds::part_keep(tx, c, &a.tid, &a.ak)? } else { 0 };
     let hosts_from = if keep == 0 { 0 } else { keep.saturating_add(osis_base::format::MAX_DRIFT_MS) };
     // a setting not held is in no timeline (spec/commits.md §5 In force)
@@ -265,7 +265,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragment(tx, c, ai)?.into_iter().collect() } else { Vec::new() };
     let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
-    // what it links joins its thing's freed set first; an invalid body's stays at hosts with its
+    // what it links joins its thing's freed set first; an invalid body's stays at peers with its
     // pieces, a refetch source (spec/permissions.md §6)
     if !invalid {
         freed::free_part(tx, c, ai)?;
@@ -1300,7 +1300,7 @@ impl Engine {
 
     /// Whether commit `c` is held only as purged leftovers (`kept_purged`): a memory one is
     /// charged its own bytes against its sync IDs' caps until it is forgotten, not through its
-    /// entries, which the purger deletes at hosts.
+    /// entries, which the purger deletes at peers.
     pub fn kept_purged(&self, c: &CommitId) -> bool {
         self.core.ix.commits.get(c).is_some_and(|m| kept_purged(&self.core, c, m))
     }

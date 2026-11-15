@@ -4,5 +4,5 @@
 > Tags: crypto, engine
 
 - The salt is in the link so a holder deletes a piece without fetching it (notes/chunk-links.md, The link); derived from the key it stays so: the holder holds the key.
-- What it takes: the LINK format and its vectors (spec/data-model.md §5, spec/wire.md §5), `linked_prefix_inputs` and every framing of a linked blob deriving the salt (`BlobWriter::put_blob`, header-list blobs through `ListBlobs`, whose salt the builder draws today), `tree::bears` and `Framing::keeps`, the freed rows (salt stored), the delete signing (`freed_delete_secrets`); about 80 sites read `Link::salt`. A host sees the salt as now: a KDF output of a key it never sees.
+- What it takes: the LINK format and its vectors (spec/data-model.md §5, spec/wire.md §5), `linked_prefix_inputs` and every framing of a linked blob deriving the salt (`BlobWriter::put_blob`, header-list blobs through `ListBlobs`, whose salt the builder draws today), `tree::bears` and `Framing::keeps`, the freed rows (salt stored), the delete signing (`freed_delete_secrets`); about 80 sites read `Link::salt`. A node keeping it unread sees the salt as now: a KDF output of a key it never sees.
 - Check before building: nothing else needs the salt chosen apart from the key (spec/crypto.md §7: the salt is per blob, random; a derived one is per key, which is per blob).

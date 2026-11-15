@@ -1,5 +1,5 @@
 //! Judgment conformance vectors (core/test/vectors/README.md, `judgment/`): histories played by
-//! the order harness (`order::play`), carried in a bundle as one sync ID's host holds them, judged
+//! the order harness (`order::play`), carried in a bundle as a peer holding the sync ID holds them, judged
 //! by a fresh node in a given arrival order; the expected verdicts are what this engine judges.
 //! `judgment_vectors_spec_permissions_5_2` replays every generated case (its inputs only) through
 //! a fresh engine and compares; `judgment_vectors_can_fail` (ignored) checks a changed verdict
@@ -80,7 +80,7 @@ struct Laid {
     setup: usize,
 }
 
-/// A played history as a bundle as the hosts hold it: the genesis path of the first sync ID (group
+/// A played history as a bundle as the peers hold it: the genesis path of the first sync ID (group
 /// secrets read `0a`, write `0b`, admin `09`, deposit seed `0c`), then per commit the blobs it
 /// references, each under a filler wrap (left out where the case needs no bytes of them: the
 /// chunks of `t:blob.0`, which nothing waits for), and its

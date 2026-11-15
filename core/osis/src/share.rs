@@ -544,7 +544,7 @@ impl Osis {
     /// Lowering or removing a role writes at once, keeping what this node has received of the
     /// holder's work and what any other writer had received before the removal (each vouches for
     /// it in an addendum, spec/permissions.md §5.2). What reached no writer in time (an offline
-    /// device, a reader or a host alone) is undone until the holder is granted the role again. To
+    /// device, a reader or a node keeping it unread alone) is undone until the holder is granted the role again. To
     /// keep more, sync first: `wait_synced(SyncScope::Thing(target))` under your runtime's timeout,
     /// removing anyway when it times out or fails `Unsynced` (crate docs, Sharing). A raise waits
     /// for nothing.

@@ -741,7 +741,7 @@ fn forged_keyset_invalid_where_removal_arrived_spec_crypto_4() {
 
 // spec/crypto.md §4 (Carried), model `Carry`: a node learning an epoch learns the keysets its boxes name with it: peer 0 seals A's holder M at m1's knowing keyset kk and places kk's
 // commit under A's sync ID with its rotation. W (peer 4, A's other admin) gets peer 0's commits
-// but not kk's (a host withholding the carried commit): kk is no anchor there (not held), so W's
+// but not kk's (a peer withholding the carried commit): kk is no anchor there (not held), so W's
 // next rotation of A seals M at k0, which D opens (the stated limit: W holds no knowing keyset
 // of M). Peer 0 finds that box stale and moves A back to kk; once kk's commit reaches W, W
 // seals at kk. D opens nothing a writer holding kk encrypts under.

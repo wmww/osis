@@ -1,5 +1,5 @@
 //! Bodies, sealing, wraps, stamps, deposits and delete keys (spec/sync-ids.md §1-§3, §5;
-//! spec/crypto.md §5, §7): what a commit becomes under a sync ID, and the role keys a host's head calls for.
+//! spec/crypto.md §5, §7): what a commit becomes under a sync ID, and the role keys a peer's head calls for.
 
 use osis_base::memo::Memo;
 use crate::engine::Engine;
@@ -124,7 +124,7 @@ impl BodyCtx {
     }
 }
 
-/// The role keys this node holds for a host's head (spec/sync-ids.md §2, spec/sync-ids.md §6).
+/// The role keys this node holds for a peer's head (spec/sync-ids.md §2, spec/sync-ids.md §6).
 #[derive(Clone, Default)]
 pub struct HeadKeys {
     /// Opens (any held secret, spec/crypto.md §4: opening is not encrypting under).

@@ -260,7 +260,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
 
 // spec/commits.md §5 (each delta of a body is dated for these bounds by its own writes alone): a delta's live writes are its own: of a commit on two aspects, the part
 // whose write is replaced is dead while the other lives, and that one is judged afresh once its
-// own aspect changes (a stale cached answer gave a host delete with no carrier, or a carrier for
+// own aspect changes (a stale cached answer gave a delete at peers with no carrier, or a carrier for
 // nothing). The node keeps every body, so nothing covers the body away.
 #[test]
 fn delta_live_per_part_spec_commits_5() {

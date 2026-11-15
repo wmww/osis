@@ -22,7 +22,7 @@
 Keep is promised only by nodes that hold the setting. Beyond purge an admin can only shorten windows; it cannot touch live values or force a prompt deletion, and a backdated setting ends no more than one stamped now and re-shows only bodies readers still hold. Purge on replace keeps its property (replaced content is never history, however late a node dates the replacement) only through the one-way rule. A writer ignoring the setting can only give its own writes another expiry or purgeable-by.
 
 ## Model
-held-model `thing_history.rs` (`tests/it/spec_thing_history.rs`) checks the decisions above and that an eager-dropping node shows what a keep-everything node shows when nothing is late, and a subset in every arrival order. Not modelled: covers and rights, validity flips of settings, host placement.
+held-model `thing_history.rs` (`tests/it/spec_thing_history.rs`) checks the decisions above and that an eager-dropping node shows what a keep-everything node shows when nothing is late, and a subset in every arrival order. Not modelled: covers and rights, validity flips of settings, what peers hold.
 
 ## Leaving history (`retention/leaving.rs`)
 - Bodies of one aspect leave in replaced order, so per (thing, AK) the engine keeps places in replaced order, a cursor (every place at or before it is out) and one timer at the first place past it (`Indexes::leave_from`, `hf/`). Places: a signal's fires by `ts`; a value aspect's rows (`Indexes::leaving`, `hr/`), one per held valid part replaced on a dated aspect (and per snapshot a kill there may have replaced), in history or out.

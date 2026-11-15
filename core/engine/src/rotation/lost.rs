@@ -145,11 +145,11 @@ pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
 }
 
 /// How long an actor lost by the time alone waits for node-sync to hear its sync IDs out before
-/// it is dropped anyway (spec/permissions.md §2): a host dead or hostile for good holds no
+/// it is dropped anyway (spec/permissions.md §2): a peer dead or hostile for good holds no
 /// erasure off beyond it. `ROLE_KEEP_MS`, past which a node offline does not sync cleanly
 /// anyway. Minor consequence: a node out of reach that long loses its unsent writes on what a
 /// renewal it has not heard would have kept, and comes back by a re-seal; a later erase before
-/// it. At 0 every offline holder loses those; at infinity one dead host keeps every expired
+/// it. At 0 every offline holder loses those; at infinity one dead peer keeps every expired
 /// share on the node for good.
 pub const LOST_HEARD_WAIT_MS: u64 = osis_base::format::ROLE_KEEP_MS;
 

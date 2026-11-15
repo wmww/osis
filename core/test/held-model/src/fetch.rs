@@ -12,7 +12,7 @@ use crate::model::{act, evaluate};
 use crate::types::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What hosts hold.
+/// What peers hold.
 #[derive(Clone, Debug, Default)]
 pub struct Library {
     pub now: u64,

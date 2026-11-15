@@ -1,4 +1,4 @@
-//! `LocalPeer`: engines exchanging commits directly, with no sync IDs or hosts (the simulator's
+//! `LocalPeer`: engines exchanging commits directly, with no sync IDs or peers (the simulator's
 //! seed, notes/test-sim.md). Each engine has its own `MemoryBackend`, `ManualClock` and
 //! seeded rng; delivery is explicit and order is the caller's. `Package` is plaintext (a direct
 //! connection: pairing, or a test of what arrives regardless of keys); `SealedPackage` is what a
@@ -72,7 +72,7 @@ pub struct Peer {
     pub redelivered: u64,
 }
 
-/// A package this peer's engine threw out, as hosts keep it: fetched again as node-sync does
+/// A package this peer's engine threw out, as peers keep it: fetched again as node-sync does
 /// (`Peer::receive`).
 #[derive(Clone)]
 pub struct Discarded {

@@ -940,7 +940,7 @@ mod tests {
             fn dedup(&self, _: &Tid) -> Option<Secret32> {
                 Some(osis_crypto::dedup_secret(self.0.nonce()))
             }
-            // made-up delete keys (hosts' business)
+            // made-up delete keys (peers' business)
             fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
                 Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([3; 32])).verifying_key())
             }

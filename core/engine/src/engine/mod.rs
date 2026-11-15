@@ -147,8 +147,8 @@ pub struct Dropped {
     pub covered_by: BTreeSet<CommitId>,
     pub why: DropFor,
     /// A part dropped as covered: the wall ms from which a right holder may delete its body at
-    /// hosts, `MAX_DRIFT` past its keep-at-least bound when it had one (0: at once). A local drop
-    /// follows this node's clock alone; a host delete waits for every node's clock to agree
+    /// peers, `MAX_DRIFT` past its keep-at-least bound when it had one (0: at once). A local drop
+    /// follows this node's clock alone; a delete at peers waits for every node's clock to agree
     /// (spec/commits.md §5 Keep bounds).
     pub hosts_from: u64,
     /// A compaction snapshot's part dropped other than as covered, held then or not: it still
@@ -347,7 +347,7 @@ impl Meta {
     pub fn stripped_parts(&self) -> impl Iterator<Item = usize> + '_ {
         self.hold.iter().enumerate().filter(|(_, h)| matches!(h, Hold::Leftover { .. })).map(|(ai, _)| ai)
     }
-    /// Whether part `ai` has no body to upload or keep at hosts: dropped, or held as its leftover
+    /// Whether part `ai` has no body to upload or keep at peers: dropped, or held as its leftover
     /// (spec/commits.md §5: purged, expired).
     pub fn body_gone(&self, ai: usize) -> bool {
         matches!(self.hold.get(ai), Some(Hold::Dropped(_) | Hold::Leftover { .. }))

@@ -69,7 +69,7 @@ fn v_reseals_to_m(lp: &mut LocalPeer, g: Tid, w: CommitId) -> (bool, bool) {
 
 // spec/requirements.md Permissions (removing a holder never re-encrypts existing content; it
 // stops reading new content once a writer has written after the removal), spec/crypto.md §5
-// (Passing on): V holds e_R's secret by its box but not W (a host withholds it), so e_R is not
+// (Passing on): V holds e_R's secret by its box but not W (a peer withholds it), so e_R is not
 // established there. Its fresh encryption of R's write, opened from R's entry, does not go
 // under V's own epoch (which M holds); once W arrives V seals it again, and M reads it never.
 #[test]

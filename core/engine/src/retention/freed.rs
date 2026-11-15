@@ -4,8 +4,8 @@
 //! `tree_refs`): one a held source reaches leaves the set, kept; one no held source reaches is
 //! freed: an interior node's links join the set (a node is immutable, so a linked node's whole
 //! subtree stays linked and the walk stops at shared nodes), node-sync drops its bytes here and
-//! deletes it at every host holding an entry of it, by the delete keys its link names (Del, the
-//! writer's claim: a host checks the delete against the prefix), then it leaves the set
+//! deletes it at every peer holding an entry of it, by the delete keys its link names (Del, the
+//! writer's claim: a peer checks the delete against the prefix), then it leaves the set
 //! (`Engine::freed_done`). A judgment needing a node blob not held waits for it (`wants`).
 //!
 //! A judged link keeps no key here: what it needs to delete (its blob ID, salt, Del and thing
@@ -589,7 +589,7 @@ mod tests {
     // spec/sync-compaction.md §1 freed links: a link judged freed whose next judgment waits for a held
     // source's node (a co-writer's new tree not fetched yet) is handed on again once the node
     // comes, as one judged anew: its entries are judged again under their own sync ID, whichever
-    // pass woke it, so its delete at hosts is not stranded.
+    // pass woke it, so its delete at peers is not stranded.
     #[test]
     fn a_judged_link_woken_from_a_wait_is_handed_on_spec_sync_7() {
         let (mut lp, t, a, cs) = three_replaces();

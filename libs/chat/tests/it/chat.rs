@@ -204,8 +204,8 @@ fn a_chat_made_and_joined_syncs_spec_sync_set_4() {
 fn a_relay_carries_a_chat_between_accounts_that_never_meet_spec_sync_3() {
     let c0 = clock();
     let net = ManualNet::new(c0.clone());
-    let host = on(&net, 30, &c0);
-    let addr = host.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
+    let carrier = on(&net, 30, &c0);
+    let addr = carrier.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
     let via = |seed| {
         let mut o = osis::internals::Opening::at(osis::Store::Memory(osis::MemStore::new()));
         o.app.internals.seed = Some(seed);
@@ -218,20 +218,20 @@ fn a_relay_carries_a_chat_between_accounts_that_never_meet_spec_sync_3() {
     let (alice, bob) = (via(31), via(32));
     let c = create(&alice, &Options::default()).unwrap();
     let link = alice.make_link(c, Role::Write, LinkOpts::default()).unwrap();
-    drive(&net, alice.import_contact(&host.contact_card().unwrap())).unwrap();
+    drive(&net, alice.import_contact(&carrier.contact_card().unwrap())).unwrap();
     let k = alice.links().unwrap()[0].id.actor();
-    assert_eq!(relay(&alice, c, host.me()).unwrap(), [c, k]);
-    assert_eq!(relay(&alice, c, host.me()).unwrap(), [], "granted already");
+    assert_eq!(relay(&alice, c, carrier.me()).unwrap(), [c, k]);
+    assert_eq!(relay(&alice, c, carrier.me()).unwrap(), [], "granted already");
     for _ in 0..5 {
         net.advance(1_000);
     }
-    let mut inv: Vec<Tid> = host.invitations().unwrap().iter().map(|i| i.thing).collect();
+    let mut inv: Vec<Tid> = carrier.invitations().unwrap().iter().map(|i| i.thing).collect();
     inv.sort();
     let mut want = vec![c, k];
     want.sort();
     assert_eq!(inv, want);
     for t in inv {
-        host.accept_invite(t, host.home()).unwrap();
+        carrier.accept_invite(t, carrier.home()).unwrap();
     }
     for _ in 0..5 {
         net.advance(1_000);

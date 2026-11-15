@@ -528,7 +528,7 @@ impl Engine {
         self.read(|tx| crate::engine::tree_refs::live_trees_in(tx, &tid))
     }
 
-    /// Chunks or tree nodes `lost`, gone from every host of a sync ID, that this node's own
+    /// Chunks or tree nodes `lost`, gone from every peer holding a sync ID, that this node's own
     /// commit links (spec/sync-ids.md §1: a purger that had not seen this node's reuse judged them
     /// dead), looked for among `things` (the sync ID's closure: those whose live states link a
     /// held one). For each aspect whose newest own commit linking one is held: every large position

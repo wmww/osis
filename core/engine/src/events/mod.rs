@@ -118,7 +118,7 @@ pub enum DiagnosticKind {
     /// A text session could not commit its edits (the `osis` API: lost write access, storage);
     /// they stay in its buffer.
     Uncommitted,
-    /// Ephemeral data was not synced or not applied: a host's or this node's ephemeral cap
+    /// Ephemeral data was not synced or not applied: a peer's or this node's ephemeral cap
     /// was reached, or an ephemeral commit could not be built.
     EphemeralRefused,
     /// A typed read found a stored value that does not match the reader's type (another
@@ -156,7 +156,7 @@ pub enum DiagnosticKind {
     /// A dialed peer's clock differs from this node's by more than `OFFSET_DIAGNOSTIC_MS`
     /// (spec/sync-streams.md §1): one of the two is wrong (`detail`: the peer and the offset).
     ClockSkew,
-    /// A bound on unverified input from other nodes (hosts' unvouched entries, peers' uploads)
+    /// A bound on unverified input from other nodes (peers' unvouched entries, peers' uploads)
     /// was reached under a sync ID: what came past it was not kept, and a real entry among it
     /// arrives again from its holders (`detail`: the sync ID and the bound).
     InputCapped,

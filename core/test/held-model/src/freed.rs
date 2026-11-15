@@ -3,8 +3,8 @@
 //! body's links in a durable per-thing **freed set** and, link by link, judges each against the
 //! sources of its thing it still holds (bodies and live states): a piece one of them reaches stays;
 //! an unreached interior node is walked (its plaintext held or fetched) and its links join the set;
-//! an unreached piece is deleted at every host entry of the thing's sync IDs the node holds the
-//! role key of, signed by a key Del names that the node holds. A host accepts a delete only when
+//! an unreached piece is deleted at every peer's entry of the thing's sync IDs the node holds the
+//! role key of, signed by a key Del names that the node holds. A peer accepts a delete only when
 //! the blob's commitments, under the thing it was signed for, bear that key (the thing blind binds
 //! commitments to one thing). A judgment needing a node blob nobody serves waits.
 //!
@@ -59,7 +59,7 @@ pub struct NodeState {
     pub freed: BTreeSet<(Thing, Link)>,
 }
 
-/// A delete the host accepted: by `node`, of `piece`'s entry under `sync_id`, signed for `thing`.
+/// A delete the peer accepted: by `node`, of `piece`'s entry under `sync_id`, signed for `thing`.
 #[derive(Clone, Debug)]
 pub struct Deleted {
     pub node: usize,
@@ -75,7 +75,7 @@ pub struct World {
     pub sources: Vec<Source>,
     /// The sync IDs of each thing.
     pub sync_ids: BTreeMap<Thing, Vec<SyncId>>,
-    /// Live host entries (sync ID, piece).
+    /// Live entries at peers (sync ID, piece).
     pub entries: BTreeSet<(SyncId, Pid)>,
     pub nodes: Vec<NodeState>,
     pub deleted: Vec<Deleted>,
@@ -111,7 +111,7 @@ impl World {
         self.reach(roots)
     }
 
-    /// Whether node `n` may read interior node `p`: it holds it, or fetches it (a host entry of
+    /// Whether node `n` may read interior node `p`: it holds it, or fetches it (a peer's entry of
     /// one of its sync IDs, or another node holding it).
     fn fetch(&mut self, n: usize, p: Pid) -> bool {
         if self.nodes[n].blobs.contains(&p) {
@@ -163,7 +163,7 @@ impl World {
             if !self.nodes[n].sync_ids.contains(&g) || !self.entries.contains(&(g, l.piece)) {
                 continue;
             }
-            // sign with a key Del names that the node holds; the host checks the prefix
+            // sign with a key Del names that the node holds; the peer checks the prefix
             let Some(key) = l.del.iter().copied().find(|k| self.nodes[n].keys.contains(k)) else { continue };
             let piece = &self.pieces[l.piece];
             if piece.thing == thing && piece.group.contains(&key) {

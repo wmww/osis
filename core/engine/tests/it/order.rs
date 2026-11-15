@@ -1503,8 +1503,8 @@ fn later_than(played: &Played) -> WallMs {
 }
 
 /// The sync exchange, as a node's sync makes it: every held
-/// commit the node itself counts a part of missing is fetched again from the host (the history's
-/// packs, which a host holding the sync ID keeps), until none is or a round changes nothing. Only
+/// commit the node itself counts a part of missing is fetched again from the peer (the history's
+/// packs, which a peer holding the sync ID keeps), until none is or a round changes nothing. Only
 /// the node's own count decides: a node that fails to count a body missing never gets it back.
 fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
     let missing = |p: &Peer| -> BTreeSet<CommitId> { p.engine.commit_parts_missing().into_iter().filter(|(_, m)| !m.is_empty()).map(|(c, _)| c).collect() };
@@ -1641,7 +1641,7 @@ fn reopens_alike(played: &Played, order: &[usize]) -> Result<(), String> {
     shown_differs(&shown(&mut r, &played.things), &shown(&mut p, &played.things), &|_| false).map_or(Ok(()), Err)
 }
 
-/// A node holding what hosts keep once covered bodies go (spec/permissions.md §5.1: a frontier
+/// A node holding what peers keep once covered bodies go (spec/permissions.md §5.1: a frontier
 /// lists commit IDs; §5.2: a valid snapshot vouches for what it carries): every role commit and
 /// snapshot whole, each other commit without the parts a held snapshot covers at the node keeping
 /// every body, on the walk's side of each dispute as every node checked (none of it when that leaves

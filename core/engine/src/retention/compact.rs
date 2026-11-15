@@ -1,7 +1,7 @@
 //! The compaction trigger (spec/sync-compaction.md §1 trigger), one for durable and ephemeral aspects: a
 //! node that may write a content aspect writes a snapshot of it once the bodies it holds of it
 //! that the snapshot would drop, two at least, cost more than `FACTOR` times the snapshot. What a
-//! body costs is what dropping it frees, what holders and hosts pay for it: its deltas' bytes,
+//! body costs is what dropping it frees, what holders and peers pay for it: its deltas' bytes,
 //! the pages they link, the tree blobs its values link that no live state links (`body_bytes`,
 //! `freed_under`), `PART_OVERHEAD` per part (`apply::memory::part_weight`, what the node cap
 //! charges) and `ENTRY_CHARGE`. Bodies kept by history (a replaced one in history, a live one
@@ -21,15 +21,15 @@ use std::collections::{BTreeMap, BTreeSet};
 /// this many times the snapshot (spec/sync-compaction.md §1 trigger). Performance switch between correct
 /// strategies: 0 compacts whenever two bodies are held (at every write), infinity never (live
 /// bodies pile up: a map's every key written apart keeps its own body, an ephemeral aspect's
-/// pile up to the node and host caps, past which entries are refused). Snapshots cost O(1) per
-/// byte written, amortized, for any value above 1; a host cap of this many times the sum of the
+/// pile up to the caps of the node and its peers, past which entries are refused). Snapshots cost O(1) per
+/// byte written, amortized, for any value above 1; a peer's cap of this many times the sum of the
 /// aspects' snapshots holds every ephemeral entry.
 pub const FACTOR: usize = 2;
 
 /// Bytes charged per held commit besides its parts (`part_weight`) when a node weighs the bodies
-/// it holds against their snapshot: about a host's per-entry and log record overhead plus the
+/// it holds against their snapshot: about a peer's per-entry and log record overhead plus the
 /// commit header. Performance switch: 0 lets small writes pile up as entries whose overhead
-/// dwarfs their bytes (a host's cap fills with overhead the trigger never sees), infinity
+/// dwarfs their bytes (a peer's cap fills with overhead the trigger never sees), infinity
 /// compacts at every write.
 pub const ENTRY_CHARGE: usize = 1024;
 
@@ -773,7 +773,7 @@ impl Engine {
                 continue;
             };
             // cover once quiet: a leftover is the one carrier of an expired write's creations and
-            // resets to a node that missed it (hosts deleted the body at its expiry)
+            // resets to a node that missed it (peers deleted the body at its expiry)
             let full = l.bodies >= 2 && l.held > FACTOR.saturating_mul(l.snapshot);
             let fire = full || (quiet.contains(&k) || quiet_owed) && l.leftovers > 0;
             let mut held = l.held;

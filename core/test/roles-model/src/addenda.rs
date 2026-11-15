@@ -12,7 +12,7 @@
 //! names such a demotion D ordered after it and lists it. A counts iff (plan rules 1-5):
 //! - A is valid (rule 5: an ordinary write of its author, audited by its author's removals);
 //! - A's key is after D's and the listed commit's before D's (rule 2);
-//! - A's author holds write on m at A's key (rules 1 and 3: readers and blind hosts hold no
+//! - A's author holds write on m at A's key (rules 1 and 3: readers and nodes keeping it unread hold no
 //!   write; a commit's acting check is its part on its header actor, vouched for there by a
 //!   writer of that actor, as the removal's frontier lists it there);
 //! - the listed commit is plain content, no compaction snapshot (rule 4; `Kind::Special` stands for role-class,

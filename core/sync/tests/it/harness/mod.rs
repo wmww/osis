@@ -737,7 +737,7 @@ impl World {
         if n.node.rounds() > ROUND_CAP {
             panic!("settle loop: {} rounds in one step ({seen:?})", n.node.rounds());
         }
-        // one place of outputs (scenario no-host-chain): a step gives at most one wake, last
+        // one place of outputs (scenario one-wake-last): a step gives at most one wake, last
         let wakes = out.iter().filter(|o| matches!(o, Out::Wake(_))).count();
         assert!(wakes <= 1 && (wakes == 0 || matches!(out.last(), Some(Out::Wake(_)))), "a step's wake is one and last: {out:?}");
         if let Some(l) = self.liars.get_mut(&i) {

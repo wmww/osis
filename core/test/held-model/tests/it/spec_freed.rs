@@ -217,7 +217,7 @@ fn deleter_missing_a_node_fetches_it_or_waits() {
     let mut lost = w.clone();
     w.drop_source(0, 0);
     w.settle(&mut Rng::new(1));
-    assert!(w.entries.is_empty(), "fetched from the host, then deleted");
+    assert!(w.entries.is_empty(), "fetched from the peer, then deleted");
     // every copy of the node gone: the chunk below it stays, the link waits
     lost.entries.retain(|e| e.1 != n.piece);
     lost.drop_source(0, 0);

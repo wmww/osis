@@ -1,7 +1,7 @@
 //! Destroying a thing (spec/commits.md §5 Destruction; notes/expiry-creation-design.md §3): purging or
 //! expiring its creation. A thing exists while a creation of it is held live; once every held
 //! creation of it is value-less the thing goes in the transaction that made it so: its parts as
-//! bodies dropped (node-sync then deletes them at hosts by the dropped-body path), its states and
+//! bodies dropped (node-sync then deletes them at peers by the dropped-body path), its states and
 //! per-aspect rows. Records are identity, `created.0` is existence: what the thing created lives
 //! on: authority that passed through it stands as its frozen history says. Its record, its
 //! value-less mintings, its `roles.0` parts (no content) and the destroying requests' parts stay
@@ -503,7 +503,7 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
 /// - all marked: it goes whole, header and ID included; node-sync deletes its entries where it
 ///   may, then forgets them (`MemoryDrop::Gone`);
 /// - none other, some unknown: it goes here alone, as a commit thrown out awaiting records; its
-///   entries stay at hosts, node-sync skipping them until one of those records arrives
+///   entries stay at peers, node-sync skipping them until one of those records arrives
 ///   (`MemoryDrop::Awaits`);
 /// - else it keeps its header, its parts on `t` counting as never received, marked forgotten:
 ///   not fetched, joined (the mark going) if a copy comes (spec/commits.md §5 Never received).
@@ -589,7 +589,7 @@ fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 /// thing reads as absent, nothing is written on it or for it (a valid write acting for it is on a
 /// thing that needs it), and a dependent reaching this node later brings what reads its parts
 /// (spec/commits.md §5 Destruction). Limit: an entry left awaiting a record (`Kind::Awaits`) keeps
-/// no header to tell, so one of a commit keyed by it stays at hosts once the secrets went.
+/// no header to tell, so one of a commit keyed by it stays at peers once the secrets went.
 fn hold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     if tx.core.ix.secrets.get(t).is_none() || tx.core.ix.destroyed_secrets.contains(t) {
         return Ok(());

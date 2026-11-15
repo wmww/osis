@@ -190,7 +190,7 @@ fn invalid_own_replaces_give_back_what_they_covered_spec_commits_5() {
 // replaces is missing again once one of them turns invalid, as one never dropped is uncovered
 // then (a single own replace covers nothing). Bob writes C and a replace everyone gets, then a
 // second replace only the reader Eve gets; Alice removes Bob without having received it. Eve
-// keeping C dropped would delete at hosts what Alice, holding C uncovered, uploads.
+// keeping C dropped would delete at peers what Alice, holding C uncovered, uploads.
 #[test]
 fn one_own_replace_left_covers_nothing_spec_commits_5() {
     let mut lp = LocalPeer::fresh(3, T0);

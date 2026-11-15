@@ -444,7 +444,7 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 /// it meets. Not held (dropped or never received), which writes it carried are not known here: it
 /// is live while the state holds a write stamped at or before its `ts` (the header's `ts` bounds
 /// what it carried) or one without a `ts` (a sequence record whose creation is gone): an
-/// over-approximation, so its delete at hosts waits for a carrier (spec/sync-compaction.md §1).
+/// over-approximation, so its delete at peers waits for a carrier (spec/sync-compaction.md §1).
 pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(a) = h.aspects.get(ai) else { return Ok(false) };
     // by dot: records without a `ts` count too
@@ -490,7 +490,7 @@ impl Engine {
     /// From when any node may drop held part `(tid, ak)` of `c` under a held valid writer's
     /// cover or its author's own whole replaces (spec/commits.md §5 Out of history, spec/sync.md
     /// §7): its keep-at-least bound on this node's clock (`part_keep`; a local drop changes only
-    /// this node's reads, which follow its clock; deleting it at hosts waits `MAX_DRIFT` more,
+    /// this node's reads, which follow its clock; deleting it at peers waits `MAX_DRIFT` more,
     /// `Dropped::hosts_from`). Out of history nothing promises to keep it, so the cover's writer
     /// need not hold the purge right.
     pub fn drop_from(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<u64> {

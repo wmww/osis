@@ -24,8 +24,8 @@ pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 4]> {
     Some([get(Role::Sync)?, get(Role::Read)?, get(Role::Write)?, get(Role::Admin)?])
 }
 
-/// The held epoch of `l`'s group role whose role key is `key` (a host head's
-/// registered key): the node talks to that host with it (spec/sync-ids.md §3). Any held secret,
+/// The held epoch of `l`'s group role whose role key is `key` (a peer's head's
+/// registered key): the node talks to that peer with it (spec/sync-ids.md §3). Any held secret,
 /// established or not: opening a sync ID is not encrypting under (spec/crypto.md §4). A stamp,
 /// step or delete under it needs `RoleEpochs::is_established`.
 pub fn registered_epoch(a: &ActorEpochs, l: RoleKey, key: &VerifyingKey) -> Option<Epoch> {

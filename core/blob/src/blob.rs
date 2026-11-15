@@ -229,7 +229,7 @@ fn commitments(salt: &[u8; 16], hb: &[u8; 16], keys: &[(Level, VerifyingKey)]) -
 
 /// A blob as a node that cannot read it sees it: its prefix, or none for an unknown framing version (spec/wire.md
 /// §5: stored and relayed as a blob with no expiry and no commitments). Checks `MAX_BLOB`.
-pub fn host_prefix(blob: &[u8]) -> Result<Option<Prefix>, Error> {
+pub fn clear_prefix(blob: &[u8]) -> Result<Option<Prefix>, Error> {
     check_size(blob)?;
     match Prefix::parse(blob) {
         Ok(p) if blob.len() >= p.len() + MIN_CIPHERTEXT => Ok(Some(p)),
@@ -369,7 +369,7 @@ mod tests {
         assert!(Prefix::parse(&b).is_err());
         b[0] = 2;
         assert_eq!(Prefix::parse(&b), Err(Error::UnknownFraming(2)));
-        assert_eq!(host_prefix(&b), Ok(None));
+        assert_eq!(clear_prefix(&b), Ok(None));
         assert!(Prefix::new([0; 16], Some(WallMs(0)), vec![]).is_err());
         // a group count past the bytes
         let mut b = Prefix::new([0; 16], None, vec![]).unwrap().to_bytes();
@@ -386,13 +386,13 @@ mod tests {
         let (k, blob) = frame(&p, b"chunk", &mut rng).unwrap();
         assert_eq!(open(&blob, &k).unwrap(), (p.clone(), b"chunk".to_vec()));
         assert_eq!(blob_id(&blob).0, osis_base::hash::hash(&blob));
-        assert_eq!(host_prefix(&blob), Ok(Some(p.clone())));
+        assert_eq!(clear_prefix(&blob), Ok(Some(p.clone())));
         let mut t = blob.clone();
         t[20] ^= 1;
         assert!(open(&t, &k).is_err());
         assert!(matches!(frame(&p, &vec![0; MAX_BLOB], &mut rng), Err(Error::TooLarge(_))));
-        assert!(host_prefix(&vec![1; MAX_BLOB + 1]).is_err());
-        assert!(host_prefix(&p.to_bytes()).is_err());
+        assert!(clear_prefix(&vec![1; MAX_BLOB + 1]).is_err());
+        assert!(clear_prefix(&p.to_bytes()).is_err());
     }
 
     // spec/commits.md §4, spec/crypto.md §7: the prefix agrees with the header's delete keys and

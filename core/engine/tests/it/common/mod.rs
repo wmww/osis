@@ -289,7 +289,7 @@ pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base
 }
 
 /// Secrets for hand-built commits with `writer` retention: dedup, and made-up delete keys
-/// (hosts' business).
+/// (peers' business).
 pub struct Keys(pub osis_base::CreationRecord);
 impl osis_commit::Secrets for Keys {
     fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
