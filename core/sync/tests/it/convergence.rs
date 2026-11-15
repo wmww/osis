@@ -21,7 +21,9 @@ pub(crate) fn sized(small: u64, full: u64) -> std::ops::Range<u64> {
 
 /// The world a history plays on, the history played once, then the checks; replayed by
 /// `replay`. The checks run at quiet: every history ends healed, every node on, faults off, run
-/// (so a shrunk history ends so too). The world is returned for a test's own outcome checks.
+/// (so a shrunk history ends so too). The replay call a failure prints: a debugging aid in a
+/// scratch test, never a committed test (notes/coordination.md, Never pin a seed).
+#[allow(dead_code)]
 pub(crate) fn converge(seed: u64, n: usize, steps: &[Step], replay: String) -> World {
     converge_as(seed, n, steps, replay, false)
 }
@@ -106,8 +108,8 @@ fn one_node_through_device_faults_reads_as_the_reference() {
 // checks that a world plays it the same way twice).
 #[test]
 fn a_history_is_a_function_of_its_seed() {
-    let h = history(3, 2, 24, true);
-    assert_eq!(h, history(3, 2, 24, true));
+    let h = history(0, 2, 24, true);
+    assert_eq!(h, history(0, 2, 24, true));
     assert!(h.iter().any(|s| matches!(s, Step::Grant(..))) && h.iter().any(|s| matches!(s, Step::Lossy(..) | Step::Disk(..) | Step::PowerOff(..))));
 }
 

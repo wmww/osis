@@ -1,9 +1,9 @@
-# The sync test binary costs two and a half times its budget
-> Summary: osis-sync's `it` binary runs 2,945 G instructions in one process against notes/sync-test-harness.md's 1,200 G; read's judgements dominate, and about half of them are moved by reads of whole permission timelines (`Core::horizon`, `may_rotate`) whose answers rarely change: Fathom's lane (memo early cutoff, or finer timeline reads).
+# The sync test binary runs over its budget
+> Summary: osis-sync's `it` binary runs 1,568 G instructions in one process against notes/sync-test-harness.md's 1,200 G; read's judgements dominate, and about half of them are moved by reads of whole permission timelines (`Core::horizon`, `may_rotate`) whose answers rarely change: Fathom's lane (memo early cutoff, or finer timeline reads).
 > Priority: normal
 > Tags: engine, sync, tests
 
-Measured by `tools/icount` over the binary in one process: 2,945 G (per module: `convergence::` 1,242 G, `sims::` 670 G, `flows::` 475 G, `growth::` 260 G, the rest under 90 G each). A 40-step faulted history plays for about 11 G, and a 3-node differential world costs about as much to build (`introduce`); defaults are seeds (notes/sync-test-harness.md, Measured layers), so cutting them costs coverage, not correctness.
+Measured by `tools/icount` over the binary in one process: 1,568 G, `flows::` 158 G (hand-written reproducers on cached fixtures in place of seed-pinned worlds took 113 G off the binary, 149 G off `flows::`); an earlier per-module split, at 2,945 G: `convergence::` 1,242 G, `sims::` 670 G, `growth::` 260 G, the rest under 90 G each. A 40-step faulted history plays for about 11 G, and a 3-node differential world costs about as much to build (`introduce`); defaults are seeds (notes/sync-test-harness.md, Measured layers), so cutting them costs coverage, not correctness.
 
 Where a history's cost goes (faulted seed 1, `tools/cpuprof`): read's settle about half, `judge::body` 29% (`read_facts` 14%, `may_log` 13%), memo bookkeeping (stamp reads, frames, `Effects` index) about a sixth, restarts in place a tenth.
 
@@ -18,6 +18,5 @@ Causes in the engine (`core/engine`, `core/base/src/memo`):
 
 Options on the test side, each a coverage trade (not taken):
 - Fewer default seeds (20 per convergence test, 6 per simulation): each faulted seed is about 11 G a play plus its world where no simulation shares it.
-- Reproducers in `flows::` each pin a world seed of their own (15, 5, 7, 16, 77, 78, 93 and four 12-digit ones), so each builds a world (about 11 G): moved to `world(0, 3)` they may no longer reach the corner they were shrunk from.
 - Fewer distinct differential worlds (a history on world `seed % k`): fewer drawn IDs and tie-breaks (the fixture guard in notes/sync-test-harness.md).
 - A cheaper `introduce` (contacts by cards costs about 800 deliveries for 3 nodes).

@@ -124,7 +124,7 @@ fn a_repeated_send_arrives_then_its_connection_resets() {
 fn faults_replay_from_the_seed_and_script() {
     let script = [Step::Lossy(Loss { drop: 50, dup: 100, delay: 300, delay_ms: 2_000 }), Step::Run];
     let trace = || {
-        let mut w = World::new(7);
+        let mut w = World::new(0);
         w.add_bare_node();
         w.add_bare_node();
         w.add_bare_node();

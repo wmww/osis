@@ -99,6 +99,8 @@ PLANTS = [
     # record_tags
     ("core/sync/src/store/rows.rs", "    pub(crate) const REFUSED: u8 = b'r';", "    pub(crate) const REFUSED: u8 = b'r';\n    pub(crate) const PLANTED_TAG: u8 = b'r';"),
     ("core/sync/src/life.rs", None, "\nfn planted_tag(t: &mut T) { t.record_put_row(&rec, b'z', &s, b\"\", Vec::new()); }\n"),
+    # pinned_seeds
+    ("core/sync/tests/it/faults.rs", None, "\nfn planted_seed() { converge(77, 3, &[], String::new()); let _ = world(0, 3); let _ = w.history(5); }\n"),
     # doc_refs
     ("notes/build.md", None, "\nSee notes/no-such-planted.md and notes/gate.md, Planted Nonexistent Section.\n"),
     # dead_pub
@@ -156,6 +158,7 @@ EXPECT = [  # regexes the output must hold
     r"core/sync/src/life\.rs: a row key `b\"zr/\.\.\.` written as a literal",
     r"core/sync/src/store/rows\.rs: record tags REFUSED and PLANTED_TAG are both b'r'",
     r"core/sync/src/life\.rs: a record row written with a literal tag",
+    r"core/sync/tests/it/faults\.rs:\d+: converge\(77, \.\.\) pins a seed",
     r"notes/build\.md:\d+: notes/no-such-planted\.md does not exist",
     r"notes/build\.md:\d+: notes/gate\.md, \"planted nonexistent section\": no such section",
     r"pub fn osis-crdt::planted_dead_fn is used only",
@@ -174,6 +177,7 @@ ABSENT = [  # near misses: what the plants show must not be reported
     r"core/engine/tests/it/groups\.rs:\d+: engine",
     r"osis-crdt::planted_live",
     r"core/transport/src/lib\.rs:\d+: `hosts`",
+    r"faults\.rs:\d+: (world|history)\(",
 ]
 
 

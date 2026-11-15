@@ -4,8 +4,8 @@
 # Default-test settings (notes/build.md, Footguns: Proptest). An explicit environment value wins.
 [env]
 PROPTEST_CASES = "32"
-# Never write proptest-regressions files: a failure prints its minimal input; a seed worth keeping
-# becomes a named reproducer (notes/coordination.md, Never pin a failing seed).
+# Never write proptest-regressions files: a failure prints its minimal input; a bug it shows
+# gets a hand-written reproducer (notes/coordination.md, Never pin a seed of a random test).
 PROPTEST_DISABLE_FAILURE_PERSISTENCE = "1"
 
 # Debug sections compressed at link time: line tables keep file:line in backtraces at about 40% of

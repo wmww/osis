@@ -4,7 +4,7 @@ workspace lints on, every external dependency has its line in notes/architecture
 target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run,
 and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and no
 test can bind the real LAN port or
-announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and sync keeps no hashed collection (`sync_hashed`), and only the engine's `apply::checked`
+announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and sync keeps no hashed collection (`sync_hashed`), and sync's tests pin no differential seed (`pinned_seeds`), and only the engine's `apply::checked`
 vouches for checked delta bytes (`checked_bytes`), and signature verdicts are read back only where kept (`kept_verdicts`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
 and every list under git's union merge has no duplicate line and a stale-line check (`union_lists`),
@@ -332,6 +332,19 @@ def sync_hashed():
         yield f"{rel}:{n}: a hashed collection in sync (its order varies per run; use BTreeMap/BTreeSet)"
 
 
+# notes/coordination.md (Never pin a seed of a random test): a bug a random test finds gets a
+# hand-written reproducer at seed 0, never its random history replayed on its world seed. Sync's
+# differential world, history and replay take a seed first; in tests a literal one is 0.
+PINNED_SEED = re.compile(r"(?<![\w.])(world|history|converge|World::new)\(\s*(0*[1-9][0-9_]*)\s*[,)]")
+
+def pinned_seeds():
+    for path, rel in walk(("core/sync/tests",), ".rs"):
+        for n, line in enumerate(code_of(path).split("\n"), 1):
+            m = PINNED_SEED.search(line)
+            if m:
+                yield f"{rel}:{n}: {m[1]}({m[2]}, ..) pins a seed (notes/coordination.md, Never pin a seed: a hand-written reproducer at seed 0)"
+
+
 def known_failures():
     names, bad = gate_failures.known(ROOT)
     yield from bad
@@ -477,6 +490,7 @@ errs.extend(test_copies())
 errs.extend(checked_bytes())
 errs.extend(kept_verdicts())
 errs.extend(sync_hashed())
+errs.extend(pinned_seeds())
 errs.extend(real_lan_tests())
 errs.extend(peer_ticks())
 errs.extend(env_vars())

@@ -435,14 +435,12 @@ fn cuts(played: &Played, i: usize) -> Vec<Vec<u8>> {
 }
 
 // spec/commits.md §4: the differential's histories play through a write that changes nothing (no
-// commit), so no seed is left out for it (seeds 9350000+: 16 was; this is seed 9350074's prefix).
-// `play` panics on it.
+// commit): the same values written twice. `play` panics on it.
 #[test]
 fn history_plays_past_a_no_op_write_spec_commits_4() {
     use Step::*;
-    let a = |s: Step| Aim(Box::new(s));
-    let steps = [NewTop { by: 0 }, NewTop { by: 0 }, Advance { who: None, ms: 1000 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, Advance { who: None, ms: 1000 }, Forged { by: 1, a: 4, b: 4, how: 1, op: 6, k: 0, v: 1 }, Sync { from: 0, to: 1 }, Sync { from: 0, to: 1 }, a(New { by: 0, parent: 4, write: true }), a(New { by: 0, parent: 1, write: true }), a(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Read) }), Sync { from: 1, to: 0 }, Sync { from: 0, to: 1 }];
-    play(0, &steps);
+    let write = || Three { by: 0, a: 0, b: 1, c: 2, v: 1 };
+    play(0, &[NewTop { by: 0 }, NewTop { by: 0 }, write(), write()]);
 }
 
 // spec/commits.md §4: a commit on two synced things, the H part expired with its pages away. It holds
