@@ -1850,8 +1850,7 @@ fn a_local_thing_is_not_filed_spec_sync_set_1() {
     w.commit().unwrap();
     db.make_link(shared, Role::Read, osis::LinkOpts::default()).unwrap();
     db.settle();
-    // a false alarm on the item of home (issues/notsynced-home-false-alarm.md)
-    let _ = rx.try_iter().count();
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![], "the account's own item of home reaches its holders");
     let mut w = db.write();
     let hidden = w.create_with_content(db.me()).unwrap();
     w.local(hidden).unwrap();
