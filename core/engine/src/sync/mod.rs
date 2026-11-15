@@ -521,6 +521,12 @@ impl Engine {
         self.lists_feed_now()
     }
 
+    /// Whether `c`'s body under `s` can be wrapped for `s` now (`wrap_secret` for its parts): a
+    /// must-hold body is logged once it can, so a judgement reading this acts when it moves.
+    pub fn body_wrap(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        self.body_wrap_now(s, c)
+    }
+
     /// Whether a record blob (`r` none) or a list blob of rotation `r` can be sealed under `s`
     /// now: what is missing there waits for it.
     pub fn cert_wrap(&mut self, s: &SyncId, r: Option<&CommitId>) -> Result<bool> {

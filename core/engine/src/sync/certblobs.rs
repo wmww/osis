@@ -140,6 +140,15 @@ impl Engine {
         Ok(Arc::new(out))
     }
 
+    /// Whether `c`'s body under `s` can be wrapped for `s` now: `wrap_secret` for the parts of
+    /// its body there (`Engine::body_wrap`).
+    pub(crate) fn body_wrap_now(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        let Some(t) = self.read_thing(s)? else { return Ok(false) };
+        let Some(meta) = self.sync_body_now(s, c)? else { return Ok(false) };
+        let parts: Vec<usize> = meta.parts.iter().copied().collect();
+        Ok(self.wrap_secret(&t, Some((c, &parts)))?.is_some())
+    }
+
     /// Whether a record blob can be sealed under `s` now (a current read epoch of its thing to
     /// wrap under; none while, say, a rotation is owed before encrypting), and a list blob of
     /// rotation `r` (`r`: `list_wrap_secret`).
