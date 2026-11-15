@@ -8,7 +8,7 @@
 
 use osis_base::{BlobId, SyncId};
 use osis_proto::msg::flow;
-use osis_proto::{Code, Event, Flow, FrameDecoder, Msg, Stream, encode_frame};
+use osis_proto::{Code, Event, Flow, FrameDecoder, Msg, OfferItem, Stream, encode_frame};
 use osis_sync::{ConnId, Out};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,6 +27,9 @@ pub enum Lie {
     /// Refuses every role entry it is shown (spec/sync-streams.md §4 Refused, code 1), while it
     /// takes them.
     RefuseRoles,
+    /// Declares this class for every sync ID it opens (`unread` in its Offer items and its
+    /// accepting answers, spec/wire.md §11.2), whatever it holds.
+    Declare { unread: bool },
 }
 
 /// One connection's frames each way.
@@ -47,6 +50,8 @@ pub struct Liar {
     told: BTreeSet<(ConnId, SyncId)>,
     /// Messages the lie sends next on each connection.
     owed: BTreeMap<ConnId, Vec<Msg>>,
+    /// Suspect entries heard, per sync ID (`Declare`: what a false class gets it).
+    pub suspects: BTreeMap<SyncId, usize>,
 }
 
 /// Each (S, entry added) of a message.
@@ -73,12 +78,12 @@ fn bare_stream(events: Vec<(SyncId, Event)>) -> Msg {
 
 impl Liar {
     pub fn new(lie: Lie) -> Liar {
-        Liar { lie, conns: BTreeMap::new(), told: BTreeSet::new(), owed: BTreeMap::new() }
+        Liar { lie, conns: BTreeMap::new(), told: BTreeSet::new(), owed: BTreeMap::new(), suspects: BTreeMap::new() }
     }
 
     /// The node hears `bytes` on `conn`; `role(S, blob)` says whether an entry is a role entry.
     pub fn heard(&mut self, conn: ConnId, bytes: &[u8], role: &dyn Fn(&SyncId, &BlobId) -> bool) {
-        if !matches!(self.lie, Lie::Full | Lie::RefuseRoles) {
+        if !matches!(self.lie, Lie::Full | Lie::RefuseRoles | Lie::Declare { .. }) {
             return;
         }
         let f = self.conns.entry(conn).or_default();
@@ -89,6 +94,11 @@ impl Liar {
                 continue;
             }
             msgs.extend(Msg::decode(&body).ok());
+        }
+        for m in &msgs {
+            if let Msg::Suspect { sync_id, entries, .. } = m {
+                *self.suspects.entry(*sync_id).or_default() += entries.len();
+            }
         }
         for (s, b) in msgs.iter().flat_map(added) {
             let event = match self.lie {
@@ -111,6 +121,21 @@ impl Liar {
             (Lie::Withhold | Lie::Forget, Msg::PullReply(mut r)) => {
                 r.events = self.log(r.events);
                 vec![Msg::PullReply(r)]
+            }
+            (Lie::Declare { unread }, Msg::Offer { id, mut items }) => {
+                for i in &mut items {
+                    match i {
+                        OfferItem::Hit { unread: u, .. } | OfferItem::ByRole { unread: u, .. } | OfferItem::Static { unread: u, .. } => *u = unread,
+                        _ => {}
+                    }
+                }
+                vec![Msg::Offer { id, items }]
+            }
+            (Lie::Declare { unread }, Msg::Shared { id, mut items }) => {
+                for i in items.iter_mut().filter(|i| i.code == Code::OK) {
+                    i.unread = unread;
+                }
+                vec![Msg::Shared { id, items }]
             }
             (_, m) => vec![m],
         }

@@ -226,3 +226,27 @@ fn a_flag_naming_a_body_a_source_shows_waits_spec_permissions_4() {
     w.run();
     assert!(sent() >= 1, "a body no stream shows is listed at once");
 }
+
+// spec/permissions.md §4 (Suspect list: a peer keeping L unread is sent none), spec/sync-opens.md
+// §4 (Source: what a node discloses to a source is bounded by what its peer proved, never by
+// the class it declared): node 2 keeps S unread (its account syncs S, reads nothing) and declares
+// it reads S. Node 1's lists reach node 0, whose account may read S, and never node 2: it learns
+// no tid, AK or digest of S's closure.
+#[test]
+fn a_false_reader_declaration_gets_no_list_spec_permissions_4() {
+    let mut w = world(0, 3);
+    w.lie(2, Some(Lie::Declare { unread: false }));
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Grant(0, 0, 2, Gives::Syncs), Run, Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    first_synced(&mut w, 1, s, true);
+    sent();
+    w.write(1, |e| e.flag_suspect(&t, &big(), Why::Uncovered, &[(CommitId([7; 32]), 0)]).unwrap());
+    w.run();
+    assert!(sent() >= 1, "listed to node 0");
+    let a = w.node(2).account;
+    let declared: Vec<_> = w.status(1).get(&s).map(|st| st.sources.values().filter(|x| x.src.account == a).map(|x| x.src.class).collect()).unwrap_or_default();
+    assert_eq!(declared, [osis_sync::types::SourceClass::Reader], "node 1 takes node 2's word for its class");
+    let heard = |w: &World, i: usize| w.liar(i).and_then(|l| l.suspects.get(&s).copied()).unwrap_or(0);
+    assert_eq!(heard(&w, 2), 0, "a node keeping S unread is not, whatever it declares");
+}

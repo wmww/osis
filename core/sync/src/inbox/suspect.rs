@@ -5,8 +5,9 @@
 //! (the engine's `suspect(t, ak)` per aspect, grouped by `carrying(t)` filtered by
 //! `suspect_under`; under no S while a source's stream shows under S a body the flag names: it
 //! is fetched, its state not yet what it reports), most recently flagged first, each with its state digest taken as it goes.
-//! Sent to each reader source's peer at its join and to every one when S's list moves (a store
-//! source keeps S unread: it learns nothing of S's closure from us), once S's first sync here ended (`Store::first_synced`: a
+//! Sent to each reader source's peer at its join and to every one when S's list moves, where the
+//! peer proves an account that may read S (the class is the peer's word; a store source keeps S
+//! unread: it learns nothing of S's closure from us), once S's first sync here ended (`Store::first_synced`: a
 //! node mid first sync digests a partial state, so every writer would repair it for nothing).
 //! An empty list, or one going empty, sends nothing: a repair is idempotent.
 //!
@@ -244,6 +245,12 @@ impl Suspects {
                 continue;
             }
             let Some(list) = self.lists.get(&s) else { continue };
+            // the peer's class is its word: the list goes only where its proof shows it may read
+            // S, the judgement a list received is held to
+            let actors = crate::opens::counted(h.engine, &net.named(conn));
+            if h.engine.reader_account(&s, &actors)?.is_none() {
+                continue;
+            }
             let mut entries = Vec::new();
             for (t, ak) in ordered(list) {
                 if let Some(digest) = h.engine.state_digest(t, ak)? {

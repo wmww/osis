@@ -1923,3 +1923,29 @@ fn a_sources_class_follows_what_the_peer_holds_spec_sync_opens_4() {
     w.run();
     assert_eq!(at1(&mut w), 0, "node 2 deleted its purged write at node 1");
 }
+
+// spec/sync-opens.md §4 (Source: a side opens S only while its class is still the one it
+// declared in that exchange): store K Hits the sync key Adv shows, declaring it keeps S unread;
+// K comes to read S before Adv's valid answer arrives. K opens nothing at the class it declared
+// (Adv would class it a store for the member's life): a member there, if any, is at its new class.
+#[test]
+fn an_answer_after_the_testers_class_moved_opens_nothing_at_the_old_class_spec_sync_opens_4() {
+    let s0 = StepKeys::new(1, 0);
+    for moved in [false, true] {
+        let (mut k, mut adv) = store_dialed_by_adv(&s0, [2; 32]);
+        adv.filter(&mut k, &[s0.pk()], &S);
+        let sent = k.sent();
+        let Some(Msg::Offer { id, items }) = of_kind(&sent, 37).pop() else { panic!("K Hits the sync key Adv shows") };
+        assert!(matches!(items[..], [OfferItem::Hit { unread: true, .. }]), "{items:?}");
+        if moved {
+            k.table.set(S, Some(reader(&S, &read_secret(1, 0), &s0, &[], &[], &[])));
+            k.settle();
+            k.sent();
+        }
+        let tag = adv.tag_on(&s0.pk(), &S);
+        adv.send(&mut k, Msg::Shared { id, items: vec![osis_proto::SharedItem { code: Code::OK, tag: Some(tag), grant: None, sig: Some(adv.bind.sign(&s0.sync, &S)), unread: false }] });
+        let own = k.opens.members(adv.peer).get(&S).map(|m| m.own);
+        let want = if moved { None } else { Some(SourceClass::Store) };
+        assert_eq!(own, want, "moved {moved}");
+    }
+}
