@@ -2310,3 +2310,56 @@ fn a_seed_boxed_in_a_rotation_not_counting_is_held_spec_crypto_9() {
     let blob = osis_commit::CommitBlob::decode(&e.commit_bytes(&r2).unwrap().unwrap()).unwrap();
     assert_eq!(e.open_inner(&blob), Some(two), "its minter is read");
 }
+
+// spec/crypto.md §9 (Custody: a seed re-seal): peer 2 is granted on D but never gets the
+// rotation pairing it, so it holds no seed of P. Node 1, holding the grant, sees a device on D's
+// roster no box of its head's seed is tagged for: its signing pass re-seals that seed to it, once.
+// Peer 2 then takes up the account, signs at that head, and its write counts at node 1. Fails
+// without the re-seal: peer 2 holds no seed to take the account up with.
+#[test]
+fn a_device_missing_its_pairing_rotation_is_resealed_its_heads_seed_spec_crypto_9() {
+    let mut lp = LocalPeer::new_bare(3, 0, WallMs(1_700_000_000_000)).unwrap();
+    let (a, _) = lp.peers[0].engine.create_account().unwrap();
+    for i in [1, 2] {
+        let node = lp.peers[i].engine.tid();
+        let ids = lp.peers[i].engine.commit_ids();
+        send(&mut lp, i, 0, &ids);
+        // its card too: node 1 seals to its key
+        send(&mut lp, i, 1, &ids);
+        let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
+        let rot = |lp: &LocalPeer, c: &CommitId| lp.peers[0].engine.header(c).is_some_and(|h| h.rotation.is_some());
+        // peer 2's pairing rotation reaches no one
+        let all: Vec<CommitId> = if i == 2 { all.into_iter().filter(|c| !rot(&lp, c) || setup_rotation(&lp, &a, c)).collect() } else { all };
+        send(&mut lp, 0, i, &all);
+        if i == 1 {
+            lp.peers[1].engine.paired(&a.account).unwrap();
+        } else {
+            send(&mut lp, 0, 1, &all);
+        }
+    }
+    assert!(lp.peers[2].engine.paired(&a.account).is_err(), "no seed in custody yet");
+    let made = lp.peers[1].engine.signing_due().unwrap().commits;
+    let reseals: Vec<CommitId> = made.iter().copied().filter(|c| lp.peers[1].engine.header(c).is_some_and(|h| h.reseal.is_some())).collect();
+    assert_eq!((made.len(), reseals.len()), (1, 1), "one re-seal and nothing else: {made:?}");
+    assert!(lp.peers[1].engine.signing_due().unwrap().commits.is_empty(), "re-sealed once");
+    send(&mut lp, 1, 2, &reseals);
+    lp.peers[2].engine.paired(&a.account).unwrap();
+    let head = lp.peers[1].engine.core.account_view(&a.account).unwrap().preferred();
+    let w = write_on_d(&mut lp, 2, a.account, a.devices);
+    assert_eq!(lp.peers[2].engine.header(&w).unwrap().epoch, Some(head), "signed at node 1's head");
+    send(&mut lp, 2, 1, &[w]);
+    let e = &lp.peers[1].engine;
+    assert_eq!(e.core.ix.commits.get(&w).map(|m| e.core.standing(&w, &m.view)), Some(osis_perm::EpochStanding::Counts));
+}
+
+/// Whether `c` is a rotation node 0 made before peer 2's pairing (node 1's).
+fn setup_rotation(lp: &LocalPeer, a: &CreatedAccount, c: &CommitId) -> bool {
+    lp.peers[1].engine.core.account_view(&a.account).is_some_and(|v| v.holds(c))
+}
+
+fn write_on_d(lp: &mut LocalPeer, peer: usize, p: Tid, d: Tid) -> CommitId {
+    let mut m = crate::Mutation::new();
+    m.sign_as(p);
+    m.set(d, &x(), &Value::Int(1)).unwrap();
+    lp.peers[peer].engine.commit(m).unwrap().unwrap()
+}

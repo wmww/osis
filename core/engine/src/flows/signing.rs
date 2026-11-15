@@ -535,20 +535,12 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<C
     }
     let Some(p) = tx.core.member() else { return Ok(None) };
     let Some(d) = tx.core.accounts.get(&p).map(|a| a.devices) else { return Ok(None) };
-    // a node off D's roster rotates nothing: it mints a seed it keeps while boxing it to none of
-    // itself, so a removed node holding its removal before the removal's rotation would fork the
-    // account and hold the new epoch's seed (spec/permissions.md §3: it stays until a carrier)
-    if !tx.core.of_devices(&d) {
+    let Some(v) = tx.core.account_view(&p) else { return Ok(None) };
+    if !signs_for(tx.core, &d, &v) {
         return Ok(None);
     }
-    let Some(v) = tx.core.account_view(&p) else { return Ok(None) };
     let dep = departures(tx, &p, &v)?;
     let named = dep.all();
-    // a node its own chain removes (it took a revocation of itself) signs nothing for the account
-    let me = tx.core.id.tid();
-    if v.taken().iter().any(|r| v.devices.as_ref().is_some_and(|d| d.removes.get(r).is_some_and(|ns| ns.contains(&me)))) {
-        return Ok(None);
-    }
     let mut unnamed = Vec::new();
     for (c, _) in removals(tx.core, &p, &d)? {
         // a removal stands or falls with the rotation carrying it: one carried by a rotation that
@@ -581,14 +573,25 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<C
     rotate_in(tx, p, &unnamed, done)
 }
 
+/// Whether this node writes its account's chain (rotations, seed re-seals): it is on D's
+/// roster (a node off it would mint a seed it boxes to none but itself, so a removed node holding
+/// its removal before the removal's rotation would fork the account and hold the new epoch's
+/// seed: spec/permissions.md §3, it stays until a carrier), and it took no revocation of itself.
+pub(crate) fn signs_for(core: &crate::engine::Core, d: &Tid, v: &super::account::AccountView) -> bool {
+    let me = core.id.tid();
+    core.of_devices(d) && !v.taken().iter().any(|r| v.devices.as_ref().is_some_and(|x| x.removes.get(r).is_some_and(|ns| ns.contains(&me))))
+}
+
 impl Engine {
-    /// What this node owes its account's signing chain (`rotations_due`), decided at the end
-    /// of a complete pass of its devices actor's sync IDs (node-sync), so a removal and its
-    /// rotation that arrive apart, or two forks and the merge of another node, are both in.
+    /// What this node owes its account's signing chain, decided at the end of a complete pass
+    /// of its devices actor's sync IDs (node-sync), so a removal and its rotation that arrive
+    /// apart, or two forks and the merge of another node, are both in: the rotation due
+    /// (`rotations_due`), then the seed re-seals of its heads (`custody::reseal_seeds`).
     pub fn signing_due(&mut self) -> Result<Done> {
         let mut done = Done::default();
         let c = self.run(|tx| rotations_due(tx, &mut done))?;
         done.add(c);
+        done.commits.extend(self.run(super::custody::reseal_seeds)?);
         Ok(done)
     }
 }

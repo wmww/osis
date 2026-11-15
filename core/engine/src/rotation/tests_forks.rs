@@ -1091,6 +1091,11 @@ impl Run {
             if self.left[v] || !side(self, v) {
                 continue;
             }
+            // a node of P removed in its own view (T where B's removal of it counts) is no node:
+            // nothing is promised it (the model's settled check)
+            if v < forks::OWN && self.judge(v).removed_node(v) {
+                continue;
+            }
             let hs = self.view(v).heads();
             if hs.len() != 1 {
                 self.fail(&format!("node {v} settled with heads {hs:?}"));
@@ -1178,11 +1183,9 @@ fn engine_agrees_with_forks_model_large_spec_permissions_5_4() {
 
 /// As the property, with the users of P's nodes left on X's side switching to A's removal in the
 /// settle (the model's settle). A switch takes (custody: the honest line's boxes open whatever
-/// counts), but a head a switched node made while on X's side boxes no device X revoked, and
-/// with no seed re-seal nobody hands that device the seed, so it cannot merge the heads
-/// (issues/account-node-switch-back.md).
+/// counts), and a head a switched node made while on X's side, boxing no device X revoked, is
+/// re-sealed to them (seed re-seals), so they merge the heads.
 #[test]
-#[ignore = "issues/account-node-switch-back.md: seed re-seals"]
 fn engine_agrees_with_forks_model_switching_back_spec_permissions_5_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_FORKS_START", "OSIS_FORKS_SEEDS", osis_base::testenv::large(0..2_000));
     tally(&s.run("rotation::tests_forks::engine_agrees_with_forks_model_switching_back_spec_permissions_5_4", replay, |seed| play(seed, true)));

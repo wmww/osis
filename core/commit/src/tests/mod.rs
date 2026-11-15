@@ -95,6 +95,36 @@ fn rotation_header_spec_wire_4() {
     assert!(r.validate().is_err(), "supersedes not ascending");
 }
 
+// spec/wire.md §4 field 16: a seed re-seal round-trips; it sits only on an account's role
+// commit that is no rotation, with at least one box, ascending by tag.
+#[test]
+fn reseal_header_spec_wire_4() {
+    use crate::header::{RotationHeader, SeedBox, SeedReseal};
+    let keys = osis_crypto::AccountEpochKeys::from_seed(&Secret32::from_bytes([8; 32]));
+    let b = |t: u8| SeedBox { tag: [t; 16], sealed: vec![t; osis_crypto::SEALED_OVERHEAD + 32] };
+    let rs = SeedReseal { signing_key: keys.signing.verifying_key(), seeds: vec![b(1), b(2)] };
+    let mut r = validate::role_header("account.0");
+    r.actor = r.author;
+    r.epoch = Some(crate::FIRST_EPOCH);
+    r.reseal = Some(rs.clone());
+    assert_eq!(Header::decode(&r.encode()).unwrap(), r);
+    r.validate().unwrap();
+    let mut x = r.clone();
+    x.epoch = None;
+    assert!(x.validate().is_err(), "no account's");
+    let mut x = r.clone();
+    x.kind = Kind::Content;
+    assert!(x.validate().is_err(), "no role commit");
+    let mut x = r.clone();
+    x.rotation = Some(RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: vec![crate::FIRST_EPOCH], names: vec![], takes: vec![], removals: vec![], list_root: [6; 32], seeds: vec![b(1)] });
+    assert!(x.validate().is_err(), "on a rotation");
+    let mut x = r.clone();
+    x.reseal = Some(SeedReseal { seeds: vec![b(2), b(1)], ..rs.clone() });
+    assert!(Header::decode(&x.encode()).is_err(), "boxes not ascending");
+    x.reseal = Some(SeedReseal { seeds: vec![], ..rs });
+    assert!(Header::decode(&x.encode()).is_err(), "no box");
+}
+
 // spec/wire.md §4: a stored header (verified on arrival) reads back as `decode` reads it,
 // without the delete keys' point checks
 #[test]
