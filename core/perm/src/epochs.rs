@@ -52,15 +52,6 @@ pub struct Listing<E, T> {
     pub commits: BTreeSet<E>,
 }
 
-// Interim (issues/account-removal-before-its-rotation.md): replaced by custody phase 2 (D's lists decide no membership).
-/// The thing whose thing lists a node waits for (spec/permissions.md §5.5, Waiting): at a node
-/// of the account, its devices actor D, with the rotations whose thing list of D it holds.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Awaited<E, T> {
-    pub thing: T,
-    pub listed: BTreeSet<E>,
-}
-
 /// What the epoch rule says of one held commit of the account, before §5.2 judges it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EpochStanding<E> {
@@ -89,34 +80,22 @@ pub struct Epochs<E, T> {
     revoked: BTreeSet<E>,
     /// (commit, thing): a counting thing list or counting listing names the commit on the thing.
     named: BTreeSet<(E, T)>,
-    awaited: Option<Awaited<E, T>>,
-    /// Per closed epoch, the closers whose lists name its commits (`deciders`).
-    deciders: BTreeMap<E, BTreeSet<E>>,
 }
 
 impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     /// Judges the account with first epoch `root`: its held `rotations` as `Chain::new` places
     /// them (`chosen`, `received`, `devices`), of which `carriers` carry a removal (spec/permissions.md
-    /// §5.5 Revoked), and the held thing lists and listings naming its commits; `awaited`, at a
-    /// node of the account, the thing whose lists it waits for.
+    /// §5.5 Revoked), and the held thing lists and listings naming its commits.
     #[allow(clippy::too_many_arguments)]
-    pub fn new<M: Ord + Copy>(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, chosen: Option<E>, received: &[E], devices: Option<&Devices<E, M>>, carriers: &BTreeSet<E>, lists: &[ThingList<E, T>], listings: &[Listing<E, T>], awaited: Option<Awaited<E, T>>) -> Epochs<E, T> {
+    pub fn new<M: Ord + Copy>(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, chosen: Option<E>, received: &[E], devices: Option<&Devices<E, M>>, carriers: &BTreeSet<E>, lists: &[ThingList<E, T>], listings: &[Listing<E, T>]) -> Epochs<E, T> {
         let rotations: Vec<Rotation<E>> = rotations.into_iter().collect();
         let held: BTreeSet<E> = rotations.iter().map(|r| r.id).chain([root]).collect();
-        let supersedes: BTreeMap<E, BTreeSet<E>> = rotations.iter().map(|r| (r.id, r.supersedes.clone())).collect();
-        let chain = Chain::new(root, rotations, chosen, received, devices);
+                let chain = Chain::new(root, rotations, chosen, received, devices);
         let held: Vec<E> = held.into_iter().filter(|e| chain.holds(e)).collect();
         let open = held.iter().filter(|e| chain.open(e)).copied().collect();
-        let mut e = Epochs { chain, open, closers: BTreeMap::new(), revoked: BTreeSet::new(), named: BTreeSet::new(), awaited, deciders: BTreeMap::new() };
+        let mut e = Epochs { chain, open, closers: BTreeMap::new(), revoked: BTreeSet::new(), named: BTreeSet::new() };
         e.closers = held.iter().filter(|x| !e.open.contains(x)).map(|x| (*x, e.chain.closers(x).into_iter().collect())).collect();
         e.revoked = e.closers.iter().filter(|(_, cs)| !cs.is_disjoint(carriers)).map(|(x, _)| *x).collect();
-        // a rotation lists the commits at the epochs it supersedes; an epoch no counting rotation
-        // supersedes (a void one whose line was rejected below it) is named by listings alone,
-        // and any of its closers' lists stands for them
-        e.deciders = e.closers.iter().map(|(x, cs)| {
-            let direct: BTreeSet<E> = cs.iter().filter(|r| supersedes.get(r).is_some_and(|s| s.contains(x))).copied().collect();
-            (*x, if direct.is_empty() { cs.clone() } else { direct })
-        }).collect();
         e.named = lists.iter().filter(|l| e.chain.counts(&l.rotation)).flat_map(|l| l.commits.iter().map(|c| (*c, l.thing))).collect();
         // Least fixpoint: a listing at a closed epoch speaks only once it is itself named.
         loop {
@@ -142,7 +121,7 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
 
     /// Whether `c` counts whole: a held rotation counts by the chain alone; any other commit
     /// iff its epoch is open or closed unrevoked, or is held and a counting thing list or listing
-    /// on one of its things names it, or it waits (`waits`).
+    /// on one of its things names it.
     pub fn counts(&self, c: &AccountCommit<E, T>) -> bool {
         if self.chain.holds(&c.id) {
             return self.chain.counts(&c.id);
@@ -150,29 +129,12 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
         if !self.revoked.contains(&c.epoch) {
             return self.open.contains(&c.epoch) || self.closers.contains_key(&c.epoch);
         }
-        c.things.iter().any(|t| self.named.contains(&(c.id, *t))) || self.waits(c)
-    }
-
-    /// The closers of closed epoch `e` whose lists name its commits: those superseding it, or
-    /// every closer where none counts. Empty for an epoch not held or open.
-    pub fn deciders(&self, e: &E) -> BTreeSet<E> {
-        self.deciders.get(e).cloned().unwrap_or_default()
+        c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
     }
 
     /// Whether held epoch `e` is revoked: a counting rotation closing it carries a removal.
     pub fn revoked(&self, e: &E) -> bool {
         self.revoked.contains(e)
-    }
-
-    /// Whether `c` counts only by waiting: a role commit at a revoked epoch, named by no word, on
-    /// the awaited thing while one of the closers whose lists name its epoch's commits
-    /// (`deciders`) does not decide there yet: any list may name it, so one held that does not
-    /// says nothing. A lister still names it. Only role commits wait: D's roster, keys and seeds
-    /// are role-class, and a removed node's role commits on D are cut where its removal is taken
-    /// (`Chain::cut`), so a decider whose list never comes keeps none of its later word counting.
-    pub fn waits(&self, c: &AccountCommit<E, T>) -> bool {
-        let (Some(w), Some(deciders)) = (self.awaited.as_ref(), self.deciders.get(&c.epoch)) else { return false };
-        c.role && self.revoked.contains(&c.epoch) && !self.chain.holds(&c.id) && c.things.contains(&w.thing) && !deciders.is_subset(&w.listed) && !c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
     }
 
     /// What the epoch rule says of `c` (`EpochStanding`).

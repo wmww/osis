@@ -23,7 +23,7 @@ pub use cert::{verify, Certificates};
 #[doc(hidden)]
 pub use cert::chain_steps;
 pub use chain::{Chain, Devices, Rotation};
-pub use epochs::{AccountCommit, Awaited, Epochs, ListPath, Listing, EpochStanding, ThingList};
+pub use epochs::{AccountCommit, Epochs, ListPath, Listing, EpochStanding, ThingList};
 pub use content::{Addendum, AddendumEntry, Validity, Vouching};
 pub use graph::{Class, Edges, Records, Standing};
 pub use held::{HeldSet, MemoryHeldSet};

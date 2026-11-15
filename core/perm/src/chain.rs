@@ -66,37 +66,26 @@ pub struct Rotation<E> {
     pub takes: BTreeSet<E>,
 }
 
-/// What a node of the account reads of its devices list D (spec/permissions.md §5.4,
-/// Following, at a node of P). Who signed each commit is its inner signature, as the caller
-/// opened it.
+/// What a node of the account reads of its chain as D's roster (spec/permissions.md §5.4,
+/// Following, at a node of P): who minted each held rotation (its inner signature, as the caller
+/// opened it) and the membership changes each carries (its sealed devices field, opened with the
+/// seed of the epoch it is signed at). No removal or addition exists apart from its rotation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Devices<E, M> {
     /// Per held rotation, the key actor that minted it (one whose inner signature opens to no
     /// key actor is left out: it stands by none).
     pub minter: BTreeMap<E, M>,
-    /// Per held rotation, the nodes whose removal from D it carries (signed at the epoch it
-    /// rotates, by its minter).
+    /// Per held rotation, the devices it removes from D.
     pub removes: BTreeMap<E, BTreeSet<M>>,
-    /// Per rotation carrying removals, their frontiers: the removed nodes' commits on D its
-    /// maker held (spec/permissions.md §5.1, Frontier).
-    pub covers: BTreeMap<E, BTreeSet<E>>,
-    /// Per rotation carrying removals, those of its removal commits (held, named by its header)
-    /// that came to be held after it: it is placed no earlier than the last of them.
-    pub carried: BTreeMap<E, BTreeSet<E>>,
-    /// The account's role commits on D but its rotations: (key actor that signed it, `None`
-    /// when its inner signature opens to none: it counts by none; epoch signed at).
-    pub commits: BTreeMap<E, (Option<M>, E)>,
-    /// D's grants: (commit, among `commits`; node granted).
-    pub grants: BTreeSet<(E, M)>,
-    /// The grants in commits creating D: (commit, node). A removed node holding the first
-    /// epoch's key can make such a commit again, so one pairs its node only while every removal
-    /// taken lists it in its frontier (a remover lists the creating commits it holds).
-    pub first: BTreeSet<(E, M)>,
+    /// Per held rotation, the devices it adds to D (a pairing).
+    pub adds: BTreeMap<E, BTreeSet<M>>,
+    /// The devices the account's creation record names.
+    pub first: BTreeSet<M>,
 }
 
 impl<E, M> Default for Devices<E, M> {
     fn default() -> Self {
-        Devices { minter: BTreeMap::new(), removes: BTreeMap::new(), covers: BTreeMap::new(), carried: BTreeMap::new(), commits: BTreeMap::new(), grants: BTreeSet::new(), first: BTreeSet::new() }
+        Devices { minter: BTreeMap::new(), removes: BTreeMap::new(), adds: BTreeMap::new(), first: BTreeSet::new() }
     }
 }
 
@@ -122,8 +111,6 @@ pub struct Chain<E> {
     preferred: E,
     /// The disregarded tips in a rejection with a counting rotation.
     contested: BTreeSet<E>,
-    /// At a node of the account: D's commits that do not count (`Chain::cut`).
-    cut: BTreeSet<E>,
     /// At a node of the account: the revocations it takes, in the order taken.
     taken: Vec<E>,
 }
@@ -139,13 +126,6 @@ impl<E: Ord + Copy> Chain<E> {
         let rank = ranks(received);
         let rank_of = |r: &E| rank.get(r).copied().unwrap_or(usize::MAX);
         let mut pending: BTreeMap<E, Rotation<E>> = rotations.into_iter().filter(|r| r.id != root).map(|r| (r.id, r)).collect();
-        // at a node of the account a rotation is placed no earlier than its minter came to be
-        // known as a node (one never known: at its receipt, so it is disregarded and answered)
-        let known = devices.map(|d| d.known(&rank_of)).unwrap_or_default();
-        let minter_known = |id: &E| devices.and_then(|d| known.get(d.minter.get(id)?)).copied().unwrap_or(0);
-        // and no earlier than the removals it carries came to be held: what a rotation revokes
-        // is read when it arrives, never moved back to when the rotation did
-        let carried_held = |id: &E| devices.and_then(|d| d.carried.get(id)).and_then(|cs| cs.iter().map(&rank_of).max()).unwrap_or(0);
         let mut rots: BTreeMap<E, Rotation<E>> = BTreeMap::new();
         // when each came to be held with its chain: its own receipt or a parent's, the later
         let mut when: BTreeMap<E, usize> = BTreeMap::new();
@@ -158,13 +138,13 @@ impl<E: Ord + Copy> Chain<E> {
         let needs = |r: &Rotation<E>| -> Vec<E> { std::iter::once(r.at).chain(r.names.iter().copied()).chain(r.takes.iter().copied()).collect() };
         while let Some(id) = pending.values().find(|r| needs(r).iter().all(|n| held(&rots, n))).map(|r| r.id) {
             if let Some(r) = pending.remove(&id) {
-                let w = needs(&r).iter().filter_map(|p| when.get(p)).fold(rank_of(&id).max(minter_known(&id)).max(carried_held(&id)), |a, b| a.max(*b));
+                let w = needs(&r).iter().filter_map(|p| when.get(p)).fold(rank_of(&id), |a, b| a.max(*b));
                 when.insert(id, w);
                 depth.insert(id, 1 + needs(&r).iter().filter_map(|p| depth.get(p)).max().copied().unwrap_or(0));
                 rots.insert(id, r);
             }
         }
-        let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), cut: BTreeSet::new(), taken: Vec::new() };
+        let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), taken: Vec::new() };
         c.lines = c.rots.keys().map(|&r| (r, c.line_of(r))).collect();
         c.chosen = chosen.filter(|s| c.rots.contains_key(s));
         // the chosen rotation's line first and, at a node of the account, what it stands with
@@ -213,90 +193,97 @@ impl<E: Ord + Copy> Chain<E> {
         }
     }
 
-    /// At a node of the account, which reads who minted each rotation and whom each removes:
-    /// the revocations (rotations carrying a removal) it takes are a consistent set, built in
-    /// order: one is taken when no revocation taken, nor itself, hits a rotation on its line,
-    /// nor it one on a taken one's line, and every revocation it stands with (`with_of`) is
-    /// taken. It follows every rotation whose line none taken hits and whose revocations it
-    /// stands with are all taken: a device that took another revocation first stands with it in
-    /// every rotation it makes (`Rotation::takes`), so those are that side, never merged into
-    /// this one, whoever signed them. So its devices' rotations made at once all count, a
-    /// removed device's plain fork never outweighs the removal, and of two revocations hitting
-    /// each other the one held first holds. Then D's commits that do not count (`cut`).
+    /// At a node of the account, which reads who minted each rotation and whom each removes
+    /// and adds: the revocations (rotations carrying a removal) it takes are a consistent set,
+    /// built in order: one is taken when its line and every taken one's stand with it and every
+    /// revocation it stands with (`with_of`) is taken. It follows every rotation whose line stands
+    /// under the taken revocations and whose revocations it stands with are all taken: a device
+    /// that took another revocation first stands with it in every rotation it makes
+    /// (`Rotation::takes`), so those are that side, never merged into this one, whoever signed
+    /// them. So its devices' rotations made at once all count, a removed device's plain fork never
+    /// outweighs the removal, and of two revocations hitting each other the one held first holds.
     fn follow_as_node<M: Ord + Copy>(&mut self, order: &[E], d: &Devices<E, M>) {
-        // (node removed, rotation carrying the removal)
-        let removals = |r: &E| -> BTreeSet<(M, E)> { d.removes.get(r).into_iter().flatten().map(|m| (*m, *r)).collect() };
         let revocation = |q: &E| d.removes.get(q).is_some_and(|x| !x.is_empty());
         // the revocations r stands with: those on its line and those a rotation on it takes
         let with_of = |r: &E| -> BTreeSet<E> {
             self.lines.get(r).into_iter().flatten().flat_map(|q| std::iter::once(*q).filter(revocation).chain(self.rots.get(q).into_iter().flat_map(|x| x.takes.iter().copied()))).collect()
         };
         let mut taken: Vec<E> = Vec::new();
-        let mut removed: BTreeSet<(M, E)> = BTreeSet::new();
         for r in order.iter().filter(|r| revocation(r)) {
-            let mine = removals(r);
-            let with: BTreeSet<(M, E)> = removed.union(&mine).copied().collect();
-            let nodes_mine = self.nodes(&mine, d);
-            if self.stands(*r, &with, d, &self.nodes(&with, d)) && taken.iter().all(|q| self.stands(*q, &mine, d, &nodes_mine)) && with_of(r).iter().all(|q| q == r || taken.contains(q)) {
+            let mut with = taken.clone();
+            with.push(*r);
+            if self.stands(*r, &with, d) && taken.iter().all(|q| self.stands(*q, &with, d)) && with_of(r).iter().all(|q| q == r || taken.contains(q)) {
                 taken.push(*r);
-                removed = with;
             }
         }
-        let nodes = self.nodes(&removed, d);
         for &r in order {
-            if self.stands(r, &removed, d, &nodes) && with_of(&r).iter().all(|q| taken.contains(q)) {
+            if self.stands(r, &taken, d) && with_of(&r).iter().all(|q| taken.contains(q)) {
                 self.counting.insert(r);
             } else {
                 self.disregarded.insert(r);
             }
         }
-        self.cut = d.commits.iter().filter(|(c, (s, _))| !s.is_some_and(|s| nodes.contains(&s)) || self.hit(c, &removed, d, &nodes)).map(|(c, _)| *c).collect();
         self.taken = taken;
     }
 
-    /// Whether no removal of `removed` hits a rotation on `r`'s line, each minted by one of
-    /// `nodes`. A removal hits a rotation its node minted beside it: not on the line of the
-    /// rotation carrying it (made before it), unless the rotation is made after a re-add
-    /// (`readded`). A rotation whose minter is no node is hit by every removal and stands by
-    /// none.
-    fn stands<M: Ord + Copy>(&self, r: E, removed: &BTreeSet<(M, E)>, d: &Devices<E, M>, nodes: &BTreeSet<M>) -> bool {
-        self.lines.get(&r).into_iter().flatten().all(|p| {
-            let Some(m) = d.minter.get(p).filter(|m| nodes.contains(m)) else { return false };
-            removed.iter().filter(|(y, _)| y == m).all(|(_, rr)| *p != *rr && self.on_line(*p, *rr) || self.readded(*m, *rr, *p, removed, d, nodes))
-        })
+    /// Whether every rotation on `r`'s line is minted by a node of the line before it, and none
+    /// is hit by the removals of `rs` or those carried on the line. A rotation whose minter is
+    /// no node stands by none.
+    fn stands<M: Ord + Copy>(&self, r: E, rs: &[E], d: &Devices<E, M>) -> bool {
+        let Some(line) = self.lines.get(&r) else { return false };
+        let mut all: Vec<E> = rs.to_vec();
+        all.extend(line.iter().copied().filter(|q| d.removes.get(q).is_some_and(|x| !x.is_empty()) && !rs.contains(q)));
+        line.iter().all(|q| d.minter.get(q).is_some_and(|m| self.nodes_before(*q, &all, d).contains(m)) && !self.hit(*q, &all, d))
     }
 
-    /// Whether epoch `e` is or descends from the epoch of a grant of D to `y` by another of
-    /// `nodes` that no removal hits, signed at an epoch descending from (and not) the one the
-    /// removal carried by `rr` is signed at: made after a re-add. (A rotation of `y`'s never
-    /// mints that epoch: its seed goes to `y` only with the grant.)
-    fn readded<M: Ord + Copy>(&self, y: M, rr: E, e: E, removed: &BTreeSet<(M, E)>, d: &Devices<E, M>, nodes: &BTreeSet<M>) -> bool {
-        let Some(at) = self.rots.get(&rr).map(|x| x.at) else { return false };
-        d.grants.iter().filter(|(_, n)| *n == y).filter_map(|(g, _)| Some((g, d.commits.get(g)?))).any(|(g, (s, ge))| {
-            s.is_some_and(|s| s != y && nodes.contains(&s)) && *ge != at && self.on_line(at, *ge) && self.on_line(*ge, e) && !self.hit(g, removed, d, nodes)
-        })
+    /// Whether a removal of `rs` hits rotation `q`: it removes `q`'s minter and `q` is not on its
+    /// line before it (made before the removal), and `q` descends from no re-add of that node
+    /// after the removal by a rotation not hit (`readded`).
+    fn hit<M: Ord + Copy>(&self, q: E, rs: &[E], d: &Devices<E, M>) -> bool {
+        let Some(y) = d.minter.get(&q) else { return false };
+        let Some(lq) = self.lines.get(&q) else { return false };
+        rs.iter().any(|r| *r != q && d.removes.get(r).is_some_and(|x| x.contains(y)) && !self.before(q, *r) && !self.readded(*y, *r, lq, rs, d))
     }
 
-    /// Whether a removal of `removed` hits D's commit `c` by the node removed: its frontier does
-    /// not cover it (made beside or after the removal, or not held by its maker) and it is not
-    /// made after a re-add of its signer (`readded`).
-    fn hit<M: Ord + Copy>(&self, c: &E, removed: &BTreeSet<(M, E)>, d: &Devices<E, M>, nodes: &BTreeSet<M>) -> bool {
-        let Some((Some(s), e)) = d.commits.get(c) else { return false };
-        removed.iter().filter(|(y, _)| y == s).any(|(_, rr)| !d.covers.get(rr).is_some_and(|f| f.contains(c)) && !self.readded(*s, *rr, *e, removed, d, nodes))
+    /// Whether a rotation on line `l` adds `y` back after the removal carried by `r` (it
+    /// descends from `r`), minted by another node and not hit.
+    fn readded<M: Ord + Copy>(&self, y: M, r: E, l: &BTreeSet<E>, rs: &[E], d: &Devices<E, M>) -> bool {
+        l.iter().any(|a| d.adds.get(a).is_some_and(|x| x.contains(&y)) && self.before(r, *a) && d.minter.get(a) != Some(&y) && !self.hit(*a, rs, d))
     }
 
-    /// The nodes under `removed`: those a commit creating D every removal's frontier lists
-    /// grants, and every node a grant of D by another node grants that no removal hits (a least
-    /// fixpoint, so grants cannot vouch for each other).
-    fn nodes<M: Ord + Copy>(&self, removed: &BTreeSet<(M, E)>, d: &Devices<E, M>) -> BTreeSet<M> {
-        let mut nodes: BTreeSet<M> = d.first.iter().filter(|(c, _)| removed.iter().all(|(_, rr)| d.covers.get(rr).is_some_and(|f| f.contains(c)))).map(|(_, m)| *m).collect();
-        loop {
-            let more: Vec<M> = d.grants.iter().filter(|(g, n)| !nodes.contains(n) && d.commits.get(g).is_some_and(|(s, _)| s.is_some_and(|s| s != *n && nodes.contains(&s))) && !self.hit(g, removed, d, &nodes)).map(|(_, n)| *n).collect();
-            if more.is_empty() {
-                return nodes;
+    /// Whether held rotation `x` is on `r`'s line before it (`r` descends from `x`).
+    fn before(&self, x: E, r: E) -> bool {
+        x != r && self.on_line(x, r)
+    }
+
+    /// The nodes of the epoch `q` is signed at (its line before it): `nodes_on` that line.
+    fn nodes_before<M: Ord + Copy>(&self, q: E, rs: &[E], d: &Devices<E, M>) -> BTreeSet<M> {
+        let base: BTreeSet<E> = self.lines.get(&q).into_iter().flatten().copied().filter(|x| *x != q).collect();
+        self.nodes_on(&base, rs, d)
+    }
+
+    /// The nodes on line `l`: the creation devices and those added on it by a rotation not hit,
+    /// less every one a rotation on it removes without a re-add after.
+    fn nodes_on<M: Ord + Copy>(&self, l: &BTreeSet<E>, rs: &[E], d: &Devices<E, M>) -> BTreeSet<M> {
+        let added = l.iter().filter(|a| !self.hit(**a, rs, d)).flat_map(|a| d.adds.get(a).into_iter().flatten().filter(move |y| d.minter.get(a) != Some(*y)));
+        let candidates: BTreeSet<M> = d.first.iter().copied().chain(added.copied()).collect();
+        candidates.into_iter().filter(|y| l.iter().filter(|r| d.removes.get(r).is_some_and(|x| x.contains(y))).all(|r| self.readded(*y, *r, l, rs, d))).collect()
+    }
+
+    /// At a node of the account, D's roster at epoch `e` (a held rotation, or the root): the
+    /// nodes of its line under the taken revocations, a removal taken off the line holding
+    /// unless the line adds its node back after it.
+    pub fn roster<M: Ord + Copy>(&self, e: &E, d: &Devices<E, M>) -> BTreeSet<M> {
+        let line: BTreeSet<E> = self.lines.get(e).cloned().unwrap_or_default();
+        let mut nodes = self.nodes_on(&line, &self.taken, d);
+        for r in self.taken.iter().filter(|r| !line.contains(*r)) {
+            for y in d.removes.get(r).into_iter().flatten() {
+                if !self.readded(*y, *r, &line, &self.taken, d) {
+                    nodes.remove(y);
+                }
             }
-            nodes.extend(more);
         }
+        nodes
     }
 
     /// Of `candidates`, the one whose line holds the earliest-placed rotation (by `pos`; ties by
@@ -458,50 +445,9 @@ impl<E: Ord + Copy> Chain<E> {
         self.preferred
     }
 
-    /// At a node of the account: whether D's commit `c` (one of `Devices::commits`) does not
-    /// count. Its signer is no node, or a removal taken hits it (made beside or after its
-    /// signer's removal, or one its remover did not hold).
-    pub fn cut(&self, c: &E) -> bool {
-        self.cut.contains(c)
-    }
-
-    /// `cut`, all of them.
-    pub fn cuts(&self) -> &BTreeSet<E> {
-        &self.cut
-    }
-
     /// At a node of the account, the revocations it takes, in the order taken; a rotation it
     /// makes takes those not on its line (`Rotation::takes`).
     pub fn taken(&self) -> &[E] {
         &self.taken
-    }
-}
-
-impl<E: Ord + Copy, M: Ord + Copy> Devices<E, M> {
-    /// When each key actor came to be known as a node, as a place in the receipt order: the
-    /// holder of a grant in a commit creating D once it is held; the holder of a grant by another node known, once both the grant and its
-    /// signer are. Removals are not read: they decide what stands, not what is held.
-    fn known(&self, rank_of: &impl Fn(&E) -> usize) -> BTreeMap<M, usize> {
-        let mut known: BTreeMap<M, usize> = BTreeMap::new();
-        for (c, m) in &self.first {
-            let t = rank_of(c);
-            if known.get(m).is_none_or(|k| t < *k) {
-                known.insert(*m, t);
-            }
-        }
-        loop {
-            let mut changed = false;
-            for (g, n) in &self.grants {
-                let Some((Some(s), _)) = self.commits.get(g).filter(|(s, _)| *s != Some(*n)) else { continue };
-                let Some(t) = known.get(s).map(|k| (*k).max(rank_of(g))) else { continue };
-                if known.get(n).is_none_or(|k| t < *k) {
-                    known.insert(*n, t);
-                    changed = true;
-                }
-            }
-            if !changed {
-                return known;
-            }
-        }
     }
 }

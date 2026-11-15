@@ -121,6 +121,40 @@ pub fn open_seeds(kem: &KemSecret, account: &Tid, epoch: &VerifyingKey, sealed: 
     (AccountEpochKeys::from_seed(seeds.first()?).signing.verifying_key() == *epoch).then_some(seeds)
 }
 
+/// A rotation's membership changes (spec/crypto.md §9, Roster): the devices it adds, then those
+/// it removes, sealed under `kdf("devices", inner secret, new epoch's signing key)` of the epoch
+/// it is signed at, zero nonce (one plaintext per key: the new key is fresh).
+pub fn seal_devices(inner: &Secret32, new_epoch: &VerifyingKey, adds: &[Tid], removes: &[Tid]) -> Vec<u8> {
+    let k = kdf(kdf::DEVICES, inner.expose(), &new_epoch.to_bytes());
+    let mut plain = Vec::with_capacity(2 + (adds.len() + removes.len()) * osis_base::format::TID_LEN);
+    plain.extend_from_slice(&u16::try_from(adds.len()).unwrap_or(u16::MAX).to_le_bytes());
+    for t in adds.iter().chain(removes) {
+        plain.extend_from_slice(t.as_bytes());
+    }
+    crate::aead::seal(k.expose(), &[0; crate::aead::NONCE_LEN], &[], &plain).unwrap_or_default()
+}
+
+/// Opens a rotation's sealed membership changes with the inner secret of the epoch it is signed
+/// at: (adds, removes). `None` when the secret is not that epoch's or the bytes are malformed.
+pub fn open_devices(inner: &Secret32, new_epoch: &VerifyingKey, sealed: &[u8]) -> Option<(Vec<Tid>, Vec<Tid>)> {
+    let k = kdf(kdf::DEVICES, inner.expose(), &new_epoch.to_bytes());
+    let plain = crate::aead::open(k.expose(), &[0; crate::aead::NONCE_LEN], &[], sealed).ok()?;
+    let (n, rest) = plain.split_at_checked(2)?;
+    let n = usize::from(u16::from_le_bytes(n.try_into().ok()?));
+    let (tids, extra) = rest.as_chunks::<{ osis_base::format::TID_LEN }>();
+    if !extra.is_empty() || n > tids.len() {
+        return None;
+    }
+    let tids: Vec<Tid> = tids.iter().map(|t| Tid::from_bytes(*t)).collect();
+    Some((tids[..n].to_vec(), tids[n..].to_vec()))
+}
+
+/// An account's creation nonce (spec/crypto.md §3): `kdf("first device", first seed, creation
+/// device's tid)`, so its tid fixes the device that created it, read only with the first seed.
+pub fn first_device_nonce(first_seed: &Secret32, device: &Tid) -> [u8; 32] {
+    *kdf(kdf::FIRST_DEVICE, first_seed.expose(), device.as_bytes()).expose()
+}
+
 /// A key actor's role secret `kdf("role <role>", seed)`, never rotated.
 pub fn key_actor_role_secret(seed: &Secret32, role: Role) -> Secret32 {
     kdf(kdf::role_purpose(role), seed.expose(), b"")

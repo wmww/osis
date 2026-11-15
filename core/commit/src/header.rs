@@ -394,9 +394,12 @@ pub struct RotationHeader {
     /// The rotations carrying removals from D its maker took that are not on its line
     /// (spec/permissions.md §5.4): ascending, distinct.
     pub takes: Vec<CommitId>,
-    /// The removals from D it carries (spec/permissions.md §5.4): its minter's removal edge writes
-    /// on D signed at the epoch it rotates; ascending, distinct.
-    pub removals: Vec<CommitId>,
+    /// Whether it removes a device from D (spec/permissions.md §5.5 Revoked): what readers
+    /// outside the account read of its membership changes.
+    pub revokes: bool,
+    /// Its membership changes of D, sealed (`osis_crypto::seal_devices`) under the epoch it is
+    /// signed at; empty when it carries none (spec/crypto.md §9, Roster).
+    pub devices: Vec<u8>,
     pub list_root: [u8; 32],
     /// The new epoch's seed boxed to each device on its maker's roster (spec/crypto.md §9,
     /// Custody): ascending by tag, distinct.
@@ -423,24 +426,27 @@ impl RotationHeader {
             put_array(out, v.len());
             v.iter().for_each(|c| put_bytes(out, &c.0));
         };
-        put_array(out, 8);
+        put_array(out, 9);
         put_signing_key(out, &self.signing_key);
         encode_into(&self.kem_key.to_value(), out);
         ids(out, &self.supersedes);
         ids(out, &self.names);
         ids(out, &self.takes);
-        ids(out, &self.removals);
+        osis_base::cbor::put_bool(out, self.revokes);
+        put_bytes(out, &self.devices);
         put_bytes(out, &self.list_root);
         put_seed_boxes(out, &self.seeds);
     }
 
     fn read(v: Item) -> Result<RotationHeader, Error> {
-        let Some([sk, kem, sup, names, takes, removals, root, seeds]) = item::list(v)?.tuple() else { return Err(Error::Malformed("rotation arity")) };
+        let Some([sk, kem, sup, names, takes, revokes, devices, root, seeds]) = item::list(v)?.tuple() else { return Err(Error::Malformed("rotation arity")) };
         let signing_key = read_signing_key(sk)?;
         let kem_key = KemPublicKey::from_value(&kem.to_value()?).map_err(|_| Error::Malformed("rotation kem key"))?;
         let ids = |v: Item| -> Result<Vec<CommitId>, Error> { item::list(v)?.iter().map(|c| item::bytes(c).map(CommitId)).collect() };
         let seeds = read_seed_boxes(seeds)?;
-        Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, takes: ids(takes)?, removals: ids(removals)?, list_root: item::bytes(root)?, seeds })
+        let Ok(Value::Bool(revokes)) = revokes.to_value() else { return Err(Error::Malformed("rotation revokes")) };
+        let devices: Vec<u8> = devices.as_bytes().ok_or(Error::Malformed("rotation devices"))?.to_vec();
+        Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, takes: ids(takes)?, revokes, devices, list_root: item::bytes(root)?, seeds })
     }
 }
 

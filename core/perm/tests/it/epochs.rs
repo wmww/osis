@@ -95,7 +95,7 @@ fn judge_as(rots: &[Rotation<u32>], received: &[u32], commits: &[AccountCommit<u
 }
 
 fn judge_carrying(rots: &[Rotation<u32>], carriers: &BTreeSet<u32>, received: &[u32], commits: &[AccountCommit<u32, u32>], (l, g, a): Parts) -> Judged<u32> {
-    Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, received, None, carriers, l, g, None), commits.to_vec(), a.to_vec())
+    Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, received, None, carriers, l, g), commits.to_vec(), a.to_vec())
 }
 
 /// The rotator received X's write (100) and lists it; X's later write at the old epoch (101)
@@ -107,42 +107,6 @@ fn rotator_received_write_counts_later_write_does_not() {
     assert!(e.counts(&100) && !e.counts(&101));
     let before = judge(&[], &commits, (&[], &[], &[]));
     assert!(before.counts(&100) && before.counts(&101), "without the rotation the epoch is open");
-}
-
-// spec/permissions.md §5.5 (Waiting): at a node of P, P's role commits on D at a closed epoch
-// count while no closer's thing list for D is held there; once one is, the lists judge them.
-// Another thing's commits, and plain content on D, are unlisted at once.
-#[test]
-fn a_node_of_the_account_waits_for_the_devices_list() {
-    let mut other = c(102, 0);
-    other.things = set(&[1]);
-    let mut plain = c(103, 0);
-    plain.role = false;
-    let commits = [c(100, 0), c(101, 0), other, plain];
-    let rots = [rot(1, 0, &[0], &[])];
-    let received = [1];
-    let at = |l: &[ThingList<u32, u32>], listed: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, &set(&[1]), l, &[], Some(osis_perm::Awaited { thing: 0, listed: set(listed) })), commits.to_vec(), Vec::new());
-    let waiting = at(&[], &[]);
-    assert!(waiting.counts(&100) && waiting.counts(&101), "no list of D held: waiting");
-    assert!(!waiting.counts(&102), "another thing's commits are unlisted");
-    assert!(!waiting.counts(&103), "plain content on D is unlisted");
-    let listed = at(&[list(1, &[100])], &[1]);
-    assert!(listed.counts(&100) && !listed.counts(&101), "the list held judges");
-    let outsider = judge(&rots, &commits, (&[], &[], &[]));
-    assert!(!outsider.counts(&100), "anyone else waits for nothing");
-}
-
-// spec/permissions.md §5.5 (Waiting): a list of D decides only the epochs its rotation
-// supersedes. Rotations 1 (closing 0) and 2 (closing 1): holding 2's list, the commit at 0 still
-// waits; holding 1's, it is judged (unnamed here).
-#[test]
-fn only_a_list_of_a_rotation_superseding_the_epoch_ends_waiting() {
-    let commits = [c(100, 0)];
-    let rots = [rot(1, 0, &[0], &[]), rot(2, 1, &[1], &[])];
-    let received = [1, 2];
-    let at = |listed: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, &set(&[1, 2]), &[], &[], Some(osis_perm::Awaited { thing: 0, listed: set(listed) })), commits.to_vec(), Vec::new());
-    assert!(at(&[2]).counts(&100), "the later list names nothing at epoch 0: waiting");
-    assert!(!at(&[1]).counts(&100), "the superseding rotation's list judges");
 }
 
 /// A witness received X's write (100) in time and the rotator did not: its addendum against
@@ -364,31 +328,27 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
     let received: Vec<u32> = std::iter::once(CREATED).chain(received.into_iter().map(|i| pid(w, i))).collect();
     // a node of P reads who minted each rotation and whom it removes
     let devices = (o < w.np).then(|| {
-        // P's nodes paired by the commit creating D, held first and on every removal's frontier
-        let mut d = Devices { first: (0..w.np).map(|m| (CREATED, m)).collect(), ..Devices::default() };
+        // P's nodes are its creation devices; a re-add is carried by the rotation the model reads
+        // it at, minted by node 0
+        let mut d = Devices { first: (0..w.np).collect(), ..Devices::default() };
         for (i, it) in w.items.iter().enumerate().filter(|(i, _)| held[*i]) {
             if let Kind::Rotation { new, removes, .. } = &it.kind {
                 d.minter.insert(*new, it.author);
                 if let Some(Kind::Removal { node }) = removes.map(|rc| &w.items[rc as usize - 1].kind) {
                     d.removes.insert(*new, [*node].into());
-                    d.covers.insert(*new, [CREATED].into());
                 }
                 let _ = i;
             }
         }
-        // D's grant putting a re-added node back, at the epoch the model reads it at
         let rooted = w.rooted(held);
         for y in 0..w.np {
             if let Some(Kind::Rotation { new, .. }) = w.grant_of(&rooted, y).map(|g| &w.items[g].kind) {
-                // by node 0, a commit of its own
-                let g = u32::MAX - y as u32;
-                d.commits.insert(g, (Some(0), *new));
-                d.grants.insert((g, y));
+                d.adds.entry(*new).or_default().insert(y);
             }
         }
         d
     });
-    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &received, devices.as_ref(), &carriers, &lists, &listings, None), commits, addenda)
+    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &received, devices.as_ref(), &carriers, &lists, &listings), commits, addenda)
 }
 
 /// The first difference between the model's verdict `v` (`judge_at`) and perm at observer `o`
@@ -437,7 +397,11 @@ fn epochs_run(samples: u64, seed: u64) {
         let mut times: Vec<u32> = w.items.iter().flat_map(|i| i.recv.iter().copied()).filter(|&t| t < roles_model::shrink::LATE).collect();
         times.sort_unstable();
         times.dedup();
-        for o in 0..w.nodes {
+        // a re-add in the model is a grant at its granter's newest epoch, the removal's own
+        // included: no rotation of the chain-as-roster rule carries that, so P's nodes judge a
+        // re-added node's word otherwise (the roster rule is roles-model `custody`'s)
+        let readds = w.readded.iter().any(|t| *t < roles_model::shrink::LATE);
+        for o in (0..w.nodes).filter(|o| !readds || *o >= w.np) {
             let mut last: Option<Vec<bool>> = None;
             for &t in &times {
                 let held = w.held_at(o, t);
