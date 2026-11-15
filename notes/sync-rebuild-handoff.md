@@ -22,7 +22,6 @@ The rewrite (issues/sync-rewrite.md) is on the local branch `sync-rebuild`, neve
     - depth0 option B (Fathom, branch depth0, in review): a keyset counts as held only once its listed demotions' edge writes are held; whoever logs a keyset logs its demotions too (in the engine via author_chain, Carried and chain certificates). The facade's deliveries and the read module's logging keep that: keys.0 carries keysets plus demotion lists. Possession (key, domain, proofs, index) is deleted.
 
 ## Queue
-- After sync-transport and sync-foundation land in sync-rebuild: rename LabelId -> SyncId (osis-base and every user), crypto domains to the spec ("osis v1 stamp", "osis v1 sync open", "osis v1 sync step", "osis v1 sync id", kdf "sync key"...), vectors regenerated.
 - SETTLE_MS: undefined in code (engine's), named in node policy.
 - Restore engine-level scale::/growth::/memory:: tests the deletion dropped (from 680a85188 core/node/tests/it) into core/engine/tests/it; notes/test-scale.md "Checks to restore".
 - tools/bin-at defaults to -p osis-node (gone).
@@ -35,4 +34,4 @@ The rewrite (issues/sync-rewrite.md) is on the local branch `sync-rebuild`, neve
 - Client status 'connected' count tells a client actor roughly how many devices are online: consider a boolean for client actors (low).
 - AFTER rb-merge-main: engine link-join worker: (1) certificate copies of the author chain under K's sync ID via author_chain/chain certificates (no link-specific path); test: redeemer joins from link alone, reads K's roster+content as a member would; (2) Awaits via existing pending mechanism (sig-once verdict kept), per-sender bound (arbitrary-values), re-examined when awaited arrives; test role commits first, creation after; keep ou/ openings through the same ingest. Send commits to Fathom.
 - CRITICAL issue sync-certificate-bodies (on sync-facts): sync_bodies has no certificate blobs, so read judges certificates outside the required set, drops them and deletes them at unread peers. Data loss. Fix with the link-join engine worker (chain certificates under S). sync-facts (2d508c6db, wt5) needs review + rebase after rb-merge-main.
-- AFTER sync-certs merges (few agents running): wire/term rename: crypto domain strings and kdf purposes to spec (osis v1 sync id, sync key, ...), osis-label crate rename (osis-sync-ids? decide), engine labeling module, LabelRole, LinkSpec hosts field removal, bundle fields; deprecated-terms rows. Big rename: run alone. Also issues likely obsolete (destroyed-record-relearned, gate-five-minutes, tests-4x, derived-state-recomputed, held-model-setting-reads, p2p-own): triage.
+- Issues likely obsolete (destroyed-record-relearned, gate-five-minutes, tests-4x, derived-state-recomputed, held-model-setting-reads, p2p-own): triage.

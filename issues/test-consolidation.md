@@ -34,7 +34,7 @@ Format: `file:line test | action | why safe | confidence`.
 - `rng.rs deterministic` | delete | only rand_chacha's seeding | medium
 
 **others**
-- sync ID `auth.rs stamp_binds_wrap` | delete or one flip | Ed25519/BLAKE3 behaviour; `entry_signatures` and bundle `rejections` cover the binding | medium
+- blob `auth.rs stamp_binds_wrap` | delete or one flip | Ed25519/BLAKE3 behaviour; `entry_signatures` and bundle `rejections` cover the binding | medium
 - keys `epoch.rs ordering_keys_match_folds` | delete or shrink | refactor scaffolding comparing against replaced folds; the rule is in `current_and_newest` | medium
 - osis `api.rs:1833` | drop its runtime field-read asserts | keep the compile-time guards | medium
 
@@ -85,7 +85,7 @@ Format: `file:line test | action | why safe | confidence`.
 - transport `p2p.rs peer_*_connects` | one table | medium
 - transport `quic.rs` + `mem.rs`/`manage.rs` | one shared conformance suite, like store's `memory_backend_suite` | medium
 - sim `peers.rs world_*` (4 tests) | one World wiring test | low-medium
-- sync ID `step.rs claim_key_per_step` | one seed | low
+- blob `step.rs claim_key_per_step` | one seed | low
 
 ### Category 3: cross-crate duplication
 - keys `props.rs departures_and_current_holders` | maybe delete | a keys-level copy of engine `rotation::tests_property`; its unique part is the `snapshot_keyed` / `unvouched` check | low

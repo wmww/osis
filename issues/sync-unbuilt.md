@@ -54,7 +54,6 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - A loss by an `until` alone (`Leaving::timed`, spec/permissions.md §2: dropped once its sync IDs are heard out, or `LOST_HEARD_WAIT_MS` after): the driver's lost-access step (`role_duties`) leaves these, and nothing reads `lost_leaving` for them, so such an actor's secrets are never dropped. Plan: a `Life` key over `lost_leaving().timed` read with the memo clock up to each wait's end and status's heard-out values; the duty drops those heard out or past the wait (`forget_lost(LostScope::Only)`); a reload restarts the modules as any does.
 
 ## Wire differs from spec
-- Kdf strings in osis-crypto keep the old words where spec/wire.md §8 names new ones (`"osis v1 sync id"` for `"osis v1 sync id"`, kdf `"sync key"` and the other `LABEL_*` for `"sync key"`, `"sync claim"`, ...): a node built from the spec cannot open, verify or derive with this one. Rename with their vectors (issues/deprecated-terms.md, sync ID).
 - osis-blob's link carries a `hosts` list between K's sync ID and the peers that spec/wire.md §10 `Link` does not have.
 
 ## Own issues

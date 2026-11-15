@@ -14,10 +14,10 @@ Tess's direction, which governs every choice below:
 - **Pace:** all five phases in roughly 24 hours of wall time unless something goes wrong. Phases 0-2 are hours, not days.
 
 ## Words (check every new line against issues/deprecated-terms.md)
-- No **sync ID**, `LabelId`, `sync.0`: the word is **sync ID** everywhere at once (spec, code, tests). Rename `sync.0` in the new design (say `sync.0`) and its record shapes; decide the names in Phase 1 and list them in the deprecated-terms registry's "Removing takes" column as done.
+- No **label**, `LabelId`, `label.0`: the word is **sync ID** everywhere (spec, code, tests); the aspect is `sync.0`.
 - No **host**, **box**, **serving node**, **keeper**, **storage node**, **blind node**, or any kind of node named by what it can read. Whether a node reads data is a property of the pair (node, sync ID), never of the node. Write "a node that reads S" / "a node that keeps S unread".
 - No **placed**/**placement** in the sync sense, no **upload**: use the registry's words (a node **logs** an entry in its own store; an entry is **held at** a peer; a peer **pulls**). "Placement" stays only for positions in a sequence (crdt).
-- No **saved peer**, **sync ID hosts**, **admission**, **keep list**; no **person** for the account actor; no **device** for a node.
+- No **saved peer**, **label hosts**, **admission**, **keep list**; no **person** for the account actor; no **device** for a node.
 - Not "two kinds of node". The design has one kind of node and, per sync ID, two ways a node holds it: **read** (it holds the read secret: full engine judgement) and **kept unread** (it holds only the sync secret: it keeps ciphertext, relays it, verifies signatures and its own grant and removal, and judges nothing else).
 
 ## Building it (Tess)

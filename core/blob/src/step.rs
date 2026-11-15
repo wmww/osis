@@ -1,4 +1,4 @@
-//! Sync IDs: role keys, registration steps, step IDs and paths, claim sets with claim keys and
+//! Steps: role keys, registration steps, step IDs and paths, claim sets with claim keys and
 //! static entries, entry boxes (spec/sync-ids.md §2, §3, spec/wire.md §8, §7).
 
 use crate::cbor::{get_bytes, get_key};

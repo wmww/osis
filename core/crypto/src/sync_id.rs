@@ -1,4 +1,4 @@
-//! Role keys, sync ID, claim keys, static entries and the open signature (spec/sync-ids.md §2, §3, spec/sync-opens.md §4,
+//! Role keys, the sync ID, claim keys, static entries and the open signature (spec/sync-ids.md §2, §3, spec/sync-opens.md §4,
 //! spec/wire.md §8, §11.2).
 
 use crate::kdf::{self, SYNC_ID, STATIC_CLAIM, kdf};
