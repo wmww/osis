@@ -154,7 +154,7 @@ impl Leave {
             self.set.want(s);
         }
         for s in self.set.due() {
-            let Some((_, now)) = self.set.try_settle(&s, || g.sync_held(&s))? else { continue };
+            let Some((was, now)) = self.set.try_settle(&s, || g.sync_held(&s))? else { continue };
             match now {
                 Some(h) => {
                     // synced again before it stopped: kept as it was
@@ -167,7 +167,11 @@ impl Leave {
                 }
                 None => {
                     self.set.unwant(&s);
-                    self.out.want(s);
+                    // only what was in the sync set left it: the feed also lists one that
+                    // entered and left between two settles
+                    if was.is_some() {
+                        self.out.want(s);
+                    }
                 }
             }
         }

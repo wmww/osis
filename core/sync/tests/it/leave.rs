@@ -52,9 +52,13 @@ struct Fake {
 }
 
 impl Ground for Fake {
-    /// Every sync ID of the closure's things: a superset of what entered.
+    /// Every sync ID of the closure's things and every one this node's keys hold, at each read:
+    /// a superset of what entered (one out of the sync set too, as a feed lists one that entered
+    /// and left between two reads).
     fn held_added(&mut self, _: &mut Option<Feed<SyncId>>) -> Result<Vec<SyncId>> {
-        Ok(self.closure.get(&()).map(|c| c.iter().map(|t| sid(t.as_bytes()[0])).collect()).unwrap_or_default())
+        let mut ids: BTreeSet<SyncId> = self.closure.get(&()).map(|c| c.iter().map(|t| sid(t.as_bytes()[0])).collect()).unwrap_or_default();
+        ids.extend(self.holders.iter().map(|(s, _)| *s));
+        Ok(ids.into_iter().collect())
     }
     fn sync_held(&mut self, s: &SyncId) -> Result<Option<Held>> {
         let t = tid(s.0[0]);
@@ -557,9 +561,10 @@ fn owned_in(e: &mut osis_engine::Engine, p: Tid, s: Tid) -> (Tid, SyncId) {
 }
 
 // spec/sync-set.md §2 (the sync set follows every `group.0` change), §5: a thing leaves the
-// followed sync set by a change to what places it, never itself a candidate (a group above it
-// unlisted, sourced away), comes back when that is undone, and a follower started before a
-// reload is told what enters after it.
+// sync set by a change to what places it, never itself a candidate (a group above it unlisted,
+// sourced away), and comes back when that is undone: its sync ID's entry moves for a follower
+// reading it (`sync_held`) and the feed lists it each time it enters; a follower started again
+// after a reload (the driver restarts the modules) is given the whole set, then what enters.
 #[test]
 fn a_thing_leaves_and_returns_with_what_places_it_spec_sync_set_2() {
     let (mut e, mut f, p, g) = synced_of(0);
@@ -567,28 +572,36 @@ fn a_thing_leaves_and_returns_with_what_places_it_spec_sync_set_2() {
     let s = e.new_thing(&mut m, p);
     list_sub(&mut m, g, s, true);
     e.commit(m).unwrap();
-    let (_, x) = owned_in(&mut e, p, s);
-    e.sync_held_added(&mut f).unwrap();
-    assert!(e.sync_held(&x).unwrap().is_some(), "listed under the synced group");
+    let (xt, x) = owned_in(&mut e, p, s);
+    // as `Leave` follows it: the feed read first (it brings the rows up to date), then each
+    // sync ID followed whose entry moved
+    let mut held: osis_base::memo::Effects<SyncId, Option<Held>> = osis_base::memo::Effects::new("test: held");
+    let mut step = |e: &mut osis_engine::Engine| -> (Vec<SyncId>, Vec<Option<Held>>) {
+        let added = e.sync_held_added(&mut f).unwrap();
+        if added.contains(&x) {
+            held.want(x);
+        }
+        (added, held.due().into_iter().filter_map(|k| held.try_settle(&k, || e.sync_held(&k)).unwrap().map(|(_, now)| now)).collect())
+    };
+    let r = Some((xt, Holding::Read));
+    let (added, now) = step(&mut e);
+    assert!(added.contains(&x) && now == vec![r], "listed under the synced group");
     let mut m = osis_engine::Mutation::new();
     list_sub(&mut m, g, s, false);
     e.commit(m).unwrap();
-    e.sync_held_added(&mut f).unwrap();
-    assert!(!e.sync_held(&x).unwrap().is_some(), "the group above it unlisted");
+    assert_eq!(step(&mut e), (vec![], vec![None]), "the group above it unlisted");
     let mut m = osis_engine::Mutation::new();
     list_sub(&mut m, g, s, true);
     e.commit(m).unwrap();
-    e.sync_held_added(&mut f).unwrap();
-    assert!(e.sync_held(&x).unwrap().is_some(), "listed again");
+    assert_eq!(step(&mut e), (vec![x], vec![r]), "listed again");
     e.set_sourced([s].into(), &BTreeSet::new());
-    e.sync_held_added(&mut f).unwrap();
-    assert!(!e.sync_held(&x).unwrap().is_some(), "the group above it sourced away");
+    assert_eq!(step(&mut e), (vec![], vec![None]), "the group above it sourced away");
     e.set_sourced(BTreeSet::new(), &BTreeSet::new());
-    e.sync_held_added(&mut f).unwrap();
-    assert!(e.sync_held(&x).unwrap().is_some(), "home again");
+    assert_eq!(step(&mut e), (vec![x], vec![r]), "home again");
+    assert_eq!(step(&mut e), (vec![], vec![]), "nothing moved");
     e.reload().unwrap();
-    e.sync_held_added(&mut f).unwrap();
+    let mut f = None;
+    assert!(e.sync_held_added(&mut f).unwrap().contains(&x), "the whole set, started again");
     let (_, y) = owned_in(&mut e, p, s);
-    e.sync_held_added(&mut f).unwrap();
-    assert!(e.sync_held(&x).unwrap().is_some() && e.sync_held(&y).unwrap().is_some(), "entered after a reload");
+    assert_eq!(e.sync_held_added(&mut f).unwrap(), vec![y], "entered after a reload");
 }

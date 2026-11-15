@@ -184,7 +184,8 @@ impl Engine {
     }
 
     /// The sync IDs that entered the sync set since `f`'s last read (its first: every one), each
-    /// read by `sync_held`, which moves when it leaves or its entry changes.
+    /// read by `sync_held`, which moves when it leaves or its entry changes. A reload replaces
+    /// the rows both read: a follower starts again (`f` at `None`).
     pub fn sync_held_added(&mut self, f: &mut Option<Feed<SyncId>>) -> Result<Vec<SyncId>> {
         self.follow_rows()?;
         let ids = &self.core.sync_rows.ids;
