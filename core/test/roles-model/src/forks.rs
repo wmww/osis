@@ -21,7 +21,8 @@
 //! revocation not taken is that other side, whoever signed it: never followed, nor taken if it is
 //! a revocation itself (a rotation is held only once what it takes is). The nodes: those paired before the world, and every
 //! holder of a grant by another node no removal hits (a removal hits its node's grants its
-//! frontier does not cover); a rotation counts as held only once its minter is known as a node.
+//! frontier does not cover); a rotation is placed no earlier than its minter came to be known as
+//! a node.
 //! D's roster (whom an honest rotation boxes) is the nodes but the removed. Followed rotations
 //! count; nothing else does (at P's nodes a followed rotation may reject another, when a device
 //! that sided otherwise supersedes a line this node follows: counted, `View::cross`). A

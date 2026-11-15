@@ -136,7 +136,8 @@ impl<E: Ord + Copy> Chain<E> {
         let rank = ranks(received);
         let rank_of = |r: &E| rank.get(r).copied().unwrap_or(usize::MAX);
         let mut pending: BTreeMap<E, Rotation<E>> = rotations.into_iter().filter(|r| r.id != root).map(|r| (r.id, r)).collect();
-        // at a node of the account a rotation is held only once its minter is known as a node
+        // at a node of the account a rotation is placed no earlier than its minter came to be
+        // known as a node (one never known: at its receipt, so it is disregarded and answered)
         let known = devices.map(|d| d.known(&rank_of)).unwrap_or_default();
         let minter_known = |id: &E| devices.and_then(|d| known.get(d.minter.get(id)?)).copied().unwrap_or(0);
         let mut rots: BTreeMap<E, Rotation<E>> = BTreeMap::new();
