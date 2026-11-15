@@ -1072,10 +1072,10 @@ impl Engine {
             return Err(Error::Misuse("no seed of the account in custody here"));
         }
         self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, keys }));
-        let p = *p;
+        let (p, d) = (*p, *d);
         self.run(|tx| {
             if judge {
-                super::signing::judge_account_again(tx, p)?;
+                super::signing::judge_account_again(tx, p, d)?;
             }
             super::reopen_all(tx)
         })

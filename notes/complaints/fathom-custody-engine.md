@@ -7,3 +7,4 @@
 - Phase 1 finish: osis-sync failures took most of the time again: four were unrelated to the re-seal (a rebase onto a moved main, a derived-epoch restart, `core.me()` vs `core.member()`); diagnosing each needed throwaway eprintlns in engine and sync (no per-node "why re-seal / why refuse / why not dial" trace).
 - `Mutation::set` of an unchanged value writes nothing (`commit_tx` returns `None`): a re-put meant as a carrier silently makes no commit.
 - `LocalPeer` packages hand parts over in the clear, so an engine test of "can it open" must check held secrets, not reads.
+- Phase 2 outgrew a session: D's roster as edges on D is read across engine, sync and osis (role_now/roster/key_holders of nodes on D, own_node, card ends, pairing checks, ~60 engine tests built on separate removal commits). A grep list of every D-role read before starting would have sized it.

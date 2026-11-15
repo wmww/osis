@@ -376,12 +376,16 @@ fn witness(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
     Ok(true)
 }
 
-/// Judges account `p`'s epochs again now that this node took it up or left it (`Engine::take_up`):
-/// the epoch rule reads D only at a node holding the account, so every standing may move
-/// (spec/permissions.md §5.4, Following, at a node of P and outside it). Nothing else notes it:
-/// `Core::judged_from` tracks what moves while the account is held, not holding it.
-pub(crate) fn judge_account_again(tx: &mut Tx<'_>, p: Tid) -> Result<()> {
+/// Judges account `p` (devices actor `d`) again now that this node took it up or left it
+/// (`Engine::take_up`): the epoch rule reads D only at a node holding the account, so every
+/// standing may move (spec/permissions.md §5.4, Following, at a node of P and outside it), the
+/// account's commits on D among them, whose standing may move with no epoch's (Waiting counts
+/// them only at a node of P). Nothing else notes it: `Core::judged_from` tracks what moves while
+/// the account is held, not holding it.
+pub(crate) fn judge_account_again(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
     tx.core.ix.epochs_due.insert(p);
+    let on_d: Vec<CommitId> = tx.core.ix.role_on.get(&(d, p)).into_iter().flatten().copied().collect();
+    tx.core.ix.names_due.extend(on_d);
     crate::apply::atomic::rejudged(tx, false).map(drop)
 }
 
@@ -418,7 +422,7 @@ pub(crate) fn leave(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
     tx.core.accounts.remove(&p);
     super::custody::shred(tx, &p)?;
     tx.core.left.insert(p);
-    judge_account_again(tx, p)?;
+    judge_account_again(tx, p, d)?;
     let held: Vec<Tid> = tx.core.ix.secrets.keys().copied().chain([d]).collect();
     crate::rotation::touch_held(tx, held);
     Ok(())

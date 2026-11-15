@@ -796,6 +796,30 @@ fn a_node_of_the_account_waits_for_d_s_list_spec_permissions_5_5() {
     assert!(e.roster(&d).contains_key(&sib));
 }
 
+// spec/permissions.md §5.1 step 5 (validity is a function of the held set) with §5.5 Waiting: a
+// node counting the account's grant on D only by waiting for a closer's list of D, that then
+// leaves the account, judges it as an outsider at once (unnamed at a revoked epoch: it counts
+// nowhere), as a rebuild from its records does. Leaving moves no epoch's standing, so the commits
+// on D are judged again by name.
+#[test]
+fn a_node_leaving_its_account_judges_its_waiting_commits_on_d_again_spec_permissions_5_5() {
+    let (mut lp, p, d, _, gone, g) = siblings_world();
+    let r = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
+    let counts = |e: &crate::Engine, c: &CommitId| e.core.counts_at_epoch(c, &p, e.header(c).and_then(|h| h.epoch));
+    let rots = lp.peers[0].engine.prove_rotations().unwrap();
+    lp.peers[1].engine.take_rotations(rots).unwrap();
+    let (rm, r2) = remove_node(&mut lp, 0, d, gone);
+    let whole: Vec<Vec<u8>> = [r, r2].iter().map(|c| lp.peers[0].engine.commit_bytes(c).unwrap().unwrap()).collect();
+    let e = &mut lp.peers[1].engine;
+    for b in whole.iter().chain([&rm]) {
+        assert!(matches!(e.ingest(b, Vec::new()).unwrap(), Ingested::Applied(_)));
+    }
+    assert!(counts(e, &g), "waiting for r's list of D: the grant stands");
+    e.run(|tx| crate::flows::signing::leave(tx, p, d)).unwrap();
+    assert!(!counts(e, &g), "left: unnamed at a revoked epoch, it counts nowhere");
+    e.check_index();
+}
+
 // spec/sync-set.md §3 (Leaving: a record of a node of another account A proved at epoch E is
 // waited for no more once a rotation of A's chain as this node follows it, past E, carries a
 // removal): at an outsider, a rotation naming no removal revokes nothing; one naming a removal

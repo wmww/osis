@@ -81,6 +81,11 @@ roles-model `custody` (core/test/roles-model/README.md, Custody): parties `forks
 - Interim sites phase 2 replaces carry `// Interim (issues/account-removal-before-its-rotation.md)`: Waiting, D's own key schedule (`seed_under`), the account-rotation wrap exception, the D clause of frontiers (`devices_word`), the re-seal's `account.0` write.
 - Not yet: D still has its own epochs and roster; merges carry their maker's choices.
 
+## Phase 2 in progress (branch `fathom-custody-phase2-wip`, red)
+- Built there: perm `Chain` reads the roster from the chain alone (`Devices`: minter, adds, removes per rotation, creation devices; the model's hit, re-add and stands rules; `Chain::roster`; no `cut`, no Waiting); header `revokes` plus `devices` (adds and removes sealed under the inner secret of the epoch it is signed at, `osis_crypto::seal_devices`); the creation nonce `kdf("first device", first seed, creation device)`; `account.0` a set of the seed-boxing epochs' keys (the re-seal's carrier); removal and pairing each one rotation (`Engine::remove_device`, `pair`); `Core::edge_holders` of D is the chain's roster; Waiting, `devices_word`, the wrap exception, `unpublished` gone.
+- Open question: D's secrets. A plain thing has no sync ID (spec/sync-ids.md §2), and D's home is a sync ID, so derivation as designed needs a new actor kind (derived secrets with sync IDs of its own). The branch instead keeps D's secrets of its own, re-keyed only inside each P rotation, boxed to the chain's roster (the P rotation is also D's rotation, so the general rotation wrap applies).
+- Left there: every read of a node's role on D through D's timeline (`role_now`, `roles_on`, `roster(d)`, `own_node`, card ends, `paired`) must read the chain's roster; about 60 engine tests built on separate removal commits or grants on D need rewriting or deleting; osis-sync and osis not run yet.
+
 ## What it removes once built
 The account-rotation wrap exception (spec/crypto.md §5: a P rotation is wrapped under the epoch it is signed at, the general rule); D's own rotations; the `rotations_due` seed fixpoint; the "Who is a node" grant fixpoint and the D clause of removal frontiers (spec/permissions.md §5.1, Listed); the merge-storm limit (spec/permissions.md §5.5); the `forks-first-grants` and `forks-anyone` controls (moot by construction).
 
