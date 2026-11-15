@@ -932,6 +932,16 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.dial_peers, s, |e| e.dial_peers_now(s))
     }
 
+    /// Whether a node other than this one may hold S, by the rosters and records held here
+    /// (spec/sync-status.md §3: a sync ID no other node may hold holds no wait): of S read, an
+    /// account other than this one holding a role on S's thing, or another node of this account
+    /// whose synced group's closure holds it; S kept unread always (its granters). The nodes
+    /// `dial_peers` lists, by who they are, whether or not an address is known. A memo per sync
+    /// ID.
+    pub fn others_hold(&mut self, s: &SyncId) -> Result<bool> {
+        osis_base::memo::Memo::get_in(self, |e| &e.core.others_hold, s, |e| e.others_hold_now(s))
+    }
+
     /// The inbox deliveries owed and not seen taken (spec/sync-inbox.md §2), whole: a start lists
     /// them, then follows `delivery_feed` and `delivery_taken` per delivery. A delivery to a node
     /// (pairing) is its commit sent over a connection; to an actor, `inbox_blob`.

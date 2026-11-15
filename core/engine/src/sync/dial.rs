@@ -33,24 +33,13 @@ fn lists_on_profile() -> bool {
 impl Engine {
     /// See `Engine::dial_peers`.
     pub(crate) fn dial_peers_now(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {
-        // a sync ID left that sync still syncs: as read while its read secrets are held
-        let held = match self.sync_holder(s)? {
-            Some(x) => Some(x),
-            None => self.opening_thing(s)?.map(|t| (t, Holding::Read)),
-        };
-        let Some((t, holding)) = held else { return Ok(Arc::default()) };
+        let Some((t, holding)) = self.synced_thing(s)? else { return Ok(Arc::default()) };
         let mut out: BTreeMap<[u8; 32], Address> = BTreeMap::new();
         let own = self.core.account_devices();
         // own nodes whose sync sets hold S's thing, by their `reach.0`
-        if let Some((_, d)) = own {
-            let synced = self.get_typed(&d, &ct::SYNCED)?.unwrap_or_default();
-            for (n, _) in self.core.key_holders(&d) {
-                if !self.core.own_node(&n) || !self.closure(synced.get(&n).unwrap_or(&d)).contains(&t) {
-                    continue;
-                }
-                if let Some(r) = self.get_typed(&n, &ct::REACH)? {
-                    out.entry(r.dialable).or_insert(Address { url: peer_url(&r.items), key: r.dialable });
-                }
+        for n in self.own_nodes_syncing(&t)? {
+            if let Some(r) = self.get_typed(&n, &ct::REACH)? {
+                out.entry(r.dialable).or_insert(Address { url: peer_url(&r.items), key: r.dialable });
             }
         }
         match holding {
@@ -78,6 +67,34 @@ impl Engine {
             }
         }
         Ok(Arc::new(out.into_values().collect()))
+    }
+
+    /// S's thing and how this node holds S; a sync ID left that sync still syncs: as read while
+    /// its read secrets are held.
+    fn synced_thing(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
+        Ok(match self.sync_holder(s)? {
+            Some(x) => Some(x),
+            None => self.opening_thing(s)?.map(|t| (t, Holding::Read)),
+        })
+    }
+
+    /// See `Engine::others_hold`: the candidates `dial_peers_now` walks, by who they are, not
+    /// where they are dialed.
+    pub(crate) fn others_hold_now(&mut self, s: &SyncId) -> Result<bool> {
+        let Some((t, holding)) = self.synced_thing(s)? else { return Ok(false) };
+        // kept unread: kept for the accounts that granted it
+        if holding == Holding::Unread || !self.own_nodes_syncing(&t)?.is_empty() {
+            return Ok(true);
+        }
+        let own = self.core.account_devices().map(|(p, _)| p);
+        Ok(self.holder_accounts(&t).into_iter().any(|a| Some(a) != own))
+    }
+
+    /// This account's other nodes whose synced group's closure holds `t`.
+    fn own_nodes_syncing(&mut self, t: &Tid) -> Result<Vec<Tid>> {
+        let Some((_, d)) = self.core.account_devices() else { return Ok(Vec::new()) };
+        let synced = self.get_typed(&d, &ct::SYNCED)?.unwrap_or_default();
+        Ok(self.core.key_holders(&d).into_iter().map(|(n, _)| n).filter(|n| self.core.own_node(n) && self.closure(synced.get(n).unwrap_or(&d)).contains(t)).collect())
     }
 
     /// The accounts holding a role on `t`'s reader actor, directly or through the actors holding
