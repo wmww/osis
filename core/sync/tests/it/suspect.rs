@@ -138,3 +138,59 @@ fn a_repeated_report_repairs_once_per_state_across_restarts_spec_sync_compaction
     assert_eq!(snapshots(&mut w, t), before + 2, "its state moved: once more");
 }
 
+
+/// Node `i`'s first sync of S not ended (staged: its row taken away) or ended (`set_first_synced`),
+/// then node `i` stepped so it reads it again.
+fn first_synced(w: &mut World, i: usize, s: osis_base::SyncId, ended: bool) {
+    let mut store = w.node(i).store.clone();
+    if ended {
+        store.set_first_synced(&s).unwrap();
+    } else {
+        store.with_tx(|x| x.remove_local(&[b"F/".as_slice(), &s.0].concat(), osis_store::Shred::No)).unwrap();
+    }
+    w.write(i, |_| ());
+}
+
+fn sent() -> u64 {
+    osis_base::costs::take().into_iter().filter(|(k, ..)| *k == "inbox: suspect sent").map(|(.., n)| n).sum()
+}
+
+// spec/permissions.md §4 (Suspect list: a node past its first sync of L, and as its first sync
+// of L ends): node 1 mid its first sync sends nothing (its digest is of a partial state), then
+// sends as it ends, and node 0 repairs.
+#[test]
+fn a_sender_lists_only_past_its_first_sync_spec_permissions_4() {
+    let (mut w, t) = diverged();
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let before = snapshots(&mut w, t);
+    first_synced(&mut w, 1, s, false);
+    sent();
+    w.heal();
+    w.run();
+    assert_eq!(sent(), 0, "nothing sent mid first sync");
+    assert_eq!(snapshots(&mut w, t), before);
+    first_synced(&mut w, 1, s, true);
+    w.run();
+    assert!(sent() >= 1, "sent as it ends");
+    assert_eq!(snapshots(&mut w, t), before + 1, "and repaired");
+}
+
+// spec/sync-compaction.md §1 (Repair: past its first sync there; the last list a peer sent
+// before the node's first sync ended is judged as that sync ends): node 0 mid its first sync
+// keeps node 1's list, writes nothing, and repairs as its first sync ends.
+#[test]
+fn a_list_received_mid_first_sync_is_judged_as_it_ends_spec_sync_compaction_1() {
+    let (mut w, t) = diverged();
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let before = snapshots(&mut w, t);
+    first_synced(&mut w, 0, s, false);
+    sent();
+    w.heal();
+    w.run();
+    assert!(sent() >= 1, "node 1 sent its list");
+    assert_eq!(snapshots(&mut w, t), before, "node 0 waits");
+    first_synced(&mut w, 0, s, true);
+    w.run();
+    assert_eq!(snapshots(&mut w, t), before + 1, "repaired as its first sync ends");
+    assert_eq!(digests(&mut w, t).0, digests(&mut w, t).1);
+}

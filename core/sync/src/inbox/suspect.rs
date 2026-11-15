@@ -1,10 +1,11 @@
 //! Suspect lists out and in (spec/permissions.md §4 Suspect, Suspect list; spec/sync-compaction.md
 //! §1 Repair; spec/wire.md §11.2 Suspect).
 //!
-//! Out: per S, this node's flagged, not dormant aspects of things S carries (the engine's
-//! `suspect(t, ak)` per aspect, grouped by its `carrying(t)`), most recently flagged first, each
-//! with its state digest taken as it goes. Sent to each member's peer at its join and to every
-//! member's peer when S's list moves, once S's first sync here ended (`Store::first_synced`: a
+//! Out: per S, this node's flagged, not dormant aspects of things S carries and S's actor may read
+//! (the engine's `suspect(t, ak)` per aspect, grouped by `carrying(t)` filtered by
+//! `suspect_under`), most recently flagged first, each with its state digest taken as it goes.
+//! Sent to each reader source's peer at its join and to every one when S's list moves (a store
+//! source keeps S unread: it learns nothing of S's closure from us), once S's first sync here ended (`Store::first_synced`: a
 //! node mid first sync digests a partial state, so every writer would repair it for nothing).
 //! An empty list, or one going empty, sends nothing: a repair is idempotent.
 //!
@@ -14,10 +15,10 @@
 //! as many repairs per state as it has nodes; a snapshot written for one of its nodes reaches the
 //! others under S anyway. Before S's first sync here ended, the latest message per (connection,
 //! S) waits, its entries this node may repair, judged once it ends (the sender sends again only
-//! when its flags move). Each entry: `Engine::repair_suspect` with the digest of the state this node last wrote
-//! a snapshot from for that reporter (row `I/s/ reporter thing ak`), and the row follows: written
-//! with a snapshot, dropped when the entry is the same state or not judged, so it is kept only
-//! while it can spare a repair.
+//! when its flags move). An aspect named twice in a message is judged once. Each entry: `Engine::repair_suspect` with the digest of the state this node last wrote
+//! a snapshot from for that reporter (row `I/s/ reporter thing ak`), written with a snapshot and
+//! dropped only once stale (`judge`), so no sequence of lists gets a second snapshot of one
+//! state for one reporter.
 //!
 //! Work follows change: one `Effects` key per flagged aspect (new ones from `suspect_feed`), one
 //! per S whose first sync is awaited; a list goes out only when S's list moved or a member
@@ -26,11 +27,13 @@
 //! Bounds: a followed key per flagged aspect, and its place in the lists of the sync IDs carrying
 //! it (both go with the flag); the members per S (gone at `Left` or close); one message's entries
 //! waiting per (connection, S), only aspects this node may snapshot (gone at `Left`, close or the
-//! first sync's end); a row per (reporter account, aspect), replaced by a later
-//! state. A flood of lists repairs at most once per state per reporter.
+//! first sync's end); a row per (reporter account, aspect) repaired, replaced by a later state,
+//! dropped when an entry shows it stale; a row of a thing gone stays until then (issue
+//! suspect-judge-cost). A flood of lists repairs at most once per state per reporter, but each
+//! entry judged costs a digest of this node's state of the aspect: the same issue.
 
 use super::{Here, Net};
-use crate::types::{ConnId, Result};
+use crate::types::{ConnId, Result, SourceClass};
 use osis_base::memo::{Effects, Feed};
 use osis_base::{Ak, SyncId, Tid};
 use osis_engine::retention::suspect::Repaired;
@@ -124,7 +127,12 @@ impl Suspects {
         }
     }
 
-    pub(super) fn joined(&mut self, conn: ConnId, s: SyncId) {
+    /// S joined `conn`'s shared set: a reader source is owed S's list. A store source keeps S
+    /// unread: it learns no tid, AK or digest of S's closure, and could repair nothing.
+    pub(super) fn joined(&mut self, conn: ConnId, s: SyncId, net: &impl Net) {
+        if !net.member(conn, &s).is_some_and(|m| m.class == SourceClass::Reader) {
+            return self.left(conn, &s);
+        }
         self.members.entry(s).or_default().insert(conn);
         self.owed.insert((conn, s));
     }
@@ -241,13 +249,15 @@ impl Suspects {
     /// spec/wire.md §11.2).
     pub(super) fn received(&mut self, h: &mut Here<'_>, net: &impl Net, conn: ConnId, s: SyncId, entries: Vec<SuspectEntry>) -> Result<()> {
         let Some(reporter) = h.engine.reader_account(&s, &net.actors(conn))? else { return Ok(()) };
+        // an aspect named twice is one entry (the last), judged once
+        let entries: BTreeMap<Aspect, [u8; 16]> = entries.into_iter().map(|e| ((e.thing, e.ak), e.digest)).collect();
         if !h.store.first_synced(&s)? {
             // the latest message waits, its entries this node may repair (what it holds of them
             // is judged once the first sync ended)
             let mut keep = BTreeMap::new();
-            for e in entries {
-                if h.engine.may_repair(&s, &e.thing, &e.ak)? {
-                    keep.insert((e.thing, e.ak), e.digest);
+            for ((t, ak), d) in entries {
+                if h.engine.may_repair(&s, &t, &ak)? {
+                    keep.insert((t, ak), d);
                 }
             }
             if keep.is_empty() {
@@ -258,8 +268,8 @@ impl Suspects {
             }
             return Ok(());
         }
-        for e in entries {
-            judge(h, &s, &reporter, &e.thing, &e.ak, &e.digest)?;
+        for ((t, ak), d) in entries {
+            judge(h, &s, &reporter, &t, &ak, &d)?;
         }
         Ok(())
     }
@@ -271,27 +281,51 @@ fn flag(engine: &mut osis_engine::Engine, k: &Aspect) -> Result<Flag> {
     if why == 0 || !engine.record_known(&k.0) {
         return Ok(Flag::Quiet);
     }
-    Ok(Flag::Listed { at, under: engine.carrying(&k.0)? })
+    let mut under = BTreeSet::new();
+    for s in engine.carrying(&k.0)? {
+        if engine.suspect_under(&s, &k.0)? {
+            under.insert(s);
+        }
+    }
+    Ok(if under.is_empty() { Flag::Quiet } else { Flag::Listed { at, under } })
 }
 
 /// Judges one entry for `reporter`, keeping the row of the state last snapshotted for it.
-/// Whether a snapshot was written.
+/// Whether a snapshot was written. The row goes only once it is stale (this node's state moved
+/// off it, seen as the reporter's digest matching a state other than the row's): dropped on an
+/// entry not judged or a matching one, a reporter could alternate the true digest (or a sync ID
+/// not carrying the thing) with a false one and have a snapshot written per pair.
 fn judge(h: &mut Here<'_>, s: &SyncId, reporter: &Tid, t: &Tid, ak: &Ak, theirs: &[u8; 16]) -> Result<bool> {
     let key = row(reporter, t, ak);
     let wrote = h.store.with_tx(|x| x.get_local(&key))?.and_then(|v| <[u8; 16]>::try_from(v.as_slice()).ok());
-    match h.engine.repair_suspect(s, t, ak, theirs, reporter, wrote)? {
-        Repaired::Wrote { from, .. } => {
-            osis_base::costs::count("inbox: suspect repaired", 1);
-            h.store.with_tx(|x| x.put_local(&key, &from, Shred::No))?;
-            Ok(true)
-        }
-        Repaired::Already => Ok(false),
-        Repaired::Same | Repaired::Skipped => {
-            if wrote.is_some() {
-                h.store.with_tx(|x| x.remove_local(&key, Shred::No).map(drop))?;
-            }
-            Ok(false)
-        }
+    let done = h.engine.repair_suspect(s, t, ak, theirs, reporter, wrote)?;
+    match row_after(wrote, theirs, &done) {
+        Row::Put(from) => h.store.with_tx(|x| x.put_local(&key, &from, Shred::No))?,
+        Row::Drop => h.store.with_tx(|x| x.remove_local(&key, Shred::No).map(drop))?,
+        Row::Keep => {}
+    }
+    let wrote_one = matches!(done, Repaired::Wrote { .. });
+    if wrote_one {
+        osis_base::costs::count("inbox: suspect repaired", 1);
+    }
+    Ok(wrote_one)
+}
+
+/// What becomes of a reporter's row after an entry was judged.
+#[derive(Debug, PartialEq, Eq)]
+enum Row {
+    Put([u8; 16]),
+    Drop,
+    Keep,
+}
+
+/// The row after `done`, `wrote` the row before, `theirs` the entry's digest (`judge`).
+fn row_after(wrote: Option<[u8; 16]>, theirs: &[u8; 16], done: &Repaired) -> Row {
+    match done {
+        Repaired::Wrote { from, .. } => Row::Put(*from),
+        // this node's state is `theirs` and the row names another: stale
+        Repaired::Same if wrote.is_some_and(|w| w != *theirs) => Row::Drop,
+        Repaired::Already | Repaired::Same | Repaired::Skipped => Row::Keep,
     }
 }
 
@@ -316,6 +350,75 @@ mod tests {
             let m = Msg::Suspect { id: 1, sync_id: SyncId([1; 16]), entries: c };
             assert!(m.encode().len() <= osis_base::format::MAX_MESSAGE);
         }
+    }
+
+    // spec/sync-compaction.md §1 (Repair: unless it already wrote one from that same state for
+    // that reporter): the row of the state last snapshotted stays through every entry that does
+    // not show it stale, so a reporter alternating the true digest, a sync ID not carrying the
+    // thing, and a false digest gets one snapshot per state; a matching digest of a state the row
+    // does not name drops it.
+    #[test]
+    fn a_reporter_cannot_alternate_its_way_to_a_second_snapshot_spec_sync_compaction_1() {
+        let (own, other) = ([1; 16], [2; 16]);
+        assert_eq!(row_after(None, &other, &Repaired::Wrote { commit: osis_base::CommitId([0; 32]), from: own }), Row::Put(own));
+        assert_eq!(row_after(Some(own), &own, &Repaired::Same), Row::Keep, "the true digest keeps it");
+        assert_eq!(row_after(Some(own), &other, &Repaired::Skipped), Row::Keep, "an entry not judged keeps it");
+        assert_eq!(row_after(Some(own), &other, &Repaired::Already), Row::Keep);
+        assert_eq!(row_after(Some(other), &own, &Repaired::Same), Row::Drop, "stale: this node moved to the reporter's state");
+        assert_eq!(row_after(None, &own, &Repaired::Same), Row::Keep);
+    }
+
+    /// A `Net` of members alone.
+    #[derive(Default)]
+    struct Members(BTreeMap<(ConnId, SyncId), SourceClass>);
+
+    impl Net for Members {
+        fn actors(&self, _: ConnId) -> Vec<Tid> {
+            Vec::new()
+        }
+        fn member(&self, conn: ConnId, s: &SyncId) -> Option<crate::opens::Member> {
+            self.0.get(&(conn, *s)).map(|class| crate::opens::Member { class: *class, by: crate::types::Credential::SyncKey, until: None })
+        }
+        fn head(&self, _: ConnId, _: &SyncId) -> Option<osis_label::StepId> {
+            None
+        }
+        fn present(&self, _: ConnId, _: &SyncId, _: &osis_base::BlobId) -> bool {
+            false
+        }
+        fn filter_generation(&self, _: ConnId) -> u64 {
+            0
+        }
+        fn shows_deposit_key(&self, _: ConnId, _: &SyncId, _: &[u8; 32]) -> bool {
+            false
+        }
+        fn source(&self, conn: ConnId) -> crate::store::Source {
+            crate::store::Source::Conn(conn)
+        }
+        fn request(&mut self, _: ConnId, _: Msg) -> Option<crate::session::RequestId> {
+            None
+        }
+        fn answer(&mut self, _: ConnId, _: crate::session::RequestId, _: Msg) {}
+    }
+
+    // spec/permissions.md §4 (Suspect list), spec/requirements.md Confidentiality: a list goes
+    // to a reader source of S only; a peer keeping S unread (a store source) learns no tid, AK
+    // or digest of S's closure. One that opened S as a reader and then as a store source is owed
+    // nothing more.
+    #[test]
+    fn a_list_goes_to_reader_sources_alone_spec_permissions_4() {
+        let s = SyncId([1; 16]);
+        let (reader, store) = (ConnId(1), ConnId(2));
+        let mut net = Members::default();
+        net.0.insert((reader, s), SourceClass::Reader);
+        net.0.insert((store, s), SourceClass::Store);
+        let mut x = Suspects::default();
+        x.joined(reader, s, &net);
+        x.joined(store, s, &net);
+        assert_eq!(x.members.get(&s).cloned().unwrap_or_default(), [reader].into());
+        assert_eq!(x.owed, [(reader, s)].into());
+        net.0.insert((reader, s), SourceClass::Store);
+        x.joined(reader, s, &net);
+        assert!(x.members.is_empty() && x.owed.is_empty());
     }
 
     // spec/permissions.md §4 (Suspect list): the most recently flagged first.

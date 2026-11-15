@@ -226,7 +226,7 @@ impl Inbox {
                 self.deliveries.opened(conn, &s, net);
                 self.offers.joined(conn, &s, net);
                 self.register.joined(conn, s);
-                self.suspects.joined(conn, s);
+                self.suspects.joined(conn, s, net);
             }
             Moved::Left(conn, s, _) => {
                 self.register.left(conn, &s);
