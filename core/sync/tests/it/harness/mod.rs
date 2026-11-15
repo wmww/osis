@@ -935,11 +935,14 @@ impl World {
                         if !opens {
                             continue;
                         }
-                        // held, or an entry of it fetched that waits to open (parked); a held
-                        // body counting parts missing is not checked
-                        // (issues/missing-parts-below-a-floor.md)
-                        let fetched = blobs.iter().any(|b| self.store(j).entry(&s, b).unwrap().is_some());
-                        if !fetched && !self.engine(j).holds_commit(&c) {
+                        // held with no part of its body under S missing, or an entry of it
+                        // fetched that waits to open (parked)
+                        let reached = if self.engine(j).holds_commit(&c) {
+                            !self.engine(j).read_facts(&s, &c).unwrap().missing
+                        } else {
+                            blobs.iter().any(|b| self.store(j).entry(&s, b).unwrap().is_some())
+                        };
+                        if !reached {
                             lost.push((i, j, s, c));
                         }
                     }

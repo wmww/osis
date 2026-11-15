@@ -375,6 +375,13 @@ fn a_from_now_grantee_after_a_removal_holds_the_old_readers_roster_spec_crypto_5
     assert!(w.engine(n3).roster(&t).contains_key(&a3), "node 3 holds its grant");
     assert_eq!(w.engine(n3).roster(&t), w.engine(1).roster(&t), "node 3 holds the writer's roster of t");
     assert_eq!(w.engine(0).roster(&t), w.engine(1).roster(&t), "so does node 0");
+    // spec/crypto.md §4 State at a cut: what node 3 holds of a commit sealed before its cut (the
+    // removal's rotation: its role parts, by the roles secret) lacks nothing it could get
+    for c in w.engine(n3).commit_ids() {
+        for s in w.engine(n3).sync_bodies(&c).unwrap().keys() {
+            assert!(!w.engine(n3).read_facts(s, &c).unwrap().missing, "node 3 counts a part of {c:?} under {s:?} missing that is sealed below its floor");
+        }
+    }
 }
 
 // spec/sync-opens.md §3 (who it may be: the node it names while a node of this account),

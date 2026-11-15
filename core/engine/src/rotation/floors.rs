@@ -87,6 +87,26 @@ pub(crate) fn set(core: &Core, a: &Tid, view: &mut ActorEpochs) {
     view.role_mut(Role::Read).set_floors(makers, own);
 }
 
+/// Whether a part on thing `t` of held commit `c`, other than a role part, lies sealed below this node's floor
+/// (spec/crypto.md §4 State at a cut, Roles secrets: a holder of a floor opens a role commit's
+/// role parts from below it, nothing else): it never opens here, so it is no part of a body
+/// this node owes or lacks. Known where `c` is a read rotation of `t`'s secret actor to an epoch
+/// of n at most this node's floor: its sections lie under an epoch it supersedes (spec/wire.md
+/// §4), of lower n, so below the floor, and this node holds no read secret of lower n (every read
+/// secret it is handed below its floor is one it read before, a re-add; the module invariant).
+/// Any other commit's section epoch is not known here: its part counts as it is.
+pub(crate) fn sealed_below_floor(core: &Core, c: &osis_base::CommitId, t: &Tid) -> bool {
+    let Some(a) = core.secret_actor(t) else { return false };
+    let Some(view) = core.epochs(&a) else { return false };
+    let re = view.role(Role::Read);
+    let own = re.own_floor();
+    if own == 0 {
+        return false;
+    }
+    let Some(made) = re.epochs().find_map(|(e, i)| i.rotations.contains_key(c).then_some(e.n())) else { return false };
+    made <= own && re.held().all(|(e, _)| e.n() >= made)
+}
+
 /// The greatest floor of a holder of `a`.
 fn greatest(core: &Core, a: &Tid) -> u64 {
     let Some(on) = core.timelines.on(a) else { return 0 };
