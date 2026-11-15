@@ -12,6 +12,6 @@ The rule and where it lives: notes/crypto.md (Passing on content), notes/sync-fa
 - Reseal.tla models section openings only: the header opening by a wrap's epoch (`note_unwrapped`) and a copy's opening by it are not in it.
 
 ## Limits
-- Content read only from copies of another thing's sync ID (a thing read by role on a reader actor that sync ID does not carry) never passes on here under an epoch of its own thing: this node neither re-encrypts it for that thing's sync IDs nor snapshots it until it opens a section of it, nor wraps such a copy again; its writer and nodes that opened its section do.
+- Content read only from copies of another thing's sync ID (a thing read by role on a reader actor that sync ID does not carry) never passes on here under an epoch of its own thing: this node neither re-encrypts it for that thing's sync IDs nor snapshots it until it opens a section of it; its writer and nodes that opened its section do. Copies under the sync ID it came from it logs again.
 - An aspect holding a write this node read only under an epoch not established here (withheld removal, or a withdrawn epoch: never established) is not compacted by this node while so. Not a new growth: other writers' valid snapshots still drop its bodies here (spec/sync-compaction.md §1), and its size is that of the writes, as with no compaction.
 - A wrap whose epoch is not among the thing's own or first-admin-derived epochs held (a thing whose `created.0` is not here, opened by a key actor's derived secret) records no header opening.

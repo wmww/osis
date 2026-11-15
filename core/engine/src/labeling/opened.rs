@@ -367,15 +367,36 @@ fn above_floor(tx: &Tx<'_>, t: &Tid, mut under: Vec<Opening>, floor: Option<u64>
     (!under.is_empty()).then_some(under)
 }
 
+/// A wrap under an epoch this node chooses: of thing `thing` (the sync ID's), whose reader actor
+/// is `actor`, at that epoch's floor `floor`.
+pub(super) struct Wrapping {
+    pub thing: Tid,
+    pub actor: Tid,
+    pub floor: u64,
+}
+
+/// Whether part `ai` of commit `c` has a genuine opening under an epoch of the wrap's own thing
+/// established here now, of floor at least the wrap's (a copy's section, opened under the epoch
+/// its entry's wrap opened under, `Engine::open_entry`): this node knows every departure from
+/// that thing the epoch covered, and the epoch it wraps under covers them, so the wrap passes
+/// the part on as its epoch's own content would (spec/crypto.md §5 Passing on).
+fn opened_under_wrap(tx: &mut Tx<'_>, c: &CommitId, ai: usize, w: &Wrapping) -> Result<bool> {
+    let under = openings(tx, c, Some(ai))?;
+    match above_floor(tx, &w.thing, under, Some(w.floor)) {
+        Some(under) if !under.is_empty() => established_genuine(tx, c, ai, &w.thing, under),
+        _ => Ok(false),
+    }
+}
+
 /// Whether this node may wrap a blob of commit `c` (its header) under an epoch of its own
-/// choosing: one with no content part, or one each of whose content parts it opened (its own:
-/// any) has a genuine opening under an epoch established here now (a part dropped or held
-/// value-less keeps none); if an entry's wrap of it opened here, one such wrap's epoch is
-/// established here now (`note_unwrapped`: kept whatever is dropped); and, the wrap under an
-/// epoch of actor `a` of floor f (`floor`), every content part on a thing whose secrets are
-/// `a`'s has an opening (or own record) under an epoch of floor at least f: the header names the
-/// part's thing, aspect and delta hash.
-fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header, floor: Option<(Tid, u64)>) -> Result<bool> {
+/// choosing (`w`): one with no content part, or one each of whose content parts it opened (its
+/// own: any) has a genuine opening under an epoch established here now, of the part's thing or
+/// of the wrap's (`opened_under_wrap`; a part dropped or held value-less keeps none); if an
+/// entry's wrap of it opened here, one such wrap's epoch is established here now
+/// (`note_unwrapped`: kept whatever is dropped); and every content part on a thing whose secrets
+/// are the wrap actor's has an opening (or own record) under an epoch of floor at least the
+/// wrap's: the header names the part's thing, aspect and delta hash.
+fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header, w: &Wrapping) -> Result<bool> {
     let own = tx.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local);
     let content: Vec<(usize, Tid)> = h.aspects.iter().enumerate().filter(|(_, a)| is_content(a.ak.as_str())).map(|(ai, a)| (ai, a.tid)).collect();
     if content.is_empty() {
@@ -388,12 +409,12 @@ fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header, floor: 
     let all = openings(tx, c, None)?;
     for (ai, t) in content {
         let under: Vec<_> = all.iter().filter(|r| r.0 == ai).cloned().collect();
-        let f = floor.filter(|(a, _)| tx.core.secret_actor(&t) == Some(*a)).map(|x| x.1);
-        let Some(under) = above_floor(tx, &t, under, f) else { return Ok(false) };
-        if own || under.is_empty() {
-            continue;
-        }
-        if !established_genuine(tx, c, ai, &t, under)? {
+        let f = (tx.core.secret_actor(&t) == Some(w.actor)).then_some(w.floor);
+        let passes = match above_floor(tx, &t, under, f) {
+            None => false,
+            Some(under) => own || under.is_empty() || established_genuine(tx, c, ai, &t, under)?,
+        };
+        if !passes && !opened_under_wrap(tx, c, ai, w)? {
             return Ok(false);
         }
     }
@@ -428,21 +449,21 @@ pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
 
 impl Engine {
     /// Whether this node may wrap a blob of commit `c` carrying parts `ais` under an epoch of its
-    /// choosing, of actor `floor.0` with floor `floor.1` (the wrap gates the header, and a copy's
-    /// whole content): `passes_on` for each (the floor clause for a part on a thing whose secrets
-    /// are that actor's), and `header_passes`.
-    pub(super) fn passes_on_parts(&mut self, c: &CommitId, ais: &[usize], floor: Option<(Tid, u64)>) -> Result<bool> {
+    /// choosing (`w`; the wrap gates the header, and a copy's whole content): for each, `passes_on`
+    /// (the floor clause for a part on a thing whose secrets are the wrap's actor's) or an opening
+    /// under an epoch of the wrap's own thing (`opened_under_wrap`); and `header_passes`.
+    pub(super) fn passes_on_parts(&mut self, c: &CommitId, ais: &[usize], w: &Wrapping) -> Result<bool> {
         let c = *c;
         let Some(h) = self.header(&c) else { return Ok(true) };
         self.read(|tx| {
             for ai in ais {
                 let Some(a) = h.aspects.get(*ai) else { continue };
-                let f = floor.filter(|(x, _)| tx.core.secret_actor(&a.tid) == Some(*x)).map(|x| x.1);
-                if !passes_on(tx, &c, *ai, &a.tid, a.ak.as_str(), f)? {
+                let f = (tx.core.secret_actor(&a.tid) == Some(w.actor)).then_some(w.floor);
+                if !passes_on(tx, &c, *ai, &a.tid, a.ak.as_str(), f)? && !opened_under_wrap(tx, &c, *ai, w)? {
                     return Ok(false);
                 }
             }
-            header_passes(tx, &c, &h, floor)
+            header_passes(tx, &c, &h, w)
         })
     }
 

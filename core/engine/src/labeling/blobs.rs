@@ -656,7 +656,7 @@ impl Engine {
         // where every part it carries may go so and the commit's header may, at that epoch's
         // floor (`Engine::passes_on_parts`, spec/crypto.md §5 Passing on)
         if let Some((c, parts)) = c
-            && !self.passes_on_parts(c, parts, Some((self.core.reader_of(g), e.read.floor(&ep))))?
+            && !self.passes_on_parts(c, parts, &super::opened::Wrapping { thing: *g, actor: self.core.reader_of(g), floor: e.read.floor(&ep) })?
         {
             return Ok(None);
         }

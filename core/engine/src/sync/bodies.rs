@@ -719,4 +719,95 @@ mod tests {
         let bodies = e.sync_bodies(&c).unwrap();
         assert!(d_ids.iter().all(|s| bodies.contains_key(s)), "a body under D's sync IDs");
     }
+
+    // spec/crypto.md §5 (Passing on: a copy's section counts as opened under its wrap's epoch,
+    // of the sync ID's thing), spec/sync-judgement.md §1 (Per-sync-ID copies: a thing added from
+    // another actor's tree): g, a thing under actor a, is filed in h, whose actor reads a. V reads
+    // h, not a, so it reads R's write w on g only from R's copy under h's sync ID, wrapped under
+    // e_h, R's rotation of h after A2 removed M.
+    // While M's removal is withheld from V (e_h not established), V logs no copy of w under h's
+    // sync ID; once it arrives V does, under its own epoch of h, and M opens nothing of it.
+    #[test]
+    fn copy_logged_again_under_its_own_things_established_epoch_spec_crypto_5() {
+        use crate::flows::Demotion;
+        use osis_base::{Ak, Role, Value};
+        use osis_crdt::{Op, PathOp, PathSeg};
+        use std::collections::BTreeSet;
+        const R: usize = 0;
+        const V: usize = 1;
+        const M: usize = 2;
+        const A2: usize = 3;
+        let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None, floor: None };
+        let ids = |lp: &mut LocalPeer| -> BTreeSet<osis_base::CommitId> { lp.packages(A2).unwrap().into_iter().map(|p| p.id).collect() };
+        let mut lp = LocalPeer::new(4, 0, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tids: Vec<_> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
+        let mut things = Vec::new();
+        for _ in 0..2 {
+            let mut m = Mutation::new();
+            let t = lp.peers[R].engine.new_thing(&mut m, tids[R]);
+            lp.peers[R].commit(m).unwrap();
+            lp.peers[R].engine.give_own_secrets(&t).unwrap();
+            things.push(t);
+        }
+        let (a, h) = (things[0], things[1]);
+        let mut m = Mutation::new();
+        let g = lp.peers[R].engine.new_thing(&mut m, a);
+        m.op(h, &osis_schema::core_types::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(g)) }).unwrap();
+        lp.peers[R].commit(m).unwrap();
+        let r = &mut lp.peers[R].engine;
+        r.grant(&h, &tids[V], &edge(Role::Admin)).unwrap();
+        r.grant(&h, &tids[M], &edge(Role::Read)).unwrap();
+        r.grant(&h, &tids[A2], &edge(Role::Admin)).unwrap();
+        r.grant(&a, &h, &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(5_000);
+        let before = ids(&mut lp);
+        lp.peers[A2].engine.demote(&h, &Demotion { holder: tids[M], new: None, retain: None }).unwrap();
+        let removal: BTreeSet<_> = ids(&mut lp).difference(&before).copied().collect();
+        lp.sync(A2, R).unwrap();
+        lp.advance(5_000);
+        // R rotates read of h once more (A2's removal rotated too): e_h names A2's removal
+        lp.peers[R]
+            .engine
+            .run(|tx| {
+                let held = tx.core.epochs(&h).unwrap();
+                let holders = crate::rotation::recipients(tx, &tx.core.writer().unwrap(), &h, &[])?;
+                let mut m = Mutation::new();
+                let r = crate::rotation::rotation_into(tx, &mut m, h, &BTreeSet::from([Role::Read]), &held, &holders, crate::rotation::Departs::No)?;
+                crate::engine::Engine::commit_tx(tx, m)?;
+                crate::rotation::record(tx, h, &r)
+            })
+            .unwrap();
+        lp.advance(7);
+        let mut m = Mutation::new();
+        let x = Ak::new("x:m.0").unwrap();
+        m.op(g, &x, PathOp { path: vec![PathSeg::Key(Value::Str("w".into()))], op: Op::Put(Value::Int(1)) }).unwrap();
+        let w = lp.peers[R].commit(m).unwrap().unwrap();
+        for pk in lp.packages(R).unwrap().iter().filter(|p| !removal.contains(&p.id) && p.id != w) {
+            let _ = lp.peers[V].receive(&pk.bytes, pk.blobs.clone());
+        }
+        let e_h = lp.peers[R].engine.epochs(&h).unwrap().read.newest_held().unwrap().0;
+        assert!(!lp.peers[V].engine.epochs(&h).unwrap().read.is_established(&e_h), "M's removal withheld from V");
+        let sh = lp.peers[V].engine.home_sync_id(&h).unwrap().expect("V syncs h");
+        let r = &mut lp.peers[R].engine;
+        let body = r.body(&w).unwrap().unwrap();
+        let copy = r.seal_to(&body, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(26)).unwrap().unwrap();
+        let k = r.wrap_secret(&h, Some((&w, &body.parts))).unwrap().expect("R wraps its own");
+        let copied = crate::sync::HeldBlob { sync_id: sh, wrap: osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap(), bytes: copy.blob.clone() };
+        let o = lp.peers[V].engine.open_entry(&sh, &copy.id, &copied.wrap, &copied.bytes, u64::MAX).unwrap();
+        assert!(matches!(o, crate::sync::Opened::Commit(c, _) if c == w), "V opens R's copy: {o:?}");
+        assert!(matches!(lp.peers[V].engine.get(&g, &x).unwrap(), Some(Value::Map(m)) if m.contains_key(&Value::Str("w".into()))), "V reads w");
+        let v = &mut lp.peers[V].engine;
+        let ctx = v.body_ctx(&h);
+        assert!(matches!(&v.commit_bodies_under(&ctx, &w).unwrap()[..], [b] if b.to_label), "w goes under h's sync ID as a copy");
+        let mut rng = osis_crypto::SeededRng::from_u64(27);
+        assert!(lp.peers[V].engine.seal_body(&sh, &w, std::slice::from_ref(&copied), &mut rng).unwrap().is_none(), "V logs w's copy lacking M's removal");
+        for pk in lp.packages(A2).unwrap().iter().filter(|p| removal.contains(&p.id)) {
+            let _ = lp.peers[V].receive(&pk.bytes, pk.blobs.clone());
+        }
+        assert!(lp.peers[V].engine.epochs(&h).unwrap().read.is_established(&e_h));
+        let (sealed, wrap) = lp.peers[V].engine.seal_body(&sh, &w, std::slice::from_ref(&copied), &mut rng).unwrap().expect("V logs w's copy under h's sync ID");
+        assert!(osis_label::unwrap_any(lp.peers[M].engine.read_secrets(&h).iter(), &sealed.id, &wrap).is_none(), "M unwraps V's copy");
+    }
 }
