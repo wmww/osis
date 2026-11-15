@@ -156,7 +156,7 @@ fn a_removed_nodes_write_counts_nowhere_an_aware_siblings_rotation_closed_spec_p
     send(&mut lp, r0, b, &done.commits[..1]);
     let rb = lp.peers[b].engine.signing_due().unwrap().commits;
     assert_eq!(rb.len(), 1, "B rotates on the removal it holds");
-    assert_eq!(lp.peers[b].engine.header(&rb[0]).unwrap().rotation.clone().unwrap().removals, vec![done.commits[0]], "its header names the removal");
+    assert!(lp.peers[b].engine.header(&rb[0]).unwrap().rotation.clone().unwrap().revokes, "its header says it removes");
     send(&mut lp, b, o, &rb);
     let late = write(&mut lp, x, t, "removed");
     send(&mut lp, x, o, &[late]);
@@ -772,8 +772,8 @@ fn a_node_holding_a_line_without_its_removals_signs_nothing_there_spec_crypto_9(
     let rot = rz.commits[1];
     // D's new epoch boxes neither Y nor Z
     let key = lp.peers[2].engine.header(&rot).unwrap().rotation.as_ref().unwrap().signing_key;
-    let acct = lp.peers[2].engine.get_typed(&a.devices, &ct::ACCOUNT).unwrap().unwrap();
-    let under = acct.under.get(key.to_bytes().as_slice()).unwrap().clone();
+    let _ = key;
+    let under = osis_keys::aspects::to_schema(&osis_keys::wrap_epoch(&lp.peers[2].engine.core.epochs(&a.devices).unwrap().read).unwrap());
     let boxes = lp.peers[2].engine.get_typed(&a.devices, &ct::SECRETS).unwrap().unwrap().boxes;
     let gone = [lp.peers[4].engine.tid(), z];
     assert!(boxes.keys().any(|k| k.role == Role::Read && k.epoch == under), "D's epoch boxes the nodes left");
@@ -829,7 +829,7 @@ fn header_naming_anothers_removal(sealed_as_n1: bool) {
         let vk = e.header(&at).unwrap().rotation.clone().unwrap().signing_key;
         let at_keys = AccountEpochKeys::from_seed(e.core.accounts.get(&a.account).unwrap().keys.get(&vk).unwrap().seed());
         let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([71; 32]));
-        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![at], names: Vec::new(), takes: Vec::new(), removals: vec![rem], list_root: [0; 32], seeds: Vec::new() };
+        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![at], names: Vec::new(), takes: Vec::new(), revokes: true, devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
         let made_up = super::tests_account::rotation_at(rec, (at, &at_keys), &[], &next, header, osis_base::Ts::make(e.now(), 0).unwrap());
         // and the same header sealed as N1 itself: its minter is the removal's, its epoch is not
         let mut b = osis_commit::CommitBlob::decode(&made_up).unwrap();
@@ -1551,7 +1551,7 @@ fn forge(lp: &mut LocalPeer, by: usize, a: &CreatedAccount, at: CommitId, forks:
     let mut names: Vec<CommitId> = forks.iter().map(|f| f.0).collect();
     names.sort();
     let fork_keys: Vec<&AccountEpochKeys> = names.iter().map(|n| &fork_keys[forks.iter().position(|f| f.0 == *n).unwrap()]).collect();
-    let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes, names, takes: takes.to_vec(), removals: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
+    let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes, names, takes: takes.to_vec(), revokes: false, devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     super::tests_account::rotation_at(rec, (at, &at_keys), &fork_keys, &next, header, ts)
 }
@@ -1675,7 +1675,7 @@ fn a_revocation_is_placed_when_its_removal_arrives_spec_permissions_5_4() {
     let (r, x, t) = (0, 2, 3);
     let rx = remove(&mut lp, x, a.devices, r);
     let (rem, q) = (rx.commits[0], rx.commits[1]);
-    assert!(lp.peers[x].engine.header(&q).unwrap().rotation.clone().unwrap().removals == vec![rem], "q names its removal");
+    assert!(lp.peers[x].engine.header(&q).unwrap().rotation.clone().unwrap().revokes, "q carries its removal");
     send(&mut lp, x, t, &[q]);
     lp.advance(5);
     let done = remove(&mut lp, r, a.devices, x);
@@ -1963,7 +1963,7 @@ fn a_node_paired_after_a_removal_reads_its_maker_spec_permissions_5_4() {
     pair(&mut lp, 2, true);
     let maker = lp.peers[0].engine.tid();
     let v = lp.peers[2].engine.core.account_view(&a.account).unwrap();
-    let signed = v.devices.as_ref().and_then(|d| d.commits.get(&r)).and_then(|x| x.0);
+    let signed = v.devices.as_ref().and_then(|d| d.minter.get(&r)).copied();
     assert_eq!(signed, Some(maker), "node 2 reads node 0 as the removal's maker");
     // the signatures kept are facts of the commits held: read back from the commit records at an
     // open, and rebuilt from them, alike

@@ -110,14 +110,14 @@ impl osis_commit::Secrets for Dedup {
 /// A rotation of the account of record `rec` from its first epoch to `next`, superseding that
 /// epoch alone: what a node removed at the first epoch can make after every merge.
 pub(super) fn rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &AccountEpochKeys, ts: Ts) -> Vec<u8> {
-    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), removals: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
+    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), revokes: false, devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
     rotation_at(rec, (FIRST_EPOCH, first), &[], next, header, ts)
 }
 
 /// `rotation`, its header naming a removal no outsider holds: at an outsider it revokes the
 /// first epoch (spec/permissions.md §5.5 Revoked), as the rotation removing a node does.
 pub(super) fn revoking_rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &AccountEpochKeys, ts: Ts) -> Vec<u8> {
-    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), removals: vec![CommitId([0x55; 32])], list_root: [0; 32], seeds: Vec::new() };
+    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), revokes: true, devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
     rotation_at(rec, (FIRST_EPOCH, first), &[], next, header, ts)
 }
 
@@ -631,7 +631,7 @@ fn header_only(bytes: &[u8]) -> osis_base::Value {
 
 fn rotation_to(next: &AccountEpochKeys, mut supersedes: Vec<CommitId>) -> RotationHeader {
     supersedes.sort();
-    RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes, names: Vec::new(), takes: Vec::new(), removals: Vec::new(), list_root: [0; 32], seeds: Vec::new() }
+    RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes, names: Vec::new(), takes: Vec::new(), revokes: false, devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() }
 }
 
 /// A verifier holding account A's record and its rotation r1 (taken from A's Prove), and a
@@ -831,7 +831,7 @@ fn a_node_leaving_its_account_judges_its_waiting_commits_on_d_again_spec_permiss
 fn a_rotation_carrying_a_removal_revokes_the_epochs_below_it_spec_sync_set_3() {
     let ts_of = |e: &crate::Engine| Ts::make(e.now(), 0).unwrap();
     let key = |k: &AccountEpochKeys| k.signing.verifying_key().to_bytes();
-    let header = |next: &AccountEpochKeys, sup: CommitId, removals: Vec<CommitId>| RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![sup], names: Vec::new(), takes: Vec::new(), removals, list_root: [0; 32], seeds: Vec::new() };
+    let header = |next: &AccountEpochKeys, sup: CommitId, removals: Vec<CommitId>| RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![sup], names: Vec::new(), takes: Vec::new(), revokes: !removals.is_empty(), devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
     let setup = || {
         let mut lp = peers(2);
         let (a, bytes) = created(&mut lp);

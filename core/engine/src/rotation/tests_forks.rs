@@ -244,9 +244,8 @@ impl Run {
             let Some(d) = self.lp.peers[v].engine.core.account_view(&self.p).and_then(|w| w.devices.clone()) else { continue };
             let minter: Vec<String> = d.minter.iter().map(|(r, m)| format!("{}:{}", name(r), who(m))).collect();
             let removes: Vec<String> = d.removes.iter().map(|(r, ms)| format!("{}:{:?}", name(r), ms.iter().map(who).collect::<Vec<_>>())).collect();
-            let grants: Vec<String> = d.grants.iter().map(|(g, m)| format!("{}->{}", name(g), who(m))).collect();
-            let commits: Vec<String> = d.commits.iter().map(|(c, (m, e))| format!("{}:{}@{}", name(c), m.as_ref().map_or("-".into(), who), name(e))).collect();
-            s.push_str(&format!("devices at {v}: minter {minter:?} removes {removes:?} grants {grants:?} commits {commits:?}\n"));
+            let adds: Vec<String> = d.adds.iter().map(|(r, ms)| format!("{}:{:?}", name(r), ms.iter().map(who).collect::<Vec<_>>())).collect();
+            s.push_str(&format!("devices at {v}: minter {minter:?} removes {removes:?} adds {adds:?}\n"));
         }
         panic!("{s}");
     }
@@ -739,7 +738,7 @@ impl Run {
         names_e.sort_by_key(|x| x.0);
         let mut takes_e: Vec<CommitId> = takes.iter().map(|x| self.e(*x)).collect();
         takes_e.sort();
-        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: sup_e, names: names_e.iter().map(|x| x.0).collect(), takes: takes_e, removals: removal.iter().map(|r| r.pk.id).collect(), list_root: [0; 32], seeds: Vec::new() };
+        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: sup_e, names: names_e.iter().map(|x| x.0).collect(), takes: takes_e, revokes: removal.is_some(), devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
         let rec = self.lp.peers[X].engine.core.created(&self.p).unwrap().clone();
         self.lp.advance(1);
         let ts = osis_base::Ts::make(self.lp.peers[X].engine.now(), 0).unwrap();
