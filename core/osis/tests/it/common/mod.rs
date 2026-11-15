@@ -280,7 +280,6 @@ impl MembersOf for Osis {
     }
 }
 
-/// `create` and add to `groups` in one commit.
 /// `n` new things, then unfiled from home (spec/sync-set.md §1 Filing) in a commit of their own:
 /// listed nowhere, for tests where a home listing would be noise (a backlink, a membership).
 pub fn unfiled(db: &Osis, n: usize) -> Vec<Tid> {
@@ -290,6 +289,7 @@ pub fn unfiled(db: &Osis, n: usize) -> Vec<Tid> {
 }
 
 pub trait CreateIn {
+    /// `create` and add to `groups` in one commit.
     fn create_in(&mut self, admin: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid>;
     /// `create` with a write (`t:made.0`), so the thing has content.
     fn create_with_content(&mut self, admin: osis::Tid) -> osis::Result<osis::Tid>;
