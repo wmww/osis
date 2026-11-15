@@ -3,6 +3,8 @@
 > Priority: critical
 > Tags: security, perm, engine, tess-call
 
+Design: notes/account-forks-design.md (Custody: seeds boxed to device keys, opened whatever counts; a node removed on the line it follows keeps custody while another held line keeps it). Root cause: judgment gates custody.
+
 ## What happens (engine)
 - A node of P reads who minted each rotation from its inner signature, which opens only with the seed of the epoch it is signed at (§5.4, Following at a node of P). Seeds come from D's `account.0`, whose deltas count only where their rotation counts. A node following X's line never counts the honest rotations, so never takes their seeds, so never opens their inner signatures: to it the honest line is minted by no node and never stands, whatever its user chooses (`Engine::choose_line` holds, but the chosen line is disregarded).
 - A node that took X's revocation of itself: where X's removal commit counts on D (its epoch open there) the node leaves the account (`signing::leave_if_removed`) and drops its seeds; where it does not, it stays on D's roster but its chain removes it (its signing pass now signs nothing, `rotations_due`). Either way its user's switch to A's line cannot bring it back.

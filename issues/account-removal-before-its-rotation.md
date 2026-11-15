@@ -3,6 +3,8 @@
 > Priority: critical
 > Tags: security, perm, engine
 
+Design: notes/account-forks-design.md (Roster and D: D's secrets derive from P's epochs, removals and additions exist only inside P's rotations, the roster is the chain's). Root cause: D is a second roster source, and the seed sitting under D's re-key is what stalled the chain-only roster.
+
 ## What happens
 - X revokes A with a rotation taking a rotation it never sends: by spec/permissions.md §5.4 the rotation is held nowhere, so no one follows or answers it. Its removal commit on D still counts at an unaware sibling B (X is a node there, the epoch open): `key_holders(D)` loses A, B's next rotation re-keys D boxing everyone but A (X included, the unaware-sibling limit), and A cannot merge B's heads until B merges A's; another node of P that took A's removal cannot take up B's seed (B's D epoch rests on X's removal, cut there).
 - Not always transient: a node that took A's removal cannot take up the seed of a rotation B made so (its D epoch rests on X's removal, cut there), so it reads B's later rotations as minted by no node, disregards and answers each, while B merges each answer: the two rotate against each other for good (`OSIS_FORKS_START=916629000175 OSIS_FORKS_SEEDS=1` on `rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4`, listed in tools/known_failures.txt; the model, fed the seeds the engines took up, does the same).
