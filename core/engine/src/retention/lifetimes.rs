@@ -309,13 +309,4 @@ impl crate::engine::Engine {
         self.commit(m)
     }
 
-    /// The things judged unreachable here and not destroyed (`PENDING`).
-    pub fn lifetimes_pending(&mut self) -> Result<Vec<Tid>> {
-        self.read(|tx| rows(tx, PENDING))
-    }
-
-    /// How the lifetime judgment reads `t` here (known, destroyed, unknown).
-    pub fn lifetime_status(&self, t: &Tid) -> Status {
-        status(&self.core, t, &BTreeSet::new())
-    }
 }

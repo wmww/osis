@@ -126,17 +126,6 @@ impl Mutation {
         self
     }
 
-    /// Takes the commit's `ts` now, from the engine's clock, and returns it.
-    pub fn take_ts(&mut self, e: &mut crate::Engine) -> Ts {
-        *self.ts.get_or_insert_with(|| e.core.hlc.next())
-    }
-
-    /// The header's blind, drawn now (tests forging a departs mark, spec/crypto.md §4).
-    #[doc(hidden)]
-    pub fn take_blind(&mut self, e: &mut crate::Engine) -> [u8; 16] {
-        *self.blind.get_or_insert_with(|| e.run(|tx| Ok(draw_blind(&mut *tx.rng))).unwrap_or_default())
-    }
-
     /// Commit-form dots (spec/commits.md §3).
     pub fn commit_form(&mut self) -> &mut Self {
         self.commit_form = true;

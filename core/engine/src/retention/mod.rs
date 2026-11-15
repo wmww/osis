@@ -1169,13 +1169,6 @@ pub(crate) fn expire_waiting(tx: &mut Tx<'_>, id: &CommitId, pending: &osis_comm
 }
 
 impl Engine {
-    /// Whether part `ai` of `c` was dropped here while invalid and no right took it since (not
-    /// purged, not expired): no right deletes its blobs at hosts, which keep the copy fetched
-    /// again if it turns valid (spec/permissions.md §6, spec/sync-judgement.md §2).
-    pub fn left_at_hosts(&self, c: &CommitId, ai: usize) -> bool {
-        self.core.ix.commits.get(c).is_some_and(|m| m.dropped_invalid(ai) && !valueless(&self.core, c, ai))
-    }
-
     /// Runs what is due by the wall clock: expiries, purge floors (`T_FLOOR`, `T_KEPT`), bodies
     /// leaving history (`leaving`), live bounds and quiet times the compaction trigger waits for
     /// (`compact::Trigger::passed`, `quiet_passed`) and commits parked for drift.
@@ -1255,12 +1248,6 @@ impl Engine {
     /// The held commits own replaces `qs` of one author newly let go (`snapshot::own_newly_covered`).
     pub fn own_newly_covered(&self, qs: &[CommitId], tid: &Tid, ak: &Ak) -> Vec<CommitId> {
         snapshot::own_newly_covered(&self.core, qs, tid, ak)
-    }
-
-    /// Whether `c` is a held commit of `s`'s author on `(tid, ak)` stamped before `s`.
-    pub fn own_older(&self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-        let (Some(sm), Some(cm)) = (self.core.ix.commits.get(s), self.core.ix.commits.get(c)) else { return false };
-        self.core.ix.own_held.get(&(*tid, ak.clone(), sm.view.author)).is_some_and(|x| x.contains(&(cm.view.ts, *c))) && cm.view.ts < sm.view.ts
     }
 
     /// `s`'s author's held commits on `(tid, ak)` stamped before `s` (`Indexes::own_held`).

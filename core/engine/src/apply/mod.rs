@@ -1268,34 +1268,6 @@ impl Engine {
         self.run(|tx| crate::labeling::opened::forget(tx, &id))
     }
 
-    /// Names commit `id` for `take_redeliver`.
-    pub fn name_redeliver(&mut self, id: CommitId) {
-        self.core.redeliver.insert(id);
-    }
-
-    /// The slots of commit `id` no copy need bring here: those held, applied or pending, and those
-    /// counting as never received (spec/commits.md §5), its body dropped or past its expiry, which
-    /// only a new copy brings back.
-    pub fn settled_slots(&mut self, id: &CommitId) -> Result<BTreeSet<usize>> {
-        let id = *id;
-        self.read(|tx| {
-            let now = tx.now().0;
-            let mut out: BTreeSet<usize> = BTreeSet::new();
-            let pending = tx.txn.get_pending(&id)?.and_then(|p| CommitBlob::decode_stored(&p.bytes).ok());
-            if let Some(b) = &pending {
-                out.extend(b.parts.iter().map(|p| p.ai));
-                out.extend((0..b.header.aspects.len()).filter(|ai| crate::retention::pending_expired(tx, &b.header, *ai)));
-            }
-            if let Some(b) = tx.get_commit(&id)? {
-                out.extend(b.parts.iter().map(|p| p.ai));
-            }
-            if let Some(m) = tx.core.ix.commits.get(&id) {
-                out.extend((0..m.header.aspects.len()).filter(|ai| m.is_dropped(*ai) || m.header.expires.is_some_and(|t| t <= now)));
-            }
-            Ok(out)
-        })
-    }
-
     /// Whether copy `copy` of commit `id` holds a part that went from the node (spec/commits.md §5:
     /// dropped from the applied commit or held as its leftover while value-less, held pending past
     /// its expiry, or held pending value-less or gone for a request, `retention::strip_purged`)
@@ -1339,11 +1311,6 @@ impl Engine {
             }
             Ok(gone)
         })
-    }
-
-    /// Whether commit `id` is named for redelivery (`take_redeliver` has not taken it yet).
-    pub fn redeliver_named(&self, id: &CommitId) -> bool {
-        self.core.redeliver.contains(id)
     }
 
     /// Receives a commit blob's plaintext (`CommitBlobPlaintext`, spec/wire.md §4) with the page,
@@ -1544,26 +1511,9 @@ impl Engine {
         self.run(|tx| keys::forget_unchecked(tx, &id))
     }
 
-    /// The destroyed things whose record something here awaits: a destruction here kept nothing of
-    /// them (spec/commits.md §5 Destruction) and a dependent reached this node after it, so a held
-    /// record blob gives the record again (node-sync).
-    pub fn destroyed_records_awaited(&self) -> BTreeSet<Tid> {
-        self.core.waits.records_awaited().filter(|t| self.core.created(t).is_none() && self.core.destroyed(t)).copied().collect()
-    }
-
-    /// The records the parts of pending commit `id` await (empty when not remembered).
-    pub fn records_awaited_by(&self, id: &CommitId) -> Vec<Tid> {
-        self.core.waits.records_of(id).to_vec()
-    }
-
     /// Whether a commit on `t` cannot be judged here yet.
     pub fn awaits_on(&self, t: &Tid) -> bool {
         self.core.waits.awaits_on(t)
-    }
-
-    /// Commit `id`'s last entry left: what it was noted under goes.
-    pub fn no_entry_left(&mut self, id: &CommitId) {
-        self.core.waits.unawaits(id);
     }
 
     /// Drops the stored pending copy of durable commit `id` (a pending or parked commit, or an

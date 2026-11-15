@@ -5,8 +5,8 @@ use osis_base::memo::Memo;
 use crate::engine::Engine;
 use crate::error::{Error, Result};
 use osis_commit::{CommitBlob, Envelope, Section};
-use osis_base::{BlobId, CommitId, SyncId, Role, Tid, WallMs};
-use osis_crypto::{CryptoRngCore, DeleteSecret, Epoch, LabelRole, Secret32, SigningSecret, deposit_key};
+use osis_base::{BlobId, CommitId, Role, Tid, WallMs};
+use osis_crypto::{CryptoRngCore, Epoch, LabelRole, Secret32, SigningSecret, deposit_key};
 use osis_keys::ActorEpochs;
 use osis_label::Step;
 use std::collections::BTreeSet;
@@ -139,10 +139,6 @@ pub struct HeadKeys {
 }
 
 impl HeadKeys {
-    pub fn is_writer(&self) -> bool {
-        self.write.is_some()
-    }
-
     /// What tells two apart: the public keys and the rest.
     fn public(&self) -> ([Option<osis_crypto::VerifyingKey>; 4], bool, [Option<Epoch>; 3]) {
         ([&self.sync, &self.write, &self.delete, &self.deposit].map(|k| k.as_ref().map(SigningSecret::verifying_key)), self.sync_established, self.epochs)
@@ -431,18 +427,6 @@ impl Engine {
         Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, sealed: opened.sealed, sections: env.sections, copy })
     }
 
-    /// The bodies a group's label must hold from its closure (spec/sync-judgement.md §1): held commits
-    /// touching the closure with a part the group's actor may read. A home label (an actor
-    /// synced as a group of itself) also carries the `label.0` and `created.0` writes of the
-    /// labeled groups it is the nearest labeled record-chain actor of (spec/sync-ids.md §2).
-    pub fn label_bodies(&mut self, g: &Tid) -> Result<Vec<Body>> {
-        let mut out = self.label_bodies_meta(g)?;
-        for b in &mut out {
-            b.plaintext = self.body_plaintext(b)?;
-        }
-        Ok(out)
-    }
-
     /// The plaintext of a body (`label_bodies_meta` leaves it out): the opened form of every
     /// held part of the commit; empty when the commit is not held any more.
     pub fn body_plaintext(&mut self, b: &Body) -> Result<Vec<u8>> {
@@ -458,7 +442,11 @@ impl Engine {
         Ok(c.encode())
     }
 
-    /// `label_bodies` without plaintexts, from a memo per commit (`Core::bodies`): a pass after a
+    /// The bodies a group's label must hold from its closure (spec/sync-judgement.md §1): held commits
+    /// touching the closure with a part the group's actor may read. A home label (an actor
+    /// synced as a group of itself) also carries the `label.0` and `created.0` writes of the
+    /// labeled groups it is the nearest labeled record-chain actor of (spec/sync-ids.md §2).
+    /// Without plaintexts (`body_plaintext`), from a memo per commit (`Core::bodies`): a pass after a
     /// change looks at only the commits it changed. The commits are found through `on_thing` and
     /// `by_aspect` (O(the closure's commits), no header decoded when the memo holds them), in ID
     /// order.
@@ -826,97 +814,6 @@ impl Engine {
         let Some(up) = self.core.created(g).and_then(osis_base::CreationRecord::first_admin) else { return false };
         self.epochs(&up).is_some_and(|o| ActorEpochs::derived(&o, g).role(r).is_established(ep))
     }
-
-    /// The delete secrets this node holds per commitment group of a blob of commit `c` whose
-    /// sections list aspects `ais` (spec/crypto.md §7, spec/wire.md §5): one list per group in
-    /// prefix order, each entry a level and its secret, matched over every held epoch along the
-    /// record chains. Needs no blob: a dropped body's copy may be gone.
-    pub fn delete_secrets_of(&mut self, c: &CommitId, ais: &[usize]) -> Vec<Vec<(u8, DeleteSecret)>> {
-        let Some(h) = self.header(c) else { return Vec::new() };
-        self.delete_secrets_by_group(&h, ais)
-    }
-
-    /// `delete_secrets_of` for header `h`.
-    pub fn delete_secrets_by_group(&self, h: &osis_commit::Header, ais: &[usize]) -> Vec<Vec<(u8, DeleteSecret)>> {
-        let ais: BTreeSet<usize> = ais.iter().copied().collect();
-        let mut sets: Vec<&Vec<usize>> = Vec::new();
-        let mut out = Vec::new();
-        for ai in ais {
-            let Some(a) = h.aspects.get(ai) else { continue };
-            if sets.contains(&&a.keys) {
-                continue;
-            }
-            sets.push(&a.keys);
-            out.push(self.delete_secrets(h, &a.tid, &a.keys));
-        }
-        out
-    }
-
-    /// The delete secrets for header `h`'s delete keys at indices `idx`, for a delta on `tid`.
-    fn delete_secrets(&self, h: &osis_commit::Header, tid: &Tid, idx: &[usize]) -> Vec<(u8, DeleteSecret)> {
-        let thing = self.core.delete_chain(tid);
-        let author = self.core.delete_chain(&h.actor);
-        idx.iter().filter_map(|i| h.keys.get(*i)).filter_map(|k| crate::engine::Core::delete_secret(k.level, &k.key, &thing, &author).map(|d| (k.level, d))).collect()
-    }
-}
-
-/// A delete item for an entry: by the label delete key when held, else by delete keys of
-/// levels (`groups`: the secrets held per commitment group, for the blob's prefix salt and its
-/// header's blind) and the label key those levels need (spec/sync-ids.md §6), under established
-/// epochs only (spec/crypto.md §4), one signature per group.
-pub fn delete_item(keys: &HeadKeys, label: &SyncId, blob: BlobId, blinding: Option<(&[u8; 16], &[u8; 16])>, groups: &[Vec<(u8, DeleteSecret)>]) -> Option<osis_label::DeleteItem> {
-    if let Some(d) = &keys.delete {
-        return Some(osis_label::DeleteItem::sign(d, label, blob));
-    }
-    delete_item_by_level(keys, label, blob, blinding?, groups)
-}
-
-/// A delete item by delete keys: per group the first level whose label key `keys` hold (a
-/// level-3 key needs the write key, which then signs for every level; without it, levels 1
-/// and 2 under the sync key). Signs each distinct (level, key) once. `None`: a group offers no
-/// level this node can sign for.
-pub fn delete_item_by_level(keys: &HeadKeys, label: &SyncId, blob: BlobId, blinding: (&[u8; 16], &[u8; 16]), groups: &[Vec<(u8, DeleteSecret)>]) -> Option<osis_label::DeleteItem> {
-    let (salt, hb) = blinding;
-    let sync = keys.sync.as_ref().filter(|_| keys.sync_established);
-    let write = keys.write.as_ref();
-    let usable = |level: u8| match osis_label::key_for_levels(&[level]).ok()? {
-        LabelRole::Write => write.map(|_| ()),
-        _ => sync.map(|_| ()),
-    };
-    let mut chosen: Vec<(u8, &DeleteSecret)> = Vec::new();
-    for g in groups {
-        // levels under the sync key first: the write key is asked for only when a group needs it
-        let pick = g.iter().filter(|(l, _)| *l != osis_base::format::DELETE_WRITER && usable(*l).is_some()).chain(g.iter().filter(|(l, _)| *l == osis_base::format::DELETE_WRITER && usable(*l).is_some())).next();
-        match pick {
-            Some((l, dk)) => {
-                if !chosen.iter().any(|(x, k)| x == l && k.seed().expose() == dk.seed().expose()) {
-                    chosen.push((*l, dk));
-                }
-            }
-            None => return None,
-        }
-    }
-    if chosen.is_empty() {
-        return None;
-    }
-    // one signature per level: two groups at one level with different keys cannot both be
-    // signed in one item; the first wins and the other group goes unsigned
-    chosen.sort_by_key(|(l, _)| *l);
-    chosen.dedup_by_key(|(l, _)| *l);
-    let levels: Vec<u8> = chosen.iter().map(|(l, _)| *l).collect();
-    let key = match osis_label::key_for_levels(&levels).ok()? {
-        LabelRole::Write => write?,
-        _ => sync?,
-    };
-    let item = osis_label::DeleteItem::sign_by(key, &chosen, salt, hb, label, blob).ok()?;
-    if groups.len() > chosen.len() {
-        // a group was dropped by the level dedup: check each is still covered by a chosen key
-        let covered = groups.iter().all(|g| g.iter().any(|(l, dk)| chosen.iter().any(|(x, k)| x == l && k.seed().expose() == dk.seed().expose())));
-        if !covered {
-            return None;
-        }
-    }
-    Some(item)
 }
 
 /// The label key of `keys` that signs `item` (the delete key, or the key its levels need).

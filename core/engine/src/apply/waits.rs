@@ -359,11 +359,6 @@ impl Waits {
         }
     }
 
-    /// The records the parts of commits here await (`awaits_records`).
-    pub fn records_awaited(&self) -> impl Iterator<Item = &Tid> {
-        self.on_record.keys()
-    }
-
     /// The records the parts of `id` await (`awaits_records`).
     pub fn records_of(&self, id: &CommitId) -> &[Tid] {
         self.records_of.get(id).map_or(&[], |v| v.as_slice())

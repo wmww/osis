@@ -5,4 +5,3 @@
 
 - Reach: any writer of a sync ID whose record blobs carry the destroyed thing logging a minting of it there (a dependent once needed the record; record blobs carry no delete key, notes/growth.md).
 - Fix options: a minting of a thing destroyed for good awaits nothing (it is never taken, `thing_wait`'s `for_good`), so it should not count in `awaits_record`; only a dependent's wait (`Reason::MissingChain`) or a part on a thing not destroyed for good learns a record.
-- `Engine::destroyed_records_awaited` (core/engine/src/apply/mod.rs) has no caller: the old sync's relearn path.

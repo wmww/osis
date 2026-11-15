@@ -99,17 +99,6 @@ impl Engine {
         r
     }
 
-    /// `commit_hostile` as a memory commit (`Engine::commit_in_memory`): a forged ephemeral
-    /// write, to test receivers.
-    #[doc(hidden)]
-    pub fn commit_in_memory_hostile(&mut self, mut m: crate::Mutation) -> Result<Option<CommitId>> {
-        m.unchecked();
-        let was = std::mem::replace(&mut self.core.skip_writer_rules, true);
-        let r = self.commit_in_memory(m);
-        self.core.skip_writer_rules = was;
-        r
-    }
-
     /// The last commit built while `skip_writer_rules` or `forge_bad` was set, as sent (tests:
     /// what this node's own copy may have dropped of it).
     #[doc(hidden)]
@@ -173,14 +162,6 @@ impl Engine {
         Ok(out)
     }
 
-    /// The store's local rows naming `needle` (a thing's or commit's bytes, in the key or value):
-    /// tests that nothing of what a node forgot stays.
-    #[doc(hidden)]
-    pub fn local_rows_naming(&mut self, needle: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let rows = self.read(|tx| Ok(tx.txn.scan_local(b"", b"", usize::MAX)?))?;
-        Ok(rows.into_iter().filter(|(k, v)| k.windows(needle.len()).any(|w| w == needle) || v.windows(needle.len()).any(|w| w == needle)).collect())
-    }
-
     /// What the store holds, decrypted (`Store::dump`): tests compare two nodes' stores.
     #[doc(hidden)]
     pub fn store_dump(&mut self) -> Result<Vec<(String, Vec<u8>)>> {
@@ -226,19 +207,6 @@ impl Engine {
                     n += 1;
                 }
             }
-            Ok(n)
-        })
-    }
-
-    /// How many purge requests' dropped-a-permanent-delta notes are kept (`retention::lasting`).
-    #[doc(hidden)]
-    pub fn named_permanent_count(&mut self) -> Result<usize> {
-        self.read(|tx| {
-            let mut n = 0;
-            tx.scan(crate::engine::records::NAMED_PERMANENT, |_, _| {
-                n += 1;
-                Ok(())
-            })?;
             Ok(n)
         })
     }
@@ -295,14 +263,6 @@ impl Engine {
         let m = self.core.ix.commits.get(c)?;
         let ai = m.aspect(tid, ak)?;
         Some(m.valid.get(ai).copied().unwrap_or(true))
-    }
-
-    /// The held deltas of `(tid, ak)` judged invalid here, with their `ts`. Tests: the order
-    /// harness tells the documented keep-at-most difference apart.
-    #[doc(hidden)]
-    pub fn invalid_writes(&self, tid: &Tid, ak: &Ak) -> Vec<(CommitId, osis_base::Ts)> {
-        let k = (*tid, ak.clone());
-        self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| self.body_valid(c, tid, ak) == Some(false)).map(|(ts, c)| (*c, *ts)).collect()
     }
 
     /// How many bodies of `(tid, ak)` are held.

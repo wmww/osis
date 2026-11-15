@@ -110,15 +110,6 @@ impl Engine {
             .collect()
     }
 
-    /// The newest held commit writing `(tid, ak)` with its aspect indexes there (a
-    /// grantee's certificate copy names a thing's `label.0` and `created.0`, spec/sync-inbox.md §5).
-    pub fn aspect_commit(&self, tid: &Tid, ak: &str) -> Option<(CommitId, BTreeSet<usize>)> {
-        let c = self.latest_on(tid, ak)?;
-        let h = self.header(&c)?;
-        let ais: BTreeSet<usize> = h.aspect_index(tid, ak).into_iter().collect();
-        Some((c, ais))
-    }
-
     /// Every applied commit with a valid delta on `(tid, ak)`, with its aspects there.
     pub fn aspect_commits(&self, tid: &Tid, ak: &str) -> Vec<(CommitId, BTreeSet<usize>)> {
         let Some(held) = Ak::new(ak).ok().and_then(|k| self.core.ix.by_aspect.get(&(*tid, k))) else { return Vec::new() };
@@ -749,84 +740,6 @@ impl Engine {
         judged_valid(&self.core, c, parts)
     }
 
-    /// Revokes about `authors` (of entries seen under a label of `ctx`'s group), with what a
-    /// verifier needs to judge them as this node does (their own authors' chain certificates;
-    /// spec/permissions.md §4): applied edge writes lowering an author's edge on a thing whose
-    /// parts the label's bodies do not carry (`body_carried`). Keysets only of actors reading the
-    /// label's actor: its rotators seal to those; a verifier needs none, and a thing the author
-    /// left has a fresh deposit seed that is not for the label's readers.
-    pub fn revoke_certificates(&mut self, authors: &BTreeSet<Tid>, ctx: &super::BodyCtx) -> Certs {
-        let actor = &ctx.actor;
-        let mut found: Vec<osis_perm::Certificates> = Vec::new();
-        for m in authors {
-            let Some(tl) = self.core.timelines.get(m) else { continue };
-            for wid in tl.applied().keys() {
-                let Some(mc) = tl.role_commit(&wid.0) else { continue };
-                let Some(op) = mc.ops.get(wid.1 as usize) else { continue };
-                if op.holder != *m || ctx.closure.contains(&op.target) && self.reads(ctx, &op.target) {
-                    continue;
-                }
-                let old = tl.edges_at(Some(mc.point())).get(&op.holder, &op.target).map(|e| e.role);
-                let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
-                if new >= old {
-                    continue;
-                }
-                if let Some(mut cs) = tl.write_certificates(wid) {
-                    cs.keys.retain(|t| self.core.may_read(t, actor));
-                    found.push(cs);
-                }
-            }
-        }
-        let mut out = Certs::default();
-        for cs in &found {
-            self.cert_parts(cs, &mut out);
-        }
-        out.records.retain(|t| self.core.created(t).is_some());
-        out
-    }
-
-    /// Applied writes lowering `x`'s edge on a thing inside `closure` (`x`'s label's closure)
-    /// that `x`'s edge there has not been raised again since, with what judges them
-    /// (spec/permissions.md §2, §4): `x`'s holders still holding the edge would re-upload the
-    /// thing's bodies its delete-key holders drop. Never a `secrets.0` or `keys.0` delta of such
-    /// a removal's own commit (`cert_parts` takes its `roles.0`).
-    pub fn removal_certificates(&mut self, x: &Tid, closure: &BTreeSet<Tid>) -> Certs {
-        let mut found: Vec<osis_perm::Certificates> = Vec::new();
-        let mut own = BTreeSet::new();
-        if let Some(tl) = self.core.timelines.get(x) {
-            let current = tl.edges_at(None);
-            for wid in tl.applied().keys() {
-                let Some(mc) = tl.role_commit(&wid.0) else { continue };
-                let Some(op) = mc.ops.get(wid.1 as usize) else { continue };
-                if op.holder != *x || !closure.contains(&op.target) {
-                    continue;
-                }
-                let old = tl.edges_at(Some(mc.point())).get(&op.holder, &op.target).map(|e| e.role);
-                let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
-                let now = current.get(&op.holder, &op.target).map(|e| e.role);
-                if new < old && now <= new
-                    && let Some(cs) = tl.write_certificates(wid)
-                {
-                    own.insert(wid.0);
-                    found.push(cs);
-                }
-            }
-        }
-        let mut out = Certs::default();
-        for cs in &found {
-            self.cert_parts(cs, &mut out);
-        }
-        out.records.retain(|t| self.core.created(t).is_some());
-        // the thing's newest `keys.0` is often the removal's own (its fresh deposit seed)
-        for c in &own {
-            let Some(h) = self.header(c) else { continue };
-            if let Some(p) = out.commits.get_mut(c) {
-                p.retain(|ai| h.aspects.get(*ai).is_some_and(|a| crate::apply::validity::edge_ak(a.ak.as_str())));
-            }
-        }
-        out
-    }
-
     /// The body of commit `c` restricted to `parts` (its plaintext holds those alone): a
     /// certificate copy. `None`: none of them held.
     pub fn part_body(&mut self, c: &CommitId, parts: &Parts) -> Result<Option<Body>> {
@@ -847,14 +760,6 @@ impl Engine {
             order: super::fetch_order(&resolved),
             to_label: false,
         }))
-    }
-
-    /// A header-only copy of held commit `c` (a minting or a destroying request, `minting_evidence`): no
-    /// part, so no expiry or commitments in its prefix (spec/sync-ids.md §1), ordered by its `ts`
-    /// (spec/crypto.md §5).
-    pub fn header_body(&self, c: &CommitId) -> Option<Body> {
-        let h = self.core.ix.commits.get(c).map(|m| m.header.clone())?;
-        Some(Body { commit: *c, parts: Vec::new(), expires: None, blind: h.blind, plaintext: Vec::new(), role_commit: h.kind.is_role(), order: h.ts.to_u64().max(1), to_label: false })
     }
 
     /// Blobs a certificate copy of `parts` of commit `c` needs beside its body (spec/sync.md

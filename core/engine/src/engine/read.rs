@@ -186,11 +186,6 @@ impl Engine {
         self.core.role_now(&self.core.me()?, tid)
     }
 
-    /// This node's role on `tid` for good: through edges with no `until` (`At::END`).
-    pub fn lasting_role_on(&self, tid: &Tid) -> Option<Role> {
-        self.core.timelines.get(tid)?.role(&self.core.me()?, tid, At::END)
-    }
-
     /// The local state fragment of `(tid, ak)` (tests, simulator invariants).
     pub fn state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
         let (tid, ak) = (*tid, ak.clone());

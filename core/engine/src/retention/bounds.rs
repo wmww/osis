@@ -1,6 +1,6 @@
 //! A held body's keep-at-least bound and whether it holds a live write (spec/commits.md §5).
 
-use super::{aspect_index, bounded, gone_of, held_part, known_part, writes_of};
+use super::{aspect_index, bounded, held_part, known_part, writes_of};
 #[cfg(test)]
 use super::oracle;
 use crate::engine::{Core, Engine, Tx};
@@ -490,14 +490,6 @@ impl Engine {
         super::history::permanent(&self.core, h, a, self.now().0)
     }
 
-    /// Whether a header of `h` may be a lasting header on `t` (spec/commits.md §5): it carries a
-    /// purge request, or a permanent delta on `t` unless `t` was destroyed by release alone (no header of
-    /// it lasts).
-    pub fn may_last_on(&self, h: &Header, t: &osis_base::Tid) -> bool {
-        let now = self.now().0;
-        !h.purge.is_empty() || h.aspects.iter().any(|a| a.tid == *t && super::history::permanent(&self.core, h, a, now)) && !super::destroy::released(&self.core, t, now)
-    }
-
     /// From when any node may drop held part `(tid, ak)` of `c` under a held valid writer's
     /// cover or its author's own whole replaces (spec/commits.md §5 Out of history, spec/sync.md
     /// §7): its keep-at-least bound on this node's clock (`part_keep`; a local drop changes only
@@ -554,12 +546,6 @@ impl Engine {
     pub fn delta_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         let key = (*c, *tid, ak.clone());
         osis_base::memo::Memo::get_in(self, |e| &e.core.live_bodies, &key, |e| e.run(|tx| delta_live_read(tx, &key)))
-    }
-
-    /// Whether delta `ai` of `c` holds writes of its own and is held value-less for all of them: a
-    /// purge took them, so it has no live write to carry (spec/commits.md §5).
-    pub fn part_valueless(&self, h: &Header, c: &CommitId, ai: usize) -> bool {
-        !gone_of(&self.core, h, c, ai).is_empty()
     }
 
     /// The lowest `ts` among the writes the held body of aspect `ak` of `c` carries (`None`: not

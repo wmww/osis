@@ -156,11 +156,6 @@ impl Held {
         out
     }
 
-    /// Everyone granted on `t` (`granted_on`), for old node-sync's `downstream`.
-    pub fn named_holders(&self, t: &Tid) -> Vec<Tid> {
-        self.granted_on(t).copied().collect()
-    }
-
     /// `from` and everything authority comes to them from: their first admins and the
     /// holders named on them, transitively (the search `reach` answers forward). A changed edge
     /// to holder `z` changes the roles only of `upstream({z})`.

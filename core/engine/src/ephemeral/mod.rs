@@ -36,11 +36,6 @@ pub struct Written {
 }
 
 impl Engine {
-    /// This open's session (spec/crdt.md §2.1): the source of its plain writes.
-    pub fn ephemeral_session(&self) -> osis_crdt::Session {
-        self.core.session
-    }
-
     /// The form this node's own session commits write under: for tests forging one.
     #[doc(hidden)]
     pub fn own_session_form(&self) -> osis_commit::Form {

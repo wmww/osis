@@ -36,7 +36,7 @@ use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_keys::{KeysWrite, HolderKeys, Recipient, SecretsWrite};
 use osis_perm::At;
-use osis_schema::core_types::{self as ct, Inbox, Keys, Secrets};
+use osis_schema::core_types::{self as ct, Keys, Secrets};
 use osis_schema::{RawKey, Codec};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
@@ -263,15 +263,6 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
     Ok(Recipient { holder, role, keys, floor: 0 })
 }
 
-/// The inbox a role write about `holder` goes to (spec/sync-inbox.md §1): the one its `keys.0` names.
-/// `None` for a key actor (direct delivery only) and when none is known here.
-pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
-    if tx.core.is_key_actor(holder) && !tx.core.is_account(holder) {
-        return Ok(None);
-    }
-    Ok(Core::keys_in(tx, holder)?.and_then(|k| k.inbox).map(|i| (*holder, i)))
-}
-
 /// The home sync ID of `tid` (two admins giving it secrets at once made two: the higher ID) of
 /// those it owns (`sync_ids::owned_in`).
 pub(crate) fn home_sync_id(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<SyncId>> {
@@ -392,11 +383,6 @@ impl Engine {
         self.read(|tx| edges::inbox_kem(tx, &a))
     }
 
-    pub fn inbox_of_actor(&mut self, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
-        let h = *holder;
-        self.read(|tx| inbox_of(tx, &h))
-    }
-
     /// Takes up a key actor from its seed (a link key from its link)
     /// for this session: it can sign (`Mutation::sign_as`) and its boxes open. Returns its tid.
     pub fn hold_key_actor(&mut self, seed: Secret32) -> Result<Tid> {
@@ -432,11 +418,6 @@ impl Engine {
     pub fn is_node(&mut self, t: &Tid) -> Result<bool> {
         let t = *t;
         self.read(|tx| is_node(tx, &t))
-    }
-
-    /// How many key actors this node holds now (tests: a redeemer forgets the seed).
-    pub fn held_key_actors(&self) -> usize {
-        self.core.key_actors.len()
     }
 
     /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §7).
