@@ -52,7 +52,7 @@ fn a_record_resumes_its_shared_set_spec_sync_opens_3() {
     assert!(p.a.opens.agreed(p.ca) && p.b.opens.agreed(p.cb));
 }
 
-// spec/sync-set.md §3 (waits while some peer shares S: a source or a record it keeps holding S
+// spec/sync-set.md §3 (it waits only while some peer is to be waited for on S: a source or a record it keeps holding S
 // as a member), spec/permissions.md §3 (Lost access: no peer but its account's nodes): S is
 // waited on while the connection has it open and, once closed, while the kept record holds it;
 // a peer whose proven actors the caller skips (this account's own nodes, for a self-removal)
@@ -70,8 +70,8 @@ fn waited_by_a_connection_or_a_kept_record_spec_sync_set_3() {
     assert!(!wait(&p, &S, &other), "its record names a skipped actor");
 }
 
-// spec/sync-set.md §3 (a peer that may hold S, its record not acknowledging S's current
-// credentials, keeps the wait), spec/sync-opens.md §5 Testing (`acked_pos`): S joins `a` while
+// spec/sync-set.md §3 (it waits only while some peer is to be waited for on S: one the rosters name
+// while no record of it acknowledged S's current credentials), spec/sync-opens.md §5 Testing (`acked_pos`): S joins `a` while
 // `b` is away, so no record holds it: `a` waits for `b` when the rosters say `b` may hold S, and
 // not for a peer they do not name, nor once `b`'s record acknowledges S with S not a member, nor
 // past a restart of what it read; records naming the same actors are one peer; the wait comes

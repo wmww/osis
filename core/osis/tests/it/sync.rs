@@ -639,7 +639,7 @@ fn an_unsynced_thing_is_forgotten_here_spec_sync_set_3() {
     assert_eq!(name(&b, t).as_deref(), Some("moved"));
 }
 
-// spec/sync-set.md §3 (it waits only while some peer shares S): a node alone, no peer ever sharing the thing, unsyncing
+// spec/sync-set.md §3 (with none, it stops at once): a node alone, no peer ever sharing the thing, unsyncing
 // it drops its only copy at once (the user's choice), its own writes held nowhere else.
 #[test]
 fn an_unsynced_thing_no_peer_shares_goes_at_once_spec_sync_set_3() {

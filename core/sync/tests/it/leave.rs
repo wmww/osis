@@ -167,7 +167,7 @@ fn kept_unread_stays_synced_until_own_entries_are_present_spec_sync_set_3() {
     assert_eq!(g.syncs(3), None);
 }
 
-// spec/sync-set.md §3 (it waits only while some peer shares S): a sync ID no peer shares (this node's only copy, no
+// spec/sync-set.md §3 (with none, it stops at once): a sync ID no peer shares (this node's only copy, no
 // source, no record holding it) stops at once, read or kept unread, its own writes held nowhere
 // else; one waiting whose last peer goes (its record evicted) stops then.
 #[test]

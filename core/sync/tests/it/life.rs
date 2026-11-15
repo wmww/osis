@@ -98,7 +98,7 @@ fn a_node_alone_releases_at_once_spec_commits_5() {
 }
 
 // spec/commits.md §5 (Lifetimes: while a peer sharing a sync ID is away nothing under it is
-// released), spec/sync-set.md §3 (a peer that may hold S, its record not acknowledging S): node 1
+// released), spec/sync-set.md §3 (it waits only while some peer is to be waited for on S: one the rosters name, never told of S): node 1
 // makes R retaining and referencing X outside its synced group and grants node 0's account write
 // on R, which node 0 accepts; apart from node 0, node 1 files both and drops R's reference. R's
 // sync ID joined node 1's sync set after the two parted, so no record holds it, yet node 1

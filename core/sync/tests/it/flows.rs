@@ -539,7 +539,7 @@ fn unfile(w: &mut World, i: usize, t: osis_base::Tid) {
     });
 }
 
-// spec/sync-set.md §3 (it waits while a peer that may hold S has not acknowledged it): node 1
+// spec/sync-set.md §3 (it waits only while some peer is to be waited for on S: one the rosters name, never told of S): node 1
 // makes a thing outside its synced group and grants node 0's account write, which node 0
 // accepts; apart from node 0, node 1 files the thing, writes it and unfiles it. No record holds
 // S (it joined node 1's sync set after the two parted), but node 0's account holds a role on it
@@ -588,7 +588,7 @@ fn an_unsynced_write_on_a_sync_id_just_joined_reaches_the_peer_first_spec_sync_s
     assert!(w.store(1).synced(&s).is_none(), "then stopped");
 }
 
-// spec/sync-set.md §3 (with no peer sharing S it stops at once): node 1 grants a thing it made
+// spec/sync-set.md §3 (with none, it stops at once): node 1 grants a thing it made
 // outside its synced group to node 0's account and removes it again; apart from node 0 it files
 // the thing, writes it and unfiles it. Node 0's record was never told of S, but no roster names
 // another holder of it any more, so it stops at once.
@@ -624,7 +624,7 @@ fn a_thing_no_other_node_may_hold_leaves_at_once_spec_sync_set_3() {
     assert!(w.store(1).synced(&s).is_none(), "stopped at once");
 }
 
-// spec/sync-set.md §3 (it waits only while some peer shares S): as above, but node 0 unfiles the
+// spec/sync-set.md §3 (it waits only while some peer is to be waited for on S: a peer told them that does not share S is not): as above, but node 0 unfiles the
 // thing while apart; once the two meet node 0's record acknowledges S with S not a member, so
 // node 1 stops though its write is held nowhere else (a peer that does not hold S takes nothing).
 #[test]
