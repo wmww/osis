@@ -182,3 +182,38 @@ fn a_node_removed_from_its_account_stops_syncing_spec_sync_set_3() {
     assert!(w.store(2).syncs().is_empty(), "node 2 syncs nothing: {:?}", w.store(2).syncs());
     assert!(w.store(2).held_ids().unwrap().is_empty(), "and holds no rows");
 }
+
+// spec/permissions.md §3 (Required rotation: a node's removal from D), spec/crypto.md §4
+// (Established and current): nodes 0 and 1 remove nodes 2 and 3 apart, each with its rotations,
+// and sync alone carries them across the heal: each node then holds the other's removal (the
+// other's removed node holds nothing on D there), every D epoch the other holds, and owes no
+// merge rotation. Fails in the engine: the sibling's removal, held whole, takes effect and
+// establishes its D epoch only once its account rotation is held, whose entry is wrapped under
+// that epoch (issues/sync-sibling-rotation-unopened.md)
+#[test]
+#[ignore = "needs fork-sides"]
+fn sibling_removals_apart_both_hold_through_sync_spec_permissions_3() {
+    let mut w = four_siblings();
+    w.cap = 6_000;
+    w.power_off(2);
+    w.power_off(3);
+    w.partition(0, 1);
+    w.run();
+    remove_node(&mut w, 0, 2);
+    remove_node(&mut w, 1, 3);
+    w.heal();
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    w.run();
+    let d = w.engine(0).account().unwrap().unwrap().1;
+    let gone: Vec<_> = [2, 3].map(|i| w.engine(i).tid()).into();
+    for (i, j) in [(0, 1), (1, 0)] {
+        let roster = w.engine(i).roster(&d);
+        assert!(gone.iter().all(|n| !roster.contains_key(n)), "node {i}: neither removed node holds D: {roster:?}");
+        let held: Vec<_> = w.engine(i).epochs(&d).unwrap().read.held().map(|(_, s)| s.clone()).collect();
+        let newest: Vec<_> = w.engine(j).epochs(&d).unwrap().read.held().map(|(_, s)| s.clone()).collect();
+        assert!(newest.iter().all(|s| held.contains(s)), "node {i}: holds every D epoch node {j} holds, its removal's included");
+        let owed = w.write(i, |e| e.signing_due()).unwrap();
+        assert!(owed.commits.is_empty(), "node {i}: the merge rotation made, nothing owed: {owed:?}");
+    }
+}

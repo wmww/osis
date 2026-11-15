@@ -1,15 +1,18 @@
-# A sibling's concurrent removal and rotation never open through sync
-> Summary: Two nodes of one account each remove a node while apart; through sync neither ever applies the other's removal (each still holds the other's removed node as an admin of D) and the other's account rotation stays unopened, so each keeps encrypting under a D epoch boxed to the node the other removed: a device removal is silently undone. Handed over directly, both apply.
+# A sibling's concurrent removal never takes effect at the other sibling
+> Summary: Two nodes of one account each remove a node while apart; after the heal each holds the other's removal commit whole, yet its edge write does not take effect (the other's removed node stays in D's roster) and its D epoch is not established, so the other's P rotation, wrapped under that epoch, never opens: a device removal is silently undone. Sync delivers everything; the cycle is in the engine's judgement.
 > Priority: critical
-> Tags: sync, engine, security
+> Tags: engine, security
 
-Severity (probe at the end of this run, after healing and a long advance): at node 0, `role_now(node 3, D)` is still Admin and node 1's removal of node 3 is not a departure there (`departures(D)` lists node 2's only); node 0's current D epoch is its own n=2, made while node 3 was a member and so boxed to it, and node 0 owes nothing (`signing_due` empty). Node 1 likewise keeps node 2. A removed device that ignores its removal keeps reading everything the other sibling writes, and that sibling re-seals and serves it as a device.
+Shape (osis-sync `duties::sibling_removals_apart_both_hold_through_sync_spec_permissions_3`, ignored until the engine fix): four siblings, nodes 2 and 3 off, nodes 0 and 1 partitioned; node 0 removes node 2, node 1 removes node 3 (`demote` on D: the removal commit R with D's rotation, then P's rotation Q); heal, run, pass deadline, run.
 
-Reproduce (core/sync/tests/it/duties.rs shape): four siblings of one account, nodes 2 and 3 off, nodes 0 and 1 partitioned; node 0 removes node 2, node 1 removes node 3 (each `demote` on D: the removal with D's rotation, then P's rotation); heal, run.
-- At each of nodes 0 and 1: the other's removal is applied (`header` present, all three parts held, `blob_parts` {0,1,2}, not a copy), yet `epochs(D).read` holds only the node's own n=2 epoch: the other's D epoch, boxed to it by that removal, is never learned.
-- So the other's P rotation, wrapped under that D epoch, stays `Opened::NotOpen` in the store (opening it by hand with `open_entry` after the run: still NotOpen), across a restart too.
-- The same commits handed over by `ingest_with_lists` instead (before or after the run) apply, and the node then holds both D epochs (two current) and owes the merge rotation.
+What node 0 holds after the run (node 1 is symmetric):
+- R: held, applied, not pending, its one blob with parts {0,1,2}, not a copy; reopening its entry gives `Duplicate`. Yet `roster(D)` still lists node 3 as admin, `departures(D)` lists node 2 alone, and D's epochs hold only node 0's own n=2 (node 1's n=2 is absent from the map, not even unestablished).
+- Q: its blob and entry are in the store under the account's sync ID, entry wrap under node 1's D n=2; `open_entry` gives `NotOpen` (S's read secrets at node 0: its own n=2 only).
+- Ingesting R alone by `ingest_with_lists` (during the partition, or with the removals 5 ms apart) gives the same state as sync: so the sync path does not diverge from plain ingest.
+- Ingesting Q's plaintext by hand: Q applies, node 1's n=2 is then established (held D epochs n 0, 1, 2, 2), departures cover both, and Q's entry then opens (`Duplicate`).
 
-So something on the sync path (open_entry: `open_commit`, the sections' openings, `note_unwrapped`, then `ingest` of the plaintext) leaves the removal's `secrets.0` boxes unopened or untaken where a plain ingest takes them. Until fixed, a sibling's concurrent removal is never covered at the other node: its account's fork is never merged (`signing_due` sees one head).
+So R's write and R's epoch count at node 0 only once Q is held, and Q reaches node 0 only under R's epoch: nothing delivery can carry breaks it. spec/permissions.md §3 (Nodes of P) makes the removal count "wherever the rotation does" and encrypts Q's seed under R's D epoch; nothing there says what Q's entry wrap is under, and the engine's `wrap_secret(D, Some(Q))` picks R's epoch, which a sibling holding R alone cannot open. Two ways out, both engine: wrap Q (its role parts only; the seed stays under R's epoch) under an epoch a holder of D held before R, or let R count and establish its epoch without Q at a node of P. The fix belongs to the engine's judgement of a sibling's concurrent removal and rotation (Fathom's fork-sides work).
 
-The duties test hands the commits over to test the pass-end rotation alone; once fixed, it should let sync carry them.
+Also seen: with both sides' commits handed over by `ingest_with_lists` before the heal, the run after the pass deadline never settles: each node, on the other's newest commit, writes another (a merge war at one world ms, a new commit per delivery, hundreds within minutes). The one-way hand-over in `a_rotation_owed_by_the_account_is_made_at_a_pass_end_spec_permissions_3` settles. A fix must leave concurrent merges settling to one.
+
+Once fixed: drop the `ignore`, and let that pass-end test carry node 1's commits by sync instead of handing them over.
