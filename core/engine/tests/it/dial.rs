@@ -225,3 +225,49 @@ fn a_removed_nodes_entry_leaves_the_dial_list_spec_sync_set_1() {
     publish(&mut lp, 0);
     assert_eq!(keys(&mut lp), vec![key(0).to_vec(), key(1).to_vec()], "back on D: listed");
 }
+
+// spec/sync-set.md §1 (dial list: a removed node's entry goes, unless a node on D's `reach.0`
+// names that key too): a node that named another node's dialable key in its own `reach.0`
+// before it was removed takes nothing out of the dial list with it.
+#[test]
+fn a_removed_node_naming_anothers_key_drops_no_entry_spec_sync_set_1() {
+    let (mut lp, d) = account_two_nodes();
+    publish(&mut lp, 0);
+    publish(&mut lp, 1);
+    spread(&mut lp);
+    let p = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let n1 = lp.peers[1].engine.tid();
+    let mut m = Mutation::new();
+    m.set(n1, &ct::REACH, &ct::Reach { dialable: key(0), items: items(1), account: Some(p) }).unwrap();
+    lp.peers[1].engine.commit(m).unwrap();
+    spread(&mut lp);
+    let profile = lp.peers[0].engine.profile_of(&p).expect("P's profile");
+    lp.peers[0].engine.demote(&d, &Demotion { holder: n1, new: None, retain: None }).unwrap();
+    let keys = lp.peers[0].engine.get_typed(&profile, &ct::DIAL).unwrap().unwrap_or_default().into_keys().collect::<Vec<_>>();
+    assert_eq!(keys, vec![key(0).to_vec(), key(1).to_vec()], "node 0's entry stays; node 1's own key is not one its reach.0 names");
+}
+
+// spec/sync-set.md §1 (dial list: a removed node's entry goes whenever it is held): the removed
+// node rewrites its entry beside its removal, not having seen it (counted here or not); once
+// both meet, the entry is gone and stays gone, and nothing more is written (no node writes it
+// back to drop it again).
+#[test]
+fn an_entry_written_beside_the_removal_goes_once_spec_sync_set_1() {
+    let (mut lp, d) = account_two_nodes();
+    publish(&mut lp, 0);
+    publish(&mut lp, 1);
+    spread(&mut lp);
+    let p = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let profile = lp.peers[0].engine.profile_of(&p).expect("P's profile");
+    let n1 = lp.peers[1].engine.tid();
+    lp.peers[0].engine.demote(&d, &Demotion { holder: n1, new: None, retain: None }).unwrap();
+    lp.peers[1].engine.publish_reach(key(1), items(5)).unwrap();
+    spread(&mut lp);
+    let keys = |lp: &mut LocalPeer| lp.peers[0].engine.get_typed(&profile, &ct::DIAL).unwrap().unwrap_or_default().into_keys().collect::<Vec<_>>();
+    assert_eq!(keys(&mut lp), vec![key(0).to_vec()]);
+    let held = lp.peers[0].engine.commit_ids().len();
+    spread(&mut lp);
+    spread(&mut lp);
+    assert_eq!(keys(&mut lp), vec![key(0).to_vec()]);
+    assert_eq!(lp.peers[0].engine.commit_ids().len(), held, "settled: no more writes");
+}

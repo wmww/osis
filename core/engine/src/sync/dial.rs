@@ -183,9 +183,10 @@ pub(crate) type Departed = Option<(Tid, BTreeSet<Vec<u8>>)>;
 
 /// The entries of this node's account's dial list (`dial^.0` on its profile) of nodes removed
 /// from its devices actor D (spec/sync-set.md §1 Dial list): the dialable keys of the `reach.0`
-/// held of each node a counting removal took off D that holds no role there now, with the
-/// profile; `None` when this node writes no profile (no account, or the profile not held or not
-/// writable here).
+/// held of each node a counting removal took off D that holds no role there now, but for a key
+/// some node on D's `reach.0` names (that node's own entry: a node about to be removed could
+/// name another's key in its `reach.0`), with the profile; `None` when this node writes no
+/// profile (no account, or the profile not held or not writable here).
 fn departed(tx: &mut Tx<'_>) -> Result<Departed> {
     let Some((p, d)) = tx.core.account_devices() else { return Ok(None) };
     let Some(profile) = tx.core.profile_of(&p).filter(|x| tx.core.writable(x)) else { return Ok(None) };
@@ -199,6 +200,13 @@ fn departed(tx: &mut Tx<'_>) -> Result<Departed> {
     for n in gone {
         if let Some(r) = typed(tx, &n, &ct::REACH)?.filter(|r| list.contains_key(r.dialable.as_slice())) {
             out.insert(r.dialable.to_vec());
+        }
+    }
+    if !out.is_empty() {
+        for n in &current {
+            if let Some(r) = typed(tx, n, &ct::REACH)? {
+                out.remove(r.dialable.as_slice());
+            }
         }
     }
     Ok(Some((profile, out)))
