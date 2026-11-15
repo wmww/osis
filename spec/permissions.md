@@ -380,6 +380,7 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
   - The link has ended, and the redeemer stops there, when either holds:
     - every route of K's sync ID (the link's node and the peers it shares K with, as known) has failed to open it, at least one by refusing L's static entry;
     - a held role history shows L's grant, or K's on the target, removed or past `until`.
+  - A redeemer not joined MAY stop after a time of its node's choosing (spec/sync-inbox.md §6).
   - A redeemer that stops, for any reason, forgets the seed and so loses read access to K and what K holds (§3).
 - **Joiner's leave**: an account other than K's first admin holding K by a grant (a thing whose creation record has the `link` field) leaves K (a self-removal, §2) once a held role history shows K's edge on the target that field names removed or past `until`; K's edge on any other thing ends nothing. A node of the account MUST write it once it holds that history. A grant of K again brings back no joiner.
 - `until` on L's grant expires the link. **Single use** (the link's `flags` bit 0, spec/wire.md §10) = the redemption also removes L's own grant in the same commit (a self-removal).

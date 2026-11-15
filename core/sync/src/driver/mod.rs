@@ -384,10 +384,18 @@ impl Node {
     /// Redeems a share link (spec/sync-inbox.md §6): first contact, kept until the join is held
     /// elsewhere. `Done` once the join is written.
     pub fn redeem(&mut self, link: &osis_label::ShareLink) -> Waiting {
+        // its follow time runs from now (`Policy::follow_link_ms`)
+        self.now = self.now.max(self.engine.now());
         let mut out = Vec::new();
         let w = self.inbox.redeem(&mut cx!(self, &mut out), link);
         self.driver.pending.extend(out);
         w
+    }
+
+    /// Whether link K is being redeemed here (`redeem`): not joined yet or the join not yet held
+    /// at a source, and not ended or given up (`Policy::follow_link_ms`).
+    pub fn redeeming(&self, k: &osis_base::Tid) -> bool {
+        self.inbox.redeeming(k)
     }
 
     /// Writes a bundle of the sync IDs `ids` held here (spec/sync-streams.md §6, spec/wire.md

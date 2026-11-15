@@ -209,10 +209,17 @@ impl Default for SyncConfig {
     }
 }
 
+/// How long a redeem not joined yet is followed (spec/sync-inbox.md §6, local policy;
+/// minor consequence): an hour, long enough for a sharer's sleeping device to wake, short enough
+/// not to dial a gone one forever. At 0 a redeem gives up at once; at infinity a sharer that never
+/// answers is followed and dialed forever. Past it the user redeems the link again.
+pub const FOLLOW_LINK_MS: u64 = 60 * 60 * 1000;
+
 /// Which nodes this node dials, proves its actors to and syncs with (spec/sync-opens.md §1
 /// Policy): its account's choice, overridable per node. The one seam such a choice goes through:
-/// the dial candidates (`dial`), the session's proofs (`identify`) and whether a proven peer is
-/// kept (`sync_with`). Only the permissive policy exists, every answer yes; a configuration adds
+/// the dial candidates (`dial`), the session's proofs (`identify`), whether a proven peer is
+/// kept (`sync_with`) and how long a link's sharer is followed (`follow_link_ms`). Only the
+/// default policy exists, every answer yes and `FOLLOW_LINK_MS`; a configuration adds
 /// its options here and answers from them (and from what the engine holds, e.g. the account's
 /// contacts, once it takes the engine).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -235,5 +242,11 @@ impl Policy {
     /// the proofs are judged.
     pub fn sync_with(&self, _peer: &crate::session::Proven) -> bool {
         true
+    }
+
+    /// How long, from its start, a redeem not joined yet is followed before this node gives it up
+    /// (spec/sync-inbox.md §6): `FOLLOW_LINK_MS`.
+    pub fn follow_link_ms(&self) -> u64 {
+        FOLLOW_LINK_MS
     }
 }

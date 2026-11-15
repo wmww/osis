@@ -521,6 +521,32 @@ fn redeeming_a_link_joins_and_files_its_thing_spec_sync_set_4() {
     assert_eq!(a.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("from b"));
 }
 
+// spec/sync-inbox.md §6 (First contact: a node may stop following a link after a time of its
+// choosing), notes/api-design.md (a wait sure never to finish fails): with the sharer away the
+// whole follow time, `redeem` fails `Network` at it, and nothing is held.
+#[test]
+fn a_redeem_whose_sharer_never_answers_fails_at_the_follow_time_spec_sync_inbox_6() {
+    use osis::internals::FOLLOW_LINK_MS;
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 44, &c);
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    let b = on(&net, 45, &c);
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.commit().unwrap();
+    let link = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
+    net.set_online(0, false);
+    let mut f = std::pin::pin!(b.redeem(&link));
+    let mut poll = || f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+    assert!(poll().is_pending());
+    net.advance(FOLLOW_LINK_MS - 60_000);
+    assert!(poll().is_pending(), "waits within the follow time");
+    net.advance(120_000);
+    assert!(matches!(poll(), std::task::Poll::Ready(Err(Error::Network(_)))), "fails once given up");
+    assert!(!matches!(b.role_on(t), Ok(Some(_))), "joined nothing");
+}
+
 // spec/sync-status.md §3 (waits), spec/sync-inbox.md §6: a redeemer (the redeem files the thing
 // under its home) waits on the thing (its home carrying it, shared by no peer) until the thing's data
 // is here; the sharer away (its record holding the thing's sync ID), a wait there runs on.

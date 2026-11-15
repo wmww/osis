@@ -730,9 +730,11 @@ impl Osis {
     /// Redeems a link: reaches what it names and joins it, returning the thing. The join lists the
     /// thing in `home()` as a subgroup, unless a synced group holds it already, so it syncs as
     /// one this account made (move it elsewhere afterwards to file it in another group). Returns once
-    /// this account holds a role on the thing here; it waits for the link's node meanwhile
-    /// (wrap it in a timeout). A link this account already reaches the thing by joins nothing.
-    /// What the link holds is kept until the join is held elsewhere, a dropped call included.
+    /// this account holds a role on the thing here; it waits for the link's node meanwhile, for
+    /// about an hour from the first call (this node's policy), then fails with `Network` and
+    /// keeps nothing: redeem it again to try again. A link this account already reaches the thing
+    /// by joins nothing. What the link holds is kept until the join is held elsewhere or the node
+    /// gives up, a dropped call included.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if let Some(at) = self.process_at("redeem")? {
             return self.remote_wait(&at, crate::port::method::REDEEM, (link.clone(),))?.await;
@@ -760,7 +762,7 @@ impl Osis {
                     return Some(Err(Error::Invalid(format!("link: {why}"))));
                 }
             }
-            None
+            redeem_over(db, &link, "link")
         }))
     }
 
@@ -873,7 +875,11 @@ impl Osis {
                     return Some(Err(Error::Invalid(format!("contact card: {why}"))));
                 }
             }
-            None
+            // joined: the account's keys come with the profile's sync
+            if db.engine(|e| e.role_on(&p).is_some()) {
+                return None;
+            }
+            redeem_over(db, &link, "contact card")
         }))
     }
 
@@ -985,3 +991,17 @@ const PROFILE_OF: &str = "profile/";
 
 /// App record: this node's contact card text.
 const CONTACT: &str = "contact";
+
+/// A redeem with no role on its target yet (`redeem`, `import_contact`) whose node stopped
+/// redeeming the link: it ended (`Invalid`), or the sharer never answered within the node's
+/// follow time (`Network`, `osis_sync::Policy::follow_link_ms`). `None` while it is redeemed.
+fn redeem_over<R>(db: &Osis, link: &osis_label::ShareLink, what: &str) -> Option<Result<R>> {
+    if db.locked(|l| l.node.redeeming(&link.k)) {
+        return None;
+    }
+    Some(Err(if db.engine(|e| e.link_ended(link)) {
+        Error::Invalid(format!("{what}: the link has ended"))
+    } else {
+        Error::Network(format!("{what}: no holder answered"))
+    }))
+}

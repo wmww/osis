@@ -143,13 +143,14 @@ pub(crate) struct Here<'a> {
     pub store: &'a mut Store,
     pub now: WallMs,
     pub rng: &'a mut dyn NodeRng,
+    pub policy: &'a crate::types::Policy,
 }
 
 impl Inbox {
     /// Whether anything acted.
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status) -> Result<bool> {
-        let Cx { engine, store, now, rng, .. } = cx;
-        let mut here = Here { engine, status: Some(status), store, now: *now, rng: &mut **rng };
+        let Cx { engine, store, now, rng, policy, .. } = cx;
+        let mut here = Here { engine, status: Some(status), store, now: *now, rng: &mut **rng, policy };
         let mut net = Links { sessions, opens, streams };
         self.step(&mut here, &mut net)
     }
@@ -158,8 +159,8 @@ impl Inbox {
     /// followed again from the store, before any module reads the sync set (`leave` judges what
     /// left it by the set as it stands). Whether it started now.
     pub fn start(&mut self, cx: &mut Cx) -> Result<bool> {
-        let Cx { engine, store, now, rng, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng };
+        let Cx { engine, store, now, rng, policy, .. } = cx;
+        let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng, policy };
         self.begin(&mut here)
     }
 
@@ -191,8 +192,8 @@ impl Inbox {
 
     /// Register, Delete, Stranded and Suspect requests; Deposit, Stranded and Register answers.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, conn: ConnId, m: Incoming) {
-        let Cx { engine, store, now, rng, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng };
+        let Cx { engine, store, now, rng, policy, .. } = cx;
+        let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng, policy };
         let mut net = Links { sessions, opens, streams };
         self.receive(&mut here, &mut net, conn, m);
     }
@@ -249,8 +250,8 @@ impl Inbox {
     /// First contact through a link (spec/sync-inbox.md §6): durable until the join is held
     /// elsewhere. `Done` once the join is written.
     pub fn redeem(&mut self, cx: &mut Cx, link: &ShareLink) -> Waiting {
-        let Cx { engine, store, now, rng, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng };
+        let Cx { engine, store, now, rng, policy, .. } = cx;
+        let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng, policy };
         self.redeem_on(&mut here, link)
     }
 
@@ -259,6 +260,12 @@ impl Inbox {
             Ok(w) => w,
             Err(_) => Waiting::Never("the link could not be kept"),
         }
+    }
+
+    /// Whether link K is being redeemed here: a redeem not joined and not ended, nor given up
+    /// (`Policy::follow_link_ms`).
+    pub fn redeeming(&self, k: &Tid) -> bool {
+        self.links.redeeming(k)
     }
 
     /// Dial hints from inbox blobs taken and links being redeemed: dial candidates

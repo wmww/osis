@@ -350,3 +350,60 @@ fn a_link_keys_promoted_grant_verifies_where_its_node_card_never_went_spec_sync_
         assert_eq!(w.engine(2).core.held_on(&k).count(), 0, "node 1's {ak} never reached node 2");
     }
 }
+
+// spec/sync-inbox.md §6 (First contact: a node may stop following a link after a time of its
+// choosing): node 1 redeems node 0's link while node 0 is unreachable; a restart halfway keeps
+// the redeem and its start; at the follow time the redeem is given up: not redeemed, K's sync ID
+// no longer followed, nothing kept across a restart, and node 0 no longer dialed.
+#[test]
+fn a_link_whose_sharer_never_answers_is_given_up_spec_sync_inbox_6() {
+    use osis_sync::types::FOLLOW_LINK_MS;
+    let mut w = two_nodes();
+    let p0 = w.node(0).profile.unwrap();
+    let link = w.make_link(0, p0, Role::Read);
+    w.partition(0, 1);
+    assert_eq!(w.redeem(1, &link), Waiting::Pending);
+    w.advance(FOLLOW_LINK_MS / 2);
+    w.power_off(1);
+    w.power_on(1);
+    w.advance(1);
+    assert!(w.node(1).node.redeeming(&link.k), "kept across the restart");
+    assert!(w.engine(1).sync_holder(&link.k_label).unwrap().is_some(), "K's sync ID followed");
+    let before = w.dials(1).work().dials;
+    w.advance(FOLLOW_LINK_MS / 2 - 2);
+    assert!(w.node(1).node.redeeming(&link.k), "still redeemed before the follow time from its start");
+    assert!(w.dials(1).work().dials > before, "node 0 dialed meanwhile");
+    w.advance(2);
+    assert!(!w.node(1).node.redeeming(&link.k), "given up at the follow time from its start");
+    assert_eq!(w.engine(1).sync_holder(&link.k_label).unwrap(), None, "K's sync ID unfollowed");
+    let after = w.dials(1).work().dials;
+    w.advance(FOLLOW_LINK_MS);
+    assert_eq!(w.dials(1).work().dials, after, "node 0 no longer dialed");
+    w.power_off(1);
+    w.power_on(1);
+    w.advance(1);
+    assert!(!w.node(1).node.redeeming(&link.k), "nothing kept");
+    // redeeming it again starts again, and with node 0 back it joins
+    w.heal();
+    assert_eq!(w.redeem(1, &link), Waiting::Pending);
+    w.run();
+    assert_eq!(w.redeem(1, &link), Waiting::Done, "joined once redeemed again");
+}
+
+// spec/sync-inbox.md §6 (First contact): a sharer that answers within the follow time is joined
+// as ever: node 0 back just before it, node 1 joins.
+#[test]
+fn a_sharer_answering_before_the_follow_time_is_joined_spec_sync_inbox_6() {
+    use osis_sync::types::FOLLOW_LINK_MS;
+    let mut w = two_nodes();
+    let p0 = w.node(0).profile.unwrap();
+    let link = w.make_link(0, p0, Role::Read);
+    w.partition(0, 1);
+    assert_eq!(w.redeem(1, &link), Waiting::Pending);
+    w.advance(FOLLOW_LINK_MS - 60_000);
+    w.heal();
+    w.run();
+    assert_eq!(w.redeem(1, &link), Waiting::Done, "joined");
+    let a1 = w.node(1).account.unwrap();
+    assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
+}

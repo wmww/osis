@@ -10,14 +10,18 @@
 //! (`redeem-dropped-before-delivery`). "Held at a source" is status's view (spec/sync-status.md
 //! §2). A link that ends before the join (the held role history shows L's edge on K, or K's on the
 //! target, removed or past `until`) is forgotten the same way, and redeeming it again answers
-//! `Never`. Not built: the other end, every route refusing L's static entry.
+//! `Never`. So is a link not joined within the node's follow time (`Policy::follow_link_ms`, from
+//! the redeem's start kept in its row, judged on the engine's clock, whose wake comes through
+//! `Engine::clock_next`): a sharer that never answers is followed no longer (spec/sync-inbox.md
+//! §6); the user may redeem it again. Not built: the other end, every route refusing L's static
+//! entry.
 //!
 //! Finalize is the sharer's engine's, on a complete pass of K's sync ID (status tells it).
 
 use super::{DialHint, Here};
 use crate::types::{Result, Waiting};
 use osis_base::memo::{Effects, Stamped};
-use osis_base::{CommitId, Tid};
+use osis_base::{CommitId, Tid, WallMs};
 use osis_engine::Engine;
 use osis_label::ShareLink;
 use osis_store::Shred;
@@ -28,6 +32,8 @@ const ROWS: &[u8] = b"I/r/";
 #[derive(Clone, Debug)]
 struct Pending {
     link: ShareLink,
+    /// When this node started redeeming it (node clock): its follow time runs from here.
+    since: WallMs,
     joined: Option<CommitId>,
 }
 
@@ -40,15 +46,16 @@ impl Pending {
     fn encode(&self) -> Result<Vec<u8>> {
         let text = self.link.to_text().map_err(|_| crate::types::Error::NotBuilt("link text"))?;
         let joined = self.joined.map_or(vec![0], |c| [&[1u8][..], &c.0].concat());
-        Ok([joined, text.into_bytes()].concat())
+        Ok([joined, self.since.0.to_be_bytes().to_vec(), text.into_bytes()].concat())
     }
     fn decode(v: &[u8]) -> Option<Pending> {
         let (joined, rest) = match v.first()? {
             0 => (None, v.get(1..)?),
             _ => (Some(CommitId(v.get(1..33)?.try_into().ok()?)), v.get(33..)?),
         };
-        let link = ShareLink::from_text(std::str::from_utf8(rest).ok()?).ok()?;
-        Some(Pending { link, joined })
+        let since = WallMs(u64::from_be_bytes(rest.get(..8)?.try_into().ok()?));
+        let link = ShareLink::from_text(std::str::from_utf8(rest.get(8..)?).ok()?).ok()?;
+        Some(Pending { link, since, joined })
     }
 }
 
@@ -65,6 +72,8 @@ enum Stage {
     Ready,
     /// The link has ended (`Engine::link_ended`): the redeemer stops.
     Ended,
+    /// Not joined within the node's follow time: the redeemer stops.
+    GaveUp,
 }
 
 #[derive(Clone)]
@@ -108,13 +117,19 @@ impl Redemptions {
     }
 
     pub(super) fn redeem(&mut self, h: &mut Here<'_>, link: &ShareLink) -> Result<Waiting> {
+        // a redeem before this start's: the kept row, with its start
+        if !self.pending.contains_key(&link.k)
+            && let Some(p) = h.store.with_tx(|t| t.get_local(&row_key(&link.k)))?.as_deref().and_then(Pending::decode)
+        {
+            self.follow(h, link.k, p)?;
+        }
         if let Some(p) = self.pending.get(&link.k) {
             return Ok(if p.joined.is_some() { Waiting::Done } else { Waiting::Pending });
         }
         if h.engine.link_ended(link) {
             return Ok(Waiting::Never("the link has ended"));
         }
-        let p = Pending { link: link.clone(), joined: None };
+        let p = Pending { link: link.clone(), since: h.now, joined: None };
         let row = p.encode()?;
         h.store.with_tx(|t| t.put_local(&row_key(&link.k), &row, Shred::Yes))?;
         self.follow(h, link.k, p)?;
@@ -124,16 +139,17 @@ impl Redemptions {
     pub(super) fn settle(&mut self, h: &mut Here<'_>) -> Result<bool> {
         let mut acted = false;
         for k in self.ready.due() {
-            let Some(link) = self.pending.get(&k).map(|p| p.link.clone()) else {
+            let Some((link, since)) = self.pending.get(&k).map(|p| (p.link.clone(), p.since)) else {
                 self.ready.unwant(&k);
                 continue;
             };
             let engine = &mut *h.engine;
-            let Some((_, stage)) = self.ready.try_settle(&k, || link_stage(engine, &link))? else { continue };
+            let until = WallMs(since.0.saturating_add(h.policy.follow_link_ms()));
+            let Some((_, stage)) = self.ready.try_settle(&k, || link_stage(engine, &link, until))? else { continue };
             if stage == Stage::Waiting {
                 continue;
             }
-            if stage == Stage::Ended {
+            if matches!(stage, Stage::Ended | Stage::GaveUp) {
                 self.ready.unwant(&k);
                 self.forget(h, &k)?;
                 acted = true;
@@ -144,7 +160,7 @@ impl Redemptions {
             let me = h.engine.me();
             let Some(c) = h.engine.redeem(&link, &me, link.single_use)?.commits.first().copied() else { continue };
             self.ready.unwant(&k);
-            let p = Pending { link, joined: Some(c) };
+            let p = Pending { link, since, joined: Some(c) };
             let row = p.encode()?;
             h.store.with_tx(|t| t.put_local(&row_key(&k), &row, Shred::Yes))?;
             self.pending.insert(k, p);
@@ -176,16 +192,25 @@ impl Redemptions {
         Ok(())
     }
 
+    /// Whether link K is being redeemed here.
+    pub(super) fn redeeming(&self, k: &Tid) -> bool {
+        self.pending.contains_key(k)
+    }
+
     /// The sharer nodes of the links being redeemed (spec/wire.md §10: first-contact hints).
     pub(super) fn hints(&self) -> impl Iterator<Item = &DialHint> {
         self.hints.values().flatten()
     }
 }
 
-/// The link has ended, or the join can be written (`Engine::redeemable`).
-fn link_stage(engine: &mut Engine, link: &ShareLink) -> Result<Stage> {
+/// The link has ended, the join can be written (`Engine::redeemable`), or the follow time ran out
+/// at `until` (the engine's clock read up to `until`, so its passing moves this).
+fn link_stage(engine: &mut Engine, link: &ShareLink, until: WallMs) -> Result<Stage> {
     if engine.link_ended(link) {
         return Ok(Stage::Ended);
     }
-    Ok(if engine.redeemable(link) { Stage::Ready } else { Stage::Waiting })
+    if engine.redeemable(link) {
+        return Ok(Stage::Ready);
+    }
+    Ok(if engine.reached(until) { Stage::GaveUp } else { Stage::Waiting })
 }

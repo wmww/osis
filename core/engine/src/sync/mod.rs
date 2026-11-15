@@ -1261,6 +1261,12 @@ impl Engine {
         self.core.time.next().map(WallMs)
     }
 
+    /// Whether the memo clock reached `t`, read up to `t`: a value judged by it moves when `t`
+    /// passes, and `clock_next` wakes the driver then.
+    pub fn reached(&self, t: WallMs) -> bool {
+        self.core.time.until(Some(t.0)) >= t.0
+    }
+
     /// Moves the memo clock to `now`.
     pub fn set_now(&mut self, now: WallMs) {
         self.core.time.set(now.0);
@@ -1269,5 +1275,26 @@ impl Engine {
     /// `caps^.0` of this node (spec/sync-ids.md §5 Caps).
     pub fn caps(&mut self) -> Result<Arc<Caps>> {
         self.caps_now()
+    }
+}
+
+#[cfg(test)]
+mod tests_clock {
+    use crate::local_peer::LocalPeer;
+    use osis_base::WallMs;
+
+    // `reached` (sync's deadlines, e.g. a link's follow time, spec/sync-inbox.md §6): read before
+    // `t`, it sets a wake at `t`, and holds once the clock is there.
+    #[test]
+    fn reached_wakes_at_its_time_spec_sync_inbox_6() {
+        let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+        let e = &mut lp.peers[0].engine;
+        let now = e.now();
+        e.set_now(now);
+        let t = WallMs(now.0 + 10_000);
+        assert!(!e.reached(t));
+        assert_eq!(e.clock_next(), Some(t), "a wake at t");
+        e.set_now(t);
+        assert!(e.reached(t));
     }
 }
