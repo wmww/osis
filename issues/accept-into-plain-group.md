@@ -4,4 +4,4 @@
 > Tags: osis, sync
 
 - Fix: judge `into` by the synced closures (`Engine::synced_closures`, pub(crate) today) instead of the sync set's sync IDs.
-- Seen in cli `invitations_accept_and_relay_commands` (a `--local` group; refusing that one is right either way).
+- Seen in cli `invitations_accept_and_relay_commands` (a group listed nowhere; refusing that one is right either way).
