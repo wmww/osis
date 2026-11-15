@@ -1495,6 +1495,30 @@ fn a_walk_stops_past_its_keys_or_refused_spec_sync_ids_6() {
     assert_eq!(r.opens.walk_stop(&S), None, "13: the source does not keep S");
 }
 
+// spec/sync-ids.md §6 (Behind: refused for now, code 4: asked again after a back-off): a
+// Behind answered 4 is not asked again before its back-off, which wakes the node, stops nothing
+// and is not counted off the path; once over it is asked again, and a second 4 backs off longer.
+#[test]
+fn a_behind_refused_for_now_is_asked_again_after_a_back_off_spec_sync_ids_6() {
+    use osis_base::WallMs;
+    use osis_sync::inbox::{BACKOFF_MIN_MS, backoff_ms};
+    let behind = |r: &mut Side| of_kind(&r.sent(), 37).into_iter().find_map(|m| match m {
+        Msg::Offer { id, items } if matches!(items.as_slice(), [OfferItem::Behind(b)] if b.sync_id == S) => Some(id),
+        _ => None,
+    });
+    let (mut r, mut adv, _) = walk_answered(osis_proto::SharedItem::code(Code::RATE_LIMITED), false);
+    assert_eq!(r.opens.walk_stop(&S), None, "refused for now: no stop");
+    assert_eq!(r.opens.next_wake(), Some(WallMs(r.now.0 + BACKOFF_MIN_MS)), "its back-off wakes the node");
+    r.now = WallMs(r.now.0 + BACKOFF_MIN_MS - 1);
+    r.settle();
+    assert_eq!(behind(&mut r), None, "not asked within its back-off");
+    r.now = WallMs(r.now.0 + 1);
+    r.settle();
+    let Some(id) = behind(&mut r) else { panic!("asked again once its back-off is over") };
+    adv.send(&mut r, Msg::Shared { id, items: vec![osis_proto::SharedItem::code(Code::RATE_LIMITED)] });
+    assert_eq!(r.opens.next_wake(), Some(WallMs(r.now.0 + backoff_ms(1))), "a second 4: a longer back-off");
+}
+
 // spec/sync-ids.md §6 (Walk: Stranded there), spec/sync-opens.md §3 (record: it keeps the
 // source's step): where a walk stopped is kept in the peer's record, so after both sides restart
 // the record's next connection starts stopped there, testing nothing again; a test there that

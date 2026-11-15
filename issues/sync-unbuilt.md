@@ -13,7 +13,6 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 ## opens
 - Records' named actors (spec/sync-opens.md §3: a record is honoured only while a proven actor it names is known here now) are judged at a connection's proof alone; a live connection keeps its record when the actor stops being known.
 - Static entries claimed in the walk's tests (`Tested::Static` always has no step).
-- A Behind answered 4 (refused for now, spec/sync-ids.md §6 Register: asked again after a back-off) is asked again only at this node's next change of S.
 
 ## store and streams
 - Fetching an unjudgeable body again (spec/commits.md §4 Unjudgeable, spec/sync-judgement.md §3 Dropped bodies): needs byte-less entries (a body counting missing is fetched again through `Streams::fetch_again`, notes/sync-read.md); until then an awaiting entry keeps its bytes (notes/sync-store.md).

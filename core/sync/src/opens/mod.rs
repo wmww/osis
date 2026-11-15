@@ -241,6 +241,9 @@ struct WalkState {
     asked: bool,
     /// A Hit on a walk credential refused (a false positive of the filter): it asks Behind.
     missed: bool,
+    /// Behind answers refused for now (4) in a row: the next ask waits `inbox::backoff_ms` of
+    /// it (`Conn::retries`).
+    backoffs: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -275,6 +278,9 @@ struct Conn {
     /// Members with an `until`: what a reported position may close.
     ending: BTreeSet<SyncId>,
     walks: BTreeMap<SyncId, WalkState>,
+    /// Walks whose Behind was refused for now (4), by when they ask again (spec/sync-ids.md §6
+    /// Behind: asked again after a back-off); due ones join the next test.
+    retries: BTreeSet<(WallMs, SyncId)>,
     /// It lost its record to this connection (spec/sync-opens.md §1 One connection per pair):
     /// it closes, and acts on nothing meanwhile.
     lost_to: Option<ConnId>,
@@ -737,7 +743,7 @@ impl Opens {
     }
 
     pub fn next_wake(&self) -> Option<WallMs> {
-        self.conns.values().filter_map(|c| c.resync_at).min()
+        self.conns.values().flat_map(|c| c.resync_at.into_iter().chain(c.retries.first().map(|(t, _)| *t))).min()
     }
 
     /// The connection `conn` lost its record to (spec/sync-opens.md §1 One connection per pair),
@@ -915,6 +921,11 @@ impl Opens {
                 k.resync_at = None;
                 k.whole_next = true;
             }
+            if let Some(k) = self.conns.get_mut(&c)
+                && k.retries.first().is_some_and(|(t, _)| *t <= ctx.now)
+            {
+                k.test_due = true;
+            }
             self.run(ctx, c, moved);
         }
         moved.len() > before
@@ -961,6 +972,7 @@ impl Opens {
                 self.peers.wrote(&s, false);
                 for k in self.conns.values_mut() {
                     k.walks.remove(&s);
+                    k.retries.retain(|(_, x)| *x != s);
                 }
                 if self.stops.contains_key(&s) {
                     self.stops.remove(&s);
@@ -1021,6 +1033,7 @@ impl Opens {
             reported: Positions::default(),
             ending: BTreeSet::new(),
             walks: BTreeMap::new(),
+            retries: BTreeSet::new(),
             lost_to: None,
         };
         if bind.dialer {
@@ -1583,7 +1596,9 @@ impl Opens {
         let (rr, bind, from) = (r.r, c.bind, c.tested_pos);
         let mut pending = self.changed.after(from);
         // a walk Hit refused: S asks Behind (spec/sync-ids.md §6 Walk)
-        let missed: Vec<SyncId> = c.walks.iter().filter(|(_, w)| w.missed).map(|(s, _)| *s).collect();
+        let mut missed: Vec<SyncId> = c.walks.iter().filter(|(_, w)| w.missed).map(|(s, _)| *s).collect();
+        // a Behind refused for now, its back-off over: asked again
+        missed.extend(c.retries.iter().take_while(|(t, _)| *t <= ctx.now).map(|(_, s)| *s));
         if !missed.is_empty() {
             let have: BTreeSet<SyncId> = pending.iter().copied().collect();
             pending.extend(missed.into_iter().filter(|s| !have.contains(s)));
@@ -1678,11 +1693,17 @@ impl Opens {
                 return Some(Some(n.keys.sync.to_bytes()));
             }
         }
-        if self.behind_item(ctx, conn, s, adm, items, sent) {
-            // asked: the stop (if any) stands until the answer says otherwise
+        // refused for now and backed off, or asked: the stop (if any) stands until an answer
+        // says otherwise
+        if self.backed_off(ctx, conn, s) || self.behind_item(ctx, conn, s, adm, items, sent) {
             return self.stops.get(s).and_then(|at| at.get(&conn).copied());
         }
         Some(newest.map(|n| n.keys.sync.to_bytes()))
+    }
+
+    /// Whether S's Behind toward `conn` was refused for now (4) and waits out its back-off.
+    fn backed_off(&self, ctx: &Ctx, conn: ConnId, s: &SyncId) -> bool {
+        self.conns.get(&conn).is_some_and(|c| c.retries.iter().any(|(t, x)| x == s && *t > ctx.now))
     }
 
     /// A Behind item for S toward a peer J judges a sync holder, when no walk credential was
@@ -1690,6 +1711,7 @@ impl Opens {
     /// of, each step once per walk. Whether one was asked.
     fn behind_item(&mut self, ctx: &mut Ctx, conn: ConnId, s: &SyncId, adm: &Adm, items: &mut Vec<OfferItem>, sent: &mut Vec<Sent>) -> bool {
         let Some(c) = self.conns.get_mut(&conn) else { return false };
+        c.retries.retain(|(_, x)| x != s);
         let w = c.walks.entry(*s).or_default();
         let known: Vec<Tested> = w.known.iter().rev().flat_map(|st| ctx.holds.step_creds(s, st)).map(|(t, _)| t).collect();
         let cand = known.iter().chain(adm.tests.iter()).find(|t| matches!(t, Tested::SyncKey { .. } | Tested::Claim { .. } | Tested::Static { .. }) && !w.refused.contains(&t.step()));
@@ -1761,6 +1783,12 @@ impl Opens {
                     let Some(c) = self.conns.get_mut(&conn) else { continue };
                     let w = c.walks.entry(s).or_default();
                     w.asked = false;
+                    if a.code == Code::RATE_LIMITED {
+                        c.retries.insert((WallMs(ctx.now.0.saturating_add(crate::inbox::backoff_ms(w.backoffs))), s));
+                        w.backoffs = w.backoffs.saturating_add(1);
+                    } else {
+                        w.backoffs = 0;
+                    }
                     // the walk goes on (tested again) with each step it learns there, and after
                     // each refusal on an earlier step; each step is refused once per walk, and
                     // an answer naming only steps it knows changes nothing
@@ -1775,8 +1803,8 @@ impl Opens {
                         // The source does not keep S: once it does, its filter shows its step's
                         // sync key (spec/sync-opens.md §4 Admissible) and a test opens it.
                         (Code::UNKNOWN_SYNC_ID, _) => false,
-                        // Refused for now: asked again after a back-off (not built: at this
-                        // node's next change of S), never counted as off the path.
+                        // Refused for now: asked again after a back-off (`retries`), never
+                        // counted as off the path.
                         (Code::RATE_LIMITED, _) => false,
                         // Refused on a step: off the source's path; ask on an earlier one.
                         _ => w.refused.insert(named),
