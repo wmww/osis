@@ -375,6 +375,8 @@ fn spec_decode(body: &[u8]) -> Result<(), &'static str> {
         44 => n(1).and_then(|_| cursor(&a[0])),
         45 => n(1).and_then(|_| b(&a[0], 32)),
         46 => n(2).and_then(|_| list(&a[0], 0, 4096, |s| b(s, 16))).and_then(|_| boolean(&a[1])),
+        47 => n(1).and_then(|_| b(&a[0], 32)),
+        48 => n(1).and_then(|_| opt_of(&a[0], |t| b(t, 32))),
         _ => return Err("unknown kind"),
     };
     ok(id_ok, "id")?;

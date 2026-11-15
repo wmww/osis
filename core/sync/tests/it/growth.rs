@@ -126,6 +126,36 @@ fn several_writers_grow_nothing_spec_commits_5() {
 /// and 2 meet, then all: every node judges them invalid. Then a restart of every node and the
 /// tombstone lifetime: the world, the thing, the invalid commits and what each node holds
 /// (`Held`).
+// spec/sync-opens.md §1 (One connection per pair; Twin): the differential's nodes dial each other at
+// once at first contact, yet each pair keeps one connection, so each write crosses each pair on one
+// stream: deliveries per write are the same at n and 10n writes, all on one connection per pair.
+#[test]
+fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
+    let (mut w, _) = setup(Gives::Writes);
+    for i in 0..3 {
+        let mut peers: Vec<usize> = w.links_of(i).into_iter().map(|(_, j)| j).collect();
+        peers.sort();
+        assert_eq!(peers, (0..3).filter(|j| *j != i).collect::<Vec<_>>(), "node {i}: one connection per peer");
+    }
+    let writes = |w: &mut World, n: usize| {
+        let d = w.deliveries;
+        for _ in 0..n {
+            let _ = play(w, &[Write(0, 0), Run], String::new());
+        }
+        w.deliveries - d
+    };
+    // the first write after setup carries the grants' tail; after it deliveries repeat every 3 writes
+    writes(&mut w, 1);
+    w.trace = true;
+    let (a, b) = (writes(&mut w, 3), writes(&mut w, 30));
+    assert_eq!(b, 10 * a, "deliveries per write at n and 10n");
+    let ends: std::collections::BTreeSet<_> = w.seen.iter().filter_map(|s| match s {
+        crate::harness::Seen::Bytes { node, conn, .. } => Some((*node, *conn)),
+        _ => None,
+    }).collect();
+    assert!(ends.len() <= 6, "bytes on one connection per pair: {ends:?}");
+}
+
 fn lowered_writes(n: usize) -> (World, Tid, Vec<CommitId>, Vec<Held>) {
     let mut w = world(0, 3);
     w.cap = 200_000;

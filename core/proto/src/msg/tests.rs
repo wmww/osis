@@ -6,7 +6,7 @@ use proptest::prelude::*;
 use std::collections::BTreeSet;
 
 /// Every kind version 1 names (spec/wire.md §11.2).
-const KINDS: [u64; 32] = [0, 1, 2, 3, 7, 11, 14, 19, 20, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46];
+const KINDS: [u64; 34] = [0, 1, 2, 3, 7, 11, 14, 19, 20, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48];
 /// Retired kinds (spec/wire.md §11.2): never decoded, never reused.
 const RETIRED: [u64; 15] = [4, 5, 6, 8, 9, 10, 12, 13, 15, 16, 17, 18, 21, 22, 23];
 
@@ -100,7 +100,7 @@ fn ids_spec_wire_11_1() {
 // request of it is answered Error 11 with its id
 #[test]
 fn unknown_and_retired_kinds_spec_wire_11_2() {
-    for kind in RETIRED.into_iter().chain([47, 99, 1 << 40]) {
+    for kind in RETIRED.into_iter().chain([49, 99, 1 << 40]) {
         for n in 2..=8 {
             let mut items = vec![Value::uint(kind), Value::Int(7)];
             items.resize(n, Value::Int(0));
@@ -260,7 +260,7 @@ fn set_id_spec_wire_11_1() {
 // spec/wire.md §11.2: each request kind's answer kinds, an Error answering any
 #[test]
 fn answers_spec_wire_11_2() {
-    let pairs = [(2, 3), (7, 1), (14, 11), (19, 20), (24, 26), (25, 26), (27, 26), (28, 1), (30, 1), (31, 1), (32, 33), (34, 35), (36, 39), (37, 39), (38, 39), (40, 39), (41, 42)];
+    let pairs = [(2, 3), (7, 1), (14, 11), (19, 20), (24, 26), (25, 26), (27, 26), (28, 1), (30, 1), (31, 1), (32, 33), (34, 35), (36, 39), (37, 39), (38, 39), (40, 39), (41, 42), (47, 48)];
     for req in KINDS.into_iter().filter(|k| flow(*k) == Some(Flow::Request)) {
         assert!(answers(req, 0), "{req}");
         for rep in KINDS.into_iter().filter(|k| *k != 0 && flow(*k) == Some(Flow::Reply)) {

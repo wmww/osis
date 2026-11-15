@@ -194,6 +194,8 @@ enum Agree {
 #[derive(Clone, Debug)]
 enum Req {
     Resume,
+    /// A Twin naming the new record `rid` of connection `with` (spec/sync-opens.md §1 Twin).
+    Twin { with: ConnId, rid: RecordId },
     NoRecord,
     Beacons { generation: u64 },
     Offer,
@@ -398,6 +400,9 @@ pub struct Opens {
     /// with the sync key of the step it stopped at (none: this node's recorded head). Goes with
     /// the connection, S opening there, and S leaving the sync set (`walk_stop`: status follows it).
     stops: osis_base::memo::Stamped<SyncId, BTreeMap<ConnId, Stop>>,
+    /// Records of twinned connections that closed (spec/sync-opens.md §1 Twin): removed at
+    /// `flush` once no connection holds or lists one.
+    dropped: BTreeSet<RecordId>,
     work: Work,
 }
 
@@ -420,6 +425,7 @@ impl Default for Opens {
             peers: osis_base::memo::Stamps::named("opens: peers"),
             acks: None,
             stops: osis_base::memo::Stamped::default(),
+            dropped: BTreeSet::new(),
             work: Work::default(),
         }
     }
@@ -483,7 +489,8 @@ impl Opens {
         let dirty = std::mem::take(&mut self.dirty);
         let records = &self.records;
         let budget = self.budget;
-        let evicted = store.write_records(budget, &in_use, |t| {
+        let dropped: BTreeSet<RecordId> = self.dropped.iter().filter(|id| !in_use.contains(*id)).copied().collect();
+        let evicted = store.write_records(budget, &in_use, &dropped, |t| {
             for (id, d) in dirty {
                 if let Some(r) = records.get(&id).filter(|r| r.kept) {
                     records::write(t, &id, r, d)?;
@@ -499,6 +506,7 @@ impl Opens {
             }
             self.peers.wrote_all();
         }
+        self.dropped.retain(|id| !dropped.contains(id));
         let held: BTreeSet<RecordId> = self.conns.values().filter_map(|c| c.rec).collect();
         self.records.retain(|id, r| !r.kept || held.contains(id));
         Ok(evicted)
@@ -853,15 +861,45 @@ impl Opens {
         let node = c.proven.node;
         let kept = self.records.get(&id).is_some_and(|r| r.kept);
         let same = |k: &Conn| k.rec.is_some_and(|o| (o == id && kept) || (node.is_some() && k.proven.node == node));
-        let Some((other, theirs)) = self.conns.iter().filter(|(o, k)| **o != conn && k.lost_to.is_none() && same(k)).find_map(|(o, k)| Some((*o, k.bind.pair_order(&self.records.get(&k.rec?)?.r)))) else { return true };
-        let ours = c.bind.pair_order(&r);
-        let (loser, winner) = if ours < theirs { (other, conn) } else { (conn, other) };
+        let Some(other) = self.conns.iter().find(|(o, k)| **o != conn && k.lost_to.is_none() && same(k)).map(|(o, _)| *o) else { return true };
+        self.settle_pair(ctx, (conn, r), other, false, moved)
+    }
+
+    /// Two connections of one record's pair: `a` and `b`, each holding its own record, twinned
+    /// (spec/sync-opens.md §1 Twin). Whether `a` stays.
+    fn pair(&mut self, ctx: &mut Ctx, a: ConnId, b: ConnId, twinned: bool, moved: &mut Vec<Moved>) -> bool {
+        let Some(r) = self.conns.get(&a).and_then(|c| self.records.get(&c.rec?)).map(|r| r.r) else { return false };
+        self.settle_pair(ctx, (a, r), b, twinned, moved)
+    }
+
+    /// spec/sync-opens.md §1 (one connection per pair): of `a` (ordered under pair key `ra`) and
+    /// `b`, the one of better route rank stays, then the smaller order hash; the other lets its
+    /// record go and closes, and a twinned one's record goes (its members re-marked for the one
+    /// that stays). Whether `a` stays.
+    fn settle_pair(&mut self, ctx: &mut Ctx, (a, ra): (ConnId, [u8; 32]), b: ConnId, twinned: bool, moved: &mut Vec<Moved>) -> bool {
+        let Some(ours) = self.conns.get(&a).map(|c| c.bind.pair_order(&ra)) else { return false };
+        let Some(theirs) = self.conns.get(&b).and_then(|k| Some(k.bind.pair_order(&self.records.get(&k.rec?)?.r))) else { return true };
+        let (loser, winner) = if ours < theirs { (b, a) } else { (a, b) };
+        let gone = if twinned { self.conns.get(&loser).and_then(|c| c.rec) } else { None };
+        let members: Vec<SyncId> = gone.and_then(|id| self.records.get(&id)).map(|r| r.members.keys().copied().collect()).unwrap_or_default();
         self.release(loser, moved);
         if let Some(k) = self.conns.get_mut(&loser) {
             k.lost_to = Some(winner);
         }
         ctx.wire.close(loser, "one connection per pair");
-        loser != conn
+        if let Some(id) = gone {
+            self.records.remove(&id);
+            self.dirty.remove(&id);
+            if let Some(acks) = &mut self.acks {
+                acks.set(id, None);
+            }
+            self.peers.wrote_all();
+            self.dropped.insert(id);
+            for s in members {
+                self.remark(winner, &s);
+            }
+        }
+        loser != a
     }
 
     /// Keep or close (spec/sync-opens.md §1), opens' part: the connection runs its shared set,
@@ -1208,6 +1246,7 @@ impl Opens {
         let running = self.conns.get(&conn).is_some_and(|c| c.phase == Phase::Running);
         match m {
             Msg::Resume { nonce, tags, .. } => self.resume(ctx, conn, id, nonce, &tags, moved),
+            Msg::Twin { tag, .. } => self.twin(ctx, conn, id, &tag, moved),
             Msg::NoRecord { .. } => {
                 if self.conns.get(&conn).is_some_and(|c| c.phase == Phase::Waiting && !c.bind.dialer) {
                     // a Shared holds at least one item (spec/wire.md §11.2): one of code 0
@@ -1270,6 +1309,8 @@ impl Opens {
         match (req, m) {
             (Req::Resume, Msg::Resumed { nonce, tag, .. }) => self.resumed(ctx, conn, nonce, tag, moved),
             (Req::Resume, _) => self.no_record(ctx, conn, moved),
+            (Req::Twin { with, rid }, Msg::Twinned { tag: Some(tag), .. }) => self.twinned(ctx, conn, with, rid, &tag, moved),
+            (Req::Twin { .. }, _) => {}
             // the source's filter shows its new head's credentials when it moves: nothing to do
             (Req::NoRecord | Req::Lost, _) => {}
             (Req::Beacons { generation }, m) => self.beacons_answered(ctx, conn, id, generation, &m),
@@ -1286,14 +1327,64 @@ impl Opens {
         let (d, l) = (bind.own_challenge, bind.peer_challenge);
         // An absent or unexpected answer finds nothing.
         let found = tag.and_then(|t| listed.iter().find(|(_, r)| resumed_tag(r, &bind.listener_key, &d, &l) == t).map(|(id, _)| *id));
-        let rid = match found {
-            Some(rid) => rid,
+        match found {
+            Some(rid) => self.take(ctx, conn, rid, true, moved),
             None => {
                 let named = c.named.clone();
-                self.new_record(ctx, *pair_key(&nonce, &lnonce).expose(), named, true)
+                let rid = self.new_record(ctx, *pair_key(&nonce, &lnonce).expose(), named, true);
+                self.take(ctx, conn, rid, true, moved);
+                self.send_twins(ctx, conn, rid);
             }
-        };
-        self.take(ctx, conn, rid, true, moved);
+        }
+    }
+
+    /// spec/sync-opens.md §1 Twin: the dialer made record `rid` on `conn`; a Twin naming it goes on
+    /// each other connection whose record names an actor `rid` names.
+    fn send_twins(&mut self, ctx: &mut Ctx, conn: ConnId, rid: RecordId) {
+        let Some(new) = self.records.get(&rid) else { return };
+        let (r, actors) = (new.r, new.named.actors());
+        let others: Vec<ConnId> = self.conns.iter().filter(|(o, k)| **o != conn && self.twin_candidate(k, &actors)).map(|(o, _)| *o).collect();
+        for o in others {
+            let Some(k) = self.conns.get_mut(&o) else { continue };
+            let id = ctx.wire.request(o, Msg::Twin { id: 0, tag: k.bind.twin_tag(&r) });
+            k.reqs.insert(id, Req::Twin { with: conn, rid });
+        }
+    }
+
+    /// A connection that may be twinned with one of a record naming `actors`: running on a kept
+    /// record naming one of them, not closing for the pair rule.
+    fn twin_candidate(&self, k: &Conn, actors: &[osis_base::Tid]) -> bool {
+        k.lost_to.is_none() && k.rec.and_then(|id| self.records.get(&id)).is_some_and(|r| r.kept && r.named.actors().iter().any(|a| actors.contains(a)))
+    }
+
+    /// A Twin (spec/sync-opens.md §1 Twin): answered with the proof when its tag names the record
+    /// of another connection of this pair's actors, and the two are twinned.
+    fn twin(&mut self, ctx: &mut Ctx, conn: ConnId, id: Id, tag: &[u8; 32], moved: &mut Vec<Moved>) {
+        let mine = self.conns.get(&conn).and_then(|c| Some((c.bind, self.records.get(&c.rec?).filter(|r| r.kept)?.named.actors())));
+        let found = mine.and_then(|(bind, actors)| {
+            self.conns.iter().filter(|(o, k)| **o != conn && self.twin_candidate(k, &actors)).find_map(|(o, k)| {
+                let r = self.records.get(&k.rec?)?.r;
+                (bind.twin_tag(&r) == *tag).then(|| (*o, bind.twinned_tag(&r)))
+            })
+        });
+        ctx.wire.answer(conn, id, Msg::Twinned { id, tag: found.map(|(_, t)| t) });
+        if let Some((other, _)) = found {
+            self.pair(ctx, conn, other, true, moved);
+        }
+    }
+
+    /// The answer to this side's Twin on `conn` naming `with`'s record `rid`: twinned when it
+    /// proves the peer holds that record (spec/sync-opens.md §1 Twin).
+    fn twinned(&mut self, ctx: &mut Ctx, conn: ConnId, with: ConnId, rid: RecordId, tag: &[u8; 32], moved: &mut Vec<Moved>) {
+        let live = |c: ConnId| self.conns.get(&c).filter(|k| k.lost_to.is_none());
+        let (Some(k), Some(w)) = (live(conn), live(with)) else { return };
+        if w.rec != Some(rid) {
+            return;
+        }
+        let Some(r) = self.records.get(&rid).map(|r| r.r) else { return };
+        if k.bind.twinned_tag(&r) == *tag {
+            self.pair(ctx, conn, with, true, moved);
+        }
     }
 
     fn push(&mut self, ctx: &mut Ctx, conn: ConnId, m: Msg, moved: &mut Vec<Moved>) {

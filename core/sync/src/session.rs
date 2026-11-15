@@ -71,7 +71,7 @@ pub enum Incoming {
 /// The module a received message goes to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum To {
-    /// Proved; Resume, Beacons, Offer, Lost, NoRecord; Digest, Members.
+    /// Proved; Resume, Beacons, Offer, Lost, NoRecord, Twin; Digest, Members.
     Opens,
     /// Pull, Fetch; Stream, Applied.
     Streams,
@@ -92,7 +92,7 @@ impl Incoming {
             Incoming::Proved => Some(To::Opens),
             Incoming::Reply(to, ..) => Some(*to),
             Incoming::Request(_, m) | Incoming::Push(m) => match m.kind() {
-                34 | 36 | 37 | 38 | 40 | 45 | 46 => Some(To::Opens),
+                34 | 36 | 37 | 38 | 40 | 45 | 46 | 47 => Some(To::Opens),
                 19 | 41 | 43 | 44 => Some(To::Streams),
                 7 | 14 | 30 | 31 => Some(To::Inbox),
                 24 | 25 | 27 | 28 if matches!(self, Incoming::Request(..)) => Some(To::Port),

@@ -415,6 +415,13 @@ impl Transaction<'_> {
         self.record_put_meta(total.saturating_sub(before), seq)
     }
 
+    /// Removes record `id` and every row of it; whether it was kept. O(its rows).
+    pub fn record_remove(&mut self, id: &RecordId) -> Result<bool, Error> {
+        let Some(rec) = self.record(id)? else { return Ok(false) };
+        self.record_delete(rec)?;
+        Ok(true)
+    }
+
     /// Bytes of records kept (what `RECORD_BUDGET` bounds).
     pub fn records_total(&mut self) -> Result<u64, Error> {
         Ok(self.record_meta()?.0)

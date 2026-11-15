@@ -1397,15 +1397,22 @@ impl Store {
         g.write(|t, env| Self::gone_durable(t, env, src))
     }
 
-    /// Writes `f` (opens' rows of the records in use), then drops the records past `budget` that
-    /// are not `in_use` (`osis_store::Transaction::records_evict`) with what was charged to each
+    /// Writes `f` (opens' rows of the records in use), then drops the records `dropped` (a
+    /// twinned connection's, spec/sync-opens.md §1 Twin) and those past `budget` that are not
+    /// `in_use` (`osis_store::Transaction::records_evict`) with what was charged to each
     /// (as `gone`), all in one transaction: a record never goes leaving its peer's entries
     /// charged to nobody. The records that went.
-    pub fn write_records(&mut self, budget: u64, in_use: &BTreeSet<RecordId>, f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<(), osis_store::Error>) -> Result<Vec<RecordId>> {
+    pub fn write_records(&mut self, budget: u64, in_use: &BTreeSet<RecordId>, dropped: &BTreeSet<RecordId>, f: impl FnOnce(&mut Transaction<'_>) -> std::result::Result<(), osis_store::Error>) -> Result<Vec<RecordId>> {
         let mut g = self.lock();
         let evicted = g.write(|t, env| {
             f(t)?;
-            let evicted = t.records_evict(budget, in_use)?;
+            let mut evicted = Vec::new();
+            for id in dropped {
+                if t.record_remove(id)? {
+                    evicted.push(*id);
+                }
+            }
+            evicted.extend(t.records_evict(budget, in_use)?);
             for id in &evicted {
                 Self::gone_durable(t, env, Source::Record(*id))?;
             }

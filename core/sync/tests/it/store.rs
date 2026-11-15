@@ -581,9 +581,9 @@ fn an_evicted_record_takes_its_charges_at_once_spec_sync_opens_3() {
     assert_eq!(st.take_deposit(&deposit(&s, &x, false), Some(Source::Record(rec))).unwrap(), Code::OK);
     let none = std::collections::BTreeSet::new();
     dev.faults.at(0, Fault::Fail);
-    assert!(st.write_records(0, &none, |_| Ok(())).is_err());
+    assert!(st.write_records(0, &none, &none, |_| Ok(())).is_err());
     assert!(st.with_read(|t| t.record(&rec)).unwrap().is_some() && st.entry(&s.id, &b).unwrap().is_some(), "a failed eviction leaves both");
-    assert_eq!(st.write_records(0, &none, |_| Ok(())).unwrap(), [rec]);
+    assert_eq!(st.write_records(0, &none, &none, |_| Ok(())).unwrap(), [rec]);
     assert!(st.with_read(|t| t.record(&rec)).unwrap().is_none());
     assert!(st.entry(&s.id, &b).unwrap().is_none(), "what the peer brought went with its record");
 }

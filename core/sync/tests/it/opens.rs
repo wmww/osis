@@ -1048,6 +1048,11 @@ fn a_reconnect_costs_the_same_at_n_and_10n_spec_sync_opens_3() {
 /// `ACCEPTED | n` and the other way round), until none flows. A side's last messages before it
 /// closed still go; none reach a side that closed its end.
 fn route_all(p: &mut Pair) {
+    route_with(p, |_, m| Some(m));
+}
+
+/// `route_all`, each message passed through `f` (whether a sent it; none: lost).
+fn route_with(p: &mut Pair, mut f: impl FnMut(bool, Msg) -> Option<Msg>) {
     use osis_sync::types::ConnId;
     let peer = |c: ConnId| ConnId(c.0 ^ ConnId::ACCEPTED);
     for _ in 0..500 {
@@ -1056,12 +1061,16 @@ fn route_all(p: &mut Pair) {
             return;
         }
         for (c, m) in fa {
-            if !p.b.pipe.closed.iter().any(|(x, _)| *x == peer(c)) {
+            if !p.b.pipe.closed.iter().any(|(x, _)| *x == peer(c))
+                && let Some(m) = f(true, m)
+            {
                 p.b.take(peer(c), incoming(m));
             }
         }
         for (c, m) in fb {
-            if !p.a.pipe.closed.iter().any(|(x, _)| *x == peer(c)) {
+            if !p.a.pipe.closed.iter().any(|(x, _)| *x == peer(c))
+                && let Some(m) = f(false, m)
+            {
                 p.a.take(peer(c), incoming(m));
             }
         }
@@ -1143,6 +1152,77 @@ fn crossed_first_dials_between_own_nodes_keep_one_spec_sync_opens_1() {
     let (lost, kept) = if a_lost[0] == pairs[0].0 { (pairs[0], pairs[1]) } else { (pairs[1], pairs[0]) };
     assert_eq!(b_lost, [lost.1], "the same connection at both ends");
     assert!(p.a.open(kept.0, &S) && p.b.open(kept.1, &S));
+}
+
+/// Readers of S under accounts 1 and 2 that dial each other at once: a dials b (connection 1),
+/// b dials a (connection 2), both proved, nothing routed yet. b's and a's ends of connection 2.
+fn crossed_accounts() -> (Pair, (osis_sync::types::ConnId, osis_sync::types::ConnId)) {
+    use osis_sync::types::ConnId;
+    let st = StepKeys::new(1, 0);
+    let rs = read_secret(1, 0);
+    let mut a = Side::new(1);
+    let mut b = Side::new(2);
+    a.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    b.table.set(S, Some(reader(&S, &rs, &st, &[], &[], &[])));
+    a.settle();
+    b.settle();
+    let mut p = Pair::new(a, b, account(1), account(2));
+    let (cb2, ca2) = (ConnId(2), ConnId(ConnId::ACCEPTED | 2));
+    let (bb, ba) = binds([0x5c; 32], [0x6d; 32], [0x4a; 32]);
+    p.b.pipe.binds.insert(cb2, (bb, account(1)));
+    p.a.pipe.binds.insert(ca2, (ba, account(2)));
+    p.a.take(ca2, osis_sync::session::Incoming::Proved);
+    p.b.take(cb2, osis_sync::session::Incoming::Proved);
+    (p, (ca2, cb2))
+}
+
+// spec/sync-opens.md §1 (Twin): nodes of two accounts that dial each other at once make a record
+// on each connection; each dialer's Twin names its new record on the other connection, so the two
+// are of one pair: one closes, the same one at both ends, its record goes at both ends, and the
+// shared set runs on the other alone.
+#[test]
+fn crossed_first_dials_between_accounts_twin_spec_sync_opens_1() {
+    let (mut p, (ca2, cb2)) = crossed_accounts();
+    route_all(&mut p);
+    let a_lost: Vec<_> = p.a.pipe.closed.iter().map(|(c, _)| *c).collect();
+    let b_lost: Vec<_> = p.b.pipe.closed.iter().map(|(c, _)| *c).collect();
+    let pairs = [(p.ca, p.cb), (ca2, cb2)];
+    assert_eq!(a_lost.len(), 1, "one closed: {a_lost:?}");
+    let (lost, kept) = if a_lost[0] == pairs[0].0 { (pairs[0], pairs[1]) } else { (pairs[1], pairs[0]) };
+    assert_eq!(b_lost, [lost.1], "the same connection at both ends");
+    assert!(p.a.open(kept.0, &S) && p.b.open(kept.1, &S));
+    for (x, conn) in [(&p.a, kept.0), (&p.b, kept.1)] {
+        let kept_rec = x.opens.record(conn);
+        let all: Vec<_> = x.store.with_read(|t| t.records_all()).unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(all.iter().map(|id| Some(*id)).collect::<Vec<_>>(), [kept_rec], "one record of the peer, the kept connection's");
+    }
+}
+
+// spec/sync-opens.md §1 (Twin): a Twin's sender takes the two connections as twinned only on the
+// answer proving the peer holds the record: a forged Twinned closes nothing at the sender.
+#[test]
+fn a_forged_twinned_twins_nothing_spec_sync_opens_1() {
+    let (mut p, _) = crossed_accounts();
+    // b's Twins never reach a (a learns only from its own Twin's answer), and b's answers lie
+    route_with(&mut p, |from_a, m| match m {
+        Msg::Twin { .. } if !from_a => None,
+        Msg::Twinned { id, tag: Some(_) } if !from_a => Some(Msg::Twinned { id, tag: Some([0x55; 32]) }),
+        m => Some(m),
+    });
+    assert!(p.a.pipe.closed.is_empty(), "a closed {:?} on a forged answer", p.a.pipe.closed);
+}
+
+// spec/sync-opens.md §1 (Twin): a Twin whose tag names no record of another connection here (a
+// guess, or another node of the peer's account) twins nothing: answered with none, nothing closes.
+#[test]
+fn a_twin_naming_no_record_here_twins_nothing_spec_sync_opens_1() {
+    let (mut p, (ca2, _)) = crossed_accounts();
+    // the Twins lost: two connections of account 2, each on a record of its own
+    route_with(&mut p, |_, m| (!matches!(m, Msg::Twin { .. })).then_some(m));
+    p.a.take(ca2, osis_sync::session::Incoming::Request(9, Msg::Twin { id: 9, tag: [0x77; 32] }));
+    assert!(p.a.pipe.sent.iter().any(|(c, m)| *c == ca2 && matches!(m, Msg::Twinned { id: 9, tag: None })), "answered with none");
+    assert!(p.a.pipe.closed.is_empty() && p.b.pipe.closed.is_empty());
+    assert!(p.a.open(p.ca, &S) && p.a.open(ca2, &S));
 }
 
 /// `a` and `b` share `n` sync IDs, close, both restart (opens started from their stores) and

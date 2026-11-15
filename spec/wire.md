@@ -279,6 +279,8 @@ Stream    [43, 0, [[sync_id, event]*], Opt(cursor), report, seq]
 Applied   [44, 0, cursor]
 Digest    [45, 0, digest]
 Members   [46, 0, [sync_id*], more]
+Twin      [47, id, tag]                       -> Twinned
+Twinned   [48, id, Opt(tag)]
 
 actor_proof := [creation, key, sig]
 rotation := CommitBlobPlaintext
@@ -304,6 +306,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Fetch** between such nodes (spec/sync-streams.md §4, Stream), with a top-bit id: `sync_id` a member of the connection's shared set; an ID it does not hold, or of a sync ID it does not share there, is answered with none; `max_reply` and a prefix as below (Fetch).
 - **Digest** (spec/sync-opens.md §3): `digest` 32 bytes. **Members**: at most 4096 sync IDs, `more` true on every page but the last; sent only after a Digest that differs. Neither is answered.
 - **Resume** (spec/sync-opens.md §3): dialer to listener, after the dialer's `Proved`, at most one per connection (a second, or one before a Prove, is answered Error 2; a listener the dialer proved no actor to, keeping no record for this connection, answers Error 1, and the dialer sends NoRecord). `nonce` 32 random bytes; each `tag` 32 bytes, at most `MAX_RESUME_TAGS` of them, as many as fit one message. **Resumed**: the listener's own `nonce`, and `tag` when it holds a listed record.
+- **Twin** (spec/sync-opens.md §1 Twin): either side, on a connection holding a record, about another; `tag` 32 bytes. **Twinned**: `tag` when the receiver matched it. A Twin on a connection holding no record is answered Twinned with none.
 - **Register**: replies Ok (also when the step already is the head), or an Error without the head (spec/sync-ids.md §6):
   - 2 when the step's sync ID is not the message's, the claim set does not hash to `claims_hash`, or a closing step under the head is malformed (§8);
   - 1 for a genesis step that does not verify;
