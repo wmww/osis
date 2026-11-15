@@ -5,8 +5,7 @@
 //! accounts of their own; peer 6 stands in for Z, a key actor X makes up). A removes X at tick 1;
 //! X, never told, forks from epochs whose keys it holds (plainly, naming another fork, claiming to
 //! take a revocation, one it withholds, sealed as itself or as Z), revokes A or B, writes at any
-//! epoch it holds and edits D (pairing Z, re-adding itself, Z re-adding it); B may be offline and
-//! write, rotate and remove T unaware; R2's user switches; the settle delivers everything and the
+//! epoch it holds; B may be offline and write, rotate and remove T unaware; R2's user switches; the settle delivers everything and the
 //! honest nodes act in turn, users on X's side switching as in the model.
 //!
 //! Every commit an engine makes that the model knows (rotations, D grants, content) becomes an
@@ -25,11 +24,9 @@
 //! milliseconds, a pending commit once it applied; one millisecond's by commit ID, as
 //! `World::commit_ids`), whom an honest rotation boxes (its maker's D roster; checked against the
 //! model's roster), and thing lists and listings (the model has none; checked only by the write
-//! rules above). Open issues, excused where computed from the history: a node holding X's removal
-//! whose rotation it does not hold acts on it on D (issues/account-removal-before-its-rotation.md:
-//! no act comparison then, and who takes up the seeds of what it makes is read from the engines).
-//! The switching variant has P's nodes on X's side switch back in the settle. Not generated: a commit creating D made again (perm's `chain::forks_model_agrees` covers it), each
-//! target revoked by X once.
+//! rules above). The switching variant has P's nodes on X's side switch back in the settle. Not
+//! generated: D edits apart from rotations (the model's grants of D: a membership change is a
+//! rotation's, which the custody model reads), each target revoked by X once.
 
 use crate::flows::Demotion;
 use crate::local_peer::{LocalPeer, Package};
@@ -44,10 +41,6 @@ use std::sync::Arc;
 const SETTLE: u32 = 12;
 /// Milliseconds per tick: room for every delivery and action of one, each a millisecond apart.
 const TICK_MS: u64 = 10_000;
-
-fn admin() -> osis_schema::core_types::Edge {
-    osis_schema::core_types::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None }
-}
 
 fn x() -> Ak {
     Ak::new("x:a.0").unwrap()
@@ -101,7 +94,6 @@ pub(super) struct Reached {
     as_z: bool,
     claims: bool,
     withheld: bool,
-    d_edits: bool,
     b_unaware: bool,
     b_left: bool,
     merges: bool,
@@ -128,10 +120,6 @@ struct Run {
     /// When each item is to reach each peer, in ticks (`NEVER`: until the settle). The mirror's
     /// receipts are what the engines report (`sync_recv`), in milliseconds.
     sched: BTreeMap<u32, [u32; N]>,
-    /// Honest rotations made by a node holding X's removal without its rotation: who takes up
-    /// their seeds is the open issue's (issues/account-removal-before-its-rotation.md), so the
-    /// mirror reads it from the engines.
-    bare_made: BTreeSet<u32>,
     /// Commits made in the action that made an item, delivered just before it.
     comp: BTreeMap<u32, Vec<Side>>,
     /// Commits honest node k made on receipt (listings): each goes with k's next item to a peer.
@@ -183,7 +171,6 @@ impl Run {
             mid: BTreeMap::new(),
             pk: BTreeMap::new(),
             sched: BTreeMap::new(),
-            bare_made: BTreeSet::new(),
             comp: BTreeMap::new(),
             extras: Default::default(),
             extras_at: BTreeMap::new(),
@@ -266,13 +253,6 @@ impl Run {
                 }
                 let r = self.lp.peers[v].engine.core.ix.commits.get(&c).map_or(NEVER, |m| (m.received.0 - self.base.0 + 1) as u32);
                 self.w.items[k].recv[v] = r;
-            }
-        }
-        for r in self.bare_made.clone() {
-            let author = self.w.items[r as usize - 1].author;
-            for v in [A, B, T].into_iter().filter(|v| *v != author) {
-                let s = self.has_seed(v, r);
-                self.w.items[r as usize - 1].boxed[v] = s;
             }
         }
     }
@@ -457,14 +437,6 @@ impl Run {
         std::array::from_fn(|m| Some(m) != removes && roster.contains_key(&self.tids[m]))
     }
 
-    /// Whether node n, at `at` ms, holds a removal of an honest node by X whose rotation it does
-    /// not hold with its chain (waiting for what it takes): the removal acts on D's roster there
-    /// all the same (issues/account-removal-before-its-rotation.md), which the model does not.
-    fn bare_x_removal(&self, n: usize, at: u32) -> bool {
-        let j = forks::judge(&self.w, n, at);
-        self.w.items.iter().any(|i| i.author == X && i.recv[n] <= at && !j.chain.contains(&i.id) && matches!(i.kind, MK::Rot { removes: Some(y), .. } if [A, B, T].contains(&y)))
-    }
-
     /// When node n came to hold rotation r with what it needs (its epoch's rotation, the forks it
     /// names, the rotations it takes, and theirs): the latest receipt among them.
     fn held_at(&self, n: usize, r: u32) -> u32 {
@@ -513,25 +485,8 @@ impl Run {
         let new = self.fresh(n);
         let rot = new.iter().copied().find(|c| self.lp.peers[n].engine.header(c).is_some_and(|h| h.rotation.is_some()));
         self.log.push(format!("t{t} node {n} acts (removes {removes:?}): model {:?}, engine rotates {}", model.as_ref().map(|i| &i.kind), rot.is_some()));
-        // (a node acting on X's removal before its rotation is held: the open issue, not compared)
-        let model = if self.bare_x_removal(n, self.now()) && rot.is_none() != model.is_none() {
-            self.log.push(format!("t{t} node {n} holds X's removal without its rotation: not compared"));
-            None
-        } else {
-            model
-        };
         let item = match (&model, rot) {
             (None, None) => None,
-            (None, Some(c)) if self.bare_x_removal(n, self.now()) => {
-                let (at, sup, names, takes) = self.rot_fields(n, &c);
-                let pk = self.lp.peers[n].engine.package(&c).unwrap().unwrap();
-                let boxed = self.boxed_by(n, removes);
-                let id = self.add(MK::Rot { at, names, sup, removes, covers: vec![], takes }, n, n, at, c, pk, boxed);
-                self.bare_made.insert(id);
-                let comp: Vec<Side> = new.iter().filter(|x| **x != c).map(|x| self.side(n, x)).collect();
-                self.comp.insert(id, comp);
-                Some(id)
-            }
             (Some(mi), Some(c)) => {
                 let MK::Rot { at, names, sup, takes, .. } = &mi.kind else { unreachable!() };
                 let (eat, mut esup, enames, etakes) = self.rot_fields(n, &c);
@@ -552,11 +507,7 @@ impl Run {
                 }
                 let pk = self.lp.peers[n].engine.package(&c).unwrap().unwrap();
                 let boxed = self.boxed_by(n, removes);
-                let bare = self.bare_x_removal(n, self.now());
                 let id = self.add(mi.kind.clone(), n, n, *at, c, pk, boxed);
-                if bare {
-                    self.bare_made.insert(id);
-                }
                 let comp: Vec<Side> = new.iter().filter(|x| **x != c).map(|x| self.side(n, x)).collect();
                 self.comp.insert(id, comp);
                 Some(id)
@@ -636,11 +587,7 @@ impl Run {
         }
         let pk = self.lp.peers[n].engine.package(&c).unwrap().unwrap();
         let boxed = self.boxed_by(n, None);
-        let bare = self.bare_x_removal(n, self.now());
         let id = self.add(MK::Rot { at, names, sup, removes: None, covers: vec![], takes }, n, n, at, c, pk, boxed);
-        if bare {
-            self.bare_made.insert(id);
-        }
         let comp: Vec<Side> = new.iter().map(|x| self.side(n, x)).collect();
         self.comp.insert(id, comp);
         self.log.push(format!("t{} node {n} rotates plainly: #{id}", self.tick));
@@ -691,21 +638,10 @@ impl Run {
         let removes = [None, Some(A), Some(B)][self.rng.below(3)].filter(|y| !self.revoked.contains(y));
         let signer = self.signer();
         let t = self.tick;
-        // a revocation: the removal its engine writes on D, signed at e as the rotation's minter
-        let removal = match removes {
-            Some(y) => {
-                self.lp.advance(1);
-                let holder = self.tids[y];
-                self.lp.peers[X].engine.demote(&self.d, &Demotion { holder, new: None, retain: None }).ok()?;
-                self.revoked.insert(y);
-                let new = self.fresh(X);
-                let d = self.d;
-                let c = *new.iter().find(|c| self.lp.peers[X].engine.header(c).is_some_and(|h| h.rotation.is_none() && h.aspects.iter().any(|a| a.tid == d && a.ak.as_str() == "roles.0")))?;
-                let (_, pk) = self.x_resign(&c, e, signer)?;
-                Some(Side { pk, d_only: true })
-            }
-            None => None,
-        };
+        // a revocation: the removal sealed in the rotation's devices field (spec/crypto.md §9)
+        if let Some(y) = removes {
+            self.revoked.insert(y);
+        }
         let names: Vec<u32> = if self.rng.below(4) == 0 { held.iter().copied().filter(|x| *x != e && *x != 0).take(1).collect() } else { vec![] };
         let now = self.now();
         let revs: Vec<u32> = self.rots().into_iter().filter(|r| self.w.items[*r as usize - 1].recv[X] <= now && matches!(self.w.items[*r as usize - 1].kind, MK::Rot { removes: Some(_), .. })).chain([self.w.removal]).collect();
@@ -738,7 +674,8 @@ impl Run {
         names_e.sort_by_key(|x| x.0);
         let mut takes_e: Vec<CommitId> = takes.iter().map(|x| self.e(*x)).collect();
         takes_e.sort();
-        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: sup_e, names: names_e.iter().map(|x| x.0).collect(), takes: takes_e, revokes: removal.is_some(), devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
+        let devices = removes.map(|y| osis_crypto::seal_devices(&at_keys.inner, &next.signing.verifying_key(), &[], &[self.tids[y]])).unwrap_or_default();
+        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: sup_e, names: names_e.iter().map(|x| x.0).collect(), takes: takes_e, revokes: removes.is_some(), devices, list_root: [0; 32], seeds: Vec::new() };
         let rec = self.lp.peers[X].engine.core.created(&self.p).unwrap().clone();
         self.lp.advance(1);
         let ts = osis_base::Ts::make(self.lp.peers[X].engine.now(), 0).unwrap();
@@ -751,7 +688,6 @@ impl Run {
         let mut sup = vec![e];
         sup.extend(names.iter().copied());
         let id = self.add(MK::Rot { at: e, names, sup, removes, covers: vec![], takes }, X, signer, e, c, pk, boxed);
-        self.comp.insert(id, removal.into_iter().collect());
         self.keys.insert(id, next);
         self.reached.forked = true;
         self.reached.revoked |= removes.is_some();
@@ -770,21 +706,6 @@ impl Run {
         let (id, pk) = self.x_resign(&c, e, X)?;
         let item = self.add(MK::Content, X, X, e, id, pk, [false; N]);
         self.log.push(format!("t{} X writes #{item} at {e}", self.tick));
-        Some(item)
-    }
-
-    /// X edits D at epoch `e`: pairs Z, re-adds itself, or Z re-adds it.
-    fn x_grant(&mut self, e: u32, k: usize) -> Option<u32> {
-        let (to, signer) = [(Z, X), (X, X), (X, if self.w.z_paired() { X } else { Z })][k];
-        self.lp.advance(1);
-        let holder = self.tids[to];
-        let done = self.lp.peers[X].engine.grant(&self.d, &holder, &admin()).ok()?;
-        self.fresh(X);
-        let c = *done.commits.first()?;
-        let (id, pk) = self.x_resign(&c, e, signer)?;
-        let item = self.add(MK::Grant { to }, X, signer, e, id, pk, [false; N]);
-        self.reached.d_edits = true;
-        self.log.push(format!("t{} X grants D to {to} as {signer} at {e}: #{item}", self.tick));
         Some(item)
     }
 
@@ -840,7 +761,7 @@ impl Run {
                 // word on D, counting only where the rotation does, and a removed node's by its
                 // word on D, which is not the model's: only its own inner signatures read it)
                 let honest_side = j.counting.contains(&removal) && !j.removed_node(v);
-                for &r in j.counting.iter().filter(|r| honest_side && [A, B, T].contains(&self.w.items[**r as usize - 1].author) && !self.bare_x_removal(self.w.items[**r as usize - 1].author, self.w.items[**r as usize - 1].t)) {
+                for &r in j.counting.iter().filter(|r| honest_side && [A, B, T].contains(&self.w.items[**r as usize - 1].author)) {
                     let (e, m) = (self.has_seed(v, r), self.w.items[r as usize - 1].boxed[v]);
                     if e != m {
                         at(&format!("seed of #{r}"), format!("{e}"), format!("{m}"));
@@ -851,27 +772,8 @@ impl Run {
                     at("taken", format!("{taken:?}"), format!("{:?}", j.taken));
                 }
                 let roster: BTreeSet<usize> = self.lp.peers[v].engine.roster(&self.d).keys().filter_map(|m| self.tids.iter().position(|x| x == m)).collect();
-                // the model reads every grant held, the engine's D timeline only those counting
-                // by the epoch rule (a grant at a closed epoch no word names counts for nothing):
-                // the engine boxes no one the model does not, and every honest node it does
-                // (nor one X's removal commit held here removes: D's timeline counts it by the
-                // epoch rule while its revocation is not taken, pending or held, which the model
-                // does not read: issues/account-removal-before-its-rotation.md)
-                let x_removes = |m: usize| self.w.items.iter().any(|i| i.author == X && i.recv[v] <= now && matches!(i.kind, MK::Rot { removes: Some(y), .. } if y == m));
-                let honest: BTreeSet<usize> = j.roster.iter().copied().filter(|m| [A, B, T].contains(m) && !x_removes(*m)).collect();
-                // (and an honest node X's revocation removes in the chain may stay on D's roster
-                // where X's removal does not count by the epoch rule: what is checked is that the
-                // engine boxes neither X nor Z where the model does not)
-                let hostile: BTreeSet<usize> = roster.iter().copied().filter(|m| [X, Z].contains(m)).collect();
-                if !hostile.is_subset(&j.roster) || !honest.is_subset(&roster) {
-                    let core = &self.lp.peers[v].engine.core;
-                    let roles = Ak::new("roles.0").unwrap();
-                    let rem: Vec<String> = core.ix.by_aspect.get(&(self.d, roles)).into_iter().flatten().filter_map(|(_, c)| {
-                        let rc = core.ix.held.edge_commit(c)?;
-                        let ops: Vec<String> = rc.ops.iter().filter(|o| o.target == self.d).map(|o| format!("{}:{}", self.tids.iter().position(|x| *x == o.holder).unwrap_or(9), o.edge.is_some())).collect();
-                        Some(format!("{}{:?}", self.mid.get(c).map_or_else(|| format!("{c:?}"), |m| format!("#{m}")), ops))
-                    }).collect();
-                    at("D's roster", format!("{roster:?} (D's edge commits {rem:?})"), format!("{:?}", j.roster));
+                if roster != j.roster {
+                    at("D's roster", format!("{roster:?}"), format!("{:?}", j.roster));
                 }
             }
             // writes: what the model counts counts; outside P where the removal counts, no write X
@@ -911,16 +813,6 @@ impl Run {
         self.goto(0);
         if self.rng.below(4) == 0 {
             let id = self.rotate(X, None);
-            self.schedule(&[id]);
-        }
-        if self.rng.below(5) == 0 {
-            self.lp.advance(1);
-            let z = self.tids[Z];
-            let done = self.lp.peers[X].engine.grant(&self.d, &z, &admin()).unwrap();
-            self.fresh(X);
-            let c = done.commits[0];
-            let pk = self.lp.peers[X].engine.package(&c).unwrap().unwrap();
-            let id = self.add(MK::Grant { to: Z }, X, X, 0, c, pk, [false; N]);
             self.schedule(&[id]);
         }
         if self.rng.below(3) == 0 {
@@ -1008,14 +900,13 @@ impl Run {
     fn x_move(&mut self) {
         let held = self.x_held();
         let e = held[self.rng.below(held.len())];
-        let made: Vec<u32> = match self.rng.below(9) {
+        let made: Vec<u32> = match self.rng.below(6) {
             0..=3 => {
                 let f = self.x_fork();
                 let w = f.filter(|_| self.rng.below(2) == 0).and_then(|f| self.x_write(f));
                 f.into_iter().chain(w).collect()
             }
-            4 | 5 => self.x_write(e).into_iter().collect(),
-            k => self.x_grant(e, k - 6).into_iter().collect(),
+            _ => self.x_write(e).into_iter().collect(),
         };
         let made: Vec<u32> = made.into_iter().filter(|id| !self.w.withheld.contains(id)).collect();
         self.schedule(&made);
@@ -1175,14 +1066,13 @@ fn play(seed: u64, p_switch: bool) -> Reached {
 fn tally(runs: &[Reached]) {
     let count = |f: fn(&Reached) -> bool| runs.iter().filter(|r| f(r)).count();
     eprintln!(
-        "forks: {} worlds; X forged {}, revoked {}, as Z {}, claimed {}, withheld {}, edited D {}; B unaware {}, B left {}; merges {}, answers {}, warned {}, child first {}, switched {}",
+        "forks: {} worlds; X forged {}, revoked {}, as Z {}, claimed {}, withheld {}; B unaware {}, B left {}; merges {}, answers {}, warned {}, child first {}, switched {}",
         runs.len(),
         count(|r| r.forked),
         count(|r| r.revoked),
         count(|r| r.as_z),
         count(|r| r.claims),
         count(|r| r.withheld),
-        count(|r| r.d_edits),
         count(|r| r.b_unaware),
         count(|r| r.b_left),
         count(|r| r.merges),

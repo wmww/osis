@@ -148,6 +148,9 @@ impl Core {
     /// answer depends on (`Timeline::roles_on_now`), so a memo reading it (chain placement, grant
     /// copies, access) moves when that passes, with a wake then (`Engine::clock_next`).
     pub fn role_now(&self, node: &Tid, tid: &Tid) -> Option<Role> {
+        if let Some(h) = self.devices_holders(tid) {
+            return h.get(node).copied();
+        }
         let (role, until) = self.timelines.role_now(node, tid, now_ts(self));
         self.time.until(until.map(|u| u.0));
         role
@@ -186,6 +189,9 @@ impl Core {
     /// Current holders of `actor` with their role and `until` (alive edges), its record edge
     /// included while it stands (with no timeline here, nothing wrote it: the first admin alone).
     pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
+        if let Some(h) = self.devices_holders(actor) {
+            return h.into_iter().map(|(m, r)| (m, r, None)).collect();
+        }
         let ts = now_ts(self);
         match self.timelines.on(actor) {
             Some(on) => on.roster(At::now(ts)).into_iter().map(|(m, e)| (m, e.role, e.until)).collect(),
@@ -219,9 +225,9 @@ impl Core {
     /// holders in their place): every edge on it by `rotation::key_role`, its record edge
     /// included while it stands.
     pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
-        // this node's account's devices actor D: its holders are D's roster, read from the chain
-        // alone (spec/permissions.md §5.4, Roster); D bears no edge write
-        if let Some(p) = self.devices_of(actor).filter(|p| self.accounts.contains_key(p)) {
+        // a held account's devices actor D: its holders for keys are D's roster (`devices_holders`),
+        // never the account (a box to it on D would open with what D's `account.0` boxes)
+        if let Some(p) = self.held_devices_of(actor) {
             return self.devices_roster(&p).into_iter().map(|m| (m, Role::Admin)).collect();
         }
         match self.timelines.on(actor) {

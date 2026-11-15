@@ -184,6 +184,17 @@ impl AccountView {
         &self.roster
     }
 
+    /// Whether the chain held here names `node` a device of this node's account: its creation
+    /// device, or one a held rotation adds.
+    pub(crate) fn named_device(&self, node: &Tid) -> bool {
+        self.devices.as_ref().is_some_and(|d| d.first.contains(node) || d.adds.values().any(|a| a.contains(node)))
+    }
+
+    /// The node that minted held rotation `r` (its inner signature; this node's account only).
+    pub(crate) fn minter(&self, r: &CommitId) -> Option<Tid> {
+        self.devices.as_ref().and_then(|d| d.minter.get(r)).copied()
+    }
+
     /// The revocations held rotation `r` takes (`osis_perm::Rotation::takes`).
     pub(crate) fn takes_of(&self, r: &CommitId) -> BTreeSet<CommitId> {
         self.rotations.iter().find(|x| x.id == *r).map(|x| x.takes.clone()).unwrap_or_default()
@@ -472,6 +483,20 @@ impl Core {
             return BTreeSet::new();
         }
         self.account_view(p).map(|v| v.roster().clone()).unwrap_or_default()
+    }
+
+    /// The account held here whose devices actor is `d`.
+    pub(crate) fn held_devices_of(&self, d: &Tid) -> Option<Tid> {
+        self.accounts.iter().find(|(_, a)| a.devices == *d).map(|(p, _)| *p)
+    }
+
+    /// Who holds a role on `d`, a held account's devices actor, and at what: D bears no edge
+    /// write, so its roster is the chain's (spec/permissions.md §5.4, Roster), each device on it
+    /// at admin, and the account at admin by its record. `None` when `d` is no such actor: its
+    /// timeline says.
+    pub(crate) fn devices_holders(&self, d: &Tid) -> Option<BTreeMap<Tid, Role>> {
+        let p = self.held_devices_of(d)?;
+        Some(self.devices_roster(&p).into_iter().chain([p]).map(|m| (m, Role::Admin)).collect())
     }
 
     pub fn is_account(&self, t: &Tid) -> bool {

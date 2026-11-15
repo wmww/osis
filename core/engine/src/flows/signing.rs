@@ -81,7 +81,14 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     let mut names = Vec::new();
     // a removed node's rotation no authorized one supersedes yet: superseded unnamed, rejected
     let reject = unanswered(&v, &tx.core.id.tid());
-    let heads = mergeable(&v, &held);
+    let mut heads = mergeable(&v, &held);
+    // a removal hits every rotation its node minted off its line (spec/permissions.md §5.4): a
+    // rotation removing a node merges no head whose line holds such a rotation
+    if !members.removes.is_empty()
+        && let Some(pref) = heads.first().map(|h| v.line(&h.0).cloned().unwrap_or_default())
+    {
+        heads.retain(|(h, _)| v.line(h).into_iter().flatten().all(|q| pref.contains(q) || v.minter(q).is_none_or(|m| !members.removes.contains(&m))));
+    }
     let (at, supersedes, merge_keys, closes) = match signing {
         Some((e, _)) if heads.len() < 2 => (None, vec![e], Vec::new(), vec![e]),
         // an open epoch whose seed is not here yet (its removal has not arrived): nothing to act at

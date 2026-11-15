@@ -31,12 +31,11 @@ pub struct Judge<'a> {
 }
 
 impl Core {
-    /// Whether `x` is another node of this node's account: not an account, holding read or above
-    /// on the account's devices actor D through the rosters held here now (spec/permissions.md
-    /// §1). A node removed from D is not, nor is a holder of sync alone.
+    /// Whether `x` is another node of this node's account: on D's roster as this node reads it
+    /// (spec/permissions.md §1, §5.4 Roster). A node removed is not.
     pub fn own_node(&self, x: &Tid) -> bool {
-        let Some((_, d)) = self.account_devices() else { return false };
-        *x != self.id.tid() && !self.is_account(x) && self.timelines.get(x).is_some_and(|tl| tl.role(x, &d, At::KEYS) >= Some(osis_base::Role::Read))
+        let Some((p, _)) = self.account_devices() else { return false };
+        *x != self.id.tid() && self.devices_roster(&p).contains(x)
     }
 
     /// J over `actors`: the actors a connection proved by their own key or, for an account, by

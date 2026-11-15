@@ -6,7 +6,7 @@
 use super::{BlobOf, BodyFacts, MustNot, PartSet, ReadFacts};
 use crate::engine::{DropFor, Engine};
 use crate::error::Result;
-use osis_base::{BlobId, CommitId, Role, SyncId, Tid};
+use osis_base::{BlobId, CommitId, SyncId, Tid};
 use osis_commit::Header;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -172,22 +172,16 @@ impl Engine {
     }
 
     /// spec/sync-judgement.md §2 must-not-hold: another node's card commit, for `node.0` and
-    /// `reach.0`, once that node is a node of the account no more after an applied edge write on D
-    /// ended its grant (removed it, or its `until` passed). A node never granted on D here (its
-    /// grant not applied yet) has ended nothing.
+    /// `reach.0`, once that node is a node of the account no more: the chain held here names it a
+    /// device (creation or a pairing) and D's roster lacks it (spec/permissions.md §5.4, Roster).
+    /// A node whose pairing is not held here has ended nothing.
     fn card_ended(&self, h: &Header, node: &Tid) -> bool {
         if !h.aspects.iter().all(|a| matches!(a.ak.as_str(), "node.0" | "reach.0")) {
             return false;
         }
-        let Some((_, d)) = self.core.account_devices() else { return false };
-        let Some(tl) = self.core.timelines.get(&d) else { return false };
-        if !tl.roles_ever(node).contains_key(&d) {
-            return false;
-        }
-        match tl.roster(&d, osis_perm::At::KEYS).get(node) {
-            None => true,
-            Some(e) => e.role < Role::Read || e.until.is_some_and(|u| self.core.time.until(Some(u.0)) >= u.0),
-        }
+        let Some((p, _)) = self.core.account_devices() else { return false };
+        let Some(v) = self.core.account_view(&p) else { return false };
+        v.named_device(node) && !v.roster().contains(node)
     }
 
     /// The deltas of `c`'s body under `s` only a blob carries (spec/sync-judgement.md §2 strict
