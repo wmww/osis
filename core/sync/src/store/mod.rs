@@ -653,10 +653,12 @@ impl Store {
         g.policy.memory_bytes.saturating_sub(g.mem.usage(s).bytes)
     }
 
-    /// Ephemeral entry `b` of S names a held commit from another node costing `n` held here
-    /// (`Engine::memory_charge`): S's memory usage counts it at that, or at its bytes if more.
-    pub fn set_memory_charge(&self, s: &SyncId, b: &BlobId, n: u64) {
-        self.lock().mem.set_estimate(s, b, n);
+    /// Blob `b`, named by ephemeral entries, is of a held commit from another node costing `n`
+    /// held here (`Engine::memory_charge`): the memory usage of every sync ID an entry of it is
+    /// under counts it at that, or at its bytes if more (spec/sync-compaction.md §2 Caps: each
+    /// body counts at what it takes held, under each sync ID).
+    pub fn set_memory_charge(&self, b: &BlobId, n: u64) {
+        self.lock().mem.set_estimate(b, n);
     }
 
     /// Whether entry `e`'s stamp verifies under S's head write key (a relay-only entry at a

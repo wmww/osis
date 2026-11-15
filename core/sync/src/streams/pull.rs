@@ -818,7 +818,7 @@ impl Streams {
                     if let Err(e) = r {
                         return self.failed(Err(e));
                     }
-                    ctx.store.set_memory_charge(&s, &b, n);
+                    ctx.store.set_memory_charge(&b, n);
                 }
                 Ok(_) => took = true,
                 Err(e) => return self.failed(Err(e)),

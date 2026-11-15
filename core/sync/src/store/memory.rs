@@ -41,10 +41,10 @@ pub(crate) struct Memory {
     /// The sync IDs whose ephemeral entries name each blob.
     pub by_blob: BTreeMap<BlobId, BTreeSet<SyncId>>,
     pub usage: BTreeMap<SyncId, Usage>,
-    /// What an entry of a held ephemeral commit from another node costs held here, past its
-    /// bytes (`Engine::memory_charge`; spec/sync-compaction.md §2 Caps): its usage counts the
-    /// larger.
-    estimate: BTreeMap<(SyncId, BlobId), u64>,
+    /// What a blob of a held ephemeral commit from another node costs held here, past its bytes
+    /// (`Engine::memory_charge`; spec/sync-compaction.md §2 Caps): every entry naming it, under
+    /// any sync ID, counts the larger. Kept while an entry names the blob.
+    estimate: BTreeMap<BlobId, u64>,
     /// Bytes charged to each source by ephemeral entries and connections.
     pub charges: BTreeMap<Source, u64>,
     /// Rows a connection's source keeps for this connection only (stands, deletes seen).
@@ -122,7 +122,7 @@ impl Memory {
     }
 
     fn count(&mut self, s: &SyncId, b: &BlobId, r: &EntryRow, sign: bool) {
-        let held = self.estimate.get(&(*s, *b)).copied().unwrap_or(0).max(r.size);
+        let held = self.estimate.get(b).copied().unwrap_or(0).max(r.size);
         let u = self.usage.entry(*s).or_default();
         let op = |x: &mut u64, n: u64| *x = if sign { x.saturating_add(n) } else { x.saturating_sub(n) };
         if !r.role {
@@ -172,13 +172,19 @@ impl Memory {
         self.moved(s, b);
     }
 
-    /// Sets what held entry `b` of S costs past its bytes (`estimate`); nothing for one not held.
-    pub(crate) fn set_estimate(&mut self, s: &SyncId, b: &BlobId, n: u64) {
-        let Some(row) = self.entries.get(&(*s, *b)).cloned() else { return };
-        self.count(s, b, &row, false);
-        self.estimate.insert((*s, *b), n);
-        self.count(s, b, &row, true);
-        self.stamps.wrote(&Listing(s), true);
+    /// Sets what blob `b` costs held past its bytes (`estimate`), for every entry naming it;
+    /// nothing where no entry names it.
+    pub(crate) fn set_estimate(&mut self, b: &BlobId, n: u64) {
+        let Some(ss) = self.by_blob.get(b).cloned() else { return };
+        let rows: Vec<(SyncId, EntryRow)> = ss.into_iter().filter_map(|s| self.entries.get(&(s, *b)).cloned().map(|r| (s, r))).collect();
+        for (s, r) in &rows {
+            self.count(s, b, r, false);
+        }
+        self.estimate.insert(*b, n);
+        for (s, r) in &rows {
+            self.count(s, b, r, true);
+            self.stamps.wrote(&Listing(s), true);
+        }
     }
 
     /// Removes an ephemeral entry (`tomb`: with a tombstone, `MAX_DRIFT`); `expired`: no event.
@@ -189,7 +195,6 @@ impl Memory {
                 self.stamps.wrote(&Elsewhere(s, b), true);
             }
             self.count(s, b, row, false);
-            self.estimate.remove(&(*s, *b));
             if let Some(t) = row.expires {
                 self.expiry.remove(&(t, *s, *b));
             }
@@ -206,6 +211,7 @@ impl Memory {
                 set.remove(s);
                 if set.is_empty() {
                     self.by_blob.remove(b);
+                    self.estimate.remove(b);
                     self.unnamed.wrote_added(b, true, true);
                     if !self.engine.contains(b) {
                         self.blobs.remove(b);

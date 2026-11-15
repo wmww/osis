@@ -58,7 +58,7 @@ pub(crate) fn open_entry(engine: &mut Engine, store: &Store, s: &SyncId, b: &Blo
     if let Opened::Commit(c, _) = &o
         && engine.holds_memory(c)
     {
-        store.set_memory_charge(s, b, engine.memory_charge(c)?);
+        store.set_memory_charge(b, engine.memory_charge(c)?);
     }
     Ok(o)
 }
