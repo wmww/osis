@@ -161,6 +161,9 @@ impl Table {
 
     /// The changes after `at`, and the mark moved from `at` to now.
     fn read_log(&mut self, at: &mut u64) -> Vec<Logged> {
+        if *at == self.ver {
+            return Vec::new();
+        }
         let start = self.log.partition_point(|(v, _)| *v <= *at);
         let out = self.log.iter().skip(start).map(|(_, e)| e.clone()).collect();
         let now = self.ver;
