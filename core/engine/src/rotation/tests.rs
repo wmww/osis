@@ -2664,3 +2664,48 @@ fn derived_written_goes_with_its_destroyed_thing() {
     lp.peers[0].engine.check_index();
 }
 
+
+/// What W (peer 1) serves of `g`'s `secrets.0` (`flows::secrets_in`), and a decode of the state it
+/// holds, read past every memo.
+fn served_secrets(lp: &mut LocalPeer, g: Tid) -> (std::sync::Arc<ct::Secrets>, ct::Secrets) {
+    lp.peers[1]
+        .engine
+        .run(|tx| {
+            let kept = crate::flows::secrets_in(tx, &g)?;
+            let ak = crate::flows::ak("secrets.0")?;
+            let fresh = osis_base::memo::unrecorded(|| -> crate::error::Result<ct::Secrets> { Ok(tx.state(&g, &ak)?.and_then(osis_crdt::Fragment::read).and_then(|v| crate::engine::secrets::secrets_value(&v)).unwrap_or_default()) })?;
+            Ok((kept, fresh))
+        })
+        .unwrap()
+}
+
+// spec/permissions.md §3 (Lost access), spec/crypto.md §4: what this node serves of a thing's
+// `secrets.0` is the state it holds, whatever route a held commit comes again by. Writer W (1),
+// restarted (its rows present with no stamp of their own), reads its secrets of `g`, leaves `g`
+// (a self-removal), drops them once A holds it (`removal_done`: forgetting rebuilds the state
+// to nothing) and is handed every commit of A's again, the grant included: each read gives what
+// a decode of the state gives, after a restart too.
+#[test]
+fn a_held_grant_again_after_a_self_removal_serves_the_state_held_spec_perm_3() {
+    let (mut lp, g, tids) = granted(2, &[(1, Role::Write)]);
+    let pks = lp.packages(0).unwrap();
+    lp.peers[1].restart(0).unwrap();
+    let (before, _) = served_secrets(&mut lp, g);
+    assert!(before.boxes.keys().any(|b| b.holder == tids[1]), "W's boxes held");
+    lp.peers[1].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    let waiting = lp.peers[1].engine.waiting_removals();
+    assert!(!waiting.is_empty(), "the self-removal waits");
+    for c in waiting.iter() {
+        lp.peers[1].engine.removal_done(c).unwrap();
+    }
+    assert!(lp.peers[1].engine.epochs(&g).is_none_or(|e| e.read.held().next().is_none()), "W's secrets dropped");
+    for pk in &pks {
+        let _ = lp.peers[1].receive(&pk.bytes, pk.blobs.clone());
+        let (kept, fresh) = served_secrets(&mut lp, g);
+        assert_eq!(*kept, fresh, "served after a held commit came again");
+    }
+    lp.peers[1].restart(1).unwrap();
+    let (kept, fresh) = served_secrets(&mut lp, g);
+    assert_eq!(*kept, fresh, "served after a restart");
+}

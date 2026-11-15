@@ -410,15 +410,20 @@ mod tests {
         e.want(2);
         assert_eq!(e.due(), [2]);
         assert_eq!(e.settle(&2, || read(&m, &s, 2)), Some((None, 7)), "wanted again: reported anew");
-        // a read of an absent key moves with no removal of a key written since the stamps, its
-        // bucket's included
+        // a read of an absent key moves with every removal in its bucket, of a key written since
+        // the stamps included, and with no removal elsewhere
         e.want(100);
         e.settle(&100, || read(&m, &s, 100));
-        let removed = (0..=255u8).find(|x| super::super::bucket(super::super::hash(x)) == super::super::bucket(super::super::hash(&100u8)) && *x != 100).unwrap();
+        let same = |x: &u8| super::super::bucket(super::super::hash(x)) == super::super::bucket(super::super::hash(&100u8));
+        let (removed, elsewhere) = ((0..=255u8).find(|x| same(x) && *x != 100).unwrap(), (0..=255u8).find(|x| !same(x)).unwrap());
+        m.insert(elsewhere, 1);
+        m.remove(&elsewhere);
+        assert_eq!(e.due(), Vec::<u8>::new(), "a removal in another bucket");
         m.insert(removed, 1);
         let _ = e.due();
         m.remove(&removed);
-        assert_eq!(e.due(), Vec::<u8>::new(), "a removal in the bucket of an absent key read");
+        assert_eq!(e.due(), [100], "a removal in the bucket of an absent key read");
+        e.settle(&100, || read(&m, &s, 100));
         // a write logged before the settle that read it moved nothing since
         m.insert(1, 3);
         assert_eq!(e.settle(&1, || read(&m, &s, 1)), Some((Some(0), 3)));
@@ -435,7 +440,8 @@ mod tests {
 
     // spec: none (internal). A settle that reads the same keys again keeps its index, yet a key
     // read present before and absent now moves with its bucket's absent stamp, as at a first
-    // read; a write reverted before `due` still makes its reader due.
+    // read (every removal in the bucket); a write reverted before `due` still makes its reader
+    // due.
     #[test]
     fn a_key_read_again_absent_moves_with_its_bucket() {
         let mut m: Stamped<u8, u8> = Stamped::default();
@@ -455,7 +461,8 @@ mod tests {
         let other = (0..=255u8).find(|x| super::super::bucket(super::super::hash(x)) == super::super::bucket(super::super::hash(&100u8)) && *x != 100).unwrap();
         m.insert(other, 1);
         m.remove(&other);
-        assert_eq!(e.due(), Vec::<u8>::new(), "a key with a stamp of its own came and went: the bucket held");
+        assert_eq!(e.due(), [1], "a key with a stamp of its own came and went: the bucket moved");
+        e.settle(&1, || read(&m));
         // a key present with no stamp of its own (since `wrote_all`) is read at its bucket's
         // absent stamp: its removal moves the bucket
         m.insert(other, 1);

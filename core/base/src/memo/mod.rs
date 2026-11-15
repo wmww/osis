@@ -44,8 +44,10 @@ struct Table {
     /// Counts changes: the whole container's stamp.
     ver: u64,
     /// Per bucket of key hashes, `ver` at the last removal of a key in it: the stamp of every key
-    /// of the bucket without one of its own (an absent key costs nothing to keep; a removal moves
-    /// what read an absent key of its bucket, or one present since before the stamps were).
+    /// of the bucket without one of its own (an absent key costs nothing to keep). A key without
+    /// one may be present (there before the stamps were, since `wrote_all`, or put back by an
+    /// undo, which stamps as a removal), so every removal moves its bucket: falling back to a
+    /// bucket stamp some reader saw would make that reader's answer hold again over another value.
     absent: [u64; ABSENT_BUCKETS],
     /// `ver` at the last write of each key present, by the key's hash, and at the last write
     /// under each prefix read (`Stamps::read_prefix`). Two keys sharing a hash share a stamp: a
@@ -109,11 +111,10 @@ impl Table {
         let v = self.ver;
         if present {
             self.keys.insert(h, v);
-        } else if self.keys.remove(&h).is_none() {
-            // a key with no stamp of its own (present before the stamps were, or since
-            // `wrote_all`) was read at its bucket's absent stamp: its removal moves the bucket. A
-            // key with one falls back to the bucket's, which differs from any key's own (each
-            // `ver` is one change's), so its readers move and no other absent key's do
+        } else {
+            // the key reads at its bucket's stamp from now on, moved to this change: the stamp
+            // it read at before its own (present with none) may be the bucket's still (`absent`)
+            self.keys.remove(&h);
             if let Some(a) = self.absent.get_mut(bucket(h)) {
                 *a = v;
             }
@@ -1333,6 +1334,30 @@ mod tests {
         assert!(!ask(&stamps), "the removal of a key read without a stamp");
     }
 
+    // spec: none (internal). A key read present with no stamp of its own (a store row there since
+    // the open, or put back by an undo), then written and removed, never reads at the stamp its
+    // first reader saw: that reader's answer moves, though one of another memo was asked between.
+    #[test]
+    fn a_key_read_unstamped_then_written_and_removed_moves_its_first_reader() {
+        let stamps = Stamps::default();
+        let value = std::cell::Cell::new(Some(1u8));
+        let (first, between): (Memo<u8, Option<u8>>, Memo<u8, Option<u8>>) = (Memo::new("test first"), Memo::new("test between"));
+        let ask = |m: &Memo<u8, Option<u8>>| {
+            m.get(&1, || {
+                stamps.read(&1u8);
+                value.get()
+            })
+        };
+        assert_eq!(ask(&first), Some(1));
+        value.set(Some(2));
+        stamps.wrote(&1u8, true);
+        assert_eq!(ask(&between), Some(2));
+        value.set(None);
+        stamps.wrote(&1u8, false);
+        assert_eq!(ask(&first), None, "removed: the answer read before the write moved");
+        assert_eq!(ask(&between), None);
+    }
+
     // spec: none (internal). A clock read whole moves its reader at every move; read until `t`,
     // only when it reaches `t` (not a millisecond before); a move back moves every reader. A
     // forward move keeps no stamp of its own (a long run keeps no entry per time set).
@@ -1493,8 +1518,8 @@ mod tests {
         stamps.wrote_bytes(b"abc", false);
         ask(&stamps);
         assert_eq!(runs("test prefix"), 2, "a key under it came, one went");
-        // absent keys hold through the removal of a key written since the stamps; that of one
-        // with no stamp of its own (there before them) moves its bucket's alone
+        // a removal moves the absent keys of its bucket alone, whether the key removed had a
+        // stamp of its own or not
         let absent: Memo<u64, bool> = Memo::new("test absent");
         let keys: Vec<u64> = (0..200).collect();
         for k in &keys {
@@ -1515,7 +1540,8 @@ mod tests {
             }
         };
         ask(&stamps);
-        assert_eq!(runs("test absent"), 0, "written and removed again: absent as read");
+        let ran = runs("test absent");
+        assert!(ran > 0 && ran < 20, "written and removed again: only its bucket moved: {ran}");
         stamps.wrote(&1000u64, false);
         ask(&stamps);
         let ran = runs("test absent");
