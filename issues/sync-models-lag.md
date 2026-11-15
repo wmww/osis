@@ -6,8 +6,8 @@
 Each line: the rule (spec), the model that should carry it, what it lacks.
 - Behind refused for now (4) asked again after a doubling back-off (spec/sync-ids.md §6 Behind; `opens` `Conn::retries`): NetOpen leaves Behind out (ASSUMPTIONS.md, NetOpen). Liveness of a walk past a refused-for-now answer is unchecked.
 - Raise from kept unread to read pulls S anew from every source, marked durably (`N/` `ANEW_RAISED`, spec/sync-judgement.md §6 Read and unread move): no model moves a holding between kept unread and read; NetKeep's K never restarts.
-- Code 1 refusals kept per (peer, S) under the head told, and a head move pulling S anew from those peers (spec/sync-streams.md §4 Refused): NetHold models only codes 6 and 12; no told head, no pull anew.
-- Room growth pulling S anew and sending `full` false (spec/sync-streams.md §4 Full): NetHold's K has `full`/`refused` but never restarts, so the case in issues/sync-full-lost-at-restart.md is outside it.
+- Code 1 refusals kept per (peer, S) under the head told, and a head move pulling S anew from those peers (spec/sync-streams.md §4 Refused): NetHold models only codes 6 and 12; no told head, no pull anew, and no reader-side refusal standing only while the stamp and head are as told (issues/sync-refusals-never-lift.md).
+- Room growth pulling S anew and sending `full` false (spec/sync-streams.md §4 Full): NetHold's K has `full`/`refused` but never restarts, so the case in issues/sync-full-wait-stuck.md is outside it.
 - Who a duty waits for (`opens::awaited`: an account at any key; spec/sync-set.md §3) against who counts (`opens::counted`: trust now): NetDestroy and NetHold have no account key epochs (ASSUMPTIONS.md: account proofs not modelled).
 - Must-hold only what this node may log under S (spec/sync-judgement.md §2 Loggable), certificates never dropped as covered, a reader taking an announced entry whose bytes it holds under another sync ID: NetHold leaves certificate copies out.
 - Suspect lists and repair, the receiver's first-sync gate (spec/sync-judgement.md, suspect; `inbox/suspect.rs`): no model.
