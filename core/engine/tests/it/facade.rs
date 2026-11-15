@@ -3397,3 +3397,27 @@ fn a_bodys_facts_and_fate_move_at_a_follow_spec_commits_5() {
     assert_eq!(e.read_facts(&home, &c).unwrap().body.covered, Some(true));
     assert!(e.held_fate(&c).unwrap().is_some_and(|f| f.forgettable || !f.drops.is_empty()), "{:?}", e.held_fate(&c));
 }
+
+// spec/sync-set.md §3 (Unsyncing: its content goes), notes/growth.md: a commit forgotten whole
+// keeps no row naming it; its blobs come back from `forget_local` (sync unlogs their entries)
+// and are no blobs of it after, through a restart too.
+#[test]
+fn forget_local_keeps_no_blob_row_of_a_commit_forgotten_whole_spec_sync_set_3() {
+    let (mut lp, ps) = people(1);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    m.set(t, &ct::NAME, &"own".to_string()).unwrap();
+    let c = e.commit(m).unwrap().unwrap();
+    let s = e.home_sync_id(&t).unwrap().unwrap();
+    let (sealed, _) = e.seal_body(&s, &c, &[], &mut SeededRng::from_u64(3)).unwrap().expect("an own commit seals");
+    let held = e.commit_blobs(&c).unwrap();
+    assert_eq!(*held, vec![sealed.id], "noted");
+    let gone = e.forget_local(&[t].into()).unwrap();
+    assert!(e.commit_bytes(&c).unwrap().is_none(), "forgotten whole");
+    assert!(held.iter().all(|b| gone.contains(b)), "its blobs returned");
+    assert!(e.commit_blobs(&c).unwrap().is_empty(), "no blob row names a commit forgotten whole");
+    lp.peers[0].restart(71).unwrap();
+    assert!(lp.peers[0].engine.commit_blobs(&c).unwrap().is_empty(), "nor after a restart");
+}

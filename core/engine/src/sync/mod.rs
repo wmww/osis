@@ -718,8 +718,8 @@ impl Engine {
     /// holds (`node_closure`: its synced group's and its shared things'); their role-class aspects
     /// (`secrets.0` included) and secrets stay, and what arrives again counts as never received.
     /// One forgetting for all of them, however many left at once, in proportion to what it
-    /// forgets. The blobs of the commits it deleted whole: their entries anywhere stand for
-    /// nothing held.
+    /// forgets. The blobs of the commits it deleted whole, whose rows go with them: their entries
+    /// anywhere stand for nothing held.
     pub fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<BTreeSet<BlobId>> {
         let closure = self.node_closure()?;
         let mut things = crate::retention::forget::under(&self.core, ts);
@@ -729,7 +729,7 @@ impl Engine {
             return Ok(BTreeSet::new());
         }
         let f = self.run(|tx| crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new()))?;
-        Ok(f.commits.iter().flat_map(|c| self.core.ix.commit_blobs.get(c).into_iter().flatten().copied()).collect())
+        Ok(f.blobs)
     }
 
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
