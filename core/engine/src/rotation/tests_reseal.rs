@@ -917,8 +917,8 @@ fn lists_go_where_chain_certificates_do_for_any_accounts_devices_spec_sync_judge
     assert!(e.certificate_lists(&s, &r).unwrap().contains(&g), "P1's home carries G's list of its rotation");
 }
 
-// spec/permissions.md §1 (role-class aspects are written by admins alone; a devices actor is
-// created with its account, which writes its seeds), spec/sync-judgement.md §1 (Entitlement: an
+// spec/permissions.md §1 (The role-class aspects of a thing: written only by its admins; Devices
+// actor: known by an `account.0` delta signed as its account), spec/sync-judgement.md §1 (Entitlement: an
 // account's devices actor reads as its account, placing chain certificates and thing lists): a
 // co-admin of G, a thing whose first admin is account A0 and which A0's sync set holds, puts an
 // `account.0` on G and lists X, a thing only A0 reads, in G. G is no devices actor (only seeds A0
