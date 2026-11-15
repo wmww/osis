@@ -9,3 +9,4 @@ rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4
 rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=67 issues/forks-model-seed-67-rebuild-differs.md rebuilt from the commit records, the index Commit
 rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=786082893264 issues/forks-model-counting-differs.md counting: engine
 order::held_set_decides_plain OSIS_ORDER_START=712821043672 issues/held-set-plain-list-reset-floor.md held-model judged no list element reset
+order::held_set_decides_plain OSIS_ORDER_SEED=472457420585 issues/held-plain-kept-dropped-as-covered.md dropped as covered at \d+, live, the settings held keep it
