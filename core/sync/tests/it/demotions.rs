@@ -161,9 +161,9 @@ fn restarted(w: &mut World, sh: &Shape) -> Option<Value> {
 }
 
 // spec/permissions.md §4 (Chain certificates: the demotion lies on W's path into t, so it goes
-// with W's chain under S2), spec/sync-judgement.md §2 (required set) and §6 (a node keeping S2
-// unread serves what it holds), spec/permissions.md §5.2 (a write after an explicit demotion is
-// invalid; one its frontier lists stays): node 0 removes W from g under g's sync ID, which
+// with W's chain under S2), spec/sync-judgement.md §2 (required set) and §6 (a node keeping S
+// unread: it serves what it holds), spec/permissions.md §5.2 (valid explicit demotion: a write after
+// one is invalid, one its frontier lists stays): node 0 removes W from g under g's sync ID, which
 // neither node 2 nor the store syncs; the demotion reaches the store under S2, once, and node 2
 // from it. W, cut off and not knowing, writes w2 and pushes its deposit to node 2 (by hand: an
 // honest W that reaches S2 learns of the demotion and logs w2 nowhere). Node 2 reads w1, never
