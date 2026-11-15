@@ -670,6 +670,9 @@ impl Engine {
     /// while this node holds a grant on `a` it may finalize (spec/permissions.md §2 Finalize: the
     /// finalize goes before its next commit encrypting under `a`; the driver's role duties write
     /// it, `Engine::role_duty_due`). A key actor's epochs are its seed's: never blocked.
+    /// Kept per (actor, walk) (`Core::wrap_blocks`, `memo::Cutoff`): every body judged under a
+    /// sync ID asks it, and what it reads (the actor's component whole) moves far more often
+    /// than its answer.
     fn wrap_blocked(&mut self, a: &Tid, c: Option<&CommitId>) -> Result<bool> {
         if self.core.is_key_actor(a) {
             return Ok(false);
@@ -678,6 +681,11 @@ impl Engine {
             Some(h) if !h.kind.is_role() => crate::rotation::Walk::Encrypt,
             _ => crate::rotation::Walk::Place,
         };
+        osis_base::memo::Cutoff::get_in(self, |e| &e.core.wrap_blocks, &(*a, walk), |e, (a, walk)| e.wrap_blocked_read(a, *walk))
+    }
+
+    /// `wrap_blocked` read anew.
+    pub(crate) fn wrap_blocked_read(&mut self, a: &Tid, walk: crate::rotation::Walk) -> Result<bool> {
         let a = *a;
         let encrypt = matches!(walk, crate::rotation::Walk::Encrypt);
         self.read(|tx| {

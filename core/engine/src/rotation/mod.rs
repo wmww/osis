@@ -38,7 +38,7 @@ pub(crate) use members::{Boxing, Sealed, grant_keyless, sealed};
 pub(crate) use lost::{boxes_kept, load_lost, may_learn, may_take, touch_held};
 
 /// How far `blocked_epoch` follows boxes to holder actors (spec/crypto.md §4, Encrypting under).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Walk {
     /// For encrypting under, sealing a holder actor at a keyset included: through every holder
     /// actor whose boxes this node holds, rights aside (what a departed party opens does not

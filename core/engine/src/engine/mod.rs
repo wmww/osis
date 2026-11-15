@@ -686,6 +686,14 @@ macro_rules! indexes {
             $($f: <$t as Journaled>::Mark,)*
         }
 
+        impl Indexes {
+            /// Each index's stamps named by its field.
+            fn named(mut self) -> Self {
+                $(self.$f.name(concat!("index: ", stringify!($f)));)*
+                self
+            }
+        }
+
         impl Journaled for Indexes {
             type Mark = IndexesMark;
             fn commit(&mut self) {
@@ -1114,6 +1122,8 @@ pub struct Core {
     /// `inbox_actors`' entries (`memo::Spread`, `Engine::inbox_actors_at`): a reader of one inbox
     /// moves only when its actors do (the map moves as any actor gains secrets).
     pub(crate) inboxes: memo::Spread<SyncId, Vec<Tid>>,
+    /// `Engine::wrap_blocked` per (actor, walk) (`memo::Cutoff`), refreshed by `Engine::follow`.
+    pub(crate) wrap_blocks: memo::Cutoff<(Tid, crate::rotation::Walk), bool>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::StatePages>,
     pub timelines: held::Timelines,
@@ -1360,6 +1370,12 @@ pub struct Core {
     pub(crate) bodies: memo::Memo<CommitId, Option<crate::labeling::Body>>,
     /// `Engine::delta_live` per delta (`memo`).
     pub(crate) live_bodies: memo::Memo<(CommitId, Tid, Ak), bool>,
+    /// `retention::snapshot::covered` per (cover, body, aspect) (`memo`).
+    pub(crate) covers: memo::Memo<(CommitId, CommitId, Tid, Ak), Option<bool>>,
+    /// `Engine::sync_body_now` per (sync ID, commit) (`memo`).
+    pub(crate) sync_body: memo::Memo<(SyncId, CommitId), Option<crate::sync::BodyMeta>>,
+    /// `Engine::sync_bodies` per commit (`memo`).
+    pub(crate) sync_bodies: memo::Memo<CommitId, Arc<BTreeMap<SyncId, crate::sync::BodyMeta>>>,
     /// `Engine::state_digest` per aspect (`memo`): a suspect list's entries judged by lookup.
     pub(crate) state_digests: memo::Memo<(Tid, Ak), Option<[u8; 16]>>,
     /// `Engine::piece_below` per piece link (`memo`): a node's links, decoded once while held.
@@ -1444,6 +1460,7 @@ impl Core {
             acting_of: self.acting_of.clone(),
             inbox_actors: self.inbox_actors.clone(),
             inboxes: self.inboxes.clone(),
+            wrap_blocks: self.wrap_blocks.clone(),
             pages: self.pages.clone(),
             timelines: self.timelines.clone(),
             sides: self.sides.clone(),
@@ -1536,6 +1553,9 @@ impl Core {
             missed: self.missed.clone(),
             bodies: self.bodies.clone(),
             live_bodies: self.live_bodies.clone(),
+            covers: self.covers.clone(),
+            sync_body: self.sync_body.clone(),
+            sync_bodies: self.sync_bodies.clone(),
             state_digests: self.state_digests.clone(),
             pieces_below: self.pieces_below.clone(),
             replaced_reads: self.replaced_reads.clone(),
@@ -1998,6 +2018,9 @@ impl Core {
             epochs_of: _,
             bodies: _,
             live_bodies: _,
+            covers: _,
+            sync_body: _,
+            sync_bodies: _,
             state_digests: _,
             pieces_below: _,
             account_views: _,
@@ -2019,6 +2042,7 @@ impl Core {
             key_roles: _,
             inbox_actors: _,
             inboxes: _,
+            wrap_blocks: _,
             acting_of: _,
             sync_ids: _,
             passes_wanted: _,
@@ -2227,6 +2251,7 @@ impl Core {
             acting_of: memo::Memo::new("acting"),
             inbox_actors: memo::Memo::new("inbox actors"),
             inboxes: memo::Spread::new("inboxes"),
+            wrap_blocks: memo::Cutoff::new("wrap blocked"),
             pages: HashMap::new(),
             timelines: held::Timelines::default(),
             sides: crate::sides::Sides::default(),
@@ -2248,7 +2273,8 @@ impl Core {
                 by_actor: JSetMap::by_run(|k| actor_run(&k.0)),
                 role_on: JSetMap::by_run(|k| actor_run(&k.0)),
                 ..Indexes::default()
-            },
+            }
+            .named(),
             waits: crate::apply::Waits::default(),
             schemas: JMap::default(),
             events: Events::default(),
@@ -2334,6 +2360,9 @@ impl Core {
             missed: BTreeSet::new(),
             bodies: memo::Memo::new("label body"),
             live_bodies: memo::Memo::new("delta live"),
+            covers: memo::Memo::new("covered"),
+            sync_body: memo::Memo::new("sync body"),
+            sync_bodies: memo::Memo::new("sync bodies"),
             state_digests: memo::Memo::new("state digest"),
             pieces_below: memo::Memo::new("pieces: below"),
             replaced_reads: 0,

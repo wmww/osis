@@ -84,6 +84,11 @@ impl<K: Hash + Eq + Clone, V: Clone + PartialEq> Effects<K, V> {
         self.followed.contains_key(k)
     }
 
+    /// Whether `k` is followed with a value settled (none since a failed settle).
+    pub(super) fn settled_value(&self, k: &K) -> bool {
+        self.followed.get(k).is_some_and(|f| f.value.is_some())
+    }
+
     /// The followed keys whose last value read a stamp written since, and those never settled,
     /// in want order. A key stays due until it is settled.
     pub fn due(&mut self) -> Vec<K> {
@@ -405,15 +410,15 @@ mod tests {
         e.want(2);
         assert_eq!(e.due(), [2]);
         assert_eq!(e.settle(&2, || read(&m, &s, 2)), Some((None, 7)), "wanted again: reported anew");
-        // a read of an absent key moves with a removal in its bucket, as its stamp does
+        // a read of an absent key moves with no removal of a key written since the stamps, its
+        // bucket's included
         e.want(100);
         e.settle(&100, || read(&m, &s, 100));
         let removed = (0..=255u8).find(|x| super::super::bucket(super::super::hash(x)) == super::super::bucket(super::super::hash(&100u8)) && *x != 100).unwrap();
         m.insert(removed, 1);
         let _ = e.due();
         m.remove(&removed);
-        assert_eq!(e.due(), [100], "a removal in the bucket of an absent key read");
-        e.settle(&100, || read(&m, &s, 100));
+        assert_eq!(e.due(), Vec::<u8>::new(), "a removal in the bucket of an absent key read");
         // a write logged before the settle that read it moved nothing since
         m.insert(1, 3);
         assert_eq!(e.settle(&1, || read(&m, &s, 1)), Some((Some(0), 3)));

@@ -163,6 +163,8 @@ fn whether_a_body_wraps_moves_at_a_grants_until_spec_crypto_4() {
     let e = &mut lp.peers[0].engine;
     let now = e.now();
     e.set_now(now);
+    // as sync's driver does before each module's `due` (`Engine::follow`)
+    e.follow().unwrap();
     assert_eq!(fx.due(), vec![()], "due at the until");
     assert_eq!(fx.settle(&(), || { let held = e.commit_blobs(&c).unwrap(); e.may_log(&s, &c, &held).unwrap() }), Some((Some(true), false)), "the finalize is owed first");
 }

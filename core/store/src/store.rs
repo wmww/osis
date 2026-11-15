@@ -147,12 +147,17 @@ fn split(k: u8) -> Option<usize> {
 
 impl Default for Stamping {
     fn default() -> Stamping {
-        let name = |i: usize| match i {
-            i if i < KINDS => "store: catalog kind",
-            i if i < KINDS + 256 => "store: local rows",
-            _ => "store: record rows",
-        };
-        Stamping { families: (0..KINDS + 512).map(|i| Stamps::named(name(i))).collect(), all: Stamps::named("store: catalog"), log: Vec::new() }
+        // each family named by its kind and key byte (`Effects` causes), made once per process
+        static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+        let names = NAMES.get_or_init(|| {
+            let name = |i: usize| match i {
+                i if i < KINDS => format!("store: catalog kind {i}"),
+                i if i < KINDS + 256 => format!("store: local rows {:#04x}", i - KINDS),
+                i => format!("store: record rows {:#04x}", i - KINDS - 256),
+            };
+            (0..KINDS + 512).map(|i| &*Box::leak(name(i).into_boxed_str())).collect()
+        });
+        Stamping { families: names.iter().map(|n| Stamps::named(n)).collect(), all: Stamps::named("store: catalog"), log: Vec::new() }
     }
 }
 

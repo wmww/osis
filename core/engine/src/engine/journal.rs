@@ -23,6 +23,8 @@ pub(crate) trait Journaled {
     fn mark(&mut self) -> Self::Mark;
     /// Undoes every change journaled after `m`, newest first.
     fn rollback_to(&mut self, m: Self::Mark);
+    /// Names its stamps (`Effects` causes name an index by its field).
+    fn name(&mut self, _name: &'static str) {}
     /// The contents, without journal or counters (tests: a rollback restores them).
     #[cfg(test)]
     fn contents(&self) -> String;
@@ -213,6 +215,9 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static + Debug, V: Clone + Debug> Jo
         format!("{:?}", self.map)
     }
     type Mark = usize;
+    fn name(&mut self, name: &'static str) {
+        self.stamps.rename(name);
+    }
     fn commit(&mut self) {
         self.log.clear();
         self.seen.clear();
@@ -305,6 +310,9 @@ impl<T: Ord + Clone + Hash + Debug + Send + Sync + 'static> Journaled for JSet<T
         format!("{:?}", self.set)
     }
     type Mark = usize;
+    fn name(&mut self, name: &'static str) {
+        self.stamps.rename(name);
+    }
     fn commit(&mut self) {
         self.log.clear();
     }
@@ -447,6 +455,9 @@ impl<K: Ord + Clone + Hash + Debug + Send + Sync + 'static, T: Ord + Clone + Deb
         format!("{:?}", self.map)
     }
     type Mark = usize;
+    fn name(&mut self, name: &'static str) {
+        self.stamps.rename(name);
+    }
     fn commit(&mut self) {
         self.log.clear();
     }
@@ -536,6 +547,9 @@ impl<K: Ord + Clone + Hash + Debug, K2: Ord + Clone + Debug, V: Clone + Debug> J
         format!("{:?}", self.map)
     }
     type Mark = usize;
+    fn name(&mut self, name: &'static str) {
+        self.stamps.rename(name);
+    }
     fn commit(&mut self) {
         self.log.clear();
     }

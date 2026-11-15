@@ -456,7 +456,8 @@ impl Engine {
 
     // Held parts and bodies
 
-    /// Brings the facade values kept per entry (`Core::published`, per labeled thing; each read
+    /// Brings the facade values kept per entry (`Core::published`, per labeled thing;
+    /// `Core::wrap_blocks`, per actor and walk; each read
     /// thing's certificates per piece and commit, `certified`; its thing lists per rotation, `listed`) up to date with what moved since
     /// the last call: whether any entry moved. Each refreshes itself when asked, but an `Effects`
     /// key that read an entry goes due only once the entry is written, so a module calls this
@@ -466,6 +467,7 @@ impl Engine {
     /// (notes/engine.md).
     pub fn follow(&mut self) -> Result<bool> {
         let moved = self.follow_published();
+        let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.wrap_blocks, |e, (a, walk)| e.wrap_blocked_read(a, *walk))? | moved;
         // `listed` follows `certified` first: one follow of each
         Ok(self.follow_lists()? | moved)
     }

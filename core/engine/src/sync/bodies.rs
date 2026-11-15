@@ -107,8 +107,24 @@ impl Engine {
 
     /// Per sync ID this node reads whose required set holds a body of commit `c`: that body
     /// (spec/sync-judgement.md §1: parts, expiry, fetch order, a per-sync-ID copy or the shared
-    /// blob, a lasting header alone, or a certificate copy, `certificate_bodies`).
+    /// blob, a lasting header alone, or a certificate copy, `certificate_bodies`). A memo
+    /// (`Core::sync_bodies`): read's bodies and each judgement's held blobs ask it.
     pub(crate) fn sync_bodies_now(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
+        self.follow_bodies()?;
+        osis_base::memo::Memo::get_in(self, |e| &e.core.sync_bodies, c, |e| e.sync_bodies_read(c))
+    }
+
+    /// Brings the per-entry values a body reads (`published`, `certified`) up to date before a
+    /// memo of bodies is asked: a hit asks neither, and its reads of them hold only once they are
+    /// (notes/engine.md, Derived values: `Spread`).
+    fn follow_bodies(&mut self) -> Result<()> {
+        self.follow_published();
+        self.follow_certificates()?;
+        Ok(())
+    }
+
+    /// `sync_bodies_now` read anew.
+    fn sync_bodies_read(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
         let mut out = BTreeMap::new();
         for g in self.body_things(c)? {
             let ThingSync::Read(ids) = self.thing_sync_now(&g)? else { continue };
@@ -123,8 +139,15 @@ impl Engine {
     }
 
     /// Commit `c`'s body at read sync ID `s` (`sync_bodies`' entry for `s`), read from `s`'s
-    /// thing alone: a body coming or going at another sync ID moves nothing here.
+    /// thing alone: a body coming or going at another sync ID moves nothing here. A memo
+    /// (`Core::sync_body`): each judgement of a body asks it from several facade calls.
     pub(crate) fn sync_body_now(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BodyMeta>> {
+        self.follow_bodies()?;
+        osis_base::memo::Memo::get_in(self, |e| &e.core.sync_body, &(*s, *c), |e| e.sync_body_read(s, c))
+    }
+
+    /// `sync_body_now` read anew.
+    fn sync_body_read(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BodyMeta>> {
         let Some(t) = self.read_thing(s)? else { return Ok(None) };
         if self.body_things(c)?.contains(&t)
             && let Some(meta) = self.closure_body(&t, c)?

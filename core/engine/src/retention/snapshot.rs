@@ -562,8 +562,15 @@ pub(crate) fn drops_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid
 /// `Engine::covered` in `tx`: a plain commit `s` covers `c` only as its author's own replace
 /// (spec/commits.md §5, Own replaces), with a second own replace later than `c`, so what
 /// `c`'s author wrote before their last replace stays: a function of the commits held here,
-/// the same at every node holding them.
+/// the same at every node holding them. A memo (`Core::covers`): sync's judgement of a body asks
+/// it per snapshot of its aspects at every rerun, and a join reads both bodies.
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
+    let key = (*s, *c, *tid, ak.clone());
+    osis_base::memo::Memo::get_in(tx, |tx| &tx.core.covers, &key, |tx| covered_read(tx, &key.0, &key.1, &key.2, &key.3))
+}
+
+/// `covered` read anew.
+fn covered_read(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let Some(sm) = tx.core.ix.commits.get(s) else { return covered_join(tx, s, c, tid, ak) };
     if sm.view.kind.is_compaction() {
         return covered_join(tx, s, c, tid, ak);

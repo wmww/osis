@@ -24,8 +24,10 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+mod cutoff;
 mod effects;
 mod spread;
+pub use cutoff::Cutoff;
 pub use spread::Spread;
 pub use effects::{Effects, Feed};
 
@@ -107,10 +109,11 @@ impl Table {
         let v = self.ver;
         if present {
             self.keys.insert(h, v);
-        } else {
-            // every removal moves its bucket's absent stamp: a key present with no stamp of its
-            // own (one there before the stamps were, or since `wrote_all`) was read at it
-            self.keys.remove(&h);
+        } else if self.keys.remove(&h).is_none() {
+            // a key with no stamp of its own (present before the stamps were, or since
+            // `wrote_all`) was read at its bucket's absent stamp: its removal moves the bucket. A
+            // key with one falls back to the bucket's, which differs from any key's own (each
+            // `ver` is one change's), so its readers move and no other absent key's do
             if let Some(a) = self.absent.get_mut(bucket(h)) {
                 *a = v;
             }
@@ -220,6 +223,11 @@ impl Stamps {
     /// The stamps of a container of type `C`, named by it.
     pub fn of<C: ?Sized>() -> Stamps {
         Stamps::named(std::any::type_name::<C>())
+    }
+
+    /// Names the container after its place (an index field): what `Effects` reports it by.
+    pub fn rename(&self, name: &'static str) {
+        lock(&self.0).name = Some(name);
     }
 
     /// Key `k` was written (`present`) or removed.
@@ -1481,7 +1489,8 @@ mod tests {
         stamps.wrote_bytes(b"abc", false);
         ask(&stamps);
         assert_eq!(runs("test prefix"), 2, "a key under it came, one went");
-        // absent keys in other buckets hold through a removal
+        // absent keys hold through the removal of a key written since the stamps; that of one
+        // with no stamp of its own (there before them) moves its bucket's alone
         let absent: Memo<u64, bool> = Memo::new("test absent");
         let keys: Vec<u64> = (0..200).collect();
         for k in &keys {
@@ -1493,12 +1502,18 @@ mod tests {
         crate::costs::take();
         stamps.wrote(&7u64, true);
         stamps.wrote(&7u64, false);
-        for k in &keys {
-            absent.get(k, || {
-                stamps.read(k);
-                false
-            });
-        }
+        let ask = |stamps: &Stamps| {
+            for k in &keys {
+                absent.get(k, || {
+                    stamps.read(k);
+                    false
+                });
+            }
+        };
+        ask(&stamps);
+        assert_eq!(runs("test absent"), 0, "written and removed again: absent as read");
+        stamps.wrote(&1000u64, false);
+        ask(&stamps);
         let ran = runs("test absent");
         assert!(ran > 0 && ran < 20, "only the removed key's bucket moved: {ran}");
     }

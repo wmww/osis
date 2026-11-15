@@ -542,11 +542,63 @@ impl HeldSet for Held {
 #[derive(Clone)]
 pub struct Timelines {
     of: osis_perm::Timelines,
-    stamps: Stamps,
+    stamps: TlStamps,
     /// The keyless actor grants (target, holder): the union of each component's
     /// (`rotation::members::keyless_in`, spec/crypto.md §4 Key access: a keyless grant closes a
     /// cycle of actor grants, which lies in one component).
     keyless: Arc<BTreeSet<(Tid, Tid)>>,
+}
+
+/// `Timelines`' stamps, a table per kind of read (`Read`), each named for it (`Effects` causes).
+#[derive(Clone)]
+struct TlStamps {
+    whole: Stamps,
+    into: Stamps,
+    held: Stamps,
+    ever: Stamps,
+    things: Stamps,
+    keyless: Stamps,
+}
+
+impl Default for TlStamps {
+    fn default() -> Self {
+        TlStamps {
+            whole: Stamps::named("timelines: whole"),
+            into: Stamps::named("timelines: into"),
+            held: Stamps::named("timelines: held"),
+            ever: Stamps::named("timelines: ever"),
+            things: Stamps::named("timelines: things"),
+            keyless: Stamps::named("timelines: keyless"),
+        }
+    }
+}
+
+impl TlStamps {
+    fn of(&self, r: &Read) -> &Stamps {
+        match r {
+            Read::Whole(_) => &self.whole,
+            Read::Into(_) => &self.into,
+            Read::Held(_) => &self.held,
+            Read::Ever(_) => &self.ever,
+            Read::Things => &self.things,
+            Read::Keyless => &self.keyless,
+        }
+    }
+    fn all(&self) -> [&Stamps; 6] {
+        [&self.whole, &self.into, &self.held, &self.ever, &self.things, &self.keyless]
+    }
+    fn read(&self, r: &Read) {
+        self.of(r).read(r);
+    }
+    fn wrote(&self, r: &Read, present: bool) {
+        self.of(r).wrote(r, present);
+    }
+    fn read_all(&self) {
+        self.all().into_iter().for_each(Stamps::read_all);
+    }
+    fn wrote_all(&self) {
+        self.all().into_iter().for_each(Stamps::wrote_all);
+    }
 }
 
 /// What a read of `Timelines` is stamped by.
@@ -571,7 +623,7 @@ enum Read {
 
 impl Default for Timelines {
     fn default() -> Self {
-        Timelines { of: osis_perm::Timelines::new(), stamps: Stamps::default(), keyless: Arc::default() }
+        Timelines { of: osis_perm::Timelines::new(), stamps: TlStamps::default(), keyless: Arc::default() }
     }
 }
 
@@ -589,7 +641,7 @@ impl std::ops::Deref for Timelines {
 pub struct On<'a> {
     tl: &'a osis_perm::Timeline,
     thing: Tid,
-    stamps: &'a Stamps,
+    stamps: &'a TlStamps,
 }
 
 impl<'a> On<'a> {
