@@ -1324,6 +1324,8 @@ pub struct Core {
     pub(crate) bodies: memo::Memo<CommitId, Option<crate::labeling::Body>>,
     /// `Engine::delta_live` per delta (`memo`).
     pub(crate) live_bodies: memo::Memo<(CommitId, Tid, Ak), bool>,
+    /// `Engine::state_digest` per aspect (`memo`): a suspect list's entries judged by lookup.
+    pub(crate) state_digests: memo::Memo<(Tid, Ak), Option<[u8; 16]>>,
     /// `Engine::piece_below` per piece link (`memo`): a node's links, decoded once while held.
     pub(crate) pieces_below: memo::Memo<crate::sync::PieceLink, Option<Arc<Vec<crate::sync::PieceLink>>>>,
     /// Keep-bound judgments (`retention::bounds::part_keep`, `commit_bounds`: a commit's parts at once), for cost
@@ -1489,6 +1491,7 @@ impl Core {
             missed: self.missed.clone(),
             bodies: self.bodies.clone(),
             live_bodies: self.live_bodies.clone(),
+            state_digests: self.state_digests.clone(),
             pieces_below: self.pieces_below.clone(),
             replaced_reads: self.replaced_reads.clone(),
             death_walks: self.death_walks.clone(),
@@ -1948,6 +1951,7 @@ impl Core {
             epochs_of: _,
             bodies: _,
             live_bodies: _,
+            state_digests: _,
             pieces_below: _,
             account_views: _,
             account_epochs_of: _,
@@ -2267,6 +2271,7 @@ impl Core {
             missed: BTreeSet::new(),
             bodies: memo::Memo::new("label body"),
             live_bodies: memo::Memo::new("delta live"),
+            state_digests: memo::Memo::new("state digest"),
             pieces_below: memo::Memo::new("pieces: below"),
             replaced_reads: 0,
             death_walks: 0,

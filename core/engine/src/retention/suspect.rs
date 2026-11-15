@@ -267,12 +267,18 @@ impl Engine {
     /// `kdf("state", dedup secret of tid, ak || state bytes)`, the state bytes its encoding as a
     /// snapshot fragment with its pages, none for an aspect holding no state. `None` while the
     /// thing's creation record is unknown. Nodes holding the same bodies get the same digest; a
-    /// host, lacking the dedup secret, learns nothing from it.
+    /// host, lacking the dedup secret, learns nothing from it. A memo per aspect
+    /// (`Core::state_digests`, stamped by the thing's creation record and the aspect's state): a
+    /// suspect list's entry costs a lookup unless its aspect moved, not the aspect's size.
     pub fn state_digest(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<[u8; 16]>> {
-        let Some(r) = self.core.created(tid) else { return Ok(None) };
-        let d = osis_crypto::dedup_secret(r.nonce());
-        let (tid, ak) = (*tid, ak.clone());
-        let bytes = self.read(|tx| tx.state(&tid, &ak)?.map(crate::engine::state::encode).transpose())?.unwrap_or_default();
-        Ok(Some(osis_crypto::state_digest(&d, ak.as_str(), &bytes)))
+        let key = (*tid, ak.clone());
+        osis_base::memo::Memo::get_in(self, |e| &e.core.state_digests, &key, |e| {
+            let (tid, ak) = &key;
+            let Some(r) = e.core.created(tid) else { return Ok(None) };
+            let d = osis_crypto::dedup_secret(r.nonce());
+            let _s = osis_base::costs::span("state digest: computed");
+            let bytes = e.read(|tx| tx.state(tid, ak)?.map(crate::engine::state::encode).transpose())?.unwrap_or_default();
+            Ok(Some(osis_crypto::state_digest(&d, ak.as_str(), &bytes)))
+        })
     }
 }

@@ -1695,3 +1695,42 @@ fn a_suspect_entry_is_repaired_once_per_state_spec_sync_compaction_1() {
     let r = &mut lp.peers[1].engine;
     assert_eq!(r.repair_suspect(&s, &t, &a, &[0; 16], &reporter, None).unwrap(), Repaired::Skipped, "a node not syncing it");
 }
+
+// spec/permissions.md §4 (Suspect list): a writer judging a reader's list digests each listed
+// aspect once per state of it: at a 100- and a 1,000-element list, judging three entries again
+// and again computes nothing anew; a write recomputes the aspect it moved alone, to the digest a
+// node holding the same bodies computes, one that asked before the creation record came included.
+#[test]
+fn a_state_digest_is_computed_once_per_state_spec_perm_4() {
+    let computed = || osis_base::costs::take().iter().find(|x| x.0 == "state digest: computed").map_or(0, |x| x.2);
+    for n in [100usize, 1000] {
+        let mut lp = net2();
+        let t = new_thing(&mut lp, 0);
+        let mut m = Mutation::new();
+        let items = (0..n).map(|i| s(&format!("e{i}"))).collect();
+        m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items } }).unwrap();
+        m.set(t, &REG, &s("r")).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let listed = [ak("t:list.0"), ak("t:reg.0"), ak("t:hi.0")];
+        osis_base::costs::take();
+        let first: Vec<_> = listed.iter().map(|a| lp.peers[0].engine.state_digest(&t, a).unwrap().unwrap()).collect();
+        for _ in 0..50 {
+            for (a, d) in listed.iter().zip(&first) {
+                assert_eq!(lp.peers[0].engine.state_digest(&t, a).unwrap().as_ref(), Some(d), "n {n}");
+            }
+        }
+        assert_eq!(computed(), 3, "n {n}: each listed aspect digested once");
+        let mut m = Mutation::new();
+        m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("new")] } }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        osis_base::costs::take();
+        let after: Vec<_> = listed.iter().map(|a| lp.peers[0].engine.state_digest(&t, a).unwrap().unwrap()).collect();
+        assert_eq!(computed(), 1, "n {n}: the written aspect alone digested anew");
+        assert_ne!(after[0], first[0], "n {n}: the list moved");
+        assert_eq!(after[1..], first[1..], "n {n}");
+        assert_eq!(lp.peers[1].engine.state_digest(&t, &listed[0]).unwrap(), None, "n {n}: creation record unknown");
+        lp.sync_all().unwrap();
+        let fresh: Vec<_> = listed.iter().map(|a| lp.peers[1].engine.state_digest(&t, a).unwrap().unwrap()).collect();
+        assert_eq!(after, fresh, "n {n}: as a node holding the same bodies digests it");
+    }
+}
