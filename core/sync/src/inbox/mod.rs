@@ -67,6 +67,8 @@ pub trait Net {
     fn head(&self, conn: ConnId, s: &SyncId) -> Option<StepId>;
     /// Whether that source's stream showed `b` present under S.
     fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool;
+    /// Whether some source's stream showed `b` present under S (stamped).
+    fn shown(&self, s: &SyncId, b: &BlobId) -> bool;
     /// Moves at each arrival of the peer's filter (spec/sync-inbox.md §3: a refused Deposit item
     /// waits for the next; a new one may show a deposit key).
     fn filter_generation(&self, conn: ConnId) -> u64;
@@ -97,6 +99,9 @@ impl Net for Links<'_> {
     }
     fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
         self.streams.knows(self.streams.source(self.opens, conn), Some(conn), s, b)
+    }
+    fn shown(&self, s: &SyncId, b: &BlobId) -> bool {
+        self.streams.known().present(s, b)
     }
     fn filter_generation(&self, conn: ConnId) -> u64 {
         self.opens.filter_arrivals(conn)

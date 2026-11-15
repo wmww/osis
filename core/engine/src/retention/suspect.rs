@@ -188,6 +188,12 @@ impl Engine {
         core.ix.suspects.get(&(*tid, ak.clone())).map(|f| judged(core, f))
     }
 
+    /// The commits of the bodies `(tid, ak)`'s flag names, dormant ones included (stamped as
+    /// `suspect`): a node fetches those its sources show (spec/permissions.md §4 Suspect list).
+    pub fn suspect_bodies(&self, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
+        self.core.ix.suspects.get(&(*tid, ak.clone())).map(|f| f.bodies.iter().map(|e| e.0).collect()).unwrap_or_default()
+    }
+
     /// A cursor over the aspects flagged from now on (`memo::Feed`; one flagged again after its
     /// flag went is given again).
     pub fn suspect_feed(&self) -> osis_base::memo::Feed<(Tid, Ak)> {

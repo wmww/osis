@@ -194,3 +194,35 @@ fn a_list_received_mid_first_sync_is_judged_as_it_ends_spec_sync_compaction_1() 
     assert_eq!(snapshots(&mut w, t), before + 1, "repaired as its first sync ends");
     assert_eq!(digests(&mut w, t).0, digests(&mut w, t).1);
 }
+
+// spec/permissions.md §4 (Suspect list: an aspect is left out while a source's stream shows a
+// body its flag names present under L): node 1 flags `u:v.0` for node 0's write, which node 0's
+// stream shows: nothing is listed and node 0 writes no snapshot, while a flag naming a body no
+// stream shows goes at once. Fails if a node lists a state it is still fetching into (a writer
+// would repair it for nothing).
+#[test]
+fn a_flag_naming_a_body_a_source_shows_waits_spec_permissions_4() {
+    let mut w = world(0, 2);
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let v = Ak::new("u:v.0").unwrap();
+    let c = w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &v, &s("x")).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    let count = |w: &mut World| {
+        let e = w.engine(0);
+        e.commit_ids().iter().filter(|x| e.header(x).is_some_and(|h| h.kind == Kind::ContentSnapshot)).count()
+    };
+    let before = count(&mut w);
+    sent();
+    w.write(1, |e| e.flag_suspect(&t, &v, Why::Uncovered, &[(c, 0)]).unwrap());
+    w.run();
+    assert_eq!(sent(), 0, "the body node 0 shows is fetched, not listed");
+    assert_eq!(count(&mut w), before, "no repair");
+    w.write(1, |e| e.flag_suspect(&t, &big(), Why::Uncovered, &[(CommitId([7; 32]), 0)]).unwrap());
+    w.run();
+    assert!(sent() >= 1, "a body no stream shows is listed at once");
+}

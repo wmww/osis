@@ -3,7 +3,8 @@
 //!
 //! Out: per S, this node's flagged, not dormant aspects of things S carries and S's actor may read
 //! (the engine's `suspect(t, ak)` per aspect, grouped by `carrying(t)` filtered by
-//! `suspect_under`), most recently flagged first, each with its state digest taken as it goes.
+//! `suspect_under`; under no S while a source's stream shows under S a body the flag names: it
+//! is fetched, its state not yet what it reports), most recently flagged first, each with its state digest taken as it goes.
 //! Sent to each reader source's peer at its join and to every one when S's list moves (a store
 //! source keeps S unread: it learns nothing of S's closure from us), once S's first sync here ended (`Store::first_synced`: a
 //! node mid first sync digests a partial state, so every writer would repair it for nothing).
@@ -182,7 +183,7 @@ impl Suspects {
         let mut moved = BTreeSet::new();
         for k in self.flags.due() {
             let engine = &mut *h.engine;
-            let Some((was, now)) = self.flags.try_settle(&k, || flag(engine, &k))? else { continue };
+            let Some((was, now)) = self.flags.try_settle(&k, || flag(engine, &*net, &k))? else { continue };
             if let Some(Flag::Listed { under, .. }) = &was {
                 for s in under {
                     if let Some(l) = self.lists.get_mut(s) {
@@ -291,15 +292,21 @@ impl Suspects {
     }
 }
 
-/// `k`'s flag as the lists see it.
-fn flag(engine: &mut osis_engine::Engine, k: &Aspect) -> Result<Flag> {
+/// `k`'s flag as the lists see it: listed under each S that may name it, unless a source's
+/// stream shows a body its flag names present under S (the node fetches it there, so its state
+/// is not yet the one it would report; spec/permissions.md §4 Suspect list).
+fn flag(engine: &mut osis_engine::Engine, net: &impl Net, k: &Aspect) -> Result<Flag> {
     let Some((at, why)) = engine.suspect(&k.0, &k.1) else { return Ok(Flag::Gone) };
     if why == 0 || !engine.record_known(&k.0) {
         return Ok(Flag::Quiet);
     }
+    let mut blobs = Vec::new();
+    for c in engine.suspect_bodies(&k.0, &k.1) {
+        blobs.extend(engine.commit_blobs(&c)?.iter().copied());
+    }
     let mut under = BTreeSet::new();
     for s in engine.carrying(&k.0)? {
-        if engine.suspect_under(&s, &k.0)? {
+        if engine.suspect_under(&s, &k.0)? && !blobs.iter().any(|b| net.shown(&s, b)) {
             under.insert(s);
         }
     }
@@ -399,6 +406,9 @@ mod tests {
             None
         }
         fn present(&self, _: ConnId, _: &SyncId, _: &osis_base::BlobId) -> bool {
+            false
+        }
+        fn shown(&self, _: &SyncId, _: &osis_base::BlobId) -> bool {
             false
         }
         fn filter_generation(&self, _: ConnId) -> u64 {

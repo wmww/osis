@@ -87,6 +87,9 @@ impl Net for FakeNet {
     fn present(&self, conn: ConnId, s: &SyncId, b: &BlobId) -> bool {
         self.present.contains(&(conn, *s, *b))
     }
+    fn shown(&self, _s: &SyncId, _b: &BlobId) -> bool {
+        false
+    }
     fn filter_generation(&self, conn: ConnId) -> u64 {
         self.generation.get(&conn).copied().unwrap_or(0)
     }
