@@ -180,7 +180,7 @@ pub(crate) fn rank(ms: &[Minting], mut held: impl FnMut(&CommitId) -> Result<boo
 /// Empty: none is (no longer followed).
 pub(crate) fn mintings(g: &mut impl Ground, metas: &Stamped<(SyncId, CommitId), BodyMeta>, s: &SyncId, t: &Tid) -> Result<Arc<BTreeMap<CommitId, Mint>>> {
     osis_base::costs::count("read: mintings", 1);
-    let ms = g.mintings(t)?;
+    let ms = g.mintings(t);
     let mut ranked = rank(&ms, |c| Ok(!g.own(s, c)?.is_empty()))?;
     ranked.retain(|c, _| metas.get(&(*s, *c)).is_some_and(|m| m.mints.contains(t)));
     Ok(Arc::new(ranked))
@@ -218,12 +218,12 @@ impl Mine<'_> {
 /// past a complete pass of S begun after both an entry of it came and what its bodies read last
 /// moved (§1 Unjudged blobs: what arrives in that pass may still put it inside), else unjudged,
 /// with the place the wait runs from.
-fn outside(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -> Result<(Verdict, Option<u64>)> {
+fn outside(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -> (Verdict, Option<u64>) {
     let since = mine.arrived.get(&(*s, *c)).copied().unwrap_or(0).max(mine.moved.get(c).copied().unwrap_or(0));
-    Ok(match g.passed(s, since)? {
+    match g.passed(s, since) {
         true => (Verdict::MustNot(Why::OutsideRequired), None),
         false => (Verdict::Unjudged, Some(since)),
-    })
+    }
 }
 
 /// Held blob `b` of a commit whose body at S is a certificate (`meta`): a copy holding deltas, none
@@ -250,7 +250,7 @@ fn unnamed_copies(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId, bl
     if out.is_empty() {
         return Ok((out, false, None));
     }
-    let (v, wait) = outside(g, mine, s, c)?;
+    let (v, wait) = outside(g, mine, s, c);
     Ok((out, matches!(v, Verdict::MustNot(_)), wait))
 }
 
@@ -321,7 +321,7 @@ fn covered_dropped(v: &Verdict, f: &Facts, mut held: impl FnMut(&CommitId) -> Re
 pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -> Result<Judged> {
     osis_base::costs::count("read: judged", 1);
     let mut j = Judged::default();
-    if !g.reads(s)? {
+    if !g.reads(s) {
         j.idle = true;
         return Ok(j);
     }
@@ -333,7 +333,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     // the body's verdict (spec/sync-judgement.md §1): it leaves, and the body counts as unlogged
     let mut stale = Vec::new();
     for e in &own {
-        if !request && g.dropped(&e.blob)? {
+        if !request && g.dropped(&e.blob) {
             stale.push(e.blob);
         }
     }
@@ -353,7 +353,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     let (f, verdict) = match mine.meta(s, c) {
         None if !g.closure_settled(s)? => (None, Verdict::Unjudged),
         None => {
-            let (v, wait) = outside(g, mine, s, c)?;
+            let (v, wait) = outside(g, mine, s, c);
             j.wait = wait;
             (None, v)
         }
@@ -374,7 +374,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
                 v = Verdict::May;
             }
             if v == Verdict::MustNot(Why::OutsideRequired) {
-                let (x, wait) = outside(g, mine, s, c)?;
+                let (x, wait) = outside(g, mine, s, c);
                 v = x;
                 j.wait = wait;
             }
@@ -396,7 +396,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     if f.as_ref().is_some_and(|f| f.missing) {
         j.acts.extend(g.own_tombstones(s, c)?.into_iter().map(Act::Lift));
         j.acts.extend(own.iter().filter(|e| !stale.contains(&e.blob)).map(|e| Act::Take(e.blob)));
-        for (at, conn) in g.reached(s)? {
+        for (at, conn) in g.reached(s) {
             for b in g.seen(&at, s, c)?.present {
                 if !own.iter().any(|e| e.blob == b) {
                     j.acts.insert(Act::Fetch { at, conn, blob: b });
@@ -499,8 +499,8 @@ pub(crate) fn piece(g: &mut impl Ground, s: &SyncId, p: &PieceLink) -> Result<Pi
             j.acts.insert(Act::TakePiece(b));
             return Ok(j);
         }
-        for (at, conn) in g.reached(s)? {
-            if g.piece_shown(&at, s, &b)? {
+        for (at, conn) in g.reached(s) {
+            if g.piece_shown(&at, s, &b) {
                 j.acts.insert(Act::Fetch { at, conn, blob: b });
             }
         }
@@ -513,9 +513,9 @@ pub(crate) fn piece(g: &mut impl Ground, s: &SyncId, p: &PieceLink) -> Result<Pi
     }
     // lost: some source shows it deleted and none present, S's sources heard out (every entry of
     // S each can open applied); deletes read only once no source shows it
-    let sources = g.reached(s)?;
+    let sources = g.reached(s);
     for (at, _) in &sources {
-        if g.piece_shown(at, s, &b)? {
+        if g.piece_shown(at, s, &b) {
             return Ok(j);
         }
     }
@@ -541,20 +541,20 @@ pub(crate) fn freed(g: &mut impl Ground, b: &BlobId, t: &Tid) -> Result<Freed> {
     osis_base::costs::count("read: freed", 1);
     let mut acts = BTreeSet::new();
     let mut known = false;
-    if !g.freed_link(b, t)? {
+    if !g.freed_link(b, t) {
         return Ok((acts, false));
     }
     for s in g.carrying(t)? {
-        if !g.reads(&s)? {
+        if !g.reads(&s) {
             continue;
         }
         if matches!(g.piece(&s, b)?, PieceAt::Own | PieceAt::Peer) {
             known = true;
             acts.insert((s, Act::DropBlob(*b)));
         }
-        for src in g.sources(&s)?.iter() {
+        for src in g.sources(&s).iter() {
             // a reader judges its own entries: only a store's count
-            if !src.store || !g.piece_shown(&src.at, &s, b)? {
+            if !src.store || !g.piece_shown(&src.at, &s, b) {
                 continue;
             }
             known = true;
@@ -576,14 +576,14 @@ pub(crate) fn freed(g: &mut impl Ground, b: &BlobId, t: &Tid) -> Result<Freed> {
 pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId, at: &Source) -> Result<Toward> {
     osis_base::costs::count("read: toward", 1);
     let mut t = Toward::default();
-    if !g.kept_at(s, at)? {
+    if !g.kept_at(s, at) {
         t.idle = true;
         return Ok(t);
     }
     let seen = g.seen(at, s, c)?;
     let verdict = mine.verdicts.get(&(*s, *c)).cloned().unwrap_or(Verdict::Unjudged);
     let creds = g.credentials(s)?;
-    let head = g.head_at(s, at)?;
+    let head = g.head_at(s, at);
     let keys = head.and_then(|h| creds.as_ref()?.keys.get(&h).cloned());
     let writer = keys.as_ref().is_some_and(|k| k.write.is_some());
     let quiet = seen.present.is_empty() && seen.deleted.is_empty();
@@ -614,7 +614,7 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
         return Ok(t);
     }
     // away, it stays owed (followed while its stream shows the body) until it is up again
-    let Some(src) = g.source(s, at)? else { return Ok(t) };
+    let Some(src) = g.source(s, at) else { return Ok(t) };
     if !src.store {
         t.idle = true;
         return Ok(t);
@@ -762,7 +762,7 @@ fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, se
     if expires.is_some_and(|e| mine.reached(e.0.saturating_sub(MAX_DRIFT_MS))) {
         return Ok(());
     }
-    let fall = g.fall_mark(s, c)?;
+    let fall = g.fall_mark(s, c);
     if g.stand(&src.at, s, c)?.is_some_and(|st: Stand| st.head == head && st.fall == fall) {
         return Ok(());
     }
@@ -785,7 +785,7 @@ pub(crate) fn doom(g: &mut impl Ground, mine: &Mine, told_before: bool, s: &Sync
         let exp = mine.meta(s, r).and_then(|m| m.expires);
         over &= exp.is_some_and(|e| mine.reached(e.0));
     }
-    let sources = g.sources(s)?;
+    let sources = g.sources(s);
     // per source: the blobs of the requests it holds, when it holds each
     let mut holds_all: BTreeMap<Source, BTreeSet<BlobId>> = BTreeMap::new();
     for src in sources.iter() {

@@ -202,8 +202,8 @@ struct Fake {
 }
 
 impl Ground for Fake {
-    fn mintings(&mut self, t: &Tid) -> Result<Arc<Vec<Minting>>> {
-        Ok(self.mintings.get(t).cloned().unwrap_or_default())
+    fn mintings(&mut self, t: &Tid) -> Arc<Vec<Minting>> {
+        self.mintings.get(t).cloned().unwrap_or_default()
     }
     fn piece_roots(&mut self, c: &CommitId, _parts: &osis_engine::sync::PartSet) -> Result<Arc<Vec<PieceLink>>> {
         Ok(self.roots.get(c).cloned().unwrap_or_default())
@@ -214,8 +214,8 @@ impl Ground for Fake {
     fn piece(&mut self, s: &SyncId, b: &BlobId) -> Result<PieceAt> {
         Ok(self.piece_at.get(&(*s, *b)).copied().unwrap_or(PieceAt::Absent))
     }
-    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
-        Ok(self.piece_seen.get(&(*at, *s, *b)).is_some_and(|x| x.0))
+    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> bool {
+        self.piece_seen.get(&(*at, *s, *b)).is_some_and(|x| x.0)
     }
     fn piece_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
         Ok(self.piece_seen.get(&(*at, *s, *b)).is_some_and(|x| x.1))
@@ -256,11 +256,11 @@ impl Ground for Fake {
         self.sent.extend(b.iter().map(|b| Sent::Repair(*c, *b)));
         Ok(())
     }
-    fn freed_added(&mut self) -> Result<Vec<(BlobId, Tid)>> {
-        Ok(std::mem::take(&mut self.freed_feed))
+    fn freed_added(&mut self) -> Vec<(BlobId, Tid)> {
+        std::mem::take(&mut self.freed_feed)
     }
-    fn freed_link(&mut self, b: &BlobId, t: &Tid) -> Result<bool> {
-        Ok(self.freed.contains_key(&(*b, *t)))
+    fn freed_link(&mut self, b: &BlobId, t: &Tid) -> bool {
+        self.freed.contains_key(&(*b, *t))
     }
     fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
         Ok(self.carrying.get(t).cloned().unwrap_or_default())
@@ -290,8 +290,8 @@ impl Ground for Fake {
         self.freed.remove(&(*b, *t));
         Ok(())
     }
-    fn commits_added(&mut self) -> Result<Vec<CommitId>> {
-        Ok(std::mem::take(&mut self.added))
+    fn commits_added(&mut self) -> Vec<CommitId> {
+        std::mem::take(&mut self.added)
     }
     fn forgettable(&mut self, c: &CommitId) -> Result<Option<bool>> {
         Ok(self.bodies.contains_key(c).then(|| self.forgettable.contains_key(c)))
@@ -310,8 +310,8 @@ impl Ground for Fake {
     fn place(&mut self) -> u64 {
         self.place
     }
-    fn passed(&mut self, s: &SyncId, since: u64) -> Result<bool> {
-        Ok(self.done.get(s).is_none_or(|d| *d > since))
+    fn passed(&mut self, s: &SyncId, since: u64) -> bool {
+        self.done.get(s).is_none_or(|d| *d > since)
     }
     fn unlog(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         self.unlogged.push((*s, *b));
@@ -333,8 +333,8 @@ impl Ground for Fake {
     fn facts(&mut self, s: &SyncId, c: &CommitId) -> Result<Facts> {
         Ok(self.facts.get(&(*s, *c)).cloned().unwrap_or_else(uncovered))
     }
-    fn fall_mark(&mut self, s: &SyncId, c: &CommitId) -> Result<u64> {
-        Ok(self.marks.get(&(*s, *c)).copied().unwrap_or(0))
+    fn fall_mark(&mut self, s: &SyncId, c: &CommitId) -> u64 {
+        self.marks.get(&(*s, *c)).copied().unwrap_or(0)
     }
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
         Ok(self.creds.get(s).cloned())
@@ -342,11 +342,11 @@ impl Ground for Fake {
     fn destruction(&mut self, s: &SyncId) -> Result<Option<Arc<Destruction>>> {
         Ok(self.doom.get(s).cloned())
     }
-    fn reads(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(!self.unread.contains_key(s))
+    fn reads(&mut self, s: &SyncId) -> bool {
+        !self.unread.contains_key(s)
     }
-    fn holdings_moved(&mut self) -> Result<Vec<SyncId>> {
-        Ok(std::mem::take(&mut self.holdings_feed))
+    fn holdings_moved(&mut self) -> Vec<SyncId> {
+        std::mem::take(&mut self.holdings_feed)
     }
     fn closure_settled(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unsettled.contains_key(s))
@@ -386,8 +386,8 @@ impl Ground for Fake {
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>> {
         Ok(self.blobs.get(b).cloned().unwrap_or(Some(BlobInfo { parts: [0].into(), sealed: Default::default(), copy: false })))
     }
-    fn dropped(&mut self, b: &BlobId) -> Result<bool> {
-        Ok(self.dropped.contains_key(b))
+    fn dropped(&mut self, b: &BlobId) -> bool {
+        self.dropped.contains_key(b)
     }
     // every entry of a commit carries its whole body here: none is a strict subset, any held
     // one carries it (the engine's own judgement: core/engine/src/sync/tests_facts.rs)
@@ -414,26 +414,26 @@ impl Ground for Fake {
         let pieces: Vec<(Source, SyncId, BlobId)> = self.piece_seen.keys().filter(|(_, x, _)| x == s).copied().collect();
         Ok(keys.iter().any(|k| self.seen.get(k).is_some_and(|v| !v.deleted.is_empty())) || pieces.iter().any(|k| self.piece_seen.get(k).is_some_and(|v| v.1)))
     }
-    fn sources(&mut self, s: &SyncId) -> Result<Arc<Vec<SrcView>>> {
-        Ok(self.sources.get(s).cloned().unwrap_or_default())
+    fn sources(&mut self, s: &SyncId) -> Arc<Vec<SrcView>> {
+        self.sources.get(s).cloned().unwrap_or_default()
     }
-    fn source(&mut self, s: &SyncId, at: &Source) -> Result<Option<SrcView>> {
-        Ok(self.srcs.get(&(*s, *at)).cloned())
+    fn source(&mut self, s: &SyncId, at: &Source) -> Option<SrcView> {
+        self.srcs.get(&(*s, *at)).cloned()
     }
-    fn holds(&mut self, c: &CommitId) -> Result<bool> {
-        Ok(self.bodies.get(c).is_some())
+    fn holds(&mut self, c: &CommitId) -> bool {
+        self.bodies.get(c).is_some()
     }
-    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<bool> {
-        Ok(self.srcs.get(&(*s, *at)).is_some_and(|v| v.store))
+    fn kept_at(&mut self, s: &SyncId, at: &Source) -> bool {
+        self.srcs.get(&(*s, *at)).is_some_and(|v| v.store)
     }
-    fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>> {
-        Ok(self.srcs.get(&(*s, *at)).and_then(|v| v.head))
+    fn head_at(&mut self, s: &SyncId, at: &Source) -> Option<StepId> {
+        self.srcs.get(&(*s, *at)).and_then(|v| v.head)
     }
     fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>> {
         Ok(self.seen.iter().filter(|((_, x, y), v)| x == s && y == c && !v.present.is_empty()).map(|((at, ..), _)| *at).collect())
     }
-    fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {
-        Ok(std::mem::take(&mut self.src_feed))
+    fn sources_added(&mut self) -> Vec<(SyncId, Source)> {
+        std::mem::take(&mut self.src_feed)
     }
     fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen> {
         Ok(self.seen.get(&(*at, *s, *c)).cloned().unwrap_or_default())
@@ -591,7 +591,7 @@ impl W {
     }
 
     fn source(&mut self, s: SyncId, at: Source, conn: ConnId, store: bool) {
-        let mut v = (*self.g.sources(&s).unwrap()).clone();
+        let mut v = (*self.g.sources(&s)).clone();
         v.retain(|x| x.conn != conn);
         v.push(SrcView { at, conn, store, head: Some(step(0).id()), full: false, role_unheld: false });
         self.g.set_sources(s, v);
@@ -599,7 +599,7 @@ impl W {
 
     fn edit_source(&mut self, conn: ConnId, f: impl Fn(&mut SrcView)) {
         for s in [S, S2] {
-            let mut v = (*self.g.sources(&s).unwrap()).clone();
+            let mut v = (*self.g.sources(&s)).clone();
             v.iter_mut().filter(|x| x.conn == conn).for_each(&f);
             self.g.set_sources(s, v);
         }
@@ -651,7 +651,7 @@ impl W {
                 Sent::Close(c) if c == KC => {
                     self.g.sent.push(m);
                     self.g.k.held.retain(|(x, _), _| *x != S);
-                    let v: Vec<SrcView> = self.g.sources(&S).unwrap().iter().filter(|x| x.conn != KC).cloned().collect();
+                    let v: Vec<SrcView> = self.g.sources(&S).iter().filter(|x| x.conn != KC).cloned().collect();
                     self.g.set_sources(S, v);
                 }
                 other => self.g.sent.push(other),
@@ -721,7 +721,7 @@ impl W {
             }
         }
         let full = self.g.k.full;
-        if self.g.sources(&S).unwrap().iter().any(|x| x.conn == KC && x.full != full) {
+        if self.g.sources(&S).iter().any(|x| x.conn == KC && x.full != full) {
             self.edit_source(KC, |x| x.full = full);
         }
     }

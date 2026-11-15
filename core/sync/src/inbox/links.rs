@@ -191,7 +191,7 @@ impl Redemptions {
             };
             let engine = &mut *h.engine;
             let until = WallMs(since.0.saturating_add(h.policy.follow_link_ms()));
-            let Some((_, stage)) = self.ready.try_settle(&k, || link_stage(engine, &link, until))? else { continue };
+            let Some((_, stage)) = self.ready.settle(&k, || link_stage(engine, &link, until)) else { continue };
             if stage == Stage::Waiting {
                 continue;
             }
@@ -272,15 +272,15 @@ impl Redemptions {
 
 /// The account joined K already, the link has ended, the join can be written (`Engine::redeemable`), or the follow time ran out
 /// at `until` (the engine's clock read up to `until`, so its passing moves this).
-fn link_stage(engine: &mut Engine, link: &ShareLink, until: WallMs) -> Result<Stage> {
+fn link_stage(engine: &mut Engine, link: &ShareLink, until: WallMs) -> Stage {
     if engine.joined_link(&link.k) {
-        return Ok(Stage::Joined);
+        return Stage::Joined;
     }
     if engine.link_ended(link) {
-        return Ok(Stage::Ended);
+        return Stage::Ended;
     }
     if engine.redeemable(link) {
-        return Ok(Stage::Ready);
+        return Stage::Ready;
     }
-    Ok(if engine.reached(until) { Stage::GaveUp } else { Stage::Waiting })
+    if engine.reached(until) { Stage::GaveUp } else { Stage::Waiting }
 }

@@ -38,7 +38,7 @@ use crate::opens::Opens;
 use crate::session::{Incoming, Sessions};
 use crate::store::{Source, Stand};
 use crate::streams::Streams;
-use crate::types::{ConnId, Cx, Error, Result};
+use crate::types::{ConnId, Cx, Result};
 use judge::{Act, Doom, Judged, Mine, Toward};
 use osis_base::memo::{Clock, Effects, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
@@ -211,10 +211,7 @@ impl Read {
     /// the own role commits re-judges what waits on them) before anything acts, so the order the
     /// keys come in (a start judges every one) never lets an act skip a rule.
     pub fn settle_on(&mut self, g: &mut impl Ground) -> Result<bool> {
-        let added = match g.commits_added() {
-            Err(e) if not_built(&e) => return Ok(false),
-            r => r?,
-        };
+        let added = g.commits_added();
         self.clock.set(g.now().0);
         // the lists feed runs from the first settle, before any S is first followed
         let mut lists = g.lists_added()?;
@@ -225,7 +222,7 @@ impl Read {
         // a wait a complete pass ended is over (the judgements waiting read the pass themselves)
         let waits: Vec<(SyncId, u64)> = self.waits.iter().map(|(s, w)| (*s, *w)).collect();
         for (s, w) in waits {
-            if g.passed(&s, w)? {
+            if g.passed(&s, w) {
                 self.waits.remove(&s);
             }
         }
@@ -264,7 +261,7 @@ impl Read {
         let seen: Vec<(Source, SyncId, CommitId)> = g.seen_added()?;
         let mut shown = Vec::new();
         for (_, s, c) in &seen {
-            if g.holds(c)? {
+            if g.holds(c) {
                 shown.push((*s, *c));
             }
         }
@@ -279,8 +276,8 @@ impl Read {
         }
         // a sync ID coming to be read: a judgement while it was not (it joined the engine's sync
         // set before the store's holdings) left its keys unfollowed
-        for s in g.holdings_moved()? {
-            if !g.reads(&s)? {
+        for s in g.holdings_moved() {
+            if !g.reads(&s) {
                 continue;
             }
             for (k, _) in self.metas.range((s, CommitId([0; 32]))..=(s, CommitId([0xff; 32]))) {
@@ -321,7 +318,7 @@ impl Read {
             }
         }
         for (s, r) in self.cert_blobs.due() {
-            if !g.reads(&s)? {
+            if !g.reads(&s) {
                 self.cert_blobs.unwant(&(s, r));
                 continue;
             }
@@ -350,7 +347,7 @@ impl Read {
         // §6 Steps); tried again whenever what it read moves while ready (a role blocked here
         // issues nothing until the rotation that unblocks it)
         for s in self.steps.due() {
-            if !g.reads(&s)? {
+            if !g.reads(&s) {
                 self.steps.unwant(&s);
                 continue;
             }
@@ -456,7 +453,7 @@ impl Read {
         }
         // what each body calls for at each source keeping S unread: the rows a source's stream
         // wrote, and a source joining or moving (a non-writer there gives every must-hold body)
-        for (s, at) in g.sources_added()? {
+        for (s, at) in g.sources_added() {
             if self.giving_to(g, &s)?.contains(&at) {
                 let must: Vec<CommitId> = self.verdicts.range((s, CommitId([0; 32]))..=(s, CommitId([0xff; 32]))).filter(|(_, v)| **v == Verdict::Must).map(|((_, c), _)| *c).collect();
                 for c in must {
@@ -489,7 +486,7 @@ impl Read {
         }
         // freed links: dropped here and deleted at the sources keeping S unread that show them,
         // until no entry of them is known
-        for k in g.freed_added()? {
+        for k in g.freed_added() {
             self.freed.want(k);
         }
         for k in self.freed.due() {
@@ -542,7 +539,7 @@ impl Read {
     fn giving_to(&self, g: &mut impl Ground, s: &SyncId) -> Result<Vec<Source>> {
         let creds = g.credentials(s)?;
         let writer = |h: &osis_blob::StepId| creds.as_ref().and_then(|c| c.keys.get(h)).is_some_and(|k| k.write.is_some());
-        Ok(g.sources(s)?.iter().filter(|x| x.store && !x.head.is_some_and(|h| writer(&h))).map(|x| x.at).collect())
+        Ok(g.sources(s).iter().filter(|x| x.store && !x.head.is_some_and(|h| writer(&h))).map(|x| x.at).collect())
     }
 
     /// Answers to its own requests: a Delete's codes reach `known` through the source's stream,
@@ -616,23 +613,23 @@ impl Read {
             (Act::Lift(b), _) => g.lift(s, &b)?,
             (Act::Take(b), _) => g.take(s, &b)?,
             (Act::Fetch { at, conn, blob }, _) => {
-                if let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) {
+                if let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) {
                     g.fetch(&src, s, &blob)?;
                 }
             }
             (Act::Delete { at, conn, head, blob }, _) => {
-                let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };
+                let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) else { return Ok(()) };
                 g.delete(&src, s, &head, &blob)?;
             }
             (Act::Close { at, conn, head }, _) => {
-                let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };
+                let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) else { return Ok(()) };
                 let key = g.credentials(s)?.and_then(|cr| cr.keys.get(&head).and_then(|k| k.delete.clone()));
                 if let Some(key) = key {
                     g.close(&src, s, &head, &key)?;
                 }
             }
             (Act::Deposit { at, conn, blob }, Some(c)) => {
-                if let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) {
+                if let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) {
                     g.deposit(&src, s, c, &blob)?;
                 }
             }
@@ -651,7 +648,7 @@ impl Read {
             (Act::Repair(_), _) => {}
             (Act::DropBlob(b), _) => g.drop_blob(s, &b)?,
             (Act::DeleteFreed { at, conn, head, blob, thing }, _) => {
-                let Some(src) = g.source(s, &at)?.filter(|x| x.conn == conn) else { return Ok(()) };
+                let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) else { return Ok(()) };
                 g.delete_freed(&src, s, &head, &blob, &thing)?;
             }
             (_, None) => {}
@@ -676,10 +673,4 @@ fn cert_blobs_missing(g: &mut impl Ground, s: &SyncId, r: CertKind, told: bool) 
         return Ok(x);
     }
     Ok(CertBlobsMissing::default())
-}
-
-/// A part of the facade or of another module read needs is not built: read does nothing until
-/// it is.
-fn not_built(e: &Error) -> bool {
-    matches!(e, Error::NotBuilt(_) | Error::Engine(osis_engine::Error::NotBuilt(_)))
 }

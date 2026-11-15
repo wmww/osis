@@ -74,8 +74,8 @@ impl Ground for Live<'_, '_> {
     fn now(&self) -> WallMs {
         self.cx.now
     }
-    fn syncs(&mut self) -> Result<Arc<SyncSet>> {
-        Ok(Arc::new(SyncSet { ids: self.cx.store.syncs(), ..SyncSet::default() }))
+    fn syncs(&mut self) -> Arc<SyncSet> {
+        Arc::new(SyncSet { ids: self.cx.store.syncs(), ..SyncSet::default() })
     }
     fn stamped(&mut self, s: &SyncId) -> Result<Vec<BlobId>> {
         Ok(self.cx.store.entries(s)?.into_iter().filter(|e| e.stamp.is_some()).map(|e| e.blob).collect())
@@ -95,8 +95,8 @@ impl Ground for Live<'_, '_> {
     fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
         Ok(self.cx.engine.own_commits(s)?)
     }
-    fn self_removals(&mut self) -> Result<Arc<BTreeSet<CommitId>>> {
-        Ok(self.cx.engine.waiting_removals())
+    fn self_removals(&mut self) -> Arc<BTreeSet<CommitId>> {
+        self.cx.engine.waiting_removals()
     }
     fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict> {
         self.read.verdict(s, c)

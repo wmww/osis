@@ -110,8 +110,8 @@ impl Ground for Fake {
     fn now(&self) -> WallMs {
         WallMs(self.now)
     }
-    fn syncs(&mut self) -> Result<Arc<SyncSet>> {
-        Ok(self.set.get(&()).cloned().unwrap_or_default())
+    fn syncs(&mut self) -> Arc<SyncSet> {
+        self.set.get(&()).cloned().unwrap_or_default()
     }
     fn stamped(&mut self, s: &SyncId) -> Result<Vec<BlobId>> {
         self.stamped_reads += 1;
@@ -132,8 +132,8 @@ impl Ground for Fake {
     fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
         Ok(self.own.get(s).cloned().unwrap_or_default())
     }
-    fn self_removals(&mut self) -> Result<Arc<BTreeSet<CommitId>>> {
-        Ok(self.removals.get(&()).cloned().unwrap_or_default())
+    fn self_removals(&mut self) -> Arc<BTreeSet<CommitId>> {
+        self.removals.get(&()).cloned().unwrap_or_default()
     }
     fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict> {
         self.verdicts.get(&(*s, *c)).cloned()

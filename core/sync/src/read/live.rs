@@ -165,25 +165,25 @@ impl Live<'_, '_> {
 }
 
 impl Ground for Live<'_, '_> {
-    fn commits_added(&mut self) -> Result<Vec<CommitId>> {
+    fn commits_added(&mut self) -> Vec<CommitId> {
         // the feeds start with the first settle: what each covers before is judged then
         if self.feeds.views.is_none() {
             self.feeds.views = Some(self.views.feed());
             self.feeds.syncs = Some(self.cx.store.syncs_feed());
         }
         match self.commits.as_mut() {
-            Some(f) => Ok(f.added()),
+            Some(f) => f.added(),
             None => {
                 *self.commits = Some(self.cx.engine.commit_feed());
-                Ok(self.cx.engine.commit_ids())
+                self.cx.engine.commit_ids()
             }
         }
     }
     fn place(&mut self) -> u64 {
         self.cx.engine.pass_place()
     }
-    fn passed(&mut self, s: &SyncId, since: u64) -> Result<bool> {
-        Ok(self.status.passed_since(s, since))
+    fn passed(&mut self, s: &SyncId, since: u64) -> bool {
+        self.status.passed_since(s, since)
     }
     fn unlog(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         self.cx.store.unlog_entry(s, b)?;
@@ -233,11 +233,11 @@ impl Ground for Live<'_, '_> {
     fn unfollow_fate(&mut self, c: &CommitId) {
         self.cx.engine.unfollow_fate(c);
     }
-    fn mintings(&mut self, t: &Tid) -> Result<Arc<Vec<osis_engine::retention::Minting>>> {
-        Ok(Arc::new(self.cx.engine.mintings_of(t)))
+    fn mintings(&mut self, t: &Tid) -> Arc<Vec<osis_engine::retention::Minting>> {
+        Arc::new(self.cx.engine.mintings_of(t))
     }
-    fn fall_mark(&mut self, _s: &SyncId, c: &CommitId) -> Result<u64> {
-        Ok(self.cx.engine.body_fall_mark(c))
+    fn fall_mark(&mut self, _s: &SyncId, c: &CommitId) -> u64 {
+        self.cx.engine.body_fall_mark(c)
     }
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
         Ok(self.cx.engine.read_credentials(s)?)
@@ -248,11 +248,11 @@ impl Ground for Live<'_, '_> {
             None => Ok(None),
         }
     }
-    fn reads(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.cx.store.holding(s) == Some(osis_engine::sync::Holding::Read))
+    fn reads(&mut self, s: &SyncId) -> bool {
+        self.cx.store.holding(s) == Some(osis_engine::sync::Holding::Read)
     }
-    fn holdings_moved(&mut self) -> Result<Vec<SyncId>> {
-        Ok(self.feeds.syncs.as_mut().map(|f| f.added()).unwrap_or_default())
+    fn holdings_moved(&mut self) -> Vec<SyncId> {
+        self.feeds.syncs.as_mut().map(|f| f.added()).unwrap_or_default()
     }
     fn closure_settled(&mut self, s: &SyncId) -> Result<bool> {
         match self.thing(s)? {
@@ -329,8 +329,8 @@ impl Ground for Live<'_, '_> {
         let Some(x) = self.cx.engine.blob_of(b) else { return Ok(None) };
         Ok(Some(BlobInfo { parts: x.parts.clone(), sealed: x.sealed.clone(), copy: x.copy }))
     }
-    fn dropped(&mut self, b: &BlobId) -> Result<bool> {
-        Ok(self.cx.engine.blob_dropped(b))
+    fn dropped(&mut self, b: &BlobId) -> bool {
+        self.cx.engine.blob_dropped(b)
     }
     fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
         Ok(self.cx.engine.strict_subset(s, b, held)?)
@@ -341,38 +341,38 @@ impl Ground for Live<'_, '_> {
     fn deletes_known(&mut self, s: &SyncId) -> Result<bool> {
         self.cx.store.deletes_known(s)
     }
-    fn sources(&mut self, s: &SyncId) -> Result<Arc<Vec<SrcView>>> {
+    fn sources(&mut self, s: &SyncId) -> Arc<Vec<SrcView>> {
         let mut out = Vec::new();
         for at in self.views.of(s) {
-            out.extend(self.source(s, &at)?);
+            out.extend(self.source(s, &at));
         }
-        Ok(Arc::new(out))
+        Arc::new(out)
     }
-    fn reached(&mut self, s: &SyncId) -> Result<Vec<(Source, ConnId)>> {
-        Ok(self.views.of(s).iter().filter_map(|at| self.views.get(s, at)).map(|v| (v.at, v.conn)).collect())
+    fn reached(&mut self, s: &SyncId) -> Vec<(Source, ConnId)> {
+        self.views.of(s).iter().filter_map(|at| self.views.get(s, at)).map(|v| (v.at, v.conn)).collect()
     }
-    fn source(&mut self, s: &SyncId, at: &Source) -> Result<Option<SrcView>> {
-        let Some(mut v) = self.views.get(s, at) else { return Ok(None) };
+    fn source(&mut self, s: &SyncId, at: &Source) -> Option<SrcView> {
+        let mut v = self.views.get(s, at)?;
         let known = self.streams.known();
         v.head = known.head(*at, s);
         v.full = known.full(v.conn, s);
-        Ok(Some(v))
+        Some(v)
     }
-    fn holds(&mut self, c: &CommitId) -> Result<bool> {
-        Ok(self.cx.engine.holds_commit(c))
+    fn holds(&mut self, c: &CommitId) -> bool {
+        self.cx.engine.holds_commit(c)
     }
-    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<bool> {
-        Ok(self.streams.known().kept(*at, s))
+    fn kept_at(&mut self, s: &SyncId, at: &Source) -> bool {
+        self.streams.known().kept(*at, s)
     }
-    fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>> {
-        Ok(self.streams.known().head(*at, s))
+    fn head_at(&mut self, s: &SyncId, at: &Source) -> Option<StepId> {
+        self.streams.known().head(*at, s)
     }
     fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>> {
         let known = self.streams.known();
         Ok(self.cx.engine.commit_blobs(c)?.iter().flat_map(|b| known.shown_at(s, b)).collect())
     }
-    fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {
-        Ok(self.feeds.views.as_mut().map(|f| f.added()).unwrap_or_default().into_iter().map(|(_, s, at)| (s, at)).collect())
+    fn sources_added(&mut self) -> Vec<(SyncId, Source)> {
+        self.feeds.views.as_mut().map(|f| f.added()).unwrap_or_default().into_iter().map(|(_, s, at)| (s, at)).collect()
     }
     fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>> {
         let mut out = Vec::new();
@@ -589,8 +589,8 @@ impl Ground for Live<'_, '_> {
             None => PieceAt::Absent,
         })
     }
-    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
-        Ok(self.streams.known().knows(*at, s, b))
+    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> bool {
+        self.streams.known().knows(*at, s, b)
     }
     fn piece_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
         self.cx.store.seen_deleted(*at, s, b)
@@ -637,17 +637,17 @@ impl Ground for Live<'_, '_> {
             _ => Ok(()),
         }
     }
-    fn freed_added(&mut self) -> Result<Vec<(BlobId, Tid)>> {
+    fn freed_added(&mut self) -> Vec<(BlobId, Tid)> {
         match self.feeds.freed.as_mut() {
-            Some(f) => Ok(f.added()),
+            Some(f) => f.added(),
             None => {
                 self.feeds.freed = Some(self.cx.engine.freed_feed());
-                Ok(self.cx.engine.freed_rows())
+                self.cx.engine.freed_rows()
             }
         }
     }
-    fn freed_link(&mut self, b: &BlobId, t: &Tid) -> Result<bool> {
-        Ok(self.cx.engine.freed_link(b, t).is_some())
+    fn freed_link(&mut self, b: &BlobId, t: &Tid) -> bool {
+        self.cx.engine.freed_link(b, t).is_some()
     }
     fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
         Ok(self.cx.engine.carrying(t)?)

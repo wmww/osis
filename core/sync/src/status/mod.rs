@@ -153,7 +153,7 @@ pub trait Ground: Net {
     fn now(&self) -> WallMs;
     /// The sync IDs this node syncs (`Store::syncs`: the sync set, and each leaving one while it
     /// waits), whole.
-    fn syncs(&mut self) -> Result<Arc<SyncSet>>;
+    fn syncs(&mut self) -> Arc<SyncSet>;
     /// The entries of S here a source keeping S unread would pull: the stamped ones.
     fn stamped(&mut self, s: &SyncId) -> Result<Vec<BlobId>>;
     /// Whether that source's stream showed `b` present under S (streams' `knows`).
@@ -167,7 +167,7 @@ pub trait Ground: Net {
     /// This node's commits and self-removals with a body under S (engine).
     fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>>;
     /// The self-removals whose secrets wait on being held elsewhere (engine).
-    fn self_removals(&mut self) -> Result<Arc<BTreeSet<CommitId>>>;
+    fn self_removals(&mut self) -> Arc<BTreeSet<CommitId>>;
     /// Read's verdict on `c`'s body under S.
     fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict>;
     /// The entries of S here holding a blob of `c` (the engine's `commit_blobs`, the store's
@@ -395,7 +395,7 @@ impl Status {
     pub fn settle_on(&mut self, g: &mut impl Ground, pulls: &mut Vec<ConnId>) -> Result<bool> {
         self.clock.set(g.now().0);
         let mut acted = false;
-        self.sync_set(g)?;
+        self.sync_set(g);
         self.count_lacking(g)?;
         acted |= self.held_elsewhere(g)?;
         self.leaving.clear();
@@ -406,12 +406,12 @@ impl Status {
 
     /// The projection of the sync IDs this node syncs: a row per S held, read or kept unread (§3), and own commits
     /// followed per read S.
-    fn sync_set(&mut self, g: &mut impl Ground) -> Result<()> {
+    fn sync_set(&mut self, g: &mut impl Ground) {
         self.set.want(());
         if self.set.due().is_empty() {
-            return Ok(());
+            return;
         }
-        let Some(set) = whole(&mut self.set, || g.syncs())? else { return Ok(()) };
+        let Some(set) = whole(&mut self.set, || g.syncs()) else { return };
         let gone: Vec<SyncId> = self.holding.keys().filter(|s| !set.ids.contains_key(*s)).copied().collect();
         for s in gone {
             self.holding.remove(&s);
@@ -436,7 +436,6 @@ impl Status {
                 }
             }
         }
-        Ok(())
     }
 
     fn unstrand(&mut self, s: &SyncId) {
@@ -516,7 +515,7 @@ impl Status {
         let mut acted = false;
         self.removals_fx.want(());
         if !self.removals_fx.due().is_empty()
-            && let Some(now) = whole(&mut self.removals_fx, || g.self_removals())?
+            && let Some(now) = whole(&mut self.removals_fx, || g.self_removals())
         {
             let gone: Vec<CommitId> = self.removals.iter().filter(|c| !now.contains(*c)).copied().collect();
             for c in gone {
@@ -626,7 +625,7 @@ impl Status {
         // a pass of each S leave or read wants, begun after its place (crate::leave, read)
         self.modules_fx.want(());
         if !self.modules_fx.due().is_empty()
-            && let Some(wanted) = whole(&mut self.modules_fx, || Ok(g.module_passes()))?
+            && let Some(wanted) = whole(&mut self.modules_fx, || g.module_passes())
         {
             for (s, since) in wanted.iter() {
                 if self.done.get(s).is_some_and(|d| d > since) {
@@ -881,6 +880,6 @@ fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: 
     PassNow { read, done }
 }
 
-fn whole<T: Default + PartialEq>(fx: &mut Effects<(), Arc<T>>, f: impl FnOnce() -> Result<Arc<T>>) -> Result<Option<Arc<T>>> {
-    Ok(fx.try_settle(&(), f)?.map(|(_, now)| now))
+fn whole<T: Default + PartialEq>(fx: &mut Effects<(), Arc<T>>, f: impl FnOnce() -> Arc<T>) -> Option<Arc<T>> {
+    fx.settle(&(), f).map(|(_, now)| now)
 }

@@ -85,7 +85,7 @@ pub struct BlobInfo {
 /// What read stands on and what it does.
 pub trait Ground {
     /// Commits the engine came to hold since the last call (all of them at the first: a start).
-    fn commits_added(&mut self) -> Result<Vec<CommitId>>;
+    fn commits_added(&mut self) -> Vec<CommitId>;
     /// Entries of a read S in the own store whose commit this node holds, since the last call (all
     /// of them at the first: a start): an entry added or changed, its blob coming to name a
     /// commit (opened or sealed here), or that commit coming to be held. Each is judged under S
@@ -98,7 +98,7 @@ pub trait Ground {
     fn place(&mut self) -> u64;
     /// A complete pass of S begun after pass place `since` ended (`Status::passed_since`; a
     /// stamped read).
-    fn passed(&mut self, s: &SyncId, since: u64) -> Result<bool>;
+    fn passed(&mut self, s: &SyncId, since: u64) -> bool;
     /// Entry `b` of S leaves the own store with no tombstone (judged outside S's required set
     /// here: judged so wrongly, it is logged or pulled again once required).
     fn unlog(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
@@ -111,19 +111,19 @@ pub trait Ground {
     }
     /// Thing `t`'s held mintings with their standings and expiries (`Engine::mintings_of`,
     /// spec/commits.md §5 A thing's mintings travel with its record).
-    fn mintings(&mut self, t: &Tid) -> Result<Arc<Vec<Minting>>>;
+    fn mintings(&mut self, t: &Tid) -> Arc<Vec<Minting>>;
     /// Falls of held parts on `c`'s aspects so far (`Engine::fall_mark`, summed over them).
-    fn fall_mark(&mut self, s: &SyncId, c: &CommitId) -> Result<u64>;
+    fn fall_mark(&mut self, s: &SyncId, c: &CommitId) -> u64;
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>>;
     /// S's thing's destruction, when S is a destroyed thing's own sync ID.
     fn destruction(&mut self, s: &SyncId) -> Result<Option<Arc<Destruction>>>;
     /// This node syncs S read (`Store::holding`: the sync set, or leaving and waiting): read judges
     /// nothing else.
-    fn reads(&mut self, s: &SyncId) -> Result<bool>;
+    fn reads(&mut self, s: &SyncId) -> bool;
     /// Sync IDs whose holding moved since the last call (none at the first: a start judges every
     /// body): one coming to be read judges its bodies, which a judgement while it was not read
     /// left unfollowed.
-    fn holdings_moved(&mut self) -> Result<Vec<SyncId>>;
+    fn holdings_moved(&mut self) -> Vec<SyncId>;
     /// No group of S's closure holds a part of its `group.0` as a header only (spec/sync-judgement.md
     /// §2 outside the required set, §3 Header-only parts): until then nothing is judged outside it.
     fn closure_settled(&mut self, s: &SyncId) -> Result<bool>;
@@ -163,7 +163,7 @@ pub trait Ground {
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>>;
     /// Held blob `b` holds a part this node dropped for good (purged, past its bounds, expired,
     /// destroyed): must-not-hold wherever it is logged (spec/sync-judgement.md §1).
-    fn dropped(&mut self, b: &BlobId) -> Result<bool>;
+    fn dropped(&mut self, b: &BlobId) -> bool;
     /// Held blob `b` is a strict subset of another of `held`, the blobs of its commit held under S
     /// (`Engine::strict_subset`, spec/sync-judgement.md §2): must-not-hold.
     fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool>;
@@ -173,28 +173,28 @@ pub trait Ground {
     fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool>;
 
     /// The sources of S on connections up now.
-    fn sources(&mut self, s: &SyncId) -> Result<Arc<Vec<SrcView>>>;
+    fn sources(&mut self, s: &SyncId) -> Arc<Vec<SrcView>>;
     /// Where each source of S up now is reached, reading nothing of its streams' rows: what a
     /// fetch needs (a piece reading `sources` would move with every source's head and full row,
     /// read at its absent stamp, so a removal in that row's bucket would judge every piece).
-    fn reached(&mut self, s: &SyncId) -> Result<Vec<(Source, ConnId)>> {
-        Ok(self.sources(s)?.iter().map(|x| (x.at, x.conn)).collect())
+    fn reached(&mut self, s: &SyncId) -> Vec<(Source, ConnId)> {
+        self.sources(s).iter().map(|x| (x.at, x.conn)).collect()
     }
     /// One source of S, if up now (read per source, so a source's change moves its rows alone).
-    fn source(&mut self, s: &SyncId, at: &Source) -> Result<Option<SrcView>>;
+    fn source(&mut self, s: &SyncId, at: &Source) -> Option<SrcView>;
     /// Commit `c` is held here (applied or judged): one that is not is not judged (spec/sync-judgement.md
     /// §1 Unjudged blobs).
-    fn holds(&mut self, c: &CommitId) -> Result<bool>;
+    fn holds(&mut self, c: &CommitId) -> bool;
     /// Whether source `at` keeps S unread, as it last joined S, up now or away (kept with what its
     /// stream showed). Moves only when that changes, never as it comes and goes.
-    fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<bool>;
+    fn kept_at(&mut self, s: &SyncId, at: &Source) -> bool;
     /// The source's head for S, as its stream last named it, up now or away.
-    fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>>;
+    fn head_at(&mut self, s: &SyncId, at: &Source) -> Option<StepId>;
     /// The sources, up now or away, whose stream shows an entry of `c` under S present (one
     /// showing it deleted only is never idle there, so its verdict moving judges it again).
     fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>>;
     /// Sources of S whose view was written (joined or changed) since the last call.
-    fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>>;
+    fn sources_added(&mut self) -> Vec<(SyncId, Source)>;
     fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen>;
     /// `known` rows written since the last call (a source's stream showed an entry of the commit,
     /// or its removal); at the first call (a start) every row, presence and deletes seen alike.
@@ -289,9 +289,9 @@ pub trait Ground {
         Ok(PieceAt::Absent)
     }
     /// The source's stream shows piece `b` under S present.
-    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
+    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> bool {
         let _ = (at, s, b);
-        Ok(false)
+        false
     }
     /// The source's stream showed piece `b` under S deleted (a Deleted event, or a refusal as
     /// tombstoned).
@@ -322,13 +322,13 @@ pub trait Ground {
         Ok(())
     }
     /// Freed links judged freed since the last call (all of them at the first: a start).
-    fn freed_added(&mut self) -> Result<Vec<(BlobId, Tid)>> {
-        Ok(Vec::new())
+    fn freed_added(&mut self) -> Vec<(BlobId, Tid)> {
+        Vec::new()
     }
     /// Freed link `b` of thing `t` is in the set.
-    fn freed_link(&mut self, b: &BlobId, t: &Tid) -> Result<bool> {
+    fn freed_link(&mut self, b: &BlobId, t: &Tid) -> bool {
         let _ = (b, t);
-        Ok(false)
+        false
     }
     /// The sync IDs read here carrying thing `t` (`Engine::carrying`).
     fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
