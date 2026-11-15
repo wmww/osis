@@ -610,7 +610,7 @@ fn forget_local_keeps_what_a_shared_thing_holds_spec_sync_set_3() {
     e.commit(m).unwrap().unwrap();
     listing(&mut lp, 0, g, 0, shared, true);
     let e = &mut lp.peers[0].engine;
-    e.forget_local(&t).unwrap();
+    e.forget_local(&[t].into()).unwrap();
     assert_eq!(e.get_typed(&under, &ct::NAME).unwrap(), None, "under its secrets");
     assert_eq!(e.get_typed(&shared, &ct::NAME).unwrap().as_deref(), Some("shared"), "in a shared thing's closure");
 }
@@ -2163,7 +2163,7 @@ fn forget_local_drops_content_keeps_secrets_spec_sync_set_3() {
     add_item(&mut lp, 0, d, listed);
     let e = &mut lp.peers[0].engine;
     let s0 = e.home_sync_id(&t).unwrap().unwrap();
-    e.forget_local(&t).unwrap();
+    e.forget_local(&[t].into()).unwrap();
     assert_eq!(e.get_typed(&t, &ct::NAME).unwrap(), None);
     assert_eq!(e.get_typed(&under, &ct::NAME).unwrap(), None, "under its secrets");
     assert_eq!(e.get_typed(&listed, &ct::NAME).unwrap().as_deref(), Some("listed"), "in the synced group's closure");
@@ -2193,7 +2193,7 @@ fn forget_local_keeps_a_spanning_commits_synced_part_spec_sync_set_3() {
     let c = e.commit(m).unwrap().unwrap();
     let bytes = e.commit_bytes(&c).unwrap().unwrap();
     assert!(e.own_commits(&sv).unwrap().contains(&c));
-    e.forget_local(&t).unwrap();
+    e.forget_local(&[t].into()).unwrap();
     assert_eq!(e.get_typed(&t, &ct::NAME).unwrap(), None);
     assert_eq!(e.get_typed(&v, &ct::NAME).unwrap().as_deref(), Some("kept"), "the synced thing's part stays");
     assert!(e.commit_bytes(&c).unwrap().is_some(), "the commit stays with its other part");

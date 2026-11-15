@@ -164,6 +164,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     let mut links: BTreeMap<Tid, Vec<osis_base::Link>> = BTreeMap::new();
     // rare (lost access, unsyncing): decodes every header
     let ids: Vec<CommitId> = tx.core.ix.commits.keys().copied().collect();
+    osis_base::costs::count("forget: commits scanned", ids.len() as u64);
     for id in ids {
         let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
         let ais = lost_aspects(tx.core, scope, &m.header, &mut memo);

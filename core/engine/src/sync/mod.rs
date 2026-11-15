@@ -706,26 +706,29 @@ impl Engine {
         Ok(true)
     }
 
-    /// Forgets this node's local copy of `t`, unsynced (spec/sync-set.md §3 Unsyncing): the
-    /// content of `t` and of each thing whose secrets are `t`'s, but those N's closure holds
-    /// (`node_closure`: its synced group's and its shared things'); their role-class aspects
+    /// Forgets this node's local copies of `ts`, unsynced (spec/sync-set.md §3 Unsyncing): the
+    /// content of each and of each thing whose secrets are one of theirs, but those N's closure
+    /// holds (`node_closure`: its synced group's and its shared things'); their role-class aspects
     /// (`secrets.0` included) and secrets stay, and what arrives again counts as never received.
-    /// Decodes every commit header (rare).
-    pub fn forget_local(&mut self, t: &Tid) -> Result<()> {
+    /// One forgetting and one reload for all of them, however many left at once; decodes every
+    /// commit header (rare). The blobs of the commits it deleted whole: their entries anywhere
+    /// stand for nothing held.
+    pub fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<BTreeSet<BlobId>> {
         let closure = self.node_closure()?;
         let core = &self.core;
-        let mut things: BTreeSet<Tid> = core.ix.by_aspect.keys().map(|(x, _)| *x).filter(|x| core.secret_actor(x) == Some(*t)).collect();
-        things.insert(*t);
+        let mut things: BTreeSet<Tid> = core.ix.by_aspect.keys().map(|(x, _)| *x).filter(|x| core.secret_actor(x).is_some_and(|a| ts.contains(&a))).collect();
+        things.extend(ts.iter().copied());
         things.retain(|x| !closure.contains(x));
         if things.is_empty() {
-            return Ok(());
+            return Ok(BTreeSet::new());
         }
         let f = self.run(|tx| crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new()))?;
         if !f.things.is_empty() {
+            osis_base::costs::count("engine: forget reload", 1);
             self.reload()?;
             self.reexamine()?;
         }
-        Ok(())
+        Ok(f.commits.iter().flat_map(|c| self.core.ix.commit_blobs.get(c).into_iter().flatten().copied()).collect())
     }
 
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {

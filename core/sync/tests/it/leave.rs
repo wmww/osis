@@ -44,6 +44,8 @@ struct Fake {
     synced: BTreeMap<SyncId, Held>,
     shredded: Vec<SyncId>,
     forgot: Vec<Tid>,
+    /// Calls of `forget_local`.
+    forgettings: u64,
 }
 
 impl SetGround for Fake {
@@ -90,8 +92,9 @@ impl Ground for Fake {
         self.shredded.push(*s);
         Ok(())
     }
-    fn forget_local(&mut self, t: &Tid) -> Result<()> {
-        self.forgot.push(*t);
+    fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
+        self.forgot.extend(ts.iter().copied());
+        self.forgettings += 1;
         Ok(())
     }
     fn pass_seq(&mut self) -> u64 {
@@ -186,6 +189,19 @@ fn unshared_stops_at_once_spec_sync_set_3() {
     g.unshared.insert(sid(2));
     l.settle(&mut g).unwrap();
     assert_eq!((g.forgot.clone(), g.syncs(2)), (vec![tid(1), tid(2)], None));
+}
+
+// spec/sync-set.md §3 (Unsyncing), issues/leave-forget-per-sync-id.md: read sync IDs that stop in
+// one settle forget their things' copies in one forgetting (one engine reload), before any of
+// them is shredded.
+#[test]
+fn sync_ids_stopping_together_forget_once_spec_sync_set_3() {
+    let (mut g, mut l) = settled();
+    g.unshared.insert(sid(1));
+    g.unshared.insert(sid(2));
+    g.closure(&[3]);
+    l.settle(&mut g).unwrap();
+    assert_eq!((g.forgot.clone(), g.shredded.clone(), g.forgettings), (vec![tid(1), tid(2)], vec![sid(1), sid(2)], 1));
 }
 
 // spec/sync-set.md §3 (synced again before then, S is kept as it was): a leaving sync ID listed
@@ -302,4 +318,77 @@ fn nothing_leaves_before_the_synced_group_is_known_spec_sync_set_3() {
     g.unrooted.insert((), false);
     l.settle(&mut g).unwrap();
     assert!(l.waits(&sid(1)) && g.syncs(1) == Some(Holding::Read), "known: S left, synced while it waits");
+}
+
+/// One node, alone: `k` things of its own, each with secrets (and so a sync ID) of its own, filed
+/// in its D, each written once more, and a thing under D's sync ID written `n` times; then the `k` things unfiled at once
+/// (no peer shares them: each stops at once). The costs of the leave: engine reloads, own entries
+/// unlogged, commits the engine's forgetting scanned.
+fn leave_costs(k: usize, n: usize) -> (u64, u64, u64) {
+    use crate::harness::World;
+    use crate::harness::history::{file, value_ak};
+    use osis_base::Value;
+    use osis_engine::Mutation;
+    let mut w = World::new(0);
+    w.add_node();
+    let a = w.node(0).account.unwrap();
+    let new = |w: &mut World| {
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a);
+            m.set(t, &value_ak(), &Value::Int(0)).unwrap();
+            e.commit(m).unwrap();
+            t
+        })
+    };
+    let things: Vec<Tid> = (0..k).map(|_| new(&mut w)).collect();
+    for t in &things {
+        w.write(0, |e| e.give_own_secrets(t)).unwrap();
+        // a commit of content alone: forgotten whole, its own entry unlogged
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            m.set(*t, &value_ak(), &Value::Int(1)).unwrap();
+            e.commit(m).unwrap();
+        });
+    }
+    let keep = new(&mut w);
+    file(&mut w, 0, things.iter().copied().chain([keep]).collect(), Vec::new());
+    for i in 0..n {
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            m.set(keep, &value_ak(), &Value::Int(i as i64 + 1)).unwrap();
+            e.commit(m).unwrap();
+        });
+    }
+    w.run();
+    let ids = |w: &mut World| w.store(0).syncs().len();
+    let before = ids(&mut w);
+    osis_base::costs::take();
+    w.write(0, |e| {
+        let (_, d) = e.account().unwrap().unwrap();
+        let mut g = e.get_typed(&d, &osis_schema::core_types::GROUP).unwrap().unwrap_or_default();
+        for t in &things {
+            g.items.remove(t);
+        }
+        let mut m = Mutation::new();
+        m.set(d, &osis_schema::core_types::GROUP, &g).unwrap();
+        e.write(m).unwrap();
+    });
+    w.run();
+    let costs = osis_base::costs::take();
+    assert_eq!(ids(&mut w), before - k, "the {k} sync IDs stopped");
+    let sum = |name: &str| costs.iter().filter(|(x, _, _)| *x == name).map(|(_, _, n)| n).sum::<u64>();
+    (sum("engine: forget reload"), sum("leave: own entries unlogged"), sum("forget: commits scanned"))
+}
+
+// spec/sync-set.md §3 (Unsyncing), issues/leave-forget-per-sync-id.md: leaving k separately
+// synced things at once forgets them in one engine reload, and unlogs only the own entries of
+// what forgot, at n and 10n own entries elsewhere. The engine's forgetting itself still scans
+// every held commit (issues/leave-forget-per-sync-id.md).
+#[test]
+fn leaving_several_reloads_once_and_unlogs_what_left_at_n_and_10n_spec_sync_set_3() {
+    let (one, three, three_10n) = (leave_costs(1, 2), leave_costs(3, 2), leave_costs(3, 20));
+    assert_eq!((one.0, three.0, three_10n.0), (1, 1, 1), "one reload per leave");
+    assert!(one.1 > 0);
+    assert_eq!((three.1, three_10n.1), (3 * one.1, 3 * one.1), "own entries unlogged: what left, not what stays");
 }

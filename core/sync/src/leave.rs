@@ -67,11 +67,12 @@ pub trait Ground: SetGround {
     /// This node knows the group whose closure it syncs (`Engine::sync_rooted`): before, its sync
     /// set is empty for want of it, and nothing it holds counts as left.
     fn rooted(&mut self) -> Result<bool>;
-    /// Forgets `t`'s local copy (`Engine::forget_local`), then unlogs this node's own entries,
-    /// under every sync ID it holds, of the commits that forgot whole: no judgement reaches a
+    /// Forgets the local copies of `ts`, every thing whose sync ID stopped in one settle
+    /// (`Engine::forget_local`: one forgetting), then unlogs this node's own entries of the
+    /// commits that forgot whole, under every sync ID naming their blobs: no judgement reaches a
     /// commit no longer held, and reopened (a start parks every entry not opening to a held
-    /// commit) it would come back. O(entries held), on this rare path alone.
-    fn forget_local(&mut self, t: &Tid) -> Result<()>;
+    /// commit) it would come back. O(the blobs of what forgot) beside the engine's forgetting.
+    fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<()>;
 }
 
 /// A sync ID out of the sync set: its judgement.
@@ -149,6 +150,9 @@ impl Leave {
             }
             self.started = true;
         }
+        // the sync IDs that stop in this settle, and the things whose local copies go with them
+        let mut stopped = Vec::new();
+        let mut forget = BTreeSet::new();
         for s in self.out.due() {
             self.judged += 1;
             let leaving = &mut self.leaving;
@@ -164,18 +168,24 @@ impl Leave {
                     }
                 }
                 Wait::Done | Wait::Lost => {
-                    // unsyncing: forgotten before the shred, so a crash between finds the rows
-                    // at the next start and does both again
                     if now == Wait::Done && h == Holding::Read {
-                        g.forget_local(&t)?;
+                        forget.insert(t);
                     }
-                    g.shred(&s)?;
-                    g.set_synced(&s, None)?;
-                    self.leaving.remove(&s);
-                    self.out.unwant(&s);
-                    acted = true;
+                    stopped.push(s);
                 }
             }
+        }
+        // unsyncing: one forgetting for every thing whose sync ID stopped, before the shreds,
+        // so a crash between finds the rows at the next start and does both again
+        if !forget.is_empty() {
+            g.forget_local(&forget)?;
+        }
+        for s in stopped {
+            g.shred(&s)?;
+            g.set_synced(&s, None)?;
+            self.leaving.remove(&s);
+            self.out.unwant(&s);
+            acted = true;
         }
         Ok(acted)
     }
@@ -311,15 +321,13 @@ impl Ground for Live<'_, '_> {
     fn passed(&mut self, s: &SyncId, since: u64) -> Result<bool> {
         Ok(self.status.passed_since(s, since))
     }
-    fn forget_local(&mut self, t: &Tid) -> Result<()> {
-        self.cx.engine.forget_local(t)?;
-        for (s, _) in self.cx.store.syncs() {
-            for e in self.cx.store.entries(&s)?.into_iter().filter(|e| e.own) {
-                if let Some(c) = self.cx.engine.blob_commit(&e.blob)?
-                    && !self.cx.engine.holds_commit(&c)
-                    && !self.cx.engine.pends(&c)
-                {
-                    self.cx.store.unlog_entry(&s, &e.blob)?;
+    fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
+        let gone = self.cx.engine.forget_local(ts)?;
+        for b in &gone {
+            for s in self.cx.store.naming(b)? {
+                if self.cx.store.entry(&s, b)?.is_some_and(|e| e.own) {
+                    osis_base::costs::count("leave: own entries unlogged", 1);
+                    self.cx.store.unlog_entry(&s, b)?;
                 }
             }
         }
