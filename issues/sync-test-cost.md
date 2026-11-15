@@ -1,9 +1,9 @@
 # The sync test binary costs about twice its budget
-> Summary: osis-sync's `it` binary runs 2,534 G instructions in one process against notes/sync-test-harness.md's 1,200 G; most of it is the differential's fresh world per seed and read's settle (engine reads whose memo stamps move with every commit on a thing): Fathom's lane for the reads.
+> Summary: osis-sync's `it` binary runs 2,882 G instructions in one process against notes/sync-test-harness.md's 1,200 G; most of it is the differential's fresh world per seed and read's settle (engine reads whose memo stamps move with every commit on a thing): Fathom's lane for the reads.
 > Priority: normal
 > Tags: engine, sync, tests
 
-Measured by `tools/icount` over the binary per module (notes/sync-test-harness.md, Measured layers): `convergence::` 1,172 G (20 faulted histories played twice, 20 clean once, the handed-history oracle tests), `sims::` 574 G (9 scenarios x 6 seeds), `flows::` 453 G, `growth::` 183 G. Defaults are seeds, so cutting them costs coverage, not correctness.
+Measured by `tools/icount` over the binary per module (notes/sync-test-harness.md, Measured layers): `convergence::` 1,313 G (20 faulted histories played twice, 20 clean once but seed 0 twice, the handed-history oracle tests), `sims::` 669 G (9 scenarios x 6 seeds), `flows::` 516 G, `growth::` 226 G. Defaults are seeds, so cutting them costs coverage, not correctness.
 
 Where a fresh history's cost goes (cpuprof, clean seed 0): building its world about a quarter (`history::introduce`, about 950 deliveries; shared in one process by the convergence tests and simulations of the same seed); read's settle about 60%, of which `read::judge::body` about half.
 
