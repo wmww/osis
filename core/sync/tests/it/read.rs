@@ -73,7 +73,7 @@ fn meta() -> BodyMeta {
 /// A body of this node's own, established uncovered: must-hold.
 fn uncovered() -> Facts {
     Facts {
-        body: BodyFacts { required: true, closure: true, dropped: None, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false },
+        body: BodyFacts { required: true, closure: true, dropped: None, invalid: false, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false },
         must_not: None,
         own: true,
         repair_fresh: Arc::default(),

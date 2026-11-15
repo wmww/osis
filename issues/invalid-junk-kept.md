@@ -4,3 +4,5 @@
 > Tags: sync, security, retention
 
 Options: a right holder deletes invalid bodies at its sources (then a re-grant restores only what an author or another node still holds, as for a body no holder has), maybe only bodies never valid at any key a removal could reopen; or accept, stated. The author keeps its own invalid bodies either way and logs them again (must-hold), so deleting the author's copy while it lives is a delete/re-log loop to avoid.
+
+Readers drop their own entries of a body they judge invalid (spec/sync-judgement.md §2 Judged invalid) and forget its commit once no source shows an entry (spec/commits.md §5 Forgetting), so this junk at a store also keeps the commit's header (about 690 B) known at every reader that has the store as a source, until the entry leaves the store.

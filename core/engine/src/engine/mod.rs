@@ -3292,6 +3292,11 @@ impl Engine {
     /// after a write whose outcome was unknown (`run`).
     fn load(&mut self) -> Result<()> {
         self.settle_blobs()?;
+        // the account first: judging what is held reads which commits are this node's own (an own
+        // part judged invalid stays, `retention::goes_invalid`)
+        if let Some((p, _)) = self.account()? {
+            self.core.account.set(Some(p));
+        }
         self.reload()?;
         self.take_account()?;
         self.reexamine()?;

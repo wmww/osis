@@ -6,8 +6,10 @@ use crate::harness::Step::*;
 use crate::harness::history::{Gives, value_ak, world};
 use crate::harness::{World, play};
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
-use osis_base::{Tid, Value};
+use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_engine::Mutation;
+use osis_engine::flows::Demotion;
+use osis_schema::core_types::Edge;
 use std::collections::BTreeMap;
 
 const DAY_MS: u64 = 86_400_000;
@@ -116,12 +118,102 @@ fn several_writers_grow_nothing_spec_commits_5() {
     grows_nothing(Gives::Writes, &[0, 2]);
 }
 
+/// Node 0 makes thing 0 and grants node 1's account write and node 2's read (no node keeps it
+/// unread: a store keeps what it holds of an invalid body until its expiry,
+/// issues/invalid-junk-kept.md). Cut off from node 0, node 1 is lowered to read there and writes
+/// `n` values it still believes valid, the first purging its own earlier write (`writer`
+/// retention, so it may as a writer); node 2, cut off from node 0 too, takes them; then nodes 0
+/// and 2 meet, then all: every node judges them invalid. Then a restart of every node and the
+/// tombstone lifetime: the world, the thing, the invalid commits and what each node holds
+/// (`Held`).
+fn lowered_writes(n: usize) -> (World, Tid, Vec<CommitId>, Vec<Held>) {
+    let mut w = world(0, 3);
+    w.cap = 200_000;
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+    let t = w.history.things[0].0;
+    let note = Ak::new("u:n.0").unwrap();
+    let mine = w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &note, &Value::Str("mine".into())).unwrap().retention(t, &note, osis_schema::Retention { by: osis_schema::PurgeBy::Writer }).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    w.partition(0, 1);
+    w.partition(0, 2);
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.demote(&t, &Demotion { holder: a1, new: Some(Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }), retain: None })).unwrap();
+    w.run();
+    let mut bad = Vec::new();
+    for i in 0..n {
+        w.advance(1_000);
+        bad.push(w.write(1, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &value_ak(), &Value::Str(format!("w{i:04}"))).unwrap();
+            if i == 0 {
+                m.purge_commit(mine, t, note.clone());
+            }
+            e.commit(m).unwrap().unwrap()
+        }));
+    }
+    // node 2 holds them (valid as it judges), then meets node 0 alone: each holds an invalid body
+    // the other's stream shows
+    w.run();
+    let (first, last) = (bad[0], bad[n - 1]);
+    assert!(w.engine(2).holds_commit(&first) && w.engine(2).holds_commit(&last), "node 2 took the writes");
+    w.heal();
+    w.partition(0, 1);
+    w.partition(1, 2);
+    w.run();
+    // known while node 1's stream, as node 2 last heard it, shows them
+    assert!(w.engine(2).kept_invalid(&first) && w.engine(2).kept_invalid(&last), "node 2 dropped them as invalid, their headers kept");
+    w.heal();
+    w.run();
+    for i in 0..3 {
+        w.power_off(i);
+        w.power_on(i);
+    }
+    w.run();
+    w.advance(TOMBSTONE_LIFETIME_MS + 2 * DAY_MS);
+    w.run();
+    let held = (0..3).map(|i| held(&mut w, i)).collect();
+    (w, t, bad, held)
+}
 
-
-
-
-
-
+// spec/commits.md §5 (Forgetting: a commit judged invalid goes once no entry of it is known),
+// spec/sync-judgement.md §3 (Own store: a body judged invalid leaves it with no tombstone),
+// spec/permissions.md §6 (an invalid request purges nothing): a lowered writer's invalid writes,
+// one carrying a purge request, leave no header at the other nodes, nor a store entry anywhere,
+// the author included (it keeps its own commits for its user): every node's store and the
+// others' engines hold the same at 10 and 20 such writes (both past what arms a compaction of the value), the purge took nothing, and nothing of
+// them is held at nodes 0 and 2. Then a re-grant makes them valid again: the author logs them
+// again and every node reads its last write. Fails if a node keeps its entry of a body judged
+// invalid, the author included, or the engine keeps a commit known only for invalid parts.
+#[test]
+fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_commits_5() {
+    let (_, _, _, few) = lowered_writes(10);
+    let (mut w, t, bad, many) = lowered_writes(20);
+    // the author keeps its own commits for its user: its engine is not compared
+    let mut few = few;
+    few[1].0 = many[1].0.clone();
+    flat(&few, &many);
+    let note = Ak::new("u:n.0").unwrap();
+    for i in [0, 2] {
+        assert!(bad.iter().all(|c| !w.engine(i).holds_commit(c)), "node {i} forgot every invalid write");
+        assert_eq!(w.engine(i).get(&t, &note).unwrap(), Some(Value::Str("mine".into())), "node {i}: the invalid request purged nothing");
+        assert_ne!(w.engine(i).get(&t, &value_ak()).unwrap(), Some(Value::Str("w0019".into())));
+    }
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &a1, &Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None })).unwrap();
+    w.run();
+    for i in 0..3 {
+        assert_eq!(w.engine(i).get(&t, &value_ak()).unwrap(), Some(Value::Str("w0019".into())), "node {i} reads the re-granted writer's last write");
+    }
+    for i in [0, 2] {
+        // the author's own replaces cover the rest: never sent again
+        assert!(w.engine(i).holds_commit(&bad[0]) && w.engine(i).holds_commit(&bad[19]), "node {i} holds the writes valid again");
+        assert_eq!(w.engine(i).get(&t, &note).unwrap(), None, "node {i}: the request valid again purges");
+    }
+}
 
 /// Node 0 makes `n` things, each kept unread by node 1 and read by node 2; every node then
 /// restarts once (what a start finds owed is done), then once more cut off from its peers: the

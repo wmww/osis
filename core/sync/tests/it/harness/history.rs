@@ -423,6 +423,7 @@ pub fn check(w: &mut World) {
     let checked = catch_unwind(AssertUnwindSafe(|| {
         reader_clauses(w, &mut r);
         other_clauses(w, &mut r);
+        invalid_clauses(w);
     }));
     if let Err(e) = checked {
         if !osis_base::testenv::quiet() {
@@ -485,6 +486,23 @@ fn reader_clauses(w: &mut World, r: &mut Peer) {
         for i in readers(w, k, &want) {
             assert!(w.online(i), "node {i}, a reader of thing {k}, is off at the check");
             assert_eq!(reads(w.engine(i), t), want, "node {i} reads thing {k} unlike the reference");
+        }
+    }
+}
+
+/// `check`'s invalid clauses (spec/sync-judgement.md §2 Judged invalid, spec/commits.md §5
+/// Forgetting): no online node keeps an own-store entry of a body it judges invalid, so none is a
+/// refetch source of one and each such commit is forgotten once no source shows an entry.
+fn invalid_clauses(w: &mut World) {
+    let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
+    for i in on {
+        for s in w.store(i).held_ids().expect("sync IDs") {
+            for e in w.store(i).entries(&s).expect("entries") {
+                let Some(c) = w.engine(i).blob_commit(&e.blob).expect("blob commit") else { continue };
+                if w.engine(i).holds_commit(&c) {
+                    assert!(!w.engine(i).body_facts(&s, &c).expect("facts").invalid, "node {i} keeps an entry of {c:?}, a body it judges invalid, under {s:?}");
+                }
+            }
         }
     }
 }

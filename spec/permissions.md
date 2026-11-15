@@ -346,9 +346,9 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
 - **Invalid deltas**: a node holds no delta it judges invalid past the transaction that judged it (spec/commits.md §5 Invalid). It keeps only:
   - a delta of a role commit: the timeline and the possible holders read every held edge write, of any validity (§5.1, spec/commits.md §4), and a sync ID holds the commit whole (a deposit is promoted whole, spec/sync-inbox.md §4);
   - a delta of its own commit: its user is told the write was refused and may write it again from it.
-  - An ephemeral delta goes alike. A commit with no part held left and a part so dropped stays known only while an entry of it is (spec/commits.md §5 Forgetting, spec/sync-compaction.md §2); unstamped such entries count against the node's bounds on unvouched input (spec/commits.md §4 Pending storage).
+  - An ephemeral delta goes alike. A commit with no part held left and a part so dropped stays known only while an entry of it is (spec/commits.md §5 Forgetting, spec/sync-compaction.md §2); no node keeps an entry of a body it judges invalid in its own store, its own included (spec/sync-judgement.md §3 Own store); unstamped entries a source still shows count against the node's bounds on unvouched input (spec/commits.md §4 Pending storage).
   - A delta judged invalid drops as invalid even where a held snapshot covers it, never as covered.
-  - A delta dropped so that turns valid again counts as never received and is fetched from any holder; with none it stays gone, at every node alike. The drop is no right's: no node deletes it at peers for it (spec/sync-judgement.md §2).
+  - A delta dropped so that turns valid again counts as never received and is fetched from any holder; with none it stays gone, at every node alike. Its author keeps it and logs it again once it judges it valid (spec/sync-judgement.md §3), as does any node that held it valid. The drop is no right's: no node deletes it at peers for it (spec/sync-judgement.md §2).
 - What the right promises is that honest nodes keep the body. Which nodes carry it follows the thing's sync IDs: a thing leaving a group leaves that sync ID's stores whatever its retention (spec/sync-judgement.md §2), and holders keep their copies.
 
 ## 7. Links

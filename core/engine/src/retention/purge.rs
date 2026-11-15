@@ -255,8 +255,9 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -> bool) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(false) };
     let now = tx.now().0;
-    // a released thing's drops are no erasure's (spec/commits.md §5 Destruction): none lasts
-    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped(ai) || m.is_dropped(ai)) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now) && !super::destroy::released(tx.core, &a.tid, now)) {
+    // a released thing's drops are no erasure's (spec/commits.md §5 Destruction): none lasts; nor
+    // does a drop as invalid (an invalid delta shows nothing, spec/permissions.md §5.2)
+    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped(ai) || (m.is_dropped(ai) && !m.dropped_invalid(ai))) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now) && !super::destroy::released(tx.core, &a.tid, now)) {
         return Ok(true);
     }
     if !m.view.purges {
@@ -268,6 +269,20 @@ pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -
         }
     }
     Ok(false)
+}
+
+/// Whether request `pc` (header `p`) holds the right over no delta it could name, by the role
+/// timeline now (spec/permissions.md §6: an invalid request purges nothing): for each item, no
+/// purgeable-by class and no delta actor gives it, the widest class (`writer`, every member) over
+/// each actor the author could write (`Held::reach`) that could write the item's thing
+/// (`Held::upstream`). Forgetting such a request changes no read (`Engine::forgettable`); a
+/// re-grant giving it the right back brings it again as any forgotten commit.
+pub(crate) fn drops_nothing(core: &Core, pc: &CommitId, p: &Header) -> bool {
+    let reach = core.ix.held.reach(&BTreeSet::from([p.author]));
+    p.requests().iter().all(|item| {
+        let up = core.ix.held.upstream(&BTreeSet::from([*item.tid()]));
+        std::iter::once(&p.author).chain(reach.intersection(&up)).all(|actor| !right_holds(core, p, pc, &Right { tid: *item.tid(), ak: item.ak().clone(), by: osis_base::PurgeBy::Writer, actor: *actor }))
+    })
 }
 
 /// The requests in a list record: their IDs back to back.

@@ -329,7 +329,8 @@ pub(crate) fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
 
 /// Parts on `(tid, ak)` dropped as covered that no coverer carries any more (no coverer, or
 /// one covering a coverer and so on, is held and valid: each turned invalid, went missing or was
-/// dropped other than as covered, by a purge) are missing again (spec/permissions.md §5.2): they
+/// dropped other than as covered, by a purge) are missing again (spec/permissions.md §5.2), but
+/// one invalid here, which goes on dropped as invalid (spec/permissions.md §6): they
 /// give nothing, as at a node that never held them, until the body arrives again (a node still
 /// holding it finds it uncovered and re-uploads it, spec/sync-judgement.md §2; sync fetches it again). The caller rebuilds the aspect. Whether any part went missing.
 pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
@@ -354,7 +355,24 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
         }
     }
     let any = !lost.is_empty();
-    if any {
+    // one invalid here (judged when it dropped as covered) goes on dropped, as invalid: a copy
+    // would drop so on arrival, valid again it is fetched (`valid_again`), and missing, its
+    // commit would wait for it for good
+    let (invalid, lost): (Vec<_>, Vec<_>) = lost.into_iter().partition(|(c, ai)| core.ix.commits.get(c).is_some_and(|m| !m.valid_at(*ai) && kept_if_invalid(core, m)));
+    for (c, ai) in &invalid {
+        let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { continue };
+        if let Some(d) = m.dropped_mut(*ai) {
+            *d = Dropped { why: DropFor::Invalid, role: d.role, overreach: d.overreach, keysets: std::mem::take(&mut d.keysets), ..Dropped::default() };
+        }
+        tx.in_class(m.view.memory, |tx| {
+            if let Some(blob) = tx.get_commit(c)? {
+                tx.put_commit(c, &blob, &m, Shred::No, None)?;
+            }
+            Ok(())
+        })?;
+        tx.core.put_meta(*c, m);
+    }
+    if !lost.is_empty() {
         // until each comes back, this node may read less than one that kept it
         suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &lost)?;
     }
@@ -376,7 +394,12 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
 /// refused and may write it again from it, `DiagnosticKind::OwnWriteInvalid`). A memory part
 /// goes as a durable one: its commit stays known while an entry of it is (`forgettable`).
 fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
-    !m.valid_at(ai) && m.holds(ai) && Some(m.view.author) != core.me() && !m.view.kind.is_role()
+    !m.valid_at(ai) && m.holds(ai) && kept_if_invalid(core, m)
+}
+
+/// Whether `m` keeps no part judged invalid here: neither a role commit nor this node's own.
+fn kept_if_invalid(core: &Core, m: &crate::engine::Meta) -> bool {
+    Some(m.view.author) != core.me() && !m.view.kind.is_role()
 }
 
 /// Whether commit `m` holds no part and is known only for a part dropped while invalid (its
@@ -1238,8 +1261,8 @@ impl Engine {
     }
 
     /// Whether commit `c` is known with no part held, only for a part dropped while invalid
-    /// (`kept_invalid`): sync keeps of it its header, charged to its source like input not
-    /// judged yet.
+    /// (`kept_invalid`): sync keeps of it its header while an entry of it is known
+    /// (`forgettable`).
     pub fn kept_invalid(&self, c: &CommitId) -> bool {
         self.core.ix.commits.get(c).is_some_and(kept_invalid)
     }
@@ -1261,8 +1284,11 @@ impl Engine {
     /// `tests_addenda::a_removed_writers_invalid_commits_are_forgotten_spec_commits_5`; a memory
     /// one all covered went at once, `forget_if_spent`); or one held only as
     /// purged leftovers (`kept_purged`, either class) once each part not dropped as covered is
-    /// covered here (`part_covered`: a valid snapshot past the purge carries its kill). An
-    /// invalid part that turns valid later comes back only as a copy arriving again, judged anew.
+    /// covered here (`part_covered`: a valid snapshot past the purge carries its kill). One
+    /// carrying a purge request, every part dropped as covered or invalid and one at least as
+    /// invalid, goes where its request holds the right over nothing (`purge::drops_nothing`: an
+    /// invalid request purges nothing) and it is not lasting. An invalid part that turns valid
+    /// later comes back only as a copy arriving again, judged anew.
     pub fn forgettable(&mut self, c: &CommitId) -> Result<bool> {
         // counted: tests read how many commits forgetting looks at
         let _s = osis_base::costs::span("forgettable");
@@ -1274,6 +1300,11 @@ impl Engine {
         let gone = |ai: usize| covered(ai) || m.dropped_invalid(ai);
         if matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && (0..m.view.aspects.len()).all(gone) {
             return Ok(true);
+        }
+        let n = m.view.aspects.len();
+        if matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && m.view.purges && (0..n).any(|ai| m.dropped_invalid(ai)) && (0..n).all(gone) {
+            let c = *c;
+            return self.read(|tx| Ok(purge::drops_nothing(tx.core, &c, &m.header) && !lasting(tx, &c, &|_, _| true)?));
         }
         if !kept_purged(&self.core, c, &m) {
             return Ok(false);
@@ -2184,5 +2215,134 @@ mod tests {
         assert!(e.forgettable(&one).unwrap());
         e.forget_commits(&[one]).unwrap();
         assert_eq!(e.get(&t, &x).unwrap(), None);
+    }
+
+    /// Peer 0 makes things `t` and `u` and grants peer 1's account write on `t` and admin on `u`,
+    /// synced; then lowers it to read on `t` without telling peer 1.
+    fn lowered_writer() -> (LocalPeer, osis_base::Tid, osis_base::Tid, osis_base::Tid) {
+        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let a = lp.peers[0].engine.me();
+        let r = lp.peers[1].engine.me();
+        let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        let (u, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
+        lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&u, &r, &edge(Role::Admin)).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        lp.peers[0].engine.demote(&t, &Demotion { holder: r, new: Some(edge(Role::Read)), retain: None }).unwrap();
+        lp.advance(10);
+        (lp, t, u, r)
+    }
+
+    /// Peer 1 commits `m` and peer 0 receives it: its ID.
+    fn from_1(lp: &mut LocalPeer, m: Mutation) -> CommitId {
+        lp.advance(10);
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+        lp.deliver(0, &pk).unwrap();
+        c
+    }
+
+    // spec/commits.md §5 (Forgetting: a commit judged invalid, every part dropped as invalid, goes
+    // once no entry of it is known), spec/permissions.md §6 (Invalid deltas: valid again, it is
+    // received again from any holder): a lowered writer's write is forgettable at the remover,
+    // forgetting it changes no read, survives a restart, and a copy arriving again is dropped and
+    // forgettable again; after a re-grant the copy is held and read.
+    #[test]
+    fn a_commit_judged_invalid_is_forgettable_and_comes_back_valid_spec_commits_5() {
+        let (mut lp, t, _, r) = lowered_writer();
+        let x = Ak::new("x:m.0").unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &x, &Value::Int(1)).unwrap();
+        let c = from_1(&mut lp, m.clone());
+        let e = &mut lp.peers[0].engine;
+        assert!(e.kept_invalid(&c) && e.forgettable(&c).unwrap(), "dropped as invalid: forgettable");
+        let before = e.state_digest(&t, &x).unwrap();
+        e.forget_commits(&[c]).unwrap();
+        assert!(!e.holds_commit(&c));
+        assert_eq!(e.state_digest(&t, &x).unwrap(), before, "no read changed");
+        e.check_index();
+        lp.peers[0].restart(7).unwrap();
+        assert!(!lp.peers[0].engine.holds_commit(&c), "forgotten across a restart");
+        let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+        lp.deliver(0, &pk).unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert!(e.kept_invalid(&c) && e.forgettable(&c).unwrap(), "arrived again: dropped again");
+        e.forget_commits(&[c]).unwrap();
+        lp.advance(10);
+        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
+        lp.deliver(0, &pk).unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert!(!e.forgettable(&c).unwrap() && e.get(&t, &x).unwrap() == Some(Value::Int(1)), "re-granted: held and read");
+    }
+
+    // spec/permissions.md §6 (Invalid deltas: a node keeps a delta of its own commit judged
+    // invalid), spec/commits.md §5 (Forgetting): the lowered writer's own write, invalid once it
+    // holds the demotion, stays held across a restart (judging at open knows its account), so it
+    // is never forgettable there and a re-grant gives it back from its author.
+    #[test]
+    fn an_own_invalid_write_stays_held_across_a_restart_spec_perm_6() {
+        let (mut lp, t, _, _) = lowered_writer();
+        let x = Ak::new("x:m.0").unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &x, &Value::Int(1)).unwrap();
+        lp.advance(10);
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.sync(0, 1).unwrap();
+        let held = |lp: &mut LocalPeer| {
+            let e = &mut lp.peers[1].engine;
+            e.part_held(&c, 0) && !e.kept_invalid(&c) && !e.forgettable(&c).unwrap()
+        };
+        assert!(held(&mut lp), "its own invalid part is held");
+        lp.peers[1].restart(8).unwrap();
+        assert!(held(&mut lp), "and still after a restart");
+    }
+
+    // spec/commits.md §5 (Forgetting: a commit judged invalid carrying a purge request goes only
+    // where the request holds the right over nothing), spec/permissions.md §6 (an invalid request
+    // purges nothing): the lowered writer's invalid commit purging its write on `t` (it lost write
+    // there) is forgettable; one purging its write on `u`, where it is still admin, drops that
+    // write and is kept, also past a demotion on `u` whose frontier lists it.
+    #[test]
+    fn an_invalid_commits_request_is_forgotten_only_where_it_drops_nothing_spec_commits_5() {
+        let (mut lp, t, u, r) = lowered_writer();
+        let (x, y, z) = (Ak::new("x:m.0").unwrap(), Ak::new("x:y.0").unwrap(), Ak::new("x:z.0").unwrap());
+        // `x` keeps history for good at peer 0: a drop as invalid leaves no lasting header (an
+        // invalid delta shows nothing)
+        let mut m = Mutation::new();
+        m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::FOREVER)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        // its write as it holds write on `t` and admin on `u`, stamped after the demotion: its
+        // part on `t` invalid at peer 0
+        let mut m = Mutation::new();
+        m.set(t, &y, &Value::Int(1)).unwrap().retention(t, &y, osis_schema::Retention { by: osis_schema::PurgeBy::Writer }).unwrap();
+        m.set(u, &y, &Value::Int(1)).unwrap();
+        lp.advance(10);
+        let own = lp.peers[1].commit(m).unwrap().unwrap();
+        // then, stamped after the demotion: invalid on `t`
+        let mut m = Mutation::new();
+        m.set(t, &x, &Value::Int(2)).unwrap();
+        m.purge_commit(own, t, y.clone());
+        let q_t = from_1(&mut lp, m);
+        let mut m = Mutation::new();
+        m.set(t, &z, &Value::Int(3)).unwrap();
+        m.purge_commit(own, u, y.clone());
+        let q_u = from_1(&mut lp, m);
+        let pk = lp.peers[1].engine.package(&own).unwrap().unwrap();
+        lp.deliver(0, &pk).unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert!(e.kept_invalid(&q_t) && e.kept_invalid(&q_u));
+        assert!(e.forgettable(&q_t).unwrap(), "lost write on t: its request drops nothing");
+        assert_eq!(e.get(&u, &y).unwrap(), None, "admin on u: its request drops the write there");
+        assert!(!e.forgettable(&q_u).unwrap(), "a request dropping a write is kept");
+        lp.advance(10);
+        lp.peers[0].engine.demote(&u, &Demotion { holder: r, new: Some(ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }), retain: None }).unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert!(!e.forgettable(&q_u).unwrap(), "a demotion whose frontier lists it leaves the purge standing: still kept");
+        e.forget_commits(&[q_t]).unwrap();
+        assert_eq!(e.get(&u, &y).unwrap(), None, "forgetting the request that dropped nothing changes no read");
+        e.check_index();
     }
 }

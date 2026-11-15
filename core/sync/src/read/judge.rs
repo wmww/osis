@@ -26,12 +26,13 @@ pub(crate) enum Act {
     /// The entry leaves the own log (§3 Own store: must-not-hold, or covered and dropped).
     DropOwn(BlobId),
     /// The entry leaves the own log with no tombstone: judged outside S's required set
-    /// (`outside`), a judgement the node may make wrongly while what it reads moves.
+    /// (`outside`), a judgement the node may make wrongly while what it reads moves, or a body
+    /// judged invalid here (`BodyFacts::invalid`: valid again, it is logged or pulled again).
     Unlog(BlobId),
     /// The body counts missing again: its own tombstone ends (§4, §3 Dropped bodies).
     Lift(BlobId),
     /// The body counts missing again: an entry of it held here is opened again from the store
-    /// (§3 Dropped bodies: a body dropped as invalid keeps its entries while it may come back).
+    /// (§3 Dropped bodies: a body whose cover fell before its entry left, a purge's leftover).
     Take(BlobId),
     /// The body counts missing again: an entry of it a source's stream shows present is fetched
     /// there (§3 Dropped bodies), by streams.
@@ -238,6 +239,10 @@ fn classify(mine: &Mine, f: &Facts, s: &SyncId, c: &CommitId, meta: &BodyMeta, l
     if !meta.mints.is_empty() {
         return minted(mine, s, c, meta);
     }
+    // judged invalid here: kept by none of must-hold's clauses, never logged (§3 Own store)
+    if f.body.invalid {
+        return Verdict::May;
+    }
     // not held here (dropped): kept by none of must-hold's clauses
     if f.body.dropped.is_some() {
         return Verdict::May;
@@ -381,7 +386,13 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         Some(f) => covered_dropped(&verdict, f, |x| Ok(!g.own(s, x)?.is_empty()))?,
         None => false,
     };
-    if verdict == Verdict::MustNot(Why::OutsideRequired) {
+    // judged invalid here, the body leaves the own store with no tombstone, so the node is no
+    // refetch source of it and its commit becomes forgettable (spec/commits.md §5 Forgetting);
+    // valid again, it counts missing and is fetched where shown, or pulled when a holder logs it
+    // again (the author keeps its own and logs it once valid: invariant, every honest holder
+    // judging it invalid drops its entry only while every holder judging it valid keeps it)
+    let invalid = f.as_ref().is_some_and(|f| f.body.invalid);
+    if verdict == Verdict::MustNot(Why::OutsideRequired) || (verdict == Verdict::May && invalid) {
         j.acts.extend(live.iter().map(|b| Act::Unlog(*b)));
     } else if matches!(verdict, Verdict::MustNot(_)) || dropped_here {
         j.acts.extend(live.iter().map(|b| Act::DropOwn(*b)));
@@ -579,8 +590,8 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
             None => false,
         },
     };
-    // a body dropped as invalid is never deleted at a peer (spec/permissions.md §6)
-    if f.is_some_and(|f| f.body.dropped == Some(osis_engine::engine::DropFor::Invalid)) {
+    // a body judged invalid is never deleted at a peer (spec/permissions.md §6)
+    if f.is_some_and(|f| f.body.invalid || f.body.dropped == Some(osis_engine::engine::DropFor::Invalid)) {
         return Ok(());
     }
     let blobs: Vec<BlobId> = if why {
