@@ -424,9 +424,12 @@ fn an_invalid_addendum_is_forgettable_spec_commits_5() {
     assert_eq!(reads(&mut lp, 0, t, "x:e.0"), None);
 }
 
+/// Rows by kind: count and bytes (`Engine::local_census`).
+type Census = std::collections::BTreeMap<String, (usize, usize)>;
+
 /// Bob, removed by Alice without knowing it, writes `n` edits; Alice receives them, judges them
-/// invalid and forgets every commit she may: Alice's rows by kind (count, bytes) and the edits.
-fn removed_writer_writes(n: usize) -> (LocalPeer, Tid, Vec<CommitId>, std::collections::BTreeMap<String, (usize, usize)>) {
+/// invalid and forgets every commit she may: Alice's rows by kind and the edits.
+fn removed_writer_writes(n: usize) -> (LocalPeer, Tid, Vec<CommitId>, Census) {
     let (mut lp, t) = world(2, &[Role::Write]);
     remove(&mut lp, 0, t, 1);
     let edits: Vec<CommitId> = (0..n).map(|i| write(&mut lp, 1, t, "x:e.0", i64::try_from(i).unwrap())).collect();
@@ -448,7 +451,7 @@ fn removed_writer_writes(n: usize) -> (LocalPeer, Tid, Vec<CommitId>, std::colle
 fn a_removed_writers_invalid_commits_are_forgotten_spec_commits_5() {
     let (_, _, _, a) = removed_writer_writes(3);
     let (mut lp, t, edits, b) = removed_writer_writes(30);
-    let bytes = |c: &std::collections::BTreeMap<String, (usize, usize)>| c.values().map(|v| v.1).sum::<usize>();
+    let bytes = |c: &Census| c.values().map(|v| v.1).sum::<usize>();
     assert!(b.iter().all(|(k, v)| v.0 <= a.get(k).map_or(0, |x| x.0)) && bytes(&b) <= bytes(&a) + 64, "rows by kind {a:?} at n, {b:?} at 10n");
     let bob = lp.peers[1].engine.me();
     lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
