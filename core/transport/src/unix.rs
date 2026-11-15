@@ -172,6 +172,11 @@ impl Listener for UnixListener {
         Address { url: url_of(&self.path), key: self.key }
     }
 
+    /// Its key is the uid's, never a secret's, and a closed listener frees its path at once.
+    async fn relisten(&mut self, _: &ListenConfig) -> Result<bool, Error> {
+        Ok(false)
+    }
+
     fn close(&self) {}
 }
 

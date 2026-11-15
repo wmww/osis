@@ -61,6 +61,13 @@ pub enum Listening {
     Socket,
 }
 
+/// A listener serving: `serve` hands its sessions to `fwd`, which reports them; aborting `fwd`
+/// ends `serve`, which gives the listener back (a listener dropped closes).
+struct Served<L> {
+    serve: JoinHandle<L>,
+    fwd: JoinHandle<()>,
+}
+
 /// The product's `Links` over transport `T`.
 pub struct TransportLinks<T: Transport> {
     transport: Arc<T>,
@@ -70,8 +77,8 @@ pub struct TransportLinks<T: Transport> {
     live: BTreeMap<ConnId, Live>,
     /// Dials in flight: one closed before its result came is not here, and its result is dropped.
     dialing: BTreeMap<ConnId, JoinHandle<()>>,
-    /// Each listener set's tasks (a listener lives in its task: ended, it closes).
-    listeners: BTreeMap<Listening, Vec<JoinHandle<()>>>,
+    /// Each listener set's listeners, each serving in its task.
+    listeners: BTreeMap<Listening, Vec<Served<T::Listener>>>,
     discovery: Vec<JoinHandle<()>>,
     wake: Option<WallMs>,
     accepted: u64,
@@ -79,7 +86,11 @@ pub struct TransportLinks<T: Transport> {
 
 impl<T: Transport> Drop for TransportLinks<T> {
     fn drop(&mut self) {
-        for t in self.dialing.values().chain(self.listeners.values().flatten()).chain(&self.discovery) {
+        for s in self.listeners.values().flatten() {
+            s.serve.abort();
+            s.fwd.abort();
+        }
+        for t in self.dialing.values().chain(&self.discovery) {
             t.abort();
         }
     }
@@ -92,30 +103,32 @@ impl<T: Transport> TransportLinks<T> {
         TransportLinks { transport, clock, tx, rx, live: BTreeMap::new(), dialing: BTreeMap::new(), listeners: BTreeMap::new(), discovery: Vec::new(), wake: None, accepted: 0 }
     }
 
-    /// Replaces listener set `set`: its listeners close first (closed when this returns, so a
-    /// listen at the port one held finds it free), then it listens at every URL of `urls` under
-    /// `secret`, all or none (spec/sync-transport.md §5 One key; none: the set stays closed).
-    /// Each session a listener takes comes up as an accepted connection; the other sets and
-    /// every connection go on. Their addresses.
+    /// Replaces listener set `set` (spec/sync-transport.md §5 One key, Key change): it listens at
+    /// every URL of `urls` under `secret`, all or none (`osis_transport::listen_all`: a URL a
+    /// listener of the set is bound at keeps that listener and its connections, under `secret`;
+    /// the set's other listeners close first; none: the set stays closed and the error is
+    /// returned). Each session a listener takes comes up as an accepted connection; the other
+    /// sets and every connection go on. Their addresses.
     pub async fn listen(&mut self, set: Listening, urls: &[String], secret: &StaticSecret) -> Result<Vec<Address>, Error> {
-        self.close_listeners(set).await;
-        let ls = osis_transport::listen_all(&*self.transport, urls, secret).await?;
+        let old = self.take_listeners(set).await;
+        let ls = osis_transport::listen_all(&*self.transport, old, urls, secret).await?;
         let mut out = Vec::new();
-        let tasks = self.listeners.entry(set).or_default();
+        let served = self.listeners.entry(set).or_default();
         for l in ls {
             use osis_transport::Listener;
             let addr = l.address();
             let (stx, mut srx) = mpsc::channel(1);
-            tasks.push(tokio::spawn(link::serve(l, LINGER, LINGER, stx)));
+            let serve = tokio::spawn(link::serve(l, LINGER, LINGER, stx));
             let tx = self.tx.clone();
             let key = addr.key;
-            tasks.push(tokio::spawn(async move {
+            let fwd = tokio::spawn(async move {
                 while let Some(link) = srx.recv().await {
                     if tx.send(Event::Accepted(link, key)).is_err() {
                         return;
                     }
                 }
-            }));
+            });
+            served.push(Served { serve, fwd });
             out.push(addr);
         }
         Ok(out)
@@ -127,13 +140,18 @@ impl<T: Transport> TransportLinks<T> {
         self.live.get(&conn).is_some_and(|l| l.unix)
     }
 
-    /// Closes listener set `set` (its connections go on), returning once its listeners are
-    /// dropped: their tasks ended, not just told to.
-    pub async fn close_listeners(&mut self, set: Listening) {
-        for t in self.listeners.remove(&set).unwrap_or_default() {
-            t.abort();
-            let _ = t.await;
+    /// Listener set `set`'s listeners, served no more (their tasks ended, not just told to).
+    async fn take_listeners(&mut self, set: Listening) -> Vec<T::Listener> {
+        let mut out = Vec::new();
+        for s in self.listeners.remove(&set).unwrap_or_default() {
+            s.fwd.abort();
+            let _ = s.fwd.await;
+            // `serve` ends once `fwd`'s receiver is gone
+            if let Ok(l) = s.serve.await {
+                out.push(l);
+            }
         }
+        out
     }
 
     /// Starts the transport's discovery (spec/sync-transport.md §4): what it finds comes as

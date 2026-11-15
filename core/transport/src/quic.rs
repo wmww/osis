@@ -447,6 +447,17 @@ impl Listener for QuicListener {
         self.addr.clone()
     }
 
+    /// Its endpoint serves under the new key (quinn's server config swapped).
+    async fn relisten(&mut self, cfg: &ListenConfig) -> Result<bool, Error> {
+        if resolve(&cfg.url).await? != self.ep.local_addr()? {
+            return Ok(false);
+        }
+        let (pk, me) = keypair(cfg.secret.as_bytes())?;
+        self.ep.set_server_config(Some(server_config(me, &[ALPN])?));
+        self.addr.key = pk;
+        Ok(true)
+    }
+
     fn close(&self) {
         self.ep.close(0u32.into(), b"");
     }
@@ -561,7 +572,7 @@ impl crate::p2p::Udp for QuicUdp {
 }
 
 /// A `QuicUdp` socket at `at`; with `secret` it accepts connections of the protocols `serves`.
-fn bind_sock(at: SocketAddr, secret: Option<&crate::StaticSecret>, serves: &[&[u8]]) -> Result<QuicSock, Error> {
+fn bind_sock(at: SocketAddr, secret: Option<&crate::StaticSecret>, serves: &'static [&'static [u8]]) -> Result<QuicSock, Error> {
     let server = match secret {
         Some(s) => Some(server_config(keypair(s.as_bytes())?.1, serves)?),
         None => None,
@@ -587,7 +598,7 @@ fn bind_sock(at: SocketAddr, secret: Option<&crate::StaticSecret>, serves: &[&[u
         }),
         None => tokio::sync::mpsc::channel(1).1,
     };
-    Ok(QuicSock { ep, punch, local, rx: tokio::sync::Mutex::new(rx) })
+    Ok(QuicSock { ep, punch, local, serves, rx: tokio::sync::Mutex::new(rx) })
 }
 
 /// The protocol a connection's handshake settled on.
@@ -602,6 +613,8 @@ pub struct QuicSock {
     /// The endpoint's socket, for punches.
     punch: std::net::UdpSocket,
     local: SocketAddr,
+    /// The protocols it accepts, when bound with a secret.
+    serves: &'static [&'static [u8]],
     rx: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<(QuicConn, crate::p2p::Alpn, SocketAddr)>>,
 }
 
@@ -629,6 +642,11 @@ impl crate::p2p::Sock for QuicSock {
             _ => to,
         };
         let _ = self.punch.send_to(&crate::p2p::PUNCH, to);
+    }
+
+    fn serve_as(&self, secret: &crate::StaticSecret) -> Result<(), Error> {
+        self.ep.set_server_config(Some(server_config(keypair(secret.as_bytes())?.1, self.serves)?));
+        Ok(())
     }
 
     fn close(&self) {

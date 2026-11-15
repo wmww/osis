@@ -153,6 +153,20 @@ impl<U: Udp> Listener for MultiListener<U> {
         each!(self, l => l.address())
     }
 
+    /// A URL of another scheme names another listener's socket.
+    async fn relisten(&mut self, cfg: &ListenConfig) -> Result<bool, Error> {
+        let mine = match self {
+            Self::Mem(_) => crate::mem::SCHEME,
+            Self::Quic(_) => crate::quic::SCHEME,
+            Self::P2p(_) => crate::PEER_SCHEME,
+            Self::Unix(_) => crate::unix::SCHEME,
+        };
+        if cfg.url.split_once("://").map(|(s, _)| s) != Some(mine) {
+            return Ok(false);
+        }
+        each!(self, l => l.relisten(cfg).await)
+    }
+
     fn close(&self) {
         each!(self, l => l.close())
     }

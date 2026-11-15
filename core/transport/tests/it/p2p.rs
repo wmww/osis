@@ -400,6 +400,54 @@ fn relayed_keys_spec_sync_10() {
     assert!(matches!(none, Some(Error::Unreachable(_))), "{none:?}");
 }
 
+// spec/sync-transport.md §5 (Key change), §3 (relays): a listener listened again at its own URL
+// keeps its socket and the connections it took, and registers at its relay under the new key:
+// a dial through the relay reaches it under the new key, none under the old.
+#[test]
+fn a_relayed_listener_relistens_under_a_new_key_spec_sync_transport_5() {
+    let mut w = world(0, anyone());
+    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
+    let mut lb = listen_via(&mut w, b, "10.0.0.2", 2);
+    let old = lb.address();
+    let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
+    let via = peer_url(&[w.relay.item()]);
+    let (a2, via2, old2) = (a.clone(), via.clone(), old.clone());
+    let (lb, c1, s1) = w
+        .sched
+        .block_on(async move {
+            let c1 = a2.dial(&Address { url: via2, key: old2.key }).await.unwrap();
+            let (mut t1, _r1) = c1.open_stream().await.unwrap();
+            t1.write_all(b"x").await.unwrap();
+            let s1 = lb.accept().await.unwrap();
+            assert!(lb.relisten(&ListenConfig { url: old2.url.clone(), secret: secret(3) }).await.unwrap(), "its own URL");
+            let other = ListenConfig { url: "peer://10.0.0.2:7001".into(), secret: secret(3) };
+            assert!(!lb.relisten(&other).await.unwrap(), "another socket");
+            (lb, c1, s1)
+        })
+        .unwrap();
+    assert_eq!((lb.address().url, lb.address().key), (old.url.clone(), secret(3).public_key()));
+    // its registration under the new key settles
+    w.sched.run();
+    let mut lb = lb;
+    let got = w.sched.block_on(async move {
+        let c2 = a.dial(&Address { url: via.clone(), key: secret(3).public_key() }).await.unwrap();
+        let (mut t2, _r2) = c2.open_stream().await.unwrap();
+        t2.write_all(b"y").await.unwrap();
+        let s2 = lb.accept().await.unwrap();
+        let stale = a.dial(&Address { url: via, key: old.key }).await.err();
+        // the connection taken under the old key goes on
+        let (_ts, mut rs) = s1.accept_stream().await.unwrap();
+        let mut x = [0u8; 1];
+        rs.read(&mut x).await.unwrap();
+        drop((c1, c2));
+        (s2.peer_key() != s1.peer_key(), stale, x)
+    });
+    let (two, stale, x) = got.unwrap();
+    assert!(two);
+    assert_eq!(&x, b"x");
+    assert!(matches!(stale, Some(Error::Unreachable(_))), "{stale:?}");
+}
+
 /// Forwards `r` to `t` until it ends.
 async fn pipe(mut r: impl RecvStream, mut t: impl SendStream) {
     let mut b = [0u8; 4096];

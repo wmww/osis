@@ -545,7 +545,57 @@ fn a_listener_set_listens_again_at_its_own_port_spec_sync_transport_5() {
             let b = l.listen(Listening::Urls, std::slice::from_ref(&a.url), &s2).await.expect("the set's own port is free again").remove(0);
             assert_eq!(b.url, a.url);
         }
-        assert!(osis_transport::listen_all(&new(), std::slice::from_ref(&kept.url), &s1).await.is_err(), "the other set still holds its port");
+        assert!(osis_transport::listen_all(&new(), Vec::new(), std::slice::from_ref(&kept.url), &s1).await.is_err(), "the other set still holds its port");
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    rt.block_on(async {
+        again(osis_transport::Quic::new, "quic://127.0.0.1:0").await;
+        again(|| osis_transport::P2p::new(osis_transport::QuicUdp::new()), "peer://127.0.0.1:0").await;
+    });
+}
+
+// spec/sync-transport.md §5 (Key change: rotate_peer_address returns once every listener listens
+// under the new key): a listener set with a live accepted connection listens again at its own
+// port under a new key, over real QUIC and `peer://` sockets on loopback: the listener keeps its
+// socket, so its connection goes on.
+#[test]
+fn a_listener_set_with_a_live_connection_listens_again_spec_sync_transport_5() {
+    use osis_sync::{Input, Listening};
+    use osis_transport::StaticSecret;
+    async fn again<T: osis_transport::Transport>(new: impl Fn() -> T, url: &str) {
+        let clock: Arc<dyn osis_base::Clock> = Arc::new(osis_base::SystemClock);
+        let mut l = osis_sync::TransportLinks::new(Arc::new(new()), clock);
+        let (s1, s2) = (StaticSecret::from_bytes([1; 32]), StaticSecret::from_bytes([2; 32]));
+        let a = l.listen(Listening::Urls, &[url.to_string()], &s1).await.unwrap().remove(0);
+        let dialer = new();
+        let c = osis_transport::link::dial(&dialer, &a, Duration::from_secs(5)).await.unwrap();
+        assert!(c.tx.send(b"hi".to_vec(), usize::MAX));
+        let up = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Input::Up { .. } = l.next().await {
+                    return;
+                }
+            }
+        });
+        up.await.expect("the listener took the connection");
+        let b = tokio::time::timeout(Duration::from_secs(5), l.listen(Listening::Urls, std::slice::from_ref(&a.url), &s2)).await.expect("relisten ends");
+        let b = b.expect("the set's own port is free again with a connection up").remove(0);
+        assert_eq!((b.url.as_str(), b.key), (a.url.as_str(), s2.public_key()));
+        // the connection goes on; a dial under the new key comes up, under the old one fails
+        assert!(c.tx.send(b"again".to_vec(), usize::MAX));
+        let more = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Input::Bytes { bytes, .. } = l.next().await
+                    && bytes.ends_with(b"again")
+                {
+                    return;
+                }
+            }
+        });
+        more.await.expect("the connection carries bytes after the relisten");
+        assert!(osis_transport::link::dial(&dialer, &b, Duration::from_secs(5)).await.is_ok());
+        assert!(osis_transport::link::dial(&dialer, &a, Duration::from_secs(5)).await.is_err(), "nothing under the old key");
+        drop(c);
     }
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     rt.block_on(async {

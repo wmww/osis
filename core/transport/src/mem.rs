@@ -607,6 +607,11 @@ impl Listener for MemListener {
         self.addr.clone()
     }
 
+    /// A closed listener frees its name at once.
+    async fn relisten(&mut self, _: &ListenConfig) -> Result<bool, Error> {
+        Ok(false)
+    }
+
     fn close(&self) {
         lock(&self.net.0).drop_listener(&self.name, Some(self.id));
     }

@@ -523,6 +523,13 @@ impl Sock for MemSock {
         let _ = st.udp.route(self.addr, to);
     }
 
+    fn serve_as(&self, secret: &StaticSecret) -> Result<(), Error> {
+        let mut st = self.net.state();
+        let e = st.udp.socks.get_mut(&self.addr).filter(|e| e.id == self.id && e.key.is_some()).ok_or(Error::Closed)?;
+        e.key = Some(secret.public_key());
+        Ok(())
+    }
+
     fn close(&self) {
         self.net.state().unbind(self.addr, Some(self.id));
     }

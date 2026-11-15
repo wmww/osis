@@ -215,14 +215,18 @@ fn pipe() -> (LinkTx, LinkRx) {
 
 /// Accepts connections on `l` and hands each stream they open to `out` as a session, until
 /// `out` or the listener closes; any number of them (spec/sync-transport.md §5 served connections). One
-/// with no live session for `idle` is closed.
-pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>) {
-    while let Ok(c) = l.accept().await {
-        if out.is_closed() {
-            break;
-        }
+/// with no live session for `idle` is closed. The listener, once `out` closes (to listen again
+/// with it, `listen_all`).
+pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>) -> L {
+    loop {
+        let c = tokio::select! {
+            c = l.accept() => c,
+            () = out.closed() => break,
+        };
+        let Ok(c) = c else { break };
         tokio::spawn(serve_conn(c, idle, wait, out.clone()));
     }
+    l
 }
 
 /// Hands each stream accepted connection `c`'s dialer opens to `out` as a session, as `serve`

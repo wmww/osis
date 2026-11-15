@@ -166,6 +166,8 @@ pub trait Sock: Send + Sync + 'static {
     /// Sends one datagram to `to` that no QUIC endpoint answers (`PUNCH`), so this socket's
     /// NAT lets `to`'s packets in.
     fn punch(&self, to: SocketAddr);
+    /// A socket bound with a secret accepts under `secret` from now on; its connections go on.
+    fn serve_as(&self, secret: &StaticSecret) -> Result<(), Error>;
     fn close(&self);
 }
 
@@ -1167,10 +1169,7 @@ impl<U: Udp> P2p<U> {
         let it = items(&cfg.url)?;
         let [bind] = it.direct.as_slice() else { return Err(Error::BadUrl(format!("{}: one socket address to bind", cfg.url))) };
         let sock = Arc::new(if lan { self.udp.bind_lan(*bind, &cfg.secret)? } else { self.udp.bind(*bind, Some(&cfg.secret))? });
-        let key = cfg.secret.public_key();
         let (tx, rx) = mpsc::channel(ACCEPT_QUEUE);
-        let stop = Arc::new(Gate::default());
-        let observed = Arc::new(Mutex::new(BTreeMap::new()));
         let (s2, tx2, relay) = (sock.clone(), tx.clone(), self.relay.clone());
         self.udp.spawn(async move {
             loop {
@@ -1188,14 +1187,10 @@ impl<U: Udp> P2p<U> {
                 }
             }
         });
-        let mut list = vec![sock.local().to_string()];
-        let fwd = Arc::new(Forwarded::default());
-        for r in it.relays {
-            list.push(r.item());
-            let reg = Registration { udp: self.udp.clone(), sock: sock.clone(), relay: r, secret: cfg.secret.clone(), tx: tx.clone(), observed: observed.clone(), fwd: fwd.clone() };
-            self.udp.spawn(reg.run(stop.clone()));
-        }
-        Ok(P2pListener { rx, addr: Address { url: crate::peer_url(&list), key }, stop, sock, observed })
+        let addr = Address { url: String::new(), key: cfg.secret.public_key() };
+        let mut l = P2pListener { rx, addr, stop: Arc::default(), sock, observed: Arc::default(), udp: self.udp.clone(), tx: tx.downgrade(), fwd: Arc::default() };
+        l.register(it.relays, &cfg.secret, &tx);
+        Ok(l)
     }
 
     /// One LAN join (spec/sync-transport.md §4): a fresh key and a LAN listener at the first of
@@ -1319,12 +1314,30 @@ async fn hand_up<U: Udp, C>(mut l: P2pListener<U>, tx: mpsc::Sender<Found<C>>, w
 pub struct P2pListener<U: Udp> {
     rx: mpsc::Receiver<P2pConn<SConn<U>>>,
     addr: Address,
+    /// Ends its registrations.
     stop: Arc<Gate>,
     sock: Arc<U::Sock>,
     observed: Arc<Mutex<BTreeMap<Relay, SocketAddr>>>,
+    udp: U,
+    /// What its registrations queue to (weak: `accept` ends once the socket and they are gone).
+    tx: mpsc::WeakSender<P2pConn<SConn<U>>>,
+    fwd: Arc<Forwarded>,
 }
 
 impl<U: Udp> P2pListener<U> {
+    /// Registers at each of `relays` under `secret` (spec/sync-transport.md §3), each relay's
+    /// observed address in a fresh map; its address lists them.
+    fn register(&mut self, relays: Vec<Relay>, secret: &StaticSecret, tx: &mpsc::Sender<P2pConn<SConn<U>>>) {
+        let mut list = vec![self.sock.local().to_string()];
+        self.observed = Arc::new(Mutex::new(BTreeMap::new()));
+        for r in relays {
+            list.push(r.item());
+            let reg = Registration { udp: self.udp.clone(), sock: self.sock.clone(), relay: r, secret: secret.clone(), tx: tx.clone(), observed: self.observed.clone(), fwd: self.fwd.clone() };
+            self.udp.spawn(reg.run(self.stop.clone()));
+        }
+        self.addr = Address { url: crate::peer_url(&list), key: secret.public_key() };
+    }
+
     /// This socket's address as each relay it is registered at sees it.
     pub fn observed(&self) -> Vec<(Relay, SocketAddr)> {
         lock(&self.observed).iter().map(|(r, a)| (r.clone(), *a)).collect()
@@ -1340,6 +1353,21 @@ impl<U: Udp> Listener for P2pListener<U> {
 
     fn address(&self) -> Address {
         self.addr.clone()
+    }
+
+    /// Its socket accepts under the new key and its registrations start again under it, at
+    /// `cfg`'s relays.
+    async fn relisten(&mut self, cfg: &ListenConfig) -> Result<bool, Error> {
+        let it = items(&cfg.url)?;
+        if it.direct != [self.sock.local()] {
+            return Ok(false);
+        }
+        let tx = self.tx.upgrade().ok_or(Error::Closed)?;
+        self.sock.serve_as(&cfg.secret)?;
+        self.stop.close();
+        self.stop = Arc::new(Gate::default());
+        self.register(it.relays, &cfg.secret, &tx);
+        Ok(true)
     }
 
     fn close(&self) {

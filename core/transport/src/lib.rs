@@ -176,21 +176,34 @@ impl<T: Transport> Transport for std::sync::Arc<T> {
 }
 
 /// Listens at every URL of `urls` under one key (spec/sync-transport.md §5, One key): all or
-/// none. A URL that cannot be listened on closes the listeners made and is the error, naming it;
-/// a key change (`rotate_peer_address`) closes the old listeners first, then calls this with the
-/// new secret, so a failed relisten is never an `Ok`.
-pub async fn listen_all<T: Transport>(t: &T, urls: &[String], secret: &StaticSecret) -> Result<Vec<T::Listener>, Error> {
-    let mut out = Vec::with_capacity(urls.len());
+/// none. `old` are the listeners a set held (none for a new set): a URL one of them is bound at
+/// keeps it, moved to `secret` (`Listener::relisten`), so a key change never needs a socket
+/// that its connections still hold; the rest of `old` close before any fresh listen. A URL that
+/// cannot be listened on closes every listener here and is the error, naming it, so a failed
+/// relisten is never an `Ok`. The listeners in `urls`' order.
+pub async fn listen_all<T: Transport>(t: &T, mut old: Vec<T::Listener>, urls: &[String], secret: &StaticSecret) -> Result<Vec<T::Listener>, Error> {
+    fn named(url: &str) -> impl FnOnce(Error) -> Error + '_ {
+        move |e| Error::Listen(url.to_owned(), Box::new(e))
+    }
+    let mut out: Vec<Option<T::Listener>> = Vec::with_capacity(urls.len());
     for url in urls {
-        match t.listen(ListenConfig { url: url.clone(), secret: secret.clone() }).await {
-            Ok(l) => out.push(l),
-            Err(e) => {
-                out.iter().for_each(Listener::close);
-                return Err(Error::Listen(url.clone(), Box::new(e)));
+        let cfg = ListenConfig { url: url.clone(), secret: secret.clone() };
+        let mut kept = None;
+        for (i, l) in old.iter_mut().enumerate() {
+            if l.relisten(&cfg).await.map_err(named(url))? {
+                kept = Some(i);
+                break;
             }
         }
+        out.push(kept.map(|i| old.swap_remove(i)));
     }
-    Ok(out)
+    drop(old);
+    for (slot, url) in out.iter_mut().zip(urls) {
+        if slot.is_none() {
+            *slot = Some(t.listen(ListenConfig { url: url.clone(), secret: secret.clone() }).await.map_err(named(url))?);
+        }
+    }
+    Ok(out.into_iter().flatten().collect())
 }
 
 /// Incoming connections.
@@ -200,6 +213,11 @@ pub trait Listener: Send + 'static {
     fn accept(&mut self) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
     /// The address to dial this listener at (bound URL, public key).
     fn address(&self) -> Address;
+    /// Listens at `cfg` on this listener's own socket when `cfg.url` names the socket it is
+    /// bound to: under `cfg.secret` from now on, the connections it took going on (`true`).
+    /// `false`: `cfg.url` names another socket, or this transport frees a listener's address the
+    /// moment it closes, so a fresh `listen` takes it.
+    fn relisten(&mut self, cfg: &ListenConfig) -> impl Future<Output = Result<bool, Error>> + Send;
     fn close(&self);
 }
 
