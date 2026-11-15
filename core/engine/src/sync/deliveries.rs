@@ -109,7 +109,7 @@ impl Engine {
     /// holder took `c`, and shows nothing); or `c` is no longer held (forgotten: nothing to
     /// deliver). The other sign, an open by the holder of a sync ID the blob names, is sync's to
     /// see. Reads the delivery's keys and those commits' openings.
-    pub(crate) fn delivery_taken_now(&mut self, c: &CommitId, holder: &Tid) -> Result<bool> {
+    pub fn delivery_taken(&mut self, c: &CommitId, holder: &Tid) -> Result<bool> {
         let Some(o) = self.core.ix.owed_inbox.get(&(*c, *holder)).cloned() else { return Ok(true) };
         let Some(ts) = self.core.ix.commits.get(c).map(|m| m.view.ts) else { return Ok(true) };
         for t in o.things.iter().copied() {
@@ -128,11 +128,11 @@ impl Engine {
     }
 
     /// The deliveries owed and not seen taken, whole (`delivery_feed` follows additions).
-    pub(crate) fn deliveries_now(&mut self) -> Result<Arc<BTreeSet<(CommitId, Tid)>>> {
+    pub fn deliveries(&mut self) -> Result<Arc<BTreeSet<(CommitId, Tid)>>> {
         let owed: Vec<(CommitId, Tid)> = self.core.ix.owed_inbox.keys().copied().collect();
         let mut out = BTreeSet::new();
         for (c, h) in owed {
-            if !self.delivery_taken_now(&c, &h)? {
+            if !self.delivery_taken(&c, &h)? {
                 out.insert((c, h));
             }
         }
@@ -142,7 +142,7 @@ impl Engine {
     /// The inbox blob of delivery (`c`, `holder`), sealed now to the holder's current KEM key
     /// (spec/wire.md §9): `None` for a holder with no inbox (a node is sent `c` itself), one whose
     /// keys are not known here, or a commit no longer held.
-    pub(crate) fn inbox_blob_now(&mut self, c: &CommitId, holder: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
+    pub fn inbox_blob(&mut self, c: &CommitId, holder: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
         self.inbox_blob_with(c, holder, true, rng)
     }
 

@@ -132,7 +132,7 @@ impl Engine {
     /// The records sync ID `s` carries as certificates (spec/permissions.md §4): those its
     /// certificates name (`certified_records`) whose `created.0` no closure body there carries
     /// (a thing of the closure its actor reads), held here.
-    pub(crate) fn certificate_records_now(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
+    pub fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
         let Some(t) = self.read_thing(s)? else { return Ok(Arc::default()) };
         let records = self.certified_records(&t)?;
         let ctx = self.body_ctx(&t);
@@ -143,7 +143,7 @@ impl Engine {
     /// Whether a record blob can be sealed under `s` now (a current read epoch of its thing to
     /// wrap under; none while, say, a rotation is owed before encrypting), and a list blob of
     /// rotation `r` (`r`: `list_wrap_secret`).
-    pub(crate) fn cert_wrap_now(&mut self, s: &SyncId, r: Option<&CommitId>) -> Result<bool> {
+    pub fn cert_wrap(&mut self, s: &SyncId, r: Option<&CommitId>) -> Result<bool> {
         let Some(t) = self.read_thing(s)? else { return Ok(false) };
         Ok(match r {
             Some(r) => self.list_wrap_secret(&t, r)?.is_some(),
@@ -152,13 +152,13 @@ impl Engine {
     }
 
     /// The certificate blobs of kind `r` sealed here under `s`, each with what it carries.
-    pub(crate) fn cert_blobs_now(&self, s: &SyncId, r: CertKind) -> Arc<CertBlobs> {
+    pub fn cert_blobs(&self, s: &SyncId, r: CertKind) -> Arc<CertBlobs> {
         self.core.ix.cert_blobs.get(&(*s, r)).cloned().unwrap_or_default()
     }
 
     /// One record blob of `records` (those held here) under `s` and its wrap (`seal_cert_blob`).
     /// `None` when none is held or no epoch is.
-    pub(crate) fn seal_records_now(&mut self, s: &SyncId, records: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
+    pub fn seal_records(&mut self, s: &SyncId, records: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
         let Some(t) = self.read_thing(s)? else { return Ok(None) };
         let recs: Vec<osis_base::CreationRecord> = records.iter().filter_map(|x| self.core.created(x).cloned()).collect();
         if recs.is_empty() {
@@ -176,7 +176,7 @@ impl Engine {
 
     /// One list blob of rotation `r`'s thing lists held here for `things` under `s` and its wrap
     /// (`seal_cert_blob`). `None` when none is held or no epoch is.
-    pub(crate) fn seal_lists_now(&mut self, s: &SyncId, r: &CommitId, things: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
+    pub fn seal_lists(&mut self, s: &SyncId, r: &CommitId, things: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
         let Some(t) = self.read_thing(s)? else { return Ok(None) };
         let r = *r;
         let wanted = things.clone();

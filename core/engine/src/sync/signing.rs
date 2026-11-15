@@ -14,7 +14,7 @@ impl Engine {
     /// The keys this node signs entries of `s` with: its head's write and delete keys where
     /// established here, and its deposit key (from `actor`'s deposit seed when given: another
     /// actor's inbox, whose head this node need not record; else from the head's).
-    pub(crate) fn signers_now(&mut self, s: &SyncId, actor: Option<&Tid>) -> Result<Signers> {
+    pub fn signers(&mut self, s: &SyncId, actor: Option<&Tid>) -> Result<Signers> {
         let mut out = Signers::default();
         if let Some(t) = self.sync_owner_of(s)?
             && let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s && !o.hint).cloned()
@@ -35,7 +35,7 @@ impl Engine {
     }
 
     /// The sync IDs delivery (`c`, `holder`)'s blob names (spec/wire.md §9 position 1).
-    pub(crate) fn delivery_names_now(&mut self, c: &CommitId, holder: &Tid) -> Result<Arc<Vec<SyncId>>> {
+    pub fn delivery_names(&mut self, c: &CommitId, holder: &Tid) -> Result<Arc<Vec<SyncId>>> {
         let Some(o) = self.core.ix.owed_inbox.get(&(*c, *holder)).cloned() else { return Ok(Arc::default()) };
         let mut out = Vec::new();
         for t in &o.things {
@@ -54,7 +54,7 @@ impl Engine {
     /// Steps). A role's epoch is the one whose key the step carries; where no secret held here
     /// tells (a reader registering a write or delete key), each current epoch of the role here.
     /// Empty for a step this node does not record.
-    pub(crate) fn step_needs_now(&mut self, s: &SyncId, step: &StepId) -> Result<Arc<Vec<CommitId>>> {
+    pub fn step_needs(&mut self, s: &SyncId, step: &StepId) -> Result<Arc<Vec<CommitId>>> {
         let Some(t) = self.sync_owner_of(s)? else { return Ok(Arc::default()) };
         let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s).cloned() else { return Ok(Arc::default()) };
         let Some((st, _)) = o.path.steps.iter().find(|(x, _)| x.id() == *step).cloned() else { return Ok(Arc::default()) };

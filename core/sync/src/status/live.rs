@@ -96,7 +96,7 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.own_commits(s)?)
     }
     fn self_removals(&mut self) -> Result<Arc<BTreeSet<CommitId>>> {
-        Ok(self.cx.engine.waiting_removals()?)
+        Ok(self.cx.engine.waiting_removals())
     }
     fn verdict(&self, s: &SyncId, c: &CommitId) -> Option<Verdict> {
         self.read.verdict(s, c)

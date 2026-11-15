@@ -378,11 +378,11 @@ pub fn promotion(engine: &mut Engine, store: &Store, s: &SyncId, c: &CommitId, b
     };
     let need = engine.sync_bodies(c)?.get(s).map(|m| m.parts.clone()).unwrap_or_default();
     let judged = |o: Arc<osis_engine::sync::BlobOf>| Judged { parts: o.parts.clone(), sealed: o.sealed.clone() };
-    let mine = engine.blob_of(b)?.map(judged).unwrap_or_default();
+    let mine = engine.blob_of(b).map(judged).unwrap_or_default();
     let mut others = Vec::new();
     for x in engine.commit_blobs(c)?.iter().filter(|x| *x != b) {
         if store.entry(s, x)?.is_some_and(|e| !e.deposited)
-            && let Some(held) = engine.blob_of(x)?
+            && let Some(held) = engine.blob_of(x)
         {
             others.push(judged(held));
         }
@@ -409,7 +409,7 @@ fn chain_under(engine: &mut Engine, store: &Store, s: &SyncId, chain: &osis_engi
         for x in engine.commit_blobs(&c)?.iter() {
             if store.entry(s, x)?.is_some_and(|e| !e.deposited) {
                 any = true;
-                held.extend(engine.blob_parts(x)?.unwrap_or_default());
+                held.extend(engine.blob_parts(x).unwrap_or_default());
             }
         }
         let complete = match parts {

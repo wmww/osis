@@ -237,7 +237,7 @@ impl Ground for Live<'_, '_> {
         Ok(Arc::new(self.cx.engine.mintings_of(t)))
     }
     fn fall_mark(&mut self, _s: &SyncId, c: &CommitId) -> Result<u64> {
-        Ok(self.cx.engine.body_fall_mark(c)?)
+        Ok(self.cx.engine.body_fall_mark(c))
     }
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
         Ok(self.cx.engine.read_credentials(s)?)
@@ -326,11 +326,11 @@ impl Ground for Live<'_, '_> {
         if self.cx.store.blob_len(b)?.is_none() {
             return Ok(None);
         }
-        let Some(x) = self.cx.engine.blob_of(b)? else { return Ok(None) };
+        let Some(x) = self.cx.engine.blob_of(b) else { return Ok(None) };
         Ok(Some(BlobInfo { parts: x.parts.clone(), sealed: x.sealed.clone(), copy: x.copy }))
     }
     fn dropped(&mut self, b: &BlobId) -> Result<bool> {
-        Ok(self.cx.engine.blob_dropped(b)?)
+        Ok(self.cx.engine.blob_dropped(b))
     }
     fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
         Ok(self.cx.engine.strict_subset(s, b, held)?)
@@ -425,7 +425,7 @@ impl Ground for Live<'_, '_> {
             // a held blob of the commit not tombstoned under S, verbatim under a wrap for S
             let homes: Vec<SyncId> = self.cx.engine.sync_bodies(c)?.keys().copied().collect();
             for b in self.cx.engine.commit_blobs(c)?.iter() {
-                if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() || self.cx.engine.blob_dropped(b)? {
+                if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() || self.cx.engine.blob_dropped(b) {
                     continue;
                 }
                 for from in &homes {
@@ -509,7 +509,7 @@ impl Ground for Live<'_, '_> {
             (true, Some(r)) => (*self.cx.engine.certificate_lists(s, &r)?).clone(),
         };
         let mut out = CertBlobsMissing { missing, ..CertBlobsMissing::default() };
-        for (b, tids) in self.cx.engine.cert_blobs(s, r)?.iter() {
+        for (b, tids) in self.cx.engine.cert_blobs(s, r).iter() {
             let Some(e) = self.cx.store.entry(s, b)?.filter(|e| e.own) else {
                 out.gone.insert(*b);
                 continue;

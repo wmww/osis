@@ -196,14 +196,14 @@ impl Engine {
 
     /// The things whose held list of rotation `r` sync ID `s` carries (spec/sync-judgement.md §1
     /// List blobs): a read of that row alone.
-    pub(crate) fn certificate_lists_now(&mut self, s: &SyncId, r: &CommitId) -> Result<Arc<BTreeSet<Tid>>> {
+    pub fn certificate_lists(&mut self, s: &SyncId, r: &CommitId) -> Result<Arc<BTreeSet<Tid>>> {
         self.follow_lists()?;
         let Some(t) = self.read_thing(s)? else { return Ok(Arc::default()) };
         Ok(self.core.listed.rows.get(&(t, *r)).cloned().unwrap_or_default())
     }
 
     /// The rotations with a list `s` carries (read whole: where a reader starts following `s`).
-    pub(crate) fn list_rotations_now(&mut self, s: &SyncId) -> Result<Vec<CommitId>> {
+    pub fn list_rotations(&mut self, s: &SyncId) -> Result<Vec<CommitId>> {
         self.follow_lists()?;
         let Some(t) = self.read_thing(s)? else { return Ok(Vec::new()) };
         Ok(self.core.listed.rows.range(of(t)).map(|((_, r), _)| *r).collect())
@@ -211,7 +211,7 @@ impl Engine {
 
     /// A cursor over the (read thing, rotation) rows that come from now on (`memo::Feed`): a new
     /// rotation listing a carried thing, or a thing carried anew.
-    pub(crate) fn lists_feed_now(&self) -> Feed<(Tid, CommitId)> {
+    pub fn lists_feed(&self) -> Feed<(Tid, CommitId)> {
         self.core.listed.added.feed()
     }
 }
@@ -270,8 +270,8 @@ pub(crate) mod tests {
         let ids: Vec<SyncId> = e.sync_set().unwrap().ids.keys().copied().collect();
         let (mut kept, mut whole) = (BTreeMap::new(), BTreeMap::new());
         for s in ids {
-            for r in e.list_rotations_now(&s).unwrap() {
-                kept.insert((s, r), (*e.certificate_lists_now(&s, &r).unwrap()).clone());
+            for r in e.list_rotations(&s).unwrap() {
+                kept.insert((s, r), (*e.certificate_lists(&s, &r).unwrap()).clone());
             }
             let Some(t) = e.read_thing(&s).unwrap() else { continue };
             for x in e.carried_lists(&t).unwrap().iter() {

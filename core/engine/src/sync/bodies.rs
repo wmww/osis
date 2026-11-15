@@ -121,7 +121,7 @@ impl Engine {
     /// (spec/sync-judgement.md §1: parts, expiry, fetch order, a per-sync-ID copy or the shared
     /// blob, a lasting header alone, or a certificate copy, `certificate_bodies`). A memo
     /// (`Core::sync_bodies`): read's bodies and each judgement's held blobs ask it.
-    pub(crate) fn sync_bodies_now(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
+    pub fn sync_bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
         self.follow_bodies()?;
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_bodies, c, |e| e.sync_bodies_read(c))
     }
@@ -135,7 +135,7 @@ impl Engine {
         Ok(())
     }
 
-    /// `sync_bodies_now` read anew.
+    /// `sync_bodies` read anew.
     fn sync_bodies_read(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
         let mut out = BTreeMap::new();
         for g in self.body_things(c)? {
@@ -252,7 +252,7 @@ impl Engine {
     /// store shows (snapshots under `s` this node does not hold, other blobs of the commit, a
     /// certificate's author's other blobs) is the judgement's to add: `sole_certificate` is false
     /// here.
-    pub(crate) fn body_facts_now(&mut self, s: &SyncId, c: &CommitId) -> Result<BodyFacts> {
+    pub fn body_facts(&mut self, s: &SyncId, c: &CommitId) -> Result<BodyFacts> {
         let Some(b) = self.sync_body_now(s, c)? else { return Ok(BodyFacts { required: false, closure: false, dropped: None, invalid: false, kept: false, hosts_from: 0, covered: Some(false), sole_certificate: false, lasting_header: false }) };
         let (Some(m), Some(h)) = (self.core.ix.commits.get(c).cloned(), self.header(c)) else { return Err(Error::UnknownCommit(*c)) };
         // dropped here: no part of the body held (a part dropped beside a held one leaves the
@@ -319,12 +319,12 @@ impl Engine {
     }
 
     /// Blob `b` as this node opened or sealed it.
-    pub(crate) fn blob_of_now(&self, b: &BlobId) -> Option<Arc<BlobOf>> {
+    pub fn blob_of(&self, b: &BlobId) -> Option<Arc<BlobOf>> {
         self.core.ix.blob_parts.get(b).cloned()
     }
 
     /// The parts blob `b` holds of its commit, as this node opened or sealed it.
-    pub(crate) fn blob_parts_now(&self, b: &BlobId) -> Option<PartSet> {
+    pub fn blob_parts(&self, b: &BlobId) -> Option<PartSet> {
         self.core.ix.blob_parts.get(b).map(|x| x.parts.clone())
     }
 
@@ -333,7 +333,7 @@ impl Engine {
     /// whatever sync ID it is under): purged, past its bounds, expired, destroyed. A part dropped
     /// as covered (it leaves by the carriers rule, spec/sync-compaction.md §1) or while invalid
     /// (no right deletes it) does not count. `false` for a blob not opened or sealed here.
-    pub(crate) fn blob_dropped_now(&self, b: &BlobId) -> bool {
+    pub fn blob_dropped(&self, b: &BlobId) -> bool {
         let Some(x) = self.core.ix.blob_parts.get(b) else { return false };
         let Some(m) = self.core.ix.commits.get(&x.commit) else { return false };
         x.parts.iter().any(|ai| m.dropped(*ai).is_some_and(|d| matches!(d.why, crate::engine::DropFor::Other | crate::engine::DropFor::Destroyed)))
@@ -353,7 +353,7 @@ impl Engine {
     /// `wrap_secret`'s for the parts the blob carries. `None`: nothing may be made now (a part
     /// the body needs, or its header, this node read only under an epoch not established here).
     /// A held blob not tombstoned under `s` is the store's to log verbatim (`rewrap`).
-    pub(crate) fn seal_body_now(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::sync_ids::Sealed, Wrap)>> {
+    pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::sync_ids::Sealed, Wrap)>> {
         let Some(t) = self.read_thing(s)? else { return Ok(None) };
         if let Some(meta) = self.sync_body_now(s, c)?.filter(|m| m.certificate) {
             return self.seal_certificate(&t, c, &meta, rng);
@@ -394,12 +394,12 @@ impl Engine {
 
     /// Whether this node may log `c`'s body under `s` now (spec/sync-judgement.md §2 Loggable;
     /// what read's must-hold reads, so a judgement moves when it does), as the sync store's log
-    /// would: a held blob of `c` passed on verbatim under a wrap for `s` (`rewrap_now`), else a
-    /// fresh encryption (`seal_body_now`): a copy or certificate of parts all held, or each
+    /// would: a held blob of `c` passed on verbatim under a wrap for `s` (`rewrap`), else a
+    /// fresh encryption (`seal_body`): a copy or certificate of parts all held, or each
     /// part of the body sealed here (`section_secret`) or carried by a held genuine section; in
     /// each case wrapped for `s` as `wrap_secret` says for the parts the blob carries. Only the
     /// blobs of `held` (bytes in the sync store) count as passed on or carried.
-    pub(crate) fn may_log_now(&mut self, s: &SyncId, c: &CommitId, held_blobs: &[BlobId]) -> Result<bool> {
+    pub fn may_log(&mut self, s: &SyncId, c: &CommitId, held_blobs: &[BlobId]) -> Result<bool> {
         let Some(t) = self.read_thing(s)? else { return Ok(false) };
         let Some(meta) = self.sync_body_now(s, c)? else { return Ok(false) };
         let Some(h) = self.header(c) else { return Ok(false) };
@@ -413,7 +413,7 @@ impl Engine {
         let mut carried = BTreeSet::new();
         for b in held_blobs {
             let Some(row) = self.core.ix.blob_parts.get(b).filter(|x| x.commit == *c).cloned() else { continue };
-            if self.blob_dropped_now(b) {
+            if self.blob_dropped(b) {
                 continue;
             }
             if !row.copy {
@@ -526,19 +526,19 @@ impl Engine {
     /// copy's body (spec/sync-judgement.md §1 Per-sync-ID copies). A certificate copy of exactly
     /// the parts `to`'s certificate body names is the one blob wrapped under each sync ID needing
     /// them, wrapped as `wrap_secret` says for those parts (§1 Certificate blobs).
-    pub(crate) fn rewrap_now(&mut self, c: &CommitId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
+    pub fn rewrap(&mut self, c: &CommitId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
         // a certificate copy of the same parts is one blob wrapped under each sync ID needing
         // them (spec/sync-judgement.md §1 Certificate blobs); a per-sync-ID copy never is shared,
         // even as a certificate of the same parts elsewhere: `from` holds `b` as a certificate too
         let Some(meta) = self.sync_body_now(to, c)? else { return Ok(None) };
         let from_certificate = self.sync_body_now(from, c)?.is_some_and(|m| m.certificate && m.parts == meta.parts);
-        let certificate = meta.certificate && from_certificate && self.blob_copy_now(b) == Some(true) && self.blob_parts_now(b).as_ref() == Some(&meta.parts);
+        let certificate = meta.certificate && from_certificate && self.blob_copy_now(b) == Some(true) && self.blob_parts(b).as_ref() == Some(&meta.parts);
         if !certificate && (self.blob_copy_now(b) != Some(false) || meta.copy) {
             return Ok(None);
         }
         let (Some(tf), Some(tt)) = (self.read_thing(from)?, self.read_thing(to)?) else { return Ok(None) };
         let Some((key, order)) = self.read_secrets(&tf).iter().find_map(|x| osis_crypto::unwrap_order(x, b, from_wrap).ok()) else { return Ok(None) };
-        let parts: Vec<usize> = self.blob_parts_now(b).map(|p| p.into_iter().collect()).unwrap_or_default();
+        let parts: Vec<usize> = self.blob_parts(b).map(|p| p.into_iter().collect()).unwrap_or_default();
         let Some(w) = self.wrap_secret(&tt, Some((c, &parts)))? else { return Ok(None) };
         Ok(Some(osis_crypto::wrap(&w, b, &key, order)?))
     }
@@ -551,7 +551,7 @@ impl Engine {
     /// waiting for, stored.
     /// A blob opening bad is no blob of its commit here, whatever an earlier opening noted (one
     /// opened again once its parts can be checked, `BlobOf::unchecked`).
-    pub(crate) fn open_entry_now(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
+    pub fn open_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
         let o = self.open_entry_once(s, blob, wrap, bytes, room)?;
         if matches!(o, Opened::Bad) && self.core.ix.blob_parts.contains_key(blob) {
             self.run(|tx| unnote_blob(tx, blob))?;
@@ -660,7 +660,7 @@ impl Engine {
     /// actor at `c`'s `ts` (as this node judges it); then with the author's chain for those parts
     /// to log beside it (`NotYet` while that chain is not complete here). `Never` when `s` carries
     /// nothing of `c` or its author lacked write then.
-    pub(crate) fn promotable_now(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
+    pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
         let Some(t) = self.read_thing(s)? else { return Ok(Promote::Never) };
         if !self.core.ix.commits.contains_key(c) || self.core.ix.pending.contains_key(c) {
             return Ok(Promote::NotYet);

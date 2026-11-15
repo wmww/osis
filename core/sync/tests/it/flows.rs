@@ -432,15 +432,15 @@ fn a_self_removal_drops_its_secrets_once_held_elsewhere_spec_sync_status_2() {
     w.run();
     let c = w.write(1, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
     w.run();
-    assert!(w.engine(1).waiting_removals().unwrap().contains(&c), "only here");
+    assert!(w.engine(1).waiting_removals().contains(&c), "only here");
     assert!(w.engine(1).epochs(&t).is_some_and(|x| x.read.holds_any()), "kept while it waits");
     w.power_off(1);
     w.power_on(1);
     w.run();
-    assert!(w.engine(1).waiting_removals().unwrap().contains(&c), "a restart finds it waiting");
+    assert!(w.engine(1).waiting_removals().contains(&c), "a restart finds it waiting");
     w.heal();
     w.run();
-    assert!(w.engine(1).waiting_removals().unwrap().is_empty(), "node 0 holds it");
+    assert!(w.engine(1).waiting_removals().is_empty(), "node 0 holds it");
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }
 
@@ -466,7 +466,7 @@ fn a_self_removal_nobody_shares_drops_at_once_spec_perm_3() {
     assert!(w.store(0).synced(&s).is_none(), "node 0 stopped syncing it");
     let c = w.write(1, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
     w.run();
-    assert!(!w.engine(1).waiting_removals().unwrap().contains(&c), "no peer shares it: done at once");
+    assert!(!w.engine(1).waiting_removals().contains(&c), "no peer shares it: done at once");
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }
 
@@ -672,11 +672,11 @@ fn a_self_removal_on_a_sync_id_just_joined_reaches_the_granter_spec_perm_3() {
     assert!(w.store(1).synced(&s).is_some(), "synced again");
     let c = w.write(1, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
     w.run();
-    assert!(w.engine(1).waiting_removals().unwrap().contains(&c), "waits for node 0");
+    assert!(w.engine(1).waiting_removals().contains(&c), "waits for node 0");
     w.heal();
     w.run();
     assert!(w.engine(0).commit_ids().contains(&c), "the removal reached node 0");
-    assert!(w.engine(1).waiting_removals().unwrap().is_empty(), "then dropped");
+    assert!(w.engine(1).waiting_removals().is_empty(), "then dropped");
 }
 
 // spec/permissions.md §3 (Re-seal: a node that may rotate re-seals a current holder without a box
@@ -1173,7 +1173,7 @@ fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2()
     // opened or sealed it knows it)
     let copies = |w: &mut World, i: usize| -> std::collections::BTreeSet<osis_base::BlobId> {
         let held: Vec<osis_base::BlobId> = w.store(i).entries(&s).unwrap().iter().map(|e| e.blob).collect();
-        held.into_iter().filter(|b| (0..2).any(|j| w.engine(j).blob_of(b).unwrap().is_some_and(|x| x.copy))).collect()
+        held.into_iter().filter(|b| (0..2).any(|j| w.engine(j).blob_of(b).is_some_and(|x| x.copy))).collect()
     };
     let mut ever = std::collections::BTreeSet::new();
     let mut settle = |w: &mut World, step: &str| {
@@ -1190,7 +1190,7 @@ fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2()
         // a line both find unnamed past one pass), each a fresh encryption
         let bodies = |w: &mut World, cs: &std::collections::BTreeSet<osis_base::BlobId>| -> std::collections::BTreeSet<(osis_base::CommitId, Vec<usize>)> {
             let e = w.engine(0);
-            cs.iter().map(|b| (e.blob_commit(b).unwrap().unwrap(), e.blob_parts(b).unwrap().unwrap_or_default().into_iter().collect())).collect()
+            cs.iter().map(|b| (e.blob_commit(b).unwrap().unwrap(), e.blob_parts(b).unwrap_or_default().into_iter().collect())).collect()
         };
         let (b0, b1) = (bodies(w, &c0), bodies(w, &c1));
         assert_eq!(b0, b1, "{step}: both stores hold copies of the same certificate bodies");
@@ -1424,7 +1424,7 @@ fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
         let held: Vec<osis_base::BlobId> = w.store(j).entries(&s).unwrap().iter().map(|e| e.blob).collect();
         for r in &rots {
             let e = w.engine(j);
-            let parts: Vec<usize> = held.iter().filter(|b| e.blob_commit(b).unwrap() == Some(*r)).collect::<Vec<_>>().into_iter().map(|b| e.blob_parts(b).unwrap().map_or(0, |p| p.len())).collect();
+            let parts: Vec<usize> = held.iter().filter(|b| e.blob_commit(b).unwrap() == Some(*r)).collect::<Vec<_>>().into_iter().map(|b| e.blob_parts(b).map_or(0, |p| p.len())).collect();
             assert!(!parts.is_empty(), "node {j}: a rotation not held under S");
             match current.contains(r) {
                 true => assert!(parts.iter().any(|n| *n > 0), "node {j}: the current rotation without its keys.0 part under S"),

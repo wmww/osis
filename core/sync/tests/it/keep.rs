@@ -65,9 +65,9 @@ fn kept() -> (World, Tid, SyncId) {
     // 1's user accepts by listing the thing (spec/sync-set.md §4), keeping its sync ID
     let inv = w.engine(1).invitations().unwrap();
     assert!(inv.iter().any(|i| i.thing == t && !i.taken && i.role == Role::Sync), "an invitation: {inv:?}");
-    assert!(w.engine(1).sync_record(&t).unwrap().is_none(), "nothing kept before the accept");
+    assert!(w.engine(1).sync_record(&t).is_none(), "nothing kept before the accept");
     add_to_d(&mut w, 1, t);
-    assert_eq!(w.engine(1).sync_record(&t).unwrap().expect("kept").sync_ids, vec![s]);
+    assert_eq!(w.engine(1).sync_record(&t).expect("kept").sync_ids, vec![s]);
     w.run();
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some((t, Holding::Unread)), "kept unread");
     // node 1's filter shows its grant's sync key once it accepts and its own test opens S: node 0
@@ -118,7 +118,7 @@ fn grant_kept_unread_held_then_removed_drops_its_copy_spec_sync_judgement_6() {
     let (mut w, t, s) = kept_then_removed();
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "its copy dropped");
     assert!(w.status(1)[&s].stranded, "at a head past its keys");
-    assert!(w.store(1).head(&s).unwrap().is_some() && w.engine(1).sync_record(&t).unwrap().is_some(), "path and record stay");
+    assert!(w.store(1).head(&s).unwrap().is_some() && w.engine(1).sync_record(&t).is_some(), "path and record stay");
     let c = w.write(0, |e| {
         let mut m = Mutation::new();
         m.set(t, &Ak::new("t:reg.0").unwrap(), &Value::Int(3)).unwrap();

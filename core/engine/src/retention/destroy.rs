@@ -649,7 +649,7 @@ fn unhold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 impl crate::engine::Engine {
     /// The destroyed things whose own secrets are held for deletes alone (`hold_secrets`): what
     /// `destruction` describes.
-    pub(crate) fn destroyed_now(&self) -> std::sync::Arc<BTreeSet<Tid>> {
+    pub fn destructions(&self) -> std::sync::Arc<BTreeSet<Tid>> {
         std::sync::Arc::new(self.core.ix.destroyed_secrets.iter().copied().collect())
     }
 
@@ -657,7 +657,7 @@ impl crate::engine::Engine {
     /// §5): its destroying requests (none: by expiry alone), its own sync IDs being emptied
     /// (`keep_sync_ids`), and the held commits keyed by it (a part on it or acting for it) whose
     /// entries its delete keys may delete anywhere. `None` for anything else.
-    pub(crate) fn destruction_now(&mut self, t: &Tid) -> Result<Option<std::sync::Arc<crate::sync::Destruction>>> {
+    pub fn destruction(&mut self, t: &Tid) -> Result<Option<std::sync::Arc<crate::sync::Destruction>>> {
         if !self.core.ix.destroyed_secrets.contains(t) {
             return Ok(None);
         }
@@ -671,7 +671,7 @@ impl crate::engine::Engine {
     /// Sync emptied destroyed `t`'s own sync IDs and knows no entry of a commit keyed by it, nor a
     /// delete of one within its tombstone (spec/sync-judgement.md §5): the kept sync IDs go, then
     /// its secrets, last (`drop_destroyed_secrets`).
-    pub(crate) fn forget_destroyed_now(&mut self, t: &Tid) -> Result<()> {
+    pub fn forget_destroyed(&mut self, t: &Tid) -> Result<()> {
         let t = *t;
         // its sync IDs emptied, it is shared here no more (spec/sync-set.md §2)
         self.run(|tx| {

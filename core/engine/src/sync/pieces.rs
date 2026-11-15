@@ -33,7 +33,7 @@ impl PieceLink {
 
 impl Engine {
     /// The links of the body of held commit `c` made of `parts` (`Engine::piece_roots`).
-    pub(crate) fn piece_roots_now(&mut self, c: &CommitId, parts: &PartSet) -> Result<Vec<PieceLink>> {
+    pub fn piece_roots(&mut self, c: &CommitId, parts: &PartSet) -> Result<Vec<PieceLink>> {
         let c = *c;
         let parts = parts.clone();
         self.read(|tx| {
@@ -53,7 +53,7 @@ impl Engine {
     }
 
     /// What lies one step below piece `p` (`Engine::piece_below`), through the memo.
-    pub(crate) fn piece_below_now(&mut self, p: &PieceLink) -> Result<Option<Arc<Vec<PieceLink>>>> {
+    pub fn piece_below(&mut self, p: &PieceLink) -> Result<Option<Arc<Vec<PieceLink>>>> {
         Memo::get_in(self, |e| &e.core.pieces_below, p, |e| e.piece_below_read(p))
     }
 

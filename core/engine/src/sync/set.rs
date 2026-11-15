@@ -55,12 +55,12 @@ impl Engine {
     /// spec/sync-judgement.md §5). Walked through groups this node reads only: a thing kept unread
     /// lists nothing here. A memo: the same `Arc` while nothing it read moved; built again in
     /// O(N's closure) when one did.
-    pub(crate) fn sync_things_now(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
+    pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_things, &(), |e| {
             let mut emptying: Vec<Tid> = e.core.ix.destroyed_sync_ids.keys().copied().collect();
             // links being redeemed (spec/sync-set.md §2)
             emptying.extend(e.core.followed_links.all().keys().filter(|k| crate::sync_ids::actors::followable(e, k)).copied());
-            // home is never sourced away (spec/sync-set.md §5): D, which `set_sourced_now` never
+            // home is never sourced away (spec/sync-set.md §5): D, which `set_sourced` never
             // cuts, roots the walk too, so the engine's own records on it (sync record keeps,
             // inbox marks, accepts) and what is filed under it sync even where a cut group holds D
             let home = e.core.account_devices().map(|(_, d)| d);
@@ -68,11 +68,11 @@ impl Engine {
         })
     }
 
-    /// `sync_things_now`'s answer for `t` alone: a destroyed thing being emptied or a link being
+    /// `sync_things`'s answer for `t` alone: a destroyed thing being emptied or a link being
     /// redeemed, or a root of N's closure (the sync root, home, a thing shared here) among the
     /// groups whose sync closure holds `t` (`Groups::sync_enclosing`). Reads only those rows, so
     /// it moves when `t` enters or leaves and with nothing else of the closure.
-    pub(crate) fn in_sync_things_now(&mut self, t: &Tid) -> Result<bool> {
+    pub fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
         if self.core.ix.destroyed_sync_ids.contains_key(t) || crate::sync_ids::actors::followable(self, t) {
             return Ok(true);
         }
@@ -97,7 +97,7 @@ impl Engine {
     /// since, the sync closure of each root new since (a share; the synced group read first),
     /// and the links being redeemed (followed links, few: whether one is followable moves with
     /// its record, sync record and destruction). Leaving needs no feed: `in_sync_things` moves.
-    pub(crate) fn things_entered_now(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
+    pub fn things_entered(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
         let roots = self.sync_roots()?;
         // a reload's fresh index feeds the old cursors nothing: started again, every thing
         let loads = self.loads();
@@ -105,7 +105,7 @@ impl Engine {
         let Some(at) = f.0.as_mut().filter(|at| at.loads == loads) else {
             let ix = &self.core.ix;
             f.0 = Some(Entered { gained: ix.groups.sync_gained_feed(), destroyed: ix.destroyed_sync_ids.feed(), shared, roots, loads });
-            return Ok(self.sync_things_now()?.iter().copied().collect());
+            return Ok(self.sync_things()?.iter().copied().collect());
         };
         let mut out = at.gained.added();
         out.extend(at.destroyed.added());
@@ -160,7 +160,7 @@ impl Engine {
     /// others `sync_things` leaves out with what it reaches only through them, home (D) aside: it
     /// is never cut. A client of this node reads nothing of any of them (`readable_by`). Between
     /// transactions; cost: what is below each group whose state moved.
-    pub(crate) fn set_sourced_now(&mut self, elsewhere: BTreeSet<Tid>, homing: &BTreeSet<Tid>) {
+    pub fn set_sourced(&mut self, elsewhere: BTreeSet<Tid>, homing: &BTreeSet<Tid>) {
         let home = self.core.account_devices().map(|(_, d)| d);
         self.core.ix.groups.set_cut(elsewhere.difference(homing).filter(|g| Some(**g) != home).copied().collect());
         self.core.sourced_elsewhere = elsewhere;
@@ -171,7 +171,7 @@ impl Engine {
     /// carrying one of them, read here, has a complete pass noted. True when none does: nothing
     /// here syncs it. A memo per group: O(its closure times the groups enclosing each) when
     /// something it read moved (asked only while the group moves home).
-    pub(crate) fn caught_up_now(&mut self, g: &Tid) -> Result<bool> {
+    pub fn caught_up(&mut self, g: &Tid) -> Result<bool> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.caught_up, g, |e| e.caught_up_fresh(g))
     }
 
@@ -180,7 +180,7 @@ impl Engine {
         // groups', a group outside g listing one of them included
         let mut ids = self.carrying_now(g, true)?;
         for x in self.closure(g).iter() {
-            if self.in_sync_things_now(x)? {
+            if self.in_sync_things(x)? {
                 ids.extend(self.carrying_now(x, true)?);
             }
         }
@@ -223,7 +223,7 @@ impl Engine {
             // kept for several things is synced for those tied to it when any is
             let mut ids = Vec::new();
             for s in &r.sync_ids {
-                let kept = self.kept_records_now(s);
+                let kept = self.kept_records(s);
                 if self.sync_owner_of(s)?.is_none_or(|o| o == *t) && super::kept_things(s, &kept).any(|(x, _)| x == t) {
                     ids.push(*s);
                 }
@@ -236,7 +236,7 @@ impl Engine {
     /// The sync set, whole (`sync_things` and `thing_sync` of each).
     pub(crate) fn sync_set_now(&mut self) -> Result<Arc<SyncSet>> {
         let mut set = SyncSet::default();
-        let things = self.sync_things_now()?;
+        let things = self.sync_things()?;
         osis_base::costs::count("sync: set folded", things.len() as u64);
         for t in things.iter() {
             match self.thing_sync(t)? {
@@ -314,7 +314,7 @@ impl Engine {
     /// The held valid rotation commits of read sync ID `s`'s thing whose established epoch
     /// supersedes read epoch `e` (spec/sync-opens.md §6: an ended member's `until`); empty when
     /// `s` is not read here or none does.
-    pub(crate) fn rotations_superseding_now(&mut self, s: &SyncId, e: &Epoch) -> Result<Vec<CommitId>> {
+    pub fn rotations_superseding(&mut self, s: &SyncId, e: &Epoch) -> Result<Vec<CommitId>> {
         let Some((t, _)) = self.read_sync_id(s)? else { return Ok(Vec::new()) };
         let Some(ep) = self.core.epochs(&t) else { return Ok(Vec::new()) };
         let read = ep.role(Role::Read);
@@ -333,7 +333,7 @@ impl Engine {
     /// half of a read KEM key it holds (its node key, its account's epoch keys, the read keysets
     /// of the actors holding the thing's reader actor that it holds), the one the step's claim set
     /// lists. `None` when no held key is listed (or the claim set is not held).
-    pub(crate) fn claim_key_now(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
+    pub fn claim_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
         let Some((t, o)) = self.read_sync_id(s)? else { return Ok(None) };
         let Some((st, Some(claims))) = o.path.steps.iter().find(|(x, _)| x.id() == *step) else { return Ok(None) };
         let listed: BTreeSet<[u8; 32]> = claims.claims.iter().copied().collect();
@@ -361,7 +361,7 @@ impl Engine {
     /// `s`'s thing and how this node's keys let it hold `s`, whatever lists the thing: its owner
     /// (by `sync.0`, a destroyed thing's kept sync IDs, or a sync record naming it) whose
     /// `thing_sync` lists `s`. The sync set's entry for `s` when the closure holds that thing.
-    pub(crate) fn sync_holder_now(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
+    pub fn sync_holder(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
         let mut owners: Vec<Tid> = self.sync_owner_of(s)?.into_iter().collect();
         owners.extend(self.core.ix.record_ids.get(s).into_iter().flatten().copied());
         for t in owners {
@@ -390,7 +390,7 @@ impl Engine {
     }
 
     /// `caps^.0` of this node (spec/data-model.md §9; absent: the defaults, an empty policy).
-    pub(crate) fn caps_now(&mut self) -> Result<Arc<Caps>> {
+    pub fn caps(&mut self) -> Result<Arc<Caps>> {
         let me = self.core.id.tid();
         let c = self.get_typed(&me, &ct::CAPS)?.unwrap_or_default();
         Ok(Arc::new(Caps { policy: c.policy, things: c.things.into_iter().map(|(t, x)| (t, ThingCaps { entries: x.entries, bytes: x.bytes })).collect() }))
@@ -501,12 +501,12 @@ impl Engine {
     /// The things kept here that sync no more (spec/sync-set.md §3 Unsyncing): out of the sync set's
     /// things, staying local (`Core::stays_local`: a share that ended, unsynced by no one here).
     /// O(things the account ever granted on): for status and an unsync, not per change.
-    pub(crate) fn kept_local_now(&mut self) -> Result<BTreeSet<Tid>> {
+    pub fn kept_local(&mut self) -> Result<BTreeSet<Tid>> {
         let Some(account) = self.core.me() else { return Ok(BTreeSet::new()) };
         let granted: Vec<Tid> = self.core.ix.held.granted_by(&account).copied().collect();
         let mut out = BTreeSet::new();
         for t in granted {
-            if self.core.stays_local(&t) && !self.in_sync_things_now(&t)? {
+            if self.core.stays_local(&t) && !self.in_sync_things(&t)? {
                 out.insert(t);
             }
         }

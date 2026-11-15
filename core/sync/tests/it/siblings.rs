@@ -98,7 +98,7 @@ fn a_self_removal_shared_only_with_a_sibling_drops_at_once_spec_perm_3() {
     w.flush();
     let c = w.write(1, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
     w.flush();
-    assert!(!w.engine(1).waiting_removals().unwrap().contains(&c), "only a sibling shares it: done");
+    assert!(!w.engine(1).waiting_removals().contains(&c), "only a sibling shares it: done");
     assert!(w.engine(1).epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "dropped");
 }
 
@@ -111,7 +111,7 @@ fn accepted_on_one() -> (World, Tid, osis_base::SyncId) {
     for i in [1, 2] {
         let inv = w.engine(i).invitations().unwrap();
         assert!(inv.iter().any(|x| x.thing == t && !x.taken && x.role == Role::Sync), "node {i}: an invitation: {inv:?}");
-        assert!(w.engine(i).sync_record(&t).unwrap().is_none(), "node {i}: nothing kept before the accept");
+        assert!(w.engine(i).sync_record(&t).is_none(), "node {i}: nothing kept before the accept");
     }
     let g1 = synced_group(&mut w, 1);
     w.write(1, |e| e.accept_invite(&t, &g1)).unwrap();
@@ -128,7 +128,7 @@ fn accepted_on_one() -> (World, Tid, osis_base::SyncId) {
 fn a_sync_grant_accepted_on_one_sibling_is_kept_at_both_spec_sync_3() {
     let (mut w, t, s) = accepted_on_one();
     for i in [1, 2] {
-        let r = w.engine(i).sync_record(&t).unwrap().unwrap_or_else(|| panic!("node {i} keeps it"));
+        let r = w.engine(i).sync_record(&t).unwrap_or_else(|| panic!("node {i} keeps it"));
         assert_eq!(r.sync_ids, vec![s], "node {i}");
         assert!(!r.recorded.is_empty(), "node {i}: the secret its path bears, recorded");
         assert!(!w.engine(i).invitations().unwrap().iter().any(|x| x.thing == t && !x.taken), "node {i}: no invitation");
@@ -147,7 +147,7 @@ fn a_sibling_paired_after_inbox_lifetime_keeps_an_accepted_grant_spec_sync_3() {
     w.run();
     let n = w.pair(1);
     w.run();
-    let r = w.engine(n).sync_record(&t).unwrap().expect("kept from the record");
+    let r = w.engine(n).sync_record(&t).expect("kept from the record");
     assert_eq!(r.sync_ids, vec![s]);
     assert!(!r.recorded.is_empty() && r.secrets.keys().all(|e| r.recorded.contains(e)), "only recorded secrets: every offer expired");
     assert_eq!(w.engine(n).thing_sync(&t).unwrap(), osis_engine::sync::ThingSync::Unread(vec![s]));
@@ -161,7 +161,7 @@ fn a_sibling_paired_after_inbox_lifetime_keeps_an_accepted_grant_spec_sync_3() {
 #[test]
 fn a_rotation_reaches_kept_siblings_without_an_accept_spec_sync_3() {
     let (mut w, t, s) = accepted_on_one();
-    let before = w.engine(1).sync_record(&t).unwrap().unwrap().recorded.len();
+    let before = w.engine(1).sync_record(&t).unwrap().recorded.len();
     let x = w.add_node();
     let ax = w.node(x).account.unwrap();
     w.run();
@@ -173,7 +173,7 @@ fn a_rotation_reaches_kept_siblings_without_an_accept_spec_sync_3() {
     let head = w.engine(0).sync_ids(&t).unwrap().iter().find(|o| o.id == s).unwrap().path.steps.last().map(|(st, _)| st.id());
     assert_eq!(w.store(1).head(&s).unwrap().map(|h| h.id()), head, "node 1 at the new step");
     for i in [1, 2] {
-        assert!(w.engine(i).sync_record(&t).unwrap().unwrap().recorded.len() > before, "node {i}: the rotation's secret recorded");
+        assert!(w.engine(i).sync_record(&t).unwrap().recorded.len() > before, "node {i}: the rotation's secret recorded");
         assert!(!w.engine(i).invitations().unwrap().iter().any(|x| x.thing == t && !x.taken), "node {i}: no accept asked");
     }
 }
@@ -219,13 +219,13 @@ fn a_siblings_self_removal_waits_and_drops_at_both_siblings_spec_perm_3() {
     w.power_on(2);
     w.run();
     for i in [1, 2] {
-        assert!(w.engine(i).waiting_removals().unwrap().contains(&c), "node {i} waits: node 0 shares S, away");
+        assert!(w.engine(i).waiting_removals().contains(&c), "node {i} waits: node 0 shares S, away");
         assert!(w.engine(i).epochs(&t).is_some_and(|x| x.read.holds_any()), "node {i} keeps its secrets while it waits");
     }
     w.heal();
     w.run();
     for i in [1, 2] {
-        assert!(!w.engine(i).waiting_removals().unwrap().contains(&c), "node {i}: node 0 holds it");
+        assert!(!w.engine(i).waiting_removals().contains(&c), "node {i}: node 0 holds it");
         assert!(w.engine(i).epochs(&t).is_none_or(|x| x.read.held().next().is_none()), "node {i} dropped");
         assert!(w.store(i).synced(&s).is_none(), "node {i} stopped syncing S");
     }

@@ -143,7 +143,7 @@ pub(crate) fn wait_if_own(tx: &mut Tx<'_>, c: &CommitId, rosters: &BTreeSet<Tid>
 
 impl Engine {
     /// The self-removals sync waits on (spec/sync-status.md §2).
-    pub(crate) fn waiting_removals_now(&self) -> Arc<BTreeSet<CommitId>> {
+    pub fn waiting_removals(&self) -> Arc<BTreeSet<CommitId>> {
         Arc::new(self.core.ix.held_wait.iter().copied().collect())
     }
 
@@ -152,7 +152,7 @@ impl Engine {
     /// actor: one that cannot be placed holds back nothing else; spec/permissions.md §3 Lost
     /// access). The drop goes first: a crash before `c` leaves the wait finds it waiting, and
     /// sync tells it done again.
-    pub(crate) fn removal_done_now(&mut self, c: &CommitId) -> Result<()> {
+    pub fn removal_done(&mut self, c: &CommitId) -> Result<()> {
         if !self.core.ix.held_wait.contains(c) {
             return Ok(());
         }
@@ -193,7 +193,7 @@ impl Engine {
     /// `s` is read here no more: its passes go with it, so a sync ID read again wants a pass of
     /// its own (history read since it left is not here), and so do the certificate blobs sealed
     /// under it (`certblobs`: read logs them again if it reads `s` again).
-    pub(crate) fn forget_read_now(&mut self, s: &SyncId) -> Result<()> {
+    pub fn forget_read(&mut self, s: &SyncId) -> Result<()> {
         self.core.own_commits.unfollow(s);
         self.core.pass_wanted.unfollow(s);
         if !self.core.ix.passes.contains_key(s) && !super::certblobs::any(&self.core, s) {
@@ -207,13 +207,13 @@ impl Engine {
         })
     }
 
-    /// What `forget_read_now` drops, of each sync ID not read here (one left while the node was
+    /// What `forget_read` drops, of each sync ID not read here (one left while the node was
     /// down): `Engine::forget_unread`.
-    pub(crate) fn forget_unread_now(&mut self) -> Result<()> {
+    pub fn forget_unread(&mut self) -> Result<()> {
         let gone: BTreeSet<SyncId> = self.core.ix.passes.keys().chain(self.core.ix.cert_blobs.keys().map(|k| &k.0)).copied().collect();
         for s in gone {
             if !self.reads_now(&s)? {
-                self.forget_read_now(&s)?;
+                self.forget_read(&s)?;
             }
         }
         Ok(())
@@ -221,12 +221,12 @@ impl Engine {
 
     /// The sync IDs some rule waits on a complete pass of (`pass_wanted` of each read one), whole:
     /// for tests and listing; status follows each sync ID it reads.
-    pub(crate) fn passes_wanted_now(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
+    pub fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
         self.follow_rows()?;
         let read: Vec<SyncId> = self.core.sync_rows.held.iter().filter(|(_, (_, h))| *h == Holding::Read).map(|(s, _)| *s).collect();
         let mut out = BTreeMap::new();
         for s in read {
-            if let Some(since) = self.pass_wanted_now(&s)? {
+            if let Some(since) = self.pass_wanted(&s)? {
                 out.insert(s, since);
             }
         }
@@ -247,7 +247,7 @@ impl Engine {
     /// - spec/commits.md §5 Waiting for it: every read sync ID carrying a thing whose setting this
     ///   node waits for, from where the wait began (`sync::setting`);
     /// - spec/sync-status.md §3 History complete: one pass of every sync ID read here.
-    pub(crate) fn pass_wanted_now(&mut self, s: &SyncId) -> Result<Option<u64>> {
+    pub fn pass_wanted(&mut self, s: &SyncId) -> Result<Option<u64>> {
         self.follow_rows()?;
         osis_base::memo::Cutoff::get_in(self, |e| &e.core.pass_wanted, s, |e, s| e.pass_wanted_fresh(s))
     }
@@ -443,7 +443,7 @@ impl Engine {
 
     /// spec/sync-status.md §3 History complete for `thing`: a complete pass of every sync ID
     /// carrying it (its own and its enclosing groups' read here) noted.
-    pub(crate) fn history_complete_now(&mut self, thing: &Tid) -> Result<bool> {
+    pub fn history_complete(&mut self, thing: &Tid) -> Result<bool> {
         let ids = self.carrying_now(thing, true)?;
         Ok(!ids.is_empty() && ids.iter().all(|s| self.core.ix.passes.contains_key(s)))
     }

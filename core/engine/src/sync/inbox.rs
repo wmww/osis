@@ -424,7 +424,7 @@ impl Engine {
     /// acted on while `acted^.0` on D lists it. A boxes payload's granting account is the one its
     /// grant signature verifies for here; a held role's, the thing's first admin's account as
     /// known here.
-    pub(crate) fn invitations_now(&mut self) -> Result<Arc<Vec<Invitation>>> {
+    pub fn invitations(&mut self) -> Result<Arc<Vec<Invitation>>> {
         let now = WallMs(self.core.time.get());
         let acted = match self.core.account_devices() {
             Some((_, d)) => self.get_typed(&d, &ct::ACTED)?.unwrap_or_default(),

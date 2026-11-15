@@ -294,23 +294,23 @@ pub(crate) fn unkeep_in(tx: &mut Tx<'_>, t: &Tid, s: &SyncId) -> Result<bool> {
 impl Engine {
     /// Closed sync ID `s` of `thing` leaves the account's sync record (spec/sync-judgement.md §6
     /// Closes). Returns whether it wrote.
-    pub(crate) fn close_kept_now(&mut self, thing: &Tid, s: &SyncId) -> Result<bool> {
+    pub fn close_kept(&mut self, thing: &Tid, s: &SyncId) -> Result<bool> {
         let (t, s) = (*thing, *s);
         self.run(|tx| unkeep_in(tx, &t, &s))
     }
 
     /// `thing`'s sync record view (spec/sync.md §3): reads only its key.
-    pub(crate) fn sync_record_now(&self, thing: &Tid) -> Option<Arc<SyncRecord>> {
+    pub fn sync_record(&self, thing: &Tid) -> Option<Arc<SyncRecord>> {
         self.core.ix.sync_records.get(thing).cloned()
     }
 
     /// Every sync record view, whole: for a start's listing (`sync_record_feed` follows additions).
-    pub(crate) fn sync_records_now(&self) -> Arc<BTreeMap<Tid, SyncRecord>> {
+    pub fn sync_records(&self) -> Arc<BTreeMap<Tid, SyncRecord>> {
         Arc::new(self.core.ix.sync_records.iter().map(|(t, r)| (*t, (**r).clone())).collect())
     }
 
     /// The records keeping `s`, by thing (`record_ids`).
-    pub(crate) fn kept_records_now(&self, s: &SyncId) -> Vec<(Tid, Arc<SyncRecord>)> {
+    pub fn kept_records(&self, s: &SyncId) -> Vec<(Tid, Arc<SyncRecord>)> {
         let ix = &self.core.ix;
         ix.record_ids.get(s).into_iter().flatten().filter_map(|t| Some((*t, ix.sync_records.get(t)?.clone()))).collect()
     }
@@ -319,7 +319,7 @@ impl Engine {
     /// `borne` is (the sync keys of the steps on this node's path of `s`, spec/sync.md §3 Tied,
     /// A recorded secret), whatever is not there yet, while the record keeps `s` for `thing`.
     /// Returns whether it wrote.
-    pub(crate) fn record_borne_now(&mut self, thing: &Tid, s: &SyncId, borne: &BTreeSet<[u8; 32]>) -> Result<bool> {
+    pub fn record_borne(&mut self, thing: &Tid, s: &SyncId, borne: &BTreeSet<[u8; 32]>) -> Result<bool> {
         let Some(r) = self.core.ix.sync_records.get(thing).cloned() else { return Ok(false) };
         if !r.sync_ids.contains(s) {
             return Ok(false);

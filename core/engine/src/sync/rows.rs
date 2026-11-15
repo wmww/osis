@@ -111,11 +111,11 @@ impl Engine {
     }
 
     fn follow_rows_in(&mut self, r: &mut SyncRows) -> Result<()> {
-        for t in self.things_entered_now(&mut r.entered)? {
+        for t in self.things_entered(&mut r.entered)? {
             r.thing.want(t);
         }
         for t in r.thing.due() {
-            let Some((_, now)) = r.thing.try_settle(&t, || if self.in_sync_things_now(&t)? { self.thing_sync(&t).map(Some) } else { Ok(None) })? else { continue };
+            let Some((_, now)) = r.thing.try_settle(&t, || if self.in_sync_things(&t)? { self.thing_sync(&t).map(Some) } else { Ok(None) })? else { continue };
             let ids = match now {
                 None => {
                     r.thing.unwant(&t);

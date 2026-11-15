@@ -19,7 +19,7 @@
    - `Memo` has no early cutoff: a memo recomputed to the same answer still moves every key that read it (`memo::depend` passes the memo's reads on). `Cutoff` rows stop it where used (`wrap_blocked`, body facts and fates; notes/engine.md, General early cutoff).
    - `Core::horizon` reads `Whole` of the actor's and the writer's components to find the next `until`; reading the edges it walks (`Into` per target, as `roles_on` does) would move it only with them.
    - Absent rows read at a bucket stamp (`store: local rows`, `catalog kind`) move a further fifth of a play's judgements: issues/absent-stamp-fanout.md.
-   - `body_facts_now` tries every snapshot ever held of each aspect (`sync/bodies.rs`, `ix.snapshots`) against the body: one write synced after 3 earlier writes joins 20 snapshot pairs, after 30 writes 200.
+   - `body_facts` tries every snapshot ever held of each aspect (`sync/bodies.rs`, `ix.snapshots`) against the body: one write synced after 3 earlier writes joins 20 snapshot pairs, after 30 writes 200.
    - An inbox blob no key here opens (another actor's inbox this node reads, as `introduce`'s profiles give) is tried again at each move of that actor's timeline.
 4. **`order::held_set_decides`** (399 G alone, the costliest engine test): ingest about half, held-model compares a fifth, `check_index` a sixth; every order is ingested from the setup (Properties, below).
 5. **`check_index` has no exact incremental form** (22% of osis-engine `it` inclusive): its halves are two loads from scratch; cheaper loads are the lever, and they are the product's open.

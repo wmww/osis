@@ -208,7 +208,7 @@ impl Unread {
                 cx.engine.record_borne(t, &s, keys)?;
             }
             if k.closed {
-                for (t, _) in cx.engine.kept_records(&s)? {
+                for (t, _) in cx.engine.kept_records(&s) {
                     cx.engine.close_kept(&t, &s)?;
                 }
             }
@@ -224,7 +224,7 @@ impl Unread {
 
 /// One S's judgement, reading its own keys only.
 fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
-    let records = cx.engine.kept_records(s)?;
+    let records = cx.engine.kept_records(s);
     let path = cx.store.path(s)?;
     Ok(judge(&Judged { s: *s, records: &records, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default() }))
 }

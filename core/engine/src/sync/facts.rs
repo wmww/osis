@@ -30,8 +30,8 @@ impl Engine {
     /// secret arriving may open it. Any part, not only those of a sync ID's body: an account's
     /// rotation goes only under its devices actor's sync IDs, and its part on the account
     /// (`keys.0`) opens from there alone. Reads no record: the meta's view and missing parts.
-    pub(crate) fn blob_awaits_secret_now(&mut self, b: &BlobId) -> bool {
-        let Some(o) = self.blob_of_now(b).filter(|o| !o.sealed.is_empty()) else { return false };
+    pub fn blob_awaits_secret(&mut self, b: &BlobId) -> bool {
+        let Some(o) = self.blob_of(b).filter(|o| !o.sealed.is_empty()) else { return false };
         let Some(m) = self.core.ix.commits.get(&o.commit).cloned() else { return false };
         let readable = |ai: &usize| m.view.aspects.get(*ai).is_some_and(|a| self.epochs(&a.tid).is_some_and(|e| e.read.held().next().is_some()));
         let parts: Vec<usize> = m.missing_parts().filter(readable).collect();
@@ -42,7 +42,7 @@ impl Engine {
     /// entries first, Dropped bodies, Neither; spec/sync-compaction.md §1 Carriers.
     /// - `must_not`: purged (a held request purges a part of the body, `purged_by`); another
     ///   node's card commit superseded (`card_superseded`) or ended (`card_ended`). A strict
-    ///   subset is per blob (`strict_subset_now`).
+    ///   subset is per blob (`strict_subset`).
     /// - `own`: written here. `role`: a role commit or a purge request.
     /// - `carriers`: for a covered body, per part a held valid snapshot under S covers, the
     ///   snapshots covering it (one of each must be held where the body leaves); a part dropped
@@ -54,7 +54,7 @@ impl Engine {
     ///   (`rotation::floors::sealed_below_floor`): it never opens here, so it is fetched for
     ///   nothing, and the body is judged with it as every reader judges it.
     pub(crate) fn read_facts_now(&mut self, s: &SyncId, c: &CommitId) -> Result<ReadFacts> {
-        let body: BodyFacts = self.body_facts_now(s, c)?;
+        let body: BodyFacts = self.body_facts(s, c)?;
         let mut f = ReadFacts { body, must_not: None, own: false, repair_fresh: Arc::default(), role: false, carriers: Vec::new(), later_unheld: Vec::new(), missing: false };
         // a card is judged by its header alone: it is no closure body of S (spec/permissions.md §4)
         if let Some(h) = self.header(c)
@@ -222,7 +222,7 @@ impl Engine {
     /// spec/sync-judgement.md §1 Per-sync-ID copies).
     fn carried_by(&self, c: &CommitId, copy: bool, x: &BlobId) -> Option<Arc<BlobOf>> {
         let p = self.core.ix.blob_parts.get(x)?;
-        (p.commit == *c && p.copy == copy && !self.blob_dropped_now(x)).then(|| p.clone())
+        (p.commit == *c && p.copy == copy && !self.blob_dropped(x)).then(|| p.clone())
     }
 
     /// spec/sync-judgement.md §2 must-not-hold: blob `b` of commit C, whose delta set is a strict
@@ -232,7 +232,7 @@ impl Engine {
     /// Judged over what this node checked (spec/sync-compaction.md §1 Duplicates): the larger
     /// holds each section of `b` this node did not open byte for byte, and its extra deltas are
     /// among those it opened.
-    pub(crate) fn strict_subset_now(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
+    pub fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
         let Some(mine) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(false) };
         let (c, parts) = (mine.commit, &mine.parts);
         let Some(copy) = self.sync_body_now(s, &c)?.map(|m| m.copy) else { return Ok(false) };
@@ -259,7 +259,7 @@ impl Engine {
     /// carries is held there by another blob of the commit that is not must-not-hold (one of
     /// `there`, the blobs of `c` held where the delete was) and no held purge request signed by
     /// ones that could hold the right names a delta of it without dropping it.
-    pub(crate) fn neither_now(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
+    pub fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
         let Some(meta) = self.sync_body_now(s, c)? else { return Ok(false) };
         if meta.certificate {
             return Ok(false);
@@ -278,8 +278,8 @@ impl Engine {
 
     /// Falls of held parts on commit `c`'s aspects so far, summed (spec/sync-judgement.md §4: a
     /// stand compares marks).
-    pub(crate) fn body_fall_mark_now(&mut self, c: &CommitId) -> u64 {
+    pub fn body_fall_mark(&mut self, c: &CommitId) -> u64 {
         let Some(h) = self.header(c) else { return 0 };
-        h.aspects.iter().map(|a| self.fall_mark_now(&a.tid, &a.ak)).fold(0u64, u64::saturating_add)
+        h.aspects.iter().map(|a| self.fall_mark(&a.tid, &a.ak)).fold(0u64, u64::saturating_add)
     }
 }

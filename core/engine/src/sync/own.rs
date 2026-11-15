@@ -17,7 +17,7 @@ pub(crate) struct Scope {
     authors: BTreeSet<Tid>,
 }
 
-/// The own commits of each sync ID asked (`own_commits_now`). Bounded by the candidates: an own
+/// The own commits of each sync ID asked (`own_commits`). Bounded by the candidates: an own
 /// commit on a thing of a followed sync ID's closure, or a self-removal waiting; a sync ID read
 /// here no more takes its rows with it.
 #[derive(Clone)]
@@ -176,7 +176,7 @@ impl Engine {
     /// This node's commits and the own self-removals sync waits on with a body under `s`
     /// (spec/sync-status.md §2, `own_under`): a row per sync ID, from its first ask, moved by
     /// `follow_own` (here and at `Engine::follow`).
-    pub(crate) fn own_commits_now(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
+    pub fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
         {
             let o = &mut self.core.own_commits;
             if o.feeds.is_none() {

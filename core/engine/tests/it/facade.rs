@@ -126,7 +126,7 @@ fn a_sync_grant_is_held_as_an_offer_spec_sync_inbox_2() {
     let o = e.take_inbox_blob(&blob, false).unwrap().expect("opens");
     assert_eq!((o.commit, o.taken), (None, Taken::Offered));
     assert!(o.hints.is_empty() && o.dial.is_none());
-    assert!(e.sync_record(&t).unwrap().is_none(), "nothing kept before an accept");
+    assert!(e.sync_record(&t).is_none(), "nothing kept before an accept");
     assert!(e.core.ix.commits.get(&g).is_none(), "the grant is not applied");
     assert!(e.epochs(&t).is_none(), "no engine state of the thing");
     let inv = e.invitations().unwrap();
@@ -231,7 +231,7 @@ fn kept() -> (LocalPeer, Vec<Tid>, Tid, osis_base::SyncId) {
     lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
     accept(&mut lp, 1, t);
     let e = &mut lp.peers[1].engine;
-    let r = e.sync_record(&t).unwrap().expect("kept");
+    let r = e.sync_record(&t).expect("kept");
     assert!(e.record_borne(&t, &s, &keys_of(&r)).unwrap());
     (lp, ps, t, s)
 }
@@ -253,7 +253,7 @@ fn an_accept_keeps_the_offered_sync_id_spec_sync_3() {
     accept(&mut lp, 1, t);
     assert_eq!(lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().unwrap().dial, p.dial, "kept: its dial hint");
     let e = &mut lp.peers[1].engine;
-    let r = e.sync_record(&t).unwrap().expect("kept");
+    let r = e.sync_record(&t).expect("kept");
     assert_eq!(r.sync_ids, vec![s]);
     assert!(!r.secrets.is_empty() && r.recorded.is_empty(), "held from the offer, not recorded yet");
     assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(vec![s]));
@@ -262,10 +262,10 @@ fn an_accept_keeps_the_offered_sync_id_spec_sync_3() {
     assert!(e.get_typed(&d, &ct::KEPT).unwrap().is_some_and(|k| k.get(&t).is_some_and(|x| x.ids.contains(&s))), "in kept^.0 on D");
     lp.advance(osis_base::format::INBOX_LIFETIME_MS + 1);
     lp.peers[1].tick().unwrap();
-    let r = lp.peers[1].engine.sync_record(&t).unwrap().expect("the record outlives the offer");
+    let r = lp.peers[1].engine.sync_record(&t).expect("the record outlives the offer");
     assert!(r.secrets.is_empty(), "the offer's secret went with it: never recorded");
     lp.peers[1].restart(5).unwrap();
-    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().unwrap().sync_ids, vec![s], "a restart changes nothing");
+    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().sync_ids, vec![s], "a restart changes nothing");
 }
 
 // spec/sync.md §3 (A recorded secret: only once a step on the node's own path bears its sync key):
@@ -282,10 +282,10 @@ fn a_secret_is_recorded_only_borne_spec_sync_3() {
     accept(&mut lp, 1, t);
     let e = &mut lp.peers[1].engine;
     assert!(!e.record_borne(&t, &s, &junk).unwrap(), "a key no held secret derives");
-    assert!(e.sync_record(&t).unwrap().unwrap().recorded.is_empty());
-    let r = e.sync_record(&t).unwrap().unwrap();
+    assert!(e.sync_record(&t).unwrap().recorded.is_empty());
+    let r = e.sync_record(&t).unwrap();
     assert!(e.record_borne(&t, &s, &keys_of(&r)).unwrap());
-    let r2 = e.sync_record(&t).unwrap().unwrap();
+    let r2 = e.sync_record(&t).unwrap();
     assert_eq!(r2.recorded, r.secrets.keys().copied().collect(), "recorded");
     assert!(r2.tied.contains(&s), "and s tied to t");
     assert!(!e.record_borne(&t, &s, &keys_of(&r)).unwrap(), "recorded once");
@@ -305,7 +305,7 @@ fn stranger_key(n: u8) -> osis_crypto::SigningSecret {
 #[test]
 fn an_offer_after_the_accept_attaches_nothing_spec_sync_3() {
     let (mut lp, ps, t, s) = kept();
-    let before = lp.peers[1].engine.sync_record(&t).unwrap().unwrap();
+    let before = lp.peers[1].engine.sync_record(&t).unwrap();
     let blob = {
         let u = thing_of(&mut lp, 0, ps[0]);
         let done = lp.peers[0].engine.grant(&u, &ps[1], &edge_of(Role::Sync)).unwrap();
@@ -328,12 +328,12 @@ fn an_offer_after_the_accept_attaches_nothing_spec_sync_3() {
         // a box of another thing opens to no secret of t: refused or offered, never more
         assert!(matches!(o.taken, Taken::Refused | Taken::Offered) && o.dial.is_none(), "{o:?}");
         let e = &mut lp.peers[1].engine;
-        let r = e.sync_record(&t).unwrap().unwrap();
+        let r = e.sync_record(&t).unwrap();
         assert_eq!((r.sync_ids.clone(), r.recorded.clone(), r.dials.clone()), (before.sync_ids.clone(), before.recorded.clone(), Vec::new()));
         assert!(!e.record_borne(&t, &s, &keys_of(&r)).unwrap(), "nothing new recorded");
     }
     let e = &mut lp.peers[1].engine;
-    assert_eq!(e.sync_record(&t).unwrap().unwrap().sync_ids, vec![s], "only the accepted sync ID");
+    assert_eq!(e.sync_record(&t).unwrap().sync_ids, vec![s], "only the accepted sync ID");
 }
 
 // spec/sync.md §3 (A recorded secret: from any box that opens here, no accept), spec/wire.md §9
@@ -343,7 +343,7 @@ fn an_offer_after_the_accept_attaches_nothing_spec_sync_3() {
 #[test]
 fn a_rotation_needs_no_accept_spec_sync_3() {
     let (mut lp, ps, t, s) = kept();
-    let first = lp.peers[1].engine.sync_record(&t).unwrap().unwrap();
+    let first = lp.peers[1].engine.sync_record(&t).unwrap();
     lp.peers[0].engine.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
     // removing peer 2 rotates read and sync: the rotation boxes peer 1 at the new sync epoch
     let done = lp.peers[0].engine.demote(&t, &Demotion { holder: ps[2], new: None, retain: None }).unwrap();
@@ -351,11 +351,11 @@ fn a_rotation_needs_no_accept_spec_sync_3() {
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.take_inbox_blob(&rot, false).unwrap().unwrap().taken, Taken::Offered);
     assert!(!e.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken), "no accept asked");
-    let r = e.sync_record(&t).unwrap().unwrap();
+    let r = e.sync_record(&t).unwrap();
     assert_eq!(r.sync_ids, vec![s]);
     assert!(r.secrets.len() > first.secrets.len() && first.secrets.keys().all(|x| r.secrets.contains_key(x)), "the new epoch held, nothing lost");
     assert!(e.record_borne(&t, &s, &keys_of(&r)).unwrap());
-    assert_eq!(e.sync_record(&t).unwrap().unwrap().recorded.len(), r.secrets.len());
+    assert_eq!(e.sync_record(&t).unwrap().recorded.len(), r.secrets.len());
 }
 
 // spec/sync-inbox.md §2 Taking (a grant's payload names its granting account only when its
@@ -420,7 +420,7 @@ fn a_listed_thing_offered_waits_for_an_accept_spec_sync_set_4() {
     add_item(&mut lp, 1, d, t);
     let e = &mut lp.peers[1].engine;
     e.take_inbox_blob(&blob, false).unwrap();
-    assert!(e.sync_record(&t).unwrap().is_none());
+    assert!(e.sync_record(&t).is_none());
     assert!(!matches!(e.thing_sync(&t).unwrap(), ThingSync::Unread(_)), "listed, no kept sync ID: not kept");
     assert!(e.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken), "an invitation though listed");
     accept(&mut lp, 1, t);
@@ -446,13 +446,13 @@ fn an_accept_takes_the_waiting_blob_spec_sync_set_4() {
     let (real, _) = boxes_of(&mut lp, 1, &blob);
     lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
     accept(&mut lp, 1, t);
-    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().unwrap().sync_ids, vec![s]);
+    assert_eq!(lp.peers[1].engine.sync_record(&t).unwrap().sync_ids, vec![s]);
     let mut things = real.things.clone();
     things[0].sync_id = Some(osis_base::SyncId([0x77; 16]));
     let late = boxes_by_hand(&mut lp, 1, &osis_blob::BoxesPayload::new(&b, things, None, None));
     assert_eq!(lp.peers[1].engine.take_inbox_blob(&late, false).unwrap().unwrap().taken, Taken::Offered);
     let e = &mut lp.peers[1].engine;
-    assert_eq!(e.sync_record(&t).unwrap().unwrap().sync_ids, vec![s]);
+    assert_eq!(e.sync_record(&t).unwrap().sync_ids, vec![s]);
     assert!(e.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken), "the user decides again");
 }
 
@@ -885,10 +885,10 @@ fn a_self_removal_waits_for_sync_spec_perm_3() {
     let done = lp.peers[1].engine.demote(&t, &Demotion { holder: pb, new: None, retain: None }).unwrap();
     let c = done.commits[0];
     let e = &mut lp.peers[1].engine;
-    assert!(e.waiting_removals().unwrap().contains(&c));
+    assert!(e.waiting_removals().contains(&c));
     assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "kept while it waits");
     e.removal_done(&c).unwrap();
-    assert!(e.waiting_removals().unwrap().is_empty());
+    assert!(e.waiting_removals().is_empty());
 }
 
 // spec/sync-status.md §2: the own commits of each read sync ID, followed from before a
@@ -945,15 +945,15 @@ fn a_siblings_self_removal_waits_and_drops_alike_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
-    assert!(lp.peers[0].engine.waiting_removals().unwrap().contains(&c), "the writer waits");
-    assert!(lp.peers[2].engine.waiting_removals().unwrap().is_empty(), "another account's node waits on nothing");
+    assert!(lp.peers[0].engine.waiting_removals().contains(&c), "the writer waits");
+    assert!(lp.peers[2].engine.waiting_removals().is_empty(), "another account's node waits on nothing");
     lp.peers[1].restart(1).unwrap();
     let e = &mut lp.peers[1].engine;
-    assert!(e.waiting_removals().unwrap().contains(&c), "the sibling waits too, through a restart");
+    assert!(e.waiting_removals().contains(&c), "the sibling waits too, through a restart");
     e.role_duties().unwrap();
     assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "kept while it waits");
     e.removal_done(&c).unwrap();
-    assert!(e.waiting_removals().unwrap().is_empty());
+    assert!(e.waiting_removals().is_empty());
     assert!(e.epochs(&t).is_none_or(|x| x.read.held().next().is_none()), "dropped");
 }
 
@@ -970,7 +970,7 @@ fn a_self_removal_done_drops_its_own_loss_alone_spec_perm_3() {
     let e = &mut lp.peers[1].engine;
     let c1 = e.demote(&t1, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
     let c2 = e.demote(&t2, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
-    assert_eq!(*e.waiting_removals().unwrap(), BTreeSet::from([c1, c2]));
+    assert_eq!(*e.waiting_removals(), BTreeSet::from([c1, c2]));
     e.removal_done(&c1).unwrap();
     assert!(e.epochs(&t1).is_none_or(|x| x.read.held().next().is_none()), "t1 dropped");
     assert!(e.epochs(&t2).is_some_and(|x| x.read.holds_any()), "t2 waits on its own removal");
@@ -993,7 +993,7 @@ fn a_loss_behind_a_done_self_removal_drops_at_the_trigger_spec_perm_3() {
     let e = &mut lp.peers[1].engine;
     let c = e.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
     e.removal_done(&c).unwrap();
-    assert!(e.waiting_removals().unwrap().is_empty());
+    assert!(e.waiting_removals().is_empty());
     assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "read through the group");
     spread(&mut lp);
     lp.peers[0].engine.demote(&g, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
@@ -1011,10 +1011,10 @@ fn reads(lp: &LocalPeer, i: usize, t: &Tid) -> bool {
 /// Tells node `i` sync is done with every removal it waits on.
 fn all_done(lp: &mut LocalPeer, i: usize) {
     let e = &mut lp.peers[i].engine;
-    for c in e.waiting_removals().unwrap().iter() {
+    for c in e.waiting_removals().iter() {
         e.removal_done(c).unwrap();
     }
-    assert!(e.waiting_removals().unwrap().is_empty(), "node {i}");
+    assert!(e.waiting_removals().is_empty(), "node {i}");
 }
 
 // spec/permissions.md §3 (Lost access: a self-removal by itself, its account or a key actor it
@@ -1031,7 +1031,7 @@ fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
     let other = lp.peers[2].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
     for i in [0, 1] {
-        assert!(lp.peers[i].engine.waiting_removals().unwrap().is_empty(), "node {i}: another account's removal is no wait");
+        assert!(lp.peers[i].engine.waiting_removals().is_empty(), "node {i}: another account's removal is no wait");
         lp.peers[i].engine.removal_done(&other).unwrap();
         assert!(reads(&lp, i, &t), "node {i}: a done not waited on drops nothing");
     }
@@ -1040,7 +1040,7 @@ fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
     let own = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
     for i in [0, 1] {
-        assert!(lp.peers[i].engine.waiting_removals().unwrap().contains(&own), "node {i} waits on the own removal");
+        assert!(lp.peers[i].engine.waiting_removals().contains(&own), "node {i} waits on the own removal");
         all_done(&mut lp, i);
         assert!(reads(&lp, i, &t), "node {i} still reads through the group: nothing dropped");
     }
@@ -1057,7 +1057,7 @@ fn siblings_removing_at_once_both_drop_spec_perm_3() {
     }
     spread(&mut lp);
     for i in [0, 1] {
-        assert!(!lp.peers[i].engine.waiting_removals().unwrap().is_empty(), "node {i} waits");
+        assert!(!lp.peers[i].engine.waiting_removals().is_empty(), "node {i} waits");
         assert!(reads(&lp, i, &t), "node {i} keeps it while it waits");
         all_done(&mut lp, i);
         assert!(!reads(&lp, i, &t), "node {i} dropped");
@@ -1071,7 +1071,7 @@ fn a_regrant_during_the_wait_keeps_the_secrets_spec_perm_3() {
     let (mut lp, a, t) = siblings_granted();
     let c = lp.peers[0].engine.demote(&t, &Demotion { holder: a, new: None, retain: None }).unwrap().commits[0];
     spread(&mut lp);
-    assert!(lp.peers[1].engine.waiting_removals().unwrap().contains(&c));
+    assert!(lp.peers[1].engine.waiting_removals().contains(&c));
     lp.advance(10);
     lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Write)).unwrap();
     spread(&mut lp);
@@ -1095,7 +1095,7 @@ fn a_crash_between_drop_and_clear_is_done_again_spec_perm_3() {
     e.forget_lost(osis_engine::rotation::LostScope::Only(&lost)).unwrap();
     lp.peers[1].restart(1).unwrap();
     let e = &mut lp.peers[1].engine;
-    assert_eq!(*e.waiting_removals().unwrap(), BTreeSet::from([c]), "still waiting after the restart");
+    assert_eq!(*e.waiting_removals(), BTreeSet::from([c]), "still waiting after the restart");
     assert!(!reads(&lp, 1, &t));
     all_done(&mut lp, 1);
 }
@@ -1168,7 +1168,7 @@ fn seal_body_seals_an_own_commit_spec_crypto_5() {
     let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
     let mut rng = SeededRng::from_u64(3);
     let (sealed, wrap) = lp.peers[0].engine.seal_body(&home, &c, &[], &mut rng).unwrap().expect("an own commit seals");
-    assert_eq!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().map(|p| p.into_iter().collect::<Vec<_>>()), Some(sealed.parts.clone()));
+    assert_eq!(lp.peers[0].engine.blob_parts(&sealed.id).map(|p| p.into_iter().collect::<Vec<_>>()), Some(sealed.parts.clone()));
     let rc = lp.peers[0].engine.read_credentials(&home).unwrap().unwrap();
     assert!(osis_blob::unwrap_any(rc.read_secrets.iter().map(|x| &x.1), &sealed.id, &wrap).is_some(), "the wrap opens under home's read secret");
 }
@@ -1259,7 +1259,7 @@ fn a_forged_author_names_nobody_spec_sync_inbox_2() {
     let blob = inbox_by_hand(&mut lp, 1, &forged, vec![osis_blob::InboxThing { tid: t, sync_id: s, delete_keys: None }]);
     let e = &mut lp.peers[1].engine;
     assert_eq!(e.take_inbox_blob(&blob, false).unwrap().expect("opens").taken, Taken::Offered);
-    assert!(e.sync_record(&t).unwrap().is_none());
+    assert!(e.sync_record(&t).is_none());
     assert_eq!(e.invitations().unwrap().iter().find(|i| i.thing == t).expect("an invitation").from, None);
 }
 
@@ -1276,7 +1276,7 @@ fn a_payload_sync_id_of_another_thing_is_not_kept_unread_spec_sync_inbox_2() {
     lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
     accept(&mut lp, 1, t);
     let e = &mut lp.peers[1].engine;
-    assert_eq!(e.sync_record(&t).unwrap().expect("kept").sync_ids, vec![home1], "kept as the payload named it");
+    assert_eq!(e.sync_record(&t).expect("kept").sync_ids, vec![home1], "kept as the payload named it");
     assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(Vec::new()), "home1 is D's");
     assert_eq!(e.sync_set().unwrap().ids.get(&home1), Some(&(d1, Holding::Read)));
 }
@@ -1310,11 +1310,11 @@ fn blob_rows_go_with_their_commit() {
     let c = lp.peers[0].engine.commit(m).unwrap().unwrap();
     let (sealed, _) = lp.peers[0].engine.seal_body(&home, &c, &[], &mut SeededRng::from_u64(3)).unwrap().unwrap();
     lp.peers[0].restart(8).unwrap();
-    assert!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().is_some(), "durable");
+    assert!(lp.peers[0].engine.blob_parts(&sealed.id).is_some(), "durable");
     lp.peers[0].engine.forget_commits(&[c]).unwrap();
-    assert!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().is_none());
+    assert!(lp.peers[0].engine.blob_parts(&sealed.id).is_none());
     lp.peers[0].restart(9).unwrap();
-    assert!(lp.peers[0].engine.blob_parts(&sealed.id).unwrap().is_none(), "its row gone too");
+    assert!(lp.peers[0].engine.blob_parts(&sealed.id).is_none(), "its row gone too");
 }
 
 
@@ -1433,9 +1433,9 @@ fn read_facts_of_own_and_role_commits_spec_sync_judgement_3() {
     assert!(f.own && !f.role && f.must_not.is_none() && !f.missing);
     let r = e.read_facts(&s, &g).unwrap();
     assert!(r.own && r.role, "the grant is an own role commit");
-    assert_eq!(e.body_fall_mark(&c).unwrap(), 0, "nothing fell yet");
+    assert_eq!(e.body_fall_mark(&c), 0, "nothing fell yet");
     let (sealed, wrap) = e.seal_body(&s, &c, &[], &mut SeededRng::from_u64(4)).unwrap().unwrap();
-    assert_eq!(e.blob_of(&sealed.id).unwrap().map(|r| r.copy), Some(false));
+    assert_eq!(e.blob_of(&sealed.id).map(|r| r.copy), Some(false));
     // the held blob logged verbatim under the same sync ID: a wrap of the same key
     let again = e.rewrap(&c, &sealed.id, &s, &wrap, &s).unwrap().expect("its epoch is held");
     let rc = e.read_credentials(&s).unwrap().unwrap();
@@ -1451,7 +1451,7 @@ fn a_lowering_to_sync_writes_a_sync_record_spec_sync_judgement_6() {
     let (mut lp, t, pb, _, blob) = granted(Role::Read);
     lp.peers[1].engine.take_inbox_blob(&blob, true).unwrap();
     spread(&mut lp);
-    assert!(lp.peers[1].engine.sync_record(&t).unwrap().is_none(), "a reader keeps no record");
+    assert!(lp.peers[1].engine.sync_record(&t).is_none(), "a reader keeps no record");
     let held: Vec<_> = lp.peers[1].engine.epochs(&t).unwrap().sync.held().map(|(e, _)| e).collect();
     assert!(!held.is_empty());
     let done = lp.peers[0].engine.demote(&t, &Demotion { holder: pb, new: Some(edge_of(Role::Sync)), retain: None }).unwrap();
@@ -1464,7 +1464,7 @@ fn a_lowering_to_sync_writes_a_sync_record_spec_sync_judgement_6() {
     let e = &mut lp.peers[1].engine;
     e.forget_lost(osis_engine::rotation::LostScope::All).unwrap();
     assert!(e.epochs(&t).is_none_or(|x| !x.read.holds_any()), "read secrets gone");
-    let r = e.sync_record(&t).unwrap().expect("lowered: a sync record");
+    let r = e.sync_record(&t).expect("lowered: a sync record");
     assert!(held.iter().all(|x| r.recorded.contains(x)), "the sync secrets it held, recorded");
     assert_eq!(r.sync_ids, vec![lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap()]);
 }
@@ -1491,7 +1491,7 @@ fn a_copy_is_never_logged_verbatim_elsewhere_spec_sync_judgement_1() {
     let mut rng = SeededRng::from_u64(9);
     let (copy, copy_wrap) = e.seal_body(&s, &c, &[], &mut rng).unwrap().expect("the copy seals");
     let (shared, shared_wrap) = e.seal_body(&su, &c, &[], &mut rng).unwrap().expect("the shared blob seals");
-    assert_eq!((e.blob_of(&copy.id).unwrap().map(|r| r.copy), e.blob_of(&shared.id).unwrap().map(|r| r.copy)), (Some(true), Some(false)));
+    assert_eq!((e.blob_of(&copy.id).map(|r| r.copy), e.blob_of(&shared.id).map(|r| r.copy)), (Some(true), Some(false)));
     assert!(e.rewrap(&c, &copy.id, &s, &copy_wrap, &su).unwrap().is_none(), "a copy goes under no other sync ID");
     assert!(e.rewrap(&c, &shared.id, &su, &shared_wrap, &s).unwrap().is_none(), "a copy body is held only by a copy");
     assert!(e.rewrap(&c, &shared.id, &su, &shared_wrap, &su).unwrap().is_some(), "a shared blob for a shared body");
@@ -1592,7 +1592,7 @@ fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
     let f = e.body_facts(&home, &r).unwrap();
     assert!(f.required && !f.closure, "{f:?}");
     let (sealed, wrap) = e.seal_body(&home, &r, &[], &mut SeededRng::from_u64(1)).unwrap().expect("sealed as a certificate copy");
-    assert_eq!(e.blob_of(&sealed.id).unwrap().map(|r| r.copy), Some(true));
+    assert_eq!(e.blob_of(&sealed.id).map(|r| r.copy), Some(true));
     match lp.peers[1].engine.open_entry(&home, &sealed.id, &wrap, &sealed.blob, u64::MAX).unwrap() {
         osis_engine::sync::Opened::Commit(c, _) => assert_eq!(c, r),
         o => panic!("{o:?}"),
@@ -2254,13 +2254,13 @@ fn record_blob_rows_go_with_their_sync_id_spec_perm_4() {
     let (b, _, _) = lp.peers[0].engine.seal_records(&s, &[ps[0]].into(), &mut rng).unwrap().expect("sealed");
     let (b2, _, _) = lp.peers[0].engine.seal_records(&s, &[ps[0]].into(), &mut rng).unwrap().expect("sealed");
     lp.peers[0].restart(8).unwrap();
-    assert_eq!(lp.peers[0].engine.cert_blobs(&s, None).unwrap().keys().copied().collect::<Vec<_>>().len(), 2, "durable");
+    assert_eq!(lp.peers[0].engine.cert_blobs(&s, None).keys().copied().collect::<Vec<_>>().len(), 2, "durable");
     lp.peers[0].engine.forget_cert_blob(&s, None, &b2).unwrap();
-    assert_eq!(lp.peers[0].engine.cert_blobs(&s, None).unwrap().keys().copied().collect::<Vec<_>>(), vec![b]);
+    assert_eq!(lp.peers[0].engine.cert_blobs(&s, None).keys().copied().collect::<Vec<_>>(), vec![b]);
     lp.peers[0].engine.forget_read(&s).unwrap();
-    assert!(lp.peers[0].engine.cert_blobs(&s, None).unwrap().is_empty());
+    assert!(lp.peers[0].engine.cert_blobs(&s, None).is_empty());
     lp.peers[0].restart(9).unwrap();
-    assert!(lp.peers[0].engine.cert_blobs(&s, None).unwrap().is_empty(), "its rows gone too");
+    assert!(lp.peers[0].engine.cert_blobs(&s, None).is_empty(), "its rows gone too");
     // left while down: the start drops them
     lp.peers[0].engine.seal_records(&s, &[ps[0]].into(), &mut rng).unwrap().expect("sealed");
     let mut m = Mutation::new();
@@ -2268,7 +2268,7 @@ fn record_blob_rows_go_with_their_sync_id_spec_perm_4() {
     lp.peers[0].engine.commit(m).unwrap().unwrap();
     lp.peers[0].restart(10).unwrap();
     lp.peers[0].engine.forget_unread().unwrap();
-    assert!(lp.peers[0].engine.cert_blobs(&s, None).unwrap().is_empty(), "S not read at the start");
+    assert!(lp.peers[0].engine.cert_blobs(&s, None).is_empty(), "S not read at the start");
 }
 
 // spec/permissions.md §4 (Logging certificates: each node logs its account's chain certificates
@@ -2780,7 +2780,7 @@ fn an_accept_with_a_forgers_offer_held_keeps_the_genuine_too_spec_sync_3() {
     lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap();
     accept(&mut lp, 1, t);
     let e = &mut lp.peers[1].engine;
-    let r = e.sync_record(&t).unwrap().expect("kept");
+    let r = e.sync_record(&t).expect("kept");
     let mut want = vec![s, forger];
     want.sort();
     assert_eq!(r.sync_ids, want, "both offers' sync IDs: the genuine one kept");
@@ -2803,8 +2803,8 @@ fn a_thing_accepted_under_a_sync_id_tied_to_another_is_not_synced_under_it_spec_
     assert_eq!(lp.peers[1].engine.take_inbox_blob(&b, false).unwrap().unwrap().taken, Taken::Offered);
     accept(&mut lp, 1, u);
     let e = &mut lp.peers[1].engine;
-    assert!(e.sync_record(&u).unwrap().is_some_and(|r| r.sync_ids == vec![s] && r.tied.is_empty()), "kept for u, not tied");
-    assert!(e.sync_record(&t).unwrap().is_some_and(|r| r.tied.contains(&s)), "tied to t");
+    assert!(e.sync_record(&u).is_some_and(|r| r.sync_ids == vec![s] && r.tied.is_empty()), "kept for u, not tied");
+    assert!(e.sync_record(&t).is_some_and(|r| r.tied.contains(&s)), "tied to t");
     assert_eq!(e.thing_sync(&u).unwrap(), ThingSync::Unread(Vec::new()), "u not synced under s");
     assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "t keeps its sync ID");
 }
@@ -2830,7 +2830,7 @@ fn an_accepted_forgers_dial_hint_hides_no_granter_spec_sync_inbox_2() {
     assert!(lp.peers[1].engine.invitations().unwrap().iter().any(|i| i.thing == t && !i.taken), "an invitation again");
     let (_, d) = lp.peers[1].engine.account().unwrap().unwrap();
     lp.peers[1].engine.accept_invite(&t, &d).unwrap();
-    let r = lp.peers[1].engine.sync_record(&t).unwrap().unwrap();
+    let r = lp.peers[1].engine.sync_record(&t).unwrap();
     assert_eq!(r.sync_ids.len(), 2, "the user accepted the forger's sync ID too");
     assert!(r.dials.contains(&granter) && r.dials.contains(&forger), "{:?}", r.dials);
 }
@@ -2990,27 +2990,27 @@ fn a_forgers_earlier_accept_takes_no_sync_id_from_a_later_thing_spec_sync_3() {
     lp.peers[1].engine.take_inbox_blob(&genuine, false).unwrap();
     accept(&mut lp, 1, t);
     let e = &mut lp.peers[1].engine;
-    assert!(e.sync_record(&t).unwrap().is_some_and(|r| r.sync_ids.contains(&s)), "t keeps its own sync ID");
+    assert!(e.sync_record(&t).is_some_and(|r| r.sync_ids.contains(&s)), "t keeps its own sync ID");
     assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Unread(vec![s]), "untied: synced for t");
     assert_eq!(e.thing_sync(&u).unwrap(), ThingSync::Unread(vec![s]), "... and for u");
     // the genuine step bears t's sync key, which u's held secrets do not derive
-    let step_keys = keys_of(&e.sync_record(&t).unwrap().unwrap());
+    let step_keys = keys_of(&e.sync_record(&t).unwrap());
     assert!(!e.record_borne(&u, &s, &step_keys).unwrap(), "u not tied");
     assert!(e.record_borne(&t, &s, &step_keys).unwrap(), "t tied");
     assert_eq!(e.thing_sync(&u).unwrap(), ThingSync::Unread(Vec::new()), "u no longer synced under s");
     assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "s syncs t");
-    assert_eq!(e.kept_records(&s).unwrap().len(), 2, "both records keep s");
+    assert_eq!(e.kept_records(&s).len(), 2, "both records keep s");
     lp.peers[1].restart(5).unwrap();
     assert_eq!(lp.peers[1].engine.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Unread)), "a restart changes nothing");
     // closed (spec/sync.md §3: removed with its ties from every entry keeping it): s leaves both,
     // u's entry whole, and nothing ties s to t if an accept keeps it again
     let e = &mut lp.peers[1].engine;
-    for (x, _) in e.kept_records(&s).unwrap() {
+    for (x, _) in e.kept_records(&s) {
         assert!(e.close_kept(&x, &s).unwrap());
     }
-    assert!(e.kept_records(&s).unwrap().is_empty() && !e.sync_set().unwrap().ids.contains_key(&s), "s closed");
-    assert!(e.sync_record(&u).unwrap().is_none(), "u's entry went whole");
-    assert!(e.sync_record(&t).unwrap().is_none_or(|r| !r.tied.contains(&s)), "t's tie went with s");
+    assert!(e.kept_records(&s).is_empty() && !e.sync_set().unwrap().ids.contains_key(&s), "s closed");
+    assert!(e.sync_record(&u).is_none(), "u's entry went whole");
+    assert!(e.sync_record(&t).is_none_or(|r| !r.tied.contains(&s)), "t's tie went with s");
 }
 
 // spec/sync.md §3 (Sync record: a closed sync ID leaves its thing's entry, entries otherwise only
@@ -3036,7 +3036,7 @@ fn a_close_hides_no_concurrent_keep_of_the_thing_spec_sync_3() {
     keep(&mut lp, 1, &[s1, s2]);
     spread(&mut lp);
     for i in 0..2 {
-        let r = lp.peers[i].engine.sync_record(&t).unwrap();
+        let r = lp.peers[i].engine.sync_record(&t);
         assert_eq!(r.map(|r| r.sync_ids.clone()), Some(vec![s2]), "node {i}: the concurrent keep stands, the closed one goes");
     }
 }
@@ -3086,7 +3086,7 @@ fn a_section_the_node_cannot_open_goes_as_it_came_spec_sync_judgement_3() {
     let got = lp.peers[1].engine.open_entry(&s, &id, &fwrap, &blob, u64::MAX).unwrap();
     assert!(matches!(got, osis_engine::sync::Opened::Commit(x, _) if x == c), "{got:?}");
     assert_eq!(lp.peers[1].engine.blob_commit(&id).unwrap(), Some(c));
-    let parts = lp.peers[1].engine.blob_parts(&id).unwrap().expect("opened");
+    let parts = lp.peers[1].engine.blob_parts(&id).expect("opened");
     assert!(parts.iter().all(|i| h.aspects[*i].tid == t) && !parts.is_empty(), "t's part alone: {parts:?}");
 }
 
@@ -3158,7 +3158,7 @@ fn an_unopened_section_counts_by_its_bytes_spec_sync_compaction_1() {
     for (x, w) in [(&g, &gw), (&j, &jw), (&o, &ow)] {
         assert!(matches!(e1.open_entry(&s, &x.id, w, &x.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Commit(y, _) if y == c));
     }
-    let rows: Vec<_> = [&g, &j, &o].iter().map(|x| e1.blob_of(&x.id).unwrap().unwrap()).collect();
+    let rows: Vec<_> = [&g, &j, &o].iter().map(|x| e1.blob_of(&x.id).unwrap()).collect();
     assert!(rows.iter().all(|r| r.parts == BTreeSet::from([at]) && !r.unchecked), "t's part opened of each");
     assert_eq!(rows[0].sealed.len(), 1);
     assert_ne!(rows[0].sealed, rows[1].sealed, "the junk section counts as other bytes");
@@ -3171,13 +3171,13 @@ fn an_unopened_section_counts_by_its_bytes_spec_sync_compaction_1() {
     let (d, dw) = framed(&mut lp, &t, &from, &env, &mut rng);
     let e1 = &mut lp.peers[1].engine;
     e1.open_entry(&s, &d.id, &dw, &d.blob, u64::MAX).unwrap();
-    let row = e1.blob_of(&d.id).unwrap().unwrap();
+    let row = e1.blob_of(&d.id).unwrap();
     assert_eq!((&row.parts, &row.sealed), (&rows[0].parts, &rows[0].sealed), "a copy of the same sections notes alike");
     // peer 0 opens u's section: the junk copy is bad there, the others open whole or short
     let e0 = &mut lp.peers[0].engine;
     assert!(matches!(e0.open_entry(&s, &j.id, &jw, &j.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Bad));
     e0.open_entry(&s, &g.id, &gw, &g.blob, u64::MAX).unwrap();
-    let row = e0.blob_of(&g.id).unwrap().unwrap();
+    let row = e0.blob_of(&g.id).unwrap();
     assert_eq!((row.parts.clone(), row.sealed.is_empty()), (BTreeSet::from([at, au]), true));
 }
 
@@ -3217,7 +3217,7 @@ fn a_part_unchecked_for_want_of_its_record_opens_again_spec_sync_compaction_1() 
     for (x, w) in [(&g, &gw), (&f, &fw)] {
         let o = e1.open_entry(&sid, &x.id, w, &x.blob, u64::MAX).unwrap();
         assert!(matches!(o, osis_engine::sync::Opened::Commit(y, _) if y == c), "{o:?}");
-        let row = e1.blob_of(&x.id).unwrap().unwrap();
+        let row = e1.blob_of(&x.id).unwrap();
         assert!(row.unchecked && row.parts.is_empty() && row.sealed.len() == 1, "{row:?}");
     }
     assert!(e1.pends(&c));
@@ -3229,9 +3229,9 @@ fn a_part_unchecked_for_want_of_its_record_opens_again_spec_sync_compaction_1() 
     assert!(!e1.pends(&c));
     assert!(e1.take_redeliver().contains(&c), "the write's blobs open again");
     assert!(matches!(e1.open_entry(&sid, &f.id, &fw, &f.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Bad));
-    assert_eq!(e1.blob_of(&f.id).unwrap(), None, "the forged blob is no blob of the write");
+    assert_eq!(e1.blob_of(&f.id), None, "the forged blob is no blob of the write");
     e1.open_entry(&sid, &g.id, &gw, &g.blob, u64::MAX).unwrap();
-    let row = e1.blob_of(&g.id).unwrap().unwrap();
+    let row = e1.blob_of(&g.id).unwrap();
     assert_eq!((row.parts.clone(), row.sealed.is_empty(), row.unchecked), (BTreeSet::from([ai]), true, false));
 }
 
@@ -3275,10 +3275,10 @@ fn a_held_commits_part_unchecked_for_want_of_its_record_opens_again_spec_sync_co
     for (x, w) in [(&g, &gw), (&f, &fw)] {
         let got = e1.open_entry(&sid, &x.id, w, &x.blob, u64::MAX).unwrap();
         assert!(matches!(got, osis_engine::sync::Opened::Commit(y, _) if y == c), "{got:?}");
-        let row = e1.blob_of(&x.id).unwrap().unwrap();
+        let row = e1.blob_of(&x.id).unwrap();
         assert!(row.unchecked && row.parts == BTreeSet::from([at]) && row.sealed.len() == 1, "{row:?}");
     }
-    let (rg, rf) = (e1.blob_of(&g.id).unwrap().unwrap(), e1.blob_of(&f.id).unwrap().unwrap());
+    let (rg, rf) = (e1.blob_of(&g.id).unwrap(), e1.blob_of(&f.id).unwrap());
     assert_ne!(rg.sealed, rf.sealed, "no duplicates while t2's part is unchecked");
     e1.take_redeliver();
     let pk = lp.peers[0].engine.package(&cr).unwrap().unwrap();
@@ -3287,9 +3287,9 @@ fn a_held_commits_part_unchecked_for_want_of_its_record_opens_again_spec_sync_co
     e1.reexamine().unwrap();
     assert!(e1.take_redeliver().contains(&c), "the write's blobs open again once t2's record is held");
     assert!(matches!(e1.open_entry(&sid, &f.id, &fw, &f.blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Bad));
-    assert_eq!(e1.blob_of(&f.id).unwrap(), None, "the forged blob is no blob of the write");
+    assert_eq!(e1.blob_of(&f.id), None, "the forged blob is no blob of the write");
     e1.open_entry(&sid, &g.id, &gw, &g.blob, u64::MAX).unwrap();
-    let row = e1.blob_of(&g.id).unwrap().unwrap();
+    let row = e1.blob_of(&g.id).unwrap();
     assert_eq!((row.parts.clone(), row.sealed.is_empty(), row.unchecked), (BTreeSet::from([at, a2]), true, false));
 }
 
@@ -3318,14 +3318,14 @@ fn a_fresh_encryption_carries_no_section_it_never_opened_for_a_held_part_spec_sy
     for (x, w) in [(&g, &gw), (&f, &fw)] {
         e1.open_entry(&s, &x.id, w, &x.blob, u64::MAX).unwrap();
     }
-    let rg = e1.blob_of(&g.id).unwrap().unwrap();
-    assert!(rg.parts.contains(&at) && e1.blob_of(&f.id).unwrap().unwrap().sealed.contains(&junk_t), "t's section opened in g alone");
+    let rg = e1.blob_of(&g.id).unwrap();
+    assert!(rg.parts.contains(&at) && e1.blob_of(&f.id).unwrap().sealed.contains(&junk_t), "t's section opened in g alone");
     let held = |x: &osis_engine::sync_ids::Sealed, w| osis_engine::sync::HeldBlob { sync_id: s, wrap: w, bytes: x.blob.clone() };
     let sections = |x: &osis_engine::sync_ids::Sealed| -> BTreeSet<[u8; 32]> { osis_commit::Envelope::decode(&osis_blob::open(&x.blob, &x.key).unwrap().1).unwrap().sections.iter().map(|x| x.digest()).collect() };
     for hs in [vec![held(&f, fw), held(&g, gw)], vec![held(&f, fw)]] {
         let (x, _) = e1.seal_body(&s, &c, &hs, &mut rng).unwrap().expect("sealed");
         assert!(!sections(&x).contains(&junk_t), "the junk section copied");
-        let rx = e1.blob_of(&x.id).unwrap().unwrap();
+        let rx = e1.blob_of(&x.id).unwrap();
         assert_eq!((&rx.parts, &rx.sealed), (&rg.parts, &rg.sealed), "a duplicate of the genuine blob");
     }
 }

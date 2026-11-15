@@ -39,10 +39,10 @@ pub use osis_blob::DialHint;
 use crate::apply::reach::Wants;
 use crate::engine::DropFor;
 use crate::error::{Error, Result};
-use crate::sync_ids::{Certs, HeadKeys, Sealed};
+use crate::sync_ids::{Certs, HeadKeys};
 use crate::{Engine, Ingested};
 use osis_base::{Ak, BlobId, CommitId, CreationRecord, Role, SyncId, Tid, WallMs};
-use osis_crypto::{Epoch, NodeRng, Secret32, SigningSecret, WRAP_LEN};
+use osis_crypto::{Epoch, Secret32, SigningSecret, WRAP_LEN};
 use osis_blob::{Address, Step, StepId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -476,13 +476,6 @@ pub(crate) fn recorded_ids(f: &osis_crdt::Fragment) -> BTreeSet<SyncId> {
 impl Engine {
     // Ingest
 
-    /// Opens an entry's wrap with a held read secret and takes what the blob holds. `room`: what
-    /// holding an ephemeral commit may cost under S's cap now (`ingest_memory`; `TooLarge`
-    /// past it); a durable blob ignores it.
-    pub fn open_entry(&mut self, s: &SyncId, blob: &BlobId, wrap: &Wrap, bytes: &[u8], room: u64) -> Result<Opened> {
-        self.open_entry_now(s, blob, wrap, bytes, room)
-    }
-
     /// What to fetch: pages and header lists before apply.
     pub fn wants(&mut self) -> Result<Arc<Wants>> {
         Ok(Arc::new(self.blob_wants()?))
@@ -512,15 +505,6 @@ impl Engine {
         // a body's facts read every value above
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.read_facts, |e, (s, c)| e.read_facts_now(s, c))? | moved;
         Ok(osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.held_fates, |e, c| e.held_fate_now(c))? | moved)
-    }
-
-    /// Per sync ID of the sync set whose required set holds a body of `c`: that body.
-    pub fn sync_bodies(&mut self, c: &CommitId) -> Result<Arc<BTreeMap<SyncId, BodyMeta>>> {
-        self.sync_bodies_now(c)
-    }
-
-    pub fn body_facts(&mut self, s: &SyncId, c: &CommitId) -> Result<BodyFacts> {
-        self.body_facts_now(s, c)
     }
 
     /// What `read` judges `c`'s body under `s` on beside `BodyFacts` (`ReadFacts`). Kept per
@@ -557,24 +541,6 @@ impl Engine {
         Ok(Some(HeldFate { forgettable, drops: Arc::new(drops) }))
     }
 
-    /// Whether held blob `b` is must-not-hold under `s` as a strict subset of another blob of its
-    /// commit among `held`, the blobs of it held under `s` (spec/sync-judgement.md §2).
-    pub fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
-        self.strict_subset_now(s, b, held)
-    }
-
-    /// Whether a delete that removed `c`'s body from `s` stands where `there` are the blobs of `c`
-    /// still held (spec/sync-judgement.md §3 Neither): the body is then neither logged nor relayed
-    /// there. False whatever `there` holds while the judgement is not established.
-    pub fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
-        self.neither_now(s, c, there)
-    }
-
-    /// Falls of held parts on `c`'s aspects so far, summed over them (a body's stand mark).
-    pub fn body_fall_mark(&mut self, c: &CommitId) -> Result<u64> {
-        Ok(self.body_fall_mark_now(c))
-    }
-
     /// A cursor over the commits held from now on (`memo::Feed`; a start lists `commit_ids`).
     pub fn commit_feed(&self) -> osis_base::memo::Feed<CommitId> {
         self.core.ix.commits.feed()
@@ -592,134 +558,11 @@ impl Engine {
         self.core.waits.unpended.feed()
     }
 
-    /// The records `s` carries as certificates (spec/permissions.md §4): a record blob of those
-    /// no record blob in the own store carries is logged there.
-    pub fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
-        self.certificate_records_now(s)
-    }
-
-    /// The things whose held list of rotation `r` sync ID `s` carries (spec/sync-judgement.md §1
-    /// List blobs, `sync::listed`): a list blob of those no list blob of `r` in the own store
-    /// carries is logged there.
-    pub fn certificate_lists(&mut self, s: &SyncId, r: &CommitId) -> Result<Arc<BTreeSet<Tid>>> {
-        self.certificate_lists_now(s, r)
-    }
-
-    /// The rotations with a list `s` carries: where a reader starts following `s` (later ones
-    /// come from `lists_feed`).
-    pub fn list_rotations(&mut self, s: &SyncId) -> Result<Vec<CommitId>> {
-        self.list_rotations_now(s)
-    }
-
-    /// A cursor over the (read thing, rotation) pairs whose sync IDs come to carry a list of the
-    /// rotation (`memo::Feed`).
-    pub fn lists_feed(&self) -> osis_base::memo::Feed<(Tid, CommitId)> {
-        self.lists_feed_now()
-    }
-
-    /// Whether this node may log `c`'s body under `s` now: a held blob verbatim or a fresh
-    /// encryption, wrapped for `s` (spec/sync-judgement.md §2 Loggable): a body is must-hold only
-    /// while it may, so a judgement reading this moves when it does. `held`: the blobs of `c`
-    /// whose bytes the sync store holds under some entry, the ones `seal_body` and a verbatim
-    /// log may use (the store is the one truth of what can be passed on).
-    pub fn may_log(&mut self, s: &SyncId, c: &CommitId, held: &[BlobId]) -> Result<bool> {
-        self.may_log_now(s, c, held)
-    }
-
-    /// Whether a record blob (`r` none) or a list blob of rotation `r` can be sealed under `s`
-    /// now: what is missing there waits for it.
-    pub fn cert_wrap(&mut self, s: &SyncId, r: Option<&CommitId>) -> Result<bool> {
-        self.cert_wrap_now(s, r)
-    }
-
     /// Certificate blob `b` of kind `r` sealed here under `s` is in the own store no more: its
     /// row goes.
     pub fn forget_cert_blob(&mut self, s: &SyncId, r: CertKind, b: &BlobId) -> Result<()> {
         let (s, b) = (*s, *b);
         self.run(|tx| certblobs::forget_blob(tx, &s, r, &b))
-    }
-
-    /// The certificate blobs of kind `r` (record blobs: `None`; list blobs of a rotation) sealed
-    /// here under `s`, each with what it carries.
-    pub fn cert_blobs(&mut self, s: &SyncId, r: CertKind) -> Result<Arc<CertBlobs>> {
-        Ok(self.cert_blobs_now(s, r))
-    }
-
-    /// A record blob of `records` under `s` (spec/wire.md §3), its bytes and wrap.
-    pub fn seal_records(&mut self, s: &SyncId, records: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
-        self.seal_records_now(s, records, rng)
-    }
-
-    /// A list blob of rotation `r`'s thing lists for `things` under `s` (spec/wire.md §4, List
-    /// tree), its bytes and wrap.
-    pub fn seal_lists(&mut self, s: &SyncId, r: &CommitId, things: &BTreeSet<Tid>, rng: &mut dyn NodeRng) -> Result<Option<(BlobId, Vec<u8>, Wrap)>> {
-        self.seal_lists_now(s, r, things, rng)
-    }
-
-    /// A held blob as opened or sealed here: its commit, the parts opened, the sections not
-    /// opened (by digest), and whether it is a per-sync-ID copy.
-    pub fn blob_of(&mut self, b: &BlobId) -> Result<Option<Arc<BlobOf>>> {
-        Ok(self.blob_of_now(b))
-    }
-
-    /// Whether opened blob `b` holds a section not opened here while a part of its held commit
-    /// that this node may come to read counts missing: a read secret arriving may open it
-    /// (spec/sync-streams.md §4 Fill order: the store opens it again as its read secrets gain an
-    /// epoch).
-    pub fn blob_awaits_secret(&mut self, b: &BlobId) -> bool {
-        self.blob_awaits_secret_now(b)
-    }
-
-    /// The parts an opened or sealed blob holds (as opened or sealed here).
-    pub fn blob_parts(&mut self, b: &BlobId) -> Result<Option<PartSet>> {
-        Ok(self.blob_parts_now(b))
-    }
-
-    /// Whether held blob `b` holds a part of its commit dropped here (spec/sync-judgement.md §1:
-    /// the blob is must-not-hold wherever it is logged).
-    pub fn blob_dropped(&mut self, b: &BlobId) -> Result<bool> {
-        Ok(self.blob_dropped_now(b))
-    }
-
-    /// `c`'s body under `s` as a fresh encryption, with its wrap for `s`: the one place sync
-    /// encrypts a body (spec/crypto.md §5 Passing on). `held`: every blob of `c` the store holds
-    /// bytes of, each with an entry's wrap (its sections go as they came where this node may not
-    /// encrypt them). `None`: nothing may be made now; ask again when keys change.
-    pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(Sealed, Wrap)>> {
-        self.seal_body_now(s, c, held, rng)
-    }
-
-    /// A wrap for `to` of held blob `b` of commit `c`, from its entry's wrap under `from`: the
-    /// held blob logged verbatim under another sync ID (`None`: an epoch not held, or a
-    /// per-sync-ID copy on either side, which is never shared).
-    pub fn rewrap(&mut self, c: &CommitId, b: &BlobId, from: &SyncId, from_wrap: &Wrap, to: &SyncId) -> Result<Option<Wrap>> {
-        self.rewrap_now(c, b, from, from_wrap, to)
-    }
-
-    /// Falls of held parts on the aspect so far (durable; spec/sync-judgement.md §4 compares marks).
-    pub fn fall_mark(&mut self, thing: &Tid, ak: &Ak) -> Result<u64> {
-        Ok(self.fall_mark_now(thing, ak))
-    }
-
-    /// This node's commits and self-removals with a body under `s` (spec/sync-status.md §2).
-    pub fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
-        self.own_commits_now(s)
-    }
-
-    /// The destroyed things whose secrets are held for deletes alone (`destruction` of each).
-    pub fn destructions(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
-        Ok(self.destroyed_now())
-    }
-
-    /// A destroyed thing's emptying (spec/sync-judgement.md §5); `None` unless `thing` is one.
-    pub fn destruction(&mut self, thing: &Tid) -> Result<Option<Arc<Destruction>>> {
-        self.destruction_now(thing)
-    }
-
-    /// Sync emptied `thing`'s own sync IDs and knows no entry keyed by it: its secrets drop, last
-    /// (spec/sync-judgement.md §5).
-    pub fn forget_destroyed(&mut self, thing: &Tid) -> Result<()> {
-        self.forget_destroyed_now(thing)
     }
 
     /// This node shares `t` no more (spec/sync-set.md §2 Shared here): it syncs it only while N's
@@ -732,12 +575,6 @@ impl Engine {
         }
         self.run(|tx| set::unshare_here(tx, t))?;
         Ok(true)
-    }
-
-    /// The things kept here that sync no more: a share that ended, unsynced by no one here
-    /// (spec/sync-set.md §3 Unsyncing). O(things the account ever granted on).
-    pub fn kept_local(&mut self) -> Result<BTreeSet<Tid>> {
-        self.kept_local_now()
     }
 
     /// Forgets this node's local copies of `ts`, unsynced (spec/sync-set.md §3 Unsyncing): the
@@ -762,26 +599,9 @@ impl Engine {
         Ok(f.blobs)
     }
 
-    pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
-        self.promotable_now(s, c)
-    }
-
     /// Whether `b` is a freed link's blob.
     pub fn freed(&mut self, b: &BlobId) -> Result<bool> {
         self.is_freed(b)
-    }
-
-    /// The links of `c`'s body made of `parts` (spec/sync-judgement.md §1: the tree roots and pages
-    /// its deltas link, its header-list trees): where its pieces start.
-    pub fn piece_roots(&mut self, c: &CommitId, parts: &PartSet) -> Result<Vec<PieceLink>> {
-        self.piece_roots_now(c, parts)
-    }
-
-    /// What lies one step below piece `p`: `None` while its blob is not held; a node's or page's
-    /// links; nothing for a chunk. A memo per link (a node is immutable): moves only as the blob
-    /// is held or released.
-    pub fn piece_below(&mut self, p: &PieceLink) -> Result<Option<Arc<Vec<PieceLink>>>> {
-        self.piece_below_now(p)
     }
 
     /// Takes a piece's bytes (a blob a held body links, `pieces`' missing) from a store entry:
@@ -855,48 +675,6 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_set, &(), |e| e.sync_set_now())
     }
 
-    /// Sync ID `s`'s thing and how this node's keys let it hold `s` (read or kept unread),
-    /// whatever lists the thing: `sync_set`'s entry for `s` while N's closure holds the thing, and what a sync ID leaving the sync set is held as while it waits
-    /// (spec/sync-set.md §3). Reads only `s`'s owner's keys.
-    pub fn sync_holder(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
-        self.sync_holder_now(s)
-    }
-
-    /// The things the sync set is judged over: N's closure (its synced group's and each shared
-    /// thing's) walked through no group sourced at another node (the same `Arc` while it does not
-    /// change), destroyed things being emptied and links being redeemed.
-    pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
-        self.sync_things_now()
-    }
-
-    /// Whether `sync_things` holds `t`, reading only what places `t` there (the groups above it
-    /// and its key homes, whether each is a root of N's closure; its destruction; a link it is
-    /// K of): what a follower of the sync set settles per thing, so a thing leaving moves it.
-    pub fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
-        self.in_sync_things_now(t)
-    }
-
-    /// The things that may have entered `sync_things` since `f`'s last read, each a candidate for
-    /// `in_sync_things` (the first read: every one): O(what changed) (spec/sync-set.md §2 Cost),
-    /// a new root of N's closure (a share, the synced group read first) its closure.
-    pub fn things_entered(&mut self, f: &mut ThingsFeed) -> Result<Vec<Tid>> {
-        self.things_entered_now(f)
-    }
-
-    /// The groups the handle reads and writes at another node (spec/sync-set.md §5): `elsewhere`,
-    /// of which those in `homing` (moved home, catching up) still sync here and the rest leave
-    /// the sync set (by spec/sync-set.md §3); a client of this node reads nothing of any. Between
-    /// transactions.
-    pub fn set_sourced(&mut self, elsewhere: BTreeSet<Tid>, homing: &BTreeSet<Tid>) {
-        self.set_sourced_now(elsewhere, homing);
-    }
-
-    /// Whether group `g` moving home has caught up (spec/sync-set.md §5): history complete here
-    /// for it and each thing of its closure the sync set holds (spec/sync-status.md §3).
-    pub fn caught_up(&mut self, g: &Tid) -> Result<bool> {
-        self.caught_up_now(g)
-    }
-
     /// How this node syncs thing `t` (read, kept unread, unsyncable, plain); reads only `t`'s keys.
     pub fn thing_sync(&mut self, t: &Tid) -> Result<ThingSync> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.thing_sync, t, |e| e.thing_sync_now(t))
@@ -933,17 +711,6 @@ impl Engine {
     /// until a complete pass after it left (spec/sync-set.md §3).
     pub fn read_credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.read_credentials, s, |e| e.read_credentials_now(s))
-    }
-
-    /// The rotation commits superseding read epoch `e` of read sync ID `s` (spec/sync-opens.md §6:
-    /// a member opened by `e`'s read secret ends at the highest of their entries in S).
-    pub fn rotations_superseding(&mut self, s: &SyncId, e: &Epoch) -> Result<Vec<CommitId>> {
-        self.rotations_superseding_now(s, e)
-    }
-
-    /// The claim key from this node's own read KEM key and the step key (spec/sync-ids.md §3).
-    pub fn claim_key(&mut self, s: &SyncId, step: &StepId) -> Result<Option<SigningSecret>> {
-        self.claim_key_now(s, step)
     }
 
     /// Opens a static entry's grant (spec/sync-opens.md §5): `steps` verify from S's genesis step
@@ -987,43 +754,9 @@ impl Engine {
         Ok(())
     }
 
-    /// The sync records of things this node keeps unread (spec/sync.md §3): each thing's kept
-    /// sync IDs and held sync secrets by epoch. Whole: a start lists them, then follows
-    /// `sync_record_feed` and `sync_record` per thing.
-    pub fn sync_records(&mut self) -> Result<Arc<BTreeMap<Tid, SyncRecord>>> {
-        Ok(self.sync_records_now())
-    }
-
-    /// `thing`'s sync record; reads only its key (an `Effects` value per thing).
-    pub fn sync_record(&mut self, thing: &Tid) -> Result<Option<Arc<SyncRecord>>> {
-        Ok(self.sync_record_now(thing))
-    }
-
     /// A cursor over the things whose sync record is made from now on (`memo::Feed`).
     pub fn sync_record_feed(&self) -> osis_base::memo::Feed<Tid> {
         self.core.ix.sync_records.feed()
-    }
-
-    /// What a step on this node's path of `s` bears of `thing`'s held sync secrets (`borne`:
-    /// the sync keys of those steps that a held secret of it derives), into the account's sync
-    /// record: `s` tied to `thing` (spec/sync.md §3 Tied) and each such secret recorded (A
-    /// recorded secret), those not yet. Nothing unless the record keeps `s` for `thing`. Returns
-    /// whether it wrote.
-    pub fn record_borne(&mut self, thing: &Tid, s: &SyncId, borne: &BTreeSet<[u8; 32]>) -> Result<bool> {
-        self.record_borne_now(thing, s, borne)
-    }
-
-    /// The records keeping sync ID `s`, by thing (`kept_things` picks those it is synced for);
-    /// reads only `s`'s key and those records'.
-    pub fn kept_records(&mut self, s: &SyncId) -> Result<Vec<(Tid, Arc<SyncRecord>)>> {
-        Ok(self.kept_records_now(s))
-    }
-
-    /// The account's sync record of `thing` keeps closed sync ID `s` no more (spec/sync.md §3,
-    /// spec/sync-judgement.md §6 Closes), its recorded secrets too once it keeps none. Returns
-    /// whether it wrote.
-    pub fn close_kept(&mut self, thing: &Tid, s: &SyncId) -> Result<bool> {
-        self.close_kept_now(thing, s)
     }
 
     // Grants, removals, peers
@@ -1208,13 +941,6 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.roster_holders, s, |e| e.roster_holders_now(s))
     }
 
-    /// The inbox deliveries owed and not seen taken (spec/sync-inbox.md §2), whole: a start lists
-    /// them, then follows `delivery_feed` and `delivery_taken` per delivery. A delivery to a node
-    /// (pairing) is its commit sent over a connection; to an actor, `inbox_blob`.
-    pub fn deliveries(&mut self) -> Result<Arc<BTreeSet<(CommitId, Tid)>>> {
-        self.deliveries_now()
-    }
-
     /// The things delivery `c` to `holder` names (a grant's: its target); none once not owed.
     pub fn delivery_things(&self, c: &CommitId, holder: &Tid) -> Vec<Tid> {
         self.core.ix.owed_inbox.get(&(*c, *holder)).map(|o| o.things.clone()).unwrap_or_default()
@@ -1225,36 +951,12 @@ impl Engine {
         self.core.ix.owed_inbox.feed()
     }
 
-    /// Whether this node saw `holder` take delivery `c` (a commit of the holder's on a thing it
-    /// names; an open the blob names at this node is sync's to see). Reads only its keys.
-    pub fn delivery_taken(&mut self, c: &CommitId, holder: &Tid) -> Result<bool> {
-        self.delivery_taken_now(c, holder)
-    }
-
     /// Sync stops delivering `c` to `holder`: it saw the holder take it (`delivery_taken`, or an
     /// open of a sync ID the blob names by the holder), or gave up re-sending. The row goes: a
     /// delivery is owed from its commit's transaction to here, or until its commit is forgotten.
     pub fn delivered(&mut self, c: &CommitId, holder: &Tid) -> Result<()> {
         let (c, h) = (*c, *holder);
         self.run(|tx| deliveries::drop_owed(tx, &c, &h))
-    }
-
-    /// The inbox blob of delivery (`c`, `holder`), sealed now (spec/wire.md §9): `None` for a
-    /// node holder (sent `c` itself) or one whose inbox key is not known here.
-    pub fn inbox_blob(&mut self, c: &CommitId, holder: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
-        self.inbox_blob_now(c, holder, rng)
-    }
-
-    /// The sync IDs delivery (`c`, `holder`)'s blob names (spec/wire.md §9 position 1): an open
-    /// of one by the holder shows it took the delivery (spec/sync-inbox.md §2 Re-send).
-    pub fn delivery_names(&mut self, c: &CommitId, holder: &Tid) -> Result<Arc<Vec<SyncId>>> {
-        self.delivery_names_now(c, holder)
-    }
-
-    /// The keys this node signs entries of `s` with; `actor`: the actor whose deposit seed
-    /// signs a deposit to its inbox when this node records no head of `s`.
-    pub fn signers(&mut self, s: &SyncId, actor: Option<&Tid>) -> Result<Signers> {
-        self.signers_now(s, actor)
     }
 
     /// The commit a held blob opened or was sealed as (`blob_parts`' row).
@@ -1276,12 +978,6 @@ impl Engine {
     /// The blobs of commit `c` opened or sealed here.
     pub fn commit_blobs(&mut self, c: &CommitId) -> Result<Arc<Vec<BlobId>>> {
         Ok(Arc::new(self.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect()))
-    }
-
-    /// The role commits recorded step `step` of `s` depends on (spec/sync-ids.md §6 Steps): a
-    /// store source must hold each before the step is registered there.
-    pub fn step_needs(&mut self, s: &SyncId, step: &StepId) -> Result<Arc<Vec<CommitId>>> {
-        self.step_needs_now(s, step)
     }
 
     /// The step due of `s` here (spec/sync-ids.md §6 Steps, spec/permissions.md §3): `Some` with
@@ -1336,36 +1032,6 @@ impl Engine {
         self.take_inbox_bytes(s, blob, &bytes, vouched)
     }
 
-    /// The invitations waiting for the user (spec/sync-set.md §4).
-    pub fn invitations(&mut self) -> Result<Arc<Vec<Invitation>>> {
-        self.invitations_now()
-    }
-
-    /// This node's self-removals sync waits on (spec/sync-status.md §2): the secrets they gave
-    /// up drop once sync is done with each.
-    pub fn waiting_removals(&mut self) -> Result<Arc<BTreeSet<CommitId>>> {
-        Ok(self.waiting_removals_now())
-    }
-
-    /// Sync is done waiting for self-removal `c`: held elsewhere, or no peer but this account's
-    /// own nodes shares a sync ID it goes under (spec/permissions.md §3 Lost access).
-    pub fn removal_done(&mut self, c: &CommitId) -> Result<()> {
-        self.removal_done_now(c)
-    }
-
-    /// The sync IDs some engine rule waits on a complete pass of, each with the pass place the
-    /// pass must begin after (`begin_pass`); a memo value, so status follows it with `Effects`
-    /// (spec/permissions.md §2-§3, spec/sync-status.md §3).
-    pub fn passes_wanted(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
-        self.passes_wanted_now()
-    }
-
-    /// The place a complete pass of `s` must begin after while some rule waits on one
-    /// (`passes_wanted`'s entry for `s`): kept per sync ID, moved only when it does.
-    pub fn pass_wanted(&mut self, s: &SyncId) -> Result<Option<u64>> {
-        self.pass_wanted_now(s)
-    }
-
     /// Begins a complete pass: the next pass place, one count with the role commits' arrivals
     /// from elsewhere, so a pass begun at place `p` counts for a want at `since` only when
     /// `p > since`.
@@ -1417,26 +1083,6 @@ impl Engine {
         self.note_complete_pass_now(s, began)
     }
 
-    /// Sync ID `s` is read here no more (it left the sync set, or is kept unread): its noted
-    /// passes go, so reading it again wants a fresh pass, and so do the record blobs sealed under
-    /// it.
-    pub fn forget_read(&mut self, s: &SyncId) -> Result<()> {
-        self.forget_read_now(s)
-    }
-
-    /// `forget_read` of every sync ID not read here (one left while the node was down). Not at
-    /// an open: what node-sync has the engine follow (links being redeemed, `follow_link`) is
-    /// part of the sync set, so node-sync calls it at its start once it followed them again.
-    pub fn forget_unread(&mut self) -> Result<()> {
-        self.forget_unread_now()
-    }
-
-    /// History complete for `thing` (spec/sync-status.md §3): a complete pass of every sync ID
-    /// carrying it noted here.
-    pub fn history_complete(&mut self, thing: &Tid) -> Result<bool> {
-        self.history_complete_now(thing)
-    }
-
     // Timers and config
 
     /// When the memo clock next moves a value read with an `until` (`memo::Clock::next`): the
@@ -1456,10 +1102,6 @@ impl Engine {
         self.core.time.set(now.0);
     }
 
-    /// `caps^.0` of this node (spec/sync-ids.md §5 Caps).
-    pub fn caps(&mut self) -> Result<Arc<Caps>> {
-        self.caps_now()
-    }
 }
 
 #[cfg(test)]

@@ -145,7 +145,7 @@ fn a_released_thing_reads_absent_and_its_sync_id_is_forgotten_spec_sync_judgemen
     // §6 Closes: node 1, keeping S unread, took the closing step: its account's record keeps S no
     // more, and S, its path and its store are gone
     assert!(w.store(1).path(&s).unwrap().is_none(), "node 1 keeps S's path");
-    assert!(w.engine(1).sync_record(&t).unwrap().is_none(), "node 1's account still records S");
+    assert!(w.engine(1).sync_record(&t).is_none(), "node 1's account still records S");
 }
 
 // spec/sync-judgement.md §5 (Emptying), spec/sync-status.md §1 (heard out), as a lifecycle duty

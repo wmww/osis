@@ -71,7 +71,7 @@ impl Engine {
             }
             // its granters, by the grants' dial hints, of every thing S is synced for
             Holding::Unread => {
-                let kept = self.kept_records_now(s);
+                let kept = self.kept_records(s);
                 for DialHint { dialable, urls } in super::kept_things(s, &kept).flat_map(|(_, r)| r.dials.iter()) {
                     if let Some(x) = address(dialable, urls) {
                         out.entry(x.key).or_insert(x);

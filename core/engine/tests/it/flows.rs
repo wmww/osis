@@ -332,7 +332,7 @@ fn a_sync_grant_gives_no_read_secret_to_follow_spec_wire_9() {
         let (d, _, g, with, _) = grant_with_chain(&mut lp, pa, pb, role);
         lp.peers[1].engine.take_inbox_blob(&with, true).unwrap();
         // a sync grant is held as an offer and applies nothing (spec/sync.md §3)
-        assert!(lp.peers[1].engine.sync_record(&d).unwrap().is_none(), "{role:?}: nothing kept before an accept");
+        assert!(lp.peers[1].engine.sync_record(&d).is_none(), "{role:?}: nothing kept before an accept");
         assert_eq!(lp.peers[1].engine.core.ix.commits.get(&g).is_some(), reads, "the {role:?} grant applied");
         sync(&mut lp, 0, 1);
         assert_eq!(lp.peers[1].engine.role_on(&d), Some(role));
@@ -1917,9 +1917,9 @@ fn writer_leaves_spec_perm_3() {
     assert_eq!(aks_of(&lp, 1, &done.commits[0]), BTreeSet::from(["roles.0".to_string()]));
     assert!(lp.peers[1].engine.header(&done.commits[0]).unwrap().frontier.is_none());
     // the leaver drops what it lost once its removal is held elsewhere (sync's word)
-    assert!(lp.peers[1].engine.waiting_removals().unwrap().contains(&done.commits[0]));
+    assert!(lp.peers[1].engine.waiting_removals().contains(&done.commits[0]));
     lp.peers[1].engine.removal_done(&done.commits[0]).unwrap();
-    assert!(lp.peers[1].engine.waiting_removals().unwrap().is_empty());
+    assert!(lp.peers[1].engine.waiting_removals().is_empty());
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.held().next().is_none()), "dropped on leaving");
     spread(&mut lp);
     let (rot, still) = lp.peers[0].engine.ensure_rotated(&d).unwrap();

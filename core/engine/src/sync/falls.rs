@@ -34,7 +34,7 @@ pub(crate) fn fell(tx: &mut Tx<'_>, t: &Tid, ak: &Ak) -> Result<()> {
 
 impl Engine {
     /// The fall mark of `(t, ak)`; reads only its key.
-    pub(crate) fn fall_mark_now(&self, t: &Tid, ak: &Ak) -> u64 {
+    pub fn fall_mark(&self, t: &Tid, ak: &Ak) -> u64 {
         self.core.ix.falls.get(&(*t, ak.clone())).copied().unwrap_or(0)
     }
 }

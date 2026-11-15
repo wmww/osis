@@ -98,7 +98,7 @@ pub fn accept(w: &mut World) {
         let filed = w.engine(i).get_typed(&d, &osis_schema::core_types::GROUP).ok().flatten().is_some_and(|g| g.subgroups.contains(&t));
         let invited = w.engine(i).invitations().is_ok_and(|v| v.iter().any(|x| x.thing == t && !x.taken));
         // done once it holds the thing (reads it, or keeps it unread)
-        let holds = w.engine(i).sync_record(&t).is_ok_and(|r| r.is_some()) || w.engine(i).epochs(&t).is_some_and(|e| e.read.holds_any());
+        let holds = w.engine(i).sync_record(&t).is_some() || w.engine(i).epochs(&t).is_some_and(|e| e.read.holds_any());
         if filed && !invited && holds {
             w.history.accepts.remove(&(t, i));
         } else if !filed || invited {
