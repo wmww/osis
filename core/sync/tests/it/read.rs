@@ -149,8 +149,12 @@ struct Fake {
     anywhere: Stamped<(SyncId, CommitId), bool>,
     /// S not read here, its closure not settled, or no reader can pull it.
     unread: Stamped<SyncId, ()>,
+    /// Sync IDs whose holding moved (`unread` written through `W::set_reads`).
+    holdings_feed: Vec<SyncId>,
     unsettled: Stamped<SyncId, ()>,
     unpullable: Stamped<SyncId, ()>,
+    /// Bodies no wrap for their sync ID is held for yet.
+    unwrappable: Stamped<(SyncId, CommitId), ()>,
     /// Blobs held with other parts than `{0}`, as a copy, or without bytes (`None`).
     blobs: Stamped<BlobId, Option<BlobInfo>>,
     /// Blobs holding a part dropped here for good (a purge).
@@ -335,11 +339,17 @@ impl Ground for Fake {
     fn reads(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unread.contains_key(s))
     }
+    fn holdings_moved(&mut self) -> Result<Vec<SyncId>> {
+        Ok(std::mem::take(&mut self.holdings_feed))
+    }
     fn closure_settled(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unsettled.contains_key(s))
     }
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unpullable.contains_key(s))
+    }
+    fn wraps(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        Ok(!self.unwrappable.contains_key(&(*s, *c)))
     }
     fn cert_blobs_missing(&mut self, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
         Ok(self.records.get(&(*s, r)).cloned().unwrap_or_default())
@@ -509,6 +519,15 @@ impl Fake {
         if self.anywhere.get(&(s, c)).copied().unwrap_or(false) != any {
             self.anywhere.insert((s, c), any);
         }
+    }
+
+    /// Whether this node holds S read (`Store::holding`): the holdings feed follows it.
+    fn set_reads(&mut self, s: SyncId, reads: bool) {
+        match reads {
+            true => self.unread.remove(&s),
+            false => self.unread.insert(s, ()),
+        };
+        self.holdings_feed.push(s);
     }
 
     fn set_sources(&mut self, s: SyncId, v: Vec<SrcView>) {
@@ -1563,6 +1582,39 @@ fn logs_only_while_a_reader_can_pull() {
     assert_eq!(w.logs(S, cid(1)), 1);
 }
 
+// spec/sync-judgement.md §3 (own store): a must-hold body no wrap for S is held for yet is
+// logged once one is (the judgement reads it, so it moves then), once.
+#[test]
+fn a_body_waits_for_a_wrap_then_is_logged_spec_sync_judgement_3() {
+    let mut w = W::new();
+    w.g.unwrappable.insert((S, cid(1)), ());
+    w.hold(cid(1), &[S], uncovered());
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
+    assert_eq!(w.logs(S, cid(1)), 0);
+    w.g.unwrappable.remove(&(S, cid(1)));
+    w.settle();
+    w.settle();
+    assert_eq!(w.logs(S, cid(1)), 1);
+}
+
+// spec/sync-judgement.md §3 (own store), spec/permissions.md §4 (Logging certificates): a body
+// and S's missing records judged while S is not yet held read (the engine's sync set lists S
+// before the store's holdings do) are logged once S comes to be read, with no restart.
+#[test]
+fn what_s_carries_is_logged_once_s_comes_to_be_read_spec_sync_judgement_3() {
+    let mut w = W::new();
+    let r1 = osis_base::Tid::from_bytes([1; 15]);
+    w.g.set_reads(S, false);
+    w.g.records.insert(S, CertBlobsMissing { records: [r1].into(), ..Default::default() });
+    w.hold(cid(1), &[S], uncovered());
+    assert_eq!(w.logs(S, cid(1)), 0);
+    assert!(w.g.record_logs.is_empty());
+    w.g.set_reads(S, true);
+    w.settle();
+    assert_eq!(w.logs(S, cid(1)), 1, "the body logged");
+    assert_eq!(w.g.record_logs, vec![(S, [r1].into())], "the records logged");
+}
+
 // spec/permissions.md §4 (Logging certificates: the records missing go as one record blob of the
 // logging node's, while held in its own store), spec/sync-judgement.md §3 (own store: logged only while a reader can
 // pull it): a sync ID's missing records are logged once as one record blob once a reader can pull
@@ -2471,3 +2523,80 @@ fn a_move_of_its_bodies_inputs_restarts_the_wait_spec_sync_judgement_2() {
     assert_eq!(w.read.verdict(&S, &c), None);
     assert_eq!(w.g.unlogged.len(), 1);
 }
+
+// spec/sync-judgement.md §3 (own store: must-hold bodies are logged), spec/permissions.md §4
+// (Logging certificates): a body this node could not wrap for S when first judged (no read epoch
+// of S's thing held yet: a contact's profile read through a redeemed link) is logged in the
+// session once it can, so a start logs no body the session left unlogged.
+#[test]
+fn a_body_is_logged_once_it_can_be_wrapped_spec_sync_judgement_3() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world};
+    let mut w = world(0, 3);
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
+    // the own entries naming a commit, per sync ID read
+    let bodies = |w: &mut crate::harness::World, i: usize| -> BTreeSet<(SyncId, BlobId)> {
+        let mut out = BTreeSet::new();
+        for (s, _) in w.store(i).syncs().into_iter().filter(|(_, (_, h))| *h == osis_engine::sync::Holding::Read) {
+            for e in w.store(i).entries(&s).unwrap() {
+                if w.engine(i).blob_commit(&e.blob).unwrap().is_some() {
+                    out.insert((s, e.blob));
+                }
+            }
+        }
+        out
+    };
+    let before: Vec<_> = (0..3).map(|i| bodies(&mut w, i)).collect();
+    for i in 0..3 {
+        w.power_off(i);
+    }
+    for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+        w.partition(i, j);
+    }
+    for i in 0..3 {
+        w.power_on(i);
+    }
+    w.run();
+    for (i, b) in before.iter().enumerate() {
+        let new: Vec<_> = bodies(&mut w, i).difference(b).copied().collect();
+        assert!(new.is_empty(), "node {i}: bodies a start logged that the session did not: {new:?}");
+    }
+}
+
+/// Node 0 makes `n` things, each kept unread by node 1 and read by node 2, run to quiet; then
+/// every node restarts cut off from the others: the durable commits (engine store, sync store)
+/// each node's first start makes, run to quiet.
+fn first_starts(n: usize) -> Vec<(u64, u64)> {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, world};
+    let mut w = world(0, 3);
+    w.cap = 2_000_000;
+    let mut steps = Vec::new();
+    for k in 0..n {
+        steps.extend([New(0), Grant(0, k, 1, Gives::Syncs), Grant(0, k, 2, Gives::Reads)]);
+    }
+    steps.push(Run);
+    let _ = crate::harness::play(&mut w, &steps, String::new());
+    for i in 0..3 {
+        w.power_off(i);
+    }
+    for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+        w.partition(i, j);
+    }
+    for i in 0..3 {
+        w.power_on(i);
+    }
+    w.run();
+    (0..3).map(|i| (w.engine(i).store_writes().committed, w.store(i).committed())).collect()
+}
+
+// spec: none (property: notes/growth.md, no per-session growth; spec/sync-judgement.md §3, a node
+// logs what S must hold while it runs): a first start after a session finds nothing owed, at n
+// and 10n things shared with a reader and a node keeping them unread.
+#[test]
+fn a_first_start_after_a_session_commits_the_same_at_n_and_10n() {
+    let (a, b) = (first_starts(1), first_starts(10));
+    assert_eq!(a, b, "(engine, store) commits per node's first start");
+}
+
+

@@ -33,6 +33,7 @@ pub struct Feeds {
     /// The own store's entries, the blobs coming to name a commit and the commits coming to be
     /// held (`entries_added`).
     entries: Option<EntryFeeds>,
+    syncs: Option<Feed<SyncId>>,
 }
 
 /// `Feeds::entries`: the store's entries, blobs opened or sealed, commits held.
@@ -150,6 +151,7 @@ impl Ground for Live<'_, '_> {
         if self.feeds.known.is_none() {
             self.feeds.known = Some(self.streams.known().feed());
             self.feeds.views = Some(self.views.feed());
+            self.feeds.syncs = Some(self.cx.store.syncs_feed());
         }
         match self.commits.as_mut() {
             Some(f) => Ok(f.added()),
@@ -225,6 +227,9 @@ impl Ground for Live<'_, '_> {
     fn reads(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.cx.store.holding(s) == Some(osis_engine::sync::Holding::Read))
     }
+    fn holdings_moved(&mut self) -> Result<Vec<SyncId>> {
+        Ok(self.feeds.syncs.as_mut().map(|f| f.added()).unwrap_or_default())
+    }
     fn closure_settled(&mut self, s: &SyncId) -> Result<bool> {
         match self.thing(s)? {
             Some(t) => Ok(self.cx.engine.closure_whole(&t)?),
@@ -237,6 +242,9 @@ impl Ground for Live<'_, '_> {
             return Ok(true);
         }
         Ok(self.cx.engine.publishes_reach()?)
+    }
+    fn wraps(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        Ok(self.cx.engine.body_wrap(s, c)?)
     }
     fn now(&self) -> WallMs {
         self.cx.now

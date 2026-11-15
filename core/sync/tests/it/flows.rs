@@ -169,6 +169,17 @@ fn raised_from_sync_to_read_opens_what_is_held_spec_sync_judgement_6() {
     crate::convergence::converge(5, 3, &[New(2), New(2), Grant(2, 1, 0, Gives::Syncs), Run, Grant(2, 1, 0, Gives::Reads)], String::new());
 }
 
+// spec/permissions.md §3 (Lost access), spec/sync-judgement.md §3 (own store): a writer that
+// restamped the writes it pulled as its own logs, removed and granted write again, reads them:
+// its own entries, whose commits went with the lost access, open again as access returns (an
+// entry waits for S's read secrets own or not). Found by the differential.
+#[test]
+fn own_logs_open_again_when_access_returns_spec_permissions_3() {
+    use crate::harness::Step::*;
+    use crate::harness::history::Gives;
+    crate::convergence::converge(7, 3, &[New(1), Write(1, 0), Write(1, 0), Write(1, 0), Rotate(1, 0), Write(1, 0), Write(1, 0), Grant(1, 0, 0, Gives::Reads), Partition(0, 1), Grant(1, 0, 0, Gives::Writes), Remove(1, 0, 0), Run, Grant(1, 0, 0, Gives::Writes)], String::new());
+}
+
 // spec/sync-inbox.md §2 (Re-send): a holder of sync alone, removed and granted read before either
 // reached it, reads the thing: its open by its old sync credential does not show the read grant
 // taken. Found by the differential.

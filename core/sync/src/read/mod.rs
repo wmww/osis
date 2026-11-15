@@ -257,6 +257,19 @@ impl Read {
             }
             self.judged.want(k);
         }
+        // a sync ID coming to be read: a judgement while it was not (it joined the engine's sync
+        // set before the store's holdings) left its keys unfollowed
+        for s in g.holdings_moved()? {
+            if !g.reads(&s)? {
+                continue;
+            }
+            for (k, _) in self.metas.range((s, CommitId([0; 32]))..=(s, CommitId([0xff; 32]))) {
+                self.judged.want(*k);
+            }
+            self.dooms.want(s);
+            self.cert_blobs.want(s);
+            self.steps.want(s);
+        }
         let mut acted = false;
         for s in self.dooms.due() {
             let told_before = self.told.contains_key(&s);

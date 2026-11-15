@@ -400,7 +400,8 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         if !stands && restamp.is_empty() {
             restamp.extend(peer);
         }
-        if !stands && restamp.is_empty() {
+        // logged once it can be wrapped for S: read here, so the judgement moves when it can
+        if !stands && restamp.is_empty() && g.wraps(s, c)? {
             j.acts.insert(Act::Log);
         }
         j.acts.extend(restamp.into_iter().map(Act::Restamp));

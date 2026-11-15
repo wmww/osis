@@ -116,12 +116,18 @@ pub trait Ground {
     /// This node syncs S read (`Store::holding`: the sync set, or leaving and waiting): read judges
     /// nothing else.
     fn reads(&mut self, s: &SyncId) -> Result<bool>;
+    /// Sync IDs whose holding moved since the last call (none at the first: a start judges every
+    /// body): one coming to be read judges its bodies, which a judgement while it was not read
+    /// left unfollowed.
+    fn holdings_moved(&mut self) -> Result<Vec<SyncId>>;
     /// No group of S's closure holds a part of its `group.0` as a header only (spec/sync-judgement.md
     /// §2 outside the required set, §3 Header-only parts): until then nothing is judged outside it.
     fn closure_settled(&mut self, s: &SyncId) -> Result<bool>;
     /// A reader can pull S from here: this node publishes `reach.0`, or a connection shares S
     /// (spec/sync-judgement.md §3 Own store).
     fn pullable(&mut self, s: &SyncId) -> Result<bool>;
+    /// `c`'s body can be wrapped for S now (`Engine::body_wrap`): logging waits for it.
+    fn wraps(&mut self, s: &SyncId, c: &CommitId) -> Result<bool>;
     /// The time (not followed: `Read` follows it through its clock).
     fn now(&self) -> WallMs;
 

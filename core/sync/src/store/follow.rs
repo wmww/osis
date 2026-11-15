@@ -349,10 +349,15 @@ fn charge_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Resul
     Ok(())
 }
 
-/// Whether entry `b` of S waits for a read secret: a peer's entry whose commit is neither held
-/// nor pending here (it did not open, or what it opened to was thrown out).
+/// Whether entry `b` of S waits for a read secret: one whose commit is neither held nor pending
+/// here (it did not open, what it opened to was thrown out, or, an own log, the commit was
+/// forgotten with lost access and opens again when access returns). An own entry naming no
+/// commit (a certificate blob sealed here from what is held) waits for nothing.
 fn waits(engine: &mut Engine, e: &crate::types::Entry) -> Result<bool> {
-    Ok(!e.own && !engine.blob_commit(&e.blob)?.is_some_and(|c| engine.holds_commit(&c) || engine.pends(&c)))
+    Ok(match engine.blob_commit(&e.blob)? {
+        Some(c) => !engine.holds_commit(&c) && !engine.pends(&c),
+        None => !e.own,
+    })
 }
 
 /// Parks entry `b` (`e`: held now) if it waits for a read secret, else unparks it (gone, or
