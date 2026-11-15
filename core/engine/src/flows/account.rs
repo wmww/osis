@@ -901,7 +901,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         }
         let commit_of = |c: &CommitId| -> Option<osis_perm::AccountCommit<CommitId, Tid>> {
             let m = tx.core.ix.commits.get(c).filter(|m| m.view.author == p)?;
-            Some(osis_perm::AccountCommit { id: *c, epoch: m.view.epoch?, things: things_of(&m.view) })
+            Some(osis_perm::AccountCommit { id: *c, epoch: m.view.epoch?, things: things_of(&m.view), role: m.view.kind.is_role() })
         };
         let mut lists: Vec<osis_perm::ThingList<CommitId, Tid>> = Vec::new();
         let mut listings: BTreeMap<(CommitId, Tid), BTreeSet<CommitId>> = BTreeMap::new();

@@ -23,7 +23,7 @@ fn rot(id: u32, at: u32, sup: &[u32], names: &[u32]) -> Rotation<u32> {
 
 /// Commit `id` at `epoch` on thing 0.
 fn c(id: u32, epoch: u32) -> AccountCommit<u32, u32> {
-    AccountCommit { id, epoch, things: set(&[0]) }
+    AccountCommit { id, epoch, things: set(&[0]), role: true }
 }
 
 fn list(rotation: u32, commits: &[u32]) -> ThingList<u32, u32> {
@@ -103,20 +103,23 @@ fn rotator_received_write_counts_later_write_does_not() {
     assert!(before.counts(&100) && before.counts(&101), "without the rotation the epoch is open");
 }
 
-// spec/permissions.md §5.5 (Waiting): at a node of P, P's commits on D at a closed epoch count
-// while no closer's thing list for D is held there; once one is, the lists judge them. Another
-// thing's commits are unlisted at once.
+// spec/permissions.md §5.5 (Waiting): at a node of P, P's role commits on D at a closed epoch
+// count while no closer's thing list for D is held there; once one is, the lists judge them.
+// Another thing's commits, and plain content on D, are unlisted at once.
 #[test]
 fn a_node_of_the_account_waits_for_the_devices_list() {
     let mut other = c(102, 0);
     other.things = set(&[1]);
-    let commits = [c(100, 0), c(101, 0), other];
+    let mut plain = c(103, 0);
+    plain.role = false;
+    let commits = [c(100, 0), c(101, 0), other, plain];
     let rots = [rot(1, 0, &[0], &[])];
     let received = [1];
     let at = |l: &[ThingList<u32, u32>], listed: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, l, &[], Some(osis_perm::Awaited { thing: 0, listed: set(listed) })), commits.to_vec(), Vec::new());
     let waiting = at(&[], &[]);
     assert!(waiting.counts(&100) && waiting.counts(&101), "no list of D held: waiting");
     assert!(!waiting.counts(&102), "another thing's commits are unlisted");
+    assert!(!waiting.counts(&103), "plain content on D is unlisted");
     let listed = at(&[list(1, &[100])], &[1]);
     assert!(listed.counts(&100) && !listed.counts(&101), "the list held judges");
     let outsider = judge(&rots, &commits, (&[], &[], &[]));
@@ -207,7 +210,7 @@ fn listing_at_a_closed_epoch_counts_once_listed() {
 #[test]
 fn thing_list_names_only_commits_on_its_thing() {
     let rots = [rot(1, 0, &[0], &[])];
-    let on = |id: u32, things: &[u32]| AccountCommit { id, epoch: 0, things: set(things) };
+    let on = |id: u32, things: &[u32]| AccountCommit { id, epoch: 0, things: set(things), role: false };
     let wrong = ThingList { rotation: 1, thing: 1, commits: set(&[100]) };
     let right = ThingList { rotation: 1, thing: 1, commits: set(&[101]) };
     let e = judge(&rots, &[on(100, &[2]), on(101, &[1, 2])], (&[wrong, right], &[], &[]));
@@ -218,7 +221,7 @@ fn thing_list_names_only_commits_on_its_thing() {
 /// the rotation's list for the devices actor names it.
 #[test]
 fn removal_commit_counts_through_its_rotation() {
-    let removal = AccountCommit { id: 100, epoch: 0, things: set(&[9]) };
+    let removal = AccountCommit { id: 100, epoch: 0, things: set(&[9]), role: true };
     let e = judge(&[rot(1, 0, &[0], &[])], std::slice::from_ref(&removal), (&[ThingList { rotation: 1, thing: 9, commits: set(&[100]) }], &[], &[]));
     assert!(e.counts(&100));
     assert!(judge(&[], &[removal], (&[], &[], &[])).counts(&100), "alone it closes nothing");
@@ -339,7 +342,7 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
         }
         if let (Some(e), false) = (it.epoch, matches!(it.kind, Kind::Rotation { .. })) {
             let thing = it.kind.thing().unwrap_or(D);
-            let c = AccountCommit { id: pid(w, i), epoch: e, things: [thing].into() };
+            let c = AccountCommit { id: pid(w, i), epoch: e, things: [thing].into(), role: !matches!(it.kind, Kind::Content { .. } | Kind::Snap { .. }) };
             if let Kind::Listing { thing, lists: l, .. } = &it.kind {
                 listings.push(Listing { listing: c.clone(), thing: *thing, commits: ids(l) });
             }

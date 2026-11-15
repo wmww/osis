@@ -20,13 +20,14 @@ use osis_base::format::LIST_TREE_DEPTH;
 use osis_base::hash::Hasher;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A held commit of the account: its ID, the epoch it is signed at, and the things it has a
-/// delta on or acts for.
+/// A held commit of the account: its ID, the epoch it is signed at, the things it has a delta on
+/// or acts for, and whether it is a role commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountCommit<E, T> {
     pub id: E,
     pub epoch: E,
     pub things: BTreeSet<T>,
+    pub role: bool,
 }
 
 /// A held thing list (the caller verified it against its rotation's list root,
@@ -149,13 +150,15 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
         self.deciders.get(e).cloned().unwrap_or_default()
     }
 
-    /// Whether `c` counts only by waiting: at a closed epoch, named by no word, on the awaited
-    /// thing while one of the closers whose lists name its epoch's commits (`deciders`) does not
-    /// decide there yet: any list may name it, so one held that does not says nothing. A lister
-    /// still names it.
+    /// Whether `c` counts only by waiting: a role commit at a closed epoch, named by no word, on
+    /// the awaited thing while one of the closers whose lists name its epoch's commits
+    /// (`deciders`) does not decide there yet: any list may name it, so one held that does not
+    /// says nothing. A lister still names it. Only role commits wait: D's roster, keys and seeds
+    /// are role-class, and a removed node's role commits on D are cut where its removal is taken
+    /// (`Chain::cut`), so a decider whose list never comes keeps none of its later word counting.
     pub fn waits(&self, c: &AccountCommit<E, T>) -> bool {
         let (Some(w), Some(deciders)) = (self.awaited.as_ref(), self.deciders.get(&c.epoch)) else { return false };
-        !self.chain.holds(&c.id) && c.things.contains(&w.thing) && !deciders.is_subset(&w.listed) && !c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
+        c.role && !self.chain.holds(&c.id) && c.things.contains(&w.thing) && !deciders.is_subset(&w.listed) && !c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
     }
 
     /// What the epoch rule says of `c` (`EpochStanding`).

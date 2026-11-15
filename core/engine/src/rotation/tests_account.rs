@@ -702,9 +702,9 @@ fn a_proved_answer_warns_and_can_be_chosen_spec_permissions_5_4() {
 }
 
 // spec/permissions.md §5.5 (Waiting): a node of the account holding a sibling's rotation
-// without its thing list for D keeps every commit of the account on D at the closed epoch (D's
-// roster, so it stays a node of the account); once that list arrives, the lists judge: what
-// the rotator held stands, a write it never held falls.
+// without its thing list for D keeps every role commit of the account on D at the closed epoch
+// (D's roster, so it stays a node of the account); plain content on D reads unlisted, as on any
+// thing. Once that list arrives, the lists judge: what the rotator held stands.
 #[test]
 fn a_node_of_the_account_waits_for_d_s_list_spec_permissions_5_5() {
     let mut lp = peers(2);
@@ -731,7 +731,8 @@ fn a_node_of_the_account_waits_for_d_s_list_spec_permissions_5_5() {
     e.take_rotations(rots).unwrap();
     assert!(e.header(&r).is_some(), "the rotation held");
     let counts = |e: &crate::Engine, c: &CommitId| e.core.counts_at_epoch(c, &p, e.header(c).and_then(|h| h.epoch));
-    assert!(counts(e, &g) && counts(e, &x), "waiting for D's list: both stand");
+    assert!(counts(e, &g), "waiting for D's list: the grant stands");
+    assert!(!counts(e, &x), "plain content on D waits for nothing");
     assert!(e.roster(&d).contains_key(&sib), "still a node of the account");
     assert_eq!(e.hold_lists(&lists).unwrap(), crate::flows::lists::ListsHeld::Held);
     assert!(counts(e, &g), "the list names the grant");

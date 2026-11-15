@@ -1986,7 +1986,10 @@ fn a_sibling_taking_a_removals_rotation_before_its_list_stays_spec_permissions_5
             rots.push(lp.peers[0].engine.rotate_account(&a.account).unwrap().unwrap());
         }
         proved(&mut lp, 0, 1);
-        assert!(rots.iter().all(|r| lp.peers[1].engine.header(r).is_some()), "more {more}: the rotations held");
+        // the later rotations' inner signatures open only with the removal's seed, which a
+        // header-only copy lacks: their minters unknown, they count nowhere here and the Prove
+        // keeps none of them
+        assert!(lp.peers[1].engine.header(&rots[0]).is_some(), "more {more}: the removal's rotation held");
         assert!(a_node(&mut lp, 1, &a), "more {more}: waiting for D's list, still a node");
         lp.peers[1].restart(1).unwrap();
         assert!(a_node(&mut lp, 1, &a), "more {more}: still a node after a restart");
@@ -2055,4 +2058,82 @@ fn a_removed_nodes_writes_after_its_removal_count_at_no_reader_spec_permissions_
             assert_ne!(e.get(&a.devices, &x()).unwrap(), Some(Value::Str("removed".into())), "took {took}, peer {k}: read on D");
         }
     }
+}
+
+// spec/permissions.md §5.5 (Waiting: only role commits wait), §5.4 (a removed node's word on D is
+// what its remover held of it): node 2 rotates while a node and withholds the rotation's thing
+// lists, so its siblings hold it without its list of D; node 0 removes it with a rotation at that
+// epoch, so the epoch before it is decided by node 2's list alone, for good. A write node 2 then
+// signs on D at that earlier epoch (its first epoch's key, kept: a copy of it from before) counts
+// at neither sibling, as when the list was sent, and both stay nodes.
+#[test]
+fn a_removed_nodes_withheld_list_keeps_none_of_its_later_word_on_d_spec_permissions_5_5() {
+    for withheld in [false, true] {
+        let (mut lp, a, _) = world(3, 3);
+        let (mut before, _, _) = world(3, 3);
+        let own = lp.peers[2].engine.rotate_account(&a.account).unwrap().unwrap();
+        for to in [0, 1] {
+            lp.advance(1);
+            let mut pk = lp.peers[2].engine.package(&own).unwrap().unwrap();
+            if withheld {
+                pk.lists.clear();
+            }
+            lp.deliver(to, &pk).unwrap();
+        }
+        let done = remove(&mut lp, 0, a.devices, 2);
+        assert_eq!(lp.peers[0].engine.header(&done.commits[1]).unwrap().epoch, Some(own), "withheld {withheld}: the removal's rotation at node 2's");
+        lp.sync(0, 1).unwrap();
+        lp.sync(1, 0).unwrap();
+        before.advance(100_000);
+        let mut m = crate::Mutation::new();
+        m.sign_as(a.account);
+        m.set(a.devices, &x(), &Value::Str("removed".into())).unwrap();
+        let late = before.peers[2].commit(m).unwrap().unwrap();
+        assert_eq!(before.peers[2].engine.header(&late).unwrap().epoch, Some(osis_commit::FIRST_EPOCH));
+        let pk = before.peers[2].engine.package(&late).unwrap().unwrap();
+        for k in [0, 1] {
+            lp.advance(1);
+            lp.deliver(k, &pk).unwrap();
+            lp.peers[k].engine.signing_due().unwrap();
+            assert!(a_node(&mut lp, k, &a), "withheld {withheld}, peer {k}: a node");
+            assert_eq!(lp.peers[k].engine.get(&a.devices, &x()).unwrap(), None, "withheld {withheld}, peer {k}: the removed node's later write on D");
+        }
+    }
+}
+
+// spec/permissions.md §5.5 (Cutoff, Listings, Waiting), §5.4: node 0 pairs node 2 while node 1,
+// not holding that grant, rotates the account. Node 2 takes the rotation with its lists: the
+// list of D names no grant of node 2 (node 1 never held it), so the grant reads unnamed until
+// node 0's listing names it. Node 2 must stay a node of the account throughout, and once settled.
+#[test]
+#[ignore = "issues/paired-beside-rotation-leaves.md: a node leaves on an unnamed grant, not on its removal"]
+fn a_node_paired_beside_a_concurrent_rotation_stays_spec_permissions_5_5() {
+    let mut lp = LocalPeer::new_bare(3, 7, WallMs(1_700_000_000_000)).unwrap();
+    let (a, _) = lp.peers[0].engine.create_account().unwrap();
+    for i in [1, 2] {
+        let node = lp.peers[i].engine.tid();
+        let ids = lp.peers[i].engine.commit_ids();
+        send(&mut lp, i, 0, &ids);
+        let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
+        send(&mut lp, 0, i, &all);
+        lp.peers[i].engine.paired(&a.account).unwrap();
+        if i == 1 {
+            lp.sync_all().unwrap();
+            lp.advance(1000);
+        }
+    }
+    assert!(a_node(&mut lp, 2, &a), "paired");
+    let r = lp.peers[1].engine.rotate_account(&a.account).unwrap().unwrap();
+    send(&mut lp, 1, 2, &[r]);
+    assert!(a_node(&mut lp, 2, &a), "the rotation held with its lists");
+    lp.peers[2].engine.signing_due().unwrap();
+    assert!(a_node(&mut lp, 2, &a), "its answer made");
+    for _ in 0..3 {
+        lp.sync_all().unwrap();
+        for k in 0..3 {
+            lp.peers[k].engine.signing_due().unwrap();
+        }
+    }
+    lp.sync_all().unwrap();
+    assert!(a_node(&mut lp, 2, &a), "settled");
 }
