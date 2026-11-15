@@ -51,7 +51,9 @@ impl Engine {
 
     /// The role commits of `s`'s thing that recorded step `step`'s epochs depend on: the held
     /// rotations of the epochs it registers and of those they supersede (spec/sync-ids.md §6
-    /// Steps). Empty for a step this node does not record.
+    /// Steps). A role's epoch is the one whose key the step carries; where no secret held here
+    /// tells (a reader registering a write or delete key), each current epoch of the role here.
+    /// Empty for a step this node does not record.
     pub(crate) fn step_needs_now(&mut self, s: &SyncId, step: &StepId) -> Result<Arc<Vec<CommitId>>> {
         let Some(t) = self.sync_owner_of(s)? else { return Ok(Arc::default()) };
         let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s).cloned() else { return Ok(Arc::default()) };
@@ -60,12 +62,14 @@ impl Engine {
         let Some(ep) = self.epochs(&t) else { return Ok(Arc::default()) };
         let mut out = BTreeSet::new();
         for (r, e) in [Role::Sync, Role::Write, Role::Admin].into_iter().zip(k.epochs) {
-            let Some(e) = e else { continue };
-            let Some(info) = ep.role(r).get(&e) else { continue };
-            out.extend(info.rotations.keys().copied());
-            for x in &info.supersedes {
-                if let Some(i) = ep.role(r).get(x) {
-                    out.extend(i.rotations.keys().copied());
+            let re = ep.role(r);
+            for e in e.map_or_else(|| re.current(), |e| vec![e]) {
+                let Some(info) = re.get(&e) else { continue };
+                out.extend(info.rotations.keys().copied());
+                for x in info.superseded_epochs() {
+                    if let Some(i) = re.get(&x) {
+                        out.extend(i.rotations.keys().copied());
+                    }
                 }
             }
         }

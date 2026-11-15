@@ -305,7 +305,8 @@ fn a_dropped_copy_granted_read_again_is_fetched_from_the_start_spec_sync_judgeme
 // the new head, the rotations the step registers under the step before it. With node 0 off,
 // node 2 (a reader, no writer) registers the path at node 1, which takes the write node 0 logs as
 // node 0 stamped it: node 2 deposits no write, at node 1's old head (it registers the step there
-// first) or its new one.
+// first) or its new one, and registers the step only once node 1 holds the write rotation (holding
+// no write secret to tell the step's write epoch, it reads the current one), so nothing is refused.
 #[test]
 fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgement_3() {
     use crate::harness::Step::*;
@@ -380,4 +381,11 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
         assert!(w.store(1).entry(&s, b).unwrap().is_some_and(|e| e.stamp.is_some()), "{b:?} taken at node 1 as node 0 stamped it");
     }
     assert_eq!(reader_deposits(&mut w), 0, "node 2 deposits nothing");
+    // node 2, holding no write secret, registered the step only once node 1 held the write
+    // rotation, so node 1 took it as node 0 stamped it, never refused (code 9) nor deposited
+    for c in needs.iter() {
+        let blobs = w.engine(0).commit_blobs(c).unwrap();
+        assert!(blobs.iter().any(|b| w.store(1).entry(&s, b).unwrap().is_some_and(|e| e.stamp.is_some() && !e.deposited)), "rotation {c:?} taken stamped at node 1");
+        assert!(!blobs.iter().chain(w.engine(2).commit_blobs(c).unwrap().iter()).any(|b| w.store(2).entry(&s, b).unwrap().is_some_and(|e| e.own && e.deposited)), "node 2 deposits no rotation {c:?}");
+    }
 }

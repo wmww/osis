@@ -1073,8 +1073,8 @@ impl Engine {
             let re = epochs.role(r);
             let Some(info) = re.newest().and_then(|e| re.get(&e)) else { continue };
             out.extend(info.rotations.keys().copied());
-            for x in &info.supersedes {
-                if let Some(i) = re.get(x) {
+            for x in info.superseded_epochs() {
+                if let Some(i) = re.get(&x) {
                     out.extend(i.rotations.keys().copied());
                 }
             }
