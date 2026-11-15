@@ -166,8 +166,8 @@ impl Core {
     /// `a`'s record chain through standing record edges (spec/permissions.md §1): `a`, then its
     /// first admin while `a`'s record edge stands here (any role), and so on up, the top
     /// included (a key actor, or a thing whose record is not held). The one walk for node rules
-    /// that read the record chain as standing: inboxes, `sync.0` cross-publishing, hosting
-    /// admission, inbox stamps and copies (spec/sync-ids.md §2, spec/sync-judgement.md §1; spec/data-model.md §9).
+    /// that read the record chain as standing: inboxes, `sync.0` cross-publishing, inbox stamps
+    /// and copies (spec/sync-ids.md §2, spec/sync-judgement.md §1; spec/data-model.md §9).
     /// Derivation and entitlement read the records alone (`record_chain`).
     pub fn standing_chain(&self, a: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();

@@ -11,7 +11,7 @@ Nothing of recovery is in the engine or spec. Accounts (spec/permissions.md §1)
 
 ## Questions for the design
 - Is recovery an explicit act after `create`, any time, with or without peers?
-- Where the data comes from on restore: any node of the account, saved peers, or an address typed in.
+- Where the data comes from on restore: any node of the account or an address typed in.
 - How a lost or stolen card is revoked.
 - Interaction with disputes (notes/disputes-plan.md step 3).
 

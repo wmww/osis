@@ -801,11 +801,11 @@ fn group_and_splice_commands() {
     assert_eq!(s.code(&["op", &schema, "t:made.0", "", "splice"]), 2, "a range");
 }
 
-// No-server audit rows 3 and 12 (issues/sync-rewrite.md Phase 4), spec/permissions.md §7: with no saved peers
+// No-server audit rows 3 and 12 (issues/sync-rewrite.md Phase 4), spec/permissions.md §7: with no peer to dial
 // the CLI still makes a link, a chat link and a contact card; a store with no peers is not a dead end.
 #[test]
 #[ignore = "issues/sync-rewrite.md"]
-fn repro_row3_row12_links_and_cards_on_a_store_with_no_saved_peer() {
+fn repro_row3_row12_links_and_cards_on_a_store_with_no_peer() {
     let s = S::mem();
     let g = s.ok(&["create", "--in", "home", "t:made.0", "true"]).line().to_string();
     s.ok(&["group", "sync", &g]);

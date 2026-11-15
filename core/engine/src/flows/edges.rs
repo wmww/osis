@@ -40,7 +40,7 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
 }
 
 /// The chain commits an inbox payload carries (spec/wire.md §9) that decode as commit blobs, each
-/// cut to its chain deltas. Admission judges the blob's commit, which anyone can name: a box or a
+/// cut to its chain deltas. Taking it judges the blob's commit, which anyone can name: a box or a
 /// `sync.0` here would be an invite nobody was asked about; a bare edge is the limit (a status
 /// row at worst).
 pub fn inbox_chain(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, CommitBlob)> {
