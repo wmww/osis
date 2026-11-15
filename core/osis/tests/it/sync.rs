@@ -444,8 +444,14 @@ fn a_local_thing_shares_no_write_with_a_shared_group_spec_sync_set_1() {
     }
     assert_eq!(name(&o, g).as_deref(), Some("shared"), "the group's write reached o");
     assert_eq!(o.created(l).unwrap(), None, "the local thing did not");
-    a.grant(l, o.me(), Role::Read, osis::GrantOpts::default()).unwrap();
-    assert_eq!(a.at(l, osis::core::NAME).get().unwrap().as_deref(), Some("private"));
+    a.grant(l, o.me(), Role::Read, osis::GrantOpts::default()).expect("granting a local thing shares it");
+    use osis::internals::Internals;
+    assert!(a.engine(|e| e.carried(&l)), "no longer local");
+    let mut w = a.write();
+    w.at(l, osis::core::NAME).set(&"private 2".to_string()).unwrap();
+    w.at(g, osis::core::NAME).set(&"shared 2".to_string()).unwrap();
+    w.commit().expect("shared: written beside what syncs");
+    assert_eq!(a.at(l, osis::core::NAME).get().unwrap().as_deref(), Some("private 2"));
 }
 
 // spec/sync-inbox.md §6 (first contact): a redeemer reaches the sharer node by the link and

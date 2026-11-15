@@ -700,13 +700,13 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
     // node anyway); placing a durable thing persists the group
     let home_item = w.create_with_content(db.home()).unwrap();
     w.group(db.home()).add(osis::Member::Item(home_item)).unwrap();
-    w.commit().unwrap();
-    // a local thing's write is a commit of its own (spec/sync-set.md §1 Local stays local)
-    let mut w = db.write();
-    w.group(g).add(osis::Member::Item(lost)).unwrap();
     // a thing whose admin is the account, an item of home: home's holders (the account's
     // devices actor) read as the account does (spec/sync-judgement.md §1 Entitlement)
     let mine = w.create_in(db.me(), &[db.home()]).unwrap();
+    w.commit().unwrap();
+    // a local thing's write is one of its own (spec/sync-set.md §1 Local stays local)
+    let mut w = db.write();
+    w.group(g).add(osis::Member::Item(lost)).unwrap();
     w.commit().unwrap();
     db.settle();
     let got: Vec<osis::Tid> = rx.try_iter().flatten().collect();
@@ -1840,6 +1840,13 @@ fn a_local_thing_is_not_filed_spec_sync_set_1() {
     let filed = w.create().unwrap();
     w.commit().unwrap();
     assert!(in_home(filed), "not made local: filed");
+    // a link's actor and key (records and keys go as chain certificates, not bodies)
+    let mut w = db.write();
+    let shared = w.create_in(db.me(), &[home]).unwrap();
+    w.commit().unwrap();
+    db.make_link(shared, Role::Read, osis::LinkOpts::default()).unwrap();
+    db.settle();
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![], "the account's own item of home reaches its holders");
     let mut w = db.write();
     let local = w.create_local().unwrap();
     let _ = w.create().unwrap();
@@ -1892,6 +1899,28 @@ fn a_local_thing_shares_no_write_with_what_syncs_spec_sync_set_1() {
     name(&mut w, g, "g2");
     w.commit().unwrap();
     assert_eq!(db.at(l, osis::core::NAME).get().unwrap().as_deref(), Some("l4"));
+}
+
+// spec/sync-set.md §1 (Local stays local): an undo is judged as any write, on the state before
+// and after it. Reverting the write that listed a thing in home and wrote it is allowed (the
+// thing was carried as the revert began) and leaves it local; reverting, then, a write that put
+// it beside a thing that syncs is refused, naming it.
+#[test]
+fn an_undo_keeps_a_local_thing_local_spec_sync_set_1() {
+    let db = db(0);
+    let home = db.home();
+    let name = |w: &mut osis::Write<'_>, t, v: &str| w.at(t, osis::core::NAME).set(&v.to_string());
+    let g = db.commit_with(|w| w.create()).unwrap();
+    let l = db.commit_with(|w| w.create_local()).unwrap();
+    crate::common::keep_day(&db, g, &["name.0", "group.0"]);
+    crate::common::keep_day(&db, l, &["name.0", "t:x.0"]);
+    crate::common::keep_day(&db, home, &["group.0"]);
+    let x = osis::DynamicAspectKey::untyped(ak("t:x.0"));
+    let listed = commit_with(&db, |w| { w.group(home).add(osis::Member::Subgroup(l))?; w.at(l, x.clone()).set(&Value::Int(1)) });
+    let beside = commit_with(&db, |w| { name(w, l, "l2")?; name(w, g, "g") });
+    db.revert(listed.stamp.id).expect("l carried as the revert begins");
+    assert!(!db.engine(|e| e.carried(&l)) && db.at(l, x).get().unwrap().is_none(), "reverted, local again");
+    assert!(matches!(db.revert(beside.stamp.id), Err(Error::Invalid(m)) if m.contains(&l.to_string())), "its blob would carry l");
 }
 
 // spec/sync-set.md §1 (Filing): the filing listing is part of the creating commit, with its
