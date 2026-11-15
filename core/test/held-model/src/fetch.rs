@@ -1,6 +1,6 @@
 //! Fetching what judges what the node holds (notes/expiry-creation-design.md §3): which entries a
 //! node can open, what it keeps of an entry it cannot judge, and the fixed point it reaches.
-//! A sync ID holds a commit's parts on its things, or the whole commit where a copy is placed under
+//! A sync ID holds a commit's parts on its things, or the whole commit where a copy is logged under
 //! it (a home-sync-ID sibling). An entry is delivered only under a sync ID the node holds a key for.
 //! A part or commit that cannot be judged is discarded (`act`); before that, boxes opening with
 //! the node's own key are read: reading-only keys, sourced from the commit, that open further
@@ -19,7 +19,7 @@ pub struct Library {
     pub me: NodeId,
     /// Records known from the start.
     pub records: Vec<Record>,
-    /// The sync IDs each thing's parts are placed under.
+    /// The sync IDs each thing's parts are logged under.
     pub sync_ids: BTreeMap<ThingId, BTreeSet<SyncId>>,
     /// Further sync IDs holding a whole commit (a home-sync-ID sibling copy).
     pub copies: BTreeMap<CommitId, BTreeSet<SyncId>>,
@@ -29,7 +29,7 @@ pub struct Library {
 }
 
 impl Library {
-    fn places(&self, c: &Commit, sync_id: SyncId) -> bool {
+    fn logs(&self, c: &Commit, sync_id: SyncId) -> bool {
         self.copies.get(&c.id).is_some_and(|s| s.contains(&sync_id)) || c.parts.iter().any(|p| self.part_in(p, sync_id))
     }
     fn part_in(&self, p: &Part, sync_id: SyncId) -> bool {
@@ -38,7 +38,7 @@ impl Library {
     fn entries(&self) -> Vec<(SyncId, CommitId)> {
         let mut ls: BTreeSet<SyncId> = self.sync_ids.values().flatten().copied().collect();
         ls.extend(self.copies.values().flatten());
-        ls.into_iter().flat_map(|l| self.commits.iter().filter(move |c| self.places(c, l)).map(move |c| (l, c.id))).collect()
+        ls.into_iter().flat_map(|l| self.commits.iter().filter(move |c| self.logs(c, l)).map(move |c| (l, c.id))).collect()
     }
     /// The commit as delivered under `sync_id`.
     fn delivered(&self, c: &Commit, sync_id: SyncId) -> Commit {

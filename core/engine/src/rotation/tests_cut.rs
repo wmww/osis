@@ -459,28 +459,28 @@ fn aspect_on_g(h: &osis_commit::Header, g: Tid) -> bool {
     h.aspects.iter().any(|a| a.tid == g && a.ak.as_str() != "created.0")
 }
 
-/// What `g`'s sync IDs hold: each commit on `g` sealed once, by the first peer to place it, under
-/// its wrap epoch then (`LocalPeer::sealed`, as node-sync places a body soon after it is made
+/// What `g`'s sync IDs hold: each commit on `g` sealed once, by the first peer to log it, under
+/// its wrap epoch then (`LocalPeer::sealed`, as node-sync logs a body soon after it is made
 /// or received).
 #[derive(Default)]
 struct Logged {
-    placed: BTreeSet<osis_base::CommitId>,
+    logged: BTreeSet<osis_base::CommitId>,
     held: Vec<crate::local_peer::SealedPackage>,
 }
 
 impl Logged {
-    /// Peers `among` place what they hold that is not placed yet, after the rotations due
+    /// Peers `among` log what they hold that is not logged yet, after the rotations due
     /// before they encrypt (noted).
-    fn place(&mut self, lp: &mut LocalPeer, g: Tid, among: &[usize]) {
+    fn log(&mut self, lp: &mut LocalPeer, g: Tid, among: &[usize]) {
         for &p in among {
             let _ = lp.peers[p].engine.ensure_rotated(&g);
             let e = &lp.peers[p].engine;
-            let ids: Vec<osis_base::CommitId> = e.commit_ids().into_iter().filter(|id| !self.placed.contains(id) && e.header(id).is_some_and(|h| aspect_on_g(&h, g))).collect();
+            let ids: Vec<osis_base::CommitId> = e.commit_ids().into_iter().filter(|id| !self.logged.contains(id) && e.header(id).is_some_and(|h| aspect_on_g(&h, g))).collect();
             if ids.is_empty() {
                 continue;
             }
             for pk in lp.sealed(p, &ids).unwrap() {
-                if self.placed.insert(pk.id) {
+                if self.logged.insert(pk.id) {
                     self.held.push(pk);
                 }
             }
@@ -490,10 +490,10 @@ impl Logged {
 
 /// Delivers to peer `to` what a history-less holder of `g` gets: its grant's commits (`done`, by
 /// peer `from`) and those any peer owes its inbox (`Engine::deliveries`), whole; `from`'s commits with no
-/// aspect on `g` but its creation record, raw; and what `g`'s sync IDs hold (`sync_id`), sealed as
-/// placed: `to` opens what its secrets and roles secrets open (spec/crypto.md §4, Roles secrets),
-/// so of what was placed before its cut only the `roles.0` sections.
-fn deliver_as_newcomer(lp: &mut LocalPeer, from: usize, to: usize, g: Tid, done: &crate::flows::Done, sync_id: &Logged) {
+/// aspect on `g` but its creation record, raw; and what `g`'s sync IDs hold (`logged`), sealed as
+/// logged: `to` opens what its secrets and roles secrets open (spec/crypto.md §4, Roles secrets),
+/// so of what was logged before its cut only the `roles.0` sections.
+fn deliver_as_newcomer(lp: &mut LocalPeer, from: usize, to: usize, g: Tid, done: &crate::flows::Done, logged: &Logged) {
     let me = lp.peers[to].engine.me();
     let inbox: Vec<osis_base::CommitId> = (0..lp.peers.len()).flat_map(|i| lp.peers[i].engine.deliveries().unwrap().iter().filter(|(_, t)| *t == me).map(|x| x.0).collect::<Vec<_>>()).collect();
     for c in done.commits.iter().copied().chain(inbox) {
@@ -506,7 +506,7 @@ fn deliver_as_newcomer(lp: &mut LocalPeer, from: usize, to: usize, g: Tid, done:
             let _ = lp.peers[to].receive(&pk.bytes, pk.blobs.clone());
         }
     }
-    let left = lp.deliver_sealed(to, &sync_id.held).unwrap();
+    let left = lp.deliver_sealed(to, &logged.held).unwrap();
     if std::env::var("OSIS_CUT_DUMP").is_ok() {
         for c in left {
             let h = lp.peers[from].engine.header(&c).unwrap();
@@ -527,16 +527,16 @@ fn cut_after_a_removal_establishes_at_the_newcomer_spec_crypto_4() {
         let mut lp = synced(3);
         let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
         let g = group(&mut lp, 0);
-        let mut sync_id = Logged::default();
+        let mut logged = Logged::default();
         lp.peers[0].engine.grant(&g, &tids[1], &edge(role)).unwrap();
-        sync_id.place(&mut lp, g, &[0]);
+        logged.log(&mut lp, g, &[0]);
         lp.sync_all().unwrap();
         lp.peers[0].engine.demote(&g, &crate::flows::Demotion { holder: tids[1], new: None, retain: None }).unwrap();
-        sync_id.place(&mut lp, g, &[0]);
+        logged.log(&mut lp, g, &[0]);
         let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Read), History::None).unwrap();
         let cut = lp.peers[0].engine.epochs(&g).unwrap().read.newest_held().unwrap().0;
-        sync_id.place(&mut lp, g, &[0]);
-        deliver_as_newcomer(&mut lp, 0, 2, g, &done, &sync_id);
+        logged.log(&mut lp, g, &[0]);
+        deliver_as_newcomer(&mut lp, 0, 2, g, &done, &logged);
         let e = lp.peers[2].engine.epochs(&g).unwrap();
         assert!(e.read.is_established(&cut), "{role:?}: N does not establish the cut");
         assert_eq!(e.read.current(), vec![cut], "{role:?}: N's current epochs");
@@ -628,17 +628,17 @@ fn cut_newcomer_holds_the_setting_in_force_spec_commits_5() {
     let (x, y) = (osis_base::Ak::new("note.0").unwrap(), osis_base::Ak::new("body.0").unwrap());
     let keep = RetentionEntry { history: Some(Kept::Keep { until: None, after: Some(1000) }), expires: None, r#final: false };
     let purge = RetentionEntry { history: Some(Kept::PurgeOnReplace), expires: None, r#final: false };
-    let mut sync_id = Logged::default();
+    let mut logged = Logged::default();
     for s in [RetentionSetting { rules: [(x.clone(), purge)].into(), ..Default::default() }, RetentionSetting { rules: [(x.clone(), keep), (y.clone(), keep)].into(), ..Default::default() }] {
         let mut m = crate::Mutation::new();
         m.set(g, &RETENTION, &s).unwrap();
         lp.peers[0].commit(m).unwrap();
-        sync_id.place(&mut lp, g, &[0]);
+        logged.log(&mut lp, g, &[0]);
         lp.advance(10);
     }
     let done = lp.peers[0].engine.grant_with(&g, &tids[1], &edge(Role::Read), History::None).unwrap();
-    sync_id.place(&mut lp, g, &[0]);
-    deliver_as_newcomer(&mut lp, 0, 1, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 1, g, &done, &logged);
     let s = lp.peers[1].engine.run(|tx| Ok(crate::apply::validity::setting_now(tx.core, &g))).unwrap().expect("N holds no setting");
     assert_eq!(s.rules.get(&x).and_then(|e| e.history), None, "the keep after purge on replace reads as kept at N");
     assert_eq!(s.rules.get(&y).and_then(|e| e.history), keep.history, "N lacks the setting's keep");
@@ -805,21 +805,21 @@ fn rotate(lp: &mut LocalPeer, i: usize, g: Tid) -> crate::flows::Done {
 #[test]
 fn fork_beside_the_cut_is_merged_for_the_newcomer_spec_crypto_4() {
     let (mut lp, g, tids) = two_admins();
-    let mut sync_id = Logged::default();
-    sync_id.place(&mut lp, g, &[0]);
+    let mut logged = Logged::default();
+    logged.log(&mut lp, g, &[0]);
     let done = lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
-    sync_id.place(&mut lp, g, &[0]);
+    logged.log(&mut lp, g, &[0]);
     let _ = rotate(&mut lp, 1, g);
     let _ = lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
-    sync_id.place(&mut lp, g, &[1]);
+    logged.log(&mut lp, g, &[1]);
     sync_among(&mut lp, &[0, 1, 2]);
     let merge = lp.peers[0].engine.reseal_after_pass(&g).unwrap();
     assert!(!merge.commits.is_empty(), "A's rotation over B's fork is not due");
     let n = lp.peers[3].engine.me();
     assert!(lp.peers[0].engine.deliveries().unwrap().iter().any(|(c, to)| *to == n && merge.commits.contains(c)), "the merge is not owed to N");
     settle_among(&mut lp, g, &[0, 1, 2]);
-    sync_id.place(&mut lp, g, &[0, 1, 2]);
-    deliver_as_newcomer(&mut lp, 0, 3, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0, 1, 2]);
+    deliver_as_newcomer(&mut lp, 0, 3, g, &done, &logged);
     let roster = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&g).into_iter().map(|(h, e)| (h, e.role)).collect::<Vec<_>>();
     assert_eq!(roster(&lp, 3), roster(&lp, 0), "N's roster differs from A's");
     let cur = lp.peers[0].engine.epochs(&g).unwrap().read.current();
@@ -865,16 +865,16 @@ fn settle_among(lp: &mut LocalPeer, g: Tid, among: &[usize]) {
 #[test]
 fn grant_beside_a_cut_reaches_the_newcomer_spec_crypto_4() {
     let (mut lp, g, tids) = two_admins();
-    let mut sync_id = Logged::default();
-    sync_id.place(&mut lp, g, &[0]);
+    let mut logged = Logged::default();
+    logged.log(&mut lp, g, &[0]);
     let done = lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
-    sync_id.place(&mut lp, g, &[0]);
+    logged.log(&mut lp, g, &[0]);
     lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
-    // B places its raise before it holds the cut: under the epoch the cut supersedes
-    sync_id.place(&mut lp, g, &[1]);
+    // B logs its raise before it holds the cut: under the epoch the cut supersedes
+    logged.log(&mut lp, g, &[1]);
     settle_among(&mut lp, g, &[0, 1, 2]);
-    sync_id.place(&mut lp, g, &[0, 1, 2]);
-    deliver_as_newcomer(&mut lp, 0, 3, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0, 1, 2]);
+    deliver_as_newcomer(&mut lp, 0, 3, g, &done, &logged);
     let roster = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&g).into_iter().map(|(h, e)| (h, e.role)).collect::<Vec<_>>();
     assert_eq!(roster(&lp, 0).iter().find(|x| x.0 == tids[2]).map(|x| x.1), Some(Role::Write), "A reads B's raise");
     assert_eq!(roster(&lp, 3), roster(&lp, 0), "N's roster differs from A's");
@@ -882,7 +882,7 @@ fn grant_beside_a_cut_reaches_the_newcomer_spec_crypto_4() {
 
 // spec/crypto.md §4 (Roles secrets): a cut writes the same commits and owes the same deliveries
 // whatever the role history: after 3 or 30 rounds of granting P and removing it again (each
-// removal a rotation), no role commit is placed again.
+// removal a rotation), no role commit is logged again.
 #[test]
 fn cut_cost_does_not_grow_with_role_history_spec_crypto_4() {
     let cost = |rounds: usize| {
@@ -966,8 +966,8 @@ fn newcomer_reads_the_roster(seed: u64) -> bool {
     let cut_at = rng.next(10) as usize;
     let mut done = None;
     let mut before = BTreeSet::new();
-    let mut sync_id = Logged::default();
-    sync_id.place(&mut lp, g, &among);
+    let mut logged = Logged::default();
+    logged.log(&mut lp, g, &among);
     for step in 0..14 {
         if step == cut_at {
             for p in among {
@@ -975,7 +975,7 @@ fn newcomer_reads_the_roster(seed: u64) -> bool {
             }
             done = lp.peers[0].engine.grant_with(&g, &tids[5], &edge(Role::Read), History::None).ok();
             put(&mut lp, 0, g, "after");
-            sync_id.place(&mut lp, g, &[0]);
+            logged.log(&mut lp, g, &[0]);
         }
         let admin = rng.next(2) as usize;
         if done.is_none() {
@@ -1006,21 +1006,21 @@ fn newcomer_reads_the_roster(seed: u64) -> bool {
             }
             _ => sync_among(&mut lp, &among),
         }
-        // each peer places what it made or received soon after (a random one first)
+        // each peer logs what it made or received soon after (a random one first)
         let first = rng.next(5) as usize;
-        sync_id.place(&mut lp, g, &[among[first]]);
-        sync_id.place(&mut lp, g, &among);
+        logged.log(&mut lp, g, &[among[first]]);
+        logged.log(&mut lp, g, &among);
     }
     let Some(done) = done else { return false };
     let cut = lp.peers[0].engine.epochs(&g).unwrap().read.held().map(|x| x.0).filter(|e| done.commits.iter().any(|c| lp.peers[0].engine.core.ix.epoch_intro.get(&(g, Role::Read, *e)).is_some_and(|(_, x)| x == c))).max_by_key(Epoch::n).unwrap();
     settle_among(&mut lp, g, &among);
-    sync_id.place(&mut lp, g, &among);
+    logged.log(&mut lp, g, &among);
     // a peer encrypts again some commits it holds (node-sync seals a body again: a placement
     // past a delete, a body with no held encryption)
     let p = among[rng.next(5) as usize];
     let again: Vec<osis_base::CommitId> = lp.packages(p).unwrap().into_iter().filter(|pk| on_g(pk, g) && rng.next(2) == 0).map(|pk| pk.id).collect();
-    sync_id.held.extend(lp.sealed(p, &again).unwrap());
-    deliver_as_newcomer(&mut lp, 0, 5, g, &done, &sync_id);
+    logged.held.extend(lp.sealed(p, &again).unwrap());
+    deliver_as_newcomer(&mut lp, 0, 5, g, &done, &logged);
     let roster = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&g).into_iter().map(|(h, e)| (h, e.role)).collect::<Vec<_>>();
     if std::env::var("OSIS_CUT_DUMP").is_ok() && roster(&lp, 5) != roster(&lp, 0) {
         let ne = lp.peers[5].engine.epochs(&g).unwrap();
@@ -1037,7 +1037,7 @@ fn newcomer_reads_the_roster(seed: u64) -> bool {
     assert!(below.is_empty(), "seed {seed}: N holds {below:?} below its cut {cut:?}");
     holds_none(&lp, 5, &before, &format!("seed {seed}"));
     // nor reads the header of one: the wrap gates it (spec/crypto.md §5 Passing on)
-    let open: Vec<_> = sync_id.held.iter().filter(|pk| before.contains(&pk.id) && unwraps(&lp, 5, pk)).map(|pk| pk.id).collect();
+    let open: Vec<_> = logged.held.iter().filter(|pk| before.contains(&pk.id) && unwraps(&lp, 5, pk)).map(|pk| pk.id).collect();
     assert!(open.is_empty(), "seed {seed}: N unwraps sync ID entries from before its cut: {open:?}");
     let read = content(&mut lp, 5, g);
     assert!(read.contains("after"), "seed {seed}: N does not read A's write after its cut");
@@ -1058,19 +1058,19 @@ fn concurrent_cuts_read_alike_spec_crypto_4() {
     let mut lp = synced(5);
     let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
-    let mut sync_id = Logged::default();
+    let mut logged = Logged::default();
     let _ = lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
     let _ = lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
     sync_among(&mut lp, &[0, 1, 2]);
-    sync_id.place(&mut lp, g, &[0, 1]);
+    logged.log(&mut lp, g, &[0, 1]);
     let done_n = lp.peers[0].engine.grant_with(&g, &tids[3], &edge(Role::Read), History::None).unwrap();
     let done_n2 = lp.peers[1].engine.grant_with(&g, &tids[4], &edge(Role::Read), History::None).unwrap();
-    sync_id.place(&mut lp, g, &[0]);
-    sync_id.place(&mut lp, g, &[1]);
+    logged.log(&mut lp, g, &[0]);
+    logged.log(&mut lp, g, &[1]);
     settle_among(&mut lp, g, &[0, 1, 2]);
-    sync_id.place(&mut lp, g, &[0, 1, 2]);
-    deliver_as_newcomer(&mut lp, 0, 3, g, &done_n, &sync_id);
-    deliver_as_newcomer(&mut lp, 1, 4, g, &done_n2, &sync_id);
+    logged.log(&mut lp, g, &[0, 1, 2]);
+    deliver_as_newcomer(&mut lp, 0, 3, g, &done_n, &logged);
+    deliver_as_newcomer(&mut lp, 1, 4, g, &done_n2, &logged);
     let cur = |lp: &LocalPeer, i: usize| lp.peers[i].engine.epochs(&g).unwrap().read.current();
     assert!(cur(&lp, 0).len() > 1, "the cuts do not fork");
     if std::env::var("OSIS_CUT_DUMP").is_ok() {
@@ -1149,29 +1149,29 @@ fn content_encrypted_again_after_a_cut_stays_hidden_spec_crypto_5() {
         let g = group(&mut lp, 0);
         lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
-        let mut sync_id = Logged::default();
+        let mut logged = Logged::default();
         put(&mut lp, 0, g, "draft");
         remove(&mut lp, 0, g, "draft");
         put(&mut lp, 0, g, "final");
-        sync_id.place(&mut lp, g, &[0, 1]);
+        logged.log(&mut lp, g, &[0, 1]);
         let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Read), History::None).unwrap();
         put(&mut lp, 1, g, "beside");
-        sync_id.place(&mut lp, g, &[1]);
+        logged.log(&mut lp, g, &[1]);
         let mut before = edits_on(&lp, 0, g);
         before.extend(edits_on(&lp, 1, g));
-        sync_id.place(&mut lp, g, &[0]);
+        logged.log(&mut lp, g, &[0]);
         put(&mut lp, 0, g, "after");
-        sync_id.place(&mut lp, g, &[0]);
+        logged.log(&mut lp, g, &[0]);
         if again {
             let ids: Vec<osis_base::CommitId> = edits_on(&lp, 0, g).intersection(&before).copied().collect();
-            sync_id.held.extend(lp.sealed(0, &ids).unwrap());
+            logged.held.extend(lp.sealed(0, &ids).unwrap());
         }
-        // B goes offline for good; its commit reaches A late, sealed as B placed it: A owes the
+        // B goes offline for good; its commit reaches A late, sealed as B logged it: A owes the
         // state it carries
-        lp.deliver_sealed(0, &sync_id.held).unwrap();
+        lp.deliver_sealed(0, &logged.held).unwrap();
         settle_among(&mut lp, g, &[0]);
-        sync_id.place(&mut lp, g, &[0]);
-        deliver_as_newcomer(&mut lp, 0, 2, g, &done, &sync_id);
+        logged.log(&mut lp, g, &[0]);
+        deliver_as_newcomer(&mut lp, 0, 2, g, &done, &logged);
         holds_none(&lp, 2, &before, &format!("again {again}"));
         assert_eq!(content(&mut lp, 2, g), content(&mut lp, 0, g), "again {again}: N reads another state than A");
         assert_eq!(content(&mut lp, 2, g), BTreeSet::from(["final".to_string(), "beside".into(), "after".into()]), "again {again}");
@@ -1218,18 +1218,18 @@ fn from_now_document_shows_its_text_not_its_edits_spec_crypto_4() {
     assert_eq!(text(&mut lp, 0), "the final draft.");
     // compacted before the grant: that snapshot is history as much as the edits
     assert!(lp.peers[0].engine.snapshot(&g, &ak).unwrap().is_some(), "A compacts");
-    let mut sync_id = Logged::default();
-    sync_id.place(&mut lp, g, &[0]);
+    let mut logged = Logged::default();
+    logged.log(&mut lp, g, &[0]);
     let before = edits_on(&lp, 0, g);
     let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Read), History::None).unwrap();
-    sync_id.place(&mut lp, g, &[0]);
-    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &logged);
     assert_eq!(text(&mut lp, 2), "the final draft.", "N reads another text");
     holds_none(&lp, 2, &before, "the document");
     let versions = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.held_parts(&g, &ak, crate::engine::listing::CommitFrom::Oldest, 100, usize::MAX).unwrap().0.len();
     edit(&mut lp, osis_crdt::Op::Insert { at: 16, items: vec![osis_base::Value::Str("!".into())] });
-    sync_id.place(&mut lp, g, &[0]);
-    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &logged);
     assert_eq!(text(&mut lp, 2), "the final draft.!", "N misses A's edit after its grant");
     lp.sync(0, 1).unwrap();
     assert!(versions(&mut lp, 1) >= 5, "P, with history, lists every edit");
@@ -1255,12 +1255,12 @@ fn from_now_chat_shows_no_earlier_message_spec_crypto_4() {
         lp.peers[0].commit(m).unwrap().unwrap()
     };
     let early = [say(&mut lp, "secret plans"), say(&mut lp, "more plans")];
-    let mut sync_id = Logged::default();
-    sync_id.place(&mut lp, g, &[0]);
+    let mut logged = Logged::default();
+    logged.log(&mut lp, g, &[0]);
     let done = lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Write), History::None).unwrap();
     let welcome = say(&mut lp, "welcome");
-    sync_id.place(&mut lp, g, &[0]);
-    deliver_as_newcomer(&mut lp, 0, 1, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 1, g, &done, &logged);
     let fires = |lp: &mut LocalPeer, i: usize| -> Vec<osis_base::CommitId> {
         let (parts, _) = lp.peers[i].engine.held_parts(&g, &msg_ak, crate::engine::listing::CommitFrom::Oldest, 100, usize::MAX).unwrap();
         parts.iter().map(|p| p.id).collect()
@@ -1348,20 +1348,20 @@ fn late_bodies_a_cut_covers_owe_no_snapshot_spec_crypto_4() {
     let mut lp = synced(3);
     let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let g = group(&mut lp, 0);
-    let mut sync_id = Logged::default();
+    let mut logged = Logged::default();
     for r in 0..3 {
         let mut m = crate::Mutation::new();
         for a in 0..4 {
             m.op(g, &osis_base::Ak::new(format!("x:a{a}.0")).unwrap(), osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Set(osis_base::Value::Str(format!("value {r}"))) }).unwrap();
         }
         lp.peers[0].commit(m).unwrap();
-        sync_id.place(&mut lp, g, &[0]);
+        logged.log(&mut lp, g, &[0]);
     }
     let cut = lp.peers[0].engine.grant_with(&g, &tids[1], &edge(Role::Read), History::None).unwrap();
     let _ = cut;
-    sync_id.place(&mut lp, g, &[0]);
+    logged.log(&mut lp, g, &[0]);
     let done = lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
-    sync_id.place(&mut lp, g, &[0]);
+    logged.log(&mut lp, g, &[0]);
     let snaps_a = own_snapshots(&lp, 0);
     assert_eq!(snaps_a, 4, "A writes the state at its cut");
     // W: its grant and A's commits off `g` whole, then `g`'s sync IDs in `ts` order, one step each
@@ -1374,7 +1374,7 @@ fn late_bodies_a_cut_covers_owe_no_snapshot_spec_crypto_4() {
             let _ = lp.peers[2].receive(&pk.bytes, pk.blobs.clone());
         }
     }
-    let mut held = sync_id.held.clone();
+    let mut held = logged.held.clone();
     // spec/crypto.md §5 Order: role commits first (order 0), then by `ts`
     held.sort_by_key(|pk| lp.peers[0].engine.header(&pk.id).map(|h| (!matches!(h.kind, osis_commit::Kind::Role), h.ts)));
     for pk in &held {
@@ -1515,11 +1515,11 @@ fn from_now_reads_expiring_values_until_they_end_spec_crypto_4() {
     put(&mut lp, 0, g, "plain");
     put_expiring(&mut lp, 0, g, "soon", now + 10_000);
     put_expiring(&mut lp, 0, g, "later", now + 100_000);
-    let mut sync_id = Logged::default();
-    sync_id.place(&mut lp, g, &[0]);
+    let mut logged = Logged::default();
+    logged.log(&mut lp, g, &[0]);
     let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Write), History::None).unwrap();
-    sync_id.place(&mut lp, g, &[0]);
-    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &logged);
     assert_eq!(content(&mut lp, 2, g), keys(&["plain", "soon", "later"]), "N misses an expiring value");
     let ak = osis_base::Ak::new("x:m.0").unwrap();
     let snap = lp.peers[2].engine.snapshot(&g, &ak).unwrap().expect("N compacts");
@@ -1534,7 +1534,7 @@ fn from_now_reads_expiring_values_until_they_end_spec_crypto_4() {
     assert_eq!(content_now(&mut lp, 2, g), keys(&["plain"]), "N reads a value past its expiry");
     assert_eq!(content_now(&mut lp, 1, g), keys(&["plain"]), "N's snapshot hands P a value past its expiry");
     // a stale copy of the expiring snapshots arriving later brings nothing back
-    lp.deliver_sealed(2, &sync_id.held).unwrap();
+    lp.deliver_sealed(2, &logged.held).unwrap();
     assert_eq!(content_now(&mut lp, 2, g), keys(&["plain"]), "a late copy of an expiring snapshot brings its value back");
 }
 
@@ -1584,8 +1584,8 @@ fn from_now_lists_no_edit_of_an_earlier_message_spec_commits_5() {
     let setting = lp.peers[0].commit(m).unwrap().unwrap();
     lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
     let typo = say(&mut lp, 0, g, "typo", None);
-    let mut sync_id = Logged::default();
-    sync_id.place(&mut lp, g, &[0]);
+    let mut logged = Logged::default();
+    logged.log(&mut lp, g, &[0]);
     let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Write), History::None).unwrap();
     let fix = say(&mut lp, 0, g, "fixed", Some(typo));
     let welcome = say(&mut lp, 0, g, "welcome", None);
@@ -1593,8 +1593,8 @@ fn from_now_lists_no_edit_of_an_earlier_message_spec_commits_5() {
     lp.peers[0].engine.core.lie_floor = Some(0);
     say(&mut lp, 0, g, "welcome!", Some(welcome));
     lp.peers[0].engine.core.lie_floor = None;
-    sync_id.place(&mut lp, g, &[0]);
-    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &logged);
     assert_eq!(fires(&mut lp, 0, g).iter().map(|x| x.0).collect::<Vec<_>>(), vec![typo, welcome], "A lists the message (as its fix) and the welcome");
     assert!(fires(&mut lp, 0, g)[0].1.contains("fixed"), "A reads the fix");
     assert_eq!(fires(&mut lp, 2, g).iter().map(|x| x.0).collect::<Vec<_>>(), vec![welcome], "N lists an edit of a message from before its grant");
@@ -1633,12 +1633,12 @@ fn from_now_undo_writes_back_an_expiring_value_with_its_expiry_spec_crdt_4() {
     };
     let now = lp.peers[0].engine.now().0;
     set(&mut lp, 0, 1, Some(now + 100_000));
-    let mut sync_id = Logged::default();
-    sync_id.place(&mut lp, g, &[0]);
+    let mut logged = Logged::default();
+    logged.log(&mut lp, g, &[0]);
     let done = lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Write), History::None).unwrap();
     let two = set(&mut lp, 0, 2, None);
-    sync_id.place(&mut lp, g, &[0]);
-    deliver_as_newcomer(&mut lp, 0, 1, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 1, g, &done, &logged);
     let r = |lp: &mut LocalPeer| lp.peers[1].engine.get(&g, &ak).unwrap();
     assert_eq!(r(&mut lp), Some(osis_base::Value::Int(2)));
     lp.advance(10);
@@ -1735,11 +1735,11 @@ fn forged_expiring_snapshot_neither_ends_nor_extends_a_value_at_a_newcomer_spec_
     };
     let pk = forge(&mut lp, &ak, now + 50_000);
     lp.peers[0].receive(&pk.bytes, pk.blobs.clone()).unwrap();
-    let mut sync_id = Logged::default();
-    sync_id.place(&mut lp, g, &[0]);
+    let mut logged = Logged::default();
+    logged.log(&mut lp, g, &[0]);
     let done = lp.peers[0].engine.grant_with(&g, &tids[2], &edge(Role::Write), History::None).unwrap();
-    sync_id.place(&mut lp, g, &[0]);
-    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &logged);
     assert_eq!(content(&mut lp, 2, g), keys(&["x", "e"]));
     let r = |lp: &mut LocalPeer| lp.peers[2].engine.get(&g, &reg).unwrap();
     assert_eq!(r(&mut lp), Some(osis_base::Value::Int(1)));
@@ -1812,11 +1812,11 @@ fn cut_with_a_clock_ahead_past_an_expiry_spec_crypto_4() {
     put_expiring(&mut lp, 0, g, "soon", now + 10_000);
     put_expiring(&mut lp, 0, g, "later", now + 100_000);
     lp.peers[0].engine.core.hlc.observe(osis_base::Ts::make(osis_base::WallMs(now + 20_000), 0).unwrap());
-    let mut sync_id = Logged::default();
-    sync_id.place(&mut lp, g, &[0]);
+    let mut logged = Logged::default();
+    logged.log(&mut lp, g, &[0]);
     let done = lp.peers[0].engine.grant_with(&g, &n, &edge(Role::Write), History::None).unwrap();
-    sync_id.place(&mut lp, g, &[0]);
-    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &sync_id);
+    logged.log(&mut lp, g, &[0]);
+    deliver_as_newcomer(&mut lp, 0, 2, g, &done, &logged);
     assert_eq!(content(&mut lp, 2, g), keys(&["plain", "later"]), "N misses the state at its cut");
 }
 
