@@ -138,3 +138,31 @@ fn synced_tids(n: usize) -> (LocalPeer, Vec<Tid>) {
     let tids = (0..n).map(|i| lp.peers[i].engine.me()).collect();
     (lp, tids)
 }
+
+// spec/crypto.md §4 (Encrypting under: a grant past its `until` that this node may finalize is
+// finalized before its next commit encrypting under the actor): whether a body can be wrapped for
+// S reads the clock with a wake at the grant's `until`, so a reader following it is due then with
+// nothing else moving, and judges it unwrappable until the finalize is written.
+#[test]
+fn whether_a_body_wraps_moves_at_a_grants_until_spec_crypto_4() {
+    let (mut lp, tids) = synced_tids(2);
+    let g = group(&mut lp, 0);
+    let until = lp.peers[0].engine.now().0 + 1_000;
+    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::WallMs(until)), ..edge(Role::Read) }).unwrap();
+    lp.sync_all().unwrap();
+    let mut m = crate::Mutation::new();
+    m.set(g, &osis_base::Ak::new("x:m.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let s = lp.peers[0].engine.sync_ids(&g).unwrap()[0].id;
+    let e = &mut lp.peers[0].engine;
+    let mut fx: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("wraps");
+    fx.want(());
+    assert_eq!(fx.settle(&(), || e.body_wrap(&s, &c).unwrap()), Some((None, true)), "wraps before the until");
+    assert!(fx.due().is_empty());
+    lp.peers[0].clock.advance(2_000);
+    let e = &mut lp.peers[0].engine;
+    let now = e.now();
+    e.set_now(now);
+    assert_eq!(fx.due(), vec![()], "due at the until");
+    assert_eq!(fx.settle(&(), || e.body_wrap(&s, &c).unwrap()), Some((Some(true), false)), "the finalize is owed first");
+}
