@@ -68,7 +68,6 @@ strings = [b for b in bad if "doc comment inside a macro" not in b and "read as 
 check("d8b89848d string lines", len(strings), 14)
 check("d8b89848d strings named", all('"' in b for b in strings), True)
 check("d8b89848d docs in a macro", len([b for b in bad if "doc comment inside a macro" in b]), 2)
-check("d8b89848d msg.rs read as text", [b.split(":")[0] for b in bad if "read as text" in b], ["core/proto/src/msg.rs"])
 check("d8b89848d", g.classify("d8b89848d^", "d8b89848d")["core"], "1")
 check("6050ae05f", g.classify("6050ae05f^", "6050ae05f"), dict(core="comments", gui="", unify="", doc=""))
 
@@ -78,7 +77,8 @@ crates, why = g.doc_crates(["cli/src/args.rs", "core/test/fuzz/x.rs"])
 check("doc in a clap crate, doc outside the workspace", (crates, [w.split(":")[0] for w in why]), ([], ["cli/src/args.rs", "core/test/fuzz/x.rs"]))
 
 # a source a test reads as text: its comments are what the test parses
-check("source read as text", [w.split(":")[0] for w in g.sources_read(["core/proto/src/msg.rs", "core/proto/src/lib.rs"])], ["core/proto/src/msg.rs"])
+reader = ['core/proto/src/msg/tests.rs:69:    let src = include_str!("../msg.rs");']
+check("source read as text", [w.split(":")[0] for w in g.sources_read(["core/proto/src/msg.rs", "core/proto/src/lib.rs"], reader)], ["core/proto/src/msg.rs"])
 
 
 def verdict(old, change):

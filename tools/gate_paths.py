@@ -109,10 +109,12 @@ def links(base, rev, paths):
                    if any(m not in (b"100644", b"100755", b"000000") for m in out[k].lstrip(b":").split()[:2])})
 
 
-def sources_read(paths):
+def sources_read(paths, out=None):
     """`path: reader` for each of the .rs `paths` whose name a one-line call reading a .rs file as
-    text names (a test parsing a source sees its comments)."""
-    out = subprocess.run(["git", "grep", "-n", "-E", SOURCE_READERS, "--", "*.rs"], capture_output=True, text=True).stdout.splitlines()
+    text names (a test parsing a source sees its comments). `out`: the reader lines (tests), else
+    the tree's."""
+    if out is None:
+        out = subprocess.run(["git", "grep", "-n", "-E", SOURCE_READERS, "--", "*.rs"], capture_output=True, text=True).stdout.splitlines()
     return [f"{p}: read as text by {l}" for p in paths for l in out if re.search(r"\b" + re.escape(os.path.basename(p)) + '"', l)]
 
 
