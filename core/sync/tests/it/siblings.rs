@@ -377,12 +377,12 @@ fn a_from_now_grantee_after_a_removal_holds_the_old_readers_roster_spec_crypto_5
     assert_eq!(w.engine(0).roster(&t), w.engine(1).roster(&t), "so does node 0");
 }
 
-// spec/sync-opens.md §3 (A record is honoured only while a proven actor of this session is named
-// by it: an account proved at an epoch open here, a node), spec/sync-set.md §3 (it waits only
-// while some peer is to be waited for on S): node 1 writes a thing of its own both siblings sync
-// (its own sync ID: a link no one redeems) while node 2 is away, removes node 2 from its account's D, then unfiles the thing. Node 2's
-// record still holds S, but no actor it names counts now (the account at an epoch the removal
-// closed, a node no longer the account's): it is no peer, so node 1 leaves S at once.
+// spec/sync-opens.md §3 (Who it may be: the node it names while a node of this account),
+// spec/sync-set.md §3 (it waits only while some peer is to be waited for on S): node 1 writes a
+// thing of its own both siblings sync (its own sync ID: a link no one redeems) while node 2 is
+// away, removes node 2 from its account's D, then unfiles the thing. Node 2's record still holds
+// S, but the node it names is no longer the account's: no one to wait for, so node 1 leaves S at
+// once.
 #[test]
 fn a_removed_siblings_record_is_no_peer_spec_sync_opens_3() {
     let mut w = siblings();
@@ -419,4 +419,48 @@ fn a_removed_siblings_record_is_no_peer_spec_sync_opens_3() {
     });
     w.run();
     assert!(w.store(1).synced(&s).is_none(), "node 1 left S: a removed node is no peer");
+}
+
+// spec/sync-set.md §3 (to be waited for on S: a peer that may hold S by the rosters, or whose
+// kept record holds S; A peer away keeps it waiting until that peer connects),
+// spec/sync-opens.md §3 (a node of another account whose epoch closed is still that account): node
+// 0 writes a thing account 1 holds a role on while both siblings are away; node 1 removes node 2
+// from its account's D (a rotation of account 1's key, handed to node 0), then node 0 unfiles the
+// thing. Node 1, away but honest, is still account 1: node 0 keeps its only copy of the write
+// past the pass's wait, and node 1 takes it once back.
+#[test]
+fn a_peer_away_across_its_accounts_rotation_is_waited_for_spec_sync_set_3() {
+    let mut w = stranger_siblings();
+    let (t, ak) = granted(&mut w, Role::Write);
+    list_own(&mut w, 1, t, true);
+    list_own(&mut w, 2, t, true);
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("x".into())), "node 1 reads it");
+    let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
+    w.partition(0, 1);
+    w.partition(0, 2);
+    w.flush();
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("away".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    let (n2, d) = (w.engine(2).tid(), w.engine(1).account().unwrap().unwrap().1);
+    w.write(1, |e| e.demote(&d, &Demotion { holder: n2, new: None, retain: None })).unwrap();
+    w.flush();
+    assert!(crate::harness::history::hand(&mut w, 1, 0), "node 0 is handed account 1's rotation");
+    w.write(0, |e| {
+        let d0 = e.account().unwrap().unwrap().1;
+        let mut g = e.get_typed(&d0, &ct::GROUP).unwrap().unwrap_or_default();
+        g.items.retain(|x| *x != t);
+        let mut m = Mutation::new();
+        m.set(d0, &ct::GROUP, &g).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    assert!(w.store(0).synced(&s).is_some(), "node 0 waits for node 1, away across its account's rotation");
+    w.heal();
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(Value::Str("away".into())), "node 1 took node 0's write");
+    assert!(w.store(0).synced(&s).is_none(), "then node 0 left S");
 }

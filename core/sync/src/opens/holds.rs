@@ -24,16 +24,57 @@ pub fn named(engine: &mut Engine, proven: &Proven) -> Named {
     Named { account, node: proven.node, key_actors: proven.key_actors.keys().copied().collect() }
 }
 
-/// The actors `named` counts for now, ascending: the one rule for who a peer is, a connection
-/// up and a record kept alike (spec/sync-opens.md §2-§3, judged on what this node holds now, not
-/// on what the proofs once counted for): the account while the key it proved with is at an
-/// epoch open here, the node while it is a node of this node's account, each key actor. Empty
-/// where `named` is not: no session of that peer is honoured by it any more (a removed node of
-/// this account, a node of an account whose epoch it proved at closed).
+/// The actors `named` is trusted as now, ascending: what a connection up and a record kept are
+/// judged as (J, a report's reader or writer; spec/sync-opens.md §2-§3, judged on what this node
+/// holds now, not on what the proofs once counted for): the account while the key it proved with
+/// is at an epoch open here, the node while it is a node of this node's account, each key actor.
+/// Who is waited for is `awaited`.
 pub fn counted(engine: &mut Engine, named: &Named) -> Vec<Tid> {
     let account = named.account.filter(|(a, k)| engine.account_key_counts(a, k)).map(|(a, _)| a);
     let node = named.node.filter(|n| engine.own_node(n));
     let mut v: Vec<Tid> = account.into_iter().chain(node).chain(named.key_actors.iter().copied()).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// What a record or connection names, the account's key left out: what waits judge (`awaited`),
+/// so a peer's records proved at two epochs of its account are one peer.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Who {
+    pub account: Option<Tid>,
+    pub node: Option<Tid>,
+    pub key_actors: Vec<Tid>,
+}
+
+impl From<&Named> for Who {
+    fn from(n: &Named) -> Who {
+        Who { account: n.account.map(|(a, _)| a), node: n.node, key_actors: n.key_actors.clone() }
+    }
+}
+
+impl Who {
+    /// Every actor named, ascending.
+    pub fn actors(&self) -> Vec<Tid> {
+        let mut v: Vec<Tid> = self.account.into_iter().chain(self.node).chain(self.key_actors.iter().copied()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+}
+
+/// Who a peer may be, for what it could still take or tell (spec/sync-set.md §3 to be waited
+/// for, spec/sync-status.md §1), ascending: a node of this account it names while that node is
+/// ours (a removed node takes nothing back), else its account whatever key it proved with (a node
+/// of it away across the account's rotation proves the new key when back and resumes its record;
+/// a removed one is not told from it at rest), and its key actors. Empty where `who` is not: a
+/// removed node of this account, never waited for.
+pub fn awaited(engine: &mut Engine, who: &Who) -> Vec<Tid> {
+    let me = match who.node {
+        Some(n) => engine.own_node(&n).then_some(n),
+        None => who.account,
+    };
+    let mut v: Vec<Tid> = me.into_iter().chain(who.key_actors.iter().copied()).collect();
     v.sort();
     v.dedup();
     v

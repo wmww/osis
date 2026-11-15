@@ -7,8 +7,7 @@ use crate::harness::scripted::*;
 use osis_base::SyncId;
 use osis_engine::sync::J;
 use osis_proto::{Code, Msg, OfferItem};
-use osis_store::Named;
-use osis_sync::opens::{Moved, Peer, Rejoin};
+use osis_sync::opens::{Moved, Peer, Rejoin, Who};
 use osis_sync::session::Proven;
 use osis_sync::types::{Credential, SourceClass};
 
@@ -61,8 +60,8 @@ fn a_record_resumes_its_shared_set_spec_sync_opens_3() {
 #[test]
 fn waited_by_a_connection_or_a_kept_record_spec_sync_set_3() {
     let mut p = readers();
-    let other = |a: &Named| if a.actors().contains(&tid(2)) { Peer::Skipped } else { Peer::Unlisted };
-    let wait = |p: &Pair, s: &SyncId, f: &dyn Fn(&Named) -> Peer| p.a.opens.wait_for(&p.a.store, s, f).unwrap();
+    let other = |a: &Who| if a.actors().contains(&tid(2)) { Peer::Skipped } else { Peer::Unlisted };
+    let wait = |p: &Pair, s: &SyncId, f: &dyn Fn(&Who) -> Peer| p.a.opens.wait_for(&p.a.store, s, f).unwrap();
     assert!(wait(&p, &S, &|_| Peer::Unlisted), "open on a connection");
     assert!(!wait(&p, &S, &other), "only a skipped peer");
     assert!(!wait(&p, &sid(9), &|_| Peer::Unlisted), "held by nobody");
@@ -82,8 +81,8 @@ fn a_sync_id_just_joined_waits_for_a_peer_the_rosters_name_spec_sync_set_3() {
     let s2 = sid(7);
     let mut p = readers();
     p.close();
-    let may = |_: &Named| Peer::MayHold;
-    let wait = |p: &Pair, f: &dyn Fn(&Named) -> Peer| p.a.opens.wait_for(&p.a.store, &sid(7), f).unwrap();
+    let may = |_: &Who| Peer::MayHold;
+    let wait = |p: &Pair, f: &dyn Fn(&Who) -> Peer| p.a.opens.wait_for(&p.a.store, &sid(7), f).unwrap();
     let st = StepKeys::new(2, 0);
     p.a.table.set(s2, Some(reader(&s2, &read_secret(2, 0), &st, &[], &[], &[])));
     p.a.settle();
@@ -104,6 +103,11 @@ fn a_sync_id_just_joined_waits_for_a_peer_the_rosters_name_spec_sync_set_3() {
     p.a.store.with_tx(|t| t.record_create([9; 32], &named(2)).map(drop)).unwrap();
     p.a.restart();
     assert!(!wait(&p, &may), "the same peer, told by its other record");
+    // spec/sync-opens.md §3 (who a peer may be: its account at whatever key)
+    let other_key = osis_store::Named { account: Some((tid(2), [0x77; 32])), ..osis_store::Named::default() };
+    p.a.store.with_tx(|t| t.record_create([7; 32], &other_key).map(drop)).unwrap();
+    p.a.restart();
+    assert!(!wait(&p, &may), "the same peer at another key of its account, told by its other record");
     p.a.store.with_tx(|t| t.record_create([8; 32], &named(3)).map(drop)).unwrap();
     p.a.restart();
     assert!(wait(&p, &may) && !wait(&p, &|a| if a.actors().contains(&tid(3)) { Peer::Unlisted } else { Peer::MayHold }), "another peer, never told");
