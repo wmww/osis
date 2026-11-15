@@ -438,8 +438,9 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     // peer's stamped entry is (a head move restamps each body once; peers' duplicates are never
     // stamped). A peer's deposit is stamped in place only as promoted (spec/sync-inbox.md §4,
     // `Ground::promotion`), standing or not, and one promoted later holds the body back from a
-    // log of its own meanwhile.
-    if verdict == Verdict::Must && !f.as_ref().is_some_and(|f| f.missing) && g.pullable(s)? {
+    // log of its own meanwhile. Whether a reader can pull S (`pullable`) is read last, only
+    // where there is something to log: a body standing reads no source flip.
+    if verdict == Verdict::Must && !f.as_ref().is_some_and(|f| f.missing) {
         let mut stands = false;
         let mut restamp = Vec::new();
         let mut peer = None;
@@ -464,10 +465,13 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
             restamp.extend(peer);
         }
         restamp.extend(promoted);
-        if !stands && restamp.is_empty() && !waits {
-            j.acts.insert(Act::Log);
+        let log = !stands && restamp.is_empty() && !waits;
+        if (log || !restamp.is_empty()) && g.pullable(s)? {
+            if log {
+                j.acts.insert(Act::Log);
+            }
+            j.acts.extend(restamp.into_iter().map(Act::Restamp));
         }
-        j.acts.extend(restamp.into_iter().map(Act::Restamp));
     }
     if verdict == Verdict::Must {
         // the body's parts as its meta gives them (read's `bodies` effect), not `sync_bodies`

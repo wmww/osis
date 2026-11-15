@@ -662,17 +662,20 @@ impl Read {
 
 /// Settles `k` with `f`; a failure leaves `k` due and is returned.
 /// `Ground::cert_blobs_missing` while a reader can pull S, else nothing (`pullable` read inside,
-/// so S is due again once it can). S `told` destroyed is being emptied (told only once its thing
-/// keeps nothing, `judge::doom`): it carries no certificate blob, and its own ones are to drop
-/// (`held`); else they stay.
+/// so S is due again once it can; read only where there is something to do, so a source flip
+/// moves no key with nothing to do). S `told` destroyed is being emptied (told only once its
+/// thing keeps nothing, `judge::doom`): it carries no certificate blob, and its own ones are to
+/// drop (`held`); else they stay.
 fn cert_blobs_missing(g: &mut impl Ground, s: &SyncId, r: CertKind, told: bool) -> Result<CertBlobsMissing> {
+    let x = g.cert_blobs_missing(s, r)?;
     if told {
-        return Ok(CertBlobsMissing { missing: BTreeSet::new(), stale: BTreeSet::new(), ..g.cert_blobs_missing(s, r)? });
+        return Ok(CertBlobsMissing { missing: BTreeSet::new(), stale: BTreeSet::new(), ..x });
     }
-    match g.pullable(s)? {
-        true => Ok(CertBlobsMissing { held: BTreeSet::new(), ..g.cert_blobs_missing(s, r)? }),
-        false => Ok(CertBlobsMissing::default()),
+    let x = CertBlobsMissing { held: BTreeSet::new(), ..x };
+    if x == CertBlobsMissing::default() || g.pullable(s)? {
+        return Ok(x);
     }
+    Ok(CertBlobsMissing::default())
 }
 
 /// A part of the facade or of another module read needs is not built: read does nothing until

@@ -1669,6 +1669,34 @@ fn logs_only_while_a_reader_can_pull() {
     assert_eq!(w.logs(S, cid(1)), 1);
 }
 
+// spec/sync.md §2 (work in proportion to change), spec/sync-judgement.md §3 (own store): whether
+// a reader can pull S flips at every connection lost and made again; it moves only the bodies
+// and certificate blobs with something to log, so at n and 10n logged bodies a flip judges
+// the same few.
+#[test]
+fn a_pull_flip_judges_only_what_is_to_log() {
+    let mut costs = Vec::new();
+    for n in [10u8, 100] {
+        let mut w = W::new();
+        for i in 0..n {
+            w.hold(cid(i), &[S], uncovered());
+        }
+        w.exchange();
+        assert_eq!(w.g.logged.len(), n as usize);
+        osis_base::costs::take();
+        w.g.unpullable.insert(S, ());
+        w.settle();
+        w.hold(cid(200), &[S], uncovered());
+        w.g.unpullable.remove(&S);
+        w.settle();
+        assert_eq!(w.logs(S, cid(200)), 1, "the body held while no reader could pull is logged once one can");
+        let taken = osis_base::costs::take();
+        let n = |name: &str| taken.iter().filter(|(k, _, _)| *k == name).map(|(_, _, n)| n).sum::<u64>();
+        costs.push((n("read: judged"), n("read: certificate blobs")));
+    }
+    assert_eq!(costs[0], costs[1], "judgements per pull flip grow with the logged bodies");
+}
+
 // spec/sync-judgement.md §2 (Loggable): a body of S's required set this node may not log under S
 // is may-hold, so a non-writer gives it no source and owes it nowhere; once it may (the judgement
 // reads it, so it moves then), it is must-hold, logged once and given.
