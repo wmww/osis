@@ -76,12 +76,13 @@ fn a_forged_edge_enters_no_chain_spec_permissions_4() {
 /// holds an invite on T, and invites Y (two hops through a holder actor); C, Y's admin, lowers
 /// Y's edge (a self-removal); A, an admin K removed, grants Y2 after its removal: applied
 /// nowhere here, it goes all the same (who could write it never shrinks, so no node drops a
-/// write another walk, siding with A, applies). Y's and Y2's rosters go into T.
+/// write another walk, siding with A, applies). Y's and Y2's rosters go into T. F, a writer,
+/// finalizes V's read grant past its `until`.
 #[test]
 fn every_authority_chains_its_writes_spec_permissions_4() {
     let mut w = World::new();
-    let n = w.nodes(6);
-    let (k, x, c, a, z, z2) = (n[0], n[1], n[2], n[3], n[4], n[5]);
+    let n = w.nodes(8);
+    let (k, x, c, a, z, z2, f, v) = (n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]);
     let t = w.thing(k);
     let g = w.thing(k);
     let y = w.thing(c);
@@ -95,15 +96,93 @@ fn every_authority_chains_its_writes_spec_permissions_4() {
     let lowered = w.set(c, t, y, edge(Sync), 3, &all);
     w.set(k, t, a, None, 4, &all);
     let late = w.set(a, t, y2, edge(Read), 5, &[]);
+    w.set(k, t, f, edge(Write), 0, &all);
+    w.set(k, t, v, edge_inv(Read, None, Some(3)), 0, &all);
+    let fin = w.fresh_id();
+    w.commit_spec(fin, f, 6, &[(t, v, None)], &[], true);
     let held = w.held();
     let tl = Timeline::evaluate(&held);
-    assert!(tl.is_applied(&WriteId(invited, 0)) && tl.is_applied(&WriteId(lowered, 0)) && !tl.is_applied(&WriteId(late, 0)));
+    assert!([invited, lowered, fin].iter().all(|c| tl.is_applied(&WriteId(*c, 0))) && !tl.is_applied(&WriteId(late, 0)));
     let into = tl.certificates_into(&[t].into());
-    for want in [invited, lowered, late].iter().chain(&rosters) {
+    for want in [invited, lowered, late, fin].iter().chain(&rosters) {
         assert!(into.commits.contains(want), "{want:?}: {into:?}");
     }
     assert!(tl.certificates(&z, &t).commits.contains(&lowered));
     assert_eq!(cert_check(&w), None);
+}
+
+/// §4 (chained writes): the chained set and the edges it sets only grow with the held set. F
+/// writes Q (C's actor, Z on its roster) read on T at 1, before K makes F an admin of T at 2: no
+/// walk applies it, so it sets no edge into T with or without C's earlier grant making F an admin
+/// of Q (which chains it as a self-removal's authority would, setting none).
+#[test]
+fn chained_edges_grow_with_the_held_set_spec_permissions_4() {
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let (k, f, c, z) = (n[0], n[1], n[2], n[3]);
+    let t = w.thing(k);
+    let q = w.thing(c);
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    let roster = w.set(c, q, z, edge(Read), 1, &all);
+    let early = w.set(c, q, f, edge(Admin), 0, &all);
+    let wq = w.set(f, t, q, edge(Read), 1, &all);
+    w.set(k, t, f, edge(Admin), 2, &all);
+    let full = Timeline::evaluate(&w.held());
+    let less = Timeline::evaluate(&w.held_without(&[early].into()));
+    let (a, b) = (less.certificates_into(&[t].into()), full.certificates_into(&[t].into()));
+    assert!(a.commits.is_subset(&b.commits) && a.created.is_subset(&b.created) && a.keys.is_subset(&b.keys), "{a:?}\n{b:?}");
+    assert!(!b.commits.contains(&roster) && !b.created.contains(&q), "{b:?}");
+    assert!(!less.is_chained(&WriteId(wq, 0)) && full.is_chained(&WriteId(wq, 0)));
+}
+
+/// §4 (chained writes), randomized over joint and edges histories with random forged writes
+/// (any node writing any edge on any actor at any time): every write the walk applies is
+/// chained, with and without one commit; and dropping a commit chains nothing more and leaves
+/// every thing's certificates (`certificates_into`) a subset.
+fn chained_run(samples: u64, seed: u64) {
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
+    for s in 0..samples {
+        let (mut w, nodes, actors) = if s % 2 == 0 {
+            joint_world(&joint::random_hist(&mut rng), 0)
+        } else {
+            let (w, nodes, t) = edges_world(&edges::random_hist(&mut rng), 0);
+            (w, nodes, vec![t])
+        };
+        for _ in 0..rng.below(6) {
+            let holders: Vec<Tid> = nodes.iter().chain(&actors).copied().collect();
+            let (a, t, h) = (nodes[rng.below(nodes.len())], actors[rng.below(actors.len())], holders[rng.below(holders.len())]);
+            let e = [None, edge(Read), edge(Write), edge(Admin), edge_inv(Read, Some(Read), None)][rng.below(5)];
+            let recv: Vec<(Tid, u64)> = nodes.iter().map(|x| (*x, rng.below(12) as u64)).collect();
+            w.set(a, t, h, e, rng.below(12) as u64, &recv);
+        }
+        let held = w.held();
+        let ids: Vec<WriteId> = held.commits.values().flatten().flat_map(|c| (0..c.ops.len() as u32).map(|k| WriteId(c.id, k))).collect();
+        let full = Timeline::evaluate(&held);
+        let skip = ids[rng.below(ids.len())].0;
+        let less = Timeline::evaluate(&w.held_without(&[skip].into()));
+        let why = |d: String| format!("seed {seed:#x} sample {s}: {d}");
+        for id in &ids {
+            assert!(!full.is_applied(id) || full.is_chained(id), "{}", why(format!("{id:?} applied, unchained")));
+            assert!(!less.is_applied(id) || less.is_chained(id), "{}", why(format!("{id:?} applied without {skip:?}, unchained")));
+            assert!(!less.is_chained(id) || full.is_chained(id), "{}", why(format!("{id:?} chained only without {skip:?}")));
+        }
+        for t in nodes.iter().chain(&actors) {
+            let (a, b) = (less.certificates_into(&[*t].into()), full.certificates_into(&[*t].into()));
+            assert!(a.commits.is_subset(&b.commits) && a.created.is_subset(&b.created) && a.keys.is_subset(&b.keys), "{}", why(format!("{t:?} without {skip:?}")));
+        }
+    }
+}
+
+#[test]
+fn chained_writes_hold_the_applied_and_grow_spec_permissions_4() {
+    chained_run(120, 0);
+}
+
+#[test]
+#[ignore]
+fn chained_writes_hold_the_applied_and_grow_large() {
+    sharded(20_000, 0x5eed_0206, chained_run);
 }
 
 /// §4: a demotion goes along with its demoted author's other paths. X writes on G by

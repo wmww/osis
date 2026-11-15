@@ -391,3 +391,40 @@ fn role_history_arrival_moves_flat() {
     assert!(b.0 <= 2 * a.0 + 2, "commits walked: {a:?} -> {b:?}");
     assert!(b.1 <= 2 * a.1 + 2, "entries moved: {a:?} -> {b:?}");
 }
+
+/// Backdated authority: node i (of n) makes node i-1 an admin of T at time i, its own grant
+/// coming at i+1 (K's, of node n-1, last): an adversary's chain of keys, each write before its
+/// authority. The things the chained-write search visits (spec/permissions.md §4) for T's
+/// certificates, and the certificates' commits.
+fn backdated_chain(n: usize) -> (u64, usize) {
+    let mut w = World::new();
+    let nodes = w.nodes(n + 1);
+    let k = nodes[n];
+    let t = w.thing(k);
+    for i in 1..n {
+        w.set(nodes[i], t, nodes[i - 1], edge(Admin), i as u64, &[]);
+    }
+    w.set(k, t, nodes[n - 1], edge(Admin), n as u64, &[]);
+    let tl = Timeline::evaluate(&w.held());
+    let s0 = osis_perm::chain_steps();
+    let into = tl.certificates_into(&[t].into());
+    (osis_perm::chain_steps() - s0, into.commits.len())
+}
+
+// spec/requirements.md Scale (role history: O(history)), spec/permissions.md §4: finding the
+// chained writes visits about linearly many things in the edge writes, in the org and in a chain
+// of writes each ordered before its author's authority (no write there is chained but K's).
+#[test]
+fn chained_writes_found_linear_in_edge_writes_spec_permissions_4() {
+    let mut per = Vec::new();
+    for n in [N, 10 * N] {
+        let (w, _, root) = org(n);
+        let tl = Timeline::evaluate(&w.held());
+        let s0 = osis_perm::chain_steps();
+        tl.certificates_into(&[root].into());
+        per.push((osis_perm::chain_steps() - s0, backdated_chain(n)));
+    }
+    let (a, b) = (per[0], per[1]);
+    assert_eq!((a.1 .1, b.1 .1), (1, 1), "only K's write is chained");
+    assert!(b.0 <= 15 * a.0 && b.1 .0 <= 15 * a.1 .0, "{a:?} -> {b:?}");
+}

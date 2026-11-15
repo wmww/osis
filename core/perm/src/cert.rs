@@ -3,11 +3,12 @@
 //! certificates alone.
 //!
 //! A write is chained when its author could have had the authority it needs, over record edges
-//! and the edges chained writes on their targets set, at any time, applied or not (`Chained`):
-//! a superset of the paths any walk had at any point (every applied write is chained), so no
-//! point and no replay is needed; a function of the held set alone, which only grows with it;
-//! and holding no write of an author no record or chained write gave authority, so no such
-//! author makes honest nodes log another actor's roster.
+//! and the edges chained writes before it set, applied or not, never removed (`Chained`): a
+//! superset of the paths any walk had at any point (every applied write is chained: its
+//! authority runs over edges earlier applied writes set), so no point and no replay is needed;
+//! a function of the held set alone, which only grows with it (an earlier write only adds
+//! edges); and holding no write of an author no record or chained write gave authority, so no
+//! such author makes honest nodes log another actor's roster.
 
 use crate::graph::Records;
 use crate::held::{HeldSet, MemoryHeldSet};
@@ -63,6 +64,7 @@ impl Chained {
         let mut seen: BTreeSet<Tid> = from.into_iter().collect();
         let mut stack: Vec<Tid> = seen.iter().copied().collect();
         while let Some(x) = stack.pop() {
+            count_chain_step();
             if x == *a {
                 return true;
             }
@@ -93,40 +95,35 @@ impl Chained {
 }
 
 impl CertIndex {
-    /// The chained writes of `input`: the least set holding each write whose author could have
-    /// had the authority it needs over the edges the set's writes on their targets set (`could`),
-    /// found by passes in timeline order until one adds nothing (a grant chain in order is one
-    /// pass).
+    /// The chained writes of `input`, in one pass in timeline order (§5.1 step 1): each write
+    /// whose author could have had the authority it needs over the edges chained writes of
+    /// earlier commits set (`could`). O(edge writes × what a search from a target visits).
     fn of(input: &Input) -> CertIndex {
         let mut list: Vec<&Arc<RoleCommit>> = input.commits.values().collect();
         list.sort_by_key(|c| c.point());
         let (mut g, mut x) = (Chained::default(), CertIndex::default());
-        loop {
-            let mut grew = false;
-            for c in &list {
-                for (k, op) in c.ops.iter().enumerate() {
-                    let Ok(id) = u32::try_from(k).map(|k| WriteId(c.id, k)) else { continue };
-                    if x.writes.contains(&id) {
-                        continue;
-                    }
-                    let Some(sets) = g.could(&input.records, &c.author, op) else { continue };
-                    grew = true;
-                    x.writes.insert(id);
-                    let on = x.by_edge.entry(op.holder).or_default().entry(op.target).or_default();
-                    if on.last().is_none_or(|l| l.id != c.id) {
-                        on.push((*c).clone());
-                    }
-                    if let (true, Some(e)) = (sets, &op.edge) {
-                        g.add(op.holder, op.target, e.role, e.invite.is_some());
-                        x.targets.entry(op.holder).or_default().insert(op.target);
-                        x.holders.entry(op.target).or_default().insert(op.holder);
-                    }
+        for c in list {
+            // each write against the edges before its commit (§5.1 step 4)
+            let judged: Vec<(WriteId, &EdgeOp, bool)> = c
+                .ops
+                .iter()
+                .enumerate()
+                .filter_map(|(k, op)| Some((WriteId(c.id, u32::try_from(k).ok()?), op, g.could(&input.records, &c.author, op)?)))
+                .collect();
+            for (id, op, sets) in judged {
+                x.writes.insert(id);
+                let on = x.by_edge.entry(op.holder).or_default().entry(op.target).or_default();
+                if on.last().is_none_or(|l| l.id != c.id) {
+                    on.push(c.clone());
+                }
+                if let (true, Some(e)) = (sets, &op.edge) {
+                    g.add(op.holder, op.target, e.role, e.invite.is_some());
+                    x.targets.entry(op.holder).or_default().insert(op.target);
+                    x.holders.entry(op.target).or_default().insert(op.holder);
                 }
             }
-            if !grew {
-                return x;
-            }
         }
+        x
     }
 
     /// What any of `seeds` (included) reaches (`forward`) or is reached by over record edges
@@ -150,9 +147,37 @@ impl CertIndex {
     }
 }
 
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Things the chained-write searches visited on this thread (`chain_steps`).
+    static CHAIN_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn count_chain_step() {
+    #[cfg(debug_assertions)]
+    CHAIN_STEPS.with(|m| m.set(m.get() + 1));
+}
+
+/// Things the chained-write searches (`CertIndex::of`) on this thread visited so far (scale
+/// checks). Debug builds only, as `commits_walked`.
+#[doc(hidden)]
+#[allow(clippy::panic)]
+pub fn chain_steps() -> u64 {
+    #[cfg(debug_assertions)]
+    return CHAIN_STEPS.with(|m| m.get());
+    #[cfg(not(debug_assertions))]
+    panic!("chain_steps counts in debug builds only");
+}
+
 impl Timeline {
     fn cert_index(&self) -> &CertIndex {
         self.memo.certs.get_or_init(|| CertIndex::of(&self.input))
+    }
+
+    /// Whether `w` is a chained write (§4).
+    #[doc(hidden)]
+    pub fn is_chained(&self, w: &WriteId) -> bool {
+        self.cert_index().writes.contains(w)
     }
 
     /// What `n` reaches over chained edges: O(what it reaches) once while this timeline stands.
