@@ -903,7 +903,7 @@ impl Streams {
                     p.tell.push((*s, Event::Full(false)));
                 }
             }
-            self.pull_anew(ctx, *s);
+            self.pull_anew(ctx, *s, true);
         }
         Ok(!grew.is_empty())
     }
@@ -916,7 +916,7 @@ impl Streams {
         // once each, written twice or not (a raise to read off a dropped copy)
         let anew: BTreeSet<SyncId> = self.anew.added().into_iter().collect();
         for s in &anew {
-            self.pull_anew(ctx, *s);
+            self.pull_anew(ctx, *s, false);
         }
         !anew.is_empty()
     }
@@ -924,12 +924,13 @@ impl Streams {
     /// S pulled from the start: from each source pulling it now, and from the start at its next
     /// join at every source whose place passed it, those only stored included (a restart since),
     /// in one transaction with clearing the store's durable mark (`N/`, `Store::clear_anew`).
-    /// Under a head move's mark (`Store::anew_everywhere` false) only at the sources told a
+    /// `everywhere` (room grown), or the store's mark says so (`Store::anew_everywhere`: a
+    /// dropped copy, a raise); else (a head move's mark, or none) only at the sources told a
     /// refusal of S under a head other than S's now. O(the sources holding a place of S).
-    fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId) {
+    fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId, everywhere: bool) {
         let pulling: BTreeMap<Source, ConnId> = self.holders.get(&s).into_iter().flatten().filter_map(|c| self.pull.get(c).map(|p| (p.src, *c))).collect();
         let read = ctx.store.with_read(|t| {
-            let everywhere = Store::anew_everywhere(t, &s)?;
+            let everywhere = everywhere || Store::anew_everywhere(t, &s)?;
             let mut out = BTreeSet::new();
             let tags: &[u8] = if everywhere { &[AT_STREAM, JOIN_FROM, TOLD] } else { &[TOLD] };
             for tag in tags {

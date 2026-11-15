@@ -889,6 +889,8 @@ fn full_told_then_room_again_spec_sync_streams_4() {
     p.run();
     assert!(!p.a.streams.known().full(a_src, &k.id));
     assert!(matches!(p.sent_by_b(41).last().unwrap(), Msg::Pull(q) if q.joins == vec![(k.id, None)]), "pulled again from the start");
+    let refused = if held == x { y } else { x };
+    assert!(p.b.store.entry(&k.id, &refused).unwrap().is_some(), "what it refused for room taken once room grew");
 }
 
 // spec/sync-judgement.md §6 (Stops: a box of its head's sync secret keeps S again, and it fetches
