@@ -451,14 +451,14 @@ fn a_joined_redeem_is_followed_past_the_follow_time_until_its_join_is_held_spec_
 fn a_held_join_forgets_the_link_and_k_syncs_by_its_filing_spec_permissions_7() {
     let mut w = two_nodes();
     let (p0, a0, a1) = (w.node(0).profile.unwrap(), w.node(0).account.unwrap(), w.node(1).account.unwrap());
-    let peer = osis_label::Peer { dialable: w.node(0).key.0, relays: w.net.reach.items(0) };
-    let spec = osis_engine::flows::LinkSpec { target: p0, role: Role::Read, until: None, hosts: Vec::new(), peers: vec![peer], single_use: true };
+    let peers = osis_blob::link_peers(w.node(0).key.0, &w.net.reach.items(0), &[]);
+    let spec = osis_engine::flows::LinkSpec { target: p0, role: Role::Read, until: None, peers, single_use: true };
     let link = w.write(0, |e| e.create_link(&a0, &spec)).unwrap().0;
     assert_eq!(w.redeem(1, &link), Waiting::Pending);
     w.run();
     assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
     assert!(!w.node(1).node.redeeming(&link.k), "forgotten once held");
-    let s = link.k_label;
+    let s = link.k_sync_id;
     assert!(w.engine(1).read_credentials(&s).unwrap().is_some_and(|c| c.acting.is_empty()), "K read, L acted for no more");
     assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == link.k), "K syncs by its filing");
     let on_k = w.engine(1).core.on_thing(&link.k).count();
@@ -498,4 +498,26 @@ fn a_siblings_join_ends_a_redeem_spec_permissions_7() {
         assert_eq!(w.engine(i).core.ix.by_thing.get(&(link.k, l)).map_or(0, |x| x.len()), 1, "node {i}: one join");
     }
     assert_eq!(w.redeem(2, &link), Waiting::Done);
+}
+
+// spec/permissions.md §7 (First contact: once its join is held a redeemer keeps the link's peers,
+// not the seed, as addresses to dial while its account holds a role on the target): node 1's
+// link forgotten, node 0 stays a dial hint there, across a restart, until node 1's account
+// leaves K (K taken off the target), when it goes.
+#[test]
+fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
+    use osis_sync::driver::dials::Why;
+    let (mut w, link) = redeemed();
+    let sharer = w.node(0).key.0;
+    assert!(!w.node(1).node.redeeming(&link.k), "joined, the link forgotten");
+    let hinted = |w: &World| w.dials(1).why(&sharer).contains(&Why::Hint);
+    assert!(hinted(&w), "the link's peer kept as a dial hint");
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    assert!(hinted(&w), "kept across a restart");
+    w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
+    w.run();
+    assert!(!w.engine(1).roster(&link.k).contains_key(&w.node(1).account.unwrap()), "node 1's account left K");
+    assert!(!hinted(&w), "the peer dropped with the join");
 }

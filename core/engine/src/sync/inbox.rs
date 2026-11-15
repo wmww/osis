@@ -392,7 +392,7 @@ impl Engine {
     /// The user accepts `thing` into group `into` (spec/sync-set.md §4 Accepting), in one
     /// transaction (`accept_in`).
     pub fn accept_invite(&mut self, thing: &Tid, into: &Tid) -> Result<()> {
-        self.run(|tx| accept_in(tx, thing, into))
+        self.run(|tx| accept_in(tx, &[*thing], into))
     }
 
     /// Opens inbox blob `bytes` under whichever inbox here opens it, taking nothing (tests: what
@@ -491,18 +491,22 @@ impl crate::engine::Core {
     }
 }
 
-/// An accept of `thing` into group `into` (spec/sync-set.md §4 Accepting): written as a subgroup
-/// of `into` where it does not list it yet, the sync IDs the boxes payloads held offering it name
-/// kept in the account's sync record (spec/sync.md §3), and marked acted (`mark_acted`, as any
-/// listing is).
-pub(crate) fn accept_in(tx: &mut Tx<'_>, thing: &Tid, into: &Tid) -> Result<()> {
-    if !tx.core.ix.groups.listed(into, crate::engine::groups::SUBGROUPS, thing) {
-        let mut m = crate::Mutation::new();
-        m.op(*into, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::SUBGROUPS)], op: osis_crdt::Op::Add(Value::Tid(*thing)) })?;
+/// An accept of `things` into group `into` (spec/sync-set.md §4 Accepting): each written as a
+/// subgroup of `into` where it does not list it yet (one commit), the sync IDs the boxes payloads
+/// held offering it name kept in the account's sync record (spec/sync.md §3), and marked acted
+/// (`mark_acted`, as any listing is).
+pub(crate) fn accept_in(tx: &mut Tx<'_>, things: &[Tid], into: &Tid) -> Result<()> {
+    let mut m = crate::Mutation::new();
+    for t in things.iter().filter(|t| !tx.core.ix.groups.listed(into, crate::engine::groups::SUBGROUPS, t)) {
+        m.op(*into, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::SUBGROUPS)], op: osis_crdt::Op::Add(Value::Tid(*t)) })?;
+    }
+    if !m.is_empty() {
         crate::engine::write::commit_in(tx, m)?;
     }
     let now = tx.now();
-    keep_offered(tx, thing, now)?;
+    for t in things {
+        keep_offered(tx, t, now)?;
+    }
     mark_acted(tx)
 }
 
@@ -521,16 +525,7 @@ pub(crate) fn accept_redeemed(tx: &mut Tx<'_>, grantee: &Tid, k: &Tid, target: &
     if things.is_empty() {
         return Ok(());
     }
-    let mut m = crate::Mutation::new();
-    for t in &things {
-        m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::SUBGROUPS)], op: osis_crdt::Op::Add(Value::Tid(*t)) })?;
-    }
-    crate::engine::write::commit_in(tx, m)?;
-    let now = tx.now();
-    for t in &things {
-        keep_offered(tx, t, now)?;
-    }
-    mark_acted(tx)
+    accept_in(tx, &things, &d)
 }
 
 /// Keeps in the account's sync record the sync IDs the boxes payloads held unexpired at `now`

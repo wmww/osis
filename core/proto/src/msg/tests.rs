@@ -158,13 +158,16 @@ fn list_caps_spec_wire_11_2() {
     }
 }
 
-// spec/wire.md §11.2 Prove: at most `MAX_ROTATIONS` rotations, each a header-only copy
+// spec/wire.md §11.2 Prove, Proved: at most `MAX_ROTATIONS` rotations, each a header-only copy
 #[test]
 fn prove_rotations_cap_spec_wire_11_2() {
     let prove = |n: usize| Msg::Prove { id: 32, proofs: vec![], rotations: Some(vec![crate::examples::rotation(); n]) };
-    let at = prove(crate::limits::MAX_ROTATIONS);
-    assert_eq!(Msg::decode(&at.encode()), Ok(at));
-    assert_eq!(rejected(prove(crate::limits::MAX_ROTATIONS + 1).to_value()).error, Error::Cap("rotations"));
+    let proved = |n: usize| Msg::Proved { id: 32, proofs: vec![], rotations: Some(vec![crate::examples::rotation(); n]) };
+    for m in [prove, proved] {
+        let at = m(crate::limits::MAX_ROTATIONS);
+        assert_eq!(Msg::decode(&at.encode()), Ok(at));
+        assert_eq!(rejected(m(crate::limits::MAX_ROTATIONS + 1).to_value()).error, Error::Cap("rotations"));
+    }
 }
 
 // spec/wire.md §11.2 (Offer: a Deposit item's blob at most `MAX_BLOB`; Pull: a cursor at most

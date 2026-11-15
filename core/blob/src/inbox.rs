@@ -106,12 +106,12 @@ impl InboxPayload {
 
 impl DialHint {
     /// `[dialable, [url*]]` (spec/wire.md §9 position 4, §10 `peer`).
-    pub(crate) fn to_value(&self) -> Value {
+    pub fn to_value(&self) -> Value {
         Value::List(vec![Value::bytes(&self.dialable), Value::List(self.urls.iter().map(|u| Value::Str(u.clone())).collect())])
     }
 
     /// From `[dialable, [url*]]`: at most `max_urls` URLs, each at most `MAX_URL_BYTES`.
-    pub(crate) fn from_value(v: &Value, max_urls: usize, what: &'static str) -> Result<DialHint, Error> {
+    pub fn from_value(v: &Value, max_urls: usize, what: &'static str) -> Result<DialHint, Error> {
         let Value::List(d) = v else { return Err(Error::Malformed(what)) };
         let [k, Value::List(urls)] = d.as_slice() else { return Err(Error::Malformed(what)) };
         if urls.len() > max_urls {

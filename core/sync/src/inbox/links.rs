@@ -9,7 +9,10 @@
 //! both sync by the sync set from then on, link or not), once; the link is kept, and L held at
 //! every start, until the join is held at a source of K's sync ID (status's view, spec/sync-
 //! status.md §2: the join is an own commit while L is followed, `Engine::own_commits`); then it
-//! is unfollowed and L forgotten (spec/permissions.md §7). So a redeem dropped or a restart before
+//! is unfollowed and L forgotten (spec/permissions.md §7), its peers kept as dial hints (rows
+//! `I/p/`, no seed) while the account holds K by a grant (`Engine::joined_link`; so too for a
+//! link forgotten because a sibling joined), which is while the account reads the target through
+//! K. So a redeem dropped or a restart before
 //! the join reached the sharer's node still completes (`redeem-dropped-before-delivery`).
 //!
 //! One rule says whether there is anything to write: the account holding K by a grant
@@ -38,6 +41,8 @@ use osis_store::Shred;
 use std::collections::BTreeMap;
 
 const ROWS: &[u8] = b"I/r/";
+/// A joined link's peers, kept once the link is forgotten (`KeptPeers`).
+const PEERS: &[u8] = b"I/p/";
 
 #[derive(Clone, Debug)]
 struct Pending {
@@ -73,6 +78,19 @@ fn row_key(k: &Tid) -> Vec<u8> {
     [ROWS, k.as_bytes()].concat()
 }
 
+fn peers_key(k: &Tid) -> Vec<u8> {
+    [PEERS, k.as_bytes()].concat()
+}
+
+fn encode_peers(hints: &[DialHint]) -> Vec<u8> {
+    osis_base::cbor::encode(&osis_base::Value::List(hints.iter().map(DialHint::to_value).collect()))
+}
+
+fn decode_peers(v: &[u8]) -> Option<Vec<DialHint>> {
+    let osis_base::Value::List(l) = osis_base::cbor::decode(v, &osis_base::cbor::Limits::DEFAULT).ok()? else { return None };
+    l.iter().map(|x| DialHint::from_value(x, usize::MAX, "kept link peer").ok()).collect()
+}
+
 /// What a link not joined yet waits on.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Stage {
@@ -96,11 +114,14 @@ pub(super) struct Redemptions {
     hints: Stamped<Tid, Vec<DialHint>>,
     ready: Effects<Tid, Stage>,
     held: Effects<Tid, bool>,
+    /// Links forgotten while the account holds K by a grant: their peers stay dial hints (rows
+    /// `I/p/`) while it does (`Engine::joined_link`, spec/permissions.md §7 First contact).
+    kept: Effects<Tid, bool>,
 }
 
 impl Default for Redemptions {
     fn default() -> Self {
-        Redemptions { pending: BTreeMap::new(), hints: Stamped::default(), ready: Effects::new("inbox: link ready"), held: Effects::new("inbox: join held") }
+        Redemptions { pending: BTreeMap::new(), hints: Stamped::default(), ready: Effects::new("inbox: link ready"), held: Effects::new("inbox: join held"), kept: Effects::new("inbox: joined link's peers") }
     }
 }
 
@@ -111,6 +132,14 @@ impl Redemptions {
             let Some(p) = Pending::decode(&v) else { continue };
             let Some(k) = k.get(ROWS.len()..).and_then(|x| <[u8; 15]>::try_from(x).ok()).map(Tid::from_bytes) else { continue };
             self.follow(h, k, p)?;
+        }
+        for (k, v) in h.store.with_tx(|t| t.scan_local(PEERS, b"", usize::MAX))? {
+            let Some(hints) = decode_peers(&v) else { continue };
+            let Some(k) = k.get(PEERS.len()..).and_then(|x| <[u8; 15]>::try_from(x).ok()).map(Tid::from_bytes) else { continue };
+            if !self.pending.contains_key(&k) {
+                self.hints.insert(k, hints);
+                self.kept.want(k);
+            }
         }
         Ok(())
     }
@@ -185,7 +214,7 @@ impl Redemptions {
             acted = true;
         }
         for k in self.held.due() {
-            let Some((s, c)) = self.pending.get(&k).and_then(|p| Some((p.link.k_label, p.joined?))) else {
+            let Some((s, c)) = self.pending.get(&k).and_then(|p| Some((p.link.k_sync_id, p.joined?))) else {
                 self.held.unwant(&k);
                 continue;
             };
@@ -197,17 +226,35 @@ impl Redemptions {
             self.forget(h, &k)?;
             acted = true;
         }
+        for k in self.kept.due() {
+            let engine = &mut *h.engine;
+            let Some((_, false)) = self.kept.settle(&k, || engine.joined_link(&k)) else { continue };
+            self.kept.unwant(&k);
+            if self.hints.contains_key(&k) {
+                self.hints.remove(&k);
+            }
+            h.store.with_tx(|t| t.remove_local(&peers_key(&k), Shred::No))?;
+            acted = true;
+        }
         Ok(acted)
     }
 
     /// Stops redeeming link K: unfollowed, L and the kept link forgotten (spec/permissions.md §7).
+    /// Its peers stay dial hints while the account holds K by a grant (`kept`), else go.
     fn forget(&mut self, h: &mut Here<'_>, k: &Tid) -> Result<()> {
-        self.pending.remove(k);
+        let peers = self.pending.remove(k).map(|p| link_hints(&p.link)).unwrap_or_default();
         h.engine.unfollow_link(k);
-        if self.hints.contains_key(k) {
+        let keep = !peers.is_empty() && h.engine.joined_link(k);
+        let row = encode_peers(&peers);
+        h.store.with_tx(|t| {
+            t.remove_local(&row_key(k), Shred::Yes)?;
+            if keep { t.put_local(&peers_key(k), &row, Shred::No) } else { Ok(()) }
+        })?;
+        if keep {
+            self.kept.want(*k);
+        } else if self.hints.contains_key(k) {
             self.hints.remove(k);
         }
-        h.store.with_tx(|t| t.remove_local(&row_key(k), Shred::Yes))?;
         Ok(())
     }
 
@@ -216,7 +263,8 @@ impl Redemptions {
         self.pending.contains_key(k)
     }
 
-    /// The sharer nodes of the links being redeemed (spec/wire.md §10: first-contact hints).
+    /// The peers of the links being redeemed (spec/wire.md §10: first-contact hints) and of
+    /// those forgotten joined (`kept`).
     pub(super) fn hints(&self) -> impl Iterator<Item = &DialHint> {
         self.hints.values().flatten()
     }
