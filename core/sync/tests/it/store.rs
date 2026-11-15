@@ -627,6 +627,40 @@ fn full_ends_once_what_it_refused_expired_spec_sync_streams_4() {
     }
 }
 
+// spec/sync-streams.md §4 (Full: no longer full once a source's stream shows what it refused
+// may be gone, then pulled anew, marked durably): a sign while S is not full changes nothing; one
+// while full ends it at once, and a restart before the next `room_grew` or the pull anew keeps it
+// ended and the pull anew owed (`anew_feed`).
+#[test]
+fn full_ended_by_a_stream_stays_ended_across_a_restart_spec_sync_streams_4() {
+    for restart in [false, true] {
+        let dev = Dev::new();
+        let s = Sid::new(10);
+        let mut st = unread(&dev, &s);
+        let mut anew = st.anew_feed().0;
+        st.refused_may_be_gone(&s.id).unwrap();
+        assert!(st.room_grew().unwrap().is_empty() && anew.added().is_empty(), "not full: nothing");
+        let used = st.usage(&s.id).unwrap().0.bytes;
+        st.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), used + 100)]), ..Caps::default() });
+        let (b, x) = blob(300, Class::Durable, None, &[]);
+        assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x).unwrap(), Code::STORAGE_CAP);
+        st.refused_may_be_gone(&s.id).unwrap();
+        assert!(!st.waits_room(&s.id));
+        if restart {
+            drop(st);
+            st = dev.open();
+            st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
+            anew = st.anew_feed().0;
+            assert!(st.room_grew().unwrap().is_empty(), "no connection was told full since");
+        } else {
+            assert_eq!(st.room_grew().unwrap(), vec![s.id], "reported once");
+            assert!(st.room_grew().unwrap().is_empty());
+        }
+        assert!(!st.waits_room(&s.id), "restart: {restart}");
+        assert_eq!(anew.added(), vec![s.id], "pulled anew (restart: {restart})");
+    }
+}
+
 // spec/sync-inbox.md §3 (deposit refusals): 0 taken (and for a held or dropped blob, changing
 // nothing); 4 for a sync ID the node will hold but holds no head of yet; 5 past the budget; 12
 // past a cap; 14 for a bad signature, a relay-only blob, an unknown sync ID; never the head.
