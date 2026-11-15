@@ -26,13 +26,6 @@ pub struct Standing {
     pub role: Option<Role>,
 }
 
-impl Standing {
-    pub const NONE: Standing = Standing { class: Class::None, role: None };
-    pub fn max(self, o: Standing) -> Standing {
-        Standing { class: self.class.max(o.class), role: self.role.max(o.role) }
-    }
-}
-
 /// The value of a record edge in force (spec/permissions.md §1): admin, no `until`, no invite.
 pub const RECORD_EDGE: Edge = Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
 

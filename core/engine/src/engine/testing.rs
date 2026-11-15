@@ -211,30 +211,6 @@ impl Engine {
         })
     }
 
-    /// The origin dots of the writes of `(tid, ak)` held valid snapshots carry whose own delta
-    /// was never received, read from their bodies (tests: a recompute plays them at their
-    /// snapshot, not at their own `ts`; an invalid snapshot gives nothing, spec/permissions.md
-    /// §5.2). A record carrying no `ts` (a tombstone) carries no write.
-    #[doc(hidden)]
-    pub fn carried_dots(&mut self, tid: &Tid, ak: &osis_base::Ak) -> Vec<osis_crdt::Dot> {
-        let (tid, ak) = (*tid, ak.clone());
-        self.read(|tx| {
-            let snaps: Vec<(CommitId, usize)> = tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten().filter_map(|s| tx.core.ix.commits.get(&s.1).and_then(|m| m.aspect(&tid, &ak)).map(|ai| (s.1, ai))).collect();
-            let mut out = std::collections::BTreeSet::new();
-            for (s, ai) in snaps {
-                if !crate::apply::copies::snapshot_valid(tx.core, &s, &tid, &ak) {
-                    continue;
-                }
-                crate::apply::each_held_piece(tx, &s, ai, &mut |tx, f| {
-                    out.extend(f.writes().into_iter().filter(|(d, ts)| ts.is_some() && !d.src.is_derived() && !crate::apply::copies::delta_received(tx.core, &tid, &ak, d)).map(|(d, _)| d));
-                    Ok(())
-                })?;
-            }
-            Ok(out.into_iter().collect())
-        })
-        .unwrap_or_default()
-    }
-
     /// Keeps every body: no purge-on-replace cover or drop (tests: an oracle for the earliest
     /// superseder of each write, spec/crdt.md §4.8).
     #[doc(hidden)]
@@ -631,7 +607,6 @@ impl Engine {
         self.run(invalidate)?;
         self.reload()
     }
-
 }
 
 /// One index of `IndexDigest::tables`: compared typed (`Core::same_index`), shown as its `Debug`

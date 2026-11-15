@@ -498,19 +498,6 @@ impl Engine {
         self.read(|tx| part_keep(tx, &c, &tid, &ak))
     }
 
-    /// Whether held part `(tid, ak)` of `c` is replaced: a write of it is dead (spec/commits.md
-    /// §5 Bodies and deaths; `false` when not held whole and valid).
-    pub fn replaced(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
-        let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.read(|tx| {
-            let Some(ai) = held_part(tx.core, &c, &tid, &ak) else { return Ok(false) };
-            if tx.core.ix.commits.get(&c).is_none_or(|m| m.bare(ai)) {
-                return Ok(false);
-            }
-            super::replace::replaced(tx, &c, ai, &tid, &ak)
-        })
-    }
-
     /// When part `ak` of `c` was replaced, for a relative keep at least (`part_replaced_at`;
     /// `None`: no relative bound on its aspect, or no write of it dead).
     pub fn replaced_at(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Ts>> {

@@ -700,15 +700,6 @@ pub(crate) fn own_delete_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result
 }
 
 impl crate::Engine {
-    /// [`own_delete_keys`] of `t`. This and the role reads below run as transactions, not
-    /// reads (`Engine::read`): `published_keys` takes up applied inbox hints
-    /// (`Core::promote_hints`), which a read would undo, to take up again (every cache dropped)
-    /// at each call.
-    pub fn own_delete_keys(&mut self, t: &Tid) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
-        let t = *t;
-        self.run(|tx| own_delete_keys(tx, &t))
-    }
-
     /// [`holds_delete_keys_in`], for tests.
     #[cfg(test)]
     pub(crate) fn holds_delete_keys(&mut self, t: &Tid) -> Result<bool> {
@@ -716,7 +707,9 @@ impl crate::Engine {
         self.run(|tx| holds_delete_keys_in(tx, &t))
     }
 
-    /// [`usable_role`]: `role` on `t` as this node can use it now.
+    /// [`usable_role`]: `role` on `t` as this node can use it now. A transaction, not a read
+    /// (`Engine::read`): `published_keys` takes up applied inbox hints (`Core::promote_hints`),
+    /// which a read would undo, to take up again (every cache dropped) at each call.
     pub fn usable_role(&mut self, t: &Tid, role: Option<Role>) -> Result<Option<Role>> {
         let t = *t;
         self.run(|tx| usable_role(tx, &t, role))

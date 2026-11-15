@@ -376,13 +376,6 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 impl Engine {
-    /// The inbox a role write about `holder` goes to (`inbox_of`): the actor whose inbox it is,
-    /// and the inbox.
-    pub fn inbox_kem(&mut self, actor: &Tid) -> Result<Option<osis_crypto::KemPublicKey>> {
-        let a = *actor;
-        self.read(|tx| edges::inbox_kem(tx, &a))
-    }
-
     /// Takes up a key actor from its seed (a link key from its link)
     /// for this session: it can sign (`Mutation::sign_as`) and its boxes open. Returns its tid.
     pub fn hold_key_actor(&mut self, seed: Secret32) -> Result<Tid> {

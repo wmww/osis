@@ -876,11 +876,7 @@ impl crate::handle::ReadOnly {
     pub(crate) fn subscribe_in(&self, l: &mut crate::handle::Locked, filter: Filter, initial: bool, cb: Callback) -> Subscription {
         let d = &self.inner.dispatch;
         match &filter {
-            Filter::Commits(a) => {
-                // a store failure here only loses telling a keep bound passing: the
-                // subscription stands
-                let _ = l.engine().listen_commits(d.commit_listened(), &a.things());
-            }
+            Filter::Commits(_) => l.engine().listen_commits(d.commit_listened()),
             Filter::Due(Watch::CommitsOf(_)) => l.engine().watch_commits(),
             _ => {}
         }

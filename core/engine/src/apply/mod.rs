@@ -1166,7 +1166,7 @@ fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet
     let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let mut skip: BTreeSet<usize> = held.parts.iter().map(|p| p.ai).collect();
     for ai in (0..meta.hold.len()).filter(|ai| meta.body_gone(*ai)) {
-        if !crate::retention::takes_late(tx, id, ai)? {
+        if !crate::retention::takes_late(tx, id, ai) {
             skip.insert(ai);
         }
     }
@@ -1575,11 +1575,6 @@ impl Engine {
             crate::rotation::touch_held(tx, things);
             Ok(true)
         })
-    }
-
-    /// The commits reading-only secrets came from (node-sync's sweep of entries gone).
-    pub fn reading_sources(&self) -> Vec<CommitId> {
-        self.core.waits.sources().iter().copied().collect()
     }
 
     /// Pending commits `reexamine` read again so far (scale checks).

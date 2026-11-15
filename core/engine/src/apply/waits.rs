@@ -299,11 +299,6 @@ impl Waits {
         self.reading.contains(id)
     }
 
-    /// The commits reading-only secrets came from.
-    pub fn sources(&self) -> &BTreeSet<CommitId> {
-        &self.reading
-    }
-
     /// `id` cannot be judged; `things`: its header's.
     pub fn awaits(&mut self, id: CommitId, things: Vec<Tid>) {
         self.make_room(&id);

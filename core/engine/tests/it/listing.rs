@@ -626,7 +626,7 @@ fn purge_floor_part_told_at_its_floor_spec_commits_5() {
     write(&mut lp, 0, d, crate::common::purgeable_by(PurgeBy::AuthorOrAdmin), "y");
     assert!(held(&mut lp.peers[0], d, &c).body != PartBody::Dropped, "kept to its floor");
     // a listener added after the replacement
-    lp.peers[0].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[d]).unwrap();
+    lp.peers[0].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
     lp.peers[0].drain_events();
     lp.advance(osis_base::format::ROLE_KEEP_MS + 10_000);
     lp.peers[0].tick().unwrap();

@@ -121,8 +121,6 @@ pub(crate) struct Memo {
     pub forward_walks: std::sync::atomic::AtomicU64,
     /// `certificates` per (node, thing) asked.
     pub certificates: Mutex<BTreeMap<(Tid, Tid), crate::cert::Certificates>>,
-    /// `roles_ever` calls so far (a measure).
-    pub ever_walks: std::sync::atomic::AtomicU64,
     /// The chained edge writes and the edges they set, for certificates and trust seeds.
     pub certs: std::sync::OnceLock<Arc<crate::cert::CertIndex>>,
     /// The edge writes applied, by their target; and the indexes built (a measure).
@@ -161,7 +159,6 @@ impl Clone for Memo {
             forward: get(&self.forward),
             forward_walks: n(&self.forward_walks),
             certificates: get(&self.certificates),
-            ever_walks: n(&self.ever_walks),
             certs: self.certs.clone(),
             on_target: self.on_target.clone(),
             on_target_built: n(&self.on_target_built),
@@ -1086,7 +1083,6 @@ impl Timeline {
     /// and a retain value end a path; `until` is disregarded). A path may join edges that never
     /// stood at once (over-counts into departed, never into holder). O(history): built once per use.
     pub fn roles_ever(&self, node: &Tid) -> BTreeMap<Tid, Role> {
-        self.memo.ever_walks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut best: BTreeMap<(Tid, Tid), Edge> = BTreeMap::new();
         for c in &self.walked.history {
             if let Some(e) = c.edge.filter(|e| !e.says_retain())
@@ -1097,11 +1093,6 @@ impl Timeline {
         }
         let ever = Edges::restore(best.into_iter().map(|((h, t), e)| (h, t, e)), BTreeSet::new());
         View::new(&self.input.records, &ever, Some(Ts::ZERO)).roles_from(node)
-    }
-
-    /// `roles_ever` calls so far (a measure).
-    pub fn ever_walks(&self) -> u64 {
-        self.memo.ever_walks.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Walks of `Memo::forward` so far (a measure).

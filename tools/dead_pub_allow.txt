@@ -116,7 +116,6 @@ osis-sync::holder_duties_follow  test hook: the holder duties follow a thing onl
 osis-sync::clock_offset  deferred: status reports a large offset as a diagnostic (spec/sync-streams.md §1; issues/sync-unbuilt.md, status and API)
 osis-sync::status_of  deferred: unused since the sync rebuild (issues/sync-tests-owed.md, Dead public items)
 osis-sync::set_record_budget  test hook: a small RECORD_BUDGET to drive eviction
-osis-engine::destructions  facade: osis-sync's modules call it (notes/sync-facade.md)
 osis-engine::logged_with  facade: osis-sync's modules call it (notes/sync-facade.md)
 osis-engine::sync_record_feed  facade: osis-sync's modules call it (notes/sync-facade.md)
 osis-engine::carry_deliveries  test hook: engine integration tests carry deliveries and passes as sync would

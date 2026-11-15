@@ -62,15 +62,6 @@ fn perm_edge(e: &Edge) -> PermEdge {
     PermEdge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(super::tied::tie_perm), floor: e.floor }
 }
 
-/// Which parts of a commit an inbox blob carries.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Parts {
-    /// Every part (a grant: the edge and the grantee's boxes; a re-seal).
-    All,
-    /// The `roles.0` parts only (a removal: the rotation's boxes are not about the holder).
-    Edge,
-}
-
 /// Owes `holder` an inbox delivery of role commit `c` about it (spec/permissions.md §2,
 /// spec/sync-inbox.md §2): an inbox blob for an actor, the commit itself over a connection for a
 /// node, nothing for a link key (it reads its sync ID by static entry).

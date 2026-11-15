@@ -524,20 +524,6 @@ pub(crate) fn own_replace(core: &Core, s: &CommitId, tid: &Tid, ak: &Ak) -> bool
     core.ix.own_replaces.get(&(*tid, ak.clone(), m.view.author)).is_some_and(|x| x.contains(&(m.view.ts, *s))) && m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai))
 }
 
-/// The commits own replaces `qs` (of one author on `(tid, ak)`, held here) newly let go: the
-/// author's held commits older than the newest of `qs` with at most one other own replace later
-/// than them, so `qs` give them their second (spec/commits.md §5 Own replaces). What a pass
-/// judges when `qs` arrive or turn valid: older ones had two covers before.
-pub(crate) fn own_newly_covered(core: &Core, qs: &[CommitId], tid: &Tid, ak: &Ak) -> Vec<CommitId> {
-    let Some(m) = qs.first().and_then(|q| core.ix.commits.get(q)) else { return Vec::new() };
-    let author = m.view.author;
-    let Some(hi) = qs.iter().filter_map(|q| core.ix.commits.get(q)).map(|m| m.view.ts).max() else { return Vec::new() };
-    let lo = own_replaces(core, tid, ak, &author).rev().filter(|x| !qs.contains(&x.1)).map(|x| x.0).nth(1);
-    // from `lo` only: what stays under older covers (another part of it uncovered) is not walked
-    let from = (lo.unwrap_or(Ts::ZERO), CommitId([0; 32]));
-    core.ix.own_held.get(&(*tid, ak.clone(), author)).into_iter().flat_map(|x| x.range(from..)).take_while(|(ts, _)| *ts < hi).filter(|(_, c)| !qs.contains(c)).map(|x| x.1).collect()
-}
-
 /// The own replaces that may cover `c` on `(tid, ak)`: its author's two newest valid held
 /// own replaces later than it, none for a memory commit (`covered` asks for two).
 pub(crate) fn own_covers(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
@@ -1011,46 +997,6 @@ impl Engine {
                 tx.set_memory();
             }
             write_snapshot(tx, &tid, &ak, memory)
-        })
-    }
-
-    /// Writes a memory snapshot of `(tid, ak)` carrying only the join of this node's own unsent
-    /// plain commits `ids` on it (spec/commits.md §2, the coalescing snapshot): its frontier
-    /// reaches the last of their counters, so it covers exactly them (and nothing another
-    /// session wrote, which joining would change). One entry goes up per round trip instead of
-    /// one per write; the covered commits are forgotten here at once (`drop_covered`) and never
-    /// logged. `None` when nothing of them is held, or the aspect keeps them while live.
-    pub fn coalesce(&mut self, tid: &Tid, ak: &Ak, ids: &[CommitId]) -> Result<Option<CommitId>> {
-        let (tid, ak) = (*tid, ak.clone());
-        // kept while live (spec/commits.md §5): the snapshot would drop none of them
-        if super::history::of(&self.core, &tid, &ak).live_until() > self.now().0 {
-            return Ok(None);
-        }
-        let ids = ids.to_vec();
-        self.run(|tx| {
-            tx.set_memory();
-            let node = tx.core.writer_for(&tid)?;
-            let ts = tx.core.hlc.next();
-            let own = osis_crdt::Source::session(tx.core.session);
-            let mut st: Option<Fragment> = None;
-            let mut hi = 0u64;
-            for c in &ids {
-                let Some(m) = tx.core.ix.commits.get(c).cloned() else { continue };
-                let Some(ai) = m.aspect(&tid, &ak).filter(|ai| m.holds(*ai)) else { continue };
-                if m.header.form != Form::Session(tx.core.session.nonce) || m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()) {
-                    return Err(Error::Misuse("coalescing takes this session's plain commits"));
-                }
-                hi = hi.max(m.header.aspects.get(ai).map_or(0, |a| a.hi));
-                if let Some(f) = crate::apply::held_fragment(tx, c, ai)? {
-                    st.get_or_insert_with(Fragment::default).join(f);
-                }
-            }
-            let Some(st) = st else { return Ok(None) };
-            let mut frontiers = Frontiers::default();
-            if hi > 1 {
-                frontiers.insert(&own, hi - 1);
-            }
-            build_snapshot(tx, tid, ak, st, ts, node, frontiers, Default::default(), None, false).map(Some)
         })
     }
 

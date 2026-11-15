@@ -306,19 +306,6 @@ impl osis_commit::Secrets for Keys {
     }
 }
 
-/// Whether commit `id` (header `h`) carries one of `dots`, carried writes by aspect
-/// (`Engine::carried_dots`): its session-form range on the aspect holds one, or a commit-form
-/// dot names it.
-pub fn owns_carried(h: &osis_commit::Header, id: &CommitId, dots: &std::collections::BTreeSet<(Tid, Ak, osis_crdt::Dot)>) -> bool {
-    h.aspects.iter().any(|a| {
-        dots.iter().filter(|(t, k, _)| *t == a.tid && *k == a.ak).any(|(_, _, d)| match d.src.kind() {
-            osis_crdt::SourceKind::Session(_) => h.form.counted() && d.src == h.form.own_source(h.author, *id) && a.lo <= d.ctr && d.ctr < a.hi,
-            osis_crdt::SourceKind::Commit(c) => c == id,
-            osis_crdt::SourceKind::Derived(_) => false,
-        })
-    })
-}
-
 /// A session of `node` for hand-built commits (spec/crdt.md §2.1): one of its own, apart from
 /// its engine's.
 pub fn forged_session(node: Tid) -> osis_commit::Form {
@@ -335,11 +322,6 @@ pub fn session_of(lp: &LocalPeer, i: usize) -> osis_commit::Form {
 pub fn read_recipient(e: &mut Engine) -> osis_keys::Recipient {
     let me = e.me();
     osis_keys::Recipient { holder: me, role: Role::Read, keys: e.account_holder_keys(&me).unwrap(), floor: 0 }
-}
-
-/// The stamp of a `forge_pending_grant` commit.
-pub fn grant_ts(bytes: &[u8]) -> osis_base::WallMs {
-    osis_commit::CommitBlob::decode(bytes).unwrap().header.ts.wall_ms()
 }
 
 /// The keep-at-least bound of part `(t, a)` of `c` (`Engine::part_keeps`).

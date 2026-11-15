@@ -912,8 +912,4 @@ impl Timelines {
     pub fn changed(&self) -> &BTreeSet<Tid> {
         &self.changed
     }
-
-    pub fn components(&self) -> usize {
-        self.comps.len()
-    }
 }

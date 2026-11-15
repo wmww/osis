@@ -569,13 +569,6 @@ impl Transaction<'_> {
         self.memory || ak.ephemeral()
     }
 
-    /// 32 random bytes from this transaction's generator.
-    pub fn random32(&mut self) -> [u8; 32] {
-        let mut b = [0u8; 32];
-        self.rng().fill_bytes(&mut b);
-        b
-    }
-
     pub(crate) fn rng(&mut self) -> &mut dyn CryptoRngCore {
         &mut *self.rng
     }

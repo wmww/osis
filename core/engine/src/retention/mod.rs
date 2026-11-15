@@ -631,20 +631,20 @@ fn drop_as_invalid(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<cr
 /// (`memory::forget_if_spent` forgets a spent commit); one missing when purged is a durable one's
 /// case. A signal's part past its keep bound is past every bound: no copy is taken
 /// (spec/commits.md §5 Signals), so a peer still holding it resends nothing that sticks.
-pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
-    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
+pub(crate) fn takes_late(tx: &Tx<'_>, c: &CommitId, ai: usize) -> bool {
+    let Some(m) = tx.core.ix.commits.get(c) else { return false };
     if past_signal_bound(tx.core, &m.header, ai, tx.now().0) {
-        return Ok(false);
+        return false;
     }
     // an expiring snapshot past its expiry: a copy brings back nothing it may hold
     if m.header.kind.is_compaction() && m.header.expires.is_some_and(|t| t <= tx.now().0) {
-        return Ok(false);
+        return false;
     }
     if m.stripped(ai) {
-        return Ok(gone_of(tx.core, &m.header, c, ai).is_empty());
+        return gone_of(tx.core, &m.header, c, ai).is_empty();
     }
     let gone = m.dropped(ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Destroyed));
-    Ok(gone && (!m.view.memory || valueless(tx.core, c, ai)))
+    gone && (!m.view.memory || valueless(tx.core, c, ai))
 }
 
 /// Whether the value-carrying writes of delta `ai` of `c` are held value-less here
@@ -1313,11 +1313,6 @@ impl Engine {
     /// Whether held commit `c` is an own replace of `(tid, ak)` (`snapshot::covered`).
     pub fn own_replace(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         snapshot::own_replace(&self.core, c, tid, ak)
-    }
-
-    /// The held commits own replaces `qs` of one author newly let go (`snapshot::own_newly_covered`).
-    pub fn own_newly_covered(&self, qs: &[CommitId], tid: &Tid, ak: &Ak) -> Vec<CommitId> {
-        snapshot::own_newly_covered(&self.core, qs, tid, ak)
     }
 
     /// `s`'s author's held commits on `(tid, ak)` stamped before `s` (`Indexes::own_held`).

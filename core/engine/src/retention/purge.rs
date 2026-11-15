@@ -883,9 +883,4 @@ impl Engine {
             Ok(false)
         })
     }
-
-    /// `snapshot_right`: may snapshot `s` drop body `(tid, ak)` of `c` when it covers it?
-    pub fn snapshot_right(&self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-        snapshot_right(&self.core, s, c, tid, ak)
-    }
 }

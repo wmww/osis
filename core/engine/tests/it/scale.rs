@@ -1088,7 +1088,7 @@ fn history_moves(n: usize) -> [Work; 3] {
     let t = crate::common::new_thing_keeping(&mut lp, 0, &[("t:log~0", crate::common::DAY)]);
     let (kept, log) = (ak("t:kept.0"), ak("t:log~0"));
     let rx = lp.peers[0].engine.subscribe();
-    lp.peers[0].engine.listen_commits(std::sync::Arc::new(|_| true), &[t]).unwrap();
+    lp.peers[0].engine.listen_commits(std::sync::Arc::new(|_| true));
     let start = lp.peers[0].engine.now().0;
     let mut vals = Vec::new();
     let mut fires = Vec::new();

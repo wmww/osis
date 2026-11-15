@@ -112,7 +112,7 @@ fn a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_
         assert!(left.is_empty(), "node {i} holds {} entries under S but the request's", left.len());
     }
     assert!(w.store(1).entries(&s).unwrap().iter().any(|e| request.contains(&e.blob)), "node 1 lost the request");
-    assert!(w.engine(0).destruction(&t).unwrap().is_some_and(|d| d.requests == vec![q]), "the purge is a destroying request");
+    assert!(w.engine(0).destruction(&t).is_some_and(|d| d.requests == vec![q]), "the purge is a destroying request");
 }
 
 // spec/commits.md §5 (Destruction: a release request destroys things as storage reclaim; a

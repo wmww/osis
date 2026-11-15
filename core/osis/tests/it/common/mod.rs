@@ -86,11 +86,6 @@ pub fn kept(db: &osis::ReadOnly, k: &Ak) -> osis::DynamicAspectKey {
 }
 
 /// Shorthands for tests whose point is what a write does, not how it is spelled.
-/// The id of the link whose actor is `k`.
-pub fn link_id(k: Tid) -> osis::LinkId {
-    k.to_uri().parse().expect("a tid's text")
-}
-
 pub trait TestWrites {
     /// `write()`, `f`, `commit()`: for a commit whose outcome the test inspects as one `Result`.
     fn commit_with<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R>;

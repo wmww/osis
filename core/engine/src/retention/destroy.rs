@@ -647,25 +647,19 @@ fn unhold_secrets(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
 }
 
 impl crate::engine::Engine {
-    /// The destroyed things whose own secrets are held for deletes alone (`hold_secrets`): what
-    /// `destruction` describes.
-    pub fn destructions(&self) -> std::sync::Arc<BTreeSet<Tid>> {
-        std::sync::Arc::new(self.core.ix.destroyed_secrets.iter().copied().collect())
-    }
-
     /// Destroyed `t` keeping nothing whose secrets are held for deletes alone (spec/sync-judgement.md
     /// §5): its destroying requests (none: by expiry alone), its own sync IDs being emptied
     /// (`keep_sync_ids`), and the held commits keyed by it (a part on it or acting for it) whose
     /// entries its delete keys may delete anywhere. `None` for anything else.
-    pub fn destruction(&mut self, t: &Tid) -> Result<Option<std::sync::Arc<crate::sync::Destruction>>> {
+    pub fn destruction(&self, t: &Tid) -> Option<std::sync::Arc<crate::sync::Destruction>> {
         if !self.core.ix.destroyed_secrets.contains(t) {
-            return Ok(None);
+            return None;
         }
         // every request destroying it, purge or release (spec/sync-judgement.md §5 Telling)
         let requests = creation_requests(&self.core, t).map(|(c, _)| c).collect();
         let sync_ids = self.core.ix.destroyed_sync_ids.get(t).map(|v| v.iter().map(|o| o.id).collect()).unwrap_or_default();
         let keyed = self.core.on_thing(t).chain(self.core.acting_for(t)).collect();
-        Ok(Some(std::sync::Arc::new(crate::sync::Destruction { requests, sync_ids, keyed })))
+        Some(std::sync::Arc::new(crate::sync::Destruction { requests, sync_ids, keyed }))
     }
 
     /// Sync emptied destroyed `t`'s own sync IDs and knows no entry of a commit keyed by it, nor a

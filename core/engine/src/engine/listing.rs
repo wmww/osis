@@ -394,12 +394,11 @@ impl Engine {
     /// `f` says whether a commit listener is on a thing (a group's: its things too): at the end of
     /// each transaction the listing of each of their aspects it touched is judged
     /// (`listing_moved`), and a part leaving history by time alone is told
-    /// (`retention::leaving`). `new`: the things of a listener just added (nothing to arm: the
-    /// history rows are kept whoever listens).
-    pub fn listen_commits(&mut self, f: super::CommitListeners, _new: &[Tid]) -> Result<()> {
+    /// (`retention::leaving`). Nothing to arm per listener: the history rows are kept whoever
+    /// listens.
+    pub fn listen_commits(&mut self, f: super::CommitListeners) {
         self.core.commits_watched = true;
         self.core.commit_listeners = Some(f);
-        Ok(())
     }
 
     /// What is here of `c`'s part on `(tid, ak)`, listed or not; `None` when it has none.

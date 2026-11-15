@@ -2878,12 +2878,12 @@ fn a_destroyed_things_sync_id_stays_read_until_forgotten_spec_sync_judgement_5()
     assert_eq!(e.sync_holder(&s).unwrap(), Some((t, Holding::Read)));
     assert_eq!(e.sync_set().unwrap().ids.get(&s), Some(&(t, Holding::Read)));
     assert!(e.sync_bodies(&q).unwrap().contains_key(&s), "the request goes under S");
-    assert!(e.destruction(&t).unwrap().is_none(), "not emptied while it keeps");
+    assert!(e.destruction(&t).is_none(), "not emptied while it keeps");
     assert!(e.wrap_secret(&t, None).unwrap().is_some(), "kept: the request is wrapped under S");
     lp.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
     lp.peers[0].tick().unwrap();
     let e = &mut lp.peers[0].engine;
-    assert!(e.destruction(&t).unwrap().is_some(), "keeps nothing: emptied");
+    assert!(e.destruction(&t).is_some(), "keeps nothing: emptied");
     assert_eq!(e.thing_sync(&t).unwrap(), ThingSync::Read(vec![s]), "keeping nothing: S read");
     let c = e.read_credentials(&s).unwrap().expect("credentials of S");
     let head = c.head.as_ref().unwrap().id();
@@ -2962,7 +2962,7 @@ fn a_destroyed_thing_owes_no_role_commit_spec_sync_judgement_5() {
     lp.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
     lp.peers[0].tick().unwrap();
     let e = &mut lp.peers[0].engine;
-    assert!(e.destruction(&t).unwrap().is_some(), "keeps nothing");
+    assert!(e.destruction(&t).is_some(), "keeps nothing");
     assert!(!e.role_duty_due(&t).unwrap(), "keeping nothing: nothing owed on t");
 }
 

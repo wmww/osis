@@ -757,7 +757,7 @@ fn an_unkept_part_dates_no_other_part_spec_commits_5() {
 
 /// Peer `p` listens for commit events on every thing.
 fn watch(p: &mut Peer) {
-    p.engine.listen_commits(std::sync::Arc::new(|_| true), &[]).unwrap();
+    p.engine.listen_commits(std::sync::Arc::new(|_| true));
     p.drain_events();
 }
 
@@ -862,7 +862,7 @@ fn a_snapshot_is_told_leaving_history_spec_commits_5() {
     let x1 = put(&mut lp, 0, d, "one");
     let s = lp.peers[0].engine.snapshot(&d, &ak(A)).unwrap().unwrap();
     lp.advance(1_000);
-    lp.peers[0].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[d]).unwrap();
+    lp.peers[0].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
     put(&mut lp, 0, d, "two");
     assert!(listed(&mut lp.peers[0], &x1, d) && listed(&mut lp.peers[0], &s, d), "in history");
     lp.peers[0].drain_events();
@@ -901,7 +901,7 @@ fn a_late_row_under_no_history_leaves_no_earlier_than_replaced_spec_commits_5() 
     let c = put(&mut lp, 2, d, "carol");
     let packs: Vec<Package> = [(0, keep), (0, v), (2, c), (1, b)].iter().map(|(i, x)| pack(&mut lp, *i, x)).collect();
     let mut p = fresh(&base, &packs.iter().collect::<Vec<_>>(), FRESH, early);
-    p.engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[d]).unwrap();
+    p.engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
     p.drain_events();
     let x = pack(&mut lp, 0, &none);
     p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();

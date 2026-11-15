@@ -489,7 +489,7 @@ fn leaving_told_alike_paged_or_whole_spec_commits_5() {
         w.lp.peers[0].commit(m).unwrap().unwrap();
         let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
         let pk = packages(&mut w, 0, &[snap]);
-        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[t]).unwrap();
+        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
         let heard = |w: &mut World| {
             let mut told = std::collections::BTreeSet::new();
             for e in w.lp.peers[3].drain_events() {
@@ -535,7 +535,7 @@ fn leaving_told_alike_paged_or_whole_later_write_elsewhere_spec_commits_5() {
         w.lp.peers[0].commit(m).unwrap().unwrap();
         let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
         let pk = packages(&mut w, 0, &[snap]);
-        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[t]).unwrap();
+        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
         let heard = |w: &mut World| {
             let mut told = std::collections::BTreeSet::new();
             for e in w.lp.peers[3].drain_events() {
@@ -588,7 +588,7 @@ fn killed_fill_leaves_an_hour_after_its_overwrite_spec_commits_5() {
         w.lp.peers[0].commit(m).unwrap().unwrap();
         let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
         let pk = packages(&mut w, 0, &[snap]);
-        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true), &[t]).unwrap();
+        w.lp.peers[3].engine.listen_commits(std::sync::Arc::new(|_: &Tid| true));
         w.lp.peers[3].drain_events();
         w.lp.deliver(3, &pk[0]).unwrap();
         let told = |w: &mut World| {

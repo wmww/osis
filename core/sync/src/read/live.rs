@@ -244,7 +244,7 @@ impl Ground for Live<'_, '_> {
     }
     fn destruction(&mut self, s: &SyncId) -> Result<Option<Arc<Destruction>>> {
         match self.thing(s)? {
-            Some(t) => Ok(self.cx.engine.destruction(&t)?),
+            Some(t) => Ok(self.cx.engine.destruction(&t)),
             None => Ok(None),
         }
     }

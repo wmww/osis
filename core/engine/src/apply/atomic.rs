@@ -745,7 +745,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let (held, n) = with_held(tx, &h, id, &parts)?;
     let read = super::PartsRead::of(&h, &held);
     if h.kind.is_role() {
-        held_changed |= judge_late(tx, &h, id, &parts, &read, &mut meta)?;
+        held_changed |= judge_late(tx, &h, id, &parts, &read, &mut meta);
     }
     let with_keys = read.first(n);
     let pend = super::keys::before_join(tx, &h, id, &with_keys, &meta.valid)?;
@@ -810,7 +810,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
 /// part names what its `secrets.0` part may box): what that judged (an overreaching late
 /// `secrets.0` part) holds for their join; other aspects' flips go through the re-judge
 /// (`invalidated`, `revalidated`). Whether a late part's validity changed (`meta` updated).
-fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, all: &super::PartsRead<'_>, meta: &mut Meta) -> Result<bool> {
+fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, all: &super::PartsRead<'_>, meta: &mut Meta) -> bool {
     validity::note_required(tx.core, h, id, all);
     let mut flipped = false;
     for ai in parts.ais() {
@@ -828,7 +828,7 @@ fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, all: &s
         }
         tx.core.index_validity(id);
     }
-    Ok(flipped)
+    flipped
 }
 
 /// The late parts of commit `id` and, for a role commit, its other held parts (`judge_late`
