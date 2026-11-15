@@ -363,16 +363,17 @@ fn drive<T>(net: &ManualNet, f: impl std::future::Future<Output = T>) -> T {
     panic!("did not resolve");
 }
 
-/// Two paired nodes of one account on `net`, the second dialing the first.
-fn paired(net: &ManualNet, c: &Arc<ManualClock>) -> (Osis, Osis) {
+/// Two paired nodes of one account on `net`, the second dialing the first, with the first's
+/// address.
+fn paired(net: &ManualNet, c: &Arc<ManualClock>) -> (Osis, Osis, osis::Address) {
     let a = on(net, 30, c);
     let addr = a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
     let mut o = cfg(31, MemStore::new(), c);
     o.app.internals.net = Some(net.clone());
-    o.cfg.dial = vec![addr];
+    o.cfg.dial = vec![addr.clone()];
     let join = osis::internals::pair(o, &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(join.request()).unwrap();
-    (a, join.finish(&reply).unwrap())
+    (a, join.finish(&reply).unwrap(), addr)
 }
 
 // spec/sync-set.md §1 (home under synced group): what one node of an account writes in its
@@ -382,7 +383,7 @@ fn paired(net: &ManualNet, c: &Arc<ManualClock>) -> (Osis, Osis) {
 fn a_write_reaches_the_accounts_other_node_spec_sync_set_1() {
     let c = clock();
     let net = ManualNet::new(c.clone());
-    let (a, b) = paired(&net, &c);
+    let (a, b, _) = paired(&net, &c);
     let mut w = a.write();
     let t = w.create().unwrap();
     w.group(a.home()).add(osis::Member::Item(t)).unwrap();
@@ -400,7 +401,7 @@ fn a_write_reaches_the_accounts_other_node_spec_sync_set_1() {
 fn a_thing_listed_nowhere_reaches_the_accounts_other_node_spec_sync_set_1() {
     let c = clock();
     let net = ManualNet::new(c.clone());
-    let (a, b) = paired(&net, &c);
+    let (a, b, _) = paired(&net, &c);
     let mut w = a.write();
     let g = w.create().unwrap();
     w.at(g, osis::core::NAME).set(&"g".to_string()).unwrap();
@@ -423,7 +424,7 @@ fn a_thing_listed_nowhere_reaches_the_accounts_other_node_spec_sync_set_1() {
 fn a_local_thing_stays_until_listed_somewhere_synced_spec_sync_set_1() {
     let c = clock();
     let net = ManualNet::new(c.clone());
-    let (a, b) = paired(&net, &c);
+    let (a, b, _) = paired(&net, &c);
     let mut w = a.write();
     let t = w.create_local().unwrap();
     w.at(t, osis::core::NAME).set(&"t".to_string()).unwrap();
@@ -625,7 +626,7 @@ fn an_unsynced_invitation_is_acted_on_spec_sync_set_4() {
 fn a_bundle_carries_a_group_by_hand_spec_sync_streams_6() {
     let c = clock();
     let net = ManualNet::new(c.clone());
-    let (a, b) = paired(&net, &c);
+    let (a, b, _) = paired(&net, &c);
     net.set_online(0, false);
     let mut w = a.write();
     let t = w.create().unwrap();
@@ -676,7 +677,7 @@ fn keep_at(db: &Osis, t: osis::Tid) {
 fn an_unsynced_thing_is_forgotten_here_spec_sync_set_3() {
     let c = clock();
     let net = ManualNet::new(c.clone());
-    let (a, b) = paired(&net, &c);
+    let (a, b, _) = paired(&net, &c);
     let t = shared_in(&a, a.home(), "moved");
     drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
     net.run();
@@ -720,7 +721,7 @@ fn an_unsynced_thing_no_peer_shares_goes_at_once_spec_sync_set_3() {
 fn an_unsynced_write_goes_out_before_the_copy_goes_spec_sync_set_3() {
     let c = clock();
     let net = ManualNet::new(c.clone());
-    let (a, b) = paired(&net, &c);
+    let (a, b, _) = paired(&net, &c);
     let t = shared_in(&a, a.home(), "first");
     drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
     net.run();
@@ -758,7 +759,7 @@ fn an_unsynced_write_goes_out_before_the_copy_goes_spec_sync_set_3() {
 fn an_outsider_reads_the_accounts_writes_across_a_node_removal_spec_permissions_3() {
     let c = clock();
     let net = ManualNet::new(c.clone());
-    let (a, b) = paired(&net, &c);
+    let (a, b, _) = paired(&net, &c);
     let o = on(&net, 32, &c);
     o.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
     drive(&net, a.import_contact(&o.contact_card().unwrap())).unwrap();
@@ -798,7 +799,7 @@ fn an_outsider_reads_the_accounts_writes_across_a_node_removal_spec_permissions_
 fn removing_a_node_lists_the_accounts_links_spec_permissions_7() {
     let c = clock();
     let net = ManualNet::new(c.clone());
-    let (a, b) = paired(&net, &c);
+    let (a, b, _) = paired(&net, &c);
     let mut w = a.write();
     let g = w.create().unwrap();
     w.group(a.home()).add(osis::Member::Subgroup(g)).unwrap();
@@ -879,4 +880,67 @@ fn a_third_accounts_node_relays_a_group_it_keeps_unread_spec_sync_3() {
     }
     assert_eq!(name(&a, t).as_deref(), Some("from b"));
     assert_eq!((a.status().unwrap().connected, b.status().unwrap().connected), (1, 1), "each connected to h alone");
+}
+
+// ---- group sources: the hand-off (spec/sync-set.md §5) ----
+
+/// Paired nodes a (place 0) and b; g in a's home with `x:v.0` = 1, granted to a client of a's,
+/// which b is connected as; b holds g, and sources it at a, run to quiet: (a, b, g, a's address).
+fn sourced_at_a(net: &ManualNet, c: &Arc<ManualClock>) -> (Osis, Osis, osis::Tid, osis::Address) {
+    let (a, b, addr) = paired(net, c);
+    let mut w = a.write();
+    let g = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Item(g)).unwrap();
+    w.at(g, v()).set(&Value::Int(1)).unwrap();
+    w.commit().unwrap();
+    let (actor, secret) = a.add_client(None).unwrap();
+    a.grant(g, actor, Role::Write, osis::GrantOpts::default()).unwrap();
+    drive(net, a.wait_synced(SyncScope::Thing(g))).unwrap();
+    net.run();
+    assert_eq!(b.at(g, v()).get().unwrap(), Some(Value::Int(1)), "b holds g");
+    drive(net, b.connect_node(&osis::NodeLogin { addr: addr.clone(), secret })).unwrap();
+    drive(net, b.group_source(g, osis::GroupSource::Node(addr.clone()))).unwrap();
+    net.run();
+    (a, b, g, addr)
+}
+
+fn v() -> osis::DynamicAspectKey {
+    osis::DynamicAspectKey::untyped(crate::common::ak("x:v.0"))
+}
+
+// spec/sync-set.md §5 (Sourced away; Moving home): b, with g sourced at a, stops syncing it;
+// moved home while a wrote g meanwhile, the move answers only once b's copy caught up, and then
+// b reads a's write here.
+#[test]
+fn moving_home_answers_once_caught_up_spec_sync_set_5() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (a, b, g, _) = sourced_at_a(&net, &c);
+    assert!(!b.status().unwrap().groups.contains_key(&g), "away: b syncs g no more");
+    let mut w = a.write();
+    w.at(g, v()).set(&Value::Int(2)).unwrap();
+    w.commit().unwrap();
+    net.run();
+    let mut home = std::pin::pin!(b.group_source(g, osis::GroupSource::Local));
+    assert!(now(home.as_mut()).is_pending(), "not caught up yet");
+    assert!(b.group_sources().contains_key(&g), "read at a meanwhile");
+    drive(&net, home).unwrap();
+    assert!(b.group_sources().is_empty());
+    assert_eq!(b.at(g, v()).get().unwrap(), Some(Value::Int(2)), "caught up: a's write here");
+}
+
+// spec/sync-set.md §5 (Moving home: a complete pass ends by `PASS_WAIT_MS`): with a gone, b's move
+// home still answers, once `PASS_WAIT_MS` passed.
+#[test]
+fn moving_home_with_the_source_gone_answers_spec_sync_set_5() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (_a, b, g, _) = sourced_at_a(&net, &c);
+    net.set_online(0, false);
+    let mut home = std::pin::pin!(b.group_source(g, osis::GroupSource::Local));
+    assert!(now(home.as_mut()).is_pending(), "a is recorded: the pass waits for it");
+    net.advance(osis::internals::proto::limits::PASS_WAIT_MS + 1);
+    drive(&net, home).unwrap();
+    assert!(b.group_sources().is_empty());
+    assert_eq!(b.at(g, v()).get().unwrap(), Some(Value::Int(1)));
 }

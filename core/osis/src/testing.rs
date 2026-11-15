@@ -42,7 +42,7 @@ impl Osis {
         })?;
         let _ = &mut node;
         let secret = osis_transport::StaticSecret::from_bytes(*l.secret.as_bytes());
-        let locked = Locked { node, events, seq: l.seq, offers: l.offers.clone(), out: Vec::new(), wake: l.wake, stepped: false, secret, port: Default::default(), remotes: Vec::new(), group_sources: l.group_sources.clone() };
+        let locked = Locked { node, events, seq: l.seq, offers: l.offers.clone(), out: Vec::new(), wake: l.wake, stepped: false, secret, port: Default::default(), remotes: Vec::new(), group_sources: l.group_sources.clone(), homing: l.homing.clone() };
         drop(l);
         let inner = Arc::new(Inner {
             eng: Mutex::new(locked),

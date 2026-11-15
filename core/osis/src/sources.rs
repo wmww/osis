@@ -12,9 +12,13 @@
 //! Group sources persist as the app record `sources` (a line `tid url#key` per group), holding
 //! no secret: `connect_node` brings the connection after each open.
 //!
-//! Not built: hand-off. The engine's sync set does not leave a group sourced elsewhere yet, so
-//! such a group still syncs here (its copy updates and never answers): moving a group needs no
-//! wait for it to be synced, and moving it home finds it current (issues/group-source-hand-off.md).
+//! **Hand-off** (spec/sync-set.md §5): the engine's sync set leaves a group sourced at another
+//! node (`Engine::set_sourced`), so its sync IDs stop by spec/sync-set.md §3, once this node's
+//! own commits there are held elsewhere: the move away waits for nothing itself. Moving home, the
+//! group syncs here again while still read at its node (`Locked::homing`), and the move answers
+//! once it caught up (`Engine::caught_up`: history complete, spec/sync-status.md §3, so a source
+//! gone ends it by `PASS_WAIT_MS`); only then is it recorded home. A client of this node reads
+//! nothing of it until then.
 
 use crate::error::{Error, Result};
 use crate::handle::{AppConfig, Locked, Osis, ReadOnly};
@@ -197,11 +201,22 @@ impl ReadOnly {
     }
 }
 
-/// The engine's copy of the source table (`Core::sourced_elsewhere`): a client of this node
-/// reads nothing of a group read elsewhere, whose copy here may be behind (`readable_by`).
+/// The engine's copy of the source table (`Engine::set_sourced`): the sync set leaves a group
+/// read elsewhere unless it is moving home, and a client of this node reads nothing of it, its
+/// copy here maybe behind (`readable_by`).
 fn mirror(l: &mut Locked) {
     let g = l.group_sources.keys().copied().collect();
-    l.engine().core.sourced_elsewhere = g;
+    let homing = l.homing.clone();
+    l.engine().set_sourced(g, &homing);
+}
+
+/// Writes the source table to its app record and the engine (`mirror`).
+fn record(db: &ReadOnly, l: &mut Locked) -> Result<()> {
+    let text: String = l.group_sources.iter().map(|(g, a)| format!("{g} {a}\n")).collect();
+    l.engine().set_app_record(SOURCES, text.as_bytes())?;
+    mirror(l);
+    db.inner.has_sources.store(!l.remotes.is_empty() || !l.group_sources.is_empty(), Ordering::Release);
+    Ok(())
 }
 
 /// The scratch node a thin client stands on: in memory, dialing nothing, listening nowhere.
@@ -271,25 +286,57 @@ impl Osis {
     /// Moves where `group` is read and written, between this node and a node it is connected to
     /// (`connect_node`). At a node, the group's things are read there and written there, and a
     /// write on one also carried by a group that syncs here or at a third node fails `Invalid`;
-    /// this node keeps the copy it had. `Invalid` for a node not connected.
+    /// this node keeps the copy it had and stops syncing the group once its own writes there
+    /// reached another holder. Moving home answers once this node's copy caught up (a complete
+    /// pass of each sync ID carrying the group: at most `PASS_WAIT_MS` past a holder away); until
+    /// then the group stays read at its node, and a call dropped before it answers leaves it so,
+    /// syncing here too (moving it again ends that). `Invalid` for a node not connected, or when
+    /// the group moved away again before it caught up.
     pub async fn group_source(&self, group: Tid, to: GroupSource) -> Result<()> {
         self.local("group_source")?;
-        self.locked(|l| -> Result<()> {
+        let homing = self.locked(|l| -> Result<bool> {
             match &to {
-                GroupSource::Node(a) if !l.remotes.iter().any(|r| r.addr == *a) => return Err(Error::Invalid(format!("not connected to {a} (connect_node)"))),
+                GroupSource::Node(a) if !l.remotes.iter().any(|r| r.addr == *a) => Err(Error::Invalid(format!("not connected to {a} (connect_node)"))),
                 GroupSource::Node(a) => {
                     l.group_sources.insert(group, a.clone());
+                    l.homing.remove(&group);
+                    record(self, l)?;
+                    Ok(false)
                 }
+                GroupSource::Local if !l.group_sources.contains_key(&group) => Ok(false),
                 GroupSource::Local => {
-                    l.group_sources.remove(&group);
+                    // syncing here again, read at its node until it caught up
+                    if l.homing.insert(group) {
+                        mirror(l);
+                        l.handle(osis_sync::Input::Wrote);
+                    }
+                    Ok(true)
                 }
             }
-            let text: String = l.group_sources.iter().map(|(g, a)| format!("{g} {a}\n")).collect();
-            l.engine().set_app_record(SOURCES, text.as_bytes())?;
-            mirror(l);
-            self.inner.has_sources.store(!l.remotes.is_empty() || !l.group_sources.is_empty(), Ordering::Release);
-            Ok(())
+        })?;
+        if !homing {
+            return Ok(());
+        }
+        self.waiting(move |db| {
+            db.locked(|l| -> Option<Result<()>> {
+                if !l.group_sources.contains_key(&group) {
+                    return Some(Ok(()));
+                }
+                if !l.homing.contains(&group) {
+                    return Some(Err(Error::Invalid(format!("{group} moved away again before it caught up"))));
+                }
+                match l.engine().caught_up(&group) {
+                    Ok(false) => None,
+                    Ok(true) => {
+                        l.group_sources.remove(&group);
+                        l.homing.remove(&group);
+                        Some(record(db, l))
+                    }
+                    Err(e) => Some(Err(e.into())),
+                }
+            })
         })
+        .await
     }
 
     /// Ends the connection to the node at `addr`. `false`: no such connection.

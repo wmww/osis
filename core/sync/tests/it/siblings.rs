@@ -518,3 +518,78 @@ fn a_from_now_grantee_granted_history_holds_what_was_below_its_floor_spec_sync_j
         }
     }
 }
+
+/// Node `i` sources `elsewhere` at another node, of which `homing` moves home
+/// (`Engine::set_sourced`, as the handle's `group_source` does), then steps.
+fn source(w: &mut World, i: usize, elsewhere: &[Tid], homing: &[Tid]) {
+    w.write(i, |e| e.set_sourced(elsewhere.iter().copied().collect(), &homing.iter().copied().collect()));
+}
+
+// spec/sync-set.md §5 (Sourced away; §3 one rule ends syncing it): node 2 writes t while cut off
+// from every holder, then sources t at node 0: t leaves its sync set, but it syncs t's sync ID
+// until its own commit is held elsewhere; then it stops, keeping its copy (nothing unsynced).
+#[test]
+fn a_group_sourced_away_stops_syncing_once_own_writes_are_held_spec_sync_set_5() {
+    let (mut w, t, ak) = listed();
+    let s = w.engine(2).home_sync_id(&t).unwrap().unwrap();
+    w.partition(0, 2);
+    w.partition(1, 2);
+    w.flush();
+    w.write(2, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("y".into())).unwrap();
+        e.commit(m).unwrap()
+    });
+    source(&mut w, 2, &[t], &[]);
+    w.flush();
+    assert!(!w.engine(2).sync_set().unwrap().ids.contains_key(&s), "out of the sync set");
+    assert!(w.store(2).synced(&s).is_some(), "its own write is held nowhere else: still synced");
+    w.heal();
+    w.run();
+    assert!(w.store(2).synced(&s).is_none(), "its own write held elsewhere: stopped");
+    assert_eq!(w.engine(0).get(&t, &ak).unwrap(), Some(Value::Str("y".into())), "the write reached the source");
+    assert_eq!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("y".into())), "the copy stays");
+}
+
+// spec/sync-set.md §5 (Moving home), spec/sync-status.md §3 (History complete): node 2, t
+// sourced away and stopped, moves it home while node 0 writes t: it syncs t again at once, and
+// has caught up only once a complete pass of t's sync ID ran, which brings node 0's write.
+#[test]
+fn a_group_moving_home_catches_up_by_a_complete_pass_spec_sync_set_5() {
+    let (mut w, t, ak) = listed();
+    let s = w.engine(2).home_sync_id(&t).unwrap().unwrap();
+    source(&mut w, 2, &[t], &[]);
+    w.run();
+    assert!(w.store(2).synced(&s).is_none(), "away: stopped");
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("z".into())).unwrap();
+        e.commit(m).unwrap()
+    });
+    w.run();
+    assert_eq!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("x".into())), "away: not synced");
+    source(&mut w, 2, &[t], &[t]);
+    assert!(w.store(2).synced(&s).is_some(), "moving home: synced again");
+    assert!(!w.engine(2).caught_up(&t).unwrap(), "no complete pass yet");
+    w.run();
+    assert!(w.engine(2).caught_up(&t).unwrap(), "a complete pass ran");
+    assert_eq!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("z".into())), "caught up");
+}
+
+// spec/sync-set.md §5 (Moving home: a complete pass ends by `PASS_WAIT_MS`), spec/sync-status.md
+// §1: node 2 moves t home while every other holder is away for good: it catches up once
+// `PASS_WAIT_MS` passed, not before.
+#[test]
+fn a_group_moving_home_with_its_source_gone_catches_up_spec_sync_set_5() {
+    let (mut w, t, _) = listed();
+    source(&mut w, 2, &[t], &[]);
+    w.run();
+    w.power_off(0);
+    w.power_off(1);
+    source(&mut w, 2, &[t], &[t]);
+    w.flush();
+    assert!(!w.engine(2).caught_up(&t).unwrap(), "its holders are recorded: the pass waits for them");
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    w.flush();
+    assert!(w.engine(2).caught_up(&t).unwrap(), "`PASS_WAIT_MS` passed");
+}
