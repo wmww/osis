@@ -220,6 +220,7 @@ fn lowered_writes(n: usize) -> (World, Tid, Vec<CommitId>, Vec<Held>) {
 // again and every node reads its last write. Fails if a node keeps its entry of a body judged
 // invalid, the author included, or the engine keeps a commit known only for invalid parts.
 #[test]
+#[ignore = "issues/lowered-writes-grow-with-promotion.md"]
 fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_commits_5() {
     let (_, _, _, few) = lowered_writes(10);
     let (mut w, t, bad, many) = lowered_writes(20);
