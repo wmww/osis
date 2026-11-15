@@ -648,14 +648,33 @@ pub(crate) fn holds_delete_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> R
     Ok(holds_listed_keys(tx.core, &created, &published, t))
 }
 
-/// `role` on `t` as this node can use it now (spec/crypto.md §7): a write or admin role counts as
-/// read until this node holds the delete keys every write on `t` lists ([`holds_delete_keys_in`]),
-/// as it writes nothing on `t` before. The one rule for every local call that needs a role (a
-/// content write, a grant, a removal, a link, `Osis::role_on`), so each fails `Permission` alike
-/// meanwhile; never for judging a received commit.
+/// Whether this node knows of a `retention^.0` setting on `t` while it holds none valid: a held
+/// header lists a valid part there not received yet (a record that came as a certificate with its
+/// creating commit as a header only). What it writes is written under the setting (expiry,
+/// a fire's keep, a removal's `retain`, spec/commits.md §5 The setting), so it waits for it
+/// rather than judge the setting absent.
+pub(crate) fn awaits_setting(core: &Core, t: &Tid) -> bool {
+    let Ok(ak) = osis_base::Ak::new(osis_commit::retention::RETENTION) else { return false };
+    let known = core.ix.missing.get(&(ak.clone(), *t)).into_iter().flatten().any(|c| {
+        core.ix.commits.get(c).and_then(|m| Some((m, m.aspect(t, &ak)?))).is_some_and(|(m, ai)| m.valid_at(ai) && m.missing_as(ai) == Some(crate::engine::Missing::Plain))
+    });
+    known && crate::apply::validity::settings(core, t).is_empty()
+}
+
+/// Whether this node holds what every write on `t` is written under: the delete keys it lists
+/// ([`holds_delete_keys_in`]) and the setting it knows of ([`awaits_setting`]).
+pub(crate) fn ready_to_write_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<bool> {
+    Ok(!awaits_setting(tx.core, t) && holds_delete_keys_in(tx, t)?)
+}
+
+/// `role` on `t` as this node can use it now (spec/crypto.md §7, spec/commits.md §5 The
+/// setting): a write or admin role counts as read until this node is ready to write `t`
+/// ([`ready_to_write_in`]), as it writes nothing on `t` before. The one rule for every local call
+/// that needs a role (a content write, a grant, a removal, a link, `Osis::role_on`), so each
+/// fails `Permission` alike meanwhile; never for judging a received commit.
 pub(crate) fn usable_role(tx: &mut crate::engine::Tx<'_>, t: &Tid, role: Option<Role>) -> Result<Option<Role>> {
     Ok(match role {
-        Some(r) if r >= Role::Write && !holds_delete_keys_in(tx, t)? => Some(Role::Read),
+        Some(r) if r >= Role::Write && !ready_to_write_in(tx, t)? => Some(Role::Read),
         r => r,
     })
 }

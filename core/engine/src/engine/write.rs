@@ -377,12 +377,12 @@ pub(crate) fn writable_now<V>(tx: &mut Tx<'_>, node: Tid, by_thing: BTreeMap<Tid
 }
 
 /// `may_write` but for the role: whether the thing takes writes here (`Core::writable`) and this
-/// node holds the delete keys every write on it lists.
+/// node is ready to write it (`secrets::ready_to_write_in`).
 pub(crate) fn may_write_on(tx: &mut Tx<'_>, tid: &Tid) -> Result<MayWrite> {
     if !tx.core.exists(tid) {
         return Ok(MayWrite::No);
     }
-    Ok(if tx.core.writable(tid) && super::secrets::holds_delete_keys_in(tx, tid)? { MayWrite::Yes } else { MayWrite::Later })
+    Ok(if tx.core.writable(tid) && super::secrets::ready_to_write_in(tx, tid)? { MayWrite::Yes } else { MayWrite::Later })
 }
 
 /// May `node` act for `actor` at `ts`: it is the actor or holds write on it? A receiver judges a
@@ -852,6 +852,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         }
         if !m.unchecked {
             check_authority(tx.core, node, &base.creates, &tid, ak.as_str(), ts)?;
+        }
+        // a content write is written under the setting: one known and not held yet is waited
+        // for, never read as none (`secrets::usable_role`, spec/commits.md §5 The setting)
+        if kind == Kind::Content && super::secrets::awaits_setting(tx.core, &tid) {
+            return Err(Error::Permission { tid });
         }
         let (r, e) = {
             if let Some(o) = am.replaces {

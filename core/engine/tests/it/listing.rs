@@ -560,8 +560,8 @@ fn undo_over_not_fetched_kept_part_waits_spec_commits_7() {
     lp.advance(1_000);
     let pk = pack(&mut lp, 0, &c);
     let mut only = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    let keep = only.header.aspects.iter().position(|a| a.ak != reg()).unwrap();
-    only.parts.retain(|x| x.ai == keep);
+    let set = only.header.aspects.iter().position(|a| a.ak == reg()).unwrap();
+    only.parts.retain(|x| x.ai != set);
     lp.peers[1].receive(&only.encode(), pk.blobs.clone()).unwrap();
     let mine = write(&mut lp, 1, d, Retention::default(), "bob");
     let mut m = Mutation::new();

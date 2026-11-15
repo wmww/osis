@@ -6,6 +6,7 @@
 use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::internals::costs;
+use osis::internals::Internals as _;
 use osis::{Body, CommitEvent, CommitFrom, CommitId, Osis, Tid, Value};
 use std::sync::mpsc::{Receiver, channel};
 
@@ -195,4 +196,34 @@ fn a_fire_no_setting_keeps_is_refused_spec_commits_5() {
     let kept = thing(&db);
     fire(&db, kept, "kept");
     assert_eq!(listed(&db, kept).len(), 1);
+}
+
+// spec/commits.md §5 (The setting; Signals: a fire the setting held would not keep), notes/api.md
+// Rights: a node holding a thing's creating commit as a header only (its record came as a
+// certificate, its `retention^.0` part not yet) does not judge the setting absent: a write waits
+// (`Permission`, `role_on` reads `Read`) until the setting arrives, then the same fire is written.
+#[test]
+fn a_setting_not_received_yet_is_waited_for_spec_commits_5() {
+    let (a, b, _) = paired();
+    let t = thing(&a);
+    let made = a.engine(|e| e.commit_ids().into_iter().find(|id| e.header(id).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == osis_commit::retention::RETENTION))).unwrap());
+    let pks = a.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap().map(|p| (*id, p))).collect::<Vec<_>>());
+    for (id, pk) in pks {
+        let bytes = if id == made {
+            let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+            osis_commit::rewrite(&blob, |ai| blob.header.aspects[ai].ak.as_str() == osis_commit::retention::RETENTION).encode()
+        } else {
+            pk.bytes.clone()
+        };
+        b.engine(|e| e.ingest(&bytes, pk.blobs.clone()).unwrap());
+    }
+    assert_eq!(b.at(t, osis::core::RETENTION).get().unwrap(), None, "the setting is not here yet");
+    assert_eq!(b.role_on(t).unwrap(), Some(osis::Role::Read), "a role of no use yet");
+    let mut w = b.write();
+    let r = w.at(t, key()).fire(&s("early")).and_then(|_| w.commit());
+    assert!(matches!(r, Err(osis::Error::Permission { tid, .. }) if tid == t), "waits, not refused as unkept: {r:?}");
+    deliver(&a, &b);
+    assert_eq!(b.role_on(t).unwrap(), Some(osis::Role::Admin));
+    fire(&b, t, "after");
+    assert_eq!(listed(&b, t).len(), 1);
 }

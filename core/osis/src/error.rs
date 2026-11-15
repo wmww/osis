@@ -60,7 +60,7 @@ pub enum Error {
 osis_base::impl_error!(Error {
     UnknownThing { tid } => ("unknown thing {tid}"),
     UnknownActor { tid } => ("unknown actor {tid}"),
-    Permission { tid, needs } => ("needs {needs:?} on {tid}"),
+    Permission { tid, needs } => ("needs {needs:?} on {tid} (or what writing it needs has not synced here yet)"),
     Type { path, reason } => ("type error at {path}: {reason}"),
     TooLarge { limit } => ("value larger than the materialization bound ({limit} bytes)"),
     NotUndoable { commit, reason } => ("cannot revert {commit:?}: {reason:?}"),
