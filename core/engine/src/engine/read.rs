@@ -183,8 +183,7 @@ impl Engine {
         if !self.core.exists(tid) {
             return None;
         }
-        let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
-        super::write::role_of(&self.core, &self.core.me()?, tid, ts)
+        self.core.role_now(&self.core.me()?, tid)
     }
 
     /// This node's role on `tid` for good: through edges with no `until` (`At::END`).

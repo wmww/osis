@@ -739,8 +739,7 @@ pub(crate) fn owe_resnapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: BTreeSet
 /// Whether this node holds write on `tid` now.
 fn writes_on(core: &Core, tid: &Tid) -> bool {
     let Some(me) = core.me() else { return false };
-    let ts = osis_base::Ts::make(core.now(), 0).unwrap_or_default();
-    crate::engine::write::role_of(core, &me, tid, ts) >= Some(osis_base::Role::Write)
+    core.role_now(&me, tid) >= Some(osis_base::Role::Write)
 }
 
 /// The re-snapshots owed at the last stop (`Indexes::resnapshots_owed`), each due again.

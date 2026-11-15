@@ -849,3 +849,31 @@ fn another_accounts_devices_reads_as_itself_but_places_chains_as_its_account_spe
     let p1 = &mut lp.peers[1].engine;
     assert!(p1.reads_in(&d1, &g) && p1.cert_reads_in(&d1, &g), "a node's own devices actor reads as its account");
 }
+
+// notes/engine.md (Roles at now: every role-at-now read goes through `Core::role_now`, on the
+// memo clock): `actor_role` and `role_on` read a role held by a grant with an `until`; a follower
+// of either is due when the clock passes it, with nothing else moving, and reads the role gone.
+#[test]
+fn roles_at_now_move_at_an_until_spec_permissions_2() {
+    let (mut lp, g, tids) = granted(2, &[]);
+    let until = osis_base::WallMs(lp.peers[0].engine.core.now().0 + 1_000);
+    lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
+    lp.sync_all().unwrap();
+    let mut fx: osis_base::memo::Effects<u8, Option<Role>> = osis_base::memo::Effects::new("roles at now");
+    fx.want(0);
+    fx.want(1);
+    let (e0, e1) = { let (a, b) = lp.peers.split_at_mut(1); (&mut a[0].engine, &mut b[0].engine) };
+    assert_eq!(fx.settle(&0, || e0.actor_role(&tids[1], &g)), Some((None, Some(Role::Read))));
+    assert_eq!(fx.settle(&1, || e1.role_on(&g)), Some((None, Some(Role::Read))));
+    assert!(fx.due().is_empty());
+    lp.peers[0].clock.advance(2_000);
+    lp.peers[1].clock.advance(2_000);
+    for p in &mut lp.peers {
+        let now = p.engine.now();
+        p.engine.set_now(now);
+    }
+    assert_eq!(fx.due(), vec![0, 1], "both due at the until");
+    let (e0, e1) = { let (a, b) = lp.peers.split_at_mut(1); (&mut a[0].engine, &mut b[0].engine) };
+    assert_eq!(fx.settle(&0, || e0.actor_role(&tids[1], &g)), Some((Some(Some(Role::Read)), None)));
+    assert_eq!(fx.settle(&1, || e1.role_on(&g)), Some((Some(Some(Role::Read)), None)));
+}
