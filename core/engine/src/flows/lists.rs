@@ -102,7 +102,10 @@ pub(crate) fn keep_certs(tx: &mut Tx<'_>, certs: &[ThingCert]) -> Result<bool> {
         if let ListIds::Inline(ids) = &c.list.ids {
             put_names(tx, &c.rotation, &c.list.thing, ids.iter().copied())?;
         }
-        waited_list_held(tx, &c.list.thing);
+        // a rotation not held yet judges its epochs on arrival (`put_names` alike)
+        if tx.core.ix.commits.contains_key(&c.rotation) {
+            waited_list_held(tx, &c.list.thing);
+        }
     }
     Ok(new)
 }

@@ -48,11 +48,12 @@ pub struct Listing<E, T> {
 }
 
 /// The thing whose thing lists a node waits for (spec/permissions.md §5.5, Waiting): at a node
-/// of the account, its devices actor D, with the counting rotations whose list of D it holds.
+/// of the account, its devices actor D, with the rotations whose word on D decides without
+/// waiting (its list of D held, or it carries a removal from D).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Awaited<E, T> {
     pub thing: T,
-    pub listed: BTreeSet<E>,
+    pub deciding: BTreeSet<E>,
 }
 
 /// What the epoch rule says of one held commit of the account, before §5.2 judges it.
@@ -122,13 +123,13 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
 
     /// Whether `c` counts whole: a held rotation counts by the chain alone; any other commit
     /// iff its epoch is open, or is held and a counting thing list or listing on one of its
-    /// things names it, or it is on the awaited thing and no closer's list of it is held yet.
+    /// things names it, or it is on the awaited thing and no closer decides on it yet.
     pub fn counts(&self, c: &AccountCommit<E, T>) -> bool {
         if self.chain.holds(&c.id) {
             return self.chain.counts(&c.id);
         }
         let Some(closers) = self.closers.get(&c.epoch) else { return self.open.contains(&c.epoch) };
-        c.things.iter().any(|t| self.named.contains(&(c.id, *t))) || self.awaited.as_ref().is_some_and(|w| c.things.contains(&w.thing) && !closers.is_empty() && closers.is_disjoint(&w.listed))
+        c.things.iter().any(|t| self.named.contains(&(c.id, *t))) || self.awaited.as_ref().is_some_and(|w| c.things.contains(&w.thing) && !closers.is_empty() && closers.is_disjoint(&w.deciding))
     }
 
     /// What the epoch rule says of `c` (`EpochStanding`).

@@ -113,7 +113,7 @@ fn a_node_of_the_account_waits_for_the_devices_list() {
     let commits = [c(100, 0), c(101, 0), other];
     let rots = [rot(1, 0, &[0], &[])];
     let received = [1];
-    let at = |l: &[ThingList<u32, u32>], listed: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, l, &[], Some(osis_perm::Awaited { thing: 0, listed: set(listed) })), commits.to_vec(), Vec::new());
+    let at = |l: &[ThingList<u32, u32>], listed: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, l, &[], Some(osis_perm::Awaited { thing: 0, deciding: set(listed) })), commits.to_vec(), Vec::new());
     let waiting = at(&[], &[]);
     assert!(waiting.counts(&100) && waiting.counts(&101), "no list of D held: waiting");
     assert!(!waiting.counts(&102), "another thing's commits are unlisted");

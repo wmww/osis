@@ -822,8 +822,11 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         }
         let listings: Vec<osis_perm::Listing<CommitId, Tid>> = listings.into_iter().filter_map(|((s, t), commits)| Some(osis_perm::Listing { listing: commit_of(&s)?, thing: t, commits })).collect();
         // a node of the account waits for D's lists (spec/permissions.md §5.5 Waiting): what
-        // proves it a node of P is D's roster, so lacking a list of D is never not being one
-        let awaited = tx.core.accounts.get(&p).map(|a| osis_perm::Awaited { thing: a.devices, listed: v.rotations.iter().map(|r| r.id).filter(|r| tx.core.ix.lists_on.contains(&(a.devices, *r))).collect() });
+        // proves it a node of P is D's roster, so lacking a list of D is never not being one;
+        // a rotation carrying a removal from D decides without its list (nothing else shows a
+        // removed node its removal)
+        let deciding = |d: &Tid, r: &CommitId| tx.core.ix.lists_on.contains(&(*d, *r)) || tx.core.ix.commits.get(r).and_then(|m| m.header.decoded()).is_some_and(|h| h.rotation.as_ref().is_some_and(|x| !x.removals.is_empty()));
+        let awaited = tx.core.accounts.get(&p).map(|a| osis_perm::Awaited { thing: a.devices, deciding: v.rotations.iter().map(|r| r.id).filter(|r| deciding(&a.devices, r)).collect() });
         let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), v.chosen, &v.received, v.devices.as_ref(), &lists, &listings, awaited);
         let mut named: BTreeSet<CommitId> = was.as_ref().map(|j| j.named.clone()).unwrap_or_default();
         for c in &cands {
