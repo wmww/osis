@@ -554,8 +554,10 @@ impl Status {
             self.work.commits += 1;
             let (all, leaving, removals) = (&self.sources, &self.leaving, &self.removals);
             let r = self.held_fx.try_settle(&(s, c), || {
-                let now = all.get(&s).map_or(&NO_SOURCES, |x| &**x);
-                let srcs = now.iter().map(|(k, v)| (*k, *v, None)).chain(leaving.get(&s).into_iter().flatten().map(|(k, (v, at))| (*k, *v, Some(*at))));
+                let srcs = || {
+                    let now = all.get(&s).map_or(&NO_SOURCES, |x| &**x);
+                    now.iter().map(|(k, v)| (*k, *v, None)).chain(leaving.get(&s).into_iter().flatten().map(|(k, (v, at))| (*k, *v, Some(*at)))).collect()
+                };
                 held_at(g, &s, &c, srcs, removals.contains(&c))
             });
             let Some((_, now)) = r? else { continue };
@@ -791,21 +793,27 @@ impl Status {
 /// removal: not at this account's own nodes), or a reader reported a position at or past where
 /// this node's log first held it (for a member being ended, only an entry first logged at or below
 /// its `until`). A store's position says nothing of an entry: it applies past what it refused for
-/// room or does not pull (unstamped), so a store counts by its stream alone. `sources`: each with
-/// where it stood as it left, for one that left since the last settle (its stream's word still
-/// counts: a report and the close that follows it come in one step).
-fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl Iterator<Item = (ConnId, Src, Option<LeftAt>)> + Clone, removal: bool) -> Result<Held> {
+/// room or does not pull (unstamped), so a store counts by its stream alone. `sources` gives S's
+/// sources, asked only past the recorded check (a commit held elsewhere moves at no source joining
+/// or leaving), each with where it stood as it left, for one that left since the last settle (its
+/// stream's word still counts: a report and the close that follows it come in one step).
+fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl FnOnce() -> Vec<(ConnId, Src, Option<LeftAt>)>, removal: bool) -> Result<Held> {
     match g.verdict(s, c) {
         Some(Verdict::Must) => {}
         Some(Verdict::May | Verdict::MustNot(_)) => return Ok(Held::Yes(None)),
         Some(Verdict::Unjudged) | None => return Ok(Held::No),
     }
+    let mut sources = Some(sources);
+    let mut srcs = Vec::new();
     for b in g.commit_entries(s, c)? {
         if g.elsewhere(s, &b)? {
             return Ok(Held::Yes(None));
         }
         let first = g.first_logged(s, &b)?;
-        for (conn, src, left) in sources.clone() {
+        if let Some(f) = sources.take() {
+            srcs = f();
+        }
+        for &(conn, src, left) in &srcs {
             if removal && src.own_node {
                 continue;
             }

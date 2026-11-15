@@ -670,6 +670,35 @@ fn work_follows_change() {
     assert!((1..=2).contains(&c1), "{c1}");
 }
 
+/// Own commits judged for held elsewhere when a second source of S joins and leaves, with `n`
+/// own commits under S held elsewhere and one not.
+fn work_for_a_source_flip(n: u8) -> u64 {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.join(S, A, reader(RA, 1));
+    for i in 0..n {
+        t.own(S, cid(1 + i), blob(1 + i), 1);
+        t.g.elsewhere.insert((S, blob(1 + i)));
+    }
+    t.own(S, cid(200), blob(200), 1);
+    t.settle();
+    assert_eq!(t.st.of(&S, &t.g).unwrap().unheld, Some(1));
+    let before = t.st.work().commits;
+    t.join(S, ConnId(7), reader(RA, 2));
+    t.st.left(S, ConnId(7), Default::default());
+    t.settle();
+    t.st.work().commits - before
+}
+
+// spec/sync-status.md §2, spec/sync.md §2 (work in proportion to change): a source joining or
+// leaving judges again only the own commits not recorded held elsewhere: at n and 10n held ones
+// alike.
+#[test]
+fn a_source_flip_judges_only_the_unheld() {
+    let (a, b) = (work_for_a_source_flip(10), work_for_a_source_flip(100));
+    assert_eq!(a, b, "own commits judged per source flip grow with those held elsewhere");
+    assert!(a >= 1, "the unheld commit is judged again");
+}
+
 /// A node reading `ids` with self-removal `c` under each, logged as blob 1 at position 1.
 fn removal_under(ids: &[SyncId], c: CommitId) -> T {
     let mut t = T::new(&ids.iter().map(|s| (*s, Holding::Read)).collect::<Vec<_>>());
