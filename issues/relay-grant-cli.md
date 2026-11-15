@@ -3,6 +3,5 @@
 > Priority: normal
 > Tags: cli, chat, dogfood
 
-- Accepting = listing under a synced group (`group add home T --subgroup`, through `mark_acted`); before the inbox blob is held it lists T and keeps no sync ID, with no error. A CLI `invitations` (local engine; also through the port, issues/client-port-listings.md) would let the operator check first, and `accept T [--into G]` name the step.
+- Accepting = listing under a synced group (`group add home T --subgroup`, through `mark_acted`); before the inbox blob is held it lists T and keeps no sync ID, with no error. A CLI `invitations` (local engine, or through the port) would let the operator check first, and `accept T [--into G]` name the step.
 - K: a joiner redeems the link at a node sharing K (spec/permissions.md §7 First contact), so the relay needs K as well as the chat. A chat-level `chat relay CHAT ACCOUNT` (sync on the chat and on every working link's K, and on links made later) would keep the two together; today a new link needs its own grant.
-- `card show` and `card import` do not run through a daemon (issues/client-port-listings.md): the host prints its card before starting, a member imports before its daemon starts.
