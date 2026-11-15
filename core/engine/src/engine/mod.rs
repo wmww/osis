@@ -973,6 +973,13 @@ pub(crate) enum Step {
     Filing,
 }
 
+impl Step {
+    /// Whether the step is one answer the engine writes on its own (`Tx::answering`).
+    fn answers(self) -> bool {
+        matches!(self, Step::Answer | Step::Cover | Step::Resnapshot | Step::Rotation)
+    }
+}
+
 /// Tests: after `skip` more steps of kind `site` run, every later one fails (`BadInput`), before
 /// it runs or, `after`, once it ran in full.
 #[cfg(test)]
@@ -1206,6 +1213,9 @@ pub struct Core {
     /// Tests: the facts this node's snapshots state, over the true ones (`snapshot::facts_of`).
     #[cfg(test)]
     pub(crate) lie_facts: Option<osis_crdt::Facts>,
+    /// Tests: a listing answering a rotation is one commit over every thing (`flows::signing::listing`).
+    #[cfg(test)]
+    pub(crate) listing_whole: bool,
     /// Key actors other than the node whose seed this node holds for now (a link key from
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
@@ -1463,6 +1473,8 @@ impl Core {
             step_fault: self.step_fault.clone(),
             #[cfg(test)]
             lie_facts: self.lie_facts.clone(),
+            #[cfg(test)]
+            listing_whole: self.listing_whole,
             key_actors: self.key_actors.clone(),
             followed_links: self.followed_links.clone(),
             account: self.account.clone(),
@@ -2079,6 +2091,8 @@ impl Core {
             step_fault: _,
             #[cfg(test)]
             lie_facts: _,
+            #[cfg(test)]
+            listing_whole: _,
         } = c;
     }
 
@@ -2245,6 +2259,8 @@ impl Core {
             step_fault: None,
             #[cfg(test)]
             lie_facts: None,
+            #[cfg(test)]
+            listing_whole: false,
             key_actors: Default::default(),
             followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
@@ -2570,6 +2586,10 @@ pub struct Tx<'a> {
     pub blobs: blobs::Cipher<'a>,
     pub core: &'a mut Core,
     pub rng: &'a mut dyn CryptoRngCore,
+    /// Inside a step answering on the engine's own (`Step::answers`): each commit writes on one
+    /// thing (`write::commit_in`), so the end of the transaction never refuses it (spec/sync-set.md
+    /// §1 Local stays local) and a failing answer is that step's, never the receive's.
+    pub(crate) answering: bool,
 }
 
 impl Tx<'_> {
@@ -2601,6 +2621,8 @@ impl Tx<'_> {
         let m = self.core.mark();
         let sp = self.txn.savepoint();
         let held = self.blobs.mark();
+        let answering = self.answering;
+        self.answering |= site.answers();
         #[cfg(test)]
         let r = match self.core.step_fault.as_mut().filter(|x| x.site == site) {
             Some(x) if x.skip > 0 => {
@@ -2616,6 +2638,7 @@ impl Tx<'_> {
             let _ = site;
             f(self)
         };
+        self.answering = answering;
         match r {
             Ok(v) => {
                 self.txn.release(sp)?;
@@ -3480,7 +3503,7 @@ impl Engine {
         self.core.time.set(now);
         let start = self.core.mark();
         let txn = self.store.transaction(&mut self.store_rng)?;
-        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
+        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, answering: false };
         let r = f(&mut tx);
         // a read that changed something would have its change undone, and every cache dropped, at
         // every call
@@ -3537,7 +3560,7 @@ impl Engine {
         let mut sample = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, answering: false };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
                 _after = memo::Unrecorded::start();
@@ -3728,7 +3751,7 @@ impl Engine {
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;
-            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
+            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, answering: false };
             crate::apply::load(&mut tx, rebuild)
         };
         crate::apply::load_waits(&mut self.core);
@@ -3777,7 +3800,7 @@ impl Engine {
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<Option<u64>> {
                 let txn = self.store.transaction(&mut store_rng)?;
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, 0), core: &mut fresh, rng: &mut rng };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, 0), core: &mut fresh, rng: &mut rng, answering: false };
                 // a transaction that left the index stale (`index::invalidate`: commit records
                 // changed outside the in-memory indexes) is followed by a reload
                 if !index::current(&mut tx)? {

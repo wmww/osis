@@ -819,6 +819,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         }
     };
     if let Some(c) = &id {
+        if tx.answering {
+            one_thing(tx.core, c)?;
+        }
         check_synced(tx.core, &synced)?;
         check_lifetimes(tx, &kept, &references)?;
         // tests let a local writer break this, to test receivers
@@ -843,15 +846,34 @@ fn carried_at_start(core: &Core, m: &Mutation) -> BTreeSet<Tid> {
 /// only as a chain certificate (`certificate_only`) is no body.
 pub(crate) fn check_local(core: &Core, c: &CommitId, local: &BTreeSet<Tid>, was: &BTreeSet<Tid>) -> Result<()> {
     // a commit a step of the transaction rolled back is no write
-    let Some(meta) = core.ix.commits.get(c) else { return Ok(()) };
+    if !core.ix.commits.contains_key(c) {
+        return Ok(());
+    }
     if let Some(t) = local.iter().find(|t| core.carried(t)) {
         return Err(Error::Clash(format!("{t} is made local, yet this write puts it where it syncs: make it local and list it in separate writes")));
     }
-    let things: BTreeSet<Tid> = meta.view.aspects.iter().filter(|a| !certificate_only(core, &a.tid, &a.ak)).map(|a| a.tid).collect();
-    let (carried, not): (Vec<Tid>, Vec<Tid>) = things.into_iter().partition(|t| was.contains(t) || core.carried(t));
+    let (carried, not): (Vec<Tid>, Vec<Tid>) = bodied(core, c).into_iter().partition(|t| was.contains(t) || core.carried(t));
     match (carried.first(), not.first()) {
         (Some(s), Some(t)) => Err(Error::Clash(format!("{t} is local (nothing that syncs holds it), so it cannot share a write with {s}, which syncs: write it apart, or list it somewhere that syncs first"))),
         _ => Ok(()),
+    }
+}
+
+/// The things commit `c` holds a body on (`certificate_only` parts are none).
+fn bodied(core: &Core, c: &CommitId) -> BTreeSet<Tid> {
+    let Some(meta) = core.ix.commits.get(c) else { return BTreeSet::new() };
+    meta.view.aspects.iter().filter(|a| !certificate_only(core, &a.tid, &a.ak)).map(|a| a.tid).collect()
+}
+
+/// A commit the engine writes on its own as an answer (`Tx::answering`) holds bodies on one thing
+/// at most, so `check_local` never refuses it whatever the rest of the transaction carries
+/// (spec/sync-set.md §1 Local stays local): an answer breaking this fails its own step (reported
+/// `OwnWriteFailed` by its caller), never the transaction.
+fn one_thing(core: &Core, c: &CommitId) -> Result<()> {
+    let on = bodied(core, c);
+    match on.len() {
+        0 | 1 => Ok(()),
+        n => Err(Error::Clash(format!("an answer the engine writes holds bodies on one thing per commit, this one on {n}: {on:?}"))),
     }
 }
 
