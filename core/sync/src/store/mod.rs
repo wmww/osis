@@ -336,10 +336,14 @@ impl Store {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
         let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), room: BTreeMap::new() };
         inner.write(|t, env| {
+            // a start ends every connection: each one charged or bringing goes (connection
+            // numbers start again, so none may name the next one given it)
             let mut conns = BTreeSet::new();
-            for (k, _) in t.scan_local(&[rows::CHARGED, &[0]].concat(), b"", usize::MAX)? {
-                let id = k.get(3..11).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("charged row")))?;
-                conns.insert(crate::types::ConnId(u64::from_be_bytes(id)));
+            for prefix in [rows::CHARGED, rows::BROUGHT] {
+                for (k, _) in t.scan_local(&[prefix, &[0]].concat(), b"", usize::MAX)? {
+                    let id = k.get(prefix.len() + 1..prefix.len() + 9).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("charged row")))?;
+                    conns.insert(crate::types::ConnId(u64::from_be_bytes(id)));
+                }
             }
             for c in conns {
                 Self::gone_durable(t, env, Source::Conn(c))?;

@@ -1366,6 +1366,47 @@ fn a_gone_bringer_passes_its_vouched_entries_on_spec_sync_ids_5() {
     assert!(st.entry(&s.id, &b).unwrap().is_none(), "gone with that record");
 }
 
+// spec/sync-ids.md §5 (Peer budget): a start ends every connection, so each source that is a
+// connection goes then: what one was charged passes to a record that showed it, else goes, and
+// the bringer of what one brought vouched is a record that showed it, or none, never the next
+// connection given the same number.
+#[test]
+fn a_start_passes_on_what_connections_brought_spec_sync_ids_5() {
+    const PRESENT: u8 = b'k';
+    let mut s = Sid::new(70);
+    let dev = Dev::new();
+    let start = |st: &mut Store, s: &Sid| {
+        st.set_sync_set(&holding(&[(s, Holding::Read)])).unwrap();
+        st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 10_000)]), ..Caps::default() });
+        st.serve_path(&s.id, &osis_engine::sync::Path { steps: s.steps.iter().map(|(p, c)| (p.clone(), Some(c.clone()))).collect() }).unwrap();
+    };
+    let mut st = dev.open();
+    start(&mut st, &s);
+    let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
+    let (c7, c9) = (Source::Conn(ConnId(7)), Source::Conn(ConnId(9)));
+    // charged to connection 7: one a record showed, one none did
+    let (shown, x) = blob(100, Class::Durable, None, &[]);
+    assert_eq!(st.take_deposit(&deposit(&s, &x, false), Some(c7)).unwrap(), Code::OK);
+    let (unshown, x) = blob(101, Class::Durable, None, &[]);
+    assert_eq!(st.take_deposit(&deposit(&s, &x, false), Some(c7)).unwrap(), Code::OK);
+    st.with_tx(|t| t.record_put_row(&rec, PRESENT, &s.id, &shown.0, Vec::new())).unwrap();
+    // brought vouched by connection 9 alone, which was charged nothing
+    let (vouched, x) = blob(102, Class::Durable, None, &[]);
+    assert_eq!(st.log(&s.id, stamped(&s, vouched, false), Some(x), Some(c9)).unwrap(), Code::OK);
+    drop(st);
+    let mut st = dev.open();
+    start(&mut st, &s);
+    assert!(st.entry(&s.id, &unshown).unwrap().is_none(), "shown by no record: gone at the start");
+    assert!(st.entry(&s.id, &shown).unwrap().is_some(), "a record showed it: kept");
+    // the head moves past the stamp: connection 9 is gone, so the entry is not kept
+    s.rotate(80);
+    start(&mut st, &s);
+    assert!(!st.charge_unvouched(&s.id, &vouched).unwrap(), "its bringer went with the start");
+    assert!(st.entry(&s.id, &vouched).unwrap().is_none());
+    st.gone(Source::Record(rec)).unwrap();
+    assert!(st.entry(&s.id, &shown).unwrap().is_none(), "charged to the record that showed it");
+}
+
 /// A reader holding `n` entries stamped under S's first head, brought by one peer, one entry that
 /// peer brought unstamped, and one brought by a peer gone since; after a head move, one stamped
 /// under the new head. With the peer's budget at `budget` (`None`: room for the unstamped one and
@@ -1484,7 +1525,8 @@ fn a_stamp_is_checked_once_per_node_spec_sync_ids_5() {
         let mut st = dev.open();
         st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
         st.serve_path(&s.id, &path(&s)).unwrap();
-        let c = Source::Conn(ConnId(5));
+        // a record: it outlives the restart below (a connection does not)
+        let c = Source::Record(st.with_tx(|t| t.record_create([5; 32], &osis_store::Named::default())).unwrap());
         let blobs: Vec<(BlobId, Vec<u8>)> = (0..n).map(|i| blob(200 + i, Class::Durable, None, &[])).collect();
         stamp_checks();
         for (b, x) in &blobs {
