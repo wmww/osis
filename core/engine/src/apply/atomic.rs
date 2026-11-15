@@ -586,8 +586,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         tx.core.signing_due = true;
     }
     // an account's rotation: this node answers it with its listing or addenda
+    crate::flows::custody::take_boxes(tx, &h)?;
     if h.rotation.is_some() {
-        crate::flows::custody::take_boxes(tx, &h)?;
         crate::flows::signing::note_rotation_due(tx, &id)?;
     }
     // an explicit demotion: this node answers it with its addenda (`Engine::answer_removals`)

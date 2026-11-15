@@ -588,7 +588,7 @@ fn fallback_header(v: &View) -> Header {
         ephemeral: None,
         epoch: None,
         rotation: None,
-        own_cover: v.own_cover,
+        reseal: None, own_cover: v.own_cover,
     }
 }
 

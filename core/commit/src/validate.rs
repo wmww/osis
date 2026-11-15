@@ -152,9 +152,14 @@ impl Header {
                 return Err(Error::Invalid("rotation not writing its author's keys.0 as its author"));
             }
         }
-        // an own cover is a durable content snapshot (spec/wire.md §4 field 16)
+        // an own cover is a durable content snapshot (spec/wire.md §4 field 17)
         if self.own_cover && (kind != Kind::ContentSnapshot || self.ephemeral.is_some()) {
             return Err(Error::Invalid("own cover not a durable content snapshot"));
+        }
+        // a seed re-seal: on an account's role commit as its author that is no rotation
+        // (spec/wire.md §4 field 16)
+        if self.reseal.is_some() && (kind != Kind::Role || self.rotation.is_some() || self.epoch.is_none() || self.actor != self.author) {
+            return Err(Error::Invalid("reseal outside an account's role commit, or on a rotation"));
         }
         // an ephemeral commit is a content commit or a content snapshot (each in its form, as a
         // durable one) and carries nothing a stored commit is for (spec/commits.md §2, §3)

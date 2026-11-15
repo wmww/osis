@@ -85,6 +85,8 @@ pub struct Mutation {
     /// A rotation of the signing account's chain, with the key of each fork it names
     /// (spec/crypto.md §9; `flows::signing`).
     pub(crate) rotation: Option<crate::flows::signing::AccountRotation>,
+    /// A seed re-seal of an epoch of the signing account's chain (spec/crypto.md §9, Custody).
+    pub(crate) reseal: Option<osis_commit::SeedReseal>,
 }
 
 impl Default for Mutation {
@@ -99,7 +101,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None, reseal: None }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -471,6 +473,8 @@ pub(crate) struct CommitPlan {
     pub rotation: Option<crate::flows::signing::AccountRotation>,
     /// The own-cover marker (`retention::snapshot::write_own_cover`).
     pub own_cover: bool,
+    /// The header's seed re-seal (`Mutation::reseal`).
+    pub reseal: Option<osis_commit::SeedReseal>,
 }
 
 /// A fresh header blind.
@@ -677,6 +681,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     b.blind = Some(plan.blind);
     b.rotation = plan.rotation.as_ref().map(|r| (r.header.clone(), r.merge_keys.clone()));
     b.own_cover = plan.own_cover;
+    b.reseal = plan.reseal.clone();
     // a commit built in a memory transaction is a memory commit (spec/commits.md §2, §3)
     b.ephemeral = tx.txn.is_memory().then_some(osis_commit::EphClass::Plain);
     // a merge is signed at the head it names first (`flows::signing::rotate_in`)
@@ -846,7 +851,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let item = tx.core.purge_item(&c, tid, ak).ok_or(Error::UnknownCommit(c))?;
         m.purge.push(item);
     }
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, rotation: m.rotation.take(), own_cover: false };
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: m.blind.unwrap_or_else(|| draw_blind(&mut *tx.rng)), expires: None, restores: false, rotation: m.rotation.take(), reseal: m.reseal.take() , own_cover: false };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }

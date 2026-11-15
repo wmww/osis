@@ -306,8 +306,75 @@ pub struct Header {
     /// commit. Its commit ID names the epoch it mints.
     pub rotation: Option<RotationHeader>,
     /// A content snapshot that is its writer's own cover at a removal (spec/permissions.md §5.1,
-    /// Own cover; spec/wire.md §4): only its writer drops a body under it.
+    /// Own cover; spec/wire.md §4 field 17): only its writer drops a body under it.
     pub own_cover: bool,
+    /// A seed re-seal (spec/wire.md §4): seed boxes of an existing epoch of the account's chain,
+    /// only on an account's role commit that is no rotation.
+    pub reseal: Option<SeedReseal>,
+}
+
+/// A header's `reseal` (spec/wire.md §4 `Reseal`, spec/crypto.md §9 Custody): the signing key of
+/// the epoch whose seed it boxes and its seed boxes, ascending by tag, distinct, at least one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeedReseal {
+    pub signing_key: VerifyingKey,
+    pub seeds: Vec<SeedBox>,
+}
+
+impl SeedReseal {
+    fn put(&self, out: &mut Vec<u8>) {
+        put_array(out, 2);
+        put_signing_key(out, &self.signing_key);
+        put_seed_boxes(out, &self.seeds);
+    }
+
+    fn read(v: Item) -> Result<SeedReseal, Error> {
+        let Some([sk, seeds]) = item::list(v)?.tuple() else { return Err(Error::Malformed("reseal arity")) };
+        let seeds = read_seed_boxes(seeds)?;
+        if seeds.is_empty() {
+            return Err(Error::Malformed("reseal without a seed box"));
+        }
+        Ok(SeedReseal { signing_key: read_signing_key(sk)?, seeds })
+    }
+}
+
+fn put_signing_key(out: &mut Vec<u8>, k: &VerifyingKey) {
+    encode_into(&Value::Enum(SIGNING_KEY_ED25519, Some(Box::new(Value::bytes(&k.to_bytes())))), out);
+}
+
+fn read_signing_key(v: Item) -> Result<VerifyingKey, Error> {
+    match v.to_value()? {
+        Value::Enum(SIGNING_KEY_ED25519, Some(b)) => match b.as_ref() {
+            Value::Bytes(k) => VerifyingKey::from_slice(k).map_err(|_| Error::Malformed("signing key")),
+            _ => Err(Error::Malformed("signing key")),
+        },
+        _ => Err(Error::Malformed("signing key")),
+    }
+}
+
+fn put_seed_boxes(out: &mut Vec<u8>, seeds: &[SeedBox]) {
+    put_array(out, seeds.len());
+    for b in seeds {
+        put_array(out, 2);
+        put_bytes(out, &b.tag);
+        put_bytes(out, &b.sealed);
+    }
+}
+
+/// Seed boxes, ascending by tag and distinct (else malformed).
+fn read_seed_boxes(v: Item) -> Result<Vec<SeedBox>, Error> {
+    let seeds = item::list(v)?.iter().map(|b| {
+        let Some([tag, sealed]) = item::list(b)?.tuple() else { return Err(Error::Malformed("seed box arity")) };
+        let sealed: Vec<u8> = sealed.as_bytes().ok_or(Error::Malformed("seed box"))?.to_vec();
+        if sealed.len() < osis_crypto::SEALED_OVERHEAD + 32 {
+            return Err(Error::Malformed("seed box length"));
+        }
+        Ok(SeedBox { tag: item::bytes(tag)?, sealed })
+    }).collect::<Result<Vec<SeedBox>, Error>>()?;
+    if !crate::cbor::strictly_ascending(&seeds, |b| b.tag) {
+        return Err(Error::Malformed("seed boxes not ascending by tag"));
+    }
+    Ok(seeds)
 }
 
 /// The first epoch of every account's signing chain, named by 32 zero bytes (spec/crypto.md §9).
@@ -357,43 +424,22 @@ impl RotationHeader {
             v.iter().for_each(|c| put_bytes(out, &c.0));
         };
         put_array(out, 8);
-        encode_into(&Value::Enum(SIGNING_KEY_ED25519, Some(Box::new(Value::bytes(&self.signing_key.to_bytes())))), out);
+        put_signing_key(out, &self.signing_key);
         encode_into(&self.kem_key.to_value(), out);
         ids(out, &self.supersedes);
         ids(out, &self.names);
         ids(out, &self.takes);
         ids(out, &self.removals);
         put_bytes(out, &self.list_root);
-        put_array(out, self.seeds.len());
-        for b in &self.seeds {
-            put_array(out, 2);
-            put_bytes(out, &b.tag);
-            put_bytes(out, &b.sealed);
-        }
+        put_seed_boxes(out, &self.seeds);
     }
 
     fn read(v: Item) -> Result<RotationHeader, Error> {
         let Some([sk, kem, sup, names, takes, removals, root, seeds]) = item::list(v)?.tuple() else { return Err(Error::Malformed("rotation arity")) };
-        let signing_key = match sk.to_value()? {
-            Value::Enum(SIGNING_KEY_ED25519, Some(b)) => match b.as_ref() {
-                Value::Bytes(k) => VerifyingKey::from_slice(k).map_err(|_| Error::Malformed("rotation signing key"))?,
-                _ => return Err(Error::Malformed("rotation signing key")),
-            },
-            _ => return Err(Error::Malformed("rotation signing key")),
-        };
+        let signing_key = read_signing_key(sk)?;
         let kem_key = KemPublicKey::from_value(&kem.to_value()?).map_err(|_| Error::Malformed("rotation kem key"))?;
         let ids = |v: Item| -> Result<Vec<CommitId>, Error> { item::list(v)?.iter().map(|c| item::bytes(c).map(CommitId)).collect() };
-        let seeds = item::list(seeds)?.iter().map(|b| {
-            let Some([tag, sealed]) = item::list(b)?.tuple() else { return Err(Error::Malformed("seed box arity")) };
-            let sealed: Vec<u8> = sealed.as_bytes().ok_or(Error::Malformed("seed box"))?.to_vec();
-            if sealed.len() < osis_crypto::SEALED_OVERHEAD + 32 {
-                return Err(Error::Malformed("seed box length"));
-            }
-            Ok(SeedBox { tag: item::bytes(tag)?, sealed })
-        }).collect::<Result<Vec<SeedBox>, Error>>()?;
-        if !crate::cbor::strictly_ascending(&seeds, |b| b.tag) {
-            return Err(Error::Malformed("seed boxes not ascending by tag"));
-        }
+        let seeds = read_seed_boxes(seeds)?;
         Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, takes: ids(takes)?, removals: ids(removals)?, list_root: item::bytes(root)?, seeds })
     }
 }
@@ -534,7 +580,7 @@ impl Header {
 
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
         // the own-cover marker is a trailing `true`, absent on every other header
-        put_array(out, if self.own_cover { 17 } else { 16 });
+        put_array(out, if self.own_cover { 18 } else { 17 });
         put_uint(out, FORMAT_VERSION);
         put_tid_bytes(out, &self.author);
         put_tid_bytes(out, &self.actor);
@@ -551,6 +597,7 @@ impl Header {
         put_opt(out, self.ephemeral, |out, c| put_uint(out, c as u64));
         put_opt(out, self.epoch, |out, c| put_bytes(out, &c.0));
         put_opt(out, self.rotation.as_ref(), |out, r| r.put(out));
+        put_opt(out, self.reseal.as_ref(), |out, r| r.put(out));
         if self.own_cover {
             osis_base::cbor::put_bool(out, true);
         }
@@ -789,12 +836,12 @@ impl Header {
             return Err(Error::Malformed("format version"));
         }
         let all: Vec<Item> = items.into_iter().collect();
-        let own_cover = match all.get(16) {
+        let own_cover = match all.get(17) {
             None => false,
-            Some(m) if all.len() == 17 && m.as_bool() == Some(true) => true,
+            Some(m) if all.len() == 18 && m.as_bool() == Some(true) => true,
             Some(_) => return Err(Error::Malformed("own cover marker")),
         };
-        let Some([_, author, actor, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]) = all.get(..16).and_then(|x| <[Item; 16]>::try_from(x).ok()) else {
+        let Some([_, author, actor, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, reseal]) = all.get(..17).and_then(|x| <[Item; 17]>::try_from(x).ok()) else {
             return Err(Error::Malformed("header arity"));
         };
         let mut h = Header {
@@ -814,6 +861,7 @@ impl Header {
             ephemeral: item::opt(ephemeral)?.map(|c| EphClass::from_id(item::uint(c)?).ok_or(Error::Malformed("ephemeral marker"))).transpose()?,
             epoch: item::opt(epoch)?.map(|c| item::bytes(c).map(CommitId)).transpose()?,
             rotation: item::opt(rotation)?.map(RotationHeader::read).transpose()?,
+            reseal: item::opt(reseal)?.map(SeedReseal::read).transpose()?,
             own_cover,
         };
         h.take_position(ListField::Aspects, aspects, stored)?;

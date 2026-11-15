@@ -20,22 +20,33 @@ fn row(p: &Tid, key: &VerifyingKey) -> Vec<u8> {
     [records::SEEDS, p.as_bytes().as_slice(), &key.to_bytes()].concat()
 }
 
-/// Opens the seed boxes of rotation header `h` addressed to this node's device key, at a node
-/// holding the rotation's account or of no account yet (a pairing hands a new node its seeds so),
-/// counting or not, and keeps every seed found (`keep`).
+/// Opens the seed boxes of header `h` (a rotation's of the epoch it mints, a re-seal's of the
+/// epoch it names) addressed to this node's device key, at a node holding the account or of no
+/// account yet (a pairing hands a new node its seeds so), counting or not, and keeps every seed
+/// found (`keep`).
 pub(crate) fn take_boxes(tx: &mut Tx<'_>, h: &Header) -> Result<()> {
-    let Some(rot) = h.rotation.as_ref() else { return Ok(()) };
+    let Some((key, boxes)) = seed_boxes_of(h) else { return Ok(()) };
     let p = h.author;
     let ours = tx.core.accounts.contains_key(&p) || tx.core.account.get().is_none_or(|a| a == p);
-    if !ours || held(tx, &p, &rot.signing_key)? {
+    if !ours || held(tx, &p, key)? {
         return Ok(());
     }
     let kem = tx.core.id.keys().kem.clone();
-    let Some(seeds) = rot.seeds.iter().find_map(|b| osis_crypto::open_seeds(&kem, &p, &rot.signing_key, &b.sealed)) else { return Ok(()) };
+    let Some(seeds) = boxes.iter().find_map(|b| osis_crypto::open_seeds(&kem, &p, key, &b.sealed)) else { return Ok(()) };
     for s in seeds {
         keep(tx, &p, &s)?;
     }
     Ok(())
+}
+
+/// Header `h`'s seed boxes with the signing key of the epoch whose seed they carry: a rotation's
+/// (the epoch it mints) or a re-seal's.
+pub(crate) fn seed_boxes_of(h: &Header) -> Option<(&VerifyingKey, &[SeedBox])> {
+    match (&h.rotation, &h.reseal) {
+        (Some(r), _) => Some((&r.signing_key, &r.seeds)),
+        (None, Some(r)) => Some((&r.signing_key, &r.seeds)),
+        (None, None) => None,
+    }
 }
 
 /// Whether the seed of account `p`'s epoch with signing key `key` is in custody here: recorded,
