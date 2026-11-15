@@ -913,13 +913,17 @@ impl Opens {
     }
 
     /// spec/sync-opens.md §1 (one connection per pair): of `a` (ordered under pair key `ra`) and
-    /// `b`, the one of better route rank stays, then the smaller order hash; the other lets its
-    /// record go and closes, and a twinned one's record goes (its members re-marked for the one
-    /// that stays). Whether `a` stays.
+    /// `b`, the later stays when one side dialed both (numbered in order at each end), else the
+    /// one of better route rank, then the smaller order hash; the other lets its record go and
+    /// closes, and a twinned one's record goes (its members re-marked for the one that stays).
+    /// Whether `a` stays.
     fn settle_pair(&mut self, ctx: &mut Ctx, (a, ra): (ConnId, [u8; 32]), b: ConnId, twinned: bool, moved: &mut Vec<Moved>) -> bool {
         let Some(ours) = self.conns.get(&a).map(|c| c.bind.pair_order(&ra)) else { return false };
         let Some(theirs) = self.conns.get(&b).and_then(|k| Some(k.bind.pair_order(&self.records.get(&k.rec?)?.r))) else { return true };
-        let (loser, winner) = if ours < theirs { (b, a) } else { (a, b) };
+        // a node dials a peer at most once at a time: of two it dialed, the earlier is one it
+        // gave up (its close not arrived, or an earlier run of the node)
+        let a_stays = if a.accepted() == b.accepted() { a > b } else { ours < theirs };
+        let (loser, winner) = if a_stays { (b, a) } else { (a, b) };
         let gone = if twinned { self.conns.get(&loser).and_then(|c| c.rec) } else { None };
         let members: Vec<SyncId> = gone.and_then(|id| self.records.get(&id)).map(|r| r.members.keys().copied().collect()).unwrap_or_default();
         self.release(loser, moved);

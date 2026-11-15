@@ -1110,6 +1110,25 @@ fn the_order_hash_breaks_a_tie_alike_at_both_ends_spec_sync_opens_1() {
     assert_eq!(b_lost, [lost.1], "the same connection at both ends");
 }
 
+// spec/sync-opens.md §1 (one connection per pair): a dialer restarted while its old connection
+// still stands at the listener (its close never arrived) dials again: of the two the listener
+// holds, both dialed by the peer, the later stays whatever the order hash, and the shared set runs
+// on it. Several challenge sets, so the order hash falls both ways.
+#[test]
+fn a_redial_replaces_the_connection_its_dialer_gave_up_spec_sync_opens_1() {
+    for n in 2..10u64 {
+        let mut p = readers();
+        let old = p.cb;
+        p.a.restart();
+        p.connect(n, account(1), account(2));
+        p.run();
+        let b_lost: Vec<_> = p.b.pipe.closed.iter().map(|(c, _)| *c).collect();
+        assert_eq!(b_lost, [old], "the old one closed (n {n})");
+        assert!(p.a.pipe.closed.is_empty(), "the redial stands (n {n})");
+        assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S), "open on the redial (n {n})");
+    }
+}
+
 // spec/sync-opens.md §1 (one connection per pair): two connections on which the peer proved the
 // same node of this account are of one pair though each made a record of its own (crossed first
 // dials): one closes, the same one at both ends, and the shared set runs on the other.

@@ -247,6 +247,39 @@ impl ClientCertVerifier for AnyClientKey {
     raw_ed25519_only!();
 }
 
+/// A listening endpoint's config: its stateless reset key derived from its listening secret
+/// (spec/sync-transport.md §2), and connection IDs it takes as possibly its own whatever run made
+/// them (`AnyCids`), so a restarted node resets the connections of its earlier run at the peer's
+/// next packet instead of leaving them to the idle timeout.
+fn endpoint_config(secret: &[u8; 32]) -> quinn::EndpointConfig {
+    use ring::hmac;
+    let reset = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, secret), b"osis quic stateless reset");
+    let mut c = quinn::EndpointConfig::new(Arc::new(hmac::Key::new(hmac::HMAC_SHA256, reset.as_ref())));
+    c.cid_generator(|| Box::new(AnyCids));
+    c
+}
+
+/// Random 8-byte connection IDs, none told apart as another run's: an unknown one is answered
+/// with a stateless reset (rate-limited by quinn, never larger than the packet it answers).
+struct AnyCids;
+
+impl quinn::ConnectionIdGenerator for AnyCids {
+    fn generate_cid(&mut self) -> quinn::ConnectionId {
+        let mut b = [0u8; 8];
+        // the system's randomness failing leaves zeros: quinn draws again on a collision
+        let _ = ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b);
+        quinn::ConnectionId::new(&b)
+    }
+
+    fn cid_len(&self) -> usize {
+        8
+    }
+
+    fn cid_lifetime(&self) -> Option<Duration> {
+        None
+    }
+}
+
 fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
@@ -422,7 +455,8 @@ impl Transport for Quic {
         let sa = resolve(&cfg.url).await?;
         let (pk, me) = keypair(cfg.secret.as_bytes())?;
         let sc = server_config(me, &[ALPN])?;
-        let ep = quinn::Endpoint::server(sc, sa).map_err(|e| Error::Io(e.to_string()))?;
+        let udp = std::net::UdpSocket::bind(sa)?;
+        let ep = quinn::Endpoint::new(endpoint_config(cfg.secret.as_bytes()), Some(sc), udp, Arc::new(quinn::TokioRuntime)).map_err(|e| Error::Io(e.to_string()))?;
         let local = ep.local_addr().map_err(|e| Error::Io(e.to_string()))?;
         let rx = accept_loop(ep.clone(), |inc: quinn::Incoming| async move { keyed(inc.await.ok()?) });
         Ok(QuicListener { ep, rx, addr: Address { url: format!("{SCHEME}://{local}"), key: pk } })
@@ -586,7 +620,8 @@ fn bind_sock(at: SocketAddr, secret: Option<&crate::StaticSecret>, serves: &'sta
     raw.bind(&at.into())?;
     let udp: std::net::UdpSocket = raw.into();
     let punch = udp.try_clone()?;
-    let ep = quinn::Endpoint::new(quinn::EndpointConfig::default(), server, udp, std::sync::Arc::new(quinn::TokioRuntime))?;
+    let config = secret.map_or_else(quinn::EndpointConfig::default, |s| endpoint_config(s.as_bytes()));
+    let ep = quinn::Endpoint::new(config, server, udp, std::sync::Arc::new(quinn::TokioRuntime))?;
     let local = ep.local_addr()?;
     let rx = match secret {
         Some(_) => accept_loop(ep.clone(), |inc: quinn::Incoming| async move {
@@ -660,7 +695,7 @@ mod tests {
     //! Handshake failure modes (by hand: localhost sockets). spec/sync-transport.md §2.
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use crate::{Listener, StaticSecret, Transport};
+    use crate::{Connection, Listener, SendStream, StaticSecret, Transport};
 
     fn rt() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
@@ -723,6 +758,32 @@ mod tests {
             drop(c);
         });
         stall.join().unwrap();
+    }
+
+    // spec/sync-transport.md §2 (stateless reset): a node back at its address under its key after
+    // a crash resets a connection of its earlier run at the dialer's next packet, not at the idle
+    // timeout.
+    #[test]
+    #[ignore]
+    fn a_restarted_listener_resets_its_earlier_connections() {
+        let multi = || tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let earlier = multi();
+        let (l, sa) = earlier.block_on(listener(6));
+        let addr = l.address();
+        let client = rt();
+        let c = client.block_on(Quic::new().dial(&addr)).unwrap();
+        // the earlier run ends unpolled: no close goes out; its socket goes with its last handle
+        earlier.shutdown_timeout(Duration::from_secs(5));
+        drop(l);
+        let later = multi();
+        let cfg = ListenConfig { url: format!("quic://{sa}"), secret: StaticSecret::from_bytes([6; 32]) };
+        let _l2 = later.block_on(Quic::new().listen(cfg)).unwrap();
+        let why = client.block_on(async {
+            let (mut s, _r) = c.open_stream().await.unwrap();
+            let _ = s.write_all(b"x").await;
+            c.c.closed().await
+        });
+        assert!(matches!(why, quinn::ConnectionError::Reset), "{why:?}");
     }
 
     fn lax_client(early: bool, me: Option<Arc<CertifiedKey>>) -> quinn::ClientConfig {

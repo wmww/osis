@@ -18,6 +18,7 @@
   - The listener's key is the address key; a client's is fresh per connection.
   - SNI is ignored.
   - Each sync session (spec/wire.md §11.1) runs on a bidirectional stream the client opens; the dialer closes the connection.
+  - A listener's stateless reset key (RFC 9000 §10.3) is derived from its listening secret, and it answers a short-header packet of any connection ID it does not hold with a stateless reset: a node back at its address under its key resets the connections of its earlier run at the peer's next packet.
 
 ## 3. `peer://` and relays
 - **P2P transports**: a node dials another node by dialable key over a P2P transport, each named by its own address scheme; only `peer://` is defined.
