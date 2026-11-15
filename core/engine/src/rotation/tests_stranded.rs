@@ -157,12 +157,12 @@ fn whether_a_body_wraps_moves_at_a_grants_until_spec_crypto_4() {
     let e = &mut lp.peers[0].engine;
     let mut fx: osis_base::memo::Effects<(), bool> = osis_base::memo::Effects::new("wraps");
     fx.want(());
-    assert_eq!(fx.settle(&(), || e.may_log(&s, &c).unwrap()), Some((None, true)), "wraps before the until");
+    assert_eq!(fx.settle(&(), || { let held = e.commit_blobs(&c).unwrap(); e.may_log(&s, &c, &held).unwrap() }), Some((None, true)), "wraps before the until");
     assert!(fx.due().is_empty());
     lp.peers[0].clock.advance(2_000);
     let e = &mut lp.peers[0].engine;
     let now = e.now();
     e.set_now(now);
     assert_eq!(fx.due(), vec![()], "due at the until");
-    assert_eq!(fx.settle(&(), || e.may_log(&s, &c).unwrap()), Some((Some(true), false)), "the finalize is owed first");
+    assert_eq!(fx.settle(&(), || { let held = e.commit_blobs(&c).unwrap(); e.may_log(&s, &c, &held).unwrap() }), Some((Some(true), false)), "the finalize is owed first");
 }

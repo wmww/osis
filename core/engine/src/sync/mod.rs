@@ -547,9 +547,11 @@ impl Engine {
 
     /// Whether this node may log `c`'s body under `s` now: a held blob verbatim or a fresh
     /// encryption, wrapped for `s` (spec/sync-judgement.md §2 Loggable): a body is must-hold only
-    /// while it may, so a judgement reading this moves when it does.
-    pub fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
-        self.may_log_now(s, c)
+    /// while it may, so a judgement reading this moves when it does. `held`: the blobs of `c`
+    /// whose bytes the sync store holds under some entry, the ones `seal_body` and a verbatim
+    /// log may use (the store is the one truth of what can be passed on).
+    pub fn may_log(&mut self, s: &SyncId, c: &CommitId, held: &[BlobId]) -> Result<bool> {
+        self.may_log_now(s, c, held)
     }
 
     /// Whether a record blob (`r` none) or a list blob of rotation `r` can be sealed under `s`

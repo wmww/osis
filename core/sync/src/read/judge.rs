@@ -261,10 +261,11 @@ fn classify(mine: &Mine, f: &Facts, s: &SyncId, c: &CommitId, meta: &BodyMeta, l
 
 /// Covered and dropped where `held` says which commits are held (spec/sync-judgement.md §3,
 /// spec/sync-compaction.md §1 Carriers): a may-hold body a held valid snapshot covers, past its
-/// keep-at-least bound, each delta needing a carrier having one held there. A must-hold body
-/// (a certificate, a lasting header) is must-hold whatever snapshot covers it.
+/// keep-at-least bound, each delta needing a carrier having one held there. A certificate but a
+/// sole one (a lasting header has no delta to cover) is required whatever snapshot covers it:
+/// never dropped as covered, may-hold only while this node may not log it (§2 Loggable: kept).
 fn covered_dropped(v: &Verdict, f: &Facts, mut held: impl FnMut(&CommitId) -> Result<bool>) -> Result<bool> {
-    if *v != Verdict::May || f.body.covered != Some(true) || f.body.kept {
+    if *v != Verdict::May || f.body.covered != Some(true) || f.body.kept || (!f.body.closure && !f.body.sole_certificate) {
         return Ok(false);
     }
     for alternatives in &f.carriers {

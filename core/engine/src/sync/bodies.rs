@@ -379,8 +379,9 @@ impl Engine {
     /// would: a held blob of `c` passed on verbatim under a wrap for `s` (`rewrap_now`), else a
     /// fresh encryption (`seal_body_now`): a copy or certificate of parts all held, or each
     /// part of the body sealed here (`section_secret`) or carried by a held genuine section; in
-    /// each case wrapped for `s` as `wrap_secret` says for the parts the blob carries.
-    pub(crate) fn may_log_now(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+    /// each case wrapped for `s` as `wrap_secret` says for the parts the blob carries. Only the
+    /// blobs of `held` (bytes in the sync store) count as passed on or carried.
+    pub(crate) fn may_log_now(&mut self, s: &SyncId, c: &CommitId, held_blobs: &[BlobId]) -> Result<bool> {
         let Some(t) = self.read_thing(s)? else { return Ok(false) };
         let Some(meta) = self.sync_body_now(s, c)? else { return Ok(false) };
         let Some(h) = self.header(c) else { return Ok(false) };
@@ -392,8 +393,7 @@ impl Engine {
         // verbatim: a held genuine blob (a certificate copy of exactly the body's parts for a
         // certificate), never for a per-sync-ID copy's body
         let mut carried = BTreeSet::new();
-        let blobs: Vec<BlobId> = self.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect();
-        for b in &blobs {
+        for b in held_blobs {
             let Some(row) = self.core.ix.blob_parts.get(b).filter(|x| x.commit == *c).cloned() else { continue };
             if self.blob_dropped_now(b) {
                 continue;

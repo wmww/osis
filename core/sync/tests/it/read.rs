@@ -1544,6 +1544,30 @@ fn must_hold_certificate_is_never_covered_and_dropped() {
     assert_eq!(w.logs(S, cid(1)), 1, "logged and dropped in a loop");
 }
 
+// spec/sync-judgement.md §2 (Loggable): a certificate this node may not log now is may-hold, kept
+// as it is: it neither leaves the own log nor is deleted at K as covered (a may-hold body that
+// is not loggable is kept if it arrives), and is must-hold again once it may.
+#[test]
+fn an_unloggable_certificate_is_kept_not_covered_and_dropped_spec_sync_judgement_2() {
+    let mut w = W::new();
+    w.hold(cid(2), &[S], uncovered());
+    let mut f = covered(cid(2));
+    f.body.closure = false;
+    w.hold(cid(1), &[S], f);
+    w.exchange();
+    assert_eq!(w.own_blobs(S, cid(1)).len(), 1);
+    w.g.unloggable.insert((S, cid(1)), ());
+    w.exchange();
+    w.exchange();
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::May));
+    assert_eq!(w.own_blobs(S, cid(1)).len(), 1, "an unloggable certificate left the own log");
+    assert_eq!(w.deletes(), 0, "an unloggable certificate was deleted at K");
+    w.g.unloggable.remove(&(S, cid(1)));
+    w.exchange();
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
+    assert_eq!(w.logs(S, cid(1)), 1);
+}
+
 // spec/sync-judgement.md §3 (deletes): a body dropped as invalid is never deleted at a peer,
 // whatever covers it (spec/permissions.md §6).
 #[test]

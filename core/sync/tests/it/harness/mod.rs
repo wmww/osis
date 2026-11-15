@@ -901,6 +901,52 @@ impl World {
             }
         }
         assert!(stuck.is_empty(), "must-hold bodies with no entry at quiet (node, S, commit): {stuck:?}");
+        self.unreached_must_holds();
+    }
+
+    /// At quiet, a body some node judges must-hold under S (so may log, and logs) reaches every
+    /// reader of S connected to it, caught up on S there and able to open that node's entry of
+    /// it (spec/sync-judgement.md §2 Loggable is no way to lose a body a reader needs: who may
+    /// log it does). Not while a node lies (it may withhold).
+    fn unreached_must_holds(&mut self) {
+        if !self.liars.is_empty() {
+            return;
+        }
+        let mut lost = Vec::new();
+        let on: Vec<usize> = (0..self.nodes.len()).filter(|j| self.online(*j)).collect();
+        for &j in &on {
+            let peers: BTreeMap<ConnId, usize> = self.net.links.iter().filter(|((m, _), _)| *m == j).map(|((_, c), (t, _))| (*c, *t)).collect();
+            for (s, (t, h)) in self.store(j).syncs() {
+                if h != osis_engine::sync::Holding::Read {
+                    continue;
+                }
+                let Some(st) = self.node(j).node.status_of(&s) else { continue };
+                let holders: Vec<usize> = st.sources.iter().filter(|(_, x)| x.caught_up).filter_map(|(c, _)| peers.get(c).copied()).filter(|i| on.contains(i)).collect();
+                let secrets: Vec<_> = self.engine(j).read_secrets(&t).iter().flat_map(|x| [x.clone(), osis_crypto::roles_secret(x)]).collect();
+                for i in holders {
+                    for c in self.engine(i).commit_ids() {
+                        if self.node(i).node.verdict(&s, &c) != Some(osis_sync::read::Verdict::Must) {
+                            continue;
+                        }
+                        let blobs = self.engine(i).commit_blobs(&c).unwrap();
+                        // needed: j opens the wrap of an entry of it at i (one under an epoch j
+                        // never held, say before a cut, is not j's to read)
+                        let opens = blobs.iter().any(|b| self.store(i).entry(&s, b).unwrap().is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some()));
+                        if !opens {
+                            continue;
+                        }
+                        // held, or an entry of it fetched that waits to open (parked); a held
+                        // body counting parts missing is not checked
+                        // (issues/missing-parts-below-a-floor.md)
+                        let fetched = blobs.iter().any(|b| self.store(j).entry(&s, b).unwrap().is_some());
+                        if !fetched && !self.engine(j).holds_commit(&c) {
+                            lost.push((i, j, s, c));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(lost.is_empty(), "must-hold bodies a caught-up reader lacks at quiet (holder, reader, S, commit): {lost:?}");
     }
 
     /// Moves the clock by `ms` (tests about time only) and runs every wake up to then.

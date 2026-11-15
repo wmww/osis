@@ -136,12 +136,29 @@ impl Live<'_, '_> {
     /// The only place read makes a fresh encryption of a body.
     fn fresh(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<(osis_engine::labeling::Sealed, crate::types::Wrap)>> {
         let mut held = Vec::new();
-        for b in self.cx.engine.commit_blobs(c)?.iter() {
-            let Some(bytes) = self.cx.store.bytes(b)? else { continue };
-            let Some(e) = self.cx.store.naming(b)?.into_iter().find_map(|x| self.cx.store.entry(&x, b).ok().flatten().map(|e| (x, e))) else { continue };
-            held.push(HeldBlob { sync_id: e.0, wrap: e.1.wrap, bytes });
+        for (b, x, e) in self.held_blobs(c)? {
+            let Some(bytes) = self.cx.store.bytes(&b)? else { continue };
+            held.push(HeldBlob { sync_id: x, wrap: e.wrap, bytes });
         }
         Ok(self.cx.engine.seal_body(s, c, &held, self.cx.rng)?)
+    }
+
+    /// The blobs of `c` opened or sealed here whose bytes the store holds, each with an entry
+    /// naming it under a sync ID read here that carries a body of `c` (so its wrap opens here):
+    /// what a fresh encryption carries and a verbatim log passes on, and so what
+    /// `Engine::may_log` reads (one truth: what this node may log is what it can).
+    fn held_blobs(&mut self, c: &CommitId) -> Result<Vec<(BlobId, SyncId, Entry)>> {
+        let homes = self.cx.engine.sync_bodies(c)?;
+        let mut out = Vec::new();
+        for b in self.cx.engine.commit_blobs(c)?.iter() {
+            // the entry first: its row moves when the bytes arrive, so a reader follows them
+            let Some((x, e)) = self.cx.store.naming(b)?.into_iter().filter(|x| homes.contains_key(x)).find_map(|x| self.cx.store.entry(&x, b).ok().flatten().map(|e| (x, e))) else { continue };
+            if self.cx.store.blob_len(b)?.is_none() {
+                continue;
+            }
+            out.push((*b, x, e));
+        }
+        Ok(out)
     }
 }
 
@@ -244,7 +261,8 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.publishes_reach()?)
     }
     fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
-        Ok(self.cx.engine.may_log(s, c)?)
+        let held: Vec<BlobId> = self.held_blobs(c)?.into_iter().map(|(b, _, _)| b).collect();
+        Ok(self.cx.engine.may_log(s, c, &held)?)
     }
     fn now(&self) -> WallMs {
         self.cx.now
