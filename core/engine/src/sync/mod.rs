@@ -707,6 +707,12 @@ impl Engine {
         self.owned_sync_ids(thing)
     }
 
+    /// Every read secret an entry of `s` is tried under (`open_entry`): held, current or not, its
+    /// thing's and those derived from its first admin's. A parked entry waits on these alone.
+    pub fn opening_secrets(&mut self, s: &SyncId) -> Result<Vec<osis_crypto::Secret32>> {
+        Ok(self.opening_thing(s)?.map(|t| self.read_secrets(&t)).unwrap_or_default())
+    }
+
     /// What this node opens and acts with as a reader of `s` (`None`: it does not read `s`): also
     /// for a sync ID it left while a read secret of its thing is held, which sync keeps syncing
     /// until a complete pass after it left (spec/sync-set.md §3).

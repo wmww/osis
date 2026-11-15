@@ -9,7 +9,6 @@ use crate::set::SyncsFollow;
 use crate::types::{Holding, Result};
 use osis_base::memo::{Effects, Feed};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
-use osis_crypto::Epoch;
 use osis_engine::Engine;
 use osis_engine::sync::{Caps, Opened, Path};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,8 +20,9 @@ pub struct Follow {
     caps: Effects<(), Arc<Caps>>,
     /// Per sync ID read here, its thing and its recorded path.
     paths: Effects<(SyncId, Tid), Option<Arc<Path>>>,
-    /// Per sync ID read here, the epochs of its current read secrets: what opens a parked entry.
-    creds: Effects<SyncId, Vec<Epoch>>,
+    /// Per sync ID read here, every read secret its entries are tried under, current or not
+    /// (`Engine::opening_secrets`): what opens a parked entry.
+    creds: Effects<SyncId, Vec<osis_crypto::Secret32>>,
     /// Per sync ID read here, its entries that did not open (neither held nor pending here): each
     /// parked under the one thing it awaits, S's read secrets (notes/sync.md Arriving early), and
     /// opened again only as those move. Found by the store's entry feed and at S's start.
@@ -260,7 +260,7 @@ impl Follow {
         // a parked entry is opened as read secrets arrive (spec/sync-streams.md §4 Fill order;
         // S's first settle tries each once)
         for s in self.creds.due() {
-            let r = self.creds.try_settle(&s, || Ok::<_, osis_engine::Error>(engine.read_credentials(&s)?.map(|c| c.read_secrets.iter().map(|(e, _)| *e).collect()).unwrap_or_default()))?;
+            let r = self.creds.try_settle(&s, || engine.opening_secrets(&s))?;
             let Some((was, now)) = r else { continue };
             if was.is_some_and(|w| now.iter().all(|e| w.contains(e))) {
                 continue;
