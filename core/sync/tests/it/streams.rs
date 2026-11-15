@@ -730,7 +730,7 @@ fn a_refused_join_is_joined_again_later_spec_sync_streams_4() {
     let pulls = p.sent_by_b(41).len();
     p.run();
     assert_eq!(p.sent_by_b(41).len(), pulls, "not before resync_ms");
-    p.now += osis_sync::streams::RESYNC_MS;
+    p.now += osis_sync::types::RESYNC_MS;
     p.run();
     assert!(knows(&p.b, p.b.src(), t, x));
     assert!(p.b.streams.caught_up(C, &t));

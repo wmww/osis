@@ -11,6 +11,13 @@ use osis_label::{Address, Class};
 pub use osis_engine::sync::{Holding, Path, Wrap};
 pub use osis_store::RecordId;
 
+/// `resync_ms` (local policy, spec/sync.md): the wait after a peer refuses before asking again:
+/// a whole filter after a refused generation (spec/sync-opens.md §5), a refused Pull sent again,
+/// a join refused while S stays a member joined again (spec/sync-streams.md §4 Joining). At 0 a
+/// peer refusing loops at the speed of the link; at infinity a refusal stops that filter or
+/// stream on the connection for good (its opens and joins wait for the next connection).
+pub const RESYNC_MS: u64 = 30_000;
+
 /// A connection. A node numbers the connections it dials (`Out::Dial`); its `Links` numbers the
 /// ones it accepts, with `ConnId::ACCEPTED` set, so the two never meet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

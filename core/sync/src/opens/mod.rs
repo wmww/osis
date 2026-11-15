@@ -46,12 +46,6 @@ use osis_proto::{Code, Id, Msg, OfferItem, SharedItem};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// After a refused filter generation, the wait before a whole one (spec/sync-opens.md §5,
-/// `resync_ms`, local policy). At 0 a peer refusing every generation gets a whole filter at each
-/// refusal, a loop at the speed of the link; at infinity a refusal stops this side's filter on
-/// that connection for good (its opens wait for the next connection).
-pub const RESYNC_MS: u64 = 30_000;
-
 /// A member of a connection's shared set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
@@ -1497,7 +1491,7 @@ impl Opens {
         let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r)) else { return };
         if g.refused {
             // A refused generation is followed, after `resync_ms`, by a whole one.
-            c.resync_at = Some(WallMs(ctx.now.0.saturating_add(RESYNC_MS)));
+            c.resync_at = Some(WallMs(ctx.now.0.saturating_add(crate::types::RESYNC_MS)));
         } else if g.base_missing {
             c.whole_next = true;
         } else {

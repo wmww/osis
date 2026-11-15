@@ -68,11 +68,6 @@ pub const PENDING_CAP: usize = 64;
 /// a time is local policy). At 0 nothing is fetched; at infinity the window alone bounds them.
 pub const FETCHES_OUT: usize = 2;
 
-/// The wait before a refused Pull is sent again, and before a join refused while S stays a
-/// member is joined again (`resync_ms`, spec/sync-streams.md §4 Joining; local policy). At 0 a
-/// peer refusing loops at the speed of the link; at infinity a refusal stops the stream for good.
-pub const RESYNC_MS: u64 = 30_000;
-
 /// How long a blob counts as asked at one source before another that has it is asked too
 /// (spec/sync-streams.md §4 Bodies: the Stall rule's wait).
 pub const ASKED_MS: u64 = crate::session::STALL_TIMEOUT_MS;

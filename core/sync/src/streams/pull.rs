@@ -4,11 +4,11 @@
 //! `seq` checked and a gap read again, bodies fetched one source at a time in the fill order.
 
 use super::known::{self, Op};
-use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, RESYNC_MS, Rank, Refusal, Streams};
+use super::{ASKED_MS, Ctx, FETCHES_OUT, INLINE_LIMIT, Opening, PENDING_CAP, Rank, Refusal, Streams};
 use crate::opens::Rejoin;
 use crate::store::rows::tag::{AT_STREAM, CURSOR, JOIN_FROM, TOLD};
 use crate::store::{Source, Store};
-use crate::types::{ConnId, Cursor, Entry, RecordId, Result};
+use crate::types::{ConnId, Cursor, Entry, RESYNC_MS, RecordId, Result};
 use osis_store::Transaction;
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, WallMs};
