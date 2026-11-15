@@ -3,11 +3,20 @@
 > Priority: normal
 > Tags: engine, sync, data-model, tess-call
 
-Nothing here is decided. It records her design, what it implies under today's permissions and sync specs, and the questions it leaves. Storage side: issues/storage-follows-groups.md.
+Only the Decided section is decided. The rest records her design, what it implies under today's permissions and sync specs, and the questions it leaves. Storage side: issues/storage-follows-groups.md.
+
+## Decided (Tess)
+- **No default strength.** Every reference states strong or weak: in the encoding (two tags, no bare tid as a value), in the API (no `Tid` into a value) and in schemas. `group.0` entries carry the flag like any field.
+- **Words.** A **tid** is a thing's ID and is never a value. A **strong** and a **weak** are the two kinds of reference; each holds a tid and is built from one. **Ref** (reference) means either kind. Schema types: `strong`, `weak`, and `ref` (either, the writer picks per value); the type `tid` goes.
+- **Rust.** `Strong`, `Weak`, and `Ref` (the enum of both). `Tid` converts into `Strong` and into `Weak` with `.into()` (so a write to a typed field takes a tid and the schema's strength; a `ref` field makes the writer choose), and each converts back. A read that returns a reference can also return its `Tid` (generic on the return type).
+- **Schemas bind the local writer only**, as all types do (spec/versioning.md §5): a peer may write either strength anywhere it may write, and every node syncs and holds by the flag in the data, never by a schema.
+- **A strong and a weak to one tid are different values.** A set may hold both, a map may have both as keys; the target is held when any strong to it is in current state. No rule bars strong map keys: schemas type keys.
+- **A strong keeps its target whatever the size of the value holding it** (issues/refs-in-chunked-elements.md).
+- **`osis://` links in text** become weak references: issues/text-links-as-references.md (independent of this work).
 
 ## Terms
 Defined, changed or removed by this design; used only in these meanings below.
-- **Reference**: a tid inside a thing's current durable value, on an aspect other than `created.0` and the role-class aspects (as notes/engine-refs.md counts today). Unchanged.
+- **Reference** (ref): a strong or a weak inside a thing's current durable value. Whether `created.0` and the role-class aspects stay outside the index, as today (notes/engine-refs.md), is open question 12.
 - **Strong reference** (new): a reference flagged strong in the data. Makes its target part of the referrer's sync closure and keeps it alive at nodes that reach the referrer.
 - **Weak reference** (new): a reference flagged weak. Points only: syncs nothing, keeps nothing alive. A target the node does not hold is an error at read.
 - **Current state**: a thing's valid held writes that carry values (no history, no value-less, invalid, ephemeral or signal writes). Unchanged from what lifetimes and garbage collection read today.
@@ -80,8 +89,8 @@ Code:
 Migration: none (no backward compatibility before release, CLAUDE.md).
 
 ## Open questions
-1. Encoding of the flag: a second CBOR tag beside 1616, or a wrapper. Default for an untyped tid and for `group.0`: strong or weak?
-2. Optional type-level constraint: a schema type saying a field's references must be strong (or weak), checked at write time; and whether untyped writes may write either.
+1. Encoding: which two CBOR tags (1616 is retired or becomes one of them).
+2. (settled: Decided, schema types.)
 3. Items vs subgroups: today an item is carried but its own `group.0` is not walked. Under strong references everything reached is walked. Keep both lists (and what does "item" mean then), or one set?
 4. Key homes: today a thing is in the closure of its key home whether listed or not (spec/sync-set.md §2). Keep this as an implicit strong edge, or drop it now that creation must reference the thing?
 5. Ephemeral aspects: may a strong reference there hold anything (memory, may be lost; today they are not references for lifetime)? Lean: no, durable current state only.
@@ -91,3 +100,9 @@ Migration: none (no backward compatibility before release, CLAUDE.md).
 9. One word for release and unsync, and the user-facing name.
 10. Readers of S computing different sync closures (Permissions above): acceptable, or does the closure rule need a form every reader computes alike?
 11. A writer forcing large storage on every reader by one strong reference: accepted as today with `group.0`, or bounded?
+12. `created.0` and the role-class aspects hold tids (`creation.admin`, `creation.link`, `roles.0` keys) that are not indexed today because authority is not lifetime. As weaks they keep nothing by the general rule, so the exclusion is no longer needed for lifetime. Left: should backlinks list them? Check why they are unindexed beyond lifetime (`roles.0` reads through the role timeline, not as plain state) before keeping any exclusion.
+13. Synthetic aspects typed by tid: `tid.0` (`tid`) and `groups.0` (`set<tid>`, derived: the groups that reach the thing through `group.0`, the inverse of the listing). With a tid no value they become weaks or stop being aspects (`groups_of` already serves the second). And with strong references in any aspect, is "the groups holding a thing" still the useful inverse, or is it backlinks by strong references?
+14. Other roots: today's sync set also takes the shared-here set, a link being redeemed, a destroyed thing's sync IDs until emptied, and cuts paths through groups sourced at another node (spec/sync-set.md §2, §3, §5). Each becomes a strong reference from the root group or a stated root; "exactly what the root group reaches" does not hold until then.
+15. The "not prompt" rule. Commits arrive in any order, so "no longer referenced" may be held before an earlier "referenced from elsewhere". Dropping locally is harmless; deleting the thing's blobs under a sync ID (Retag, spec/sync-judgement.md §1) is durable. What a node waits for before each needs stating; the lifetimes design waits to be heard out (notes/lifetimes.md Rules, When) and some form of that likely stays.
+16. Removal cost. The backward walk from a target costs its fan-in when it is still held (one profile referenced by 10,000 messages). Candidate: each held thing records one path edge towards the root, so removing any other edge is O(1) and removing that one searches the target's other strong referrers. Model first.
+17. notes/lifetimes.md (Limits and problems, stated: Rejected) rejected "every node releasing on its own judgment with no request": a partial-view node logs the thing again while right holders delete it, round for good. This design avoids most of it (release destroys nothing), but the loop returns wherever readers of S compute different closures (question 10): settle the two together.
