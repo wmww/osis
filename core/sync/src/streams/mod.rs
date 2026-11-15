@@ -423,6 +423,7 @@ impl Streams {
     /// Settles every connection: pushes under `follow`, Pulls and Fetches due, room regained.
     pub fn tick(&mut self, ctx: &mut Ctx) -> Result<bool> {
         self.forget_shredded();
+        self.known.settle();
         let mut acted = self.send_relays(ctx)?;
         acted |= ctx.store.room_grew()?;
         self.untell_full(ctx);

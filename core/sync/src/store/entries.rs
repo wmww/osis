@@ -215,6 +215,11 @@ pub(crate) fn remove(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, b: 
             t.remove_local(&rows::deposited_key(s, b), Shred::No)?;
         }
         t.remove_local(&rows::elsewhere_key(s, b), Shred::No)?;
+        // a source's refusal stands only for an entry held here (spec/sync-streams.md §4
+        // Refused): it goes with the entry, however it left (an expiry serves no event)
+        for rec in t.records_with_row(s, rows::tag::REFUSED, &b.0, usize::MAX)? {
+            t.record_remove_row(&rec, rows::tag::REFUSED, s, &b.0)?;
+        }
         env.mem.fed.wrote_added(&(*s, *b), true, true);
         charge(t, row, s, b, false)?;
         add_usage(t, env, s, |u| count(u, row, false))?;

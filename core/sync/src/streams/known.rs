@@ -25,7 +25,7 @@ use crate::store::Source;
 use crate::store::Store;
 use crate::store::rows::tag::{HEAD, PRESENT, REFUSED};
 use crate::types::{ConnId, RecordId};
-use osis_base::memo::Stamps;
+use osis_base::memo::{Feed, Stamps};
 use osis_base::{BlobId, SyncId};
 use osis_label::StepId;
 use osis_proto::Code;
@@ -88,7 +88,12 @@ pub struct Known {
     by_blob: BTreeMap<(SyncId, BlobId), BTreeSet<Source>>,
     heads: BTreeMap<(Source, SyncId), StepId>,
     full: BTreeSet<(Source, SyncId)>,
+    /// Refusals kept in memory: a connection's source's, and an ephemeral entry's whatever the
+    /// source (they go with the entry: none outlives a restart); by entry in `refused_by`.
     refused: BTreeMap<(Source, SyncId, BlobId), Code>,
+    refused_by: BTreeMap<(SyncId, BlobId), BTreeSet<Source>>,
+    /// The store's entries changed: a refusal of an entry no longer held goes (`settle`).
+    entries: Feed<(SyncId, BlobId)>,
     stamps: Stamps,
     /// Every presence row written (shown present or removed, any source): `feed` readers take
     /// each (read, judging what a source showed of a commit).
@@ -100,11 +105,13 @@ pub type Row = (Source, SyncId, BlobId);
 
 impl Known {
     pub(super) fn new(store: Store) -> Known {
-        Known { store, by_src: BTreeMap::new(), by_blob: BTreeMap::new(), heads: BTreeMap::new(), full: BTreeSet::new(), refused: BTreeMap::new(), stamps: Stamps::named("streams: known"), log: Stamps::named("streams: known rows") }
+        let entries = store.entry_feed();
+        Known { store, by_src: BTreeMap::new(), by_blob: BTreeMap::new(), heads: BTreeMap::new(), full: BTreeSet::new(), refused: BTreeMap::new(), refused_by: BTreeMap::new(), entries, stamps: Stamps::named("streams: known"), log: Stamps::named("streams: known rows") }
     }
 
     /// Tests only (world copies): the copy's store.
     pub(super) fn set_store(&mut self, store: Store) {
+        self.entries = store.entry_feed();
         self.store = store;
     }
 
@@ -157,14 +164,42 @@ impl Known {
                         self.stamps.wrote(&("f", src, s), *full);
                     }
                 }
-                Op::Refused(s, b, c) => {
-                    if self.refused.insert((src, *s, *b), *c).is_none() {
-                        self.stamps.wrote(&("rs", src, *s), true);
-                    }
-                }
+                Op::Refused(s, b, c) => self.refused_here(src, *s, *b, *c),
                 Op::Lift(s, Some(b)) => self.lift(src, *s, b),
                 Op::Lift(s, None) => self.lift_all(src, *s),
                 Op::Forget(s) => self.forget_conn(src, *s),
+            }
+        }
+    }
+
+    /// A refusal kept in memory whatever the source (an ephemeral entry's: `refused`).
+    pub(super) fn refused_here(&mut self, src: Source, s: SyncId, b: BlobId, c: Code) {
+        if self.refused.insert((src, s, b), c).is_none() {
+            self.refused_by.entry((s, b)).or_default().insert(src);
+            self.stamps.wrote(&("rs", src, s), true);
+        }
+    }
+
+    /// A record's `op` was written (`write`): its refusals kept in memory end as its rows do
+    /// (`moved`: an `Op::Head` naming a head other than the one stored).
+    pub(super) fn wrote_record(&mut self, src: Source, op: &Op, moved: bool) {
+        match op {
+            Op::Add(s, b) | Op::Lift(s, Some(b)) => self.lift(src, *s, b),
+            Op::Lift(s, None) | Op::Forget(s) => self.lift_all(src, *s),
+            Op::Head(s, _) if moved => self.lift_all(src, *s),
+            _ => {}
+        }
+    }
+
+    /// The refusals kept in memory of entries that left this node go (spec/sync-streams.md §4
+    /// Refused: kept per entry held; a record's rows go with the entry, `store::entries::remove`).
+    /// O(the entries changed).
+    pub(super) fn settle(&mut self) {
+        for (s, b) in self.entries.added() {
+            if self.refused_by.contains_key(&(s, b)) && self.store.entry(&s, &b).ok().flatten().is_none() {
+                for src in self.refused_by.get(&(s, b)).cloned().unwrap_or_default() {
+                    self.lift(src, s, &b);
+                }
             }
         }
     }
@@ -201,6 +236,12 @@ impl Known {
 
     fn lift(&mut self, src: Source, s: SyncId, b: &BlobId) {
         if self.refused.remove(&(src, s, *b)).is_some() {
+            if let Some(set) = self.refused_by.get_mut(&(s, *b)) {
+                set.remove(&src);
+                if set.is_empty() {
+                    self.refused_by.remove(&(s, *b));
+                }
+            }
             self.stamps.wrote(&("rs", src, s), false);
         }
     }
@@ -283,23 +324,17 @@ impl Known {
     /// Whether a refusal the source sent of some entry of S stands (spec/sync-streams.md §4
     /// Refused): status names it among those that do not take S.
     pub fn refusing(&self, src: Source, s: &SyncId) -> bool {
-        match src {
-            Source::Record(rec) => self.read(|t| Ok(!t.record_rows(&rec, REFUSED, s, b"", 1)?.is_empty())),
-            Source::Conn(_) => {
-                self.stamps.read(&("rs", src, s));
-                self.refused.range((src, *s, BlobId([0; 32]))..=(src, *s, BlobId([0xff; 32]))).next().is_some()
-            }
-        }
+        self.stamps.read(&("rs", src, s));
+        self.refused.range((src, *s, BlobId([0; 32]))..=(src, *s, BlobId([0xff; 32]))).next().is_some()
+            || matches!(src, Source::Record(rec) if self.read(|t| Ok(!t.record_rows(&rec, REFUSED, s, b"", 1)?.is_empty())))
     }
 
     /// The code of the source's standing refusal of entry `b` of S.
     pub fn refusal(&self, src: Source, s: &SyncId, b: &BlobId) -> Option<Code> {
-        match src {
+        self.stamps.read(&("rs", src, *s));
+        self.refused.get(&(src, *s, *b)).copied().or_else(|| match src {
             Source::Record(rec) => self.read(|t| Ok(t.record_get_row(&rec, REFUSED, s, &b.0)?.and_then(|v| Some(Code(u64::from_be_bytes(v.try_into().ok()?)))))),
-            Source::Conn(_) => {
-                self.stamps.read(&("rs", src, *s));
-                self.refused.get(&(src, *s, *b)).copied()
-            }
-        }
+            Source::Conn(_) => None,
+        })
     }
 }

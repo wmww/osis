@@ -334,6 +334,8 @@ impl Streams {
         if rec_ops.is_empty() && (!matches!(src, Source::Record(_)) || (ss.is_empty() && !cursor)) {
             return true;
         }
+        // a record's head that moves ends its refusals kept in memory too (`Known::wrote_record`)
+        let moved: Vec<bool> = rec_ops.iter().map(|(at, op)| matches!(op, Op::Head(s, h) if self.known.head(*at, s).is_some_and(|old| old != *h))).collect();
         let place = self.places.get(&src);
         let r = ctx.store.with_tx(|t| {
             for (at, op) in &rec_ops {
@@ -357,8 +359,9 @@ impl Streams {
         });
         let ok = r.is_ok();
         if ok {
-            for (at, op) in &rec_ops {
+            for ((at, op), moved) in rec_ops.iter().zip(moved) {
                 self.known.logged(*at, op);
+                self.known.wrote_record(*at, op, moved);
             }
             if let Some(p) = self.places.get_mut(&src) {
                 match cursor {
@@ -621,11 +624,12 @@ impl Streams {
                             let _ = ctx.store.saw_deleted(src, &s, &b);
                         }
                     }
-                    Event::Refused(b, code) => {
-                        if let Ok(Some(_)) = ctx.store.entry(&s, &b) {
-                            ops.push((src, Op::Refused(s, b, code)));
-                        }
-                    }
+                    // an ephemeral entry's refusal is kept in memory: it goes with the entry
+                    Event::Refused(b, code) => match ctx.store.entry(&s, &b) {
+                        Ok(Some(e)) if e.class == Class::Ephemeral => self.known.refused_here(src, s, b, code),
+                        Ok(Some(_)) => ops.push((src, Op::Refused(s, b, code))),
+                        _ => {}
+                    },
                     // a relay-only entry (spec/sync-streams.md §4 Relay-only entries); any other
                     // announcement with no cursor is ignored
                     Event::Added { blob_id, blob: Some(bytes), wrap, stamp } => {

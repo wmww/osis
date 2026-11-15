@@ -903,6 +903,8 @@ fn full_told_then_room_again_spec_sync_streams_4() {
         assert!(matches!(p.sent_by_b(41).last().unwrap(), Msg::Pull(q) if q.joins == vec![(k.id, None)]), "pulled again from the start");
         let refused = if held == x { y } else { x };
         assert!(p.b.store.entry(&k.id, &refused).unwrap().is_some(), "what it refused for room taken once room grew (restart: {restart})");
+        // what status waits on (spec/sync-status.md §1): b not full, caught up both ways
+        assert!(p.a.streams.caught_up(C, &k.id) && !p.b.store.waits_room(&k.id));
     }
 }
 
@@ -1099,6 +1101,49 @@ fn a_refusal_ends_with_its_ground_spec_sync_streams_4() {
     p.a.join_on(p.now, C, k.id, Rejoin::From(None));
     p.run();
     assert!(!refused(&p, &k), "b's stream shows it present");
+}
+
+// spec/sync-streams.md §4 (Refused: one ends when its entry leaves the receiver): an entry leaving the peer with no event served (its expiry,
+// spec/wire.md §11.2; an ephemeral entry's restart) ends the refusal, durable or ephemeral, across
+// a restart. Here b's clock is past the entry's expiry (7) before a's is.
+#[test]
+fn a_refusal_ends_when_its_entry_leaves_unannounced_spec_sync_streams_4() {
+    for class in [Class::Durable, Class::Ephemeral] {
+        for restart in [false, true] {
+            let mut p = Pair::new();
+            let k = Sid::new(10);
+            k.keep(&mut p.a);
+            k.keep(&mut p.b);
+            let exp = 50_000;
+            let pre = Prefix::for_keys([9; 16], &[1; 16], Some(WallMs(exp)), &[]).unwrap().with_class(class);
+            let (_, bytes) = osis_label::frame(&pre, &[9; 300], &mut SeededRng::from_u64(9)).unwrap();
+            let b = osis_label::blob_id(&bytes);
+            let w = [3u8; WRAP_LEN];
+            let stamp = osis_label::sign_stamp(&label_role_key(LabelRole::Write, &k.write), &k.id, &b, &w, false);
+            let e = Entry { blob: b, wrap: w, stamp: Some(stamp), deposited: false, own: false, role: false, class, expires: Some(WallMs(exp)) };
+            assert_eq!(p.a.store.take_stamped(&k.id, &e, bytes).unwrap(), Code::OK);
+            p.b.store.settle_at(WallMs(exp)).unwrap();
+            p.a.join(p.now, k.id);
+            p.b.join(p.now, k.id);
+            p.run();
+            assert_eq!(p.a.streams.known().refusal(p.a.src(), &k.id, &b), Some(Code::EXPIRED), "{class:?}");
+            if restart {
+                p.a.restart_all(7);
+                p.b.streams.closed(C);
+            }
+            if !restart || class == Class::Durable {
+                p.a.store.settle_at(WallMs(exp)).unwrap();
+            }
+            assert!(p.a.store.entry(&k.id, &b).unwrap().is_none(), "gone from a");
+            if restart {
+                p.a.join(p.now, k.id);
+                p.b.join(p.now, k.id);
+            }
+            p.run();
+            assert!(!p.a.streams.known().refusing(p.a.src(), &k.id), "the entry left a ({class:?}, restart: {restart})");
+            assert!(p.a.streams.caught_up(C, &k.id));
+        }
+    }
 }
 
 // spec/sync-streams.md §4 (Refused): a node keeping S unread refuses an entry stamped under no key
