@@ -1932,6 +1932,11 @@ impl Tree {
         }
         t.ends.push(end);
     }
+
+    /// Its first end by rank (`End::key`).
+    fn first(&self) -> End {
+        self.ends.iter().copied().chain(self.kids.values().map(Tree::first)).min_by_key(|e| e.key()).expect("a tree ends")
+    }
 }
 
 /// A task of `walk`: the tree below a node, from a copy of a node at a branch (taking it after the
@@ -1977,17 +1982,29 @@ fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], end: &(dyn F
         let r = match task {
             Task::Job(j) => (jobs[j].0, caught(&jobs[j].1)),
             Task::End(e, at) => (e.key(), caught(|| end(e, take_node(played, at)))),
-            Task::Down(mut t, m, at) => {
-                let mut p = take_node(played, at);
-                if let Some(m) = m {
-                    take_move(played, &mut p, m);
-                }
-                // down to the next branch or end
-                while t.ends.is_empty() && t.kids.len() == 1 {
-                    let (&m, kid) = t.kids.iter().next().unwrap();
-                    take_move(played, &mut p, m);
-                    t = kid;
-                }
+            Task::Down(below, m, at) => {
+                // down to the next branch or end; a failure on the way is every end's below, ranked
+                // as the first of them
+                let walked = caught(|| {
+                    let (mut t, mut p) = (below, take_node(played, at));
+                    if let Some(m) = m {
+                        take_move(played, &mut p, m);
+                    }
+                    while t.ends.is_empty() && t.kids.len() == 1 {
+                        let (&m, kid) = t.kids.iter().next().unwrap();
+                        take_move(played, &mut p, m);
+                        t = kid;
+                    }
+                    Ok((t, p))
+                });
+                let (t, p) = match walked {
+                    Ok(x) => x,
+                    Err(d) => {
+                        let first = below.first();
+                        out.lock().unwrap_or_else(|e| e.into_inner()).push((first.key(), Err(format!("on the way to {first:?}: {d}"))));
+                        return;
+                    }
+                };
                 if t.kids.is_empty() && t.ends.len() == 1 {
                     let e = t.ends[0];
                     (e.key(), caught(|| end(e, p)))
@@ -2453,8 +2470,12 @@ impl Seen {
                 fail(&format!("{e:?} seeds ran, but not {what}"));
             }
         }
-        // every history's `Removals`, as held-model judged them (`held::compare`)
+        // every history's `Removals`, as held-model judged them (`held::compare`); every emphasis's
+        // seeds tried with late parts
         for (e, s) in by {
+            if s.twins.2 == 0 {
+                fail(&format!("{e} seeds ran, but no order with late parts"));
+            }
             for k in crate::held::REMOVALS {
                 if !s.model.reached.get(k).is_some_and(|n| *n > 0) {
                     fail(&format!("{e} seeds ran, but held-model judged no {k}"));
@@ -2522,16 +2543,18 @@ struct HeldSet {
     reopens: usize,
 }
 
+/// The history `check_orders` delivers: `steps` played, settled and held away as `cfg` says.
+fn played_of(seed: u64, steps: &[Step], cfg: Cfg) -> Played {
+    let _p = Permit::take();
+    let played = play_with(seed, steps, cfg.addenda);
+    let played = if cfg.settled { settling(played, steps) } else { played };
+    let played = if cfg.withhold { withhold(played, seed, cfg) } else { played };
+    let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(crate::held::Coverage::default()))));
+    Played { model, ..played }
+}
+
 fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    let played = {
-        let _p = Permit::take();
-        let played = play_with(seed, steps, cfg.addenda);
-        let played = if cfg.settled { settling(played, steps) } else { played };
-        let played = if cfg.withhold { withhold(played, seed, cfg) } else { played };
-        let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(crate::held::Coverage::default()))));
-        Played { model, ..played }
-    };
-    let played = &played;
+    let played = &played_of(seed, steps, cfg);
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
     let n = played.packs.len();
@@ -3105,6 +3128,8 @@ fn held_set_decides_at(sizes: Vec<Size>) {
         fails.extend(failed);
     }
     if std::env::var("OSIS_ORDER_STATS").is_ok() {
+        let late: BTreeMap<&String, (u64, u64)> = by.iter().map(|(e, s)| (e, (s.twins.0, s.twins.2))).collect();
+        eprintln!("held sets with a multi-part commit and orders with late parts, by emphasis: {late:?}");
         eprintln!("{}\nemphases {:?}, pending {:?}, invalid {}, aspects {:?}, judged {:?}, {} of {} early clocks moved, {} bodies dropped as covered, model reached {:?}, skipped {:?}", seen.tally.show(), seen.emphases, seen.pending, seen.invalid, seen.aspects, seen.judged, seen.moved, seen.clocked, seen.dropped, seen.model.reached, seen.model.skipped);
     }
     assert!(fails.is_empty(), "{} histories judged differently by what was held:\n{}", fails.len(), fails.join("\n\n"));
@@ -3119,6 +3144,92 @@ fn held_set_decides_at(sizes: Vec<Size>) {
 #[test]
 fn held_set_decides() {
     held_set_decides_at(quick());
+}
+
+// A delivery tree's failure on the way to its ends (here an ingest of a pack the history lacks)
+// is a result of the first end below it, its message kept, and the other ways on still run.
+#[test]
+fn tree_failure_on_the_way_is_its_first_ends() {
+    let (e, steps) = generate(0, 1);
+    let played = &played_of(0, &steps, cfg_of(e, NAMED));
+    let mut tree = Tree::default();
+    let order: Vec<usize> = (0..played.packs.len()).collect();
+    tree.add(played, &order, None, End::Order(0, 0));
+    let lacking = tree.kids.entry(Move::Ingest(usize::MAX, None)).or_default();
+    for k in [2, 1] {
+        lacking.kids.entry(Move::Finish { late: false }).or_default().ends.push(End::Order(0, k));
+    }
+    let r = walk(played, &tree, 2, &[], &|_, _| Ok(Seen::default()));
+    assert_eq!(r.len(), 2, "{r:?}");
+    assert!(r[0].0 == (0, 0, 0) && r[0].1.is_ok(), "{r:?}");
+    assert!(r[1].0 == (0, 0, 1) && r[1].1.as_ref().is_err_and(|d| d.contains("on the way to Order(0, 1)") && d.contains("index out of bounds")), "{r:?}");
+}
+
+/// Everything a delivery left at node `p` (`tree_ends_are_fresh_deliveries`), by name: its
+/// stores' bytes as on disk and decrypted, its indexes, what it shows, its pending and thrown-out
+/// commits, its clock.
+fn node_state(played: &Played, p: &mut Peer) -> Vec<(&'static str, String)> {
+    let discarded: Vec<CommitId> = p.discarded.iter().map(|d| d.commit).collect();
+    vec![
+        ("store bytes", format!("{:?}", (p.backend.dump(), p.blob_disk.0.dump()))),
+        ("store rows", format!("{:?}", p.engine.store_dump().unwrap())),
+        ("indexes", format!("{:?}", p.engine.index_digest())),
+        ("shown", format!("{:?}", shown(p, &played.things))),
+        ("pending", format!("{:?}", p.engine.pending())),
+        ("thrown out", format!("{:?}", (discarded, p.discards, p.redelivered))),
+        ("clock", format!("{:?}", p.engine.now())),
+    ]
+}
+
+// The delivery tree (`walk`) is exact: each delivery's end, reached from nodes copied where
+// deliveries part (`Peer::copy`) on several threads, is the node a fresh replay of that delivery
+// alone makes, byte for byte. Seeds of the emphases whose ends hold pending and thrown-out
+// commits (and parts away), held sets whole and partial, each order as it is and with late parts.
+#[test]
+fn tree_ends_are_fresh_deliveries() {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    let [copies, late, waiting, thrown] = [(); 4].map(|_| AtomicU64::new(0));
+    par_map(&[5, 7], 2, |seed| {
+        let (e, steps) = generate(seed, 10);
+        let cfg = cfg_of(e, Cfg { all_up_to: 0, random: 0, ..ORDERS });
+        let played = &played_of(seed, &steps, cfg);
+        let mut rng = Rng(seed | 1);
+        let mut deliveries = Vec::new();
+        for held in held_sets(played, 3, &mut rng) {
+            for order in orders(played, &held, cfg, &mut rng) {
+                deliveries.push((order.clone(), None));
+                deliveries.push((order, Some(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1)));
+            }
+        }
+        let mut tree = Tree::default();
+        for (d, (order, split)) in deliveries.iter().enumerate() {
+            tree.add(played, order, *split, End::Order(0, d));
+            late.fetch_add(u64::from(ingests(played, order, *split).iter().any(|m| matches!(m, Move::Ingest(_, Some(_))))), Relaxed);
+        }
+        let end = |e: End, mut p: Peer| -> Result<Seen, String> {
+            let End::Order(_, d) = e else { unreachable!() };
+            let (order, split) = &deliveries[d];
+            let mut fresh = deliver_with(played, order, *split, None, None, &mut |_| {});
+            waiting.fetch_add(u64::from(!fresh.engine.pending().is_empty()), Relaxed);
+            thrown.fetch_add(u64::from(!fresh.discarded.is_empty()), Relaxed);
+            let (got, want) = (node_state(played, &mut p), node_state(played, &mut fresh));
+            match got.iter().zip(&want).find(|(g, w)| g != w) {
+                // from the first difference: a store's bytes print long
+                Some((g, w)) => {
+                    let at = g.1.bytes().zip(w.1.bytes()).take_while(|(a, b)| a == b).count().saturating_sub(100);
+                    let from = |x: &str| x.get(at..).unwrap_or("").chars().take(400).collect::<String>();
+                    Err(format!("seed {seed}, {order:?} split {split:?}: the tree's node differs in its {} (from byte {at} printed):\n  fresh {}\n  tree  {}", g.0, from(&w.1), from(&g.1)))
+                }
+                None => Ok(Seen::default()),
+            }
+        };
+        for (_, r) in walk(played, &tree, 4, &[], &end) {
+            r.unwrap();
+        }
+        copies.fetch_add(played.copies.load(Relaxed), Relaxed);
+    });
+    let [copies, late, waiting, thrown] = [copies, late, waiting, thrown].map(AtomicU64::into_inner);
+    assert!(copies > 0 && late > 0 && waiting > 0 && thrown > 0, "{copies} nodes copied, {late} deliveries with late parts, {waiting} ends with a pending commit, {thrown} with a thrown-out one");
 }
 
 // The same at small size (a tenth of large; `OSIS_FULL=1` large).
