@@ -1099,6 +1099,54 @@ fn a_sign_at_one_source_pulls_anew_there_alone_spec_sync_streams_4() {
     }
 }
 
+// spec/sync-streams.md §4 (Full: S is pulled again from the start from each source whose mark is
+// owed): a refused entry this connection settled while a message is still in hand is judged
+// again by the listing from the start, not counted settled: room grown, it is fetched and taken.
+#[test]
+fn a_listing_from_the_start_judges_again_what_a_message_in_hand_refused_spec_sync_streams_4() {
+    const D: ConnId = ConnId(2);
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    let x = k.stamped(&mut p.a, 3000, true);
+    let y = k.stamped(&mut p.a, 3001, true);
+    p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 4000)]), ..Caps::default() });
+    // two sources: bodies are fetched, not inline
+    let (rb, ra) = (p.b.new_record(0xd), p.a.new_record(0x1d));
+    p.b.open.records.insert(D, rb);
+    p.a.open.records.insert(D, ra);
+    for c in [C, D] {
+        p.a.join_on(p.now, c, k.id, Rejoin::Held);
+        p.b.join_on(p.now, c, k.id, Rejoin::Held);
+    }
+    let cursor = RefCell::new(None);
+    p.run_on(&[C, D], |ab, conn, m| {
+        match m {
+            Msg::PullReply(r) if ab && conn == C && r.cursor.is_some() => *cursor.borrow_mut() = r.cursor.clone(),
+            Msg::Stream(st) if ab && conn == C && st.cursor.is_some() => *cursor.borrow_mut() = st.cursor.clone(),
+            _ => {}
+        }
+        false
+    });
+    assert!(p.b.store.waits_room(&k.id));
+    let refused = if p.b.store.entry(&k.id, &x).unwrap().is_some() { y } else { x };
+    // a message in hand on C: the refused entry inline (refused again, settled) and one a lacks,
+    // whose fetch's answer is held back
+    let e = p.a.store.entry(&k.id, &refused).unwrap().unwrap();
+    let bytes = p.a.store.bytes(&refused).unwrap().unwrap();
+    let lacked = BlobId([0x99; 32]);
+    let events = vec![(k.id, Event::Added { blob_id: refused, blob: Some(bytes), wrap: e.wrap, stamp: e.stamp }), (k.id, Event::Added { blob_id: lacked, blob: None, wrap: e.wrap, stamp: e.stamp })];
+    let st = osis_proto::Stream { events, cursor: cursor.borrow().clone(), report: false, seq: 0 };
+    p.b.with(p.now, |t, c| t.message(c, C, Incoming::Push(Msg::Stream(Box::new(st)))));
+    // room grows: S is pulled from the start at C (D silent), its listing names the refused entry
+    p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 8000)]), ..Caps::default() });
+    let hold = |ab: bool, conn: ConnId, m: &Msg| conn == D || (ab && matches!(m, Msg::FetchReply { items, .. } if !items.iter().any(|f| f.blob_id == refused && f.entry.is_some())));
+    p.run_on(&[C, D], hold);
+    assert!(p.b.store.entry(&k.id, &refused).unwrap().is_some(), "fetched by the listing, taken");
+    assert!(!p.b.store.waits_room(&k.id));
+}
+
 // spec/sync-streams.md §4 (Full: the room of the cap that refused): a node refusing an entry by
 // the store's total is full for S until the total's room grows (here the cap rises; S's own usage
 // never moves), across a restart.

@@ -573,6 +573,19 @@ impl Streams {
             }
         }
         let Some(p) = self.pull.get_mut(&conn) else { return };
+        // what a message in hand settled of S kept unread without taking it (a refusal) is asked
+        // again: counted settled, the listing's place would pass it unjudged, its mark not set
+        // again (and room grown, never fetched); asked, the messages owing it still settle
+        let again: Vec<(SyncId, BlobId)> = p.settled.iter().filter(|(s, b)| from_start.contains(s) && ctx.store.holding(s) == Some(Holding::Unread) && ctx.store.bytes(b).ok().flatten().is_none()).copied().collect();
+        for (s, b) in again {
+            p.settled.remove(&(s, b));
+            if !p.queue.values().any(|x| *x == (s, b))
+                && let Some(c) = class(Rank::Unopened, false)
+            {
+                p.arrivals += 1;
+                p.queue.insert((c.0, c.1, u64::MAX - p.arrivals), (s, b));
+            }
+        }
         p.seq = 0;
         p.gap = false;
         p.more = r.more;
