@@ -32,7 +32,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - `Live::fresh` (the held blobs it hands `Engine::seal_body`) has no World test: a mutation passing none fails no osis-sync test; the engine's `rotation::tests_reseal::facade_*` cover the contract. Cheapest found: a purge of one thing's part of a commit spanning two things, the other thing's section then logged again verbatim.
 
 ## inbox
-- A promotion's chain (`held::log_chain`: not built; the engine seals certificate copies, `sync_bodies`).
+- Promotion (spec/sync-inbox.md §4): `held::log_chain` always answers false, so `Act::Promote` never stamps: no deposit is ever promoted in the live path (line coverage: the effect never runs in any test; inbox.rs tests only the pure decision). Build the chain (or let the engine's certificate copies, `sync_bodies`, stand for it) and add a World test that a writer stamps a non-writer's deposit.
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
