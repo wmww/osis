@@ -206,10 +206,21 @@ impl Engine {
         self.core.created(tid).is_some()
     }
 
-    /// Whether this node may repair `(tid, ak)` for a suspect list sent for `s`: the thing is in
-    /// S's closure here and this node may snapshot the aspect (spec/sync-compaction.md §1 Repair).
-    pub fn may_repair(&mut self, s: &osis_base::SyncId, tid: &Tid, ak: &Ak) -> Result<bool> {
+    /// Whether `tid` is in sync ID `s`'s closure here and S's actor may read it: the things whose
+    /// bodies S carries (spec/sync-judgement.md §1) and whose flagged aspects S's suspect list
+    /// names (spec/permissions.md §4 Suspect list). A reader of S learns nothing of the others.
+    pub fn suspect_under(&mut self, s: &osis_base::SyncId, tid: &Tid) -> Result<bool> {
         if !self.carrying(tid)?.contains(s) {
+            return Ok(false);
+        }
+        Ok(self.sync_owner(s)?.is_some_and(|g| self.reads_in(&g, tid)))
+    }
+
+    /// Whether this node may repair `(tid, ak)` for a suspect list sent for `s`: the thing is one
+    /// S's list may name (`suspect_under`) and this node may snapshot the aspect
+    /// (spec/sync-compaction.md §1 Repair).
+    pub fn may_repair(&mut self, s: &osis_base::SyncId, tid: &Tid, ak: &Ak) -> Result<bool> {
+        if !self.suspect_under(s, tid)? {
             return Ok(false);
         }
         let (t, a) = (*tid, ak.clone());

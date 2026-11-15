@@ -383,4 +383,29 @@ pub(crate) mod tests {
         let under = |e: &mut Engine, t: Tid| kept.iter().filter(|((s, _), _)| e.read_thing(s).unwrap() == Some(t)).any(|(_, row)| row.contains(&x));
         assert!(!under(e, g), "X's list never under G's: {kept:?}");
     }
+
+    // spec/permissions.md §4 (Suspect list: things in L's closure L's actor may read): G, with
+    // secrets of its own, holds X, which G's actor does not read; G's sync ID carries X yet names
+    // none of X's aspects in a suspect list, nor is asked to repair one. Fails with the reads
+    // condition dropped from `suspect_under`.
+    #[test]
+    fn a_closure_thing_its_actor_does_not_read_is_in_no_suspect_list_spec_permissions_4() {
+        let (mut lp, p, d) = rotated(0);
+        let mut m = Mutation::new();
+        let x = lp.peers[0].engine.new_thing(&mut m, p);
+        m.set(x, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let mut m = Mutation::new();
+        let g = lp.peers[0].engine.new_thing(&mut m, p);
+        m.set(g, &ct::GROUP, &ct::Group { items: [x].into(), ..Default::default() }).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.give_own_secrets(&g).unwrap();
+        file(&mut lp, d, g, true);
+        let e = &mut lp.peers[0].engine;
+        let s = *e.sync_ids(&g).unwrap().first().map(|o| &o.id).unwrap();
+        assert!(e.carrying(&x).unwrap().contains(&s), "G's sync ID carries X");
+        assert!(e.suspect_under(&s, &g).unwrap(), "G itself is named under its own sync ID");
+        assert!(!e.suspect_under(&s, &x).unwrap(), "X is not");
+        assert!(!e.may_repair(&s, &x, &Ak::new("x:a.0").unwrap()).unwrap(), "nor repaired for its readers");
+    }
 }
