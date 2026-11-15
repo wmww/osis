@@ -4,7 +4,6 @@
 
 pub mod blob;
 pub mod boxes;
-pub mod bundle;
 pub mod cbor;
 pub mod chunker;
 pub mod commit;
@@ -41,7 +40,7 @@ pub struct Generated {
 }
 
 /// Every generator. A new one adds its line here.
-pub const GENERATED: [Generated; 22] = {
+pub const GENERATED: [Generated; 21] = {
     const fn g(name: &'static str, generate: fn() -> VecFile) -> Generated {
         Generated { name, generate, check: None }
     }
@@ -66,7 +65,6 @@ pub const GENERATED: [Generated; 22] = {
         g("inbox/inbox", inbox::inbox),
         g("link/link", link::links),
         g("lan/announce", lan::announce),
-        g("bundle/bundle", bundle::bundle),
         Generated { name: "crdt/deltas", generate: crdt::deltas, check: Some(crdt::check) },
     ]
 };

@@ -1,4 +1,4 @@
-//! Streams and flow control (spec/sync-streams.md §3-§6, spec/wire.md §11.2 Pull, PullReply,
+//! Streams and flow control (spec/sync-streams.md §3-§5, spec/wire.md §11.2 Pull, PullReply,
 //! Stream, Applied, Fetch; spec/sync-judgement.md §3 `known`).
 //!
 //! **Principle:** every node pulls each member of a connection's shared set from its peer by one
@@ -30,10 +30,9 @@
 //! its record, written by the transaction that applies what they cover; a connection's are in
 //! memory and go with it. A place is held in memory while a connection pulls from its source.
 //!
-//! Not built: relay-only entries (the engine's relay
-//! path); the engine's linked blobs (`wants`: pages and header lists before apply); bundles
-//! (`import`); `Rank::Never` from the engine (a keyset without history: the facade has no call
-//! for it yet).
+//! Not built: relay-only entries (the engine's relay path); the engine's linked blobs (`wants`:
+//! pages and header lists before apply); `Rank::Never` from the engine (a keyset without history:
+//! the facade has no call for it yet).
 
 mod known;
 mod pull;
@@ -265,12 +264,6 @@ impl Streams {
     #[allow(clippy::too_many_arguments)]
     pub fn fetch_again(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, conn: ConnId, s: SyncId, b: BlobId, reported: &mut Vec<Reported>) {
         product(cx, sessions, opens, reported, |ctx| self.refetch(ctx, conn, s, b));
-    }
-
-    /// A source with no cursor: a bundle (spec/sync-streams.md §6).
-    pub fn import(&mut self, cx: &mut Cx, bundle: &mut dyn std::io::Read) -> Result<()> {
-        let _ = (cx, bundle);
-        Err(Error::NotBuilt("streams::import"))
     }
 
     pub fn next_wake(&self) -> Option<WallMs> {

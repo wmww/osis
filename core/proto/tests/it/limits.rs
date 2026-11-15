@@ -1,4 +1,4 @@
-//! Decoder limits (spec/wire.md §13; spec/requirements.md: peer input never causes unbounded
+//! Decoder limits (spec/wire.md §12; spec/requirements.md: peer input never causes unbounded
 //! allocation): what a peer's bytes can make a decoder build is bounded by those bytes and the
 //! caps, and a claim of more is refused before anything is built. Checked by sizes: the workspace
 //! forbids the unsafe code a counting allocator needs.
@@ -8,10 +8,10 @@ use osis_proto::filter::encode_gcs;
 use osis_proto::limits::{MAX_FILTER_ENTRIES, MAX_MESSAGE, TOP_BIT};
 use osis_proto::{Error, FrameDecoder, Msg};
 
-// spec/wire.md §11.1, §13 (frame `MAX_MESSAGE`): a length prefix claiming a whole frame buffers
+// spec/wire.md §11.1, §12 (frame `MAX_MESSAGE`): a length prefix claiming a whole frame buffers
 // only the bytes that came; one claiming more is refused before its body
 #[test]
-fn a_claimed_frame_length_allocates_nothing_spec_wire_13() {
+fn a_claimed_frame_length_allocates_nothing_spec_wire_12() {
     let mut d = FrameDecoder::new();
     d.push(&(MAX_MESSAGE as u32).to_be_bytes());
     d.push(&[0x80; 100]);
@@ -22,10 +22,10 @@ fn a_claimed_frame_length_allocates_nothing_spec_wire_13() {
     assert!(d.next_frame().is_err());
 }
 
-// spec/wire.md §13 (no array or map longer than the bytes that remain): a head claiming 2^32
+// spec/wire.md §12 (no array or map longer than the bytes that remain): a head claiming 2^32
 // items in a few bytes is refused, not allocated
 #[test]
-fn a_claimed_list_length_is_refused_spec_wire_13() {
+fn a_claimed_list_length_is_refused_spec_wire_12() {
     for head in [vec![0x9a, 0xff, 0xff, 0xff, 0xff], vec![0x9b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]] {
         let mut body = vec![0x84, 0x14, 0x01];
         body.extend(head);
@@ -33,10 +33,10 @@ fn a_claimed_list_length_is_refused_spec_wire_13() {
     }
 }
 
-// spec/wire.md §13 (CBOR nesting at most 512 deep; values inside it at most `MAX_VALUE_DEPTH`):
+// spec/wire.md §12 (CBOR nesting at most 512 deep; values inside it at most `MAX_VALUE_DEPTH`):
 // nesting past 512 is refused by the CBOR reader; a Call argument past 64 by the message
 #[test]
-fn nesting_bounds_spec_wire_13() {
+fn nesting_bounds_spec_wire_12() {
     let nest = |n: usize| (0..n).fold(Value::uint(0), |v, _| Value::List(vec![v]));
     let call = |arg: Value| cbor::encode(&Value::List(vec![Value::uint(25), Value::uint(1), Value::uint(16_384), Value::uint(1), Value::List(vec![arg])]));
     assert!(Msg::decode(&call(nest(64))).is_ok());
@@ -59,11 +59,11 @@ fn a_filter_page_is_counted_not_built_spec_wire_11_2() {
     assert_eq!(Msg::decode(&page(&vec![7; n + 1]).encode()).unwrap_err().error, Error::Cap("filter entries"));
 }
 
-// spec/wire.md §13 (a message at most 2^20 CBOR data items in all): the items of the canonical
+// spec/wire.md §12 (a message at most 2^20 CBOR data items in all): the items of the canonical
 // bytes a byte string carries count too, so a claim set or entry box of one-byte items, a few
 // bytes of the message's own items, is refused before it is built
 #[test]
-fn embedded_items_count_toward_the_message_spec_wire_13() {
+fn embedded_items_count_toward_the_message_spec_wire_12() {
     let ones = |n: usize, tail: &[u8]| {
         let mut b = vec![0x82, 0x9a];
         b.extend_from_slice(&(n as u32).to_be_bytes());

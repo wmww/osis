@@ -1,4 +1,4 @@
-//! spec/wire.md §11.1, §11.2, §13: message layouts, ids, caps, rejections.
+//! spec/wire.md §11.1, §11.2, §12: message layouts, ids, caps, rejections.
 
 use super::*;
 use crate::examples::{messages, rejections};
@@ -171,9 +171,9 @@ fn prove_rotations_cap_spec_wire_11_2() {
 }
 
 // spec/wire.md §11.2 (Offer: a Deposit item's blob at most `MAX_BLOB`; Pull: a cursor at most
-// 256 bytes); spec/wire.md §13 (blob `MAX_BLOB`)
+// 256 bytes); spec/wire.md §12 (blob `MAX_BLOB`)
 #[test]
-fn byte_caps_spec_wire_13() {
+fn byte_caps_spec_wire_12() {
     let m = messages().into_iter().find(|(n, _)| *n == "offer with a deposit").unwrap().1;
     let Msg::Offer { id, mut items } = m else { unreachable!() };
     let OfferItem::Deposit(d) = &mut items[0] else { unreachable!() };
@@ -217,10 +217,10 @@ fn peek_head_reads_a_partial_frame_spec_wire_11_1() {
 }
 
 proptest! {
-    // spec/wire.md §13: decoders never panic on arbitrary or mutated bytes, and whatever decodes
+    // spec/wire.md §12: decoders never panic on arbitrary or mutated bytes, and whatever decodes
     // is canonical: it re-encodes to the bytes it came from
     #[test]
-    fn decode_never_panics_and_accepts_only_canonical_spec_wire_13(bytes in proptest::collection::vec(any::<u8>(), 0..200), which in any::<usize>(), pos in any::<usize>(), byte in any::<u8>()) {
+    fn decode_never_panics_and_accepts_only_canonical_spec_wire_12(bytes in proptest::collection::vec(any::<u8>(), 0..200), which in any::<usize>(), pos in any::<usize>(), byte in any::<u8>()) {
         if let Ok(m) = Msg::decode(&bytes) {
             prop_assert_eq!(m.encode(), bytes);
         }
@@ -234,10 +234,10 @@ proptest! {
     }
 }
 
-// spec/wire.md §13 (a message at most 2^20 CBOR data items): a frame of one-byte items is
+// spec/wire.md §12 (a message at most 2^20 CBOR data items): a frame of one-byte items is
 // refused before its value tree is built, while a frame densely full of valid events decodes
 #[test]
-fn item_cap_spec_wire_13() {
+fn item_cap_spec_wire_12() {
     let n = MAX_MESSAGE - 16;
     let mut body = vec![0x83, 0x0b, 0x01, 0x9a];
     body.extend_from_slice(&(n as u32).to_be_bytes());

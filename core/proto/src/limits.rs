@@ -1,5 +1,5 @@
 //! Protocol version 1 limits and the sync side's node policy (spec/wire.md §2), and the
-//! per-message caps and decoder limits of spec/wire.md §11-§13. Format constants live in
+//! per-message caps and decoder limits of spec/wire.md §11-§12. Format constants live in
 //! `osis_base::format`; a value here is the spec's, so its 0/∞ case is the spec's (spec/wire.md
 //! §2, notes/arbitrary-values-table.md).
 
@@ -72,7 +72,7 @@ pub const MIN_FILTER_WIDTH: u8 = BEACON_P as u8;
 /// The widest filter: `ceil(log2(MAX_FILTER_ENTRIES)) + 8` (spec/wire.md §11.2 Beacons).
 pub const MAX_FILTER_WIDTH: u8 = 22 + BEACON_P as u8;
 
-/// CBOR data items in one message, counted before it is decoded (spec/wire.md §13).
+/// CBOR data items in one message, counted before it is decoded (spec/wire.md §12).
 pub const MAX_MESSAGE_ITEMS: usize = 1 << 20;
 
 // Node policy (spec/wire.md §2) the sync side applies. `TOMBSTONE_LIFETIME_MS` is

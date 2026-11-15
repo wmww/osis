@@ -9,7 +9,7 @@ impl Node {
     pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Result<Node>;
     #[must_use] pub fn handle(&mut self, input: Input) -> Vec<Out>;   // Up, Bytes, Taken, Closed, Down, Tick, Wrote, Discovered
     pub fn engine(&mut self) -> &mut Engine;   // the osis handle's writes and reads; then handle(Wrote)
-    pub fn status(&self) / status_of(s) / idle() / wait(scope) / redeem(link) / export_bundle / import_bundle;
+    pub fn status(&self) / status_of(s) / idle() / wait(scope) / redeem(link);
 }
 pub fn apply(out: Vec<Out>, links: &mut impl Links);   // Out: Send, Dial, Close, Wake
 ```

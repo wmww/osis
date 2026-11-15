@@ -398,40 +398,6 @@ impl Node {
         self.inbox.redeeming(k)
     }
 
-    /// Writes a bundle of the sync IDs `ids` held here (spec/sync-streams.md §6, spec/wire.md
-    /// §12): each one's path, then its entries with their blobs, durable ones only.
-    pub fn export_bundle(&self, ids: &[SyncId], out: &mut dyn std::io::Write) -> Result<()> {
-        use osis_blob::Record;
-        let proto = |e: osis_blob::Error| Error::Proto(osis_proto::Error::Blob(e));
-        let mut w = osis_blob::BundleWriter::new(out).map_err(proto)?;
-        let mut sent = std::collections::BTreeSet::new();
-        for s in ids {
-            let Some(path) = self.store.path(s)? else { continue };
-            w.record(&Record::Path { sync_id: *s, steps: path.steps.clone() }).map_err(proto)?;
-            for e in self.store.entries(s)? {
-                if e.class != osis_blob::Class::Durable {
-                    continue;
-                }
-                if sent.insert(e.blob) {
-                    let Some(b) = self.store.bytes(&e.blob)? else { continue };
-                    w.record(&Record::Blob(b)).map_err(proto)?;
-                }
-                w.record(&Record::Entry { sync_id: *s, blob: e.blob, wrap: e.wrap, stamp: e.stamp }).map_err(proto)?;
-            }
-        }
-        w.finish().map_err(proto)?;
-        Ok(())
-    }
-
-    /// Takes a bundle as a source with no cursor (spec/sync-streams.md §6); then `handle`
-    /// (`Input::Wrote`) settles what it brought.
-    pub fn import_bundle(&mut self, bundle: &mut dyn std::io::Read) -> Result<()> {
-        let mut out = Vec::new();
-        let r = self.streams.import(&mut cx!(self, &mut out), bundle);
-        self.driver.pending.extend(out);
-        r
-    }
-
     /// No request, fill or Hello outstanding on any connection (spec/sync-status.md §3).
     pub fn idle(&self) -> bool {
         self.driver.sessions.idle()

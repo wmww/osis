@@ -1,7 +1,7 @@
 //! A second decoder of spec/wire.md §11.2, written from the spec's layouts alone, against
 //! `Msg::decode` on the examples mutated (values replaced, items dropped, duplicated, wrapped,
 //! bytes flipped or cut). Property: the two accept the same bodies, and whatever is accepted
-//! re-encodes to its bytes (spec/wire.md §1, §13). Embedded structures of other subsystems
+//! re-encodes to its bytes (spec/wire.md §1, §12). Embedded structures of other subsystems
 //! (creation records, `box` values, AKs, value depth) are read by their own crates' rules.
 
 use osis_base::format::{MAX_BLOB, MAX_MESSAGE, MAX_VALUE_DEPTH};
@@ -488,7 +488,7 @@ fn mutate_embedded(v: &mut Value, r: &mut Rng) {
     *bytes = cbor::encode(&inner);
 }
 
-// spec/wire.md §11.2, §13: an independent decoder written from the layouts accepts exactly
+// spec/wire.md §11.2, §12: an independent decoder written from the layouts accepts exactly
 // what `Msg::decode` accepts, on every example and its mutations, and an accepted body
 // re-encodes to its bytes
 #[test]

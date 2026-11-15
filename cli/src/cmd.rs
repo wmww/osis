@@ -592,12 +592,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Node(to.parse()?) };
             wait(ctx, db.group_source(g, to))
         }
-        Cmd::Bundle(BundleCmd::Export { groups }) => {
-            let gs = groups.iter().map(|g| ctx.tid(g)).collect::<anyhow::Result<Vec<_>>>()?;
-            db.export_bundle(&gs, &mut *ctx.out)?;
-            Ok(())
-        }
-        Cmd::Bundle(BundleCmd::Import) => Ok(db.import_bundle(&mut *ctx.stdin)?),
         Cmd::Inspect(i) => inspect(ctx, i),
         Cmd::Diag { follow } => diag(ctx, follow, false),
     }

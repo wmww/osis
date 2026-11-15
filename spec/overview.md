@@ -11,7 +11,7 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 - spec/commits.md: commits: header, kinds, dot forms, verification and apply, retention, purge, expiry, undo.
 - spec/crypto.md: primitives, key derivations, sealed boxes, wraps, links, delete keys, agility.
 - spec/permissions.md: actors, role grants, first admins, rotation, certificates, the validity rules, purge rights, links.
-- spec/wire.md: byte layouts of everything on the wire, constants, the node-to-node protocol, bundles, decoder limits.
+- spec/wire.md: byte layouts of everything on the wire, constants, the node-to-node protocol, decoder limits.
 - spec/sync.md: overview of sync: its words, the one kind of node, the two holdings of a sync ID (read, kept unread), each area's principle and the sync file map.
 - spec/sync-set.md: the synced group, the sync set, leaving, invitations and accepting, group sources.
 - spec/sync-ids.md: blobs, sync IDs and role keys, steps and claim sets, `sync.0`, the store per sync ID and the operations on it.
@@ -19,7 +19,7 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 - spec/sync-judgement.md: what goes under a sync ID, the required set and judgement, acting on it, logged again once, destruction and emptying, kept unread.
 - spec/sync-compaction.md: compaction and deletion, ephemeral and relay-only commits.
 - spec/sync-inbox.md: inboxes, inbox blobs, deposits, promotion and clearing, grant copies and contact cards, links.
-- spec/sync-streams.md: framing, clock and flow control, pushes, the node log and cursor, the stream, first sync, bundles.
+- spec/sync-streams.md: framing, clock and flow control, pushes, the node log and cursor, the stream, first sync.
 - spec/sync-status.md: sources and caught up, held elsewhere, status and waits.
 - spec/sync-hostile.md: bounds on hostile peers and the stated limits.
 - spec/sync-transport.md: byte streams and addresses, QUIC, `peer://` and relays, LAN discovery, listeners, local and client sessions.

@@ -242,7 +242,7 @@ pub fn clear_prefix(blob: &[u8]) -> Result<Option<Prefix>, Error> {
 /// Smallest ciphertext: one padded byte plus the 16-byte tag.
 const MIN_CIPHERTEXT: usize = 17;
 
-/// `Malformed` above `MAX_BLOB` (spec/wire.md §13).
+/// `Malformed` above `MAX_BLOB` (spec/wire.md §12).
 pub fn check_size(blob: &[u8]) -> Result<(), Error> {
     if blob.len() > MAX_BLOB {
         return Err(Error::Malformed("blob above MAX_BLOB"));

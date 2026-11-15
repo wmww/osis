@@ -3666,7 +3666,7 @@ fn relink_waits_for_a_commit_pending_on_the_aspect_spec_sync_1() {
 // every write of the holder's), as is a frontier on a write whose `until` is alive (it audits
 // nothing); `Engine::needs_frontier` says which.
 #[test]
-fn frontier_iff_the_write_audits_spec_wire_13() {
+fn frontier_iff_the_write_audits_spec_wire_4() {
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
     let (mut lp, d, b, _) = setup();

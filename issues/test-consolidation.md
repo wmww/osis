@@ -34,7 +34,7 @@ Format: `file:line test | action | why safe | confidence`.
 - `rng.rs deterministic` | delete | only rand_chacha's seeding | medium
 
 **others**
-- blob `auth.rs stamp_binds_wrap` | delete or one flip | Ed25519/BLAKE3 behaviour; `entry_signatures` and bundle `rejections` cover the binding | medium
+- blob `auth.rs stamp_binds_wrap` | delete or one flip | Ed25519/BLAKE3 behaviour; `entry_signatures` covers the binding | medium
 - keys `epoch.rs ordering_keys_match_folds` | delete or shrink | refactor scaffolding comparing against replaced folds; the rule is in `current_and_newest` | medium
 - osis `api.rs:1833` | drop its runtime field-read asserts | keep the compile-time guards | medium
 

@@ -959,34 +959,6 @@ impl Osis {
         self.set_role(home, node, None, o)?;
         if was { self.links() } else { Ok(Vec::new()) }
     }
-
-    /// Writes what this node syncs of `groups` (each thing's sync IDs, with what it holds there)
-    /// as a bundle to `out`, for another node's `import_bundle`: sync by hand, carried any way.
-    pub fn export_bundle(&self, groups: &[Tid], mut out: impl std::io::Write) -> Result<()> {
-        self.local("export_bundle")?;
-        let bytes = self.locked(|l| -> Result<Vec<u8>> {
-            let mut ids = Vec::new();
-            for g in groups {
-                ids.extend(l.engine().sync_ids(g)?.iter().map(|o| o.id));
-            }
-            let mut b = Vec::new();
-            l.node.export_bundle(&ids, &mut b).map_err(crate::handle::sync_err)?;
-            Ok(b)
-        })?;
-        out.write_all(&bytes).map_err(|e| Error::Storage(e.to_string()))
-    }
-
-    /// Reads a bundle: what this node can open applies like synced content.
-    pub fn import_bundle(&self, mut input: impl std::io::Read) -> Result<()> {
-        self.local("import_bundle")?;
-        let mut b = Vec::new();
-        input.read_to_end(&mut b).map_err(|e| Error::Storage(e.to_string()))?;
-        self.locked(|l| {
-            l.node.import_bundle(&mut b.as_slice()).map_err(crate::handle::sync_err)?;
-            l.handle(osis_sync::Input::Wrote);
-            Ok(())
-        })
-    }
 }
 
 /// `SetRoleOpts::retain_copy` is a removal's word.

@@ -1,10 +1,9 @@
-//! osis-proto: the node-to-node protocol's bytes (spec/wire.md §2, §11-§13): its limits, frames,
-//! Hello, every message, actor proofs, the shared set's filter, bundle import and the relay gate;
+//! osis-proto: the node-to-node protocol's bytes (spec/wire.md §2, §11-§12): its limits, frames,
+//! Hello, every message, actor proofs, the shared set's filter and the relay gate;
 //! no session. Layer 5 (notes/architecture.md). Notes: notes/sync-protocol.md (osis-proto).
 #![forbid(unsafe_code)]
 
 pub mod api;
-pub mod bundle;
 mod dec;
 mod error;
 #[doc(hidden)]

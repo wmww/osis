@@ -1,4 +1,4 @@
-//! Frames, Hello and every message (spec/wire.md §11.1, §11.2, §13): never panics; an accepted
+//! Frames, Hello and every message (spec/wire.md §11.1, §11.2, §12): never panics; an accepted
 //! Hello or message re-encodes to the same canonical bytes. The input is a stream of frames; a
 //! seed without a valid length prefix is also tried as one frame body.
 #![no_main]

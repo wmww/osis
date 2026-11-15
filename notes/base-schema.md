@@ -8,7 +8,7 @@
 - `Float`: bit pattern; `new` normalizes NaN, `from_bits` rejects other NaNs. `Unknown::new(tag, CanonicalBytes)` refuses tags this build knows; the reserved STRUCT tag counts as unknown. An unknown CBOR tag is no error: it decodes to `Value::Unknown`, and parking happens where a typed read fails.
 - `cbor::CanonicalBytes` is bytes proven canonical; `head`/`head_len` are for callers that splice pre-encoded items (osis-commit's commit blobs, osis-blob's large strings). Decoding is recursive with a depth cap; claimed lengths are checked against remaining input before allocating.
 - `record_chain` (`chain.rs`: `RecordLink`, `ChainStep`, `RecordChain`): every walk up creation records goes through it, so the stop rules and `MAX_CHAIN_DEPTH` live in one place.
-- `format` (spec/wire.md §2, §13) holds only fixed format constants; `MAX_MESSAGE` (protocol v1) and `TOMBSTONE_LIFETIME_MS` (policy) are not format constants.
+- `format` (spec/wire.md §2, §12) holds only fixed format constants; `MAX_MESSAGE` (protocol v1) and `TOMBSTONE_LIFETIME_MS` (policy) are not format constants.
 - Errors: every error type has an `ErrorClass` (`BadInput`, `Parked`, `Local`), through `Classified`.
 - `memo` (stamps and memos, notes/engine.md Derived values) and `costs` (phase spans and work counts for scale tests, always compiled, recording on a thread once it calls `costs::take`) are doc-hidden infrastructure for the layers above: the store stamps its rows with `memo::Stamps`, the engine and sync keep memos.
 - `testenv` is doc-hidden and tests only; it reads the environment. Every `OSIS_*` variable is in core/base/testenv-known.txt, policy.py-checked (notes/test-harnesses.md, Seed runners).

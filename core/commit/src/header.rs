@@ -11,7 +11,7 @@ use osis_base::SIGNING_KEY_ED25519;
 use osis_crypto::{Domain, KemPublicKey, Signature, VerifyingKey};
 use osis_schema::{PurgeBy, Retention};
 
-/// Decoder limits of commit structures (spec/wire.md §13).
+/// Decoder limits of commit structures (spec/wire.md §12).
 pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
 // `until` meaning forever (spec/wire.md §4).
 pub const FOREVER: u64 = osis_schema::FOREVER;

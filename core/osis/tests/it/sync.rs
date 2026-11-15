@@ -1,4 +1,4 @@
-//! The osis API over the new sync: status, waits, listening, links and cards, bundles,
+//! The osis API over the new sync: status, waits, listening, links and cards,
 //! `keep_alive`, and the client port's node side; nodes on one in-process test network
 //! (`internals::ManualNet`) with one manual clock, or with no network at all.
 
@@ -648,26 +648,6 @@ fn an_unsynced_invitation_is_acted_on_spec_sync_set_4() {
     w.group(a.home()).remove(osis::Member::Subgroup(t)).unwrap();
     w.commit().unwrap();
     assert_eq!(acted(&a), Some(true), "unsynced");
-}
-
-// spec/sync-streams.md §6 (a bundle is a one-way log replay): a bundle carries what a node holds of a group to another
-// node of the account by hand.
-#[test]
-#[ignore = "sync rewrite: bundle import (streams::import) and the engine facade are not built here"]
-fn a_bundle_carries_a_group_by_hand_spec_sync_streams_6() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let (a, b, _) = paired(&net, &c);
-    net.set_online(0, false);
-    let mut w = a.write();
-    let t = w.create().unwrap();
-    w.group(a.home()).add(osis::Member::Item(t)).unwrap();
-    w.at(t, osis::core::NAME).set(&"by hand".to_string()).unwrap();
-    w.commit().unwrap();
-    let mut bytes = Vec::new();
-    a.export_bundle(&[a.home()], &mut bytes).unwrap();
-    b.import_bundle(bytes.as_slice()).unwrap();
-    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("by hand"));
 }
 
 // ---- leaving (spec/sync-set.md §3) ----

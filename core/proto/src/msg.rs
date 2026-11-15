@@ -1,4 +1,4 @@
-//! Protocol version 1 messages (spec/wire.md §11.2) with their caps and decoder limits (§13).
+//! Protocol version 1 messages (spec/wire.md §11.2) with their caps and decoder limits (§12).
 //! Steps, claim sets, delete items and holder keys are osis-blob's types; the wire carries
 //! steps, claim sets and entry boxes as their canonical bytes in byte strings. Decoding takes
 //! only canonical CBOR (spec/data-model.md §5) in each kind's exact layout, so whatever decodes
@@ -508,7 +508,7 @@ impl Msg {
     }
 }
 
-/// The CBOR items a message may still build (spec/wire.md §13: at most `MAX_MESSAGE_ITEMS` in
+/// The CBOR items a message may still build (spec/wire.md §12: at most `MAX_MESSAGE_ITEMS` in
 /// all): canonical bytes carried in a byte string are counted against it before they are decoded.
 struct Items(Cell<usize>);
 

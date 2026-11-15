@@ -131,7 +131,7 @@ impl CommitBlob {
     /// third of what re-reading an aspect's bodies cost) and each part's delta kept as its stored
     /// bytes, never decoded here. Only for bytes this node wrote from a blob `decode` accepted
     /// (stored and pending rows; a parked row of raw bytes fails here on its version, and what
-    /// applies it decodes it with `decode`); never for bytes from a peer or a bundle.
+    /// applies it decodes it with `decode`); never for bytes from a peer.
     pub fn decode_stored(b: &[u8]) -> Result<CommitBlob, Error> {
         let mut r = osis_base::cbor::Reader::new(b);
         if r.array()? != 5 {

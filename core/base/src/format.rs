@@ -1,4 +1,4 @@
-//! Format constants (spec/wire.md §2, §13; spec/versioning.md §1). All are fixed by format version
+//! Format constants (spec/wire.md §2, §12; spec/versioning.md §1). All are fixed by format version
 //! 1 unless marked otherwise.
 
 /// Format version this build writes and the newest it reads (spec/wire.md §2). fixed.
@@ -60,7 +60,7 @@ pub const CHUNK_MAX: usize = 256 * KIB;
 pub const CHUNK_MASK_BITS: u32 = 16;
 /// Most links per tree node or link page (spec/wire.md §2, §6). fixed.
 pub const TREE_FANOUT: usize = 512;
-/// Highest chunk tree level (spec/wire.md §6, §13). fixed.
+/// Highest chunk tree level (spec/wire.md §6, §12). fixed.
 pub const TREE_MAX_LEVEL: u64 = 48;
 
 /// Blob framing version (spec/wire.md §5). fixed.
@@ -110,7 +110,7 @@ pub const MAX_CHAIN_DEPTH: usize = 64;
 /// Node policy default, not a format constant (spec/wire.md §2).
 pub const TOMBSTONE_LIFETIME_MS: u64 = 30 * DAY_MS;
 
-// Decoder limits (spec/wire.md §13, spec/data-model.md §5). Depth counts the arrays, maps and
+// Decoder limits (spec/wire.md §12, spec/data-model.md §5). Depth counts the arrays, maps and
 // tags on the deepest path; scalars add nothing.
 /// Deepest nesting of a value. fixed.
 pub const MAX_VALUE_DEPTH: usize = 64;
@@ -118,7 +118,7 @@ pub const MAX_VALUE_DEPTH: usize = 64;
 pub const MAX_OBJECT_DEPTH: usize = 512;
 /// Largest value encoding a decoder accepts by default: a value lives in one blob.
 pub const MAX_VALUE_BYTES: usize = MAX_BLOB;
-/// Longest AK or signal kind in bytes (spec/wire.md §4, §13). fixed.
+/// Longest AK or signal kind in bytes (spec/wire.md §4, §12). fixed.
 pub const MAX_AK_BYTES: usize = 1024;
 /// Most entries in the `rules` of one `retention^.0` delta (spec/commits.md §5); past it the
 /// delta is no setting. Every node keeps what one says in memory, for every such delta. 0: no
@@ -131,7 +131,7 @@ pub const MAX_RETENTION_ENTRIES: usize = 64;
 /// list. 0: no purge by author; infinity: one small commit stalls every node for its items times the
 /// aspect's length. More goes in further commits, at a write's price each.
 pub const MAX_AUTHOR_ITEMS: usize = 32;
-/// Longest URL (spec/wire.md §10, §13). fixed.
+/// Longest URL (spec/wire.md §10, §12). fixed.
 pub const MAX_URL_BYTES: usize = 256;
 
 /// Largest node-to-node frame (spec/wire.md §11.1): protocol version 1, not a format constant.

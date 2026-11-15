@@ -96,13 +96,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "bundle"
-path = "fuzz_targets/bundle.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "proto_frame"
 path = "fuzz_targets/proto_frame.rs"
 test = false

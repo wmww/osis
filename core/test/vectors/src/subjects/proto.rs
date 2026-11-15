@@ -1,5 +1,5 @@
 //! `proto/`: frames, Hello, one message of every kind on a fixed sync ID, and rejections of every
-//! kind (spec/wire.md §11.1, §11.2, §13). Generated.
+//! kind (spec/wire.md §11.1, §11.2, §12). Generated.
 
 use super::{case, generated_header};
 use crate::file::{Record, VecFile};

@@ -394,7 +394,7 @@ fn an_untyped_index_past_the_limit_says_so() {
 
 // CLI Sharing and roles, Sync, Identity and nodes: the local half of the
 // sharing commands on one store (nobody to dial): links, cards, nodes, grants by error
-// category, status (bundles are binary: the localhost e2e).
+// category, status.
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();

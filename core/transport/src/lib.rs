@@ -107,7 +107,7 @@ pub fn peer_items(url: &str) -> Option<Vec<String>> {
     Some(rest.split(' ').filter(|r| !r.is_empty()).map(str::to_owned).collect())
 }
 
-/// URLs longer than `MAX_URL_BYTES` are refused (spec/wire.md §13).
+/// URLs longer than `MAX_URL_BYTES` are refused (spec/wire.md §12).
 pub(crate) fn check_url(url: &str) -> Result<(), Error> {
     if url.len() > osis_base::format::MAX_URL_BYTES { Err(Error::BadUrl(format!("{} bytes", url.len()))) } else { Ok(()) }
 }

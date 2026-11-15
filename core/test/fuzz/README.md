@@ -37,7 +37,6 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `inbox` | inbox payload | osis-blob | live |
 | `link` | link, text form | osis-blob | live |
 | `proto_frame` | frame codec, Hello, each message | osis-proto | live |
-| `bundle` | bundle reader, importer | osis-blob | live |
 | `schema_dsl` | schema DSL parser, schema-as-data | osis-schema | live |
 
 ## `seq_ops`

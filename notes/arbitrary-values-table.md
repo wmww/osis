@@ -17,7 +17,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 ## Table
 0 / ∞: what the value at 0 and at infinity would do.
 
-### Spec format and protocol constants (`base/format.rs`, spec/wire.md §2, §11, §13)
+### Spec format and protocol constants (`base/format.rs`, spec/wire.md §2, §11, §12)
 | value | class | 0 / ∞ |
 |---|---|---|
 | `MAX_BLOB` 8 MiB | R | nothing fits / unbounded per-blob memory; larger values chunk |

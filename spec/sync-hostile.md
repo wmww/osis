@@ -5,7 +5,7 @@
 
 ## 1. Bounds
 - Identity and authorization come only from proofs on the connection (spec/sync-opens.md §2) and from verified data; a stream's `Deleted`, a refusal, a head the peer names, a payload sync ID and a hint are its word only.
-- Bad bytes are ignored; no peer input causes unbounded allocation, work, storage or diagnostics (spec/wire.md §13).
+- Bad bytes are ignored; no peer input causes unbounded allocation, work, storage or diagnostics (spec/wire.md §12).
 - A filter breaking spec/wire.md §11.2 Beacons is answered Error 2 and closes the connection. One test pass in flight per peer.
 - Records, Resume, Beacons, Pull and Members floods are bounded by message size, `max_reply`, `RECORD_BUDGET` and the shared set; only a peer that proved an actor makes a record.
 - An ephemeral commit is room-checked whole before any decode and waits only once its signature checks.

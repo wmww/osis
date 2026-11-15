@@ -9,7 +9,7 @@ use crate::dec::Fields;
 use osis_base::Value;
 use osis_base::format::MAX_VALUE_DEPTH;
 
-/// An embedded value: at most `MAX_VALUE_DEPTH` deep (spec/wire.md §13).
+/// An embedded value: at most `MAX_VALUE_DEPTH` deep (spec/wire.md §12).
 pub(crate) fn value(v: Value) -> Result<Value, Error> {
     if v.deeper_than(MAX_VALUE_DEPTH) {
         return Err(Error::Malformed("value too deep"));

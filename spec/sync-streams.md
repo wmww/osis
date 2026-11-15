@@ -1,5 +1,5 @@
 # Sync: streams and flow control
-> Summary: Area 6: framing, clock and flow control on a connection, the push rule, the node log and its cursors, the stream (Pull, joins, pushes with sequence numbers, bodies, full and refusing peers, reports), the first sync of a sync ID and bundles.
+> Summary: Area 6: framing, clock and flow control on a connection, the push rule, the node log and its cursors, the stream (Pull, joins, pushes with sequence numbers, bodies, full and refusing peers, reports), and the first sync of a sync ID.
 
 **Principle:** every node pulls each open sync ID from each peer by one stream over that peer's node log; a push only continues a pull, and a gap is repaired by reading again, never by trusting order. A position is stored only once what it covers is applied, so a lost or replayed message costs a re-read, never a wrong view.
 
@@ -59,6 +59,3 @@ A node pulls every member of its shared set from its peer by one stream, whoever
   - The first sync ends, and the stream stands at the listing's end, when nothing is left to fetch. A node that stopped part way (a restart, a lost connection) goes on from what it listed, without listing again.
   - A node is past its first sync of a sync ID once a first sync of it ended at any peer, until it leaves the sync ID (spec/sync-set.md §3).
 - Pages of a delta are fetched before its commit is applied (spec/commits.md §4), found from what the delta links and then what its link pages link (two rounds at most); a header list given by link likewise before its commit is examined. Chunk and tree-node blobs of large atomic values may be fetched lazily, by local policy, except an ephemeral commit's (spec/sync-compaction.md §2).
-
-## 6. Bundles
-A bundle is a one-way log replay for a set of sync IDs: registration paths, entries with wraps and stamps, blobs, deletions (spec/wire.md §12). An importer treats it as a source with no cursor.

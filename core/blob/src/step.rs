@@ -66,11 +66,11 @@ pub fn genesis_sync_id(admin: &Secret32) -> SyncId {
     sync_id(&role_key(RoleKey::Delete, admin).verifying_key())
 }
 
-/// Limits for steps, claim sets and the structures holding them (spec/wire.md §13).
+/// Limits for steps, claim sets and the structures holding them (spec/wire.md §12).
 pub(crate) const OBJECT_LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_MESSAGE };
 
 /// Largest encoded claim set with its entry boxes, so a step and its set fit one message
-/// (spec/wire.md §13).
+/// (spec/wire.md §12).
 pub const MAX_CLAIM_SET: usize = MAX_MESSAGE - 64 * 1024;
 
 fn check_claim_set_size(len: usize) -> Result<(), Error> {
@@ -588,7 +588,7 @@ pub(crate) mod tests {
         assert_eq!(ClaimSet::from_value(&set(c(1), vec![(Value::bytes(&[0; 32]), parked)])), Err(Error::Crypto(osis_crypto::Error::UnknownCase(7))));
     }
 
-    // spec/wire.md §13: a claim set with its entry boxes is at most MAX_MESSAGE − 64 KiB, on
+    // spec/wire.md §12: a claim set with its entry boxes is at most MAX_MESSAGE − 64 KiB, on
     // read and when registering.
     #[test]
     fn claim_set_size_cap() {

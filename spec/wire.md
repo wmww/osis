@@ -27,8 +27,8 @@ Format version 1, spec/versioning.md §1:
 | `MAX_DELTA_BARE` | 262 144 (2^18) sequence elements in runs without `Content` per writer's delta, pages included (spec/crdt.md §3.3) |
 | `MAX_PAGE_ITEMS` | 2 097 152 (2^21) items (CBOR heads plus text string content bytes) in a durable delta's root fragment or one of its pages (spec/crdt.md §8) |
 | `MAX_RUN` | 4096 (2^12) elements per sequence run (spec/crdt.md §3.3) |
-| `MAX_AK_BYTES` | 1024 bytes, one AK (§4, §13) |
-| `MAX_VALUE_DEPTH` | 64 levels of nesting in a value (§13, spec/data-model.md §5) |
+| `MAX_AK_BYTES` | 1024 bytes, one AK (§4, §12) |
+| `MAX_VALUE_DEPTH` | 64 levels of nesting in a value (§12, spec/data-model.md §5) |
 | `MAX_DRIFT` | 1 hour |
 | `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync-ids.md §6; spec/sync-compaction.md §2) |
 | `ROLE_KEEP` | 90 days |
@@ -237,7 +237,7 @@ peer := [dialable, [url*]]
 ```
 - `Link` (spec/permissions.md §7): format 1, L's 32-byte seed, the target tid, K's tid, K's sync ID, and the nodes to dial for first contact, each a `dialable` 32-byte key and the transport `url`s it is dialed at (as a dial hint, §9 position 4): first the sharer node, its dialable key with one `peer://` URL of its relays (the relay items of `reach.0`, spec/data-model.md §9, spec/sync-transport.md §3, in order, those that would take the URL past 256 bytes left out; no relay: `peer://`), then each of the sharer node's configured addresses (spec/sync-opens.md §1) of another key, in order, its key with its URL, while there is room. The redeemer dials each peer, its first URL first; one holding K's sync ID serves it as at any peer (spec/permissions.md §7). `flags` (uint): bit 0 single use (the redemption removes L's own grant, spec/permissions.md §7); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
 - The sync ID a link names is K's home sync ID (spec/sync-ids.md §2): K is created with it.
-- Caps: at most 4 peers, 4 URLs per peer; URLs at most 256 bytes (§13).
+- Caps: at most 4 peers, 4 URLs per peer; URLs at most 256 bytes (§12).
 - Text form: `osis://link/` followed by the unpadded base64url of the canonical bytes.
 
 ## 11. Node-to-node protocol (version 1)
@@ -443,15 +443,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - Delete: 1024 items.
   - Fetch: 1024 IDs.
 
-## 12. Bundles
-- A bundle file (spec/sync-streams.md §6) is the 8 ASCII bytes `osisbndl` followed by frames as in §11.1, each one record. The first record is `[0, 1]` (bundle format 1). Records:
-  - `[1, sync_id, [[step, Opt(claim_set)]+]]`: the registration path from the genesis step to the head;
-  - `[2, blob]`: blob bytes, before the first entry naming them, once per bundle;
-  - `[3, sync_id, blob_id, wrap, Opt(stamp)]`: an entry (no stamp: deposited);
-  - `[4, sync_id, blob_id]`: a deletion.
-- Steps and claim sets are their canonical bytes as byte strings (as in §11.2). An importer verifies paths and stamps as a node keeping the sync ID unread does (spec/sync-ids.md §6) and applies the records as a peer's log events received without a cursor: a path record after the first for its sync ID must pass through the current head; an entry before its blob's record, or stamped before a path record of its sync ID (its stamp checked against that path's head), is malformed; a second format record is malformed, another bundle format parks the file; records of unknown kind are skipped.
-
-## 13. Decoder limits
+## 12. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most `MAX_VALUE_DEPTH` (spec/data-model.md §5); no array or map longer than the bytes that remain.
 - Blob `MAX_BLOB`; frame `MAX_MESSAGE`; a message at most 2^20 CBOR data items in all, those of the canonical bytes its byte strings carry (steps, claim sets, entry boxes) included; AK `MAX_AK_BYTES`; URL 256 bytes.
 - Header: each inline list at most `CHUNK_THRESHOLD` bytes, each linked one at most `MAX_LIST_BYTES`. Prefix: 65535 groups of at most 3 commitments, within the blob. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links (a tree node one length per link); tree level 48. Sequence run: `MAX_RUN` elements, a list run's `Content` closing at `CHUNK_MAX` bytes; runs without `Content` in a writer or import delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link: §10. Messages: §11.2.

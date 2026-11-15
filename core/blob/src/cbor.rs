@@ -9,11 +9,6 @@ pub(crate) fn tid(t: &Tid) -> Value {
     Value::bytes(t.as_bytes())
 }
 
-/// A uint; `TooLarge` above i64.
-pub(crate) fn uint(n: u64) -> Result<Value, Error> {
-    Value::try_uint(n).ok_or(Error::TooLarge("int"))
-}
-
 pub(crate) fn get_bytes<const N: usize>(v: &Value, what: &'static str) -> Result<[u8; N], Error> {
     v.as_array().ok_or(Error::Malformed(what))
 }

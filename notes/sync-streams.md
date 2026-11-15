@@ -1,7 +1,7 @@
 # Sync: streams
 > Summary: osis-sync's `streams` module (core/sync/src/streams/): serving and pulling each shared sync ID over the peer's node log, joins, bodies, `known` (what each source showed); its durable place per source, presence and listings, failure handling, the shred rule, remaining O(members) costs and what is not built.
 
-Spec: spec/sync-streams.md §3-§6, spec/wire.md §11.2 (Pull, PullReply, Stream, Applied, Fetch), spec/sync-judgement.md §3 `known`. Model: core/test/tla/net/NetStream.tla (each `SN_*` rule names its function). Principle and state: the module doc of core/sync/src/streams/mod.rs. Overview: notes/sync.md.
+Spec: spec/sync-streams.md §3-§5, spec/wire.md §11.2 (Pull, PullReply, Stream, Applied, Fetch), spec/sync-judgement.md §3 `known`. Model: core/test/tla/net/NetStream.tla (each `SN_*` rule names its function). Principle and state: the module doc of core/sync/src/streams/mod.rs. Overview: notes/sync.md.
 
 ## Shape
 - Both sides serve (`serve.rs`: Pulls from the node log filtered by the shared set now, pages by `max_reply`, joins in pages, ephemeral listings, pushes under `follow` with `seq`, Fetches, reported positions) and pull (`pull.rs`: one Pull out, received vs stored cursors, joins by generation, messages in hand applied in order once their bodies settle, gaps read again, bodies one source at a time in fill order (only what the store lacks: a body opening to a held commit is kept as it came, `Opening::Held`, so it is never fetched again while held or tombstoned; an announced entry whose bytes the store holds under another sync ID, a certificate copy wrapped under each sync ID needing it, is taken with them at once: else a reader that cannot wrap under S, which never logs it itself, holds it must-hold with no entry forever), Full and Refused at a node keeping S unread; relay-only entries in Streams with no cursor (`relay.rs`, notes/ephemeral.md In osis-sync); `refetch`: a body read finds missing, queued outside any message from a source that showed it, `Streams::fetch_again`).
@@ -44,4 +44,4 @@ A Pull's reply builds the members map (per Pull: joins, gaps, pages, not per eve
 `INLINE_LIMIT` (16 KiB), `PENDING_CAP` (64 messages in hand), `FETCHES_OUT` (2), `RESYNC_MS` (30 s, before a refused Pull goes again or a refused join is joined again), `ASKED_MS` (the stall timeout, a blob asked of one source).
 
 ## Not built
-issues/sync-unbuilt.md (streams): the engine's linked blobs (`Engine::wants`: pages and header lists before apply); bundle import (`Streams::import` answers `NotBuilt`; `Node::export_bundle` is built); `Rank::Never` from the engine (a keyset without history: the facade has no call for it).
+issues/sync-unbuilt.md (streams): the engine's linked blobs (`Engine::wants`: pages and header lists before apply); `Rank::Never` from the engine (a keyset without history: the facade has no call for it).

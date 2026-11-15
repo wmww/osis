@@ -403,9 +403,6 @@ pub enum Cmd {
     /// Group sync configuration
     #[command(subcommand)]
     Group(GroupCmd),
-    /// Bundles
-    #[command(subcommand)]
-    Bundle(BundleCmd),
     /// Engine internals (format not stable)
     #[command(subcommand)]
     Inspect(InspectCmd),
@@ -695,14 +692,6 @@ pub enum GroupCmd {
     /// connected by --connect; held in the store. Local: this store syncs it, and it is caught up
     /// before calls come home
     Source { g: String, to: Option<String> },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum BundleCmd {
-    /// Write groups as a bundle to stdout
-    Export { groups: Vec<String> },
-    /// Read a bundle from stdin
-    Import,
 }
 
 #[derive(Subcommand, Debug)]

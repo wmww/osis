@@ -57,7 +57,6 @@ generated! {
     step_steps => "step/steps",
     inbox_inbox => "inbox/inbox",
     link_link => "link/link",
-    bundle_bundle => "bundle/bundle",
     lan_announce => "lan/announce",
 }
 

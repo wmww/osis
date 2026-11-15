@@ -1,14 +1,13 @@
 //! Judgment conformance vectors (core/test/vectors/README.md, `judgment/`): histories played by
-//! the order harness (`order::play`), carried in a bundle as a peer holding the sync ID holds them, judged
+//! the order harness (`order::play`), delivered as a peer holding the sync IDs holds them, judged
 //! by a fresh node in a given arrival order; the expected verdicts are what this engine judges.
 //! `judgment_vectors_spec_permissions_5_2` replays every generated case (its inputs only) through
 //! a fresh engine and compares; `judgment_vectors_can_fail` (ignored) checks a changed verdict
 //! fails each case, and a shorter order some case of each file.
 
 use crate::order::{Played, Step, play};
-use osis_base::{CommitId, Role, Tid, WallMs};
-use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, role_key};
-use osis_blob::{BundleReader, BundleWriter, Importer, Parent, Record, StepKeys, genesis_sync_id, register, sign_stamp};
+use osis_base::{CommitId, Role, WallMs};
+use osis_crypto::{Secret32, SeededRng};
 use osis_engine::local_peer::{LocalPeer, Peer};
 use osis_vectors::file::{Record as Rec, VecFile};
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// seeds them 0 to 2; its own identity is never observed).
 const FRESH: u64 = 3;
 /// Fields of a case that are inputs; every other field is expected output.
-const INPUTS: [&str; 7] = ["case", "spec", "source", "read-secret", "now", "bundle", "order"];
+const INPUTS: [&str; 7] = ["case", "spec", "source", "read-secret", "now", "entries", "order"];
 /// Header fields that are not expected lines.
 const HEADER: [&str; 4] = ["subject", "spec", "source", "setup"];
 const GEN: &str = "osis-engine judgment generator (tests/it/judgment.rs)";
@@ -26,7 +25,7 @@ fn s32(b: u8) -> Secret32 {
     Secret32::from_bytes([b; 32])
 }
 
-/// One arrival step: receive bundle entry i (a body it opens, else a referenced blob), advance
+/// One arrival step: receive entry i (a body it opens, else a referenced blob), advance
 /// the clock by ms and run timers, drop every aspect of entry i's body as covered (node-sync's
 /// compaction drop).
 #[derive(Clone, Copy, Debug)]
@@ -52,27 +51,8 @@ fn parse_order(s: &str) -> Vec<Tok> {
     }).collect()
 }
 
-/// One sync ID of a bundle: its genesis path record, stamp key and read secret.
-struct Lab {
-    path: Record,
-    id: osis_base::SyncId,
-    read: Secret32,
-    stamp: osis_crypto::SigningSecret,
-}
-
-/// A sync ID's genesis path from group secrets all but the deposit seed named `base`: read
-/// `base`, write `base + 1`, admin `base - 1`, deposit seed `base + 2`.
-fn sync_id(base: u8, rng: &mut SeededRng) -> Lab {
-    let (r, w, a) = (s32(base), s32(base + 1), s32(base - 1));
-    let id = genesis_sync_id(&a);
-    let keys = StepKeys::derive(&r, &w, &a, &s32(base + 2), &id);
-    let delete = role_key(RoleKey::Delete, &a);
-    let (step, claims) = register(Parent::Genesis(&delete), keys, &[], (&Tid::from_bytes([base - 3; 15]), Epoch::new(0, [0; 32]).unwrap(), &r), (Epoch::new(0, [0; 32]).unwrap(), &r), rng).unwrap();
-    Lab { id: step.sync_id, path: Record::Path { sync_id: step.sync_id, steps: vec![(step, Some(claims))] }, read: r, stamp: role_key(RoleKey::Write, &w) }
-}
-
-/// What `bundle` lays out: the bytes, each entry's commit index, the entries that are referenced
-/// blobs and the length of the setup's prefix.
+/// What `lay` lays out: the entry bytes (README.md, `judgment/`), each entry's commit index, the
+/// entries that are referenced blobs and the length of the setup's prefix.
 struct Laid {
     bytes: Vec<u8>,
     of: Vec<usize>,
@@ -80,96 +60,62 @@ struct Laid {
     setup: usize,
 }
 
-/// A played history as a bundle as the peers hold it: the genesis path of the first sync ID (group
-/// secrets read `0a`, write `0b`, admin `09`, deposit seed `0c`), then per commit the blobs it
+/// A played history's entries as a peer holding its sync IDs holds them: per commit the blobs it
 /// references, each under a filler wrap (left out where the case needs no bytes of them: the
-/// chunks of `t:blob.0`, which nothing waits for), and its
-/// one blob (sections per sync ID, each under that sync ID's read secret, spec/wire.md §4) sealed
-/// and stamped under every sync ID with a part of it, each blob before its entry. With `second`,
-/// every thing but G is under a second sync ID (read `1a`, write `1b`, admin `19`, deposit seed
-/// `1c`), its path before its first entry.
-fn bundle(played: &Played, second: bool) -> Laid {
+/// chunks of `t:blob.0`, which nothing waits for), then its one blob (sections per sync ID, each
+/// under that sync ID's read secret, spec/wire.md §4) once per sync ID with a part of it, wrapped
+/// under that sync ID's read secret. Every thing is under one sync ID (read secret `0a`); with
+/// `second`, every thing but G under a second one (read secret `1a`).
+fn lay(played: &Played, second: bool) -> Laid {
     let mut rng = SeededRng::from_u64(0);
-    let first = sync_id(0x0a, &mut rng);
-    let mut recs = vec![first.path.clone()];
+    let reads = read_secrets(second);
+    let mut ents: Vec<([u8; osis_crypto::WRAP_LEN], Vec<u8>)> = Vec::new();
     let mut of = Vec::new();
     let mut refs = BTreeSet::new();
     let mut seen = BTreeSet::new();
-    let mut other: Option<Lab> = None;
-    let mut setup = 1;
+    let mut setup = 0;
     for (ci, pk) in played.packs.iter().enumerate() {
         let cb = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
         // bare headers name no list by link in these histories: the aspects are at hand
         let under = |ai: usize| second && cb.header.aspects[ai].tid != played.things[0] && played.things.contains(&cb.header.aspects[ai].tid);
         let readers: Vec<bool> = cb.parts.iter().map(|p| under(p.ai)).collect::<BTreeSet<_>>().into_iter().collect();
-        if readers.contains(&true) && other.is_none() {
-            let l = sync_id(0x1a, &mut rng);
-            recs.push(l.path.clone());
-            other = Some(l);
-        }
-        let lab_of = |second: bool| if second { other.as_ref().unwrap() } else { &first };
-        // the referenced blobs under the first sync ID the commit has a part under
-        if let Some(r0) = readers.first().copied()
-            && !cb.header.aspects.iter().any(|a| a.ak.as_str() == "t:blob.0")
-        {
-            let lab = lab_of(r0);
+        let read_of = |second: bool| &reads[usize::from(second)];
+        if !readers.is_empty() && !cb.header.aspects.iter().any(|a| a.ak.as_str() == "t:blob.0") {
             for (id, b) in &pk.blobs {
                 if seen.insert(*id) {
-                    let wrap = osis_crypto::filler_wrap(&mut rng);
-                    let stamp = sign_stamp(&lab.stamp, &lab.id, id, &wrap, false);
-                    recs.push(Record::Blob(b.clone()));
-                    recs.push(Record::Entry { sync_id: lab.id, blob: *id, wrap, stamp: Some(stamp) });
+                    ents.push((osis_crypto::filler_wrap(&mut rng), b.clone()));
                     refs.insert(of.len());
                     of.push(ci);
                 }
             }
         }
         if !cb.parts.is_empty() {
-            let env = osis_commit::seal_commit(&cb, under, |r, _| Some((lab_of(*r).read.clone(), vec![])), &[], &mut rng).unwrap();
+            let env = osis_commit::seal_commit(&cb, under, |r, _| Some((read_of(*r).clone(), vec![])), &[], &mut rng).unwrap();
             let sealed = osis_engine::sync_ids::frame_envelope(&env, &cb.header, osis_blob::Class::Durable, &mut rng, &cb).unwrap();
-            recs.push(Record::Blob(sealed.blob));
             for r in readers {
-                let lab = lab_of(r);
-                let wrap = osis_crypto::wrap(&lab.read, &sealed.id, &sealed.key, 1).unwrap();
-                let stamp = sign_stamp(&lab.stamp, &lab.id, &sealed.id, &wrap, false);
-                recs.push(Record::Entry { sync_id: lab.id, blob: sealed.id, wrap, stamp: Some(stamp) });
+                ents.push((osis_crypto::wrap(read_of(r), &sealed.id, &sealed.key, 1).unwrap(), sealed.blob.clone()));
                 of.push(ci);
             }
         }
         if ci < played.base {
-            setup = recs.len();
+            setup = ents.len();
         }
     }
-    let write = |recs: &[Record]| {
-        let mut bw = BundleWriter::new(Vec::new()).unwrap();
-        for x in recs {
-            bw.record(x).unwrap();
+    let write = |n: usize| {
+        let mut out = Vec::new();
+        for (wrap, b) in ents.iter().take(n) {
+            out.extend_from_slice(wrap);
+            out.extend_from_slice(&u32::try_from(b.len()).unwrap().to_be_bytes());
+            out.extend_from_slice(b);
         }
-        bw.finish().unwrap()
+        out
     };
-    let (full, setup) = (write(&recs), write(&recs[..setup]));
-    assert!(full.starts_with(&setup), "a bundle is its records' frames in order");
-    Laid { bytes: full, of, refs, setup: setup.len() }
+    Laid { bytes: write(ents.len()), of, refs, setup: write(setup).len() }
 }
 
-/// Reads a bundle as an importer does (paths and stamps verified): its entries in order, each
-/// with its blob.
+/// The entries of `bytes`, each with its blob's ID.
 fn entries(bytes: &[u8]) -> Vec<(osis_base::BlobId, [u8; osis_crypto::WRAP_LEN], Vec<u8>)> {
-    let mut rd = BundleReader::new(bytes).unwrap();
-    let mut imp = Importer::new();
-    let mut blobs = BTreeMap::new();
-    let mut out = Vec::new();
-    while let Some(r) = rd.next_record().unwrap() {
-        imp.import(r.clone()).unwrap().unwrap();
-        match r {
-            Record::Blob(b) => {
-                blobs.insert(osis_blob::blob_id(&b), b);
-            }
-            Record::Entry { blob, wrap, .. } => out.push((blob, wrap, blobs[&blob].clone())),
-            _ => {}
-        }
-    }
-    out
+    osis_vectors::subjects::judgment::entries(bytes).unwrap().into_iter().map(|(wrap, b)| (osis_blob::blob_id(&b), wrap, b)).collect()
 }
 
 fn role(r: Role) -> &'static str {
@@ -199,7 +145,7 @@ fn judged(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
     v
 }
 
-/// Delivers `order` of the bundle's entries to a fresh node at `now`; what it judges, as the
+/// Delivers `order` of the entries to a fresh node at `now`; what it judges, as the
 /// expected fields of a case (README.md, `judgment/`).
 fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
     let ents = entries(bytes);
@@ -329,7 +275,7 @@ fn read_secrets(second: bool) -> Vec<Secret32> {
     r
 }
 
-/// `second`: every thing but G under a second sync ID (`bundle`).
+/// `second`: every thing but G under a second sync ID (`lay`).
 fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
     let mut setup: Option<Vec<u8>> = None;
     let mut cases = Vec::new();
@@ -337,7 +283,7 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
     let reads_hex = reads.iter().map(|x| osis_base::hex::encode(x.expose())).collect::<Vec<_>>().join(",");
     for sc in scenarios {
         let played = play(0, &sc.steps);
-        let laid = bundle(&played, second);
+        let laid = lay(&played, second);
         let n = laid.setup;
         assert_eq!(setup.get_or_insert_with(|| laid.bytes[..n].to_vec())[..], laid.bytes[..n], "{}: one setup per file", sc.name);
         let orders = sc.orders.unwrap_or(default_orders)(&played, &laid.of, &laid.refs);
@@ -345,7 +291,7 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
         for (i, (oname, order)) in orders.into_iter().enumerate() {
             let name = format!("{}, {oname}", sc.name);
             let mut r = Rec::new().with("case", &name).with("spec", sc.spec).with("source", sc.source).with("read-secret", &reads_hex).with("now", played.now.0.to_string());
-            r = if i == 0 { r.with("bundle", osis_base::hex::encode(&laid.bytes[n..])) } else { r.with("bundle", format!("as in {first}")) };
+            r = if i == 0 { r.with("entries", osis_base::hex::encode(&laid.bytes[n..])) } else { r.with("entries", format!("as in {first}")) };
             r = r.with("order", render_order(&order));
             for (k, v) in judged(&laid.bytes, &reads, played.now, &order) {
                 r = r.with(&k, v);
@@ -369,7 +315,7 @@ fn files() -> Vec<(&'static str, String)> {
     vec![
         ("judgment/models.vec", generate("spec/permissions.md §5", models(), false).render()),
         ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(invites()).chain(remerges()).chain(bounds()).collect(), false).render()),
-        ("judgment/sync IDs.vec", generate("spec/commits.md §4, spec/sync-judgement.md §1, spec/wire.md §12", sync_ids(), true).render()),
+        ("judgment/sync IDs.vec", generate("spec/commits.md §4, spec/sync-judgement.md §1", sync_ids(), true).render()),
         ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false).render()),
     ]
 }
@@ -638,7 +584,7 @@ fn remerges() -> Vec<Scenario> {
     }]
 }
 
-/// One history over two sync IDs (`bundle`'s `second`): one commit, a part under each. H's first admin
+/// One history over two sync IDs (`lay`'s `second`): one commit, a part under each. H's first admin
 /// is 0, so only H's own edge gives 1 a role on it.
 fn sync_ids() -> Vec<Scenario> {
     use Step::*;
@@ -760,7 +706,7 @@ fn blobs() -> Vec<Scenario> {
         Scenario {
             name: "large atomic value",
             spec: "spec/commits.md §4, spec/data-model.md §6",
-            source: "hand-picked: 1 writes a value above CHUNK_THRESHOLD; the bundle leaves out its chunks, which nothing waits for: the commit applies",
+            source: "hand-picked: 1 writes a value above CHUNK_THRESHOLD; the entries leave out its chunks, which nothing waits for: the commit applies",
             steps: vec![Large { by: 1, t: 0 }],
             orders: Some(made_only),
         },
@@ -836,15 +782,15 @@ fn replay_cases(path: &str, text: &str, only: Option<&str>) -> Result<usize, Str
     let setup = osis_base::hex::decode(f.header.req("setup")?).ok_or_else(|| format!("{path}: bad setup hex"))?;
     // the header's expected lines: part of every case's judgment
     let shared: Vec<(String, String)> = f.header.fields.iter().filter(|(k, _)| !HEADER.contains(&k.as_str())).cloned().collect();
-    let mut bundles: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut laid: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     for c in f.live() {
         let name = c.req("case")?;
-        let b = c.req("bundle")?;
-        let bytes = match b.strip_prefix("as in ") {
-            Some(other) => bundles.get(other).cloned().ok_or_else(|| format!("{name}: no case {other}"))?,
-            None => [&setup[..], &osis_base::hex::decode(b).ok_or_else(|| format!("{name}: bad bundle hex"))?].concat(),
+        let e = c.req("entries")?;
+        let bytes = match e.strip_prefix("as in ") {
+            Some(other) => laid.get(other).cloned().ok_or_else(|| format!("{name}: no case {other}"))?,
+            None => [&setup[..], &osis_base::hex::decode(e).ok_or_else(|| format!("{name}: bad entries hex"))?].concat(),
         };
-        bundles.insert(name.to_string(), bytes.clone());
+        laid.insert(name.to_string(), bytes.clone());
         if only.is_some_and(|x| x != name) {
             continue;
         }
@@ -869,7 +815,7 @@ fn replay_cases(path: &str, text: &str, only: Option<&str>) -> Result<usize, Str
 }
 
 // spec/permissions.md §5, spec/commits.md §5: every judgment vector (core/test/vectors/README.md,
-// `judgment/`), generated in memory, has its inputs and a bundle that imports, and replayed from
+// `judgment/`), generated in memory, has its inputs and entries that parse, and replayed from
 // its text judges as generated (each input judged once by a fresh engine: `judged`).
 #[test]
 fn judgment_vectors_spec_permissions_5_2() {
@@ -887,7 +833,7 @@ fn chainless_part_order_spec_commits_4() {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
     let played = play(0, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick, Two { by: 1, a: 0, b: 1, v: 1 }]);
-    let laid = bundle(&played, true);
+    let laid = lay(&played, true);
     let (edge, last) = (played.base + 1, played.packs.len() - 1);
     let rest: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] != edge && laid.of[*e] != last).collect();
     let two: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] == last).collect();
@@ -902,7 +848,7 @@ fn chainless_role_part_order_spec_commits_4() {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
     let played = play(0, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick, TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
-    let laid = bundle(&played, true);
+    let laid = lay(&played, true);
     let (edge, last) = (played.base + 1, played.packs.len() - 1);
     let rest: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] != edge && laid.of[*e] != last).collect();
     let two: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] == last).collect();
