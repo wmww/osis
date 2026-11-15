@@ -248,7 +248,8 @@ impl Suspects {
     /// A Suspect message from `conn` (answered Ok by the caller whatever is judged,
     /// spec/wire.md §11.2).
     pub(super) fn received(&mut self, h: &mut Here<'_>, net: &impl Net, conn: ConnId, s: SyncId, entries: Vec<SuspectEntry>) -> Result<()> {
-        let Some(reporter) = h.engine.reader_account(&s, &net.actors(conn))? else { return Ok(()) };
+        let actors = crate::opens::counted(h.engine, &net.named(conn));
+        let Some(reporter) = h.engine.reader_account(&s, &actors)? else { return Ok(()) };
         // an aspect named twice is one entry (the last), judged once
         let entries: BTreeMap<Aspect, [u8; 16]> = entries.into_iter().map(|e| ((e.thing, e.ak), e.digest)).collect();
         if !h.store.first_synced(&s)? {
@@ -373,8 +374,8 @@ mod tests {
     struct Members(BTreeMap<(ConnId, SyncId), SourceClass>);
 
     impl Net for Members {
-        fn actors(&self, _: ConnId) -> Vec<Tid> {
-            Vec::new()
+        fn named(&self, _: ConnId) -> osis_store::Named {
+            osis_store::Named::default()
         }
         fn member(&self, conn: ConnId, s: &SyncId) -> Option<crate::opens::Member> {
             self.0.get(&(conn, *s)).map(|class| crate::opens::Member { class: *class, by: crate::types::Credential::SyncKey, until: None })

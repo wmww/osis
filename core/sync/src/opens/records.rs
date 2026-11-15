@@ -183,7 +183,7 @@ pub(super) fn encode_values(values: &[u64]) -> Vec<u8> {
 /// and its filter's entries): what a connection taking it needs.
 pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>> {
     let Some(rec) = t.record(id)? else { return Ok(None) };
-    let mut r = Record { r: rec.r, actors: rec.actors, kept: true, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walk: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None };
+    let mut r = Record { r: rec.r, named: rec.named, kept: true, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walk: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None };
     if let Some(v) = t.record_get_wide_row(id, OPENS, b"")? {
         let mut d = Rd(&v);
         r.acked_pos = d.u64()?;
@@ -233,7 +233,7 @@ pub(super) fn acked_pos(t: &mut Transaction<'_>, id: &RecordId) -> Res<u64> {
 /// Writes what changed of record `id` (held as `r`).
 pub(super) fn write(t: &mut Transaction<'_>, id: &RecordId, r: &Record, d: Dirty) -> Res<()> {
     if d.used {
-        t.record_used(id, &r.actors)?;
+        t.record_used(id, &r.named)?;
     }
     if let Some((whole, gens)) = d.filter {
         if whole {

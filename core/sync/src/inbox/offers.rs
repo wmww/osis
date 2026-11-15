@@ -134,7 +134,7 @@ impl Offers {
 
     /// A connection's proofs are done.
     pub fn connected(&mut self, conn: ConnId, net: &impl Net) {
-        let c = Conn { actors: net.actors(conn), filter: net.filter_generation(conn), ready: self.items.keys().copied().collect(), ..Conn::default() };
+        let c = Conn { actors: net.named(conn).actors(), filter: net.filter_generation(conn), ready: self.items.keys().copied().collect(), ..Conn::default() };
         osis_base::costs::count("inbox: offer placed", self.items.len() as u64);
         if !c.ready.is_empty() {
             self.active.insert(conn);

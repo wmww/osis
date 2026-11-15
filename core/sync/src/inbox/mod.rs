@@ -54,12 +54,14 @@ use osis_crypto::NodeRng;
 use osis_engine::Engine;
 use osis_label::{DialHint, ShareLink, StepId};
 use osis_proto::Msg;
+use osis_store::Named;
 use std::collections::BTreeSet;
 
 /// What this module reads of sessions, opens and streams, and how it sends.
 pub trait Net {
-    /// The actors a connection's proofs count for (opens' `proven`).
-    fn actors(&self, conn: ConnId) -> Vec<Tid>;
+    /// What a connection's proofs counted for at its proof (opens' `named`); who the peer is
+    /// now is `opens::counted` of it.
+    fn named(&self, conn: ConnId) -> Named;
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member>;
     /// That source's step for S: the head its stream last named (spec/sync-ids.md §6 Walk).
     fn head(&self, conn: ConnId, s: &SyncId) -> Option<StepId>;
@@ -84,8 +86,8 @@ pub struct Links<'a> {
 }
 
 impl Net for Links<'_> {
-    fn actors(&self, conn: ConnId) -> Vec<Tid> {
-        self.opens.proven(conn).to_vec()
+    fn named(&self, conn: ConnId) -> Named {
+        self.opens.named(conn)
     }
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member> {
         self.opens.members(conn).get(s).cloned()

@@ -75,8 +75,9 @@ struct FakeNet {
 }
 
 impl Net for FakeNet {
-    fn actors(&self, conn: ConnId) -> Vec<Tid> {
-        self.actors.get(&conn).cloned().unwrap_or_default()
+    fn named(&self, conn: ConnId) -> osis_store::Named {
+        // key actors: each counts whatever this node holds
+        osis_store::Named { key_actors: self.actors.get(&conn).cloned().unwrap_or_default(), ..Default::default() }
     }
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member> {
         self.members.get(&(conn, *s)).cloned()

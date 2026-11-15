@@ -28,6 +28,7 @@
 - **Pair key**: two nodes that each proved an actor to the other keep one record of each other, found by a 32-byte pair key `r` known only to the two. No node key finds a record.
   - After `Proved` a dialer the listener proved an actor to sends `Resume` (spec/wire.md §11.2): a fresh nonce and, for each of its records naming a proven actor of this session (most recent first), `BLAKE3(key = r, "resume" || listener static key || dialer challenge || listener challenge)`, challenges as sent in Hello.
   - A record is honoured only while a proven actor of this session is named by it: an account proved at an epoch open here, a node, or a key actor.
+  - A record names what its last session's proofs counted for, the account with the key it proved with. Who the peer is, for a record kept or a connection up, is judged on what this node holds now: the account while that key is at an epoch open here, the node while it is a node of this node's account, each key actor. A record none of whose named actors counts now is no peer (no session can be honoured by it).
   - The listener answers `BLAKE3(key = r, "resumed" || listener static key || dialer challenge || listener challenge)` of the first listed record it holds, else none. An absent or unexpected answer finds nothing.
   - On no match, both sides make a new record with `r = kdf("pair key", dialer nonce, listener nonce)`, written before the listener's answer goes (listener) or when the answer is read (dialer).
   - The listener sends its answer before any message of the connection's shared set.

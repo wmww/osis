@@ -12,7 +12,32 @@ use osis_engine::sync::{J, Path, ReadCredentials};
 use osis_label::{Step, StepId};
 use osis_proto::{BehindItem, Code, DepositItem, Grant, SharedItem};
 use osis_base::memo::Effects;
+use osis_engine::Engine;
+use osis_store::Named;
 use std::sync::Arc;
+
+/// What `proven` counts for at its proof (spec/sync-opens.md §2): its account while the key it
+/// proved with is at an epoch open here, its node while a node of this node's account, its key
+/// actors.
+pub fn named(engine: &mut Engine, proven: &Proven) -> Named {
+    let account = proven.account.as_ref().filter(|(r, k)| engine.key_open(r, k)).map(|(r, k)| (r.tid(), *k));
+    Named { account, node: proven.node, key_actors: proven.key_actors.keys().copied().collect() }
+}
+
+/// The actors `named` counts for now, ascending: the one rule for who a peer is, a connection
+/// up and a record kept alike (spec/sync-opens.md §2-§3, judged on what this node holds now, not
+/// on what the proofs once counted for): the account while the key it proved with is at an
+/// epoch open here, the node while it is a node of this node's account, each key actor. Empty
+/// where `named` is not: no session of that peer is honoured by it any more (a removed node of
+/// this account, a node of an account whose epoch it proved at closed).
+pub fn counted(engine: &mut Engine, named: &Named) -> Vec<Tid> {
+    let account = named.account.filter(|(a, k)| engine.account_key_counts(a, k)).map(|(a, _)| a);
+    let node = named.node.filter(|n| engine.own_node(n));
+    let mut v: Vec<Tid> = account.into_iter().chain(node).chain(named.key_actors.iter().copied()).collect();
+    v.sort();
+    v.dedup();
+    v
+}
 
 /// One sync ID's credentials at this node, before a connection's J filters them
 /// (spec/sync-opens.md §4 Admissible): each with the epoch it is at, for the Departed rule.
@@ -90,10 +115,12 @@ pub trait Holds {
     fn due(&mut self) -> Vec<SyncId>;
     /// S's credentials, `None` when this node does not sync S.
     fn creds(&mut self, s: &SyncId) -> Option<Arc<Creds>>;
-    /// The actors a connection's proofs count for now (spec/sync-opens.md §2): its account only
-    /// while the key it proved with is at an epoch open here, its node, its key actors; sorted.
-    fn actors(&mut self, proven: &Proven) -> Vec<Tid>;
-    /// J of a peer's proven actors (`actors`) for S.
+    /// What a connection's proofs count for at its proof (spec/sync-opens.md §2): what its
+    /// record names (`named`).
+    fn named(&mut self, proven: &Proven) -> Named;
+    /// The actors `named` counts for now (`counted`), ascending.
+    fn counts(&mut self, named: &Named) -> Vec<Tid>;
+    /// J of a peer's actors (`counts`) for S.
     fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J;
     /// Whether `epoch` of S's thing covers every departure this node knows of (spec/crypto.md §4).
     fn covers_departures(&mut self, s: &SyncId, epoch: &Epoch) -> bool;
@@ -290,13 +317,12 @@ impl Holds for NodeHolds<'_, '_> {
         node_creds(self.cx, self.unread, s)
     }
 
-    fn actors(&mut self, proven: &Proven) -> Vec<Tid> {
-        let engine = &mut *self.cx.engine;
-        let account = proven.account.as_ref().filter(|(r, k)| engine.key_open(r, k)).map(|(r, _)| r.tid());
-        let mut v: Vec<Tid> = account.into_iter().chain(proven.node).chain(proven.key_actors.keys().copied()).collect();
-        v.sort();
-        v.dedup();
-        v
+    fn named(&mut self, proven: &Proven) -> Named {
+        named(self.cx.engine, proven)
+    }
+
+    fn counts(&mut self, named: &Named) -> Vec<Tid> {
+        counted(self.cx.engine, named)
     }
 
     fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J {

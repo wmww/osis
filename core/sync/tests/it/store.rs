@@ -576,7 +576,7 @@ fn an_evicted_record_takes_its_charges_at_once_spec_sync_opens_3() {
     let dev = Dev::new();
     let s = Sid::new(10);
     let mut st = unread(&dev, &s);
-    let rec = st.with_tx(|t| t.record_create([1; 32], &[])).unwrap();
+    let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
     let (b, x) = blob(1003, Class::Durable, None, &[]);
     assert_eq!(st.take_deposit(&deposit(&s, &x, false), Some(Source::Record(rec))).unwrap(), Code::OK);
     let none = std::collections::BTreeSet::new();
@@ -611,7 +611,7 @@ fn peer_budget_spec_sync_ids_5() {
     assert!(st.entry(&s.id, &b3).unwrap().is_some(), "an entry giving something held stays");
     assert_eq!(st.take_deposit(&deposit(&s, &x2, false), Some(c)).unwrap(), Code::OK, "the charge went with it");
     // a peer's record: its charges outlive its connections and go with the record
-    let rec = st.with_tx(|t| t.record_create([1; 32], &[])).unwrap();
+    let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
     let (b4, x4) = blob(1003, Class::Durable, None, &[]);
     assert_eq!(st.take_deposit(&deposit(&s, &x4, false), Some(Source::Record(rec))).unwrap(), Code::OK);
     st.gone(Source::Conn(ConnId(1))).unwrap();
@@ -907,7 +907,7 @@ fn stands_live_in_the_record_spec_sync_judgement_4() {
     let dev = Dev::new();
     let s = Sid::new(10);
     let mut st = unread(&dev, &s);
-    let rec = st.with_tx(|t| t.record_create([1; 32], &[])).unwrap();
+    let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
     let stand = Stand { at: WallMs(5), logged: BlobId([2; 32]), head: s.head().id(), fall: 3 };
     let (src, conn) = (Source::Record(rec), Source::Conn(ConnId(9)));
     st.set_stand(src, &s.id, b"body", Some(&stand)).unwrap();
@@ -942,7 +942,7 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
     let (b2, x2) = blob(101, Class::Durable, None, &[]);
     st.take_stamped(&s.id, &stamped(&s, b2, false), x2).unwrap();
     st.take_delete(&s.id, &[DeleteItem::sign(&s.delete(), &s.id, b2)], true).unwrap();
-    let rec = st.with_tx(|t| t.record_create([1; 32], &[])).unwrap();
+    let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
     st.saw_deleted(Source::Record(rec), &s.id, &b2).unwrap();
     // opens' rejoin rows in the record: S's go, another sync ID's stay
     let other = SyncId([7; 16]);
@@ -1034,7 +1034,7 @@ fn crash_at_every_write_is_before_or_after_spec_sync_streams_3() {
     // a store holding S with a peer's record
     let start = |dev: &Dev| {
         let mut st = unread(dev, &s);
-        let rec = st.with_tx(|t| t.record_create([1; 32], &[])).unwrap();
+        let rec = st.with_tx(|t| t.record_create([1; 32], &osis_store::Named::default())).unwrap();
         (st, rec)
     };
     // the store after `ops` 0..n, reopened over its device

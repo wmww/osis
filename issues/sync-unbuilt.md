@@ -11,7 +11,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - The node-wide bound on what served connections hold (spec/sync-transport.md §5 Served connections: requests waiting for the bound's room, reading paused, the largest holders closed); needs `Sessions` to hold answers back. Each connection is bounded alone.
 
 ## opens
-- Records' named actors (spec/sync-opens.md §3: a record is honoured only while a proven actor it names is known here now) are judged at a connection's proof alone; a live connection keeps its record when the actor stops being known.
+- A live connection whose proofs stop counting (spec/sync-opens.md §3) keeps its record, and inbox offers and deliveries still read its actors as named at the proof (J, waits and the inbox's judged reports read `opens::counted`).
 - Static entries claimed in the walk's tests (`Tested::Static` always has no step).
 
 ## store and streams

@@ -231,7 +231,7 @@ impl Deliveries {
             // J and static entries show nothing the delivery gave
             _ => return,
         };
-        let actors = net.actors(conn);
+        let actors = net.named(conn).actors();
         for k in ks.clone() {
             if !actors.contains(&k.1) {
                 continue;

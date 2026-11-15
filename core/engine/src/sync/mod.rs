@@ -949,6 +949,16 @@ impl Engine {
         self.account_key_open(record, key)
     }
 
+    /// Whether `key`, with which account `account` proved before, is at an epoch open here now
+    /// (a record's account judged again, spec/sync-opens.md §3): `key_open` by the account's
+    /// creation record; an account this node holds nothing of had no epoch closed here.
+    pub fn account_key_counts(&mut self, account: &Tid, key: &[u8; 32]) -> bool {
+        match self.core.created(account).cloned() {
+            Some(r) => self.account_key_open(&r, key),
+            None => true,
+        }
+    }
+
     /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
     /// address it is known by here: of S read, the nodes of each account holding a role on S's
     /// thing by that account's dial list (`dial^.0` on its profile); of S kept unread, its granting

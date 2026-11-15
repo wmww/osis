@@ -7,16 +7,41 @@ use crate::common;
 use common::*;
 use osis_base::SyncId;
 use osis_crypto::SeededRng;
-use osis_store::{Fault, RecordId, Shred, Store};
+use osis_store::{Fault, Named, RecordId, Shred, Store};
 use std::collections::BTreeSet;
 
 fn l(n: u8) -> SyncId {
     SyncId([n; 16])
 }
 
+/// A record naming `actors` as key actors.
+fn named(actors: &[osis_base::Tid]) -> Named {
+    Named { key_actors: actors.to_vec(), ..Named::default() }
+}
+
+// a record keeps what it names as named (spec/sync-opens.md §3: the account with the key it
+// proved with, judged again by it), and is found by each actor it names
+#[test]
+fn a_record_keeps_what_it_names() {
+    let (_d, mut rng, mut s) = fresh(cfg());
+    let n = Named { account: Some((tid(1), [9; 32])), node: Some(tid(2)), key_actors: vec![tid(3)] };
+    let mut t = s.transaction(&mut rng).unwrap();
+    let id = t.record_create([1; 32], &n).unwrap();
+    t.commit().unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(t.record(&id).unwrap().unwrap().named, n);
+    for a in [1, 2, 3] {
+        assert_eq!(t.records_of_actors(&[tid(a)]).unwrap().len(), 1, "found by actor {a}");
+    }
+    let m = Named { account: Some((tid(1), [8; 32])), ..Named::default() };
+    t.record_used(&id, &m).unwrap();
+    assert_eq!(t.record(&id).unwrap().unwrap().named, m, "the account's new key");
+    assert!(t.records_of_actors(&[tid(2)]).unwrap().is_empty(), "no longer found by the node");
+}
+
 fn create(s: &mut Store, rng: &mut SeededRng, r: u8, actor: u8) -> RecordId {
     let mut t = s.transaction(rng).unwrap();
-    let id = t.record_create([r; 32], &[tid(actor)]).unwrap();
+    let id = t.record_create([r; 32], &named(&[tid(actor)])).unwrap();
     t.commit().unwrap();
     id
 }
@@ -29,7 +54,7 @@ fn crash_at_any_write_leaves_a_record_whole_or_absent() {
         let (d, mut rng, mut s) = fresh(cfg());
         d.backend.faults().at(k, Fault::Crash);
         let mut t = s.transaction(&mut rng).unwrap();
-        let id = t.record_create([7; 32], &[tid(1), tid(2)]).unwrap();
+        let id = t.record_create([7; 32], &named(&[tid(1), tid(2)])).unwrap();
         t.record_put_row(&id, b'm', &l(1), b"", b"member".to_vec()).unwrap();
         t.record_put_wide_row(&id, b'c', b"", b"cur".to_vec()).unwrap();
         let _ = t.commit();
@@ -134,8 +159,8 @@ fn eviction_drops_the_least_recently_used_not_in_use_whole() {
     t.record_put_row(&a, b'm', &l(1), b"", vec![1; 10]).unwrap();
     t.record_put_wide_row(&a, b'F', &1u64.to_be_bytes(), vec![0; 1000]).unwrap();
     // b most recent, a next, c least
-    t.record_used(&a, &[tid(1)]).unwrap();
-    t.record_used(&b, &[tid(2)]).unwrap();
+    t.record_used(&a, &named(&[tid(1)])).unwrap();
+    t.record_used(&b, &named(&[tid(2)])).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
     let total = t.records_total().unwrap();
@@ -164,7 +189,7 @@ fn a_copied_or_restored_store_keeps_its_records_as_of_the_copy() {
     let copy = d.copy();
     let mut t = s.transaction(&mut rng).unwrap();
     t.record_put_wide_row(&a, b'c', b"", b"later".to_vec()).unwrap();
-    let b = t.record_create([2; 32], &[tid(1)]).unwrap();
+    let b = t.record_create([2; 32], &named(&[tid(1)])).unwrap();
     t.commit().unwrap();
     let mut c = reopen(&copy);
     let mut t = c.transaction(&mut rng).unwrap();
@@ -208,9 +233,9 @@ fn a_lookup_reads_only_the_records_of_the_proven_actors() {
         for i in 0..n {
             let mut a = [0u8; 15];
             a[..4].copy_from_slice(&i.to_be_bytes());
-            t.record_create([1; 32], &[osis_base::Tid::from_bytes(a)]).unwrap();
+            t.record_create([1; 32], &named(&[osis_base::Tid::from_bytes(a)])).unwrap();
         }
-        t.record_create([2; 32], &[tid(0xfe)]).unwrap();
+        t.record_create([2; 32], &named(&[tid(0xfe)])).unwrap();
         assert_eq!(t.records_of_actors(&[tid(0xfe)]).unwrap().len(), 1, "at n = {n}");
     }
 }
@@ -266,7 +291,7 @@ fn using_a_record_moves_no_reader_of_module_rows() {
     assert_eq!((ask(&mut t, 5), ask(&mut t, 6)), ((Some(vec![1]), 1), (None, 0)));
     assert_eq!(runs(), 2);
     for (i, id) in ids.iter().enumerate().cycle().take(200) {
-        t.record_used(id, &[tid(i as u8 + 100)]).unwrap();
+        t.record_used(id, &named(&[tid(i as u8 + 100)])).unwrap();
     }
     assert_eq!((ask(&mut t, 5), ask(&mut t, 6)), ((Some(vec![1]), 1), (None, 0)));
     assert_eq!(runs(), 0, "records used");

@@ -174,13 +174,13 @@ impl Side {
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let mut store = Store::open(Box::new(backend.clone()), Box::new(root.clone()), Box::new(SeededRng::from_u64(seed))).unwrap();
         let log = Log::default();
-        let record = store.with_tx(|t| t.record_create([seed as u8; 32], &[])).unwrap();
+        let record = store.with_tx(|t| t.record_create([seed as u8; 32], &osis_store::Named::default())).unwrap();
         Side { backend, root, streams: Streams::new(store.clone()), store, table: Table { log: log.clone(), ..Table::default() }, pipe: Pipe { log, ..Pipe::default() }, open: Open { record: Some(record), ..Open::default() }, reported: Vec::new(), folded: 0, set: SyncSet::default(), down: false, faulty: false }
     }
 
     /// Another peer record in this side's store.
     fn new_record(&mut self, r: u8) -> RecordId {
-        self.store.with_tx(|t| t.record_create([r; 32], &[])).unwrap()
+        self.store.with_tx(|t| t.record_create([r; 32], &osis_store::Named::default())).unwrap()
     }
 
     fn hold(&mut self, s: SyncId, h: Holding) {

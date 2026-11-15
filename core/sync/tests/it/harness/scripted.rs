@@ -153,10 +153,11 @@ impl Holds for Table {
     fn creds(&mut self, s: &SyncId) -> Option<Arc<Creds>> {
         self.creds.get(s).cloned()
     }
-    fn actors(&mut self, proven: &Proven) -> Vec<Tid> {
-        let mut v = proven.actors();
-        v.sort();
-        v
+    fn named(&mut self, proven: &Proven) -> osis_store::Named {
+        osis_store::Named { account: proven.account.as_ref().map(|(r, k)| (r.tid(), *k)), node: proven.node, key_actors: proven.key_actors.keys().copied().collect() }
+    }
+    fn counts(&mut self, named: &osis_store::Named) -> Vec<Tid> {
+        named.actors()
     }
     fn judge(&mut self, s: &SyncId, actors: &[Tid]) -> J {
         let js: Vec<J> = actors.iter().filter_map(|a| self.j.get(&(*s, *a)).copied()).collect();
@@ -353,6 +354,11 @@ fn account_record(n: u8) -> osis_base::CreationRecord {
 /// Account `n`, proved.
 pub fn account(n: u8) -> Proven {
     Proven { account: Some((account_record(n), [n; 32])), ..Proven::default() }
+}
+
+/// What a record of a peer proving `account(n)` names.
+pub fn named(n: u8) -> osis_store::Named {
+    osis_store::Named { account: Some((tid(n), [n; 32])), ..osis_store::Named::default() }
 }
 
 /// Account `n`'s tid.

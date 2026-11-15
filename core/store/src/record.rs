@@ -42,14 +42,41 @@ const WIDE: &[u8] = &[kind::RECORD, b'w'];
 /// A module row of a record: its sync ID, key and value.
 pub type RecordRow = (SyncId, Vec<u8>, Vec<u8>);
 
+/// The actors a record names: what the peer's last session proved and those proofs counted for
+/// then (spec/sync-opens.md §2-§3), each kept with what it is judged again by.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Named {
+    /// Its account, with the key it proved with.
+    pub account: Option<(Tid, [u8; 32])>,
+    /// Its node, a node of this node's account then.
+    pub node: Option<Tid>,
+    /// The key actors it proved by their own keys, ascending.
+    pub key_actors: Vec<Tid>,
+}
+
+impl Named {
+    /// Every actor named, ascending.
+    pub fn actors(&self) -> Vec<Tid> {
+        let mut v: Vec<Tid> = self.account.map(|(a, _)| a).into_iter().chain(self.node).chain(self.key_actors.iter().copied()).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    /// Names no actor: a connection keeping no record.
+    pub fn is_empty(&self) -> bool {
+        self.account.is_none() && self.node.is_none() && self.key_actors.is_empty()
+    }
+}
+
 /// A record as held.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
     pub id: RecordId,
     /// The pair key: 32 bytes only the two nodes know.
     pub r: [u8; 32],
-    /// The proven actors last seen. Only actors the session's proofs count (`Transaction::record_create`).
-    pub actors: Vec<Tid>,
+    /// The actors last named (`Transaction::record_create`).
+    pub named: Named,
     /// Its place in the LRU order: higher is more recent.
     pub used: u64,
     /// Bytes of its module rows.
@@ -85,8 +112,17 @@ fn row_parts(rest: &[u8]) -> Result<(u8, SyncId, &[u8]), Error> {
 impl Record {
     fn encode(&self) -> Vec<u8> {
         let mut w = W::new();
-        w.raw(&self.r).u32(self.actors.len() as u32);
-        for a in &self.actors {
+        w.raw(&self.r);
+        let n = &self.named;
+        w.u8(u8::from(n.account.is_some()) | u8::from(n.node.is_some()) << 1);
+        if let Some((a, k)) = &n.account {
+            w.raw(a.as_bytes()).raw(k);
+        }
+        if let Some(x) = &n.node {
+            w.raw(x.as_bytes());
+        }
+        w.u32(n.key_actors.len() as u32);
+        for a in &n.key_actors {
             w.raw(a.as_bytes());
         }
         w.u64(self.used).u64(self.row_bytes);
@@ -96,20 +132,26 @@ impl Record {
     fn decode(id: RecordId, b: &[u8]) -> Result<Record, Error> {
         let mut r = R::new(b);
         let key: [u8; 32] = r.array()?;
+        let flags = r.u8()?;
+        if flags > 3 {
+            return Err(Error::Corrupt("peer record"));
+        }
+        let account = if flags & 1 != 0 { Some((Tid::from_bytes(r.array()?), r.array()?)) } else { None };
+        let node = if flags & 2 != 0 { Some(Tid::from_bytes(r.array()?)) } else { None };
         let n = r.u32()? as usize;
-        let mut actors = Vec::with_capacity(n.min(b.len() / TID_LEN));
+        let mut key_actors = Vec::with_capacity(n.min(b.len() / TID_LEN));
         for _ in 0..n {
-            actors.push(Tid::from_bytes(r.array()?));
+            key_actors.push(Tid::from_bytes(r.array()?));
         }
         let (used, row_bytes) = (r.u64()?, r.u64()?);
         r.end()?;
-        Ok(Record { id, r: key, actors, used, row_bytes })
+        Ok(Record { id, r: key, named: Named { account, node, key_actors }, used, row_bytes })
     }
 
     /// The bytes this record's rows take: what `RECORD_BUDGET` counts.
     fn cost(&self) -> u64 {
         let core = self.encode().len() + CORE.len() + 16;
-        let actors = self.actors.len() * (ACTOR.len() + TID_LEN + 16);
+        let actors = self.named.actors().len() * (ACTOR.len() + TID_LEN + 16);
         let used = USED.len() + 8 + 16;
         (core + actors + used) as u64 + self.row_bytes
     }
@@ -157,15 +199,14 @@ impl Transaction<'_> {
         self.cat_get(&core_key(id))?.map(|b| Record::decode(*id, &b)).transpose()
     }
 
-    /// A new record with pair key `r` for `actors`, the most recently used. `actors` must be
-    /// actors the session's proofs count: until accounts sign, key actors alone (`Proven`), never
-    /// a chain-proved account, so a record cannot let one resume anything.
-    pub fn record_create(&mut self, r: [u8; 32], actors: &[Tid]) -> Result<RecordId, Error> {
+    /// A new record with pair key `r` naming `named`, the most recently used. `named` must be
+    /// what the session's proofs count for, so a record cannot let anything else resume.
+    pub fn record_create(&mut self, r: [u8; 32], named: &Named) -> Result<RecordId, Error> {
         let mut id = [0u8; 16];
         self.rng().fill_bytes(&mut id);
         let used = self.record_next_used()?;
-        let rec = Record { id, r, actors: actors.to_vec(), used, row_bytes: 0 };
-        for a in actors {
+        let rec = Record { id, r, named: named.clone(), used, row_bytes: 0 };
+        for a in &named.actors() {
             self.cat_put_to(&actor_key(a, &id), Vec::new(), Shred::No, false)?;
         }
         self.cat_put_to(&used_key(used, &id), Vec::new(), Shred::No, false)?;
@@ -203,19 +244,19 @@ impl Transaction<'_> {
         Ok(out)
     }
 
-    /// `id` was taken by a connection: it becomes most recently used, naming `actors` from now on.
-    pub fn record_used(&mut self, id: &RecordId, actors: &[Tid]) -> Result<(), Error> {
+    /// `id` was taken by a connection: it becomes most recently used, naming `named` from now on.
+    pub fn record_used(&mut self, id: &RecordId, named: &Named) -> Result<(), Error> {
         let Some(mut rec) = self.record(id)? else { return Err(Error::Corrupt("peer record")) };
         let before = rec.cost();
-        for a in &rec.actors {
+        for a in &rec.named.actors() {
             self.cat_remove(&actor_key(a, id), Shred::No)?;
         }
-        for a in actors {
+        for a in &named.actors() {
             self.cat_put_to(&actor_key(a, id), Vec::new(), Shred::No, false)?;
         }
         self.cat_remove(&used_key(rec.used, id), Shred::No)?;
         rec.used = self.record_next_used()?;
-        rec.actors = actors.to_vec();
+        rec.named = named.clone();
         self.cat_put_to(&used_key(rec.used, id), Vec::new(), Shred::No, false)?;
         self.record_store(&rec, before)
     }
@@ -365,7 +406,7 @@ impl Transaction<'_> {
             t.cat_remove(&k, Shred::Yes).map(drop)
         })?;
         self.cat_each(&[WIDE, &id].concat(), |t, k, _| t.cat_remove(&k, Shred::Yes).map(drop))?;
-        for a in &rec.actors {
+        for a in &rec.named.actors() {
             self.cat_remove(&actor_key(a, &id), Shred::No)?;
         }
         self.cat_remove(&used_key(rec.used, &id), Shred::No)?;

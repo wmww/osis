@@ -162,7 +162,7 @@ pub trait Ground: Net {
     /// The `until` of member S on `conn` (opens: a member being ended).
     fn until(&self, conn: ConnId, s: &SyncId) -> Option<Position>;
     /// The records holding S as a member (opens).
-    fn records_holding(&self, s: &SyncId) -> Result<BTreeSet<RecordId>>;
+    fn records_holding(&mut self, s: &SyncId) -> Result<BTreeSet<RecordId>>;
     /// This node's commits and self-removals with a body under S (engine).
     fn own_commits(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>>;
     /// The self-removals whose secrets wait on being held elsewhere (engine).

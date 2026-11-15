@@ -33,7 +33,9 @@ use crate::types::{ConnId, Credential, Cursor, Cx, Position, RecordId, Result, S
 use crate::unread::Unread;
 use cred::{Bind, Shown, Tested, beacon_of, source_class};
 use holds::{Creds, Holds, NodeHolds};
-use osis_base::{SyncId, Tid, WallMs};
+pub use holds::counted;
+use osis_store::Named;
+use osis_base::{SyncId, WallMs};
 use osis_crypto::NodeRng;
 use osis_crypto::kdf::{members_digest, pair_key, resume_tag, resumed_tag};
 use osis_engine::sync::J;
@@ -132,7 +134,7 @@ pub struct Work {
 #[derive(Clone, Debug)]
 struct Record {
     r: [u8; 32],
-    actors: Vec<Tid>,
+    named: Named,
     kept: bool,
     members: BTreeMap<SyncId, Member>,
     /// The beacon each member was opened by (none: by J).
@@ -252,9 +254,9 @@ struct WalkState {
 struct Conn {
     bind: Bind,
     proven: Proven,
-    /// The actors the peer proved, as judged at its proof: what a record of this connection names
-    /// (none: no record).
-    named: Vec<Tid>,
+    /// The actors the peer's proofs counted for at its proof: what a record of this connection
+    /// names (none: no record). Who the peer is now: `counted`.
+    named: Named,
     phase: Phase,
     rec: Option<RecordId>,
     agree: Agree,
@@ -318,14 +320,14 @@ impl Changed {
 /// and a record evicted. Bound: one entry per kept record (`RECORD_BUDGET`).
 #[derive(Clone, Debug, Default)]
 struct Acks {
-    rec: BTreeMap<RecordId, (u64, Vec<Tid>)>,
-    by_actors: BTreeMap<Vec<Tid>, BTreeSet<(u64, RecordId)>>,
+    rec: BTreeMap<RecordId, (u64, Named)>,
+    by_actors: BTreeMap<Named, BTreeSet<(u64, RecordId)>>,
     /// Per actors, the highest `acked_pos` of their records.
-    by_pos: BTreeSet<(u64, Vec<Tid>)>,
+    by_pos: BTreeSet<(u64, Named)>,
 }
 
 impl Acks {
-    fn set(&mut self, id: RecordId, now: Option<(u64, Vec<Tid>)>) {
+    fn set(&mut self, id: RecordId, now: Option<(u64, Named)>) {
         if let Some((p, a)) = self.rec.remove(&id) {
             self.regroup(&a, |g| {
                 g.remove(&(p, id));
@@ -340,8 +342,8 @@ impl Acks {
     }
 
     /// Changes the records of actors `a` by `f`, keeping their highest position in `by_pos`.
-    fn regroup(&mut self, a: &[Tid], f: impl FnOnce(&mut BTreeSet<(u64, RecordId)>)) {
-        let g = self.by_actors.entry(a.to_vec()).or_default();
+    fn regroup(&mut self, a: &Named, f: impl FnOnce(&mut BTreeSet<(u64, RecordId)>)) {
+        let g = self.by_actors.entry(a.clone()).or_default();
         let was = g.last().map(|(p, _)| *p);
         f(g);
         let now = g.last().map(|(p, _)| *p);
@@ -350,10 +352,10 @@ impl Acks {
         }
         if was != now {
             if let Some(p) = was {
-                self.by_pos.remove(&(p, a.to_vec()));
+                self.by_pos.remove(&(p, a.clone()));
             }
             if let Some(p) = now {
-                self.by_pos.insert((p, a.to_vec()));
+                self.by_pos.insert((p, a.clone()));
             }
         }
     }
@@ -362,7 +364,7 @@ impl Acks {
 /// How a peer counts for `Opens::wait_for`, by the actors it proved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Peer {
-    /// Never waited for (this account's own nodes, for a self-removal).
+    /// Never waited for (this account's own nodes, for a self-removal; a peer no one now).
     Skipped,
     /// The rosters say it may hold S (`Engine::roster_holders`): waited for also while its
     /// record has not acknowledged S's current credentials.
@@ -583,10 +585,10 @@ impl Opens {
         self.records.get(&id).filter(|r| r.kept).map(|_| id)
     }
 
-    /// The actors `conn`'s proofs count for (what its record names), as judged at its proofs
-    /// (spec/sync-opens.md §2-§3).
-    pub fn proven(&self, conn: ConnId) -> &[Tid] {
-        self.conns.get(&conn).map_or(&[], |c| &c.named)
+    /// The actors `conn`'s proofs counted for at its proofs (what its record names,
+    /// spec/sync-opens.md §2-§3); who the peer is now is `counted` of these.
+    pub fn named(&self, conn: ConnId) -> Named {
+        self.conns.get(&conn).map(|c| c.named.clone()).unwrap_or_default()
     }
 
     /// How many of the peer's filter generations have arrived through `conn`'s record: moves at
@@ -610,10 +612,31 @@ impl Opens {
         self.conns.get(&conn).is_some_and(|c| c.phase == Phase::Running && c.agree == Agree::Done)
     }
 
-    /// The kept records holding S as a member (spec/sync-status.md §1: a complete pass waits for
-    /// each while it does): as connections hold them, else as written. Stamped per S (`peers`).
-    /// O(records holding S): read as a pass begins and as it is judged.
-    pub fn records_holding(&self, store: &Store, s: &SyncId) -> Result<BTreeSet<RecordId>> {
+    /// The kept records holding S as a member whose peer is still someone (`counted`: a record
+    /// whose actors count for nothing now can never be taken again), spec/sync-status.md §1: a
+    /// complete pass waits for each while it does. Stamped per S (`peers`); what `counted` reads
+    /// is the caller's to follow. O(records holding S): read as a pass begins and as it is judged.
+    pub fn records_holding(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId) -> Result<BTreeSet<RecordId>> {
+        let mut out = BTreeSet::new();
+        for id in self.holders_of(store, s)? {
+            if !counted(engine, &self.named_of(store, &id)?).is_empty() {
+                out.insert(id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Record `id`'s named actors: as a connection holds it, else as written.
+    fn named_of(&self, store: &Store, id: &RecordId) -> Result<Named> {
+        Ok(match self.records.get(id) {
+            Some(r) => r.named.clone(),
+            None => store.with_read(|t| t.record(id))?.map(|r| r.named).unwrap_or_default(),
+        })
+    }
+
+    /// The kept records holding S as a member: as connections hold them, else as written.
+    /// Stamped per S (`peers`).
+    fn holders_of(&self, store: &Store, s: &SyncId) -> Result<BTreeSet<RecordId>> {
         self.peers.read(s);
         let stored = store.with_read(|t| t.records_with_row(s, crate::store::rows::tag::MEMBER, b"", usize::MAX))?;
         let held = |id: &RecordId| self.records.get(id).filter(|r| r.kept).map(|r| r.members.contains_key(s));
@@ -624,45 +647,46 @@ impl Opens {
     /// Lost access, spec/commits.md §5 Lifetimes, spec/sync-judgement.md §5 Emptying: the duties
     /// that act once no peer could still take or tell what S holds): a peer `peer` does not skip
     /// with S open on a connection up now, or whose kept record holds S as a member, or that the
-    /// rosters say may hold S (`Peer::MayHold`) no kept record of which (by the actors it names:
-    /// a peer is what it proves) has acknowledged S's current credentials (`acked_pos` below
+    /// rosters say may hold S (`Peer::MayHold`) no kept record of which (by what it names: a
+    /// peer is what it proves, `counted`) has acknowledged S's current credentials (`acked_pos` below
     /// `changed_at(S)`; every record before S has one). A peer whose record acknowledged them
     /// with S not a member does not hold S; one with no record was never met; a record evicted
     /// (`RECORD_BUDGET`) goes with its wait. Before the
     /// records are indexed (the first settle), waited. Stamped per S (`peers`); what `peer`
     /// reads is the caller's to follow. O(connections and records holding S, and records not
     /// acknowledging S, by their actors).
-    pub fn wait_for(&self, store: &Store, s: &SyncId, mut peer: impl FnMut(&[Tid]) -> Peer) -> Result<bool> {
+    pub fn wait_for(&self, store: &Store, s: &SyncId, mut peer: impl FnMut(&Named) -> Peer) -> Result<bool> {
         self.peers.read(s);
         if self.holding.get(s).into_iter().flatten().any(|c| self.conns.get(c).is_some_and(|k| peer(&k.named) != Peer::Skipped)) {
             return Ok(true);
         }
-        for id in self.records_holding(store, s)? {
-            let actors = match self.records.get(&id) {
-                Some(r) => r.actors.clone(),
-                None => store.with_read(|t| t.record(&id))?.map(|r| r.actors).unwrap_or_default(),
-            };
-            if peer(&actors) != Peer::Skipped {
+        for id in self.holders_of(store, s)? {
+            if peer(&self.named_of(store, &id)?) != Peer::Skipped {
                 return Ok(true);
             }
         }
         let Some(acks) = &self.acks else { return Ok(true) };
         let below = self.changed.at.get(s).map_or(u64::MAX, |(p, ..)| *p);
-        Ok(acks.by_pos.range(..(below, Vec::new())).any(|(_, a)| peer(a) == Peer::MayHold))
+        Ok(acks.by_pos.range(..(below, Named::default())).any(|(_, a)| peer(a) == Peer::MayHold))
     }
 
-    /// `wait_for` judged by the rosters held here (`Engine::roster_holders`): the one rule every
-    /// duty reads (leave, a self-removal's drop, life's heard out, read's emptying, a pass with no
-    /// source). `own`: this account's own nodes count (a self-removal skips them, and a peer
-    /// proving only this account: its node unproven, a dialer lacking this node's `reach.0`,
-    /// spec/sync-status.md §2).
+    /// `wait_for` judged by the rosters held here (`Engine::roster_holders`) on who each peer is
+    /// now (`counted`): the one rule every duty reads (leave, a self-removal's drop, life's heard
+    /// out, read's emptying, a pass with no source). A peer whose proofs counted for actors and
+    /// count for none now (a removed node of this account, a node whose account's epoch closed)
+    /// is no one to wait for. `own`: this account's own nodes count (a self-removal skips them,
+    /// and a peer proving only this account: its node unproven, a dialer lacking this node's
+    /// `reach.0`, spec/sync-status.md §2).
     pub fn waited(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId, own: bool) -> Result<bool> {
         let roster = engine.roster_holders(s)?;
         let me = if own { None } else { engine.account()?.map(|(p, _)| p) };
-        self.wait_for(store, s, |actors| {
-            if !own && actors.iter().any(|t| Some(*t) == me || engine.own_node(t)) {
+        self.wait_for(store, s, |named| {
+            let actors = counted(engine, named);
+            // a peer no one now, or (`!own`) this account or one of its nodes
+            let gone = actors.is_empty() && !named.is_empty();
+            if gone || !own && actors.iter().any(|t| Some(*t) == me || engine.own_node(t)) {
                 Peer::Skipped
-            } else if roster.may_hold(actors) {
+            } else if roster.may_hold(&actors) {
                 Peer::MayHold
             } else {
                 Peer::Unlisted
@@ -887,7 +911,7 @@ impl Opens {
                 let mut acks = Acks::default();
                 for rec in t.records_all()? {
                     let pos = records::acked_pos(t, &rec.id)?;
-                    acks.set(rec.id, Some((pos, rec.actors)));
+                    acks.set(rec.id, Some((pos, rec.named)));
                 }
                 Ok(acks)
             });
@@ -895,7 +919,7 @@ impl Opens {
                 Ok(mut acks) => {
                     // records in memory are newer than their rows
                     for (id, r) in self.records.iter().filter(|(_, r)| r.kept) {
-                        acks.set(*id, Some((r.acked_pos, r.actors.clone())));
+                        acks.set(*id, Some((r.acked_pos, r.named.clone())));
                     }
                     self.acks = Some(acks);
                     self.peers.wrote_all();
@@ -1015,7 +1039,7 @@ impl Opens {
 
     fn proved(&mut self, ctx: &mut Ctx, conn: ConnId, moved: &mut Vec<Moved>) {
         let Some((bind, proven)) = ctx.wire.bind(conn) else { return };
-        let named = ctx.holds.actors(&proven);
+        let named = ctx.holds.named(&proven);
         let mut c = Conn {
             bind,
             proven,
@@ -1046,7 +1070,7 @@ impl Opens {
             if !c.named.is_empty() {
                 // spec/sync-opens.md §3: Resume lists each record naming a proven actor of this
                 // session, most recent first.
-                let actors = c.named.clone();
+                let actors = c.named.actors();
                 let mut listed: Vec<(RecordId, [u8; 32])> = match ctx.store.with_read(|t| t.records_of_actors(&actors)) {
                     Ok(rs) => rs.into_iter().map(|r| (r.id, r.r)).collect(),
                     Err(e) => {
@@ -1084,15 +1108,15 @@ impl Opens {
         let Some(c) = self.conns.get(&conn) else { return };
         let (d, l) = if c.bind.dialer { (c.bind.own_challenge, c.bind.peer_challenge) } else { (c.bind.peer_challenge, c.bind.own_challenge) };
         let r = *pair_key(&d, &l).expose();
-        let id = self.new_record(ctx, r, Vec::new(), false);
+        let id = self.new_record(ctx, r, Named::default(), false);
         self.take(ctx, conn, id, false, moved);
     }
 
     /// A new record: a kept one is written now (before the answer naming it goes, and before
     /// any module writes rows in it); one kept nowhere lives in memory with its connection.
-    fn new_record(&mut self, ctx: &mut Ctx, r: [u8; 32], actors: Vec<Tid>, kept: bool) -> RecordId {
+    fn new_record(&mut self, ctx: &mut Ctx, r: [u8; 32], named: Named, kept: bool) -> RecordId {
         let id = if kept {
-            let made = ctx.store.with_tx(|t| t.record_create(r, &actors));
+            let made = ctx.store.with_tx(|t| t.record_create(r, &named));
             match made {
                 Ok(id) => id,
                 Err(e) => {
@@ -1103,7 +1127,7 @@ impl Opens {
         } else {
             random16(ctx.holds.rng())
         };
-        self.records.insert(id, Record { r, actors, kept, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walk: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None });
+        self.records.insert(id, Record { r, named, kept, members: BTreeMap::new(), basis: BTreeMap::new(), stopped: BTreeMap::new(), walk: BTreeMap::new(), acked_pos: 0, own: OwnFilter::default(), peer: None });
         self.acks_moved(id, None);
         id
     }
@@ -1137,16 +1161,19 @@ impl Opens {
             self.dirty(id).used = true;
         }
         let mut core = false;
-        let was = self.records.get(&id).filter(|r| r.kept).map(|r| (r.acked_pos, r.actors.clone()));
+        let was = self.records.get(&id).filter(|r| r.kept).map(|r| (r.acked_pos, r.named.clone()));
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(r) = self.records.get_mut(&id) else { return };
-        if r.kept && r.actors != c.named {
+        if r.kept && r.named != c.named {
             // spec/sync-opens.md §3: a session proving other actors than the record names starts
-            // with every credential pending and a whole filter.
-            r.actors = c.named.clone();
-            r.acked_pos = 0;
-            r.own.acked = 0;
-            c.whole_next = true;
+            // with every credential pending and a whole filter (an account's new key alone is
+            // the same actor, named by that key from now on: written as the record is used).
+            if r.named.actors() != c.named.actors() {
+                r.acked_pos = 0;
+                r.own.acked = 0;
+                c.whole_next = true;
+            }
+            r.named = c.named.clone();
             core = true;
         }
         c.rec = Some(id);
@@ -1222,10 +1249,10 @@ impl Opens {
             return;
         }
         let bind = c.bind;
-        let actors = c.named.clone();
+        let named = c.named.clone();
         let (d, l) = (bind.peer_challenge, bind.own_challenge);
         // A record is honoured only while a proven actor of this session is named by it.
-        let held = match ctx.store.with_read(|t| t.records_of_actors(&actors)) {
+        let held = match ctx.store.with_read(|t| t.records_of_actors(&named.actors())) {
             Ok(rs) => rs,
             Err(e) => {
                 self.failed(Err(e));
@@ -1238,7 +1265,7 @@ impl Opens {
         let (rid, tag) = match found {
             Some((rid, r)) => (rid, Some(resumed_tag(&r, &bind.listener_key, &d, &l))),
             // On no match a new record, written before the answer goes.
-            None => (self.new_record(ctx, *pair_key(&dnonce, &lnonce).expose(), actors, true), None),
+            None => (self.new_record(ctx, *pair_key(&dnonce, &lnonce).expose(), named, true), None),
         };
         ctx.wire.answer(conn, id, Msg::Resumed { id, nonce: lnonce, tag });
         self.take(ctx, conn, rid, true, moved);
@@ -1268,8 +1295,8 @@ impl Opens {
         let rid = match found {
             Some(rid) => rid,
             None => {
-                let actors = c.named.clone();
-                self.new_record(ctx, *pair_key(&nonce, &lnonce).expose(), actors, true)
+                let named = c.named.clone();
+                self.new_record(ctx, *pair_key(&nonce, &lnonce).expose(), named, true)
             }
         };
         self.take(ctx, conn, rid, true, moved);
@@ -1578,8 +1605,9 @@ impl Opens {
         let creds = self.changed.at.get(s).map(|(_, _, c)| c.clone())?;
         creds.holding?;
         let c = self.conns.get(&conn)?;
-        // spec/sync-opens.md §4 J: judged on the rosters held now, from what this connection proved.
-        let actors = ctx.holds.actors(&c.proven);
+        // spec/sync-opens.md §4 J: judged on the rosters held now, from what this connection's
+        // proofs count for now.
+        let actors = ctx.holds.counts(&c.named);
         let j = ctx.holds.judge(s, &actors);
         let mut ok = |e: &Option<osis_crypto::Epoch>| j != J::Departed || e.as_ref().is_some_and(|e| ctx.holds.covers_departures(s, e));
         let shows = creds.shows.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
@@ -2161,7 +2189,7 @@ impl Opens {
     /// Record `rid`'s `acked_pos` moves to `to` (written at `flush`).
     fn set_acked(&mut self, rid: RecordId, to: u64) {
         let Some(r) = self.records.get_mut(&rid) else { return };
-        let was = r.kept.then(|| (r.acked_pos, r.actors.clone()));
+        let was = r.kept.then(|| (r.acked_pos, r.named.clone()));
         r.acked_pos = to;
         self.dirty(rid).core = true;
         self.acks_moved(rid, was);
@@ -2171,8 +2199,8 @@ impl Opens {
     /// `acks` follows, and `peers` is stamped for each S whose `changed_at` lies between the
     /// two positions (every S past the lower one when the actors changed: who may hold S is
     /// judged by them). O(sync IDs stamped): what the record's next filter iterates.
-    fn acks_moved(&mut self, rid: RecordId, was: Option<(u64, Vec<Tid>)>) {
-        let now = self.records.get(&rid).filter(|r| r.kept).map(|r| (r.acked_pos, r.actors.clone()));
+    fn acks_moved(&mut self, rid: RecordId, was: Option<(u64, Named)>) {
+        let now = self.records.get(&rid).filter(|r| r.kept).map(|r| (r.acked_pos, r.named.clone()));
         if now == was {
             return;
         }

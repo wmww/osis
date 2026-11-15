@@ -194,7 +194,8 @@ impl Reports {
         let mut keys = None;
         let mut writers = 0;
         for conn in self.conns.clone() {
-            let Some(acct) = h.engine.writer_of(&s, &net.actors(conn))? else { continue };
+            let actors = crate::opens::counted(h.engine, &net.named(conn));
+            let Some(acct) = h.engine.writer_of(&s, &actors)? else { continue };
             writers += 1;
             if sent.to.contains(&To::Peer(acct)) || self.out.values().any(|o| *o == (s, key, acct)) {
                 continue;
