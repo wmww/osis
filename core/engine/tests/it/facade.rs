@@ -58,26 +58,9 @@ fn read_credentials_and_claim_key_spec_sync_ids_3() {
     assert_eq!(rc.head.as_ref().map(|s| s.id()), Some(head.id()));
     assert!(!rc.read_secrets.is_empty(), "a current read secret");
     assert_eq!(rc.proofs.first().map(|p| p.0), Some(head.id()), "the head's sync proof first");
-    assert_ne!(rc.roster, [0; 32]);
     let ck = e.claim_key(&home, &head.id()).unwrap().expect("this node is listed at genesis");
     let (_, Some(claims)) = &ids[0].path.steps[0] else { panic!("claim set held") };
     assert!(claims.claims.contains(&ck.verifying_key().to_bytes()));
-}
-
-// spec/sync-opens.md §4: the roster digest moves with a grant (no rotation needed).
-#[test]
-fn roster_digest_moves_with_a_grant_spec_sync_opens_4() {
-    let (mut lp, ps) = people(2);
-    let t = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.give_own_secrets(&t).unwrap();
-    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
-    // the thing in the synced group's closure: read here
-    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
-    add_item(&mut lp, 0, d, t);
-    let before = lp.peers[0].engine.read_credentials(&s).unwrap().expect("read").roster;
-    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
-    let after = lp.peers[0].engine.read_credentials(&s).unwrap().unwrap().roster;
-    assert_ne!(before, after);
 }
 
 // spec/sync-opens.md §4, spec/sync-ids.md §6 (Test: a reader's credentials, the recorded head, its
@@ -104,7 +87,6 @@ fn read_credentials_follow_a_rotation_and_its_step_spec_sync_opens_4() {
     assert_eq!(rotated.head.as_ref().map(|h| h.id()), before.head.as_ref().map(|h| h.id()), "no step yet");
     assert_ne!(rotated.read_secrets, before.read_secrets, "the new read secret");
     assert_eq!(rotated.sync_keys.len(), before.sync_keys.len() + 1, "the new sync key, held");
-    assert_ne!(rotated.roster, before.roster);
     let step = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("issued");
     let stepped = ask(&mut lp);
     assert_eq!(stepped.head.as_ref().map(|h| h.id()), Some(step.id()), "the new head");

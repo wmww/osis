@@ -260,7 +260,6 @@ impl Engine {
         {
             c.acting.push(id.keys().signing.clone());
         }
-        c.roster = self.roster_digest(&t);
         if let Some(e) = self.core.epochs(&t) {
             // each held sync secret's key derived once (a curve multiplication), then matched per step
             let held: Vec<(Epoch, Secret32, SigningSecret)> = e
@@ -371,16 +370,6 @@ impl Engine {
             }
         }
         Ok(None)
-    }
-
-    /// The digest of `t`'s roster as J reads it: its reader actor's holders for keys with their
-    /// roles (`key_holders`), sorted.
-    fn roster_digest(&self, t: &Tid) -> [u8; 32] {
-        let a = self.core.reader_of(t);
-        let mut holders = self.core.key_holders(&a);
-        holders.sort();
-        let v = osis_base::Value::List(holders.into_iter().map(|(m, r)| osis_base::Value::List(vec![osis_base::Value::Tid(m), osis_base::Value::Int(i64::from(r.id()))])).collect());
-        osis_base::hash::hash(&osis_base::encode(&v))
     }
 
     /// `caps^.0` of this node (spec/data-model.md §9; absent: the defaults, an empty policy).

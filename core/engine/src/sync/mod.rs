@@ -298,9 +298,6 @@ pub struct ReadCredentials {
     /// The signing keys of the key actors this node acts for on S (the link it redeems): their
     /// static entries are tested (spec/sync-opens.md §4).
     pub acting: Vec<osis_crypto::SigningSecret>,
-    /// A digest of S's roster as J judges it (its reader actor's holders for keys, each with its
-    /// role): moves with every grant, change or removal, rotated or not (spec/sync-opens.md §4).
-    pub roster: [u8; 32],
     /// The sync proof (spec/sync-ids.md §2) of each recorded step whose sync key this node holds,
     /// deepest first: the head's is what a reader shows, the rest what the walk tests
     /// (spec/sync-ids.md §6 Walk).
@@ -310,7 +307,7 @@ pub struct ReadCredentials {
     pub sync_keys: Vec<(Epoch, SigningSecret)>,
 }
 
-type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, &'a [(Epoch, Secret32)], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, [u8; 32], &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>);
+type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, &'a [(Epoch, Secret32)], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>);
 
 impl ReadCredentials {
     /// What tells two apart (`Engine::read_credentials` is a memo): signing keys by their public
@@ -318,7 +315,7 @@ impl ReadCredentials {
     fn public(&self) -> PublicCredentials<'_> {
         let acting = self.acting.iter().map(SigningSecret::verifying_key).collect();
         let sync_keys = self.sync_keys.iter().map(|(e, k)| (*e, k.verifying_key())).collect();
-        (self.head.as_ref().map(Step::id), &self.keys, &self.read_secrets, &self.statics, acting, self.roster, &self.proofs, sync_keys)
+        (self.head.as_ref().map(Step::id), &self.keys, &self.read_secrets, &self.statics, acting, &self.proofs, sync_keys)
     }
 }
 
