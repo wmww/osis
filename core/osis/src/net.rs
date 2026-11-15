@@ -225,13 +225,16 @@ impl crate::Osis {
     /// (`Osis::connect_socket` with this store's directory) act as this node's main actor, with
     /// no authentication (there is no security boundary between them); the kernel refuses
     /// others. `Invalid` for a store in memory (no directory names it); `Storage` when the
-    /// socket's directory is not safely this user's; `Network` without a runtime.
-    pub fn listen_socket(&self) -> Result<()> {
+    /// socket's directory is not safely this user's; `Network` without a runtime. Returns the
+    /// socket's path, accepting clients from then on.
+    pub fn listen_socket(&self) -> Result<std::path::PathBuf> {
         self.local("listen_socket")?;
         let Some(dir) = &self.inner.store_dir else { return Err(Error::Invalid("a store in memory has no client socket".into())) };
-        let url = osis_transport::unix::url_of(&crate::sources::socket_path(dir)?);
+        let path = crate::sources::socket_path(dir)?;
+        let url = osis_transport::unix::url_of(&path);
         let secret = self.locked(|l| StaticSecret::from_bytes(*l.secret.as_bytes()));
-        self.inner.net.listen(Listening::Socket, Some(vec![url]), secret).map(drop)
+        self.inner.net.listen(Listening::Socket, Some(vec![url]), secret)?;
+        Ok(path)
     }
 
     /// Listens at `urls` (`quic://example.org:4040`) under this node's one key: other nodes sync

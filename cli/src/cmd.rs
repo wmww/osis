@@ -1274,13 +1274,16 @@ fn serve(ctx: &mut Ctx<'_>, listen: &[String]) -> anyhow::Result<()> {
     let urls = listen.iter().map(|u| u.parse()).collect::<osis::Result<Vec<osis::Url>>>()?;
     let db = ctx.db.clone();
     // other invocations on this store become its clients (notes/cli.md Design)
-    crate::listen(&ctx.sel, &db)?;
-    if !urls.is_empty() {
-        for a in db.listen(&urls).map_err(|e| exit(6, format!("listen: {e}")))? {
-            ctx.one("address", a)?;
-        }
-        ctx.out.flush()?;
+    let socket = crate::listen(&ctx.sel, &db)?;
+    for a in if urls.is_empty() { Vec::new() } else { db.listen(&urls).map_err(|e| exit(6, format!("listen: {e}")))? } {
+        ctx.one("address", a)?;
     }
+    // the socket's line says the daemon takes clients: a command run before would open the store
+    // itself
+    if let Some(p) = socket {
+        ctx.one("socket", p.display())?;
+    }
+    ctx.out.flush()?;
     // the address lines above are a hard failure; the diagnostics after them are best effort (a
     // caller that read only the addresses and closed the pipe does not end it)
     diag(ctx, true, true)

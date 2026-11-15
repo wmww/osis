@@ -704,7 +704,7 @@ fn verbose_prints_diagnostics_plan_cli_4() {
     assert!(o.err.contains("\"kind\":\"NotSynced\""), "{}", o.err);
 }
 
-// notes/cli.md Design (daemon), notes/client-port.md §5: a socket directory another user made first (here: one of the wrong mode) does not stop `serve`: it warns and serves without the client socket (the one test here that runs the binary)
+// notes/cli.md Design (daemon), notes/client-port.md §5: a socket directory another user made first (here: one of the wrong mode) does not stop `serve`: it warns and serves without the client socket; with a good one, its first line is the socket's path (the one test here that runs the binary)
 #[test]
 fn serve_survives_a_bad_socket_dir() {
     use std::io::BufRead;
@@ -725,6 +725,17 @@ fn serve_survives_a_bad_socket_dir() {
     let _ = c.kill();
     let _ = c.wait();
     assert!(warned && running);
+    // a socket it may use: its line, once it takes clients, is the socket's path
+    std::fs::set_permissions(xdg.join("osis"), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &xdg).args(["--no-lan", "-s", ds, "serve"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().unwrap();
+    let out = std::io::BufReader::new(c.stdout.take().unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(out.lines().map_while(Result::ok).next()));
+    let line = rx.recv_timeout(std::time::Duration::from_secs(60)).ok().flatten();
+    let _ = c.kill();
+    let _ = c.wait();
+    let line = line.expect("a socket line");
+    assert!(line.starts_with(xdg.join("osis").to_str().unwrap()) && line.ends_with(".sock"), "{line}");
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&xdg);
 }

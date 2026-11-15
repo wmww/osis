@@ -19,8 +19,19 @@ cmd=$1; shift
 short() { git rev-parse --short=9 "$1"; }
 need() { [ -x "$1" ] || { echo "no $1: run build first" >&2; exit 1; }; }
 fresh() { [ -e "$1" ] && { echo "$1 exists" >&2; exit 1; }; mkdir -m 700 "$1"; }
-# the daemon starts only after every direct command on the store has ended
-daemon() { systemd-run --user --unit "$1" "$2" --no-lan -s "$3/store" --dial "$4" serve >/dev/null; }
+# the daemon starts only after every direct command on the store has ended, and returns once it
+# takes clients (its socket line): a command run before would open the store itself and stop it
+daemon() {
+	t=$(date +%s)
+	systemd-run --user --unit "$1" "$2" --no-lan -s "$3/store" --dial "$4" serve >/dev/null
+	i=0
+	until journalctl --user -u "$1" --since "@$t" -o cat | grep -q '\.sock$'; do
+		i=$((i + 1))
+		[ "$i" -lt 30 ] || { echo "$1 takes no clients yet: journalctl --user -u $1" >&2; exit 1; }
+		sleep 1
+	done
+	echo "post through it: $2 -s $3/store chat post $(cat "$3/chat" 2>/dev/null || echo CHAT) TEXT" >&2
+}
 host_daemon() { systemd-run --user --unit "$U-dogfood-host-$1" "$2" --no-lan -s "$3/store" serve --listen "$(cat "$3/listen")" >/dev/null; }
 # the cursor of a `chat read` (empty for an empty chat)
 cursor() { tail -n 1 | sed -n 's/.*"cursor":"\([^"]*\)".*/\1/p'; }

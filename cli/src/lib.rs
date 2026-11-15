@@ -255,16 +255,19 @@ fn client_of_node(g: &Global) -> anyhow::Result<Osis> {
     Ok(crate::cmd::within(connect_wait(g)?, Osis::connect(&[login], app_config(g)))?)
 }
 
-/// Serves the client port while `serve` runs, on the store's socket. A memory store has none.
-pub(crate) fn listen(sel: &Store, db: &Osis) -> anyhow::Result<()> {
-    let Store::Dir(_) = sel else { return Ok(()) };
+/// Serves the client port while `serve` runs, on the store's socket, returning its path. A memory
+/// store has none.
+pub(crate) fn listen(sel: &Store, db: &Osis) -> anyhow::Result<Option<PathBuf>> {
+    let Store::Dir(_) = sel else { return Ok(None) };
     match db.listen_socket() {
         // a socket directory another user made first (no XDG_RUNTIME_DIR, `/tmp/osis-<uid>`) costs
         // the clients, never the daemon
-        Err(Error::Storage(e)) => eprintln!("warning: serving without a client socket: {e}"),
-        r => r?,
+        Err(Error::Storage(e)) => {
+            eprintln!("warning: serving without a client socket: {e}");
+            Ok(None)
+        }
+        r => Ok(Some(r?)),
     }
-    Ok(())
 }
 
 /// Creates a store; refuses a non-empty directory.
