@@ -1334,10 +1334,10 @@ fn cached_placement_between_siblings_spec_6() {
     assert_eq!(read_str(&d.state), format!("{}nnnnmmooo{}", "x".repeat(40), "x".repeat(40)));
 }
 
-/// §4.5 (`DeltaBuilder`): sequence ops at one position resolve against a kept view of it once the
+/// §4.5 (net effect): `DeltaBuilder`'s sequence ops at one position resolve against a kept view of it once the
 /// delta has written there; an op elsewhere drops it; the result equals one-by-one commits.
 #[test]
-fn batch_keeps_sequence_view_spec_4_5() {
+fn delta_keeps_sequence_view_spec_4_5() {
     let ty = Ty::Struct([(1, Ty::Text), (2, Ty::Register)].into_iter().collect());
     let view = TyView(ty);
     let mut a = Replica::new(1);
