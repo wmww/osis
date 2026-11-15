@@ -7,7 +7,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::{RETENTION, RetentionEntry, RetentionSetting};
-use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, History, Osis, Purge, PurgeBy, ReadOnly, Result, Retention, Tid, Time};
+use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, GrantOpts, History, Osis, Purge, PurgeBy, ReadOnly, Result, Retention, Role, Tid, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -71,6 +71,23 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge), purge })?;
     w.commit()?;
     Ok(c)
+}
+
+/// Makes `account`'s nodes able to relay chat `c` without reading it: sync on `c` and on the K of
+/// each of `c`'s links that works (a joiner redeems a link at a node sharing K, spec/permissions.md
+/// §7), each skipped where `account` holds a role already. `account` keeps them unread once it
+/// accepts each (`Osis::accept_invite`); a link made later needs `relay` again. Returns the
+/// things granted.
+pub fn relay(db: &Osis, c: Tid, account: Tid) -> Result<Vec<Tid>> {
+    let ks = db.links()?.into_iter().filter(|l| l.target == c).map(|l| l.id.actor());
+    let mut granted = Vec::new();
+    for t in std::iter::once(c).chain(ks) {
+        if !db.grants(t)?.contains_key(&account) {
+            db.grant(t, account, Role::Sync, GrantOpts::default())?;
+            granted.push(t);
+        }
+    }
+    Ok(granted)
 }
 
 /// The retention a message on chat `c` carries: who may delete it, as the chat's settings say.

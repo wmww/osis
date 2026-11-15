@@ -3,8 +3,8 @@
 #   tools/dogfood-member.sh build PIN                  in a claimed worktree: build osis-cli at PIN into ~/osis-dogfood/bin/osis-SHORT
 #   tools/dogfood-member.sh host PIN LISTEN            the shared node: new store host-SHORT, its card and account, its daemon listening at LISTEN (quic://IP:PORT)
 #   tools/dogfood-member.sh create NAME PIN ADDR HOST  new own store NAME-SHORT dialing ADDR (URL#KEY), a new channel, its link,
-#                                                      sync grants on the channel and the link's K to the shared node's account (HOST: its host-SHORT dir copied here, or card and account files)
-#   tools/dogfood-member.sh accept PIN CHAT K          on the shared node: keep the channel and K unread (accepts the sync grants)
+#                                                      `chat relay` to the shared node's account (HOST: its host-SHORT dir copied here, or card and account files)
+#   tools/dogfood-member.sh accept PIN CHAT K          on the shared node: keep the channel and K unread (lists the invitations, accepts both)
 #   tools/dogfood-member.sh join NAME PIN ADDR LINK    new own store NAME-SHORT dialing ADDR, joined by LINK through the shared node
 # Store dirs keep address, chat, k, link, cursor (members) or card, account, address (host): never commit them.
 set -eu
@@ -54,16 +54,16 @@ create)
 	c=$(cat "$dir/chat")
 	o chat link "$c" > "$dir/link"
 	o link ls "$c" | awk '{ print $1 }' > "$dir/k"
-	o grant "$c" "$(cat "$host/account")" sync
-	o grant "$(cat "$dir/k")" "$(cat "$host/account")" sync
+	o chat relay "$c" "$(cat "$host/account")" >/dev/null
 	"$bin" -s "$dir/store" --json chat read "$c" | tail -n 1 | sed 's/.*"cursor":"\([^"]*\)".*/\1/' > "$dir/cursor"
 	daemon "osis-$name-$s" "$bin" "$dir" "$addr"
 	echo "$dir"
 	;;
 accept)
 	pin=$1 c=$2 k=$3; s=$(short "$pin"); bin="$DF/bin/osis-$s"; dir="$DF/host-$s"
-	"$bin" -s "$dir/store" group add home "$c" --subgroup >/dev/null
-	"$bin" -s "$dir/store" group add home "$k" --subgroup >/dev/null
+	# both must be invitations here first: one whose grant has not arrived accepts nothing
+	"$bin" -s "$dir/store" invitations
+	"$bin" -s "$dir/store" accept "$c" "$k"
 	"$bin" -s "$dir/store" status
 	;;
 join)

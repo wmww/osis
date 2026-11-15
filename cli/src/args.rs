@@ -332,6 +332,18 @@ pub enum Cmd {
         #[arg(long, value_name = "WHAT")]
         reads: Option<String>,
     },
+    /// Things this account was granted that no node of it syncs yet: thing, role, granting account
+    /// (`-`: not known here), `taken` once this node holds the grant's keys, `acted` once accepted,
+    /// filed elsewhere or unsynced before
+    Invitations,
+    /// Sync each T: list it as a subgroup of G, a synced group (default home). Check `invitations`
+    /// first: a T whose grant has not arrived is listed and syncs nothing until it does
+    Accept {
+        #[arg(required = true)]
+        t: Vec<String>,
+        #[arg(long, value_name = "G", default_value = "home")]
+        into: String,
+    },
     /// Make HOLDER's role on T this one: read, write, admin, or none to remove
     SetRole {
         t: String,
@@ -598,6 +610,10 @@ pub enum ChatCmd {
     },
     /// Joins by link: prints the chat's tid
     Join { link: String },
+    /// Lets ACCOUNT's nodes carry the chat without reading it: sync on it and on the K of each of
+    /// its links that works (joiners redeem a link where K syncs). Prints what it granted; ACCOUNT
+    /// then `accept`s each. A link made later needs `relay` again
+    Relay { chat: String, account: String },
     /// Removes a participant
     Kick {
         chat: String,

@@ -424,6 +424,29 @@ fn sharing_commands_local_plan_cli_4() {
     assert_eq!(s.ok(&["--json", "group", "source", &g]).line(), "{\"source\":\"local\"}");
 }
 
+// CLI `invitations`, `accept`, `chat relay` (issues of notes/dogfood.md: a relay of another
+// account): nothing granted lists nothing; `accept` lists each T under G (default home), a G
+// with nothing synced refused; `chat
+// relay` grants as `grant` does, so an account whose keys are not here is exit 3. The flow across
+// accounts: osis-chat's `a_relay_carries_a_chat_between_accounts_that_never_meet_spec_sync_3`.
+#[test]
+fn invitations_accept_and_relay_commands() {
+    let s = S::mem();
+    assert_eq!(s.ok(&["invitations"]).out, "");
+    assert_eq!(s.ok(&["--json", "invitations"]).line(), "[]");
+    let g = s.ok(&["create", "--local", "t:made.0", "true"]).line().to_string();
+    let (a, b) = (s.ok(&["create", "--local", "t:made.0", "true"]).line().to_string(), s.ok(&["create", "--local", "t:made.0", "true"]).line().to_string());
+    s.ok(&["accept", &a]);
+    assert_eq!(s.code(&["accept", &b, "--into", &g]), 7, "G syncs nothing here");
+    let home = s.ok(&["--json", "members", "home"]).line().to_string();
+    assert!(home.contains(&a) && !home.contains(&b), "{home}");
+    assert_eq!(s.code(&["accept"]), 2, "a thing to accept");
+    let c = s.ok(&["chat", "create"]).line().to_string();
+    let other = S::mem();
+    let stranger = other.ok(&["whoami"]).out.lines().next().unwrap().split('\t').nth(1).unwrap().to_string();
+    assert_eq!(s.code(&["chat", "relay", &c, &stranger]), 3, "keys unknown: import a card first");
+}
+
 // CLI `backlinks T`: the things whose values reference T, one `tid aspect` line each.
 #[test]
 fn backlinks_lists_the_referrers() {

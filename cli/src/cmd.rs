@@ -459,6 +459,19 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             };
             Ok(db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())? })?)
         }
+        Cmd::Invitations => {
+            let inv = db.invitations()?;
+            let lines: Vec<String> = inv.iter().map(|i| format!("{} {} {} {} {}", i.thing.to_uri(), role_text(i.role), i.from.map_or("-".into(), |a| a.to_uri()), if i.taken { "taken" } else { "-" }, if i.acted { "acted" } else { "-" })).collect();
+            let j = J::Arr(inv.iter().map(|i| J::obj([("thing", J::tid(i.thing)), ("role", J::str(role_text(i.role))), ("from", J::opt(i.from.map(J::tid))), ("taken", J::Bool(i.taken)), ("acted", J::Bool(i.acted))])).collect());
+            ctx.emit(&lines, j)
+        }
+        Cmd::Accept { t, into } => {
+            let into = ctx.tid(&into)?;
+            for t in t {
+                db.accept_invite(ctx.tid(&t)?, into)?;
+            }
+            Ok(())
+        }
         Cmd::SetRole { t, holder, role, d } => {
             let role = if role == "none" { None } else { Some(parse_role(&role)?) };
             let (t, m, o) = (ctx.tid(&t)?, ctx.tid(&holder)?, SetRoleOpts { retain_copy: d.retain_copy });

@@ -823,8 +823,7 @@ fn removing_a_node_lists_the_accounts_links_spec_permissions_7() {
 // spec/sync.md §3 (kept unread), spec/sync-set.md §4 (accepting), spec/permissions.md §7 (first
 // contact: a link reaches the redeemer through peers it shares K with): a node of a third account, granted
 // sync on a group and on its link's K and accepting both, relays the group between two accounts
-// that never connect to each other (the dogfood channel, notes/dogfood.md); the redeemer files
-// the thing to sync it.
+// that never connect to each other (the dogfood channel, notes/dogfood.md).
 #[test]
 fn a_third_accounts_node_relays_a_group_it_keeps_unread_spec_sync_3() {
     let c = clock();

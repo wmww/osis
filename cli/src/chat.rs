@@ -159,6 +159,10 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let t = crate::cmd::confirm(ctx, db.redeem(&l))?;
             ctx.one("tid", t.to_uri())
         }
+        ChatCmd::Relay { chat, account } => {
+            let granted = osis_chat::relay(&db, ctx.tid(&chat)?, ctx.tid(&account)?)?;
+            ctx.list(&granted.iter().map(Tid::to_uri).collect::<Vec<_>>())
+        }
         ChatCmd::Kick { chat, account, erase, retain_copy, purge } => {
             let (t, p) = (ctx.tid(&chat)?, ctx.tid(&account)?);
             // clap keeps --erase and --retain-copy apart: at most one is given
