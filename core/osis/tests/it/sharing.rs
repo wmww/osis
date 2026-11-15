@@ -200,7 +200,9 @@ fn purge_without_the_right_is_refused_spec_permissions_6() {
 // spec/permissions.md §5.1 (Trust set: a node's side is its own), notes/api.md Disputes: two admins
 // remove each other, neither having seen the other's removal; a third node takes the side of the
 // removal it held first, is told, lists the dispute and can switch; each party stands with
-// itself. A dispute's id reads back from its text; a side of another kind is `Invalid`.
+// itself. Either removal may name the dispute (the walk's key order picks which one is open), so
+// the sides are read from the one told. A dispute's id reads back from its text; a side of
+// another kind is `Invalid`.
 #[test]
 fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     let (a, b, c) = (db(1), db(2), db(3));
@@ -224,16 +226,19 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     assert!(!holds(&c, a.me()) && holds(&c, b.me()), "b's removal was here first");
     let told = rx.try_iter().last().expect("told");
     let osis::Dispute::Removal { author, holder, side, chosen, commit, .. } = told.clone() else { panic!("a removal: {told:?}") };
-    assert_eq!((author, holder, side, chosen), (b.me(), a.me(), osis::Side::Author, false), "b's removal, which counts here");
+    assert!((author, holder) == (a.me(), b.me()) || (author, holder) == (b.me(), a.me()), "one of the two removals: {told:?}");
+    // the side a stands on: the author's of a's removal, the holder's of b's
+    let (a_side, b_side) = if author == a.me() { (osis::Side::Author, osis::Side::Holder) } else { (osis::Side::Holder, osis::Side::Author) };
+    assert_eq!((side, chosen), (b_side, false), "b's side, by the removal held first");
     assert_eq!(c.disputes().unwrap(), (vec![told.clone()], 0));
     let id: osis::DisputeId = told.id().to_string().parse().unwrap();
     assert_eq!(id, told.id());
     assert!(matches!(c.choose_side(id, osis::Side::Version(commit)), Err(Error::Invalid(_))), "a version is no side of a removal");
-    c.choose_side(id, osis::Side::Holder).unwrap();
+    c.choose_side(id, a_side).unwrap();
     assert!(holds(&c, a.me()) && !holds(&c, b.me()), "a's side: b's removal of a does not count, a's of b does");
     let (ds, _) = c.disputes().unwrap();
-    assert_eq!((ds[0].side(), ds[0].chosen()), (osis::Side::Holder, true));
-    c.choose_side(id, osis::Side::Author).unwrap();
+    assert_eq!((ds[0].side(), ds[0].chosen()), (a_side, true));
+    c.choose_side(id, b_side).unwrap();
     assert!(!holds(&c, a.me()) && holds(&c, b.me()));
     assert!(holds(&a, a.me()) && !holds(&a, b.me()), "each party stands with itself");
     assert!(holds(&b, b.me()) && !holds(&b, a.me()));
