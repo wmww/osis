@@ -450,7 +450,9 @@ pub(crate) struct Frame {
 /// The hasher of the memo's own maps keyed by ids already spread (a table's address, a key's
 /// stamp hash: `Frame::seen`, `Table::keys`, `Effects`' indexes): a multiply-fold, then a mix
 /// under a per-process random seed so a peer choosing keys cannot pick colliding ones; SipHash
-/// there cost a tenth of a sync history (every read inside a memo notes one).
+/// there cost a tenth of a sync history (every read inside a memo notes one). One seed serves
+/// the whole process, so a history played twice in one process iterates these maps alike: keep
+/// them to lookups (an order drawn from one would escape the determinism check).
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Ids;
 

@@ -428,6 +428,32 @@ mod tests {
         assert_eq!(e.due(), [1], "written during its own settle");
     }
 
+    // spec: none (internal). A settle that reads the same keys again keeps its index, yet a key
+    // read present before and absent now moves with a removal in its bucket, as at a first read;
+    // a write reverted before `due` still makes its reader due.
+    #[test]
+    fn a_key_read_again_absent_moves_with_its_bucket() {
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        let mut e: Effects<u8, u8> = Effects::new("test again");
+        let read = |m: &Stamped<u8, u8>| m.get(&100).copied().unwrap_or(0);
+        m.insert(100, 1);
+        e.want(1);
+        e.due();
+        e.settle(&1, || read(&m));
+        m.insert(100, 2);
+        m.insert(100, 1);
+        assert_eq!(e.due(), [1], "written and written back");
+        assert_eq!(e.settle(&1, || read(&m)), None);
+        m.remove(&100);
+        assert_eq!(e.due(), [1]);
+        e.settle(&1, || read(&m));
+        let other = (0..=255u8).find(|x| super::super::bucket(super::super::hash(x)) == super::super::bucket(super::super::hash(&100u8)) && *x != 100).unwrap();
+        m.insert(other, 1);
+        assert_eq!(e.due(), Vec::<u8>::new());
+        m.remove(&other);
+        assert_eq!(e.due(), [1], "a removal in the bucket of the key now read absent");
+    }
+
     // spec: none (internal). A settle that fails records nothing: the key stays due, its next
     // settle reports it anew, and nothing it read before keeps it.
     #[test]
