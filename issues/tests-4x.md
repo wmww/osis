@@ -21,7 +21,7 @@
    - Absent rows read at a bucket stamp (`store: local rows`, `catalog kind`) move a further fifth of a play's judgements: issues/absent-stamp-fanout.md.
    - `body_facts` tries every snapshot ever held of each aspect (`sync/bodies.rs`, `ix.snapshots`) against the body: one write synced after 3 earlier writes joins 20 snapshot pairs, after 30 writes 200.
    - An inbox blob no key here opens (another actor's inbox this node reads, as `introduce`'s profiles give) is tried again at each move of that actor's timeline.
-4. **`order::held_set_decides`** (399 G alone, the costliest engine test): ingest about half, held-model compares a fifth, `check_index` a sixth; every order is ingested from the setup (Properties, below).
+4. **`order::held_set_decides`** (218 G alone, about 115 CPU-s, still the costliest engine test): a seed's unclocked deliveries are one tree of moves, each prefix ingested once (notes/test-properties.md, Delivery tree), and the default is a covering set. Left, by cost: clocked orders (held-model after every ingest, each from a fresh node), the tree's ingests (the engine's apply is most of an ingest), the leaves' checks, reopening deliveries; the settled seed bounds the wall. Further cuts need cheaper applies or a clocked delivery that shares its prefix.
 5. **`check_index` has no exact incremental form** (22% of osis-engine `it` inclusive): its halves are two loads from scratch; cheaper loads are the lever, and they are the product's open.
 6. **The forensic attack's tries**: candidates (130-185K per attack) times each unopened section and blob; each candidate prepared again per attack.
 7. `rotation_holds_spec_crypto_4` (46 G, 8 seeds; `tally` needs 8): ingest 50%, 95% of its ingests re-deliveries of known commits, each fully decoded before `late_parts` finds nothing new.
@@ -36,21 +36,20 @@ Rejected levers: `opt-level` 2 for the workspace (3-10% for a full rebuild). Fak
 - **A flip-prone input read before the answer needs it.** A key that reads something moving often (a source of S up now, S's source map) on every path moves with it even where its answer cannot: read such an input last, on the paths whose answer depends on it (sync read's `pullable`, status's sources). A small map read whole where one key is asked is the same pattern (`followed_links` before `FollowedLinks`): index it by what is asked.
 - **Derived values whose inputs move far more often than their answers.** A memo copies its inner reads into its readers (notes/engine.md, Derived values), so an `Effects` follower re-runs whenever anything a memo it asked read moved. Where a value is read by many followers and its inputs are coarse (a component's whole timeline, an aspect's whole commit set), keep it as a `Cutoff` row or narrow its reads. The copy costs more than the rerun: n readers of an aggregate over n inputs record O(n²) reads per change. Next candidates by count: `life`'s lost-access and role-duty keys (moved by `timelines: whole`).
 - **Work done twice in one judgement**: the same facade value asked from several calls (`sync_body_now`, `sync_bodies`, `covered` are memos for it); `held_blobs` per judgement.
-- **Every test builds its world from nothing, and many build it once per case.** Exact in-memory copies exist for `LocalPeer`, the sim `World` and osis-sync's fixtures and differential worlds (notes/test-harnesses.md, notes/sync-test-harness.md). Left: tests that close and reopen a node from a store the setup kept; the order tree walk past the setup.
-- **Width**: a covering set by default (named regressions, each item first and last, the smallest sizes where the counted quantity is not trivial, just past the threshold); the full width through `testenv::large_n` and `_large` twins. Left: `order::held_set_decides`' quick size (about 240 CPU-s; fewer steps and orders cut little, since the emphasis starts set most of a history: the prefix walk below is the lever), crdt variant loops other than `part_judges`, engine scale tests at 20/200 and 30/300, osis tests writing past `COMMIT_PAGE` (256) commits on one aspect.
+- **Every test builds its world from nothing, and many build it once per case.** Exact in-memory copies exist for `LocalPeer`, the sim `World` and osis-sync's fixtures and differential worlds (notes/test-harnesses.md, notes/sync-test-harness.md). Left: tests that close and reopen a node from a store the setup kept.
+- **Width**: a covering set by default (named regressions, each item first and last, the smallest sizes where the counted quantity is not trivial, just past the threshold); the full width through `testenv::large_n` and `_large` twins. Left: crdt variant loops other than `part_judges`, engine scale tests at 20/200 and 30/300, osis tests writing past `COMMIT_PAGE` (256) commits on one aspect.
 - **Real time waited out** (osis real-runtime tests): must-expire timeouts of 300 ms to 2 s (`runtime.rs`, `port.rs`).
 - **Quadratic helpers**: `apply::keys::tests::spread` sends every commit to every peer again.
 
 ## Properties and the sweep
-- `order::held_set_decides` runs quick and quick-exhaustive in the default tests, plain and exhaustive as properties. Every order of a held set ingests the setup again in a fresh account; left, without losing an order: walk the permutation tree depth first, copying the node at each prefix past the setup (`Peer::copy`), so a prefix is ingested once.
+- `order::held_set_decides` runs quick and quick-exhaustive in the default tests, plain and exhaustive as properties (about 380 and 680 CPU-s at 8 seeds); the delivery tree saves the properties little (exhaustive's orders share at most 6 commits past the setup; its leaf checks and late parts dominate).
 - Fixed-seed properties run in every gate (forged_parts, tombstone, unmerge_paged, crdt stream and paging, base proptests): the same run each time; only worth it when the branch touches what they reach.
 - Seed counts stay; the time is to come from the work each seed does.
 
 ## Order of work
 1. osis-sync's per-delivery work (Left 2) and the memo re-runs (Left 3).
 2. The facts' reads narrowed (Left 1).
-3. The order tree walk (Properties).
-4. Width, file by file.
+3. Width, file by file.
 
 ## Method
 Per-test instructions: `tools/pertest.py` (every default test alone under `tools/icount`; `top`, `compare`). Whole binaries: `tools/icount <bin> -q` from its package dir, every binary through `tools/heavy`. Where a binary's time goes: `tools/cpuprof OUT <bin> -q`. Why a judgement re-ran: take `costs` in a test (`osis_base::costs::take()` before, again after) and read the `"<effects> <- <cause>"` counts (notes/engine.md, Why a key went due). CPU seconds move 20-40% between identical runs (load, SMT): compare by `tools/icount`.

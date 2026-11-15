@@ -586,18 +586,9 @@ pub(crate) struct Played {
     withheld: u64,
     /// `Cfg::model`: the history for the held-model adapter, and what it compared.
     model: Option<std::sync::Arc<(crate::held::History, std::sync::Mutex<crate::held::Coverage>)>>,
-    /// Fresh nodes given the setup as made, by the length of the order (`deliver`).
-    setups: Setups,
-}
-
-/// `Played::setups`: a clone starts empty (a history changed after a delivery is a clone).
-#[derive(Default)]
-struct Setups(std::sync::Mutex<BTreeMap<usize, Peer>>);
-
-impl Clone for Setups {
-    fn clone(&self) -> Setups {
-        Setups::default()
-    }
+    /// The work of its deliveries: ingests (`ingest`) and nodes copied at branches (`Tree`).
+    ingests: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    copies: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Per step kind: how many ran and how many made a commit, and why the others made none.
@@ -1379,7 +1370,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, setups: Setups::default() }
+    Played { packs, authors, base, things, now, tally, restored: Default::default(), judged: Default::default(), moved: Default::default(), dropped: Default::default(), steps_at, own_sets, settle_from: None, settled_last, withheld: 0, model: None, ingests: Default::default(), copies: Default::default() }
 }
 
 /// Per body (commit, thing, aspect): when it was replaced, for keep-for-D (spec/commits.md §5).
@@ -1715,42 +1706,111 @@ fn withhold(mut played: Played, seed: u64, cfg: Cfg) -> Played {
     played
 }
 
-/// A fresh node given `packs` in `order`. An order starting with the setup as made starts from
-/// a copy of a node given it once (`Played::setups`): the same node, as `Peer::copy` goes on as
-/// the original would.
-fn deliver(played: &Played, order: &[usize]) -> Peer {
-    let n = played.base;
-    let start = if order.len() > n && order[..n].iter().copied().eq(0..n) {
-        let mut setups = played.setups.0.lock().unwrap();
-        let p = setups.entry(order.len()).or_insert_with(|| first_of(played, order, n));
-        (p.copy().unwrap(), n)
-    } else {
-        (first_of(played, order, 0), 0)
-    };
-    deliver_from(played, order, start, None, None, None, &mut |_| {})
+/// A move of a delivery: pack `i` ingested whole, or (`Some(ai)`) with its parts on its `ai`th
+/// aspect only, the rest of the commit arriving late (spec/commits.md §4: a late delta joins on
+/// arrival); or the delivery's end (`finish`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Move {
+    Ingest(usize, Option<usize>),
+    Finish { late: bool },
 }
 
-/// A fresh node given the first `n` of `order` as `deliver_with` gives them with no late parts
-/// or clock (its sides walked after each).
-fn first_of(played: &Played, order: &[usize], n: usize) -> Peer {
-    let mut p = fresh(played.now);
-    // every component's walk saved, so reopens restore them
-    p.engine.set_walk_cache_min(1);
-    for &i in &order[..n] {
-        let pk = &played.packs[i];
-        let _ = p.receive(&pk.bytes, pk.blobs.clone());
-        crate::disputes::walk_sides(&mut p);
-        drop_covered(played, &mut p);
+/// The ingests delivering `order`: each pack whole or, with `split` (late parts), each commit
+/// with parts on several aspects first with those of one of them, the rest of it as late parts at
+/// the end (before a settled history's settling tail), in reverse. Each pick is drawn from `split`
+/// and the moves before it, so deliveries sharing a prefix share its picks (`Tree`).
+fn ingests(played: &Played, order: &[usize], split: Option<u64>) -> Vec<Move> {
+    let mix = |h: u64, m: &Move| -> u64 {
+        let (i, ai) = match m {
+            Move::Ingest(i, ai) => (*i as u64 + 1, ai.map_or(0, |a| a as u64 + 1)),
+            Move::Finish { .. } => (0, 0),
+        };
+        (h ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ ai.wrapping_mul(0xbf58_476d_1ce4_e5b9)).wrapping_mul(0x94d0_49bb_1331_11eb).rotate_left(29)
+    };
+    let (mut out, mut late, mut h) = (Vec::new(), Vec::new(), split.unwrap_or(0));
+    let push = |out: &mut Vec<Move>, m: Move, h: &mut u64| {
+        *h = mix(*h, &m);
+        out.push(m);
+    };
+    for &i in order {
+        if played.settle_from.is_some_and(|f| i >= f) {
+            for j in std::mem::take(&mut late).into_iter().rev() {
+                push(&mut out, Move::Ingest(j, None), &mut h);
+            }
+        }
+        let mut ai = None;
+        if split.is_some() {
+            let b = osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
+            let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
+            if ais.len() > 1 {
+                let pick = Rng(mix(h, &Move::Ingest(i, None)) | 1).below(ais.len() as u64) as usize;
+                ai = ais.iter().copied().nth(pick);
+                late.push(i);
+            }
+        }
+        push(&mut out, Move::Ingest(i, ai), &mut h);
     }
+    for j in late.into_iter().rev() {
+        push(&mut out, Move::Ingest(j, None), &mut h);
+    }
+    out
+}
+
+/// The node every delivery starts from: fresh, every component's walk saved, so reopens restore
+/// them.
+fn judged_node(played: &Played) -> Peer {
+    let mut p = fresh(played.now);
+    p.engine.set_walk_cache_min(1);
     p
 }
 
-/// A fresh node given `packs` in `order`, each commit with parts on several aspects first with
-/// those of one of them only (a seeded pick), the rest of it as late parts at the end (before a
-/// settled history's settling tail), in reverse (spec/commits.md §4: a late delta joins on
-/// arrival).
-fn deliver_split(played: &Played, order: &[usize], rng: &mut Rng) -> Peer {
-    deliver_with(played, order, Some(rng), None, None, &mut |_| {})
+/// Node `p` takes ingest `m` (`Move::Ingest`).
+fn ingest(played: &Played, p: &mut Peer, m: Move) {
+    let Move::Ingest(i, ai) = m else { unreachable!("{m:?} is no ingest") };
+    let pk = &played.packs[i];
+    played.ingests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _ = match ai {
+        None => p.receive(&pk.bytes, pk.blobs.clone()),
+        Some(ai) => {
+            let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+            b.parts.retain(|x| x.ai == ai);
+            p.receive(&b.encode(), pk.blobs.clone())
+        }
+    };
+}
+
+/// What a judged node does after every ingest and clock move: takes the walk's side in each
+/// dispute it detected (`disputes::walk_sides`), so its trust set is empty wherever it is judged
+/// (spec/permissions.md §5.1), and runs sync's covered drops (`drop_covered`; `drops` first notes
+/// the parts it holds other than whole, `held::Drops::before`, so held-model judges each drop by
+/// the part as it was just before). Checks that the wakes miss nothing a full scan of the pending
+/// commits would apply.
+fn settle(played: &Played, p: &mut Peer, drops: Option<&std::cell::RefCell<crate::held::Drops>>) {
+    crate::disputes::walk_sides(p);
+    if let Some(d) = drops {
+        d.borrow_mut().before(&p.engine);
+    }
+    drop_covered(played, p);
+    let lost = p.engine.lost_wakes().unwrap();
+    assert!(lost.is_empty(), "applied by a full scan, missed by the wakes: {lost:?}");
+}
+
+/// A delivery's end (`each` after each step): a late-parts delivery reexamines, then what is due
+/// runs, as a node runs it before every read (a purge request's floor passing judges its
+/// purge-on-replace bodies again, spec/commits.md §5).
+fn finish(p: &mut Peer, late: bool, each: &mut dyn FnMut(&mut Peer)) {
+    each(p);
+    if late {
+        let _ = p.reexamine();
+        each(p);
+    }
+    p.tick().unwrap();
+    each(p);
+}
+
+/// A fresh node given `packs` in `order`.
+fn deliver(played: &Played, order: &[usize]) -> Peer {
+    deliver_with(played, order, None, None, None, &mut |_| {})
 }
 
 /// A delivery's clock (`deliver_with`): the first `at` ingests at wall time `early`, then the
@@ -1800,90 +1860,191 @@ fn move_clock(played: &Played, p: &mut Peer) {
     }
 }
 
-/// `deliver` (no `rng`) or `deliver_split`, calling `each` after every ingest; with `clock`,
-/// the first ingests at an earlier time (`Clock`). The node is made at `played.now` either way
-/// and its clock set back, so its own things are the same as every fresh node's. Before every
-/// `each` the node takes the walk's side in each dispute it detected (`disputes::walk_sides`),
-/// so its trust set is empty wherever it is judged (spec/permissions.md §5.1).
-fn deliver_with(played: &Played, order: &[usize], rng: Option<&mut Rng>, clock: Option<Clock>, drops: Option<&std::cell::RefCell<crate::held::Drops>>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
-    deliver_from(played, order, (first_of(played, order, 0), 0), rng, clock, drops, each)
-}
-
-/// `deliver_with` from node `p` given the first `start` of `order` (`first_of`; with `rng` or
-/// `clock`, none). Before each step's covered drops (`drop_covered`), `drops` notes the parts
-/// the node holds other than whole (`held::Drops::before`), so held-model judges each drop by the
-/// part as it was just before.
-fn deliver_from(played: &Played, order: &[usize], (mut p, start): (Peer, usize), mut rng: Option<&mut Rng>, clock: Option<Clock>, drops: Option<&std::cell::RefCell<crate::held::Drops>>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
-    assert!(start == 0 || (rng.is_none() && clock.is_none()), "`first_of` gives no late parts and no clock");
+/// A fresh node (`judged_node`) given `packs` in `order` (with `split`, late parts: `ingests`),
+/// settling (`settle`) and calling `each` after every ingest; with `clock`, the first ingests at an
+/// earlier time (`Clock`). The node is made at `played.now` either way and its clock set back, so
+/// its own things are the same as every fresh node's.
+fn deliver_with(played: &Played, order: &[usize], split: Option<u64>, clock: Option<Clock>, drops: Option<&std::cell::RefCell<crate::held::Drops>>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
+    let path = ingests(played, order, split);
+    let mut p = judged_node(played);
     let mut each = |p: &mut Peer| {
-        crate::disputes::walk_sides(p);
-        if let Some(d) = drops {
-            d.borrow_mut().before(&p.engine);
-        }
-        drop_covered(played, p);
-        // the wakes miss nothing a full scan of the pending commits would apply
-        let lost = p.engine.lost_wakes().unwrap();
-        assert!(lost.is_empty(), "applied by a full scan, missed by the wakes: {lost:?}");
+        settle(played, p, drops);
         each(p)
     };
     if let Some(c) = clock {
         p.clock.set(c.early);
     }
-    let mut late = Vec::new();
-    let mut done = start;
-    // a settled history's late parts come before its settling tail: one after it is a write
-    // after the writers' last compactions, which then settle nothing
-    let deliver_late = |p: &mut Peer, late: &mut Vec<usize>, done: &mut usize, each: &mut dyn FnMut(&mut Peer)| {
-        for &i in std::mem::take(late).iter().rev() {
-            *done += 1;
-            let pk = &played.packs[i];
-            let _ = p.receive(&pk.bytes, pk.blobs.clone());
-            each(p);
-        }
-    };
-    for &i in &order[start..] {
-        if played.settle_from.is_some_and(|f| i >= f) && !late.is_empty() {
-            deliver_late(&mut p, &mut late, &mut done, &mut each);
-        }
+    for (done, &m) in path.iter().enumerate() {
         if clock.is_some_and(|c| c.at == done) {
             move_clock(played, &mut p);
         }
-        done += 1;
-        let pk = &played.packs[i];
-        let bytes = match rng.as_deref_mut() {
-            None => pk.bytes.clone(),
-            Some(rng) => {
-                let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-                let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
-                if ais.len() > 1 {
-                    let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
-                    b.parts.retain(|x| x.ai == keep);
-                    late.push(i);
-                }
-                b.encode()
-            }
-        };
-        let _ = p.receive(&bytes, pk.blobs.clone());
+        ingest(played, &mut p, m);
         each(&mut p);
     }
-    if clock.is_some_and(|c| c.at >= order.len()) {
+    if clock.is_some_and(|c| c.at >= path.len()) {
         move_clock(played, &mut p);
         each(&mut p);
     }
-    deliver_late(&mut p, &mut late, &mut done, &mut each);
-    each(&mut p);
-    if rng.is_some() {
-        let _ = p.reexamine();
-        each(&mut p);
-    }
-    // what is due runs, as a node runs it before every read: a
-    // purge request's floor passing judges its purge-on-replace bodies again (spec/commits.md §5)
-    p.tick().unwrap();
-    each(&mut p);
+    finish(&mut p, split.is_some(), &mut each);
     p
 }
 
+/// What a delivery in a `Tree` is for, judged at its end (`check_orders`): held set `h`'s `k`th
+/// order as it is or with late parts, the `k`th rest after it, its reference.
+#[derive(Clone, Copy, Debug)]
+enum End {
+    Order(usize, usize),
+    Late(usize, usize),
+    Rest(usize, usize),
+    Reference(usize),
+}
 
+/// Where a check ranks among a seed's (its first failure is the one reported): held set, kind
+/// (an order as it is, with late parts, at an earlier clock, a rest, reopening, the reference),
+/// index.
+type Key = (usize, u8, usize);
+
+impl End {
+    fn key(self) -> Key {
+        match self {
+            End::Order(h, k) => (h, 0, k),
+            End::Late(h, k) => (h, 1, k),
+            End::Rest(h, k) => (h, 3, k),
+            End::Reference(h) => (h, 5, 0),
+        }
+    }
+}
+
+/// A seed's deliveries as a tree of their moves (`deliver_with` without clock or `each`): a prefix
+/// shared by several is taken once, by one node copied (`Peer::copy`, a node going on as the
+/// original would) for each way on from where they part.
+#[derive(Default)]
+struct Tree {
+    kids: BTreeMap<Move, Tree>,
+    ends: Vec<End>,
+}
+
+impl Tree {
+    fn add(&mut self, played: &Played, order: &[usize], split: Option<u64>, end: End) {
+        let mut t = self;
+        for m in ingests(played, order, split).into_iter().chain([Move::Finish { late: split.is_some() }]) {
+            t = t.kids.entry(m).or_default();
+        }
+        t.ends.push(end);
+    }
+}
+
+/// A task of `walk`: the tree below a node, from a copy of a node at a branch (taking it after the
+/// last other way on has copied it) given the move into it; an end; a task of its own.
+enum Task<'t> {
+    Down(&'t Tree, Option<Move>, std::sync::Arc<std::sync::Mutex<Peer>>),
+    End(End, std::sync::Arc<std::sync::Mutex<Peer>>),
+    Job(usize),
+}
+
+/// The node at a branch, for one way on: copied, or itself once every other way has its copy.
+fn take_node(played: &Played, at: std::sync::Arc<std::sync::Mutex<Peer>>) -> Peer {
+    match std::sync::Arc::try_unwrap(at) {
+        Ok(m) => m.into_inner().unwrap_or_else(|e| e.into_inner()),
+        Err(at) => {
+            played.copies.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            at.lock().unwrap_or_else(|e| e.into_inner()).copy().unwrap()
+        }
+    }
+}
+
+/// Node `p` takes move `m`, as `deliver_with` without clock or `each`.
+fn take_move(played: &Played, p: &mut Peer, m: Move) {
+    match m {
+        Move::Ingest(..) => {
+            ingest(played, p, m);
+            settle(played, p, None);
+        }
+        Move::Finish { late } => finish(p, late, &mut |p| settle(played, p, None)),
+    }
+}
+
+/// A check outside a `Tree` (`walk`).
+type Job<'j> = (Key, Box<dyn Fn() -> Result<Seen, String> + Sync + 'j>);
+
+/// Every delivery of `tree` from a fresh node (`judged_node`), each judged at its end by `end`,
+/// and `jobs`, on up to `threads` threads (`pool`): every result, by key.
+fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], end: &(dyn Fn(End, Peer) -> Result<Seen, String> + Sync)) -> Vec<(Key, Result<Seen, String>)> {
+    let out = std::sync::Mutex::new(Vec::new());
+    let root = std::sync::Arc::new(std::sync::Mutex::new(judged_node(played)));
+    let tasks: Vec<Task> = (0..jobs.len()).map(Task::Job).chain([Task::Down(tree, None, root)]).collect();
+    pool(tasks, threads, |task, add| {
+        let r = match task {
+            Task::Job(j) => (jobs[j].0, caught(&jobs[j].1)),
+            Task::End(e, at) => (e.key(), caught(|| end(e, take_node(played, at)))),
+            Task::Down(mut t, m, at) => {
+                let mut p = take_node(played, at);
+                if let Some(m) = m {
+                    take_move(played, &mut p, m);
+                }
+                // down to the next branch or end
+                while t.ends.is_empty() && t.kids.len() == 1 {
+                    let (&m, kid) = t.kids.iter().next().unwrap();
+                    take_move(played, &mut p, m);
+                    t = kid;
+                }
+                if t.kids.is_empty() && t.ends.len() == 1 {
+                    let e = t.ends[0];
+                    (e.key(), caught(|| end(e, p)))
+                } else {
+                    let at = std::sync::Arc::new(std::sync::Mutex::new(p));
+                    for &e in &t.ends {
+                        add(Task::End(e, at.clone()));
+                    }
+                    for (&m, kid) in &t.kids {
+                        add(Task::Down(kid, Some(m), at.clone()));
+                    }
+                    return;
+                }
+            }
+        };
+        out.lock().unwrap_or_else(|e| e.into_inner()).push(r);
+    });
+    let mut out = out.into_inner().unwrap_or_else(|e| e.into_inner());
+    out.sort_by_key(|a| a.0);
+    out
+}
+
+/// Runs `tasks` and every task they add (`run`'s second argument) on up to `threads` threads,
+/// newest first (a tree walked depth first, few of its branch nodes held at once), each task
+/// holding a permit (`Permit`) and no thread holding one while it waits for a task.
+fn pool<T: Send>(tasks: Vec<T>, threads: usize, run: impl Fn(T, &dyn Fn(T)) + Sync) {
+    use std::sync::{Condvar, Mutex};
+    type Queue<T> = Mutex<(Vec<T>, usize)>;
+    // a task's end, a panic's too: the last wakes every waiting thread to stop
+    struct Done<'a, T>(&'a Queue<T>, &'a Condvar);
+    impl<T> Drop for Done<'_, T> {
+        fn drop(&mut self) {
+            let mut q = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            q.1 -= 1;
+            if q.1 == 0 && q.0.is_empty() {
+                self.1.notify_all();
+            }
+        }
+    }
+    let (queue, cv): (Queue<T>, Condvar) = (Mutex::new((tasks, 0)), Condvar::new());
+    let (queue, cv) = (&queue, &cv);
+    let workers: Vec<u64> = (0..threads.max(1) as u64).collect();
+    par_map(&workers, threads, |_| loop {
+        let task = {
+            let mut q = cv.wait_while(queue.lock().unwrap_or_else(|e| e.into_inner()), |q| q.0.is_empty() && q.1 > 0).unwrap_or_else(|e| e.into_inner());
+            let Some(task) = q.0.pop() else { return };
+            q.1 += 1;
+            task
+        };
+        let _done = Done(queue, cv);
+        let _p = Permit::take();
+        run(task, &|t| {
+            queue.lock().unwrap_or_else(|e| e.into_inner()).0.push(t);
+            cv.notify_one();
+        });
+    });
+}
 
 /// `OSIS_ORDER_DUMP`: on a failure, each commit whose index entry at node `p` differs from the
 /// keep-everything node's holding `held` at the same clock (validity, dropped and why, stood in,
@@ -2023,14 +2184,17 @@ struct Cfg {
     every_held: bool,
     /// Random shuffles of each held set.
     random: usize,
-    /// Partial held sets.
-    subsets: usize,
+    /// Partial held sets (`held_sets`).
+    partial: usize,
     /// Which of each held set's orders are tried again with late parts (only a held set with a
     /// commit with parts on several aspects: otherwise they deliver the same bytes).
     split: Twins,
     /// How many of each held set's orders are tried again at an earlier clock (`Clock`): as made
     /// and reversed, then a sample spread evenly over the rest.
     clock: usize,
+    /// How many of the whole set's first orders are tried again reopening after every ingest
+    /// (`reopens_alike`).
+    reopens: usize,
     /// Fresh nodes are given some multi-part commits in part for good, by seed (`withhold`).
     withhold: bool,
     /// With `withhold`: whatever the seed.
@@ -2088,14 +2252,14 @@ fn twins(split: Twins, n: usize, rng: &mut Rng) -> Vec<usize> {
 }
 
 /// The one order config (`held_set_decides`): as made, reversed, as fetched, every order of a
-/// whole set of at most 4 commits after the setup, shuffles, two partial held sets, two orders
-/// each with late parts and at an earlier clock; every node judged by held-model too. Sizes
-/// change the counts (`Size`), never the kinds.
-const ORDERS: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 2, split: Twins::First(2), clock: 2, withhold: true, every_seed: false, settled: false, model: true, addenda: false, away: false };
+/// whole set of at most 4 commits after the setup, shuffles, four partial held sets, two orders
+/// each with late parts, at an earlier clock and (the whole set's) reopening after every ingest;
+/// every node judged by held-model too. Sizes change the counts (`Size`), never the kinds.
+const ORDERS: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, partial: 4, split: Twins::First(2), clock: 2, reopens: 2, withhold: true, every_seed: false, settled: false, model: true, addenda: false, away: false };
 
 /// A hand-written history's orders, none shuffled or drawn: as made, reversed and as a first
 /// sync fetches it, of the whole set and two first-sync prefixes.
-const NAMED: Cfg = Cfg { all_up_to: 0, random: 0, subsets: 0, split: Twins::First(0), clock: 0, withhold: false, model: false, ..ORDERS };
+const NAMED: Cfg = Cfg { all_up_to: 0, random: 0, partial: 2, split: Twins::First(0), clock: 0, withhold: false, model: false, ..ORDERS };
 
 /// The arrival orders of `held` tried: as made (the reference), reversed, every order of the
 /// held commits after the setup when there are at most `all_up_to` (and the whole set is held,
@@ -2138,16 +2302,16 @@ fn fill_order(played: &Played, held: &[usize]) -> Vec<usize> {
     o
 }
 
-/// The held sets tried: everything, a first sync part way (the setup and its first half and three
-/// quarters: it reads as if the rest never came), then `subsets` partial ones (alternately without one
-/// writer's commits after the setup, as a node that never heard from it, and without a random
-/// third of them), then the history's own sets (`Played::own_sets`); `usize::MAX`: every held set (all
-/// of the setup, any of the rest).
-fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> {
+/// The held sets tried: everything, `partial` partial ones, then the history's own sets
+/// (`Played::own_sets`). The partial ones in turn: a first sync part way (the setup and the first
+/// half of it, then three quarters: it reads as if the rest never came), then alternately without
+/// one writer's commits after the setup (as a node that never heard from it) and without a random
+/// third of them.
+fn held_sets(played: &Played, partial: usize, rng: &mut Rng) -> Vec<Vec<usize>> {
     let n = played.packs.len();
     let mut out = vec![(0..n).collect::<Vec<_>>()];
     let fill = fill_order(played, &(0..n).collect::<Vec<_>>());
-    for part in [n / 2, n * 3 / 4] {
+    for part in [n / 2, n * 3 / 4].into_iter().take(partial) {
         let mut keep: Vec<usize> = fill[..part].iter().copied().chain(0..played.base).collect();
         keep.sort();
         keep.dedup();
@@ -2155,15 +2319,7 @@ fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> 
             out.push(keep);
         }
     }
-    if subsets == usize::MAX {
-        // every subset of what follows the setup
-        let rest = n - played.base;
-        for m in (0..(1u64 << rest) - 1).rev() {
-            out.push((0..n).filter(|&i| i < played.base || m >> (i - played.base) & 1 == 1).collect());
-        }
-        return out;
-    }
-    for j in 0..subsets {
+    for j in 0..partial.saturating_sub(2) {
         let peer = rng.below(3) as usize;
         let keep: Vec<usize> = (0..n).filter(|&i| i < played.base || if j % 2 == 0 { played.authors[i] != peer } else { rng.below(3) != 0 }).collect();
         if !out.contains(&keep) {
@@ -2225,6 +2381,9 @@ struct Seen {
     settled: u64,
     /// What the held-model comparison covered (`Cfg::model`).
     model: crate::held::Coverage,
+    /// The deliveries' work: ingests and nodes copied (`Played::ingests`).
+    ingests: u64,
+    copies: u64,
 }
 
 impl Seen {
@@ -2248,6 +2407,8 @@ impl Seen {
         self.covered_away += o.covered_away;
         self.withheld += o.withheld;
         self.settled += o.settled;
+        self.ingests += o.ingests;
+        self.copies += o.copies;
         self.model.add(&o.model);
         for (k, v) in &o.pending {
             *self.pending.entry(k.clone()).or_default() += v;
@@ -2339,21 +2500,37 @@ fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     check_on(1, seed, steps, cfg)
 }
 
-/// `check` with its orders on up to `threads` threads, each holding a permit
-/// (`testenv::pooled_map`), the seed's own steps holding one.
+/// `check` with its orders on up to `threads` threads, each part holding a permit
+/// (`testenv::Permit`).
 fn check_on(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    caught(|| {
-        let _p = Permit::take();
-        check_orders(threads, seed, steps, cfg)
-    })
+    caught(|| check_orders(threads, seed, steps, cfg))
+}
+
+/// One held set's deliveries (`check_orders`).
+struct HeldSet {
+    held: Vec<usize>,
+    /// How its failures are named.
+    of: String,
+    orders: Vec<Vec<usize>>,
+    /// The orders tried again with late parts.
+    twins: Vec<usize>,
+    /// How many orders are tried again at an earlier clock.
+    clocks: usize,
+    /// The held set, then the rest (both ways): ends as the whole set's node.
+    rests: Vec<Vec<usize>>,
+    /// How many of the first orders are tried reopening after every ingest.
+    reopens: usize,
 }
 
 fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
-    let played = play_with(seed, steps, cfg.addenda);
-    let played = if cfg.settled { settling(played, steps) } else { played };
-    let played = if cfg.withhold { withhold(played, seed, cfg) } else { played };
-    let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(crate::held::Coverage::default()))));
-    let played = Played { model, ..played };
+    let played = {
+        let _p = Permit::take();
+        let played = play_with(seed, steps, cfg.addenda);
+        let played = if cfg.settled { settling(played, steps) } else { played };
+        let played = if cfg.withhold { withhold(played, seed, cfg) } else { played };
+        let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), std::sync::Mutex::new(crate::held::Coverage::default()))));
+        Played { model, ..played }
+    };
     let played = &played;
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
@@ -2361,103 +2538,9 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
     let whole: Vec<usize> = (0..n).collect();
     // late parts only matter for a commit with parts on several aspects
     let multi: Vec<bool> = played.packs.iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.parts.iter().any(|x| x.ai != b.parts[0].ai))).collect();
-    let mut full: Option<Oracle> = None;
-    for (h, held) in held_sets(played, cfg.subsets, &mut rng).into_iter().take(if cfg.settled { 1 } else { usize::MAX }).enumerate() {
-        let of = format!("held {held:?} of {n} commits (base {})", played.base);
-        let o = oracle(played, &held);
+    // the held sets, the whole set first (`held_sets`), each with its orders drawn in turn
+    let sets: Vec<HeldSet> = held_sets(played, cfg.partial, &mut rng).into_iter().take(if cfg.settled { 1 } else { usize::MAX }).enumerate().map(|(h, held)| {
         let orders = orders(played, &held, cfg, &mut rng);
-        seen.orders += orders.len();
-        // the reference, as made: tallies
-        let mut p = deliver(played, &orders[0]);
-        for t in &played.things {
-            for c in p.engine.purged_on(t, &msg()).unwrap().into_keys() {
-                seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak == msg() && p.engine.permanent(&h, a))));
-            }
-            let (rows, _) = p.engine.held_parts(t, &msg(), osis_engine::engine::listing::CommitFrom::Oldest, usize::MAX - 1, usize::MAX).unwrap();
-            for r in &rows {
-                if let osis_engine::engine::listing::PartBody::Purged(by) = &r.body {
-                    seen.by_author += u64::from(p.engine.header(by).is_some_and(|h| h.purge.iter().any(|i| matches!(i, osis_commit::PurgeItem::Author { .. }))));
-                }
-            }
-        }
-        if p.discards > 0 {
-            *seen.pending.entry("Awaits".to_string()).or_default() += 1;
-        }
-        for (_, why) in p.engine.pending() {
-            let why = format!("{why:?}");
-            *seen.pending.entry(why.split('(').next().unwrap_or("").to_string()).or_default() += 1;
-        }
-        if full.is_none() {
-            for id in p.engine.commit_ids() {
-                for a in p.engine.header(&id).into_iter().flat_map(|h| h.aspects.clone()) {
-                    *seen.aspects.entry(a.ak.as_str().to_string()).or_default() += 1;
-                }
-            }
-        }
-        let idx = p.engine.index_digest();
-        let invalid = idx.commits.values().filter(|c| c.valid.contains(&false)).count();
-        seen.invalid += invalid as u64;
-        seen.fallen += p.engine.fallen_settings() as u64;
-        if std::env::var("OSIS_ORDER_STATS").is_ok() {
-            eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} pending, {} things", held.len(), n, played.base, invalid, p.engine.pending().len(), played.things.len());
-        }
-        // order `k`: the per-node checks, after a reopen (P4) for orders as they are
-        let one = |k: usize, split_rng: Option<&mut Rng>| -> Result<(), String> {
-            let order = &orders[k];
-            if let Some(rng) = split_rng {
-                let mut p = deliver_split(played, order, rng);
-                return node_checks(&mut p, played, &o).map_err(|d| {
-                    explain(played, &held, &mut p, &d);
-                    format!("{of}: order #{k} with late parts {order:?}: {d}")
-                });
-            }
-            let mut p = deliver(played, order);
-            let before = shown(&mut p, &played.things);
-            p.engine.reload().unwrap();
-            if let Some(d) = p.engine.misjudged() {
-                return Err(format!("{of}, order #{k} {order:?}: judged anew after a reopen: {d}"));
-            }
-            p.reexamine().unwrap();
-            if let Some(d) = shown_differs(&before, &shown(&mut p, &played.things), &|_| false) {
-                return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
-            }
-            node_checks(&mut p, played, &o).map_err(|d| {
-                explain(played, &held, &mut p, &d);
-                dump_order(played, order);
-                format!("{of}, order #{k} {order:?}: {d}")
-            })
-        };
-        // order `k` with its first commits delivered at an earlier clock (`clock_of`, drawn from
-        // its own rng)
-        let clock_base = seed.wrapping_mul(0xbf58_476d_1ce4_e5b9) ^ (held.len() as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
-        let clocks = cfg.clock.min(orders.len());
-        // the `i`th clocked order: as made, reversed, then evenly spread over the rest
-        let clocked = |i: usize| -> Result<(), String> {
-            let k = if i < 2 || clocks <= 2 { i } else { 2 + (i - 2) * (orders.len() - 2) / (clocks - 2) };
-            let order = &orders[k];
-            let c = clock_of(played, order, &mut Rng(clock_base ^ (k as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1));
-            // `Cfg::model`: held-model judges the node after every ingest too, at the early clock
-            // and after the move (a drop before its bound or a value kept past its expiry shows
-            // only between ticks)
-            let mut early: Option<String> = None;
-            let mut done = 0;
-            let drops = std::cell::RefCell::new(crate::held::Drops::default());
-            let mut p = deliver_with(played, order, None, Some(c), Some(&drops), &mut |p| {
-                done += 1;
-                if early.is_none() {
-                    early = model_differs(p, played, Some(&mut drops.borrow_mut())).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
-                    if let Some(d) = &early {
-                        explain(played, &held, p, d);
-                    }
-                }
-            });
-            early
-                .map_or(Ok(()), Err)
-                .and_then(|_| {
-                    node_checks(&mut p, played, &o).inspect_err(|d| explain(played, &held, &mut p, d))
-                })
-                .map_err(|d| format!("{of}: order #{k} at an earlier clock {c:?} {order:?}: {d}"))
-        };
         // the orders tried again with late parts, drawn from the seed (its own stream per held set)
         let twins = if held.iter().any(|&i| multi[i]) {
             let mut r = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) ^ (h as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
@@ -2465,53 +2548,124 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
         } else {
             Vec::new()
         };
-        seen.twins.0 += u64::from(held.iter().any(|&i| multi[i]));
-        seen.twins.1 += u64::from(!twins.is_empty());
-        seen.twins.2 += twins.len() as u64;
-        seen.orders += twins.len();
-        seen.orders += clocks;
-        seen.clocked += clocks as u64;
         // a partial set, then the rest (both ways), ends as the whole set's node
-        let rests: Vec<Vec<usize>> = full.as_ref().map_or(Vec::new(), |_| {
+        let rests = if h == 0 {
+            Vec::new()
+        } else {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             vec![held.iter().chain(&rest).copied().collect(), held.iter().chain(rest.iter().rev()).copied().collect()]
-        });
-        let then_rest = |order: &[usize]| -> Result<(), String> {
-            let mut p = deliver(played, order);
-            node_checks(&mut p, played, full.as_ref().unwrap()).map_err(|d| format!("{of}, then the rest: order {order:?}: {d}"))
         };
         // a node reopening after every ingest (its clock moving) reads as one that never did
-        let reopens = if held == whole && played.settle_from.is_none() { 2.min(orders.len()) } else { 0 };
-        // tasks, each holding a permit: orders 0.. as they are, then `twins` with late parts, each split by
-        // its own rng, then 0.. at an earlier clock, then the rest after the partial set, then the
-        // first orders reopening after every ingest
-        let counts = [orders.len(), twins.len(), clocks, rests.len(), reopens];
-        let tasks: Vec<u64> = (0..counts.iter().sum::<usize>() as u64).collect();
-        let base = rng.0;
-        let errs = pooled_map(&tasks, threads, |x| {
-            let (mut kind, mut k) = (0, x as usize);
-            while k >= counts[kind] {
-                k -= counts[kind];
-                kind += 1;
+        let reopens = if held == whole && played.settle_from.is_none() { cfg.reopens.min(orders.len()) } else { 0 };
+        let of = format!("held {held:?} of {n} commits (base {})", played.base);
+        HeldSet { clocks: cfg.clock.min(orders.len()), held, of, orders, twins, rests, reopens }
+    }).collect();
+    let hs: Vec<u64> = (0..sets.len() as u64).collect();
+    let oracles: Vec<Oracle> = pooled_map(&hs, threads, |h| caught(|| Ok(oracle(played, &sets[h as usize].held)))).into_iter().collect::<Result<_, _>>()?;
+    for s in &sets {
+        let with_multi = s.held.iter().any(|&i| multi[i]);
+        seen.orders += s.orders.len() + s.twins.len() + s.clocks;
+        seen.twins = (seen.twins.0 + u64::from(with_multi), seen.twins.1 + u64::from(!s.twins.is_empty()), seen.twins.2 + s.twins.len() as u64);
+        seen.clocked += s.clocks as u64;
+        seen.reopened += s.reopens as u64;
+    }
+    // every delivery without a clock, as one tree: the reference (as made), each order as it is
+    // and with late parts (picks drawn from the seed), the rests
+    let salt = seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1;
+    let mut tree = Tree::default();
+    for (h, s) in sets.iter().enumerate() {
+        tree.add(played, &s.orders[0], None, End::Reference(h));
+        for (k, order) in s.orders.iter().enumerate() {
+            tree.add(played, order, None, End::Order(h, k));
+        }
+        for &k in &s.twins {
+            tree.add(played, &s.orders[k], Some(salt), End::Late(h, k));
+        }
+        for (k, order) in s.rests.iter().enumerate() {
+            tree.add(played, order, None, End::Rest(h, k));
+        }
+    }
+    // the tree's ends, judged
+    let end = |e: End, mut p: Peer| -> Result<Seen, String> {
+        match e {
+            End::Reference(h) => Ok(reference(played, &sets[h].held, h == 0, &mut p)),
+            End::Order(h, k) => {
+                let (s, order) = (&sets[h], &sets[h].orders[k]);
+                let before = shown(&mut p, &played.things);
+                p.engine.reload().unwrap();
+                if let Some(d) = p.engine.misjudged() {
+                    return Err(format!("{}, order #{k} {order:?}: judged anew after a reopen: {d}", s.of));
+                }
+                p.reexamine().unwrap();
+                if let Some(d) = shown_differs(&before, &shown(&mut p, &played.things), &|_| false) {
+                    return Err(format!("{}, order #{k} {order:?}: reopen differs: {d}", s.of));
+                }
+                node_checks(&mut p, played, &oracles[h]).map(|_| Seen::default()).map_err(|d| {
+                    explain(played, &s.held, &mut p, &d);
+                    dump_order(played, order);
+                    format!("{}, order #{k} {order:?}: {d}", s.of)
+                })
             }
-            caught(|| match kind {
-                0 => one(k, None),
-                1 => one(twins[k], Some(&mut Rng(base ^ x.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1))),
-                2 => clocked(k),
-                3 => then_rest(&rests[k]),
-                _ => reopens_alike(played, &orders[k]).map_err(|d| format!("{of}, order {:?} reopened after every ingest: {d}", orders[k])),
-            })
+            End::Late(h, k) => {
+                let (s, order) = (&sets[h], &sets[h].orders[k]);
+                node_checks(&mut p, played, &oracles[h]).map(|_| Seen::default()).map_err(|d| {
+                    explain(played, &s.held, &mut p, &d);
+                    format!("{}: order #{k} with late parts {order:?}: {d}", s.of)
+                })
+            }
+            End::Rest(h, k) => node_checks(&mut p, played, &oracles[0]).map(|_| Seen::default()).map_err(|d| format!("{}, then the rest: order {:?}: {d}", sets[h].of, sets[h].rests[k])),
+        }
+    };
+    // the `i`th clocked order of held set `h`: as made, reversed, then evenly spread over the rest,
+    // its first commits delivered at an earlier clock (`clock_of`, drawn from its own rng)
+    let clocked = |h: usize, i: usize| -> Result<Seen, String> {
+        let s = &sets[h];
+        let clock_base = seed.wrapping_mul(0xbf58_476d_1ce4_e5b9) ^ (s.held.len() as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
+        let k = if i < 2 || s.clocks <= 2 { i } else { 2 + (i - 2) * (s.orders.len() - 2) / (s.clocks - 2) };
+        let order = &s.orders[k];
+        let c = clock_of(played, order, &mut Rng(clock_base ^ (k as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1));
+        // `Cfg::model`: held-model judges the node after every ingest too, at the early clock and
+        // after the move (a drop before its bound or a value kept past its expiry shows only
+        // between ticks)
+        let mut early: Option<String> = None;
+        let mut done = 0;
+        let drops = std::cell::RefCell::new(crate::held::Drops::default());
+        let mut p = deliver_with(played, order, None, Some(c), Some(&drops), &mut |p| {
+            done += 1;
+            if early.is_none() {
+                early = model_differs(p, played, Some(&mut drops.borrow_mut())).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
+                if let Some(d) = &early {
+                    explain(played, &s.held, p, d);
+                }
+            }
         });
-        if let Some(e) = errs.into_iter().find_map(Result::err) {
-            return Err(e);
-        }
-        seen.reopened += reopens as u64;
-        if held == whole {
-            if cfg.away {
-                seen.covered_away += covered_away(played, &o).map_err(|d| format!("{of} without what its snapshots cover: {d}"))? as u64;
-            }
-            full = Some(o);
-        }
+        early
+            .map_or(Ok(()), Err)
+            .and_then(|_| node_checks(&mut p, played, &oracles[h]).inspect_err(|d| explain(played, &s.held, &mut p, d)))
+            .map(|_| Seen::default())
+            .map_err(|d| format!("{}: order #{k} at an earlier clock {c:?} {order:?}: {d}", s.of))
+    };
+    let reopened = |h: usize, k: usize| -> Result<Seen, String> {
+        let order = &sets[h].orders[k];
+        reopens_alike(played, order).map(|_| Seen::default()).map_err(|d| format!("{}, order {order:?} reopened after every ingest: {d}", sets[h].of))
+    };
+    // the whole set without what its snapshots cover
+    let away = || -> Result<Seen, String> {
+        let covered_away = covered_away(played, &oracles[0]).map_err(|d| format!("{} without what its snapshots cover: {d}", sets[0].of))? as u64;
+        Ok(Seen { covered_away, ..Seen::default() })
+    };
+    // the checks outside the tree
+    let mut jobs: Vec<Job> = Vec::new();
+    for (h, s) in sets.iter().enumerate() {
+        let (clocked, reopened) = (&clocked, &reopened);
+        jobs.extend((0..s.clocks).map(|i| ((h, 2, i), Box::new(move || clocked(h, i)) as Box<dyn Fn() -> Result<Seen, String> + Sync>)));
+        jobs.extend((0..s.reopens).map(|k| ((h, 4, k), Box::new(move || reopened(h, k)) as Box<dyn Fn() -> Result<Seen, String> + Sync>)));
+    }
+    if cfg.away {
+        jobs.push(((sets.len(), 0, 0), Box::new(away)));
+    }
+    for (_, r) in walk(played, &tree, threads, &jobs, &end) {
+        seen.add(&r?);
     }
     seen.withheld = played.withheld;
     if played.settle_from.is_none() {
@@ -2521,11 +2675,52 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
     if let Some(m) = &played.model {
         seen.model = m.1.lock().unwrap().clone();
     }
-    seen.restored = played.restored.load(std::sync::atomic::Ordering::Relaxed);
-    seen.moved = played.moved.load(std::sync::atomic::Ordering::Relaxed);
-    seen.dropped = played.dropped.load(std::sync::atomic::Ordering::Relaxed);
-    seen.judged = std::array::from_fn(|i| played.judged[i].load(std::sync::atomic::Ordering::Relaxed));
+    let load = |x: &std::sync::atomic::AtomicU64| x.load(std::sync::atomic::Ordering::Relaxed);
+    seen.restored = load(&played.restored);
+    seen.moved = load(&played.moved);
+    seen.dropped = load(&played.dropped);
+    seen.judged = std::array::from_fn(|i| load(&played.judged[i]));
+    seen.ingests = load(&played.ingests);
+    seen.copies = load(&played.copies);
     Ok(seen)
+}
+
+/// The reference's tallies: held set `held` delivered as made (`whole`: the whole set).
+fn reference(played: &Played, held: &[usize], whole: bool, p: &mut Peer) -> Seen {
+    let mut seen = Seen::default();
+    for t in &played.things {
+        for c in p.engine.purged_on(t, &msg()).unwrap().into_keys() {
+            seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak == msg() && p.engine.permanent(&h, a))));
+        }
+        let (rows, _) = p.engine.held_parts(t, &msg(), osis_engine::engine::listing::CommitFrom::Oldest, usize::MAX - 1, usize::MAX).unwrap();
+        for r in &rows {
+            if let osis_engine::engine::listing::PartBody::Purged(by) = &r.body {
+                seen.by_author += u64::from(p.engine.header(by).is_some_and(|h| h.purge.iter().any(|i| matches!(i, osis_commit::PurgeItem::Author { .. }))));
+            }
+        }
+    }
+    if p.discards > 0 {
+        *seen.pending.entry("Awaits".to_string()).or_default() += 1;
+    }
+    for (_, why) in p.engine.pending() {
+        let why = format!("{why:?}");
+        *seen.pending.entry(why.split('(').next().unwrap_or("").to_string()).or_default() += 1;
+    }
+    if whole {
+        for id in p.engine.commit_ids() {
+            for a in p.engine.header(&id).into_iter().flat_map(|h| h.aspects.clone()) {
+                *seen.aspects.entry(a.ak.as_str().to_string()).or_default() += 1;
+            }
+        }
+    }
+    let idx = p.engine.index_digest();
+    let invalid = idx.commits.values().filter(|c| c.valid.contains(&false)).count();
+    seen.invalid += invalid as u64;
+    seen.fallen += p.engine.fallen_settings() as u64;
+    if std::env::var("OSIS_ORDER_STATS").is_ok() {
+        eprintln!("{} of {} commits held ({} base), {} with an invalid part, {} pending, {} things", held.len(), played.packs.len(), played.base, invalid, p.engine.pending().len(), played.things.len());
+    }
+    seen
 }
 
 /// Drops steps while the history still fails, pass after pass until a whole pass drops none (a
@@ -2802,14 +2997,16 @@ struct Size {
     env: bool,
 }
 
-/// Default tests: a seed of every emphasis, and one of every emphasis capped to 3 commits after the
+/// Default tests, a covering set: a seed of every emphasis (16 steps: its start sets most of a
+/// history) given one order of each kind and three partial held sets (the first sync part way,
+/// a node that never heard from a writer); and one of every emphasis capped to 3 commits after the
 /// setup (the smallest cap with orders past as made and reversed), checked in every order of every
 /// held set, each with late parts (its seeds are fixed, so a drawn share would leave the same
-/// orders untried for good); no environment read. `exhaustive` runs the same kinds at 6.
+/// orders untried for good); no environment read. `plain` and `exhaustive` run the full width.
 fn quick() -> Vec<Size> {
     vec![
-        Size { name: "quick", seeds: (0..8).collect(), len: 32, cfg: ORDERS, exhaustive: None, env: false },
-        Size { name: "quick, exhaustive", seeds: (100..108).collect(), len: 30, cfg: Cfg { all_up_to: 3, every_held: true, random: 0, subsets: 1, split: Twins::First(usize::MAX), clock: 4, ..ORDERS }, exhaustive: Some(3), env: false },
+        Size { name: "quick", seeds: (0..8).collect(), len: 16, cfg: Cfg { random: 1, partial: 3, split: Twins::First(1), clock: 1, reopens: 1, ..ORDERS }, exhaustive: None, env: false },
+        Size { name: "quick, exhaustive", seeds: (100..108).collect(), len: 30, cfg: Cfg { all_up_to: 3, every_held: true, random: 0, partial: 1, split: Twins::First(usize::MAX), clock: 1, ..ORDERS }, exhaustive: Some(3), env: false },
     ]
 }
 
@@ -2828,14 +3025,14 @@ fn from_env(name: &'static str, full: std::ops::Range<u64>, len: usize, cfg: Cfg
 
 /// `plain`: 80 seeds of 60 steps at large size (`OSIS_FULL=1`), a tenth at small size.
 fn plain() -> Size {
-    from_env("plain", 0..80, 60, Cfg { random: 6, subsets: 4, ..ORDERS }, None)
+    from_env("plain", 0..80, 60, Cfg { random: 6, partial: 6, ..ORDERS }, None)
 }
 
 /// Every order of the whole set and of every held set, a drawn quarter of them with late parts
 /// (`Twins::Share`), of histories of at most 6 commits after the setup (720 orders), 24 of them at
 /// an earlier clock.
 fn exhaustive() -> Size {
-    from_env("exhaustive", 0..80, 40, Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: Twins::Share, clock: 24, ..ORDERS }, Some(6))
+    from_env("exhaustive", 0..80, 40, Cfg { all_up_to: 6, every_held: true, random: 0, partial: 4, split: Twins::Share, clock: 24, ..ORDERS }, Some(6))
 }
 
 impl Size {
@@ -2862,8 +3059,8 @@ fn held_set_decides_at(sizes: Vec<Size>) {
     let threads = threads("OSIS_SEED_THREADS");
     for size in &sizes {
         let t0 = std::time::Instant::now();
-        // up to a seed per thread in flight, each seed's orders on every thread, all of it holding
-        // the process's permits (`testenv::pooled_map`)
+        // up to a seed per thread in flight, each seed's deliveries on every thread, all of it
+        // holding the process's permits (`check_on`)
         let results = par_map(&size.seeds, threads, |seed| {
             let (e, steps) = generate(seed, size.len);
             let cfg = cfg_of(e, size.cfg);
@@ -2903,7 +3100,7 @@ fn held_set_decides_at(sizes: Vec<Size>) {
         }
         let failed: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
         // always shown: the counts are what a passing run is read for
-        osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones ({} with late parts), {} failing, {:.1} s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, here.orders, here.twins.2, failed.len(), t0.elapsed().as_secs_f64(), here.model.compared, here.model.nodes));
+        osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones ({} with late parts; {} ingests, {} nodes copied), {} failing, {:.1} s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, here.orders, here.twins.2, here.ingests, here.copies, failed.len(), t0.elapsed().as_secs_f64(), here.model.compared, here.model.nodes));
         seen.add(&here);
         fails.extend(failed);
     }
@@ -3787,7 +3984,7 @@ fn harness_judges_a_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
 fn removals_judged_whatever_else_waits() {
     use Step::*;
     let h = vec![Removals { by: 1, other: 2, v: 5 }, NewTop { by: 0 }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }];
-    let seen = check(0, &h, Cfg { all_up_to: 0, random: 0, subsets: 0, split: Twins::First(0), clock: 0, away: true, ..ORDERS }).unwrap();
+    let seen = check(0, &h, Cfg { all_up_to: 0, random: 0, partial: 2, split: Twins::First(0), clock: 0, away: true, ..ORDERS }).unwrap();
     assert!(seen.pending.contains_key("UnknownCreated"), "{:?}", seen.pending);
     for k in crate::held::REMOVALS {
         assert!(seen.model.reached.get(k).is_some_and(|n| *n > 0), "{k}: {:?}", seen.model.reached);
