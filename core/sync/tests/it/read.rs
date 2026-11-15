@@ -2641,3 +2641,42 @@ fn a_first_start_after_a_session_commits_the_same_at_n_and_10n() {
 }
 
 
+
+// spec/sync-judgement.md §2 (required set: a copy is in it by the deltas it holds, a header-only
+// copy of a rotation while its account's chain is), spec/permissions.md §4 (Chain certificates:
+// an account's rotation past its current `keys.0` goes as a header alone): a certificate copy
+// logged while S named its part stays while the body is must-hold as a header alone, until a
+// complete pass after the move; then it leaves the own store with no tombstone, a header-only
+// copy is logged in its place, and the old copy is deleted at K.
+#[test]
+fn a_copy_holding_no_named_delta_leaves_for_a_header_copy_spec_sync_judgement_2() {
+    let mut w = W::new();
+    w.g.done.insert(S, 0);
+    let c = cid(44);
+    let mut f = uncovered();
+    f.body.closure = false;
+    let cert = BodyMeta { parts: [0].into(), copy: true, certificate: true, ..meta() };
+    w.g.facts.insert((S, c), f);
+    w.g.bodies.insert(c, Arc::new([(S, cert.clone())].into()));
+    w.g.added.push(c);
+    w.exchange();
+    let old = w.g.logged.iter().find(|(s, x, _)| *s == S && *x == c).expect("logged").2;
+    w.g.blobs.insert(old, Some(BlobInfo { parts: [0].into(), sealed: Default::default(), copy: true }));
+    assert!(w.g.k.held.contains_key(&(S, old)), "K took it");
+    // S names its header alone from place 5 on
+    w.g.place = 5;
+    w.g.bodies.insert(c, Arc::new([(S, BodyMeta { parts: BTreeSet::new(), header_only: true, ..cert })].into()));
+    w.exchange();
+    assert_eq!(w.read.verdict(&S, &c), Some(Verdict::Must));
+    assert_eq!(w.logs(S, c), 1, "the copy stands while no pass ended");
+    assert_eq!(w.read.passes_wanted().get(&S), Some(&5));
+    assert_eq!(w.deletes(), 0);
+    w.pass(6);
+    assert_eq!(w.g.unlogged, vec![(S, old)], "the copy left with no tombstone");
+    assert_eq!(w.logs(S, c), 2, "a header-only copy logged in its place");
+    let new = w.g.logged.last().unwrap().2;
+    w.g.blobs.insert(new, Some(BlobInfo { parts: BTreeSet::new(), sealed: Default::default(), copy: true }));
+    w.exchange();
+    assert!(w.sent().any(|m| *m == Sent::Delete(KC, old)), "the copy deleted at K");
+    assert!(!w.sent().any(|m| *m == Sent::Delete(KC, new)), "the header-only copy deleted at K");
+}

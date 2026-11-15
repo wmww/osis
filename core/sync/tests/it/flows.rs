@@ -1160,8 +1160,8 @@ fn keep_arriving(as_item: bool) {
 // changes, each account's rotation (a node paired and removed) and the thing filed in a group
 // and out again, each followed by complete passes, neither node drops or deletes a copy of the
 // other's (no tombstone of one at either node), both judge every copy either holds, of both
-// accounts, inside S's required set, and both stores hold the same copies, each account's
-// rotations among them.
+// accounts, inside S's required set, and both stores hold copies of the same bodies, each
+// account's rotations among them.
 #[test]
 fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2() {
     let (mut w, t, ak) = granted_and_read(Role::Write);
@@ -1183,11 +1183,22 @@ fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2()
     let mut ever = std::collections::BTreeSet::new();
     let mut settle = |w: &mut World, step: &str| {
         w.run();
-        w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
-        w.run();
+        // two passes: a copy a rotation leaves unnamed (an old card, an old line's part) goes a
+        // pass after the rotation's copies arrive
+        for _ in 0..2 {
+            w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+            w.run();
+        }
         let (c0, c1) = (copies(w, 0), copies(w, 1));
         ever.extend(c0.iter().chain(&c1).copied());
-        assert_eq!(c0, c1, "{step}: both stores hold the same certificate copies");
+        // the same bodies: two nodes may each log a copy of one at once (a header-only copy of
+        // a line both find unnamed past one pass), each a fresh encryption
+        let bodies = |w: &mut World, cs: &std::collections::BTreeSet<osis_base::BlobId>| -> std::collections::BTreeSet<(osis_base::CommitId, Vec<usize>)> {
+            let e = w.engine(0);
+            cs.iter().map(|b| (e.blob_commit(b).unwrap().unwrap(), e.blob_parts(b).unwrap().unwrap_or_default().into_iter().collect())).collect()
+        };
+        let (b0, b1) = (bodies(w, &c0), bodies(w, &c1));
+        assert_eq!(b0, b1, "{step}: both stores hold copies of the same certificate bodies");
         let mut authors = std::collections::BTreeSet::new();
         for b in c0.iter().chain(&c1) {
             // one judgement of the blob at both nodes: in S's required set
@@ -1251,4 +1262,72 @@ fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2()
         e.commit(m).unwrap();
     });
     settle(&mut w, "unfiled");
+}
+
+// spec/permissions.md §4 (Chain certificates: an account's current `keys.0` commits with their
+// `keys.0` part, its other rotations, every line, as header-only copies), §5.5 (Chains travel),
+// spec/sync-judgement.md §2 (required set: a header-only copy of a rotation): after a writer's
+// account rotates three times, every node reading S holds every old rotation under S as
+// header-only copies alone and the current one with its `keys.0` part (no old epoch's deposit
+// seed under S; a copy logged while its rotation was current leaves once it is not), a fresh
+// reader of S, cut off from the writer, among them; it verifies the commits signed at closed
+// epochs (each later rotation).
+#[test]
+fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
+    let mut w = crate::harness::history::world(0, 3);
+    let (a0, a1, a2) = (w.node(0).account.unwrap(), w.node(1).account.unwrap(), w.node(2).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let t = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a0);
+        m.set(t, &ak, &Value::Str("x".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    file(&mut w, 0, vec![t], Vec::new());
+    w.write(0, |e| e.grant(&t, &a1, &edge(Role::Write))).unwrap();
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    // three rotations, each signed at the epoch the one before mints; node 2 cut off from the
+    // writer (no Prove carries them to it), each goes under every sync ID the account acts in
+    w.cap = 10_000;
+    w.partition(1, 2);
+    for _ in 0..3 {
+        w.write(1, |e| e.rotate_account(&a1)).unwrap().expect("rotated");
+        w.run();
+    }
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    w.run();
+    let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
+    let rots = w.engine(1).account_rotations(&a1);
+    let current = w.engine(1).current_keys(&a1);
+    assert_eq!(rots.len(), 3, "three rotations");
+    assert_eq!(rots.iter().filter(|r| current.contains(r)).count(), 1, "one current rotation");
+    // a fresh reader of S verifies the commits signed at closed epochs (the later rotations) by
+    // the headers of the rotations minting those epochs alone
+    w.write(0, |e| e.grant(&t, &a2, &edge(Role::Read))).unwrap();
+    w.run();
+    file(&mut w, 2, Vec::new(), vec![t]);
+    w.run();
+    assert!(w.engine(2).sync_ids(&t).unwrap().iter().any(|x| x.id == s), "the fresh reader reads S");
+    let pending: Vec<osis_base::CommitId> = w.engine(2).pending().into_iter().map(|x| x.0).collect();
+    for r in &rots {
+        let e = w.engine(2);
+        assert!(e.header(r).is_some() && !pending.contains(r), "a rotation signed at an old epoch verifies at a fresh reader");
+    }
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    w.run();
+    for j in 0..3 {
+        let held: Vec<osis_base::BlobId> = w.store(j).entries(&s).unwrap().iter().map(|e| e.blob).collect();
+        for r in &rots {
+            let e = w.engine(j);
+            let parts: Vec<usize> = held.iter().filter(|b| e.blob_commit(b).unwrap() == Some(*r)).collect::<Vec<_>>().into_iter().map(|b| e.blob_parts(b).unwrap().map_or(0, |p| p.len())).collect();
+            assert!(!parts.is_empty(), "node {j}: a rotation not held under S");
+            match current.contains(r) {
+                true => assert!(parts.iter().any(|n| *n > 0), "node {j}: the current rotation without its keys.0 part under S"),
+                false => assert!(parts.iter().all(|n| *n == 0), "node {j}: an old rotation's keys.0 part under S"),
+            }
+        }
+    }
 }

@@ -225,6 +225,34 @@ fn outside(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -> Result
     })
 }
 
+/// Held blob `b` of a commit whose body at S is a certificate (`meta`): a copy holding deltas, none
+/// of them one S's certificates name, is outside S's required set by the deltas it holds
+/// (spec/sync-judgement.md §2), whatever the body: an account's rotation past its current
+/// `keys.0` is named for its header alone (spec/permissions.md §4).
+fn unnamed_copy(g: &mut impl Ground, meta: &BodyMeta, b: &BlobId) -> Result<bool> {
+    if !meta.certificate {
+        return Ok(false);
+    }
+    Ok(g.blob(b)?.is_some_and(|i| i.copy && !i.parts.is_empty() && i.parts.is_disjoint(&meta.parts)))
+}
+
+/// Of `blobs` of `c`, the unnamed copies (`unnamed_copy`) and, while any is, whether the
+/// judgement that they are outside is final (`outside`) and the wait otherwise.
+fn unnamed_copies(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId, blobs: &BTreeSet<BlobId>) -> Result<(Vec<BlobId>, bool, Option<u64>)> {
+    let Some(meta) = mine.meta(s, c) else { return Ok((Vec::new(), false, None)) };
+    let mut out = Vec::new();
+    for b in blobs {
+        if unnamed_copy(g, meta, b)? {
+            out.push(*b);
+        }
+    }
+    if out.is_empty() {
+        return Ok((out, false, None));
+    }
+    let (v, wait) = outside(g, mine, s, c)?;
+    Ok((out, matches!(v, Verdict::MustNot(_)), wait))
+}
+
 /// spec/sync-judgement.md §2: what the body is at S.
 fn classify(mine: &Mine, f: &Facts, s: &SyncId, c: &CommitId, meta: &BodyMeta, later_held: bool) -> Verdict {
     if let Some(w) = f.must_not {
@@ -309,7 +337,11 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         }
     }
     // a strict subset of another entry of it held here leaves too (§2); the larger one stays
-    let held: BTreeSet<BlobId> = own.iter().map(|e| e.blob).filter(|b| !stale.contains(b)).collect();
+    let mut held: BTreeSet<BlobId> = own.iter().map(|e| e.blob).filter(|b| !stale.contains(b)).collect();
+    // a certificate copy holding none of what S names of it leaves as outside, once final
+    let (unnamed, unnamed_gone, unnamed_wait) = unnamed_copies(g, mine, s, c, &held)?;
+    let unnamed: Vec<BlobId> = if unnamed_gone { unnamed } else { Vec::new() };
+    held.retain(|b| !unnamed.contains(b));
     let mut subsets = Vec::new();
     for b in &held {
         if g.strict_subset(s, b, &held)? {
@@ -371,6 +403,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
             }
         }
     }
+    j.wait = j.wait.or(unnamed_wait);
     let present = g.present_anywhere(s, c)?;
     j.idle = mine.meta(s, c).is_none() && own.is_empty() && !present;
     // a wait matters only where something of it is held here or at a source
@@ -378,6 +411,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         j.wait = None;
     }
     j.acts.extend(stale.iter().chain(&subsets).map(|b| Act::DropOwn(*b)));
+    j.acts.extend(unnamed.iter().map(|b| Act::Unlog(*b)));
     if verdict == Verdict::Unjudged {
         return Ok(j);
     }
@@ -599,9 +633,20 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
     } else {
         let copy = mine.meta(s, c).is_some_and(|m| m.copy);
         let mut out = duplicates(g, seen, copy)?;
+        // a copy holding none of what S names of it (§2), once final
+        let (unnamed, gone, _) = unnamed_copies(g, mine, s, c, &seen.present)?;
+        let mut present = seen.present.clone();
+        if gone {
+            present.retain(|b| !unnamed.contains(b));
+            for b in unnamed {
+                if !out.contains(&b) {
+                    out.push(b);
+                }
+            }
+        }
         // a strict subset of another entry of it there (§2), which carries it there
-        for b in &seen.present {
-            if !out.contains(b) && g.strict_subset(s, b, &seen.present)? {
+        for b in &present {
+            if !out.contains(b) && g.strict_subset(s, b, &present)? {
                 out.push(*b);
             }
         }
