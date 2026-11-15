@@ -3741,13 +3741,14 @@ fn harness_flags_a_live_drop_before_its_live_bound_spec_commits_5() {
     assert_eq!(cov.reached.get("live drops judged"), Some(&2), "{:?}", cov.reached);
 }
 
-// The harness's covered-drop check judges a drop by the body as last seen in scope: a kept
-// register write replaced, then a write by 1 that waits for 1's setup (out of the model, so the
-// aspect is out of scope and its bodies are not read), then 1's setup and a snapshot arrive and
-// the first write, out of history, is dropped by hand. Seen only out of scope, it is not judged
-// (judged by its unread body it read as live, kept for good).
+// The harness's covered-drop check judges a drop of a body last seen out of scope by that body
+// as read then (the model is fed it empty there, which reads as live): two kept register writes
+// by 0 (kept 30 min after replaced), then a write by 1 that waits for 1's setup (out of the model,
+// so the aspect is out of scope), then 1's setup and a snapshot arrive. Both of 0's writes are
+// dropped by hand: the first, out of history, is judged and spared; the second, replaced by 1's
+// just now, is in history and flagged.
 #[test]
-fn harness_judges_no_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
+fn harness_judges_a_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
     use Step::*;
     let w = |by, v| Typed { by, t: 0, op: 16, k: 0, v };
     let h = vec![w(0, 1), Advance { who: None, ms: 10 }, w(0, 2), Advance { who: None, ms: HOUR }, w(1, 3), Compact { by: 0, t: 0, op: 16 }];
@@ -3755,7 +3756,7 @@ fn harness_judges_no_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
     let hist = crate::held::History::new(&played.packs);
     let n = played.packs.len();
     let (t, a) = (played.things[0], aspect_of(16));
-    let first = played.packs[played.base].id;
+    let (first, second) = (played.packs[played.base].id, played.packs[played.base + 1].id);
     assert!(osis_commit::CommitBlob::decode(&played.packs[n - 1].bytes).unwrap().header.kind.is_compaction(), "{:?}", played.tally.show());
     let setup: Vec<usize> = (0..played.base).filter(|&i| played.authors[i] == 1).collect();
     assert!(!setup.is_empty());
@@ -3763,13 +3764,18 @@ fn harness_judges_no_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
     assert!(!p.engine.pending().is_empty(), "1's write waits");
     let (mut cov, mut drops) = (crate::held::Coverage::default(), crate::held::Drops::default());
     assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)), None);
+    assert!(cov.skipped.contains_key("waits for a reason outside the model"), "{:?}", cov.skipped);
     for &i in setup.iter().chain([&(n - 1)]) {
         p.receive(&played.packs[i].bytes, played.packs[i].blobs.clone()).unwrap();
     }
     assert!(p.engine.pending().is_empty());
     p.engine.drop_body(&first, &t, &a).unwrap();
-    assert_eq!(crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)), None);
-    assert_eq!(cov.reached.get("covered drops unjudged"), Some(&1), "{:?}", cov.reached);
+    p.engine.drop_body(&second, &t, &a).unwrap();
+    let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)).expect("the second drop is flagged");
+    assert!(d.contains("dropped as covered"), "{d}");
+    assert_eq!(cov.differs.get("dropped a body in history"), Some(&1), "{:?}", cov.differs);
+    assert_eq!(cov.reached.get("covered drops judged"), Some(&2), "{:?}", cov.reached);
+    assert_eq!(cov.reached.get("covered drops unjudged"), None, "{:?}", cov.reached);
 }
 
 // The coverage floor's removals are the generator's by construction: a new thing whose creation

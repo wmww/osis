@@ -821,7 +821,8 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
     // together. A leftover holding no value of its own writes is never dropped for keep bounds:
     // past its expiry it drops as covered, purged it does not (spec/commits.md §5 Purge, Dropping
     // a body); a body past its commit's expiry left by expiry, its leftover with it. A part last
-    // seen missing or waiting, or on an aspect out of scope then or now, is not judged
+    // seen missing or waiting, or on an aspect out of scope now, is not judged; one last seen
+    // out of scope is judged by its body as read then (`unread_body`: the model is fed it empty)
     if let Some(d) = drops {
         let mut back = input.held.clone();
         let mut fresh = Vec::new();
@@ -829,14 +830,13 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, cov: &mut Coverage, drops:
         for (ci, c) in back.commits.iter_mut().enumerate().filter(|(_, c)| !c.is_role()) {
             let (id, applied) = input.commits[&c.id];
             let expired = hist.headers.get(&id).and_then(|h| h.expires).is_some_and(|x| x <= now);
-            let meta = e.core.ix.commits.get(&id);
             for (i, p) in c.parts.iter_mut().enumerate() {
                 if !matches!(p.body, hm::Body::Dropped(_)) {
-                    let bare = meta.is_some_and(|m| m.bare(i));
+                    let bare = e.core.ix.commits.get(&id).is_some_and(|m| m.bare(i));
                     let seen = match &p.body {
                         hm::Body::Held(_) if bare => Seen::Bare,
-                        // out of scope its body was not read (fed empty): not judged
-                        hm::Body::Held(_) if applied && by_part.contains_key(&(p.thing, p.aspect)) => Seen::Held(Box::new(p.body.clone())),
+                        hm::Body::Held(_) if applied && !by_part.contains_key(&(p.thing, p.aspect)) => unread_body(e, hist, &id, i).map_or(Seen::Not, |f| Seen::Held(Box::new(hm::Body::Held(hm::Delta::Writes(f))))),
+                        hm::Body::Held(_) if applied => Seen::Held(Box::new(p.body.clone())),
                         _ => Seen::Not,
                     };
                     d.seen.insert((id, i), seen);
@@ -933,6 +933,18 @@ pub(crate) fn keep_for_d(e: &mut Engine, hist: &History) -> (usize, usize, Optio
         }
     }
     (judged, later, early)
+}
+
+/// Content part `ai` of applied commit `c`, held whole, as crdt-model decodes it: an out-of-scope
+/// aspect's body, which `convert` feeds empty, for judging its drop once the aspect is in scope.
+/// None for any other part, or a body crdt-model cannot read.
+fn unread_body(e: &mut Engine, hist: &History, c: &CommitId, ai: usize) -> Option<hm::Frag> {
+    let a = e.header(c)?.aspects.get(ai)?.clone();
+    if !ct::is_content(a.ak.as_str()) || !held_body(e, c, ai) {
+        return None;
+    }
+    let f = e.body_fragment(c, &a.tid, &a.ak).ok()??;
+    hist.frag(&f).ok()
 }
 
 fn reach_n(cov: &mut Coverage, k: &'static str, n: usize) {
