@@ -430,7 +430,7 @@ impl Ground for Fake {
         Ok(self.srcs.get(&(*s, *at)).and_then(|v| v.head))
     }
     fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>> {
-        Ok(self.seen.iter().filter(|((_, x, y), v)| x == s && y == c && !v.present.is_empty()).map(|((at, ..), _)| *at).collect())
+        Ok(self.seen.iter().filter(|((_, x, y), v)| x == s && y == c && !(v.present.is_empty() && v.deleted.is_empty())).map(|((at, ..), _)| *at).collect())
     }
     fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {
         Ok(std::mem::take(&mut self.src_feed))

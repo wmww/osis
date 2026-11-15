@@ -369,7 +369,19 @@ impl Ground for Live<'_, '_> {
     }
     fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>> {
         let known = self.streams.known();
-        Ok(self.cx.engine.commit_blobs(c)?.iter().flat_map(|b| known.shown_at(s, b)).collect())
+        let blobs = self.cx.engine.commit_blobs(c)?;
+        let mut out: BTreeSet<Source> = blobs.iter().flat_map(|b| known.shown_at(s, b)).collect();
+        // shown deleted: a record's row by the index; a connection's lasts while it is up
+        let conns: Vec<Source> = self.views.of(s).into_iter().filter(|at| matches!(at, Source::Conn(_))).collect();
+        for b in blobs.iter() {
+            out.extend(self.cx.store.deleted_at_records(s, b)?.into_iter().map(Source::Record));
+            for at in &conns {
+                if self.cx.store.seen_deleted(*at, s, b)? {
+                    out.insert(*at);
+                }
+            }
+        }
+        Ok(out)
     }
     fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>> {
         Ok(self.feeds.views.as_mut().map(|f| f.added()).unwrap_or_default().into_iter().map(|(_, s, at)| (s, at)).collect())
@@ -378,10 +390,12 @@ impl Ground for Live<'_, '_> {
         let mut out = Vec::new();
         let rows = match self.feeds.known.as_mut() {
             Some(f) => f.added(),
-            // a start: every row each source showed
+            // a start: every row each source showed, present or deleted
             None => {
                 self.feeds.known = Some(self.streams.known().feed());
-                self.streams.known().rows_all()?
+                let mut rows = self.streams.known().rows_all()?;
+                rows.extend(self.cx.store.deletes_seen_all()?);
+                rows
             }
         };
         // a blob this node never opened or sealed names no commit here: it is pulled, and its

@@ -190,13 +190,14 @@ pub trait Ground {
     fn kept_at(&mut self, s: &SyncId, at: &Source) -> Result<bool>;
     /// The source's head for S, as its stream last named it, up now or away.
     fn head_at(&mut self, s: &SyncId, at: &Source) -> Result<Option<StepId>>;
-    /// The sources, up now or away, whose stream shows an entry of `c` under S present.
+    /// The sources, up now or away, whose stream shows an entry of `c` under S present or showed
+    /// one deleted (within `TOMBSTONE_LIFETIME`; a connection's while it is up).
     fn shown_at(&mut self, s: &SyncId, c: &CommitId) -> Result<BTreeSet<Source>>;
     /// Sources of S whose view was written (joined or changed) since the last call.
     fn sources_added(&mut self) -> Result<Vec<(SyncId, Source)>>;
     fn seen(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Seen>;
     /// `known` rows written since the last call (a source's stream showed an entry of the commit,
-    /// or its removal); every row at the first call (a start).
+    /// or its removal); at the first call (a start) every row, presence and deletes seen alike.
     fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>>;
     /// Some source's stream shows an entry of `c` under S present.
     fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool>;

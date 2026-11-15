@@ -1823,6 +1823,31 @@ impl Store {
         })
     }
 
+    /// Every delete this node saw at a source within `TOMBSTONE_LIFETIME`, of every source: a
+    /// start judges what each showed deleted as what each shows present. O(rows).
+    pub fn deletes_seen_all(&self) -> Result<Vec<(Source, SyncId, BlobId)>> {
+        let mut g = self.lock();
+        let blob = |k: &[u8]| <[u8; 32]>::try_from(k).ok().map(BlobId);
+        let mut out: Vec<_> = g.mem.conn_rows.keys().filter(|(_, _, tag, _)| *tag == SEEN).filter_map(|(c, s, _, k)| Some((Source::Conn(*c), *s, blob(k)?))).collect();
+        let recs = g.read(|t, _| {
+            let mut rows = Vec::new();
+            for r in t.records_all()? {
+                for (s, k, _) in t.record_tag_rows(&r.id, SEEN)? {
+                    rows.extend(blob(&k).map(|b| (Source::Record(r.id), s, b)));
+                }
+            }
+            Ok(rows)
+        })?;
+        out.extend(recs);
+        Ok(out)
+    }
+
+    /// The records at which this node saw entry `b` of S deleted within `TOMBSTONE_LIFETIME`
+    /// (by the row index: costs what it returns).
+    pub fn deleted_at_records(&self, s: &SyncId, b: &BlobId) -> Result<Vec<RecordId>> {
+        self.lock().read(|t, _| Ok(t.records_with_row(s, SEEN, &b.0, usize::MAX)?))
+    }
+
     /// Whether this node saw entry `b` of S deleted at `src` within `TOMBSTONE_LIFETIME`.
     pub fn seen_deleted(&self, src: Source, s: &SyncId, b: &BlobId) -> Result<bool> {
         Ok(self.source_get(src, s, SEEN, &b.0)?.is_some())
