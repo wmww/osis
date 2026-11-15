@@ -58,7 +58,7 @@ pub(crate) fn keep(tx: &mut Tx<'_>, p: &Tid, s: &Secret32) -> Result<()> {
         tx.core.ix.epochs_due.insert(*p);
         // a part on the account itself sealed under an epoch whose seed came only now opens now:
         // its stored entries are opened again
-        let lacking: Vec<crate::CommitId> = tx.core.aspects_of(p).flat_map(|(_, cs)| cs.iter().map(|x| x.1)).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.aspects_on(p).any(|ai| m.missing(ai)))).collect();
+        let lacking: Vec<osis_base::CommitId> = tx.core.aspects_of(p).flat_map(|(_, cs)| cs.iter().map(|x| x.1)).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.aspects_on(p).any(|ai| m.missing(ai)))).collect();
         tx.core.redeliver.extend(lacking);
     }
     Ok(())

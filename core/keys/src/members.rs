@@ -24,6 +24,10 @@ pub struct Keysets {
     /// jointly at every one that is or descends from each anchor, never at one of them alone, so
     /// a removed node holding a head beside its removal opens nothing the others do not.
     pub heads: bool,
+    /// Superseded keysets no departure reaches (an account's closed epochs no revocation closes,
+    /// spec/permissions.md §5.5 Revoked): every holder of one holds the keysets past it, so a
+    /// box naming one is not stale, though nothing is sealed to it.
+    pub lasting: BTreeSet<Epoch>,
 }
 
 impl Keysets {
@@ -118,7 +122,8 @@ pub fn seal_keyset(keysets: &Keysets, anchors: &BTreeSet<Epoch>, tainted: &BTree
 }
 
 /// Stale (rule 2): whether a box of A to holder actor M naming M's epoch `k` is stale: `k` is
-/// held invalid, `tainted`, or named by the supersedes list of a held valid keyset of M. A node
+/// held invalid, `tainted`, or named by the supersedes list of a held valid keyset of M and not
+/// `lasting`. A node
 /// that may rotate A does not encrypt under an epoch of A with a stale box; it rotates first.
 ///
 /// Invariant: once M's keyset rotated knowing a removal (it lists the keyset the removed party
@@ -128,7 +133,7 @@ pub fn seal_keyset(keysets: &Keysets, anchors: &BTreeSet<Epoch>, tainted: &BTree
 /// yet, and rotating onto an older one would move A off it (a staleness by "any newer keyset"
 /// would move A onto an ignorant fork).
 pub fn stale(k: &Epoch, keysets: &Keysets, tainted: &BTreeSet<Epoch>) -> bool {
-    keysets.invalid.contains(k) || tainted.contains(k) || keysets.valid.values().any(|l| l.contains(k))
+    keysets.invalid.contains(k) || tainted.contains(k) || !keysets.lasting.contains(k) && keysets.valid.values().any(|l| l.contains(k))
 }
 
 /// The epochs at which `boxes` (an actor's held box keys of one role, as (holder, epoch)) box a

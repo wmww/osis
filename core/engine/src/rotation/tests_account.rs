@@ -142,29 +142,35 @@ pub(super) fn rotation_at(rec: CreationRecord, at: (CommitId, &AccountEpochKeys)
     cb.build(&first.signing, &Dedup(rec, first.signing.verifying_key()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
-// spec/crypto.md §4 (Account keysets): at an outsider holding the rotation, a box naming the closed first epoch reads stale and the new epoch does not; the keyset rule reads the public name alone
+// spec/crypto.md §4 (Account keysets), spec/permissions.md §5.5 (Revoked): at an outsider, a box
+// naming the first epoch a plain rotation closed is not stale (no one left), one naming the
+// epoch a revocation closed is, and the open epoch's is not; the seal goes at the open epoch.
+// The keyset rule reads the public name and the header alone
 #[test]
-fn box_to_a_closed_epoch_reads_stale_spec_crypto_4() {
-    let mut lp = peers(2);
-    let (a, bytes) = created(&mut lp);
-    let e = &mut lp.peers[1].engine;
-    assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
-    let rec = e.core.created(&a.account).unwrap().clone();
-    let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
-    let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([77; 32]));
-    let first_name = account_epoch(0, &first.signing.verifying_key()).unwrap();
-    let next_name = account_epoch(1, &next.signing.verifying_key()).unwrap();
+fn box_to_a_revoked_epoch_reads_stale_spec_crypto_4() {
     let none = BTreeSet::new();
-    let e = &mut lp.peers[1].engine;
-    let ks = e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap();
-    assert!(!stale(&first_name, &ks, &none), "open before the rotation");
-    let ts = Ts::make(e.now(), 0).unwrap();
-    assert!(matches!(e.ingest(&rotation(rec, &first, &next, ts), Vec::new()).unwrap(), Ingested::Applied(_)));
-    let ks = e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap();
-    assert!(stale(&first_name, &ks, &none));
-    assert!(!stale(&next_name, &ks, &none));
-    assert_eq!(osis_keys::seal_keyset(&ks, &[first_name].into(), &none, &Default::default()), osis_keys::Seal::At([next_name].into()), "sealed at the open epoch");
+    for revoking in [false, true] {
+        let mut lp = peers(2);
+        let (a, bytes) = created(&mut lp);
+        let e = &mut lp.peers[1].engine;
+        assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
+        let rec = e.core.created(&a.account).unwrap().clone();
+        let held = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().clone();
+        let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
+        let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([77; 32]));
+        let first_name = account_epoch(0, &first.signing.verifying_key()).unwrap();
+        let next_name = account_epoch(1, &next.signing.verifying_key()).unwrap();
+        let e = &mut lp.peers[1].engine;
+        let ks = e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap();
+        assert!(!stale(&first_name, &ks, &none), "open before the rotation");
+        let ts = Ts::make(e.now(), 0).unwrap();
+        let rot = if revoking { revoking_rotation(rec, &first, &next, ts) } else { rotation(rec, &first, &next, ts) };
+        assert!(matches!(e.ingest(&rot, Vec::new()).unwrap(), Ingested::Applied(_)));
+        let ks = e.run(|tx| keysets_of(tx, &a.account, Role::Read, None)).unwrap();
+        assert_eq!(stale(&first_name, &ks, &none), revoking, "revoking {revoking}");
+        assert!(!stale(&next_name, &ks, &none));
+        assert_eq!(osis_keys::seal_keyset(&ks, &[first_name].into(), &none, &Default::default()), osis_keys::Seal::At([next_name].into()), "sealed at the open epoch");
+    }
 }
 
 // spec/sync-opens.md §2: an account's proof counts at an open epoch only: its first key alone while no
@@ -191,9 +197,9 @@ fn account_key_open_follows_the_rotations_held_spec_sync_10() {
 }
 
 // spec/permissions.md §5.4, spec/crypto.md §4 (Account keysets), §7: a reader outside the
-// account holding two rotations of one epoch follows the one it came to hold first (received in
+// account holding two revocations of one epoch follows the one it came to hold first (received in
 // one millisecond: the lower ID): it alone is open, a box to the account is sealed at it, the
-// first epoch's box and the other fork's are stale, the delete key is its; a fork nothing
+// first epoch's box (revoked) and the other fork's (not counting) are stale, the delete key is its; a fork nothing
 // rejects tells nothing
 #[test]
 fn forked_account_reads_the_head_held_first_spec_permissions_5_4() {
@@ -208,7 +214,7 @@ fn forked_account_reads_the_head_held_first_spec_permissions_5_4() {
     let ts = Ts::make(e.now(), 0).unwrap();
     let mut ids = Vec::new();
     for k in [&x, &y] {
-        let r = rotation(rec.clone(), &first, k, ts);
+        let r = revoking_rotation(rec.clone(), &first, k, ts);
         ids.push(CommitBlob::decode(&r).unwrap().id());
         assert!(matches!(e.ingest(&r, Vec::new()).unwrap(), Ingested::Applied(_)));
     }

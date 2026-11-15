@@ -127,7 +127,7 @@ impl AccountView {
     /// The account's keysets as the seal and stale rules read them (spec/crypto.md §4).
     pub(crate) fn keysets(&self) -> Keysets {
         let named = self.epochs.iter().filter_map(|(id, e)| Some((*id, self.name(e)?))).collect();
-        account_keysets(self.rule.chain(), &named)
+        account_keysets(self.rule.chain(), &named, |e| self.rule.revoked(e))
     }
 
     /// Whether `key` is an open epoch's (a head's) signing key.
