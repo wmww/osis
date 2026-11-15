@@ -18,3 +18,4 @@
 - The settle had no quiescence check, so two sides answering each other's answers forever (one rotation each per pass) passed every run unseen; a last-round "still rotating" check found it at once.
 - Review 3: roles-model forks `Stats` fields are summed across threads by a hand list in `run`; a new counter left out of it reads 0 and looks like a generator that never reaches the case.
 - Review 3: the model's honest policy (`act`) is checked only in the model; the engine's `unanswered` drifted from it (supersedes vs rejects) with no differential between them, found by reading.
+- Review 3: the roles-model differentials number items in the order made, so ties broken by ID are always ancestors first there; perm with hash IDs is not, and the first gate's sim (`stranded_reseal`, two removals in one millisecond) was the first to show it. The gate took three runs (sim, then the models' tiebreak) at about 12-20 min each.
