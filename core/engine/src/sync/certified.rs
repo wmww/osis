@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// What one thing's certificates name of a commit: parts to carry, whether its header goes alone
-/// (a request, `Certs::headers`), and the things it is a held minting of whose records go
+/// (`Certs::headers`), and the things it is a held minting of whose records go
 /// (`Certs::mintings`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Named {
@@ -675,8 +675,8 @@ mod tests {
 
     // spec/sync-judgement.md §2 (required set: a certificate blob is in it by the chain
     // certificates it carries, the same at every node), spec/permissions.md §4 (Chain
-    // certificates: an account's signing chain, every line): writers of two accounts on T, through
-    // account rotations of both, a role change and T filed in a group and out again, name the
+    // certificates: an account's signing chain, every line, old lines as headers alone): writers
+    // of two accounts on T, through account rotations of both, a role change and T filed in a group and out again, name the
     // same certificates of T at both nodes, each account's own (its every rotation line among
     // them) included at the other; a chain certificate of a writer that is none of T's (its edge
     // on an unrelated group) is named at neither.
@@ -765,12 +765,18 @@ mod tests {
                 assert!(!r0.commits.contains_key(&c), "{name}: an edge on an unrelated group named");
             }
         }
+        // every line named, the current rotation with its `keys.0` part, every other as a header
+        // alone (no old epoch's deposit seed, spec/permissions.md §4)
         let r0 = rows_of(&mut lp.peers[0].engine, &t);
         for p in [a0.account, a1.account] {
             let ls = lines(&lp.peers[0].engine, &p);
+            let current = lp.peers[0].engine.current_keys(&p);
             assert!(ls.len() >= 2, "rotations made");
             for c in ls {
-                assert!(r0.commits.contains_key(&c), "every line of each writer's signing chain named");
+                match current.contains(&c) {
+                    true => assert!(r0.commits.contains_key(&c), "the current rotation named with its part"),
+                    false => assert!(r0.headers.contains(&c) && !r0.commits.contains_key(&c), "an old line named as a header alone"),
+                }
             }
         }
     }

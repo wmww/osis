@@ -37,6 +37,14 @@ impl Engine {
         })
     }
 
+    /// Tests only: rotates account `p`'s signing chain from this node, made for no reason
+    /// (`flows::signing::rotate_in`). The rotation made; `None` as `rotate_in`'s.
+    #[doc(hidden)]
+    pub fn rotate_account(&mut self, p: &Tid) -> Result<Option<CommitId>> {
+        let p = *p;
+        self.run(|tx| crate::flows::signing::rotate_in(tx, p, &[], &mut crate::flows::Done::default()))
+    }
+
     /// Tests only: an exact copy of this engine as it stands, on `clock`, sharing no mutable
     /// state with it (notes/test-harnesses.md, Copied worlds): its store over test copies of the backend
     /// and root (`osis_store::Store::test_copy`), its indexes, caches and memos, its rngs

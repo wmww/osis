@@ -19,7 +19,8 @@ const CARD: [&str; 3] = ["keys.0", "node.0", "reach.0"];
 pub type Parts = BTreeSet<usize>;
 
 /// Chain material a verifier needs (spec/permissions.md §4): parts of commits to copy, commits
-/// to copy as headers alone (the requests destroying things whose records go), the held
+/// to copy as headers alone (the requests destroying things whose records go, an account's
+/// rotations but its current `keys.0` commits), the held
 /// mintings of things whose records go (each with those things: a header-only copy of each is
 /// judged by its standing, spec/commits.md §5), and raw creation records (a record blob's),
 /// which outlive the commits that minted them.
@@ -233,23 +234,22 @@ impl Engine {
         out.records.retain(|t| self.core.created(t).is_some());
     }
 
-    /// Account `p`'s record, card and signing chain, every line held (spec/permissions.md §4,
-    /// §5.5 Chains travel): its newest valid `keys.0` commit and its rotations, each projected to
-    /// `keys.0`, added to `out`. Nothing for an actor that is no account.
+    /// Account `p`'s record, current `keys.0` commits and signing chain, every line held
+    /// (spec/permissions.md §4, §5.5 Chains travel), added to `out`: the current `keys.0` commits
+    /// projected to `keys.0` (`current_keys`), every other held rotation as a header-only copy
+    /// (`Certs::headers`): a commit at an old epoch verifies by the key its rotation's header
+    /// carries, and the rotation's `keys.0` part (that epoch's deposit seed) is the readers' for
+    /// nothing. Nothing for an actor that is no account.
     pub(crate) fn account_chain(&mut self, p: &Tid, out: &mut Certs) {
         if !self.core.is_account(p) {
             return;
         }
         out.records.insert(*p);
-        let on = BTreeSet::from([*p]);
-        if let Some(c) = self.latest_on(p, "keys.0") {
-            out.add(c, self.parts_of(&c, &on, &["keys.0"]));
-        }
+        let current = self.current_keys(p);
+        self.current_keys_into(p, out);
         let Ok(keys) = osis_base::Ak::new("keys.0") else { return };
-        let rots: Vec<CommitId> = self.core.ix.by_aspect.get(&(*p, keys)).into_iter().flatten().map(|(_, c)| *c).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == *p && m.view.epoch.is_some()) && self.header(c).is_some_and(|h| h.rotation.is_some())).collect();
-        for c in rots {
-            out.add(c, self.parts_of(&c, &on, &["keys.0"]));
-        }
+        let rots: Vec<CommitId> = self.core.ix.by_aspect.get(&(*p, keys)).into_iter().flatten().map(|(_, c)| *c).filter(|c| !current.contains(c) && self.core.ix.commits.get(c).is_some_and(|m| m.view.author == *p && m.view.epoch.is_some()) && self.header(c).is_some_and(|h| h.rotation.is_some())).collect();
+        out.headers.extend(rots);
     }
 
     /// What a sync ID of `g` holds as certificates, whoever logs them (spec/permissions.md §4,
@@ -328,7 +328,6 @@ impl Engine {
     pub(crate) fn account_piece(&mut self, p: &Tid) -> Certs {
         let mut out = Certs::default();
         self.account_chain(p, &mut out);
-        self.current_keys_into(p, &mut out);
         self.close_records(&mut out);
         out
     }
