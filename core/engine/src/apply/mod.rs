@@ -2288,11 +2288,17 @@ pub struct Creation {
 fn hold_rotation_lists(tx: &mut Tx<'_>, b: &CommitBlob, lists: &[Vec<u8>]) -> Result<Option<CommitId>> {
     let Some(root) = b.header.rotation.as_ref().map(|r| r.list_root) else { return Ok(None) };
     let id = b.id();
+    let decoded = lists.iter().filter_map(|l| osis_commit::thing_list::decode_list_blob(l).ok()).flatten();
+    // held already (a Prove's header-only copy, say): its lists are kept as `hold_lists` keeps them
     if tx.core.ix.commits.contains_key(&id) {
+        let certs: Vec<osis_commit::thing_list::ThingCert> = decoded.filter(|c| c.rotation == id && crate::flows::lists::verifies(c, &root)).collect();
+        if crate::flows::lists::keep_certs(tx, &certs)? {
+            crate::apply::atomic::rejudged(tx, false)?;
+        }
         return Ok(None);
     }
     let loose = tx.core.waits.loose.lists_for(&id);
-    let certs: Vec<osis_commit::thing_list::ThingCert> = lists.iter().filter_map(|l| osis_commit::thing_list::decode_list_blob(l).ok()).flatten().chain(loose).filter(|c| c.rotation == id && crate::flows::lists::verifies(c, &root)).collect();
+    let certs: Vec<osis_commit::thing_list::ThingCert> = decoded.chain(loose).filter(|c| c.rotation == id && crate::flows::lists::verifies(c, &root)).collect();
     crate::flows::lists::keep_certs(tx, &certs)?;
     Ok(Some(id))
 }

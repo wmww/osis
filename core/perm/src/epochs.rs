@@ -48,12 +48,11 @@ pub struct Listing<E, T> {
 }
 
 /// The thing whose thing lists a node waits for (spec/permissions.md §5.5, Waiting): at a node
-/// of the account, its devices actor D, with the rotations whose word on D is in (its list of D
-/// held, or it carries a removal from D).
+/// of the account, its devices actor D, with the rotations whose thing list of D it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Awaited<E, T> {
     pub thing: T,
-    pub deciding: BTreeSet<E>,
+    pub listed: BTreeSet<E>,
 }
 
 /// What the epoch rule says of one held commit of the account, before §5.2 judges it.
@@ -156,7 +155,7 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     /// still names it.
     pub fn waits(&self, c: &AccountCommit<E, T>) -> bool {
         let (Some(w), Some(deciders)) = (self.awaited.as_ref(), self.deciders.get(&c.epoch)) else { return false };
-        !self.chain.holds(&c.id) && c.things.contains(&w.thing) && !deciders.is_subset(&w.deciding) && !c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
+        !self.chain.holds(&c.id) && c.things.contains(&w.thing) && !deciders.is_subset(&w.listed) && !c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
     }
 
     /// What the epoch rule says of `c` (`EpochStanding`).

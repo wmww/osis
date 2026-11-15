@@ -1955,3 +1955,104 @@ fn a_prove_carries_no_removed_nodes_fork_spec_sync_opens_2() {
     e.take_rotations(given).unwrap();
     assert!(e.key_open(&record, &key), "the node's key open at the verifier");
 }
+
+/// Peer `to` takes every rotation peer `from` holds of its account as a Prove carries them
+/// (header-only copies, no thing lists), a millisecond on.
+fn proved(lp: &mut LocalPeer, from: usize, to: usize) {
+    lp.advance(1);
+    let rots = lp.peers[from].engine.prove_rotations().unwrap();
+    lp.peers[to].engine.take_rotations(rots).unwrap();
+}
+
+/// Whether peer `k` is a node of `a` on D's roster.
+fn a_node(lp: &mut LocalPeer, k: usize, a: &CreatedAccount) -> bool {
+    let me = lp.peers[k].engine.tid();
+    let e = &mut lp.peers[k].engine;
+    e.core.accounts.contains_key(&a.account) && e.account().unwrap() == Some((a.account, a.devices)) && e.roster(&a.devices).contains_key(&me)
+}
+
+// spec/permissions.md §5.5 (Waiting: a closer decides on D only once its thing list for D is
+// held): node 1, not removed, takes node 0's rotation removing node 2 from a Prove before the
+// removal and the list reach it, alone or behind two more rotations (an away sibling). It waits:
+// it stays a node of the account (D's roster holds it) through a restart and the settle, which
+// then reads node 2 off D's roster and hands node 1 the newest seed.
+#[test]
+fn a_sibling_taking_a_removals_rotation_before_its_list_stays_spec_permissions_5_5() {
+    for more in [0, 2] {
+        let (mut lp, a, _) = world(3, 3);
+        let gone = lp.peers[2].engine.tid();
+        let mut rots = vec![remove(&mut lp, 0, a.devices, 2).commits[1]];
+        for _ in 0..more {
+            rots.push(lp.peers[0].engine.rotate_account(&a.account).unwrap().unwrap());
+        }
+        proved(&mut lp, 0, 1);
+        assert!(rots.iter().all(|r| lp.peers[1].engine.header(r).is_some()), "more {more}: the rotations held");
+        assert!(a_node(&mut lp, 1, &a), "more {more}: waiting for D's list, still a node");
+        lp.peers[1].restart(1).unwrap();
+        assert!(a_node(&mut lp, 1, &a), "more {more}: still a node after a restart");
+        lp.sync(0, 1).unwrap();
+        lp.sync(1, 0).unwrap();
+        assert!(a_node(&mut lp, 1, &a), "more {more}: still a node once settled");
+        assert!(!lp.peers[1].engine.roster(&a.devices).contains_key(&gone), "more {more}: node 2 off D's roster");
+        assert_eq!(lp.peers[1].engine.account_open_key(), lp.peers[0].engine.account_open_key(), "more {more}: the newest seed");
+        lp.peers[1].restart(2).unwrap();
+        assert!(a_node(&mut lp, 1, &a), "more {more}: still a node after a second restart");
+    }
+}
+
+// spec/permissions.md §5.5 (Epoch rule, Cutoff, Waiting), §5.4 (Following, at a node of P): what
+// removed node 2 writes after its removal counts at no reader, whether it holds nothing of the
+// removal or then takes its rotation before the list: a write on a thing of P, a write on D
+// signed as P, a rotation it forks unaware, and one it forks from the first epoch's key it keeps. Siblings 0 and 1 (1 having taken the
+// removal's rotation before its list) and outsider 3 hold them; none counts there once the
+// siblings settle, and node 1 stays a node.
+#[test]
+fn a_removed_nodes_writes_after_its_removal_count_at_no_reader_spec_permissions_5_5() {
+    for took in [false, true] {
+        let (mut lp, a, t) = world(4, 3);
+        let done = remove(&mut lp, 0, a.devices, 2);
+        proved(&mut lp, 0, 1);
+        send(&mut lp, 0, 3, &done.commits[1..]);
+        let late = write(&mut lp, 2, t, "removed");
+        let mut m = crate::Mutation::new();
+        m.sign_as(a.account);
+        m.set(a.devices, &x(), &Value::Str("removed".into())).unwrap();
+        let on_d = lp.peers[2].commit(m).unwrap().unwrap();
+        let fork = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+        for to in [0, 1, 3] {
+            send(&mut lp, 2, to, &[late, on_d, fork]);
+        }
+        let mut forks = vec![fork];
+        if took {
+            // it takes the removal's rotation from a Prove (waiting, it holds no seed of it) and
+            // forks again from the first epoch, whose key it keeps
+            proved(&mut lp, 0, 2);
+            let f = refork(&mut lp, 2, &a, 93);
+            forks.push(give(&mut lp, &f, &[0, 1, 3]));
+        }
+        assert!(a_node(&mut lp, 1, &a), "took {took}: node 1 waits for D's list");
+        lp.sync(0, 1).unwrap();
+        lp.sync(1, 0).unwrap();
+        for _ in 0..3 {
+            for k in [0, 1] {
+                let made = lp.peers[k].engine.signing_due().unwrap().commits;
+                for to in [0, 1, 3] {
+                    if to != k {
+                        send(&mut lp, k, to, &made);
+                    }
+                }
+            }
+        }
+        assert!(a_node(&mut lp, 1, &a), "took {took}: node 1 stays a node");
+        for k in [0, 1, 3] {
+            assert_ne!(read(&mut lp, k, t), Some(Value::Str("removed".into())), "took {took}, peer {k}: the removed node's write");
+            let e = &lp.peers[k].engine;
+            assert!(forks.iter().all(|f| !e.core.account_view(&a.account).unwrap().rotation_counts(f)), "took {took}, peer {k}: the removed node's forks");
+        }
+        for k in [0, 1] {
+            let e = &mut lp.peers[k].engine;
+            assert!(!e.core.counts_at_epoch(&on_d, &a.account, e.header(&on_d).and_then(|h| h.epoch)), "took {took}, peer {k}: the removed node's write on D");
+            assert_ne!(e.get(&a.devices, &x()).unwrap(), Some(Value::Str("removed".into())), "took {took}, peer {k}: read on D");
+        }
+    }
+}
