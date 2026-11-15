@@ -63,11 +63,11 @@ pub trait Ground: SetGround {
     fn shred(&mut self, s: &SyncId) -> Result<()>;
     /// Whether a role commit on `t` is held but uncounted, its epoch revoked and no list naming
     /// it held (`Engine::uncounted_role_on`).
-    fn uncounted_role(&mut self, t: &Tid) -> Result<bool>;
+    fn uncounted_role(&mut self, t: &Tid) -> bool;
     /// The pass place now (`Engine::pass_place`): when S left, in the order passes begin.
     fn pass_seq(&mut self) -> u64;
     /// A complete pass of S begun after pass place `since` ended (status's, spec/sync-status.md §1).
-    fn passed(&mut self, s: &SyncId, since: u64) -> Result<bool>;
+    fn passed(&mut self, s: &SyncId, since: u64) -> bool;
     /// This node knows the group whose closure it syncs (`Engine::sync_rooted`): before, its sync
     /// set is empty for want of it, and nothing it holds counts as left.
     fn rooted(&mut self) -> Result<bool>;
@@ -250,13 +250,13 @@ fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -
     // lists give S back only while its thing is in the closure: leaving it (an unsync, this
     // node's removal) ends the pass with a source unwaited
     let moot = left.sourced && !g.in_sync_things(&held.0)?;
-    if !moot && !g.passed(s, left.since)? {
+    if !moot && !g.passed(s, left.since) {
         return Ok(Wait::Waiting);
     }
     if holder != Some(held) {
         // a role commit on S's thing uncounted for want of its lists (a revocation taken before
         // them): one complete pass with a source, begun now, fetches them before S is judged lost
-        if !left.sourced && g.uncounted_role(&held.0)? && g.in_sync_things(&held.0)? {
+        if !left.sourced && g.uncounted_role(&held.0) && g.in_sync_things(&held.0)? {
             leaving.insert(*s, Left { since: g.pass_seq(), sourced: true, ..left });
             return Ok(Wait::Waiting);
         }
@@ -349,8 +349,8 @@ impl Ground for Live<'_, '_> {
     fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.cx.store.shred(s)
     }
-    fn uncounted_role(&mut self, t: &Tid) -> Result<bool> {
-        Ok(self.cx.engine.uncounted_role_on(t))
+    fn uncounted_role(&mut self, t: &Tid) -> bool {
+        self.cx.engine.uncounted_role_on(t)
     }
     fn pass_seq(&mut self) -> u64 {
         self.cx.engine.pass_place()
@@ -358,8 +358,8 @@ impl Ground for Live<'_, '_> {
     fn rooted(&mut self) -> Result<bool> {
         Ok(self.cx.engine.sync_rooted()?)
     }
-    fn passed(&mut self, s: &SyncId, since: u64) -> Result<bool> {
-        Ok(self.status.passed_since(s, since))
+    fn passed(&mut self, s: &SyncId, since: u64) -> bool {
+        self.status.passed_since(s, since)
     }
     fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
         forget_local(self.cx.engine, self.cx.store, ts)

@@ -106,14 +106,14 @@ impl Ground for Fake {
         self.forgettings += 1;
         Ok(())
     }
-    fn uncounted_role(&mut self, t: &Tid) -> Result<bool> {
-        Ok(self.uncounted.contains(t))
+    fn uncounted_role(&mut self, t: &Tid) -> bool {
+        self.uncounted.contains(t)
     }
     fn pass_seq(&mut self) -> u64 {
         self.clock
     }
-    fn passed(&mut self, s: &SyncId, since: u64) -> Result<bool> {
-        Ok(!self.passing.contains(s) || self.passes.get(s).is_some_and(|b| *b > since))
+    fn passed(&mut self, s: &SyncId, since: u64) -> bool {
+        !self.passing.contains(s) || self.passes.get(s).is_some_and(|b| *b > since)
     }
     fn rooted(&mut self) -> Result<bool> {
         Ok(self.unrooted.get(&()) != Some(&true))
