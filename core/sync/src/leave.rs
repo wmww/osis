@@ -65,7 +65,10 @@ pub trait Ground: SetGround {
     /// This node knows the group whose closure it syncs (`Engine::sync_rooted`): before, its sync
     /// set is empty for want of it, and nothing it holds counts as left.
     fn rooted(&mut self) -> Result<bool>;
-    /// Forgets `t`'s local copy (`Engine::forget_local`).
+    /// Forgets `t`'s local copy (`Engine::forget_local`), then unlogs this node's own entries,
+    /// under every sync ID it holds, of the commits that forgot whole: no judgement reaches a
+    /// commit no longer held, and reopened (a start parks every entry not opening to a held
+    /// commit) it would come back. O(entries held), on this rare path alone.
     fn forget_local(&mut self, t: &Tid) -> Result<()>;
 }
 
@@ -307,6 +310,17 @@ impl Ground for Live<'_, '_> {
         Ok(self.status.passed_since(s, since))
     }
     fn forget_local(&mut self, t: &Tid) -> Result<()> {
-        Ok(self.cx.engine.forget_local(t)?)
+        self.cx.engine.forget_local(t)?;
+        for (s, _) in self.cx.store.syncs() {
+            for e in self.cx.store.entries(&s)?.into_iter().filter(|e| e.own) {
+                if let Some(c) = self.cx.engine.blob_commit(&e.blob)?
+                    && !self.cx.engine.holds_commit(&c)
+                    && !self.cx.engine.pends(&c)
+                {
+                    self.cx.store.unlog_entry(&s, &e.blob)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
