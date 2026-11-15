@@ -747,6 +747,9 @@ indexes! {
     /// Snapshots per aspect whose dropped part still stands in (`Dropped::stands_in`; derived at
     /// open, not persisted).
     pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
+    /// The suspect flags per aspect (`retention::suspect`, rows `q/`): what sync follows per key,
+    /// new keys by its `Feed`.
+    pub suspects: JMap<(Tid, Ak), Arc<crate::retention::suspect::Flag>>,
     /// Per coverer, the commits with a dropped part naming it (`Dropped::covered_by`;
     /// derived, as `Core::put_meta` keeps it): what a coverer forgotten hands its own covers
     /// down to (`apply::unindex_commit`).

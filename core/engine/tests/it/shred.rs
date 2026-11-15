@@ -438,7 +438,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
             let e = &mut lp.peers[1].engine;
             assert!(e.pending().is_empty(), "order {order:?}: {:?}", e.pending());
             assert_eq!(e.get(&t2, &ak("t:reg.0")).unwrap(), Some(s("other")), "order {order:?}");
-            assert!(e.suspects().unwrap().is_empty(), "order {order:?}");
+            assert!(e.suspects().is_empty(), "order {order:?}");
         }
         let mut read = Vec::new();
         for a in &aspects {
@@ -493,12 +493,12 @@ fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
                 _ => drop(lp.peers[1].receive(&rest.encode(), Vec::new()).unwrap()),
             }
             lp.peers[1].reexamine().unwrap();
-            assert!(lp.peers[1].engine.suspects().unwrap().is_empty(), "order {order:?} after {g}: held value-less, not dropped");
+            assert!(lp.peers[1].engine.suspects().is_empty(), "order {order:?} after {g}: held value-less, not dropped");
         }
         let e = &mut lp.peers[1].engine;
         assert!(e.pending().is_empty(), "order {order:?}: {:?}", e.pending());
         assert_eq!(e.get(&t2, &ak("t:reg.0")).unwrap(), Some(s("other")), "order {order:?}");
-        assert!(e.suspects().unwrap().is_empty(), "order {order:?}: {:?}", e.suspects().unwrap());
+        assert!(e.suspects().is_empty(), "order {order:?}: {:?}", e.suspects());
         for a in [ak("t:reg.0"), ak("t:list.0")] {
             let author = lp.peers[0].engine.state_digest(&t, &a).unwrap();
             assert_eq!(lp.peers[1].engine.state_digest(&t, &a).unwrap(), author, "order {order:?}: {a:?} as its author holds it");
@@ -591,7 +591,7 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     lp.peers[1].reexamine().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
     assert!(lp.peers[1].engine.commit_ids().contains(&c));
-    assert!(lp.peers[1].engine.suspects().unwrap().is_empty());
+    assert!(lp.peers[1].engine.suspects().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), None, "the true part joined value-less");
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:brief.0")).unwrap(), None);
     // the writer past T reads the same
@@ -721,7 +721,7 @@ fn past_expiry_and_purge_alike(every: bool) {
                 p.tick().unwrap();
                 p.reexamine().unwrap();
                 let e = &mut p.engine;
-                let got = format!("applied {} pending {:?} stripped {} flags {:?} reads {:?} {:?} {:?} digests {:?} {:?} {:?} {:?}", e.commit_ids().contains(&c), e.pending(), e.stripped_count(&c).unwrap(), e.suspects().unwrap().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), e.get(&t, &reg).unwrap(), e.get(&t, &list).unwrap(), e.get(&t2, &brief).unwrap(), e.state_digest(&t, &reg).unwrap(), e.state_digest(&t, &list).unwrap(), e.state_digest(&t2, &brief).unwrap(), crate::judgment::observe(e, ids));
+                let got = format!("applied {} pending {:?} stripped {} flags {:?} reads {:?} {:?} {:?} digests {:?} {:?} {:?} {:?}", e.commit_ids().contains(&c), e.pending(), e.stripped_count(&c).unwrap(), e.suspects().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), e.get(&t, &reg).unwrap(), e.get(&t, &list).unwrap(), e.get(&t2, &brief).unwrap(), e.state_digest(&t, &reg).unwrap(), e.state_digest(&t, &list).unwrap(), e.state_digest(&t2, &brief).unwrap(), crate::judgment::observe(e, ids));
                 let [kept_secret, kept_brief] = recovered(&mut p, [b"SECRET-R5c", b"BRIEF-R5c"]);
                 let gone = !kept_secret && !kept_brief;
                 outcomes.lock().unwrap().entry(format!("gone {gone} {got}")).or_insert(format!("sync {sync} k {k} tick {tick} order {order:?}"));
@@ -818,7 +818,7 @@ fn tombstone_alike(stride: u64) {
             assert_eq!(e.purged_on(&t, &ak("t:reg.0")).unwrap().get(&c), Some(&pc), "{at}");
             assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("after")), "{at}");
             assert!(e.pending().is_empty(), "{at}: {:?}", e.pending());
-            assert!(e.suspects().unwrap().is_empty(), "{at}: flagged");
+            assert!(e.suspects().is_empty(), "{at}: flagged");
             // the slow check: a sample
             if *restart == order.len() {
                 assert!(!recoverable(&mut p, marker.as_bytes()), "{at}: recoverable");
@@ -877,7 +877,7 @@ fn purged_with_a_page_away_goes_at_once_spec_commits_5() {
     let (t, c, _) = purged_page_away(&mut lp, marker);
     let e = &mut lp.peers[1].engine;
     assert!(e.pending().is_empty() && e.commit_ids().contains(&c), "{:?}", e.pending());
-    assert_eq!(e.suspects().unwrap().into_iter().map(|x| (x.0, x.1)).collect::<Vec<_>>(), vec![(t, ak("t:big.0"))]);
+    assert_eq!(e.suspects().into_iter().map(|x| (x.0, x.1)).collect::<Vec<_>>(), vec![(t, ak("t:big.0"))]);
     assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "recovered with a page away");
 }
 
@@ -891,7 +891,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
         let a = ak("t:big.0");
         let (t, _, whole) = purged_page_away(&mut lp, marker);
         assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))), "by snapshot {by_snapshot}");
-        assert_eq!(lp.peers[1].engine.suspects().unwrap().len(), 1);
+        assert_eq!(lp.peers[1].engine.suspects().len(), 1);
         if by_snapshot {
             lp.advance(5);
             let sc = lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
@@ -902,7 +902,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
         }
         lp.peers[1].reexamine().unwrap();
         assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), lp.peers[0].engine.get(&t, &a).unwrap(), "by snapshot {by_snapshot}");
-        assert!(lp.peers[1].engine.suspects().unwrap().is_empty(), "by snapshot {by_snapshot}");
+        assert!(lp.peers[1].engine.suspects().is_empty(), "by snapshot {by_snapshot}");
         assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "by snapshot {by_snapshot}");
     }
 }
@@ -1509,7 +1509,7 @@ fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
         let e = &mut lp.peers[1].engine;
         assert!(e.pending().is_empty() && e.commit_ids().contains(&snap), "{:?}", e.pending());
         assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None, "purged");
-        assert!(e.suspects().unwrap().is_empty());
+        assert!(e.suspects().is_empty());
         assert!(!recoverable(&mut lp.peers[1], b"SECRET-W9b4"));
     }
 }
@@ -1578,3 +1578,89 @@ fn waiting_snapshots_judged_only_when_their_list_changes_spec_commits_5() {
     assert_eq!(waiting_snapshots_judged(3), [0, 3, 0, 3], "judged once at each change of the list: a purge, an expiry");
     assert_eq!(waiting_snapshots_judged(30), [0, 30, 0, 30]);
 }
+
+
+type Flagged = (Tid, osis_base::Ak);
+type SuspectFx = osis_base::memo::Effects<Flagged, Option<(u64, u8)>>;
+
+/// The flags of peer `i` that moved since the follower last looked: keys new from `feed` are
+/// followed, each due one settled; a flag gone is let go.
+fn suspects_moved(lp: &mut LocalPeer, i: usize, feed: &mut osis_base::memo::Feed<Flagged>, fx: &mut SuspectFx) -> Vec<(Flagged, Option<(u64, u8)>)> {
+    let e = &lp.peers[i].engine;
+    for k in feed.added() {
+        fx.want(k);
+    }
+    let mut out = Vec::new();
+    for k in fx.due() {
+        if let Some((_, now)) = fx.settle(&k, || e.suspect(&k.0, &k.1)) {
+            if now.is_none() {
+                fx.unwant(&k);
+            }
+            out.push((k, now));
+        }
+    }
+    out
+}
+
+// spec/permissions.md §4 (Suspect: dormant; Suspect list): a flag is followed per aspect, due when
+// it is raised, when a valid snapshot of its aspect settles it, and when its body back clears it;
+// writes elsewhere move nothing.
+#[test]
+fn a_suspect_flag_is_followed_per_aspect_spec_perm_4() {
+    for by_snapshot in [true, false] {
+        let mut lp = net2();
+        let a = ak("t:big.0");
+        let mine = new_thing(&mut lp, 1);
+        let mut feed = lp.peers[1].engine.suspect_feed();
+        let mut fx = SuspectFx::new("test suspects");
+        let (t, c, whole) = purged_page_away(&mut lp, "FOLLOW-7e3c");
+        let moved = suspects_moved(&mut lp, 1, &mut feed, &mut fx);
+        assert!(matches!(moved.as_slice(), [(k, Some((_, w)))] if *k == (t, a.clone()) && *w != 0), "raised: {moved:?}");
+        for i in 0..4 {
+            set(&mut lp, 1, mine, &REG, &format!("w{i}"));
+            assert_eq!(suspects_moved(&mut lp, 1, &mut feed, &mut fx), vec![], "a write elsewhere");
+        }
+        // raised again about the same body: only the flag moves
+        lp.advance(5);
+        lp.peers[1].engine.flag_suspect(&t, &a, osis_engine::retention::suspect::Why::Uncovered, &[(c, 0)]).unwrap();
+        let at = lp.peers[1].engine.suspect(&t, &a).unwrap().0;
+        assert_eq!(suspects_moved(&mut lp, 1, &mut feed, &mut fx), vec![((t, a.clone()), Some((at, osis_engine::retention::suspect::Why::Uncovered as u8)))], "raised again");
+        if by_snapshot {
+            lp.advance(5);
+            let sc = lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+            let pk = lp.peers[0].engine.package(&sc).unwrap().unwrap();
+            lp.deliver(1, &pk).unwrap();
+        } else {
+            lp.peers[1].receive(&whole.bytes, whole.blobs.clone()).unwrap();
+        }
+        lp.peers[1].reexamine().unwrap();
+        let moved = suspects_moved(&mut lp, 1, &mut feed, &mut fx);
+        let want = if by_snapshot { "dormant" } else { "gone" };
+        assert!(matches!(moved.as_slice(), [(k, x)] if *k == (t, a.clone()) && if by_snapshot { matches!(x, Some((_, 0))) } else { x.is_none() }), "{want}: {moved:?}");
+        assert!(lp.peers[1].engine.suspects().is_empty(), "{want}");
+    }
+}
+
+// spec/permissions.md §4: a follower of the flags does work per flag that moved, not per flag held: at n
+// and 10n flagged aspects, raising one again re-judges that one alone.
+#[test]
+fn a_flag_moving_rejudges_that_flag_alone_spec_perm_4() {
+    for n in [8usize, 80] {
+        let mut lp = net2();
+        let t = new_thing(&mut lp, 1);
+        let body = |i: usize| (osis_base::CommitId([u8::try_from(i % 251).unwrap(); 32]), i / 251);
+        let mut feed = lp.peers[1].engine.suspect_feed();
+        let mut fx = SuspectFx::new("test suspects");
+        for i in 0..n {
+            lp.peers[1].engine.flag_suspect(&t, &ak(&format!("t:reg.{i}")), osis_engine::retention::suspect::Why::Uncovered, &[body(i)]).unwrap();
+        }
+        assert_eq!(suspects_moved(&mut lp, 1, &mut feed, &mut fx).len(), n);
+        for i in 0..4 {
+            lp.advance(5);
+            lp.peers[1].engine.flag_suspect(&t, &ak(&format!("t:reg.{i}")), osis_engine::retention::suspect::Why::Uncovered, &[body(i)]).unwrap();
+            let moved = suspects_moved(&mut lp, 1, &mut feed, &mut fx);
+            assert_eq!(moved.iter().map(|m| m.0.1.clone()).collect::<Vec<_>>(), vec![ak(&format!("t:reg.{i}"))], "n {n}");
+        }
+    }
+}
+

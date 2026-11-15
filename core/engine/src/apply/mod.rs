@@ -1819,6 +1819,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::sync::records::load(tx)?;
     crate::sync::inbox::load(tx)?;
     crate::sync::deliveries::load(tx)?;
+    crate::retention::suspect::load(tx)?;
     crate::retention::freed::load(tx)?;
     crate::sync::held::load(tx)?;
     crate::sync::stranded::load(tx)?;

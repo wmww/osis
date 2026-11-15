@@ -2067,7 +2067,7 @@ mod tests {
         let e = &mut lp.peers[2].engine;
         assert!(!e.core.ix.commits[&sw.id].valid_at(0), "W's snapshot fell");
         assert!(matches!(e.core.ix.commits[&c].hold[0], Hold::Dropped(_)), "S2 carries C");
-        assert!(e.suspects().unwrap().is_empty(), "no flag");
+        assert!(e.suspects().is_empty(), "no flag");
         assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Int(2)));
         e.check_index();
     }

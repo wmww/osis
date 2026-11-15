@@ -18,12 +18,18 @@
 //! of one delta share a dot). The lists' digests say whether nodes agree; such an entry goes
 //! only with its thing (`forget`), yields to any flag raised after it (`suspects_under`: most
 //! recent first).
+//!
+//! The flags are rows `q/` mirrored in `Indexes::suspects`, so a reader of one aspect's flag
+//! (`Engine::suspect`) reads that key and the aspect's held snapshots alone: sync follows each
+//! flagged aspect by `Effects`, new ones by `suspect_feed`, and a change re-judges only the
+//! aspect it moved.
 
 use crate::engine::records;
 use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
 use osis_store::Shred;
+use std::sync::Arc;
 
 /// Why an aspect is suspect (bits of an entry's last byte).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,9 +43,16 @@ pub enum Why {
 /// A body a flag is about: its commit, aspect index and `Why` bits.
 type Entry = (CommitId, u8, u8);
 
+/// An aspect's flag: when it was last raised (wall ms) and the bodies it is about.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Flag {
+    at: u64,
+    bodies: Vec<Entry>,
+}
+
 /// The flag record: le64 wall ms last raised, then per body a 32-byte commit ID, the
 /// aspect index and the `Why` bits.
-fn read(v: &[u8]) -> (u64, Vec<Entry>) {
+fn decode(v: &[u8]) -> Flag {
     let (at, rest) = v.split_first_chunk::<8>().map_or((0, &[][..]), |(a, r)| (u64::from_le_bytes(*a), r));
     let (chunks, _) = rest.as_chunks::<34>();
     let bodies = chunks
@@ -49,12 +62,12 @@ fn read(v: &[u8]) -> (u64, Vec<Entry>) {
             Some((CommitId(*c), *tail.first()?, *tail.get(1)?))
         })
         .collect();
-    (at, bodies)
+    Flag { at, bodies }
 }
 
-fn write(at: u64, bodies: &[Entry]) -> Vec<u8> {
-    let mut v = at.to_le_bytes().to_vec();
-    for (c, ai, why) in bodies {
+fn encode(f: &Flag) -> Vec<u8> {
+    let mut v = f.at.to_le_bytes().to_vec();
+    for (c, ai, why) in &f.bodies {
         v.extend_from_slice(&c.0);
         v.push(*ai);
         v.push(*why);
@@ -62,18 +75,35 @@ fn write(at: u64, bodies: &[Entry]) -> Vec<u8> {
     v
 }
 
-fn load(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<(u64, Vec<Entry>)>> {
-    Ok(tx.txn.get_local(&records::aspect_key(records::SUSPECT, tid, ak))?.map(|v| read(&v)))
+/// Loads the flags (an open or reload).
+pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
+    let mut flags = Vec::new();
+    tx.scan(records::SUSPECT, |k, v| {
+        let mut r = records::Rd::new(k);
+        let (tid, ak) = (r.tid()?, r.ak()?);
+        flags.push(((tid, ak), Arc::new(decode(&v))));
+        Ok(())
+    })?;
+    for (k, f) in flags {
+        tx.core.ix.suspects.insert(k, f);
+    }
+    Ok(())
 }
 
-fn store(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: u64, bodies: &[Entry]) -> Result<()> {
-    if bodies.is_empty() {
-        tx.txn.remove_local(&records::aspect_key(records::SUSPECT, tid, ak), Shred::No)?;
-    } else {
-        tx.put_aspect_local(records::SUSPECT, tid, ak, &write(at, bodies))?;
+fn store(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Flag) -> Result<()> {
+    if f.bodies.is_empty() {
+        return forget(tx, tid, ak, Shred::No);
     }
-    // what reads the flags (node sync's suspect lists) is taken again
-    tx.core.touch();
+    tx.put_aspect_local(records::SUSPECT, tid, ak, &encode(&f))?;
+    tx.core.ix.suspects.insert((*tid, ak.clone()), Arc::new(f));
+    Ok(())
+}
+
+/// `(tid, ak)` is flagged no more (its last entry went, or the aspect is forgotten).
+pub(crate) fn forget(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, shred: Shred) -> Result<()> {
+    if tx.core.ix.suspects.remove(&(*tid, ak.clone())).is_some() {
+        tx.txn.remove_local(&records::aspect_key(records::SUSPECT, tid, ak), shred)?;
+    }
     Ok(())
 }
 
@@ -84,56 +114,70 @@ pub(crate) fn raise(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, why: Why, bodies: &[(Co
     if bodies.is_empty() {
         return Ok(());
     }
-    let (_, mut all) = load(tx, tid, ak)?.unwrap_or_default();
+    let mut f = tx.core.ix.suspects.get(&(*tid, ak.clone())).map(|f| (**f).clone()).unwrap_or_default();
     for (c, ai) in bodies {
         let ai = u8::try_from(*ai).unwrap_or(u8::MAX);
-        match all.iter_mut().find(|e| e.0 == *c && e.1 == ai) {
+        match f.bodies.iter_mut().find(|e| e.0 == *c && e.1 == ai) {
             Some(e) => e.2 |= why as u8,
-            None => all.push((*c, ai, why as u8)),
+            None => f.bodies.push((*c, ai, why as u8)),
         }
     }
-    let now = tx.now().0;
-    store(tx, tid, ak, now, &all)
+    f.at = tx.now().0;
+    store(tx, tid, ak, f)
 }
 
 /// Part `ai` of `c` on `(tid, ak)` is held again: the flag is no longer about it.
 pub(crate) fn body_back(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<()> {
-    let Some((at, mut all)) = load(tx, tid, ak)? else { return Ok(()) };
-    let n = all.len();
-    all.retain(|e| !(e.0 == *c && usize::from(e.1) == ai));
-    if all.len() != n {
-        store(tx, tid, ak, at, &all)?;
+    let Some(old) = tx.core.ix.suspects.get(&(*tid, ak.clone())).cloned() else { return Ok(()) };
+    let mut f = (*old).clone();
+    f.bodies.retain(|e| !(e.0 == *c && usize::from(e.1) == ai));
+    if f.bodies.len() != old.bodies.len() {
+        store(tx, tid, ak, f)?;
     }
     Ok(())
 }
 
 /// Whether flag entry `e` is dormant: not about a part that went pending at its expiry, and a
-/// held snapshot valid here is stamped after its commit.
+/// held snapshot of its aspect valid here is stamped after its commit.
 fn dormant(core: &Core, e: &Entry) -> bool {
     e.2 & Why::PendingExpiry as u8 == 0 && core.ix.commits.get(&e.0).is_some_and(|m| crate::apply::receipt::settled(core, &m.header, usize::from(e.1)))
+}
+
+/// `f` as reported: when last raised and the `Why` bits of its bodies not dormant (0 while
+/// every one is).
+fn judged(core: &Core, f: &Flag) -> (u64, u8) {
+    (f.at, f.bodies.iter().filter(|e| !dormant(core, e)).fold(0, |w, e| w | e.2))
 }
 
 impl Engine {
     /// The aspects this node flags suspect, with when each was last flagged (wall ms)
     /// and why (`Why` bits over the bodies it is about that are not dormant).
-    pub fn suspects(&mut self) -> Result<Vec<(Tid, Ak, u64, u8)>> {
-        self.read(|tx| {
-            let mut flags = Vec::new();
-            tx.scan(records::SUSPECT, |k, v| {
-                let mut r = records::Rd::new(k);
-                let (tid, ak) = (r.tid()?, r.ak()?);
-                let (at, bodies) = read(&v);
-                flags.push((tid, ak, at, bodies));
-                Ok(())
-            })?;
-            Ok(flags
-                .into_iter()
-                .filter_map(|(tid, ak, at, bodies)| {
-                    let why = bodies.iter().filter(|e| !dormant(tx.core, e)).fold(0, |w, e| w | e.2);
-                    (why != 0).then_some((tid, ak, at, why))
-                })
-                .collect())
-        })
+    pub fn suspects(&self) -> Vec<(Tid, Ak, u64, u8)> {
+        let core = &self.core;
+        core.ix
+            .suspects
+            .iter()
+            .filter_map(|((t, ak), f)| {
+                let (at, why) = judged(core, f);
+                (why != 0).then(|| (*t, ak.clone(), at, why))
+            })
+            .collect()
+    }
+
+    /// `(tid, ak)`'s flag: when last raised and why, as `suspects` lists it, the `Why` bits 0
+    /// while it is dormant (it shows again if its settling snapshot turns invalid); `None` once
+    /// it is gone, when a follower lets the key go. Reads that aspect's flag and held snapshots
+    /// alone, so a follower (`Effects`, new keys from `suspect_feed`) is due when the flag is
+    /// raised or cleared, or a snapshot of the aspect comes, goes or turns valid or invalid here.
+    pub fn suspect(&self, tid: &Tid, ak: &Ak) -> Option<(u64, u8)> {
+        let core = &self.core;
+        core.ix.suspects.get(&(*tid, ak.clone())).map(|f| judged(core, f))
+    }
+
+    /// A cursor over the aspects flagged from now on (`memo::Feed`; one flagged again after its
+    /// flag went is given again).
+    pub fn suspect_feed(&self) -> osis_base::memo::Feed<(Tid, Ak)> {
+        self.core.ix.suspects.feed()
     }
 
     /// The keyed digest of `(tid, ak)`'s state (spec/permissions.md §4): the first 16 bytes of

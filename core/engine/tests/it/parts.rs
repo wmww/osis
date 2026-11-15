@@ -830,7 +830,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     let mut p = new(late);
     let _ = p.engine.ingest(&cut(&b, &[x]), Vec::new());
     assert!(!copy_held(&mut p), "no copy past T");
-    assert!(p.engine.suspects().unwrap().iter().any(|f| f.0 == x), "flagged");
+    assert!(p.engine.suspects().iter().any(|f| f.0 == x), "flagged");
     assert_eq!(p.engine.pending(), vec![]);
     // parked before T, alone or beside a part that applied; its timer takes it
     for things in [&[x][..], &[x, y]] {
@@ -916,7 +916,7 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
         p.reexamine().unwrap();
         assert!(p.engine.header(&rq.id).is_some(), "the request applied");
         assert_eq!(p.engine.pending(), vec![], "parked first: {parked_first}");
-        assert!(p.engine.suspects().unwrap().iter().any(|f| f.0 == x), "flagged");
+        assert!(p.engine.suspects().iter().any(|f| f.0 == x), "flagged");
         assert_eq!(p.engine.pending_value_past_end(&b.id(), now).unwrap(), None, "parked first: {parked_first}");
         assert_eq!(found_in(&mut p, PARKED_MARK), vec![], "parked first: {parked_first}");
     }
@@ -977,7 +977,7 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
                     let _ = p.engine.ingest(&items[i], Vec::new());
                     p.reexamine().unwrap();
                 }
-                format!("applied {} pending {:?} flags {:?} reads {:?} {:?} {:?}", p.engine.commit_ids().contains(&b.id()), p.engine.pending(), p.engine.suspects().unwrap().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), p.engine.get(&x, &ak("t:brief.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&z, &ak("t:reg.0")).unwrap())
+                format!("applied {} pending {:?} flags {:?} reads {:?} {:?} {:?}", p.engine.commit_ids().contains(&b.id()), p.engine.pending(), p.engine.suspects().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), p.engine.get(&x, &ak("t:brief.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&z, &ak("t:reg.0")).unwrap())
             };
             let mut seen = std::collections::BTreeMap::<String, Vec<usize>>::new();
             for (order, got) in picked.iter().zip(osis_base::testenv::par_map(&idx, osis_base::testenv::threads("OSIS_SEED_THREADS"), one)) {

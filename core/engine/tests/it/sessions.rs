@@ -408,7 +408,7 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     let fp = packages(&mut lp, 0).into_iter().find(|p| p.id == fall).unwrap();
     lp.deliver(1, &fp).unwrap();
     lp.deliver(3, &fp).unwrap();
-    let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == asp);
+    let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().iter().any(|x| x.0 == t && x.1 == asp);
     assert!(flagged(&mut lp), "W's write fell where a body was dropped: flagged");
     lp.advance(1_000);
     let v3 = set(&mut lp, 3, t, &GONE, "v3");
@@ -541,7 +541,7 @@ fn flip_flag_on(lp: &mut LocalPeer, t: Tid, asp: &Ak, body: &CommitId) {
     for p in packages(lp, 0).into_iter().filter(|p| p.id == fall) {
         lp.deliver(1, &p).unwrap();
     }
-    assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *asp), "flagged");
+    assert!(lp.peers[1].engine.suspects().iter().any(|x| x.0 == t && x.1 == *asp), "flagged");
 }
 
 /// Y's later write and snapshot of `(t, asp)` reach peer 1.
@@ -553,7 +553,7 @@ fn later_snapshot_settles(lp: &mut LocalPeer, t: Tid, asp: &Ak) {
     for p in packages(lp, 3).into_iter().filter(|p| p.id == v || p.id == z) {
         lp.deliver(1, &p).unwrap();
     }
-    assert!(!lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *asp), "settled");
+    assert!(!lp.peers[1].engine.suspects().iter().any(|x| x.0 == t && x.1 == *asp), "settled");
 }
 
 // spec/permissions.md §4: a flag about a dropped snapshot body settles like any other. Its dormancy
