@@ -375,3 +375,25 @@ fn purge_by_id_reads_alike_forgotten_or_not_spec_commits_5() {
     }
     assert!(by_name > 0, "no purge went through a name");
 }
+
+// spec/commits.md §5 Purge: a purge that expires reaches only deltas expiring no later, so one
+// naming a write that never expires is refused, never written to drop less than it says: by its
+// name as by its header.
+#[test]
+fn an_expiring_purge_of_a_forgotten_write_is_refused_spec_commits_5() {
+    for forget in [false, true] {
+        let (mut lp, t) = world();
+        let (c, _) = written(&mut lp, t, PurgeBy::Admin);
+        if forget {
+            compact_forget(&mut lp, 0, t, &reg());
+            assert!(!lp.peers[0].engine.commit_ids().contains(&c));
+        }
+        let mut m = Mutation::new();
+        let other = Ak::new("x:b.0").unwrap();
+        m.set(t, &other, &Value::Int(1)).unwrap();
+        m.expires(t, &other, osis_base::WallMs(T0.0 + 3_600_000)).unwrap();
+        m.purge_commit(c, t, reg());
+        let r = lp.peers[0].commit(m);
+        assert!(matches!(r, Err(crate::Error::Clash(_))), "forget {forget}: {r:?}");
+    }
+}

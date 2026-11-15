@@ -186,6 +186,10 @@ pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()
                     return Err(Error::Clash(format!("a purge in a commit that expires reaches only commits expiring no later, and {c:?} on {} {} expires later or never. Write the purge as a commit of its own", item.tid(), item.ak())));
                 }
             }
+            // a forgotten commit's name, as its header
+            if core.forgotten_on(item.tid(), item.ak()).iter().any(|t| stamped_before(p.ts, item.ak(), t.ts) && reaches(item, t) && t.expires.is_none_or(|x| x > e)) {
+                return Err(Error::Clash(format!("a purge in a commit that expires reaches only commits expiring no later, and a forgotten commit on {} {} expires later or never. Write the purge as a commit of its own", item.tid(), item.ak())));
+            }
         }
         // the right once per class and actor, as `apply_request` judges it; `names` skips
         // snapshots, so whether one is held (a compaction, a purge's re-snapshot) never decides
