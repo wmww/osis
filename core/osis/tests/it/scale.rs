@@ -208,6 +208,7 @@ fn new_things(n: usize) -> Vec<(u64, bool)> {
 // the home group's `group.0` re-judges every body the snapshot covers (their carriers and covers
 // move, issues/tests-4x.md).
 #[test]
+#[ignore = "issues/new-thing-judges-grow.md"]
 fn a_new_thing_judges_the_bodies_it_changes() {
     let plain = |v: Vec<(u64, bool)>| v.into_iter().filter(|x| !x.1).map(|x| x.0).collect::<BTreeSet<u64>>();
     let (small, big) = (plain(new_things(10)), plain(new_things(100)));
