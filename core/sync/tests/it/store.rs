@@ -951,7 +951,10 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
         t.record_put_row(&rec, b'O', &other, b"k", vec![1])
     })
     .unwrap();
+    st.set_first_synced(&s.id).unwrap();
+    assert!(st.first_synced(&s.id).unwrap());
     st.shred(&s.id).unwrap();
+    assert!(!st.first_synced(&s.id).unwrap(), "S's first sync goes with it (spec/sync-streams.md §5)");
     assert!(st.with_tx(|t| t.record_get_row(&rec, b'O', &s.id, b"k")).unwrap().is_none(), "S's rows in every record go");
     assert!(st.with_tx(|t| t.record_get_row(&rec, b'O', &other, b"k")).unwrap().is_some());
     assert!(st.entries(&s.id).unwrap().is_empty() && st.path(&s.id).unwrap().is_none());

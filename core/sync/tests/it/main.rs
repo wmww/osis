@@ -22,6 +22,7 @@ mod retention;
 mod unread;
 mod status;
 mod stranded;
+mod suspect;
 mod store;
 mod opens;
 mod pieces;

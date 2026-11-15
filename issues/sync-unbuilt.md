@@ -34,7 +34,6 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 
 ## inbox
 - A promotion's chain (`held::log_chain`: not built; the engine seals certificate copies, `sync_bodies`).
-- Suspect lists and their repair (spec/permissions.md §4 Suspect, spec/sync-compaction.md §1 Repair): issues/sync-suspect.md.
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
@@ -58,4 +57,4 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - osis-label's link carries a `hosts` list between K's sync ID and the peers that spec/wire.md §10 `Link` does not have.
 
 ## Own issues
-issues/sync-link-first-contact.md, issues/sync-suspect.md, issues/group-source-hand-off.md, issues/sync-pending-leftovers.md, issues/holder-actor-sync-record.md, issues/sync-sibling-rotation-unopened.md.
+issues/sync-link-first-contact.md, issues/group-source-hand-off.md, issues/sync-pending-leftovers.md, issues/holder-actor-sync-record.md, issues/sync-sibling-rotation-unopened.md.

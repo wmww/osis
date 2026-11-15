@@ -22,6 +22,8 @@
 //!   kept while the entry is; a row of its own so recording it moves no reader of the entry.
 //! - `N/ s` S's copy was dropped kept unread (`Store::set_unheld`): written with the drop, gone
 //!   once streams set every source's place of S back to the start (`clear_dropped`).
+//! - `F/ s` S's first sync here ended (spec/sync-streams.md §5): a source's stream of S stood at
+//!   the end of a listing from the start; gone with S (`shred`).
 
 use crate::types::{Error, Result};
 use osis_base::{BlobId, SyncId, WallMs};
@@ -50,6 +52,7 @@ pub(crate) const HEAD: &[u8] = b"H/";
 pub(crate) const DEPOSITED: &[u8] = b"D/";
 pub(crate) const ELSEWHERE: &[u8] = b"S/";
 pub(crate) const DROPPED: &[u8] = b"N/";
+pub(crate) const FIRST: &[u8] = b"F/";
 
 /// The tags of the rows each module keeps in a peer's record (`osis_store::Transaction::
 /// record_put_row`, `record_put_wide_row` for a row about the record as a whole), one owner per

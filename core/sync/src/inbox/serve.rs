@@ -1,6 +1,5 @@
 //! Requests from peers this module answers: Register and Delete (spec/sync-ids.md §6, taken by
-//! the store's rules), Stranded (taken by the engine) and Suspect (spec/wire.md §11.2: answered Ok
-//! whatever the receiver does with them).
+//! the store's rules) and Stranded (taken by the engine). Suspect is `suspect`'s.
 
 use super::{Here, Net};
 use crate::session::RequestId;
@@ -28,8 +27,6 @@ pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: Re
             Ok(_) => Msg::Ok { id },
             Err(_) => Msg::Error { id, code: Code::REFUSED },
         },
-        // not built: the suspect repair (issues/sync-suspect.md)
-        Msg::Suspect { .. } => Msg::Ok { id },
         _ => Msg::Error { id, code: Code::UNSUPPORTED },
     };
     net.answer(conn, id, reply);

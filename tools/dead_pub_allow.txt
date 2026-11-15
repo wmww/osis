@@ -45,7 +45,6 @@ osis-engine::delete_item  deferred: sync rebuild (issues/sync-rewrite.md Phase 3
 osis-engine::delete_secrets_of  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::destroyed_records_awaited  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::ephemeral_session  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::flag_suspect  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::freed_wants  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::header_body  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::held_key_actors  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
@@ -81,7 +80,6 @@ osis-engine::revoke_certificates  deferred: sync rebuild (issues/sync-rewrite.md
 osis-engine::seal_plain  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::settled_slots  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::store_dump  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
-osis-engine::suspect_feed  deferred: the suspect sender (issues/sync-suspect.md), beside `suspect` per key
 osis-engine::take_blind  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_forged  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-engine::take_ts  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync

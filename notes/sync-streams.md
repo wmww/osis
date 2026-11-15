@@ -22,6 +22,8 @@ Spec: spec/sync-streams.md §3-§6, spec/wire.md §11.2 (Pull, PullReply, Stream
 ## Presence and listings
 A listing read from the start to its end (a whole reply and its pages: no cursor, one naming no position, or trimmed; a join from the start) replaces what that source is known to hold of each member it covers (spec/sync-streams.md §4 Applying). Until its end it stores no cursor (a join keeps its stored start) and owes no Applied, so one cut short by a lost connection or a restart is listed from the start again.
 
+Its end, applied once every body it owed was settled (`drain`), is S's first sync ending here (spec/sync-streams.md §5): `Store::set_first_synced` (row `F/`, stamped, gone with S's shred), read by inbox's suspect lists. Reading: past the first sync once one ended at any source, until S is left (written into the spec).
+
 ## Failures
 - A store read of a record's rows that fails answers as if nothing were shown, which only holds back acts (held elsewhere, Leave, Register all need presence); the one read whose absence would act, the presence a listing replaces, fails the step (`Known::list`).
 - A body the store or engine fails to take stays owed and fails the step: it is never settled, so no cursor passes it.

@@ -1136,6 +1136,14 @@ impl Streams {
         if !self.save(ctx, src, &touched, moved_cursor, ops) {
             return;
         }
+        // a listing from the start read to its end, its bodies settled (`drain`): S's first sync
+        // here ended (spec/sync-streams.md §5)
+        let place = self.place(ctx.store, src);
+        let ended: Vec<SyncId> = listed.keys().filter(|s| place.at_stream.contains(*s)).copied().collect();
+        for s in ended {
+            let r = ctx.store.set_first_synced(&s);
+            self.failed(r);
+        }
         let Some(p) = self.pull.get_mut(&conn) else { return };
         // an Applied says the cursor and each join's position are stored: none while a listing
         // from the start is under way

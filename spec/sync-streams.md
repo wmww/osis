@@ -57,6 +57,7 @@ A node pulls every member of its shared set from its peer by one stream, whoever
   - A node judges (spec/sync-judgement.md §3) once order 0 is here, or once a fetch of it from the source counts as asked no longer (§4 Bodies).
   - An entry that opens and is not here keeps what it would settle unsettled, as an unopened entry does, except that the node's own commits count as established uncovered; it runs no repair (spec/sync-compaction.md §1).
   - The first sync ends, and the stream stands at the listing's end, when nothing is left to fetch. A node that stopped part way (a restart, a lost connection) goes on from what it listed, without listing again.
+  - A node is past its first sync of a sync ID once a first sync of it ended at any peer, until it leaves the sync ID (spec/sync-set.md §3).
 - Pages of a delta are fetched before its commit is applied (spec/commits.md §4), found from what the delta links and then what its link pages link (two rounds at most); a header list given by link likewise before its commit is examined. Chunk and tree-node blobs of large atomic values may be fetched lazily, by local policy, except an ephemeral commit's (spec/sync-compaction.md §2).
 
 ## 6. Bundles

@@ -1206,6 +1206,7 @@ impl Store {
             // S's rows in every record go with its `changed_at` (spec/sync-opens.md §3)
             t.changed_forget(s)?;
             t.remove_local(&[rows::DROPPED, &s.0].concat(), Shred::No)?;
+            t.remove_local(&[rows::FIRST, &s.0].concat(), Shred::No)?;
             Ok(())
         })?;
         g.mem.forget(s, now);
@@ -1213,6 +1214,25 @@ impl Store {
         g.past_cap.remove(s);
         g.unheld.remove(s);
         Ok(())
+    }
+
+    /// Whether S's first sync here ended (spec/sync-streams.md §5): a source's stream of S stood
+    /// at the end of a listing from the start since S was last shredded here. Stamped (row `F/`).
+    pub fn first_synced(&self, s: &SyncId) -> Result<bool> {
+        self.lock().read(|t, _| Ok(t.get_local(&[rows::FIRST, &s.0].concat())?.is_some()))
+    }
+
+    /// S's first sync here ended: kept until S is shredded (`first_synced`).
+    pub fn set_first_synced(&mut self, s: &SyncId) -> Result<()> {
+        let k = [rows::FIRST, &s.0].concat();
+        let mut g = self.lock();
+        if g.read(|t, _| Ok(t.get_local(&k)?.is_some()))? {
+            return Ok(());
+        }
+        g.write(|t, _| {
+            t.put_local(&k, &[], Shred::No)?;
+            Ok(())
+        })
     }
 
     /// In `t` (streams' transaction moving every source's place of S back to the start): S's

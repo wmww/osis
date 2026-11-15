@@ -12,10 +12,11 @@
 //!   writer), deposits promoted by a writer, own deposits offered, clearing past the bounds.
 //! - `register`: the recorded steps a source keeping S unread lacks, each once its stream showed
 //!   the role commits it depends on.
-//! - `serve`: Register, Delete, Stranded and Suspect from peers (a Stranded report taken by the
+//! - `serve`: Register, Delete and Stranded from peers (a Stranded report taken by the
 //!   engine's `take_stranded`).
 //! - `stranded`: this node's own stranded reports (status's `strandings`), by message to a
 //!   connected writer of S's actor, else by notice to its admins' inboxes.
+//! - `suspect`: suspect lists out (the engine's flags per S) and in (a writer's repair).
 //! - `links`: first contact through a link, durable until the join is held elsewhere.
 //!
 //! Work follows change: the engine's values are read through `Effects` keys, the store's entries
@@ -35,6 +36,7 @@ mod offers;
 mod register;
 mod serve;
 mod stranded;
+mod suspect;
 
 pub use deliveries::Sent;
 pub use held::{Act, Facts, Judged, act_of, adds_delta, goes_last, to_clear};
@@ -122,6 +124,7 @@ pub struct Inbox {
     register: register::Register,
     links: links::Redemptions,
     reports: stranded::Reports,
+    suspects: suspect::Suspects,
 }
 
 impl std::fmt::Debug for Inbox {
@@ -166,6 +169,7 @@ impl Inbox {
         self.deliveries.start(h, &mut self.offers)?;
         self.held.start(h, &mut self.offers)?;
         self.reports.start(h)?;
+        self.suspects.start(h);
         self.started = true;
         Ok(true)
     }
@@ -177,6 +181,7 @@ impl Inbox {
         acted |= self.links.settle(h)?;
         acted |= self.register.settle(h, net)?;
         acted |= self.reports.settle(h, net, &mut self.offers)?;
+        acted |= self.suspects.settle(h, net)?;
         let engine = &mut *h.engine;
         acted |= self.offers.settle(h.now, h.store, net, &mut |s, actor| Ok(engine.signers(s, actor.as_ref())?.deposit))?;
         Ok(acted)
@@ -192,6 +197,12 @@ impl Inbox {
 
     fn receive(&mut self, h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, m: Incoming) {
         match m {
+            // judged here (spec/sync-compaction.md §1 Repair), answered Ok whatever it judges
+            // (spec/wire.md §11.2); a failure judges the rest of the list at no later time
+            Incoming::Request(id, Msg::Suspect { sync_id, entries, .. }) => {
+                let _ = self.suspects.received(h, net, conn, sync_id, entries);
+                net.answer(conn, id, Msg::Ok { id });
+            }
             Incoming::Request(id, m) => serve::request(h, net, conn, id, m),
             Incoming::Reply(_, id, m) => {
                 if !self.offers.answered(h.now, conn, id, &m) && !self.reports.answered(conn, id, &m) {
@@ -215,8 +226,12 @@ impl Inbox {
                 self.deliveries.opened(conn, &s, net);
                 self.offers.joined(conn, &s, net);
                 self.register.joined(conn, s);
+                self.suspects.joined(conn, s);
             }
-            Moved::Left(conn, s, _) => self.register.left(conn, &s),
+            Moved::Left(conn, s, _) => {
+                self.register.left(conn, &s);
+                self.suspects.left(conn, &s);
+            }
             Moved::Until(..) => {}
         }
     }
@@ -226,6 +241,7 @@ impl Inbox {
         self.offers.closed(conn);
         self.register.closed(conn);
         self.reports.closed(conn);
+        self.suspects.closed(conn);
     }
 
     /// First contact through a link (spec/sync-inbox.md §6): durable until the join is held
