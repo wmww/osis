@@ -389,23 +389,10 @@ impl Engine {
         }
     }
 
-    /// The user accepts `thing` into group `into` (spec/sync-set.md §4 Accepting): written as a
-    /// subgroup of `into` (`Engine::write`, so the accept marks and keeps as any listing does),
-    /// and, where a synced closure listed it already (no listing change to see), the sync IDs the
-    /// boxes payloads held offering it name kept in the account's sync record (spec/sync.md §3)
-    /// in a commit of its own.
+    /// The user accepts `thing` into group `into` (spec/sync-set.md §4 Accepting), in one
+    /// transaction (`accept_in`).
     pub fn accept_invite(&mut self, thing: &Tid, into: &Tid) -> Result<()> {
-        let mut g = self.get_typed(into, &ct::GROUP)?.unwrap_or_default();
-        if g.subgroups.insert(*thing) {
-            let mut m = crate::Mutation::new();
-            m.set(*into, &ct::GROUP, &g)?;
-            self.write(m)?;
-        }
-        let t = *thing;
-        self.run(|tx| {
-            let now = tx.now();
-            keep_offered(tx, &t, now)
-        })
+        self.run(|tx| accept_in(tx, thing, into))
     }
 
     /// Opens inbox blob `bytes` under whichever inbox here opens it, taking nothing (tests: what
@@ -504,6 +491,21 @@ impl crate::engine::Core {
 
 /// Keeps in the account's sync record the sync IDs the boxes payloads held unexpired at `now`
 /// name for `t` (an accept, spec/sync.md §3), whatever other thing the record keeps them for.
+/// An accept of `thing` into group `into` (spec/sync-set.md §4 Accepting): written as a subgroup
+/// of `into` where it does not list it yet, the sync IDs the boxes payloads held offering it name
+/// kept in the account's sync record (spec/sync.md §3), and marked acted (`mark_acted`, as any
+/// listing is).
+pub(crate) fn accept_in(tx: &mut Tx<'_>, thing: &Tid, into: &Tid) -> Result<()> {
+    if !tx.core.ix.groups.listed(into, crate::engine::groups::SUBGROUPS, thing) {
+        let mut m = crate::Mutation::new();
+        m.op(*into, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::SUBGROUPS)], op: osis_crdt::Op::Add(Value::Tid(*thing)) })?;
+        crate::engine::write::commit_in(tx, m)?;
+    }
+    let now = tx.now();
+    keep_offered(tx, thing, now)?;
+    mark_acted(tx)
+}
+
 fn keep_offered(tx: &mut Tx<'_>, t: &Tid, now: WallMs) -> Result<()> {
     let core = &*tx.core;
     let ids: BTreeSet<SyncId> = core.ix.offered.get(t).into_iter().flatten().filter_map(|b| core.ix.offers.get(b)).filter(|o| o.expires > now).flat_map(|o| o.things.iter().filter(|x| x.tid == *t).filter_map(|x| x.sync_id)).collect();

@@ -560,6 +560,12 @@ impl Engine {
     /// explicit write that audits carries its author's frontier, else every write of the holder's
     /// it puts in question drops, received or not.
     pub(crate) fn grant_signed(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History) -> Result<Done> {
+        self.grant_signed_then(signer, target, holder, edge, leave, history, |_| Ok(()))
+    }
+
+    /// `grant_signed`, then `then` in the same transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn grant_signed_then(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History, then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
         let who = signer.unwrap_or(self.core.writer()?);
         let new = Some(perm_edge(edge));
         let audits = self.core.role_now(&who, &target) == Some(Role::Admin) && self.needs_frontier(&target, &holder, Some(edge));
@@ -570,7 +576,11 @@ impl Engine {
             }
             false => None,
         };
-        let done = self.run(|tx| grant_history(tx, signer, target, holder, edge, leave, frontier, history))?;
+        let done = self.run(|tx| {
+            let done = grant_history(tx, signer, target, holder, edge, leave, frontier, history)?;
+            then(tx)?;
+            Ok(done)
+        })?;
         // a cut's owed snapshots (the state it carries to the holder) go right after it
         if history == History::None {
             self.purge_resnapshots()?;

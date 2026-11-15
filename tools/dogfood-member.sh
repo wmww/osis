@@ -2,10 +2,10 @@
 # One box's side of a dogfood build update (notes/dogfood.md, Update the build).
 #   tools/dogfood-member.sh build PIN                  in a claimed worktree: build osis-cli at PIN into ~/osis-dogfood/bin/osis-SHORT
 #   tools/dogfood-member.sh host PIN LISTEN            the shared node: new store host-SHORT, its card and account, its daemon listening at LISTEN (quic://IP:PORT)
-#   tools/dogfood-member.sh create NAME PIN ADDR HOST  new own store NAME-SHORT dialing ADDR (URL#KEY), a new channel filed in home, its link,
+#   tools/dogfood-member.sh create NAME PIN ADDR HOST  new own store NAME-SHORT dialing ADDR (URL#KEY), a new channel, its link,
 #                                                      sync grants on the channel and the link's K to the shared node's account (HOST: its host-SHORT dir copied here, or card and account files)
 #   tools/dogfood-member.sh accept PIN CHAT K          on the shared node: keep the channel and K unread (accepts the sync grants)
-#   tools/dogfood-member.sh join NAME PIN ADDR LINK    new own store NAME-SHORT dialing ADDR, joined by LINK through the shared node, filed in home
+#   tools/dogfood-member.sh join NAME PIN ADDR LINK    new own store NAME-SHORT dialing ADDR, joined by LINK through the shared node
 # Store dirs keep address, chat, k, link, cursor (members) or card, account, address (host): never commit them.
 set -eu
 DF="$HOME/osis-dogfood"
@@ -52,8 +52,6 @@ create)
 	o card import "$(cat "$host/card")" >/dev/null
 	o chat create --name channel > "$dir/chat"
 	c=$(cat "$dir/chat")
-	# a thing syncs only when a synced group's closure lists it
-	o group add home "$c" --subgroup >/dev/null
 	o chat link "$c" > "$dir/link"
 	o link ls "$c" | awk '{ print $1 }' > "$dir/k"
 	o grant "$c" "$(cat "$host/account")" sync
@@ -75,7 +73,6 @@ join)
 	o() { "$bin" -s "$dir/store" --dial "$addr" --timeout 120s "$@"; }
 	"$bin" -s "$dir/store" init >/dev/null
 	o chat join "$link" > "$dir/chat"
-	o group add home "$(cat "$dir/chat")" --subgroup >/dev/null
 	o --json chat read "$(cat "$dir/chat")" | tail -n 1 | sed 's/.*"cursor":"\([^"]*\)".*/\1/' > "$dir/cursor"
 	daemon "osis-$name-$s" "$bin" "$dir" "$addr"
 	echo "$dir"

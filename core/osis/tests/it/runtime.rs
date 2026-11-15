@@ -297,7 +297,6 @@ fn two_accounts_sync_over_loopback_quic_spec_sync_transport_2() {
     w.commit().unwrap();
     let link = a.make_link(t, osis::Role::Write, osis::LinkOpts::default()).unwrap();
     assert_eq!(block_on(b.redeem(&link)).unwrap(), t);
-    b.accept_invite(t, b.home()).unwrap();
     block_on(b.wait_synced(osis::SyncScope::Thing(t))).unwrap();
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("first"));
     set(&a, t, "from a");

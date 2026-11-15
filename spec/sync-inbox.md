@@ -70,5 +70,6 @@
 ## 6. Links
 - Link text (spec/wire.md §10): seed, target, K, K's sync ID, and the sharer node's dialable key and relays as first-contact hints; no other addresses. `make_link` works on every node.
 - **First contact**: the redeemer dials the sharer node by the link's key and proves the link key; its credential of K is the link key's static entry, which every node holding K's roster or head claim set holds, so K opens with the sharer offline, at readers and at nodes keeping K unread alike. An accepted static Hit's answer carries the head's entry box, the path from genesis and a signature by the head's sync key, verified before opening (spec/sync-opens.md §5). A node holding K's finalize opens nothing by the link.
+- The join files the target in the redeemer's account (spec/sync-set.md §4, A redeem is an accept), so the target syncs there once the join is held and the link is unfollowed.
 - A link's end is read only from its sharer's filter; a sharer node not syncing K reads as refused while the link may stand (K's finalize is the end that holds).
 - **Finalize**: any sharer node holding the seed thing and admin on K finalizes once a complete pass of K's sync ID is done (spec/sync-status.md §1; spec/permissions.md §7). Two finalizers need no order: each finalize is an explicit removal of the link key, and removals of one grant compose.

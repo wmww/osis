@@ -1,6 +1,6 @@
 use super::*;
 use osis::core::RETENTION;
-use osis::{Body, Commit, CommitFrom, CommitId, CommitQuery, Error, History, PurgeBy, Role, Tid};
+use osis::{Body, Commit, CommitFrom, CommitId, CommitQuery, Error, History, LinkOpts, PurgeBy, Role, SyncScope, Tid};
 use osis_chat::schema::{self, Deletes, EditMode, MSG, SETTINGS};
 use osis_chat::*;
 
@@ -166,4 +166,33 @@ fn a_reply_names_a_commit_or_nothing() {
     assert_eq!(reply(&id.to_string()), Some(id));
     assert_eq!(reply("not an id"), None);
     assert_eq!(msg("x").reply(), None);
+}
+
+/// The texts of chat `c`'s messages at `db`, by arrival.
+fn texts(db: &Osis, c: Tid) -> Vec<String> {
+    since(db, c, None, 100).unwrap().messages.iter().map(|k| text(&k.at(c, MSG).unwrap().body)).collect()
+}
+
+// spec/sync-set.md §1 (Filing), spec/sync-set.md §4 (A redeem is an accept): a chat made through the library reaches the
+// maker's other node, and one joined by its link syncs both ways, with no write besides
+// create, the join and the posts.
+#[test]
+fn a_chat_made_and_joined_syncs_with_no_filing_spec_sync_set_4() {
+    let c0 = clock();
+    let net = ManualNet::new(c0.clone());
+    let (alice, alice2) = paired(&net, &c0, 10);
+    let bob = on(&net, 20, &c0);
+    let c = create(&alice, &Options { name: "room".into(), ..Options::default() }).unwrap();
+    drive(&net, alice.wait_synced(SyncScope::Thing(c))).unwrap();
+    assert_eq!(alice2.at(c, SETTINGS).get().unwrap().map(|s| s.name).as_deref(), Some("room"), "the maker's other node");
+    let link = alice.make_link(c, Role::Write, LinkOpts::default()).unwrap();
+    assert_eq!(drive(&net, bob.redeem(&link)).unwrap(), c);
+    post(&bob, c, "hi from bob");
+    drive(&net, bob.wait_synced(SyncScope::Thing(c))).unwrap();
+    net.run();
+    assert_eq!(texts(&alice, c), ["hi from bob"]);
+    post(&alice, c, "hi from alice");
+    drive(&net, alice.wait_synced(SyncScope::Thing(c))).unwrap();
+    net.run();
+    assert_eq!(texts(&bob, c), ["hi from bob", "hi from alice"]);
 }

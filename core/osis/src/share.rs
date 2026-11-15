@@ -727,7 +727,9 @@ impl Osis {
         osis_label::Peer { dialable: key, relays: self.inner.relays.clone() }
     }
 
-    /// Redeems a link: reaches what it names and joins it, returning the thing. Returns once
+    /// Redeems a link: reaches what it names and joins it, returning the thing. The join lists the
+    /// thing in `home()` as a subgroup, unless a synced group holds it already, so it syncs as
+    /// one this account made (move it elsewhere afterwards to file it in another group). Returns once
     /// this account holds a role on the thing here; it waits for the link's node meanwhile
     /// (wrap it in a timeout). A link this account already reaches the thing by joins nothing.
     /// What the link holds is kept until the join is held elsewhere, a dropped call included.

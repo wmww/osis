@@ -75,7 +75,9 @@ impl Engine {
     /// `hold_key_actor(link.seed)` came first so L's boxes open): signing as L, an invite grant
     /// of `grantee` (this node's actor, or this node) to K with the link's role and K's boxes;
     /// `single_use` also removes L's own edge in the same commit. Deposited under K's label
-    /// unless the role is write or above. Leaves the seed held as it was: a caller holding it
+    /// unless the role is write or above. Redeemed for the account, the same transaction files the
+    /// target as a subgroup of D (an accept, spec/sync-set.md §4) unless a synced group's closure
+    /// holds it already. Leaves the seed held as it was: a caller holding it
     /// keeps it (a redeemer proves L until its join is at a source, spec/permissions.md §7).
     pub fn redeem(&mut self, link: &ShareLink, grantee: &Tid, single_use: bool) -> Result<Done> {
         let l = crate::identity::key_actor_tid(&link.seed);
@@ -115,8 +117,18 @@ impl Engine {
             return Err(Error::Misuse("K's grant on the link's target is not held here"));
         }
         let grant = Edge { role: edge.role, until: None, invite: None, tied: None, floor: None };
+        // a redeem is an accept (spec/sync-set.md §4 Accepting): the account files the target
+        // under D in the join's transaction, unless a synced group's closure holds it already
+        let file = match self.core.account_devices() {
+            Some((p, d)) if p == grantee && !self.synced_closures()?.contains(&link.target) => Some(d),
+            _ => None,
+        };
+        let target = link.target;
         // L signs with its own role, so the grant deposits only below write
-        self.grant_signed(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All)
+        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, |tx| match file {
+            Some(d) => crate::sync::inbox::accept_in(tx, &target, &d),
+            None => Ok(()),
+        })
     }
 
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or

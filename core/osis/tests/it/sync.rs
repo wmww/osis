@@ -492,11 +492,11 @@ fn a_local_thing_shares_no_write_with_a_shared_group_spec_sync_set_1() {
     assert_eq!(a.at(l, osis::core::NAME).get().unwrap().as_deref(), Some("private 2"));
 }
 
-// spec/sync-inbox.md §6 (first contact): a redeemer reaches the sharer node by the link and
-// joins; the thing is read there.
+// spec/sync-inbox.md §6 (first contact), spec/sync-set.md §4 (A redeem is an accept): a redeemer reaches the
+// sharer node by the link and joins; the redeem files the thing under its home, so it syncs both
+// ways after the join with no other write.
 #[test]
-#[ignore = "the join holds, but the redeemed thing is filed nowhere so it is not synced after (issues/sync-link-first-contact.md)"]
-fn redeeming_a_link_joins_its_thing_spec_sync_inbox_6() {
+fn redeeming_a_link_joins_and_files_its_thing_spec_sync_set_4() {
     let c = clock();
     let net = ManualNet::new(c.clone());
     let a = on(&net, 40, &c);
@@ -506,14 +506,22 @@ fn redeeming_a_link_joins_its_thing_spec_sync_inbox_6() {
     let t = w.create().unwrap();
     w.at(t, osis::core::NAME).set(&"shared".to_string()).unwrap();
     w.commit().unwrap();
-    let link = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
+    let link = a.make_link(t, Role::Write, LinkOpts::default()).unwrap();
     assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
-    assert_eq!(b.role_on(t).unwrap(), Some(Role::Read));
+    assert_eq!(b.role_on(t).unwrap(), Some(Role::Write));
+    assert!(b.invitations().unwrap().iter().all(|i| i.thing != t), "filed: no invitation");
+    drive(&net, b.wait_synced(SyncScope::Thing(t))).unwrap();
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("shared"));
+    let mut w = b.write();
+    w.at(t, osis::core::NAME).set(&"from b".to_string()).unwrap();
+    w.commit().unwrap();
+    drive(&net, b.wait_synced(SyncScope::Thing(t))).unwrap();
+    net.run();
+    assert_eq!(a.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("from b"));
 }
 
-// spec/sync-status.md §3 (waits), spec/sync-inbox.md §6: a redeemer that files the thing under
-// its home waits on the thing (its home carrying it, shared by no peer) until the thing's data
+// spec/sync-status.md §3 (waits), spec/sync-inbox.md §6: a redeemer (the redeem files the thing
+// under its home) waits on the thing (its home carrying it, shared by no peer) until the thing's data
 // is here; the sharer away (its record holding the thing's sync ID), a wait there runs on.
 #[test]
 fn a_redeemers_wait_on_the_thing_ends_spec_sync_status_3() {
@@ -529,7 +537,6 @@ fn a_redeemers_wait_on_the_thing_ends_spec_sync_status_3() {
     w.commit().unwrap();
     let link = a.make_link(t, Role::Write, LinkOpts::default()).unwrap();
     assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
-    b.accept_invite(t, b.home()).unwrap();
     drive(&net, b.wait_synced(SyncScope::Thing(t))).unwrap();
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("shared"));
     drive(&net, a.wait_synced(SyncScope::Thing(t))).unwrap();
@@ -854,7 +861,6 @@ fn a_third_accounts_node_relays_a_group_it_keeps_unread_spec_sync_3() {
     }
     assert!(h.status().unwrap().groups.contains_key(&t), "kept unread at h");
     assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
-    b.accept_invite(t, b.home()).unwrap();
     for _ in 0..5 {
         net.advance(1_000);
     }
