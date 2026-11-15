@@ -23,9 +23,15 @@ fn edge_value(e: &Edge) -> Value {
 }
 
 impl Core {
+    /// `thing`'s roster now, read on the memo clock up to the earliest `until` ahead in it, so a
+    /// memo or follower reading it moves when the clock alone ends a role there, with a wake then
+    /// (`Engine::clock_next`).
     pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
-        let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
-        self.timelines.on(thing).map(|on| on.roster(At::now(ts))).unwrap_or_default()
+        let now = self.now();
+        let ts = osis_base::Ts::make(now, 0).unwrap_or_default();
+        let r = self.timelines.on(thing).map(|on| on.roster(At::now(ts))).unwrap_or_default();
+        self.time.until(r.values().filter_map(|e| e.until).map(|u| u.0).filter(|u| *u > now.0).min());
+        r
     }
 }
 

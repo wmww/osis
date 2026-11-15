@@ -862,6 +862,7 @@ fn another_accounts_devices_reads_as_itself_but_places_chains_as_its_account_spe
 // notes/engine.md (Roles at now: every role-at-now read goes through `Core::role_now`, on the
 // memo clock): `actor_role` and `role_on` read a role held by a grant with an `until`; a follower
 // of either is due when the clock passes it, with nothing else moving, and reads the role gone.
+// So is a follower of the roster holding it (`roster`, read alone).
 #[test]
 fn roles_at_now_move_at_an_until_spec_permissions_2() {
     let (mut lp, g, tids) = granted(2, &[]);
@@ -875,6 +876,9 @@ fn roles_at_now_move_at_an_until_spec_permissions_2() {
     assert_eq!(fx.settle(&0, || e0.actor_role(&tids[1], &g)), Some((None, Some(Role::Read))));
     assert_eq!(fx.settle(&1, || e1.role_on(&g)), Some((None, Some(Role::Read))));
     assert!(fx.due().is_empty());
+    let mut rosters: osis_base::memo::Effects<(), Vec<Tid>> = osis_base::memo::Effects::new("roster at now");
+    rosters.want(());
+    assert!(rosters.settle(&(), || e1.roster(&g).into_keys().collect()).is_some_and(|(_, r)| r.contains(&tids[1])));
     lp.peers[0].clock.advance(2_000);
     lp.peers[1].clock.advance(2_000);
     for p in &mut lp.peers {
@@ -882,6 +886,8 @@ fn roles_at_now_move_at_an_until_spec_permissions_2() {
         p.engine.set_now(now);
     }
     assert_eq!(fx.due(), vec![0, 1], "both due at the until");
+    assert_eq!(rosters.due(), vec![()], "the roster too");
+    assert!(rosters.settle(&(), || lp.peers[1].engine.roster(&g).into_keys().collect()).is_some_and(|(_, r)| !r.contains(&tids[1])));
     let (e0, e1) = { let (a, b) = lp.peers.split_at_mut(1); (&mut a[0].engine, &mut b[0].engine) };
     assert_eq!(fx.settle(&0, || e0.actor_role(&tids[1], &g)), Some((Some(Some(Role::Read)), None)));
     assert_eq!(fx.settle(&1, || e1.role_on(&g)), Some((Some(Some(Role::Read)), None)));

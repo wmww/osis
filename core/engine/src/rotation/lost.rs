@@ -36,13 +36,6 @@ pub(crate) fn touch_held(tx: &mut Tx<'_>, tids: impl IntoIterator<Item = Tid>) {
     }
 }
 
-/// The earliest `until` ahead among the edges alive now on `t`: when the clock alone next ends
-/// a role there.
-pub(crate) fn next_until(core: &Core, t: &Tid) -> Option<u64> {
-    let now = core.now().0;
-    core.timelines.get(t)?.roster(t, At::now(now_ts(core))).values().filter_map(|e| e.until).map(|u| u.0).filter(|u| *u > now).min()
-}
-
 /// Loads the timed-loss records and the bearers.
 pub(crate) fn load_lost(tx: &mut Tx<'_>) -> Result<()> {
     let mut v = Vec::new();
@@ -626,7 +619,7 @@ impl Engine {
     /// read up to the next `until` on the actors reaching `a`, so an `until` passing wakes it.
     pub fn lost_due(&mut self, a: &Tid) -> Result<bool> {
         for x in reaching(&self.core, a) {
-            self.core.time.until(next_until(&self.core, &x));
+            self.core.roster_of(&x);
         }
         let a = *a;
         let due = self.core.ix.secrets.contains_key(&a) && self.read(|tx| due_now(tx, &a))?;

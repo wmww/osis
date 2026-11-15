@@ -1170,7 +1170,7 @@ impl Engine {
         if self.core.writer().is_err() || !self.core.ix.secrets.contains_key(actor) || !self.core.exists(actor) {
             return Ok(false);
         }
-        self.core.time.until(lost::next_until(&self.core, actor));
+        self.core.roster_of(actor);
         let a = *actor;
         let owed = self.read(|tx| {
             let me = tx.core.writer()?;
