@@ -184,8 +184,6 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
                 super::drop_part_for(tx, &c, ai, DropFor::Cover)?;
                 super::memory::forget_if_spent(tx, &c)
             })?;
-            // node-sync judges its delete at hosts (a snapshot's arrival judges only the
-            // aspect's cover candidates, `Core::cover_judged_on`)
         }
     }
     Ok(())

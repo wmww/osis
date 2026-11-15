@@ -63,7 +63,6 @@ osis-transport::run_on_tokio  deferred: sync rebuild (issues/sync-rewrite.md Pha
 osis-transport::set_dial_ms  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis-transport::set_lan_loss  deferred: sync rebuild (issues/sync-rewrite.md Phase 3); its callers went with the old sync
 osis::rotate_peer_address  public API: fails `NotBuilt` until sync is rebuilt (issues/sync-rewrite.md)
-osis-engine::cover_judged_on  deferred: its one reader went with the old sync; cover_candidates is written and never read (issues/cover-candidates-unread.md)
 osis-engine::coverers_of  test hook: retention tests read what covered a dropped part
 osis-engine::body_valid  test hook: validity tests read one body's verdict
 osis-engine::commit_in_memory  test hook: an own memory commit (what write makes of an ephemeral write)
@@ -75,6 +74,7 @@ osis-engine::damage_walks  test hook (tests/it)
 osis-engine::deliver_sealed  test hook (tests/it)
 osis-engine::drop_from  test hook (tests/it)
 osis-engine::droppable_if_covered  test hook (tests/it)
+osis-engine::durable_on  test hook (tests/it)
 osis-engine::edge_write_applied  test hook (tests/it)
 osis-engine::edges_rows  test hook (tests/it)
 osis-engine::fallen_settings  test hook (tests/it)
@@ -96,7 +96,6 @@ osis-engine::rebuild_state  test hook (tests/it)
 osis-engine::refresh_deposit_seed  test hook (tests/it)
 osis-engine::removal_scope  test hook (tests/it)
 osis-engine::set_walk_cache_min  test hook (tests/it)
-osis-engine::settle_kept  test hook (tests/it)
 osis-engine::sign_forged  test hook (tests/it)
 osis-engine::spent_copy  test hook (tests/it)
 osis-engine::stripped_count  test hook (tests/it)

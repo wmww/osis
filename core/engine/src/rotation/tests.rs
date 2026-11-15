@@ -2058,8 +2058,8 @@ fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
 
 /// Node-sync's covered drop (`CoverPass`, as `SyncEngine::compact_now` runs it, role snapshots
 /// included) over `t`'s `keys.0` and `secrets.0` at peer `i`: each held body (not a snapshot) that
-/// a held valid snapshot covers drops once past its keep bound (`Engine::drop_from`); one kept for
-/// good leaves the cover candidates (`Engine::settle_kept`). Returns how many dropped.
+/// a held valid snapshot covers drops once past its keep bound (`Engine::drop_from`). Returns how
+/// many dropped.
 pub(super) fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {
     let e = &mut lp.peers[i].engine;
     let now = e.now().0;
@@ -2074,10 +2074,6 @@ pub(super) fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {
                     continue;
                 }
                 let due = e.drop_from(&c, &t, &ak).unwrap();
-                // kept for good: out of the aspect's cover candidates until its bound may move
-                if due >= osis_commit::FOREVER {
-                    e.settle_kept(&c, &t, &ak);
-                }
                 if due <= now {
                     e.drop_body(&c, &t, &ak).unwrap();
                     n += 1;

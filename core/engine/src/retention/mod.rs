@@ -284,10 +284,6 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     }
     let header = m.header.clone();
     tx.core.put_meta(*c, m);
-    // a part not held is no cover candidate (`Core::cover_judged_on`)
-    if let Some(s) = tx.core.cover_candidates.get_mut(&k) {
-        s.remove(c);
-    }
     crate::apply::note_stands_in(tx.core, c);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     crate::apply::keys::forget_dropped(tx, &header, ai, &role_bodies)?;
@@ -466,18 +462,13 @@ pub(crate) fn settings_changed(tx: &mut Tx<'_>) -> Result<()> {
                 tx.core.none_due.insert((t, ak.clone()));
             }
             // a live body kept for good may not be now (spec/commits.md §5 Kept while live): the
-            // aspect's held deltas are cover candidates again, and the trigger weighs it
+            // trigger weighs the aspect again
             let live = kept.live_until();
             if live > tx.now().0 {
                 crate::retention::compact::Trigger::live_until(tx, (t, ak.clone()), live);
             }
             if live != osis_commit::retention::NEVER {
-                let k = (t, ak.clone());
-                let on: Vec<CommitId> = tx.core.durable_on(&k).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| !m.view.kind.is_compaction())).collect();
-                if !on.is_empty() {
-                    tx.core.cover_candidates.entry(k.clone()).or_default().extend(on);
-                }
-                tx.core.compaction.weigh(k);
+                tx.core.compaction.weigh((t, ak.clone()));
             }
             leaving::settings_changed(tx, &t, &ak)?;
         }
@@ -794,12 +785,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     put_leftover(tx, c, ai, m, body, gives)?;
     match at {
         // an expiry: the state stripped in place, the delta's body and leftover saying where
-        Some(at) => {
-            crate::apply::strip_state(tx, &a.tid, &a.ak, &at, o)?;
-            if !tx.is_memory_commit(c) {
-                tx.core.cover_candidates.entry(k.clone()).or_default().insert(*c);
-            }
-        }
+        Some(at) => crate::apply::strip_state(tx, &a.tid, &a.ak, &at, o)?,
         // the one path (item 1): the state from the held bodies, the leftover among them,
         // stripped by the list, shredded (every local copy of the values goes)
         None => crate::apply::rebuild(tx, &a.tid, &a.ak)?,

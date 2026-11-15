@@ -411,10 +411,6 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     if ch.is_changed() {
         j.changed.insert((tid, ak.clone()));
     }
-    // a durable delta a cover may drop unless kept while live (`Core::cover_candidates`)
-    if !snap && !tx.is_memory_commit(id) {
-        tx.core.cover_candidates.entry((tid, ak.clone())).or_default().insert(*id);
-    }
     j.joined.push((tid, ak, dead));
     Ok(())
 }

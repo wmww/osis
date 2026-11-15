@@ -367,8 +367,6 @@ impl Killed {
 /// judged again by sync, and the history row of each is set no earlier
 /// than `Killed::at` (`Core::to_date`, `Dating::Killed`: no body read; a snapshot whether or not it
 /// carries a dying write, as telling which would read it).
-/// On any aspect the dying writes' own commits are marked and become cover candidates: a body
-/// kept while live may not be now (`live_keep`).
 pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     if dead.dots.is_empty() {
         return;
@@ -378,8 +376,6 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
     let mut on = owners.clone();
     on.extend(core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1));
     crate::engine::listing::note_killed(tx, tid, ak, &on);
-    let held: Vec<CommitId> = owners.iter().copied().filter(|c| super::held_part(tx.core, c, tid, ak).is_some()).collect();
-    tx.core.cover_candidates.entry((*tid, ak.clone())).or_default().extend(held);
     if !bounded(tx.core, tid, ak) {
         return;
     }
@@ -393,21 +389,13 @@ pub(crate) fn mark_killed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, dead: &Killed) {
 }
 
 /// The state of `(tid, ak)` was rebuilt (a validity flip, an un-merge, a drop): every held body
-/// with a relative bound is judged again by node-sync and its history row dated again, as when it
-/// was replaced may have moved, and
-/// every held body is a cover candidate again (a write of it may have died; the rebuild read
-/// them all already).
+/// with a relative bound is judged again by sync and its history row dated again, as when it
+/// was replaced may have moved.
 pub(crate) fn mark_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) {
-    let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-    let k = (*tid, ak.clone());
-    let delta = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| !m.header.kind.is_compaction() && !m.view.memory) && super::held_part(tx.core, c, tid, ak).is_some();
-    let fresh: Vec<CommitId> = on.iter().copied().filter(|c| delta(c)).collect();
-    if !fresh.is_empty() {
-        tx.core.cover_candidates.entry(k).or_default().extend(fresh);
-    }
     if !bounded(tx.core, tid, ak) {
         return;
     }
+    let on: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for c in on {
         if bounded_part(tx.core, &c, tid, ak).is_some() {
             tx.core.to_date.push((*tid, ak.clone(), c, super::leaving::Dating::Full(false)));
@@ -506,16 +494,6 @@ impl Engine {
             }
             super::replace::replaced(tx, &c, ai, &tid, &ak)
         })
-    }
-
-    /// Body `(tid, ak)` of `c` is kept for good (its `drop_from` is past `FOREVER`: while live,
-    /// spec/commits.md §5 Kept while live): it leaves the aspect's cover candidates
-    /// (`Core::cover_judged_on`) until a write of it dies, its aspect is rebuilt or its thing's
-    /// setting changes.
-    pub fn settle_kept(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) {
-        if let Some(s) = self.core.cover_candidates.get_mut(&(*tid, ak.clone())) {
-            s.remove(c);
-        }
     }
 
     /// When part `ak` of `c` was replaced, for a relative keep at least (`part_replaced_at`;

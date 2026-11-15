@@ -78,11 +78,7 @@ impl CoverPass<'_> {
             }
             // out of history any held valid writer's cover drops it (spec/commits.md §5)
             let due = self.engine.drop_from(&c, t, ak)?;
-            // kept for good while live (spec/commits.md §5 Kept while live)
-            if due >= osis_commit::FOREVER {
-                self.engine.settle_kept(&c, t, ak);
-                continue;
-            }
+            // not due yet (kept for good while live too: spec/commits.md §5 Kept while live)
             if due > now.0 {
                 continue;
             }
