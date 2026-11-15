@@ -377,7 +377,7 @@ fn a_from_now_grantee_after_a_removal_holds_the_old_readers_roster_spec_crypto_5
     assert_eq!(w.engine(0).roster(&t), w.engine(1).roster(&t), "so does node 0");
 }
 
-// spec/sync-opens.md §3 (Who it may be: the node it names while a node of this account),
+// spec/sync-opens.md §3 (who it may be: the node it names while a node of this account),
 // spec/sync-set.md §3 (it waits only while some peer is to be waited for on S): node 1 writes a
 // thing of its own both siblings sync (its own sync ID: a link no one redeems) while node 2 is
 // away, removes node 2 from its account's D, then unfiles the thing. Node 2's record still holds
