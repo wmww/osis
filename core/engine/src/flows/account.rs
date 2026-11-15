@@ -679,6 +679,15 @@ impl Core {
         a.keys.contains_key(&e.signing).then(|| e.signing.to_bytes())
     }
 
+    /// The read epoch of account `p` that rotation `r` mints, as `account_epochs` names it, when
+    /// its seed is held.
+    pub(crate) fn account_read_epoch_of(&self, p: &Tid, r: &CommitId) -> Option<Epoch> {
+        let v = self.account_view(p)?;
+        let e = v.epochs.get(r)?;
+        let seed = self.accounts.get(p)?.keys.get(&e.signing)?.seed().clone();
+        Epoch::derive(p, Role::Read, e.height?, &osis_crypto::key_actor_role_secret(&seed, Role::Read)).ok()
+    }
+
     /// The role epochs of account `p` this node holds seeds of (spec/crypto.md §3), internal to
     /// its nodes.
     pub(crate) fn account_epochs(&self, p: &Tid) -> Option<ActorEpochs> {

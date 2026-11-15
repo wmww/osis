@@ -636,3 +636,31 @@ fn a_node_of_the_account_waits_for_d_s_list_spec_permissions_5_5() {
     assert!(!counts(e, &x), "the write the rotator never held falls");
     assert!(e.roster(&d).contains_key(&sib));
 }
+
+// spec/crypto.md §5 (Who wraps under what): an account rotation's own sections go under the
+// epoch it supersedes, never the one it mints, so a sibling opens its keys.0 part from the
+// blob that carries the new seed, before holding that seed
+#[test]
+fn a_sibling_opens_the_rotation_s_keys_before_its_seed_spec_crypto_5() {
+    let mut lp = peers(2);
+    let sib = lp.peers[1].engine.tid();
+    let (a, _) = created(&mut lp);
+    let (p, d) = (a.account, a.devices);
+    let both = |lp: &mut LocalPeer| {
+        lp.sync(0, 1).unwrap();
+        lp.sync(1, 0).unwrap();
+    };
+    both(&mut lp);
+    lp.peers[0].engine.grant_as(&p, &d, &sib, &edge(Role::Admin)).unwrap();
+    both(&mut lp);
+    lp.peers[1].engine.hold_account(&p, &d).unwrap();
+    let r = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
+    let pks = lp.sealed(0, &[r]).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.account_open_key().is_some_and(|k| Some(k) != lp.peers[0].engine.account_open_key()), "the new seed not held");
+    let e = &mut lp.peers[1].engine;
+    for pk in &pks {
+        e.open_package(pk).unwrap();
+    }
+    assert_eq!(e.commit_parts_missing().get(&r).map(|m| m.len()), Some(0), "both parts opened at once");
+}
