@@ -407,13 +407,19 @@ pub(crate) fn judge_account_again(tx: &mut Tx<'_>, p: Tid) -> Result<()> {
     crate::apply::atomic::rejudged(tx, false).map(drop)
 }
 
-/// A node removed from its account's devices actor (a counting removal of it applied) is no
-/// node of the account any more: it drops the account's seeds, so it signs and opens nothing as
-/// it, and everything it read only as the account is lost (spec/permissions.md §3, Lost access;
-/// an account's retain default does not reach its nodes, §2): every held actor is judged again.
+/// A node removed from its account's devices actor is no node of the account any more: it drops
+/// the account's seeds, so it signs and opens nothing as it, and everything it read only as the
+/// account is lost (spec/permissions.md §3, Lost access; an account's retain default does not
+/// reach its nodes, §2): every held actor is judged again. Removed: off D's roster, and a
+/// counting rotation carries a removal of it (§3). Off the roster alone is no
+/// evidence: a grant of it the rotator never held reads unnamed until a listing names it.
 pub(crate) fn leave_if_removed(tx: &mut Tx<'_>) -> Result<()> {
     let Some((p, d)) = tx.core.account_devices() else { return Ok(()) };
     if tx.core.of_devices(&d) {
+        return Ok(());
+    }
+    let me = tx.core.id.tid();
+    if !tx.core.account_view(&p).is_some_and(|v| v.carries_removal_of(&me)) {
         return Ok(());
     }
     leave(tx, p, d)

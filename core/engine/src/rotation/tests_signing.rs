@@ -2101,12 +2101,12 @@ fn a_removed_nodes_withheld_list_keeps_none_of_its_later_word_on_d_spec_permissi
     }
 }
 
-// spec/permissions.md §5.5 (Cutoff; Waiting), §5.4: node 0 pairs node 2 while node 1,
+// spec/permissions.md §5.5 (Cutoff; Listings), §3 (Off the roster alone it stays), §5.4: node 0 pairs node 2 while node 1,
 // not holding that grant, rotates the account. Node 2 takes the rotation with its lists: the
-// list of D names no grant of node 2 (node 1 never held it), so the grant reads unnamed until
-// node 0's listing names it. Node 2 must stay a node of the account throughout, and once settled.
+// list of D names no grant of node 2 (node 1 never held it), so it reads itself off D's roster
+// until node 0's listing names the grant. No rotation carries a removal of it, so it keeps the
+// account throughout (a restart included), and once settled every node holds it on D's roster.
 #[test]
-#[ignore = "issues/paired-beside-rotation-leaves.md: a node leaves on an unnamed grant, not on its removal"]
 fn a_node_paired_beside_a_concurrent_rotation_stays_spec_permissions_5_5() {
     let mut lp = LocalPeer::new_bare(3, 7, WallMs(1_700_000_000_000)).unwrap();
     let (a, _) = lp.peers[0].engine.create_account().unwrap();
@@ -2122,12 +2122,20 @@ fn a_node_paired_beside_a_concurrent_rotation_stays_spec_permissions_5_5() {
             lp.advance(1000);
         }
     }
+    let two = lp.peers[2].engine.tid();
+    let holds = |lp: &mut LocalPeer| {
+        let e = &mut lp.peers[2].engine;
+        e.core.accounts.contains_key(&a.account) && e.account().unwrap() == Some((a.account, a.devices))
+    };
     assert!(a_node(&mut lp, 2, &a), "paired");
     let r = lp.peers[1].engine.rotate_account(&a.account).unwrap().unwrap();
     send(&mut lp, 1, 2, &[r]);
-    assert!(a_node(&mut lp, 2, &a), "the rotation held with its lists");
+    assert!(holds(&mut lp), "the rotation held with its lists");
+    assert!(!lp.peers[2].engine.roster(&a.devices).contains_key(&two), "the shape: off D's roster as node 1's list reads");
     lp.peers[2].engine.signing_due().unwrap();
-    assert!(a_node(&mut lp, 2, &a), "its answer made");
+    assert!(holds(&mut lp), "its answer made");
+    lp.peers[2].restart(1).unwrap();
+    assert!(holds(&mut lp), "restarted");
     for _ in 0..3 {
         lp.sync_all().unwrap();
         for k in 0..3 {
@@ -2136,4 +2144,59 @@ fn a_node_paired_beside_a_concurrent_rotation_stays_spec_permissions_5_5() {
     }
     lp.sync_all().unwrap();
     assert!(a_node(&mut lp, 2, &a), "settled");
+    for k in 0..3 {
+        assert!(lp.peers[k].engine.roster(&a.devices).contains_key(&two), "peer {k}: node 2 on D's roster");
+    }
+}
+
+// spec/permissions.md §3 (A node removed from its account's D is no node of P), §5.4: as above, node 2 off D's roster by node 1's list.
+// Node 0 removes node 2; node 2 receives the removal first with a rotation by node 1 at node 1's
+// epoch whose header names it: node 1 did not sign that removal, so the rotation carries none and
+// node 2 stays. The removal's own rotation (node 0's, carrying it) then makes node 2 leave.
+#[test]
+fn a_header_naming_a_removal_its_minter_did_not_make_removes_no_one_spec_permissions_5_5() {
+    use osis_crypto::{AccountEpochKeys, Secret32};
+    let mut lp = LocalPeer::new_bare(3, 7, WallMs(1_700_000_000_000)).unwrap();
+    let (a, _) = lp.peers[0].engine.create_account().unwrap();
+    for i in [1, 2] {
+        let node = lp.peers[i].engine.tid();
+        let ids = lp.peers[i].engine.commit_ids();
+        send(&mut lp, i, 0, &ids);
+        let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
+        send(&mut lp, 0, i, &all);
+        lp.peers[i].engine.paired(&a.account).unwrap();
+        if i == 1 {
+            lp.sync_all().unwrap();
+            lp.advance(1000);
+        }
+    }
+    let two = lp.peers[2].engine.tid();
+    let holds = |lp: &mut LocalPeer| lp.peers[2].engine.core.accounts.contains_key(&a.account);
+    let r = lp.peers[1].engine.rotate_account(&a.account).unwrap().unwrap();
+    send(&mut lp, 1, 2, &[r]);
+    assert!(holds(&mut lp) && !lp.peers[2].engine.roster(&a.devices).contains_key(&two), "the shape: kept, off D's roster");
+    let done = remove(&mut lp, 0, a.devices, 2);
+    let rem = done.commits[0];
+    let forged = {
+        let e = &lp.peers[1].engine;
+        let rec = e.core.created(&a.account).unwrap().clone();
+        let vk = e.header(&r).unwrap().rotation.clone().unwrap().signing_key;
+        let at_keys = AccountEpochKeys::from_seed(e.core.accounts.get(&a.account).unwrap().keys.get(&vk).unwrap().seed());
+        let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([73; 32]));
+        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![r], names: Vec::new(), takes: Vec::new(), removals: vec![rem], list_root: [0; 32] };
+        let made = super::tests_account::rotation_at(rec, (r, &at_keys), &[], &next, header, osis_base::Ts::make(e.now(), 0).unwrap());
+        let mut b = osis_commit::CommitBlob::decode(&made).unwrap();
+        let id = b.header.id();
+        let inner = osis_crypto::seal_inner(&at_keys.inner, &id.0, &e.core.id.tid(), &e.core.id.keys().signing);
+        b.sigs = osis_commit::Sigs::signed(&id, &at_keys.signing, Some(inner), Vec::new());
+        b.encode()
+    };
+    send(&mut lp, 0, 2, &[rem]);
+    let f = give(&mut lp, &forged, &[2]);
+    let v = lp.peers[2].engine.core.account_view(&a.account).unwrap();
+    assert!(v.rotation_counts(&f), "node 1's rotation counts");
+    assert!(!v.carries_removal_of(&two), "it carries no removal its minter did not make");
+    assert!(holds(&mut lp), "kept beside the forged carrier");
+    send(&mut lp, 0, 2, &done.commits[1..]);
+    assert!(!holds(&mut lp), "the removal's own rotation: node 2 leaves");
 }

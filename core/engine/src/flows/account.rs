@@ -216,6 +216,12 @@ impl AccountView {
         held.keys.get(&self.epochs.get(e)?.signing).cloned()
     }
 
+    /// Whether a counting held rotation carries a removal of `node` from D (its header names it,
+    /// its minter signed it at the epoch it rotates; this node's account only).
+    pub(crate) fn carries_removal_of(&self, node: &Tid) -> bool {
+        self.devices.as_ref().is_some_and(|d| d.removes.iter().any(|(r, ns)| ns.contains(node) && self.rotation_counts(r)))
+    }
+
     /// Whether a held rotation that does not count names removal `c` in its header: the removal
     /// stands or falls with it.
     pub(crate) fn carried_uncounted(&self, c: &CommitId) -> bool {
@@ -1070,7 +1076,8 @@ impl Engine {
         let first = VerifyingKey::from_slice(&public_key).map_err(|_| Error::Misuse("account key"))?;
         let stored = self.get_typed(d, &ct::ACCOUNT)?.ok_or(Error::UnknownThing(*d))?;
         let keys = super::signing::usable_seeds(&self.core, d, stored, &BTreeMap::new());
-        if keys.is_empty() || !self.core.of_devices(d) {
+        // at open, off D's roster is no leaving by itself (`signing::leave_if_removed` decides)
+        if keys.is_empty() || judge && !self.core.of_devices(d) {
             return Err(Error::Misuse("no seed of the account readable here"));
         }
         self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, keys }));
