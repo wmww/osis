@@ -223,6 +223,14 @@ impl Engine {
         Ok(proven.iter().find(|x| self.core.is_account(x) && self.core.role_now(x, &a) >= Some(Role::Write)).copied())
     }
 
+    /// The account among `proven` holding read or above on read sync ID `s`'s actor, as this
+    /// node judges it: whom a suspect list is judged for (`repair_suspect`).
+    pub fn reader_account(&mut self, s: &SyncId, proven: &[Tid]) -> Result<Option<Tid>> {
+        let Some((t, _)) = self.read_sync_id(s)? else { return Ok(None) };
+        let a = self.core.reader_of(&t);
+        Ok(proven.iter().find(|x| self.core.is_account(x) && self.core.role_now(x, &a) >= Some(Role::Read)).copied())
+    }
+
     /// A stranded report (a Stranded message, or a stranded notice taken from this node's inbox):
     /// `holder` is stranded on `s`. Judged from what this node holds alone (spec/permissions.md
     /// §4): only for a sync ID read here whose actor `holder` is a current holder of and that this

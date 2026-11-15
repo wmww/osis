@@ -149,6 +149,20 @@ fn judged(core: &Core, f: &Flag) -> (u64, u8) {
     (f.at, f.bodies.iter().filter(|e| !dormant(core, e)).fold(0, |w, e| w | e.2))
 }
 
+/// What a writer did with one entry of a peer's suspect list (`Engine::repair_suspect`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repaired {
+    /// Not judged: the thing is outside S's closure here, or this node may not snapshot the
+    /// aspect or holds no state of it.
+    Skipped,
+    /// The reporter's digest is this node's own.
+    Same,
+    /// A snapshot from this state was written for that reporter already.
+    Already,
+    /// A snapshot written, `from` the digest of the state it was written from.
+    Wrote { commit: CommitId, from: [u8; 16] },
+}
+
 impl Engine {
     /// The aspects this node flags suspect, with when each was last flagged (wall ms)
     /// and why (`Why` bits over the bodies it is about that are not dormant).
@@ -178,6 +192,64 @@ impl Engine {
     /// flag went is given again).
     pub fn suspect_feed(&self) -> osis_base::memo::Feed<(Tid, Ak)> {
         self.core.ix.suspects.feed()
+    }
+
+    /// Every flagged aspect, dormant ones included: what a follower starting now follows before
+    /// `suspect_feed` gives the new ones.
+    pub fn suspect_keys(&self) -> Vec<(Tid, Ak)> {
+        self.core.ix.suspects.keys().cloned().collect()
+    }
+
+    /// Whether `tid`'s creation record is held (stamped): a suspect list leaves out an aspect
+    /// of a thing whose record is unknown (spec/permissions.md §4 Suspect list).
+    pub fn record_known(&self, tid: &Tid) -> bool {
+        self.core.created(tid).is_some()
+    }
+
+    /// Whether this node may repair `(tid, ak)` for a suspect list sent for `s`: the thing is in
+    /// S's closure here and this node may snapshot the aspect (spec/sync-compaction.md §1 Repair).
+    pub fn may_repair(&mut self, s: &osis_base::SyncId, tid: &Tid, ak: &Ak) -> Result<bool> {
+        if !self.carrying(tid)?.contains(s) {
+            return Ok(false);
+        }
+        let (t, a) = (*tid, ak.clone());
+        self.read(|tx| {
+            let ts = tx.core.hlc.peek();
+            Ok(super::snapshot::may_snapshot(tx, &t, &a, a.ephemeral(), ts)? == crate::engine::write::MayWrite::Yes)
+        })
+    }
+
+    /// Judges one entry `(tid, ak, theirs)` of a suspect list `reporter` sent for sync ID `s`
+    /// (spec/sync-compaction.md §1 Repair): only for a thing in S's closure here whose aspect this
+    /// node may snapshot and holds state of; an equal digest repairs nothing; `wrote_from` is the
+    /// digest of the state this node last wrote a snapshot from for `reporter` (the caller keeps
+    /// it), and a state still at it is not snapshotted again. Each entry judged is a
+    /// `DiagnosticKind::Repair`.
+    pub fn repair_suspect(&mut self, s: &osis_base::SyncId, tid: &Tid, ak: &Ak, theirs: &[u8; 16], reporter: &Tid, wrote_from: Option<[u8; 16]>) -> Result<Repaired> {
+        let (t, a) = (*tid, ak.clone());
+        if !self.may_repair(s, tid, ak)? || self.read(|tx| Ok(tx.state(&t, &a)?.is_none()))? {
+            return Ok(Repaired::Skipped);
+        }
+        let Some(own) = self.state_digest(tid, ak)? else { return Ok(Repaired::Skipped) };
+        let done = if own == *theirs {
+            Repaired::Same
+        } else if wrote_from == Some(own) {
+            Repaired::Already
+        } else {
+            match self.snapshot(tid, ak) {
+                Ok(Some(c)) => Repaired::Wrote { commit: c, from: self.state_digest(tid, ak)?.unwrap_or(own) },
+                Ok(None) | Err(crate::Error::Misuse(_) | crate::Error::Permission { .. }) => return Ok(Repaired::Skipped),
+                Err(e) => return Err(e),
+            }
+        };
+        let (commit, detail) = match done {
+            Repaired::Wrote { commit, .. } => (Some(commit), "re-snapshotted"),
+            Repaired::Already => (None, "a snapshot from this state was written for this reporter"),
+            _ => (None, "same state"),
+        };
+        let now = self.now();
+        self.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::Repair, tids: vec![*reporter, *tid], commit, peer: Some(*reporter), detail: detail.into() }, now);
+        Ok(done)
     }
 
     /// The keyed digest of `(tid, ak)`'s state (spec/permissions.md §4): the first 16 bytes of
