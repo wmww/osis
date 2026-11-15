@@ -185,13 +185,13 @@ impl Side {
 
     fn hold(&mut self, s: SyncId, h: Holding) {
         self.set.ids.insert(s, (THING, h));
-        self.store.set_sync_set(&self.set);
+        self.store.set_sync_set(&self.set).unwrap();
     }
 
     /// The store reopened over its device (a restart).
     fn restart(&mut self, seed: u64) {
         self.store = Store::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), Box::new(SeededRng::from_u64(seed))).unwrap();
-        self.store.set_sync_set(&self.set);
+        self.store.set_sync_set(&self.set).unwrap();
         self.streams.set_store(self.store.clone());
     }
 
@@ -899,6 +899,35 @@ fn kept_again_fetches_anew_spec_sync_judgement_6() {
     p.run();
     assert!(p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)])), "pulled again from the start");
     assert!(p.b.store.entry(&k.id, &x).unwrap().is_some(), "what it dropped held again");
+}
+
+// spec/sync-judgement.md §6 (Read and unread move: a node raised to read pulls S anew), a
+// restart between the raise and the pull changing nothing: the raise is marked durably, so the
+// restarted node pulls S from the start at its reconnect rather than from its stored place, and
+// once it has, a further restart pulls from the stored place again.
+#[test]
+fn a_raise_to_read_fetches_anew_after_a_restart_spec_sync_judgement_6() {
+    let mut p = Pair::new();
+    let k = Sid::new(10);
+    k.keep(&mut p.a);
+    k.keep(&mut p.b);
+    k.stamped(&mut p.a, 3000, true);
+    p.a.join(p.now, k.id);
+    p.b.join(p.now, k.id);
+    p.run();
+    let reconnect = |p: &mut Pair, seed: u64| {
+        p.b.restart_all(seed);
+        p.a.streams.closed(C);
+        p.a.join(p.now, k.id);
+        p.b.join(p.now, k.id);
+        let pulls = p.sent_by_b(41).len();
+        p.run();
+        p.sent_by_b(41).iter().skip(pulls).any(|m| matches!(m, Msg::Pull(q) if q.joins == vec![(k.id, None)]))
+    };
+    assert!(!reconnect(&mut p, 7), "kept unread: pulled from its stored place");
+    p.b.hold(k.id, Holding::Read);
+    assert!(reconnect(&mut p, 8), "raised, restarted before the pull: pulled from the start");
+    assert!(!reconnect(&mut p, 9), "pulled anew once: from its stored place again");
 }
 
 // spec/sync-streams.md §4 (Refused): an entry refused for anything but room is told with its code;

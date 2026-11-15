@@ -228,6 +228,9 @@ pub(crate) struct Inner {
     /// The sync IDs kept unread at a head whose sync key this node holds no box for
     /// (spec/sync-judgement.md §6): they take no entry, as with no head (`unread` sets them).
     unheld: BTreeSet<SyncId>,
+    /// Sync IDs raised to read before the open whose pull anew is owed (`N/`), until the first
+    /// `anew_feed` announces them.
+    raised: BTreeSet<SyncId>,
 }
 
 impl Inner {
@@ -314,7 +317,7 @@ impl Store {
     /// record brought that still gave nothing held go: every connection ended with the last start.
     pub fn open(backend: Box<dyn osis_store::Backend>, root: Box<dyn osis_store::RootStorage>, mut rng: Box<dyn osis_crypto::NodeRng>) -> Result<Store> {
         let store = osis_store::Store::open_or_create(backend, root, osis_store::StoreConfig::default(), &mut *rng)?;
-        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new() };
+        let mut inner = Inner { store, rng, open: None, now: WallMs(0), holdings: BTreeMap::new(), caps: Caps::default(), policy: Policy::default(), mem: Memory::default(), total: None, past_cap: BTreeMap::new(), unheld: BTreeSet::new(), raised: BTreeSet::new() };
         inner.write(|t, env| {
             for (k, _) in t.scan_local(&[rows::CHARGED, &[0]].concat(), b"", usize::MAX)? {
                 let (s, b) = rows::tail_ids(&k)?;
@@ -323,12 +326,13 @@ impl Store {
             }
             Ok(())
         })?;
-        // a copy dropped before the start takes nothing until judged again (`set_unheld`)
-        inner.unheld = inner.read(|t, _| {
-            let mut out = BTreeSet::new();
-            for (k, _) in t.scan_local(rows::DROPPED, b"", usize::MAX)? {
-                let id: [u8; 16] = k.get(rows::DROPPED.len()..).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("sync store dropped copy")))?;
-                out.insert(SyncId(id));
+        // a copy dropped before the start takes nothing until judged again (`set_unheld`); one
+        // raised to read is fetched anew (`anew_feed`)
+        (inner.unheld, inner.raised) = inner.read(|t, _| {
+            let mut out = (BTreeSet::new(), BTreeSet::new());
+            for (k, v) in t.scan_local(rows::ANEW, b"", usize::MAX)? {
+                let id: [u8; 16] = k.get(rows::ANEW.len()..).and_then(|x| x.try_into().ok()).ok_or(crate::types::Error::Store(osis_store::Error::Corrupt("sync store anew mark")))?;
+                if v.is_empty() { &mut out.0 } else { &mut out.1 }.insert(SyncId(id));
             }
             Ok(out)
         })?;
@@ -365,12 +369,12 @@ impl Store {
     // Holdings and caps
 
     /// Tests: the sync IDs this node syncs, whole (`set_holdings` of what differs).
-    pub fn set_sync_set(&mut self, set: &SyncSet) {
+    pub fn set_sync_set(&mut self, set: &SyncSet) -> Result<()> {
         let moved: Vec<(SyncId, Option<(Tid, Holding)>)> = {
             let g = self.lock();
             g.holdings.keys().chain(set.ids.keys()).filter(|s| g.holdings.get(s) != set.ids.get(s)).map(|s| (*s, set.ids.get(s).copied())).collect()
         };
-        self.set_holdings(&moved);
+        self.set_holdings(&moved)
     }
 
     /// The sync IDs this node syncs (spec/sync-set.md §3: the sync set, and each sync ID that
@@ -378,10 +382,22 @@ impl Store {
     /// entry now (`None`: no longer synced), of which thing, read or kept unread. A sync ID moving
     /// between read and kept unread is counted again in the unread total (spec/sync-ids.md §5
     /// Caps); only the sync IDs whose entry moved stamp. One raised from kept unread to read is
-    /// fetched anew (spec/sync-judgement.md §6 Read and unread move).
-    pub fn set_holdings(&mut self, moved: &[(SyncId, Option<(Tid, Holding)>)]) {
+    /// fetched anew (spec/sync-judgement.md §6 Read and unread move), marked durably (`N/`) until
+    /// streams moved every source's place of S back to the start (`clear_anew`), so a restart
+    /// between still fetches it (`anew_feed`).
+    pub fn set_holdings(&mut self, moved: &[(SyncId, Option<(Tid, Holding)>)]) -> Result<()> {
         let mut g = self.lock();
         let unread = |h: Option<&(Tid, Holding)>| h.is_some_and(|(_, h)| *h == Holding::Unread);
+        let raised: Vec<SyncId> = moved.iter().filter(|(s, now)| unread(g.holdings.get(s)) && now.is_some_and(|(_, h)| h == Holding::Read) && !g.unheld.contains(s)).map(|(s, _)| *s).collect();
+        if !raised.is_empty() {
+            // a dropped copy's mark stands as it is: it is fetched anew once judged (`set_unheld`)
+            g.write(|t, _| {
+                for s in &raised {
+                    t.put_local(&[rows::ANEW, &s.0].concat(), rows::ANEW_RAISED, Shred::No)?;
+                }
+                Ok(())
+            })?;
+        }
         let mut recount = Vec::new();
         for (s, now) in moved {
             let was = g.holdings.get(s).copied();
@@ -415,6 +431,7 @@ impl Store {
             });
             g.total = counted.ok();
         }
+        Ok(())
     }
 
     /// The node's `caps^.0` (`Engine::caps`).
@@ -580,9 +597,15 @@ impl Store {
         self.lock().mem.shreds.feed()
     }
 
-    /// Sync IDs whose dropped copy is to be fetched anew (`set_unheld`).
+    /// A cursor over the sync IDs to fetch anew from now on (`set_unheld`, `set_holdings`); the
+    /// first one made since the open starts with those raised to read before it (`N/`).
     pub fn anew_feed(&self) -> osis_base::memo::Feed<SyncId> {
-        self.lock().mem.anew.feed()
+        let mut g = self.lock();
+        let feed = g.mem.anew.feed();
+        for s in std::mem::take(&mut g.raised) {
+            g.mem.anew.wrote_added(&s, true, true);
+        }
+        feed
     }
 
     /// Blob `b`'s bytes, whoever holds them.
@@ -1205,7 +1228,7 @@ impl Store {
             t.log_forget(*s)?;
             // S's rows in every record go with its `changed_at` (spec/sync-opens.md §3)
             t.changed_forget(s)?;
-            t.remove_local(&[rows::DROPPED, &s.0].concat(), Shred::No)?;
+            t.remove_local(&[rows::ANEW, &s.0].concat(), Shred::No)?;
             t.remove_local(&[rows::FIRST, &s.0].concat(), Shred::No)?;
             Ok(())
         })?;
@@ -1237,8 +1260,8 @@ impl Store {
 
     /// In `t` (streams' transaction moving every source's place of S back to the start): S's
     /// dropped copy is fetched anew, its mark (`set_unheld`) goes.
-    pub(crate) fn clear_dropped(t: &mut Transaction<'_>, s: &SyncId) -> std::result::Result<(), osis_store::Error> {
-        t.remove_local(&[rows::DROPPED, &s.0].concat(), Shred::No).map(drop)
+    pub(crate) fn clear_anew(t: &mut Transaction<'_>, s: &SyncId) -> std::result::Result<(), osis_store::Error> {
+        t.remove_local(&[rows::ANEW, &s.0].concat(), Shred::No).map(drop)
     }
 
     /// S kept unread moved to (`true`) or off (`false`) a head whose sync key this node holds no
@@ -1247,7 +1270,7 @@ impl Store {
     /// takes no entry, deposit or Delete, as with no head. Moving off it (or read), S is fetched
     /// anew (`anew_feed`): its sources' positions passed the entries dropped. The drop is marked
     /// durably (`N/`) until streams moved every source's place of S back to the start
-    /// (`clear_dropped`), so a restart between finds S unheld, to be judged again.
+    /// (`clear_anew`), so a restart between finds S unheld, to be judged again.
     pub fn set_unheld(&mut self, s: &SyncId, unheld: bool) -> Result<()> {
         let mut g = self.lock();
         if !unheld {
@@ -1265,7 +1288,7 @@ impl Store {
                 let (_, b) = rows::tail_ids(&k)?;
                 entries::remove(t, env, s, &b, Removal::Expired)?;
             }
-            t.put_local(&[rows::DROPPED, &s.0].concat(), &[], Shred::No)?;
+            t.put_local(&[rows::ANEW, &s.0].concat(), &[], Shred::No)?;
             Ok(())
         })?;
         g.mem.drop_entries(s, now);

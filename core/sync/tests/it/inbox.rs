@@ -139,7 +139,7 @@ impl T {
     }
 
     fn hold(&mut self, ids: &[(SyncId, Holding)]) {
-        self.store.set_sync_set(&SyncSet { ids: ids.iter().map(|(s, h)| (*s, (THING, *h))).collect(), ..SyncSet::default() });
+        self.store.set_sync_set(&SyncSet { ids: ids.iter().map(|(s, h)| (*s, (THING, *h))).collect(), ..SyncSet::default() }).unwrap();
     }
 
     fn connect(&mut self, c: ConnId, actors: &[Tid]) {

@@ -111,7 +111,7 @@ fn holding(sids: &[(&Sid, Holding)]) -> SyncSet {
 /// A store holding `s` kept unread, its genesis registered.
 fn unread(dev: &Dev, s: &Sid) -> Store {
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(s, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(s, Holding::Unread)])).unwrap();
     let (g, c) = &s.steps[0];
     assert_eq!(st.take_register(&s.id, g, Some(c)).unwrap(), Code::OK);
     st
@@ -156,7 +156,7 @@ fn register_takes_genesis_then_children_of_the_head_spec_sync_ids_6() {
     let dev = Dev::new();
     let mut s = Sid::new(10);
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     let (c1, cs1) = s.rotate(60);
     assert_eq!(st.take_register(&s.id, &c1, Some(&cs1)).unwrap(), Code::UNKNOWN_SYNC_ID, "a child into an empty path");
     let mut forged = s.steps[0].0.clone();
@@ -251,7 +251,7 @@ fn register_only_where_kept_unread_spec_sync_ids_6() {
     let s = Sid::new(10);
     let mut st = dev.open();
     assert_eq!(st.take_register(&s.id, &s.steps[0].0, None).unwrap(), Code::DECLINED, "not synced");
-    st.set_sync_set(&holding(&[(&s, Holding::Read)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
     assert_eq!(st.take_register(&s.id, &s.steps[0].0, None).unwrap(), Code::DECLINED, "read");
     assert!(st.head(&s.id).unwrap().is_none());
 }
@@ -263,7 +263,7 @@ fn register_past_the_caps_spec_sync_ids_6() {
     let dev = Dev::new();
     let mut s = Sid::new(10);
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     let tiny = |bytes: u64| Caps { policy: BTreeMap::from([("bytes".to_string(), bytes), ("register_every_ms".to_string(), 1000)]), ..Caps::default() };
     st.set_caps(&tiny(10));
     assert_eq!(st.take_register(&s.id, &s.steps[0].0, Some(&s.steps[0].1)).unwrap(), Code::STORAGE_CAP);
@@ -323,12 +323,12 @@ fn a_behind_refused_is_13_only_where_s_is_not_kept_spec_sync_ids_6() {
     let s = Sid::new(10);
     let mut st = dev.open();
     assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::UNKNOWN_SYNC_ID, "not held");
-    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::UNKNOWN_SYNC_ID, "kept unread, no step");
     let (g, c) = &s.steps[0];
     assert_eq!(st.take_register(&s.id, g, Some(c)).unwrap(), Code::OK);
     assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::DECLINED, "kept unread with a step");
-    st.set_sync_set(&holding(&[(&s, Holding::Read)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
     assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::DECLINED, "read here");
 }
 
@@ -427,11 +427,11 @@ fn a_dropped_copy_is_fetched_anew_after_a_restart_spec_sync_judgement_6() {
     st.set_unheld(&s.id, true).unwrap();
     drop(st);
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     let (c, cbytes) = blob(102, Class::Durable, None, &[]);
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, c, false), cbytes).unwrap(), Code::REFUSED, "still dropped after the restart");
     let mut anew = st.anew_feed();
-    st.set_sync_set(&holding(&[(&s, Holding::Read)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
     st.set_unheld(&s.id, false).unwrap();
     assert_eq!(anew.added().into_iter().collect::<std::collections::BTreeSet<_>>(), [s.id].into(), "fetched anew");
 }
@@ -446,11 +446,11 @@ fn a_raise_to_read_fetches_s_anew_spec_sync_judgement_6() {
     let (s, r) = (Sid::new(10), Sid::new(11));
     let mut st = unread(&dev, &s);
     let mut anew = st.anew_feed();
-    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&r, Holding::Read)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&r, Holding::Read)])).unwrap();
     assert!(anew.added().is_empty(), "nothing raised");
-    st.set_sync_set(&holding(&[(&s, Holding::Read), (&r, Holding::Read)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Read), (&r, Holding::Read)])).unwrap();
     assert_eq!(anew.added(), vec![s.id], "raised: fetched anew");
-    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&r, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&r, Holding::Unread)])).unwrap();
     assert!(anew.added().is_empty(), "lowered: nothing");
 }
 
@@ -511,7 +511,7 @@ fn deposit_answers_spec_sync_inbox_3() {
     let mut st = dev.open();
     let (b, bytes) = blob(100, Class::Durable, None, &[]);
     assert_eq!(st.take_deposit(&deposit(&s, &bytes, false), None).unwrap(), Code::DECLINED, "not synced");
-    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     assert_eq!(st.take_deposit(&deposit(&s, &bytes, false), None).unwrap(), Code::RATE_LIMITED, "no head yet");
     let (g, c) = &s.steps[0];
     st.take_register(&s.id, g, Some(c)).unwrap();
@@ -621,7 +621,7 @@ fn peer_budget_spec_sync_ids_5() {
     // a reader's own judgement logging unstamped entries a peer brought: the same bound
     let r = Sid::new(40);
     let mut st = Dev::new().open();
-    st.set_sync_set(&holding(&[(&r, Holding::Read)]));
+    st.set_sync_set(&holding(&[(&r, Holding::Read)])).unwrap();
     st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), 1500)]), ..Caps::default() });
     let unstamped = |b| Entry { blob: b, wrap: wrap(3), stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: None };
     let c = Source::Conn(ConnId(3));
@@ -756,7 +756,7 @@ fn bytes_once_per_node_spec_sync_ids_5() {
     let dev = Dev::new();
     let (s1, s2) = (Sid::new(10), Sid::new(40));
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(&s1, Holding::Read), (&s2, Holding::Read)]));
+    st.set_sync_set(&holding(&[(&s1, Holding::Read), (&s2, Holding::Read)])).unwrap();
     let (b, x) = blob(100, Class::Durable, None, &[]);
     let e = Entry { blob: b, wrap: wrap(1), stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None };
     assert_eq!(st.log(&s2.id, e.clone(), None, None).unwrap(), Code::OK);
@@ -817,7 +817,7 @@ fn caps_govern_unread_and_the_largest_gives_way_spec_sync_ids_6() {
     let dev = Dev::new();
     let (s1, s2, r) = (Sid::new(10), Sid::new(40), Sid::new(70));
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread), (&r, Holding::Read)]));
+    st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread), (&r, Holding::Read)])).unwrap();
     for s in [&s1, &s2] {
         st.take_register(&s.id, &s.steps[0].0, None).unwrap();
     }
@@ -841,7 +841,7 @@ fn caps_govern_unread_and_the_largest_gives_way_spec_sync_ids_6() {
     let (eb, ex) = blob(1600, Class::Ephemeral, Some(MAX_DRIFT_MS), &[]);
     assert_eq!(st.take_stamped(&s1.id, &stamped(&s1, eb, false), ex).unwrap(), Code::STORAGE_CAP, "past S's memory cap");
     // r kept unread from now: counted again, it passes the total and, using most, gives way
-    st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread), (&r, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread), (&r, Holding::Unread)])).unwrap();
     assert!(st.settle_at(WallMs(0)).unwrap());
     assert!(st.entry(&r.id, &rb).unwrap().is_none(), "r gave way");
     assert_eq!(st.entries(&s1.id).unwrap().len(), 3, "within the total again: nothing else went");
@@ -855,7 +855,7 @@ fn log_reads_by_member_and_until_spec_sync_streams_3() {
     let dev = Dev::new();
     let (s1, s2) = (Sid::new(10), Sid::new(40));
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread)])).unwrap();
     st.take_register(&s1.id, &s1.steps[0].0, None).unwrap();
     st.take_register(&s2.id, &s2.steps[0].0, None).unwrap();
     let mut bs = Vec::new();
@@ -915,7 +915,7 @@ fn stands_live_in_the_record_spec_sync_judgement_4() {
     st.saw_deleted(src, &s.id, &BlobId([3; 32])).unwrap();
     drop(st);
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     assert_eq!(st.stand(src, &s.id, b"body").unwrap(), Some(stand.clone()), "a restart is no change of ground");
     assert!(st.seen_deleted(src, &s.id, &BlobId([3; 32])).unwrap());
     assert_eq!(st.stand(conn, &s.id, b"body").unwrap(), None, "the connection's went with the start");
@@ -1046,7 +1046,7 @@ fn crash_at_every_write_is_before_or_after_spec_sync_streams_3() {
         }
         drop(st);
         let mut st = dev.open();
-        st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+        st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
         observe(&st, &s, rec, OPS)
     };
     for step in 0..OPS {
@@ -1073,7 +1073,7 @@ fn crash_at_every_write_is_before_or_after_spec_sync_streams_3() {
             drop(st);
             dev.faults.revive();
             let mut st = dev.open();
-            st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+            st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
             let got = observe(&st, &s, rec, OPS);
             assert!(got == before || got == after, "step {step}, crash at write {k} of {writes} (ran: {}):\n{got}\nbefore:\n{before}\nafter:\n{after}", r.is_ok());
         }
@@ -1095,7 +1095,7 @@ fn filled(n: usize, k: usize) -> (Store, Sid, Option<Vec<u8>>) {
     let mut st = dev.open();
     let mut set: Vec<(&Sid, Holding)> = others.iter().map(|o| (o, Holding::Unread)).collect();
     set.push((&s, Holding::Unread));
-    st.set_sync_set(&holding(&set));
+    st.set_sync_set(&holding(&set)).unwrap();
     for x in others.iter().chain([&s]) {
         st.take_register(&x.id, &x.steps[0].0, None).unwrap();
     }
@@ -1183,7 +1183,7 @@ fn store_values_are_due_when_their_rows_move() {
     assert_eq!(lists.due(), [s.id], "an ephemeral entry added under S");
     settle(&mut heads, &mut lists, &st);
     let other = Sid::new(40);
-    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&other, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Unread), (&other, Holding::Unread)])).unwrap();
     st.take_register(&other.id, &other.steps[0].0, None).unwrap();
     let (o, ox) = blob(102, Class::Durable, None, &[]);
     st.take_stamped(&other.id, &stamped(&other, o, false), ox).unwrap();
@@ -1201,7 +1201,7 @@ fn deposited_index_and_entry_feed_follow_entries() {
     let dev = Dev::new();
     let s = Sid::new(10);
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(&s, Holding::Read)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
     let mut feed = st.entry_feed();
     let (b, bytes) = blob(40, Class::Durable, None, &[]);
     let e = Entry { blob: b, wrap: wrap(3), stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: None };
@@ -1231,7 +1231,7 @@ fn held_elsewhere_kept_while_the_entry_is() {
     st.set_elsewhere(&s.id, &b).unwrap();
     assert!(st.elsewhere(&s.id, &b).unwrap());
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(&s, Holding::Unread)]));
+    st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     assert!(st.elsewhere(&s.id, &b).unwrap(), "durable");
     assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), bytes).unwrap(), Code::OK);
     assert!(st.elsewhere(&s.id, &b).unwrap(), "taking it again keeps the record");
@@ -1243,7 +1243,7 @@ fn held_elsewhere_kept_while_the_entry_is() {
 /// peer budget.
 fn reader(s: &Sid, peer_bytes: u64) -> Store {
     let mut st = Dev::new().open();
-    st.set_sync_set(&holding(&[(s, Holding::Read)]));
+    st.set_sync_set(&holding(&[(s, Holding::Read)])).unwrap();
     st.set_caps(&Caps { policy: BTreeMap::from([("peer_bytes".to_string(), peer_bytes)]), ..Caps::default() });
     st.serve_path(&s.id, &osis_engine::sync::Path { steps: s.steps.iter().map(|(p, c)| (p.clone(), Some(c.clone()))).collect() }).unwrap();
     st
@@ -1349,7 +1349,7 @@ fn a_blobs_tombstones_are_known_by_the_blob_until_they_end_spec_commits_5() {
     let dev = Dev::new();
     let (s1, s2) = (Sid::new(1), Sid::new(2));
     let mut st = dev.open();
-    st.set_sync_set(&holding(&[(&s1, Holding::Read), (&s2, Holding::Read)]));
+    st.set_sync_set(&holding(&[(&s1, Holding::Read), (&s2, Holding::Read)])).unwrap();
     let (b, x) = blob(100, Class::Durable, None, &[]);
     let e = Entry { blob: b, wrap: wrap(1), stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None };
     assert_eq!(st.log(&s1.id, e.clone(), Some(x), None).unwrap(), Code::OK);

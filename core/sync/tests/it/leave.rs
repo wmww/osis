@@ -64,11 +64,12 @@ impl Ground for Fake {
     fn synced(&mut self, s: &SyncId) -> Option<Held> {
         self.synced.get(s).copied()
     }
-    fn set_synced(&mut self, s: &SyncId, now: Option<Held>) {
+    fn set_synced(&mut self, s: &SyncId, now: Option<Held>) -> Result<()> {
         match now {
             Some(h) => self.synced.insert(*s, h),
             None => self.synced.remove(s),
         };
+        Ok(())
     }
     fn stored(&mut self) -> Result<BTreeSet<SyncId>> {
         Ok(self.stored.get(&()).cloned().unwrap_or_default())

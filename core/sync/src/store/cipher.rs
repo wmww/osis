@@ -127,6 +127,7 @@ impl osis_store::CipherHost for Inner {
             total: self.total,
             past_cap: self.past_cap.clone(),
             unheld: self.unheld.clone(),
+            raised: self.raised.clone(),
         })
     }
 }

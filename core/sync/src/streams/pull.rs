@@ -861,7 +861,7 @@ impl Streams {
 
     /// S pulled from the start: from each source pulling it now, and from the start at its next
     /// join at every source whose place passed it, those only stored included (a restart since),
-    /// in one transaction with the store's mark of a dropped copy (`Store::clear_dropped`).
+    /// in one transaction with clearing the store's durable mark (`N/`, `Store::clear_anew`).
     /// O(the sources holding a place of S).
     fn pull_anew(&mut self, ctx: &mut Ctx, s: SyncId) {
         let pulling: BTreeMap<Source, ConnId> = self.holders.get(&s).into_iter().flatten().filter_map(|c| self.pull.get(c).map(|p| (p.src, *c))).collect();
@@ -894,7 +894,7 @@ impl Streams {
                     p.write(t, rec, &s)?;
                 }
             }
-            Store::clear_dropped(t, &s)
+            Store::clear_anew(t, &s)
         });
         self.failed(r);
     }

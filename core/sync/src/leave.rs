@@ -45,7 +45,7 @@ pub trait Ground: SetGround {
     /// S's entry in the sync IDs this node syncs (`Store::synced`).
     fn synced(&mut self, s: &SyncId) -> Option<Held>;
     /// Sets it (`Store::set_holdings`; `None`: not synced).
-    fn set_synced(&mut self, s: &SyncId, now: Option<Held>);
+    fn set_synced(&mut self, s: &SyncId, now: Option<Held>) -> Result<()>;
     /// The sync IDs whose store holds rows (`Store::held_ids`) or that are listed synced.
     fn stored(&mut self) -> Result<BTreeSet<SyncId>>;
     /// S's thing and how this node's keys let it hold S, whatever lists it (`Engine::sync_holder`).
@@ -132,7 +132,7 @@ impl Leave {
                     self.out.unwant(&s);
                     self.leaving.remove(&s);
                     if g.synced(&s) != Some(h) {
-                        g.set_synced(&s, Some(h));
+                        g.set_synced(&s, Some(h))?;
                         acted = true;
                     }
                 }
@@ -159,7 +159,7 @@ impl Leave {
                 Wait::Waiting => {
                     // held before the start, not synced yet: synced while it waits
                     if g.synced(&s).is_none() {
-                        g.set_synced(&s, Some((t, h)));
+                        g.set_synced(&s, Some((t, h)))?;
                         acted = true;
                     }
                 }
@@ -170,7 +170,7 @@ impl Leave {
                         g.forget_local(&t)?;
                     }
                     g.shred(&s)?;
-                    g.set_synced(&s, None);
+                    g.set_synced(&s, None)?;
                     self.leaving.remove(&s);
                     self.out.unwant(&s);
                     acted = true;
@@ -266,8 +266,8 @@ impl Ground for Live<'_, '_> {
     fn synced(&mut self, s: &SyncId) -> Option<Held> {
         self.cx.store.synced(s)
     }
-    fn set_synced(&mut self, s: &SyncId, now: Option<Held>) {
-        self.cx.store.set_holdings(&[(*s, now)]);
+    fn set_synced(&mut self, s: &SyncId, now: Option<Held>) -> Result<()> {
+        self.cx.store.set_holdings(&[(*s, now)])
     }
     fn stored(&mut self) -> Result<BTreeSet<SyncId>> {
         let mut ids = self.cx.store.held_ids()?;
