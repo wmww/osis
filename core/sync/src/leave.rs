@@ -264,6 +264,12 @@ pub struct Live<'a, 'b> {
 }
 
 impl SetGround for Live<'_, '_> {
+    fn things_entered(&mut self, f: &mut osis_engine::sync::ThingsFeed) -> Result<Vec<Tid>> {
+        Ok(self.cx.engine.things_entered(f)?)
+    }
+    fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
+        Ok(self.cx.engine.in_sync_things(t)?)
+    }
     fn sync_things(&mut self) -> Result<std::sync::Arc<BTreeSet<Tid>>> {
         Ok(self.cx.engine.sync_things()?)
     }

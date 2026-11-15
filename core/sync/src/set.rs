@@ -1,9 +1,9 @@
 //! What a node syncs, in two layers.
 //!
-//! - The engine's sync set followed per key (spec/sync-set.md §2, `SetFollow`): the synced
-//!   group's closure (`Engine::sync_things`) through one `Effects` key, diffed on change, and
-//!   each thing's `thing_sync` through its own, so a change of one thing's keys moves that thing's
-//!   sync IDs alone and a closure change costs O(closure). `leave` alone follows it.
+//! - The engine's sync set followed per key (spec/sync-set.md §2, `SetFollow`): each thing that
+//!   may have entered the synced group's closure (`Engine::things_entered`) is followed through
+//!   its own `Effects` key, whether the closure holds it and its `thing_sync`, so a closure change
+//!   or a change of one thing's keys costs what moved, never the closure. `leave` alone follows it.
 //! - The sync IDs this node syncs: the sync set, and each sync ID that left it while it waits to
 //!   stop (spec/sync-set.md §3: it stays a member of its shared sets as before). `leave` writes
 //!   them into the store (`Store::set_holdings`); every other module (store, opens, dials, read,
@@ -20,7 +20,7 @@ use crate::types::{Holding, Result};
 use osis_base::memo::{Effects, Feed};
 use osis_base::{SyncId, Tid};
 use osis_engine::Engine;
-use osis_engine::sync::ThingSync;
+use osis_engine::sync::{ThingSync, ThingsFeed};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -29,13 +29,24 @@ pub type Held = (Tid, Holding);
 
 /// What `SetFollow` reads (the product's is the engine; a test's a table).
 pub trait SetGround {
-    /// The synced group's closure (`Engine::sync_things`).
+    /// The things that may have entered the synced group's closure since `f`'s last read
+    /// (`Engine::things_entered`; a superset is fine).
+    fn things_entered(&mut self, f: &mut ThingsFeed) -> Result<Vec<Tid>>;
+    /// Whether the closure holds `t` (`Engine::in_sync_things`), read per thing.
+    fn in_sync_things(&mut self, t: &Tid) -> Result<bool>;
+    /// The closure whole (`Engine::sync_things`): debug builds check the followed set by it.
     fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>>;
     /// How this node syncs thing `t` (`Engine::thing_sync`).
     fn thing_sync(&mut self, t: &Tid) -> Result<ThingSync>;
 }
 
 impl SetGround for Engine {
+    fn things_entered(&mut self, f: &mut ThingsFeed) -> Result<Vec<Tid>> {
+        Ok(Engine::things_entered(self, f)?)
+    }
+    fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
+        Ok(Engine::in_sync_things(self, t)?)
+    }
     fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         Ok(Engine::sync_things(self)?)
     }
@@ -86,9 +97,11 @@ impl std::fmt::Debug for SyncsFollow {
 
 #[derive(Clone)]
 pub struct SetFollow {
-    closure: Effects<(), Arc<BTreeSet<Tid>>>,
+    entered: ThingsFeed,
+    /// Per thing of the closure, how it is synced (`None`: out of the closure, followed no more).
+    thing: Effects<Tid, Option<ThingSync>>,
+    /// The things followed with a value in the closure, as last settled.
     things: BTreeSet<Tid>,
-    thing: Effects<Tid, ThingSync>,
     /// The sync IDs each thing is synced under, as last settled.
     ids_of: BTreeMap<Tid, Vec<(SyncId, Holding)>>,
     /// Per sync ID, every thing naming it.
@@ -100,9 +113,7 @@ pub struct SetFollow {
 
 impl SetFollow {
     pub fn new(name: &'static str) -> SetFollow {
-        let mut closure = Effects::new(name);
-        closure.want(());
-        SetFollow { closure, things: BTreeSet::new(), thing: Effects::new(name), ids_of: BTreeMap::new(), by_sync: BTreeMap::new(), held: BTreeMap::new(), touched: BTreeSet::new() }
+        SetFollow { entered: ThingsFeed::default(), thing: Effects::new(name), things: BTreeSet::new(), ids_of: BTreeMap::new(), by_sync: BTreeMap::new(), held: BTreeMap::new(), touched: BTreeSet::new() }
     }
 
     /// Whether `s` is in the sync set, as last settled.
@@ -111,49 +122,53 @@ impl SetFollow {
     }
 
     /// The sync IDs whose entry moved since the last call, each with its entry now (`None`: it
-    /// left the sync set).
+    /// left the sync set). O(what moved): each thing that may have entered is followed, each
+    /// followed thing whose place or keys moved is settled again (spec/sync-set.md §2 Cost).
     pub fn settle(&mut self, g: &mut impl SetGround) -> Result<Vec<(SyncId, Option<Held>)>> {
         let mut touched = std::mem::take(&mut self.touched);
-        if !self.closure.due().is_empty() {
-            let moved = match self.closure.try_settle(&(), || g.sync_things()) {
-                Ok(m) => m,
-                Err(e) => {
-                    self.touched = touched;
-                    return Err(e);
-                }
-            };
-            if let Some((_, now)) = moved {
-                let gone: Vec<Tid> = self.things.iter().filter(|t| !now.contains(*t)).copied().collect();
-                for t in gone {
-                    self.things.remove(&t);
+        let out = self.settle_into(g, &mut touched);
+        if out.is_err() {
+            self.touched = touched;
+        }
+        out
+    }
+
+    fn settle_into(&mut self, g: &mut impl SetGround, touched: &mut BTreeSet<SyncId>) -> Result<Vec<(SyncId, Option<Held>)>> {
+        let entered = g.things_entered(&mut self.entered)?;
+        osis_base::costs::count("sync set: entered", entered.len() as u64);
+        for t in entered {
+            self.thing.want(t);
+        }
+        let due = self.thing.due();
+        #[cfg(debug_assertions)]
+        let moved = !due.is_empty();
+        osis_base::costs::count("sync set: settled", due.len() as u64);
+        for t in due {
+            let Some((_, now)) = self.thing.try_settle(&t, || if g.in_sync_things(&t)? { g.thing_sync(&t).map(Some) } else { Ok(None) })? else { continue };
+            let ids = match now {
+                None => {
                     self.thing.unwant(&t);
-                    self.moved(&t, Vec::new(), &mut touched);
+                    self.things.remove(&t);
+                    Vec::new()
                 }
-                for t in now.iter() {
-                    if self.things.insert(*t) {
-                        self.thing.want(*t);
+                Some(now) => {
+                    self.things.insert(t);
+                    match now {
+                        ThingSync::Read(ids) => ids.into_iter().map(|s| (s, Holding::Read)).collect(),
+                        ThingSync::Unread(ids) => ids.into_iter().map(|s| (s, Holding::Unread)).collect(),
+                        ThingSync::Unsyncable | ThingSync::Plain => Vec::new(),
                     }
                 }
-            }
+            };
+            self.moved(&t, ids, touched);
         }
-        for t in self.thing.due() {
-            let moved = match self.thing.try_settle(&t, || g.thing_sync(&t)) {
-                Ok(m) => m,
-                Err(e) => {
-                    self.touched = touched;
-                    return Err(e);
-                }
-            };
-            let Some((_, now)) = moved else { continue };
-            let ids = match now {
-                ThingSync::Read(ids) => ids.into_iter().map(|s| (s, Holding::Read)).collect(),
-                ThingSync::Unread(ids) => ids.into_iter().map(|s| (s, Holding::Unread)).collect(),
-                ThingSync::Unsyncable | ThingSync::Plain => Vec::new(),
-            };
-            self.moved(&t, ids, &mut touched);
+        #[cfg(debug_assertions)]
+        if moved {
+            let all = osis_base::costs::paused(|| g.sync_things())?;
+            debug_assert_eq!(self.things, *all, "the followed sync set differs from the closure derived anew");
         }
         let mut out = Vec::new();
-        for s in touched {
+        for s in std::mem::take(touched) {
             let now = self.by_sync.get(&s).and_then(fold);
             let was = match now {
                 Some(h) => self.held.insert(s, h),
@@ -184,7 +199,6 @@ impl SetFollow {
             self.ids_of.insert(*t, ids);
         }
     }
-
 }
 
 /// `Engine::sync_set`'s fold of the things naming one sync ID.

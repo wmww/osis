@@ -30,5 +30,6 @@ driver = ["dep:tokio"]
 
 [dev-dependencies]
 osis-commit.workspace = true
+osis-crdt.workspace = true
 osis-schema.workspace = true
 osis-transport.workspace = true

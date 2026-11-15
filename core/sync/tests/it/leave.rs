@@ -49,6 +49,13 @@ struct Fake {
 }
 
 impl SetGround for Fake {
+    /// Every thing of the closure, each read: a superset of what entered.
+    fn things_entered(&mut self, _: &mut osis_engine::sync::ThingsFeed) -> Result<Vec<Tid>> {
+        Ok(self.closure.get(&()).map(|c| c.iter().copied().collect()).unwrap_or_default())
+    }
+    fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
+        Ok(self.closure.get(&()).is_some_and(|c| c.contains(t)))
+    }
     fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         Ok(self.closure.get(&()).cloned().unwrap_or_default())
     }
@@ -391,4 +398,69 @@ fn leaving_several_reloads_once_and_unlogs_what_left_at_n_and_10n_spec_sync_set_
     assert_eq!((one.0, three.0, three_10n.0), (1, 1, 1), "one reload per leave");
     assert!(one.1 > 0);
     assert_eq!((three.1, three_10n.1), (3 * one.1, 3 * one.1), "own entries unlogged: what left, not what stays");
+}
+
+/// A node with an account of its own whose synced group lists `n` plain things (one write), its
+/// sync set followed and settled: (engine, follower, account, synced group).
+fn synced_of(n: usize) -> (osis_engine::Engine, osis_sync::set::SetFollow, Tid, Tid) {
+    use osis_crypto::SeededRng;
+    use osis_store::{MemoryBackend, MemoryRoot};
+    let clock: Arc<dyn osis_base::Clock> = Arc::new(osis_base::ManualClock::new(osis_base::WallMs(1_700_000_000_000)));
+    let store = osis_sync::Store::open(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), Box::new(SeededRng::from_u64(2))).unwrap();
+    let mut e = osis_engine::Engine::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), store.cipher(), osis_engine::Config::default(), clock, Box::new(SeededRng::from_u64(1))).unwrap();
+    e.create_account().unwrap();
+    let (p, d) = e.account().unwrap().unwrap();
+    let g = *e.get_typed(&d, &osis_schema::core_types::SYNCED).unwrap().unwrap().values().next().unwrap();
+    let mut m = osis_engine::Mutation::new();
+    for _ in 0..n {
+        let x = e.new_thing(&mut m, p);
+        list(&mut m, g, x, true);
+    }
+    e.commit(m).unwrap();
+    let mut f = osis_sync::set::SetFollow::new("test: sync set");
+    f.settle(&mut e).unwrap();
+    assert!(e.sync_things().unwrap().len() > n, "the synced group's things are in the sync set");
+    (e, f, p, g)
+}
+
+/// Lists (`on`) or unlists `x` as an item of group `g`.
+fn list(m: &mut osis_engine::Mutation, g: Tid, x: Tid, on: bool) {
+    let v = osis_base::Value::Tid(x);
+    let op = if on { osis_crdt::Op::Add(v) } else { osis_crdt::Op::Remove(v) };
+    m.op(g, &osis_schema::core_types::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op }).unwrap();
+}
+
+/// The closure work counted since the last `take`: the group index's walks and the sync set's
+/// things entered, walked and settled.
+fn closure_work() -> BTreeMap<&'static str, u64> {
+    osis_base::costs::take().into_iter().filter(|(k, _, _)| k.starts_with("group index") || k.starts_with("sync set") || k.starts_with("sync: things")).map(|(k, _, n)| (k, n)).collect()
+}
+
+// spec/sync-set.md §2 (Cost): a `group.0` change that adds a thing to the synced group costs
+// work in proportion to what it adds, and one that removes it likewise here (the spec allows up
+// to N's closure): the same closure work at n and 10n things, the engine's closure maintenance
+// and the followed sync set together.
+#[test]
+fn adding_or_removing_a_thing_costs_the_same_at_any_closure_size_spec_sync_set_2() {
+    let mut work = Vec::new();
+    for n in [20, 200] {
+        let (mut e, mut f, p, g) = synced_of(n);
+        osis_base::costs::take();
+        let mut m = osis_engine::Mutation::new();
+        let x = e.new_thing(&mut m, p);
+        list(&mut m, g, x, true);
+        e.commit(m).unwrap();
+        f.settle(&mut e).unwrap();
+        let added = closure_work();
+        assert!(e.in_sync_things(&x).unwrap(), "the thing added is in the sync set");
+        let mut m = osis_engine::Mutation::new();
+        list(&mut m, g, x, false);
+        e.commit(m).unwrap();
+        f.settle(&mut e).unwrap();
+        let removed = closure_work();
+        assert!(!e.in_sync_things(&x).unwrap(), "the thing removed left the sync set");
+        assert!(added.get("sync set: settled").is_some_and(|n| *n > 0) && removed.get("sync set: settled").is_some_and(|n| *n > 0), "counted: {added:?} {removed:?}");
+        work.push((added, removed));
+    }
+    assert_eq!(work[0], work[1], "closure work at n and 10n things (add, remove)");
 }

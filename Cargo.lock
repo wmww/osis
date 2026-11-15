@@ -2910,6 +2910,7 @@ dependencies = [
  "osis-base",
  "osis-blob",
  "osis-commit",
+ "osis-crdt",
  "osis-crypto",
  "osis-engine",
  "osis-proto",
