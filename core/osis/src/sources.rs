@@ -116,7 +116,7 @@ impl ReadOnly {
         // the first node holding it answers; an unreachable one stops the search, so a later
         // one never answers for it
         for a in &ask {
-            if self.remote_call(a, crate::port::method::HOLDS, vec![osis_base::Value::Tid(t)], crate::port::SMALL_REPLY)? == osis_base::Value::Bool(true) {
+            if self.forward(a, crate::port::method::HOLDS, (t,))? {
                 return Ok(Source::Node(a.clone()));
             }
         }

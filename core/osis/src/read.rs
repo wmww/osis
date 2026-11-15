@@ -448,8 +448,7 @@ impl ReadOnly {
     /// whose live write was purged reads absent, and is not listed.
     pub fn aspects(&self, tid: Tid) -> Result<Vec<Ak>> {
         if let Some(at) = self.remote(tid, "aspects")? {
-            let v = self.remote_call(&at, crate::port::method::ASPECTS, vec![Value::Tid(tid)], crate::port::VALUE_REPLY)?;
-            return crate::port::codec::list(v, "aspects")?.iter().map(crate::port::codec::ak).collect();
+            return self.forward(&at, crate::port::method::ASPECTS, (tid,));
         }
         self.read_answer(|| thing_key("aspects", tid), thing(tid), move |r| r.aspects(tid))
     }
@@ -479,7 +478,7 @@ impl ReadOnly {
     /// holding it transitively.
     pub fn groups_of(&self, tid: Tid) -> Result<GroupsOf> {
         if let Some(at) = self.remote(tid, "groups_of")? {
-            return crate::port::codec::groups_of_from(self.remote_call(&at, crate::port::method::GROUPS_OF, vec![Value::Tid(tid)], crate::port::VALUE_REPLY)?);
+            return self.forward(&at, crate::port::method::GROUPS_OF, (tid,));
         }
         Ok(self.read_answer(|| thing_key("groups_of", tid), Filter::Due(Watch::Groups(tid)), move |r| r.groups_of(tid)))
     }
@@ -497,7 +496,7 @@ impl ReadOnly {
     /// Whoever holds through those: `holders`.
     pub fn grants(&self, thing: Tid) -> Result<Grants> {
         if let Some(at) = self.remote(thing, "grants")? {
-            return crate::port::codec::grants_from(self.remote_call(&at, crate::port::method::GRANTS, vec![Value::Tid(thing)], crate::port::VALUE_REPLY)?);
+            return self.forward(&at, crate::port::method::GRANTS, (thing,));
         }
         Ok(self.read_answer(|| thing_key("grants", thing), Filter::Grants(thing), move |r| r.grants(thing)))
     }
@@ -507,8 +506,7 @@ impl ReadOnly {
     /// (on another node of the account, say), and a write before then fails `Permission`.
     pub fn role_on(&self, tid: Tid) -> Result<Option<Role>> {
         if let Some(at) = self.remote(tid, "role_on")? {
-            let v = self.remote_call(&at, crate::port::method::ROLE_ON, vec![Value::Tid(tid)], crate::port::SMALL_REPLY)?;
-            return crate::port::codec::opt_from(v, "role")?.map(|r| crate::port::codec::role_from(&r)).transpose();
+            return self.forward(&at, crate::port::method::ROLE_ON, (tid,));
         }
         self.read_answer(|| thing_key("role_on", tid), Filter::Due(Watch::Roles), move |r| r.role_on(tid))
     }
@@ -518,7 +516,7 @@ impl ReadOnly {
     /// only added to a group or granted. Its creation being here needs no content, and is all a write needs.
     pub fn has_content(&self, tid: Tid) -> Result<bool> {
         if let Some(at) = self.remote(tid, "has_content")? {
-            return Ok(self.remote_call(&at, crate::port::method::HAS_CONTENT, vec![Value::Tid(tid)], crate::port::SMALL_REPLY)? == Value::Bool(true));
+            return self.forward(&at, crate::port::method::HAS_CONTENT, (tid,));
         }
         self.read_answer(|| thing_key("has_content", tid), thing(tid), move |r| r.knows(tid))
     }
@@ -531,7 +529,7 @@ impl ReadOnly {
     /// is unknown here, or once it was destroyed (`Write::purge`, `Write::release`, an expiry).
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let Some(at) = self.remote(tid, "created")? {
-            return crate::port::codec::thing_stamp_from(self.remote_call(&at, crate::port::method::CREATED, vec![Value::Tid(tid)], crate::port::SMALL_REPLY)?);
+            return self.forward(&at, crate::port::method::CREATED, (tid,));
         }
         Ok(self.read_answer(|| thing_key("created", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.created(tid)))
     }
@@ -541,7 +539,7 @@ impl ReadOnly {
     /// not seen.
     pub fn changed(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let Some(at) = self.remote(tid, "changed")? {
-            return crate::port::codec::thing_stamp_from(self.remote_call(&at, crate::port::method::CHANGED, vec![Value::Tid(tid)], crate::port::SMALL_REPLY)?);
+            return self.forward(&at, crate::port::method::CHANGED, (tid,));
         }
         Ok(self.read_answer(|| thing_key("changed", tid), Filter::Due(Watch::CommitsOf(tid)), move |r| r.changed(tid)))
     }
@@ -570,8 +568,7 @@ impl Osis {
     pub fn now(&self) -> Result<Time> {
         if !self.has_store() {
             let at = self.locked(|l| l.remotes.first().map(|r| r.addr.clone())).ok_or_else(|| Error::Network("not connected".into()))?;
-            let v = self.remote_call(&at, crate::port::method::NOW, Vec::new(), crate::port::SMALL_REPLY)?;
-            return Ok(Time(crate::port::codec::uint(&v, "time")?));
+            return self.forward(&at, crate::port::method::NOW, ());
         }
         Ok(self.engine(|e| e.now()))
     }

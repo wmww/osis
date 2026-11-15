@@ -837,9 +837,24 @@ fn get_call(t: Tid) -> Msg {
     Msg::Call { id: 2, max_reply: 1 << 16, method: osis::internals::port_method::GET, args: vec![Value::Tid(t), Value::Str("x:v.0".into()), Value::List(vec![])] }
 }
 
+/// A LISTING of `t`'s writes, newest first.
+fn listing_call(t: Tid) -> Msg {
+    let address = Value::List(vec![Value::uint(0), Value::List(vec![Value::uint(0), Value::Tid(t)])]);
+    let none = || Value::List(vec![]);
+    let query = Value::List(vec![Value::List(vec![Value::uint(0)]), none(), none(), none(), none(), none(), none()]);
+    Msg::Call { id: 4, max_reply: 1 << 16, method: osis::internals::port_method::LISTING, args: vec![address, query] }
+}
+
+/// A Sub to the commits listed as `t`'s writes (filter 6).
+fn commits_sub(t: Tid) -> Msg {
+    let address = Value::List(vec![Value::uint(0), Value::List(vec![Value::uint(0), Value::Tid(t)])]);
+    Msg::Sub { id: 5, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(6), address]) }
+}
+
 // notes/client-port.md, Catching up (the port never waits on another node): a node's own
 // clients get nothing it reads at another node: its copy may be behind. A client actor reads
-// such a thing as unknown and cannot write it; a main session's row is `Unsupported`; no
+// (and lists) such a thing as unknown and cannot write it; a main session's row, listing and
+// commit listener are `Unsupported`; no
 // write goes on to the other node.
 #[test]
 fn a_nodes_clients_get_nothing_it_reads_elsewhere_notes_client_port() {
@@ -854,18 +869,22 @@ fn a_nodes_clients_get_nothing_it_reads_elsewhere_notes_client_port() {
     b.grant(t, actor, Role::Write, osis::GrantOpts::default()).unwrap();
     let read = |main: bool, conn: u64| {
         let a = if main { auth_as(None, conn as u8) } else { auth_as(Some(&secret), conn as u8) };
-        osis::internals::port_answers(&b, conn, main, vec![a, get_call(t), write_call(1, if main { b.me() } else { actor }, t, 9)])
+        osis::internals::port_answers(&b, conn, main, vec![a, get_call(t), write_call(1, if main { b.me() } else { actor }, t, 9), listing_call(t), commits_sub(t)])
     };
     let r = read(false, 1);
     assert_eq!(outcome(&r[1]), &Outcome::Ok { value: Value::List(vec![Value::uint(0), Value::List(vec![Value::Int(3)])]) }, "readable here first");
+    assert!(matches!(outcome(&r[3]), Outcome::Ok { value: Value::List(p) } if p[0] != Value::List(vec![])), "listed here first: {r:?}");
     ready(b.connect_node(&login(&w))).unwrap();
     ready(b.group_source(g, GroupSource::Node(w.addr.clone()))).unwrap();
     let r = read(false, 2);
     assert_eq!(outcome(&r[1]), &Outcome::Ok { value: Value::List(vec![Value::uint(0), Value::List(vec![])]) }, "as unknown");
     assert!(matches!(outcome(&r[2]), Outcome::Err { code, .. } if *code == ApiCode::UNKNOWN_THING), "{r:?}");
+    assert_eq!(outcome(&r[3]), &Outcome::Ok { value: Value::List(vec![Value::List(vec![]), Value::Bool(false), Value::Bool(true)]) }, "lists nothing");
+    assert_eq!(outcome(&r[4]), &Outcome::Ok { value: Value::List(vec![]) }, "a listener as on an unknown thing");
     let r = read(true, 3);
-    assert!(matches!(outcome(&r[1]), Outcome::Err { code, .. } if *code == ApiCode::UNSUPPORTED), "{r:?}");
-    assert!(matches!(outcome(&r[2]), Outcome::Err { code, .. } if *code == ApiCode::UNSUPPORTED), "{r:?}");
+    for m in &r[1..] {
+        assert!(matches!(outcome(m), Outcome::Err { code, .. } if *code == ApiCode::UNSUPPORTED), "{r:?}");
+    }
     assert_eq!(w.a.at(t, v()).get().unwrap(), None, "nothing went on to the other node");
 }
 
@@ -1389,4 +1408,41 @@ fn diagnostics_through_a_socket_notes_client_port() {
     cl.settle();
     let got: Vec<_> = rx.try_iter().collect();
     assert!(got.iter().any(|d| matches!(d, osis::Diagnostic::Callback { .. })), "{got:?}");
+}
+
+// spec/wire.md §11.2 (A client actor's rights): a commit listener on a group the actor may not
+// read hears nothing of a write to an item it reads, as one on a group never known; in process
+// and through a thin client alike (an event would tell the group holds the item).
+#[test]
+fn a_hidden_groups_listener_hears_nothing_spec_wire_11() {
+    use osis::internals::Internals as _;
+    let w = world(Some(Role::Read));
+    let g = crate::common::commit_with(&w.a, |x| {
+        let g = x.create()?;
+        x.group(g).add(osis::Member::Item(w.t))
+    })
+    .parts()
+    .map(|p| p.0)
+    .find(|g| *g != w.t)
+    .unwrap();
+    let never = Tid::from_bytes([9; 15]);
+    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
+    let actor = w.a.acting_as(w.actor);
+    let (tx, rx) = channel();
+    let mut subs = Vec::new();
+    for db in [&cl, &actor] {
+        for s in [g, never] {
+            let tx = tx.clone();
+            subs.push(db.on_write(&osis::Scope::Group(s), move |_, e| tx.send((s, e)).unwrap()).unwrap());
+        }
+    }
+    crate::common::commit_with(&w.a, |x| x.at(w.t, v()).set(&Value::Int(7)));
+    w.a.settle();
+    cl.settle();
+    assert_eq!(rx.try_iter().map(|(s, e)| format!("{s}: {e:?}")).collect::<Vec<_>>(), Vec::<String>::new());
+    let q = osis::CommitQuery::default();
+    for s in [g, never] {
+        assert_eq!(cl.writes(&osis::Scope::Group(s), &q), actor.writes(&osis::Scope::Group(s), &q));
+        assert!(cl.writes(&osis::Scope::Group(s), &q).unwrap().commits.is_empty());
+    }
 }

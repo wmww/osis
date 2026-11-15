@@ -433,83 +433,79 @@ pub(crate) fn role_from(v: &Value) -> Result<Role> {
 }
 
 /// `groups_of`: `[[item_of*], [subgroup_of*], [within*]]`.
-pub(crate) fn groups_of_to(g: &GroupsOf) -> Value {
-    Value::List(vec![tids_to(&g.item_of), tids_to(&g.subgroup_of), tids_to(&g.within)])
-}
-
-pub(crate) fn groups_of_from(v: Value) -> Result<GroupsOf> {
-    let [i, s, w] = <[Value; 3]>::try_from(list(v, "groups")?).map_err(|_| bad("groups"))?;
-    Ok(GroupsOf { item_of: tids_from(i, "groups")?, subgroup_of: tids_from(s, "groups")?, within: tids_from(w, "groups")? })
+impl Form for GroupsOf {
+    fn to_wire(&self) -> Value {
+        Value::List(vec![tids_to(&self.item_of), tids_to(&self.subgroup_of), tids_to(&self.within)])
+    }
+    fn from_wire(v: Value) -> Result<GroupsOf> {
+        let [i, s, w] = <[Value; 3]>::try_from(list(v, "groups")?).map_err(|_| bad("groups"))?;
+        Ok(GroupsOf { item_of: tids_from(i, "groups")?, subgroup_of: tids_from(s, "groups")?, within: tids_from(w, "groups")? })
+    }
 }
 
 /// `grants`: `[[holder, role, Opt(until), Opt(may_grant), with_membership, from_now]*]`.
-pub(crate) fn grants_to(g: &Grants) -> Value {
-    Value::List(g.iter().map(|(h, g)| Value::List(vec![Value::Tid(*h), role_to(g.role), time_to(g.until), opt(g.may_grant.map(role_to)), Value::Bool(g.with_membership), Value::Bool(g.from_now)])).collect())
-}
-
-pub(crate) fn grants_from(v: Value) -> Result<Grants> {
-    list(v, "grants")?
-        .into_iter()
-        .map(|g| {
-            let [h, role, until, may, with, from_now] = <[Value; 6]>::try_from(list(g, "grant")?).map_err(|_| bad("grant"))?;
-            let may_grant = opt_from(may, "grant")?.map(|r| role_from(&r)).transpose()?;
-            Ok((tid(&h)?, Grant { role: role_from(&role)?, until: time_from(until, "grant")?, may_grant, with_membership: bool_from(&with, "grant")?, from_now: bool_from(&from_now, "grant")? }))
-        })
-        .collect()
+impl Form for Grants {
+    fn to_wire(&self) -> Value {
+        Value::List(self.iter().map(|(h, g)| Value::List(vec![Value::Tid(*h), role_to(g.role), time_to(g.until), opt(g.may_grant.map(role_to)), Value::Bool(g.with_membership), Value::Bool(g.from_now)])).collect())
+    }
+    fn from_wire(v: Value) -> Result<Grants> {
+        list(v, "grants")?
+            .into_iter()
+            .map(|g| {
+                let [h, role, until, may, with, from_now] = <[Value; 6]>::try_from(list(g, "grant")?).map_err(|_| bad("grant"))?;
+                let may_grant = opt_from(may, "grant")?.map(|r| role_from(&r)).transpose()?;
+                Ok((tid(&h)?, Grant { role: role_from(&role)?, until: time_from(until, "grant")?, may_grant, with_membership: bool_from(&with, "grant")?, from_now: bool_from(&from_now, "grant")? }))
+            })
+            .collect()
+    }
 }
 
 const HOLDER_KINDS: [HolderKind; 3] = [HolderKind::Actor, HolderKind::Link, HolderKind::Key];
 
-/// `holders`: `[[actor, kind, role, Opt(until), [through*]]*]`, kind 0 an actor, 1 a link's, 2
-/// a key.
-pub(crate) fn holders_to(hs: &[Holder]) -> Value {
-    Value::List(
-        hs.iter()
-            .map(|h| Value::List(vec![Value::Tid(h.actor), Value::uint(HOLDER_KINDS.iter().position(|k| *k == h.kind).unwrap_or(0) as u64), role_to(h.role), time_to(h.until), tids_to(&h.through)]))
-            .collect(),
-    )
+/// A holder (`holders`): `[actor, kind, role, Opt(until), [through*]]`, kind 0 an actor, 1 a
+/// link's, 2 a key.
+impl Form for Holder {
+    fn to_wire(&self) -> Value {
+        Value::List(vec![Value::Tid(self.actor), Value::uint(HOLDER_KINDS.iter().position(|k| *k == self.kind).unwrap_or(0) as u64), role_to(self.role), time_to(self.until), tids_to(&self.through)])
+    }
+    fn from_wire(v: Value) -> Result<Holder> {
+        let [actor, kind, role, until, through] = <[Value; 5]>::try_from(list(v, "holder")?).map_err(|_| bad("holder"))?;
+        let kind = *HOLDER_KINDS.get(usize_from(&kind)?).ok_or_else(|| bad("holder kind"))?;
+        Ok(Holder { actor: tid(&actor)?, kind, role: role_from(&role)?, until: time_from(until, "holder")?, through: tids_from(through, "holder")? })
+    }
 }
 
-pub(crate) fn holders_from(v: Value) -> Result<Vec<Holder>> {
-    list(v, "holders")?
-        .into_iter()
-        .map(|h| {
-            let [actor, kind, role, until, through] = <[Value; 5]>::try_from(list(h, "holder")?).map_err(|_| bad("holder"))?;
-            let kind = *HOLDER_KINDS.get(usize_from(&kind)?).ok_or_else(|| bad("holder kind"))?;
-            Ok(Holder { actor: tid(&actor)?, kind, role: role_from(&role)?, until: time_from(until, "holder")?, through: tids_from(through, "holder")? })
-        })
-        .collect()
-}
-
-/// `created`, `changed`: `Opt([commit id, actor, ts, received])`.
-pub(crate) fn thing_stamp_to(s: Option<ThingStamp>) -> Value {
-    opt(s.map(|s| Value::List(vec![commit_id_to(&s.id.0), Value::Tid(s.actor), Value::uint(s.ts.to_u64()), Value::uint(s.received.0)])))
-}
-
-pub(crate) fn thing_stamp_from(v: Value) -> Result<Option<ThingStamp>> {
-    opt_from(v, "stamp")?.map(stamp_from).transpose().map(|s| s.map(|s| ThingStamp { id: s.id, actor: s.actor, written: s.written, received: s.received, ts: s.ts }))
+/// `created`, `changed` (in an `Opt`): `[commit id, actor, ts, received]`.
+impl Form for ThingStamp {
+    fn to_wire(&self) -> Value {
+        Value::List(vec![commit_id_to(&self.id.0), Value::Tid(self.actor), Value::uint(self.ts.to_u64()), Value::uint(self.received.0)])
+    }
+    fn from_wire(v: Value) -> Result<ThingStamp> {
+        stamp_from(v).map(|s| ThingStamp { id: s.id, actor: s.actor, written: s.written, received: s.received, ts: s.ts })
+    }
 }
 
 const STATES: [SyncState; 4] = [SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Stranded];
 
 /// `status`: `[connected, [[tid, state, not_taking, leaving]*]]`, state 0 synced, 1 syncing, 2
 /// not connected, 3 stranded.
-pub(crate) fn status_to(s: &Status) -> Value {
-    let groups = s.groups.iter().map(|(t, g)| Value::List(vec![Value::Tid(*t), Value::uint(STATES.iter().position(|x| *x == g.state).unwrap_or(0) as u64), usize_to(g.not_taking), Value::Bool(g.leaving)]));
-    Value::List(vec![usize_to(s.connected), Value::List(groups.collect())])
-}
-
-pub(crate) fn status_from(v: Value) -> Result<Status> {
-    let [connected, groups] = <[Value; 2]>::try_from(list(v, "status")?).map_err(|_| bad("status"))?;
-    let groups = list(groups, "status")?
-        .into_iter()
-        .map(|g| {
-            let [t, state, not_taking, leaving] = <[Value; 4]>::try_from(list(g, "status")?).map_err(|_| bad("status"))?;
-            let state = *STATES.get(usize_from(&state)?).ok_or_else(|| bad("sync state"))?;
-            Ok((tid(&t)?, GroupSync { state, not_taking: usize_from(&not_taking)?, leaving: bool_from(&leaving, "status")? }))
-        })
-        .collect::<Result<_>>()?;
-    Ok(Status { connected: usize_from(&connected)?, groups })
+impl Form for Status {
+    fn to_wire(&self) -> Value {
+        let groups = self.groups.iter().map(|(t, g)| Value::List(vec![Value::Tid(*t), Value::uint(STATES.iter().position(|x| *x == g.state).unwrap_or(0) as u64), usize_to(g.not_taking), Value::Bool(g.leaving)]));
+        Value::List(vec![usize_to(self.connected), Value::List(groups.collect())])
+    }
+    fn from_wire(v: Value) -> Result<Status> {
+        let [connected, groups] = <[Value; 2]>::try_from(list(v, "status")?).map_err(|_| bad("status"))?;
+        let groups = list(groups, "status")?
+            .into_iter()
+            .map(|g| {
+                let [t, state, not_taking, leaving] = <[Value; 4]>::try_from(list(g, "status")?).map_err(|_| bad("status"))?;
+                let state = *STATES.get(usize_from(&state)?).ok_or_else(|| bad("sync state"))?;
+                Ok((tid(&t)?, GroupSync { state, not_taking: usize_from(&not_taking)?, leaving: bool_from(&leaving, "status")? }))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Status { connected: usize_from(&connected)?, groups })
+    }
 }
 
 /// A scope: `[0, tid]` a thing, `[1, [[tid, ak]*]]` aspects, `[2, tid]` a group.
@@ -916,6 +912,35 @@ impl Form for SyncScope {
             [c] if c.as_uint() == Some(2) => SyncScope::Deliveries,
             _ => return Err(bad("sync scope")),
         })
+    }
+}
+
+/// A read's result (`read_to`).
+impl Form for Result<Option<Value>> {
+    fn to_wire(&self) -> Value {
+        read_to(self)
+    }
+    fn from_wire(v: Value) -> Result<Result<Option<Value>>> {
+        read_from(v)
+    }
+}
+
+impl Form for Path {
+    fn to_wire(&self) -> Value {
+        path_to(self)
+    }
+    fn from_wire(v: Value) -> Result<Path> {
+        path_from(v)
+    }
+}
+
+/// Wall ms.
+impl Form for Time {
+    fn to_wire(&self) -> Value {
+        Value::uint(self.0)
+    }
+    fn from_wire(v: Value) -> Result<Time> {
+        uint(&v, "time").map(Time)
     }
 }
 

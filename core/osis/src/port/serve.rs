@@ -304,7 +304,7 @@ fn call(db: &ReadOnly, conn: ConnId, max_reply: u64, method: u64, args: Vec<Valu
     } else if matches!(method, method::WRITE | method::UNDO | method::REDO | method::REVERT) {
         write(db, &h, who, id, method, args)
     } else {
-        match run(&h, method, args, limit) {
+        match row(&h, method, Value::List(args), limit) {
             Ok(v) => Outcome::Ok { value: v },
             Err(e) => outcome_of(&e),
         }
@@ -349,66 +349,12 @@ fn here_all(h: &crate::Osis, things: &[Tid]) -> Result<()> {
     things.iter().try_for_each(|t| here(h, *t).map(drop))
 }
 
-/// Runs method `method` on `h`, its reply at most `limit` bytes.
-fn run(h: &crate::Osis, method: u64, args: Vec<Value>, limit: usize) -> Result<Value> {
-    match method {
-        method::WHOAMI => Ok(Value::List(vec![Value::Tid(h.me()), Value::Tid(h.node()), Value::Tid(h.home())])),
-        method::GET => {
-            let (t, k, p) = place(args)?;
-            here(h, t)?;
-            Ok(read_to(&h.read_local(|r| r.get_path(t, &k, &p))))
-        }
-        method::ASPECTS => {
-            let t = here(h, one_tid(&args)?)?;
-            Ok(Value::List(h.read_local(|r| r.aspects(t))?.iter().map(codec::ak_to).collect()))
-        }
-        method::HAS_CONTENT => {
-            let t = here(h, one_tid(&args)?)?;
-            Ok(Value::Bool(h.read_local(|r| r.knows(t))?))
-        }
-        method::HOLDS => {
-            let t = here(h, one_tid(&args)?)?;
-            Ok(Value::Bool(h.read_local(|r| r.holds(t))))
-        }
-        method::GROUPS_OF => {
-            let t = here(h, one_tid(&args)?)?;
-            Ok(codec::groups_of_to(&h.read_local(|r| r.groups_of(t))))
-        }
-        method::GRANTS => {
-            let t = here(h, one_tid(&args)?)?;
-            Ok(codec::grants_to(&h.read_local(|r| r.grants(t))))
-        }
-        method::ROLE_ON => {
-            let t = here(h, one_tid(&args)?)?;
-            Ok(opt(h.read_local(|r| r.role_on(t))?.map(codec::role_to)))
-        }
-        method::HOLDERS => {
-            let t = here(h, one_tid(&args)?)?;
-            Ok(codec::holders_to(&h.read_local(|r| crate::share::holders_in(r, t))))
-        }
-        method::CREATED => {
-            let t = here(h, one_tid(&args)?)?;
-            Ok(codec::thing_stamp_to(h.read_local(|r| r.created(t))))
-        }
-        method::CHANGED => {
-            let t = here(h, one_tid(&args)?)?;
-            Ok(codec::thing_stamp_to(h.read_local(|r| r.changed(t))))
-        }
-        method::UNDO_TARGET | method::REDO_TARGET => {
-            let scope = codec::scope_from(args.into_iter().next().ok_or_else(|| bad("arguments"))?)?;
-            crate::commits::Address::Writes(scope.clone()).things().into_iter().try_for_each(|t| here(h, t).map(drop))?;
-            let c = if method == method::UNDO_TARGET { h.undo_target(&scope)? } else { h.redo_target(&scope)? };
-            Ok(opt(c.as_ref().map(codec::commit_to)))
-        }
-        method::STATUS => Ok(codec::status_to(&h.locked(|l| crate::syncing::status_in(l, h.acting))?)),
-        method::NOW => Ok(Value::uint(h.now()?.0)),
-        method::SETTLE => {
-            // every Notify for what changed before this goes before its Reply
-            h.settle_here();
-            Ok(Value::List(Vec::new()))
-        }
-        m => row(h, m, Value::List(args), limit),
-    }
+/// Runs `f` on the thing `args` names (`here`), read as the session's actor.
+fn thing<R: Form>(h: &crate::Osis, args: Value, f: impl FnOnce(&mut Reader<'_>, Tid) -> Result<R>) -> Result<Value> {
+    on(args, |(t,)| {
+        let t = here(h, t)?;
+        h.read_local(|r| f(r, t))
+    })
 }
 
 /// Runs `f` on `args` decoded as its arguments; its result encoded.
@@ -417,9 +363,35 @@ fn on<A: Form, R: Form>(args: Value, f: impl FnOnce(A) -> Result<R>) -> Result<V
 }
 
 /// A row that is one API call (notes/client-port.md §2): the call run on `h`, its arguments and
-/// result in their `Form`s, so the port serves exactly what the API answers in process.
+/// result in their `Form`s, so the port serves exactly what the API answers in process; its
+/// reply at most `limit` bytes.
 fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value> {
     match method {
+        method::WHOAMI => on(args, |()| Ok((h.me(), h.node(), h.home()))),
+        method::GET => on(args, |(t, k, p): (Tid, Ak, Path)| {
+            here(h, t)?;
+            Ok(h.read_local(|r| r.get_path(t, &crate::DynamicAspectKey::untyped(k), &p)))
+        }),
+        method::ASPECTS => thing(h, args, |r, t| r.aspects(t)),
+        method::HAS_CONTENT => thing(h, args, |r, t| r.knows(t)),
+        method::HOLDS => thing(h, args, |r, t| Ok(r.holds(t))),
+        method::GROUPS_OF => thing(h, args, |r, t| Ok(r.groups_of(t))),
+        method::GRANTS => thing(h, args, |r, t| Ok(r.grants(t))),
+        method::ROLE_ON => thing(h, args, |r, t| r.role_on(t)),
+        method::HOLDERS => thing(h, args, |r, t| Ok(crate::share::holders_in(r, t))),
+        method::CREATED => thing(h, args, |r, t| Ok(r.created(t))),
+        method::CHANGED => thing(h, args, |r, t| Ok(r.changed(t))),
+        method::UNDO_TARGET | method::REDO_TARGET => on(args, |(scope,): (crate::Scope,)| {
+            here_all(h, &Address::Writes(scope.clone()).things())?;
+            if method == method::UNDO_TARGET { h.undo_target(&scope) } else { h.redo_target(&scope) }
+        }),
+        method::STATUS => on(args, |()| h.locked(|l| crate::syncing::status_in(l, h.acting))),
+        method::NOW => on(args, |()| h.now()),
+        // every Notify for what changed before this goes before its Reply
+        method::SETTLE => on(args, |()| {
+            h.settle_here();
+            Ok(())
+        }),
         method::LISTING => on(args, |(a, q): (Address, crate::CommitQuery)| {
             here_all(h, &a.things())?;
             Ok(fitted(h.listing_here(&a, &q, limit)?, limit))
@@ -695,13 +667,13 @@ fn watch(l: &mut Locked, read_limit: usize, actor: Option<Tid>, w: Watched, limi
             (Value::List(first), Filter::Thing(t), tell)
         }
         Watched::Grants(t) => {
-            let first = codec::grants_to(&r.grants(t));
+            let first = r.grants(t).to_wire();
             let mut last = first.clone();
             let tell: Tell = Box::new(move |db, d| {
                 if !matches!(d, Delivery::Grants | Delivery::Due) {
                     return Vec::new();
                 }
-                let now = codec::grants_to(&read_as(db, actor, |r| r.grants(t)));
+                let now = read_as(db, actor, |r| r.grants(t)).to_wire();
                 if now == last {
                     return Vec::new();
                 }
@@ -711,14 +683,14 @@ fn watch(l: &mut Locked, read_limit: usize, actor: Option<Tid>, w: Watched, limi
             (first, Filter::Grants(t), tell)
         }
         Watched::Status => {
-            let first = codec::status_to(&crate::syncing::status_in(l, actor)?);
+            let first = crate::syncing::status_in(l, actor)?.to_wire();
             let mut last = first.clone();
             let tell: Tell = Box::new(move |db, d| {
                 if !matches!(d, Delivery::Due) {
                     return Vec::new();
                 }
                 let Ok(now) = db.locked(|l| crate::syncing::status_in(l, actor)) else { return Vec::new() };
-                let now = codec::status_to(&now);
+                let now = now.to_wire();
                 if now == last {
                     return Vec::new();
                 }
@@ -801,8 +773,10 @@ fn sub(db: &ReadOnly, conn: ConnId, id: osis_sync::session::RequestId, max_reply
     let checked = match &w {
         Watched::Value(t, ..) | Watched::Thing(t) | Watched::Grants(t) => here(&h, *t).map(drop),
         Watched::Commits(a) => here_all(&h, &a.things()),
+        Watched::Status => Ok(()),
+        // the node's own state (spec/wire.md §11.2: main only)
         Watched::Diagnostics | Watched::Wait(..) if who != Who::Main => Err(main_only()),
-        _ => Ok(()),
+        Watched::Diagnostics | Watched::Wait(..) => Ok(()),
     };
     if let Err(e) = checked {
         return refuse(reply(outcome_of(&e)));

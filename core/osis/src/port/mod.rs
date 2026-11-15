@@ -12,7 +12,8 @@ pub(crate) use serve::{Port, answer_all, serve};
 
 /// The method table (notes/client-port.md §2): each row's arguments and result. A method not
 /// listed is answered `Unsupported`. Every row runs as the session's actor (spec/wire.md §11.2
-/// A client actor's rights).
+/// A client actor's rights), and is one API call, its arguments and result in `codec::Form`
+/// forms (`serve::row`, `ReadOnly::forward`), but the write rows, which carry a nonce.
 pub mod method {
     /// `[] -> [me, node, home]`: who this session acts as, at which node.
     pub const WHOAMI: u64 = 0;
@@ -28,7 +29,7 @@ pub mod method {
     pub const HOLDS: u64 = 4;
     /// `[tid] -> [[item_of*], [subgroup_of*], [within*]]`
     pub const GROUPS_OF: u64 = 5;
-    /// `[tid] -> [[holder, role, Opt(until), Opt(may_grant), with_membership]*]`
+    /// `[tid] -> [[holder, role, Opt(until), Opt(may_grant), with_membership, from_now]*]`
     pub const GRANTS: u64 = 6;
     /// `[tid] -> Opt(role)`
     pub const ROLE_ON: u64 = 7;
@@ -57,9 +58,6 @@ pub mod method {
     pub const STATUS: u64 = 21;
     /// `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`
     pub const HOLDERS: u64 = 22;
-
-    // The rows below are each one API call, its arguments and result in `codec::Form` forms
-    // (`serve::row`, `ReadOnly::forward`).
 
     /// `[address, query] -> page` (`writes`, `fired`, `versions`): at most what fits the Call's
     /// `max_reply`, `more` set when it cut the page.

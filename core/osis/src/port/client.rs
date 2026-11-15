@@ -383,10 +383,8 @@ pub(crate) fn reply(db: &ReadOnly, conn: ConnId, id: RequestId, m: Msg) {
 }
 
 fn who(v: Value) -> Result<Thin> {
-    match list(v, "whoami")?.as_slice() {
-        [me, node, home] => Ok(Thin { me: codec::tid(me)?, node: codec::tid(node)?, home: codec::tid(home)? }),
-        _ => Err(codec::bad("whoami")),
-    }
+    let (me, node, home) = Form::from_wire(v)?;
+    Ok(Thin { me, node, home })
 }
 
 /// A connection ended (or its dial failed): one that was up is dialed again at once; one that
@@ -538,14 +536,13 @@ impl ReadOnly {
 
     /// `undo_target` (`redo`: `redo_target`) of `scope` at the node at `at`.
     pub(crate) fn remote_target(&self, at: &Address, scope: &crate::Scope, redo: bool) -> Result<Option<crate::commits::Commit>> {
-        let v = self.remote_call(at, if redo { method::REDO_TARGET } else { method::UNDO_TARGET }, vec![codec::scope_to(scope)], super::VALUE_REPLY)?;
-        self.made(v)
+        let c: Option<crate::commits::Commit> = self.forward(at, if redo { method::REDO_TARGET } else { method::UNDO_TARGET }, (scope.clone(),))?;
+        Ok(c.map(|c| c.reporting(self)))
     }
 
     /// The value at `path` of `tid`'s `ak` at the node at `at`, untyped.
     pub(crate) fn remote_get(&self, at: &Address, tid: Tid, ak: &Ak, path: &Path) -> Result<Option<Value>> {
-        let v = self.remote_call(at, method::GET, vec![Value::Tid(tid), codec::ak_to(ak), codec::path_to(path)], super::VALUE_REPLY)?;
-        read_from(v)?
+        self.forward(at, method::GET, (tid, ak.clone(), path.clone()))?
     }
 
     /// Who this process is at the node at `at`.
@@ -644,7 +641,7 @@ impl ReadOnly {
         let all: Vec<Address> = self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect());
         let mut out = Vec::new();
         for a in &all {
-            out.push(codec::status_from(self.remote_call(a, method::STATUS, Vec::new(), super::VALUE_REPLY)?)?);
+            out.push(self.forward(a, method::STATUS, ())?);
         }
         Ok(merged(out.iter()))
     }
@@ -752,7 +749,7 @@ impl crate::Osis {
         let mut last = None;
         self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
             let now = match got {
-                Pushed::Initial(v) | Pushed::Delivery(v) => codec::grants_from(v),
+                Pushed::Initial(v) | Pushed::Delivery(v) => crate::Grants::from_wire(v),
                 Pushed::TooLarge(source) => Err(Error::TooLarge { limit: limit_of(&source) }),
                 Pushed::Failed(e) => Err(e),
             };
@@ -781,7 +778,7 @@ impl crate::Osis {
         self.remote_sub(&all, filter, false, move |db, from, got| {
             let before = each.iter().find(|(a, _)| a == from).map(|(_, s)| s.clone()).unwrap_or_default();
             let now = match got {
-                Pushed::Initial(v) | Pushed::Delivery(v) => codec::status_from(v).unwrap_or_else(|_| unreachable(&before)),
+                Pushed::Initial(v) | Pushed::Delivery(v) => Status::from_wire(v).unwrap_or_else(|_| unreachable(&before)),
                 Pushed::TooLarge(_) | Pushed::Failed(_) => unreachable(&before),
             };
             each.retain(|(a, _)| a != from);

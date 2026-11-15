@@ -451,8 +451,10 @@ impl Osis {
 /// `on_fire`, and their subscriptions through the port).
 pub(crate) fn commit_event(db: &Osis, acting: Option<Tid>, a: &Address, d: Delivery) -> Option<CommitEvent> {
     match d {
-        // what it may not read is not told: an event would tell the commit is there
-        Delivery::Commit { tids, .. } if acting.is_some_and(|x| !db.engine(|e| tids.iter().any(|t| e.readable_by(&x, t)))) => None,
+        // what it may not read is not told: an event would tell the commit is there (on a group
+        // it may not read, that the group holds the item: the group names nothing, `scope_aspects`)
+        Delivery::Commit { tids, .. }
+            if acting.is_some_and(|x| db.engine(|e| !tids.iter().any(|t| e.readable_by(&x, t)) || matches!(a, Address::Writes(Scope::Group(g)) if !e.readable_by(&x, g)))) => None,
         Delivery::Commit { id, fired, .. } => {
             let told = match acting {
                 Some(x) => db.act_as(x).commit_told_here(a, id, fired),

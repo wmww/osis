@@ -407,7 +407,7 @@ impl ReadOnly {
     /// shown here (`grants`).
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
         if let Some(at) = self.remote(target, "holders")? {
-            return crate::port::codec::holders_from(self.remote_call(&at, crate::port::method::HOLDERS, vec![osis_base::Value::Tid(target)], crate::port::VALUE_REPLY)?);
+            return self.forward(&at, crate::port::method::HOLDERS, (target,));
         }
         Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::Roles), move |r| holders_in(r, target)))
     }

@@ -847,7 +847,7 @@ impl Osis {
         // the nodes this process watches at: their Notifies for commits so far come first
         let remotes: Vec<Address> = if self.inner.has_sources.load(std::sync::atomic::Ordering::Acquire) { self.locked(|l| l.remotes.iter().map(|r| r.addr.clone()).collect()) } else { Vec::new() };
         for a in remotes {
-            let _ = self.remote_call(&a, crate::port::method::SETTLE, Vec::new(), crate::port::SMALL_REPLY);
+            let _: Result<()> = self.forward(&a, crate::port::method::SETTLE, ());
         }
         self.settle_here();
     }
