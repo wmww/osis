@@ -47,7 +47,7 @@ Everything runs locally; there is no CI. Tests are organised by when they run, n
 - TLA+ when a model or its spec sections change: `core/test/tla/run.sh <module>` (notes/test-properties.md, Models).
 - Networking, for a sync, link or transport change: the networking command (notes/build.md, Profile and command forms; real sockets, not seeded, so any failure is a bug).
 - Slow or special `#[ignore]` tests, by name (`cargo test -p <crate> --test it -- --ignored <name>`): osis-crdt `stream_memory_big_map` (alone, `--exact`).
-- Fuzz (notes/test-properties.md, Fuzzing); roles-model searches (notes/test-properties.md, Models); sim seeds beyond the gate's (`sim-sweep`, notes/test-sim.md); `cargo bench` and memory checks (notes/test-scale.md); coverage: `cargo llvm-cov --lcov --output-path lcov.info` if installed (measured, never gated; read it for untested decoder branches).
+- Fuzz (notes/test-properties.md, Fuzzing); roles-model searches (notes/test-properties.md, Models; `-- 0 custody-exh` when `custody.rs` changes: the gate runs only random custody worlds); sim seeds beyond the gate's (`sim-sweep`, notes/test-sim.md); `cargo bench` and memory checks (notes/test-scale.md); coverage: `cargo llvm-cov --lcov --output-path lcov.info` if installed (measured, never gated; read it for untested decoder branches).
 
 ## Conventions
 - **One test binary per crate**: `tests/it/main.rs` with a module per file, so a test's name is `<module>::<fn>`. Single-file crates (osis-base, osis-vectors, crdt-model) keep `tests/<file>.rs` (`--test cbor`, `--test vectors`, `--test props`). Nothing requires nextest, nightly or cargo-fuzz.

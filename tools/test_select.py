@@ -11,8 +11,9 @@ The default base is the merge base with origin/main as last fetched, as in the g
 The set: every property test, at small size, of the crates the paths touch and their dependents
 (the Cargo graph), and every sim scenario if osis-sim is one of those; `--all` selects every crate.
 A file in PINNED (run-time data whose meaning an instant check fixes) selects nothing.
-A dependent is reached through normal and build edges; a dev edge selects that one crate and
-stops, since a dev dependency is linked only into that crate's own tests.
+A dependent is reached through normal and build edges; a dev (or cfg(fuzzing)) edge selects that
+one crate and stops, since a dev dependency is linked only into that crate's own tests, and of a
+crate reached only so, only the properties in files that can call the dependency (`reaching`).
 
 A property test is an `#[ignore]` test whose name ends in a size word (SIZE_WORD), before any
 `_spec_*` suffix. Nothing else names one: a new property test is picked up by its name alone.
@@ -139,17 +140,22 @@ def closure(touched, users):
 def reaching(files, idents):
     """The files of one crate whose tests can call into a dev dependency named in `idents`: those
     naming it, then, within one test target (a dev dependency is linked only into test code, which
-    no other target sees), those naming (`m::`, not `std::m::`) the module of a file found, and a
-    file's child modules (`super::*` brings its names in unnamed), to a fixed point. None when a
-    crate root (lib.rs, main.rs) names one: its items reach every module unnamed."""
+    no other target sees; files under no lib.rs or main.rs count as one target), to a fixed point:
+    those naming the module of a file found (`m::`, not `std::m::`, or `m` in a `use`, as for
+    `use crate::m as n`), using a macro one defines (`name!`), and a file's child modules
+    (`super::*` brings its names in unnamed). None when a crate root (lib.rs, main.rs) names one (its
+    items reach every module unnamed) or a file mounts code by `#[path]` or `include!` (a module not
+    named by its file)."""
     text = {f: open(f, encoding="utf-8").read() for f in files}
+    if any(re.search(r"#\[\s*path\b|\binclude!", t) for t in text.values()):
+        return None
     roots = {os.path.dirname(f) for f in files if os.path.basename(f) in ("lib.rs", "main.rs")}
 
     def target(f):
         d = os.path.dirname(f)
         while d and d not in roots:
             d = os.path.dirname(d)
-        return d or f
+        return d
 
     def module(f):
         """(the module's name, the directory of its children)"""
@@ -166,7 +172,10 @@ def reaching(files, idents):
         if os.path.basename(f) in ("lib.rs", "main.rs"):
             return None
         name, kids = module(f)
-        used = re.compile(rf"(?<!std::)(?<!core::)(?<!alloc::)\b{re.escape(name)}::")
+        m = re.escape(name)
+        ways = [rf"(?<!std::)(?<!core::)(?<!alloc::)\b{m}::", rf"^\s*(pub\S*\s+)?use\s[^;]*\b{m}\b"]
+        ways += [rf"\b{re.escape(k)}!" for k in re.findall(r"macro_rules!\s*(\w+)", text[f])]
+        used = re.compile("|".join(ways), re.M)
         for g, t in text.items():
             if g not in found and target(g) == target(f) and (used.search(t) or g.startswith(kids + "/")):
                 found.add(g)
@@ -181,8 +190,8 @@ def crate_files(pkg_dir, nested):
 
 
 def ignored_tests(files):
-    """({name of an `#[ignore]` test: its file}, `file:line` of each `#[ignore]` no name could be
-    read for)."""
+    """({name of an `#[ignore]` test: the files defining one of that name}, `file:line` of each
+    `#[ignore]` no name could be read for)."""
     names, unread = {}, []
     for f in files:
         lines = open(f, encoding="utf-8").read().split("\n")
@@ -190,7 +199,7 @@ def ignored_tests(files):
             if IGNORE.match(line):
                 m = next(filter(None, (FN.search(s) for s in lines[i:i + FN_WITHIN])), None)
                 if m and not m.group(1).startswith("$"):
-                    names[m.group(1)] = f
+                    names.setdefault(m.group(1), set()).add(f)
                 else:
                     unread.append(f"{f}:{i + 1}")
     return names, unread
@@ -206,7 +215,7 @@ def properties(selected, dirs):
         names, missed = ignored_tests(files)
         unread += missed
         keep = reaching(files, selected[c]) if selected[c] else None
-        chosen = {n for n, f in names.items() if SIZE_WORD.search(n) and not n.startswith("repro_") and (keep is None or f in keep)}
+        chosen = {n for n, fs in names.items() if SIZE_WORD.search(n) and not n.startswith("repro_") and (keep is None or not fs.isdisjoint(keep))}
         if chosen:
             props[c] = sorted(chosen)
         others |= set(names) - chosen
@@ -215,10 +224,11 @@ def properties(selected, dirs):
 
 def cargo_args(props, others):
     """`cargo test` arguments for the properties. libtest filters match substrings, so an ignored
-    test that is not selected and contains a selected name gets its own --skip."""
+    test that is not selected and contains a selected name gets its own --skip; a name selected in one
+crate runs wherever it is (a skip of it would drop the selected one)."""
     wanted = sorted({t for v in props.values() for t in v})
     pkgs = [a for c in sorted(props) for a in ("-p", c)]
-    skips = sorted(o for o in others if any(w in o for w in wanted))
+    skips = sorted(o for o in others if o not in wanted and any(w in o for w in wanted))
     filters = ["--ignored", *wanted, "--skip", "repro_"] + [a for o in skips for a in ("--skip", o)]
     return pkgs, filters
 
