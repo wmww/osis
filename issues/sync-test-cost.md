@@ -1,9 +1,9 @@
-# The sync test binary costs twice its budget
-> Summary: osis-sync's `it` binary runs 2,433 G instructions in one process against notes/sync-test-harness.md's 1,200 G; read's judgements dominate, and about half of them are moved by reads of whole permission timelines (`Core::horizon`, `may_rotate`) whose answers rarely change: Fathom's lane (memo early cutoff, or finer timeline reads).
+# The sync test binary costs two and a half times its budget
+> Summary: osis-sync's `it` binary runs 2,945 G instructions in one process against notes/sync-test-harness.md's 1,200 G; read's judgements dominate, and about half of them are moved by reads of whole permission timelines (`Core::horizon`, `may_rotate`) whose answers rarely change: Fathom's lane (memo early cutoff, or finer timeline reads).
 > Priority: normal
 > Tags: engine, sync, tests
 
-Measured by `tools/icount` over the binary in one process: 2,433 G (per module: `convergence::` 990 G, `sims::` 564 G, `flows::` 409 G, `growth::` 216 G, the rest under 80 G each). A 40-step faulted history plays for about 11 G, and a 3-node differential world costs about as much to build (`introduce`); defaults are seeds (notes/sync-test-harness.md, Measured layers), so cutting them costs coverage, not correctness.
+Measured by `tools/icount` over the binary in one process: 2,945 G (per module: `convergence::` 1,242 G, `sims::` 670 G, `flows::` 475 G, `growth::` 260 G, the rest under 90 G each). A 40-step faulted history plays for about 11 G, and a 3-node differential world costs about as much to build (`introduce`); defaults are seeds (notes/sync-test-harness.md, Measured layers), so cutting them costs coverage, not correctness.
 
 Where a history's cost goes (faulted seed 1, `tools/cpuprof`): read's settle about half, `judge::body` 29% (`read_facts` 14%, `may_log` 13%), memo bookkeeping (stamp reads, frames, `Effects` index) about a sixth, restarts in place a tenth.
 
