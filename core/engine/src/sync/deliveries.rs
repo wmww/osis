@@ -299,19 +299,7 @@ impl Engine {
         let parts: crate::sync_ids::Parts = blob.parts.iter().map(|p| p.ai).collect();
         let boxed: BTreeSet<Tid> = crate::apply::keys::pending_secrets_writes(blob, c).into_iter().filter(|(_, w)| w.boxes.keys().any(|k| k.holder == *holder)).map(|(t, _)| t).collect();
         let Some(certs) = self.carried_chain(c, &parts, &boxed) else { return Ok((Vec::new(), Vec::new())) };
-        let mut out = Vec::new();
-        for (x, ps) in &certs.commits {
-            let id = *x;
-            let Some(full) = self.read(|tx| tx.get_commit(&id))? else { continue };
-            let mut b = Arc::unwrap_or_clone(full);
-            b.parts.retain(|p| ps.contains(&p.ai));
-            if b.parts.is_empty() {
-                continue;
-            }
-            out.extend(osis_base::decode(&b.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).ok());
-        }
-        let records = certs.records.iter().filter_map(|t| self.core.created(t).cloned()).collect();
-        Ok((out, records))
+        self.certs_values(&certs)
     }
 
     /// This node's dial hint (spec/wire.md §9 position 4): its `reach.0` dialable key and URL, as
