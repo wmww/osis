@@ -593,7 +593,7 @@ impl Engine {
     /// that this node may come to read counts missing: a read secret arriving may open it
     /// (spec/sync-streams.md §4 Fill order: the store opens it again as its read secrets gain an
     /// epoch).
-    pub fn blob_awaits_secret(&mut self, b: &BlobId) -> Result<bool> {
+    pub fn blob_awaits_secret(&mut self, b: &BlobId) -> bool {
         self.blob_awaits_secret_now(b)
     }
 

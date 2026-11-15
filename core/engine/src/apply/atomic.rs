@@ -72,8 +72,9 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
 /// The signing chain decides which are an account's on its devices actor when it reads them
 /// (`Core::devices_read`), so the order commits arrive in records nothing differently.
 pub(crate) fn note_role_sigs(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
-    let role = h.kind == osis_commit::Kind::Role && h.epoch.is_some();
-    if (role || h.rotation.is_some()) && (sigs.inner.is_some() || !sigs.merge.is_empty()) {
+    // a rotation is a role commit at an epoch (`osis_commit::validate`): what an open reads back
+    // from the records (`index::load`)
+    if h.kind == osis_commit::Kind::Role && h.epoch.is_some() && (sigs.inner.is_some() || !sigs.merge.is_empty()) {
         core.ix.role_sigs.insert(*id, Arc::new(crate::engine::RoleSigs { inner: sigs.inner, merge: sigs.merge.clone() }));
     }
 }

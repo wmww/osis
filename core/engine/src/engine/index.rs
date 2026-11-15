@@ -1108,8 +1108,8 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (k, v) in scan::<Tid>(tx, EPOCHS)? {
         tx.core.ix.epochs.insert(k, dec(&v)?);
     }
-    // the role commits' signatures from their records (`Indexes::role_sigs`): role commits are
-    // few, and a table of them would cost a store page per role commit applied
+    // the role commits' signatures from their records (`Indexes::role_sigs`): a table of them
+    // would cost a store page per role commit applied (issues/role-sigs-open-reads.md)
     let role: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind == osis_commit::Kind::Role && m.view.epoch.is_some()).map(|(c, _)| *c).collect();
     for id in role {
         if let Some(b) = tx.get_commit(&id)? {

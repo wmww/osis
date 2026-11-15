@@ -20,22 +20,22 @@ impl Engine {
     /// here, so it is fetched for nothing. Judged by the shared blob's sections also where the
     /// body is a copy: its readers make that copy from what they open, so one sharing this node's
     /// floor never has the part.
-    fn body_missing(&self, c: &CommitId, h: &Header, m: &crate::engine::Meta, parts: &PartSet) -> bool {
-        let below = |ai: usize| h.aspects.get(ai).is_some_and(|a| crate::rotation::floors::sealed_below_floor(&self.core, c, &a.tid, a.ak.as_str()));
-        parts.iter().any(|ai| m.missing(*ai) && !below(*ai))
+    fn body_missing(&self, c: &CommitId, m: &crate::engine::Meta, parts: impl IntoIterator<Item = usize>) -> bool {
+        let below = |ai: usize| m.view.aspects.get(ai).is_some_and(|a| crate::rotation::floors::sealed_below_floor(&self.core, c, &a.tid, a.ak.as_str()));
+        parts.into_iter().any(|ai| m.missing(ai) && !below(ai))
     }
 
     /// Whether opened blob `b` holds a section not opened here while a part of its commit counts
     /// missing (`body_missing`) on a thing whose read secrets this node holds some of: a read
     /// secret arriving may open it. Any part, not only those of a sync ID's body: an account's
     /// rotation goes only under its devices actor's sync IDs, and its part on the account
-    /// (`keys.0`) opens from there alone.
-    pub(crate) fn blob_awaits_secret_now(&mut self, b: &BlobId) -> Result<bool> {
-        let Some(o) = self.blob_of_now(b).filter(|o| !o.sealed.is_empty()) else { return Ok(false) };
-        let c = o.commit;
-        let (Some(m), Some(h)) = (self.core.ix.commits.get(&c).cloned(), self.header(&c)) else { return Ok(false) };
-        let readable: PartSet = h.aspects.iter().enumerate().filter(|(_, a)| self.epochs(&a.tid).is_some_and(|e| e.read.held().next().is_some())).map(|(ai, _)| ai).collect();
-        Ok(self.body_missing(&c, &h, &m, &readable))
+    /// (`keys.0`) opens from there alone. Reads no record: the meta's view and missing parts.
+    pub(crate) fn blob_awaits_secret_now(&mut self, b: &BlobId) -> bool {
+        let Some(o) = self.blob_of_now(b).filter(|o| !o.sealed.is_empty()) else { return false };
+        let Some(m) = self.core.ix.commits.get(&o.commit).cloned() else { return false };
+        let readable = |ai: &usize| m.view.aspects.get(*ai).is_some_and(|a| self.epochs(&a.tid).is_some_and(|e| e.read.held().next().is_some()));
+        let parts: Vec<usize> = m.missing_parts().filter(readable).collect();
+        self.body_missing(&o.commit, &m, parts)
     }
 
     /// spec/sync-judgement.md §2 must-not-hold (the clauses only the engine judges), §3 Role
@@ -65,7 +65,7 @@ impl Engine {
         f.own = m.origin == crate::events::Origin::Local;
         f.repair_fresh = m.repair.clone().unwrap_or_default();
         f.role = h.kind.is_role() || m.view.purges;
-        f.missing = self.body_missing(c, &h, &m, &b.parts);
+        f.missing = self.body_missing(c, &m, b.parts.iter().copied());
         let (id, parts) = (*c, b.parts.clone());
         let purged = self.read(|tx| {
             for ai in &parts {

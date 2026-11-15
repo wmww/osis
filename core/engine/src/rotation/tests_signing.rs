@@ -1912,9 +1912,12 @@ fn a_node_paired_after_a_removal_reads_its_maker_spec_permissions_5_4() {
     let v = lp.peers[2].engine.core.account_view(&a.account).unwrap();
     let signed = v.devices.as_ref().and_then(|d| d.commits.get(&r)).and_then(|x| x.0);
     assert_eq!(signed, Some(maker), "node 2 reads node 0 as the removal's maker");
-    // the signatures kept are facts of the commits held: rebuilt from the commit records alike
+    // the signatures kept are facts of the commits held: read back from the commit records at an
+    // open, and rebuilt from them, alike
     for k in 0..3 {
         let d = lp.peers[k].engine.index_digest();
+        lp.peers[k].engine.reload().unwrap();
+        assert_eq!(d.first_diff(&lp.peers[k].engine.index_digest()), None, "node {k}: reopened");
         lp.peers[k].engine.rebuild_index().unwrap();
         assert_eq!(d.first_diff(&lp.peers[k].engine.index_digest()), None, "node {k}: rebuilt");
     }
