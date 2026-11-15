@@ -1667,6 +1667,15 @@ fn logs_only_while_a_reader_can_pull() {
     w.g.unpullable.remove(&S);
     w.settle();
     assert_eq!(w.logs(S, cid(1)), 1);
+    // a head move's stamp in place is a log too: it waits for a reader, then is made once
+    w.g.unpullable.insert(S, ());
+    w.settle();
+    w.g.creds.insert(S, creds(1, true, true));
+    w.settle();
+    assert!(w.g.restamped.is_empty(), "stamped while no reader can pull");
+    w.g.unpullable.remove(&S);
+    w.settle();
+    assert_eq!(w.g.restamped.len(), 1);
 }
 
 // spec/sync.md §2 (work in proportion to change), spec/sync-judgement.md §3 (own store): whether
@@ -1763,6 +1772,23 @@ fn missing_records_are_logged_once_a_reader_can_pull() {
     w.settle();
     assert_eq!(w.g.record_logs, vec![(S, None, [r1].into()), (S, None, [r2].into())]);
     assert_eq!(w.g.records_forgotten, vec![(S, BlobId([9; 32]))]);
+}
+
+// spec/sync-judgement.md §3 (own store: logged only while a reader can pull it, stamped in place
+// on a head move): a certificate blob not stamped under S's head is stamped in place only once a
+// reader can pull S.
+#[test]
+fn a_stale_certificate_blob_is_stamped_once_a_reader_can_pull() {
+    let mut w = W::new();
+    let rb = BlobId([77; 32]);
+    w.g.unpullable.insert(S, ());
+    w.g.own.insert((S, cid(9)), vec![Entry { blob: rb, wrap: [0; osis_crypto::WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None }]);
+    w.g.records.insert((S, None), CertBlobsMissing { held: [rb].into(), stale: [rb].into(), ..Default::default() });
+    w.hold(cid(1), &[S], uncovered());
+    assert!(w.g.restamped.is_empty(), "no reader can pull S yet");
+    w.g.unpullable.remove(&S);
+    w.settle();
+    assert_eq!(w.g.restamped, vec![(S, cid(9), rb)]);
 }
 
 // spec/sync-judgement.md §2 (outside the required set): while a group of the closure holds part
