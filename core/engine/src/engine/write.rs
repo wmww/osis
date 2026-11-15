@@ -176,8 +176,9 @@ impl Mutation {
         self
     }
 
-    /// Filing (`file_created`) skips `t`, a thing this commit creates: it stays on this node
-    /// unless something synced lists it (spec/sync-set.md §1 Filing).
+    /// Filing (`file_created`) skips `t`, a thing this commit creates, and the commit fails
+    /// `Error::Clash` if it leaves `t` carried: it stays on this node until a later commit lists
+    /// it somewhere synced (spec/sync-set.md §1 Filing, Local stays local).
     pub fn local(&mut self, t: Tid) -> &mut Self {
         self.local.insert(t);
         self
@@ -798,6 +799,8 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let synced = std::mem::take(&mut m.synced);
     let kept = std::mem::take(&mut m.kept);
     let references = std::mem::take(&mut m.references);
+    let local = m.local.clone();
+    let was = carried_at_start(tx.core, &m);
     let id = match filing(tx, &m)? {
         None => apply_in(tx, m)?,
         Some((d, roots)) => {
@@ -826,11 +829,47 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             }
         }
     };
-    if id.is_some() {
+    if let Some(c) = &id {
         check_synced(tx.core, &synced)?;
         check_lifetimes(tx, &kept, &references)?;
+        // tests let a local writer break this, to test receivers
+        if !tx.core.skip_writer_rules {
+            check_local(tx.core, c, &local, &was)?;
+        }
     }
     Ok(id)
+}
+
+/// The things `m` writes on (an undo: those of the commit it undoes) that something carries as
+/// it begins (`Core::carried`): a delete or an unlisting is judged by where its thing was.
+fn carried_at_start(core: &Core, m: &Mutation) -> BTreeSet<Tid> {
+    let undone = m.undoes.and_then(|u| core.ix.commits.get(&u)).map(|c| c.view.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()).unwrap_or_default();
+    m.aspects.keys().map(|(t, _)| *t).chain(m.deleting.iter().copied()).chain(undone).filter(|t| core.carried(t)).collect()
+}
+
+/// spec/sync-set.md §1 (Local stays local), commit `c` applied: no thing named `local` is
+/// carried (`Core::carried`), and, when `c` is a content commit or names something local, it has
+/// no part on a thing carried neither before it (`was`) nor after it beside one on a thing
+/// carried then, since its blob goes whole under the sync IDs of what it touches. Other role
+/// commits are left alone: their parts go as chain certificates wherever needed (an account's
+/// own, a link's key actor).
+fn check_local(core: &Core, c: &CommitId, local: &BTreeSet<Tid>, was: &BTreeSet<Tid>) -> Result<()> {
+    if let Some(t) = local.iter().find(|t| core.carried(t)) {
+        return Err(Error::Clash(format!("{t} is made local, yet this write puts it where it syncs: make it local and list it in separate writes")));
+    }
+    let Some(meta) = core.ix.commits.get(c) else { return Ok(()) };
+    if local.is_empty() && matches!(meta.view.kind, Kind::Role | Kind::RoleSnapshot) {
+        return Ok(());
+    }
+    let things: BTreeSet<Tid> = meta.view.aspects.iter().map(|a| a.tid).collect();
+    if things.len() < 2 {
+        return Ok(());
+    }
+    let (carried, not): (Vec<Tid>, Vec<Tid>) = things.into_iter().partition(|t| was.contains(t) || core.carried(t));
+    match (carried.first(), not.first()) {
+        (Some(s), Some(t)) => Err(Error::Clash(format!("{t} is local (nothing that syncs holds it), so it cannot share a write with {s}, which syncs: write it apart, or list it somewhere that syncs first"))),
+        _ => Ok(()),
+    }
 }
 
 /// Home (the account's D) and the account's synced groups, where `m` files what it creates: it

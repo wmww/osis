@@ -1320,7 +1320,11 @@ mod tests {
         let mut m = Mutation::new();
         let n = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(n, &x, &Value::Int(1)).unwrap().set(ts[0], &x, &Value::Int(1)).unwrap();
+        // N, local, beside a thing that syncs (spec/sync-set.md §1 Local stays local): a writer
+        // breaking it, so the creation reaches B
+        lp.peers[0].engine.core.skip_writer_rules = true;
         let c = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.peers[0].engine.core.skip_writer_rules = false;
         lp.peers[0].engine.grant(&n, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
         lp.advance(10);
         let mut m = Mutation::new();
