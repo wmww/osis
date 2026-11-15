@@ -306,33 +306,6 @@ impl Engine {
         Ok(this)
     }
 
-    /// This node's commits (written here, as its account, itself or the link key of a link it
-    /// follows: a join, spec/permissions.md §7) and the own self-removals sync waits on
-    /// (`waiting_removals`, a sibling's among them) with a body under `s` (spec/sync-status.md
-    /// §2): O(things on `s`'s closure + its authors' commits on them + removals waiting).
-    pub(crate) fn own_commits_now(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<CommitId>>> {
-        let Some(t) = self.read_thing(s)? else { return Ok(Arc::new(BTreeSet::new())) };
-        let closure = self.closure(&t);
-        let links = self.core.followed_links.values().map(|(_, l)| *l);
-        let authors: Vec<Tid> = self.core.me().into_iter().chain([self.core.id.tid()]).chain(links).collect();
-        let ix = &self.core.ix;
-        let mut own = BTreeSet::new();
-        for x in closure.iter() {
-            for a in &authors {
-                own.extend(ix.by_thing.get(&(*x, *a)).into_iter().flatten().filter(|c| ix.commits.get(*c).is_some_and(|m| m.origin == crate::events::Origin::Local)));
-            }
-        }
-        own.extend(ix.held_wait.iter());
-        let ctx = self.body_ctx(&t);
-        let mut out = BTreeSet::new();
-        for c in own {
-            if !self.commit_bodies_under(&ctx, &c)?.is_empty() {
-                out.insert(c);
-            }
-        }
-        Ok(Arc::new(out))
-    }
-
     /// Blob `b` as this node opened or sealed it.
     pub(crate) fn blob_of_now(&self, b: &BlobId) -> Option<Arc<BlobOf>> {
         self.core.ix.blob_parts.get(b).cloned()

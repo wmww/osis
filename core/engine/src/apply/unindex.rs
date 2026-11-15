@@ -12,8 +12,20 @@ use std::collections::BTreeSet;
 /// Removes commit `id` from every index applying it added to and its records from the store:
 /// the mirror of `index_commit` and the rest of `apply_verified`.
 pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    unindex(tx, id, true)
+}
+
+/// `unindex_commit` of a commit forgotten as never received (`retention::forget`: its thing
+/// unsynced or unreadable here): nothing of it stays as a cover, a name or a forgotten mark.
+pub(crate) fn unindex_unreceived(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    unindex(tx, id, false)
+}
+
+fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     // what it dropped under stays its covers while something names it
-    crate::retention::handed::note(tx, id)?;
+    if marks {
+        crate::retention::handed::note(tx, id)?;
+    }
     // what sync's facade kept of it: section epochs, blob parts, deliveries owed
     crate::sync::bodies::forget(tx, id)?;
     crate::sync::deliveries::forget(tx, id)?;
@@ -25,7 +37,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         crate::retention::freed::free_part(tx, id, ai)?;
     }
     // a held snapshot carrying its writes keeps its name (`retention::names`)
-    crate::retention::names::note(tx, id)?;
+    if marks {
+        crate::retention::names::note(tx, id)?;
+    }
     let core = &mut *tx.core;
     let Some(m) = core.take_meta(id) else { return Ok(()) };
     let v = &m.view;
@@ -51,7 +65,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
         // a memory commit's aspect holds no durable one (ephemeral aspects): one row per aspect;
         // an invalid part replaced nothing (`undo::parts_before` skips it), so it stands for none
-        if m.valid_at(ai) && core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
+        if marks && m.valid_at(ai) && core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
             if !v.memory {
                 tx.txn.put_local(&records::aspect_key(records::FORGOTTEN, &a.tid, &a.ak), &v.ts.to_u64().to_be_bytes(), Shred::No)?;
             }

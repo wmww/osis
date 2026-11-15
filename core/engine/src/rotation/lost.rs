@@ -720,11 +720,6 @@ impl Engine {
     /// Drops lost actors (`scope`), with what was forgotten (node-sync drops its sync ID
     /// sessions).
     pub fn forget_lost(&mut self, scope: LostScope<'_>) -> Result<Dropped> {
-        let r = self.run(|tx| drop_scope(tx, scope))?;
-        if !r.forgotten.things.is_empty() {
-            self.reload()?;
-            self.reexamine()?;
-        }
-        Ok(r)
+        self.run(|tx| drop_scope(tx, scope))
     }
 }

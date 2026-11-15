@@ -24,15 +24,13 @@
 
 ## Left, by size
 1. **A body's facts are derived again per body whose reads moved.** The judgement moves only with its facts (`Engine::read_facts`, a row), but every write on an aspect re-derives the facts of each body on it: a part's date reads the aspect's state row (`deaths` at its positions), and own covers read the author's newest own replace (`part_covered` checks the newest two own replaces, a new `covered` key per body per write). Cheap per body (O(1) reads each since `held_writes_rows`), O(n) per write (a part dropped as covered derives nothing against later snapshots: `part_covered` answers from its drop). Narrowing: dates stamped by the positions read (issues/derived-state-recomputed.md step 4); own covers checked against the first two covering own replaces after the body (spec/commits.md §5 Own replaces says any two), which is stable as writes land.
-
-2. **Sync status re-walks every own commit per pass**: `Engine::own_commits_now` (spec/sync-status.md §2) walks every commit this node wrote on the sync ID's closure and asks each its bodies, per new thing in home: osis `pass: bodies of a commit` 524 over 20 new things, 25,818 over 200 (quadratic). Lever: keep the own commits per sync ID as rows moved by the commits feed.
-3. **osis-sync's differential and simulations** (3,000 G alone): a fresh world per seed (31% of a seed in one process), then per delivery a settle of every module. `may_log`'s `held_blobs` reads the sync store per judgement; `Effects::due`'s log reads 10%; `follow_certificates` at every follow.
-4. **`order::held_set_decides`** (399 G alone, the costliest engine test): ingest about half, held-model compares a fifth, `check_index` a sixth; every order is ingested from the setup (Properties, below).
-5. **`check_index` has no exact incremental form** (22% of osis-engine `it` inclusive): its halves are two loads from scratch; cheaper loads are the lever, and they are the product's open.
-6. **The forensic attack's tries**: candidates (130-185K per attack) times each unopened section and blob; each candidate prepared again per attack.
-7. `rotation_holds_spec_crypto_4` (46 G, 8 seeds; `tally` needs 8): ingest 50%, 95% of its ingests re-deliveries of known commits, each fully decoded before `late_parts` finds nothing new.
-8. Engine lib, alone (G): `rotation_holds` 38, `seq_placement_differential_after_reset` 31 (its oracles `vis_whole` and `place_whole_pass` 40%), `arrival_order_holds_alike` 19, `seq_cold_edits_keep_placement` 19, `per_entry_secrets_ingestion_equals_whole_state` 14, `every_box_is_recorded_beside_it` 13. osis-perm `incremental::late_writes_across_kept_states` 37 G: 98% its oracle `check`, which asks every role, `roles_on` and three `delta_valid` before each of about 200 applied writes for six nodes of both timelines, ten times; each such past query is a checkpoint replay and a graph walk.
-9. Allocation (glibc's allocator, the production one): `Value` trees for epochs, histories and schema reads; B-tree nodes of fragments; fragment clones where a join consumes its side; `kdf_key` formats `"osis v1 " + purpose` per call.
+2. **osis-sync's differential and simulations** (3,000 G alone): a fresh world per seed (31% of a seed in one process), then per delivery a settle of every module. `may_log`'s `held_blobs` reads the sync store per judgement; `Effects::due`'s log reads 10%; `follow_certificates` at every follow.
+3. **`order::held_set_decides`** (399 G alone, the costliest engine test): ingest about half, held-model compares a fifth, `check_index` a sixth; every order is ingested from the setup (Properties, below).
+4. **`check_index` has no exact incremental form** (22% of osis-engine `it` inclusive): its halves are two loads from scratch; cheaper loads are the lever, and they are the product's open.
+5. **The forensic attack's tries**: candidates (130-185K per attack) times each unopened section and blob; each candidate prepared again per attack.
+6. `rotation_holds_spec_crypto_4` (46 G, 8 seeds; `tally` needs 8): ingest 50%, 95% of its ingests re-deliveries of known commits, each fully decoded before `late_parts` finds nothing new.
+7. Engine lib, alone (G): `rotation_holds` 38, `seq_placement_differential_after_reset` 31 (its oracles `vis_whole` and `place_whole_pass` 40%), `arrival_order_holds_alike` 19, `seq_cold_edits_keep_placement` 19, `per_entry_secrets_ingestion_equals_whole_state` 14, `every_box_is_recorded_beside_it` 13. osis-perm `incremental::late_writes_across_kept_states` 37 G: 98% its oracle `check`, which asks every role, `roles_on` and three `delta_valid` before each of about 200 applied writes for six nodes of both timelines, ten times; each such past query is a checkpoint replay and a graph walk.
+8. Allocation (glibc's allocator, the production one): `Value` trees for epochs, histories and schema reads; B-tree nodes of fragments; fragment clones where a join consumes its side; `kdf_key` formats `"osis v1 " + purpose` per call.
 
 Rejected levers: `opt-level` 2 for the workspace (3-10% for a full rebuild). Fake crypto in tests: a debug-only switch (every forgery and wrong-key test must opt out), a verification memo in osis-crypto (debug and release differ), dependencies without debug assertions (loses their assertions), precomputed keys (keygen under 1%).
 
@@ -50,7 +48,7 @@ Rejected levers: `opt-level` 2 for the workspace (3-10% for a full rebuild). Fak
 - Seed counts stay; the time is to come from the work each seed does.
 
 ## Order of work
-1. osis-sync's per-delivery work (Left 3).
+1. osis-sync's per-delivery work (Left 2).
 2. The facts' reads narrowed (Left 1).
 3. The order tree walk (Properties).
 4. The width rule (Pattern 4), file by file.

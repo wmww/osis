@@ -116,15 +116,72 @@ pub(crate) fn copy_of(core: &Core, t: &Tid) -> Option<Tid> {
     core.secret_actor(t).filter(|a| core.ix.kept.contains_key(a) && !read_path(core, t))
 }
 
-/// Aspect indices of `h` forgotten.
-fn lost_aspects(core: &Core, scope: Scope<'_>, h: &Header, memo: &mut BTreeMap<Tid, Fate>) -> BTreeSet<usize> {
+/// Indices of the aspects forgotten, of a commit's `aspects`.
+fn lost_aspects<'a>(core: &Core, scope: Scope<'_>, aspects: impl Iterator<Item = (&'a Tid, &'a Ak)>, memo: &mut BTreeMap<Tid, Fate>) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
-    for (ai, a) in h.aspects.iter().enumerate() {
-        if forgotten_ak(*memo.entry(a.tid).or_insert_with(|| fate(core, scope, &a.tid)), &a.ak) {
+    for (ai, (t, ak)) in aspects.enumerate() {
+        if forgotten_ak(*memo.entry(*t).or_insert_with(|| fate(core, scope, t)), ak) {
             out.insert(ai);
         }
     }
     out
+}
+
+/// The things whose secrets derive from one of `actors` (`Core::secret_actor`): each actor and
+/// what lies below it down the record chains, to the next actor with secrets of its own.
+/// O(the things found).
+pub(crate) fn under(core: &Core, actors: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+    let mut out = BTreeSet::new();
+    let mut todo: Vec<Tid> = actors.iter().copied().collect();
+    while let Some(t) = todo.pop() {
+        let Some(a) = core.secret_actor(&t) else { continue };
+        if !actors.contains(&a) || !out.insert(t) {
+            continue;
+        }
+        todo.extend(core.ix.held.first_admin_of(&t).copied());
+    }
+    out
+}
+
+/// Per `secrets.0` aspect, a role commit's header and part index on it, and the bodies forgotten.
+type BoxesGone = BTreeMap<(Tid, Ak), (std::sync::Arc<Header>, usize, Vec<osis_crdt::Fragment>)>;
+
+/// Parts `ais` of held commit `id` are forgotten (`rest`: its record without them): each held
+/// one counts as never received (missing), as an open of the rewritten record reads it.
+/// A role commit's `secrets.0` body goes into `boxes` (its aspect's, with the header and index
+/// to name it by): what keys noted from them goes once per aspect (`keys::forget_dropped`).
+fn unreceive(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, rest: Option<&CommitBlob>, boxes: &mut BoxesGone) -> Result<()> {
+    let Some(mut m) = tx.core.ix.commits.get(id).cloned() else { return Ok(()) };
+    let held: Vec<usize> = ais.iter().copied().filter(|ai| m.holds(*ai)).collect();
+    let moved = !held.is_empty();
+    for ai in held {
+        let Some(a) = m.view.aspects.get(ai).cloned() else { continue };
+        if m.view.kind.is_role() && a.ak.as_str() == "secrets.0" {
+            let body = crate::apply::held_fragment(tx, id, ai)?;
+            let e = boxes.entry((a.tid, a.ak.clone())).or_insert_with(|| (m.header.arc(), ai, Vec::new()));
+            e.2.extend(body);
+        }
+        if m.stripped(ai) {
+            super::leftover::remove(tx, &a.tid, &a.ak, id, ai)?;
+        }
+        if osis_schema::core_types::is_addenda(a.ak.as_str()) {
+            crate::apply::validity::forget_addendum_body(tx.core, id, &a.tid);
+        }
+        // its validity stands: it reads the author's roles, not the body
+        tx.core.touch();
+        m.set_hold(ai, crate::engine::Hold::Missing(crate::engine::Missing::Plain));
+        crate::apply::unjudge_part(tx.core, id, ai);
+        crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, id);
+    }
+    if !moved {
+        return Ok(());
+    }
+    if let Some(rest) = rest {
+        tx.put_commit(id, rest, &m, Shred::Yes, None)?;
+    }
+    tx.core.put_meta(*id, m);
+    crate::apply::note_stands_in(tx.core, id);
+    Ok(())
 }
 
 /// Forgets what `scope` names (lost: called after the lost secrets are dropped from the store;
@@ -137,60 +194,66 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     } {
         return Ok(out);
     }
-    // commit records change below the indexes: the reload rebuilds the persisted index
-    crate::engine::index::invalidate(tx)?;
     let mut memo: BTreeMap<Tid, Fate> = BTreeMap::new();
-    // forgotten aspects: held in states or in commits
+    // the things reached, found down the record chains (`under`), and their aspects forgotten,
+    // held in states or in commits
+    let cands: BTreeSet<Tid> = match scope {
+        Scope::Lost(lost) => under(tx.core, lost),
+        Scope::Local(ts) => ts.clone(),
+    };
     let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    let mut indexed = Vec::new();
-    tx.scan(records::ASPECTS, |k, _| {
-        let mut r = Rd::new(k);
-        indexed.push((r.tid()?, r.ak()?));
-        Ok(())
-    })?;
-    let known: Vec<(Tid, Ak)> = tx.core.ix.by_aspect.keys().cloned().chain(indexed).collect();
-    for (t, ak) in known {
+    // every aspect held of a thing reached, forgotten or not
+    let mut all: Vec<(Tid, Ak)> = Vec::new();
+    for t in cands {
         let f = *memo.entry(t).or_insert_with(|| fate(tx.core, scope, &t));
-        if f != Fate::Stays {
-            out.things.insert(t);
-            if forgotten_ak(f, &ak) {
-                aspects.insert((t, ak));
-            }
+        if f == Fate::Stays {
+            continue;
         }
+        let mut held: BTreeSet<Ak> = tx.core.aspects_of(&t).map(|((_, ak), _)| ak.clone()).collect();
+        tx.scan(&[records::ASPECTS, t.as_bytes()].concat(), |k, _| {
+            held.insert(Rd::new(k).ak()?);
+            Ok(())
+        })?;
+        if held.is_empty() {
+            continue;
+        }
+        out.things.insert(t);
+        aspects.extend(held.iter().filter(|ak| forgotten_ak(f, ak)).map(|ak| (t, ak.clone())));
+        all.extend(held.into_iter().map(|ak| (t, ak)));
     }
-    // commit records: forgotten parts out, shredded; a commit left with none is deleted
+    // commit records: forgotten parts out, shredded, counting as never received (missing); a
+    // commit left with none is forgotten whole
     let mut parts: BTreeMap<CommitId, BTreeSet<usize>> = BTreeMap::new();
     // the links of the parts forgotten, by thing: the pieces they reach may go (`freed::lost`)
     let mut links: BTreeMap<Tid, Vec<osis_base::Link>> = BTreeMap::new();
-    // rare (lost access, unsyncing): decodes every header
-    let ids: Vec<CommitId> = tx.core.ix.commits.keys().copied().collect();
+    let mut boxes = BoxesGone::new();
+    let ids: BTreeSet<CommitId> = aspects.iter().flat_map(|k| tx.core.ix.by_aspect.get(k).into_iter().flatten().map(|x| x.1)).collect();
+    osis_base::costs::count("forget: forgettings", u64::from(!out.things.is_empty()));
     osis_base::costs::count("forget: commits scanned", ids.len() as u64);
     for id in ids {
         let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-        let ais = lost_aspects(tx.core, scope, &m.header, &mut memo);
+        let ais = lost_aspects(tx.core, scope, m.view.aspects.iter().map(|a| (&a.tid, &a.ak)), &mut memo);
         if ais.is_empty() {
             continue;
         }
-        let Some(blob) = tx.get_commit(&id)? else { continue };
         for ai in ais.iter().copied().filter(|ai| m.holds(*ai)) {
-            if let Some(a) = m.header.aspects.get(ai) {
+            if let Some(a) = m.view.aspects.get(ai) {
                 let l = super::freed::part_links(tx, &id, ai)?;
                 links.entry(a.tid).or_default().extend(l);
             }
         }
-        let rest = osis_commit::rewrite(&blob, |ai| ais.contains(&ai));
-        if rest.parts.is_empty() {
-            tx.remove_commit(&id)?;
+        let blob = tx.get_commit(&id)?;
+        let rest = blob.as_ref().map(|b| osis_commit::rewrite(b, |ai| ais.contains(&ai)));
+        if rest.as_ref().is_some_and(|r| r.parts.is_empty()) {
+            crate::apply::unindex_unreceived(tx, &id)?;
             out.commits.insert(id);
-        } else if rest.parts.len() < blob.parts.len() {
-            tx.put_commit(&id, &rest, &m, Shred::Yes, None)?;
-        }
-        for (ai, a) in m.header.aspects.iter().enumerate() {
-            if ais.contains(&ai) {
-                aspects.insert((a.tid, a.ak.clone()));
-            }
+        } else {
+            unreceive(tx, &id, &ais, rest.as_ref(), &mut boxes)?;
         }
         parts.insert(id, ais);
+    }
+    for (h, ai, bodies) in boxes.into_values() {
+        crate::apply::keys::forget_dropped(tx, &h, ai, &bodies)?;
     }
     // pending and parked commits (and late parts waiting under an applied commit's ID)
     let mut pend = Vec::new();
@@ -200,7 +263,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         let Ok(blob) = CommitBlob::decode_stored(&p.bytes) else { continue };
         // a kept copy's content takes nothing new: what waits goes too
         let mut ais: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| frozen(tx.core, &a.tid, &a.ak)).map(|(ai, _)| ai).collect();
-        ais.extend(lost_aspects(tx.core, scope, &blob.header, &mut memo));
+        ais.extend(lost_aspects(tx.core, scope, blob.header.aspects.iter().map(|a| (&a.tid, &a.ak)), &mut memo));
         if ais.is_empty() {
             continue;
         }
@@ -223,12 +286,16 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
             }
         }
         tx.txn.remove_pending(&id, Shred::Yes)?;
-        if !rest.parts.is_empty() {
+        if rest.parts.is_empty() {
+            crate::apply::set_pending(tx.core, &id, None);
+        } else {
             tx.txn.put_pending(&id, p.kind, p.verdict, &rest.encode())?;
         }
     }
-    // aspect units and per-aspect records
+    // aspect units and per-aspect records: rebuilt from what is held (nothing), so what their
+    // states gave goes, then dropped
     for (t, ak) in &aspects {
+        crate::apply::rebuild(tx, t, ak)?;
         crate::engine::refs::clear(tx, t, ak)?;
         tx.txn.drop_aspect(t, ak)?;
         super::destroy::forget_aspect_rows(tx, t, ak)?;
@@ -238,7 +305,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         super::lifetimes::queue_with_listers(tx, t)?;
     }
     // the things' history cursors and rows (`leaving`), and the sync IDs inbox blobs hinted
-    super::leaving::forget_things(tx, &out.things)?;
+    super::leaving::forget_aspects(tx, all)?;
     for t in &out.things {
         crate::sync::inbox::set_hint(tx, t, None)?;
         // its role arrival and loss place: nothing left names it
@@ -262,12 +329,11 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     for g in out.things.clone() {
         out.sync_ids.extend(crate::flows::sync_ids::recorded_in(tx, &g)?);
     }
-    if !out.sync_ids.is_empty() {
-        let kept: Vec<Tid> = tx.core.ix.sync_recorded.iter().filter(|g| !out.things.contains(g)).copied().collect();
-        for g in kept {
-            for l in crate::flows::sync_ids::owned_in(tx, &g)?.keys() {
-                out.sync_ids.remove(l);
-            }
+    // (each found by the groups recording it, `Indexes::sync_recorders`)
+    let kept: BTreeSet<Tid> = out.sync_ids.iter().flat_map(|l| tx.core.ix.sync_recorders.get(l).into_iter().flatten().copied()).filter(|g| !out.things.contains(g)).collect();
+    for g in kept {
+        for l in crate::flows::sync_ids::owned_in(tx, &g)?.keys() {
+            out.sync_ids.remove(l);
         }
     }
     // the pieces the forgotten parts reach that no kept source of their thing links (a link

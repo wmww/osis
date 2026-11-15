@@ -27,7 +27,7 @@ mod tests_steps;
 #[cfg(test)]
 mod tests_account;
 
-pub(crate) use unindex::{unindex_commit, unjudge_part};
+pub(crate) use unindex::{unindex_commit, unindex_unreceived, unjudge_part};
 pub use waits::Wake;
 pub(crate) use waits::{awaits_record, next_at, set_pending};
 pub use memory::PART_OVERHEAD;

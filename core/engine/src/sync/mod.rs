@@ -15,6 +15,7 @@ pub(crate) mod falls;
 pub(crate) mod held;
 pub(crate) mod inbox;
 pub(crate) mod listed;
+pub(crate) mod own;
 pub(crate) mod pieces;
 pub use pieces::PieceLink;
 pub(crate) mod certblobs;
@@ -480,6 +481,7 @@ impl Engine {
     /// (notes/engine.md).
     pub fn follow(&mut self) -> Result<bool> {
         let moved = self.follow_published();
+        self.follow_own()?;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.wrap_blocks, |e, (a, walk)| e.wrap_blocked_read(a, *walk))? | moved;
         let moved = self.follow_held_writes()? | moved;
         // `listed` follows `certified` first: one follow of each
@@ -712,25 +714,23 @@ impl Engine {
     /// content of each and of each thing whose secrets are one of theirs, but those N's closure
     /// holds (`node_closure`: its synced group's and its shared things'); their role-class aspects
     /// (`secrets.0` included) and secrets stay, and what arrives again counts as never received.
-    /// One forgetting and one reload for all of them, however many left at once; decodes every
-    /// commit header (rare). The blobs of the commits it deleted whole: their entries anywhere
-    /// stand for nothing held.
+    /// One forgetting for all of them, however many left at once, in proportion to what it
+    /// forgets. The blobs of the commits it deleted whole: their entries anywhere stand for
+    /// nothing held.
     pub fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<BTreeSet<BlobId>> {
         let closure = self.node_closure()?;
-        let core = &self.core;
-        let mut things: BTreeSet<Tid> = core.ix.by_aspect.keys().map(|(x, _)| *x).filter(|x| core.secret_actor(x).is_some_and(|a| ts.contains(&a))).collect();
+        let mut things = crate::retention::forget::under(&self.core, ts);
         things.extend(ts.iter().copied());
         things.retain(|x| !closure.contains(x));
         if things.is_empty() {
             return Ok(BTreeSet::new());
         }
-        let f = self.run(|tx| crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new()))?;
-        if !f.things.is_empty() {
-            osis_base::costs::count("engine: forget reload", 1);
-            self.reload()?;
-            self.reexamine()?;
-        }
-        Ok(f.commits.iter().flat_map(|c| self.core.ix.commit_blobs.get(c).into_iter().flatten().copied()).collect())
+        self.run(|tx| {
+            // the blobs of what may go whole, read before their rows go with it
+            let blobs: BTreeMap<CommitId, Vec<BlobId>> = things.iter().flat_map(|t| tx.core.on_thing(t).collect::<Vec<_>>()).map(|c| (c, tx.core.ix.commit_blobs.get(&c).into_iter().flatten().copied().collect())).collect();
+            let f = crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new())?;
+            Ok(f.commits.iter().flat_map(|c| blobs.get(c).into_iter().flatten().copied()).collect())
+        })
     }
 
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {

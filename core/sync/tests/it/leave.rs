@@ -203,9 +203,8 @@ fn unshared_stops_at_once_spec_sync_set_3() {
     assert_eq!((g.forgot.clone(), g.syncs(2)), (vec![tid(1), tid(2)], None));
 }
 
-// spec/sync-set.md §3 (Unsyncing), issues/leave-forget-per-sync-id.md: read sync IDs that stop in
-// one settle forget their things' copies in one forgetting (one engine reload), before any of
-// them is shredded.
+// spec/sync-set.md §3 (Unsyncing): read sync IDs that stop in one settle forget their things'
+// copies in one forgetting, before any of them is shredded.
 #[test]
 fn sync_ids_stopping_together_forget_once_spec_sync_set_3() {
     let (mut g, mut l) = settled();
@@ -406,8 +405,9 @@ fn nothing_leaves_before_the_synced_group_is_known_spec_sync_set_3() {
 
 /// One node, alone: `k` things of its own, each with secrets (and so a sync ID) of its own, filed
 /// in its D, each written once more, and a thing under D's sync ID written `n` times; then the `k` things unfiled at once
-/// (no peer shares them: each stops at once). The costs of the leave: engine reloads, own entries
-/// unlogged, commits the engine's forgetting scanned.
+/// (no peer shares them: each stops at once). The costs of the leave: engine forgettings, own
+/// entries unlogged, commits the engine's forgetting looked at. The engine's indexes then read as
+/// an open of its store does.
 fn leave_costs(k: usize, n: usize) -> (u64, u64, u64) {
     use crate::harness::World;
     use crate::harness::history::{file, value_ak};
@@ -447,6 +447,7 @@ fn leave_costs(k: usize, n: usize) -> (u64, u64, u64) {
     w.run();
     let ids = |w: &mut World| w.store(0).syncs().len();
     let before = ids(&mut w);
+    let own_before = w.engine(0).own_commits_kept().0;
     osis_base::costs::take();
     w.write(0, |e| {
         let (_, d) = e.account().unwrap().unwrap();
@@ -461,20 +462,23 @@ fn leave_costs(k: usize, n: usize) -> (u64, u64, u64) {
     w.run();
     let costs = osis_base::costs::take();
     assert_eq!(ids(&mut w), before - k, "the {k} sync IDs stopped");
+    w.engine(0).check_index();
+    assert_eq!(w.engine(0).own_commits_kept().0, own_before - k, "own commits kept per sync ID read, the {k} gone");
     let sum = |name: &str| costs.iter().filter(|(x, _, _)| *x == name).map(|(_, _, n)| n).sum::<u64>();
-    (sum("engine: forget reload"), sum("leave: own entries unlogged"), sum("forget: commits scanned"))
+    (sum("forget: forgettings"), sum("leave: own entries unlogged"), sum("forget: commits scanned"))
 }
 
-// spec/sync-set.md §3 (Unsyncing), issues/leave-forget-per-sync-id.md: leaving k separately
-// synced things at once forgets them in one engine reload, and unlogs only the own entries of
-// what forgot, at n and 10n own entries elsewhere. The engine's forgetting itself still scans
-// every held commit (issues/leave-forget-per-sync-id.md).
+// spec/sync-set.md §3 (Unsyncing): leaving k separately synced things at once forgets them in
+// one engine forgetting, which looks at the commits on what left alone (found through the
+// indexes, the indexes moved in place, no reload), and unlogs only the own entries of what
+// forgot, at n and 10n own commits on a thing that stays.
 #[test]
-fn leaving_several_reloads_once_and_unlogs_what_left_at_n_and_10n_spec_sync_set_3() {
+fn leaving_several_forgets_once_and_costs_what_left_at_n_and_10n_spec_sync_set_3() {
     let (one, three, three_10n) = (leave_costs(1, 2), leave_costs(3, 2), leave_costs(3, 20));
-    assert_eq!((one.0, three.0, three_10n.0), (1, 1, 1), "one reload per leave");
-    assert!(one.1 > 0);
+    assert_eq!((one.0, three.0, three_10n.0), (1, 1, 1), "one forgetting per leave");
+    assert!(one.1 > 0 && one.2 > 0);
     assert_eq!((three.1, three_10n.1), (3 * one.1, 3 * one.1), "own entries unlogged: what left, not what stays");
+    assert_eq!((three.2, three_10n.2), (3 * one.2, 3 * one.2), "commits looked at: what left, not what stays");
 }
 
 /// A node with an account of its own whose synced group lists `n` plain things (one write), its

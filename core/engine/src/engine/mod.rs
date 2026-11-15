@@ -1411,6 +1411,8 @@ pub struct Core {
     /// `Engine::published_under` for every actor, followed per thing with a sync ID
     /// (`sync_ids::published`).
     pub(crate) published: crate::sync_ids::published::Published,
+    /// `Engine::own_commits` per sync ID asked, followed per candidate (`sync::own`).
+    pub(crate) own_commits: crate::sync::own::OwnCommits,
     /// `Engine::held_links` (`memo`).
     pub(crate) links: memo::Memo<(), std::sync::Arc<Vec<crate::flows::HeldLink>>>,
     /// `Engine::caught_up` per group (`memo`).
@@ -1568,6 +1570,7 @@ impl Core {
             sync_ids: self.sync_ids.clone(),
             passes_wanted: self.passes_wanted.clone(),
             published: self.published.clone(),
+            own_commits: self.own_commits.clone(),
             links: self.links.clone(),
             caught_up: self.caught_up.clone(),
             sourced_elsewhere: self.sourced_elsewhere.clone(),
@@ -2014,6 +2017,7 @@ impl Core {
             account_epochs_of: _,
             secrets_read: _,
             published: _,
+            own_commits: _,
             head_keys: _,
             read_credentials: _,
             sync_things: _,
@@ -2365,6 +2369,7 @@ impl Core {
             sync_ids: memo::Memo::new("sync IDs of"),
             passes_wanted: memo::Memo::new("sync: passes wanted"),
             published: Default::default(),
+            own_commits: Default::default(),
             links: memo::Memo::new("held links"),
             caught_up: memo::Memo::new("sync: caught up"),
             sourced_elsewhere: BTreeSet::new(),

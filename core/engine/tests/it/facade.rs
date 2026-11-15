@@ -917,6 +917,38 @@ fn a_crash_between_drop_and_clear_is_done_again_spec_perm_3() {
     all_done(&mut lp, 1);
 }
 
+// spec/sync-status.md §2: the own commits under a sync ID follow what changes after the first
+// ask (rows moved per commit and per thing entering the closure): a write on a listed thing, a
+// thing with own commits listed later, one listed no more.
+#[test]
+fn own_commits_follow_writes_and_listings_spec_sync_status_2() {
+    let (mut lp, ps) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let (_, d) = e.account().unwrap().unwrap();
+    let home = e.home_sync_id(&d).unwrap().unwrap();
+    let t = thing_of(&mut lp, 0, d);
+    add_item(&mut lp, 0, d, t);
+    let write = |lp: &mut LocalPeer, x: Tid| {
+        let mut m = Mutation::new();
+        m.set(x, &Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(5)).unwrap();
+        lp.peers[0].engine.commit(m).unwrap().unwrap()
+    };
+    let own = |lp: &mut LocalPeer| lp.peers[0].engine.own_commits(&home).unwrap();
+    let first = own(&mut lp);
+    let c = write(&mut lp, t);
+    assert!(!first.contains(&c) && own(&mut lp).contains(&c), "a write after the first ask");
+    // under the account, not its devices actor: outside home's closure until listed
+    let u = thing_of(&mut lp, 0, ps[0]);
+    let cu = write(&mut lp, u);
+    assert!(!own(&mut lp).contains(&cu), "not in the closure");
+    add_item(&mut lp, 0, d, u);
+    assert!(own(&mut lp).contains(&cu), "listed later");
+    let mut m = Mutation::new();
+    m.op(d, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Remove(osis_base::Value::Tid(u)) }).unwrap();
+    lp.peers[0].engine.commit(m).unwrap().unwrap();
+    assert!(!own(&mut lp).contains(&cu), "listed no more");
+}
+
 // spec/sync-judgement.md §1-§2: a commit's body under each read sync ID whose closure holds it,
 // with its facts; this node's own commits under it.
 #[test]

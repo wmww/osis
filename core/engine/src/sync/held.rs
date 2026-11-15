@@ -194,6 +194,7 @@ impl Engine {
     /// its own (history read since it left is not here), and so do the certificate blobs sealed
     /// under it (`certblobs`: read logs them again if it reads `s` again).
     pub(crate) fn forget_read_now(&mut self, s: &SyncId) -> Result<()> {
+        self.core.own_commits.unfollow(s);
         if !self.core.ix.passes.contains_key(s) && !super::certblobs::any(&self.core, s) {
             return Ok(());
         }

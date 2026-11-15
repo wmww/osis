@@ -1286,3 +1286,47 @@ fn chunk_drop_judgment_is_flat() {
     flat("chunk drop: parts read", small.0, big.0);
     flat("chunk drop: tree links", small.1, big.1);
 }
+
+/// Bob reads alice's thing `d` (three writes on it) and writes `n` times on a thing of his own;
+/// alice removes him from `d`. The commits his drop of the lost secrets looks at (`forget: commits
+/// scanned`); his indexes then read as an open of his store does.
+fn lost_forget(n: usize) -> u64 {
+    use crate::flows::{edge_of, people, spread, thing_of};
+    let (mut lp, ps) = people(2);
+    let reg = ak("t:reg.0");
+    let d = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.grant(&d, &ps[1], &edge_of(Role::Read)).unwrap();
+    let write = |lp: &mut LocalPeer, i: usize, t: Tid, v: usize| {
+        let mut m = Mutation::new();
+        m.set(t, &reg, &Value::Int(v as i64)).unwrap();
+        lp.peers[i].engine.commit(m).unwrap().unwrap();
+    };
+    for v in 0..3 {
+        write(&mut lp, 0, d, v);
+    }
+    let mine = thing_of(&mut lp, 1, ps[1]);
+    for v in 0..n {
+        write(&mut lp, 1, mine, v);
+    }
+    spread(&mut lp);
+    assert!(lp.peers[1].engine.get(&d, &reg).unwrap().is_some());
+    lp.peers[0].engine.demote(&d, &osis_engine::flows::Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+    spread(&mut lp);
+    osis_base::costs::take();
+    let lost = lp.peers[1].engine.drop_lost_secrets().unwrap();
+    let cs = osis_base::costs::take();
+    assert!(lost.contains(&d), "{lost:?}");
+    assert_eq!(lp.peers[1].engine.get(&d, &reg).unwrap(), None, "forgotten");
+    assert!(lp.peers[1].engine.get(&mine, &reg).unwrap().is_some(), "kept");
+    lp.peers[1].engine.check_index();
+    cs.iter().filter(|c| c.0 == "forget: commits scanned").map(|c| c.2).sum()
+}
+
+// spec/permissions.md §3 (Lost access): forgetting what a lost read reached costs what it
+// forgets: the commits on the lost things alone, found through the indexes and moved in place,
+// at n and 10n own commits elsewhere (each held commit looked at would be linear).
+#[test]
+fn losing_access_forgets_what_was_lost() {
+    let (a, b) = (lost_forget(3), lost_forget(30));
+    assert!(a > 0 && a == b, "commits looked at, with 3 own commits elsewhere {a}, with 30 {b}");
+}
