@@ -19,3 +19,11 @@
 - Review 3: roles-model forks `Stats` fields are summed across threads by a hand list in `run`; a new counter left out of it reads 0 and looks like a generator that never reaches the case.
 - Review 3: the model's honest policy (`act`) is checked only in the model; the engine's `unanswered` drifted from it (supersedes vs rejects) with no differential between them, found by reading.
 - Review 3: the roles-model differentials number items in the order made, so ties broken by ID are always ancestors first there; perm with hash IDs is not, and the first gate's sim (`stranded_reseal`, two removals in one millisecond) was the first to show it. The gate took three runs (sim, then the models' tiebreak) at about 12-20 min each.
+- fork-sides-ix: `check_index` runs on a sample, so where it fires need not be the transaction that diverged; setting `check_every_tx` on every peer (a debug edit in the harness) settles it in one run. The brief had want/got reversed (`first_diff` prints the running index as "want").
+
+## fork-sides-sib (worker)
+- `LocalPeer::deliver` ships plaintext, so the sibling deadlock (a wrap under an epoch not established) does not reproduce through it; `open_package` drops a rotation's list blobs and `seal_package` skips the rotations due first. A label-faithful test helper (`tests_signing::carry_sealed`, `pass_end`) had to be written; it belongs in `LocalPeer`.
+- A lockstep loop (both nodes act on the same receipts each round) looks like a storm in every world; check act-in-turn before calling a merge storm a bug.
+- Final review: the brief named wt2, which was free in `wt list`; another reviewer's `wt claim` took it mid-task and my uncommitted differential vanished from the tree (saved on a side branch). Claim the worktree yourself even when a brief names one, and wip-commit early.
+- Final review: `git cherry-pick` of two branches that each appended tests to tests_signing.rs conflicted on the shared closing `}`; deleting the markers dropped a brace twice. Check a conflict's last lines, not just the markers.
+- Final review: the engine differential's own harness leaked commits as "made here" whenever a forged commit's new ID was not added to the seen set; every mismatch traced to such harness slips first, real findings after.

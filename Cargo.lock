@@ -2812,6 +2812,7 @@ dependencies = [
  "osis-perm",
  "osis-schema",
  "osis-store",
+ "roles-model",
 ]
 
 [[package]]

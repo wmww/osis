@@ -81,6 +81,8 @@ pub(crate) struct AccountView {
     /// The counting epochs by name: what a write or seal reads, so neither walks the chain (its
     /// length is the account's to choose).
     by_name: BTreeMap<Epoch, CommitId>,
+    /// Per removal commit, the held rotations whose headers name it.
+    carriers: BTreeMap<CommitId, BTreeSet<CommitId>>,
 }
 
 impl AccountView {
@@ -192,9 +194,11 @@ impl AccountView {
         self.standing.contains(r)
     }
 
-    /// Whether a counting rotation D's roster authorizes supersedes held rotation `r`'s epoch.
-    pub(crate) fn superseded_by_authorized(&self, r: &CommitId) -> bool {
-        self.rotations.iter().any(|x| x.supersedes.contains(r) && self.authorized.contains_key(&x.id) && self.rotation_counts(&x.id))
+    /// Whether a held rotation minted by `node` (by its inner signature) supersedes held rotation
+    /// `r`'s epoch (this node's account only).
+    pub(crate) fn superseded_by(&self, r: &CommitId, node: &Tid) -> bool {
+        let Some(d) = &self.devices else { return false };
+        self.rotations.iter().any(|x| x.supersedes.contains(r) && d.minter.get(&x.id) == Some(node))
     }
 
     /// The node D's roster authorizes rotation `r` by: its minter, when D holds it as current
@@ -206,6 +210,18 @@ impl AccountView {
     /// The keys of held epoch `e` among `held`'s.
     pub(crate) fn keys_of(&self, e: &CommitId, held: &HeldAccount) -> Option<Arc<AccountEpochKeys>> {
         held.keys.get(&self.epochs.get(e)?.signing).cloned()
+    }
+
+    /// Whether a held rotation that does not count names removal `c` in its header: the removal
+    /// stands or falls with it.
+    pub(crate) fn carried_uncounted(&self, c: &CommitId) -> bool {
+        self.carriers.get(c).is_some_and(|rs| rs.iter().any(|r| !self.rotation_counts(r)))
+    }
+
+    /// The order the chain reads receipts in (rotations, D's grants, carried removals).
+    #[cfg(test)]
+    pub(crate) fn received(&self) -> &[CommitId] {
+        &self.received
     }
 
     /// The held rotations.
@@ -476,18 +492,19 @@ impl Core {
     /// Following, at a node of P): who signed each held rotation and each held role commit of
     /// `p` on D but its rotations (the inner signature; `None` when it opens to no key actor
     /// here), counting or not (`Devices` decides which count); the grants and removals among
-    /// them, each removal carried by its maker's rotation of the epoch it is signed at with its
-    /// frontier; and the nodes the commit creating D grants it.
-    fn devices_read(&self, p: &Tid, a: &HeldAccount, epochs: &BTreeMap<CommitId, EpochPublic>, at: &BTreeMap<CommitId, CommitId>) -> osis_perm::Devices<CommitId, Tid> {
+    /// them, each removal carried by the rotation whose header names it, when that rotation is its
+    /// maker's of the epoch it is signed at, with its frontier; and the nodes the commit creating
+    /// D grants it. `at`: each held rotation's epoch and the removals its header names.
+    fn devices_read(&self, p: &Tid, a: &HeldAccount, epochs: &BTreeMap<CommitId, EpochPublic>, at: &BTreeMap<CommitId, (CommitId, Vec<CommitId>)>) -> osis_perm::Devices<CommitId, Tid> {
         let mut d = osis_perm::Devices::default();
         let signer = |c: &CommitId, e: &CommitId| self.ix.role_sigs.get(c).and_then(|s| s.inner).and_then(|inner| self.inner_signer(a, &epochs.get(e)?.signing, c, &inner));
-        for (id, e) in at {
+        for (id, (e, _)) in at {
             if let Some(m) = signer(id, e) {
                 d.minter.insert(*id, m);
             }
         }
         let created: BTreeSet<CommitId> = osis_base::Ak::new("created.0").ok().and_then(|ak| self.ix.by_aspect.get(&(a.devices, ak))).into_iter().flatten().map(|(_, c)| *c).collect();
-        let mut removals: Vec<(Tid, CommitId, Tid, BTreeSet<CommitId>)> = Vec::new();
+        let mut removals: Vec<(CommitId, Tid, CommitId, Tid, BTreeSet<CommitId>)> = Vec::new();
         for c in self.ix.by_thing.get(&(a.devices, *p)).into_iter().flatten() {
             let Some(m) = self.ix.commits.get(c).filter(|m| m.view.kind.is_role() && !at.contains_key(c)) else { continue };
             let Some(e) = m.view.epoch else { continue };
@@ -501,14 +518,23 @@ impl Core {
                         d.first.insert((*c, o.holder));
                     }
                 } else if let Some(s) = s {
-                    removals.push((o.holder, e, s, rc.frontier.as_ref().map(|f| f.commits.clone()).unwrap_or_default()));
+                    removals.push((*c, o.holder, e, s, rc.frontier.as_ref().map(|f| f.commits.clone()).unwrap_or_default()));
                 }
             }
         }
-        for (node, e, maker, frontier) in removals {
-            for (r, _) in d.minter.iter().filter(|(r, m)| **m == maker && at.get(r) == Some(&e)) {
+        // a removal belongs to the rotation that names it, fixed with that rotation's ID: a removed
+        // node writing a removal at an old epoch turns none of its earlier rotations into one
+        for (c, node, e, maker, frontier) in removals {
+            for (r, _) in d.minter.iter().filter(|(r, m)| **m == maker && at.get(*r).is_some_and(|(re, named)| *re == e && named.contains(&c))) {
                 d.removes.entry(*r).or_default().insert(node);
                 d.covers.entry(*r).or_default().extend(frontier.iter().copied());
+                // placed by it only when it came later than the rotation: one that came with it (in
+                // the same millisecond, or before) moves nothing, as the order within a millisecond
+                // is commit IDs' and decides nothing here
+                let at = |x: &CommitId| self.ix.commits.get(x).map(|m| m.received);
+                if at(&c) > at(r) {
+                    d.carried.entry(*r).or_default().insert(c);
+                }
             }
         }
         d
@@ -542,12 +568,12 @@ impl Core {
         // each removal removes and what its frontier covers (spec/permissions.md §5.4, Following,
         // at a node of P)
         let devices = self.accounts.get(p).map(|a| {
-            let at: BTreeMap<CommitId, CommitId> = rots.iter().map(|(id, at, _)| (*id, *at)).collect();
+            let at: BTreeMap<CommitId, (CommitId, Vec<CommitId>)> = rots.iter().map(|(id, at, r)| (*id, (*at, r.removals.clone()))).collect();
             self.devices_read(p, a, &epochs, &at)
         });
-        // the order this node came to hold the rotations and D's grants in: by receipt, one
-        // millisecond's by ID
-        let grants = devices.iter().flat_map(|d| d.grants.iter().map(|(g, _)| *g).chain(d.first.iter().map(|(c, _)| *c)));
+        // the order this node came to hold the rotations, D's grants and the removals the rotations
+        // carry in: by receipt, one millisecond's by ID
+        let grants = devices.iter().flat_map(|d| d.grants.iter().map(|(g, _)| *g).chain(d.first.iter().map(|(c, _)| *c)).chain(d.carried.values().flatten().copied()));
         let mut order: Vec<(osis_base::WallMs, CommitId)> = rots.iter().map(|(id, ..)| *id).chain(grants).filter_map(|id| Some((self.ix.commits.get(&id)?.received, id))).collect();
         order.sort();
         order.dedup();
@@ -580,7 +606,13 @@ impl Core {
                 }
             }
         }
-        let mut v = AccountView { rule, rotations, chosen, received, devices, authorized, standing, epochs, by_name: BTreeMap::new() };
+        let mut carriers: BTreeMap<CommitId, BTreeSet<CommitId>> = BTreeMap::new();
+        for (id, _, r) in &rots {
+            for c in &r.removals {
+                carriers.entry(*c).or_default().insert(*id);
+            }
+        }
+        let mut v = AccountView { rule, rotations, chosen, received, devices, authorized, standing, epochs, by_name: BTreeMap::new(), carriers };
         // a name repeated (two rotations minting one key) is read as its lowest ID
         for (id, e) in v.epochs.iter().filter(|(id, _)| v.rule.chain().epoch_counts(id)) {
             if let Some(name) = v.name(e) {
@@ -704,6 +736,16 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             // a rotation whose count moved: what its lists name
             if now.get(e).map(|x| x.1) != get(&was, e).map(|x| x.1) {
                 cands.extend(super::lists::named_by(tx, e)?.into_iter().map(|(c, _)| c));
+                // invariant: every rotation that counts here is due this node's answer once it
+                // counts. One read as void when it arrived (its minter not known yet: the seed
+                // its inner signature opens with still to come) was answered by nothing, and the
+                // writes at the epochs it closes would wait on a listing never written
+                // (`signing::answer_rotations`). A rotation first judged here was noted due as it
+                // applied. A second answer names only what no word held names yet, so a rotation
+                // counting again (a user's switch) writes nothing twice
+                if now.get(e).and_then(|x| x.1) == Some(true) && get(&was, e).and_then(|x| x.1) == Some(false) {
+                    super::signing::note_rotation_due(tx, e)?;
+                }
             }
         }
         // the names of the candidates, with the listings among their sources and among them, and
@@ -883,8 +925,19 @@ impl Engine {
     }
 
     /// Takes up account `p` from the seeds on its devices actor `d` (`account.0`, readable here
-    /// as a node of the account): this node signs as it and its boxes open.
+    /// as a node of the account): this node signs as it and its boxes open, and judges its chain
+    /// as a node of it.
     pub fn hold_account(&mut self, p: &Tid, d: &Tid) -> Result<()> {
+        self.take_up(p, d, true)
+    }
+
+    /// `hold_account`; `judge`: the account's epochs judged again in the same transaction. The
+    /// epoch rule reads D (`AccountView::devices`, and the seeds opening inner signatures) only
+    /// at a node holding the account, so its judgment of the chain moves whenever the account is
+    /// taken up or left (`signing::leave`), and the index is a function of what is held (a
+    /// rebuild judges with the account as held now). Only the take-up at open (`take_account`)
+    /// skips it: the persisted judgment was made with the account held.
+    fn take_up(&mut self, p: &Tid, d: &Tid, judge: bool) -> Result<()> {
         let Some(CreationRecord::KeyActor { public_key, account: true, .. }) = self.core.created(p).cloned() else { return Err(Error::UnknownThing(*p)) };
         let first = VerifyingKey::from_slice(&public_key).map_err(|_| Error::Misuse("account key"))?;
         let stored = self.get_typed(d, &ct::ACCOUNT)?.ok_or(Error::UnknownThing(*d))?;
@@ -894,7 +947,13 @@ impl Engine {
         }
         self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, keys }));
         self.core.role_changed();
-        self.run(super::reopen_all)
+        let p = *p;
+        self.run(|tx| {
+            if judge {
+                super::signing::judge_account_again(tx, p)?;
+            }
+            super::reopen_all(tx)
+        })
     }
 
     /// How a box to account `p` is sealed: at its open epoch.
@@ -948,7 +1007,7 @@ impl Engine {
     pub(crate) fn take_account(&mut self) -> Result<()> {
         let Some((p, d)) = self.account()? else { return Ok(()) };
         self.core.account.set(Some(p));
-        if self.hold_account(&p, &d).is_err() {
+        if self.take_up(&p, &d, false).is_err() {
             self.core.accounts.remove(&p);
         }
         // removed before what it read as the account went: it goes now

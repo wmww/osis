@@ -80,6 +80,9 @@ pub struct Devices<E, M> {
     /// Per rotation carrying removals, their frontiers: the removed nodes' commits on D its
     /// maker held (spec/permissions.md §5.1, Frontier).
     pub covers: BTreeMap<E, BTreeSet<E>>,
+    /// Per rotation carrying removals, those of its removal commits (held, named by its header)
+    /// that came to be held after it: it is placed no earlier than the last of them.
+    pub carried: BTreeMap<E, BTreeSet<E>>,
     /// The account's role commits on D but its rotations: (key actor that signed it, `None`
     /// when its inner signature opens to none: it counts by none; epoch signed at).
     pub commits: BTreeMap<E, (Option<M>, E)>,
@@ -93,7 +96,7 @@ pub struct Devices<E, M> {
 
 impl<E, M> Default for Devices<E, M> {
     fn default() -> Self {
-        Devices { minter: BTreeMap::new(), removes: BTreeMap::new(), covers: BTreeMap::new(), commits: BTreeMap::new(), grants: BTreeSet::new(), first: BTreeSet::new() }
+        Devices { minter: BTreeMap::new(), removes: BTreeMap::new(), covers: BTreeMap::new(), carried: BTreeMap::new(), commits: BTreeMap::new(), grants: BTreeSet::new(), first: BTreeSet::new() }
     }
 }
 
@@ -140,6 +143,9 @@ impl<E: Ord + Copy> Chain<E> {
         // known as a node (one never known: at its receipt, so it is disregarded and answered)
         let known = devices.map(|d| d.known(&rank_of)).unwrap_or_default();
         let minter_known = |id: &E| devices.and_then(|d| known.get(d.minter.get(id)?)).copied().unwrap_or(0);
+        // and no earlier than the removals it carries came to be held: what a rotation revokes
+        // is read when it arrives, never moved back to when the rotation did
+        let carried_held = |id: &E| devices.and_then(|d| d.carried.get(id)).and_then(|cs| cs.iter().map(&rank_of).max()).unwrap_or(0);
         let mut rots: BTreeMap<E, Rotation<E>> = BTreeMap::new();
         // when each came to be held with its chain: its own receipt or a parent's, the later
         let mut when: BTreeMap<E, usize> = BTreeMap::new();
@@ -152,7 +158,7 @@ impl<E: Ord + Copy> Chain<E> {
         let needs = |r: &Rotation<E>| -> Vec<E> { std::iter::once(r.at).chain(r.names.iter().copied()).chain(r.takes.iter().copied()).collect() };
         while let Some(id) = pending.values().find(|r| needs(r).iter().all(|n| held(&rots, n))).map(|r| r.id) {
             if let Some(r) = pending.remove(&id) {
-                let w = needs(&r).iter().filter_map(|p| when.get(p)).fold(rank_of(&id).max(minter_known(&id)), |a, b| a.max(*b));
+                let w = needs(&r).iter().filter_map(|p| when.get(p)).fold(rank_of(&id).max(minter_known(&id)).max(carried_held(&id)), |a, b| a.max(*b));
                 when.insert(id, w);
                 depth.insert(id, 1 + needs(&r).iter().filter_map(|p| depth.get(p)).max().copied().unwrap_or(0));
                 rots.insert(id, r);

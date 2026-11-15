@@ -324,6 +324,9 @@ pub struct RotationHeader {
     /// The rotations carrying removals from D its maker took that are not on its line
     /// (spec/permissions.md §5.4): ascending, distinct.
     pub takes: Vec<CommitId>,
+    /// The removals from D it carries (spec/permissions.md §5.4): its minter's removal edge writes
+    /// on D signed at the epoch it rotates; ascending, distinct.
+    pub removals: Vec<CommitId>,
     pub list_root: [u8; 32],
 }
 
@@ -333,17 +336,18 @@ impl RotationHeader {
             put_array(out, v.len());
             v.iter().for_each(|c| put_bytes(out, &c.0));
         };
-        put_array(out, 6);
+        put_array(out, 7);
         encode_into(&Value::Enum(SIGNING_KEY_ED25519, Some(Box::new(Value::bytes(&self.signing_key.to_bytes())))), out);
         encode_into(&self.kem_key.to_value(), out);
         ids(out, &self.supersedes);
         ids(out, &self.names);
         ids(out, &self.takes);
+        ids(out, &self.removals);
         put_bytes(out, &self.list_root);
     }
 
     fn read(v: Item) -> Result<RotationHeader, Error> {
-        let Some([sk, kem, sup, names, takes, root]) = item::list(v)?.tuple() else { return Err(Error::Malformed("rotation arity")) };
+        let Some([sk, kem, sup, names, takes, removals, root]) = item::list(v)?.tuple() else { return Err(Error::Malformed("rotation arity")) };
         let signing_key = match sk.to_value()? {
             Value::Enum(SIGNING_KEY_ED25519, Some(b)) => match b.as_ref() {
                 Value::Bytes(k) => VerifyingKey::from_slice(k).map_err(|_| Error::Malformed("rotation signing key"))?,
@@ -353,7 +357,7 @@ impl RotationHeader {
         };
         let kem_key = KemPublicKey::from_value(&kem.to_value()?).map_err(|_| Error::Malformed("rotation kem key"))?;
         let ids = |v: Item| -> Result<Vec<CommitId>, Error> { item::list(v)?.iter().map(|c| item::bytes(c).map(CommitId)).collect() };
-        Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, takes: ids(takes)?, list_root: item::bytes(root)? })
+        Ok(RotationHeader { signing_key, kem_key, supersedes: ids(sup)?, names: ids(names)?, takes: ids(takes)?, removals: ids(removals)?, list_root: item::bytes(root)? })
     }
 }
 

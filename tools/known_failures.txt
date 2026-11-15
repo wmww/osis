@@ -7,3 +7,4 @@ runtime::a_paired_peer_serves_what_it_reads_in_process_spec_data_model_9 - issue
 props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
 runtime::redeem_in_process_spec_permissions_7 - issues/paired-peer-runtime-flake.md Unsynced
 validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-depend-on-store-rng.md one rebuild per flipped aspect\s+left: 7\s+right: 5
+rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4 OSIS_FORKS_START=916629000175 issues/account-removal-before-its-rotation.md still rotates in the last settle round

@@ -102,7 +102,7 @@ impl osis_commit::Secrets for Dedup {
 /// A rotation of the account of record `rec` from its first epoch to `next`, superseding that
 /// epoch alone: what a node removed at the first epoch can make after every merge.
 pub(super) fn rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &AccountEpochKeys, ts: Ts) -> Vec<u8> {
-    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), list_root: [0; 32] };
+    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), removals: Vec::new(), list_root: [0; 32] };
     rotation_at(rec, (FIRST_EPOCH, first), &[], next, header, ts)
 }
 

@@ -23,3 +23,6 @@ osis-perm.workspace = true
 osis-keys.workspace = true
 osis-label.workspace = true
 osis-store.workspace = true
+
+[dev-dependencies]
+roles-model.workspace = true

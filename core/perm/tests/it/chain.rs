@@ -296,18 +296,20 @@ fn forks_chain(w: &forks::World, v: usize, now: u32, chosen: Option<u32>) -> Cha
         for i in &held {
             match &i.kind {
                 forks::Kind::Rot { removes, covers, .. } => {
-                    d.minter.insert(i.id, i.signer);
+                    if let Some(m) = forks::signer_at(w, v, now, i.id) {
+                        d.minter.insert(i.id, m);
+                    }
                     if let Some(y) = removes {
                         d.removes.insert(i.id, [*y].into());
                         d.covers.insert(i.id, covers.iter().copied().chain([created]).collect());
                     }
                 }
                 forks::Kind::Grant { to } => {
-                    d.commits.insert(i.id, (Some(i.signer), i.epoch));
+                    d.commits.insert(i.id, (forks::signer_at(w, v, now, i.id), i.epoch));
                     d.grants.insert((i.id, *to));
                 }
                 forks::Kind::Creation { to } => {
-                    d.commits.insert(i.id, (Some(i.signer), i.epoch));
+                    d.commits.insert(i.id, (forks::signer_at(w, v, now, i.id), i.epoch));
                     d.first.insert((i.id, *to));
                 }
                 _ => {}
@@ -338,7 +340,7 @@ fn forks_run(samples: u64, seed: u64) -> u64 {
                     // Z (never removed) is on the model's roster iff a grant to it by another
                     // signer, or a commit creating D made again pairing it, counts here
                     let granted = w.items.iter().any(|i| i.recv[v] <= now && !c.cut(&i.id) && match i.kind {
-                        forks::Kind::Grant { to } => to == forks::Z && i.signer != forks::Z,
+                        forks::Kind::Grant { to } => to == forks::Z && forks::signer_at(&w, v, now, i.id) != Some(forks::Z),
                         forks::Kind::Creation { to } => to == forks::Z,
                         _ => false,
                     });

@@ -18,6 +18,8 @@ pub(crate) mod merge;
 mod tests_account;
 #[cfg(test)]
 mod tests_signing;
+#[cfg(test)]
+mod tests_forks;
 
 use osis_label::Address;
 use crate::engine::{Core, Engine, Tx};
