@@ -232,18 +232,14 @@ fn reads_without_a_listener_are_heard() {
 #[test]
 fn role_on_hears_roles_and_compares() {
     let (a, b, _) = paired();
-    let t = a.commit_with(|w| {
-        let t = w.create()?;
-        w.group(a.me()).add(Member::Item(t))?;
-        Ok(t)
-    }).unwrap();
+    let t = a.commit_with(|w| w.create()).unwrap();
     let (_set, n, h) = tracked(&b);
     assert_eq!(h.role_on(t).unwrap(), None);
     a.commit_set(t, untyped("t:a.0"), &Value::Int(1)).unwrap();
     deliver(&a, &b);
     assert_eq!(fired(&b, &n), 1, "the thing's roles arrived");
     assert!(h.role_on(t).unwrap().is_some());
-    let other = a.commit_with(|w| { let x = w.create()?; w.group(a.me()).add(Member::Item(x))?; Ok(x) }).unwrap();
+    let other = a.commit_with(|w| w.create()).unwrap();
     deliver(&a, &b);
     b.settle();
     let _ = other;

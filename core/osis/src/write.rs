@@ -80,7 +80,7 @@ pub(crate) enum WriteOp {
     /// Adds `by` to `thing`'s retainers; `by`'s aspect `key` must reference `thing` after the
     /// commit.
     Retain { by: Tid, key: u32, thing: Tid },
-    /// The thing, created by this write, is not filed under home (`Write::local`).
+    /// The thing, created by this write, is local (`Write::create_local`).
     Local(Tid),
 }
 
@@ -305,9 +305,23 @@ impl<'d> Write<'d> {
     /// holds in `home()` as a subgroup, in the same commit, so it reaches the account's other
     /// nodes (and, should it become a group, so do its items). A thing the write lists in a
     /// group that syncs, or makes under a thing that syncs other than `home()`, is not listed
-    /// there, nor is one named in `local`.
+    /// there. `create_local` makes one that stays on this device.
     pub fn create(&mut self) -> Result<Tid> {
         self.create_with_admin(self.actor)
+    }
+
+    /// `create`, kept on this device: it is not listed in `home()`. Only what is made local
+    /// stays: a thing the write lists in it is listed in `home()`, unless made local too.
+    ///
+    /// A local thing stays local: a write that leaves it where something syncs holds it (in a
+    /// group that syncs, or under a thing that does), or that writes it beside a thing that
+    /// syncs, fails `Invalid` naming it, whenever the thing was made. To share it later, list
+    /// it somewhere that syncs (or share it) in a later write, which may write it too; from
+    /// then on it syncs with its whole history.
+    pub fn create_local(&mut self) -> Result<Tid> {
+        let t = self.create()?;
+        self.ops.push(WriteOp::Local(t));
+        Ok(t)
     }
 
     /// `create`, with `admin` as the first admin in place of the acting actor: a group or account
@@ -322,21 +336,6 @@ impl<'d> Write<'d> {
         self.ops.push(WriteOp::Create(rec));
         self.created.push(t);
         Ok(t)
-    }
-
-    /// Keeps `t`, a thing this write creates, on this device: it is not listed in `home()`, so it
-    /// reaches the account's other nodes only once something that syncs lists it, or it is
-    /// shared. `Invalid` when this write does not create `t`. Only what is named stays: a thing
-    /// the write lists in `t` is listed in `home()` unless it is named too. A commit travels
-    /// whole, so what any write puts on `t` beside something that syncs (a sibling it lists in
-    /// `home()` included) goes with it, readable only by `t`'s readers (by default the account's
-    /// nodes) and left stale there: write a local thing in writes of its own.
-    pub fn local(&mut self, t: Tid) -> Result<()> {
-        if !self.created.contains(&t) {
-            return Err(Error::Invalid("local names only a thing this write creates".into()));
-        }
-        self.ops.push(WriteOp::Local(t));
-        Ok(())
     }
 
     /// The members of `group`: what it contains, to add or remove.

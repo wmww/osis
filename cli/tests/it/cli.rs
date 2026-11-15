@@ -53,7 +53,7 @@ impl S {
     }
 
     fn thing(&self) -> String {
-        self.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string()
+        self.ok(&["create", "--in", "home", "t:made.0", "true"]).line().to_string()
     }
 
     /// A thing whose setting (`retention^.0`, written in its creating commit) keeps every
@@ -61,7 +61,7 @@ impl S {
     fn kept_thing(&self) -> String {
         let keep = "{history: #some(#keep({until: #some(9223372036854775807), after: #none})), expires: #none, final: false}";
         let setting = format!("{{rules: {{}}, retain: false, default: #some({keep})}}");
-        self.ok(&["create", "--in", "me", "t:made.0", "true", "retention^.0", &setting]).line().to_string()
+        self.ok(&["create", "--in", "home", "t:made.0", "true", "retention^.0", &setting]).line().to_string()
     }
 }
 
@@ -81,7 +81,7 @@ fn command_tree_is_consistent_plan_cli_tests() {
 #[test]
 fn things_and_aspects_plan_cli_4() {
     let s = S::mem();
-    let t = s.ok(&["create", "--in", "me", "note:title.0", "\"hi\"", "note:n.0", "3", "note:neg.0", "-3"]).line().to_string();
+    let t = s.ok(&["create", "--in", "home", "note:title.0", "\"hi\"", "note:n.0", "3", "note:neg.0", "-3"]).line().to_string();
     assert_eq!(s.ok(&["get", &t, "note:neg.0"]).line(), "-3");
     assert!(t.starts_with("osis://"));
     assert_eq!(s.ok(&["get", &t, "note:title.0"]).line(), "\"hi\"");
@@ -122,7 +122,7 @@ fn exit_codes_plan_cli_6() {
     // 7: invalid (role-class aspects are written only through sharing calls)
     assert_eq!(s.code(&["set", &t, "roles.0", "{}"]), 7);
     // 1: not built yet (queries)
-    let o = s.call(&["--json", "ls", "me"], "");
+    let o = s.call(&["--json", "ls", "home"], "");
     assert_eq!(o.code, 1);
     assert!(o.err.starts_with("{\"error\":{\"kind\":\"Cli\""), "{}", o.err);
     assert!(o.err.contains("not built yet"), "{}", o.err);
@@ -217,7 +217,7 @@ fn commands_run_through_the_daemon_plan_cli() {
 #[test]
 fn json_output_plan_cli_5() {
     let s = S::mem();
-    let o = s.ok(&["--json", "create", "--in", "me", "a:b.0", "1.5"]);
+    let o = s.ok(&["--json", "create", "--in", "home", "a:b.0", "1.5"]);
     assert!(o.out.starts_with("{\"commit\":\"") && o.out.contains("\"tid\":\"osis://"), "{}", o.out);
     let t = o.out.split("\"tid\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
     assert_eq!(s.ok(&["--json", "get", &t, "a:b.0"]).line(), "1.5");
@@ -232,7 +232,7 @@ fn json_output_plan_cli_5() {
 #[test]
 fn write_script_atomic_plan_cli_4() {
     let s = S::mem();
-    let script = "# a note with a tag\ncreate --in me --as n note:title.0 \"a b\"\nset $n note:tags.0 #{\"x\"}\nset $n note:m.0 [\"k\"] [$n, me]\n";
+    let script = "# a note with a tag\ncreate --in home --as n note:title.0 \"a b\"\nset $n note:tags.0 #{\"x\"}\nset $n note:m.0 [\"k\"] [$n, me]\n";
     let o = s.call(&["write"], script);
     assert_eq!(o.code, 0, "{}", o.err);
     let mut lines = o.out.lines();
@@ -243,11 +243,11 @@ fn write_script_atomic_plan_cli_4() {
     let me = s.ok(&["--json", "whoami"]).out.split("\"me\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
     assert_eq!(s.ok(&["get", &n, "note:m.0", "[\"k\"]"]).line(), format!("[{n}, {me}]"));
     // the third line fails: nothing of the script is committed
-    let bad = "create --in me --as x a:b.0 1\nset $x a:c.0 2\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
-    let before = s.ok(&["writes", "--group", "me"]).out;
+    let bad = "create --in home --as x a:b.0 1\nset $x a:c.0 2\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
+    let before = s.ok(&["writes", "--group", "home"]).out;
     let o = s.call(&["write"], bad);
     assert_eq!(o.code, 3, "{}", o.err);
-    assert_eq!(s.ok(&["writes", "--group", "me"]).out, before);
+    assert_eq!(s.ok(&["writes", "--group", "home"]).out, before);
     // a script parse error is usage, reported once
     let o = s.call(&["write"], "frobnicate x\n");
     assert_eq!(o.code, 2);
@@ -260,7 +260,7 @@ fn write_script_atomic_plan_cli_4() {
 #[test]
 fn untyped_index_paths_notes_cli() {
     let s = S::mem();
-    let t = s.ok(&["create", "--in", "me", "x:l.0", "[10, 20]", "x:m.0", "{1: \"a\"}"]).line().to_string();
+    let t = s.ok(&["create", "--in", "home", "x:l.0", "[10, 20]", "x:m.0", "{1: \"a\"}"]).line().to_string();
     assert_eq!(s.ok(&["get", &t, "x:l.0", "[1]"]).line(), "20");
     let o = s.call(&["set", &t, "x:l.0", "[0]", "5"], "");
     assert_eq!(o.code, 2, "{}", o.err);
@@ -271,13 +271,13 @@ fn untyped_index_paths_notes_cli() {
     s.ok(&["set", &t, "x:m.0", "[1]", "\"b\""]);
     assert_eq!(s.ok(&["get", &t, "x:m.0"]).line(), "{1: \"b\"}");
     // in a script, an aspect written by an earlier line cannot be resolved against saved state
-    let before = s.ok(&["writes", "--group", "me"]).out;
+    let before = s.ok(&["writes", "--group", "home"]).out;
     let o = s.call(&["write"], &format!("set {t} x:m.0 {{1: \"c\"}}\nset {t} x:m.0 [1] \"d\"\n"));
     assert_eq!(o.code, 2, "{}", o.err);
     assert!(o.err.contains("line 2") && o.err.contains("earlier in this script"), "{}", o.err);
-    let o = s.call(&["write"], "create --in me --as a x:l.0 [1, 2]\nset $a x:l.0 [0] 5\n");
+    let o = s.call(&["write"], "create --in home --as a x:l.0 [1, 2]\nset $a x:l.0 [0] 5\n");
     assert_eq!(o.code, 2, "{}", o.err);
-    assert_eq!(s.ok(&["writes", "--group", "me"]).out, before);
+    assert_eq!(s.ok(&["writes", "--group", "home"]).out, before);
 }
 
 // notes/cli.md Design `--timeout` parses (`0` is no timeout: `deadline_never_overflows_plan_cli_2`).
@@ -331,7 +331,7 @@ fn commits_undo_redo_plan_cli_4() {
     assert_eq!(s.ok(&["writes", "--thing", &t, "--before", pos]).out.lines().count(), 4);
     s.ok(&["revert", id_of(&newest)]);
     assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "1");
-    assert_eq!(s.code(&["undo", "--thing", &t, "--group", "me"]), 2);
+    assert_eq!(s.code(&["undo", "--thing", &t, "--group", "home"]), 2);
     assert_eq!(s.code(&["writes", "--thing", &t, "--kind", "nope"]), 2);
     s.ok(&["set", &t, "a:x.0", "3"]);
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
@@ -349,7 +349,7 @@ fn commits_undo_redo_plan_cli_4() {
 fn groups_plan_cli_4() {
     let s = S::mem();
     s.ok(&["create"]);
-    s.ok(&["create", "--in", "me"]);
+    s.ok(&["create", "--in", "home"]);
     let g = s.ok(&["create", "t:made.0", "true"]).line().to_string();
     let t = s.thing();
     s.ok(&["group", "add", &g, &t]);
@@ -387,7 +387,7 @@ fn stream_and_len_plan_cli_4() {
 #[test]
 fn an_untyped_index_past_the_limit_says_so() {
     let s = S::mem();
-    let t = s.ok(&["create", "--in", "me", "t:l.0", "[\"a long enough string\"]"]).line().to_string();
+    let t = s.ok(&["create", "--in", "home", "t:l.0", "[\"a long enough string\"]"]).line().to_string();
     assert_eq!(s.ok(&["get", &t, "t:l.0", "[0]"]).line(), "\"a long enough string\"");
     assert_eq!(s.code(&["--limit", "4", "get", &t, "t:l.0", "[0]"]), 5);
 }
@@ -398,7 +398,7 @@ fn an_untyped_index_past_the_limit_says_so() {
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
-    let g = s.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string();
+    let g = s.ok(&["create", "--in", "home", "t:made.0", "true"]).line().to_string();
     // spec/sync-inbox.md §6: `make_link` works on every node; the link names this node
     let link = s.ok(&["link", "make", &g, "write", "--single-use"]).line().to_string();
     assert!(link.starts_with("osis://link/"), "{link}");
@@ -443,7 +443,7 @@ fn backlinks_lists_the_referrers() {
 #[test]
 fn unbuilt_commands_say_so_plan_cli_4() {
     let s = S::mem();
-    let o = s.call(&["ls", "me"], "");
+    let o = s.call(&["ls", "home"], "");
     assert_eq!(o.code, 1, "{}", o.err);
     assert!(o.err.contains("not built yet"), "{}", o.err);
     assert_eq!(s.ok(&["node", "ls"]).out.lines().count(), 1, "this node");
@@ -455,7 +455,7 @@ fn unbuilt_commands_say_so_plan_cli_4() {
 #[test]
 fn watch_initial_not_counted_plan_cli_4() {
     let s = S::mem();
-    let t = s.ok(&["create", "--in", "me", "a:b.0", "7"]).line().to_string();
+    let t = s.ok(&["create", "--in", "home", "a:b.0", "7"]).line().to_string();
     let o = s.call(&["--timeout", "50ms", "watch", &t, "a:b.0", "--count", "1"], "");
     assert_eq!((o.code, o.line(), o.err.trim()), (6, "initial - - a:b.0 7", "error: timed out after 0 change(s)"));
     let o = s.call(&["--json", "--timeout", "50ms", "watch", &t, "--count", "1"], "");
@@ -498,7 +498,7 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["init"], "").0, 0);
     assert_eq!(call(&["schema", "add", f.to_str().unwrap()], "").0, 0);
     assert!(call(&["schema", "ls"], "").1.contains("todo.osis"));
-    let (c, t, e) = call(&["create", "--in", "me", "todo:task.0", "{title: \"buy\", done: false, due: #some(2026-01-02T03:04:05Z)}"], "");
+    let (c, t, e) = call(&["create", "--in", "home", "todo:task.0", "{title: \"buy\", done: false, due: #some(2026-01-02T03:04:05Z)}"], "");
     assert_eq!(c, 0, "{e}");
     let t = t.trim();
     assert_eq!(call(&["get", t, "todo:task.0"], "").1, "{title: \"buy\", done: false, due: #some(2026-01-02T03:04:05Z)}\n");
@@ -562,10 +562,10 @@ fn named_keys_with_schema_plan_cli_1() {
 #[test]
 fn inspect_and_diag_plan_cli_4() {
     let s = S::mem();
-    let t = s.ok(&["create", "--in", "me", "a:b.0", "1"]).line().to_string();
+    let t = s.ok(&["create", "--in", "home", "a:b.0", "1"]).line().to_string();
     let o = s.ok(&["inspect", "thing", &t]).out;
     assert!(o.contains("aspect a:b.0 commits=1"), "{o}");
-    assert!(s.ok(&["inspect", "group", "me"]).out.contains(&t));
+    assert!(s.ok(&["inspect", "group", "home"]).out.contains(&t));
     // notes/api.md Reads: `show` names the creating commit; `now` the clock
     let shown = s.ok(&["show", &t]).out;
     assert!(shown.contains("created\t"), "{shown}");
@@ -784,7 +784,7 @@ fn group_and_splice_commands() {
 #[ignore = "issues/sync-rewrite.md"]
 fn repro_row3_row12_links_and_cards_on_a_store_with_no_saved_peer() {
     let s = S::mem();
-    let g = s.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string();
+    let g = s.ok(&["create", "--in", "home", "t:made.0", "true"]).line().to_string();
     s.ok(&["group", "sync", &g]);
     assert_eq!(s.code(&["link", "make", &g, "write"]), 0, "link make");
     assert_eq!(s.code(&["card", "show"]), 0, "card show");

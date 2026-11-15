@@ -380,17 +380,14 @@ fn a_thing_listed_nowhere_reaches_the_accounts_other_node_spec_sync_set_1() {
 }
 
 // spec/sync-set.md §1 (Filing): a thing created local is not filed, so it stays off the
-// account's other node; listed in home later, it reaches it, its creation included. (Written
-// beside something that syncs, a commit's parts on it travel with that commit: one blob per
-// commit, spec/sync-judgement.md §1.)
+// account's other node; listed in home later, it reaches it, its creation included.
 #[test]
 fn a_local_thing_stays_until_listed_somewhere_synced_spec_sync_set_1() {
     let c = clock();
     let net = ManualNet::new(c.clone());
     let (a, b) = paired(&net, &c);
     let mut w = a.write();
-    let t = w.create().unwrap();
-    w.local(t).unwrap();
+    let t = w.create_local().unwrap();
     w.at(t, osis::core::NAME).set(&"t".to_string()).unwrap();
     w.commit().unwrap();
     let mut w = a.write();
@@ -410,12 +407,11 @@ fn a_local_thing_stays_until_listed_somewhere_synced_spec_sync_set_1() {
     assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("t"), "listed in home: reaches b");
 }
 
-// spec/sync-set.md §1 (Filing), spec/wire.md §4 (Commit blob): its limit, a section sealed to
-// its thing's readers: a local thing written beside a group shared with another account rides that commit's
-// blob to it, sealed to the local thing's readers: the other account reads the group's write and
-// none of the local thing's parts (the header names it, as any thing a commit touches).
+// spec/sync-set.md §1 (Local stays local): a write of a local thing beside a group shared with
+// another account is refused (one blob per commit would carry the local thing's parts to it);
+// written alone it reaches nobody; granting it shares it.
 #[test]
-fn a_local_thing_beside_a_shared_group_stays_sealed_spec_sync_set_1() {
+fn a_local_thing_shares_no_write_with_a_shared_group_spec_sync_set_1() {
     let c = clock();
     let net = ManualNet::new(c.clone());
     let a = on(&net, 54, &c);
@@ -433,16 +429,22 @@ fn a_local_thing_beside_a_shared_group_stays_sealed_spec_sync_set_1() {
     }
     o.accept_invite(g, o.home()).unwrap();
     let mut w = a.write();
-    let l = w.create().unwrap();
-    w.local(l).unwrap();
+    let l = w.create_local().unwrap();
     w.at(l, osis::core::NAME).set(&"private".to_string()).unwrap();
+    w.commit().unwrap();
+    let mut w = a.write();
+    w.at(l, osis::core::NAME).set(&"private 2".to_string()).unwrap();
+    w.at(g, osis::core::NAME).set(&"shared".to_string()).unwrap();
+    assert!(matches!(w.commit(), Err(osis::Error::Invalid(m)) if m.contains(&l.to_string())), "refused, naming the local thing");
+    let mut w = a.write();
     w.at(g, osis::core::NAME).set(&"shared".to_string()).unwrap();
     w.commit().unwrap();
     for _ in 0..5 {
         net.run();
     }
-    assert_eq!(name(&o, g).as_deref(), Some("shared"), "the commit reached o");
-    assert_eq!(o.at(l, osis::core::NAME).get().ok().flatten(), None, "no part of the local thing read");
+    assert_eq!(name(&o, g).as_deref(), Some("shared"), "the group's write reached o");
+    assert_eq!(o.created(l).unwrap(), None, "the local thing did not");
+    a.grant(l, o.me(), Role::Read, osis::GrantOpts::default()).unwrap();
     assert_eq!(a.at(l, osis::core::NAME).get().unwrap().as_deref(), Some("private"));
 }
 

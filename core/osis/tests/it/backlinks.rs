@@ -124,7 +124,9 @@ fn backlinks_follow_writes_in_any_arrival_order() {
 fn only_what_the_actor_may_read() {
     let db = db(1);
     let (actor, _) = db.add_client(None).unwrap();
-    let [g, h, x] = things(&db, 3)[..] else { panic!() };
+    let [x] = things(&db, 1)[..] else { panic!() };
+    // groups that sync: what is made under them shares a write (spec/sync-set.md §1 Local stays local)
+    let [g, h] = db.commit_with(|w| Ok([w.create()?, w.create()?])).unwrap();
     let mut w = db.write();
     // three readable, three not
     let srcs: Vec<(Tid, bool)> = (0..6).map(|i| (w.create_in([g, h][i % 2], &[[g, h][i % 2]]).unwrap(), i % 2 == 0)).collect();

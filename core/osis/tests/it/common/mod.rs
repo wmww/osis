@@ -280,10 +280,10 @@ impl MembersOf for Osis {
     }
 }
 
-/// `n` new local things (`Write::local`, spec/sync-set.md §1 Filing): listed nowhere, for tests
+/// `n` new local things (`Write::create_local`, spec/sync-set.md §1 Filing): listed nowhere, for tests
 /// where a home listing would be noise (a backlink, a membership).
 pub fn unfiled(db: &Osis, n: usize) -> Vec<Tid> {
-    db.commit_with(|w| (0..n).map(|_| { let t = w.create()?; w.local(t)?; Ok(t) }).collect()).unwrap()
+    db.commit_with(|w| (0..n).map(|_| w.create_local()).collect()).unwrap()
 }
 
 pub trait CreateIn {

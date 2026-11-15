@@ -13,7 +13,7 @@
 //! You are the first admin of a thing you create. `me()` is your account; `home()` is a private group synced to
 //! all your nodes. A thing you create reaches your other nodes: unless the same write lists it in
 //! a group that syncs, the write also lists it in `home()`, as a subgroup. One meant to stay on
-//! this device is named so (`Write::local`).
+//! this device is made with `Write::create_local`.
 //! ```
 //! use osis::{Config, Member, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;

@@ -700,6 +700,9 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
     // node anyway); placing a durable thing persists the group
     let home_item = w.create_with_content(db.home()).unwrap();
     w.group(db.home()).add(osis::Member::Item(home_item)).unwrap();
+    w.commit().unwrap();
+    // a local thing's write is a commit of its own (spec/sync-set.md §1 Local stays local)
+    let mut w = db.write();
     w.group(g).add(osis::Member::Item(lost)).unwrap();
     // a thing whose admin is the account, an item of home: home's holders (the account's
     // devices actor) read as the account does (spec/sync-judgement.md §1 Entitlement)
@@ -1717,10 +1720,12 @@ fn a_cut_or_expiring_subgroup_tells_what_it_strands() {
     }).unwrap();
     // listed nowhere but where the test lists them (no home filing, spec/sync-set.md §1 Filing)
     let [expiring, in_expiring] = unfiled(&db, 2)[..] else { panic!() };
+    // a local thing's write is a commit of its own (spec/sync-set.md §1 Local stays local)
+    commit_with(&db, |w| w.at(in_expiring, k.clone()).set(&Value::Int(1)));
     let mut w = db.write();
     let cut = w.create().unwrap();
     let (kept, in_cut) = (w.create_with_admin(synced).unwrap(), w.create().unwrap());
-    for t in [kept, in_cut, in_expiring] {
+    for t in [kept, in_cut] {
         w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
     }
     w.group(synced).add(osis::Member::Subgroup(cut)).unwrap();
@@ -1776,15 +1781,14 @@ fn from_now_grant_is_kept_until_a_grant_shows_everything() {
 
 // spec/sync-set.md §1 (Filing): a write as the account lists what it creates under home, as a
 // subgroup, unless the same write lists it in a group a synced group's closure walks: one listed
-// there is not filed; one made under home is filed (so its items sync); one listed only in a
-// group no synced group holds, or as an item of a group whose items do not sync, is filed too;
-// what the write lists in a group it creates and files rides with that group.
+// there is not filed; one made under home is filed (so its items sync); one listed as an item of
+// a group whose items do not sync is filed too; what the write lists in a group it creates and
+// files rides with that group.
 #[test]
 fn create_files_what_nothing_synced_holds_spec_sync_set_1() {
     let db = db(0);
     let home = db.home();
     let in_home = |t| db.members(home).unwrap().into_iter().filter(|m| matches!(m, osis::Member::Item(x) | osis::Member::Subgroup(x) if *x == t)).collect::<Vec<_>>();
-    let [local] = unfiled(&db, 1)[..] else { panic!() };
     let mut w = db.write();
     let main = w.create().unwrap();
     w.group(home).add(osis::Member::Subgroup(main)).unwrap();
@@ -1793,8 +1797,6 @@ fn create_files_what_nothing_synced_holds_spec_sync_set_1() {
     let item = w.create().unwrap();
     w.group(home).add(osis::Member::Item(item)).unwrap();
     let under_home = w.create_with_admin(home).unwrap();
-    let only_local = w.create().unwrap();
-    w.group(local).add(osis::Member::Item(only_local)).unwrap();
     let in_item = w.create().unwrap();
     w.group(item).add(osis::Member::Item(in_item)).unwrap();
     let bare = w.create().unwrap();
@@ -1804,32 +1806,21 @@ fn create_files_what_nothing_synced_holds_spec_sync_set_1() {
     assert_eq!(in_home(main), vec![osis::Member::Subgroup(main)], "listed by the write: no second listing");
     assert_eq!(in_home(listed), vec![], "in a synced closure's walked group");
     assert_eq!(in_home(item), vec![osis::Member::Item(item)], "an item of home is listed");
-    for t in [under_home, only_local, in_item, bare] {
+    for t in [under_home, in_item, bare] {
         assert_eq!(in_home(t), vec![osis::Member::Subgroup(t)], "filed");
     }
     assert_eq!(in_home(rides), vec![], "carried by the group it is listed in");
     assert!(db.engine(|e| e.closure(&home).contains(&rides)), "which syncs its items");
 }
 
-// spec/sync-set.md §1 (Filing): a thing the write names `local` is not filed, and no
-// `NotSynced` says it stays here (one in a group its holders may not read still does); beside it a
-// thing not named still is filed, a thing the write lists only in
-// the local one included; `local` names only what the write creates.
+// spec/sync-set.md §1 (Filing): a thing made with `create_local` is not filed, and no
+// `NotSynced` says it stays here; beside it, a thing not made local still is filed, which puts
+// the two in different writes (Local stays local).
 #[test]
 fn a_local_thing_is_not_filed_spec_sync_set_1() {
     let db = db(0);
     let home = db.home();
     let in_home = |t| db.members(home).unwrap().into_iter().any(|m| matches!(m, osis::Member::Item(x) | osis::Member::Subgroup(x) if x == t));
-    let mut w = db.write();
-    let local = w.create().unwrap();
-    w.local(local).unwrap();
-    let inner = w.create().unwrap();
-    w.group(local).add(osis::Member::Item(inner)).unwrap();
-    let filed = w.create().unwrap();
-    let made = w.commit().unwrap().unwrap();
-    assert!(!in_home(local), "named local");
-    assert!(in_home(inner) && in_home(filed), "not named: filed");
-    assert!(made.parts().any(|p| p.0 == home));
     let (tx, rx) = std::sync::mpsc::channel();
     let _sub = db.on_diagnostic(move |_, d| {
         if let osis::Diagnostic::NotSynced { thing, .. } = d {
@@ -1837,29 +1828,70 @@ fn a_local_thing_is_not_filed_spec_sync_set_1() {
         }
     }).unwrap();
     let mut w = db.write();
-    let alone = w.create_with_content(db.me()).unwrap();
-    w.local(alone).unwrap();
-    w.group(local).add(osis::Member::Item(alone)).unwrap();
+    let local = w.create_local().unwrap();
+    let inner = w.create_local().unwrap();
+    w.group(local).add(osis::Member::Item(inner)).unwrap();
+    w.at(inner, osis::core::NAME).set(&"inner".to_string()).unwrap();
     let made = w.commit().unwrap().unwrap();
-    assert!(!in_home(alone) && made.parts().all(|p| p.0 != home), "no part on home");
+    assert!(!in_home(local) && !in_home(inner) && made.parts().all(|p| p.0 != home), "made local: no part on home");
     db.settle();
     assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![], "kept here on purpose: no NotSynced");
-    // a group whose holders may not read it is no place it is kept on purpose: still told
     let mut w = db.write();
-    let shared = w.create_in(db.me(), &[home]).unwrap();
+    let filed = w.create().unwrap();
     w.commit().unwrap();
-    db.make_link(shared, Role::Read, osis::LinkOpts::default()).unwrap();
-    db.settle();
-    assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![], "the account's own item of home reaches its holders");
+    assert!(in_home(filed), "not made local: filed");
     let mut w = db.write();
-    let hidden = w.create_with_content(db.me()).unwrap();
-    w.local(hidden).unwrap();
-    w.group(shared).add(osis::Member::Item(hidden)).unwrap();
+    let local = w.create_local().unwrap();
+    let _ = w.create().unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains(&local.to_string())), "a filed sibling writes home: refused, naming the local thing");
+}
+
+// spec/sync-set.md §1 (Local stays local): judged on the state each write leaves, whenever the
+// thing was made: a write with a part on a local thing and one on a thing that syncs is refused,
+// naming the local thing; so is one leaving a thing made local where something syncs holds it.
+// A later write listing it somewhere synced may write it too, and from then on it syncs.
+#[test]
+fn a_local_thing_shares_no_write_with_what_syncs_spec_sync_set_1() {
+    let db = db(0);
+    let home = db.home();
+    let named = |m: &str, t: osis::Tid| m.contains(&t.to_string());
+    let name = |w: &mut osis::Write<'_>, t, v: &str| w.at(t, osis::core::NAME).set(&v.to_string()).unwrap();
+    let mut w = db.write();
+    let _ = w.create().unwrap();
+    let [l, m] = [w.create_local().unwrap(), w.create_local().unwrap()];
+    assert!(matches!(w.commit(), Err(Error::Invalid(e)) if named(&e, l) || named(&e, m)), "beside a filed thing");
+    let mut w = db.write();
+    let l = w.create_local().unwrap();
+    w.group(home).add(osis::Member::Subgroup(l)).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(e)) if named(&e, l)), "made local yet listed in home");
+    let mut w = db.write();
+    let g = w.create().unwrap();
     w.commit().unwrap();
-    db.settle();
-    assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![hidden], "its holders may not read it");
     let mut w = db.write();
-    assert!(matches!(w.local(filed), Err(Error::Invalid(_))), "not created by this write");
+    let l = w.create_local().unwrap();
+    let m = w.create_local().unwrap();
+    name(&mut w, l, "l");
+    name(&mut w, m, "m");
+    w.commit().unwrap();
+    // a later write, nothing about how l was made remembered
+    let mut w = db.write();
+    name(&mut w, l, "l2");
+    name(&mut w, g, "g");
+    assert!(matches!(w.commit(), Err(Error::Invalid(e)) if named(&e, l)), "a later write beside what syncs");
+    let mut w = db.write();
+    name(&mut w, l, "l2");
+    name(&mut w, m, "m2");
+    w.commit().expect("local things together");
+    // listed in home by a write that also writes it: carried once it commits
+    let mut w = db.write();
+    w.group(home).add(osis::Member::Subgroup(l)).unwrap();
+    name(&mut w, l, "l3");
+    w.commit().unwrap();
+    let mut w = db.write();
+    name(&mut w, l, "l4");
+    name(&mut w, g, "g2");
+    w.commit().unwrap();
+    assert_eq!(db.at(l, osis::core::NAME).get().unwrap().as_deref(), Some("l4"));
 }
 
 // spec/sync-set.md §1 (Filing): the filing listing is part of the creating commit, with its

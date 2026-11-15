@@ -408,8 +408,8 @@ pub struct CreateArgs {
     /// First admin in place of the acting actor: a thin client's way to create, naming a group that outlives it
     #[arg(long, value_name = "G")]
     pub admin: Option<String>,
-    /// Keep it on this device: not listed in home, so it reaches other nodes only once listed somewhere synced
-    #[arg(long)]
+    /// Keep it on this device: not listed in home, and refused beside or under anything that syncs until a later write lists it somewhere synced
+    #[arg(long, conflicts_with = "admin")]
     pub local: bool,
     #[command(flatten)]
     pub groups: GroupsArgs,
