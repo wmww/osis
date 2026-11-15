@@ -1267,7 +1267,7 @@ pub struct Core {
     /// the link key L, held in `key_actors`. K's sync ID is in the sync set while followed
     /// (spec/sync-set.md §2). In memory only: sync holds the link durably and follows it again
     /// at a start.
-    pub followed_links: memo::Stamped<Tid, (osis_base::SyncId, Tid)>,
+    pub(crate) followed_links: crate::sync_ids::actors::FollowedLinks,
     /// The account this node belongs to (`Engine::join_account`): the author of its commits and
     /// the holder of its roles. `None` before it joins one.
     pub account: memo::Tracked<Option<Tid>>,
@@ -3597,6 +3597,12 @@ impl Engine {
     #[doc(hidden)]
     pub fn take_wakes(&mut self) -> Wakes {
         self.core.wakes.replace(Wakes::default()).unwrap_or_default()
+    }
+
+    /// The first `limit` local records under `prefix`, read in a store transaction dropped after:
+    /// a read of rows alone, for a caller that reads nothing else through a `Tx` (`next_timer`).
+    pub(crate) fn scan_local(&mut self, prefix: &[u8], limit: usize) -> Result<Vec<osis_store::KeyValue>> {
+        Ok(self.store.transaction(&mut self.store_rng)?.scan_local(prefix, &[], limit)?)
     }
 
     /// What `f` returns, run as a read: in a store transaction dropped after, and whatever `f`

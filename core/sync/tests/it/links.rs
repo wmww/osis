@@ -521,3 +521,41 @@ fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
     assert!(!w.engine(1).roster(&link.k).contains_key(&w.node(1).account.unwrap()), "node 1's account left K");
     assert!(!hinted(&w), "the peer dropped with the join");
 }
+
+// spec/sync-set.md §2 (Sync set: a link's sync ID while its redeemer redeems it), spec/sync-status.md
+// §2 (Held elsewhere: a commit by a key actor it holds, a followed link's key): a redeem judges again only what the
+// link moves, not what the redeemer wrote before: the bodies read judges again and the own
+// commits judged again are the same after n and 10n writes of its own.
+#[test]
+fn a_redeem_judges_none_of_the_redeemers_own_writes_spec_sync_set_2() {
+    let judged = |n: i64| -> (u64, u64) {
+        let mut w = crate::harness::contacts();
+        let mut m = osis_engine::Mutation::new();
+        let t = w.write(1, |e| {
+            let me = e.account().unwrap().unwrap().0;
+            let t = e.new_thing(&mut m, me);
+            e.commit(m).unwrap();
+            t
+        });
+        crate::harness::history::file(&mut w, 1, vec![t], Vec::new());
+        w.write(1, |e| {
+            for i in 0..n {
+                let mut m = osis_engine::Mutation::new();
+                m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(i)).unwrap();
+                e.commit(m).unwrap();
+            }
+        });
+        w.run();
+        let p0 = w.node(0).profile.unwrap();
+        let link = w.make_link(0, p0, Role::Read);
+        w.run();
+        osis_base::costs::take();
+        w.redeem(1, &link);
+        w.run();
+        let c = osis_base::costs::take();
+        // judged again: due by a read that moved (`Effects` causes), not first judgements
+        let again = |name: &str| c.iter().filter(|x| x.0.strip_prefix(name).and_then(|r| r.strip_prefix(" <- ")).is_some_and(|cause| cause != "unsettled")).map(|x| x.2).sum::<u64>();
+        (again("read: judged"), again("own: commits"))
+    };
+    assert_eq!(judged(2), judged(20), "(bodies judged again, own commits judged again) by a redeem at n and 10n own writes");
+}

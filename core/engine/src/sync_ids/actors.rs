@@ -2,7 +2,7 @@
 //! has secrets of its own, else its first admin), who may read it, a group's closure and its
 //! sync IDs (`sync.0`).
 
-use osis_base::memo::Memo;
+use osis_base::memo::{Memo, Stamped};
 use crate::engine::{Core, Engine};
 use crate::error::Result;
 use osis_base::{ChainStep, SyncId, Role, Tid};
@@ -231,19 +231,92 @@ impl Engine {
     }
 }
 
+/// The links this node redeems (`Engine::follow_link`): link K to its sync ID from the link text
+/// and its link key L, read per key three ways (by K; by L, an author this node writes as; by
+/// sync ID), so a reader asking about one link, actor or sync ID moves only when that one does,
+/// not at every link followed or let go. In memory only (`Core::followed_links`).
+#[derive(Clone, Default)]
+pub(crate) struct FollowedLinks {
+    by_k: Stamped<Tid, (SyncId, Tid)>,
+    /// Per link key L, the links K it is the key of.
+    by_actor: Stamped<Tid, BTreeSet<Tid>>,
+    /// Per sync ID, the links K whose text names it.
+    by_sync: Stamped<SyncId, BTreeSet<Tid>>,
+}
+
+impl FollowedLinks {
+    /// Link `k`'s sync ID and key, read per K.
+    pub(crate) fn get(&self, k: &Tid) -> Option<(SyncId, Tid)> {
+        self.by_k.get(k).copied()
+    }
+
+    pub(crate) fn contains(&self, k: &Tid) -> bool {
+        self.by_k.contains_key(k)
+    }
+
+    /// Every link followed: a read of all of them.
+    pub(crate) fn all(&self) -> &BTreeMap<Tid, (SyncId, Tid)> {
+        &self.by_k
+    }
+
+    /// Whether `a` is the key of a link followed, read per actor.
+    pub(crate) fn is_key(&self, a: &Tid) -> bool {
+        self.by_actor.contains_key(a)
+    }
+
+    /// The links whose text names sync ID `s`, read per sync ID.
+    pub(crate) fn naming(&self, s: &SyncId) -> BTreeSet<Tid> {
+        self.by_sync.get(s).cloned().unwrap_or_default()
+    }
+
+    /// Follows link `k` under `(s, l)`; the same again moves nothing.
+    pub(crate) fn insert(&mut self, k: Tid, s: SyncId, l: Tid) {
+        if self.by_k.get(&k) == Some(&(s, l)) {
+            return;
+        }
+        self.remove(&k);
+        self.by_k.insert(k, (s, l));
+        Self::add(&mut self.by_actor, l, k);
+        Self::add(&mut self.by_sync, s, k);
+    }
+
+    /// Lets link `k` go: its key, if it was followed.
+    pub(crate) fn remove(&mut self, k: &Tid) -> Option<Tid> {
+        let (s, l) = self.by_k.remove(k)?;
+        Self::take(&mut self.by_actor, &l, k);
+        Self::take(&mut self.by_sync, &s, k);
+        Some(l)
+    }
+
+    fn add<K: Ord + std::hash::Hash + Clone>(m: &mut Stamped<K, BTreeSet<Tid>>, at: K, k: Tid) {
+        let mut ks = m.get(&at).cloned().unwrap_or_default();
+        ks.insert(k);
+        m.insert(at, ks);
+    }
+
+    fn take<K: Ord + std::hash::Hash + Clone>(m: &mut Stamped<K, BTreeSet<Tid>>, at: &K, k: &Tid) {
+        let mut ks = m.get(at).cloned().unwrap_or_default();
+        ks.remove(k);
+        match ks.is_empty() {
+            true => drop(m.remove(at)),
+            false => drop(m.insert(at.clone(), ks)),
+        }
+    }
+}
+
 /// A link being redeemed (`Engine::follow_link`): K's sync ID from its link text, followed with no
 /// recorded path while the link text is all this node has of it (spec/sync-set.md §2). The link
 /// text is untrusted: its K must be a link's K or unknown here (`followable`), and its sync ID no
 /// other thing's here (no applied `sync.0` records it, no sync record, destroyed thing, inbox hint
 /// or other followed link names it), else it is nobody's.
 fn followed(e: &Engine, k: &Tid) -> Option<OwnedSyncId> {
-    let (s, _) = e.core.followed_links.get(k).copied()?;
+    let (s, _) = e.core.followed_links.get(k)?;
     let ix = &e.core.ix;
     let elsewhere = crate::sync::inbox::recorded(e, &s)
         || ix.record_ids.get(&s).is_some_and(|x| !x.is_empty())
         || ix.destroyed_sync_ids.values().any(|v| v.iter().any(|o| o.id == s))
         || ix.hinted.get(&s).is_some_and(|x| x.iter().any(|t| t != k))
-        || e.core.followed_links.iter().any(|(t, x)| t != k && x.0 == s);
+        || e.core.followed_links.naming(&s).iter().any(|t| t != k);
     (followable(e, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true })
 }
 
@@ -251,7 +324,7 @@ fn followed(e: &Engine, k: &Tid) -> Option<OwnedSyncId> {
 /// (its creation record has the `link` field), or one it knows nothing of yet (no record, sync
 /// record or destruction). A link text naming any other thing as K changes nothing of it.
 pub(crate) fn followable(e: &Engine, k: &Tid) -> bool {
-    if !e.core.followed_links.contains_key(k) {
+    if !e.core.followed_links.contains(k) {
         return false;
     }
     match e.core.created(k) {

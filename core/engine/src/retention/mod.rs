@@ -1281,18 +1281,20 @@ impl Engine {
     }
 
     /// When the next retention timer is due (wall ms).
+    /// Asked by a driver at every step: one row read and the in-memory indexes borrowed, with
+    /// none of a read's in-memory work (`Engine::read`: a mark, an undo, its debug check), which
+    /// a borrow cannot need.
     pub fn next_timer(&mut self) -> Result<Option<u64>> {
-        self.read(|tx| {
-            let first = tx.txn.scan_local(records::TIMER, &[], 1)?;
-            let part = first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t);
-            let aspect = tx.core.ix.leave_due.keys().next().copied();
-            let live = Some(tx.core.compaction.next_at()).filter(|t| *t != u64::MAX);
-            let inbox = tx.core.ix.waiting_inbox.values().map(|w| w.expires.0).chain(tx.core.ix.offers.values().map(|o| o.expires.0)).min();
-            let fallen = (!tx.core.fallen.is_empty()).then(|| tx.now().0);
-            // a commit pending for its `ts` ahead (`apply::Wake::At`)
-            let drift = crate::apply::next_at(tx.core);
-            Ok(part.into_iter().chain(aspect).chain(live).chain(inbox).chain(fallen).chain(drift).min())
-        })
+        let first = self.scan_local(records::TIMER, 1)?;
+        let part = first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t);
+        let core = &self.core;
+        let aspect = core.ix.leave_due.keys().next().copied();
+        let live = Some(core.compaction.next_at()).filter(|t| *t != u64::MAX);
+        let inbox = core.ix.waiting_inbox.values().map(|w| w.expires.0).chain(core.ix.offers.values().map(|o| o.expires.0)).min();
+        let fallen = (!core.fallen.is_empty()).then(|| self.now().0);
+        // a commit pending for its `ts` ahead (`apply::Wake::At`)
+        let drift = crate::apply::next_at(core);
+        Ok(part.into_iter().chain(aspect).chain(live).chain(inbox).chain(fallen).chain(drift).min())
     }
 
     /// Whether held commit `c` is an own replace of `(tid, ak)` (`snapshot::covered`).

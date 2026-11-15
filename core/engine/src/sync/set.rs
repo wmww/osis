@@ -59,7 +59,7 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_things, &(), |e| {
             let mut emptying: Vec<Tid> = e.core.ix.destroyed_sync_ids.keys().copied().collect();
             // links being redeemed (spec/sync-set.md §2)
-            emptying.extend(e.core.followed_links.keys().filter(|k| crate::sync_ids::actors::followable(e, k)).copied());
+            emptying.extend(e.core.followed_links.all().keys().filter(|k| crate::sync_ids::actors::followable(e, k)).copied());
             // home is never sourced away (spec/sync-set.md §5): D, which `set_sourced_now` never
             // cuts, roots the walk too, so the engine's own records on it (sync record keeps,
             // inbox marks, accepts) and what is filed under it sync even where a cut group holds D
@@ -118,7 +118,7 @@ impl Engine {
             osis_base::costs::count("sync: things walked", c.len() as u64);
             out.extend(c.iter().copied());
         }
-        out.extend(self.core.followed_links.keys().copied());
+        out.extend(self.core.followed_links.all().keys().copied());
         osis_base::costs::count("sync: things entered", out.len() as u64);
         Ok(out)
     }
@@ -211,7 +211,7 @@ impl Engine {
         }
         // a link being redeemed: its sync ID read while followed, whatever is held of K yet, while
         // it is K's (`followable`; from the link text until K's own `sync.0` records it)
-        if let Some((s, _)) = self.core.followed_links.get(t).copied()
+        if let Some((s, _)) = self.core.followed_links.get(t)
             && crate::sync_ids::actors::followable(self, t)
             && self.owned_sync_ids(t)?.iter().any(|o| o.id == s)
         {
@@ -271,7 +271,7 @@ impl Engine {
         for k in self.static_listed(&t)? {
             c.statics.insert(osis_crypto::static_entry(s, &k));
         }
-        if let Some((fs, l)) = self.core.followed_links.get(&t).copied()
+        if let Some((fs, l)) = self.core.followed_links.get(&t)
             && fs == *s
             && let Some(id) = self.core.key_actors.get(&l)
         {
@@ -380,7 +380,7 @@ impl Engine {
         things.extend(self.core.ix.destroyed_sync_ids.iter().filter(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t));
         // a thing a taken inbox blob named it for
         things.extend(self.core.ix.hinted.get(s).into_iter().flatten().copied());
-        things.extend(self.core.followed_links.iter().filter(|(_, x)| x.0 == *s).map(|(t, _)| *t));
+        things.extend(self.core.followed_links.naming(s));
         for t in things {
             if self.owned_sync_ids(&t)?.iter().any(|o| o.id == *s) {
                 return Ok(Some(t));
