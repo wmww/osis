@@ -103,22 +103,16 @@ pub(crate) fn roster(core: &Core, d: &Tid) -> Vec<Tid> {
 }
 
 /// The seed boxes of a rotation of account `p` minting the epoch with seed `seed`: one to each
-/// device on D's roster here after its membership changes `members`, carrying the new seed, and
-/// to each device it adds also every seed this node holds (spec/crypto.md §9, Custody).
-/// Ascending by tag.
-pub(crate) fn seed_boxes(tx: &mut Tx<'_>, p: &Tid, d: &Tid, seed: &Secret32, members: &super::signing::Members) -> Result<Vec<SeedBox>> {
-    let adds = &members.adds;
+/// device on its roster (`devices`: D's roster on its line after its membership changes),
+/// carrying the new seed, and to each device not on the roster of the epoch it is signed at
+/// (`newcomers`: one it adds, one a fork it joins added) also every seed this node holds, so it
+/// reads who minted each rotation on the line (spec/crypto.md §9, Custody). Ascending by tag.
+pub(crate) fn seed_boxes(tx: &mut Tx<'_>, p: &Tid, seed: &Secret32, devices: &BTreeSet<Tid>, newcomers: &BTreeSet<Tid>) -> Result<Vec<SeedBox>> {
+    let adds = newcomers;
     let epoch = AccountEpochKeys::from_seed(seed).signing.verifying_key();
     let held: Vec<Secret32> = tx.core.accounts.get(p).map(|a| a.keys.values().map(|k| k.seed().clone()).collect()).unwrap_or_default();
-    let mut devices = roster(tx.core, d);
-    devices.retain(|m| !members.removes.contains(m));
-    for a in adds {
-        if !devices.contains(a) {
-            devices.push(*a);
-        }
-    }
     let mut out = Vec::new();
-    for m in devices {
+    for m in devices.iter().copied() {
         let mut payload: Vec<&Secret32> = vec![seed];
         if adds.contains(&m) {
             payload.extend(held.iter().filter(|s| s.expose() != seed.expose()));

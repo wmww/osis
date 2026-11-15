@@ -179,6 +179,12 @@ impl AccountView {
         self.rule.chain().disregarded(r)
     }
 
+    /// This node's account: D's roster on the line joining held epochs `heads` (a rotation's
+    /// before it is made: `osis_perm::Chain::roster_joining`).
+    pub(crate) fn roster_joining(&self, heads: &[CommitId]) -> BTreeSet<Tid> {
+        self.devices.as_ref().map(|d| self.rule.chain().roster_joining(heads, d)).unwrap_or_default()
+    }
+
     /// This node's account: D's roster (`roster`).
     pub(crate) fn roster(&self) -> &BTreeSet<Tid> {
         &self.roster

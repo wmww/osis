@@ -1074,7 +1074,17 @@ fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
     spread(&mut lp);
     assert_eq!(lp.peers[0].engine.role_on(&p.devices), Some(Role::Admin));
     let home = *lp.peers[1].engine.get_typed(&p.devices, &ct::SYNC).unwrap().unwrap().keys().next().unwrap();
+    // the pairing's rotation re-keyed D: its home's next step registers the new epochs
+    lp.peers[1].engine.issue_step(&p.devices, &home, false).unwrap().expect("the pairing's step");
+    spread(&mut lp);
     (lp, p.devices, pa, home)
+}
+
+/// The head step of sync ID `s` of actor `a` at peer `k`: the one no other names as its parent.
+fn head_step(lp: &mut LocalPeer, k: usize, a: &Tid, s: &SyncId) -> osis_blob::Step {
+    let ids = lp.peers[k].engine.get_typed(a, &ct::SYNC).unwrap().unwrap();
+    let steps: Vec<osis_blob::Step> = ids.get(s).unwrap().steps.values().map(|r| osis_blob::parse_record(r).unwrap().0).collect();
+    steps.iter().find(|x| !steps.iter().any(|y| y.prev == Some(x.id()))).unwrap().clone()
 }
 
 // spec/permissions.md §3, spec/crypto.md §4 (Holder actors; Stale): the cascade: node d1
@@ -1563,10 +1573,11 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
     assert!(again.commits.is_empty(), "covered by the finalize's own rotation");
 }
 
-// notes/sync-access.md Limits (stranded node re-paired), spec/permissions.md §3: a node whose
-// grant raced a rotation of its account is re-sealed over the pairing channel.
+// spec/permissions.md §5.4 (Roster), §5.5 (merges): a pairing racing a removal (each one rotation
+// of the account) forks it; the merge joins them, its roster the union of the lines' (the new
+// node in, the removed node out), so D's new keys reach the new node and not the removed one.
 #[test]
-fn stranded_node_repaired_spec_perm_3() {
+fn a_pairing_racing_a_removal_is_joined_by_the_merge_spec_permissions_5_4() {
     let mut lp = net_bare(4, 0);
     let (a, _) = lp.peers[0].engine.create_account().unwrap();
     let (pa, p) = (a.account, a.devices);
@@ -1586,23 +1597,22 @@ fn stranded_node_repaired_spec_perm_3() {
     send(&mut lp, 3, 0, &ids);
     let (_, first) = lp.peers[0].engine.pair(&n).unwrap();
     send(&mut lp, 0, 3, &first);
+    lp.peers[3].engine.paired(&pa).unwrap();
     let d2 = lp.peers[2].engine.tid();
     lp.peers[1].engine.demote(&p, &Demotion { holder: d2, new: None, retain: None }).unwrap();
     spread(&mut lp);
-    let e1 = newest_read(&lp, 1, p).unwrap();
-    assert!(lp.peers[3].engine.epochs(&p).unwrap().read.secret(&e1).is_none(), "n is stranded");
-    assert_eq!(lp.peers[3].engine.roster(&p).get(&n).map(|e| e.role), Some(Role::Admin), "its grant stands: its granter's listing names it");
-    assert_eq!(sealed_write(&mut lp, 1, p, "stranded"), BTreeSet::from([0]), "n reads nothing new");
-    // re-pairing an existing holder re-seals it, and the account's rotation boxes it its seeds
-    let (again, send_) = lp.peers[0].engine.pair(&n).unwrap();
-    assert_eq!(again.commits.len(), 2);
-    send(&mut lp, 0, 3, &send_);
-    assert_eq!(newest_read(&lp, 3, p), Some(e1));
-    // the rotation reaches every node before the write: signed at a head it closes, the write
-    // would count only by its writer's later listing
+    let merged = lp.peers[0].engine.signing_due().unwrap();
+    assert_eq!(merged.commits.len(), 1, "the merge");
+    // it boxes n, which holds no box at the epoch it is wrapped under: delivered directly
+    carry(&mut lp, 0);
     spread(&mut lp);
-    assert!(lp.peers[2].engine.epochs(&p).unwrap().read.secret(&e1).is_none());
-    assert_eq!(sealed_write(&mut lp, 1, p, "repaired"), BTreeSet::from([0, 3]));
+    let e = newest_read(&lp, 0, p).unwrap();
+    for k in [1, 3] {
+        assert_eq!(newest_read(&lp, k, p), Some(e), "peer {k} follows the merge");
+        assert!(lp.peers[k].engine.roster(&p).contains_key(&n) && !lp.peers[k].engine.roster(&p).contains_key(&d2), "peer {k}: n in, d2 out");
+    }
+    assert!(lp.peers[2].engine.epochs(&p).is_none_or(|x| x.read.secret(&e).is_none()), "the removed node opens nothing new");
+    assert_eq!(sealed_write(&mut lp, 1, p, "joined"), BTreeSet::from([0, 3]));
 }
 
 /// Alice (0) grants carol (2) at e0 while bob (1) removes dave (rotation e1, without carol);
@@ -1825,18 +1835,17 @@ fn plain_first_admin_gets_secrets_before_its_thing_spec_perm_3() {
 fn registration_step_after_rotation_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
     let d1 = lp.peers[0].engine.tid();
-    let sync_ids = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
-    let genesis = osis_blob::StepId(*sync_ids.get(&card).unwrap().steps.keys().next().unwrap());
+    let parent = head_step(&mut lp, 1, &p, &card);
+    let had = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap().get(&card).unwrap().steps.len();
     assert!(lp.peers[1].engine.issue_step(&p, &card, false).unwrap().is_none(), "nothing newer");
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, retain: None }).unwrap();
     let (step, set) = lp.peers[1].engine.issue_step(&p, &card, false).unwrap().unwrap();
-    let parent = osis_blob::parse_record(&sync_ids.get(&card).unwrap().steps[&genesis.0]).unwrap().0;
     step.verify_child(&parent).unwrap();
     let claims = |i: usize| step.claim_key(lp.peers[i].engine.identity().keys().kem.x25519()).unwrap().verifying_key().to_bytes();
     assert!(set.contains(&claims(1)));
     assert!(!set.contains(&claims(0)));
     let now = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
-    assert_eq!(now.get(&card).unwrap().steps.len(), 2);
+    assert_eq!(now.get(&card).unwrap().steps.len(), had + 1);
 }
 
 // spec/crypto.md §3 (fresh deposit seed), spec/sync-ids.md §6: an admin's removal that rotates read writes a fresh
@@ -1868,9 +1877,7 @@ fn removal_refreshes_deposit_seed_spec_crypto_3() {
 #[test]
 fn refreshed_deposit_seed_issues_step_spec_sync_5() {
     let (mut lp, p, _pa, card) = nodes_and_alice();
-    let sync_ids = lp.peers[1].engine.get_typed(&p, &ct::SYNC).unwrap().unwrap();
-    let genesis = osis_blob::StepId(*sync_ids.get(&card).unwrap().steps.keys().next().unwrap());
-    let parent = osis_blob::parse_record(&sync_ids.get(&card).unwrap().steps[&genesis.0]).unwrap().0;
+    let parent = head_step(&mut lp, 1, &p, &card);
     assert!(lp.peers[1].engine.issue_step(&p, &card, false).unwrap().is_none(), "nothing newer");
     lp.peers[1].engine.refresh_deposit_seed(&p).unwrap();
     let new = lp.peers[1].engine.deposit_seed(&p).unwrap().unwrap();
@@ -2264,9 +2271,9 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
 
 // spec/permissions.md §5.1 Frontier, §5.2 Acting; notes/frontier-study.md (a kick
 // never scales with history): node 1 writes doc X many times as its account P, compacted, and
-// once as P on its own thing Y. Removing it from P lists only what no snapshot covers: Y's write
+// once as P on its own thing Y. A demotion of P lists only what no snapshot covers: Y's write
 // (it would go invalid unlisted, though the node's own right on Y never fell), not every
-// commit it made as P; X keeps its last value.
+// commit it made as P. Removing node 1 from P, X keeps its last value and Y its write.
 #[test]
 fn removed_node_frontier_lists_uncovered_acting_spec_perm_5_1() {
     let (mut lp, p) = account_two_nodes();
@@ -2294,8 +2301,9 @@ fn removed_node_frontier_lists_uncovered_acting_spec_perm_5_1() {
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     assert!(f.commits.contains(&on_y), "an uncovered write as P on a thing outside the scope");
     assert!(on_x.iter().all(|c| f.commits.contains(c)), "covered writes as P listed too: {} commits", f.commits.len());
-    lp.peers[0].engine.demote(&p, &Demotion { holder: d, new: None, retain: None }).unwrap();
-    assert!(!lp.peers[0].engine.roster(&p).contains_key(&d));
+    let n1 = lp.peers[1].engine.tid();
+    lp.peers[0].engine.remove_device(&n1).unwrap();
+    assert!(!lp.peers[0].engine.roster(&p).contains_key(&n1));
     assert_eq!(lp.peers[0].engine.get(&x, &reg).unwrap(), Some(s("v29")));
     assert_eq!(lp.peers[0].engine.get(&y, &reg).unwrap(), Some(s("as p")));
 }

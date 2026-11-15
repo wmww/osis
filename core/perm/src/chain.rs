@@ -274,11 +274,19 @@ impl<E: Ord + Copy> Chain<E> {
     /// nodes of its line under the taken revocations, a removal taken off the line holding
     /// unless the line adds its node back after it.
     pub fn roster<M: Ord + Copy>(&self, e: &E, d: &Devices<E, M>) -> BTreeSet<M> {
-        let line: BTreeSet<E> = self.lines.get(e).cloned().unwrap_or_default();
-        let mut nodes = self.nodes_on(&line, &self.taken, d);
+        self.roster_of_line(&self.lines.get(e).cloned().unwrap_or_default(), d)
+    }
+
+    /// `roster` of the line joining the held epochs `heads` (a merge's, before it is made).
+    pub fn roster_joining<M: Ord + Copy>(&self, heads: &[E], d: &Devices<E, M>) -> BTreeSet<M> {
+        self.roster_of_line(&heads.iter().flat_map(|h| self.lines.get(h).into_iter().flatten().copied()).collect(), d)
+    }
+
+    fn roster_of_line<M: Ord + Copy>(&self, line: &BTreeSet<E>, d: &Devices<E, M>) -> BTreeSet<M> {
+        let mut nodes = self.nodes_on(line, &self.taken, d);
         for r in self.taken.iter().filter(|r| !line.contains(*r)) {
             for y in d.removes.get(r).into_iter().flatten() {
-                if !self.readded(*y, *r, &line, &self.taken, d) {
+                if !self.readded(*y, *r, line, &self.taken, d) {
                     nodes.remove(y);
                 }
             }

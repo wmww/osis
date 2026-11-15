@@ -110,6 +110,8 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     let on_line = |t: &CommitId| supersedes.iter().any(|b| b == t || v.line(b).is_some_and(|l| l.contains(t)));
     let mut takes: Vec<CommitId> = v.taken().iter().copied().filter(|t| !on_line(t)).collect();
     takes.sort();
+    // the heads it joins (the epoch it is signed at and the forks it names), before what it rejects
+    let joined = supersedes.clone();
     let (mut supersedes, mut closes) = (supersedes, closes);
     for r in reject {
         if !supersedes.contains(&r) {
@@ -184,17 +186,24 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     // membership changes (spec/permissions.md §3: D's keys move only with the account's)
     let d = held.devices;
     m.op(d, &ct::ACCOUNT, PathOp { path: vec![], op: Op::Add(Value::bytes(&signing.to_bytes())) })?;
-    let skip: Vec<(Tid, Option<osis_base::Role>)> = members.removes.iter().map(|x| (*x, None)).collect();
+    // its roster: D's on the line it makes (the heads it joins under the revocations taken),
+    // after its membership changes
+    let mut roster = v.roster_joining(&joined);
+    roster.retain(|x| !members.removes.contains(x));
+    roster.extend(members.adds.iter().copied());
+    let skip: Vec<(Tid, Option<osis_base::Role>)> = tx.core.key_holders(&d).into_iter().map(|x| x.0).filter(|x| !roster.contains(x)).map(|x| (x, None)).collect();
     let mut boxing = crate::rotation::recipients(tx, &p, &d, &skip)?;
-    for n in &members.adds {
+    for n in &roster {
         if !boxing.holders.iter().any(|h| h.holder == *n) {
             boxing.holders.push(super::recipient(tx, *n, osis_base::Role::Admin)?);
         }
     }
     let held_d = tx.core.epochs(&d).map(Arc::unwrap_or_clone).ok_or(Error::Misuse("D's epochs not held"))?;
-    let departs = if members.removes.is_empty() { crate::rotation::Departs::No } else { crate::rotation::Departs::Holder };
-    let d_rot = crate::rotation::rotation_into(tx, &mut m, d, &osis_keys::ROLES.into_iter().collect(), &held_d, &boxing, departs)?;
-    let seeds = super::custody::seed_boxes(tx, &p, &held.devices, &seed, members)?;
+    // D's departures are the chain's, no edge write: its names carry none (no departs mark)
+    let d_rot = crate::rotation::rotation_into(tx, &mut m, d, &osis_keys::ROLES.into_iter().collect(), &held_d, &boxing, crate::rotation::Departs::No)?;
+    let base = joined.first().map(|e| v.roster_joining(&[*e])).unwrap_or_default();
+    let newcomers: BTreeSet<Tid> = roster.iter().filter(|x| !base.contains(*x)).copied().collect();
+    let seeds = super::custody::seed_boxes(tx, &p, &seed, &roster, &newcomers)?;
     let at_keys = match &at {
         Some((_, k)) => k.clone(),
         None => tx.core.account_signing(&p)?.ok_or(Error::Misuse("the account's open epoch is not held"))?.1,
