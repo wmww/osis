@@ -560,6 +560,12 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<C
             break;
         }
     }
+    // a node off D's roster rotates nothing: it mints a seed it keeps while boxing it to none of
+    // itself, so a removed node holding its removal before the removal's rotation would fork the
+    // account and hold the new epoch's seed (spec/permissions.md §3: it stays until a carrier)
+    if !tx.core.of_devices(&d) {
+        return Ok(None);
+    }
     let Some(v) = tx.core.account_view(&p) else { return Ok(None) };
     let dep = departures(tx, &p, &v)?;
     let named = dep.all();

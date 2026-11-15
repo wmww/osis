@@ -2200,3 +2200,37 @@ fn a_header_naming_a_removal_its_minter_did_not_make_removes_no_one_spec_permiss
     send(&mut lp, 0, 2, &done.commits[1..]);
     assert!(!holds(&mut lp), "the removal's own rotation: node 2 leaves");
 }
+
+// spec/permissions.md §5.5 (Honest nodes of P: a node D's roster does not hold rotates nothing), §3: removed node 2
+// holds its removal before the rotation carrying it: off D's roster, it stays, and rotates
+// nothing (a rotation of its own would fork the account at a seed it keeps); the carrier then
+// makes it leave.
+#[test]
+fn a_node_holding_its_removal_before_its_rotation_rotates_nothing_spec_permissions_3() {
+    let (mut lp, a, _) = world(3, 3);
+    let two = lp.peers[2].engine.tid();
+    let done = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 0, 2, &done.commits[..1]);
+    assert!(!lp.peers[2].engine.roster(&a.devices).contains_key(&two), "off D's roster");
+    assert!(lp.peers[2].engine.core.accounts.contains_key(&a.account), "no carrier held: it stays");
+    assert!(lp.peers[2].engine.signing_due().unwrap().commits.is_empty(), "it rotates nothing");
+    send(&mut lp, 0, 2, &done.commits[1..]);
+    assert!(!lp.peers[2].engine.core.accounts.contains_key(&a.account), "the carrier: it leaves");
+}
+
+// spec/permissions.md §3, §5.4 (Following, at a node of P): node 0 removes node 1; node 1,
+// unaware, removes node 2. Node 2, holding node 0's removal first, takes node 1's as a removed
+// node's: D's roster holds node 2, no counting rotation carries its removal, and it stays.
+#[test]
+fn a_removal_by_a_node_removed_first_removes_no_one_spec_permissions_3() {
+    let (mut lp, a, _) = world(3, 3);
+    let two = lp.peers[2].engine.tid();
+    let first = remove(&mut lp, 0, a.devices, 1);
+    let late = remove(&mut lp, 1, a.devices, 2);
+    send(&mut lp, 0, 2, &first.commits);
+    send(&mut lp, 1, 2, &late.commits);
+    let e = &mut lp.peers[2].engine;
+    assert!(e.roster(&a.devices).contains_key(&two), "on D's roster");
+    assert!(!e.core.account_view(&a.account).unwrap().carries_removal_of(&two), "no carrier counts");
+    assert!(e.core.accounts.contains_key(&a.account), "it stays");
+}
