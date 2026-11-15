@@ -5,10 +5,11 @@
 
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{SyncId, Tid};
-use osis_engine::sync::{Holding, ThingSync};
+use osis_base::memo::Feed;
+use osis_engine::sync::Holding;
 use osis_sync::Result;
 use osis_sync::leave::{Ground, Leave};
-use osis_sync::set::{Held, SetGround};
+use osis_sync::set::Held;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -50,28 +51,18 @@ struct Fake {
     forgettings: u64,
 }
 
-impl SetGround for Fake {
-    /// Every thing of the closure, each read: a superset of what entered.
-    fn things_entered(&mut self, _: &mut osis_engine::sync::ThingsFeed) -> Result<Vec<Tid>> {
-        Ok(self.closure.get(&()).map(|c| c.iter().copied().collect()).unwrap_or_default())
+impl Ground for Fake {
+    /// Every sync ID of the closure's things: a superset of what entered.
+    fn held_added(&mut self, _: &mut Option<Feed<SyncId>>) -> Result<Vec<SyncId>> {
+        Ok(self.closure.get(&()).map(|c| c.iter().map(|t| sid(t.as_bytes()[0])).collect()).unwrap_or_default())
+    }
+    fn sync_held(&mut self, s: &SyncId) -> Result<Option<Held>> {
+        let t = tid(s.0[0]);
+        Ok(self.holders.get(s).filter(|_| self.closure.get(&()).is_some_and(|c| c.contains(&t))).map(|h| (t, *h)))
     }
     fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
         Ok(self.closure.get(&()).is_some_and(|c| c.contains(t)))
     }
-    fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
-        Ok(self.closure.get(&()).cloned().unwrap_or_default())
-    }
-    fn thing_sync(&mut self, t: &Tid) -> Result<ThingSync> {
-        let s = sid(t.as_bytes()[0]);
-        Ok(match self.holders.get(&s) {
-            Some(Holding::Read) => ThingSync::Read(vec![s]),
-            Some(Holding::Unread) => ThingSync::Unread(vec![s]),
-            None => ThingSync::Plain,
-        })
-    }
-}
-
-impl Ground for Fake {
     fn synced(&mut self, s: &SyncId) -> Option<Held> {
         self.synced.get(s).copied()
     }
@@ -483,8 +474,8 @@ fn leaving_several_forgets_once_and_costs_what_left_at_n_and_10n_spec_sync_set_3
 }
 
 /// A node with an account of its own whose synced group lists `n` plain things (one write), its
-/// sync set followed and settled: (engine, follower, account, synced group).
-fn synced_of(n: usize) -> (osis_engine::Engine, osis_sync::set::SetFollow, Tid, Tid) {
+/// sync set followed (`Engine::sync_held_added`): (engine, the feed, account, synced group).
+fn synced_of(n: usize) -> (osis_engine::Engine, Option<Feed<SyncId>>, Tid, Tid) {
     use osis_crypto::SeededRng;
     use osis_store::{MemoryBackend, MemoryRoot};
     let clock: Arc<dyn osis_base::Clock> = Arc::new(osis_base::ManualClock::new(osis_base::WallMs(1_700_000_000_000)));
@@ -499,8 +490,8 @@ fn synced_of(n: usize) -> (osis_engine::Engine, osis_sync::set::SetFollow, Tid, 
         list(&mut m, g, x, true);
     }
     e.commit(m).unwrap();
-    let mut f = osis_sync::set::SetFollow::new("test: sync set");
-    f.settle(&mut e).unwrap();
+    let mut f = None;
+    e.sync_held_added(&mut f).unwrap();
     assert!(e.sync_things().unwrap().len() > n, "the synced group's things are in the sync set");
     (e, f, p, g)
 }
@@ -532,13 +523,13 @@ fn adding_or_removing_a_thing_costs_the_same_at_any_closure_size_spec_sync_set_2
         let x = e.new_thing(&mut m, p);
         list(&mut m, g, x, true);
         e.commit(m).unwrap();
-        f.settle(&mut e).unwrap();
+        e.sync_held_added(&mut f).unwrap();
         let added = closure_work();
         assert!(e.in_sync_things(&x).unwrap(), "the thing added is in the sync set");
         let mut m = osis_engine::Mutation::new();
         list(&mut m, g, x, false);
         e.commit(m).unwrap();
-        f.settle(&mut e).unwrap();
+        e.sync_held_added(&mut f).unwrap();
         let removed = closure_work();
         assert!(!e.in_sync_things(&x).unwrap(), "the thing removed left the sync set");
         assert!(added.get("sync set: settled").is_some_and(|n| *n > 0) && removed.get("sync set: settled").is_some_and(|n| *n > 0), "counted: {added:?} {removed:?}");
@@ -577,27 +568,27 @@ fn a_thing_leaves_and_returns_with_what_places_it_spec_sync_set_2() {
     list_sub(&mut m, g, s, true);
     e.commit(m).unwrap();
     let (_, x) = owned_in(&mut e, p, s);
-    f.settle(&mut e).unwrap();
-    assert!(f.holds(&x), "listed under the synced group");
+    e.sync_held_added(&mut f).unwrap();
+    assert!(e.sync_held(&x).unwrap().is_some(), "listed under the synced group");
     let mut m = osis_engine::Mutation::new();
     list_sub(&mut m, g, s, false);
     e.commit(m).unwrap();
-    f.settle(&mut e).unwrap();
-    assert!(!f.holds(&x), "the group above it unlisted");
+    e.sync_held_added(&mut f).unwrap();
+    assert!(!e.sync_held(&x).unwrap().is_some(), "the group above it unlisted");
     let mut m = osis_engine::Mutation::new();
     list_sub(&mut m, g, s, true);
     e.commit(m).unwrap();
-    f.settle(&mut e).unwrap();
-    assert!(f.holds(&x), "listed again");
+    e.sync_held_added(&mut f).unwrap();
+    assert!(e.sync_held(&x).unwrap().is_some(), "listed again");
     e.set_sourced([s].into(), &BTreeSet::new());
-    f.settle(&mut e).unwrap();
-    assert!(!f.holds(&x), "the group above it sourced away");
+    e.sync_held_added(&mut f).unwrap();
+    assert!(!e.sync_held(&x).unwrap().is_some(), "the group above it sourced away");
     e.set_sourced(BTreeSet::new(), &BTreeSet::new());
-    f.settle(&mut e).unwrap();
-    assert!(f.holds(&x), "home again");
+    e.sync_held_added(&mut f).unwrap();
+    assert!(e.sync_held(&x).unwrap().is_some(), "home again");
     e.reload().unwrap();
-    f.settle(&mut e).unwrap();
+    e.sync_held_added(&mut f).unwrap();
     let (_, y) = owned_in(&mut e, p, s);
-    f.settle(&mut e).unwrap();
-    assert!(f.holds(&x) && f.holds(&y), "entered after a reload");
+    e.sync_held_added(&mut f).unwrap();
+    assert!(e.sync_held(&x).unwrap().is_some() && e.sync_held(&y).unwrap().is_some(), "entered after a reload");
 }

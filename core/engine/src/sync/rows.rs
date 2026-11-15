@@ -7,12 +7,12 @@
 use super::{Holding, ThingSync, ThingsFeed};
 use crate::Engine;
 use crate::error::Result;
-use osis_base::memo::{Effects, Stamped, StampedSet, Unrecorded};
+use osis_base::memo::{Effects, Feed, Stamped, StampedSet, Unrecorded};
 use osis_base::{SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One sync ID's entry of the sync set: its thing and how it is held.
-pub(crate) type Held = (Tid, Holding);
+pub type Held = (Tid, Holding);
 
 #[derive(Clone)]
 pub(crate) struct SyncRows {
@@ -25,15 +25,35 @@ pub(crate) struct SyncRows {
     by_sync: BTreeMap<SyncId, BTreeMap<Tid, Holding>>,
     /// Per sync ID of the sync set, its entry (`Engine::sync_set`'s fold), read per sync ID.
     pub(crate) held: Stamped<SyncId, Held>,
+    /// `held`'s keys: a feed gives the sync IDs entering it.
+    ids: StampedSet<SyncId>,
     /// The things holding a read sync ID (read per thing; a feed gives those added), and how many
     /// each holds.
     pub(crate) read: StampedSet<Tid>,
     read_count: BTreeMap<Tid, usize>,
+    /// Debug builds: the things followed in the closure, and the closure last compared with them.
+    #[cfg(debug_assertions)]
+    things: BTreeSet<Tid>,
+    #[cfg(debug_assertions)]
+    checked: Option<std::sync::Arc<BTreeSet<Tid>>>,
 }
 
 impl Default for SyncRows {
     fn default() -> Self {
-        SyncRows { entered: ThingsFeed::default(), thing: Effects::new("sync: set rows"), ids_of: BTreeMap::new(), by_sync: BTreeMap::new(), held: Stamped::default(), read: StampedSet::default(), read_count: BTreeMap::new() }
+        SyncRows {
+            entered: ThingsFeed::default(),
+            thing: Effects::new("sync: set rows"),
+            ids_of: BTreeMap::new(),
+            by_sync: BTreeMap::new(),
+            held: Stamped::default(),
+            ids: StampedSet::default(),
+            read: StampedSet::default(),
+            read_count: BTreeMap::new(),
+            #[cfg(debug_assertions)]
+            things: BTreeSet::new(),
+            #[cfg(debug_assertions)]
+            checked: None,
+        }
     }
 }
 
@@ -72,9 +92,15 @@ impl SyncRows {
                 continue;
             }
             match now {
-                Some(h) => self.held.insert(s, h),
-                None => self.held.remove(&s),
-            };
+                Some(h) => {
+                    self.held.insert(s, h);
+                    self.ids.insert(s);
+                }
+                None => {
+                    self.held.remove(&s);
+                    self.ids.remove(&s);
+                }
+            }
             if let Some((x, Holding::Read)) = old {
                 self.uncount(&x);
             }
@@ -111,11 +137,23 @@ impl Engine {
     }
 
     fn follow_rows_in(&mut self, r: &mut SyncRows) -> Result<()> {
-        for t in self.things_entered(&mut r.entered)? {
+        let entered = self.things_entered(&mut r.entered)?;
+        osis_base::costs::count("sync set: entered", entered.len() as u64);
+        for t in entered {
             r.thing.want(t);
         }
-        for t in r.thing.due() {
+        let due = r.thing.due();
+        #[cfg(debug_assertions)]
+        let moved = !due.is_empty();
+        osis_base::costs::count("sync set: settled", due.len() as u64);
+        for t in due {
             let Some((_, now)) = r.thing.try_settle(&t, || if self.in_sync_things(&t)? { self.thing_sync(&t).map(Some) } else { Ok(None) })? else { continue };
+            #[cfg(debug_assertions)]
+            if now.is_some() {
+                r.things.insert(t);
+            } else {
+                r.things.remove(&t);
+            }
             let ids = match now {
                 None => {
                     r.thing.unwant(&t);
@@ -127,12 +165,35 @@ impl Engine {
             };
             r.moved(&t, ids);
         }
+        // a thing entering or leaving that no key moved for shows as the closure moving alone
+        #[cfg(debug_assertions)]
+        {
+            let all = osis_base::costs::paused(|| self.sync_things())?;
+            if moved || !r.checked.as_ref().is_some_and(|c| std::sync::Arc::ptr_eq(c, &all)) {
+                debug_assert_eq!(r.things, *all, "the followed sync set differs from the closure derived anew");
+                r.checked = Some(all);
+            }
+        }
         Ok(())
     }
 
     /// Sync ID `s`'s entry of the sync set (`sync_set`'s), read per sync ID.
-    pub(crate) fn sync_held(&mut self, s: &SyncId) -> Result<Option<Held>> {
+    pub fn sync_held(&mut self, s: &SyncId) -> Result<Option<Held>> {
         self.follow_rows()?;
         Ok(self.core.sync_rows.held.get(s).copied())
+    }
+
+    /// The sync IDs that entered the sync set since `f`'s last read (its first: every one), each
+    /// read by `sync_held`, which moves when it leaves or its entry changes.
+    pub fn sync_held_added(&mut self, f: &mut Option<Feed<SyncId>>) -> Result<Vec<SyncId>> {
+        self.follow_rows()?;
+        let ids = &self.core.sync_rows.ids;
+        Ok(match f {
+            Some(f) => f.added(),
+            None => {
+                *f = Some(ids.feed());
+                ids.iter().copied().collect()
+            }
+        })
     }
 }

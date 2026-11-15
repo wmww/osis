@@ -1,6 +1,6 @@
 //! Leaving the sync set (spec/sync-set.md §3), and the sync IDs this node syncs.
 //!
-//! `leave` alone follows the engine's sync set (`SetFollow`) and writes what this node syncs into
+//! `leave` alone follows the engine's sync set (per sync ID, `Engine::sync_held`) and writes what this node syncs into
 //! the store (`Store::set_holdings`): the sync set, and each sync ID that left it while it waits
 //! to stop. Every other module follows that (crate::set), so a waiting sync ID stays open,
 //! served, logged into, judged and counted as before until it stops (§3: it stays a member of its
@@ -28,9 +28,9 @@
 //! follows change: the sync set per key; each leaving S judged over its own commits or entries
 //! (O(own writes under S)). Nothing here is durable.
 
-use crate::set::{Held, SetFollow, SetGround};
+use crate::set::Held;
 use crate::types::{Holding, Result};
-use osis_base::memo::{Effects, Stamped};
+use osis_base::memo::{Effects, Feed, Stamped};
 use osis_base::{BlobId, SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -42,7 +42,14 @@ pub trait Sources {
 }
 
 /// What leave reads and does (the product's is `Live`; a test's a table).
-pub trait Ground: SetGround {
+pub trait Ground {
+    /// The sync IDs that entered the engine's sync set since `f`'s last read (its first: every
+    /// one; `Engine::sync_held_added`; a superset is fine).
+    fn held_added(&mut self, f: &mut Option<Feed<SyncId>>) -> Result<Vec<SyncId>>;
+    /// S's entry of the engine's sync set (`Engine::sync_held`), read per sync ID.
+    fn sync_held(&mut self, s: &SyncId) -> Result<Option<Held>>;
+    /// Whether the synced group's closure holds `t` (`Engine::in_sync_things`), read per thing.
+    fn in_sync_things(&mut self, t: &Tid) -> Result<bool>;
     /// S's entry in the sync IDs this node syncs (`Store::synced`).
     fn synced(&mut self, s: &SyncId) -> Option<Held>;
     /// Sets it (`Store::set_holdings`; `None`: not synced).
@@ -109,7 +116,9 @@ enum Wait {
 
 #[derive(Clone)]
 pub struct Leave {
-    set: SetFollow,
+    /// Per sync ID of the engine's sync set, its entry; one that leaves is followed no more.
+    set: Effects<SyncId, Option<Held>>,
+    set_feed: Option<Feed<SyncId>>,
     /// The first settle is done: it wants every sync ID the store holds rows of or syncs, as a
     /// feed's first read lists everything; later ones, each sync ID that leaves the sync set.
     started: bool,
@@ -125,7 +134,7 @@ pub struct Leave {
 
 impl Default for Leave {
     fn default() -> Leave {
-        Leave { set: SetFollow::new("leave: sync set"), started: false, out: Effects::new("leave: out of the sync set"), leaving: Stamped::default(), judged: 0 }
+        Leave { set: Effects::new("leave: sync set"), set_feed: None, started: false, out: Effects::new("leave: out of the sync set"), leaving: Stamped::default(), judged: 0 }
     }
 }
 
@@ -141,7 +150,11 @@ impl Leave {
     /// (spec/sync-set.md §3). Whether it acted.
     pub fn settle(&mut self, g: &mut impl Ground) -> Result<bool> {
         let mut acted = false;
-        for (s, now) in self.set.settle(g)? {
+        for s in g.held_added(&mut self.set_feed)? {
+            self.set.want(s);
+        }
+        for s in self.set.due() {
+            let Some((_, now)) = self.set.try_settle(&s, || g.sync_held(&s))? else { continue };
             match now {
                 Some(h) => {
                     // synced again before it stopped: kept as it was
@@ -152,14 +165,17 @@ impl Leave {
                         acted = true;
                     }
                 }
-                None => self.out.want(s),
+                None => {
+                    self.set.unwant(&s);
+                    self.out.want(s);
+                }
             }
         }
         if !self.started {
             // what this node held before its start (or a restart of the modules) and its sync set
             // does not: left while it was down, or waiting still
             for s in g.stored()? {
-                if !self.set.holds(&s) {
+                if !self.set.wants(&s) {
                     self.out.want(s);
                 }
             }
@@ -294,22 +310,16 @@ pub struct Live<'a, 'b> {
     pub status: &'a crate::status::Status,
 }
 
-impl SetGround for Live<'_, '_> {
-    fn things_entered(&mut self, f: &mut osis_engine::sync::ThingsFeed) -> Result<Vec<Tid>> {
-        Ok(self.cx.engine.things_entered(f)?)
+impl Ground for Live<'_, '_> {
+    fn held_added(&mut self, f: &mut Option<Feed<SyncId>>) -> Result<Vec<SyncId>> {
+        Ok(self.cx.engine.sync_held_added(f)?)
+    }
+    fn sync_held(&mut self, s: &SyncId) -> Result<Option<Held>> {
+        Ok(self.cx.engine.sync_held(s)?)
     }
     fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
         Ok(self.cx.engine.in_sync_things(t)?)
     }
-    fn sync_things(&mut self) -> Result<std::sync::Arc<BTreeSet<Tid>>> {
-        Ok(self.cx.engine.sync_things()?)
-    }
-    fn thing_sync(&mut self, t: &Tid) -> Result<osis_engine::sync::ThingSync> {
-        Ok(self.cx.engine.thing_sync(t)?)
-    }
-}
-
-impl Ground for Live<'_, '_> {
     fn synced(&mut self, s: &SyncId) -> Option<Held> {
         self.cx.store.synced(s)
     }

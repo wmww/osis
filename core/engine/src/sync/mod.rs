@@ -17,6 +17,7 @@ pub(crate) mod inbox;
 pub(crate) mod listed;
 pub(crate) mod own;
 pub(crate) mod rows;
+pub use rows::Held;
 pub(crate) mod pieces;
 pub use pieces::PieceLink;
 pub(crate) mod certblobs;
