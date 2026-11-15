@@ -185,28 +185,36 @@ fn an_own_rotation_proves_again_spec_sync_opens_1() {
     assert!(!proven_at(&mut w, 1, 0, old), "no connection left on the closed epoch");
 }
 
-// spec/sync-opens.md §1 (proves once), §2 (its account by a signature at an epoch): a node
-// holding a rotation of its account made by another of its nodes, without that epoch's seed,
-// proves its account at no epoch (its other actors as before) and no connection counts it at
-// the closed one where the rotation is held. issues/sibling-rotation-drops-home.md: the seed
-// never arrives there yet; its fix extends this test to the proof at the new epoch.
+// spec/sync-opens.md §1 (proves once), §2 (its account by a signature at an epoch),
+// spec/permissions.md §5.5 (Waiting): when another node of its account rotates it, a node keeps
+// its home throughout (lacking D's list of the rotation is waiting, never being no node of the
+// account), takes the rotation whole and so the new seed, and proves its account again at the
+// new key.
 #[test]
-fn a_rotation_without_its_seed_proves_the_account_at_none_spec_sync_opens_2() {
+fn a_sibling_rotation_proves_again_spec_sync_opens_1() {
     let mut w = siblings();
     let a1 = w.node(1).account.expect("an account");
+    assert_eq!(w.node(2).account, Some(a1), "node 2 is a node of account 1");
     let old = w.engine(2).account_open_key().expect("an open key");
-    w.write(1, |e| e.rotate_account(&a1)).unwrap().expect("rotated");
+    assert!(proven_at(&mut w, 0, 2, old), "node 2's account proved to node 0");
+    let d = w.engine(2).account().unwrap().expect("an account").1;
+    let home = w.engine(2).home_sync_id(&d).unwrap().expect("a home");
+    let held = |w: &World| w.node(2).store.entries(&home).unwrap().len();
+    let entries = held(&w);
+    assert!(entries > 0, "node 2 holds its home");
+    let r = w.write(1, |e| e.rotate_account(&a1)).unwrap().expect("rotated");
+    while w.step() {
+        assert!(w.store(2).synced(&home).is_some(), "node 2 keeps its home throughout");
+    }
     w.run();
-    w.advance(osis_sync::driver::REDIAL_MS + 1);
+    w.advance(REDIAL_MS);
     w.run();
-    assert_eq!(w.engine(2).account_rotations(&a1).len(), w.engine(1).account_rotations(&a1).len(), "the rotation reached node 2");
-    let new = w.engine(1).account_open_key();
-    assert_ne!(new, Some(old));
-    let key = w.engine(2).account_open_key();
-    let provers = w.engine(2).provers(false).expect("proves its other actors");
-    let account: Vec<[u8; 32]> = provers.iter().filter(|(_, r)| r.tid() == a1).map(|(k, _)| k.verifying_key().to_bytes()).collect();
-    assert_eq!(account, key.into_iter().collect::<Vec<_>>(), "its account at the open key it holds the seed of, or at none");
-    assert!(key.is_none() || key == new);
+    let new = w.engine(1).account_open_key().expect("an open key");
+    assert_ne!(new, old);
+    assert!(w.engine(2).commit_parts_missing()[&r].is_empty(), "node 2 holds the rotation whole");
+    assert!(held(&w) >= entries, "node 2 keeps its home");
+    assert_eq!(w.engine(2).account_open_key(), Some(new), "node 2 holds the new seed");
+    assert!(proven_at(&mut w, 0, 2, new), "proved again at the new epoch");
     for j in [0, 1] {
         assert!(!proven_at(&mut w, j, 2, old), "node {j} counts node 2's account at the closed epoch");
     }
