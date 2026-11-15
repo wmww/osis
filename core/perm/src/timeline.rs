@@ -113,15 +113,16 @@ pub(crate) struct Memo {
     pub on_end: Mutex<BTreeMap<Tid, Arc<BTreeMap<Tid, Role>>>>,
     /// `roles_on` on the current edges, per thing, as `roles_now` keeps its walks.
     pub on_now: Mutex<BTreeMap<Tid, RolesNow>>,
-    /// `ever_forward` per node `closure` met: the asker (a node asks for its own certificates at
-    /// every pass) and the authors on its chains; and the walks made for it (a measure).
+    /// What a node reaches over chained edges (`cert`), per node `closure` met: the asker (a
+    /// node asks for its own certificates at every pass) and the authors on its chains; and the
+    /// walks made for it (a measure).
     pub forward: Mutex<BTreeMap<Tid, Arc<BTreeSet<Tid>>>>,
     pub forward_walks: std::sync::atomic::AtomicU64,
     /// `certificates` per (node, thing) asked.
     pub certificates: Mutex<BTreeMap<(Tid, Tid), crate::cert::Certificates>>,
     /// `roles_ever` calls so far (a measure).
     pub ever_walks: std::sync::atomic::AtomicU64,
-    /// Held records by the edges and things they write, for certificates.
+    /// The chained edge writes and the edges they set, for certificates.
     pub certs: std::sync::OnceLock<crate::cert::CertIndex>,
     /// The edge writes applied, by their target; and the indexes built (a measure).
     pub on_target: std::sync::OnceLock<BTreeMap<Tid, Vec<WriteId>>>,

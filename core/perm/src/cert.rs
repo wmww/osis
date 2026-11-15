@@ -1,15 +1,19 @@
-//! Chain certificates (spec/permissions.md §4): every held record on an edge between two
-//! things on any path that ever existed from a node to a thing, closed under authors; and
-//! verification from certificates alone.
+//! Chain certificates (spec/permissions.md §4): every held chained edge write between two
+//! things on any path from a node to a thing, closed under authors; and verification from
+//! certificates alone.
 //!
-//! "Ever existed" is over every edge any held write or first admin record can set
-//! (`Input::ever`) and record links (`Input::ever_forward`, `ever_back`), whatever the walk
-//! applied or when: a superset of the paths any walk had at any point, so no point and no
-//! replay is needed.
+//! A write is chained when its author could have had the authority it needs, over record edges
+//! and the edges chained writes on their targets set, at any time, applied or not (`Chained`):
+//! a superset of the paths any walk had at any point (every applied write is chained), so no
+//! point and no replay is needed; a function of the held set alone, which only grows with it;
+//! and holding no write of an author no record or chained write gave authority, so no such
+//! author makes honest nodes log another actor's roster.
 
+use crate::graph::Records;
 use crate::held::{HeldSet, MemoryHeldSet};
 use crate::timeline::{At, Timeline};
-use crate::types::{RoleCommit, Point, WriteId};
+use crate::types::{EdgeOp, RoleCommit, Point, WriteId};
+use crate::walk::Input;
 use osis_base::{CommitId, Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -25,32 +29,139 @@ pub struct Certificates {
     pub keys: BTreeSet<Tid>,
 }
 
-/// Held role commits by the holder and target of their edge writes.
+/// The chained edge writes (spec/permissions.md §4) and the edges they set.
 #[derive(Clone, Default)]
 pub(crate) struct CertIndex {
+    /// Commits with a chained write, by the holder and target of that write.
     by_edge: BTreeMap<Tid, BTreeMap<Tid, Vec<Arc<RoleCommit>>>>,
+    writes: BTreeSet<WriteId>,
+    /// The edges chained writes set: holder to targets, target to holders.
+    targets: BTreeMap<Tid, BTreeSet<Tid>>,
+    holders: BTreeMap<Tid, BTreeSet<Tid>>,
+}
+
+/// The edges chained writes on their targets set, by target: the holders whose edge some such
+/// write set at each role or above (`Role` order), and those some such write gave an invite.
+#[derive(Default)]
+struct Chained {
+    at: BTreeMap<(Tid, Role), BTreeSet<Tid>>,
+    invites: BTreeMap<Tid, BTreeSet<Tid>>,
+}
+
+impl Chained {
+    fn add(&mut self, holder: Tid, target: Tid, role: Role, invite: bool) {
+        for r in [Role::Sync, Role::Read, Role::Write, Role::Admin].into_iter().filter(|r| *r <= role) {
+            self.at.entry((target, r)).or_default().insert(holder);
+        }
+        if invite {
+            self.invites.entry(target).or_default().insert(holder);
+        }
+    }
+
+    /// Whether `a` is one of `from` or reaches one over record edges and edges at `min` or above.
+    fn reaches(&self, records: &Records, a: &Tid, from: impl IntoIterator<Item = Tid>, min: Role) -> bool {
+        let mut seen: BTreeSet<Tid> = from.into_iter().collect();
+        let mut stack: Vec<Tid> = seen.iter().copied().collect();
+        while let Some(x) = stack.pop() {
+            if x == *a {
+                return true;
+            }
+            for y in records.first_admin(&x).into_iter().chain(self.at.get(&(x, min)).into_iter().flatten().copied()) {
+                if seen.insert(y) {
+                    stack.push(y);
+                }
+            }
+        }
+        false
+    }
+
+    /// The authority `a` could have had for `op` (§2, §5.1 step 2): `Some(true)` on its target
+    /// (admin, or an invite for a grant), so the write sets its edge here; `Some(false)` admin
+    /// on its holder (a self-removal) or, for a removal, write on its target (a finalize), which
+    /// only lower an edge some write on the target set; `None` none.
+    fn could(&self, records: &Records, a: &Tid, op: &EdgeOp) -> Option<bool> {
+        if op.holder == op.target {
+            return None;
+        }
+        let removal = op.edge.as_ref().is_none_or(|e| e.says_retain());
+        let invited = || !removal && self.reaches(records, a, self.invites.get(&op.target).into_iter().flatten().copied(), Role::Sync);
+        if self.reaches(records, a, [op.target], Role::Admin) || invited() {
+            return Some(true);
+        }
+        (self.reaches(records, a, [op.holder], Role::Admin) || (removal && self.reaches(records, a, [op.target], Role::Write))).then_some(false)
+    }
+}
+
+impl CertIndex {
+    /// The chained writes of `input`: the least set holding each write whose author could have
+    /// had the authority it needs over the edges the set's writes on their targets set (`could`),
+    /// found by passes in timeline order until one adds nothing (a grant chain in order is one
+    /// pass).
+    fn of(input: &Input) -> CertIndex {
+        let mut list: Vec<&Arc<RoleCommit>> = input.commits.values().collect();
+        list.sort_by_key(|c| c.point());
+        let (mut g, mut x) = (Chained::default(), CertIndex::default());
+        loop {
+            let mut grew = false;
+            for c in &list {
+                for (k, op) in c.ops.iter().enumerate() {
+                    let Ok(id) = u32::try_from(k).map(|k| WriteId(c.id, k)) else { continue };
+                    if x.writes.contains(&id) {
+                        continue;
+                    }
+                    let Some(sets) = g.could(&input.records, &c.author, op) else { continue };
+                    grew = true;
+                    x.writes.insert(id);
+                    let on = x.by_edge.entry(op.holder).or_default().entry(op.target).or_default();
+                    if on.last().is_none_or(|l| l.id != c.id) {
+                        on.push((*c).clone());
+                    }
+                    if let (true, Some(e)) = (sets, &op.edge) {
+                        g.add(op.holder, op.target, e.role, e.invite.is_some());
+                        x.targets.entry(op.holder).or_default().insert(op.target);
+                        x.holders.entry(op.target).or_default().insert(op.holder);
+                    }
+                }
+            }
+            if !grew {
+                return x;
+            }
+        }
+    }
+
+    /// What any of `seeds` (included) reaches (`forward`) or is reached by over record edges
+    /// and the edges chained writes set.
+    fn reach(&self, records: &Records, seeds: impl IntoIterator<Item = Tid>, forward: bool) -> BTreeSet<Tid> {
+        let mut seen: BTreeSet<Tid> = seeds.into_iter().collect();
+        let mut stack: Vec<Tid> = seen.iter().copied().collect();
+        while let Some(e) = stack.pop() {
+            let next: Vec<Tid> = if forward {
+                records.first_admin_of(&e).iter().chain(self.targets.get(&e).into_iter().flatten()).copied().collect()
+            } else {
+                records.first_admin(&e).into_iter().chain(self.holders.get(&e).into_iter().flatten().copied()).collect()
+            };
+            for y in next {
+                if seen.insert(y) {
+                    stack.push(y);
+                }
+            }
+        }
+        seen
+    }
 }
 
 impl Timeline {
     fn cert_index(&self) -> &CertIndex {
-        self.memo.certs.get_or_init(|| {
-            let mut x = CertIndex::default();
-            for cm in self.input.commits.values() {
-                for o in &cm.ops {
-                    x.by_edge.entry(o.holder).or_default().entry(o.target).or_default().push(cm.clone());
-                }
-            }
-            x
-        })
+        self.memo.certs.get_or_init(|| CertIndex::of(&self.input))
     }
 
-    /// What `n` ever reaches: O(what it reaches) once while this timeline stands.
+    /// What `n` reaches over chained edges: O(what it reaches) once while this timeline stands.
     fn forward_of(&self, n: &Tid) -> Arc<BTreeSet<Tid>> {
         if let Some(x) = self.memo.forward.lock().ok().and_then(|m| m.get(n).cloned()) {
             return x;
         }
         self.memo.forward_walks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let x = Arc::new(self.input.ever_forward([*n]));
+        let x = Arc::new(self.cert_index().reach(&self.input.records, [*n], true));
         if let Ok(mut m) = self.memo.forward.lock() {
             m.insert(*n, x.clone());
         }
@@ -72,14 +183,14 @@ impl Timeline {
     }
 
     /// Every actor's chain certificates for writes on any of `targets` (§4): the union of
-    /// `certificates(n, t)` over each `t` and each `n` that ever reaches it. The things on those
-    /// paths are exactly what ever reaches a target, so this is one backward walk and the edges
-    /// among what it found, closed under authors (an author on no path adds its own record and
-    /// keys). O(what reaches the targets and the edge writes among it).
+    /// `certificates(n, t)` over each `t` and each `n` that reaches it. The things on those
+    /// paths are exactly what reaches a target, so this is one backward walk and the chained
+    /// writes among what it found, closed under authors (an author on no path adds its own record
+    /// and keys). O(what reaches the targets and the edge writes among it).
     pub fn certificates_into(&self, targets: &BTreeSet<Tid>) -> Certificates {
         let mut out = Certificates::default();
         let index = self.cert_index();
-        let on = self.input.ever_back(targets.iter().copied());
+        let on = index.reach(&self.input.records, targets.iter().copied(), false);
         let mut things: BTreeSet<Tid> = on.clone();
         for m in &on {
             let Some(by_target) = index.by_edge.get(m) else { continue };
@@ -102,9 +213,10 @@ impl Timeline {
         out
     }
 
-    /// Every thing that ever reaches `thing`, `thing` included (the walk `certificates_into`
-    /// makes): `certificates(_, thing)` and `certificates_into` of it read the held inputs of
-    /// these and the records of what they name, nothing else (a path into `thing` lies within it).
+    /// Every thing that reaches `thing` over any held edge write, `thing` included: a superset of
+    /// what `certificates(_, thing)` and `certificates_into` of it read (the held inputs of these
+    /// and the records of what they name): a path into `thing`, and whether a write on it is
+    /// chained, lie within it.
     pub fn ever_into(&self, thing: &Tid) -> BTreeSet<Tid> {
         self.input.ever_back([*thing])
     }
@@ -134,10 +246,11 @@ impl Timeline {
                 continue;
             }
             let up = ups.entry(n).or_insert_with(|| self.forward_of(&n));
-            let down = downs.entry(t).or_insert_with(|| self.input.ever_back([t]));
+            let down = downs.entry(t).or_insert_with(|| index.reach(&self.input.records, [t], false));
+            // the things on its paths to `t` (none when it reaches no `t`: nothing of `t` goes)
+            // and itself
             let mut things: BTreeSet<Tid> = up.intersection(down).copied().collect();
             things.insert(n);
-            things.insert(t);
             for c in &things {
                 if !on_paths.insert(*c) {
                     continue;
@@ -157,9 +270,11 @@ impl Timeline {
                     }
                     for cm in ws {
                         if out.commits.insert(cm.id) {
-                            for o in &cm.ops {
-                                todo.insert((cm.author, o.target));
-                                todo.insert((cm.author, o.holder));
+                            for (k, o) in cm.ops.iter().enumerate() {
+                                if u32::try_from(k).is_ok_and(|k| index.writes.contains(&WriteId(cm.id, k))) {
+                                    todo.insert((cm.author, o.target));
+                                    todo.insert((cm.author, o.holder));
+                                }
                             }
                         }
                     }

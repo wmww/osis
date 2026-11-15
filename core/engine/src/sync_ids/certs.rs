@@ -269,12 +269,12 @@ impl Engine {
     }
 
     /// `g`'s own certificates as a read thing (`sync_certificates`): `shared_certificates`, every
-    /// actor's chain certificates for `g` (`Timelines::certificates_into`: what ever reaches it,
-    /// each account with its signing chain), and under D's home every node's card commits (each
-    /// node of D logs its own there). The same at
-    /// every node judging `g`: what this node logs of its own (`certificates`) decides nothing of
-    /// S's required set, else two honest nodes would delete each other's copies (spec/sync-
-    /// judgement.md §2). Reads role commits, records and cards, never content.
+    /// actor's chain certificates for `g` (`Timelines::certificates_into`: what reaches it over
+    /// chained writes, each account with its signing chain), and under D's home every node's card
+    /// commits (each node of D logs its own there). The same at every node judging `g`: what this
+    /// node logs of its own (`certificates`) decides nothing of S's required set, else two honest
+    /// nodes would delete each other's copies (spec/sync-judgement.md §2). Reads role commits,
+    /// records and cards, never content.
     pub(crate) fn own_piece(&mut self, g: &Tid) -> Certs {
         // any account's devices actor, whichever node judges it
         let under_d = self.core.devices_of(g).is_some();

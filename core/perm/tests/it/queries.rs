@@ -5,7 +5,7 @@ use crate::common;
 
 use common::*;
 use roles_model::{edges, joint, Rng};
-use osis_base::Role::{Admin, Read, Write};
+use osis_base::Role::{Admin, Read, Sync, Write};
 use osis_base::{Role, Tid};
 use osis_perm::{verify, At, Edge, HeldSet, Point, PurgeBy, Timeline, WriteId};
 use std::collections::BTreeMap;
@@ -36,6 +36,74 @@ fn certificates_carry_demotions() {
     let mut set2 = set.clone();
     set2.remove(&rm);
     assert!(verify(&set2, &z, &g, before, Write));
+}
+
+/// §4 (chained writes): an edge write enters a chain only if its author could write it. W, a
+/// writer of T and no admin, grants private actor Y (C's, with Z on its roster) read on T, admin
+/// on G (a holder actor reading T: two hops), and removes Y from T. None applies, so nothing of
+/// Y (record, card, roster) and none of W's writes goes in any chain into T, whatever arrived
+/// last; the certificates still judge as the full timeline.
+#[test]
+fn a_forged_edge_enters_no_chain_spec_permissions_4() {
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let (k, wr, c, z) = (n[0], n[1], n[2], n[3]);
+    let t = w.thing(k);
+    let g = w.thing(k);
+    let y = w.thing(c);
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, t, wr, edge(Write), 0, &all);
+    w.set(k, t, g, edge(Read), 0, &all);
+    let roster = w.set(c, y, z, edge(Read), 1, &all);
+    let forged = [w.set(wr, t, y, edge(Read), 2, &all), w.set(wr, g, y, edge(Admin), 3, &all), w.set(wr, t, y, None, 4, &all)];
+    let held = w.held();
+    let tl = Timeline::evaluate(&held);
+    assert!(forged.iter().all(|f| !tl.is_applied(&WriteId(*f, 0))));
+    let of_y = |x: &osis_perm::Certificates| x.created.contains(&y) || x.keys.contains(&y) || x.commits.contains(&roster) || forged.iter().any(|f| x.commits.contains(f));
+    let into = tl.certificates_into(&[t].into());
+    assert!(into.commits.len() == 2 && !of_y(&into), "{into:?}");
+    for (a, x) in [(wr, t), (wr, g), (k, t), (z, t), (wr, y)] {
+        assert!(!of_y(&tl.certificates(&a, &x)), "{a:?} to {x:?}");
+    }
+    assert_eq!(cert_check(&w), None);
+    for skip in forged.iter().chain(&[roster]) {
+        let late = Timeline::evaluate(&w.held_without(&[*skip].into())).extend(&held).unwrap();
+        assert_eq!(late.certificates_into(&[t].into()), into, "{skip:?} last");
+    }
+}
+
+/// §4 (chained writes): every authority a write can have chains it. X reads T through G, which
+/// holds an invite on T, and invites Y (two hops through a holder actor); C, Y's admin, lowers
+/// Y's edge (a self-removal); A, an admin K removed, grants Y2 after its removal: applied
+/// nowhere here, it goes all the same (who could write it never shrinks, so no node drops a
+/// write another walk, siding with A, applies). Y's and Y2's rosters go into T.
+#[test]
+fn every_authority_chains_its_writes_spec_permissions_4() {
+    let mut w = World::new();
+    let n = w.nodes(6);
+    let (k, x, c, a, z, z2) = (n[0], n[1], n[2], n[3], n[4], n[5]);
+    let t = w.thing(k);
+    let g = w.thing(k);
+    let y = w.thing(c);
+    let y2 = w.thing(c);
+    let all: Vec<(Tid, u64)> = n.iter().map(|m| (*m, 0)).collect();
+    w.set(k, t, g, edge_inv(Read, Some(Read), None), 0, &all);
+    w.set(k, g, x, edge(Read), 0, &all);
+    w.set(k, t, a, edge(Admin), 0, &all);
+    let rosters = [w.set(c, y, z, edge(Read), 1, &all), w.set(c, y2, z2, edge(Read), 1, &all)];
+    let invited = w.set(x, t, y, edge(Read), 2, &all);
+    let lowered = w.set(c, t, y, edge(Sync), 3, &all);
+    w.set(k, t, a, None, 4, &all);
+    let late = w.set(a, t, y2, edge(Read), 5, &[]);
+    let held = w.held();
+    let tl = Timeline::evaluate(&held);
+    assert!(tl.is_applied(&WriteId(invited, 0)) && tl.is_applied(&WriteId(lowered, 0)) && !tl.is_applied(&WriteId(late, 0)));
+    let into = tl.certificates_into(&[t].into());
+    for want in [invited, lowered, late].iter().chain(&rosters) {
+        assert!(into.commits.contains(want), "{want:?}: {into:?}");
+    }
+    assert!(tl.certificates(&z, &t).commits.contains(&lowered));
+    assert_eq!(cert_check(&w), None);
 }
 
 /// §4: a demotion goes along with its demoted author's other paths. X writes on G by

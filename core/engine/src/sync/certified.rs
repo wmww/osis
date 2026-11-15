@@ -971,6 +971,66 @@ mod tests {
         assert!(e.core.certified.placed.get(&Piece::Chain(x, ts[0])).is_some_and(|p| p.under.contains(&ts[0])), "X's chain to T1 stays, by its own write");
     }
 
+    /// Node 0's account A makes T (read here) and Y, a private actor: C (node 2's account) holds
+    /// read on Y, W (node 1's account) write on T. Y holds no role on T: (world, W, Y, T, the
+    /// commits granting C on Y).
+    fn private_world() -> (LocalPeer, Tid, Tid, Tid, Vec<CommitId>) {
+        let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
+        let a = lp.peers[0].engine.create_account().unwrap().0;
+        let w = lp.peers[1].engine.create_account().unwrap().0;
+        let c = lp.peers[2].engine.create_account().unwrap().0;
+        lp.sync_all().unwrap();
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
+        let e = &mut lp.peers[0].engine;
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a.account);
+        let y = e.new_thing(&mut m, a.account);
+        m.set(t, &acting_ak(), &Value::Int(0)).unwrap();
+        m.set(y, &acting_ak(), &Value::Int(0)).unwrap();
+        e.commit(m).unwrap();
+        e.grant(&t, &w.account, &edge(Role::Write)).unwrap();
+        let on_y = e.grant(&y, &c.account, &edge(Role::Read)).unwrap().commits;
+        lp.sync_all().unwrap();
+        (lp, w.account, y, t, on_y)
+    }
+
+    /// What T's certificates at node 0 carry of Y: Y's record, or a commit on Y's roster.
+    fn of_y(lp: &mut LocalPeer, t: Tid, y: Tid, on_y: &[CommitId]) -> (bool, bool) {
+        let e = &mut lp.peers[0].engine;
+        check(e, "synced");
+        let r = rows_of(e, &t);
+        (r.records.contains(&y), on_y.iter().any(|c| r.commits.contains_key(c) || r.headers.contains(c)))
+    }
+
+    // spec/permissions.md §4 (Chained writes; Chain certificates), spec/requirements.md (readers
+    // learn the rosters of actors holding a role, never the entries of other rosters): W, a writer
+    // of T and no admin, grants private Y read on T. The grant never applies; node 0, holding Y's
+    // roster, logs nothing of Y under T.
+    #[test]
+    fn a_writers_grant_of_a_private_actor_logs_nothing_of_it_spec_permissions_4() {
+        let (mut lp, _, y, t, on_y) = private_world();
+        let mut m = Mutation::new();
+        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(y))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None })) }).unwrap();
+        lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        assert!(!lp.peers[0].engine.roster(&t).contains_key(&y), "the grant applies nowhere");
+        assert_eq!(of_y(&mut lp, t, y, &on_y), (false, false), "Y's record or roster under T");
+    }
+
+    // spec/permissions.md §4 (Chain certificates), as above: W writes T acting for Y, holding no
+    // role on Y: its chain to Y carries nothing of Y (the commit is invalid without it).
+    #[test]
+    fn acting_for_an_actor_one_holds_no_role_on_logs_nothing_of_it_spec_permissions_4() {
+        let (mut lp, _, y, t, on_y) = private_world();
+        let mut m = Mutation::new();
+        m.set(t, &acting_ak(), &Value::Int(1)).unwrap();
+        m.act_as(y);
+        let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        assert!(lp.peers[0].engine.kept_invalid(&c), "the write for Y is invalid at node 0");
+        assert_eq!(of_y(&mut lp, t, y, &on_y), (false, false), "Y's record or roster under T");
+    }
+
     // spec/permissions.md §4, spec/sync-judgement.md §1 (List blobs), as above: random histories
     // of grants, lowerings, removals, group filings, own secrets, links, grantee writes, account
     // rotations listing a write and syncs;
