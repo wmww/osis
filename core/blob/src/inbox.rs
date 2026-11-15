@@ -104,30 +104,37 @@ impl InboxPayload {
     }
 }
 
+impl DialHint {
+    /// `[dialable, [url*]]` (spec/wire.md §9 position 4, §10 `peer`).
+    pub(crate) fn to_value(&self) -> Value {
+        Value::List(vec![Value::bytes(&self.dialable), Value::List(self.urls.iter().map(|u| Value::Str(u.clone())).collect())])
+    }
+
+    /// From `[dialable, [url*]]`: at most `max_urls` URLs, each at most `MAX_URL_BYTES`.
+    pub(crate) fn from_value(v: &Value, max_urls: usize, what: &'static str) -> Result<DialHint, Error> {
+        let Value::List(d) = v else { return Err(Error::Malformed(what)) };
+        let [k, Value::List(urls)] = d.as_slice() else { return Err(Error::Malformed(what)) };
+        if urls.len() > max_urls {
+            return Err(Error::Malformed(what));
+        }
+        let urls = urls
+            .iter()
+            .map(|u| match u {
+                Value::Str(u) if u.len() <= MAX_URL_BYTES => Ok(u.clone()),
+                _ => Err(Error::Malformed(what)),
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(DialHint { dialable: get_bytes(k, "dialable key")?, urls })
+    }
+}
+
 /// `Opt([dialable, [url*]])` (spec/wire.md §9 position 4).
 fn dial_value(d: Option<&DialHint>) -> Value {
-    Value::opt(d.map(|d| Value::List(vec![Value::bytes(&d.dialable), Value::List(d.urls.iter().map(|u| Value::Str(u.clone())).collect())])))
+    Value::opt(d.map(DialHint::to_value))
 }
 
 fn dial_from(v: &Value) -> Result<Option<DialHint>, Error> {
-    match get_opt(v, "inbox dial hint")? {
-        None => Ok(None),
-        Some(Value::List(d)) => {
-            let [k, Value::List(urls)] = d.as_slice() else { return Err(Error::Malformed("inbox dial hint")) };
-            if urls.len() > MAX_DIAL_URLS {
-                return Err(Error::Malformed("inbox dial hint"));
-            }
-            let urls = urls
-                .iter()
-                .map(|u| match u {
-                    Value::Str(u) if u.len() <= MAX_URL_BYTES => Ok(u.clone()),
-                    _ => Err(Error::Malformed("inbox dial url")),
-                })
-                .collect::<Result<_, _>>()?;
-            Ok(Some(DialHint { dialable: get_bytes(k, "inbox dialable")?, urls }))
-        }
-        Some(_) => Err(Error::Malformed("inbox dial hint")),
-    }
+    get_opt(v, "inbox dial hint")?.map(|d| DialHint::from_value(d, MAX_DIAL_URLS, "inbox dial hint")).transpose()
 }
 
 /// An inbox payload but its commit (`InboxPayload::split`).

@@ -5,7 +5,7 @@ use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
 use osis_base::{SyncId, Tid, Value, encode};
-use osis_blob::{Error, Peer, ShareLink};
+use osis_blob::{DialHint, Error, ShareLink};
 
 const SPEC: &str = "spec/wire.md §10";
 
@@ -15,7 +15,7 @@ pub fn links() -> VecFile {
         target: Tid::from_bytes([0x01; 15]),
         k: Tid::from_bytes([0x02; 15]),
         k_sync_id: SyncId([0x04; 16]),
-        peers: vec![Peer { dialable: [0x07; 32], relays: vec!["https://relay.example".into()] }],
+        peers: vec![DialHint { dialable: [0x07; 32], urls: vec!["quic://relay.example:4040".into()] }],
         single_use: false,
     };
     let mut bare = link.clone();
@@ -36,9 +36,9 @@ pub fn links() -> VecFile {
     };
     let peer = Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![])]);
     let five = with(5, Value::List(vec![peer; 5]));
-    let relays = with(5, Value::List(vec![Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![Value::Str("r".into()); 5])])]));
+    let urls = with(5, Value::List(vec![Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![Value::Str("r".into()); 5])])]));
     let long = with(5, Value::List(vec![Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![Value::Str("r".repeat(257))])])]));
-    for (name, b, rule) in [("five peers", five, "link-cap"), ("five relays", relays, "link-cap"), ("relay URL of 257 bytes", long, "link-cap")] {
+    for (name, b, rule) in [("five peers", five, "link-cap"), ("five URLs", urls, "link-cap"), ("peer URL of 257 bytes", long, "link-cap")] {
         assert!(ShareLink::from_value(&osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap()).is_err());
         cases.push(case(name, SPEC).with("bytes", hex(&b)).with("reject", rule));
     }

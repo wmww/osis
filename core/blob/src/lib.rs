@@ -27,6 +27,6 @@ pub use bundle::{BundleEvent, BundleReader, BundleWriter, Importer, Record};
 pub use error::Error;
 pub use inbox::{BoxedThing, BoxesPayload, DialHint, GrantSig, HolderKeys, Inbox, InboxPayload, InboxRest, InboxThing, MAX_DIAL_URLS, StrandedNotice, open_inbox_blob, open_inbox_item, seal_boxes_payload, seal_inbox_blob, seal_stranded_notice};
 pub use sync_ids::{StepRecord, SyncEntry, SyncIds, parse_record, step_record, sync_steps};
-pub use link::{Peer, ShareLink};
+pub use link::{ShareLink, link_peers};
 pub use step::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_sync_id, open_entry_box, path_to, register, register_with, verify_path};
 pub use tree::{BlobFetch, BlobReader, BlobSink, BlobStore, BlobWriter, Framing, Reuse, HashSink, LinkSource, MemoryBlobs, TreeReader, TreeSink, TreeWriter, Written, linked_prefix_inputs, read_tree, write_tree};

@@ -17,8 +17,8 @@
 6. **Serving addresses pin a key**: a transport URL plus the node's static public key (its dialable key, `Osis::listen`), so serving needs no certificate authority and a middlebox cannot pose as the node.
 
 ## First contact
-A link may carry the sharer node's dialable key and relays (spec/wire.md §10): a redeemer sharing no other peer with the sharer dials that node, which opens K by the link key's static entry (spec/sync-inbox.md §6). No new mechanism; redemption then needs the sharer online, as any P2P exchange does. Relay defaulting to an official osis node is client policy.
-- A link text carries the dialable key and relays only, never direct addresses (`make_link` filters).
+A link's peers (spec/wire.md §10, `osis_blob::link_peers`) are dial hints: the sharer node (its dialable key, one `peer://` URL of its relays) and the nodes it dials by configured address (`Config::dial`, at most 3, `URL#KEY` as configured). A redeemer sharing no other peer with the sharer dials them; any that holds K opens it by the link key's static entry (spec/sync-inbox.md §6). So a sharer reachable by nobody (no listener, no relay) still makes working links when it syncs through a configured node keeping K unread (the dogfood shared node): the redeemer joins there with no address of its own. Without a configured node, redemption needs the sharer online, as any P2P exchange does. Relay defaulting to an official osis node is client policy.
+- The sharer's own socket addresses never go in a link (only its relays); a configured node's address does: the sharer chose to dial it, and a link already names whom to contact.
 
 ## Local and offline transports
 Tess wants "just works" across LAN, Bluetooth and similar. LAN is our own announcement plus direct QUIC. BLE, WiFi Aware and mixnets are further transports under decision 1. Not MVP. Low-bandwidth links suit small commits and signals; large bodies wait for a fast path (chunk fetch may be lazy, spec/sync-streams.md §5).

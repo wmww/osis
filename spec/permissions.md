@@ -364,11 +364,11 @@ A commit of account P names the epoch it is signed at (spec/wire.md §4); §5.4 
 - A **link** consists of K, an actor whose first admin is the sharer's actor, with secrets of its own and the `link` field in its creation record naming the target (spec/wire.md §3; every holder of the target holds that record among the chain certificates of K's grant, §4; the field is its creator's word: no node checks it and no authority depends on it; only a joiner's own leave reads it, below), granted the link's role on the target, and L, a key actor whose seed is in the link, with a grant (role r, invite r) on K for the link's role r, read or above (redeeming reads K's roster).
   - The sharer's actor is K's only admin.
   - A client making the link writes the target's `retain` default then in force on K (§3) when it says retain.
-- **Link text** encodes: L's seed, the target tid, K's tid, K's sync ID, and optionally the sharer node's dialable key and relays.
-- **First contact**: the redeemer dials the sharer's node at the key from the link, which serves K's sync ID as a peer that reads it (spec/wire.md §10).
-  - A link carries only that key and those relays.
-  - The redeemer dials that key with an ephemeral transport key, finds K through its shared set (the link key's static entry, spec/sync-opens.md §4), opens K's sync ID there as at any peer, and MAY keep dialing it, from the link it followed, for K's sync IDs and the target's, nothing else.
-  - Putting the key in a link is the sharer's explicit choice; a link without it reaches the redeemer only through peers it already shares K with. The sharer's node serves K's sync ID and the target's from its own store (spec/sync-ids.md §5).
+- **Link text** encodes: L's seed, the target tid, K's tid, K's sync ID, and the link's peers: the sharer node's dialable key and relays, and the addresses the sharer node is configured to dial (spec/wire.md §10).
+- **First contact**: the redeemer dials the link's peers, each of which serves K's sync ID as at any peer when it holds it: the sharer's node as a peer that reads it, a configured node (one keeping K unread) as one that keeps it (spec/wire.md §10).
+  - A link carries only those peers.
+  - The redeemer dials each with an ephemeral transport key, finds K through its shared set (the link key's static entry, spec/sync-opens.md §4) and opens K's sync ID there as at any peer. Once its join is held it keeps the link's peers, not the seed, as addresses to dial (spec/sync-opens.md §1 Where to dial) while its account holds a role on the target here.
+  - The link's peers are the sharer's explicit choice; a link without them reaches the redeemer only through peers it already shares K with. The sharer's node serves K's sync ID and the target's from its own store (spec/sync-ids.md §5).
 - L is listed in every step of K's sync ID by its static entry with an entry box (spec/sync-ids.md §3), and holds boxes in K's `secrets.0` like any key-actor holder (sealed to L's KEM key, spec/crypto.md §3).
 - **Redeem**:
   1. Derive L's keys from the seed.

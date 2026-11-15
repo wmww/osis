@@ -116,9 +116,9 @@ pub struct SetRoleOpts {
 }
 
 /// How a link made by `Osis::make_link` ends. The link names the node that made it and its relays,
-/// so a redeemer reaches that node while it is online: anyone holding the link can dial it, also
-/// after the link ends, until `Osis::rotate_peer_address`; dialing opens nothing the link no
-/// longer grants.
+/// and the nodes it dials by `Config::dial`, so a redeemer reaches the thing at any of them that
+/// holds the link's actor: anyone holding the link can dial them, also after the link ends (this
+/// node until `Osis::rotate_peer_address`); dialing opens nothing the link no longer grants.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
     /// The link expires. It closes when one of your nodes next syncs after `until`: until then
@@ -732,16 +732,16 @@ impl Osis {
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         self.local_at(target, "make_link")?;
         let me = self.me();
-        let peer = self.own_peer();
-        let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), peers: vec![peer], single_use: opts.single_use };
+        let peers = self.link_peers();
+        let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), peers, single_use: opts.single_use };
         let (link, _, _) = self.engine(|e| e.create_link(&me, &spec)).map_err(needs_admin)?;
         Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }
 
-    /// This node's first-contact reach (spec/wire.md §10): its dialable key and relays.
-    fn own_peer(&self) -> osis_blob::Peer {
-        let key = self.locked(|l| l.secret.public_key());
-        osis_blob::Peer { dialable: key, relays: self.inner.relays.clone() }
+    /// A link's first-contact peers (spec/wire.md §10): this node by its dialable key and relays,
+    /// then the nodes it dials by configured address (`Config::dial`).
+    fn link_peers(&self) -> Vec<osis_blob::DialHint> {
+        self.locked(|l| osis_blob::link_peers(l.secret.public_key(), &self.inner.relays, &l.node.config().dial))
     }
 
     /// Redeems a link: reaches what it names and joins it, returning the thing. The join lists the

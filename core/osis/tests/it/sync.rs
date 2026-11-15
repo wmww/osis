@@ -183,7 +183,7 @@ fn osis_key() -> String {
     osis::Address::new(&"peer://127.0.0.1:1".parse().unwrap(), [9; 32]).to_string().rsplit('#').next().unwrap().to_string()
 }
 
-// spec/wire.md §10 (the sharer node's P2P reach): a link names its target, K and the sharer node's dialable key; it
+// spec/wire.md §10 (the target tid): a link names its target, K and the sharer node's dialable key; it
 // gives read or above.
 #[test]
 fn a_link_names_its_target_and_this_node_spec_wire_10() {
@@ -916,6 +916,71 @@ fn a_third_accounts_node_relays_a_group_it_keeps_unread_spec_sync_3() {
         net.advance(1_000);
     }
     assert_eq!(name(&a, t).as_deref(), Some("from b"));
+    assert_eq!((a.status().unwrap().connected, b.status().unwrap().connected), (1, 1), "each connected to h alone");
+}
+
+// spec/wire.md §10 (the nodes to dial for first contact), spec/permissions.md §7 (First contact): a link lists the nodes its sharer dials by configured address,
+// so a fresh node with no address of its own joins from the link alone through a third account's
+// node keeping the thing unread (the sharer reachable by nobody), receives the sharer's writes
+// there, and dials that node again after a restart (spec/permissions.md §7: the link's peers stay
+// addresses to dial while the target is held).
+#[test]
+fn a_link_reaches_a_node_its_sharer_dials_spec_wire_10() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let h = on(&net, 70, &c);
+    let addr = h.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
+    let node = |seed, store: MemStore, dial: Vec<osis::Address>, open: bool| {
+        let mut o = cfg(seed, store, &c);
+        o.app.internals.net = Some(net.clone());
+        o.cfg.dial = dial;
+        o.cfg.direct_sync = false;
+        if open { osis::internals::open(o) } else { osis::internals::create(o) }.unwrap()
+    };
+    let a = node(71, MemStore::new(), vec![addr.clone()], false);
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
+    w.at(t, osis::core::NAME).set(&"first".to_string()).unwrap();
+    w.commit().unwrap();
+    let link = a.make_link(t, Role::Write, LinkOpts::default()).unwrap();
+    let peers = osis::internals::blob::ShareLink::from_text(&link.to_string()).unwrap().peers;
+    assert_eq!(peers.iter().map(|p| p.dialable).collect::<Vec<_>>()[1..], [addr.key()], "the sharer, then its configured node");
+    drive(&net, a.import_contact(&h.contact_card().unwrap())).unwrap();
+    a.grant(t, h.me(), Role::Sync, osis::GrantOpts::default()).unwrap();
+    let k = a.links().unwrap().iter().find(|l| l.target == t).unwrap().id.actor();
+    a.grant(k, h.me(), Role::Sync, osis::GrantOpts::default()).unwrap();
+    for _ in 0..5 {
+        net.advance(1_000);
+    }
+    h.accept_invite(t, h.home()).unwrap();
+    h.accept_invite(k, h.home()).unwrap();
+    for _ in 0..5 {
+        net.advance(1_000);
+    }
+    let store = MemStore::new();
+    let b = node(72, store.clone(), Vec::new(), false);
+    assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
+    for _ in 0..5 {
+        net.advance(1_000);
+    }
+    assert_eq!(name(&b, t).as_deref(), Some("first"));
+    let mut w = a.write();
+    w.at(t, osis::core::NAME).set(&"from a".to_string()).unwrap();
+    w.commit().unwrap();
+    for _ in 0..5 {
+        net.advance(1_000);
+    }
+    assert_eq!(name(&b, t).as_deref(), Some("from a"));
+    drop(b);
+    let b = node(72, store, Vec::new(), true);
+    let mut w = a.write();
+    w.at(t, osis::core::NAME).set(&"after b's restart".to_string()).unwrap();
+    w.commit().unwrap();
+    for _ in 0..40 {
+        net.advance(1_000);
+    }
+    assert_eq!(name(&b, t).as_deref(), Some("after b's restart"));
     assert_eq!((a.status().unwrap().connected, b.status().unwrap().connected), (1, 1), "each connected to h alone");
 }
 

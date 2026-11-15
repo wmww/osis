@@ -1,8 +1,9 @@
 //! Links (spec/wire.md §10, spec/permissions.md §7): the canonical layout, caps and the text
-//! form `osis://link/` + unpadded base64url.
+//! form `osis://link/` + unpadded base64url. A link's peers are dial hints (`DialHint`).
 
 use osis_base::base64url;
 use crate::cbor::{get_bytes, get_tid, get_uint, tid};
+use crate::DialHint;
 use crate::Error;
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::MAX_URL_BYTES;
@@ -10,18 +11,11 @@ use osis_base::{SyncId, Tid, Value};
 use osis_crypto::Secret32;
 
 const MAX_PEERS: usize = 4;
-const MAX_RELAYS: usize = 4;
+const MAX_URLS: usize = 4;
 const FORMAT: i64 = 1;
 const LINK_PREFIX: &str = "osis://link/";
 /// Far above the largest layout the caps allow.
 const LIMITS: Limits = Limits { max_depth: 8, max_bytes: 16 * 1024 };
-
-/// A sharer node's P2P reach for first contact: dialable key and relay URLs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Peer {
-    pub dialable: [u8; 32],
-    pub relays: Vec<String>,
-}
 
 /// `Link := [1, seed, target, k, k_sync_id, [peer*], ? flags]` (spec/wire.md §10).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,9 +25,34 @@ pub struct ShareLink {
     pub target: Tid,
     pub k: Tid,
     pub k_sync_id: SyncId,
-    pub peers: Vec<Peer>,
+    /// The nodes to dial for first contact (spec/wire.md §10 `peer`).
+    pub peers: Vec<DialHint>,
     /// `flags` bit 0: the redemption removes L's own edge (spec/permissions.md §7).
     pub single_use: bool,
+}
+
+/// A link's peers as a sharer node makes them (spec/wire.md §10): itself, `own` with one
+/// `peer://` URL of its `relays` (relay items, in order, those that would take the URL past
+/// 256 bytes left out), then each of its configured addresses `dial` of another key, in order,
+/// while there is room.
+pub fn link_peers(own: [u8; 32], relays: &[String], dial: &[crate::Address]) -> Vec<DialHint> {
+    let mut items: Vec<String> = Vec::new();
+    for r in relays {
+        items.push(r.clone());
+        if osis_base::peer_url(&items).len() > MAX_URL_BYTES {
+            items.pop();
+        }
+    }
+    let mut out = vec![DialHint { dialable: own, urls: vec![osis_base::peer_url(&items)] }];
+    for a in dial {
+        if out.len() == MAX_PEERS {
+            break;
+        }
+        if a.url.len() <= MAX_URL_BYTES && !out.iter().any(|p| p.dialable == a.key) {
+            out.push(DialHint { dialable: a.key, urls: vec![a.url.clone()] });
+        }
+    }
+    out
 }
 
 /// `flags` bit 0 of a link.
@@ -60,11 +79,11 @@ impl ShareLink {
         }
         let mut peers = Vec::with_capacity(self.peers.len());
         for p in &self.peers {
-            if p.relays.len() > MAX_RELAYS {
-                return Err(Error::Malformed("more than 4 relays"));
+            if p.urls.len() > MAX_URLS {
+                return Err(Error::Malformed("more than 4 URLs"));
             }
-            p.relays.iter().try_for_each(|r| check_url(r))?;
-            peers.push(Value::List(vec![Value::bytes(&p.dialable), Value::List(p.relays.iter().map(|r| Value::Str(r.clone())).collect())]));
+            p.urls.iter().try_for_each(|r| check_url(r))?;
+            peers.push(p.to_value());
         }
         let mut v = vec![
             Value::Int(FORMAT),
@@ -99,24 +118,7 @@ impl ShareLink {
         if peers.len() > MAX_PEERS {
             return Err(Error::Malformed("more than 4 peers"));
         }
-        let peers = peers
-            .iter()
-            .map(|p| {
-                let Value::List(f) = p else { return Err(Error::Malformed("peer")) };
-                let [dialable, Value::List(relays)] = f.as_slice() else { return Err(Error::Malformed("peer")) };
-                if relays.len() > MAX_RELAYS {
-                    return Err(Error::Malformed("more than 4 relays"));
-                }
-                let relays = relays
-                    .iter()
-                    .map(|r| match r {
-                        Value::Str(s) => check_url(s).map(|()| s.clone()),
-                        _ => Err(Error::Malformed("relay")),
-                    })
-                    .collect::<Result<_, _>>()?;
-                Ok(Peer { dialable: get_bytes(dialable, "dialable key")?, relays })
-            })
-            .collect::<Result<_, _>>()?;
+        let peers = peers.iter().map(|p| DialHint::from_value(p, MAX_URLS, "link peer")).collect::<Result<_, _>>()?;
         Ok(ShareLink {
             seed: Secret32::from_bytes(get_bytes(seed, "link seed")?),
             target: get_tid(target, "link target")?,
@@ -154,7 +156,7 @@ pub(crate) mod tests {
             target: Tid::from_bytes([2; 15]),
             k: Tid::from_bytes([3; 15]),
             k_sync_id: SyncId([4; 16]),
-            peers: vec![Peer { dialable: [6; 32], relays: vec!["https://relay".into()] }],
+            peers: vec![DialHint { dialable: [6; 32], urls: vec!["quic://example.org:4040".into()] }],
             single_use: false,
         }
     }
@@ -192,7 +194,21 @@ pub(crate) mod tests {
         assert!(!format!("{l:?}").contains("[1, 1"));
     }
 
-    // spec/wire.md §10: caps (4 peers, 4 relays, 256-byte URLs); an unknown format
+    // spec/wire.md §10 (the nodes to dial for first contact): the sharer first, its relays as one `peer://` URL, those
+    // that would take it past 256 bytes left out; then its configured addresses of other keys, in
+    // order, up to 4 peers.
+    #[test]
+    fn peers_are_the_sharer_then_its_configured_addresses() {
+        let relay = |b: u8| format!("{}@[2001:db8::{b}]:4040", "ab".repeat(32));
+        let at = |k: u8| crate::Address { url: format!("quic://n{k}.example:4040"), key: [k; 32] };
+        let p = link_peers([1; 32], &[relay(1), relay(2), relay(3)], &[at(1), at(2), at(2), at(3), at(4), at(5)]);
+        assert_eq!(p[0].urls, vec![format!("peer://{} {}", relay(1), relay(2))], "a third relay would pass 256 bytes");
+        assert_eq!(p.iter().map(|x| x.dialable[0]).collect::<Vec<_>>(), [1, 2, 3, 4], "own key once, then in order, distinct");
+        assert_eq!(p[1].urls, vec![at(2).url]);
+        assert_eq!(link_peers([1; 32], &[], &[])[0].urls, vec!["peer://".to_string()], "no relay: LAN only");
+    }
+
+    // spec/wire.md §10: caps (4 peers, 4 URLs per peer, 256-byte URLs); an unknown format
     // parks.
     #[test]
     fn caps() {
@@ -200,10 +216,10 @@ pub(crate) mod tests {
         l.peers = vec![l.peers[0].clone(); 5];
         assert!(l.to_value().is_err());
         let mut l = link();
-        l.peers[0].relays = vec!["r".into(); 5];
+        l.peers[0].urls = vec!["r".into(); 5];
         assert!(l.to_value().is_err());
         let mut l = link();
-        l.peers[0].relays = vec!["r".repeat(257)];
+        l.peers[0].urls = vec!["r".repeat(257)];
         assert!(l.to_value().is_err());
         let mut v = link().to_value().unwrap();
         if let Value::List(items) = &mut v {

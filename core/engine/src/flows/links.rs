@@ -44,7 +44,7 @@ pub struct LinkSpec {
     pub target: Tid,
     pub role: Role,
     pub until: Option<WallMs>,
-    pub peers: Vec<osis_blob::Peer>,
+    pub peers: Vec<osis_blob::DialHint>,
     /// The link's `flags` bit 0: its redemption removes L (spec/permissions.md §7).
     pub single_use: bool,
 }

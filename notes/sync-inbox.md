@@ -15,7 +15,7 @@ Spec: spec/sync-inbox.md, spec/sync-ids.md §6 Steps and Register, spec/wire.md 
 
 Grant copies (spec/sync-inbox.md §5) are no part of this module: the engine lists them among the inbox's certificates (notes/sync-facade.md, Certificate bodies) and read logs them as any certificate.
 
-`dial_hints` (granting nodes of inbox blobs held, sharer nodes of links being redeemed) are the driver's dial candidates; `may_deposit(conn)` keeps a dialed connection open while a deposit to it may land.
+`dial_hints` (granting nodes of inbox blobs held, the peers of links being redeemed) are the driver's dial candidates; `may_deposit(conn)` keeps a dialed connection open while a deposit to it may land.
 
 ## Taking inbox blobs
 - `held` calls `take_inbox` inside an `Effects` settle. A take that writes what it read would be due again at once, every round of every step; `take_inbox` writes nothing when taking again changes nothing (tests/it/keep.rs `taking_an_inbox_blob_again_moves_nothing_spec_sync_inbox_2`).

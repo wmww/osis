@@ -575,8 +575,8 @@ impl World {
     /// the node's dialable key and where it is reached, as first-contact hints).
     pub fn make_link(&mut self, i: usize, target: Tid, role: osis_base::Role) -> osis_blob::ShareLink {
         let me = self.node(i).account.expect("an account");
-        let peer = osis_blob::Peer { dialable: self.node(i).key.0, relays: self.net.reach.items(i) };
-        let spec = osis_engine::flows::LinkSpec { target, role, until: None, peers: vec![peer], single_use: false };
+        let peers = osis_blob::link_peers(self.node(i).key.0, &self.net.reach.items(i), &self.node(i).node.config().dial);
+        let spec = osis_engine::flows::LinkSpec { target, role, until: None, peers, single_use: false };
         self.write(i, |e| e.create_link(&me, &spec)).expect("a link").0
     }
 

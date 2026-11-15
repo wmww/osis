@@ -2,7 +2,7 @@
 //!
 //! `redeem` keeps the link durably (store rows `I/r/`, shredded: they hold the seed) and follows
 //! it in the engine for this start (`Engine::follow_link`: L held, K's sync ID read in the sync
-//! set), so the node proves L, opens K by L's static entry (opens) and its boxes open; the sharer's dialable key and relays are dial hints. Once the join can be written
+//! set), so the node proves L, opens K by L's static entry (opens) and its boxes open; the link's peers are dial hints. Once the join can be written
 //! (`Engine::redeemable`: the target's roster lists K, K's lists L, K's keyset is held) it is written (`Engine::redeem`, which files the target under D: a redeem is an accept), once; the link is kept, and L held at every start,
 //! until the join is held at a source (a redeemer proves L until its join is there); then it is
 //! unfollowed and L forgotten. So a redeem
@@ -40,9 +40,9 @@ struct Pending {
     joined: Option<CommitId>,
 }
 
-/// A link's sharer nodes as dial hints.
+/// A link's peers as dial hints.
 fn link_hints(link: &ShareLink) -> Vec<DialHint> {
-    link.peers.iter().map(|p| DialHint { dialable: p.dialable, urls: vec![osis_base::peer_url(&p.relays)] }).collect()
+    link.peers.clone()
 }
 
 impl Pending {
