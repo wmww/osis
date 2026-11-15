@@ -313,8 +313,22 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
         let (at, _, sup, _) = w.rot(m).unwrap();
         m != r && sup.contains(&r) && j0.chain.contains(&r) && !j0.chain.iter().any(|s| signed_at(*s).contains(&at) && (j0.on(r, *s) || j0.on(*s, r)))
     };
+    // the chosen rotation's line first and, at a node of P, what it stands with (what a rotation
+    // on it takes, and that one's line). (Items are numbered in the order made, so a rotation's
+    // `when` is past what it needs: no tie to break.)
+    let mut chosen_needs: BTreeSet<u32> = j.chosen.into_iter().collect();
+    let mut work: Vec<u32> = chosen_needs.iter().copied().collect();
+    while let Some(x) = work.pop() {
+        let (at, names, ..) = w.rot(x).unwrap();
+        let takes = if reads_takes { w.takes(x) } else { &[] };
+        for p in std::iter::once(&at).chain(names).chain(takes).filter(|p| j.chain.contains(p)) {
+            if chosen_needs.insert(*p) {
+                work.push(*p);
+            }
+        }
+    }
     let mut order: Vec<u32> = j.chain.iter().copied().collect();
-    order.sort_by_key(|r| (!j.chosen.is_some_and(|c| j.on(*r, c)), when[r], *r));
+    order.sort_by_key(|r| (!chosen_needs.contains(r), when[r], *r));
     // Placed in order. A rotation is held only with every rotation on its line, so lines are
     // whole when placed; rejections read only what was placed before, so a later arrival never
     // reopens an earlier decision.

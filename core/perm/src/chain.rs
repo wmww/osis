@@ -6,8 +6,8 @@
 //! `Devices`).
 //!
 //! Principle: the first revocation seen holds. A node places the rotations in the order it came
-//! to hold them (each with its chain, every fork it names and every rotation it takes; the
-//! chosen rotation's line first).
+//! to hold them (each with its chain, every fork it names and every rotation it takes; ties
+//! ancestors first; the chosen line first, at a node of the account with what it stands with).
 //! Outside the account it follows each with its line unless it is beside one already followed
 //! (a removed device's fork looks like any other); a node of the account reads who minted each
 //! rotation and whom each removes, takes the revocations first-seen as a consistent set and
@@ -143,6 +143,9 @@ impl<E: Ord + Copy> Chain<E> {
         let mut rots: BTreeMap<E, Rotation<E>> = BTreeMap::new();
         // when each came to be held with its chain: its own receipt or a parent's, the later
         let mut when: BTreeMap<E, usize> = BTreeMap::new();
+        // and its depth: one more than the deepest of what it needs, so of two held at once the
+        // one it needs is placed first (a receipt millisecond orders its rotations by ID)
+        let mut depth: BTreeMap<E, usize> = BTreeMap::new();
         let held = |rots: &BTreeMap<E, Rotation<E>>, e: &E| *e == root || rots.contains_key(e);
         // and every revocation it takes, at every node: one taking what no node of the account
         // holds would otherwise be followed outside unanswered
@@ -151,14 +154,22 @@ impl<E: Ord + Copy> Chain<E> {
             if let Some(r) = pending.remove(&id) {
                 let w = needs(&r).iter().filter_map(|p| when.get(p)).fold(rank_of(&id).max(minter_known(&id)), |a, b| a.max(*b));
                 when.insert(id, w);
+                depth.insert(id, 1 + needs(&r).iter().filter_map(|p| depth.get(p)).max().copied().unwrap_or(0));
                 rots.insert(id, r);
             }
         }
         let mut c = Chain { root, rots, lines: BTreeMap::new(), rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), cut: BTreeSet::new(), taken: Vec::new() };
         c.lines = c.rots.keys().map(|&r| (r, c.line_of(r))).collect();
         c.chosen = chosen.filter(|s| c.rots.contains_key(s));
+        // the chosen rotation's line first and, at a node of the account, what it stands with
+        // (what a rotation on it takes, and that one's line; outside, takes decide nothing more)
+        let chosen_needs: BTreeSet<E> = c.chosen.map(|s| {
+            let mut up = ancestors(s, |x| c.parents(x).into_iter().chain(c.rots.get(&x).filter(|_| devices.is_some()).into_iter().flat_map(|r| r.takes.iter().copied())).collect::<Vec<E>>());
+            up.insert(s);
+            up
+        }).unwrap_or_default();
         let mut order: Vec<E> = c.rots.keys().copied().collect();
-        order.sort_by_key(|r| (!c.chosen.is_some_and(|s| c.on_line(s, *r)), when.get(r).copied().unwrap_or(usize::MAX), *r));
+        order.sort_by_key(|r| (!chosen_needs.contains(r), when.get(r).copied().unwrap_or(usize::MAX), depth.get(r).copied().unwrap_or(0), *r));
         match devices {
             Some(d) => c.follow_as_node(&order, d),
             None => c.follow_outside(&order),

@@ -364,3 +364,29 @@ fn forks_model_agrees() {
 fn forks_model_agrees_large() {
     crate::common::sharded(20_000, 0xf0c5_0e01, forks_run);
 }
+
+/// A removes X (5) and then Y (3, at 5) within one millisecond: placed by when each came to be
+/// held, then ancestors first, never by ID alone, so A takes both (spec/permissions.md §5.4,
+/// Placing). Taken by ID, 3 would come first, standing with 5 not yet taken, and A would
+/// disregard its own removal of Y.
+#[test]
+fn a_rotation_is_placed_after_its_line_whatever_its_id() {
+    let rots = vec![rot(5, 0, &[0], &[]), rot(3, 5, &[5], &[])];
+    let a = own(&rots, &[3, 5], &[(5, 'A'), (3, 'A')], &[(5, 'X'), (3, 'Y')], &[]);
+    assert!(a.counts(&5) && a.counts(&3) && a.taken() == [5, 3], "heads {:?} taken {:?}", a.heads(), a.taken());
+}
+
+/// B's rotation (4, at 2) takes X's revocation of A (3); A removed X (1). A's user chooses 4:
+/// what 4 stands with is placed with its line, ahead of A's own removal, so the choice holds
+/// (spec/permissions.md §5.4, Placing).
+#[test]
+fn a_chosen_line_is_placed_with_what_it_takes() {
+    let mut r4 = rot(4, 2, &[2], &[]);
+    r4.takes = set(&[3]);
+    let rots = vec![rot(1, 0, &[0], &[]), rot(2, 0, &[0], &[]), rot(3, 0, &[0], &[]), r4];
+    let d = devices(&[(1, 'A'), (2, 'B'), (3, 'X'), (4, 'B')], &[(1, 'X'), (3, 'A')], &[]);
+    let a = Chain::new(0, rots.clone(), None, &rec(&[1, 2, 3, 4]), Some(&d));
+    assert!(a.counts(&1) && !a.counts(&4), "before the choice");
+    let a = Chain::new(0, rots, Some(4), &rec(&[1, 2, 3, 4]), Some(&d));
+    assert!(a.counts(&4) && a.counts(&3) && !a.counts(&1), "the choice holds: heads {:?} taken {:?}", a.heads(), a.taken());
+}
