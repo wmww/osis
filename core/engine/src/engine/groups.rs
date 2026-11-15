@@ -412,6 +412,9 @@ pub struct Groups {
     pub(crate) moved: BTreeSet<Tid>,
     /// Stamps the index per row read (`Row`): a change moves what read the rows it changed.
     stamps: osis_base::memo::Stamps,
+    /// Each thing that entered some group's sync closure (`sync_gained_feed`): what a follower
+    /// of a sync closure looks at, O(the change), never the closure (spec/sync-set.md §2 Cost).
+    gained: osis_base::memo::Stamps,
 }
 
 /// A row of `Groups` as its stamps name it: a reader of one moves only with it.
@@ -429,6 +432,8 @@ enum Row {
     SyncClosure(Tid),
     /// Whether a group's closure holds a tid.
     Member(Tid, Tid),
+    /// The groups whose sync closure holds a tid (`sync_enclosing`), as the cut moves it.
+    SyncEnclosing(Tid),
 }
 
 /// A group's closure as handed out (`Groups::closure_of`): read tid by tid as it is used, so
@@ -466,6 +471,7 @@ impl Clone for Groups {
             log: self.log.clone(),
             moved: self.moved.clone(),
             stamps: self.stamps.clone(),
+            gained: self.gained.clone(),
         }
     }
 }
@@ -768,11 +774,30 @@ impl Groups {
             kept.clear();
         }
         for ((x, was), now) in before.iter().zip(&after) {
+            if was != now {
+                self.stamps.wrote(&Row::SyncEnclosing(*x), true);
+            }
+            if now.difference(was).next().is_some() {
+                self.gained.wrote_added(x, true, true);
+            }
             for a in was.symmetric_difference(now) {
                 self.stamps.wrote(&Row::SyncClosure(*a), true);
                 edit_kept(kept, a, x, now.contains(a));
             }
         }
+    }
+
+    /// The groups whose sync closure (`sync_closure`) holds `t`: O(the groups above `t` and its
+    /// key homes), moving only with them.
+    pub(crate) fn sync_enclosing(&self, t: &Tid) -> BTreeSet<Tid> {
+        self.stamps.read(&Row::SyncEnclosing(*t));
+        self.enclosing_avoiding(t, &self.cut)
+    }
+
+    /// A cursor over the things that entered some group's sync closure from now on, each time it
+    /// did (an undone edit's included): a follower of a closure asks each whether it holds it.
+    pub(crate) fn sync_gained_feed(&self) -> osis_base::memo::Feed<Tid> {
+        self.gained.feed()
     }
 
     /// The closures of `gs` when the running transaction began (its edits undone), together.
@@ -895,6 +920,9 @@ impl Groups {
         let mut moved = Vec::new();
         let kept = self.closures.get_mut().unwrap_or_else(PoisonError::into_inner);
         for ((x, was), now) in before.iter().zip(&after) {
+            if !cut && now.difference(was).next().is_some() {
+                self.gained.wrote_added(x, true, true);
+            }
             for a in was.symmetric_difference(now) {
                 // `x` entered or left `a`'s closure; what `a` holds is an answer too
                 moved.extend([*x, *a]);
@@ -911,6 +939,9 @@ impl Groups {
             let after_cut: Vec<BTreeSet<Tid>> = before.iter().map(|(x, _)| self.enclosing_avoiding(x, &self.cut)).collect();
             let kept = self.cut_closures.get_mut().unwrap_or_else(PoisonError::into_inner);
             for (((x, _), was), now) in before.iter().zip(&before_cut).zip(&after_cut) {
+                if now.difference(was).next().is_some() {
+                    self.gained.wrote_added(x, true, true);
+                }
                 for a in was.symmetric_difference(now) {
                     self.stamps.wrote(&Row::SyncClosure(*a), true);
                     edit_kept(kept, a, x, now.contains(a));

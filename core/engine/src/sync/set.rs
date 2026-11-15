@@ -68,6 +68,51 @@ impl Engine {
         })
     }
 
+    /// `sync_things_now`'s answer for `t` alone: a destroyed thing being emptied or a link being
+    /// redeemed, or a root of N's closure (the sync root, home, a thing shared here) among the
+    /// groups whose sync closure holds `t` (`Groups::sync_enclosing`). Reads only those rows, so
+    /// it moves when `t` enters or leaves and with nothing else of the closure.
+    pub(crate) fn in_sync_things_now(&mut self, t: &Tid) -> Result<bool> {
+        if self.core.ix.destroyed_sync_ids.contains_key(t) || crate::sync_ids::actors::followable(self, t) {
+            return Ok(true);
+        }
+        let [root, home] = self.sync_roots()?;
+        let ix = &self.core.ix;
+        Ok(ix.groups.sync_enclosing(t).iter().any(|a| Some(*a) == root || Some(*a) == home || ix.shared_here.contains(a)))
+    }
+
+    /// The sync root and home (D): the roots of N's closure besides the things shared here.
+    fn sync_roots(&mut self) -> Result<[Option<Tid>; 2]> {
+        Ok([self.sync_root()?, self.core.account_devices().map(|(_, d)| d)])
+    }
+
+    /// The things that may have entered `sync_things` since `f`'s last read (its first: every
+    /// one): each thing that entered a sync closure (`Groups::sync_gained_feed`) or was destroyed
+    /// since, the sync closure of each root new since (a share; the synced group read first),
+    /// and the links being redeemed (followed links, few: whether one is followable moves with
+    /// its record, sync record and destruction). Leaving needs no feed: `in_sync_things` moves.
+    pub(crate) fn things_entered_now(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
+        let roots = self.sync_roots()?;
+        let Some(at) = f.0.as_mut() else {
+            let ix = &self.core.ix;
+            f.0 = Some(Entered { gained: ix.groups.sync_gained_feed(), destroyed: ix.destroyed_sync_ids.feed(), shared: ix.shared_here.feed(), roots });
+            return Ok(self.sync_things_now()?.iter().copied().collect());
+        };
+        let mut out = at.gained.added();
+        out.extend(at.destroyed.added());
+        let mut new: Vec<Tid> = at.shared.added();
+        new.extend(roots.iter().flatten().filter(|r| !at.roots.contains(&Some(**r))));
+        at.roots = roots;
+        for r in new {
+            let c = self.core.ix.groups.sync_closure(&r);
+            osis_base::costs::count("sync: things walked", c.len() as u64);
+            out.extend(c.iter().copied());
+        }
+        out.extend(self.core.followed_links.keys().copied());
+        osis_base::costs::count("sync: things entered", out.len() as u64);
+        Ok(out)
+    }
+
     /// N's closure uncut (spec/sync-set.md §2): what unsyncing keeps (`forget_local`).
     pub(crate) fn node_closure(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         self.rooted(None, Vec::new(), |g, t| g.closure(t))
@@ -362,6 +407,15 @@ pub(crate) fn unshare_here(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
         tx.txn.remove_local(&[records::SHARED_HERE, t.as_bytes()].concat(), Shred::No)?;
     }
     Ok(())
+}
+
+/// A started `ThingsFeed`: its cursors and the roots it last saw.
+#[derive(Clone, Debug)]
+pub(crate) struct Entered {
+    gained: osis_base::memo::Feed<Tid>,
+    destroyed: osis_base::memo::Feed<Tid>,
+    shared: osis_base::memo::Feed<Tid>,
+    roots: [Option<Tid>; 2],
 }
 
 /// A thing's home sync ID among those it owns (two admins giving it secrets at once made two: the

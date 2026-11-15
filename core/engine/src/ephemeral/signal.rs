@@ -60,8 +60,14 @@ impl Engine {
         let c = self.build_relay(actor, ts, deltas)?;
         let id = c.id;
         // relayed when the synced group's closure holds a thing it writes (spec/sync-set.md §2)
-        let synced = self.sync_things()?;
-        if signals.iter().any(|(t, _, _)| synced.contains(t)) {
+        let mut synced = false;
+        for (t, _, _) in &signals {
+            if self.in_sync_things(t)? {
+                synced = true;
+                break;
+            }
+        }
+        if synced {
             self.eph.signals.push(c);
         }
         let (node, received) = (self.core.writer()?, self.now());

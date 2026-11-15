@@ -3124,6 +3124,68 @@ fn sourced_world(n: usize) -> (LocalPeer, Tid, Tid, Tid, Tid) {
     (lp, d, g, h, both)
 }
 
+/// `things_entered` of `f` now, after checking it names every thing that entered `sync_things`
+/// since `was` (`was` moves to the set now).
+#[track_caller]
+fn entered_cover(e: &mut osis_engine::Engine, f: &mut osis_engine::sync::ThingsFeed, was: &mut BTreeSet<Tid>, step: &str) {
+    let got: BTreeSet<Tid> = e.things_entered(f).unwrap().into_iter().collect();
+    let now = e.sync_things().unwrap();
+    let missed: Vec<&Tid> = now.iter().filter(|t| !was.contains(*t) && !got.contains(*t)).collect();
+    assert!(missed.is_empty(), "{step}: entered and not named: {missed:?}");
+    for t in now.iter() {
+        assert!(e.in_sync_things(t).unwrap(), "{step}: in_sync_things({t:?}) disagrees");
+    }
+    *was = (*now).clone();
+}
+
+// spec/sync-set.md §2 (Cost; the sync set follows every `group.0` change), §5: a follower of
+// the sync set by `things_entered` is named every thing entering it, however it entered: listed
+// while a group is sourced away, destroyed while listed nowhere (its own sync IDs kept), a root
+// switched to a group populated before (the node's synced group read anew).
+#[test]
+fn things_entered_names_every_thing_entering_the_sync_set_spec_sync_set_2() {
+    let (mut lp, d, g, _, _) = sourced_world(1);
+    let p = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let (y, lone) = (thing_of(&mut lp, 0, p), thing_of(&mut lp, 0, p));
+    let mut f = osis_engine::sync::ThingsFeed::default();
+    let mut was = BTreeSet::new();
+    let e = &mut lp.peers[0].engine;
+    e.give_own_secrets(&lone).unwrap();
+    entered_cover(e, &mut f, &mut was, "start");
+    e.set_sourced([g].into(), &BTreeSet::new());
+    entered_cover(e, &mut f, &mut was, "g sourced away");
+    list_in(&mut lp, 0, d, 0, y);
+    let e = &mut lp.peers[0].engine;
+    entered_cover(e, &mut f, &mut was, "listed while g is away");
+    assert!(was.contains(&y));
+    e.set_sourced(BTreeSet::new(), &BTreeSet::new());
+    entered_cover(e, &mut f, &mut was, "g home");
+    assert!(!was.contains(&lone));
+    let mut m = Mutation::new();
+    let now = e.now();
+    m.set(lone, &ct::PURGE, &now).unwrap();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: lone, ak: ct::CREATED.name() });
+    e.commit(m).unwrap().unwrap();
+    entered_cover(e, &mut f, &mut was, "destroyed, listed nowhere");
+    assert!(was.contains(&lone), "a destroyed thing's kept sync IDs sync");
+    // a group listing D and listed in D, holding z, which the synced group's closure lacks
+    let (g2, z) = (thing_of(&mut lp, 0, p), thing_of(&mut lp, 0, p));
+    list_in(&mut lp, 0, g2, 0, z);
+    list_in(&mut lp, 0, g2, 1, d);
+    list_in(&mut lp, 0, d, 0, g2);
+    let e = &mut lp.peers[0].engine;
+    entered_cover(e, &mut f, &mut was, "g2 made");
+    assert!(!was.contains(&z));
+    let me = e.tid();
+    let mut synced = e.get_typed(&d, &ct::SYNCED).unwrap().unwrap();
+    synced.insert(me, g2);
+    let mut m = Mutation::new();
+    m.set(d, &ct::SYNCED, &synced).unwrap();
+    e.commit(m).unwrap().unwrap();
+    entered_cover(e, &mut f, &mut was, "synced group switched");
+    assert!(was.contains(&z), "the new synced group's things sync");
+}
+
 // spec/sync-set.md §5 (Home is never sourced away): home (D) asked sourced elsewhere stays in the
 // sync set with its home sync ID and what is filed under it, so the engine's own records on D
 // (sync record keeps, inbox marks, accepts) still leave this node.

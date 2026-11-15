@@ -250,6 +250,11 @@ pub struct SyncSet {
     pub unsyncable: BTreeSet<Tid>,
 }
 
+/// One follower's cursor over the things that may have entered `Engine::sync_things`
+/// (`Engine::things_entered`); unstarted until its first read.
+#[derive(Clone, Debug, Default)]
+pub struct ThingsFeed(pub(crate) Option<set::Entered>);
+
 /// How this node syncs one thing of its synced group's closure (spec/sync-set.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThingSync {
@@ -799,6 +804,20 @@ impl Engine {
     /// change), destroyed things being emptied and links being redeemed.
     pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         self.sync_things_now()
+    }
+
+    /// Whether `sync_things` holds `t`, reading only what places `t` there (the groups above it
+    /// and its key homes, whether each is a root of N's closure; its destruction; a link it is
+    /// K of): what a follower of the sync set settles per thing, so a thing leaving moves it.
+    pub fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
+        self.in_sync_things_now(t)
+    }
+
+    /// The things that may have entered `sync_things` since `f`'s last read, each a candidate for
+    /// `in_sync_things` (the first read: every one): O(what changed) (spec/sync-set.md §2 Cost),
+    /// a new root of N's closure (a share, the synced group read first) its closure.
+    pub fn things_entered(&mut self, f: &mut ThingsFeed) -> Result<Vec<Tid>> {
+        self.things_entered_now(f)
     }
 
     /// The groups the handle reads and writes at another node (spec/sync-set.md §5): `elsewhere`,
