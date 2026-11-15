@@ -1165,6 +1165,10 @@ fn keep_arriving(as_item: bool) {
 #[test]
 fn writers_of_two_accounts_keep_each_others_certificates_spec_sync_judgement_2() {
     let (mut w, t, ak) = granted_and_read(Role::Write);
+    // each account rotation closes and redials the rotator's connections (spec/sync-opens.md §1):
+    // node 0's to the removed node of account 1, powered off unseen, then fails and is dialed
+    // again each `REDIAL_MS` for the rest of the run (about 4 000 dials over its world hours)
+    w.cap = 6 * crate::harness::RULE_CAP;
     let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
     let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let write = |w: &mut World, i: usize, v: &str| {
@@ -1289,6 +1293,13 @@ fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
     w.run();
     file(&mut w, 1, Vec::new(), vec![t]);
     w.run();
+    // a content write at the first epoch, which the first rotation closes and lists under S
+    let c = w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("y".into())).unwrap();
+        e.commit(m).unwrap()
+    }).unwrap();
+    w.run();
     // two rotations, the second signed at the epoch the first mints; each goes under every sync
     // ID the account acts in, streamed by every node on both connections of each pair (about
     // 1 000 deliveries each)
@@ -1331,6 +1342,19 @@ fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
     }
     w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
     w.run();
+    // the rotator's thing list for T naming the write at the closed epoch is held at every
+    // reader of S (spec/permissions.md §5.5 Rotation's list; spec/sync-judgement.md §1 List
+    // blobs), so the write counts where it is held (§5.5 Epoch rule): its node proved its account
+    // again after rotating, so S stays shared with it (spec/sync-opens.md §1, §2). The fresh
+    // reader may hold only the later commit covering it.
+    let names = |w: &mut World, j: usize| rots.iter().any(|r| w.engine(j).rotation_lists(r).unwrap().iter().any(|(x, cs)| *x == t && cs.contains(&c)));
+    for j in 0..3 {
+        assert!(names(&mut w, j), "node {j}: no thing list of T naming the write");
+    }
+    for j in 0..2 {
+        assert_eq!(w.engine(j).held_part(&t, &ak, &c, 1 << 20).unwrap().map(|p| p.valid), Some(true), "node {j}: the write at the closed epoch is not valid");
+    }
+    assert_eq!(w.engine(2).get(&t, &ak).unwrap(), Some(Value::Str("y".into())), "the fresh reader reads the write");
     for j in 0..3 {
         let held: Vec<osis_base::BlobId> = w.store(j).entries(&s).unwrap().iter().map(|e| e.blob).collect();
         for r in &rots {
@@ -1344,3 +1368,4 @@ fn old_rotation_lines_go_as_headers_alone_spec_permissions_4() {
         }
     }
 }
+

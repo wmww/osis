@@ -4,7 +4,7 @@
 //! of the Phase 1 checklist, issues/sync-rewrite.md). World tests run the product's node; the dial rules alone
 //! run on `Dials` with a table of dial peers.
 
-use crate::harness::{Seen, World, two_nodes};
+use crate::harness::{Seen, World, contacts, two_nodes};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_label::{Address, Class, Prefix};
 use osis_store::Fault;
@@ -154,6 +154,35 @@ fn acting_for_a_new_actor_redials_spec_sync_opens_1() {
     assert_eq!(dials_to(&w, 0, 1), 2, "closed and dialed again at once");
     w.run();
     assert_eq!(ups_to(&w, 0, 1), 2);
+}
+
+/// Whether node `i` holds a live connection from node `j` on which `j` proved its account with
+/// `key`, the account at an epoch open at `i`.
+fn proven_at(w: &mut World, i: usize, j: usize, key: [u8; 32]) -> bool {
+    let account = w.node(j).account.expect("an account");
+    let proofs: Vec<(osis_base::CreationRecord, [u8; 32])> = w.links_of(i).into_iter().filter(|(_, t)| *t == j).filter_map(|(c, _)| w.node(i).node.session(c)?.proven().account.clone()).collect();
+    proofs.into_iter().any(|(r, k)| r.tid() == account && k == key && w.engine(i).key_open(&r, &k))
+}
+
+// spec/sync-opens.md §1 (proves once), §2 (its account by a signature at an epoch): a node whose
+// account rotates by its own write closes each connection where it proved the account at the
+// closed epoch and dials again; its new Prove carries the rotation, so the peer holds it and
+// counts the account proved at the new epoch.
+#[test]
+fn an_own_rotation_proves_again_spec_sync_opens_1() {
+    let mut w = contacts();
+    let a0 = w.node(0).account.expect("an account");
+    let old = w.engine(0).account_open_key().expect("an open key");
+    assert!(proven_at(&mut w, 1, 0, old), "node 0's account proved to node 1");
+    let dials = dials_to(&w, 0, 1);
+    let r = w.write(0, |e| e.rotate_account(&a0)).unwrap().expect("rotated");
+    assert_eq!(dials_to(&w, 0, 1), dials + 1, "closed and dialed again at once");
+    w.run();
+    let new = w.engine(0).account_open_key().expect("an open key");
+    assert_ne!(new, old);
+    assert!(w.engine(1).account_rotations(&a0).contains(&r), "the Prove carried the rotation");
+    assert!(proven_at(&mut w, 1, 0, new), "proved again at the new epoch");
+    assert!(!proven_at(&mut w, 1, 0, old), "no connection left on the closed epoch");
 }
 
 /// A blob of `class` expiring at `expiry`.

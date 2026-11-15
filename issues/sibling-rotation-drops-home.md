@@ -1,0 +1,8 @@
+# A sibling taking its account's rotation leaves its home and never takes the new seed
+> Summary: when another node of its account rotates P (no removal), a node holds the rotation without its D part, drops every entry of its home (D's sync ID) and never holds the new epoch's seed: it cannot sign or prove its account from then on.
+> Priority: critical
+> Tags: engine, sync
+
+- Shape: `harness::siblings()`; node 1 `rotate_account(a1)`, run, advance `REDIAL_MS`, run. At node 2: `commit_parts_missing()[r]` is `{0}` (the `account.0` part on D carrying the seed), node 2's trace shows `-entry` for every entry of D's home sync ID right after the rotation arrives, `account_prover()` is `None`, `account_open_key()` `None`. Node 1 holds the rotation's blob with both parts under D's home. Seen on rotation-lines' base without any of the re-prove change, so not caused by it.
+- Likely: once the rotation counts, node 2's open epoch is one whose seed it lacks; something judging D's home (whether node 2 is a node of P, acting as P) reads that as not being one, so the home leaves the sync set and the seed it carries can never arrive. A node of P must keep D's home while it holds D's read role, whatever epoch's seed it lacks.
+- Test to land with the fix (osis-sync `driver::`): after the above, node 2's `account_open_key()` is the rotator's, and node 0 holds a connection on which node 2 proved the account at that key and none at the old one (spec/sync-opens.md §1, proves once). It also exercises the driver's re-prove on a rotation taken from sync (`Node::handle`, `account_open_key` moving), which no test reaches until then.

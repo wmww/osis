@@ -11,9 +11,6 @@
 //! ids and their order, the window, the stall clock, unanswered-in bytes, the bytes written and
 //! taken. Depends on osis-proto and the engine's proof calls (`provers`, `own_node_key`,
 //! `own_node`, `key_open`, `account_tid`, `prove_rotations`, `take_rotations`).
-//! Not built: closing a connection where this node came to act for an actor it did not prove
-//! there (spec/sync-opens.md §1), and the engine's rotations in a Prove (`prove_rotations` and
-//! `take_rotations` are not built: none are sent, those received are not taken).
 
 use crate::types::{ConnId, Cx, NodeKey, Out};
 use osis_base::{CreationRecord, Tid, WallMs};
@@ -193,7 +190,7 @@ pub struct Session {
     frames: FrameDecoder,
     proofs: Proofs,
     proven: Proven,
-    proved: Vec<Tid>,
+    proved: Vec<(Tid, [u8; 32])>,
     now: WallMs,
     up_at: WallMs,
     next_low: RequestId,
@@ -395,8 +392,9 @@ impl Session {
         self.proofs == Proofs::Done
     }
 
-    /// The actors this node proved on this connection (its Prove, or its Proved).
-    pub fn proved(&self) -> &[Tid] {
+    /// The actors this node proved on this connection (its Prove, or its Proved), each with the
+    /// key it proved with (an account's: its signing key at the epoch it proved).
+    pub fn proved(&self) -> &[(Tid, [u8; 32])] {
         &self.proved
     }
 
@@ -580,7 +578,7 @@ impl Session {
         let provers = cx.engine.provers(own_node).map_err(|_| Close("engine"))?;
         let listener = self.listener_key.0;
         let proofs: Vec<ActorProof> = provers.into_iter().take(MAX_PROOFS).map(|(key, record)| Prover { key, record }.sign(by_listener, challenge, &listener)).collect();
-        self.proved = proofs.iter().map(ActorProof::actor).collect();
+        self.proved = proofs.iter().map(|p| (p.actor(), p.key)).collect();
         Ok(proofs)
     }
 
@@ -653,10 +651,7 @@ impl Session {
             return Ok(());
         };
         if let Some(r) = rotations {
-            match cx.engine.take_rotations(r) {
-                Ok(()) | Err(osis_engine::Error::NotBuilt(_)) => {}
-                Err(_) => return Err(Close("engine")),
-            }
+            cx.engine.take_rotations(r).map_err(|_| Close("engine"))?;
         }
         let proven = self.judge(cx, verified(proofs, false, &b.listener_challenge, &b.listener_key));
         if !cx.policy.sync_with(&proven) {
@@ -772,14 +767,9 @@ fn allowance(m: &Msg) -> u64 {
 }
 
 /// The account's rotations for a Prove, in the engine's order: as many as fit `room` bytes (what
-/// the proofs leave of one message), at most `MAX_ROTATIONS` (none while the engine does
-/// not build them).
+/// the proofs leave of one message), at most `MAX_ROTATIONS`.
 fn rotations(cx: &mut Cx, mut room: usize) -> Result<Vec<osis_base::Value>, Close> {
-    let all = match cx.engine.prove_rotations() {
-        Ok(r) => r,
-        Err(osis_engine::Error::NotBuilt(_)) => Vec::new(),
-        Err(_) => return Err(Close("engine")),
-    };
+    let all = cx.engine.prove_rotations().map_err(|_| Close("engine"))?;
     let mut out = Vec::new();
     for r in all.into_iter().take(MAX_ROTATIONS) {
         let n = osis_base::cbor::encode(&r).len();

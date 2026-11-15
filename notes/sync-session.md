@@ -22,5 +22,8 @@ The driver owns every `Session` in one `Sessions`. A module that sends takes `&m
 - Memory per connection is bounded by constants: one partial frame, `UNANSWERED` bytes of the peer's requests, unwritten bytes past `CLOSING` plus this side's in flight close it, checked as bytes arrive.
 - The stall clock catches stuck peers, not hostile ones: a peer trickling a reply to the oldest request, a small push every few minutes, or a dialer that sends Hello and nothing more holds its own connection (a served connection is never closed for silence, spec/sync-transport.md §5), each at that bounded cost.
 
+## Proving again
+A connection proves once (spec/sync-opens.md §1): the driver (`Node::proving`) closes each connection where this node proved something and now proves an (actor, key) it did not prove there, and redials at once where it dialed. It reads `Engine::provers` at each owner's write, and at the end of any step where `Engine::account_open_key` moved (a rotation of its account another node made, or the new epoch's seed arriving). A Prove carries the account's rotations as header-only copies (`Engine::prove_rotations`, each minting rotation first) so a verifier behind on them judges the new key open; one that would pend at the verifier is not kept (`take_rotations`). Without this an account's rotation silently ends every sync ID opened by J between its nodes and other accounts' (the closed-epoch proof no longer counts), and with it the thing lists its rotations carry.
+
 ## Not built
-issues/sync-unbuilt.md (session): the account's rotations in a Prove (`Engine::prove_rotations`/`take_rotations` answer `NotBuilt`: none sent, none taken); closing a connection where this node came to act for an actor it did not prove there; the node-wide bound on what served connections hold (spec/sync-transport.md §5).
+issues/sync-unbuilt.md (session): the node-wide bound on what served connections hold (spec/sync-transport.md §5).

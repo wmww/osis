@@ -268,8 +268,8 @@ fn strangers_prove_to_each_other_spec_sync_opens_2() {
     assert!(matches!(p.d_in.as_slice(), [Incoming::Proved]), "{:?}", p.d_in);
     assert_eq!(p.ls.proven().account(), p.d.account(), "the dialer's account");
     assert_eq!(p.ds.proven().account(), p.l.account(), "the listener's account");
-    assert_eq!(p.ds.proved(), [p.d.account().expect("account")], "the dialer proved its account (not its node key: not its own node)");
-    assert_eq!(p.ls.proved(), [p.l.account().expect("account")]);
+    assert_eq!(p.ds.proved().iter().map(|x| x.0).collect::<Vec<_>>(), [p.d.account().expect("account")], "the dialer proved its account (not its node key: not its own node)");
+    assert_eq!(p.ls.proved().iter().map(|x| x.0).collect::<Vec<_>>(), [p.l.account().expect("account")]);
 }
 
 // spec/sync-opens.md §2 (its own node key only to nodes of its own account): a listener whose

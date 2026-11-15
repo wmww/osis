@@ -6,8 +6,6 @@
 Each line: what is missing, what it costs now. The module notes (notes/sync-*.md) point here.
 
 ## session
-- The account's rotations in a Prove (spec/sync-opens.md §2): `Engine::prove_rotations` and `take_rotations` answer `NotBuilt`, so none are sent and those received are not taken; a verifier behind on the prover's account rotations judges its proof at an old epoch.
-- Closing a connection where this node came to act for an actor it did not prove there (spec/sync-opens.md §1); the dials redial at once instead.
 - The node-wide bound on what served connections hold (spec/sync-transport.md §5 Served connections: requests waiting for the bound's room, reading paused, the largest holders closed); needs `Sessions` to hold answers back. Each connection is bounded alone.
 
 ## opens
