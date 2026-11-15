@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [forks|forks-stand|forks-blind|forks-anyone|forks-first-grants|forks-no-takes|forks-every-answer|as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-cost|epochs|epochs-exh|epochs-exh-c|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
+//! Search driver for the roles model: `[samples] [forks|forks-stand|forks-blind|forks-anyone|forks-first-grants|forks-no-takes|forks-every-answer|as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-cost|forget|forget-window|epochs|epochs-exh|epochs-exh-c|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
 
 use roles_model::{edges, joint, single};
 
@@ -45,6 +45,11 @@ fn main() {
         Some("forget-prev") => roles_model::forget::prev_search(),
         Some("forget-any") => roles_model::forget::any_search(),
         Some("forget-costs") => roles_model::forget::costs(),
+        Some("forget-window") => {
+            if roles_model::forget::window_search() > 0 {
+                std::process::exit(1);
+            }
+        }
         Some("forget-account") => roles_model::forget_account::exhaustive(),
         Some("addenda") => roles_model::addenda::random(samples, 0x5eed).print(),
         Some("addenda-cost") => roles_model::addenda::cost_sweep(samples),

@@ -784,11 +784,12 @@ impl<'a> Judge<'a> {
         // a compaction snapshot: valid iff its author could write the aspect at the snapshot,
         // judged by commit ID (a demotion's frontier lists it; addenda list content commits
         // only), needing the strictest role a write it carries could need (`snapshot_role`:
-        // admin for `keys.0` and `secrets.0`)
+        // admin for `keys.0` and `secrets.0`); or as its author's own cover its removal names,
+        // standing while that removal applies (spec/permissions.md §5.1, Own cover)
         if h.kind.is_compaction() {
             let required = crate::engine::write::snapshot_role(ak);
             let point = Point { ts: h.ts, node: h.author, commit: *id };
-            return tl.delta_valid(point, &a.tid, required) == Validity::Valid;
+            return tl.delta_valid(point, &a.tid, required) == Validity::Valid || tl.own_cover_stands(point, &a.tid, required);
         }
         // the author's deltas from the first point it held the role on are valid (re-grant),
         // found once per author

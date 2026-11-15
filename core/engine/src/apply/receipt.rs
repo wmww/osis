@@ -9,6 +9,7 @@ use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
 use osis_commit::Header;
 use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_role_class};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The held snapshots of `(tid, ak)`, any validity (bodies held, or dropped and still standing in,
 /// `Dropped::stands_in`): ID and `ts`.
@@ -42,7 +43,7 @@ impl Engine {
 
     /// `frontier_and_requests` fitted to the list bound (`fit`): what is left out of content the
     /// demoter's own addenda list instead.
-    pub(crate) fn frontier_fitted(&mut self, scope: &DemotionScope, as_of: WallMs, keep: &std::collections::BTreeSet<CommitId>) -> Result<Frontier> {
+    pub(crate) fn frontier_fitted(&mut self, scope: &DemotionScope, as_of: WallMs, keep: &BTreeSet<CommitId>) -> Result<Frontier> {
         let (mut f, content, requests) = self.frontier_and_requests(scope, as_of)?;
         f.commits.extend(keep.iter().copied());
         let out: Vec<CommitId> = content.into_iter().chain(requests).filter(|c| !keep.contains(c)).collect();
@@ -50,11 +51,10 @@ impl Engine {
         Ok(f)
     }
 
-    /// `frontier`, the plain-content commits it lists (what addenda may list, received last
-    /// first) and the requests it lists (received last first): what `fit` leaves out when it is
-    /// over the list bound, in that order.
-    pub(crate) fn frontier_and_requests(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<(Frontier, Vec<CommitId>, Vec<CommitId>)> {
-        // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
+    /// The (demoted node, thing, aspect) triples `scope` puts in question (spec/permissions.md
+    /// §5.1): role-class and admin-only (`^`) aspects for a fall below admin, every aspect for a
+    /// fall below write.
+    fn scope_aspects(&self, scope: &DemotionScope) -> Vec<(Tid, Tid, Ak)> {
         let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin_only();
         let mut aspects: Vec<(Tid, Tid, Ak)> = Vec::new();
         for (node, things) in &scope.roles {
@@ -69,6 +69,45 @@ impl Engine {
         }
         aspects.sort();
         aspects.dedup();
+        aspects
+    }
+
+    /// The demoter's own cover (spec/permissions.md §5.1, Own cover): the frontier lists every
+    /// received commit of the demoted nodes this node still holds, so only what it no longer
+    /// holds the ID of needs another word. For each aspect `scope` puts in question whose state
+    /// holds a live write of a demoted node that stands only through a cover (a session write
+    /// of the node, or a commit-form write, whose commit is not held here: forgotten under a
+    /// cover, or never received), this node writes a fresh compaction snapshot from its whole
+    /// state, which the frontier names. An aspect this node may not snapshot writes none.
+    pub(crate) fn own_cover(&mut self, scope: &DemotionScope) -> Result<BTreeSet<CommitId>> {
+        let mut by_aspect: BTreeMap<(Tid, Ak), BTreeSet<Tid>> = BTreeMap::new();
+        for (node, t, ak) in self.scope_aspects(scope) {
+            if crate::retention::snapshot::compacted(&ak) && !ak.ephemeral() {
+                by_aspect.entry((t, ak)).or_default().insert(node);
+            }
+        }
+        self.run(|tx| {
+            let mut named = BTreeSet::new();
+            for ((t, ak), nodes) in &by_aspect {
+                if !crate::retention::snapshot::carried_only(tx, t, ak, &|x| nodes.contains(x), None)? {
+                    continue;
+                }
+                if crate::retention::snapshot::may_snapshot(tx, t, ak, false, tx.core.hlc.peek())? == crate::engine::write::MayWrite::Yes
+                    && let Some(s) = crate::retention::snapshot::write_snapshot(tx, t, ak, false)?
+                {
+                    named.insert(s);
+                }
+            }
+            Ok(named)
+        })
+    }
+
+    /// `frontier`, the plain-content commits it lists (what addenda may list, received last
+    /// first) and the requests it lists (received last first): what `fit` leaves out when it is
+    /// over the list bound, in that order.
+    pub(crate) fn frontier_and_requests(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<(Frontier, Vec<CommitId>, Vec<CommitId>)> {
+        let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin_only();
+        let aspects = self.scope_aspects(scope);
         self.run(|tx| {
             let mut f = Frontier::default();
             // (received, commit) of the plain-content commits: those addenda may list

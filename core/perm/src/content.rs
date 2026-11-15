@@ -98,6 +98,17 @@ impl Timeline {
         Validity::Invalid { by: dems.last().map(|d| d.point) }
     }
 
+    /// §5.1 (Own cover): whether the compaction snapshot at `at` on `thing` is its author's own
+    /// cover at a removal: made while its author held `required` there, ordered no later than
+    /// an explicit demotion its author wrote on `thing` whose frontier names it. It then
+    /// stands while that demotion applies, whatever demotes its author later (a demoter that
+    /// did not receive the removal drops the removal, and the cover with it). Asked of
+    /// compaction snapshots alone, beside `delta_valid`.
+    pub fn own_cover_stands(&self, at: Point, thing: &Tid, required: Role) -> bool {
+        let pos = Point::start(at.ts);
+        self.role(&at.node, thing, At::before(pos)) >= Some(required) && self.own_named(&at.node, thing).iter().any(|d| d.point >= pos && d.frontier.as_ref().is_some_and(|f| f.covers(&at.commit)))
+    }
+
     /// The addenda on `thing` that count (§5.2, Addenda): the least fixpoint of "valid as its
     /// author's plain delta on the thing, by `delta_valid` or by a counting addendum", kept to
     /// those whose author held write on the thing at their key. `addenda`: every held addendum

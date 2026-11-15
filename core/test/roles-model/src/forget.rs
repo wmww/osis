@@ -11,6 +11,15 @@
 //!   (the engine's rule: spec/commits.md §5 Forgetting); `forget-any` finds what it loses
 //!   that `OWN` keeps: a cover whose author an admin who never received it removes.
 //! - `Policy::grace`: a node forgets only that long after receiving the cover.
+//! - `HELD_LIST` (the rule built, spec/permissions.md §5.1, §5.5 Own cover): a removal lists
+//!   every commit of the leaver the remover holds; for the leaver's visible writes whose commits
+//!   it forgot, its fresh snapshot (`Kind::RemSnap`), named by the removal, standing while the
+//!   removal applies or as its author's write. Only its writer drops anything under it, and
+//!   witnesses list what they hold whatever it carries, so a removal voided later (its remover
+//!   removed by an admin that never received it) leaves every holder as it was. A node forgets
+//!   under any other valid held cover.
+//! - `KEPT_WINDOW` (rejected for cost): B with the kept window: held commits past kept history
+//!   (`Script::kept`) go unlisted under the remover's snapshot too.
 //!
 //! Layer 2 is `addenda::Ctx`, judged per node over what the node really holds. Per-node
 //! simulation (`Run`): arrivals in time order; a body dropped when a valid held snapshot
@@ -82,21 +91,34 @@ pub struct Policy {
     /// A writer's previous snapshot stays until its next one lands: forgotten only once two
     /// newer own valid held snapshots cover it (`OWN_PREV`; not built: notes/engine-retention-covers.md Forgetting).
     pub keep_prev: bool,
+    /// Kept history (`Script::kept`) is never dropped as covered, and a removal lists it by ID
+    /// even where its own snapshot carries it.
+    pub window: bool,
+    /// The removal snapshot carries only the leaver's writes whose commits the remover no longer
+    /// holds (forgotten); every held commit is listed. Nobody but its writer drops anything under
+    /// it, and witnesses' addenda list what it carries too.
+    pub forgotten_only: bool,
 }
 
 impl Policy {
-    pub const LIST_ALL: Policy = Policy { name: "list all", forget: Forget::Never, own_cover: false, removal_snapshot: false, grace: 0, keep_prev: false };
+    pub const LIST_ALL: Policy = Policy { name: "list all", forget: Forget::Never, own_cover: false, removal_snapshot: false, grace: 0, keep_prev: false, window: false, forgotten_only: false };
     /// Today's listing with `Cover::OmitOwn`: no forgetting.
-    pub const OWN_KEEP: Policy = Policy { name: "own, nothing forgotten", forget: Forget::Never, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: false };
-    pub const OWN: Policy = Policy { name: "A own, forget", forget: Forget::Own, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: false };
+    pub const OWN_KEEP: Policy = Policy { name: "own, nothing forgotten", forget: Forget::Never, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: false, window: false, forgotten_only: false };
+    pub const OWN: Policy = Policy { name: "A own, forget", forget: Forget::Own, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: false, window: false, forgotten_only: false };
     /// `OWN` keeping each writer's previous snapshot until its next lands.
-    pub const OWN_PREV: Policy = Policy { name: "A own, forget, previous snapshot kept", forget: Forget::Own, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: true };
+    pub const OWN_PREV: Policy = Policy { name: "A own, forget, previous snapshot kept", forget: Forget::Own, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: true, window: false, forgotten_only: false };
     /// Forget under any writer's valid held cover, no removal snapshot (built: spec/commits.md §5 Forgetting).
-    pub const ANY: Policy = Policy { name: "any cover, forget", forget: Forget::Any, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: false };
+    pub const ANY: Policy = Policy { name: "any cover, forget", forget: Forget::Any, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: false, window: false, forgotten_only: false };
     /// `ANY` keeping a snapshot until two later valid held snapshots, of any writer, cover it.
-    pub const ANY_PREV: Policy = Policy { name: "any cover, forget, previous snapshot kept", forget: Forget::Any, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: true };
-    pub const B_ANY: Policy = Policy { name: "B removal snapshot, forget any cover", forget: Forget::Any, own_cover: true, removal_snapshot: true, grace: 0, keep_prev: false };
-    pub const B_AFTER: Policy = Policy { name: "B removal snapshot, forget at removals", forget: Forget::AfterRemoval, own_cover: true, removal_snapshot: true, grace: 0, keep_prev: false };
+    pub const ANY_PREV: Policy = Policy { name: "any cover, forget, previous snapshot kept", forget: Forget::Any, own_cover: true, removal_snapshot: false, grace: 0, keep_prev: true, window: false, forgotten_only: false };
+    pub const B_ANY: Policy = Policy { name: "B removal snapshot, forget any cover", forget: Forget::Any, own_cover: true, removal_snapshot: true, grace: 0, keep_prev: false, window: false, forgotten_only: false };
+    /// B with the kept window, forgetting under any cover (rejected for cost: `HELD_LIST`).
+    pub const KEPT_WINDOW: Policy = Policy { name: "own snapshot at removal, kept window", forget: Forget::Any, own_cover: true, removal_snapshot: true, grace: 0, keep_prev: false, window: true, forgotten_only: false };
+    /// The built rule: list every held commit by ID; the remover's own snapshot only for what
+    /// it forgot. `own_cover` as `ANY`, the comparator: the leaver's own held snapshot named in
+    /// place of what it carries is still a held ID, and addenda read alike.
+    pub const HELD_LIST: Policy = Policy { name: "list what is held, own snapshot for what is forgotten", forget: Forget::Any, own_cover: true, removal_snapshot: true, grace: 0, keep_prev: false, window: false, forgotten_only: true };
+    pub const B_AFTER: Policy = Policy { name: "B removal snapshot, forget at removals", forget: Forget::AfterRemoval, own_cover: true, removal_snapshot: true, grace: 0, keep_prev: false, window: false, forgotten_only: false };
 }
 
 /// The candidates compared with `LIST_ALL`.
@@ -123,11 +145,13 @@ pub struct Script {
     pub claims: HashMap<u32, Vec<u32>>,
     /// Commit ID -> session counter: two commits of one counter are both invalid (forks).
     pub ctr: HashMap<u32, u32>,
+    /// Writes in kept history for the whole run (`Policy::window`): never dropped as covered.
+    pub kept: HashSet<u32>,
 }
 
 impl Script {
     pub fn new() -> Script {
-        Script { roles: genesis(), writes: vec![], snaps: vec![], blind: HashSet::new(), claims: HashMap::new(), ctr: HashMap::new() }
+        Script { roles: genesis(), writes: vec![], snaps: vec![], blind: HashSet::new(), claims: HashMap::new(), ctr: HashMap::new(), kept: HashSet::new() }
     }
     fn row(author: usize, t: u32, recv: &[(usize, u32)]) -> Vec<u32> {
         let mut r = vec![LATE; NN];
@@ -189,6 +213,10 @@ pub struct Out {
     pub rounds_cut: bool,
     /// Per node, the IDs it named or carried in anything it wrote.
     pub used: Vec<BTreeSet<u32>>,
+    /// Per node, the role writes its final timeline applies.
+    pub applied: Vec<BTreeSet<u32>>,
+    /// Per node, the kept writes it holds the header of while it drops their body.
+    pub kept_dropped: Vec<BTreeSet<u32>>,
 }
 
 struct Run<'a> {
@@ -360,6 +388,10 @@ impl<'a> Run<'a> {
                     continue;
                 }
                 let is_rem = matches!(si.kind, Kind::RemSnap { .. });
+                // an own cover drops nothing but at its writer (spec/commits.md §5 Covered)
+                if is_rem && self.p.forgotten_only && si.author != v {
+                    continue;
+                }
                 let recv_s = self.hdr[v][s].unwrap_or(0);
                 let aged = self.now >= recv_s.saturating_add(self.p.grace);
                 let sa = si.author;
@@ -369,6 +401,10 @@ impl<'a> Run<'a> {
                         continue;
                     }
                     let ci = &self.w.items[c];
+                    // compaction never covers inside the kept window (spec/commits.md §5 Keep bounds)
+                    if self.s.kept.contains(&ci.id) {
+                        continue;
+                    }
                     if self.p.keep_prev && matches!(ci.kind, Kind::Snap(_)) && own_covers(self, c) < 2 {
                         continue;
                     }
@@ -450,13 +486,16 @@ impl<'a> Run<'a> {
             if self.p.removal_snapshot {
                 let (_, e, _, _) = self.eval(v, Some(wr.t));
                 let n = self.w.items.len();
-                let carries: Vec<u32> = (0..n).filter(|&c| e.visible[c] && self.w.items[c].author == victim && is_write(self.w.items[c].id) && !self.s.blind.contains(&self.w.items[c].id)).map(|c| self.w.items[c].id).collect();
+                let (_, _, held, _) = self.eval(v, Some(wr.t));
+                let only = self.p.forgotten_only;
+                let carries: Vec<u32> = (0..n).filter(|&c| e.visible[c] && self.w.items[c].author == victim && is_write(self.w.items[c].id) && !self.s.blind.contains(&self.w.items[c].id) && !(only && held[c])).map(|c| self.w.items[c].id).collect();
                 if !carries.is_empty() {
                     self.used[v].extend(carries.iter().copied());
                     // Arrives with the removal itself (`DeliverRole`): one commit.
                     let it = Item { kind: Kind::RemSnap { removal: wr.id, carries: carries.clone() }, author: v, t: wr.t, id: remsnap_id(wr.id), thing: 0, acting: None, recv: vec![LATE; NN], forged: false };
                     self.push_item(it);
-                    lists.retain(|c| !carries.contains(c));
+                    let kept = &self.s.kept;
+                    lists.retain(|c| !carries.contains(c) || self.p.window && kept.contains(c));
                 }
             }
             self.frontier_ids += lists.len() as u64;
@@ -502,8 +541,8 @@ impl<'a> Run<'a> {
             return;
         }
         let front = self.w.frontier.get(&wr.id).cloned().unwrap_or_default();
-        // What the removal's own snapshot carries needs no addendum.
-        let carried: Vec<u32> = self.idx.get(&remsnap_id(wr.id)).map_or(vec![], |&r| self.w.items[r].kind.carries().to_vec());
+        // What the removal's own snapshot carries needs no addendum, but under `forgotten_only`.
+        let carried: Vec<u32> = if self.p.forgotten_only { vec![] } else { self.idx.get(&remsnap_id(wr.id)).map_or(vec![], |&r| self.w.items[r].kind.carries().to_vec()) };
         let lists: Vec<u32> = self.own_list(v, wr.t, victim, true).into_iter().filter(|c| !front.contains(c) && !carried.contains(c)).collect();
         if lists.is_empty() {
             return;
@@ -653,7 +692,9 @@ impl<'a> Run<'a> {
         let orders_agree = self.order_check(rng);
         let ids_held = (0..NN).map(|v| self.hdr[v].iter().filter(|h| h.is_some()).count()).collect();
         let forgot = (0..NN).map(|v| self.forgot[v].iter().filter(|id| self.hdr[v][self.idx[id]].is_none()).copied().collect()).collect();
-        Out { visible, forgot, agree, orders_agree, ids_held, frontier_ids: self.frontier_ids, addendum_ids: self.addendum_ids, rounds_cut: self.rounds_cut, used: self.used.clone() }
+        let applied = (0..NN).map(|v| { let l1 = self.eval(v, None).0; self.w.roles.writes.iter().map(|w| w.id).filter(|&id| l1.applied(id)).collect() }).collect();
+        let kept_dropped = (0..NN).map(|v| { let (_, e, hdr, body) = self.eval(v, None); (0..self.w.items.len()).filter(|&i| hdr[i] && e.valid[i] && !body[i] && self.s.kept.contains(&self.w.items[i].id) && (0..NN).any(|u| self.body[u][i])).map(|i| self.w.items[i].id).collect() }).collect();
+        Out { visible, forgot, agree, orders_agree, ids_held, frontier_ids: self.frontier_ids, addendum_ids: self.addendum_ids, rounds_cut: self.rounds_cut, used: self.used.clone(), applied, kept_dropped }
     }
 }
 
@@ -789,6 +830,108 @@ pub fn any_search() {
             println!("  node {v}: list all {:?}, own {:?}, any {:?}", run(&m, Policy::LIST_ALL).visible[v], run(&m, Policy::OWN).visible[v], run(&m, Policy::ANY).visible[v]);
         }
     }
+}
+
+/// The built rule (`HELD_LIST`) and the rejected `KEPT_WINDOW` over the member family with Bob's
+/// writes in or out of the kept window, and over the attack family. Checks, per node: (1) it
+/// loses no write `ANY` (today's forgetting, every held commit listed) shows, the removal applied
+/// or voided (`KEPT_WINDOW`: none `ANY` shows when Alice compacts the aspect as she removes Bob); (2) where Alice's removal of Bob
+/// applies, every write of Bob's Alice received before its `ts` that listing every commit shows
+/// is visible (her own snapshot carries what left the window); (3) a kept write valid and held
+/// somewhere is held, never dropped as covered; (4) the usual agreement, order and forgetting
+/// checks; attacks: no forged write gains, no honest write lost. Counted, not failures: writes
+/// lost against listing every commit (a cover that later counts for nothing: a removal that
+/// falls with its author, or a witness's cover received late). One member world in eight.
+pub fn window_search() -> u64 {
+    const SLICE: usize = 8;
+    const PS: [Policy; 2] = [Policy::KEPT_WINDOW, Policy::HELD_LIST];
+    let slice = std::env::var("FORGET_WINDOW_SLICE").ok().and_then(|x| x.parse().ok()).unwrap_or(SLICE);
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    // per policy: [worlds, loses what ANY shows, removal stands lost, kept dropped, other,
+    // loses vs list all, -, attacks, voided-removal loss vs plain ANY]; shared: [ANY plain vs
+    // list all, ANY with the remover's compaction vs list all]
+    let res: Vec<([[u64; 10]; 2], [u64; 2])> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..threads)
+            .map(|th| {
+                sc.spawn(move || {
+                    let mut rng = Rng(0x5eed ^ th as u64);
+                    let mut c = [[0u64; 10]; 2];
+                    let mut shared = [0u64; 2];
+                    let mut first = true;
+                    // one member world in `SLICE`, so a run fits one heavy hold
+                    member_family((th * slice, threads * slice), |base_s| {
+                        for kept in 0..3 {
+                            let mut s = base_s.clone();
+                            s.kept = match kept { 0 => HashSet::new(), 1 => [1].into(), _ => [1, 2].into() };
+                            let (b, a0) = (run(&s, Policy::LIST_ALL), run(&s, Policy::ANY));
+                            // the engine's rule with the remover compacting the aspect as it removes
+                            let mut sr = s.clone();
+                            let rw = sr.roles.writes.iter().position(|w| w.id == 1000).unwrap();
+                            let recv: Vec<(usize, u32)> = (0..NN).filter(|&v| v != ALICE && sr.roles.recv[rw][v] < LATE).map(|v| (v, sr.roles.recv[rw][v])).collect();
+                            sr.snap(199, ALICE, 6, &recv);
+                            let a = run(&sr, Policy::ANY);
+                            shared[0] += (0..FRANK).any(|v| !diff(&b, &a0, v).0.is_empty()) as u64;
+                            shared[1] += (0..FRANK).any(|v| !diff(&b, &a, v).0.is_empty()) as u64;
+                            for (k, p) in PS.iter().enumerate() {
+                                let c = &mut c[k];
+                                let mut t = Tally::default();
+                                judge(&s, *p, &b, &mut t, &mut rng);
+                                let o = run(&s, *p);
+                                c[0] += 1;
+                                let bad_any = (0..FRANK).any(|v| a.visible[v].iter().any(|id| !o.visible[v].contains(id)));
+                                let alice_got: Vec<u32> = s.writes.iter().filter(|w| w.author == BOB && w.recv[ALICE] < 6).map(|w| w.id).collect();
+                                let bad_stand = (0..FRANK).any(|v| o.applied[v].contains(&1000) && alice_got.iter().any(|id| b.visible[v].contains(id) && !o.visible[v].contains(id)));
+                                let bad_kept = (0..FRANK).any(|v| !o.kept_dropped[v].is_empty());
+                                let other = t.disagree + t.order + t.forget_read;
+                                let lost0 = |v: usize| a0.visible[v].iter().any(|id| !o.visible[v].contains(id));
+                                let bad_applied = (0..FRANK).any(|v| lost0(v) && o.applied[v].contains(&1000));
+                                c[8] += (0..FRANK).any(|v| lost0(v) && !o.applied[v].contains(&1000)) as u64;
+                                c[1] += bad_any as u64;
+                                c[9] += bad_applied as u64;
+                                c[2] += bad_stand as u64;
+                                c[3] += bad_kept as u64;
+                                c[4] += other;
+                                c[5] += t.loses;
+                                if first && (bad_any || bad_applied || bad_stand || bad_kept || other > 0) {
+                                    first = false;
+                                    println!("{} failure (any {bad_any}, applied {bad_applied}, stands {bad_stand}, kept {bad_kept}, other {other}), kept {:?}:\n{}", p.name, s.kept, show(&s));
+                                }
+                            }
+                        }
+                    });
+                    for (k, p) in PS.iter().enumerate() {
+                        let mut at = Tally::default();
+                        attack_family((th, threads), |s| judge_attack(&s, *p, &run(&s, Policy::LIST_ALL), &mut at, &mut rng));
+                        c[k][7] += at.attack_gain + at.forged_lost;
+                    }
+                    (c, shared)
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let mut c = [[0u64; 10]; 2];
+    let mut shared = [0u64; 2];
+    for (r, sh) in res {
+        for p in 0..2 {
+            for k in 0..10 {
+                c[p][k] += r[p][k];
+            }
+        }
+        shared[0] += sh[0];
+        shared[1] += sh[1];
+    }
+    println!("today's engine (ANY): loses against listing all {} worlds; with the remover compacting as it removes {}", shared[0], shared[1]);
+    let mut fails = 0;
+    for (p, c) in PS.iter().zip(c) {
+        println!("{}: {} worlds | loses what ANY shows where the removal applies {} | removal stands, remover's receipt lost {} | kept body dropped {} | disagree/order/forget-reads {} | attacks (gain or honest loss) {}", p.name, c[0], c[9], c[2], c[3], c[4], c[7]);
+        println!("  counted: loses against listing all {}; loses what ANY with the remover compacting as it removes shows {}; loses what ANY shows where the removal does not apply {} (its own cover falling with its removal, voided by a concurrent removal of the remover)", c[5], c[1], c[8]);
+        // the rejected candidate must keep the remover's receipts; the built rule may lose
+        // only what today's rule loses (a cover arriving after the removal's `ts`), the removal
+        // applied or voided
+        fails += c[9] + c[3] + c[4] + c[7] + if p.forgotten_only { c[8] } else { c[1] + c[2] };
+    }
+    fails
 }
 
 /// One script's checks of a candidate against the reference: `base`, the reference's run.
@@ -1376,6 +1519,106 @@ mod tests {
         let kept = o.ids_held[ALICE];
         assert!(kept <= 3, "held {kept} of {}", 2 * k);
         assert!(o.forgot[ALICE].len() >= 2 * k as usize - 3);
+    }
+
+    /// The own snapshot (`KEPT_WINDOW`, `HELD_LIST`) on the issue's minimal case: Alice forgot Bob's edit under
+    /// Dave's snapshot, Carol removed Dave without it; Alice's own snapshot at her removal of Bob
+    /// carries the edit, where forgetting under any cover alone loses it.
+    #[test]
+    fn own_snapshot_at_removal_outlives_another_writers_cover() {
+        let mut s = Script::new();
+        s.write(C, BOB, 1, &[(ALICE, 2), (DAVE, 2)]);
+        s.snap(100, DAVE, 4, &[(ALICE, 5)]);
+        s.remove(1000, CAROL, DAVE, 5, &[(BOB, 6), (DAVE, 6), (EVE, 6)]);
+        s.remove(1001, ALICE, BOB, 6, &[(BOB, 7), (CAROL, 7), (DAVE, 7), (EVE, 7)]);
+        assert!(!reads(&s, Policy::ANY, C), "another writer's cover falls with its author");
+        let o = run(&s, Policy::KEPT_WINDOW);
+        assert!(o.visible[ALICE].contains(&C) && o.frontier_ids == 0, "carried by the removal's snapshot, not listed");
+        assert!(o.forgot[ALICE].contains(&C), "and forgotten");
+        assert!(reads(&s, Policy::HELD_LIST, C));
+    }
+
+    /// The remover removed later by an admin that received the removal (and so its snapshot
+    /// with it): the snapshot stands with the removal.
+    #[test]
+    fn own_snapshot_stands_with_its_removal() {
+        let mut s = Script::new();
+        s.write(C, BOB, 1, &[(ALICE, 2)]);
+        s.snap(100, ALICE, 3, &[]);
+        s.remove(1000, ALICE, BOB, 6, &[(CAROL, 7), (DAVE, 7), (EVE, 7), (BOB, 7)]);
+        s.remove(1001, CAROL, ALICE, 8, &[(DAVE, 9), (BOB, 9), (EVE, 9), (ALICE, 9)]);
+        assert!(!reads(&s, Policy::ANY, C), "Alice's earlier cover falls with her");
+        assert!(reads(&s, Policy::KEPT_WINDOW, C));
+        assert!(reads(&s, Policy::HELD_LIST, C), "she forgot C under her earlier snapshot: the removal's own cover carries it");
+    }
+
+    /// `HELD_LIST`'s limit, today's rule's too: Alice lists Bob's edit, then forgets it under
+    /// Bob's snapshot that reached her after her removal's `ts`; the snapshot counts nowhere
+    /// once the removal does (nothing lists it), so the edit is gone. Waiting to forget, or the
+    /// own snapshot whatever was forgotten (`KEPT_WINDOW`), keeps it.
+    #[test]
+    fn held_list_late_cover_limit() {
+        let mut s = Script::new();
+        s.write(C, BOB, 1, &[(ALICE, 2)]);
+        s.snap(100, BOB, 3, &[(ALICE, 8), (CAROL, 8), (DAVE, 4)]);
+        s.remove(1000, ALICE, BOB, 6, &[(BOB, 7), (CAROL, 10), (DAVE, 10), (EVE, 7)]);
+        s.remove(1001, CAROL, DAVE, 5, &[(BOB, 6)]);
+        assert!(reads(&s, Policy::LIST_ALL, C));
+        assert!(!reads(&s, Policy::ANY, C), "today's rule loses it");
+        assert!(!reads(&s, Policy::HELD_LIST, C), "so does the built one");
+        assert!(reads(&s, Policy::KEPT_WINDOW, C));
+    }
+
+    /// `HELD_LIST`, a voided removal: Alice forgot Bob's edit under her own snapshot, so her
+    /// removal of Bob names her own cover of it; Dave holds the edit and receives both, then
+    /// Carol's removal of Alice that never received them voids the removal and the own cover with
+    /// it. Dave neither dropped the edit under the own cover nor left it out of his addendum, so it
+    /// stays, as today's rule keeps it.
+    #[test]
+    fn held_list_voided_removal_keeps_what_holders_held() {
+        let mut s = Script::new();
+        s.write(C, BOB, 1, &[(ALICE, 2), (DAVE, 2)]);
+        s.snap(100, ALICE, 3, &[(BOB, 8), (CAROL, 8)]);
+        s.remove(1000, ALICE, BOB, 6, &[(BOB, 7), (CAROL, 7), (DAVE, 7), (EVE, 10)]);
+        s.remove(1001, CAROL, ALICE, 7, &[(ALICE, 8), (BOB, 8)]);
+        assert!(reads(&s, Policy::ANY, C));
+        let o = run(&s, Policy::HELD_LIST);
+        assert!((0..FRANK).all(|v| o.visible[v].contains(&C) && !o.applied[v].contains(&1000)), "voided, the edit kept: {:?}", o.visible);
+    }
+
+    /// `HELD_LIST`: what the remover still holds is listed by ID and no own snapshot is written;
+    /// one is written only for what it forgot (the issue's minimal case, as above).
+    #[test]
+    fn held_list_snapshots_only_what_was_forgotten() {
+        let mut s = Script::new();
+        s.write(C, BOB, 1, &[(ALICE, 2), (EVE, 2)]);
+        s.remove(1000, ALICE, BOB, 6, &[(CAROL, 7), (DAVE, 7), (EVE, 7), (BOB, 7)]);
+        let o = run(&s, Policy::HELD_LIST);
+        assert_eq!(o.frontier_ids, 1, "held: listed");
+        assert!(o.visible[ALICE].contains(&C) && o.forgot[ALICE].is_empty(), "no own snapshot, nothing forgotten");
+        let mut s = Script::new();
+        s.write(C, BOB, 1, &[(ALICE, 2), (DAVE, 2)]);
+        s.snap(100, DAVE, 4, &[(ALICE, 5)]);
+        s.remove(1000, CAROL, DAVE, 5, &[(BOB, 6), (DAVE, 6), (EVE, 6)]);
+        s.remove(1001, ALICE, BOB, 6, &[(BOB, 7), (CAROL, 7), (DAVE, 7), (EVE, 7)]);
+        let o = run(&s, Policy::HELD_LIST);
+        assert!(o.visible[ALICE].contains(&C) && o.forgot[ALICE].contains(&C), "forgotten, carried by the own snapshot");
+    }
+
+    /// Inside the kept window nothing is covered: the removal lists the write by ID and every
+    /// holder keeps its body, the removal's snapshot carrying it or not.
+    #[test]
+    fn kept_window_is_listed_never_covered() {
+        let mut s = Script::new();
+        s.write(C, BOB, 1, &[(ALICE, 2), (EVE, 2)]);
+        s.write(2, BOB, 3, &[(ALICE, 4), (EVE, 4)]);
+        s.kept.insert(C);
+        s.remove(1000, ALICE, BOB, 6, &[(CAROL, 7), (DAVE, 7), (EVE, 7), (BOB, 7)]);
+        let o = run(&s, Policy::KEPT_WINDOW);
+        assert_eq!(o.frontier_ids, 1, "the kept write alone is listed");
+        assert!(o.visible[ALICE].contains(&C) && o.visible[ALICE].contains(&2));
+        assert!(o.forgot[ALICE].contains(&2) && !o.forgot[ALICE].contains(&C));
+        assert!(o.kept_dropped.iter().all(|k| k.is_empty()));
     }
 
     /// A slice of each family: finds no failure the candidates' tests name beyond the stated.

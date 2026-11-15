@@ -454,7 +454,28 @@ impl Timeline {
             return acts && self.valid_addenda.contains(&(c.id, thing));
         }
         let need = need(aspect);
-        acts && (self.valid_as(x, thing, need, key, c.id) || plain && need == Role::Write && aspect != Aspect::ROLES && self.vouched(thing, x, key, c.id))
+        let own = c.kind == CommitKind::Snapshot && self.own_cover(x, thing, need, key, c.id);
+        acts && (self.valid_as(x, thing, need, key, c.id) || own || plain && need == Role::Write && aspect != Aspect::ROLES && self.vouched(thing, x, key, c.id))
+    }
+
+    /// spec/permissions.md §5.2 (Compaction snapshot, Own cover): snapshot `c` by X at `key`,
+    /// made while X held `need` on the thing, is named by the frontier of an applied explicit
+    /// write by X ordered at or after it that demotes some node on the thing (below write or
+    /// admin): it stands while that write applies.
+    fn own_cover(&self, x: NodeId, thing: ThingId, need: Role, key: Key, c: CommitId) -> bool {
+        let key = start(key);
+        if !self.role_at(thing, x, key).is_some_and(|r| r >= need) {
+            return false;
+        }
+        let nodes: BTreeSet<NodeId> = self.applied.iter().flat_map(|p| [p.ev.holder, p.ev.author]).collect();
+        self.applied.iter().any(|p| {
+            let w = wall(p.ev.key.0);
+            p.explicit
+                && p.ev.author == x
+                && p.ev.key >= key
+                && p.ev.frontier.as_ref().is_some_and(|f| f.contains(&c))
+                && nodes.iter().any(|&y| y != x && [Role::Write, Role::Admin].into_iter().any(|n| self.world.role(&p.before, y, thing, w).is_some_and(|r| r >= n) && !self.world.role(&p.after, y, thing, w).is_some_and(|r| r >= n)))
+        })
     }
 
     /// spec/permissions.md §6: does a request (author `q`, actor `qa`, commit `qc` at `qkey`) hold

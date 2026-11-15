@@ -132,6 +132,8 @@ pub(crate) struct Memo {
     pub held_on_target: std::sync::OnceLock<BTreeMap<Tid, Vec<WriteId>>>,
     /// `Timeline::disputes`.
     pub disputes: std::sync::OnceLock<Vec<Dispute>>,
+    /// `Timeline::own_named`'s index: by (author, thing).
+    pub own_named: std::sync::OnceLock<BTreeMap<(Tid, Tid), Vec<Demotion>>>,
 }
 
 /// A copy holding the same answers and measures (world copies, notes/test-harnesses.md).
@@ -165,6 +167,7 @@ impl Clone for Memo {
             on_target_built: n(&self.on_target_built),
             held_on_target: self.held_on_target.clone(),
             disputes: self.disputes.clone(),
+            own_named: self.own_named.clone(),
         }
     }
 }
@@ -781,6 +784,26 @@ impl Timeline {
         let view = View::at(&edges, Some(c.ts)).patched(op.holder, op.target, old);
         let best = view.roles_from(&c.author);
         walk::judge(&view, old.as_ref(), c, w.1 as usize, &best).is_some()
+    }
+    /// The explicit demotions on `thing` that `author` wrote, each once (whoever it demotes), in
+    /// timeline order: what saves the author's own commits its frontier names (§5.1, Own cover).
+    pub fn own_named(&self, author: &Tid, thing: &Tid) -> &[Demotion] {
+        let index = self.memo.own_named.get_or_init(|| {
+            let mut m: BTreeMap<(Tid, Tid), Vec<Demotion>> = BTreeMap::new();
+            for ((_, t), ds) in &self.walked.demotions {
+                for d in ds.iter().filter(|d| d.frontier.is_some()) {
+                    let v = m.entry((d.point.node, *t)).or_default();
+                    if !v.iter().any(|x| x.point == d.point) {
+                        v.push(d.clone());
+                    }
+                }
+            }
+            for v in m.values_mut() {
+                v.sort_by_key(|d| d.point);
+            }
+            m
+        });
+        index.get(&(*author, *thing)).map_or(&[], |v| v.as_slice())
     }
     /// Explicit demotions of `node` on `thing` in timeline order (§5.2 input).
     pub fn demotions(&self, node: &Tid, thing: &Tid) -> &[Demotion] {

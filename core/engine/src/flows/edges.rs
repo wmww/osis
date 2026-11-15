@@ -574,13 +574,15 @@ impl Engine {
                 let ops: Vec<osis_perm::EdgeOp> = std::iter::once((holder, new)).chain(leave.then_some((who, None))).map(|(holder, edge)| osis_perm::EdgeOp { target, holder, edge }).collect();
                 self.demotion_frontier(who, target, ops)?
             }
-            false => None,
+            false => (None, Vec::new()),
         };
-        let done = self.run(|tx| {
+        let (frontier, covers) = frontier;
+        let mut done = self.run(|tx| {
             let done = grant_history(tx, signer, target, holder, edge, leave, frontier, history)?;
             then(tx)?;
             Ok(done)
         })?;
+        done.commits.splice(0..0, covers);
         // a cut's owed snapshots (the state it carries to the holder) go right after it
         if history == History::None {
             self.purge_resnapshots()?;
@@ -621,26 +623,35 @@ impl Engine {
     /// §5.1): what this node received on the aspects they put in question with that frontier
     /// (`Timeline::demotion_scope`), from what they put in question with every held write
     /// received, until the scope stops growing, plus this node's own chain certificates for the
-    /// target by commit ID (its own chain counts only as listed, §4). `None` for an unknown target.
-    fn demotion_frontier(&mut self, who: Tid, target: Tid, ops: Vec<osis_perm::EdgeOp>) -> Result<Option<osis_base::Value>> {
+    /// target by commit ID (its own chain counts only as listed, §4), and its own cover of what it
+    /// no longer holds the ID of (`own_cover`; the scope settled first: content moves no edge
+    /// write). Returns the frontier and the own covers, which the caller's `Done` carries before
+    /// the demotion. `None`: an unknown target.
+    fn demotion_frontier(&mut self, who: Tid, target: Tid, ops: Vec<osis_perm::EdgeOp>) -> Result<(Option<osis_base::Value>, Vec<CommitId>)> {
         let as_of = self.now();
-        let Some(tl) = self.core.timelines.get(&target) else { return Ok(None) };
+        let Some(tl) = self.core.timelines.get(&target) else { return Ok((None, Vec::new())) };
         let own = tl.certificates(&who, &target).commits;
         let mut scope = tl.demotion_scope(self.demotion_probe(who, ops.clone(), tl.all_held()));
         // a node's removal from its account's devices actor also lists the removed node's own
         // word on it (inner signature) held here: its commits there it does not list stop
         // counting (spec/permissions.md §5.4, Following, at a node of P)
         let removed: BTreeSet<Tid> = ops.iter().filter(|o| o.edge.is_none()).map(|o| o.holder).collect();
-        let keep: BTreeSet<CommitId> = own.iter().copied().chain(self.core.devices_word(&target, &removed)).collect();
-        loop {
+        let mut keep: BTreeSet<CommitId> = own.iter().copied().chain(self.core.devices_word(&target, &removed)).collect();
+        let mut f = loop {
             let f = self.frontier_fitted(&scope, as_of, &keep)?;
             let probe = self.demotion_probe(who, ops.clone(), osis_perm::Frontier { commits: f.commits.clone() });
             let s = self.core.timelines.get(&target).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();
             if scope.covers(&s) {
-                return Ok(Some(osis_schema::Codec::to_value(&f)));
+                break f;
             }
             scope.join(s);
+        };
+        let named = self.own_cover(&scope)?;
+        if !named.is_empty() {
+            keep.extend(named.iter().copied());
+            f = self.frontier_fitted(&scope, as_of, &keep)?;
         }
+        Ok((Some(osis_schema::Codec::to_value(&f)), named.into_iter().collect()))
     }
 
     /// A demotion by `who` with edge writes `ops` and frontier `f`, as `Timeline::demotion_scope`
@@ -672,8 +683,10 @@ impl Engine {
         let audits = self.needs_frontier(&t, &d.holder, new.as_ref());
         let new = new.as_ref().map(perm_edge);
         let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new)).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
-        let frontier = if audits { self.demotion_frontier(who, t, ops)? } else { None };
+        let (frontier, covers) = if audits { self.demotion_frontier(who, t, ops)? } else { (None, Vec::new()) };
         let d = d.clone();
-        self.run(|tx| demote_in(tx, signer, t, &d, others, frontier))
+        let mut done = self.run(|tx| demote_in(tx, signer, t, &d, others, frontier))?;
+        done.commits.splice(0..0, covers);
+        Ok(done)
     }
 }

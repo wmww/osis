@@ -536,7 +536,10 @@ fn addenda_diff(w: &addenda::World) -> Option<String> {
         if tl.delta_valid(p, &jw.actors[m], Role::Write) == Validity::Valid {
             return true;
         }
-        if matches!(it.kind, addenda::Kind::Special | addenda::Kind::Snap(_)) {
+        if let addenda::Kind::RemSnap { .. } = it.kind {
+            return tl.own_cover_stands(p, &jw.actors[m], Role::Write);
+        }
+        if matches!(it.kind, addenda::Kind::Special | addenda::Kind::Snap(_) | addenda::Kind::RemSnap { .. }) {
             return false;
         }
         vouching[&m].witnesses(&tl, p).next().is_some()

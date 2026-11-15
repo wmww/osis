@@ -49,8 +49,8 @@ pub enum Kind {
     Snap(Vec<u32>),
     /// Addendum naming a removal (role write ID) and listing commit IDs.
     Add { removal: u32, lists: Vec<u32> },
-    /// `forget`, candidate B: the snapshot inside a removal commit, carrying these content
-    /// items; it stands exactly while that removal (role write ID) applies.
+    /// `forget`, candidate B: the remover's snapshot its removal names, carrying these content
+    /// items; it stands while that removal (role write ID) applies, else as its author's write.
     RemSnap { removal: u32, carries: Vec<u32> },
 }
 
@@ -261,8 +261,14 @@ impl<'a> Ctx<'a> {
     pub fn part_ok(&self, c: usize, m: usize, valid: &[bool]) -> bool {
         let it = &self.w.items[c];
         let (x, key, l1) = (it.author, it.pos(), self.v.l1);
+        // the demoter's own cover its removal names (spec/permissions.md §5.1, Own cover):
+        // made while its author held write, ordered no later than the removal, it stands while
+        // that removal applies as a demotion on its thing; else it is judged as its author's
+        // snapshot
         if let Kind::RemSnap { removal, .. } = &it.kind {
-            return l1.applied(*removal);
+            if l1.role(x, m, key) >= Role::Write && l1.dems.iter().any(|d| d.rid == *removal && d.thing == m && d.author == x && key <= d.key) {
+                return true;
+            }
         }
         if l1.regrant(x, m, key) {
             return true;
@@ -557,6 +563,19 @@ pub fn random_world(rng: &mut Rng, rules: Rules) -> World {
     let snaps: Vec<(usize, u32, usize)> = (0..rng.below(3)).map(|_| (rng.below(nn), 2 + rng.below(9) as u32, rng.below(na))).collect();
     let mut w = World { roles, items, frontier: HashMap::new() };
     w.derive(rng, rules, &snaps, &mut ids, None);
+    // half the removals name their demoter's own cover of the thing, written at the removal's
+    // `ts` from its view (spec/permissions.md §5.1, Own cover)
+    for d in L1::new(&w.roles, |_| true).dems {
+        if rng.below(2) != 0 || w.items.iter().any(|it| matches!(it.kind, Kind::RemSnap { removal, .. } if removal == d.rid)) {
+            continue;
+        }
+        let (_, e) = w.view_at(d.author, d.key.0, rules);
+        let carries: Vec<u32> = w.items.iter().enumerate().filter(|(c, it)| it.content() && it.thing == d.thing && e.visible[*c]).map(|(_, it)| it.id).collect();
+        let id = fresh(rng, &mut ids);
+        let recv = recv_row(rng, nn, d.author, d.key.0, false);
+        w.items.push(Item { kind: Kind::RemSnap { removal: d.rid, carries }, author: d.author, t: d.key.0, id, thing: d.thing, acting: None, recv, forged: false });
+        w.frontier.entry(d.rid).or_default().insert(id);
+    }
     w
 }
 

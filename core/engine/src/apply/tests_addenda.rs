@@ -58,6 +58,38 @@ fn remove(lp: &mut LocalPeer, by: usize, t: Tid, holder: usize) -> CommitId {
     id
 }
 
+/// Peer 0 keeps a day of history on every aspect of `t` (spec/commits.md §5 The setting): its
+/// writes stay inside the kept window while live and a day after replaced.
+fn keep_history(lp: &mut LocalPeer, t: Tid) {
+    keep_history_from(lp, 0, t);
+    lp.sync_all().unwrap();
+}
+
+/// `keep_history` written by peer `from`, sent from it to the others only.
+fn keep_history_from(lp: &mut LocalPeer, from: usize, t: Tid) {
+    let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
+    let setting = ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(day), ..Default::default() }), ..Default::default() };
+    let mut m = Mutation::new();
+    m.set(t, &ct::RETENTION, &setting).unwrap();
+    lp.peers[from].commit(m).unwrap();
+    for p in 0..lp.peers.len() {
+        if p != from {
+            lp.sync(from, p).unwrap();
+        }
+    }
+    lp.advance(1000);
+}
+
+/// The frontier of removal `r` at `peer`: the commits it lists and those of them that are
+/// compaction snapshots by the remover (its own cover).
+fn frontier_of(lp: &LocalPeer, peer: usize, r: &CommitId) -> (std::collections::BTreeSet<CommitId>, Vec<CommitId>) {
+    let core = &lp.peers[peer].engine.core;
+    let rm = core.ix.commits.get(r).unwrap();
+    let f = rm.view.frontier.as_ref().unwrap();
+    let own = f.commits.iter().filter(|c| core.ix.commits.get(*c).is_some_and(|m| m.view.kind.is_compaction() && m.view.author == rm.view.author)).copied().collect();
+    (f.commits.iter().copied().collect(), own)
+}
+
 fn reads(lp: &mut LocalPeer, peer: usize, t: Tid, a: &str) -> Option<Value> {
     lp.peers[peer].engine.get(&t, &ak(a)).unwrap()
 }
@@ -816,4 +848,268 @@ fn a_removed_writers_later_snapshot_drops_nothing_spec_commits_5() {
     let pk = lp.peers[0].engine.package(&ours).unwrap().unwrap();
     lp.deliver(2, &pk).unwrap();
     assert_eq!(lp.peers[2].engine.covered_drops(&e).unwrap(), vec![(t, ak("x:e.0"))]);
+}
+
+/// Peer `p` covers `(t, a)` with a snapshot of its own and forgets every held commit of
+/// `author` there that it covers (spec/commits.md §5 Forgetting): what a list can no longer name.
+fn forget_under_own_snapshot(lp: &mut LocalPeer, p: usize, author: usize, t: Tid, a: &str) -> CommitId {
+    let a = ak(a);
+    let x = lp.peers[author].engine.me();
+    let s = lp.peers[p].engine.snapshot(&t, &a).unwrap().unwrap();
+    let e = &mut lp.peers[p].engine;
+    let mine: Vec<CommitId> = e.core.held_on(&(t, a.clone())).filter(|c| e.core.ix.commits.get(c).is_some_and(|m| m.view.author == x)).collect();
+    for c in &mine {
+        assert_eq!(e.covered(&s, c, &t, &a).unwrap(), Some(true));
+        e.drop_body(c, &t, &a).unwrap();
+    }
+    assert!(mine.iter().all(|c| e.forgettable(c).unwrap()));
+    e.forget_commits(&mine).unwrap();
+    lp.advance(1000);
+    s
+}
+
+// spec/permissions.md §5.1 (Own cover): a remover lists by ID every commit of the removed writer
+// it still holds, kept history or not, and writes no own cover for them: the common case costs
+// IDs only.
+#[test]
+fn removal_lists_what_it_holds_spec_perm_5_1() {
+    for keep in [false, true] {
+        let (mut lp, t) = world(3, &[Role::Write, Role::Write]);
+        if keep {
+            keep_history(&mut lp, t);
+        }
+        let es = [write(&mut lp, 1, t, "x:e.0", 7), write(&mut lp, 1, t, "x:e.0", 8), write(&mut lp, 1, t, "x:f.0", 9)];
+        lp.sync_all().unwrap();
+        let r = remove(&mut lp, 0, t, 1);
+        let (f, own) = frontier_of(&lp, 0, &r);
+        assert!(es.iter().all(|c| f.contains(c)), "keep {keep}: every held commit listed");
+        assert!(own.is_empty(), "keep {keep}: nothing forgotten, no own cover");
+        lp.sync_all().unwrap();
+        for p in [0, 2] {
+            assert_eq!(reads(&mut lp, p, t, "x:e.0"), Some(Value::Int(8)), "peer {p}");
+            assert_eq!(reads(&mut lp, p, t, "x:f.0"), Some(Value::Int(9)), "peer {p}");
+        }
+    }
+}
+
+// spec/permissions.md §5.1 (Own cover), §5.2 (Copies): the issue's minimal case. Alice holds
+// Bob's edit only under Dave's snapshot (every holder dropped its body as covered, Alice forgot
+// it); Carol removed Dave earlier without that snapshot, so it falls once her removal arrives.
+// Alice's removal of Bob cannot list the forgotten edit; it names her own fresh snapshot, which
+// carries it from her state: it stays everywhere.
+#[test]
+fn own_cover_outlives_another_writers_falling_cover_spec_perm_5_1() {
+    let (mut lp, t) = world(4, &[Role::Write, Role::Admin, Role::Write]);
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync(1, 3).unwrap();
+    let a = ak("x:e.0");
+    let s = lp.peers[3].engine.snapshot(&t, &a).unwrap().unwrap();
+    lp.advance(1000);
+    for p in [0, 1] {
+        lp.sync(3, p).unwrap();
+    }
+    // every holder drops the edit's body under Dave's cover; Alice forgets it whole
+    for p in [0, 1, 3] {
+        let en = &mut lp.peers[p].engine;
+        assert_eq!(en.covered(&s, &e, &t, &a).unwrap(), Some(true), "peer {p}");
+        en.drop_body(&e, &t, &a).unwrap();
+    }
+    assert!(lp.peers[0].engine.forgettable(&e).unwrap());
+    lp.peers[0].engine.forget_commits(&[e]).unwrap();
+    // Carol removes Dave, never having received his snapshot
+    remove(&mut lp, 2, t, 3);
+    let r = remove(&mut lp, 0, t, 1);
+    let (_, own) = frontier_of(&lp, 0, &r);
+    assert_eq!(own.len(), 1, "Alice's own cover of the aspect");
+    lp.sync_all().unwrap();
+    lp.sync_all().unwrap();
+    for p in [0, 2] {
+        assert!(!lp.peers[p].engine.core.ix.commits.get(&s).is_some_and(|m| m.valid_at(0)), "peer {p}: Dave's cover fell");
+        assert_eq!(reads(&mut lp, p, t, "x:e.0"), Some(Value::Int(7)), "peer {p}: Alice's own cover carries the edit");
+    }
+}
+
+// spec/permissions.md §5.1 (Own cover): the remover's own cover stands while its removal applies.
+// Alice forgot Bob's edit under her own earlier snapshot, which nobody else received. Carol
+// receives Alice's removal of Bob but not the own cover it names, and removes Alice: her frontier
+// lists the removal (it applies) and neither snapshot. The own cover counts all the same as the
+// removal's word, so Bob's edit it alone carries stays; the earlier snapshot falls.
+#[test]
+fn own_cover_stands_with_its_removal_spec_perm_5_1() {
+    let (mut lp, t) = world(3, &[Role::Write, Role::Admin]);
+    let a = ak("x:e.0");
+    write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync(1, 0).unwrap();
+    forget_under_own_snapshot(&mut lp, 0, 1, t, "x:e.0");
+    let r = remove(&mut lp, 0, t, 1);
+    let (_, own) = frontier_of(&lp, 0, &r);
+    assert_eq!(own.len(), 1);
+    let pk = lp.peers[0].engine.package(&r).unwrap().unwrap();
+    lp.deliver(2, &pk).unwrap();
+    assert!(lp.peers[2].engine.core.ix.commits.contains_key(&r) && !lp.peers[2].engine.core.ix.commits.contains_key(&own[0]), "the removal alone");
+    remove(&mut lp, 2, t, 0);
+    lp.sync_all().unwrap();
+    lp.sync_all().unwrap();
+    for p in [0, 2] {
+        assert!(lp.peers[p].engine.core.ix.commits.get(&own[0]).is_some_and(|m| m.valid_at(0)), "peer {p}: the own cover stands with the removal");
+        assert_eq!(lp.peers[p].engine.get(&t, &a).unwrap(), Some(Value::Int(7)), "peer {p}");
+    }
+}
+
+// spec/permissions.md §5.1 (Own cover), spec/commits.md §5 (Covered): a removal voided later
+// leaves every other holder as it was. Alice forgot Bob's edit under her own snapshot, so her
+// removal of Bob names her own cover of it; Dave holds the edit and receives both. He keeps its
+// body under that cover (only its writer drops under it) and his addendum lists it all the same.
+// Carol, never holding the removal, removes Alice: the removal falls, its own cover with it, and
+// Dave and Carol read the edit from Dave's copy, Bob gone.
+#[test]
+fn a_voided_removal_leaves_holders_as_they_were_spec_perm_5_1() {
+    let (mut lp, t) = world(4, &[Role::Write, Role::Admin, Role::Write]);
+    let a = ak("x:e.0");
+    let e = write(&mut lp, 1, t, "x:e.0", 7);
+    lp.sync(1, 0).unwrap();
+    lp.sync(1, 3).unwrap();
+    forget_under_own_snapshot(&mut lp, 0, 1, t, "x:e.0");
+    let r = remove(&mut lp, 0, t, 1);
+    let (_, own) = frontier_of(&lp, 0, &r);
+    assert_eq!(own.len(), 1, "Alice's own cover");
+    for c in [own[0], r] {
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        lp.deliver(3, &pk).unwrap();
+    }
+    let d = &mut lp.peers[3].engine;
+    assert_eq!(d.covered(&own[0], &e, &t, &a).unwrap(), Some(true), "the own cover covers Dave's copy");
+    assert!(d.own_kept_under(&own[0], &e, &t, &a).unwrap(), "Dave keeps it: only Alice drops under her own cover");
+    let dave = lp.peers[3].engine.me();
+    let by_dave: Vec<CommitId> = addenda(&lp, 3, t).into_iter().filter(|(x, _)| *x == dave).map(|(_, c)| c).collect();
+    assert_eq!(by_dave.len(), 1, "Dave answers the removal");
+    let lists = lp.peers[3].engine.core.ix.addenda.get(&(t, by_dave[0])).unwrap().clone();
+    assert!(lists.entries.iter().any(|(rm, l)| *rm == r && l.contains(&e)), "listed though the own cover carries it: {lists:?}");
+    remove(&mut lp, 2, t, 0);
+    for _ in 0..2 {
+        for (x, y) in [(0, 2), (2, 3), (0, 3)] {
+            lp.sync(x, y).unwrap();
+            lp.sync(y, x).unwrap();
+        }
+    }
+    for p in [2, 3] {
+        assert!(!lp.peers[p].engine.core.ix.commits.get(&own[0]).is_some_and(|m| m.valid_at(0)), "peer {p}: the own cover fell with its removal");
+        assert_eq!(reads(&mut lp, p, t, "x:e.0"), Some(Value::Int(7)), "peer {p}: Dave's copy");
+    }
+}
+
+// spec/commits.md §5 (Keep bounds), §7, spec/permissions.md §5.1 (Own cover): undo across a
+// removal on kept history. Held: Alice's removal of Bob lists his kept edit by ID and writes no own
+// cover; her later undo of her own write over it brings it back everywhere. Forgotten before the
+// thing kept history: her removal names her own cover of the aspect, which drops no kept body
+// (their keep bound is still ahead), and Carol's undo of her write made after it brings Bob's edit
+// back from that cover everywhere.
+#[test]
+fn undo_across_a_removal_on_kept_history_spec_commits_7() {
+    for forgot in [false, true] {
+        let (mut lp, t) = world(3, &[Role::Write, Role::Admin]);
+        let a = ak("x:e.0");
+        let b = write(&mut lp, 1, t, "x:e.0", 7);
+        lp.sync_all().unwrap();
+        if forgot {
+            forget_under_own_snapshot(&mut lp, 0, 1, t, "x:e.0");
+        }
+        // the setting from Alice, nothing sent to her: what she forgot stays forgotten
+        keep_history_from(&mut lp, 0, t);
+        let (undoer, mine) = if forgot {
+            let r = remove(&mut lp, 0, t, 1);
+            let (f, own) = frontier_of(&lp, 0, &r);
+            assert!(!f.contains(&b) && own.len() == 1, "forgotten: the own cover");
+            lp.sync_all().unwrap();
+            (2, write(&mut lp, 2, t, "x:e.0", 9))
+        } else {
+            let mine = write(&mut lp, 0, t, "x:e.0", 8);
+            lp.sync_all().unwrap();
+            let r = remove(&mut lp, 0, t, 1);
+            let (f, own) = frontier_of(&lp, 0, &r);
+            assert!(f.contains(&b) && own.is_empty(), "held: listed by ID, no own cover");
+            (0, mine)
+        };
+        lp.sync_all().unwrap();
+        for p in [0, 2] {
+            assert!(lp.peers[p].engine.drop_from(&mine, &t, &a).unwrap() > lp.peers[p].engine.now().0, "forgot {forgot}: peer {p}: the kept write stays to its bound");
+        }
+        lp.peers[undoer].engine.revert(&mine).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        for p in [0, 2] {
+            assert_eq!(reads(&mut lp, p, t, "x:e.0"), Some(Value::Int(7)), "forgot {forgot}: peer {p}: Bob's edit back");
+        }
+    }
+}
+
+/// Bytes of commit `c` at `peer` and of the blobs it links that `known` lacks, and those blobs'
+/// count.
+fn new_bytes(lp: &mut LocalPeer, peer: usize, c: &CommitId, known: &std::collections::BTreeSet<osis_base::BlobId>) -> (usize, usize, usize) {
+    let pk = lp.peers[peer].engine.package(c).unwrap().unwrap();
+    let fresh: Vec<_> = pk.blobs.iter().filter(|(b, _)| !known.contains(b)).collect();
+    (pk.bytes.len(), fresh.len(), fresh.iter().map(|(_, b)| b.len()).sum())
+}
+
+// spec/permissions.md §5.1 (Own cover): what a removal costs, counted. Bodies held: one 32 B ID per
+// commit and no snapshot. Forgotten (the remover compacted and forgot them): one own cover per
+// aspect. A chunked large value's own cover links the value's pieces, which every holder already
+// has, so it adds its commit and no piece, however large the value.
+#[test]
+fn own_cover_cost_counts_spec_perm_5_1() {
+    // a 1 MiB value, then a one-byte edit of it: the edit reuses all but the changed chunk
+    for forget in [false, true] {
+        let (mut lp, t) = world(2, &[Role::Write]);
+        let big = |lp: &mut LocalPeer, k: u8| {
+            let mut m = Mutation::new();
+            let mut v: Vec<u8> = (0..16 * 65536).map(|i| (i * 7 % 251) as u8).collect();
+            v[0] = k;
+            m.set(t, &ak("x:big.0"), &Value::Bytes(v)).unwrap();
+            let c = lp.peers[1].commit(m).unwrap().unwrap();
+            lp.advance(1000);
+            c
+        };
+        let b1 = big(&mut lp, 0);
+        let b2 = big(&mut lp, 1);
+        lp.sync_all().unwrap();
+        let mut known = std::collections::BTreeSet::new();
+        for c in [b1, b2] {
+            known.extend(lp.peers[0].engine.package(&c).unwrap().unwrap().blobs.into_iter().map(|x| x.0));
+        }
+        if forget {
+            let s = forget_under_own_snapshot(&mut lp, 0, 1, t, "x:big.0");
+            known.extend(lp.peers[0].engine.package(&s).unwrap().unwrap().blobs.into_iter().map(|x| x.0));
+        }
+        let r = remove(&mut lp, 0, t, 1);
+        let (f, own) = frontier_of(&lp, 0, &r);
+        if !forget {
+            assert!(f.contains(&b1) && f.contains(&b2) && own.is_empty(), "held: IDs only");
+            eprintln!("1 MiB chunked value, bodies held: 2 IDs listed, no own cover");
+            continue;
+        }
+        assert!(!f.contains(&b1) && !f.contains(&b2) && own.len() == 1);
+        let (commit, blobs, bytes) = new_bytes(&mut lp, 0, &own[0], &known);
+        eprintln!("1 MiB chunked value, forgotten: own cover commit {commit} B, {blobs} new blobs ({bytes} B)");
+        assert_eq!(blobs, 0, "the snapshot reuses every piece");
+        assert!(commit < 2048, "a commit linking the value: {commit} B");
+    }
+
+    // 40 aspects written once each
+    for forget in [false, true] {
+        let (mut lp, t) = world(2, &[Role::Write]);
+        let n = 40;
+        for i in 0..n {
+            write(&mut lp, 1, t, &format!("x:a{i}.0"), i);
+        }
+        lp.sync_all().unwrap();
+        if forget {
+            for i in 0..n {
+                forget_under_own_snapshot(&mut lp, 0, 1, t, &format!("x:a{i}.0"));
+            }
+        }
+        let r = remove(&mut lp, 0, t, 1);
+        let (f, own) = frontier_of(&lp, 0, &r);
+        let total: usize = own.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap().bytes.len()).sum();
+        eprintln!("{n} one-write aspects, forgotten {forget}: {} own covers ({total} B), frontier {} IDs", own.len(), f.len());
+        assert_eq!(own.len(), if forget { n as usize } else { 0 });
+    }
 }

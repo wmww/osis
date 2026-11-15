@@ -184,7 +184,7 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
                     if new_snap.is_some_and(|n| *n != c && *n != *s) {
                         continue;
                     }
-                    if *s == c || !holds(tx, s) || !holds(tx, &c) || (Some(author) == me && Some(*snap_author) != me) {
+                    if *s == c || !holds(tx, s) || !holds(tx, &c) || (Some(author) == me && Some(*snap_author) != me) || super::others_own_cover(tx.core, s) {
                         continue;
                     }
                     if !super::snapshot::drops_under(tx, s, &c, tid, ak)? {

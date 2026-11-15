@@ -191,11 +191,15 @@ pub(crate) fn drops_as_covered(m: &crate::engine::Meta, ai: usize, now: u64) -> 
     !m.is_dropped(ai) && (!m.bare(ai) || m.header.expires.is_some_and(|t| t <= now))
 }
 
-/// Whether this node keeps held part `(tid, ak)` of `c` under cover `s` though `s` covers it
-/// (spec/sync-compaction.md §1 own bodies): a delta it wrote none of whose writes is dead drops only under
-/// a cover it wrote. The one judgment: node-sync's covered drops and the compaction trigger's
-/// count (`compact::covered_already`) both ask it.
+/// Whether this node keeps held part `(tid, ak)` of `c` under cover `s` though `s` covers it:
+/// `s` is another node's own cover at a removal (`others_own_cover`), or `c` is a delta this node
+/// wrote none of whose writes is dead, which drops only under a cover it wrote
+/// (spec/sync-compaction.md §1 own bodies). The one judgment: the covered drops
+/// (`Engine::covered_drops`) and the compaction trigger's count (`compact::covered_already`) ask it.
 pub(crate) fn own_kept_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+    if others_own_cover(tx.core, s) {
+        return Ok(true);
+    }
     let own = |x: &CommitId| tx.core.ix.commits.get(x).is_some_and(|m| m.origin == crate::events::Origin::Local);
     if !own(c) || own(s) || tx.core.ix.commits.get(c).is_none_or(|m| m.view.kind.is_compaction()) {
         return Ok(false);
@@ -206,6 +210,19 @@ pub(crate) fn own_kept_under(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &
         return Ok(true);
     }
     Ok(!replace::replaced(tx, c, ai, tid, ak)?)
+}
+
+/// Whether `s` is a compaction snapshot another node wrote as its own cover at a removal: an
+/// explicit demotion by `s`'s author on a thing `s` is on names it (spec/permissions.md §5.1, Own
+/// cover). It stands on that removal, which may fall (its author removed by an admin that never
+/// received it), so only the node that wrote it drops a body under it (spec/commits.md §5
+/// Covered); every other holder keeps what it held as before.
+pub(crate) fn others_own_cover(core: &Core, s: &CommitId) -> bool {
+    let Some(m) = core.ix.commits.get(s) else { return false };
+    if !m.view.kind.is_compaction() || m.origin == crate::events::Origin::Local {
+        return false;
+    }
+    m.view.aspects.iter().any(|a| core.timelines.get(&a.tid).is_some_and(|tl| tl.own_named(&m.view.author, &a.tid).iter().any(|d| d.frontier.as_ref().is_some_and(|f| f.covers(s)))))
 }
 
 /// `drop_part`, saying why.
