@@ -116,17 +116,20 @@ fn the_granter_of_what_it_keeps_unread_spec_sync_opens_1() {
 // spec/sync-status.md §3 (held by no other node), by the rosters, known address or not: a thing
 // of a one-node account is held by no other node, until another account holds a role on it
 // (with no address known), and again once removed; the accepter of a thing it keeps unread
-// waits for its granter; two nodes of one account each hold home for the other.
+// waits for its granter; two nodes of one account each hold home for the other. Per peer
+// (`may_hold`): by the proven actors a holder is named by.
 #[test]
-fn others_hold_by_the_rosters_spec_sync_status_3() {
+fn roster_holders_by_the_rosters_spec_sync_status_3() {
     let (mut lp, ps) = people(2);
     let d0 = lp.peers[0].engine.account().unwrap().unwrap().1;
     let home = lp.peers[0].engine.home_sync_id(&d0).unwrap().unwrap();
     let (t, s) = synced_thing(&mut lp, 0, d0);
-    let held = |lp: &mut LocalPeer, i: usize, s: &SyncId| lp.peers[i].engine.others_hold(s).unwrap();
+    let held = |lp: &mut LocalPeer, i: usize, s: &SyncId| lp.peers[i].engine.roster_holders(s).unwrap().any();
     assert!(!held(&mut lp, 0, &home) && !held(&mut lp, 0, &s), "a one-node account");
     let done = lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Sync)).unwrap();
     assert!(peers(&mut lp, 0, &s).is_empty() && held(&mut lp, 0, &s), "no address known, held all the same");
+    let r = lp.peers[0].engine.roster_holders(&s).unwrap();
+    assert!(r.may_hold(&[ps[1]]) && !r.may_hold(&[ps[0]]), "per peer: the grantee's account, never this one");
     let blob = lp.inbox_blobs(0, &done).unwrap().into_iter().find(|(h, _)| *h == ps[1]).expect("an inbox blob to peer 1").1;
     lp.peers[1].engine.take_inbox_blob(&blob, false).unwrap().expect("opens");
     crate::facade::accept(&mut lp, 1, t);
@@ -137,6 +140,8 @@ fn others_hold_by_the_rosters_spec_sync_status_3() {
     spread(&mut lp);
     let home = lp.peers[0].engine.home_sync_id(&d).unwrap().unwrap();
     assert!(held(&mut lp, 0, &home) && held(&mut lp, 1, &home));
+    let n1 = lp.peers[1].engine.tid();
+    assert!(lp.peers[0].engine.roster_holders(&home).unwrap().may_hold(&[n1]), "per peer: the other node");
 }
 
 // spec/sync-set.md §1 (dial list: each node keeping its own entry), spec/sync-transport.md §5

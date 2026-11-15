@@ -173,6 +173,17 @@ impl Transaction<'_> {
         Ok(id)
     }
 
+    /// Every record kept. O(records): what a start indexes (osis-sync's opens: records by
+    /// acknowledgement position).
+    pub fn records_all(&mut self) -> Result<Vec<Record>, Error> {
+        let mut out = Vec::new();
+        self.cat_each(CORE, |_, k, v| {
+            out.push(Record::decode(tail(&k)?, &v)?);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
     /// Records naming any of `actors`, most recently used first. O(records naming them).
     pub fn records_of_actors(&mut self, actors: &[Tid]) -> Result<Vec<Record>, Error> {
         let mut ids = BTreeSet::new();

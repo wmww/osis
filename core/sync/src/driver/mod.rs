@@ -425,7 +425,7 @@ impl Node {
         };
         // by the rosters, not by who has S open: a sync ID just joined is open at no peer yet;
         // a failed read keeps the wait waiting
-        let w = self.status.wait(&net, scope, |_| carrying, |s| engine.others_hold(s).unwrap_or(true));
+        let w = self.status.wait(&net, scope, |_| carrying, |s| engine.roster_holders(s).map_or(true, |r| r.any()));
         let mut owes = || engine.deliveries().map_or(true, |d| !d.is_empty());
         match (w, scope) {
             (Waiting::Done, Scope::All | Scope::Deliveries) if owes() => Waiting::Pending,
@@ -707,8 +707,9 @@ impl Node {
             // the lifecycle duties the engine judges (`life`), on what this round settled
             let net = NetView { streams: &self.streams, unread: &self.unread };
             let (status, opens, store) = (&self.status, &self.opens, &self.store);
-            // a sync ID no peer shares is heard out at once (the rule a leave's wait reads)
-            acted |= self.life.settle(&mut self.engine, &self.store, |s| status.heard_out_or_alone(opens, store, s, &net))?;
+            // a sync ID no peer is to be waited for on is heard out at once (the rule a leave's
+            // wait reads)
+            acted |= self.life.settle(&mut self.engine, &self.store, |e, s| status.heard_out_or_alone(opens, e, store, s, &net))?;
             // the engine read its store again (a forgetting drop): every feed followed is stale,
             // so the settle ends and the step restarts the modules (`engine_reloaded`)
             if !acted || self.engine.loads() != self.driver.engine_loads {

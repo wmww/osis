@@ -82,7 +82,7 @@ impl Ground for Fake {
     fn own_present(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.present.contains(s))
     }
-    fn shared(&mut self, s: &SyncId) -> Result<bool> {
+    fn waited(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unshared.contains(s))
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {

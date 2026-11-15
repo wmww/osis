@@ -1,0 +1,3 @@
+# joined-window
+- The issue's offline scenarios (accept, then write or self-remove, all apart) cannot happen: an accepted grant's thing is unknown until S opens (`UnknownThing`). The window is real for a thing the node already knows that joins its sync set apart from its other holders (filed after granting it out, filed again after unfiling); the tests use those.
+- Contacts that dialed each other at first contact keep two records each (spec/sync-opens.md §1 Limit), one never used again: a per-record wait got stuck on it until `RECORD_BUDGET`. Only the existing self-removal flow test showed it.

@@ -13,7 +13,8 @@
 //! it stops at once (its secrets lost, a removal); then it waits until what this node logged
 //! itself under S is elsewhere (read: each own commit with an entry under S held elsewhere,
 //! status's durable mark, `Store::elsewhere`; kept unread: each own entry present at a source,
-//! `Sources`), or no peer shares S to take it (`Opens::shared`), then stops: read and still read
+//! `Sources`), or no peer is to be waited for on S (`Opens::waited`: none has S open or in its
+//! kept record, none the rosters name has a record not acknowledging S), then stops: read and still read
 //! here (unsyncing), its thing's local copy is forgotten first. Synced again before then, it is
 //! kept as it was. Meanwhile the engine answers for it by its thing's held read secrets
 //! (`Engine::read_credentials`, `open_entry`).
@@ -54,9 +55,10 @@ pub trait Ground: SetGround {
     fn own_elsewhere(&mut self, s: &SyncId) -> Result<bool>;
     /// Kept unread: each entry this node logged itself under S is present at a source.
     fn own_present(&mut self, s: &SyncId) -> Result<bool>;
-    /// Some peer shares S with this node: a source now, or a kept record holding S as a member
-    /// (`Opens::shared`). With none, nothing could take its own writes.
-    fn shared(&mut self, s: &SyncId) -> Result<bool>;
+    /// Some peer is to be waited for on S (`Opens::waited`): S open there or in its kept record,
+    /// or the rosters say it may hold S and its record has not acknowledged S. With none,
+    /// nothing could take its own writes.
+    fn waited(&mut self, s: &SyncId) -> Result<bool>;
     fn shred(&mut self, s: &SyncId) -> Result<()>;
     /// The pass place now (`Engine::pass_place`): when S left, in the order passes begin.
     fn pass_seq(&mut self) -> u64;
@@ -222,7 +224,7 @@ fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, (Held, u
     let done = match held.1 {
         Holding::Read => g.own_elsewhere(s)?,
         Holding::Unread => g.own_present(s)?,
-    } || !g.shared(s)?;
+    } || !g.waited(s)?;
     Ok(if done { Wait::Done } else { Wait::Waiting })
 }
 
@@ -294,8 +296,8 @@ impl Ground for Live<'_, '_> {
     fn own_present(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.cx.store.entries(s)?.into_iter().filter(|e| e.own).all(|e| self.sources.present(s, &e.blob)))
     }
-    fn shared(&mut self, s: &SyncId) -> Result<bool> {
-        self.opens.shared(self.cx.store, s, |_| false)
+    fn waited(&mut self, s: &SyncId) -> Result<bool> {
+        self.opens.waited(self.cx.engine, self.cx.store, s, true)
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.cx.store.shred(s)

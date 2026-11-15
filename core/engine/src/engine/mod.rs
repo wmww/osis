@@ -1043,8 +1043,9 @@ pub struct Core {
     pub(crate) sync_set: memo::Memo<(), Arc<crate::sync::SyncSet>>,
     /// `Engine::dial_peers` per sync ID (`memo`): sync's dials read it at each move of what it read.
     pub(crate) dial_peers: memo::Memo<SyncId, Arc<Vec<osis_base::Address>>>,
-    /// `Engine::others_hold` per sync ID (`memo`): a wait reads it per sync ID at each step.
-    pub(crate) others_hold: memo::Memo<SyncId, bool>,
+    /// `Engine::roster_holders` per sync ID (`memo`): waits and leaving's peers read it per sync
+    /// ID at each step.
+    pub(crate) roster_holders: memo::Memo<SyncId, Arc<crate::sync::RosterHolders>>,
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
@@ -1384,7 +1385,7 @@ impl Core {
             thing_sync: self.thing_sync.clone(),
             sync_set: self.sync_set.clone(),
             dial_peers: self.dial_peers.clone(),
-            others_hold: self.others_hold.clone(),
+            roster_holders: self.roster_holders.clone(),
             holders_named: self.holders_named.clone(),
             certified: self.certified.clone(),
             listed: self.listed.clone(),
@@ -1957,7 +1958,7 @@ impl Core {
             thing_sync: _,
             sync_set: _,
             dial_peers: _,
-            others_hold: _,
+            roster_holders: _,
             holders_named: _,
             // followed (`Effects`): what a rollback restores moves its reads, so the next follow
             // indexes again
@@ -2150,7 +2151,7 @@ impl Core {
             thing_sync: memo::Memo::new("sync: thing sync"),
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),
-            others_hold: memo::Memo::new("sync: others hold"),
+            roster_holders: memo::Memo::new("sync: roster holders"),
             holders_named: memo::Memo::new("holders named: read"),
             certified: Default::default(),
             listed: Default::default(),

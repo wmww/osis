@@ -222,6 +222,14 @@ pub(super) fn load(t: &mut Transaction<'_>, id: &RecordId) -> Res<Option<Record>
     Ok(Some(r))
 }
 
+/// Record `id`'s `acked_pos` as its rows hold it (0 before its own state is written).
+pub(super) fn acked_pos(t: &mut Transaction<'_>, id: &RecordId) -> Res<u64> {
+    match t.record_get_wide_row(id, OPENS, b"")? {
+        Some(v) => Rd(&v).u64(),
+        None => Ok(0),
+    }
+}
+
 /// Writes what changed of record `id` (held as `r`).
 pub(super) fn write(t: &mut Transaction<'_>, id: &RecordId, r: &Record, d: Dirty) -> Res<()> {
     if d.used {

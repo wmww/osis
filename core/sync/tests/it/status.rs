@@ -146,7 +146,7 @@ impl Ground for Fake {
         self.elsewhere.insert((*s, *b));
         Ok(())
     }
-    fn shared(&mut self, s: &SyncId) -> Result<bool> {
+    fn waited(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.shared.contains(s))
     }
     fn removal_done(&mut self, c: &CommitId) -> Result<()> {

@@ -7,7 +7,7 @@ use crate::harness::scripted::*;
 use osis_base::SyncId;
 use osis_engine::sync::J;
 use osis_proto::{Code, Msg, OfferItem};
-use osis_sync::opens::{Moved, Rejoin};
+use osis_sync::opens::{Moved, Peer, Rejoin};
 use osis_sync::session::Proven;
 use osis_sync::types::{Credential, SourceClass};
 
@@ -52,20 +52,91 @@ fn a_record_resumes_its_shared_set_spec_sync_opens_3() {
     assert!(p.a.opens.agreed(p.ca) && p.b.opens.agreed(p.cb));
 }
 
-// spec/sync-set.md §3 (shares S: a source or a record it keeps holding S as a member),
-// spec/permissions.md §3 (Lost access: no peer but its account's nodes): S is shared while the
-// connection has it open and, once closed, while the kept record holds it; a peer whose proven
-// actors the caller skips (this account's own nodes, for a self-removal) shares nothing.
+// spec/sync-set.md §3 (waits while some peer shares S: a source or a record it keeps holding S
+// as a member), spec/permissions.md §3 (Lost access: no peer but its account's nodes): S is
+// waited on while the connection has it open and, once closed, while the kept record holds it;
+// a peer whose proven actors the caller skips (this account's own nodes, for a self-removal)
+// holds no wait.
 #[test]
-fn shared_by_a_connection_or_a_kept_record_spec_sync_set_3() {
+fn waited_by_a_connection_or_a_kept_record_spec_sync_set_3() {
     let mut p = readers();
-    let other = |t: &osis_base::Tid| *t == tid(2);
-    assert!(p.a.opens.shared(&p.a.store, &S, |_| false).unwrap(), "open on a connection");
-    assert!(!p.a.opens.shared(&p.a.store, &S, other).unwrap(), "only a skipped peer");
-    assert!(!p.a.opens.shared(&p.a.store, &sid(9), |_| false).unwrap(), "held by nobody");
+    let other = |a: &[osis_base::Tid]| if a.contains(&tid(2)) { Peer::Skipped } else { Peer::Unlisted };
+    let wait = |p: &Pair, s: &SyncId, f: &dyn Fn(&[osis_base::Tid]) -> Peer| p.a.opens.wait_for(&p.a.store, s, f).unwrap();
+    assert!(wait(&p, &S, &|_| Peer::Unlisted), "open on a connection");
+    assert!(!wait(&p, &S, &other), "only a skipped peer");
+    assert!(!wait(&p, &sid(9), &|_| Peer::Unlisted), "held by nobody");
     p.close();
-    assert!(p.a.opens.shared(&p.a.store, &S, |_| false).unwrap(), "the peer away: its record holds S");
-    assert!(!p.a.opens.shared(&p.a.store, &S, other).unwrap(), "its record names a skipped actor");
+    assert!(wait(&p, &S, &|_| Peer::Unlisted), "the peer away: its record holds S");
+    assert!(!wait(&p, &S, &other), "its record names a skipped actor");
+}
+
+// spec/sync-set.md §3 (a peer that may hold S, its record not acknowledging S's current
+// credentials, keeps the wait), spec/sync-opens.md §5 Testing (`acked_pos`): S joins `a` while
+// `b` is away, so no record holds it: `a` waits for `b` when the rosters say `b` may hold S, and
+// not for a peer they do not name, nor once `b`'s record acknowledges S with S not a member, nor
+// past a restart of what it read; records naming the same actors are one peer; the wait comes
+// back when S's credentials move again, and once `b` holds S too it is its member.
+#[test]
+fn a_sync_id_just_joined_waits_for_a_peer_the_rosters_name_spec_sync_set_3() {
+    let s2 = sid(7);
+    let mut p = readers();
+    p.close();
+    let may = |_: &[osis_base::Tid]| Peer::MayHold;
+    let wait = |p: &Pair, f: &dyn Fn(&[osis_base::Tid]) -> Peer| p.a.opens.wait_for(&p.a.store, &sid(7), f).unwrap();
+    let st = StepKeys::new(2, 0);
+    p.a.table.set(s2, Some(reader(&s2, &read_secret(2, 0), &st, &[], &[], &[])));
+    p.a.settle();
+    assert!(wait(&p, &may), "b away, its record not told of S");
+    assert!(!wait(&p, &|_| Peer::Unlisted), "a peer the rosters do not name");
+    assert!(!wait(&p, &|_| Peer::Skipped));
+    p.a.restart();
+    assert!(wait(&p, &may), "a restart reads the same from the record's rows");
+    p.connect(2, account(1), account(2));
+    p.run();
+    assert!(!p.a.open(p.ca, &s2));
+    assert!(!wait(&p, &may), "b acknowledged S, not a member: it does not hold S");
+    p.close();
+    p.a.restart();
+    assert!(!wait(&p, &may), "nor after a restart");
+    // a second record naming the same actors (both nodes dialed at first contact, §1 Limit) is the
+    // same peer: told by one of its records, it is told; one naming other actors is another peer
+    p.a.store.with_tx(|t| t.record_create([9; 32], &[tid(2)]).map(drop)).unwrap();
+    p.a.restart();
+    assert!(!wait(&p, &may), "the same peer, told by its other record");
+    p.a.store.with_tx(|t| t.record_create([8; 32], &[tid(3)]).map(drop)).unwrap();
+    p.a.restart();
+    assert!(wait(&p, &may) && !wait(&p, &|a| if a.contains(&tid(3)) { Peer::Unlisted } else { Peer::MayHold }), "another peer, never told");
+    let st3 = StepKeys::new(3, 0);
+    p.a.table.set(s2, Some(reader(&s2, &read_secret(3, 0), &st3, &[], &[], &[])));
+    p.a.settle();
+    assert!(wait(&p, &may), "S's credentials moved: b not told of them");
+    p.b.table.set(s2, Some(reader(&s2, &read_secret(3, 0), &st3, &[], &[], &[])));
+    p.b.settle();
+    p.connect(3, account(1), account(2));
+    p.run();
+    assert!(p.a.open(p.ca, &s2) && wait(&p, &|_| Peer::Unlisted), "open: a member");
+}
+
+// spec/sync-set.md §3 (a peer away keeps it waiting until that peer connects or its record goes),
+// spec/sync-opens.md §3 (RECORD_BUDGET): the record of a peer away that was never told of S goes
+// past the budget, and the wait with it: nothing stays stuck on a peer that never returns.
+#[test]
+fn an_evicted_record_ends_its_wait_spec_sync_set_3() {
+    let s2 = sid(7);
+    let mut p = readers();
+    p.close();
+    let st = StepKeys::new(2, 0);
+    p.a.table.set(s2, Some(reader(&s2, &read_secret(2, 0), &st, &[], &[], &[])));
+    p.a.settle();
+    let wait = |p: &Pair| p.a.opens.wait_for(&p.a.store, &s2, |_| Peer::MayHold).unwrap();
+    assert!(wait(&p) && wait_s(&p), "b's record: not told of s2, holding S");
+    p.a.opens.set_record_budget(0);
+    assert_eq!(p.a.flush().len(), 1);
+    assert!(!wait(&p) && !wait_s(&p), "the record gone, nothing to wait for");
+}
+
+fn wait_s(p: &Pair) -> bool {
+    p.a.opens.wait_for(&p.a.store, &S, |_| Peer::Unlisted).unwrap()
 }
 
 fn sid(n: u8) -> SyncId {

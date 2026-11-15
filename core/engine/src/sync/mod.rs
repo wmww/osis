@@ -372,6 +372,29 @@ pub fn kept_things<'a>(s: &SyncId, kept: &'a [(Tid, Arc<SyncRecord>)]) -> impl I
     kept.iter().filter(move |(_, r)| !any_tied || r.tied.contains(&s))
 }
 
+/// Who may hold a sync ID besides this node, by the rosters (`Engine::roster_holders`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RosterHolders {
+    /// Anyone may: S kept unread (its granters are not named here).
+    pub anyone: bool,
+    /// This account's other nodes syncing S's thing.
+    pub nodes: BTreeSet<Tid>,
+    /// The accounts other than this one holding a role on S's thing.
+    pub accounts: BTreeSet<Tid>,
+}
+
+impl RosterHolders {
+    /// Some node other than this one may hold S.
+    pub fn any(&self) -> bool {
+        self.anyone || !self.nodes.is_empty() || !self.accounts.is_empty()
+    }
+
+    /// A peer proving `proven` may hold S: one of them is a holder named here.
+    pub fn may_hold(&self, proven: &[Tid]) -> bool {
+        self.anyone || proven.iter().any(|x| self.nodes.contains(x) || self.accounts.contains(x))
+    }
+}
+
 /// J of a peer for S (spec/sync-opens.md §4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum J {
@@ -939,14 +962,14 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.dial_peers, s, |e| e.dial_peers_now(s))
     }
 
-    /// Whether a node other than this one may hold S, by the rosters and records held here
-    /// (spec/sync-status.md §3: a sync ID no other node may hold holds no wait): of S read, an
-    /// account other than this one holding a role on S's thing, or another node of this account
-    /// whose synced group's closure holds it; S kept unread always (its granters). The nodes
-    /// `dial_peers` lists, by who they are, whether or not an address is known. A memo per sync
-    /// ID.
-    pub fn others_hold(&mut self, s: &SyncId) -> Result<bool> {
-        osis_base::memo::Memo::get_in(self, |e| &e.core.others_hold, s, |e| e.others_hold_now(s))
+    /// The nodes other than this one that may hold S, by the rosters and records held here
+    /// (spec/sync-status.md §3 held by no other node; spec/sync-set.md §3 the peers a leave waits
+    /// for): of S read, the accounts other than this one holding a role on S's thing and the
+    /// other nodes of this account whose synced group's closure holds it; S kept unread, anyone
+    /// (its granters, whom the rosters do not name). The nodes `dial_peers` lists, by who they
+    /// are, whether or not an address is known. A memo per sync ID.
+    pub fn roster_holders(&mut self, s: &SyncId) -> Result<Arc<RosterHolders>> {
+        osis_base::memo::Memo::get_in(self, |e| &e.core.roster_holders, s, |e| e.roster_holders_now(s))
     }
 
     /// The inbox deliveries owed and not seen taken (spec/sync-inbox.md §2), whole: a start lists

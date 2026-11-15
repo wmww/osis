@@ -147,7 +147,7 @@ impl Engine {
         Arc::new(self.core.ix.held_wait.iter().copied().collect())
     }
 
-    /// Sync is done waiting for `c` (held elsewhere, or no peer shares where it goes): each
+    /// Sync is done waiting for `c` (held elsewhere, or no peer to wait for where it goes): each
     /// actor lost with no own self-removal behind it still waiting drops (`lost_leaving`, per
     /// actor: one that cannot be placed holds back nothing else; spec/permissions.md §3 Lost
     /// access). The drop goes first: a crash before `c` leaves the wait finds it waiting, and

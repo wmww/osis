@@ -97,6 +97,42 @@ fn a_node_alone_releases_at_once_spec_commits_5() {
     assert_eq!(w.engine(0).get(&x, &v()).unwrap(), None, "a node alone releases");
 }
 
+// spec/commits.md §5 (Lifetimes: while a peer sharing a sync ID is away nothing under it is
+// released), spec/sync-set.md §3 (a peer that may hold S, its record not acknowledging S): node 1
+// makes R retaining and referencing X outside its synced group and grants node 0's account write
+// on R, which node 0 accepts; apart from node 0, node 1 files both and drops R's reference. R's
+// sync ID joined node 1's sync set after the two parted, so no record holds it, yet node 1
+// releases nothing until node 0's record has been told of it.
+#[test]
+fn nothing_is_released_under_a_sync_id_just_joined_before_the_peer_is_told_spec_commits_5() {
+    let mut w = crate::harness::contacts();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let (r, x) = w.write(1, |e| {
+        let mut m = Mutation::new();
+        let r = e.new_thing(&mut m, a1);
+        let x = e.new_thing(&mut m, a1);
+        m.set(r, &v(), &Value::Tid(x)).unwrap();
+        m.set(x, &v(), &Value::Str("x".into())).unwrap();
+        m.set(x, &ct::RETAINERS, &BTreeSet::from([r])).unwrap();
+        e.commit(m).unwrap();
+        (r, x)
+    });
+    w.write(1, |e| e.grant(&r, &a0, &crate::flows::edge(osis_base::Role::Write))).unwrap();
+    w.run();
+    file(&mut w, 0, Vec::new(), vec![r]);
+    w.run();
+    w.partition(0, 1);
+    w.run();
+    file(&mut w, 1, vec![r, x], Vec::new());
+    w.run();
+    unreference(&mut w, 1, r);
+    w.run();
+    assert_eq!(w.engine(1).get(&x, &v()).unwrap(), Some(Value::Str("x".into())), "released before node 0 was told of R's sync ID");
+    w.heal();
+    w.run();
+    assert_eq!(w.engine(1).get(&x, &v()).unwrap(), None, "released once heard out");
+}
+
 // spec/permissions.md §2 (Tied grants), §7 (Joiner's leave): the holder duties' state, one value
 // per thing named a holder: a thing is followed while named a holder here and no longer. A node alone releases X; once X is
 // destroyed (its record and role commits gone), no holder duty follows it.

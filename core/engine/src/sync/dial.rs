@@ -3,7 +3,7 @@
 //! grant's dial hint in a sync record), and what this node publishes of itself
 //! (`publish_reach`). For dialing only, never proof.
 
-use super::{DialHint, Holding};
+use super::{DialHint, Holding, RosterHolders};
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::Mutation;
@@ -78,16 +78,18 @@ impl Engine {
         })
     }
 
-    /// See `Engine::others_hold`: the candidates `dial_peers_now` walks, by who they are, not
+    /// See `Engine::roster_holders`: the candidates `dial_peers_now` walks, by who they are, not
     /// where they are dialed.
-    pub(crate) fn others_hold_now(&mut self, s: &SyncId) -> Result<bool> {
-        let Some((t, holding)) = self.synced_thing(s)? else { return Ok(false) };
-        // kept unread: kept for the accounts that granted it
-        if holding == Holding::Unread || !self.own_nodes_syncing(&t)?.is_empty() {
-            return Ok(true);
+    pub(crate) fn roster_holders_now(&mut self, s: &SyncId) -> Result<Arc<RosterHolders>> {
+        let Some((t, holding)) = self.synced_thing(s)? else { return Ok(Arc::default()) };
+        // kept unread: kept for the accounts that granted it, which the rosters here do not name
+        if holding == Holding::Unread {
+            return Ok(Arc::new(RosterHolders { anyone: true, ..RosterHolders::default() }));
         }
+        let nodes = self.own_nodes_syncing(&t)?.into_iter().collect();
         let own = self.core.account_devices().map(|(p, _)| p);
-        Ok(self.holder_accounts(&t).into_iter().any(|a| Some(a) != own))
+        let accounts = self.holder_accounts(&t).into_iter().filter(|a| Some(*a) != own).collect();
+        Ok(Arc::new(RosterHolders { anyone: false, nodes, accounts }))
     }
 
     /// This account's other nodes whose synced group's closure holds `t`.

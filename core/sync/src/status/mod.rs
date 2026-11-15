@@ -177,9 +177,9 @@ pub trait Ground: Net {
     /// Whether a source was recorded holding entry `b` of S, durably.
     fn elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<bool>;
     fn set_elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
-    /// Some peer other than this account's own nodes shares S: a connection has it open or a kept
-    /// record holds it as a member (`Opens::shared`). Stamped.
-    fn shared(&mut self, s: &SyncId) -> Result<bool>;
+    /// Some peer other than this account's own nodes is to be waited for on S (`Opens::waited`,
+    /// own nodes skipped). Stamped.
+    fn waited(&mut self, s: &SyncId) -> Result<bool>;
     /// Tells the engine sync is done waiting for a self-removal (it drops the secrets).
     fn removal_done(&mut self, c: &CommitId) -> Result<()>;
     /// The sync IDs the engine wants a complete pass of, each with the pass place the pass must
@@ -722,10 +722,11 @@ impl Status {
     }
 
     /// S heard out for what waits on it (a lifecycle duty, emptying a destroyed thing's sync ID):
-    /// at once when no peer shares it (`Opens::shared`: no connection has it open, no kept record
-    /// lists it), so a node alone waits for none; else `heard_out`.
-    pub fn heard_out_or_alone(&self, opens: &Opens, store: &crate::store::Store, s: &SyncId, net: &impl Net) -> Result<bool> {
-        Ok(!opens.shared(store, s, |_| false)? || self.heard_out(s, net))
+    /// at once when no peer is to be waited for on it (`Opens::waited`: none has it open or in its
+    /// kept record, none the rosters name has a record not acknowledging it), so a node alone
+    /// waits for none; else `heard_out`.
+    pub fn heard_out_or_alone(&self, opens: &Opens, engine: &mut osis_engine::Engine, store: &crate::store::Store, s: &SyncId, net: &impl Net) -> Result<bool> {
+        Ok(!opens.waited(engine, store, s, true)? || self.heard_out(s, net))
     }
 
     /// Whether own commit `c` is held elsewhere under every read sync ID it has a body under
@@ -740,7 +741,7 @@ impl Status {
     /// (notes/api-design.md: a wait on `Stranded` fails). Deliveries are not status's: their
     /// scope holds no sync ID. Reads only.
     /// `ids_of`: the sync IDs carrying a thing (the engine's `carrying`); `others`: whether some
-    /// other node may hold S (the engine's `others_hold`, by the rosters).
+    /// other node may hold S (the engine's `roster_holders`).
     pub fn wait(&self, net: &impl Net, scope: Scope, ids_of: impl FnOnce(&Tid) -> Result<Vec<SyncId>>, mut others: impl FnMut(&SyncId) -> bool) -> Waiting {
         let ids: Vec<SyncId> = match scope {
             Scope::All => self.holding.keys().copied().collect(),
@@ -811,13 +812,13 @@ fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl Iterator
 }
 
 /// Whether sync is done waiting for self-removal `c` (spec/permissions.md §3 Lost access): under
-/// each read S it has a body under (`ids`), held elsewhere or shared with no peer but this
-/// account's own nodes (which leave by the same commit, §2). With no such S, done at once: no
+/// each read S it has a body under (`ids`), held elsewhere or no peer but this account's own
+/// nodes (which leave by the same commit, §2) to wait for (`Opens::waited`). With no such S, done at once: no
 /// peer could take it.
 fn removal_done<'a>(g: &mut impl Ground, c: &CommitId, ids: impl Iterator<Item = &'a SyncId>, unheld: &Stamped<SyncId, Arc<BTreeSet<CommitId>>>) -> Result<bool> {
     for s in ids {
         let held = unheld.get(s).is_some_and(|u| !u.contains(c));
-        if !held && g.shared(s)? {
+        if !held && g.waited(s)? {
             return Ok(false);
         }
     }

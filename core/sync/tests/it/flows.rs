@@ -527,6 +527,163 @@ fn an_unsynced_write_reaches_a_peer_before_the_copy_goes_spec_sync_set_3() {
     assert!(w.store(1).synced(&s).is_none() && !w.store(1).held_ids().unwrap().contains(&s), "stopped and shredded");
 }
 
+fn unfile(w: &mut World, i: usize, t: osis_base::Tid) {
+    w.write(i, |e| {
+        let d = e.account().unwrap().unwrap().1;
+        let mut g = e.get_typed(&d, &ct::GROUP).unwrap().unwrap_or_default();
+        g.subgroups.retain(|x| *x != t);
+        g.items.retain(|x| *x != t);
+        let mut m = Mutation::new();
+        m.set(d, &ct::GROUP, &g).unwrap();
+        e.commit(m).unwrap();
+    });
+}
+
+// spec/sync-set.md §3 (it waits while a peer that may hold S has not acknowledged it): node 1
+// makes a thing outside its synced group and grants node 0's account write, which node 0
+// accepts; apart from node 0, node 1 files the thing, writes it and unfiles it. No record holds
+// S (it joined node 1's sync set after the two parted), but node 0's account holds a role on it
+// and node 0's record was never told of S, so node 1 keeps S until its write reached node 0.
+#[test]
+fn an_unsynced_write_on_a_sync_id_just_joined_reaches_the_peer_first_spec_sync_set_3() {
+    let mut w = contacts();
+    w.cap = 4_000;
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let t = w.write(1, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a1);
+        m.set(t, &ak, &Value::Str("x".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    w.write(1, |e| e.grant(&t, &a0, &edge(Role::Write))).unwrap();
+    w.run();
+    file(&mut w, 0, Vec::new(), vec![t]);
+    w.run();
+    let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
+    assert!(w.store(0).synced(&s).is_some() && w.store(1).synced(&s).is_none(), "node 0 syncs S, node 1 not yet");
+    w.partition(0, 1);
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    let mine = Some(Value::Str("from 1".into()));
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("from 1".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    unfile(&mut w, 1, t);
+    w.run();
+    assert!(!w.engine(1).sync_set().unwrap().ids.contains_key(&s), "left the sync set");
+    assert!(w.store(1).synced(&s).is_some(), "still synced: node 0 was never told of S");
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    assert!(w.store(1).synced(&s).is_some(), "a restart finds it waiting");
+    w.heal();
+    w.run();
+    assert_eq!(w.engine(0).get(&t, &ak).unwrap(), mine, "the write reached node 0");
+    assert!(w.store(1).synced(&s).is_none(), "then stopped");
+}
+
+// spec/sync-set.md §3 (with no peer sharing S it stops at once): node 1 grants a thing it made
+// outside its synced group to node 0's account and removes it again; apart from node 0 it files
+// the thing, writes it and unfiles it. Node 0's record was never told of S, but no roster names
+// another holder of it any more, so it stops at once.
+#[test]
+fn a_thing_no_other_node_may_hold_leaves_at_once_spec_sync_set_3() {
+    let mut w = contacts();
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let ak = Ak::new("u:v.0").unwrap();
+    let t = w.write(1, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a1);
+        m.set(t, &ak, &Value::Str("x".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    w.write(1, |e| e.grant(&t, &a0, &edge(Role::Write))).unwrap();
+    w.run();
+    w.write(1, |e| e.demote(&t, &Demotion { holder: a0, new: None, retain: None })).unwrap();
+    w.run();
+    w.partition(0, 1);
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
+    assert!(w.store(1).synced(&s).is_some());
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Str("y".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    unfile(&mut w, 1, t);
+    w.run();
+    assert!(w.store(1).synced(&s).is_none(), "stopped at once");
+}
+
+// spec/sync-set.md §3 (it waits only while some peer shares S): as above, but node 0 unfiles the
+// thing while apart; once the two meet node 0's record acknowledges S with S not a member, so
+// node 1 stops though its write is held nowhere else (a peer that does not hold S takes nothing).
+#[test]
+fn a_peer_acknowledging_a_sync_id_it_does_not_hold_ends_the_wait_spec_sync_set_3() {
+    let mut w = contacts();
+    w.cap = 4_000;
+    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
+    let t = w.write(1, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a1);
+        e.commit(m).unwrap();
+        t
+    });
+    w.write(1, |e| e.grant(&t, &a0, &edge(Role::Write))).unwrap();
+    w.run();
+    file(&mut w, 0, Vec::new(), vec![t]);
+    w.run();
+    let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
+    w.partition(0, 1);
+    w.run();
+    unfile(&mut w, 0, t);
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    unfile(&mut w, 1, t);
+    w.run();
+    assert!(w.store(0).synced(&s).is_none(), "node 0 stopped syncing S");
+    assert!(w.store(1).synced(&s).is_some(), "node 1 waits: node 0 was never told of S");
+    w.heal();
+    w.run();
+    assert!(w.store(1).synced(&s).is_none(), "told, node 0 does not hold S: stopped");
+}
+
+// spec/permissions.md §3 (Lost access: a self-remover keeps the secrets until its self-removal is
+// held elsewhere, waiting while a peer could take it): node 1 reads and writes a thing, unfiles
+// it (its copy goes), then, apart from node 0, files it again and leaves it. S joined node 1's
+// sync set after the two parted, so no record holds it, yet node 1 waits, and the removal reaches
+// node 0's account once the two meet.
+#[test]
+fn a_self_removal_on_a_sync_id_just_joined_reaches_the_granter_spec_perm_3() {
+    let (mut w, t, _) = granted_and_read(Role::Write);
+    let a1 = w.node(1).account.unwrap();
+    let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
+    unfile(&mut w, 1, t);
+    w.run();
+    assert!(w.store(1).synced(&s).is_none(), "stopped syncing it");
+    w.partition(0, 1);
+    w.run();
+    file(&mut w, 1, Vec::new(), vec![t]);
+    w.run();
+    assert!(w.store(1).synced(&s).is_some(), "synced again");
+    let c = w.write(1, |e| e.demote(&t, &Demotion { holder: a1, new: None, retain: None })).unwrap().commits[0];
+    w.run();
+    assert!(w.engine(1).waiting_removals().unwrap().contains(&c), "waits for node 0");
+    w.heal();
+    w.run();
+    assert!(w.engine(0).commit_ids().contains(&c), "the removal reached node 0");
+    assert!(w.engine(1).waiting_removals().unwrap().is_empty(), "then dropped");
+}
+
 // spec/permissions.md §3 (Re-seal: a node that may rotate re-seals a current holder without a box
 // at a current epoch; Complete pass: it decides at the end of a complete pass of the actor's sync
 // IDs): node 0 grants node 2 read while node 1, an admin cut off from it, removes node 3 (a
