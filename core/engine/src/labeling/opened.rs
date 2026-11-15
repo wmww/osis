@@ -51,19 +51,20 @@ use osis_store::Shred;
 /// `OPENED_UNDER` rows (key, value) of one commit not yet written (`Core::openings`).
 pub type Rows = Vec<(Vec<u8>, Vec<u8>)>;
 
-/// A section's opening, per part: its epoch (of the part's thing, derived for a plain thing) and
-/// the hash of the delta it carried, checked against the header when `genuine`.
-fn key(c: &CommitId, ai: usize, e: &Epoch) -> Vec<u8> {
-    [records::OPENED_UNDER, c.0.as_slice(), &u32::try_from(ai).unwrap_or(u32::MAX).to_be_bytes(), &e.n().to_be_bytes(), e.nonce()].concat()
+/// A section's opening, per part: its epoch with the thing it is an epoch of (the part's,
+/// derived for a plain thing; a copy's, the sync ID's) and the hash of the delta it carried,
+/// checked against the header when `genuine`. An epoch names no thing (a rotation commit's
+/// keyset may name another thing's epoch), so the thing is part of the opening.
+fn key(c: &CommitId, ai: u32, t: &Tid, e: &Epoch) -> Vec<u8> {
+    [records::OPENED_UNDER, c.0.as_slice(), &ai.to_be_bytes(), t.as_bytes(), &e.n().to_be_bytes(), e.nonce()].concat()
+}
+
+fn part_index(ai: usize) -> u32 {
+    u32::try_from(ai).unwrap_or(u32::MAX)
 }
 
 /// The part index a header opening's key carries in place of a part's (`note_unwrapped`).
 const HEADER: u32 = u32::MAX;
-
-/// A header opening: the epoch of thing `t` an entry's wrap of a blob of `c` opened under.
-fn header_key(c: &CommitId, t: &Tid, e: &Epoch) -> Vec<u8> {
-    [records::OPENED_UNDER, c.0.as_slice(), &HEADER.to_be_bytes(), t.as_bytes(), &e.n().to_be_bytes(), e.nonce()].concat()
-}
 
 fn value(genuine: bool, delta: &[u8]) -> Vec<u8> {
     [&[u8::from(genuine)][..], &osis_base::hash::hash(delta)].concat()
@@ -122,19 +123,19 @@ impl Engine {
 
     /// Records the epoch each opened section of a commit another wrote opened under, per content
     /// part (`key`), unless already written. A failed write records nothing (opening reads only).
-    pub(crate) fn note_opened(&mut self, header: &osis_commit::Header, opened: &[(Epoch, Vec<&osis_commit::Part>)]) {
+    pub(crate) fn note_opened(&mut self, header: &osis_commit::Header, opened: &[(Tid, Epoch, Vec<&osis_commit::Part>)]) {
         let id = header.id();
         if self.core.ix.commits.get(&id).is_some_and(|m| m.origin == Origin::Local) {
             return;
         }
         let mut rows = Vec::new();
-        for (e, parts) in opened {
+        for (t, e, parts) in opened {
             for p in parts {
                 // content only: the rest is records, keys and boxes (each box sealed to its own
                 // recipient)
                 let Some(a) = header.aspects.get(p.ai).filter(|a| is_content(a.ak.as_str())) else { continue };
                 let genuine = self.core.created(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&osis_crypto::dedup_secret(r.nonce()), &p.delta) == a.hash);
-                rows.push((key(&id, p.ai, e), value(genuine, &p.delta)));
+                rows.push((key(&id, part_index(p.ai), t, e), value(genuine, &p.delta)));
             }
         }
         self.keep_openings(&id, rows);
@@ -147,7 +148,7 @@ impl Engine {
         if self.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local) {
             return;
         }
-        self.keep_openings(c, vec![(header_key(c, t, e), vec![1])]);
+        self.keep_openings(c, vec![(key(c, HEADER, t, e), vec![1])]);
     }
 
     /// Keeps `rows` of commit `id` in memory until its next ingest writes them: of a held or
@@ -196,7 +197,7 @@ pub(crate) fn note_own(tx: &mut Tx<'_>, c: &osis_commit::CommitBlob) -> Result<(
         let Some(a) = c.header.aspects.get(p.ai).filter(|a| is_content(a.ak.as_str())) else { continue };
         let Some((e, f)) = tx.core.seal_epoch(&a.tid) else { continue };
         if f > 0 {
-            tx.txn.put_local(&key(&id, p.ai, &e), &value(true, &p.delta), Shred::No)?;
+            tx.txn.put_local(&key(&id, part_index(p.ai), &a.tid, &e), &value(true, &p.delta), Shred::No)?;
         }
     }
     Ok(())
@@ -239,43 +240,56 @@ pub(crate) fn prune(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta) -> R
     Ok(())
 }
 
-/// One opening of a part: the part, its epoch, whether its delta was checked against the
-/// header, and the delta's hash.
-type Opening = (usize, Epoch, bool, [u8; 32]);
+/// One opening of a part: the part, the thing its epoch is of, the epoch, whether its delta was
+/// checked against the header, and the delta's hash.
+type Opening = (usize, Tid, Epoch, bool, [u8; 32]);
 
-/// The openings of commit `c` recorded here, written or not (`ai`: of that part alone): per
-/// row its part, epoch, whether its delta was checked against the header, and the delta's hash.
-fn openings(tx: &mut Tx<'_>, c: &CommitId, ai: Option<usize>) -> Result<Vec<Opening>> {
-    let mut prefix = [records::OPENED_UNDER, c.0.as_slice()].concat();
-    if let Some(ai) = ai {
-        prefix.extend_from_slice(&u32::try_from(ai).unwrap_or(u32::MAX).to_be_bytes());
-    }
+/// One `OPENED_UNDER` row: its index (a part's, or `HEADER`), thing, epoch and value.
+type Row = (u32, Tid, Epoch, Vec<u8>);
+
+/// The `OPENED_UNDER` rows of commit `c` recorded here, written or not (`ai`: of that index
+/// alone, `HEADER` for header openings).
+fn rows(tx: &mut Tx<'_>, c: &CommitId, ai: Option<u32>) -> Result<Vec<Row>> {
     let whole = [records::OPENED_UNDER, c.0.as_slice()].concat();
-    let row = |k: &[u8], v: &[u8]| -> Result<Opening> {
+    let mut prefix = whole.clone();
+    if let Some(ai) = ai {
+        prefix.extend_from_slice(&ai.to_be_bytes());
+    }
+    let row = |k: &[u8], v: &[u8]| -> Result<Row> {
         let bad = || Error::Corrupt("opened under");
         let (ai, rest) = k.split_at_checked(4).ok_or_else(bad)?;
+        let (t, rest) = rest.split_at_checked(15).ok_or_else(bad)?;
         let (n, nonce) = rest.split_at_checked(8).ok_or_else(bad)?;
         let e = Epoch::new(u64::from_be_bytes(n.try_into().map_err(|_| bad())?), nonce.try_into().map_err(|_| bad())?).map_err(|_| bad())?;
-        let (g, h) = v.split_first().ok_or_else(bad)?;
-        Ok((u32::from_be_bytes(ai.try_into().map_err(|_| bad())?) as usize, e, *g == 1, h.try_into().map_err(|_| bad())?))
+        Ok((u32::from_be_bytes(ai.try_into().map_err(|_| bad())?), Tid::from_bytes(t.try_into().map_err(|_| bad())?), e, v.to_vec()))
     };
     let mut out = Vec::new();
     let skip = whole.len();
-    let header = |k: &[u8]| k.get(skip..skip + 4) == Some(&HEADER.to_be_bytes()[..]);
     tx.scan(&prefix, |k, v| {
         let full = [prefix.as_slice(), k].concat();
-        if !header(&full) {
-            out.push(row(full.get(skip..).unwrap_or_default(), &v)?);
-        }
+        out.push(row(full.get(skip..).unwrap_or_default(), &v)?);
         Ok(())
     })?;
     for (k, v) in tx.core.openings.get(c).into_iter().flatten() {
-        if k.starts_with(&prefix) && !header(k) {
+        if k.starts_with(&prefix) {
             let r = row(k.get(skip..).unwrap_or_default(), v)?;
-            if !out.contains(&r) {
+            if !out.iter().any(|x| (x.0, x.1, x.2) == (r.0, r.1, r.2)) {
                 out.push(r);
             }
         }
+    }
+    Ok(out)
+}
+
+/// The openings of commit `c`'s parts recorded here, written or not (`ai`: of that part alone).
+fn openings(tx: &mut Tx<'_>, c: &CommitId, ai: Option<usize>) -> Result<Vec<Opening>> {
+    let mut out = Vec::new();
+    for (i, t, e, v) in rows(tx, c, ai.map(part_index))? {
+        if i == HEADER {
+            continue;
+        }
+        let (g, h) = v.split_first().ok_or(Error::Corrupt("opened under"))?;
+        out.push((i as usize, t, e, *g == 1, h.try_into().map_err(|_| Error::Corrupt("opened under"))?));
     }
     Ok(out)
 }
@@ -283,44 +297,23 @@ fn openings(tx: &mut Tx<'_>, c: &CommitId, ai: Option<usize>) -> Result<Vec<Open
 /// The header openings of commit `c` recorded here, written or not (`note_unwrapped`): per row
 /// the sync ID's thing and the epoch an entry's wrap opened under.
 fn header_openings(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<(Tid, Epoch)>> {
-    let prefix = [records::OPENED_UNDER, c.0.as_slice(), &HEADER.to_be_bytes()].concat();
-    let row = |k: &[u8]| -> Result<(Tid, Epoch)> {
-        let bad = || Error::Corrupt("opened under");
-        let (t, rest) = k.split_at_checked(15).ok_or_else(bad)?;
-        let (n, nonce) = rest.split_at_checked(8).ok_or_else(bad)?;
-        let e = Epoch::new(u64::from_be_bytes(n.try_into().map_err(|_| bad())?), nonce.try_into().map_err(|_| bad())?).map_err(|_| bad())?;
-        Ok((Tid::from_bytes(t.try_into().map_err(|_| bad())?), e))
-    };
-    let mut out = Vec::new();
-    tx.scan(&prefix, |k, _| {
-        out.push(row(k)?);
-        Ok(())
-    })?;
-    for (k, _) in tx.core.openings.get(c).into_iter().flatten() {
-        if let Some(rest) = k.strip_prefix(prefix.as_slice()) {
-            let r = row(rest)?;
-            if !out.contains(&r) {
-                out.push(r);
-            }
-        }
-    }
-    Ok(out)
+    Ok(rows(tx, c, Some(HEADER))?.into_iter().map(|(_, t, e, _)| (t, e)).collect())
 }
 
-/// The epochs held commit `c`'s parts on thing `t` opened under here, written or not: the
-/// epoch its writer sealed each under, kept through every passing on (spec/crypto.md §5); none
-/// for a part read in no section.
+/// The epochs of thing `t` held commit `c`'s parts on `t` opened under here, written or not:
+/// the epoch its writer sealed each under, kept through every passing on (spec/crypto.md §5);
+/// none for a part read in no section.
 pub(crate) fn opened_epochs(tx: &mut Tx<'_>, c: &CommitId, t: &Tid) -> Result<Vec<Epoch>> {
     let Some(view) = tx.core.ix.commits.get(c).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
     let on = |ai: usize| view.aspects.get(ai).is_some_and(|a| a.tid == *t);
-    Ok(openings(tx, c, None)?.into_iter().filter(|(ai, ..)| on(*ai)).map(|(_, e, ..)| e).collect())
+    Ok(openings(tx, c, None)?.into_iter().filter(|o| on(o.0) && o.1 == *t).map(|o| o.2).collect())
 }
 
 /// Whether one of `under` (part `ai`'s openings) is genuine and under an epoch of `t`
 /// established here now: its delta checked against the header, else equal to the held delta.
 fn established_genuine(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, mut under: Vec<Opening>) -> Result<bool> {
-    under.retain(|(_, e, ..)| tx.core.read_established(t, e));
-    if under.iter().any(|(_, _, g, _)| *g) {
+    under.retain(|o| o.1 == *t && tx.core.read_established(t, &o.2));
+    if under.iter().any(|o| o.3) {
         return Ok(true);
     }
     if under.is_empty() {
@@ -329,7 +322,7 @@ fn established_genuine(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, mut un
     let Some(held) = tx.get_commit(c)? else { return Ok(false) };
     let Some(p) = held.parts.iter().find(|p| p.ai == ai) else { return Ok(false) };
     let h = osis_base::hash::hash(&p.delta);
-    Ok(under.iter().any(|(.., x)| *x == h))
+    Ok(under.iter().any(|o| o.4 == h))
 }
 
 /// Whether this node may encrypt part `ai` (on aspect `ak` of thing `t`) of held commit `c`
@@ -358,12 +351,12 @@ pub(crate) fn passes_on(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, ak: &
     established_genuine(tx, c, ai, t, under)
 }
 
-/// The floor clause: of `under` (a part's openings on thing `t`), those under an epoch whose
+/// The floor clause: of `under` (a part's openings), those under an epoch of thing `t` whose
 /// floor is at least `floor`; `None` where `floor` is above 0 and none is (the part was written
 /// below it, or its epoch is unknown). Every opening where `floor` is `None` or 0.
 fn above_floor(tx: &Tx<'_>, t: &Tid, mut under: Vec<Opening>, floor: Option<u64>) -> Option<Vec<Opening>> {
     let Some(f) = floor.filter(|f| *f > 0) else { return Some(under) };
-    under.retain(|(_, e, ..)| tx.core.read_floor(t, e) >= f);
+    under.retain(|o| o.1 == *t && tx.core.read_floor(t, &o.2) >= f);
     (!under.is_empty()).then_some(under)
 }
 
@@ -408,7 +401,7 @@ fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header, w: &Wra
     }
     let all = openings(tx, c, None)?;
     for (ai, t) in content {
-        let under: Vec<_> = all.iter().filter(|r| r.0 == ai).cloned().collect();
+        let under: Vec<_> = all.iter().filter(|o| o.0 == ai).cloned().collect();
         let f = (tx.core.secret_actor(&t) == Some(w.actor)).then_some(w.floor);
         let passes = match above_floor(tx, &t, under, f) {
             None => false,
@@ -422,12 +415,13 @@ fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header, w: &Wra
 }
 
 /// The floor of part `ai` (on thing `t`) of held commit `c` (spec/crypto.md §4 Floors): the
-/// greatest floor of an epoch it was opened (or, this node's own, made) under; this node's own
-/// with no record has 0 (`note_own`), another's read in no section none known.
+/// greatest floor of an epoch of `t` it was opened (or, this node's own, made) under, an opening
+/// under another thing's (a copy's) counting 0; this node's own with no record has 0
+/// (`note_own`), another's read in no section none known.
 pub(crate) fn part_floor(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid) -> Result<Option<u64>> {
     let under = openings(tx, c, Some(ai))?;
     let own = tx.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local);
-    Ok(match under.iter().map(|(_, e, ..)| tx.core.read_floor(t, e)).max() {
+    Ok(match under.iter().map(|o| if o.1 == *t { tx.core.read_floor(t, &o.2) } else { 0 }).max() {
         Some(f) => Some(f),
         None => own.then_some(0),
     })

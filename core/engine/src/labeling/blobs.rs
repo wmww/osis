@@ -422,7 +422,7 @@ impl Engine {
                     continue;
                 }
                 let Some((e, _)) = self.read_epochs(&t, &sec.chain).into_iter().find(|(_, s)| osis_crypto::unwrap_section(s, &id, &sec.wrap).is_ok()) else { continue };
-                under.push((e, opened.commit.parts.iter().filter(|p| sec.ais.contains(&p.ai)).collect::<Vec<_>>()));
+                under.push((t, e, opened.commit.parts.iter().filter(|p| sec.ais.contains(&p.ai)).collect::<Vec<_>>()));
             }
             self.note_opened(h, &under);
         }
