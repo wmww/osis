@@ -977,6 +977,8 @@ pub(crate) enum Step {
     Rotation,
     /// A commit applied to find what it leaves unfiled (`write::commit_in`).
     Filing,
+    /// This node's account's dial list rid of removed nodes' entries (`sync::dial::drop_departed`).
+    Dial,
 }
 
 impl Step {
@@ -1064,6 +1066,10 @@ pub struct Core {
     /// `Engine::roster_holders` per sync ID (`memo`): waits and leaving's peers read it per sync
     /// ID at each step.
     pub(crate) roster_holders: memo::Memo<SyncId, Arc<crate::sync::RosterHolders>>,
+    /// This node's account's dial list entries of nodes removed from its devices actor
+    /// (`sync::dial::drop_departed`), followed: settled at each transaction's end that moved what
+    /// it read.
+    pub(crate) dial_departed: memo::Effects<(), crate::sync::dial::Departed>,
     /// `Engine::holders_named` per commit (`memo`): an admin's pass reads it for every inbox
     /// copy, and it decodes role parts.
     pub(crate) holders_named: memo::Memo<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
@@ -1417,6 +1423,7 @@ impl Core {
             sync_set: self.sync_set.clone(),
             dial_peers: self.dial_peers.clone(),
             roster_holders: self.roster_holders.clone(),
+            dial_departed: self.dial_departed.clone(),
             holders_named: self.holders_named.clone(),
             certified: self.certified.clone(),
             listed: self.listed.clone(),
@@ -1999,6 +2006,7 @@ impl Core {
             sync_set: _,
             dial_peers: _,
             roster_holders: _,
+            dial_departed: _,
             holders_named: _,
             // followed (`Effects`): what a rollback restores moves its reads, so the next follow
             // indexes again
@@ -2198,6 +2206,7 @@ impl Core {
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),
             roster_holders: memo::Memo::new("sync: roster holders"),
+            dial_departed: memo::Effects::new("sync: dial list departed"),
             holders_named: memo::Memo::new("holders named: read"),
             certified: Default::default(),
             listed: Default::default(),
@@ -3585,6 +3594,7 @@ impl Engine {
                 if r.is_ok()
                     && !tx.txn.is_memory()
                     && let Err(e) = crate::flows::addenda::answer_removals(&mut tx).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
+                        .and_then(|()| crate::sync::dial::drop_departed(&mut tx))
                 {
                     r = Err(e);
                 }

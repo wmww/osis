@@ -92,7 +92,7 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
     let at_epoch = at.as_ref().map_or_else(|| supersedes.first().copied(), |x| Some(x.0));
     let me = tx.core.id.tid();
     let mut carried = Vec::new();
-    for (c, _) in removals(tx, &p, &held.devices)? {
+    for (c, _) in removals(tx.core, &p, &held.devices)? {
         if tx.core.ix.commits.get(&c).and_then(|m| m.view.epoch) == at_epoch && tx.get_commit(&c)?.as_ref().and_then(|b| tx.core.inner_node(b)) == Some(me) {
             carried.push(c);
         }
@@ -431,9 +431,8 @@ pub(crate) fn leave(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
 }
 
 /// The counting removals from account `p`'s devices actor D of a node of D, with that node.
-fn removals(tx: &mut Tx<'_>, p: &Tid, d: &Tid) -> Result<Vec<(CommitId, Tid)>> {
+pub(crate) fn removals(core: &crate::engine::Core, p: &Tid, d: &Tid) -> Result<Vec<(CommitId, Tid)>> {
     let roles = osis_base::Ak::new("roles.0").map_err(|_| Error::Misuse("ak"))?;
-    let core = &*tx.core;
     Ok(core.ix.by_aspect.get(&(*d, roles)).into_iter().flatten().filter_map(|(_, c)| {
         let rc = core.ix.held.edge_commit(c).filter(|rc| rc.author == *p)?;
         let o = rc.ops.iter().find(|o| o.target == *d && o.edge.is_none() && core.is_key_actor(&o.holder))?;
@@ -474,7 +473,7 @@ fn departures(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView) -> Resu
     let mut out = Departures::default();
     let Some(d) = tx.core.accounts.get(p).map(|a| a.devices) else { return Ok(out) };
     let roster: BTreeSet<Tid> = tx.core.key_holders(&d).into_iter().map(|(m, _)| m).collect();
-    for (c, n) in removals(tx, p, &d)? {
+    for (c, n) in removals(tx.core, p, &d)? {
         if roster.contains(&n) {
             out.back.insert(n);
         }
@@ -565,7 +564,7 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Option<C
         return Ok(None);
     }
     let mut unnamed = Vec::new();
-    for (c, _) in removals(tx, &p, &d)? {
+    for (c, _) in removals(tx.core, &p, &d)? {
         // a removal stands or falls with the rotation carrying it: one carried by a rotation that
         // does not count here (pending, another side's) is no one's to name again
         if named.contains(&c) || v.carried_uncounted(&c) {

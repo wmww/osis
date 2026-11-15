@@ -4,7 +4,7 @@
 //! (`publish_reach`). For dialing only, never proof.
 
 use super::{DialHint, Holding, RosterHolders};
-use crate::engine::Engine;
+use crate::engine::{Core, Engine, Step, Tx};
 use crate::error::Result;
 use crate::Mutation;
 use osis_base::{Address, SyncId, Tid, peer_url};
@@ -28,6 +28,19 @@ fn address(key: &[u8], urls: &[String]) -> Option<Address> {
 /// profile lists is Tess's open question (issues/sync-tess-calls.md).
 fn lists_on_profile() -> bool {
     true
+}
+
+impl Core {
+    /// Account `a`'s profile (spec/permissions.md §1): the thing created with `a` (in the commit
+    /// creating it, which `a` authors: a record needs no authority, so another author's commit
+    /// carrying `a`'s record again creates no profile of `a`'s) whose first admin is `a`, other
+    /// than its devices actor. `None` until that commit is held here.
+    pub(crate) fn profile_of(&self, a: &Tid) -> Option<Tid> {
+        let created = ct::CREATED.name();
+        let by = self.ix.by_aspect.get(&(*a, created.clone()))?;
+        let meta = by.iter().filter_map(|(_, c)| self.ix.commits.get(c)).find(|m| m.header.author == *a)?;
+        meta.view.aspects.iter().filter(|x| x.ak == created && x.tid != *a).map(|x| x.tid).find(|x| self.first_admin(x) == Some(*a) && self.devices_of(x).is_none())
+    }
 }
 
 impl Engine {
@@ -121,15 +134,9 @@ impl Engine {
         out
     }
 
-    /// Account `a`'s profile (spec/permissions.md §1): the thing created with `a` (in the commit
-    /// creating it, which `a` authors: a record needs no authority, so another author's commit
-    /// carrying `a`'s record again creates no profile of `a`'s) whose first admin is `a`, other
-    /// than its devices actor. `None` until that commit is held here.
+    /// See `Core::profile_of`.
     pub fn profile_of(&self, a: &Tid) -> Option<Tid> {
-        let created = ct::CREATED.name();
-        let by = self.core.ix.by_aspect.get(&(*a, created.clone()))?;
-        let meta = by.iter().filter_map(|(_, c)| self.core.ix.commits.get(c)).find(|m| m.header.author == *a)?;
-        meta.view.aspects.iter().filter(|x| x.ak == created && x.tid != *a).map(|x| x.tid).find(|x| self.core.first_admin(x) == Some(*a) && self.core.devices_of(x).is_none())
+        self.core.profile_of(a)
     }
 
     /// Account `a`'s dial list: `dial^.0` on its profile, as held here.
@@ -169,4 +176,77 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// `departed`'s value: the profile and the dialable keys to drop from its dial list.
+pub(crate) type Departed = Option<(Tid, BTreeSet<Vec<u8>>)>;
+
+/// The entries of this node's account's dial list (`dial^.0` on its profile) of nodes removed
+/// from its devices actor D (spec/sync-set.md §1 Dial list): the dialable keys of the `reach.0`
+/// held of each node a counting removal took off D that holds no role there now, with the
+/// profile; `None` when this node writes no profile (no account, or the profile not held or not
+/// writable here).
+fn departed(tx: &mut Tx<'_>) -> Result<Departed> {
+    let Some((p, d)) = tx.core.account_devices() else { return Ok(None) };
+    let Some(profile) = tx.core.profile_of(&p).filter(|x| tx.core.writable(x)) else { return Ok(None) };
+    let list = typed(tx, &profile, &ct::DIAL)?.unwrap_or_default();
+    if list.is_empty() {
+        return Ok(Some((profile, BTreeSet::new())));
+    }
+    let current: BTreeSet<Tid> = tx.core.key_holders(&d).into_iter().map(|(n, _)| n).collect();
+    let gone: BTreeSet<Tid> = crate::flows::signing::removals(tx.core, &p, &d)?.into_iter().map(|(_, n)| n).filter(|n| !current.contains(n)).collect();
+    let mut out = BTreeSet::new();
+    for n in gone {
+        if let Some(r) = typed(tx, &n, &ct::REACH)?.filter(|r| list.contains_key(r.dialable.as_slice())) {
+            out.insert(r.dialable.to_vec());
+        }
+    }
+    Ok(Some((profile, out)))
+}
+
+/// `key`'s value on `t` as held in this transaction.
+fn typed<K: osis_schema::RawKey>(tx: &mut Tx<'_>, t: &Tid, key: &K) -> Result<Option<K::T>> {
+    let ak = osis_base::Ak::new(key.ak()).map_err(|_| crate::Error::Misuse("invalid AK"))?;
+    match tx.state(t, &ak)?.and_then(osis_crdt::Fragment::read) {
+        Some(v) => Ok(Some(key.decode(&v)?)),
+        None => Ok(None),
+    }
+}
+
+/// A node removed from its account has no entry in the account's dial list (spec/sync-set.md §1
+/// Dial list): at each transaction's end that moved what `departed` read, this node, writing its
+/// account's profile, removes the entries of removed nodes it finds there, whoever wrote them
+/// and whenever (a removed node's entry written beside its removal goes too), in one commit of
+/// its own. A step (`Tx::step`): one that fails leaves nothing, is reported
+/// (`DiagnosticKind::OwnWriteFailed`) and stays due.
+pub(crate) fn drop_departed(tx: &mut Tx<'_>) -> Result<()> {
+    let mut fx = std::mem::replace(&mut tx.core.dial_departed, osis_base::memo::Effects::new("sync: dial list departed"));
+    fx.want(());
+    let r = if fx.due().is_empty() { Ok(()) } else { drop_due(tx, &mut fx) };
+    tx.core.dial_departed = fx;
+    r
+}
+
+fn drop_due(tx: &mut Tx<'_>, fx: &mut osis_base::memo::Effects<(), Departed>) -> Result<()> {
+    let mut now = None;
+    fx.try_settle(&(), || {
+        let v = departed(tx)?;
+        now = v.clone();
+        Ok::<_, crate::Error>(v)
+    })?;
+    let Some((profile, keys)) = now.filter(|(_, k)| !k.is_empty()) else { return Ok(()) };
+    let wrote = tx.step(Step::Dial, |tx| {
+        let mut m = Mutation::new();
+        for k in &keys {
+            m.op(profile, &ct::DIAL, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(osis_base::Value::bytes(k)) })?;
+        }
+        Engine::commit_tx(tx, m).map(|_| ())
+    });
+    if let Err(e) = wrote {
+        // due again at the next transaction's end
+        fx.unwant(&());
+        let now = tx.now();
+        tx.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteFailed, tids: vec![profile], commit: None, peer: None, detail: e.to_string() }, now);
+    }
+    Ok(())
 }

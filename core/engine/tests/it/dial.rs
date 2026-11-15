@@ -192,3 +192,36 @@ fn a_co_writer_cannot_plant_a_dial_list_spec_sync_set_1() {
     lp.peers[2].engine.grant(&t, &ps[0], &edge_of(Role::Read)).unwrap();
     assert_eq!(peers(&mut lp, 2, &s), vec![addr(0)]);
 }
+
+// spec/sync-set.md §1 (dial list: a node removed from D has no entry): the node removing another
+// takes its entry out of the profile's dial list in the removal's transaction, and an entry of
+// the removed node's key written there again (whoever writes it) goes again at once; the node
+// paired again is listed again (also after a restart).
+#[test]
+fn a_removed_nodes_entry_leaves_the_dial_list_spec_sync_set_1() {
+    let (mut lp, d) = account_two_nodes();
+    publish(&mut lp, 0);
+    publish(&mut lp, 1);
+    spread(&mut lp);
+    let p = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let profile = lp.peers[0].engine.profile_of(&p).expect("P's profile");
+    let keys = |lp: &mut LocalPeer| lp.peers[0].engine.get_typed(&profile, &ct::DIAL).unwrap().unwrap_or_default().into_keys().collect::<Vec<_>>();
+    assert_eq!(keys(&mut lp), vec![key(0).to_vec(), key(1).to_vec()]);
+    let n1 = lp.peers[1].engine.tid();
+    lp.peers[0].engine.demote(&d, &Demotion { holder: n1, new: None, retain: None }).unwrap();
+    assert_eq!(keys(&mut lp), vec![key(0).to_vec()], "the removal's transaction drops it");
+    let mut m = Mutation::new();
+    m.op(profile, &ct::DIAL, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(osis_base::Value::bytes(&key(1)))], op: osis_crdt::Op::Set(osis_base::Value::List(vec![osis_base::Value::Str(peer_url(&items(1)))])) }).unwrap();
+    lp.peers[0].engine.commit(m).unwrap();
+    assert_eq!(keys(&mut lp), vec![key(0).to_vec()], "written again: dropped again");
+    // paired again: a node of D, its entry stays
+    let (_, again) = lp.peers[0].engine.pair(&n1).unwrap();
+    crate::flows::send(&mut lp, 0, 1, &again);
+    lp.peers[1].engine.paired(&p).unwrap();
+    spread(&mut lp);
+    publish(&mut lp, 1);
+    spread(&mut lp);
+    lp.peers[0].restart(3).unwrap();
+    publish(&mut lp, 0);
+    assert_eq!(keys(&mut lp), vec![key(0).to_vec(), key(1).to_vec()], "back on D: listed");
+}

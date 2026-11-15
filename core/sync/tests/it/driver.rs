@@ -764,3 +764,27 @@ fn dead_addresses_take_turns_at_the_redial_pace_spec_sync_opens_1() {
     assert_eq!(seen, all, "each distinct address once a turn");
     assert_eq!(turns[1], turns[0], "then again in the same order");
 }
+
+// spec/sync-set.md §1 (dial list: a node removed from D has no entry), spec/sync-opens.md §1
+// (whom to dial: the nodes of accounts holding a role, by their dial list): a contact dials a
+// node of an account holding a role on what it reads; once that node is removed (and gone
+// quiet, powered off), the contact dials it no more.
+#[test]
+fn a_removed_node_is_dialed_no_more_by_a_contact_spec_sync_set_1() {
+    let (mut w, t, _) = crate::flows::granted_and_read(osis_base::Role::Write);
+    let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
+    let n = w.pair(0);
+    w.run();
+    let nk = w.node(n).key.0;
+    let listed = |w: &mut World| w.engine(1).dial_peers(&s).unwrap().iter().any(|a| a.key == nk);
+    assert!(listed(&mut w), "a node of a holding account: a candidate");
+    let (node, d) = (w.engine(n).tid(), w.engine(0).account().unwrap().unwrap().1);
+    w.write(0, |e| e.demote(&d, &osis_engine::flows::Demotion { holder: node, new: None, retain: None })).unwrap();
+    w.power_off(n);
+    w.run();
+    assert!(!listed(&mut w), "removed: no candidate");
+    let before = dials_to(&w, 1, n);
+    w.advance(10 * REDIAL_MS);
+    w.run();
+    assert_eq!(dials_to(&w, 1, n), before, "never dialed again");
+}
