@@ -132,13 +132,14 @@ fn synced(ctx: &Ctx<'_>, scopes: &[SyncScope]) -> anyhow::Result<bool> {
 pub(crate) fn delivered(ctx: &Ctx<'_>, scopes: &[SyncScope]) -> anyhow::Result<()> {
     match synced(ctx, scopes)? {
         true => Ok(()),
-        false => Err(Error::Network("done here, not yet at its peers: it goes out when this node next syncs (osis sync)".into()).into()),
+        false => Err(Error::Network("done here, not yet held or taken where it goes: it goes on as this node syncs".into()).into()),
     }
 }
 
-/// What a grant of `t` delivers: `t` synced, holding the grant, and the grantee's inbox item taken.
-pub(crate) fn granted(t: Tid) -> [SyncScope; 2] {
-    [SyncScope::Thing(t), SyncScope::Deliveries]
+/// What a grant of `t` to `holder` delivers: `t` synced, holding the grant, and the grant's inbox
+/// item taken by `holder` (only this grant's: another's grantee away holds up nothing here).
+pub(crate) fn granted(t: Tid, holder: Tid) -> [SyncScope; 2] {
+    [SyncScope::Thing(t), SyncScope::Delivery { thing: t, to: holder }]
 }
 
 /// `NAME\tTID` lines, each list under its name.
@@ -486,7 +487,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
             db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())? })?;
-            delivered(ctx, &granted(t))
+            delivered(ctx, &granted(t, m))
         }
         Cmd::Invitations => {
             let inv = db.invitations()?;
@@ -507,7 +508,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             db.set_role(t, m, role, o)?;
             // a role given is a grant; a removal gives nobody anything and waits for nothing
             match role {
-                Some(_) => delivered(ctx, &granted(t)),
+                Some(_) => delivered(ctx, &granted(t, m)),
                 None => Ok(()),
             }
         }
@@ -519,9 +520,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Retained { drop: Some(a) } => Ok(db.drop_retained_copy(ctx.tid(&a)?)?),
         Cmd::Retained { drop: None } => ctx.list(&db.retained_copies()?.iter().map(Tid::to_uri).collect::<Vec<_>>()),
         Cmd::AddWithGrant { t, g, role, subgroup } => {
-            let t = ctx.tid(&t)?;
-            db.add_with_grant(write::member(t, subgroup), ctx.tid(&g)?, parse_role(&role)?)?;
-            delivered(ctx, &granted(t))
+            let (t, g) = (ctx.tid(&t)?, ctx.tid(&g)?);
+            db.add_with_grant(write::member(t, subgroup), g, parse_role(&role)?)?;
+            delivered(ctx, &granted(t, g))
         }
         Cmd::Chat(c) => crate::chat::run(ctx, c),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {

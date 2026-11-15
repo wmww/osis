@@ -128,6 +128,8 @@ pub enum Scope {
     All,
     Thing(Tid),
     Deliveries,
+    /// The deliveries owed `to` naming `thing`.
+    Delivery { thing: Tid, to: Tid },
 }
 
 /// Where a wait stands (spec/sync-status.md §3).

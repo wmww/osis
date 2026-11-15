@@ -67,6 +67,14 @@ pub enum SyncScope {
     Thing(Tid),
     /// This node's pending deliveries (grants and other inbox items), nothing else.
     Deliveries,
+    /// This node's pending deliveries to one actor about one thing (a grant of it), nothing
+    /// else: each ends once a node of that actor takes it.
+    Delivery {
+        /// The thing the delivery is about.
+        thing: Tid,
+        /// Whom it goes to.
+        to: Tid,
+    },
 }
 
 /// A thing's state from its sync IDs' (worst first).
@@ -172,7 +180,7 @@ impl Osis {
     /// Resolves once everything in `scope` is synced: each sync ID carrying it heard out (every
     /// connected node with it open caught up both ways, none of them full or refusing it left
     /// waited for) and each commit of this node's on it held elsewhere, and in `All` and
-    /// `Deliveries` every delivery taken. A sync ID no other node may hold (no other account has
+    /// `Deliveries` every delivery taken (in `Delivery` those it names). A sync ID no other node may hold (no other account has
     /// a role on its thing, no other node of this account syncs it) holds nothing up, so a
     /// one-node account's home does not, and nor does a delivery no other node may take; it never
     /// resolves while one some other node may hold is unconnected.
@@ -192,6 +200,7 @@ impl Osis {
             SyncScope::All => osis_sync::types::Scope::All,
             SyncScope::Thing(t) => osis_sync::types::Scope::Thing(t),
             SyncScope::Deliveries => osis_sync::types::Scope::Deliveries,
+            SyncScope::Delivery { thing, to } => osis_sync::types::Scope::Delivery { thing, to },
         };
         self.waiting(move |db| match db.locked(|l| l.node.wait(s)) {
             osis_sync::types::Waiting::Done => Some(Ok(())),

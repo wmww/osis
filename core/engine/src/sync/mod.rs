@@ -1158,6 +1158,11 @@ impl Engine {
         self.deliveries_now()
     }
 
+    /// The things delivery `c` to `holder` names (a grant's: its target); none once not owed.
+    pub fn delivery_things(&self, c: &CommitId, holder: &Tid) -> Vec<Tid> {
+        self.core.ix.owed_inbox.get(&(*c, *holder)).map(|o| o.things.clone()).unwrap_or_default()
+    }
+
     /// A cursor over the deliveries owed from now on (`memo::Feed`).
     pub fn delivery_feed(&self) -> osis_base::memo::Feed<(CommitId, Tid)> {
         self.core.ix.owed_inbox.feed()

@@ -762,7 +762,7 @@ impl Status {
                 Ok(ids) if !ids.is_empty() => ids,
                 _ => return Waiting::Pending,
             },
-            Scope::Deliveries => Vec::new(),
+            Scope::Deliveries | Scope::Delivery { .. } => Vec::new(),
         };
         let stranded: Vec<SyncId> = ids.iter().filter(|s| net.stranded(s) || self.strandings.contains_key(*s)).copied().collect();
         if !stranded.is_empty() {

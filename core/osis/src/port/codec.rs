@@ -895,13 +895,14 @@ impl Form for Invitation {
     }
 }
 
-/// `[0]` all, `[1, tid]` a thing, `[2]` deliveries.
+/// `[0]` all, `[1, tid]` a thing, `[2]` deliveries, `[3, thing, to]` the deliveries to `to` about `thing`.
 impl Form for SyncScope {
     fn to_wire(&self) -> Value {
         Value::List(match self {
             SyncScope::All => vec![Value::uint(0)],
             SyncScope::Thing(t) => vec![Value::uint(1), Value::Tid(*t)],
             SyncScope::Deliveries => vec![Value::uint(2)],
+            SyncScope::Delivery { thing, to } => vec![Value::uint(3), Value::Tid(*thing), Value::Tid(*to)],
         })
     }
     fn from_wire(v: Value) -> Result<SyncScope> {
@@ -910,6 +911,7 @@ impl Form for SyncScope {
             [c] if c.as_uint() == Some(0) => SyncScope::All,
             [c, t] if c.as_uint() == Some(1) => SyncScope::Thing(tid(t)?),
             [c] if c.as_uint() == Some(2) => SyncScope::Deliveries,
+            [c, t, to] if c.as_uint() == Some(3) => SyncScope::Delivery { thing: tid(t)?, to: tid(to)? },
             _ => return Err(bad("sync scope")),
         })
     }

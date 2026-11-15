@@ -614,6 +614,40 @@ fn an_accepters_wait_on_the_thing_ends_spec_sync_status_3() {
     drive(&net, b.wait_synced(SyncScope::Deliveries)).unwrap();
 }
 
+// spec/sync-status.md §3 (waits): a wait on one delivery (a grant of a thing to an account) ends
+// once that account takes it, whatever else is owed: another thing granted it and not accepted,
+// and the same thing granted another account that never accepts, hold up only their own waits
+// and `Deliveries`.
+#[test]
+fn a_wait_on_one_delivery_ends_alone_spec_sync_status_3() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 56, &c);
+    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
+    let x = on(&net, 57, &c);
+    x.listen(&["peer://127.0.0.1:2".parse().unwrap()]).unwrap();
+    let b = on(&net, 58, &c);
+    drive(&net, b.import_contact(&a.contact_card().unwrap())).unwrap();
+    drive(&net, b.import_contact(&x.contact_card().unwrap())).unwrap();
+    let mut w = b.write();
+    let (t1, t2) = (w.create().unwrap(), w.create().unwrap());
+    for t in [t1, t2] {
+        w.group(b.home()).add(osis::Member::Subgroup(t)).unwrap();
+    }
+    w.commit().unwrap();
+    for (t, to) in [(t1, a.me()), (t2, a.me()), (t2, x.me())] {
+        b.grant(t, to, Role::Read, osis::GrantOpts::default()).unwrap();
+    }
+    net.run();
+    a.accept_invite(t2, a.home()).unwrap();
+    drive(&net, a.wait_synced(SyncScope::Thing(t2))).unwrap();
+    drive(&net, b.wait_synced(SyncScope::Delivery { thing: t2, to: a.me() })).unwrap();
+    net.advance(60_000);
+    for scope in [SyncScope::Delivery { thing: t1, to: a.me() }, SyncScope::Delivery { thing: t2, to: x.me() }, SyncScope::Deliveries] {
+        assert!(now(b.wait_synced(scope)).is_pending(), "{scope:?}");
+    }
+}
+
 // spec/sync-inbox.md §5 (contact card), spec/sync-set.md §4: importing a card gives the account,
 // whose keys are then here (a grant to it goes through).
 #[test]

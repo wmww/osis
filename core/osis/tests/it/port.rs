@@ -1373,6 +1373,7 @@ fn cards_invitations_and_waits_through_a_socket_notes_client_port() {
     drive(&net, cl.wait_synced(osis::SyncScope::Thing(t))).unwrap();
     assert_eq!(cl.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("granted"));
     drive(&net, cl.wait_synced(osis::SyncScope::Deliveries)).unwrap();
+    drive(&net, cl.wait_synced(osis::SyncScope::Delivery { thing: t, to: b.me() })).unwrap();
     assert_eq!(osis::internals::port_waits(&a), 0, "a wait answered goes");
 }
 

@@ -316,7 +316,7 @@ pub enum Cmd {
     Now,
     /// Grant HOLDER ROLE (read, write, admin) on T, or change the grant's --until and --may-grant (no
     /// ROLE: as it is). Never lowers. Waits until T's other holders hold the grant and HOLDER took
-    /// it (exit 6 past --timeout: done here, it goes out when this node next syncs)
+    /// it (exit 6 past --timeout: done here, it goes on as this node syncs)
     Grant {
         t: String,
         holder: String,

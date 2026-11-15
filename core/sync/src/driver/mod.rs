@@ -419,21 +419,32 @@ impl Node {
     }
 
     /// Where a wait on `scope` stands (spec/sync-status.md §3): status's for its sync IDs, and
-    /// for `All` and `Deliveries` every delivery this node owes taken (the engine owes none).
+    /// for `All` and `Deliveries` every delivery this node owes taken (the engine owes none), for
+    /// `Delivery` those it owes `to` naming `thing`.
     pub fn wait(&mut self, scope: Scope) -> Waiting {
         let net = NetView { streams: &self.streams, unread: &self.unread };
         let engine = &mut self.engine;
         let carrying = match scope {
             Scope::Thing(t) => engine.carrying(&t).map(|x| x.into_iter().collect()).map_err(Into::into),
-            Scope::All | Scope::Deliveries => Ok(Vec::new()),
+            Scope::All | Scope::Deliveries | Scope::Delivery { .. } => Ok(Vec::new()),
         };
         // by the rosters, not by who has S open: a sync ID just joined is open at no peer yet;
         // a failed read keeps the wait waiting
         let w = self.status.wait(&net, scope, |_| carrying, |s| engine.roster_holders(s).map_or(true, |r| r.any()));
-        // a delivery no other node may take holds nothing up, as a sync ID no other node may hold
-        let mut owes = || engine.deliveries().and_then(|d| d.iter().try_fold(false, |any, (_, h)| Ok(any || engine.delivery_awaited(h)?))).unwrap_or(true);
+        // a delivery no other node may take holds nothing up, as a sync ID no other node may hold;
+        // a failed read keeps the wait waiting
+        let mut owes = || {
+            let Ok(d) = engine.deliveries() else { return true };
+            d.iter().any(|(c, h)| {
+                let ours = match scope {
+                    Scope::Delivery { thing, to } => *h == to && engine.delivery_things(c, h).contains(&thing),
+                    _ => true,
+                };
+                ours && engine.delivery_awaited(h).unwrap_or(true)
+            })
+        };
         match (w, scope) {
-            (Waiting::Done, Scope::All | Scope::Deliveries) if owes() => Waiting::Pending,
+            (Waiting::Done, Scope::All | Scope::Deliveries | Scope::Delivery { .. }) if owes() => Waiting::Pending,
             (w, _) => w,
         }
     }
