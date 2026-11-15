@@ -3016,11 +3016,14 @@ fn sourced_world(n: usize) -> (LocalPeer, Tid, Tid, Tid, Tid) {
 // spec/sync-set.md §5 (Sourced away; Moving home): a group sourced at another node leaves the
 // sync set's closure with what it reaches only through it (its items, a subgroup, their sync
 // IDs); a thing also listed elsewhere stays; moving home brings it back, and it has caught up
-// once each read sync ID carrying it had a complete pass. The closure itself keeps it.
+// once each read sync ID carrying it had a complete pass. The closure itself keeps it. A client
+// actor reads nothing of it while sourced away or moving home (notes/client-port.md Catching up).
 #[test]
 fn a_sourced_group_leaves_the_sync_set_spec_sync_set_5() {
     let (mut lp, d, g, h, both) = sourced_world(3);
+    let a = lp.peers[0].engine.account().unwrap().unwrap().0;
     let e = &mut lp.peers[0].engine;
+    assert!(e.readable_by(&a, &h), "read here while nothing is sourced");
     let (sh, sb) = (e.home_sync_id(&h).unwrap().unwrap(), e.home_sync_id(&both).unwrap().unwrap());
     let items: Vec<Tid> = e.closure(&g).iter().copied().collect();
     assert!(e.sync_set().unwrap().ids.contains_key(&sh));
@@ -3031,8 +3034,10 @@ fn a_sourced_group_leaves_the_sync_set_spec_sync_set_5() {
     let set = e.sync_set().unwrap();
     assert!(!set.ids.contains_key(&sh) && set.ids.contains_key(&sb));
     assert!(e.closure(&d).contains(&h), "still in the closure: nothing unsynced");
+    assert!(!e.readable_by(&a, &h), "sourced away: a client reads nothing of it here");
     e.set_sourced([g].into(), &[g].into());
     assert!(e.sync_set().unwrap().ids.contains_key(&sh), "moving home: synced again");
+    assert!(!e.readable_by(&a, &h), "moving home: a client reads nothing of it until it caught up");
     let began = e.begin_pass();
     for s in e.sync_set().unwrap().ids.keys().copied().filter(|s| *s != sh).collect::<Vec<_>>() {
         e.note_complete_pass(&s, began).unwrap();
@@ -3042,6 +3047,7 @@ fn a_sourced_group_leaves_the_sync_set_spec_sync_set_5() {
     assert!(e.caught_up(&g).unwrap());
     e.set_sourced(BTreeSet::new(), &BTreeSet::new());
     assert!(e.sync_things().unwrap().contains(&h));
+    assert!(e.readable_by(&a, &h), "home: read here again");
 }
 
 /// The group index work (`osis_base::costs`, "group index" rows) of `f`.

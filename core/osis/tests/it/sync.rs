@@ -944,3 +944,25 @@ fn moving_home_with_the_source_gone_answers_spec_sync_set_5() {
     assert!(b.group_sources().is_empty());
     assert_eq!(b.at(g, v()).get().unwrap(), Some(Value::Int(1)));
 }
+
+// spec/sync-set.md §5 (Moving home): a move home dropped before it answers leaves g read at a
+// (syncing here too); moving it home again answers once caught up, as a restart's retry would.
+#[test]
+fn a_dropped_move_home_leaves_it_at_its_node_until_moved_again_spec_sync_set_5() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let (a, b, g, _) = sourced_at_a(&net, &c);
+    let mut w = a.write();
+    w.at(g, v()).set(&Value::Int(2)).unwrap();
+    w.commit().unwrap();
+    net.run();
+    {
+        let mut home = std::pin::pin!(b.group_source(g, osis::GroupSource::Local));
+        assert!(now(home.as_mut()).is_pending(), "not caught up yet");
+    }
+    net.run();
+    assert!(b.group_sources().contains_key(&g), "dropped: still read at a");
+    drive(&net, b.group_source(g, osis::GroupSource::Local)).unwrap();
+    assert!(b.group_sources().is_empty());
+    assert_eq!(b.at(g, v()).get().unwrap(), Some(Value::Int(2)));
+}
