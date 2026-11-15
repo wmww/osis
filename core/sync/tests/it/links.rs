@@ -319,3 +319,34 @@ fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
     w.advance(120_000);
     assert!(!w.engine(1).roster(&link.k).contains_key(&a1), "node 1's account still holds K");
 }
+
+// spec/sync-judgement.md §2 (required set: certificates the same at every node),
+// spec/permissions.md §7 (Redeem), §4 (Nothing of a node goes under another sync ID than its
+// account's D's): a reader through a link key alone logs nothing of its own under K. Node 2
+// joins K by node 0's read link, then node 1 redeems it: L's grant to node 1's account is
+// deposited and promoted. It verifies at node 2, which never held node 1's node card.
+#[test]
+fn a_link_keys_promoted_grant_verifies_where_its_node_card_never_went_spec_sync_judgement_2() {
+    let mut w = World::new(0);
+    for _ in 0..3 {
+        w.add_node();
+    }
+    w.run();
+    let p0 = w.node(0).profile.unwrap();
+    let link = w.make_link(0, p0, Role::Read);
+    w.redeem(2, &link);
+    w.run();
+    assert_eq!(w.redeem(2, &link), Waiting::Done, "node 2 joined K");
+    w.redeem(1, &link);
+    w.run();
+    assert_eq!(w.redeem(1, &link), Waiting::Done, "node 1 joined K");
+    let a1 = w.node(1).account.unwrap();
+    let n1 = w.engine(1).tid();
+    for i in [0, 2] {
+        assert!(w.engine(i).roster(&link.k).contains_key(&a1), "node 1's join verified at node {i}");
+    }
+    for ak in ["node.0", "reach.0"] {
+        let k = (n1, osis_base::Ak::new(ak).unwrap());
+        assert_eq!(w.engine(2).core.held_on(&k).count(), 0, "node 1's {ak} never reached node 2");
+    }
+}

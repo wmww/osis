@@ -153,7 +153,6 @@ osis-sync::status_of  deferred: the osis API reads one sync ID's status (sync re
 osis-sync::set_record_budget  test hook: a small RECORD_BUDGET to drive eviction
 osis-engine::destructions  facade: osis-sync's modules call it (notes/sync-facade.md)
 osis-engine::logged_with  facade: osis-sync's modules call it (notes/sync-facade.md)
-osis-engine::own_certificates  facade: osis-sync's modules call it (notes/sync-facade.md)
 osis-engine::sync_record_feed  facade: osis-sync's modules call it (notes/sync-facade.md)
 osis-engine::carry_deliveries  test hook: engine integration tests carry deliveries and passes as sync would
 osis-engine::inbox_blobs  test hook: engine integration tests carry deliveries and passes as sync would

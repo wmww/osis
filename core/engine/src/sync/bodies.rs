@@ -300,13 +300,6 @@ impl Engine {
         Ok(Arc::new(out))
     }
 
-    /// This node's own certificates under `s` (spec/permissions.md §4): its account's and its
-    /// own cards and the chain certificates for `s`'s thing, the commits with the parts to log.
-    pub(crate) fn own_certificates_now(&mut self, s: &SyncId) -> Result<Arc<crate::labeling::Certs>> {
-        let Some(t) = self.read_thing(s)? else { return Ok(Arc::default()) };
-        Ok(Arc::new(self.certificates(&t)))
-    }
-
     /// Blob `b` as this node opened or sealed it.
     pub(crate) fn blob_of_now(&self, b: &BlobId) -> Option<Arc<BlobOf>> {
         self.core.ix.blob_parts.get(b).cloned()

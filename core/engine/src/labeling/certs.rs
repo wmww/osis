@@ -29,9 +29,24 @@ pub struct Certs {
     pub headers: BTreeSet<CommitId>,
     pub mintings: BTreeMap<CommitId, BTreeSet<Tid>>,
     pub records: BTreeSet<Tid>,
+    /// `Some` in a `sync::certified` piece (`Certs::deferring`): the accounts whose record, card
+    /// and signing chain go too, not added here, each account's chain being one piece of its own
+    /// (`account_piece`), so a rotation re-derives that piece alone. `None` in every other value:
+    /// each account's chain is in it (`cert_parts`).
+    pub accounts: Option<BTreeSet<Tid>>,
 }
 
 impl Certs {
+    /// An empty value naming accounts rather than holding their chains (`accounts`).
+    pub(crate) fn deferring() -> Certs {
+        Certs { accounts: Some(BTreeSet::new()), ..Certs::default() }
+    }
+
+    /// Whether `t` is an account this value names rather than holds (`accounts`).
+    fn defers(&self, t: &Tid) -> bool {
+        self.accounts.as_ref().is_some_and(|a| a.contains(t))
+    }
+
     fn add(&mut self, c: CommitId, parts: Parts) {
         if !parts.is_empty() {
             self.commits.entry(c).or_default().extend(parts);
@@ -39,7 +54,7 @@ impl Certs {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.commits.is_empty() && self.headers.is_empty() && self.mintings.is_empty() && self.records.is_empty()
+        self.commits.is_empty() && self.headers.is_empty() && self.mintings.is_empty() && self.records.is_empty() && self.accounts.as_ref().is_none_or(BTreeSet::is_empty)
     }
 
     /// Adds `other`'s commits, headers, mintings and records.
@@ -52,6 +67,11 @@ impl Certs {
             self.mintings.entry(c).or_default().extend(ts);
         }
         self.records.extend(other.records);
+        match (&mut self.accounts, other.accounts) {
+            (Some(a), Some(b)) => a.extend(b),
+            (a @ None, Some(b)) => *a = Some(b),
+            _ => {}
+        }
     }
 }
 
@@ -142,10 +162,11 @@ impl Engine {
 
     /// This node's chain certificates for `g`, its node card and the cards of the key actors
     /// holding `g` (spec/permissions.md §4): the commits with the parts to carry, and the records.
-    /// What this node would log of its own; never what S's required set holds (`own_piece`).
+    /// What pairing hands a new node of the account; S's required set is `own_piece`.
     pub fn certificates(&mut self, g: &Tid) -> Certs {
         let Some(me) = self.core.me() else { return Certs::default() };
-        let mut out = self.shared_certificates(g);
+        let mut out = Certs::default();
+        self.shared_certificates(g, &mut out);
         // the account's card (the author of every commit but the node's own) and, under D's
         // home alone, the node's (nothing of a node goes under another sync ID)
         let under_d = self.core.account_devices().is_some_and(|(_, d)| d == *g);
@@ -175,9 +196,8 @@ impl Engine {
     /// What any node logs under `g` beside chains (spec/permissions.md §4): the records up `g`'s
     /// record chain, the destroyed things its closure needs with their frozen permission history,
     /// and the cards of the key actors holding `g` that are no node. Nothing here depends on which
-    /// node asks.
-    fn shared_certificates(&mut self, g: &Tid) -> Certs {
-        let mut out = Certs::default();
+    /// node asks. Added to `out`.
+    fn shared_certificates(&mut self, g: &Tid, out: &mut Certs) {
         // the record chain's records
         out.records.extend(self.core.record_chain(g).filter_map(|s| s.thing()));
         // the destroyed things the label's closure needs told destroyed: on an authority path into it,
@@ -189,25 +209,24 @@ impl Engine {
             out.records.insert(e);
             out.records.extend(self.core.record_chain(&e).filter_map(|s| s.thing()));
             let certs = self.history_certificates(&e);
-            self.cert_parts(&certs, &mut out);
+            self.cert_parts(&certs, out);
         }
-        // the cards of the key actors holding `g` that are no node (a link key: its writes
-        // under the label verify by its card, which no chain of this node's carries; a node
-        // places its own)
-        let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_key_actor(k)).collect();
+        // the cards of the key actors holding `g` that are neither node nor account (a link key:
+        // its writes under the label verify by its card, which no chain carries; a node places
+        // its own under D's home alone; an account's goes with its signing chain)
+        let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| self.core.is_key_actor(k) && !self.core.is_account(k)).collect();
         for k in keys.into_iter().filter(|k| self.latest_on(k, "node.0").is_none()) {
             out.records.insert(k);
             if let Some(c) = self.latest_on(&k, "keys.0") {
                 out.add(c, self.parts_of(&c, &BTreeSet::from([k]), &["keys.0"]));
             }
         }
-        out
     }
 
     /// Every thing whose record `out` carries gets its mintings (and a destroyed one's
-    /// destruction); records not held leave.
+    /// destruction), but an account it defers (whose piece carries them); records not held leave.
     fn close_records(&mut self, out: &mut Certs) {
-        let records: Vec<Tid> = out.records.iter().copied().collect();
+        let records: Vec<Tid> = out.records.iter().copied().filter(|t| !out.defers(t)).collect();
         for t in records {
             self.minting_evidence(&t, out);
         }
@@ -248,6 +267,7 @@ impl Engine {
         for (a, x) in self.certificate_authors(g) {
             out.extend(self.chain_piece(&a, &x));
         }
+        self.expand_accounts(&mut out);
         for a in self.inbox_actors_of(g) {
             let things: Vec<Tid> = self.core.ix.held.named_on(&a).filter(|t| **t != a).copied().collect();
             for t in things {
@@ -265,8 +285,10 @@ impl Engine {
     /// S's required set, else two honest nodes would delete each other's copies (spec/sync-
     /// judgement.md §2). Reads role commits, records and cards, never content.
     pub(crate) fn own_piece(&mut self, g: &Tid) -> Certs {
-        let under_d = self.core.account_devices().is_some_and(|(_, d)| d == *g);
-        let mut out = self.shared_certificates(g);
+        // any account's devices actor, whichever node judges it
+        let under_d = self.core.devices_of(g).is_some();
+        let mut out = Certs::deferring();
+        self.shared_certificates(g, &mut out);
         let found = self.core.timelines.certificates_into(g);
         self.cert_parts(&found, &mut out);
         if under_d {
@@ -295,10 +317,29 @@ impl Engine {
     /// chain), the parts and records they name: read from the paths into `x` alone
     /// (`Timelines::certificates`).
     pub(crate) fn chain_piece(&mut self, a: &Tid, x: &Tid) -> Certs {
-        let mut out = Certs::default();
+        let mut out = Certs::deferring();
         let found = self.core.timelines.certificates(a, x);
         self.cert_parts(&found, &mut out);
         out
+    }
+
+    /// Account `p`'s record, card and signing chain (`account_chain`) with its mintings: one
+    /// piece wherever a piece names `p` (`Certs::accounts`), naming no account.
+    pub(crate) fn account_piece(&mut self, p: &Tid) -> Certs {
+        let mut out = Certs::default();
+        self.account_chain(p, &mut out);
+        self.current_keys_into(p, &mut out);
+        self.close_records(&mut out);
+        out
+    }
+
+    /// `out` with each account it names (`Certs::accounts`) brought in whole (`account_piece`).
+    #[cfg(test)]
+    pub(crate) fn expand_accounts(&mut self, out: &mut Certs) {
+        for p in out.accounts.take().unwrap_or_default() {
+            let a = self.account_piece(&p);
+            out.extend(a);
+        }
     }
 
     /// The (author, thing) pairs whose author's chain goes under a sync ID of `g` with the
@@ -620,30 +661,47 @@ impl Engine {
 
     /// The commits, parts and records certificates `certs` name (spec/permissions.md §4), added to
     /// `out`: edge writes projected to their edge deltas on the chain's things, the record of
-    /// each thing and the current `keys.0` of each actor, with the demotions its keysets carry.
+    /// each thing and the current `keys.0` of each actor, with the demotions its keysets carry,
+    /// and each account's on the chain or at the root of a record chain on it (`account_chain`;
+    /// named in `out.accounts` instead where `out` defers them).
     pub(super) fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut Certs) {
         let all: BTreeSet<Tid> = certs.created.iter().copied().collect();
         for c in &certs.commits {
             out.add(*c, self.parts_of(c, &all, &["roles.0"]));
         }
         out.records.extend(certs.created.iter().copied());
-        for t in &certs.keys {
-            for c in self.current_keys(t) {
-                out.add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
-                self.carried_demotions(t, &c, out);
-            }
-        }
         // each account on the chain or at the root of a record chain on it: its record, card and
         // signing chain, every line (spec/permissions.md §4)
         let accounts: BTreeSet<Tid> = certs.created.iter().flat_map(|t| std::iter::once(*t).chain(self.core.record_chain(t).filter_map(|s| match s {
             ChainStep::Key(y) => Some(y),
             _ => None,
         }))).filter(|t| self.core.is_account(t)).collect();
-        for p in &accounts {
-            self.account_chain(p, out);
+        match &mut out.accounts {
+            Some(named) => named.extend(accounts),
+            None => {
+                for p in &accounts {
+                    self.account_chain(p, out);
+                }
+            }
+        }
+        for t in &certs.keys {
+            if !out.defers(t) {
+                self.current_keys_into(t, out);
+            }
         }
         for t in &certs.created {
-            self.minting_evidence(t, out);
+            if !out.defers(t) {
+                self.minting_evidence(t, out);
+            }
+        }
+    }
+
+    /// Actor `t`'s current `keys.0` commits projected to `keys.0`, with the demotions its keysets
+    /// carry (spec/permissions.md §4), added to `out`.
+    fn current_keys_into(&mut self, t: &Tid, out: &mut Certs) {
+        for c in self.current_keys(t) {
+            out.add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
+            self.carried_demotions(t, &c, out);
         }
     }
 

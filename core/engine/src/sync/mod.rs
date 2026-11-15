@@ -581,11 +581,6 @@ impl Engine {
         self.seal_lists_now(s, r, things, rng)
     }
 
-    /// This node's own certificates under `s` (spec/permissions.md §4), to log there.
-    pub fn own_certificates(&mut self, s: &SyncId) -> Result<Arc<Certs>> {
-        self.own_certificates_now(s)
-    }
-
     /// A held blob as opened or sealed here: its commit, the parts opened, the sections not
     /// opened (by digest), and whether it is a per-sync-ID copy.
     pub fn blob_of(&mut self, b: &BlobId) -> Result<Option<Arc<BlobOf>>> {

@@ -51,7 +51,14 @@ pub(crate) enum Piece {
     /// Actor `a`'s grant copy for `x` (`Engine::kept_grant_copy`), under each read thing owning `a`'s
     /// inbox.
     Grant(Tid, Tid),
+    /// Account `p`'s signing chain (`Engine::account_piece`), under each read thing one of whose
+    /// pieces names `p` (`Certs::accounts`): a rotation re-derives this piece alone, not every
+    /// piece naming the account.
+    Account(Tid),
 }
+
+/// `Followers::pieces`.
+type Pieces = Effects<Piece, Option<Arc<Certs>>>;
 
 /// What a thing with authors gives (`Followers::authored`): its authors that are no node, and the
 /// read things whose closure holds it and whose actor reads it.
@@ -73,7 +80,7 @@ struct Followers {
     authored: Effects<Tid, Arc<Authored>>,
     /// Per piece placed somewhere, its certificates; `None` for a grant copy of a pair no longer
     /// named (the piece goes).
-    pieces: Effects<Piece, Option<Arc<Certs>>>,
+    pieces: Pieces,
     /// New things with authors, new (holder, thing) pairs; `None` until the first follow.
     feeds: Option<Feeds>,
 }
@@ -122,6 +129,9 @@ pub(crate) struct Certified {
     named: BTreeMap<(CommitId, Tid), BTreeMap<Piece, Named>>,
     /// Per read thing, each record its pieces name, with how many name it.
     record_counts: BTreeMap<Tid, BTreeMap<Tid, usize>>,
+    /// Per (read thing, account), how many pieces under the thing name the account
+    /// (`Certs::accounts`): its `Piece::Account` goes under the thing while any does.
+    account_counts: BTreeMap<(Tid, Tid), usize>,
     /// Per (commit, read thing) whose certificates name it, what they name (the union of the
     /// thing's pieces'), read per pair.
     of: Stamped<(CommitId, Tid), Named>,
@@ -134,44 +144,63 @@ pub(crate) struct Certified {
 }
 
 impl Certified {
-    /// Places piece `p` under `t`: whether it is newly followed.
-    fn place(&mut self, p: Piece, t: Tid) -> bool {
-        let fresh = !self.placed.contains_key(&p);
+    /// Places piece `p` under `t`, following it if it is new.
+    fn place(&mut self, p: Piece, t: Tid, pieces: &mut Pieces) {
+        if !self.placed.contains_key(&p) {
+            pieces.want(p);
+        }
         let placed = self.placed.entry(p).or_default();
         if placed.under.insert(t) {
             let certs = placed.certs.clone();
-            self.apply(t, p, &Certs::default(), &certs);
+            self.apply(t, p, &Certs::default(), &certs, pieces);
         }
-        fresh
     }
 
-    /// Takes piece `p` from under `t`: whether it is placed nowhere now (to unfollow).
-    fn unplace(&mut self, p: Piece, t: Tid) -> bool {
-        let Some(placed) = self.placed.get_mut(&p) else { return false };
+    /// Takes piece `p` from under `t`, unfollowing it once it is placed nowhere.
+    fn unplace(&mut self, p: Piece, t: Tid, pieces: &mut Pieces) {
+        let Some(placed) = self.placed.get_mut(&p) else { return };
         if placed.under.remove(&t) {
             let certs = placed.certs.clone();
-            self.apply(t, p, &certs, &Certs::default());
+            self.apply(t, p, &certs, &Certs::default(), pieces);
         }
-        let gone = self.placed.get(&p).is_some_and(|x| x.under.is_empty());
-        if gone {
+        if self.placed.get(&p).is_some_and(|x| x.under.is_empty()) {
             self.placed.remove(&p);
+            pieces.unwant(&p);
         }
-        gone
     }
 
     /// Piece `p`'s certificates are `now`.
-    fn reset(&mut self, p: Piece, now: Arc<Certs>) {
+    fn reset(&mut self, p: Piece, now: Arc<Certs>, pieces: &mut Pieces) {
         let Some(placed) = self.placed.get_mut(&p) else { return };
         let was = std::mem::replace(&mut placed.certs, now.clone());
         let under: Vec<Tid> = placed.under.iter().copied().collect();
         for t in under {
-            self.apply(t, p, &was, &now);
+            self.apply(t, p, &was, &now, pieces);
         }
     }
 
     /// Piece `p` under `t` moved from `was` to `now`: the rows of the commits and the records
-    /// either names.
-    fn apply(&mut self, t: Tid, p: Piece, was: &Certs, now: &Certs) {
+    /// either names, and the account pieces under `t` (an account piece names no account).
+    fn apply(&mut self, t: Tid, p: Piece, was: &Certs, now: &Certs, pieces: &mut Pieces) {
+        let none = BTreeSet::new();
+        let (had, has) = (was.accounts.as_ref().unwrap_or(&none), now.accounts.as_ref().unwrap_or(&none));
+        for a in had.difference(has) {
+            let k = (t, *a);
+            let n = self.account_counts.get(&k).copied().unwrap_or_default().saturating_sub(1);
+            if n == 0 {
+                self.account_counts.remove(&k);
+                self.unplace(Piece::Account(*a), t, pieces);
+            } else {
+                self.account_counts.insert(k, n);
+            }
+        }
+        for a in has.difference(had) {
+            let n = self.account_counts.entry((t, *a)).or_default();
+            *n += 1;
+            if *n == 1 {
+                self.place(Piece::Account(*a), t, pieces);
+            }
+        }
         let commits: BTreeSet<&CommitId> = was.commits.keys().chain(&was.headers).chain(was.mintings.keys()).chain(now.commits.keys()).chain(&now.headers).chain(now.mintings.keys()).collect();
         for c in commits {
             let n = Named::of(now, c);
@@ -201,7 +230,7 @@ impl Certified {
             }
             self.wrote = true;
             if was.is_some() != union.is_some() {
-                    let mut naming = self.naming.remove(c).unwrap_or_default();
+                let mut naming = self.naming.remove(c).unwrap_or_default();
                 let set = Arc::make_mut(&mut naming);
                 match union.is_some() {
                     true => set.insert(t),
@@ -277,6 +306,7 @@ impl Engine {
             Piece::Chain(a, x) => self.chain_piece(a, x),
             Piece::Grant(a, x) if !self.core.ix.held.is_named(a, x) => return None,
             Piece::Grant(a, x) => self.kept_grant_copy(a, x),
+            Piece::Account(p) => self.account_piece(p),
         }))
     }
 
@@ -311,16 +341,12 @@ impl Engine {
             let was = was.unwrap_or_default();
             for t in now.difference(&was) {
                 self.core.certified.read.insert(*t);
-                if self.core.certified.place(Piece::Own(*t), *t) {
-                    f.pieces.want(Piece::Own(*t));
-                }
+                self.core.certified.place(Piece::Own(*t), *t, &mut f.pieces);
                 f.inboxes.want(*t);
             }
             for t in was.difference(&now) {
                 self.core.certified.read.remove(t);
-                if self.core.certified.unplace(Piece::Own(*t), *t) {
-                    f.pieces.unwant(&Piece::Own(*t));
-                }
+                self.core.certified.unplace(Piece::Own(*t), *t, &mut f.pieces);
                 f.inboxes.unwant(t);
                 let had = self.core.certified.inboxes_of.remove(t).unwrap_or_default();
                 self.set_inboxes(f, t, &had, &BTreeSet::new());
@@ -357,24 +383,24 @@ impl Engine {
             let pairs = |a: &Authored| -> BTreeSet<(Tid, Tid)> { a.authors.iter().flat_map(|au| a.under.iter().map(move |t| (*au, *t))).collect() };
             let (old, new) = (pairs(&had), pairs(&now));
             for (a, t) in old.difference(&new) {
-                if self.core.certified.unplace(Piece::Chain(*a, x), *t) {
-                    f.pieces.unwant(&Piece::Chain(*a, x));
-                }
+                self.core.certified.unplace(Piece::Chain(*a, x), *t, &mut f.pieces);
             }
             for (a, t) in new.difference(&old) {
-                if self.core.certified.place(Piece::Chain(*a, x), *t) {
-                    f.pieces.want(Piece::Chain(*a, x));
-                }
+                self.core.certified.place(Piece::Chain(*a, x), *t, &mut f.pieces);
             }
         }
-        for p in f.pieces.due() {
-            osis_base::costs::count("sync: certificate pieces derived", 1);
-            let Some((_, now)) = f.pieces.settle(&p, || self.piece(&p)) else { continue };
-            match (p, now) {
-                (_, Some(now)) => self.core.certified.reset(p, now),
-                // a grant copy of a pair no longer named: gone until the feed names it again
-                (Piece::Grant(a, x), None) => self.drop_grant(f, a, x),
-                (_, None) => {}
+        // a piece settling may place account pieces (`Certs::accounts`): a second round settles
+        // them (an account piece names no account)
+        for _ in 0..2 {
+            for p in f.pieces.due() {
+                osis_base::costs::count("sync: certificate pieces derived", 1);
+                let Some((_, now)) = f.pieces.settle(&p, || self.piece(&p)) else { continue };
+                match (p, now) {
+                    (_, Some(now)) => self.core.certified.reset(p, now, &mut f.pieces),
+                    // a grant copy of a pair no longer named: gone until the feed names it again
+                    (Piece::Grant(a, x), None) => self.drop_grant(f, a, x),
+                    (_, None) => {}
+                }
             }
         }
         Ok(self.core.certified.wrote)
@@ -391,9 +417,7 @@ impl Engine {
                 self.core.certified.inboxes.remove(a);
             }
             for x in on {
-                if self.core.certified.unplace(Piece::Grant(*a, x), *t) {
-                    f.pieces.unwant(&Piece::Grant(*a, x));
-                }
+                self.core.certified.unplace(Piece::Grant(*a, x), *t, &mut f.pieces);
             }
         }
         for a in now.difference(had) {
@@ -406,9 +430,7 @@ impl Engine {
             ib.owners.insert(*t);
             let on: Vec<Tid> = ib.on.iter().copied().collect();
             for x in on {
-                if self.core.certified.place(Piece::Grant(*a, x), *t) {
-                    f.pieces.want(Piece::Grant(*a, x));
-                }
+                self.core.certified.place(Piece::Grant(*a, x), *t, &mut f.pieces);
             }
         }
     }
@@ -419,9 +441,7 @@ impl Engine {
         ib.on.insert(x);
         let owners: Vec<Tid> = ib.owners.iter().copied().collect();
         for t in owners {
-            if self.core.certified.place(Piece::Grant(a, x), t) {
-                f.pieces.want(Piece::Grant(a, x));
-            }
+            self.core.certified.place(Piece::Grant(a, x), t, &mut f.pieces);
         }
     }
 
@@ -430,9 +450,9 @@ impl Engine {
             ib.on.remove(&x);
             ib.owners.iter().copied().collect()
         }).unwrap_or_default();
-        self.core.certified.reset(Piece::Grant(a, x), Arc::default());
+        self.core.certified.reset(Piece::Grant(a, x), Arc::default(), &mut f.pieces);
         for t in owners {
-            self.core.certified.unplace(Piece::Grant(a, x), t);
+            self.core.certified.unplace(Piece::Grant(a, x), t, &mut f.pieces);
         }
         f.pieces.unwant(&Piece::Grant(a, x));
     }
@@ -756,27 +776,34 @@ mod tests {
     }
 
     // spec/sync-judgement.md §2 (required set: certificates the same at every node), counted at n
-    // and 10n lines of a writer's signing chain: after another account's rotation, and after a
-    // plain write by it, the reader derives the same number of pieces at both sizes.
+    // and 10n lines of a writer's signing chain and at m and 10m things it wrote on: after its
+    // rotation, and after a plain write by it, the reader derives the same number of pieces at
+    // every size (the chain is one piece, `Piece::Account`, not part of each piece naming it).
     #[test]
     fn another_accounts_rotation_derives_pieces_in_proportion_to_change_spec_sync_judgement_2() {
-        let derived = |n: usize| -> (u64, u64) {
+        let derived = |n: usize, m: usize| -> (u64, u64) {
             let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
             let a0 = lp.peers[0].engine.create_account().unwrap().0;
             let a1 = lp.peers[1].engine.create_account().unwrap().0;
             lp.sync_all().unwrap();
             let ak = Ak::new("x:a.0").unwrap();
             let e = &mut lp.peers[0].engine;
-            let mut m = Mutation::new();
-            let t = e.new_thing(&mut m, a0.account);
-            m.set(t, &ak, &Value::Int(0)).unwrap();
-            m.set(a0.devices, &ct::GROUP, &ct::Group { items: [t].into(), ..Default::default() }).unwrap();
-            e.commit(m).unwrap();
-            e.grant(&t, &a1.account, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
+            let mut m_ = Mutation::new();
+            let ts: Vec<Tid> = (0..m).map(|_| e.new_thing(&mut m_, a0.account)).collect();
+            for t in &ts {
+                m_.set(*t, &ak, &Value::Int(0)).unwrap();
+            }
+            m_.set(a0.devices, &ct::GROUP, &ct::Group { items: ts.iter().copied().collect(), ..Default::default() }).unwrap();
+            e.commit(m_).unwrap();
+            for t in &ts {
+                e.grant(t, &a1.account, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
+            }
             lp.sync_all().unwrap();
-            let write = |lp: &mut LocalPeer, v: i64| {
+            let write = |lp: &mut LocalPeer, on: &[Tid], v: i64| {
                 let mut m = Mutation::new();
-                m.set(t, &ak, &Value::Int(v)).unwrap();
+                for t in on {
+                    m.set(*t, &ak, &Value::Int(v)).unwrap();
+                }
                 lp.peers[1].commit(m).unwrap();
                 lp.sync_all().unwrap();
             };
@@ -784,7 +811,7 @@ mod tests {
                 lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, a1.account, &[], &mut crate::flows::Done::default())).unwrap().unwrap();
                 lp.sync_all().unwrap();
             };
-            write(&mut lp, 1);
+            write(&mut lp, &ts, 1);
             for _ in 0..n {
                 rotate(&mut lp);
             }
@@ -794,14 +821,15 @@ mod tests {
             rotate(&mut lp);
             lp.peers[0].engine.follow_certificates().unwrap();
             let rotated = pieces();
-            write(&mut lp, 2);
+            write(&mut lp, &ts[..1], 2);
             osis_base::costs::take();
             lp.peers[0].engine.follow_certificates().unwrap();
             (rotated, pieces())
         };
-        let (small, big) = (derived(2), derived(20));
-        assert!(small.0 > 0, "the rotation re-derives the pieces naming the account");
-        assert_eq!(small, big, "pieces derived (after the rotation, after the write) at n and 10n lines");
+        let small = derived(2, 1);
+        assert!(small.0 > 0, "the rotation re-derives the account's piece");
+        assert_eq!(small, derived(20, 1), "pieces derived (after the rotation, after the write) at n and 10n lines");
+        assert_eq!(small, derived(2, 10), "pieces derived (after the rotation, after the write) at m and 10m things written on");
     }
 
     // spec/permissions.md §4, spec/sync-judgement.md §1 (List blobs), as above: random histories
