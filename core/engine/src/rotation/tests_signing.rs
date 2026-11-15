@@ -644,11 +644,16 @@ fn a_removal_named_by_a_removed_node_is_named_again_spec_permissions_3() {
 // spec/permissions.md §5.4 (the removals a rotation carries: those its header names, by its minter
 // signed at the epoch it rotates), §5.5 (a removal no held rotation it does not count carries is
 // named again). As above, but before N2 asks what is due, removed N1, holding r1's keys, forks at
-// r1 sealed as a key actor it makes up, its header naming L's removal: that fork carries nothing
-// (neither its minter nor its epoch is the removal's), so N2's rotation answering it still names
+// r1 sealed as a key actor it makes up (or as itself), its header naming L's removal: that fork
+// carries nothing (its minter or its epoch is not the removal's), so N2's rotation answering it still names
 // L's removal
 #[test]
 fn a_header_naming_anothers_removal_carries_none_spec_permissions_5_4() {
+    header_naming_anothers_removal(false);
+    header_naming_anothers_removal(true);
+}
+
+fn header_naming_anothers_removal(sealed_as_n1: bool) {
     use osis_crypto::{AccountEpochKeys, Secret32};
     let (mut lp, a, _) = world(3, 3);
     let r1 = remove(&mut lp, 0, a.devices, 1);
@@ -663,7 +668,13 @@ fn a_header_naming_anothers_removal_carries_none_spec_permissions_5_4() {
         let at_keys = AccountEpochKeys::from_seed(e.core.accounts.get(&a.account).unwrap().keys.get(&vk).unwrap().seed());
         let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([71; 32]));
         let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![at], names: Vec::new(), takes: Vec::new(), removals: vec![rem], list_root: [0; 32] };
-        super::tests_account::rotation_at(rec, (at, &at_keys), &[], &next, header, osis_base::Ts::make(e.now(), 0).unwrap())
+        let made_up = super::tests_account::rotation_at(rec, (at, &at_keys), &[], &next, header, osis_base::Ts::make(e.now(), 0).unwrap());
+        // and the same header sealed as N1 itself: its minter is the removal's, its epoch is not
+        let mut b = osis_commit::CommitBlob::decode(&made_up).unwrap();
+        let id = b.header.id();
+        let inner = osis_crypto::seal_inner(&at_keys.inner, &id.0, &e.core.id.tid(), &e.core.id.keys().signing);
+        b.sigs = osis_commit::Sigs::signed(&id, &at_keys.signing, Some(inner), Vec::new());
+        if sealed_as_n1 { b.encode() } else { made_up }
     };
     let f = give(&mut lp, &fb, &[2]);
     let again = lp.peers[2].engine.signing_due().unwrap();
@@ -1419,22 +1430,21 @@ fn a_rotation_undoing_an_answer_is_answered_spec_permissions_5_5() {
 }
 
 // spec/permissions.md §5.4 (Following, at a node of P: the removals a rotation carries are those
-// its header names). X rotates (x0) before A removes it; T holds x0, then the removal, and takes
-// the removal. X, keeping the first epoch's keys, then writes a removal of B on D signed at the
-// first epoch, where x0 was signed: x0 names no removal, so it carries none, and T keeps A's
-// removal (were x0 to carry it, x0 would be a revocation held before A's, and T would switch)
+// its header names). X rotates (x0) before A removes it. X, keeping the first epoch's keys, writes
+// a removal of B on D signed at the first epoch, where x0 was signed: x0 names no removal, so it
+// carries none, and T takes A's removal whether it holds x0, then the removal, then A's removal,
+// or X's removal first (were x0 to carry it, x0 would be a revocation held before A's, and T would
+// side with X)
 #[test]
 fn a_removal_written_later_turns_no_earlier_rotation_into_a_revocation_spec_permissions_5_4() {
+    removal_written_later(false);
+    removal_written_later(true);
+}
+
+fn removal_written_later(removal_first: bool) {
     let (mut lp, a, _) = world(5, 4);
     let (r, b, x, t) = (0, 1, 2, 3);
     let x0 = lp.peers[x].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
-    send(&mut lp, x, t, &[x0]);
-    lp.advance(5);
-    let done = remove(&mut lp, r, a.devices, x);
-    send(&mut lp, r, t, &done.commits);
-    let ra = done.commits[1];
-    let v = lp.peers[t].engine.core.account_view(&a.account).unwrap();
-    assert!(v.rotation_counts(&ra) && !v.rotation_counts(&x0) && v.taken() == [ra], "heads {:?}", v.heads());
     // X's removal of B, signed at the first epoch with that epoch's keys
     let first = {
         let h = lp.peers[x].engine.core.accounts.get(&a.account).unwrap();
@@ -1452,10 +1462,23 @@ fn a_removal_written_later_turns_no_earlier_rotation_into_a_revocation_spec_perm
     blob.sigs = osis_commit::Sigs::signed(&id, &first.signing, Some(inner), Vec::new());
     pk.id = id;
     pk.bytes = blob.encode();
+    if removal_first {
+        lp.advance(5);
+        lp.deliver(t, &pk).unwrap();
+    }
+    send(&mut lp, x, t, &[x0]);
     lp.advance(5);
-    lp.deliver(t, &pk).unwrap();
+    let done = remove(&mut lp, r, a.devices, x);
+    send(&mut lp, r, t, &done.commits);
+    let ra = done.commits[1];
     let v = lp.peers[t].engine.core.account_view(&a.account).unwrap();
-    assert!(v.rotation_counts(&ra) && !v.rotation_counts(&x0) && v.taken() == [ra], "T keeps A's removal: heads {:?} taken {:?}", v.heads(), v.taken());
+    assert!(v.rotation_counts(&ra) && !v.rotation_counts(&x0) && v.taken() == [ra], "removal first {removal_first}: heads {:?} taken {:?}", v.heads(), v.taken());
+    if !removal_first {
+        lp.advance(5);
+        lp.deliver(t, &pk).unwrap();
+        let v = lp.peers[t].engine.core.account_view(&a.account).unwrap();
+        assert!(v.rotation_counts(&ra) && !v.rotation_counts(&x0) && v.taken() == [ra], "T keeps A's removal: heads {:?} taken {:?}", v.heads(), v.taken());
+    }
 }
 
 // spec/permissions.md §5.4 (Placing: no earlier than the removals a rotation carries came to be
