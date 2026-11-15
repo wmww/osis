@@ -644,9 +644,10 @@ impl Opens {
     }
 
     /// `wait_for` judged by the rosters held here (`Engine::roster_holders`): the one rule every
-    /// duty reads (leave, a self-removal's drop, life's heard out, read's emptying). `own`: this
-    /// account's own nodes count (a self-removal skips them, and a peer proving only this
-    /// account: its node unproven, a dialer lacking this node's `reach.0`, spec/sync-status.md §2).
+    /// duty reads (leave, a self-removal's drop, life's heard out, read's emptying, a pass with no
+    /// source). `own`: this account's own nodes count (a self-removal skips them, and a peer
+    /// proving only this account: its node unproven, a dialer lacking this node's `reach.0`,
+    /// spec/sync-status.md §2).
     pub fn waited(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId, own: bool) -> Result<bool> {
         let roster = engine.roster_holders(s)?;
         let me = if own { None } else { engine.account()?.map(|(p, _)| p) };

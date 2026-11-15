@@ -661,6 +661,8 @@ fn rotate_below(tx: &mut Tx<'_>, who: Tid, a: Tid, keep: Option<Keep<'_>>, mode:
         let x = *x;
         stack.pop();
         finalize_due(tx, who, x, keep, done)?;
+        // lets go of derived epochs a rotation's history carries (`merge::due` judges without)
+        merge::settle(tx, &x)?;
         let mine = rotation_due(tx, &who, &x, mode, &Keep::kept(keep, &x))?;
         if mine.is_empty() {
             continue;

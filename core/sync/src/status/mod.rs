@@ -177,9 +177,9 @@ pub trait Ground: Net {
     /// Whether a source was recorded holding entry `b` of S, durably.
     fn elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<bool>;
     fn set_elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
-    /// Some peer other than this account's own nodes is to be waited for on S (`Opens::waited`,
-    /// own nodes skipped). Stamped.
-    fn waited(&mut self, s: &SyncId) -> Result<bool>;
+    /// Some peer is to be waited for on S (`Opens::waited`); `own`: this account's own nodes
+    /// count (a self-removal skips them). Stamped.
+    fn waited(&mut self, s: &SyncId, own: bool) -> Result<bool>;
     /// Tells the engine sync is done waiting for a self-removal (it drops the secrets).
     fn removal_done(&mut self, c: &CommitId) -> Result<()>;
     /// The sync IDs the engine wants a complete pass of, each with the pass place the pass must
@@ -640,7 +640,7 @@ impl Status {
             };
             let (all, passes, clock, work) = (&self.sources, &self.passes, &self.clock, &mut self.work);
             let Some((_, now)) = self.pass_fx.settle(&s, || match passes.get(&s) {
-                Some(p) => pass_now(g, clock, work, &s, p, all.get(&s).map_or(&NO_SOURCES, |x| &**x)),
+                Some(p) => pass_now(&mut *g, clock, work, &s, p, all.get(&s).map_or(&NO_SOURCES, |x| &**x)),
                 None => PassNow::default(),
             }) else {
                 continue;
@@ -818,7 +818,7 @@ fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl Iterator
 fn removal_done<'a>(g: &mut impl Ground, c: &CommitId, ids: impl Iterator<Item = &'a SyncId>, unheld: &Stamped<SyncId, Arc<BTreeSet<CommitId>>>) -> Result<bool> {
     for s in ids {
         let held = unheld.get(s).is_some_and(|u| !u.contains(c));
-        if !held && g.waited(s)? {
+        if !held && g.waited(s, false)? {
             return Ok(false);
         }
     }
@@ -826,8 +826,10 @@ fn removal_done<'a>(g: &mut impl Ground, c: &CommitId, ids: impl Iterator<Item =
 }
 
 /// A pass of S as its sources stand: every source waited on caught up from a Pull sent since it
-/// began, each recorded peer read at a connection since, or `PASS_WAIT_MS` past.
-fn pass_now(g: &impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: &Pass, sources: &BTreeMap<ConnId, Src>) -> PassNow {
+/// began, each recorded peer read at a connection since, or `PASS_WAIT_MS` past. With no source,
+/// not while some peer is to be waited for on S (`Opens::waited`: a sync ID just joined waits for
+/// its other holders as a leave does).
+fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: &Pass, sources: &BTreeMap<ConnId, Src>) -> PassNow {
     let mut fresh_all = true;
     let mut read = BTreeSet::new();
     for (conn, src) in sources {
@@ -847,7 +849,8 @@ fn pass_now(g: &impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: &Pas
     // its peer judged this node departed)
     let holding = g.records_holding(s).unwrap_or_default();
     let records = p.waits.iter().all(|r| read.contains(r) || !holding.contains(r));
-    PassNow { read, done: timed_out || (fresh_all && records) }
+    let done = timed_out || (fresh_all && records && !(sources.is_empty() && g.waited(s, true).unwrap_or(true)));
+    PassNow { read, done }
 }
 
 fn whole<T: Default + PartialEq>(fx: &mut Effects<(), Arc<T>>, f: impl FnOnce() -> Result<Arc<T>>) -> Result<Option<Arc<T>>> {

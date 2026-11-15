@@ -67,8 +67,11 @@ struct Fake {
     entries: Stamped<(SyncId, CommitId), Vec<BlobId>>,
     first: Stamped<(SyncId, BlobId), Position>,
     elsewhere: StampedSet<(SyncId, BlobId)>,
-    /// Sync IDs some peer other than this account's own nodes shares (opens' `shared`).
+    /// Sync IDs some peer other than this account's own nodes is to be waited for on (opens'
+    /// `waited`).
     shared: StampedSet<SyncId>,
+    /// Sync IDs only this account's own nodes are to be waited for on.
+    own_shared: StampedSet<SyncId>,
     told_held: Vec<CommitId>,
     /// The engine's wants, by pass place; the fake's places are its ms (`begin_pass`).
     wanted: Stamped<(), Arc<BTreeMap<SyncId, u64>>>,
@@ -146,8 +149,8 @@ impl Ground for Fake {
         self.elsewhere.insert((*s, *b));
         Ok(())
     }
-    fn waited(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.shared.contains(s))
+    fn waited(&mut self, s: &SyncId, own: bool) -> Result<bool> {
+        Ok(self.shared.contains(s) || (own && self.own_shared.contains(s)))
     }
     fn removal_done(&mut self, c: &CommitId) -> Result<()> {
         self.told_held.push(*c);
@@ -476,13 +479,40 @@ fn complete_pass_needs_fresh_pulls_and_recorded_peers() {
     assert_eq!(t.st.of(&S, &t.g).unwrap().pass_waits, None);
 }
 
-// spec/sync-status.md §1 (with no source and no such record it ends at once): with neither, a pass ends at once.
+// spec/sync-status.md §1 (complete pass): with no source and no peer to be waited for on S, a pass ends at once.
 #[test]
 fn complete_pass_with_nobody_ends_at_once() {
     let mut t = T::new(&[(S, Holding::Read)]);
     t.at(7);
     want(&mut t, S, 7);
     assert_eq!(t.g.passes, vec![(S, 7)]);
+}
+
+// spec/sync-status.md §1 (complete pass): with no source, a
+// peer to be waited for (an own node counts) holds the pass until it is no more, or a source
+// catches up, or PASS_WAIT_MS.
+#[test]
+fn complete_pass_with_no_source_waits_for_a_peer_to_be_waited_for() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.own_shared.insert(S);
+    t.at(7);
+    want(&mut t, S, 7);
+    assert!(t.g.passes.is_empty(), "an own node to be waited for");
+    t.g.own_shared.remove(&S);
+    t.settle();
+    assert_eq!(t.g.passes, vec![(S, 7)], "none left to wait for");
+    t.g.shared.insert(S);
+    t.at(20);
+    want(&mut t, S, 20);
+    assert!(t.g.passes[1..].is_empty());
+    t.join(S, A, reader(RA, 1));
+    t.caught(A, S, 20);
+    assert_eq!(t.g.passes, vec![(S, 7), (S, 20)], "a source caught up since");
+    t.st.left(S, A, Default::default());
+    t.at(30);
+    want(&mut t, S, 30);
+    t.at(30 + PASS_WAIT_MS);
+    assert_eq!(t.g.passes, vec![(S, 7), (S, 20), (S, 30)], "PASS_WAIT_MS");
 }
 
 // spec/sync-status.md §1 (PASS_WAIT_MS): a recorded peer away holds a pass no longer than

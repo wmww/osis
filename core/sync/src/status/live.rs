@@ -119,8 +119,8 @@ impl Ground for Live<'_, '_> {
     fn set_elsewhere(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         self.cx.store.set_elsewhere(s, b)
     }
-    fn waited(&mut self, s: &SyncId) -> Result<bool> {
-        self.opens.waited(self.cx.engine, self.cx.store, s, false)
+    fn waited(&mut self, s: &SyncId, own: bool) -> Result<bool> {
+        self.opens.waited(self.cx.engine, self.cx.store, s, own)
     }
     fn removal_done(&mut self, c: &CommitId) -> Result<()> {
         Ok(self.cx.engine.removal_done(c)?)
