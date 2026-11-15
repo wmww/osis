@@ -1645,8 +1645,9 @@ fn a_followed_link_stays_across_a_reload_spec_sync_set_2() {
     assert!(e.sync_set().unwrap().ids.contains_key(&link.k_sync_id), "still followed after a reload");
 }
 
-// spec/sync-set.md §2 (a link text's sync ID is nobody's when another followed link names it):
-// two links followed under one sync ID leave it nobody's; letting either go, or following it
+// spec/sync-set.md §2 (A received grant syncs nothing until the account lists its thing: a link's
+// sync ID is in the redeemer's sync set while it redeems the link), spec/sync-inbox.md §6: two
+// links followed under one sync ID leave it nobody's (a link text is untrusted); letting either go, or following it
 // again under its own sync ID, gives it back to the other. Asked between steps, so a stale
 // answer kept from before a step shows.
 #[test]

@@ -1023,9 +1023,9 @@ fn pending_commits_wake_only_for_what_they_await_spec_commits_4() {
     }
 }
 
-// spec/commits.md §4 (a commit pending for its `ts` is examined when the clock reaches it) and §6
-// (expiry): the engine's next timer is the earliest of every kind, a pending `ts` and an expiry
-// either side of it.
+// spec/commits.md §4 (its `ts` is more than `MAX_DRIFT` ahead: pending until the clock reaches
+// it), spec/commits.md §6 (`expires: T`: at T every value-carrying write dies): the engine's next
+// timer is the earliest of every kind, a pending `ts` and an expiry either side of it.
 #[test]
 fn the_next_timer_is_the_earliest_of_every_kind_spec_commits_4() {
     let mut lp = net(3, 0);
