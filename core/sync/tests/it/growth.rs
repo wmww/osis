@@ -118,14 +118,6 @@ fn several_writers_grow_nothing_spec_commits_5() {
     grows_nothing(Gives::Writes, &[0, 2]);
 }
 
-/// Node 0 makes thing 0 and grants node 1's account write and node 2's read (no node keeps it
-/// unread: a store keeps what it holds of an invalid body until its expiry,
-/// issues/invalid-junk-kept.md). Cut off from node 0, node 1 is lowered to read there and writes
-/// `n` values it still believes valid, the first purging its own earlier write (`writer`
-/// retention, so it may as a writer); node 2, cut off from node 0 too, takes them; then nodes 0
-/// and 2 meet, then all: every node judges them invalid. Then a restart of every node and the
-/// tombstone lifetime: the world, the thing, the invalid commits and what each node holds
-/// (`Held`).
 // spec/sync-opens.md §1 (One connection per pair; Twin): the differential's nodes dial each other at
 // once at first contact, yet each pair keeps one connection, so each write crosses each pair on one
 // stream: deliveries per write are the same at n and 10n writes, all on one connection per pair.
@@ -156,6 +148,14 @@ fn each_write_crosses_each_pair_on_one_connection_spec_sync_opens_1() {
     assert!(ends.len() <= 6, "bytes on one connection per pair: {ends:?}");
 }
 
+/// Node 0 makes thing 0 and grants node 1's account write and node 2's read (no node keeps it
+/// unread: a store keeps what it holds of an invalid body until its expiry,
+/// issues/invalid-junk-kept.md). Cut off from node 0, node 1 is lowered to read there and writes
+/// `n` values it still believes valid, the first purging its own earlier write (`writer`
+/// retention, so it may as a writer); node 2, cut off from node 0 too, takes them; then nodes 0
+/// and 2 meet, then all: every node judges them invalid. Then a restart of every node and the
+/// tombstone lifetime: the world, the thing, the invalid commits and what each node holds
+/// (`Held`).
 fn lowered_writes(n: usize) -> (World, Tid, Vec<CommitId>, Vec<Held>) {
     let mut w = world(0, 3);
     w.cap = 200_000;

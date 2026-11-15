@@ -1341,6 +1341,10 @@ impl Opens {
     /// spec/sync-opens.md §1 Twin: the dialer made record `rid` on `conn`; a Twin naming it goes on
     /// each other connection whose record names an actor `rid` names.
     fn send_twins(&mut self, ctx: &mut Ctx, conn: ConnId, rid: RecordId) {
+        // none when the pair rule closed `conn` as it took the record
+        if self.conns.get(&conn).is_none_or(|c| c.rec != Some(rid)) {
+            return;
+        }
         let Some(new) = self.records.get(&rid) else { return };
         let (r, actors) = (new.r, new.named.actors());
         let others: Vec<ConnId> = self.conns.iter().filter(|(o, k)| **o != conn && self.twin_candidate(k, &actors)).map(|(o, _)| *o).collect();

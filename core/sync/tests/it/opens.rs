@@ -1048,11 +1048,12 @@ fn a_reconnect_costs_the_same_at_n_and_10n_spec_sync_opens_3() {
 /// `ACCEPTED | n` and the other way round), until none flows. A side's last messages before it
 /// closed still go; none reach a side that closed its end.
 fn route_all(p: &mut Pair) {
-    route_with(p, |_, m| Some(m));
+    route_with(p, |_, _, m| Some(m));
 }
 
-/// `route_all`, each message passed through `f` (whether a sent it; none: lost).
-fn route_with(p: &mut Pair, mut f: impl FnMut(bool, Msg) -> Option<Msg>) {
+/// `route_all`, each message passed through `f` (whether a sent it, the sender's end of its
+/// connection; none: lost).
+fn route_with(p: &mut Pair, mut f: impl FnMut(bool, osis_sync::types::ConnId, Msg) -> Option<Msg>) {
     use osis_sync::types::ConnId;
     let peer = |c: ConnId| ConnId(c.0 ^ ConnId::ACCEPTED);
     for _ in 0..500 {
@@ -1062,14 +1063,14 @@ fn route_with(p: &mut Pair, mut f: impl FnMut(bool, Msg) -> Option<Msg>) {
         }
         for (c, m) in fa {
             if !p.b.pipe.closed.iter().any(|(x, _)| *x == peer(c))
-                && let Some(m) = f(true, m)
+                && let Some(m) = f(true, c, m)
             {
                 p.b.take(peer(c), incoming(m));
             }
         }
         for (c, m) in fb {
             if !p.a.pipe.closed.iter().any(|(x, _)| *x == peer(c))
-                && let Some(m) = f(false, m)
+                && let Some(m) = f(false, c, m)
             {
                 p.a.take(peer(c), incoming(m));
             }
@@ -1198,13 +1199,57 @@ fn crossed_first_dials_between_accounts_twin_spec_sync_opens_1() {
     }
 }
 
+// spec/sync-opens.md §1 (Twin), §5 Testing (re-marking): a twinned connection's record goes with
+// its members re-marked for the one that stays. Each connection in turn has every Hit garbled
+// until the Twins land (S tested there, refused, `acked_pos` past it: a Hit that opened nothing
+// is not tried again until a re-mark), so S is open on the other alone; whichever stays, S opens
+// on it at both ends.
+#[test]
+fn a_twinned_records_members_are_remarked_on_the_survivor_spec_sync_opens_1() {
+    for garbled in [0, 1] {
+        let (mut p, (ca2, cb2)) = crossed_accounts();
+        let pairs = [(p.ca, p.cb), (ca2, cb2)];
+        let ends = pairs[garbled];
+        let mut held = Vec::new();
+        route_with(&mut p, |from_a, c, m| match m {
+            Msg::Twin { .. } => {
+                held.push((from_a, c, m));
+                None
+            }
+            Msg::Offer { id, mut items } if c == if from_a { ends.0 } else { ends.1 } => {
+                for it in &mut items {
+                    match it {
+                        OfferItem::Hit { hit, .. } | OfferItem::Static { hit, .. } => hit[0] ^= 1,
+                        OfferItem::ByRole { hits, .. } => hits.iter_mut().for_each(|h| h[0] ^= 1),
+                        _ => {}
+                    }
+                }
+                Some(Msg::Offer { id, items })
+            }
+            m => Some(m),
+        });
+        assert!(!held.is_empty(), "a Twin went");
+        let other = pairs[1 - garbled];
+        assert!(!p.a.open(ends.0, &S) && !p.b.open(ends.1, &S) && p.a.open(other.0, &S) && p.b.open(other.1, &S), "S open only where Hits passed");
+        let peer = |c: osis_sync::types::ConnId| osis_sync::types::ConnId(c.0 ^ osis_sync::types::ConnId::ACCEPTED);
+        for (from_a, c, m) in held {
+            if from_a { p.b.take(peer(c), incoming(m)) } else { p.a.take(peer(c), incoming(m)) }
+        }
+        route_all(&mut p);
+        let lost: Vec<_> = p.a.pipe.closed.iter().map(|(c, _)| *c).collect();
+        assert_eq!(lost.len(), 1, "one closed: {lost:?}");
+        let kept = if lost[0] == pairs[0].0 { pairs[1] } else { pairs[0] };
+        assert!(p.a.open(kept.0, &S) && p.b.open(kept.1, &S), "S open on the survivor at both ends (garbled {garbled})");
+    }
+}
+
 // spec/sync-opens.md §1 (Twin): a Twin's sender takes the two connections as twinned only on the
 // answer proving the peer holds the record: a forged Twinned closes nothing at the sender.
 #[test]
 fn a_forged_twinned_twins_nothing_spec_sync_opens_1() {
     let (mut p, _) = crossed_accounts();
     // b's Twins never reach a (a learns only from its own Twin's answer), and b's answers lie
-    route_with(&mut p, |from_a, m| match m {
+    route_with(&mut p, |from_a, _, m| match m {
         Msg::Twin { .. } if !from_a => None,
         Msg::Twinned { id, tag: Some(_) } if !from_a => Some(Msg::Twinned { id, tag: Some([0x55; 32]) }),
         m => Some(m),
@@ -1218,7 +1263,7 @@ fn a_forged_twinned_twins_nothing_spec_sync_opens_1() {
 fn a_twin_naming_no_record_here_twins_nothing_spec_sync_opens_1() {
     let (mut p, (ca2, _)) = crossed_accounts();
     // the Twins lost: two connections of account 2, each on a record of its own
-    route_with(&mut p, |_, m| (!matches!(m, Msg::Twin { .. })).then_some(m));
+    route_with(&mut p, |_, _, m| (!matches!(m, Msg::Twin { .. })).then_some(m));
     p.a.take(ca2, osis_sync::session::Incoming::Request(9, Msg::Twin { id: 9, tag: [0x77; 32] }));
     assert!(p.a.pipe.sent.iter().any(|(c, m)| *c == ca2 && matches!(m, Msg::Twinned { id: 9, tag: None })), "answered with none");
     assert!(p.a.pipe.closed.is_empty() && p.b.pipe.closed.is_empty());
