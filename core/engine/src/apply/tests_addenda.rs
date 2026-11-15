@@ -1114,7 +1114,7 @@ fn own_cover_cost_counts_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §5.1 (Own cover), spec/commits.md §5 (Covered, Purge on replace): only its
+// spec/permissions.md §5.1 (Own cover), spec/commits.md §5 (Covered; Purge on replace): only its
 // writer drops under an own cover, on a purge-on-replace aspect too. Dave covers Bob's edit with
 // his own snapshot and drops its body; Alice forgets the edit under Dave's snapshot, so her
 // removal of Bob names her own cover. Dave keeps his snapshot under it, whether it arrives before

@@ -760,7 +760,7 @@ impl Header {
             Some(m) if all.len() == 17 && m.as_bool() == Some(true) => true,
             Some(_) => return Err(Error::Malformed("own cover marker")),
         };
-        let Ok([_, author, actor, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]) = <[Item; 16]>::try_from(&all[..all.len().min(16)]) else {
+        let Some([_, author, actor, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]) = all.get(..16).and_then(|x| <[Item; 16]>::try_from(x).ok()) else {
             return Err(Error::Malformed("header arity"));
         };
         let mut h = Header {
