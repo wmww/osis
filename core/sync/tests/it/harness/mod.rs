@@ -436,7 +436,7 @@ pub struct World {
     pub seen: Vec<Seen>,
     /// Per step traced: the node, whether the step failed (a restart in place), its sends.
     pub stepped: Vec<(usize, bool, usize)>,
-    /// Checks after every step that every entry waiting for a read secret is parked
+    /// Checks after every script step that every entry waiting for a read secret is parked
     /// (`Node::lost_parks`): parking opens what re-reading every entry would.
     pub parks: bool,
     /// Nodes added from now on record every row and blob their disks are given (`forensic`,
@@ -745,12 +745,24 @@ impl World {
         }
         apply(out, &mut NodeLinks { net: &mut self.net, node: i });
         self.crashed(i);
-        if self.parks {
-            let lost = self.nodes.get_mut(i).expect("no such node").node.lost_parks().expect("a full scan");
-            assert!(lost.is_empty(), "node {i}: entries waiting for a read secret, not parked: {lost:?} ({seen:?})");
-        }
         if traced {
             self.traced(i);
+        }
+    }
+
+    /// With `parks`, every entry of each node on waiting for a read secret is parked
+    /// (`Node::lost_parks`, a full scan): after each step, not each delivery (an entry left
+    /// unparked stays unopened, so the step's end still finds it).
+    fn check_parks(&mut self) {
+        if !self.parks {
+            return;
+        }
+        for i in 0..self.nodes.len() {
+            if !self.online(i) {
+                continue;
+            }
+            let lost = self.nodes.get_mut(i).expect("no such node").node.lost_parks().expect("a full scan");
+            assert!(lost.is_empty(), "node {i}: entries waiting for a read secret, not parked: {lost:?} (after {} deliveries)", self.deliveries);
         }
     }
 
@@ -1256,6 +1268,7 @@ pub const SHRINK_VAR: &str = "OSIS_SYNC_SHRINK";
 pub fn step(w: &mut World, s: &Step) -> String {
     let note = step_of(w, s);
     history::accept(w);
+    w.check_parks();
     note
 }
 
