@@ -1617,6 +1617,8 @@ mod tests {
                 rows.borrow().get(&k).copied()
             };
             let mut seen: HashMap<u8, (u64, Option<u8>)> = HashMap::new();
+            // a follower that skips its follow at its fixed point (`Quiet`), with its values
+            let (mut quiet, mut follower, mut held) = (Quiet::default(), Effects::<u8, Option<u8>>::new("test random quiet"), HashMap::new());
             for step in 0..150 {
                 let k = keys[next(keys.len() as u64) as usize];
                 let at = format!("seed {seed} step {step} key {k}");
@@ -1648,7 +1650,23 @@ mod tests {
                         let m = &memos[next(3) as usize];
                         assert_eq!(m.get(&k, || read(k)), rows.borrow().get(&k).copied(), "{at}: memo");
                         effects.want(k);
+                        if next(2) == 0 {
+                            follower.want(k);
+                        }
                     }
+                }
+                if quiet.holds(follower.idle()) {
+                    for (x, v) in &held {
+                        assert_eq!(*v, rows.borrow().get(x).copied(), "{at}: quiet follower skipped over {x}'s change");
+                    }
+                } else {
+                    let from = Quiet::begin();
+                    for x in follower.due() {
+                        let v = read(x);
+                        follower.settle(&x, || read(x));
+                        held.insert(x, v);
+                    }
+                    quiet.ended(from, true);
                 }
                 for x in &keys {
                     let (now, stamp) = (rows.borrow().get(x).copied(), stamps.stamp(x));
