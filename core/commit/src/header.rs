@@ -499,7 +499,8 @@ impl Header {
     }
 
     pub(crate) fn encode_into(&self, out: &mut Vec<u8>) {
-        put_array(out, 17);
+        // the own-cover marker is a trailing `true`, absent on every other header
+        put_array(out, if self.own_cover { 17 } else { 16 });
         put_uint(out, FORMAT_VERSION);
         put_tid_bytes(out, &self.author);
         put_tid_bytes(out, &self.actor);
@@ -516,7 +517,9 @@ impl Header {
         put_opt(out, self.ephemeral, |out, c| put_uint(out, c as u64));
         put_opt(out, self.epoch, |out, c| put_bytes(out, &c.0));
         put_opt(out, self.rotation.as_ref(), |out, r| r.put(out));
-        osis_base::cbor::put_bool(out, self.own_cover);
+        if self.own_cover {
+            osis_base::cbor::put_bool(out, true);
+        }
     }
 
     /// Commit ID = BLAKE3(canonical header bytes).
@@ -751,7 +754,13 @@ impl Header {
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let Some([_, author, actor, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation, own_cover]) = items.tuple() else {
+        let all: Vec<Item> = items.into_iter().collect();
+        let own_cover = match all.get(16) {
+            None => false,
+            Some(m) if all.len() == 17 && m.as_bool() == Some(true) => true,
+            Some(_) => return Err(Error::Malformed("own cover marker")),
+        };
+        let Ok([_, author, actor, kind, ts, form, expires, aspects, purge, undoes, blind, keys, frontier, ephemeral, epoch, rotation]) = <[Item; 16]>::try_from(&all[..all.len().min(16)]) else {
             return Err(Error::Malformed("header arity"));
         };
         let mut h = Header {
@@ -771,7 +780,7 @@ impl Header {
             ephemeral: item::opt(ephemeral)?.map(|c| EphClass::from_id(item::uint(c)?).ok_or(Error::Malformed("ephemeral marker"))).transpose()?,
             epoch: item::opt(epoch)?.map(|c| item::bytes(c).map(CommitId)).transpose()?,
             rotation: item::opt(rotation)?.map(RotationHeader::read).transpose()?,
-            own_cover: own_cover.as_bool().ok_or(Error::Malformed("own cover marker"))?,
+            own_cover,
         };
         h.take_position(ListField::Aspects, aspects, stored)?;
         h.take_position(ListField::Purge, purge, stored)?;

@@ -54,6 +54,36 @@ fn validate_kinds() {
     x.validate().unwrap();
 }
 
+// spec/wire.md §4 field 16: the own-cover marker is a trailing `true` on a durable content
+// snapshot only, absent on every other header (which keeps its bytes); any other value is bad.
+#[test]
+fn own_cover_marker_spec_wire_4() {
+    let mut x = sample_header();
+    x.own_cover = true;
+    assert!(invalid(&x).to_string().contains("own cover"), "on a content commit");
+    x.kind = Kind::ContentSnapshot;
+    x.form = Form::Commit;
+    x.aspects[0].lo = 0;
+    x.aspects[0].hi = 0;
+    x.aspects[0].retention.by = PurgeBy::Writer;
+    x.keys.push(dkey(3, 3));
+    x.aspects[0].keys = vec![0, 1, 2];
+    x.validate().unwrap();
+    let marked = x.encode();
+    assert_eq!(Header::decode(&marked).unwrap(), x);
+    x.own_cover = false;
+    assert_eq!(x.encode().len() + 1, marked.len(), "one byte, on the own cover alone");
+    assert_eq!(Header::decode(&x.encode()).unwrap(), x);
+    // a trailing `false` is no canonical header
+    let mut bad = x.encode();
+    bad[0] += 1;
+    bad.push(0xf4);
+    assert!(Header::decode(&bad).is_err());
+    x.own_cover = true;
+    x.ephemeral = Some(EphClass::Plain);
+    assert!(invalid(&x).to_string().contains("own cover"), "an ephemeral own cover");
+}
+
 pub(crate) fn role_header(ak: &str) -> Header {
     let mut h = sample_header();
     h.kind = Kind::Role;
