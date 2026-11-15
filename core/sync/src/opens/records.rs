@@ -100,11 +100,23 @@ fn encode_core(r: &Record) -> Vec<u8> {
     w
 }
 
-fn encode_member(m: &Member, basis: Option<&[u8; 32]>) -> Vec<u8> {
-    let mut w = vec![match m.class {
+fn class_byte(c: SourceClass) -> u8 {
+    match c {
         SourceClass::Store => 0,
         SourceClass::Reader => 1,
-    }];
+    }
+}
+
+fn class_of(b: u8) -> Res<SourceClass> {
+    match b {
+        0 => Ok(SourceClass::Store),
+        1 => Ok(SourceClass::Reader),
+        _ => Err(corrupt()),
+    }
+}
+
+fn encode_member(m: &Member, basis: Option<&[u8; 32]>) -> Vec<u8> {
+    let mut w = vec![class_byte(m.class), class_byte(m.own)];
     match m.by {
         Credential::ReadSecret(e) => {
             w.push(0);
@@ -134,11 +146,8 @@ fn encode_member(m: &Member, basis: Option<&[u8; 32]>) -> Vec<u8> {
 
 fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
     let mut r = Rd(v);
-    let class = match r.u8()? {
-        0 => SourceClass::Store,
-        1 => SourceClass::Reader,
-        _ => return Err(corrupt()),
-    };
+    let class = class_of(r.u8()?)?;
+    let own = class_of(r.u8()?)?;
     let by = match r.u8()? {
         0 => {
             let n = r.u64()?;
@@ -155,7 +164,7 @@ fn decode_member(v: &[u8]) -> Res<(Member, Option<[u8; 32]>)> {
     let until = if r.u8()? == 1 { Some(r.u64()?) } else { None };
     let basis = r.opt32()?;
     r.end()?;
-    Ok((Member { class, by, until }, basis))
+    Ok((Member { class, own, by, until }, basis))
 }
 
 /// A generation's values as its row holds them (the filter's own coding).

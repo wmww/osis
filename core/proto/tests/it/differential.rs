@@ -188,11 +188,11 @@ fn events(v: &Value, cursorless: bool) -> R {
 fn item(v: &Value) -> R {
     let a = arr(v)?;
     match (a.first().and_then(uint), a.len()) {
-        (Some(0), 3) => b(&a[1], 32).and(opt_of(&a[2], |s| b(s, 64))),
-        (Some(1), 3) => b(&a[1], 16).and(list(&a[2], 0, 256, |h| b(h, 32))),
+        (Some(0), 4) => b(&a[1], 32).and(opt_of(&a[2], |s| b(s, 64))).and(boolean(&a[3])),
+        (Some(1), 4) => b(&a[1], 16).and(list(&a[2], 0, 256, |h| b(h, 32))).and(boolean(&a[3])),
         (Some(2), 5) => b(&a[1], 16).and(bmax(&a[2], MAX_BLOB)).and(b(&a[3], 57)).and(b(&a[4], 64)),
         (Some(3), 5) => b(&a[1], 16).and(opt_of(&a[2], |s| b(s, 32))).and(b(&a[3], 32)).and(b(&a[4], 64)),
-        (Some(4), 4) => b(&a[1], 32).and(b(&a[2], 32)).and(b(&a[3], 64)),
+        (Some(4), 5) => b(&a[1], 32).and(b(&a[2], 32)).and(b(&a[3], 64)).and(boolean(&a[4])),
         _ => Err("item"),
     }
 }
@@ -203,9 +203,10 @@ fn grant(v: &Value) -> R {
     list(&a[1], 1, usize::MAX, step)
 }
 
-/// A Shared answer: only code 0 carries anything, and a `sig` only beside a tag.
+/// A Shared answer: only code 0 carries anything (`unread` true included), and a `sig` only
+/// beside a tag.
 fn shared(v: &Value) -> R {
-    let a = tuple(v, 4)?;
+    let a = tuple(v, 5)?;
     let code = uint(&a[0]).ok_or("code")?;
     let tag = opt(&a[1])?;
     tag.map_or(Ok(()), |t| b(t, 32))?;
@@ -213,7 +214,8 @@ fn shared(v: &Value) -> R {
     g.map_or(Ok(()), grant)?;
     let sig = opt(&a[3])?;
     sig.map_or(Ok(()), |s| b(s, 64))?;
-    ok(code == 0 || (tag.is_none() && g.is_none() && sig.is_none()), "refusal carrying")?;
+    boolean(&a[4])?;
+    ok(code == 0 || (tag.is_none() && g.is_none() && sig.is_none() && a[4] == Value::Bool(false)), "refusal carrying")?;
     ok(sig.is_none() || tag.is_some(), "sig without tag")
 }
 

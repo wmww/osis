@@ -168,14 +168,15 @@ pub struct BehindItem {
 /// `item := [0, hit, Opt(sig)] | [1, sync_id, [hit*]] | [2, ...] | [3, ...] | [4, hit, signing_pk, sig]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OfferItem {
-    /// A Hit with the open signature proving its credential, where it needs one.
-    Hit { hit: [u8; 32], sig: Option<Signature> },
+    /// A Hit with the open signature proving its credential, where it needs one; `unread`: the
+    /// sender keeps S unread (its class, spec/sync-opens.md §4 Source).
+    Hit { hit: [u8; 32], sig: Option<Signature>, unread: bool },
     /// A sync ID the sender judged the peer reads, with the sender's Hits.
-    ByRole { sync_id: SyncId, hits: Vec<[u8; 32]> },
+    ByRole { sync_id: SyncId, hits: Vec<[u8; 32]>, unread: bool },
     Deposit(DepositItem),
     Behind(BehindItem),
     /// A Hit on a key actor's static entry with its signing key and an open signature by it.
-    Static { hit: [u8; 32], signing_pk: [u8; 32], sig: Signature },
+    Static { hit: [u8; 32], signing_pk: [u8; 32], sig: Signature, unread: bool },
 }
 
 /// `grant := [Opt(entry_box), [step+]]`: the head's entry box for a static entry and the path to
@@ -186,7 +187,7 @@ pub struct Grant {
     pub steps: Vec<Step>,
 }
 
-/// One answer of a Shared: `[code, Opt(tag), Opt(grant), Opt(sig)]`. Only code 0 carries
+/// One answer of a Shared: `[code, Opt(tag), Opt(grant), Opt(sig), unread]`. Only code 0 carries
 /// anything, and a `sig` only beside a tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedItem {
@@ -195,12 +196,14 @@ pub struct SharedItem {
     pub grant: Option<Grant>,
     /// An open signature by the sync key of the replier's step.
     pub sig: Option<Signature>,
+    /// Accepting a Hit, Static or ByRole item: the replier keeps S unread (its class).
+    pub unread: bool,
 }
 
 impl SharedItem {
     /// An answer carrying its code alone.
     pub fn code(code: Code) -> SharedItem {
-        SharedItem { code, tag: None, grant: None, sig: None }
+        SharedItem { code, tag: None, grant: None, sig: None, unread: false }
     }
 }
 
@@ -704,13 +707,13 @@ fn claim_set(v: Value, n: &Items) -> Result<ClaimSet, Error> {
 }
 
 fn offer_item(v: Value) -> Result<OfferItem, Error> {
-    let mut f = Fields::range(v, 2, 5, "offer item")?;
+    let mut f = Fields::range(v, 4, 5, "offer item")?;
     let item = match (f.uint()?, f.remaining()) {
-        (0, 2) => OfferItem::Hit { hit: f.fixed()?, sig: f.opt()?.map(|v| dec::fixed(v, "open signature").map(Signature)).transpose()? },
-        (1, 2) => OfferItem::ByRole { sync_id: sync_id(&mut f)?, hits: f.list(0, MAX_ITEM_HITS, "hits")?.into_iter().map(|v| dec::fixed(v, "hit")).collect::<Result<_, _>>()? },
+        (0, 3) => OfferItem::Hit { hit: f.fixed()?, sig: f.opt()?.map(|v| dec::fixed(v, "open signature").map(Signature)).transpose()?, unread: f.bool()? },
+        (1, 3) => OfferItem::ByRole { sync_id: sync_id(&mut f)?, hits: f.list(0, MAX_ITEM_HITS, "hits")?.into_iter().map(|v| dec::fixed(v, "hit")).collect::<Result<_, _>>()?, unread: f.bool()? },
         (2, 4) => OfferItem::Deposit(DepositItem { sync_id: sync_id(&mut f)?, blob: f.bytes(MAX_BLOB)?, wrap: f.fixed()?, sig: Signature(f.fixed()?) }),
         (3, 4) => OfferItem::Behind(BehindItem { sync_id: sync_id(&mut f)?, step: f.opt()?.map(|v| dec::fixed(v, "behind step").map(StepId)).transpose()?, key: f.fixed()?, sig: Signature(f.fixed()?) }),
-        (4, 3) => OfferItem::Static { hit: f.fixed()?, signing_pk: f.fixed()?, sig: Signature(f.fixed()?) },
+        (4, 4) => OfferItem::Static { hit: f.fixed()?, signing_pk: f.fixed()?, sig: Signature(f.fixed()?), unread: f.bool()? },
         _ => return Err(Error::Malformed("offer item")),
     };
     f.end()?;
@@ -720,23 +723,24 @@ fn offer_item(v: Value) -> Result<OfferItem, Error> {
 fn offer_item_value(i: &OfferItem) -> Value {
     let sig = |s: &Signature| Value::bytes(&s.0);
     Value::List(match i {
-        OfferItem::Hit { hit, sig: s } => vec![Value::uint(0), Value::bytes(hit), Value::opt(s.as_ref().map(sig))],
-        OfferItem::ByRole { sync_id, hits } => vec![Value::uint(1), Value::bytes(&sync_id.0), Value::List(hits.iter().map(|h| Value::bytes(h)).collect())],
+        OfferItem::Hit { hit, sig: s, unread } => vec![Value::uint(0), Value::bytes(hit), Value::opt(s.as_ref().map(sig)), Value::Bool(*unread)],
+        OfferItem::ByRole { sync_id, hits, unread } => vec![Value::uint(1), Value::bytes(&sync_id.0), Value::List(hits.iter().map(|h| Value::bytes(h)).collect()), Value::Bool(*unread)],
         OfferItem::Deposit(d) => vec![Value::uint(2), Value::bytes(&d.sync_id.0), Value::bytes(&d.blob), Value::bytes(&d.wrap), sig(&d.sig)],
         OfferItem::Behind(b) => vec![Value::uint(3), Value::bytes(&b.sync_id.0), Value::opt(b.step.as_ref().map(|s| Value::bytes(&s.0))), Value::bytes(&b.key), sig(&b.sig)],
-        OfferItem::Static { hit, signing_pk, sig: s } => vec![Value::uint(4), Value::bytes(hit), Value::bytes(signing_pk), sig(s)],
+        OfferItem::Static { hit, signing_pk, sig: s, unread } => vec![Value::uint(4), Value::bytes(hit), Value::bytes(signing_pk), sig(s), Value::Bool(*unread)],
     })
 }
 
 fn shared_item(v: Value, n: &Items) -> Result<SharedItem, Error> {
-    let mut g = Fields::exact(v, 4, "shared item")?;
+    let mut g = Fields::exact(v, 5, "shared item")?;
     let item = SharedItem {
         code: Code(g.uint()?),
         tag: g.opt()?.map(|v| dec::fixed(v, "tag")).transpose()?,
         grant: g.opt()?.map(|v| grant(v, n)).transpose()?,
         sig: g.opt()?.map(|v| dec::fixed(v, "open signature").map(Signature)).transpose()?,
+        unread: g.bool()?,
     };
-    let carries = item.tag.is_some() || item.grant.is_some() || item.sig.is_some();
+    let carries = item.tag.is_some() || item.grant.is_some() || item.sig.is_some() || item.unread;
     if (item.code != Code::OK && carries) || (item.sig.is_some() && item.tag.is_none()) {
         return Err(Error::Malformed("shared item"));
     }
@@ -749,6 +753,7 @@ fn shared_item_value(i: &SharedItem) -> Value {
         Value::opt(i.tag.as_ref().map(|t| Value::bytes(t))),
         Value::opt(i.grant.as_ref().map(|g| Value::List(vec![Value::opt(g.entry_box.as_ref().map(|e| Value::Bytes(cbor::encode(&e.to_value())))), Value::List(g.steps.iter().map(step_value).collect())]))),
         Value::opt(i.sig.as_ref().map(|s| Value::bytes(&s.0))),
+        Value::Bool(i.unread),
     ])
 }
 

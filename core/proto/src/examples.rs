@@ -167,9 +167,9 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
         ("resumed", Msg::Resumed { id: 34, nonce: [0x37; 32], tag: Some([0x35; 32]) }),
         ("beacons", Msg::Beacons { id: top(36), generation: 1, base: None, f: 9, lo: 0, hi: 512, gcs, more: false }),
         ("beacons additions", Msg::Beacons { id: top(37), generation: 2, base: Some(1), f: 9, lo: 0, hi: 512, gcs: vec![], more: false }),
-        ("offer", Msg::Offer { id: top(37), items: vec![OfferItem::Hit { hit: [9; 32], sig: None }, OfferItem::Hit { hit: [10; 32], sig: Some(open(&f.sync)) }, OfferItem::ByRole { sync_id: l, hits: vec![[8; 32]] }] }),
+        ("offer", Msg::Offer { id: top(37), items: vec![OfferItem::Hit { hit: [9; 32], sig: None, unread: false }, OfferItem::Hit { hit: [10; 32], sig: Some(open(&f.sync)), unread: true }, OfferItem::ByRole { sync_id: l, hits: vec![[8; 32]], unread: false }] }),
         ("offer with a deposit", Msg::Offer { id: top(38), items: vec![OfferItem::Deposit(DepositItem { sync_id: l, blob: deposited, wrap: dep_wrap, sig: dep_sig })] }),
-        ("offer static", Msg::Offer { id: top(39), items: vec![OfferItem::Static { hit: [12; 32], signing_pk: f.key_actor.verifying_key().to_bytes(), sig: open(&f.key_actor) }] }),
+        ("offer static", Msg::Offer { id: top(39), items: vec![OfferItem::Static { hit: [12; 32], signing_pk: f.key_actor.verifying_key().to_bytes(), sig: open(&f.key_actor), unread: false }] }),
         (
             "offer behind",
             Msg::Offer {
@@ -181,12 +181,12 @@ pub fn messages() -> Vec<(&'static str, Msg)> {
             },
         ),
         ("lost", Msg::Lost { id: top(38), items: vec![(l, None), (other, Some(cursor(0x38)))] }),
-        ("shared", Msg::Shared { id: top(37), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), grant: None, sig: None }, SharedItem::code(Code::DECLINED)] }),
+        ("shared", Msg::Shared { id: top(37), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), grant: None, sig: None, unread: true }, SharedItem::code(Code::DECLINED)] }),
         (
             "shared with an entry grant",
-            Msg::Shared { id: top(39), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), grant: Some(Grant { entry_box: Some(entry_box), steps: vec![f.genesis.clone(), f.child.clone()] }), sig: Some(open(&f.sync)) }] },
+            Msg::Shared { id: top(39), items: vec![SharedItem { code: Code::OK, tag: Some([7; 32]), grant: Some(Grant { entry_box: Some(entry_box), steps: vec![f.genesis.clone(), f.child.clone()] }), sig: Some(open(&f.sync)), unread: true }] },
         ),
-        ("shared with a child step", Msg::Shared { id: top(40), items: vec![SharedItem { code: Code::OK, tag: None, grant: Some(Grant { entry_box: None, steps: vec![f.child.clone()] }), sig: None }, SharedItem::code(Code::UNKNOWN_SYNC_ID)] }),
+        ("shared with a child step", Msg::Shared { id: top(40), items: vec![SharedItem { code: Code::OK, tag: None, grant: Some(Grant { entry_box: None, steps: vec![f.child.clone()] }), sig: None, unread: false }, SharedItem::code(Code::UNKNOWN_SYNC_ID)] }),
         ("no record", Msg::NoRecord { id: crate::limits::NO_RECORD_ID }),
         ("pull", Msg::Pull(Box::new(Pull { id: top(41), cursor: Some(cursor(0x2c)), joins: vec![(l, None), (other, Some(cursor(0x2d)))], inline_limit: 0, max_reply: 65_536, follow: true, ephemeral: true }))),
         (

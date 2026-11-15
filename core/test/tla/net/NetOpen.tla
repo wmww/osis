@@ -33,6 +33,9 @@
    a reader does once S is open both ways and the store holds no step. With no head (ShownKey)
    it shows and tests the sync key and proof of the step its grant names, the newest it learned,
    so its own Hit opens S; a reader tests nothing again at a change of the store's filter.
+   Each open records the class of its peer (store: keeps S unread; reader: a reader or link
+   holder), as the peer declared it in its Hit or answer (Declared), never from the credential
+   or which side's Hit opened S.
    A rule of the design is a flag. *)
 EXTENDS Naturals, FiniteSets, Sequences, TLC
 
@@ -57,7 +60,8 @@ CONSTANTS
     AdvPublic,      \* Adv holds S's public values (each step's sync key, every static entry)
     AdvJunk,        \* Adv's filter may show junk matching any value a tester tests
     LostTag,        \* a Lost answers only an acceptance with a valid tag (FALSE: any acceptance)
-    ShownKey        \* a store with no step shows and tests its grant's step's sync key and proof
+    ShownKey,       \* a store with no step shows and tests its grant's step's sync key and proof
+    Declared        \* an open's class of its peer is the peer's declaration (FALSE: from the credential)
 
 Honest == Nodes \ {Adv}
 NE == Len(Events)
@@ -89,6 +93,14 @@ JB == Key("J", 0, "-")
 DialB == Key("dial", 0, "-")
 Secret(key) == key.c = "proof"
 Tok(key, sd, ch, lk) == [k |-> key, sd |-> sd, ch |-> ch, lk |-> lk]
+\* What n declares of itself: whether it keeps S unread; Adv declares what it likes ("adv").
+Cls(n) == IF n = Adv THEN "adv" ELSE IF Role[n] = "store" THEN "store" ELSE "reader"
+\* The rejected rule: the class from the credential that opened S, tested here or by the peer.
+FromCred(v, testedHere) ==
+    IF testedHere THEN (IF v.c \in {"sync", "link"} THEN "store" ELSE "reader")
+    ELSE (IF v.c = "proof" THEN "store" ELSE "reader")
+\* The class n records of its peer p, S opened on credential v (JB: by J).
+ClassOf(p, v, testedHere) == IF Declared THEN Cls(p) ELSE IF v = JB THEN "reader" ELSE FromCred(v, testedHere)
 NoTok == Tok(Key("none", 0, "-"), 0, 0, "-")
 
 VARIABLES conns, opens, known, seen, next, happened, know,
@@ -168,12 +180,12 @@ Finish(i, t, p, v, a, base) ==
                        /\ Accept(t, know[t], a.k, p)
     IN
     /\ leak' = (leak \/ (p = Adv /\ ~opensT /\ lost /\ AdvValues = {}))
-    /\ opens' = IF ~AnswerSig THEN base \cup {<<i, t, v>>}
-             ELSE IF J(t, p, know[t]) THEN base \cup {<<i, t, JB>>}
+    /\ opens' = IF ~AnswerSig THEN base \cup {<<i, t, v, ClassOf(p, v, TRUE)>>}
+             ELSE IF J(t, p, know[t]) THEN base \cup {<<i, t, JB, ClassOf(p, JB, TRUE)>>}
              ELSE IF /\ a # NoTok /\ Valid(a, a.k, c, t)
                      /\ a.k.c = (IF v.c = "proof" THEN "proof" ELSE "sync")
                      /\ Accept(t, know[t], a.k, p)
-                  THEN base \cup {<<i, t, a.k>>}
+                  THEN base \cup {<<i, t, a.k, ClassOf(p, v, TRUE)>>}
              ELSE IF lost THEN {o \in base : o[1] # i}
              ELSE base
 
@@ -245,7 +257,7 @@ HonestHit(i, t, v) ==
                      THEN Tok(ak, Side(c, p), Ch(c, t), c.l) ELSE NoTok
             IN /\ v \in ShowsAt(p, know[p])
                /\ Syncs(p) /\ Accept(p, know[p], v, t)
-               /\ Finish(i, t, p, v, a, IF IsOpen(i, p) THEN opens ELSE opens \cup {<<i, p, v>>})
+               /\ Finish(i, t, p, v, a, IF IsOpen(i, p) THEN opens ELSE opens \cup {<<i, p, v, ClassOf(t, v, FALSE)>>})
                /\ UNCHANGED known
     /\ UNCHANGED <<conns, seen, next, happened, know, head>>
 
@@ -261,7 +273,7 @@ AdvHit(i, v) ==
     /\ v \in ShowsEver(h)
     /\ Syncs(h) /\ Accept(h, know[h], v, Adv)
     /\ \E s \in known \cup Forge(c, h) : Valid(s, v, c, h)
-    /\ opens' = opens \cup {<<i, h, v>>}
+    /\ opens' = opens \cup {<<i, h, v, ClassOf(Adv, v, FALSE)>>}
     /\ known' = IF ak \in HoldsKeys(h) /\ CanSign(h, c, ak) /\ ak \notin HoldsKeys(Adv)
                 THEN known \cup {Tok(ak, Side(c, h), Ch(c, Adv), c.l)} ELSE known
     /\ UNCHANGED <<conns, seen, next, happened, know, leak, head>>
@@ -271,14 +283,14 @@ JOpen(i, v) ==
     LET c == conns[i] IN
     /\ v \in {c.d, c.l} /\ ~IsOpen(i, v)
     /\ Syncs(v) /\ J(v, Peer(c, v), know[v])
-    /\ opens' = opens \cup {<<i, v, JB>>}
+    /\ opens' = opens \cup {<<i, v, JB, ClassOf(Peer(c, v), JB, TRUE)>>}
     /\ UNCHANGED <<conns, known, seen, next, happened, know, leak, head>>
 
 \* The rejected rule: a dialer opens toward the key it dialed.
 DialOpen(i) ==
     LET c == conns[i] IN
     /\ DialProves /\ c.d \in Honest /\ ~IsOpen(i, c.d) /\ Syncs(c.d)
-    /\ opens' = opens \cup {<<i, c.d, DialB>>}
+    /\ opens' = opens \cup {<<i, c.d, DialB, "reader">>}
     /\ UNCHANGED <<conns, known, seen, next, happened, know, leak, head>>
 
 \* Reader r, S open both ways on connection i toward a store p holding no step (spec/sync-ids.md
@@ -324,6 +336,12 @@ SafeRmStep == \A o \in opens' \ opens :
     LET n == o[2] IN
     (IsReader(n) /\ Peer(conns'[o[1]], n) = Adv) => ~Gone(Adv, know'[n])
 SafeRm == [][SafeRmStep]_vars
+
+\* An open between honest nodes records the class its peer holds S by, whichever side's Hit opened
+\* it and on whichever credential.
+ClassRight == \A o \in opens :
+    LET n == o[2] p == Peer(conns[o[1]], n) IN
+    (n \in Honest /\ p \in Honest) => o[4] = Cls(p)
 
 \* Two honest holders connected, every event known to all, end up open both ways, whichever dialed.
 Stable == happened = NE /\ \A n \in Honest : know[n] = NE

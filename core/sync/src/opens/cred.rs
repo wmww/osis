@@ -172,17 +172,3 @@ impl Tested {
         matches!(self, Tested::Read(..) | Tested::Proof(_))
     }
 }
-
-/// The source class of a member (spec/sync-opens.md §4 source): reading the spec's list, a
-/// member is a store source (the peer keeps S unread) when opened by a sync key, a claim or a
-/// static entry this side tested (only a node keeping S unread shows these at its head with a
-/// claim set), or by a sync proof the peer tested (only a node keeping S unread tests one); every
-/// other open is a reader source.
-pub fn source_class(by: &Credential, tested_here: bool) -> crate::types::SourceClass {
-    use crate::types::SourceClass::{Reader, Store};
-    match by {
-        Credential::SyncKey | Credential::Claim | Credential::Static(_) if tested_here => Store,
-        Credential::SyncProof if !tested_here => Store,
-        _ => Reader,
-    }
-}

@@ -31,7 +31,7 @@ use crate::session::{Incoming, Proven, Sessions};
 use crate::store::Store;
 use crate::types::{ConnId, Credential, Cursor, Cx, Position, RecordId, Result, SourceClass};
 use crate::unread::Unread;
-use cred::{Bind, Shown, Tested, beacon_of, source_class};
+use cred::{Bind, Shown, Tested, beacon_of};
 use holds::{Creds, Holds, NodeHolds};
 pub use holds::{Who, awaited, counted};
 use osis_store::Named;
@@ -49,7 +49,10 @@ use std::sync::Arc;
 /// A member of a connection's shared set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
+    /// The peer's class, as it declared opening S (spec/sync-opens.md §4 Source).
     pub class: SourceClass,
+    /// This side's class as it declared it then: a move closes the member (§6).
+    pub own: SourceClass,
     pub by: Credential,
     /// Being ended: served up to this position.
     pub until: Option<Position>,
@@ -104,6 +107,8 @@ enum Close {
     AtOnce,
     /// S left this node's sync set: nothing kept, and its Lost names no position.
     Left,
+    /// This side's class moved: kept as at `Until`, and S opens again by testing.
+    Class,
 }
 
 impl Moved {
@@ -235,8 +240,9 @@ enum Req {
 /// An Offer item sent, to read its answer by.
 #[derive(Clone, Debug)]
 enum Sent {
-    Hit { s: SyncId, cred: Box<Tested>, beacon: [u8; 32] },
-    ByRole(SyncId),
+    /// `own`: the class this side declared in it.
+    Hit { s: SyncId, cred: Box<Tested>, beacon: [u8; 32], own: SourceClass },
+    ByRole(SyncId, SourceClass),
     Behind(SyncId, Option<StepId>),
 }
 
@@ -475,6 +481,8 @@ impl crate::store::Members for BTreeMap<SyncId, Member> {
 /// What a connection may open S by, judged now (spec/sync-opens.md §4 Admissible).
 struct Adm {
     j: J,
+    /// This node's class for S now (spec/sync-opens.md §4 Source).
+    own: SourceClass,
     shows: Vec<Shown>,
     tests: Vec<Tested>,
     step: Option<osis_crypto::SigningSecret>,
@@ -1751,7 +1759,8 @@ impl Opens {
         let shows = creds.shows.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
         let tests = creds.tests.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
         let step = creds.step.as_ref().filter(|(_, e)| ok(e)).map(|(k, _)| k.clone());
-        Some(Adm { j, shows, tests, step })
+        let own = SourceClass::declared(creds.holding == Some(crate::types::Holding::Unread));
+        Some(Adm { j, own, shows, tests, step })
     }
 
     /// Tests the pending sync IDs against the peer's latest filter and sends one Offer
@@ -1801,12 +1810,13 @@ impl Opens {
                     continue;
                 }
                 let h = bind.hit(&m, &s, &b);
+                let unread = adm.own.unread();
                 items.push(match t {
-                    Tested::SyncKey { key, .. } | Tested::Claim { key, .. } => OfferItem::Hit { hit: h, sig: Some(bind.sign(key, &s)) },
-                    Tested::Static { key, .. } => OfferItem::Static { hit: h, signing_pk: key.verifying_key().to_bytes(), sig: bind.sign(key, &s) },
-                    Tested::Read(..) | Tested::Proof(_) => OfferItem::Hit { hit: h, sig: None },
+                    Tested::SyncKey { key, .. } | Tested::Claim { key, .. } => OfferItem::Hit { hit: h, sig: Some(bind.sign(key, &s)), unread },
+                    Tested::Static { key, .. } => OfferItem::Static { hit: h, signing_pk: key.verifying_key().to_bytes(), sig: bind.sign(key, &s), unread },
+                    Tested::Read(..) | Tested::Proof(_) => OfferItem::Hit { hit: h, sig: None, unread },
                 });
-                sent.push(Sent::Hit { s, cred: Box::new(t.clone()), beacon: b });
+                sent.push(Sent::Hit { s, cred: Box::new(t.clone()), beacon: b, own: adm.own });
                 hit = true;
                 // spec/sync-ids.md §6 Walk: the first shown of the walk's credentials is Hit.
                 if t.step().is_some() {
@@ -1821,8 +1831,8 @@ impl Opens {
                     let m = t.matched(&s);
                     bind.hit(&m, &s, &beacon_of(&m, &s, &rr))
                 });
-                items.push(OfferItem::ByRole { sync_id: s, hits: hits.collect() });
-                sent.push(Sent::ByRole(s));
+                items.push(OfferItem::ByRole { sync_id: s, hits: hits.collect(), unread: adm.own.unread() });
+                sent.push(Sent::ByRole(s, adm.own));
                 self.set_stop(conn, s, None);
             } else if !hit && adm.j == J::SyncHolder {
                 let stop = self.walk_on(ctx, conn, &s, &adm, &mut items, &mut sent);
@@ -1922,7 +1932,7 @@ impl Opens {
                         c.walks.entry(s).or_default().missed = true;
                     }
                 }
-                Sent::Hit { s, cred, beacon } => {
+                Sent::Hit { s, cred, beacon, own } => {
                     let m = cred.matched(&s);
                     // The tag: computable only with the credential and S, by the replier's side.
                     // Without it the peer showed no knowledge of S: no Lost names S to it (a
@@ -1935,21 +1945,21 @@ impl Opens {
                         continue;
                     }
                     let Some(adm) = self.admissible(ctx, conn, &s) else { continue };
-                    // Its credential still admissible.
-                    if !adm.tests.iter().any(|t| t.matched(&s) == m) {
+                    // Its credential still admissible, its class still the one it declared.
+                    if !adm.tests.iter().any(|t| t.matched(&s) == m) || adm.own != own {
                         continue;
                     }
                     if !self.replier_proved(ctx, &bind, &s, &cred, &a, adm.j) {
                         continue;
                     }
                     let by = cred.credential(&s);
-                    self.open(conn, s, Member { class: source_class(&by, true), by, until: None }, Some(beacon), moved);
+                    self.open(conn, s, Member { class: SourceClass::declared(a.unread), own, by, until: None }, Some(beacon), moved);
                 }
-                Sent::ByRole(s) if a.code == Code::OK => {
+                Sent::ByRole(s, own) if a.code == Code::OK => {
                     accepted.insert(s);
                     // An accepted ByRole opens S at its sender while J is still reader there.
-                    if self.member(conn, &s).is_none() && self.admissible(ctx, conn, &s).is_some_and(|a| a.j == J::Reader) {
-                        self.open(conn, s, Member { class: SourceClass::Reader, by: Credential::J, until: None }, None, moved);
+                    if self.member(conn, &s).is_none() && self.admissible(ctx, conn, &s).is_some_and(|a| a.j == J::Reader && a.own == own) {
+                        self.open(conn, s, Member { class: SourceClass::declared(a.unread), own, by: Credential::J, until: None }, None, moved);
                     }
                 }
                 Sent::Behind(s, named) => {
@@ -2035,9 +2045,9 @@ impl Opens {
         let mut answers = Vec::with_capacity(items.len());
         for item in items {
             let a = match item {
-                OfferItem::Hit { hit, sig } => self.accept_hit(ctx, conn, &hit, sig.as_ref(), None, moved),
-                OfferItem::Static { hit, signing_pk, sig } => self.accept_hit(ctx, conn, &hit, Some(&sig), Some(signing_pk), moved),
-                OfferItem::ByRole { sync_id, hits } => self.accept_by_role(ctx, conn, sync_id, &hits, moved),
+                OfferItem::Hit { hit, sig, unread } => self.accept_hit(ctx, conn, &hit, sig.as_ref(), None, SourceClass::declared(unread), moved),
+                OfferItem::Static { hit, signing_pk, sig, unread } => self.accept_hit(ctx, conn, &hit, Some(&sig), Some(signing_pk), SourceClass::declared(unread), moved),
+                OfferItem::ByRole { sync_id, hits, unread } => self.accept_by_role(ctx, conn, sync_id, &hits, SourceClass::declared(unread), moved),
                 OfferItem::Deposit(d) => {
                     let src = self.record(conn).map_or(crate::store::Source::Conn(conn), crate::store::Source::Record);
                     SharedItem::code(ctx.holds.deposit(src, &d))
@@ -2054,7 +2064,9 @@ impl Opens {
         ctx.wire.answer(conn, id, Msg::Shared { id, items: answers });
     }
 
-    fn accept_hit(&mut self, ctx: &mut Ctx, conn: ConnId, hit: &[u8; 32], sig: Option<&osis_crypto::Signature>, signing: Option<[u8; 32]>, moved: &mut Vec<Moved>) -> SharedItem {
+    /// `class`: the class the peer declared in its item.
+    #[allow(clippy::too_many_arguments)]
+    fn accept_hit(&mut self, ctx: &mut Ctx, conn: ConnId, hit: &[u8; 32], sig: Option<&osis_crypto::Signature>, signing: Option<[u8; 32]>, class: SourceClass, moved: &mut Vec<Moved>) -> SharedItem {
         let refuse = SharedItem::code(Code::DECLINED);
         let Some(c) = self.conns.get(&conn) else { return refuse };
         let Some((s, shown, beacon)) = c.shown.get(hit).cloned() else { return refuse };
@@ -2098,20 +2110,21 @@ impl Opens {
         };
         if self.member(conn, &s).is_none() {
             let by = shown.credential();
-            self.open(conn, s, Member { class: source_class(&by, false), by, until: None }, Some(beacon), moved);
+            self.open(conn, s, Member { class, own: adm.own, by, until: None }, Some(beacon), moved);
         }
-        SharedItem { code: Code::OK, tag: Some(bind.tag(shown.matched(), &s, &beacon)), grant, sig: answer_sig }
+        SharedItem { code: Code::OK, tag: Some(bind.tag(shown.matched(), &s, &beacon)), grant, sig: answer_sig, unread: adm.own.unread() }
     }
 
     /// ByRole (spec/sync-opens.md §5): opens S when this side holds S and J judges the peer a
     /// reader, or a listed Hit is its own of a read secret or a static entry, carrying its proof.
-    fn accept_by_role(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, hits: &[[u8; 32]], moved: &mut Vec<Moved>) -> SharedItem {
+    fn accept_by_role(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, hits: &[[u8; 32]], class: SourceClass, moved: &mut Vec<Moved>) -> SharedItem {
         let Some(adm) = self.admissible(ctx, conn, &s) else { return SharedItem::code(Code::DECLINED) };
+        let ok = SharedItem { unread: adm.own.unread(), ..SharedItem::code(Code::OK) };
         if adm.j == J::Reader {
             if self.member(conn, &s).is_none() {
-                self.open(conn, s, Member { class: SourceClass::Reader, by: Credential::J, until: None }, None, moved);
+                self.open(conn, s, Member { class, own: adm.own, by: Credential::J, until: None }, None, moved);
             }
-            return SharedItem::code(Code::OK);
+            return ok;
         }
         let Some(c) = self.conns.get(&conn) else { return SharedItem::code(Code::DECLINED) };
         let proven = c.proven.clone();
@@ -2129,9 +2142,9 @@ impl Opens {
             Some((_, sh, b)) => {
                 if self.member(conn, &s).is_none() {
                     let by = sh.credential();
-                    self.open(conn, s, Member { class: SourceClass::Reader, by, until: None }, Some(b), moved);
+                    self.open(conn, s, Member { class, own: adm.own, by, until: None }, Some(b), moved);
                 }
-                SharedItem::code(Code::OK)
+                ok
             }
             None => SharedItem::code(Code::DECLINED),
         }
@@ -2159,7 +2172,9 @@ impl Opens {
     /// Re-judges member S of `conn` (spec/sync-opens.md §6): J reader or sync holder stays; an
     /// open by a credential stays while it is admissible; one no longer admissible whose peer J
     /// judges neither holder nor departed is ended (`until`), and stays ended until it closes;
-    /// any other closes at once with a Lost.
+    /// any other closes at once with a Lost. One that stays, not ended, closes keeping where it
+    /// stopped once this side's class is not the one it declared opening S (an ended one opens
+    /// again past its `until` anyway).
     fn rejudge(&mut self, ctx: &mut Ctx, conn: ConnId, s: SyncId, moved: &mut Vec<Moved>) {
         let Some(m) = self.member(conn, &s).cloned() else { return };
         self.work.rejudged += 1;
@@ -2177,6 +2192,9 @@ impl Opens {
         // An ended member judged holder or admissible again stays ended: the peer's stream may be
         // past `until` already (S's entries since skipped), so it closes there and opens again.
         if stays {
+            if m.own != adm.own && m.until.is_none() {
+                self.close_member(ctx, conn, s, Close::Class, moved);
+            }
         } else if m.by == Credential::J || adm.j == J::Departed {
             self.close_member(ctx, conn, s, Close::AtOnce, moved);
         } else if m.until.is_none() {
@@ -2213,7 +2231,7 @@ impl Opens {
             Close::Left => None,
             _ => self.stopped_for_peer(ctx, conn, &s, m.until),
         };
-        self.drop_member(conn, s, (why == Close::Until).then_some(Rejoin::Held), moved);
+        self.drop_member(conn, s, matches!(why, Close::Until | Close::Class).then_some(Rejoin::Held), moved);
         self.remark(conn, &s);
         self.send_lost(ctx, conn, vec![(s, cursor)]);
     }

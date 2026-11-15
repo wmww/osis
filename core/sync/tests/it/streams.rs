@@ -147,7 +147,7 @@ impl Shared for Open {
 }
 
 fn member() -> Member {
-    Member { class: SourceClass::Reader, by: Credential::J, until: None }
+    Member { class: SourceClass::Reader, own: SourceClass::Reader, by: Credential::J, until: None }
 }
 
 struct Side {
@@ -819,7 +819,7 @@ fn the_class_a_source_joined_lasts_with_what_it_showed_spec_sync_opens_3() {
     p.shared_read(s);
     let src = p.b.src();
     let join = |side: &mut Side, now: u64, class: SourceClass| {
-        side.open.members.entry(C).or_default().insert(s, Member { class, by: Credential::J, until: None });
+        side.open.members.entry(C).or_default().insert(s, Member { class, own: SourceClass::Reader, by: Credential::J, until: None });
         side.with(now, |st, ctx| st.member_moved(ctx, Moved::Joined(C, s, Rejoin::Held)));
     };
     assert!(!p.b.streams.known().kept(src, &s), "joined as a reader");

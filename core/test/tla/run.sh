@@ -201,6 +201,7 @@ instances=(
   "netopen net MCOpen O_rkjunk.cfg pass"           # O_rk with junk filter entries Hit
   "netopen net MCOpen ON_losttag.cfg fail"         # negative control: a Lost on an acceptance without a valid tag (Private)
   "netopen net MCOpen ON_shownkey.cfg fail"        # negative control (Live): a store with no step shows nothing
+  "netopen net MCOpen ON_class.cfg fail"           # negative control: the class from the credential, two stores (ClassRight)
   "nethold net MCHold H_quiet.cfg pass"            # hold/log/delete per sync ID (net/README.md)
   "nethold net MCHold H_head.cfg pass"
   "nethold net MCHold H_meet.cfg pass"
