@@ -682,9 +682,9 @@ impl<T: std::fmt::Debug + PartialEq + 'static> Table for T {
     }
 }
 
-/// The indexes `IndexDigest::tables` holds as text, by name.
-fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 50] {
-    [
+/// The indexes `IndexDigest::tables` holds as text, by name (a list, no count to keep in step).
+fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
+    vec![
         ("by_thing", &*ix.by_thing),
         ("authors_on", &*ix.authors_on),
         ("by_actor", &*ix.by_actor),
@@ -978,6 +978,16 @@ fn keyed<K: Ord + Clone, V: PartialEq>(a: &BTreeMap<K, V>, b: &BTreeMap<K, V>, f
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    // spec: none (test support): every index the check compares is named once, so none is
+    // shadowed in `IndexDigest::tables` by a twin a merge left behind.
+    #[test]
+    fn index_tables_named_once() {
+        let ix = super::super::Indexes::default();
+        let names: Vec<_> = tables(&ix).into_iter().map(|(n, _)| n).collect();
+        let set: BTreeSet<_> = names.iter().collect();
+        assert_eq!(set.len(), names.len(), "{names:?}");
+    }
 
     // spec: none (forensic test support): a section key planted on the device opens its section
     // in the attack (`Section::may_open_with` never rules out a real one), for sections of two
