@@ -80,9 +80,16 @@ pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> 
 
 /// The deposit seed `group`'s sync IDs derive from (spec/sync-ids.md §2): its secret actor's
 /// `keys.0`, a devices actor's being its account's. The one derivation (`Engine::deposit_seed`,
-/// `step_due`).
+/// `step_due`). None while a valid part of that `keys.0` is still to fetch (a rotation taken
+/// header-only): lacking it is waiting, so no step is issued from an older seed, which a node
+/// holding the newer one would step past again, and so on.
 pub(crate) fn deposit_seed_of(tx: &mut Tx<'_>, group: &Tid) -> Result<Option<Secret32>> {
     let actor = tx.core.home_owner(&tx.core.reader_of(group));
+    let keys = ak("keys.0")?;
+    let lacking = tx.core.ix.by_aspect.get(&(actor, keys.clone())).into_iter().flatten().any(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&actor, &keys).is_some_and(|ai| m.valid_at(ai) && m.missing(ai))));
+    if lacking {
+        return Ok(None);
+    }
     Ok(Core::keys_in(tx, &actor)?.and_then(|k| k.deposit_seed).map(Secret32::from_bytes))
 }
 

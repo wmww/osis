@@ -84,8 +84,11 @@ pub(crate) struct AccountView {
     /// Per removal commit, the held rotations carrying it (their headers name it; their minter
     /// signed it at the epoch they rotate).
     carriers: BTreeMap<CommitId, BTreeSet<CommitId>>,
-    /// The signing keys of the held epochs a counting rotation descending from them past them
-    /// carries a removal in (`revoked`).
+    /// The held rotations whose header names a removal (but one held that is no commit of the
+    /// account at the epoch it rotates): what revokes the epochs a counting one closes
+    /// (spec/permissions.md §5.5 Revoked).
+    carrying: BTreeSet<CommitId>,
+    /// The signing keys of the revoked epochs (`revoked`).
     revoked: BTreeSet<[u8; 32]>,
 }
 
@@ -228,12 +231,9 @@ impl AccountView {
         self.carriers.get(c).is_some_and(|rs| rs.iter().any(|r| !self.rotation_counts(r)))
     }
 
-    /// [for Fathom's review] Whether the held epoch whose signing key is `key` is superseded by a
-    /// counting rotation descending from it, it excluded, that carries a removal
-    /// (spec/sync-set.md §3 Leaving): at a node of the account, a removal its header names that
-    /// its minter signed at the epoch it rotates (`carriers`); elsewhere every removal its header
-    /// names, but one held here that is no commit of the account at the epoch it rotates. A key
-    /// of no held epoch is not.
+    /// Whether the held epoch whose signing key is `key` is revoked (spec/permissions.md §5.5
+    /// Revoked; spec/sync-set.md §3 Leaving): a counting rotation closing it carries a removal. A
+    /// key of no held epoch is not.
     pub(crate) fn revoked(&self, key: &[u8; 32]) -> bool {
         self.revoked.contains(key)
     }
@@ -339,9 +339,6 @@ impl AccountView {
 pub struct JudgedEpochs {
     epochs: BTreeMap<CommitId, (EpochStanding<CommitId>, Option<bool>)>,
     named: BTreeSet<CommitId>,
-    /// Of `named`, those counting only while they wait for a list of D (`osis_perm::Epochs::waits`):
-    /// a lister still names them.
-    waiting: BTreeSet<CommitId>,
     /// The chain is read in doubt (`AccountView::doubt`), so the user was told.
     doubt: bool,
     /// This node's account: its commits on D that do not count, though their epoch may
@@ -364,11 +361,6 @@ impl JudgedEpochs {
         self.epochs.get(epoch).map_or(EpochStanding::Closed(BTreeSet::new()), |x| x.0.clone())
     }
 
-    /// Whether commit `id` counts only while it waits for a list of D (`waiting`).
-    pub(crate) fn waits(&self, id: &CommitId) -> bool {
-        self.waiting.contains(id)
-    }
-
     /// Whether the chain was read in doubt (`AccountView::doubt`).
     pub(crate) fn doubt(&self) -> bool {
         self.doubt
@@ -384,7 +376,6 @@ impl JudgedEpochs {
         self.named.contains(id).then(|| {
             let mut j = self.clone();
             j.named.remove(id);
-            j.waiting.remove(id);
             j
         })
     }
@@ -399,7 +390,7 @@ impl JudgedEpochs {
             };
             Value::List(vec![id(e), s, Value::uint(r.map_or(0, |c| 1 + u64::from(c)))])
         }).collect());
-        Value::List(vec![epochs, Value::List(self.named.iter().map(id).collect()), Value::List(self.waiting.iter().map(id).collect()), Value::Bool(self.doubt), Value::List(self.cut.iter().map(id).collect())])
+        Value::List(vec![epochs, Value::List(self.named.iter().map(id).collect()), Value::Bool(self.doubt), Value::List(self.cut.iter().map(id).collect())])
     }
 
     pub(crate) fn from_value(v: &osis_base::Value) -> Option<JudgedEpochs> {
@@ -409,9 +400,8 @@ impl JudgedEpochs {
             _ => None,
         };
         let Value::List(top) = v else { return None };
-        let [Value::List(xs), Value::List(named), Value::List(waiting), Value::Bool(doubt), Value::List(cut)] = top.as_slice() else { return None };
+        let [Value::List(xs), Value::List(named), Value::Bool(doubt), Value::List(cut)] = top.as_slice() else { return None };
         let named = named.iter().map(id).collect::<Option<BTreeSet<CommitId>>>()?;
-        let waiting = waiting.iter().map(id).collect::<Option<BTreeSet<CommitId>>>()?;
         let cut = cut.iter().map(id).collect::<Option<BTreeSet<CommitId>>>()?;
         let mut epochs = BTreeMap::new();
         for x in xs {
@@ -430,7 +420,7 @@ impl JudgedEpochs {
             };
             epochs.insert(id(e)?, (s, r));
         }
-        Some(JudgedEpochs { epochs, named, waiting, doubt: *doubt, cut })
+        Some(JudgedEpochs { epochs, named, doubt: *doubt, cut })
     }
 }
 
@@ -660,7 +650,23 @@ impl Core {
         order.dedup();
         let received: Vec<CommitId> = order.into_iter().map(|x| x.1).collect();
         let chosen = self.sides.account(p);
-        let rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, devices.as_ref(), &[], &[], None);
+        // a header names the removals its rotation carries, but at a node of the account carries
+        // only its minter's signed at the epoch it rotates (spec/permissions.md §5.4): anyone
+        // holding an old epoch's key mints a rotation there naming whatever it likes
+        let mut carriers: BTreeMap<CommitId, BTreeSet<CommitId>> = BTreeMap::new();
+        for (id, at, r) in &rots {
+            let Some(m) = devices.as_ref().and_then(|d| d.minter.get(id)) else { continue };
+            for c in r.removals.iter().filter(|c| devices.as_ref().and_then(|d| d.commits.get(*c)) == Some(&(Some(*m), *at))) {
+                carriers.entry(*c).or_default().insert(*id);
+            }
+        }
+        // what revokes (spec/permissions.md §5.5 Revoked): a rotation is its word for the removals
+        // it names, but one held here must be the account's commit at the epoch it rotates. Read
+        // alike at every node, a node of P included: no inner signature, so a rebuild reading
+        // them later judges the same (a forged removal only revokes more, and only a rotation
+        // counting here revokes)
+        let carrying: BTreeSet<CommitId> = rots.iter().filter(|(_, at, r)| r.removals.iter().any(|c| self.ix.commits.get(c).is_none_or(|m| m.view.author == *p && m.view.epoch == Some(*at)))).map(|(id, ..)| *id).collect();
+        let rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, devices.as_ref(), &carrying, &[], &[], None);
         let mut authorized = BTreeMap::new();
         let mut standing = BTreeSet::new();
         if let (Some(a), Some(dv)) = (self.accounts.get(p), devices.as_ref()) {
@@ -687,18 +693,8 @@ impl Core {
                 }
             }
         }
-        // a header names the removals its rotation carries, but carries only its minter's signed at
-        // the epoch it rotates (spec/permissions.md §5.4): anyone holding an old epoch's key mints a
-        // rotation there naming whatever it likes
-        let mut carriers: BTreeMap<CommitId, BTreeSet<CommitId>> = BTreeMap::new();
-        for (id, at, r) in &rots {
-            let Some(m) = devices.as_ref().and_then(|d| d.minter.get(id)) else { continue };
-            for c in r.removals.iter().filter(|c| devices.as_ref().and_then(|d| d.commits.get(*c)) == Some(&(Some(*m), *at))) {
-                carriers.entry(*c).or_default().insert(*id);
-            }
-        }
-        let mut v = AccountView { rule, rotations, chosen, received, devices, authorized, standing, epochs, by_name: BTreeMap::new(), carriers, revoked: BTreeSet::new() };
-        v.revoked = self.revoked_keys(p, &v, &rots);
+        let revoked = epochs.iter().filter(|(e, _)| rule.revoked(e)).map(|(_, e)| e.signing.to_bytes()).collect();
+        let mut v = AccountView { rule, rotations, chosen, received, devices, authorized, standing, epochs, by_name: BTreeMap::new(), carriers, carrying, revoked };
         // a name repeated (two rotations minting one key) is read as its lowest ID
         for (id, e) in v.epochs.iter().filter(|(id, _)| v.rule.chain().epoch_counts(id)) {
             if let Some(name) = v.name(e) {
@@ -706,31 +702,6 @@ impl Core {
             }
         }
         Some(v)
-    }
-
-    /// `AccountView::revoked` of account `p`'s chain `v` over its held rotations `rots`: every
-    /// held epoch a counting rotation carrying a removal descends from, that rotation excluded.
-    /// The deepest carriers first, so a carrier already within another's line adds nothing:
-    /// O(the epochs marked) besides the carriers and the removals they carry.
-    fn revoked_keys(&self, p: &Tid, v: &AccountView, rots: &[(CommitId, CommitId, osis_commit::RotationHeader)]) -> BTreeSet<[u8; 32]> {
-        let carrying: BTreeSet<&CommitId> = v.carriers.values().flatten().collect();
-        let carries = |id: &CommitId, at: &CommitId, r: &osis_commit::RotationHeader| match &v.devices {
-            Some(_) => carrying.contains(id),
-            // outside the account a counting rotation is its word for the removals it names, but
-            // one held here must be the account's commit at the epoch the rotation rotates
-            None => r.removals.iter().any(|c| self.ix.commits.get(c).is_none_or(|m| m.view.author == *p && m.view.epoch == Some(*at))),
-        };
-        let mut carriers: Vec<(Option<u64>, CommitId)> = rots.iter().filter(|(id, at, r)| v.rotation_counts(id) && carries(id, at, r)).map(|(id, ..)| (v.epochs.get(id).and_then(|e| e.height), *id)).collect();
-        carriers.sort_by(|a, b| b.cmp(a));
-        let mut marked: BTreeSet<CommitId> = BTreeSet::new();
-        for (_, r) in carriers {
-            if marked.contains(&r) {
-                continue;
-            }
-            marked.insert(FIRST_EPOCH);
-            marked.extend(v.line(&r).into_iter().flatten().filter(|x| **x != r));
-        }
-        marked.iter().filter_map(|e| v.epochs.get(e)).map(|e| e.signing.to_bytes()).collect()
     }
 
     /// What the epoch rule (spec/permissions.md §5.5) says of held commit `id` (`view` its view):
@@ -748,12 +719,6 @@ impl Core {
     /// nowhere, such as a request, is never saved by an addendum).
     pub fn counts_at_epoch(&self, id: &CommitId, author: &Tid, epoch: Option<CommitId>) -> bool {
         self.standing_by(id, author, epoch) == EpochStanding::Counts
-    }
-
-    /// Whether held commit `id` of `author` counts only while it waits for a list of D
-    /// (spec/permissions.md §5.5 Waiting): no word names it yet.
-    pub(crate) fn waits(&self, id: &CommitId, author: &Tid) -> bool {
-        self.ix.epochs.get(author).is_some_and(|j| j.waits(id))
     }
 
     fn standing_by(&self, id: &CommitId, author: &Tid, epoch: Option<CommitId>) -> EpochStanding<CommitId> {
@@ -924,21 +889,16 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         // a node of the account waits for D's lists (spec/permissions.md §5.5 Waiting): what
         // proves it a node of P is D's roster, so lacking a list of D is never not being one
         let awaited = tx.core.accounts.get(&p).map(|a| osis_perm::Awaited { thing: a.devices, listed: v.rotations.iter().map(|r| r.id).filter(|r| tx.core.ix.lists_on.contains(&(a.devices, *r))).collect() });
-        let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), v.chosen, &v.received, v.devices.as_ref(), &lists, &listings, awaited);
+        let rule = Epochs::new(FIRST_EPOCH, v.rotations.iter().cloned(), v.chosen, &v.received, v.devices.as_ref(), &v.carrying, &lists, &listings, awaited);
         let mut named: BTreeSet<CommitId> = was.as_ref().map(|j| j.named.clone()).unwrap_or_default();
-        let mut waiting: BTreeSet<CommitId> = was.as_ref().map(|j| j.waiting.clone()).unwrap_or_default();
         for c in &cands {
             named.remove(c);
-            waiting.remove(c);
             if let Some(ac) = commit_of(c)
                 && !now.contains_key(c)
                 && rule.unnamed(&ac.epoch) != EpochStanding::Counts
                 && rule.counts(&ac)
             {
                 named.insert(*c);
-                if rule.waits(&ac) {
-                    waiting.insert(*c);
-                }
             }
         }
         let doubt = v.doubt();
@@ -947,7 +907,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         let was_cut = was.as_ref().map(|j| j.cut.clone()).unwrap_or_default();
         let cut_moved: Vec<CommitId> = cut.symmetric_difference(&was_cut).copied().collect();
         cands.extend(cut_moved);
-        let judged = Arc::new(JudgedEpochs { epochs: now, named, waiting, doubt: doubt.is_some(), cut });
+        let judged = Arc::new(JudgedEpochs { epochs: now, named, doubt: doubt.is_some(), cut });
         if was.as_deref() == Some(&*judged) {
             continue;
         }

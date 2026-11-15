@@ -1,7 +1,8 @@
 //! Account signing epochs (issues/account-signing.md): one account P whose nodes sign as P at
 //! a signing epoch. Removing a node is a removal commit on the devices actor (only P's nodes
 //! receive it) followed by a rotation of the signing epoch that names it; what still counts of
-//! a closed epoch is decided as for any ended standing (the demoter-frontier rule with addenda,
+//! a revoked epoch (closed by a counting rotation carrying a removal; a merge or other rotation
+//! revoking no one ends nothing) is decided as for any ended standing (the demoter-frontier rule with addenda,
 //! spec/permissions.md §5): by what the rotator had received (the rotation's list), by what
 //! other writers of the thing had received before the earliest rotation closing the epoch
 //! (addenda; a writer's rule, judgment reads no `ts`), and by
@@ -683,6 +684,9 @@ impl World {
         // may box the node it removes).
         let descends = |e: Epoch, r: usize| e != 0 && minted(e).map_or(false, |m| lines.on(r, m));
         let closes = |r: usize, e: Epoch| counting[r] && !descends(e, r);
+        // An epoch is revoked once a counting rotation closing it carries a removal: a rotation
+        // revoking no one only re-keys (spec/permissions.md §5.5 Revoked).
+        let revoked = |e: Epoch| (0..n).any(|r| closes(r, e) && matches!(self.items[r].kind, Kind::Rotation { removes: Some(_), .. }));
         // Every counting head is open (epoch 0 when no rotation counts): one outside P, several
         // at a node of P only for its devices' rotations made at once. The preferred head (the
         // one whose line holds the earliest placed rotation not on every one's) is where a
@@ -738,7 +742,8 @@ impl World {
                     if rot(i).is_some() || e != 0 && minted(e).is_none() {
                         return rot(i).is_some() && epoch_counts(e);
                     }
-                    if open(e) {
+                    // ... or while no counting closer of it carries a removal (it is not revoked)
+                    if open(e) || !revoked(e) {
                         return true;
                     }
                     let id = self.items[i].id;
@@ -897,7 +902,9 @@ impl World {
         let stands = |r: usize| self.stands(&all, r);
         // An epoch no honest rotation ends stays a head: it is open. A re-added node's removal
         // ends nothing at the end (the upper bound) but may have at a lister before (the lower).
-        let chain = if !closers.iter().any(|&r| self.ends(&all, e, r, if at_least { 0 } else { LATE })) {
+        // An epoch no rotation carrying a removal closes is not revoked: it counts unnamed.
+        let revoked = closers.iter().any(|&r| matches!(self.items[r].kind, Kind::Rotation { removes: Some(_), .. }));
+        let chain = if !revoked || !closers.iter().any(|&r| self.ends(&all, e, r, if at_least { 0 } else { LATE })) {
             true
         } else {
             let earliest = closers.iter().map(|&r| self.items[r].ts).min().unwrap();
@@ -2791,6 +2798,18 @@ mod tests {
         b.add(Kind::Rotation { at, new, supersedes, names, removes: None }, author, Some(at), t, t, vec![t; b.w.nodes], false)
     }
 
+    /// Rotation item `r` carries X's removal: a removal commit appended last (P's nodes alone
+    /// receive it), so the items before keep their indices.
+    fn carry(b: &mut Builder, r: usize) {
+        let (at, t) = (b.w.items[r].epoch, b.w.items[r].t);
+        let recv = (0..b.w.nodes).map(|m| if m < b.w.np { t } else { LATE }).collect();
+        let rc = b.add(Kind::Removal { node: X }, b.w.items[r].author, at, t, t, recv, false);
+        let id = b.w.items[rc].id;
+        if let Kind::Rotation { removes, .. } = &mut b.w.items[r].kind {
+            *removes = Some(id);
+        }
+    }
+
     /// Step 5: X's backdated write after its removal never counts once the rotation is held;
     /// its write before it, received by the rotator, counts (the rotator's list).
     #[test]
@@ -2853,12 +2872,13 @@ mod tests {
             b.w.items[m].recv[4] = 8;
             // the thief's merge lists its own write at the epoch it closes
             b.add(Kind::List { rot: 5, thing: 0, lists: vec![3] }, X, None, 7, 7, at(8), true);
+            carry(b, r0);
         });
-        let fork_only = vec![true, true, true, false, false, false];
+        let fork_only = vec![true, true, true, false, false, false, false];
         let v = w.judge(&fork_only, None);
         assert!(v.counting[0] && !v.counting[1] && !v.valid[2], "a fork beside the rotation held first never counts");
-        assert!(w.judge(&[false, true, true, false, false, false], None).valid[2], "without the removal its write counts (unaware reader)");
-        let merged = vec![true, true, true, true, false, false];
+        assert!(w.judge(&[false, true, true, false, false, false, false], None).valid[2], "without the removal its write counts (unaware reader)");
+        let merged = vec![true, true, true, true, false, false, false];
         let v = w.judge(&merged, None);
         assert!(!v.valid[2] && v.warning(), "told once the owner's merge rejects the fork");
         let both = all(&w);
@@ -3057,8 +3077,9 @@ mod tests {
         // A list over the bound lists nothing.
         let mut w = b.w.clone();
         let r = Builder::new(w.clone()).w.items.len();
-        w.items.push(Item { id: r as u32 + 1, kind: Kind::Rotation { at: 0, new: 1, supersedes: vec![0], names: vec![], removes: None }, author: 0, epoch: Some(0), t: 3, ts: 3, recv: vec![3; 3], hostile: false });
-        w.items.push(Item { id: r as u32 + 2, kind: Kind::List { rot: r as u32 + 1, thing: 0, lists: vec![1, 2] }, author: 0, epoch: None, t: 3, ts: 3, recv: vec![3; 3], hostile: false });
+        w.items.push(Item { id: r as u32 + 1, kind: Kind::Removal { node: X }, author: 0, epoch: Some(0), t: 3, ts: 3, recv: vec![3; 3], hostile: false });
+        w.items.push(Item { id: r as u32 + 2, kind: Kind::Rotation { at: 0, new: 1, supersedes: vec![0], names: vec![], removes: Some(r as u32 + 1) }, author: 0, epoch: Some(0), t: 3, ts: 3, recv: vec![3; 3], hostile: false });
+        w.items.push(Item { id: r as u32 + 3, kind: Kind::List { rot: r as u32 + 2, thing: 0, lists: vec![1, 2] }, author: 0, epoch: None, t: 3, ts: 3, recv: vec![3; 3], hostile: false });
         let v = w.judge(&all(&w), None);
         assert!(!v.valid[0] && !v.valid[1]);
     }
@@ -3221,11 +3242,11 @@ mod tests {
             assert!(v.heads == vec![m] && v.visible[c1] && v.visible[c2], "observer {o}: {v:?}");
         }
         // The outsider received the second fork first: it follows that fork, whose epoch closes
-        // the first (the account's earlier write too, which no word the fork's line holds names)
+        // the merge's; the fork carries no removal, so the account's write there still counts
         let mut first = w.clone();
         first.items[l2].recv[2] = 0;
         let v = first.judge_at(2, &all);
-        assert!(v.counting[l2] && !v.counting[m] && !v.visible[c2], "{v:?}");
+        assert!(v.counting[l2] && !v.counting[m] && v.visible[c2], "{v:?}");
         let mut st = Stats::default();
         check(&w, &mut st);
         assert_eq!(st.hard_failures(), 0, "{st:?}");

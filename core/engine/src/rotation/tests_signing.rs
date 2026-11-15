@@ -76,6 +76,58 @@ fn remove(lp: &mut LocalPeer, by: usize, d: Tid, node: usize) -> Done {
     lp.peers[by].engine.demote(&d, &Demotion { holder: n, new: None, retain: None }).unwrap()
 }
 
+// spec/permissions.md §5.5 (Revoked; Epoch rule): an outsider (peer 2) holds account P's grant
+// to it on P's thing t and P's write there, both at P's first epoch. P rotates with no removal:
+// the outsider keeps both in every arrival order (the rotation from a Prove before its lists, the
+// rotation whole, with its lists, the lists after) and across a restart, as a node never
+// concludes from a list it does not hold yet. Then P removes peer 1 (who has not received its
+// removal and writes at the epoch the removal closes, revoked): that write, reaching the outsider
+// after the removal's rotation, counts nowhere (the rotator never held it; no witness held it
+// before the closer).
+#[test]
+fn an_outsider_keeps_the_accounts_word_across_a_rotation_revoking_no_one_spec_permissions_5_5() {
+    for (k, whole) in [false, true].into_iter().enumerate() {
+        let (mut lp, a, t) = world(3, 2);
+        let o = lp.peers[2].engine.me();
+        let r = lp.peers[0].engine.rotate_account(&a.account).unwrap().unwrap();
+        let pk = lp.peers[0].engine.package(&r).unwrap().unwrap();
+        let rots = lp.peers[0].engine.prove_rotations().unwrap();
+        let keeps = |lp: &mut LocalPeer, when: &str| {
+            assert_eq!(lp.peers[2].engine.core.role_now(&o, &t), Some(Role::Write), "order {k}, {when}: the grant at the closed epoch stands");
+            assert_eq!(read(lp, 2, t), Some(Value::Str("p".into())), "order {k}, {when}: the write at the closed epoch stands");
+        };
+        lp.advance(1);
+        match whole {
+            false => lp.peers[2].engine.take_rotations(rots).unwrap(),
+            true => drop(lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap()),
+        }
+        assert!(lp.peers[2].engine.header(&r).is_some(), "order {k}: the rotation held");
+        keeps(&mut lp, "the rotation before its lists");
+        for l in &pk.lists {
+            lp.peers[2].engine.hold_lists(l).unwrap();
+        }
+        keeps(&mut lp, "its lists held");
+        lp.peers[2].restart(0).unwrap();
+        keeps(&mut lp, "restarted");
+    }
+    // a removed node's write at the epoch its removal closes
+    let (mut lp, a, t) = world(3, 2);
+    let r = lp.peers[0].engine.rotate_account(&a.account).unwrap().unwrap();
+    send(&mut lp, 0, 1, &[r]);
+    send(&mut lp, 0, 2, &[r]);
+    let done = remove(&mut lp, 0, a.devices, 1);
+    let late = write(&mut lp, 1, t, "removed");
+    assert_eq!(lp.peers[1].engine.header(&late).unwrap().epoch, Some(r), "signed at the epoch the removal closes");
+    let pk = lp.peers[0].engine.package(&done.commits[1]).unwrap().unwrap();
+    lp.advance(1);
+    lp.peers[2].receive_with(&pk.bytes, pk.blobs.clone(), &pk.lists).unwrap();
+    send(&mut lp, 1, 2, &[late]);
+    assert!(lp.peers[2].engine.header(&late).is_some(), "held");
+    assert_eq!(read(&mut lp, 2, t), Some(Value::Str("p".into())), "revoked, unnamed: it counts not");
+    lp.peers[2].restart(0).unwrap();
+    assert_eq!(read(&mut lp, 2, t), Some(Value::Str("p".into())), "restarted");
+}
+
 // spec/permissions.md §3, §5.5: removing a node from D is the removal and then a rotation of the
 // account naming in its thing lists what the rotator held at the epoch it closes; at an outsider
 // holding both, the account's earlier writes and grants still count, the removed node's later
@@ -313,8 +365,9 @@ fn a_writers_addendum_keeps_what_it_received_spec_permissions_5_5() {
 // lacks the other's removal (blocked), so each node holding both owes a rotation, none
 // designated: both rotate at once, superseding both heads and naming them (signed at each), and
 // their two rotations fork again. Outside the account only one of them is followed, so that fork
-// is owed a merge too: the first node asked makes it, the other then owes nothing, and every
-// write of the account counts at the outsider
+// is owed a merge too: the first node asked makes it, the other then owes nothing. A merge
+// revokes nothing (spec/permissions.md §5.5 Revoked), so every write of the account counts at the
+// outsider throughout, a write at the head it does not follow included
 #[test]
 fn concurrent_rotations_fork_and_every_node_supersedes_them_spec_crypto_9() {
     let (mut lp, a, t) = world(4, 3);
@@ -344,7 +397,7 @@ fn concurrent_rotations_fork_and_every_node_supersedes_them_spec_crypto_9() {
     send(&mut lp, 1, 3, &[m1]);
     send(&mut lp, 0, 3, &[m0, w0]);
     // node 0 writes at its own rotation, which the outsider holds beside the one it follows
-    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("p".into())), "not yet: m1 is followed");
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "m1 is followed, and revokes nothing m0 signed");
     let m2 = lp.peers[0].engine.signing_due().unwrap().commits;
     assert_eq!(m2.len(), 1, "the fork is owed a merge");
     send(&mut lp, 0, 1, &m2);
@@ -352,9 +405,7 @@ fn concurrent_rotations_fork_and_every_node_supersedes_them_spec_crypto_9() {
     // the merge's list names node 0's listing, which names its write
     let ids = lp.peers[0].engine.commit_ids();
     send(&mut lp, 0, 3, &ids);
-    // its body, dropped while it did not count, is offered again
-    send(&mut lp, 0, 3, &[w0]);
-    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "node 0's write counts by its word");
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("after".into())), "node 0's write counts after the merge");
     assert_eq!(lp.peers[3].engine.core.account_view(&a.account).unwrap().heads(), m2);
     assert!(lp.peers[3].engine.account_disputes().is_empty());
 }
@@ -823,10 +874,10 @@ fn a_removed_nodes_reforks_never_count_after_the_removal_spec_permissions_5_4() 
     }
 }
 
-// spec/permissions.md §5.4 (Placing; Warning): a reader the removed node's fork reached before the
-// removal follows the fork; it is told once the account's line rejects it, and stays. Its user's
-// switch to the account's line holds (through a rebuild and later forks), and every write of the
-// account then counts there
+// spec/permissions.md §5.4 (Placing; Warning), §5.5 (Revoked): a reader the removed node's fork
+// reached before the removal follows the fork; it is told once the account's line rejects it, and
+// stays. The fork carries no removal, so every write of the account counts there throughout. Its
+// user's switch to the account's line holds (through a rebuild and later forks)
 #[test]
 fn a_reader_the_fork_reached_first_stays_until_its_user_switches_spec_permissions_5_4() {
     let (mut lp, a, t) = world(6, 3);
@@ -846,7 +897,7 @@ fn a_reader_the_fork_reached_first_stays_until_its_user_switches_spec_permission
         send(&mut lp, 0, k, &done.commits[1..]);
         send(&mut lp, 3, k, &[f1, m1, w]);
         assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), vec![f2], "peer {k} follows the fork it held first");
-        assert_ne!(read(&mut lp, k, t), Some(Value::Str("merged".into())), "peer {k}: the account's line is beside it");
+        assert_eq!(read(&mut lp, k, t), Some(Value::Str("merged".into())), "peer {k}: the fork revokes nothing of the line beside it");
         assert_eq!(told(&mut lp, k), 0, "peer {k}: nothing rejects its fork yet");
     }
     // the next rotation of the account rejects the fork: told, and staying
@@ -865,22 +916,21 @@ fn a_reader_the_fork_reached_first_stays_until_its_user_switches_spec_permission
     for k in [4, 5] {
         assert_eq!(told(&mut lp, k), 1, "peer {k} is told");
         assert_eq!(lp.peers[k].engine.core.account_view(&a.account).unwrap().heads(), vec![f2], "peer {k} stays");
-        assert_ne!(read(&mut lp, k, t), Some(Value::Str("after".into())));
+        assert_eq!(read(&mut lp, k, t), Some(Value::Str("after".into())));
         let ds = lp.peers[k].engine.account_disputes();
         assert!(ds.len() == 1 && ds[0].side == f2 && ds[0].lines.contains(&m2) && !ds[0].chosen);
     }
     // peer 5's user switches; a rebuild and a later fork change nothing
     lp.peers[5].engine.choose_line(a.account, m2).unwrap();
-    // the write's body, dropped while it did not count, is offered again
-    send(&mut lp, 1, 5, &[w2]);
-    assert_eq!(read(&mut lp, 5, t), Some(Value::Str("after".into())), "switched");
+    assert_eq!(lp.peers[5].engine.core.account_view(&a.account).unwrap().heads(), vec![m2], "switched");
+    assert_eq!(read(&mut lp, 5, t), Some(Value::Str("after".into())));
     lp.peers[5].engine.rebuild_index().unwrap();
     let f3 = refork(&mut lp, 2, &a, 82);
     give(&mut lp, &f3, &[5]);
     assert_eq!(read(&mut lp, 5, t), Some(Value::Str("after".into())), "the switch holds");
     let ds = lp.peers[5].engine.account_disputes();
     assert!(ds.len() == 1 && ds[0].side == m2 && ds[0].chosen);
-    assert_ne!(read(&mut lp, 4, t), Some(Value::Str("after".into())), "peer 4 stays with the fork");
+    assert_eq!(lp.peers[4].engine.core.account_view(&a.account).unwrap().heads(), vec![f2], "peer 4 stays with the fork");
 }
 
 // spec/permissions.md §5.4 (Following, at a node of P): a removed node's plain rotation never
@@ -2101,11 +2151,11 @@ fn a_removed_nodes_withheld_list_keeps_none_of_its_later_word_on_d_spec_permissi
     }
 }
 
-// spec/permissions.md §5.5 (Cutoff; Listings), §3 (Off the roster alone it stays), §5.4: node 0 pairs node 2 while node 1,
-// not holding that grant, rotates the account. Node 2 takes the rotation with its lists: the
-// list of D names no grant of node 2 (node 1 never held it), so it reads itself off D's roster
-// until node 0's listing names the grant. No rotation carries a removal of it, so it keeps the
-// account throughout (a restart included), and once settled every node holds it on D's roster.
+// spec/permissions.md §5.5 (Revoked; Listings), §3, §5.4: node 0 pairs node 2 while node 1, not
+// holding that grant, rotates the account. Node 2 takes the rotation with its lists: the list of D
+// names no grant of node 2 (node 1 never held it), but the rotation revokes no one, so the grant
+// counts and node 2 stays on D's roster and keeps the account throughout (a restart included);
+// once settled every node holds it on D's roster.
 #[test]
 fn a_node_paired_beside_a_concurrent_rotation_stays_spec_permissions_5_5() {
     let mut lp = LocalPeer::new_bare(3, 7, WallMs(1_700_000_000_000)).unwrap();
@@ -2131,7 +2181,7 @@ fn a_node_paired_beside_a_concurrent_rotation_stays_spec_permissions_5_5() {
     let r = lp.peers[1].engine.rotate_account(&a.account).unwrap().unwrap();
     send(&mut lp, 1, 2, &[r]);
     assert!(holds(&mut lp), "the rotation held with its lists");
-    assert!(!lp.peers[2].engine.roster(&a.devices).contains_key(&two), "the shape: off D's roster as node 1's list reads");
+    assert!(lp.peers[2].engine.roster(&a.devices).contains_key(&two), "on D's roster though node 1's list names no grant of it");
     lp.peers[2].engine.signing_due().unwrap();
     assert!(holds(&mut lp), "its answer made");
     lp.peers[2].restart(1).unwrap();
@@ -2149,7 +2199,7 @@ fn a_node_paired_beside_a_concurrent_rotation_stays_spec_permissions_5_5() {
     }
 }
 
-// spec/permissions.md §3 (A node removed from its account's D is no node of P), §5.4: as above, node 2 off D's roster by node 1's list.
+// spec/permissions.md §3 (A node removed from its account's D is no node of P), §5.4: as above.
 // Node 0 removes node 2; node 2 receives the removal first with a rotation by node 1 at node 1's
 // epoch whose header names it: node 1 did not sign that removal, so the rotation carries none and
 // node 2 stays. The removal's own rotation (node 0's, carrying it) then makes node 2 leave.
@@ -2174,7 +2224,7 @@ fn a_header_naming_a_removal_its_minter_did_not_make_removes_no_one_spec_permiss
     let holds = |lp: &mut LocalPeer| lp.peers[2].engine.core.accounts.contains_key(&a.account);
     let r = lp.peers[1].engine.rotate_account(&a.account).unwrap().unwrap();
     send(&mut lp, 1, 2, &[r]);
-    assert!(holds(&mut lp) && !lp.peers[2].engine.roster(&a.devices).contains_key(&two), "the shape: kept, off D's roster");
+    assert!(holds(&mut lp), "kept");
     let done = remove(&mut lp, 0, a.devices, 2);
     let rem = done.commits[0];
     let forged = {

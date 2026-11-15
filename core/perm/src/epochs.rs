@@ -2,12 +2,16 @@
 //! function of the held rotations, the side, and the held lists, listings and addenda naming
 //! the account's commits. Nothing here reads `ts`, counters or the inner signature.
 //!
-//! Principle: closing an epoch ends the standing of what was signed at it, as a demotion ends a
-//! holder's. A commit at a closed epoch, void ones included (a rotation the chain rejects
-//! closes nothing honest nodes signed there), counts iff some party's word names it: the rotator's
-//! (a thing list of a counting rotation), the account's own later word (a counting listing), or
-//! another writer's (an addendum against a counting rotation closing the epoch). When each
-//! party names a commit is the one cutoff, a writer's rule (`fit_list` for the bound).
+//! Principle: a revocation ends the standing of what was signed at the epochs it closes, as a
+//! demotion ends a holder's; a rotation revoking no one only re-keys, as a thing's key rotation
+//! ends no earlier write. An epoch is revoked once a counting rotation closing it carries a
+//! removal (the caller reads which do). A commit at a revoked epoch, void ones included (a rotation
+//! the chain rejects closes nothing honest nodes signed there), counts iff some party's word
+//! names it: the rotator's (a thing list of a counting rotation), the account's own later word (a
+//! counting listing), or another writer's (an addendum against a counting rotation closing the
+//! epoch). When each party names a commit is the one cutoff, a writer's rule (`fit_list` for the
+//! bound). So nothing counts less for want of a word that may still come but where a removal shows
+//! that some node's word at the epoch must no longer count.
 //!
 //! Addenda are not judged here: an addendum counts by §5.2's least fixpoint, which may run
 //! through other accounts' epochs (a witness's addendum at its own closed epoch), so it is
@@ -80,6 +84,8 @@ pub struct Epochs<E, T> {
     open: BTreeSet<E>,
     /// Per held epoch that is not open (counting or void), its closers.
     closers: BTreeMap<E, BTreeSet<E>>,
+    /// The closed epochs a closer carrying a removal closes.
+    revoked: BTreeSet<E>,
     /// (commit, thing): a counting thing list or counting listing names the commit on the thing.
     named: BTreeSet<(E, T)>,
     awaited: Option<Awaited<E, T>>,
@@ -89,18 +95,20 @@ pub struct Epochs<E, T> {
 
 impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     /// Judges the account with first epoch `root`: its held `rotations` as `Chain::new` places
-    /// them (`chosen`, `received`, `devices`) and the held thing lists and listings naming its
-    /// commits; `awaited`, at a node of the account, the thing whose lists it waits for.
+    /// them (`chosen`, `received`, `devices`), of which `carriers` carry a removal (spec/permissions.md
+    /// §5.5 Revoked), and the held thing lists and listings naming its commits; `awaited`, at a
+    /// node of the account, the thing whose lists it waits for.
     #[allow(clippy::too_many_arguments)]
-    pub fn new<M: Ord + Copy>(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, chosen: Option<E>, received: &[E], devices: Option<&Devices<E, M>>, lists: &[ThingList<E, T>], listings: &[Listing<E, T>], awaited: Option<Awaited<E, T>>) -> Epochs<E, T> {
+    pub fn new<M: Ord + Copy>(root: E, rotations: impl IntoIterator<Item = Rotation<E>>, chosen: Option<E>, received: &[E], devices: Option<&Devices<E, M>>, carriers: &BTreeSet<E>, lists: &[ThingList<E, T>], listings: &[Listing<E, T>], awaited: Option<Awaited<E, T>>) -> Epochs<E, T> {
         let rotations: Vec<Rotation<E>> = rotations.into_iter().collect();
         let held: BTreeSet<E> = rotations.iter().map(|r| r.id).chain([root]).collect();
         let supersedes: BTreeMap<E, BTreeSet<E>> = rotations.iter().map(|r| (r.id, r.supersedes.clone())).collect();
         let chain = Chain::new(root, rotations, chosen, received, devices);
         let held: Vec<E> = held.into_iter().filter(|e| chain.holds(e)).collect();
         let open = held.iter().filter(|e| chain.open(e)).copied().collect();
-        let mut e = Epochs { chain, open, closers: BTreeMap::new(), named: BTreeSet::new(), awaited, deciders: BTreeMap::new() };
+        let mut e = Epochs { chain, open, closers: BTreeMap::new(), revoked: BTreeSet::new(), named: BTreeSet::new(), awaited, deciders: BTreeMap::new() };
         e.closers = held.iter().filter(|x| !e.open.contains(x)).map(|x| (*x, e.chain.closers(x).into_iter().collect())).collect();
+        e.revoked = e.closers.iter().filter(|(_, cs)| !cs.is_disjoint(carriers)).map(|(x, _)| *x).collect();
         // a rotation lists the commits at the epochs it supersedes; an epoch no counting rotation
         // supersedes (a void one whose line was rejected below it) is named by listings alone,
         // and any of its closers' lists stands for them
@@ -132,14 +140,14 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     }
 
     /// Whether `c` counts whole: a held rotation counts by the chain alone; any other commit
-    /// iff its epoch is open, or is held and a counting thing list or listing on one of its
-    /// things names it, or it waits (`waits`).
+    /// iff its epoch is open or closed unrevoked, or is held and a counting thing list or listing
+    /// on one of its things names it, or it waits (`waits`).
     pub fn counts(&self, c: &AccountCommit<E, T>) -> bool {
         if self.chain.holds(&c.id) {
             return self.chain.counts(&c.id);
         }
-        if !self.closers.contains_key(&c.epoch) {
-            return self.open.contains(&c.epoch);
+        if !self.revoked.contains(&c.epoch) {
+            return self.open.contains(&c.epoch) || self.closers.contains_key(&c.epoch);
         }
         c.things.iter().any(|t| self.named.contains(&(c.id, *t))) || self.waits(c)
     }
@@ -150,7 +158,12 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
         self.deciders.get(e).cloned().unwrap_or_default()
     }
 
-    /// Whether `c` counts only by waiting: a role commit at a closed epoch, named by no word, on
+    /// Whether held epoch `e` is revoked: a counting rotation closing it carries a removal.
+    pub fn revoked(&self, e: &E) -> bool {
+        self.revoked.contains(e)
+    }
+
+    /// Whether `c` counts only by waiting: a role commit at a revoked epoch, named by no word, on
     /// the awaited thing while one of the closers whose lists name its epoch's commits
     /// (`deciders`) does not decide there yet: any list may name it, so one held that does not
     /// says nothing. A lister still names it. Only role commits wait: D's roster, keys and seeds
@@ -158,7 +171,7 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     /// (`Chain::cut`), so a decider whose list never comes keeps none of its later word counting.
     pub fn waits(&self, c: &AccountCommit<E, T>) -> bool {
         let (Some(w), Some(deciders)) = (self.awaited.as_ref(), self.deciders.get(&c.epoch)) else { return false };
-        c.role && !self.chain.holds(&c.id) && c.things.contains(&w.thing) && !deciders.is_subset(&w.listed) && !c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
+        c.role && self.revoked.contains(&c.epoch) && !self.chain.holds(&c.id) && c.things.contains(&w.thing) && !deciders.is_subset(&w.listed) && !c.things.iter().any(|t| self.named.contains(&(c.id, *t)))
     }
 
     /// What the epoch rule says of `c` (`EpochStanding`).
@@ -170,9 +183,12 @@ impl<E: Ord + Copy, T: Ord + Copy> Epochs<E, T> {
     }
 
     /// What a commit signed at `e` that no word names stands as (its `standing`, a rotation
-    /// aside).
+    /// aside): it counts at an open epoch and at a closed one not revoked.
     pub fn unnamed(&self, e: &E) -> EpochStanding<E> {
-        if self.open.contains(e) { EpochStanding::Counts } else { EpochStanding::Closed(self.closers.get(e).cloned().unwrap_or_default()) }
+        match self.revoked.contains(e) || !self.open.contains(e) && !self.closers.contains_key(e) {
+            false => EpochStanding::Counts,
+            true => EpochStanding::Closed(self.closers.get(e).cloned().unwrap_or_default()),
+        }
     }
 }
 

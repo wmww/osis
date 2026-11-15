@@ -88,8 +88,14 @@ fn judge(rots: &[Rotation<u32>], commits: &[AccountCommit<u32, u32>], parts: Par
     judge_as(rots, &received, commits, parts)
 }
 
-fn judge_as(rots: &[Rotation<u32>], received: &[u32], commits: &[AccountCommit<u32, u32>], (l, g, a): Parts) -> Judged<u32> {
-    Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, received, None, l, g, None), commits.to_vec(), a.to_vec())
+/// Every rotation carries a removal (each revokes the epochs it closes) unless `carriers` says
+/// which do.
+fn judge_as(rots: &[Rotation<u32>], received: &[u32], commits: &[AccountCommit<u32, u32>], parts: Parts) -> Judged<u32> {
+    judge_carrying(rots, &rots.iter().map(|r| r.id).collect(), received, commits, parts)
+}
+
+fn judge_carrying(rots: &[Rotation<u32>], carriers: &BTreeSet<u32>, received: &[u32], commits: &[AccountCommit<u32, u32>], (l, g, a): Parts) -> Judged<u32> {
+    Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, received, None, carriers, l, g, None), commits.to_vec(), a.to_vec())
 }
 
 /// The rotator received X's write (100) and lists it; X's later write at the old epoch (101)
@@ -115,7 +121,7 @@ fn a_node_of_the_account_waits_for_the_devices_list() {
     let commits = [c(100, 0), c(101, 0), other, plain];
     let rots = [rot(1, 0, &[0], &[])];
     let received = [1];
-    let at = |l: &[ThingList<u32, u32>], listed: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, l, &[], Some(osis_perm::Awaited { thing: 0, listed: set(listed) })), commits.to_vec(), Vec::new());
+    let at = |l: &[ThingList<u32, u32>], listed: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, &set(&[1]), l, &[], Some(osis_perm::Awaited { thing: 0, listed: set(listed) })), commits.to_vec(), Vec::new());
     let waiting = at(&[], &[]);
     assert!(waiting.counts(&100) && waiting.counts(&101), "no list of D held: waiting");
     assert!(!waiting.counts(&102), "another thing's commits are unlisted");
@@ -134,7 +140,7 @@ fn only_a_list_of_a_rotation_superseding_the_epoch_ends_waiting() {
     let commits = [c(100, 0)];
     let rots = [rot(1, 0, &[0], &[]), rot(2, 1, &[1], &[])];
     let received = [1, 2];
-    let at = |listed: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, &[], &[], Some(osis_perm::Awaited { thing: 0, listed: set(listed) })), commits.to_vec(), Vec::new());
+    let at = |listed: &[u32]| Judged::new(Epochs::new::<u32>(0, rots.to_vec(), None, &received, None, &set(&[1, 2]), &[], &[], Some(osis_perm::Awaited { thing: 0, listed: set(listed) })), commits.to_vec(), Vec::new());
     assert!(at(&[2]).counts(&100), "the later list names nothing at epoch 0: waiting");
     assert!(!at(&[1]).counts(&100), "the superseding rotation's list judges");
 }
@@ -320,6 +326,7 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
     let mut lists = Vec::new();
     let mut listings = Vec::new();
     let mut addenda = Vec::new();
+    let mut carriers = BTreeSet::new();
     let ids = |v: &[u32]| -> BTreeSet<u32> { v.iter().map(|&id| pid_of(w, id)).collect() };
     for (i, it) in w.items.iter().enumerate() {
         if !held[i] {
@@ -331,6 +338,9 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
                 // merges always are).
                 let names: BTreeSet<u32> = names.iter().map(|&id| pid_of(w, id)).collect();
                 rots.push(Rotation { id: *new, at: *at, supersedes: supersedes.iter().copied().collect(), signed: names.clone(), names, takes: BTreeSet::new() });
+                if removes.is_some() {
+                    carriers.insert(*new);
+                }
                 if let Some(rm) = removes {
                     lists.push(ThingList { rotation: *new, thing: D, commits: ids(&[*rm]) });
                 }
@@ -378,7 +388,7 @@ fn perm_epochs(w: &World, o: usize, held: &[bool], side: Option<usize>) -> Judge
         }
         d
     });
-    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &received, devices.as_ref(), &lists, &listings, None), commits, addenda)
+    Judged::new(Epochs::new(0, rots, side.map(|s| pid(w, s)), &received, devices.as_ref(), &carriers, &lists, &listings, None), commits, addenda)
 }
 
 /// The first difference between the model's verdict `v` (`judge_at`) and perm at observer `o`

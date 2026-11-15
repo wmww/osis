@@ -2,9 +2,9 @@
 //! spec/crypto.md §9): the rotation a removal from P's devices actor D requires, with its thing
 //! lists; its take-up of the seeds D's `account.0` holds.
 //!
-//! Principle: closing an epoch ends the standing of what was signed at it, so a rotation names
-//! what its rotator holds there (its thing lists), as a demotion's frontier names what its
-//! demoter holds.
+//! Principle: a revocation ends the standing of what was signed at the epochs it closes, so a
+//! rotation names what its rotator holds there (its thing lists), as a demotion's frontier names
+//! what its demoter holds; every rotation names, as a later removal revokes earlier epochs.
 
 use super::account::things_of;
 use super::Done;
@@ -244,6 +244,11 @@ pub(crate) fn take_seeds(tx: &mut Tx<'_>, d: &Tid) -> Result<()> {
         tx.core.accounts.insert(p, Arc::new(n));
         // the epoch it can sign at may move
         tx.core.ix.epochs_due.insert(p);
+        // a part on the account itself sealed under an epoch whose seed came only now (a
+        // rotation's own `keys.0`, beside the `account.0` it is taken from) opens now: its stored
+        // entries are opened again
+        let lacking: Vec<CommitId> = tx.core.aspects_of(&p).flat_map(|(_, cs)| cs.iter().map(|x| x.1)).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.aspects_on(&p).any(|ai| m.missing(ai)))).collect();
+        tx.core.redeliver.extend(lacking);
     }
     Ok(())
 }
@@ -300,8 +305,10 @@ fn nameable(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, epochs: &
         let at: Vec<CommitId> = tx.core.ix.by_epoch.get(&(*p, *e)).into_iter().flatten().copied().collect();
         for c in at {
             let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
-            // one counting only while it waits for D's list is named by no word yet
-            if v.is_rotation(&c) || !open && tx.core.standing(&c, &m.view) == osis_perm::EpochStanding::Counts && !tx.core.waits(&c, p) {
+            // a word is owed whether or not the epoch is revoked yet (one counting unrevoked, or
+            // only while it waits for D's list, may be revoked later): only a held word naming it
+            // spares it
+            if v.is_rotation(&c) || !open && named_by_a_word(tx, v, &c, &m.view)? {
                 continue;
             }
             let cut = closers.is_empty() || earliest.is_some_and(|x| m.received < x);
@@ -312,6 +319,27 @@ fn nameable(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, epochs: &
         }
     }
     Ok(out)
+}
+
+/// Whether a counting word held here names account commit `c` (`view`, its view): a counting
+/// rotation's thing list or a counting listing, on a thing `c` has a delta on or acts for
+/// (spec/permissions.md §5.5, Epoch rule).
+fn named_by_a_word(tx: &mut Tx<'_>, v: &super::account::AccountView, c: &CommitId, view: &crate::engine::View) -> Result<bool> {
+    let things = things_of(view);
+    for (t, s) in super::lists::names_of(tx, c)? {
+        if !things.contains(&t) {
+            continue;
+        }
+        let counts = match tx.core.ix.commits.get(&s) {
+            _ if v.is_rotation(&s) => v.rotation_counts(&s),
+            Some(m) => m.view.author == view.author && tx.core.standing(&s, &m.view) == osis_perm::EpochStanding::Counts,
+            None => false,
+        };
+        if counts {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// This node's answer to rotation `r`; whether `r` is answered.

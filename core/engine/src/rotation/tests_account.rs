@@ -106,6 +106,13 @@ pub(super) fn rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &Acc
     rotation_at(rec, (FIRST_EPOCH, first), &[], next, header, ts)
 }
 
+/// `rotation`, its header naming a removal no outsider holds: at an outsider it revokes the
+/// first epoch (spec/permissions.md §5.5 Revoked), as the rotation removing a node does.
+pub(super) fn revoking_rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &AccountEpochKeys, ts: Ts) -> Vec<u8> {
+    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), removals: vec![CommitId([0x55; 32])], list_root: [0; 32] };
+    rotation_at(rec, (FIRST_EPOCH, first), &[], next, header, ts)
+}
+
 /// A rotation of the account of record `rec` to `next`, signed at epoch `at` (its keys) and at
 /// each fork of `forks` (named in `header`, in its order), sealed as a key actor made up.
 pub(super) fn rotation_at(rec: CreationRecord, at: (CommitId, &AccountEpochKeys), forks: &[&AccountEpochKeys], next: &AccountEpochKeys, header: RotationHeader, ts: Ts) -> Vec<u8> {
@@ -410,7 +417,7 @@ fn a_siblings_far_future_commit_waits_spec_crdt_2_2() {
 
 /// `peers(3)` synced; peer 1 makes thing `t` (`x:a.0` = 0) and grants peer 0's account admin;
 /// peer 0's account writes `x:a.0` = 1 there (`c`) and grants peer 2's account write (`g`);
-/// all synced. Returns (lp, account, t, c, g) and the rotation of the account closing its first
+/// all synced. Returns (lp, account, t, c, g) and a rotation of the account revoking its first
 /// epoch, as peer 1 would receive it.
 fn closed_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId, Vec<u8>) {
     let (lp, (a, t, c, g, rot)) = LocalPeer::cached("rotation::tests_account::closed_world", || {
@@ -437,7 +444,7 @@ fn closed_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId, Vec<u8>) {
         lp.advance(1000);
         let e = &lp.peers[0].engine;
         let first = AccountEpochKeys::from_seed(e.core.accounts[&a].keys.values().next().unwrap().seed());
-        let rot = rotation(e.core.created(&a).unwrap().clone(), &first, &AccountEpochKeys::from_seed(&Secret32::from_bytes([90; 32])), Ts::make(e.now(), 0).unwrap());
+        let rot = revoking_rotation(e.core.created(&a).unwrap().clone(), &first, &AccountEpochKeys::from_seed(&Secret32::from_bytes([90; 32])), Ts::make(e.now(), 0).unwrap());
         (lp, (a, t, c, g, rot))
     });
     (lp, a, t, c, g, rot)
@@ -701,42 +708,75 @@ fn a_proved_answer_warns_and_can_be_chosen_spec_permissions_5_4() {
     assert!(v.rotation_counts(&sid) && v.rotation_counts(&r1id) && !v.rotation_counts(&fid), "the chosen line followed");
 }
 
-// spec/permissions.md §5.5 (Waiting): a node of the account holding a sibling's rotation
-// without its thing list for D keeps every role commit of the account on D at the closed epoch
-// (D's roster, so it stays a node of the account); plain content on D reads unlisted, as on any
-// thing. Once that list arrives, the lists judge: what the rotator held stands.
-#[test]
-fn a_node_of_the_account_waits_for_d_s_list_spec_permissions_5_5() {
-    let mut lp = peers(2);
-    let sib = lp.peers[1].engine.tid();
+/// Peer `by` removes node `gone` from D, rotating the account: the removal commit's bytes and the
+/// rotation, which carries it, so it revokes every epoch it closes (spec/permissions.md §5.5
+/// Revoked).
+fn remove_node(lp: &mut LocalPeer, by: usize, d: Tid, gone: Tid) -> (Vec<u8>, CommitId) {
+    let done = lp.peers[by].engine.demote(&d, &crate::flows::Demotion { holder: gone, new: None, retain: None }).unwrap();
+    assert_eq!(done.commits.len(), 2, "the removal, then the rotation");
+    (lp.peers[by].engine.commit_bytes(&done.commits[0]).unwrap().unwrap(), done.commits[1])
+}
+
+/// `peers(3)` with an account made on peer 0: peer 1 its sibling (`g`, its grant on D), peer 2
+/// a node of D peer 0 may remove (holding nothing of the account), peers 0 and 1 synced.
+/// Returns (lp, P, D, the sibling, peer 2, g).
+fn siblings_world() -> (LocalPeer, Tid, Tid, Tid, Tid, CommitId) {
+    let mut lp = peers(3);
+    let (sib, gone) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     let (a, _) = created(&mut lp);
     let (p, d) = (a.account, a.devices);
-    let both = |lp: &mut LocalPeer| {
-        lp.sync(0, 1).unwrap();
-        lp.sync(1, 0).unwrap();
-    };
-    both(&mut lp);
+    for k in [1, 2] {
+        lp.sync(0, k).unwrap();
+        lp.sync(k, 0).unwrap();
+    }
     let g = *lp.peers[0].engine.grant_as(&p, &d, &sib, &edge(Role::Admin)).unwrap().commits.last().unwrap();
-    both(&mut lp);
+    lp.peers[0].engine.grant_as(&p, &d, &gone, &edge(Role::Admin)).unwrap();
+    lp.sync(0, 1).unwrap();
+    lp.sync(1, 0).unwrap();
     lp.peers[1].engine.hold_account(&p, &d).unwrap();
-    // a write on D the rotator never holds
+    (lp, p, d, sib, gone, g)
+}
+
+/// A write as account `p` on D by `peer`.
+fn write_on_d(lp: &mut LocalPeer, peer: usize, p: Tid, d: Tid) -> CommitId {
     let mut m = crate::Mutation::new();
     m.sign_as(p);
     m.set(d, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
-    let x = lp.peers[1].engine.commit(m).unwrap().unwrap();
+    lp.peers[peer].engine.commit(m).unwrap().unwrap()
+}
+
+// spec/permissions.md §5.5 (Revoked; Waiting): a node of the account holding a sibling's plain
+// rotation r and a later one revoking r's epoch (a node's removal) without r's thing list for D
+// keeps every role commit of the account on D at that epoch (D's roster, so it stays a node of
+// the account); its own write there the rotator never held stands by its own listing. Once that
+// list arrives, the lists judge: what the rotator held stands. Without the revoking rotation,
+// both stand whatever the lists say.
+#[test]
+fn a_node_of_the_account_waits_for_d_s_list_spec_permissions_5_5() {
+    let (mut lp, p, d, sib, gone, g) = siblings_world();
+    // a write on D the rotator never holds
+    let x = write_on_d(&mut lp, 1, p, d);
     let r = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
     let lists = lp.peers[0].engine.list_blob(&r, Some(&[d].into())).unwrap().unwrap();
+    let counts = |e: &crate::Engine, c: &CommitId| e.core.counts_at_epoch(c, &p, e.header(c).and_then(|h| h.epoch));
     let rots = lp.peers[0].engine.prove_rotations().unwrap();
     let e = &mut lp.peers[1].engine;
     e.take_rotations(rots).unwrap();
-    assert!(e.header(&r).is_some(), "the rotation held");
-    let counts = |e: &crate::Engine, c: &CommitId| e.core.counts_at_epoch(c, &p, e.header(c).and_then(|h| h.epoch));
-    assert!(counts(e, &g), "waiting for D's list: the grant stands");
-    assert!(!counts(e, &x), "plain content on D waits for nothing");
+    assert!(e.header(&r).is_some(), "r held, header-only");
+    assert!(counts(e, &g) && counts(e, &x), "a plain rotation revokes nothing");
+    let (rm, r2) = remove_node(&mut lp, 0, d, gone);
+    let whole: Vec<Vec<u8>> = [r, r2].iter().map(|c| lp.peers[0].engine.commit_bytes(c).unwrap().unwrap()).collect();
+    let e = &mut lp.peers[1].engine;
+    for b in whole.iter().chain([&rm]) {
+        assert!(matches!(e.ingest(b, Vec::new()).unwrap(), Ingested::Applied(_)));
+    }
+    assert!(e.header(&r).is_some() && e.header(&r2).is_some(), "both rotations held");
+    assert!(e.core.account_view(&p).unwrap().rotation_counts(&r2));
+    assert!(counts(e, &g), "waiting for r's list of D: the grant stands");
+    assert!(counts(e, &x), "the sibling's own listing answering the rotations names its write");
     assert!(e.roster(&d).contains_key(&sib), "still a node of the account");
     assert_eq!(e.hold_lists(&lists).unwrap(), crate::flows::lists::ListsHeld::Held);
     assert!(counts(e, &g), "the list names the grant");
-    assert!(!counts(e, &x), "the write the rotator never held falls");
     assert!(e.roster(&d).contains_key(&sib));
 }
 
@@ -805,39 +845,27 @@ fn a_rotation_carrying_a_removal_revokes_the_epochs_below_it_spec_sync_set_3() {
 }
 
 // spec/permissions.md §5.5 (Waiting): a list of D decides only the epochs it could name, those
-// its rotation supersedes. A sibling away across two rotations holds the later one's list of D
-// before the earlier one's: its own grant, named only by the earlier list, still stands, and it
-// stays a node of the account; once the earlier list arrives, it judges.
+// its rotation supersedes. A sibling away across three rotations (the last removing a node, so
+// every earlier epoch is revoked) holds the second's list of D before the first's: its own grant,
+// named only by the first list, still stands, and it stays a node of the account; once the first
+// list arrives, it judges.
 #[test]
 fn a_later_rotations_list_of_d_decides_no_earlier_epoch_spec_permissions_5_5() {
-    let mut lp = peers(2);
-    let sib = lp.peers[1].engine.tid();
-    let (a, _) = created(&mut lp);
-    let (p, d) = (a.account, a.devices);
-    let both = |lp: &mut LocalPeer| {
-        lp.sync(0, 1).unwrap();
-        lp.sync(1, 0).unwrap();
-    };
-    both(&mut lp);
-    let g = *lp.peers[0].engine.grant_as(&p, &d, &sib, &edge(Role::Admin)).unwrap().commits.last().unwrap();
-    both(&mut lp);
-    lp.peers[1].engine.hold_account(&p, &d).unwrap();
+    let (mut lp, p, d, sib, gone, g) = siblings_world();
     let r1 = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
     // a write on D at r1's epoch, so r2 has a list of D too
-    let mut m = crate::Mutation::new();
-    m.sign_as(p);
-    m.set(d, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
-    lp.peers[0].engine.commit(m).unwrap().unwrap();
+    write_on_d(&mut lp, 0, p, d);
     let r2 = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
+    let (rm, r3) = remove_node(&mut lp, 0, d, gone);
     let l1 = lp.peers[0].engine.list_blob(&r1, Some(&[d].into())).unwrap().unwrap();
     let l2 = lp.peers[0].engine.list_blob(&r2, Some(&[d].into())).unwrap().unwrap();
-    let full1 = lp.peers[0].engine.commit_bytes(&r1).unwrap().unwrap();
-    let rots = lp.peers[0].engine.prove_rotations().unwrap();
+    let whole: Vec<Vec<u8>> = [r1, r2, r3].iter().map(|c| lp.peers[0].engine.commit_bytes(c).unwrap().unwrap()).collect();
     let e = &mut lp.peers[1].engine;
-    // r1 whole (its seed in `account.0`) before its list blob; r2 header-only
-    assert!(matches!(e.ingest(&full1, Vec::new()).unwrap(), Ingested::Applied(_)));
-    e.take_rotations(rots).unwrap();
-    assert!(e.header(&r1).is_some() && e.header(&r2).is_some(), "both rotations held");
+    // the rotations whole (their seeds in `account.0`) before their list blobs
+    for b in whole.iter().chain([&rm]) {
+        assert!(matches!(e.ingest(b, Vec::new()).unwrap(), Ingested::Applied(_)));
+    }
+    assert!(e.header(&r1).is_some() && e.header(&r2).is_some() && e.header(&r3).is_some(), "the rotations held");
     let counts = |e: &crate::Engine, c: &CommitId| e.core.counts_at_epoch(c, &p, e.header(c).and_then(|h| h.epoch));
     assert_eq!(e.hold_lists(&l2).unwrap(), crate::flows::lists::ListsHeld::Held);
     assert!(counts(e, &g), "the later list names nothing at the grant's epoch: still waiting");
@@ -847,66 +875,56 @@ fn a_later_rotations_list_of_d_decides_no_earlier_epoch_spec_permissions_5_5() {
     assert!(e.roster(&d).contains_key(&sib));
 }
 
-// spec/permissions.md §5.5 (Waiting): a node of the account names its own commits at
-// the epochs a rotation closes that no word names; one counting only while it waits for D's
-// list is named no less. A sibling taking the rotation whole (its seed) before the list answers
-// it naming its own write on D the rotator never held, so the write stands once the list comes.
+// spec/permissions.md §5.5 (Waiting; Listings): a node of the account names its own commits at
+// the epochs a rotation closes that no word names, whether or not the epoch is revoked yet; one
+// counting only while it waits for D's list is named no less. A sibling taking the rotation whole
+// (its seed) before its list answers it naming its own write on D the rotator never held, so the
+// write stands once a later rotation revokes the epoch and the list comes.
 #[test]
 fn a_waiting_write_is_named_by_its_writers_listing_spec_permissions_5_5() {
-    let mut lp = peers(2);
-    let sib = lp.peers[1].engine.tid();
-    let (a, _) = created(&mut lp);
-    let (p, d) = (a.account, a.devices);
-    let both = |lp: &mut LocalPeer| {
-        lp.sync(0, 1).unwrap();
-        lp.sync(1, 0).unwrap();
-    };
-    both(&mut lp);
-    lp.peers[0].engine.grant_as(&p, &d, &sib, &edge(Role::Admin)).unwrap();
-    both(&mut lp);
-    lp.peers[1].engine.hold_account(&p, &d).unwrap();
-    let mut m = crate::Mutation::new();
-    m.sign_as(p);
-    m.set(d, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
-    let x = lp.peers[1].engine.commit(m).unwrap().unwrap();
+    let (mut lp, p, d, _, gone, _) = siblings_world();
+    let x = write_on_d(&mut lp, 1, p, d);
     let r = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
     let lists = lp.peers[0].engine.list_blob(&r, Some(&[d].into())).unwrap().unwrap();
     let whole = lp.peers[0].engine.commit_bytes(&r).unwrap().unwrap();
     let e = &mut lp.peers[1].engine;
     assert!(matches!(e.ingest(&whole, Vec::new()).unwrap(), Ingested::Applied(_)));
     e.signing_due().unwrap();
+    let listing: Vec<CommitId> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == p && h.aspects.iter().any(|a| a.ak.as_str() == "listing.0"))).collect();
+    assert!(!listing.is_empty(), "the sibling answers r with a listing");
     let counts = |e: &crate::Engine, c: &CommitId| e.core.counts_at_epoch(c, &p, e.header(c).and_then(|h| h.epoch));
-    assert!(counts(e, &x), "waiting for D's list");
-    assert_eq!(e.hold_lists(&lists).unwrap(), crate::flows::lists::ListsHeld::Held);
+    assert!(counts(e, &x), "r revokes nothing");
+    // the listing reaches peer 0 before it removes a node: its rotation lists the listing
+    lp.sync(1, 0).unwrap();
+    let (rm, r2) = remove_node(&mut lp, 0, d, gone);
+    let w2 = lp.peers[0].engine.commit_bytes(&r2).unwrap().unwrap();
+    let l2 = lp.peers[0].engine.list_blob(&r2, Some(&[d].into())).unwrap().unwrap();
+    let e = &mut lp.peers[1].engine;
+    for b in [&w2, &rm] {
+        assert!(matches!(e.ingest(b, Vec::new()).unwrap(), Ingested::Applied(_)));
+    }
+    assert!(counts(e, &x), "revoked, waiting for r's list of D");
+    for l in [&l2, &lists] {
+        assert_eq!(e.hold_lists(l).unwrap(), crate::flows::lists::ListsHeld::Held);
+    }
+    assert!(counts(e, &listing[0]), "r2's list names the listing");
     assert!(counts(e, &x), "its writer's listing names it");
 }
 
 // spec/permissions.md §5.5 (Rotation's list, Waiting): every rotation carries a thing list for D,
 // naming nothing when its rotator held nothing there, so a node of the account holding it judges
-// D's commits at the epoch it closes by the lists: a sibling's write there the rotator never held
-// falls until a listing names it, rather than waiting for good.
+// D's commits at the epoch it closes by the lists once the epoch is revoked: a sibling's write
+// there the rotator never held falls until a listing names it, rather than waiting for good.
 #[test]
 fn a_rotation_naming_nothing_on_d_still_decides_d_spec_permissions_5_5() {
-    let mut lp = peers(2);
-    let sib = lp.peers[1].engine.tid();
-    let (a, _) = created(&mut lp);
-    let (p, d) = (a.account, a.devices);
-    let both = |lp: &mut LocalPeer| {
-        lp.sync(0, 1).unwrap();
-        lp.sync(1, 0).unwrap();
-    };
-    both(&mut lp);
-    lp.peers[0].engine.grant_as(&p, &d, &sib, &edge(Role::Admin)).unwrap();
-    both(&mut lp);
-    lp.peers[1].engine.hold_account(&p, &d).unwrap();
+    let (mut lp, p, d, _, gone, _) = siblings_world();
     lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
-    both(&mut lp);
-    let mut m = crate::Mutation::new();
-    m.sign_as(p);
-    m.set(d, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
-    let x = lp.peers[1].engine.commit(m).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    lp.sync(1, 0).unwrap();
+    let x = write_on_d(&mut lp, 1, p, d);
     let bytes = lp.peers[1].engine.commit_bytes(&x).unwrap().unwrap();
     lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
+    remove_node(&mut lp, 0, d, gone);
     let e = &mut lp.peers[0].engine;
     assert!(matches!(e.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
     assert!(!e.core.counts_at_epoch(&x, &p, e.header(&x).and_then(|h| h.epoch)), "unnamed after the rotation's list of D");
@@ -914,19 +932,20 @@ fn a_rotation_naming_nothing_on_d_still_decides_d_spec_permissions_5_5() {
 
 // spec/permissions.md §5.5 (Waiting): a commit counts if any counting list names it, so one held
 // list not naming it says nothing while another decider's list is missing. Nodes 0 and 1 rotate at
-// once; 0 granted node 2 first, unseen by 1. Node 2 holding 1's list of D alone still stands; once
-// 0's arrives, the grant is named.
+// once; 0 granted node 2 first, unseen by 1, and then removes node 3 (so the first epoch is
+// revoked). Node 2 holding 1's list of D alone still stands; once 0's arrives, the grant is named.
 #[test]
 fn every_decider_of_an_epoch_decides_spec_permissions_5_5() {
-    let mut lp = peers(3);
-    let (n1, n2) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let mut lp = peers(4);
+    let (n1, n2, n3) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
     let (a, _) = created(&mut lp);
     let (p, d) = (a.account, a.devices);
-    for k in [1, 2] {
+    for k in [1, 2, 3] {
         lp.sync(0, k).unwrap();
         lp.sync(k, 0).unwrap();
     }
     lp.peers[0].engine.grant_as(&p, &d, &n1, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant_as(&p, &d, &n3, &edge(Role::Admin)).unwrap();
     lp.sync(0, 1).unwrap();
     lp.sync(1, 0).unwrap();
     lp.peers[1].engine.hold_account(&p, &d).unwrap();
@@ -936,11 +955,12 @@ fn every_decider_of_an_epoch_decides_spec_permissions_5_5() {
     lp.peers[2].engine.hold_account(&p, &d).unwrap();
     let ra = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
     let rb = lp.peers[1].engine.rotate_account(&p).unwrap().unwrap();
+    let (rm, rc) = remove_node(&mut lp, 0, d, n3);
     let la = lp.peers[0].engine.list_blob(&ra, Some(&[d].into())).unwrap().unwrap();
     let lb = lp.peers[1].engine.list_blob(&rb, Some(&[d].into())).unwrap().unwrap();
-    let (wa, wb) = (lp.peers[0].engine.commit_bytes(&ra).unwrap().unwrap(), lp.peers[1].engine.commit_bytes(&rb).unwrap().unwrap());
+    let (wa, wb, wc) = (lp.peers[0].engine.commit_bytes(&ra).unwrap().unwrap(), lp.peers[1].engine.commit_bytes(&rb).unwrap().unwrap(), lp.peers[0].engine.commit_bytes(&rc).unwrap().unwrap());
     let e = &mut lp.peers[2].engine;
-    for w in [&wa, &wb] {
+    for w in [&wa, &wb, &wc, &rm] {
         assert!(matches!(e.ingest(w, Vec::new()).unwrap(), Ingested::Applied(_)));
     }
     let v = e.core.account_view(&p).unwrap();
