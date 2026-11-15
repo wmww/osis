@@ -648,8 +648,16 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
 // phases and counts, perm's role walks, debug checks' walks included).
 #[test]
 fn commit_work_linear_in_things_spec_requirements_decentralization() {
-    let small = commit_work(50);
-    let big = commit_work(500);
+    // per kind, over the three steps: a memo one step fills at one size another fills at the other
+    // (things' epochs: derived at b while the create is delivered at n, by the write's apply at 10n)
+    let total = |w: std::collections::BTreeMap<String, u64>| {
+        let mut t = std::collections::BTreeMap::<String, u64>::new();
+        for (k, n) in w {
+            *t.entry(k.split_once(' ').map_or(k.clone(), |(_, kind)| kind.to_string())).or_default() += n;
+        }
+        t
+    };
+    let (small, big) = (total(commit_work(50)), total(commit_work(500)));
     // `linear` as notes/test-scale.md (Scale checks) has it: at 10n at most 15x + 15 the count at n
     let over: Vec<_> = big.iter().map(|(k, n)| (k, small.get(k).copied().unwrap_or(0), *n)).filter(|(_, s, b)| *b > 15 * s + 15).collect();
     assert!(over.is_empty(), "work at n and 10n (kind, n, 10n): {over:?}");
