@@ -1088,9 +1088,6 @@ pub struct Core {
     pub(crate) listed: crate::sync::listed::Listed,
     /// `rotation::departures` per actor (`memo`).
     pub(crate) departures: memo::Memo<Tid, Vec<osis_keys::Departure>>,
-    /// Whether wrapping under an actor is blocked, per (actor, an encrypting walk)
-    /// (`Engine::wrap_blocked`, `memo`): every body judged asks it of its thing's reader.
-    pub(crate) wrap_blocked: memo::Memo<(Tid, bool), bool>,
     /// The holders lacking a box of each actor (`rotation::reseal_candidates`, `memo`): O(roster)
     /// a pass otherwise.
     pub(crate) reseal_scans: memo::Memo<Tid, Vec<(Tid, BTreeSet<osis_base::Role>)>>,
@@ -1447,7 +1444,6 @@ impl Core {
             certified: self.certified.clone(),
             listed: self.listed.clone(),
             departures: self.departures.clone(),
-            wrap_blocked: self.wrap_blocked.clone(),
             reseal_scans: self.reseal_scans.clone(),
             store_rows: self.store_rows.clone(),
             epochs_of: self.epochs_of.clone(),
@@ -2054,7 +2050,6 @@ impl Core {
             part_bounds: _,
             tree_roots: _,
             departures: _,
-            wrap_blocked: _,
             reseal_scans: _,
             // decodes of commit records kept at each record's stamp (`decoded`): an undo
             // stamps the rows it restores
@@ -2240,7 +2235,6 @@ impl Core {
             certified: Default::default(),
             listed: Default::default(),
             departures: memo::Memo::new("departures"),
-            wrap_blocked: memo::Memo::new("wrap blocked"),
             reseal_scans: memo::Memo::new("reseal: scan"),
             rotation_seq: 0,
             place: 0,
