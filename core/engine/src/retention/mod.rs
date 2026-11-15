@@ -382,8 +382,8 @@ fn goes_invalid(core: &Core, m: &crate::engine::Meta, ai: usize) -> bool {
 /// Whether commit `m` holds no part and is known only for a part dropped while invalid (its
 /// header, so a copy is not taken while it stays invalid and valid again it is fetched,
 /// `valid_again`) or, memory class, one reopened to be fetched (`Missing::ToFetch`): durable and
-/// memory alike, never forgotten (`Engine::forgettable`: a part dropped as invalid is never
-/// covered, spec/commits.md §5 Forgetting); a memory one goes at a restart.
+/// memory alike, kept while node-sync knows an entry of it (`Engine::forgettable`: one dropped
+/// as invalid is forgettable, spec/commits.md §5 Forgetting); a memory one goes at a restart.
 pub(crate) fn kept_invalid(m: &crate::engine::Meta) -> bool {
     (0..m.view.aspects.len()).all(|ai| !m.holds(ai)) && (0..m.view.aspects.len()).any(|ai| m.missing_as(ai) == Some(Missing::ToFetch) || m.dropped_invalid(ai))
 }

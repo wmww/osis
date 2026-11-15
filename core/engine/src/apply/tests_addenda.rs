@@ -462,6 +462,25 @@ fn a_removed_writers_invalid_commits_are_forgotten_spec_commits_5() {
     assert_eq!(reads(&mut lp, 0, t, "x:e.0"), Some(Value::Int(29)));
 }
 
+// spec/permissions.md §6 (Invalid deltas: fetched again from any holder), spec/commits.md §5
+// (Forgetting): hostile order. Bob learns his removal, so every node judges his edits invalid;
+// Alice forgets them; a re-grant still brings them back from Bob, who keeps his own invalid
+// commits (his user is told the write was refused), judged valid at Alice.
+#[test]
+fn a_regrant_after_everyone_judged_them_invalid_brings_them_back_spec_perm_6() {
+    let (mut lp, t, edits, _) = removed_writer_writes(3);
+    lp.sync(0, 1).unwrap();
+    let last = *edits.last().unwrap();
+    assert!(!valid(&lp, 1, &last, t, "x:e.0"), "Bob judges his edit invalid too");
+    assert!(lp.peers[1].engine.commit_bytes(&last).unwrap().is_some(), "Bob keeps his own body");
+    let bob = lp.peers[1].engine.me();
+    lp.peers[0].engine.grant(&t, &bob, &edge(Role::Write)).unwrap();
+    lp.advance(1000);
+    lp.sync_all().unwrap();
+    assert!(valid(&lp, 0, &last, t, "x:e.0"), "received again and judged valid");
+    assert_eq!(reads(&mut lp, 0, t, "x:e.0"), Some(Value::Int(2)));
+}
+
 /// One of the removed writer's writes in
 /// `a_removed_writers_writes_read_alike_in_any_arrival_order_and_tie_spec_perm_5_2`: its `ts`,
 /// whether the remover and the witness had it before the removal.
