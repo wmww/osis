@@ -50,6 +50,8 @@ pub const SIGN: &str = "sign";
 pub const INNER_SECRET: &str = "inner secret";
 /// (Not "inner": that is the inner signature's domain, spec/crypto.md §2.)
 pub const INNER: &str = "inner key";
+/// A seed box's tag from the epoch's seed (spec/crypto.md §9, Custody).
+pub const SEED_BOX: &str = "seed box";
 /// KEM key pair from a seed or role secret.
 pub const KEM: &str = "kem";
 /// Link key creation nonce from the seed (spec/wire.md §3).
@@ -98,10 +100,10 @@ pub const BEACON_REPLY: &str = "beacon reply";
 pub const SYNC_PROOF: &str = "sync proof";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 36] = [
+pub const PURPOSES: [&str; 37] = [
     THING_SYNC, THING_READ, THING_WRITE, THING_ADMIN, ROLE_SYNC, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, EPOCH, ROLES, WRAP, SECTION,
     DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LINK_BLIND, THING_BLIND, SYNC_KEY, SYNC_WRITE, SYNC_DELETE, SYNC_DEPOSIT, SYNC_CLAIM,
-    INNER_SECRET, INNER, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF,
+    INNER_SECRET, INNER, SEED_BOX, BEACON, BEACON_HIT, BEACON_REPLY, SYNC_PROOF,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).

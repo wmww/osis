@@ -354,17 +354,11 @@ codec_struct! {
 }
 
 codec_struct! {
-    /// An account epoch's seed and the devices actor's read epoch its writer encrypted it under
-    /// (spec/data-model.md §9).
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct AccountSeed { 0 seed: Vec<u8>, 1 under: Epoch }
-}
-
-codec_struct! {
-    /// `account.0` on an account's devices actor (spec/data-model.md §9): per epoch, its signing
-    /// public key to its seed (empty when never written, its default in the schema).
+    /// `account.0` on an account's devices actor D (spec/data-model.md §9): per epoch of the
+    /// account, by its signing public key, the read epoch of D its rotation made D's content go
+    /// under (empty when never written, its default in the schema). It marks D as the account's.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Account { 0 seeds: BTreeMap<Vec<u8>, AccountSeed> }
+    pub struct Account { 0 under: BTreeMap<Vec<u8>, Epoch> }
 }
 
 /// `listing.0`: a rotation's commit ID to the commit IDs a listing names (spec/permissions.md §5.5).

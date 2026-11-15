@@ -16,6 +16,7 @@ pub(crate) mod sync_ids;
 pub(crate) mod links;
 mod create;
 pub(crate) mod account;
+pub(crate) mod custody;
 pub mod lists;
 pub(crate) mod signing;
 pub mod tied;

@@ -1593,11 +1593,14 @@ fn stranded_node_repaired_spec_perm_3() {
     assert!(lp.peers[3].engine.epochs(&p).unwrap().read.secret(&e1).is_none(), "n is stranded");
     assert_eq!(lp.peers[3].engine.roster(&p).get(&n).map(|e| e.role), Some(Role::Admin), "its grant stands: its granter's listing names it");
     assert_eq!(sealed_write(&mut lp, 1, p, "stranded"), BTreeSet::from([0]), "n reads nothing new");
-    // re-pairing an existing holder re-seals it
+    // re-pairing an existing holder re-seals it, and the account's rotation boxes it its seeds
     let (again, send_) = lp.peers[0].engine.pair(&n).unwrap();
-    assert_eq!(again.commits.len(), 1);
+    assert_eq!(again.commits.len(), 2);
     send(&mut lp, 0, 3, &send_);
     assert_eq!(newest_read(&lp, 3, p), Some(e1));
+    // the rotation reaches every node before the write: signed at a head it closes, the write
+    // would count only by its writer's later listing
+    spread(&mut lp);
     assert!(lp.peers[2].engine.epochs(&p).unwrap().read.secret(&e1).is_none());
     assert_eq!(sealed_write(&mut lp, 1, p, "repaired"), BTreeSet::from([0, 3]));
 }

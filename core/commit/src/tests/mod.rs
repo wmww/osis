@@ -66,7 +66,7 @@ pub(crate) fn sample_header() -> Header {
 fn rotation_header_spec_wire_4() {
     use crate::header::RotationHeader;
     let keys = osis_crypto::AccountEpochKeys::from_seed(&Secret32::from_bytes([8; 32]));
-    let rot = RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: vec![crate::FIRST_EPOCH, CommitId([3; 32])], names: vec![CommitId([3; 32])], takes: vec![CommitId([4; 32])], removals: vec![CommitId([8; 32])], list_root: [6; 32] };
+    let rot = RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: vec![crate::FIRST_EPOCH, CommitId([3; 32])], names: vec![CommitId([3; 32])], takes: vec![CommitId([4; 32])], removals: vec![CommitId([8; 32])], list_root: [6; 32], seeds: Vec::new() };
     let mut h = sample_header();
     h.epoch = Some(crate::FIRST_EPOCH);
     assert_eq!(Header::decode(&h.encode()).unwrap(), h);

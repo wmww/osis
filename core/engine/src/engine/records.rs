@@ -105,6 +105,9 @@ pub const SCHEMAS: &[u8] = b"d/";
 pub const APP: &[u8] = b"u/";
 /// The sides taken in admin disputes (`crate::sides`), one record.
 pub const SIDES: &[u8] = b"sides";
+/// The seeds of account epochs in this node's custody (`flows::custody`): `sd/` + the account's
+/// tid + the epoch's signing key, the 32-byte seed. Shredded when the node leaves the account.
+pub const SEEDS: &[u8] = b"sd/";
 /// The account this node belongs to and its devices actor (two tids).
 pub const ACCOUNT: &[u8] = b"account";
 /// Thing lists held (`flows::lists`): `tl/` + rotation ID + thing + be64 index, the `ThingCert`.

@@ -1,8 +1,7 @@
-# A removed node does not learn its removal
-> Summary: Waiting (spec/permissions.md §5.5) ends only on held D lists, so a node removed from its account's D, which is served neither the removal nor D's later lists, never reads itself off D's roster: it keeps its local state and home and believes it is still a node. Accepted interim limit; custody's (e) restores removed-node learning.
+# A removed node keeps rows after it leaves
+> Summary: A node removed from its account learns its removal from the removal's rotation (custody: it boxes the node nothing) and stops syncing, but keeps some held rows: osis-sync `duties::a_node_removed_from_its_account_stops_syncing_*` passes its "syncs nothing" check and fails "holds no rows".
 > Priority: normal
 > Tags: engine, sync
 
-- Why no rotation decides without its D list: a sibling not removed holding a removal's rotation before its D list (a Prove's rotations, a header-only copy under another sync ID) holds exactly what the removed node holds; deciding at once read D's roster as P alone there and left for good (`signing::leave`). Test: engine `rotation::tests_signing::a_sibling_taking_a_removals_rotation_before_its_list_stays_*`.
-- What still holds: nothing the removed node signs after its removal counts at a sibling holding the removal with its rotation, or an outsider holding the rotation before its fork (`a_removed_nodes_writes_after_its_removal_count_at_no_reader_*`), and its siblings serve it no D (no later sync key of D). A sibling holding the rotation without the removal (header-only from a Prove) holds the removed node as a node until D's sync brings the removal.
-- Fix (Fathom's custody build, notes/account-forks-design.md Custody): rule (e), a node leaves only on a rotation counting on the chain it follows, superseding an epoch it held, with no box to its device key. Then osis-sync `duties::a_node_removed_from_its_account_stops_syncing_*` (ignored, naming this issue) passes again.
+- Not yet looked into: which rows stay (what the node read as the account and should drop on leaving, spec/permissions.md §3 Lost access, or rows kept by another rule). Check against Tess's storage rule: a node's storage is attributable to its synced groups; unsync everything leaves zero.
+- Also check once joiner-target's rule (a rotation carrying no removal revokes nothing) lands: pairings are rotations, and on main a plain rotation revokes at outsiders, which several osis-sync sibling tests trip over.

@@ -587,6 +587,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     // an account's rotation: this node answers it with its listing or addenda
     if h.rotation.is_some() {
+        crate::flows::custody::take_boxes(tx, &h)?;
         crate::flows::signing::note_rotation_due(tx, &id)?;
     }
     // an explicit demotion: this node answers it with its addenda (`Engine::answer_removals`)
@@ -703,8 +704,7 @@ fn observe_all(tx: &mut Tx<'_>, j: &Joins) -> Result<()> {
 
 /// Re-judges held deltas when the held set changed or something is stale
 /// (`validity::rejudge_all`), and observes the aspects that flipped; returns them. Until nothing
-/// is stale: observing may make more so (a devices actor's `account.0` that counts again gives
-/// its nodes seeds, which move the account's epochs; each pass takes some up, or ends).
+/// is stale: observing may make more so (secrets opened move what is judged).
 pub(crate) fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, Ak)>> {
     let mut all = Vec::new();
     let mut first = held_changed;
@@ -962,7 +962,7 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
 /// Keeps the indexes derived from states current: secrets opened from `secrets.0`, inbox
 /// delete-key hints `keys.0` replaces, group definitions.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0" | "account.0") {
+    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0") {
         return Ok(());
     }
     let v = tx.state(tid, ak)?.and_then(Fragment::read);
@@ -996,8 +996,6 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             }
             tx.core.ix.groups.set(*tid, def)
         }
-        // an account's devices actor: its nodes take up the seeds a rotation added
-        "account.0" => crate::flows::signing::take_seeds(tx, tid)?,
         _ => {}
     }
     Ok(())

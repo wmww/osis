@@ -85,6 +85,42 @@ pub fn verify_inner(node: &VerifyingKey, commit: &[u8; 32], sig: &Signature) -> 
     node.verify(Domain::Inner, commit, sig).is_ok()
 }
 
+/// Bytes of a seed box's tag (spec/crypto.md §9, Custody).
+pub const SEED_TAG_LEN: usize = 16;
+
+/// The tag of a seed box of the epoch with seed `seed` to device `device`: the first 16 bytes of
+/// `kdf("seed box", seed, device tid)`, so a holder of the seed reads whom the epoch is boxed to
+/// and no one else does (spec/crypto.md §9, Custody).
+pub fn seed_tag(seed: &Secret32, device: &Tid) -> [u8; SEED_TAG_LEN] {
+    let k = kdf(kdf::SEED_BOX, seed.expose(), device.as_bytes());
+    let mut t = [0u8; SEED_TAG_LEN];
+    t.copy_from_slice(&k.expose()[..SEED_TAG_LEN]);
+    t
+}
+
+fn seeds_ad(account: &Tid, epoch: &VerifyingKey) -> Vec<u8> {
+    [b"osis v1 seeds".as_slice(), account.as_bytes(), &epoch.to_bytes()].concat()
+}
+
+/// A seed box (spec/crypto.md §9, Custody): `seeds` (the epoch's own first, then earlier ones
+/// its writer hands a device it adds) sealed to device KEM key `kem`, AD naming the account and
+/// the epoch by its signing key.
+pub fn seal_seeds(kem: &crate::KemPublicKey, account: &Tid, epoch: &VerifyingKey, seeds: &[&Secret32], rng: &mut dyn rand_core::CryptoRngCore) -> Result<Vec<u8>, crate::Error> {
+    let payload: zeroize::Zeroizing<Vec<u8>> = zeroize::Zeroizing::new(seeds.iter().flat_map(|s| s.expose().iter().copied()).collect());
+    crate::seal(kem, &seeds_ad(account, epoch), &payload, rng)
+}
+
+/// Opens a seed box with this device's KEM key: its seeds, the epoch's own first. `None` when it
+/// is not to this device, or its first seed is not that epoch's.
+pub fn open_seeds(kem: &KemSecret, account: &Tid, epoch: &VerifyingKey, sealed: &[u8]) -> Option<Vec<Secret32>> {
+    let plain = crate::open_sealed(kem, &seeds_ad(account, epoch), sealed).ok()?;
+    if plain.is_empty() || plain.len() % 32 != 0 {
+        return None;
+    }
+    let seeds: Vec<Secret32> = plain.as_chunks::<32>().0.iter().map(|c| Secret32::from_bytes(*c)).collect();
+    (AccountEpochKeys::from_seed(seeds.first()?).signing.verifying_key() == *epoch).then_some(seeds)
+}
+
 /// A key actor's role secret `kdf("role <role>", seed)`, never rotated.
 pub fn key_actor_role_secret(seed: &Secret32, role: Role) -> Secret32 {
     kdf(kdf::role_purpose(role), seed.expose(), b"")

@@ -19,6 +19,13 @@ fn peers(n: usize) -> LocalPeer {
     LocalPeer::cached(&format!("rotation::tests_account::peers/{n}"), || (LocalPeer::new(n, 0, super::tests::T0).unwrap(), ())).0
 }
 
+/// Node `to` holds node 0's seeds of account `p` in custody, as the boxes of a rotation adding it
+/// would hand them (spec/crypto.md §9, Custody): for tests whose subject is not how seeds travel.
+fn hand_seeds(lp: &mut LocalPeer, to: usize, p: Tid) {
+    let seeds = lp.peers[0].engine.held_seeds(&p);
+    lp.peers[to].engine.keep_seeds(&p, &seeds).unwrap();
+}
+
 fn created(lp: &mut LocalPeer) -> (CreatedAccount, Vec<u8>) {
     let (a, done) = lp.peers[0].engine.create_account().unwrap();
     let bytes = lp.peers[0].engine.commit_bytes(&done.commits[0]).unwrap().unwrap();
@@ -53,6 +60,7 @@ fn sibling_opens_the_inner_signature_spec_crypto_3() {
     let edge = osis_schema::core_types::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
     lp.peers[0].engine.grant_as(&a.account, &a.devices, &sib, &edge).unwrap();
     both(&mut lp);
+    hand_seeds(&mut lp, 1, a.account);
     lp.peers[1].engine.hold_account(&a.account, &a.devices).unwrap();
     assert_eq!(lp.peers[1].engine.open_inner(&blob), Some(me));
     let mut m = crate::Mutation::new();
@@ -102,14 +110,14 @@ impl osis_commit::Secrets for Dedup {
 /// A rotation of the account of record `rec` from its first epoch to `next`, superseding that
 /// epoch alone: what a node removed at the first epoch can make after every merge.
 pub(super) fn rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &AccountEpochKeys, ts: Ts) -> Vec<u8> {
-    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), removals: Vec::new(), list_root: [0; 32] };
+    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), removals: Vec::new(), list_root: [0; 32], seeds: Vec::new() };
     rotation_at(rec, (FIRST_EPOCH, first), &[], next, header, ts)
 }
 
 /// `rotation`, its header naming a removal no outsider holds: at an outsider it revokes the
 /// first epoch (spec/permissions.md §5.5 Revoked), as the rotation removing a node does.
 pub(super) fn revoking_rotation(rec: CreationRecord, first: &AccountEpochKeys, next: &AccountEpochKeys, ts: Ts) -> Vec<u8> {
-    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), removals: vec![CommitId([0x55; 32])], list_root: [0; 32] };
+    let header = RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![FIRST_EPOCH], names: Vec::new(), takes: Vec::new(), removals: vec![CommitId([0x55; 32])], list_root: [0; 32], seeds: Vec::new() };
     rotation_at(rec, (FIRST_EPOCH, first), &[], next, header, ts)
 }
 
@@ -401,6 +409,7 @@ fn a_siblings_far_future_commit_waits_spec_crdt_2_2() {
     let edge = osis_schema::core_types::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
     lp.peers[0].engine.grant_as(&a.account, &a.devices, &sib, &edge).unwrap();
     both(&mut lp);
+    hand_seeds(&mut lp, 1, a.account);
     lp.peers[1].engine.hold_account(&a.account, &a.devices).unwrap();
     lp.peers[1].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
     let mut m = crate::Mutation::new();
@@ -616,7 +625,7 @@ fn header_only(bytes: &[u8]) -> osis_base::Value {
 
 fn rotation_to(next: &AccountEpochKeys, mut supersedes: Vec<CommitId>) -> RotationHeader {
     supersedes.sort();
-    RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes, names: Vec::new(), takes: Vec::new(), removals: Vec::new(), list_root: [0; 32] }
+    RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes, names: Vec::new(), takes: Vec::new(), removals: Vec::new(), list_root: [0; 32], seeds: Vec::new() }
 }
 
 /// A verifier holding account A's record and its rotation r1 (taken from A's Prove), and a
@@ -733,6 +742,7 @@ fn siblings_world() -> (LocalPeer, Tid, Tid, Tid, Tid, CommitId) {
     lp.peers[0].engine.grant_as(&p, &d, &gone, &edge(Role::Admin)).unwrap();
     lp.sync(0, 1).unwrap();
     lp.sync(1, 0).unwrap();
+    hand_seeds(&mut lp, 1, p);
     lp.peers[1].engine.hold_account(&p, &d).unwrap();
     (lp, p, d, sib, gone, g)
 }
@@ -791,7 +801,7 @@ fn a_node_of_the_account_waits_for_d_s_list_spec_permissions_5_5() {
 fn a_rotation_carrying_a_removal_revokes_the_epochs_below_it_spec_sync_set_3() {
     let ts_of = |e: &crate::Engine| Ts::make(e.now(), 0).unwrap();
     let key = |k: &AccountEpochKeys| k.signing.verifying_key().to_bytes();
-    let header = |next: &AccountEpochKeys, sup: CommitId, removals: Vec<CommitId>| RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![sup], names: Vec::new(), takes: Vec::new(), removals, list_root: [0; 32] };
+    let header = |next: &AccountEpochKeys, sup: CommitId, removals: Vec<CommitId>| RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![sup], names: Vec::new(), takes: Vec::new(), removals, list_root: [0; 32], seeds: Vec::new() };
     let setup = || {
         let mut lp = peers(2);
         let (a, bytes) = created(&mut lp);
@@ -948,10 +958,12 @@ fn every_decider_of_an_epoch_decides_spec_permissions_5_5() {
     lp.peers[0].engine.grant_as(&p, &d, &n3, &edge(Role::Admin)).unwrap();
     lp.sync(0, 1).unwrap();
     lp.sync(1, 0).unwrap();
+    hand_seeds(&mut lp, 1, p);
     lp.peers[1].engine.hold_account(&p, &d).unwrap();
     let g = *lp.peers[0].engine.grant_as(&p, &d, &n2, &edge(Role::Admin)).unwrap().commits.last().unwrap();
     lp.sync(0, 2).unwrap();
     lp.sync(2, 0).unwrap();
+    hand_seeds(&mut lp, 2, p);
     lp.peers[2].engine.hold_account(&p, &d).unwrap();
     let ra = lp.peers[0].engine.rotate_account(&p).unwrap().unwrap();
     let rb = lp.peers[1].engine.rotate_account(&p).unwrap().unwrap();

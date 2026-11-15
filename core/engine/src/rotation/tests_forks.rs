@@ -113,6 +113,9 @@ pub(super) struct Reached {
 }
 
 struct Run {
+    /// The epoch the setup's pairings leave (the mirror's first epoch) and its line.
+    base_epoch: CommitId,
+    setup_chain: BTreeSet<CommitId>,
     lp: LocalPeer,
     p: Tid,
     d: Tid,
@@ -161,7 +164,12 @@ impl Run {
         let tids: [Tid; N] = std::array::from_fn(|i| lp.peers[i].engine.tid());
         let base = WallMs(lp.peers[A].engine.now().0 + 1);
         let seen = (0..N).flat_map(|i| lp.peers[i].engine.commit_ids()).collect();
+        let va = lp.peers[A].engine.core.account_view(&p).unwrap();
+        let base_epoch = va.preferred();
+        let setup_chain = va.line(&base_epoch).cloned().unwrap_or_default();
         Run {
+            base_epoch,
+            setup_chain,
             lp,
             p,
             d,
@@ -194,11 +202,12 @@ impl Run {
     }
 
     fn e(&self, id: u32) -> CommitId {
-        if id == 0 { FIRST_EPOCH } else { self.eid[id as usize - 1] }
+        if id == 0 { self.base_epoch } else { self.eid[id as usize - 1] }
     }
 
     fn m(&self, c: &CommitId) -> u32 {
-        if *c == FIRST_EPOCH {
+        // the setup's chain (the first epoch and its pairings' rotations) is the mirror's first epoch
+        if *c == FIRST_EPOCH || self.setup_chain.contains(c) {
             return 0;
         }
         *self.mid.get(c).unwrap_or_else(|| self.fail(&format!("commit {c:?} is no mirror item")))
@@ -207,6 +216,7 @@ impl Run {
     fn ms(&self, cs: &[CommitId]) -> Vec<u32> {
         let mut v: Vec<u32> = cs.iter().map(|c| self.m(c)).collect();
         v.sort();
+        v.dedup();
         v
     }
 
@@ -406,21 +416,13 @@ impl Run {
         self.lp.peers[k].engine.core.account_view(&self.p).unwrap_or_else(|| self.fail(&format!("no view of P at {k}")))
     }
 
-    /// Node n takes up the seeds D holds for it, as its signing pass at the end of every pass of
-    /// D's sync IDs does (`rotations_due`), without rotating.
+    /// Node n judges what it holds, as its signing pass at the end of every pass of D's sync IDs
+    /// does (`rotations_due`), without rotating.
     fn take_up(&mut self, n: usize) {
         if self.left[n] || !self.lp.peers[n].engine.core.accounts.contains_key(&self.p) {
             return;
         }
-        let (p, d) = (self.p, self.d);
-        self.lp.peers[n].engine.run(|tx| loop {
-            let held = tx.core.accounts.get(&p).map_or(0, |a| a.keys.len());
-            crate::flows::signing::take_seeds(tx, &d)?;
-            crate::apply::rejudged(tx, false)?;
-            if tx.core.accounts.get(&p).map_or(0, |a| a.keys.len()) == held {
-                return Ok(());
-            }
-        }).unwrap();
+        self.lp.peers[n].engine.run(|tx| crate::apply::rejudged(tx, false).map(drop)).unwrap();
         self.note_extras(n);
     }
 
@@ -732,7 +734,7 @@ impl Run {
         names_e.sort_by_key(|x| x.0);
         let mut takes_e: Vec<CommitId> = takes.iter().map(|x| self.e(*x)).collect();
         takes_e.sort();
-        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: sup_e, names: names_e.iter().map(|x| x.0).collect(), takes: takes_e, removals: removal.iter().map(|r| r.pk.id).collect(), list_root: [0; 32] };
+        let header = osis_commit::RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: sup_e, names: names_e.iter().map(|x| x.0).collect(), takes: takes_e, removals: removal.iter().map(|r| r.pk.id).collect(), list_root: [0; 32], seeds: Vec::new() };
         let rec = self.lp.peers[X].engine.core.created(&self.p).unwrap().clone();
         self.lp.advance(1);
         let ts = osis_base::Ts::make(self.lp.peers[X].engine.now(), 0).unwrap();
@@ -1175,10 +1177,12 @@ fn engine_agrees_with_forks_model_large_spec_permissions_5_4() {
 
 
 /// As the property, with the users of P's nodes left on X's side switching to A's removal in the
-/// settle (the model's settle): a node of P that sided with X holds no seed of the honest line, so
-/// it reads no inner signature on it and cannot follow it (issues/account-node-switch-back.md).
+/// settle (the model's settle). A switch takes (custody: the honest line's boxes open whatever
+/// counts), but a head a switched node made while on X's side boxes no device X revoked, and
+/// with no seed re-seal nobody hands that device the seed, so it cannot merge the heads
+/// (issues/account-node-switch-back.md).
 #[test]
-#[ignore = "issues/account-node-switch-back.md"]
+#[ignore = "issues/account-node-switch-back.md: seed re-seals"]
 fn engine_agrees_with_forks_model_switching_back_spec_permissions_5_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_FORKS_START", "OSIS_FORKS_SEEDS", osis_base::testenv::large(0..2_000));
     tally(&s.run("rotation::tests_forks::engine_agrees_with_forks_model_switching_back_spec_permissions_5_4", replay, |seed| play(seed, true)));

@@ -813,7 +813,7 @@ impl Engine {
         let id = *c;
         let Some(f) = self.read(|tx| crate::apply::held_fragment(tx, &id, ai))? else { return Ok(None) };
         let Some(acct) = f.read().and_then(|x| ct::ACCOUNT.decode(&x).ok()) else { return Ok(None) };
-        let Some(under) = acct.seeds.get(&key).and_then(|s| osis_keys::aspects::from_schema(&s.under).ok()) else { return Ok(None) };
+        let Some(under) = acct.under.get(&key).and_then(|e| osis_keys::aspects::from_schema(e).ok()) else { return Ok(None) };
         let Some(epochs) = self.epochs(&d) else { return Ok(None) };
         Ok(epochs.read.wrapped_under(&under).map(|(s, _)| s))
     }

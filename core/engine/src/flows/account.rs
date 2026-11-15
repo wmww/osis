@@ -90,6 +90,8 @@ pub(crate) struct AccountView {
     carrying: BTreeSet<CommitId>,
     /// The signing keys of the revoked epochs (`revoked`).
     revoked: BTreeSet<[u8; 32]>,
+    /// Per held rotation, the removals from D its header names.
+    removals: BTreeMap<CommitId, Vec<CommitId>>,
 }
 
 impl AccountView {
@@ -219,12 +221,6 @@ impl AccountView {
         held.keys.get(&self.epochs.get(e)?.signing).cloned()
     }
 
-    /// Whether a counting held rotation carries a removal of `node` from D (its header names it,
-    /// its minter signed it at the epoch it rotates; this node's account only).
-    pub(crate) fn carries_removal_of(&self, node: &Tid) -> bool {
-        self.devices.as_ref().is_some_and(|d| d.removes.iter().any(|(r, ns)| ns.contains(node) && self.rotation_counts(r)))
-    }
-
     /// Whether a held rotation that does not count names removal `c` in its header: the removal
     /// stands or falls with it.
     pub(crate) fn carried_uncounted(&self, c: &CommitId) -> bool {
@@ -236,6 +232,13 @@ impl AccountView {
     /// key of no held epoch is not.
     pub(crate) fn revoked(&self, key: &[u8; 32]) -> bool {
         self.revoked.contains(key)
+    }
+
+    /// Whether this node holds held epoch `e`'s line whole: every removal from D a rotation on it
+    /// names (`held`). A node signs at or rotates from an epoch only so (spec/crypto.md §9,
+    /// Custody): its roster then lacks every node the line removed, so it boxes none of them.
+    pub(crate) fn whole(&self, e: &CommitId, held: impl Fn(&CommitId) -> bool) -> bool {
+        self.line(e).into_iter().flatten().all(|r| self.removals.get(r).is_none_or(|rs| rs.iter().all(&held)))
     }
 
     /// The order the chain reads receipts in (rotations, D's grants, carried removals).
@@ -489,9 +492,9 @@ impl Core {
         self.ix.by_aspect.get(&(*d, ak))?.iter().any(by_p).then_some(p)
     }
 
-    /// Whether this node is a node of the account `d` is the devices actor of: a current holder on
-    /// `d` (spec/permissions.md §1). Only such a node takes up the account's seeds and writes as
-    /// it.
+    /// Whether this node is on D's roster as it reads it, `d` an account's devices actor: a current
+    /// holder on `d` (spec/permissions.md §1). Whom it boxes and lists for; never what it holds
+    /// (custody, `flows::custody`) nor whether it leaves (`signing::leave_if_removed`).
     pub(crate) fn of_devices(&self, d: &Tid) -> bool {
         let me = self.id.tid();
         self.key_holders(d).iter().any(|(m, _)| *m == me)
@@ -695,7 +698,8 @@ impl Core {
             }
         }
         let revoked = epochs.iter().filter(|(e, _)| rule.revoked(e)).map(|(_, e)| e.signing.to_bytes()).collect();
-        let mut v = AccountView { rule, rotations, chosen, received, devices, authorized, standing, epochs, by_name: BTreeMap::new(), carriers, carrying, revoked };
+        let removals = rots.iter().map(|(id, _, r)| (*id, r.removals.clone())).collect();
+        let mut v = AccountView { rule, rotations, chosen, received, devices, authorized, standing, epochs, by_name: BTreeMap::new(), carriers, carrying, revoked, removals };
         // a name repeated (two rotations minting one key) is read as its lowest ID
         for (id, e) in v.epochs.iter().filter(|(id, _)| v.rule.chain().epoch_counts(id)) {
             if let Some(name) = v.name(e) {
@@ -733,6 +737,10 @@ impl Core {
         let Some(a) = self.accounts.get(p) else { return Ok(None) };
         let v = self.account_view(p).ok_or(Error::Misuse("no signing chain for the account"))?;
         let (id, keys) = v.open_epoch().and_then(|(id, e)| Some((*id, a.keys.get(&e.signing)?.clone()))).ok_or(Error::Misuse("the account's open epoch is not held"))?;
+        // its line held whole: else it signs nothing there (spec/crypto.md §9, Custody)
+        if !v.whole(&id, |c| self.ix.commits.contains_key(c)) {
+            return Err(Error::Misuse("a removal the account's open epoch's line names is not held"));
+        }
         Ok(Some((id, keys)))
     }
 
@@ -741,8 +749,8 @@ impl Core {
     pub(crate) fn account_open_key(&self, p: &Tid) -> Option<[u8; 32]> {
         let a = self.accounts.get(p)?;
         let v = self.account_view(p)?;
-        let (_, e) = v.open_epoch()?;
-        a.keys.contains_key(&e.signing).then(|| e.signing.to_bytes())
+        let (id, e) = v.open_epoch()?;
+        (a.keys.contains_key(&e.signing) && v.whole(id, |c| self.ix.commits.contains_key(c))).then(|| e.signing.to_bytes())
     }
 
     /// The role epochs of account `p` this node holds seeds of (spec/crypto.md §3), internal to
@@ -1035,11 +1043,10 @@ impl Engine {
     fn take_up(&mut self, p: &Tid, d: &Tid, judge: bool) -> Result<()> {
         let Some(CreationRecord::KeyActor { public_key, account: true, .. }) = self.core.created(p).cloned() else { return Err(Error::UnknownThing(*p)) };
         let first = VerifyingKey::from_slice(&public_key).map_err(|_| Error::Misuse("account key"))?;
-        let stored = self.get_typed(d, &ct::ACCOUNT)?.ok_or(Error::UnknownThing(*d))?;
-        let keys = super::signing::usable_seeds(&self.core, d, stored, &BTreeMap::new());
-        // at open, off D's roster is no leaving by itself (`signing::leave_if_removed` decides)
-        if keys.is_empty() || judge && !self.core.of_devices(d) {
-            return Err(Error::Misuse("no seed of the account readable here"));
+        let p0 = *p;
+        let keys = self.read(|tx| super::custody::seeds(tx, &p0))?;
+        if keys.is_empty() {
+            return Err(Error::Misuse("no seed of the account in custody here"));
         }
         self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, keys }));
         let p = *p;
@@ -1096,17 +1103,16 @@ impl Engine {
         self.run(|tx| Ok(tx.txn.put_local(records::ACCOUNT, &v, Shred::No)?))
     }
 
-    /// Re-takes this node's account seeds at open (`hold_account`): seeds stay in the store's
-    /// encrypted `account.0`, never in a local record. Seeds not readable (the node was removed):
-    /// it stays the account's, unable to sign.
+    /// Re-takes this node's account seeds at open (`hold_account`) from its custody records
+    /// (`flows::custody`).
     pub(crate) fn take_account(&mut self) -> Result<()> {
         let Some((p, d)) = self.account()? else { return Ok(()) };
         self.core.account.set(Some(p));
         if self.take_up(&p, &d, false).is_err() {
             self.core.accounts.remove(&p);
         }
-        // removed before what it read as the account went: it goes now
-        if !self.core.accounts.contains_key(&p) && !self.core.of_devices(&d) {
+        // no seed in custody (it left before what it read as the account went): it goes now
+        if !self.core.accounts.contains_key(&p) {
             self.run(|tx| super::signing::leave(tx, p, d))?;
         }
         self.run(crate::sync::records::observe_own)
@@ -1115,8 +1121,9 @@ impl Engine {
     /// Pairing, existing node side (spec/sync-inbox.md §1: the only way a node receives a grant):
     /// `node`'s card (`created.0`, `keys.0`) was received over the direct connection. A node
     /// that is not on the account's devices actor is granted admin there (spec/permissions.md
-    /// §1: a grant of read or above on D makes a node of P); one that is (stranded) is re-sealed. Returns the
-    /// commits to send it directly: the grant or re-seal, D's and P's certificates and D's
+    /// §1: a grant of read or above on D makes a node of P); one that is (stranded) is re-sealed.
+    /// Either way the account rotates, boxing the node every seed held here (its custody, spec/crypto.md
+    /// §9). Returns the commits to send it directly: the grant or re-seal and the rotation, D's and P's certificates and D's
     /// `sync.0` commits (the new node downloads the rest under the home sync ID), and last the
     /// new node's synced group (spec/sync-set.md §1: a copy of this node's synced group's items
     /// and subgroups) unless the account lists one for it still under home (a re-sealed stranded
@@ -1129,7 +1136,16 @@ impl Engine {
             return Err(Error::UnknownThing(n));
         }
         let holder = self.roster(&d).get(&n).is_some_and(|e| e.role >= Role::Read && e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
-        let done = if holder { self.reshare(&d, &n)? } else { self.grant(&d, &n, &admin_edge())? };
+        let mut done = if holder { self.reshare(&d, &n)? } else { self.grant(&d, &n, &admin_edge())? };
+        // the rotation adding it: it boxes the node a new seed and every seed held here, its
+        // custody of the account (spec/crypto.md §9, Custody)
+        let rotated = self.run(|tx| {
+            let mut inner = Done::default();
+            let r = super::signing::rotate_with(tx, p, &[], &[n], &mut inner)?.ok_or(Error::Misuse("the account's open epoch cannot be rotated here yet"))?;
+            inner.add(Some(r));
+            Ok(inner)
+        })?;
+        done.extend(rotated);
         let synced = if self.under_home(d, &n)? {
             None
         } else {
@@ -1248,7 +1264,8 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     put_edge(&mut m, d, me, &admin_edge())?;
     let signing = keys.signing.verifying_key().to_bytes().to_vec();
     let under = osis_keys::aspects::to_schema(&rot.role(Role::Read).ok_or(Error::Misuse("D's first read epoch"))?.epoch);
-    m.set(d, &ct::ACCOUNT, &ct::Account { seeds: [(signing, ct::AccountSeed { seed: keys.seed().expose().to_vec(), under })].into() })?;
+    m.set(d, &ct::ACCOUNT, &ct::Account { under: [(signing, under)].into() })?;
+    super::custody::keep(tx, &p, keys.seed())?;
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, d, &rot)?;
     let me = tx.core.id.tid();
