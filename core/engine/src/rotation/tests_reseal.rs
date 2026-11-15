@@ -886,3 +886,33 @@ fn roles_at_now_move_at_an_until_spec_permissions_2() {
     assert_eq!(fx.settle(&0, || e0.actor_role(&tids[1], &g)), Some((Some(Some(Role::Read)), None)));
     assert_eq!(fx.settle(&1, || e1.role_on(&g)), Some((Some(Some(Role::Read)), None)));
 }
+
+// spec/sync-judgement.md §1 (Entitlement: placing chain certificates and thing lists, any
+// account's devices actor reads as its account does, whichever node judges it; List blobs),
+// spec/permissions.md §5.5 (a thing list is a chain certificate of T): P1 writes G and files it
+// in D1 (its closure); D1's actor places chains on G and carries G's lists at
+// P1's own node and at peer 0, where D1 is another account's devices actor reading nothing of G
+// as itself; at P1 the home sync ID carries G's list of P1's next rotation. Fails with lists
+// judged by `reads_in` (peer 0 then leaves G's list out of D1's).
+#[test]
+fn lists_go_where_chain_certificates_do_for_any_accounts_devices_spec_sync_judgement_1() {
+    let (mut lp, g, _) = granted(2, &[(1, Role::Write)]);
+    let (a1, d1) = lp.peers[1].engine.core.account_devices().unwrap();
+    let mut m = crate::Mutation::new();
+    let op = osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::ITEMS)], op: osis_crdt::Op::Add(osis_base::Value::Tid(g)) };
+    m.op(d1, &osis_schema::core_types::GROUP, op).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    let c = put(&mut lp, 1, g, "by P1");
+    let r = lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, a1, &[c], &mut crate::flows::Done::default())).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    for i in 0..2 {
+        let e = &mut lp.peers[i].engine;
+        assert!(e.core.ix.groups.closure_of(&d1).contains(&g), "peer {i}: G is in D1's closure");
+        assert!(e.cert_reads_in(&d1, &g), "peer {i}: D1 places chains on G");
+        assert!(e.closure_lists(&d1).contains(&g), "peer {i}: and carries G's lists");
+    }
+    assert!(!lp.peers[0].engine.reads_in(&d1, &g), "at peer 0, D1 reads nothing of G as itself");
+    let e = &mut lp.peers[1].engine;
+    let s = e.sync_ids(&d1).unwrap().first().unwrap().id;
+    assert!(e.certificate_lists(&s, &r).unwrap().contains(&g), "P1's home carries G's list of its rotation");
+}

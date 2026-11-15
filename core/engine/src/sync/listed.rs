@@ -1,6 +1,7 @@
 //! The thing lists each read thing's sync IDs carry (spec/sync-judgement.md §1 List blobs),
 //! kept per (read thing, rotation) (`Listed`): `certificate_lists(s, r)` reads one row. A read
-//! thing carries the lists of the things of its closure its actor reads and of the things whose
+//! thing carries the lists of the things of its closure its actor reads as chain certificates
+//! place (`Engine::cert_reads_in`: a thing list is a chain certificate) and of the things whose
 //! records its certificates name (`Engine::certified_records`); which things it carries is
 //! followed per read thing (`Effects`), the read things are `sync::certified`'s (its set's feed,
 //! so the sync set is followed once), and the lists held come from `Indexes::lists_on`'s feed, so
@@ -90,17 +91,23 @@ impl Listed {
 
 impl Engine {
     /// The things whose lists read thing `t`'s sync IDs carry (spec/sync-judgement.md §1 List
-    /// blobs): its closure's things its actor may read (`reads_in`, a role at now on the memo
-    /// clock), and the things whose records its certificates name; none once `t` is read no more.
+    /// blobs): its closure's things whose lists go there (`closure_lists`), and the things whose
+    /// records its certificates name; none once `t` is read no more.
     fn carried_lists(&mut self, t: &Tid) -> Result<Arc<BTreeSet<Tid>>> {
         let records = self.certified_records(t)?;
         if !self.core.certified.read.contains(t) {
             return Ok(Arc::default());
         }
-        let closure = self.core.ix.groups.closure_of(t);
-        let mut out: BTreeSet<Tid> = closure.iter().filter(|x| self.reads_in(t, x)).copied().collect();
+        let mut out = self.closure_lists(t);
         out.extend(records.iter().copied());
         Ok(Arc::new(out))
+    }
+
+    /// The things of `t`'s closure whose lists its sync IDs carry: those its actor may read as it
+    /// places chain certificates (a thing list is one: `cert_reads_in`, a role at now on the memo
+    /// clock), so they are the same at every node.
+    pub(crate) fn closure_lists(&self, t: &Tid) -> BTreeSet<Tid> {
+        self.core.ix.groups.closure_of(t).iter().filter(|x| self.cert_reads_in(t, x)).copied().collect()
     }
 
     /// The rotations whose held lists name `x` (`Indexes::lists_on`, read whole: only while
@@ -375,7 +382,7 @@ pub(crate) mod tests {
         file(&mut lp, d, g, true);
         let e = &mut lp.peers[0].engine;
         assert!(e.read_things().unwrap().contains(&g), "G is read here");
-        assert!(!e.reads_in(&g, &x), "G's actor does not read X");
+        assert!(!e.cert_reads_in(&g, &x), "G's actor does not read X");
         rotate(&mut lp, p, c);
         let (kept, whole) = rows(&mut lp);
         assert_eq!(kept, whole);
