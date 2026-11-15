@@ -729,9 +729,13 @@ impl Groups {
     /// Of `unfiled` (things `listed_under` holds in no synced closure), the fewest, roughly, to
     /// list as subgroups of home so that each is held: those no other of them lists first, then
     /// the rest (a cycle), each skipped when the closure of one chosen already holds it.
-    /// O(the closures of those chosen).
+    /// O(the groups listing each, plus the closures of those chosen).
     pub(crate) fn to_file(&self, unfiled: &[Tid]) -> Vec<Tid> {
-        let lists = |t: &Tid| unfiled.iter().any(|u| u != t && (self.listed(u, ITEMS, t) || self.listed(u, SUBGROUPS, t)));
+        let set: BTreeSet<&Tid> = unfiled.iter().collect();
+        let lists = |t: &Tid| {
+            let (items, subs) = self.listed_in(t);
+            items.iter().chain(&subs).any(|u| u != t && set.contains(u))
+        };
         let (roots, rest): (Vec<Tid>, Vec<Tid>) = unfiled.iter().partition(|t| !lists(t));
         let mut held = BTreeSet::new();
         let mut out = Vec::new();
