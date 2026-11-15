@@ -293,11 +293,11 @@ impl Mutation {
 }
 
 /// The role a write of `ak` needs (spec/permissions.md §1, §3, §5.2): admin for edges,
-/// `label.0` and admin-only (`^`) aspects; write for rotations
+/// `sync.0`, an account's seeds (`account.0`) and admin-only (`^`) aspects; write for rotations
 /// (`secrets.0`, `keys.0`) and other content.
 pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
-        "roles.0" | "sync.0" => Role::Admin,
+        "roles.0" | "sync.0" | "account.0" => Role::Admin,
         _ if Ak::markers_of(ak).admin_only => Role::Admin,
         _ => Role::Write,
     }

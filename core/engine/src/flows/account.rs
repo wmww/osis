@@ -372,11 +372,15 @@ impl Core {
     }
 
     /// The account `d` is the devices actor of: its first admin, an account, when `d` holds its
-    /// seeds (`account.0`).
+    /// seeds (`account.0`) as that account wrote them. Only a commit signed as the account counts:
+    /// any signer's header can name the aspect, and a devices actor reads as its account wherever
+    /// chains and lists are placed (`Engine::cert_reads_in`), so a thing another writer marked
+    /// would carry the account's private lists to its own readers.
     pub(crate) fn devices_of(&self, d: &Tid) -> Option<Tid> {
         let p = self.first_admin(d).filter(|p| self.is_account(p))?;
         let ak = osis_base::Ak::new("account.0").ok()?;
-        self.ix.by_aspect.contains_key(&(*d, ak)).then_some(p)
+        let by_p = |(_, c): &(osis_base::Ts, CommitId)| self.ix.commits.get(c).is_some_and(|m| m.view.author == p);
+        self.ix.by_aspect.get(&(*d, ak))?.iter().any(by_p).then_some(p)
     }
 
     /// Whether this node is a node of the account `d` is the devices actor of: a current holder on
@@ -941,11 +945,11 @@ impl Engine {
         self.run(crate::sync::records::observe_own)
     }
 
-    /// The devices actor of account `p` as held here: the thing with `account.0` whose first admin
-    /// is `p`.
+    /// The devices actor of account `p` as held here: a thing with `account.0` whose devices
+    /// actor it is (`Core::devices_of`).
     pub fn devices_held(&self, p: &Tid) -> Option<Tid> {
         let ak = osis_base::Ak::new("account.0").ok()?;
-        self.core.ix.aspect_things.get(&ak)?.iter().find(|t| self.core.first_admin(t) == Some(*p)).copied()
+        self.core.ix.aspect_things.get(&ak)?.iter().find(|t| self.core.devices_of(t) == Some(*p)).copied()
     }
 
     /// The node whose inner signature `blob` carries, when this node holds the seed of the epoch

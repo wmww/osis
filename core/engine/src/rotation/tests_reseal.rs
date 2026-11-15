@@ -916,3 +916,40 @@ fn lists_go_where_chain_certificates_do_for_any_accounts_devices_spec_sync_judge
     let s = e.sync_ids(&d1).unwrap().first().unwrap().id;
     assert!(e.certificate_lists(&s, &r).unwrap().contains(&g), "P1's home carries G's list of its rotation");
 }
+
+// spec/permissions.md §1 (role-class aspects are written by admins alone; a devices actor is
+// created with its account, which writes its seeds), spec/sync-judgement.md §1 (Entitlement: an
+// account's devices actor reads as its account, placing chain certificates and thing lists): a
+// co-admin of G, a thing whose first admin is account A0 and which A0's sync set holds, puts an
+// `account.0` on G and lists X, a thing only A0 reads, in G. G is no devices actor (only seeds A0
+// signed count), so the lists of X never go under G's sync ID, where the co-admin and G's other
+// readers would learn which commits A0 made on X. A writer of G may not write `account.0` at all.
+// Fails with any held `account.0` header making a devices actor.
+#[test]
+fn another_admin_makes_no_devices_actor_spec_permissions_1() {
+    let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
+    let x = super::tests::group(&mut lp, 0);
+    let (_, d0) = lp.peers[0].engine.core.account_devices().unwrap();
+    let mut m = Mutation::new();
+    m.op(d0, &osis_schema::core_types::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::SUBGROUPS)], op: Op::Add(Value::Tid(g)) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let mut seeds = Mutation::new();
+    seeds.set(g, &osis_schema::core_types::ACCOUNT, &osis_schema::core_types::Account::default()).unwrap();
+    assert!(matches!(lp.peers[2].commit(seeds.clone()), Err(crate::Error::Permission { .. })), "a writer writes no account.0");
+    lp.peers[1].commit(seeds).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(g, &osis_schema::core_types::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(x)) }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let c = put(&mut lp, 0, x, "private");
+    let r = lp.peers[0].engine.run(|tx| crate::flows::signing::rotate_in(tx, tids[0], &[c], &mut crate::flows::Done::default())).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(e.core.ix.groups.closure_of(&g).contains(&x) && e.read_things().unwrap().contains(&g), "X listed in G, which A0 syncs");
+    assert!(!e.reads_in(&g, &x), "G's actor reads nothing of X");
+    let (s, sx) = (e.sync_ids(&g).unwrap()[0].id, e.sync_ids(&x).unwrap()[0].id);
+    assert!(e.certificate_lists(&sx, &r).unwrap().contains(&x), "X's own sync ID carries its list");
+    assert!(!e.certificate_lists(&s, &r).unwrap().contains(&x), "X's list goes nowhere G's readers pull");
+    assert_eq!(e.devices_held(&tids[0]), Some(d0), "A0's devices actor is D0 alone");
+}

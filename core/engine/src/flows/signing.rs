@@ -319,7 +319,8 @@ fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
 
 /// A node of account `p` answers its rotation `r` with a listing: per thing, the commits of `p`
 /// at the epochs `r` closes that no word held names, this node's own (by inner signature) and
-/// others' by the cutoff (spec/permissions.md §5.5, Listings). A listing needs no role on a thing;
+/// others' by the cutoff (spec/permissions.md §5.5, Listings), in one commit for the carried
+/// things and one for the local ones. A listing needs no role on a thing;
 /// one it may write on only later waits whole, one that is gone here is left out.
 fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitId) -> Result<bool> {
     if tx.core.accounts.get(&p).is_none_or(|a| !tx.core.of_devices(&a.devices)) {
@@ -340,14 +341,19 @@ fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
     if on.is_empty() {
         return Ok(true);
     }
-    let mut m = Mutation::new();
-    m.sign_as(p);
-    m.unchecked();
-    for (t, ids) in on {
-        let set = Value::Set(ids.iter().map(|c| Value::bytes(&c.0)).collect());
-        m.op(t, &ct::LISTING, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(set) })?;
+    // the things something carries and the local ones in commits of their own (spec/sync-set.md
+    // §1 Local stays local)
+    let (carried, local): (BTreeMap<_, _>, BTreeMap<_, _>) = on.into_iter().partition(|(t, _)| tx.core.carried(t));
+    for on in [carried, local].into_iter().filter(|x| !x.is_empty()) {
+        let mut m = Mutation::new();
+        m.sign_as(p);
+        m.unchecked();
+        for (t, ids) in on {
+            let set = Value::Set(ids.iter().map(|c| Value::bytes(&c.0)).collect());
+            m.op(t, &ct::LISTING, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(set) })?;
+        }
+        Engine::commit_tx(tx, m)?;
     }
-    Engine::commit_tx(tx, m)?;
     Ok(true)
 }
 

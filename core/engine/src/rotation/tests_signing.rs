@@ -1045,3 +1045,31 @@ fn a_rotation_waiting_for_a_head_names_nothing_until_held_spec_permissions_5_5()
     lp.peers[3].engine.rebuild_index().unwrap();
     assert_eq!(d0.first_diff(&lp.peers[3].engine.index_digest()), None, "rebuilt");
 }
+
+// spec/permissions.md §5.5 (Listings), spec/sync-set.md §1 (Local stays local): a node of the
+// account that wrote on a local thing L and on t, a thing that syncs, before the rotator held
+// either, takes the rotation in and lists both writes; L's listing shares no commit with t's,
+// so nothing of L goes under t's sync IDs. Fails with one listing over every thing (the
+// receive is refused at its end, naming L).
+#[test]
+fn a_listing_keeps_a_local_thing_apart_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(4, 3);
+    let mut m = crate::Mutation::new();
+    let l = lp.peers[2].engine.new_thing(&mut m, a.account);
+    m.local(l);
+    m.set(l, &x(), &Value::Str("mine".into())).unwrap();
+    let made = lp.peers[2].commit(m).unwrap().unwrap();
+    assert!(!lp.peers[2].engine.core.carried(&l) && lp.peers[2].engine.core.carried(&t), "L local, t carried");
+    let w = write(&mut lp, 2, t, "offline");
+    let done = remove(&mut lp, 0, a.devices, 1);
+    for id in &done.commits {
+        let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
+        lp.deliver(2, &pk).expect("the rotation is taken in");
+    }
+    let e = &lp.peers[2].engine;
+    let listings: Vec<std::sync::Arc<osis_commit::Header>> = e.commit_ids().into_iter().filter_map(|c| e.header(&c)).filter(|h| h.aspects.iter().any(|x| x.ak.as_str() == "listing.0")).collect();
+    let on = |x: Tid| listings.iter().filter(|h| h.aspects.iter().any(|y| y.tid == x)).collect::<Vec<_>>();
+    assert!(!on(l).is_empty() && !on(t).is_empty(), "both writes listed: {listings:?}");
+    assert!(on(l).iter().all(|h| h.aspects.iter().all(|y| y.tid == l)), "L's listing is a commit of its own");
+    let _ = (made, w);
+}

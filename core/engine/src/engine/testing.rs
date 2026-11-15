@@ -703,6 +703,21 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("by_epoch", &*ix.by_epoch),
         ("covered_under", &*ix.covered_under),
         ("forgotten_names", &*ix.forgotten_names),
+        ("own_held", &*ix.own_held),
+        ("own_replaces", &*ix.own_replaces),
+        ("signed", &*ix.signed),
+        ("sealed", &*ix.sealed),
+        ("rotation_sigs", &*ix.rotation_sigs),
+        ("leave_from", &*ix.leave_from),
+        ("leave_due", &*ix.leave_due),
+        ("addenda_due", &*ix.addenda_due),
+        ("rotations_due", &*ix.rotations_due),
+        ("resnapshots_owed", &*ix.resnapshots_owed),
+        ("bearers", &*ix.bearers),
+        ("freed", &*ix.freed),
+        ("delete_hints", &*ix.delete_hints),
+        ("kept", &*ix.kept),
+        ("timed_lost", &*ix.timed_lost),
     ]
 }
 
@@ -962,7 +977,15 @@ mod tests {
     #[test]
     fn every_index_is_placed_in_the_check() {
         const OWN: &[&str] = &["held", "commits", "snapshots", "dropped_snapshots", "derived_written"];
-        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "rotation_sigs", "names_due", "forgotten", "own_held", "own_replaces", "signed", "pending", "pend_on", "pend_keys", "bearers", "freed", "falls", "passes", "role_arrivals", "cause_at", "reseal_asks", "delete_hints", "leaving", "dated", "leave_from", "leave_due", "addenda_due", "rotations_due", "sealed", "timed_lost", "kept", "hint_candidates", "cover_waits", "resnapshots_owed"];
+        // node-local or re-derived by an open, so they differ from a fresh load by design: a
+        // cache counter (`rotations`); a transaction's work queues (`epochs_due`, `names_due`,
+        // `hint_candidates`, `cover_waits`); what an open parks anew (`pending`, `pend_on`,
+        // `pend_keys`: each examined again); rows not persisted for ephemeral aspects
+        // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
+        // `cause_at`, `reseal_asks`). And `leaving`, `dated`: an open and a rebuild agree, but a
+        // snapshot applied page by page gets no row where applied whole it does (the paged
+        // differential compares these tables: issues/leaving-row-paged-snapshot.md).
+        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "reseal_asks", "hint_candidates", "cover_waits", "leaving", "dated"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {
