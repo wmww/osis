@@ -643,16 +643,14 @@ fn path_listener_hears_an_expiry_and_a_purge() {
     for rx in [&a, &b, &cc] {
         assert_eq!(rx.try_iter().map(|x| x.0).collect::<Vec<_>>(), vec![Ok(Some(Value::Int(1)))]);
     }
-    // the purge first: past the expiry a snapshot may cover `c`'s write and its commit be
-    // forgotten (spec/commits.md §5 Forgetting), unknown to a purge by commit
-    db.commit_with(|w| w.at(t, m()).purge(osis::Purge::Commit(cid))).unwrap();
-    assert_eq!(heard(&db, &cc), vec![Ok(None)], "the purged write's entry");
-    assert!(heard(&db, &a).is_empty() && heard(&db, &b).is_empty(), "the entries beside it");
     c.advance(6_000);
     db.engine(|e| e.tick()).unwrap();
     db.settle();
     assert_eq!(a.try_iter().collect::<Vec<_>>(), vec![(Ok(None), Origin::Derived(DerivedFrom::Expired))]);
     assert!(heard(&db, &b).is_empty() && heard(&db, &cc).is_empty(), "the entries beside it");
+    db.commit_with(|w| w.at(t, m()).purge(osis::Purge::Commit(cid))).unwrap();
+    assert_eq!(heard(&db, &cc), vec![Ok(None)], "the purged write's entry");
+    assert!(heard(&db, &a).is_empty() && heard(&db, &b).is_empty(), "the entries beside it");
 }
 
 // notes/local-store.md Failed writes: a failed sync at any write of a purging commit, then a write
