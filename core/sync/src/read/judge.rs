@@ -329,6 +329,11 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
                 }
             }
             let mut v = classify(mine, &f, s, c, meta, later_held);
+            // must-hold only what this node may log under S (§2 Loggable): else may-hold, kept
+            // if it arrives, never relayed, deposited or owed
+            if v == Verdict::Must && !g.may_log(s, c)? {
+                v = Verdict::May;
+            }
             if v == Verdict::MustNot(Why::OutsideRequired) {
                 let (x, wait) = outside(g, mine, s, c)?;
                 v = x;
@@ -400,8 +405,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         if !stands && restamp.is_empty() {
             restamp.extend(peer);
         }
-        // logged once it can be wrapped for S: read here, so the judgement moves when it can
-        if !stands && restamp.is_empty() && g.wraps(s, c)? {
+        if !stands && restamp.is_empty() {
             j.acts.insert(Act::Log);
         }
         j.acts.extend(restamp.into_iter().map(Act::Restamp));

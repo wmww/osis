@@ -153,8 +153,8 @@ struct Fake {
     holdings_feed: Vec<SyncId>,
     unsettled: Stamped<SyncId, ()>,
     unpullable: Stamped<SyncId, ()>,
-    /// Bodies no wrap for their sync ID is held for yet.
-    unwrappable: Stamped<(SyncId, CommitId), ()>,
+    /// Bodies this node may not log under their sync ID (`Ground::may_log`).
+    unloggable: Stamped<(SyncId, CommitId), ()>,
     /// Blobs held with other parts than `{0}`, as a copy, or without bytes (`None`).
     blobs: Stamped<BlobId, Option<BlobInfo>>,
     /// Blobs holding a part dropped here for good (a purge).
@@ -348,8 +348,8 @@ impl Ground for Fake {
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unpullable.contains_key(s))
     }
-    fn wraps(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
-        Ok(!self.unwrappable.contains_key(&(*s, *c)))
+    fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        Ok(!self.unloggable.contains_key(&(*s, *c)))
     }
     fn cert_blobs_missing(&mut self, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
         Ok(self.records.get(&(*s, r)).cloned().unwrap_or_default())
@@ -1582,19 +1582,27 @@ fn logs_only_while_a_reader_can_pull() {
     assert_eq!(w.logs(S, cid(1)), 1);
 }
 
-// spec/sync-judgement.md §3 (own store): a must-hold body no wrap for S is held for yet is
-// logged once one is (the judgement reads it, so it moves then), once.
+// spec/sync-judgement.md §2 (Loggable): a body of S's required set this node may not log under S
+// is may-hold, so a non-writer gives it no source and owes it nowhere; once it may (the judgement
+// reads it, so it moves then), it is must-hold, logged once and given.
 #[test]
-fn a_body_waits_for_a_wrap_then_is_logged_spec_sync_judgement_3() {
+fn a_body_this_node_may_not_log_is_may_hold_until_it_may_spec_sync_judgement_2() {
     let mut w = W::new();
-    w.g.unwrappable.insert((S, cid(1)), ());
+    w.pulls = false;
+    w.g.creds.insert(S, creds(0, false, false));
+    w.g.unloggable.insert((S, cid(1)), ());
     w.hold(cid(1), &[S], uncovered());
-    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
+    w.settle();
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::May));
     assert_eq!(w.logs(S, cid(1)), 0);
-    w.g.unwrappable.remove(&(S, cid(1)));
+    assert!(w.g.sent.is_empty(), "{:?}", w.g.sent);
+    w.g.unloggable.remove(&(S, cid(1)));
     w.settle();
     w.settle();
+    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must));
     assert_eq!(w.logs(S, cid(1)), 1);
+    let b = w.own_blobs(S, cid(1))[0];
+    assert_eq!(w.g.sent, vec![Sent::Deposit(KC, b)]);
 }
 
 // spec/sync-judgement.md §3 (own store), spec/permissions.md §4 (Logging certificates): a body

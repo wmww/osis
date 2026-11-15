@@ -374,6 +374,73 @@ impl Engine {
         Ok(Some((sealed, wrap)))
     }
 
+    /// Whether this node may log `c`'s body under `s` now (spec/sync-judgement.md §2 Loggable;
+    /// what read's must-hold reads, so a judgement moves when it does), as the sync store's log
+    /// would: a held blob of `c` passed on verbatim under a wrap for `s` (`rewrap_now`), else a
+    /// fresh encryption (`seal_body_now`): a copy or certificate of parts all held, or each
+    /// part of the body sealed here (`section_secret`) or carried by a held genuine section; in
+    /// each case wrapped for `s` as `wrap_secret` says for the parts the blob carries.
+    pub(crate) fn may_log_now(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        let Some(t) = self.read_thing(s)? else { return Ok(false) };
+        let Some(meta) = self.sync_body_now(s, c)? else { return Ok(false) };
+        let Some(h) = self.header(c) else { return Ok(false) };
+        let held: BTreeSet<usize> = match self.core.ix.commits.get(c) {
+            Some(m) => m.hold.iter().enumerate().filter(|(_, x)| matches!(x, crate::engine::Hold::Body { .. })).map(|(ai, _)| ai).collect(),
+            None => return Ok(false),
+        };
+        let body: Vec<usize> = meta.parts.iter().copied().collect();
+        // verbatim: a held genuine blob (a certificate copy of exactly the body's parts for a
+        // certificate), never for a per-sync-ID copy's body
+        let mut carried = BTreeSet::new();
+        let blobs: Vec<BlobId> = self.core.ix.commit_blobs.get(c).into_iter().flatten().copied().collect();
+        for b in &blobs {
+            let Some(row) = self.core.ix.blob_parts.get(b).filter(|x| x.commit == *c).cloned() else { continue };
+            if self.blob_dropped_now(b) {
+                continue;
+            }
+            if !row.copy {
+                carried.extend(row.parts.iter().copied().filter(|ai| held.contains(ai)));
+            }
+            let fits = (meta.certificate && row.copy && row.parts == meta.parts) || (!row.copy && !meta.copy);
+            let parts: Vec<usize> = row.parts.iter().copied().collect();
+            if fits && self.wrap_secret(&t, Some((c, &parts)))?.is_some() {
+                return Ok(true);
+            }
+        }
+        // a fresh encryption
+        let ctx = self.body_ctx(&t);
+        let copy = meta.certificate || self.commit_bodies_under(&ctx, c)?.first().is_some_and(|b| b.to_label);
+        let sealed: Vec<usize> = match copy || body.is_empty() {
+            // one section of the body's parts under its blob key; a header alone, none
+            true => body.clone(),
+            // per section (thing, role-class or not), sealed here or carried as held
+            false => {
+                let mut of_thing: BTreeMap<Tid, Vec<usize>> = BTreeMap::new();
+                let mut sections: BTreeMap<(Tid, bool), Vec<usize>> = BTreeMap::new();
+                for ai in &held {
+                    let Some(a) = h.aspects.get(*ai) else { continue };
+                    of_thing.entry(a.tid).or_default().push(*ai);
+                    sections.entry((a.tid, osis_keys::under_roles(a.ak.as_str()))).or_default().push(*ai);
+                }
+                let mut sealed = carried;
+                for ((tid, _), parts) in &sections {
+                    if parts.iter().all(|ai| sealed.contains(ai)) {
+                        continue;
+                    }
+                    let all = of_thing.get(tid).cloned().unwrap_or_default();
+                    if self.section_secret(c, &h, tid, &all, parts).is_some() {
+                        sealed.extend(parts.iter().copied());
+                    }
+                }
+                sealed.into_iter().collect()
+            }
+        };
+        if body.iter().any(|ai| !held.contains(ai) || !sealed.contains(ai)) {
+            return Ok(false);
+        }
+        Ok(self.wrap_secret(&t, Some((c, &sealed)))?.is_some())
+    }
+
     /// The sections of commit `c`'s held genuine blobs among `held` (each opened by its entry's
     /// wrap under a read secret of its sync ID's thing): shared blobs of `c` opened or sealed
     /// here, never a copy (a section under its blob key is never copied into another encryption,

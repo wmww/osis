@@ -243,8 +243,8 @@ impl Ground for Live<'_, '_> {
         }
         Ok(self.cx.engine.publishes_reach()?)
     }
-    fn wraps(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
-        Ok(self.cx.engine.body_wrap(s, c)?)
+    fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        Ok(self.cx.engine.may_log(s, c)?)
     }
     fn now(&self) -> WallMs {
         self.cx.now

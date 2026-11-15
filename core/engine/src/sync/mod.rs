@@ -545,10 +545,11 @@ impl Engine {
         self.lists_feed_now()
     }
 
-    /// Whether `c`'s body under `s` can be wrapped for `s` now (`wrap_secret` for its parts): a
-    /// must-hold body is logged once it can, so a judgement reading this acts when it moves.
-    pub fn body_wrap(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
-        self.body_wrap_now(s, c)
+    /// Whether this node may log `c`'s body under `s` now: a held blob verbatim or a fresh
+    /// encryption, wrapped for `s` (spec/sync-judgement.md §2 Loggable): a body is must-hold only
+    /// while it may, so a judgement reading this moves when it does.
+    pub fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        self.may_log_now(s, c)
     }
 
     /// Whether a record blob (`r` none) or a list blob of rotation `r` can be sealed under `s`

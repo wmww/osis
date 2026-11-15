@@ -326,13 +326,7 @@ impl Engine {
             |ai| (things.get(ai).copied(), roles.get(ai).copied().unwrap_or(false)),
             |(t, is_roles), parts| {
                 let t = (*t)?;
-                let (e, s) = self.wrap_under(&t, Some((&id, of_thing.get(&t)?))).ok().flatten()?;
-                // a write goes under this node's epoch only where `opened::passes_on` (its
-                // invariant and the floor clause, at that epoch's floor), else as a held section
-                // of it or not at all
-                if !self.passes_on_all(&id, &resolved, parts, self.core.read_floor(&t, &e)).ok()? {
-                    return None;
-                }
+                let (e, s) = self.section_secret(&id, &resolved, &t, of_thing.get(&t)?, parts)?;
                 under.push((t, e));
                 // role parts in a section of their own under the epoch's roles secret
                 // (spec/crypto.md §4, Roles secrets)
@@ -350,6 +344,19 @@ impl Engine {
             self.note_sealed(t, e)?;
         }
         Ok(Some(s))
+    }
+
+    /// The epoch and secret a fresh encryption's section of commit `id` (header `h`) holding
+    /// `parts` on thing `t` goes under (`of_thing`: every held part of `id` on `t`, which choose
+    /// the epoch, `wrap_under`). A write goes under this node's epoch only where
+    /// `opened::passes_on` (its invariant and the floor clause, at that epoch's floor), else as a
+    /// held section of it or not at all (`None`). `seal` and `may_log` alike.
+    pub(crate) fn section_secret(&mut self, id: &CommitId, h: &osis_commit::Header, t: &Tid, of_thing: &[usize], parts: &[usize]) -> Option<(Epoch, Secret32)> {
+        let (e, s) = self.wrap_under(t, Some((id, of_thing))).ok().flatten()?;
+        if !self.passes_on_all(id, h, parts, self.core.read_floor(t, &e)).ok()? {
+            return None;
+        }
+        Some((e, s))
     }
 
     /// Opens a commit blob (spec/wire.md §4): each section under the read secrets of its thing

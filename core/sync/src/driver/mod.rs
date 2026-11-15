@@ -249,6 +249,12 @@ impl Node {
         &self.life
     }
 
+    /// Tests only: read's verdict of commit `c`'s body under `s`.
+    #[doc(hidden)]
+    pub fn verdict(&self, s: &SyncId, c: &osis_base::CommitId) -> Option<crate::read::Verdict> {
+        self.read.verdict(s, c)
+    }
+
     /// Tests only: restarts in place after a store failure so far.
     #[doc(hidden)]
     pub fn restarts(&self) -> u64 {

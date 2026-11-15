@@ -126,8 +126,9 @@ pub trait Ground {
     /// A reader can pull S from here: this node publishes `reach.0`, or a connection shares S
     /// (spec/sync-judgement.md §3 Own store).
     fn pullable(&mut self, s: &SyncId) -> Result<bool>;
-    /// `c`'s body can be wrapped for S now (`Engine::body_wrap`): logging waits for it.
-    fn wraps(&mut self, s: &SyncId, c: &CommitId) -> Result<bool>;
+    /// This node may log `c`'s body under S now (`Engine::may_log`, spec/sync-judgement.md §2
+    /// Loggable): must-hold only while it may.
+    fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool>;
     /// The time (not followed: `Read` follows it through its clock).
     fn now(&self) -> WallMs;
 

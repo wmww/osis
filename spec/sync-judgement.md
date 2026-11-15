@@ -28,7 +28,8 @@ S's **required set** is its closure blobs (§1) plus what is logged there beside
 
 Per node, a body it holds is **must-hold**, **must-not-hold** or **may-hold** at a sync ID. A body meeting a must-not-hold condition is must-not-hold whatever else holds of it.
 - A delta is **kept** while it is before its keep-at-least bound (in history by the settings the node holds, spec/commits.md §5 The setting). One out of history is neither must-hold nor fetched; a node that dropped it fetches it none when a later setting puts it back in history.
-- **must-hold**: in the required set and, for a closure body, one of:
+- **Loggable**: a node judges must-hold only what it may log under S now (§3 Own store): a body it may seal under S, or a held blob of the commit it may pass on verbatim under a wrap for S (both by spec/crypto.md §5 Passing on and Who wraps under what). Whatever else of the required set it is entitled to is may-hold: kept if it arrives, never fetched, relayed, deposited or owed.
+- **must-hold**: in the required set, loggable and, for a closure body, one of:
   - a delta of it kept, whatever snapshot covers it;
   - established uncovered: the node can join it, no held snapshot of the aspect under the sync ID covers it (spec/commits.md §5), and the sync ID holds no snapshot of the aspect that this node does not hold (forgotten, dropped) stamped later than the body (one this node judged invalid does not count); a signal's delta is never joined, so it is must-hold only while kept.
 - **Header-only blob**: in the required set only as a certificate (above) or as the lasting header of a commit lasting on a thing of the closure whose actor the sync ID's reads (spec/commits.md §5), with no other body of the commit wanted there, and then is must-hold, whatever snapshot covers it. One of a commit with a permanent delta or a purge request that is not lasting here is may-hold, except on a thing destroyed by release alone (no header of it lasts).
@@ -41,7 +42,7 @@ Per node, a body it holds is **must-hold**, **must-not-hold** or **may-hold** at
   - under D's home sync ID, another node's card commit, for `node.0` and `reach.0`, once that node is a node of the account no more after an applied edge write on D ended its grant (removed it, or its `until` passed).
   - any entry but a destroying request's under a sync ID of a destroyed thing the node keeps nothing of, once its destruction is told (§5);
   - an inbox blob this node cleared (spec/sync-inbox.md §4 Clearing deposits) or deleted as an admin of the inbox's thing (spec/sync-inbox.md §2 Logging), unexpired or not.
-- **may-hold**: the rest: covered, out of history, parked, unfetched pages, dropped here (as invalid included: never deleted at a peer, §3), a certificate blob whose author has no other blob under the sync ID.
+- **may-hold**: the rest: not loggable, covered, out of history, parked, unfetched pages, dropped here (as invalid included: never deleted at a peer, §3), a certificate blob whose author has no other blob under the sync ID.
 
 ## 3. Acting on the judgement
 - **Driven by events**: an entry is judged when an event touches it: it is logged, pulled, fetched, deleted, expires or is refused somewhere; a commit, snapshot, purge or role change on its aspects is held or falls here; its thing's closure changes; a source's stream shows it, shows it gone or refuses it. A new source is judged entry by entry as its stream's events arrive. Judging is to a fixpoint: a judgement that changes the closure or a held part re-judges what that change touches, and nothing else.

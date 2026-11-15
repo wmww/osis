@@ -868,9 +868,39 @@ impl World {
             self.flush();
             match self.net.next_due(horizon) {
                 Some(at) => self.fire(at),
-                None => return,
+                None => break,
             }
         }
+        self.unlogged_must_holds();
+    }
+
+    /// At quiet, each node logs every body it judges must-hold under S, wherever a reader can
+    /// pull S from it and the body counts as held (spec/sync-judgement.md §2: must-hold only what
+    /// it may log under S; §3 Own store).
+    fn unlogged_must_holds(&mut self) {
+        let mut stuck = Vec::new();
+        for i in 0..self.nodes.len() {
+            let reach = self.engine(i).publishes_reach().unwrap();
+            for c in self.engine(i).commit_ids() {
+                let bodies = self.engine(i).sync_bodies(&c).unwrap();
+                for s in bodies.keys() {
+                    if self.node(i).node.verdict(s, &c) != Some(osis_sync::read::Verdict::Must) {
+                        continue;
+                    }
+                    if !reach && self.node(i).node.status_of(s).is_none_or(|x| x.sources.is_empty()) {
+                        continue;
+                    }
+                    if self.engine(i).read_facts(s, &c).unwrap().missing {
+                        continue;
+                    }
+                    let blobs = self.engine(i).commit_blobs(&c).unwrap();
+                    if !blobs.iter().any(|b| self.store(i).entry(s, b).unwrap().is_some()) {
+                        stuck.push((i, *s, c));
+                    }
+                }
+            }
+        }
+        assert!(stuck.is_empty(), "must-hold bodies with no entry at quiet (node, S, commit): {stuck:?}");
     }
 
     /// Moves the clock by `ms` (tests about time only) and runs every wake up to then.
