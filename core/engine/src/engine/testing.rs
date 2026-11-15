@@ -719,6 +719,7 @@ fn tables(ix: &super::Indexes) -> [(&'static str, &dyn Table); 49] {
         ("record_ids", &*ix.record_ids),
         ("waiting_inbox", &*ix.waiting_inbox),
         ("inbox_hints", &*ix.inbox_hints),
+        ("hinted", &*ix.hinted),
         ("owed_inbox", &*ix.owed_inbox),
         ("suspects", &*ix.suspects),
         ("held_wait", &*ix.held_wait),

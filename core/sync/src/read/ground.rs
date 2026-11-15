@@ -246,10 +246,10 @@ pub trait Ground {
         let _ = (s, r, tids);
         Ok(())
     }
-    /// The links of `c`'s body at S, where its pieces start (`Engine::piece_roots`;
+    /// The links of `c`'s body of `parts`, where its pieces start (`Engine::piece_roots`;
     /// spec/sync-judgement.md §1).
-    fn piece_roots(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<PieceLink>>> {
-        let _ = (s, c);
+    fn piece_roots(&mut self, c: &CommitId, parts: &osis_engine::sync::PartSet) -> Result<Arc<Vec<PieceLink>>> {
+        let _ = (c, parts);
         Ok(Arc::default())
     }
     /// What lies one step below piece `p`: `None` while it is not held (`Engine::piece_below`).

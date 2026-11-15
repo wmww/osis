@@ -1070,18 +1070,25 @@ impl<T: Ord + Hash + Clone + Send + Sync + 'static> StampedSet<T> {
         self.stamps.read(t);
         self.set.contains(t)
     }
+    /// Adds `t`; one already there changes nothing, so it moves nothing.
     pub fn insert(&mut self, t: T) -> bool {
         let added = self.set.insert(t.clone());
-        self.stamps.wrote_added(&t, true, added);
+        if added {
+            self.stamps.wrote_added(&t, true, true);
+        }
         added
     }
     /// A reader's cursor over the items inserted from now on (`Feed`).
     pub fn feed(&self) -> Feed<T> {
         self.stamps.feed()
     }
+    /// Removes `t`; one not there changes nothing, so it moves nothing.
     pub fn remove(&mut self, t: &T) -> bool {
-        self.stamps.wrote(t, false);
-        self.set.remove(t)
+        let removed = self.set.remove(t);
+        if removed {
+            self.stamps.wrote(t, false);
+        }
+        removed
     }
     /// A handle reading this set's items (`Reader`, as `contains` reads them).
     pub fn reader(&self) -> Reader {
@@ -1137,6 +1144,18 @@ mod tests {
         s.insert(2);
         assert_eq!(n(&s), 2);
         assert_eq!(runs("test count"), 1);
+        // a set's insert of an item there, or removal of one not there, changes nothing
+        let has: Memo<u8, bool> = Memo::new("test has");
+        let ask_s = |s: &StampedSet<u8>, k: u8| has.get(&k, || s.contains(&k));
+        assert_eq!((ask_s(&s, 1), ask_s(&s, 9), n(&s)), (true, false, 2));
+        assert_eq!(runs("test has"), 2);
+        crate::costs::take();
+        for k in 10..250 {
+            s.insert(1);
+            s.remove(&k);
+        }
+        assert_eq!((ask_s(&s, 1), ask_s(&s, 9), n(&s)), (true, false, 2));
+        assert_eq!(runs("test has") + runs("test count"), 0, "no-op inserts and removals");
     }
 
     // spec: none (engine internals): a hit looks up the keys an answer read only in containers

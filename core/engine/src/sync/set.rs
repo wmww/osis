@@ -150,13 +150,22 @@ impl Engine {
         }
         c.roster = self.roster_digest(&t);
         if let Some(e) = self.core.epochs(&t) {
-            c.sync_keys = e.role(Role::Sync).held_newest_first().into_iter().map(|(ep, x)| (ep, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, x))).collect();
+            // each held sync secret's key derived once (a curve multiplication), then matched per step
+            let held: Vec<(Epoch, Secret32, SigningSecret)> = e
+                .role(Role::Sync)
+                .held_newest_first()
+                .into_iter()
+                .map(|(ep, x)| {
+                    let seed = osis_crypto::label_role_seed(osis_crypto::LabelRole::Sync, x);
+                    (ep, seed.clone(), SigningSecret::from_seed(&seed))
+                })
+                .collect();
             for (step, _) in o.path.steps.iter().rev() {
-                let sync = e.role(Role::Sync).held_newest_first().into_iter().find(|(_, x)| osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, x).verifying_key() == step.keys.sync);
-                if let Some((_, x)) = sync {
-                    c.proofs.push((step.id(), osis_crypto::kdf::sync_proof(&osis_crypto::label_role_seed(osis_crypto::LabelRole::Sync, x))));
+                if let Some((_, seed, _)) = held.iter().find(|(_, _, k)| k.verifying_key() == step.keys.sync) {
+                    c.proofs.push((step.id(), osis_crypto::kdf::sync_proof(seed)));
                 }
             }
+            c.sync_keys = held.into_iter().map(|(ep, _, k)| (ep, k)).collect();
         }
         Ok(Some(Arc::new(c)))
     }
@@ -241,8 +250,8 @@ impl Engine {
         let mut things: Vec<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
         // a destroyed thing's kept own sync IDs (`owned_sync_ids`)
         things.extend(self.core.ix.destroyed_sync_ids.iter().filter(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t));
-        // a thing a taken inbox blob named it for (O(hints held))
-        things.extend(self.core.ix.inbox_hints.iter().filter(|(_, x)| x.0 == *s).map(|(t, _)| *t));
+        // a thing a taken inbox blob named it for
+        things.extend(self.core.ix.hinted.get(s).into_iter().flatten().copied());
         things.extend(self.core.followed_links.iter().filter(|(_, x)| x.0 == *s).map(|(t, _)| *t));
         for t in things {
             if self.owned_sync_ids(&t)?.iter().any(|o| o.id == *s) {

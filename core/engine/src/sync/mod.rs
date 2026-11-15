@@ -292,14 +292,15 @@ pub struct ReadCredentials {
     pub sync_keys: Vec<(Epoch, SigningSecret)>,
 }
 
+type PublicCredentials<'a> = (Option<StepId>, &'a BTreeMap<StepId, HeadKeys>, &'a [(Epoch, Secret32)], &'a BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, [u8; 32], &'a [(StepId, [u8; 32])], Vec<(Epoch, osis_crypto::VerifyingKey)>);
+
 impl ReadCredentials {
-    /// What tells two apart, public keys for secrets (`Engine::read_credentials` is a memo).
-    #[allow(clippy::type_complexity)]
-    fn public(&self) -> (Option<StepId>, &BTreeMap<StepId, HeadKeys>, Vec<(Epoch, osis_crypto::VerifyingKey)>, &BTreeSet<[u8; 32]>, Vec<osis_crypto::VerifyingKey>, [u8; 32], &Vec<(StepId, [u8; 32])>, Vec<(Epoch, osis_crypto::VerifyingKey)>) {
-        let read = self.read_secrets.iter().map(|(e, x)| (*e, osis_crypto::SigningSecret::from_seed(x).verifying_key())).collect();
-        let acting = self.acting.iter().map(osis_crypto::SigningSecret::verifying_key).collect();
-        let sync = self.sync_keys.iter().map(|(e, k)| (*e, k.verifying_key())).collect();
-        (self.head.as_ref().map(Step::id), &self.keys, read, &self.statics, acting, self.roster, &self.proofs, sync)
+    /// What tells two apart (`Engine::read_credentials` is a memo): signing keys by their public
+    /// halves, read secrets as they are (`Secret32` compares, and prints redacted).
+    fn public(&self) -> PublicCredentials<'_> {
+        let acting = self.acting.iter().map(SigningSecret::verifying_key).collect();
+        let sync_keys = self.sync_keys.iter().map(|(e, k)| (*e, k.verifying_key())).collect();
+        (self.head.as_ref().map(Step::id), &self.keys, &self.read_secrets, &self.statics, acting, self.roster, &self.proofs, sync_keys)
     }
 }
 

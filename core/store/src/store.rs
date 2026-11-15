@@ -117,8 +117,8 @@ pub struct Store {
 /// A catalog row is stamped by its key (a scan by its prefix), a table's rows as the catalog row
 /// owning the table (`Table`). A transaction stamps each row it writes, and again each it undoes
 /// (a savepoint rolled back, an abort), so a memo that read a row written and then undone moves.
-/// The rows are stamped in families, a stamp table each (by catalog kind, a local record by its
-/// key's first byte as well): a memo's debug comparison runs again when a table it read changed
+/// The rows are stamped in families, a stamp table each (by catalog kind; a local or peer record
+/// row by its key's next byte as well): a memo's debug comparison runs again when a table it read changed
 /// (`osis_base::memo`, Checks), so one table for the whole store would compare every memo reading
 /// it at nearly every transaction.
 #[derive(Clone)]
@@ -130,22 +130,40 @@ struct Stamping {
     log: Vec<Logged>,
 }
 
-/// Stamp tables: one per catalog kind (kinds are below `KINDS`), then one per first byte of a
-/// local record's key.
+/// Stamp tables: one per catalog kind (kinds are below `KINDS`), then one per byte after the kind
+/// of a local row's key, then of a peer record row's (`record.rs`: its LRU rows move at every use
+/// of a record, and a removal moves what read an absent row of the same table, so they share no
+/// table with the module rows sync judges by).
 const KINDS: usize = 16;
 
-impl Default for Stamping {
-    fn default() -> Stamping {
-        Stamping { families: (0..KINDS + 256).map(|_| Stamps::named("store: catalog family")).collect(), all: Stamps::named("store: catalog"), log: Vec::new() }
+/// The kinds stamped per their key's next byte, each with the first of its 256 tables.
+fn split(k: u8) -> Option<usize> {
+    match k {
+        kind::LOCAL => Some(KINDS),
+        kind::RECORD => Some(KINDS + 256),
+        _ => None,
     }
 }
 
-/// The family of catalog key (or prefix) `key`: `None` for a prefix naming no single family (the
-/// local kind alone).
+impl Default for Stamping {
+    fn default() -> Stamping {
+        let name = |i: usize| match i {
+            i if i < KINDS => "store: catalog kind",
+            i if i < KINDS + 256 => "store: local rows",
+            _ => "store: record rows",
+        };
+        Stamping { families: (0..KINDS + 512).map(|i| Stamps::named(name(i))).collect(), all: Stamps::named("store: catalog"), log: Vec::new() }
+    }
+}
+
+/// The family of catalog key (or prefix) `key`: `None` for a prefix naming no single family (a
+/// split kind alone, `split`).
 fn family(key: &[u8]) -> Option<usize> {
     match key {
-        [k, ..] if *k == kind::LOCAL => key.get(1).map(|b| KINDS + usize::from(*b)),
-        [k, ..] => Some(usize::from(*k) % KINDS),
+        [k, rest @ ..] => match split(*k) {
+            Some(first) => rest.first().map(|b| first + usize::from(*b)),
+            None => Some(usize::from(*k) % KINDS),
+        },
         [] => None,
     }
 }
@@ -176,7 +194,11 @@ impl Stamping {
                     t.read_prefix(p);
                 }
             }
-            None => self.families.iter().skip(KINDS).for_each(|t| t.read_prefix(p)),
+            // a split kind alone reads its 256 tables; the empty prefix, every table
+            None => {
+                let (from, n) = p.first().and_then(|k| split(*k)).map_or((0, self.families.len()), |f| (f, 256));
+                self.families.iter().skip(from).take(n).for_each(|t| t.read_prefix(p))
+            }
         }
     }
     fn stamp(&self, key: &[u8]) -> u64 {

@@ -407,7 +407,11 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         j.acts.extend(restamp.into_iter().map(Act::Restamp));
     }
     if verdict == Verdict::Must {
-        j.roots = g.piece_roots(s, c)?;
+        // the body's parts as its meta gives them (read's `bodies` effect), not `sync_bodies`
+        // again: that reads every sync ID's body of `c`
+        if let Some(meta) = mine.meta(s, c) {
+            j.roots = g.piece_roots(c, &meta.parts)?;
+        }
         j.repairs = f.as_ref().is_some_and(|f| f.own);
         j.fresh = f.as_ref().map(|f| f.repair_fresh.clone()).unwrap_or_default();
     }

@@ -513,9 +513,8 @@ impl Ground for Live<'_, '_> {
         self.cx.store.log(s, e, Some(bytes), None)?;
         Ok(())
     }
-    fn piece_roots(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<PieceLink>>> {
-        let Some(parts) = self.cx.engine.sync_bodies(c)?.get(s).map(|m| m.parts.clone()) else { return Ok(Arc::default()) };
-        Ok(Arc::new(self.cx.engine.piece_roots(c, &parts)?))
+    fn piece_roots(&mut self, c: &CommitId, parts: &osis_engine::sync::PartSet) -> Result<Arc<Vec<PieceLink>>> {
+        Ok(Arc::new(self.cx.engine.piece_roots(c, parts)?))
     }
     fn piece_below(&mut self, p: &PieceLink) -> Result<Option<Arc<Vec<PieceLink>>>> {
         Ok(self.cx.engine.piece_below(p)?)

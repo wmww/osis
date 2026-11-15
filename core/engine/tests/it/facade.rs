@@ -80,6 +80,38 @@ fn roster_digest_moves_with_a_grant_spec_sync_opens_4() {
     assert_ne!(before, after);
 }
 
+// spec/sync-opens.md §4, spec/sync-ids.md §6 (a reader's credentials: the recorded head, its
+// keys and proof, current read secrets, held sync keys): asked between changes (a memo, notes/
+// sync-facade.md), they follow a removal's rotation (new read secret and sync key, same head)
+// and the step it makes due (the new head, its keys and proof first).
+#[test]
+fn read_credentials_follow_a_rotation_and_its_step_spec_sync_opens_4() {
+    let (mut lp, ps) = people(2);
+    let t = thing_of(&mut lp, 0, ps[0]);
+    lp.peers[0].engine.give_own_secrets(&t).unwrap();
+    let s = lp.peers[0].engine.home_sync_id(&t).unwrap().unwrap();
+    let (_, d) = lp.peers[0].engine.account().unwrap().unwrap();
+    add_item(&mut lp, 0, d, t);
+    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
+    let ask = |lp: &mut LocalPeer| {
+        let a = lp.peers[0].engine.read_credentials(&s).unwrap().expect("read");
+        assert_eq!(lp.peers[0].engine.read_credentials(&s).unwrap().expect("read"), a, "asked again");
+        a
+    };
+    let before = ask(&mut lp);
+    lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
+    let rotated = ask(&mut lp);
+    assert_eq!(rotated.head.as_ref().map(|h| h.id()), before.head.as_ref().map(|h| h.id()), "no step yet");
+    assert_ne!(rotated.read_secrets, before.read_secrets, "the new read secret");
+    assert_eq!(rotated.sync_keys.len(), before.sync_keys.len() + 1, "the new sync key, held");
+    assert_ne!(rotated.roster, before.roster);
+    let step = lp.peers[0].engine.issue_due_step(&s).unwrap().expect("issued");
+    let stepped = ask(&mut lp);
+    assert_eq!(stepped.head.as_ref().map(|h| h.id()), Some(step.id()), "the new head");
+    assert!(stepped.keys.get(&step.id()).is_some_and(|k| k.write.is_some()), "its keys");
+    assert_eq!(stepped.proofs.first().map(|p| p.0), Some(step.id()), "its proof first");
+}
+
 fn add_item(lp: &mut LocalPeer, i: usize, g: Tid, t: Tid) {
     let mut m = Mutation::new();
     m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(osis_base::Value::Tid(t)) }).unwrap();

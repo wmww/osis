@@ -181,7 +181,7 @@ struct Fake {
     k: Kstore,
     /// Roots per body, what lies below each held piece, what the own store has of each, what
     /// each source shows of each.
-    roots: Stamped<(SyncId, CommitId), Arc<Vec<PieceLink>>>,
+    roots: Stamped<CommitId, Arc<Vec<PieceLink>>>,
     below: Stamped<PieceLink, Arc<Vec<PieceLink>>>,
     piece_at: Stamped<(SyncId, BlobId), PieceAt>,
     piece_seen: Stamped<(Source, SyncId, BlobId), (bool, bool)>,
@@ -202,8 +202,8 @@ impl Ground for Fake {
     fn mintings(&mut self, t: &Tid) -> Result<Arc<Vec<Minting>>> {
         Ok(self.mintings.get(t).cloned().unwrap_or_default())
     }
-    fn piece_roots(&mut self, s: &SyncId, c: &CommitId) -> Result<Arc<Vec<PieceLink>>> {
-        Ok(self.roots.get(&(*s, *c)).cloned().unwrap_or_default())
+    fn piece_roots(&mut self, c: &CommitId, _parts: &osis_engine::sync::PartSet) -> Result<Arc<Vec<PieceLink>>> {
+        Ok(self.roots.get(c).cloned().unwrap_or_default())
     }
     fn piece_below(&mut self, p: &PieceLink) -> Result<Option<Arc<Vec<PieceLink>>>> {
         Ok(self.below.get(p).cloned())
@@ -1827,7 +1827,7 @@ fn with_pieces(held: &[u8], missing: &[u8]) -> W {
         w.g.below.insert(pl(*i, true), Arc::default());
     }
     let roots = held.iter().chain(missing).map(|i| pl(*i, true)).collect();
-    w.g.roots.insert((S, cid(1)), Arc::new(roots));
+    w.g.roots.insert(cid(1), Arc::new(roots));
     w.hold(cid(1), &[S], uncovered());
     w
 }
@@ -1848,8 +1848,8 @@ fn pieces_of_a_must_hold_body_are_logged_once_spec_sync_judgement_1() {
     for i in [11, 12, 20] {
         w.g.below.insert(pl(i, true), Arc::default());
     }
-    w.g.roots.insert((S, cid(1)), Arc::new(vec![pl(10, false)]));
-    w.g.roots.insert((S, cid(2)), Arc::new(vec![pl(20, true)]));
+    w.g.roots.insert(cid(1), Arc::new(vec![pl(10, false)]));
+    w.g.roots.insert(cid(2), Arc::new(vec![pl(20, true)]));
     w.hold(cid(1), &[S], uncovered());
     w.hold(cid(2), &[S], covered(cid(9)));
     w.exchange();
@@ -1865,7 +1865,7 @@ fn a_missing_piece_is_taken_or_fetched_spec_sync_judgement_1() {
     let mut w = W::new();
     w.g.piece_at.insert((S, bid(10)), PieceAt::Peer);
     w.g.piece_seen.insert((K, S, bid(11)), (true, false));
-    w.g.roots.insert((S, cid(1)), Arc::new(vec![pl(10, true), pl(11, true), pl(12, true)]));
+    w.g.roots.insert(cid(1), Arc::new(vec![pl(10, true), pl(11, true), pl(12, true)]));
     w.hold(cid(1), &[S], uncovered());
     assert!(w.g.sent.contains(&Sent::TakePiece(bid(10))), "{:?}", w.g.sent);
     assert!(w.g.sent.contains(&Sent::Fetch(KC, bid(11))));
@@ -1941,14 +1941,14 @@ fn pieces_judged_for_an_edit(n: u32) -> u64 {
         w.g.below.insert(*c, Arc::default());
     }
     w.g.below.insert(plw(1000, false), Arc::new(chunks.clone()));
-    w.g.roots.insert((S, cid(1)), Arc::new(vec![plw(1000, false)]));
+    w.g.roots.insert(cid(1), Arc::new(vec![plw(1000, false)]));
     w.hold(cid(1), &[S], uncovered());
     w.exchange();
     let mut edited = chunks[..chunks.len() - 1].to_vec();
     edited.push(plw(999, true));
     w.g.below.insert(plw(999, true), Arc::default());
     w.g.below.insert(plw(1001, false), Arc::new(edited));
-    w.g.roots.insert((S, cid(2)), Arc::new(vec![plw(1001, false)]));
+    w.g.roots.insert(cid(2), Arc::new(vec![plw(1001, false)]));
     osis_base::costs::take();
     w.hold(cid(2), &[S], uncovered());
     w.exchange();
@@ -1985,7 +1985,7 @@ fn a_piece_no_must_hold_body_links_acts_again_once_linked_spec_sync_judgement_1(
     let mut w = W::new();
     w.g.below.insert(pl(30, false), Arc::new(vec![pl(31, true)]));
     w.g.below.insert(pl(31, true), Arc::default());
-    w.g.roots.insert((S, cid(1)), Arc::new(vec![pl(30, false)]));
+    w.g.roots.insert(cid(1), Arc::new(vec![pl(30, false)]));
     w.hold(cid(1), &[S], uncovered());
     assert!(w.g.sent.contains(&Sent::LogPiece(bid(31))), "{:?}", w.g.sent);
     w.judge(S, cid(1), covered(cid(9)));
@@ -1993,7 +1993,7 @@ fn a_piece_no_must_hold_body_links_acts_again_once_linked_spec_sync_judgement_1(
     w.g.piece_at.insert((S, bid(31)), PieceAt::Absent);
     w.settle();
     assert_eq!(sent_of(&w, |m| matches!(m, Sent::LogPiece(_))), 0, "not linked: {:?}", w.g.sent);
-    w.g.roots.insert((S, cid(2)), Arc::new(vec![pl(30, false)]));
+    w.g.roots.insert(cid(2), Arc::new(vec![pl(30, false)]));
     w.hold(cid(2), &[S], uncovered());
     assert_eq!(w.g.sent.iter().filter(|m| **m == Sent::LogPiece(bid(31))).count(), 1, "{:?}", w.g.sent);
 }
@@ -2005,7 +2005,7 @@ fn a_lost_piece_an_own_body_comes_to_link_is_repaired_spec_sync_ids_1() {
     let mut w = W::new();
     w.g.below.insert(pl(10, true), Arc::default());
     w.g.below.insert(pl(30, false), Arc::new(vec![pl(10, true)]));
-    w.g.roots.insert((S, cid(1)), Arc::new(vec![pl(10, true)]));
+    w.g.roots.insert(cid(1), Arc::new(vec![pl(10, true)]));
     let mut f = uncovered();
     f.own = false;
     w.hold(cid(1), &[S], f);
@@ -2013,7 +2013,7 @@ fn a_lost_piece_an_own_body_comes_to_link_is_repaired_spec_sync_ids_1() {
     w.g.piece_seen.insert((K, S, bid(10)), (false, true));
     w.settle();
     assert_eq!(sent_of(&w, |m| matches!(m, Sent::Repair(..))), 0, "another's body is not repaired here");
-    w.g.roots.insert((S, cid(2)), Arc::new(vec![pl(30, false)]));
+    w.g.roots.insert(cid(2), Arc::new(vec![pl(30, false)]));
     w.hold(cid(2), &[S], uncovered());
     assert_eq!(w.g.sent.iter().filter(|m| **m == Sent::Repair(cid(2), bid(10))).count(), 1, "{:?}", w.g.sent);
 }
@@ -2029,7 +2029,7 @@ fn followed_after_replacements(k: u8, release: bool) -> usize {
             w.g.below.insert(*c, Arc::default());
         }
         w.g.below.insert(node, Arc::new(chunks));
-        w.g.roots.insert((S, cid(i)), Arc::new(vec![node]));
+        w.g.roots.insert(cid(i), Arc::new(vec![node]));
         w.hold(cid(i), &[S], uncovered());
         if i > 1 {
             w.judge(S, cid(i - 1), covered(cid(i)));

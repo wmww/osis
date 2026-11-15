@@ -612,7 +612,7 @@ fn past_expiry_and_purge_alike_spec_commits_5() {
     past_expiry_and_purge_alike(false);
 }
 
-// As above, all 5040 orders in every shape (75600 cases, about 670 s on 16 threads at load).
+// As above, all 5040 orders in every shape (50400 cases).
 #[test]
 #[ignore = "by hand: every order"]
 fn past_expiry_and_purge_alike_in_every_order_by_hand_spec_commits_5() {
@@ -664,8 +664,8 @@ fn past_expiry_and_purge_alike(every: bool) {
             orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut x = q.clone(); x.insert(at, i); x })).collect();
         }
     }
-    // (what it syncs, deliveries before T, whether a tick follows T)
-    let shapes: Vec<(usize, usize, bool)> = (0..3).flat_map(|sync| [(0, false), (2, false), (2, true), (4, false), (4, true)].map(|(k, tick)| (sync, k, tick))).collect();
+    // (whether it restarts before the fourth item, deliveries before T, whether a tick follows T)
+    let shapes: Vec<(bool, usize, bool)> = [false, true].into_iter().flat_map(|restart| [(0, false), (2, false), (2, true), (4, false), (4, true)].map(|(k, tick)| (restart, k, tick))).collect();
     let cases: Vec<(usize, usize)> = shapes.iter().enumerate().flat_map(|(n, _)| (0..orders.len()).map(move |o| (n, o))).collect();
     let outcomes = std::sync::Mutex::new(std::collections::BTreeMap::<String, String>::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -678,9 +678,8 @@ fn past_expiry_and_purge_alike(every: bool) {
             sc.spawn(|| loop {
                 let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let Some(&(n, o)) = cases.get(at) else { return };
-                let ((sync, k, tick), order) = (shapes[n], &orders[o]);
+                let ((restart, k, tick), order) = (shapes[n], &orders[o]);
                 let mut p = base.lock().unwrap().copy().unwrap();
-                let _ = (sync, t2);
                 let late = exp.0 + 5_000;
                 let to = |p: &mut Peer, when: u64| {
                     let now = p.engine.now().0;
@@ -694,7 +693,7 @@ fn past_expiry_and_purge_alike(every: bool) {
                             p.tick().unwrap();
                         }
                     }
-                    if i == 3 && at % 2 == 1 {
+                    if i == 3 && restart {
                         p = reopened(p, FRESH + 1);
                     }
                     let _ = p.receive(&items[*x].0, items[*x].1.clone());
@@ -724,7 +723,7 @@ fn past_expiry_and_purge_alike(every: bool) {
                 let got = format!("applied {} pending {:?} stripped {} flags {:?} reads {:?} {:?} {:?} digests {:?} {:?} {:?} {:?}", e.commit_ids().contains(&c), e.pending(), e.stripped_count(&c).unwrap(), e.suspects().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), e.get(&t, &reg).unwrap(), e.get(&t, &list).unwrap(), e.get(&t2, &brief).unwrap(), e.state_digest(&t, &reg).unwrap(), e.state_digest(&t, &list).unwrap(), e.state_digest(&t2, &brief).unwrap(), crate::judgment::observe(e, ids));
                 let [kept_secret, kept_brief] = recovered(&mut p, [b"SECRET-R5c", b"BRIEF-R5c"]);
                 let gone = !kept_secret && !kept_brief;
-                outcomes.lock().unwrap().entry(format!("gone {gone} {got}")).or_insert(format!("sync {sync} k {k} tick {tick} order {order:?}"));
+                outcomes.lock().unwrap().entry(format!("gone {gone} {got}")).or_insert(format!("restart {restart} k {k} tick {tick} order {order:?}"));
             });
         }
     });

@@ -845,9 +845,10 @@ impl Groups {
             }
         }
         self.moved.extend(moved);
-        // every path that edits the index (a refresh, a whole set, a rolled-back step)
+        // every path that edits the index (a refresh, a whole set, a rolled-back step), each
+        // group once: a whole set edits it per tid
         #[cfg(debug_assertions)]
-        osis_base::costs::paused(|| edits.iter().for_each(|(g, _)| self.check_around(g)));
+        osis_base::costs::paused(|| edits.iter().map(|(g, _)| *g).collect::<BTreeSet<Tid>>().iter().for_each(|g| self.check_around(g)));
     }
 
     /// Edits `g`'s listing (`refresh`: per tid), logged.

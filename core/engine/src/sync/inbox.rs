@@ -83,15 +83,24 @@ pub(crate) fn set_hint(tx: &mut Tx<'_>, t: &Tid, s: Option<(SyncId, WallMs)>) ->
         Some(h) if tx.core.ix.inbox_hints.get(t) == Some(&h) => {}
         Some((s, expires)) => {
             tx.txn.put_local(&k, &[&s.0[..], &expires.0.to_be_bytes()].concat(), Shred::No)?;
-            tx.core.ix.inbox_hints.insert(*t, (s, expires));
+            hint(tx, *t, (s, expires));
         }
         None => {
-            if tx.core.ix.inbox_hints.remove(t).is_some() {
+            if let Some((was, _)) = tx.core.ix.inbox_hints.remove(t) {
+                tx.core.ix.hinted.remove(&was, t);
                 tx.txn.remove_local(&k, Shred::No)?;
             }
         }
     }
     Ok(())
+}
+
+/// Holds `h` as `t`'s hint in `inbox_hints` and its inverse.
+fn hint(tx: &mut Tx<'_>, t: Tid, h: (SyncId, WallMs)) {
+    if let Some((was, _)) = tx.core.ix.inbox_hints.insert(t, h) {
+        tx.core.ix.hinted.remove(&was, &t);
+    }
+    tx.core.ix.hinted.insert(h.0, t);
 }
 
 /// Whether an applied `sync.0` records `s` (a payload naming it is no hint, spec/sync-inbox.md §2).
@@ -110,7 +119,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     for (t, s) in hints {
-        tx.core.ix.inbox_hints.insert(t, s);
+        hint(tx, t, s);
     }
     let mut rows = Vec::new();
     tx.scan(WAITING, |k, v| {

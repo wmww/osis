@@ -237,7 +237,7 @@ fn followed(e: &Engine, k: &Tid) -> Option<OwnedSyncId> {
     let elsewhere = crate::sync::inbox::recorded(e, &s)
         || ix.record_ids.get(&s).is_some_and(|x| !x.is_empty())
         || ix.destroyed_sync_ids.values().any(|v| v.iter().any(|o| o.id == s))
-        || ix.inbox_hints.iter().any(|(t, x)| t != k && x.0 == s)
+        || ix.hinted.get(&s).is_some_and(|x| x.iter().any(|t| t != k))
         || e.core.followed_links.iter().any(|(t, x)| t != k && x.0 == s);
     (followable(e, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true })
 }

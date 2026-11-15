@@ -849,6 +849,8 @@ indexes! {
     /// Per thing, the sync ID a taken inbox blob's payload named for it while no applied `sync.0`
     /// records one it owns (`sync::inbox`, spec/sync-inbox.md §2 Following a payload sync ID).
     pub inbox_hints: JMap<Tid, (SyncId, WallMs)>,
+    /// The things `inbox_hints` names each sync ID for (`inbox_hints` inverted).
+    pub hinted: JSetMap<SyncId, Tid>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.

@@ -243,3 +243,34 @@ fn owned_rows_go_with_the_record_and_the_sync_id() {
     assert!(t.record_get_row(&a, b's', &l(2), b"k2").unwrap().is_none(), "a gone record takes nothing");
     assert_eq!(t.records_total().unwrap(), 0);
 }
+
+// spec: none (notes/local-store.md, Stamps): a memo reading a module's rows, absent ones
+// included, holds while records are used (each use moves the record's LRU and actor rows): those
+// rows share no stamp table with the module rows
+#[test]
+fn using_a_record_moves_no_reader_of_module_rows() {
+    use osis_base::memo::Memo;
+    let (_d, mut rng, mut s) = fresh(cfg());
+    let ids: Vec<RecordId> = (0..20).map(|i| create(&mut s, &mut rng, i, i)).collect();
+    let memo: Memo<u8, (Option<Vec<u8>>, usize)> = Memo::new("test record rows");
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.record_put_row(&ids[0], b'k', &l(1), &[5; 32], vec![1]).unwrap();
+    let ask = |t: &mut osis_store::Transaction<'_>, k: u8| {
+        Memo::get_in(&mut (&memo, t), |c| c.0, &k, |(_, t)| {
+            Ok::<_, osis_store::Error>((t.record_get_row(&ids[0], b'k', &l(1), &[k; 32])?, t.records_with_row(&l(1), b'k', &[k; 32], 10)?.len()))
+        })
+        .unwrap()
+    };
+    let runs = || osis_base::costs::take().iter().filter(|x| x.0 == "test record rows").map(|x| x.2).sum::<u64>();
+    osis_base::costs::take();
+    assert_eq!((ask(&mut t, 5), ask(&mut t, 6)), ((Some(vec![1]), 1), (None, 0)));
+    assert_eq!(runs(), 2);
+    for (i, id) in ids.iter().enumerate().cycle().take(200) {
+        t.record_used(id, &[tid(i as u8 + 100)]).unwrap();
+    }
+    assert_eq!((ask(&mut t, 5), ask(&mut t, 6)), ((Some(vec![1]), 1), (None, 0)));
+    assert_eq!(runs(), 0, "records used");
+    t.record_put_row(&ids[1], b'k', &l(1), &[6; 32], vec![]).unwrap();
+    assert_eq!(ask(&mut t, 6), (None, 1));
+    assert_eq!(runs(), 1, "a row read");
+}
