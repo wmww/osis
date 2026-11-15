@@ -655,10 +655,11 @@ impl Core {
     /// `AccountView::revoked` of account `p`'s chain `v` over its held rotations `rots`: every
     /// held epoch a counting rotation carrying a removal descends from, that rotation excluded.
     /// The deepest carriers first, so a carrier already within another's line adds nothing:
-    /// O(the epochs marked) besides the carriers.
+    /// O(the epochs marked) besides the carriers and the removals they carry.
     fn revoked_keys(&self, p: &Tid, v: &AccountView, rots: &[(CommitId, CommitId, osis_commit::RotationHeader)]) -> BTreeSet<[u8; 32]> {
+        let carrying: BTreeSet<&CommitId> = v.carriers.values().flatten().collect();
         let carries = |id: &CommitId, at: &CommitId, r: &osis_commit::RotationHeader| match &v.devices {
-            Some(_) => v.carriers.values().any(|rs| rs.contains(id)),
+            Some(_) => carrying.contains(id),
             // outside the account a counting rotation is its word for the removals it names, but
             // one held here must be the account's commit at the epoch the rotation rotates
             None => r.removals.iter().any(|c| self.ix.commits.get(c).is_none_or(|m| m.view.author == *p && m.view.epoch == Some(*at))),

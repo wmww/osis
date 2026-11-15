@@ -476,19 +476,44 @@ fn remove_sibling(w: &mut World, by: usize, node: usize) {
 // spec/sync-set.md §3 (Leaving: a kept record of a node of another account proved at an epoch a
 // rotation the chain followed here makes past it, carrying a removal, is waited for no more):
 // node 0 writes t while away from both siblings of account 1; only node 1 holds t; node 2
-// removes node 1 from D, and node 0 holds the account's rotation. Node 0 then unsyncs t: node 1's
-// record holds S, but proved at the epoch the removal's rotation closed, so node 0 leaves S.
+// removes node 1 from D. Node 0 unsyncs t and waits for node 1's record, which holds S; then
+// node 0 is handed the account's rotation: node 1's record was proved at the epoch the removal's
+// rotation closed, so node 0 leaves S.
 #[test]
 fn a_record_of_a_node_its_account_removed_is_waited_for_no_more_spec_sync_set_3() {
     let (mut w, t, _, s) = shared_then_away(false);
     assert!(w.store(2).synced(&s).is_none(), "node 2 does not share t");
     remove_sibling(&mut w, 2, 1);
+    unfile_and_wait(&mut w, t);
+    assert!(w.store(0).synced(&s).is_some(), "node 0 waits for node 1 before the rotation");
     assert!(crate::harness::history::hand(&mut w, 2, 0), "node 0 is handed account 1's rotation");
     let a1 = w.node(1).account.unwrap();
     let k = first_key(&mut w, 0, &a1);
     assert!(w.engine(0).account_key_revoked(&a1, &k) && w.engine(2).account_key_revoked(&a1, &k), "the first epoch revoked outside the account and at its remover alike");
-    unfile_and_wait(&mut w, t);
+    w.flush();
     assert!(w.store(0).synced(&s).is_none(), "node 0 left S: node 1's record names a revoked key");
+}
+
+// spec/sync-set.md §3 (Leaving: an account other than N's holding a role on S's thing while no
+// record N keeps naming its proven actors has acknowledged S's current credentials; each record
+// proved at E or below is no one to wait for): node 0, apart from both siblings of account 1,
+// grants account 1 a new thing t and writes it; no record of theirs acknowledged t's credentials.
+// Node 0 unsyncs t and waits for account 1 by the rosters; handed the rotation of node 2
+// removing node 1, every record of account 1 was proved below it, so node 0 leaves S.
+#[test]
+fn records_by_the_rosters_proved_below_a_removal_are_waited_for_no_more_spec_sync_set_3() {
+    let mut w = stranger_siblings();
+    w.partition(0, 1);
+    w.partition(0, 2);
+    w.flush();
+    let (t, _) = granted(&mut w, Role::Write);
+    let s = w.engine(0).sync_ids(&t).unwrap()[0].id;
+    remove_sibling(&mut w, 2, 1);
+    unfile_and_wait(&mut w, t);
+    assert!(w.store(0).synced(&s).is_some(), "node 0 waits for account 1 by the rosters");
+    assert!(crate::harness::history::hand(&mut w, 2, 0), "node 0 is handed account 1's rotation");
+    w.flush();
+    assert!(w.store(0).synced(&s).is_none(), "node 0 left S: every record of account 1 names a revoked key");
 }
 
 // spec/sync-set.md §3 (is still A after A rotates: no rotation past its epoch carries a removal;
