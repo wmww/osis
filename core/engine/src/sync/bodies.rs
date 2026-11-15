@@ -817,7 +817,7 @@ mod tests {
         let (sealed, wrap) = lp.peers[V].engine.seal_body(&sh, &w, std::slice::from_ref(&copied), &mut rng).unwrap().expect("V logs w's copy under h's sync ID");
         assert!(osis_label::unwrap_any(lp.peers[M].engine.read_secrets(&h).iter(), &sealed.id, &wrap).is_none(), "M unwraps V's copy");
     }
-    // spec/crypto.md §5 (Passing on, floors: an epoch of the sync ID's thing counts for a copy
+    // spec/crypto.md §5 (Passing on: an epoch of the sync ID's thing counts for a copy
     // only at a floor at least the wrap's), §4 (Floors): g, a thing under actor a, is filed in h,
     // whose actor reads a; V reads h, not a, and reads R's write w on g only from R's copy under
     // h's sync ID. V logs that copy under its own epoch of h; once V grants N read on h without

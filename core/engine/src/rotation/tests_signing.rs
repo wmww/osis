@@ -1867,7 +1867,7 @@ fn a_node_paired_after_a_removal_reads_its_maker_spec_permissions_5_4() {
     }
 }
 
-// spec/permissions.md §5.5 (Waiting), §5.4 (a removal hits its node's commits on D its frontier
+// spec/permissions.md §5.5 (Waiting), §5.4 (no removal of the set hits: a removal hits its node's commits on D its frontier
 // does not list): nodes 0, 1, 2; node 0 rotates (r1, unseen by node 1), then removes node 1
 // (r2). Node 1, removed, grants its tablet (peer 3) D, signed at the epoch r1 closes. Node 2 holds
 // r1 without its D list and the grant (which counts while node 2 waits for the list: node 1 is a
