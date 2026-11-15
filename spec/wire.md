@@ -372,7 +372,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 18 | contact card | `[] -> text`; main only |
     | 19 | settle | `[] -> []`, after every Notify for changes before it |
     | 20 | now | `[] -> wall ms` |
-    | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; for a client actor only the things it may read, `connected` the connections with one of them open |
+    | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*], [kept tid*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; kept: things held and synced no more (a share that ended, not unsynced, spec/sync-set.md §3); for a client actor only the things it may read, `connected` the connections with one of them open |
     | 22 | holders | `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`, kind 0 actor, 1 link, 2 key; nothing behind an actor the actor may not read |
     | 23 | profile | `[] -> tid`; main only |
     | 24 | profile of | `[account] -> Opt(tid)`; main only |

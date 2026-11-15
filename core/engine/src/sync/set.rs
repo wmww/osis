@@ -398,10 +398,11 @@ impl Engine {
 }
 
 /// This node stops sharing `t` (spec/sync-set.md §2 Shared here): unsynced here, or forgotten.
-/// The account's grants on it live now are marked, so it is shared again only by a grant not
-/// marked (a new one). Nothing when it is not shared.
+/// The account's grants on it, live or ended (`Core::account_grants`), are marked, so it is
+/// shared again only by a grant not marked (a new one), and it stays local no more
+/// (`Core::stays_local`). Nothing when the account wrote none.
 pub(crate) fn unshare_here(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
-    for c in tx.core.account_shares(t) {
+    for c in tx.core.account_grants(t) {
         if tx.core.ix.unshared.insert(*t, c) {
             tx.txn.put_local(&[records::UNSHARED, t.as_bytes(), &c.0].concat(), &[], Shred::No)?;
         }
@@ -466,19 +467,23 @@ impl crate::engine::Core {
         out
     }
 
+    /// The role commits on `t` this node's account wrote (header actor) granting an edge on it to
+    /// an actor other than the account or one of its nodes, of any validity and whatever followed:
+    /// the grants that share `t` or once did. O(role commits on `t`).
+    pub(crate) fn account_grants(&self, t: &Tid) -> Vec<CommitId> {
+        let Some(account) = self.me() else { return Vec::new() };
+        let me = self.id.tid();
+        let outside = |h: &Tid| *h != account && *h != me && !self.own_node(h);
+        self.ix.held.commits_on(t).iter().filter(|c| c.actor == account && c.ops.iter().any(|o| o.target == *t && o.edge.is_some() && outside(&o.holder))).map(|c| c.id).collect()
+    }
+
     /// Whether `t`, out of N's closure, stays local here rather than being forgotten
     /// (spec/sync-set.md §3 Unsyncing; spec/requirements.md: shared with no one, it stays local):
-    /// the account wrote a grant on it to an actor other than the account or one of its nodes,
-    /// live or ended, that this node did not stop sharing (`unshare_here` marked none such).
+    /// a grant of the account's on it (`account_grants`), live or ended, that this node did not
+    /// stop sharing (`unshare_here` marked none such).
     pub(crate) fn stays_local(&self, t: &Tid) -> bool {
-        let Some(account) = self.me() else { return false };
-        let me = self.id.tid();
         let marked = self.ix.unshared.get(t);
-        self.ix.held.commits_on(t).iter().any(|c| {
-            c.actor == account
-                && marked.is_none_or(|m| !m.contains(&c.id))
-                && c.ops.iter().any(|o| o.target == *t && o.edge.is_some() && o.holder != account && o.holder != me && !self.own_node(&o.holder))
-        })
+        self.account_grants(t).iter().any(|c| marked.is_none_or(|m| !m.contains(c)))
     }
 }
 
@@ -491,6 +496,21 @@ impl Engine {
             let marked = e.core.ix.unshared.get(t).cloned().unwrap_or_default();
             Ok(e.core.account_shares(t).iter().any(|c| !marked.contains(c)))
         })
+    }
+
+    /// The things kept here that sync no more (spec/sync-set.md §3 Unsyncing): out of the sync set's
+    /// things, staying local (`Core::stays_local`: a share that ended, unsynced by no one here).
+    /// O(things the account ever granted on): for status and an unsync, not per change.
+    pub(crate) fn kept_local_now(&mut self) -> Result<BTreeSet<Tid>> {
+        let Some(account) = self.core.me() else { return Ok(BTreeSet::new()) };
+        let granted: Vec<Tid> = self.core.ix.held.granted_by(&account).copied().collect();
+        let mut out = BTreeSet::new();
+        for t in granted {
+            if self.core.stays_local(&t) && !self.in_sync_things_now(&t)? {
+                out.insert(t);
+            }
+        }
+        Ok(out)
     }
 
     /// The things this node shares (`shares`), among those its account ever granted on

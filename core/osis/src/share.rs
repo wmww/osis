@@ -696,14 +696,15 @@ impl Osis {
     /// Afterwards `thing` syncs here only while a group this node syncs holds it;
     /// otherwise this node keeps syncing it until what it wrote there reached another holder
     /// (or no other holder is left to wait for), then forgets its copy, as moving a thing out of
-    /// every synced group does. A thing this node did not share: nothing changes. `Unsupported`
-    /// through a connection to a node and on a client with its own actor.
+    /// every synced group does. A thing kept here after its share ended (`Status::kept`) is
+    /// forgotten at once. A thing this node neither shared nor kept: nothing changes.
+    /// `Unsupported` through a connection to a node and on a client with its own actor.
     pub fn unsync(&self, thing: Tid) -> Result<()> {
         self.local("unsync")?;
         if self.acting.is_some() {
             return Err(Error::Unsupported("unsync: on a client with its own actor".into()));
         }
-        self.engine(|e| e.unshare(&thing))?;
+        self.locked(|l| l.node.unsync(&thing)).map_err(crate::handle::sync_err)?;
         Ok(())
     }
 

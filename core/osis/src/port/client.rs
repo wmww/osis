@@ -620,7 +620,7 @@ fn fixed<const N: usize>(v: Value, what: &str) -> Result<[Value; N]> {
 /// A status as nothing reaches its node now: no connection, each thing not connected.
 fn unreachable(s: &Status) -> Status {
     let groups = s.groups.iter().map(|(t, g)| (*t, crate::GroupSync { state: crate::SyncState::NotConnected, not_taking: 0, leaving: g.leaving })).collect();
-    Status { connected: 0, groups }
+    Status { connected: 0, groups, kept: s.kept.clone() }
 }
 
 /// The statuses of several nodes as one.
@@ -631,7 +631,11 @@ fn merged<'a>(all: impl Iterator<Item = &'a Status>) -> Status {
         for (t, g) in &s.groups {
             crate::syncing::merge(&mut out.groups, *t, g.clone());
         }
+        out.kept.extend(s.kept.iter().copied());
     }
+    // kept at one node, synced at another: it syncs
+    let groups = &out.groups;
+    out.kept.retain(|t| !groups.contains_key(t));
     out
 }
 

@@ -1027,7 +1027,7 @@ fn moving_home_with_the_source_gone_answers_spec_sync_set_5() {
     assert_eq!(b.at(g, v()).get().unwrap(), Some(Value::Int(1)));
 }
 
-// spec/commits.md §5 (Waiting for it), spec/sync-status.md §1 (a complete pass ends by
+// spec/commits.md §5 (Waiting for it), spec/sync-status.md §1 (complete pass: it ends by
 // `PASS_WAIT_MS` at the latest): b holds a thing's creating commit with its setting's part left
 // out, the only holder of the body away: b writes nothing there (`role_on` reads `Read`) until a
 // complete pass of home, begun after it started waiting, ends without the body; then it writes as
@@ -1091,4 +1091,37 @@ fn a_dropped_move_home_leaves_it_at_its_node_until_moved_again_spec_sync_set_5()
     drive(&net, b.group_source(g, osis::GroupSource::Local)).unwrap();
     assert!(b.group_sources().is_empty());
     assert_eq!(b.at(g, v()).get().unwrap(), Some(Value::Int(2)));
+}
+
+// spec/sync-set.md §2-3 (Shared here; Unsyncing: a share that ended keeps the copy, shared with
+// no one, until the user unsyncs it), issues/storage-follows-groups.md (unsync everything gives
+// zero): a thing listed nowhere, granted to another account, stays here once the grant is
+// revoked, synced no more and listed as kept; unsyncing it then forgets it.
+#[test]
+fn a_thing_whose_share_ended_is_kept_until_unsynced_spec_sync_set_3() {
+    let c = clock();
+    let net = ManualNet::new(c.clone());
+    let a = on(&net, 31, &c);
+    let o = on(&net, 57, &c);
+    drive(&net, o.import_contact(&a.contact_card().unwrap())).unwrap();
+    drive(&net, a.import_contact(&o.contact_card().unwrap())).unwrap();
+    let mut w = a.write();
+    let t = w.create().unwrap();
+    w.at(t, osis::core::NAME).set(&"kept".to_string()).unwrap();
+    w.commit().unwrap();
+    a.grant(t, o.me(), Role::Read, osis::GrantOpts::default()).unwrap();
+    net.run();
+    assert!(a.status().unwrap().groups.contains_key(&t), "shared: synced here");
+    a.set_role(t, o.me(), None, osis::SetRoleOpts::default()).unwrap();
+    for _ in 0..5 {
+        net.run();
+    }
+    let st = a.status().unwrap();
+    assert!(!st.groups.contains_key(&t), "the share ended: synced no more");
+    assert_eq!(name(&a, t).as_deref(), Some("kept"), "its copy stays");
+    assert!(st.kept.contains(&t), "listed as kept");
+    a.unsync(t).unwrap();
+    net.run();
+    assert_eq!(name(&a, t), None, "unsynced: forgotten");
+    assert!(!a.status().unwrap().kept.contains(&t));
 }

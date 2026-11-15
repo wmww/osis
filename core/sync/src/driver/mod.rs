@@ -232,6 +232,21 @@ impl Node {
         &mut self.engine
     }
 
+    /// The owner unsyncs `t` here (spec/sync-set.md §2-3): this node shares it no more
+    /// (`Engine::unshare`); a thing kept here after its share ended, synced no more (none of its
+    /// sync IDs still waiting to stop), is forgotten at once, as a stopped sync ID's thing is.
+    /// `false`: it neither shared nor kept `t`. After it, `handle(Input::Wrote)`.
+    pub fn unsync(&mut self, t: &Tid) -> Result<bool> {
+        let kept = self.engine.kept_local()?.contains(t) && !self.store.syncs().values().any(|(x, _)| x == t);
+        if !self.engine.unshare(t)? {
+            return Ok(false);
+        }
+        if kept {
+            crate::leave::forget_local(&mut self.engine, &mut self.store, &[*t].into())?;
+        }
+        Ok(true)
+    }
+
     /// The node's store per sync ID, for reads (status views, tests).
     pub fn store(&self) -> &Store {
         &self.store

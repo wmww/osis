@@ -1082,12 +1082,13 @@ fn status_lines(s: &osis::Status) -> Vec<String> {
         }
         line
     });
-    std::iter::once(format!("connected {}", s.connected)).chain(groups).collect()
+    let kept = s.kept.iter().map(|t| format!("{} kept", t.to_uri()));
+    std::iter::once(format!("connected {}", s.connected)).chain(groups).chain(kept).collect()
 }
 
 fn status_json(s: &osis::Status) -> J {
     let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("leaving", J::Bool(x.leaving)), ("not_taking", J::int(x.not_taking as u64))]));
-    J::obj([("groups", J::Arr(groups.collect())), ("connected", J::int(s.connected as u64))])
+    J::obj([("groups", J::Arr(groups.collect())), ("kept", J::Arr(s.kept.iter().map(|t| J::tid(*t)).collect())), ("connected", J::int(s.connected as u64))])
 }
 
 /// One diagnostic as `diag` prints it (text or a JSON line): its kind, what it names, its detail.

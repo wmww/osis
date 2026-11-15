@@ -704,14 +704,21 @@ impl Engine {
     }
 
     /// This node shares `t` no more (spec/sync-set.md §2 Shared here): it syncs it only while N's
-    /// closure holds it (its synced group's, another shared thing's), else `t` leaves the sync set by spec/sync-set.md §3.
-    /// `false`: it did not share `t`.
+    /// closure holds it (its synced group's, another shared thing's), else `t` leaves the sync set
+    /// by spec/sync-set.md §3; kept here after a share ended (`kept_local`), it stays local no
+    /// more (sync forgets it, `osis_sync::Node::unsync`). `false`: it neither shared nor kept `t`.
     pub fn unshare(&mut self, t: &Tid) -> Result<bool> {
-        if !self.shares(t)? {
+        if !self.shares(t)? && !self.core.stays_local(t) {
             return Ok(false);
         }
         self.run(|tx| set::unshare_here(tx, t))?;
         Ok(true)
+    }
+
+    /// The things kept here that sync no more: a share that ended, unsynced by no one here
+    /// (spec/sync-set.md §3 Unsyncing). O(things the account ever granted on).
+    pub fn kept_local(&mut self) -> Result<BTreeSet<Tid>> {
+        self.kept_local_now()
     }
 
     /// Forgets this node's local copies of `ts`, unsynced (spec/sync-set.md §3 Unsyncing): the

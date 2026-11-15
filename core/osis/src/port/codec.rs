@@ -487,15 +487,15 @@ impl Form for ThingStamp {
 
 const STATES: [SyncState; 4] = [SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Stranded];
 
-/// `status`: `[connected, [[tid, state, not_taking, leaving]*]]`, state 0 synced, 1 syncing, 2
-/// not connected, 3 stranded.
+/// `status`: `[connected, [[tid, state, not_taking, leaving]*], [kept tid*]]`, state 0 synced, 1
+/// syncing, 2 not connected, 3 stranded.
 impl Form for Status {
     fn to_wire(&self) -> Value {
         let groups = self.groups.iter().map(|(t, g)| Value::List(vec![Value::Tid(*t), Value::uint(STATES.iter().position(|x| *x == g.state).unwrap_or(0) as u64), usize_to(g.not_taking), Value::Bool(g.leaving)]));
-        Value::List(vec![usize_to(self.connected), Value::List(groups.collect())])
+        Value::List(vec![usize_to(self.connected), Value::List(groups.collect()), tids_to(&self.kept.iter().copied().collect::<Vec<_>>())])
     }
     fn from_wire(v: Value) -> Result<Status> {
-        let [connected, groups] = <[Value; 2]>::try_from(list(v, "status")?).map_err(|_| bad("status"))?;
+        let [connected, groups, kept] = <[Value; 3]>::try_from(list(v, "status")?).map_err(|_| bad("status"))?;
         let groups = list(groups, "status")?
             .into_iter()
             .map(|g| {
@@ -504,7 +504,7 @@ impl Form for Status {
                 Ok((tid(&t)?, GroupSync { state, not_taking: usize_from(&not_taking)?, leaving: bool_from(&leaving, "status")? }))
             })
             .collect::<Result<_>>()?;
-        Ok(Status { connected: usize_from(&connected)?, groups })
+        Ok(Status { connected: usize_from(&connected)?, groups, kept: tids_from(kept, "status")?.into_iter().collect() })
     }
 }
 

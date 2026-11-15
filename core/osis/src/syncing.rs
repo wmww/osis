@@ -8,7 +8,7 @@ use crate::handle::{Locked, Osis, ReadOnly, WeakOsis};
 use crate::watch::{Delivery, Filter, Subscription, lock};
 use osis_base::Tid;
 use osis_sync::status::SyncStatus;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -50,6 +50,9 @@ pub struct Status {
     pub connected: usize,
     /// How each thing with a sync ID here stands.
     pub groups: BTreeMap<Tid, GroupSync>,
+    /// Things kept here that sync no more: shared once, the share ended, and not unsynced here
+    /// (`Osis::unsync` forgets one).
+    pub kept: BTreeSet<Tid>,
 }
 
 /// What `Osis::wait_synced` waits for.
@@ -85,8 +88,14 @@ pub(crate) fn status_in(l: &mut Locked, actor: Option<Tid>) -> Result<Status> {
     let per_id = l.node.status();
     let mut connected = l.node.connections();
     let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
+    // kept here, synced no more; a thing still waiting to stop shows in `groups`
+    let mut kept = l.engine().kept_local()?;
+    if let Some(a) = actor {
+        let e = l.engine();
+        kept.retain(|t| e.readable_by(&a, t));
+    }
     if per_id.is_empty() {
-        return Ok(Status { connected: if actor.is_some() { 0 } else { connected }, groups });
+        return Ok(Status { connected: if actor.is_some() { 0 } else { connected }, groups, kept });
     }
     // what this node syncs: the sync set, and each sync ID that left it while it waits to stop
     let syncs = l.node.store().syncs();
@@ -105,7 +114,8 @@ pub(crate) fn status_in(l: &mut Locked, actor: Option<Tid>) -> Result<Status> {
     if actor.is_some() {
         connected = seen.len();
     }
-    Ok(Status { connected, groups })
+    kept.retain(|t| !groups.contains_key(t));
+    Ok(Status { connected, groups, kept })
 }
 
 /// Adds `g`, how `t` stands under one sync ID or at one node, to `groups`: the worst state.

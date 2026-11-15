@@ -362,15 +362,22 @@ impl Ground for Live<'_, '_> {
         Ok(self.status.passed_since(s, since))
     }
     fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
-        let gone = self.cx.engine.forget_local(ts)?;
-        for b in &gone {
-            for s in self.cx.store.naming(b)? {
-                if self.cx.store.entry(&s, b)?.is_some_and(|e| e.own) {
-                    osis_base::costs::count("leave: own entries unlogged", 1);
-                    self.cx.store.unlog_entry(&s, b)?;
-                }
+        forget_local(self.cx.engine, self.cx.store, ts)
+    }
+}
+
+/// `Ground::forget_local` (`Engine::forget_local`, then each own entry naming a blob of a commit
+/// it forgot whole is unlogged); also an unsync of a thing kept after its share ended
+/// (`Node::unsync`).
+pub(crate) fn forget_local(engine: &mut osis_engine::Engine, store: &mut crate::store::Store, ts: &BTreeSet<Tid>) -> Result<()> {
+    let gone = engine.forget_local(ts)?;
+    for b in &gone {
+        for s in store.naming(b)? {
+            if store.entry(&s, b)?.is_some_and(|e| e.own) {
+                osis_base::costs::count("leave: own entries unlogged", 1);
+                store.unlog_entry(&s, b)?;
             }
         }
-        Ok(())
     }
+    Ok(())
 }

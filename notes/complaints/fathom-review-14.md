@@ -3,3 +3,4 @@
 - Engine-only tests seal nothing at commit: a test of blob rows must `seal_body` first (`commit_blobs` is empty otherwise).
 - `ManualNet::run` moves the clock to each wake up to an hour ahead, so a `PASS_WAIT_MS` wait ends inside one `run`: assert "still waiting" before running the net, not after.
 - A setting-wait test that ingests a thing's commits one by one sees the thing uncarried (so not waited for) until its listing commit lands: ingest the listing in the same or an earlier commit.
+- `revoke_link` removes the link key from K, not K's grant on the target: a link's share stands after it (redeemers still reach the target through K). A test of a share ending must revoke a grant (`set_role(.., None, ..)`).

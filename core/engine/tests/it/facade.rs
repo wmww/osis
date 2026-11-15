@@ -593,8 +593,8 @@ fn a_setting_never_received_is_waited_for_one_pass_spec_commits_5() {
     assert!(e.get_typed(&t, &ct::RETENTION).unwrap().is_some(), "the setting arrived later: it applies");
 }
 
-// spec/commits.md §5 (Waiting for it), spec/sync-status.md §1 (no sync ID: a complete pass of
-// none ends at once): a thing no read sync ID carries waits for nothing.
+// spec/commits.md §5 (Waiting for it: a complete pass of no sync ID ends at once): a thing no
+// read sync ID carries waits for nothing.
 #[test]
 fn a_setting_nothing_here_syncs_is_not_waited_for_spec_commits_5() {
     let (mut lp, t, _, _, _) = setting_header_only(false);
