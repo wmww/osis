@@ -841,13 +841,15 @@ fn removal_done<'a>(g: &mut impl Ground, c: &CommitId, ids: impl Iterator<Item =
 /// began, each recorded peer read at a connection since, or `PASS_WAIT_MS` past. With no source,
 /// not while some peer is to be waited for on S (`Opens::waited`: a sync ID just joined waits for
 /// its other holders as a leave does), nor while S's pass must have one (`pass_sourced`): then
-/// it ends only with a source and every source caught up, whatever the time.
+/// it ends only once some source caught up (a refusing or full one is not), then as any pass.
 fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: &Pass, sources: &BTreeMap<ConnId, Src>) -> PassNow {
     let mut fresh_all = true;
+    let mut fresh_any = false;
     let mut read = BTreeSet::new();
     for (conn, src) in sources {
         work.sources += 1;
         let fresh = g.caught_since(*conn, s).is_some_and(|t| t > p.pulled);
+        fresh_any |= fresh;
         if fresh {
             if let Some(r) = src.record().filter(|r| p.waits.contains(r)) {
                 read.insert(r);
@@ -863,7 +865,8 @@ fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: 
     let holding = g.records_holding(s).unwrap_or_default();
     let records = p.waits.iter().all(|r| read.contains(r) || !holding.contains(r));
     let done = if g.pass_sourced(s) {
-        !sources.is_empty() && fresh_all && (records || timed_out)
+        // a source caught up, then as any pass: one silent source holds it no past PASS_WAIT_MS
+        fresh_any && (timed_out || (fresh_all && records))
     } else {
         timed_out || (fresh_all && records && !(sources.is_empty() && g.waited(s, true).unwrap_or(true)))
     };

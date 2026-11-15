@@ -360,6 +360,34 @@ fn a_loss_waiting_for_lists_waits_for_a_pass_with_a_source_spec_sync_set_3() {
     assert_eq!(g.shredded, vec![sid(1)], "nothing uncounted: lost after the first pass");
 }
 
+// spec/sync-set.md §3 (lacking a list is waiting): a sync
+// ID waiting for a pass with a source whose thing leaves the closure (the user unsyncs it) stops
+// at once, no pass with a source needed; one already out of the closure waits for none.
+#[test]
+fn an_unsync_ends_a_wait_for_lists_spec_sync_set_3() {
+    for unsync_first in [false, true] {
+        let (mut g, mut l) = settled();
+        g.passing.insert(sid(1));
+        g.clock = 10;
+        g.holders.remove(&sid(1));
+        g.uncounted.insert(tid(1));
+        if unsync_first {
+            g.closure(&[2, 3]);
+        }
+        l.settle(&mut g).unwrap();
+        g.clock = 12;
+        g.passes.insert(sid(1), 11);
+        l.settle(&mut g).unwrap();
+        if !unsync_first {
+            assert!(g.shredded.is_empty() && l.pass_sourced(&sid(1)), "waits for a pass with a source");
+            g.closure(&[2, 3]);
+            l.settle(&mut g).unwrap();
+        }
+        assert_eq!(g.shredded, vec![sid(1)], "out of the closure: no list gives S back");
+        assert!(!l.pass_sourced(&sid(1)) && g.syncs(1).is_none());
+    }
+}
+
 // spec/sync-set.md §3 (Before the group is known: nothing counts as having left): a node pairing, its sync set empty for want of its synced group, starts with rows of a sync
 // ID its keys hold and leaves none; once it knows the group and the closure lacks it, it leaves.
 #[test]

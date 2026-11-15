@@ -539,6 +539,22 @@ fn a_sourced_pass_ends_only_with_a_caught_up_source() {
     assert_eq!(t.g.passes, vec![(S, 7)]);
 }
 
+// spec/sync-set.md §3 (lacking a list is waiting): one source caught up is what a sourced pass
+// needs; another, silent, holds it no longer than PASS_WAIT_MS, as any pass.
+#[test]
+fn a_silent_source_holds_a_sourced_pass_no_past_pass_wait_ms() {
+    let mut t = T::new(&[(S, Holding::Read)]);
+    t.g.sourced.insert(S);
+    t.at(7);
+    t.join(S, A, reader(RA, 1));
+    t.join(S, B, reader(RB, 2));
+    want(&mut t, S, 7);
+    t.caught(A, S, 8);
+    assert!(t.g.passes.is_empty(), "B not caught up yet");
+    t.at(8 + PASS_WAIT_MS);
+    assert_eq!(t.g.passes, vec![(S, 7)], "B silent past PASS_WAIT_MS");
+}
+
 // spec/sync-status.md §1 (PASS_WAIT_MS): a recorded peer away holds a pass no longer than
 // PASS_WAIT_MS; the node wakes for it.
 #[test]

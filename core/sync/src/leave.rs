@@ -247,13 +247,16 @@ fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -
         }
     };
     let held = left.held;
-    if !g.passed(s, left.since)? {
+    // lists give S back only while its thing is in the closure: leaving it (an unsync, this
+    // node's removal) ends the pass with a source unwaited
+    let moot = left.sourced && !g.in_sync_things(&held.0)?;
+    if !moot && !g.passed(s, left.since)? {
         return Ok(Wait::Waiting);
     }
     if holder != Some(held) {
         // a role commit on S's thing uncounted for want of its lists (a revocation taken before
         // them): one complete pass with a source, begun now, fetches them before S is judged lost
-        if !left.sourced && g.uncounted_role(&held.0)? {
+        if !left.sourced && g.uncounted_role(&held.0)? && g.in_sync_things(&held.0)? {
             leaving.insert(*s, Left { since: g.pass_seq(), sourced: true, ..left });
             return Ok(Wait::Waiting);
         }
