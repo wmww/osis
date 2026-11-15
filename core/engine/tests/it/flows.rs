@@ -5,16 +5,11 @@
 use crate::common;
 use common::*;
 use osis_base::{Clock, CommitId, SyncId, Role, Tid, Value};
-use osis_blob::Address;
 use osis_engine::flows::{Demotion, Done};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
-
-pub(crate) fn hosts() -> Vec<Address> {
-    vec![Address { url: "quic://s1:1".into(), key: [7; 32] }]
-}
 
 /// Every peer's new commits to every other peer, twice (cheaper than `sync_all`'s n rounds);
 /// commits that arrive before their chain wait and apply on the second pass.
@@ -1053,7 +1048,7 @@ fn cascade_two_hops_spec_perm_3() {
 }
 
 fn link_spec(target: Tid, role: Role, until: Option<osis_base::WallMs>) -> osis_engine::flows::LinkSpec {
-    osis_engine::flows::LinkSpec { target, role, until, hosts: hosts(), peers: Vec::new(), single_use: false }
+    osis_engine::flows::LinkSpec { target, role, until, peers: Vec::new(), single_use: false }
 }
 
 // spec/crdt.md §3.2 (commit form: own writes first among commits), spec/commits.md §4: a

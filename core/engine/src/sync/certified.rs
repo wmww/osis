@@ -553,7 +553,7 @@ mod tests {
             ("own secrets", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.give_own_secrets(&things[1]).unwrap()))),
             ("grant write", Box::new(|lp: &mut LocalPeer| drop(lp.peers[0].engine.grant(&things[1], &a1.account, &edge(Role::Write)).unwrap()))),
             ("link made", Box::new(|lp: &mut LocalPeer| {
-                let spec = crate::flows::LinkSpec { target: things[2], role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: false };
+                let spec = crate::flows::LinkSpec { target: things[2], role: Role::Read, until: None, peers: Vec::new(), single_use: false };
                 *link.borrow_mut() = Some(lp.peers[0].engine.create_link(&a0.account, &spec).unwrap().0);
                 lp.sync_all().unwrap();
             })),
@@ -888,7 +888,7 @@ mod tests {
                         lp.peers[1].commit(m).map(drop)
                     }
                     5 => {
-                        let spec = crate::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: next(2) == 0 };
+                        let spec = crate::flows::LinkSpec { target: t, role: Role::Read, until: None, peers: Vec::new(), single_use: next(2) == 0 };
                         lp.peers[0].engine.create_link(&a0.account, &spec).map(|(l, _, _)| l).and_then(|l| {
                             lp.sync_all()?;
                             lp.peers[1].engine.redeem(&l, &a1.account, l.single_use).map(drop)

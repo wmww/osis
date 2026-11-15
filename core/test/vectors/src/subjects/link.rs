@@ -5,19 +5,16 @@ use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
 use osis_base::{SyncId, Tid, Value, encode};
-use osis_blob::{Address, Error, Peer, ShareLink};
-use osis_schema::Codec;
+use osis_blob::{Error, Peer, ShareLink};
 
 const SPEC: &str = "spec/wire.md §10";
 
 pub fn links() -> VecFile {
-    let a = Address { url: "quic://host.example:4433".into(), key: [0x06; 32] };
     let link = ShareLink {
         seed: s32(0x03),
         target: Tid::from_bytes([0x01; 15]),
         k: Tid::from_bytes([0x02; 15]),
         k_sync_id: SyncId([0x04; 16]),
-        hosts: vec![a.clone()],
         peers: vec![Peer { dialable: [0x07; 32], relays: vec!["https://relay.example".into()] }],
         single_use: false,
     };
@@ -37,12 +34,11 @@ pub fn links() -> VecFile {
         items[i] = v;
         encode(&Value::List(items))
     };
-    let nine = with(5, Value::List(vec![a.to_value(); 9]));
     let peer = Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![])]);
-    let five = with(6, Value::List(vec![peer; 5]));
-    let relays = with(6, Value::List(vec![Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![Value::Str("r".into()); 5])])]));
-    let long = with(6, Value::List(vec![Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![Value::Str("r".repeat(257))])])]));
-    for (name, b, rule) in [("nine addresses", nine, "link-cap"), ("five peers", five, "link-cap"), ("five relays", relays, "link-cap"), ("relay URL of 257 bytes", long, "link-cap")] {
+    let five = with(5, Value::List(vec![peer; 5]));
+    let relays = with(5, Value::List(vec![Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![Value::Str("r".into()); 5])])]));
+    let long = with(5, Value::List(vec![Value::List(vec![Value::Bytes(vec![7; 32]), Value::List(vec![Value::Str("r".repeat(257))])])]));
+    for (name, b, rule) in [("five peers", five, "link-cap"), ("five relays", relays, "link-cap"), ("relay URL of 257 bytes", long, "link-cap")] {
         assert!(ShareLink::from_value(&osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap()).is_err());
         cases.push(case(name, SPEC).with("bytes", hex(&b)).with("reject", rule));
     }

@@ -1,20 +1,10 @@
-//! Peer addresses (spec/sync-transport.md §1, spec/data-model.md §9 `address`): strict value decoding,
-//! the text form (key in osis-base's unpadded base64url).
+//! Peer addresses (spec/sync-transport.md §1, spec/data-model.md §9 `address`): the text form (key
+//! in osis-base's unpadded base64url).
 
 use crate::Error;
-use osis_base::{Value, base64url};
+use osis_base::base64url;
 use osis_base::format::MAX_URL_BYTES;
-use osis_schema::Codec;
 pub use osis_base::Address;
-
-/// An `address` value, strictly (re-encodes to itself), URL at most 256 bytes.
-pub(crate) fn address_from_value(v: &Value) -> Result<Address, Error> {
-    let a = Address::from_value(v).map_err(|_| Error::Malformed("address"))?;
-    if a.to_value() != *v || a.url.len() > MAX_URL_BYTES {
-        return Err(Error::Malformed("address"));
-    }
-    Ok(a)
-}
 
 /// Text form `<url>#<base64url key>` (provisional: client-side only, never on the wire).
 pub fn address_to_text(a: &Address) -> String {
@@ -43,8 +33,5 @@ mod tests {
         assert!(address_from_text("quic://x").is_err());
         assert!(address_from_text("quic://x#AAAA").is_err());
         assert!(address_from_text(&format!("{}#{}", "u".repeat(257), base64url::encode(&[0; 32]))).is_err());
-        assert_eq!(address_from_value(&a.to_value()).unwrap(), a);
-        let long = Address { url: "u".repeat(257), key: [0; 32] };
-        assert!(address_from_value(&long.to_value()).is_err());
     }
 }

@@ -3425,7 +3425,7 @@ fn stranger_card_makes_no_node_spec_perm_4() {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, p.account);
         lp.peers[0].commit(m).unwrap();
-        let spec = osis_engine::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: false };
+        let spec = osis_engine::flows::LinkSpec { target: t, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
         let (link, _, _) = lp.peers[0].engine.create_link(&p.account, &spec).unwrap();
         let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
         {

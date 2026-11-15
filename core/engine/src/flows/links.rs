@@ -16,7 +16,7 @@ use osis_base::{Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp};
 use osis_crypto::{KeyActorKeys, Secret32};
 use osis_keys::{HolderKeys, Recipient, box_holder, roles_up_to};
-use osis_blob::{Address, ShareLink};
+use osis_blob::ShareLink;
 use osis_schema::core_types::{self as ct, Edge};
 use std::sync::Arc;
 
@@ -33,8 +33,8 @@ pub struct HeldLink {
     pub first_admin: Tid,
     pub target: Tid,
     pub single_use: bool,
-    /// This node wrote the seed: it made the link, so a redeemer of a link without hosts
-    /// reached this node.
+    /// This node wrote the seed: it made the link, so its redeemer dials this node (the link's
+    /// peers, spec/wire.md §10).
     pub here: bool,
 }
 
@@ -44,7 +44,6 @@ pub struct LinkSpec {
     pub target: Tid,
     pub role: Role,
     pub until: Option<WallMs>,
-    pub hosts: Vec<Address>,
     pub peers: Vec<osis_blob::Peer>,
     /// The link's `flags` bit 0: its redemption removes L (spec/permissions.md §7).
     pub single_use: bool,
@@ -68,7 +67,7 @@ impl Engine {
         let res = self.run(|tx| create_link_in(tx, *sharer, spec, l, &seed));
         self.drop_key_actor(&l);
         let (k, k_sync_id, keep, done) = res?;
-        Ok((ShareLink { seed, target: spec.target, k, k_sync_id, hosts: spec.hosts.clone(), peers: spec.peers.clone(), single_use: spec.single_use }, keep, done))
+        Ok((ShareLink { seed, target: spec.target, k, k_sync_id, peers: spec.peers.clone(), single_use: spec.single_use }, keep, done))
     }
 
     /// Redeems a link once K's sync ID was claimed by L's static entry and downloaded (node-sync;

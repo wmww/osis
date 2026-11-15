@@ -1,7 +1,6 @@
 //! Links (spec/wire.md §10, spec/permissions.md §7): the canonical layout, caps and the text
 //! form `osis://link/` + unpadded base64url.
 
-use crate::addr::{Address, address_from_value};
 use osis_base::base64url;
 use crate::cbor::{get_bytes, get_tid, get_uint, tid};
 use crate::Error;
@@ -9,9 +8,7 @@ use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::MAX_URL_BYTES;
 use osis_base::{SyncId, Tid, Value};
 use osis_crypto::Secret32;
-use osis_schema::Codec;
 
-const MAX_ADDRESSES: usize = 8;
 const MAX_PEERS: usize = 4;
 const MAX_RELAYS: usize = 4;
 const FORMAT: i64 = 1;
@@ -26,7 +23,7 @@ pub struct Peer {
     pub relays: Vec<String>,
 }
 
-/// `Link := [1, seed, target, k, k_sync_id, [address*], [peer*], ? flags]` (spec/wire.md §10).
+/// `Link := [1, seed, target, k, k_sync_id, [peer*], ? flags]` (spec/wire.md §10).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShareLink {
     /// L's seed.
@@ -34,7 +31,6 @@ pub struct ShareLink {
     pub target: Tid,
     pub k: Tid,
     pub k_sync_id: SyncId,
-    pub hosts: Vec<Address>,
     pub peers: Vec<Peer>,
     /// `flags` bit 0: the redemption removes L's own edge (spec/permissions.md §7).
     pub single_use: bool,
@@ -48,22 +44,6 @@ fn check_url(u: &str) -> Result<(), Error> {
         return Err(Error::Malformed("url longer than 256 bytes"));
     }
     Ok(())
-}
-
-fn hosts_value(s: &[Address]) -> Result<Value, Error> {
-    if s.len() > MAX_ADDRESSES {
-        return Err(Error::Malformed("more than 8 addresses"));
-    }
-    s.iter().try_for_each(|a| check_url(&a.url))?;
-    Ok(Value::List(s.iter().map(Codec::to_value).collect()))
-}
-
-fn get_hosts(v: &Value) -> Result<Vec<Address>, Error> {
-    let Value::List(l) = v else { return Err(Error::Malformed("addresses")) };
-    if l.len() > MAX_ADDRESSES {
-        return Err(Error::Malformed("more than 8 addresses"));
-    }
-    l.iter().map(address_from_value).collect()
 }
 
 fn format_of(v: &Value) -> Result<(), Error> {
@@ -92,7 +72,6 @@ impl ShareLink {
             tid(&self.target),
             tid(&self.k),
             Value::bytes(&self.k_sync_id.0),
-            hosts_value(&self.hosts)?,
             Value::List(peers),
         ];
         // `flags` only when a bit is set: one encoding per link
@@ -107,7 +86,7 @@ impl ShareLink {
         let (f, rest) = items.split_first().ok_or(Error::Malformed("link"))?;
         format_of(f)?;
         let (rest, single_use) = match rest {
-            [head @ .., flags] if rest.len() == 7 => {
+            [head @ .., flags] if rest.len() == 6 => {
                 let f = get_uint(flags, "link flags")?;
                 if f == 0 || f & !(FLAG_SINGLE_USE as u64) != 0 {
                     return Err(Error::Malformed("link flags"));
@@ -116,7 +95,7 @@ impl ShareLink {
             }
             _ => (rest, false),
         };
-        let [seed, target, k, k_sync_id, hosts, Value::List(peers)] = rest else { return Err(Error::Malformed("link")) };
+        let [seed, target, k, k_sync_id, Value::List(peers)] = rest else { return Err(Error::Malformed("link")) };
         if peers.len() > MAX_PEERS {
             return Err(Error::Malformed("more than 4 peers"));
         }
@@ -143,7 +122,6 @@ impl ShareLink {
             target: get_tid(target, "link target")?,
             k: get_tid(k, "link k")?,
             k_sync_id: SyncId(get_bytes(k_sync_id, "link sync ID")?),
-            hosts: get_hosts(hosts)?,
             peers,
             single_use,
         })
@@ -176,7 +154,6 @@ pub(crate) mod tests {
             target: Tid::from_bytes([2; 15]),
             k: Tid::from_bytes([3; 15]),
             k_sync_id: SyncId([4; 16]),
-            hosts: vec![Address { url: "quic://a".into(), key: [5; 32] }],
             peers: vec![Peer { dialable: [6; 32], relays: vec!["https://relay".into()] }],
             single_use: false,
         }
@@ -187,15 +164,15 @@ pub(crate) mod tests {
     #[test]
     fn flags() {
         let mut l = link();
-        assert!(matches!(l.to_value().unwrap(), Value::List(v) if v.len() == 7));
+        assert!(matches!(l.to_value().unwrap(), Value::List(v) if v.len() == 6));
         l.single_use = true;
         let v = l.to_value().unwrap();
-        assert!(matches!(&v, Value::List(x) if x.len() == 8 && x[7] == Value::Int(1)));
+        assert!(matches!(&v, Value::List(x) if x.len() == 7 && x[6] == Value::Int(1)));
         assert_eq!(ShareLink::from_value(&v).unwrap(), l);
         for bad in [0, 2, 3] {
             let mut v = v.clone();
             if let Value::List(x) = &mut v {
-                x[7] = Value::Int(bad);
+                x[6] = Value::Int(bad);
             }
             assert!(ShareLink::from_value(&v).is_err(), "flags {bad}");
         }
@@ -211,24 +188,14 @@ pub(crate) mod tests {
         assert_eq!(ShareLink::from_text(&t).unwrap(), l);
         let mut bare = link();
         bare.peers.clear();
-        bare.hosts.clear();
         assert_eq!(ShareLink::from_text(&bare.to_text().unwrap()).unwrap(), bare);
         assert!(!format!("{l:?}").contains("[1, 1"));
     }
 
-    // spec/wire.md §10: caps (8 addresses, 4 peers, 4 relays, 256-byte URLs); an unknown format
+    // spec/wire.md §10: caps (4 peers, 4 relays, 256-byte URLs); an unknown format
     // parks.
     #[test]
     fn caps() {
-        let a = Address { url: "quic://a".into(), key: [5; 32] };
-        let mut l = link();
-        l.hosts = vec![a.clone(); 9];
-        assert!(l.to_value().is_err());
-        let mut v = link().to_value().unwrap();
-        if let Value::List(items) = &mut v {
-            items[5] = Value::List(vec![a.to_value(); 9]);
-        }
-        assert!(ShareLink::from_value(&v).is_err());
         let mut l = link();
         l.peers = vec![l.peers[0].clone(); 5];
         assert!(l.to_value().is_err());

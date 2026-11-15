@@ -716,7 +716,7 @@ impl Osis {
         self.local_at(target, "make_link")?;
         let me = self.me();
         let peer = self.own_peer();
-        let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), hosts: Vec::new(), peers: vec![peer], single_use: opts.single_use };
+        let spec = flows::LinkSpec { target, role, until: opts.until.map(|t| osis_base::WallMs(t.0)), peers: vec![peer], single_use: opts.single_use };
         let (link, _, _) = self.engine(|e| e.create_link(&me, &spec)).map_err(needs_admin)?;
         Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }

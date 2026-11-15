@@ -1316,7 +1316,7 @@ fn a_pass_begun_before_a_role_commit_does_not_count_spec_perm_3() {
 fn a_followed_link_stays_across_a_reload_spec_sync_set_2() {
     let (mut lp, ps) = people(2);
     let target = thing_of(&mut lp, 0, ps[0]);
-    let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: false };
+    let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
     let link = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
     let e = &mut lp.peers[1].engine;
     e.follow_link(&link).unwrap();
