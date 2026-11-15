@@ -128,6 +128,40 @@ fn an_outsider_keeps_the_accounts_word_across_a_rotation_revoking_no_one_spec_pe
     assert_eq!(read(&mut lp, 2, t), Some(Value::Str("p".into())), "restarted");
 }
 
+// spec/permissions.md §5.5 (Revoked), spec/wire.md §4 (a header names the removals its list for D
+// names): sibling B holds A's removal of X, not A's rotation, and rotates on it, its list for D
+// naming the removal: a revocation, though the removal is not B's. X, removed and unaware, writes
+// at the open epoch it holds, which B's rotation closes. That write counts neither at B nor at an
+// outsider following B's rotation, before A's rotation arrives (were A's never to come, for good)
+// or after the merge
+#[test]
+fn a_removed_nodes_write_counts_nowhere_an_aware_siblings_rotation_closed_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(4, 3);
+    let (r0, b, x, o) = (0, 1, 2, 3);
+    let done = remove(&mut lp, r0, a.devices, x);
+    send(&mut lp, r0, b, &done.commits[..1]);
+    let rb = lp.peers[b].engine.signing_due().unwrap().commits;
+    assert_eq!(rb.len(), 1, "B rotates on the removal it holds");
+    assert_eq!(lp.peers[b].engine.header(&rb[0]).unwrap().rotation.clone().unwrap().removals, vec![done.commits[0]], "its header names the removal");
+    send(&mut lp, b, o, &rb);
+    let late = write(&mut lp, x, t, "removed");
+    send(&mut lp, x, o, &[late]);
+    send(&mut lp, x, b, &[late]);
+    let mut got = Vec::new();
+    for k in [b, o] {
+        assert!(lp.peers[k].engine.header(&late).is_some(), "peer {k} holds X's write");
+        got.push((k, "before", read(&mut lp, k, t)));
+    }
+    send(&mut lp, r0, b, &done.commits[1..]);
+    send(&mut lp, r0, o, &done.commits[1..]);
+    let m = lp.peers[b].engine.signing_due().unwrap().commits;
+    send(&mut lp, b, o, &m);
+    for k in [b, o] {
+        got.push((k, "merged", read(&mut lp, k, t)));
+    }
+    assert!(got.iter().all(|g| g.2 != Some(Value::Str("removed".into()))), "{got:?}");
+}
+
 // spec/permissions.md §3, §5.5: removing a node from D is the removal and then a rotation of the
 // account naming in its thing lists what the rotator held at the epoch it closes; at an outsider
 // holding both, the account's earlier writes and grants still count, the removed node's later

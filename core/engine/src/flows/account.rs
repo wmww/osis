@@ -85,7 +85,7 @@ pub(crate) struct AccountView {
     /// signed it at the epoch they rotate).
     carriers: BTreeMap<CommitId, BTreeSet<CommitId>>,
     /// The held rotations whose header names a removal (but one held that is no commit of the
-    /// account at the epoch it rotates): what revokes the epochs a counting one closes
+    /// account at an epoch it descends from): what revokes the epochs a counting one closes
     /// (spec/permissions.md §5.5 Revoked).
     carrying: BTreeSet<CommitId>,
     /// The signing keys of the revoked epochs (`revoked`).
@@ -661,11 +661,12 @@ impl Core {
             }
         }
         // what revokes (spec/permissions.md §5.5 Revoked): a rotation is its word for the removals
-        // it names, but one held here must be the account's commit at the epoch it rotates. Read
-        // alike at every node, a node of P included: no inner signature, so a rebuild reading
-        // them later judges the same (a forged removal only revokes more, and only a rotation
-        // counting here revokes)
-        let carrying: BTreeSet<CommitId> = rots.iter().filter(|(_, at, r)| r.removals.iter().any(|c| self.ix.commits.get(c).is_none_or(|m| m.view.author == *p && m.view.epoch == Some(*at)))).map(|(id, ..)| *id).collect();
+        // it names (every one its list for D names, whoever made it), but one held here must be
+        // the account's commit at an epoch it descends from. Read alike at every node, a node of P
+        // included: no inner signature, so a rebuild reading them later judges the same (a forged
+        // removal only revokes more, and only a rotation counting here revokes)
+        let below = |r: &CommitId| osis_perm::chain::ancestors(*r, |x| sup.get(&x).cloned().unwrap_or_default());
+        let carrying: BTreeSet<CommitId> = rots.iter().filter(|(id, _, r)| r.removals.iter().any(|c| self.ix.commits.get(c).is_none_or(|m| m.view.author == *p && m.view.epoch.is_some_and(|e| below(id).contains(&e))))).map(|(id, ..)| *id).collect();
         let rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, devices.as_ref(), &carrying, &[], &[], None);
         let mut authorized = BTreeMap::new();
         let mut standing = BTreeSet::new();

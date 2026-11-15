@@ -87,17 +87,8 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
     let on_line = |t: &CommitId| supersedes.iter().any(|b| b == t || v.line(b).is_some_and(|l| l.contains(t)));
     let mut takes: Vec<CommitId> = v.taken().iter().copied().filter(|t| !on_line(t)).collect();
     takes.sort();
-    // the removals from D it carries: this node's own, signed at the epoch it rotates (named in
-    // its header, so what a rotation revokes is fixed with its ID)
-    let at_epoch = at.as_ref().map_or_else(|| supersedes.first().copied(), |x| Some(x.0));
-    let me = tx.core.id.tid();
-    let mut carried = Vec::new();
-    for (c, _) in removals(tx.core, &p, &held.devices)? {
-        if tx.core.ix.commits.get(&c).and_then(|m| m.view.epoch) == at_epoch && tx.get_commit(&c)?.as_ref().and_then(|b| tx.core.inner_node(b)) == Some(me) {
-            carried.push(c);
-        }
-    }
-    carried.sort();
+    // the removals a rotation it descends from names already (each revokes once per line)
+    let carried_below: BTreeSet<CommitId> = supersedes.iter().flat_map(|b| v.line(b).into_iter().flatten().chain([b])).filter_map(|q| tx.core.ix.commits.get(q)?.header.rotation.as_ref()).flat_map(|r| r.removals.iter().copied()).collect();
     let (mut supersedes, mut closes) = (supersedes, closes);
     for r in reject {
         if !supersedes.contains(&r) {
@@ -130,6 +121,13 @@ pub(crate) fn rotate_in(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], done: &mut D
             }
         }
     }
+    // the removals from D it carries: every one its list for D names, whoever made it, that no
+    // rotation it descends from carries (named in its header, so what a rotation revokes is fixed
+    // with its ID and read outside the account, spec/permissions.md §5.5 Revoked); a node of P
+    // reads as its side only its minter's signed at the epoch it rotates (§5.4)
+    let on_d = per.get(&held.devices).map(|x| x.0.clone()).unwrap_or_default();
+    let mut carried: Vec<CommitId> = removals(tx.core, &p, &held.devices)?.into_iter().map(|x| x.0).filter(|c| on_d.contains(c) && !carried_below.contains(c)).collect();
+    carried.sort();
     let mut leaves: Vec<(u64, ThingList)> = Vec::new();
     let mut used = BTreeSet::new();
     for (t, (special, mut plain)) in per {

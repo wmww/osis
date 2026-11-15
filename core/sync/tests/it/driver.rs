@@ -220,6 +220,26 @@ fn a_sibling_rotation_proves_again_spec_sync_opens_1() {
     }
 }
 
+// spec/sync-ids.md §2 (the deposit seed is the actor's `keys.0`): a node paired after its account
+// rotated holds the account's deposit seed and its D's deposit keys, whatever of the earlier
+// rotations it holds only as certificates.
+#[test]
+fn a_node_paired_after_rotations_holds_the_deposit_seed_spec_sync_ids_2() {
+    let mut w = contacts();
+    let a1 = w.node(1).account.expect("an account");
+    for _ in 0..2 {
+        w.write(1, |e| e.rotate_account(&a1)).unwrap().expect("rotated");
+        w.run();
+    }
+    let n = w.pair(1);
+    w.run();
+    w.advance(REDIAL_MS);
+    w.run();
+    let d = w.engine(n).account().unwrap().expect("an account").1;
+    let missing: Vec<_> = w.engine(n).commit_parts_missing().into_iter().filter(|(_, x)| !x.is_empty()).collect();
+    assert_eq!(w.engine(n).deposit_seed(&d).unwrap().map(|s| *s.expose()), w.engine(1).deposit_seed(&d).unwrap().map(|s| *s.expose()), "the account's deposit seed; parts missing {missing:?}");
+}
+
 /// A blob of `class` expiring at `expiry`.
 fn blob(n: usize, class: Class, expiry: u64) -> (BlobId, Vec<u8>) {
     let mut rng = osis_crypto::SeededRng::from_u64(n as u64);
