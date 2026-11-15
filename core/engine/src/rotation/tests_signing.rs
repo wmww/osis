@@ -2003,7 +2003,7 @@ fn a_sibling_taking_a_removals_rotation_before_its_list_stays_spec_permissions_5
     }
 }
 
-// spec/permissions.md §5.5 (Epoch rule, Cutoff, Waiting), §5.4 (Following, at a node of P): what
+// spec/permissions.md §5.5 (Epoch rule; Cutoff; Waiting), §5.4 (Following, at a node of P): what
 // removed node 2 writes after its removal counts at no reader, whether it holds nothing of the
 // removal or then takes its rotation before the list: a write on a thing of P, a write on D
 // signed as P, a rotation it forks unaware, and one it forks from the first epoch's key it keeps. Siblings 0 and 1 (1 having taken the
@@ -2101,7 +2101,7 @@ fn a_removed_nodes_withheld_list_keeps_none_of_its_later_word_on_d_spec_permissi
     }
 }
 
-// spec/permissions.md §5.5 (Cutoff, Listings, Waiting), §5.4: node 0 pairs node 2 while node 1,
+// spec/permissions.md §5.5 (Cutoff; Waiting), §5.4: node 0 pairs node 2 while node 1,
 // not holding that grant, rotates the account. Node 2 takes the rotation with its lists: the
 // list of D names no grant of node 2 (node 1 never held it), so the grant reads unnamed until
 // node 0's listing names it. Node 2 must stay a node of the account throughout, and once settled.
