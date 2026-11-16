@@ -1,4 +1,4 @@
-//! `ui:theme.0` and `ui:mode.0`: how the app looks, a section of the account group's page.
+//! `ui:theme.0` and `ui:mode.0`: how the app looks, a section of home's page.
 
 use crate::store::Reader;
 use crate::schema::Mode;
@@ -37,9 +37,9 @@ impl Facet for LookFacet {
     fn claims(&self, ak: &str) -> bool {
         ak == "ui:theme.0" || ak == "ui:mode.0"
     }
-    /// The app group always can choose its look, chosen or not.
+    /// Home always can choose its look, chosen or not.
     fn applies(&self, cx: &Reader, t: Tid) -> Result<bool> {
-        cx.is_app(t)
+        cx.is_home(t)
     }
     fn summarize(&self, _: &Reader, _: Tid, s: &mut Summary) -> Result<()> {
         s.name = "osis".into();

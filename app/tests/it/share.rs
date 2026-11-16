@@ -36,13 +36,13 @@ fn sync(a: &Data, b: &Data) {
     }
 }
 
-/// Alice and Bob, two accounts, each with an app group; each holds the other's commits.
+/// Alice and Bob, two accounts, each with a home; each holds the other's commits.
 fn two_people() -> (Data, Data) {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = osis_app::store::data(osis::internals::create(cfg(1, &clock)).unwrap());
     let b = osis_app::store::data(osis::internals::create(cfg(2, &clock)).unwrap());
-    a.main_group().unwrap();
-    b.main_group().unwrap();
+    a.home().unwrap();
+    b.home().unwrap();
     sync(&a, &b);
     (a, b)
 }
@@ -100,8 +100,8 @@ fn reach_counts_an_edge_until_it_ends() {
     assert_eq!(reach(&a, tag).unwrap().people.len(), 1);
 }
 
-/// Undo takes back only my own changes: not a thing's creation (that would leave it in no
-/// group), and never Bob's edit of a thing we share.
+/// Undo takes back only my own changes: not a thing's creation (that would release it as a
+/// side effect), and never Bob's edit of a thing we share.
 #[test]
 fn undo_is_mine_and_keeps_the_thing() {
     let (a, b) = two_people();
@@ -145,11 +145,11 @@ fn edited_time() {
     let tag = shared_tag(&a, &b, Role::Read);
     a.add_tag(n, tag).unwrap();
     a.db.grant(n, tag, Role::Read, GrantOpts::default()).unwrap();
-    assert_eq!(a.changed(n).unwrap(), Some(made), "a membership or a grant is not an edit");
+    assert_eq!(a.changed(n).unwrap(), Some(made), "a strong or a grant is not an edit");
     assert!(a.changed(n).unwrap().unwrap() <= a.db.now().unwrap().0);
 }
 
-/// Tagging a tag nests it (a subgroup, not an item); removing un-nests.
+/// Tagging a tag nests it; removing un-nests.
 #[test]
 fn tagging_a_tag_nests_it() {
     let (a, _b) = two_people();
@@ -158,8 +158,6 @@ fn tagging_a_tag_nests_it() {
     let n = osis_kit::facets::create(&a, "note").unwrap();
     a.add_tag(n, inner).unwrap();
     a.add_tag(deeper, inner).unwrap();
-    let g = a.db.at(inner, osis::internals::core_types::GROUP).get().unwrap().unwrap();
-    assert!(g.subgroups.contains(&deeper) && !g.items.contains(&deeper), "a tag nests as a subgroup");
     assert_eq!(a.tags_of(deeper).unwrap(), vec![inner]);
     assert_eq!(a.tag_contents(inner).unwrap(), (vec![deeper], vec![n]));
     a.remove_tag(deeper, inner).unwrap();

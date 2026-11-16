@@ -1,31 +1,31 @@
-//! The view tree with kit alone: a small app's account group, no app facets.
+//! The view tree with kit alone: a small app's home, no app facets.
 use osis::core::NAME;
-use osis::{Member, Osis, Result, Tid};
+use osis::{Osis, Result, Tid};
 use osis_kit::facets::create;
-use osis_kit::store::{Account, Data, Registry, keep_a_day};
+use osis_kit::store::{Account, Data, Registry, hold, keep_a_day};
 use osis_kit::view::{Block, Cx, WindowState};
 use osis_kit::views::page;
 use std::sync::{Arc, Mutex};
 
-/// One group, made on first use.
+/// One home, made on first use.
 #[derive(Default)]
 pub(crate) struct Small(Mutex<Option<Tid>>);
 
 impl Account for Small {
-    fn groups(&self, _: &osis::ReadOnly) -> Result<Vec<Tid>> {
+    fn homes(&self, _: &osis::ReadOnly) -> Result<Vec<Tid>> {
         Ok(self.0.lock().unwrap().iter().copied().collect())
     }
-    fn main_group(&self, db: &Osis) -> Result<Tid> {
+    fn home(&self, db: &Osis) -> Result<Tid> {
         let mut g = self.0.lock().unwrap();
         if let Some(t) = *g {
             return Ok(t);
         }
         let mut w = db.write();
-        let t = w.create()?;
-        // its memberships are what undoing a delete writes back
+        let root = db.account_root();
+        let t = w.create_with_admin(root)?;
+        // its strongs are what undoing a delete writes back
         keep_a_day(&mut w, t)?;
-        w.group(db.home()).add(Member::Item(t))?;
-        w.group(db.home()).add(Member::Subgroup(t))?;
+        hold(&mut w, root, t)?;
         w.commit()?;
         *g = Some(t);
         Ok(t)
@@ -34,7 +34,7 @@ impl Account for Small {
 
 pub(crate) fn data() -> Data {
     let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap(), Arc::new(Small::default()), Registry::kit());
-    d.main_group().unwrap();
+    d.home().unwrap();
     d
 }
 
@@ -50,10 +50,10 @@ fn kit_alone_opens_things() {
     let d = data();
     let t = d.create_note().unwrap();
     assert_eq!(view_type(&d, t), "note");
-    let g = d.main_group().unwrap();
+    let g = d.home().unwrap();
     let mut w = d.db.write();
-    let u = w.create().unwrap();
-    w.group(g).add(Member::Item(u)).unwrap();
+    let u = w.create_with_admin(g).unwrap();
+    hold(&mut w, g, u).unwrap();
     w.at(u, osis::DynamicAspectKey::untyped(osis::Ak::new("x:y.0").unwrap())).set(&osis::Value::Int(1)).unwrap();
     w.commit().unwrap();
     assert_eq!(view_type(&d, u), "raw");
@@ -74,8 +74,8 @@ fn chrome_is_not_content() {
     assert!(content.out.blocks.iter().all(|b| !matches!(b, Block::Bar { .. } | Block::Tabs(_))));
 }
 
-/// Undo works on a thing kit created: an edit, and a delete, which brings the thing back into its
-/// group (both keep what they replace: `keep_a_day`).
+/// Undo works on a thing kit created: an edit keeps what it replaces (`keep_a_day`). A delete
+/// releases the thing: it has no undo.
 #[test]
 fn undo_works_on_a_kit_created_thing() {
     let d = data();
@@ -90,9 +90,6 @@ fn undo_works_on_a_kit_created_thing() {
     assert_eq!(d.name(t).unwrap(), "one");
     d.delete(t).unwrap();
     assert!(!d.things().unwrap().contains(&t));
-    assert!(d.undo(t).unwrap());
-    assert!(d.things().unwrap().contains(&t), "back in its group");
-    assert_eq!(d.name(t).unwrap(), "one");
 }
 
 /// A thing made here from an offer is to have its title typed in: the field to type in next

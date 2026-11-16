@@ -77,22 +77,22 @@ pub fn sample_collection(d: &Data) -> Tid {
     tag
 }
 
-/// An account group, for a `sample`: what kit's views of the account show.
+/// Home, for a `sample`: what kit's views of the account show.
 #[allow(clippy::expect_used)]
 pub fn sample_main(d: &Data) -> Tid {
-    d.main_group().expect("sample: an account group")
+    d.home().expect("sample: home")
 }
 
 /// `n` more notes in the tag `t` (`ViewType::grow`).
 #[allow(clippy::expect_used)]
 pub fn grow_tag(d: &Data, t: Tid, n: usize) {
-    let g = d.main_group().expect("grow: a group");
+    let g = d.home().expect("grow: home");
     let mut w = d.db.write();
     for i in 0..n {
-        let x = w.create().expect("grow: a thing");
+        let x = w.create_with_admin(g).expect("grow: a thing");
         w.at(x, osis::core::NAME).set(&format!("grown {i}")).expect("grow: a name");
-        w.group(g).add(osis::Member::Item(x)).expect("grow: a member");
-        w.group(t).add(osis::Member::Item(x)).expect("grow: a member");
+        crate::store::hold(&mut w, g, x).expect("grow: held");
+        crate::store::hold(&mut w, t, x).expect("grow: tagged");
     }
     w.commit().expect("grow: a commit");
 }

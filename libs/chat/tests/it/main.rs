@@ -1,5 +1,5 @@
 //! osis-chat's shared rules at the osis API (notes/chat.md, The osis-chat crate): creation, the
-//! edit model, reading by arrival, filing. Nodes in memory on one manual clock; commits travel
+//! edit model, reading by arrival, holding. Nodes in memory on one manual clock; commits travel
 //! between them by hand (`deliver`) where no sync is needed for what is checked, else over an
 //! in-process test network (`ManualNet`, `drive`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]

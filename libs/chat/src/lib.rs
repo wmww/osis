@@ -6,8 +6,8 @@
 
 #![forbid(unsafe_code)]
 
-use osis::core::{RETENTION, RetentionEntry, RetentionSetting};
-use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, GrantOpts, History, Osis, Purge, PurgeBy, ReadOnly, Result, Retention, Role, Tid, Time};
+use osis::core::{HOLDS, RETENTION, RetentionEntry, RetentionSetting};
+use osis::{Body, Commit, CommitFrom, CommitId, CommitKind, CommitPos, CommitQuery, Error, GrantOpts, History, Osis, Purge, PurgeBy, ReadOnly, Ref, Result, Retention, Role, Strong, Tid, Time};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -51,14 +51,14 @@ impl Default for Options {
     }
 }
 
-/// A new chat, this account its first admin, its settings written before anyone is granted:
-/// every message kept for good (expiry ends a disappearing one), replacements refused when
-/// editing is off, who may delete a message. One commit makes it whole (record, `retention^.0`,
-/// settings), filed as a subgroup of `home()` so it reaches this account's other nodes, as an
-/// accept would (spec/sync-set.md §4). Changing a setting later writes `retention^.0` whole; a
-/// participant who has not seen it writes as before (its messages keep the expiry they were
-/// written with).
-pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
+/// A new chat, a root made under this account (its first admin), its settings written before
+/// anyone is granted: every message kept for good (expiry ends a disappearing one), replacements
+/// refused when editing is off, who may delete a message. One commit makes it whole (record,
+/// `retention^.0`, settings) and writes a strong to it in `holder`'s `holds.0` (the app's home,
+/// the account root), as an accept would (spec/sync-set.md §4). Changing a setting later writes
+/// `retention^.0` whole; a participant who has not seen it writes as before (its messages keep
+/// the expiry they were written with).
+pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
     let purge = match o.purge {
         PurgeBy::AuthorOrAdmin => None,
         PurgeBy::Admin => Some(schema::Deletes::Admins),
@@ -71,7 +71,9 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let c = w.create()?;
     w.at(c, RETENTION).set(&setting)?;
     w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge), purge })?;
-    // refgraph: chat brought back after the lanes: a strong to the chat from where the app holds it
+    // refgraph: a root made under the account takes own keys at creation (issues/own-keys-at-creation.md):
+    // until core gives them, the chat stays on this node until its first grant or link
+    w.at(holder, HOLDS).path(osis::p![]).add(&Ref::Strong(Strong(c)))?;
     w.commit()?;
     Ok(c)
 }
@@ -79,8 +81,9 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
 /// Makes `account`'s nodes able to relay chat `c` without reading it: sync on `c` and on the K of
 /// each of `c`'s links that works (a joiner redeems a link at a node sharing K, spec/permissions.md
 /// §7), each skipped where `account` holds a role already. `account` keeps them unread once it
-/// holds a strong to each; a link made later needs `relay` again. Returns the
-/// things granted.
+/// holds a strong to each (accepting the grant's ticket); a link made later needs `relay` again.
+/// Returns the things granted.
+// refgraph: (c) the grant fires its ticket on `account`'s inbox (`fire_ticket`)
 pub fn relay(db: &Osis, c: Tid, account: Tid) -> Result<Vec<Tid>> {
     let ks = db.links()?.into_iter().filter(|l| l.target == c).map(|l| l.id.actor());
     let mut granted = Vec::new();

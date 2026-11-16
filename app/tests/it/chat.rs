@@ -49,7 +49,7 @@ fn two_people_chat() {
     let a = osis::internals::create(cfg(1, &clock)).unwrap();
     let b = osis::internals::create(cfg(2, &clock)).unwrap();
     sync(&a, &b);
-    let c = osis_chat::create(&a, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
+    let c = osis_chat::create(&a, &osis_chat::Options { name: "channel".into(), ..Default::default() }, a.account_root()).unwrap();
     a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
     set_name(&a, "Alice").unwrap();
     assert_eq!(chat::my_name(&a).unwrap().as_deref(), Some("Alice"));
@@ -86,7 +86,7 @@ fn edited_deleted_and_nameless() {
     let a = osis::internals::create(cfg(1, &clock)).unwrap();
     let b = osis::internals::create(cfg(2, &clock)).unwrap();
     sync(&a, &b);
-    let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
+    let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
     a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
     assert_eq!(chat::name(&a, c).unwrap(), "Chat");
     set_name(&a, "Alice").unwrap();
@@ -120,7 +120,7 @@ fn edited_deleted_and_nameless() {
 fn reading_the_name_writes_nothing() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = osis::internals::create(cfg(0, &clock)).unwrap();
-    let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
+    let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
     let before = a.engine(|e| e.commit_ids().len());
     chat::my_name(&a).unwrap();
     assert_eq!(a.engine(|e| e.commit_ids().len()), before);
@@ -130,7 +130,7 @@ fn reading_the_name_writes_nothing() {
     assert_eq!(chat::my_name(&a).unwrap().as_deref(), Some("Alice"));
 }
 
-/// A link to a chat already here (pasted by its maker or a member) opens it without the link's
+/// A link to a chat already here (pasted by its maker or a participant) opens it without the link's
 /// peer; text that is no link still fails.
 #[test]
 fn join_held_chat_opens_it() {
@@ -138,7 +138,7 @@ fn join_held_chat_opens_it() {
     let a = osis::internals::create(cfg(1, &clock)).unwrap();
     let b = osis::internals::create(cfg(2, &clock)).unwrap();
     sync(&a, &b);
-    let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
+    let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
     a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
     let link = a.make_link(c, Role::Write, LinkOpts { until: None, single_use: false }).unwrap().to_string();
     sync(&a, &b);
@@ -166,7 +166,7 @@ fn quotes_read_flat_in_history() {
     let reads = |n: usize| -> (Vec<(&'static str, u64)>, Vec<chat::Line>) {
         let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
         let a = osis::internals::create(cfg(0, &clock)).unwrap();
-        let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
+        let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
         let first = chat::send(&a, c, "", "typo", None).unwrap();
         for i in 0..n {
             clock.advance(1);

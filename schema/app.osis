@@ -3,16 +3,16 @@
 //! chat.osis; only the app's own bits are here.
 revision 1;
 
-// ---- The account group ----
-// The app keeps one internal group per account (kit's "account group"; see schema/ui.osis): an item
-// and subgroup of the account's home, so it syncs and its items sync. Nodes that started before
+// ---- Home ----
+// The app keeps one home per account (kit's home; see schema/ui.osis): made under the account
+// root and held by its `holds.0`, so it syncs, and so does what it holds. Nodes that started before
 // syncing each make one; all are read and writes go to the smallest tid.
 
-/// Marks the app's account group among home's subgroups: an app finds its own group by this scan,
+/// Marks the app's home among the account root's strongs: an app finds its own home by this scan,
 /// because a tid depends on who made it first.
 aspect osis_app:app.0: bool;
 
-/// On the account group: this account already received the demo data (`--demo`), so a second device
+/// On home: this account already received the demo data (`--demo`), so a second device
 /// or run adds none.
 aspect osis_app:demo.0: bool;
 

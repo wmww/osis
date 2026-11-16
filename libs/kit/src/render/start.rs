@@ -1,5 +1,5 @@
 //! Starting the UI, the same on every shell: make the store dir, open the store in it, the app's
-//! `Data` over it, its main group, then `Ui`. A failure shows why instead, in the app's look. Where
+//! `Data` over it, its home, then `Ui`. A failure shows why instead, in the app's look. Where
 //! the store itself cannot be read (before stability, data an older build wrote may not load) it
 //! offers one way on: start fresh, which moves the store aside to a sibling path (kept, never
 //! deleted), says where, and opens a new one in its place. A store in use elsewhere, a later step
@@ -53,7 +53,7 @@ impl Start {
         })?;
         let later = || -> Result<Ui, String> {
             let data = (self.data)(db.clone())?;
-            data.main_group().map_err(|e| e.to_string())?;
+            data.home().map_err(|e| e.to_string())?;
             Ui::new(data, self.waker.clone()).map_err(|e| e.to_string())
         };
         // the store is fine: closed, so trying again (a restart) finds it free

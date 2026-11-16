@@ -351,8 +351,8 @@ pub struct Offer {
     pub id: &'static str,
     pub label: &'static str,
     pub icon: Icon,
-    /// Writes the starting values on the thing (the app group's `Tid` beside it).
-    pub set: fn(&Data, &mut osis::Write<'_>, Tid, Tid) -> Result<()>,
+    /// Writes the starting values on the thing.
+    pub set: fn(&Data, &mut osis::Write<'_>, Tid) -> Result<()>,
 }
 
 /// Everything the app knows about one family of aspects (notes/app.md Facet).
@@ -586,9 +586,8 @@ impl Action for UseOffer {
                 act.set_local(TYPE_IN, Some((t, crate::facets::name::TITLE)));
             }
             Some(t) => {
-                let g = act.main_group()?;
                 let mut w = act.data.db.write();
-                (o.set)(act.data, &mut w, t, g)?;
+                (o.set)(act.data, &mut w, t)?;
                 w.commit()?;
             }
         }

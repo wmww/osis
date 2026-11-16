@@ -8,9 +8,9 @@ use osis::{Result, Tid};
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
-/// `t`'s view: `collection.0`, else its members, placed as cards.
+/// `t`'s view: `collection.0`, else what it holds, placed as cards.
 pub fn of(cx: &Reader, t: Tid) -> Result<Collection> {
-    Ok((*cx.collection(t)?).clone().unwrap_or(Collection { source: Source::Members, having: BTreeSet::new().into_iter().collect(), order: Order::Own, arrange: crate::schema::Arrange::Cards, element: None }))
+    Ok((*cx.collection(t)?).clone().unwrap_or(Collection { source: Source::Holds, having: BTreeSet::new().into_iter().collect(), order: Order::Own, arrange: crate::schema::Arrange::Cards, element: None }))
 }
 
 /// What `view` holds on `t`, narrowed and ordered, without `t` itself.
@@ -42,7 +42,7 @@ pub fn count(cx: &Reader, t: Tid) -> Result<usize> {
 /// What `view` holds on `t`, narrowed, unsorted, without `t` itself.
 fn held(cx: &Reader, t: Tid, view: &Collection) -> Result<Vec<Tid>> {
     let mut out: Vec<Tid> = match view.source {
-        Source::Members => {
+        Source::Holds => {
             let (subs, items) = cx.tag_contents(t)?;
             subs.into_iter().chain(items).collect()
         }

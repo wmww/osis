@@ -1,6 +1,5 @@
 //! The account's state over an in-memory node.
 use osis::core::{NAME, TAG};
-use osis::internals::core_types::GROUP;
 use osis_app::store::data as make;
 use osis_kit::store::Data;
 use osis_kit::view::search::{search, snippet};
@@ -23,15 +22,15 @@ pub fn found(d: &Data, q: &str) -> osis_kit::view::search::Found {
     search(&Cx::new(d, &w, false), q).unwrap()
 }
 
-/// One account group, a subgroup of home (no item of it) with no `tag.0`, holding the four seeds, which
+/// One home, held by the account root's strong, with no `tag.0`, holding the four seeds, which
 /// start as the favorites.
 #[test]
-fn app_group_and_seeds() {
+fn home_and_seeds() {
     let d = data();
-    let g = d.main_group().unwrap();
-    assert_eq!(d.main_group().unwrap(), g);
-    let home = d.db.at(d.db.home(), GROUP).get().unwrap().unwrap();
-    assert!(!home.items.contains(&g) && home.subgroups.contains(&g));
+    let g = d.home().unwrap();
+    assert_eq!(d.home().unwrap(), g);
+    let root = d.db.at(d.db.account_root(), osis::core::HOLDS).get().unwrap().unwrap();
+    assert!(root.contains(&osis::Ref::Strong(osis::Strong(g))));
     assert_eq!(d.db.at(g, TAG).get().unwrap(), None);
     assert_eq!(d.collections().unwrap().len(), 4);
     let favs: Vec<String> = d.favorites().unwrap().iter().map(|t| d.name(*t).unwrap()).collect();
@@ -66,7 +65,28 @@ fn create_open_favorite_delete() {
     d.delete(t).unwrap();
     assert_eq!(d.opened().unwrap(), None, "deleting the open thing goes home");
     assert!(!d.favorites().unwrap().contains(&t), "a deleted favorite is skipped");
-    assert_eq!(d.db.at(t, NAME).get().unwrap(), None);
+    assert!(!d.things().unwrap().contains(&t) && d.held_by(t).unwrap().is_empty(), "nothing holds it");
+}
+
+/// A thing favorited twice in one list (two nodes at once) shows once, and dragging it to the end
+/// puts it at the end, whichever of its entries comes first.
+#[test]
+fn favorite_twice_then_moved() {
+    use osis_kit::schema::FAVORITES;
+    let d = data();
+    let g = d.home().unwrap();
+    let (n, m, k) = (d.create_note().unwrap(), d.create_note().unwrap(), d.create_note().unwrap());
+    let base = d.db.at(g, FAVORITES).get().unwrap().unwrap_or_default();
+    let mut list = base.clone();
+    list.extend([n, m, n, k].map(osis::Weak));
+    let mut w = d.db.write();
+    w.at(g, FAVORITES).edit(&base, &list).unwrap();
+    w.commit().unwrap();
+    let f = d.favorites().unwrap();
+    assert_eq!(f.iter().filter(|x| **x == n).count(), 1);
+    let i = f.iter().position(|x| *x == n).unwrap();
+    d.move_favorite(i, f.len() - 1).unwrap();
+    assert_eq!(d.favorites().unwrap().last(), Some(&n), "{:?}", d.favorites().unwrap());
 }
 
 /// Demo data once; tags, colours, contents and search over it.
@@ -105,12 +125,12 @@ fn snippets() {
     assert!(snippet("İzmir", &osis_kit::view::search::fold("İZMİR")).is_some());
 }
 
-/// The look is per account, on the account group: default until set.
+/// The look is per account, on home: default until set.
 #[test]
 fn look_choice() {
     use osis_kit::schema::Mode;
     let d = data();
-    d.main_group().unwrap();
+    d.home().unwrap();
     assert_eq!(d.look().unwrap(), (None, Mode::Auto));
     d.set_theme("velocity").unwrap();
     d.set_mode(Mode::Dark).unwrap();
@@ -138,7 +158,7 @@ fn offers_tags_reach_undo() {
     assert_eq!(reach(&cx, g).unwrap().people, Vec::<String>::new());
     d.remove_tag(n, g).unwrap();
     assert!(d.tags_of(n).unwrap().is_empty());
-    assert!(d.things().unwrap().contains(&n), "still in the account group");
+    assert!(d.things().unwrap().contains(&n), "still held by home");
     let mut w = d.db.write();
     w.at(n, NAME).set(&"changed".to_string()).unwrap();
     w.commit().unwrap();

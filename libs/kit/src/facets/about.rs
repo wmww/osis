@@ -31,8 +31,9 @@ fn live(e: &Grant, now: osis::Time) -> bool {
 }
 
 /// Who can see `t`: its holders (its first admin among them while that edge stands), through
-/// holder actors (shared tags) down to people; me and my nodes are "you". Grants with an `until`
-/// count until it passes.
+/// the things holding roles (shared tags, a home, a team) down to people, the actors no one holds
+/// a role on; me, my nodes and my account root are "you". Grants with an `until` count until it
+/// passes.
 pub fn reach(cx: &Reader, t: Tid) -> Result<Reach> {
     Ok((*cx.memo(("reach", t), |r, &(_, t)| compute_reach(r, t))?).clone())
 }
@@ -41,7 +42,7 @@ fn compute_reach(cx: &Reader, t: Tid) -> Result<Reach> {
     let db = &cx.db;
     let me = db.me();
     let now = cx.now()?;
-    let mine: BTreeSet<Tid> = db.grants(me)?.into_keys().chain([me, db.node()]).collect();
+    let mine: BTreeSet<Tid> = db.grants(me)?.into_keys().chain([me, db.node(), db.account_root()]).collect();
     let mut r = Reach::default();
     let mut seen = BTreeSet::new();
     let mut todo = vec![t];
@@ -52,17 +53,19 @@ fn compute_reach(cx: &Reader, t: Tid) -> Result<Reach> {
         if x != t && mine.contains(&x) {
             continue;
         }
-        if x != t && db.has_content(x)? && db.at(x, TAG).get()?.is_some() {
-            // a shared tag: its holders see what it holds
-            r.via.push(x);
-        } else if x != t {
+        let holders: Vec<Tid> = db.grants(x)?.into_iter().filter(|(_, e)| live(e, now)).map(|(m, _)| m).collect();
+        if x != t && holders.is_empty() {
             let name = account_name(cx, x)?;
             if !r.people.contains(&name) {
                 r.people.push(name);
             }
             continue;
         }
-        todo.extend(db.grants(x)?.into_iter().filter(|(_, e)| live(e, now)).map(|(m, _)| m));
+        if x != t && db.has_content(x)? && db.at(x, TAG).get()?.is_some() {
+            // a shared tag: its holders see what it holds
+            r.via.push(x);
+        }
+        todo.extend(holders);
     }
     r.people.sort();
     Ok(r)

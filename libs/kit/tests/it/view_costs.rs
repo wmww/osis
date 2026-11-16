@@ -53,11 +53,15 @@ mod rows {
         let c2 = step(&mut tree, &mut screen, &w);
         assert_eq!(c2.renders, 1, "one collection render: {c2:?}");
         let inserted = std::mem::take(&mut screen.rows);
-        // an unrelated write: nothing
+        // an unrelated write: nothing (the window opening it last referenced `added`, a backlink
+        // of a row: home first)
+        d.set_open(None).unwrap();
+        step(&mut tree, &mut screen, &w);
         let other = d.create_note().unwrap();
         name(&d, other, "elsewhere");
+        w.graph.record();
         let c3 = step(&mut tree, &mut screen, &w);
-        assert_eq!(c3, Costs::default(), "an unrelated write runs nothing");
+        assert_eq!(c3, Costs::default(), "an unrelated write runs nothing: {:?}", w.graph.recorded());
         (changed, inserted, c.memo_runs)
     }
 
@@ -115,13 +119,13 @@ mod rows {
 
     fn big(d: &osis_kit::store::Data, n: usize) -> osis::Tid {
         let tag = create(d, "tag").unwrap();
-        let g = d.main_group().unwrap();
+        let g = d.home().unwrap();
         let mut x = d.db.write();
         for i in 0..n {
-            let t = x.create().unwrap();
+            let t = x.create_with_admin(g).unwrap();
             x.at(t, NAME).set(&format!("note {i:04}")).unwrap();
-            x.group(g).add(osis::Member::Item(t)).unwrap();
-            x.group(tag).add(osis::Member::Item(t)).unwrap();
+            osis_kit::store::hold(&mut x, g, t).unwrap();
+            osis_kit::store::hold(&mut x, tag, t).unwrap();
         }
         x.commit().unwrap();
         tag
@@ -173,7 +177,7 @@ mod rows {
         let w = WindowState::default();
         let results = |w: &WindowState| {
             let cx = Cx::new(&d, w, false);
-            let s = osis_kit::views::render(&cx, "r", &ViewSpec::new("results", d.main_group().unwrap())).unwrap();
+            let s = osis_kit::views::render(&cx, "r", &ViewSpec::new("results", d.home().unwrap())).unwrap();
             s.blocks.iter().find_map(|b| if let Block::List(l) = b { Some(l.rows().iter().map(|r| r.key.clone()).collect::<Vec<_>>()) } else { None }).unwrap()
         };
         w.set_local(QUERY, "note".to_string());

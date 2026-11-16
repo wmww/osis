@@ -55,7 +55,7 @@ fn ran(w: &WindowState, f: impl FnOnce()) -> Vec<String> {
 #[test]
 fn no_node_runs_twice_in_a_pass() {
     let d = data();
-    let g = d.main_group().unwrap();
+    let g = d.home().unwrap();
     for i in 0..20 {
         let n = d.create_note().unwrap();
         name(&d, n, &format!("n{i}"));
@@ -109,13 +109,13 @@ fn a_value_depending_on_itself_fails() {
 fn collections_of_everything_summarize() {
     let d = data();
     let v = Collection { source: Source::Everything, having: Default::default(), order: Order::Name, arrange: Arrange::Cards, element: None };
+    let g = d.home().unwrap();
     let mut w = d.db.write();
-    let (a, b) = (w.create().unwrap(), w.create().unwrap());
-    let g = d.main_group().unwrap();
+    let (a, b) = (w.create_with_admin(g).unwrap(), w.create_with_admin(g).unwrap());
     for (x, n) in [(a, "One"), (b, "Two")] {
         w.at(x, COLLECTION).set(&v).unwrap();
         w.at(x, NAME).set(&n.to_string()).unwrap();
-        w.group(g).add(osis::Member::Item(x)).unwrap();
+        osis_kit::store::hold(&mut w, g, x).unwrap();
     }
     w.commit().unwrap();
     assert_eq!(d.summary(a).unwrap().sub, "1 item");
@@ -307,7 +307,7 @@ fn nothing_grows_and_a_window_frees_its_graph() {
 fn one_write_costs_the_same_at_n_and_10n() {
     let at = |n: usize| {
         let d = data();
-        let g = d.main_group().unwrap();
+        let g = d.home().unwrap();
         let mut last = None;
         for i in 0..n {
             let t = d.create_note().unwrap();
@@ -387,7 +387,7 @@ fn one_node_state_write_renders_one_node() {
     use osis_kit::schema::WEEK;
     let d = data();
     let cal = create(&d, "tag").unwrap();
-    let c = Collection { source: Source::Members, having: Default::default(), order: Order::Name, arrange: Arrange::Days, element: None };
+    let c = Collection { source: Source::Holds, having: Default::default(), order: Order::Name, arrange: Arrange::Days, element: None };
     let mut x = d.db.write();
     x.at(cal, COLLECTION).set(&c).unwrap();
     x.commit().unwrap();
@@ -492,7 +492,7 @@ fn flaky_data() -> osis_kit::store::Data {
 fn a_failed_view_recovers() {
     use osis_kit::view::{Block, ViewSpec};
     let d = flaky_data();
-    let g = d.main_group().unwrap();
+    let g = d.home().unwrap();
     let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
     assert!(tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("failing", g)).is_err());
     w.set_local(flaky::BAD, false);
@@ -505,7 +505,7 @@ fn a_failed_view_recovers() {
 fn a_handled_failure_two_memos_down_moves_the_view() {
     use osis_kit::view::{Block, ViewSpec};
     let d = flaky_data();
-    let g = d.main_group().unwrap();
+    let g = d.home().unwrap();
     let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
     tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("handling", g)).unwrap();
     assert_eq!(screen.models["v"].blocks, vec![Block::Line("got 0".into())]);
@@ -519,7 +519,7 @@ fn a_handled_failure_two_memos_down_moves_the_view() {
 fn a_failing_child_leaves_its_sibling() {
     use osis_kit::view::{Block, ViewSpec};
     let d = flaky_data();
-    let g = d.main_group().unwrap();
+    let g = d.home().unwrap();
     let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
     assert!(tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("pair", g)).is_err());
     assert_eq!(screen.models["v/good"].blocks, vec![Block::Line("fine".into())]);
@@ -533,7 +533,7 @@ fn a_failing_child_leaves_its_sibling() {
 fn a_child_replaced_while_marked_shows_the_new_spec() {
     use osis_kit::view::{Block, ViewSpec};
     let d = flaky_data();
-    let g = d.main_group().unwrap();
+    let g = d.home().unwrap();
     let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
     tree.show(attached(&d, &w), &mut screen, "v", &ViewSpec::new("parent", g)).unwrap();
     assert_eq!(screen.models["v/c"].blocks, vec![Block::Line("a 0".into())]);

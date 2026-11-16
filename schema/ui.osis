@@ -2,24 +2,24 @@
 //! things (notes/app.md Terms); this schema is what that tree needs to remember between
 //! refreshes, restarts and devices. Read top to bottom it is the architecture:
 //! a **window** holds where you are and what is half-done; a **collection config** says what a
-//! thing shows as a collection; the account's own choices live on its **account group**.
+//! thing shows as a collection; the account's own choices live on its **home**.
 //! Nothing here is specific to the first-party app: a small app built on kit alone uses all of it.
 revision 1;
 
-// ---- The account group: what a person decided, per account ----
-// The account group is the internal group an app keeps for one account (the app finds it and hands
-// its tid to kit). These aspects live on it, sync to all of the account's devices, and survive
-// restart. A value here is a viewer's decision, so it works on things that person cannot write.
+// ---- Home: what a person decided, per account ----
+// Home is the thing an app keeps for one account, made under the account root and held by it (the
+// app finds it and hands its tid to kit). These aspects live on it, sync to all of the account's
+// nodes, and survive restart. A value here is a viewer's decision, so it works on things that
+// person cannot write.
 
 /// The account's favorites, in order: the source of the home collection and the rail. Written when
 /// the viewer favorites, unfavorites or reorders; reordering is a sequence move, so a concurrent
-/// unfavorite wins. Nodes that raced on two account groups keep their own list; readers take the
-/// union.
+/// unfavorite wins. Nodes that raced on two homes keep their own list; readers take the union.
 aspect ui:favorites.0: list<weak>;
 
 /// How the viewer places a collection: by thing, the arrangement that beats the thing's stored one.
-/// Written from the chooser every collection offers, on the account group so it works on a thing the
-/// viewer cannot write.
+/// Written from the chooser every collection offers, on home so it works on a thing the viewer
+/// cannot write.
 aspect ui:arranged.0: map<weak, arrange>;
 
 /// Which content view the viewer opens a thing in, by view type id. Written when the viewer picks a
@@ -40,19 +40,15 @@ aspect ui:mode.0: enum {
 
 // ---- Windows: per device, where you are ----
 // A window is a thing per device. It is an ordinary thing: its raw view works, and another device
-// can show it given only its tid. Windows are items of an internal group below the account group, so
-// they sync with the account but are never part of what the account "holds" (the universe).
+// can show it given only its tid. Windows are made under home and held by its `ui:windows.0`, so
+// they sync with the account but are never among what home holds in `holds.0` (the universe).
 
-/// On the account group: each device's window (node tid to window thing). A device adds its entry the
-/// first time it writes window state; reading makes nothing.
+/// On home: each device's window (node tid to window thing), held by the strong. A device adds its
+/// entry the first time it writes window state; reading makes nothing.
 aspect ui:windows.0: map<weak, strong>;
 
-/// Marks a subgroup of the account group as internal: it holds the kit's own things (windows). The
-/// universe excludes it and its members by the same rule that excludes the account group.
-aspect ui:internal.0: bool;
-
-/// On a window: the thing it has open; absent: the account group's own page (home). Durable, so a
-/// window reopens where it was; a thing deleted since shows home instead.
+/// On a window: the thing it has open; absent: home's own page. Durable, so a window reopens where
+/// it was; a thing held no more shows home instead.
 aspect ui:open.0: weak;
 
 // ---- Node state: per window, per node of the view tree ----
@@ -95,7 +91,8 @@ type arrange = enum {
     rows 1,
     /// A week of seven days; admits only entries that have a span.
     days 2,
-    /// Nested by subgroup; a cycle is cut at a repeat, a thing in two parents shows under both.
+    /// Nested by what each thing holds; a cycle is cut at a repeat, a thing in two parents shows
+    /// under both.
     outline 3,
     /// By time, oldest first, following the end when it fills the page.
     stream 4,
@@ -116,9 +113,10 @@ type element_spec = struct {
 /// like any other, with a name, tags and a place among favorites. Written on the thing, so it is
 /// shared with whoever else can read it. The kit's seeds are values of this aspect and nothing else.
 aspect ui:collection.0: struct {
-    /// What it looks at: the thing's members, everything the account holds, or its favorites.
+    /// What it looks at: what the thing holds (`holds.0`), everything the account holds, or its
+    /// favorites.
     source 0: enum {
-        members 0,
+        holds 0,
         everything 1,
         favorites 2,
     },

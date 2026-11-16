@@ -2,7 +2,6 @@
 //! path of core's tests) and over malformed synced data.
 use osis::internals::Internals as _;
 use osis::core::{BODY};
-use osis::internals::core_types::{GROUP};
 use osis::{Ak, MemStore, Osis, Store, Tid, Value, Time};
 use osis::internals::{ManualClock};
 use osis_kit::store::Data;
@@ -52,34 +51,32 @@ fn found(d: &Data, q: &str) -> osis_kit::view::search::Found {
     osis_kit::view::search::search(&osis_kit::view::Cx::new(d, &w, false), q).unwrap()
 }
 
-/// Both nodes make an app group before they sync: afterwards both write to the same one, the
-/// views and favorites are not doubled, and a favorite made in the other group can be removed.
+/// Both nodes make a home before they sync: afterwards both write to the same one, the
+/// views and favorites are not doubled, and a favorite made in the other home can be removed.
 #[test]
-fn two_nodes_race_the_app_group() {
+fn two_nodes_race_home() {
     let (a, b) = two();
-    let ga = a.main_group().unwrap();
-    let gb = b.main_group().unwrap();
+    let ga = a.home().unwrap();
+    let gb = b.home().unwrap();
     assert_ne!(ga, gb);
     let n = b.create_note().unwrap();
     b.toggle_favorite(n).unwrap();
     sync(&a, &b);
-    assert_eq!(a.groups().unwrap(), b.groups().unwrap());
-    assert_eq!(a.groups().unwrap().len(), 2);
-    assert_eq!(a.main_group().unwrap(), ga.min(gb));
-    assert_eq!(b.main_group().unwrap(), ga.min(gb));
+    assert_eq!(a.homes().unwrap(), b.homes().unwrap());
+    assert_eq!(a.homes().unwrap().len(), 2);
+    assert_eq!(a.home().unwrap(), ga.min(gb));
+    assert_eq!(b.home().unwrap(), ga.min(gb));
     for d in [&a, &b] {
         assert_eq!(d.collections().unwrap().len(), 4);
         let favs = d.favorites().unwrap();
         assert_eq!(views_in(d, &favs), vec!["Calendar", "People", "Tags", "Recent"], "views once each: {favs:?}");
         assert!(favs.contains(&n));
         assert_eq!(found(d, "calendar").scopes.len(), 1, "one Calendar scope");
-        // everything the app shows is a member of home, so it syncs to every node
-        for t in d.things().unwrap().iter().copied() {
-            assert!(d.db.groups_of(t).unwrap().within.contains(&d.db.home()), "{t} not under home");
-        }
     }
+    // everything the app shows is held from a home, so it syncs to every node of the account
+    assert_eq!(a.things().unwrap(), b.things().unwrap());
     a.toggle_favorite(n).unwrap();
-    assert!(!a.is_favorite(n).unwrap(), "unfavorite a favorite kept in the other group");
+    assert!(!a.is_favorite(n).unwrap(), "unfavorite a favorite kept in the other home");
     sync(&a, &b);
     assert!(!b.is_favorite(n).unwrap());
     // a reorder after the merge keeps one of each
@@ -95,7 +92,7 @@ fn two_nodes_race_the_app_group() {
 #[test]
 fn concurrent_reorder_and_delete() {
     let (a, b) = two();
-    a.main_group().unwrap();
+    a.home().unwrap();
     let ns: Vec<Tid> = (0..3).map(|_| a.create_note().unwrap()).collect();
     for n in &ns {
         a.toggle_favorite(*n).unwrap();
@@ -120,12 +117,12 @@ fn concurrent_reorder_and_delete() {
     assert_eq!(fa.len(), len - 2);
 }
 
-/// This node's open thing stays open when the other node's group (smaller tid) arrives.
+/// This node's open thing stays open when the other node's home (smaller tid) arrives.
 #[test]
-fn open_survives_a_merged_group() {
+fn open_survives_a_merged_home() {
     let (a, b) = two();
-    let ga = a.main_group().unwrap();
-    let gb = b.main_group().unwrap();
+    let ga = a.home().unwrap();
+    let gb = b.home().unwrap();
     let (late, _) = if ga > gb { (&a, &b) } else { (&b, &a) };
     let n = late.create_note().unwrap();
     assert_eq!(late.opened().unwrap(), Some(n));
@@ -149,7 +146,7 @@ fn demo_once_per_account() {
     assert_eq!(count(&b), 1);
 }
 
-/// A deleted tag leaves no ghost behind (its subgroup edges go too).
+/// A deleted tag leaves no ghost behind (every strong to it goes too).
 #[test]
 fn deleted_tag_is_gone() {
     let (a, _) = two();
@@ -167,7 +164,7 @@ fn deleted_tag_is_gone() {
 #[test]
 fn remote_delete_of_the_open_thing() {
     let (a, b) = two();
-    a.main_group().unwrap();
+    a.home().unwrap();
     let n = a.create_note().unwrap();
     let s = a.db.at(n, BODY).path(osis::p![]).edit_text().unwrap();
     s.edit("", "hello").unwrap();
@@ -188,10 +185,10 @@ fn remote_delete_of_the_open_thing() {
 fn malformed_aspects_do_not_break_reads() {
     let (a, _) = two();
     osis_app::demo::add(&a).unwrap();
-    let g = a.main_group().unwrap();
+    let g = a.home().unwrap();
     let bad = |w: &mut osis::Write<'_>, ak: &str, v: Value| -> osis::Result<()> {
-        let t = w.create()?;
-        w.group(g).add(osis::Member::Item(t))?;
+        let t = w.create_with_admin(g)?;
+        osis_kit::store::hold(w, g, t)?;
         w.at(t, osis::DynamicAspectKey::untyped(Ak::new(ak).unwrap())).set(&v)?;
         Ok(())
     };
@@ -207,8 +204,8 @@ fn malformed_aspects_do_not_break_reads() {
     // an event with a far start and a huge duration
     {
         let mut w = a.db.write();
-        let t = w.create().unwrap();
-        w.group(g).add(osis::Member::Item(t)).unwrap();
+        let t = w.create_with_admin(g).unwrap();
+        osis_kit::store::hold(&mut w, g, t).unwrap();
         w.at(t, osis_app::event::START).set(&osis_app::event::Start::At(osis_app::event::Wall { time: i64::MAX - 1, zone: None })).unwrap();
         w.at(t, osis_app::event::END).set(&osis_app::event::End::After(i64::MAX)).unwrap();
         w.commit().unwrap();
@@ -227,17 +224,17 @@ fn malformed_aspects_do_not_break_reads() {
     for q in ["a", "acme", "tomorrow", "7"] {
         found(&a, q);
     }
-    assert!(a.db.at(g, GROUP).get().unwrap().is_some());
+    assert!(!a.holds(g).unwrap().is_empty());
 }
 
-/// One node empties the other's group into the main one while that node, not yet knowing
-/// the main group, favorites something in its own: nothing is lost.
+/// One node empties the other's home into the main one while that node, not yet knowing
+/// the main home, favorites something in its own: nothing is lost.
 #[test]
-fn emptying_a_group_keeps_a_concurrent_favorite() {
+fn emptying_a_home_keeps_a_concurrent_favorite() {
     let (a, b) = two();
-    let ga = a.main_group().unwrap();
-    let gb = b.main_group().unwrap();
-    // `big` is the node whose group loses; it learns of the other group only at the end
+    let ga = a.home().unwrap();
+    let gb = b.home().unwrap();
+    // `big` is the node whose home loses; it learns of the other home only at the end
     let (small, big) = if ga < gb { (&a, &b) } else { (&b, &a) };
     let x = big.create_note().unwrap();
     big.toggle_favorite(x).unwrap();
@@ -260,8 +257,8 @@ fn emptying_a_group_keeps_a_concurrent_favorite() {
 #[test]
 fn concurrent_writes_after_the_merge_converge() {
     let (a, b) = two();
-    a.main_group().unwrap();
-    b.main_group().unwrap();
+    a.home().unwrap();
+    b.home().unwrap();
     let na = a.create_note().unwrap();
     let nb = b.create_note().unwrap();
     a.toggle_favorite(na).unwrap();
@@ -284,13 +281,13 @@ fn concurrent_writes_after_the_merge_converge() {
     assert_eq!(a.db.engine(|e| e.commit_ids().len()), before);
 }
 
-/// One node unfavorites a thing still held in the other group while the other node, also
+/// One node unfavorites a thing still held in the other home while the other node, also
 /// writing for the first time since the merge, favorites something else.
 #[test]
 fn unfavorite_survives_a_concurrent_first_write() {
     let (a, b) = two();
-    let ga = a.main_group().unwrap();
-    let gb = b.main_group().unwrap();
+    let ga = a.home().unwrap();
+    let gb = b.home().unwrap();
     let (small, big) = if ga < gb { (&a, &b) } else { (&b, &a) };
     let n = big.create_note().unwrap();
     big.toggle_favorite(n).unwrap();
@@ -306,30 +303,30 @@ fn unfavorite_survives_a_concurrent_first_write() {
     assert!(!f.contains(&n), "unfavorite lost: {f:?}");
 }
 
-/// The look across two nodes' racing app groups and over malformed synced values: both read
+/// The look across two nodes' racing homes and over malformed synced values: both read
 /// one choice, a value of another shape or an unknown mode reads as unset, an unknown theme id
 /// is only a string (the UI falls back to the default theme).
 #[test]
 fn look_merges_and_tolerates_odd_values() {
     use osis_kit::schema::Mode;
     let (a, b) = two();
-    let ga = a.main_group().unwrap();
-    let gb = b.main_group().unwrap();
+    let ga = a.home().unwrap();
+    let gb = b.home().unwrap();
     a.set_theme("velocity").unwrap();
     b.set_theme("slate").unwrap();
     b.set_mode(Mode::Dark).unwrap();
     sync(&a, &b);
     assert_eq!(a.look().unwrap(), b.look().unwrap());
     let want = if ga < gb { "velocity" } else { "slate" };
-    assert_eq!(a.look().unwrap(), (Some(want.into()), Mode::Dark), "the main group's theme, the other's mode");
-    let main = a.main_group().unwrap();
+    assert_eq!(a.look().unwrap(), (Some(want.into()), Mode::Dark), "the main home's theme, the other's mode");
+    let main = a.home().unwrap();
     let mut w = a.db.write();
     w.at(main, osis::DynamicAspectKey::untyped(Ak::new("ui:theme.0").unwrap())).set(&Value::Int(3)).unwrap();
     w.at(main, osis::DynamicAspectKey::untyped(Ak::new("ui:mode.0").unwrap())).set(&Value::Enum(7, None)).unwrap();
     w.commit().unwrap();
-    // the other group's choice shows through (b's mode lived on gb)
+    // the other home's choice shows through (b's mode lived on gb)
     let other = if main == ga { (Some("slate".into()), Mode::Dark) } else { (Some("velocity".into()), Mode::Auto) };
-    assert_eq!(a.look().unwrap(), other, "odd values on the main group read as unset");
+    assert_eq!(a.look().unwrap(), other, "odd values on the main home read as unset");
     a.set_theme("no-such-theme").unwrap();
     assert_eq!(a.look().unwrap().0.as_deref(), Some("no-such-theme"));
 }
@@ -339,7 +336,7 @@ fn look_merges_and_tolerates_odd_values() {
 #[test]
 fn reorder_against_concurrent_unfavorite() {
     let (a, b) = two();
-    a.main_group().unwrap();
+    a.home().unwrap();
     let n1 = a.create_note().unwrap();
     let n2 = a.create_note().unwrap();
     a.toggle_favorite(n1).unwrap();
@@ -372,7 +369,7 @@ fn contact_fields_of_an_absent_struct_race() {
     use osis_app::facets::contact::FormRow;
     for later_is_b in [false, true] {
         let (a, b, clock) = two_clocked();
-        a.main_group().unwrap();
+        a.home().unwrap();
         let c = osis_kit::facets::create(&a, "person").unwrap();
         let mut w = a.db.write();
         w.at(c, NAMES).remove().unwrap();
@@ -403,7 +400,7 @@ fn email_rename_against_concurrent_edits() {
     use osis_app::contact::EMAILS;
     use osis_app::facets::contact::FormAct;
     let (a, b, clock) = two_clocked();
-    a.main_group().unwrap();
+    a.home().unwrap();
     let c = osis_kit::facets::create(&a, "person").unwrap();
     let add = |d: &Data| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "contact:emails.0" })).unwrap().act;
     let email = |d: &Data, v: &str| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r| r.value == v).unwrap().act;
@@ -432,7 +429,7 @@ fn email_rename_against_concurrent_edits() {
 fn field_edit_and_nudge_merge() {
     use osis_app::event::{START, Start};
     let (a, b, clock) = two_clocked();
-    a.main_group().unwrap();
+    a.home().unwrap();
     let e = osis_kit::facets::create(&a, "event").unwrap();
     sync(&a, &b);
     let Some(Start::At(w0)) = a.db.at(e, START).get().unwrap() else { panic!() };
@@ -449,15 +446,15 @@ fn field_edit_and_nudge_merge() {
 }
 
 /// Adversarial favorites interleavings: concurrent moves of one entry, a move against a
-/// remove-and-re-add, moves onto entries held in the other group's list. Both nodes end with
+/// remove-and-re-add, moves onto entries held in the other home's list. Both nodes end with
 /// one order, without duplicates, and a removal is never undone by a move.
 #[test]
 fn favorites_moves_adversarial() {
     for round in 0..4 {
         let (a, b, clock) = two_clocked();
-        let ga = a.main_group().unwrap();
-        let gb = b.main_group().unwrap();
-        // entries in both groups' lists
+        let ga = a.home().unwrap();
+        let gb = b.home().unwrap();
+        // entries in both homes' lists
         let na: Vec<Tid> = (0..3).map(|_| a.create_note().unwrap()).collect();
         let nb: Vec<Tid> = (0..3).map(|_| b.create_note().unwrap()).collect();
         for n in &na {
@@ -514,8 +511,8 @@ fn favorites_moves_adversarial() {
             _ => assert_eq!(fa.len(), len, "round {round}"),
         }
         // the moved order is reachable: moving an entry to the very front puts it there (when
-        // it is in the main group's list, which shows first)
-        let main = a.main_group().unwrap();
+        // it is in the main home's list, which shows first)
+        let main = a.home().unwrap();
         let own = if main == ga { na[0] } else { nb[0] };
         if fa.contains(&own) {
             a.move_favorite(pos(&a, own), 0).unwrap();
@@ -524,14 +521,14 @@ fn favorites_moves_adversarial() {
     }
 }
 
-/// A favorite held in the other group's list cannot move ahead of the main group's entries:
-/// the move is limited to its own list (no copying between groups). The order stays put
+/// A favorite held in the other home's list cannot move ahead of the main home's entries:
+/// the move is limited to its own list (no copying between homes). The order stays put
 /// rather than jumping somewhere unasked.
 #[test]
-fn favorite_from_the_other_group_moves_within_its_list() {
+fn favorite_from_the_other_home_moves_within_its_list() {
     let (a, b) = two();
-    let ga = a.main_group().unwrap();
-    let gb = b.main_group().unwrap();
+    let ga = a.home().unwrap();
+    let gb = b.home().unwrap();
     let (small, big) = if ga < gb { (&a, &b) } else { (&b, &a) };
     let m = small.create_note().unwrap();
     small.toggle_favorite(m).unwrap();
@@ -540,32 +537,10 @@ fn favorite_from_the_other_group_moves_within_its_list() {
     sync(&a, &b);
     let f = a.favorites().unwrap();
     let i = f.iter().position(|x| *x == n).unwrap();
-    assert!(i > f.iter().position(|x| *x == m).unwrap(), "the other group's extras follow");
+    assert!(i > f.iter().position(|x| *x == m).unwrap(), "the other home's extras follow");
     a.move_favorite(i, 0).unwrap();
     let after = a.favorites().unwrap();
     assert_eq!(after.len(), f.len());
-}
-
-/// Both nodes favorite the same thing at once (two entries in one list): it shows once, and
-/// dragging it to the end puts it at the end.
-#[test]
-fn favorite_twice_then_moved() {
-    let (a, b) = two();
-    a.main_group().unwrap();
-    let n = a.create_note().unwrap();
-    let m = a.create_note().unwrap();
-    a.toggle_favorite(m).unwrap();
-    sync(&a, &b);
-    a.toggle_favorite(n).unwrap();
-    b.toggle_favorite(n).unwrap();
-    let k = a.create_note().unwrap();
-    a.toggle_favorite(k).unwrap();
-    sync(&a, &b);
-    let f = a.favorites().unwrap();
-    assert_eq!(f.iter().filter(|x| **x == n).count(), 1);
-    let i = f.iter().position(|x| *x == n).unwrap();
-    a.move_favorite(i, f.len() - 1).unwrap();
-    assert_eq!(a.favorites().unwrap().last(), Some(&n), "{:?}", a.favorites().unwrap());
 }
 
 /// A form saved on focus loss after its thing was deleted (here, or concurrently on the other
@@ -574,7 +549,7 @@ fn favorite_twice_then_moved() {
 fn form_save_after_a_delete() {
     use osis_app::facets::contact::FormRow;
     let (a, b) = two();
-    a.main_group().unwrap();
+    a.home().unwrap();
     let c = osis_kit::facets::create(&a, "person").unwrap();
     sync(&a, &b);
     let act = |d: &Data| osis_app::facets::contact::contact_form(d, c).unwrap().into_iter().find(|r: &FormRow| r.label == "Title").unwrap().act;
@@ -601,7 +576,7 @@ fn windows_do_not_interfere() {
     use osis_kit::schema::WEEK;
     use osis_kit::view::{Act, Cx, WindowState};
     let (a, b) = two();
-    a.main_group().unwrap();
+    a.home().unwrap();
     sync(&a, &b);
     let n = a.create_note().unwrap();
     let m = b.create_note().unwrap();

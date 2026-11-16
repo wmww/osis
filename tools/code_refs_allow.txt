@@ -45,7 +45,7 @@ WxH  placeholder: a window size
 r_B  placeholder: math
 last_modified  placeholder: an example schema field
 
-app_root  planned: issues/app-group-helper.md
+app_root  planned: issues/app-home-helper.md
 node_data  planned: issues/settings.md
 materialize_limit  planned: issues/cli-proxy.md
 QUERY_PAGE  planned: issues/cli-proxy.md, notes/client-port.md

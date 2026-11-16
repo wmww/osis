@@ -12,7 +12,7 @@ pub struct NameFacet;
 pub static FACET: NameFacet = NameFacet;
 
 /// Gives `t` a name of its own.
-fn start(_: &crate::store::Data, w: &mut osis::Write<'_>, t: Tid, _g: Tid) -> Result<()> {
+fn start(_: &crate::store::Data, w: &mut osis::Write<'_>, t: Tid) -> Result<()> {
     w.at(t, NAME).set(&String::new())
 }
 

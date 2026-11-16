@@ -49,9 +49,9 @@ impl Screen {
     fn home_as(width: u32, height: u32, n: usize, arrange: Arrange) -> Screen {
         let d = data();
         d.set_theme("glass").unwrap();
-        // home: the account group's collection of favorites
+        // home: home's collection of favorites
         let mut w = d.db.write();
-        w.at(d.main_group().unwrap(), COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange, element: None }).unwrap();
+        w.at(d.home().unwrap(), COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange, element: None }).unwrap();
         w.commit().unwrap();
         for i in 0..n {
             let t = d.create_note().unwrap();

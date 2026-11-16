@@ -1,5 +1,5 @@
 //! The shell (Masonry over kit): the window, the rail, the bar, one screen: the open thing's page
-//! (home is the app group's page; `opened()` being `None` shows it). What is shown comes from
+//! (home is the page of the app's home thing; `opened()` being `None` shows it). What is shown comes from
 //! osis through a `Tree` of view nodes: a read that changed marks its node dirty on the UI thread
 //! (`Dispatcher::Pump`), and only marked nodes run. A slot per facet section is rebuilt only when
 //! its model changes, so editors keep their caret.
@@ -10,7 +10,7 @@ mod start;
 pub use start::{Start, Started};
 
 use crate::edit::{map_byte, shown_edits};
-use crate::facets::members::toggle_creating;
+use crate::facets::holds::toggle_creating;
 use crate::schema::Mode;
 use crate::store::{Data, Reader};
 use crate::view::search::{Paste, classify, search};
@@ -396,7 +396,7 @@ impl Ui {
     fn update_inner(&mut self, rr: &mut RenderRoot, force: bool) -> osis::Result<()> {
         self.data.db.settle();
         Graph::drain(&self.state.graph);
-        let main = self.data.main_group()?;
+        let main = self.data.home()?;
         let sh = Graph::view(&self.state.graph, ("shell", main), move |r| shell(r, &("shell", main)))?.value;
         self.theme = Theme::named(sh.theme.as_deref());
         self.mode = sh.mode.clone();

@@ -100,7 +100,7 @@ impl Action for Save {
     }
 }
 
-fn start(_: &Data, w: &mut osis::Write<'_>, t: Tid, _g: Tid) -> Result<()> {
+fn start(_: &Data, w: &mut osis::Write<'_>, t: Tid) -> Result<()> {
     w.at(t, NAMES).set(&Names { given: None, family: None, middle: None, prefix: None, suffix: None })
 }
 
@@ -119,7 +119,7 @@ impl Facet for ContactFacet {
     fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
         s.words.insert(0, "Person".into());
         s.mark = Mark::Initials(initials(&s.name));
-        s.profile = cx.db.at(t, PROFILE).get()?;
+        s.profile = cx.db.at(t, PROFILE).get()?.map(|w| w.0);
         if s.sub.is_empty() {
             let org = cx.db.at(t, ORG).get()?.map(|o| if o.title.is_empty() { o.name } else { o.title }).filter(|x| !x.is_empty());
             s.sub = match org {

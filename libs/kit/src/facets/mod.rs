@@ -5,7 +5,7 @@ pub mod add;
 pub mod body;
 pub mod fields;
 pub mod look;
-pub mod members;
+pub mod holds;
 pub mod name;
 pub mod places;
 
@@ -16,7 +16,7 @@ use osis::{Result, Tid};
 /// Kit's facets of core aspects, in the order they contribute to a summary (an app inserts its
 /// own among them).
 pub fn kit() -> [&'static dyn Facet; 8] {
-    [&name::FACET, &members::FACET, &body::FACET, &look::FACET, &places::FACET, &about::FACET, &fields::FACET, &add::FACET]
+    [&name::FACET, &holds::FACET, &body::FACET, &look::FACET, &places::FACET, &about::FACET, &fields::FACET, &add::FACET]
 }
 
 /// The offer with this id: facets offer the same set for new things and additions.

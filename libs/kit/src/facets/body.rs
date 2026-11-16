@@ -9,12 +9,12 @@ pub struct BodyFacet;
 pub static FACET: BodyFacet = BodyFacet;
 
 /// A body to write in.
-fn start(_: &crate::store::Data, w: &mut osis::Write<'_>, t: Tid, _g: Tid) -> Result<()> {
+fn start(_: &crate::store::Data, w: &mut osis::Write<'_>, t: Tid) -> Result<()> {
     w.at(t, BODY).set(&String::new())
 }
 
 /// A new thing is a note: nothing to write beyond what creation does.
-fn note(_: &crate::store::Data, _: &mut osis::Write<'_>, _: Tid, _: Tid) -> Result<()> {
+fn note(_: &crate::store::Data, _: &mut osis::Write<'_>, _: Tid) -> Result<()> {
     Ok(())
 }
 

@@ -13,10 +13,10 @@ fn note_fits(cx: &Reader, t: Tid) -> Result<bool> {
 }
 
 /// A set of things.
-pub static COLLECTION: ViewType = ViewType { id: "collection", label: "Collection", fits: Some(collection_fits), parts: &[always("name"), always("members")], always_offered: false, custom: None, sample: sample_collection, grow: Some(super::grow_tag) };
+pub static COLLECTION: ViewType = ViewType { id: "collection", label: "Collection", fits: Some(collection_fits), parts: &[always("name"), always("holds")], always_offered: false, custom: None, sample: sample_collection, grow: Some(super::grow_tag) };
 
 fn collection_fits(cx: &Reader, t: Tid) -> Result<bool> {
-    cx.applies("members", t)
+    cx.applies("holds", t)
 }
 
 /// The look a person chooses, on the thing holding that choice.

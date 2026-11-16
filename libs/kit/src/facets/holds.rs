@@ -1,4 +1,4 @@
-//! A set of things: from `ui:collection.0`, a `tag.0` thing, or a group with members.
+//! A set of things: from `ui:collection.0`, a `tag.0` thing, or a thing whose `holds.0` holds some.
 
 use crate::store::Reader;
 use crate::schema::{Arrange, CREATING, WEEK};
@@ -7,18 +7,17 @@ use crate::view::source::of;
 use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Mark, Offer, Section, Summary, Toggle, arrange};
 use crate::view::paged::{Shape, Style};
 use osis::core::{TAG, Tag};
-use osis::{Member, Result, Tid};
+use osis::{Result, Tid};
 
-pub struct MembersFacet;
-pub static FACET: MembersFacet = MembersFacet;
+pub struct HoldsFacet;
+pub static FACET: HoldsFacet = HoldsFacet;
 
 /// Colours a new tag takes, in turn.
 pub const TAG_COLORS: [&str; 8] = ["#ef4444", "#f59e0b", "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899", "#64748b"];
 
-fn start(d: &Data, w: &mut osis::Write<'_>, t: Tid, g: Tid) -> Result<()> {
+fn start(d: &Data, w: &mut osis::Write<'_>, t: Tid) -> Result<()> {
     let c = TAG_COLORS.get(d.all_tags()?.len() % TAG_COLORS.len()).map(|c| c.to_string());
-    w.at(t, TAG).set(&Tag { color: c })?;
-    w.group(g).add(Member::Subgroup(t))
+    w.at(t, TAG).set(&Tag { color: c })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -47,21 +46,21 @@ impl Action for MoveFavorite {
     }
 }
 
-impl Facet for MembersFacet {
+impl Facet for HoldsFacet {
     fn id(&self) -> &'static str {
-        "members"
+        "holds"
     }
     fn claims(&self, ak: &str) -> bool {
         ak == "ui:collection.0" || ak == "tag.0"
     }
-    /// `collection.0` or `tag.0`, or a group that holds something.
+    /// `collection.0` or `tag.0`, or a thing that holds something.
     fn applies(&self, cx: &Reader, t: Tid) -> Result<bool> {
-        Ok(cx.aspects(t)?.iter().any(|a| self.claims(a)) || !cx.members(t)?.is_empty())
+        Ok(cx.aspects(t)?.iter().any(|a| self.claims(a)) || !cx.holds(t)?.is_empty())
     }
     fn summarize(&self, cx: &Reader, t: Tid, s: &mut Summary) -> Result<()> {
         let view = cx.collection(t)?;
         let is_tag = cx.has(t, "tag.0")?;
-        s.words.insert(0, if view.is_some() { "Collection" } else if is_tag { "Tag" } else { "Group" }.into());
+        s.words.insert(0, if is_tag && view.is_none() { "Tag" } else { "Collection" }.into());
         let v = of(cx, t)?;
         s.mark = Mark::Icon(match (view.is_some(), &v.arrange) {
             (true, Arrange::Days) => Icon::Calendar,

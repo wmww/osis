@@ -77,7 +77,7 @@ fn compute(cx: &Reader, q: &str) -> Result<Found> {
             f.in_scopes.push(t);
         }
     }
-    // a view's members are its source's, not memberships
+    // what a view holds is its source's, not its `holds.0`
     for (_, vt) in cx.collections()? {
         if f.scopes.contains(&vt) {
             for t in super::source::items(cx, vt)?.iter().copied() {

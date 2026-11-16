@@ -9,7 +9,7 @@ fn rows_and_edits() {
     let find = |rows: &[osis_kit::facets::fields::Row], ak: &str, label: &str| rows.iter().find(|r| r.ak == ak && r.label == label).cloned().unwrap_or_else(|| panic!("{ak} {label} in {rows:#?}"));
     let given = find(&rows, "contact:names.0", "given");
     assert!(given.optional && given.edit == Edit::Text && given.value.is_empty());
-    assert!(!rows.iter().any(|r| r.ak == "created.0" || r.ak == "group.0"), "system aspects are hidden");
+    assert!(!rows.iter().any(|r| r.ak == "created.0" || r.ak == "holds.0"), "system aspects are hidden");
     d.set_field(c, &given, "Lena").unwrap();
     let rows = d.field_rows(c).unwrap();
     assert_eq!(find(&rows, "contact:names.0", "given").value, "Lena");

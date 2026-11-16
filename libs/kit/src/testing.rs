@@ -10,7 +10,7 @@ use crate::view::graph::{Costs, NodeReads};
 use crate::view::keyed::steps;
 use crate::view::{Block, Cx, QUERY, Section, Surface, TICK, Tree, ViewSpec, WindowState};
 use crate::views::ViewType;
-use osis::{Ak, DynamicAspectKey, Member, Tid, Value};
+use osis::{Ak, DynamicAspectKey, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// An aspect no view reads, on purpose.
@@ -83,8 +83,9 @@ pub fn check_views(d: &Data) -> Vec<String> {
     // a thing nothing shows: nothing reads it unless the view shows everything, then its address is
     let other = {
         let mut w = d.db.write();
-        let t = w.create().unwrap();
-        w.group(d.db.me()).add(Member::Item(t)).unwrap();
+        let home = d.home().unwrap();
+        let t = w.create_with_admin(home).unwrap();
+        crate::store::hold(&mut w, home, t).unwrap();
         w.commit().unwrap();
         t
     };
@@ -295,7 +296,7 @@ fn check_view(d: &Data, v: &ViewType, t: Tid, (other, spare): (Tid, Tid), query:
         put(d, tid, &ak, Some(old));
         update(&mut tree, &mut screen).unwrap();
     }
-    // the set of aspects, and what groups a thing is in
+    // the set of aspects, and what holds a thing
     for a in &addresses {
         if let Some(rest) = a.strip_prefix("aspects ") {
             let Ok(tid) = rest.parse::<Tid>() else { continue };
@@ -308,9 +309,9 @@ fn check_view(d: &Data, v: &ViewType, t: Tid, (other, spare): (Tid, Tid), query:
             check_write(&mut tree, &mut screen, format!("a write to {a}"), allowed, readers);
             put(d, tid, ADDED, None);
             update(&mut tree, &mut screen).unwrap();
-        } else if let Some(rest) = a.strip_prefix("groups_of ") {
-            let Ok(tid) = rest.parse::<Tid>() else { continue };
-            if !member(d, spare, tid, true) {
+        } else if let Some(rest) = a.strip_prefix("backlinks ") {
+            let Some(Ok(tid)) = rest.split(' ').next().map(str::parse::<Tid>) else { continue };
+            if !held(d, spare, tid, true) {
                 continue;
             }
             moved = true;
@@ -318,7 +319,7 @@ fn check_view(d: &Data, v: &ViewType, t: Tid, (other, spare): (Tid, Tid), query:
             let allowed = closure(&snap, |n| n.reads.iter().any(|(x, _)| x == a || x.contains(&spare_s) || whole(x, tid)));
             let readers: Vec<&str> = snap.iter().filter(|n| n.view && n.reads.iter().any(|(x, _)| x == a)).map(|n| n.key.as_str()).collect();
             check_write(&mut tree, &mut screen, format!("a write to {a}"), allowed, readers);
-            member(d, spare, tid, false);
+            held(d, spare, tid, false);
             update(&mut tree, &mut screen).unwrap();
         }
     }
@@ -364,13 +365,13 @@ fn try_put(d: &Data, t: Tid, ak: &str, v: Option<Value>) -> bool {
     set.is_ok() && w.commit().is_ok()
 }
 
-/// `t` put in or taken out of the group `g`.
-fn member(d: &Data, g: Tid, t: Tid, add: bool) -> bool {
+/// `t` put in or taken out of `g`'s `holds.0`.
+fn held(d: &Data, g: Tid, t: Tid, add: bool) -> bool {
     if g == t {
         return false;
     }
     let mut w = d.db.write();
-    let changed = if add { w.group(g).add(Member::Item(t)) } else { w.group(g).remove(Member::Item(t)) };
+    let changed = if add { crate::store::hold(&mut w, g, t) } else { crate::store::unhold(&mut w, g, t) };
     changed.is_ok() && w.commit().is_ok()
 }
 

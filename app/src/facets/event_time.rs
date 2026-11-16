@@ -13,7 +13,7 @@ pub struct EventTimeFacet;
 pub static FACET: EventTimeFacet = EventTimeFacet;
 
 /// Starts at the next full hour, for an hour.
-fn start(data: &Data, w: &mut osis::Write<'_>, t: Tid, _g: Tid) -> Result<()> {
+fn start(data: &Data, w: &mut osis::Write<'_>, t: Tid) -> Result<()> {
     const ONE: i64 = HOUR;
     let at = (data.now_local()? / ONE + 1) * ONE;
     w.at(t, START).set(&Start::At(Wall { time: at, zone: None }))?;
@@ -60,7 +60,7 @@ pub fn overridden(d: &Reader) -> Result<Rc<BTreeMap<Tid, Vec<Occurrence>>>> {
         let mut out: BTreeMap<Tid, Vec<Occurrence>> = BTreeMap::new();
         for t in r.things()?.iter().copied() {
             if let Some(o) = &*r.memo(("overrides", t), |r, &(_, t)| r.db.at(t, OVERRIDES).get())? {
-                out.entry(o.series).or_default().push(o.at.clone());
+                out.entry(o.series.0).or_default().push(o.at.clone());
             }
         }
         Ok(out)

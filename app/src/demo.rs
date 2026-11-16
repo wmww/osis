@@ -1,13 +1,13 @@
 //! Demo data (`osis-app DIR --demo`): tags, people, notes and events to play with, written once
-//! per account (marked `osis_app:demo.0` on the app group).
+//! per account (marked `osis_app:demo.0` on home).
 
 use crate::contact::{EMAILS, Labeled, ORG, Org, PHONES};
-use osis_kit::store::{Data, keep_a_day};
+use osis_kit::store::{Data, hold, keep_a_day};
 use crate::event::{END, End, LOCATION, START, Start, Wall};
 use crate::schema::{COLOR, DEMO};
 use osis_kit::schema::FAVORITES;
 use osis::core::{BODY, NAME, TAG, Tag};
-use osis::{Member, Result, Tid, Write};
+use osis::{Result, Tid, Weak, Write};
 use std::collections::BTreeMap;
 
 const DAY_MS: i64 = 86_400_000;
@@ -15,20 +15,20 @@ const HOUR_MS: i64 = 3_600_000;
 
 struct Ctx<'a, 'w> {
     w: &'a mut Write<'w>,
-    group: Tid,
+    home: Tid,
     names: BTreeMap<&'static str, Tid>,
 }
 
 impl Ctx<'_, '_> {
     fn thing(&mut self, key: &'static str, name: &str, tags: &[&str]) -> Result<Tid> {
-        let t = self.w.create()?;
-        // as a thing made in the app: its changes can be undone
+        // made under home and held by it, as a thing made in the app: its changes can be undone
+        let t = self.w.create_with_admin(self.home)?;
         keep_a_day(self.w, t)?;
         self.w.at(t, NAME).set(&name.to_string())?;
-        self.w.group(self.group).add(Member::Item(t))?;
+        hold(self.w, self.home, t)?;
         for g in tags {
             if let Some(g) = self.names.get(g).copied() {
-                self.w.group(g).add(Member::Item(t))?;
+                hold(self.w, g, t)?;
             }
         }
         self.names.insert(key, t);
@@ -38,10 +38,8 @@ impl Ctx<'_, '_> {
     fn tag(&mut self, key: &'static str, name: &str, color: &str, parent: Option<&str>) -> Result<Tid> {
         let t = self.thing(key, name, &[])?;
         self.w.at(t, TAG).set(&Tag { color: Some(color.into()) })?;
-        // a subgroup of the app group, so its items sync
-        self.w.group(self.group).add(Member::Subgroup(t))?;
         if let Some(p) = parent.and_then(|p| self.names.get(p).copied()) {
-            self.w.group(p).add(Member::Subgroup(t))?;
+            hold(self.w, p, t)?;
         }
         Ok(t)
     }
@@ -88,15 +86,15 @@ pub fn add(data: &Data) -> Result<bool> {
     if crate::store::has_demo(data)? {
         return Ok(false);
     }
-    let group = data.main_group()?;
+    let home = data.home()?;
     let db = &data.db;
     let monday = crate::time::monday_of(data.now_local()?);
     let views: Vec<Tid> = data.collections()?.into_iter().map(|(_, t)| t).collect();
     // the account's own favorites stay, after the demo's
     let had = data.favorites()?;
-    let base = data.db.at(group, FAVORITES).get()?.unwrap_or_default();
+    let base = data.db.at(home, FAVORITES).get()?.unwrap_or_default();
     let mut w = db.write();
-    let mut c = Ctx { w: &mut w, group, names: BTreeMap::new() };
+    let mut c = Ctx { w: &mut w, home, names: BTreeMap::new() };
     c.tag("home", "Home", "#f59e0b", None)?;
     c.tag("work", "Work", "#3b82f6", None)?;
     c.tag("garden", "Garden", "#22c55e", Some("home"))?;
@@ -146,8 +144,9 @@ pub fn add(data: &Data) -> Result<bool> {
     let mut favs: Vec<Tid> = ["groceries", "lisbon", "mara", "garden", "ideas"].iter().filter_map(|k| pick(k)).collect();
     favs.splice(1..1, views.iter().take(2).copied());
     favs.extend(had.iter().filter(|t| !views.iter().take(2).any(|v| v == *t)));
-    c.w.at(group, FAVORITES).edit(&base, &favs)?;
-    c.w.at(group, DEMO).set(&true)?;
+    let favs: Vec<Weak> = favs.into_iter().map(Weak).collect();
+    c.w.at(home, FAVORITES).edit(&base, &favs)?;
+    c.w.at(home, DEMO).set(&true)?;
     w.commit()?;
     Ok(true)
 }

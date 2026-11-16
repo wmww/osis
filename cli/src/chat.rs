@@ -147,7 +147,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
                 x => return Err(usage(format!("--edit: purge, keep or off, not {x:?}"))),
             };
             let o = Options { name, purge, edit, disappear: disappear.as_deref().map(parse_dur).transpose()?, retain_copies: !no_retain_copy };
-            let t = osis_chat::create(&db, &o)?;
+            let t = osis_chat::create(&db, &o, db.account_root())?;
             ctx.one("tid", t.to_uri())
         }
         ChatCmd::Add { chat, account, role } => {

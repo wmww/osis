@@ -1,18 +1,19 @@
-//! The app's account: its group among home's subgroups (marked `osis_app:app.0`), the first-use
-//! seeds, and the registry of what the app adds to kit.
+//! The app's account: its home (marked `osis_app:app.0`) among what the account root holds, the
+//! first-use seeds, and the registry of what the app adds to kit.
 
 use crate::facets;
 use crate::schema::{APP, COLOR};
 use osis::core::NAME;
-use osis::{Member, Osis, Result, Tid};
+use osis::core::HOLDS;
+use osis::{Osis, Ref, Result, Tid, Weak};
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder as Order, CollectionSource as Source, FAVORITES};
-use osis_kit::store::{Account, Data, Registry, keep_a_day};
+use osis_kit::store::{Account, Data, Registry, hold, keep_a_day};
 use std::sync::Arc;
 
-/// Finds or makes the app's group.
+/// Finds or makes the app's home.
 pub struct AppAccount;
 
-/// The collections every account group offers: config, name, colour.
+/// The collections every home offers: config, name, colour.
 fn seeds() -> Vec<(Collection, &'static str, &'static str)> {
     let v = |source, having: &[&str], order, arrange| Collection { source, having: having.iter().map(|s| s.to_string()).collect(), order, arrange, element: None };
     vec![
@@ -24,42 +25,42 @@ fn seeds() -> Vec<(Collection, &'static str, &'static str)> {
 }
 
 impl Account for AppAccount {
-    /// The groups marked as the app's among home's subgroups, smallest tid first.
-    /// Works around issues/app-group-helper.md (as does merging favorites, collections, look).
-    fn groups(&self, db: &osis::ReadOnly) -> Result<Vec<Tid>> {
-        let home = db.home();
+    /// The things marked as the app's home among the account root's strongs, smallest tid first.
+    /// Works around issues/app-home-helper.md (as does merging favorites, collections, look).
+    fn homes(&self, db: &osis::ReadOnly) -> Result<Vec<Tid>> {
         let mut out = Vec::new();
-        for m in db.members(home)? {
-            if let Member::Subgroup(t) = m
-                && t != home
-                && db.at(t, APP).get()? == Some(true)
+        for r in db.at(db.account_root(), HOLDS).get()?.unwrap_or_default() {
+            if let Ref::Strong(s) = r
+                && db.at(s.0, APP).get()? == Some(true)
             {
-                out.push(t);
+                out.push(s.0);
             }
         }
         Ok(out)
     }
 
-    fn main_group(&self, db: &Osis) -> Result<Tid> {
-        if let Some(g) = self.groups(db)?.first() {
+    fn home(&self, db: &Osis) -> Result<Tid> {
+        if let Some(g) = self.homes(db)?.first() {
             return Ok(*g);
         }
         let mut w = db.write();
-        // a subgroup of home: it and its items sync with home (spec/sync-set.md §2)
-        let g = w.create()?;
+        // plain, under the account root and held by it: it and what it holds sync to every node
+        // of the account (spec/sync-set.md §1)
+        let root = db.account_root();
+        let g = w.create_with_admin(root)?;
+        hold(&mut w, root, g)?;
         keep_a_day(&mut w, g)?;
         w.at(g, APP).set(&true)?;
         w.at(g, COLLECTION).set(&Collection { source: Source::Favorites, having: Default::default(), order: Order::Own, arrange: Arrange::Cards, element: None })?;
-        w.group(db.home()).add(Member::Subgroup(g))?;
         let mut favs = Vec::new();
         for (v, name, color) in seeds() {
-            let t = w.create()?;
+            let t = w.create_with_admin(g)?;
             keep_a_day(&mut w, t)?;
             w.at(t, COLLECTION).set(&v)?;
             w.at(t, NAME).set(&name.to_string())?;
             w.at(t, COLOR).set(&color.to_string())?;
-            w.group(g).add(Member::Item(t))?;
-            favs.push(t);
+            hold(&mut w, g, t)?;
+            favs.push(Weak(t));
         }
         w.at(g, FAVORITES).set(&favs)?;
         w.commit()?;
@@ -92,9 +93,9 @@ pub fn data(db: Osis) -> Data {
     d
 }
 
-/// Whether demo data was added to this account's group.
+/// Whether demo data was added to this account's home.
 pub fn has_demo(d: &Data) -> Result<bool> {
-    for g in d.groups()? {
+    for g in d.homes()? {
         if d.db.at(g, crate::schema::DEMO).get()? == Some(true) {
             return Ok(true);
         }

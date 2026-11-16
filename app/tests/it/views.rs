@@ -1,6 +1,7 @@
 //! What a user can observe, read as the opener's tree (toolkit-free).
 use osis::core::{BODY, NAME, TAG, Tag};
-use osis::{DynamicAspectKey, Member, Role, Tid, Value};
+use osis::{DynamicAspectKey, Role, Tid, Value};
+use osis_kit::store::hold;
 use osis_app::store::data as make;
 use osis_kit::facets::create;
 use osis_kit::schema::{Arrange, COLLECTION, Collection, CollectionOrder, CollectionSource, ElementSpec};
@@ -14,7 +15,7 @@ use std::collections::BTreeMap;
 
 fn data() -> Data {
     let d = make(osis::internals::create(osis::internals::Opening::memory()).unwrap());
-    d.main_group().unwrap();
+    d.home().unwrap();
     d
 }
 
@@ -68,7 +69,7 @@ fn a_stale_viewed_as_falls_back() {
 #[test]
 fn a_chat_is_an_ordinary_thing() {
     let d = data();
-    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
+    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }, d.home().unwrap()).unwrap();
     assert!(d.things().unwrap().contains(&c));
     let w = WindowState::default();
     let found = search(&Cx::new(&d, &w, false), "chann").unwrap();
@@ -89,7 +90,7 @@ fn a_chat_is_an_ordinary_thing() {
 #[test]
 fn a_chat_with_a_body_offers_note_too() {
     let d = data();
-    let c = osis_chat::create(&d.db, &osis_chat::Options::default()).unwrap();
+    let c = osis_chat::create(&d.db, &osis_chat::Options::default(), d.home().unwrap()).unwrap();
     let mut w = d.db.write();
     w.at(c, BODY).set(&"about this".to_string()).unwrap();
     w.commit().unwrap();
@@ -100,11 +101,11 @@ fn a_chat_with_a_body_offers_note_too() {
     assert!(content(&open(&d, c)).out.blocks.iter().any(|b| matches!(b, Block::Editor { ak, .. } if ak == "body.0")));
 }
 
-/// A group holding a chat and a note: in stream both contribute, merged by time; cards, one each.
+/// A thing holding a chat and a note: in stream both contribute, merged by time; cards, one each.
 #[test]
 fn arrangements_expand_or_show_one_each() {
     let d = data();
-    let c = osis_chat::create(&d.db, &osis_chat::Options::default()).unwrap();
+    let c = osis_chat::create(&d.db, &osis_chat::Options::default(), d.home().unwrap()).unwrap();
     osis_app::facets::log::send(&d.db, c, "", "hi", None).unwrap();
     let note = d.create_note().unwrap();
     let tag = create(&d, "tag").unwrap();
@@ -125,10 +126,10 @@ fn arrangements_expand_or_show_one_each() {
 #[test]
 fn an_unknown_thing_opens_raw() {
     let d = data();
-    let g = d.main_group().unwrap();
+    let g = d.home().unwrap();
     let mut w = d.db.write();
-    let t = w.create().unwrap();
-    w.group(g).add(Member::Item(t)).unwrap();
+    let t = w.create_with_admin(g).unwrap();
+    hold(&mut w, g, t).unwrap();
     w.at(t, DynamicAspectKey::untyped(osis::Ak::new("mystery:thing.0").unwrap())).set(&Value::Int(3)).unwrap();
     w.commit().unwrap();
     let n = open(&d, t);
@@ -190,15 +191,15 @@ fn raw_shows_every_aspect() {
 fn an_element_spec_embeds_a_view() {
     let d = data();
     let e = create(&d, "event").unwrap();
-    let g = d.main_group().unwrap();
+    let g = d.home().unwrap();
     let mut wr = d.db.write();
-    let holder = wr.create().unwrap();
-    wr.group(g).add(Member::Item(holder)).unwrap();
+    let holder = wr.create_with_admin(g).unwrap();
+    hold(&mut wr, g, holder).unwrap();
     wr.at(holder, TAG).set(&Tag { color: None }).unwrap();
     wr.at(holder, COLLECTION)
-        .set(&Collection { source: CollectionSource::Members, having: Default::default(), order: CollectionOrder::Own, arrange: Arrange::Cards, element: Some(ElementSpec { view_type: "note".into(), config: BTreeMap::from([("compact".to_string(), "true".to_string())]) }) })
+        .set(&Collection { source: CollectionSource::Holds, having: Default::default(), order: CollectionOrder::Own, arrange: Arrange::Cards, element: Some(ElementSpec { view_type: "note".into(), config: BTreeMap::from([("compact".to_string(), "true".to_string())]) }) })
         .unwrap();
-    wr.group(holder).add(Member::Item(e)).unwrap();
+    hold(&mut wr, holder, e).unwrap();
     wr.commit().unwrap();
     let n = open(&d, holder);
     let col = content(&n);
@@ -228,7 +229,7 @@ fn arrangement_on_what_i_cannot_write() {
     a.db.grant(t, b.db.me(), Role::Read, osis::GrantOpts::default()).unwrap();
     deliver(&a, &b);
     deliver(&b, &a);
-    b.main_group().unwrap();
+    b.home().unwrap();
     b.set_arranged(t, &Arrange::Rows).unwrap();
     assert_eq!(b.arranged(t).unwrap(), Some(Arrange::Rows));
 }
@@ -240,7 +241,7 @@ fn window_state_survives_reopening() {
     let mem = osis::MemStore::new();
     let opening = || osis::internals::Opening::at(Store::Memory(mem.clone()));
     let d = make(osis::internals::create(opening()).unwrap());
-    d.main_group().unwrap();
+    d.home().unwrap();
     let t = d.create_note().unwrap();
     let w = WindowState::default();
     let cx = Cx::new(&d, &w, false);
@@ -360,7 +361,7 @@ fn composer(n: &Node) -> Composer {
 fn send_clears_the_draft_in_open_editors() {
     use osis_app::schema::DRAFT;
     let d = data();
-    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
+    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }, d.home().unwrap()).unwrap();
     d.window().unwrap();
     let w = WindowState::default();
     let cx = Cx::new(&d, &w, false);
@@ -385,7 +386,7 @@ fn send_clears_the_draft_in_open_editors() {
 #[test]
 fn a_message_reruns_the_chat_only() {
     let d = data();
-    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
+    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }, d.home().unwrap()).unwrap();
     d.window().unwrap();
     let other = d.create_note().unwrap();
     let w = WindowState::default();
@@ -414,7 +415,7 @@ fn one_message_renders_one_node() {
         }
     }
     let d = data();
-    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
+    let c = osis_chat::create(&d.db, &osis_chat::Options { name: "channel".into(), ..Default::default() }, d.home().unwrap()).unwrap();
     d.window().unwrap();
     let w = WindowState::default();
     Cx::new(&d, &w, false);
@@ -485,7 +486,7 @@ fn a_second_rename_undoes_back_to_the_first_after_reopen() {
     let mem = osis::MemStore::new();
     let opening = || osis::internals::Opening::at(Store::Memory(mem.clone()));
     let d = make(osis::internals::create(opening()).unwrap());
-    d.main_group().unwrap();
+    d.home().unwrap();
     let t = d.create_note().unwrap();
     let k = editor("e", t, "name.0", None);
     {
@@ -534,9 +535,9 @@ fn chat_stays_in_its_facet() {
 
 /// Choosing a look is a tab of the thing holding the choice; embedded or railed collections never carry it.
 #[test]
-fn home_offers_look_as_a_tab_of_the_account_group() {
+fn home_offers_look_as_a_tab_of_home() {
     let d = make(osis::internals::create(osis::internals::Opening::memory()).unwrap());
-    let main = d.main_group().unwrap();
+    let main = d.home().unwrap();
     let state = Default::default();
     let cx = osis_kit::view::Cx::new(&d, &state, false);
     let page = osis_kit::views::page(&cx, main).unwrap();

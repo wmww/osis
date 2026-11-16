@@ -8,7 +8,7 @@ use osis::{Result, Tid};
 pub struct PlaceFacet;
 pub static FACET: PlaceFacet = PlaceFacet;
 
-fn start(_: &osis_kit::store::Data, w: &mut osis::Write<'_>, t: Tid, _g: Tid) -> Result<()> {
+fn start(_: &osis_kit::store::Data, w: &mut osis::Write<'_>, t: Tid) -> Result<()> {
     w.at(t, LOCATION).set(&String::new())
 }
 

@@ -47,7 +47,7 @@ pub fn grow(d: &osis_kit::store::Data, c: Tid, n: usize) {
 /// A chat with one message, for a view's `sample`.
 #[allow(clippy::expect_used)]
 pub fn sample(d: &osis_kit::store::Data) -> Tid {
-    let c = osis_chat::create(&d.db, &osis_chat::Options::default()).expect("sample: a chat");
+    let c = osis_chat::create(&d.db, &osis_chat::Options::default(), d.home().expect("sample: home")).expect("sample: a chat");
     send(&d.db, c, "", "hello", None).expect("sample: a message");
     c
 }

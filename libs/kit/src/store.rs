@@ -1,11 +1,12 @@
-//! The account's own state (notes/app.md Layers), toolkit-free: its groups, favorites, the look, the
+//! The account's own state (notes/app.md Layers), toolkit-free: its home, favorites, the look, the
 //! open thing, and the universe of things.
 //!
-//! The account group (found by the app: `Account`) is a subgroup of home: it syncs (favorites,
-//! the collections) and so do its items. Every thing the app makes is an
-//! item of it; tags are also its subgroups, so their items sync too. Nodes that start before
-//! syncing each make one: every group the app reports is read, and writes go to the smallest tid
-//! (notes/app.md kit and app).
+//! Home (found by the app: `Account`) is a plain thing made under the account root and held by
+//! its `holds.0`, so it syncs to the account's nodes (favorites, the collections). Every thing the
+//! app makes is made under home (its first admin, whose keys it takes) and held by home's
+//! `holds.0`; a tag holds what it tags in its own `holds.0`. Nodes that start before syncing each
+//! make one: every home the app reports is read, and writes go to the smallest tid (notes/app.md
+//! kit and app).
 
 use std::any::Any;
 use std::fmt::Debug;
@@ -16,9 +17,9 @@ use std::sync::Arc;
 use crate::view::graph::{Graph, Local, Scope};
 use crate::view::{Summary, TICK};
 use osis::ReadSet;
-use crate::schema::{ARRANGED, Arrange, COLLECTION, Collection, FAVORITES, INTERNAL, MODE, Mode, OPEN, THEME, VIEWED_AS, WINDOWS};
-use osis::core::{NAME, TAG};
-use osis::{Config, Address, Member, Osis, ReadOnly, Result, Runtime, Store, Tid, p};
+use crate::schema::{ARRANGED, Arrange, COLLECTION, Collection, FAVORITES, MODE, Mode, OPEN, THEME, VIEWED_AS, WINDOWS};
+use osis::core::{HOLDS, NAME, TAG};
+use osis::{BacklinkQuery, Codec, Config, Address, Osis, ReadOnly, Ref, Result, Runtime, Step, Store, Strong, Tid, Weak, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -33,22 +34,22 @@ pub fn open(dir: &Path, dial: Vec<Address>, wake: Arc<dyn Fn() + Send + Sync>) -
 }
 
 /// The aspects that are the system's, not the user's: no view accounts for them, raw hides them.
-pub const SYSTEM: [&str; 10] = ["created.0", "group.0", "groups.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "node.0", "retention^.0"];
+pub const SYSTEM: [&str; 10] = ["created.0", "holds.0", "tickets.0", "roles.0", "keys.0", "secrets.0", "label.0", "reach.0", "node.0", "retention^.0"];
 
 /// The registry of what a Data knows: its facets and view types.
 pub use crate::view::registry::Registry;
 
-/// What an app supplies: its account groups (an app-level concept: kit takes the tids).
+/// What an app supplies: its homes (an app-level concept: kit takes the tids).
 pub trait Account: Send + Sync {
-    /// The account's groups, the main one first.
-    fn groups(&self, db: &ReadOnly) -> Result<Vec<Tid>>;
-    /// The group writes go to, made on first use.
-    fn main_group(&self, db: &Osis) -> Result<Tid>;
+    /// The account's homes, the main one first.
+    fn homes(&self, db: &ReadOnly) -> Result<Vec<Tid>>;
+    /// The home writes go to, made on first use.
+    fn home(&self, db: &Osis) -> Result<Tid>;
 }
 
 /// Every read of the view system: what a render, an action or a test asks of a store. It holds
 /// `osis::ReadOnly`, which has no write; `Data` adds those (`Deref`). A render's `Reader` is
-/// `tracking`, so what it reads is what it depends on; `things`, `favorites`, `groups`, `summary`
+/// `tracking`, so what it reads is what it depends on; `things`, `favorites`, `homes`, `summary`
 /// and `aspects` are shared memos then.
 #[derive(Clone)]
 pub struct Reader {
@@ -95,9 +96,9 @@ impl Data {
         Data { reader: Reader { db: ReadOnly::clone(&db), scope: None, clock: db.clone(), account, registry }, db }
     }
 
-    /// The group writes go to, made on first use.
-    pub fn main_group(&self) -> Result<Tid> {
-        self.account.main_group(&self.db)
+    /// The home writes go to, made on first use.
+    pub fn home(&self) -> Result<Tid> {
+        self.account.home(&self.db)
     }
 }
 
@@ -212,14 +213,14 @@ impl Reader {
         Ok(self.state(key, node)?.unwrap_or(false))
     }
 
-    /// The account groups, the main one first.
-    pub fn groups(&self) -> Result<Vec<Tid>> {
-        Ok((*self.memo(("groups", ()), |r, _| r.account.groups(&r.db))?).clone())
+    /// The account's homes, the main one first.
+    pub fn homes(&self) -> Result<Vec<Tid>> {
+        Ok((*self.memo(("homes", ()), |r, _| r.account.homes(&r.db))?).clone())
     }
 
-    /// Whether `t` is one of the app's own groups.
-    pub fn is_app(&self, t: Tid) -> Result<bool> {
-        Ok(self.groups()?.contains(&t))
+    /// Whether `t` is one of the app's homes.
+    pub fn is_home(&self, t: Tid) -> Result<bool> {
+        Ok(self.homes()?.contains(&t))
     }
 
     /// The account's profile thing, once it is made (`Osis::profile`).
@@ -227,41 +228,25 @@ impl Reader {
         self.db.profile_of(self.db.me())
     }
 
-    /// Everything held: the app groups' members, every other group this store syncs (with a sync
-    /// ID or carried as a subgroup), the profile once made, and through tags what they hold. Racing nodes' seed views count once
-    /// (equal `(collection.0, name.0)`, the smallest tid).
+    /// Everything held: what the homes hold by strongs in `holds.0`, at any depth, and the profile.
+    /// Racing nodes' seed views count once (equal `(collection.0, name.0)`, the smallest tid).
     pub fn things(&self) -> Result<Rc<BTreeSet<Tid>>> {
         self.memo(("things", ()), |r, _| r.compute_things())
     }
 
     fn compute_things(&self) -> Result<BTreeSet<Tid>> {
-        let groups = self.groups()?;
-        let home = self.db.home();
-        let internal = self.internal()?;
-        let skip = |t: &Tid| *t == home || groups.contains(t) || internal.contains(t);
+        let homes = self.homes()?;
         let mut seen = BTreeSet::new();
         let mut todo: Vec<Tid> = Vec::new();
-        for g in &groups {
-            todo.extend(self.members(*g)?.iter().copied().map(Member::tid).filter(|t| !skip(t)));
+        for h in &homes {
+            todo.extend(self.strongs(*h)?.iter().copied());
         }
-        // the things this store syncs: each with a sync ID here, and the subgroups at any depth
-        // of those, which a synced group carries (spec/sync-judgement.md §1)
-        let mut synced: Vec<Tid> = self.db.status()?.groups.into_iter().filter(|(_, g)| !g.leaving).map(|(t, _)| t).collect();
-        let mut carried = BTreeSet::new();
-        while let Some(g) = synced.pop() {
-            if carried.insert(g) {
-                synced.extend(self.members(g)?.iter().filter_map(|m| if let Member::Subgroup(s) = m { Some(*s) } else { None }));
-            }
-        }
-        todo.extend(carried.into_iter().filter(|t| !skip(t)));
-        todo.extend(self.db.profile_of(home)?);
+        todo.extend(self.you()?);
         while let Some(t) = todo.pop() {
-            if !seen.insert(t) {
+            if homes.contains(&t) || !seen.insert(t) {
                 continue;
             }
-            if self.tag(t)?.is_some() {
-                todo.extend(self.members(t)?.iter().copied().map(Member::tid).filter(|x| !skip(x) && !seen.contains(x)));
-            }
+            todo.extend(self.strongs(t)?.iter().copied().filter(|x| !seen.contains(x)));
         }
         let mut keep: BTreeMap<(Collection, String), Tid> = BTreeMap::new();
         let mut dup = Vec::new();
@@ -294,9 +279,37 @@ impl Reader {
         Ok((*self.memo(("name", t), |r, &(_, t)| Ok(r.db.at(t, NAME).get()?.unwrap_or_default()))?).clone())
     }
 
-    /// `t`'s members, shared by what reads them.
-    pub fn members(&self, t: Tid) -> Result<Rc<Vec<Member>>> {
-        self.memo(("members", t), |r, &(_, t)| r.db.members(t))
+    /// What `t`'s `holds.0` references, strong or weak, each once, shared by what reads it.
+    pub fn holds(&self, t: Tid) -> Result<Rc<Vec<Tid>>> {
+        self.memo(("holds", t), |r, &(_, t)| {
+            let mut out: Vec<Tid> = r.db.at(t, HOLDS).get()?.unwrap_or_default().into_iter().map(Ref::tid).collect();
+            out.sort();
+            out.dedup();
+            Ok(out)
+        })
+    }
+
+    /// What `t`'s `holds.0` references by strongs: what belongs with it.
+    pub fn strongs(&self, t: Tid) -> Result<Rc<Vec<Tid>>> {
+        self.memo(("strongs", t), |r, &(_, t)| Ok(r.db.at(t, HOLDS).get()?.unwrap_or_default().into_iter().filter_map(|x| if let Ref::Strong(s) = x { Some(s.0) } else { None }).collect()))
+    }
+
+    /// The things whose `holds.0` references `t`, by any kind.
+    pub fn held_by(&self, t: Tid) -> Result<Rc<Vec<Tid>>> {
+        self.memo(("held_by", t), |r, &(_, t)| {
+            let mut out = Vec::new();
+            let mut q = BacklinkQuery::default();
+            loop {
+                let page = r.db.backlinks(t, &q)?;
+                out.extend(page.backlinks.iter().filter(|b| b.ak == HOLDS.name()).map(|b| b.tid));
+                match page.backlinks.last() {
+                    Some(last) if page.more => q.after = Some(last.clone()),
+                    _ => break,
+                }
+            }
+            out.dedup();
+            Ok(out)
+        })
     }
 
     /// `t`'s `tag.0`, shared by what reads it.
@@ -335,9 +348,8 @@ impl Reader {
     /// The tags `t` is directly in (not their parents), by name.
     pub fn tags_of(&self, t: Tid) -> Result<Vec<Tid>> {
         Ok((*self.memo(("tags_of", t), |r, &(_, t)| {
-            let g = r.db.groups_of(t)?;
             let mut out = Vec::new();
-            for x in g.item_of.into_iter().chain(g.subgroup_of).collect::<BTreeSet<_>>() {
+            for x in r.held_by(t)?.iter().copied() {
                 if x != t && r.tag(x)?.is_some() {
                     out.push(x);
                 }
@@ -348,18 +360,13 @@ impl Reader {
         .clone())
     }
 
-    /// A tag's subtags and items (subtags are not repeated among the items), each by name.
+    /// What a tag holds: its subtags and its items, each by name.
     pub fn tag_contents(&self, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
         let mut subs = Vec::new();
         let mut items = Vec::new();
-        for m in self.members(tag)?.iter().copied() {
-            match m {
-                Member::Subgroup(s) if s != tag && self.tag(s)?.is_some() => subs.push(s),
-                Member::Item(t) if t != tag => items.push(t),
-                _ => {}
-            }
+        for t in self.holds(tag)?.iter().copied().filter(|t| *t != tag) {
+            if self.tag(t)?.is_some() { subs.push(t) } else { items.push(t) }
         }
-        items.retain(|t| !subs.contains(t));
         self.sort_by_name(&mut subs)?;
         self.sort_by_name(&mut items)?;
         Ok((subs, items))
@@ -387,10 +394,10 @@ impl Reader {
         Ok(out)
     }
 
-    /// The viewer's arrangement of `t` (the main group's first; `None`: its own).
+    /// The viewer's arrangement of `t` (the main home's first; `None`: its own).
     pub fn arranged(&self, t: Tid) -> Result<Option<Arrange>> {
-        for g in self.groups()? {
-            if let Some(a) = self.db.at(g, ARRANGED).path(p![t]).get()? {
+        for g in self.homes()? {
+            if let Some(a) = self.db.at(g, ARRANGED).path(p![Weak(t)]).get()? {
                 return Ok(Some(a));
             }
         }
@@ -399,8 +406,8 @@ impl Reader {
 
     /// Which thing view the viewer chose for `t` (`None`: the default).
     pub fn viewed_as(&self, t: Tid) -> Result<Option<String>> {
-        for g in self.groups()? {
-            if let Some(v) = self.db.at(g, VIEWED_AS).path(p![t]).get()? {
+        for g in self.homes()? {
+            if let Some(v) = self.db.at(g, VIEWED_AS).path(p![Weak(t)]).get()? {
                 return Ok(Some(v));
             }
         }
@@ -427,9 +434,9 @@ impl Reader {
 
     // ---- favorites
 
-    /// The favorites in order: the main group's list, then any others' extras; things gone are
+    /// The favorites in order: the main home's list, then any others' extras; things gone are
     /// skipped, a duplicate view stands for the one `views` keeps.
-    /// Works around issues/app-group-helper.md.
+    /// Works around issues/app-home-helper.md.
     pub fn favorites(&self) -> Result<Vec<Tid>> {
         Ok((*self.memo(("favorites", ()), |r, _| r.compute_favorites())?).clone())
     }
@@ -438,7 +445,7 @@ impl Reader {
         let mut out: Vec<Tid> = Vec::new();
         let all = self.things()?;
         let views = self.view_map()?;
-        for g in self.groups()? {
+        for g in self.homes()? {
             for t in self.db.at(g, FAVORITES).get()?.unwrap_or_default() {
                 let t = self.shown_as(&views, t.0)?;
                 if !out.contains(&t) && all.contains(&t) {
@@ -465,112 +472,90 @@ impl Reader {
         })
     }
 
-    // ---- the look (per account, on the app group)
+    // ---- the look (per account, on home)
 
     /// The chosen theme id (`None`: the default) and mode.
     pub fn look(&self) -> Result<(Option<String>, Mode)> {
         let mut theme = None;
         let mut mode = None;
-        for g in self.groups()? {
+        for g in self.homes()? {
             theme = theme.or(self.db.at(g, THEME).get()?);
             mode = mode.or(self.db.at(g, MODE).get()?);
         }
         Ok((theme, mode.unwrap_or(Mode::Auto)))
     }
 
-    // ---- navigation (per-node ephemeral view state on the main group)
+    // ---- navigation (per-window state, the window held by the main home)
 
-    /// The internal groups among the app groups' subgroups, and what they hold.
-    fn internal(&self) -> Result<BTreeSet<Tid>> {
-        let mut out = BTreeSet::new();
-        for g in self.groups()? {
-            for m in self.members(g)?.iter().copied() {
-                if let Member::Subgroup(x) = m
-                    && self.db.at(x, INTERNAL).get()? == Some(true)
-                {
-                    out.insert(x);
-                    out.extend(self.members(x)?.iter().copied().map(Member::tid));
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    /// This device's window, if it has one (the main group's first).
+    /// This device's window, if it has one (the main home's first).
     pub fn window_opt(&self) -> Result<Option<Tid>> {
         Ok(*self.memo(("window_opt", ()), |r, _| {
             let node = r.db.node();
-            for g in r.groups()? {
-                if let Some(w) = r.db.at(g, WINDOWS).get()?.and_then(|m| m.get(&osis_base::Weak(node)).copied()) {
-                    return Ok(Some(w));
+            for g in r.homes()? {
+                if let Some(w) = r.db.at(g, WINDOWS).path(p![Weak(node)]).get::<Strong>()? {
+                    return Ok(Some(w.0));
                 }
             }
             Ok(None)
         })?)
     }
 
-    /// The thing this window has open; `None`: home (also when it was deleted meanwhile).
+    /// The thing this window has open; `None`: home (also when it is held no more).
     pub fn opened(&self) -> Result<Option<Tid>> {
         let Some(w) = self.window_opt()? else { return Ok(None) };
         let Some(t) = self.db.at(w, OPEN).get()? else { return Ok(None) };
-        Ok(Some(t).filter(|t| self.things().is_ok_and(|all| all.contains(t.0))))
+        Ok(Some(t.0).filter(|t| self.things().is_ok_and(|all| all.contains(t))))
     }
 }
 
 impl Data {
-    /// Remembers how the viewer arranges `t`, on the app group: `t` need not be writable.
+    /// Remembers how the viewer arranges `t`, on home: `t` need not be writable.
     pub fn set_arranged(&self, t: Tid, a: &Arrange) -> Result<()> {
-        let g = self.main_group()?;
+        let g = self.home()?;
         let mut w = self.db.write();
-        w.at(g, ARRANGED).path(p![t]).set(a)?;
+        w.at(g, ARRANGED).path(p![Weak(t)]).set(a)?;
         w.commit()?;
         Ok(())
     }
     pub fn set_viewed_as(&self, t: Tid, id: &str) -> Result<()> {
-        let g = self.main_group()?;
+        let g = self.home()?;
         let mut w = self.db.write();
-        w.at(g, VIEWED_AS).path(p![t]).set(&id.to_string())?;
+        w.at(g, VIEWED_AS).path(p![Weak(t)]).set(&id.to_string())?;
         w.commit()?;
         Ok(())
     }
-    /// Tags `t` with `tag`: a thing becomes an item of it, a tag is nested in it (a subgroup,
-    /// core's sub-tag: notes/tags.md). Membership grants nothing, so tagging shares nothing;
-    /// sharing a tag is core's `add_with_grant` (notes/tags.md, Sharing a tag), unused here.
+    /// Tags `t` with `tag`: a strong in the tag's `holds.0` (a tag in a tag is nested: notes/tags.md).
+    /// A strong grants nothing, so tagging shares nothing (notes/tags.md, Sharing a tag).
     pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
-        let nest = self.db.at(t, TAG).get()?.is_some();
         let mut w = self.db.write();
-        w.group(tag).add(if nest { Member::Subgroup(t) } else { Member::Item(t) })?;
+        hold(&mut w, tag, t)?;
         w.commit()?;
         Ok(())
     }
-    /// Takes `t` out of `tag` (it stays in the app group): removes a thing, un-nests a tag.
+    /// Takes `t` out of `tag` (home still holds it): every reference to it in the tag's `holds.0`.
     pub fn remove_tag(&self, t: Tid, tag: Tid) -> Result<()> {
         let mut w = self.db.write();
-        for m in self.db.members(tag)? {
-            if m.tid() == t {
-                w.group(tag).remove(m)?;
-            }
-        }
+        unhold(&mut w, tag, t)?;
         w.commit()?;
         Ok(())
     }
     /// Undoes my newest commit to `t` (made on any of my nodes; never someone else's); `false`
-    /// when there is none. Its creation is not undone: that commit also added it to the app
-    /// group, so reverting it would leave the thing in no group, gone from the app but not deleted.
+    /// when there is none. Its creation is not undone: that commit also wrote home's strong to
+    /// it, so reverting it would release the thing as a side effect of an undo.
     pub fn undo(&self, t: Tid) -> Result<bool> {
         if !self.can_undo(t)? {
             return Ok(false);
         }
         Ok(self.db.undo(&osis::Scope::Thing(t))?.is_some())
     }
-    /// Adds `t` at the end of the main group's favorites, or removes it from every group's list.
-    /// Entries stay in the group holding them: copying another group's entries into the main
+    /// Adds `t` at the end of the main home's favorites, or removes it from every home's list.
+    /// Entries stay in the home holding them: copying another home's entries into the main
     /// list would bring back one that a node removes meanwhile.
     pub fn toggle_favorite(&self, t: Tid) -> Result<()> {
         let mut edits = Vec::new();
         if self.is_favorite(t)? {
             let views = self.view_map()?;
-            for g in self.groups()? {
+            for g in self.homes()? {
                 let base = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
                 let mut new = Vec::with_capacity(base.len());
                 for x in &base {
@@ -583,10 +568,10 @@ impl Data {
                 }
             }
         } else {
-            let g = self.main_group()?;
+            let g = self.home()?;
             let base = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
             let mut new = base.clone();
-            new.push(osis_base::Weak(t));
+            new.push(Weak(t));
             edits.push((g, base, new));
         }
         self.write_favorites(&edits)
@@ -594,7 +579,7 @@ impl Data {
     /// Moves the favorite at `from` to `to` (indices into `favorites()`), by a sequence move
     /// inside the list that holds it: a node removing it meanwhile wins (a move never brings
     /// back a deleted element, where delete-and-insert would), and nothing is copied between
-    /// groups. An entry moves among its own group's entries only: placed before the first of
+    /// homes. An entry moves among its own home's entries only: placed before the first of
     /// them that follows it in the new order, else after their last.
     pub fn move_favorite(&self, from: usize, to: usize) -> Result<()> {
         let mut favs = self.favorites()?;
@@ -604,28 +589,36 @@ impl Data {
         let x = favs.remove(from);
         favs.insert(to, x);
         let views = self.view_map()?;
-        for g in self.groups()? {
+        for g in self.homes()? {
             let list = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
             let mut shown = Vec::with_capacity(list.len());
             for e in &list {
                 shown.push(self.shown_as(&views, e.0)?);
             }
-            let Some(i) = shown.iter().position(|t| *t == x) else { continue };
+            // every entry showing `x` (two nodes favoriting it at once leave two): the first
+            // moves, the others go in the same write, so `x` lands where it was dropped
+            let at: Vec<usize> = shown.iter().enumerate().filter(|(_, t)| **t == x).map(|(k, _)| k).collect();
+            let Some(&i) = at.first() else { continue };
             // the first entry of this list that comes after `x` in the new order
             let after: Vec<Tid> = favs.iter().skip(to + 1).copied().collect();
-            let rest: Vec<Tid> = shown.iter().enumerate().filter(|(k, _)| *k != i).map(|(_, t)| *t).collect();
+            let rest: Vec<Tid> = shown.iter().filter(|t| **t != x).copied().collect();
             let dest = after.iter().find_map(|a| rest.iter().position(|t| t == a)).unwrap_or(rest.len());
-            if dest == i {
+            if dest == i && at.len() == 1 {
                 return Ok(());
             }
             let mut w = self.db.write();
-            w.at(g, FAVORITES).path(p![]).move_range(i..i + 1, dest)?;
+            for &j in at.iter().skip(1).rev() {
+                w.at(g, FAVORITES).path(p![]).splice(j..j + 1, ())?;
+            }
+            if dest != i {
+                w.at(g, FAVORITES).path(p![]).move_range(i..i + 1, dest)?;
+            }
             w.commit()?;
             return Ok(());
         }
         Ok(())
     }
-    fn write_favorites(&self, edits: &[(Tid, Vec<Tid>, Vec<Tid>)]) -> Result<()> {
+    fn write_favorites(&self, edits: &[(Tid, Vec<Weak>, Vec<Weak>)]) -> Result<()> {
         let mut w = self.db.write();
         for (g, base, new) in edits {
             w.at(*g, FAVORITES).edit(base, new)?;
@@ -634,7 +627,7 @@ impl Data {
         Ok(())
     }
     pub fn set_theme(&self, id: &str) -> Result<()> {
-        let g = self.main_group()?;
+        let g = self.home()?;
         if self.db.at(g, THEME).get()?.as_deref() == Some(id) {
             return Ok(());
         }
@@ -644,7 +637,7 @@ impl Data {
         Ok(())
     }
     pub fn set_mode(&self, m: Mode) -> Result<()> {
-        let g = self.main_group()?;
+        let g = self.home()?;
         if self.db.at(g, MODE).get()? == Some(m.clone()) {
             return Ok(());
         }
@@ -653,81 +646,79 @@ impl Data {
         w.commit()?;
         Ok(())
     }
-    /// This device's window, made on first use.
+    /// This device's window, made on first use: under home, held by home's `ui:windows.0` (so it
+    /// syncs, and is not among the things home holds).
     pub fn window(&self) -> Result<Tid> {
         if let Some(w) = self.window_opt()? {
             return Ok(w);
         }
-        let g = self.main_group()?;
-        let node = self.db.node();
-        let mut inner = None;
-        for m in self.db.members(g)? {
-            if let Member::Subgroup(x) = m
-                && self.db.at(x, INTERNAL).get()? == Some(true)
-            {
-                inner = Some(x);
-                break;
-            }
-        }
+        let g = self.home()?;
         let mut w = self.db.write();
-        let inner = match inner {
-            Some(x) => x,
-            None => {
-                let x = w.create()?;
-                w.at(x, INTERNAL).set(&true)?;
-                w.group(g).add(Member::Item(x))?;
-                w.group(g).add(Member::Subgroup(x))?;
-                x
-            }
-        };
-        let win = w.create()?;
-        w.group(inner).add(Member::Item(win))?;
-        w.at(g, WINDOWS).path(p![node]).set(&win)?;
+        let win = w.create_with_admin(g)?;
+        w.at(g, WINDOWS).path(p![Weak(self.db.node())]).set(&Strong(win))?;
         w.commit()?;
         Ok(win)
     }
     /// Opens `t` in this window (`None`: home).
     pub fn set_open(&self, t: Option<Tid>) -> Result<()> {
         let win = self.window()?;
-        let here = self.db.at(win, OPEN).get()?;
+        let here = self.db.at(win, OPEN).get()?.map(|w| w.0);
         if here == t {
             return Ok(());
         }
         let mut w = self.db.write();
         match t {
-            Some(t) => w.at(win, OPEN).set(&osis_base::Weak(t))?,
+            Some(t) => w.at(win, OPEN).set(&Weak(t))?,
             None => w.at(win, OPEN).remove()?,
         }
         w.commit()?;
         Ok(())
     }
-    /// A new thing in the app group with an empty `name.0` and whatever `start` writes, opened
-    /// on this node.
-    pub fn create_with(&self, start: impl FnOnce(&Data, &mut osis::Write<'_>, Tid, Tid) -> Result<()>) -> Result<Tid> {
-        let g = self.main_group()?;
+    /// A new thing made under home and held by it, with an empty `name.0` and whatever `start`
+    /// writes, opened on this node.
+    pub fn create_with(&self, start: impl FnOnce(&Data, &mut osis::Write<'_>, Tid) -> Result<()>) -> Result<Tid> {
+        let g = self.home()?;
         let mut w = self.db.write();
-        let t = w.create()?;
+        let t = w.create_with_admin(g)?;
         keep_a_day(&mut w, t)?;
         w.at(t, NAME).set(&String::new())?;
-        start(self, &mut w, t, g)?;
-        w.group(g).add(Member::Item(t))?;
+        start(self, &mut w, t)?;
+        hold(&mut w, g, t)?;
         w.commit()?;
         self.set_open(Some(t))?;
         Ok(t)
     }
-    /// A new empty note in the app group, opened on this node.
+    /// A new empty note under home, opened on this node.
     pub fn create_note(&self) -> Result<Tid> {
-        self.create_with(|_, _, _, _| Ok(()))
+        self.create_with(|_, _, _| Ok(()))
     }
-    /// Deletes `t` (every aspect and membership, as item or subgroup: a deleted tag must not stay in
-    /// the app group as an empty thing) and goes home if it was open.
+    /// Deletes `t` as far as this account goes: every reference to it in a `holds.0` this node may
+    /// write goes, so it leaves the app (and, held nowhere else, every node); goes home if it was
+    /// open. Clearing its aspects is no part of it: a thing goes with its last reference.
     pub fn delete(&self, t: Tid) -> Result<()> {
         let was = self.opened()? == Some(t);
         let mut w = self.db.write();
-        w.delete(t)?;
+        for h in self.held_by(t)?.iter().copied() {
+            if self.db.role_on(h)? >= Some(osis::Role::Write) {
+                unhold(&mut w, h, t)?;
+            }
+        }
         w.commit()?;
         if was { self.set_open(None) } else { Ok(()) }
     }
+}
+
+/// In `w`: a strong to `t` in `holder`'s `holds.0`.
+pub fn hold(w: &mut osis::Write<'_>, holder: Tid, t: Tid) -> Result<()> {
+    w.at(holder, HOLDS).path(p![]).add(&Ref::Strong(Strong(t)))
+}
+
+/// In `w`: every reference to `t` in `holder`'s `holds.0` removed, strong or weak.
+pub fn unhold(w: &mut osis::Write<'_>, holder: Tid, t: Tid) -> Result<()> {
+    for r in [Ref::Strong(Strong(t)), Ref::Weak(Weak(t))] {
+        w.at(holder, HOLDS).path(osis::Path(vec![Step::Elem(r.to_value())])).remove()?;
+    }
+    Ok(())
 }
 
 /// In `w`, by the admin creating `t`: `t`'s setting keeping what any aspect replaces a day after,
@@ -774,10 +765,13 @@ impl Data {
         let l: osis::ShareLink = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a link: {e}")))?;
         let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|e| osis::Error::Network(e.to_string()))?;
         let got = rt.block_on(async { tokio::time::timeout(JOIN_WAIT, self.db.redeem(&l)).await }).unwrap_or_else(|_| Err(osis::Error::Network("could not confirm this link yet; trying again is safe".into())))?;
+        // accepting is a strong to the target; the account's ticket for it, which brings it to
+        // the account's other nodes, is core's
+        // refgraph: (c) the redeem's ticket in the account root's `tickets.0` (`redeem_in`)
         if !self.things()?.contains(&got) {
-            let g = self.main_group()?;
+            let g = self.home()?;
             let mut w = self.db.write();
-            w.group(g).add(Member::Item(got))?;
+            hold(&mut w, g, got)?;
             w.commit()?;
         }
         Ok(got)
