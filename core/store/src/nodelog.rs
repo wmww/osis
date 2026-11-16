@@ -433,7 +433,7 @@ impl Transaction<'_> {
 
     /// Up to `limit` events after position `after` in log order, and the position the read
     /// covers: its last event's when more remain, else the log's end. Costs what it returns.
-    pub fn log_after(&mut self, after: u64, limit: usize) -> Result<(Vec<LoggedEvent>, u64, bool), Error> {
+    fn log_after(&mut self, after: u64, limit: usize) -> Result<(Vec<LoggedEvent>, u64, bool), Error> {
         let end = self.log_end()?;
         let rows = self.cat_scan(EVENT, &after.saturating_add(1).to_be_bytes(), limit.saturating_add(1))?;
         let more = rows.len() > limit;

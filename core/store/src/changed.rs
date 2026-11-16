@@ -4,8 +4,7 @@
 //! with it; it shares no positions with the node log, which may live in another store.
 //!
 //! Rows, catalog rows under `kind::CHANGED`: `n` the sequence's end; `c sync_id` a sync ID's
-//! `changed_at` and the fingerprint it was computed from; `C pos sync_id` the sync IDs by
-//! `changed_at`. A fingerprint is a keyed hash: it shows nothing to whoever lacks the node's
+//! `changed_at` and the fingerprint it was computed from. A fingerprint is a keyed hash: it shows nothing to whoever lacks the node's
 //! credentials, so overwrites shred nothing.
 
 use crate::codec::{R, W};
@@ -15,11 +14,6 @@ use osis_base::SyncId;
 
 const END: &[u8] = &[kind::CHANGED, b'n'];
 const SLOT: &[u8] = &[kind::CHANGED, b'c'];
-const ORDER: &[u8] = &[kind::CHANGED, b'C'];
-
-fn order_key(pos: u64, l: &SyncId) -> Vec<u8> {
-    [ORDER, &pos.to_be_bytes(), &l.0].concat()
-}
 
 fn slot_pos(v: &[u8]) -> Result<u64, Error> {
     R::new(v.get(..8).ok_or(Error::Corrupt("changed_at slot"))?).u64()
@@ -34,13 +28,9 @@ impl Transaction<'_> {
         if old.as_ref().is_some_and(|v| v.get(8..) == Some(fingerprint.as_slice())) {
             return Ok(None);
         }
-        if let Some(v) = &old {
-            self.cat_remove(&order_key(slot_pos(v)?, &l), Shred::No)?;
-        }
         let pos = self.changed_end()? + 1;
         self.cat_put_to(END, W::new().u64(pos).take(), Shred::No, false)?;
         self.cat_put_to(&slot, W::new().u64(pos).raw(fingerprint).take(), Shred::No, false)?;
-        self.cat_put_to(&order_key(pos, &l), Vec::new(), Shred::No, false)?;
         Ok(Some(pos))
     }
 
@@ -55,24 +45,10 @@ impl Transaction<'_> {
         Ok(Some(slot_pos(&v)?))
     }
 
-    /// Up to `limit` sync IDs with `changed_at` above `after`, in order. Costs what it returns.
-    pub fn changed_after(&mut self, after: u64, limit: usize) -> Result<Vec<(u64, SyncId)>, Error> {
-        let rows = self.cat_scan(ORDER, &after.saturating_add(1).to_be_bytes(), limit)?;
-        let mut out = Vec::with_capacity(rows.len());
-        for (k, _) in rows {
-            let mut r = R::new(k.get(2..).ok_or(Error::Corrupt("changed_at index"))?);
-            out.push((r.u64()?, SyncId(r.array()?)));
-        }
-        Ok(out)
-    }
-
     /// `l` left this node's sync IDs: its `changed_at` goes, and it leaves every record's S.
     pub fn changed_forget(&mut self, l: &SyncId) -> Result<(), Error> {
         let slot = [SLOT, &l.0].concat();
-        if let Some(v) = self.cat_get(&slot)? {
-            self.cat_remove(&order_key(slot_pos(&v)?, l), Shred::No)?;
-            self.cat_remove(&slot, Shred::No)?;
-        }
+        self.cat_remove(&slot, Shred::No)?;
         self.records_forget_sync_id(l)
     }
 }

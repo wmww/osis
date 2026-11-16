@@ -388,7 +388,6 @@ fn changed_at_has_its_own_sequence() {
     let mut s = reopen(&d);
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(t.changed_note(l(2), &[1; 32]).unwrap(), Some(3), "a position is never given twice");
-    assert_eq!(t.changed_after(1, 10).unwrap(), [(2, l(1)), (3, l(2))]);
     assert_eq!(t.changed_at(&l(1)).unwrap(), Some(2));
 }
 
