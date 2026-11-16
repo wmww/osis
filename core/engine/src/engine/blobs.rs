@@ -62,6 +62,12 @@ impl<'a> Cipher<'a> {
         self.tx().any()
     }
 
+    /// Whether the store keeps sync ID `s`'s path ending at a closing step (spec/sync-judgement.md
+    /// §6 Closes). Unstamped: a reader follows it by `Engine::close_kept`.
+    pub fn closed(&mut self, s: &osis_base::SyncId) -> crate::error::Result<bool> {
+        Ok(self.tx().closed(s)?)
+    }
+
     /// Whether the engine holds blob `id` (a release this transaction made counts).
     pub fn held(&mut self, id: &BlobId) -> crate::error::Result<bool> {
         self.stamps.read(id);

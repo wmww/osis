@@ -198,7 +198,7 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
                     // a ticket appearing for what a strong reaches
                     match kind {
                         RefKind::Strong => tx.core.ix.closure.note_row(*source, target),
-                        RefKind::Ticket => tx.core.ix.closure.note_ticket(target),
+                        RefKind::Ticket => tx.core.ix.closure.rejudge(target),
                         RefKind::Weak => {}
                     }
                 }

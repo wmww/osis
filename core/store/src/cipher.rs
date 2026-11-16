@@ -72,6 +72,9 @@ pub trait CipherTx {
     fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error>;
     /// The store itself, for a holder that knows its type.
     fn any(&mut self) -> &mut dyn Any;
+    /// Whether the path the store keeps of sync ID `s` ends at a closing step (spec/sync-judgement.md
+    /// §6 Closes): none in a store of blobs only.
+    fn closed(&mut self, s: &osis_base::SyncId) -> Result<bool, Error>;
 }
 
 /// A store that can be an engine's ciphertext store, behind a `Mutex` (`Ciphertext`): the
@@ -96,6 +99,11 @@ pub trait CipherHost: Send + Any {
     fn local(&mut self, f: &mut dyn FnMut(&mut crate::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error>;
     fn commit(&mut self) -> Result<(), Error>;
     fn abort(&mut self);
+    /// `CipherTx::closed`.
+    fn closed(&mut self, s: &osis_base::SyncId) -> Result<bool, Error> {
+        let _ = s;
+        Ok(false)
+    }
     /// Tests only: every key the store's tree yields, its open writes committed first.
     #[doc(hidden)]
     fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error>;
@@ -208,6 +216,9 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
     }
     fn any(&mut self) -> &mut dyn Any {
         &mut *self.g
+    }
+    fn closed(&mut self, s: &osis_base::SyncId) -> Result<bool, Error> {
+        self.g.closed(s)
     }
 }
 

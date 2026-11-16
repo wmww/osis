@@ -114,3 +114,21 @@ fn a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_
     assert!(w.store(1).entries(&s).unwrap().iter().any(|e| request.contains(&e.blob)), "node 1 lost the request");
     assert!(w.engine(0).destruction(&t).is_some_and(|d| d.requests == vec![q]), "the purge is a destroying request");
 }
+
+// spec/sync-judgement.md §6 Closes, spec/sync-set.md §2-§3: a closing step registered at node 1,
+// which keeps S unread, takes t out of node 1's node closure while node 1 holds the ticket naming
+// S, read from the path its store keeps; a restart judges it so again.
+#[test]
+#[ignore = "issues/ticket-sync-ids.md: the harness's card redeem"]
+fn a_closing_head_takes_a_kept_thing_out_spec_sync_judgement_6() {
+    let (mut w, t, s) = three();
+    assert!(w.engine(1).closure_holds(&t), "node 1 keeps t");
+    let head = w.store(1).head(&s).unwrap().unwrap();
+    let delete = w.engine(0).head_keys(&t, &head).unwrap().delete.expect("node 0 holds the delete key");
+    let mut st = w.store(1).clone();
+    assert_eq!(st.take_register(&s, &head.closing(&delete), None).unwrap(), osis_proto::Code::OK);
+    w.run();
+    assert!(!w.engine(1).closure_holds(&t), "closed: t left");
+    let _ = play(&mut w, &[PowerOff(1), PowerOn(1), Run], String::new());
+    assert!(!w.engine(1).closure_holds(&t), "closed: t stays out after a restart");
+}
