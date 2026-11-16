@@ -99,7 +99,7 @@ pub(crate) fn shred(tx: &mut Tx<'_>, p: &Tid) -> Result<()> {
 
 /// The devices on D's roster as this node reads it (`Core::devices_roster`).
 pub(crate) fn roster(core: &Core, d: &Tid) -> Vec<Tid> {
-    core.devices_of(d).map(|p| core.devices_roster(&p).into_iter().collect()).unwrap_or_default()
+    core.account_of_root(d).map(|p| core.devices_roster(&p).into_iter().collect()).unwrap_or_default()
 }
 
 /// The seed boxes of a rotation of account `p` minting the epoch with seed `seed`: one to each
@@ -147,7 +147,7 @@ fn seed_box(tx: &mut Tx<'_>, p: &Tid, epoch: &VerifyingKey, m: &Tid, payload: &[
 /// holds another's. A box counts only in a commit that counts here, so a holder of an old seed (a
 /// removed node) cannot hold a re-seal back with a tag over a box that opens for no one.
 pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> {
-    let Some((p, d)) = tx.core.account_devices() else { return Ok(Vec::new()) };
+    let Some((p, d)) = tx.core.account_and_root() else { return Ok(Vec::new()) };
     let (Some(v), Some(held)) = (tx.core.account_view(&p), tx.core.accounts.get(&p).cloned()) else { return Ok(Vec::new()) };
     // a re-seal is signed at the preferred head: none while its seed is not here
     if !super::signing::signs_for(tx.core, &d, &v) || tx.core.account_open_key(&p).is_none() {
@@ -183,7 +183,7 @@ pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> 
     Ok(out)
 }
 
-/// A seed re-seal of account `p` (devices actor `d`) of the epoch with signing key `epoch`:
+/// A seed re-seal of account `p` (account root `d`) of the epoch with signing key `epoch`:
 /// boxes `seeds`, carried by the epoch's key added to D's `account.0` afresh (its live elements
 /// removed in the same delta: an add of a key already there writes nothing, and a commit with no
 /// delta is never made), so it travels under D's sync IDs to every device.
@@ -202,7 +202,7 @@ pub(crate) fn reseal_commit(p: Tid, d: Tid, epoch: VerifyingKey, seeds: Vec<Seed
 /// seed, so its certificate boxes it them not).
 pub(crate) fn derivers(core: &Core, v: &AccountView, d: &Tid, tips: &[Arc<AccountEpochKeys>]) -> BTreeSet<Tid> {
     let boxed = counting_tags(core, v, d);
-    let roster = core.account_devices().map(|(p, _)| core.devices_roster(&p)).unwrap_or_default();
+    let roster = core.account_and_root().map(|(p, _)| core.devices_roster(&p)).unwrap_or_default();
     roster.into_iter().filter(|m| tips.iter().all(|k| boxed.contains(&osis_crypto::seed_tag(k.seed(), m)))).collect()
 }
 

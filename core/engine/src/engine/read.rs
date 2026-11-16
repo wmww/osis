@@ -27,7 +27,7 @@ impl Core {
     /// memo or follower reading it moves when the clock alone ends a role there, with a wake then
     /// (`Engine::clock_next`).
     pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
-        if let Some(h) = self.devices_holders(thing) {
+        if let Some(h) = self.root_holders(thing) {
             return h.into_iter().map(|(m, role)| (m, Edge { role, until: None, invite: None, floor: None })).collect();
         }
         let now = self.now();

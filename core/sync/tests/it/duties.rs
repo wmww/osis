@@ -18,7 +18,7 @@ fn four_siblings() -> World {
     })
 }
 
-/// Node `by` removes node `node` from its account's devices actor.
+/// Node `by` removes node `node` from its account root.
 fn remove_node(w: &mut World, by: usize, node: usize) -> Vec<osis_base::CommitId> {
     let n = w.engine(node).tid();
     w.write(by, |e| {

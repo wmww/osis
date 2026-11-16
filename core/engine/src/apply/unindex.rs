@@ -16,9 +16,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 }
 
 /// `unindex_commit` of a commit forgotten as never received (`retention::forget`: its thing
-/// unsynced or unreadable here): nothing of it stays as a cover, a name or a forgotten mark; the
+/// released or unreadable here): nothing of it stays as a cover, a name or a forgotten mark; the
 /// rows of its blobs as this node opened or sealed them (`sync::bodies`) stay with the blobs, which
-/// the sync store may keep (an own entry, opened again once the thing reads again); unsyncing
+/// the sync store may keep (an own entry, opened again once the thing reads again); a release
 /// drops them once it has named them (`retention::forget::Forgotten::blobs`).
 pub(crate) fn unindex_unreceived(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     unindex(tx, id, false)

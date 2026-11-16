@@ -1,4 +1,4 @@
-//! The things with a sync ID each actor's home sync ID publishes (spec/sync-ids.md §4, `published_under`),
+//! The things with a sync ID whose `sync.0` each actor's sync ID publishes (spec/sync-ids.md §2, `published_under`),
 //! kept per thing with a sync ID (`Published`): each one's publisher is followed alone, so a thing
 //! coming to be published moves its own row and the actor's whole set, never another thing's.
 //! A body judgement asks per thing (`PublishedView::contains`); the walk of what a sync ID carries
@@ -34,7 +34,7 @@ impl Default for Published {
     }
 }
 
-/// What an actor's home sync ID publishes, as a body judgement reads it (`BodyCtx::published`): per
+/// What an actor's sync ID publishes, as a body judgement reads it (`BodyCtx::published`): per
 /// thing asked (`contains`), whole when walked (`iter`).
 pub struct PublishedView {
     actor: Tid,
@@ -55,16 +55,16 @@ impl PublishedView {
 }
 
 impl Engine {
-    /// The actor whose home sync ID publishes thing with a sync ID `h` (spec/sync-ids.md §2, §4): the
+    /// The actor whose sync ID publishes thing with a sync ID `h` (spec/sync-ids.md §2, §4): the
     /// nearest actor with a sync ID with secrets of its own up `h`'s record chain whose record edges up
     /// to it stand here (`Core::standing_chain`); an account has no sync ID, so what is under it
-    /// publishes under its devices actor's. `None` for a thing without a sync ID.
+    /// publishes under its account root's. `None` for a thing without a sync ID.
     pub(crate) fn publisher(&self, h: &Tid) -> Option<Tid> {
         let core = &self.core;
         if !core.ix.sync_recorded.contains(h) {
             return None;
         }
-        let up = core.standing_chain(h).into_iter().skip(1).map(|a| core.accounts.get(&a).map_or(a, |x| x.devices)).find(|a| core.ix.sync_recorded.contains(a) && core.ix.own_keys.contains(a));
+        let up = core.standing_chain(h).into_iter().skip(1).map(|a| core.accounts.get(&a).map_or(a, |x| x.root)).find(|a| core.ix.sync_recorded.contains(a) && core.ix.own_keys.contains(a));
         up.filter(|a| a != h)
     }
 
@@ -118,7 +118,7 @@ impl Engine {
         moved
     }
 
-    /// Things with a sync ID whose nearest record-chain actor with a sync ID is `g` (its home sync ID publishes
+    /// Things with a sync ID whose nearest record-chain actor with a sync ID is `g` (its sync ID publishes
     /// their `sync.0`, spec/sync-ids.md §4). Empty unless `g` is an actor with secrets of its
     /// own. A read of `g`'s whole set.
     pub fn published_under(&mut self, g: &Tid) -> Arc<BTreeSet<Tid>> {

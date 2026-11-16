@@ -28,7 +28,7 @@ impl Engine {
     /// The things whose read secrets may open what opened blob `b` holds sealed here: the thing
     /// of each part it carries in a section not opened (`BlobOf::parts` lacks it) that counts
     /// missing (`body_missing`), whether or not a read secret of it is held yet. Any part, not
-    /// only those of a sync ID's body: an account's rotation goes only under its devices actor's
+    /// only those of a sync ID's body: an account's rotation goes only under its account root's
     /// sync IDs, and its part on the account (`keys.0`) opens from there alone; a commit held
     /// from a certificate copy has its other parts' sections opened from a blob under another
     /// sync ID, once their thing's secrets arrive. Reads no record: the meta's view and missing
@@ -126,14 +126,14 @@ impl Engine {
     }
 
     /// The node whose card `h` is, when it is another node's card commit under this node's
-    /// account's D's home sync ID (spec/permissions.md §4: a node's `keys.0`, `node.0` and
-    /// `reach.0` commits, each touching nothing else, go under D's home sync ID only).
+    /// account's D's sync ID (spec/permissions.md §4: a node's `keys.0`, `node.0` and
+    /// `reach.0` commits, each touching nothing else, go under D's sync ID only).
     fn card_node(&mut self, s: &SyncId, h: &Header) -> Result<Option<Tid>> {
         let Some(node) = h.aspects.first().map(|a| a.tid) else { return Ok(None) };
         if node == self.core.id.tid() || !h.aspects.iter().all(|a| a.tid == node && CARD.contains(&a.ak.as_str())) {
             return Ok(None);
         }
-        let Some((_, d)) = self.core.account_devices() else { return Ok(None) };
+        let Some((_, d)) = self.core.account_and_root() else { return Ok(None) };
         if self.home_sync_id(&d)? != Some(*s) || !self.is_node(&node)? {
             return Ok(None);
         }
@@ -180,7 +180,7 @@ impl Engine {
         if !h.aspects.iter().all(|a| matches!(a.ak.as_str(), "node.0" | "reach.0")) {
             return false;
         }
-        let Some((p, _)) = self.core.account_devices() else { return false };
+        let Some((p, _)) = self.core.account_and_root() else { return false };
         let Some(v) = self.core.account_view(&p) else { return false };
         v.named_device(node) && !v.roster().contains(node)
     }

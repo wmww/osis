@@ -542,7 +542,7 @@ pub(crate) fn account_ticket_due(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Role
 
 /// `account_ticket_due`, with the sync IDs lacking D's ticket.
 fn owed_account_tickets(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<(Role, Vec<osis_base::SyncId>)>> {
-    let (Some((p, d)), Some(r)) = (tx.core.account_devices(), tx.core.ix.closure.entered_outside(t)) else { return Ok(None) };
+    let (Some((p, d)), Some(r)) = (tx.core.account_and_root(), tx.core.ix.closure.entered_outside(t)) else { return Ok(None) };
     let Some(epochs) = tx.core.epochs(t) else { return Ok(None) };
     let held = account_tickets(tx, &d, t)?;
     let mut lacking = Vec::new();
@@ -581,7 +581,7 @@ pub(crate) fn account_tickets(tx: &mut Tx<'_>, d: &Tid, t: &Tid) -> Result<BTree
 /// tickets for `t` of that role naming that sync ID at older epochs.
 pub(crate) fn write_account_ticket(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<CommitId>> {
     let Some((r, lacking)) = owed_account_tickets(tx, t)? else { return Ok(None) };
-    let Some((p, d)) = tx.core.account_devices() else { return Ok(None) };
+    let Some((p, d)) = tx.core.account_and_root() else { return Ok(None) };
     let mut m = Mutation::new();
     let mut any = false;
     for s in lacking {
@@ -603,7 +603,7 @@ pub(crate) fn write_account_ticket(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Co
 
 /// In the transaction releasing `ts`: D's tickets for each go (spec/sync-set.md §1, §3).
 pub(crate) fn drop_account_tickets(tx: &mut Tx<'_>, ts: &BTreeSet<Tid>) -> Result<()> {
-    let Some((_, d)) = tx.core.account_devices() else { return Ok(()) };
+    let Some((_, d)) = tx.core.account_and_root() else { return Ok(()) };
     if ts.contains(&d) {
         return Ok(());
     }

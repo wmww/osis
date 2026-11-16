@@ -22,9 +22,10 @@ pub enum Wake {
     At(u64),
     /// A blob stored (a page, a header list's tree: `Reason::WaitBlobs`).
     Blobs,
-    /// A commit held here, or an epoch an account's chain came to hold (the rotation minting it
-    /// held with its chain, a merge's tips and a certificate: `Reason::Epoch`).
-    Commit(CommitId),
+    /// An epoch an account's chain came to hold (the rotation minting it held with its chain, a
+    /// merge's tips and a certificate: `Reason::Epoch`). Holding the rotation alone opens nothing:
+    /// its key is known once the chain holds its epoch.
+    Epoch(CommitId),
     /// What is value-less on this thing changing (a purge request, an expiry): what reaches a
     /// stored copy writing on it (`retention::pending_drops`).
     Thing(Tid),
@@ -42,7 +43,7 @@ pub(crate) fn wakes_of(core: &Core, id: &CommitId, r: &Reason, h: Option<&osis_c
             None => vec![Wake::Moved],
         },
         Reason::WaitBlobs => vec![Wake::Blobs],
-        Reason::Epoch(e) => vec![Wake::Commit(*e), Wake::Moved],
+        Reason::Epoch(e) => vec![Wake::Epoch(*e), Wake::Moved],
     };
     // every record a part of it awaits (`awaits_records`), whatever its first reason: any arriving
     // may let a part apply; one held: a reach, which role commits bring (whichever part `t` names)
@@ -315,12 +316,8 @@ pub(crate) struct Waits {
     /// Things whose value-less lists or purge requests moved since the last `wake`: `Wake::Thing`.
     pub lists_moved: BTreeSet<Tid>,
     /// Epochs an account's chain came to hold since the last `wake` (`account::refresh_epochs`):
-    /// `Wake::Commit` of each, as a merge's ID is no commit's and a rotation may be held before its
-    /// chain is.
+    /// `Wake::Epoch` of each.
     pub epochs_held: BTreeSet<CommitId>,
-    /// The commits held since the last `wake` (`Wake::Commit`); started at the first, and again
-    /// after a load (whose `Wake::Open` examines every pending commit).
-    pub held_feed: Option<osis_base::memo::Feed<CommitId>>,
     /// Tests: the next `wake` examines every pending commit, as a full scan (`Engine::lost_wakes`).
     pub every_due: bool,
     /// Actors whose applied boxes gave secrets the node's roles did not give then
@@ -482,11 +479,7 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
         keys.push(Wake::Open);
     }
     keys.extend(std::mem::take(&mut core.waits.lists_moved).into_iter().map(Wake::Thing));
-    match core.waits.held_feed.as_mut() {
-        Some(f) => keys.extend(f.added().into_iter().map(Wake::Commit)),
-        None => core.waits.held_feed = Some(core.ix.commits.feed()),
-    }
-    keys.extend(std::mem::take(&mut core.waits.epochs_held).into_iter().map(Wake::Commit));
+    keys.extend(std::mem::take(&mut core.waits.epochs_held).into_iter().map(Wake::Epoch));
     let now = core.now().0;
     keys.extend(pend_on.range(Wake::At(0)..=Wake::At(now)).map(|(w, _)| *w));
     if std::mem::take(&mut core.waits.every_due) {

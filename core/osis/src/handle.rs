@@ -617,7 +617,7 @@ impl Osis {
         let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
         let (a, _) = engine.create_account()?;
         engine.set_app_record(PROFILE, a.profile.as_bytes())?;
-        Osis::start(engine, sync, clock, store, &cfg, a.account, a.devices, 0)
+        Osis::start(engine, sync, clock, store, &cfg, a.account, a.root, 0)
     }
 
     /// Opens an existing store.

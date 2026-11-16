@@ -377,11 +377,11 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         let told: Vec<Tid> = std::iter::once((holder, old.map(|e| e.role))).chain(gone.iter().map(|(x, e)| (*x, Some(e.role)))).filter(|(_, r)| *r > Some(Role::Sync)).map(|(x, _)| x).collect();
         lowered_deliveries(tx, target, c, &unreached, &told)?;
     }
-    // a node's removal from its account's devices actor: the account's epoch rotates next, in
+    // a node's removal from its account root: the account's epoch rotates next, in
     // this transaction (spec/permissions.md §3)
     if c.is_some()
         && !selfr
-        && let Some(p) = tx.core.devices_of(&target).filter(|p| tx.core.accounts.contains_key(p))
+        && let Some(p) = tx.core.account_of_root(&target).filter(|p| tx.core.accounts.contains_key(p))
         && removing.iter().any(|x| tx.core.is_key_actor(x))
         && let Some(r) = super::signing::rotate_in(tx, p, &[], &mut done)?
     {
@@ -515,7 +515,7 @@ impl Engine {
     /// `grant_signed`, then `then` in the same transaction.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn grant_signed_then(&mut self, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, history: History, then: impl FnOnce(&mut Tx<'_>) -> Result<()>) -> Result<Done> {
-        if self.core.devices_of(&target).is_some() {
+        if self.core.account_of_root(&target).is_some() {
             return Err(Error::Misuse("D's roster changes only by its account's rotations: pair a device"));
         }
         let who = signer.unwrap_or(self.core.writer()?);
@@ -622,8 +622,8 @@ impl Engine {
     /// `demote` that also removes `others` in the same commit under one rotation
     /// (spec/commits.md §2); `d.new` must then be `None`.
     pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid]) -> Result<Done> {
-        // a device leaves its account's devices actor only by a rotation removing it
-        if self.core.devices_of(target).is_some() {
+        // a device leaves its account root only by a rotation removing it
+        if self.core.account_of_root(target).is_some() {
             return match d.new {
                 None if others.is_empty() => self.remove_device(&d.holder),
                 _ => Err(Error::Misuse("D's roster changes only by its account's rotations")),

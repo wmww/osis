@@ -78,8 +78,13 @@ impl Engine {
                 eph: self.eph.clone(),
                 clock,
                 cfg: self.cfg.clone(),
+                // the original checks their shared past
                 #[cfg(debug_assertions)]
-                index_checks: self.index_checks,
+                index_unchecked: false,
+                #[cfg(debug_assertions)]
+                last_tx_wall: self.last_tx_wall,
+                #[cfg(debug_assertions)]
+                loading: self.loading,
                 #[cfg(test)]
                 index_poked: self.index_poked,
                 #[cfg(test)]
@@ -101,7 +106,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn plain_admin(&self) -> Tid {
         let me = self.me();
-        match self.core.account_devices() {
+        match self.core.account_and_root() {
             Some((p, d)) if p == me => d,
             _ => me,
         }

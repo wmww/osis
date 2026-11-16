@@ -1,6 +1,6 @@
 //! Whom a node dials (`Engine::dial_peers`, spec/sync-opens.md §1 Whom to dial) and what it
 //! publishes of itself (`Engine::publish_reach`, spec/sync-set.md §1, spec/sync-transport.md §5),
-//! over `LocalPeer` (commits and inbox blobs carried by hand).
+//! over `LocalPeer` (commits and sealed fires carried by hand).
 
 use crate::flows::{account_two_nodes, people, spread};
 use osis_base::peer_url;

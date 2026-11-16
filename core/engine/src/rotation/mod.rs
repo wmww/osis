@@ -86,8 +86,8 @@ pub fn blocked_roles_of(tx: &mut Tx<'_>, who: &Tid, a: &Tid, deps: &[Departure],
 /// walked past (it reads that actor's sync IDs, so it learns the actor's next keyset and re-seals
 /// it), and only other parties' departures count (`others`); past any other epoch (but for
 /// placing) only a box to this node's own account is judged, at any depth: an account epoch it
-/// cannot show covers a removal from its devices actor it knows (`uncovered`) blocks the keyset
-/// boxing it, secret held or not (it learns its account's next epochs from its devices actor's
+/// cannot show covers a removal from its account root it knows (`uncovered`) blocks the keyset
+/// boxing it, secret held or not (it learns its account's next epochs from its account root's
 /// sync IDs, and so re-seals once either moves).
 ///
 /// A joint box (several keysets) is judged as a whole: blocked by a departure only when every
@@ -132,7 +132,7 @@ pub(crate) fn joint_blocked(why: BTreeMap<osis_crypto::Epoch, Block>, n: usize) 
 
 /// `blocking` from `root` (an epoch of an actor, with whether every epoch above it on the walk is
 /// one whose secret this node holds), past the epochs in `seen`; `own`: whether this node knows a
-/// removal from its devices actor, found when first needed. `full`: on past a missed departure,
+/// removal from its account root, found when first needed. `full`: on past a missed departure,
 /// for a box reason (else the first reason found).
 #[allow(clippy::too_many_arguments)]
 fn walk_from(tx: &mut Tx<'_>, who: &Tid, a: &Tid, r: Role, root: (Tid, osis_crypto::Epoch, bool), deps: &[Departure], walk: Walk, full: bool, mut seen: BTreeSet<(Tid, osis_crypto::Epoch)>, own: &mut Option<bool>) -> Result<Option<Block>> {
@@ -1235,7 +1235,7 @@ impl Engine {
     /// rotations of `actor` nothing waits for (`pass_end_rotations`: withdraws), the re-seals of
     /// the holders the trigger names, the history its current epochs lack (spec/permissions.md §3,
     /// spec/crypto.md §4 History box), the snapshots a cut owes (spec/crypto.md §4, State at a
-    /// cut) and, for this node's devices actor D, what the account owes its signing chain
+    /// cut) and, for this node's account root D, what the account owes its signing chain
     /// (`signing_due`, spec/permissions.md §3, §5.5: decided at the end of a complete pass of D's
     /// sync IDs).
     pub fn pass_end(&mut self, actor: &Tid) -> Result<Done> {
@@ -1243,7 +1243,7 @@ impl Engine {
             return Ok(Done::default());
         }
         let mut done = self.reseal_run(actor)?;
-        if self.core.account_devices().is_some_and(|(_, d)| d == *actor) {
+        if self.core.account_and_root().is_some_and(|(_, d)| d == *actor) {
             done.extend(self.signing_due()?);
         }
         Ok(done)

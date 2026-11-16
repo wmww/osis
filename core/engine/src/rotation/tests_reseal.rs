@@ -371,7 +371,7 @@ fn openings_of_a_pending_write_survive_a_restart_spec_crypto_5() {
 // The sync facade's paths (`Engine::seal_body`, `rewrap`, `open_entry`): every fresh encryption
 // and wrap of a body goes through `Engine::seal` and `wrap_secret`.
 
-/// g's home sync ID and R's entry of `w` (`entry`) under it, as the sync store holds it.
+/// g's sync ID and R's entry of `w` (`entry`) under it, as the sync store holds it.
 fn r_held(lp: &mut LocalPeer, g: Tid, w: CommitId, entry: &[SealedPackage]) -> (SyncId, HeldBlob) {
     let s = lp.peers[V].engine.home_sync_id(&g).unwrap().unwrap();
     let e = &entry.iter().find(|p| p.id == w).unwrap().entries[0];

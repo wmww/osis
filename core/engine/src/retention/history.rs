@@ -6,7 +6,7 @@
 //! (`osis_commit::retention::Timeline`): its held valid `retention^.0` settings in key order
 //! (`validity::Judge::settings`), each read for the AK. A fixed-retention aspect has no timeline:
 //! `ROLE_KEEP` after replaced for a role-class aspect or `addenda.0` (compactor policy), never
-//! out of history for `created.0` and `retention^.0`, no history for `purge.0` and `released.0`.
+//! out of history for `created.0` and `retention^.0`, no history for `purge.0`.
 
 use crate::engine::Core;
 use osis_base::format::ROLE_KEEP_MS;

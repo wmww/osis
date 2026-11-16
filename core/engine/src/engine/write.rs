@@ -731,7 +731,7 @@ impl Engine {
     pub fn hold_where_it_lives(&self, m: &mut Mutation, t: Tid, admin: Tid) {
         let holder = if m.creates.contains_key(&admin) || self.closure_holds(&admin) {
             Some(admin)
-        } else if let Some((_, d)) = self.core.account_devices() {
+        } else if let Some((_, d)) = self.core.account_and_root() {
             Some(d)
         } else {
             self.core.node_root

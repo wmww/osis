@@ -51,7 +51,7 @@ pub struct LinkSpec {
 
 impl Engine {
     /// Creates a link to `spec.target` for actor `sharer` (an actor this node is admin of):
-    /// K (first admin `sharer`, secrets of its own, home sync ID listing L by
+    /// K (first admin `sharer`, secrets of its own, its sync ID listing L by
     /// static entry), L (key actor from a fresh seed, `created.0` and `keys.0` signed by itself),
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
     /// thing under the account root keeping the seed. Returns the link and the seed thing.
@@ -119,7 +119,7 @@ impl Engine {
         // the node closure holds them, and so D's tickets for both (`inbox::write_account_ticket`)
         let target = link.target;
         self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, move |tx| {
-            let Some((_, d)) = tx.core.account_devices() else { return Ok(()) };
+            let Some((_, d)) = tx.core.account_and_root() else { return Ok(()) };
             let mut m = Mutation::new();
             for t in [k, target].into_iter().filter(|t| !tx.core.ix.closure.holds(t)) {
                 m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) })?;
@@ -307,7 +307,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let mut m = Mutation::new();
     let k = m.create(crate::identity::link_record(sharer, spec.target, &mut *tx.rng));
     done.add(Engine::commit_tx(tx, m)?);
-    // K's secrets, its home sync ID listing L, its inbox: one commit
+    // K's secrets, its sync ID listing L, its inbox: one commit
     let lvk = lkeys.signing.verifying_key();
     rotation::own_secrets_listing(tx, k, &[ReaderKey::Static(lvk, lkeys.kem.public().clone())], &mut done)?;
     // L's edge (r, invite r, until) with its boxes
@@ -337,7 +337,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     // the seed on a thing made under the account root, which holds it and K by strongs: every
     // node of the account holds the seed, may finalize and serves K's sync ID to redeemers
     // (spec/permissions.md §7)
-    let d = tx.core.account_devices().map(|(_, d)| d).ok_or(Error::Misuse("not a node of an account"))?;
+    let d = tx.core.account_and_root().map(|(_, d)| d).ok_or(Error::Misuse("not a node of an account"))?;
     let mut m = Mutation::new();
     let keep = m.create(crate::identity::thing_record(d, &mut *tx.rng));
     for t in [keep, k] {

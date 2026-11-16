@@ -73,7 +73,7 @@ pub const ASKED_MS: u64 = crate::session::STALL_TIMEOUT_MS;
 /// What opening a pulled body did at a node reading S.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opening {
-    /// It opened to what no entry keeps: a piece, an inbox blob, records.
+    /// It opened to what no entry keeps: a piece, a sealed fire, records.
     Taken,
     /// It opened to a commit held here: the entry is kept as it came, the reader's own store's
     /// copy of the body (spec/sync-judgement.md §3 Own store: a held blob goes on verbatim);

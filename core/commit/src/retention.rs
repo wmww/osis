@@ -39,7 +39,7 @@ pub fn role_kept(ak: &str) -> bool {
 }
 
 /// Fixed retention of an AK, if it has one (role-class aspects, `addenda.0`, `retention^.0`,
-/// `purge.0`, `released.0`): no setting governs it.
+/// `purge.0`): no setting governs it.
 pub fn fixed_retention(ak: &str) -> Option<Retention> {
     if ak == RETENTION {
         Some(KEPT_RETENTION)

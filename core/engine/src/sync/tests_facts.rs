@@ -42,7 +42,7 @@ fn two_nodes() -> (LocalPeer, Tid) {
         let (_, out) = lp.peers[0].engine.pair(&n).unwrap();
         send(&mut lp, 0, 1, &out);
         lp.peers[1].engine.paired(&p.account).unwrap();
-        (lp, p.devices)
+        (lp, p.root)
     })
 }
 
@@ -85,7 +85,7 @@ fn a_card_goes_once_a_later_one_is_opened_spec_sync_judgement_2() {
 #[test]
 fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
     let mut lp = LocalPeer::new_bare(1, 0, T0).unwrap();
-    let d = lp.peers[0].engine.create_account().unwrap().0.devices;
+    let d = lp.peers[0].engine.create_account().unwrap().0.root;
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, d);

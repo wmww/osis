@@ -161,7 +161,7 @@ pub struct BodyMeta {
 pub struct BodyFacts {
     /// In S's required set.
     pub required: bool,
-    /// A closure body (not a certificate or inbox blob).
+    /// A closure body (not a certificate or sealed fire).
     pub closure: bool,
     /// Dropped here, and why.
     pub dropped: Option<DropFor>,
@@ -776,7 +776,7 @@ impl Engine {
     /// account (spec/sync-opens.md §2: a dialer proves its node key only to such a key). O(the
     /// account's nodes): asked once per connection dialed.
     pub fn own_node_key(&mut self, key: &[u8; 32]) -> Result<bool> {
-        let Some((_, d)) = self.core.account_devices() else { return Ok(false) };
+        let Some((_, d)) = self.core.account_and_root() else { return Ok(false) };
         for (n, _) in self.core.key_holders(&d) {
             if self.core.own_node(&n) && self.get_typed(&n, &osis_schema::core_types::REACH)?.is_some_and(|r| r.dialable == *key) {
                 return Ok(true);

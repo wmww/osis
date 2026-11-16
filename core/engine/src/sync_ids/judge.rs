@@ -33,7 +33,7 @@ impl Core {
     /// Whether `x` is another node of this node's account: on D's roster as this node reads it
     /// (spec/permissions.md §1, §5.4 Roster). A node removed is not.
     pub fn own_node(&self, x: &Tid) -> bool {
-        let Some((p, _)) = self.account_devices() else { return false };
+        let Some((p, _)) = self.account_and_root() else { return false };
         *x != self.id.tid() && self.devices_roster(&p).contains(x)
     }
 

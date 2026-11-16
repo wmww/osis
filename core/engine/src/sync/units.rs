@@ -1179,8 +1179,13 @@ impl Engine {
     /// Tests: panics unless the node closure as followed equals one walked afresh.
     #[doc(hidden)]
     pub fn check_closure(&mut self) {
-        let r = osis_base::costs::paused(|| osis_base::memo::unrecorded(|| self.read(check_whole)));
+        let r = self.checked_closure();
         assert!(r.is_ok(), "node closure walked afresh: {:?}", r.err());
+    }
+
+    /// `check_closure`, a failing read returned.
+    pub(crate) fn checked_closure(&mut self) -> crate::Result<()> {
+        osis_base::costs::paused(|| osis_base::memo::unrecorded(|| self.read(check_whole)))
     }
 
     /// Whether the node closure holds `t` (spec/sync-set.md §2).

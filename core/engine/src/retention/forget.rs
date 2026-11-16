@@ -70,7 +70,7 @@ pub struct Forgotten {
     pub sync_ids: BTreeSet<SyncId>,
     /// Commits deleted whole.
     pub commits: BTreeSet<CommitId>,
-    /// Unsyncing (`Scope::Local`): the blobs noted for `commits`, whose rows go with them (sync
+    /// A release (`Scope::Local`): the blobs noted for `commits`, whose rows go with them (sync
     /// unlogs its own entries of them; an entry of one opens to nothing held). Losing access keeps
     /// the rows: an own entry naming one waits for the access to return.
     pub blobs: BTreeSet<osis_base::BlobId>,

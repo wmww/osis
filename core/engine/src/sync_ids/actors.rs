@@ -125,10 +125,10 @@ impl Core {
     /// Actor `x`'s role on actor `a` now as far as grants with key access give it (spec/crypto.md
     /// §4 Holds, Key access: a keyless grant, one closing a cycle of actor grants, reads nothing
     /// through it): what gives, takes and opens `a`'s secrets. Read on the memo clock
-    /// (`role_now`); an account's devices actor has no grants.
+    /// (`role_now`); an account root has no grants.
     pub(crate) fn keyed_role_now(&self, x: &Tid, a: &Tid) -> Option<Role> {
         let role = self.role_now(x, a);
-        if role.is_none() || self.timelines.keyless().is_empty() || self.devices_holders(a).is_some() {
+        if role.is_none() || self.timelines.keyless().is_empty() || self.root_holders(a).is_some() {
             return role;
         }
         role.min(crate::rotation::members::role_for_keys(self, x, a))
@@ -144,12 +144,12 @@ impl Core {
     /// through grants with key access (`reads_now`). An actor up the record chain of one with
     /// secrets of its own reads it only by its role there: a record edge lowered or removed
     /// takes that role (spec/permissions.md §1).
-    /// This node's own account's devices actor reads as the account does (its readers are the
-    /// account's nodes); another account's devices actor reads as itself: what this node seals,
+    /// This node's own account root reads as the account does (its readers are the
+    /// account's nodes); another account root reads as itself: what this node seals,
     /// boxes or opens never reads another account's grants as its own (chain placement alone
     /// widens that, `Engine::cert_reads_in`).
     pub fn may_read(&self, x: &Tid, t: &Tid) -> bool {
-        let x = &self.account_devices().filter(|(_, d)| d == x).map_or(*x, |(p, _)| p);
+        let x = &self.account_and_root().filter(|(_, d)| d == x).map_or(*x, |(p, _)| p);
         let Some(a) = self.secret_actor(t) else { return false };
         a == *x || self.reads_now(x, &a)
     }

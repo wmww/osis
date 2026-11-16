@@ -148,7 +148,7 @@ impl Core {
     /// answer depends on (`Timeline::roles_on_now`), so a memo reading it (chain placement, grant
     /// copies, access) moves when that passes, with a wake then (`Engine::clock_next`).
     pub fn role_now(&self, node: &Tid, tid: &Tid) -> Option<Role> {
-        if let Some(h) = self.devices_holders(tid) {
+        if let Some(h) = self.root_holders(tid) {
             return h.get(node).copied();
         }
         let (role, until) = self.timelines.role_now(node, tid, now_ts(self));
@@ -189,7 +189,7 @@ impl Core {
     /// Current holders of `actor` with their role and `until` (alive edges), its record edge
     /// included while it stands (with no timeline here, nothing wrote it: the first admin alone).
     pub fn current_holders(&self, actor: &Tid) -> Vec<(Tid, Role, Option<WallMs>)> {
-        if let Some(h) = self.devices_holders(actor) {
+        if let Some(h) = self.root_holders(actor) {
             return h.into_iter().map(|(m, r)| (m, r, None)).collect();
         }
         let ts = now_ts(self);
@@ -225,9 +225,9 @@ impl Core {
     /// holders in their place): every edge on it by `rotation::key_role`, its record edge
     /// included while it stands.
     pub(crate) fn edge_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
-        // a held account's devices actor D: its holders for keys are D's roster (`devices_holders`),
+        // a held account root D: its holders for keys are D's roster (`root_holders`),
         // never the account (a box to it on D would open with what D's `account.0` boxes)
-        if let Some(p) = self.held_devices_of(actor) {
+        if let Some(p) = self.held_account_of_root(actor) {
             return self.devices_roster(&p).into_iter().map(|m| (m, Role::Admin)).collect();
         }
         match self.timelines.on(actor) {

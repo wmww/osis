@@ -69,7 +69,7 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
 
 /// A role commit's inner and merge signatures (`Indexes::role_sigs`), as held facts: every role
 /// commit at an epoch, whatever is known of its author or the things it is on when it applies.
-/// The signing chain decides which are an account's on its devices actor when it reads them
+/// The signing chain decides which are an account's on its account root when it reads them
 /// (`Core::devices_read`), so the order commits arrive in records nothing differently.
 pub(crate) fn note_role_sigs(core: &mut Core, h: &osis_commit::Header, id: &CommitId, sigs: &osis_commit::Sigs) {
     // a rotation is a role commit at an epoch (`osis_commit::validate`): what an open reads back
@@ -977,34 +977,24 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
-/// What a transaction changed (`check_rebuilt`).
-#[cfg(debug_assertions)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TxChange {
-    None,
-    /// Valid joins of new commits only.
-    Joins,
-    /// Something else: a part's status, a state written otherwise.
-    More,
-}
-
 /// Debug builds, at the end of every transaction (issues/drop-rejoin-robust.md, item 5): each
-/// aspect it touched (below) holds exactly the join of its held bodies (`rebuilt`: spec/crdt.md
-/// §4.6 Un-merge), as stored, but for the text chars §5.7 leaves to the node. Panics with the
-/// difference. Every change but a valid join or an invalid part's arrival or drop is a rebuild,
-/// so for those aspects this checks that a rebuild is a fixpoint; for the ordinary joins, that
-/// the incremental state is the rebuild; for an invalid part (always checked), that it changes
-/// nothing. Returns what the transaction changed.
+/// aspect it touched holds exactly the join of its held bodies (`check_states`). An aspect where
+/// a held part's status changed, a part arrived not valid and whole, or the state was written
+/// with no new commit naming it is checked now: every such change is a rebuild, so this checks
+/// that a rebuild is a fixpoint, and for an invalid part that it changes nothing. An aspect only
+/// valid whole joins or drops as covered (`shred_covered`, the state left as it was) touched
+/// joins `Core::unchecked_states`, checked at the end of the engine's history
+/// (`Engine::checked_states`): a check per change would cost O(the aspect) per commit, and a
+/// wrong state stays wrong until a rebuild of the aspect rewrites it (checked then). A
+/// transaction a test hook marks (`Core::unchecked_tx`) checks none of what it touched. Whether
+/// the transaction changed a state or a part.
 #[cfg(debug_assertions)]
-pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
-    use crate::engine::state::encode;
-    // per aspect, the new commits joining it whole and valid (`fresh`) and the bodies dropped
-    // as covered (`covered`), both sampled below, and whether some other change touched it (a
-    // part's status, valid, dropped or missing, changed or arrived otherwise; a state written
-    // otherwise: always checked)
-    let mut fresh: BTreeMap<(Tid, Ak), usize> = BTreeMap::new();
-    let mut always: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    let mut covered: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<bool> {
+    // per aspect, whether only new commits joining it whole and valid or bodies dropped as
+    // covered touched it (`later`), or some other change did (a part's status, valid, dropped or
+    // missing, changed or arrived otherwise; a state written otherwise: `now`)
+    let mut later: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut now: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let status = |m: &Meta, ai: usize| (m.valid_at(ai), m.is_dropped(ai), m.missing(ai), m.stripped(ai));
     for (id, old) in tx.core.ix.commits.before() {
         let new = tx.core.ix.commits.get(id);
@@ -1012,57 +1002,45 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
         for (ai, a) in m.view.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
             match (old, new) {
-                (None, Some(n)) if status(n, ai) == (true, false, false, false) => *fresh.entry(k).or_default() += 1,
+                (None, Some(n)) if status(n, ai) == (true, false, false, false) => {
+                    later.insert(k);
+                }
                 (Some(o), Some(n)) if status(n, ai) == status(o, ai) => {}
                 (Some(o), Some(n)) if !o.is_dropped(ai) && n.dropped(ai).is_some_and(|d| d.why == crate::engine::DropFor::Cover) => {
-                    covered.insert(k);
+                    later.insert(k);
                 }
                 _ => {
-                    always.insert(k);
+                    now.insert(k);
                 }
             }
         }
     }
-    // a wrong state stays wrong, so a later sample still sees it: an aspect only new commits
-    // joined is checked when its held commits pass a power of four from 4 (O(1) bodies read per
-    // commit). Not below 4: the first joins of every aspect were four fifths of the check's cost
-    // and no known bug showed there first (notes/test-harnesses.md Rebuild check).
-    // A transaction dropping bodies of an aspect as covered and changing nothing else of it is
-    // checked at the 1st, 2nd, 4th, 8th ... such transaction on the aspect (a rebuild per drop
-    // made the check O(n) per body)
-    covered.retain(|k| !always.contains(k));
-    let mut covered_due = BTreeSet::new();
-    for k in &covered {
-        let n = tx.core.covered_drops_seen.entry(k.clone()).or_default();
-        *n += 1;
-        if n.is_power_of_two() {
-            covered_due.insert(k.clone());
+    now.extend(tx.core.written.iter().filter(|k| !later.contains(*k)).cloned());
+    later.retain(|k| !now.contains(k));
+    let changed = !now.is_empty() || !later.is_empty();
+    // a test hook wrote states no body gives (`Core::unchecked_tx`): no check reads them
+    if tx.core.unchecked_tx {
+        for k in now.iter().chain(&later) {
+            tx.core.unchecked_states.remove(k);
         }
+        return Ok(changed);
     }
-    let core = &*tx.core;
-    let quarters = |n: usize| if n < 4 { 0 } else { n.ilog2() / 2 };
-    let sampled = |k: &(Tid, Ak)| {
-        if always.contains(k) {
-            return true;
-        }
-        let joined = fresh.get(k).map(|added| {
-            let n = core.ix.by_aspect.get(k).map_or(0, |s| s.len());
-            quarters(n) != quarters(n.saturating_sub(*added))
-        });
-        match (joined, covered.contains(k)) {
-            (None, false) => true,
-            (j, c) => j.unwrap_or(false) || (c && covered_due.contains(k)),
-        }
-    };
-    let change = if !always.is_empty() || !covered.is_empty() {
-        TxChange::More
-    } else if !fresh.is_empty() || !core.written.is_empty() {
-        TxChange::Joins
-    } else {
-        TxChange::None
-    };
-    let touched: BTreeSet<(Tid, Ak)> = core.written.iter().chain(fresh.keys()).chain(&always).filter(|k| sampled(k)).cloned().collect();
-    for (tid, ak) in touched {
+    for k in &now {
+        tx.core.unchecked_states.remove(k);
+    }
+    tx.core.unchecked_states.extend(later);
+    check_states(tx, now)?;
+    Ok(changed)
+}
+
+/// Debug builds: each of `aspects` holds exactly the join of its held bodies (`rebuilt`: spec/crdt.md
+/// §4.6 Un-merge), as stored, but for the text chars §5.7 leaves to the node, and the caches
+/// derived from them agree (value-less lists, snapshot bounds, references). Panics with the
+/// difference. Changes nothing.
+#[cfg(debug_assertions)]
+pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Result<()> {
+    use crate::engine::state::encode;
+    for (tid, ak) in aspects {
         // unseen: the cached state as it was, and no cost recorded
         let k = (tid, ak.clone());
         // the value-less list is a cache of the parts' statuses: a part held as a bare leftover
@@ -1116,7 +1094,7 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
         let same = got.as_ref().map(encode).transpose()? == want.as_ref().map(encode).transpose()?;
         debug_assert!(same, "state of {tid:?} {ak:?} differs from a rebuild from held bodies:\n{}", text_diff(&format!("{got:#?}"), &format!("{want:#?}")));
     }
-    Ok(change)
+    Ok(())
 }
 
 /// The lines of `kept` and `rebuilt` the other lacks, `-` kept and `+` rebuilt, each with its

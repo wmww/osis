@@ -16,7 +16,7 @@ impl Engine {
 
     /// This node's account root (spec/sync-set.md §1), strongly referenced from the node root.
     pub fn account_root(&self) -> Option<Tid> {
-        self.core.account_devices().map(|(_, d)| d)
+        self.core.account_and_root().map(|(_, d)| d)
     }
 
     /// Adds `s` to the node root's `holds.0` (spec/data-model.md §8, spec/sync-set.md §1).
@@ -62,7 +62,7 @@ pub(crate) fn hold_in(tx: &mut Tx<'_>, t: Tid) -> Result<()> {
 /// node root's to the account root, the account root's to the profile and the inbox. O(1).
 pub(crate) fn kept(tx: &mut Tx<'_>) -> Result<Vec<(Tid, Tid)>> {
     let mut kept: Vec<(Tid, Tid)> = Vec::new();
-    if let (Some(root), Some((p, d))) = (tx.core.node_root, tx.core.account_devices()) {
+    if let (Some(root), Some((p, d))) = (tx.core.node_root, tx.core.account_and_root()) {
         kept.push((root, d));
         let inbox = super::inbox::inbox_in(tx, &p)?;
         kept.extend(tx.core.profile_of(&p, inbox).map(|x| (d, x)));

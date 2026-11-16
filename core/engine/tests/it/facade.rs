@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The engine's facade for sync (`osis_engine::sync`, notes/sync-facade.md): each call against
-//! the spec rule it serves, over `LocalPeer` (commits and inbox blobs carried by hand).
+//! the spec rule it serves, over `LocalPeer` (commits and sealed fires carried by hand).
 
 use crate::common::{REG, s};
 use crate::flows::{edge_of, people, spread, thing_of};
@@ -339,7 +339,7 @@ fn a_card_goes_with_its_nodes_grant_spec_sync_judgement_2() {
 }
 
 // spec/sync-judgement.md §2 required set (the certificate blobs of spec/permissions.md §4): the
-// other node's `reach.0` card is in D's home sync ID's required set, so read never judges it
+// other node's `reach.0` card is in D's sync ID's required set, so read never judges it
 // outside it (must-not-hold, deleted at a node keeping the sync ID unread by a delete-key
 // holder); sealed as a copy, it opens at the card's own node.
 #[test]
@@ -611,12 +611,12 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
     }
 }
 
-// spec/sync-ids.md §2 (home sync id): a commit that gives a thing role secrets of its own also
+// spec/sync-ids.md §2 (One sync ID per actor): a commit that gives a thing role secrets of its own also
 // creates its sync ID and records it in `sync.0`, in that one commit. A thing given secrets of its
-// own, by `give_own_secrets` or by its first grant, has its home sync ID, and the first commit
+// own, by `give_own_secrets` or by its first grant, has its sync ID, and the first commit
 // with a `secrets.0` part on it carries a `sync.0` write too.
 #[test]
-fn own_secrets_and_the_home_sync_id_come_in_one_commit_spec_sync_ids_2() {
+fn own_secrets_and_the_sync_id_come_in_one_commit_spec_sync_ids_2() {
     for by_grant in [false, true] {
         let (mut lp, ps) = people(2);
         let admin = lp.peers[0].engine.plain_admin();
@@ -624,7 +624,7 @@ fn own_secrets_and_the_home_sync_id_come_in_one_commit_spec_sync_ids_2() {
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.home_sync_id(&t).unwrap(), None, "a plain thing has none");
         let done = if by_grant { e.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap() } else { e.give_own_secrets(&t).unwrap() };
-        assert!(e.home_sync_id(&t).unwrap().is_some(), "a home sync ID (by grant: {by_grant})");
+        assert!(e.home_sync_id(&t).unwrap().is_some(), "a sync ID (by grant: {by_grant})");
         let secrets = Ak::new("secrets.0").unwrap();
         let sync = ct::SYNC.name();
         // the first commit with a secrets.0 part on t gives them (later ones box holders)

@@ -189,8 +189,8 @@ fn thing_list_names_only_commits_on_its_thing() {
     assert!(!e.counts(&100) && e.counts(&101) && e.delta_counts(&101, &2, false));
 }
 
-/// The removal commit (100, on the devices actor, thing 9) counts wherever its rotation does:
-/// the rotation's list for the devices actor names it.
+/// The removal commit (100, on the account root, thing 9) counts wherever its rotation does:
+/// the rotation's list for the account root names it.
 #[test]
 fn removal_commit_counts_through_its_rotation() {
     let removal = AccountCommit { id: 100, epoch: 0, things: set(&[9]), role: true };

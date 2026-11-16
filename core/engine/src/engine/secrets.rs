@@ -942,6 +942,7 @@ mod tests {
         seed.read.set_secret(held, Secret32::from_bytes([1; 32]));
         let n = osis_keys::Names { list: [Name::applied(osis_keys::Key { ts: 1, node: actor, commit: osis_base::CommitId([1; 32]) }, actor)].into(), departs: None };
         seed.read.set_history(unheld, [n].into(), [held], None);
+        lp.peers[0].engine.index_poked = true;
         let core = &mut lp.peers[0].engine.core;
         core.ix.secrets.insert(actor, seed);
         let mut secrets = Secrets::default();

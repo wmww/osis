@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Role flows over `LocalPeer`: commits and inbox blobs are
+//! Role flows over `LocalPeer`: commits and sealed fires are
 //! delivered by hand between engines (no sync IDs or peers).
 
 use crate::common;
@@ -133,11 +133,11 @@ fn account_two_nodes_built() -> (LocalPeer, Tid) {
     let (_, send_) = lp.peers[0].engine.pair(&n).unwrap();
     send(&mut lp, 0, 1, &send_);
     lp.peers[1].engine.paired(&p.account).unwrap();
-    (lp, p.devices)
+    (lp, p.root)
 }
 
-// spec/permissions.md §1, spec/crypto.md §3: an account's devices actor D has secrets of its own and
-// the home sync ID; pairing grants a node on D and the node opens D's secrets.
+// spec/permissions.md §1, spec/crypto.md §3: an account root D has secrets of its own and a
+// sync ID; pairing grants a node on D and the node opens D's secrets.
 #[test]
 fn account_and_pairing_spec_perm_1() {
     let (mut lp, d) = account_two_nodes();
@@ -850,15 +850,15 @@ fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
     send(&mut lp, 1, 0, &send_);
     lp.peers[0].engine.paired(&p.account).unwrap();
     let pa = lp.peers[2].engine.create_account().unwrap().0.account;
-    // alice grants P's devices actor: she keeps it
-    lp.peers[2].know(&[p.devices]).unwrap();
+    // alice grants P's account root: she keeps it
+    lp.peers[2].know(&[p.root]).unwrap();
     spread(&mut lp);
-    assert_eq!(lp.peers[0].engine.role_on(&p.devices), Some(Role::Admin));
-    let home = *lp.peers[1].engine.get_typed(&p.devices, &ct::SYNC).unwrap().unwrap().keys().next().unwrap();
+    assert_eq!(lp.peers[0].engine.role_on(&p.root), Some(Role::Admin));
+    let home = *lp.peers[1].engine.get_typed(&p.root, &ct::SYNC).unwrap().unwrap().keys().next().unwrap();
     // the pairing's rotation re-keyed D: its home's next step registers the new epochs
-    lp.peers[1].engine.issue_step(&p.devices, &home, false).unwrap().expect("the pairing's step");
+    lp.peers[1].engine.issue_step(&p.root, &home, false).unwrap().expect("the pairing's step");
     spread(&mut lp);
-    (lp, p.devices, pa, home)
+    (lp, p.root, pa, home)
 }
 
 /// The head step of sync ID `s` of actor `a` at peer `k`: the one no other names as its parent.

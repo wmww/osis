@@ -595,7 +595,7 @@ impl Engine {
     }
 
     /// Opens entry `blob` (`bytes`, its `wrap`) logged under `s` and takes what it holds
-    /// (spec/sync-ids.md §5, spec/sync-inbox.md §2): an inbox blob under an inbox of this node's;
+    /// (spec/sync-ids.md §5, spec/sync-inbox.md §2): a sealed fire under an inbox of this node's;
     /// a commit blob whose wrap opens under a held read secret of `s`'s thing, opened
     /// (`open_commit`, each section's opening kept) and ingested, the epoch its wrap opened under
     /// kept as an opening of its header (`note_unwrapped`); a chunk, tree node or page a held commit is

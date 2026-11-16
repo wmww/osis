@@ -1,6 +1,6 @@
 //! Destruction and mintings end to end (spec/commits.md §5 Destruction, A thing's mintings travel
 //! with its record; spec/requirements.md Deletion: purging or expiring a thing's creation destroys
-//! it at every node): node 0 makes thing t with a home sync ID S, node 1's account syncs it (kept
+//! it at every node): node 0 makes thing t with its sync ID S, node 1's account syncs it (kept
 //! unread), node 2's writes it; node 0 destroys it. The engine's judgement of a destroyed thing is
 //! the engine's and held-model's; these check what crosses nodes: the destruction reaches every
 //! node, holds over a restart, a write after it counts nowhere, S empties once nothing needs it,

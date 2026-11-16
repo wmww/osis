@@ -147,7 +147,7 @@ impl Engine {
         self.shared_certificates(g, &mut out);
         // the account's card (the author of every commit but the node's own) and, under D's
         // home alone, the node's (nothing of a node goes under another sync ID)
-        let under_d = self.core.account_devices().is_some_and(|(_, d)| d == *g);
+        let under_d = self.core.account_and_root().is_some_and(|(_, d)| d == *g);
         for who in std::iter::once(me).chain(under_d.then(|| self.tid())) {
             let mine = BTreeSet::from([who]);
             out.records.insert(who);
@@ -263,8 +263,8 @@ impl Engine {
     /// nodes would delete each other's copies (spec/sync-judgement.md §2). Reads role commits,
     /// records and cards, never content.
     pub(crate) fn own_piece(&mut self, g: &Tid) -> Certs {
-        // any account's devices actor, whichever node judges it
-        let under_d = self.core.devices_of(g).is_some();
+        // any account root, whichever node judges it
+        let under_d = self.core.account_of_root(g).is_some();
         let mut out = Certs::deferring();
         self.shared_certificates(g, &mut out);
         let found = self.core.timelines.certificates_into(g);
@@ -273,7 +273,7 @@ impl Engine {
             // D's holders, and every node its account's chain names (a rotation's minter or
             // certifier, a device added or removed): each rotation is read by its minter's card
             let mut nodes: BTreeSet<Tid> = self.core.key_holders(g).into_iter().map(|(n, _)| n).collect();
-            nodes.extend(self.core.devices_of(g).map(|p| self.core.chain_nodes(&p)).unwrap_or_default());
+            nodes.extend(self.core.account_of_root(g).map(|p| self.core.chain_nodes(&p)).unwrap_or_default());
             for n in nodes {
                 if !self.is_node(&n).unwrap_or(false) {
                     continue;

@@ -30,7 +30,7 @@ pub struct Part {
 }
 
 /// A commit as a node holds it: the header, its signatures and the parts it opened (its stored
-/// form, `[Header, signature, Opt(inner), [signature*], [Part*]]`; an inbox blob's payload too,
+/// form, `[Header, signature, Opt(inner), [signature*], [Part*]]`; a sealed fire's payload too,
 /// spec/wire.md §9).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitBlob {

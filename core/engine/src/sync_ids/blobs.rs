@@ -453,7 +453,7 @@ impl Engine {
     }
 
     /// The bodies a sync ID must hold from its thing's sync unit (spec/sync-judgement.md §1): held
-    /// commits touching the sync unit with a part its reader actor may read. A home sync ID also
+    /// commits touching the sync unit with a part its reader actor may read. A sync ID also
     /// carries the `sync.0` and `created.0` writes of the things with a sync ID it is the nearest
     /// record-chain actor with a sync ID of (spec/sync-ids.md §2).
     /// Without plaintexts (`body_plaintext`), from a memo per commit (`Core::bodies`): a pass after a
@@ -529,15 +529,15 @@ impl Engine {
     }
 
     /// Whether the reader actor of sync unit `g`'s thing reads `t` as every node judges it, for placing chain
-    /// certificates alone (spec/sync-judgement.md §1: a devices actor reads as its account,
-    /// whichever node judges it): any account's devices actor reads what its account reads, so
+    /// certificates alone (spec/sync-judgement.md §1: an account root reads as its account,
+    /// whichever node judges it): any account root reads what its account reads, so
     /// the chains placed under a sync ID are the same at every node. Never an access, sealing,
     /// boxing or opening decision: there `reads_in`.
     pub(crate) fn cert_reads_in(&self, g: &Tid, t: &Tid) -> bool {
         // counted: tests read how many (read thing, thing) pairs a change judges
         osis_base::costs::count("sync: cert reads judged", 1);
         let actor = self.core.reader_of(g);
-        let reader = self.core.devices_of(&actor).unwrap_or(actor);
+        let reader = self.core.account_of_root(&actor).unwrap_or(actor);
         self.core.may_read(&reader, &self.core.reader_of(t))
     }
 
@@ -773,7 +773,7 @@ impl Engine {
     /// commit ID), spec/permissions.md §5.1; `r`'s own epoch is not current when it is made), so
     /// a rotation of `g` that `r` caused takes nothing from whoever read `g` before it. Like a
     /// rotation's own wrap, it is not subject to `wrap_blocked` (an account's rotation re-keys its
-    /// devices actor in the same commit, so its lists there go as that rotation's do). `None`: `r`
+    /// account root in the same commit, so its lists there go as that rotation's do). `None`: `r`
     /// or no such epoch is held.
     pub(crate) fn list_wrap_secret(&mut self, g: &Tid, r: &CommitId) -> Result<Option<Secret32>> {
         Ok(self.list_wrap_under(g, r))

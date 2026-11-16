@@ -57,7 +57,7 @@ The rebuilt sync core is sans-IO: `Node::handle(Input) -> Outputs`.
 | **Clock jumps to the next wake** | idle time and retry waits | a test passes because time never moved | quiet is defined as "no wake before the horizon", and the differential's run ends past every timer the spec names |
 | **Many small tests on one fixture** | setup | tests coupled through a shared builder | a fixture's shape is in its key; changing a shape is changing its key |
 | **Table-driven rule families** (one plain `#[test]` fn per row calling a shared `case(...)`) | writing, not runtime | none | rows stay individual fns so `tools/spec_map.py` sees each name and citation |
-| **Debug checks stay on** (`check_rebuilt`, sampled `check_index`) | none (about 11%) | cost | they are the incremental-against-from-scratch oracle in every test; keep their sampling |
+| **Debug checks stay on** (`check_rebuilt` per transaction, `check_index` at each engine's end) | none | cost | they are the incremental-against-from-scratch oracle in every test, at every size (notes/test-harnesses.md, Debug checks) |
 
 ## Layers and budget
 The whole sync suite (the sync crate's one `tests/it` binary) is budgeted at about 1,200 G instructions: about 430 CPU-s, a minute of wall on fastbox-0 at the usual load. It runs at about 1.3 times that (Measured layers; issues/test-time.md); `convergence::`, `sims::` and `flows::` dominate, every rule-test module is under 10 CPU-s.

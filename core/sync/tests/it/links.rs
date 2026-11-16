@@ -338,12 +338,12 @@ fn a_joined_redeem_is_followed_past_the_follow_time_until_its_join_is_held_spec_
 
 // spec/permissions.md §7 (Redeem: a redeemer keeps the seed until its grant is at a source and
 // SHOULD discard it then), spec/sync-set.md §4 (A redeem is an accept), spec/sync-ids.md §2
-// (One sync ID per actor: every holder of a role on it syncs it through its home sync ID):
+// (One sync ID per actor: every holder of a role on it syncs it through that sync ID):
 // node 1 redeems node 0's single-use link; once node 0 holds the join, node 1 forgets the link (L
-// acted for no more) and syncs K by its filing: what node 0 writes
+// acted for no more) and syncs K read through D's strong to it: what node 0 writes
 // on K after reaches it. Redeeming the link again, L long gone, is done and writes no second join.
 #[test]
-fn a_held_join_forgets_the_link_and_k_syncs_by_its_filing_spec_permissions_7() {
+fn a_held_join_forgets_the_link_and_k_stays_synced_spec_permissions_7() {
     let mut w = two_nodes();
     let (p0, a0, a1) = (w.node(0).profile.unwrap(), w.node(0).account.unwrap(), w.node(1).account.unwrap());
     let peers = osis_blob::link_peers(w.node(0).key.0, &w.net.reach.items(0), &[]);
@@ -355,7 +355,7 @@ fn a_held_join_forgets_the_link_and_k_syncs_by_its_filing_spec_permissions_7() {
     assert!(!w.node(1).node.redeeming(&link.k), "forgotten once held");
     let s = link.k_sync_id;
     assert!(w.engine(1).read_credentials(&s).unwrap().is_some_and(|c| c.acting.is_empty()), "K read, L acted for no more");
-    assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == [link.k].into()), "K syncs by its filing");
+    assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == [link.k].into()), "K synced read");
     let on_k = w.engine(1).core.on_thing(&link.k).count();
     assert_eq!(w.redeem(1, &link), Waiting::Done, "joined: done");
     w.run();

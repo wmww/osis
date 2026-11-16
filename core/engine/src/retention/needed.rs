@@ -127,8 +127,9 @@ fn needers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Tid>> {
     let refs = crate::engine::refs::to(tx, t)?;
     let core = &*tx.core;
     out.extend(refs.into_iter().filter(|r| core.ix.closure.holds(&r.source) || (r.ak.as_str() == "keys.0" && core.is_account(&r.source))).map(|r| r.source));
-    // an account's devices actor, whose roster its chain is, and its profile
-    out.extend(core.devices_of(t));
+    // an account root and an account's profile: needed by the account (its chain is the root's
+    // roster)
+    out.extend(core.account_of_root(t));
     if let Some(a) = core.first_admin(t).filter(|a| core.is_account(a)) {
         let inbox = crate::flows::inbox::inbox_in(tx, &a)?;
         if tx.core.profile_of(&a, inbox) == Some(*t) {

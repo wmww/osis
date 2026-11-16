@@ -800,7 +800,7 @@ indexes! {
     /// author: when the last goes, `chains_on` loses (author, actor).
     pub acting_on: JSetMap<(Tid, Tid, Tid), CommitId>,
     /// `by_thing` for role commits alone: what an account's chain reads of its role commits on
-    /// its devices actor (`Core::devices_read`), so filing into D moves no account's chain.
+    /// its account root (`Core::devices_read`), so filing into D moves no account's chain.
     pub role_on: JSetMap<(Tid, Tid), CommitId>,
     /// Held commits carrying a purge request, per thing they have a delta on (a request has one
     /// on each thing it names, spec/commits.md §5): what finds a thing's requests
@@ -1083,7 +1083,7 @@ pub struct Core {
     /// `Engine::roster_holders` per sync ID (`memo`): waits and leaving's peers read it per sync
     /// ID at each step.
     pub(crate) roster_holders: memo::Memo<SyncId, Arc<crate::sync::RosterHolders>>,
-    /// This node's account's dial list entries of nodes removed from its devices actor
+    /// This node's account's dial list entries of nodes removed from its account root
     /// (`sync::dial::drop_departed`), followed: settled at each transaction's end that moved what
     /// it read.
     pub(crate) dial_departed: memo::Effects<(), crate::sync::dial::Departed>,
@@ -1201,10 +1201,11 @@ pub struct Core {
     /// another build's rules), so the rebuild check (`apply::check_rebuilt`) skips it.
     #[cfg(debug_assertions)]
     pub(crate) unchecked_tx: bool,
-    /// Debug builds: per aspect, the transactions that dropped bodies of it as covered and
-    /// changed nothing else of it (`apply::check_rebuilt` samples them).
+    /// Debug builds: the aspects valid whole joins or covered drops changed since the rebuild
+    /// check last read them (`apply::check_rebuilt`), checked at the end of the engine's history
+    /// (`Engine::checked_states`). A copy starts empty: its original checks their shared past.
     #[cfg(debug_assertions)]
-    pub(crate) covered_drops_seen: BTreeMap<(Tid, Ak), u64>,
+    pub(crate) unchecked_states: BTreeSet<(Tid, Ak)>,
     /// Debug builds: what a load from the commit records read of each role commit's edge writes
     /// (`apply::load`), for `Engine::check_index` to compare with the persisted rows.
     #[cfg(debug_assertions)]
@@ -1273,7 +1274,7 @@ pub struct Core {
     /// node-sync before it asks its memos; a memo reads it whole (`get`) or up to the next time
     /// that moves its answer (`until`, `Core::horizon`).
     pub time: memo::Clock,
-    /// Accounts this node signs as, seeds from each one's devices actor (`Engine::hold_account`),
+    /// Accounts this node signs as, seeds from each one's account root (`Engine::hold_account`),
     /// retaken on every open.
     pub accounts: memo::Stamped<Tid, Arc<crate::flows::account::HeldAccount>>,
     /// The account this node was removed from and has not dropped what it read as it yet
@@ -1281,7 +1282,7 @@ pub struct Core {
     pub left: BTreeSet<Tid>,
     /// A commit of this node's account applied from elsewhere, or the engine opened (not
     /// durable): what it owes its signing chain is looked at at the end of the next complete
-    /// pass of its devices actor's sync IDs (`Engine::pass_end`, `Engine::signing_due`).
+    /// pass of its account root's sync IDs (`Engine::pass_end`, `Engine::signing_due`).
     pub signing_due: bool,
     /// The account this node is being paired into (`Engine::joining`): kept as its own until
     /// `Engine::paired`.
@@ -1530,7 +1531,7 @@ impl Core {
             #[cfg(debug_assertions)]
             unchecked_tx: self.unchecked_tx.clone(),
             #[cfg(debug_assertions)]
-            covered_drops_seen: self.covered_drops_seen.clone(),
+            unchecked_states: BTreeSet::new(),
             #[cfg(debug_assertions)]
             rebuilt_edges: self.rebuilt_edges.clone(),
             forged: self.forged.clone(),
@@ -2186,7 +2187,7 @@ impl Core {
             #[cfg(debug_assertions)]
             unchecked_tx: _,
             #[cfg(debug_assertions)]
-            covered_drops_seen: _,
+            unchecked_states: _,
             #[cfg(debug_assertions)]
             rebuilt_edges: _,
             #[cfg(debug_assertions)]
@@ -2384,7 +2385,7 @@ impl Core {
             #[cfg(debug_assertions)]
             unchecked_tx: false,
             #[cfg(debug_assertions)]
-            covered_drops_seen: BTreeMap::new(),
+            unchecked_states: BTreeSet::new(),
             #[cfg(debug_assertions)]
             rebuilt_edges: BTreeMap::new(),
             forged: None,
@@ -3387,16 +3388,24 @@ pub struct Engine {
     pub(crate) eph: crate::ephemeral::Eph,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) cfg: Config,
-    /// Debug builds: this open's durable transactions that changed a state or a commit's
-    /// parts, and those of them that changed more than valid joins (`check_index` runs when
-    /// either count reaches a power of 16: 1, 16, 256).
+    /// Debug builds: a durable transaction changed a state or a commit's parts since
+    /// `check_index` last ran; it runs at the end of the engine's history (its drop). A copy
+    /// starts clear: its original checks their shared past.
     #[cfg(debug_assertions)]
-    index_checks: [u64; 2],
+    index_unchecked: bool,
+    /// Debug builds: the wall time the last transaction ran at, which the index is as of
+    /// (`check_index`).
+    #[cfg(debug_assertions)]
+    last_tx_wall: Option<u64>,
+    /// Debug builds: a load (`load`) began and has not finished, so the core is half loaded and
+    /// the drop checks nothing.
+    #[cfg(debug_assertions)]
+    loading: bool,
     /// Tests: an index was edited in memory past the store, so `check_index` does not run.
     #[cfg(test)]
     pub(crate) index_poked: bool,
-    /// Tests, set by hand: `check_index` after every transaction that changed something, not a
-    /// sample (a fix whose divergence the sample may miss).
+    /// Tests, set by hand: `check_index` after every transaction that changed something, not
+    /// only at the end (to find the transaction that diverged).
     #[cfg(test)]
     pub(crate) check_every_tx: bool,
 }
@@ -3458,7 +3467,7 @@ impl Engine {
         let id = Identity::generate(&mut *rng);
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -3488,7 +3497,7 @@ impl Engine {
         };
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
-        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_unchecked: false, #[cfg(debug_assertions)] last_tx_wall: None, #[cfg(debug_assertions)] loading: false, #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
         e.core.node_root = node_root;
         e.load()?;
         Ok(e)
@@ -3497,6 +3506,10 @@ impl Engine {
     /// Reads the store whole, as an open does: at open, and in place once the store works again
     /// after a write whose outcome was unknown (`run`).
     fn load(&mut self) -> Result<()> {
+        #[cfg(debug_assertions)]
+        {
+            self.loading = true;
+        }
         self.settle_blobs()?;
         // the account first: judging what is held reads which commits are this node's own (an own
         // part judged invalid stays, `retention::goes_invalid`)
@@ -3518,6 +3531,10 @@ impl Engine {
         // what this node may not write could not be compacted: weighed once it may
         self.owe_unwritable_held()?;
         self.core.timer_floor = self.next_timer()?.unwrap_or(u64::MAX);
+        #[cfg(debug_assertions)]
+        {
+            self.loading = false;
+        }
         Ok(())
     }
 
@@ -3730,6 +3747,10 @@ impl Engine {
         let _after;
         let now = self.now().0;
         self.core.time.set(now);
+        #[cfg(debug_assertions)]
+        {
+            self.last_tx_wall = Some(now);
+        }
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         self.core.memory_tx = false;
@@ -3738,9 +3759,9 @@ impl Engine {
         {
             self.core.unchecked_tx = false;
         }
-        // debug builds: whether `check_index` runs after this transaction
+        // debug builds: whether the transaction changed a state or a part
         #[cfg(debug_assertions)]
-        let mut sample = false;
+        let mut changed = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
@@ -3851,21 +3872,9 @@ impl Engine {
                 // every validity change was judged before the index is persisted
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty() && tx.core.ix.epochs_due.is_empty()), "stale validity left unjudged: {:?} {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits, *tx.core.ix.epochs_due);
                 #[cfg(debug_assertions)]
-                if r.is_ok() && !tx.core.unchecked_tx {
+                if r.is_ok() {
                     match crate::apply::check_rebuilt(&mut tx) {
-                        Ok(c) if c != crate::apply::TxChange::None && !tx.txn.is_memory() => {
-                            let more = c == crate::apply::TxChange::More;
-                            let n = &mut self.index_checks;
-                            n[0] += 1;
-                            n[1] += u64::from(more);
-                            let sixteenth = |n: u64| n.is_power_of_two() && n.trailing_zeros().is_multiple_of(4);
-                            sample = sixteenth(n[0]) || (more && sixteenth(n[1]));
-                            #[cfg(test)]
-                            {
-                                sample |= self.check_every_tx;
-                            }
-                        }
-                        Ok(_) => {}
+                        Ok(c) => changed = c && !tx.txn.is_memory(),
                         Err(e) => r = Err(e),
                     }
                 }
@@ -3925,10 +3934,12 @@ impl Engine {
                     self.core.setting_waits_judging = false;
                     r?;
                 }
-                #[cfg(test)]
-                let sample = sample && !self.index_poked;
                 #[cfg(debug_assertions)]
-                if sample {
+                {
+                    self.index_unchecked |= changed;
+                }
+                #[cfg(test)]
+                if changed && self.check_every_tx && !self.index_poked {
                     self.check_index();
                 }
                 Ok(v)
@@ -3957,12 +3968,15 @@ impl Engine {
         fresh.accounts = std::mem::take(&mut self.core.accounts);
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
         fresh.waits = std::mem::take(&mut self.core.waits);
-        // a feed of the old index's commits: started again on the fresh one
-        fresh.waits.held_feed = None;
         fresh.wakes = self.core.wakes.take();
         // the sync units' sources are the handle's, set between transactions (`set_sourced`)
         fresh.sourced_elsewhere = std::mem::take(&mut self.core.sourced_elsewhere);
         fresh.node_root = self.core.node_root;
+        // states loaded as stored: still unchecked
+        #[cfg(debug_assertions)]
+        {
+            fresh.unchecked_states = std::mem::take(&mut self.core.unchecked_states);
+        }
         // and so is what the sync set's walk takes no path through: the fresh closure is built cut
         fresh.ix.closure.set_cut(None, self.core.ix.closure.cut().iter().copied().collect())?;
         self.core = fresh;
@@ -3980,9 +3994,14 @@ impl Engine {
 
     /// An empty `Core` with this one's identity, sessions, clock and settings.
     fn blank_core(&self) -> Core {
-        let mut fresh = Core::new(self.core.id.clone(), self.clock.clone(), self.core.session, self.core.expiring, self.store.row_changes());
+        self.blank_core_on(self.clock.clone())
+    }
+
+    /// `blank_core` on `clock`.
+    fn blank_core_on(&self, clock: Arc<dyn Clock>) -> Core {
+        let mut fresh = Core::new(self.core.id.clone(), clock.clone(), self.core.session, self.core.expiring, self.store.row_changes());
         fresh.later_sessions = self.core.later_sessions;
-        fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
+        fresh.hlc = Hlc::new(clock, self.core.hlc.last());
         fresh.commits_watched = self.core.commits_watched;
         fresh.refs_watched = self.core.refs_watched;
         fresh.commit_listeners = self.core.commit_listeners.clone();
@@ -4005,16 +4024,35 @@ impl Engine {
     /// a function of the held set), the open decoding no header, reading no blob (what a held
     /// record needs is in the store, whatever blobs expiry or a drop took) and judging every
     /// part as held. Both load in a transaction that is dropped, so the store is as it was. Panics with the
-    /// difference. Debug builds run it after sampled transactions (`run`); tests call it where
-    /// a reproducer's point is.
+    /// difference. Debug builds run it at the end of the engine's history (its drop), with the
+    /// states left unchecked (`checked_states`); tests call it where a reproducer's point is.
     #[doc(hidden)]
     pub fn check_index(&mut self) {
+        let r = self.checked_index();
+        assert!(r.is_ok(), "check_index: {:?}", r.err());
+    }
+
+    /// `check_index`, a store failure returned (every other failure panics).
+    fn checked_index(&mut self) -> Result<()> {
+        #[cfg(debug_assertions)]
+        {
+            self.checked_states()?;
+            self.index_unchecked = false;
+        }
         // key actors are derived: held exactly while `hold_key_actor` or a followed link names them
         let named: BTreeSet<Tid> = self.core.held_keys.keys().chain(self.core.followed_links.all().values().map(|(_, l)| l)).copied().collect();
         assert_eq!(self.core.key_actors.keys().copied().collect::<BTreeSet<_>>(), named, "key actors: held or named by a followed link");
-        self.check_closure();
+        match self.checked_closure() {
+            Err(e @ Error::Store(_)) => return Err(e),
+            r => assert!(r.is_ok(), "node closure walked afresh: {:?}", r.err()),
+        }
+        // the index is as of the last transaction: a timer due since has not run
+        #[cfg(debug_assertions)]
+        let clock: Arc<dyn Clock> = Arc::new(osis_base::ManualClock::new(WallMs(self.last_tx_wall.unwrap_or(self.now().0))));
+        #[cfg(not(debug_assertions))]
+        let clock = self.clock.clone();
         for rebuild in [false, true] {
-            let mut fresh = self.blank_core();
+            let mut fresh = self.blank_core_on(clock.clone());
             fresh.key_actors = self.core.key_actors.clone();
             fresh.accounts = self.core.accounts.clone();
             let mut rng = SeededRng::from_u64(0);
@@ -4042,8 +4080,11 @@ impl Engine {
             // its work is not the measured code's (scale checks count work)
             let r = osis_base::costs::paused(|| osis_perm::uncounted(load));
             let at = if rebuild { "rebuilt from the commit records" } else { "opened from the persisted index" };
+            if let Err(e @ Error::Store(_)) = r {
+                return Err(e);
+            }
             assert!(r.is_ok(), "{at}: {:?}", r.err());
-            let Ok(Some(reads)) = r else { return };
+            let Ok(Some(reads)) = r else { return Ok(()) };
             assert!(rebuild || reads == 0, "{at}: {reads} blob reads");
             // compared typed; the digests' text only for the message
             if !self.core.same_index(&fresh) {
@@ -4057,6 +4098,19 @@ impl Engine {
                 assert_eq!(crate::apply::validity::misjudged(&fresh), None, "{at}: judged anew");
             }
         }
+        Ok(())
+    }
+
+    /// Debug builds: each aspect valid joins or covered drops changed since the rebuild check
+    /// last read it (`Core::unchecked_states`) holds exactly the join of its held bodies
+    /// (`apply::check_states`), read in a transaction dropped after. Panics with the difference; a failing read returned.
+    #[cfg(debug_assertions)]
+    fn checked_states(&mut self) -> Result<()> {
+        let aspects = std::mem::take(&mut self.core.unchecked_states);
+        if aspects.is_empty() {
+            return Ok(());
+        }
+        osis_base::costs::paused(|| osis_perm::uncounted(|| memo::unrecorded(|| self.read(|tx| crate::apply::check_states(tx, aspects)))))
     }
 
     /// Rebuilds every in-memory cache and index from the store (keeps identity, clock and
@@ -4091,6 +4145,26 @@ impl Engine {
     fn start_detection(&mut self) {
         self.core.detect = true;
         self.core.timelines.aside().detect(true);
+    }
+}
+
+/// Debug builds: the end of the engine's history checks what its transactions left unchecked
+/// (`check_index`, `checked_states`), unless a panic is already unwinding.
+#[cfg(debug_assertions)]
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // nor on a half-loaded core, nor when a write's outcome is unknown (the next transaction
+        // would load the store again)
+        if std::thread::panicking() || self.loading || self.store.writes().unknown != self.unknown_seen {
+            return;
+        }
+        #[cfg(test)]
+        if self.index_poked {
+            return;
+        }
+        let r = if self.index_unchecked { self.checked_index() } else { self.checked_states() };
+        // a store that fails (a crash test's) has nothing to check
+        assert!(matches!(r, Ok(()) | Err(Error::Store(_))), "end of history: {:?}", r.err());
     }
 }
 

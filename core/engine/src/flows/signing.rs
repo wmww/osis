@@ -1,5 +1,5 @@
 //! What a node of account P writes of P's signing chain (spec/permissions.md §3, §5.5,
-//! spec/crypto.md §9): the rotation a removal from P's devices actor D requires, with its thing
+//! spec/crypto.md §9): the rotation a removal from P's account root D requires, with its thing
 //! lists; its take-up of the seeds D's `account.0` holds.
 //!
 //! Principle: a revocation ends the standing of what was signed at the epochs it closes, so a
@@ -117,7 +117,7 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     supersedes.sort();
     let header = RotationHeader { signing_key: signing, kem_key: keys.kem.public().clone(), supersedes, names: Vec::new(), takes, revokes: !removes.is_empty(), devices, list_root: root, seeds };
     let rotation = AccountRotation { header, merge_keys: Vec::new(), more: vec![keys.inner.clone()], lists, at: None };
-    commit_rotation(tx, p, held.devices, &keys, &roster, rotation)
+    commit_rotation(tx, p, held.root, &keys, &roster, rotation)
 }
 
 /// The merge of every head of this node's account (spec/crypto.md §9, Merges): a certificate of
@@ -145,7 +145,7 @@ pub(crate) fn merge_heads(tx: &mut Tx<'_>, p: Tid) -> Result<Option<CommitId>> {
     let (Some(at), Some(at_keys)) = (tips.first().copied(), tip_keys.first().cloned()) else { return Ok(None) };
     let roster = v.roster_joining(&heads);
     let me = tx.core.id.tid();
-    let derive = super::custody::derivers(tx.core, &v, &held.devices, &tip_keys);
+    let derive = super::custody::derivers(tx.core, &v, &held.root, &tip_keys);
     #[cfg(test)]
     let derive = if tx.core.faults.merge_random { BTreeSet::new() } else { derive };
     let lacking: BTreeSet<Tid> = roster.iter().filter(|m| **m != me && !derive.contains(*m)).copied().collect();
@@ -164,7 +164,7 @@ pub(crate) fn merge_heads(tx: &mut Tx<'_>, p: Tid) -> Result<Option<CommitId>> {
     let merge_keys = tip_keys.iter().skip(1).map(|k| k.signing.clone()).collect();
     let more = tip_keys.iter().skip(1).map(|k| k.inner.clone()).chain([keys.inner.clone()]).collect();
     let rotation = AccountRotation { header, merge_keys, more, lists: Vec::new(), at: Some((at, at_keys)) };
-    commit_rotation(tx, p, held.devices, &keys, &roster, rotation)
+    commit_rotation(tx, p, held.root, &keys, &roster, rotation)
 }
 
 /// The merge of `heads` this node can make: its tips (ascending) and keys, when there are
@@ -439,7 +439,7 @@ fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
 /// each thing's listing wherever any other thing goes. A listing needs no role on a thing; one
 /// it may write on only later waits whole, one that is gone here is left out.
 fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitId) -> Result<bool> {
-    if tx.core.accounts.get(&p).is_none_or(|a| !tx.core.of_devices(&a.devices)) {
+    if tx.core.accounts.get(&p).is_none_or(|a| !tx.core.on_root_roster(&a.root)) {
         return Ok(true);
     }
     if tx.core.account_signing(&p).ok().flatten().is_none() {
@@ -494,7 +494,7 @@ fn witness(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
     Ok(true)
 }
 
-/// Judges account `p` (devices actor `d`) again now that this node took it up or left it
+/// Judges account `p` (account root `d`) again now that this node took it up or left it
 /// (`Engine::take_up`): the epoch rule reads D only at a node holding the account, so every
 /// standing may move (spec/permissions.md §5.4, Following, at a node of P and outside it), the
 /// account's commits on D among them, whose standing may move with no epoch's (Waiting counts
@@ -521,7 +521,7 @@ pub(crate) fn judge_account_again(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()>
 /// node a removal took off the line it follows stays while another held line keeps it, so its
 /// user's switch to that line takes.
 pub(crate) fn leave_if_removed(tx: &mut Tx<'_>) -> Result<()> {
-    let Some((p, d)) = tx.core.account_devices() else { return Ok(()) };
+    let Some((p, d)) = tx.core.account_and_root() else { return Ok(()) };
     let (Some(v), Some(held)) = (tx.core.account_view(&p), tx.core.accounts.get(&p).cloned()) else { return Ok(()) };
     if kept(&v, &held, &tx.core.id.tid()) {
         return Ok(());
@@ -537,7 +537,7 @@ pub(crate) fn kept(v: &super::account::AccountView, held: &super::account::HeldA
     tips.peek().is_none() || tips.any(|t| v.keeps(&t, me))
 }
 
-/// `leave_if_removed` of account `p` with devices actor `d`.
+/// `leave_if_removed` of account `p` with account root `d`.
 pub(crate) fn leave(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()> {
     tx.core.accounts.remove(&p);
     super::custody::shred(tx, &p)?;
@@ -628,7 +628,7 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Vec<Comm
         return Ok(Vec::new());
     }
     let Some(p) = tx.core.member() else { return Ok(Vec::new()) };
-    let Some(d) = tx.core.accounts.get(&p).map(|a| a.devices) else { return Ok(Vec::new()) };
+    let Some(d) = tx.core.accounts.get(&p).map(|a| a.root) else { return Ok(Vec::new()) };
     let Some(v) = tx.core.account_view(&p) else { return Ok(Vec::new()) };
     if !signs_for(tx.core, &d, &v) {
         return Ok(Vec::new());
@@ -650,12 +650,12 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Vec<Comm
 /// revocation of itself.
 pub(crate) fn signs_for(core: &crate::engine::Core, d: &Tid, v: &super::account::AccountView) -> bool {
     let me = core.id.tid();
-    core.of_devices(d) && !v.taken().iter().any(|r| v.removes(r).contains(&me))
+    core.on_root_roster(d) && !v.taken().iter().any(|r| v.removes(r).contains(&me))
 }
 
 impl Engine {
     /// What this node owes its account's signing chain, decided at the end of a complete pass
-    /// of its devices actor's sync IDs (node-sync), so two forks and the merge of another node
+    /// of its account root's sync IDs (node-sync), so two forks and the merge of another node
     /// are both in: the rotation due (`rotations_due`), then the seed re-seals of its heads
     /// (`custody::reseal_seeds`).
     pub fn signing_due(&mut self) -> Result<Done> {

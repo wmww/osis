@@ -317,7 +317,7 @@ fn class(rank: Rank, deposited: bool) -> Option<(u8, u64)> {
 /// Whether what a source shows of entry `b` of S is kept (spec/sync-judgement.md §3 `known`),
 /// once its message's bodies settled: only of an entry this node holds or holds a tombstone of
 /// under S, or one whose body it took while the message was in hand (`taken`: a piece, records,
-/// an inbox blob), so what a source lists costs this node in proportion to what it holds or
+/// a sealed fire), so what a source lists costs this node in proportion to what it holds or
 /// took; a store read that fails keeps nothing (a later listing shows it again). Not built: a
 /// body fetched lazily.
 fn concerns(ctx: &mut Ctx, p: Option<&Pulling>, s: &SyncId, b: &BlobId) -> bool {

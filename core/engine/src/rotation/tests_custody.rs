@@ -47,7 +47,7 @@ fn x() -> Ak {
     Ak::new("x:a.0").unwrap()
 }
 
-/// The setup's actors: account P, its devices actor D, thing t (R1 writes it), plain thing u.
+/// The setup's actors: account P, its account root D, thing t (R1 writes it), plain thing u.
 #[derive(Clone, Copy)]
 struct Ids {
     p: Tid,
@@ -96,7 +96,7 @@ fn setup() -> (LocalPeer, Ids) {
         lp.hold_at(R2, t);
         lp.sync_all().unwrap();
         lp.advance(1000);
-        (lp, Ids { p: a.account, d: a.devices, t, u })
+        (lp, Ids { p: a.account, d: a.root, t, u })
     })
 }
 

@@ -330,7 +330,7 @@ codec_struct! {
     pub struct Tag { 0 color: Option<String> }
 }
 
-/// `account.0` on an account's devices actor D (spec/data-model.md §9): the signing keys of the
+/// `account.0` on an account root D (spec/data-model.md §9): the signing keys of the
 /// epochs whose seeds the account's commits on D box. It marks D as the account's.
 pub type Account = BTreeSet<Vec<u8>>;
 

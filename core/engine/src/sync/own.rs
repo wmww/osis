@@ -82,7 +82,7 @@ impl OwnCommits {
 }
 
 impl Engine {
-    /// What is kept per sync ID asked (tests: what unsyncing leaves): sync IDs whose own
+    /// What is kept per sync ID asked (tests: what a release leaves): sync IDs whose own
     /// commits are kept, own-commit candidates followed, sync IDs whose pass want is kept.
     #[doc(hidden)]
     pub fn kept_per_sync_id(&self) -> (usize, usize, usize) {

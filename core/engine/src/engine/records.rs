@@ -106,7 +106,7 @@ pub const SIDES: &[u8] = b"sides";
 /// The seeds of account epochs in this node's custody (`flows::custody`): `sd/` + the account's
 /// tid + the epoch's signing key, the 32-byte seed. Shredded when the node leaves the account.
 pub const SEEDS: &[u8] = b"sd/";
-/// The account this node belongs to and its devices actor (two tids).
+/// The account this node belongs to and its account root (two tids).
 pub const ACCOUNT: &[u8] = b"account";
 /// Thing lists held (`flows::lists`): `tl/` + rotation ID + thing + be64 index, the `ThingCert`.
 /// Kept for good, like the role commits they name.

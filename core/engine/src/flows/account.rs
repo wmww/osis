@@ -1,5 +1,5 @@
 //! Accounts (spec/permissions.md §1, spec/crypto.md §3, §9): creating one (the account, its
-//! devices actor D, its profile), holding its epoch seeds from D's `account.0`, and what signing
+//! account root D, its profile), holding its epoch seeds from D's `account.0`, and what signing
 //! as it and sealing to it read from the held signing chain.
 
 use super::sync_ids::{ReaderKey, new_sync_id};
@@ -24,7 +24,8 @@ use std::sync::Arc;
 /// An account this node signs as (`Engine::hold_account`).
 #[derive(Clone, Debug)]
 pub struct HeldAccount {
-    pub devices: Tid,
+    /// Its account root D.
+    pub root: Tid,
     /// The first epoch's signing key (the creation record's).
     pub first: VerifyingKey,
     /// The keys of the epochs whose seeds are held, by signing public key.
@@ -35,7 +36,7 @@ pub struct HeldAccount {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreatedAccount {
     pub account: Tid,
-    pub devices: Tid,
+    pub root: Tid,
     pub profile: Tid,
 }
 
@@ -563,24 +564,24 @@ impl Core {
         d.minter.into_values().chain(d.certifiers.into_values().flatten()).chain(d.adds.into_values().flatten()).chain(d.removes.into_values().flatten()).chain(d.first).collect()
     }
 
-    /// The account `d` is the devices actor of: its first admin, an account, when that account
+    /// The account `d` is the account root of: its first admin, an account, when that account
     /// wrote `account.0` on it. Only a commit signed as the account counts:
-    /// any signer's header can name the aspect, and a devices actor reads as its account wherever
+    /// any signer's header can name the aspect, and an account root reads as its account wherever
     /// chains and lists are placed (`Engine::cert_reads_in`), so a thing another writer marked
     /// would carry the account's private lists to its own readers.
-    pub(crate) fn devices_of(&self, d: &Tid) -> Option<Tid> {
+    pub(crate) fn account_of_root(&self, d: &Tid) -> Option<Tid> {
         let p = self.first_admin(d).filter(|p| self.is_account(p))?;
         let ak = osis_base::Ak::new("account.0").ok()?;
         let by_p = |(_, c): &(osis_base::Ts, CommitId)| self.ix.commits.get(c).is_some_and(|m| m.view.author == p);
         self.ix.by_aspect.get(&(*d, ak))?.iter().any(by_p).then_some(p)
     }
 
-    /// Whether this node is on D's roster as it reads it, `d` its account's devices actor
+    /// Whether this node is on D's roster as it reads it, `d` its account root
     /// (`devices_roster`). Whom it boxes and lists for; never what it holds (custody,
     /// `flows::custody`) nor whether it leaves (`signing::leave_if_removed`).
-    pub(crate) fn of_devices(&self, d: &Tid) -> bool {
+    pub(crate) fn on_root_roster(&self, d: &Tid) -> bool {
         let me = self.id.tid();
-        self.devices_of(d).is_some_and(|p| self.devices_roster(&p).contains(&me))
+        self.account_of_root(d).is_some_and(|p| self.devices_roster(&p).contains(&me))
     }
 
     /// D's roster of account `p` as this node reads it (`AccountView::roster`): empty but at a
@@ -592,17 +593,17 @@ impl Core {
         self.account_view(p).map(|v| v.roster().clone()).unwrap_or_default()
     }
 
-    /// The account held here whose devices actor is `d`.
-    pub(crate) fn held_devices_of(&self, d: &Tid) -> Option<Tid> {
-        self.accounts.iter().find(|(_, a)| a.devices == *d).map(|(p, _)| *p)
+    /// The account held here whose account root is `d`.
+    pub(crate) fn held_account_of_root(&self, d: &Tid) -> Option<Tid> {
+        self.accounts.iter().find(|(_, a)| a.root == *d).map(|(p, _)| *p)
     }
 
-    /// Who holds a role on `d`, a held account's devices actor, and at what: D bears no edge
+    /// Who holds a role on `d`, a held account root, and at what: D bears no edge
     /// write, so its roster is the chain's (spec/permissions.md §5.4, Roster), each device on it
     /// at admin, and the account at admin by its record. `None` when `d` is no such actor: its
     /// timeline says.
-    pub(crate) fn devices_holders(&self, d: &Tid) -> Option<BTreeMap<Tid, Role>> {
-        let p = self.held_devices_of(d)?;
+    pub(crate) fn root_holders(&self, d: &Tid) -> Option<BTreeMap<Tid, Role>> {
+        let p = self.held_account_of_root(d)?;
         Some(self.devices_roster(&p).into_iter().chain([p]).map(|m| (m, Role::Admin)).collect())
     }
 
@@ -610,10 +611,10 @@ impl Core {
         self.created(t).is_some_and(CreationRecord::is_account)
     }
 
-    /// This node's account and its devices actor, when it holds the account.
-    pub fn account_devices(&self) -> Option<(Tid, Tid)> {
+    /// This node's account and its account root, when it holds the account.
+    pub fn account_and_root(&self) -> Option<(Tid, Tid)> {
         let p = self.account.get()?;
-        Some((p, self.accounts.get(&p)?.devices))
+        Some((p, self.accounts.get(&p)?.root))
     }
 
     /// The signing chain of account `p` from the rotations held (`None`: `p` is not known as an
@@ -939,7 +940,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         };
         let old: BTreeSet<CommitId> = was.as_ref().map_or_else(|| [FIRST_EPOCH].into(), |j| j.epochs.keys().copied().collect());
         let moved: BTreeSet<CommitId> = now.keys().copied().chain(old).filter(|e| now.get(e).cloned() != get(&was, e)).collect();
-        // an epoch come to be held: what pends on it is examined again (`waits::Wake::Commit`)
+        // an epoch come to be held: what pends on it is examined again (`waits::Wake::Epoch`)
         tx.core.waits.epochs_held.extend(moved.iter().filter(|e| now.get(*e).is_some_and(|x| x.1.is_some()) && get(&was, e).is_none_or(|x| x.1.is_none())).copied());
         let mut cands: BTreeSet<CommitId> = due;
         for e in &moved {
@@ -1105,8 +1106,8 @@ fn first_kem(keys: Option<Keys>, signing: &VerifyingKey) -> Option<KemPublicKey>
 
 impl Engine {
     /// Creates an account (spec/permissions.md §1): the account at its first epoch (its creation
-    /// nonce naming this node as its creation device, spec/crypto.md §3), its devices actor D
-    /// (secrets of its own boxed to this node, its home sync ID, `account.0`) and its profile, one
+    /// nonce naming this node as its creation device, spec/crypto.md §3), its account root D
+    /// (secrets of its own boxed to this node, its sync ID, `account.0`) and its profile, one
     /// commit signed as the account.
     pub fn create_account(&mut self) -> Result<(CreatedAccount, Done)> {
         let (seed, nonce_d) = self.run(|tx| Ok((Secret32::random(&mut *tx.rng), thing_record(Tid::from_bytes([0; 15]), &mut *tx.rng))))?;
@@ -1119,7 +1120,7 @@ impl Engine {
         let d_record = CreationRecord::Thing { admin: p, nonce: *nonce_d.nonce(), link: None };
         let d = d_record.tid();
         self.core.account.set(Some(p));
-        self.core.accounts.insert(p, Arc::new(HeldAccount { devices: d, first: signing, keys: [(signing, keys.clone())].into() }));
+        self.core.accounts.insert(p, Arc::new(HeldAccount { root: d, first: signing, keys: [(signing, keys.clone())].into() }));
         let res = self.run(|tx| create_account_in(tx, record, d_record, &keys));
         if res.is_err() {
             self.core.account.set(None);
@@ -1127,10 +1128,10 @@ impl Engine {
         }
         let (profile, done) = res?;
         self.save_account(&p, &d)?;
-        Ok((CreatedAccount { account: p, devices: d, profile }, done))
+        Ok((CreatedAccount { account: p, root: d, profile }, done))
     }
 
-    /// Takes up account `p` from the seeds on its devices actor `d` (`account.0`, readable here
+    /// Takes up account `p` from the seeds on its account root `d` (`account.0`, readable here
     /// as a node of the account): this node signs as it and its boxes open, and judges its chain
     /// as a node of it.
     pub fn hold_account(&mut self, p: &Tid, d: &Tid) -> Result<()> {
@@ -1156,7 +1157,7 @@ impl Engine {
         }
         let was = self.core.account.get();
         self.core.account.set(Some(*p));
-        self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, keys }));
+        self.core.accounts.insert(*p, Arc::new(HeldAccount { root: *d, first, keys }));
         let (p, d) = (*p, *d);
         let r = self.run(|tx| {
             match judge {
@@ -1205,7 +1206,7 @@ impl Engine {
         self.core.accounts.get(p).map(|a| a.keys.values().map(|k| k.kem.clone()).collect()).unwrap_or_default()
     }
 
-    /// The account this node belongs to and its devices actor, once it has joined one.
+    /// The account this node belongs to and its account root, once it has joined one.
     pub fn account(&mut self) -> Result<Option<(Tid, Tid)>> {
         let Some(b) = self.read(|tx| Ok(tx.txn.get_local(records::ACCOUNT)?))? else { return Ok(None) };
         let pair = |r: std::ops::Range<usize>| b.get(r).and_then(|x| <[u8; 15]>::try_from(x).ok()).map(Tid::from_bytes);
@@ -1238,7 +1239,7 @@ impl Engine {
     /// spec/crypto.md §9) and D's new secrets; one on it (stranded) is re-sealed D's secrets, its
     /// seeds following by the seed re-seals. Returns the commits to send it directly: the
     /// rotation or re-seal, D's and P's certificates and D's `sync.0` commits (the new node
-    /// downloads the rest under the home sync ID).
+    /// downloads the rest under D's sync ID).
     pub fn pair(&mut self, node: &Tid) -> Result<(Done, Vec<CommitId>)> {
         let (p, d) = self.account()?.ok_or(Error::Misuse("not a node of an account"))?;
         let n = *node;
@@ -1315,7 +1316,7 @@ impl Engine {
     /// `paired` but ending `joining`.
     fn pair_take_up(&mut self, p: &Tid) -> Result<()> {
         let node = self.tid();
-        let d = self.devices_held(p).ok_or(Error::UnknownThing(*p))?;
+        let d = self.root_held(p).ok_or(Error::UnknownThing(*p))?;
         self.hold_account(p, &d)?;
         if !self.core.devices_roster(p).contains(&node) {
             self.core.accounts.remove(p);
@@ -1327,11 +1328,11 @@ impl Engine {
         self.hold(osis_base::Strong(d))
     }
 
-    /// The devices actor of account `p` as held here: a thing with `account.0` whose devices
-    /// actor it is (`Core::devices_of`).
-    pub fn devices_held(&self, p: &Tid) -> Option<Tid> {
+    /// The account root of account `p` as held here: a thing with `account.0` that is `p`'s
+    /// (`Core::account_of_root`).
+    pub fn root_held(&self, p: &Tid) -> Option<Tid> {
         let ak = osis_base::Ak::new("account.0").ok()?;
-        self.core.ix.aspect_things.get(&ak)?.iter().find(|t| self.core.devices_of(t) == Some(*p)).copied()
+        self.core.ix.aspect_things.get(&ak)?.iter().find(|t| self.core.account_of_root(t) == Some(*p)).copied()
     }
 
     /// The node whose inner signature `blob` carries, when this node holds the seed of the epoch
