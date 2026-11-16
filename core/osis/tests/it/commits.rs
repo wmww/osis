@@ -2,6 +2,7 @@
 //! Commit listings' relations and filters, undo, redo, revert (notes/api.md Commits; spec/commits.md
 //! §7, spec/crdt.md §4.6).
 
+use osis::internals::Held as _;
 use osis::internals::CommitRaw as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
@@ -19,7 +20,7 @@ fn undo_redo_cycle_spec_commits_7() {
     typed_any(&db, &["t:a.0", "t:b.0", "t:other.0", "t:x.0"]);
     let k = ak("t:x.0");
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     keep_all(&mut w, t);
     w.commit().unwrap();
     db.commit_set(t, kept(&db, &k.clone()), &Value::Int(1)).unwrap();
@@ -67,7 +68,7 @@ fn new_commit_clears_redo_spec_commits_7() {
     typed_any(&db, &["t:a.0", "t:b.0"]);
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     keep_all(&mut w, t);
     w.commit().unwrap();
     db.commit_set(t, kept(&db, &a.clone()), &Value::Int(1)).unwrap();
@@ -90,7 +91,7 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
     let db = db(0);
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     db.commit_set(t, osis::DynamicAspectKey::untyped(a.clone()), &Value::Int(1)).unwrap();
     let newest = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(b.clone())).set(&Value::Int(1))).stamp.id.raw();
@@ -131,7 +132,7 @@ fn undo_redo_across_nodes_spec_commits_7() {
     typed_any(&da, &["t:x.0", "t:y.0"]);
     typed_any(&db, &["t:x.0", "t:y.0"]);
     let k = ak("t:x.0");
-    let t = da.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();
+    let t = da.commit_with(|w| { let t = w.create_held()?; keep_all(w, t); Ok(t) }).unwrap();
     let c1 = commit_with(&da, |w| w.at(t, kept(&da, &k.clone())).set(&Value::Int(1)));
     sync2(&da, &db);
     let get = |d: &Osis| d.at(t, kept(&da, &k.clone())).get().unwrap();
@@ -180,7 +181,7 @@ fn exact_undo_spec_crdt_4_6() {
     // first (spec/commits.md §7)
     let t = a
         .commit_with(|w| {
-            let t = w.create()?;
+            let t = w.create_held()?;
             w.at(t, osis::core::RETENTION).set(&crate::common::setting(&[("x:doc.0", crate::common::DAY)]))?;
             Ok(t)
         })
@@ -233,7 +234,7 @@ fn one_moment_many_commits_lose_none_api_commits() {
     let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     typed_any(&db, &["t:x.0"]);
     let k = kept(&db, &ak("t:x.0"));
-    let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();
+    let t = db.commit_with(|w| { let t = w.create_held()?; keep_all(w, t); Ok(t) }).unwrap();
     let made: Vec<_> = (0..5).map(|i| commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(i)))).collect();
     let at = made[0].stamp.written;
     assert!(made.iter().all(|m| m.stamp.written == at), "the clock did not move");
@@ -268,7 +269,7 @@ fn purged_part_lists_until_its_expiry_spec_commits_7() {
     let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     typed_any(&db, &["t:x.0"]);
     let k = ak("t:x.0");
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = db.commit_with(|w| w.create_held()).unwrap();
     db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&setting(&[("t:x.0", osis::History::FOREVER)]))).unwrap();
     let set = |v: i64, expires: bool| {
         let mut w = db.write();
@@ -313,7 +314,7 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
         let mut w = a.write();
         let k = (n - things.len()).min(500);
         // plain: made under the account root, whose keys they take
-        things.extend((0..k).map(|_| w.create_with_admin(a.account_root()).unwrap()));
+        things.extend((0..k).map(|_| w.create_held_with_admin(a.account_root()).unwrap()));
         w.commit().unwrap();
     }
     deliver(&a, &b);
@@ -321,7 +322,7 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
     let big: Vec<u8> = (0..osis_base::format::MAX_BLOB + 1).map(|i| (i % 251) as u8).collect();
     let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
     let mut w = a.write();
-    let large = w.create_with_admin(a.account_root()).unwrap();
+    let large = w.create_held_with_admin(a.account_root()).unwrap();
     w.at(large, key.clone()).path(osis::p![]).set_stream(&big[..]).unwrap();
     for (i, t) in things.iter().enumerate() {
         w.at(*t, key.clone()).set(&Value::Int(i as i64)).unwrap();
@@ -379,7 +380,7 @@ fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     let r0 = osis_perm::roles_reached();
     let mut w = a.write();
     // plain: made under the account root, whose keys they take
-    let things: Vec<_> = (0..n).map(|_| w.create_with_admin(a.account_root()).unwrap()).collect();
+    let things: Vec<_> = (0..n).map(|_| w.create_held_with_admin(a.account_root()).unwrap()).collect();
     w.commit().unwrap();
     deliver(&a, &b);
     add("create", costs::take(), osis_perm::roles_reached() - r0);

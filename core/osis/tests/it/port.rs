@@ -3,6 +3,7 @@
 //! (`connect_node`, `unit_source`) against nodes on one in-process test network
 //! (`internals::ManualNet`), one manual clock. A call on the test network runs it until quiet.
 
+use osis::internals::Held as _;
 use crate::common::TestWrites as _;
 use crate::common::{ak, cfg, clock};
 use osis::internals::{ManualClock, ManualNet};
@@ -61,7 +62,7 @@ fn world(role: Option<Role>) -> World {
     let net = ManualNet::new(c.clone());
     let (a, addr) = node(&net, 1, &c);
     let mut w = a.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, v()).set(&Value::Int(5)).unwrap();
     w.commit().unwrap();
     let (actor, secret) = a.add_client(None).unwrap();
@@ -114,10 +115,10 @@ fn a_thin_client_creates_under_a_thing_it_writes_notes_client_port() {
     let w = world(Some(Role::Admin));
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
     let mut x = cl.write();
-    x.create().unwrap();
+    x.create_held().unwrap();
     assert!(matches!(x.commit(), Err(Error::Invalid(_))));
     let mut x = cl.write();
-    let n = x.create_with_admin(w.t).unwrap();
+    let n = x.create_held_with_admin(w.t).unwrap();
     x.at(n, v()).set(&Value::Int(1)).unwrap();
     x.commit().unwrap();
     assert_eq!(w.a.at(n, v()).get().unwrap(), Some(Value::Int(1)));
@@ -303,7 +304,7 @@ fn made_id(m: &Msg) -> [u8; 32] {
 fn a_hidden_thing_notifies_nothing_spec_wire_11() {
     let w = world(None);
     let mut x = w.a.write();
-    let seen = x.create().unwrap();
+    let seen = x.create_held().unwrap();
     x.at(seen, v()).set(&Value::Int(1)).unwrap();
     x.commit().unwrap();
     w.a.grant(seen, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
@@ -540,14 +541,12 @@ fn a_socket_client_over_a_real_socket_spec_sync_transport_6() {
     o.direct_sync = false;
     let a = osis::internals::create(o).unwrap();
     a.listen_socket().unwrap();
-    let t = crate::common::commit_with(&a, |x| {
-        let t = x.create()?;
-        x.at(t, v()).set(&Value::Int(5))
+    let t = a.commit_with(|x| {
+        let t = x.create_held()?;
+        x.at(t, v()).set(&Value::Int(5))?;
+        Ok(t)
     })
-    .parts()
-    .next()
-    .unwrap()
-    .0;
+    .unwrap();
     let cl = crate::common::block_on(Osis::connect_socket(&dir.0, AppConfig::default())).unwrap();
     assert_eq!(cl.me(), a.me());
     assert_eq!(cl.at(t, v()).get().unwrap(), Some(Value::Int(5)));
@@ -566,7 +565,7 @@ fn a_socket_client_over_a_real_socket_spec_sync_transport_6() {
 fn every_op(db: &Osis, t: Tid) -> Tid {
     let k = |a: &str| db.aspect_key(a).unwrap();
     let mut x = db.write();
-    let n = x.create_with_admin(t).unwrap();
+    let n = x.create_held_with_admin(t).unwrap();
     x.at(n, k("x:v.0")).set(&Value::Int(1)).unwrap();
     x.at(t, k("x:m.0")).path(osis::p!["b"]).set(&Value::Int(2)).unwrap();
     x.at(t, k("x:o.0")).overwrite(&Value::Str("o".into())).unwrap();
@@ -591,7 +590,7 @@ fn every_op(db: &Osis, t: Tid) -> Tid {
 fn every_op_reads_alike_through_a_thin_client_notes_client_port() {
     let w = world(Some(Role::Admin));
     w.a.register_schema("t.osis", "revision 1;\naspect x:l.0: list<int>;\n").unwrap();
-    let here = crate::common::commit_with(&w.a, |x| x.create_with_admin(w.t).map(drop)).parts().next().unwrap().0;
+    let here = w.a.commit_with(|x| x.create_held_with_admin(w.t)).unwrap();
     w.a.grant(here, w.actor, Role::Admin, osis::GrantOpts::default()).unwrap();
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
     let n_here = every_op(&w.a, here);
@@ -701,7 +700,7 @@ fn thing_changes(db: &Osis, t: Tid) -> (osis::Subscription, Receiver<osis::Chang
 fn a_thing_watch_through_a_thin_client_spec_wire_11() {
     let w = world(None);
     let mut x = w.a.write();
-    let seen = x.create().unwrap();
+    let seen = x.create_held().unwrap();
     x.at(seen, v()).set(&Value::Int(1)).unwrap();
     x.commit().unwrap();
     w.a.grant(seen, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
@@ -739,7 +738,7 @@ fn a_thing_watch_through_a_thin_client_spec_wire_11() {
 fn a_grants_watch_through_a_thin_client_spec_wire_11() {
     let w = world(Some(Role::Read));
     let mut x = w.a.write();
-    let hidden = x.create().unwrap();
+    let hidden = x.create_held().unwrap();
     x.at(hidden, v()).set(&Value::Int(1)).unwrap();
     x.commit().unwrap();
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
@@ -800,7 +799,7 @@ fn history(db: &Osis) -> (Tid, osis::CommitId) {
     let keep = crate::common::setting(&[("x:log~0", osis::History::FOREVER), ("x:v.0", osis::History::FOREVER)]);
     let t = db
         .commit_with(|w| {
-            let t = w.create()?;
+            let t = w.create_held()?;
             w.at(t, osis::core::RETENTION).set(&keep)?;
             w.at(t, v()).set(&Value::Int(1))?;
             Ok(t)
@@ -891,7 +890,7 @@ fn a_dropped_wait_ends_at_the_node_notes_client_port() {
     let net = ManualNet::new(c.clone());
     let (_dir, a, cl) = daemon(&net, &c, 1, "port-drop-wait");
     // a thing never known there: its wait runs on
-    let t = a.write().create().unwrap();
+    let t = a.write().create_held().unwrap();
     {
         let mut f = std::pin::pin!(cl.wait_synced(osis::SyncScope::Thing(t)));
         for _ in 0..3 {
@@ -913,7 +912,7 @@ fn diagnostics_through_a_socket_notes_client_port() {
     let (_dir, a, cl) = daemon(&net, &c, 1, "port-diag");
     let (tx, rx) = channel();
     let _d = cl.on_diagnostic(move |_, d| tx.send(d).unwrap()).unwrap();
-    let t = a.commit_with(|w| w.create()).unwrap();
+    let t = a.commit_with(|w| w.create_held()).unwrap();
     let _p = a.at(t, v()).on_change(|_, ch| assert!(ch.value != Ok(Some(Value::Int(9))), "a callback that panics")).unwrap();
     crate::common::commit_with(&a, |w| w.at(t, v()).set(&Value::Int(9)));
     a.settle();

@@ -30,6 +30,9 @@ pub enum Error {
     Corrupt(&'static str),
     /// A sync facade call not built yet (`crate::sync`), named. Local.
     NotBuilt(&'static str),
+    /// A transaction would leave a thing it made outside the node closure (spec/sync-set.md §2
+    /// Making a thing). Local.
+    NotHeld(Tid),
 }
 
 osis_base::impl_error!(Error {
@@ -48,6 +51,7 @@ osis_base::impl_error!(Error {
     Clash(m) => ("{m}"),
     Corrupt(m) => ("corrupt local record: {m}"),
     NotBuilt(m) => ("not built: {m}"),
+    NotHeld(t) => ("{t} would be held by nothing: write a strong to it from a held thing in the same write"),
 });
 
 impl Classified for Error {
@@ -60,7 +64,7 @@ impl Classified for Error {
             Error::Crypto(e) => e.class(),
             Error::Path(e) => e.class(),
             Error::BadInput(_) => ErrorClass::BadInput,
-            Error::Permission { .. } | Error::UnknownThing(_) | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::NotBuilt(_) => ErrorClass::Local,
+            Error::Permission { .. } | Error::UnknownThing(_) | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::NotBuilt(_) | Error::NotHeld(_) => ErrorClass::Local,
         }
     }
 }

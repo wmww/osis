@@ -605,8 +605,9 @@ mod tests {
             lp.peers[i].commit(m).unwrap().unwrap()
         };
         let a = lp.peers[0].engine.me();
+        // held by a strong committed first: the commit making `n` writes nothing else
         let mut m = Mutation::new();
-        let n = lp.peers[0].engine.new_thing(&mut m, a);
+        let n = m.create(lp.peers[0].engine.held_record(a).unwrap());
         m.set(n, &x, &Value::Int(1)).unwrap();
         m.set(n, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(86_400_000) })).unwrap();
         let made = lp.peers[0].commit(m).unwrap().unwrap();

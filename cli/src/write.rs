@@ -113,10 +113,17 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
     if !a.pairs.len().is_multiple_of(2) {
         return Err(usage("create takes AK VALUE pairs"));
     }
+    let holder = match (&a.in_, admin) {
+        (Some(h), _) => ctx.tid(h)?,
+        (None, Some(a)) if a != ctx.db.me() => a,
+        (None, _) => ctx.db.account_root(),
+    };
     let t = match admin {
         Some(a) => w.create_with_admin(a)?,
         None => w.create()?,
     };
+    // a thing is made only where something holds it (spec/sync-set.md §2 Making a thing)
+    w.at(holder, osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t)))?;
     for pair in a.pairs.chunks(2) {
         let key = ctx.aspect_key(&pair[0])?;
         let v = ctx.value(&pair[1], key.value_type().map(|t| t.get()).as_ref())?;

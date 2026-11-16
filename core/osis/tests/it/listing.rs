@@ -3,6 +3,7 @@
 //! aspect, a thing and the things it holds, typed and untyped; pages, `complete`, memory commits; delete for
 //! everyone and purge by author.
 
+use osis::internals::Held as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
@@ -30,7 +31,7 @@ fn db_at(n: u64) -> Osis {
 fn thing(db: &Osis) -> Tid {
     let x = crate::common::setting(&[("t:msg.0", osis::History::FOREVER), ("t:log~0", osis::History::FOREVER), ("t:kept.0", crate::common::DAY), ("t:big.0", crate::common::DAY)]);
     db.commit_with(|w| {
-        let t = w.create()?;
+        let t = w.create_held()?;
         w.at(t, osis::core::RETENTION).set(&x)?;
         Ok(t)
     })

@@ -3,6 +3,7 @@
 //! history setting and the edit's age alone, durable and ephemeral alike, never from what a node
 //! happens to hold.
 
+use osis::internals::Held as _;
 use osis::internals::CommitRaw as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
@@ -34,7 +35,7 @@ fn keeps(w: &mut osis::Write<'_>, t: osis::Tid) {
 /// A thing whose setting keeps `KEPT` a day.
 fn kept_thing(db: &Osis) -> osis::Tid {
     db.commit_with(|w| {
-        let t = w.create()?;
+        let t = w.create_held()?;
         keeps(w, t);
         Ok(t)
     })
@@ -208,7 +209,7 @@ fn takings_undo_while_kept_spec_commits_7() {
     let until = osis::History::Keep { until: osis::Time(T0 + 60_000), after_replaced: std::time::Duration::ZERO };
     let x = setting(&[("app:l.0", until), ("app:k.0", crate::common::DAY)]);
     let t = db.commit_with(|w| {
-        let t = w.create()?;
+        let t = w.create_held()?;
         w.at(t, osis::core::RETENTION).set(&x)?;
         Ok(t)
     })

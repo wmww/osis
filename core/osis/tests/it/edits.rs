@@ -3,6 +3,7 @@
 //! its newest text, `versions` lists its history, `Purge::Commit` deletes every version, and the
 //! writer refuses a replacement nobody would honor.
 
+use osis::internals::Held as _;
 use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::internals::costs;
@@ -25,7 +26,7 @@ fn s(x: &str) -> Value {
 fn thing(db: &Osis) -> Tid {
     let x = crate::common::setting(&[(log().as_str(), osis::History::FOREVER)]);
     db.commit_with(|w| {
-        let t = w.create()?;
+        let t = w.create_held()?;
         w.at(t, osis::core::RETENTION).set(&x)?;
         Ok(t)
     })
@@ -187,7 +188,7 @@ fn a_page_and_a_quote_are_flat_in_edits_spec_commits_5() {
 #[test]
 fn a_fire_no_setting_keeps_is_refused_spec_commits_5() {
     let db = db(0);
-    let bare = db.commit_with(|w| w.create()).unwrap();
+    let bare = db.commit_with(|w| w.create_held()).unwrap();
     let mut w = db.write();
     let r = w.at(bare, key()).fire(&s("unkept")).and_then(|_| w.commit());
     assert!(r.is_err(), "a fire nothing keeps: {r:?}");

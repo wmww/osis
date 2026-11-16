@@ -707,6 +707,17 @@ fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
 
 /// Plays `steps` on three peers: 0 is G's first admin and gives 1 write and 2 admin on it. The
 /// peers write no addenda (`play_with` for histories carrying them).
+/// A new plain thing's record at peer `by`, held by the account root's strong in a commit of its
+/// own (spec/sync-set.md §2 Making a thing), so the commit making it is on it alone. That commit
+/// is on the peer's account root, which no other account syncs: marked `seen`, never played.
+fn held_record(lp: &mut LocalPeer, by: usize, seen: &mut BTreeSet<CommitId>) -> osis_base::CreationRecord {
+    let e = &mut lp.peers[by].engine;
+    let before: BTreeSet<CommitId> = e.commit_ids().into_iter().collect();
+    let rec = e.held_record(e.plain_admin()).unwrap();
+    seen.extend(e.commit_ids().into_iter().filter(|c| !before.contains(c)));
+    rec
+}
+
 pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
     play_with(seed, steps, false)
 }
@@ -1126,7 +1137,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             }
             Step::NewTop { by } => {
                 let mut m = Mutation::new();
-                let t = { let a = lp.peers[by].engine.plain_admin(); lp.peers[by].engine.new_thing(&mut m, a) };
+                let t = m.create(held_record(&mut lp, by, &mut seen));
                 m.set(t, &REG, &s("top")).unwrap();
                 m.set(t, &osis_schema::core_types::RETENTION, &base_setting(lp.peers[by].engine.now(), things.len() % 2 == 1)).unwrap();
                 let id = lp.peers[by].commit(m).unwrap().expect("a creation writes");
@@ -1244,7 +1255,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let po = |path: Vec<PathSeg>, op: Op| PathOp { path, op };
                 let tag = s(&format!("t{}", v % 4));
                 let mut m = Mutation::new();
-                let t = { let a = lp.peers[by].engine.plain_admin(); lp.peers[by].engine.new_thing(&mut m, a) };
+                let t = m.create(held_record(&mut lp, by, &mut seen));
                 let made = lp.peers[by].commit(m).unwrap().expect("a creation writes");
                 assert_eq!(lp.peers[by].engine.header(&made).unwrap().aspects.len(), 1, "a creation alone");
                 things.push(t);

@@ -282,6 +282,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
+/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -298,6 +299,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
+/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -313,6 +315,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
+/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -328,6 +331,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
+/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -343,6 +347,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
+/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -358,6 +363,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
+/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -373,6 +379,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
+/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -388,6 +395,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
+/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///
@@ -403,6 +411,7 @@ impl std::ops::Deref for Osis {
 /// # let set = ReadSet::new(|_| {});
 /// # let mut w = db.write();
 /// # let t = w.create().unwrap();
+/// # w.at(db.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(t))).unwrap();
 /// # w.commit().unwrap();
 /// # let r = db.tracking(&set);
 ///

@@ -430,6 +430,9 @@ mod tests {
         lp.peers[0].engine.core.skip_writer_rules = true;
         let mut m = Mutation::new();
         let deep = lp.peers[0].engine.new_thing(&mut m, up);
+        // made and held, then its raw edge (a role commit)
+        lp.peers[0].commit(m).unwrap();
+        let mut m = Mutation::new();
         edge_in(&mut m, deep, x);
         let c = lp.peers[0].commit(m).unwrap().unwrap();
         lp.peers[0].commit(edge(shallow, deep)).unwrap();

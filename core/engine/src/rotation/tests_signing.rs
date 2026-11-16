@@ -314,6 +314,9 @@ fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
     let q = lp.peers[3].engine.me();
     let mut m = crate::Mutation::new();
     let u = lp.peers[3].engine.new_thing(&mut m, q);
+    // made and held, then its raw edge (a role commit)
+    lp.peers[3].commit(m).unwrap();
+    let mut m = crate::Mutation::new();
     m.op(u, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(a.account))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
     lp.peers[3].commit(m).unwrap();
     lp.peers[3].engine.grant(&u, &a.account, &edge(Role::Write)).unwrap();

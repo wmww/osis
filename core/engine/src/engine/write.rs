@@ -14,7 +14,7 @@ use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, W
 use osis_crdt::{AnyView, DeltaBuilder, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_blob::{BlobWriter, Framing};
 use osis_perm::At;
-use osis_schema::core_types::{CREATED, is_role_class};
+use osis_schema::core_types::{self as ct, CREATED, is_role_class};
 use osis_schema::{RawKey, Retention, Schema};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -702,9 +702,43 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
 }
 
 impl Engine {
-    /// A new thing whose first admin is `admin`, created by `m` (spec/data-model.md §1).
+    /// Tests: a new thing whose first admin is `admin`, created by `m` (spec/data-model.md §1) and
+    /// held where it lives (`hold_where_it_lives`).
+    #[doc(hidden)]
     pub fn new_thing(&mut self, m: &mut Mutation, admin: Tid) -> Tid {
-        m.create(self.thing_record(admin))
+        let t = m.create(self.thing_record(admin));
+        self.hold_where_it_lives(m, t, admin);
+        t
+    }
+
+    /// Tests: the record of a new thing under `admin`, its holding strong (`hold_where_it_lives`)
+    /// committed first, so the commit that makes it can carry its creation alone.
+    #[doc(hidden)]
+    pub fn held_record(&mut self, admin: Tid) -> Result<CreationRecord> {
+        let rec = self.thing_record(admin);
+        let mut m = Mutation::new();
+        self.hold_where_it_lives(&mut m, rec.tid(), admin);
+        self.commit(m)?;
+        Ok(rec)
+    }
+
+    /// Tests: writes in `m` the strong that holds `t`, made under `admin` (spec/sync-set.md §2
+    /// Making a thing): from `admin` where that is a thing `m` makes or the node holds, else from
+    /// the account root (what an account's node writes, it writes as the account), else from the
+    /// node root.
+    #[doc(hidden)]
+    #[allow(clippy::expect_used)] // tests: an op on a static core aspect
+    pub fn hold_where_it_lives(&self, m: &mut Mutation, t: Tid, admin: Tid) {
+        let holder = if m.creates.contains_key(&admin) || self.closure_holds(&admin) {
+            Some(admin)
+        } else if let Some((_, d)) = self.core.account_devices() {
+            Some(d)
+        } else {
+            self.core.node_root
+        };
+        if let Some(h) = holder {
+            m.op(h, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(t)) }).expect("holds.0 takes a strong");
+        }
     }
 
     /// The creation record of a new thing whose first admin is `admin` (`Mutation::create`
@@ -814,6 +848,8 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
         return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
+    // a key actor is in no closure (spec/sync-set.md §2 Making a thing)
+    tx.core.made.extend(m.creates.iter().filter(|(_, r)| !matches!(r, CreationRecord::KeyActor { .. })).map(|(t, _)| *t));
     for (&t, rec) in &m.creates {
         let e = m.aspects.entry((t, Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default();
         e.schema = Some(core_schema.clone());

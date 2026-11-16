@@ -35,6 +35,32 @@ impl CommitRaw for crate::CommitId {
     }
 }
 
+/// Tests: a thing made and held in one write (spec/sync-set.md §2 Making a thing).
+pub trait Held {
+    /// `Write::create`, held by a strong in the account root's `holds.0` in the same write.
+    fn create_held(&mut self) -> crate::Result<osis_base::Tid>;
+    /// `Write::create_with_admin`, held where it lives: by `admin`'s `holds.0`, or the account
+    /// root's where `admin` is the account or its root.
+    fn create_held_with_admin(&mut self, admin: osis_base::Tid) -> crate::Result<osis_base::Tid>;
+}
+
+impl Held for crate::Write<'_> {
+    fn create_held(&mut self) -> crate::Result<osis_base::Tid> {
+        let t = self.create()?;
+        let d = self.db().account_root();
+        self.at(d, crate::core::HOLDS).path(crate::Path(Vec::new())).add(&crate::Ref::Strong(crate::Strong(t)))?;
+        Ok(t)
+    }
+
+    fn create_held_with_admin(&mut self, admin: osis_base::Tid) -> crate::Result<osis_base::Tid> {
+        let t = self.create_with_admin(admin)?;
+        let d = self.db().account_root();
+        let holder = if admin == self.db().me() { d } else { admin };
+        self.at(holder, crate::core::HOLDS).path(crate::Path(Vec::new())).add(&crate::Ref::Strong(crate::Strong(t)))?;
+        Ok(t)
+    }
+}
+
 /// The exact order value behind a public time.
 pub trait Exact {
     fn ts(&self) -> Ts;

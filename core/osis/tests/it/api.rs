@@ -2,6 +2,7 @@
 //! Handle, keys, reads, the `Write` commit, rights, errors (notes/api.md Handle, Keys, Reads,
 //! Writes, Errors, Footguns closed).
 
+use osis::internals::Held as _;
 use osis::internals::CommitRaw as _;
 use osis::internals::schema::RawKey as _;
 use crate::common::page;
@@ -42,7 +43,7 @@ fn registered_schema_key_spec_api_keys() {
     assert!(title.schema().is_some());
     assert!(db.aspect_key("other:x.0").unwrap().schema().is_none());
     let mut w = db.write();
-    let n = w.create().unwrap();
+    let n = w.create_held().unwrap();
     assert!(matches!(w.at(n, title.clone()).set(&Value::Int(1)), Err(Error::Type { .. })));
     w.at(n, title.clone()).set(&s("x")).unwrap();
     // a task without `weight` reads with the declared default
@@ -67,7 +68,7 @@ fn titles(db: &Osis, t: osis::Tid) -> Vec<String> {
 fn write_ops_spec_api_writes() {
     let db = db(0);
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     let (m, st, c) = (ak("t:map.0"), ak("t:set.0"), ak("t:reg.0"));
     w.at(t, osis::DynamicAspectKey::untyped(m.clone())).path(p!["a"]).set(&1i64).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(m.clone())).path(p!["b"]).set(&2i64).unwrap();
@@ -143,7 +144,7 @@ fn edit_keeps_concurrent_change_set_clobbers_spec_api_footguns() {
     let k = ak("t:form.0");
     let form = |a: &str, b: &str| Value::Map(osis_base::ValueMap::from([(Value::Int(0), s(a)), (Value::Int(1), s(b))]));
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&form("a", "b")).unwrap();
     w.commit().unwrap();
     let shown = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).get().unwrap().unwrap();
@@ -179,7 +180,7 @@ fn materialization_bound_spec_data_model_6() {
     let big = Value::Bytes(vec![7u8; osis::internals::schema::osis_base::format::CHUNK_THRESHOLD + 1000]);
     let mid = Value::Bytes(vec![1u8; 100 * 1024]);
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Map(osis_base::ValueMap::from([(Value::Int(0), big), (Value::Int(1), s("small")), (Value::Int(2), mid)]))).unwrap();
     w.commit().unwrap();
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).get(), Err(Error::TooLarge { limit: 64 * 1024 }));
@@ -195,7 +196,7 @@ fn large_value_round_trip_spec_data_model_6() {
     let k = ak("t:blob.0");
     let big = Value::Bytes((0..osis::internals::schema::osis_base::format::CHUNK_THRESHOLD * 2).map(|i| (i % 251) as u8).collect());
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&big).unwrap();
     w.commit().unwrap();
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), Some(big));
@@ -209,7 +210,7 @@ fn local_rights_check_spec_permissions_1() {
     let a = db(1);
     let b = db(2);
     let mut w = a.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     // b does not know t yet
@@ -226,7 +227,7 @@ fn local_rights_check_spec_permissions_1() {
     assert_eq!(b.engine(|e| e.commit_ids().len()), before);
     // creating under someone else's actor
     let mut w = b.write();
-    w.create_with_admin(a.me()).unwrap();
+    w.create_held_with_admin(a.me()).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // signals need write too
     let mut w = b.write();
@@ -242,9 +243,9 @@ fn tree_in_one_commit_spec_permissions_1() {
     let a = db(1);
     let b = db(2);
     let mut w = a.write();
-    let x = w.create().unwrap();
-    let y = w.create_with_admin(x).unwrap();
-    let z = w.create_with_admin(y).unwrap();
+    let x = w.create_held().unwrap();
+    let y = w.create_held_with_admin(x).unwrap();
+    let z = w.create_held_with_admin(y).unwrap();
     for (i, t) in [x, y, z].into_iter().enumerate() {
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(i as i64)).unwrap();
     }
@@ -257,14 +258,14 @@ fn tree_in_one_commit_spec_permissions_1() {
     }
     let before = b.engine(|e| e.commit_ids().len());
     let mut w = b.write();
-    let p = w.create_with_admin(x).unwrap();
-    w.create_with_admin(p).unwrap();
+    let p = w.create_held_with_admin(x).unwrap();
+    w.create_held_with_admin(p).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     let mut w = b.write();
-    let p = w.create().unwrap();
-    let q = w.create_with_admin(z).unwrap();
-    w.create_with_admin(p).unwrap();
-    w.create_with_admin(q).unwrap();
+    let p = w.create_held().unwrap();
+    let q = w.create_held_with_admin(z).unwrap();
+    w.create_held_with_admin(p).unwrap();
+    w.create_held_with_admin(q).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     assert_eq!(b.engine(|e| e.commit_ids().len()), before);
 }
@@ -277,7 +278,7 @@ fn expired_unseen_before_tick_spec_crdt_4_7() {
     let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let (k, e) = (ak("t:msg.0"), ak("t:typing+.0"));
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:kept.0"))).set(&s("kept")).unwrap();
     w.commit().unwrap();
     for (key, v) in [(&k, "hi"), (&e, "typing")] {
@@ -300,7 +301,7 @@ fn expiry_retention_purge_spec_commits_5_6() {
     let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
     let (k, r) = (ak("t:msg.0"), ak("t:keep.0"));
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     let ret = osis::Retention { by: osis::internals::schema::PurgeBy::Writer };
     w.at(t, osis::DynamicAspectKey::untyped(r.clone())).retention(ret).set(&s("kept")).unwrap();
     w.commit().unwrap();
@@ -330,7 +331,7 @@ fn expiry_retention_purge_spec_commits_5_6() {
 fn act_as_spec_commits_1() {
     let db = db(0);
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:y.0"))).set(&Value::Int(0)).unwrap();
     let c1 = w.commit().unwrap().unwrap();
     let mut w = db.write();
@@ -349,7 +350,7 @@ fn act_as_spec_commits_1() {
 fn created_reads_through_run_time_key_spec_data_model_9() {
     let db = osis::internals::create(osis::internals::Opening::memory()).unwrap();
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     let v = db.at(t, db.aspect_key("created.0").unwrap()).get().unwrap().unwrap();
     assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Weak(db.me()))));
@@ -367,7 +368,7 @@ fn stream_len_set_stream_spec_data_model_6() {
     let k = ak("t:blob.0");
     let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(osis::p![]).set_stream(&data[..]).unwrap();
     w.commit().unwrap();
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).get(), Err(Error::TooLarge { limit: 64 * 1024 }));
@@ -415,7 +416,7 @@ fn close_spec_api_handle() {
     let (tx, rx) = std::sync::mpsc::channel();
     let k = ak("t:x.0");
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     let sub = db.at(t, osis::DynamicAspectKey::untyped(k)).on_change(move |db, _| {
         let _ = tx.send(db.clone().close());
@@ -442,7 +443,7 @@ fn close_waits_or_names_holders_spec_api_handle() {
         let db = common::db(0);
         let k = ak("t:x.0");
         let mut w = db.write();
-        let t = w.create().unwrap();
+        let t = w.create_held().unwrap();
         w.commit().unwrap();
         let (entered, rx) = std::sync::mpsc::channel();
         let (go, wait) = std::sync::mpsc::channel::<()>();
@@ -482,7 +483,7 @@ fn close_waits_or_names_holders_spec_api_handle() {
 fn values_past_limits(string: usize, map: i64) {
     let db = db(1);
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     let mut deep = Value::Int(0);
     for _ in 0..600 {
@@ -526,7 +527,7 @@ fn created_not_a_snapshot_spec_commits_2() {
     let b = j.finish(&reply).unwrap();
     let mut w = a.write();
     // plain: its creation is the write's own commit
-    let t = w.create_with_admin(a.account_root()).unwrap();
+    let t = w.create_held_with_admin(a.account_root()).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("v")).unwrap();
     let done = w.commit().unwrap().unwrap();
     c.advance(60_000);
@@ -561,7 +562,7 @@ fn aspects_agrees_with_reads_after_a_purge() {
     let db = db(0);
     let k = ak("t:x.0");
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
@@ -580,8 +581,10 @@ fn aspects_agrees_with_reads_after_a_purge() {
 fn the_empty_path_is_the_whole_value() {
     let db = db(0);
     let (k, l) = (ak("t:x.0"), ak("t:s.0"));
+    // plain in the account root's sync unit: entering a thing with own keys writes the account's
+    // ticket for it beside the next write
     let t = db.commit_with(|w| {
-        let t = w.create()?;
+        let t = w.create_held_with_admin(db.account_root())?;
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(p![]).set(&Value::Int(1))?;
         Ok(t)
     }).unwrap();
@@ -613,7 +616,7 @@ fn the_empty_path_is_the_whole_value() {
 fn splice_lists_and_text() {
     let db = db(0);
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, example::TASKS).set(&vec![task("a"), task("b"), task("c")]).unwrap();
     w.at(t, example::BODY).set(&"hello world".to_string()).unwrap();
     w.commit().unwrap();
@@ -645,7 +648,7 @@ fn edit_text_by_position() {
     let db = db(0);
     let k = ak("t:m.0");
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(p!["a"]).set(&"one".to_string()).unwrap();
     w.commit().unwrap();
     let ed = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(p!["a"]).edit_text().unwrap();
@@ -727,7 +730,7 @@ fn commit_and_place_text_forms_api_design() {
     let db = db(0);
     let k = db.aspect_key("t:x.0").unwrap();
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
     let done = w.commit().unwrap().unwrap();
     assert_eq!(done.stamp.id.to_string().parse::<osis::CommitId>().unwrap(), done.stamp.id);
@@ -822,7 +825,7 @@ fn commit_place_of_any_time_api_design() {
     use osis::{CommitFrom as F, CommitPos as P, Time};
     let db = db(0);
     let k = osis::DynamicAspectKey::untyped(ak("t:x.0"));
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = db.commit_with(|w| w.create_held()).unwrap();
     let c = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
     let page = |f| db.at(t, k.clone()).writes(&page(f, 10)).unwrap().commits.len();
     let (zero, end) = (P::time(Time(0)), P::time(Time(u64::MAX)));
@@ -844,7 +847,7 @@ fn commit_place_of_any_time_api_design() {
 #[test]
 fn from_now_grant_is_kept_until_a_grant_shows_everything() {
     let db = common::db(41);
-    let g = db.commit_with(|w| w.create()).unwrap();
+    let g = db.commit_with(|w| w.create_held()).unwrap();
     let n = db.node();
     let opts = |reads| osis::GrantOpts { reads, ..Default::default() };
     db.grant(g, n, Role::Read, opts(osis::Reads::FromNow)).unwrap();

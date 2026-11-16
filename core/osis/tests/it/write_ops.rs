@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! The `Write` recorder: generic helpers over value keys, ranges, clashes.
 
+use osis::internals::Held as _;
 use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::{Osis, Tid, Value, p};
@@ -21,7 +22,7 @@ fn a_generic_helper_names_value_key() {
     }
     let db = db(0);
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     let key = db.aspect_key("app:h.0").unwrap();
     assert_eq!(set_and_read(&db, t, key, &Value::Int(1)).unwrap(), Some(Value::Int(1)));
@@ -35,7 +36,7 @@ fn a_backward_move_range_is_invalid() {
     let db = db(0);
     let k = ak("app:m.0");
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     #[allow(clippy::reversed_empty_ranges)]
     let back = 2..1;
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(k)).path(p![]).move_range(back, 0), Err(osis::Error::Invalid(_))));
@@ -49,7 +50,7 @@ fn a_clash_is_judged_on_what_is_asked() {
     let db = db(0);
     db.register_schema("rv.osis", "revision 1;\nexpires(30d) aspect app:d.0: int;\naspect app:p.0: int;").unwrap();
     let t = db.commit_with(|w| {
-        let t = w.create()?;
+        let t = w.create_held()?;
         w.at(t, osis::DynamicAspectKey::untyped(ak("app:a.0"))).set(&Value::Int(0))?;
         Ok(t)
     })

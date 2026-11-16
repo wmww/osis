@@ -980,6 +980,22 @@ pub(crate) fn check_whole(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The things this transaction's own commits made, each in the node closure at its end, or the
+/// transaction is refused (spec/sync-set.md §2 Making a thing). A node with no node root yet
+/// (its first start) checks nothing, nor a hostile writer (`skip_writer_rules`): a writer's rule.
+pub(crate) fn check_made(tx: &mut Tx<'_>) -> Result<()> {
+    if tx.core.node_root.is_none() || tx.core.skip_writer_rules {
+        tx.core.made.clear();
+        return Ok(());
+    }
+    for t in std::mem::take(&mut tx.core.made) {
+        if tx.core.created(&t).is_some() && !tx.core.ix.closure.holds(&t) {
+            return Err(crate::error::Error::NotHeld(t));
+        }
+    }
+    Ok(())
+}
+
 impl Engine {
     /// The sync unit of `t` (spec/sync-set.md §2): `t` and what it reaches by strongs and itself
     /// may read, stopping at the first thing it may not read. Of a thing this node reads in no

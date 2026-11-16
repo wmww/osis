@@ -1050,7 +1050,8 @@ mod tests {
             let (quiet, busy) = (run(rounds, 0), run(rounds, 5));
             println!("{rounds} rounds (weighed, written): third writer quiet {quiet:?}, five held-back bodies a round {busy:?}");
             assert!(busy.0 <= quiet.0 + 4 && busy.1 <= quiet.1 + 2, "{rounds} rounds: the held-back bodies weighed: {quiet:?} against {busy:?}");
-            assert!(busy.0 <= rounds as u64 / 2 + 4, "{rounds} rounds: {busy:?}");
+            // one weigh more: the account root's `holds.0`, which holds `t`
+            assert!(busy.0 <= rounds as u64 / 2 + 5, "{rounds} rounds: {busy:?}");
         }
     }
 
@@ -1207,6 +1208,9 @@ mod tests {
         // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
+        // made and held, then its raw edge (a role commit)
+        lp.peers[0].commit(m).unwrap();
+        let mut m = Mutation::new();
         m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(b))], op: osis_crdt::Op::Set(edge(Role::Write).to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync(0, 1).unwrap();

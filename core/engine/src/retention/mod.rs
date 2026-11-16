@@ -1821,6 +1821,9 @@ mod tests {
             // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
             let mut m = Mutation::new();
             let t = lp.peers[0].engine.new_thing(&mut m, alice);
+            // made and held, then its raw edge (a role commit)
+            lp.peers[0].commit(m).unwrap();
+            let mut m = Mutation::new();
             m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(bob))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
             lp.peers[0].commit(m).unwrap();
             let mut m = Mutation::new();

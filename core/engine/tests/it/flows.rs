@@ -2236,7 +2236,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
 
 // spec/permissions.md §1 (first admin), §3; spec/wire.md §3: account 0
 // creates O (a chat) with itself as first admin: its creation commit
-// carries `created.0` alone, and O, made under an account, has secrets of its own from then. It grants account 1 admin, accounts 2 and 3 write. Its admins are
+// carries `created.0` alone on O, and O, made under an account, has secrets of its own from then. It grants account 1 admin, accounts 2 and 3 write. Its admins are
 // equal: account 1 removes account 0's record edge, stored nowhere. Writer 2 rotates
 // O to itself; the remaining admin recovers. O's admin grants on a thing below O through its record
 // chain.
@@ -2246,8 +2246,8 @@ fn chat_by_record_spec_perm_1() {
     let (o, done) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     assert_eq!(done.commits.len(), 1);
     let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
-    let aks: BTreeSet<&str> = h.aspects.iter().map(|a| a.ak.as_str()).collect();
-    assert_eq!(aks, BTreeSet::from(["created.0"]));
+    let aks: BTreeSet<&str> = h.aspects.iter().filter(|a| a.tid == o).map(|a| a.ak.as_str()).collect();
+    assert_eq!(aks, BTreeSet::from(["created.0"]), "on O; beside it the account root's strong holding it");
     assert_eq!(lp.peers[0].engine.first_admin(&o), Some(ps[0]));
     assert_eq!(lp.peers[0].engine.role_on(&o), Some(Role::Admin));
     assert!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap().is_some(), "secrets of its own at its creation");
@@ -2295,7 +2295,8 @@ fn chat_by_record_spec_perm_1() {
     assert_eq!(newest_read(&lp, 3, o), Some(e2));
     assert_eq!(lp.peers[2].engine.role_on(&o), None);
     assert_eq!(sealed_write(&mut lp, 3, o, "member"), BTreeSet::from([1]));
-    // a thing under O: O's admin grants on it
+    // a thing under O, which account 1 holds: O's admin grants on it
+    lp.peers[1].engine.hold(osis_base::Strong(o)).unwrap();
     let t = thing_of(&mut lp, 1, o);
     lp.peers[1].engine.grant(&t, &ps[3], &edge_of(Role::Write)).unwrap();
     spread(&mut lp);

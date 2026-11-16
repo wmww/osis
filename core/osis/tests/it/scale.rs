@@ -3,6 +3,7 @@
 //! `OSIS_LARGE_MIB=1024 cargo test --release -p osis --test it -- --ignored scale::multi_gb_value_streams --nocapture`
 //! (a store in a directory under the target dir).
 
+use osis::internals::Held as _;
 use crate::common::{cfg, clock};
 use osis::{DynamicAspectKey, MemStore, Osis, Store, Tid, p};
 use std::io::{Read, Seek, SeekFrom};
@@ -28,7 +29,7 @@ fn chunks(mib: usize) -> u64 {
 fn write(db: &Osis, mib: usize) -> Tid {
     let data = data(mib);
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, key()).path(p![]).set_stream(&data[..]).unwrap();
     w.commit().unwrap();
     t

@@ -3,6 +3,7 @@
 //! Diagnostics, Footguns closed).
 //! spec: none (API surface, notes/api.md).
 
+use osis::internals::Held as _;
 use crate::common::watched;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
@@ -18,7 +19,7 @@ use crate::schemas::example;
 
 fn thing(db: &Osis) -> osis::Tid {
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     t
 }

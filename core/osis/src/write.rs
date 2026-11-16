@@ -152,6 +152,11 @@ fn expiry_at(db: &Osis, e: Expiry) -> Result<Time> {
 }
 
 impl<'d> Write<'d> {
+    /// The handle this write commits on (`internals::Held`).
+    pub(crate) fn db(&self) -> &'d Osis {
+        self.db
+    }
+
     /// Writes as `actor` instead of `me()`; this node needs that actor's roles.
     pub fn act_as(&mut self, actor: Tid) -> &mut Self {
         self.actor = actor;
@@ -297,7 +302,9 @@ impl<'d> Write<'d> {
     /// commit on a thin client's handle: its actor goes with the client, so what it makes
     /// names who stays (`create_with_admin`).
     ///
-    /// It syncs where the node closure holds it by a strong.
+    /// The same write must hold it: a strong to it from a thing this node holds (the account
+    /// root's `holds.0` for an account-wide thing), else the commit is `Invalid`. It syncs with
+    /// what holds it.
     pub fn create(&mut self) -> Result<Tid> {
         self.create_with_admin(self.actor)
     }

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Sharing across nodes in process, commits carried by hand (notes/api.md Sharing and roles).
 
+use osis::internals::Held as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
@@ -23,7 +24,7 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         deliver(&carol, &alice);
         deliver(&dave, &bob);
         let mut w = alice.write();
-        let t = w.create().unwrap();
+        let t = w.create_held().unwrap();
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("one")).unwrap();
         w.commit().unwrap();
         // the first holder gives `t` secrets of its own: its `keys.0` goes in that commit
@@ -85,7 +86,7 @@ fn alice_knows_bob() -> (osis::Osis, osis::Osis) {
 fn grant_never_lowers_and_set_role_writes_only_changes() {
     let (alice, bob) = alice_knows_bob();
     let b = bob.me();
-    let g = alice.commit_with(|w| w.create()).unwrap();
+    let g = alice.commit_with(|w| w.create_held()).unwrap();
     let role = |db: &osis::Osis| db.grants(g).unwrap().get(&b).map(|x| x.role);
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
     let n = commits(&alice);
@@ -114,7 +115,7 @@ fn grant_never_lowers_and_set_role_writes_only_changes() {
 fn holders_list_every_way_in_nearest_first() {
     let (alice, bob) = alice_knows_bob();
     let b = bob.me();
-    let (g, team) = alice.commit_with(|w| Ok((w.create()?, w.create()?))).unwrap();
+    let (g, team) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
     alice.grant(team, b, Role::Admin, Default::default()).unwrap();
     alice.grant(g, team, Role::Read, Default::default()).unwrap();
     let hs = alice.holders(g).unwrap();
@@ -137,7 +138,7 @@ fn holders_list_every_way_in_nearest_first() {
 #[test]
 fn leave_ends_only_own_ways_and_refuses_before_writing() {
     let (alice, bob) = alice_knows_bob();
-    let (g, team) = alice.commit_with(|w| Ok((w.create()?, w.create()?))).unwrap();
+    let (g, team) = alice.commit_with(|w| Ok((w.create_held()?, w.create_held()?))).unwrap();
     let n = commits(&alice);
     alice.leave(team, g).unwrap();
     assert_eq!(commits(&alice), n, "no way in: nothing written");
@@ -151,7 +152,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     assert!(alice.grants(k).unwrap().contains_key(&team), "the join of the link stays");
     // bob's own thing, alice a writer of it who makes a link: her leave ends her role only
     deliver(&alice, &bob);
-    let t = bob.commit_with(|w| w.create()).unwrap();
+    let t = bob.commit_with(|w| w.create_held()).unwrap();
     bob.grant(t, alice.me(), Role::Admin, Default::default()).unwrap();
     deliver(&bob, &alice);
     alice.make_link(t, Role::Read, Default::default()).unwrap();
@@ -168,7 +169,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
 #[test]
 fn purge_without_the_right_is_refused_spec_permissions_6() {
     let (alice, bob) = alice_knows_bob();
-    let g = alice.commit_with(|w| w.create()).unwrap();
+    let g = alice.commit_with(|w| w.create_held()).unwrap();
     alice.grant(g, bob.me(), Role::Write, Default::default()).unwrap();
     let k = || osis::DynamicAspectKey::untyped(ak("t:m.0"));
     let hers = commit_with(&alice, |w| w.at(g, k()).set(&s("hers"))).stamp.id;
@@ -208,7 +209,7 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     let (a, b, c) = (db(1), db(2), db(3));
     deliver(&b, &a);
     deliver(&c, &a);
-    let g = a.commit_with(|w| w.create()).unwrap();
+    let g = a.commit_with(|w| w.create_held()).unwrap();
     a.grant(g, b.me(), Role::Admin, Default::default()).unwrap();
     a.grant(g, c.me(), Role::Read, Default::default()).unwrap();
     deliver(&a, &b);
@@ -269,11 +270,11 @@ fn a_parents_reader_sees_no_roster_of_its_member_team_spec_crypto_4() {
     let (alice, bob, carol, erin) = (db(1), db(2), db(3), db(4));
     let all = [&alice, &bob, &carol, &erin];
     mesh(&all);
-    let m = bob.commit_with(|w| w.create()).unwrap();
+    let m = bob.commit_with(|w| w.create_held()).unwrap();
     bob.grant(m, erin.me(), Role::Write, Default::default()).unwrap();
     bob.grant(m, alice.me(), Role::Read, Default::default()).unwrap();
     mesh(&all);
-    let g = alice.commit_with(|w| w.create()).unwrap();
+    let g = alice.commit_with(|w| w.create_held()).unwrap();
     alice.grant(g, m, Role::Write, Default::default()).unwrap();
     alice.grant(g, carol.me(), Role::Read, Default::default()).unwrap();
     mesh(&all);
@@ -286,7 +287,7 @@ fn a_parents_reader_sees_no_roster_of_its_member_team_spec_crypto_4() {
     assert!(carol.holders(g).unwrap().iter().all(|h| h.actor != erin.me()), "nor through G's holders");
     // once Carol reads M (a roster change on M's way in, not on M's), her watch on M's grants
     // hears its roster
-    let t = bob.commit_with(|w| w.create()).unwrap();
+    let t = bob.commit_with(|w| w.create_held()).unwrap();
     bob.grant(m, t, Role::Read, Default::default()).unwrap();
     mesh(&all);
     let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));

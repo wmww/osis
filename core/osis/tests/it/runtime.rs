@@ -3,6 +3,7 @@
 //! and the client socket's directory rules. Real timers run here; no assert is on wall time.
 //! spec: none (API surface, notes/api.md)
 
+use osis::internals::Held as _;
 use crate::common::*;
 use osis::{Error, Osis, Runtime, Store, Value};
 use std::path::PathBuf;
@@ -95,11 +96,11 @@ fn keep_alive_rewrites_until_dropped() {
     let db = own(&c);
     db.register_schema("c.osis", "revision 1;\nexpires(60ms) ephemeral aspect c:on+.0: int;\nephemeral aspect c:flag+.0: int;\n").unwrap();
     let (on, flag) = (db.aspect_key("c:on+.0").unwrap(), db.aspect_key("c:flag+.0").unwrap());
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = db.commit_with(|w| w.create_held()).unwrap();
     assert!(matches!(db.at(t, flag).keep_alive(&Value::Int(1)), Err(Error::Invalid(_))), "no default expiry");
     let none = osis::internals::create(cfg(1, osis::MemStore::new(), &c)).unwrap();
     none.register_schema("c.osis", "revision 1;\nexpires(60ms) ephemeral aspect c:on+.0: int;\n").unwrap();
-    let u = none.commit_with(|w| w.create()).unwrap();
+    let u = none.commit_with(|w| w.create_held()).unwrap();
     assert!(matches!(none.at(u, none.aspect_key("c:on+.0").unwrap()).keep_alive(&Value::Int(1)), Err(Error::Network(_))), "no runtime");
     let ka = db.at(t, on.clone()).keep_alive(&Value::Int(1)).unwrap();
     let get = || db.at(t, on.clone()).get().unwrap();
@@ -134,7 +135,7 @@ fn a_text_session_commits_when_idle() {
     let db = own(&clock());
     db.register_schema("t.osis", "revision 1;\naspect n:body.0: text;\n").unwrap();
     let k = db.aspect_key("n:body.0").unwrap();
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = db.commit_with(|w| w.create_held()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     let _w = db.at(t, k.clone()).on_write(move |_, e| drop(tx.send(e))).unwrap();
     let s = db.at(t, k.clone()).path(osis::p![]).edit_text().unwrap();

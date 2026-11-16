@@ -3,6 +3,7 @@
 
 use crate::flows::people;
 use osis_base::{Tid, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use osis_crdt::{Op, PathOp};
 use osis_engine::{Engine, Mutation};
 use osis_schema::core_types as ct;
@@ -269,4 +270,82 @@ fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
     e.check_closure();
     let things = e.sync_things().unwrap();
     assert!(things.contains(&a) && things.contains(&y));
+}
+
+// spec/sync-set.md §2 Sync units, Not carried (refgraph U1, U2): T's sync unit is T and what it
+// reaches by strongs through things T's keys open, chains of grants giving the lowest role and the
+// best chain counting; NotCarried names exactly the strongs in the node closure to a thing it does
+// not hold. A random walk of edits (strongs added and removed, grants made, lowered and revoked
+// between things) over 3 things with own keys and 4 plain ones on one node; after each, every
+// sync unit and the NotCarried list equal held-model `closure`'s on the world rebuilt from the
+// edits.
+#[test]
+fn sync_units_are_the_models_spec_sync_set_2() {
+    use held_model::closure as hc;
+    use osis_base::Role;
+    for seed in 1..=3u64 {
+        let mut rng = crate::order::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let (mut lp, _) = people(1);
+        let e = &mut lp.peers[0].engine;
+        let (d, p) = (e.account_root().unwrap(), e.me());
+        // model things 0..3 keyed (under the account, held by D), 3..7 plain under keyed i % 3
+        let mut tids: Vec<Tid> = (0..3).map(|_| make(e, p, d)).collect();
+        let mut kinds = vec![hc::Kind::Keyed; 3];
+        let mut edges = hc::Edges::new();
+        for i in 0..4 {
+            let k = i % 3;
+            tids.push(make(e, tids[k], tids[k]));
+            kinds.push(hc::Kind::Plain(k));
+            edges.insert((k, 3 + i));
+        }
+        let mut grants = BTreeMap::new();
+        let ix = |t: &Tid| tids.iter().position(|x| x == t);
+        for step in 0..40 {
+            let (x, y) = (rng.below(7) as usize, rng.below(7) as usize);
+            let (g, t) = (rng.below(3) as usize, rng.below(3) as usize);
+            match rng.below(6) {
+                0..=1 if x != y && e.closure_holds(&tids[x]) => {
+                    strong(e, tids[x], tids[y], true);
+                    edges.insert((x, y));
+                }
+                2 if !edges.is_empty() => {
+                    let (x, y) = *edges.iter().nth(rng.below(edges.len() as u64) as usize).unwrap();
+                    strong(e, tids[x], tids[y], false);
+                    edges.remove(&(x, y));
+                }
+                3..=4 if g != t => {
+                    let r = [Role::Sync, Role::Read, Role::Write][rng.below(3) as usize];
+                    let edge = ct::Edge { role: r, until: None, invite: None, floor: None };
+                    let had: Option<hc::Role> = grants.get(&(g, t)).copied();
+                    let m = match r { Role::Sync => hc::Role::Sync, Role::Read => hc::Role::Read, _ => hc::Role::Write };
+                    if had == Some(m) {
+                        continue;
+                    }
+                    if had.is_some_and(|h| h > m) {
+                        e.demote(&tids[t], &osis_engine::flows::Demotion { holder: tids[g], new: Some(edge), retain: None }).unwrap();
+                    } else {
+                        e.grant(&tids[t], &tids[g], &edge).unwrap();
+                    }
+                    grants.insert((g, t), m);
+                }
+                5 if grants.contains_key(&(g, t)) => {
+                    e.demote(&tids[t], &osis_engine::flows::Demotion { holder: tids[g], new: None, retain: None }).unwrap();
+                    grants.remove(&(g, t));
+                }
+                _ => continue,
+            }
+            e.check_closure();
+            let w = hc::World { kinds: kinds.clone(), grants: grants.clone() };
+            for (k, kt) in tids.iter().enumerate().take(3) {
+                let got: BTreeSet<usize> = e.sync_unit(kt).iter().filter_map(ix).collect();
+                assert_eq!(got, hc::unit(&w, k, &edges), "seed {seed} step {step}: the sync unit of {k}");
+            }
+            // the node reads every thing with own keys (it made them): roots D's strongs to them
+            let n = hc::NodeView { roots: [0, 1, 2].into(), tickets: (0..3).map(|k| (k, hc::Ticket::Open)).collect() };
+            let held = hc::closure(&w, &edges, &n, hc::Walk::Units).held;
+            let want: BTreeSet<(usize, usize)> = edges.iter().copied().filter(|(x, y)| held.contains(x) && !held.contains(y)).collect();
+            let got: BTreeSet<(usize, usize)> = e.not_carried().unwrap().iter().filter_map(|(x, y)| Some((ix(x)?, ix(y)?))).collect();
+            assert_eq!(got, want, "seed {seed} step {step}: not carried");
+        }
+    }
 }

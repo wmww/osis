@@ -380,6 +380,9 @@ pub struct CreateArgs {
     /// First admin in place of the acting actor: a thin client's way to create, naming a thing that outlives it
     #[arg(long, value_name = "A")]
     pub admin: Option<String>,
+    /// The thing whose holds.0 holds it by a strong (default: the --admin thing, else the account root, which the account's nodes hold)
+    #[arg(long = "in", value_name = "H")]
+    pub in_: Option<String>,
     /// Bind $NAME to the new tid (write scripts)
     #[arg(long = "as", value_name = "NAME")]
     pub as_: Option<String>,

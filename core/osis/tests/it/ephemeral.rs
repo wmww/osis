@@ -1,6 +1,7 @@
 //! Local ephemeral aspects (notes/ephemeral.md): in memory, no durable commit, no store write;
 //! restart forgets; rights as for durable writes; expiry in memory; signal aspects.
 
+use osis::internals::Held as _;
 use osis::internals::Exact as _;
 use osis::internals::CommitRaw as _;
 use crate::common::watched;
@@ -46,7 +47,7 @@ fn s(x: &str) -> Value {
 fn write_and_watch_without_commit_spec_data_model_2() {
     let (db, _c) = setup(0);
     let state = db.aspect_key("win:state+.0").unwrap();
-    let made = commit_with(&db, |w| w.create_with_admin(db.account_root()).map(drop));
+    let made = commit_with(&db, |w| w.create_held_with_admin(db.account_root()).map(drop));
     let win = db.engine(|e| e.header(&made.stamp.id.raw())).unwrap().aspects.iter().find(|a| a.ak.as_str() == "created.0").unwrap().tid;
     let c = db.created(win).unwrap().unwrap();
     // a record alone acts for its signer (spec/commits.md §2)
@@ -104,9 +105,9 @@ fn restart_forgets_ephemeral_spec_requirements_ephemeral() {
     let draft = ak("app:draft+.0");
     let (d, e) = db
         .commit_with(|w| {
-            let d = w.create()?;
+            let d = w.create_held()?;
             w.at(d, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
-            let e = w.create()?;
+            let e = w.create_held()?;
             Ok((d, e))
         })
         .unwrap();
@@ -133,7 +134,7 @@ fn rights_through_first_admin_spec_permissions_1() {
     let (a, _c) = setup(3);
     let (b, _c2) = setup(4);
     let mut w = a.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     deliver(&a, &b);
@@ -141,7 +142,7 @@ fn rights_through_first_admin_spec_permissions_1() {
     let before = durable_marks(&b);
     // a thing under another actor's thing
     let mut w = b.write();
-    w.create_with_admin(t).unwrap();
+    w.create_held_with_admin(t).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // ephemeral data on another actor's durable thing
     let mut w = b.write();
@@ -152,8 +153,8 @@ fn rights_through_first_admin_spec_permissions_1() {
     // a's own chain under t: admin through t
     let (x, y) = a
         .commit_with(|w| {
-            let x = w.create_with_admin(t)?;
-            let y = w.create_with_admin(x)?;
+            let x = w.create_held_with_admin(t)?;
+            let y = w.create_held_with_admin(x)?;
             Ok((x, y))
         })
         .unwrap();
@@ -169,7 +170,7 @@ fn ephemeral_expiry_spec_crdt_4_7() {
     let (db, c) = setup(0);
     let typing = db.aspect_key("win:typing+.0").unwrap();
     let note = ak("app:note+.0");
-    let t = db.commit_with(|w| w.create()).unwrap();
+    let t = db.commit_with(|w| w.create_held()).unwrap();
     let mut w = db.write();
     w.at(t, typing.clone()).set(&Value::Bool(true)).unwrap();
     w.commit().unwrap();
@@ -214,7 +215,7 @@ fn ephemeral_signal_fires_reach_history_listener_once_spec_data_model_2() {
     let (db, _c) = setup(0);
     let ring = db.aspect_key("win:ring+~0").unwrap();
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     let (tx, rx) = channel();
     let _sub = db.at(t, ring.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
@@ -269,7 +270,7 @@ fn signal_without_ephemeral_is_history_spec_commits_5() {
     let (db, _c) = setup(0);
     db.register_schema("log.osis", "revision 1;\nsignal app:log~0: string;\n").unwrap();
     let log = db.aspect_key("app:log~0").unwrap();
-    let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();
+    let t = db.commit_with(|w| { let t = w.create_held()?; keep_all(w, t); Ok(t) }).unwrap();
     let (tx, rx) = channel();
     let _sub = db.at(t, log.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     assert_eq!(recv(&rx).value, Ok(None));
@@ -306,7 +307,7 @@ fn dynamic_key_crossing_kinds_spec_data_model_2() {
     let (db, _c) = setup(0);
     db.register_schema("k.osis", "revision 1;\nsignal app:log~0: string;\naspect app:n.0: string;\n").unwrap();
     let (log, n) = (db.aspect_key("app:log~0").unwrap(), db.aspect_key("app:n.0").unwrap());
-    let t = db.commit_with(|w| { let t = w.create()?; keep_all(w, t); Ok(t) }).unwrap();
+    let t = db.commit_with(|w| { let t = w.create_held()?; keep_all(w, t); Ok(t) }).unwrap();
     let refused = |f: &dyn Fn(&mut osis::Write<'_>) -> osis::Result<()>, word: &str| {
         let mut w = db.write();
         f(&mut w).unwrap();
@@ -343,7 +344,7 @@ fn ephemeral_write_counts_as_acting_spec_permissions_4() {
     let state = db.aspect_key("win:state+.0").unwrap();
     let before = db.engine(|e| e.core.acting());
     // a record alone acts for its signer (spec/commits.md §2)
-    let win = db.commit_with(|w| w.create()).unwrap();
+    let win = db.commit_with(|w| w.create_held()).unwrap();
     assert!(!before.contains(&win), "nothing acted for it yet: {before:?}");
     let mut w = db.write();
     w.act_as(win);

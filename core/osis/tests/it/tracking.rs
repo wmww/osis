@@ -3,6 +3,7 @@
 //! never timed, on a `Dispatcher::Pump` node so what a commit dispatches runs on this thread.
 //! spec: none (API surface, notes/api.md).
 
+use osis::internals::Held as _;
 use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::internals::Internals as _;
@@ -26,9 +27,10 @@ fn pumped(seed: u64) -> Osis {
     pumped_at(seed, &clock())
 }
 
+/// A plain thing in the account root's sync unit: many of them add no sync IDs.
 fn thing(db: &Osis) -> Tid {
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held_with_admin(db.account_root()).unwrap();
     w.commit().unwrap();
     db.settle();
     t
@@ -185,14 +187,14 @@ fn tracked_path_reads_their_own_position() {
 #[test]
 fn role_on_hears_roles_and_compares() {
     let (a, b, _) = paired();
-    let t = a.commit_with(|w| w.create()).unwrap();
+    let t = a.commit_with(|w| w.create_held()).unwrap();
     let (_set, n, h) = tracked(&b);
     assert_eq!(h.role_on(t).unwrap(), None);
     a.commit_set(t, untyped("t:a.0"), &Value::Int(1)).unwrap();
     deliver(&a, &b);
     assert_eq!(fired(&b, &n), 1, "the thing's roles arrived");
     assert!(h.role_on(t).unwrap().is_some());
-    let other = a.commit_with(|w| w.create()).unwrap();
+    let other = a.commit_with(|w| w.create_held()).unwrap();
     deliver(&a, &b);
     b.settle();
     let _ = other;
@@ -234,7 +236,7 @@ fn tracked_backlinks_hear_their_thing() {
     let db = pumped(14);
     let (a, x, y) = (thing(&db), thing(&db), thing(&db));
     let (_set, n, h) = tracked(&db);
-    assert!(h.backlinks(x, &Default::default()).unwrap().backlinks.is_empty());
+    assert!(h.backlinks(x, &Default::default()).unwrap().backlinks.iter().all(|b| b.tid == db.account_root()), "the account root's strong alone");
     db.commit_with(|w| w.at(a, untyped("t:a.0")).set(&Value::Weak(y))).unwrap();
     assert_eq!(fired(&db, &n), 0);
     db.commit_with(|w| w.at(a, untyped("t:b.0")).set(&Value::Weak(x))).unwrap();
@@ -257,7 +259,7 @@ fn tracked_backlinks_of_an_aspect_hear_that_aspect() {
     assert_eq!(fired(&db, &n), 1);
     let page = db.backlinks(x, &q).unwrap();
     assert_eq!(page.backlinks.iter().map(|b| (b.tid, b.ak.as_str())).collect::<Vec<_>>(), vec![(a, "t:b.0")]);
-    assert_eq!(db.backlinks(x, &Default::default()).unwrap().backlinks.len(), 2, "every aspect's");
+    assert_eq!(db.backlinks(x, &Default::default()).unwrap().backlinks.iter().filter(|b| b.tid == a).count(), 2, "every aspect's");
 }
 
 // spec/commits.md §7 listing: a tracked page hears a commit at its address (and none elsewhere).

@@ -2,6 +2,7 @@
 //! `keep_alive`, and the client port's node side; nodes on one in-process test network
 //! (`internals::ManualNet`) with one manual clock, or with no network at all.
 
+use osis::internals::Held as _;
 use crate::common::{cfg, clock, db};
 use osis::internals::proto::Msg;
 use osis::internals::proto::api::{ApiCode, Outcome};
@@ -138,7 +139,7 @@ fn a_link_names_its_target_and_this_node_spec_wire_10() {
     let a = on(&net, 10, &c);
     let addr = a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap().remove(0);
     let mut w = a.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     let l = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
     assert_eq!(l.target().unwrap(), t);
@@ -182,7 +183,7 @@ fn a_paired_node_knows_the_accounts_profile_spec_sync_set_1() {
 fn keep_alive_needs_an_ephemeral_key_and_a_runtime_notes_ephemeral() {
     let db = db(13);
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     assert!(matches!(db.at(t, osis::core::NAME).keep_alive(&"x".to_string()), Err(Error::Invalid(_))));
 }
@@ -209,7 +210,7 @@ fn refused(m: &Msg) -> bool {
 fn port_node() -> (Osis, osis::Tid, osis::Tid, [u8; 32]) {
     let db = db(20);
     let mut w = db.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(crate::common::ak("x:v.0"))).set(&Value::Int(5)).unwrap();
     w.commit().unwrap();
     let (actor, secret) = db.add_client(None).unwrap();
@@ -294,7 +295,7 @@ fn a_redeem_whose_sharer_never_answers_fails_at_the_follow_time_spec_sync_inbox_
     a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
     let b = on(&net, 45, &c);
     let mut w = a.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     let link = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
     net.set_online(0, false);
@@ -321,7 +322,7 @@ fn importing_a_card_gives_the_account_spec_sync_inbox_5() {
     assert_eq!(who, a.me());
     assert_eq!(b.profile_of(a.me()).unwrap(), Some(a.profile().unwrap()));
     let mut w = b.write();
-    let t = w.create().unwrap();
+    let t = w.create_held().unwrap();
     w.commit().unwrap();
     b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
 }

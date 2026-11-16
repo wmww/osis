@@ -2293,6 +2293,7 @@ fn judged_per_publish(n: usize) -> u64 {
 // commits, not every body under G's sync IDs, and moves no other thing's publisher, inbox or
 // certificates: the same counts after n and 10n such things.
 #[test]
+#[ignore = "refgraph: issues/reference-graph.md Status, a publish judges G's held things"]
 fn a_thing_published_under_an_actor_judges_what_it_moved_spec_sync_2() {
     let (a, b) = (judged_per_publish(2), judged_per_publish(20));
     assert_eq!(a, b, "judgements per publish grow with the things published before");

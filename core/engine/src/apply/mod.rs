@@ -2401,7 +2401,7 @@ mod tests {
     fn tree_created_in_one_commit_spec_perm_1() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a0, a1) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (a0, a1) = (lp.peers[0].engine.plain_admin(), lp.peers[1].engine.me());
         let reg = Ak::new("x:a.0").unwrap();
         let mut things = Vec::new();
         for _ in 0..2 {
@@ -2418,6 +2418,8 @@ mod tests {
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
         let p1 = &mut lp.peers[1];
+        // the tree lives in x, which peer 1 holds
+        p1.engine.hold(osis_base::Strong(x)).unwrap();
         let mut m = Mutation::new();
         let a = p1.engine.new_thing(&mut m, x);
         let b = p1.engine.new_thing(&mut m, a);
@@ -2455,7 +2457,7 @@ mod tests {
             let mut m = Mutation::new();
             let mut cur = x;
             for _ in 0..depth {
-                cur = p1.engine.new_thing(&mut m, cur);
+                cur = m.create(p1.engine.thing_record(cur));
             }
             m.op(cur, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a1))], op: Op::Set(adm.to_value()) }).unwrap();
             assert!(matches!(p1.commit(m), Err(crate::Error::Permission { .. })), "depth {depth}");
@@ -2477,7 +2479,8 @@ mod tests {
             let p0 = &mut lp.peers[0];
             let before = p0.engine.commit_ids().len();
             let mut m = Mutation::new();
-            let mut cur = a0;
+            // from the account: its root would be a step of the chain
+            let mut cur = p0.engine.me();
             for _ in 0..osis_base::format::MAX_CHAIN_DEPTH + extra {
                 cur = p0.engine.new_thing(&mut m, cur);
             }
