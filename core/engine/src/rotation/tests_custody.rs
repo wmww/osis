@@ -9,7 +9,9 @@
 //! Every commit an engine makes that the model knows becomes an item of a mirror
 //! `custody::World`: plain rotations and merge certificates (their lines read from the engine's
 //! headers), seed boxes (a rotation's, a certificate's and every seed a box carries besides the
-//! first, a re-seal's), t's rotations and writes. The mirror's receipts are the engines'. After
+//! first, a re-seal's), t's rotations (a commit minting a read keyset of t), t's re-seals to P
+//! and writes; a t box to P is sealed as `custody::p_seal` says. The mirror's receipts are the
+//! engines'. After
 //! every tick, at every observer: rotations held with their chain, merges held, the epochs
 //! counting, heads, preferred head and warning, and at P's nodes the revocations taken, D's
 //! roster and the seeds held (and what they derive), against `custody::judge`; a write the model
@@ -24,12 +26,13 @@
 //! Z or itself, signed as X or Z, taking a revocation or one it withholds, answering), writes,
 //! certifies merges of epochs it holds and re-seals its seeds to honest nodes, as the model's
 //! `x_step` (random worlds). Settled, at every node on the honest side: one head, the same, whose
-//! seed X lacks; every honest write counts (on t too, at P's nodes and R1); X's do not; no honest
-//! node rotates in the last round.
+//! seed X lacks; every honest write counts and, on t (at P's nodes and R1), its t epoch's secret is
+//! held: P left out of a t epoch was re-sealed; X's do not; no honest node rotates in the last
+//! round.
 //!
 //! Not mirrored: listings and thing lists (the engine's names; checked by the write rules), X's
 //! writes on t. So a mirrored t rotation's history also carries the t epochs the engine's
-//! rotation supersedes (current at its maker by words the mirror leaves out).
+//! history box lists (current at its maker by words the mirror leaves out).
 
 use crate::local_peer::{LocalPeer, Package};
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
@@ -661,6 +664,7 @@ impl Run {
                     }
                 }
                 MK::TRot { .. } => p.trot = true,
+                MK::TReseal { .. } => {}
                 MK::Content => p.writes.push((i.epoch.clone(), i.on_t.is_some())),
                 MK::Listing { .. } => {}
             }
@@ -691,7 +695,7 @@ impl Run {
             eprintln!("t{t} {} to act: model {model:?}; taken {:?} heads {:?} pref {:?} roster {:?}", cm::NAMES[n], j.taken, j.heads, j.preferred, j.roster);
         }
         let te = self.t_epoch(n);
-        let t_before = self.t_current_held(n);
+        let t_known = self.t_epochs_at(n);
         self.lp.advance(1);
         if let Some(y) = removes {
             let node = self.tids[y];
@@ -739,28 +743,11 @@ impl Run {
                     }
                 }
                 made.extend(ids.first());
-            } else if self.is_t_rotation(n, &c) {
-                let e = self.line_of(&h.epoch.unwrap());
-                let mut bx = [false; N];
-                bx[R1] = true;
-                let reach = self.reach_of(n, &c);
-                let pk = self.lp.peers[n].engine.package(&c).unwrap();
-                // its history: the t epochs the model holds counting at n, and those the engine's
-                // rotation supersedes (its current ones held: counting at n by words the mirror
-                // leaves out, listings among them)
-                let j = self.judge(n);
-                let mut history: BTreeSet<u32> = j.tkeys.iter().copied().filter(|k| *k == 0 || j.valid.contains(k)).collect();
-                history.extend(self.trot_epoch.iter().filter(|(_, x)| t_before.contains(x)).map(|(k, _)| *k));
-                if self.t_setup.iter().any(|x| t_before.contains(x)) {
-                    history.insert(0);
-                }
-                let id = self.add(MK::TRot { history, sealed: j.heads.clone() }, n, n, e, te, c, pk, bx, reach);
-                if let Some(x) = self.lp.peers[n].engine.core.epochs(&self.ids.t).and_then(|x| x.read.newest_held().map(|y| y.0)) {
-                    self.trot_epoch.insert(id, x);
-                }
-                made.push(id);
+            } else if let Some(x) = self.t_rotation_epoch(n, &c, &t_known) {
+                made.push(self.add_t_rotation(n, &c, x, te));
                 trot = true;
-                self.reached.t_rekeyed = true;
+                        } else if let Some(ids) = self.add_t_reseal(n, &c) {
+                made.extend(ids.first());
             } else {
                 rest.push(c);
             }
@@ -777,14 +764,6 @@ impl Run {
         if let Some((e, d)) = model.reseals.iter().find(|x| !reseals.contains(x)) {
             self.fail(&format!("t{t} {} acting: the model re-seals {e:?} to {}, the engine not (engine {reseals:?})", cm::NAMES[n], cm::NAMES[*d]));
         }
-        // the model's t has no forks of its own (each t epoch follows one): the engine also
-        // re-keys t where two of t's epochs are current (siblings re-keyed it apart), so only the
-        // model's re-key is required
-        if model.trot && !trot {
-            let what: Vec<String> = made.iter().chain(&[]).map(|id| format!("#{id} {:?}", self.w.item(*id).kind)).collect();
-            let hs: Vec<String> = rest.iter().map(|c| { let h = self.lp.peers[n].engine.header(c).unwrap(); format!("{:?} {:?}", h.kind, h.aspects.iter().map(|a| format!("{}:{}", if a.tid == self.ids.t { "t" } else if a.tid == self.ids.d { "D" } else if a.tid == self.ids.p { "P" } else { "?" }, a.ak.as_str())).collect::<Vec<_>>()) }).collect();
-            self.fail(&format!("t{t} {} acting: engine re-keys t {trot}, model {} (made {what:?}; besides {hs:?})", cm::NAMES[n], model.trot));
-        }
         // what else it made goes with its first item, or with its next one
         let sides: Vec<Side> = rest.iter().map(|c| self.side(n, c)).collect();
         match made.first() {
@@ -797,7 +776,9 @@ impl Run {
         if write {
             let mut writes = Vec::new();
             for (thing, on_t) in [(self.ids.u, false), (self.ids.t, true)] {
-                if let Some(id) = self.write(n, thing, if on_t { te } else { None }) {
+                let before = made.len();
+                if let Some(id) = self.write(n, thing, if on_t { te } else { None }, &mut made) {
+                    trot |= made.len() > before;
                     writes.push((self.w.item(id).epoch.clone(), on_t));
                     made.push(id);
                 }
@@ -806,23 +787,87 @@ impl Run {
                 self.fail(&format!("t{t} {} writes: engine {writes:?}, model {:?}", cm::NAMES[n], model.writes));
             }
         }
+        // the model's t has no forks of its own (each t epoch follows one): the engine also
+        // re-keys t where two of t's epochs are current (siblings re-keyed it apart), so only the
+        // model's re-key is required
+        if model.trot && !trot {
+            let what: Vec<String> = made.iter().chain(&[]).map(|id| format!("#{id} {:?}", self.w.item(*id).kind)).collect();
+            let hs: Vec<String> = rest.iter().map(|c| { let h = self.lp.peers[n].engine.header(c).unwrap(); format!("{:?} {:?}", h.kind, h.aspects.iter().map(|a| format!("{}:{}", if a.tid == self.ids.t { "t" } else if a.tid == self.ids.d { "D" } else if a.tid == self.ids.p { "P" } else { "?" }, a.ak.as_str())).collect::<Vec<_>>()) }).collect();
+            self.fail(&format!("t{t} {} acting: engine re-keys t {trot}, model {} (made {what:?}; besides {hs:?})", cm::NAMES[n], model.trot));
+        }
         self.schedule(&made);
         self.check_left();
         made
     }
 
-    /// The current read epochs of t node n holds the secret of: what its next t rotation
-    /// supersedes and carries.
-    fn t_current_held(&self, n: usize) -> BTreeSet<osis_crypto::Epoch> {
-        let Some(e) = self.lp.peers[n].engine.core.epochs(&self.ids.t) else { return BTreeSet::new() };
-        let r = e.role(Role::Read);
-        r.current().into_iter().filter(|x| r.secret(x).is_some()).collect()
+    /// The model's t epoch for engine read epoch `e` of t: 0 for the setup's, else the mirrored t
+    /// rotation minting it.
+    fn t_model_id(&self, e: &osis_crypto::Epoch) -> Option<u32> {
+        if self.t_setup.contains(e) { Some(0) } else { self.trot_epoch.iter().find(|(_, y)| *y == e).map(|(id, _)| *id) }
     }
 
-    /// Whether commit c made at peer k is a rotation of thing t (it writes t's keysets).
-    fn is_t_rotation(&self, k: usize, c: &CommitId) -> bool {
+    /// The read epochs of thing t peer k knows.
+    fn t_epochs_at(&self, k: usize) -> BTreeSet<osis_crypto::Epoch> {
+        self.lp.peers[k].engine.core.ix.secrets.get(&self.ids.t).map(|e| e.read.epochs().map(|(x, _)| *x).collect()).unwrap_or_default()
+    }
+
+    /// The read boxes commit c made at peer k writes on thing t, read off the commit itself: (holder,
+    /// epoch) per box.
+    fn t_read_boxes(&mut self, k: usize, c: &CommitId) -> Vec<(Tid, osis_crypto::Epoch)> {
+        let Some(pk) = self.lp.peers[k].engine.package(c).unwrap() else { return Vec::new() };
+        let Ok(blob) = CommitBlob::decode(&pk.bytes) else { return Vec::new() };
+        crate::apply::keys::pending_secrets_writes(&blob, c)
+            .into_iter()
+            .filter(|(t, _)| *t == self.ids.t)
+            .flat_map(|(_, w)| w.boxes.into_keys())
+            .filter(|b| b.role == Role::Read)
+            .filter_map(|b| Some((b.holder.0, osis_keys::aspects::from_schema(&b.epoch).ok()?)))
+            .collect()
+    }
+
+    /// The read epoch of thing t commit c made at peer k mints, if it is a rotation of t: it boxes
+    /// an epoch not in `known` (what k knew before; a re-seal boxes known ones).
+    fn t_rotation_epoch(&mut self, k: usize, c: &CommitId, known: &BTreeSet<osis_crypto::Epoch>) -> Option<osis_crypto::Epoch> {
+        self.t_read_boxes(k, c).into_iter().map(|x| x.1).find(|e| !known.contains(e))
+    }
+
+    /// Commit c made at peer n as a t rotation minting read epoch x, encrypted under the model's t
+    /// epoch te: its box to P sealed as the model seals, R1 boxed; its history the t epochs the
+    /// model holds established at n, and those the engine's history box lists (current at n by
+    /// words the mirror leaves out, listings among them).
+    fn add_t_rotation(&mut self, n: usize, c: &CommitId, x: osis_crypto::Epoch, te: Option<u32>) -> u32 {
+        let h = self.lp.peers[n].engine.header(c).unwrap();
+        let e = self.line_of(&h.epoch.unwrap());
+        let mut bx = [false; N];
+        bx[R1] = true;
+        let reach = self.reach_of(n, c);
+        let pk = self.lp.peers[n].engine.package(c).unwrap();
+        let j = self.judge(n);
+        let mut history: BTreeSet<u32> = j.tkeys_est.clone();
+        let listed: Vec<osis_crypto::Epoch> = self.lp.peers[n].engine.core.ix.secrets.get(&self.ids.t).and_then(|s| s.read.epochs().find(|(y, _)| **y == x).map(|(_, i)| i.supersedes.iter().copied().collect())).unwrap_or_default();
+        history.extend(listed.iter().filter_map(|y| self.t_model_id(y)));
+        let id = self.add(MK::TRot { history, sealed: cm::p_seal(&self.w, &j) }, n, n, e, te, *c, pk, bx, reach);
+        self.trot_epoch.insert(id, x);
+        self.reached.t_rekeyed = true;
+        id
+    }
+
+    /// Commit c made at peer k as re-seals of t to P: an item per t read epoch it boxes P at (the setup's or a mirrored t rotation's), sealed as the model seals (`cm::p_seal`).
+    /// `None`: it boxes P at no such epoch.
+    fn add_t_reseal(&mut self, k: usize, c: &CommitId) -> Option<Vec<u32>> {
+        let p = self.ids.p;
+        let epochs: Vec<osis_crypto::Epoch> = self.t_read_boxes(k, c).into_iter().filter(|(h, _)| *h == p).map(|x| x.1).collect();
+        let of: BTreeSet<u32> = epochs.iter().filter_map(|x| self.t_model_id(x)).collect();
+        if of.is_empty() {
+            return None;
+        }
         let h = self.lp.peers[k].engine.header(c).unwrap();
-        h.kind == osis_commit::Kind::Role && h.aspects.iter().any(|a| a.tid == self.ids.t && a.ak.as_str() == "keys.0")
+        let at = self.line_of(&h.epoch.unwrap());
+        let reach = self.reach_of(k, c);
+        let mut pk = self.lp.peers[k].engine.package(c).unwrap();
+        let j = self.judge(k);
+        let sealed = cm::p_seal(&self.w, &j);
+        Some(of.into_iter().map(|of| self.add(MK::TReseal { of, sealed: sealed.clone() }, k, k, at.clone(), None, *c, pk.take(), [false; N], reach)).collect())
     }
 
     /// Plain rotation item `id` as the policy compares it: signed at, removes, takes, answers,
@@ -928,8 +973,11 @@ impl Run {
     }
 
     /// Node n writes on `thing` at its open epoch (`on_t`: the t epoch the model says).
-    fn write(&mut self, n: usize, thing: Tid, on_t: Option<u32>) -> Option<u32> {
+    /// A t rotation the engine makes first (to encrypt under a current epoch whose secret it holds)
+    /// is mirrored, pushed to `made`, and the write is under it.
+    fn write(&mut self, n: usize, thing: Tid, on_t: Option<u32>, made: &mut Vec<u32>) -> Option<u32> {
         self.lp.advance(1);
+        let t_known = self.t_epochs_at(n);
         let mut m = crate::Mutation::new();
         m.set(thing, &x(), &Value::Str(format!("{} #{}", cm::NAMES[n], self.w.items.len()))).unwrap();
         let c = match self.lp.peers[n].commit(m) {
@@ -940,7 +988,18 @@ impl Run {
                 return None;
             }
         };
-        let others: Vec<CommitId> = self.fresh(n).into_iter().filter(|x| *x != c).collect();
+        let mut on_t = on_t;
+        let mut others = Vec::new();
+        for x in self.fresh(n).into_iter().filter(|x| *x != c) {
+            match self.t_rotation_epoch(n, &x, &t_known) {
+                Some(ep) => {
+                    let id = self.add_t_rotation(n, &x, ep, on_t);
+                    made.push(id);
+                    on_t = Some(id);
+                }
+                None => others.push(x),
+            }
+        }
         let e = self.line_of(&self.lp.peers[n].engine.header(&c).unwrap().epoch.unwrap());
         let reach = self.reach_of(n, &c);
         let pk = self.lp.peers[n].engine.package(&c).unwrap();
@@ -1406,7 +1465,9 @@ impl Run {
                         && let Some(r) = self.script_rotation(B)
                     {
                         let mut ids = vec![r];
-                        ids.extend(self.write(B, self.ids.u, None));
+                        let mut made = Vec::new();
+                        ids.extend(self.write(B, self.ids.u, None, &mut made));
+                        ids.extend(made);
                         self.schedule(&ids);
                     }
                 }
@@ -1613,6 +1674,15 @@ impl Run {
                 if !counts {
                     let why = self.why(v, &c);
                     self.fail(&format!("writes: {} settled without {}'s write #{}{} ({why})", cm::NAMES[v], cm::NAMES[i.author], i.id, if i.on_t.is_some() { " on t" } else { "" }));
+                }
+                // and reads it: a node left out of its t epoch was re-sealed (spec/permissions.md §3)
+                if let Some(te) = i.on_t {
+                    let e = &self.lp.peers[v].engine;
+                    let reads = |x: &osis_crypto::Epoch| e.core.ix.secrets.get(&self.ids.t).is_some_and(|s| s.read.reading_secret(x).is_some());
+                    let ok = if te == 0 { self.t_setup.iter().any(reads) } else { self.trot_epoch.get(&te).is_some_and(reads) };
+                    if !ok {
+                        self.fail(&format!("reads: {} settled unable to read {}'s write #{} on t (t epoch of #{te})", cm::NAMES[v], cm::NAMES[i.author], i.id));
+                    }
                 }
                 if i.author == C && i.on_t.is_some() && v == A {
                     self.reached.cycle = true;

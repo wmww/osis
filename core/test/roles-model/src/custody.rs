@@ -153,9 +153,12 @@ pub enum Kind {
     Listing { names: Vec<u32> },
     /// A rotation of thing t, signed at P epoch `epoch` and boxing t's new epoch to P and to R1
     /// (`boxed[R1]`); its history carries the t epochs its maker held whose rotation counted
-    /// there. `sealed`: the epochs of P its box to P is sealed at, jointly (the heads its maker follows,
-    /// spec/crypto.md §4 Account keysets): only a node holding each one's seed opens it.
+    /// there. `sealed`: the epochs of P its box to P is sealed at, jointly (`p_seal`): only a node
+    /// holding each one's seed opens it; empty: P is left out.
     TRot { history: BTreeSet<u32>, sealed: BTreeSet<Line> },
+    /// A re-seal of t epoch `of` (0 or a `TRot`'s id) to P, sealed at `sealed` (`p_seal`, never
+    /// empty): owed where P was left out of `of` (spec/permissions.md §3 Re-seal).
+    TReseal { of: u32, sealed: BTreeSet<Line> },
 }
 
 #[derive(Clone, Debug)]
@@ -325,8 +328,10 @@ impl Keys {
 pub struct View {
     pub held: BTreeSet<u32>,
     pub keys: Keys,
-    /// t epochs whose secret it holds (0: t's first).
+    /// t epochs whose secret it holds (0: t's first), for reading.
     pub tkeys: BTreeSet<u32>,
+    /// Of `tkeys`, the established ones: what it encrypts under, carries and re-seals.
+    pub tkeys_est: BTreeSet<u32>,
     /// Line elements held with their chain.
     pub chain: BTreeSet<u32>,
     /// Merge epochs held with their chain (a certificate and every element).
@@ -585,11 +590,30 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
     let signs = own && v != X && !j.out(v) && j.keys.holds(w, &j.preferred);
     let own_named: BTreeSet<u32> = held.iter().copied().filter(|i| signs && w.item(*i).author == v && matches!(w.item(*i).kind, Kind::Content | Kind::Listing { .. } | Kind::TRot { .. })).collect();
     let mut valid: BTreeSet<u32> = BTreeSet::new();
+    // a box to P opens once held with the seeds it is sealed at, unless a t rotation removed it
+    // first (spec/crypto.md §4 Boxes: a rotation removes the boxes at the epochs its history
+    // carries, those its maker held): opened, its secret stays
+    let removal = |b: u32, k: u32| held.iter().filter(|q| matches!(&w.item(**q).kind, Kind::TRot { history, .. } if history.contains(&k)) && w.item(b).recv[w.item(**q).author] <= w.item(**q).t).map(|q| w.item(*q).recv[v]).min();
+    let keys_before: std::cell::RefCell<BTreeMap<u32, Keys>> = Default::default();
+    let opens = |b: u32, k: u32, sealed: &BTreeSet<Line>| {
+        own && !sealed.is_empty() && sealed.iter().all(|l| j.keys.holds(w, l)) && removal(b, k).is_none_or(|tq| {
+            let before = |x: &u32| w.item(*x).recv[v] < tq;
+            let mut kb = keys_before.borrow_mut();
+            let keys = kb.entry(tq).or_insert_with(|| Keys::of(w, v, &held.iter().copied().filter(before).collect(), &|_| true));
+            before(&b) && sealed.iter().all(|l| keys.holds(w, l))
+        })
+    };
+    // the boxes to P held that open here: (box item, the t epoch it gives)
+    let p_opened: Vec<(u32, u32)> = held.iter().filter_map(|b| match &w.item(*b).kind {
+        Kind::TRot { sealed, .. } => opens(*b, *b, sealed).then_some((*b, *b)),
+        Kind::TReseal { of, sealed } => opens(*b, *of, sealed).then_some((*b, *of)),
+        _ => None,
+    }).collect();
     loop {
         let mut tkeys: BTreeSet<u32> = std::iter::once(0).filter(|_| own || v == R1).chain(held.iter().copied().filter(|k| {
             let i = w.item(*k);
-            matches!(&i.kind, Kind::TRot { sealed, .. } if v == R1 || i.author == v || sealed.iter().all(|l| j.keys.holds(w, l)) && (w.control != Control::StaleShut || j.heads.contains(&i.epoch) || valid.contains(k)))
-        })).collect();
+            matches!(&i.kind, Kind::TRot { .. } if v == R1 || i.author == v)
+        })).chain(p_opened.iter().filter(|(b, _)| w.control != Control::StaleShut || j.heads.contains(&w.item(*b).epoch) || valid.contains(b)).map(|x| x.1)).collect();
         // what the histories of the t epochs held carry
         loop {
             let more: Vec<u32> = tkeys.iter().filter(|k| **k != 0).flat_map(|k| match &w.item(*k).kind {
@@ -606,7 +630,10 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
         loop {
             next = held.iter().copied().filter(|id| {
                 let i = w.item(*id);
-                matches!(i.kind, Kind::Content | Kind::Listing { .. } | Kind::TRot { .. }) && i.on_t.is_none_or(|te| tkeys.contains(&te)) && (j.heads.contains(&i.epoch) || unrevoked(&i.epoch) || named.contains(id))
+                // a t rotation's or re-seal's role parts open with t's roles secrets, held by every
+                // holder of t (spec/crypto.md §4 Roles secrets); content needs its epoch's secret
+                let opens = matches!(i.kind, Kind::TRot { .. } | Kind::TReseal { .. }) || i.on_t.is_none_or(|te| tkeys.contains(&te));
+                matches!(i.kind, Kind::Content | Kind::Listing { .. } | Kind::TRot { .. } | Kind::TReseal { .. }) && opens && (j.heads.contains(&i.epoch) || unrevoked(&i.epoch) || named.contains(id))
             }).collect();
             let more: Vec<u32> = next.iter().filter_map(|id| match &w.item(*id).kind {
                 Kind::Listing { names } => Some(names.iter().copied().filter(|n| w.item(*n).author == w.item(*id).author).collect::<Vec<_>>()),
@@ -617,7 +644,21 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
             }
             named.extend(more);
         }
+        // established (spec/crypto.md §4): a valid rotation held, its secret from a valid box or a
+        // history entry opened under an established secret; one only read is never encrypted under
+        let mut est: BTreeSet<u32> = tkeys.iter().copied().filter(|k| *k == 0 || next.contains(k) && (v == R1 || w.item(*k).author == v || p_opened.iter().any(|(b, x)| x == k && next.contains(b)))).collect();
+        loop {
+            let more: Vec<u32> = est.iter().filter(|k| **k != 0).flat_map(|k| match &w.item(*k).kind {
+                Kind::TRot { history, .. } => history.iter().copied().collect(),
+                _ => vec![],
+            }).filter(|k| !est.contains(k) && next.contains(k)).collect();
+            if more.is_empty() {
+                break;
+            }
+            est.extend(more);
+        }
         j.tkeys = tkeys;
+        j.tkeys_est = est;
         if next == valid {
             break;
         }
@@ -754,17 +795,72 @@ fn seen_holding(w: &World, j: &View, d: usize, e: &Line) -> bool {
     boxed(e) || !w.single(e) && w.tips(e).iter().all(|m| boxed(&w.line(*m)))
 }
 
-/// The current t epochs at a node: those it holds whose rotation counts there that the history
-/// of no other such one carries.
+/// The epochs of P a box of a t epoch by node `j` judges is sealed at (spec/crypto.md §4 Seal,
+/// Account keysets): its heads jointly, or none (P left out, re-sealed once it is not) where one
+/// is not named here (an epoch it supersedes, transitively, is not held with its chain: its
+/// height is unknown) or does not cover a removal from D a counting rotation here carries
+/// (blocked, spec/crypto.md §4 Encrypting under). The engine may seal at fewer heads (Seal's
+/// anchors), never at more: a node of P opens at least what this says.
+pub fn p_seal(w: &World, j: &View) -> BTreeSet<Line> {
+    let named = Named::of(w, j);
+    let counts = |q: &u32| j.counting.contains(&w.line(*q));
+    let gone: BTreeSet<usize> = j.chain.iter().filter(|q| counts(q)).flat_map(|q| w.removes(*q).iter().copied()).filter(|d| !j.roster.contains(d)).collect();
+    let covers = |h: &Line| gone.iter().all(|d| h.iter().any(|q| counts(q) && w.removes(*q).contains(d)));
+    if j.heads.iter().all(|h| named.has(w, j, h) && covers(h)) { j.heads.clone() } else { BTreeSet::new() }
+}
+
+/// The rotations of P whose epoch a node names: held with its chain, as is every epoch it
+/// supersedes, transitively (spec/crypto.md §3: else its height is unknown). Only a named epoch
+/// is a keyset of P there (spec/crypto.md §4 Account keysets).
+struct Named(BTreeSet<u32>);
+
+impl Named {
+    fn of(w: &World, j: &View) -> Named {
+        let answered = |q: u32| if matches!(w.item(q).kind, Kind::Cert { .. }) { w.mints(q) } else { w.line(q) };
+        // in ID order: what one supersedes is older
+        let mut named = Named(BTreeSet::new());
+        for q in j.chain.iter().copied() {
+            let sup: Vec<Line> = match &w.item(q).kind {
+                Kind::Cert { joined, .. } => joined.clone(),
+                _ => std::iter::once(w.base(q)).chain(w.answers(q).iter().map(|a| answered(*a))).collect(),
+            };
+            if sup.iter().all(|e| named.has(w, j, e)) {
+                named.0.insert(q);
+            }
+        }
+        named
+    }
+
+    fn has(&self, w: &World, j: &View, e: &Line) -> bool {
+        let tips = w.tips(e);
+        e.is_empty() || tips.iter().all(|q| self.0.contains(q)) && (tips.len() == 1 || j.merges.contains(e))
+    }
+}
+
+/// P's boxes of t epoch `k` that count at `j`, each as the epoch its maker signed at: t's first
+/// epoch's (the first epoch), its rotation's unless P was left out, each valid re-seal of it.
+/// None: P is left out of `k`.
+fn p_boxes(w: &World, j: &View, k: u32) -> Vec<Line> {
+    let rot = k == 0 || matches!(&w.item(k).kind, Kind::TRot { sealed, .. } if !sealed.is_empty());
+    let first = if k == 0 { Line::new() } else { w.item(k).epoch.clone() };
+    std::iter::once(first).filter(|_| rot).chain(j.valid.iter().filter(|id| matches!(&w.item(**id).kind, Kind::TReseal { of, .. } if *of == k)).map(|id| w.item(*id).epoch.clone())).collect()
+}
+
+/// The current t epochs at a node (spec/crypto.md §4 Established and current): t's first (at P's
+/// nodes and R1) and each t rotation held that counts there, its secret held or not, that the
+/// history of no other such one carries.
 pub fn t_current(w: &World, j: &View) -> Vec<u32> {
-    let counting: Vec<u32> = j.tkeys.iter().copied().filter(|k| *k == 0 || j.valid.contains(k)).collect();
+    let counting: Vec<u32> = j.tkeys.iter().copied().filter(|k| *k == 0).chain(j.valid.iter().copied().filter(|k| matches!(w.item(*k).kind, Kind::TRot { .. }))).collect();
     let carried = |k: u32| counting.iter().any(|q| *q != k && *q != 0 && matches!(&w.item(*q).kind, Kind::TRot { history, .. } if history.contains(&k)));
     counting.iter().copied().filter(|k| !carried(*k)).collect()
 }
 
-/// The t epoch a node encrypts under: the newest current one.
+/// The t epoch a node encrypts under: the newest current one whose secret it holds established;
+/// lacking every current one's (left out), the newest current one, its writes sealed under it
+/// once re-sealed.
 pub fn t_epoch(w: &World, j: &View) -> Option<u32> {
-    t_current(w, j).into_iter().max()
+    let cur = t_current(w, j);
+    cur.iter().copied().filter(|k| j.tkeys_est.contains(k)).max().or_else(|| cur.into_iter().max())
 }
 
 /// Honest node `n` acts at `now` (the policy in the module doc). `removes`: the world's script
@@ -871,20 +967,28 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
         }
     }
     // t rotates at the head (boxed to P there and to R1, its history carrying the t epochs it holds
-    // whose rotation counts there) while no t epoch is current, or a current one is boxed to P at
-    // an epoch that does not count here or lacks a taken revocation the head carries
+    // whose rotation counts there) while no t epoch is current, or a current one has a box to P
+    // (read at the epoch its maker signed at) at an epoch that does not count here or lacks a taken
+    // revocation the head carries; else it re-seals P at each current one P was left out of
     let j4 = judge(w, n, now);
     let current = t_current(w, &j4);
-    let prev = current.iter().copied().max();
+    let prev = current.iter().copied().filter(|k| j4.tkeys_est.contains(k)).max();
+    // (a box at an epoch not named here is no stale one: a keyset the node holds nothing of)
+    let named = Named::of(w, &j4);
     let stale = |k: &u32| {
-        let at = if *k == 0 { Line::new() } else { w.item(*k).epoch.clone() };
-        !at.is_empty() && !j4.counting.contains(&at) || j4.taken.iter().any(|r| j4.carries(w, &head, *r) && !j4.carries(w, &at, *r))
+        p_boxes(w, &j4, *k).iter().any(|at| named.has(w, &j4, at) && (!at.is_empty() && !j4.counting.contains(at) || j4.taken.iter().any(|r| j4.carries(w, &head, *r) && !j4.carries(w, at, *r))))
     };
-    if prev.is_none() || current.iter().any(stale) {
+    let sealed = p_seal(w, &j4);
+    if current.is_empty() || current.iter().any(stale) {
         let mut bx = [false; N];
         bx[R1] = true;
-        let history = j4.tkeys.iter().copied().filter(|k| *k == 0 || j4.valid.contains(k)).collect();
-        made.push(w.add(Kind::TRot { history, sealed: j4.heads.clone() }, n, n, head.clone(), prev, now, bx));
+        let history = j4.tkeys_est.clone();
+        made.push(w.add(Kind::TRot { history, sealed }, n, n, head.clone(), prev, now, bx));
+    } else if !sealed.is_empty() {
+        let owed: Vec<u32> = current.into_iter().filter(|k| j4.tkeys_est.contains(k) && p_boxes(w, &j4, *k).is_empty()).collect();
+        for k in owed {
+            made.push(w.add(Kind::TReseal { of: k, sealed: sealed.clone() }, n, n, head.clone(), None, now, [false; N]));
+        }
     }
     if write {
         made.push(w.add(Kind::Content, n, n, head.clone(), None, now, [false; N]));
@@ -924,7 +1028,7 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
 /// nothing reaches Z.
 fn reaches(w: &World, id: u32, m: usize) -> bool {
     let i = w.item(id);
-    m != Z && m != i.author && !(m == R2 && (i.on_t.is_some() || matches!(i.kind, Kind::TRot { .. })))
+    m != Z && m != i.author && !(m == R2 && (i.on_t.is_some() || matches!(i.kind, Kind::TRot { .. } | Kind::TReseal { .. })))
 }
 
 /// The choices a world is built from: random, or enumerated (`Odometer`).
@@ -1896,6 +2000,57 @@ mod tests {
         let m2 = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Cert { .. })).unwrap();
         assert_eq!(w.tips(&w.mints(m2)), vec![x, b2]);
         assert!(w.item(m2).boxed[B]);
+    }
+
+    /// X forks f, minted by none (signed as Z), and B answers it with q; A holds q but not f, so
+    /// q's height, and P's keyset at A's head after its removal of T, is unknown there (spec/crypto.md
+    /// §4 Account keysets). A's re-key of t leaves P out (Seal: no candidate), so B, holding A's
+    /// seeds, reads neither the new t epoch nor A's write under it; once A holds f it re-seals P
+    /// (spec/permissions.md §3 Re-seal), and B reads both.
+    #[test]
+    fn a_t_epoch_left_out_at_an_unnamed_head_reads_once_re_sealed() {
+        let mut w = World::default();
+        let f = plain(&mut w, X, Z, &Line::new(), &[], &[], &PS, 0);
+        to(&mut w, &[f], &[B], 1);
+        let q = act(&mut w, B, 1, None, false);
+        assert!(q.iter().any(|id| w.answers(*id).contains(&f)), "B answers the fork: {q:?}");
+        to(&mut w, &q, &[A], 2);
+        let made = act(&mut w, A, 2, Some(T), true);
+        let k = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::TRot { .. })).unwrap();
+        let wr = *made.iter().find(|id| w.item(**id).on_t == Some(k)).unwrap();
+        assert!(matches!(&w.item(k).kind, Kind::TRot { sealed, .. } if sealed.is_empty()), "P left out");
+        to(&mut w, &made, &[B], 3);
+        let j = judge(&w, B, 3);
+        assert!(!j.tkeys.contains(&k) && !j.valid.contains(&wr), "B reads nothing under t's new epoch: {:?}", j.tkeys);
+        to(&mut w, &[f], &[A], 4);
+        let rs = act(&mut w, A, 4, None, false);
+        assert!(rs.iter().any(|id| matches!(w.item(*id).kind, Kind::TReseal { of, .. } if of == k)), "A re-seals P: {rs:?}");
+        to(&mut w, &rs, &[B], 5);
+        let j = judge(&w, B, 5);
+        assert!(j.tkeys.contains(&k) && j.valid.contains(&wr), "B reads A's write: {:?}", j.tkeys);
+    }
+
+    /// A's t rotation k2 supersedes its k1, leaving P out, and removes P's box at k1 (its history
+    /// carries k1: spec/crypto.md §4 Boxes). B, holding k2 before k1, never opens k1's box and
+    /// reads k1 only once P is re-sealed at k2 (k2's history); holding k1 first, it keeps it.
+    #[test]
+    fn a_box_a_later_t_rotation_removed_opens_only_if_held_before() {
+        let tkeys = |k1_at: u32, now: u32| {
+            let mut w = World::default();
+            let k1 = w.add(Kind::TRot { history: [0].into(), sealed: [Line::new()].into() }, A, A, Line::new(), Some(0), 1, [false; N]);
+            let k2 = w.add(Kind::TRot { history: [0, k1].into(), sealed: BTreeSet::new() }, A, A, Line::new(), Some(k1), 2, [false; N]);
+            to(&mut w, &[k1], &[B], k1_at);
+            to(&mut w, &[k2], &[B], 4);
+            let r = w.add(Kind::TReseal { of: k2, sealed: [Line::new()].into() }, A, A, Line::new(), None, 6, [false; N]);
+            to(&mut w, &[r], &[B], 7);
+            (k1, k2, judge(&w, B, now).tkeys)
+        };
+        let (k1, k2, held) = tkeys(5, 5);
+        assert!(!held.contains(&k1) && !held.contains(&k2), "k1's box was removed first: {held:?}");
+        let (_, _, held) = tkeys(5, 7);
+        assert!(held.contains(&k1) && held.contains(&k2), "re-sealed at k2, its history carries k1: {held:?}");
+        let (_, _, held) = tkeys(3, 5);
+        assert!(held.contains(&k1), "opened before its removal: {held:?}");
     }
 
     /// B merges its b with X's x (whose seed A and T lack), boxing them the merge seed with x's

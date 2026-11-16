@@ -487,6 +487,72 @@ fn a_box_at_an_epoch_whose_answered_fork_is_not_held_opens_spec_crypto_4() {
     lp.peers[0].engine.check_index();
 }
 
+/// Node `k` re-keys thing `t` now.
+fn rekey(lp: &mut LocalPeer, k: usize, t: Tid) -> Done {
+    lp.peers[k].engine.run(|tx| {
+        let who = tx.core.writer()?;
+        crate::rotation::rotate_now(tx, who, t, &osis_keys::ROLES.into_iter().collect())
+    }).unwrap()
+}
+
+/// Node 1 answers a fork minted by no node; node 0 holds the answer but not the fork, so it
+/// cannot name its own head (its height is unknown). The fork's commit.
+fn unnamed_head_at_0(lp: &mut LocalPeer, a: &CreatedAccount) -> CommitId {
+    let head = setup_head(lp, a);
+    let fb = forge(lp, 2, a, head, &[], &[], 91);
+    let f = give(lp, &fb, &[1]);
+    let q = lp.peers[1].engine.signing_due().unwrap().commits;
+    send(lp, 1, 0, &q);
+    assert!(!lp.peers[0].engine.core.ix.commits.contains_key(&f));
+    f
+}
+
+// spec/crypto.md §4 (Seal: no candidate, Account keysets), spec/permissions.md §3 (Re-seal): a
+// node whose head it cannot name re-keys t leaving its own account out; another node of the
+// account, holding its seeds, reads nothing written under t's new epoch, sealed as a sync ID
+// carries it, until the maker can name its head and re-seals the account at its pass end
+#[test]
+fn a_t_epoch_left_out_of_its_makers_account_reads_once_re_sealed_spec_permissions_3() {
+    let (mut lp, a, t) = world(5, 4);
+    let f = unnamed_head_at_0(&mut lp, &a);
+    let rk = rekey(&mut lp, 0, t);
+    let w = write(&mut lp, 0, t, "left out");
+    let sealed = lp.sealed(0, &[w]).unwrap();
+    send(&mut lp, 0, 1, &rk.commits);
+    assert_eq!(lp.deliver_sealed(1, &sealed).unwrap(), vec![w], "the account is left out of t's new epoch");
+    assert_eq!(read(&mut lp, 1, t), Some(Value::Str("p".into())));
+    send(&mut lp, 1, 0, &[f]);
+    let rs = lp.peers[0].engine.reseal_after_pass(&t).unwrap();
+    send(&mut lp, 0, 1, &rs.commits);
+    assert!(lp.deliver_sealed(1, &sealed).unwrap().is_empty(), "re-sealed, the write opens");
+    assert_eq!(read(&mut lp, 1, t), Some(Value::Str("left out".into())));
+    lp.peers[1].engine.check_index();
+}
+
+// spec/crypto.md §4 (Boxes: a rotation removes the boxes at the epochs its history carries):
+// node 0 re-keys t boxing its account (k1) and writes under k1, then re-keys again leaving the
+// account out (its head unnamed, k2). Node 1 holding k2 before k1 never opens k1's box, so the
+// write does not open; once node 0 re-seals the account at k2, k2's history carries k1 and the
+// write reads by value
+#[test]
+fn a_box_a_later_rotation_removed_reads_through_its_re_seal_spec_crypto_4() {
+    let (mut lp, a, t) = world(5, 4);
+    let k1 = rekey(&mut lp, 0, t);
+    let w = write(&mut lp, 0, t, "under k1");
+    let sealed = lp.sealed(0, &[w]).unwrap();
+    let f = unnamed_head_at_0(&mut lp, &a);
+    let k2 = rekey(&mut lp, 0, t);
+    send(&mut lp, 0, 1, &k2.commits);
+    send(&mut lp, 0, 1, &k1.commits);
+    assert_eq!(lp.deliver_sealed(1, &sealed).unwrap(), vec![w], "k1's box was removed before node 1 held it");
+    send(&mut lp, 1, 0, &[f]);
+    let rs = lp.peers[0].engine.reseal_after_pass(&t).unwrap();
+    send(&mut lp, 0, 1, &rs.commits);
+    assert!(lp.deliver_sealed(1, &sealed).unwrap().is_empty(), "k2's history carries k1");
+    assert_eq!(read(&mut lp, 1, t), Some(Value::Str("under k1".into())));
+    lp.peers[1].engine.check_index();
+}
+
 // spec/requirements.md Cost, notes/principles.md (Check scaling): a removal lists the commits
 // of the epoch it closes, never the account's earlier history: the second rotation's lists are
 // as long after n writes at the first epoch as after 10n
