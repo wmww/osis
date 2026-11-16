@@ -1,6 +1,15 @@
 # Run by `wt release` before it prunes the target: every standard command (notes/build.md), so
 # units a task skipped stay. Each is a no-op on a gated tree.
 set -e
+# Build key: with it unchanged since the last marking no unit can be stale (a workspace crate's
+# edit rebuilds its unit in place), so mark every unit as read and let wt prune only incremental/
+# (seconds; marking builds every target a worker never built: about a minute per release).
+key=$( { cat Cargo.lock .cargo/config.toml; git ls-files -z '*Cargo.toml' | xargs -0 cat; rustc -vV; } | sha256sum)
+if [ -f target/.wt-mark-key ] && [ "$(cat target/.wt-mark-key)" = "$key" ]; then
+  find target -path '*/.fingerprint/*' -type f -exec touch -a {} +
+  exit 0
+fi
+rm -f target/.wt-mark-key
 cargo test --no-run
 cargo build --all-targets
 cargo clippy --all-targets -- -D warnings
@@ -13,3 +22,4 @@ fi
 if ls target/debug/deps/libosis_kit-*.rlib >/dev/null 2>&1; then
   cargo test $gui --no-run
 fi
+echo "$key" > target/.wt-mark-key
