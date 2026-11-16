@@ -120,6 +120,7 @@ Rules:
 - About ten agents in all.
 
 ## To settle while building
+- D's deposit seed: the inbox is its own thing, so a fresh deposit seed on a device removal rests on every sync-role rotation writing a new one (the inbox thing and D rotate inside each P rotation); check it holds in the rebuild.
 - Whether reading a weak must tell "destroyed" from "not held" (both read absent today).
 - Which search the edge-removal uses first (other referrers, or the subtree): each loses in one shape (notes/closure-model.md, counts); running both in step meets both.
 - What `tools/policy_test.py` and `tools/spec_map.py` need once `life.rs` and the removed sections go.
