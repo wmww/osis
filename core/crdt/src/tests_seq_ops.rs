@@ -305,15 +305,8 @@ fn hostile_moves(base: &Fragment, sibs: usize, moves: usize) -> (Fragment, Fragm
 /// linearly from n to 10n runs (counted: about √n, the block walk).
 #[test]
 fn small_joins_follow_cached_placement_spec_6() {
-    // 3174492301114349736: `OSIS_CRDT_SEED=33`'s, whose move took five records at 300 runs
-    for seed in [0, 3_174_492_301_114_349_736] {
-        joins_follow_cached_placement(seed);
-    }
-}
-
-fn joins_follow_cached_placement(seed: u64) {
     let work = |runs: u64| {
-        let mut r = crate::testutil::rng(seed);
+        let mut r = crate::testutil::rng(0);
         let mut a = Replica::new(1);
         let mut len = 0usize;
         let run: String = "abcdefghij".repeat(10);

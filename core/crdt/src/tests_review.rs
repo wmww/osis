@@ -1,4 +1,4 @@
-//! Regressions from the crdt-core review (spec/crdt.md §4.6, §5.6, §7, §8, §9).
+//! Hand-built cases of join, read, undo and paging rules (spec/crdt.md §4.6, §5.6, §7, §8, §9).
 
 use crate::codec::{decode_snapshot, encode_snapshot};
 use crate::fragment::{Bag, BagKind, Elem, Encoding, Fragment, Meta, RegWrite, Register, Slots};
