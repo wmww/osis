@@ -26,7 +26,7 @@ fn a_link_opens_k_by_its_static_entry_spec_sync_inbox_6() {
     let (mut w, link) = redeemed();
     let s = link.k_sync_id;
     assert!(matches!(w.engine(0).sync_holder(&s).unwrap(), Some((_, osis_engine::sync::Holding::Read))), "the sharer syncs K");
-    assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == link.k), "the redeemer follows K's sync ID");
+    assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == [link.k].into()), "the redeemer follows K's sync ID");
     assert!(w.status(1).get(&s).is_some_and(|st| !st.sources.is_empty()), "K open at the sharer");
     assert!(!w.engine(1).read_credentials(&s).unwrap().unwrap().read_secrets.is_empty(), "K's read secret from the entry box");
 }
@@ -88,7 +88,8 @@ fn a_link_text_never_moves_another_things_sync_id_spec_sync_set_2() {
     let mut w = two_nodes();
     let real = w.make_link(0, w.node(0).profile.unwrap(), Role::Read);
     let set = w.engine(1).sync_set().unwrap();
-    let (&own, &(t, _)) = set.ids.iter().next().expect("node 1 syncs something");
+    let (&own, (ts, _)) = set.ids.iter().next().expect("node 1 syncs something");
+    let t = *ts.first().unwrap();
     let thing_before = w.engine(1).thing_sync(&t).unwrap();
     // K = that thing, under the real link's sync ID
     let as_k = ShareLink { k: t, ..real.clone() };
@@ -354,7 +355,7 @@ fn a_held_join_forgets_the_link_and_k_syncs_by_its_filing_spec_permissions_7() {
     assert!(!w.node(1).node.redeeming(&link.k), "forgotten once held");
     let s = link.k_sync_id;
     assert!(w.engine(1).read_credentials(&s).unwrap().is_some_and(|c| c.acting.is_empty()), "K read, L acted for no more");
-    assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == link.k), "K syncs by its filing");
+    assert!(matches!(w.engine(1).sync_holder(&s).unwrap(), Some((t, osis_engine::sync::Holding::Read)) if t == [link.k].into()), "K syncs by its filing");
     let on_k = w.engine(1).core.on_thing(&link.k).count();
     assert_eq!(w.redeem(1, &link), Waiting::Done, "joined: done");
     w.run();

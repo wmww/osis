@@ -157,8 +157,12 @@ fn judge(engine: &mut Engine, net: &impl Net, progress: &Stamped<Key, Progress>,
     if net.member(*conn, s).is_none_or(|m| m.class != SourceClass::Store) {
         return Ok(Plan::Nothing);
     }
-    let Some(t) = engine.sync_owner(s)? else { return Ok(Plan::Nothing) };
-    let Some(path) = engine.sync_ids(&t)?.iter().find(|o| o.id == *s && !o.hint).map(|o| o.path.clone()) else { return Ok(Plan::Nothing) };
+    // S's recorded path: a sync ID only tickets name records none
+    let mut path = None;
+    for t in engine.sync_owners(s)? {
+        path = path.or_else(|| engine.sync_ids(&t).ok()?.iter().find(|o| o.id == *s && !o.hint).map(|o| o.path.clone()));
+    }
+    let Some(path) = path else { return Ok(Plan::Nothing) };
     let p = progress.get(k).copied().unwrap_or_default();
     let mut needs_held = |step: &StepId| -> Result<bool> {
         for c in engine.step_needs(s, step)?.iter() {

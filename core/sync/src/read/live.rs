@@ -91,8 +91,9 @@ impl Live<'_, '_> {
         Ok(())
     }
 
-    fn thing(&mut self, s: &SyncId) -> Result<Option<osis_base::Tid>> {
-        Ok(self.cx.store.synced(s).map(|(t, _)| t))
+    /// S's things, as this node syncs S.
+    fn things(&mut self, s: &SyncId) -> std::collections::BTreeSet<Tid> {
+        self.cx.store.synced(s).map(|(t, _)| t).unwrap_or_default()
     }
 
     /// Entry `e` of S is stamped as this node logs it now: under its served head's write key
@@ -243,10 +244,8 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.read_credentials(s)?)
     }
     fn destruction(&mut self, s: &SyncId) -> Result<Option<Arc<Destruction>>> {
-        match self.thing(s)? {
-            Some(t) => Ok(self.cx.engine.destruction(&t)),
-            None => Ok(None),
-        }
+        // a destroyed thing's own sync IDs are its alone (no ticket names them as another's)
+        Ok(self.things(s).iter().find_map(|t| self.cx.engine.destruction(t)))
     }
     fn reads(&mut self, s: &SyncId) -> bool {
         self.cx.store.holding(s) == Some(osis_engine::sync::Holding::Read)
@@ -255,10 +254,13 @@ impl Ground for Live<'_, '_> {
         self.feeds.syncs.as_mut().map(|f| f.added()).unwrap_or_default()
     }
     fn unit_settled(&mut self, s: &SyncId) -> Result<bool> {
-        match self.thing(s)? {
-            Some(t) => Ok(self.cx.engine.unit_settled(&t)?),
-            None => Ok(false),
+        let things = self.things(s);
+        for t in &things {
+            if !self.cx.engine.unit_settled(t)? {
+                return Ok(false);
+            }
         }
+        Ok(!things.is_empty())
     }
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {
         // a source of S up now (stamped: a source joining judges again)
@@ -689,10 +691,12 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.forget_commits(cs)?)
     }
     fn forget(&mut self, s: &SyncId) -> Result<()> {
-        let thing = self.thing(s)?;
+        let things = self.things(s);
         self.cx.store.shred(s)?;
-        if let Some(t) = thing {
-            self.cx.engine.forget_destroyed(&t)?;
+        for t in &things {
+            if self.cx.engine.destruction(t).is_some() {
+                self.cx.engine.forget_destroyed(t)?;
+            }
         }
         Ok(())
     }

@@ -156,7 +156,7 @@ impl T {
     }
 
     fn hold(&mut self, ids: &[(SyncId, Holding)]) {
-        self.store.set_sync_set(&SyncSet { ids: ids.iter().map(|(s, h)| (*s, (THING, *h))).collect(), ..SyncSet::default() }).unwrap();
+        self.store.set_sync_set(&SyncSet { ids: ids.iter().map(|(s, h)| (*s, ([THING].into(), *h))).collect(), ..SyncSet::default() }).unwrap();
     }
 
     fn connect(&mut self, c: ConnId, actors: &[Tid]) {
@@ -555,7 +555,7 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Writes), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
-    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some((t, Holding::Unread)));
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
     w.power_off(2);
     let a2 = w.node(2).account.unwrap();
     w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Write], &[a2])).unwrap().expect("a rotation");

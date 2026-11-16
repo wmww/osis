@@ -62,13 +62,13 @@ impl Ground for Fake {
     }
     fn sync_held(&mut self, s: &SyncId) -> Result<Option<Held>> {
         let t = tid(s.0[0]);
-        Ok(self.holders.get(s).filter(|_| self.closure.get(&()).is_some_and(|c| c.contains(&t))).map(|h| (t, *h)))
+        Ok(self.holders.get(s).filter(|_| self.closure.get(&()).is_some_and(|c| c.contains(&t))).map(|h| ([t].into(), *h)))
     }
     fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
         Ok(self.closure.get(&()).is_some_and(|c| c.contains(t)))
     }
     fn synced(&mut self, s: &SyncId) -> Option<Held> {
-        self.synced.get(s).copied()
+        self.synced.get(s).cloned()
     }
     fn set_synced(&mut self, s: &SyncId, now: Option<Held>) -> Result<()> {
         match now {
@@ -81,7 +81,7 @@ impl Ground for Fake {
         Ok(self.stored.get(&()).cloned().unwrap_or_default())
     }
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>> {
-        Ok(self.holders.get(s).map(|h| (tid(s.0[0]), *h)))
+        Ok(self.holders.get(s).map(|h| ([tid(s.0[0])].into(), *h)))
     }
     fn sourced(&mut self, s: &SyncId) -> bool {
         !self.unsourced.contains(s)

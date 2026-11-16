@@ -85,31 +85,42 @@ impl Engine {
         (o.candidates.len(), o.candidates.values().map(|x| x.1.len()).sum(), self.core.pass_wanted.len())
     }
 
-    /// `s`'s scope: its read thing's sync unit and the authors this node writes as (its account,
-    /// itself, the link key of a link it follows: a join, spec/permissions.md §7).
+    /// `s`'s scope: the sync units of the things reading it and the authors this node writes as
+    /// (its account, itself, the link key of a link it follows: a join, spec/permissions.md §7).
     fn own_scope(&mut self, s: &SyncId) -> Result<Option<Scope>> {
-        let Some(t) = self.read_thing(s)? else { return Ok(None) };
+        let things = self.read_things_of(s)?;
+        if things.is_empty() {
+            return Ok(None);
+        }
         let links = self.core.followed_links.all().values().map(|(_, l)| *l);
         let authors = self.core.me().into_iter().chain([self.core.id.tid()]).chain(links).collect();
-        Ok(Some(Scope { closure: self.sync_unit(&t), authors }))
+        let closure = match things.as_slice() {
+            [t] => self.sync_unit(t),
+            _ => Arc::new(things.iter().flat_map(|t| self.sync_unit(t).iter().copied().collect::<Vec<_>>()).collect()),
+        };
+        Ok(Some(Scope { closure, authors }))
     }
 
     /// Whether `c` is an own commit with a body under `s` (spec/sync-status.md §2): written here
     /// on a thing of `s`'s closure by one of its authors, or a self-removal sync waits on
     /// (`waiting_removals`, a sibling's among them), and with a body under `s`.
     fn own_under(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
-        let Some(t) = self.read_thing(s)? else { return Ok(false) };
-        let ctx = self.body_ctx(&t);
         let waits = self.core.ix.held_wait.contains(c);
-        // an author asked per key: one link followed or let go moves only its key's commits
-        let own = waits || {
-            let core = &self.core;
-            core.ix.commits.get(c).is_some_and(|m| {
-                let a = &m.view.author;
-                m.origin == crate::events::Origin::Local && (core.me() == Some(*a) || core.id.tid() == *a || core.followed_links.is_key(a)) && m.view.aspects.iter().any(|x| ctx.closure.contains(&x.tid))
-            })
-        };
-        Ok(own && !self.commit_bodies_under(&ctx, c)?.is_empty())
+        for t in self.read_things_of(s)? {
+            let ctx = self.body_ctx(&t);
+            // an author asked per key: one link followed or let go moves only its key's commits
+            let own = waits || {
+                let core = &self.core;
+                core.ix.commits.get(c).is_some_and(|m| {
+                    let a = &m.view.author;
+                    m.origin == crate::events::Origin::Local && (core.me() == Some(*a) || core.id.tid() == *a || core.followed_links.is_key(a)) && m.view.aspects.iter().any(|x| ctx.closure.contains(&x.tid))
+                })
+            };
+            if own && !self.commit_bodies_under(&ctx, c)?.is_empty() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Brings the own commits of each followed sync ID up to date: work in proportion to the

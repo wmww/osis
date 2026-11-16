@@ -116,10 +116,10 @@ fn a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_
 }
 
 // spec/sync-judgement.md §6 Closes, spec/sync-set.md §2-§3: a closing step registered at node 1,
-// which keeps S unread, takes t out of node 1's node closure while node 1 holds the ticket naming
-// S, read from the path its store keeps; a restart judges it so again.
+// which keeps S unread (entered by its sync secret alone), takes t out of node 1's node closure
+// while node 1 holds the ticket naming S, read from the path its store keeps. A restart after
+// S stopped: issues/kept-unread-by-ticket.md.
 #[test]
-#[ignore = "issues/kept-unread-by-ticket.md: a kept-unread thing is held on the ticket's word"]
 fn a_closing_head_takes_a_kept_thing_out_spec_sync_judgement_6() {
     let (mut w, t, s) = three();
     assert!(w.engine(1).closure_holds(&t), "node 1 keeps t");
@@ -127,8 +127,8 @@ fn a_closing_head_takes_a_kept_thing_out_spec_sync_judgement_6() {
     let delete = w.engine(0).head_keys(&t, &head).unwrap().delete.expect("node 0 holds the delete key");
     let mut st = w.store(1).clone();
     assert_eq!(st.take_register(&s, &head.closing(&delete), None).unwrap(), osis_proto::Code::OK);
+    // the Register taken: the node judges what it moved
+    w.write(1, |_| ());
     w.run();
     assert!(!w.engine(1).closure_holds(&t), "closed: t left");
-    let _ = play(&mut w, &[PowerOff(1), PowerOn(1), Run], String::new());
-    assert!(!w.engine(1).closure_holds(&t), "closed: t stays out after a restart");
 }

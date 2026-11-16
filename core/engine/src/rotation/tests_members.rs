@@ -2143,7 +2143,7 @@ fn driver_duties(lp: &mut LocalPeer, i: usize) {
     for s in wanted {
         let now = e.begin_pass();
         e.note_complete_pass(&s, now).unwrap();
-        if let Some(o) = e.sync_owner(&s).unwrap() {
+        for o in e.sync_owners(&s).unwrap() {
             e.pass_end(&o).unwrap();
         }
     }

@@ -200,7 +200,7 @@ impl T {
     /// A node holding `ids` (read, or kept unread).
     fn new(ids: &[(SyncId, Holding)]) -> T {
         let mut g = Fake::default();
-        g.set.insert((), Arc::new(SyncSet { ids: ids.iter().map(|(s, h)| (*s, (tid(9), *h))).collect(), unsyncable: BTreeSet::new() }));
+        g.set.insert((), Arc::new(SyncSet { ids: ids.iter().map(|(s, h)| (*s, ([tid(9)].into(), *h))).collect(), unsyncable: BTreeSet::new() }));
         let mut t = T { st: Status::default(), g, pulls: Vec::new() };
         t.settle();
         t

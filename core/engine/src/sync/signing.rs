@@ -16,8 +16,7 @@ impl Engine {
     /// actor's inbox, whose head this node need not record; else from the head's).
     pub fn signers(&mut self, s: &SyncId, actor: Option<&Tid>) -> Result<Signers> {
         let mut out = Signers::default();
-        if let Some(t) = self.sync_owner_of(s)?
-            && let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s && !o.hint).cloned()
+        if let Some((t, o)) = self.recorded_owner(s)?
             && let Some((head, _)) = o.path.steps.last()
         {
             let k = self.head_keys(&t, head)?;
@@ -40,8 +39,7 @@ impl Engine {
     /// tells (a reader registering a write or delete key), each current epoch of the role here.
     /// Empty for a step this node does not record.
     pub fn step_needs(&mut self, s: &SyncId, step: &StepId) -> Result<Arc<Vec<CommitId>>> {
-        let Some(t) = self.sync_owner_of(s)? else { return Ok(Arc::default()) };
-        let Some(o) = self.owned_sync_ids(&t)?.iter().find(|o| o.id == *s).cloned() else { return Ok(Arc::default()) };
+        let Some((t, o)) = self.recorded_owner(s)? else { return Ok(Arc::default()) };
         let Some((st, _)) = o.path.steps.iter().find(|(x, _)| x.id() == *step).cloned() else { return Ok(Arc::default()) };
         let k = self.head_keys(&t, &st)?;
         let Some(ep) = self.epochs(&t) else { return Ok(Arc::default()) };

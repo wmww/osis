@@ -153,11 +153,15 @@ impl Engine {
         Ok(all.pop().map(|(k, _)| k))
     }
 
-    /// The sync secrets of kept-unread `s`'s thing that the tickets held here give, by epoch
-    /// (spec/sync.md §3).
+    /// The sync secrets of kept-unread `s`'s things that the tickets held here naming `s` give,
+    /// by epoch: every one of its things alike (spec/sync.md §3 Kept sync IDs).
     pub fn ticket_sync_secrets(&mut self, s: &SyncId) -> Vec<(Epoch, Secret32)> {
-        let Ok(Some(t)) = self.sync_owner_of(s) else { return Vec::new() };
-        let Ok(all) = self.opened_tickets(&t) else { return Vec::new() };
-        all.into_iter().filter(|(k, o)| k.role == Role::Sync && o.role == Role::Sync && k.sync_id == *s).map(|(_, o)| (o.epoch, o.secret)).collect()
+        let Ok(things) = self.sync_things_of(s) else { return Vec::new() };
+        let mut out = Vec::new();
+        for t in things {
+            let Ok(all) = self.opened_tickets(&t) else { continue };
+            out.extend(all.into_iter().filter(|(k, o)| k.role == Role::Sync && o.role == Role::Sync && k.sync_id == *s).map(|(_, o)| (o.epoch, o.secret)));
+        }
+        out
     }
 }

@@ -142,7 +142,8 @@ impl Engine {
             let ThingSync::Read(ids) = self.thing_sync_now(&g)? else { continue };
             if let Some(meta) = self.closure_body(&g, c)? {
                 for s in &ids {
-                    out.insert(*s, meta.clone());
+                    let was = out.remove(s);
+                    out.insert(*s, join_body(was, meta.clone()));
                 }
             }
         }
@@ -159,15 +160,39 @@ impl Engine {
     }
 
     /// `sync_body_now` read anew.
+    /// `s`'s body of `c` is judged for each thing reading `s` (`read_things`), their bodies
+    /// joined (`join_body`).
     fn sync_body_read(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BodyMeta>> {
-        let Some(t) = self.read_thing(s)? else { return Ok(None) };
-        if self.body_things(c).contains(&t)
-            && let Some(meta) = self.closure_body(&t, c)?
+        let mut out: Option<BodyMeta> = None;
+        for t in self.read_things_of(s)? {
+            if let Some(meta) = self.body_for(&t, c)? {
+                out = Some(join_body(out, meta));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Commit `c`'s body under read thing `t`'s sync IDs: its closure body, else its certificate
+    /// body.
+    fn body_for(&mut self, t: &Tid, c: &CommitId) -> Result<Option<BodyMeta>> {
+        if self.body_things(c).contains(t)
+            && let Some(meta) = self.closure_body(t, c)?
         {
             return Ok(Some(meta));
         }
-        let Some(named) = self.certified_of(c, &t)? else { return Ok(None) };
-        self.certificate_body(c, &t, &named)
+        let Some(named) = self.certified_of(c, t)? else { return Ok(None) };
+        self.certificate_body(c, t, &named)
+    }
+
+    /// The thing reading `s` whose body of `c` `s` carries (`body_for`), under whose keys that
+    /// body is sealed, logged and promoted.
+    fn body_thing(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<Tid>> {
+        for t in self.read_things_of(s)? {
+            if self.body_for(&t, c)?.is_some() {
+                return Ok(Some(t));
+            }
+        }
+        Ok(None)
     }
 
     /// Commit `c`'s closure body under read thing `g`'s sync IDs, if any.
@@ -193,7 +218,8 @@ impl Engine {
             }
             let Some(meta) = self.certificate_body(c, &t, &named)? else { continue };
             for s in ids {
-                out.insert(s, meta.clone());
+                let was = out.remove(&s);
+                out.insert(s, join_body(was, meta.clone()));
             }
         }
         Ok(())
@@ -226,23 +252,31 @@ impl Engine {
         Ok(Some(BodyMeta { parts, expires, order, copy: true, certificate: true, header_only, mints }))
     }
 
-    /// The thing whose read sync ID `s` is here (`ThingSync::Read`).
-    pub(crate) fn read_thing(&mut self, s: &SyncId) -> Result<Option<Tid>> {
-        let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
-        Ok(matches!(self.thing_sync_now(&t)?, ThingSync::Read(ids) if ids.contains(s)).then_some(t))
+    /// The things reading `s` here: those of `s`'s things (`sync_things_of`) whose
+    /// `ThingSync::Read` lists it. What arrives under `s` is judged for each.
+    pub(crate) fn read_things_of(&mut self, s: &SyncId) -> Result<Vec<Tid>> {
+        let mut out = Vec::new();
+        for t in self.sync_things_of(s)? {
+            if matches!(self.thing_sync_now(&t)?, ThingSync::Read(ids) if ids.contains(s)) {
+                out.push(t);
+            }
+        }
+        Ok(out)
     }
 
-    /// The thing whose read secrets open and act for `s` here: the one reading it, else its owner
-    /// while a read secret of it is held. Sync keeps syncing a sync ID that left its sync set
-    /// until a complete pass after it left (spec/sync-set.md §3: opening what arrives by the read
-    /// secrets of S's thing it still holds), so what a reader of `s` acts with stands as long
-    /// as those secrets do; a lost reader's go with its drop, which waits for that pass.
-    pub(crate) fn opening_thing(&mut self, s: &SyncId) -> Result<Option<Tid>> {
-        if let Some(t) = self.read_thing(s)? {
-            return Ok(Some(t));
+    /// The things whose read secrets open and act for `s` here: those reading it, else those of
+    /// its things whose read secrets are held. Sync keeps syncing a sync ID that left its sync
+    /// set until a complete pass after it left (spec/sync-set.md §3: opening what arrives by the
+    /// read secrets of S's thing it still holds), so what a reader of `s` acts with stands as
+    /// long as those secrets do; a lost reader's go with its drop, which waits for that pass.
+    pub(crate) fn opening_things(&mut self, s: &SyncId) -> Result<Vec<Tid>> {
+        let read = self.read_things_of(s)?;
+        if !read.is_empty() {
+            return Ok(read);
         }
-        let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
-        Ok(self.core.epochs(&t).is_some_and(|e| e.role(osis_base::Role::Read).holds_any()).then_some(t))
+        let mut out = self.sync_things_of(s)?;
+        out.retain(|t| self.core.epochs(t).is_some_and(|e| e.role(osis_base::Role::Read).holds_any()));
+        Ok(out)
     }
 
     /// The facts the judgement of `c`'s body under `s` reads (spec/sync-judgement.md §2): whether
@@ -354,7 +388,7 @@ impl Engine {
     /// the body needs, or its header, this node read only under an epoch not established here).
     /// A held blob not tombstoned under `s` is the store's to log verbatim (`rewrap`).
     pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::sync_ids::Sealed, Wrap)>> {
-        let Some(t) = self.read_thing(s)? else { return Ok(None) };
+        let Some(t) = self.body_thing(s, c)? else { return Ok(None) };
         if let Some(meta) = self.sync_body_now(s, c)?.filter(|m| m.certificate) {
             return self.seal_certificate(&t, c, &meta, rng);
         }
@@ -400,7 +434,7 @@ impl Engine {
     /// each case wrapped for `s` as `wrap_secret` says for the parts the blob carries. Only the
     /// blobs of `held` (bytes in the sync store) count as passed on or carried.
     pub fn may_log(&mut self, s: &SyncId, c: &CommitId, held_blobs: &[BlobId]) -> Result<bool> {
-        let Some(t) = self.read_thing(s)? else { return Ok(false) };
+        let Some(t) = self.body_thing(s, c)? else { return Ok(false) };
         let Some(meta) = self.sync_body_now(s, c)? else { return Ok(false) };
         let Some(h) = self.header(c) else { return Ok(false) };
         let held: BTreeSet<usize> = match self.core.ix.commits.get(c) {
@@ -472,8 +506,8 @@ impl Engine {
         for h in held {
             let b = osis_blob::blob_id(&h.bytes);
             let Some(row) = self.core.ix.blob_parts.get(&b).filter(|x| x.commit == *c && !x.copy).cloned() else { continue };
-            let Ok(Some(t)) = self.read_thing(&h.sync_id) else { continue };
-            let Some((_, key)) = osis_blob::unwrap_any(self.read_secrets(&t).iter(), &b, &h.wrap) else { continue };
+            let Ok(things) = self.read_things_of(&h.sync_id) else { continue };
+            let Some((_, key)) = things.iter().find_map(|t| osis_blob::unwrap_any(self.read_secrets(t).iter(), &b, &h.wrap)) else { continue };
             let Ok((_, pt)) = osis_blob::open(&h.bytes, &key) else { continue };
             let Ok(env) = osis_commit::Envelope::decode(&pt) else { continue };
             if env.id() != *c {
@@ -536,8 +570,9 @@ impl Engine {
         if !certificate && (self.blob_copy_now(b) != Some(false) || meta.copy) {
             return Ok(None);
         }
-        let (Some(tf), Some(tt)) = (self.read_thing(from)?, self.read_thing(to)?) else { return Ok(None) };
-        let Some((key, order)) = self.read_secrets(&tf).iter().find_map(|x| osis_crypto::unwrap_order(x, b, from_wrap).ok()) else { return Ok(None) };
+        let Some(tt) = self.body_thing(to, c)? else { return Ok(None) };
+        let from_things = self.read_things_of(from)?;
+        let Some((key, order)) = from_things.iter().find_map(|t| self.read_secrets(t).iter().find_map(|x| osis_crypto::unwrap_order(x, b, from_wrap).ok())) else { return Ok(None) };
         let parts: Vec<usize> = self.blob_parts(b).map(|p| p.into_iter().collect()).unwrap_or_default();
         let Some(w) = self.wrap_secret(&tt, Some((c, &parts)))? else { return Ok(None) };
         Ok(Some(osis_crypto::wrap(&w, b, &key, order)?))
@@ -568,10 +603,19 @@ impl Engine {
             self.put_blobs(vec![(*blob, bytes.to_vec())])?;
             return Ok(Opened::Linked);
         }
-        let Some(t) = self.opening_thing(s)? else { return Ok(Opened::NotOpen) };
-        // a wrap no held secret opens: a sealed fire's filler, opened by the read KEM key
-        // (spec/sync-inbox.md §4 A sealed fire)
-        let Some((_, key)) = osis_blob::unwrap_any(self.read_secrets(&t).iter(), blob, wrap) else { return self.open_sealed_fire(&t, blob, bytes) };
+        // judged for each of `s`'s things: the one whose held read secret opens the wrap
+        let things = self.opening_things(s)?;
+        let Some((t, key)) = things.iter().find_map(|t| osis_blob::unwrap_any(self.read_secrets(t).iter(), blob, wrap).map(|(_, k)| (*t, k))) else {
+            // a wrap no held secret opens: a sealed fire's filler, opened by the read KEM key
+            // (spec/sync-inbox.md §4 A sealed fire) of whichever thing it is sealed to
+            for t in &things {
+                match self.open_sealed_fire(t, blob, bytes)? {
+                    Opened::NotOpen => {}
+                    o => return Ok(o),
+                }
+            }
+            return Ok(Opened::NotOpen);
+        };
         let opened = match self.open_commit(bytes, &key) {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
@@ -660,7 +704,7 @@ impl Engine {
     /// to log beside it (`NotYet` while that chain is not complete here). `Never` when `s` carries
     /// nothing of `c` or its author lacked write then.
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
-        let Some(t) = self.read_thing(s)? else { return Ok(Promote::Never) };
+        let Some(t) = self.body_thing(s, c)? else { return Ok(Promote::Never) };
         if !self.core.ix.commits.contains_key(c) || self.core.ix.pending.contains_key(c) {
             return Ok(Promote::NotYet);
         }
@@ -678,6 +722,35 @@ impl Engine {
             Some(chain) => Promote::Yes { chain },
             None => Promote::NotYet,
         })
+    }
+}
+
+/// Two bodies of one commit under one sync ID, from different things reading it, as one: a
+/// closure body over a certificate (where a sync ID carries a closure body of a commit, that is
+/// its one body there), else their parts and minted records together, the later expiry, the
+/// earlier fetch order. The same whatever order they come in.
+fn join_body(a: Option<BodyMeta>, b: BodyMeta) -> BodyMeta {
+    let Some(a) = a else { return b };
+    if a == b {
+        return a;
+    }
+    match (a.certificate, b.certificate) {
+        (true, false) => return b,
+        (false, true) => return a,
+        _ => {}
+    }
+    let expires = match (a.expires, b.expires) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        _ => None,
+    };
+    BodyMeta {
+        parts: a.parts.union(&b.parts).copied().collect(),
+        expires,
+        order: a.order.min(b.order),
+        copy: a.copy || b.copy,
+        certificate: a.certificate,
+        header_only: a.header_only && b.header_only,
+        mints: a.mints.union(&b.mints).copied().collect(),
     }
 }
 

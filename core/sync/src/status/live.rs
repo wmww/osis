@@ -156,7 +156,7 @@ impl Ground for Live<'_, '_> {
         // what a complete pass's end decides (spec/permissions.md §3 Complete pass, §5.5): the
         // engine re-seals, adds history and, for its devices actor, makes the account's owed
         // rotations once every sync ID of S's actor had one
-        if let Some(actor) = self.cx.engine.sync_owner(s)? {
+        for actor in self.cx.engine.sync_owners(s)? {
             self.cx.engine.pass_end(&actor)?;
         }
         Ok(())

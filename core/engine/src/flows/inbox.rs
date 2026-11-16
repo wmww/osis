@@ -162,7 +162,7 @@ impl Engine {
     /// Fires a stranded notice on the thing of sync ID `s` (spec/sync-inbox.md §5), naming
     /// `holder` for its writers to re-seal.
     pub fn fire_stranded(&mut self, s: &osis_base::SyncId, holder: &Tid) -> Result<()> {
-        let Some(t) = self.sync_owner_of(s)? else { return Ok(()) };
+        let Some((t, _)) = self.read_sync_id(s)? else { return Ok(()) };
         let keys = self.holder_keys(holder)?;
         let blobs = |v: &[Value]| Value::List(v.iter().map(|x| Value::Bytes(osis_base::encode(x))).collect());
         let records = Value::List(keys.records.iter().map(|r| Value::Bytes(osis_base::encode(&r.to_value()))).collect());

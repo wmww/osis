@@ -243,14 +243,17 @@ impl Engine {
     }
 
     pub(crate) fn pass_wanted_fresh(&mut self, s: &SyncId) -> Result<Option<u64>> {
-        let Some((t, Holding::Read)) = self.core.sync_rows.held.get(s).copied() else { return Ok(None) };
-        let a = self.core.reader_of(&t);
-        // after the newest role commit on S's actor from elsewhere: what the re-seal trigger
-        // waits on (`complete_pass`); after the loss of S's actor was judged: what the
-        // lost-access drop waits on (`lost_passed`); a stranded report's re-seal ask
+        let Some((things, Holding::Read)) = self.core.sync_rows.held.get(s).cloned() else { return Ok(None) };
+        // per thing of S: after the newest role commit on its actor from elsewhere: what the
+        // re-seal trigger waits on (`complete_pass`); after the loss of its actor was judged:
+        // what the lost-access drop waits on (`lost_passed`); a stranded report's re-seal ask
         // (spec/permissions.md §3, §4): met at a pass's end; an open setting wait on a thing S
         // carries (spec/commits.md §5)
-        let since = [self.role_arrival(&a), self.cause_place(&Cause::Lost(a)), self.asked_at(&a), self.setting_wants()?.get(s).copied()].into_iter().flatten().max().unwrap_or(0);
+        let mut since = self.setting_wants()?.get(s).copied().unwrap_or(0);
+        for t in &things {
+            let a = self.core.reader_of(t);
+            since = [self.role_arrival(&a), self.cause_place(&Cause::Lost(a)), self.asked_at(&a)].into_iter().flatten().fold(since, u64::max);
+        }
         Ok(self.core.ix.passes.get(s).is_none_or(|b| *b <= since).then_some(since))
     }
 

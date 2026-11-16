@@ -87,13 +87,16 @@ pub(crate) fn status_in(l: &mut Locked, actor: Option<Tid>) -> Result<Status> {
     let e = l.engine();
     let mut seen = std::collections::BTreeSet::new();
     for (s, st) in per_id {
-        let Some((t, _)) = syncs.get(&s).copied() else { continue };
-        if actor.is_some_and(|a| !e.readable_by(&a, &t)) {
-            continue;
+        let Some((things, _)) = syncs.get(&s) else { continue };
+        // how S stands is how each of its things stands under it
+        for t in things {
+            if actor.is_some_and(|a| !e.readable_by(&a, t)) {
+                continue;
+            }
+            seen.extend(st.sources.keys().copied());
+            let g = UnitSync { state: state_of(&st), not_taking: st.sources.values().filter(|x| !x.waited()).count() };
+            merge(&mut units, *t, g);
         }
-        seen.extend(st.sources.keys().copied());
-        let g = UnitSync { state: state_of(&st), not_taking: st.sources.values().filter(|x| !x.waited()).count() };
-        merge(&mut units, t, g);
     }
     if actor.is_some() {
         connected = seen.len();
@@ -181,7 +184,7 @@ impl Osis {
             osis_sync::types::Waiting::Stranded(ids) => Some(db.locked(|l| {
                 let mut things = Vec::new();
                 for s in &ids {
-                    things.extend(l.engine().sync_owner(s)?);
+                    things.extend(l.engine().sync_owners(s)?);
                 }
                 things.sort();
                 things.dedup();

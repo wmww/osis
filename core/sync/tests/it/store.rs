@@ -105,7 +105,7 @@ impl Sid {
 }
 
 fn holding(sids: &[(&Sid, Holding)]) -> SyncSet {
-    SyncSet { ids: sids.iter().map(|(s, h)| (s.id, (THING, *h))).collect(), ..SyncSet::default() }
+    SyncSet { ids: sids.iter().map(|(s, h)| (s.id, ([THING].into(), *h))).collect(), ..SyncSet::default() }
 }
 
 /// A store holding `s` kept unread, its genesis registered.

@@ -6,7 +6,7 @@ Spec: spec/sync-set.md §3. Overview: notes/sync.md. What leaves is the node clo
 ## What this node syncs
 One value: the sync set, and each sync ID that left it while it waits to stop. `leave` alone follows the engine's sync set (per sync ID: `Engine::sync_held_added`, then `sync_held` per key) and writes the value into the store (`Store::set_holdings`, stamped per S, fed by `Store::syncs_feed`). Every other module follows the store's value, never the engine's sync set: store, opens and dials by their own `set::SyncsFollow`, unread by its own, status by `Store::syncs` whole, read, streams and inbox by `Store::synced`/`holding`. So a waiting S stays open, served, logged into and judged exactly as before, with no per-module case. `leave` settles first in each round, so no module ever sees S drop and come back.
 
-The engine side answers for a leaving S by its thing's held read secrets, not the sync set (`Engine::opening_thing`): `read_credentials`, `claim_key`, `open_entry` and `dial_peers` go by it, `sync_bodies` by `thing_sync`.
+The engine side answers for a leaving S by its things' held read secrets, not the sync set (`Engine::opening_things`): `read_credentials`, `claim_key`, `open_entry` and `dial_peers` go by it, `sync_bodies` by `thing_sync`.
 
 ## The rule
 - One wait, for a sync ID leaving the sync set and for a thing leaving the node closure alike: the pass in flight with the connected sources (spec/sync-set.md §3). A complete pass begun after it left (status runs one, `Leave::passes_wanted`, by pass place; leave reads `Status::passed_since`), or none at all while S has no source (`Status::sourced`). No absent peer is waited for, and the node's own writes not held elsewhere go with what is released.

@@ -27,7 +27,7 @@ pub struct Follow {
     /// store's entry feed and at S's start.
     parked: Parked,
     entries: Option<Feed<(SyncId, BlobId)>>,
-    read: BTreeMap<SyncId, Tid>,
+    read: BTreeMap<SyncId, BTreeSet<Tid>>,
     carriers: Carriers,
 }
 
@@ -268,8 +268,10 @@ impl Follow {
         let moved = self.set.settle(store);
         let mut acted = !moved.is_empty();
         for (s, _, now) in &moved {
-            if let Some(t) = self.read.remove(s) {
-                self.paths.unwant(&(*s, t));
+            if let Some(ts) = self.read.remove(s) {
+                for t in ts {
+                    self.paths.unwant(&(*s, t));
+                }
                 self.creds.unwant(&Awaits::Sync(*s));
                 self.parked.forget(&mut self.creds, *s);
                 // read no more: its complete passes and record blobs go with it (a pass of it
@@ -278,9 +280,11 @@ impl Follow {
                     engine.forget_read(s)?;
                 }
             }
-            if let Some((t, Holding::Read)) = now {
-                self.read.insert(*s, *t);
-                self.paths.want((*s, *t));
+            if let Some((ts, Holding::Read)) = now {
+                self.read.insert(*s, ts.clone());
+                for t in ts {
+                    self.paths.want((*s, *t));
+                }
                 self.creds.want(Awaits::Sync(*s));
             }
         }

@@ -73,8 +73,8 @@ impl Engine {
         if osis_blob::blob_id(bytes) != *blob {
             return Ok(RelayOpened::Bad);
         }
-        let Some(t) = self.read_thing(s)? else { return Ok(RelayOpened::NotOpen) };
-        let Some((_, key)) = osis_blob::unwrap_any(self.read_secrets(&t).iter(), blob, wrap) else { return Ok(RelayOpened::NotOpen) };
+        let things = self.read_things_of(s)?;
+        let Some((_, key)) = things.iter().find_map(|t| osis_blob::unwrap_any(self.read_secrets(t).iter(), blob, wrap)) else { return Ok(RelayOpened::NotOpen) };
         let opened = match self.open_commit(bytes, &key) {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),

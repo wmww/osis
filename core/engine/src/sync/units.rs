@@ -665,12 +665,17 @@ impl Core {
         }
     }
 
-    /// Whether `y` has own keys here (spec/sync-set.md §2): by the role commits held of it, or by
-    /// an established secret of its own (not one derived from its first admin's). A secret not established (a ticket's) may be anyone's, so it
-    /// makes no thing keyed: it only has the walk fetch under its ticket's sync IDs
-    /// (`Ctx::Ticket`).
+    /// Whether `y` has own keys here (spec/sync-set.md §2): by the role commits held of it, by an
+    /// established secret of its own (not one derived from its first admin's), or by a held sync
+    /// secret where it holds no read secret of it and does not open it plainly. A read secret not established (a
+    /// ticket's) may be anyone's, so it makes no thing keyed: it only has the walk fetch under its
+    /// ticket's sync IDs (`Ctx::Ticket`) until the role commits arrive. A node keeping a thing
+    /// unread never reads its role commits: its sync secret (a ticket's) is all it holds of it, so
+    /// that keys it (entered `Ctx::Unread`, which a close ends), except where the node reads it
+    /// plainly, which a forged one must not cut off.
     pub(crate) fn keyed(&self, y: &Tid) -> bool {
-        self.has_own_secrets(y) || self.ix.secrets.get(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held_established().next().is_some()))
+        self.has_own_secrets(y)
+            || self.ix.secrets.get(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held_established().next().is_some()) || (e.role(Role::Sync).holds_any() && !e.role(Role::Read).holds_any() && !self.opens_plain(y)))
     }
 
     /// Whether the node holds an established read secret of `y`'s own (not one derived from its
@@ -1074,9 +1079,11 @@ impl Engine {
     /// `s` (`closed_kept`, from the store's path), so it leaves the node closure
     /// (spec/sync-set.md §3).
     pub fn close_kept(&mut self, s: &osis_base::SyncId) -> Result<()> {
-        let Some((t, _)) = self.sync_holder(s)? else { return Ok(()) };
+        let Some((things, _)) = self.sync_holder(s)? else { return Ok(()) };
         self.run(|tx| {
-            tx.core.ix.closure.rejudge(t);
+            for t in things {
+                tx.core.ix.closure.rejudge(t);
+            }
             Ok(())
         })
     }

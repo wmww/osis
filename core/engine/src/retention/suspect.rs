@@ -219,7 +219,7 @@ impl Engine {
         if !self.carrying(tid)?.contains(s) {
             return Ok(false);
         }
-        Ok(self.sync_owner(s)?.is_some_and(|g| self.reads_in(&g, tid)))
+        Ok(self.sync_owners(s)?.iter().any(|g| self.reads_in(g, tid)))
     }
 
     /// Whether this node may repair `(tid, ak)` for a suspect list sent for `s`: the thing is one

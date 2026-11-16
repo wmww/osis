@@ -183,7 +183,7 @@ impl Side {
     }
 
     fn hold(&mut self, s: SyncId, h: Holding) {
-        self.set.ids.insert(s, (THING, h));
+        self.set.ids.insert(s, ([THING].into(), h));
         self.store.set_sync_set(&self.set).unwrap();
     }
 

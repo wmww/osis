@@ -34,8 +34,8 @@ impl SyncsFollow {
         let mut out = Vec::new();
         for s in ids {
             let now = store.synced(&s);
-            let was = match now {
-                Some(h) => self.seen.insert(s, h),
+            let was = match &now {
+                Some(h) => self.seen.insert(s, h.clone()),
                 None => self.seen.remove(&s),
             };
             if was != now {

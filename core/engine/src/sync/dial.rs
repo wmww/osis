@@ -47,7 +47,7 @@ impl Core {
 impl Engine {
     /// See `Engine::dial_peers`.
     pub(crate) fn dial_peers_now(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {
-        let Some((t, holding)) = self.synced_thing(s)? else { return Ok(Arc::default()) };
+        let Some((things, holding)) = self.synced_things(s)? else { return Ok(Arc::default()) };
         let mut out: BTreeMap<[u8; 32], Address> = BTreeMap::new();
         let own = self.core.account_devices();
         // own nodes, by their `reach.0`
@@ -57,9 +57,10 @@ impl Engine {
             }
         }
         match holding {
-            // the listed nodes of the accounts holding sync or above on S's thing
+            // the listed nodes of the accounts holding sync or above on S's things
             Holding::Read => {
-                for a in self.holder_accounts(&t) {
+                let accounts: BTreeSet<Tid> = things.iter().flat_map(|t| self.holder_accounts(t)).collect();
+                for a in accounts {
                     if own.is_some_and(|(p, _)| p == a) {
                         continue;
                     }
@@ -72,9 +73,12 @@ impl Engine {
             }
             Holding::Unread => {}
         }
-        // the issuer of each ticket for S's thing held here, by its profile's dial list where
+        // the issuer of each ticket for S's things held here, by its profile's dial list where
         // the profile is held (spec/sync-opens.md §1: a ticket carries no address)
-        let profiles: BTreeSet<Tid> = self.held_tickets(&t)?.into_iter().map(|k| k.profile).collect();
+        let mut profiles = BTreeSet::new();
+        for t in &things {
+            profiles.extend(self.held_tickets(t)?.into_iter().map(|k| k.profile));
+        }
         for p in profiles {
             for (k, urls) in self.get_typed(&p, &ct::DIAL)?.unwrap_or_default() {
                 if let Some(x) = address(&k, &urls) {
@@ -85,26 +89,29 @@ impl Engine {
         Ok(Arc::new(out.into_values().collect()))
     }
 
-    /// S's thing and how this node holds S; a sync ID left that sync still syncs: as read while
-    /// its read secrets are held.
-    fn synced_thing(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
+    /// S's things and how this node holds S; a sync ID left that sync still syncs: as read while
+    /// its things' read secrets are held.
+    fn synced_things(&mut self, s: &SyncId) -> Result<Option<super::Held>> {
         Ok(match self.sync_holder(s)? {
             Some(x) => Some(x),
-            None => self.opening_thing(s)?.map(|t| (t, Holding::Read)),
+            None => {
+                let things: BTreeSet<Tid> = self.opening_things(s)?.into_iter().collect();
+                (!things.is_empty()).then_some((things, Holding::Read))
+            }
         })
     }
 
     /// See `Engine::roster_holders`: the candidates `dial_peers_now` walks, by who they are, not
     /// where they are dialed.
     pub(crate) fn roster_holders_now(&mut self, s: &SyncId) -> Result<Arc<RosterHolders>> {
-        let Some((t, holding)) = self.synced_thing(s)? else { return Ok(Arc::default()) };
+        let Some((things, holding)) = self.synced_things(s)? else { return Ok(Arc::default()) };
         // kept unread: kept for the accounts that granted it, which the rosters here do not name
         if holding == Holding::Unread {
             return Ok(Arc::new(RosterHolders { anyone: true, ..RosterHolders::default() }));
         }
         let nodes = self.own_nodes().into_iter().collect();
         let own = self.core.account_devices().map(|(p, _)| p);
-        let accounts = self.holder_accounts(&t).into_iter().filter(|a| Some(*a) != own).collect();
+        let accounts = things.iter().flat_map(|t| self.holder_accounts(t)).filter(|a| Some(*a) != own).collect();
         Ok(Arc::new(RosterHolders { anyone: false, nodes, accounts }))
     }
 

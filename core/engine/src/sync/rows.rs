@@ -11,8 +11,9 @@ use osis_base::memo::{Effects, Feed, Quiet, Stamped, StampedSet, Unrecorded};
 use osis_base::{SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// One sync ID's entry of the sync set: its thing and how it is held.
-pub type Held = (Tid, Holding);
+/// One sync ID's entry of the sync set: its things (every thing synced under it) and how it is
+/// held (spec/sync.md §3: read while a read secret of one of its things is held).
+pub type Held = (BTreeSet<Tid>, Holding);
 
 #[derive(Clone)]
 pub(crate) struct SyncRows {
@@ -27,8 +28,8 @@ pub(crate) struct SyncRows {
     pub(crate) held: Stamped<SyncId, Held>,
     /// `held`'s keys: a feed gives the sync IDs entering it.
     ids: StampedSet<SyncId>,
-    /// The things holding a read sync ID (read per thing; a feed gives those added), and how many
-    /// each holds.
+    /// The things reading a sync ID (read per thing; a feed gives those added), and how many
+    /// each reads.
     pub(crate) read: StampedSet<Tid>,
     read_count: BTreeMap<Tid, usize>,
     /// The follow's fixed point.
@@ -60,10 +61,15 @@ impl Default for SyncRows {
     }
 }
 
-/// `Engine::sync_set`'s fold of the things naming one sync ID: read by the greatest thing reading
-/// it, else kept unread by the least thing keeping it.
-fn fold(m: &BTreeMap<Tid, Holding>) -> Option<Held> {
-    m.iter().rev().find(|(_, h)| **h == Holding::Read).or_else(|| m.iter().find(|(_, h)| **h == Holding::Unread)).map(|(t, h)| (*t, *h))
+/// The sync set's entry of one sync ID from the things synced under it (`Engine::sync_set`'s
+/// fold): every one of them, whatever their order; read while any reads it, else kept unread
+/// (spec/sync-inbox.md §5 Ticket sync IDs, spec/sync.md §3).
+pub(crate) fn fold(m: &BTreeMap<Tid, Holding>) -> Option<Held> {
+    if m.is_empty() {
+        return None;
+    }
+    let h = if m.values().any(|h| *h == Holding::Read) { Holding::Read } else { Holding::Unread };
+    Some((m.keys().copied().collect(), h))
 }
 
 impl SyncRows {
@@ -71,17 +77,27 @@ impl SyncRows {
     /// folded again.
     fn moved(&mut self, t: &Tid, ids: Vec<(SyncId, Holding)>) {
         let mut touched = BTreeSet::new();
-        for (s, _) in self.ids_of.remove(t).unwrap_or_default() {
+        for (s, h) in self.ids_of.remove(t).unwrap_or_default() {
             if let Some(m) = self.by_sync.get_mut(&s) {
                 m.remove(t);
                 if m.is_empty() {
                     self.by_sync.remove(&s);
                 }
             }
+            if h == Holding::Read {
+                self.uncount(t);
+            }
             touched.insert(s);
         }
         for (s, h) in &ids {
             self.by_sync.entry(*s).or_default().insert(*t, *h);
+            if *h == Holding::Read {
+                let n = self.read_count.entry(*t).or_default();
+                *n += 1;
+                if *n == 1 {
+                    self.read.insert(*t);
+                }
+            }
             touched.insert(*s);
         }
         if !ids.is_empty() {
@@ -90,8 +106,7 @@ impl SyncRows {
         for s in touched {
             let now = self.by_sync.get(&s).and_then(fold);
             // read unrecorded: `follow_rows` runs outside every reader
-            let old = self.held.get(&s).copied();
-            if old == now {
+            if self.held.get(&s) == now.as_ref() {
                 continue;
             }
             match now {
@@ -102,16 +117,6 @@ impl SyncRows {
                 None => {
                     self.held.remove(&s);
                     self.ids.remove(&s);
-                }
-            }
-            if let Some((x, Holding::Read)) = old {
-                self.uncount(&x);
-            }
-            if let Some((x, Holding::Read)) = now {
-                let n = self.read_count.entry(x).or_default();
-                *n += 1;
-                if *n == 1 {
-                    self.read.insert(x);
                 }
             }
         }
@@ -195,7 +200,7 @@ impl Engine {
     /// Sync ID `s`'s entry of the sync set (`sync_set`'s), read per sync ID.
     pub fn sync_held(&mut self, s: &SyncId) -> Result<Option<Held>> {
         self.follow_rows()?;
-        Ok(self.core.sync_rows.held.get(s).copied())
+        Ok(self.core.sync_rows.held.get(s).cloned())
     }
 
     /// The sync IDs that entered the sync set since `f`'s last read (its first: every one), each

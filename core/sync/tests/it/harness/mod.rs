@@ -950,7 +950,7 @@ impl World {
                 }
                 let Some(st) = self.node(j).node.status_of(&s) else { continue };
                 let holders: Vec<usize> = st.sources.iter().filter(|(_, x)| x.caught_up).filter_map(|(c, _)| peers.get(c).copied()).filter(|i| on.contains(i)).collect();
-                let secrets: Vec<_> = self.engine(j).read_secrets(&t).iter().flat_map(|x| [x.clone(), osis_crypto::roles_secret(x)]).collect();
+                let secrets: Vec<_> = t.iter().flat_map(|t| self.engine(j).read_secrets(t)).flat_map(|x| [x.clone(), osis_crypto::roles_secret(&x)]).collect();
                 for i in holders {
                     for c in self.engine(i).commit_ids() {
                         if self.node(i).node.verdict(&s, &c) != Some(osis_sync::read::Verdict::Must) {

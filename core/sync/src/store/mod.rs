@@ -50,8 +50,8 @@ use entries::Removal;
 use memory::Memory;
 use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
 use osis_base::memo::{Clock, Effects};
-use osis_base::{BlobId, SyncId, Tid, WallMs};
-use osis_engine::sync::{Caps, Holding, Path, SyncSet};
+use osis_base::{BlobId, SyncId, WallMs};
+use osis_engine::sync::{Caps, Held, Holding, Path, SyncSet};
 use osis_blob::{Class, ClaimSet, DeleteItem, Prefix, Step, StepId};
 use osis_proto::{Code, DepositItem};
 use osis_store::{Ciphertext, LogRead, LoggedEvent, NodeEvent, Shred, Suspended, Transaction};
@@ -162,7 +162,7 @@ impl Stand {
 /// What the operations of one transaction see and change beside its rows.
 pub(crate) struct Env<'a> {
     pub now: WallMs,
-    pub holdings: &'a BTreeMap<SyncId, (Tid, Holding)>,
+    pub holdings: &'a BTreeMap<SyncId, Held>,
     pub caps: &'a Caps,
     pub policy: &'a Policy,
     pub mem: &'a Memory,
@@ -191,12 +191,12 @@ impl Env<'_> {
         self.holdings.get(s).map(|(_, h)| *h)
     }
 
-    /// The caps of S: its thing's own, else the policy's.
+    /// The caps of S: per thing of S its own, else the policy's; S kept for several things keeps
+    /// what the largest allows (it serves each).
     fn caps_of(&self, s: &SyncId) -> (u64, u64) {
-        match self.holdings.get(s).and_then(|(t, _)| self.caps.things.get(t)) {
-            Some(c) => (c.entries, c.bytes),
-            None => (self.policy.entries, self.policy.bytes),
-        }
+        let policy = (self.policy.entries, self.policy.bytes);
+        let Some((things, _)) = self.holdings.get(s) else { return policy };
+        things.iter().map(|t| self.caps.things.get(t).map_or(policy, |c| (c.entries, c.bytes))).reduce(|a, b| (a.0.max(b.0), a.1.max(b.1))).unwrap_or(policy)
     }
 
     fn total(&mut self, t: &mut Transaction<'_>) -> Result<u64> {
@@ -239,7 +239,7 @@ pub(crate) struct Inner {
     /// The engine's transaction, open between its blob calls.
     open: Option<Suspended>,
     now: WallMs,
-    holdings: BTreeMap<SyncId, (Tid, Holding)>,
+    holdings: BTreeMap<SyncId, Held>,
     caps: Caps,
     policy: Policy,
     mem: Memory,
@@ -519,9 +519,9 @@ impl Store {
 
     /// Tests: the sync IDs this node syncs, whole (`set_holdings` of what differs).
     pub fn set_sync_set(&mut self, set: &SyncSet) -> Result<()> {
-        let moved: Vec<(SyncId, Option<(Tid, Holding)>)> = {
+        let moved: Vec<(SyncId, Option<Held>)> = {
             let g = self.lock();
-            g.holdings.keys().chain(set.ids.keys()).filter(|s| g.holdings.get(s) != set.ids.get(s)).map(|s| (*s, set.ids.get(s).copied())).collect()
+            g.holdings.keys().chain(set.ids.keys()).filter(|s| g.holdings.get(s) != set.ids.get(s)).map(|s| (*s, set.ids.get(s).cloned())).collect()
         };
         self.set_holdings(&moved)
     }
@@ -534,10 +534,10 @@ impl Store {
     /// fetched anew (spec/sync-judgement.md §6 Read and unread move), marked durably (`N/`) until
     /// streams moved every source's place of S back to the start (`reset_anew`), so a restart
     /// between still fetches it (`anew_feed`).
-    pub fn set_holdings(&mut self, moved: &[(SyncId, Option<(Tid, Holding)>)]) -> Result<()> {
+    pub fn set_holdings(&mut self, moved: &[(SyncId, Option<Held>)]) -> Result<()> {
         let mut g = self.lock();
-        let unread = |h: Option<&(Tid, Holding)>| h.is_some_and(|(_, h)| *h == Holding::Unread);
-        let raised: Vec<SyncId> = moved.iter().filter(|(s, now)| unread(g.holdings.get(s)) && now.is_some_and(|(_, h)| h == Holding::Read) && !g.unheld.contains(s)).map(|(s, _)| *s).collect();
+        let unread = |h: Option<&Held>| h.is_some_and(|(_, h)| *h == Holding::Unread);
+        let raised: Vec<SyncId> = moved.iter().filter(|(s, now)| unread(g.holdings.get(s)) && now.as_ref().is_some_and(|(_, h)| *h == Holding::Read) && !g.unheld.contains(s)).map(|(s, _)| *s).collect();
         if !raised.is_empty() {
             // a dropped copy's mark stands as it is: it is fetched anew once judged (`set_unheld`)
             g.write(|t, _| {
@@ -549,7 +549,7 @@ impl Store {
         }
         let mut recount = Vec::new();
         for (s, now) in moved {
-            let was = g.holdings.get(s).copied();
+            let was = g.holdings.get(s).cloned();
             if was == *now {
                 continue;
             }
@@ -559,11 +559,11 @@ impl Store {
             g.mem.syncs.wrote_added(s, true, true);
             // raised to read: what it refused kept unread (a stamp under no key of its head then)
             // its sources show no more, so S is pulled anew (`anew_feed`)
-            if unread(was.as_ref()) && now.is_some_and(|(_, h)| h == Holding::Read) {
+            if unread(was.as_ref()) && now.as_ref().is_some_and(|(_, h)| *h == Holding::Read) {
                 g.mem.anew.wrote_added(s, true, true);
             }
             match now {
-                Some(h) => g.holdings.insert(*s, *h),
+                Some(h) => g.holdings.insert(*s, h.clone()),
                 None => g.holdings.remove(s),
             };
         }
@@ -598,15 +598,15 @@ impl Store {
         self.lock().holding(s)
     }
 
-    /// S's entry in the sync IDs this node syncs: its thing and how it is held (stamped read).
-    pub fn synced(&self, s: &SyncId) -> Option<(Tid, Holding)> {
+    /// S's entry in the sync IDs this node syncs: its things and how it is held (stamped read).
+    pub fn synced(&self, s: &SyncId) -> Option<Held> {
         let g = self.lock();
         g.mem.syncs.read(s);
-        g.holdings.get(s).copied()
+        g.holdings.get(s).cloned()
     }
 
     /// The sync IDs this node syncs, whole (a stamped read of all of them).
-    pub fn syncs(&self) -> BTreeMap<SyncId, (Tid, Holding)> {
+    pub fn syncs(&self) -> BTreeMap<SyncId, Held> {
         let g = self.lock();
         g.mem.syncs.read_all();
         g.holdings.clone()

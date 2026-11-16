@@ -238,8 +238,8 @@ pub struct NodeHolds<'a, 'c> {
 
 /// S's recorded path, read here.
 fn path_of(cx: &mut Cx, s: &SyncId) -> Option<Arc<osis_engine::sync::Path>> {
-    let (t, _) = cx.store.synced(s)?;
-    cx.engine.sync_ids(&t).ok()?.iter().find(|o| o.id == *s && !o.hint).map(|o| o.path.clone())
+    let (things, _) = cx.store.synced(s)?;
+    things.iter().find_map(|t| cx.engine.sync_ids(t).ok()?.iter().find(|o| o.id == *s && !o.hint).map(|o| o.path.clone()))
 }
 
 /// S's credentials as the engine (read) or `unread` (kept unread) gives them.

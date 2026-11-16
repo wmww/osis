@@ -74,7 +74,7 @@ pub trait Ground {
 }
 
 /// A leaving S: its entry when it left, and the complete pass it waits for.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Left {
     held: Held,
     /// The pass place a complete pass of S must begin after.
@@ -150,7 +150,7 @@ impl Leave {
                     // synced again before it stopped: kept as it was
                     self.out.unwant(&s);
                     self.leaving.remove(&s);
-                    if g.synced(&s) != Some(h) {
+                    if g.synced(&s).as_ref() != Some(&h) {
                         g.set_synced(&s, Some(h))?;
                         acted = true;
                     }
@@ -182,19 +182,19 @@ impl Leave {
             self.judged += 1;
             let leaving = &mut self.leaving;
             let Some((_, now)) = self.out.try_settle(&s, || judge(g, &s, leaving))? else { continue };
-            let Some(&Left { held: (t, h), .. }) = self.leaving.get(&s) else { continue };
+            let Some(Left { held: (things, h), .. }) = self.leaving.get(&s).cloned() else { continue };
             match now {
                 Wait::Not => {}
                 Wait::Waiting => {
                     // held before the start, not synced yet: synced while it waits
                     if g.synced(&s).is_none() {
-                        g.set_synced(&s, Some((t, h)))?;
+                        g.set_synced(&s, Some((things, h)))?;
                         acted = true;
                     }
                 }
                 Wait::Done | Wait::Lost => {
                     if now == Wait::Done && h == Holding::Read {
-                        forget.insert(t);
+                        forget.extend(things);
                     }
                     stopped.push(s);
                 }
@@ -281,29 +281,38 @@ impl Leave {
 fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -> Result<Wait> {
     let holder = g.holder(s)?;
     let left = match leaving.get(s) {
-        Some(x) => *x,
+        Some(x) => x.clone(),
         None => {
-            let Some(held) = g.synced(s).or(holder) else { return Ok(Wait::Not) };
+            let Some(held) = g.synced(s).or_else(|| holder.clone()) else { return Ok(Wait::Not) };
             if !g.rooted() {
                 return Ok(Wait::Not);
             }
             let x = Left { held, since: g.pass_seq(), sourced: false };
-            leaving.insert(*s, x);
+            leaving.insert(*s, x.clone());
             x
         }
     };
-    let held = left.held;
-    // lists give S back only while its thing is in the closure: leaving it (a release, this
-    // node's removal) ends the pass with a source unwaited
-    let moot = left.sourced && !g.in_sync_things(&held.0)?;
+    let things = &left.held.0;
+    let mut in_set = false;
+    for t in things {
+        in_set |= g.in_sync_things(t)?;
+    }
+    // lists give S back only while one of its things is in the closure: leaving it (a release,
+    // this node's removal) ends the pass with a source unwaited
+    let moot = left.sourced && !in_set;
     // a pass with no source ends at once: no absent peer is waited for
     if !moot && g.sourced(s) && !g.passed(s, left.since) {
         return Ok(Wait::Waiting);
     }
-    if holder != Some(held) {
-        // a role commit on S's thing uncounted for want of its lists (a revocation taken before
-        // them): one complete pass with a source, begun now, fetches them before S is judged lost
-        if !left.sourced && g.uncounted_role(&held.0) && g.in_sync_things(&held.0)? {
+    if holder.as_ref() != Some(&left.held) {
+        // a role commit on one of S's things uncounted for want of its lists (a revocation taken
+        // before them): one complete pass with a source, begun now, fetches them before S is
+        // judged lost
+        let mut uncounted = false;
+        for t in things {
+            uncounted |= g.uncounted_role(t) && g.in_sync_things(t)?;
+        }
+        if !left.sourced && uncounted {
             leaving.insert(*s, Left { since: g.pass_seq(), sourced: true, ..left });
             return Ok(Wait::Waiting);
         }

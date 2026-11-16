@@ -207,15 +207,26 @@ impl Engine {
     /// List blobs): a read of that row alone.
     pub fn certificate_lists(&mut self, s: &SyncId, r: &CommitId) -> Result<Arc<BTreeSet<Tid>>> {
         self.follow_lists()?;
-        let Some(t) = self.read_thing(s)? else { return Ok(Arc::default()) };
-        Ok(self.core.listed.rows.get(&(t, *r)).cloned().unwrap_or_default())
+        let mut out = BTreeSet::new();
+        for t in self.read_things_of(s)? {
+            out.extend(self.core.listed.rows.get(&(t, *r)).into_iter().flat_map(|x| x.iter().copied()));
+        }
+        Ok(Arc::new(out))
+    }
+
+    /// The things whose held list of rotation `r` read thing `t`'s sync IDs carry.
+    pub(crate) fn thing_lists(&mut self, t: &Tid, r: &CommitId) -> Arc<BTreeSet<Tid>> {
+        self.core.listed.rows.get(&(*t, *r)).cloned().unwrap_or_default()
     }
 
     /// The rotations with a list `s` carries (read whole: where a reader starts following `s`).
     pub fn list_rotations(&mut self, s: &SyncId) -> Result<Vec<CommitId>> {
         self.follow_lists()?;
-        let Some(t) = self.read_thing(s)? else { return Ok(Vec::new()) };
-        Ok(self.core.listed.rows.range(of(t)).map(|((_, r), _)| *r).collect())
+        let mut out = BTreeSet::new();
+        for t in self.read_things_of(s)? {
+            out.extend(self.core.listed.rows.range(of(t)).map(|((_, r), _)| *r));
+        }
+        Ok(out.into_iter().collect())
     }
 
     /// A cursor over the (read thing, rotation) rows that come from now on (`memo::Feed`): a new
@@ -251,10 +262,11 @@ pub(crate) mod tests {
             for r in e.list_rotations(&s).unwrap() {
                 kept.insert((s, r), (*e.certificate_lists(&s, &r).unwrap()).clone());
             }
-            let Some(t) = e.read_thing(&s).unwrap() else { continue };
-            for x in e.carried_lists(&t).unwrap().iter() {
-                for r in e.rotations_listing(*x) {
-                    whole.entry((s, r)).or_insert_with(BTreeSet::new).insert(*x);
+            for t in e.read_things_of(&s).unwrap() {
+                for x in e.carried_lists(&t).unwrap().iter() {
+                    for r in e.rotations_listing(*x) {
+                        whole.entry((s, r)).or_insert_with(BTreeSet::new).insert(*x);
+                    }
                 }
             }
         }

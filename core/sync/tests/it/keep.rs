@@ -27,8 +27,8 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run, Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
-    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some((t, Holding::Unread)));
-    assert_eq!(w.engine(2).sync_holder(&s).unwrap(), Some((t, Holding::Read)));
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Unread)));
+    assert_eq!(w.engine(2).sync_holder(&s).unwrap(), Some(([t].into(), Holding::Read)));
     w.power_off(1);
     let mut writes = Vec::new();
     for i in 0..3 {

@@ -241,7 +241,7 @@ pub enum Promote {
 /// The node's sync set (spec/sync-set.md §2).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyncSet {
-    pub ids: BTreeMap<SyncId, (Tid, Holding)>,
+    pub ids: BTreeMap<SyncId, Held>,
     /// Things in N's closure with no sync ID this node may hold.
     pub unsyncable: BTreeSet<Tid>,
 }
@@ -616,9 +616,10 @@ impl Engine {
         self.core.account.get().is_some()
     }
 
-    /// The thing owning sync ID `s` here by its `sync.0`.
-    pub fn sync_owner(&mut self, s: &SyncId) -> Result<Option<Tid>> {
-        self.sync_owner_of(s)
+    /// Sync ID `s`'s things here (`sync_things_of`): its owner by a held `sync.0`, or every
+    /// thing whose held tickets name it.
+    pub fn sync_owners(&mut self, s: &SyncId) -> Result<Vec<Tid>> {
+        self.sync_things_of(s)
     }
 
     /// The sync IDs `thing` owns by its `sync.0` (spec/sync-ids.md §4 Owner), each with its
@@ -630,7 +631,11 @@ impl Engine {
     /// Every read secret an entry of `s` is tried under (`open_entry`): held, current or not, its
     /// thing's and those derived from its first admin's. A parked entry waits on these alone.
     pub fn opening_secrets(&mut self, s: &SyncId) -> Result<Vec<osis_crypto::Secret32>> {
-        Ok(self.opening_thing(s)?.map(|t| self.read_secrets(&t)).unwrap_or_default())
+        let mut out = Vec::new();
+        for t in self.opening_things(s)? {
+            out.extend(self.read_secrets(&t));
+        }
+        Ok(out)
     }
 
     /// What this node opens and acts with as a reader of `s` (`None`: it does not read `s`): also
@@ -659,10 +664,11 @@ impl Engine {
         {
             return Ok(None);
         }
-        let Some((thing, _)) = self.sync_holder(s)? else { return Ok(None) };
+        let Some((things, _)) = self.sync_holder(s)? else { return Ok(None) };
         let ids: Vec<Arc<crate::identity::Identity>> = self.core.key_actors.values().cloned().collect();
         let Some(id) = ids.iter().find(|id| osis_crypto::static_entry(s, &id.keys().signing.verifying_key()) == *entry) else { return Ok(None) };
-        let Ok(item) = osis_blob::open_entry_box(b, head, &id.keys().kem, &thing) else { return Ok(None) };
+        // the box names the thing it is of: whichever of S's things opens it
+        let Some((thing, item)) = things.iter().find_map(|t| osis_blob::open_entry_box(b, head, &id.keys().kem, t).ok().map(|i| (*t, i))) else { return Ok(None) };
         let key = osis_crypto::role_key(osis_crypto::RoleKey::Sync, &item.sync.1).verifying_key().to_bytes();
         if key != head.keys.sync.to_bytes() {
             return Ok(None);
@@ -684,27 +690,43 @@ impl Engine {
     // Grants, removals, peers
 
     /// J of a peer's proven actors for `s` (spec/sync-opens.md §4), from the rosters held here:
-    /// a reader of `s`'s thing, a holder of sync alone, departed (every grant path ended), or
-    /// unknown. `Unknown` for a sync ID this node does not read.
+    /// a reader of one of `s`'s things, else a holder of sync alone on one, else departed from one
+    /// (every grant path ended), else unknown. `Unknown` for a sync ID this node does not read.
     pub fn judge_peer(&mut self, s: &SyncId, proven: &[Tid]) -> Result<J> {
-        let Some(t) = self.sync_owner_of(s)? else { return Ok(J::Unknown) };
-        let reader = self.core.reader_of(&t);
-        Ok(match self.core.judge(proven.iter().copied()).of(&t) {
-            crate::sync_ids::Judgment::Holder => J::Reader,
-            crate::sync_ids::Judgment::Departed => J::Departed,
-            crate::sync_ids::Judgment::Unknown if proven.iter().any(|x| self.core.role_now(x, &reader) == Some(osis_base::Role::Sync)) => J::SyncHolder,
-            crate::sync_ids::Judgment::Unknown => J::Unknown,
-        })
+        let rank = |j: &J| match j {
+            J::Reader => 3,
+            J::SyncHolder => 2,
+            J::Departed => 1,
+            J::Unknown => 0,
+        };
+        let mut out = J::Unknown;
+        for t in self.sync_things_of(s)? {
+            let reader = self.core.reader_of(&t);
+            let j = match self.core.judge(proven.iter().copied()).of(&t) {
+                crate::sync_ids::Judgment::Holder => J::Reader,
+                crate::sync_ids::Judgment::Departed => J::Departed,
+                crate::sync_ids::Judgment::Unknown if proven.iter().any(|x| self.core.role_now(x, &reader) == Some(osis_base::Role::Sync)) => J::SyncHolder,
+                crate::sync_ids::Judgment::Unknown => J::Unknown,
+            };
+            if rank(&j) > rank(&out) {
+                out = j;
+            }
+        }
+        Ok(out)
     }
 
-    /// Whether read epoch `epoch` of `s`'s thing covers every departure this node knows from it
-    /// (spec/sync-opens.md §4: a departed peer opens by a read secret only of an epoch that does
-    /// not cover its departure). False for a sync ID this node does not read.
+    /// Whether read epoch `epoch` of one of `s`'s things covers every departure this node knows
+    /// from it (spec/sync-opens.md §4: a departed peer opens by a read secret only of an epoch
+    /// that does not cover its departure). False for a sync ID this node does not read.
     pub fn covers_departures(&mut self, s: &SyncId, epoch: Epoch) -> Result<bool> {
-        let Some(t) = self.sync_owner_of(s)? else { return Ok(false) };
-        let a = self.core.reader_of(&t);
-        let deps = self.departures(&a)?;
-        Ok(!self.read(|tx| crate::rotation::uncovered(tx, &a, osis_base::Role::Read, &epoch, &deps))?)
+        for t in self.sync_things_of(s)? {
+            let a = self.core.reader_of(&t);
+            let deps = self.departures(&a)?;
+            if !self.read(|tx| crate::rotation::uncovered(tx, &a, osis_base::Role::Read, &epoch, &deps))? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The keys this node proves with on a connection, in proof order (spec/wire.md §11.2 Prove):
@@ -895,7 +917,7 @@ impl Engine {
     /// (`issue_due_step`) once each of those commits is logged under S here, so they are stamped
     /// under the head a store keeping S unread holds.
     pub fn due_step(&mut self, s: &SyncId) -> Result<Option<Arc<Vec<CommitId>>>> {
-        let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
+        let Some((t, _)) = self.recorded_owner(s)? else { return Ok(None) };
         // the head and deposit seed as `issue_due_step` reads them (one derivation, `step_due`)
         let Some(due) = self.read(|tx| crate::flows::sync_ids::step_due(tx, &t, s, false))? else { return Ok(None) };
         let epochs = due.epochs;
@@ -915,7 +937,7 @@ impl Engine {
 
     /// Issues the step due of `s` (`due_step`, `issue_step`), recorded in its thing's `sync.0`.
     pub fn issue_due_step(&mut self, s: &SyncId) -> Result<Option<Step>> {
-        let Some(t) = self.sync_owner_of(s)? else { return Ok(None) };
+        let Some((t, _)) = self.recorded_owner(s)? else { return Ok(None) };
         Ok(self.issue_step(&t, s, false)?.map(|(st, _)| st))
     }
 

@@ -1,8 +1,9 @@
-# A thing kept unread through a ticket stays entered on the ticket's word
-> Summary: A sync-only grantee whose account files the thing by its ticket keeps S unread (`thing_sync` is `Unread`), but the node closure holds the thing only as `Ctx::Ticket`: it holds no role commits it can read, so it never becomes keyed and never enters as `Ctx::Unread`; `closure_holds` is false and a closing head has no `Unread` edge to take out.
+# A close of a kept-unread sync ID does not survive the sync ID's stop
+> Summary: A closing head takes a thing kept unread out of the node closure (`closed_kept` reads the store's path), but once `leave` stops S it shreds S's path too, so at the next walk (a restart) the held ticket's sync secret enters the thing kept unread again.
 > Priority: normal
 > Tags: sync, engine, tests
 
-- Seen in osis-sync `destruction::three` (differential world, `Grant(0, 0, 1, Gives::Syncs)` then accept): node 1's store keeps S, `thing_sync(t)` is `Unread([S])`, `closure_holds(t)` false.
-- `destruction::a_closing_head_takes_a_kept_thing_out_spec_sync_judgement_6` is ignored for it (it fails on its first line, "node 1 keeps t"). `destruction::a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_judgement_5` ("node 1 lost the request") may share the cause.
-- Question: spec/sync-set.md §2 enters a thing without own keys on the ticket's word until its role commits make it keyed; a node keeping S unread never reads them. Either a held sync secret of the thing (a sync-only grant's box) makes it keyed for the walk (entered `Unread`), or closes act on ticket-entered things too.
+- `Store::shred` erases the path (`path::erase`) with the entries; `closed_kept` then finds no closing head while the ticket naming S is held, and the thing enters `Ctx::Unread` again. notes/node-closure.md says the store keeps the path while such a ticket is held; nothing does.
+- Repro: osis-sync `destruction::a_closing_head_takes_a_kept_thing_out_spec_sync_judgement_6`, then `PowerOff(1), PowerOn(1), Run`: node 1 holds t again.
+- Needed: S's closed path kept while a held ticket for one of its things names S, and gone with the last such ticket (leave knows no ticket by sync ID today), with no standing marker past that.
+- `destruction::a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_judgement_5` ("node 1 lost the request") fails the same with node 1 entered kept unread or on the ticket's word: a different cause, unstudied.
