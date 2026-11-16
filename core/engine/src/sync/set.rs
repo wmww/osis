@@ -19,35 +19,94 @@ impl Engine {
         self.core.epochs(t).is_some_and(|e| e.role(Role::Read).holds_any())
     }
 
-    /// The things the sync set is judged over: the node closure (spec/sync-set.md §2), with each destroyed
-    /// thing whose own sync IDs are kept until emptied and the links being redeemed.
+    /// The things the sync set is judged over: the node closure (spec/sync-set.md §2) walked
+    /// through no thing sourced at another node (§5), with each destroyed thing whose own sync
+    /// IDs are kept until emptied and the links being redeemed. A memo: built again in O(the
+    /// node closure) when a thing enters or leaves it.
     pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
-        todo!("refgraph: (b) the node closure walk")
+        osis_base::memo::Memo::get_in(self, |e| &e.core.sync_things, &(), |e| {
+            let mut out: BTreeSet<Tid> = match e.core.ix.closure.cut.is_empty() {
+                true => e.core.ix.closure.things().copied().collect(),
+                false => e.core.ix.closure.uncut(e.core.node_root),
+            };
+            osis_base::costs::count("sync: things walked", out.len() as u64);
+            out.extend(e.core.ix.destroyed_sync_ids.keys().copied());
+            out.extend(e.core.followed_links.all().keys().filter(|k| crate::sync_ids::actors::followable(e, k)).copied());
+            Ok(Arc::new(out))
+        })
     }
 
-    /// `sync_things`'s answer for `t` alone.
+    /// `sync_things`'s answer for `t` alone: reads only `t`'s rows while nothing is sourced
+    /// elsewhere.
     pub fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
-        let _ = t;
-        todo!("refgraph: (b) whether the node closure holds t")
+        if self.core.ix.destroyed_sync_ids.contains_key(t) || crate::sync_ids::actors::followable(self, t) {
+            return Ok(true);
+        }
+        if self.core.ix.closure.cut.is_empty() {
+            return Ok(self.core.ix.closure.holds(t));
+        }
+        Ok(self.sync_things()?.contains(t))
     }
 
-    /// The things that may have entered `sync_things` since `f`'s last read (its first: every one).
+    /// The things that may have entered `sync_things` since `f`'s last read (its first: every
+    /// one): each that entered the node closure or was destroyed since, every thing when the cut
+    /// moved, and the links being redeemed (few). Leaving needs no feed: `in_sync_things` moves.
     pub(crate) fn things_entered(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
-        let _ = f;
-        todo!("refgraph: (b) what entered the node closure")
+        let cut: BTreeSet<Tid> = self.core.ix.closure.cut.iter().copied().collect();
+        let Some(at) = f.0.as_mut() else {
+            let ix = &self.core.ix;
+            f.0 = Some(super::Entered { held: ix.closure.feed(), destroyed: ix.destroyed_sync_ids.feed(), cut });
+            return Ok(self.sync_things()?.iter().copied().collect());
+        };
+        let mut out = at.held.added();
+        out.extend(at.destroyed.added());
+        if at.cut != cut {
+            at.cut = cut;
+            out.extend(self.sync_things()?.iter().copied());
+        }
+        out.extend(self.core.followed_links.all().keys().copied());
+        osis_base::costs::count("sync: things entered", out.len() as u64);
+        Ok(out)
     }
 
-    /// Sets the sync units the handle reads and writes at another node (spec/sync-set.md §5): `elsewhere`, of which those also in `homing` (moved home, catching up) sync
-    /// here. A client of this node reads nothing of any of them (`readable_by`).
+    /// Sets the sync units the handle reads and writes at another node (spec/sync-set.md §5):
+    /// `elsewhere`, of which those also in `homing` (moved home, catching up) sync here; the
+    /// others `sync_things` walks no path through, the account root aside: it is never cut. A
+    /// client of this node reads nothing of any of them (`readable_by`). Between transactions.
     pub fn set_sourced(&mut self, elsewhere: BTreeSet<Tid>, homing: &BTreeSet<Tid>) {
-        let _ = homing;
+        let root = self.account_root();
+        let cut: BTreeSet<Tid> = elsewhere.difference(homing).filter(|g| Some(**g) != root).copied().collect();
+        let cl = &mut self.core.ix.closure;
+        for t in cl.cut.iter().copied().collect::<Vec<_>>() {
+            if !cut.contains(&t) {
+                cl.cut.remove(&t);
+            }
+        }
+        cl.cut.extend(cut);
         self.core.sourced_elsewhere = elsewhere;
     }
 
-    /// Moving home: history is complete here for sync unit `g` (spec/sync-status.md §3).
+    /// spec/sync-set.md §5 (moving home): history is complete here for sync unit `g` and each
+    /// thing of it the sync set holds (spec/sync-status.md §3): each sync ID of the sync set
+    /// carrying one of them, read here, has a complete pass noted. True when none does. A memo
+    /// per sync unit.
     pub fn caught_up(&mut self, g: &Tid) -> Result<bool> {
-        let _ = g;
-        todo!("refgraph: (b) caught up over a sync unit")
+        osis_base::memo::Memo::get_in(self, |e| &e.core.caught_up, g, |e| e.caught_up_fresh(g))
+    }
+
+    fn caught_up_fresh(&mut self, g: &Tid) -> Result<bool> {
+        let mut ids = self.carrying_now(g, true)?;
+        for x in self.sync_unit(g).iter() {
+            if self.in_sync_things(x)? {
+                ids.extend(self.carrying_now(x, true)?);
+            }
+        }
+        for s in ids {
+            if self.sync_holder(&s)?.is_some_and(|(_, h)| h == Holding::Read) && !self.core.ix.passes.contains_key(&s) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// How this node syncs thing `t` of `sync_things`: its home sync ID read while a read secret
@@ -74,7 +133,12 @@ impl Engine {
         {
             return Ok(ThingSync::Read(vec![s]));
         }
-        // refgraph: (b) kept unread (`ThingSync::Unread`) by a ticket for the sync role
+        // kept unread: in the node closure by a sync secret alone (spec/sync.md §3)
+        if self.kept_unread(t)
+            && let Some(home) = home_of(&self.owned_sync_ids(t)?)
+        {
+            return Ok(ThingSync::Unread(vec![home]));
+        }
         Ok(if self.core.has_own_secrets(t) { ThingSync::Unsyncable } else { ThingSync::Plain })
     }
 

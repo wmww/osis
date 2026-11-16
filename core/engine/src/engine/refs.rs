@@ -175,11 +175,18 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
                 tx.txn.table_remove(from, &fk, Shred::Yes)?;
                 tx.txn.table_remove(to, &tk, Shred::Yes)?;
                 moved.push(target);
+                if kind == RefKind::Strong {
+                    tx.core.ix.closure.note_row(*source, target);
+                }
             } else {
                 tx.txn.table_put(from, &fk, new.to_be_bytes().to_vec(), Shred::No)?;
                 if old == 0 {
                     tx.txn.table_put(to, &tk, Vec::new(), Shred::No)?;
                     moved.push(target);
+                    // the node closure follows a strong appearing or going (`sync::units`)
+                    if kind == RefKind::Strong {
+                        tx.core.ix.closure.note_row(*source, target);
+                    }
                 }
             }
         }
@@ -260,6 +267,19 @@ pub(crate) fn to_page(tx: &mut Tx<'_>, target: &Tid, after: Option<(&Tid, &Ak, R
         out.push(parse_to(k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?)?);
     }
     Ok(out)
+}
+
+/// Whether `source` holds a strong to `target`, in any aspect: O(its rows naming it).
+pub(crate) fn strong_from(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result<bool> {
+    let to = tx.txn.index(TO)?;
+    let pre = [target.as_bytes().as_slice(), source.as_bytes()].concat();
+    let end = [pre.as_slice(), &[0xff]].concat();
+    let mut found = false;
+    scan_table(&mut tx.txn, to, &pre, Some(&end), |k, _| {
+        found |= k.last() == Some(&RefKind::Strong.id());
+        Ok(())
+    })?;
+    Ok(found)
 }
 
 /// The rows of `source`, every aspect.

@@ -713,7 +713,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         Some(k) if tx.core.key_actors.contains_key(&k) || tx.core.accounts.contains_key(&k) => k,
         Some(_) => return Err(Error::Misuse("signer not held")),
         // a node writes its own thing as itself: nobody else has rights on it
-        None if !m.aspects.is_empty() && m.aspects.keys().all(|(t, _)| *t == tx.core.id.tid()) && m.creates.keys().all(|t| *t == tx.core.id.tid()) => {
+        None if !(m.aspects.is_empty() && m.creates.is_empty()) && m.aspects.keys().all(|(t, _)| tx.core.nodes_own(t)) && m.creates.keys().all(|t| tx.core.nodes_own(t)) => {
             m.actor = None;
             tx.core.id.tid()
         }

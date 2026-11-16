@@ -17,7 +17,6 @@ use osis_sync::session::{Incoming, To};
 use osis_sync::store::Source;
 use osis_sync::streams::{Ctx, Ground, INLINE_LIMIT, Opening, Rank, Shared, Streams, Wire};
 use osis_sync::types::{ConnId, Credential, Entry, Result, SourceClass};
-use osis_sync::leave::Sources;
 use osis_sync::Store;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
@@ -1676,18 +1675,6 @@ fn duplicates_of_held_commits_are_bounded_per_peer_spec_sync_ids_5() {
     }
 }
 
-// spec/sync-set.md §3 (keeping S unread, each entry it logged itself under S (its deposits) is present): `Sources::present` is what a source's stream showed.
-#[test]
-fn present_at_a_source_spec_sync_set_3() {
-    let mut p = Pair::new();
-    let s = sid(1);
-    let x = p.a.log(s, 100);
-    assert!(!Sources::present(&p.b.streams, &s, &x));
-    p.shared_read(s);
-    p.run();
-    assert!(Sources::present(&p.b.streams, &s, &x));
-}
-
 // spec/sync-streams.md §4 (with its live ephemeral entries listed): at the first Pull and with every join: the
 // memory part goes with its bytes; known through the connection alone, gone with it.
 #[test]
@@ -2083,7 +2070,7 @@ fn a_whole_listing_replaces_presence_trimmed_or_not_spec_sync_streams_4() {
     assert!(replies.first().is_some_and(|r| r.whole && !r.trimmed), "{replies:?}");
     assert!(knows(&p.b, p.b.src(), s, x));
     assert!(!knows(&p.b, p.b.src(), s, y), "the whole listing is the source's live set");
-    assert!(!Sources::present(&p.b.streams, &s, &y));
+    assert!(!p.b.streams.known().present(&s, &y));
     assert!(p.b.store.entry(&s, &own).unwrap().is_some(), "nothing of b's own store goes");
 }
 

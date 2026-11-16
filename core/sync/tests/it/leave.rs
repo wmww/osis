@@ -1,7 +1,7 @@
-//! Leaving (spec/sync-set.md §3) on a fake ground: the synced group's closure, what this node's
-//! keys hold of each sync ID, the store's sync IDs, and whether its own writes under S are
-//! elsewhere, each a stamped value, so `Leave` follows them as in a node. What it syncs, shreds
-//! and forgets is recorded.
+//! Leaving (spec/sync-set.md §3) on a fake ground: the node closure, what this node's
+//! keys hold of each sync ID, the store's sync IDs, its sources and passes, and what left the
+//! node closure, each a stamped value, so `Leave` follows them as in a node. What it syncs,
+//! shreds and releases is recorded.
 
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{SyncId, Tid};
@@ -31,10 +31,10 @@ struct Fake {
     /// How this node's keys hold each sync ID (read: a read secret of its thing held).
     holders: Stamped<SyncId, Holding>,
     stored: Stamped<(), BTreeSet<SyncId>>,
-    elsewhere: StampedSet<SyncId>,
-    present: StampedSet<SyncId>,
-    /// Sync IDs no peer shares with this node (no source, no record holding them).
-    unshared: StampedSet<SyncId>,
+    /// Sync IDs with no source now.
+    unsourced: StampedSet<SyncId>,
+    /// What left the node closure, with the sync units that held it.
+    left: BTreeMap<Tid, BTreeSet<Tid>>,
     /// The passes begun so far, and per sync ID the place of its last complete pass.
     clock: u64,
     passes: Stamped<SyncId, u64>,
@@ -47,7 +47,7 @@ struct Fake {
     synced: BTreeMap<SyncId, Held>,
     shredded: Vec<SyncId>,
     forgot: Vec<Tid>,
-    /// Calls of `forget_local`.
+    /// Calls of `release`.
     forgettings: u64,
 }
 
@@ -83,21 +83,24 @@ impl Ground for Fake {
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>> {
         Ok(self.holders.get(s).map(|h| (tid(s.0[0]), *h)))
     }
-    fn own_elsewhere(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.elsewhere.contains(s))
-    }
-    fn own_present(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.present.contains(s))
-    }
-    fn waited(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(!self.unshared.contains(s))
+    fn sourced(&mut self, s: &SyncId) -> bool {
+        !self.unsourced.contains(s)
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.shredded.push(*s);
         Ok(())
     }
-    fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
+    fn left(&mut self) -> Result<BTreeMap<Tid, BTreeSet<Tid>>> {
+        Ok(self.left.clone())
+    }
+    fn unit_ids(&mut self, u: &Tid) -> Result<Vec<SyncId>> {
+        Ok(vec![sid(u.as_bytes()[0])])
+    }
+    fn release(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
         self.forgot.extend(ts.iter().copied());
+        for t in ts {
+            self.left.remove(t);
+        }
         self.forgettings += 1;
         Ok(())
     }
@@ -141,74 +144,63 @@ fn settled() -> (Fake, Leave) {
     (g, l)
 }
 
-// spec/sync-set.md §3 (one rule ends syncing it; while it waits, S stays a member of its shared
-// sets; Unsyncing): a read sync ID whose thing left the synced group's closure, still read here,
-// stays synced until its own commits are held elsewhere; then its thing's copy is forgotten and
-// its store shredded, and it is synced no more.
+// spec/sync-set.md §3 (Release, Stopping): a sync ID whose thing left the node closure stays
+// synced until a complete pass begun after it left ends; then its thing is released and its store
+// shredded, read or kept unread (nothing to release). With no source it stops at once.
 #[test]
-fn unsynced_stays_synced_until_own_writes_are_elsewhere_spec_sync_set_3() {
+fn a_left_sync_id_stops_after_the_pass_in_flight_spec_sync_set_3() {
     let (mut g, mut l) = settled();
-    g.closure(&[2, 3]);
-    l.settle(&mut g).unwrap();
-    assert!(g.shredded.is_empty() && g.forgot.is_empty(), "own commits not yet held elsewhere");
-    assert_eq!(g.syncs(1), Some(Holding::Read), "still synced while it waits");
-    assert!(l.waits(&sid(1)));
-    g.elsewhere.insert(sid(1));
-    l.settle(&mut g).unwrap();
-    assert_eq!((g.forgot.clone(), g.shredded.clone()), (vec![tid(1)], vec![sid(1)]));
-    assert_eq!(g.syncs(1), None);
-    l.settle(&mut g).unwrap();
-    assert_eq!(g.shredded.len(), 1, "once");
-}
-
-// spec/sync-set.md §3 (one rule ends syncing it: keeping S unread, each entry it logged itself
-// present at a source): a kept-unread sync ID whose thing left the closure stays synced (kept
-// unread) until its own entries are present at a source; then it is shredded, nothing forgotten.
-#[test]
-fn kept_unread_stays_synced_until_own_entries_are_present_spec_sync_set_3() {
-    let (mut g, mut l) = settled();
-    g.closure(&[1, 2]);
-    l.settle(&mut g).unwrap();
-    assert_eq!(g.syncs(3), Some(Holding::Unread), "still synced while it waits");
-    assert!(g.shredded.is_empty());
-    g.present.insert(sid(3));
-    l.settle(&mut g).unwrap();
-    assert_eq!(g.shredded, vec![sid(3)]);
-    assert!(g.forgot.is_empty(), "nothing read to forget");
-    assert_eq!(g.syncs(3), None);
-}
-
-// spec/sync-set.md §3 (with none, it stops at once): a sync ID no peer shares (this node's only copy, no
-// source, no record holding it) stops at once, read or kept unread, its own writes held nowhere
-// else; one waiting whose last peer goes (its record evicted) stops then.
-#[test]
-fn unshared_stops_at_once_spec_sync_set_3() {
-    let (mut g, mut l) = settled();
-    g.unshared.insert(sid(1));
-    g.unshared.insert(sid(3));
+    g.passing.insert(sid(1));
+    g.passing.insert(sid(3));
+    g.clock = 10;
     g.closure(&[2]);
+    l.settle(&mut g).unwrap();
+    assert!(g.shredded.is_empty() && g.forgot.is_empty(), "the pass in flight first");
+    assert_eq!((g.syncs(1), g.syncs(3)), (Some(Holding::Read), Some(Holding::Unread)), "still synced while it waits");
+    g.passes.insert(sid(1), 11);
+    g.unsourced.insert(sid(3));
     l.settle(&mut g).unwrap();
     assert_eq!((g.forgot.clone(), g.shredded.clone()), (vec![tid(1)], vec![sid(1), sid(3)]));
     assert_eq!((g.syncs(1), g.syncs(3)), (None, None));
-    g.closure(&[]);
     l.settle(&mut g).unwrap();
-    assert!(l.waits(&sid(2)), "a peer shares it: waits");
-    g.unshared.insert(sid(2));
+    assert_eq!(g.shredded.len(), 2, "once");
+}
+
+// spec/sync-set.md §3 (Release): a thing that left the node closure is released once a complete
+// pass begun after it left ended for each sync ID that carried it, at once for one with no
+// source; one that left the local part (no sync unit) at once.
+#[test]
+fn a_thing_is_released_after_the_pass_in_flight_spec_sync_set_3() {
+    let (mut g, mut l) = settled();
+    g.passing.insert(sid(1));
+    g.passing.insert(sid(2));
+    g.clock = 10;
+    g.left.insert(tid(9), [tid(1), tid(2)].into());
+    g.left.insert(tid(8), BTreeSet::new());
     l.settle(&mut g).unwrap();
-    assert_eq!((g.forgot.clone(), g.syncs(2)), (vec![tid(1), tid(2)], None));
+    assert_eq!(g.forgot, vec![tid(8)], "the local part's at once");
+    assert_eq!(l.passes_wanted(), BTreeMap::from([(sid(1), 10), (sid(2), 10)]));
+    g.passes.insert(sid(1), 11);
+    l.settle(&mut g).unwrap();
+    assert_eq!(g.forgot, vec![tid(8)], "2's pass in flight still");
+    g.unsourced.insert(sid(2));
+    l.settle(&mut g).unwrap();
+    assert_eq!(g.forgot, vec![tid(8), tid(9)], "no source of 2: no wait");
+    assert!(l.passes_wanted().is_empty());
 }
 
 // spec/sync-set.md §3 (synced again before then, S is kept as it was): a leaving sync ID listed
-// again is neither forgotten nor shredded when its entries are elsewhere later.
+// again is neither forgotten nor shredded.
 #[test]
 fn synced_again_before_it_stops_keeps_it_spec_sync_set_3() {
     let (mut g, mut l) = settled();
+    g.passing.insert(sid(1));
     g.closure(&[2, 3]);
     l.settle(&mut g).unwrap();
     g.closure(&[1, 2, 3]);
     l.settle(&mut g).unwrap();
     assert!(!l.waits(&sid(1)));
-    g.elsewhere.insert(sid(1));
+    g.passes.insert(sid(1), 1);
     l.settle(&mut g).unwrap();
     assert!(g.shredded.is_empty() && g.forgot.is_empty());
     assert_eq!(g.syncs(1), Some(Holding::Read));
@@ -229,21 +221,6 @@ fn removed_stops_at_once_lowered_is_no_leaving_spec_sync_set_3() {
     assert_eq!((g.syncs(1), g.syncs(2)), (None, Some(Holding::Unread)));
 }
 
-// spec/sync-set.md §3 (stops at once): a sync ID waiting to stop whose secrets this node then
-// loses (a removal) stops at once, its copy not forgotten by the wait (lost access does that).
-#[test]
-fn losing_the_secrets_while_waiting_stops_at_once_spec_sync_set_3() {
-    let (mut g, mut l) = settled();
-    g.closure(&[2, 3]);
-    l.settle(&mut g).unwrap();
-    assert!(g.shredded.is_empty());
-    g.holders.remove(&sid(1));
-    l.settle(&mut g).unwrap();
-    assert_eq!(g.shredded, vec![sid(1)]);
-    assert!(g.forgot.is_empty());
-    assert_eq!(g.syncs(1), None);
-}
-
 // spec/sync-set.md §3 (on stopping): at a start, a sync ID whose rows the store holds outside the
 // sync set, still held by this node's keys, left while the node was down: it is synced and waits
 // as any leaving one, read or kept unread; another's rows (an inbox this node deposits to: no key
@@ -256,12 +233,12 @@ fn a_start_finds_what_left_while_down_spec_sync_set_3() {
         g.holders.insert(sid(i), h);
     }
     g.stored.insert((), [sid(1), sid(2), sid(7), sid(8)].into());
-    g.elsewhere.insert(sid(1));
+    g.passing.insert(sid(8));
     let mut l = Leave::default();
     l.settle(&mut g).unwrap();
     assert_eq!((g.forgot.clone(), g.shredded.clone()), (vec![tid(1)], vec![sid(1)]));
     assert_eq!((g.syncs(7), g.syncs(8)), (None, Some(Holding::Unread)), "8 waits, synced");
-    g.present.insert(sid(8));
+    g.passes.insert(sid(8), 1);
     l.settle(&mut g).unwrap();
     assert_eq!(g.shredded, vec![sid(1), sid(8)]);
 }

@@ -7,6 +7,8 @@ use osis_base::{Ak, CommitId, Tid};
 
 /// The node's seed.
 pub const SEED: &[u8] = b"seed";
+/// This node's node root's tid (spec/sync-set.md §1), written at its first start.
+pub const NODE_ROOT: &[u8] = b"node root";
 /// The last ciphertext-store transaction this store committed (`blobs::Cipher`, `Engine::settle_blobs`).
 pub const BLOB_SEQ: &[u8] = b"blobseq";
 /// The last `ts` issued or seen (the HLC survives restarts).

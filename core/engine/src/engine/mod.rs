@@ -951,6 +951,8 @@ indexes! {
     /// the purge's transaction (`records::RESNAPSHOTS_OWED`), gone once the snapshot is written or
     /// no longer owed (`Engine::purge_resnapshots`).
     pub resnapshots_owed: JNested<Tid, Ak, BTreeSet<CommitId>>,
+    /// The node closure (`sync::units`): derived, built again by an open.
+    pub closure: crate::sync::units::Closure,
 }
 
 /// The steps run inside a transaction, each applied fully or not at all (`Tx::step`).
@@ -1413,6 +1415,12 @@ pub struct Core {
     pub(crate) links: memo::Memo<(), std::sync::Arc<Vec<crate::flows::HeldLink>>>,
     /// `Engine::caught_up` per group (`memo`).
     pub(crate) caught_up: memo::Memo<Tid, bool>,
+    /// The follower of the node closure's out-lists (`sync::units::settle`).
+    pub(crate) closure_follow: crate::sync::units::Follow,
+    /// `Engine::sync_unit` per thing (`memo`).
+    pub(crate) unit_of: memo::Memo<Tid, Arc<BTreeSet<Tid>>>,
+    /// This node's node root (spec/sync-set.md §1), from its first start (`records::NODE_ROOT`).
+    pub(crate) node_root: Option<Tid>,
     /// Groups the handle reads and writes at another node (`osis` sources): what is here of them
     /// may be behind, syncing or not (`readable_by`). `Engine::set_sourced` sets it.
     pub(crate) sourced_elsewhere: BTreeSet<Tid>,
@@ -1572,6 +1580,9 @@ impl Core {
             own_commits: self.own_commits.clone(),
             links: self.links.clone(),
             caught_up: self.caught_up.clone(),
+            closure_follow: self.closure_follow.clone(),
+            unit_of: self.unit_of.clone(),
+            node_root: self.node_root,
             sourced_elsewhere: self.sourced_elsewhere.clone(),
         }
     }
@@ -1925,6 +1936,8 @@ impl Core {
         let sides_back = self.sides.journaled() > m.sides.0 + m.sides.1;
         self.sides.rollback_to(m.sides);
         if self.changed_since(&m) {
+            // the node closure's follower acted on what goes back (`sync::units::Follow`)
+            self.closure_follow.reset();
             self.touches.clear();
             if self.memory_tx {
                 self.memory_generation += 1;
@@ -2040,6 +2053,9 @@ impl Core {
             setting_wants: _,
             links: _,
             caught_up: _,
+            unit_of: _,
+            closure_follow: _,
+            node_root: _,
             held_writes: _,
             replaced_dates: _,
             waiting_carries: _,
@@ -2203,7 +2219,13 @@ impl Core {
 
     /// Who writes on `t`: a node writes its own thing as itself, all else as its account.
     pub(crate) fn writer_for(&self, t: &Tid) -> Result<Tid> {
-        if *t == self.id.tid() { Ok(*t) } else { self.writer() }
+        if self.nodes_own(t) { Ok(self.id.tid()) } else { self.writer() }
+    }
+
+    /// Whether `t` is the node's own, written by it alone: its node thing or its node root
+    /// (spec/sync-set.md §1).
+    pub(crate) fn nodes_own(&self, t: &Tid) -> bool {
+        *t == self.id.tid() || Some(*t) == self.node_root
     }
 
     /// `me`, for what only an account may do.
@@ -2380,6 +2402,9 @@ impl Core {
             own_commits: Default::default(),
             links: memo::Memo::new("held links"),
             caught_up: memo::Memo::new("sync: caught up"),
+            closure_follow: Default::default(),
+            unit_of: memo::Memo::new("sync: unit of"),
+            node_root: None,
             sourced_elsewhere: BTreeSet::new(),
         }
     }
@@ -3366,9 +3391,14 @@ impl Engine {
         };
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
+        let node_root = {
+            let mut txn = store.transaction(&mut store_rng)?;
+            txn.get_local(records::NODE_ROOT)?.map(|b| <[u8; osis_base::format::TID_LEN]>::try_from(b.as_slice()).map(Tid::from_bytes).map_err(|_| Error::Corrupt("node root"))).transpose()?
+        };
         let (session, expiring) = sessions(id.tid(), &mut *rng);
         let rows = store.row_changes();
         let mut e = Engine { store, store_rng, blobs, blob_stamps: Default::default(), blob_seq: 1, blobs_unsettled: false, unknown_seen: 0, loads: 0, rng, core: Core::new(id, clock.clone(), session, expiring, rows), eph: crate::ephemeral::Eph::default(), clock, cfg, #[cfg(debug_assertions)] index_checks: [0; 2], #[cfg(test)] index_poked: false, #[cfg(test)] check_every_tx: false };
+        e.core.node_root = node_root;
         e.load()?;
         Ok(e)
     }
@@ -3397,7 +3427,8 @@ impl Engine {
         // what this node may not write could not be compacted: weighed once it may
         self.owe_unwritable_held()?;
         self.core.timer_floor = self.next_timer()?.unwrap_or(u64::MAX);
-        Ok(())
+        // the node closure, walked afresh at each transaction's end (`sync::units::settle`)
+        self.run(|_| Ok(()))
     }
 
     /// The ciphertext store's notes against this store (`blobs::Cipher`): a transaction this
@@ -3446,7 +3477,7 @@ impl Engine {
         let mut k = Mutation::new();
         k.set(node, &ct::KEYS, &ct::Keys { key: Some(ct::KemKey::X25519MlKem768(kem.as_bytes().to_vec())), ..Default::default() })?;
         self.commit(k)?;
-        Ok(())
+        self.make_node_root()
     }
 
     /// Registers an app schema: typed views of its AKs for undo and large-value write-back
@@ -3697,6 +3728,10 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::leaving::date_due(&mut tx).map(|_| v));
                 }
                 tx.core.to_date.clear();
+                // the node closure follows every change above (spec/sync-set.md §2)
+                if r.is_ok() {
+                    r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
+                }
                 if r.is_ok() {
                     r = r.and_then(|v| Core::commit_changes(&mut tx).map(|_| v));
                 }
@@ -3814,6 +3849,7 @@ impl Engine {
         fresh.wakes = self.core.wakes.take();
         // the group sources are the handle's, set between transactions (`set_sourced`)
         fresh.sourced_elsewhere = std::mem::take(&mut self.core.sourced_elsewhere);
+        fresh.node_root = self.core.node_root;
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;

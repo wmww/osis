@@ -1274,7 +1274,9 @@ impl Engine {
             return Err(Error::Permission { tid: d });
         }
         self.core.account.set(Some(*p));
-        self.save_account(p, &d)
+        self.save_account(p, &d)?;
+        // the node root's strong to the account root (spec/sync-set.md §1)
+        self.hold(osis_base::Strong(d))
     }
 
     /// The devices actor of account `p` as held here: a thing with `account.0` whose devices
@@ -1331,7 +1333,16 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     // the profile and the inbox have own keys from the account's creation (spec/sync-set.md §1)
     rotation::own_secrets(tx, profile, &mut done)?;
     super::inbox::make_inbox(tx, inbox, &mut done)?;
-    // refgraph: (b) the account root, strongly referencing the profile, the inbox and the node things
+    // the account root strongly references the profile, the inbox and this node's node thing,
+    // and the node root the account root (spec/sync-set.md §1)
+    // refgraph: (c) the tickets in `tickets.0`
+    let mut m = Mutation::new();
+    m.sign_as(p);
+    for t in [profile, inbox, me] {
+        m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) })?;
+    }
+    done.add(Engine::commit_tx(tx, m)?);
+    super::roots::hold_in(tx, d)?;
     Ok((profile, done))
 }
 

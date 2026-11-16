@@ -245,8 +245,29 @@ pub struct SyncSet {
 
 /// The sync set's rows' cursor over the things that may have entered `Engine::sync_things`
 /// (`Engine::things_entered`); unstarted until its first read.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ThingsFeed;
+#[derive(Default)]
+pub(crate) struct ThingsFeed(Option<Entered>);
+
+impl Clone for ThingsFeed {
+    // a copy reads everything again at its first read
+    fn clone(&self) -> ThingsFeed {
+        ThingsFeed(None)
+    }
+}
+
+impl std::fmt::Debug for ThingsFeed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ThingsFeed")
+    }
+}
+
+/// `ThingsFeed`'s cursors: over the node closure's things, the destroyed things, and the cut
+/// last seen.
+pub(crate) struct Entered {
+    held: osis_base::memo::Feed<Tid>,
+    destroyed: osis_base::memo::Feed<Tid>,
+    cut: BTreeSet<Tid>,
+}
 
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -495,22 +516,6 @@ impl Engine {
     pub fn forget_cert_blob(&mut self, s: &SyncId, r: CertKind, b: &BlobId) -> Result<()> {
         let (s, b) = (*s, *b);
         self.run(|tx| certblobs::forget_blob(tx, &s, r, &b))
-    }
-
-    /// Forgets this node's local copies of `ts`, released (spec/sync-set.md §3): the content of
-    /// each and of each thing whose secrets are one of theirs, but those the node closure holds;
-    /// their role-class aspects (`secrets.0` included) and secrets stay, and what arrives again
-    /// counts as never received. The blobs of the commits it deleted whole.
-    pub fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<BTreeSet<BlobId>> {
-        let closure = self.sync_things()?;
-        let mut things = crate::retention::forget::under(&self.core, ts);
-        things.extend(ts.iter().copied());
-        things.retain(|x| !closure.contains(x));
-        if things.is_empty() {
-            return Ok(BTreeSet::new());
-        }
-        let f = self.run(|tx| crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new()))?;
-        Ok(f.blobs)
     }
 
     /// Whether `b` is a freed link's blob.

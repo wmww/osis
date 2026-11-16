@@ -29,9 +29,9 @@ impl Engine {
     pub fn readable_by(&self, actor: &Tid, t: &Tid) -> bool {
         // in a sync unit read at another node, or still catching up on its way home: stale here,
         // and this node would serve it to a client as if current (notes/client-port.md §6)
-        if !self.core.sourced_elsewhere.is_empty() {
-            let _ = t;
-            todo!("refgraph: (b) whether a sync unit sourced elsewhere holds t")
+        let away = &self.core.sourced_elsewhere;
+        if !away.is_empty() && (away.contains(t) || self.units_holding(t).iter().any(|u| away.contains(u))) {
+            return false;
         }
         self.entitled(actor, t) || self.copy_readable_by(actor, t)
     }

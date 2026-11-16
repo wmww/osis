@@ -103,6 +103,12 @@ pub fn harvest(w: &mut World, i: usize) {
     }
 }
 
+/// Adds a strong from `from`'s `holds.0` to `to` in `m`.
+fn hold_in(m: &mut Mutation, from: Tid, to: Tid) -> osis_engine::Result<()> {
+    m.op(from, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Strong(to)) })?;
+    Ok(())
+}
+
 /// Plays one history write; a note of what came of it.
 pub fn step(w: &mut World, s: &Step) -> String {
     let i = match s {
@@ -116,14 +122,18 @@ pub fn step(w: &mut World, s: &Step) -> String {
     let account = |w: &World, j: &usize| (*j < w.len()).then(|| w.node(*j).account).flatten();
     let r: Result<String, String> = match s {
         Step::New(_) => {
-            let Some(admin) = account(w, &i) else { return "skipped: no account".into() };
+            if account(w, &i).is_none() {
+                return "skipped: no account".into();
+            }
             let v = w.history.value();
             let ak = value_ak();
+            // made under its maker's account root, which holds it by a strong (spec/sync-set.md §2)
             match w.write(i, |e| -> osis_engine::Result<_> {
+                let d = e.account_root().ok_or(osis_engine::Error::Misuse("no account root"))?;
                 let mut m = Mutation::new();
-                let t = e.new_thing(&mut m, admin);
+                let t = e.new_thing(&mut m, d);
                 m.set(t, &ak, &Value::Str(v.clone()))?;
-                // refgraph: held from its maker's node root by a strong (rewritten at the end)
+                hold_in(&mut m, d, t)?;
                 Ok((t, e.commit(m)?))
             }) {
                 Ok((t, c)) => {
@@ -158,6 +168,16 @@ pub fn step(w: &mut World, s: &Step) -> String {
             let (Some(t), Some(holder)) = (thing(w, k), account(w, j)) else { return "skipped: no such thing or holder".into() };
             let edge = Edge { role: g.role(), until: None, invite: None, floor: None };
             let r = w.write(i, |e| e.grant(&t, &holder, &edge)).map(|_| String::new()).map_err(|e| e.to_string());
+            // the grantee's node accepts: its account root holds the thing by a strong
+            // (spec/sync-set.md §4)
+            if r.is_ok() && w.online(*j) {
+                let _ = w.write(*j, |e| -> osis_engine::Result<_> {
+                    let d = e.account_root().ok_or(osis_engine::Error::Misuse("no account root"))?;
+                    let mut m = Mutation::new();
+                    hold_in(&mut m, d, t)?;
+                    e.commit(m)
+                });
+            }
             if r.is_ok() || stands(w, i, &t, &holder, g.role()) {
                 let h = &mut w.history;
                 if *g >= Gives::Reads {
@@ -165,7 +185,6 @@ pub fn step(w: &mut World, s: &Step) -> String {
                 }
                 // granted again: what it is shown from now on is the reference's to say
                 h.removals.remove(&(*k, *j));
-                // refgraph: the differential's grantee holds the thing by a strong (rewritten at the end)
                 h.hidden.retain(|_, (thing, nodes)| {
                     if thing == k {
                         nodes.remove(j);

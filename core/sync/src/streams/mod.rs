@@ -45,7 +45,6 @@ use crate::opens::{Member, Moved, Opens, Reported};
 use crate::session::{Incoming, Sessions, To};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cx, Entry, Error, Position, RecordId, Result};
-use crate::leave::Sources;
 use osis_base::memo::{Stamped, StampedSet};
 use osis_base::{BlobId, SyncId, WallMs};
 use osis_engine::Engine;
@@ -476,13 +475,6 @@ impl Streams {
                 _ => osis_store::Error::Corrupt("streams: store"),
             });
         }
-    }
-}
-
-impl Sources for Streams {
-    /// spec/sync-set.md §3: an own entry counts held at a source once a source's stream showed it.
-    fn present(&self, s: &SyncId, b: &BlobId) -> bool {
-        self.known.present(s, b)
     }
 }
 

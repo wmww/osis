@@ -691,7 +691,7 @@ impl Node {
             }
             acted |= cx.engine.follow()?;
             // leave first: what this node syncs, which every other module follows
-            acted |= self.leave.settle(&mut crate::leave::Live { cx: &mut cx, sources: &self.streams, opens: &self.opens, status: &self.status })?;
+            acted |= self.leave.settle(&mut crate::leave::Live { cx: &mut cx, status: &self.status })?;
             acted |= self.driver.store.settle(cx.engine, cx.store, cx.now)?;
             acted |= self.unread.settle(&mut cx)?;
             acted |= self.opens.settle(&mut cx, sessions, &self.unread, &mut moved)?;

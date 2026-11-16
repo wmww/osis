@@ -437,7 +437,7 @@ fn history_completes_with_a_pass_spec_sync_status_3() {
     assert!(!e.history_complete(&d).unwrap());
     let now = e.begin_pass();
     e.note_complete_pass(&home, now).unwrap();
-    assert!(e.history_complete(&d).unwrap() && e.passes_wanted().unwrap().is_empty());
+    assert!(e.history_complete(&d).unwrap() && !e.passes_wanted().unwrap().contains_key(&home));
 }
 
 // spec/crypto.md §4 (names): a rotation names the edge writes its rotator held that pin a holder

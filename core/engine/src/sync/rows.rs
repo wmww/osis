@@ -43,7 +43,7 @@ pub(crate) struct SyncRows {
 impl Default for SyncRows {
     fn default() -> Self {
         SyncRows {
-            entered: ThingsFeed,
+            entered: ThingsFeed::default(),
             thing: Effects::new("sync: set rows"),
             ids_of: BTreeMap::new(),
             by_sync: BTreeMap::new(),

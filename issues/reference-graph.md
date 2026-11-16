@@ -133,12 +133,14 @@ Each lane owns its files; a stub's body is `todo!("refgraph: (x) ...")` or a no-
 - **(b) holding**: `core/engine/src/flows/roots.rs` (`node_root`, `account_root`, `hold`, `unhold`), `core/engine/src/sync/units.rs` (`sync_unit`, `units_holding`, `unit_settled`), `core/engine/src/sync/set.rs` (`sync_things`, `in_sync_things`, `things_entered`, `caught_up`, kept unread in `thing_sync_now`, `set_sourced`'s cut), `core/engine/src/retention/release.rs` (`left_closure`, `released`) with sync's `leave`, `Engine::readable_by`'s sourced check (`engine/acting.rs`), the `NotCarried` diagnostic (`DiagnosticKind::NotCarried`, osis `Diagnostic::NotCarried`) and the write path's warning (`core/osis/src/write.rs`), the account creation's roots (`flows/account.rs` `create_account_in`), the seed thing and K of a link and a client's actor held from the account root (`flows/links.rs`, `core/osis/src/clients.rs`), the differential's holding (`core/sync/tests/it/harness/history.rs`).
 - **(c) inbox**: `core/base/src/ids.rs` `Ak::open`, `core/blob/src/fire.rs` (`seal_fire`, `open_fire`), `core/engine/src/flows/inbox.rs` (`fire_ticket`, `fire_removal`, `inbox_thing`, `ticket_for`, `take_removal_notice`, `fire_stranded`), `core/engine/src/sync/tickets.rs` (`ticket_sync_secrets`), a sync secret of a thing not read (`apply/keys.rs` `learn_secret`), the lowered-to-sync keep (`rotation/lost.rs`), a redeem's tickets (`flows/links.rs` `redeem_in`), dialing a ticket's issuer (`sync/dial.rs`), the stranded notice with no writer connected (`core/sync/src/inbox/stranded.rs`), promotion of sealed fires (`core/sync/src/inbox/held.rs`).
 
+## Settled while building
+- Edge removal runs both searches in step (the target's other referrers up their tree paths, and its subtree), stopping at the first answer: at most twice the smaller (spec/sync-set.md §2 Cost; `core/engine/src/sync/units.rs`).
+- `caps^.0` and `clients^.0` sit on the local node root (spec/sync-set.md §1): simpler, and reversible; a sibling changing an offline node's caps waits on issues/settings.md.
+
 ## To settle while building
 - D's deposit seed: the inbox is its own thing, so a fresh deposit seed on a device removal rests on every sync-role rotation writing a new one (the inbox thing and D rotate inside each P rotation); check it holds in the rebuild.
-- Which search the edge-removal uses first (other referrers, or the subtree): each loses in one shape (notes/closure-model.md, counts); running both in step meets both.
 - What `tools/spec_map.py` needs once the removed sections go (`tools/policy_test.py` plants appended text in a missing file afresh).
 - No bound on how many sync IDs one commit is carried under (nothing limits the sync units a thing is in): measure with issues/many-sync-ids-cost.md.
-- Settings (issues/settings.md) wanted `caps^.0` and `clients^.0` on a per-node data thing synced among the account's nodes, so a sibling can change an offline node's caps; this plan puts them on the local node root. Pick one.
 
 Not blocking: issues/many-sync-ids-cost.md (the cost of many things with their own sync ID, which a shared tag of notes makes).
 

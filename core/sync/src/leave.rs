@@ -1,44 +1,36 @@
-//! Leaving the sync set (spec/sync-set.md §3), and the sync IDs this node syncs.
+//! Leaving the sync set and releasing what left the node closure (spec/sync-set.md §3), and the
+//! sync IDs this node syncs.
 //!
-//! `leave` alone follows the engine's sync set (per sync ID, `Engine::sync_held`) and writes what this node syncs into
-//! the store (`Store::set_holdings`): the sync set, and each sync ID that left it while it waits
-//! to stop. Every other module follows that (crate::set), so a waiting sync ID stays open,
-//! served, logged into, judged and counted as before until it stops (§3: it stays a member of its
-//! shared sets as before).
+//! `leave` alone follows the engine's sync set (per sync ID, `Engine::sync_held`) and writes what
+//! this node syncs into the store (`Store::set_holdings`): the sync set, and each sync ID that
+//! left it while it waits to stop. Every other module follows that (crate::set), so a waiting
+//! sync ID stays open, served, logged into, judged and counted as before until it stops.
 //!
-//! The rule, read or kept unread alike, whatever made S leave: S that left waits first for a
-//! complete pass of it begun after it left (spec/sync-set.md §3: what made it leave may be undone
-//! by what that pass brings, such as a rotation's thing list arriving after the rotation), then
-//! judges again: the node's keys must still let it hold S as it did (`Engine::sync_holder`), else
-//! it stops at once (its secrets lost, a removal), unless a role commit on its thing waits for
-//! its lists (`Ground::uncounted_role`): then once more, for a pass with a source; then it waits until what this node logged
-//! itself under S is elsewhere (read: each own commit with an entry under S held elsewhere,
-//! status's durable mark, `Store::elsewhere`; kept unread: each own entry present at a source,
-//! `Sources`), or no peer is to be waited for on S (`Opens::waited`: none has S open), then
-//! stops: read and still read here (released), its thing's local copy is forgotten first. Synced again before then, it is
-//! kept as it was. Meanwhile the engine answers for it by its thing's held read secrets
-//! (`Engine::read_credentials`, `open_entry`).
+//! The rule, read or kept unread alike, whatever made S leave: S that left waits for a complete
+//! pass of it begun after it left, unless it has no source (no absent peer is waited for; what
+//! made it leave may be undone by what that pass brings, such as a rotation's thing list arriving
+//! after the rotation), then judges again: the node's keys must still let it hold S as it did
+//! (`Engine::sync_holder`), else it stops at once (its secrets lost, a removal), unless a role
+//! commit on its thing waits for its lists (`Ground::uncounted_role`): then once more, for a pass
+//! with a source. Then it stops: its thing is released (if read and still out of the node
+//! closure) and its store shredded. Synced again before then, it is kept as it was.
+//!
+//! A thing that left the node closure (`Engine::left_closure`) is released the same way: once
+//! each sync ID that carried it when it left has had a complete pass begun after, or has no
+//! source; one that left the local part, at once. Its unsynced writes go with it.
 //!
 //! One derived value (`out`): the sync IDs out of the sync set that this node syncs or holds rows
 //! of, one `Effects` key each. The first settle wants every one stored (a start, or a restart of
 //! the modules: the store is the truth), later ones each S the sync set loses. S has left only
 //! with an entry (as synced, else as its keys hold it) and once this node has joined an account
-//! (`Engine::sync_rooted`); rows of another account's inbox it deposits to never leave. Work
-//! follows change: the sync set per key; each leaving S judged over its own commits or entries
-//! (O(own writes under S)). Nothing here is durable.
+//! (`Engine::sync_rooted`); rows of another account's inbox it deposits to never leave. Nothing
+//! here is durable.
 
 use crate::set::Held;
 use crate::types::{Holding, Result};
 use osis_base::memo::{Effects, Feed, Stamped};
-use osis_base::{BlobId, SyncId, Tid};
+use osis_base::{SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
-
-/// Whether a source of S showed `b` present by its stream (spec/sync-set.md §3: what a node
-/// keeping S unread waits for before leaving). Stamped reads, so a waiting S is judged again when
-/// presence moves.
-pub trait Sources {
-    fn present(&self, s: &SyncId, b: &BlobId) -> bool;
-}
 
 /// What leave reads and does (the product's is `Live`; a test's a table).
 pub trait Ground {
@@ -57,15 +49,8 @@ pub trait Ground {
     fn stored(&mut self) -> Result<BTreeSet<SyncId>>;
     /// S's thing and how this node's keys let it hold S, whatever lists it (`Engine::sync_holder`).
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>>;
-    /// Read: each of this node's own commits with an entry under S is held elsewhere: one of its
-    /// entries there recorded so (`Store::elsewhere`, status's durable mark, spec/sync-status.md §2).
-    fn own_elsewhere(&mut self, s: &SyncId) -> Result<bool>;
-    /// Kept unread: each entry this node logged itself under S is present at a source.
-    fn own_present(&mut self, s: &SyncId) -> Result<bool>;
-    /// Some peer is to be waited for on S (`Opens::waited`): S open there or in its kept record,
-    /// or the rosters say it may hold S and its record has not acknowledged S. With none,
-    /// nothing could take its own writes.
-    fn waited(&mut self, s: &SyncId) -> Result<bool>;
+    /// Whether S has a source now (`Status::sourced`): a pass with none ends at once.
+    fn sourced(&mut self, s: &SyncId) -> bool;
     fn shred(&mut self, s: &SyncId) -> Result<()>;
     /// Whether a role commit on `t` is held but uncounted, its epoch revoked and no list naming
     /// it held (`Engine::uncounted_role_on`).
@@ -77,12 +62,15 @@ pub trait Ground {
     /// This node knows the group whose closure it syncs (`Engine::sync_rooted`): before, its sync
     /// set is empty for want of it, and nothing it holds counts as left.
     fn rooted(&mut self) -> bool;
-    /// Forgets the local copies of `ts`, every thing whose sync ID stopped in one settle
-    /// (`Engine::forget_local`: one forgetting), then unlogs this node's own entries of the
-    /// commits that forgot whole, under every sync ID naming their blobs: no judgement reaches a
-    /// commit no longer held, and reopened (a start parks every entry not opening to a held
-    /// commit) it would come back. O(the blobs of what forgot) beside the engine's forgetting.
-    fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<()>;
+    /// The things that left the node closure and are not released yet, each with the sync units
+    /// that held it when it left (`Engine::left_closure`), a stamped read.
+    fn left(&mut self) -> Result<BTreeMap<Tid, BTreeSet<Tid>>>;
+    /// The sync IDs this node syncs for sync unit `u` (`Engine::thing_sync`, read or unread).
+    fn unit_ids(&mut self, u: &Tid) -> Result<Vec<SyncId>>;
+    /// Releases `ts` (`Engine::released`: those still outside the node closure), then unlogs this
+    /// node's own entries of the commits that went whole, under every sync ID naming their
+    /// blobs: no judgement reaches a commit no longer held. O(the blobs of what went).
+    fn release(&mut self, ts: &BTreeSet<Tid>) -> Result<()>;
 }
 
 /// A leaving S: its entry when it left, and the complete pass it waits for.
@@ -127,13 +115,17 @@ pub struct Leave {
     /// begun after (`Engine::pass_place`): status runs it (`passes_wanted`), which the wait
     /// reads. Stamped: status follows it whole.
     leaving: Stamped<SyncId, Left>,
+    /// Per thing that left the node closure and waits to be released: the pass place it left
+    /// at and the sync IDs that carried it then, each waiting for a complete pass begun after
+    /// (status runs it, `passes_wanted`). Stamped: status follows it whole.
+    releasing: Stamped<Tid, (u64, Vec<SyncId>)>,
     /// Judgements of a sync ID out of the sync set made (tests: what a change costs).
     judged: u64,
 }
 
 impl Default for Leave {
     fn default() -> Leave {
-        Leave { set: Effects::new("leave: sync set"), set_feed: None, started: false, out: Effects::new("leave: out of the sync set"), leaving: Stamped::default(), judged: 0 }
+        Leave { set: Effects::new("leave: sync set"), set_feed: None, started: false, out: Effects::new("leave: out of the sync set"), leaving: Stamped::default(), releasing: Stamped::default(), judged: 0 }
     }
 }
 
@@ -209,10 +201,39 @@ impl Leave {
                 }
             }
         }
-        // unsyncing: one forgetting for every thing whose sync ID stopped, before the shreds,
-        // so a crash between finds the rows at the next start and does both again
+        // each thing that left the node closure, released once the pass in flight with its
+        // connected sources of each sync ID that carried it ended (spec/sync-set.md §3)
+        let left = g.left()?;
+        for t in self.releasing.keys().copied().collect::<Vec<_>>() {
+            if !left.contains_key(&t) {
+                self.releasing.remove(&t);
+            }
+        }
+        for (t, units) in left {
+            let (since, ids) = match self.releasing.get(&t) {
+                Some(x) => x.clone(),
+                None => {
+                    let mut ids = Vec::new();
+                    for u in &units {
+                        ids.extend(g.unit_ids(u)?);
+                    }
+                    let x = (g.pass_seq(), ids);
+                    self.releasing.insert(t, x.clone());
+                    x
+                }
+            };
+            if ids.iter().all(|s| !g.sourced(s) || g.passed(s, since)) {
+                forget.insert(t);
+            }
+        }
+        // one release for every thing that goes, before the shreds, so a crash between finds the
+        // rows at the next start and does both again
         if !forget.is_empty() {
-            g.forget_local(&forget)?;
+            g.release(&forget)?;
+            for t in &forget {
+                self.releasing.remove(t);
+            }
+            acted = true;
         }
         for s in stopped {
             g.shred(&s)?;
@@ -232,7 +253,14 @@ impl Leave {
     /// Per leaving S, the pass place it left at: a complete pass begun after is wanted (status
     /// runs it). A stamped read, whole.
     pub fn passes_wanted(&self) -> BTreeMap<SyncId, u64> {
-        self.leaving.iter().map(|(s, l)| (*s, l.since)).collect()
+        let mut out: BTreeMap<SyncId, u64> = self.leaving.iter().map(|(s, l)| (*s, l.since)).collect();
+        for (since, ids) in self.releasing.values() {
+            for s in ids {
+                let e = out.entry(*s).or_insert(*since);
+                *e = (*e).max(*since);
+            }
+        }
+        out
     }
 
     /// Whether S's wanted pass must have a source: no pass of S ends with none meanwhile
@@ -269,7 +297,8 @@ fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -
     // lists give S back only while its thing is in the closure: leaving it (a release, this
     // node's removal) ends the pass with a source unwaited
     let moot = left.sourced && !g.in_sync_things(&held.0)?;
-    if !moot && !g.passed(s, left.since) {
+    // a pass with no source ends at once: no absent peer is waited for
+    if !moot && g.sourced(s) && !g.passed(s, left.since) {
         return Ok(Wait::Waiting);
     }
     if holder != Some(held) {
@@ -281,18 +310,12 @@ fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -
         }
         return Ok(Wait::Lost);
     }
-    let done = match held.1 {
-        Holding::Read => g.own_elsewhere(s)?,
-        Holding::Unread => g.own_present(s)?,
-    } || !g.waited(s)?;
-    Ok(if done { Wait::Done } else { Wait::Waiting })
+    Ok(Wait::Done)
 }
 
-/// The product's ground: the engine's facade, the store and what sources showed (streams).
+/// The product's ground: the engine's facade, the store and status.
 pub struct Live<'a, 'b> {
     pub cx: &'a mut crate::types::Cx<'b>,
-    pub sources: &'a dyn Sources,
-    pub opens: &'a crate::opens::Opens,
     pub status: &'a crate::status::Status,
 }
 
@@ -320,14 +343,8 @@ impl Ground for Live<'_, '_> {
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>> {
         Ok(self.cx.engine.sync_holder(s)?)
     }
-    fn own_elsewhere(&mut self, s: &SyncId) -> Result<bool> {
-        own_elsewhere(self.cx.engine, self.cx.store, s)
-    }
-    fn own_present(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.cx.store.entries(s)?.into_iter().filter(|e| e.own).all(|e| self.sources.present(s, &e.blob)))
-    }
-    fn waited(&mut self, s: &SyncId) -> Result<bool> {
-        self.opens.waited(self.cx.engine, self.cx.store, s, true)
+    fn sourced(&mut self, s: &SyncId) -> bool {
+        self.status.sourced(s)
     }
     fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.cx.store.shred(s)
@@ -344,15 +361,24 @@ impl Ground for Live<'_, '_> {
     fn passed(&mut self, s: &SyncId, since: u64) -> bool {
         self.status.passed_since(s, since)
     }
-    fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
-        forget_local(self.cx.engine, self.cx.store, ts)
+    fn left(&mut self) -> Result<BTreeMap<Tid, BTreeSet<Tid>>> {
+        Ok(self.cx.engine.left_closure())
+    }
+    fn unit_ids(&mut self, u: &Tid) -> Result<Vec<SyncId>> {
+        Ok(match self.cx.engine.thing_sync(u)? {
+            osis_engine::sync::ThingSync::Read(v) | osis_engine::sync::ThingSync::Unread(v) => v,
+            _ => Vec::new(),
+        })
+    }
+    fn release(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
+        release(self.cx.engine, self.cx.store, ts)
     }
 }
 
-/// `Ground::forget_local` (`Engine::forget_local`, then each own entry naming a blob of a commit
-/// it forgot whole is unlogged).
-pub(crate) fn forget_local(engine: &mut osis_engine::Engine, store: &mut crate::store::Store, ts: &BTreeSet<Tid>) -> Result<()> {
-    let gone = engine.forget_local(ts)?;
+/// `Ground::release` (`Engine::released`, then each own entry naming a blob of a commit that went
+/// whole is unlogged).
+pub(crate) fn release(engine: &mut osis_engine::Engine, store: &mut crate::store::Store, ts: &BTreeSet<Tid>) -> Result<()> {
+    let gone = engine.released(ts)?;
     for b in &gone {
         for s in store.naming(b)? {
             if store.entry(&s, b)?.is_some_and(|e| e.own) {

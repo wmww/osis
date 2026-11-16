@@ -958,8 +958,8 @@ mod tests {
         // `cover_waits`); what an open parks anew (`pending`, `pend_on`,
         // `pend_keys`: each examined again); rows not persisted for ephemeral aspects
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
-        // `cause_at`, `reseal_asks`).
-        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "cover_waits"];
+        // `cause_at`, `reseal_asks`); the node closure, built again after an open (`closure`).
+        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "cover_waits", "closure"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {

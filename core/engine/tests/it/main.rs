@@ -2,6 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
+mod closure;
 mod covered;
 mod setting;
 mod caches;
