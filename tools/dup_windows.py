@@ -3,7 +3,7 @@
 
   tools/dup_windows.py [--lines N] [--top K] PATH...   (.rs files under each PATH; N defaults to 4)
 
-A cleanup's first targets (notes/coordination.md, Standing agents): tools/dead_pub.py finds names
+A cleanup's first targets (notes/coordination.md, Cleanup): tools/dead_pub.py finds names
 nobody calls, this finds copies, which is where most cleanups found their volume. Lines are
 compared stripped of whitespace; blank lines, comments and lone braces are skipped. Overlapping
 windows of one copy are merged into a run; runs are listed longest first with each place they occur.
