@@ -2334,3 +2334,48 @@ fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
     }
 }
 
+// spec/crypto.md §4 (Encrypting under; History box), §9 (Account keysets): a node encrypts a thing
+// only while each current epoch of it is boxed to its account at an epoch that counts there, and a
+// rotation's history carries the established epochs its rotator holds. Node 2 removes node 0 and
+// node 0 removes node 2; node 1 takes node 2's removal first and re-keys t (held by an outsider,
+// so with secrets of its own) at that side's epoch, whose seed node 0 never holds, and writes
+// there. Its user switches to node 0's removal: its box at the side it left is stale, so it
+// re-keys t again, its history carrying the epoch it left, and node 0 reads both its writes
+#[test]
+fn a_thing_rekeyed_on_the_thiefs_side_is_read_after_a_switch_back_spec_crypto_4() {
+    let (mut lp, a, t) = world(4, 3);
+    let (h, b, x) = (0, 1, 2);
+    let rx = remove(&mut lp, x, a.devices, h);
+    let ra = remove(&mut lp, h, a.devices, x);
+    send(&mut lp, x, b, &rx.commits);
+    send(&mut lp, h, b, &ra.commits);
+    assert!(lp.peers[b].engine.core.account_view(&a.account).unwrap().rotation_counts(&rx.commits[0]), "node 1 follows node 2's removal");
+    lp.peers[b].engine.signing_due().unwrap();
+    let boxed_at = |lp: &mut LocalPeer| {
+        let cur = lp.peers[b].engine.core.epochs(&t).unwrap().role(Role::Read).current();
+        cur.iter().flat_map(|e| lp.peers[b].engine.run(|tx| crate::rotation::members::boxed_keysets(tx, &t, Role::Read, e)).unwrap()).filter(|(m, _)| *m == a.account).flat_map(|x| x.1).collect::<Vec<_>>()
+    };
+    let before = boxed_at(&mut lp);
+    lp.peers[b].engine.pass_end_rotations(&t).unwrap();
+    let thief_side = boxed_at(&mut lp);
+    assert_ne!(before, thief_side, "node 1 re-keys t on node 2's side");
+    let y = Ak::new("x:b.0").unwrap();
+    let mut m = crate::Mutation::new();
+    m.set(t, &y, &Value::Str("on the thief's side".into())).unwrap();
+    let w1 = lp.peers[b].commit(m).unwrap().unwrap();
+    lp.peers[b].engine.choose_line(a.account, ra.commits[0]).unwrap();
+    for _ in 0..3 {
+        lp.peers[b].engine.signing_due().unwrap();
+    }
+    lp.peers[b].engine.pass_end_rotations(&t).unwrap();
+    assert_ne!(boxed_at(&mut lp), thief_side, "node 1 re-keys t after the switch");
+    let w2 = write(&mut lp, b, t, "switched back");
+    let all = lp.peers[b].engine.commit_ids();
+    send(&mut lp, b, h, &all);
+    for w in [w1, w2] {
+        let m = lp.peers[h].engine.core.ix.commits.get(&w).cloned().unwrap();
+        assert_eq!(lp.peers[h].engine.core.standing(&w, &m.view), osis_perm::EpochStanding::Counts, "node 0 counts node 1's write {w:?}");
+    }
+    assert_eq!(read(&mut lp, h, t), Some(Value::Str("switched back".into())));
+    assert_eq!(lp.peers[h].engine.get(&t, &y).unwrap(), Some(Value::Str("on the thief's side".into())), "node 0 reads node 1's write on the side it left");
+}

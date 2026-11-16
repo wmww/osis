@@ -1,7 +1,0 @@
-# A thing re-keyed on the thief's side stays unreadable after a switch back
-> Summary: A node of P that took X's revocation (of A, say) re-keys P's thing t at X's line (t's departures follow the taken revocations), boxing t's new epoch to P at an epoch whose seed X sent only to some nodes. After its user switches back, its writes on t under that epoch stand at A but A cannot read them: no re-seal reaches A with that P seed (re-seals cover heads' tips only).
-> Priority: normal
-> Tags: engine, keys
-
-- roles-model `custody` shows it once its honest policy re-keys t on every taken revocation its t epoch's P epoch does not carry (as the engine does): about 1.5% of random worlds and 120 of the small family fail `writes` (C's write on t, made under the t epoch C minted at X's revocation's epoch, never readable at A, which never got X's rotation). The model re-keys t only after a node's own removal, so its runs pass; the custody differential compares t's re-key one way (the engine may re-key more).
-- Directions: on a switch, re-seal to the roster the seeds of the epochs its own words and t rotations were boxed at on the side it left (custody re-seal by line, not by head); or re-key t only for revocations a node made itself or holds with every node of its line (a node on X's side then keeps t readable to the node X removed, which it believes removed: weigh against Tess's first-seen rule).

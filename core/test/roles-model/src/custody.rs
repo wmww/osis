@@ -8,7 +8,8 @@
 //!   Z's: a key it made up) or derives it (a merge epoch from every tip's seed), whether or not
 //!   the item counts. Inner signatures open with the seed of the epoch signed at (or the item's
 //!   own; a certificate's with any epoch it joins). Thing t's epochs are boxed to P at a P epoch and to its outside holder R1: a node of P
-//!   opens a t epoch with any held seed of that P epoch. Judging decides only what counts and
+//!   opens a t epoch with any held seed of that P epoch, and every t epoch the history of a t
+//!   epoch it holds carries. Judging decides only what counts and
 //!   where a node signs and what it encrypts under.
 //! - **The chain is the roster.** An epoch is its line: the downward-closed set of plain
 //!   rotations it descends from (`Line`). The nodes on a line: the creation devices plus the
@@ -37,9 +38,12 @@
 //!   with a revocation not taken, on no line a counting rotation answered, that it has not
 //!   answered), or for a taken revocation its preferred line does not carry when it cannot merge;
 //!   then, following several heads and holding every tip's seed, it certifies the merge of them
-//!   all; it re-seals its heads' tip seeds to roster devices it sees without them; after a
-//!   removal it rotates t at the new epoch; it writes at its preferred head (on t under its
-//!   newest t epoch) and lists its own writes at every other epoch.
+//!   all; it re-seals its heads' tip seeds to roster devices it sees without them; it rotates
+//!   t at its head while no t epoch is current there or a current one (counting, carried by no
+//!   other's history) is boxed to P at an epoch that does not count there or lacks a taken
+//!   revocation the head carries, the history carrying its counting t epochs; it writes at its
+//!   preferred head (on t under its newest current t epoch) and lists its own writes at every
+//!   other epoch.
 //!
 //! Parties: account P with A (removes X at tick 1, may rotate plainly at 0), B (may be offline,
 //! unaware: rotates boxing X), C (may be apart: removes T at tick 1 and rotates t at that epoch,
@@ -141,8 +145,9 @@ pub enum Kind {
     /// The author's word that its writes `names` count.
     Listing { names: Vec<u32> },
     /// A rotation of thing t, signed at P epoch `epoch` and boxing t's new epoch to P there and to
-    /// R1 (`boxed[R1]`).
-    TRot,
+    /// R1 (`boxed[R1]`); its history carries the t epochs its maker held whose rotation counted
+    /// there.
+    TRot { history: BTreeSet<u32> },
 }
 
 #[derive(Clone, Debug)]
@@ -559,16 +564,27 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
     }).collect();
     let mut valid: BTreeSet<u32> = BTreeSet::new();
     loop {
-        let tkeys: BTreeSet<u32> = std::iter::once(0).filter(|_| own || v == R1).chain(held.iter().copied().filter(|k| {
+        let mut tkeys: BTreeSet<u32> = std::iter::once(0).filter(|_| own || v == R1).chain(held.iter().copied().filter(|k| {
             let i = w.item(*k);
-            matches!(i.kind, Kind::TRot) && (v == R1 || i.author == v || j.keys.holds(w, &i.epoch) && (w.control != Control::StaleShut || j.heads.contains(&i.epoch) || valid.contains(k)))
+            matches!(i.kind, Kind::TRot { .. }) && (v == R1 || i.author == v || j.keys.holds(w, &i.epoch) && (w.control != Control::StaleShut || j.heads.contains(&i.epoch) || valid.contains(k)))
         })).collect();
+        // what the histories of the t epochs held carry
+        loop {
+            let more: Vec<u32> = tkeys.iter().filter(|k| **k != 0).flat_map(|k| match &w.item(*k).kind {
+                Kind::TRot { history } => history.iter().copied().collect(),
+                _ => vec![],
+            }).filter(|k| !tkeys.contains(k)).collect();
+            if more.is_empty() {
+                break;
+            }
+            tkeys.extend(more);
+        }
         let mut named: BTreeSet<u32> = BTreeSet::new();
         let mut next: BTreeSet<u32>;
         loop {
             next = held.iter().copied().filter(|id| {
                 let i = w.item(*id);
-                matches!(i.kind, Kind::Content | Kind::Listing { .. } | Kind::TRot) && i.on_t.is_none_or(|te| tkeys.contains(&te)) && (j.heads.contains(&i.epoch) || unrevoked(&i.epoch) || named.contains(id))
+                matches!(i.kind, Kind::Content | Kind::Listing { .. } | Kind::TRot { .. }) && i.on_t.is_none_or(|te| tkeys.contains(&te)) && (j.heads.contains(&i.epoch) || unrevoked(&i.epoch) || named.contains(id))
             }).collect();
             let more: Vec<u32> = next.iter().filter_map(|id| match &w.item(*id).kind {
                 Kind::Listing { names } => Some(names.iter().copied().filter(|n| w.item(*n).author == w.item(*id).author).collect::<Vec<_>>()),
@@ -716,20 +732,22 @@ fn seen_holding(w: &World, j: &View, d: usize, e: &Line) -> bool {
     boxed(e) || !w.single(e) && w.tips(e).iter().all(|m| boxed(&w.line(*m)))
 }
 
-/// The t epoch node `n` encrypts under: of the t epochs it holds whose rotation counts there or
-/// is its own, the newest.
-pub fn t_epoch(w: &World, j: &View, n: usize) -> Option<u32> {
-    j.tkeys.iter().copied().filter(|k| *k == 0 || j.valid.contains(k) || w.item(*k).author == n).max()
+/// The current t epochs at a node: those it holds whose rotation counts there that the history
+/// of no other such one carries.
+pub fn t_current(w: &World, j: &View) -> Vec<u32> {
+    let counting: Vec<u32> = j.tkeys.iter().copied().filter(|k| *k == 0 || j.valid.contains(k)).collect();
+    let carried = |k: u32| counting.iter().any(|q| *q != k && *q != 0 && matches!(&w.item(*q).kind, Kind::TRot { history } if history.contains(&k)));
+    counting.iter().copied().filter(|k| !carried(*k)).collect()
+}
+
+/// The t epoch a node encrypts under: the newest current one.
+pub fn t_epoch(w: &World, j: &View) -> Option<u32> {
+    t_current(w, j).into_iter().max()
 }
 
 /// Honest node `n` acts at `now` (the policy in the module doc). `removes`: the world's script
 /// has it remove that node, in a plain rotation of its own, then act as at the end of a pass.
 pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool) -> Vec<u32> {
-    act_in(w, n, now, removes, write, false)
-}
-
-/// `act`; `rekey_t`: it removed a node in this act, so t rotates at the new epoch.
-fn act_in(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool, rekey_t: bool) -> Vec<u32> {
     let mut made = vec![];
     let j = judge(w, n, now);
     if j.out(n) || !j.keys.holds(w, &j.preferred) {
@@ -764,9 +782,9 @@ fn act_in(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool
         let id = w.add(Kind::Plain { at: h.clone(), removes: removes.into_iter().collect(), adds: vec![], takes: takes.clone(), answers: answers.clone() }, n, n, h.clone(), None, now, boxed);
         made.push(id);
         head = w.line(id);
-        // then what it owes at the end of the pass, its removal taken, and t's re-key
+        // then what it owes at the end of the pass, its removal taken
         if rotated_for_removal {
-            made.extend(act_in(w, n, now, None, write, true));
+            made.extend(act(w, n, now, None, write));
             return made;
         }
     }
@@ -818,18 +836,26 @@ fn act_in(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool
             }
         }
     }
-    // after a removal, t rotates at the new epoch (boxed to P there and to R1)
-    if rekey_t {
-        let j4 = judge(w, n, now);
-        let prev = t_epoch(w, &j4, n);
+    // t rotates at the head (boxed to P there and to R1, its history carrying the t epochs it holds
+    // whose rotation counts there) while no t epoch is current, or a current one is boxed to P at
+    // an epoch that does not count here or lacks a taken revocation the head carries
+    let j4 = judge(w, n, now);
+    let current = t_current(w, &j4);
+    let prev = current.iter().copied().max();
+    let stale = |k: &u32| {
+        let at = if *k == 0 { Line::new() } else { w.item(*k).epoch.clone() };
+        !at.is_empty() && !j4.counting.contains(&at) || j4.taken.iter().any(|r| j4.carries(w, &head, *r) && !j4.carries(w, &at, *r))
+    };
+    if prev.is_none() || current.iter().any(stale) {
         let mut bx = [false; N];
         bx[R1] = true;
-        made.push(w.add(Kind::TRot, n, n, head.clone(), prev, now, bx));
+        let history = j4.tkeys.iter().copied().filter(|k| *k == 0 || j4.valid.contains(k)).collect();
+        made.push(w.add(Kind::TRot { history }, n, n, head.clone(), prev, now, bx));
     }
     if write {
         made.push(w.add(Kind::Content, n, n, head.clone(), None, now, [false; N]));
         let j5 = judge(w, n, now);
-        if let Some(te) = t_epoch(w, &j5, n) {
+        if let Some(te) = t_epoch(w, &j5) {
             made.push(w.add(Kind::Content, n, n, head.clone(), Some(te), now, [false; N]));
         }
     }
@@ -839,7 +865,7 @@ fn act_in(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool
     for on_t in [false, true] {
         let names: Vec<u32> = jl.held.iter().copied().filter(|i| {
             let it = w.item(*i);
-            it.author == n && it.epoch != head && it.on_t.is_some() == on_t && (matches!(it.kind, Kind::Content) || on_t && matches!(it.kind, Kind::TRot))
+            it.author == n && it.epoch != head && it.on_t.is_some() == on_t && (matches!(it.kind, Kind::Content) || on_t && matches!(it.kind, Kind::TRot { .. }))
         }).collect();
         if names.is_empty() {
             continue;
@@ -851,7 +877,7 @@ fn act_in(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool
         if done {
             continue;
         }
-        let te = if on_t { t_epoch(w, &jl, n) } else { None };
+        let te = if on_t { t_epoch(w, &jl) } else { None };
         if on_t && te.is_none() {
             continue;
         }
@@ -864,7 +890,7 @@ fn act_in(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool
 /// nothing reaches Z.
 fn reaches(w: &World, id: u32, m: usize) -> bool {
     let i = w.item(id);
-    m != Z && m != i.author && !(m == R2 && (i.on_t.is_some() || matches!(i.kind, Kind::TRot)))
+    m != Z && m != i.author && !(m == R2 && (i.on_t.is_some() || matches!(i.kind, Kind::TRot { .. })))
 }
 
 /// The choices a world is built from: random, or enumerated (`Odometer`).
@@ -1214,7 +1240,7 @@ pub fn settle(w: &mut World) -> u32 {
                 t += 1;
             }
         }
-        if round + 1 == ROUNDS && made.iter().any(|id| w.is_rot(*id)) {
+        if round + 1 == ROUNDS && made.iter().any(|id| w.is_rot(*id) || matches!(w.item(*id).kind, Kind::TRot { .. })) {
             w.restless = true;
         }
     }
@@ -1345,7 +1371,7 @@ pub fn check(w0: &World, st: &mut Stats) {
     }
     // per honest rotation: one roster source, seeds away from X, merge secrecy
     let x_secrets = secrets(w, fin(X));
-    for i in w.items.iter().filter(|i| [A, B, C].contains(&i.author) && (w.is_rot(i.id) || matches!(i.kind, Kind::TRot))) {
+    for i in w.items.iter().filter(|i| [A, B, C].contains(&i.author) && (w.is_rot(i.id) || matches!(i.kind, Kind::TRot { .. }))) {
         let j = &views[i.author][i.t as usize];
         let aware = j.taken.contains(&w.removal);
         if matches!(i.kind, Kind::Plain { .. }) {
@@ -1359,7 +1385,7 @@ pub fn check(w0: &World, st: &mut Stats) {
                 fails.push(format!("secrecy: node {}'s rotation {} boxes X or Z where X's removal is taken", NAMES[i.author], i.id));
             }
         }
-        let leaks = if matches!(i.kind, Kind::TRot) { x_secrets.1.contains(&i.id) } else { x_secrets.0.contains(&w.mints(i.id)) };
+        let leaks = if matches!(i.kind, Kind::TRot { .. }) { x_secrets.1.contains(&i.id) } else { x_secrets.0.contains(&w.mints(i.id)) };
         if leaks {
             if aware {
                 fails.push(format!("secrecy: X holds the secret of {} by node {}, made where X's removal is taken", i.id, NAMES[i.author]));
@@ -1494,7 +1520,7 @@ pub fn check(w0: &World, st: &mut Stats) {
         st.merges += 1;
     }
     // the listing-cycle shape: C's t rotation at its own epoch, closed at A once settled
-    if let Some(tc) = w.items.iter().find(|i| i.author == C && matches!(i.kind, Kind::TRot)) {
+    if let Some(tc) = w.items.iter().find(|i| i.author == C && matches!(i.kind, Kind::TRot { .. })) {
         let a = fin(A);
         if !a.heads.contains(&tc.epoch) && a.tkeys.contains(&tc.id) {
             st.cycle += 1;

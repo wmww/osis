@@ -448,7 +448,7 @@ impl Run {
             eprintln!("t{} probe {what} ({:.12}) at {}", self.tick, format!("{:?}", pk.id), cm::NAMES[to]);
             if let Some(v) = self.lp.peers[to].engine.core.account_view(&self.ids.p) {
                 let e = &self.lp.peers[to].engine;
-                let st: Vec<String> = self.w.items.iter().filter(|i| matches!(i.kind, MK::TRot | MK::Plain { .. } | MK::Cert { .. })).map(|i| {
+                let st: Vec<String> = self.w.items.iter().filter(|i| matches!(i.kind, MK::TRot { .. } | MK::Plain { .. } | MK::Cert { .. })).map(|i| {
                     let c = self.eid[i.id as usize - 1];
                     let s = e.core.ix.commits.get(&c).map(|m| format!("{:?}", e.core.standing(&c, &m.view)).chars().take(6).collect::<String>());
                     format!("#{}:{}:{:?}", i.id, v.rotation_counts(&c), s)
@@ -630,7 +630,7 @@ impl Run {
                         p.reseals.insert((e.clone(), d));
                     }
                 }
-                MK::TRot => p.trot = true,
+                MK::TRot { .. } => p.trot = true,
                 MK::Content => p.writes.push((i.epoch.clone(), i.on_t.is_some())),
                 MK::Listing { .. } => {}
             }
@@ -643,7 +643,7 @@ impl Run {
     /// The model's t epoch node n writes on t under, now.
     fn t_epoch(&mut self, n: usize) -> Option<u32> {
         let j = self.judge(n);
-        cm::t_epoch(&self.w, &j, n)
+        cm::t_epoch(&self.w, &j)
     }
 
     /// Honest node n acts: removes `removes` (a plain rotation), then what it owes at the end of a
@@ -714,7 +714,10 @@ impl Run {
                 bx[R1] = true;
                 let reach = self.reach_of(n, &c);
                 let pk = self.lp.peers[n].engine.package(&c).unwrap();
-                let id = self.add(MK::TRot, n, n, e, te, c, pk, bx, reach);
+                // its history: the t epochs the model holds counting at n
+                let j = self.judge(n);
+                let history = j.tkeys.iter().copied().filter(|k| *k == 0 || j.valid.contains(k)).collect();
+                let id = self.add(MK::TRot { history }, n, n, e, te, c, pk, bx, reach);
                 if let Some(x) = self.lp.peers[n].engine.core.ix.secrets.get(&self.ids.t).and_then(|x| x.read.newest_held().map(|y| y.0)) {
                     self.trot_epoch.insert(id, x);
                 }
@@ -1461,7 +1464,7 @@ impl Run {
                     self.compare();
                 }
             }
-            if round + 1 == cm::ROUNDS && made.iter().any(|id| self.w.is_rot(*id) || matches!(self.w.item(*id).kind, MK::TRot)) {
+            if round + 1 == cm::ROUNDS && made.iter().any(|id| self.w.is_rot(*id) || matches!(self.w.item(*id).kind, MK::TRot { .. })) {
                 self.fail(&format!("restless: an honest node still rotates in the last settle round ({made:?})"));
             }
         }
