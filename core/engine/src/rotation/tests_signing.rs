@@ -2163,6 +2163,46 @@ fn a_node_switching_sides_answers_the_line_it_rotated_on_spec_permissions_5_5() 
     assert!(h.supersedes.contains(&rx.commits[0]) && h.supersedes.contains(&rb), "both answered: {:?}", h.supersedes);
 }
 
+// spec/permissions.md §5.5 (Cutoff; Listings): a node names its own word only where it names
+// each commit the word names. Node 2 removes node 0 and node 0 removes node 2; node 1 takes node
+// 2's removal first, then holds node 0's, then a write node 2 signs at its removal's epoch, then
+// node 2's rotation on its line (its lists withheld). Node 1 answers that rotation with a listing
+// naming the write by the cutoff of the side it follows. Its user then switches to node 0's
+// removal, which it held before the write: neither its new listings nor its rotation name its
+// old listing, and the write counts at neither honest node
+#[test]
+fn a_switched_nodes_old_listing_carries_nothing_its_cutoff_no_longer_names_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(3, 3);
+    let (h, b, x) = (0, 1, 2);
+    let rx = remove(&mut lp, x, a.devices, h);
+    let ra = remove(&mut lp, h, a.devices, x);
+    send(&mut lp, x, b, &rx.commits);
+    send(&mut lp, h, b, &ra.commits);
+    assert!(lp.peers[b].engine.core.account_view(&a.account).unwrap().rotation_counts(&rx.commits[0]), "node 1 follows node 2's removal");
+    let w = write(&mut lp, x, t, "thief");
+    send(&mut lp, x, b, &[w]);
+    let x2 = rotate(&mut lp, x, &a);
+    lp.advance(1);
+    let mut pk = lp.peers[x].engine.package(&x2).unwrap().unwrap();
+    pk.lists.clear();
+    lp.deliver(b, &pk).unwrap();
+    lp.peers[b].engine.signing_due().unwrap();
+    let listed = lp.peers[b].engine.read(|tx| crate::flows::lists::names_of(tx, &w)).unwrap();
+    assert!(!listed.is_empty(), "node 1's listing on node 2's side names the write");
+    lp.peers[b].engine.choose_line(a.account, ra.commits[0]).unwrap();
+    for _ in 0..3 {
+        lp.peers[b].engine.signing_due().unwrap();
+    }
+    let all = lp.peers[b].engine.commit_ids();
+    send(&mut lp, b, h, &all);
+    for k in [h, b] {
+        let e = &lp.peers[k].engine;
+        let m = e.core.ix.commits.get(&w).cloned().unwrap();
+        assert_ne!(e.core.standing(&w, &m.view), osis_perm::EpochStanding::Counts, "peer {k}: node 2's write after node 0's removal");
+        assert_ne!(read(&mut lp, k, t), Some(Value::Str("thief".into())), "peer {k}: read");
+    }
+}
+
 // spec/permissions.md §5.4, §5.5 (Honest nodes of P): a merge stands iff some certificate of it
 // was made by a node of its line, and a node makes the merge of its heads unless it holds a
 // certificate of it that stands. Nodes 0 and 2 rotate apart; node 2 certifies their merge, its inner signature sealed

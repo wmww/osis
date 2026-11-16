@@ -310,17 +310,12 @@ pub(crate) fn answer_rotations(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// The commits of account `p` at `epochs` the cutoff lets this node name (spec/permissions.md
-/// §5.5, Cutoff) that no word held names: received before the earliest closer of their epoch held
-/// that ends it (`ends`; at an epoch with none, every one received), or (`own`, a node of `p`)
-/// made by this node, per its inner signature. Rotations count by the chain; ephemeral commits
-/// are named as durable ones.
+/// §5.5, Cutoff) that no word held names (`Cutoff::names`). Rotations count by the chain;
+/// ephemeral commits are named as durable ones.
 fn nameable(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, epochs: &[CommitId], own: bool) -> Result<Vec<(CommitId, crate::engine::Meta)>> {
-    let me = tx.core.id.tid();
-    let departures = own.then(|| departures(v));
+    let mut cut = Cutoff { me: tx.core.id.tid(), departures: own.then(|| departures(v)), earliest: BTreeMap::new(), judged: BTreeMap::new() };
     let mut out = Vec::new();
     for e in epochs {
-        let closers: BTreeSet<CommitId> = v.closers(e).into_iter().filter(|c| ends(v, departures.as_ref(), e, c)).collect();
-        let earliest = closers.iter().filter_map(|c| v.held_at(c)).min();
         let open = v.is_open(e);
         let at: Vec<CommitId> = tx.core.ix.by_epoch.get(&(*p, *e)).into_iter().flatten().copied().collect();
         for c in at {
@@ -331,14 +326,69 @@ fn nameable(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, epochs: &
             if v.is_rotation(&c) || !open && named_by_a_word(tx, v, &c, &m.view)? {
                 continue;
             }
-            let cut = closers.is_empty() || earliest.is_some_and(|x| m.received < x);
-            if !cut && !(own && tx.get_commit(&c)?.as_ref().and_then(|b| tx.core.inner_node(b)) == Some(me)) {
-                continue;
+            if cut.names(tx, v, &c, &m)? {
+                out.push((c, m));
             }
-            out.push((c, m));
         }
     }
     Ok(out)
+}
+
+/// The cutoff as this node applies it (spec/permissions.md §5.5, Cutoff): it names a commit it
+/// received before the earliest closer of its epoch held that ends it (`ends`; at an epoch with
+/// none, every one), or (`departures` set: a node of the account) one it made itself, per its
+/// inner signature, a word only where it names each commit that word names. So a node's own word
+/// carries nothing its cutoff names no longer (one written while it followed another side).
+struct Cutoff {
+    me: Tid,
+    departures: Option<Departures>,
+    /// Per epoch, the receipt of its earliest closer that ends it (`None`: none ends it).
+    earliest: BTreeMap<CommitId, Option<Option<osis_base::WallMs>>>,
+    /// Per commit judged, whether it is named.
+    judged: BTreeMap<CommitId, bool>,
+}
+
+impl Cutoff {
+    fn names(&mut self, tx: &mut Tx<'_>, v: &super::account::AccountView, c: &CommitId, m: &crate::engine::Meta) -> Result<bool> {
+        if let Some(n) = self.judged.get(c) {
+            return Ok(*n);
+        }
+        // a word names no rotation and no word naming itself: judged unnamed while it is judged
+        self.judged.insert(*c, false);
+        let n = self.judge(tx, v, c, m)?;
+        self.judged.insert(*c, n);
+        Ok(n)
+    }
+
+    fn judge(&mut self, tx: &mut Tx<'_>, v: &super::account::AccountView, c: &CommitId, m: &crate::engine::Meta) -> Result<bool> {
+        let Some(e) = m.view.epoch else { return Ok(false) };
+        if v.is_rotation(c) {
+            return Ok(false);
+        }
+        let bound = match self.earliest.get(&e) {
+            Some(x) => *x,
+            None => {
+                let ending: Vec<CommitId> = v.closers(&e).into_iter().filter(|r| ends(v, self.departures.as_ref(), &e, r)).collect();
+                let x = (!ending.is_empty()).then(|| ending.iter().filter_map(|r| v.held_at(r)).min());
+                self.earliest.insert(e, x);
+                x
+            }
+        };
+        if bound.is_none_or(|x| x.is_some_and(|x| m.received < x)) {
+            return Ok(true);
+        }
+        if self.departures.is_none() || tx.get_commit(c)?.as_ref().and_then(|b| tx.core.inner_node(b)) != Some(self.me) {
+            return Ok(false);
+        }
+        for (k, _) in super::lists::named_by(tx, c)? {
+            // what it no longer holds it cannot vouch for now
+            let Some(km) = tx.core.ix.commits.get(&k).cloned() else { return Ok(false) };
+            if !self.names(tx, v, &k, &km)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
 }
 
 /// Whether a counting word held here names account commit `c` (`view`, its view): a counting
@@ -390,7 +440,7 @@ fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
 }
 
 /// A node of account `p` answers its rotation `r` with a listing: per thing, the commits of `p`
-/// at the epochs `r` closes that no word held names, this node's own (by inner signature) and
+/// at the epochs `r` closes that no word held names, this node's own (by inner signature, `Cutoff`) and
 /// others' by the cutoff (spec/permissions.md §5.5, Listings), one commit per thing: a commit
 /// goes whole under the sync IDs of every thing it touches, so one over every thing would ship
 /// each thing's listing wherever any other thing goes. A listing needs no role on a thing; one
