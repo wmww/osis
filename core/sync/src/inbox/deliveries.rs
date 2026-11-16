@@ -231,9 +231,11 @@ impl Deliveries {
         Ok(())
     }
 
-    /// S joined a connection's shared set: a delivery naming S whose recipient is proven there
-    /// is judged again on the credential that opened it (`judge`, spec/sync-inbox.md §2 Re-send).
-    pub(super) fn opened(&mut self, conn: ConnId, s: &SyncId, net: &impl Net) {
+    /// S joined a connection's shared set: a delivery naming S whose recipient is proven there,
+    /// counted as of this open (`opens::counted`: a removed node's proof of its account counts
+    /// no more), is judged again on the credential that opened it (`judge`, spec/sync-inbox.md §2
+    /// Re-send).
+    pub(super) fn opened(&mut self, engine: &mut Engine, conn: ConnId, s: &SyncId, net: &impl Net) {
         let Some(ks) = self.by_name.get(s) else { return };
         let by = match net.member(conn, s).map(|m| m.by) {
             Some(Credential::ReadSecret(_)) => By::ReadSecret,
@@ -241,7 +243,7 @@ impl Deliveries {
             // J and static entries show nothing the delivery gave
             _ => return,
         };
-        let actors = net.named(conn).actors();
+        let actors = crate::opens::counted(engine, &net.named(conn));
         for k in ks.clone() {
             if !actors.contains(&k.1) {
                 continue;

@@ -176,7 +176,7 @@ RULES = [
     ("spec/sync-judgement.md", "3", "between readers", "no Delete, Register or Deposit item is sent between readers"),
     ("spec/sync-inbox.md", "3", "deposit budget", "one per sync ID, shared by its durable and ephemeral deposits"),
     ("spec/sync-inbox.md", "3", "deposit from anyone", "whatever the connection proved and whoever offers it"),
-    ("spec/sync-set.md", "1", "home under synced group", "a node MUST NOT write a commit after which some node's synced group closure"),
+    ("spec/sync-set.md", "1", "home under synced group", "a node MUST NOT write a commit after which the synced group of some node of its account"),
     ("spec/sync-transport.md", "1", "node key check", "a client MUST check the node's key"),
     ("spec/sync-transport.md", "2", "no 0-rtt", "0-RTT MUST NOT be used"),
     ("spec/sync-transport.md", "2", "mutual auth", "Both sides MUST authenticate"),

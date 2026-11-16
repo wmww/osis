@@ -30,7 +30,6 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - `Live::fresh` (the held blobs it hands `Engine::seal_body`) has no World test: a mutation passing none fails no osis-sync test; the engine's `rotation::tests_reseal::facade_*` cover the contract. Cheapest found: a purge of one thing's part of a commit spanning two things, the other thing's section then logged again verbatim.
 
 ## inbox
-- Inbox offers and deliveries read a connection's actors as named at its proof, not as counted now (`opens::counted`): a peer whose proofs stop counting (spec/sync-opens.md §3) still gets offers and deliveries meant for those actors while connected.
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
 - A decline stamping in place.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
@@ -44,7 +43,6 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 
 ## facade
 - Nothing calls `history_complete` (spec/sync-status.md §3) from the API.
-- Home stays under it (spec/sync-set.md §1): nothing refuses a write cutting a synced group from D or D from it; a node so cut follows no change of its synced group until paired again (`Engine::pair` then writes it a new one).
 - `SETTLE_MS` (spec/wire.md §2, a MAY wait: spec/permissions.md §3, §4): nothing waits it. Every holder copies another node's demotion or `keys.0` at once (a duplicate copy each, 3.3 KB per holder per removal, notes/permissions.md Certificates), and every admin gives a plain thing with holders secrets of its own at its pass end (`own_secrets_candidates`), concurrent ones forking.
 - A blob's prefix commitment groups are checked against the commit's delete keys only when its header's linked lists resolve here (`Engine::open_commit`; spec/sync-ids.md §1, spec/crypto.md §7); its expiry is checked always. Until the lists resolve, a reader keeps and serves a blob framed under commitments of its framer's choosing: the thing's delete-key holders cannot delete it (their signatures match no commitment) while its framer can, until its expiry (an open after the lists resolve refuses it, but nothing opens it again for that alone). Fix: hold such a blob unopened (not served) until its lists resolve, then check.
 - A stale copy (spec/permissions.md §3: `open_entry` takes none of it, `Opened::NotOpen`) keeps its bytes in the store as an entry that did not open, and is opened again only when S's read secrets move, not when this node gets secrets of the part's actor (the engine names such waits in `Wakes`, `Engine::take_wakes`, which only its test peer takes, nothing in osis-sync).

@@ -172,11 +172,23 @@ fn pairing_reply_carries_the_new_nodes_synced_group_spec_sync_set_1() {
     let (_, again) = lp.peers[0].engine.pair(&n).unwrap();
     send(&mut lp, 0, 1, &again);
     assert_eq!(synced_of(&mut lp, 1, 1, d), Some(g1), "under home: kept");
-    // the group cut from D (as two concurrent writes may leave it)
+    // D cut from the group by two concurrent writes, each cutting one of its two paths (a write
+    // cutting the last is refused, spec/sync-set.md §1 Home stays under it)
+    let sub = |g: Tid, op: osis_crdt::Op| {
+        let mut m = Mutation::new();
+        m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op }).unwrap();
+        m
+    };
     let mut m = Mutation::new();
-    m.set(g1, &ct::GROUP, &ct::Group::default()).unwrap();
+    let h = lp.peers[1].engine.new_thing(&mut m, d);
+    m.set(h, &ct::GROUP, &ct::Group { subgroups: [d].into(), ..Default::default() }).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].commit(sub(g1, osis_crdt::Op::Add(osis_base::Value::Tid(h)))).unwrap().unwrap();
     spread(&mut lp);
+    lp.peers[0].commit(sub(g1, osis_crdt::Op::Remove(osis_base::Value::Tid(d)))).unwrap().unwrap();
+    lp.peers[1].commit(sub(g1, osis_crdt::Op::Remove(osis_base::Value::Tid(h)))).unwrap().unwrap();
+    spread(&mut lp);
+    assert!(!lp.peers[1].engine.closure(&g1).contains(&d), "cut");
     let (_, again) = lp.peers[0].engine.pair(&n).unwrap();
     send(&mut lp, 0, 1, &again);
     let g2 = synced_of(&mut lp, 1, 1, d).unwrap();

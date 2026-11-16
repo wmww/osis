@@ -40,6 +40,42 @@ fn account_has_a_synced_group_and_reads_home_spec_sync_set_1() {
     assert_eq!(e.sync_owner(&home).unwrap(), Some(d));
 }
 
+/// A commit editing `field` (0 items, 1 subgroups) of group `g`'s `group.0`.
+fn group_op(g: Tid, field: u64, op: osis_crdt::Op) -> Mutation {
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(field)], op }).unwrap();
+    m
+}
+
+// spec/sync-set.md §1 (Home stays under it): a write after which this node's synced group G no
+// longer holds D is refused locally (nothing written); one cutting a path while another keeps it
+// is taken. G stays under D whatever D lists: D is its key home (spec/sync-set.md §2 Closure).
+#[test]
+fn a_write_cutting_home_from_a_synced_group_is_refused_spec_sync_set_1() {
+    use osis_base::Value;
+    use osis_crdt::Op;
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let (_, d) = e.account().unwrap().unwrap();
+    let g = *e.get_typed(&d, &ct::SYNCED).unwrap().unwrap().get(&e.tid()).unwrap();
+    let held = e.commit_ids().len();
+    let refused = |r: osis_engine::Result<Option<osis_base::CommitId>>| matches!(r, Err(osis_engine::Error::Misuse(m)) if m.contains("synced group"));
+    assert!(refused(e.commit(group_op(g, 1, Op::Remove(Value::Tid(d))))), "D cut from G's subgroups");
+    assert_eq!(e.commit_ids().len(), held, "nothing written");
+    e.commit(group_op(d, 0, Op::Remove(Value::Tid(g)))).unwrap().unwrap();
+    assert!(e.closure(&d).contains(&g), "G under D as its key home");
+    // D also under G through a subgroup H: cutting the direct listing keeps it
+    let mut m = Mutation::new();
+    let h = e.new_thing(&mut m, d);
+    m.set(h, &ct::GROUP, &ct::Group { subgroups: [d].into(), ..Default::default() }).unwrap();
+    m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(1)], op: Op::Add(Value::Tid(h)) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    e.commit(group_op(g, 1, Op::Remove(Value::Tid(d)))).unwrap().unwrap();
+    assert!(e.closure(&g).contains(&d), "D still under G, through H");
+    assert!(refused(e.commit(group_op(h, 1, Op::Remove(Value::Tid(d))))), "then H's listing is the one path left");
+    assert!(refused(e.commit(group_op(g, 1, Op::Remove(Value::Tid(h))))), "and H's place in G");
+}
+
 // spec/sync-ids.md §3 (claim key: a listed reader derives it from its own key and the step key),
 // §4 (owner), spec/sync-opens.md §4 (admissible: read secrets at a current epoch, the head's sync
 // proof).

@@ -705,3 +705,29 @@ fn a_group_moving_home_with_its_source_gone_catches_up_spec_sync_set_5() {
     w.flush();
     assert!(w.engine(2).caught_up(&t).unwrap(), "`PASS_WAIT_MS` passed");
 }
+
+// spec/sync-inbox.md §3 (Sending: an inbox blob goes to a peer where the recipient is a proven
+// actor), spec/sync-opens.md §3 (What the peer is trusted as): node 2
+// removes its sibling node 1 from account 1 while node 1 stays connected to node 0, apart from
+// node 2; node 0 is handed the removal (node 1's proof of account 1 counts no more there) and then
+// grants account 1 a thing. Its inbox blob, deposited, is never offered to node 1 (which could not
+// take it, holding no current deposit key, but learns that node 0 sends to account 1).
+#[test]
+fn a_removed_node_still_connected_is_offered_no_delivery_to_its_account_spec_sync_inbox_3() {
+    let mut w = stranger_siblings();
+    w.partition(0, 2);
+    w.partition(1, 2);
+    w.flush();
+    remove_sibling(&mut w, 2, 1);
+    assert!(crate::harness::history::hand(&mut w, 2, 0), "node 0 is handed the removal");
+    w.flush();
+    osis_base::costs::take();
+    granted(&mut w, Role::Read);
+    let offered = osis_base::costs::take().into_iter().find(|(k, ..)| *k == "inbox: deposit item sent").map_or(0, |(_, _, n)| n);
+    let a1 = w.node(1).account.unwrap();
+    let inbox = w.engine(0).inbox_of(&a1).expect("account 1's inbox");
+    let sent: Vec<osis_base::BlobId> = w.store(0).entries(&inbox).unwrap().into_iter().filter(|e| e.own && e.deposited).map(|e| e.blob).collect();
+    assert!(!sent.is_empty(), "node 0 deposited the grant's inbox blob");
+    // node 2 is apart from it: any Deposit item went to node 1
+    assert_eq!(offered, 0, "the removed node was offered the delivery");
+}

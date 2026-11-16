@@ -14,9 +14,15 @@
 //! deposit key moved), else not until the receiver's next filter arrives. An offer whose entry
 //! was stamped, dropped or sealed again is removed (moot).
 //!
+//! Who the peer is (the recipient proven there) is judged now, never as its proofs once counted
+//! (`opens::counted`, spec/sync-opens.md §3): each connection's counted actors are one `Effects`
+//! key, so a removal, a revoked account key or a node leaving the account stops the offers that
+//! rested on it at once, and an actor counted again readies its offers there.
+//!
 //! Work follows change: each connection keeps the offers ready for it; an offer added is placed
 //! at the connections it may go to (O(connections)), a connection proved gets the offers it may
-//! take (O(offers)), a member joining gets the offers of its S (a range), a peer's filter arriving
+//! take (O(offers)), a connection's counted actors moving readies the offers to those it gained
+//! (O(their offers)), a member joining gets the offers of its S (a range), a peer's filter arriving
 //! gets the inbox offers (O(offers), tested against it); a settle sends only on connections with
 //! something ready, a back-off due or a refusal waiting for a filter, and reads each connection's
 //! filter count (O(connections)).
@@ -29,6 +35,7 @@ use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_base::memo::Effects;
 use osis_crypto::{Signature, SigningSecret, VerifyingKey};
 use osis_proto::{Code, DepositItem, Msg, OfferItem};
+use osis_store::Named;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The first back-off after a refusal for now (local policy; minor consequence: how soon a
@@ -41,8 +48,22 @@ pub const BACKOFF_MAX_MS: u64 = 10 * 60 * 1000;
 
 type Key = (SyncId, BlobId);
 
-/// The deposit key S's offers are signed with, for a recipient's inbox from its deposit seed.
-pub type DepositKeys<'a> = dyn FnMut(&SyncId, Option<Tid>) -> Result<Option<SigningSecret>> + 'a;
+/// What offers read of the engine: the engine in a node, a test's values in tests.
+pub trait Judge {
+    /// The deposit key S's offers are signed with, for a recipient's inbox from its deposit seed.
+    fn deposit_key(&mut self, s: &SyncId, recipient: Option<Tid>) -> Result<Option<SigningSecret>>;
+    /// The actors a connection naming `named` counts as now (`opens::counted`).
+    fn counted(&mut self, named: &Named) -> Vec<Tid>;
+}
+
+impl Judge for osis_engine::Engine {
+    fn deposit_key(&mut self, s: &SyncId, recipient: Option<Tid>) -> Result<Option<SigningSecret>> {
+        Ok(self.signers(s, recipient.as_ref())?.deposit)
+    }
+    fn counted(&mut self, named: &Named) -> Vec<Tid> {
+        crate::opens::counted(self, named)
+    }
+}
 
 /// Who may take an offer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +77,7 @@ pub enum Target {
 
 #[derive(Clone, Debug, Default)]
 struct Conn {
+    /// The actors the peer counts as, as last judged (`who`).
     actors: Vec<Tid>,
     /// The peer's filter arrivals seen: one more readies the inbox offers again.
     filter: u64,
@@ -70,6 +92,10 @@ struct Conn {
 #[derive(Clone)]
 pub struct Offers {
     items: BTreeMap<Key, Target>,
+    /// The offers to each recipient, for an actor counted anew at a connection.
+    to: BTreeMap<Tid, BTreeSet<Key>>,
+    /// Each connection's counted actors (`Judge::counted` of what its proofs named).
+    who: Effects<ConnId, Vec<Tid>>,
     /// The deposit key of each offer refused (14) somewhere: one moving sends it again there.
     keys: Effects<Key, Option<VerifyingKey>>,
     conns: BTreeMap<ConnId, Conn>,
@@ -83,7 +109,7 @@ pub struct Offers {
 
 impl Default for Offers {
     fn default() -> Self {
-        Offers { items: BTreeMap::new(), keys: Effects::new("inbox: deposit keys"), conns: BTreeMap::new(), active: BTreeSet::new(), wakes: BTreeSet::new(), parked: BTreeSet::new() }
+        Offers { items: BTreeMap::new(), to: BTreeMap::new(), who: Effects::new("inbox: offer peers"), keys: Effects::new("inbox: deposit keys"), conns: BTreeMap::new(), active: BTreeSet::new(), wakes: BTreeSet::new(), parked: BTreeSet::new() }
     }
 }
 
@@ -110,6 +136,9 @@ impl Offers {
             _ => {}
         }
         self.items.insert(k, target);
+        if let Target::Recipient(r) = target {
+            self.to.entry(r).or_default().insert(k);
+        }
         osis_base::costs::count("inbox: offer placed", self.conns.len() as u64);
         // eligibility needs `Net`: placed at the next settle on every connection
         for (c, conn) in &mut self.conns {
@@ -120,7 +149,7 @@ impl Offers {
 
     pub fn remove(&mut self, s: &SyncId, b: &BlobId) {
         let k = (*s, *b);
-        if self.items.remove(&k).is_none() {
+        if !drop_item(&mut self.items, &mut self.to, &k) {
             return;
         }
         for conn in self.conns.values_mut() {
@@ -132,9 +161,11 @@ impl Offers {
         self.keys.unwant(&k);
     }
 
-    /// A connection's proofs are done.
+    /// A connection's proofs are done: who it counts as is judged at the next settle, before
+    /// anything is sent on it.
     pub fn connected(&mut self, conn: ConnId, net: &impl Net) {
-        let c = Conn { actors: net.named(conn).actors(), filter: net.filter_generation(conn), ready: self.items.keys().copied().collect(), ..Conn::default() };
+        self.who.want(conn);
+        let c = Conn { filter: net.filter_generation(conn), ready: self.items.keys().copied().collect(), ..Conn::default() };
         osis_base::costs::count("inbox: offer placed", self.items.len() as u64);
         if !c.ready.is_empty() {
             self.active.insert(conn);
@@ -159,23 +190,44 @@ impl Offers {
     }
 
     pub fn closed(&mut self, conn: ConnId) {
+        self.who.unwant(&conn);
         self.conns.remove(&conn);
         self.active.remove(&conn);
         self.parked.remove(&conn);
         self.wakes.retain(|(_, c, _)| *c != conn);
     }
 
-    /// Sends one Deposit item on each connection with one ready and none out.
-    /// `keys` gives the deposit key S's offers are signed with (for a recipient's inbox, from its
-    /// deposit seed): the engine's `signers` in a node.
-    pub fn settle(&mut self, now: WallMs, store: &Store, net: &mut impl Net, keys: &mut DepositKeys) -> Result<bool> {
+    /// Sends one Deposit item on each connection with one ready and none out, after judging again
+    /// who each connection whose counted actors may have moved counts as.
+    pub fn settle(&mut self, now: WallMs, store: &Store, net: &mut impl Net, judge: &mut dyn Judge) -> Result<bool> {
         let mut acted = false;
+        for conn in self.who.due() {
+            let Some(c) = self.conns.get_mut(&conn) else {
+                self.who.unwant(&conn);
+                continue;
+            };
+            let named = net.named(conn);
+            let Some((_, actors)) = self.who.settle(&conn, || judge.counted(&named)) else { continue };
+            // an actor counted anew: its offers may go there now; one no longer counted is
+            // judged out as each of its offers comes up (`may_take`)
+            for a in actors.iter().filter(|a| !c.actors.contains(a)) {
+                let ks = self.to.get(a).into_iter().flatten();
+                // a back-off already over is no wait: its wake found the actor uncounted
+                let fresh: Vec<Key> = ks.filter(|k| c.backoff.get(*k).is_none_or(|(at, _)| *at <= now) && !c.parked.contains_key(*k) && c.out.is_none_or(|(_, o, _)| o != **k)).copied().collect();
+                osis_base::costs::count("inbox: offer placed", fresh.len() as u64);
+                c.ready.extend(fresh);
+            }
+            c.actors = actors;
+            if !c.ready.is_empty() {
+                self.active.insert(conn);
+            }
+        }
         for k in self.keys.due() {
             let Some(target) = self.items.get(&k).copied() else {
                 self.keys.unwant(&k);
                 continue;
             };
-            let Some((Some(_), _)) = self.keys.try_settle(&k, || Ok::<_, crate::types::Error>(keys(&k.0, target.actor())?.map(|d| d.verifying_key())))? else { continue };
+            let Some((Some(_), _)) = self.keys.try_settle(&k, || Ok::<_, crate::types::Error>(judge.deposit_key(&k.0, target.actor())?.map(|d| d.verifying_key())))? else { continue };
             // the deposit key moved: signed again, it goes again wherever it was refused
             for (c, conn) in &mut self.conns {
                 if conn.parked.remove(&k).is_some() {
@@ -222,7 +274,7 @@ impl Offers {
                     Some(g) => g != generation,
                     // just refused: again at once only if signing again changes the signature
                     None => match self.items.get(&k) {
-                        Some(target) => item(store, keys, &k, target)?.is_some_and(|i| i.sig != sig),
+                        Some(target) => item(store, judge, &k, target)?.is_some_and(|i| i.sig != sig),
                         None => true,
                     },
                 };
@@ -248,19 +300,20 @@ impl Offers {
             while let Some(k) = c.ready.pop_first() {
                 let Some(target) = self.items.get(&k) else { continue };
                 osis_base::costs::count("inbox: offer judged", 1);
-                let Some(key) = keys(&k.0, target.actor())? else {
-                    self.items.remove(&k);
+                let Some(key) = judge.deposit_key(&k.0, target.actor())? else {
+                    drop_item(&mut self.items, &mut self.to, &k);
                     continue;
                 };
                 if !may_take(net, conn, &c.actors, &k.0, *target, &key.verifying_key().to_bytes()) {
                     continue;
                 }
-                let Some(item) = item(store, keys, &k, target)? else {
-                    self.items.remove(&k);
+                let Some(item) = item(store, judge, &k, target)? else {
+                    drop_item(&mut self.items, &mut self.to, &k);
                     continue;
                 };
                 let sig = item.sig;
                 let Some(id) = net.request(conn, Msg::Offer { id: 0, items: vec![OfferItem::Deposit(item)] }) else { break };
+                osis_base::costs::count("inbox: deposit item sent", 1);
                 c.out = Some((id, k, sig));
                 acted = true;
                 break;
@@ -330,6 +383,20 @@ impl Target {
     }
 }
 
+/// Drops offer `k` and its index entry; whether it was held.
+fn drop_item(items: &mut BTreeMap<Key, Target>, to: &mut BTreeMap<Tid, BTreeSet<Key>>, k: &Key) -> bool {
+    let Some(target) = items.remove(k) else { return false };
+    if let Target::Recipient(r) = target
+        && let Some(ks) = to.get_mut(&r)
+    {
+        ks.remove(k);
+        if ks.is_empty() {
+            to.remove(&r);
+        }
+    }
+    true
+}
+
 /// Whether the peer on `conn` may take a deposit of S signed by `key` (spec/sync-inbox.md §3
 /// Sending).
 fn may_take(net: &impl Net, conn: ConnId, actors: &[Tid], s: &SyncId, target: Target, key: &[u8; 32]) -> bool {
@@ -342,14 +409,14 @@ fn may_take(net: &impl Net, conn: ConnId, actors: &[Tid], s: &SyncId, target: Ta
 
 /// The Deposit item of offer `k`, signed with the deposit key now; `None`: moot (its entry is
 /// no longer an own deposit, or no deposit key is held).
-fn item(store: &Store, keys: &mut DepositKeys, k: &Key, target: &Target) -> Result<Option<DepositItem>> {
+fn item(store: &Store, judge: &mut dyn Judge, k: &Key, target: &Target) -> Result<Option<DepositItem>> {
     let (s, b) = k;
     let Some(e) = store.entry(s, b)? else { return Ok(None) };
     if !e.deposited || !e.own {
         return Ok(None);
     }
     let Some(blob) = store.bytes(b)? else { return Ok(None) };
-    let Some(key) = keys(s, target.actor())? else { return Ok(None) };
+    let Some(key) = judge.deposit_key(s, target.actor())? else { return Ok(None) };
     let sig = osis_blob::sign_deposit(&key, s, b, &e.wrap, e.role);
     Ok(Some(DepositItem { sync_id: *s, blob, wrap: e.wrap, sig }))
 }

@@ -13,7 +13,7 @@ use osis_blob::{ClaimSet, Class, Parent, Prefix, Step, StepId, StepKeys};
 use osis_proto::{Code, Msg, OfferItem, SharedItem};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Result;
-use osis_sync::inbox::{Act, Facts, Net, Offers, Plan, Progress, Judged, Promotion, Target, act_of, adds_delta, goes_last, plan, to_clear};
+use osis_sync::inbox::{Act, Facts, Judge, Net, Offers, Plan, Progress, Judged, Promotion, Target, act_of, adds_delta, goes_last, plan, to_clear};
 use osis_sync::opens::{Member, Moved};
 use osis_sync::session::RequestId;
 use osis_sync::store::Source;
@@ -110,26 +110,41 @@ impl Net for FakeNet {
 }
 
 /// Deposit items out over a real store: each S's deposit key from `keys` (its seed number, a
-/// stamped value as the engine's reads are).
+/// stamped value as the engine's reads are); the actors no longer counted (`opens::counted`)
+/// in `uncounted`, stamped likewise.
 struct T {
     net: FakeNet,
     store: Store,
     offers: Offers,
     keys: Stamped<SyncId, u8>,
+    uncounted: StampedSet<Tid>,
     now: u64,
+}
+
+struct FakeJudge<'a> {
+    keys: &'a Stamped<SyncId, u8>,
+    uncounted: &'a StampedSet<Tid>,
+}
+
+impl Judge for FakeJudge<'_> {
+    fn deposit_key(&mut self, s: &SyncId, _: Option<Tid>) -> Result<Option<SigningSecret>> {
+        Ok(self.keys.get(s).map(|n| deposit_key(&deposit_seed(*n), s)))
+    }
+    fn counted(&mut self, named: &osis_store::Named) -> Vec<Tid> {
+        named.key_actors.iter().filter(|a| !self.uncounted.contains(a)).copied().collect()
+    }
 }
 
 impl T {
     fn new() -> T {
         let store = Store::open(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), Box::new(SeededRng::from_u64(7))).unwrap();
-        T { net: FakeNet::default(), store, offers: Offers::default(), keys: Stamped::default(), now: T0 }
+        T { net: FakeNet::default(), store, offers: Offers::default(), keys: Stamped::default(), uncounted: StampedSet::default(), now: T0 }
     }
 
     fn settle(&mut self) {
-        let keys = &self.keys;
-        let mut f = |s: &SyncId, _: Option<Tid>| -> Result<Option<SigningSecret>> { Ok(keys.get(s).map(|n| deposit_key(&deposit_seed(*n), s))) };
+        let mut judge = FakeJudge { keys: &self.keys, uncounted: &self.uncounted };
         for _ in 0..100 {
-            if !self.offers.settle(WallMs(self.now), &self.store, &mut self.net, &mut f).unwrap() {
+            if !self.offers.settle(WallMs(self.now), &self.store, &mut self.net, &mut judge).unwrap() {
                 return;
             }
         }
@@ -211,6 +226,31 @@ fn inbox_blob_offered_to_recipient_spec_sync_inbox_3() {
     let [OfferItem::Deposit(d)] = items.as_slice() else { panic!() };
     let head = deposit_key(&deposit_seed(s.0[0]), &s).verifying_key();
     assert!(osis_blob::verify_deposit(&head, &d.sync_id, &b, &d.wrap, &d.sig).is_ok());
+}
+
+// spec/sync-inbox.md §3 (sending), spec/sync-opens.md §3 (What the peer is trusted as): the
+// recipient proven on a connection counts only while its proof counts now: once it stops (its
+// account removed the proving node, its key's epoch closed), nothing more is offered there for
+// it, also what was ready or backed off; counted again, its offers go there again.
+#[test]
+fn inbox_blob_offered_only_while_the_recipient_counts_spec_sync_inbox_3() {
+    let mut t = T::new();
+    t.connect(conn(2), &[tid(0)]);
+    let s = sync_id(100);
+    let first = t.deposit(s, 1, Target::Recipient(tid(0)));
+    let (c, id, ..) = t.deposits_sent()[0];
+    t.reply(c, id, T::shared(Code::RATE_LIMITED));
+    t.uncounted.insert(tid(0));
+    t.deposit(s, 2, Target::Recipient(tid(0)));
+    t.advance(osis_sync::inbox::backoff_ms(0));
+    assert_eq!(t.deposits_sent().len(), 1, "no offer for a recipient no longer counted there: {:?}", t.deposits_sent());
+    t.uncounted.remove(&tid(0));
+    t.settle();
+    let sent = t.deposits_sent();
+    assert_eq!(sent.len(), 2, "counted again: offered again");
+    t.reply(c, sent[1].1, T::shared(Code::OK));
+    let blobs: BTreeSet<BlobId> = t.deposits_sent().iter().map(|x| x.3).collect();
+    assert!(blobs.len() == 2 && blobs.contains(&first), "both offers went: {blobs:?}");
 }
 
 // spec/sync-inbox.md §3 (sending): an inbox blob also goes to a peer whose filter shows the

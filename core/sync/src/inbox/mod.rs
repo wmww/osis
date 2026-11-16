@@ -26,8 +26,8 @@
 //! It reads the engine through its facade (`osis_engine::sync`) and the store directly; `Net`
 //! is how it reads and sends through sessions, opens and streams (`Links` is the product's).
 //! Each rule's decision is a function of plain values (`held::act_of`, `held::adds_delta`,
-//! `held::to_clear`, `register::plan`) that tests drive directly; `Offers` takes its deposit
-//! keys as a function, so it runs over a test's `Net` and store as in a node.
+//! `held::to_clear`, `register::plan`) that tests drive directly; `Offers` reads the
+//! engine through `offers::Judge`, so it runs over a test's `Net`, `Judge` and store as in a node.
 
 mod deliveries;
 mod held;
@@ -40,7 +40,7 @@ mod suspect;
 
 pub use deliveries::Sent;
 pub use held::{Act, Facts, Judged, Promotion, act_of, adds_delta, goes_last, promotion, to_clear};
-pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Offers, Target, backoff_ms};
+pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Judge, Offers, Target, backoff_ms};
 pub use osis_engine::sync::Signers;
 pub use register::{Plan, Progress, plan};
 
@@ -59,8 +59,8 @@ use std::collections::BTreeSet;
 
 /// What this module reads of sessions, opens and streams, and how it sends.
 pub trait Net {
-    /// What a connection's proofs counted for at its proof (opens' `named`); who the peer is
-    /// now is `opens::counted` of it.
+    /// What a connection's proofs counted for at its proof (opens' `named`): never who the peer
+    /// is; that is `opens::counted` of it, judged now.
     fn named(&self, conn: ConnId) -> Named;
     fn member(&self, conn: ConnId, s: &SyncId) -> Option<Member>;
     /// That source's step for S: the head its stream last named (spec/sync-ids.md §6 Walk).
@@ -190,8 +190,7 @@ impl Inbox {
         acted |= self.register.settle(h, net)?;
         acted |= self.reports.settle(h, net, &mut self.offers)?;
         acted |= self.suspects.settle(h, net)?;
-        let engine = &mut *h.engine;
-        acted |= self.offers.settle(h.now, h.store, net, &mut |s, actor| Ok(engine.signers(s, actor.as_ref())?.deposit))?;
+        acted |= self.offers.settle(h.now, h.store, net, &mut *h.engine)?;
         Ok(acted)
     }
 
@@ -228,10 +227,10 @@ impl Inbox {
     }
 
     /// A member joined or left a connection's shared set.
-    pub fn moved(&mut self, m: &Moved, net: &impl Net) {
+    pub fn moved(&mut self, engine: &mut Engine, m: &Moved, net: &impl Net) {
         match *m {
             Moved::Joined(conn, s, _) => {
-                self.deliveries.opened(conn, &s, net);
+                self.deliveries.opened(engine, conn, &s, net);
                 self.offers.joined(conn, &s, net);
                 self.register.joined(conn, s);
                 self.suspects.joined(conn, s, net);

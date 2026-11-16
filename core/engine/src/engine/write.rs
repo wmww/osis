@@ -14,7 +14,7 @@ use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, W
 use osis_crdt::{AnyView, DeltaBuilder, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_blob::{BlobWriter, Framing};
 use osis_perm::At;
-use osis_schema::core_types::{CREATED, is_role_class};
+use osis_schema::core_types::{self as ct, CREATED, is_role_class};
 use osis_schema::{RawKey, Retention, Schema};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -816,6 +816,8 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     for k in dead {
         m.aspects.entry(k).or_default();
     }
+    // spec/sync-set.md §1 Home stays under it: judged only for a write that may move a listing
+    let homed = if m.aspects.keys().any(|(_, ak)| ak.as_str() == ct::GROUP.ak() || ak.as_str() == ct::SYNCED.ak()) || !m.deleting.is_empty() { Some(under_home(tx)?) } else { None };
     let role_commit = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && is_role_class(ak.as_str()));
     let content = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && !is_role_class(ak.as_str()));
     if role_commit && content {
@@ -1022,6 +1024,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Err(Error::Clash(format!("a purge goes under a write of its thing, and this commit writes nothing on {}. Write the purge as a commit of its own", p.tid())));
     }
     let id = build_and_apply(tx, plan, deltas)?;
+    if let Some(before) = homed {
+        check_home(tx, &before)?;
+    }
     check_synced(tx.core, &m.synced)?;
     check_lifetimes(tx, &m.kept, &m.references)?;
     Ok(Some(id))
@@ -1040,6 +1045,31 @@ fn check_lifetimes(tx: &mut Tx<'_>, kept: &[Tid], references: &[(Tid, Ak, Tid)])
         }
     }
     Ok(())
+}
+
+/// The nodes of this node's account whose synced group (`synced^.0` on D) and D each hold the
+/// other in their closure (spec/sync-set.md §1 Home stays under it).
+fn under_home(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
+    let Some((_, d)) = tx.core.account_devices() else { return Ok(BTreeSet::new()) };
+    let synced = tx.state(&d, &ct::SYNCED.name())?.and_then(Fragment::read).and_then(|v| ct::SYNCED.decode(&v).ok()).unwrap_or_default();
+    let me = tx.core.id.tid();
+    let groups = &tx.core.ix.groups;
+    let home = groups.closure(&d);
+    Ok(synced.into_iter().filter(|(n, g)| (*n == me || tx.core.own_node(n)) && home.contains(g) && groups.closure(g).contains(&d)).map(|(n, _)| n).collect())
+}
+
+/// Refuses a write after which a node of `before` (`under_home` before it) has its synced group
+/// no longer under home or home no longer under it (spec/sync-set.md §1): that node would follow
+/// no change of its synced group until paired again.
+fn check_home(tx: &mut Tx<'_>, before: &BTreeSet<Tid>) -> Result<()> {
+    if before.is_empty() {
+        return Ok(());
+    }
+    let now = under_home(tx)?;
+    match before.iter().find(|n| !now.contains(*n) && (**n == tx.core.id.tid() || tx.core.own_node(n))) {
+        Some(_) => Err(Error::Misuse("a node's synced group and the account's devices group must each stay under the other")),
+        None => Ok(()),
+    }
 }
 
 /// `Mutation::require_synced`, over the state the commit left.
