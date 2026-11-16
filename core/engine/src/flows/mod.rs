@@ -17,6 +17,8 @@ pub(crate) mod links;
 mod create;
 pub(crate) mod account;
 pub(crate) mod custody;
+pub(crate) mod inbox;
+pub(crate) mod roots;
 pub mod lists;
 pub(crate) mod signing;
 

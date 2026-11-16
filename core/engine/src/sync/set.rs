@@ -19,7 +19,7 @@ impl Engine {
         self.core.epochs(t).is_some_and(|e| e.role(Role::Read).holds_any())
     }
 
-    /// The things the sync set is judged over: the node closure (spec/sync.md), with each destroyed
+    /// The things the sync set is judged over: the node closure (spec/sync-set.md §2), with each destroyed
     /// thing whose own sync IDs are kept until emptied and the links being redeemed.
     pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         todo!("refgraph: (b) the node closure walk")
@@ -37,8 +37,7 @@ impl Engine {
         todo!("refgraph: (b) what entered the node closure")
     }
 
-    /// Sets the sync units the handle reads and writes at another node (spec/sync-set.md
-    /// Source): `elsewhere`, of which those also in `homing` (moved home, catching up) sync
+    /// Sets the sync units the handle reads and writes at another node (spec/sync-set.md §5): `elsewhere`, of which those also in `homing` (moved home, catching up) sync
     /// here. A client of this node reads nothing of any of them (`readable_by`).
     pub fn set_sourced(&mut self, elsewhere: BTreeSet<Tid>, homing: &BTreeSet<Tid>) {
         let _ = homing;

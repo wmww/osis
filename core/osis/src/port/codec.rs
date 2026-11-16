@@ -898,7 +898,7 @@ impl Form for Time {
     }
 }
 
-const DIAGNOSTICS: [DiagnosticKind; 21] = {
+const DIAGNOSTICS: [DiagnosticKind; 22] = {
     use DiagnosticKind as K;
     [
         K::BadInput,
@@ -908,6 +908,7 @@ const DIAGNOSTICS: [DiagnosticKind; 21] = {
         K::OverlappingCounters,
         K::Removed,
         K::Callback,
+        K::NotCarried,
         K::Stranded,
         K::Uncommitted,
         K::EphemeralRefused,

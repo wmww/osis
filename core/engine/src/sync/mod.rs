@@ -497,7 +497,7 @@ impl Engine {
         self.run(|tx| certblobs::forget_blob(tx, &s, r, &b))
     }
 
-    /// Forgets this node's local copies of `ts`, released (spec/sync.md Release): the content of
+    /// Forgets this node's local copies of `ts`, released (spec/sync-set.md §3): the content of
     /// each and of each thing whose secrets are one of theirs, but those the node closure holds;
     /// their role-class aspects (`secrets.0` included) and secrets stay, and what arrives again
     /// counts as never received. The blobs of the commits it deleted whole.

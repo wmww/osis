@@ -42,22 +42,6 @@ fn perm_edge(e: &Edge) -> PermEdge {
     PermEdge { role: e.role, until: e.until, invite: e.invite, floor: e.floor }
 }
 
-/// Fires on `holder`'s inbox the ticket role commit `c` owes it about `things` (spec/sync-inbox.md
-/// Inbox): a grant's, a key change's or a re-seal's.
-pub(crate) fn fire_ticket(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<()> {
-    let _ = (tx, holder, c, things);
-    // refgraph: (c) fire the ticket
-    Ok(())
-}
-
-/// Fires on `holder`'s inbox the removal notice of role commit `c` lowering its edge on `target`
-/// below read (spec/sync-inbox.md Inbox).
-pub(crate) fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
-    let _ = (tx, holder, c, target);
-    // refgraph: (c) fire the removal notice
-    Ok(())
-}
-
 /// A grant or a raise of `holder`'s edge on `target` by `who` (this node, or a held key actor
 /// signing), with the grantee's boxes for every granted role at each current epoch
 /// (spec/crypto.md §4). An admin's grant, or an invite grant (spec/permissions.md §2) where
@@ -223,7 +207,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     };
     done.add(c);
     if let Some(c) = c {
-        fire_ticket(tx, holder, c, &[target])?;
+        super::inbox::fire_ticket(tx, holder, c, &[target])?;
     }
     if let Some(s) = setting {
         let mut m = Mutation::new();
@@ -410,7 +394,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
 /// notice to each holder in `lowered`, the rotation's tickets to `unreached`.
 fn lowered_deliveries(tx: &mut Tx<'_>, target: Tid, c: CommitId, unreached: &[Tid], lowered: &[Tid]) -> Result<()> {
     for x in lowered {
-        fire_removal(tx, *x, c, target)?;
+        super::inbox::fire_removal(tx, *x, c, target)?;
     }
     rotation::deliver_rotation(tx, target, Some(c), unreached)
 }

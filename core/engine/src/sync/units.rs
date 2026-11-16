@@ -1,6 +1,6 @@
-//! Sync units and the node closure (spec/sync.md Sync units, Holding and release): what a sync ID
-//! carries, walked by strongs within what the root may read; the node closure, walked sync unit
-//! by sync unit from the node root. Filled by lane (b) of issues/reference-graph.md.
+//! Sync units and the node closure (spec/sync-set.md §2): what a sync ID carries, walked by
+//! strongs within what the root may read; the node closure, walked sync unit by sync unit from
+//! the node root. Filled by lane (b) of issues/reference-graph.md.
 
 use crate::engine::Engine;
 use osis_base::Tid;
@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 impl Engine {
-    /// The sync unit of `t` (spec/sync.md Sync units): `t` and what it reaches by strongs and
+    /// The sync unit of `t` (spec/sync-set.md §2): `t` and what it reaches by strongs and
     /// itself may read, stopping at the first thing it may not read.
     pub fn sync_unit(&self, t: &Tid) -> Arc<BTreeSet<Tid>> {
         let _ = t;
@@ -22,7 +22,7 @@ impl Engine {
         todo!("refgraph: (b) whether the sync unit is known whole")
     }
 
-    /// The things whose sync unit holds `t` (spec/sync.md Sync units).
+    /// The things whose sync unit holds `t` (spec/sync-set.md §2).
     pub fn units_holding(&self, t: &Tid) -> BTreeSet<Tid> {
         let _ = t;
         todo!("refgraph: (b) sync units holding t")

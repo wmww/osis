@@ -349,6 +349,11 @@ impl Ak {
     pub fn signal(&self) -> bool {
         self.parsed().markers.signal
     }
+    /// The `@` marker (before `~`): an open signal, which anyone holding the thing's public key
+    /// record may fire (spec/data-model.md §2, spec/sync-inbox.md §2).
+    pub fn open(&self) -> bool {
+        todo!("refgraph: (c) the `@` marker in the AK grammar")
+    }
     #[doc(hidden)]
     /// The markers of a valid AK's text, read from its tail (`+`, `^` and `~` occur nowhere
     /// else in one). For keys held as text (`RawKey::ak`).

@@ -23,6 +23,9 @@ pub enum Diagnostic {
     Unreadable { thing: Tid, detail: String },
     /// This node lost read access to `actor` and dropped its secrets (a copy may stay: `retained_copies`).
     LostAccess { actor: Tid, detail: String },
+    /// `thing` holds a strong whose target `target` is neither in its sync unit nor held otherwise:
+    /// it reaches no other node by it (spec/sync-set.md §2 Not carried).
+    NotCarried { thing: Tid, target: Tid, detail: String },
     /// This node cannot open `thing`'s sync (`SyncState::Stranded`) until a holder gives it the keys.
     Stranded { thing: Tid, detail: String },
     /// Ephemeral data was not synced or not applied: a cap was reached.
@@ -63,6 +66,7 @@ impl From<osis_engine::Diagnostic> for Diagnostic {
             (K::Mismatch, Some(thing), ..) => Diagnostic::Mismatch { thing, detail },
             (K::Unreadable, Some(thing), ..) => Diagnostic::Unreadable { thing, detail },
             (K::Removed, Some(actor), ..) => Diagnostic::LostAccess { actor, detail },
+            (K::NotCarried, Some(thing), Some(target), _) => Diagnostic::NotCarried { thing, target, detail },
             (K::Stranded, Some(thing), ..) => Diagnostic::Stranded { thing, detail },
             (K::EphemeralRefused, ..) => Diagnostic::EphemeralRefused { things: tids, detail },
             (K::Storage, ..) => Diagnostic::Storage { detail },
@@ -85,6 +89,7 @@ impl std::fmt::Display for Diagnostic {
             Diagnostic::Mismatch { detail, .. } => ("mismatch", detail),
             Diagnostic::Unreadable { detail, .. } => ("unreadable", detail),
             Diagnostic::LostAccess { detail, .. } => ("lost access", detail),
+            Diagnostic::NotCarried { detail, .. } => ("not carried", detail),
             Diagnostic::Stranded { detail, .. } => ("stranded", detail),
             Diagnostic::EphemeralRefused { detail, .. } => ("ephemeral refused", detail),
             Diagnostic::Storage { detail } => ("storage", detail),

@@ -498,7 +498,7 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
 pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, holders: &[Tid]) -> Result<()> {
     if let Some(c) = c {
         for m in holders {
-            flows::edges::fire_ticket(tx, *m, c, &[a])?;
+            flows::inbox::fire_ticket(tx, *m, c, &[a])?;
         }
     }
     Ok(())
@@ -978,7 +978,7 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
     if let Some(c) = c {
         // an account's own nodes read it under the sync ID it is written to
         if holder != me {
-            flows::edges::fire_ticket(tx, holder, c, &[a])?;
+            flows::inbox::fire_ticket(tx, holder, c, &[a])?;
         }
     }
     Ok(())

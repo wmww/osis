@@ -106,6 +106,9 @@ pub enum DiagnosticKind {
     Removed,
     /// An app callback panicked (the `osis` dispatcher reports it and lives on).
     Callback,
+    /// A strong in the node closure whose target is neither in the sync unit it is in nor held
+    /// otherwise (spec/sync-set.md §2 Not carried): reported at the write adding it, as a warning.
+    NotCarried,
     /// This node cannot open a sync ID it should read: it waits for a re-seal
     /// (spec/permissions.md §3).
     Stranded,

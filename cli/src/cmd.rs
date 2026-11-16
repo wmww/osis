@@ -1091,6 +1091,7 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
         D::Mismatch { thing, detail } => ("Mismatch", vec![*thing], None, None, detail),
         D::Unreadable { thing, detail } => ("Unreadable", vec![*thing], None, None, detail),
         D::LostAccess { actor, detail } => ("LostAccess", vec![*actor], None, None, detail),
+        D::NotCarried { thing, target, detail } => ("NotCarried", vec![*thing, *target], None, None, detail),
         D::Stranded { thing, detail } => ("Stranded", vec![*thing], None, None, detail),
         D::EphemeralRefused { things, detail } => ("EphemeralRefused", things.clone(), None, None, detail),
         D::Storage { detail } => ("Storage", vec![], None, None, detail),

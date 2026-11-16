@@ -494,7 +494,7 @@ pub use track::ReadSet;
 pub use watch::{Change, DerivedFrom, Dispatcher, Origin, Subscription};
 pub use write::{AspectWrite, Expiry, PathWrite, Purge, SpliceItems, Write};
 
-pub use osis_base::{Ak, Float, Role, Tid, Value, ValueMap, ValueSet};
+pub use osis_base::{Ak, Float, Ref, Role, Strong, Ticket, Tid, Value, ValueMap, ValueSet, Weak};
 pub use osis_base::{AkError, Time, TidParseError};
 pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, PathErrorKind, PurgeBy, Signal, SignalKey, Step, ValueKey, p};
 

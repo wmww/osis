@@ -1,5 +1,5 @@
-//! Tickets in sync (spec/sync-inbox.md §5 Tickets and notices, spec/sync.md §3): the sync
-//! secrets and sync IDs the tickets a node holds give it. Filled by lane (c) of
+//! Tickets in sync (spec/sync-inbox.md §5, spec/sync.md §3): the sync secrets and sync IDs the
+//! tickets a node holds give it. Filled by lane (c) of
 //! issues/reference-graph.md.
 
 use crate::engine::Engine;

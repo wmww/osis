@@ -1,4 +1,4 @@
-//! osis-base: values and their canonical CBOR, tids, ids, format constants, chunker, hashing, hex,
+//! osis-base: values and their canonical CBOR, tids, references, ids, format constants, chunker, hashing, hex,
 //! base64url, `Clock`, `impl_error!`, `memo` (stamps and memos), `costs` (spec/data-model.md, spec/versioning.md §1). Synchronous, no I/O.
 //! Layer 0 (notes/architecture.md). Surface: notes/base-schema.md.
 #![forbid(unsafe_code)]
@@ -22,6 +22,7 @@ pub mod memo;
 #[allow(clippy::panic, clippy::expect_used)]
 pub mod testenv;
 mod ids;
+mod refs;
 mod time;
 mod sorted;
 mod value;
@@ -31,6 +32,7 @@ pub use cbor::{CanonicalBytes, DecodeError, Limits, Place, Reader, decode, decod
 pub use chunker::{ChunkParams, Chunker, PageCutter};
 pub use error::{Classified, ErrorClass};
 pub use ids::{PEER_SCHEME, peer_url, Address, Ak, AkError, BlobId, CommitId, CreationRecord, Del, SyncId, Link, Markers, PurgeBy, Role, SIGNING_KEY_ED25519, Tid, TidParseError};
+pub use refs::{Ref, Strong, Ticket, Weak};
 pub use time::{Clock, ManualClock, SystemClock, Time, Ts, WallMs};
 pub use sorted::{ValueMap, ValueSet};
 pub use value::{Float, Unknown, Value};
