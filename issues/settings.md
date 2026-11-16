@@ -1,7 +1,10 @@
 # Settings: one private thing per account and per node
-> Summary: Build plan (design decided with Tess, restated in reference graph terms): settings are ordinary aspects on a private account settings thing, plus a node data thing per node, both plain things under the account root, so they sync among the account's nodes and nobody else reads them. A node's `node.0` points to its data thing; windows are local things on the node root. Adds a place and moves misplaced state; adds no new settings. Open: where `caps^.0` lives (issues/reference-graph.md, To settle).
+> Summary: Build plan (design decided with Tess, restated in reference graph terms): settings are ordinary aspects on a private account settings thing, plus a node data thing per node, both plain things under the account root, so they sync among the account's nodes and nobody else reads them. A node's `node.0` points to its data thing; windows are local things on the node root. Adds a place and moves misplaced state; adds no new settings. Tess's direction: per-node settings sync by default, referenced from both the account's shared data and the local node root, so either finds them; easy to change or make configurable later.
 > Priority: normal
 > Tags: api, app, kit, spec
+
+## Direction (Tess)
+Per-node settings (`caps^.0`, `clients^.0` included) sync by default: the node data thing is referenced both from the account's shared data (D) and from the local node root, so a node finds its own settings locally and its siblings find them through D. Today `caps^.0`/`clients^.0` sit on the local node root (issues/reference-graph.md, Settled); building settings moves them.
 
 ## Principle
 A setting is an aspect on a thing only the account's nodes read. Privacy and sync come from where the thing sits; there is no settings protocol, store or merge rule. Everything the account keeps about one node is reached through that node's `node.0`, and nothing else is keyed by node ID.
