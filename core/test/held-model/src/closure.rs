@@ -43,19 +43,53 @@ pub struct World {
     pub kinds: Vec<Kind>,
     /// `(g, t) -> r`: the actor `g` holds role `r` on `t`.
     pub grants: BTreeMap<(T, T), Role>,
+    /// The keyless grants `(g, t)` (spec/crypto.md §4 Key access, `keyless_of`): a role all the
+    /// same, but read nothing through it.
+    pub keyless: BTreeSet<(T, T)>,
+}
+
+/// The keyless grants among actor grants `(g, t)` (holder `g` on target `t`) taken in `order`
+/// (record edges first, then by the write starting each standing; spec/crypto.md §4 Key access):
+/// a grant is keyless when `t`'s key already yields `g`'s over the grants given key access before
+/// it (`t` holds, through such grants, one on `g`), so it would close a cycle.
+pub fn keyless_of(order: &[(T, T)]) -> BTreeSet<(T, T)> {
+    let mut keyed: Vec<(T, T)> = Vec::new();
+    let mut out = BTreeSet::new();
+    for &(g, t) in order {
+        let mut seen = BTreeSet::from([t]);
+        let mut todo = vec![t];
+        while let Some(x) = todo.pop() {
+            for &(h, y) in &keyed {
+                if h == x && seen.insert(y) {
+                    todo.push(y);
+                }
+            }
+        }
+        match seen.contains(&g) {
+            true => {
+                out.insert((g, t));
+            }
+            false => keyed.push((g, t)),
+        }
+    }
+    out
 }
 
 impl World {
     pub fn keyed(&self, x: T) -> bool {
         self.kinds[x] == Kind::Keyed
     }
-    /// The role `g` holds on each keyed thing, by grants followed transitively: a chain of actors
-    /// gives the lowest role along it, and the best chain counts. `g` is admin of itself.
+    /// The role `g` holds on each keyed thing for keys, by grants with key access followed
+    /// transitively: a chain of actors gives the lowest role along it, and the best chain counts.
+    /// `g` is admin of itself.
     pub fn roles_from(&self, g: T) -> BTreeMap<T, Role> {
         let mut best = BTreeMap::from([(g, Role::Admin)]);
         loop {
             let mut changed = false;
             for (&(a, b), &r) in &self.grants {
+                if self.keyless.contains(&(a, b)) {
+                    continue;
+                }
                 if let Some(&ra) = best.get(&a) {
                     let v = ra.min(r);
                     if best.get(&b).is_none_or(|&o| o < v) {

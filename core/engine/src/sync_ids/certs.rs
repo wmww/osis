@@ -270,7 +270,11 @@ impl Engine {
         let found = self.core.timelines.certificates_into(g);
         self.cert_parts(&found, &mut out);
         if under_d {
-            for (n, _) in self.core.key_holders(g) {
+            // D's holders, and every node its account's chain names (a rotation's minter or
+            // certifier, a device added or removed): each rotation is read by its minter's card
+            let mut nodes: BTreeSet<Tid> = self.core.key_holders(g).into_iter().map(|(n, _)| n).collect();
+            nodes.extend(self.core.devices_of(g).map(|p| self.core.chain_nodes(&p)).unwrap_or_default());
+            for n in nodes {
                 if !self.is_node(&n).unwrap_or(false) {
                     continue;
                 }

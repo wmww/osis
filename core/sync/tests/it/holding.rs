@@ -237,24 +237,60 @@ fn the_last_reference_gone_the_thing_is_gone_for_everyone_spec_sync_set_3() {
     }
 }
 
-// spec/permissions.md §3 (Left out: a node that may rotate, holding the epoch's secret and the
-// grant, re-seals the holder), spec/sync-set.md §2: two nodes of Alice's account grant Bob read
-// on T at once, each its first grant, so each gives T own keys of its own; Bob accepts. Once all
-// is delivered he reads T. He reads nothing, his roster full (issues/reference-graph.md Status).
-#[test]
-#[ignore = "issues/reference-graph.md"]
-fn repro_concurrent_first_grants_by_two_nodes_reach_the_grantee_spec_permissions_3() {
+/// Two nodes of Bob's account (1 and 2, cut off from each other) key Bob's plain T at once: node
+/// `first` grants Alice read, the other grants her read too or, with `rotate`, rotates T; each
+/// gives T own keys and a sync ID of its own. Alice holds T with only node `first` reachable,
+/// then all heal.
+/// Whichever she took first, she ends on T's home sync ID and reads T's newest value.
+fn keyed_at_once(first: usize, rotate: bool) {
     let mut w = siblings();
     let t = make(&mut w, 1, None, "hi");
     w.run();
     let alice = w.node(0).account.unwrap();
-    for i in [1, 2] {
-        w.write(i, |e| e.grant(&t, &alice, &edge(Role::Read))).unwrap();
-    }
+    w.partition(1, 2);
+    w.partition(0, 3 - first);
+    w.write(first, |e| e.grant(&t, &alice, &edge(Role::Read))).unwrap();
+    match rotate {
+        true => w.write(3 - first, |e| e.give_own_secrets_again(&t)).unwrap(),
+        false => w.write(3 - first, |e| e.grant(&t, &alice, &edge(Role::Read))).unwrap(),
+    };
+    w.flush();
     strong(&mut w, 0, None, t, true);
+    w.flush();
+    w.heal();
     w.run();
+    w.write(3 - first, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &ak(), &Value::Str("after".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    let home = w.engine(1).home_sync_id(&t).unwrap();
+    assert_eq!(w.engine(1).sync_ids(&t).unwrap().len(), 2, "first {first}, rotate {rotate}: two sync IDs");
+    for i in 0..3 {
+        assert_eq!(w.engine(i).home_sync_id(&t).unwrap(), home, "first {first}, rotate {rotate}: node {i}'s home");
+    }
     assert_eq!(w.engine(0).roster(&t).get(&alice).map(|e| e.role), Some(Role::Read));
-    assert_eq!(value(&mut w, 0, &t), Some(Value::Str("hi".into())), "Alice reads T");
+    assert_eq!(value(&mut w, 0, &t), Some(Value::Str("after".into())), "first {first}, rotate {rotate}: Alice reads T");
+}
+
+// spec/permissions.md §3, spec/sync-ids.md §2, spec/sync-inbox.md §5 (Ticket sync IDs): two
+// siblings make T's first grant to Alice at once; she reads T whichever she took first.
+#[test]
+fn concurrent_first_grants_by_two_nodes_reach_the_grantee_spec_permissions_3() {
+    for first in [1, 2] {
+        keyed_at_once(first, false);
+    }
+}
+
+// spec/permissions.md §3, spec/sync-ids.md §2, spec/sync-inbox.md §5 (Ticket sync IDs): one
+// sibling grants Alice read on T while another gives T own keys by a rotation; she reads T's
+// newest value whichever sibling granted (so whether hers is the home sync ID or not).
+#[test]
+fn a_grant_beside_a_siblings_keying_reaches_the_grantee_spec_permissions_3() {
+    for first in [1, 2] {
+        keyed_at_once(first, true);
+    }
 }
 
 // spec/sync-set.md §3 (lowering from read to sync is no release: S becomes kept unread with its
@@ -274,4 +310,83 @@ fn a_reader_lowered_to_sync_keeps_the_thing_unread_spec_sync_set_3() {
     w.run();
     assert_eq!(value(&mut w, 1, &t), None, "lowered: reads nothing");
     assert_eq!(holding(&mut w, 1, &t), Some(Holding::Unread), "kept unread");
+}
+
+
+// spec/sync-set.md §1, §2 (refgraph U4): a node's local part. A node of an account makes a plain
+// thing under its node root, held from there: the node writes it as itself, holds and reads it,
+// and no sync ID carries it, so its sibling never holds it.
+#[test]
+fn a_thing_under_the_node_root_stays_on_its_node_spec_sync_set_2() {
+    let mut w = siblings();
+    let x = w.write(1, |e| {
+        let root = e.node_root().unwrap();
+        let mut m = Mutation::new();
+        let x = m.create(e.thing_record(root));
+        m.set(x, &ak(), &Value::Str("mine".into())).unwrap();
+        m.op(root, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(x)) }).unwrap();
+        e.commit(m).unwrap();
+        x
+    });
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(x, &ak(), &Value::Str("still mine".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert!(w.engine(1).closure_holds(&x), "held in the local part");
+    assert_eq!(value(&mut w, 1, &x), Some(Value::Str("still mine".into())));
+    assert!(w.engine(1).carrying(&x).unwrap().is_empty(), "under no sync ID");
+    assert!(!w.engine(2).knows(&x), "the sibling never holds it");
+}
+
+/// Alice's plain T0 and T1 (under T0 when `under`, else under her account root), T0 -> T1; Bob
+/// granted read on T1 and holding it; T1 granted read on T0, its first grant (T0's own keys).
+fn shared_through_a_thing(under: bool) -> (World, Tid, Tid) {
+    let mut w = contacts();
+    let t0 = make(&mut w, 0, None, "v1");
+    let t1 = make(&mut w, 0, under.then_some(t0), "v2");
+    strong(&mut w, 0, Some(t0), t1, true);
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, t1, true);
+    w.write(0, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    (w, t0, t1)
+}
+
+// spec/sync-set.md §2 (refgraph U5 across nodes), spec/sync-judgement.md §1 Per-sync-ID copies:
+// T1 granted read on T0 (T0's first grant) and T1 -> T0: Bob, a reader of T1, reads T0 and what
+// was written on it before it had own keys. T0's role commits reach him under T1's sync ID as
+// per-sync-ID copies, logged though a certificate copy of fewer parts was logged there first.
+#[test]
+fn a_reader_of_a_thing_reads_what_it_is_granted_spec_sync_set_2() {
+    let (mut w, t0, t1) = shared_through_a_thing(false);
+    strong(&mut w, 0, Some(t1), t0, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &t0), Some(Value::Str("v1".into())), "Bob reads T0");
+    assert_eq!(holding(&mut w, 1, &t0), Some(Holding::Read));
+}
+
+// spec/crypto.md §4 Key access, spec/sync-set.md §2: T1 is made under T0, so T1 granted read on
+// T0 closes a cycle and is keyless: it reads nothing through it. Bob, a reader of T1, never reads
+// T0, whether T1 references it or he holds it from his account root and is granted sync on it
+// (then he keeps it unread, his ticket a sync one).
+#[test]
+fn a_keyless_grant_reads_nothing_through_it_spec_crypto_4() {
+    for direct in [false, true] {
+        let (mut w, t0, t1) = shared_through_a_thing(true);
+        match direct {
+            false => strong(&mut w, 0, Some(t1), t0, true),
+            true => {
+                strong(&mut w, 1, None, t0, true);
+                w.run();
+                let bob = w.node(1).account.unwrap();
+                w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Sync))).unwrap();
+            }
+        }
+        w.run();
+        assert_eq!(value(&mut w, 1, &t0), None, "direct {direct}: Bob reads no T0");
+        assert!(w.engine(1).read_secrets(&t0).is_empty(), "direct {direct}: nor holds its read secrets");
+        assert_eq!(holding(&mut w, 1, &t0), direct.then_some(Holding::Unread), "direct {direct}");
+    }
 }

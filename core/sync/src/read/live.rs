@@ -320,6 +320,9 @@ impl Ground for Live<'_, '_> {
     fn stands(&mut self, s: &SyncId, c: &CommitId, e: &Entry) -> Result<bool> {
         Ok(self.under_head(s, e)? || self.registers_step(s, c, e)?)
     }
+    fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
+        Ok(self.cx.engine.holds_body(s, b)?)
+    }
     fn promotion(&mut self, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<crate::inbox::Promotion> {
         crate::inbox::promotion(self.cx.engine, self.cx.store, s, c, b)
     }

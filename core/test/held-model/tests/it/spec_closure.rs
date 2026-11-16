@@ -10,7 +10,7 @@ fn p(k: T) -> Kind {
     Kind::Plain(k)
 }
 fn worldr(kinds: &[Kind], grants: &[(T, T, Role)]) -> World {
-    World { kinds: kinds.to_vec(), grants: grants.iter().map(|&(g, t, r)| ((g, t), r)).collect() }
+    World { kinds: kinds.to_vec(), grants: grants.iter().map(|&(g, t, r)| ((g, t), r)).collect(), ..World::default() }
 }
 /// Grants of read.
 fn world(kinds: &[Kind], grants: &[(T, T)]) -> World {

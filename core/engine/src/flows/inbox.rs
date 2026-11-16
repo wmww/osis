@@ -47,7 +47,7 @@ pub(crate) fn fire_ticket(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[T
     let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
     let to = tx.core.is_account(&holder).then_some(holder);
     for t in things {
-        let role = if tx.core.role_now(&holder, t) >= Some(Role::Read) { Role::Read } else { Role::Sync };
+        let role = if tx.core.reads_now(&holder, t) { Role::Read } else { Role::Sync };
         let Some(ticket) = make_ticket(tx, *t, role, holder)? else { continue };
         let v = Value::Ticket(Box::new(ticket));
         if tx.core.epochs(&inbox).is_some_and(|e| e.role(Role::Read).holds_any()) {

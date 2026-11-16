@@ -559,6 +559,13 @@ fn heights(supersedes: &BTreeMap<CommitId, Vec<CommitId>>) -> BTreeMap<CommitId,
 }
 
 impl Core {
+    /// Every node account `p`'s chain names as this node reads it: each held rotation's minter or
+    /// certifier, each device one adds or removes, the creation device. Empty but at a node of `p`.
+    pub(crate) fn chain_nodes(&self, p: &Tid) -> BTreeSet<Tid> {
+        let Some(d) = self.account_view(p).and_then(|v| v.devices.clone()) else { return BTreeSet::new() };
+        d.minter.into_values().chain(d.certifiers.into_values().flatten()).chain(d.adds.into_values().flatten()).chain(d.removes.into_values().flatten()).chain(d.first).collect()
+    }
+
     /// The account `d` is the devices actor of: its first admin, an account, when that account
     /// wrote `account.0` on it. Only a commit signed as the account counts:
     /// any signer's header can name the aspect, and a devices actor reads as its account wherever
@@ -1251,7 +1258,12 @@ impl Engine {
                 Ok(inner)
             })?
         };
-        let mut all: Vec<CommitId> = self.certificates(&d).commits.into_keys().collect();
+        // D's certificates as this node logs them, and every roster node's card and record
+        // (`own_piece`): the new node reads each rotation's minter by them, the creation device's
+        // included; records travel as the commits minting them
+        let mut certs = self.certificates(&d);
+        certs.extend(self.own_piece(&d));
+        let mut all: Vec<CommitId> = certs.commits.into_keys().chain(certs.headers).chain(certs.mintings.into_keys()).collect();
         let sync_id = osis_base::Ak::new("sync.0").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.ix.by_aspect.get(&(d, sync_id)).into_iter().flatten().map(|(_, c)| *c));
         // the account's seed-boxing commits on D (`account.0`): its creation, P's creation record

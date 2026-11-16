@@ -447,6 +447,10 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         let mut promoted = None;
         let mut waits = false;
         for e in own.iter().filter(|e| live.contains(&e.blob)) {
+            // an entry of fewer parts (a certificate copy the body outgrew) is no log of it
+            if !g.holds_body(s, &e.blob)? {
+                continue;
+            }
             if e.deposited && !e.own {
                 match g.promotion(s, c, &e.blob)? {
                     Promotion::Yes => promoted = promoted.or(Some(e.blob)),

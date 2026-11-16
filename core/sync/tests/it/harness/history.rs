@@ -541,8 +541,13 @@ impl Model {
         let mut edges = hc::Edges::new();
         let sources: Vec<Tid> = roots.iter().chain(&things).copied().collect();
         for (k, t) in things.iter().enumerate() {
-            grants.insert((first_admin(k), 2 * na + k), hc::Role::Admin);
-            for (holder, e) in r.engine.roster(t) {
+            // the record edge stands at admin until an edge write lowers or removes it, which the
+            // roster then shows
+            let roster = r.engine.roster(t);
+            if roster.is_empty() {
+                grants.insert((first_admin(k), 2 * na + k), hc::Role::Admin);
+            }
+            for (holder, e) in roster {
                 if let Some(g) = index(&holder) {
                     let role = match e.role {
                         Role::Sync => hc::Role::Sync,
@@ -565,7 +570,9 @@ impl Model {
                 }
             }
         }
-        Model { accounts, world: hc::World { kinds, grants }, edges }
+        // the grants that read nothing (spec/crypto.md §4 Key access), as the reference orders them
+        let keyless = r.engine.keyless_grants().iter().filter_map(|(t, g)| Some((index(g)?, index(t)?))).collect();
+        Model { accounts, world: hc::World { kinds, grants, keyless }, edges }
     }
 
     /// Account `a`'s node closure, the keys it reads with and the things it keeps unread: its
@@ -888,8 +895,7 @@ pub fn history(seed: u64, n: usize, accounts: usize, len: usize, faults: bool) -
                 let ws = writers(&things, k);
                 if ws.is_empty() { Step::Run } else { Step::Rotate(ws[pick(ws.len())], k) }
             }
-            // from an account's first node (issues/pair-from-a-paired-node.md)
-            74 if acct.len() < n + 1 && node < accounts => {
+            74 if acct.len() < n + 1 => {
                 acct.push(acct[node]);
                 Step::Pair(node)
             }

@@ -86,15 +86,15 @@ pub(crate) fn load_kept(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// Whether the node, a held key actor or a link key it keeps reading as holds `min` or above on
-/// `a` now (any path, `until` honoured).
+/// `a` now (`role_here`).
 fn holds_at(core: &Core, a: &Tid, min: Role) -> bool {
     role_here(core, a) >= Some(min)
 }
 
 /// The best role the node, a held key actor or a link key it keeps reading as holds on `a` now
-/// (any path, `until` honoured).
+/// (any path with key access, `until` honoured: `Core::keyed_role_now`).
 pub(crate) fn role_here(core: &Core, a: &Tid) -> Option<Role> {
-    let at = |m: &Tid| core.role_now(m, a);
+    let at = |m: &Tid| core.keyed_role_now(m, a);
     core.member().into_iter().chain([core.id.tid()]).map(|m| at(&m)).chain(core.key_actors.keys().chain(core.ix.bearers.iter()).map(at)).max().flatten()
 }
 

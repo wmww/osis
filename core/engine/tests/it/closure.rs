@@ -303,6 +303,8 @@ fn sync_units_are_the_models_spec_sync_set_2() {
             edges.insert((k, 3 + i));
         }
         let mut grants = BTreeMap::new();
+        // each standing grant (holder, target) in the order its standing began (key access)
+        let mut order: Vec<(usize, usize)> = Vec::new();
         let ix = |t: &Tid| tids.iter().position(|x| x == t);
         for step in 0..40 {
             let (x, y) = (rng.below(7) as usize, rng.below(7) as usize);
@@ -330,16 +332,20 @@ fn sync_units_are_the_models_spec_sync_set_2() {
                     } else {
                         e.grant(&tids[t], &tids[g], &edge).unwrap();
                     }
+                    if had.is_none() {
+                        order.push((g, t));
+                    }
                     grants.insert((g, t), m);
                 }
                 5 if grants.contains_key(&(g, t)) => {
                     e.demote(&tids[t], &osis_engine::flows::Demotion { holder: tids[g], new: None, retain: None }).unwrap();
                     grants.remove(&(g, t));
+                    order.retain(|x| *x != (g, t));
                 }
                 _ => continue,
             }
             e.check_closure();
-            let w = hc::World { kinds: kinds.clone(), grants: grants.clone() };
+            let w = hc::World { kinds: kinds.clone(), grants: grants.clone(), keyless: hc::keyless_of(&order) };
             for (k, kt) in tids.iter().enumerate().take(3) {
                 let got: BTreeSet<usize> = e.sync_unit(kt).iter().filter_map(ix).collect();
                 assert_eq!(got, hc::unit(&w, k, &edges), "seed {seed} step {step}: the sync unit of {k}");

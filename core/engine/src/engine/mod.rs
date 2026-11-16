@@ -2263,10 +2263,27 @@ impl Core {
         if self.nodes_own(t) { Ok(self.id.tid()) } else { self.writer() }
     }
 
-    /// Whether `t` is the node's own, written by it alone: its node thing or its node root
-    /// (spec/sync-set.md §1).
+    /// Whether `t` is the node's own, written by it alone (spec/sync-set.md §1): its node thing,
+    /// its node root and what is made under it, whose record chain reaches the node (no
+    /// account holds a role there).
     pub(crate) fn nodes_own(&self, t: &Tid) -> bool {
-        *t == self.id.tid() || Some(*t) == self.node_root
+        let node = self.id.tid();
+        *t == node || self.record_chain(t).any(|s| s == osis_base::ChainStep::Key(node))
+    }
+
+    /// Whether `t`, made among `creates`, is the node's own (`nodes_own`): it is the node, or its
+    /// first admin is the node's own, held or made beside it.
+    pub(crate) fn made_nodes_own(&self, t: &Tid, creates: &write::Creates) -> bool {
+        let mut at = *t;
+        for _ in 0..=creates.len() {
+            let Some(r) = creates.get(&at) else { return self.nodes_own(&at) };
+            if at == self.id.tid() {
+                return true;
+            }
+            let Some(a) = r.first_admin() else { return false };
+            at = a;
+        }
+        false
     }
 
     /// `me`, for what only an account may do.

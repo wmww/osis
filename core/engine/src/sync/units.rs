@@ -726,13 +726,14 @@ impl Closure {
 impl Core {
     /// Whether `t`'s keys open `x` (spec/sync-set.md §2): `x`'s secrets derive from `t`'s (`t`
     /// is on the record chain of the actor they derive from), or `t` holds read or above on
-    /// that actor, by chains of grants. `t`'s own role: the account root reads as itself.
+    /// that actor, by chains of grants with key access (`reads_now`). `t`'s own role: the account
+    /// root reads as itself.
     pub(crate) fn keys_open(&self, t: &Tid, x: &Tid) -> bool {
         let Some(a) = self.secret_actor(x) else { return false };
         if self.record_chain(&a).filter_map(|s| s.thing()).any(|c| c == *t) {
             return true;
         }
-        self.role_now(t, &a) >= Some(Role::Read)
+        self.reads_now(t, &a)
     }
 
     /// Whether the node opens plain thing `y` (spec/sync-set.md §2 local part): it holds a read

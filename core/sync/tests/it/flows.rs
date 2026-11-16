@@ -65,12 +65,24 @@ fn repro_a_removal_is_logged_before_what_was_written_before_it_spec_permissions_
 }
 
 // spec/sync-inbox.md §1, spec/permissions.md §1: a node paired to an account pairs another
-// (pairing): the third node is on D's roster and joins (`paired`). It
-// is refused `Permission` on D (issues/pair-from-a-paired-node.md).
+// (pairing): the third node is on D's roster and joins (`paired`), reading the rotation that
+// added the second by the creation device's card.
 #[test]
-#[ignore = "issues/pair-from-a-paired-node.md"]
-fn repro_a_paired_node_pairs_another_spec_sync_inbox_1() {
+fn a_paired_node_pairs_another_spec_sync_inbox_1() {
     let mut w = crate::harness::siblings();
+    let n = w.pair(2);
+    w.run();
+    assert!(w.engine(n).account_root().is_some());
+}
+
+// spec/sync-inbox.md §1, spec/permissions.md §1: a node pairs another after removing the device
+// that paired it: the chain names the removed device, whose card the new node reads it by.
+#[test]
+fn a_node_pairs_another_after_removing_its_pairer_spec_sync_inbox_1() {
+    let mut w = crate::harness::siblings();
+    let n1 = w.engine(1).tid();
+    w.write(2, |e| e.remove_device(&n1)).unwrap();
+    w.run();
     let n = w.pair(2);
     w.run();
     assert!(w.engine(n).account_root().is_some());

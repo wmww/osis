@@ -106,12 +106,14 @@ impl Engine {
             return Ok(ThingSync::Read(kept.iter().map(|o| o.id).collect()));
         }
         // read: by its own keys, or on a ticket's word (its sync ID the ticket's until a held
-        // `sync.0` records one, spec/sync-inbox.md §5 Ticket sync IDs)
+        // `sync.0` records it, spec/sync-inbox.md §5 Ticket sync IDs)
         if (self.core.has_own_secrets(t) || self.core.ix.closure.on_ticket(t))
             && self.holds_read(t)
-            && let Some(home) = home_of(&self.owned_sync_ids(t)?)
         {
-            return Ok(ThingSync::Read(synced(&self.owned_sync_ids(t)?, home)));
+            let ids = synced(&self.owned_sync_ids(t)?);
+            if !ids.is_empty() {
+                return Ok(ThingSync::Read(ids));
+            }
         }
         // a link being redeemed: its sync ID read while followed, whatever is held of K yet, while
         // it is K's (`followable`; from the link text until K's own `sync.0` records it)
@@ -122,10 +124,11 @@ impl Engine {
             return Ok(ThingSync::Read(vec![s]));
         }
         // kept unread: in the node closure by a sync secret alone (spec/sync.md §3)
-        if self.kept_unread(t)
-            && let Some(home) = home_of(&self.owned_sync_ids(t)?)
-        {
-            return Ok(ThingSync::Unread(synced(&self.owned_sync_ids(t)?, home)));
+        if self.kept_unread(t) {
+            let ids = synced(&self.owned_sync_ids(t)?);
+            if !ids.is_empty() {
+                return Ok(ThingSync::Unread(ids));
+            }
         }
         Ok(if self.core.has_own_secrets(t) { ThingSync::Unsyncable } else { ThingSync::Plain })
     }
@@ -334,18 +337,13 @@ impl Engine {
     }
 }
 
-/// The sync IDs synced for a thing owning `ids`: its home (`home_of`), or, while no held
-/// `sync.0` records one, each its tickets name (their issuers' word, spec/sync-inbox.md §5 Ticket
-/// sync IDs): a forged one beside the genuine keeps the genuine one fetched.
-fn synced(ids: &[OwnedSyncId], home: SyncId) -> Vec<SyncId> {
-    match ids.iter().all(|o| o.hint && o.path.steps.is_empty()) {
-        true => ids.iter().map(|o| o.id).collect(),
-        false => vec![home],
-    }
-}
-
-/// A thing's home sync ID among those it owns (two admins giving it secrets at once made two: the
-/// higher ID, as `flows::home_sync_id`).
-fn home_of(ids: &[OwnedSyncId]) -> Option<SyncId> {
-    ids.iter().map(|o| o.id).max()
+/// The sync IDs synced for a thing owning `ids`: its home among those a held `sync.0` records
+/// (two admins giving it secrets at once made two: the higher ID, as `flows::home_sync_id`), and
+/// each its tickets name that no held `sync.0` records (their issuers' word, spec/sync-inbox.md §5
+/// Ticket sync IDs): a forged one beside the genuine keeps the genuine one fetched, and a node
+/// holding one admin's record reaches the other's. Empty when it owns none.
+fn synced(ids: &[OwnedSyncId]) -> Vec<SyncId> {
+    let ticket = |o: &&OwnedSyncId| o.hint && o.path.steps.is_empty();
+    let home = ids.iter().filter(|o| !ticket(o)).map(|o| o.id).max();
+    home.into_iter().chain(ids.iter().filter(ticket).map(|o| o.id)).collect()
 }

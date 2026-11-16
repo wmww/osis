@@ -122,9 +122,26 @@ impl Core {
         None
     }
 
+    /// Actor `x`'s role on actor `a` now as far as grants with key access give it (spec/crypto.md
+    /// §4 Holds, Key access: a keyless grant, one closing a cycle of actor grants, reads nothing
+    /// through it): what gives, takes and opens `a`'s secrets. Read on the memo clock
+    /// (`role_now`); an account's devices actor has no grants.
+    pub(crate) fn keyed_role_now(&self, x: &Tid, a: &Tid) -> Option<Role> {
+        let role = self.role_now(x, a);
+        if role.is_none() || self.timelines.keyless().is_empty() || self.devices_holders(a).is_some() {
+            return role;
+        }
+        role.min(crate::rotation::members::role_for_keys(self, x, a))
+    }
+
+    /// Whether actor `x` reads actor `a` now (`keyed_role_now`).
+    pub(crate) fn reads_now(&self, x: &Tid, a: &Tid) -> bool {
+        self.keyed_role_now(x, a) >= Some(Role::Read)
+    }
+
     /// Whether actor `x` may read thing `t` now: `t`'s secrets derive from `x`'s, or `x` holds
-    /// read or above on the actor they derive from (spec/sync-judgement.md §1, entitlement).
-    /// The role is read on the memo clock (`role_now`).
+    /// read or above on the actor they derive from (spec/sync-judgement.md §1, entitlement),
+    /// through grants with key access (`reads_now`).
     /// This node's own account's devices actor reads as the account does (its readers are the
     /// account's nodes); another account's devices actor reads as itself: what this node seals,
     /// boxes or opens never reads another account's grants as its own (chain placement alone
@@ -135,11 +152,18 @@ impl Core {
         if self.record_chain(&a).filter_map(|s| s.thing()).any(|c| c == *x) {
             return true;
         }
-        self.role_now(x, &a) >= Some(Role::Read)
+        self.reads_now(x, &a)
     }
 }
 
 impl Engine {
+    /// The keyless actor grants held here, each (target, holder) (spec/crypto.md §4 Key access):
+    /// for tests modelling what reads through grants.
+    #[doc(hidden)]
+    pub fn keyless_grants(&self) -> BTreeSet<(Tid, Tid)> {
+        (*self.core.timelines.keyless()).clone()
+    }
+
     /// Whether actor `x` may read thing `t` (entitlement, spec/sync-judgement.md §1).
     pub fn may_read(&self, x: &Tid, t: &Tid) -> bool {
         self.core.may_read(x, t)
@@ -165,8 +189,12 @@ impl Engine {
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
             let m = e.get_typed(g, &ct::SYNC)?.unwrap_or_default();
             let mut out = owned_in(&e.core, g, &m);
-            if out.is_empty() {
-                out = followed(e, g).map(|h| vec![h]).unwrap_or_else(|| ticket_hints(e, g));
+            match out.is_empty() {
+                true => out = followed(e, g).map(|h| vec![h]).unwrap_or_else(|| ticket_hints(e, g)),
+                // a ticket's sync ID no held `sync.0` records: two admins giving g secrets at
+                // once each made one, and this node may hold only the other's record (a forged
+                // one opens nothing, and goes with its ticket)
+                false => out.extend(ticket_hints(e, g).into_iter().filter(|o| !m.contains_key(&o.id))),
             }
             Ok::<_, crate::error::Error>(Arc::new(out))
         })

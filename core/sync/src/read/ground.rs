@@ -148,6 +148,12 @@ pub trait Ground {
         let _ = (s, c, e);
         Ok(true)
     }
+    /// Whether blob `b` holds S's body of its commit (`Engine::holds_body`): only such an entry
+    /// is the body's log; a certificate copy of fewer parts is not.
+    fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
+        let _ = (s, b);
+        Ok(true)
+    }
     /// Whether a peer's deposited entry `b` of `c` under S is promoted (spec/sync-inbox.md §4,
     /// `inbox::promotion`): stamped in place as this node's log of the body.
     fn promotion(&mut self, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<crate::inbox::Promotion> {

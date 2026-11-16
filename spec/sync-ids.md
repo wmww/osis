@@ -37,7 +37,7 @@
   - How often is local policy.
 
 ## 2. Sync IDs and role keys
-- **One sync ID per actor**: a commit that gives a thing role secrets of its own (spec/permissions.md §3) MUST also create its sync ID (unless it already has one) and record it in `sync.0`, in that one commit. It is the thing's one sync ID, for its life: holders are removed, the sync ID is never replaced or retired.
+- **One sync ID per actor**: a commit that gives a thing role secrets of its own (spec/permissions.md §3) MUST also create its sync ID (unless it already has one) and record it in `sync.0`, in that one commit. It is the thing's one sync ID, for its life: holders are removed, the sync ID is never replaced or retired. Two admins giving it secrets at once (a fork) each record one; both stand, and every node syncs the thing through its **home**, the greatest of those it owns (spec/sync-inbox.md §5 Ticket sync IDs).
   - Every holder of a role on a thing with secrets of its own syncs it through that sync ID, whatever else holds the thing.
   - A plain thing has none: it syncs under the sync IDs of the sync units holding it (spec/sync-set.md §2, spec/sync-judgement.md §1). Key actors (nodes, link keys) have no role secrets of their own and so no sync ID: a link key reaches its K's sync ID from its link text (§3 static entry), a node through its account's secrets or pairing.
   - The nearest actor with a sync ID up the record chain of a thing with a sync ID carries that thing's `sync.0` and `created.0` writes, while the record edges between them stand at the writer (spec/sync-judgement.md §1). An account, which has none, counts as its account root D.

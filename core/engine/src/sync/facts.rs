@@ -220,6 +220,15 @@ impl Engine {
         (p.commit == *c && p.copy == copy && !self.blob_dropped(x)).then(|| p.clone())
     }
 
+    /// Whether blob `b` holds S's body of its commit (spec/sync-judgement.md §1): a blob of the
+    /// body's kind (a per-sync-ID copy or the shared blob) carrying each of its parts. A blob not
+    /// opened or sealed here holds none.
+    pub fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
+        let Some(row) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(false) };
+        let Some(meta) = self.sync_body_now(s, &row.commit)? else { return Ok(false) };
+        Ok(row.copy == meta.copy && meta.parts.iter().all(|ai| row.parts.contains(ai)))
+    }
+
     /// spec/sync-judgement.md §2 must-not-hold: blob `b` of commit C, whose delta set is a strict
     /// subset of another held blob of C under that sync ID (one of `held`) that is not itself
     /// must-not-hold and whose extra deltas include one only a blob carries. A blob not opened or

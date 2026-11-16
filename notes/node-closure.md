@@ -6,7 +6,7 @@ Spec: spec/sync-set.md. Model: notes/closure-model.md (held-model `closure`). Co
 **Principle:** a node holds exactly what its node root reaches by strongs, sync unit by sync unit; the structure is kept by edits, each costing what it changed.
 
 ## Roots
-- The node root is made at the node's first start (`Engine::make_node_root`, local record `records::NODE_ROOT`), first admin the node; the node writes it as itself (`Core::nodes_own`, as its node thing).
+- The node root is made at the node's first start (`Engine::make_node_root`, local record `records::NODE_ROOT`), first admin the node; the node writes it and every thing made under it as itself (`Core::nodes_own`: the record chain reaches the node; `made_nodes_own` for things a commit makes), as its node thing: no account holds a role there.
 - The account's creation writes D's strongs to the profile, the inbox and the node thing, and the node root's to D, in its transaction; pairing writes the new node's strong to D (`Engine::paired`).
 - A local commit after which the node root no longer strongly references D, or D the profile or the inbox, is refused, however it was written (a remove, a whole set, a removed aspect, an undo, a purge): `commit_in` compares those strongs in the index before and after (`roots::kept`, `still_kept`), O(1).
 
