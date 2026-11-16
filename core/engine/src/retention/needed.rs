@@ -2,21 +2,17 @@
 //! spec/permissions.md §4): another account's chain (its record, its `keys.0` commits, its
 //! inbox's), and a released thing's record and role-class state. A thing outside the node closure
 //! is kept while a thing that needs it is kept: one whose record names it first admin, one whose
-//! held edge write names it holder (`Held::named_on`), one a held commit it authored or acted in
-//! is on (body held or not). A thing is rooted, kept for itself: in the node closure or leaving it,
-//! this node's account's or the node's own (its record chain's key actor), a key actor that is
+//! held edge write names it holder (`Held::named_on`), one a held or pending commit it authored or
+//! acted in is on (body held or not; a pending one by the things it writes on, `Indexes::pend_by`).
+//! A thing is rooted, kept for itself: in the node closure or leaving it, this node's account's or the node's own (its record chain's key actor), a key actor that is
 //! no account (a node, a link key), one a key actor held here is named on (a link being
 //! redeemed, a bearer), a kept copy, destroyed (`retention::destroy` keeps it), or a
 //! thing an own self-removal still waits to seal under. Everything else goes whole, as never
 //! received, in the transaction its last need went (`settle`).
 //!
-//! Interim (issues/needed-interim-roots.md): a thing this node may read, or of whose content (any
-//! aspect but the role-class ones, `forget::content`) it holds a part, is rooted too, but in the
-//! transaction that releases it: engine tests hand peers things no strong holds there.
-//!
 //! Judged again when a need goes: a signer's commit dropping a part or forgotten
-//! (`Core::note_signed`, `Core::take_meta`), a holder unnamed (`Held::take_unnamed`), a thing
-//! released (`Engine::released`), at the end of the transaction (`Engine::run`, in turn with
+//! (`Core::note_signed`, `Core::take_meta`) or leaving pending (`apply::set_pending`), a holder
+//! unnamed (`Held::take_unnamed`), a thing released (`Engine::released`), at the end of the transaction (`Engine::run`, in turn with
 //! destructions, on the node closure settled). The judgement
 //! walks the needs up from the thing (`needed`) and stops at the first rooted one, so it costs
 //! O(1) while the thing is needed and the unrooted things reached when it is not, which go
@@ -31,10 +27,6 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Whether `t` is kept for itself (the module doc).
 fn rooted(core: &Core, t: &Tid) -> bool {
     let cl = &core.ix.closure;
-    // Interim (issues/needed-interim-roots.md): readable or holding content, not released now
-    if !core.released_now.contains(t) && (super::forget::read_path(core, t) || holds_content(core, t)) {
-        return true;
-    }
     if cl.holds(t) || cl.left().contains_key(t) || core.ix.kept.contains_key(t) || super::forget::copy_of(core, t).is_some() || core.destroyed(t) {
         return true;
     }
@@ -58,21 +50,18 @@ fn rooted(core: &Core, t: &Tid) -> bool {
     core.ix.held_wait.iter().any(|c| core.ix.commits.get(c).is_some_and(|m| m.view.aspect(t, "roles.0").is_some()))
 }
 
-/// Interim (issues/needed-interim-roots.md): whether a held commit holds a part on
-/// content of `t` (`forget::content`).
-fn holds_content(core: &Core, t: &Tid) -> bool {
-    core.aspects_of(t).filter(|((_, ak), _)| super::forget::content(ak)).any(|((_, ak), cs)| cs.iter().any(|(_, c)| core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.holds(ai)))))
-}
-
-/// The things that need `t` held (the module doc), but `t`: those naming it, and those a held
-/// commit it authored (an account's: `Indexes::by_epoch`) or acted in (`Indexes::by_actor`) has
-/// an aspect on, its parts held or not (a header alone is judged by its author's chain).
+/// The things that need `t` held (the module doc), but `t`: those naming it, those a held commit
+/// it authored (an account's: `Indexes::by_epoch`) or acted in (`Indexes::by_actor`) has an aspect
+/// on, its parts held or not (a header alone is judged by its author's chain), and those a pending
+/// commit it signed writes on (`Indexes::pend_by`).
 fn needers<'a>(core: &'a Core, t: &'a Tid) -> impl Iterator<Item = Tid> + 'a {
     let lo = osis_base::CommitId([0; 32]);
     let authored = core.ix.by_epoch.range((*t, lo)..).take_while(move |((a, _), _)| a == t).flat_map(|(_, cs)| cs.iter());
     let acted = core.ix.by_actor.range((*t, Tid::from_bytes([0; 15]))..).take_while(move |((a, _), _)| a == t).flat_map(|(_, cs)| cs.iter());
     let signed = authored.chain(acted).flat_map(move |c| core.ix.commits.get(c).into_iter().flat_map(|m| m.view.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()));
-    core.ix.held.named_on(t).copied().chain(signed).filter(move |x| x != t)
+    // a pending commit it signed, on the things it writes on (`Wake::Thing`), as if held
+    let pending = core.ix.pend_by.get(t).into_iter().flatten().flat_map(move |c| core.ix.pend_keys.get(c).into_iter().flat_map(|ws| ws.iter().filter_map(|w| if let crate::apply::Wake::Thing(x) = w { Some(*x) } else { None }).collect::<Vec<_>>()));
+    core.ix.held.named_on(t).copied().chain(signed).chain(pending).filter(move |x| x != t)
 }
 
 /// Whether something rooted needs `t`, through any chain of needs; when not, `reached` holds `t`

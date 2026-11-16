@@ -31,6 +31,7 @@ fn setup_seeded(seed: u64) -> (LocalPeer, Tid) {
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.me()).collect();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
+    lp.hold(d);
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
     lp.sync_all().unwrap();

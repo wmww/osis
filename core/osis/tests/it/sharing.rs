@@ -154,6 +154,7 @@ fn leave_ends_only_own_ways_and_refuses_before_writing() {
     deliver(&alice, &bob);
     let t = bob.commit_with(|w| w.create_held()).unwrap();
     bob.grant(t, alice.me(), Role::Admin, Default::default()).unwrap();
+    alice.hold(t).unwrap();
     deliver(&bob, &alice);
     alice.make_link(t, Role::Read, Default::default()).unwrap();
     assert_eq!(alice.role_on(t).unwrap(), Some(Role::Admin));
@@ -171,6 +172,7 @@ fn purge_without_the_right_is_refused_spec_permissions_6() {
     let (alice, bob) = alice_knows_bob();
     let g = alice.commit_with(|w| w.create_held()).unwrap();
     alice.grant(g, bob.me(), Role::Write, Default::default()).unwrap();
+    bob.hold(g).unwrap();
     let k = || osis::DynamicAspectKey::untyped(ak("t:m.0"));
     let hers = commit_with(&alice, |w| w.at(g, k()).set(&s("hers"))).stamp.id;
     deliver(&alice, &bob);
@@ -273,6 +275,9 @@ fn a_parents_reader_sees_no_roster_of_its_member_team_spec_crypto_4() {
     let m = bob.commit_with(|w| w.create_held()).unwrap();
     bob.grant(m, erin.me(), Role::Write, Default::default()).unwrap();
     bob.grant(m, alice.me(), Role::Read, Default::default()).unwrap();
+    mesh(&all);
+    // alice holds the team she reads
+    alice.hold(m).unwrap();
     mesh(&all);
     let g = alice.commit_with(|w| w.create_held()).unwrap();
     alice.grant(g, m, Role::Write, Default::default()).unwrap();

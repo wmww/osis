@@ -40,6 +40,16 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, v: &View) {
     }
 }
 
+/// An unindexed commit's claims leave `versions` (`apply::unindex`), as an open would not index
+/// them: the mirror of `index_commit`.
+pub(crate) fn unindex_commit(core: &mut Core, id: &CommitId, v: &View) {
+    for (_, a) in signal_parts(v) {
+        if let Some(k) = claim(v, a) {
+            core.ix.versions.remove(&k, &(v.ts, *id));
+        }
+    }
+}
+
 /// Validity moved `id`'s claims in or out of `versions`.
 pub(crate) fn index_validity(core: &mut Core, id: &CommitId) {
     let Some(m) = core.ix.commits.get(id).filter(|m| m.view.aspects.iter().any(|a| a.replaces.is_some())) else { return };

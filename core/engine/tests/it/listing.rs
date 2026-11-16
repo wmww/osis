@@ -34,6 +34,7 @@ fn setup_built() -> (LocalPeer, Tid, [Tid; 4]) {
     let mut m = Mutation::new();
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
+    lp.hold(d);
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
     set_edge(&mut lp.peers[0].engine, d, ids[3], Some(edge(Role::Write)), None);

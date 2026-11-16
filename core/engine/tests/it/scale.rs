@@ -5,7 +5,7 @@
 //! The engine, store, crdt and commit layers alone (`osis_engine::local_peer`); sync's checks come
 //! with the new sync (notes/test-scale.md, Checks to restore).
 
-use crate::common::{BIG, GONEMAP, REFS, TEXT, edge, net, new_thing, s, set_edge};
+use crate::common::{BIG, GONEMAP, REFS, TEXT, edge, net, new_thing, s, set_edge, edge_write};
 use osis_base::{Ak, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
@@ -895,7 +895,7 @@ fn grant_and_open(n: usize) -> [Work; 2] {
         m.set(things[i % 10], &crate::common::REG, &s(&format!("v{i}"))).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
-    let (_, grant) = measured_at(&mut lp, 0, |lp| set_edge(&mut lp.peers[0].engine, things[0], Tid::from_bytes([7; 15]), Some(edge(Role::Read)), None));
+    let (_, grant) = measured_at(&mut lp, 0, |lp| edge_write(&mut lp.peers[0].engine, things[0], Tid::from_bytes([7; 15]), Some(edge(Role::Read)), None));
     let roster = lp.peers[0].engine.roster(&things[0]);
     let (_, open) = measured_at(&mut lp, 0, |lp| lp.peers[0].restart(1).unwrap());
     assert_eq!(lp.peers[0].engine.roster(&things[0]), roster);
@@ -964,7 +964,7 @@ fn role_history_join(n: usize) -> [Work; 4] {
     for i in 0..n {
         let h = Tid::from_bytes([(i % 5) as u8 + 1; 15]);
         let e = (i / 5 % 2 == 0).then(|| edge(Role::Read));
-        set_edge(&mut lp.peers[0].engine, t, h, e, None);
+        edge_write(&mut lp.peers[0].engine, t, h, e, None);
     }
     let pks = lp.packages(0).unwrap();
     for p in pks.iter().filter(|p| base.contains(&p.id)) {
@@ -975,8 +975,8 @@ fn role_history_join(n: usize) -> [Work; 4] {
             lp.deliver(1, p).unwrap();
         }
     });
-    let (g, grant) = measured_at(&mut lp, 0, |lp| set_edge(&mut lp.peers[0].engine, t, Tid::from_bytes([99; 15]), Some(edge(Role::Read)), None));
-    let (r, removal) = measured_at(&mut lp, 0, |lp| set_edge(&mut lp.peers[0].engine, t, Tid::from_bytes([99; 15]), None, None));
+    let (g, grant) = measured_at(&mut lp, 0, |lp| edge_write(&mut lp.peers[0].engine, t, Tid::from_bytes([99; 15]), Some(edge(Role::Read)), None));
+    let (r, removal) = measured_at(&mut lp, 0, |lp| edge_write(&mut lp.peers[0].engine, t, Tid::from_bytes([99; 15]), None, None));
     let pks: Vec<_> = [g, r].iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
     let (_, arrive) = measured_at(&mut lp, 1, |lp| {
         for p in &pks {

@@ -29,7 +29,7 @@ mod tests_account;
 
 pub(crate) use unindex::{unindex_commit, unindex_unreceived, unjudge_part};
 pub use waits::Wake;
-pub(crate) use waits::{awaits_record, next_at, set_pending};
+pub(crate) use waits::{awaits_record, next_at, pending_left, set_pending};
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]
@@ -951,8 +951,11 @@ fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
 /// (read from it: first). Whether it was pending.
 fn drop_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     crate::retention::forget_waiting_leftovers(tx, id)?;
+    // nothing of it held: no copy of it is needed again, nor its signers' chains for it
+    if !tx.core.ix.commits.contains_key(id) {
+        pending_left(tx.core, id);
+    }
     let was = unpend(tx, id)?;
-    // nothing of it held: no copy of it is needed again
     if !tx.core.ix.commits.contains_key(id) {
         tx.core.redeliver.remove(id);
         crate::sync_ids::opened::forget(tx, id)?;

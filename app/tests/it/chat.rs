@@ -51,6 +51,7 @@ fn two_people_chat() {
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options { name: "channel".into(), ..Default::default() }, a.account_root()).unwrap();
     a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
+    b.hold(c).unwrap();
     set_name(&a, "Alice").unwrap();
     assert_eq!(chat::my_name(&a).unwrap().as_deref(), Some("Alice"));
     let first = chat::send(&a, c, "Hello", "first post", None).unwrap();
@@ -88,6 +89,7 @@ fn edited_deleted_and_nameless() {
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
     a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
+    b.hold(c).unwrap();
     assert_eq!(chat::name(&a, c).unwrap(), "Chat");
     set_name(&a, "Alice").unwrap();
     let first = chat::send(&a, c, "", "typo", None).unwrap();
@@ -140,6 +142,7 @@ fn join_held_chat_opens_it() {
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options::default(), a.account_root()).unwrap();
     a.grant(c, b.me(), Role::Write, GrantOpts::default()).unwrap();
+    b.hold(c).unwrap();
     let link = a.make_link(c, Role::Write, LinkOpts { until: None, single_use: false }).unwrap().to_string();
     sync(&a, &b);
     for db in [a, b] {

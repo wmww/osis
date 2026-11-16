@@ -273,6 +273,10 @@ fn lost_built(from_e: bool) -> (LocalPeer, (Tid, Tid, Tid, Tid)) {
     let f = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&f, &d, &edge_of(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&d, &f, &edge_of(Role::Read)).unwrap();
+    // bob holds what alice shares
+    for t in [d, e, f] {
+        lp.hold_at(1, t);
+    }
     for (t, mark) in [(d, D_MARK), (e, E_MARK), (f, F_MARK)] {
         let mut m = Mutation::new();
         m.set(t, &REG, &s(&big(mark))).unwrap();
@@ -426,6 +430,7 @@ fn a_regrant_brings_back_what_a_drop_forgot_spec_perm_3() {
     let e = thing_of(&mut lp, 0, pa);
     for t in [d, e] {
         lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Read)).unwrap();
+        lp.hold_at(1, t);
     }
     let mut m = Mutation::new();
     m.set(d, &REG, &s("d alone")).unwrap();
@@ -757,6 +762,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     let (mut lp, ps) = people(4);
     let (pa, pb, px, pm) = (ps[0], ps[1], ps[2], ps[3]);
     let t = thing_of(&mut lp, 0, pa);
+    let mut obs = reader(&mut lp, 0, t, 0x7700);
     lp.peers[0].engine.grant(&t, &px, &edge_of(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&t, &pm, &edge_of(Role::Read)).unwrap();
     spread(&mut lp);
@@ -790,7 +796,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     let all = lp.peers[0].engine.commit_ids();
     for reversed in [false, true] {
         let i = lp.peers.len();
-        lp.peers.push(osis_engine::local_peer::Peer::new(0x7700 + reversed as u64, lp.peers[0].engine.now()).unwrap());
+        { let at = lp.peers[0].engine.now(); lp.peers.push(fresh_copy(&mut obs, at)); }
         let mut v = all.clone();
         if reversed {
             v.reverse();
@@ -1585,7 +1591,7 @@ fn link_key_writes_commit_form_spec_commits_3() {
 #[test]
 fn linked_frontier_spec_perm_5_1() {
     let mut lp = net(3, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let x = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
@@ -2311,6 +2317,11 @@ fn record_edge_removal_any_order_spec_perm_2() {
     let (mut lp, ps) = people(4);
     let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
+    // 2 and 3 read o
+    for i in [2, 3] {
+        lp.hold_at(i, o);
+        lp.peers[0].engine.grant(&o, &ps[i], &edge_of(Role::Read)).unwrap();
+    }
     let ids: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
     send(&mut lp, 0, 1, &ids);
     let before = lp.peers[1].engine.commit_ids();

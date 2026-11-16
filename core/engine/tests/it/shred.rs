@@ -18,6 +18,14 @@ use std::sync::Arc;
 /// A peer over a small key tree (arity 4: few units share a leaf, so a shred elsewhere does
 /// not incidentally rotate a leaked copy away) and small pages, recording every row written.
 fn peer(seed: u64) -> Peer {
+    let mut p = peer_bare(seed);
+    p.engine.create_account().unwrap();
+    p.engine.take_wakes();
+    p
+}
+
+/// `peer` that joined no account yet.
+fn peer_bare(seed: u64) -> Peer {
     let clock = Arc::new(ManualClock::new(T0));
     let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
     backend.record_history();
@@ -26,7 +34,6 @@ fn peer(seed: u64) -> Peer {
     let blob_disk = (MemoryBackend::new(), MemoryRoot::new());
     blob_disk.0.record_history();
     let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), osis_engine::local_peer::blob_area(&blob_disk, seed).unwrap(), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
-    engine.create_account().unwrap();
     engine.take_wakes();
     let events = engine.subscribe();
     Peer { engine, clock, backend, root, blob_disk, events, restarts: 0, discarded: Vec::new(), discards: 0, redelivered: 0 }
@@ -47,13 +54,31 @@ fn reopened(p: Peer, seed: u64) -> Peer {
 /// A node apart from `net2`'s; `FRESH + 1` reopens it on an rng stream of its own.
 const FRESH: u64 = 2;
 
-/// A `FRESH` node holding `setup`, received in order.
-fn holding(setup: &[osis_engine::local_peer::Package]) -> Peer {
-    let mut p = peer(FRESH);
+/// A `FRESH` node of peer `by`'s account (`pair_into`): it holds what it is given of `by`'s things.
+fn node_of(lp: &mut LocalPeer, by: usize) -> Peer {
+    let mut p = peer_bare(FRESH);
+    pair_into(lp, by, &mut p);
+    p
+}
+
+/// Node `p` holding `setup`, received in order.
+fn holding(mut p: Peer, setup: &[osis_engine::local_peer::Package]) -> Peer {
     for pk in setup {
         p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     p
+}
+
+/// `net2` with peer 1 a node of 0's account, so it holds what it is given of 0's things.
+fn net2_one() -> LocalPeer {
+    LocalPeer::cached("shred::net2_one", || {
+        let mut lp = LocalPeer::of(vec![peer(0)], 0);
+        let mut p = peer_bare(1);
+        pair_into(&mut lp, 0, &mut p);
+        lp.peers.push(p);
+        (lp, ())
+    })
+    .0
 }
 
 /// Two peers (seeds 0 and 1): built once (`LocalPeer::cached`).
@@ -392,7 +417,7 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
     let aspects = [ak("t:reg.0"), ak("t:list.0"), ak("t:big.0")];
     let mut reads = Vec::new();
     for order in [[0usize, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-        let mut lp = net2();
+        let mut lp = net2_one(); // 1 a node of 0's account
         let t = new_thing(&mut lp, 0);
         let mut m = Mutation::new();
         m.set(t, &REG, &s("old")).unwrap();
@@ -621,6 +646,8 @@ fn past_expiry_and_purge_alike_in_every_order_by_hand_spec_commits_5() {
 
 fn past_expiry_and_purge_alike(every: bool) {
     let mut lp = net2();
+    // the nodes judged: nodes of 0's account
+    let node = node_of(&mut lp, 0);
     let (t2, t3) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let setup = lp.packages(0).unwrap();
     let t = new_thing(&mut lp, 0);
@@ -671,7 +698,7 @@ fn past_expiry_and_purge_alike(every: bool) {
     let next = std::sync::atomic::AtomicUsize::new(0);
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     // every case starts at one node holding the setup: built once, each case a copy of it
-    let base = std::sync::Mutex::new(holding(&setup));
+    let base = std::sync::Mutex::new(holding(node, &setup));
     let (base, items, orders, shapes, cases, ids) = (&base, &items, &orders, &shapes, &cases, &ids);
     std::thread::scope(|sc| {
         for _ in 0..threads {
@@ -758,6 +785,8 @@ fn tombstone_alike(stride: u64) {
     let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin };
     let marker = "TOMBSTONE-SECRET-8e1a";
     let mut lp = net2();
+    // the nodes judged: nodes of 0's account
+    let node = node_of(&mut lp, 0);
     let setup = lp.packages(0).unwrap();
     let t = new_thing_keeping(&mut lp, 0, &[("t:reg.0", osis_schema::History::FOREVER)]);
     let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !setup.iter().any(|k| k.id == p.id)).collect();
@@ -798,7 +827,7 @@ fn tombstone_alike(stride: u64) {
             }
         }
     }
-    let base = std::sync::Mutex::new(holding(&setup));
+    let base = std::sync::Mutex::new(holding(node, &setup));
     let one = |j: u64| {
         osis_base::testenv::caught(|| {
             let (k, order, restart) = &jobs[j as usize];
@@ -836,7 +865,9 @@ fn tombstone_alike(stride: u64) {
 /// request naming it that resets nothing; node 1 holds `c` with its last page away, then the request.
 fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::CommitId, osis_engine::local_peer::Package) {
     let a = ak("t:big.0");
-    let t = new_thing(lp, 0);
+    // 1 reads t
+    lp.sync(1, 0).unwrap();
+    let t = new_shared(lp, 0);
     let mut m = Mutation::new();
     m.set(t, &BIG, &Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -975,7 +1006,7 @@ fn fallen_snapshot_rig() -> Fallen {
     use osis_engine::flows::Demotion;
     let mut lp = LocalPeer::of(vec![peer(0), peer(1), peer(2)], 0);
     lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let x = lp.peers[2].engine.me();
     lp.peers[0].engine.grant(&t, &x, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
@@ -1325,7 +1356,7 @@ fn purge_strips_carrying_snapshots_alike_in_every_order_spec_commits_5() {
     let mut seen: Option<(Vec<osis_engine::engine::listing::PartBody>, std::collections::BTreeMap<osis_base::CommitId, osis_base::CommitId>)> = None;
     for bare in [false, true] {
         for order in [[0usize, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
-            let mut lp = net2();
+            let mut lp = net2_one(); // 1 a node of 0's account
             let t = new_thing(&mut lp, 0);
             lp.sync(0, 1).unwrap();
             lp.advance(5);
@@ -1396,7 +1427,7 @@ fn record_of(lp: &mut LocalPeer, t: Tid) -> Vec<osis_engine::local_peer::Package
 #[test]
 fn pending_part_awaiting_its_record_is_judged_with_it_spec_commits_4() {
     for purge in [false, true] {
-        let mut lp = net2();
+        let mut lp = net2_one(); // 1 a node of 0's account
         let t = new_thing(&mut lp, 0);
         lp.sync(0, 1).unwrap();
         let t2 = new_thing(&mut lp, 0);

@@ -823,6 +823,12 @@ indexes! {
     pub pend_on: JSetMap<crate::apply::Wake, CommitId>,
     /// `pend_on`'s keys per pending commit.
     pub pend_keys: JMap<CommitId, Arc<Vec<crate::apply::Wake>>>,
+    /// Pending commits per signer (author, and actor where it differs), from their headers: what
+    /// a pending commit needs held, as a held one does (`retention::needed`). Derived from
+    /// `pending` with `pend_on`, never persisted.
+    pub pend_by: JSetMap<Tid, CommitId>,
+    /// `pend_by`'s keys per pending commit.
+    pub pend_signers: JMap<CommitId, Arc<Vec<Tid>>>,
     /// Link keys this node keeps reading as, their seed forgotten (`Engine::keep_bearer`,
     /// spec/permissions.md §7, Bearer use).
     pub bearers: JSet<Tid>,
@@ -1285,9 +1291,6 @@ pub struct Core {
     /// Things judged again at the end of the transaction for whether a held thing still needs
     /// them (`retention::needed`): something naming them or a commit they signed moved.
     pub needs_due: BTreeSet<Tid>,
-    /// Things released in this transaction (`Engine::released`): Interim
-    /// (issues/needed-interim-roots.md), what `retention::needed` judges without the interim roots.
-    pub released_now: BTreeSet<Tid>,
     /// Destroyed things kept here that a held thing may need (`retention::destroy::needs_evidence`,
     /// `Engine::destroyed_needed`), read through `Core::destroyed_kept`.
     pub(crate) destroyed_kept: DestroyedKept,
@@ -1550,7 +1553,6 @@ impl Core {
             valueless_dirty: self.valueless_dirty.clone(),
             destroyed_due: self.destroyed_due.clone(),
             needs_due: self.needs_due.clone(),
-            released_now: self.released_now.clone(),
             destroyed_kept: self.destroyed_kept.clone(),
             batched: self.batched.clone(),
             touches: self.touches.clone(),
@@ -2123,7 +2125,6 @@ impl Core {
             valueless_dirty: _,
             destroyed_due: _,
             needs_due: _,
-            released_now: _,
             destroyed_kept: _,
             wakes: _,
             resnapshots_due: _,
@@ -2384,7 +2385,6 @@ impl Core {
             valueless_dirty: BTreeSet::new(),
             destroyed_due: BTreeSet::new(),
             needs_due: BTreeSet::new(),
-            released_now: BTreeSet::new(),
             destroyed_kept: DestroyedKept::default(),
             batched: None,
             touches: Default::default(),
@@ -3759,7 +3759,6 @@ impl Engine {
                 }
                 tx.core.destroyed_due.clear();
                 tx.core.needs_due.clear();
-                tx.core.released_now.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
                 }

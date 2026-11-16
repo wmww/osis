@@ -379,7 +379,7 @@ fn snapshot_not_covered_by_an_earlier_equal_spec_commits_4() {
 fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     let mut lp = net(4, 0);
     lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let (w, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
@@ -436,7 +436,7 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
 fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
     let mut lp = net(5, 0);
     lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     for p in [2, 3] {
         let w = lp.peers[p].engine.me();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
@@ -487,7 +487,7 @@ fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
 fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
     let mut lp = net(4, 0);
     lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let (w, y) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
@@ -562,7 +562,7 @@ fn later_snapshot_settles(lp: &mut LocalPeer, t: Tid, asp: &Ak) {
 fn flip_flag_on_a_snapshot_body_settles_spec_permissions_4() {
     let mut lp = net(4, 0);
     lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     for p in [2, 3] {
         let w = lp.peers[p].engine.me();
         set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);

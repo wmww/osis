@@ -37,7 +37,6 @@ impl Engine {
             crate::flows::inbox::drop_account_tickets(tx, &out)?;
             // what stays of them (records, role-class state) only while a held thing needs it
             tx.core.needs_due.extend(things.iter().copied());
-            tx.core.released_now.extend(things.iter().copied());
             crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new())
         })?;
         Ok(f.blobs)

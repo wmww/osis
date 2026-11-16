@@ -44,7 +44,7 @@ fn bad_signature_rejected_spec_commits_4() {
 // spec/commits.md §4: receivers dedup by commit ID; remote applies fire events with origin.
 #[test]
 fn dedup_and_events_spec_commits_4() {
-    let mut lp = net(2, 0);
+    let mut lp = net_apart(2, 0);
     let t = new_thing(&mut lp, 0);
     let pks = packages(&mut lp, 0);
     for p in &pks {
@@ -68,8 +68,12 @@ fn dedup_and_events_spec_commits_4() {
 // touched thing: the commit pends, kept across a restart, and applies once the record comes.
 #[test]
 fn pending_until_created_spec_commits_4() {
-    let mut lp = net(2, 0);
+    let mut lp = net_apart(2, 0);
+    // 1 reads t; it holds nothing of 0's
+    sync(&mut lp, 1, 0);
     let t = new_thing(&mut lp, 0);
+    let r = lp.peers[1].engine.me();
+    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("second")).unwrap();
     lp.peers[0].commit(m).unwrap();
@@ -88,6 +92,10 @@ fn pending_until_created_spec_commits_4() {
     }
     let r = lp.peers[1].receive(&pks.last().unwrap().bytes, Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
+    // 1's grant waits for the creation too
+    for p in &pks[c + 1..pks.len() - 1] {
+        lp.deliver(1, p).unwrap();
+    }
     lp.deliver(1, &pks[c]).unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("second")));
@@ -114,10 +122,14 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::Codec;
     use osis_schema::core_types::{Edge, ROLES};
-    let mut lp = net(3, 0);
+    let mut lp = net_apart(3, 0);
     let a = lp.peers[0].engine.me();
     sync(&mut lp, 0, 1);
+    sync(&mut lp, 2, 1);
     let t = new_thing(&mut lp, 1);
+    // 2 reads t
+    let r = lp.peers[2].engine.me();
+    set_edge(&mut lp.peers[1].engine, t, r, Some(edge(Role::Read)), None);
     let mut m = Mutation::new();
     let u = lp.peers[1].engine.new_thing(&mut m, t);
     m.set(u, &REG, &s("u")).unwrap();
@@ -160,7 +172,8 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
 // (spec/requirements.md, Scale: a first sync is O(commits), not O(commits × awaiting)).
 #[test]
 fn pending_not_reexamined_while_unchanged_spec_commits_4() {
-    let mut lp = net(2, 0);
+    // 1 a node of 0's account
+    let mut lp = net_one(2);
     let u = new_thing(&mut lp, 0);
     let t = new_thing(&mut lp, 0);
     for i in 0..40 {
@@ -198,7 +211,7 @@ fn pending_not_reexamined_while_unchanged_spec_commits_4() {
 #[test]
 fn drift_parks_spec_crdt_2_2() {
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     sync(&mut lp, 0, 1);
     lp.peers[0].clock.advance(2 * 3_600_000);
     let mut m = Mutation::new();
@@ -341,25 +354,72 @@ fn parked_spec_versioning_2() {
     assert_eq!(lp.peers[1].engine.pending().len(), 2);
 }
 
+// spec/commits.md §5 What a held thing needs, §4 Pending storage: a pending commit needs its
+// author's chain as a held one does. b's two writes on t reach reader 2 before b's grant; one of
+// them goes (its carrier left), so b's chain is judged: the other, still pending on t, keeps it, and
+// applies once the grant comes, b's chain not sent again.
+#[test]
+fn a_pending_commit_keeps_its_authors_chain_spec_commits_5() {
+    let mut lp = net(3, 0);
+    let t = new_thing(&mut lp, 0);
+    let r = lp.peers[2].engine.me();
+    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    for pk in packages(&mut lp, 0) {
+        lp.deliver(2, &pk).unwrap();
+    }
+    let b = lp.peers[1].engine.me();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    let w = ["one", "two"].map(|v| {
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s(v)).unwrap();
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.advance(1);
+        c
+    });
+    let own: Vec<_> = packages(&mut lp, 1).into_iter().filter(|pk| lp.peers[1].engine.header(&pk.id).unwrap().author == b).collect();
+    for pk in &own {
+        lp.deliver(2, pk).unwrap();
+    }
+    let e = &mut lp.peers[2].engine;
+    assert!(w.iter().all(|c| e.pending().iter().any(|(x, _)| x == c)), "{:?}", e.pending());
+    assert!(e.forget_pending(&w[0]).unwrap());
+    // the grant, and nothing more of b's
+    let bs = [b, lp.peers[1].engine.tid()];
+    let rest: Vec<_> = packages(&mut lp, 0).into_iter().filter(|pk| !bs.contains(&lp.peers[0].engine.header(&pk.id).unwrap().author)).collect();
+    for pk in &rest {
+        lp.deliver(2, pk).unwrap();
+    }
+    let e = &mut lp.peers[2].engine;
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("two")));
+}
+
 // spec/commits.md §2, §4: role before content: a grantee's write arriving before its
 // grant waits for the chain and applies after.
 #[test]
 fn grantee_waits_for_grant_spec_commits_4() {
     let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
+    // peer 2 reads t first
+    let r = lp.peers[2].engine.me();
+    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    for pk in packages(&mut lp, 0) {
+        lp.deliver(2, &pk).unwrap();
+    }
     let b = lp.peers[1].engine.me();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("from b")).unwrap();
     lp.peers[1].commit(m).unwrap();
-    // peer 2 gets b's own commits first, then a's
+    // then b's own commits, then a's
     for pk in packages(&mut lp, 1) {
         if lp.peers[1].engine.header(&pk.id).unwrap().author == b {
             lp.deliver(2, &pk).unwrap();
         }
     }
-    assert_eq!(lp.peers[2].engine.get(&t, &ak("t:reg.0")).unwrap(), None, "before the grant nothing is judged");
+    assert_eq!(lp.peers[2].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "before the grant nothing is judged");
     sync(&mut lp, 0, 2);
     assert_eq!(lp.peers[2].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("from b")));
 }
@@ -374,6 +434,9 @@ fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
     lp.peers[0].engine.give_own_secrets(&t).unwrap();
     lp.peers[0].engine.grant(&t, &ps[1], &crate::flows::edge_of(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&t, &ps[1], &crate::flows::edge_of(Role::Write)).unwrap();
+    // 2 reads t
+    lp.hold_at(2, t);
+    lp.peers[0].engine.grant(&t, &ps[2], &crate::flows::edge_of(Role::Read)).unwrap();
     let pks = packages(&mut lp, 0);
     let c = creation_of(&mut lp, &pks, t);
     let roles: Vec<_> = pks[c + 1..].iter().filter(|p| is_role(&lp.peers[0].engine, &p.id)).cloned().collect();
@@ -387,7 +450,7 @@ fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
     let e = &mut lp.peers[2].engine;
     assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert_eq!(e.roster(&t).get(&ps[1]).map(|x| x.role), Some(Role::Write));
-    assert!(!e.roster(&t).contains_key(&ps[2]));
+    assert_eq!(e.roster(&t).get(&ps[2]).map(|x| x.role), Some(Role::Read));
     assert_eq!(lp.peers[2].redelivered, 0, "nothing fetched again");
 }
 
@@ -400,7 +463,8 @@ fn role_commits_before_their_creation_pend_then_apply_spec_commits_4() {
 // gives the write.
 #[test]
 fn junk_first_while_a_record_is_away_goes_once_it_comes_spec_commits_4() {
-    let mut lp = net(2, 0);
+    // 1 a node of 0's account
+    let mut lp = net_one(2);
     let t = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("true")).unwrap();

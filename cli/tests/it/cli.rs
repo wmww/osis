@@ -98,7 +98,7 @@ fn things_and_aspects_plan_cli_4() {
     let aks = s.ok(&["aspects", &t]).out;
     assert!(aks.contains("note:title.0") && aks.contains("created.0"), "{aks}");
     let show = s.ok(&["show", &t]).out;
-    assert!(show.contains("note:title.0\t\"hi\"") && show.contains("role\tadmin") && show.contains("created.0\t{admin: osis://"), "{show}");
+    assert!(show.contains("note:title.0\t\"hi\"") && show.contains("role\tadmin") && show.contains("created.0\t{admin: weak(osis://"), "{show}");
     s.ok(&["rm", &t, "note:title.0"]);
     assert_eq!(s.code(&["get", &t, "note:title.0"]), 3);
 }
@@ -225,7 +225,7 @@ fn json_output_plan_cli_5() {
 #[test]
 fn write_script_atomic_plan_cli_4() {
     let s = S::mem();
-    let script = "# a note with a tag\ncreate --as n note:title.0 \"a b\"\nset $n note:tags.0 #{\"x\"}\nset $n note:m.0 [\"k\"] [$n, me]\n";
+    let script = "# a note with a tag\ncreate --as n note:title.0 \"a b\"\nset $n note:tags.0 #{\"x\"}\nset $n note:m.0 [\"k\"] [weak($n), weak(me)]\n";
     let o = s.call(&["write"], script);
     assert_eq!(o.code, 0, "{}", o.err);
     let mut lines = o.out.lines();
@@ -234,7 +234,7 @@ fn write_script_atomic_plan_cli_4() {
     let n = lines.next().unwrap().strip_prefix("n\t").unwrap().to_string();
     assert_eq!(s.ok(&["get", &n, "note:title.0"]).line(), "\"a b\"");
     let me = s.ok(&["--json", "whoami"]).out.split("\"me\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
-    assert_eq!(s.ok(&["get", &n, "note:m.0", "[\"k\"]"]).line(), format!("[{n}, {me}]"));
+    assert_eq!(s.ok(&["get", &n, "note:m.0", "[\"k\"]"]).line(), format!("[weak({n}), weak({me})]"));
     // the third line fails: nothing of the script is committed
     let bad = format!("create --as x a:b.0 1\nset {n} a:c.0 2\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n");
     let o = s.call(&["write"], &bad);
@@ -304,8 +304,10 @@ fn commits_undo_redo_plan_cli_4() {
     s.ok(&["set", &t, "a:x.0", "1"]);
     s.ok(&["set", &t, "a:x.0", "2"]);
     let h = s.ok(&["writes", "--thing", &t]).out;
-    assert_eq!(h.lines().count(), 3, "{h}");
-    assert!(h.lines().all(|l| l.contains(" content in-effect ")), "{h}");
+    // its own keys' two role commits (spec/permissions.md §3), its creation and the two writes
+    assert_eq!(h.lines().count(), 5, "{h}");
+    assert_eq!(h.lines().filter(|l| l.contains(" content in-effect ")).count(), 3, "{h}");
+    assert_eq!(h.lines().filter(|l| l.contains(" role in-effect ")).count(), 2, "{h}");
     assert_eq!(s.ok(&["writes", "--thing", &t, "--next", "redo"]).out, "");
     let next = s.ok(&["writes", "--thing", &t, "--next", "undo"]).out;
     assert_eq!(next.lines().count(), 1, "{next}");
@@ -324,7 +326,7 @@ fn commits_undo_redo_plan_cli_4() {
     assert_eq!(s.ok(&["writes", "--thing", &t, "--kind", "revert"]).out.lines().count(), 2);
     let newest = s.ok(&["writes", "--thing", &t, "--max", "1"]).out;
     let pos = newest.split(' ').next().unwrap();
-    assert_eq!(s.ok(&["writes", "--thing", &t, "--before", pos]).out.lines().count(), 4);
+    assert_eq!(s.ok(&["writes", "--thing", &t, "--before", pos]).out.lines().count(), 6);
     s.ok(&["revert", id_of(&newest)]);
     assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "1");
     assert_eq!(s.code(&["writes", "--thing", &t, "--kind", "nope"]), 2);
@@ -414,7 +416,7 @@ fn backlinks_lists_the_referrers() {
     let s = S::mem();
     let (a, t) = (s.thing(), s.thing());
     let before = s.ok(&["backlinks", &t]).out;
-    s.ok(&["set", &a, "note:link.0", &t]);
+    s.ok(&["set", &a, "note:link.0", &format!("weak({t})")]);
     let out = s.ok(&["backlinks", &t]).out;
     assert!(out.lines().count() == before.lines().count() + 1 && out.contains(&format!("{a} note:link.0\n")), "{out}");
     assert!(s.ok(&["--json", "backlinks", &t]).line().contains(&format!("{{\"tid\":\"{a}\",\"ak\":\"note:link.0\"}}")));
@@ -439,8 +441,9 @@ fn watch_initial_not_counted_plan_cli_4() {
     assert_eq!((o.code, o.line(), o.err.trim()), (6, "initial - - a:b.0 7", "error: timed out after 0 change(s)"));
     let o = s.call(&["--json", "--timeout", "50ms", "watch", &t, "--count", "1"], "");
     assert_eq!(o.code, 6, "{}", o.err);
-    // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`), none counted
-    assert_eq!(o.out.lines().count(), 2, "{}", o.out);
+    // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`, its own keys'
+    // `keys.0`, `secrets.0` and `sync.0`), none counted
+    assert_eq!(o.out.lines().count(), 5, "{}", o.out);
     assert!(o.out.lines().all(|l| l.contains("\"origin\":\"initial\"")) && o.out.contains("\"value\":7}"), "{}", o.out);
     // a path inside the aspect, as `get` reads it
     s.ok(&["set", &t, "a:m.0", "{\"a\": 1, \"b\": 2}"]);

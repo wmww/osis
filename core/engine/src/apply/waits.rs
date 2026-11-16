@@ -90,6 +90,31 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
             false => core.ix.pend_keys.insert(*id, std::sync::Arc::new(wakes)),
         };
     }
+    // its signers, needed while it pends as a held commit's are (`retention::needed`); those of
+    // one leaving unapplied are judged again where it leaves (`pending_left`)
+    let signers: Vec<Tid> = match &r {
+        Some((_, Some(h))) => {
+            let mut v = vec![h.author, h.actor];
+            v.sort();
+            v.dedup();
+            v
+        }
+        // pending still, its header not read this time: as it was
+        Some((_, None)) => core.ix.pend_signers.get(id).map(|v| v.to_vec()).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    if core.ix.pend_signers.get(id).map(|w| w.as_slice()) != Some(signers.as_slice()) {
+        for k in core.ix.pend_signers.get(id).cloned().unwrap_or_default().iter() {
+            core.ix.pend_by.remove(k, id);
+        }
+        for k in &signers {
+            core.ix.pend_by.insert(*k, *id);
+        }
+        match signers.is_empty() {
+            true => core.ix.pend_signers.remove(id),
+            false => core.ix.pend_signers.insert(*id, std::sync::Arc::new(signers)),
+        };
+    }
     match r {
         Some((r, _)) => {
             if core.ix.pending.get(id) != Some(&r) {
@@ -102,6 +127,13 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
             }
         }
     }
+}
+
+/// Pending commit `id` leaves unapplied (its last carrier gone, its things forgotten): a need of
+/// its signers goes, so each is judged again (`retention::needed`). Call before it unpends.
+pub(crate) fn pending_left(core: &mut Core, id: &CommitId) {
+    let signers = core.ix.pend_signers.get(id).cloned().unwrap_or_default();
+    core.needs_due.extend(signers.iter().copied());
 }
 
 /// Whether a commit here awaits record `t`: one pending, or a waiting part of one (what names a

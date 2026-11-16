@@ -133,10 +133,55 @@ pub fn item(name: &str, n: i64) -> Value {
     Value::Map([(Value::Int(0), s(name)), (Value::Int(1), Value::Int(n))].into_iter().collect())
 }
 
-/// `n` peers, each its own account (`LocalPeer::new` at `T0`): built once per `(n, seed)`
-/// (`LocalPeer::cached`; a copy costs less than a build).
+/// `n` peers, each its own account (`LocalPeer::new` at `T0`), each holding the others' account
+/// chains (synced once), so any may grant any: built once per `(n, seed)` (`LocalPeer::cached`; a
+/// copy costs less than a build).
 pub fn net(n: usize, seed: u64) -> LocalPeer {
-    LocalPeer::cached(&format!("common::net/{n}/{seed}"), || (LocalPeer::new(n, seed, T0).unwrap(), ())).0
+    LocalPeer::cached(&format!("common::net/{n}/{seed}"), || {
+        let mut lp = LocalPeer::new(n, seed, T0).unwrap();
+        lp.sync_all().unwrap();
+        (lp, ())
+    })
+    .0
+}
+
+/// `n` peers, each its own account, that have met no other (`LocalPeer::new` at `T0`).
+pub fn net_apart(n: usize, seed: u64) -> LocalPeer {
+    LocalPeer::cached(&format!("common::net_apart/{n}/{seed}"), || (LocalPeer::new(n, seed, T0).unwrap(), ())).0
+}
+
+/// `n` peers, the nodes of one account (peer 0 made it, the others paired, nothing else synced):
+/// each holds what another makes under the account root (`new_thing`) once it holds its record
+/// and the root's strong to it. Built once per `n` (`LocalPeer::cached`).
+pub fn net_one(n: usize) -> LocalPeer {
+    LocalPeer::cached(&format!("common::net_one/{n}"), || {
+        let mut lp = LocalPeer::new_bare(n, 0, T0).unwrap();
+        lp.peers[0].engine.create_account().unwrap();
+        let mut rest = lp.peers.split_off(1);
+        for p in &mut rest {
+            pair_into(&mut lp, 0, p);
+        }
+        lp.peers.extend(rest);
+        (lp, ())
+    })
+    .0
+}
+
+/// Pairs `p`, a node that joined no account, into peer `by`'s account (as `Engine::pair` over a
+/// direct connection).
+pub fn pair_into(lp: &mut LocalPeer, by: usize, p: &mut osis_engine::local_peer::Peer) {
+    let account = lp.peers[by].engine.me();
+    for id in p.engine.commit_ids() {
+        let pk = p.engine.package(&id).unwrap().unwrap();
+        lp.deliver(by, &pk).unwrap();
+    }
+    let node = p.engine.tid();
+    let (_, send) = lp.peers[by].engine.pair(&node).unwrap();
+    for id in send {
+        let pk = lp.peers[by].engine.package(&id).unwrap().unwrap();
+        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    p.engine.paired(&account).unwrap();
 }
 
 /// `net` whose peers join no account: the test makes or pairs them.
@@ -154,7 +199,8 @@ pub fn net_off(n: usize, seed: u64) -> LocalPeer {
     lp
 }
 
-/// A new plain thing of peer `i`: its first admin `Engine::plain_admin`, held where it lives.
+/// A new plain thing of peer `i`: its first admin `Engine::plain_admin`, held where it lives and
+/// by every other peer (`LocalPeer::hold`), which keeps it once granted a role (`set_edge`).
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     new_thing_keeping(lp, i, &[])
 }
@@ -170,21 +216,49 @@ pub fn new_thing_keeping(lp: &mut LocalPeer, i: usize, extra: &[(&str, osis_sche
     x.rules.extend(setting(extra).rules);
     m.set(t, &ct::RETENTION, &x).unwrap();
     p.commit(m).unwrap();
+    lp.hold(t);
     t
+}
+
+/// `new_thing` shared with the net (`share`).
+pub fn new_shared(lp: &mut LocalPeer, i: usize) -> Tid {
+    let t = new_thing(lp, i);
+    share(lp, i, t);
+    t
+}
+
+/// Every other peer holding no role on `t` is granted read on it through the flow by peer
+/// `admin`, an admin of it: each keeps what it receives of `t`.
+pub fn share(lp: &mut LocalPeer, admin: usize, t: Tid) {
+    for j in (0..lp.peers.len()).filter(|j| *j != admin) {
+        let who = lp.peers[j].engine.me();
+        if lp.peers[admin].engine.key_role(&t, &who).is_none() {
+            lp.peers[admin].engine.grant(&t, &who, &edge(Role::Read)).unwrap();
+        }
+    }
 }
 
 pub fn edge(role: Role) -> ct::Edge {
     ct::Edge { role, until: None, invite: None, floor: None }
 }
 
-/// Peer `i` writes `holder`'s edge on `thing` as remove + put (`None` removes it), with an
-/// optional frontier: a write that needs one given none carries an empty one (an explicit
-/// removal, one with no frontier being a finalize, or a write that audits, spec/permissions.md
-/// §2, §5.1). A hand-built frontier says exactly what this node lists: it answers the write
-/// with no addendum of its own (`Engine::write_addenda`), which would list the rest. A bare edge
-/// write (no secrets): `LocalPeer` runs no sync passes, so no repair follows it here; on a
-/// `Net`, set up access with `Net::grant`.
+/// Writes `holder`'s edge on `thing`: a grant by the flow (`Engine::grant`: the holder's secrets
+/// with it, so a holder holding the thing keeps it) when the write needs no frontier and is given
+/// none, else `edge_write`. Its edge commit.
 pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
+    match &edge {
+        Some(x) if frontier.is_none() && !e.needs_frontier(&thing, &holder, edge.as_ref()) => *e.grant(&thing, &holder, x).unwrap().commits.last().unwrap(),
+        _ => edge_write(e, thing, holder, edge, frontier),
+    }
+}
+
+/// Writes `holder`'s edge on `thing` as a bare remove + put (`None` removes it; no secrets: for a
+/// holder no peer is, or an edge between things), with an optional frontier: a write that needs
+/// one given none carries an empty one (an explicit removal, one with no frontier being a
+/// finalize, or a write that audits, spec/permissions.md §2, §5.1). A hand-built frontier says
+/// exactly what this node lists: it answers the write with no addendum of its own
+/// (`Engine::write_addenda`), which would list the rest.
+pub fn edge_write(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
     if frontier.is_some() || e.needs_frontier(&thing, &holder, edge.as_ref()) {
         e.write_addenda(false);
     }
@@ -199,6 +273,35 @@ pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>,
         m.frontier(f);
     }
     e.commit(m).unwrap().unwrap()
+}
+
+/// A fresh observer of `t`: a node of its own account (`Peer::new` at peer `admin`'s time) holding
+/// `t`, granted read on it by peer `admin` through the flow, holding what peer `admin` holds then
+/// (made before the history a test judges: what it holds of `t` is its base), so it opens and keeps
+/// what it is given of `t`. Kept outside `lp`, a template: each copy (`fresh_copy`) is one fresh
+/// node, given what the test gives it.
+pub fn reader(lp: &mut LocalPeer, admin: usize, t: Tid, seed: u64) -> osis_engine::local_peer::Peer {
+    let mut p = osis_engine::local_peer::Peer::new(seed, lp.peers[admin].engine.now()).unwrap();
+    for id in p.engine.commit_ids() {
+        let pk = p.engine.package(&id).unwrap().unwrap();
+        lp.deliver(admin, &pk).unwrap();
+    }
+    p.engine.hold(osis_base::Strong(t)).unwrap();
+    let me = p.engine.me();
+    lp.peers[admin].engine.grant(&t, &me, &edge(Role::Read)).unwrap();
+    for pk in packages(lp, admin) {
+        p.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    p.reexamine().unwrap();
+    assert!(p.engine.closure_holds(&t), "the observer holds {t:?}");
+    p
+}
+
+/// A copy of observer `p` (`reader`) at wall time `at`: one fresh node.
+pub fn fresh_copy(p: &mut osis_engine::local_peer::Peer, at: WallMs) -> osis_engine::local_peer::Peer {
+    let q = p.copy().unwrap();
+    q.clock.set(at);
+    q
 }
 
 /// Delivers every commit of `from` to `to`.

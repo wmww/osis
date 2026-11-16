@@ -103,10 +103,11 @@ fn role_part_applies_spec_commits_4() {
     assert_ne!(applied, was, "the G part applies");
 }
 
-/// Peer 0's commit `write` makes on two of its things peer 1 knows, split per thing.
+/// Peer 0's commit `write` makes on two of its things peer 1 (a node of 0's account) knows,
+/// split per thing.
 fn two_things(write: impl Fn(&mut Mutation, Tid, Tid)) -> (osis_engine::local_peer::LocalPeer, Tid, Tid, osis_engine::local_peer::Package) {
     use crate::common::*;
-    let mut lp = net(2, 0);
+    let mut lp = net_one(2); // 1 a node of 0's account
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     for pk in packages(&mut lp, 0) {
         lp.deliver(1, &pk).unwrap();
@@ -162,7 +163,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     use crate::common::*;
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Writer, create, encode_delta};
-    let mut lp = net(2, 0);
+    let mut lp = net_one(2);
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     for pk in packages(&mut lp, 0) {
         lp.deliver(1, &pk).unwrap();
@@ -199,7 +200,7 @@ fn parked_part_waits_alone_spec_versioning_2() {
     assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("ok")), "the rest applies");
     assert_eq!(e.pending(), vec![(id, Reason::Parked)], "the parked part stays");
     // the same from the other order, and together
-    let (mut other, mut together) = (net(2, 0), net(2, 0));
+    let (mut other, mut together) = (net_one(2), net_one(2));
     for lp2 in [&mut other, &mut together] {
         for pk in packages(&mut lp, 0) {
             lp2.deliver(1, &pk).unwrap();
@@ -230,7 +231,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Source, Writer, create, encode_delta};
     use osis_schema::{Codec, core_types as ct};
-    let mut lp = net(2, 0);
+    let mut lp = net_one(2);
     let g = new_thing(&mut lp, 0);
     let known = packages(&mut lp, 0);
     let h = new_thing(&mut lp, 0);
@@ -287,7 +288,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     // a relay's junk in H's slot first: the true copy's boxes are read though the junk keeps the slot
     let junk_two = with_delta(&two, 3, 40);
     for (name, id, order) in [("G first", blob.id(), vec![&one, &two]), ("H first", blob.id(), vec![&two, &one]), ("together", blob.id(), vec![&whole]), ("plain G part", plain_id, vec![&plain]), ("junk first", blob.id(), vec![&junk_two, &two, &one])] {
-        let mut lp2 = net(2, 0);
+        let mut lp2 = net_one(2);
         for pk in &known {
             lp2.deliver(1, pk).unwrap();
         }
@@ -598,11 +599,11 @@ fn pending_commit_judged_unjudgeable_awaits_its_record_spec_commits_4() {
     use crate::common::*;
     use osis_base::format::MAX_DRIFT_MS;
     let mut lp = net(2, 0);
-    let g = new_thing(&mut lp, 0);
+    let g = new_shared(&mut lp, 0);
     for pk in packages(&mut lp, 0) {
         lp.deliver(1, &pk).unwrap();
     }
-    let h = new_thing(&mut lp, 0);
+    let h = new_shared(&mut lp, 0);
     lp.peers[0].clock.advance(2 * MAX_DRIFT_MS);
     let mut m = Mutation::new();
     m.set(h, &REG, &s("h")).unwrap();
@@ -626,7 +627,7 @@ fn pending_commit_judged_unjudgeable_awaits_its_record_spec_commits_4() {
 #[test]
 fn pending_for_pages_then_unjudgeable_awaits_its_record_spec_commits_4() {
     use crate::common::*;
-    let mut lp = net(2, 0);
+    let mut lp = net_one(2);
     for pk in packages(&mut lp, 0) {
         lp.deliver(1, &pk).unwrap();
     }
@@ -703,7 +704,7 @@ fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
 #[test]
 fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     use crate::common::*;
-    let mut lp = net(2, 0);
+    let mut lp = net_one(2);
     let known = packages(&mut lp, 0);
     let e = &mut lp.peers[0].engine;
     let mut m = Mutation::new();
@@ -730,21 +731,33 @@ fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
     assert!(p.engine.commit_ids().contains(&id), "{:?}", p.engine.pending());
 }
 
-/// Three things of peer 0's and the commits making them.
+/// Three things of peer 0's and the commits making them; a node of 0's account given none of
+/// them (`fresh`).
 struct Forge {
     lp: osis_engine::local_peer::LocalPeer,
     setup: Vec<osis_engine::local_peer::Package>,
     x: Tid,
     y: Tid,
     z: Tid,
+    node: Peer,
+}
+
+impl Forge {
+    /// A fresh node at `now`: a node of 0's account, so it holds what it is given of 0's things.
+    fn fresh(&mut self, now: osis_base::WallMs) -> Peer {
+        let p = self.node.copy().unwrap();
+        p.clock.set(now);
+        p
+    }
 }
 
 fn forge_setup() -> Forge {
     use crate::common::*;
-    let mut lp = net(2, 0);
+    let mut lp = net_one(3);
+    let node = lp.peers.pop().unwrap();
     let (x, y, z) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let setup = packages(&mut lp, 0);
-    Forge { lp, setup, x, y, z }
+    Forge { lp, setup, x, y, z, node }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -817,8 +830,8 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     let live = f.lp.peers[0].engine.now();
     let late = osis_base::WallMs(live.0 + 5000);
     let copy_held = |p: &mut Peer| p.engine.commit_bytes(&b.id()).unwrap().is_some_and(|c| !CommitBlob::decode(&c).unwrap().parts.is_empty());
-    let new = |now| {
-        let mut p = Peer::new(FRESH, now).unwrap();
+    let mut new = |now| {
+        let mut p = f.fresh(now);
         for pk in &f.setup {
             let _ = p.engine.ingest(&pk.bytes, Vec::new());
         }
@@ -898,7 +911,9 @@ fn parked_part_goes_at_its_purge_spec_commits_5() {
         m.purge(crate::common::stamp_item(&b.header, b.id(), x, ak("t:future.0")));
         let rq = f.lp.peers[0].commit(m).unwrap().unwrap();
         let rq = f.lp.peers[0].engine.package(&rq).unwrap().unwrap();
+        // a node of 0's account
         let mut p = crate::flows::forensic_peer(87, &osis_store::Faults::new());
+        pair_into(&mut f.lp, 0, &mut p);
         p.clock.set(now);
         for pk in &f.setup {
             let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
@@ -961,9 +976,10 @@ fn forged_parts_beside_a_part_past_expiry(stride: usize) {
             // the orders on a thread per core, each on its own node
             let picked: Vec<&Vec<usize>> = orders.iter().step_by(stride).collect();
             let idx: Vec<u64> = (0..picked.len() as u64).collect();
+            let node = std::sync::Mutex::new(f.fresh(now));
             let one = |j: u64| {
                 let order = picked[j as usize];
-                let mut p = Peer::new(FRESH, now).unwrap();
+                let mut p = node.lock().unwrap_or_else(|e| e.into_inner()).copy().unwrap();
                 for pk in &f.setup {
                     let _ = p.engine.ingest(&pk.bytes, Vec::new());
                 }

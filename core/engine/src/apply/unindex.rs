@@ -103,6 +103,7 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         core.ix.names_due.remove(id);
     }
     super::validity::forget_addenda(core, id, &v.aspects);
+    crate::engine::edits::unindex_commit(core, id, v);
     // its keyset parts' rows (`records::OWN_KEYS`: kept while the commit is held)
     let keyed: BTreeSet<Tid> = v.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).filter(|t| core.ix.keyset_parts.get(t).is_some_and(|s| s.contains(id))).collect();
     for t in &keyed {

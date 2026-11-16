@@ -594,6 +594,8 @@ fn a_loose_record_awaited_after_another_arrives_is_learned_spec_commits_4() {
         m.set(u, &REG, &s("later")).unwrap();
         let c = lp.peers[1].engine.commit(m).unwrap().unwrap();
         let cb = lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap();
+        // 0's t names u holder, so u is needed here (spec/commits.md §5 What a held thing needs)
+        crate::common::edge_write(&mut lp.peers[0].engine, t, u, Some(edge_of(Role::Read)), None);
         // the commit first, awaiting `later`'s record (the loose one is not yet known here)
         lp.peers[0].engine.ingest(&cb, Vec::new()).unwrap();
         let first = lp.peers[0].engine.pending().into_iter().find(|(x, _)| *x == c).map(|x| x.1);

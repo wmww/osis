@@ -65,7 +65,7 @@ fn reg_only(p: &osis_engine::local_peer::Package) -> Vec<u8> {
 #[test]
 fn forged_purge_on_replace_class_gives_no_rights_spec_commits_4() {
     let mut lp = net(3, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
     let w = lp.peers[2].engine.me();
     set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
     sync(&mut lp, 0, 1);
@@ -156,9 +156,11 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
         let map = ak("t:gonemap.0");
         let (mut lp, t, c) = carrierless(vec![put("a", true, true), put("b", false, false)]);
         let w = lp.peers[1].engine.me();
-        let grant = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
-        let pg = packages(&mut lp, 0).into_iter().find(|p| p.id == grant).unwrap();
-        lp.deliver(1, &pg).unwrap();
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+        // the grant with its secrets, not the writes
+        for pg in packages(&mut lp, 0).into_iter().filter(|p| c.iter().all(|x| x.id != p.id)) {
+            lp.deliver(1, &pg).unwrap();
+        }
         let held = holders.then(|| {
             let id = lp.peers[0].engine.snapshot(&t, &map).unwrap().unwrap();
             packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap()
@@ -291,7 +293,7 @@ fn creation_record_then_the_rest_join_spec_commits_4() {
 fn pages_away_hold_back_only_their_part_spec_commits_4() {
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
     for synced in [false, true] {
-        let mut lp = net(2, 0);
+        let mut lp = net_one(2); // 1 a node of 0's account
         let t = new_thing(&mut lp, 0);
         sync(&mut lp, 0, 1);
         let mut m = Mutation::new();
@@ -345,7 +347,8 @@ fn cross_thing_part_shows_spec_commits_4() {
 fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
     let k = ak("t:list.0");
     let mut lp = net(2, 0);
-    let t = new_thing(&mut lp, 0);
+    let t = new_shared(&mut lp, 0);
+    let mut obs = reader(&mut lp, 0, t, 0x7a06);
     writer(&mut lp, t, 1);
     for (a, b) in [(0, 1), (1, 0)] {
         sync(&mut lp, a, b);
@@ -368,7 +371,7 @@ fn list_element_overwritten_stays_past_expiry_spec_crdt_5_7() {
     // past T, a snapshot carries the value-less creation to a node without the expired commit
     lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
     let pks = packages(&mut lp, 1);
-    let mut late = osis_engine::local_peer::Peer::new(0x7a06, lp.peers[1].engine.now()).unwrap();
+    let mut late = fresh_copy(&mut obs, lp.peers[1].engine.now());
     for pk in &pks {
         let _ = late.engine.ingest(&pk.bytes, pk.blobs.clone());
     }
@@ -1003,7 +1006,7 @@ fn a_record_examines_only_what_awaits_it_spec_commits_4() {
 }
 
 /// Peer 0 writes one commit on its `x` and on peer 1's `y` (0 a writer there by a grant); peer 2
-/// holds all but `x`'s creation, the grant and the commit, then the commit: what it pends for
+/// (a reader of `y`) holds all but `x`'s creation, the grant and the commit, then the commit: what it pends for
 /// there, then whether 2 reads 0's write on `y` once the grant came.
 fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
     use osis_base::Role;
@@ -1012,6 +1015,9 @@ fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
     let a = lp.peers[0].engine.me();
     sync(&mut lp, 0, 1);
     let y = new_thing(&mut lp, 1);
+    // 2 reads y
+    let r = lp.peers[2].engine.me();
+    lp.peers[1].engine.grant(&y, &r, &Edge { role: Role::Read, until: None, invite: None, floor: None }).unwrap();
     sync(&mut lp, 1, 0);
     lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
     let grant = packages(&mut lp, 1).pop().unwrap();
@@ -1076,7 +1082,7 @@ fn an_expiry_passed_while_pending_sets_no_timer_spec_commits_4() {
 /// wake lost after any: whether what it reads equals what peer 0 reads, and what still pends.
 fn once_each(seed: u64, n: usize, m: usize) -> (Vec<Option<Value>>, Vec<Option<Value>>, usize) {
     let mut rng = crate::order::Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let mut lp = net(2, 0);
+    let mut lp = net_one(2); // 1 a node of 0's account
     let us: Vec<Tid> = (0..m).map(|_| new_thing(&mut lp, 0)).collect();
     sync(&mut lp, 0, 1);
     let me = lp.peers[0].engine.plain_admin();
@@ -1134,7 +1140,7 @@ fn once_each(seed: u64, n: usize, m: usize) -> (Vec<Option<Value>>, Vec<Option<V
 // then (`unpended_feed`), so sync takes its carriers off their peers' budgets.
 #[test]
 fn an_applied_commits_part_joins_when_its_record_comes_spec_commits_4() {
-    let mut lp = net(2, 0);
+    let mut lp = net_one(2); // 1 a node of 0's account
     let u = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let x = new_thing(&mut lp, 0);
@@ -1160,7 +1166,7 @@ fn an_applied_commits_part_joins_when_its_record_comes_spec_commits_4() {
 #[test]
 fn each_waiting_part_joins_at_its_own_record_spec_commits_4() {
     for first in [0, 1] {
-        let mut lp = net(2, 0);
+        let mut lp = net_one(2); // 1 a node of 0's account
         let u = new_thing(&mut lp, 0);
         sync(&mut lp, 0, 1);
         let mut made = Vec::new();
@@ -1189,7 +1195,7 @@ fn each_waiting_part_joins_at_its_own_record_spec_commits_4() {
 // its last carrier gone it counts as never received, and a copy brings it again.
 #[test]
 fn an_applied_commits_waiting_part_goes_with_its_carrier_spec_commits_4() {
-    let mut lp = net(2, 0);
+    let mut lp = net_one(2); // 1 a node of 0's account
     let u = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let x = new_thing(&mut lp, 0);

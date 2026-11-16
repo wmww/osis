@@ -9,7 +9,7 @@ use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
-use osis::{DerivedFrom, MemStore, Osis, Origin, Value};
+use osis::{DerivedFrom, MemStore, Origin, Osis, Role, Value};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
@@ -208,6 +208,10 @@ fn two_nodes_remote_watch() {
     let b = db(2);
     let k = ak("t:x.0");
     let t = thing(&a);
+    // b reads t
+    deliver(&b, &a);
+    a.grant(t, b.me(), Role::Read, Default::default()).unwrap();
+    b.hold(t).unwrap();
     deliver(&a, &b);
     let (tx, rx) = channel();
     let _s = b.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();

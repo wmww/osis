@@ -36,12 +36,6 @@ use std::collections::{BTreeMap, BTreeSet};
 /// no secret.
 const KEPT: [&str; 5] = ["created.0", "retention^.0", "roles.0", "keys.0", "sync.0"];
 
-/// Whether `ak` is content: not role-class (the certificate material a forgotten thing keeps,
-/// `KEPT`; `secrets.0`; a devices actor's `account.0`).
-pub(crate) fn content(ak: &Ak) -> bool {
-    !KEPT.contains(&ak.as_str()) && !matches!(ak.as_str(), "secrets.0" | "account.0")
-}
-
 /// What `forget` forgets.
 #[derive(Clone, Copy)]
 pub(crate) enum Scope<'a> {
@@ -311,6 +305,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         }
         tx.txn.remove_pending(&id, Shred::Yes)?;
         if rest.parts.is_empty() {
+            crate::apply::pending_left(tx.core, &id);
             crate::apply::set_pending(tx.core, &id, None);
         } else {
             tx.txn.put_pending(&id, p.kind, p.verdict, &rest.encode())?;

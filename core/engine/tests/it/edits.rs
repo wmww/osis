@@ -40,6 +40,7 @@ fn net_with_built(n: usize) -> (LocalPeer, Tid, Vec<Tid>) {
     // the thing keeps its signal's fires for good
     m.set(d, &ct::RETENTION, &setting(&[(log().as_str(), History::FOREVER)])).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
+    lp.hold(d);
     for x in &ids[1..] {
         set_edge(&mut lp.peers[0].engine, d, *x, Some(edge(Role::Write)), None);
     }
@@ -237,6 +238,23 @@ fn purge_commit(lp: &mut LocalPeer, i: usize, d: Tid, items: Vec<PurgeItem>) -> 
 /// The item naming `c`'s delta on `(d, log())` by its stamp, from a peer holding its header.
 fn named(lp: &LocalPeer, d: Tid, c: CommitId) -> PurgeItem {
     lp.peers.iter().find_map(|p| p.engine.purge_item(&c, d, log())).unwrap()
+}
+
+// spec/commits.md §5 Signals, What a held thing needs: a released thing goes whole, its versions'
+// claims with its commits, so the index an open builds agrees.
+#[test]
+fn a_released_things_claims_go_with_it_spec_commits_5() {
+    let (mut lp, d, _) = setup();
+    let o = fire(&mut lp, 0, d, purgeable(), "one");
+    edit(&mut lp, 0, d, purgeable(), "two", o);
+    lp.sync_all().unwrap();
+    assert_eq!(list(&mut lp, 1, d).len(), 1, "the version folds under its original");
+    let e = &mut lp.peers[1].engine;
+    e.unhold(osis_base::Strong(d)).unwrap();
+    let left = e.left_closure().into_keys().collect();
+    e.released(&left).unwrap();
+    assert_eq!(list(&mut lp, 1, d), vec![], "released");
+    lp.peers[1].engine.check_index();
 }
 
 // spec/commits.md §5 Signals, Purge: a purge takes only what it names; a purged newest version
