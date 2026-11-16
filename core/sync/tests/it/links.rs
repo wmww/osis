@@ -415,3 +415,33 @@ fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
     assert!(!w.engine(1).roster(&link.k).contains_key(&w.node(1).account.unwrap()), "node 1's account left K");
     assert!(!hinted(&w), "the peer dropped with the join");
 }
+
+// spec/sync-streams.md §4 (Fill order: an entry opening with a section it cannot open, holding a
+// part that counts missing, opens again as that part's thing's read secrets gain an epoch),
+// spec/permissions.md §7 (Redeem: wait for K's grant on the target): accounts 1 and 2 join node
+// 0's link, so node 0 holds account 1's creation commit from a certificate copy (its keys only)
+// and shares K0 with two sources (its pulls fetch every body, none inline). Node 0 then redeems
+// node 1's link: the creation commit's blob under K1 opens before the target's secrets are held,
+// its section with the target's `created.0` sealed; once the secrets arrive it opens, the record
+// lets K1's grant on the target apply, and the join is written.
+#[test]
+fn a_held_commits_sealed_part_opens_once_its_things_secrets_arrive_spec_sync_streams_4() {
+    let mut w = World::new(0);
+    for _ in 0..3 {
+        w.add_node();
+    }
+    w.run();
+    let links: Vec<ShareLink> = (0..2).map(|i| {
+        let p = w.node(i).profile.unwrap();
+        w.make_link(i, p, Role::Read)
+    }).collect();
+    for j in [1, 2] {
+        w.redeem(j, &links[0]);
+        w.run();
+    }
+    assert_eq!(w.redeem(0, &links[1]), Waiting::Pending);
+    w.run();
+    let a0 = w.node(0).account.unwrap();
+    assert!(w.engine(0).roster(&links[1].target).contains_key(&links[1].k), "K1's grant on the target held at node 0");
+    assert!(w.engine(1).roster(&links[1].k).contains_key(&a0), "node 0's join held at node 1");
+}

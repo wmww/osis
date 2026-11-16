@@ -25,17 +25,18 @@ impl Engine {
         parts.into_iter().any(|ai| m.missing(ai) && !below(ai))
     }
 
-    /// Whether opened blob `b` holds a section not opened here while a part of its commit counts
-    /// missing (`body_missing`) on a thing whose read secrets this node holds some of: a read
-    /// secret arriving may open it. Any part, not only those of a sync ID's body: an account's
-    /// rotation goes only under its devices actor's sync IDs, and its part on the account
-    /// (`keys.0`) opens from there alone. Reads no record: the meta's view and missing parts.
-    pub fn blob_awaits_secret(&mut self, b: &BlobId) -> bool {
-        let Some(o) = self.blob_of(b).filter(|o| !o.sealed.is_empty()) else { return false };
-        let Some(m) = self.core.ix.commits.get(&o.commit).cloned() else { return false };
-        let readable = |ai: &usize| m.view.aspects.get(*ai).is_some_and(|a| self.epochs(&a.tid).is_some_and(|e| e.read.held().next().is_some()));
-        let parts: Vec<usize> = m.missing_parts().filter(readable).collect();
-        self.body_missing(&o.commit, &m, parts)
+    /// The things whose read secrets may open what opened blob `b` holds sealed here: the thing
+    /// of each part it carries in a section not opened (`BlobOf::parts` lacks it) that counts
+    /// missing (`body_missing`), whether or not a read secret of it is held yet. Any part, not
+    /// only those of a sync ID's body: an account's rotation goes only under its devices actor's
+    /// sync IDs, and its part on the account (`keys.0`) opens from there alone; a commit held
+    /// from a certificate copy has its other parts' sections opened from a blob under another
+    /// sync ID, once their thing's secrets arrive. Reads no record: the meta's view and missing
+    /// parts.
+    pub fn blob_awaits_secrets(&mut self, b: &BlobId) -> BTreeSet<Tid> {
+        let Some(o) = self.blob_of(b).filter(|o| !o.sealed.is_empty()) else { return BTreeSet::new() };
+        let Some(m) = self.core.ix.commits.get(&o.commit).cloned() else { return BTreeSet::new() };
+        o.ais.iter().filter(|ai| !o.parts.contains(ai) && self.body_missing(&o.commit, &m, [**ai])).filter_map(|ai| m.view.aspects.get(*ai).map(|a| a.tid)).collect()
     }
 
     /// spec/sync-judgement.md §2 must-not-hold (the clauses only the engine judges), §3 Role

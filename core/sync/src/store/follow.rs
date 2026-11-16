@@ -1,8 +1,8 @@
 //! What the store follows (notes/sync-store.md): the sync IDs this node syncs
 //! (`SyncsFollow`), the engine's caps, and the served path of each sync ID read here (its thing's
 //! `sync.0` record, spec/sync-ids.md §5), each an `Effects` value, so a step costs what moved;
-//! the entries that did not open, parked under their sync ID's read secrets (`parked`); and the
-//! entries carrying a commit that pends here (`Carriers`).
+//! the entries that did not open, parked under the read secrets that may open them (`Parked`);
+//! and the entries carrying a commit that pends here (`Carriers`).
 
 use super::Store;
 use crate::set::SyncsFollow;
@@ -20,13 +20,12 @@ pub struct Follow {
     caps: Effects<(), Arc<Caps>>,
     /// Per sync ID read here, its thing and its recorded path.
     paths: Effects<(SyncId, Tid), Option<Arc<Path>>>,
-    /// Per sync ID read here, every read secret its entries are tried under, current or not
-    /// (`Engine::opening_secrets`): what opens a parked entry.
-    creds: Effects<SyncId, Vec<osis_crypto::Secret32>>,
-    /// Per sync ID read here, its entries that did not open (neither held nor pending here): each
-    /// parked under the one thing it awaits, S's read secrets (notes/sync.md Arriving early), and
-    /// opened again only as those move. Found by the store's entry feed and at S's start.
-    parked: BTreeMap<SyncId, BTreeSet<BlobId>>,
+    /// Per awaited value, the read secrets it names, current or not: what opens a parked entry.
+    creds: Effects<Awaits, Vec<osis_crypto::Secret32>>,
+    /// The entries of the sync IDs read here that wait for a read secret, each parked under what
+    /// it awaits (notes/sync.md Arriving early) and opened again only as that moves. Found by the
+    /// store's entry feed and at S's start.
+    parked: Parked,
     entries: Option<Feed<(SyncId, BlobId)>>,
     read: BTreeMap<SyncId, Tid>,
     carriers: Carriers,
@@ -39,6 +38,59 @@ pub struct Follow {
 /// copy go once no blob of it is named (`release`); a commit held here and pending no more (an
 /// applied one's waiting parts joined too) takes its entries off their peers' budgets. Nothing kept but the feeds' cursors: a start sweeps every pending commit
 /// once.
+/// A read secret an entry waits for: one of S's (`Engine::opening_secrets`: its wrap opened
+/// to nothing held or pending here), or one of a thing's (`Engine::read_secrets`: a section of
+/// its held commit's blob holding a missing part on that thing did not open).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Awaits {
+    Sync(SyncId),
+    Thing(Tid),
+}
+
+/// The parked entries by what they await, and what each awaits. `Sync(S)` is followed while S
+/// is read; `Thing(t)` while an entry awaits it.
+#[derive(Clone, Default)]
+struct Parked {
+    under: BTreeMap<Awaits, BTreeSet<(SyncId, BlobId)>>,
+    of: BTreeMap<(SyncId, BlobId), BTreeSet<Awaits>>,
+}
+
+impl Parked {
+    /// Parks entry `b` of S under `now`, unparked from whatever else it awaited.
+    fn set(&mut self, creds: &mut Effects<Awaits, Vec<osis_crypto::Secret32>>, s: SyncId, b: BlobId, now: BTreeSet<Awaits>) {
+        let was = match now.is_empty() {
+            true => self.of.remove(&(s, b)).unwrap_or_default(),
+            false => self.of.insert((s, b), now.clone()).unwrap_or_default(),
+        };
+        for a in was.difference(&now) {
+            if let Some(xs) = self.under.get_mut(a) {
+                xs.remove(&(s, b));
+                if xs.is_empty() {
+                    self.under.remove(a);
+                    if matches!(a, Awaits::Thing(_)) {
+                        creds.unwant(a);
+                    }
+                }
+            }
+        }
+        for a in now.difference(&was) {
+            self.under.entry(*a).or_default().insert((s, b));
+            if matches!(a, Awaits::Thing(_)) {
+                creds.want(*a);
+            }
+        }
+    }
+
+    /// Every entry of S unparked (S read no more).
+    fn forget(&mut self, creds: &mut Effects<Awaits, Vec<osis_crypto::Secret32>>, s: SyncId) {
+        let lo = (s, BlobId([0; 32]));
+        let keys: Vec<(SyncId, BlobId)> = self.of.range(lo..).take_while(|(k, _)| k.0 == s).map(|(k, _)| *k).collect();
+        for (s, b) in keys {
+            self.set(creds, s, b, BTreeSet::new());
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct Carriers {
     unnamed: Option<Feed<BlobId>>,
@@ -186,7 +238,7 @@ impl Default for Follow {
     fn default() -> Follow {
         let mut caps = Effects::new("store: caps");
         caps.want(());
-        Follow { set: SyncsFollow::default(), caps, paths: Effects::new("store: paths"), creds: Effects::new("store: read secrets"), parked: BTreeMap::new(), entries: None, read: BTreeMap::new(), carriers: Carriers::default() }
+        Follow { set: SyncsFollow::default(), caps, paths: Effects::new("store: paths"), creds: Effects::new("store: read secrets"), parked: Parked::default(), entries: None, read: BTreeMap::new(), carriers: Carriers::default() }
     }
 }
 
@@ -207,7 +259,7 @@ impl Follow {
                 for (s, b) in f.added() {
                     if self.read.contains_key(&s) {
                         let e = store.entry(&s, &b)?;
-                        park(engine, self.parked.entry(s).or_default(), &b, e.as_ref())?;
+                        park(engine, &mut self.parked, &mut self.creds, s, b, e.as_ref())?;
                     }
                 }
             }
@@ -218,8 +270,8 @@ impl Follow {
         for (s, _, now) in &moved {
             if let Some(t) = self.read.remove(s) {
                 self.paths.unwant(&(*s, t));
-                self.creds.unwant(s);
-                self.parked.remove(s);
+                self.creds.unwant(&Awaits::Sync(*s));
+                self.parked.forget(&mut self.creds, *s);
                 // read no more: its complete passes and record blobs go with it (a pass of it
                 // again when read again)
                 if !matches!(now, Some((_, Holding::Read))) {
@@ -229,7 +281,7 @@ impl Follow {
             if let Some((t, Holding::Read)) = now {
                 self.read.insert(*s, *t);
                 self.paths.want((*s, *t));
-                self.creds.want(*s);
+                self.creds.want(Awaits::Sync(*s));
             }
         }
         // S read from now on (a start, a grant, raised from kept unread): its entries that did not
@@ -237,9 +289,8 @@ impl Follow {
         // §6 Read and unread move: raised to read opens what is held)
         for (s, _, now) in &moved {
             if matches!(now, Some((_, Holding::Read))) {
-                let parked = self.parked.entry(*s).or_default();
                 for e in store.entries(s)? {
-                    park(engine, parked, &e.blob, Some(&e))?;
+                    park(engine, &mut self.parked, &mut self.creds, *s, e.blob, Some(&e))?;
                 }
             }
         }
@@ -258,16 +309,21 @@ impl Follow {
             }
         }
         // a parked entry is opened as read secrets arrive (spec/sync-streams.md §4 Fill order;
-        // S's first settle tries each once)
-        for s in self.creds.due() {
-            let r = self.creds.try_settle(&s, || engine.opening_secrets(&s))?;
+        // S's first settle tries each once; a thing's, once it names a secret)
+        for a in self.creds.due() {
+            let r = self.creds.try_settle(&a, || match a {
+                Awaits::Sync(s) => engine.opening_secrets(&s),
+                Awaits::Thing(t) => Ok(engine.read_secrets(&t)),
+            })?;
             let Some((was, now)) = r else { continue };
+            let was = match (was, a) {
+                (None, Awaits::Thing(_)) => Some(Vec::new()),
+                (w, _) => w,
+            };
             if was.is_some_and(|w| now.iter().all(|e| w.contains(e))) {
                 continue;
             }
-            if let Some(parked) = self.parked.get_mut(&s) {
-                acted |= open_parked(engine, store, parked, &s)?;
-            }
+            acted |= open_parked(engine, store, &mut self.parked, &mut self.creds, &a)?;
         }
         acted |= self.carriers.settle(engine, store)?;
         acted |= store.settle_at(now)?;
@@ -284,18 +340,23 @@ impl Follow {
     /// something no later read secret changes (records taken, bad bytes, a linked blob).
     pub fn lost_parks(&self, engine: &mut Engine, store: &Store) -> Result<Vec<(SyncId, BlobId)>> {
         let mut parked = self.parked.clone();
+        let mut creds = self.creds.clone();
         // entries the feed has not yet given (a clone of the cursor reads on alone)
         if let Some(mut f) = self.entries.clone() {
             for (s, b) in f.added() {
                 if self.read.contains_key(&s) {
-                    park(engine, parked.entry(s).or_default(), &b, store.entry(&s, &b)?.as_ref())?;
+                    park(engine, &mut parked, &mut creds, s, b, store.entry(&s, &b)?.as_ref())?;
                 }
             }
         }
         let mut lost = Vec::new();
         for s in self.read.keys() {
             for e in store.entries(s)? {
-                if engine.blob_commit(&e.blob).is_some() && waits(engine, &e)? && !parked.get(s).is_some_and(|p| p.contains(&e.blob)) {
+                if engine.blob_commit(&e.blob).is_none() {
+                    continue;
+                }
+                let a = awaits(engine, s, &e)?;
+                if !a.is_empty() && parked.of.get(&(*s, e.blob)).is_none_or(|p| !a.is_subset(p)) {
                     lost.push((*s, e.blob));
                 }
             }
@@ -341,58 +402,66 @@ fn charge_unvouched(engine: &mut Engine, store: &mut Store, s: &SyncId) -> Resul
     Ok(())
 }
 
-/// Whether entry `b` of S waits for a read secret: one whose commit is neither held nor pending
+/// What entry `e` of S waits for: S's read secrets when its commit is neither held nor pending
 /// here (it did not open, what it opened to was thrown out, or, an own log, the commit was
-/// forgotten with lost access and opens again when access returns), or held with a part missing
-/// while a section of the blob did not open (`Engine::blob_awaits_secret`: a sibling's account
-/// rotation, its seed under a D epoch established only once the rotation's header and list
-/// count). An own entry naming no commit (a certificate blob sealed here from what is held)
-/// waits for nothing.
-fn waits(engine: &mut Engine, e: &crate::types::Entry) -> Result<bool> {
+/// forgotten with lost access and opens again when access returns); the read secrets of each
+/// thing a section of its blob did not open on while that part counts missing
+/// (`Engine::blob_awaits_secrets`: a sibling's account rotation, its seed under a D epoch
+/// established only once the rotation's header and list count; a commit held from a certificate
+/// copy, the rest of which opens once its thing's secrets arrive). An own entry naming no commit
+/// (a certificate blob sealed here from what is held) waits for nothing.
+fn awaits(engine: &mut Engine, s: &SyncId, e: &crate::types::Entry) -> Result<BTreeSet<Awaits>> {
     Ok(match engine.blob_commit(&e.blob) {
-        Some(c) => (!engine.holds_commit(&c) && !engine.pends(&c)) || engine.blob_awaits_secret(&e.blob),
-        None => !e.own,
+        Some(c) => {
+            let mut a: BTreeSet<Awaits> = engine.blob_awaits_secrets(&e.blob).into_iter().map(Awaits::Thing).collect();
+            if !engine.holds_commit(&c) && !engine.pends(&c) {
+                a.insert(Awaits::Sync(*s));
+            }
+            a
+        }
+        None if !e.own => BTreeSet::from([Awaits::Sync(*s)]),
+        None => BTreeSet::new(),
     })
 }
 
-/// Parks entry `b` (`e`: held now) if it waits for a read secret, else unparks it (gone, or
+/// Parks entry `b` of S (`e`: held now) under what it waits for, else unparks it (gone, or
 /// taken).
-fn park(engine: &mut Engine, parked: &mut BTreeSet<BlobId>, b: &BlobId, e: Option<&crate::types::Entry>) -> Result<()> {
-    match e {
-        Some(e) if waits(engine, e)? => parked.insert(*b),
-        _ => parked.remove(b),
+fn park(engine: &mut Engine, parked: &mut Parked, creds: &mut Effects<Awaits, Vec<osis_crypto::Secret32>>, s: SyncId, b: BlobId, e: Option<&crate::types::Entry>) -> Result<()> {
+    let now = match e {
+        Some(e) => awaits(engine, &s, e)?,
+        None => BTreeSet::new(),
     };
+    parked.set(creds, s, b, now);
     Ok(())
 }
 
-/// Opens S's parked entries, the only ones a read secret of S may open; one that gives something
-/// held is off its peer budget (spec/sync-ids.md §5); one that opened to anything but a commit
-/// thrown out is unparked.
-/// Whether one opened. O(S's parked entries), never S's entries.
-fn open_parked(engine: &mut Engine, store: &mut Store, parked: &mut BTreeSet<BlobId>, s: &SyncId) -> Result<bool> {
+/// Opens the entries parked under `a`, the only ones its read secrets may open; one that gives
+/// something held is off its peer budget (spec/sync-ids.md §5); each is parked again under what
+/// it still waits for. Whether one opened. O(the entries parked under `a`), never S's entries.
+fn open_parked(engine: &mut Engine, store: &mut Store, parked: &mut Parked, creds: &mut Effects<Awaits, Vec<osis_crypto::Secret32>>, a: &Awaits) -> Result<bool> {
     let mut opened = false;
-    osis_base::costs::count("store: parked examined", parked.len() as u64);
-    for b in parked.clone() {
-        let Some(e) = store.entry(s, &b)? else {
-            parked.remove(&b);
+    let xs: Vec<(SyncId, BlobId)> = parked.under.get(a).map(|x| x.iter().copied().collect()).unwrap_or_default();
+    osis_base::costs::count("store: parked examined", xs.len() as u64);
+    for (s, b) in xs {
+        let Some(e) = store.entry(&s, &b)? else {
+            parked.set(creds, s, b, BTreeSet::new());
             continue;
         };
         let Some(bytes) = store.bytes(&b)? else { continue };
-        let o = open_entry(engine, store, s, &b, &e.wrap, &bytes)?;
-        // still parked: what does not open yet, and a commit opened but thrown out
+        let o = open_entry(engine, store, &s, &b, &e.wrap, &bytes)?;
+        // still parked: what does not open yet, and a commit opened but thrown out or with a
+        // section still sealed on a part it lacks
         let still = match o {
-            Opened::NotOpen => true,
-            Opened::Commit(..) => waits(engine, &e)?,
-            _ => false,
+            Opened::NotOpen => parked.of.get(&(s, b)).cloned().unwrap_or_default(),
+            Opened::Commit(..) => awaits(engine, &s, &e)?,
+            _ => BTreeSet::new(),
         };
-        if !still {
-            parked.remove(&b);
-        }
+        parked.set(creds, s, b, still);
         if pends(engine, &b, &o) {
             continue;
         }
         if matches!(o, Opened::Commit(..) | Opened::Linked | Opened::Records(_) | Opened::Lists(_)) {
-            store.uncharge(s, &b)?;
+            store.uncharge(&s, &b)?;
             opened = true;
         }
     }

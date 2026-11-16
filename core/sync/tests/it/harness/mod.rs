@@ -439,9 +439,9 @@ pub struct World {
     pub seen: Vec<Seen>,
     /// Per step traced: the node, whether the step failed (a restart in place), its sends.
     pub stepped: Vec<(usize, bool, usize)>,
-    /// Checks after every script step that no entry whose commit the engine knows, neither held
-    /// nor pending, is left unparked (`Node::lost_parks`); an entry that never opened (no commit
-    /// known) is outside it (issues/sync-parks-check.md).
+    /// Checks after every script step that no entry whose commit the engine knows is left
+    /// unparked from a read secret it awaits (`Node::lost_parks`); an entry that never opened (no
+    /// commit known) is outside it (issues/sync-parks-check.md).
     pub parks: bool,
     /// Nodes added from now on record every row and blob their disks are given (`forensic`,
     /// `recorded`), for what an attacker holding a device or watching a store learns.
