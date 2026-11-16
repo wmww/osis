@@ -47,7 +47,9 @@ pub(crate) enum Piece {
     Own(Tid),
     /// Author `a`'s chain to `x` (`Engine::chain_piece`), under each read thing whose closure
     /// holds, and whose actor reads, a thing with a held commit of `a` writing `x` or acting for
-    /// it (`Indexes::chains_on`): one piece per chain, however many things need it.
+    /// it (`Indexes::chains_on`), and under read thing `a` itself for each `x` an edge write names
+    /// it holder on (`Engine::held_on`: role changes travel): one piece per chain, however many
+    /// things need it.
     Chain(Tid, Tid),
     /// Account `p`'s signing chain (`Engine::account_piece`), under each read thing one of whose
     /// pieces names `p` (`Certs::accounts`): a rotation re-derives this piece alone, not every
@@ -77,6 +79,8 @@ struct Followers {
     read_feed: Option<Feed<Tid>>,
     /// Per thing with authors (`Indexes::chains_on`), what it gives.
     authored: Effects<Tid, Arc<Authored>>,
+    /// Per read thing, the things an edge write names it holder on (`held_on`).
+    held_on: Effects<Tid, Arc<BTreeSet<Tid>>>,
     /// Per piece placed somewhere, its certificates.
     pieces: Pieces,
     /// New things with authors; `None` until the first follow.
@@ -87,7 +91,7 @@ struct Followers {
 
 impl Default for Followers {
     fn default() -> Self {
-        Followers { read: Effects::new("sync: certified things"), read_feed: None, authored: Effects::new("sync: certified authored"), pieces: Effects::new("sync: certified pieces"), feeds: None, quiet: Quiet::default() }
+        Followers { read: Effects::new("sync: certified things"), read_feed: None, authored: Effects::new("sync: certified authored"), held_on: Effects::new("sync: certified held on"), pieces: Effects::new("sync: certified pieces"), feeds: None, quiet: Quiet::default() }
     }
 }
 
@@ -109,6 +113,8 @@ pub(crate) struct Certified {
     pub(crate) read: StampedSet<Tid>,
     /// Each followed thing with authors, as placed.
     authored: BTreeMap<Tid, Arc<Authored>>,
+    /// Per read thing, the things it is named holder on, as placed (`held_on`).
+    held_on: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     /// Per (chain piece, read thing), the things with authors that place it there: it goes under
     /// the read thing while any does.
     chain_by: BTreeMap<(Piece, Tid), BTreeSet<Tid>>,
@@ -304,6 +310,16 @@ impl Engine {
         Arc::new(Authored { chains, under })
     }
 
+    /// The things an edge write names `t` holder on, its own things aside (a first admin's edge
+    /// is its record's, which no edge write lowers): spec/permissions.md §4 Role changes travel,
+    /// a role commit with an edge write naming holder `t` goes under `t`'s own sync ID, as `t`'s
+    /// chain to its target (`Piece::Chain(t, x)`) holds every edge write on its paths, a removal
+    /// included, which the target's bodies no longer carry there once `t` reads it no more.
+    pub(crate) fn held_on(&self, t: &Tid) -> Arc<BTreeSet<Tid>> {
+        let on: BTreeSet<Tid> = self.core.ix.held.named_on(t).copied().filter(|x| x != t && self.core.first_admin(x) != Some(*t)).collect();
+        Arc::new(on)
+    }
+
     /// Piece `p`'s certificates.
     fn piece(&mut self, p: &Piece) -> Option<Arc<Certs>> {
         Some(Arc::new(match p {
@@ -334,7 +350,7 @@ impl Engine {
     /// included: a follow would do nothing.
     pub(crate) fn certificates_quiet(&self) -> bool {
         let f = &self.core.certified.followers;
-        f.quiet.holds(f.read.idle() && f.authored.idle() && f.pieces.idle()) && self.rows_quiet()
+        f.quiet.holds(f.read.idle() && f.authored.idle() && f.held_on.idle() && f.pieces.idle()) && self.rows_quiet()
     }
 
     fn follow_with(&mut self, f: &mut Followers) -> Result<bool> {
@@ -363,12 +379,28 @@ impl Engine {
             if now {
                 self.core.certified.read.insert(t);
                 self.core.certified.place(Piece::Own(t), t, &mut f.pieces);
+                f.held_on.want(t);
                 continue;
             }
             f.read.unwant(&t);
             if was == Some(true) {
                 self.core.certified.read.remove(&t);
                 self.core.certified.unplace(Piece::Own(t), t, &mut f.pieces);
+                f.held_on.unwant(&t);
+                for x in self.core.certified.held_on.remove(&t).unwrap_or_default().iter() {
+                    self.core.certified.unplace_chain(Piece::Chain(t, *x), t, t, &mut f.pieces);
+                }
+            }
+        }
+        // the role changes naming each read thing holder (`held_on`), each its chain to the target
+        for t in f.held_on.due() {
+            let Some((_, now)) = f.held_on.settle(&t, || self.held_on(&t)) else { continue };
+            let had = self.core.certified.held_on.insert(t, now.clone()).unwrap_or_default();
+            for x in had.difference(&now) {
+                self.core.certified.unplace_chain(Piece::Chain(t, *x), t, t, &mut f.pieces);
+            }
+            for x in now.difference(&had) {
+                self.core.certified.place_chain(Piece::Chain(t, *x), t, t, &mut f.pieces);
             }
         }
         let authors = f.feeds.as_mut().map(|a| a.added()).unwrap_or_default();

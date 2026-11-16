@@ -41,6 +41,7 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - `caps()`/`set_caps` in the osis API over `caps^.0` (the engine reads `caps^.0`; nothing writes it but a raw write).
 
 ## facade
+- Role changes travel (spec/permissions.md §4) under the holder A's own sync ID only (`Engine::held_on`, A's chain to each target): not yet under the sync ID of each thing whose keys open A (an account root holding a link's K), which sees a removal of A only through A's sync ID.
 - Nothing calls `history_complete` (spec/sync-status.md §3) from the API.
 - `SETTLE_MS` (spec/wire.md §2, a MAY wait: spec/permissions.md §3, §4): nothing waits it. Every holder copies another node's demotion or `keys.0` at once (a duplicate copy each, 3.3 KB per holder per removal, notes/certificates.md), and every admin gives a plain thing with holders secrets of its own at its pass end (`own_secrets_candidates`), concurrent ones forking.
 - A blob's prefix commitment groups are checked against the commit's delete keys only when its header's linked lists resolve here (`Engine::open_commit`; spec/sync-ids.md §1, spec/crypto.md §7); its expiry is checked always. Until the lists resolve, a reader keeps and serves a blob framed under commitments of its framer's choosing: the thing's delete-key holders cannot delete it (their signatures match no commitment) while its framer can, until its expiry (an open after the lists resolve refuses it, but nothing opens it again for that alone). Fix: hold such a blob unopened (not served) until its lists resolve, then check.
