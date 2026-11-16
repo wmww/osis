@@ -7,7 +7,7 @@
 - The chat's history setting (`retention^.0`, spec/commits.md §5 The setting) is written at creation, before anyone is granted: messages kept for good, the disappearing expiry and edits-off as writer defaults. No validity rule follows from it: a writer ignoring it can only give its own messages another expiry or purgeable-by.
 - The sender is the header's `actor`, checked by validity (spec/permissions.md §5.2 Acting): nobody can speak as another.
 - Why the message is the write, not a register holding a message thing's tid: the closure runs only through member lists (spec/data-model.md §8), so a message thing would need a member actor and a placement again.
-- Cost of the shape: a demotion's frontier lists every surviving message of the removed author (about 34 B each, capping a kick near 1.9×10^6 messages of one participant) until frontier heads land (notes/frontier-study.md, unbuilt); no compaction; open is O(all commits) (issues/long-aspect-cost.md).
+- Cost of the shape: a demotion's frontier lists every surviving message of the removed author (about 34 B each, capping a kick near 1.9×10^6 messages of one participant) (frontiers list IDs: notes/permissions.md, Frontier encoding); no compaction; open is O(all commits) (issues/long-aspect-cost.md).
 
 ## Tess's decisions
 - The maker as first admin is the default app's default, not a rule: a chat's first admin may be a realm or anyone. A chat keeps all messages, so it keeps its member history and needs no roster compaction. Recovery from a vandal writer needs only an admin able to demote.

@@ -812,7 +812,7 @@ fn demotion_frontier_spec_perm_5_1() {
 
 // notes/permissions.md (roles model: mutual removal): two admins removing each other
 // concurrently resolve to the earlier removal; the later one's author was already out, and
-// keeps its own side (notes/disputes-plan.md step 4).
+// keeps its own side (notes/disputes.md, Detection and sides).
 // spec/permissions.md §5.1
 #[test]
 fn mutual_removal_spec_perm_5_1() {
@@ -828,7 +828,7 @@ fn mutual_removal_spec_perm_5_1() {
     lp.peers[1].engine.demote(&t, &Demotion { holder: pa, new: None, retain: None }).unwrap();
     spread(&mut lp);
     // the earlier removal wins at every node but the removed party, which holds its own write
-    // first and sides with itself (notes/disputes-plan.md step 4)
+    // first and sides with itself (notes/disputes.md, Detection and sides)
     for i in [0, 2] {
         let r = lp.peers[i].engine.roster(&t);
         assert!(r.contains_key(&pa) && !r.contains_key(&pb), "peer {i}: {r:?}");
@@ -2269,7 +2269,7 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
     assert!(!e.is_empty() && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
 }
 
-// spec/permissions.md §5.1 Frontier, §5.2 Acting; notes/frontier-study.md (a kick
+// spec/permissions.md §5.1 Frontier, §5.2 Acting; notes/permissions.md, Frontier encoding (a kick
 // never scales with history): node 1 writes doc X many times as its account P, compacted, and
 // once as P on its own thing Y. A demotion of P lists only what no snapshot covers: Y's write
 // (it would go invalid unlisted, though the node's own right on Y never fell), not every

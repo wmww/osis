@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: engine, tests
 
-Most arrival-order bugs (notes/test-design.md, What finds bugs, notes/convergence-study.md) come from the implementation, not the rule: finding a copy is unreliable (peers keeping it unread may delete it in the same sync; the revoker may not hold it; a node without the revocation deletes a body logged again); drops stack (expiry, covers turning invalid); "nobody has it" looks like "not yet", so repair backstops can loop (seed 5288: a re-snapshot every 6 h).
+Most arrival-order bugs (notes/test-design.md, What finds bugs, notes/engine-validity.md, Flips against dropped data) come from the implementation, not the rule: finding a copy is unreliable (peers keeping it unread may delete it in the same sync; the revoker may not hold it; a node without the revocation deletes a body logged again); drops stack (expiry, covers turning invalid); "nobody has it" looks like "not yet", so repair backstops can loop (seed 5288: a re-snapshot every 6 h).
 
 Rejected (Tess): deletions final against later revocation (a removed or stolen device keeps delete power forever); history kept so drops roll back (no prompt permanent deletion); a writer's compaction vouching for a deletion (still diverges when every writer saw the revocation first).
 

@@ -21,7 +21,7 @@ instances=(
   "sync sync MC kept.cfg pass"
   "sync sync MC kept_after.cfg pass"
   "sync sync MC none_live.cfg pass"
-  "sides sides MC kill_touch.cfg pass"           # notes/disputes-plan.md step 6
+  "sides sides MC kill_touch.cfg pass"           # notes/disputes.md, Storage under a fork
   "sides sides MC purge_touch.cfg pass"
   "sides sides MC place_touch.cfg pass"
   "sides sides MC branch_kill.cfg pass"          # host branching, rule lifted per branch

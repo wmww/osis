@@ -1,4 +1,4 @@
-//! Admin disputes end to end (spec/permissions.md §5.1 Trust set; notes/disputes-plan.md
+//! Admin disputes end to end (spec/permissions.md §5.1 Trust set; notes/disputes.md
 //! step 4): the backdating attack, default sides, switching, the
 //! trust store across a restart. Over `LocalPeer`: commits delivered by hand, so who holds what
 //! first is the test's.
@@ -92,7 +92,7 @@ fn detected(lp: &LocalPeer, i: usize) -> Vec<(Tid, Tid, bool)> {
     lp.peers[i].drain_events().into_iter().filter_map(|e| if let Event::DisputeDetected { holder, author, trust, .. } = e { Some((holder, author, trust)) } else { None }).collect()
 }
 
-// spec/permissions.md §5.1 Trust set; notes/disputes-plan.md step 4 (first received): a
+// spec/permissions.md §5.1 Trust set; notes/disputes.md, Detection and sides (first received): a
 // node that held the honest removal first keeps its side when the backdated one arrives (the
 // removal it applied stops applying: the dispute is detected, the side taken by default and
 // told); one that got the backdated removal first stays with it, warned the same way.
@@ -126,7 +126,7 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
     assert_eq!(the_dispute(&f, 1).side.map(|s| s.trust), Some(true));
 }
 
-// notes/disputes-plan.md step 4 (choices): the default side is durable: after a restart the
+// notes/disputes.md, Detection and sides (choices): the default side is durable: after a restart the
 // node reads as before, and the dispute is listed with the side it took. A chosen side replaces
 // the default, switching back and forth reads each side as a node that always stood there, and a
 // choice survives a restart as the default does. A node on neither side of a fight reads the
@@ -194,7 +194,7 @@ fn late_choice_brings_back_what_the_default_dropped_spec_permissions_5_1() {
     assert_eq!(reg(&mut f, 2), reg(&mut f, 3));
 }
 
-// notes/disputes-plan.md step 4 (first received): a removal waiting for an entry's creation
+// notes/disputes.md, Detection and sides (first received): a removal waiting for an entry's creation
 // (spec/permissions.md §2) counts from when it applies. `a` plants a forward-stamped removal of
 // `b` waiting at peer 2 on an entry only `a` holds; `b`'s removal of `a` (stamped earlier)
 // applies there; `a` then releases the entry: peer 2 keeps `b`.

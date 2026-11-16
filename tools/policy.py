@@ -203,7 +203,7 @@ def paths_of(text, crate):
         expand(text, m.end(), [])
     return out
 
-# notes/disputes-plan.md, the coherence rule: the dispute types are private to osis-perm and
+# notes/disputes.md, the coherence rule: the dispute types are private to osis-perm and
 # the API layer; nothing else names a side or asks whether a dispute is open.
 # The trust store (core/engine/src/sides.rs) is the rule's second exception: durable sides, fed
 # to the walk; its end-to-end tests are core/engine/tests/it/disputes.rs.

@@ -5,7 +5,7 @@
 
 ## Status
 - On main: this plan, the spec (it describes the rebuilt design, not the code), the requirements wording (Tess approved), the model (notes/closure-model.md, held-model `closure`) and the demolition inventory (issues/reference-graph-demolition.md).
-- Execution step 3 (demolition) is under way; the spec's account parts are in the account forks terms (notes/account-forks-design.md: seeds boxed to device keys, the chain is D's roster, merges only join).
+- Execution step 3 (demolition) is under way; the spec's account parts are in the account forks terms (notes/engine-validity-epochs.md: seeds boxed to device keys, the chain is D's roster, merges only join).
 
 ## Principles (Tess)
 - **A strong grants nothing.** It says the target belongs to this closure; anyone knowing a tid may write one. Permission is a separate act by someone who may grant, and removing a reference revokes nothing.

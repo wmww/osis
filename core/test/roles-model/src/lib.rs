@@ -23,13 +23,13 @@
 //!   snapshot inside the removal, the account level), per-node with real body drops, against
 //!   listing every commit. Searches `forget`, `forget-account`, `forget-costs`, `forget-min`.
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
-//! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes-plan.md
+//! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes.md
 //!   step 3), below.
 //! - `epochs`: account signing epochs (issues/account-signing.md): node removal as
 //!   rotation, per-sync-ID list parts and per-thing lists, listings, witnesses' addenda,
 //!   successive removals, re-adds, the part bound, forks and thieves (README.md, results).
 //! - `forks`: an account's forked signing chain, the first-seen rule (§5.4).
-//! - `custody`: notes/account-forks-design.md, greenfield: seed custody follows holding, the
+//! - `custody`: notes/engine-validity-epochs.md, greenfield: seed custody follows holding, the
 //!   chain is D's roster, a merge is only a join (README.md, results).
 //! Each model's library API: `walk(h)`, the timeline as a pure function of a history;
 //! `random_hist`; `quiescent(h)` (every node's walk over the writes in its delivery order

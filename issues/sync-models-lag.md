@@ -13,4 +13,4 @@ Each line: the rule (spec), the model that should carry it, what it lacks.
 - Suspect lists and repair, the receiver's first-sync gate (spec/sync-judgement.md, suspect; `inbox/suspect.rs`): no model.
 - A body judged invalid leaving every own store untombstoned, forgotten, and a re-grant giving its request force again (spec/sync-judgement.md §2, spec/permissions.md §6): NetHold's `XFall` makes c valid once; forgetting and a second flip are not modelled.
 - A listener set's key change closing the sessions taken under the old key (spec/sync-transport.md §5 Key change): NetOpen has no own-key change.
-- A registrar none of whose secrets tells a role's step key waiting for its current epochs' rotations (spec/sync-ids.md §6 Steps): NetKeep has no epoch without a step and no history-less holder (notes/history-less-grant.md, Decided 3).
+- A registrar none of whose secrets tells a role's step key waiting for its current epochs' rotations (spec/sync-ids.md §6 Steps): NetKeep has no epoch without a step and no history-less holder (notes/history-less-grant.md, Sync IDs and steps).

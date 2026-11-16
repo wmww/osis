@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 //! The engine's account nodes against core/test/roles-model `custody` (spec/permissions.md
-//! §5.4-§5.5, spec/crypto.md §9; notes/account-forks-design.md): real engines play the model's
+//! §5.4-§5.5, spec/crypto.md §9; notes/engine-validity-epochs.md): real engines play the model's
 //! custody worlds, the model judging the same commits. Peers are the model's parties: A, B, C,
 //! X and T account P's nodes, R1 and R2 readers with accounts of their own (R1 a writer of P's
 //! thing t, so t keeps epochs of its own), Z a bare peer whose keys X uses as a key actor it made

@@ -1,5 +1,5 @@
 # The dispute listing is capped in point order
-> Summary: `disputes()` walks once per contestable removal (no exact filter exists: notes/disputes-plan.md step 4, Scan bound), so the API examines at most 64 candidates in point order and counts the rest; a flood of early-stamped hostile writes pushes an open dispute with no recorded side past the cap, where it is counted, not listed, and the cap is not a parameter of the API or CLI.
+> Summary: `disputes()` walks once per contestable removal (no exact filter exists: notes/disputes.md, Scan bound), so the API examines at most 64 candidates in point order and counts the rest; a flood of early-stamped hostile writes pushes an open dispute with no recorded side past the cap, where it is counted, not listed, and the cap is not a parameter of the API or CLI.
 > Priority: low
 > Tags: perm, api
 

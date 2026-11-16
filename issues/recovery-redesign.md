@@ -5,7 +5,7 @@
 
 **Tess question:** when should recovery be designed, and is the optional recovery key below the direction?
 
-notes/disputes.md records her direction: no recovery key by default, and a stolen unlocked device accepted. notes/disputes-plan.md makes a recovery card an ordinary key holding an admin role.
+notes/disputes.md records her direction: no recovery key by default, and a stolen unlocked device accepted.
 
 Nothing of recovery is in the engine or spec. Accounts (spec/permissions.md §1) have no owner key apart from their epoch seeds on D, so an account with no node left is not recoverable; a design starts from the epoch seeds. One that claims a sync ID by a static entry must handle a head moving while the fresh node reads.
 
@@ -13,7 +13,7 @@ Nothing of recovery is in the engine or spec. Accounts (spec/permissions.md §1)
 - Is recovery an explicit act after `create`, any time, with or without peers?
 - Where the data comes from on restore: any node of the account or an address typed in.
 - How a lost or stolen card is revoked.
-- Interaction with disputes (notes/disputes-plan.md step 3).
+- Interaction with disputes (notes/disputes.md, The walk).
 
 ## Tess's idea: an optional key
 Having none must be a fully valid way to use osis, and a thief with an unlocked device taking control is accepted (the alternatives are no irrevocable actions for legit users, or a recovery system, which stays optional). So nobody gets one by default and it is not in the first build. Losing all nodes needs no new role: a recovery card can be a key actor holding a plain admin edge, listed by static entry as link keys are (spec/permissions.md §7); a thief can remove it. If built, it is a section nothing else reads; every rule and test works with none.

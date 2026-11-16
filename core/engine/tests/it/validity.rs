@@ -3303,7 +3303,7 @@ fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
 }
 
 // spec/permissions.md §5.1 (frontier; a commit is listed whether a still holds its body, dropped it or compacted it),
-// notes/frontier-study.md: Bob writes a kept register twice and Carol, any writer, snapshots it
+// notes/permissions.md, Frontier encoding: Bob writes a kept register twice and Carol, any writer, snapshots it
 // just before Alice removes Bob. The snapshot keeps only "two"; Alice lists both, so Bob's
 // superseded "one" stays valid where held; a new node never given it reads alike. Past the
 // keep-at-least window both are still listed.

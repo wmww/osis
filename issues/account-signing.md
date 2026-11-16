@@ -1,5 +1,5 @@
 # Account signing: what is left
-> Summary: Outsiders verify a commit by its account's signing chain (epochs whose keys every node of the account holds); the node's own signature travels sealed to the account's nodes. Built and specified (spec/permissions.md §5.4-§5.5, spec/crypto.md §9; notes/engine-validity-epochs.md, notes/account-forks-design.md). Left: own cover at the account level, per-rotation re-judging cost and listing gaps, the API tests, and the thing-list cost check.
+> Summary: Outsiders verify a commit by its account's signing chain (epochs whose keys every node of the account holds); the node's own signature travels sealed to the account's nodes. Built and specified (spec/permissions.md §5.4-§5.5, spec/crypto.md §9; notes/engine-validity-epochs.md). Left: own cover at the account level, per-rotation re-judging cost and listing gaps, the API tests, and the thing-list cost check.
 > Priority: normal
 > Tags: perm, crypto, sync, spec
 

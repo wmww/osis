@@ -1,4 +1,4 @@
-//! Account custody (notes/account-forks-design.md): seed custody follows holding, the chain is
+//! Account custody (notes/engine-validity-epochs.md): seed custody follows holding, the chain is
 //! D's roster, a merge is only a join. Greenfield: shares no code with `forks`.
 //!
 //! The design under test.

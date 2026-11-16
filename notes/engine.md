@@ -79,7 +79,7 @@ osis-engine (`core/engine/src`; each file's doc comment says more):
 | `flows/` | `Done`, key actors (`mod.rs`); accounts and pairing (`account.rs`); the signing chain (`signing.rs`); thing lists (`lists.rs`); addenda (`addenda.rs`); grants, demotions, invite grants, self-removals, finalizes, inbox delivery (`edges.rs`); sync IDs and registration steps (`sync_ids.rs`); share links (`links.rs`); tied grants (`tied.rs`); creation by a record alone (`create.rs`) |
 | `rotation/` | the cascade, `rotation_due`, finalizes due, re-seals (`mod.rs`); `departures.rs`; holder actors (`members.rs`); the lost-access trigger (`lost.rs`) |
 | `local_peer.rs` | `LocalPeer`: engines exchanging commits directly (`Package`, `SealedPackage`; the simulator's seed, notes/test-sim.md) |
-| `sides.rs` | this node's sides in admin disputes (notes/disputes-plan.md) |
+| `sides.rs` | this node's sides in admin disputes (notes/disputes.md) |
 | `error.rs` | `Error` with the three classes (notes/architecture.md §3) |
 | `tests_copy.rs` | world copies (notes/test-harnesses.md, Copied worlds) |
 

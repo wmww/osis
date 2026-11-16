@@ -63,7 +63,7 @@ fn stolen_node_backdated_removals() {
 
 /// §5.1: the earliest stamp wins between admins removing each other: n0's further-backdated
 /// revoke of the stolen node n1 cancels n1's removal of n2. Stated limit until disputes are
-/// settled per node (notes/disputes-plan.md step 3): n1 backdating further still takes G
+/// settled per node (notes/disputes.md, The walk): n1 backdating further still takes G
 /// back, n0 being an ordinary admin.
 #[test]
 fn further_backdated_revoke_cancels() {
@@ -788,7 +788,7 @@ fn backdated_takeback_settled_by_trust_spec_permissions_5_1() {
     assert_eq!(back_again.disputes(), tl.disputes());
 }
 
-/// §5.1 Trust, seeds (a self-grant below, notes/disputes-plan.md step 3): X, admin of A0 (first admin
+/// §5.1 Trust, seeds (a self-grant below, notes/disputes.md, The walk): X, admin of A0 (first admin
 /// n1), grants itself admin on A1 (first admin A0) and removes n1, both unseen by n1, who then
 /// removes X from A0 (R). The plain walk keeps X everywhere (its removal is stamped first) and
 /// raises (R, X). Trusting R seeds the self-grant too: X holds nothing on A1. With X lowering
@@ -1003,7 +1003,7 @@ fn edge_written_before_its_authority_seeds_nothing_spec_permissions_5_1() {
     }
 }
 
-/// §5.1 Trust, notes/disputes-plan.md step 4 (detection): `Timelines` under `detect`
+/// §5.1 Trust, notes/disputes.md, Detection and sides (detection): `Timelines` under `detect`
 /// reports a dispute once, when the removal it voids stops applying (`stood`) or when the
 /// voided removal arrives unapplied; a switch (`set_trust`) detects nothing; `disputes_up_to`
 /// bounds the scan and counts what it left.
@@ -1058,7 +1058,7 @@ fn detection_reports_stood_spec_permissions_5_1() {
     assert!(tls.take_detected().found.is_empty());
 }
 
-/// §5.1 Trust, notes/disputes-plan.md step 4 (detection bound): a backdated removal that
+/// §5.1 Trust, notes/disputes.md, Detection and sides (detection bound): a backdated removal that
 /// voids more contestable writes than one update examines, the honest removal among the last
 /// in point order, and a flood of the author's newly held unapplied writes in the same update:
 /// the removal that stood is still examined first or kept unexamined (`Detection::kept`, the

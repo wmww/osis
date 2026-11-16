@@ -1,6 +1,6 @@
-//! Trust sets and disputes (spec/permissions.md §5.1, Trust; notes/disputes-plan.md step
-//! 3, notes/disputes.md): a node's side in a fight between admins is one more input to the walk.
-//! Private to osis-perm and the API layer (the coherence rule of notes/disputes-plan.md):
+//! Trust sets and disputes (spec/permissions.md §5.1, Trust; notes/disputes.md,
+//! The walk): a node's side in a fight between admins is one more input to the walk.
+//! Private to osis-perm and the API layer (the coherence rule of notes/disputes.md):
 //! nothing else names a side or asks whether a dispute is open.
 //!
 //! - A **trusted op** R is a held edge write with a frontier by A on another holder M's edge
