@@ -77,7 +77,7 @@ Lane: (a) refs, tickets as values, schema, API, index; (b) node root, walk, sync
 | S1 | releasing everything returns a node to its node root, account root, profile, inbox and node things, plus the bounded rows of the plan's Storage list: nothing grows with history | one count test: from a fresh contacts world, n rounds of make, write, grant, revoke, fire, redeem, accept, decline and release; release all and advance past `INBOX_LIFETIME`, `ROLE_KEEP` and `TOMBSTONE_LIFETIME`; `disk_use(i)` rows equal at n and 10n (2 and 20 rounds) and equal a fresh world's plus the peer records | sync (growth module) | b, c |
 
 ## Written
-Part 1 (engine, one node or LocalPeer worlds; sealed delivery where reads matter: plain `LocalPeer` packages carry bodies a reader's keys need not open):
+Part 1 (engine, one node or LocalPeer worlds; sealed delivery where reads matter: plain `LocalPeer` packages carry bodies a reader's keys need not open; a lowered reader drops what it lost only where `drop_lost_secrets` runs, as sync's Life does). Each fails with its rule undone by hand, H4's cycle arm aside (not tried):
 - R1: core/test/vectors/cbor/values.vec (tags 1620-1622, 1616 and bad tickets rejected). I1: base `ids::tests::ak_rules`.
 - R2: engine `refs::known_references_are_a_scan_of_held_values_spec_data_model_8` (each position keeps one shape until `refs::a_value_of_another_shape_leaves_no_references_spec_data_model_8`, ignored, is fixed: issues/reference-graph.md Status).
 - R3: engine `refs::core_aspects_hold_nothing_spec_data_model_8`.

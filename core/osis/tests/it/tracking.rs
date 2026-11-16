@@ -88,7 +88,8 @@ fn dispatch_counts_matched_listeners_at_n_and_10n() {
         assert_eq!(hits.load(Ordering::SeqCst), 1, "matched listeners only: {cs:?}");
         (count(&cs, "watch: considered"), count(&cs, "watch: dispatched"))
     };
-    assert_eq!(dispatched(40), dispatched(400));
+    // 20 and 200: making each thing costs what its sync unit holds (issues/reference-graph.md Status)
+    assert_eq!(dispatched(20), dispatched(200));
 }
 
 #[test]
