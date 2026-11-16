@@ -1708,12 +1708,16 @@ fn a_link_key_goes_with_the_last_followed_link_naming_it_spec_permissions_7() {
     assert_eq!(link_keys_held(e), BTreeSet::from([l]), "and after a reload");
     e.unfollow_link(&shared.k);
     assert!(link_keys_held(e).is_empty(), "L goes with the last link naming it");
+    e.check_index();
     e.hold_key_actor(a.seed.clone()).unwrap();
+    e.reload().unwrap();
     e.follow_link(&a).unwrap();
     e.unfollow_link(&a.k);
-    assert_eq!(link_keys_held(e), BTreeSet::from([l]), "held by hold_key_actor: kept");
+    assert_eq!(link_keys_held(e), BTreeSet::from([l]), "held by hold_key_actor, across a reload: kept");
+    e.check_index();
     e.drop_key_actor(&l);
     assert!(link_keys_held(e).is_empty());
+    e.check_index();
 }
 
 // spec/permissions.md §7 (First contact): following a link again under another seed holds the new
@@ -1733,8 +1737,10 @@ fn following_a_link_again_under_another_seed_lets_its_old_key_go_spec_permission
     assert_eq!(link_keys_held(e), BTreeSet::from([lb]), "a's old key let go");
     e.reload().unwrap();
     assert_eq!(link_keys_held(e), BTreeSet::from([lb]), "and after a reload");
+    e.check_index();
     e.unfollow_link(&a.k);
     assert!(link_keys_held(e).is_empty());
+    e.check_index();
 }
 
 // spec/permissions.md §3 (When it learns it: a node syncing a sync ID of the actor keeps syncing it,

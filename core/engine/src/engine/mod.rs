@@ -3929,6 +3929,9 @@ impl Engine {
     /// a reproducer's point is.
     #[doc(hidden)]
     pub fn check_index(&mut self) {
+        // key actors are derived: held exactly while `hold_key_actor` or a followed link names them
+        let named: BTreeSet<Tid> = self.core.held_keys.keys().chain(self.core.followed_links.all().values().map(|(_, l)| l)).copied().collect();
+        assert_eq!(self.core.key_actors.keys().copied().collect::<BTreeSet<_>>(), named, "key actors: held or named by a followed link");
         for rebuild in [false, true] {
             let mut fresh = self.blank_core();
             fresh.key_actors = self.core.key_actors.clone();
