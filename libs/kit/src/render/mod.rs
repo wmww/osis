@@ -709,18 +709,18 @@ impl Ui {
         for (i, ops) in steps {
             let Some(list) = slot.built.lists.get_mut(&i) else { continue };
             let Some(Block::List(m)) = model.get(i) else { continue };
-            views_went |= list.keyed.rows().any(|b| !b.children.is_empty());
+            views_went |= list.rows.iter().any(|(_, b)| !b.children.is_empty());
             let mut maker = blocks::Maker { data, window: state, look, acts, current, path: key, style: m.shape.style, rows: &m.rows, children: Vec::new() };
             root.edit_widget(list.widget, |mut w| {
                 let mut w = w.downcast::<VirtualList>();
                 // the row at the top, by key: rows come and go around it
-                let anchor = list.keyed.keys().nth(w.widget.anchor()).cloned();
+                let anchor = list.keys().nth(w.widget.anchor()).cloned();
                 // gone: the next row shown takes its place
                 let at = anchor.as_ref().and_then(|k| {
-                    let mut old = list.keyed.keys().skip_while(|o| *o != k);
+                    let mut old = list.keys().skip_while(|o| *o != k);
                     old.find_map(|o| m.rows.iter().position(|r| r.key == *o))
                 });
-                list.keyed.apply(&mut w, &ops, &mut maker);
+                list.apply(&mut w, &ops, &mut maker);
                 let spans = m.rows.iter().map(|r| matches!(r.item, Item::Label(_))).collect();
                 let fixed = usize::from(matches!(m.rows.last(), Some(ListRow { item: Item::New(_), .. })));
                 VirtualList::set_window(&mut w, m.first.unwrap_or(0), m.total, m.more_before, m.more_after, spans, fixed);
@@ -748,7 +748,7 @@ impl Ui {
         let v = if stuck {
             ListWindow { scope, ..ListWindow::default() }
         } else {
-            let Some(key) = m.built.lists.get(&block).and_then(|l| l.keyed.keys().nth(anchor).cloned()) else { return };
+            let Some(key) = m.built.lists.get(&block).and_then(|l| l.keys().nth(anchor).cloned()) else { return };
             let row = match m.model.get(block) {
                 Some(Block::List(l)) => l.first().map(|f| f + anchor),
                 _ => None,

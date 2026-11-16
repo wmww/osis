@@ -5,13 +5,13 @@ use crate::view::paged::{Item, List, ListRow, Style};
 use crate::view::{Block, ChipMark, Composer, Do, Entry, FormRow, Mark, Pick, TYPE_IN, TextRole, WindowState};
 use osis::Tid;
 use crate::icons::Icon;
-use crate::masonry::core::{Capitalize, EnterKey, NewWidget, Properties, TextInputHints, Widget, WidgetId};
+use crate::masonry::core::{Capitalize, EnterKey, NewWidget, Properties, TextInputHints, Widget, WidgetId, WidgetMut};
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
 use crate::masonry::widgets::{Flex, SizedBox, TextInput};
 use crate::theme::{Look, parse};
 use crate::widgets::style::{self, Text};
-use crate::list::{KeyedList, Rows};
+use crate::view::keyed::Op;
 use crate::widgets::{Chip as KChip, ChipMark as KMark, Panel, PanelKind, Tile, TileGrid, TileIcon, TileStyle, Page, VirtualList, Wrap};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,10 +41,36 @@ pub struct Built {
     ids: Vec<WidgetId>,
 }
 
-/// A list's widget and what each row registered.
+/// A list's widget and, row by row, its key and what the row registered.
 pub struct RowList {
     pub widget: WidgetId,
-    pub keyed: KeyedList<String, Built>,
+    pub rows: Vec<(String, Built)>,
+}
+
+impl RowList {
+    /// The keys shown, in order.
+    pub fn keys(&self) -> impl Iterator<Item = &String> {
+        self.rows.iter().map(|(k, _)| k)
+    }
+
+    /// Applies `ops` (from `reconcile` against `keys()`) to `list` and to the rows. Masonry cannot
+    /// move a widget between slots, so a row that moved or changed is rebuilt.
+    pub fn apply(&mut self, list: &mut WidgetMut<'_, VirtualList>, ops: &[Op<String>], maker: &mut Maker) {
+        for op in ops {
+            match op {
+                Op::Remove(i) if *i < self.rows.len() => {
+                    maker.acts.forget(&self.rows.remove(*i).1);
+                    VirtualList::remove_row(list, *i);
+                }
+                Op::Insert(i, k) if *i <= self.rows.len() => {
+                    let (w, b) = maker.make(*i);
+                    self.rows.insert(*i, (k.clone(), b));
+                    VirtualList::insert_row(list, *i, w);
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// The widgets that report an action, and what it does.
@@ -112,7 +138,7 @@ impl Acts {
         }
     }
     pub fn forget(&mut self, b: &Built) {
-        for row in b.lists.values().flat_map(|l| l.keyed.rows()) {
+        for (_, row) in b.lists.values().flat_map(|l| &l.rows) {
             self.forget(row);
         }
         for id in &b.ids {
@@ -156,8 +182,9 @@ pub struct Maker<'a> {
     pub children: Vec<(String, WidgetId)>,
 }
 
-impl Rows<String, Built> for Maker<'_> {
-    fn make(&mut self, i: usize, _: &String) -> (NewWidget<dyn Widget>, Built) {
+impl Maker<'_> {
+    /// The row at `i` of the new list, and what it registered.
+    fn make(&mut self, i: usize) -> (NewWidget<dyn Widget>, Built) {
         let mut r = R { data: self.data, window: self.window, look: self.look, acts: &mut *self.acts, built: Built::default(), current: self.current, path: self.path, listing: None, list_slot: None };
         let w = match self.rows.get(i) {
             Some(row) => r.list_row(row, self.style).0,
@@ -165,9 +192,6 @@ impl Rows<String, Built> for Maker<'_> {
         };
         self.children.extend(r.built.children.iter().cloned());
         (w, r.built)
-    }
-    fn dropped(&mut self, row: Built) {
-        self.acts.forget(&row);
     }
 }
 
@@ -358,14 +382,14 @@ impl R<'_> {
             Style::Row => (crate::widgets::ROW_MIN, 4.0, l.shape.cols),
         };
         let mut w = VirtualList::new(look, min, cols, gap, l.shape.follow_end);
-        let mut keyed = KeyedList::default();
+        let mut keyed = Vec::new();
         for row in &l.rows {
             let outer = std::mem::take(&mut self.built);
             let (row_w, span) = self.list_row(row, l.shape.style);
             let built = std::mem::replace(&mut self.built, outer);
             self.built.children.extend(built.children.iter().cloned());
             w = w.with_child(row_w, span);
-            keyed.push(row.key.clone(), built);
+            keyed.push((row.key.clone(), built));
         }
         let fixed = usize::from(matches!(l.rows.last(), Some(ListRow { item: Item::New(_), .. })));
         if l.shape.reorder.is_some() {
@@ -374,7 +398,7 @@ impl R<'_> {
         w = w.anchored(l.anchor, l.first.unwrap_or(0), l.total, l.more_before, l.more_after);
         let w = NewWidget::new(w);
         if let (Some(i), Some(slot)) = (listing, self.list_slot.clone()) {
-            self.built.lists.insert(i, RowList { widget: w.id(), keyed });
+            self.built.lists.insert(i, RowList { widget: w.id(), rows: keyed });
             self.acts.lists.insert(w.id(), (l.id.clone(), slot, i));
             self.built.ids.push(w.id());
         }

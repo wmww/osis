@@ -1,6 +1,6 @@
 //! osis-kit: the first-party UI toolkit over Masonry (notes/app.md, kit and app). Holds
 //! windowing (`window`), what platform shells supply (`platform`) and the input decisions made
-//! with it (`input`), the keyed list reconciler (`list`), themes (`theme`: parameters, the six defaults and
+//! with it (`input`), themes (`theme`: parameters, the six defaults and
 //! their resolution into a `Look`; `backdrop`: backgrounds), icons, text helpers and the widgets
 //! drawn from a look (`widgets`), and the view system: `view` (toolkit-free model), `views` and
 //! `facets` (generic view types and core-aspect facets), `render` (the widgets for it and the
@@ -15,7 +15,6 @@ pub mod fonts;
 pub mod icons;
 pub mod ime;
 pub mod input;
-pub mod list;
 pub mod platform;
 pub mod render;
 pub mod store;

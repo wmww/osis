@@ -1,15 +1,21 @@
-//! The keyed list reconciler: applying its steps to the old list gives the new one, rows that
-//! stay keep their element, and only changed rows are rebuilt.
-use osis_kit::list::{Op, apply, reconcile};
+//! The keyed list reconciler: applying its steps to the old list gives the new one (every step in
+//! range), rows that stay keep their element, and only changed rows are rebuilt.
+use osis_kit::view::keyed::{Op, reconcile};
+use std::fmt::Debug;
+use std::hash::Hash;
 
-/// Applies `reconcile(old, new)` to elements tagged with where they came from; checks the
-/// result's keys and that kept rows were not rebuilt unless moved.
-fn check(old: &[(u32, u32)], new: &[(u32, u32)]) -> Vec<Op<u32>> {
+/// Applies `reconcile(old, new)` to `old` as a list widget takes it, inserted rows taking their
+/// new value: the result is `new` only if every step is in range and every kept row already held
+/// its value.
+fn check<K: Eq + Hash + Clone + Debug, V: Clone + PartialEq + Debug>(old: &[(K, V)], new: &[(K, V)]) -> Vec<Op<K>> {
     let ops = reconcile(old, new);
-    // element: (key, value, built here)
-    let mut list: Vec<(u32, u32, bool)> = old.iter().map(|(k, v)| (*k, *v, false)).collect();
-    apply(&mut list, &ops, |i, k| (*k, new[i].1, true));
-    let got: Vec<(u32, u32)> = list.iter().map(|(k, v, _)| (*k, *v)).collect();
+    let mut got = old.to_vec();
+    for op in &ops {
+        match op {
+            Op::Remove(i) => drop(got.remove(*i)),
+            Op::Insert(i, k) => got.insert(*i, (k.clone(), new[*i].1.clone())),
+        }
+    }
     assert_eq!(got, new, "old {old:?} ops {ops:?}");
     ops
 }
@@ -19,26 +25,12 @@ fn unchanged_list_needs_nothing() {
     assert!(check(&[(1, 0), (2, 0)], &[(1, 0), (2, 0)]).is_empty());
 }
 
-#[test]
-fn insert_remove_change() {
-    assert_eq!(check(&[(1, 0), (2, 0), (3, 0)], &[(1, 0), (3, 5), (4, 0)]), vec![Op::Remove(2), Op::Remove(1), Op::Insert(1, 3), Op::Insert(2, 4)]);
-}
-
 /// The first row of the pair changed and moved past the last: the row that did not change is the
 /// one kept, whichever comes first in a tie for the longest run.
 #[test]
 fn a_changed_row_is_never_kept_over_one_that_did_not_change() {
     assert_eq!(check(&[(1, 0), (2, 0)], &[(2, 0), (1, 1)]), vec![Op::Remove(0), Op::Insert(1, 1)]);
     assert_eq!(check(&[(1, 0), (2, 0)], &[(2, 1), (1, 0)]), vec![Op::Remove(1), Op::Insert(0, 2)]);
-}
-
-/// A row changing in place rebuilds that row; duplicate keys each keep their own value.
-#[test]
-fn duplicates_take_their_own_values() {
-    let old = [(1, 0), (1, 1), (2, 0)];
-    let new = [(1, 1), (1, 2), (2, 0)];
-    let ops = check(&old, &new);
-    assert!(ops.contains(&Op::Insert(1, 1)), "{ops:?}");
 }
 
 /// Whatever the reorder, a list costs at most one remove and one insert per row, and reversing a
@@ -62,14 +54,6 @@ fn a_row_moving_far_touches_that_row() {
     let mut new = old[1..].to_vec();
     new.push((0, 1));
     assert_eq!(check(&old, &new), vec![Op::Remove(0), Op::Insert(49, 0)]);
-}
-
-#[test]
-fn duplicates_and_empties() {
-    check(&[], &[(1, 0), (2, 0)]);
-    check(&[(1, 0), (2, 0)], &[]);
-    check(&[(1, 0), (1, 0), (2, 0)], &[(2, 0), (1, 0)]);
-    check(&[(1, 0)], &[(1, 0), (1, 0)]);
 }
 
 /// Every pair of short lists over a few keys (exhaustive up to length 4, keys 0..4, values 0..2).
@@ -110,9 +94,8 @@ fn exhaustive_small() {
     }
 }
 
-/// Random old/new lists (duplicate keys included, up to 12 rows): every op is in range when
-/// applied (the lenient `apply` would skip one silently), applying gives `new`, and a kept row
-/// already holds its new value.
+/// Random old/new lists (duplicate keys included, up to 12 rows): every op is in range, applying
+/// gives `new`, and a kept row already holds its new value.
 #[test]
 fn random_lists_strict() {
     let mut seed = 1u64; // xorshift at seed 0 (its state is never 0)
@@ -140,27 +123,6 @@ fn random_lists_strict() {
         };
         let old = make(&mut rnd);
         let new = make(&mut rnd);
-        let ops = reconcile(&old, &new);
-        // (key, value, rebuilt)
-        let mut list: Vec<(u64, u64, bool)> = old.iter().map(|(k, v)| (*k, *v, false)).collect();
-        for op in &ops {
-            match op {
-                Op::Remove(i) => {
-                    assert!(*i < list.len(), "{old:?} -> {new:?}: {ops:?}");
-                    list.remove(*i);
-                }
-                Op::Insert(i, k) => {
-                    assert!(*i <= list.len(), "{old:?} -> {new:?}: {ops:?}");
-                    list.insert(*i, (*k, u64::MAX, true));
-                }
-            }
-        }
-        // rebuilt rows take the new value on creation; a kept row must already hold it
-        let got: Vec<u64> = list.iter().map(|(k, _, _)| *k).collect();
-        let want: Vec<u64> = new.iter().map(|(k, _)| *k).collect();
-        assert_eq!(got, want, "{old:?} -> {new:?}: {ops:?}");
-        for (i, (_, v, rebuilt)) in list.iter().enumerate() {
-            assert!(*rebuilt || *v == new[i].1, "stale value at {i}: {old:?} -> {new:?}: {ops:?}");
-        }
+        check(&old, &new);
     }
 }

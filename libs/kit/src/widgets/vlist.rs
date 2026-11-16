@@ -372,8 +372,9 @@ impl VirtualList {
     }
 }
 
-impl crate::list::ListWidget for VirtualList {
-    fn insert_row(this: &mut WidgetMut<'_, Self>, i: usize, row: NewWidget<dyn Widget>) {
+/// Rows coming and going one at a time (`render`'s `RowList::apply`).
+impl VirtualList {
+    pub(crate) fn insert_row(this: &mut WidgetMut<'_, Self>, i: usize, row: NewWidget<dyn Widget>) {
         let i = i.min(this.widget.children.len());
         this.widget.children.insert(i, row.to_pod());
         this.widget.spans.insert(i, false);
@@ -381,7 +382,7 @@ impl crate::list::ListWidget for VirtualList {
         this.ctx.children_changed();
         this.ctx.request_layout();
     }
-    fn remove_row(this: &mut WidgetMut<'_, Self>, i: usize) {
+    pub(crate) fn remove_row(this: &mut WidgetMut<'_, Self>, i: usize) {
         if i < this.widget.children.len() {
             let c = this.widget.children.remove(i);
             this.widget.spans.remove(i);

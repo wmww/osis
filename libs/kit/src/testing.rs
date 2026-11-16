@@ -57,7 +57,7 @@ impl Surface for Screen {
         }
         match steps(&old.blocks, &out.blocks) {
             Some(s) if old.foot == out.foot => {
-                self.rows += s.iter().map(|(_, ops)| ops.iter().filter(|o| !matches!(o, crate::list::Op::Remove(_))).count() as u64).sum::<u64>();
+                self.rows += s.iter().map(|(_, ops)| ops.iter().filter(|o| !matches!(o, crate::view::keyed::Op::Remove(_))).count() as u64).sum::<u64>();
                 Ok(false)
             }
             _ => {
