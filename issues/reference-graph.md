@@ -113,8 +113,8 @@ Main may be broken for as long as this takes: nobody runs it. No small steps tha
 
 Rules:
 - **No bridges**: no interim path, compatibility code or old thing kept until the new one works.
-- **Cut everything that makes sense to cut**, and report source lines before and after (140,433 at 515e499c5; the inventory estimates 4,800 removed). A lower total is the aim, not a condition.
-- **Fewer and faster tests**: the default tests' count and CPU seconds are lower at the end than the baseline of step 2 (120,784 test lines at 515e499c5; the inventory estimates 8,000 to 9,000 removed). A condition.
+- **Cut everything that makes sense to cut**, and report source lines before and after (baseline 141,662 impl and 123,333 test lines at 5b4faadfa; the inventory estimates 4,800 impl lines removed). A lower total is the aim, not a condition.
+- **Fewer and faster tests**: the default tests' count and CPU seconds are lower at the end than the baseline of step 2 (5b4faadfa: 3,493 default tests, 7,030 G instructions, 2,372 CPU-s; `tools/pertest.py` output kept in `~/osis-refgraph-baseline/pertest` for `compare`; the inventory estimates 8,000 to 9,000 test lines removed). A condition.
 - **"Group" is never renamed by search and replace.** Each use is read and becomes a closure, a sync unit, a tag, `holds.0`, or is deleted with what it described; about a quarter of its uses mean something else (delete-key groups, block-list groups) and stay. Reviewers sample each outcome.
 - No benchmark or timing run is part of the preparation: each is a step for the executing coordinator.
 - About ten agents in all.
