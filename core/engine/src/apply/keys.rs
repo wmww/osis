@@ -697,31 +697,35 @@ impl crate::engine::Engine {
     /// it establishes nothing). False when it is not, or when the node lost `g` (`rotation::may_learn`,
     /// spec/permissions.md §3).
     pub fn learn_secret(&mut self, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<bool> {
-        if !e.names(g, r, &secret) || !crate::rotation::may_learn(&self.core, g) {
-            return Ok(false);
-        }
         let g = *g;
-        // a sync secret of a thing not read (a ticket's, spec/sync.md §3): held as its epoch's,
-        // nothing of the thing opened by it
-        if r == Role::Sync && !self.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
-            return self.run(|tx| {
-                tx.core.touch();
-                tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
-                crate::flows::save_epochs(tx, &g)?;
-                Ok(true)
-            });
-        }
-        self.run(|tx| {
-            tx.core.touch();
-            tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
-            // what the secret opens: `g`'s own history boxes, then the boxes sealed to `g`
-            let (s, alts) = (crate::flows::secrets_in(tx, &g)?, crate::flows::secrets_alts(tx, &g)?);
-            tx.core.ingest_secrets(&g, &s, crate::engine::secrets::SecretsRead::State, &alts);
-            crate::flows::save_epochs(tx, &g)?;
-            crate::flows::reopen_dependents(tx, g)?;
-            Ok(true)
-        })
+        self.run(|tx| learn_secret_in(tx, &g, r, e, secret))
     }
+}
+
+/// `Engine::learn_secret` in a transaction.
+pub(crate) fn learn_secret_in(tx: &mut Tx<'_>, g: &Tid, r: Role, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<bool> {
+    if !e.names(g, r, &secret) || !crate::rotation::may_learn(tx.core, g) {
+        return Ok(false);
+    }
+    let g = *g;
+    if tx.core.epochs(&g).is_some_and(|x| x.role(r).secret(&e).is_some()) {
+        return Ok(false);
+    }
+    tx.core.touch();
+    // a sync secret of a thing not read (a ticket's, spec/sync.md §3): held as its epoch's,
+    // nothing of the thing opened by it
+    if r == Role::Sync && !tx.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
+        tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
+        crate::flows::save_epochs(tx, &g)?;
+        return Ok(true);
+    }
+    tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
+    // what the secret opens: `g`'s own history boxes, then the boxes sealed to `g`
+    let (s, alts) = (crate::flows::secrets_in(tx, &g)?, crate::flows::secrets_alts(tx, &g)?);
+    tx.core.ingest_secrets(&g, &s, crate::engine::secrets::SecretsRead::State, &alts);
+    crate::flows::save_epochs(tx, &g)?;
+    crate::flows::reopen_dependents(tx, g)?;
+    Ok(true)
 }
 
 #[cfg(test)]

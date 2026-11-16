@@ -5,6 +5,8 @@
 //! node owes others and what others left in its store:
 //! - `offers`: Deposit items out, one unanswered per connection, refused-for-now backed off.
 //! - `fires`: sealed fires this node owes, offered until a peer takes one.
+//! - `tickets`: the account's tickets in D's `tickets.0`, one per thing entered outside the
+//!   node root's local part.
 //! - `held`: entries in this node's store to act on: deposits promoted by a writer, own deposits
 //!   offered, clearing past the bounds.
 //! - `register`: the recorded steps a source keeping S unread lacks, each once its stream showed
@@ -33,6 +35,7 @@ mod register;
 mod serve;
 mod stranded;
 mod suspect;
+mod tickets;
 
 pub use held::{Act, Facts, Judged, Promotion, act_of, adds_delta, promotion, to_clear};
 pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Judge, Offers, Target, backoff_ms};
@@ -121,6 +124,7 @@ pub struct Inbox {
     started: bool,
     offers: offers::Offers,
     fires: fires::Fires,
+    tickets: tickets::AccountTickets,
     held: held::Held,
     register: register::Register,
     links: links::Redemptions,
@@ -169,6 +173,7 @@ impl Inbox {
         self.links.start(h)?;
         self.held.start(h, &mut self.offers)?;
         self.fires.start(h);
+        self.tickets.start(h)?;
         self.reports.start(h)?;
         self.suspects.start(h);
         self.started = true;
@@ -179,6 +184,7 @@ impl Inbox {
         let mut acted = self.begin(h)?;
         acted |= self.held.settle(h, &mut self.offers)?;
         acted |= self.fires.settle(h, &mut self.offers)?;
+        acted |= self.tickets.settle(h)?;
         acted |= self.links.settle(h)?;
         acted |= self.register.settle(h, net)?;
         acted |= self.reports.settle(h, net)?;

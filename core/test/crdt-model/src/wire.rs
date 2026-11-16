@@ -818,7 +818,7 @@ fn dec_elems(it: &Item, cx: &Ctx, set: bool) -> Result<BTreeMap<Dot, Elem>, Erro
         let gone = match a.get(3..6) {
             Some([s, v, parts]) => {
                 let v = Value::from_item(v).map_err(|_| Error::Bad("value removal"))?;
-                if !set || !matches!(v, Value::Strong(_) | Value::Weak(_)) {
+                if !set || !v.is_reference() {
                     return Err(Error::Bad("value removal"));
                 }
                 let mut seen: Vec<(Dot, u64)> = Vec::new();

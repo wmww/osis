@@ -34,6 +34,7 @@ impl Engine {
             for t in &out {
                 tx.core.ix.closure.released(t);
             }
+            crate::flows::inbox::drop_account_tickets(tx, &out)?;
             crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new())
         })?;
         Ok(f.blobs)

@@ -54,6 +54,8 @@ pub struct Closure {
     out: JSetMap<Vx, Vx>,
     /// Strongs that appeared or went since the last settle, (source, target) (`note_row`).
     rows: JSet<(Tid, Tid)>,
+    /// Targets of tickets that appeared since the last settle (`note_ticket`).
+    tickets: JSet<Tid>,
     /// Per vertex, the held vertices whose out-list holds it.
     inn: JSetMap<Vx, Vx>,
     /// Each held vertex but the root: the referrer it hangs from.
@@ -99,11 +101,12 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = [usize; 11];
+    type Mark = [usize; 12];
     fn commit(&mut self) {
         self.closed.commit();
         self.vx.commit();
         self.rows.commit();
+        self.tickets.commit();
         self.out.commit();
         self.inn.commit();
         self.parent.commit();
@@ -114,12 +117,13 @@ impl Journaled for Closure {
         self.cut.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        [self.out.mark(), self.inn.mark(), self.parent.mark(), self.children.mark(), self.held.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.vx.mark(), self.rows.mark(), self.closed.mark()]
+        [self.out.mark(), self.inn.mark(), self.parent.mark(), self.children.mark(), self.held.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.vx.mark(), self.rows.mark(), self.closed.mark(), self.tickets.mark()]
     }
     fn rollback_to(&mut self, m: Self::Mark) {
         self.closed.rollback_to(m[10]);
         self.vx.rollback_to(m[8]);
         self.rows.rollback_to(m[9]);
+        self.tickets.rollback_to(m[11]);
         self.out.rollback_to(m[0]);
         self.inn.rollback_to(m[1]);
         self.parent.rollback_to(m[2]);
@@ -201,6 +205,27 @@ impl Closure {
         }
     }
 
+    /// The role `t` is entered at by a strong outside the node root's local part (spec/sync-set.md
+    /// §1 The account's tickets): read where its read sync unit hangs from a vertex of a sync
+    /// unit, else sync where it is kept unread so; `None` where it is entered from the local
+    /// part alone, or not entered.
+    pub(crate) fn entered_outside(&self, t: &Tid) -> Option<Role> {
+        let outside = |c: Ctx| self.inn.get(&(c, *t)).is_some_and(|i| i.iter().any(|w| w.0 != Ctx::Local));
+        if outside(Ctx::Read(*t)) {
+            Some(Role::Read)
+        } else if outside(Ctx::Unread(*t)) {
+            Some(Role::Sync)
+        } else {
+            None
+        }
+    }
+
+    /// A ticket for `target` appeared among the known references: each held vertex's edge to
+    /// it is judged again (`judge` takes its secret).
+    pub(crate) fn note_ticket(&mut self, target: Tid) {
+        self.tickets.insert(target);
+    }
+
     /// The held vertices.
     fn vertices(&self) -> Vec<Vx> {
         self.vx.iter().copied().collect()
@@ -269,10 +294,20 @@ impl Core {
         self.role_now(t, &a) >= Some(Role::Read)
     }
 
+    /// Whether context `c` follows a strong to `y` by its own keys: the local part a plain
+    /// thing, a read sync unit what its root's keys open.
+    pub(crate) fn keys_open_from(&self, c: Ctx, y: &Tid) -> bool {
+        match c {
+            Ctx::Local => !self.has_own_secrets(y),
+            Ctx::Read(t) => self.keys_open(&t, y),
+            Ctx::Unread(_) => false,
+        }
+    }
+
     /// How the walk enters thing `y` with own keys at a strong from a context that does not
     /// follow it (spec/sync-set.md §2): read where the node holds a read secret of it, kept
     /// unread where it holds a sync secret only, else not at all.
-    fn enter(&self, y: &Tid) -> Option<Ctx> {
+    pub(crate) fn enter(&self, y: &Tid) -> Option<Ctx> {
         let e = self.epochs(y)?;
         if e.role(Role::Read).holds_any() {
             Some(Ctx::Read(*y))
@@ -302,7 +337,9 @@ fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
     if matches!(c, Ctx::Unread(_)) || x == y || core.is_key_actor(&y) {
         return out;
     }
-    let keyed = core.has_own_secrets(&y);
+    // own keys by the role commits held, or by secrets of its own held (a ticket's, taken before
+    // any of its role commits arrive)
+    let keyed = core.has_own_secrets(&y) || core.ix.secrets.get(&y).is_some_and(|e| e.holds_any());
     let follows = match c {
         Ctx::Local => !keyed,
         Ctx::Read(t) => core.keys_open(&t, &y),
@@ -352,8 +389,26 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
                 }
             }
         }
+        // a ticket arrived for a thing a held strong reaches: those edges judged again
+        let tickets: Vec<Tid> = tx.core.ix.closure.tickets.iter().copied().collect();
+        for y in tickets {
+            tx.core.ix.closure.tickets.remove(&y);
+            if tx.core.enter(&y).is_some() || !tx.core.has_own_secrets(&y) {
+                continue;
+            }
+            let from: Vec<Tid> = crate::engine::refs::to(tx, &y)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong).map(|r| r.source).collect();
+            for x in from {
+                for c in tx.core.ix.closure.contexts(&x) {
+                    let v = (c, x);
+                    if tx.core.ix.closure.is_held(&v) {
+                        let now = judge(tx, f, v, y)?;
+                        apply(tx, f, rv, v, y, now)?;
+                    }
+                }
+            }
+        }
         let due = f.fx.due();
-        if due.is_empty() && tx.core.ix.closure.rows.is_empty() {
+        if due.is_empty() && tx.core.ix.closure.rows.is_empty() && tx.core.ix.closure.tickets.is_empty() {
             return Ok(());
         }
         for (v, y) in due {
@@ -386,6 +441,12 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
         return Ok(BTreeSet::new());
     }
     f.fx.want((v, y));
+    // a thing with own keys the secrets held do not enter: entered by a held ticket for it the
+    // node can open, its secret taken now the strong reaches it (spec/sync-set.md §2,
+    // spec/sync-inbox.md §5 Nothing before the strong)
+    if !tx.core.is_key_actor(&y) && tx.core.enter(&y).is_none() && !tx.core.keys_open_from(v.0, &y) {
+        super::tickets::take_in(tx, &y)?;
+    }
     let core = &*tx.core;
     let mut got = BTreeSet::new();
     f.fx.settle(&(v, y), || {

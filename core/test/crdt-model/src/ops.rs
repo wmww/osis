@@ -358,7 +358,7 @@ pub fn set_remove(w: &mut Writer, state: Option<&Frag>, v: &Value, seen: &[(Dot,
         _ => Vec::new(),
     };
     let mut f = if dots.is_empty() { Frag::Set { c: comp(None), elems: BTreeMap::new() } } else { elem_reset(w, 6, &dots) };
-    if matches!(v, Value::Strong(_) | Value::Weak(_)) && !seen.is_empty() {
+    if v.is_reference() && !seen.is_empty() {
         let Frag::Set { elems, .. } = &mut f else { unreachable!() };
         let d = w.stamp().dot;
         elems.insert(d, Elem { reset: None, frag: None, gone: Some(crate::state::Removal { stamp: w.delta(), value: v.clone(), seen: seen.to_vec() }) });

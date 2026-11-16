@@ -1335,7 +1335,6 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     super::inbox::make_inbox(tx, inbox, &mut done)?;
     // the account root strongly references the profile, the inbox and this node's node thing,
     // and the node root the account root (spec/sync-set.md §1)
-    // refgraph: (c) the tickets in `tickets.0`
     let mut m = Mutation::new();
     m.sign_as(p);
     for t in [profile, inbox, me] {
@@ -1343,6 +1342,12 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     }
     done.add(Engine::commit_tx(tx, m)?);
     super::roots::hold_in(tx, d)?;
+    // the account's tickets for the profile and the inbox, which the walk now enters from D
+    // (spec/sync-set.md §1 The account's tickets)
+    crate::sync::units::settle(tx)?;
+    for t in [profile, inbox] {
+        done.add(super::inbox::write_account_ticket(tx, &t)?);
+    }
     Ok((profile, done))
 }
 

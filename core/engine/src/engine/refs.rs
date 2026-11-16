@@ -183,9 +183,12 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
                 if old == 0 {
                     tx.txn.table_put(to, &tk, Vec::new(), Shred::No)?;
                     moved.push(target);
-                    // the node closure follows a strong appearing or going (`sync::units`)
-                    if kind == RefKind::Strong {
-                        tx.core.ix.closure.note_row(*source, target);
+                    // the node closure follows a strong appearing or going (`sync::units`), and
+                    // a ticket appearing for what a strong reaches
+                    match kind {
+                        RefKind::Strong => tx.core.ix.closure.note_row(*source, target),
+                        RefKind::Ticket => tx.core.ix.closure.note_ticket(target),
+                        RefKind::Weak => {}
                     }
                 }
             }

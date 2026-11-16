@@ -2,7 +2,7 @@
 //! among the known references by their target's tid, opened as a `secrets.0` box of the target
 //! to its holder is, and the secrets they give.
 
-use crate::engine::{Core, Engine};
+use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
 use osis_base::{Ak, RefKind, Role, SyncId, Tid, Ticket, Value};
 use osis_crypto::{Epoch, Secret32};
@@ -51,30 +51,62 @@ impl Core {
     }
 }
 
-impl Engine {
-    /// The tickets for `t` among the known references (spec/data-model.md §8), as held now.
-    pub fn held_tickets(&mut self, t: &Tid) -> Result<Vec<Ticket>> {
-        let target = *t;
-        let rows = self.read(|tx| crate::engine::refs::to(tx, &target))?;
-        let mut out = Vec::new();
-        let mut seen: Vec<(Tid, Ak)> = Vec::new();
-        for r in rows.into_iter().filter(|r| r.kind == RefKind::Ticket) {
-            if seen.contains(&(r.source, r.ak.clone())) {
-                continue;
-            }
-            seen.push((r.source, r.ak.clone()));
-            if let Some(v) = self.get(&r.source, &r.ak)? {
-                tickets_in(&v, t, &mut out);
-            }
+/// The tickets for `t` among the known references (spec/data-model.md §8), as held now.
+pub(crate) fn held_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Ticket>> {
+    let rows = crate::engine::refs::to(tx, t)?;
+    let mut out = Vec::new();
+    let mut seen: Vec<(Tid, Ak)> = Vec::new();
+    for r in rows.into_iter().filter(|r| r.kind == RefKind::Ticket) {
+        if seen.contains(&(r.source, r.ak.clone())) {
+            continue;
         }
-        out.sort();
-        out.dedup();
-        Ok(out)
+        seen.push((r.source, r.ak.clone()));
+        // a signal's references are its held valid fires' (spec/data-model.md §8 Known references)
+        if r.ak.signal() {
+            let held: Vec<osis_base::CommitId> = tx.core.ix.by_aspect.get(&(r.source, r.ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+            for c in held {
+                let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&r.source, &r.ak).filter(|ai| m.holds(*ai) && m.valid_at(*ai))) else { continue };
+                crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
+                    if let Some(v) = f.read() {
+                        tickets_in(&v, t, &mut out);
+                    }
+                    Ok(())
+                })?;
+            }
+        } else if let Some(v) = tx.state(&r.source, &r.ak)?.and_then(osis_crdt::Fragment::read) {
+            tickets_in(&v, t, &mut out);
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// The held tickets for `t` this node can open, each with what it opens to.
+fn opened_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Ticket, Opened)>> {
+    Ok(held_in(tx, t)?.into_iter().filter_map(|k| tx.core.open_ticket(&k).map(|o| (k, o))).collect())
+}
+
+/// `Engine::take_ticket` in a transaction: the walk's, at a strong to `t` it cannot enter by
+/// the secrets held (spec/sync-set.md §2).
+pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
+    let mut learned = false;
+    for (k, o) in opened_in(tx, t)? {
+        learned |= crate::apply::keys::learn_secret_in(tx, &k.target, o.role, o.epoch, o.secret)?;
+    }
+    Ok(learned)
+}
+
+impl Engine {
+    /// See `held_in`.
+    pub fn held_tickets(&mut self, t: &Tid) -> Result<Vec<Ticket>> {
+        let t = *t;
+        self.read(|tx| held_in(tx, &t))
     }
 
-    /// The held tickets for `t` this node can open, each with what it opens to.
     fn opened_tickets(&mut self, t: &Tid) -> Result<Vec<(Ticket, Opened)>> {
-        Ok(self.held_tickets(t)?.into_iter().filter_map(|k| self.core.open_ticket(&k).map(|o| (k, o))).collect())
+        let t = *t;
+        self.read(|tx| opened_in(tx, &t))
     }
 }
 
@@ -91,11 +123,8 @@ impl Engine {
     /// (`Engine::learn_secret`: only where the node's roles on `t` allow it, spec/permissions.md
     /// §3 No secret taken back). Whether one was learned.
     pub fn take_ticket(&mut self, t: &Tid) -> Result<bool> {
-        let mut learned = false;
-        for (k, o) in self.opened_tickets(t)? {
-            learned |= self.learn_secret(&k.target, o.role, o.epoch, o.secret)?;
-        }
-        Ok(learned)
+        let t = *t;
+        self.run(|tx| take_in(tx, &t))
     }
 
     /// The sync secrets of kept-unread `s`'s thing that the tickets held here give, by epoch

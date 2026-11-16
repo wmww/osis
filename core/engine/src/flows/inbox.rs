@@ -429,3 +429,82 @@ impl Engine {
         Ok(Opened::Commit(id, ingested))
     }
 }
+
+/// The account's tickets (spec/sync-set.md §1): D's tickets for `t` this node owes now. `Some`
+/// while the walk enters `t` at a strong outside the local part at role `r` (read, or sync kept
+/// unread) and D's `tickets.0` holds no ticket for `t` of that role, to the account, at a current
+/// epoch of that role held here.
+pub(crate) fn account_ticket_due(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Role>> {
+    let (Some((p, d)), Some(r)) = (tx.core.account_devices(), tx.core.ix.closure.entered_outside(t)) else { return Ok(None) };
+    let Some(epochs) = tx.core.epochs(t) else { return Ok(None) };
+    let current: BTreeSet<(u64, [u8; 32])> = epochs.role(r).current().into_iter().filter(|e| epochs.role(r).secret(e).is_some()).map(|e| (e.n(), *e.nonce())).collect();
+    if current.is_empty() {
+        return Ok(None);
+    }
+    let held = account_tickets(tx, &d)?;
+    let has = held.iter().any(|k| k.target == *t && k.role == r && k.holder == p && current.contains(&k.epoch));
+    Ok((!has).then_some(r))
+}
+
+/// D's `tickets.0` as held.
+fn account_tickets(tx: &mut Tx<'_>, d: &Tid) -> Result<BTreeSet<Ticket>> {
+    let ak = super::ak("tickets.0")?;
+    let Some(v) = tx.state(d, &ak)?.and_then(osis_crdt::Fragment::read) else { return Ok(BTreeSet::new()) };
+    Ok(match v {
+        Value::Set(s) => s.iter().filter_map(|x| if let Value::Ticket(k) = x { Some((**k).clone()) } else { None }).collect(),
+        _ => BTreeSet::new(),
+    })
+}
+
+/// Writes D's ticket for `t` this node owes (`account_ticket_due`): a fresh one sealed to the
+/// account (a node's ticket for its own account, spec/data-model.md §8), removing in the same
+/// commit D's tickets for `t` of that role at older epochs.
+pub(crate) fn write_account_ticket(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<CommitId>> {
+    let Some(r) = account_ticket_due(tx, t)? else { return Ok(None) };
+    let Some((p, d)) = tx.core.account_devices() else { return Ok(None) };
+    let Some(k) = make_ticket(tx, *t, r, p)? else { return Ok(None) };
+    let old: Vec<Ticket> = account_tickets(tx, &d)?.into_iter().filter(|x| x.target == *t && x.role == r).collect();
+    let mut m = Mutation::new();
+    for o in old {
+        m.op(d, &ct::TICKETS, PathOp { path: vec![], op: Op::Remove(Value::Ticket(Box::new(o))) })?;
+    }
+    m.op(d, &ct::TICKETS, PathOp { path: vec![], op: Op::Add(Value::Ticket(Box::new(k))) })?;
+    Engine::commit_tx(tx, m)
+}
+
+/// In the transaction releasing `ts`: D's tickets for each go (spec/sync-set.md §1, §3).
+pub(crate) fn drop_account_tickets(tx: &mut Tx<'_>, ts: &BTreeSet<Tid>) -> Result<()> {
+    let Some((_, d)) = tx.core.account_devices() else { return Ok(()) };
+    if ts.contains(&d) {
+        return Ok(());
+    }
+    let gone: Vec<Ticket> = account_tickets(tx, &d)?.into_iter().filter(|k| ts.contains(&k.target)).collect();
+    if gone.is_empty() {
+        return Ok(());
+    }
+    let mut m = Mutation::new();
+    for k in gone {
+        m.op(d, &ct::TICKETS, PathOp { path: vec![], op: Op::Remove(Value::Ticket(Box::new(k))) })?;
+    }
+    Engine::commit_tx(tx, m)?;
+    Ok(())
+}
+
+impl Engine {
+    /// A cursor over the things that enter the node closure from now on.
+    pub fn closure_feed(&self) -> osis_base::memo::Feed<Tid> {
+        self.core.ix.closure.feed()
+    }
+
+    /// See `account_ticket_due`.
+    pub fn account_ticket_due(&mut self, t: &Tid) -> Result<Option<Role>> {
+        let t = *t;
+        self.read(|tx| account_ticket_due(tx, &t))
+    }
+
+    /// See `write_account_ticket`.
+    pub fn write_account_ticket(&mut self, t: &Tid) -> Result<Option<CommitId>> {
+        let t = *t;
+        self.run(|tx| write_account_ticket(tx, &t))
+    }
+}
