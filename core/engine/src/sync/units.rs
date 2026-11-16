@@ -44,25 +44,82 @@ pub enum Ctx {
 /// A vertex of the walk: a thing reached in a context.
 pub type Vx = (Ctx, Tid);
 
-/// The node closure as a spanning tree over vertices (module doc). Journaled: a failed
-/// transaction undoes its changes; derived, so an open builds it again.
+/// A spanning tree over held vertices rooted at (local, node root), its edges the closure's
+/// out-lists (`Edges`). Two follow the same out-lists: the node closure's, and the sync set's,
+/// where an edge into a thing sourced at another node leads nowhere (spec/sync-set.md §5).
 #[derive(Clone, Debug, Default)]
-pub struct Closure {
+struct Tree {
     /// The held vertices.
     vx: JSet<Vx>,
+    /// Each held vertex but the root: the referrer it hangs from.
+    parent: JMap<Vx, Vx>,
+    children: JSetMap<Vx, Vx>,
+    /// Per held thing, the contexts it is held in.
+    held: JSetMap<Tid, Ctx>,
+}
+
+impl Journaled for Tree {
+    type Mark = [usize; 4];
+    fn commit(&mut self) {
+        self.vx.commit();
+        self.parent.commit();
+        self.children.commit();
+        self.held.commit();
+    }
+    fn mark(&mut self) -> Self::Mark {
+        [self.vx.mark(), self.parent.mark(), self.children.mark(), self.held.mark()]
+    }
+    fn rollback_to(&mut self, m: Self::Mark) {
+        self.vx.rollback_to(m[0]);
+        self.parent.rollback_to(m[1]);
+        self.children.rollback_to(m[2]);
+        self.held.rollback_to(m[3]);
+    }
+    fn name(&mut self, name: &'static str) {
+        self.held.name(name);
+    }
+    #[cfg(test)]
+    fn contents(&self) -> String {
+        self.vx.contents()
+    }
+}
+
+/// The edges a tree follows: the held vertices' out-lists, an edge into a vertex of a thing of
+/// `cut` leading nowhere.
+#[derive(Clone, Copy)]
+struct Edges<'a> {
+    out: &'a JSetMap<Vx, Vx>,
+    inn: &'a JSetMap<Vx, Vx>,
+    cut: Option<&'a JSet<Tid>>,
+    root: Vx,
+}
+
+impl Edges<'_> {
+    /// Whether an edge into `v` leads to it.
+    fn admits(&self, v: &Vx) -> bool {
+        *v == self.root || self.cut.is_none_or(|c| !c.contains(&v.1))
+    }
+}
+
+/// The node closure as a spanning tree over vertices (module doc), and the sync set's tree over
+/// the same out-lists. Journaled: a failed transaction undoes its changes; derived, so an open
+/// builds it again.
+#[derive(Clone, Debug, Default)]
+pub struct Closure {
+    /// The node closure's tree.
+    tree: Tree,
+    /// The sync set's tree (`settle_synced`): what the walk reaches through no thing of `cut`.
+    synced: Tree,
     /// Each held vertex's out-list as last settled.
     out: JSetMap<Vx, Vx>,
+    /// Per vertex, the held vertices whose out-list holds it.
+    inn: JSetMap<Vx, Vx>,
+    /// Out-list edges added or removed since the sync set's tree followed them.
+    moved: JSet<(Vx, Vx)>,
     /// Strongs that appeared or went since the last settle, (source, target) (`note_row`).
     rows: JSet<(Tid, Tid)>,
     /// Targets of tickets that appeared since the last settle (`note_ticket`).
     tickets: JSet<Tid>,
-    /// Per vertex, the held vertices whose out-list holds it.
-    inn: JSetMap<Vx, Vx>,
-    /// Each held vertex but the root: the referrer it hangs from.
-    parent: JMap<Vx, Vx>,
-    children: JSetMap<Vx, Vx>,
-    /// Per held thing, the contexts it is held in: the node closure's things.
-    held: JSetMap<Tid, Ctx>,
     /// Per context, its things: a read context's are its root's sync unit.
     members: JSetMap<Ctx, Tid>,
     /// The things that left the node closure and are not released yet, each with the contexts it
@@ -73,7 +130,7 @@ pub struct Closure {
     closed: JSet<Tid>,
     /// The things sourced at another node whose paths the sync set's walk takes not
     /// (`Engine::set_sourced`, spec/sync-set.md §5), the account root never among them.
-    pub(crate) cut: JSet<Tid>,
+    cut: JSet<Tid>,
 }
 
 /// An edge followed: a held vertex and a target of its thing's strongs.
@@ -114,59 +171,227 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = [usize; 12];
+    type Mark = ([usize; 4], [usize; 4], [usize; 9]);
     fn commit(&mut self) {
-        self.closed.commit();
-        self.vx.commit();
-        self.rows.commit();
-        self.tickets.commit();
+        self.tree.commit();
+        self.synced.commit();
         self.out.commit();
         self.inn.commit();
-        self.parent.commit();
-        self.children.commit();
-        self.held.commit();
+        self.moved.commit();
+        self.rows.commit();
+        self.tickets.commit();
         self.members.commit();
         self.left.commit();
+        self.closed.commit();
         self.cut.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        [self.out.mark(), self.inn.mark(), self.parent.mark(), self.children.mark(), self.held.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.vx.mark(), self.rows.mark(), self.closed.mark(), self.tickets.mark()]
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.tickets.mark(), self.members.mark(), self.left.mark(), self.closed.mark(), self.cut.mark()])
     }
-    fn rollback_to(&mut self, m: Self::Mark) {
-        self.closed.rollback_to(m[10]);
-        self.vx.rollback_to(m[8]);
-        self.rows.rollback_to(m[9]);
-        self.tickets.rollback_to(m[11]);
+    fn rollback_to(&mut self, (t, s, m): Self::Mark) {
+        self.tree.rollback_to(t);
+        self.synced.rollback_to(s);
         self.out.rollback_to(m[0]);
         self.inn.rollback_to(m[1]);
-        self.parent.rollback_to(m[2]);
-        self.children.rollback_to(m[3]);
-        self.held.rollback_to(m[4]);
+        self.moved.rollback_to(m[2]);
+        self.rows.rollback_to(m[3]);
+        self.tickets.rollback_to(m[4]);
         self.members.rollback_to(m[5]);
         self.left.rollback_to(m[6]);
-        self.cut.rollback_to(m[7]);
+        self.closed.rollback_to(m[7]);
+        self.cut.rollback_to(m[8]);
     }
     fn name(&mut self, _name: &'static str) {
-        self.held.name("index: closure held");
+        self.tree.name("index: closure held");
+        self.synced.name("index: sync set held");
         self.members.name("index: closure members");
         self.left.name("index: closure left");
         self.cut.name("index: closure cut");
     }
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{} {} {}", self.vx.contents(), self.out.contents(), self.left.contents())
+        format!("{} {} {} {}", self.tree.contents(), self.synced.contents(), self.out.contents(), self.left.contents())
+    }
+}
+
+impl Tree {
+    fn is_held(&self, v: &Vx) -> bool {
+        self.vx.contains(v)
+    }
+
+    fn set_parent(&mut self, x: Vx, p: Vx) {
+        if let Some(old) = self.parent.insert(x, p) {
+            self.children.remove(&old, &x);
+        }
+        self.children.insert(p, x);
+    }
+
+    /// `x` held, hanging from `p` (none: the root).
+    fn hold(&mut self, x: Vx, p: Option<Vx>) {
+        if let Some(p) = p {
+            self.set_parent(x, p);
+        }
+        self.vx.insert(x);
+        self.held.insert(x.1, x.0);
+    }
+
+    /// `x` held no more.
+    fn drop_vertex(&mut self, x: Vx) {
+        if let Some(p) = self.parent.remove(&x) {
+            self.children.remove(&p, &x);
+        }
+        for c in self.children.get(&x).cloned().unwrap_or_default() {
+            self.children.remove(&x, &c);
+        }
+        self.vx.remove(&x);
+        self.held.remove(&x.1, &x.0);
+    }
+
+    /// `w`'s tree edge went (module doc): the two searches in step; then `w` hangs from another
+    /// held referrer, or its subtree is re-attached where held referrers outside it reach. The
+    /// rest is returned for the caller to drop.
+    fn detach(&mut self, g: Edges<'_>, w: Vx) -> BTreeSet<Vx> {
+        if let Some(p) = self.parent.remove(&w) {
+            self.children.remove(&p, &w);
+        }
+        // search A: each other referrer's tree path, up to the root (outside) or to `w` (below)
+        let mut last_ref: Option<Vx> = None;
+        let mut at: Option<(Vx, Vx)> = None;
+        let mut a_live = g.admits(&w);
+        // search B: `w`'s subtree
+        let mut sub: Vec<Vx> = vec![w];
+        let mut sub_set: BTreeSet<Vx> = BTreeSet::from([w]);
+        let mut pending: VecDeque<Vx> = VecDeque::new();
+        let mut expanding = 0;
+        loop {
+            if a_live {
+                osis_base::costs::count("closure: removal steps", 1);
+                match at {
+                    None => {
+                        // the next referrer, read one at a time: never a copy of `w`'s fan-in
+                        let next = g.inn.get(&w).and_then(|s| match last_ref {
+                            None => s.iter().next().copied(),
+                            Some(l) => s.range((std::ops::Bound::Excluded(l), std::ops::Bound::Unbounded)).next().copied(),
+                        });
+                        match next {
+                            Some(r) => {
+                                at = self.is_held(&r).then_some((r, r));
+                                last_ref = Some(r);
+                            }
+                            None => a_live = false,
+                        }
+                    }
+                    Some((_, c)) if c == w => at = None,
+                    Some((r, c)) if c == g.root => {
+                        // `r` is outside `w`'s subtree: `w` hangs from it, its subtree as it was
+                        self.set_parent(w, r);
+                        return BTreeSet::new();
+                    }
+                    Some((r, c)) => at = self.parent.get(&c).map(|p| (r, *p)),
+                }
+            }
+            // one step of B
+            osis_base::costs::count("closure: removal steps", 1);
+            match pending.pop_front() {
+                Some(c) => {
+                    if sub_set.insert(c) {
+                        sub.push(c);
+                    }
+                }
+                None => match sub.get(expanding) {
+                    Some(x) => {
+                        pending.extend(self.children.get(x).into_iter().flatten().copied());
+                        expanding += 1;
+                    }
+                    None => break,
+                },
+            }
+        }
+        // the subtree whole: re-attach what a held referrer outside it still reaches
+        let mut q = VecDeque::new();
+        for x in sub.iter().filter(|x| g.admits(x)) {
+            for r in g.inn.get(x).into_iter().flatten() {
+                osis_base::costs::count("closure: removal steps", 1);
+                if !sub_set.contains(r) && self.is_held(r) {
+                    q.push_back((*x, *r));
+                    break;
+                }
+            }
+        }
+        let mut rest = sub_set;
+        for (x, _) in &q {
+            rest.remove(x);
+        }
+        while let Some((x, r)) = q.pop_front() {
+            self.set_parent(x, r);
+            for y in g.out.get(&x).into_iter().flatten() {
+                osis_base::costs::count("closure: removal steps", 1);
+                if g.admits(y) && rest.remove(y) {
+                    q.push_back((*y, x));
+                }
+            }
+        }
+        for x in &rest {
+            osis_base::costs::count("closure: dropped", 1);
+            self.drop_vertex(*x);
+        }
+        rest
+    }
+}
+
+/// A tree grown by `spread`: how a vertex is held, and the out-list it follows once held.
+trait Grow {
+    fn grown(&self) -> &Tree;
+    fn hold(&mut self, x: Vx, p: Vx);
+    /// The vertices `x`'s out-list leads to (`x` just held).
+    fn out(&mut self, x: Vx) -> Result<Vec<Vx>>;
+}
+
+/// Holds each of `fresh` (vertex, referrer) not held yet, and what it reaches.
+fn spread(g: &mut impl Grow, fresh: Vec<(Vx, Vx)>) -> Result<()> {
+    let mut q: VecDeque<(Vx, Vx)> = fresh.into();
+    while let Some((x, p)) = q.pop_front() {
+        if g.grown().is_held(&x) {
+            continue;
+        }
+        g.hold(x, p);
+        for w in g.out(x)? {
+            if !g.grown().is_held(&w) {
+                q.push_back((w, x));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The sync set's tree grown over the out-lists as they stand.
+struct GrowSynced<'a>(&'a mut Closure, Vx);
+
+impl Grow for GrowSynced<'_> {
+    fn grown(&self) -> &Tree {
+        &self.0.synced
+    }
+    fn hold(&mut self, x: Vx, p: Vx) {
+        self.0.synced.hold(x, Some(p));
+    }
+    fn out(&mut self, x: Vx) -> Result<Vec<Vx>> {
+        let cl = &*self.0;
+        let g = Edges { out: &cl.out, inn: &cl.inn, cut: Some(&cl.cut), root: self.1 };
+        let out: Vec<Vx> = cl.out.get(&x).into_iter().flatten().filter(|y| g.admits(y)).copied().collect();
+        osis_base::costs::count("closure: synced edges", out.len() as u64);
+        Ok(out)
     }
 }
 
 impl Closure {
     /// Whether the node closure holds `t`.
     pub(crate) fn holds(&self, t: &Tid) -> bool {
-        self.held.contains_key(t)
+        self.tree.held.contains_key(t)
     }
 
     /// The contexts holding `t`.
     pub(crate) fn contexts(&self, t: &Tid) -> BTreeSet<Ctx> {
-        self.held.get(t).cloned().unwrap_or_default()
+        self.tree.held.get(t).cloned().unwrap_or_default()
     }
 
     /// The things of context `c`.
@@ -176,33 +401,38 @@ impl Closure {
 
     /// Every thing of the node closure (a read of it whole).
     pub(crate) fn things(&self) -> impl Iterator<Item = &Tid> {
-        self.held.keys_held()
+        self.tree.held.keys_held()
     }
 
     /// A cursor over the things entering the node closure from now on.
     pub(crate) fn feed(&self) -> osis_base::memo::Feed<Tid> {
-        self.held.feed()
+        self.tree.held.feed()
+    }
+
+    /// Whether the sync set's walk reaches `t` (spec/sync-set.md §5 Sourced away): the node
+    /// closure through no thing sourced at another node.
+    pub(crate) fn synced(&self, t: &Tid) -> bool {
+        self.synced.held.contains_key(t)
+    }
+
+    /// Every thing the sync set's walk reaches (a read of it whole).
+    pub(crate) fn synced_things(&self) -> impl Iterator<Item = &Tid> {
+        self.synced.held.keys_held()
+    }
+
+    /// A cursor over the things entering the sync set's walk from now on.
+    pub(crate) fn synced_feed(&self) -> osis_base::memo::Feed<Tid> {
+        self.synced.held.feed()
+    }
+
+    /// The things the sync set's walk takes no path through.
+    pub(crate) fn cut(&self) -> &JSet<Tid> {
+        &self.cut
     }
 
     /// The things that left and are not released yet (a stamped read, whole).
     pub(crate) fn left(&self) -> &std::collections::BTreeMap<Tid, BTreeSet<Ctx>> {
         &self.left
-    }
-
-    /// The things the walk reaches from `root` through no thing of `cut` (spec/sync-set.md §5
-    /// Sourced away): O(the node closure), asked only while something is cut.
-    pub(crate) fn uncut(&self, root: Option<Tid>) -> BTreeSet<Tid> {
-        let Some(root) = root else { return BTreeSet::new() };
-        let mut seen = BTreeSet::from([(Ctx::Local, root)]);
-        let mut stack = vec![(Ctx::Local, root)];
-        while let Some(v) = stack.pop() {
-            for w in self.out.get(&v).into_iter().flatten() {
-                if !self.cut.contains(&w.1) && seen.insert(*w) {
-                    stack.push(*w);
-                }
-            }
-        }
-        seen.into_iter().map(|(_, t)| t).collect()
     }
 
     /// `t` released: it is no longer noted as left.
@@ -213,7 +443,7 @@ impl Closure {
     /// The reference index: a row of `source`'s strong to `target` appeared or went
     /// (`refs::note`).
     pub(crate) fn note_row(&mut self, source: Tid, target: Tid) {
-        if self.held.contains_key(&source) {
+        if self.tree.held.contains_key(&source) {
             self.rows.insert((source, target));
         }
     }
@@ -241,52 +471,111 @@ impl Closure {
 
     /// The held vertices.
     fn vertices(&self) -> Vec<Vx> {
-        self.vx.iter().copied().collect()
+        self.tree.vx.iter().copied().collect()
     }
 
     fn is_held(&self, v: &Vx) -> bool {
-        self.vx.contains(v)
+        self.tree.is_held(v)
     }
 
-    fn set_parent(&mut self, x: Vx, p: Vx) {
-        if let Some(old) = self.parent.insert(x, p) {
-            self.children.remove(&old, &x);
-        }
-        self.children.insert(p, x);
+    fn link(&mut self, v: Vx, w: Vx) {
+        osis_base::costs::count("closure: edges examined", 1);
+        self.out.insert(v, w);
+        self.inn.insert(w, v);
+        self.moved.insert((v, w));
+    }
+
+    fn unlink(&mut self, v: Vx, w: Vx) {
+        osis_base::costs::count("closure: edges examined", 1);
+        self.out.remove(&v, &w);
+        self.inn.remove(&w, &v);
+        self.moved.insert((v, w));
     }
 
     /// `x` held, hanging from `p` (none: the root), with no out-list yet.
     fn hold(&mut self, x: Vx, p: Option<Vx>) {
-        if let Some(p) = p {
-            self.set_parent(x, p);
-        }
-        self.vx.insert(x);
-        self.held.insert(x.1, x.0);
+        self.tree.hold(x, p);
         self.members.insert(x.0, x.1);
         self.left.remove(&x.1);
     }
 
-    /// `x` dropped: no longer held in its context.
-    fn drop_vertex(&mut self, x: Vx) {
+    /// `x` dropped from the tree (`Tree::detach`): its out-list goes.
+    fn dropped(&mut self, x: Vx) {
         for y in self.out.get(&x).cloned().unwrap_or_default() {
-            self.out.remove(&x, &y);
-            self.inn.remove(&y, &x);
+            self.unlink(x, y);
         }
-        if let Some(p) = self.parent.remove(&x) {
-            self.children.remove(&p, &x);
-        }
-        for c in self.children.get(&x).cloned().unwrap_or_default() {
-            self.children.remove(&x, &c);
-        }
-        self.vx.remove(&x);
-        self.held.remove(&x.1, &x.0);
         self.members.remove(&x.0, &x.1);
+    }
+
+    /// The node closure's tree edge into `w` went (`Tree::detach`); the vertices dropped.
+    fn detach(&mut self, rv: Vx, w: Vx) -> BTreeSet<Vx> {
+        let g = Edges { out: &self.out, inn: &self.inn, cut: None, root: rv };
+        let rest = self.tree.detach(g, w);
+        for x in &rest {
+            self.dropped(*x);
+        }
+        rest
     }
 
     /// The vertices of `v`'s out-list that its edge to `y` gives.
     fn given(&self, v: &Vx, y: &Tid) -> BTreeSet<Vx> {
         let Some(out) = self.out.get(v) else { return BTreeSet::new() };
         [(v.0, *y), (Ctx::Read(*y), *y), (Ctx::Unread(*y), *y)].into_iter().filter(|w| out.contains(w)).collect()
+    }
+
+    /// Brings the sync set's tree up to the out-lists' edges that moved (`moved`), as the node
+    /// closure's tree follows them: a removed tree edge detached, an edge added from a held
+    /// vertex spread. Work in proportion to what moved and what it brings in or drops.
+    fn settle_synced(&mut self, rv: Vx) -> Result<()> {
+        let moved: Vec<(Vx, Vx)> = self.moved.iter().copied().collect();
+        for e in &moved {
+            self.moved.remove(e);
+        }
+        for (v, w) in &moved {
+            if self.synced.parent.get(w) == Some(v) && !self.out.get(v).is_some_and(|o| o.contains(w)) {
+                let g = Edges { out: &self.out, inn: &self.inn, cut: Some(&self.cut), root: rv };
+                self.synced.detach(g, *w);
+            }
+        }
+        if self.tree.is_held(&rv) && !self.synced.is_held(&rv) {
+            self.synced.hold(rv, None);
+        }
+        let g = Edges { out: &self.out, inn: &self.inn, cut: Some(&self.cut), root: rv };
+        let fresh: Vec<(Vx, Vx)> = moved.into_iter().filter(|(v, w)| self.synced.is_held(v) && !self.synced.is_held(w) && g.admits(w) && self.out.get(v).is_some_and(|o| o.contains(w))).map(|(v, w)| (w, v)).collect();
+        spread(&mut GrowSynced(self, rv), fresh)
+    }
+
+    /// Sets the things the sync set's walk takes no path through (spec/sync-set.md §5 Sourced
+    /// away), between transactions: each thing cut detaches its vertices from the sync set's tree
+    /// (work in proportion to what is below it), each uncut one spreads from its held referrers.
+    pub(crate) fn set_cut(&mut self, root: Option<Tid>, cut: BTreeSet<Tid>) -> Result<()> {
+        let gone: Vec<Tid> = self.cut.iter().filter(|t| !cut.contains(*t)).copied().collect();
+        let new: Vec<Tid> = cut.iter().filter(|t| !self.cut.contains(*t)).copied().collect();
+        for t in &gone {
+            self.cut.remove(t);
+        }
+        self.cut.extend(new.iter().copied());
+        let Some(root) = root else { return Ok(()) };
+        let rv = (Ctx::Local, root);
+        for t in &new {
+            for c in self.synced.held.get(t).cloned().unwrap_or_default() {
+                let w = (c, *t);
+                if w != rv && self.synced.is_held(&w) {
+                    let g = Edges { out: &self.out, inn: &self.inn, cut: Some(&self.cut), root: rv };
+                    self.synced.detach(g, w);
+                }
+            }
+        }
+        let mut fresh = Vec::new();
+        for t in &gone {
+            for c in self.tree.held.get(t).into_iter().flatten() {
+                let w = (*c, *t);
+                if let Some(r) = self.inn.get(&w).into_iter().flatten().find(|r| self.synced.is_held(r)) {
+                    fresh.push((w, *r));
+                }
+            }
+        }
+        spread(&mut GrowSynced(self, rv), fresh)
     }
 }
 
@@ -302,11 +591,23 @@ impl Core {
         self.role_now(t, &a) >= Some(Role::Read)
     }
 
+    /// Whether the node opens plain thing `y` (spec/sync-set.md §2 local part): it holds a read
+    /// secret of the thing with own keys `y`'s secrets derive from, or the keys of the key actor
+    /// they derive from (itself, its account, a key actor it holds). A tid the node holds no
+    /// record of opens nothing.
+    pub(crate) fn opens_plain(&self, y: &Tid) -> bool {
+        let Some(a) = self.secret_actor(y) else { return false };
+        if self.has_own_secrets(&a) {
+            return self.epochs(&a).is_some_and(|e| e.role(Role::Read).holds_any());
+        }
+        a == self.id.tid() || Some(a) == self.member() || self.key_actors.contains_key(&a)
+    }
+
     /// Whether context `c` follows a strong to `y` by its own keys: the local part a plain
-    /// thing, a read sync unit what its root's keys open.
+    /// thing the node opens, a read sync unit what its root's keys open.
     pub(crate) fn keys_open_from(&self, c: Ctx, y: &Tid) -> bool {
         match c {
-            Ctx::Local => !self.has_own_secrets(y),
+            Ctx::Local => !self.has_own_secrets(y) && self.opens_plain(y),
             Ctx::Read(t) => self.keys_open(&t, y),
             Ctx::Unread(_) => false,
         }
@@ -356,7 +657,7 @@ fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
     // any of its role commits arrive)
     let keyed = core.has_own_secrets(&y) || core.ix.secrets.get(&y).is_some_and(|e| e.holds_any());
     let follows = match c {
-        Ctx::Local => !keyed,
+        Ctx::Local => !keyed && core.opens_plain(&y),
         Ctx::Read(t) => core.keys_open(&t, &y),
         Ctx::Unread(_) => false,
     };
@@ -432,13 +733,13 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
             // from in this transaction: the sync units that carried it when it left
             let cl = &mut tx.core.ix.closure;
             for (t, cs) in std::mem::take(&mut f.gone) {
-                if !cl.held.contains_key(&t) {
+                if !cl.holds(&t) {
                     let mut was = cl.left.get(&t).cloned().unwrap_or_default();
                     was.extend(cs);
                     cl.left.insert(t, was);
                 }
             }
-            return Ok(());
+            return cl.settle_synced(rv);
         }
         for (v, y) in due {
             if !tx.core.ix.closure.is_held(&v) {
@@ -494,22 +795,18 @@ fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<V
     }
     let mut fresh = Vec::new();
     for w in now.difference(&old) {
-        osis_base::costs::count("closure: edges examined", 1);
-        cl.out.insert(v, *w);
-        cl.inn.insert(*w, v);
+        cl.link(v, *w);
         if !cl.is_held(w) {
             fresh.push((*w, v));
         }
     }
     let gone: Vec<Vx> = old.difference(&now).copied().collect();
     for w in &gone {
-        osis_base::costs::count("closure: edges examined", 1);
-        cl.out.remove(&v, w);
-        cl.inn.remove(w, &v);
+        cl.unlink(v, *w);
     }
     for w in gone {
-        if tx.core.ix.closure.parent.get(&w) == Some(&v) {
-            for x in detach(tx, rv, w) {
+        if tx.core.ix.closure.tree.parent.get(&w) == Some(&v) {
+            for x in tx.core.ix.closure.detach(rv, w) {
                 f.gone.entry(x.1).or_default().insert(x.0);
                 // its edges are followed no more
                 if !matches!(x.0, Ctx::Unread(_)) {
@@ -520,125 +817,32 @@ fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<V
             }
         }
     }
-    reach(tx, f, fresh)
+    spread(&mut GrowClosure(tx, f), fresh)
 }
 
-/// Holds each of `fresh` (vertex, referrer) not held yet, and what it reaches.
-fn reach(tx: &mut Tx<'_>, f: &mut Follow, fresh: Vec<(Vx, Vx)>) -> Result<()> {
-    let mut q: VecDeque<(Vx, Vx)> = fresh.into();
-    while let Some((x, p)) = q.pop_front() {
-        if tx.core.ix.closure.is_held(&x) {
-            continue;
-        }
-        tx.core.ix.closure.hold(x, Some(p));
+/// The node closure's tree grown by judging each held vertex's edges.
+struct GrowClosure<'t, 'a>(&'t mut Tx<'a>, &'t mut Follow);
+
+impl Grow for GrowClosure<'_, '_> {
+    fn grown(&self) -> &Tree {
+        &self.0.core.ix.closure.tree
+    }
+    fn hold(&mut self, x: Vx, p: Vx) {
+        self.0.core.ix.closure.hold(x, Some(p));
+    }
+    fn out(&mut self, x: Vx) -> Result<Vec<Vx>> {
+        let mut out = Vec::new();
         if matches!(x.0, Ctx::Unread(_)) {
-            continue;
+            return Ok(out);
         }
-        for y in strongs_from(tx, &x.1)? {
-            for w in judge(tx, f, x, y)? {
-                osis_base::costs::count("closure: edges examined", 1);
-                let cl = &mut tx.core.ix.closure;
-                cl.out.insert(x, w);
-                cl.inn.insert(w, x);
-                if !cl.is_held(&w) {
-                    q.push_back((w, x));
-                }
+        for y in strongs_from(self.0, &x.1)? {
+            for w in judge(self.0, self.1, x, y)? {
+                self.0.core.ix.closure.link(x, w);
+                out.push(w);
             }
         }
+        Ok(out)
     }
-    Ok(())
-}
-
-/// `w`'s tree edge went (module doc): the two searches in step; then `w` hangs from another held
-/// referrer, or its subtree is re-attached where held referrers outside it reach and the rest is
-/// dropped.
-fn detach(tx: &mut Tx<'_>, rv: Vx, w: Vx) -> Vec<Vx> {
-    let cl = &mut tx.core.ix.closure;
-    if let Some(p) = cl.parent.remove(&w) {
-        cl.children.remove(&p, &w);
-    }
-    // search A: each other referrer's tree path, up to the root (outside) or to `w` (below)
-    let mut last_ref: Option<Vx> = None;
-    let mut at: Option<(Vx, Vx)> = None;
-    let mut a_live = true;
-    // search B: `w`'s subtree
-    let mut sub: Vec<Vx> = vec![w];
-    let mut sub_set: BTreeSet<Vx> = BTreeSet::from([w]);
-    let mut pending: VecDeque<Vx> = VecDeque::new();
-    let mut expanding = 0;
-    loop {
-        if a_live {
-            osis_base::costs::count("closure: removal steps", 1);
-            match at {
-                None => {
-                    // the next referrer, read one at a time: never a copy of `w`'s fan-in
-                    let next = cl.inn.get(&w).and_then(|s| match last_ref {
-                        None => s.iter().next().copied(),
-                        Some(l) => s.range((std::ops::Bound::Excluded(l), std::ops::Bound::Unbounded)).next().copied(),
-                    });
-                    match next {
-                        Some(r) => {
-                            at = Some((r, r));
-                            last_ref = Some(r);
-                        }
-                        None => a_live = false,
-                    }
-                }
-                Some((_, c)) if c == w => at = None,
-                Some((r, c)) if c == rv => {
-                    // `r` is outside `w`'s subtree: `w` hangs from it, its subtree as it was
-                    cl.set_parent(w, r);
-                    return Vec::new();
-                }
-                Some((r, c)) => at = cl.parent.get(&c).map(|p| (r, *p)),
-            }
-        }
-        // one step of B
-        osis_base::costs::count("closure: removal steps", 1);
-        match pending.pop_front() {
-            Some(c) => {
-                if sub_set.insert(c) {
-                    sub.push(c);
-                }
-            }
-            None => match sub.get(expanding) {
-                Some(x) => {
-                    pending.extend(cl.children.get(x).into_iter().flatten().copied());
-                    expanding += 1;
-                }
-                None => break,
-            },
-        }
-    }
-    // the subtree whole: re-attach what a held referrer outside it still reaches
-    let mut q = VecDeque::new();
-    for x in &sub {
-        for r in cl.inn.get(x).into_iter().flatten() {
-            osis_base::costs::count("closure: removal steps", 1);
-            if !sub_set.contains(r) {
-                q.push_back((*x, *r));
-                break;
-            }
-        }
-    }
-    let mut rest = sub_set;
-    for (x, _) in &q {
-        rest.remove(x);
-    }
-    while let Some((x, r)) = q.pop_front() {
-        cl.set_parent(x, r);
-        for y in cl.out.get(&x).cloned().unwrap_or_default() {
-            osis_base::costs::count("closure: removal steps", 1);
-            if rest.remove(&y) {
-                q.push_back((y, x));
-            }
-        }
-    }
-    for x in &rest {
-        osis_base::costs::count("closure: dropped", 1);
-        cl.drop_vertex(*x);
-    }
-    rest.into_iter().collect()
 }
 
 /// Adds the target of every strong at any depth of `v` to `out` (the reference index's reading,
@@ -652,32 +856,37 @@ pub fn strongs_in(v: &osis_base::Value, out: &mut BTreeSet<Tid>) {
 }
 
 /// Debug: the node closure as followed equals one walked afresh from the node root by
-/// `given_by` over every strong, and its tree hangs every held vertex from a held referrer
+/// `given_by` over every strong, and so does the sync set's tree, walked so with every edge into
+/// a thing of the cut leading nowhere; each tree hangs every held vertex from a held referrer
 /// (`Engine::check_index`, `Engine::check_closure`).
 pub(crate) fn check_whole(tx: &mut Tx<'_>) -> Result<()> {
     let Some(root) = tx.core.node_root else { return Ok(()) };
     let rv = (Ctx::Local, root);
-    let mut seen = BTreeSet::from([rv]);
-    let mut stack = vec![rv];
-    while let Some(v) = stack.pop() {
-        if matches!(v.0, Ctx::Unread(_)) {
-            continue;
-        }
-        for y in strongs_from(tx, &v.1)? {
-            for w in given_by(tx.core, v, y) {
-                if seen.insert(w) {
-                    stack.push(w);
+    let cut: BTreeSet<Tid> = tx.core.ix.closure.cut.iter().copied().collect();
+    for (name, cut) in [("the node closure", None), ("the sync set's walk", Some(&cut))] {
+        let mut seen = BTreeSet::from([rv]);
+        let mut stack = vec![rv];
+        while let Some(v) = stack.pop() {
+            if matches!(v.0, Ctx::Unread(_)) {
+                continue;
+            }
+            for y in strongs_from(tx, &v.1)? {
+                for w in given_by(tx.core, v, y) {
+                    if cut.is_none_or(|c| !c.contains(&w.1)) && seen.insert(w) {
+                        stack.push(w);
+                    }
                 }
             }
         }
-    }
-    let cl = &tx.core.ix.closure;
-    let held: BTreeSet<Vx> = cl.vx.iter().copied().collect();
-    assert_eq!(held, seen, "the node closure differs from one walked afresh");
-    for v in &held {
-        if *v != rv {
-            let p = cl.parent.get(v);
-            assert!(p.is_some_and(|p| cl.out.get(p).is_some_and(|o| o.contains(v))), "{v:?} hangs from {p:?}, which does not reach it");
+        let cl = &tx.core.ix.closure;
+        let tree = if cut.is_some() { &cl.synced } else { &cl.tree };
+        let held: BTreeSet<Vx> = tree.vx.iter().copied().collect();
+        assert_eq!(held, seen, "{name} differs from one walked afresh");
+        for v in &held {
+            if *v != rv {
+                let p = tree.parent.get(v);
+                assert!(p.is_some_and(|p| tree.is_held(p) && cl.out.get(p).is_some_and(|o| o.contains(v))), "{name}: {v:?} hangs from {p:?}, which does not reach it");
+            }
         }
     }
     Ok(())

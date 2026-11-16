@@ -3866,6 +3866,8 @@ impl Engine {
         // the sync units' sources are the handle's, set between transactions (`set_sourced`)
         fresh.sourced_elsewhere = std::mem::take(&mut self.core.sourced_elsewhere);
         fresh.node_root = self.core.node_root;
+        // and so is what the sync set's walk takes no path through: the fresh closure is built cut
+        fresh.ix.closure.set_cut(None, self.core.ix.closure.cut().iter().copied().collect())?;
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;

@@ -165,12 +165,13 @@ fn the_node_roots_strong_to_the_account_root_stays_spec_sync_set_1() {
 
 // spec/sync-set.md §2 Not carried: X in D's sync unit strongly references Y, a thing this node
 // never got, so D's keys do not open it and nothing else holds it: the strong is named, from X's
-// written strongs and in the whole list; a strong to a held thing is not.
+// written strongs and in the whole list; a strong to a held thing is not. So is the node root's
+// strong to a thing never got: the local part holds only plain things the node opens.
 #[test]
 fn a_strong_nothing_carries_is_named_spec_sync_set_2() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
-    let d = e.account_root().unwrap();
+    let (root, d) = (e.node_root().unwrap(), e.account_root().unwrap());
     let x = make(e, d, d);
     let y = Tid::from_bytes([7; 15]);
     let mut m = Mutation::new();
@@ -180,4 +181,92 @@ fn a_strong_nothing_carries_is_named_spec_sync_set_2() {
     assert!(!e.closure_holds(&y) && e.closure_holds(&z));
     assert_eq!(e.not_carried_among(&x, &[y, z].into()).unwrap(), vec![y]);
     assert_eq!(e.not_carried().unwrap(), vec![(x, y)]);
+    let u = Tid::from_bytes([8; 15]);
+    strong(e, root, u, true);
+    assert!(!e.closure_holds(&u), "a thing never got is held nowhere");
+    assert_eq!(e.not_carried_among(&root, &[u].into()).unwrap(), vec![u]);
+    let mut all = e.not_carried().unwrap();
+    all.sort();
+    let mut want = vec![(x, y), (root, u)];
+    want.sort();
+    assert_eq!(all, want);
+}
+
+/// The `closure:` and sync set work of `edit` on a closure of `n` plain things under D beside A
+/// (own keys, under D) holding `m` plain things, A sourced at another node, the sync set followed
+/// before and after.
+fn cut_work(n: usize, m: usize, edit: impl Fn(&mut Engine, Tid, Tid)) -> u64 {
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let d = e.account_root().unwrap();
+    for _ in 0..n {
+        make(e, d, d);
+    }
+    let a = make(e, d, d);
+    e.give_own_secrets(&a).unwrap();
+    for _ in 0..m {
+        make(e, a, a);
+    }
+    e.set_sourced([a].into(), &Default::default()).unwrap();
+    e.check_closure();
+    let mut f = None;
+    e.sync_held_added(&mut f).unwrap();
+    osis_base::costs::take();
+    edit(e, d, a);
+    e.check_closure();
+    e.sync_held_added(&mut f).unwrap();
+    osis_base::costs::take().into_iter().filter(|(k, _, _)| k.starts_with("closure:") || k.starts_with("sync set:") || k.starts_with("sync: things")).map(|(_, _, c)| c).sum()
+}
+
+// spec/sync-set.md §5 Sourced away, Cost: while A is sourced elsewhere, a thing entering or
+// leaving the node closure costs the same at a closure of n and of 10n; moving A away or home
+// costs what is below A (n and 10n), not the rest of the node closure. The sync set leaves A and
+// what is below it only, and takes them back home.
+#[test]
+fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
+    let (n, m) = (6, 60);
+    let enter = |e: &mut Engine, d: Tid, _: Tid| {
+        make(e, d, d);
+    };
+    let leave = |e: &mut Engine, d: Tid, _: Tid| {
+        let x = make(e, d, d);
+        osis_base::costs::take();
+        strong(e, d, x, false);
+    };
+    for (name, edit) in [("enter", &enter as &dyn Fn(&mut Engine, Tid, Tid)), ("leave", &leave)] {
+        let (a, b) = (cut_work(n, 3, edit), cut_work(m, 3, edit));
+        assert!(b <= a + 2, "{name}: {a} at {n}, {b} at {m}");
+    }
+    let away = |e: &mut Engine, _: Tid, a: Tid| {
+        e.set_sourced(Default::default(), &Default::default()).unwrap();
+        e.check_closure();
+        osis_base::costs::take();
+        e.set_sourced([a].into(), &Default::default()).unwrap();
+    };
+    let home = |e: &mut Engine, _: Tid, _: Tid| {
+        e.set_sourced(Default::default(), &Default::default()).unwrap();
+    };
+    for (name, edit) in [("away", &away as &dyn Fn(&mut Engine, Tid, Tid)), ("home", &home)] {
+        let (a, b) = (cut_work(n, 3, edit), cut_work(m, 3, edit));
+        assert!(b <= a + 2, "{name}: {a} with n = {n}, {b} with n = {m}");
+        let (a, b) = (cut_work(3, n, edit), cut_work(3, m, edit));
+        assert!(b >= 8 * a && b <= 12 * a, "{name}: {a} below A at {n}, {b} at {m}");
+    }
+    // what leaves and comes back
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let d = e.account_root().unwrap();
+    let x = make(e, d, d);
+    let a = make(e, d, d);
+    e.give_own_secrets(&a).unwrap();
+    let y = make(e, a, a);
+    e.set_sourced([a].into(), &Default::default()).unwrap();
+    e.check_closure();
+    let things = e.sync_things().unwrap();
+    assert!(things.contains(&x) && !things.contains(&a) && !things.contains(&y), "{things:?}");
+    assert!(e.closure_holds(&a) && e.closure_holds(&y), "sourced away, still held");
+    e.set_sourced(Default::default(), &Default::default()).unwrap();
+    e.check_closure();
+    let things = e.sync_things().unwrap();
+    assert!(things.contains(&a) && things.contains(&y));
 }

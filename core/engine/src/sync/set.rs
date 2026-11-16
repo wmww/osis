@@ -20,15 +20,12 @@ impl Engine {
     }
 
     /// The things the sync set is judged over: the node closure (spec/sync-set.md §2) walked
-    /// through no thing sourced at another node (§5), with each destroyed thing whose own sync
-    /// IDs are kept until emptied and the links being redeemed. A memo: built again in O(the
-    /// node closure) when a thing enters or leaves it.
+    /// through no thing sourced at another node (§5, `Closure::synced`), with each destroyed
+    /// thing whose own sync IDs are kept until emptied and the links being redeemed. A memo of
+    /// the whole, for a listing: per thing `in_sync_things`, entering `things_entered`.
     pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_things, &(), |e| {
-            let mut out: BTreeSet<Tid> = match e.core.ix.closure.cut.is_empty() {
-                true => e.core.ix.closure.things().copied().collect(),
-                false => e.core.ix.closure.uncut(e.core.node_root),
-            };
+            let mut out: BTreeSet<Tid> = e.core.ix.closure.synced_things().copied().collect();
             osis_base::costs::count("sync: things walked", out.len() as u64);
             out.extend(e.core.ix.destroyed_sync_ids.keys().copied());
             out.extend(e.core.followed_links.all().keys().filter(|k| crate::sync_ids::actors::followable(e, k)).copied());
@@ -36,34 +33,22 @@ impl Engine {
         })
     }
 
-    /// `sync_things`'s answer for `t` alone: reads only `t`'s rows while nothing is sourced
-    /// elsewhere.
+    /// `sync_things`'s answer for `t` alone: reads only `t`'s rows.
     pub fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
-        if self.core.ix.destroyed_sync_ids.contains_key(t) || crate::sync_ids::actors::followable(self, t) {
-            return Ok(true);
-        }
-        if self.core.ix.closure.cut.is_empty() {
-            return Ok(self.core.ix.closure.holds(t));
-        }
-        Ok(self.sync_things()?.contains(t))
+        Ok(self.core.ix.destroyed_sync_ids.contains_key(t) || crate::sync_ids::actors::followable(self, t) || self.core.ix.closure.synced(t))
     }
 
     /// The things that may have entered `sync_things` since `f`'s last read (its first: every
-    /// one): each that entered the node closure or was destroyed since, every thing when the cut
-    /// moved, and the links being redeemed (few). Leaving needs no feed: `in_sync_things` moves.
+    /// one): each that entered the sync set's walk or was destroyed since, and the links being
+    /// redeemed (few). Leaving needs no feed: `in_sync_things` moves.
     pub(crate) fn things_entered(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
-        let cut: BTreeSet<Tid> = self.core.ix.closure.cut.iter().copied().collect();
         let Some(at) = f.0.as_mut() else {
             let ix = &self.core.ix;
-            f.0 = Some(super::Entered { held: ix.closure.feed(), destroyed: ix.destroyed_sync_ids.feed(), cut });
+            f.0 = Some(super::Entered { held: ix.closure.synced_feed(), destroyed: ix.destroyed_sync_ids.feed() });
             return Ok(self.sync_things()?.iter().copied().collect());
         };
         let mut out = at.held.added();
         out.extend(at.destroyed.added());
-        if at.cut != cut {
-            at.cut = cut;
-            out.extend(self.sync_things()?.iter().copied());
-        }
         out.extend(self.core.followed_links.all().keys().copied());
         osis_base::costs::count("sync: things entered", out.len() as u64);
         Ok(out)
@@ -73,17 +58,18 @@ impl Engine {
     /// `elsewhere`, of which those also in `homing` (moved home, catching up) sync here; the
     /// others `sync_things` walks no path through, the account root aside: it is never cut. A
     /// client of this node reads nothing of any of them (`readable_by`). Between transactions.
-    pub fn set_sourced(&mut self, elsewhere: BTreeSet<Tid>, homing: &BTreeSet<Tid>) {
+    pub fn set_sourced(&mut self, elsewhere: BTreeSet<Tid>, homing: &BTreeSet<Tid>) -> Result<()> {
         let root = self.account_root();
-        let cut: BTreeSet<Tid> = elsewhere.difference(homing).filter(|g| Some(**g) != root).copied().collect();
-        let cl = &mut self.core.ix.closure;
-        for t in cl.cut.iter().copied().collect::<Vec<_>>() {
-            if !cut.contains(&t) {
-                cl.cut.remove(&t);
-            }
-        }
-        cl.cut.extend(cut);
+        let cut: BTreeSet<Tid> = elsewhere.difference(homing).filter(|g| Some(**g) != root && Some(**g) != self.core.node_root).copied().collect();
+        self.core.ix.closure.set_cut(self.core.node_root, cut)?;
         self.core.sourced_elsewhere = elsewhere;
+        Ok(())
+    }
+
+    /// Whether sync unit `g` syncs here (spec/sync-set.md §5): the sync set's walk reaches it and
+    /// it is synced under a sync ID of its own. Reads only `g`'s rows.
+    pub fn syncs_here(&mut self, g: &Tid) -> Result<bool> {
+        Ok(self.in_sync_things(g)? && matches!(self.thing_sync(g)?, ThingSync::Read(ids) | ThingSync::Unread(ids) if !ids.is_empty()))
     }
 
     /// spec/sync-set.md §5 (moving home): history is complete here for sync unit `g` and each

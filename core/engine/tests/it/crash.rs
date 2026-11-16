@@ -325,3 +325,37 @@ fn crash_every_write_of_a_hold_and_release() {
         }
     }
 }
+
+// notes/node-closure.md (a rollback past the settle resets the follower), spec/sync-set.md §2:
+// a write removing D -> X fails at its store commit, after the node closure settled it (X and
+// Y, X -> Y, dropped and their edges no longer followed). The rollback holds them again, and Y
+// gaining own keys then enters Y's sync unit at X's strong: the node closure equals one walked
+// afresh.
+#[test]
+fn a_write_failing_past_the_closures_settle_leaves_it_followed() {
+    use osis_crdt::{Op, PathOp};
+    use osis_schema::core_types as ct;
+    let dev = Dev::new();
+    let mut e = dev.create();
+    let d = e.account_root().unwrap();
+    let holds = |from: Tid, to: Tid, on: bool| {
+        let mut m = Mutation::new();
+        let v = Value::Strong(to);
+        m.op(from, &ct::HOLDS, PathOp { path: vec![], op: if on { Op::Add(v) } else { Op::Remove(v) } }).unwrap();
+        m
+    };
+    let mut m = Mutation::new();
+    let rec = e.thing_record(d);
+    let x = m.create(rec.clone());
+    let y = m.create(rec);
+    m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(x)) }).unwrap();
+    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(y)) }).unwrap();
+    e.commit(m).unwrap();
+    dev.faults.at(0, Fault::Fail);
+    assert!(e.commit(holds(d, x, false)).is_err());
+    dev.faults.revive();
+    assert!(e.closure_holds(&x) && e.closure_holds(&y));
+    e.give_own_secrets(&y).unwrap();
+    assert!(e.units_holding(&y).contains(&d));
+    e.check_closure();
+}

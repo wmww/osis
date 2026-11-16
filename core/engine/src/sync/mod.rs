@@ -264,12 +264,11 @@ impl std::fmt::Debug for ThingsFeed {
     }
 }
 
-/// `ThingsFeed`'s cursors: over the node closure's things, the destroyed things, and the cut
-/// last seen.
+/// `ThingsFeed`'s cursors: over the things the sync set's walk reaches, and the destroyed
+/// things.
 pub(crate) struct Entered {
     held: osis_base::memo::Feed<Tid>,
     destroyed: osis_base::memo::Feed<Tid>,
-    cut: BTreeSet<Tid>,
 }
 
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).

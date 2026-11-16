@@ -91,13 +91,18 @@ pub(crate) fn sourced_in(l: &mut Locked, t: Tid) -> Option<Address> {
 /// (under a sync ID of its own in the sync set, spec/sync-judgement.md §1) or is sourced at
 /// another node.
 fn split(l: &mut Locked, t: Tid, at: &Address) -> Result<Option<Tid>> {
-    let synced: std::collections::BTreeSet<Tid> = l.engine().sync_set()?.ids.values().map(|(g, _)| *g).collect();
     let mut s = l.engine().units_holding(&t);
     s.insert(t);
-    Ok(s.into_iter().find(|g| match l.unit_sources.get(g) {
-        Some(a) => a != at,
-        None => synced.contains(g),
-    }))
+    for g in s {
+        let elsewhere = match l.unit_sources.get(&g) {
+            Some(a) => a != at,
+            None => l.engine().syncs_here(&g)?,
+        };
+        if elsewhere {
+            return Ok(Some(g));
+        }
+    }
+    Ok(None)
 }
 
 impl ReadOnly {
@@ -204,17 +209,17 @@ impl ReadOnly {
 /// The engine's copy of the source table (`Engine::set_sourced`): the sync set leaves a sync unit
 /// read elsewhere unless it is moving home, and a client of this node reads nothing of it, its
 /// copy here maybe behind (`readable_by`).
-fn mirror(l: &mut Locked) {
+fn mirror(l: &mut Locked) -> Result<()> {
     let g = l.unit_sources.keys().copied().collect();
     let homing = l.homing.clone();
-    l.engine().set_sourced(g, &homing);
+    Ok(l.engine().set_sourced(g, &homing)?)
 }
 
 /// Writes the source table to its app record and the engine (`mirror`).
 fn record(db: &ReadOnly, l: &mut Locked) -> Result<()> {
     let text: String = l.unit_sources.iter().map(|(g, a)| format!("{g} {a}\n")).collect();
     l.engine().set_app_record(SOURCES, text.as_bytes())?;
-    mirror(l);
+    mirror(l)?;
     db.inner.has_sources.store(!l.remotes.is_empty() || !l.unit_sources.is_empty(), Ordering::Release);
     Ok(())
 }
@@ -311,7 +316,7 @@ impl Osis {
                 UnitSource::Local => {
                     // syncing here again, read at its node until it caught up
                     if l.homing.insert(unit) {
-                        mirror(l);
+                        mirror(l)?;
                         l.handle(osis_sync::Input::Wrote);
                     }
                     Ok(true)
@@ -367,8 +372,8 @@ impl Osis {
         let any = !m.is_empty();
         self.locked(|l| {
             l.unit_sources = m;
-            mirror(l);
-        });
+            mirror(l)
+        })?;
         self.inner.has_sources.store(any, Ordering::Release);
         Ok(())
     }
