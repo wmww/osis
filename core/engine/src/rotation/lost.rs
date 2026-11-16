@@ -248,7 +248,7 @@ fn judge(core: &Core, cands: Vec<Tid>) -> Vec<Tid> {
     if unread.is_empty() {
         return unread;
     }
-    let sourced: Vec<Tid> = core.ix.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|u| core.waits.read_any(&u.commit))))).map(|(t, _)| *t).collect();
+    let sourced: Vec<Tid> = core.ix.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| core.waits.read_any(&u.commit))))).map(|(t, _)| *t).collect();
     let checked = |a: &Tid| core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).held().next().is_some()));
     let held: Vec<Tid> = unread.iter().filter(|k| contested(core, k)).copied().collect();
     let kept = |a: &Tid| (!checked(a) && sourced.iter().any(|x| reaches(core, x, a))) || held.iter().any(|x| reaches(core, x, a));
@@ -496,7 +496,7 @@ fn loss_seen(core: &Core, a: &Tid) -> bool {
     let ts = now_ts(core);
     // reading-only secrets whose source commit is judged no more (dropped as bad input): what
     // made them readable is gone
-    let stale = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|u| !core.waits.read_any(&u.commit)))));
+    let stale = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| !core.waits.read_any(&u.commit)))));
     // an edge of ours ended, or lowered (to sync: it stays alive) on an actor reaching `a`
     stale || reaching(core, a).iter().any(|x| core.timelines.get(x).is_some_and(|tl| tl.ended(x, ts).keys().chain(tl.lowered(x, ts).iter()).any(|h| ours(core, h))))
 }

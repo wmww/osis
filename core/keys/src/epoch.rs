@@ -83,9 +83,12 @@ pub struct EpochInfo {
     pub secret: Option<Secret32>,
     /// Its roles secret (spec/crypto.md §4, Roles secrets) when known apart from its secret: from
     /// a history entry opened. It opens the role parts and wraps sealed under the epoch, nothing
-    /// else; never encrypted under. Known only from pending commits (`reading` non-empty, its
-    /// secret not held), it is for opening alone, as a reading-only secret is.
+    /// else; never encrypted under. Known only from pending commits (`roles_reading`
+    /// non-empty), it is for opening alone, as a reading-only secret is.
     pub roles: Option<Secret32>,
+    /// The pending commits the roles secret is known from, when known only from such: `reading`
+    /// for `roles`, each secret going with its own last source.
+    pub roles_reading: BTreeSet<Unchecked>,
     /// The pending commits the secret is known from, when known only from such (their boxes, or
     /// history boxes opened with a secret so known): non-empty, the secret is kept for reading,
     /// never encrypted under, until an applied valid box or a history box opened with a secret
@@ -119,7 +122,12 @@ impl EpochInfo {
 
     /// Its secret, or its roles secret, is known only from pending commits.
     pub fn is_reading_only(&self) -> bool {
-        (self.secret.is_some() || self.roles.is_some()) && !self.reading.is_empty()
+        (self.secret.is_some() && !self.reading.is_empty()) || (self.roles.is_some() && !self.roles_reading.is_empty())
+    }
+
+    /// The pending commits its secret or its roles secret is known from.
+    pub fn sources(&self) -> impl Iterator<Item = &Unchecked> {
+        self.reading.iter().chain(&self.roles_reading)
     }
 
     /// Its secret when it may be encrypted under (not reading-only).
@@ -129,7 +137,7 @@ impl EpochInfo {
 
     /// Its roles secret when it may be encrypted under (`RoleEpochs::checked_roles`).
     pub fn checked_roles(&self) -> Option<Secret32> {
-        self.checked().map(osis_crypto::roles_secret).or_else(|| self.roles.clone().filter(|_| self.reading.is_empty()))
+        self.checked().map(osis_crypto::roles_secret).or_else(|| self.roles.clone().filter(|_| self.roles_reading.is_empty()))
     }
 
     /// A valid rotation commit of it or a `secrets.0` snapshot keying it is held (spec/crypto.md
@@ -257,9 +265,7 @@ impl RoleEpochs {
     pub fn set_roles(&mut self, e: Epoch, roles: Secret32) {
         let info = self.observe(e);
         info.roles = Some(roles);
-        if info.secret.is_none() {
-            info.reading.clear();
-        }
+        info.roles_reading.clear();
     }
 
     /// Records a roles secret known only from pending commit `from` (a history entry opened under
@@ -267,10 +273,10 @@ impl RoleEpochs {
     /// (`set_reading_secret`); it goes with its last source.
     pub fn set_reading_roles(&mut self, e: Epoch, roles: Secret32, from: Unchecked) {
         match self.map.get_mut(&e) {
-            Some(i) if i.checked().is_some() || (i.roles.is_some() && i.reading.is_empty()) => return,
+            Some(i) if i.checked_roles().is_some() => return,
             Some(i) if i.secret.is_some() || i.roles.is_some() => {
                 i.roles.get_or_insert(roles);
-                i.reading.insert(from);
+                i.roles_reading.insert(from);
                 return;
             }
             _ => {}
@@ -280,7 +286,7 @@ impl RoleEpochs {
         }
         let info = self.observe(e);
         info.roles = Some(roles);
-        info.reading.insert(from);
+        info.roles_reading.insert(from);
     }
 
     /// `e`'s roles secret: derived from its secret when held (reading-only included), else as a
@@ -326,7 +332,7 @@ impl RoleEpochs {
     /// Whether a new epoch known only from `from` fits the reading-only bounds.
     fn reading_room(&self, from: &Unchecked) -> bool {
         let reading = self.map.values().filter(|i| i.is_reading_only());
-        let (total, mine) = reading.fold((0, 0), |(t, m), i| (t + 1, m + usize::from(i.reading.iter().any(|u| u.author == from.author))));
+        let (total, mine) = reading.fold((0, 0), |(t, m), i| (t + 1, m + usize::from(i.sources().any(|u| u.author == from.author))));
         total < MAX_READING && mine < MAX_READING_PER_AUTHOR
     }
 
@@ -335,14 +341,15 @@ impl RoleEpochs {
     pub fn drop_reading_from(&mut self, commit: &CommitId) -> bool {
         let mut touched = Vec::new();
         for (e, i) in self.map.iter_mut() {
-            let n = i.reading.len();
-            i.reading.retain(|u| u.commit != *commit);
-            if i.reading.len() != n {
-                if i.reading.is_empty() {
-                    i.secret = None;
-                    i.roles = None;
+            for (from, secret) in [(&mut i.reading, &mut i.secret), (&mut i.roles_reading, &mut i.roles)] {
+                let n = from.len();
+                from.retain(|u| u.commit != *commit);
+                if from.len() != n {
+                    if from.is_empty() {
+                        *secret = None;
+                    }
+                    touched.push(*e);
                 }
-                touched.push(*e);
             }
         }
         for e in &touched {
@@ -806,6 +813,7 @@ impl ActorEpochs {
                     established: i.established.map(|_| Provenance::Derived),
                     secret: ds.clone(),
                     roles: None,
+                    roles_reading: BTreeSet::new(),
                     reading: i.reading.clone(),
                     order: Some(o.order(e)).filter(|&x| x != de.n()),
                 };
@@ -895,6 +903,32 @@ mod tests {
         assert_eq!(r.held_roles().iter().map(|x| x.0).collect::<Vec<_>>(), vec![f]);
         assert!(r.drop_reading_from(&u.commit));
         assert!(r.get(&e).is_none() && r.roles_secret(&f).is_some());
+    }
+
+    // spec/crypto.md §4 (Reading-only secrets; Roles secrets): each secret goes with its own last
+    // source. An epoch's secret known from a pending commit and its roles secret from a checked
+    // history entry: the commit going leaves the roles secret held, as a record that never saw
+    // the commit holds it (the engine's live index against its rebuild).
+    #[test]
+    fn a_checked_roles_secret_outlives_the_pending_source_of_its_epochs_secret() {
+        let u = Unchecked { author: Tid::from_bytes([1; 15]), commit: cid(1) };
+        let e = ep(6, 6);
+        let (s, rs) = (Secret32::from_bytes([1; 32]), Secret32::from_bytes([2; 32]));
+        let mut rebuilt = RoleEpochs::default();
+        rebuilt.set_roles(e, rs.clone());
+        for pending_first in [true, false] {
+            let mut live = RoleEpochs::default();
+            if pending_first {
+                live.set_reading_secret(e, s.clone(), u);
+                live.set_roles(e, rs.clone());
+            } else {
+                live.set_roles(e, rs.clone());
+                live.set_reading_secret(e, s.clone(), u);
+            }
+            assert_eq!(live.checked_roles(&e), Some(rs.clone()), "checked while its secret is reading-only");
+            assert!(live.drop_reading_from(&u.commit));
+            assert_eq!(live, rebuilt, "pending first: {pending_first}");
+        }
     }
 
     #[test]

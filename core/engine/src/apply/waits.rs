@@ -460,7 +460,7 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
 
 /// The commits reading-only secrets came from, after a load.
 pub(crate) fn load_reading(core: &mut Core) {
-    let ids: BTreeSet<CommitId> = core.ix.secrets.values().flat_map(|e| osis_keys::ROLES.iter().flat_map(|r| e.role(*r).epochs().flat_map(|(_, i)| i.reading.iter().map(|u| u.commit)).collect::<Vec<_>>()).collect::<Vec<_>>()).collect();
+    let ids: BTreeSet<CommitId> = core.ix.secrets.values().flat_map(|e| osis_keys::ROLES.iter().flat_map(|r| e.role(*r).epochs().flat_map(|(_, i)| i.sources().map(|u| u.commit)).collect::<Vec<_>>()).collect::<Vec<_>>()).collect();
     core.waits.reading = ids;
 }
 

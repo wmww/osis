@@ -649,7 +649,7 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     for k in sealed {
         tx.txn.remove_local(&k, Shred::No)?;
     }
-    let actors: Vec<Tid> = tx.core.ix.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|u| u.commit == *id)))).map(|(t, _)| *t).collect();
+    let actors: Vec<Tid> = tx.core.ix.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| u.commit == *id)))).map(|(t, _)| *t).collect();
     let mut lost = Vec::new();
     for a in actors {
         let Some(mut e) = tx.core.ix.secrets.get(&a).cloned() else { continue };

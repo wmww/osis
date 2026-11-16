@@ -830,6 +830,7 @@ fn newest_delete_key(e: &ActorEpochs, r: Role) -> Option<VerifyingKey> {
 /// Persisted: what establishment is computed from (rotation commits, snapshot, names) and the
 /// directly set `Fixed` provenance; `Rotated` and `Derived` are never stored (`Core::own_epochs`).
 pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
+    let sources = |s: &std::collections::BTreeSet<Unchecked>| Value::List(s.iter().map(|u| Value::List(vec![Value::Bytes(u.author.as_bytes().to_vec()), Value::Bytes(u.commit.0.to_vec())])).collect());
     let roles = ROLES
         .iter()
         .map(|r| {
@@ -846,9 +847,10 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                             Value::Bool(fixed),
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
                             Value::List(i.secret.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
-                            Value::List(i.reading.iter().map(|u| Value::List(vec![Value::Bytes(u.author.as_bytes().to_vec()), Value::Bytes(u.commit.0.to_vec())])).collect()),
+                            sources(&i.reading),
                             Value::List(i.floor.iter().map(|f| Value::Int(i64::try_from(*f).unwrap_or(i64::MAX))).collect()),
                             Value::List(i.roles.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
+                            sources(&i.roles_reading),
                         ])
                     })
                     .collect(),
@@ -928,7 +930,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [e, Value::List(rotations), Value::List(snapshots), Value::List(names), Value::Bool(fixed), Value::List(sup), Value::List(sec), Value::List(reading), Value::List(floor), Value::List(roles)] = f.as_slice() else { return Err(bad()) };
+            let [e, Value::List(rotations), Value::List(snapshots), Value::List(names), Value::Bool(fixed), Value::List(sup), Value::List(sec), Value::List(reading), Value::List(floor), Value::List(roles), Value::List(roles_reading)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
             for x in rotations {
@@ -962,14 +964,16 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
             if let [s] = roles.as_slice() {
                 info.roles = Some(secret(s)?);
             }
-            for c in reading {
+            let source = |c: &Value| -> Result<Unchecked> {
                 let Value::List(c) = c else { return Err(bad()) };
                 let [Value::Bytes(author), Value::Bytes(commit)] = c.as_slice() else { return Err(bad()) };
                 let author = Tid::from_bytes(author.as_slice().try_into().map_err(|_| bad())?);
                 let commit = osis_base::CommitId(commit.as_slice().try_into().map_err(|_| bad())?);
-                info.reading.insert(Unchecked { author, commit });
-            }
-            if !info.reading.is_empty() && info.secret.is_none() && info.roles.is_none() {
+                Ok(Unchecked { author, commit })
+            };
+            info.reading = reading.iter().map(source).collect::<Result<_>>()?;
+            info.roles_reading = roles_reading.iter().map(source).collect::<Result<_>>()?;
+            if (!info.reading.is_empty() && info.secret.is_none()) || (!info.roles_reading.is_empty() && info.roles.is_none()) {
                 return Err(bad());
             }
         }
