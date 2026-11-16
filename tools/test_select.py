@@ -4,7 +4,8 @@ size, computed from what it touched. tools/gate.sh runs them in its one hold of 
 
   tools/test_select.py [--base REV | --all] [--offset N]          print the selection and its commands
   tools/test_select.py --paths PATH...                            select for these paths, not a diff
-  tools/test_select.py --emit FILE ...                             also append the gate's `build CMD` and `run LIMIT CMD` lines to FILE
+  tools/test_select.py --emit FILE ...                             also append the gate's `build CMD`, `check CMD` and `run LIMIT CMD` lines to FILE
+  tools/test_select.py --listed NAME... -- CMD...                  run CMD (a `cargo test ... -- --list`), fail naming each NAME it lists no test of
 
 The default base is the merge base with origin/main as last fetched, as in the gate (local main lags).
 
@@ -17,6 +18,10 @@ crate reached only so, only the properties in files that can call the dependency
 
 A property test is an `#[ignore]` test whose name ends in a size word (SIZE_WORD), before any
 `_spec_*` suffix. Nothing else names one: a new property test is picked up by its name alone.
+
+A name the scan finds can still be in no built target (a file no target compiles): libtest's
+filters would then run nothing and pass. So the gate lists each selection's tests with the built
+binaries before its hold (`check`, `--listed`) and stops on a selected name nothing lists.
 
 Offsets: one random value per run (--offset to repeat one) starts every harness seed range and
 sim sweep, so a gate samples seeds no earlier gate ran.
@@ -239,8 +244,26 @@ def envs(offset):
     return [f"{v}={offset}" for v in vs]
 
 
+def listed(wanted, cmd):
+    """Run `cmd` (a `cargo test ... -- --list` of the built targets); 1 naming each wanted test
+    whose name no listed test ends in."""
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, text=True)
+    if r.returncode:
+        print(f"gate: listing the selected tests failed (exit {r.returncode}): {shlex.join(cmd)}")
+        return 1
+    have = {l[:-len(": test")].rsplit("::", 1)[-1] for l in r.stdout.split("\n") if l.endswith(": test")}
+    missing = [w for w in wanted if w not in have]
+    for w in missing:
+        print(f"gate: selected test {w} is in no built test target (a file the scan reads that no target compiles?): fix the selection, don't skip it")
+    print(f"   {len(wanted) - len(missing)} of {len(wanted)} selected tests listed")
+    return 1 if missing else 0
+
+
 def main():
     args = sys.argv[1:]
+    if args[:1] == ["--listed"] and "--" in args:
+        i = args.index("--")
+        return listed(args[1:i], args[i + 1:])
     every = "--all" in args
     base = offset = paths = emit = None
     i = 0
@@ -277,17 +300,19 @@ def main():
     sim = "osis-sim" in selected
 
     # unlocked builds first, with the same cargo arguments as the runs, so the runs build nothing
-    build, cmds = [], []
+    build, checks, cmds = [], [], []
     if props:
         pkgs, filters = cargo_args(props, others)
         build.append(["cargo", "test", "--locked", *pkgs, "--tests", "--no-run"])
+        wanted = sorted({t for v in props.values() for t in v})
+        checks.append(["python3", "tools/test_select.py", "--listed", *wanted, "--", "cargo", "test", "--locked", "--quiet", *pkgs, "--tests", "--", "--list", *filters])
         cmds.append(("gate.properties", ["env", *envs(offset), "cargo", "test", "--locked", "--no-fail-fast", *pkgs, "--tests", "--", *filters]))
     if sim:
         build.append(["cargo", "build", "--locked", "--bin", "sim-sweep"])
         cmds.append(("gate.sim", ["cargo", "run", "--locked", "--bin", "sim-sweep", "--", "--seeds", str(SIM_SEEDS), "--from", str(offset)]))
     if emit:
         with open(emit, "a") as f:
-            f.writelines([f"build {shlex.join(b)}\n" for b in build] + [f"run {n} {shlex.join(c)}\n" for n, c in cmds])
+            f.writelines([f"build {shlex.join(b)}\n" for b in build] + [f"check {shlex.join(c)}\n" for c in checks] + [f"run {n} {shlex.join(c)}\n" for n, c in cmds])
 
     print(f"paths: {'every crate (--all)' if every else len(paths)}")
     for p, why in sorted(nothing.items()):
@@ -313,8 +338,8 @@ def main():
     if not cmds:
         print("nothing to run")
         return 0
-    print("commands (tools/gate.sh builds, then runs these in its hold of the heavy lock):")
-    for c in build + [c for _, c in cmds]:
+    print("commands (tools/gate.sh builds and checks, then runs these in its hold of the heavy lock):")
+    for c in build + checks + [c for _, c in cmds]:
         print("  " + shlex.join(c))
     return 0
 

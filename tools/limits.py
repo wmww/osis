@@ -16,8 +16,9 @@
 
 Limits are multiples of the box's base unit u (tools/baseunit.c: the CPU-s of one fixed work
 quantum with every hardware thread busy), both read from the tables in notes/time-limits.md: a CPU limit
-is k u, a wall limit k u 16 / threads (16 quanta spread over the box's threads; ostrich has 16). A check never fails the run: it prints one line, and an over-limit line starting
-`LIMIT` for each limit exceeded, and appends the check to ~/.cache/osis/limits.log (JSON lines:
+is k u, a wall limit k u 16 / threads (16 quanta spread over the box's threads; ostrich has 16). A check never fails the run: it prints one line, and a line per limit exceeded:
+`LIMIT CAP` over a whole other limits share (`gate`, `gate.hold`: Tess's cap), an indented
+`over share:` for a stage over only its share, `LIMIT` for any other limit; it appends the check to ~/.cache/osis/limits.log (JSON lines:
 time, box, name, cpu, wall, limits, the 1-minute load, over), the record of every hit. A limit's
 `share of` cell names the whole it is a share of (a gate stage of `gate.hold` or `gate`): the
 shares of a whole sum to at most it, so a whole over its limit names its parts over their share.
@@ -87,16 +88,30 @@ def check(name, cpu, wall, what="", quiet=False, since=None):
     label = f"{name} {what}".strip()
     if not quiet or over:
         print(f"   limit {label}: CPU {cpu:.0f}/{lim[0]:.0f} s, wall {wall:.0f}/{lim[1]:.0f} s")
+    role = kind(name)
     for k, v, l in over:
         far = " (over 2x: an investigation, notes/coordination.md Time limits)" if v > FAR * l else ""
-        print(f"LIMIT {label} {k} {v:.0f} s > {l:.0f} s ({v / l:.2f}x) on {BOX} at load {os.getloadavg()[0]:.0f}{far}: "
-              f"report why (notes/time-limits.md, Patterns)")
+        hit = f"{label} {k} {v:.0f} s > {l:.0f} s ({v / l:.2f}x) on {BOX} at load {os.getloadavg()[0]:.0f}{far}"
+        if role == "share":
+            print(f"   over share: {hit}, over its share of {tables()[1][name][2]}, not a cap")
+        else:
+            cap = " CAP" if role == "cap" else ""
+            print(f"LIMIT{cap} {hit}: {'over the cap (notes/time-limits.md, Limits); ' if cap else ''}report why (notes/time-limits.md, Patterns)")
     log(dict(t=round(time.time()), box=BOX, name=name, what=what, cpu=round(cpu, 1), wall=round(wall, 1),
              cpu_lim=round(lim[0], 1), wall_lim=round(lim[1], 1), load=round(os.getloadavg()[0], 1),
              over=[k for k, _, _ in over], who=os.getcwd()))
     if over:
         shares(name, since if since is not None else time.time() - wall - 1)
     return over
+
+
+def kind(name):
+    """"cap" for a whole other limits are shares of (`gate`, `gate.hold`: Tess's cap), "share"
+    for a share that is no whole itself (a gate stage), "" for a limit on its own."""
+    limits = tables()[1]
+    if any(w == name for _, _, w in limits.values()):
+        return "cap"
+    return "share" if name in limits and limits[name][2] else ""
 
 
 def shares(whole, since):
@@ -211,25 +226,28 @@ def hit_line(o):
 def summary(hours, every):
     ev = jsonl([LOG], time.time() - hours * 3600 if hours else 0)
     hits = [o for o in ev if o["over"]]
+    tag = lambda n: {"cap": " (CAP)", "share": " (share)"}.get(kind(n), "")
     for o in (ev if every else hits):
-        print(hit_line(o) if o["over"] else f"  {stamp(o['t'])} {o['box']} `{o['name']}` CPU {o['cpu']:.0f}/{o['cpu_lim']:.0f} s, "
+        print(hit_line(o) + tag(o["name"]) if o["over"] else f"  {stamp(o['t'])} {o['box']} `{o['name']}` CPU {o['cpu']:.0f}/{o['cpu_lim']:.0f} s, "
               f"wall {o['wall']:.0f}/{o['wall_lim']:.0f} s at load {o['load']:.0f}")
-    print(f"{len(ev)} checks, {len(hits)} over a limit, on {BOX} ({LOG})")
+    caps = sum(1 for o in hits if kind(o["name"]) == "cap")
+    part = sum(1 for o in hits if kind(o["name"]) == "share")
+    print(f"{len(ev)} checks, {len(hits)} over a limit ({caps} over a cap, {part} over a share only), on {BOX} ({LOG})")
     # triggers: one limit (name and kind) hit REPEAT times within WINDOW_H; one run over FAR x
     by = {}
     for o in hits:
         for k in o["over"]:
-            by.setdefault((f'{o["name"]}` {o.get("what", "")}'.strip(), k), []).append(o["t"])
-    for (n, k), ts in sorted(by.items()):
+            by.setdefault((f'{o["name"]}` {o.get("what", "")}'.strip(), k, o["name"]), []).append(o["t"])
+    for (n, k, name), ts in sorted(by.items()):
         for i in range(len(ts) - REPEAT + 1):
             if ts[i + REPEAT - 1] - ts[i] <= WINDOW_H * 3600:
-                print(f"TRIGGER `{n} {k}: {REPEAT} hits within {WINDOW_H} h from {stamp(ts[i])}: investigate")
+                print(f"TRIGGER `{n} {k}{tag(name)}: {REPEAT} hits within {WINDOW_H} h from {stamp(ts[i])}: investigate")
                 break
     for o in hits:
         for k in o["over"]:
             v, l = o[k.lower()], o[k.lower() + "_lim"]
             if v > FAR * l:
-                print(f"TRIGGER `{o['name']}` {k} {v / l:.1f}x its limit at {stamp(o['t'])}: investigate")
+                print(f"TRIGGER `{o['name']}` {k}{tag(o['name'])} {v / l:.1f}x its limit at {stamp(o['t'])}: investigate")
 
 
 def unit():

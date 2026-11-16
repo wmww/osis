@@ -67,7 +67,7 @@ PLANTS = [
     ("libs/chat/src/lib.rs", None, "\nuse osis_perm::Trust;\n"),
     ("libs/chat/src/lib.rs", None, "\nfn near_miss(x: X) { x.disputes(); }\n"),  # outside core: allowed
     # real_lan_tests
-    ("core/sync/tests/it/life.rs", None, "\nfn planted_lan() { Lan::bind(4242); }\n"
+    ("core/sync/tests/it/flows.rs", None, "\nfn planted_lan() { Lan::bind(4242); }\n"
      "fn planted_bare() { let _ = Config { runtime: Runtime::Own, x: 1 }; }\n"
      "fn planted_default() { let mut cfg = Config::default(); cfg.runtime = Runtime::Tokio; }\n"
      "fn near_miss() { Lan::bind(0); Lan::bind(s.port()); }\n"),
@@ -76,7 +76,7 @@ PLANTS = [
     # peer_ticks
     ("core/engine/tests/it/caches.rs", None, "\nfn planted(p: P) { p.engine.tick(); }\n"),
     ("core/engine/tests/it/covered.rs", None, "\nfn planted(myself: P) { myself.engine.reexamine(); }\n"),
-    ("core/engine/tests/it/groups.rs", None, "\nfn near_miss(&self) { self.engine.tick(); }\n"),
+    ("core/engine/tests/it/flows.rs", None, "\nfn near_miss(&self) { self.engine.tick(); }\n"),
     # test_copies, checked_bytes
     ("core/crypto/src/lib.rs", None, "\nfn planted(x: X) { x.test_copy(); }\n"),
     ("core/perm/src/lib.rs", None, "\nfn planted(b: B) { let _ = Checked(b); }\n"),
@@ -98,7 +98,7 @@ PLANTS = [
     ("core/sync/src/store/rows.rs", "    pub(crate) const REFUSED: u8 = b'r';", "    pub(crate) const REFUSED: u8 = b'r';\n    pub(crate) const PLANTED_TAG: u8 = b'r';"),
     ("core/sync/src/life.rs", None, "\nfn planted_tag(t: &mut T) { t.record_put_row(&rec, b'z', &s, b\"\", Vec::new()); }\n"),
     # pinned_seeds
-    ("core/sync/tests/it/faults.rs", None, "\nfn planted_seed() { converge(77, 3, &[], String::new()); let _ = world(0, 3); let _ = w.history(5); }\n"),
+    ("core/sync/tests/it/faults.rs", None, "\nfn planted_seed() { let _ = World::new(77); let _ = world(0, 3); let _ = w.history(5); }\n"),
     # doc_refs
     ("notes/build.md", None, "\nSee notes/no-such-planted.md and notes/gate.md, Planted Nonexistent Section.\n"),
     # code_refs: a stale name, a listed name now in the code, a duplicate listed line
@@ -128,9 +128,9 @@ EXPECT = [  # regexes the output must hold
     r"core/commit/src/lib\.rs: calls a dispute query",
     r"core/keys/src/lib\.rs: names the trust store",
     r"libs/chat/src/lib\.rs: names osis_perm::Trust",
-    r"core/sync/tests/it/life\.rs: Lan::bind in a test on a fixed port: fn planted_lan",
-    r"core/sync/tests/it/life\.rs: a test node from a bare Config is on the real LAN: Config \{ runtime",
-    r"core/sync/tests/it/life\.rs: a test node from a bare Config is on the real LAN: let mut cfg",
+    r"core/sync/tests/it/flows\.rs: Lan::bind in a test on a fixed port: fn planted_lan",
+    r"core/sync/tests/it/flows\.rs: a test node from a bare Config is on the real LAN: Config \{ runtime",
+    r"core/sync/tests/it/flows\.rs: a test node from a bare Config is on the real LAN: let mut cfg",
     r"core/transport/src/lib\.rs: Lan::bind in a test on a fixed port",
     r"cli/tests/it/cli\.rs: runs osis without --no-lan: fn planted_cli",
     r"core/engine/tests/it/caches\.rs:\d+: engine\.tick\(\)",
@@ -151,7 +151,7 @@ EXPECT = [  # regexes the output must hold
     r"core/sync/src/life\.rs: a row key `b\"zr/\.\.\.` written as a literal",
     r"core/sync/src/store/rows\.rs: record tags REFUSED and PLANTED_TAG are both b'r'",
     r"core/sync/src/life\.rs: a record row written with a literal tag",
-    r"core/sync/tests/it/faults\.rs:\d+: converge\(77, \.\.\) pins a seed",
+    r"core/sync/tests/it/faults\.rs:\d+: World::new\(77, \.\.\) pins a seed",
     r"notes/build\.md:\d+: notes/no-such-planted\.md does not exist",
     r"notes/build\.md:\d+: notes/gate\.md, \"planted nonexistent section\": no such section",
     r"notes/build\.md:\d+: `planted_gone_fn`: no such name",
@@ -164,8 +164,8 @@ EXPECT = [  # regexes the output must hold
 ]
 ABSENT = [  # near misses: what the plants show must not be reported
     r"libs/chat/src/lib\.rs: calls a dispute query",
-    r"core/sync/tests/it/life\.rs: Lan::bind in a test on a fixed port: fn near_miss",
-    r"core/engine/tests/it/groups\.rs:\d+: engine",
+    r"core/sync/tests/it/flows\.rs: Lan::bind in a test on a fixed port: fn near_miss",
+    r"core/engine/tests/it/flows\.rs:\d+: engine",
     r"core/transport/src/lib\.rs:\d+: `hosts`",
     r"faults\.rs:\d+: (world|history)\(",
 ]

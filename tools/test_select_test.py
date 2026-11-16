@@ -150,22 +150,38 @@ write("core/top/new.rs", "// new\n")
 t = out()
 check("diff from merge-base", t, "paths: 2", "crates touched: osis-leaf, osis-top", "leaf_large", "top_exhaustive")
 
-# --emit FILE: the gate's `build` and `run` lines appended to FILE, builds first, with the same
+# --emit FILE: the gate's `build`, `check` and `run` lines appended to FILE, builds first, with the same
 # packages and offset; the report still printed
 emitted = os.path.abspath("emitted")
 write(emitted, "kept\n")
 check("--emit report", out("--emit", emitted, "--paths", "core/mid/src/lib.rs"), "crates selected")
 lines = open(emitted).read().splitlines()
 kinds = [l.split(" ", 1)[0] for l in lines]
-if kinds != ["kept", "build", "build", "run", "run"]:
+if kinds != ["kept", "build", "build", "check", "run", "run"]:
     print(f"FAIL --emit: line kinds {kinds}\n" + "\n".join(lines))
     fails = 1
 check("--emit", "\n".join(lines), "build cargo test --locked -p osis-mid -p osis-top --tests --no-run", "build cargo build --locked --bin sim-sweep",
+      "check python3 tools/test_select.py --listed mid_child_large ", " model_large top_exhaustive -- cargo", "cargo test --locked --quiet -p osis-mid -p osis-top --tests -- --list --ignored ",
       "run gate.properties env ", "OSIS_ORDER_START=7 ", "run gate.sim cargo run --locked --bin sim-sweep -- --seeds 15 --from 7",
       absent=["paths:", "crates selected"])
 write(emitted, "")
 out("--emit", emitted, "--paths", "notes/a.md")
 check("--emit nothing", open(emitted).read(), absent=["build", "run"])
+
+# --listed: every wanted name must end a listed test's path; a filter matching nothing fails loudly
+def listed(*a):
+    return subprocess.run([sys.executable, TOOL, "--listed", *a], capture_output=True, text=True)
+r = listed("a_large", "b_large", "--", "printf", "m::a_large: test\\nn::b_large: test\\n")
+if r.returncode != 0:
+    print(f"FAIL --listed all present: {r.stdout}{r.stderr}")
+    fails = 1
+r = listed("a_large", "gone_large", "--", "printf", "m::a_large: test\\nm::gone_large_x: test\\n")
+if r.returncode != 1 or "gone_large is in no built test target" not in r.stdout or "a_large is in" in r.stdout:
+    print(f"FAIL --listed missing: {r.returncode} {r.stdout}{r.stderr}")
+    fails = 1
+if listed("a_large", "--", "false").returncode != 1:
+    print("FAIL --listed: a failing listing passed")
+    fails = 1
 
 # --all: every crate, whatever the diff
 t = out("--all")

@@ -77,6 +77,14 @@ try:
     _, o = out(limits.check, "lone", 50, 1, since=T)
     expect("over, no parts at all", "share" in o, False)
 
+    # a cap, a share and a lone limit over: only the cap says CAP; a share is no LIMIT line
+    _, o = out(limits.check, "whole", 150, 1, since=T)
+    expect("cap line", [l.split(" whole ")[0] for l in o.splitlines() if l.startswith("LIMIT")], ["LIMIT CAP"])
+    _, o = out(limits.check, "a", 70, 1)
+    expect("share line", ([l for l in o.splitlines() if l.startswith("LIMIT")], [l.strip()[:15] for l in o.splitlines() if "over share" in l]), ([], ["over share: a C"]))
+    _, o = out(limits.check, "lone", 50, 1)
+    expect("lone line", [l.split(" CPU")[0] for l in o.splitlines() if l.startswith("LIMIT")], ["LIMIT lone"])
+
 finally:
     os.chdir(cwd0)
     shutil.rmtree(tmp)

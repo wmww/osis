@@ -36,7 +36,7 @@ step() {
   printf '== %s\n' "$*"; local s c; s=$(date +%s); cpu; c=$cpu; "$@"; cpu
   step_wall=$(( $(date +%s) - s )); step_cpu=$(( cpu - c )); printf '   (%ss, %s CPU-s)\n' $step_wall $step_cpu
 }
-# A step with time limits (notes/time-limits.md, Limits): over one prints a `LIMIT` line and logs
+# A step with time limits (notes/time-limits.md, Limits): over one prints a `LIMIT` or `over share:` line and logs
 # the hit; it never fails the gate.
 limited() { local n; n=$1; shift; step "$@"; python3 "$tools/limits.py" check "$n" $step_cpu $step_wall || true; }
 # A test stage, `tested LIMIT LOG CMD...` (one external command): timed and checked against its
@@ -124,7 +124,7 @@ t0=$(date +%s)
 # the selection (`run` lines: the test stages expected) and every test stage's result
 sel=$tmp/sel
 results=$sel.res
-# The whole gate against its limit (`gate`), its lock wait (seconds, $1) left out, naming each
+# The whole gate against its limit (`gate`, Tess's cap: `LIMIT CAP`), its lock wait (seconds, $1) left out, naming each
 # stage over its share when over; then every test stage's failure, KNOWN or NEW, and the pass
 # line or the summary's exit.
 passed() {
@@ -212,6 +212,11 @@ builds() {
   done < "$sel"
 }
 limited build builds
+# every selected property in a built target (`check` lines, tools/test_select.py --listed): a name
+# no target compiles would match nothing and pass silently
+while IFS= read -r l; do
+  case "$l" in "check "*) step sh -c "${l#check }" < /dev/null ;; esac
+done < "$sel"
 if [ -n "$unify" ]; then
   limited gate.unify unification_check
 else

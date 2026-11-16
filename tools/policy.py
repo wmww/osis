@@ -8,7 +8,7 @@ dispute types stay private (`dispute_types`), no test binds the real LAN port or
 real LAN (`real_lan_tests`), a test peer ticks through its wake (`peer_ticks`), world copies stay
 test-only (`test_copies`), only the engine's `apply::checked` vouches for checked delta bytes
 (`checked_bytes`), signature verdicts are read back only where kept (`kept_verdicts`), sync keeps
-no hashed collection (`sync_hashed`), sync's tests pin no differential seed (`pinned_seeds`),
+no hashed collection (`sync_hashed`), sync's tests pin no harness seed (`pinned_seeds`),
 tools/known_failures.txt names existing issues, tests and valid patterns (`known_failures`),
 union-merged lists have no duplicate and a stale-line check (`union_lists`), no destruction named
 "ended" (`ended_names`) and no deprecated term (`old_words`) in code, store row keys and sync's
@@ -339,8 +339,8 @@ def sync_hashed():
 
 # notes/principles.md (Never pin a seed of a random test): a bug a random test finds gets a
 # hand-written reproducer at seed 0, never its random history replayed on its world seed. Sync's
-# differential world, history and replay take a seed first; in tests a literal one is 0.
-PINNED_SEED = re.compile(r"(?<![\w.])(world|history|converge|World::new)\(\s*(0*[1-9][0-9_]*)\s*[,)]")
+# harness `world`, `history` and `World::new` take a seed first; in tests a literal one is 0.
+PINNED_SEED = re.compile(r"(?<![\w.])(world|history|World::new)\(\s*(0*[1-9][0-9_]*)\s*[,)]")
 
 def pinned_seeds():
     for path, rel in walk(("core/sync/tests",), ".rs"):
