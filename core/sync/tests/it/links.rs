@@ -446,3 +446,18 @@ fn a_held_commits_sealed_part_opens_once_its_things_secrets_arrive_spec_sync_str
     assert!(w.engine(0).roster(&links[1].target).contains_key(&links[1].k), "K1's grant on the target held at node 0");
     assert!(w.engine(1).roster(&links[1].k).contains_key(&a0), "node 0's join held at node 1");
 }
+
+// spec/sync-inbox.md §5 (Contact card: the profile's sync ID carries the account's public record,
+// the `keys.0` commits as certificate copies): node 1 imports node 0's card and holds node 0's
+// account keys, though the commit making the account also makes its profile, whose body under
+// the profile's sync ID the certificates join as one per-sync-ID copy.
+#[test]
+fn a_card_importer_holds_the_accounts_keys_spec_sync_inbox_5() {
+    let mut w = two_nodes();
+    let (p0, a0) = (w.node(0).profile.unwrap(), w.node(0).account.unwrap());
+    let card = w.make_link(0, p0, Role::Read);
+    w.redeem(1, &card);
+    w.run();
+    assert_eq!(w.redeem(1, &card), Waiting::Done);
+    assert!(w.engine(1).account_holder_keys(&a0).is_ok(), "node 0's account keys held at node 1");
+}

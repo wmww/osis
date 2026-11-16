@@ -175,13 +175,18 @@ impl Engine {
     /// Commit `c`'s body under read thing `t`'s sync IDs: its closure body, else its certificate
     /// body.
     fn body_for(&mut self, t: &Tid, c: &CommitId) -> Result<Option<BodyMeta>> {
-        if self.body_things(c).contains(t)
-            && let Some(meta) = self.closure_body(t, c)?
-        {
-            return Ok(Some(meta));
-        }
-        let Some(named) = self.certified_of(c, t)? else { return Ok(None) };
-        self.certificate_body(c, t, &named)
+        let closure = match self.body_things(c).contains(t) {
+            true => self.closure_body(t, c)?,
+            false => None,
+        };
+        let cert = match self.certified_of(c, t)? {
+            Some(named) => self.certificate_body(c, t, &named)?,
+            None => None,
+        };
+        Ok(match (closure, cert) {
+            (Some(b), Some(x)) => Some(with_certificates(b, x)),
+            (b, x) => b.or(x),
+        })
     }
 
     /// The thing reading `s` whose body of `c` `s` carries (`body_for`), under whose keys that
@@ -203,23 +208,23 @@ impl Engine {
     }
 
     /// Adds to `out` the certificate bodies of commit `c` (spec/sync-judgement.md §1-§2,
-    /// spec/permissions.md §4): per read sync ID carrying no closure body of `c`, the held parts
-    /// of it the sync ID's certificates name (`sync_certificates`) that its closure's bodies do
-    /// not carry, as a copy; else, a header the certificates name, as a header-only copy. Only a
-    /// commit with a part certificates are made of (an edge write, keys, a card, a record) or a
-    /// request is asked, so content never reads the certificates. Where a sync ID carries a
-    /// closure body of `c`, that body is its one body there (`certificate_reading`).
+    /// spec/permissions.md §4): per read sync ID, the held parts of it the sync ID's certificates
+    /// name (`sync_certificates`) that its closure's bodies do not carry, as a copy; else, a
+    /// header the certificates name, as a header-only copy. Only a commit with a part
+    /// certificates are made of (an edge write, keys, a card, a record) or a request is asked, so
+    /// content never reads the certificates. Where a sync ID carries a closure body of `c` too,
+    /// the two are its one body there (`with_certificates`).
     fn certificate_bodies(&mut self, c: &CommitId, out: &mut BTreeMap<SyncId, BodyMeta>) -> Result<()> {
         let closure: BTreeSet<SyncId> = out.keys().copied().collect();
         for (t, named, ids) in self.certified(c)? {
-            let ids: Vec<SyncId> = ids.into_iter().filter(|s| !closure.contains(s)).collect();
-            if ids.is_empty() {
-                continue;
-            }
             let Some(meta) = self.certificate_body(c, &t, &named)? else { continue };
             for s in ids {
                 let was = out.remove(&s);
-                out.insert(s, join_body(was, meta.clone()));
+                let joined = match was {
+                    Some(b) if closure.contains(&s) && !b.certificate => with_certificates(b, meta.clone()),
+                    was => join_body(was, meta.clone()),
+                };
+                out.insert(s, joined);
             }
         }
         Ok(())
@@ -389,11 +394,16 @@ impl Engine {
     /// A held blob not tombstoned under `s` is the store's to log verbatim (`rewrap`).
     pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::sync_ids::Sealed, Wrap)>> {
         let Some(t) = self.body_thing(s, c)? else { return Ok(None) };
-        if let Some(meta) = self.sync_body_now(s, c)?.filter(|m| m.certificate) {
-            return self.seal_certificate(&t, c, &meta, rng);
+        let meta = self.sync_body_now(s, c)?;
+        if let Some(meta) = meta.as_ref().filter(|m| m.certificate) {
+            return self.seal_certificate(&t, c, meta, rng);
         }
         let ctx = self.body_ctx(&t);
         let Some(b) = self.commit_bodies_under(&ctx, c)?.into_iter().next() else { return Ok(None) };
+        // certificates joined into the closure body (`with_certificates`): one copy of both
+        if let Some(meta) = meta.as_ref().filter(|m| m.copy && m.parts.iter().any(|p| !b.parts.contains(p))) {
+            return self.seal_certificate(&t, c, meta, rng);
+        }
         let class = match self.core.ix.commits.get(c).is_some_and(|m| m.view.memory) {
             true => osis_blob::Class::Ephemeral,
             false => osis_blob::Class::Durable,
@@ -461,7 +471,7 @@ impl Engine {
         }
         // a fresh encryption
         let ctx = self.body_ctx(&t);
-        let copy = meta.certificate || self.commit_bodies_under(&ctx, c)?.first().is_some_and(|b| b.to_sync_id);
+        let copy = meta.certificate || meta.copy || self.commit_bodies_under(&ctx, c)?.first().is_some_and(|b| b.to_sync_id);
         let sealed: Vec<usize> = match copy || body.is_empty() {
             // one section of the body's parts under its blob key; a header alone, none
             true => body.clone(),
@@ -729,6 +739,18 @@ impl Engine {
 /// closure body over a certificate (where a sync ID carries a closure body of a commit, that is
 /// its one body there), else their parts and minted records together, the later expiry, the
 /// earlier fetch order. The same whatever order they come in.
+/// Closure body `b` of a commit with certificate body `x` of it under the same sync ID: one
+/// body (spec/sync-judgement.md §1 One blob per commit). Parts the certificates name beyond the
+/// closure's are of things outside the sync unit (an account's `keys.0` in the commit making its
+/// profile), whose sections its readers cannot open: the body is then a per-sync-ID copy of both
+/// (§1 Per-sync-ID copies), its readers opening every part under the blob key.
+fn with_certificates(b: BodyMeta, x: BodyMeta) -> BodyMeta {
+    if x.parts.is_subset(&b.parts) {
+        return b;
+    }
+    BodyMeta { parts: b.parts.union(&x.parts).copied().collect(), copy: true, header_only: false, ..b }
+}
+
 fn join_body(a: Option<BodyMeta>, b: BodyMeta) -> BodyMeta {
     let Some(a) = a else { return b };
     if a == b {
