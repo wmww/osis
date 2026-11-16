@@ -1683,6 +1683,22 @@ fn a_reader_paired_into_the_account_judges_its_chain_as_a_node_spec_permissions_
     lp.peers[2].engine.check_index();
 }
 
+// spec/permissions.md §1 (pairing), §3 (a node holds the secrets of what it reads): a node paired
+// into an account opens what is boxed to the account (its inbox's own secrets) as it becomes a
+// node of it, so its secrets are what a rebuild from its commit records opens
+#[test]
+fn a_paired_node_opens_what_is_boxed_to_its_account_spec_permissions_1() {
+    let mut lp = LocalPeer::new_bare(2, 0, WallMs(1_700_000_000_000)).unwrap();
+    let (a, _) = lp.peers[0].engine.create_account().unwrap();
+    pair(&mut lp, &a, 1);
+    let e = &mut lp.peers[1].engine;
+    let inbox = e.inbox_thing(&a.account).expect("the account's inbox");
+    assert!(e.core.ix.secrets.get(&inbox).is_some_and(|s| s.read.held().next().is_some()), "the paired node holds the inbox's read secrets");
+    let d = e.index_digest();
+    e.rebuild_index().unwrap();
+    assert_eq!(d.first_diff(&e.index_digest()), None, "rebuilt");
+}
+
 /// Node 0 pairs peer `i` into account `a`.
 fn pair(lp: &mut LocalPeer, a: &CreatedAccount, i: usize) {
     let node = lp.peers[i].engine.tid();
@@ -1773,6 +1789,8 @@ fn siblings_apart(n: usize) {
         let d0 = remove(&mut lp, 0, a.devices, 2);
         let d1 = remove(&mut lp, 1, a.devices, 3);
         let w0 = write(&mut lp, 0, t, "zero");
+        // the later write, by ts (in one ms the dot would decide)
+        lp.advance(1);
         let w1 = write(&mut lp, 1, t, "one");
         if handed {
             send(&mut lp, 1, 0, &d1.commits);
@@ -1809,8 +1827,7 @@ fn siblings_apart(n: usize) {
                 assert!(held >= 3, "{case}: node {k}: t's re-keys made apart: {held} read epochs");
             }
             // the last write made apart is t's value at both
-            let last = if lp.peers[0].engine.core.ix.commits.get(&w0).map(|m| m.view.ts) > lp.peers[0].engine.core.ix.commits.get(&w1).map(|m| m.view.ts) { "zero" } else { "one" };
-            assert_eq!(read(&mut lp, k, t), Some(Value::Str(last.into())), "{case}: node {k}: t's value");
+            assert_eq!(read(&mut lp, k, t), Some(Value::Str("one".into())), "{case}: node {k}: t's value");
         }
     }
 }

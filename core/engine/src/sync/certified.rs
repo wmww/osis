@@ -524,6 +524,8 @@ mod tests {
         lp.peers[2].engine.grant(&y, &a1.account, &edge).unwrap();
         let ts = [new(&mut lp, 0, a0.account), new(&mut lp, 0, a0.account)];
         for t in &ts {
+            // read at node 0: held by its node root
+            lp.peers[0].engine.hold(osis_base::Strong(*t)).unwrap();
             lp.peers[0].engine.grant(t, &a1.account, &edge).unwrap();
         }
         lp.sync_all().unwrap();

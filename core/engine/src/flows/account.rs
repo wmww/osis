@@ -1131,7 +1131,10 @@ impl Engine {
         self.take_up(p, d, true)
     }
 
-    /// `hold_account`; `judge`: the account's epochs judged again in the same transaction. The
+    /// `hold_account`: this node becomes a node of `p` (`Core::member`: the account and its seeds
+    /// held, both set before anything is judged or opened, as an open sets them), so every box
+    /// opens by the roles the node holds as `p`, as a rebuild opens it. `judge`: the account's
+    /// epochs judged again in the same transaction. The
     /// epoch rule reads D (`AccountView::devices`, and the seeds opening inner signatures) only
     /// at a node holding the account, so its judgment of the chain moves whenever the account is
     /// taken up or left (`signing::leave`), and the index is a function of what is held (a
@@ -1145,14 +1148,21 @@ impl Engine {
         if keys.is_empty() {
             return Err(Error::Misuse("no seed of the account in custody here"));
         }
+        let was = self.core.account.get();
+        self.core.account.set(Some(*p));
         self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, keys }));
         let (p, d) = (*p, *d);
-        self.run(|tx| {
+        let r = self.run(|tx| {
             if judge {
                 super::signing::judge_account_again(tx, p, d)?;
             }
             super::reopen_all(tx)
-        })
+        });
+        if r.is_err() {
+            self.core.account.set(was);
+            self.core.accounts.remove(&p);
+        }
+        r
     }
 
     /// How a box to account `p` is sealed: at its open epoch.
@@ -1205,9 +1215,8 @@ impl Engine {
     pub(crate) fn take_account(&mut self) -> Result<()> {
         let Some((p, d)) = self.account()? else { return Ok(()) };
         self.core.account.set(Some(p));
-        if self.take_up(&p, &d, false).is_err() {
-            self.core.accounts.remove(&p);
-        }
+        // a take-up that fails holds no seed of the account
+        let _ = self.take_up(&p, &d, false);
         // no seed in custody (it left before what it read as the account went): it goes now
         if !self.core.accounts.contains_key(&p) {
             self.run(|tx| super::signing::leave(tx, p, d))?;
@@ -1283,9 +1292,9 @@ impl Engine {
         self.hold_account(p, &d)?;
         if !self.core.devices_roster(p).contains(&node) {
             self.core.accounts.remove(p);
+            self.core.account.set(None);
             return Err(Error::Permission { tid: d });
         }
-        self.core.account.set(Some(*p));
         self.save_account(p, &d)?;
         // the node root's strong to the account root (spec/sync-set.md §1)
         self.hold(osis_base::Strong(d))
