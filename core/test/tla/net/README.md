@@ -62,7 +62,7 @@ TLC 2.19, 12 workers. Positive cfgs pass; each `*N_*` fails with the listed prop
 | O_kk | two stores; Adv removed, rotation; 2 connections | pass, `Live` | 16,138 |
 | O_rx | a reader, a link holder; Adv a link holder, removed, rotation; 2 connections | pass, `Live` | 11,642 |
 | O_pub | a reader, a store, a rotation; Adv holds only public values; 2 connections | pass, `Live` | 6,763 |
-| O_rk3 | as O_rk, 3 connections (by name, safety) | pass (217 s at 12 workers) | 2,350,336 |
+| O_rk3 | as O_rk, 3 connections (by name, safety) | pass (351 s at 12 workers, load 13) | 1,942,392 |
 | O_kk3 | as O_kk, 3 connections (by name, safety) | pass (26 s) | 908,386 |
 | O_rx3 | as O_rx, 3 connections (by name, safety) | pass (28 s) | 548,490 |
 | O_pub3 | as O_pub, 3 connections (by name, safety) | pass (44 s) | 387,795 |

@@ -168,7 +168,12 @@ const UNTIL_MS: u64 = 10 * 86_400_000;
 /// `contacts` with node 0's thing t (value "x") granted to node 1's account for reading for
 /// `UNTIL_MS`, filed and read there: (world, t).
 fn read_until() -> (World, Tid) {
-    let (w, t) = fixture_with("life read until", || {
+    role_until("life read until", osis_base::Role::Read)
+}
+
+/// `read_until` granting `role`.
+fn role_until(name: &'static str, role: osis_base::Role) -> (World, Tid) {
+    let (w, t) = fixture_with(name, || {
         let mut w = crate::harness::contacts();
         let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
         let until = osis_base::WallMs(w.now().0 + UNTIL_MS);
@@ -180,7 +185,7 @@ fn read_until() -> (World, Tid) {
             t
         });
         file(&mut w, 0, vec![t], Vec::new());
-        w.write(0, |e| e.grant(&t, &a1, &ct::Edge { role: osis_base::Role::Read, until: Some(until), invite: None, tied: None, floor: None })).unwrap();
+        w.write(0, |e| e.grant(&t, &a1, &ct::Edge { role, until: Some(until), invite: None, tied: None, floor: None })).unwrap();
         w.run();
         file(&mut w, 1, Vec::new(), vec![t]);
         w.run();
@@ -226,4 +231,26 @@ fn a_loss_by_an_until_cut_off_drops_at_the_waits_end_spec_permissions_2() {
     w.skew(1, (UNTIL_MS + osis_engine::rotation::LOST_HEARD_WAIT_MS) as i64 + 3_600_000);
     w.run();
     assert!(!holds(&mut w, 1, &t), "dropped at the wait's end");
+}
+
+// spec/permissions.md §2 (heard out with a source: each of its own commits there is held
+// elsewhere; meanwhile its writes from before the `until` go out): node 1 writes t while cut off
+// from node 0, then its `until` passes by its clock alone (node 0's lags: it still judges node 1
+// a writer). Back in touch, node 1 drops t only once node 0 holds its write: the write survives.
+#[test]
+fn a_loss_by_an_until_sends_its_own_writes_first_spec_permissions_2() {
+    let (mut w, t) = role_until("life write until", osis_base::Role::Write);
+    w.partition(0, 1);
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &v(), &Value::Str("y".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.skew(1, UNTIL_MS as i64);
+    w.run();
+    assert!(holds(&mut w, 1, &t), "kept while its write is held nowhere else");
+    w.heal();
+    w.run();
+    assert_eq!(w.engine(0).get(&t, &v()).unwrap(), Some(Value::Str("y".into())), "node 0 holds node 1's write");
+    assert!(!holds(&mut w, 1, &t), "node 1 dropped t");
 }
