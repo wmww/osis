@@ -15,9 +15,12 @@ union-merged lists have no duplicate and a stale-line check (`union_lists`), no 
 record tags are distinct and never literals (`row_prefixes`, `record_tags`), every pointer into
 notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and every code name
 notes/ and issues/ cite in backticks exists (tools/code_refs.py).
-Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
-libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
-import functools, glob, multiprocessing, os, re, sys
+Usage: python3 tools/policy.py [--baseline [REF]]   (every workspace member, the GUI's included;
+vendored crates under libs/kit/patches/ are not ours and are skipped; exit 1 on any violation).
+--baseline prints and fails on only the violations REF (default origin/main) does not have, matched
+by message with line numbers dropped; REF's own policy runs on its tree, its output cached per commit
+under target/policy-baseline/."""
+import collections, functools, glob, multiprocessing, os, re, shutil, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import code_refs, doc_refs, gate_failures
@@ -496,6 +499,60 @@ def run(check):
 with multiprocessing.get_context("fork").Pool(min(4, os.cpu_count() or 1)) as pool:
     for out in pool.map(run, CHECKS, chunksize=1):
         errs.extend(out)
+
+LINE_NO = re.compile(r"(\.\w+):\d+\b")  # `path.ext:12` (and `:12:3`): the key drops line numbers
+
+
+def baseline(ref):
+    """REF's violations: its own tools/policy.py run on its tree (read-tree into a scratch index,
+    checkout-index into a temp dir; the git dir and index stand in for a checkout), cached by commit."""
+    def git(*args, env=None):
+        return subprocess.run(["git", *args], cwd=env["GIT_WORK_TREE"] if env else ROOT, env=env, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    try:
+        commit = git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    except subprocess.CalledProcessError:
+        sys.exit(f"policy: no commit {ref!r}")
+    cache_dir = os.path.join(ROOT, "target", "policy-baseline")
+    cache = os.path.join(cache_dir, commit)
+    if not os.path.exists(cache):
+        os.makedirs(cache_dir, exist_ok=True)
+        tmp = tempfile.mkdtemp(dir=cache_dir)
+        try:
+            env = dict(os.environ, GIT_DIR=os.path.abspath(os.path.join(ROOT, git("rev-parse", "--git-dir"))),
+                       GIT_WORK_TREE=os.path.join(tmp, "tree"), GIT_INDEX_FILE=os.path.join(tmp, "index"))
+            os.mkdir(env["GIT_WORK_TREE"])
+            git("read-tree", commit, env=env)
+            git("checkout-index", "-a", env=env)
+            out = subprocess.run([sys.executable, "tools/policy.py"], cwd=env["GIT_WORK_TREE"], env=env,
+                                 capture_output=True, text=True)
+            if out.returncode not in (0, 1):
+                sys.exit(f"policy: {ref}'s policy run failed:\n{out.stderr}")
+            with open(cache + f".{os.getpid()}", "w") as f:
+                f.write(out.stdout)
+            os.replace(cache + f".{os.getpid()}", cache)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    with open(cache) as f:
+        return [l for l in f.read().splitlines() if not l.startswith("policy: ")]
+
+
+if "--baseline" in sys.argv:
+    i = sys.argv.index("--baseline")
+    ref = sys.argv[i + 1] if i + 1 < len(sys.argv) else "origin/main"
+    old = collections.Counter(LINE_NO.sub(r"\1", e) for e in baseline(ref))
+    new = []
+    for e in errs:
+        k = LINE_NO.sub(r"\1", e)
+        if old[k]:
+            old[k] -= 1
+        else:
+            new.append(e)
+    for e in new:
+        print(e)
+    print(f"policy: {len(errs)} violations, {len(new)} new against {ref}, {len(errs) - len(new)} already there")
+    sys.exit(1 if new else 0)
 
 for e in errs:
     print(e)
