@@ -745,12 +745,9 @@ fn thing_wait(
     chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
 ) -> Option<Reason> {
     // a destroyed thing is unknown, but for what judges its destruction written before it
-    // (`retention::destroy`); a destruction by expiry keeps no record but for a dependent
+    // (`retention::destroy`)
     let destroyed = || !crate::retention::destroy::judges_destruction(a.ak.as_str()) || a.ak.as_str() != osis_commit::retention::CREATED && crate::retention::destroy::Destruction::of(core, &a.tid).is_some_and(|e| e.after(h));
-    // destroyed for good: no minting is taken, and nothing on it without its record held (a
-    // dependent's verdict brings it back, `retention::destroy::record_back`)
-    let for_good = || core.ix.destroyed_for_good.contains(&a.tid) && (a.ak.as_str() == osis_commit::retention::CREATED || core.created(&a.tid).is_none());
-    if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed() || for_good() {
+    if record(&a.tid).is_none() || core.destroyed(&a.tid) && destroyed() {
         return Some(Reason::UnknownCreated(a.tid));
     }
     let mut chain = vec![a.tid];
@@ -1856,22 +1853,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     }
     let void = tx.scan_keys(records::VOID, "void", CommitId)?;
     tx.core.ix.void.extend(void);
-    let destroyed_for_good = tx.scan_keys(records::DESTROYED, "destroyed", Tid::from_bytes)?;
-    tx.core.ix.destroyed_for_good.extend(destroyed_for_good);
-    let destroyed_secrets = tx.scan_keys(records::DESTROYED_SECRETS, "destroyed secrets", Tid::from_bytes)?;
-    tx.core.ix.destroyed_secrets.extend(destroyed_secrets);
-    let mut kept = Vec::new();
-    tx.scan(records::DESTROYED_SYNC_IDS, |k, v| {
-        let t = Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("destroyed sync IDs"))?);
-        let lim = osis_base::Limits { max_depth: 16, max_bytes: v.len() };
-        let v = osis_base::decode(&v, &lim).map_err(|_| Error::Corrupt("destroyed sync IDs"))?;
-        kept.push((t, v));
-        Ok(())
-    })?;
-    for (t, v) in kept {
-        let ids = crate::sync_ids::actors::owned_in_value(tx.core, &t, &v);
-        tx.core.ix.destroyed_sync_ids.insert(t, std::sync::Arc::new(ids));
-    }
     crate::retention::suspect::load(tx)?;
     crate::retention::freed::load(tx)?;
     crate::sync::held::load(tx)?;

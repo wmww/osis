@@ -6,9 +6,8 @@
 //! sync IDs this node syncs kept unread, those secrets and the store's path of S. It keeps S
 //! while its head's sync key is one a held secret derives; at a head whose key none derives it
 //! drops its copy and takes nothing (`Store::set_unheld`), showing only the secrets no step of its
-//! path bears, so a reader holding one registers its path onward (a re-grant past its head). At a
-//! closing head it drops its copy and S leaves. Leaving is `leave`'s: S is kept here while it
-//! waits there. Model: core/test/tla/net/NetKeep.tla.
+//! path bears, so a reader holding one registers its path onward (a re-grant past its head).
+//! Leaving is `leave`'s: S is kept here while it waits there. Model: core/test/tla/net/NetKeep.tla.
 //!
 //! Work follows change: the sync IDs this node syncs kept unread (`set::SyncsFollow`, O(moved)),
 //! and each S's judgement through one `Effects` key that reads its secrets and path by key, so a
@@ -63,9 +62,6 @@ pub struct Kept {
     pub stranded: bool,
     /// `None` when it shows no sync key.
     pub credentials: Option<Arc<UnreadCredentials>>,
-    /// Its head is a closing step (spec/sync-judgement.md §6 Closes): S leaves (`leave` shreds
-    /// it, path included).
-    pub closed: bool,
 }
 
 /// What one S is judged on, every value read by key (spec/sync-judgement.md §6).
@@ -87,17 +83,13 @@ pub fn judge(j: &Judged) -> Kept {
     let mut seen = BTreeSet::new();
     secrets.retain(|(_, x)| seen.insert(*x.expose()));
     let held: Vec<(SigningSecret, Secret32)> = secrets.into_iter().map(|(_, x)| (role_key(RoleKey::Sync, x), Secret32::from_bytes(sync_proof(&role_key_seed(RoleKey::Sync, x))))).collect();
-    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new), closed: false };
+    let keep = |stranded: bool, credentials: Option<UnreadCredentials>| Kept { stranded, credentials: credentials.map(Arc::new) };
     let Some(head) = j.steps.last() else {
         // no step registered yet: each sync secret it holds counts as its step, so a reader's
         // test finds S here and registers its path, and a box at a self-made epoch hides no
         // genuine one (spec/sync-opens.md §4 Admissible)
         return keep(false, (!held.is_empty()).then(|| UnreadCredentials { step: None, keys: held, deposit: None, claims: None }));
     };
-    // closed: it drops its copy, shows nothing, and S leaves (§6 Closes)
-    if head.0.is_closing() {
-        return Kept { stranded: true, credentials: None, closed: true };
-    }
     if let Some(k) = held.iter().find(|(k, _)| k.verifying_key() == head.0.keys.sync) {
         return keep(false, Some(UnreadCredentials { step: Some(head.0.id()), keys: vec![k.clone()], deposit: Some(head.0.keys.deposit), claims: head.1.clone() }));
     }
@@ -181,11 +173,6 @@ impl Unread {
             acted = true;
             // at a head past its keys its copy goes and it takes nothing (§6)
             cx.store.set_unheld(&s, k.stranded)?;
-            // at a closing head S's thing is kept no more: it leaves the node closure, and S
-            // with it (§6 Closes; spec/sync-set.md §3)
-            if k.closed {
-                cx.engine.close_kept(&s)?;
-            }
             self.kept.insert(s, k);
         }
         Ok(acted)

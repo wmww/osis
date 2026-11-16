@@ -686,7 +686,7 @@ impl Opens {
     }
 
     /// Whether some peer is to be waited for on S (spec/sync-set.md §3, spec/permissions.md §3
-    /// Lost access, spec/sync-judgement.md §5 Emptying: the duties
+    /// Lost access: the duties
     /// that act once no peer could still take or tell what S holds): a peer `peer` does not skip
     /// with S open on a connection up now, or whose kept record holds S as a member, or that the
     /// rosters say may hold S (`Peer::MayHold`) no kept record of which (by who it names: a

@@ -16,7 +16,7 @@ use crate::types::{ConnId, Cx, Entry, Result};
 use osis_base::memo::Feed;
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
-use osis_engine::sync::{BodyMeta, CertKind, Destruction, HeldBlob, MustNot, ReadCredentials};
+use osis_engine::sync::{BodyMeta, CertKind, HeldBlob, MustNot, ReadCredentials};
 use osis_blob::{Class, DeleteItem};
 use osis_proto::Msg;
 use std::collections::{BTreeMap, BTreeSet};
@@ -265,10 +265,6 @@ impl Ground for Live<'_, '_> {
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
         Ok(self.cx.engine.read_credentials(s)?)
     }
-    fn destruction(&mut self, s: &SyncId) -> Result<Option<Arc<Destruction>>> {
-        // a destroyed thing's own sync IDs are its alone (no ticket names them as another's)
-        Ok(self.things(s).iter().find_map(|t| self.cx.engine.destruction(t)))
-    }
     fn reads(&mut self, s: &SyncId) -> bool {
         self.cx.store.holding(s) == Some(osis_engine::sync::Holding::Read)
     }
@@ -358,9 +354,6 @@ impl Ground for Live<'_, '_> {
         }
         Ok(out)
     }
-    fn own_all(&mut self, s: &SyncId) -> Result<BTreeSet<BlobId>> {
-        Ok(self.cx.store.entries(s)?.into_iter().map(|e| e.blob).collect())
-    }
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>> {
         if self.cx.store.blob_len(b)?.is_none() {
             return Ok(None);
@@ -376,9 +369,6 @@ impl Ground for Live<'_, '_> {
     }
     fn neither(&mut self, s: &SyncId, c: &CommitId, there: &BTreeSet<BlobId>) -> Result<bool> {
         Ok(self.cx.engine.neither(s, c, there)?)
-    }
-    fn deletes_known(&mut self, s: &SyncId) -> Result<bool> {
-        self.cx.store.deletes_known(s)
     }
     fn sources(&mut self, s: &SyncId) -> Arc<Vec<SrcView>> {
         let mut out = Vec::new();
@@ -449,9 +439,6 @@ impl Ground for Live<'_, '_> {
         }
         Ok(seen)
     }
-    fn seen_all(&mut self, at: &Source, s: &SyncId) -> Result<BTreeSet<BlobId>> {
-        Ok(self.streams.known().list(*at, s)?.into_iter().collect())
-    }
     fn heard_out(&mut self, s: &SyncId) -> Result<bool> {
         self.status.heard_out_or_alone(self.opens, self.cx.engine, self.cx.store, s, &NetView { streams: self.streams, unread: self.unread })
     }
@@ -507,14 +494,6 @@ impl Ground for Live<'_, '_> {
         }
         Ok(())
     }
-    fn close(&mut self, at: &SrcView, s: &SyncId, head: &StepId, key: &SigningSecret) -> Result<()> {
-        // the source's head is a step this node records (it holds its delete key)
-        let Some(step) = self.cx.store.path(s)?.and_then(|p| p.steps.iter().map(|(st, _)| st).find(|st| st.id() == *head).cloned()) else { return Ok(()) };
-        if let Some(session) = self.sessions.get_mut(at.conn) {
-            session.request(To::Read, Msg::Register { id: 0, sync_id: *s, step: step.closing(key), claim_set: None });
-        }
-        Ok(())
-    }
     fn deposit(&mut self, at: &SrcView, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
         let Some(e) = self.cx.store.entry(s, b)? else { return Ok(()) };
         // a deposited own entry is offered to every store source of S (inbox's offers)
@@ -552,7 +531,6 @@ impl Ground for Live<'_, '_> {
                 out.gone.insert(*b);
                 continue;
             };
-            out.held.insert(*b);
             if !self.under_head(s, &e)? {
                 out.stale.insert(*b);
             }
@@ -725,16 +703,6 @@ impl Ground for Live<'_, '_> {
     }
     fn forget_commits(&mut self, cs: &[CommitId]) -> Result<()> {
         Ok(self.cx.engine.forget_commits(cs)?)
-    }
-    fn forget(&mut self, s: &SyncId) -> Result<()> {
-        let things = self.things(s);
-        self.cx.store.shred(s, false)?;
-        for t in &things {
-            if self.cx.engine.destruction(t).is_some() {
-                self.cx.engine.forget_destroyed(t)?;
-            }
-        }
-        Ok(())
     }
 }
 

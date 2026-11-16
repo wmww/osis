@@ -4,7 +4,7 @@
 ## Erasure: the data is gone for good
 - **Purge** and **expiry**. After them the data is gone at every node and stays gone; a stale copy never brings it back.
 - A tombstone is allowed where the guarantee needs one. A purge is a separate request, so the request is kept to purge late copies. Expiry needs none: the `expires` field travels in the commit's own header, so a late copy is already expired when it arrives.
-- Erasing a thing is purging or expiring its creation (`created.0`). After that the thing never comes back, not even by a new creation: the request covers every creation of the thing while in its window, and past it each node keeps the verdict alone (the thing's tid, destroyed for good), dropping every later creation. Expiry is purge on a timer and promises the same for the commits it covers.
+- Erasing a thing is purging or expiring its creation (`created.0`), by the same rules as any purge or expiry: the request is a commit kept as any purge request, so it covers every later creation of the thing wherever the thing is held; a node that released the thing is as one that never held it. Expiry is purge on a timer and promises the same for the commits it covers.
 
 ## Storage reclaim: nothing builds up, no trace
 - **History leaving** under its thing's `retention^.0` setting (a keep window passing or shortened, no history promised, purge on replace: notes/engine-retention-history.md), and **releasing a thing** (it leaves the node closure, spec/sync-set.md §3).
@@ -14,7 +14,7 @@
 - They never stand in for erasure: an app that needs data gone for good purges or expires it.
 
 ## Consequences
-- A mechanism that reclaims storage must not write a lasting record of what it removed; if it needs a request to reach other nodes, that request must be forgettable: it expires `ROLE_KEEP` after it was written, takes the removed thing's headers with it, and is kept past that only while a held thing depends on, lists or references the removed thing (the rule every destruction's evidence follows), so what is kept is bounded by live things, never by what was removed.
+- A mechanism that reclaims storage must not write a lasting record of what it removed; if it needs a request to reach other nodes, that request must be forgettable, kept only while a held thing depends on, lists or references the removed thing, so what is kept is bounded by live things, never by what was removed.
 - Lasting headers are erasure's: a purge may leave one, a release never does.
 - A mechanism that erases may keep a tombstone, and a purge must.
 - Naming: the reclaim verb for a thing is `release` (Tess preferred it to "drop", which the engine uses for bodies, and "free"). The erasure of a thing is a purge of its creation.

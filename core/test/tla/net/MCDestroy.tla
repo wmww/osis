@@ -1,3 +1,0 @@
----- MODULE MCDestroy ----
-EXTENDS NetDestroy
-====

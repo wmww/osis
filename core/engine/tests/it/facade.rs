@@ -662,13 +662,11 @@ fn a_thing_made_under_an_account_has_own_keys_spec_permissions_3() {
     assert!(b_own > b_plain);
 }
 
-// spec/commits.md §5 Destruction, spec/sync-judgement.md §5: a destroyed thing's secrets are
-// held for its destruction alone and nothing is written on it, so no role commit is owed there.
-// Peer 0 grants a reader with an `until`, destroys t and the `until` passes: the derived duty
-// owes nothing on t, purged and keeping, or keeping nothing (it failed with `UnknownThing`, which
-// fails sync's `Life` at every settle before the lifetimes duty that would forget t).
+// spec/commits.md §5 Destruction: nobody writes a destroyed thing, so no role commit is owed
+// there. Peer 0 grants a reader with an `until`, destroys t and the `until` passes: the derived
+// duty owes nothing on t, its secrets still held, past the purge's floor too.
 #[test]
-fn a_destroyed_thing_owes_no_role_commit_spec_sync_judgement_5() {
+fn a_destroyed_thing_owes_no_role_commit_spec_commits_5() {
     let (mut lp, ps) = people(2);
     let t = thing_of(&mut lp, 0, ps[0]);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 100);
@@ -682,11 +680,9 @@ fn a_destroyed_thing_owes_no_role_commit_spec_sync_judgement_5() {
     assert!(!e.knows(&t), "t destroyed");
     lp.advance(1_000);
     let e = &mut lp.peers[0].engine;
-    assert!(e.held_actors().contains(&t), "its secrets held for the destruction");
-    assert!(!e.role_duty_due(&t).unwrap(), "purged, keeping: nothing owed on t");
+    assert!(e.held_actors().contains(&t), "its secrets held");
+    assert!(!e.role_duty_due(&t).unwrap(), "nothing owed on t");
     lp.advance(osis_base::format::ROLE_KEEP_MS + 1_000);
     lp.peers[0].tick().unwrap();
-    let e = &mut lp.peers[0].engine;
-    assert!(e.destruction(&t).is_some(), "keeps nothing");
-    assert!(!e.role_duty_due(&t).unwrap(), "keeping nothing: nothing owed on t");
+    assert!(!lp.peers[0].engine.role_duty_due(&t).unwrap(), "past the floor: nothing owed on t");
 }

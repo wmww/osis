@@ -45,13 +45,7 @@ struct Fake {
     /// This node has joined no account yet (pairing).
     unrooted: Stamped<(), bool>,
     synced: BTreeMap<SyncId, Held>,
-    /// Sync IDs whose stored path ends at a closing step.
-    closed: StampedSet<SyncId>,
-    /// Sync IDs a held ticket names.
-    tickets: StampedSet<SyncId>,
     shredded: Vec<SyncId>,
-    /// Sync IDs shredded with their path kept.
-    kept_paths: BTreeSet<SyncId>,
     forgot: Vec<Tid>,
     /// Calls of `release`.
     forgettings: u64,
@@ -92,26 +86,9 @@ impl Ground for Fake {
     fn sourced(&mut self, s: &SyncId) -> bool {
         !self.unsourced.contains(s)
     }
-    fn shred(&mut self, s: &SyncId, keep_path: bool) -> Result<()> {
+    fn shred(&mut self, s: &SyncId) -> Result<()> {
         self.shredded.push(*s);
-        match keep_path {
-            true => drop(self.kept_paths.insert(*s)),
-            false => {
-                self.kept_paths.remove(s);
-                self.closed.remove(s);
-                if let Some(mut st) = self.stored.get(&()).cloned() {
-                    st.remove(s);
-                    self.stored.insert((), st);
-                }
-            }
-        }
         Ok(())
-    }
-    fn closed(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.closed.contains(s))
-    }
-    fn ticket_names(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.tickets.contains(s))
     }
     fn left(&mut self) -> Result<BTreeMap<Tid, BTreeSet<Tid>>> {
         Ok(self.left.clone())
@@ -187,30 +164,6 @@ fn a_left_sync_id_stops_after_the_pass_in_flight_spec_sync_set_3() {
     assert_eq!((g.syncs(1), g.syncs(3)), (None, None));
     l.settle(&mut g).unwrap();
     assert_eq!(g.shredded.len(), 2, "once");
-}
-
-// spec/sync-judgement.md §6 Closes: kept-unread S stopping at a closing step keeps its path while
-// a held ticket names S, also across a start, and shreds it with the last such ticket; a closed S
-// no ticket names goes whole.
-#[test]
-fn a_closed_path_stays_while_a_ticket_names_it_spec_sync_judgement_6() {
-    let (mut g, mut l) = settled();
-    for i in [2, 3] {
-        g.closed.insert(sid(i));
-        g.holders.remove(&sid(i));
-    }
-    g.tickets.insert(sid(3));
-    g.closure(&[1]);
-    l.settle(&mut g).unwrap();
-    assert_eq!((g.shredded.clone(), g.kept_paths.clone()), (vec![sid(2), sid(3)], [sid(3)].into()), "3's path kept");
-    assert_eq!(g.syncs(3), None, "3 not synced");
-    let mut l = Leave::default();
-    l.settle(&mut g).unwrap();
-    assert_eq!(g.kept_paths, [sid(3)].into(), "kept across a start");
-    g.tickets.remove(&sid(3));
-    l.settle(&mut g).unwrap();
-    assert!(g.kept_paths.is_empty(), "gone with the last ticket");
-    assert_eq!(g.shredded, vec![sid(2), sid(3), sid(3)]);
 }
 
 // spec/sync-set.md §3 (Release): a thing that left the node closure is released once a complete

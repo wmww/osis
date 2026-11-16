@@ -1,5 +1,5 @@
 //! The judgement of one body at S (`body`), of what it calls for at one source keeping S unread
-//! (`toward`), and of S's destruction (`doom`), from the ground's values alone. Pure reads: `Read`
+//! (`toward`), from the ground's values alone. Pure reads: `Read`
 //! runs these inside its effects and acts on what a new value adds.
 
 use super::ground::{Facts, Ground, PieceAt, Seen, SrcView};
@@ -38,19 +38,13 @@ pub(crate) enum Act {
     /// The body counts missing again: an entry of it a source's stream shows present is fetched
     /// there (§3 Dropped bodies), by streams.
     Fetch { at: Source, conn: ConnId, blob: BlobId },
-    /// A Delete at a source keeping S unread, by its head's delete key (§3 Deletes, §5 Emptying).
+    /// A Delete at a source keeping S unread, by its head's delete key (§3 Deletes).
     Delete { at: Source, conn: ConnId, head: StepId, blob: BlobId },
-    /// The closing step of the head of a source keeping S unread, registered there (§5 Emptying,
-    /// spec/wire.md §8).
-    Close { at: Source, conn: ConnId, head: StepId },
     /// Logged again once past a delete at the source (§4), a fresh encryption: `old` leaves the
     /// own log; the stand records `head` and `fall`.
     Again { at: Source, conn: ConnId, head: StepId, fall: u64, old: Vec<BlobId> },
     /// The body given to a source this node does not stamp for (§3 Reader that is not a writer).
     Deposit { at: Source, conn: ConnId, blob: BlobId },
-    /// §5: S left (emptied and heard out, no delete key, or untold): forget it, then the thing's
-    /// secrets.
-    Forget,
     /// A held piece of a must-hold body into the own store (§1: the same blob, a filler wrap).
     LogPiece(BlobId),
     /// A missing piece whose bytes the store holds (a peer's entry): taken by the engine.
@@ -107,22 +101,10 @@ pub(crate) struct Toward {
     pub idle: bool,
 }
 
-/// S's destruction as judged here (§5).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) enum Doom {
-    #[default]
-    Alive,
-    /// Destroyed, not told (yet): S syncs as any.
-    Untold,
-    /// Told: every entry but the destroying requests is must-not-hold.
-    Told { requests: Arc<BTreeSet<CommitId>> },
-}
-
 /// What a judgement reads of read's own state.
 pub(crate) struct Mine<'a> {
     pub verdicts: &'a Stamped<(SyncId, CommitId), Verdict>,
     pub roles: &'a Stamped<SyncId, BTreeSet<CommitId>>,
-    pub told: &'a Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
     pub clock: &'a Clock,
     /// Each (S, commit)'s body at S, as `Read::bodies` last settled it.
     pub metas: &'a Stamped<(SyncId, CommitId), BodyMeta>,
@@ -326,14 +308,11 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         return Ok(j);
     }
     let own = g.own(s, c)?;
-    // a destroying request under S told destroyed stays until its expiry (§5 Emptying), its part
-    // on the destroyed thing dropped or not
-    let request = mine.told.get(s).is_some_and(|req| req.contains(c));
     // an entry whose blob holds a part dropped here for good is must-not-hold itself, whatever
     // the body's verdict (spec/sync-judgement.md §1): it leaves, and the body counts as unlogged
     let mut stale = Vec::new();
     for e in &own {
-        if !request && g.dropped(&e.blob) {
+        if g.dropped(&e.blob) {
             stale.push(e.blob);
         }
     }
@@ -378,15 +357,8 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
                 v = x;
                 j.wait = wait;
             }
-            if mine.told.get(s).is_some_and(|req| !req.contains(c)) {
-                v = Verdict::MustNot(Why::Emptied);
-            }
             (Some(f), v)
         }
-    };
-    let verdict = match request {
-        true => Verdict::May,
-        false => verdict,
     };
     j.verdict = verdict.clone();
     j.role = verdict == Verdict::Must && f.as_ref().is_some_and(|f| f.own && f.role);
@@ -592,8 +564,8 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
     let writer = keys.as_ref().is_some_and(|k| k.write.is_some());
     let quiet = seen.present.is_empty() && seen.deleted.is_empty();
     t.idle = quiet && (writer || verdict != Verdict::Must);
-    // emptying is S's (`doom`); unjudged calls for nothing yet
-    if matches!(verdict, Verdict::Unjudged | Verdict::MustNot(Why::Emptied)) {
+    // unjudged calls for nothing yet
+    if verdict == Verdict::Unjudged {
         return Ok(t);
     }
     let (Some(head), Some(creds)) = (head, creds.as_deref()) else { return Ok(t) };
@@ -775,88 +747,6 @@ fn at_source(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, se
     }
     t.acts.insert(Act::Again { at: src.at, conn: src.conn, head, fall, old: own.iter().map(|e| e.blob).collect() });
     Ok(())
-}
-
-/// S's destruction (§5): told once an entry of each destroying request is held at a source (at
-/// once for one by expiry alone), and from then on; untold past every request's expiry.
-pub(crate) fn doom(g: &mut impl Ground, mine: &Mine, told_before: bool, s: &SyncId) -> Result<(Doom, BTreeSet<Act>)> {
-    osis_base::costs::count("read: doom", 1);
-    let mut acts = BTreeSet::new();
-    let Some(d) = g.destruction(s)? else { return Ok((Doom::Alive, acts)) };
-    let requests: BTreeSet<CommitId> = d.requests.iter().copied().collect();
-    let mut over = true;
-    for r in &requests {
-        let exp = mine.meta(s, r).and_then(|m| m.expires);
-        over &= exp.is_some_and(|e| mine.reached(e.0));
-    }
-    let sources = g.sources(s);
-    // per source: the blobs of the requests it holds, when it holds each
-    let mut holds_all: BTreeMap<Source, BTreeSet<BlobId>> = BTreeMap::new();
-    for src in sources.iter() {
-        let mut blobs = BTreeSet::new();
-        let mut all = true;
-        for r in &requests {
-            let seen = g.seen(&src.at, s, r)?;
-            all &= !seen.present.is_empty();
-            blobs.extend(seen.present);
-        }
-        if all {
-            holds_all.insert(src.at, blobs);
-        }
-    }
-    // told stays told: its requests leave at their expiry
-    let told = told_before || requests.is_empty() || !holds_all.is_empty();
-    if !told {
-        if over {
-            acts.insert(Act::Forget);
-        }
-        return Ok((Doom::Untold, acts));
-    }
-    // everything under S but the requests leaves the own store, whatever it names: an entry of a
-    // commit forgotten with a released thing (spec/commits.md §5 Forgetting) is judged by no body
-    let mut kept = BTreeSet::new();
-    for r in &requests {
-        kept.extend(g.own(s, r)?.into_iter().map(|e| e.blob));
-    }
-    let own = g.own_all(s)?;
-    acts.extend(own.iter().filter(|b| !kept.contains(*b)).map(|b| Act::DropBlob(*b)));
-    let creds = g.credentials(s)?;
-    let newest = creds.as_ref().and_then(|c| c.head.as_ref().map(|h| h.id()));
-    let delete_key = |h: &StepId| creds.as_ref().and_then(|c| c.keys.get(h)).is_some_and(|k| k.delete.is_some());
-    let holder = newest.is_some_and(|h| delete_key(&h));
-    let mut empty = true;
-    // a source keeping S unread at a head whose delete key this node holds: S is closed there
-    // before it is forgotten here
-    let mut closable = false;
-    for src in sources.iter() {
-        let all = g.seen_all(&src.at, s)?;
-        empty &= all.is_empty();
-        if let (true, Some(head)) = (src.store, src.head)
-            && holder
-            && delete_key(&head)
-        {
-            closable = true;
-            // its stream shows nothing, the requests past their expiry: the closing step (§5)
-            if all.is_empty() && over {
-                acts.insert(Act::Close { at: src.at, conn: src.conn, head });
-            }
-        }
-        // deleted where the source holds every request (told there first), or once the requests
-        // are past their expiry (no reader can be told any more)
-        let keep = match holds_all.get(&src.at) {
-            Some(keep) => keep,
-            None if over => &BTreeSet::new(),
-            None => continue,
-        };
-        let (true, Some(head)) = (src.store, src.head) else { continue };
-        if holder && delete_key(&head) {
-            acts.extend(all.iter().filter(|b| !keep.contains(*b)).map(|blob| Act::Delete { at: src.at, conn: src.conn, head, blob: *blob }));
-        }
-    }
-    if !holder || (empty && !closable && g.heard_out(s)? && !g.deletes_known(s)? && own.is_empty()) {
-        acts.insert(Act::Forget);
-    }
-    Ok((Doom::Told { requests: Arc::new(requests) }, acts))
 }
 
 /// What a held commit calls for in the engine (spec/commits.md §5 Covered, Forgetting).

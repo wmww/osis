@@ -811,7 +811,7 @@ indexes! {
     /// actors this node acts for (`Core::acting`).
     pub by_actor: JSetMap<(Tid, Tid), CommitId>,
     /// Per author or actor, its held durable commits with a part not dropped on another thing
-    /// (`signers_elsewhere`): what a destroyed key actor's record verifies (`retention::destroy::dependents`).
+    /// (`signers_elsewhere`): what a key actor's record verifies (`retention::needed`).
     pub signed: JMap<Tid, u64>,
     /// Node- and session-form ranges per (tid, ak, own source): (lo, commit) -> hi. Keyed by
     /// commit too: equivocating commits of one range are all held (spec/commits.md §4).
@@ -833,14 +833,6 @@ indexes! {
     /// spec/permissions.md §7, Bearer use).
     pub bearers: JSet<Tid>,
     pub void: JSet<CommitId>,
-    /// Things destroyed for good here (`records::DESTROYED`, `retention::destroy::keeps`).
-    pub destroyed_for_good: JSet<Tid>,
-    /// Destroyed things keeping nothing whose own secrets are held for node-sync's deletes alone
-    /// (`records::DESTROYED_SECRETS`, `retention::destroy::hold_secrets`).
-    pub destroyed_secrets: JSet<Tid>,
-    /// Destroyed things' own sync IDs, read from the destruction until emptied
-    /// (`records::DESTROYED_SYNC_IDS`, `retention::destroy::keep_sync_ids`).
-    pub destroyed_sync_ids: JMap<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
     /// Freed links judged freed, by (blob, thing) (`retention::freed`): what sync deletes.
     pub freed: JMap<(osis_base::BlobId, Tid), Arc<crate::retention::freed::Freed>>,
     /// The commit, parts and unopened sections each opened or sealed blob holds (`sync::bodies`).
@@ -1293,9 +1285,6 @@ pub struct Core {
     pub list_bound: usize,
     /// Value-less lists changed in this transaction, written at its end (`retention::persist_valueless`).
     pub valueless_dirty: BTreeSet<(Tid, Ak)>,
-    /// Destroyed things whose keep is judged again at the end of the transaction (`retention::destroy`):
-    /// what needs their evidence may have gone.
-    pub destroyed_due: BTreeSet<Tid>,
     /// Things judged at the end of the transaction for whether a held thing still needs them
     /// (`retention::needed`): a release, `pass_due` at a pass end.
     pub needs_due: BTreeSet<Tid>,
@@ -1304,9 +1293,6 @@ pub struct Core {
     /// it signed moved or left pending, a holder unnamed, an accepted ticket's strong gone). `None`
     /// after an open: every held record and awaited record is judged then.
     pub pass_due: Option<BTreeSet<Tid>>,
-    /// Destroyed things kept here that a held thing may need (`retention::destroy::needs_evidence`,
-    /// `Engine::destroyed_needed`), read through `Core::destroyed_kept`.
-    pub(crate) destroyed_kept: DestroyedKept,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
@@ -1567,10 +1553,8 @@ impl Core {
             keep_bodies: self.keep_bodies.clone(),
             list_bound: self.list_bound.clone(),
             valueless_dirty: self.valueless_dirty.clone(),
-            destroyed_due: self.destroyed_due.clone(),
             needs_due: self.needs_due.clone(),
             pass_due: self.pass_due.clone(),
-            destroyed_kept: self.destroyed_kept.clone(),
             batched: self.batched.clone(),
             touches: self.touches.clone(),
             held_writes: self.held_writes.clone(),
@@ -1813,41 +1797,9 @@ impl Core {
         held.into_iter().flatten().filter_map(move |(_, c)| Some((*c, self.ix.commits.get(c)?.aspect(&t, ak.as_ref()?)?)))
     }
 
-    /// The destroyed things kept here that a held thing may need (`retention::destroy`): every destroyed
-    /// thing with a held record once after an open, then kept by the destructions and the references
-    /// moving to them (`apply_destructions`); `Engine::destroyed_needed` leaves out those it finds unneeded.
-    /// A read of the whole set: moved when a thing comes into it (`note_destroyed_kept`).
-    pub fn destroyed_kept(&mut self) -> Vec<Tid> {
-        self.destroyed_kept.stamps.read_all();
-        if self.destroyed_kept.set.is_none() {
-            let all: BTreeSet<Tid> = self.ix.held.things().copied().filter(|t| self.destroyed(t)).collect();
-            self.destroyed_kept.set = Some(all);
-        }
-        let kept: Vec<Tid> = self.destroyed_kept.set.iter().flatten().copied().filter(|t| self.destroyed(t) && self.created(t).is_some()).collect();
-        if let Some(s) = &mut self.destroyed_kept.set {
-            s.retain(|t| kept.contains(t));
-        }
-        kept
-    }
-
-    /// Notes destroyed thing `t` as kept here or not (`destroyed_kept`).
-    pub(crate) fn note_destroyed_kept(&mut self, t: &Tid, kept: bool) {
-        let d = &mut self.destroyed_kept;
-        let Some(s) = &mut d.set else { return };
-        if !kept {
-            s.remove(t);
-        } else if s.insert(*t) {
-            d.stamps.moved();
-        }
-    }
-
-    /// Whether `t` is destroyed: destroyed for good (`Indexes::destroyed_for_good`), or a minting of it
-    /// was held (`mintings`), and each is held value-less or dropped by a purge or the destruction
-    /// (`retention::destroy`). One missing may yet come. A thing never held is unknown, not destroyed.
+    /// Whether `t` is destroyed: a minting of it was held (`mintings`), and each is held value-less
+    /// or dropped by a purge or the destruction (`retention::destroy`). One missing may yet come. A thing never held is unknown, not destroyed.
     pub fn destroyed(&self, t: &Tid) -> bool {
-        if self.ix.destroyed_for_good.contains(t) {
-            return true;
-        }
         let mut any = false;
         self.mintings(t).all(|(c, ai)| {
             any = true;
@@ -2140,10 +2092,8 @@ impl Core {
             setting_waits_due: _,
             setting_waits_judging: _,
             valueless_dirty: _,
-            destroyed_due: _,
             needs_due: _,
             pass_due: _,
-            destroyed_kept: _,
             wakes: _,
             resnapshots_due: _,
             openings: _,
@@ -2424,11 +2374,9 @@ impl Core {
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
-            destroyed_due: BTreeSet::new(),
             needs_due: BTreeSet::new(),
             // what arrived before the open but was not judged yet: all judged at the first settle
             pass_due: None,
-            destroyed_kept: DestroyedKept::default(),
             batched: None,
             touches: Default::default(),
             held_writes: memo::Memo::new("held writes"),
@@ -2671,8 +2619,7 @@ impl Core {
     }
 
     /// Moves `Indexes::signed` from a commit's signers `was` to `now` (`signers_elsewhere`). A
-    /// signer losing one is judged again for whether anything held needs it (`retention::needed`);
-    /// a key actor left with none, if destroyed (`retention::destroy::apply_destructions`).
+    /// signer losing one is judged again for whether anything held needs it (`retention::needed`).
     fn note_signed(&mut self, was: &[Tid], now: &[Tid]) {
         for k in now.iter().filter(|k| !was.contains(k)) {
             let n = self.ix.signed.get(k).copied().unwrap_or(0);
@@ -2683,9 +2630,6 @@ impl Core {
                 0 | 1 => {
                     self.ix.signed.remove(k);
                     self.note_pass_due(*k);
-                    if self.is_key_actor(k) {
-                        self.destroyed_due.insert(*k);
-                    }
                 }
                 n => {
                     self.note_pass_due(*k);
@@ -3850,7 +3794,6 @@ impl Engine {
                         break;
                     }
                 }
-                tx.core.destroyed_due.clear();
                 tx.core.needs_due.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
@@ -4451,12 +4394,3 @@ mod tests {
     }
 }
 
-/// `Core::destroyed_kept`: a superset of the destroyed things kept here that a held thing may
-/// need, `None` until first read after an open (every destroyed thing held then). Stamped as one
-/// comes in, the only change a reader's other reads do not see: one leaves only once a read of it
-/// (`destroyed`, `created`, its references) found it gone or unneeded.
-#[derive(Clone, Default)]
-pub(crate) struct DestroyedKept {
-    set: Option<BTreeSet<Tid>>,
-    stamps: memo::Stamps,
-}

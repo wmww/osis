@@ -59,19 +59,8 @@ pub(crate) fn head_of(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Opt
     steps.keys().filter(|k| !parents.contains(k)).filter_map(|k| Some((osis_blob::path_to(&plain, k).ok()?.len(), *k))).min_by_key(|(n, k)| (std::cmp::Reverse(*n), *k)).map(|(_, k)| k)
 }
 
-/// The sync IDs a destroyed thing `g`'s kept `sync.0` value `v` records that `g` owns here
-/// (`Core::owns_sync_id`), each with its recorded path; records that do not parse are skipped.
-/// A destroyed thing's are its own, never hints: `hint` is false.
-pub(crate) fn owned_in_value(core: &Core, g: &Tid, v: &osis_base::Value) -> Vec<OwnedSyncId> {
-    use osis_schema::RawKey;
-    let mut out = ct::SYNC.decode(v).map(|m| owned_in(core, g, &m)).unwrap_or_default();
-    for o in &mut out {
-        o.hint = false;
-    }
-    out
-}
-
-/// `owned_in_value` of a decoded `sync.0`.
+/// The sync IDs decoded `sync.0` `m` of `g` records that `g` owns here (`Core::owns_sync_id`),
+/// each with its recorded path; records that do not parse are skipped.
 pub(crate) fn owned_in(core: &Core, g: &Tid, m: &ct::SyncIds) -> Vec<OwnedSyncId> {
     let hint = !core.holds_own_sync(g);
     m.iter()
@@ -175,18 +164,21 @@ impl Engine {
 
     /// The sync IDs `g` owns as its `sync.0` records them (`owns`), each with its recorded path;
     /// hints while this node holds no sync secret of `g`'s own. Decoded once per write of the
-    /// `sync.0` (`Core::sync_ids`). A destroyed thing has the ones its destruction kept
-    /// (`Indexes::destroyed_sync_ids`), its record held or not. A `sync.0` the store refuses to
+    /// `sync.0` (`Core::sync_ids`), a destroyed thing's too. A `sync.0` the store refuses to
     /// read is the error, read again at the next ask.
     pub(crate) fn owned_sync_ids(&mut self, g: &Tid) -> Result<Arc<Vec<OwnedSyncId>>> {
-        if let Some(kept) = self.core.ix.destroyed_sync_ids.get(g) {
-            return Ok(kept.clone());
-        }
         if self.core.created(g).is_none() {
             return Ok(Arc::new(followed(self, g).map(|h| vec![h]).unwrap_or_else(|| ticket_hints(self, g))));
         }
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
-            let m = e.get_typed(g, &ct::SYNC)?.unwrap_or_default();
+            use osis_schema::RawKey;
+            // a destroyed thing's too: its `sync.0` stays (`retention::destroy`), read past `exists`
+            let ak = crate::flows::ak(ct::SYNC.ak())?;
+            let v = e.read(|tx| Ok(tx.state(g, &ak)?.and_then(osis_crdt::Fragment::read)))?;
+            let m = match v {
+                Some(v) => ct::SYNC.decode(&v)?,
+                None => Default::default(),
+            };
             let mut out = owned_in(&e.core, g, &m);
             match out.is_empty() {
                 true => out = followed(e, g).map(|h| vec![h]).unwrap_or_else(|| ticket_hints(e, g)),
@@ -292,39 +284,34 @@ impl FollowedLinks {
 /// A link being redeemed (`Engine::follow_link`): K's sync ID from its link text, followed with no
 /// recorded path while the link text is all this node has of it (spec/sync-set.md §2). The link
 /// text is untrusted: its K must be a link's K or unknown here (`followable`), and its sync ID no
-/// other thing's here (no applied `sync.0` records it, no destroyed thing or other followed link
-/// names it), else it is nobody's.
+/// other thing's here (no applied `sync.0` records it, no other followed link names it), else it
+/// is nobody's.
 fn followed(e: &Engine, k: &Tid) -> Option<OwnedSyncId> {
     let (s, _) = e.core.followed_links.get(k)?;
     let ix = &e.core.ix;
     let elsewhere = ix.sync_recorders.get(&s).is_some_and(|x| !x.is_empty())
-        || ix.destroyed_sync_ids.values().any(|v| v.iter().any(|o| o.id == s))
         || e.core.followed_links.naming(&s).iter().any(|t| t != k);
     (followable(e, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true })
 }
 
 /// The sync IDs the held tickets for `g` name (spec/sync-inbox.md §5 Ticket sync IDs: its
 /// issuer's word until a held `sync.0` records `g`'s), as hints with no recorded path. Each is
-/// untrusted: one another thing owns here (an applied `sync.0` records it, a destroyed thing
-/// keeps it, a followed link names it) is not `g`'s, so a forged one cuts nothing off.
+/// untrusted: one another thing owns here (an applied `sync.0` records it, a followed link names
+/// it) is not `g`'s, so a forged one cuts nothing off.
 fn ticket_hints(e: &Engine, g: &Tid) -> Vec<OwnedSyncId> {
     let ix = &e.core.ix;
     let theirs = |s: &SyncId| {
-        ix.sync_recorders.get(s).is_some_and(|x| x.iter().any(|t| t != g)) || ix.destroyed_sync_ids.values().any(|v| v.iter().any(|o| o.id == *s)) || !e.core.followed_links.naming(s).is_empty()
+        ix.sync_recorders.get(s).is_some_and(|x| x.iter().any(|t| t != g)) || !e.core.followed_links.naming(s).is_empty()
     };
     let ids: BTreeSet<SyncId> = ix.closure.ticket_ids(g).into_iter().map(|(s, _)| s).filter(|s| !theirs(s)).collect();
     ids.into_iter().map(|id| OwnedSyncId { id, path: Arc::new(crate::sync::Path::default()), hint: true }).collect()
 }
 
 /// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K
-/// (its creation record has the `link` field), or one it knows nothing of yet (no record or
-/// destruction). A link text naming any other thing as K changes nothing of it.
+/// (its creation record has the `link` field), or one it knows nothing of yet (no record). A link text naming any other thing as K changes nothing of it.
 pub(crate) fn followable(e: &Engine, k: &Tid) -> bool {
     if !e.core.followed_links.contains(k) {
         return false;
     }
-    match e.core.created(k) {
-        Some(r) => r.link_target().is_some(),
-        None => !e.core.ix.destroyed_sync_ids.contains_key(k),
-    }
+    e.core.created(k).is_none_or(|r| r.link_target().is_some())
 }

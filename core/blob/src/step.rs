@@ -165,26 +165,6 @@ impl Step {
         parent.keys.delete.verify(Domain::SyncStep, &self.digest(), &self.sig).map_err(|_| Error::Verify("step signature"))
     }
 
-    /// The closing step under `self` (spec/wire.md §8), signed by `delete`, `self`'s delete key:
-    /// its keys are `self`'s, its step key and claims hash zero, and it carries no claim set.
-    pub fn closing(&self, delete: &SigningSecret) -> Step {
-        let mut step = Step { sync_id: self.sync_id, prev: Some(self.id()), keys: self.keys, step_key: [0; 32], claims_hash: [0; 32], sig: Signature([0; 64]) };
-        step.sig = delete.sign(Domain::SyncStep, &step.digest());
-        step
-    }
-
-    /// A closing step (spec/wire.md §8): a child step with a zero step key (no genuine step has
-    /// one). Well formed only as `closing` makes it: see `closes`.
-    pub fn is_closing(&self) -> bool {
-        self.prev.is_some() && self.step_key == [0; 32]
-    }
-
-    /// `self` is the well-formed closing step under `parent` (spec/wire.md §8): a closing step
-    /// with a zero claims hash bearing `parent`'s keys. Its signature is `verify_child`'s.
-    pub fn closes(&self, parent: &Step) -> bool {
-        self.is_closing() && self.claims_hash == [0; 32] && self.keys == parent.keys
-    }
-
     /// The claim key a reader derives from its X25519 private key (spec/sync-ids.md §3); try each
     /// keyset epoch held.
     pub fn claim_key(&self, own: &X25519Secret) -> Result<SigningSecret, Error> {

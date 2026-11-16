@@ -36,10 +36,6 @@ impl Inner {
 }
 
 impl osis_store::CipherHost for Inner {
-    fn closed(&mut self, s: &osis_base::SyncId) -> Res<bool> {
-        self.engine_tx(|t, _| Ok(super::path::head(t, s)?.is_some_and(|(_, h)| h.is_closing())))
-    }
-
     fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Res<bool> {
         self.engine_tx(|t, _| super::path::bears(t, s, key))
     }

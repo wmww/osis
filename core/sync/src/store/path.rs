@@ -125,16 +125,6 @@ pub(crate) fn append(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, ste
     Ok(())
 }
 
-/// The bytes S's path rows take (its steps and claim sets).
-pub(crate) fn bytes(t: &mut Transaction<'_>, s: &SyncId) -> Result<u64> {
-    let mut n = 0;
-    for i in 0..len(t, s)? {
-        n += step_row(t, s, i)?.map_or(0, |r| r.step.len() as u64);
-        n += t.get_local(&rows::claims_key(s, i))?.map_or(0, |c| c.len() as u64);
-    }
-    Ok(n)
-}
-
 /// Drops S's path rows (its usage with them).
 pub(crate) fn erase(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> Result<()> {
     let n = len(t, s)?;
@@ -181,7 +171,7 @@ pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId
 /// Register (spec/sync-ids.md §6, spec/wire.md §11.2 Register): 2 a step of another sync ID or a
 /// claim set of another hash; 14 a sync ID not kept unread in the sync set; into an empty path a
 /// genesis step that verifies (else 1; a child step 13); else the head again (0, nothing changes)
-/// or a child of the head that is no closing step (else 9; a malformed closing step 2); within
+/// or a child of the head (else 9); within
 /// the caps, a child past them without its claim set, and past them even so at most once per
 /// `register_every_ms`. A head moved over a refusal told to a record's source marks S anew
 /// (`rows::ANEW_SOME`) unless a mark stands: refusals told under the old head are shown again
@@ -200,9 +190,7 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Poli
         None if step.verify_genesis().is_err() => return Ok((Code::REFUSED, false, false)),
         None => {}
         Some((_, h)) if h.id() == step.id() => return Ok((Code::OK, false, false)),
-        // nothing is registered after a closing step, and one is as `Step::closing` makes it (spec/wire.md §8)
-        Some((_, h)) if h.is_closing() || step.verify_child(&h).is_err() => return Ok((Code::NOT_HEAD_KEY, false, false)),
-        Some((_, h)) if step.is_closing() && !step.closes(&h) => return Ok((Code::MALFORMED, false, false)),
+        Some((_, h)) if step.verify_child(&h).is_err() => return Ok((Code::NOT_HEAD_KEY, false, false)),
         Some(_) => {}
     }
     let fits = |t: &mut Transaction<'_>, env: &mut Env<'_>, add: u64| -> Result<bool> { env.room(t, s, 0, add) };

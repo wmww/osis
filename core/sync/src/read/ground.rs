@@ -7,9 +7,8 @@
 use crate::store::{Source, Stand};
 use crate::types::{ConnId, Entry, Result};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
-use osis_crypto::SigningSecret;
 use osis_engine::retention::Minting;
-use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, Destruction, PartSet, PieceLink, ReadCredentials, SealedSet};
+use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, PartSet, PieceLink, ReadCredentials, SealedSet};
 use osis_blob::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -115,8 +114,6 @@ pub trait Ground {
     /// Falls of held parts on `c`'s aspects so far (`Engine::fall_mark`, summed over them).
     fn fall_mark(&mut self, s: &SyncId, c: &CommitId) -> u64;
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>>;
-    /// S's thing's destruction, when S is a destroyed thing's own sync ID.
-    fn destruction(&mut self, s: &SyncId) -> Result<Option<Arc<Destruction>>>;
     /// This node syncs S read (`Store::holding`: the sync set, or leaving and waiting): read judges
     /// nothing else.
     fn reads(&mut self, s: &SyncId) -> bool;
@@ -165,8 +162,6 @@ pub trait Ground {
     fn restamp(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;
     /// This node's own tombstones of `c`'s entries under S.
     fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>>;
-    /// Every entry of S in the own store, whatever it names (a forgotten commit's included).
-    fn own_all(&mut self, s: &SyncId) -> Result<BTreeSet<BlobId>>;
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>>;
     /// Held blob `b` holds a part this node dropped for good (purged, past its bounds, expired,
     /// destroyed): must-not-hold wherever it is logged (spec/sync-judgement.md §1).
@@ -208,10 +203,6 @@ pub trait Ground {
     fn seen_added(&mut self) -> Result<Vec<(Source, SyncId, CommitId)>>;
     /// Some source's stream shows an entry of `c` under S present.
     fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool>;
-    /// Every entry of S the source's stream shows present (emptying).
-    fn seen_all(&mut self, at: &Source, s: &SyncId) -> Result<BTreeSet<BlobId>>;
-    /// A delete at a source of S is known within its tombstone (`TOMBSTONE_LIFETIME`).
-    fn deletes_known(&mut self, s: &SyncId) -> Result<bool>;
     /// Every source of S heard out (spec/sync-status.md §1), at once with no peer to wait for on S
     /// (`Status::heard_out_or_alone`).
     fn heard_out(&mut self, s: &SyncId) -> Result<bool>;
@@ -235,17 +226,11 @@ pub trait Ground {
     fn delete_item(&mut self, s: &SyncId, head: &StepId, b: &BlobId) -> Result<Option<osis_blob::DeleteItem>>;
     /// A Delete of `b` at the source (`delete_item`).
     fn delete(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId) -> Result<()>;
-    /// Registers at the source the closing step of its head `head` (spec/wire.md §8), signed by
-    /// `key`, that head's delete key (spec/sync-judgement.md §5 Emptying).
-    fn close(&mut self, at: &SrcView, s: &SyncId, head: &StepId, key: &SigningSecret) -> Result<()>;
     /// `c`'s body given to a source this node does not stamp for (spec/sync-judgement.md §3
     /// Reader that is not a writer): own entry `b` relayed under its stamp when the source's head
     /// write key verifies it, else a fresh encryption (`Engine::seal_body`) deposited.
     fn deposit(&mut self, at: &SrcView, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()>;
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()>;
-    /// A destroyed thing's sync ID left (§5: emptied and heard out, held with no delete key, or
-    /// untold): its store shredded, then `Engine::forget_destroyed`.
-    fn forget(&mut self, s: &SyncId) -> Result<()>;
 
     /// Of kind `r` (records: `None`; a rotation's thing lists: `Some(r)`), what S carries as
     /// certificates that no own certificate blob of that kind there carries (spec/permissions.md
@@ -343,7 +328,7 @@ pub trait Ground {
         Ok(BTreeSet::new())
     }
     /// The own store's entry `b` under S, of a blob naming no commit, leaves: a freed link's
-    /// piece, a record blob under an emptied S.
+    /// piece.
     fn drop_blob(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
         let _ = (s, b);
         Ok(())
@@ -426,9 +411,8 @@ pub struct CertBlobsMissing {
     pub missing: BTreeSet<osis_base::Tid>,
     /// Certificate blobs of the kind sealed here under S that the own store holds no more.
     pub gone: BTreeSet<osis_base::BlobId>,
-    /// Certificate blobs of the kind sealed here under S that the own store holds.
-    pub held: BTreeSet<osis_base::BlobId>,
-    /// Of `held`, those not stamped under S's head write key where this node holds it
+    /// Certificate blobs of the kind sealed here under S that the own store holds and that are
+    /// not stamped under S's head write key where this node holds it
     /// (`Ground::stands`): stamped in place.
     pub stale: BTreeSet<osis_base::BlobId>,
 }

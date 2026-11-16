@@ -225,19 +225,6 @@ pub struct ReadFacts {
     pub missing: bool,
 }
 
-/// A destroyed thing keeping nothing whose secrets are held for deletes alone
-/// (spec/sync-judgement.md §5).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Destruction {
-    /// Its destroying requests; none: destroyed by expiry alone (told at once).
-    pub requests: Vec<CommitId>,
-    /// Its own sync IDs, emptied once told.
-    pub sync_ids: Vec<SyncId>,
-    /// The held commits keyed by it (a part on it or acting for it): their entries anywhere are
-    /// deleted by its keys before `forget_destroyed`.
-    pub keyed: BTreeSet<CommitId>,
-}
-
 /// Whether a writer may promote a deposited commit (spec/sync-inbox.md §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Promote {
@@ -273,17 +260,15 @@ impl std::fmt::Debug for ThingsFeed {
     }
 }
 
-/// `ThingsFeed`'s cursors: over the things the sync set's walk reaches, and the destroyed
-/// things.
+/// `ThingsFeed`'s cursor: over the things the sync set's walk reaches.
 pub(crate) struct Entered {
     held: osis_base::memo::Feed<Tid>,
-    destroyed: osis_base::memo::Feed<Tid>,
 }
 
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThingSync {
-    /// Read: its home sync ID (a destroyed thing being emptied: its own sync IDs).
+    /// Read: its home sync ID.
     Read(Vec<SyncId>),
     /// Kept unread: by a ticket for the sync role (spec/sync.md).
     Unread(Vec<SyncId>),

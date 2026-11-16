@@ -603,8 +603,7 @@ impl Closure {
     }
 
     /// Each held vertex's edge to `target` is judged again at the next settle: a ticket for it
-    /// appeared among the known references (`judge` takes its secret), or a sync ID a ticket for
-    /// it names closed (`Engine::close_kept`).
+    /// appeared among the known references (`judge` takes its secret).
     pub(crate) fn rejudge(&mut self, target: Tid) {
         self.rejudge.insert(target);
     }
@@ -773,13 +772,12 @@ impl Core {
 
     /// How the walk enters thing `y` with own keys at a strong from a context that does not
     /// follow it (spec/sync-set.md §2): read where the node holds a read secret of it, kept
-    /// unread where it holds a sync secret only and no held ticket for it names a closed sync ID
-    /// (`closed`, from `closed_kept`), else not at all.
-    pub(crate) fn enter(&self, y: &Tid, closed: bool) -> Option<Ctx> {
+    /// unread where it holds a sync secret only, else not at all.
+    pub(crate) fn enter(&self, y: &Tid) -> Option<Ctx> {
         let e = self.epochs(y)?;
         if e.role(Role::Read).holds_any() {
             Some(Ctx::Read(*y))
-        } else if e.role(Role::Sync).holds_any() && !closed {
+        } else if e.role(Role::Sync).holds_any() {
             Some(Ctx::Unread(*y))
         } else {
             None
@@ -797,25 +795,8 @@ fn strong_to(tx: &mut Tx<'_>, x: &Tid, y: &Tid) -> Result<bool> {
     Ok(x != y && crate::engine::refs::strong_from(tx, x, y)?)
 }
 
-/// Whether `y` is one the walk would enter kept unread and a held ticket for it names a sync ID
-/// whose stored path ends at a closing step (spec/sync-judgement.md §6 Closes): read from the
-/// store's path, which it keeps while such a ticket is held (spec/sync-set.md §3). Unstamped:
-/// a close re-judges the edges into `y` (`Engine::close_kept`).
-fn closed_kept(tx: &mut Tx<'_>, y: &Tid) -> Result<bool> {
-    if !tx.core.epochs(y).is_some_and(|e| !e.role(Role::Read).holds_any() && e.role(Role::Sync).holds_any()) {
-        return Ok(false);
-    }
-    for k in super::tickets::held_in(tx, y)? {
-        if tx.blobs.closed(&k.sync_id)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// What the walk takes from vertex `v` by a strong of its thing to `y` (module doc), `closed`
-/// as `closed_kept` says of `y`.
-fn given_by(core: &Core, v: Vx, y: Tid, closed: bool) -> BTreeSet<Vx> {
+/// What the walk takes from vertex `v` by a strong of its thing to `y` (module doc).
+fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
     let (c, x) = v;
     let mut out = BTreeSet::new();
     // the walk does not enter a key actor: it has no sync unit
@@ -831,20 +812,20 @@ fn given_by(core: &Core, v: Vx, y: Tid, closed: bool) -> BTreeSet<Vx> {
     if follows {
         out.insert((c, y));
     }
-    if keyed && Ctx::Read(y) != c && let Some(e) = core.enter(&y, closed) {
+    if keyed && Ctx::Read(y) != c && let Some(e) = core.enter(&y) {
         out.insert((e, y));
     }
     // no own keys here: entered on a ticket's word, where a ticket was taken, at the node's
     // role (`tickets::entry_role`, read again here so a role change judges the edge again), by a
     // secret of that role held: read fetches under the tickets' sync IDs (spec/sync-inbox.md §5
-    // Ticket sync IDs), none of its data held for it; sync keeps them unread, which a close ends
+    // Ticket sync IDs), none of its data held for it; sync keeps them unread
     if !keyed {
         let best = core.ix.closure.ticket_ids(&y).into_iter().map(|(_, r)| r).max();
         let role = best.and_then(|k| super::tickets::entry_role(core, &y, k));
         let holds = |r: Role| core.ix.secrets.get(&y).is_some_and(|e| e.role(r).holds_any());
         if role >= Some(Role::Read) && holds(Role::Read) {
             out.insert((Ctx::Ticket(y), y));
-        } else if role.is_some() && holds(Role::Sync) && !closed {
+        } else if role.is_some() && holds(Role::Sync) {
             out.insert((Ctx::Unread(y), y));
         }
     }
@@ -890,8 +871,7 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
                 }
             }
         }
-        // a ticket arrived for a thing a held strong reaches, or a sync ID one names closed: those
-        // edges judged again
+        // a ticket arrived for a thing a held strong reaches: those edges judged again
         let again: Vec<Tid> = tx.core.ix.closure.rejudge.iter().copied().collect();
         for y in again {
             tx.core.ix.closure.rejudge.remove(&y);
@@ -973,11 +953,10 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
         any = taken.opened;
     }
     set_accepted(tx, y, v, any);
-    let closed = closed_kept(tx, &y)?;
     let core = &*tx.core;
     let mut got = BTreeSet::new();
     f.fx.settle(&(v, y), || {
-        got = given_by(core, v, y, closed);
+        got = given_by(core, v, y);
         got.clone()
     });
     Ok(got)
@@ -1077,8 +1056,7 @@ pub(crate) fn check_whole(tx: &mut Tx<'_>) -> Result<()> {
                 continue;
             }
             for y in strongs_from(tx, &v.1)? {
-                let closed = closed_kept(tx, &y)?;
-                for w in given_by(tx.core, v, y, closed) {
+                for w in given_by(tx.core, v, y) {
                     if cut.is_none_or(|c| !c.contains(&w.1)) && seen.insert(w) {
                         stack.push(w);
                     }
@@ -1192,20 +1170,6 @@ impl Engine {
     /// Whether the node closure holds `t` (spec/sync-set.md §2).
     pub fn closure_holds(&self, t: &Tid) -> bool {
         self.core.ix.closure.holds(t)
-    }
-
-    /// Kept-unread `s` reached a closing head (spec/sync-judgement.md §6 Closes): the edges into
-    /// its thing are judged again, which enter it kept unread no more while a held ticket names
-    /// `s` (`closed_kept`, from the store's path), so it leaves the node closure
-    /// (spec/sync-set.md §3).
-    pub fn close_kept(&mut self, s: &osis_base::SyncId) -> Result<()> {
-        let Some((things, _)) = self.sync_holder(s)? else { return Ok(()) };
-        self.run(|tx| {
-            for t in things {
-                tx.core.ix.closure.rejudge(t);
-            }
-            Ok(())
-        })
     }
 
     /// Whether `t` is kept unread: in the node closure by a sync secret alone (spec/sync-set.md

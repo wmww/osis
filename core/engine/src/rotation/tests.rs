@@ -2648,32 +2648,6 @@ fn derived_write_after_own_secrets_is_merged_spec_crypto_4() {
     lp.peers[1].engine.check_index();
 }
 
-// notes/growth.md (derived epochs written under): a plain thing's noted derived epoch goes with
-// a destruction that keeps nothing of it, as on a node that never held the thing.
-#[test]
-fn derived_written_goes_with_its_destroyed_thing() {
-    let mut lp = synced(1);
-    let me = lp.peers[0].engine.plain_admin();
-    let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, me);
-    m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
-    m.expires_all(WallMs(T0.0 + 50_000));
-    let w = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.hold(t);
-    let body = lp.peers[0].engine.body(&w).unwrap().unwrap();
-    lp.peers[0].engine.seal(&body, osis_blob::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
-    let written = |lp: &LocalPeer| lp.peers[0].engine.core.ix.derived_written.get(&t).is_some_and(|s| !s.is_empty());
-    assert!(written(&lp), "the seal is noted");
-    lp.advance(100_000);
-    lp.peers[0].tick().unwrap();
-    assert!(lp.peers[0].engine.core.created(&t).is_none(), "nothing of T kept");
-    assert!(!written(&lp), "its note goes");
-    lp.peers[0].restart(0).unwrap();
-    assert!(!written(&lp), "its record too");
-    lp.peers[0].engine.check_index();
-}
-
-
 /// What W (peer 1) serves of `g`'s `secrets.0` (`flows::secrets_in`), and a decode of the state it
 /// holds, read past every memo.
 fn served_secrets(lp: &mut LocalPeer, g: Tid) -> (std::sync::Arc<ct::Secrets>, ct::Secrets) {

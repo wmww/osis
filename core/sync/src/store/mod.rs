@@ -72,8 +72,6 @@ const PAGE: usize = 256;
 /// The record row tags this module owns: a source's stand of "logged again once", and the
 /// deletes seen there (spec/sync-judgement.md §4).
 use rows::tag::{ROOM_AT, SEEN, STAND};
-/// The stamp key `deletes_known` reads per sync ID.
-const DELETES_KNOWN: &str = "deletes known";
 
 /// The local policy the caps apply (`caps^.0`, spec/data-model.md §9; spec/sync-ids.md §5-§6):
 /// every value a resource bound against peers filling this node's store. Each is read from
@@ -1444,7 +1442,7 @@ impl Store {
         self.lock().read(|t, _| Ok((t.log_end()?, t.log_horizon()?)))
     }
 
-    // Leaving and closing
+    // Leaving
 
     /// The sync IDs with a usage or a path here (`U/`, `H/`): every one whose store holds
     /// something. O(those); read at a start (spec/sync-set.md §3: what left while the node was
@@ -1463,10 +1461,8 @@ impl Store {
     }
 
     /// Leaving S (spec/sync-set.md §3): every row of S goes, wraps and keys shredded, with S's
-    /// log events, its usage, and S in every peer record (the one transaction that stops it);
-    /// with `keep_path`, its path stays, which takes nothing more (a close kept for a held ticket
-    /// naming S, spec/sync-judgement.md §6 Closes), its usage its steps' bytes.
-    pub fn shred(&mut self, s: &SyncId, keep_path: bool) -> Result<()> {
+    /// log events, its usage, and S in every peer record (the one transaction that stops it).
+    pub fn shred(&mut self, s: &SyncId) -> Result<()> {
         let mut g = self.lock();
         let now = g.now;
         g.write(|t, env| {
@@ -1478,15 +1474,9 @@ impl Store {
                 let (_, b) = rows::tail_ids(&k)?;
                 entries::lift(t, env, s, &b)?;
             }
-            let kept = match keep_path {
-                true => Usage { bytes: path::bytes(t, s)?, ..Usage::default() },
-                false => {
-                    path::erase(t, env, s)?;
-                    Usage::default()
-                }
-            };
+            path::erase(t, env, s)?;
             let u = entries::usage(t, s)?;
-            entries::put_usage(t, env, s, u, kept)?;
+            entries::put_usage(t, env, s, u, Usage::default())?;
             t.log_forget(*s)?;
             // S's rows in every record go with its `changed_at` (spec/sync-opens.md §3)
             t.changed_forget(s)?;
@@ -1797,29 +1787,7 @@ impl Store {
     pub fn saw_deleted(&mut self, src: Source, s: &SyncId, b: &BlobId) -> Result<()> {
         let now = self.lock().now;
         self.source_put(src, s, SEEN, &b.0, Some((now, now.0.to_be_bytes().to_vec())))?;
-        self.lock().mem.stamps.wrote(&(DELETES_KNOWN, *s), true);
         Ok(())
-    }
-
-    /// Whether this node saw some entry of S deleted at some source within `TOMBSTONE_LIFETIME`
-    /// (spec/sync-judgement.md §5: a destroyed thing's sync ID is forgotten only with none).
-    /// Brute force, O(the rows of deletes seen and stands of every source): read only on the
-    /// rare path of forgetting a destroyed thing's sync ID.
-    pub fn deletes_known(&self, s: &SyncId) -> Result<bool> {
-        let mut g = self.lock();
-        g.mem.stamps.read(&(DELETES_KNOWN, *s));
-        if g.mem.conn_rows.keys().any(|(_, x, tag, _)| x == s && *tag == SEEN) {
-            return Ok(true);
-        }
-        g.read(|t, _| {
-            for (k, _) in t.scan_local(rows::AGING, b"", usize::MAX)? {
-                let mut r = R::new(k.get(rows::AGING.len() + 8..).unwrap_or_default());
-                if (SyncId(r.array()?), r.u8()?) == (*s, SEEN) {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        })
     }
 
     /// Every delete this node saw at a source within `TOMBSTONE_LIFETIME`, of every source: a
@@ -1902,9 +1870,6 @@ impl Store {
                 // a row written again since ages from its new time
                 if t.record_get_row(&rec, tag, &s, &key)?.is_some_and(|v| v.get(..8) == Some(&at.to_be_bytes()[..])) {
                     t.record_remove_row(&rec, tag, &s, &key)?;
-                    if tag == SEEN {
-                        env.mem.stamps.wrote(&(DELETES_KNOWN, s), true);
-                    }
                 }
                 acted = true;
             }

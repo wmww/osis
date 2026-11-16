@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run one TLA+ module's TLC instances. Usage: run.sh <module> [cfg...]
-#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, planted, netstream, netshared, netblind, netopen, nethold, netdestroy, netkeep
+#   <module>: sync, sides, rotation, reseal, joint, jointrule, depth0, lockout, cut, finalize, cover, tail, account, withdrawn, planted, netstream, netshared, netblind, netopen, nethold, netkeep
 #   no cfg: the module's instances listed below (each module under 3 min at
 #   one worker); with cfg names: those instances instead (the larger ones
 #   in the module's README, by hand), judged only if listed below.
@@ -232,22 +232,6 @@ instances=(
   "nethold net MCHold HN_invaliddel.cfg fail"      # negative control: a body dropped as invalid deleted at K (NoLoss once x falls)
   "nethold net MCHold HN_fixpoint.cfg fail"        # negative control: acting on c's verdict from before x was taken
   "nethold net MCHold HN_durable.cfg fail"         # negative control: a restart loses the stand (Bounded)
-  "netdestroy net MCDestroy D_present.cfg pass"    # destruction and emptying (net/README.md)
-  "netdestroy net MCDestroy D_away.cfg pass"
-  "netdestroy net MCDestroy D_live.cfg pass"
-  "netdestroy net MCDestroy D_live2.cfg pass"
-  "netdestroy net MCDestroy DN_req.cfg fail"       # negative control: emptying deletes the destroying request
-  "netdestroy net MCDestroy DN_told.cfg fail"      # negative control: emptying before told
-  "netdestroy net MCDestroy DN_stand.cfg fail"     # negative control: no stand, the released-team storm
-  "netdestroy net MCDestroy DN_forget.cfg fail"    # negative control: forget while an entry is known
-  "netdestroy net MCDestroy D_meet.cfg pass"       # readers also each other's sources
-  "netdestroy net MCDestroy D_meetaway.cfg pass"   # ... b away, then untold (forgets T)
-  "netdestroy net MCDestroy D_meetlive.cfg pass"   # ... settles
-  "netdestroy net MCDestroy DN_toldsrc.cfg fail"   # negative control: told by a reader, deletes at K before K holds the request
-  "netdestroy net MCDestroy DN_forgetall.cfg fail" # negative control: forget counting K alone, not a reader source
-  "netdestroy net MCDestroy DN_untold.cfg fail"    # negative control: untold leaves S keeping T
-  "netdestroy net MCDestroy DN_closegate.cfg fail" # negative control: closing at K before its stream is empty
-  "netdestroy net MCDestroy DN_closefirst.cfg fail" # negative control: forget before K closed S
   "netkeep net MCKeep K_all.cfg pass"              # a node keeping S unread follows its own grant: drops its copy at a head past its keys, a re-grant re-fetches
   "netkeep net MCKeep K_nohead.cfg pass"           # granted before any Register: no head, first box late
   "netkeep net MCKeep K_fake.cfg pass"             # a hostile box of a self-made epoch hides nothing and keeps nothing
@@ -266,7 +250,7 @@ for line in "${instances[@]}"; do
   [ "$m" = "$module" ] && dir=$d tla=$t
 done
 if [ -z "$dir" ]; then
-  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|account|netstream|netshared|netblind|netopen|nethold|netdestroy|netkeep [cfg...]" >&2
+  echo "usage: $0 sync|sides|rotation|joint|jointrule|depth0|lockout|cut|finalize|cover|tail|account|netstream|netshared|netblind|netopen|nethold|netkeep [cfg...]" >&2
   exit 2
 fi
 

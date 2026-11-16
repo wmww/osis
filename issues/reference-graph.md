@@ -119,7 +119,6 @@ Every stored row hangs off something the node closure holds, a store entry of a 
 - fires on the inbox, for its history setting (`INBOX_LIFETIME` by default);
 - siblings' node things under D, while they are on D's roster;
 - a link's sync ID while it is redeemed, until the join is held or the redeemer stops (spec/sync-inbox.md §6);
-- a destroyed thing's sync IDs until emptied, at the latest past its destroying requests' expiry (spec/sync-judgement.md §5);
 - role changes carried under a former grantee's sync ID, for `ROLE_KEEP` after replaced (a removal: after its `ts`, spec/sync-judgement.md §2);
 - tombstones for `TOMBSTONE_LIFETIME`, peer records within `RECORD_BUDGET`.
 

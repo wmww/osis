@@ -101,8 +101,8 @@ pub(crate) fn settle(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<osis_keys::Actor
     Ok(Some(view))
 }
 
-/// Lets go of every derived read epoch of `t` this node wrote under: `t` is gone here (its
-/// destruction kept nothing of it, `retention::destroy`), as on a node that never held it.
+/// Lets go of every derived read epoch of `t` this node wrote under: `t` is gone here (its record
+/// went, `retention::needed`), as on a node that never held it.
 pub(crate) fn forget(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let Some(written) = tx.core.ix.derived_written.get(t).filter(|s| !s.is_empty()).cloned() else { return Ok(()) };
     // emptied, not removed (`Indexes::derived_written`)

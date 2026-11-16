@@ -20,14 +20,13 @@ impl Engine {
     }
 
     /// The things the sync set is judged over: the node closure (spec/sync-set.md §2) walked
-    /// through no thing sourced at another node (§5, `Closure::synced`), with each destroyed
-    /// thing whose own sync IDs are kept until emptied and the links being redeemed. A memo of
+    /// through no thing sourced at another node (§5, `Closure::synced`), with the links being
+    /// redeemed. A memo of
     /// the whole, for a listing: per thing `in_sync_things`, entering `things_entered`.
     pub fn sync_things(&mut self) -> Result<Arc<BTreeSet<Tid>>> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_things, &(), |e| {
             let mut out: BTreeSet<Tid> = e.core.ix.closure.synced_things().copied().collect();
             osis_base::costs::count("sync: things walked", out.len() as u64);
-            out.extend(e.core.ix.destroyed_sync_ids.keys().copied());
             out.extend(e.core.followed_links.all().keys().filter(|k| crate::sync_ids::actors::followable(e, k)).copied());
             Ok(Arc::new(out))
         })
@@ -35,20 +34,19 @@ impl Engine {
 
     /// `sync_things`'s answer for `t` alone: reads only `t`'s rows.
     pub fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
-        Ok(self.core.ix.destroyed_sync_ids.contains_key(t) || crate::sync_ids::actors::followable(self, t) || self.core.ix.closure.synced(t))
+        Ok(crate::sync_ids::actors::followable(self, t) || self.core.ix.closure.synced(t))
     }
 
     /// The things that may have entered `sync_things` since `f`'s last read (its first: every
-    /// one): each that entered the sync set's walk or was destroyed since, and the links being
+    /// one): each that entered the sync set's walk since, and the links being
     /// redeemed (few). Leaving needs no feed: `in_sync_things` moves.
     pub(crate) fn things_entered(&mut self, f: &mut super::ThingsFeed) -> Result<Vec<Tid>> {
         let Some(at) = f.0.as_mut() else {
             let ix = &self.core.ix;
-            f.0 = Some(super::Entered { held: ix.closure.synced_feed(), destroyed: ix.destroyed_sync_ids.feed() });
+            f.0 = Some(super::Entered { held: ix.closure.synced_feed() });
             return Ok(self.sync_things()?.iter().copied().collect());
         };
         let mut out = at.held.added();
-        out.extend(at.destroyed.added());
         out.extend(self.core.followed_links.all().keys().copied());
         osis_base::costs::count("sync: things entered", out.len() as u64);
         Ok(out)
@@ -96,15 +94,8 @@ impl Engine {
     }
 
     /// How this node syncs thing `t` of `sync_things`: its home sync ID read while a read secret
-    /// of it is held (a destroyed thing: every own sync ID its destruction kept, from its
-    /// destruction until they are emptied, spec/sync-judgement.md §5); a thing with secrets of its
-    /// own and none is unsyncable; a plain thing has none of its own. Reads only `t`'s keys.
+    /// of it is held; a thing with secrets of its own and none is unsyncable; a plain thing has none of its own. Reads only `t`'s keys.
     pub(crate) fn thing_sync_now(&mut self, t: &Tid) -> Result<ThingSync> {
-        // kept only while its secrets are (`keep_sync_ids` needs them, which read its `sync.0`;
-        // `forget_destroyed` drops the row before them)
-        if let Some(kept) = self.core.ix.destroyed_sync_ids.get(t) {
-            return Ok(ThingSync::Read(kept.iter().map(|o| o.id).collect()));
-        }
         // read: by its own keys, or on a ticket's word (its sync ID the ticket's until a held
         // `sync.0` records it, spec/sync-inbox.md §5 Ticket sync IDs)
         if (self.core.has_own_secrets(t) || self.core.ix.closure.on_ticket(t))
@@ -309,13 +300,11 @@ impl Engine {
     }
 
     /// `s`'s things: every thing owning sync ID `s` here (`owned_sync_ids` lists it), by a held
-    /// `sync.0`, as a destroyed thing's kept sync ID, as a followed link's, or on the word of the
+    /// `sync.0`, as a followed link's, or on the word of the
     /// held tickets naming it (spec/sync-inbox.md §5 Ticket sync IDs: a sync ID several things'
     /// tickets name is each one's, whatever their order).
     pub(crate) fn sync_things_of(&mut self, s: &SyncId) -> Result<Vec<Tid>> {
         let mut things: BTreeSet<Tid> = self.core.ix.sync_recorders.get(s).into_iter().flatten().copied().collect();
-        // a destroyed thing's kept own sync IDs (`owned_sync_ids`)
-        things.extend(self.core.ix.destroyed_sync_ids.iter().filter(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t));
         things.extend(self.core.followed_links.naming(s));
         // a thing whose held tickets name it (`ticket_hints`)
         things.extend(self.core.ix.closure.naming_ticket_id(s));

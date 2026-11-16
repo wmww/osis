@@ -5,7 +5,7 @@
 //! only for a reason every holder sees after one exchange; a node acts at a peer only over what
 //! that peer's stream showed (`known`), deletes there only by a Delete signed for the right, and
 //! every delete and every logging again is bounded by a change of ground (the peer's head, or a
-//! held part falling here). Models: core/test/tla/net/NetHold.tla, NetDestroy.tla.
+//! held part falling here). Models: core/test/tla/net/NetHold.tla.
 //!
 //! Per (S, commit) a judgement (`judge::body`) gives the body's `Verdict` (must-hold, may-hold,
 //! must-not-hold, unjudged) and what the own store calls for: it logs what S must hold and drops
@@ -13,16 +13,14 @@
 //! keeping S unread a second judgement (`judge::toward`) gives what that source calls for: deletes
 //! (carriers in its `known`, role entries first), deposits (not a writer there), or logging again
 //! once past a delete, its stand durable in the source's record. Between readers nothing but
-//! streams. Per S a destruction judgement (`judge::doom`): told, emptying (the destroying requests
-//! kept until their expiry), then forgetting; or, untold past the window, forgetting deleting
-//! nothing.
+//! streams.
 //!
 //! Work follows change: each judgement is an `Effects` key over the ground's per-key memo
 //! values, stamped rows and read's clock (`Ground`), and read acts only on what a new value adds,
 //! once judging reached its fixpoint; nothing re-judges every commit of S per step. A source is
 //! judged by what its stream shows (`seen_added`), and for a non-writer there by every must-hold
-//! body as it joins. State: the effects, the clock and three stamped maps (verdicts, own role
-//! commits S must hold, S told destroyed); nothing durable of its own (stands live in the store's
+//! body as it joins. State: the effects, the clock and two stamped maps (verdicts, own role
+//! commits S must hold); nothing durable of its own (stands live in the store's
 //! record rows), so a start judges every held commit once.
 
 pub mod ground;
@@ -39,7 +37,7 @@ use crate::session::{Incoming, Sessions};
 use crate::store::{Source, Stand};
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Result};
-use judge::{Act, Doom, Judged, Mine, Toward};
+use judge::{Act, Judged, Mine, Toward};
 use osis_base::memo::{Clock, Effects, Stamped};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_engine::sync::{BodyMeta, CertKind};
@@ -63,8 +61,6 @@ pub enum Why {
     OutsideRequired,
     CardSuperseded,
     CardEnded,
-    /// A destroyed thing's sync ID being emptied (§5).
-    Emptied,
     /// A header-only copy of a minting its thing's witness supersedes (spec/commits.md §5 A
     /// thing's mintings travel with its record).
     Superseded,
@@ -87,7 +83,6 @@ pub struct Read {
     mintings: Effects<(SyncId, Tid), Arc<BTreeMap<CommitId, judge::Mint>>>,
     mints: Stamped<(SyncId, CommitId, Tid), judge::Mint>,
     toward: Effects<(SyncId, CommitId, Source), Toward>,
-    dooms: Effects<SyncId, (Doom, BTreeSet<Act>)>,
     /// Per (S, kind), the records (`None`) or one rotation's thing lists (`Some(r)`) S carries
     /// as certificates that no own certificate blob of the kind carries (spec/permissions.md §4,
     /// spec/sync-judgement.md §1): one record blob of them, and one list blob per rotation, is
@@ -109,8 +104,6 @@ pub struct Read {
     verdicts: Stamped<(SyncId, CommitId), Verdict>,
     /// Own role commits S must hold (§3 Role entries first).
     roles: Stamped<SyncId, BTreeSet<CommitId>>,
-    /// S told destroyed, and its destroying requests (kept until their expiry).
-    told: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
     /// Per (S, commit), the pass place an entry of it last came into the own store of S; per
     /// commit, the pass place what its bodies read last moved; per S, the newest place a
     /// judgement outside S's required set waits a complete pass after (`judge::outside`, status
@@ -137,7 +130,6 @@ impl Default for Read {
             mintings: Effects::new("read: mintings"),
             mints: Stamped::default(),
             toward: Effects::new("read: toward"),
-            dooms: Effects::new("read: doom"),
             cert_blobs: Effects::new("read: certificate blobs"),
             steps: Effects::new("read: steps"),
             freed: Effects::new("read: freed"),
@@ -145,7 +137,6 @@ impl Default for Read {
             local: Effects::new("read: local"),
             verdicts: Stamped::default(),
             roles: Stamped::default(),
-            told: Stamped::default(),
             arrived: Stamped::default(),
             moved: Stamped::default(),
             waits: Stamped::default(),
@@ -247,7 +238,6 @@ impl Read {
             self.local.want(c);
             for s in now.keys() {
                 self.judged.want((*s, c));
-                self.dooms.want(*s);
                 self.follow_cert_blobs(g, s)?;
                 self.steps.want(*s);
             }
@@ -283,31 +273,10 @@ impl Read {
             for (k, _) in self.metas.range((s, CommitId([0; 32]))..=(s, CommitId([0xff; 32]))) {
                 self.judged.want(*k);
             }
-            self.dooms.want(s);
             self.follow_cert_blobs(g, &s)?;
             self.steps.want(s);
         }
         let mut acted = false;
-        for s in self.dooms.due() {
-            let told_before = self.told.contains_key(&s);
-            let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
-            let Some((was, (doom, acts))) = self.dooms.try_settle(&s, || judge::doom(g, &mine, told_before, &s))? else { continue };
-            let before = was.map(|(_, a)| a).unwrap_or_default();
-            acted = true;
-            match &doom {
-                Doom::Told { requests } if self.told.get(&s) != Some(requests) => {
-                    self.told.insert(s, requests.clone());
-                }
-                Doom::Told { .. } => {}
-                _ if self.told.contains_key(&s) => {
-                    self.told.remove(&s);
-                }
-                _ => {}
-            }
-            for a in acts.difference(&before).cloned().collect::<Vec<_>>() {
-                self.act(g, &s, None, a)?;
-            }
-        }
         // the records and thing lists each S carries, as one record blob and one list blob per
         // rotation of those its own store lacks, while a reader can pull it (spec/permissions.md
         // §4, spec/sync-judgement.md §1 List blobs, §3 Own store)
@@ -323,15 +292,9 @@ impl Read {
                 continue;
             }
             // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
-            let told = &self.told;
-            let Some((_, now)) = self.cert_blobs.try_settle(&(s, r), || cert_blobs_missing(g, &s, r, told.contains_key(&s)).map(Arc::new))? else { continue };
+            let Some((_, now)) = self.cert_blobs.try_settle(&(s, r), || cert_blobs_missing(g, &s, r).map(Arc::new))? else { continue };
             if !now.gone.is_empty() {
                 g.forget_cert_blobs(&s, r, &now.gone)?;
-                acted = true;
-            }
-            // under an emptied S, record blobs are must-not-hold (spec/sync-judgement.md §2, §5)
-            for b in &now.held {
-                g.drop_blob(&s, b)?;
                 acted = true;
             }
             for b in &now.stale {
@@ -386,7 +349,7 @@ impl Read {
             }
             for k in due {
                 let (s, c) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
                 let Some((was, now)) = self.judged.try_settle(&k, || judge::body(g, &mine, &s, &c))? else { continue };
                 if self.verdicts.get(&k) != Some(&now.verdict) {
                     self.verdicts.insert(k, now.verdict.clone());
@@ -469,7 +432,7 @@ impl Read {
             }
             for k in due {
                 let (s, c, at) = k;
-                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, told: &self.told, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
+                let mine = Mine { verdicts: &self.verdicts, roles: &self.roles, clock: &self.clock, metas: &self.metas, mints: &self.mints, arrived: &self.arrived, moved: &self.moved };
                 let Some((was, now)) = self.toward.try_settle(&k, || judge::toward(g, &mine, &s, &c, &at))? else { continue };
                 if now.idle {
                     self.toward.unwant(&k);
@@ -621,13 +584,6 @@ impl Read {
                 let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) else { return Ok(()) };
                 g.delete(&src, s, &head, &blob)?;
             }
-            (Act::Close { at, conn, head }, _) => {
-                let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) else { return Ok(()) };
-                let key = g.credentials(s)?.and_then(|cr| cr.keys.get(&head).and_then(|k| k.delete.clone()));
-                if let Some(key) = key {
-                    g.close(&src, s, &head, &key)?;
-                }
-            }
             (Act::Deposit { at, conn, blob }, Some(c)) => {
                 if let Some(src) = g.source(s, &at).filter(|x| x.conn == conn) {
                     g.deposit(&src, s, c, &blob)?;
@@ -642,7 +598,6 @@ impl Read {
                     }
                 }
             }
-            (Act::Forget, _) => g.forget(s)?,
             (Act::LogPiece(b), _) => g.log_piece(s, &b)?,
             (Act::TakePiece(b), _) => g.take_piece(s, &b)?,
             (Act::Repair(_), _) => {}
@@ -660,15 +615,9 @@ impl Read {
 /// Settles `k` with `f`; a failure leaves `k` due and is returned.
 /// `Ground::cert_blobs_missing` while a reader can pull S, else nothing (`pullable` read inside,
 /// so S is due again once it can; read only where there is something to do, so a source flip
-/// moves no key with nothing to do). S `told` destroyed is being emptied (told only once its
-/// thing keeps nothing, `judge::doom`): it carries no certificate blob, and its own ones are to
-/// drop (`held`); else they stay.
-fn cert_blobs_missing(g: &mut impl Ground, s: &SyncId, r: CertKind, told: bool) -> Result<CertBlobsMissing> {
+/// moves no key with nothing to do).
+fn cert_blobs_missing(g: &mut impl Ground, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
     let x = g.cert_blobs_missing(s, r)?;
-    if told {
-        return Ok(CertBlobsMissing { missing: BTreeSet::new(), stale: BTreeSet::new(), ..x });
-    }
-    let x = CertBlobsMissing { held: BTreeSet::new(), ..x };
     if x == CertBlobsMissing::default() || g.pullable(s)? {
         return Ok(x);
     }

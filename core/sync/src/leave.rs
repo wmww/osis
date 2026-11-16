@@ -13,9 +13,7 @@
 //! (`Engine::sync_holder`), else it stops at once (its secrets lost, a removal), unless a role
 //! commit on its thing waits for its lists (`Ground::uncounted_role`): then once more, for a pass
 //! with a source. Then it stops: its thing is released (if read and still out of the node
-//! closure) and its store shredded, a closed S's path kept while a held ticket names S
-//! (spec/sync-judgement.md §6 Closes) and shredded with the last. Synced again before then, it is
-//! kept as it was.
+//! closure) and its store shredded. Synced again before then, it is kept as it was.
 //!
 //! A thing that left the node closure (`Engine::left_closure`) is released the same way: once
 //! each sync ID that carried it when it left has had a complete pass begun after, or has no
@@ -53,12 +51,8 @@ pub trait Ground {
     fn holder(&mut self, s: &SyncId) -> Result<Option<Held>>;
     /// Whether S has a source now (`Status::sourced`): a pass with none ends at once.
     fn sourced(&mut self, s: &SyncId) -> bool;
-    /// Shreds S's rows (`Store::shred`), its path too unless `keep_path`.
-    fn shred(&mut self, s: &SyncId, keep_path: bool) -> Result<()>;
-    /// Whether the store's path of S ends at a closing step (spec/wire.md §8).
-    fn closed(&mut self, s: &SyncId) -> Result<bool>;
-    /// Whether a held ticket names S (`Engine::ticket_names`).
-    fn ticket_names(&mut self, s: &SyncId) -> Result<bool>;
+    /// Shreds S's rows (`Store::shred`).
+    fn shred(&mut self, s: &SyncId) -> Result<()>;
     /// Whether a role commit on `t` is held but uncounted, its epoch revoked and no list naming
     /// it held (`Engine::uncounted_role_on`).
     fn uncounted_role(&mut self, t: &Tid) -> bool;
@@ -105,9 +99,6 @@ enum Wait {
     Done,
     /// After that pass, this node's keys no longer hold S as they did: it stops at once.
     Lost,
-    /// S closed, its path kept for a held ticket naming it (spec/sync-judgement.md §6 Closes),
-    /// and the last such ticket went: the path goes.
-    Forget,
 }
 
 #[derive(Clone)]
@@ -192,15 +183,9 @@ impl Leave {
             self.judged += 1;
             let leaving = &mut self.leaving;
             let Some((_, now)) = self.out.try_settle(&s, || judge(g, &s, leaving))? else { continue };
-            if now == Wait::Forget {
-                g.shred(&s, false)?;
-                self.out.unwant(&s);
-                acted = true;
-                continue;
-            }
             let Some(Left { held: (things, h), .. }) = self.leaving.get(&s).cloned() else { continue };
             match now {
-                Wait::Not | Wait::Forget => {}
+                Wait::Not => {}
                 Wait::Waiting => {
                     // held before the start, not synced yet: synced while it waits
                     if g.synced(&s).is_none() {
@@ -251,16 +236,10 @@ impl Leave {
             acted = true;
         }
         for s in stopped {
-            // a closed S keeps its path while a held ticket names it, followed till the last goes
-            // (spec/sync-judgement.md §6 Closes): what keeps its things out of the node closure
-            let keep = g.closed(&s)? && g.ticket_names(&s)?;
-            g.shred(&s, keep)?;
+            g.shred(&s)?;
             g.set_synced(&s, None)?;
             self.leaving.remove(&s);
             self.out.unwant(&s);
-            if keep {
-                self.out.want(s);
-            }
             acted = true;
         }
         Ok(acted)
@@ -305,10 +284,7 @@ fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -
     let left = match leaving.get(s) {
         Some(x) => x.clone(),
         None => {
-            let Some(held) = g.synced(s).or_else(|| holder.clone()) else {
-                // a closed path kept goes with the last held ticket naming S (§6 Closes)
-                return Ok(if g.closed(s)? && !g.ticket_names(s)? { Wait::Forget } else { Wait::Not });
-            };
+            let Some(held) = g.synced(s).or_else(|| holder.clone()) else { return Ok(Wait::Not) };
             if !g.rooted() {
                 return Ok(Wait::Not);
             }
@@ -379,14 +355,8 @@ impl Ground for Live<'_, '_> {
     fn sourced(&mut self, s: &SyncId) -> bool {
         self.status.sourced(s)
     }
-    fn shred(&mut self, s: &SyncId, keep_path: bool) -> Result<()> {
-        self.cx.store.shred(s, keep_path)
-    }
-    fn closed(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.cx.store.head(s)?.is_some_and(|h| h.is_closing()))
-    }
-    fn ticket_names(&mut self, s: &SyncId) -> Result<bool> {
-        Ok(self.cx.engine.ticket_names(s)?)
+    fn shred(&mut self, s: &SyncId) -> Result<()> {
+        self.cx.store.shred(s)
     }
     fn uncounted_role(&mut self, t: &Tid) -> bool {
         self.cx.engine.uncounted_role_on(t)

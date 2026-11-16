@@ -4,7 +4,7 @@
 //! Deletes; a test may delete there as a hostile writer). `Read` runs as in a node while the
 //! engine facade, streams' `known` by commit and the store's entries by commit are not built:
 //! every test here needs the real facade (sync-facade) and streams to run end to end in a world.
-//! Each negative control of core/test/tla/net/NetHold.tla and NetDestroy.tla has a test here that
+//! Each negative control of core/test/tla/net/NetHold.tla has a test here that
 //! fails without its rule, and each judgement scenario from the old sync's issues one.
 
 use osis_base::memo::Stamped;
@@ -12,7 +12,7 @@ use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_crypto::{RoleKey, Secret32, Signature, SigningSecret, role_key};
 use osis_engine::sync_ids::HeadKeys;
 use osis_engine::retention::{End, Minting, Standing};
-use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, Destruction, ReadCredentials};
+use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, ReadCredentials};
 use osis_blob::{Class, Step, StepId, StepKeys};
 use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, Verdict, Why};
 use osis_engine::sync::PieceLink;
@@ -96,10 +96,7 @@ fn covered(by: CommitId) -> Facts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Sent {
     Delete(ConnId, BlobId),
-    /// The closing step of the source's head (spec/sync-judgement.md §5 Emptying).
-    Close(ConnId),
     Deposit(ConnId, BlobId),
-    Forget(SyncId),
     Fetch(ConnId, BlobId),
     Take(BlobId),
     LogPiece(BlobId),
@@ -137,7 +134,6 @@ struct Fake {
     facts: Stamped<(SyncId, CommitId), Facts>,
     marks: Stamped<(SyncId, CommitId), u64>,
     creds: Stamped<SyncId, Arc<ReadCredentials>>,
-    doom: Stamped<SyncId, Arc<Destruction>>,
     own: Stamped<(SyncId, CommitId), Vec<Entry>>,
     tombs: Stamped<(SyncId, CommitId), Vec<BlobId>>,
     /// Own entries naming no commit held here (a commit forgotten with a released thing).
@@ -339,9 +335,6 @@ impl Ground for Fake {
     fn credentials(&mut self, s: &SyncId) -> Result<Option<Arc<ReadCredentials>>> {
         Ok(self.creds.get(s).cloned())
     }
-    fn destruction(&mut self, s: &SyncId) -> Result<Option<Arc<Destruction>>> {
-        Ok(self.doom.get(s).cloned())
-    }
     fn reads(&mut self, s: &SyncId) -> bool {
         !self.unread.contains_key(s)
     }
@@ -403,17 +396,6 @@ impl Ground for Fake {
     fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>> {
         Ok(self.tombs.get(&(*s, *c)).cloned().unwrap_or_default())
     }
-    fn own_all(&mut self, s: &SyncId) -> Result<BTreeSet<BlobId>> {
-        let keys: Vec<(SyncId, CommitId)> = self.own.keys().filter(|(x, _)| x == s).copied().collect();
-        let mut out: BTreeSet<BlobId> = keys.iter().flat_map(|k| self.own.get(k).cloned().unwrap_or_default()).map(|e| e.blob).collect();
-        out.extend(self.orphans.get(s).cloned().unwrap_or_default());
-        Ok(out)
-    }
-    fn deletes_known(&mut self, s: &SyncId) -> Result<bool> {
-        let keys: Vec<(Source, SyncId, CommitId)> = self.seen.keys().filter(|(_, x, _)| x == s).copied().collect();
-        let pieces: Vec<(Source, SyncId, BlobId)> = self.piece_seen.keys().filter(|(_, x, _)| x == s).copied().collect();
-        Ok(keys.iter().any(|k| self.seen.get(k).is_some_and(|v| !v.deleted.is_empty())) || pieces.iter().any(|k| self.piece_seen.get(k).is_some_and(|v| v.1)))
-    }
     fn sources(&mut self, s: &SyncId) -> Arc<Vec<SrcView>> {
         self.sources.get(s).cloned().unwrap_or_default()
     }
@@ -443,9 +425,6 @@ impl Ground for Fake {
     }
     fn present_anywhere(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
         Ok(self.anywhere.get(&(*s, *c)).copied().unwrap_or(false))
-    }
-    fn seen_all(&mut self, at: &Source, s: &SyncId) -> Result<BTreeSet<BlobId>> {
-        Ok(self.all.get(&(*at, *s)).cloned().unwrap_or_default())
     }
     fn heard_out(&mut self, s: &SyncId) -> Result<bool> {
         Ok(self.heard.get(s).copied().unwrap_or(false))
@@ -500,11 +479,6 @@ impl Ground for Fake {
         }
         Ok(())
     }
-    fn close(&mut self, at: &SrcView, s: &SyncId, _head: &osis_blob::StepId, key: &SigningSecret) -> Result<()> {
-        let _ = (s, key);
-        self.sent.push(Sent::Close(at.conn));
-        Ok(())
-    }
     fn deposit(&mut self, at: &SrcView, s: &SyncId, c: &CommitId, b: &BlobId) -> Result<()> {
         let _ = (s, c);
         self.sent.push(Sent::Deposit(at.conn, *b));
@@ -512,10 +486,6 @@ impl Ground for Fake {
     }
     fn set_stand(&mut self, at: &Source, s: &SyncId, c: &CommitId, stand: &Stand) -> Result<()> {
         self.stands.insert((*at, *s, *c), stand.clone());
-        Ok(())
-    }
-    fn forget(&mut self, s: &SyncId) -> Result<()> {
-        self.sent.push(Sent::Forget(*s));
         Ok(())
     }
 }
@@ -647,13 +617,6 @@ impl W {
                     }
                 }
                 Sent::Deposit(c, b) if c == KC => self.k_take(b),
-                // K closes S: it forgets it and is no source of it any more
-                Sent::Close(c) if c == KC => {
-                    self.g.sent.push(m);
-                    self.g.k.held.retain(|(x, _), _| *x != S);
-                    let v: Vec<SrcView> = self.g.sources(&S).iter().filter(|x| x.conn != KC).cloned().collect();
-                    self.g.set_sources(S, v);
-                }
                 other => self.g.sent.push(other),
             }
         }
@@ -724,34 +687,6 @@ impl W {
         if self.g.sources(&S).iter().any(|x| x.conn == KC && x.full != full) {
             self.edit_source(KC, |x| x.full = full);
         }
-    }
-
-    /// `TOMBSTONE_LIFETIME` passes at K and here.
-    /// The destroying request `cid(3)` (expiry 10) past its expiry: it leaves K, no tombstone.
-    fn expire_request(&mut self) {
-        let mut m = meta();
-        m.expires = Some(WallMs(10));
-        self.g.bodies.insert(cid(3), Arc::new([(S, m)].into()));
-        self.g.added.push(cid(3));
-        self.g.now = 11;
-        self.g.k.held.retain(|(_, b), _| *b != BlobId([3; 32]));
-        self.stream();
-        self.settle();
-    }
-
-    fn expire_tombstones(&mut self) {
-        self.g.k.tomb.clear();
-        self.g.k.refused.clear();
-        let keys: Vec<(Source, SyncId, CommitId)> = self.g.seen.keys().copied().collect();
-        for k in keys {
-            let mut v = self.g.seen.get(&k).cloned().unwrap_or_default();
-            if !v.deleted.is_empty() {
-                v.deleted.clear();
-                self.g.put_seen(k, v);
-            }
-        }
-        self.g.stands = Stamped::default();
-        self.settle();
     }
 
     fn at_k(&self, s: SyncId, c: CommitId) -> usize {
@@ -1370,71 +1305,6 @@ fn duplicate_higher_goes() {
     assert_eq!(w.g.sent, vec![Sent::Delete(KC, BlobId([0xff; 32]))]);
 }
 
-/// S is a released thing's own sync ID: content `cid(1)` at K, destroying request `cid(3)`
-/// logged by the releaser (another node) at K or not.
-fn released(request_at_k: bool) -> W {
-    let mut w = at_k_must_hold();
-    w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)], ..Default::default() }));
-    if request_at_k {
-        w.g.k.held.insert((S, BlobId([3; 32])), cid(3));
-        w.g.logged.push((S, cid(3), BlobId([3; 32])));
-    }
-    w.stream();
-    w.settle();
-    w
-}
-
-// spec/sync-judgement.md §5 (told) (destroyed-sync-id): nothing is deleted at K before the destroying
-// request is held there (DN_told).
-#[test]
-fn nothing_emptied_before_told() {
-    let mut w = released(false);
-    w.exchange();
-    assert_eq!(w.deletes(), 0);
-    assert_eq!(w.at_k(S, cid(1)), 1);
-    w.g.k.held.insert((S, BlobId([3; 32])), cid(3));
-    w.g.logged.push((S, cid(3), BlobId([3; 32])));
-    w.stream();
-    w.settle();
-    assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::MustNot(Why::Emptied)));
-    assert!(w.own_blobs(S, cid(1)).is_empty());
-    assert_eq!(w.deletes(), 1);
-}
-
-// spec/sync-judgement.md §5 (emptying deletes none): told, it deletes every other
-// entry at K and keeps the request there until its expiry (DN_req).
-#[test]
-fn emptying_keeps_the_requests() {
-    let mut w = released(true);
-    w.exchange();
-    assert!(w.g.k.held.contains_key(&(S, BlobId([3; 32]))));
-    assert_eq!(w.at_k(S, cid(1)), 0);
-}
-
-// spec/sync-judgement.md §5 (Emptying): everything but the destroying requests is must-not-hold,
-// and they leave at their expiry: told, an own entry of the request whose part on the destroyed
-// thing is dropped here stays, and so does the request at K.
-#[test]
-fn emptying_keeps_a_request_whose_part_is_dropped_here_spec_sync_judgement_5() {
-    let mut w = at_k_must_hold();
-    w.hold(cid(3), &[S], uncovered());
-    w.exchange();
-    let own = w.own_blobs(S, cid(3));
-    assert!(!own.is_empty(), "the request logged here");
-    // its thing keeps nothing: told, the request's part on it dropped here
-    w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)], ..Default::default() }));
-    for b in &own {
-        w.g.dropped.insert(*b, ());
-    }
-    w.stream();
-    w.settle();
-    w.exchange();
-    assert_eq!(w.own_blobs(S, cid(3)), own, "the request left the own store");
-    assert_eq!(w.at_k(S, cid(3)), 1, "the request deleted at K");
-    assert_eq!(w.at_k(S, cid(1)), 0, "told: the rest emptied at K");
-    assert_eq!(w.read.verdict(&S, &cid(3)), Some(Verdict::May));
-}
-
 // spec/sync-compaction.md §1 (Only what the node checked): a blob of the
 // same opened parts whose unopened sections differ from the node's by their bytes (a forged
 // section of a thing it does not read, ground to the lowest blob ID and stamped by a writer that
@@ -1462,122 +1332,6 @@ fn duplicates_compare_unopened_sections_by_bytes() {
     w.settle();
     let deleted: BTreeSet<BlobId> = w.g.sent.iter().filter_map(|m| if let Sent::Delete(_, b) = m { Some(*b) } else { None }).collect();
     assert_eq!(deleted, own.into_iter().collect(), "the same bytes: the higher ID goes");
-}
-
-// spec/sync-judgement.md §5 (it forgets the sync IDs once its sources): told and emptied, it forgets S
-// only once its sources are heard out with no entry and no tombstone known there: not while the
-// request lives at K (DN_forget), nor while K keeps S (DN_closefirst).
-#[test]
-fn forget_waits_for_nothing_known() {
-    let mut w = released(true);
-    w.g.heard.insert(S, true);
-    w.exchange();
-    assert!(!w.g.sent.contains(&Sent::Forget(S)), "forgot while the request is at K");
-    w.expire_request();
-    assert!(!w.g.sent.contains(&Sent::Forget(S)), "forgot while K keeps S");
-    w.exchange();
-    assert!(w.g.sent.contains(&Sent::Close(KC)));
-    assert!(!w.g.sent.contains(&Sent::Forget(S)), "forgot while its delete's tombstone lasts at K");
-    w.expire_tombstones();
-    assert!(w.g.sent.contains(&Sent::Forget(S)));
-}
-
-// spec/sync-judgement.md §5 (Emptying: none of its sources keeps S unread at a head whose delete
-// key it holds): emptied, nothing known anywhere, it forgets S only once K took the closing step
-// and left S (DN_closefirst).
-#[test]
-fn forget_waits_for_k_to_close_spec_sync_judgement_5() {
-    let mut w = released(true);
-    w.g.heard.insert(S, true);
-    w.exchange();
-    w.expire_tombstones();
-    w.expire_request();
-    assert!(w.g.sent.contains(&Sent::Close(KC)));
-    assert!(!w.g.sent.contains(&Sent::Forget(S)), "forgot while K keeps S");
-    w.exchange();
-    assert!(w.g.sent.contains(&Sent::Forget(S)));
-}
-
-// spec/sync-judgement.md §5 (Emptying: the closing step), spec/wire.md §8: told, the closing step
-// goes to K only once K's stream shows no entry and the requests are past their expiry: not while
-// K holds the request (DN_closegate), nor while it holds content.
-#[test]
-fn closing_waits_for_an_empty_store_past_the_requests_spec_sync_judgement_5() {
-    let mut w = released(true);
-    w.exchange();
-    assert!(!w.g.sent.contains(&Sent::Close(KC)), "closed while K holds the request");
-    // content at K past the window: deleted first, then closed
-    w.g.k.held.insert((S, BlobId([7; 32])), cid(1));
-    w.expire_request();
-    assert!(!w.g.sent.contains(&Sent::Close(KC)), "closed while K holds content");
-    w.exchange();
-    w.exchange();
-    assert!(w.g.sent.contains(&Sent::Close(KC)), "K emptied past the window is never closed");
-}
-
-// spec/sync-judgement.md §5 (Emptying: everything under S but the destroying requests is
-// must-not-hold), spec/commits.md §5 (Forgetting: a released thing's role commits go with it):
-// told, an own entry naming no commit held here (one forgotten with the released thing) leaves
-// the own store, so S can be forgotten.
-#[test]
-fn emptying_drops_an_own_entry_of_a_forgotten_commit_spec_sync_judgement_5() {
-    let orphan = BlobId([9; 32]);
-    let mut w = released(true);
-    w.g.orphans.insert(S, [orphan].into());
-    w.g.heard.insert(S, true);
-    w.expire_request();
-    w.exchange();
-    w.exchange();
-    w.expire_tombstones();
-    assert!(w.g.sent.contains(&Sent::DropBlob(orphan)), "an orphan own entry stays under an emptied S");
-    assert!(w.g.sent.contains(&Sent::Forget(S)), "S not forgotten");
-}
-
-// spec/sync-judgement.md §2 (a record blob by its records: never must-not-hold but under an
-// emptied sync ID), §5 (Emptying): before told, an own record blob stays and missing records are
-// logged; told, it leaves the own store and no record is logged, so S can be forgotten.
-#[test]
-fn an_emptied_sync_id_drops_its_record_blobs_and_logs_none() {
-    let rb = BlobId([8; 32]);
-    let r1 = osis_base::Tid::from_bytes([1; 15]);
-    let mut w = released(false);
-    w.g.records.insert((S, None), CertBlobsMissing { missing: [r1].into(), held: [rb].into(), ..Default::default() });
-    w.settle();
-    assert!(!w.g.sent.contains(&Sent::DropBlob(rb)), "dropped before told");
-    assert_eq!(w.g.record_logs, vec![(S, None, [r1].into())]);
-    w.g.k.held.insert((S, BlobId([3; 32])), cid(3));
-    w.g.logged.push((S, cid(3), BlobId([3; 32])));
-    w.stream();
-    w.settle();
-    assert!(w.g.sent.contains(&Sent::DropBlob(rb)), "an emptied S keeps its record blob");
-    assert_eq!(w.g.record_logs.len(), 1, "a record logged under an emptied S");
-}
-
-// spec/sync-judgement.md §5 (untold) (released-team): a node away for the whole window leaves S
-// deleting nothing, once the window ends (no other event needed); while it does not know of the destruction a delete at K costs it one logging
-// again, not a loop (DN_stand).
-#[test]
-fn untold_leaves_and_logs_again_once() {
-    let mut w = at_k_must_hold();
-    for _ in 0..4 {
-        w.k_delete(cid(1));
-        w.exchange();
-    }
-    assert_eq!(w.logs(S, cid(1)), 2);
-    let mut m = meta();
-    m.expires = Some(WallMs(10));
-    w.g.bodies.insert(cid(3), Arc::new([(S, m)].into()));
-    // a request is held like any commit: read follows its bodies
-    w.g.added.push(cid(3));
-    w.g.doom.insert(S, Arc::new(Destruction { requests: vec![cid(3)], ..Default::default() }));
-    w.settle();
-    assert!(!w.g.sent.contains(&Sent::Forget(S)));
-    // the window's end alone moves it: read's wake is the request's expiry
-    assert_eq!(w.read.next_wake(), Some(WallMs(10)));
-    w.g.now = 11;
-    w.settle();
-    assert!(w.g.sent.contains(&Sent::Forget(S)));
-    assert_eq!(w.deletes(), 0);
 }
 
 // spec/sync-judgement.md §3 (driven by events): work follows change: a fact of one body, or K's
@@ -1800,7 +1554,7 @@ fn a_stale_certificate_blob_is_stamped_once_a_reader_can_pull() {
     let rb = BlobId([77; 32]);
     w.g.unpullable.insert(S, ());
     w.g.own.insert((S, cid(9)), vec![Entry { blob: rb, wrap: [0; osis_crypto::WRAP_LEN], stamp: None, deposited: false, own: true, role: false, class: Class::Durable, expires: None }]);
-    w.g.records.insert((S, None), CertBlobsMissing { held: [rb].into(), stale: [rb].into(), ..Default::default() });
+    w.g.records.insert((S, None), CertBlobsMissing { stale: [rb].into(), ..Default::default() });
     w.hold(cid(1), &[S], uncovered());
     assert!(w.g.restamped.is_empty(), "no reader can pull S yet");
     w.g.unpullable.remove(&S);
@@ -1858,34 +1612,6 @@ fn duplicates_by_delta_set_and_copy() {
     let deleted: BTreeSet<BlobId> = w.g.sent.iter().filter_map(|m| if let Sent::Delete(_, b) = m { Some(*b) } else { None }).collect();
     assert!(!deleted.contains(&hi), "the copy was deleted");
     assert!(deleted.contains(&lo) && shared.iter().all(|b| deleted.contains(b)), "{deleted:?}");
-}
-
-// spec/sync-judgement.md §5 (it forgets the sync IDs once its sources): an entry at any source, one
-// holding no destroying request included, keeps S; past the requests' expiry it is emptied there
-// too (no reader can be told any more), then S is forgotten.
-#[test]
-fn forget_counts_every_source() {
-    let mut w = released(true);
-    let k2 = ConnId(3);
-    w.source(S, Source::Conn(k2), k2, true);
-    let b = w.g.logged.iter().find(|(_, c, _)| *c == cid(1)).unwrap().2;
-    w.g.put_seen((Source::Conn(k2), S, cid(1)), Seen { present: [b].into(), deleted: BTreeSet::new() });
-    w.g.all.insert((Source::Conn(k2), S), [b].into());
-    w.g.heard.insert(S, true);
-    w.exchange();
-    w.g.k.held.clear();
-    w.stream();
-    w.expire_tombstones();
-    assert!(!w.g.sent.contains(&Sent::Forget(S)), "forgot while a source shows an entry");
-    assert!(!w.sent().any(|m| *m == Sent::Delete(k2, b)), "emptied a source not told");
-    let mut m = meta();
-    m.expires = Some(WallMs(10));
-    w.g.bodies.insert(cid(3), Arc::new([(S, m)].into()));
-    // a request is held like any commit: read follows its bodies
-    w.g.added.push(cid(3));
-    w.g.now = 11;
-    w.settle();
-    assert!(w.sent().any(|m| *m == Sent::Delete(k2, b)));
 }
 
 // spec/sync-judgement.md §3 (role entries first): at a start every commit is judged again, in no

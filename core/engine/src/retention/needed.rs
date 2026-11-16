@@ -13,7 +13,7 @@
 //! account's, the account it is being paired into (`Core::joining`) or the node's own (its record
 //! chain's key actor), a key actor that is no account (a node, a link key), the K of a followed
 //! link, one a key actor held here is named on (a link being redeemed, a bearer), a kept copy,
-//! destroyed (`retention::destroy` keeps it), or a thing an own self-removal still waits to seal
+//! or a thing an own self-removal still waits to seal
 //! under. Everything else goes whole, as never received, when the pass that brought it ends or its
 //! last need went (`settle`).
 //!
@@ -84,7 +84,7 @@ impl Engine {
 /// Whether `t` is kept for itself (the module doc).
 fn rooted(core: &Core, t: &Tid) -> bool {
     let cl = &core.ix.closure;
-    if cl.holds(t) || cl.left().contains_key(t) || cl.accepted(t) || core.ix.kept.contains_key(t) || super::forget::copy_of(core, t).is_some() || core.destroyed(t) {
+    if cl.holds(t) || cl.left().contains_key(t) || cl.accepted(t) || core.ix.kept.contains_key(t) || super::forget::copy_of(core, t).is_some() {
         return true;
     }
     // a key actor that is no account, or the K of a link this node follows

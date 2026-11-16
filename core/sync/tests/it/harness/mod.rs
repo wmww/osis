@@ -995,6 +995,14 @@ impl World {
         self.flush();
     }
 
+    /// Moves the clock `ms` on with no wake fired between, as if every node slept through it, then
+    /// runs: a long absence costs no dial ticks.
+    pub fn jump(&mut self, ms: u64) {
+        let to = WallMs(self.now().0.saturating_add(ms));
+        self.set_clock(to);
+        self.run();
+    }
+
     /// Separates `a` and `b`: their connections are cut (both ends told), no dial between them
     /// connects.
     pub fn partition(&mut self, a: usize, b: usize) {

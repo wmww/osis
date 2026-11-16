@@ -3,8 +3,8 @@
 //! it at every node): node 0 makes thing t with its sync ID S, node 1's account syncs it (kept
 //! unread), node 2's writes it; node 0 destroys it. The engine's judgement of a destroyed thing is
 //! the engine's and held-model's; these check what crosses nodes: the destruction reaches every
-//! node, holds over a restart, a write after it counts nowhere, S empties once nothing needs it,
-//! and the copies of a thing's mintings under a sync ID lacking it converge.
+//! node, holds over a restart, a write after it counts nowhere, a node away past the purge's
+//! floor learns it, and the copies of a thing's mintings under a sync ID lacking it converge.
 
 use crate::harness::Step::*;
 use crate::harness::history::{Gives, value_ak, world};
@@ -93,47 +93,22 @@ fn a_write_after_the_destruction_counts_nowhere_spec_commits_5() {
     assert!(!w.engine(0).commit_ids().contains(&late), "node 0 applied a write after the destruction");
 }
 
-// spec/commits.md §5 (Destruction: once no request is in force and nothing needs it, it keeps
-// nothing, its requests included, and every entry under its own sync IDs is must-not-hold),
-// spec/sync-judgement.md §5 (Emptying: the requests leave as the node keeps them no more; the
-// closing step at a source keeping S unread), §6 Closes: past a purge's window (`ROLE_KEEP`; the
-// purge has no expiry), S keeps nothing at any node's store (record blobs too,
-// spec/sync-judgement.md §2), and node 1, which keeps S unread, is closed and lets t go.
+// spec/commits.md §5 (Destruction: what a destroyed thing keeps is held by the ordinary rules;
+// the request is kept as any purge request, lasting), spec/sync-judgement.md §5: past the purge's
+// floor (`ROLE_KEEP`; the purge has no expiry) node 1, which keeps S unread and still holds t,
+// keeps the request under S, and node 2, away for all of it, learns the destruction from S once
+// back.
 #[test]
-fn a_destroyed_things_sync_id_empties_past_its_window_spec_sync_judgement_5() {
+fn a_node_away_past_the_floor_learns_the_destruction_spec_commits_5() {
     let (mut w, t, s) = three();
+    w.power_off(2);
     let q = purge_thing(&mut w, 0, t);
     w.run();
+    w.jump(ROLE_KEEP_MS + 60_000);
     let request = w.engine(0).commit_blobs(&q).unwrap();
-    assert!(w.store(1).entries(&s).unwrap().iter().any(|e| request.contains(&e.blob)), "node 1 keeps the request in its window");
-    w.advance(ROLE_KEEP_MS + 60_000);
-    w.run();
-    for i in 0..3 {
-        assert!(w.store(i).entries(&s).unwrap().is_empty(), "node {i} holds entries under S");
-    }
-    assert!(!w.engine(1).closure_holds(&t), "node 1 keeps t");
-    assert_eq!(w.store(1).synced(&s), None, "node 1 syncs S");
-}
-
-// spec/sync-judgement.md §6 Closes, spec/sync-set.md §2-§3: a closing step registered at node 1,
-// which keeps S unread (entered by its sync secret alone), takes t out of node 1's node closure
-// while node 1 holds the ticket naming S, read from the path its store keeps, also across a
-// restart after S stopped.
-#[test]
-fn a_closing_head_takes_a_kept_thing_out_spec_sync_judgement_6() {
-    let (mut w, t, s) = three();
+    assert!(w.store(1).entries(&s).unwrap().iter().any(|e| request.contains(&e.blob)), "node 1 keeps the request past the floor");
     assert!(w.engine(1).closure_holds(&t), "node 1 keeps t");
-    let head = w.store(1).head(&s).unwrap().unwrap();
-    let delete = w.engine(0).head_keys(&t, &head).unwrap().delete.expect("node 0 holds the delete key");
-    let mut st = w.store(1).clone();
-    assert_eq!(st.take_register(&s, &head.closing(&delete), None).unwrap(), osis_proto::Code::OK);
-    // the Register taken: the node judges what it moved
-    w.write(1, |_| ());
+    w.power_on(2);
     w.run();
-    assert!(!w.engine(1).closure_holds(&t), "closed: t left");
-    w.power_off(1);
-    w.power_on(1);
-    w.run();
-    assert!(!w.engine(1).closure_holds(&t), "closed: t taken back after a restart");
+    gone(&mut w, 2, t);
 }
-

@@ -8,7 +8,7 @@
 - Cleanup and workflow jobs (Job mix) run beside this list, not from it.
 
 ## Core, in order
-1. **Finish the reference graph.** The full-size sync differential to 0/100; destruction and purge requests follow ordinary commit rules with no special case; then the one end gate (issues/reference-graph.md Execution 7) and a notes pass. Issues: reference-graph (Status), storage-owners, stranger-fire-bounds, ticket-sync-id-incidental, forged-ticket-sync-id-entries, settled-writers-dispute-script, index-check-rebuild-cost, destroyed-sync-id-never-left, untold-past-window-deletes, destroyed-*. Notes: node-closure, refgraph-tests, closure-model.
+1. **Finish the reference graph.** The full-size sync differential to 0/100; then the one end gate (issues/reference-graph.md Execution 7) and a notes pass. Issues: reference-graph (Status), storage-owners, stranger-fire-bounds, ticket-sync-id-incidental, forged-ticket-sync-id-entries, settled-writers-dispute-script, index-check-rebuild-cost, destroyed-*. Notes: node-closure, refgraph-tests, closure-model.
 2. **Per-thing cost.** A plain thing costs about 1.6 KB, one with own keys about 28.8 KB and 3 commits; both should be as cheap as possible (Tess). Structural: how much key material, certificate data and commits a thing carries, and work per thing held. Issues: many-things-cost, many-sync-ids-cost, perm-eval-cost, derived-state-recomputed, chat-add-cost, rotation-names-grow.
 3. **Connection-lived data.** Tess's ephemeral model (a thing lives while a keeper account is connected), replacing keep-alive and the invalid-memory-parts carve-out. Issues: connection-lived-data, eph-parity, eph-expired-anchors-fill-cap, eph-node-cost-bounds, presence-outlives-membership, streams-ephemeral-scan. Notes: ephemeral.
 4. **Whole commits, steps 4–5.** Per-part strip (one mechanism for compaction, purge and invalidity drops), must-hold per blob, the sealed-sections rule. Issues: whole-commits, duplicate-reader-blobs, invalid-junk-kept, drop-rejoin-robust, zero-growth. Notes: whole-commits.
@@ -17,7 +17,7 @@
 7. **Strongs in kept history.** Tess's idea: a per-thing boolean making strongs in deliberately kept history hold; design study first, build only if clean. Issue: strongs-in-kept-history.
 8. **Account signing leftovers.** Account-level own cover and the rest. Issues: account-signing, session-sources, account-side-shared.
 9. **Sync leftovers.** Stubs, owed tests, timers. Issues: sync-unbuilt, sync-tests-owed, sync-pending-leftovers, sync-parks-check, sync-models-lag, sync-link-first-contact, dial-candidates, opens-hit-index-cost, clock-back-stalls-timers, clock-reads-unstamped, timed-loss-wait.
-10. **Retention and purge long tail.** Issues: purge-api-gaps, purge-join-reads-requests, seq-retention-dating, forget-whole-scans, destroyed-record-relearned, destroyed-thing-reminted, destroyed-upstream-cost, waiting-snapshot-carried-bound.
+10. **Retention and purge long tail.** Issues: purge-api-gaps, purge-join-reads-requests, seq-retention-dating, forget-whole-scans, destroyed-thing-reminted, destroyed-upstream-cost, waiting-snapshot-carried-bound.
 11. **Long tail of core bugs and costs.** The remaining `normal`/`low` core issues (grep `> Tags:` for engine, sync, crdt, store, perm, keys); take them when they fit beside other work or block a higher item.
 
 ## Parked on Tess

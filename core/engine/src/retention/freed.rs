@@ -126,12 +126,6 @@ fn rows(tx: &mut Tx<'_>, prefix: &[u8]) -> Result<Vec<Freed>> {
     Ok(out)
 }
 
-/// The things and authors a freed link is held of: deleting it needs the delete keys along their
-/// chains.
-pub(crate) fn things_with_links(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
-    Ok(rows(tx, records::FREED)?.into_iter().flat_map(|f| [f.tid, f.author]).collect())
-}
-
 /// The links part `ai` of held commit `c` holds: its delta's tree roots and pages, or, held as its
 /// leftover, the leftover's values' roots.
 pub(crate) fn part_links(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Vec<Link>> {

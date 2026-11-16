@@ -88,17 +88,6 @@ impl Sid {
         self.steps.push(st.clone());
         st
     }
-    /// An admin's removal: every role secret rotates (the admin's too) and the next step issues,
-    /// signed by the old delete key, which is returned.
-    fn remove_admin(&mut self, b: u8) -> SigningSecret {
-        let old = self.delete();
-        self.write = Secret32::from_bytes([b; 32]);
-        self.sync = Secret32::from_bytes([b + 1; 32]);
-        self.admin = Secret32::from_bytes([b + 2; 32]);
-        let st = self.issue_by(&[], &old);
-        self.steps.push(st);
-        old
-    }
     fn head(&self) -> &Step {
         &self.steps.last().unwrap().0
     }
@@ -186,53 +175,6 @@ fn register_takes_genesis_then_children_of_the_head_spec_sync_ids_6() {
     assert_eq!(st.head(&s.id).unwrap().as_ref(), Some(&c2));
     assert_eq!(st.path(&s.id).unwrap().unwrap().steps.len(), 3);
     assert_eq!(events_of(&st, &s.id), [NodeEvent::Head(s.id)], "one head event, the latest");
-}
-
-// spec/wire.md §8 (closing step), spec/sync-ids.md §6 (Register): a closing step is taken as a
-// child of the head when it bears its parent's keys (else 2), and nothing is registered after it.
-#[test]
-fn register_takes_a_closing_step_and_nothing_after_it_spec_wire_8() {
-    let dev = Dev::new();
-    let mut s = Sid::new(10);
-    let mut st = unread(&dev, &s);
-    let g = s.steps[0].0.clone();
-    let mut other = g.closing(&s.delete());
-    other.keys.sync = s.write_key().verifying_key();
-    other.sig = s.delete().sign(osis_crypto::Domain::SyncStep, &other.digest());
-    assert_eq!(st.take_register(&s.id, &other, None).unwrap(), Code::MALFORMED, "a closing step bearing other keys");
-    let closing = g.closing(&s.delete());
-    assert!(closing.is_closing() && !g.is_closing());
-    assert_eq!(st.take_register(&s.id, &closing, None).unwrap(), Code::OK);
-    assert_eq!(st.head(&s.id).unwrap().as_ref(), Some(&closing));
-    // a child of the closing step, signed by its delete key (its parent's)
-    let (mut after, _) = s.rotate(60);
-    after.prev = Some(closing.id());
-    after.sig = s.delete().sign(osis_crypto::Domain::SyncStep, &after.digest());
-    assert_eq!(st.take_register(&s.id, &after, None).unwrap(), Code::NOT_HEAD_KEY, "a step after a closing step");
-}
-
-// spec/wire.md §8 (closing step: a zero step key, a zero claims hash), spec/sync-ids.md §6
-// (Register: a child of the head only), spec/sync-hostile.md §2 (A removed admin holding the delete key of a
-// step: it closes S only at a node still at a head whose delete key it holds; Register refuses both): a closing step with a claims hash is refused
-// (2); once the head moved past the removal, the removed admin's closing step of its old head is
-// no child of the head, and one under the new head fails its signature: both refused (9).
-#[test]
-fn register_refuses_a_removed_admins_closing_step_past_its_head_spec_sync_hostile_2() {
-    let dev = Dev::new();
-    let mut s = Sid::new(10);
-    let mut st = unread(&dev, &s);
-    let g = s.steps[0].0.clone();
-    let mut hashed = g.closing(&s.delete());
-    hashed.claims_hash = [1; 32];
-    hashed.sig = s.delete().sign(osis_crypto::Domain::SyncStep, &hashed.digest());
-    assert_eq!(st.take_register(&s.id, &hashed, None).unwrap(), Code::MALFORMED, "a closing step with a claims hash");
-    let old = s.remove_admin(70);
-    let (next, cs) = s.steps[1].clone();
-    assert_eq!(st.take_register(&s.id, &next, Some(&cs)).unwrap(), Code::OK);
-    assert_eq!(st.take_register(&s.id, &g.closing(&old), None).unwrap(), Code::NOT_HEAD_KEY, "closed under an old head");
-    assert_eq!(st.take_register(&s.id, &next.closing(&old), None).unwrap(), Code::NOT_HEAD_KEY, "closed by an old delete key");
-    assert_eq!(st.head(&s.id).unwrap().as_ref(), Some(&next));
-    assert_eq!(st.take_register(&s.id, &next.closing(&s.delete()), None).unwrap(), Code::OK, "the current admin closes");
 }
 
 // spec/sync-ids.md §6 (claim set hash): a claim set registered with a step must hash to the
@@ -1285,7 +1227,7 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
     .unwrap();
     st.set_first_synced(&s.id).unwrap();
     assert!(st.first_synced(&s.id).unwrap());
-    st.shred(&s.id, false).unwrap();
+    st.shred(&s.id).unwrap();
     assert!(!st.first_synced(&s.id).unwrap(), "S's first sync goes with it (spec/sync-streams.md §5)");
     assert!(st.with_tx(|t| t.record_get_row(&rec, b'O', &s.id, b"k")).unwrap().is_none(), "S's rows in every record go");
     assert!(st.with_tx(|t| t.record_get_row(&rec, b'O', &other, b"k")).unwrap().is_some());
@@ -1328,7 +1270,7 @@ fn ops(st: &mut Store, s: &Sid, rec: RecordId, child: &(Step, ClaimSet), step: u
         }
         11 => st.take_register(&s.id, &child.0, Some(&child.1)).unwrap(),
         12 => code_of(st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 2_000)).unwrap()),
-        _ => code_of(st.shred(&s.id, false).is_ok()),
+        _ => code_of(st.shred(&s.id).is_ok()),
     };
     assert_eq!(code, Code::OK, "op {step}");
 }

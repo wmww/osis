@@ -82,7 +82,6 @@ fn a_delete_seen_before_a_restart_is_logged_again_once_after_spec_sync_judgement
     w.run();
     store_deletes(&mut w, &s, &c);
     w.run();
-    assert!(w.store(0).deletes_known(&s).unwrap(), "node 0 saw the delete");
     assert_eq!(encryptions(&mut w, &c), before, "logging again waits on the role commit");
     // from the restart on node 1 says it is full for S once shown an entry, which ends the wait
     w.lie(0, None);

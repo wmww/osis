@@ -60,17 +60,6 @@ pub const LEAVING: &[u8] = b"hr/";
 /// History cursors (`Indexes::leave_from`): `hf/` + aspect key, the due wall ms (8 bytes), then
 /// 0, or 1 + the last place out (`Ts`, commit ID).
 pub const LEAVE_FROM: &[u8] = b"hf/";
-/// Things destroyed for good here: a purge request destroying them is past its window
-/// (`retention::destroy::keeps`), so no minting of them is taken again: `td/` + tid. Kept for good.
-pub const DESTROYED: &[u8] = b"td/";
-/// Things destroyed here that keep nothing (their record gone) whose own secrets (`k/`) are still
-/// held for node-sync's deletes of their commits' entries (`retention::destroy::hold_secrets`):
-/// `kd/` + tid, until `Engine::drop_destroyed_secrets`.
-pub const DESTROYED_SECRETS: &[u8] = b"kd/";
-/// The sync IDs of a destroyed thing with secrets of its own, its `sync.0` value as its destruction
-/// dropped it: `kl/` + tid, until node-sync emptied them (`Engine::sync_ids_emptied`) or the
-/// destruction fell (`retention::destroy::keep_sync_ids`).
-pub const DESTROYED_SYNC_IDS: &[u8] = b"kl/";
 /// Commits voided by overlapping session ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
 /// `ad/<commit>`: explicit demotions this node has not answered with addenda yet

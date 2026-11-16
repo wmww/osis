@@ -1045,7 +1045,7 @@ fn a_shredded_full_s_untells_full_spec_sync_streams_4() {
     p.b.join(p.now, k.id);
     p.run();
     assert!(p.a.streams.known().full(C, &k.id));
-    p.b.store.shred(&k.id, false).unwrap();
+    p.b.store.shred(&k.id).unwrap();
     p.b.store.set_caps(&Caps { policy: BTreeMap::from([("bytes".to_string(), 1_000_000)]), ..Caps::default() });
     assert_eq!(p.b.store.take_register(&k.id, &k.genesis.0, Some(&k.genesis.1)).unwrap(), Code::OK);
     p.run();
