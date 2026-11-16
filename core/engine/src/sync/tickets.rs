@@ -179,12 +179,17 @@ impl Engine {
         })
     }
 
-    /// The sync secrets of kept-unread `s`'s things that the tickets held here naming `s` give,
-    /// by epoch: every one of its things alike (spec/sync.md §3 Kept sync IDs).
-    pub fn ticket_sync_secrets(&mut self, s: &SyncId) -> Vec<(Epoch, Secret32)> {
+    /// The held sync secrets of kept-unread `s`'s things, by epoch: those the tickets held here
+    /// naming `s` give, and those held from the node's own reading (a node lowered to sync keeps
+    /// its sync secrets, `rotation::lost`); every one of its things alike (spec/sync.md §3 Kept
+    /// sync IDs, Held sync secrets).
+    pub fn kept_sync_secrets(&mut self, s: &SyncId) -> Vec<(Epoch, Secret32)> {
         let Ok(things) = self.sync_things_of(s) else { return Vec::new() };
         let mut out = Vec::new();
         for t in things {
+            if let Some(e) = self.core.epochs(&t) {
+                out.extend(e.role(Role::Sync).held_newest_first().into_iter().map(|(ep, x)| (ep, x.clone())));
+            }
             let Ok(all) = self.opened_tickets(&t) else { continue };
             out.extend(all.into_iter().filter(|(k, o)| k.role == Role::Sync && o.role == Role::Sync && k.sync_id == *s).map(|(_, o)| (o.epoch, o.secret)));
         }

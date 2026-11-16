@@ -393,13 +393,11 @@ fn a_keyless_grant_reads_nothing_through_it_spec_crypto_4() {
 
 // spec/sync-set.md §2 (What a held ticket does), §4 (Declining is doing nothing): Alice's T1 is
 // made under T0 and held from it; Bob keeps T1 unread by a sync ticket, then is granted read on
-// T0, T1's first admin, which gives him read on T1 by chain. He never accepts T0, so he holds no
-// secret of T0, no role commit of T1 and no read secret of T1: the implementation keeps T1
-// unread, where held-model reads it (its ring takes every open ticket's keys, accepted or not).
-// Which is right is open (issues/reference-graph.md Status); accepting T0 too, Bob reads T1.
+// T0, T1's first admin, which gives him read on T1 by chain. A ticket's secret is taken only at a
+// strong to its thing, so until he accepts T0 he holds no secret of T0, no role commit of T1 and
+// no read secret of T1: T1 stays unread. Accepting T0, he reads T1.
 #[test]
-#[ignore = "issues/reference-graph.md"]
-fn repro_a_sync_ticket_beside_a_read_role_by_chain_reads_the_thing_spec_sync_set_2() {
+fn a_read_role_by_chain_through_an_unaccepted_thing_reads_nothing_spec_sync_set_4() {
     let mut w = contacts();
     let t0 = make(&mut w, 0, None, "v1");
     let t1 = make(&mut w, 0, Some(t0), "v2");
@@ -412,6 +410,83 @@ fn repro_a_sync_ticket_beside_a_read_role_by_chain_reads_the_thing_spec_sync_set
     assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Unread), "kept unread by the sync ticket");
     w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Read))).unwrap();
     w.run();
-    assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("v2".into())), "Bob reads T1");
+    assert_eq!(value(&mut w, 1, &t1), None, "T0 not accepted: Bob reads no T1");
+    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Unread));
+    strong(&mut w, 1, None, t0, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("v2".into())), "T0 accepted: Bob reads T1");
     assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Read));
+}
+
+// spec/permissions.md §3 (Lost access), spec/sync-set.md §3 (Lowering from read to sync): Alice
+// makes T1 under T0 and grants Bob write on T1 (T1's own keys); she then lowers T0's record edge
+// on T1 to sync, her only path to a role on T1. She loses read access to T1: she reads none of
+// it and keeps it unread by the sync secret T0's sync role gives; Bob still reads it.
+#[test]
+fn lowering_the_makers_only_path_to_sync_keeps_the_thing_unread_spec_permissions_3() {
+    let mut w = contacts();
+    let t0 = make(&mut w, 0, None, "v1");
+    let t1 = make(&mut w, 0, Some(t0), "v2");
+    strong(&mut w, 0, Some(t0), t1, true);
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Write))).unwrap();
+    w.run();
+    strong(&mut w, 1, None, t1, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), Some(Value::Str("v2".into())));
+    w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: Some(edge(Role::Sync)), retain: None })).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("v2".into())), "Bob still reads T1");
+    assert_eq!(value(&mut w, 0, &t1), None, "Alice lost read on T1");
+    assert_eq!(holding(&mut w, 0, &t1), Some(Holding::Unread), "she keeps it unread at sync");
+}
+
+// spec/sync-judgement.md §6 (Read and unread move), spec/sync.md §3 (Held sync secrets): Alice,
+// T1's only reader, grants Bob read on it and lowers T0's record edge on T1 to sync. She keeps
+// T1 unread by the sync secret held from her own reading, its store kept: Bob, accepting only
+// then, reads T1 from it.
+#[test]
+fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_judgement_6() {
+    let mut w = contacts();
+    let t0 = make(&mut w, 0, None, "v1");
+    let t1 = make(&mut w, 0, Some(t0), "v2");
+    strong(&mut w, 0, Some(t0), t1, true);
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    w.run();
+    w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: Some(edge(Role::Sync)), retain: None })).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 0, &t1), None);
+    assert_eq!(holding(&mut w, 0, &t1), Some(Holding::Unread));
+    strong(&mut w, 1, None, t1, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("v2".into())), "Bob accepts later and reads");
+}
+
+// spec/permissions.md §3 (Lost access): Alice makes T1 under T0, grants Bob sync on it, writes,
+// then removes T0's record edge on T1, her only path to T1. Right after that write her read sync
+// IDs hold entries waiting for a read secret that are not parked (store::Follow::lost_parks), so
+// no later secret would open them (issues/reference-graph.md Status).
+#[test]
+#[ignore = "issues/reference-graph.md"]
+fn repro_removing_the_makers_only_path_leaves_entries_unparked_spec_permissions_3() {
+    let mut w = contacts();
+    w.parks = true;
+    let t0 = make(&mut w, 0, None, "v1");
+    let t1 = make(&mut w, 0, Some(t0), "v2");
+    strong(&mut w, 0, Some(t0), t1, true);
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Sync))).unwrap();
+    w.run();
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t1, &ak(), &Value::Str("v3".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.check_parks();
+    w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: t0, new: None, retain: None })).unwrap();
+    w.check_parks();
+    w.run();
+    w.check_parks();
+    assert_eq!(value(&mut w, 0, &t1), None, "Alice lost T1");
 }

@@ -111,6 +111,11 @@ impl World {
     pub fn ring(&self, reads: &Set) -> Set {
         reads.iter().flat_map(|&r| self.keys_of(r)).collect()
     }
+    /// The keyed things a node reading every thing in `reads` holds a sync secret of: those they
+    /// hold sync or above on.
+    pub fn sync_ring(&self, reads: &Set) -> Set {
+        reads.iter().flat_map(|&r| self.roles_from(r).into_keys().filter(|&u| self.keyed(u))).collect()
+    }
     /// Whether `keys` open `x`: its secrets come from a keyed thing among them.
     pub fn opens(&self, keys: &Set, x: T) -> bool {
         match self.kinds[x] {
@@ -400,13 +405,19 @@ pub struct NodeView {
 pub struct Closure {
     /// Keyed things read: entered by keys or an open ticket, or in a sync unit entered so.
     pub read: Set,
-    /// Keyed things stored unread: in a sync unit entered by a sync-only ticket, and not read.
+    /// Keyed things stored unread: in a sync unit entered by a sync secret (a sync-only ticket or
+    /// the node's keys), and not read.
     pub stored: Set,
     /// Every thing the node holds.
     pub held: Set,
     /// What some way of obtaining covers: the sync units entered and the local sync unit (the node
     /// root's strongs walked by the node's keys).
     pub carried: Set,
+    /// The node's keys: those of every keyed thing read. An open ticket gives its keys only where
+    /// the walk enters its thing (spec/sync-set.md §4 Declining is doing nothing).
+    pub keys: Set,
+    /// The keyed things whose sync secret the node's keys give (they hold sync or above there).
+    pub synced: Set,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -419,21 +430,35 @@ pub enum Walk {
     Literal,
 }
 
-/// The node's keys: what its open tickets read, with what those read by grants ("or already
-/// holds its keys").
-pub fn node_ring(w: &World, n: &NodeView) -> Set {
-    w.ring(&n.tickets.iter().filter(|t| *t.1 == Ticket::Open).map(|t| *t.0).collect())
+/// The node closure: the walk below with the node's keys and sync secrets, the least sets that
+/// the keyed things it reads yield (a ticket's secret is taken only at a strong to its thing, so
+/// keys grow only as the walk enters things).
+pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
+    let (mut ring, mut sync) = (Set::new(), Set::new());
+    loop {
+        let mut c = walk_with(w, e, n, walk, &ring, &sync);
+        let next = (w.ring(&c.read), w.sync_ring(&c.read));
+        if next == (ring.clone(), sync.clone()) {
+            (c.keys, c.synced) = (ring, sync);
+            return c;
+        }
+        (ring, sync) = next;
+    }
 }
 
-pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
-    let ring = node_ring(w, n);
+/// The walk with keys `ring` and sync secrets `sync`: a keyed thing reached is read where `ring`
+/// holds its keys or an open ticket for it is held, else kept unread where `sync` holds its sync
+/// secret or a sync-only ticket for it is held.
+fn walk_with(w: &World, e: &Edges, n: &NodeView, walk: Walk, ring: &Set, sync: &Set) -> Closure {
+    let opened = |k: &T| ring.contains(k) || n.tickets.get(k) == Some(&Ticket::Open);
+    let synced = |k: &T| sync.contains(k) || n.tickets.get(k) == Some(&Ticket::SyncOnly);
     let mut c = Closure::default();
     let mut keyed = vec![];
     let mut stack = vec![];
     for &r in &n.roots {
         if w.keyed(r) {
             keyed.push(r);
-        } else if w.opens(&ring, r) && c.held.insert(r) {
+        } else if w.opens(ring, r) && c.held.insert(r) {
             stack.push(r);
         }
     }
@@ -444,7 +469,7 @@ pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
                 for y in targets(e, x) {
                     if w.keyed(y) {
                         keyed.push(y);
-                    } else if w.opens(&ring, y) && c.held.insert(y) {
+                    } else if w.opens(ring, y) && c.held.insert(y) {
                         stack.push(y);
                     }
                 }
@@ -452,8 +477,8 @@ pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
             c.carried = c.held.clone();
             let mut done = Set::new();
             while let Some(k) = keyed.pop() {
-                let open = ring.contains(&k);
-                if !(open || n.tickets.get(&k) == Some(&Ticket::SyncOnly)) || !done.insert(k) {
+                let open = opened(&k);
+                if !(open || synced(&k)) || !done.insert(k) {
                     continue;
                 }
                 let p = unit(w, k, e);
@@ -476,11 +501,11 @@ pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
             let mut seen: Set = stack.iter().copied().collect();
             while let Some(x) = stack.pop() {
                 let follow = if w.keyed(x) {
-                    if ring.contains(&x) {
+                    if opened(&x) {
                         c.read.insert(x);
                         c.held.insert(x);
                         true
-                    } else if n.tickets.get(&x) == Some(&Ticket::SyncOnly) {
+                    } else if synced(&x) {
                         c.stored.insert(x);
                         c.held.extend(unit(w, x, e));
                         false
@@ -493,7 +518,7 @@ pub fn closure(w: &World, e: &Edges, n: &NodeView, walk: Walk) -> Closure {
                 };
                 if follow {
                     for y in targets(e, x) {
-                        if (w.opens(&ring, y) || w.keyed(y)) && seen.insert(y) {
+                        if (w.opens(ring, y) || w.keyed(y)) && seen.insert(y) {
                             stack.push(y);
                         }
                     }

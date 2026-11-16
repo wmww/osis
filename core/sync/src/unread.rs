@@ -1,7 +1,8 @@
 //! Judgement for kept-unread sync IDs (spec/sync-judgement.md §6, spec/sync-set.md §3).
 //!
 //! Principle: a node keeping S unread holds the sync secrets of S's thing that the tickets it
-//! holds give (spec/sync.md §3); it holds no engine state of what S carries. Its inputs are the
+//! holds give and those it held when it stopped reading (spec/sync.md §3); it holds no engine
+//! state of what S carries. Its inputs are the
 //! sync IDs this node syncs kept unread, those secrets and the store's path of S. It keeps S
 //! while its head's sync key is one a held secret derives; at a head whose key none derives it
 //! drops its copy and takes nothing (`Store::set_unheld`), showing only the secrets no step of its
@@ -197,7 +198,7 @@ impl Unread {
 
 /// One S's judgement, reading its own keys only.
 fn judge_s(cx: &mut Cx, s: &SyncId) -> Result<Kept> {
-    let secrets = cx.engine.ticket_sync_secrets(s);
+    let secrets = cx.engine.kept_sync_secrets(s);
     let path = cx.store.path(s)?;
     Ok(judge(&Judged { s: *s, secrets: &secrets, steps: path.as_ref().map(|p| p.steps.as_slice()).unwrap_or_default() }))
 }

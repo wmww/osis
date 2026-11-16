@@ -757,7 +757,7 @@ impl World {
     /// With `parks`, every entry of each node on waiting for a read secret is parked
     /// (`Node::lost_parks`, a full scan): after each step, not each delivery (an entry left
     /// unparked stays unopened, so the step's end still finds it).
-    fn check_parks(&mut self) {
+    pub fn check_parks(&mut self) {
         if !self.parks {
             return;
         }

@@ -141,7 +141,9 @@ impl Core {
 
     /// Whether actor `x` may read thing `t` now: `t`'s secrets derive from `x`'s, or `x` holds
     /// read or above on the actor they derive from (spec/sync-judgement.md §1, entitlement),
-    /// through grants with key access (`reads_now`).
+    /// through grants with key access (`reads_now`). An actor up the record chain of one with
+    /// secrets of its own reads it only by its role there: a record edge lowered or removed
+    /// takes that role (spec/permissions.md §1).
     /// This node's own account's devices actor reads as the account does (its readers are the
     /// account's nodes); another account's devices actor reads as itself: what this node seals,
     /// boxes or opens never reads another account's grants as its own (chain placement alone
@@ -149,10 +151,7 @@ impl Core {
     pub fn may_read(&self, x: &Tid, t: &Tid) -> bool {
         let x = &self.account_devices().filter(|(_, d)| d == x).map_or(*x, |(p, _)| p);
         let Some(a) = self.secret_actor(t) else { return false };
-        if self.record_chain(&a).filter_map(|s| s.thing()).any(|c| c == *x) {
-            return true;
-        }
-        self.reads_now(x, &a)
+        a == *x || self.reads_now(x, &a)
     }
 }
 

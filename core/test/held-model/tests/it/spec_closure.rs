@@ -464,7 +464,8 @@ fn p3_unlinking_takes_it_out_for_every_reader() {
 }
 
 /// (c) Grants chained through two actors: X opens Y through W by the lowest role along the
-/// chain, the best chain counting; W is among X's keys but in X's sync unit only by a strong.
+/// chain, the best chain counting (sync along it: a reader of X keeps Y unread); W is among X's
+/// keys but in X's sync unit only by a strong.
 #[test]
 fn p3_grant_chains() {
     use Role::*;
@@ -484,7 +485,10 @@ fn p3_grant_chains() {
         let w = worldr(&[K, K, K], g);
         assert_eq!(w.keys_of(0).contains(&2), opens, "{g:?}");
         assert_eq!(unit(&w, 0, &e), if opens { set(&[0, 2]) } else { set(&[0]) }, "{g:?}");
-        assert_eq!(closure(&w, &e, &reader, Walk::Units).held.contains(&2), opens, "{g:?}");
+        let c = closure(&w, &e, &reader, Walk::Units);
+        assert_eq!(c.read.contains(&2), opens, "{g:?}");
+        // a role of sync alone gives Y's sync secret: kept unread
+        assert_eq!(c.held.contains(&2), w.roles_from(0).contains_key(&2), "{g:?}");
         assert!(!unit(&w, 0, &e).contains(&1));
     }
 }
@@ -520,7 +524,7 @@ fn p3_worlds() -> Vec<(World, Edges, NodeView)> {
 #[test]
 fn p3_strong_never_changes_what_no_ticket_holds_exhaustive() {
     for (w, e, n) in p3_worlds() {
-        let ring = node_ring(&w, &n);
+        let ring = w.ring(&n.tickets.iter().filter(|t| *t.1 == Ticket::Open).map(|t| *t.0).collect());
         let c = closure(&w, &e, &n, Walk::Units);
         let stores: Set = n.tickets.iter().filter(|t| *t.1 == Ticket::SyncOnly).flat_map(|t| w.keys_of(*t.0)).collect();
         assert!(c.read.is_subset(&ring), "{w:?} {e:?} {n:?}");
@@ -542,7 +546,7 @@ fn p3_strong_never_changes_what_no_ticket_holds_exhaustive() {
 /// P3: what a node's closure holds is carried under a sync ID it syncs (or is its local sync unit).
 /// Walked sync unit by sync unit it is; walked by "the closure walks strongs", a plain thing the sync unit's
 /// keys cannot open but the node can leads to things no sync ID it syncs carries. Minimal: X, U
-/// keyed with open tickets; X -> L -> M, L and M plain from U; X holds no role on U.
+/// keyed with open tickets, both node roots; X -> L -> M, L and M plain from U; X holds no role on U.
 #[test]
 fn p3_held_is_carried_exhaustive() {
     let mut literal_fails = 0;
@@ -557,10 +561,10 @@ fn p3_held_is_carried_exhaustive() {
     assert!(literal_fails > 0);
     let w = world(&[K, K, p(1), p(1)], &[]);
     let e = es(&[(0, 2), (2, 3)]);
-    let n = NodeView { roots: set(&[0]), tickets: tickets(&[0, 1], &[]) };
+    let n = NodeView { roots: set(&[0, 1]), tickets: tickets(&[0, 1], &[]) };
     let l = closure(&w, &e, &n, Walk::Literal);
     assert!(l.held.contains(&3) && !l.carried.contains(&3));
-    assert_eq!(closure(&w, &e, &n, Walk::Units).held, set(&[0]));
+    assert_eq!(closure(&w, &e, &n, Walk::Units).held, set(&[0, 1]));
 }
 
 /// P3, the making rule: the commit must leave the new thing in the node closure. X and U keyed
