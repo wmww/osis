@@ -249,6 +249,18 @@ impl AccountView {
         self.rotations.iter().any(|x| !x.is_merge() && x.at != *r && x.supersedes.contains(r) && d.minter.get(&x.id) == Some(node))
     }
 
+    /// Whether a held plain rotation minted by `node` carries held revocation `t`: `t` is on its
+    /// line or taken by a rotation on it (this node's account only).
+    pub(crate) fn carried_by(&self, t: &CommitId, node: &Tid) -> bool {
+        let Some(d) = &self.devices else { return false };
+        self.rotations.iter().filter(|x| !x.is_merge() && d.minter.get(&x.id) == Some(node)).any(|x| self.carries(&x.id, t))
+    }
+
+    /// Whether held rotation `r`'s line carries revocation `t`: on it, or taken by a rotation on it.
+    pub(crate) fn carries(&self, r: &CommitId, t: &CommitId) -> bool {
+        self.line(r).is_some_and(|l| l.contains(t) || l.iter().any(|q| self.takes_of(q).contains(t)))
+    }
+
     /// The node that minted counting rotation `r` (a merge: a certifier; this node's account
     /// only): what this node answers as its account's word, never what counts.
     pub(crate) fn authorized_by(&self, r: &CommitId) -> Option<Tid> {

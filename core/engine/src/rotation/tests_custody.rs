@@ -185,6 +185,8 @@ struct Run {
     /// Taken revocations (P) or followed rotations (outside) at the last compare.
     taken: [Vec<u32>; N],
     switched_at: [bool; N],
+    /// Deliveries share one millisecond (a hand test's receipts held at once).
+    same_ms: bool,
 }
 
 impl Run {
@@ -237,6 +239,7 @@ impl Run {
             tkeys: Default::default(),
             taken: Default::default(),
             switched_at: [false; N],
+            same_ms: false,
         }
     }
 
@@ -433,7 +436,9 @@ impl Run {
     }
 
     fn deliver(&mut self, to: usize, pk: &Package, what: &str) {
-        self.lp.advance(1);
+        if !self.same_ms {
+            self.lp.advance(1);
+        }
         match self.lp.deliver(to, pk) {
             Err(e) => {
                 if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local {
@@ -1479,16 +1484,18 @@ impl Run {
     fn settled(&mut self) {
         let w = &self.w;
         let removal = w.removal;
-        // bounded: one event per node per plain rotation, none empty
+        // bounded: each plain rotation carries an event its maker's earlier ones do not; a
+        // removal or answer is carried once (a take recurs in the header of a rotation made for
+        // another event on a line not carrying it)
         for n in [A, B, C] {
             let mut seen: BTreeSet<(u8, u32)> = BTreeSet::new();
             for i in w.items.iter().filter(|i| i.author == n && matches!(i.kind, MK::Plain { .. }) && !i.script) {
                 let evs: Vec<(u8, u32)> = w.removes(i.id).iter().map(|y| (0, *y as u32)).chain(w.takes(i.id).iter().map(|r| (1, *r))).chain(w.answers(i.id).iter().map(|q| (2, *q))).collect();
-                if evs.is_empty() {
-                    self.fail(&format!("bounded: {}'s rotation #{} carries no event", cm::NAMES[n], i.id));
+                if !evs.iter().any(|e| !seen.contains(e)) {
+                    self.fail(&format!("bounded: {}'s rotation #{} carries no new event", cm::NAMES[n], i.id));
                 }
                 for e in evs {
-                    if !seen.insert(e) {
+                    if !seen.insert(e) && e.0 != 1 {
                         self.fail(&format!("bounded: {} carries event {e:?} twice (#{})", cm::NAMES[n], i.id));
                     }
                 }
@@ -1655,6 +1662,88 @@ fn a_seed_reseal_is_made_with_its_key_in_account_already_spec_crypto_9() {
     // fails inside where the model re-seals and the engine does not
     r.act(C, None, false);
     assert!(r.w.items.iter().any(|i| matches!(i.kind, MK::Reseal { .. }) && i.author == C && i.boxed[T]), "C re-seals X's epoch's seed to T");
+}
+
+// spec/permissions.md §5.5 (Honest nodes of P): B takes X's revocation of A (its seed not boxed
+// to B, so B cannot merge) in one plain rotation; X's certificate joining X's and A's epochs
+// beside it becomes B's preferred head, which does not carry the revocation. B owes nothing
+// more: its own rotation carries it (roles-model
+// `a_taken_revocation_is_carried_once_whatever_the_preferred_head`).
+#[test]
+fn a_taken_revocation_is_carried_once_whatever_the_preferred_head_spec_permissions_5_5() {
+    let mut r = Run::new(0);
+    let p_all: [bool; N] = std::array::from_fn(|m| m < OWN);
+    let x0 = r.x_rotation(&Line::new(), vec![], vec![], X, vec![], vec![], p_all, false).unwrap();
+    let a0 = r.script_rotation(A).unwrap();
+    r.send(a0, X);
+    let la = r.w.line(a0);
+    let bx: [bool; N] = std::array::from_fn(|m| [A, C, X].contains(&m));
+    let rx = r.x_rotation(&la, vec![A], vec![], X, vec![], vec![], bx, false).unwrap();
+    for id in [x0, a0, rx] {
+        r.send(id, B);
+    }
+    let made = r.act(B, None, false);
+    let b1 = *made.iter().find(|id| matches!(r.w.item(**id).kind, MK::Plain { .. })).expect("B takes X's revocation in a plain rotation");
+    assert_eq!(r.w.takes(b1), [rx]);
+    let lx = r.w.line(x0);
+    let cert = r.x_cert(&lx, &la, X).unwrap();
+    r.send(cert, B);
+    let j = r.judge(B);
+    assert_eq!(j.preferred, r.w.mints(cert), "the merge is B's preferred head");
+    // fails inside where the engine rotates and the model does not
+    let made = r.act(B, None, false);
+    assert!(!made.iter().any(|id| matches!(r.w.item(*id).kind, MK::Plain { .. })), "B takes X's revocation once");
+}
+
+// spec/permissions.md §5.4 (Placing, Following outside P): honest lines only. A removes X at its
+// own rotation's epoch; C, unaware of both, removes T; B certifies the merge of A's rotation and
+// C's removal and rotates on it; C and A certify the merge of A's removal and C's. R2 holds C's
+// removal first, then A's rotation and removal, B's certificate and rotation and C's certificate
+// in one millisecond. Of the two merges holding C's removal it follows the one placed first: by
+// ID (a merge by its merge ID) before depth, so A and C's where its ID and A's removal's sort
+// before B's merge's, though deeper. The world is the first of a few start delays whose IDs sort
+// so (placing by depth first would follow B's).
+#[test]
+fn an_outsider_places_one_milliseconds_rotations_by_id_before_depth_spec_permissions_5_4() {
+    let cert = |r: &mut Run, made: Vec<u32>| *made.iter().find(|id| matches!(r.w.item(**id).kind, MK::Cert { .. })).expect("a certificate");
+    for delay in 0..16 {
+        let mut r = Run::new(0);
+        r.lp.advance(delay);
+        let a1 = r.script_rotation(A).unwrap();
+        for to in [B, X] {
+            r.send(a1, to);
+        }
+        let rm = r.act(A, Some(X), false)[0];
+        r.w.removal = rm;
+        let c8 = r.act(C, Some(T), false)[0];
+        r.send(c8, B);
+        let made = r.act(B, None, false);
+        let b18 = cert(&mut r, made);
+        let b21 = r.script_rotation(B).unwrap();
+        for id in [a1, rm] {
+            r.send(id, C);
+        }
+        let made = r.act(C, None, false);
+        let c23 = cert(&mut r, made);
+        let (m18, m23) = (r.w.mints(b18), r.w.mints(c23));
+        let tie = |r: &Run, l: &Line| r.w.merge_tie[l];
+        if ![r.w.tie(a1), r.w.tie(rm), tie(&r, &m23)].iter().all(|t| *t < tie(&r, &m18)) {
+            continue;
+        }
+        r.send(c8, R2);
+        r.lp.advance(1);
+        r.same_ms = true;
+        for id in [a1, rm, b18, b21, c23] {
+            r.send(id, R2);
+        }
+        r.same_ms = false;
+        // fails inside where R2 follows another line than the model's
+        r.compare();
+        let j = r.judge(R2);
+        assert!(j.followed == m23 && !j.counting.contains(&r.w.line(b21)), "R2 follows A and C's merge, not B's rotation on its own: {j:?}");
+        return;
+    }
+    panic!("no start delay sorts the IDs so");
 }
 
 fn tally(runs: &[Reached]) {

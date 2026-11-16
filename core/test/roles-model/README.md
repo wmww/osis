@@ -42,7 +42,7 @@ Searches: `cargo run --bin roles-model -- N custody` (random), `-- 0 custody-exh
 
 | Run | Worlds | Failing checks |
 |---|---|---|
-| `-- 8000 custody` | 8,000 (3,986 lockstep; a node of P taking X's revocation first 216, its own removal 109, switches back checked 206, B on X's side for good 32; twin certificates 4,467; the listing-cycle shape 2,793; X withholding 1,062, signing as Z 2,606) | 0 (`random_worlds_hold_large`'s 2,000 hit `bounded` once: issues/retake-on-thief-merge.md) |
+| `-- 8000 custody` | 8,000 (3,986 lockstep; a node of P taking X's revocation first 216, its own removal 109, switches back checked 206, B on X's side for good 32; twin certificates 4,467; the listing-cycle shape 2,793; X withholding 1,062, signing as Z 2,606) | 0 |
 | `-- 0 custody-exh` | 77,440 (X's side taken first 5,376, own removal 2,688; twin certificates 36,720; listing-cycle shape 39,680) | 0 |
 | `-- 800 custody-judged` | 800 | 999 (held keys lost 661, a switch not taking 307, flips 26, settled unwarned 5) |
 | `-- 800 custody-roster-bare` | 800 | 23 (an honest rotation boxes out a device no taken removal removes 20) |

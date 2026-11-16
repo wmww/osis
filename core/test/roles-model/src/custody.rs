@@ -36,7 +36,8 @@
 //! - **Honest policy** (`act`): a node on its own roster holding its preferred head's seed owes a
 //!   plain rotation for a removal, for an answer (a held rotation that does not stand or stands
 //!   with a revocation not taken, on no line a counting rotation answered, that it has not
-//!   answered), or for a taken revocation its preferred line does not carry when it cannot merge;
+//!   answered), or for a taken revocation neither its preferred line nor a plain rotation of its
+//!   own carries when it cannot merge;
 //!   then, following several heads and holding every tip's seed, it certifies the merge of them
 //!   all; it re-seals its heads' tip seeds to roster devices it sees without them; it rotates
 //!   t at its head while no t epoch is current there or a current one (counting, carried by no
@@ -64,8 +65,10 @@
 //!   included).
 //! - One roster source: an honest rotation leaves out of its boxes only devices removed by a
 //!   revocation its maker took (one held, even with its chain, but not taken removes no one).
-//! - Rotations are bounded: no honest node carries one event (removal, take, answer) in two plain
-//!   rotations, none makes an empty one, and none rotates in the settle's last round.
+//! - Rotations are bounded: each honest plain rotation carries an event (removal, take, answer)
+//!   none of its maker's earlier ones carries, a removal or answer in one only (a take recurs in
+//!   the header of a rotation owed for another event, on a line not carrying it), and none
+//!   rotates in the settle's last round.
 //! - Merge secrecy: X holds the seed (or t epoch) of no epoch minted by an honest node that had
 //!   taken X's removal; an honest rotation made where the removal is taken boxes neither X nor Z.
 //! - Revocation holds, no flip (P's taken revocations and outsiders' followed rotations only
@@ -775,6 +778,10 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
     let union: Line = j.heads.iter().flatten().copied().collect();
     let mergeable = j.heads.len() > 1 && j.keys.holds(w, &union) || w.control == Control::MergeRandom && j.heads.len() > 1 && j.heads.iter().all(|e| j.keys.holds(w, e));
     let takes: Vec<u32> = j.taken.iter().copied().filter(|r| !j.carries(w, &h, *r)).collect();
+    // a take is owed once: none where a plain rotation of its own carries it already (as an
+    // answer is owed only where none of its own answers)
+    let own_carries = |r: u32| j.held.iter().any(|i| w.item(*i).author == n && matches!(w.item(*i).kind, Kind::Plain { .. }) && j.carries(w, &w.line(*i), r));
+    let owed_take = takes.iter().any(|r| !own_carries(*r));
     let carries = w.control == Control::MergeCarries && mergeable && removes.is_none();
     let mut boxed = [false; N];
     for m in &j.roster {
@@ -782,7 +789,7 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
     }
     let mut head = h.clone();
     let rotated_for_removal = !carries && removes.is_some();
-    if !carries && (removes.is_some() || !answers.is_empty() || !takes.is_empty() && !mergeable) {
+    if !carries && (removes.is_some() || !answers.is_empty() || owed_take && !mergeable) {
         let id = w.add(Kind::Plain { at: h.clone(), removes: removes.into_iter().collect(), adds: vec![], takes: takes.clone(), answers: answers.clone() }, n, n, h.clone(), None, now, boxed);
         made.push(id);
         head = w.line(id);
@@ -1372,16 +1379,18 @@ pub fn check(w0: &World, st: &mut Stats) {
         vs
     }).collect();
     let fin = |v: usize| &views[v][end as usize];
-    // bounded: one event per node per plain rotation, none empty
+    // bounded: each plain rotation carries an event its maker's earlier ones do not; a removal
+    // or answer is carried once (a take recurs in the header of a rotation made for another event
+    // on a line not carrying it)
     for n in [A, B, C] {
         let mut seen: BTreeSet<(u8, u32)> = BTreeSet::new();
         for i in w.items.iter().filter(|i| i.author == n && matches!(i.kind, Kind::Plain { .. }) && !i.script) {
             let evs: Vec<(u8, u32)> = w.removes(i.id).iter().map(|y| (0, *y as u32)).chain(w.takes(i.id).iter().map(|r| (1, *r))).chain(w.answers(i.id).iter().map(|q| (2, *q))).collect();
-            if evs.is_empty() {
-                fails.push(format!("bounded: node {}'s rotation {} carries no event", NAMES[n], i.id));
+            if !evs.iter().any(|e| !seen.contains(e)) {
+                fails.push(format!("bounded: node {}'s rotation {} carries no new event", NAMES[n], i.id));
             }
             for e in evs {
-                if !seen.insert(e) {
+                if !seen.insert(e) && e.0 != 1 {
                     fails.push(format!("bounded: node {} carries event {e:?} twice (rotation {})", NAMES[n], i.id));
                 }
             }
@@ -1703,6 +1712,30 @@ mod tests {
         let (before, after) = switch_back(Control::None, B);
         assert!(before.out(B), "B took X's revocation of itself");
         assert!(!after.out(B) && after.followed.contains(&2) && after.preferred.contains(&2), "{after:?}");
+    }
+
+    /// B takes X's revocation of A (its seed not boxed to B, so B cannot merge) and carries it in
+    /// one plain rotation; X's certificate of two epochs beside that rotation becomes B's preferred
+    /// head, which does not carry the revocation. B owes nothing more: its own rotation carries it.
+    #[test]
+    fn a_taken_revocation_is_carried_once_whatever_the_preferred_head() {
+        let mut w = World::default();
+        let x0 = plain(&mut w, X, X, &Line::new(), &[], &[], &PS, 0);
+        let a0 = plain(&mut w, A, A, &Line::new(), &[], &[], &PS, 0);
+        let la = w.line(a0);
+        let rx = plain(&mut w, X, X, &la, &[A], &[], &[A, C, X], 1);
+        to(&mut w, &[x0, a0, rx], &[B], 1);
+        let made = act(&mut w, B, 2, None, false);
+        let b1 = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Plain { .. })).expect("B takes X's revocation in a plain rotation");
+        assert_eq!(w.takes(b1), [rx]);
+        let bx: [bool; N] = std::array::from_fn(|m| PS.contains(&m));
+        let (lx, la) = (w.line(x0), w.line(a0));
+        let cert = w.add(Kind::Cert { joined: vec![lx.clone(), la], takes: vec![], answers: vec![] }, X, X, lx, None, 3, bx);
+        to(&mut w, &[cert], &[B], 3);
+        let j = judge(&w, B, 4);
+        assert!(j.preferred == w.mints(cert) && !j.carries(&w, &j.preferred, rx), "the merge is B's preferred head: {j:?}");
+        let made = act(&mut w, B, 4, None, false);
+        assert!(!made.iter().any(|id| matches!(w.item(*id).kind, Kind::Plain { .. })), "B takes X's revocation once");
     }
 
     /// A removes X while C, apart, removes T; both merge the two heads on the same deliveries:

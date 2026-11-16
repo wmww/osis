@@ -613,9 +613,10 @@ fn unanswered(v: &super::account::AccountView, me: &Tid) -> Vec<CommitId> {
 /// What a node of the account owes its signing chain (spec/permissions.md §5.5), made now. Any
 /// node of the account makes it, none designated. First a plain rotation (`rotate_in`) where one
 /// is owed: a rotation it disregards stands unanswered (`unanswered`: superseded unnamed, so every
-/// reader that followed it is told), or a revocation it took is on no line of its preferred head
-/// (taken by no rotation on it) while it cannot make the merge (which carries every taken
-/// revocation, a counting one being on some head's line). A removal or addition is made with its
+/// reader that followed it is told), or a revocation it took that no plain rotation of its own
+/// carries is on no line of its preferred head (taken by no rotation on it) while it cannot make
+/// the merge (which carries every taken revocation, a counting one being on some head's line).
+/// So each event is owed once per node, as an answer is. A removal or addition is made with its
 /// own rotation (`Engine::remove_device`, `Engine::pair`). Then, following several heads and
 /// holding every tip's seed, the merge of them all (`merge_heads`): a function of the tips, so
 /// two nodes making it at once make one epoch. Looked at at the end of a complete pass of D's sync
@@ -632,12 +633,10 @@ pub(crate) fn rotations_due(tx: &mut Tx<'_>, done: &mut Done) -> Result<Vec<Comm
     }
     let held = tx.core.accounts.get(&p).cloned().ok_or(Error::Misuse("not an account held here"))?;
     let mergeable = merge_of(&v, &held, &v.heads()).is_some();
-    let pref = v.preferred();
-    let line: BTreeSet<CommitId> = v.line(&pref).unwrap_or_default();
-    let carried = |t: &CommitId| line.contains(t) || line.iter().any(|q| v.takes_of(q).contains(t));
-    let untaken = !mergeable && v.taken().iter().any(|t| !carried(t));
+    let (pref, me) = (v.preferred(), tx.core.id.tid());
+    let untaken = !mergeable && v.taken().iter().any(|t| !v.carries(&pref, t) && !v.carried_by(t, &me));
     let mut out = Vec::new();
-    if untaken || !unanswered(&v, &tx.core.id.tid()).is_empty() {
+    if untaken || !unanswered(&v, &me).is_empty() {
         out.extend(rotate_in(tx, p, &[], done)?);
     }
     out.extend(merge_heads(tx, p)?);
