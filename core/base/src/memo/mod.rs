@@ -1042,9 +1042,32 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
         self.stamps.wrote(&k, true);
         self.map.insert(k, v)
     }
+    /// Removes `k`; a removal of an absent key changes nothing and stamps nothing (it would
+    /// move the stamp of every absent key of its bucket).
     pub fn remove(&mut self, k: &K) -> Option<V> {
-        self.stamps.wrote(k, false);
-        self.map.remove(k)
+        let v = self.map.remove(k);
+        if v.is_some() {
+            self.stamps.wrote(k, false);
+        }
+        v
+    }
+    /// Sets `k` to what `f` makes of its value (`None`: absent, removed), stamping only a
+    /// change: an edit in place, never a removal and an insert (which would move the stamp of
+    /// every absent key of `k`'s bucket).
+    pub fn update(&mut self, k: K, f: impl FnOnce(Option<V>) -> Option<V>)
+    where
+        V: Clone + PartialEq,
+    {
+        let was = self.map.get(&k).cloned();
+        match f(was.clone()) {
+            now if now == was => {}
+            Some(v) => {
+                self.insert(k, v);
+            }
+            None => {
+                self.remove(&k);
+            }
+        }
     }
     /// A handle reading this map's keys (`Reader`, as `get` reads them).
     pub fn reader(&self) -> Reader {

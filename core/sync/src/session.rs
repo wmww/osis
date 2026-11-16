@@ -190,7 +190,7 @@ pub struct Session {
     frames: FrameDecoder,
     proofs: Proofs,
     proven: Proven,
-    proved: Vec<(Tid, [u8; 32])>,
+    acted_for: Option<Vec<(Tid, [u8; 32])>>,
     now: WallMs,
     up_at: WallMs,
     next_low: RequestId,
@@ -251,7 +251,7 @@ impl Session {
             frames,
             proofs: Proofs::Hello,
             proven: Proven::default(),
-            proved: Vec::new(),
+            acted_for: None,
             now: cx.now,
             up_at: cx.now,
             next_low: 0,
@@ -392,10 +392,11 @@ impl Session {
         self.proofs == Proofs::Done
     }
 
-    /// The actors this node proved on this connection (its Prove, or its Proved), each with the
-    /// key it proved with (an account's: its signing key at the epoch it proved).
-    pub fn proved(&self) -> &[(Tid, [u8; 32])] {
-        &self.proved
+    /// The actors this node acted for when it proved on this connection (its Prove, or its
+    /// Proved), each with its key (an account's: its signing key at that epoch), whether or not
+    /// its policy sent their proofs; none before it proved, and on a client connection.
+    pub fn acted_for(&self) -> Option<&[(Tid, [u8; 32])]> {
+        self.acted_for.as_deref()
     }
 
     /// The challenges and the listener's key, once the peer's Hello came.
@@ -555,25 +556,23 @@ impl Session {
     /// its key actors; none where its policy proves nothing to this peer (`Policy::identify`).
     fn prove(&mut self, cx: &mut Cx) -> Result<(), Close> {
         let Some(b) = self.binding else { return Ok(()) };
-        let proofs = if cx.policy.identify(None) {
-            let own = cx.engine.own_node_key(&self.peer.0).map_err(|_| Close("engine"))?;
-            self.signed(cx, own, false, &b.listener_challenge)?
-        } else {
-            Vec::new()
-        };
+        let own = cx.engine.own_node_key(&self.peer.0).map_err(|_| Close("engine"))?;
+        let proofs = self.signed(cx, own, cx.policy.identify(None), false, &b.listener_challenge)?;
         let rotations = with_rotations(cx, &proofs, |r| Msg::Prove { id: MAX_ID as RequestId, proofs: proofs.clone(), rotations: r })?;
         self.send_request(None, Msg::Prove { id: 0, proofs, rotations });
         Ok(())
     }
 
     /// This node's proofs over `challenge`, by `by_listener`, in proof order, at most
-    /// `MAX_PROOFS`; noted as what it proved here.
-    fn signed(&mut self, cx: &mut Cx, own_node: bool, by_listener: bool, challenge: &[u8; 32]) -> Result<Vec<ActorProof>, Close> {
+    /// `MAX_PROOFS`; none unless `identify` (its policy). What it acts for is noted either way.
+    fn signed(&mut self, cx: &mut Cx, own_node: bool, identify: bool, by_listener: bool, challenge: &[u8; 32]) -> Result<Vec<ActorProof>, Close> {
         let provers = cx.engine.provers(own_node).map_err(|_| Close("engine"))?;
+        self.acted_for = Some(provers.iter().map(|(key, record)| (record.tid(), key.verifying_key().to_bytes())).collect());
+        if !identify {
+            return Ok(Vec::new());
+        }
         let listener = self.listener_key.0;
-        let proofs: Vec<ActorProof> = provers.into_iter().take(MAX_PROOFS).map(|(key, record)| Prover { key, record }.sign(by_listener, challenge, &listener)).collect();
-        self.proved = proofs.iter().map(|p| (p.actor(), p.key)).collect();
-        Ok(proofs)
+        Ok(provers.into_iter().take(MAX_PROOFS).map(|(key, record)| Prover { key, record }.sign(by_listener, challenge, &listener)).collect())
     }
 
     /// What verified proofs show: an account only at an epoch open here; the first proof as the
@@ -653,7 +652,7 @@ impl Session {
         }
         let mine = cx.engine.account_tid();
         let own = proven.node.is_some() || (mine.is_some() && proven.account() == mine);
-        let proofs = if cx.policy.identify(Some(&proven)) { self.signed(cx, own, true, &b.dialer_challenge)? } else { Vec::new() };
+        let proofs = self.signed(cx, own, cx.policy.identify(Some(&proven)), true, &b.dialer_challenge)?;
         let rotations = with_rotations(cx, &proofs, |r| Msg::Proved { id: MAX_ID as RequestId, proofs: proofs.clone(), rotations: r })?;
         self.proven = proven;
         self.proofs = Proofs::Done;

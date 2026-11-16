@@ -146,7 +146,7 @@ fn max_peers_bounds_dials_in_flight_spec_sync_opens_1() {
 fn acting_for_a_new_actor_redials_spec_sync_opens_1() {
     let mut w = configured(two_nodes());
     // the dial up to node 0's proofs done, the connection live
-    let proved = |w: &World| w.links_of(0).iter().any(|(c, _)| w.node(0).node.session(*c).is_some_and(|s| !s.proved().is_empty()));
+    let proved = |w: &World| w.links_of(0).iter().any(|(c, _)| w.node(0).node.session(*c).is_some_and(|s| s.acted_for().is_some()));
     while !proved(&w) {
         assert!(w.step(), "the dial came up and proved");
     }
@@ -154,6 +154,27 @@ fn acting_for_a_new_actor_redials_spec_sync_opens_1() {
     assert_eq!(dials_to(&w, 0, 1), 2, "closed and dialed again at once");
     w.run();
     assert_eq!(ups_to(&w, 0, 1), 2);
+}
+
+// spec/sync-opens.md §1 (proves once): a connection where this node proved no actor (it acted for
+// none) closes too once it acts for one (an account made), and its dialer dials again; so a node
+// whose account's epoch was closed while it dialed (a sibling's rotation, its seed not yet held)
+// proves the account once the seed comes.
+#[test]
+fn acting_for_a_first_actor_redials_spec_sync_opens_1() {
+    let mut w = World::new(0);
+    w.add_node();
+    let n = w.add_bare_node();
+    let a = w.address(0);
+    w.configure(n, |c| c.dial = vec![a]);
+    let proved = |w: &World| w.links_of(n).iter().any(|(c, _)| w.node(n).node.session(*c).and_then(|s| s.acted_for()).is_some_and(|x| x.is_empty()));
+    while !proved(&w) {
+        assert!(w.step(), "the dial came up and proved nothing");
+    }
+    w.write(n, |e| e.create_account().expect("account"));
+    assert_eq!(dials_to(&w, n, 0), 2, "closed and dialed again at once");
+    w.run();
+    assert_eq!(ups_to(&w, n, 0), 2);
 }
 
 /// Whether node `i` holds a live connection from node `j` on which `j` proved its account with

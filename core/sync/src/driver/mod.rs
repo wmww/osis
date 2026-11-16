@@ -510,9 +510,9 @@ impl Node {
         Ok(())
     }
 
-    /// spec/sync-opens.md §1: a connection proves once, at its start: one where this node proved
-    /// its own and now acts for an actor it did not prove there, or for its account at another
-    /// epoch, closes, and its dialer dials again. The actors it acts for move only by its owner's
+    /// spec/sync-opens.md §1: a connection proves once, at its start: one where this node now
+    /// acts for an actor it did not act for when it proved there (none, a policy proving nothing,
+    /// counts), or for its account at another epoch, closes, and its dialer dials again. The actors it acts for move only by its owner's
     /// writes (an account taken up, a link key held, a rotation made) and its account's open
     /// epoch also by a rotation another node of it made, so they are read at `Wrote` and when
     /// that epoch moves, compared, and the sessions walked only on a move.
@@ -523,7 +523,7 @@ impl Node {
         if now == self.driver.proving {
             return Ok(());
         }
-        let stale: Vec<ConnId> = self.driver.sessions.conns().filter(|c| self.driver.sessions.get(*c).is_some_and(|s| !s.proved().is_empty() && now.iter().any(|a| !s.proved().contains(a)))).collect();
+        let stale: Vec<ConnId> = self.driver.sessions.conns().filter(|c| self.driver.sessions.get(*c).is_some_and(|s| s.acted_for().is_some_and(|was| now.iter().any(|a| !was.contains(a))))).collect();
         self.driver.proving = now;
         for c in stale {
             self.driver.dials.redial_now(c);

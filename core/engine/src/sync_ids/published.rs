@@ -97,18 +97,20 @@ impl Engine {
             moved = true;
             if let Some(a) = p.placed.remove(&h) {
                 p.pairs.remove(&(a, h));
-                let mut set = p.under.remove(&a).unwrap_or_default();
-                Arc::make_mut(&mut set).remove(&h);
-                if !set.is_empty() {
-                    p.under.insert(a, set);
-                }
+                p.under.update(a, |set| {
+                    let mut set = set.unwrap_or_default();
+                    Arc::make_mut(&mut set).remove(&h);
+                    (!set.is_empty()).then_some(set)
+                });
             }
             if let Some(a) = now {
                 p.placed.insert(h, a);
                 p.pairs.insert((a, h));
-                let mut set = p.under.remove(&a).unwrap_or_default();
-                Arc::make_mut(&mut set).insert(h);
-                p.under.insert(a, set);
+                p.under.update(a, |set| {
+                    let mut set = set.unwrap_or_default();
+                    Arc::make_mut(&mut set).insert(h);
+                    Some(set)
+                });
             }
         }
         p.quiet.ended(from, true);

@@ -255,15 +255,16 @@ impl Certified {
             }
             self.wrote = true;
             if was.is_some() != union.is_some() {
-                let mut naming = self.naming.remove(c).unwrap_or_default();
-                let set = Arc::make_mut(&mut naming);
-                match union.is_some() {
-                    true => set.insert(t),
-                    false => set.remove(&t),
-                };
-                if !set.is_empty() {
-                    self.naming.insert(*c, naming);
-                }
+                let named = union.is_some();
+                self.naming.update(*c, |naming| {
+                    let mut naming = naming.unwrap_or_default();
+                    let set = Arc::make_mut(&mut naming);
+                    match named {
+                        true => set.insert(t),
+                        false => set.remove(&t),
+                    };
+                    (!set.is_empty()).then_some(naming)
+                });
             }
             match union {
                 Some(u) => self.of.insert(k, u),

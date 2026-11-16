@@ -480,6 +480,28 @@ mod tests {
         assert_eq!(e.due(), [1], "a removal in the bucket of the key now read absent");
     }
 
+    // spec: none (internal). Nothing reacts to what did not change: a reader of an absent key is
+    // not moved by removing another absent key of its bucket, nor by `update` adding a key there
+    // and editing it in place (a removal and an insert would move the bucket).
+    #[test]
+    fn an_absent_key_moves_only_with_its_bucket_changing() {
+        let mut m: Stamped<u8, u8> = Stamped::default();
+        let mut e: Effects<u8, u8> = Effects::new("test absent");
+        let read = |m: &Stamped<u8, u8>| m.get(&100).copied().unwrap_or(0);
+        e.want(1);
+        e.due();
+        e.settle(&1, || read(&m));
+        let other = (0..=255u8).find(|x| super::super::bucket(super::super::hash(x)) == super::super::bucket(super::super::hash(&100u8)) && *x != 100).unwrap();
+        assert_eq!(m.remove(&other), None);
+        m.update(other, |v| Some(v.unwrap_or(0) + 1));
+        m.update(other, |v| Some(v.unwrap_or(0) + 1));
+        m.update(other, |v| v);
+        assert_eq!(m.get(&other), Some(&2));
+        assert_eq!(e.due(), Vec::<u8>::new(), "nothing of its bucket changed");
+        m.update(other, |_| None);
+        assert_eq!(e.due(), [1], "a key of its bucket removed");
+    }
+
     // spec: none (internal). A settle that fails records nothing: the key stays due, its next
     // settle reports it anew, and nothing it read before keeps it.
     #[test]

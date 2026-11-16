@@ -189,7 +189,7 @@ fn a_client_connection_proves_nothing_spec_sync_transport_6() {
     p.ds.client();
     p.flow();
     assert!(!p.ds.proofs_done() && !p.ls.proofs_done());
-    assert!(p.ds.proved().is_empty() && p.ls.proven().actors().is_empty());
+    assert!(p.ds.acted_for().is_none() && p.ls.proven().actors().is_empty());
     let id = p.ds.request(To::Port, Msg::Call { id: 0, max_reply: SMALL_REPLY as u64, method: 0, args: Vec::new() });
     p.flow();
     let Some(Incoming::Request(rid, m)) = p.l_in.pop() else { panic!("no request: {:?}", p.l_in) };
@@ -268,8 +268,8 @@ fn strangers_prove_to_each_other_spec_sync_opens_2() {
     assert!(matches!(p.d_in.as_slice(), [Incoming::Proved]), "{:?}", p.d_in);
     assert_eq!(p.ls.proven().account(), p.d.account(), "the dialer's account");
     assert_eq!(p.ds.proven().account(), p.l.account(), "the listener's account");
-    assert_eq!(p.ds.proved().iter().map(|x| x.0).collect::<Vec<_>>(), [p.d.account().expect("account")], "the dialer proved its account (not its node key: not its own node)");
-    assert_eq!(p.ls.proved().iter().map(|x| x.0).collect::<Vec<_>>(), [p.l.account().expect("account")]);
+    assert_eq!(p.ds.acted_for().unwrap_or_default().iter().map(|x| x.0).collect::<Vec<_>>(), [p.d.account().expect("account")], "the dialer acted for its account (not its node key: not its own node)");
+    assert_eq!(p.ls.acted_for().unwrap_or_default().iter().map(|x| x.0).collect::<Vec<_>>(), [p.l.account().expect("account")]);
 }
 
 // spec/sync-opens.md §2 (its own node key only to nodes of its own account;
