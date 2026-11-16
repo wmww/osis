@@ -44,7 +44,6 @@
   - First hears out each sync ID of the actor it reads (as §3, When it learns it). For each, one of these holds:
     - it has a source, each of its own commits with an entry under it is held elsewhere by a source's report (spec/sync-status.md §2), and a complete pass (spec/sync-status.md §1) begun since it found the role gone ended; or
     - no peer is to be waited for on it (spec/sync-set.md §3 Leaving).
-      - Limit: a peer whose kept record holds the sync ID and that proves nothing to it any more (one that judges it departed and knows it by nothing else) never resumes that record, so it keeps what it lost until `LOST_HEARD_WAIT_MS`.
   - Meanwhile its writes from before the `until` go out (a peer that judges it departed, or that keeps the sync ID unread under a later sync key, shares nothing with it), and a renewal held by then keeps its role.
   - Then it drops.
   - It drops anyway `LOST_HEARD_WAIT_MS` after it first found the role gone.
