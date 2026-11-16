@@ -85,9 +85,12 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     // an open epoch whose seed is not here yet: nothing to act at
     let Some((at, at_keys)) = tx.core.account_signing(&p).ok().flatten() else { return Ok(None) };
     let _ = done;
-    // the revocations this node took off the new rotation's line: it stands with them
-    // (spec/permissions.md §5.4), so a node that took another revocation reads it as that side
-    let mut takes: Vec<CommitId> = v.taken().iter().copied().filter(|t| *t != at && !v.on_line(t, &at)).collect();
+    // the revocations this node took that the new rotation's line does not carry (on it, or
+    // taken by a rotation on it): it stands with them (spec/permissions.md §5.4), so a node that
+    // took another revocation reads it as that side
+    let line = v.line(&at).unwrap_or_default();
+    let carried = |t: &CommitId| *t == at || line.contains(t) || line.iter().any(|q| v.takes_of(q).contains(t));
+    let mut takes: Vec<CommitId> = v.taken().iter().copied().filter(|t| !carried(t)).collect();
     takes.sort();
     // a removed node's rotation no authorized one answers yet: superseded unnamed, rejected
     let mut supersedes = vec![at];
@@ -106,7 +109,6 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     roster.retain(|x| !members.removes.contains(x));
     roster.extend(members.adds.iter().copied());
     let newcomers: BTreeSet<Tid> = roster.iter().filter(|x| !base.contains(*x)).copied().collect();
-    let line = v.line(&at).unwrap_or_default();
     let seeds = super::custody::seed_boxes(tx, &p, &seed, &roster, &newcomers, &line)?;
     let (mut adds, mut removes) = (members.adds.clone(), members.removes.clone());
     adds.sort();

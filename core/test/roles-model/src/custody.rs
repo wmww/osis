@@ -179,11 +179,19 @@ pub struct World {
     pub sched: Sched,
     /// Set by `settle`: an honest node rotated in the last round.
     pub restless: bool,
+    /// Per item, its place among rotations held at once (a differential's commit IDs; empty: the
+    /// item's ID); per merge epoch likewise (absent: after every rotation).
+    pub tie: Vec<u64>,
+    pub merge_tie: BTreeMap<Line, u64>,
 }
 
 impl World {
     pub fn item(&self, id: u32) -> &Item {
         &self.items[id as usize - 1]
+    }
+    /// Item `id`'s place among rotations held at once (`tie`).
+    pub fn tie(&self, id: u32) -> u64 {
+        self.tie.get(id as usize - 1).copied().unwrap_or(u64::from(id))
     }
     /// Bears a seed of its own (a plain rotation; a certificate under `MergeRandom`): an element
     /// of lines.
@@ -455,7 +463,7 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
             }
         }
     }
-    let key = |x: u32| (!needs.contains(&x), when[&x], depth[&x], x);
+    let key = |x: u32| (!needs.contains(&x), when[&x], depth[&x], w.tie(x));
     let mut order: Vec<u32> = j.chain.iter().copied().collect();
     order.sort_by_key(|x| key(*x));
     let pos: BTreeMap<u32, usize> = order.iter().enumerate().map(|(i, x)| (*x, i)).collect();
@@ -492,12 +500,12 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
     } else {
         // one line, grown in the order held: a rotation or merge epoch is followed iff it
         // descends from everything followed and no rejection runs between its line and it
-        let mut placeables: Vec<(Line, (bool, u32, usize, u32))> = order.iter().map(|x| (w.line(*x), key(*x))).collect();
+        let mut placeables: Vec<(Line, (bool, u32, usize, u64))> = order.iter().map(|x| (w.line(*x), key(*x))).collect();
         for e in &j.merges {
             let t = epoch_when(e, &when).unwrap();
             let d = e.iter().map(|x| depth[x]).max().unwrap_or(0) + 1;
             let first = !e.iter().all(|x| needs.contains(x));
-            placeables.push((e.clone(), (first, t, d, u32::MAX)));
+            placeables.push((e.clone(), (first, t, d, w.merge_tie.get(e).copied().unwrap_or(u64::MAX))));
         }
         placeables.sort_by_key(|p| p.1);
         let mut fol: Line = Line::new();

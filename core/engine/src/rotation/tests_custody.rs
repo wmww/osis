@@ -313,6 +313,8 @@ impl Run {
     fn add(&mut self, kind: MK, author: usize, signer: usize, epoch: Line, on_t: Option<u32>, c: CommitId, pk: Option<Package>, boxed: [bool; N], reach: [bool; N]) -> u32 {
         let now = self.now();
         let id = self.w.add(kind, author, signer, epoch, on_t, now, boxed);
+        // rotations held at once are placed by commit ID
+        self.w.tie.push(u64::from_be_bytes(c.0[..8].try_into().unwrap()));
         let mut sched = [NEVER; N];
         sched[author] = self.tick;
         self.sched.insert(id, sched);
@@ -805,6 +807,7 @@ impl Run {
         let tips: Vec<Line> = r.supersedes.iter().map(|t| self.w.line(self.m(t))).collect();
         let line: Line = tips.iter().flatten().copied().collect();
         let e = r.mints(c);
+        self.w.merge_tie.insert(line.clone(), u64::from_be_bytes(e.0[..8].try_into().unwrap()));
         self.merge_line.insert(e, line.clone());
         self.line_merge.entry(line.clone()).or_insert(e);
         self.key_line.insert(r.signing_key.to_bytes(), line.clone());
