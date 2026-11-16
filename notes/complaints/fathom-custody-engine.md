@@ -15,3 +15,4 @@
 - Review: the custody `_large` property at OSIS_FULL (2000 worlds) took 667 s wall, 9957 CPU-s under `tools/heavy`, past its limit (598 s / 5060 CPU-s): a release-size run, not a gate stage.
 - Review: notes/engine-validity-epochs.md and notes/crypto.md still described Waiting, D frontiers, D-list seed placement and the merge-storm limit after phase 2-3; `tools/policy.py` caught only the stale code names, not the stale prose.
 - Review: a set `Add` of a value already live writes no delta and a commit with no delta is silently not made (`commit_in` → `Ok(None)`), so seed re-seals (carried by such an add) were never made; nothing errors.
+- Review gate: `gate.properties` 2.15x its wall limit (168/78 s, 2520/1219 CPU-s at load 17), mostly the custody differential (75 s for its 200 worlds); recorded in issues/gate-five-minutes.md.
