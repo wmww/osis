@@ -176,7 +176,7 @@ impl Engine {
             m.set(me, &ct::REACH, &reach)?;
             self.commit(m)?;
         }
-        let Some(profile) = self.profile_of(&p).filter(|x| self.core.writable(x) && lists_on_profile()) else { return Ok(()) };
+        let Some(profile) = self.profile_of(&p).filter(|x| self.core.writable(x) && self.closure_holds(x) && lists_on_profile()) else { return Ok(()) };
         let mut list = self.get_typed(&profile, &ct::DIAL)?.unwrap_or_default();
         let old = list.clone();
         if let Some(b) = before.filter(|b| b.dialable != dialable) {

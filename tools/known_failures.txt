@@ -5,4 +5,3 @@
 # (tools/gate_failures.py).
 props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
 validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-depend-on-store-rng.md one rebuild per flipped aspect\s+left: 7\s+right: 5
-flows::a_node_pairs_another_after_removing_its_pairer_spec_sync_inbox_1 - issues/paired-after-removal-lacks-sync-secret.md must-hold bodies a caught-up reader lacks at quiet

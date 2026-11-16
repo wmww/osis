@@ -54,9 +54,10 @@ struct World {
 /// and all sync.
 fn build(seed: u64) -> (LocalPeer, Tid) {
     let mut lp = LocalPeer::new(NODES, seed, T0).unwrap();
+    lp.sync_all().unwrap();
     let a = lp.peers[0].engine.me();
+    let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
     let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, a);
     // a relative bound on `big` and `mix` (when replaced is judged), purge on replace on `reg`
     let keep = ct::RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(3_600_000) }), ..Default::default() };
     let purge = ct::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() };
@@ -66,9 +67,7 @@ fn build(seed: u64) -> (LocalPeer, Tid) {
     lp.hold(t);
     for w in [1, 2, 3] {
         let w = lp.peers[w].engine.me();
-        let mut m = Mutation::new();
-        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, floor: None }.to_value()) }).unwrap();
-        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
     }
     lp.sync_all().unwrap();
     (lp, t)

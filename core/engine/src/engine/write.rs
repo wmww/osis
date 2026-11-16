@@ -848,8 +848,14 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
         return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
-    // a key actor is in no closure (spec/sync-set.md §2 Making a thing)
-    tx.core.made.extend(m.creates.iter().filter(|(_, r)| !matches!(r, CreationRecord::KeyActor { .. })).map(|(t, _)| *t));
+    // a node writes only what it holds (spec/sync-set.md §2 Writing): every thing the commit
+    // makes, and every thing it writes not held as it writes, must be held at the transaction's
+    // end; a key actor is in no closure; a sealed fire is built, never applied
+    if !sealed {
+        tx.core.wrote_on.extend(m.creates.iter().filter(|(_, r)| !matches!(r, CreationRecord::KeyActor { .. })).map(|(t, _)| *t));
+        let unheld: Vec<Tid> = m.aspects.keys().map(|(t, _)| *t).filter(|t| !m.creates.contains_key(t) && !tx.core.is_key_actor(t) && !tx.core.ix.closure.holds(t)).collect();
+        tx.core.wrote_on.extend(unheld);
+    }
     for (&t, rec) in &m.creates {
         let e = m.aspects.entry((t, Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default();
         e.schema = Some(core_schema.clone());

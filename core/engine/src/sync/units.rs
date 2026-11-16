@@ -1099,15 +1099,16 @@ pub(crate) fn check_whole(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The things this transaction's own commits made, each in the node closure at its end, or the
-/// transaction is refused (spec/sync-set.md §2 Making a thing). A node with no node root yet
-/// (its first start) checks nothing, nor a hostile writer (`skip_writer_rules`): a writer's rule.
-pub(crate) fn check_made(tx: &mut Tx<'_>) -> Result<()> {
+/// The things this transaction's own commits made or wrote, each in the node closure at its end,
+/// or the transaction is refused (spec/sync-set.md §2 Writing: a node writes only what it holds;
+/// it fires at what it does not). A node with no node root yet (its first start) checks nothing,
+/// nor a hostile writer (`skip_writer_rules`): a writer's rule.
+pub(crate) fn check_written(tx: &mut Tx<'_>) -> Result<()> {
     if tx.core.node_root.is_none() || tx.core.skip_writer_rules {
-        tx.core.made.clear();
+        tx.core.wrote_on.clear();
         return Ok(());
     }
-    for t in std::mem::take(&mut tx.core.made) {
+    for t in std::mem::take(&mut tx.core.wrote_on) {
         if tx.core.created(&t).is_some() && !tx.core.ix.closure.holds(&t) {
             return Err(crate::error::Error::NotHeld(t));
         }

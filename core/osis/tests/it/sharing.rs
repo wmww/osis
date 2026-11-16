@@ -38,6 +38,8 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         for (_, pk) in &now {
             bob.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
         }
+        // bob holds what he writes
+        bob.hold(t).unwrap();
         let write = |v: &str| {
             let mut w = bob.write();
             w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v))?;
@@ -216,6 +218,8 @@ fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     a.grant(g, c.me(), Role::Read, Default::default()).unwrap();
     deliver(&a, &b);
     deliver(&a, &c);
+    // each writes only what it holds
+    b.hold(g).unwrap();
     b.set_role(g, a.me(), None, SetRoleOpts::default()).unwrap();
     a.set_role(g, b.me(), None, SetRoleOpts::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();

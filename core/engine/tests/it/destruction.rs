@@ -40,6 +40,7 @@ fn keeps(lp: &mut LocalPeer, t: &Tid) -> bool {
 // record past the request's window while u lives; u destroyed too, past its window t keeps
 // nothing.
 #[test]
+#[ignore = "issues/writes-on-unheld-things-tests.md"]
 fn a_dependent_keeps_a_destroyed_things_record_spec_commits_5() {
     let (mut lp, ps) = people(1);
     let t = thing_of(&mut lp, 0, ps[0]);

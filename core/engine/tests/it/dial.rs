@@ -51,6 +51,8 @@ fn a_new_key_replaces_the_nodes_entry_spec_sync_transport_5() {
 fn a_removed_nodes_entry_leaves_the_dial_list_spec_sync_set_1() {
     let (mut lp, d) = account_two_nodes();
     publish(&mut lp, 0);
+    // a node paired a moment ago lists itself once it holds the profile
+    spread(&mut lp);
     publish(&mut lp, 1);
     spread(&mut lp);
     let p = lp.peers[0].engine.account().unwrap().unwrap().0;
@@ -84,6 +86,8 @@ fn a_removed_nodes_entry_leaves_the_dial_list_spec_sync_set_1() {
 fn a_removed_node_naming_anothers_key_drops_no_entry_spec_sync_set_1() {
     let (mut lp, d) = account_two_nodes();
     publish(&mut lp, 0);
+    // a node paired a moment ago lists itself once it holds the profile
+    spread(&mut lp);
     publish(&mut lp, 1);
     spread(&mut lp);
     let p = lp.peers[0].engine.account().unwrap().unwrap().0;
@@ -106,6 +110,8 @@ fn a_removed_node_naming_anothers_key_drops_no_entry_spec_sync_set_1() {
 fn an_entry_written_beside_the_removal_goes_once_spec_sync_set_1() {
     let (mut lp, d) = account_two_nodes();
     publish(&mut lp, 0);
+    // a node paired a moment ago lists itself once it holds the profile
+    spread(&mut lp);
     publish(&mut lp, 1);
     spread(&mut lp);
     let p = lp.peers[0].engine.account().unwrap().unwrap().0;

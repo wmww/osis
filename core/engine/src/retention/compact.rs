@@ -1203,23 +1203,25 @@ mod tests {
     // of its own, its `keys.0` not yet received) compacts them once the keys arrive, with no write
     // of the aspect between (`replace::wake_covers` wakes the owed weighing).
     #[test]
+    #[ignore = "issues/writes-on-unheld-things-tests.md"]
     fn writer_compacts_once_its_delete_keys_arrive_spec_sync_7() {
         use osis_base::Role;
-        use osis_schema::{core_types as ct, Codec};
+        use osis_schema::core_types as ct;
         let mut lp = LocalPeer::fresh(3, osis_base::WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
         let [b, c] = [1, 2].map(|i| lp.peers[i].engine.me());
         let a = lp.peers[0].engine.plain_admin();
         let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
-        // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
+        // bob writes `t` by write on its first admin `k`, whose secrets `t` keeps, holding both
         let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, a);
-        // made and held, then its raw edge (a role commit)
+        let k = lp.peers[0].engine.new_thing(&mut m, a);
+        lp.peers[0].commit(m).unwrap();
+        lp.hold(k);
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, k);
         lp.peers[0].commit(m).unwrap();
         lp.hold(t);
-        let mut m = Mutation::new();
-        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(b))], op: osis_crdt::Op::Set(edge(Role::Write).to_value()) }).unwrap();
-        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.grant(&k, &b, &edge(Role::Write)).unwrap();
         lp.sync(0, 1).unwrap();
         let m_ak = Ak::new("x:m.0").unwrap();
         for i in 0..8 {

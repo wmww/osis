@@ -62,8 +62,8 @@ fn d_tickets(w: &mut World, i: usize, t: &Tid) -> usize {
 
 // spec/sync-set.md §2, spec/permissions.md §3: refgraph R4. A strong grants nothing; removing a
 // reference revokes nothing. Bob writes a strong to Alice's T he has no role on: nothing of
-// T reaches him, the strong is NotCarried. Alice grants Bob read, Bob accepts, then Alice drops
-// her own strong: Bob's roster entry and his reads stay.
+// T reaches him, the strong is NotCarried. Alice grants Bob read, Bob accepts, then Alice writes
+// and drops her own strong: Bob's roster entry and his reads stay.
 #[test]
 fn a_strong_grants_nothing_and_its_removal_revokes_nothing_spec_sync_set_2() {
     let mut w = contacts();
@@ -78,12 +78,12 @@ fn a_strong_grants_nothing_and_its_removal_revokes_nothing_spec_sync_set_2() {
     w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
     w.run();
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())), "granted, his strong reads");
-    strong(&mut w, 0, None, t, false);
     w.write(0, |e| {
         let mut m = Mutation::new();
         m.set(t, &ak(), &Value::Str("after".into())).unwrap();
         e.commit(m).unwrap();
     });
+    strong(&mut w, 0, None, t, false);
     w.run();
     assert_eq!(w.engine(1).roster(&t).get(&bob).map(|e| e.role), Some(Role::Read), "Bob's roster entry stays");
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("after".into())), "Bob still reads");

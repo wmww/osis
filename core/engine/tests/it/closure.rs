@@ -316,6 +316,10 @@ fn sync_units_are_the_models_spec_sync_set_2() {
                 }
                 2 if !edges.is_empty() => {
                     let (x, y) = *edges.iter().nth(rng.below(edges.len() as u64) as usize).unwrap();
+                    // a node writes only what it holds
+                    if !e.closure_holds(&tids[x]) {
+                        continue;
+                    }
                     strong(e, tids[x], tids[y], false);
                     edges.remove(&(x, y));
                 }
@@ -575,6 +579,9 @@ fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_
     e0.grant(&t, &ps[2], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     e0.grant(&u, &ps[2], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     pass(&mut lp);
+    // peer 1 holds what it writes
+    let d1 = lp.peers[1].engine.account_root().unwrap();
+    strong(&mut lp.peers[1].engine, d1, t, true);
     let mut m = Mutation::new();
     m.set(t, &osis_base::Ak::new("x:v.0").unwrap(), &Value::Str("by 1".into())).unwrap();
     let w = lp.peers[1].engine.commit(m).unwrap().unwrap();
@@ -707,4 +714,31 @@ fn a_commit_waiting_for_a_part_keeps_what_it_is_on_spec_commits_5() {
     let holds = r.engine.get(&g, &osis_base::Ak::new("holds.0").unwrap()).unwrap();
     assert!(matches!(&holds, Some(Value::Set(s)) if s.contains(&Value::Strong(u))), "G's strong to U: {holds:?}");
     assert!(r.engine.core.created(&u).is_some(), "U's record");
+}
+
+// spec/sync-set.md §2 (Writing): a node writes only what it holds. Bob, granted write on Alice's
+// T and holding its commits, writes it unaccepted: refused, nothing applies. Accepting T and
+// writing it in one commit passes: what it writes is held at the transaction's end.
+#[test]
+fn a_node_writes_only_what_it_holds_spec_sync_set_2() {
+    let (mut lp, ps) = people(2);
+    let e0 = &mut lp.peers[0].engine;
+    let d0 = e0.account_root().unwrap();
+    let t = make(e0, d0, d0);
+    e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Write)).unwrap();
+    let ids = lp.peers[0].engine.commit_ids();
+    crate::flows::send(&mut lp, 0, 1, &ids);
+    let e1 = &mut lp.peers[1].engine;
+    let before = e1.commit_ids().len();
+    let v = osis_base::Ak::new("x:v.0").unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &v, &Value::Str("unaccepted".into())).unwrap();
+    assert!(matches!(e1.commit(m), Err(osis_engine::Error::NotHeld(x)) if x == t), "not held: refused");
+    assert_eq!(e1.commit_ids().len(), before, "nothing applied");
+    let d1 = e1.account_root().unwrap();
+    let mut m = Mutation::new();
+    m.op(d1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+    m.set(t, &v, &Value::Str("held".into())).unwrap();
+    e1.commit(m).unwrap();
+    assert_eq!(e1.get(&t, &v).unwrap(), Some(Value::Str("held".into())));
 }

@@ -658,7 +658,7 @@ fn a_thing_made_under_an_account_has_own_keys_spec_permissions_3() {
     eprintln!("per thing: own keys {c_own} commits, {b_own} bytes stored; plain {c_plain}, {b_plain}");
     assert_eq!((c_plain, c_own), (1, 3), "its record, its rotation, then what the plain one writes");
     // about 27 KB more here: a rotation of every role (keysets, boxes, history) and a sync ID,
-    // what any thing pays at its first grant (notes/node-closure.md Making a thing)
+    // what any thing pays at its first grant (notes/node-closure.md Writing and making a thing)
     assert!(b_own > b_plain);
 }
 

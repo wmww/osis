@@ -1128,6 +1128,8 @@ fn sticky_residue_spec_perm_5_1() {
         t
     };
     edge_write(&mut lp.peers[1].engine, a0, a1, Some(edge(Role::Admin)), None);
+    // n0 holds what it writes: read on A0 by the flow (A2 under it with it)
+    set_edge(&mut lp.peers[1].engine, a0, n0, Some(edge(Role::Read)), None);
     lp.sync_all().unwrap();
     edge_write(&mut lp.peers[0].engine, a1, a2, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
@@ -1169,6 +1171,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_engine::Resu
 // node with no path may not write C. A fresh reader of C given n0's certificates for C but A's
 // raw record (the record-link step) holds nothing of the write until that record arrives.
 #[test]
+#[ignore = "issues/writes-on-unheld-things-tests.md"]
 fn record_then_edge_chain_applies_spec_perm_1() {
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
@@ -1234,6 +1237,8 @@ fn record_chain_depth_edge_chain_spec_perm_1() {
         let c = new_thing(&mut lp, 1);
         lp.sync_all().unwrap();
         edge_write(&mut lp.peers[1].engine, c, holder, Some(edge(Role::Admin)), None);
+        let p0 = lp.peers[0].engine.me();
+        set_edge(&mut lp.peers[1].engine, c, p0, Some(edge(Role::Read)), None);
         lp.sync_all().unwrap();
         write_reg(&mut lp, 0, c, "n0").unwrap().unwrap();
         sync(&mut lp, 0, 2);

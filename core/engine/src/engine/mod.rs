@@ -1454,9 +1454,9 @@ pub struct Core {
     pub(crate) unit_of: memo::Memo<Tid, Arc<BTreeSet<Tid>>>,
     /// This node's node root (spec/sync-set.md §1), from its first start (`records::NODE_ROOT`).
     pub(crate) node_root: Option<Tid>,
-    /// The things the running transaction's own commits made: each must be in the node closure at
-    /// its end (spec/sync-set.md §2 Making a thing).
-    pub(crate) made: Vec<Tid>,
+    /// The things the running transaction's own commits made or wrote: each must be in the node
+    /// closure at its end (spec/sync-set.md §2 Writing).
+    pub(crate) wrote_on: Vec<Tid>,
     /// Sync units the handle reads and writes at another node (`osis` sources): what is here of them
     /// may be behind, syncing or not (`readable_by`). `Engine::set_sourced` sets it.
     pub(crate) sourced_elsewhere: BTreeSet<Tid>,
@@ -1625,7 +1625,7 @@ impl Core {
             closure_follow: self.closure_follow.clone(),
             unit_of: self.unit_of.clone(),
             node_root: self.node_root,
-            made: self.made.clone(),
+            wrote_on: self.wrote_on.clone(),
             sourced_elsewhere: self.sourced_elsewhere.clone(),
         }
     }
@@ -2103,7 +2103,7 @@ impl Core {
             unit_of: _,
             closure_follow: _,
             node_root: _,
-            made: _,
+            wrote_on: _,
             held_writes: _,
             replaced_dates: _,
             waiting_carries: _,
@@ -2483,7 +2483,7 @@ impl Core {
             closure_follow: Default::default(),
             unit_of: memo::Memo::new("sync: unit of"),
             node_root: None,
-            made: Vec::new(),
+            wrote_on: Vec::new(),
             sourced_elsewhere: BTreeSet::new(),
         }
     }
@@ -3880,9 +3880,9 @@ impl Engine {
                 // the node closure follows every change above (spec/sync-set.md §2), and holds
                 // what this transaction made
                 if r.is_ok() {
-                    r = r.and_then(|v| crate::sync::units::settle(&mut tx).and_then(|()| crate::sync::units::check_made(&mut tx)).map(|_| v));
+                    r = r.and_then(|v| crate::sync::units::settle(&mut tx).and_then(|()| crate::sync::units::check_written(&mut tx)).map(|_| v));
                 }
-                tx.core.made.clear();
+                tx.core.wrote_on.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| Core::commit_changes(&mut tx).map(|_| v));
                 }
