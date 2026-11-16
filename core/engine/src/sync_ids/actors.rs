@@ -156,28 +156,6 @@ impl Engine {
         self.core.ix.sync_recorded.iter().copied().collect()
     }
 
-    /// The inbox of actor `a` (spec/sync-inbox.md §1): the sync ID its `keys.0` names.
-    pub fn inbox(&mut self, a: &Tid) -> Option<SyncId> {
-        self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(|i| i.sync_id)
-    }
-
-    /// The inboxes here (spec/sync-inbox.md §1): per sync ID, the actors with secrets held here whose
-    /// `keys.0` names it. Usually one: an admin may write any sync ID there, and a blob is tried
-    /// under each, so naming another actor's inbox hides nothing from it.
-    pub fn inbox_actors(&mut self) -> Arc<BTreeMap<SyncId, Vec<Tid>>> {
-        let read = |e: &mut Engine| {
-            let mut by: BTreeMap<SyncId, Vec<Tid>> = BTreeMap::new();
-            for a in e.core.ix.secrets.keys_held().chain(e.core.accounts.keys()).copied().collect::<BTreeSet<_>>() {
-                if let Some(l) = e.get_typed(&a, &ct::KEYS)?.and_then(|k| k.inbox).map(|i| i.sync_id) {
-                    by.entry(l).or_default().push(a);
-                }
-            }
-            Ok::<_, crate::error::Error>(Arc::new(by))
-        };
-        // a `keys.0` the store refused to read: no inbox known now, read again at the next ask
-        Memo::get_in(self, |e| &e.core.inbox_actors, &(), read).unwrap_or_default()
-    }
-
     /// The sync IDs `g` owns as its `sync.0` records them (`owns`), each with its recorded path;
     /// hints while this node holds no sync secret of `g`'s own. Decoded once per write of the
     /// `sync.0` (`Core::sync_ids`). A destroyed thing has the ones its destruction kept

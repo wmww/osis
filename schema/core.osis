@@ -135,11 +135,6 @@ type keyset = struct {
     demotes 8: bool,
 };
 
-/// Where others can drop things for an actor: its 16-byte home sync ID (spec/sync-inbox.md §1).
-type inbox = struct {
-    sync_id 0: blob,
-};
-
 /// An actor's public keys (spec/crypto.md §3).
 aspect keys.0: struct {
     /// One per role. Absent for a key actor.
@@ -148,7 +143,8 @@ aspect keys.0: struct {
     admin 2: option<keyset>,
     /// A key actor's one encryption key; an account's, its current epoch's.
     key 3: option<kem_key>,
-    inbox 4: option<inbox>,
+    /// An account's inbox thing (spec/sync-inbox.md §1).
+    inbox 4: option<tid>,
     /// 32 bytes. Lets others add data for the actor at nodes keeping it unread without being able to read it
     /// (spec/sync-ids.md §2).
     deposit_seed 5: option<blob>,

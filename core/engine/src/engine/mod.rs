@@ -1108,11 +1108,6 @@ pub struct Core {
     pub(crate) key_roles: memo::Memo<Tid, Arc<crate::rotation::members::KeyRoles>>,
     /// `Core::acting` (`memo`).
     acting_of: memo::Memo<(), Arc<Vec<Tid>>>,
-    /// `Engine::inbox_actors` (`memo`).
-    pub(crate) inbox_actors: memo::Memo<(), Arc<BTreeMap<SyncId, Vec<Tid>>>>,
-    /// `inbox_actors`' entries (`memo::Spread`, `Engine::inbox_actors_at`): a reader of one inbox
-    /// moves only when its actors do (the map moves as any actor gains secrets).
-    pub(crate) inboxes: memo::Spread<SyncId, Vec<Tid>>,
     /// `Engine::wrap_blocked` per (actor, walk) (`memo::Cutoff`), refreshed by `Engine::follow`.
     pub(crate) wrap_blocks: memo::Cutoff<(Tid, crate::rotation::Walk), bool>,
     /// `Engine::read_facts` per (sync ID, commit) (`memo::Cutoff`), refreshed by
@@ -1458,8 +1453,6 @@ impl Core {
             epochs_judged_from: self.epochs_judged_from.clone(),
             key_roles: self.key_roles.clone(),
             acting_of: self.acting_of.clone(),
-            inbox_actors: self.inbox_actors.clone(),
-            inboxes: self.inboxes.clone(),
             wrap_blocks: self.wrap_blocks.clone(),
             read_facts: self.read_facts.clone(),
             held_fates: self.held_fates.clone(),
@@ -2036,8 +2029,6 @@ impl Core {
             certified: _,
             listed: _,
             key_roles: _,
-            inbox_actors: _,
-            inboxes: _,
             wrap_blocks: _,
             read_facts: _,
             held_fates: _,
@@ -2257,8 +2248,6 @@ impl Core {
             epochs_judged_from: None,
             key_roles: memo::Memo::new("key roles"),
             acting_of: memo::Memo::new("acting"),
-            inbox_actors: memo::Memo::new("inbox actors"),
-            inboxes: memo::Spread::new("inboxes"),
             wrap_blocks: memo::Cutoff::new("wrap blocked"),
             read_facts: memo::Cutoff::new("sync: read facts"),
             held_fates: memo::Cutoff::new("sync: held fate"),

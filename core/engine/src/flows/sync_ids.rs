@@ -79,12 +79,12 @@ pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> 
 }
 
 /// The deposit seed `group`'s sync IDs derive from (spec/sync-ids.md §2): its secret actor's
-/// `keys.0`, a devices actor's being its account's. The one derivation (`Engine::deposit_seed`,
+/// `keys.0`. The one derivation (`Engine::deposit_seed`,
 /// `step_due`). None while a valid part of that `keys.0` is still to fetch (a rotation taken
 /// header-only): lacking it is waiting, so no step is issued from an older seed, which a node
 /// holding the newer one would step past again, and so on.
 pub(crate) fn deposit_seed_of(tx: &mut Tx<'_>, group: &Tid) -> Result<Option<Secret32>> {
-    let actor = tx.core.home_owner(&tx.core.reader_of(group));
+    let actor = tx.core.reader_of(group);
     let keys = ak("keys.0")?;
     let lacking = tx.core.ix.by_aspect.get(&(actor, keys.clone())).into_iter().flatten().any(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&actor, &keys).is_some_and(|ai| m.valid_at(ai) && m.missing(ai))));
     if lacking {
@@ -169,18 +169,6 @@ pub(crate) fn new_sync_id(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs:
     Ok(step.sync_id)
 }
 
-/// Names `sync_id` as `actor`'s inbox in its `keys.0`, in `m` (spec/sync-inbox.md §1: in the
-/// commit that makes the sync ID).
-pub(crate) fn name_inbox(m: &mut Mutation, actor: Tid, sync_id: SyncId) -> Result<()> {
-    m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(ct::Inbox { sync_id }).to_value()) })?;
-    Ok(())
-}
-
-/// Whether a new sync ID of actor `a` becomes its inbox (spec/sync-inbox.md §1): its `keys.0` names none.
-pub(crate) fn takes_inbox(tx: &mut Tx<'_>, a: &Tid) -> Result<bool> {
-    Ok(Core::keys_in(tx, a)?.and_then(|k| k.inbox).is_none())
-}
-
 /// The sync IDs `group`'s `sync.0` records that it owns (`sync_ids::actors::owns`).
 pub(crate) fn owned_in(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::SyncIds> {
     let mut sync_ids = tx.state(group, &ak("sync.0")?)?.and_then(Fragment::read).and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
@@ -245,9 +233,8 @@ fn step_into(tx: &mut Tx<'_>, m: &mut Mutation, g: Tid, l: SyncId, fresh: bool) 
 impl Engine {
     /// Refreshes `actor`'s deposit seed (spec/crypto.md §3, a MAY: a departed holder can then no
     /// longer deposit under its sync IDs, nor can a holder that has not read the new `keys.0`).
-    /// A devices actor's is its account's (`deposit_seed`).
     pub fn refresh_deposit_seed(&mut self, actor: &Tid) -> Result<Done> {
-        let a = self.core.home_owner(actor);
+        let a = *actor;
         let mut done = Done::default();
         let c = self.run(|tx| {
             let mut m = Mutation::new();

@@ -144,10 +144,6 @@ codec_struct! {
     pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 names: [u8; 32], 6 left_out: BTreeMap<Tid, BTreeSet<Epoch>>, 7 demotions: BTreeSet<CommitId>, 8 demotes: bool }
 }
 codec_struct! {
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Inbox { 0 sync_id: SyncId }
-}
-codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct BoxKey { 0 holder: Tid, 1 role: Role, 2 epoch: Epoch }
 }
@@ -198,7 +194,7 @@ codec_struct! {
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Keys {
         0 read: Option<Keyset>, 1 write: Option<Keyset>, 2 admin: Option<Keyset>,
-        3 key: Option<KemKey>, 4 inbox: Option<Inbox>, 5 deposit_seed: Option<[u8; 32]>, 6 signing: Option<SigningKey>,
+        3 key: Option<KemKey>, 4 inbox: Option<Tid>, 5 deposit_seed: Option<[u8; 32]>, 6 signing: Option<SigningKey>,
         7 sync: Option<Keyset>, 8 sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>,
     }
 }

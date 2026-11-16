@@ -116,11 +116,8 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     let devices = if adds.is_empty() && removes.is_empty() { Vec::new() } else { osis_crypto::seal_devices(&at_keys.inner, &signing, &adds, &removes) };
     supersedes.sort();
     let header = RotationHeader { signing_key: signing, kem_key: keys.kem.public().clone(), supersedes, names: Vec::new(), takes, revokes: !removes.is_empty(), devices, list_root: root, seeds };
-    // D's deposit seed is the account's: fresh with each rotation carrying a removal (someone
-    // leaves, spec/crypto.md §3); one carrying none keeps it
-    let fresh_deposit = !members.removes.is_empty();
     let rotation = AccountRotation { header, merge_keys: Vec::new(), more: vec![keys.inner.clone()], lists, at: None };
-    commit_rotation(tx, p, held.devices, &keys, fresh_deposit, &roster, rotation)
+    commit_rotation(tx, p, held.devices, &keys, &roster, rotation)
 }
 
 /// The merge of every head of this node's account (spec/crypto.md §9, Merges): a certificate of
@@ -167,7 +164,7 @@ pub(crate) fn merge_heads(tx: &mut Tx<'_>, p: Tid) -> Result<Option<CommitId>> {
     let merge_keys = tip_keys.iter().skip(1).map(|k| k.signing.clone()).collect();
     let more = tip_keys.iter().skip(1).map(|k| k.inner.clone()).chain([keys.inner.clone()]).collect();
     let rotation = AccountRotation { header, merge_keys, more, lists: Vec::new(), at: Some((at, at_keys)) };
-    commit_rotation(tx, p, held.devices, &keys, false, &roster, rotation)
+    commit_rotation(tx, p, held.devices, &keys, &roster, rotation)
 }
 
 /// The merge of `heads` this node can make: its tips (ascending) and keys, when there are
@@ -185,23 +182,19 @@ pub(crate) fn merge_of(v: &super::account::AccountView, held: &super::account::H
     Some((tips, AccountEpochKeys::from_seed(&osis_crypto::merge_seed(&refs))))
 }
 
-/// Writes rotation `rotation` of account `p` minting the epoch keyed `keys`: P's `keys.0` (its
-/// deposit seed fresh where `fresh_deposit`), the epoch on D's (`d`) `account.0`, and D re-keyed
-/// to `roster` in the same commit (spec/permissions.md §3: D's keys move only with the
+/// Writes rotation `rotation` of account `p` minting the epoch keyed `keys`: P's `keys.0`, the
+/// epoch on D's (`d`) `account.0`, and D re-keyed to `roster` with a fresh deposit seed (its sync
+/// role rotates, spec/crypto.md §3) in the same commit (spec/permissions.md §3: D's keys move only with the
 /// account's; D's departures are the chain's, no edge write).
-fn commit_rotation(tx: &mut Tx<'_>, p: Tid, d: Tid, keys: &AccountEpochKeys, fresh_deposit: bool, roster: &BTreeSet<Tid>, rotation: AccountRotation) -> Result<Option<CommitId>> {
+fn commit_rotation(tx: &mut Tx<'_>, p: Tid, d: Tid, keys: &AccountEpochKeys, roster: &BTreeSet<Tid>, rotation: AccountRotation) -> Result<Option<CommitId>> {
     let signing = keys.signing.verifying_key();
     let mut m = Mutation::new();
     m.sign_as(p);
     let mut k = crate::engine::Core::keys_in(tx, &p)?.unwrap_or_default();
     let fresh = osis_keys::aspects::account_keys(keys);
     (k.signing, k.key) = (fresh.signing, fresh.key);
-    if fresh_deposit || k.deposit_seed.is_none() {
-        let mut dep = [0u8; 32];
-        tx.rng.fill_bytes(&mut dep);
-        k.deposit_seed = Some(dep);
-    }
     m.set(p, &ct::KEYS, &k)?;
+    crate::rotation::fresh_deposit_seed(tx, &mut m, d)?;
     m.op(d, &ct::ACCOUNT, PathOp { path: vec![], op: Op::Add(Value::bytes(&signing.to_bytes())) })?;
     let skip: Vec<(Tid, Option<osis_base::Role>)> = tx.core.key_holders(&d).into_iter().map(|x| x.0).filter(|x| !roster.contains(x)).map(|x| (x, None)).collect();
     let mut boxing = crate::rotation::recipients(tx, &p, &d, &skip)?;

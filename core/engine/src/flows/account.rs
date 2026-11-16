@@ -547,11 +547,6 @@ fn heights(supersedes: &BTreeMap<CommitId, Vec<CommitId>>) -> BTreeMap<CommitId,
 }
 
 impl Core {
-    /// The actor `g` is the home of: the account whose devices actor it is, else `g` itself.
-    pub fn home_owner(&self, g: &Tid) -> Tid {
-        self.accounts.iter().find(|(_, a)| a.devices == *g).map_or(*g, |(p, _)| *p)
-    }
-
     /// The account `d` is the devices actor of: its first admin, an account, when that account
     /// wrote `account.0` on it. Only a commit signed as the account counts:
     /// any signer's header can name the aspect, and a devices actor reads as its account wherever
@@ -1112,10 +1107,8 @@ impl Engine {
             self.core.account.set(None);
             self.core.accounts.remove(&p);
         }
-        let (profile, c) = res?;
+        let (profile, done) = res?;
         self.save_account(&p, &d)?;
-        let mut done = Done::default();
-        done.add(c);
         Ok((CreatedAccount { account: p, devices: d, profile }, done))
     }
 
@@ -1309,31 +1302,37 @@ impl Core {
     }
 }
 
-fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: CreationRecord, keys: &AccountEpochKeys) -> Result<(Tid, Option<CommitId>)> {
+fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: CreationRecord, keys: &AccountEpochKeys) -> Result<(Tid, Done)> {
     let p = record.tid();
     let me = tx.core.id.tid();
     let mut m = Mutation::new();
     m.create(record);
     let d = m.create(d_record);
     let profile = m.create(thing_record(p, &mut *tx.rng));
+    let inbox = m.create(thing_record(p, &mut *tx.rng));
     m.sign_as(p);
     let held = ActorEpochs::derived(&tx.core.account_epochs(&p).ok_or(Error::Misuse("account not held"))?, &d);
     let node_kem = tx.core.id.keys().kem.public().clone();
     let holders = rotation::Boxing { holders: vec![Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: node_kem.clone(), seed: None }, floor: 0 }], left_out: Default::default() };
     let rot = rotation::rotation_into(tx, &mut m, d, &ROLES.into_iter().collect(), &held, &holders, crate::rotation::Departs::No)?;
     let after = rot.preview(&held)?;
-    let mut dep = [0u8; 32];
-    tx.rng.fill_bytes(&mut dep);
-    let sync_id = new_sync_id(tx, &mut m, d, &after, &[ReaderKey::Dh(node_kem.x25519())], &Secret32::from_bytes(dep))?;
-    m.set(p, &ct::KEYS, &Keys { inbox: Some(ct::Inbox { sync_id }), deposit_seed: Some(dep), ..osis_keys::aspects::account_keys(keys) })?;
+    // D's own deposit seed (spec/crypto.md §3), fresh with each of its sync rotations
+    let dep = rotation::fresh_deposit_seed(tx, &mut m, d)?;
+    new_sync_id(tx, &mut m, d, &after, &[ReaderKey::Dh(node_kem.x25519())], &dep)?;
+    m.set(p, &ct::KEYS, &Keys { inbox: Some(inbox), ..osis_keys::aspects::account_keys(keys) })?;
     // this node is the creation device, fixed by the account's tid (`create_account`): D bears
     // no edge write, its roster is the chain's
     m.op(d, &ct::ACCOUNT, PathOp { path: vec![], op: Op::Add(Value::bytes(&keys.signing.verifying_key().to_bytes())) })?;
     super::custody::keep(tx, &p, keys.seed())?;
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, d, &rot)?;
+    let mut done = Done::default();
+    done.add(c);
+    // the profile and the inbox have own keys from the account's creation (spec/sync-set.md §1)
+    rotation::own_secrets(tx, profile, &mut done)?;
+    super::inbox::make_inbox(tx, inbox, &mut done)?;
     // refgraph: (b) the account root, strongly referencing the profile, the inbox and the node things
-    Ok((profile, c))
+    Ok((profile, done))
 }
 
 #[cfg(test)]

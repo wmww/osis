@@ -422,10 +422,8 @@ pub(crate) fn fresh_deposit_seed(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid) -> R
 /// §3): it rotates sync (every departure from sync or above does), so the departed party (which
 /// read the seed in `keys.0`, a holder of sync alone included) can no longer deposit under `a`'s
 /// sync IDs, and `who` is an admin (the seed is admin-written).
-/// A devices actor's sync IDs derive deposit keys from its account's inbox seed, which anyone may
-/// deposit by: none to refresh.
 pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSet<Role>) -> bool {
-    roles.contains(&Role::Sync) && may_rotate(core, who, a).contains(&Role::Admin) && core.devices_of(a).is_none()
+    roles.contains(&Role::Sync) && may_rotate(core, who, a).contains(&Role::Admin)
 }
 
 /// What the commit carrying a rotation of an actor departs from it (`rotation_into`).
@@ -775,22 +773,16 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::Read
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, Departs::No)?;
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
-    // the rule (spec/sync-ids.md §2): role secrets of its own and its one sync ID, its home and inbox,
-    // in this one commit
-    let sync_id = match crate::flows::home_sync_id(tx, &t)? {
-        Some(id) => id,
-        None => {
-            let mut readers = Vec::new();
-            for r in &holders.holders {
-                readers.extend(crate::flows::sync_ids::reader_key(tx, &r.holder)?);
-            }
-            let after = rot.preview(&held)?;
-            let readers: Vec<_> = readers.into_iter().chain(also.iter().cloned()).collect();
-            crate::flows::sync_ids::new_sync_id(tx, &mut m, t, &after, &readers, &deposit)?
+    // the rule (spec/sync-ids.md §2): role secrets of its own and its one sync ID, in this one
+    // commit
+    if crate::flows::home_sync_id(tx, &t)?.is_none() {
+        let mut readers = Vec::new();
+        for r in &holders.holders {
+            readers.extend(crate::flows::sync_ids::reader_key(tx, &r.holder)?);
         }
-    };
-    if crate::flows::sync_ids::takes_inbox(tx, &t)? {
-        crate::flows::sync_ids::name_inbox(&mut m, t, sync_id)?;
+        let after = rot.preview(&held)?;
+        let readers: Vec<_> = readers.into_iter().chain(also.iter().cloned()).collect();
+        crate::flows::sync_ids::new_sync_id(tx, &mut m, t, &after, &readers, &deposit)?;
     }
     let to = unreached(tx, &t, &rot)?;
     let c = Engine::commit_tx(tx, m)?;
