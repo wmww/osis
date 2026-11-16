@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Every token a diff renames, as `count  old -> new  first-file`, most frequent first, so an
 over-match (`RELAYS_REMEMBERED -> RELAYS_REHOLDERED`) stands out among the intended pairs
-(notes/build.md, Scripted renames).
+(notes/build-internals.md, Scripted renames).
 
 Usage: tools/rename-table [REV | A..B | -]
   REV    the changes of commit REV (against its first parent)

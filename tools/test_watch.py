@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Runs a `cargo test` command with a hang bound (notes/gate.md, Hung tests): its output (stderr
 merged) passes through unchanged, and when no test of the running target has finished for HANG
-times the `test` wall limit (notes/build.md, Time limits), and at least twice libtest's 60-second
+times the `test` wall limit (notes/time-limits.md, Limits), and at least twice libtest's 60-second
 notice, counted from the target's start or its last finished test, the target is stopped: every
 process below each `cargo` process in CMD's tree (the test binary or rustdoc and what they
 started) and every orphan of that tree (the watcher is their subreaper), by PID, never by name. It
@@ -23,7 +23,7 @@ import limits
 
 # R: a run-away bound. 0: every target is stopped before its first test ends; infinity: a hung test
 # holds the gate and the box-wide heavy lock until someone notices. Past it a test has run 10 times
-# its limit, five times the overrun that starts an investigation (notes/build.md, Time limits): a
+# its limit, five times the overrun that starts an investigation (notes/time-limits.md, Limits): a
 # hang, or a test so slow that failing it costs nothing. The wall limit shrinks with the box's
 # threads, a single test's wall does not: the floor, twice libtest's notice, keeps the bound past
 # it on any box, so the running tests are named (fastbox-0: 10 x 11 s, so 120 s).

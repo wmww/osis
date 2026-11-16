@@ -845,7 +845,7 @@ fn a_static_grant_is_taken_only_once_its_signature_verifies_spec_sync_opens_5() 
     assert!(!p.a.open(p.ca, &S), "the tester opened nothing");
 }
 
-// ---- work in proportion to change (notes/coordination.md, Check scaling) ----
+// ---- work in proportion to change (notes/principles.md, Check scaling) ----
 
 /// Two readers sharing `n` sync IDs, all open; then one sync ID's credentials move on both.
 /// The work of that change, at each side.

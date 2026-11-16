@@ -332,7 +332,7 @@ def sync_hashed():
         yield f"{rel}:{n}: a hashed collection in sync (its order varies per run; use BTreeMap/BTreeSet)"
 
 
-# notes/coordination.md (Never pin a seed of a random test): a bug a random test finds gets a
+# notes/principles.md (Never pin a seed of a random test): a bug a random test finds gets a
 # hand-written reproducer at seed 0, never its random history replayed on its world seed. Sync's
 # differential world, history and replay take a seed first; in tests a literal one is 0.
 PINNED_SEED = re.compile(r"(?<![\w.])(world|history|converge|World::new)\(\s*(0*[1-9][0-9_]*)\s*[,)]")
@@ -342,7 +342,7 @@ def pinned_seeds():
         for n, line in enumerate(code_of(path).split("\n"), 1):
             m = PINNED_SEED.search(line)
             if m:
-                yield f"{rel}:{n}: {m[1]}({m[2]}, ..) pins a seed (notes/coordination.md, Never pin a seed: a hand-written reproducer at seed 0)"
+                yield f"{rel}:{n}: {m[1]}({m[2]}, ..) pins a seed (notes/principles.md, Never pin a seed: a hand-written reproducer at seed 0)"
 
 
 def known_failures():

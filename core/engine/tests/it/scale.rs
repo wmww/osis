@@ -1,7 +1,7 @@
 //! Scale checks (spec/requirements.md, Scale): each test counts the work an operation does
 //! (pages loaded and written, store bytes, commits judged, bodies read) at a size n and at 10n
 //! and asserts the growth Scale allows: `flat` for a change that costs O(change), `linear` for a
-//! cost that may grow with the data. Counts, never time (notes/coordination.md, Design principles).
+//! cost that may grow with the data. Counts, never time (notes/principles.md).
 //! The engine, store, crdt and commit layers alone (`osis_engine::local_peer`); sync's checks come
 //! with the new sync (notes/test-scale.md, Checks to restore).
 

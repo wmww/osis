@@ -1,7 +1,39 @@
-# Time limits: hits and investigations
-> Summary: What overruns the time limits and why (recurring patterns per stage and box), the investigations, and the raw hits not yet folded into the patterns; the limits and their tooling: notes/build.md, Time limits.
+# Time limits
+> Summary: The time limits (the tables tools/limits.py reads) and their tooling; what overruns them and why (recurring patterns per stage and box), the investigations, and the raw hits not yet folded into the patterns.
 
 Each box's checks go to its own `~/.cache/osis/limits.log`. `tools/limits.py summary` lists that box's hits, flags the investigation triggers (notes/coordination.md, Time limits) and prints the hits after the `Digested through` time below that Hits lacks, in the entry format.
+
+## Limits
+Every timed run has a CPU limit (tight: other work barely moves CPU-s) and a wall limit (looser: it also catches waiting, idle cores, a demoted process), as multiples of the box's base unit `u` (policy: notes/coordination.md, Time limits). `u` is the CPU-s of one fixed work quantum of `tools/baseunit.c` with every hardware thread busy; a CPU limit is `k u`, a wall limit `k u 16/threads`. Measure a box's with `tools/heavy tools/limits.py unit` (median of 5; varies 2-4% with load) and add its row. `tools/limits.py` reads both tables below: keep their shape.
+
+`gate` and `gate.hold` are Tess's 5-minute cap, never raised. Every gate stage is a share of one of them (`share of`), each whole's shares summing to at most it with 1 u wall and 10 u CPU left for the steps between (`tools/limits.py split`, a gate instant check), so a gate over its cap names the stages over their share. The shares follow ostrich's cost when set and are all under what their stage takes today, so gates hit them until issues/gate-five-minutes.md is done: such hits belong to that issue. A hit is reported and logged, never fatal.
+
+| box | unit (CPU-s) |
+|---|---|
+| fastbox-0 | 1.69 |
+| ostrich | 2.3 |
+
+| limit | CPU (u) | wall (u) | share of | what (fastbox-0, median of recent runs: CPU-s / wall at load) |
+|---|---|---|---|---|
+| `test` | 4.5 | 6.5 |  | one default test alone (`tools/limits.py tests`): over 10 s needs a reason |
+| `rebuild` | 70 | 13 |  | an osis-base edit, `cargo build --all-targets` (`tools/limits.py run rebuild cargo build --all-targets`): one comment line, warm, 330-390 / 41-53 s at load 9-14 (notes/time-limits.md, Investigations) |
+| `build` | 55 | 10 | `gate` | the gate's builds: 8-108 / 4-42 s with nothing below the branch's top crates changed since the target's build; any change below osis-engine 330 / 41 s at best, 500-1350 / 70-370 s in gates |
+| `default-tests` | 700 | 50 | `gate.hold` | `cargo test --no-fail-fast`, built: 1190 / 123 s at load 16 (per test and binary: notes/test-harnesses.md, Default-test cost) |
+| `gate.checks` | 5 | 3 | `gate` | the instant checks: 9 / 11 s at load 1 (gate_select_test.sh 3 / 5 s, policy_test.py 3 / 3 s) |
+| `gate.clippy` | 20 | 4 | `gate` | core clippy, warm: 15 / 5 s |
+| `gate.gui-lint` | 5 | 1 | `gate` | the GUI's clippy after core's: 4 / 2 s |
+| `gate.unify` | 20 | 3 | `gate` | the unification check: 241 / 13 s |
+| `gate.deny` | 5 | 1 | `gate` | schema check, deny, core bans: 3 / 2 s |
+| `gate.properties` | 530 | 34 | `gate.hold` | the selected properties: 705 / 54 s at load 35 (every crate: 43 tests) |
+| `gate.sim` | 410 | 20 | `gate.hold` | every sim scenario at 15 seeds: 695 / 56 s at load 26 |
+| `gate.doctests` | 55 | 10 |  | the comments path's doctests (notes/gate.md, Components pay for themselves): the changed crates' test build and their doctests, as `build` |
+| `gate.gui-tests` | 10 | 2 | `gate` | GUI tests: 72 / 20 s |
+| `gate.hold` | 1650 | 105 | `gate` | the gate's one heavy-lock hold: 2580 / 246 s at load 25 |
+| `gate` | 1780 | 130 |  | the whole gate but its lock wait: 2920 / 338 s at load 24; 5 minutes wall is Tess's cap, its CPU what 5 minutes at the box's usual 85% busy allows |
+| `heavy` | 2200 | 260 |  | any other heavy-lock hold |
+
+- `tools/limits.py check NAME CPU WALL` prints `limit NAME: CPU a/b s, wall c/d s`, a `LIMIT NAME ...` line per limit exceeded (`over 2x` starts an investigation), and appends to `~/.cache/osis/limits.log`; it never fails the run. The gate checks each stage and itself (its lock wait left out); `tools/heavy` checks each hold (`--limit NAME`, default `heavy`). A whole over its limit prints `over its share of WHOLE:` for each part over its share.
+- `tools/limits.py run NAME CMD` wraps a by-hand run; `tools/limits.py tests [--jobs N]` runs every default test as its own process and times again alone those past half the `test` limit (under the lock, about half an hour); `tools/limits.py table` prints every limit in seconds on this box; `tools/limits.py summary [--since H] [--all]` lists the box's hits, flags investigation triggers and prints the hits notes/time-limits.md lacks after its `Digested through` time, in its format, to be added with their reasons.
 
 ## Logging a hit
 Whoever ran it (for a gate, its reviewer) appends one line per run at the end of Hits and commits it with the branch's review; two branches' appends merge keep-both. Format, starting as `summary` prints it:
@@ -26,7 +58,7 @@ Both boxes have 16 threads (fastbox-0 u 1.69, ostrich u 2.3) and run other agent
 - **A storm seed or a slow tail in the sim.** `gate.sim` wall 3-5x with CPU 1.3-1.7x: a seed running to the 5000-delivery storm cutoff, 2-3 min single-threaded. Check the stage's slow and failing seeds before blaming load. Without a storm, the seed offset alone moves `gate.sim` CPU around its share (Investigations, cover-once-quiet).
 - **By-hand holds over `heavy`.** 300-seed sweeps of `order::held_set_decides_plain` (12,000-14,500 CPU-s), several runs in one hold (A/B, plants: 5000-11,000 CPU-s), roles-model exhaustive families (`epochs-exh-c` 10,450 CPU-s grown by half, 4500-5550 trimmed, against 5060; `epochs-exh` with family C 8300-9000 before the split) and by-hand TLC configs (700-3400 s wall; liveness checking runs on one thread, so wall-bound; `run.sh depth0` at one worker 646 s, its old instances slower than the README says: `D0_nc3` 185 s against 16 s; `netopen` with the walk about 550 s at load 40; Cut.tla's `X_*` instances at 16 workers 6500-7500 CPU-s each, to shrink at the model's next change) go 1.04-5x over `heavy`, which fits a gate-size hold. A full-size sync differential (`OSIS_FULL=1`, 1,000 seeds) in one hold is 19,000 CPU-s, 1480 s: split the seed range across holds. Size by design, not an investigation; log what ran.
 - **Single tests over `test`.** `tools/limits.py tests` finds the default tests over the limit alone: `order::held_set_decides` (115 CPU-s, 17 s), `shred::past_expiry_and_purge_alike` (13-14), held-model's repair properties (12-13), `rotation_holds_spec_crypto_4` (11-12): issues/tests-4x.md.
-- **The disk fills.** A gate can abort at its build on a full disk while worktree targets are a normal 9-16 GB each: the rest is elsewhere (stray targets, scratch dirs: the watchdog's disk check, notes/coordination.md Watchdog). Not a limit: a gate that fails to build reruns.
+- **The disk fills.** A gate can abort at its build on a full disk while worktree targets are a normal 9-16 GB each: the rest is elsewhere (stray targets, scratch dirs: the watchdog's disk check, notes/coordination.md, Watchdog). Not a limit: a gate that fails to build reruns.
 - **A hung test.** A default test with no test of its target finishing for 10x the `test` wall limit is stopped and failed "hung" (notes/gate.md, Hung tests). A property seed can also run to its 600 CPU-s timeout (`gate.properties` wall about 2x).
 
 ## Investigations

@@ -134,7 +134,7 @@ fn a_table_page_is_decoded_once_per_write() {
     assert_eq!(gets(&mut s, &mut rng), 0, "pages a transaction wrote");
 }
 
-// spec: none (internal: notes/local-store.md, Key tree; notes/coordination.md, Check scaling). A write seals the units
+// spec: none (internal: notes/local-store.md, Key tree; notes/principles.md, Check scaling). A write seals the units
 // it changed and one key tree path as tall as the store's slots need, at n and 10n rows: here a
 // changed value rewrites its leaf page, and the store's few dozen slots sit under the top alone.
 #[test]

@@ -1569,7 +1569,7 @@ fn waiting_snapshots_judged(n: usize) -> [u64; 4] {
     [idle, purged, expiring, expired]
 }
 
-// notes/coordination.md (Check scaling): a waiting snapshot is decoded to judge its carried copies
+// notes/principles.md (Check scaling): a waiting snapshot is decoded to judge its carried copies
 // when stored and when its aspect's value-less list changes, never by a `reexamine` with nothing
 // changed: n and 10n waiting snapshots cost the same there.
 #[test]

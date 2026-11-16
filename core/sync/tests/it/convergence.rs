@@ -22,7 +22,7 @@ pub(crate) fn sized(small: u64, full: u64) -> std::ops::Range<u64> {
 /// The world a history plays on, the history played once, then the checks; replayed by
 /// `replay`. The checks run at quiet: every history ends healed, every node on, faults off, run
 /// (so a shrunk history ends so too). The replay call a failure prints: a debugging aid in a
-/// scratch test, never a committed test (notes/coordination.md, Never pin a seed).
+/// scratch test, never a committed test (notes/principles.md, Never pin a seed).
 #[allow(dead_code)]
 pub(crate) fn converge(seed: u64, n: usize, steps: &[Step], replay: String) -> World {
     converge_as(seed, n, steps, replay, false)

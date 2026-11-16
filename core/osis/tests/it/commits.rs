@@ -642,7 +642,7 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
     assert_eq!(b.at(large, key).get().unwrap(), Some(Value::Bytes(big)));
 }
 
-// notes/coordination.md (Check scaling), spec/requirements.md (Decentralization): writing and
+// notes/principles.md (Check scaling), spec/requirements.md (Decentralization): writing and
 // applying one commit on n things does work linear in n, every counted kind of it (engine
 // phases and counts, perm's role walks, debug checks' walks included).
 #[test]

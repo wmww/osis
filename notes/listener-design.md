@@ -1,7 +1,7 @@
 # Listener design
 > Summary: The listener model and the one `Commit` type, as built: every read that changes has one listener at its address (values: `on_change`; a value aspect's or a scope's commits: `writes`/`on_write`; a signal's: `fired`/`on_fire`; diagnostics; disputes); `Signal<T>` keys make values and signals distinct at compile time; a part is listed while in the read, kept by history, or a tombstone; undo writes back only kept history, else `NotUndoable`; every listener hears local writes after a transaction ends; text sessions follow their field. Properties 1-8 at the end, which tests cite as steps. The API's current shape: notes/api.md.
 
-Tess decided the shape (local writes, history a run-time fact, `Signal<T>`, the fire names, the undo leak). Judged against notes/api-design.md and notes/coordination.md (Design principles).
+Tess decided the shape (local writes, history a run-time fact, `Signal<T>`, the fire names, the undo leak). Judged against notes/api-design.md and notes/principles.md.
 
 ## Principle
 **Every read that can change has one listener, at the same address, called when that read's answer differs, whoever caused it.** Two kinds of read:

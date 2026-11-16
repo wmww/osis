@@ -28,7 +28,7 @@ osis.workspace = true
 jiff.workspace = true
 tokio.workspace = true
 masonry.workspace = true
-# Feature pin, unused here (notes/build.md, Feature unification): as core's proptest enables it.
+# Feature pin, unused here (notes/build-internals.md, Feature unification): as core's proptest enables it.
 regex-syntax.workspace = true
 
 [build-dependencies]

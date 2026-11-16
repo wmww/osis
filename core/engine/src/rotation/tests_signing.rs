@@ -477,7 +477,7 @@ fn a_box_at_an_epoch_named_once_its_answered_fork_arrives_opens_alike_on_rebuild
     lp.peers[0].engine.check_index();
 }
 
-// spec/requirements.md Cost, notes/coordination.md (Check scaling): a removal lists the commits
+// spec/requirements.md Cost, notes/principles.md (Check scaling): a removal lists the commits
 // of the epoch it closes, never the account's earlier history: the second rotation's lists are
 // as long after n writes at the first epoch as after 10n
 #[test]

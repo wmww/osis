@@ -5,7 +5,7 @@
 [env]
 PROPTEST_CASES = "32"
 # Never write proptest-regressions files: a failure prints its minimal input; a bug it shows
-# gets a hand-written reproducer (notes/coordination.md, Never pin a seed of a random test).
+# gets a hand-written reproducer (notes/principles.md, Never pin a seed of a random test).
 PROPTEST_DISABLE_FAILURE_PERSISTENCE = "1"
 
 # Debug sections compressed at link time: line tables keep file:line in backtraces at about 40% of

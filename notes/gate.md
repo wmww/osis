@@ -1,7 +1,7 @@
 # Merge gate
 > Summary: What `tools/gate.sh` runs and in what order, which steps a branch's paths select (GUI, docs-only, comments-only), how `tools/test_select.py` picks the properties and sim scenarios, how failures are marked KNOWN or NEW (`tools/known_failures.txt`), and the instant checks (policy.py, spec_map.py).
 
-The reviewer gates once per branch in the branch's worktree; a worker never does (notes/coordination.md, Test budget). Stage costs and limits: notes/build.md, Time limits.
+The reviewer gates once per branch in the branch's worktree; a worker never does (notes/coordination.md, Test budget). Stage costs and limits: notes/time-limits.md, Limits.
 
 ## Running it
 `tools/gate.sh [--all] [--base REV] [--plan]` from the worktree root, after `git fetch && git rebase origin/main` and reading the rebase's result, and after checking that `git diff origin/main` of each union-merged list (.gitattributes) shows only the branch's own change (union merge can bring back a line the branch removed beside main's addition). No pipe, no `tools/heavy` around it (it takes the lock itself; a nested one refuses). In the background, end the wrapper with the gate's code and read the log's last line before merging: `tools/gate.sh > $L 2>&1; e=$?; echo gate=$e >> $L; exit $e` (`...; echo gate=$?` exits 0). It fetches origin/main and uses it as the base, never local main (coordinators push from worktrees, so local main lags; a diff against it counts other branches' merged work as this one's). It refuses a tree mid-rebase or with conflicts, and a HEAD that lacks origin/main.
@@ -16,7 +16,7 @@ Each prints its wall and CPU-s (compare CPU-s; wall follows load) and checks its
 3. The selection, printed with its commands (The selection, below).
 4. Lints: core clippy, then the GUI's on the same artifacts (re-lints only kit and app, a few seconds; cold, about 1.5 min once per worktree).
 5. Builds, unlocked: `cargo test --no-run` and every binary the selection runs, with the runs' own cargo arguments, so the hold builds nothing (doctests still compile inside it).
-6. The unification check, when a `Cargo.toml`, `Cargo.lock` or `.cargo/` changed (notes/build.md, Feature unification); `osis schema check` on every `schema/*.osis`; `cargo deny check`, then core's bans alone (deny.toml skip-trees the GUI stack, which would hide a core duplicate with a copy there).
+6. The unification check, when a `Cargo.toml`, `Cargo.lock` or `.cargo/` changed (notes/build-internals.md, Feature unification); `osis schema check` on every `schema/*.osis`; `cargo deny check`, then core's bans alone (deny.toml skip-trees the GUI stack, which would hide a core duplicate with a copy there).
 7. One `tools/heavy` hold: the default tests (`cargo test --locked --no-fail-fast`), the selected properties, the selected sim scenarios at 15 seeds.
 8. The GUI tests (`cargo test -p osis-kit -p osis-app -p osis-android`), when libs/kit/ or app/ changed.
 9. The summary (below).
@@ -40,7 +40,7 @@ A new project extends the same pattern, with its own properties and release chec
 - Never at the gate: large sizes and by-hand tests. A branch changing an invariant the selection does not reach gets one targeted larger run, named in its brief.
 
 ## Hung tests
-The default-test stages (the default tests, the GUI tests) run under `tools/test_watch.py` (its docstring has the details): a target where no test finishes for 10 times the `test` wall limit (notes/build.md, Time limits), at least 120 s, is stopped by PID and cargo goes on with the next target. Each test libtest said had run over 60 seconds and that has not finished since fails as `hung: no test finished for N s`, KNOWN or NEW like any other; a hang naming no test is NEW. Properties and sim scenarios are not watched: their seeds have the seed runner's bound (`OSIS_SEED_TIMEOUT_SECS`, sim-sweep's hung-seed exit), and a property may rightly run minutes with nothing finishing. `GATE_HANG_S` sets the bound in seconds.
+The default-test stages (the default tests, the GUI tests) run under `tools/test_watch.py` (its docstring has the details): a target where no test finishes for 10 times the `test` wall limit (notes/time-limits.md, Limits), at least 120 s, is stopped by PID and cargo goes on with the next target. Each test libtest said had run over 60 seconds and that has not finished since fails as `hung: no test finished for N s`, KNOWN or NEW like any other; a hang naming no test is NEW. Properties and sim scenarios are not watched: their seeds have the seed runner's bound (`OSIS_SEED_TIMEOUT_SECS`, sim-sweep's hung-seed exit), and a property may rightly run minutes with nothing finishing. `GATE_HANG_S` sets the bound in seconds.
 
 ## The summary
 `tools/gate_failures.py` (its docstring has the exact parse rules): one line per failure, `KNOWN` (with its issue) or `NEW`, each failing seed under it with its replay line. Whatever it cannot account for is NEW: a stage that did not run, a crashed or killed target, a hung-seed exit, a hung target naming no test, a cargo `error` outside a target, a missing sim tally.

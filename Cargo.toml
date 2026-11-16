@@ -57,7 +57,7 @@ masonry = "=0.4.0"
 masonry_winit = "=0.4.0"
 # Civil time and the system time zone for calendar views (notes/architecture.md).
 jiff = "0.2"
-# Feature pins only (notes/build.md, Feature unification): default features, as quinn-proto and
+# Feature pins only (notes/build-internals.md, Feature unification): default features, as quinn-proto and
 # libcrux-platform enable them.
 rand = "0.10"
 libc = "0.2"
@@ -105,7 +105,7 @@ opt-level = 2
 # cargo never merges a build-time unit with a run-time one. A merged unit takes the run-time
 # `lto = "off"`, a build-time-only one does not: a dependency both sides reach in one selection
 # (unicode-ident: naga in the GUI, proc-macro2 everywhere) otherwise gives every build-time unit
-# above it, osis-schema and so every osis crate, a second copy (notes/build.md, Feature unification).
+# above it, osis-schema and so every osis crate, a second copy (notes/build-internals.md, Feature unification).
 [profile.dev.build-override]
 debug-assertions = false
 

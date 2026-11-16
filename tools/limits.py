@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Time limits (notes/build.md, Time limits): every timed run against its CPU and wall limit.
+"""Time limits (notes/time-limits.md, Limits): every timed run against its CPU and wall limit.
 
   tools/limits.py run NAME CMD...      run CMD, then check its CPU-s and wall against NAME's limits
   tools/limits.py check NAME CPU WALL [--since T]
@@ -16,7 +16,7 @@
   tools/limits.py tests [--jobs N]     every default test against the `test` limit (under tools/heavy)
 
 Limits are multiples of the box's base unit u (tools/baseunit.c: the CPU-s of one fixed work
-quantum with every hardware thread busy), both read from the tables in notes/build.md: a CPU limit
+quantum with every hardware thread busy), both read from the tables in notes/time-limits.md: a CPU limit
 is k u, a wall limit k u 16 / threads (16 quanta spread over the box's threads; ostrich has 16). A check never fails the run: it prints one line, and an over-limit line starting
 `LIMIT` for each limit exceeded, and appends the check to ~/.cache/osis/limits.log (JSON lines:
 time, box, name, cpu, wall, limits, the 1-minute load, over). Hits are copied to the committed
@@ -27,7 +27,7 @@ shares of a whole sum to at most it, so a whole over its limit names its parts o
 import calendar, json, os, re, resource, socket, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NOTE = os.path.join(ROOT, "notes", "build.md")
+NOTE = os.path.join(ROOT, "notes", "time-limits.md")
 RECORD = os.path.join(ROOT, "notes", "time-limits.md")
 LOG = os.path.expanduser("~/.cache/osis/limits.log")
 BOX = socket.gethostname().split(".")[0]
@@ -37,7 +37,7 @@ REPEAT, WINDOW_H, FAR = 5, 3, 2.0
 
 
 def tables():
-    """({box: unit}, {name: (cpu_units, wall_units, whole or None)}) from notes/build.md."""
+    """({box: unit}, {name: (cpu_units, wall_units, whole or None)}) from notes/time-limits.md."""
     units, limits, kind = {}, {}, None
     for line in open(NOTE):
         cells = [c.strip().strip("`") for c in line.strip().strip("|").split("|")]
@@ -62,9 +62,9 @@ def limit(name):
     """(cpu_limit_s, wall_limit_s) on this box, or None with the reason."""
     units, limits = tables()
     if name not in limits:
-        return None, f"no limit named {name} in notes/build.md"
+        return None, f"no limit named {name} in notes/time-limits.md"
     if BOX not in units:
-        return None, f"no base unit for box {BOX}: tools/limits.py unit, then add it to notes/build.md"
+        return None, f"no base unit for box {BOX}: tools/limits.py unit, then add it to notes/time-limits.md"
     u, (cl, wl, _) = units[BOX], limits[name]
     return (cl * u, wl * u * 16 / os.cpu_count()), None
 

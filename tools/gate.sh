@@ -36,7 +36,7 @@ step() {
   printf '== %s\n' "$*"; local s c; s=$(date +%s); cpu; c=$cpu; "$@"; cpu
   step_wall=$(( $(date +%s) - s )); step_cpu=$(( cpu - c )); printf '   (%ss, %s CPU-s)\n' $step_wall $step_cpu
 }
-# A step with time limits (notes/build.md, Time limits): over one prints a `LIMIT` line and logs
+# A step with time limits (notes/time-limits.md, Limits): over one prints a `LIMIT` line and logs
 # the hit; it never fails the gate.
 limited() { local n; n=$1; shift; step "$@"; python3 "$tools/limits.py" check "$n" $step_cpu $step_wall || true; }
 # A test stage, `tested LIMIT LOG CMD...` (one external command): timed and checked against its
@@ -100,7 +100,7 @@ if [ -n "$plan" ]; then echo "core=${core:-0} gui=${gui:-0} unify=${unify:-0} se
 if [ -n "$om" ] && ! git merge-base --is-ancestor "$om" HEAD; then
   echo "gate: HEAD does not contain origin/main ($(git rev-list --count "HEAD..$om") commits behind): git rebase origin/main" >&2; exit 2
 fi
-# Feature unification is selection-invariant (notes/build.md, Feature unification): after the
+# Feature unification is selection-invariant (notes/build-internals.md, Feature unification): after the
 # whole-workspace build (GUI included), building the default members, or any one member alone,
 # compiles nothing.
 unification_check() {

@@ -1,4 +1,4 @@
-// baseunit: the box's time-limit base unit (notes/build.md, Time limits). Runs 16 fixed work
+// baseunit: the box's time-limit base unit (notes/time-limits.md, Limits). Runs 16 fixed work
 // quanta on one thread per core (sysconf), so every hardware thread is busy as in a build or a
 // test run, and prints "WALL <s> CPU <s>": the wall of the 16 quanta and their CPU-s. A quantum mixes
 // what builds and tests do: integer hashing, random reads and writes over a buffer past the

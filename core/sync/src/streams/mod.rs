@@ -169,7 +169,7 @@ pub struct Ctx<'a> {
     pub reported: &'a mut Vec<Reported>,
 }
 
-/// Work done, counted (tests: scaling by counting work, notes/coordination.md).
+/// Work done, counted (tests: scaling by counting work, notes/principles.md).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Work {
     /// Log events a server read.

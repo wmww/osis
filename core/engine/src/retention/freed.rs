@@ -660,7 +660,7 @@ mod tests {
         assert_eq!(e.tree_refs(&t, &tree).unwrap().blobs, tree, "the live tree stays linked");
     }
 
-    // spec/sync-compaction.md §1 freed links (the walk stops at shared nodes), notes/coordination.md (check
+    // spec/sync-compaction.md §1 freed links (the walk stops at shared nodes), notes/principles.md (check
     // scaling): dropping an edited version of a value frees what the edit replaced, flat in the
     // value's size; the freed set holds no more.
     #[test]

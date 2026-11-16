@@ -3077,7 +3077,7 @@ fn a_destroyed_thing_owes_no_role_commit_spec_sync_judgement_5() {
     assert!(!e.role_duty_due(&t).unwrap(), "keeping nothing: nothing owed on t");
 }
 
-// spec/sync.md §3 (A kept sync ID: an accept keeps every offered one; Tied; S's things), spec/sync-hostile.md §2, notes/coordination.md (no rule that differs by arrival order):
+// spec/sync.md §3 (A kept sync ID: an accept keeps every offered one; Tied; S's things), spec/sync-hostile.md §2, notes/principles.md (no rule that differs by arrival order):
 // the forger's offer of its own thing u naming the sync ID s of peer 0's t comes first and the user
 // accepts u; the genuine offer of t comes and is accepted. t keeps s; untied, s is synced for both
 // (so the genuine admin finds t's key shown); a step bearing t's key ties t, never u (u's secrets

@@ -1392,7 +1392,7 @@ mod tests {
         assert_eq!(rows(&b, b'u'), 0);
     }
 
-    // spec: none (internal: notes/local-store.md, Key tree; notes/coordination.md, Check scaling). A write rewrites its
+    // spec: none (internal: notes/local-store.md, Key tree; notes/principles.md, Check scaling). A write rewrites its
     // units and one path of the tree, as long as the slots need: a commit writing one unit seals
     // it, a node per level below the top and the top (and the old top, when it adds a level), at
     // every size, and a reopen reads every unit through the grown tree.
