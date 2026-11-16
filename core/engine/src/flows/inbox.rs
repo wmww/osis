@@ -327,7 +327,9 @@ fn save(tx: &mut Tx<'_>, o: OwedFire) -> Result<()> {
 /// fire, offered to peers where `to` is proven, kept until one takes it.
 pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: Option<Tid>) -> Result<()> {
     let ak = super::ak(ak)?;
-    if tx.core.epochs(&thing).is_some_and(|e| e.role(osis_base::Role::Read).holds_any()) {
+    // fired as a write where the node holds and reads the thing; at anything else it fires sealed
+    // (a node writes only what it holds, spec/sync-set.md §2 Writing)
+    if tx.core.ix.closure.holds(&thing) && tx.core.epochs(&thing).is_some_and(|e| e.role(osis_base::Role::Read).holds_any()) {
         // a fire the thing's setting would not keep is in no history: none is written (an actor
         // that is no account takes the fires its own setting keeps, spec/sync-inbox.md §1)
         let wall = tx.core.hlc.peek().wall_ms().0;

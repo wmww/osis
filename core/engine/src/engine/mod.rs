@@ -3791,7 +3791,12 @@ impl Engine {
                     r = r.and_then(|v| crate::rotation::own_keys_due(&mut tx).map(|_| v));
                 }
                 tx.core.own_keys_due.clear();
-                // explicit demotions applied get this node's addenda (spec/permissions.md §5.2)
+                // explicit demotions applied get this node's addenda (spec/permissions.md §5.2),
+                // on what the node closure holds as this transaction leaves it (a node writes only
+                // what it holds, spec/sync-set.md §2 Writing)
+                if r.is_ok() && !tx.txn.is_memory() {
+                    r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
+                }
                 if r.is_ok()
                     && !tx.txn.is_memory()
                     && let Err(e) = crate::flows::addenda::answer_removals(&mut tx).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))

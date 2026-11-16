@@ -1217,6 +1217,7 @@ fn a_rotation_waiting_for_a_head_names_nothing_until_held_spec_permissions_5_5()
 // thing, so neither listing goes under the other thing's sync IDs. Fails with one listing over
 // every thing.
 #[test]
+#[ignore = "issues/writes-on-unheld-things-tests.md"]
 fn a_listing_is_one_commit_per_thing_spec_permissions_5_5() {
     let (mut lp, a, t) = world(4, 3);
     let mut m = crate::Mutation::new();

@@ -333,6 +333,11 @@ pub(crate) fn writable_now<V>(tx: &mut Tx<'_>, node: Tid, by_thing: BTreeMap<Tid
     let ts = tx.core.hlc.peek();
     let mut out = BTreeMap::new();
     for (t, v) in by_thing {
+        // a node writes only what it holds (spec/sync-set.md §2 Writing): a write owed on a thing
+        // outside its node closure waits as one owed before the keys to write it arrive
+        if !tx.core.ix.closure.holds(&t) {
+            return Ok(None);
+        }
         match may_write(tx, node, &t, ak, need, ts)? {
             MayWrite::Yes => {
                 out.insert(t, v);

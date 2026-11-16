@@ -11,7 +11,7 @@
 - I's sync ID is synced, kept and served by the same rules as every sync ID: whoever keeps it (read or unread) carries the deposits for it.
 
 ## 2. Open signals
-- An open (`@`) signal of thing T may be fired by anyone holding T's public key record (spec/permissions.md §5.2 Open fires). A node that may write T, or reads T, fires as it writes (a non-writer by deposit, spec/sync-judgement.md §1). Any other node fires by a **sealed fire**:
+- An open (`@`) signal of thing T may be fired by anyone holding T's public key record (spec/permissions.md §5.2 Open fires). A node that holds T and may write or read it fires as it writes (a non-writer by deposit, spec/sync-judgement.md §1). Any other node fires by a **sealed fire** (a node writes only what it holds, spec/sync-set.md §2 Writing):
   - the fire is a commit by the sender's own account, acting for it, whose one delta is the fire, with its AK's default retention (`admin` for the inbox's), its delete keys those of T's `keys.0` keysets it holds (spec/crypto.md §7 Header list), its delta hash under T's dedup secret (spec/crypto.md §3: from T's creation record), and its prefix as any commit encryption's (spec/sync-ids.md §1);
   - its blob holds the commit and its author's chain certificates for its actor (spec/permissions.md §4: the account's record and its rotations to the epoch it signs at), sealed to the KEM key of T's newest read keyset the sender holds (bytes: spec/wire.md §9); its entry's wrap is filler;
   - it goes as a Deposit item under T's sync ID (§3), signed with the deposit key T's deposit seed derives (spec/sync-ids.md §2), within T's deposit budget.
