@@ -228,7 +228,7 @@ fn inbox_blob_offered_to_recipient_spec_sync_inbox_3() {
     assert!(osis_blob::verify_deposit(&head, &d.sync_id, &b, &d.wrap, &d.sig).is_ok());
 }
 
-// spec/sync-inbox.md §3 (sending), spec/sync-opens.md §3 (What the peer is trusted as): the
+// spec/sync-inbox.md §3 (sending), spec/sync-opens.md §3 (A record names what its last session's proofs counted for): the
 // recipient proven on a connection counts only while its proof counts now: once it stops (its
 // account removed the proving node, its key's epoch closed), nothing more is offered there for
 // it, also what was ready or backed off; counted again, its offers go there again.

@@ -707,7 +707,7 @@ fn a_group_moving_home_with_its_source_gone_catches_up_spec_sync_set_5() {
 }
 
 // spec/sync-inbox.md §3 (Sending: an inbox blob goes to a peer where the recipient is a proven
-// actor), spec/sync-opens.md §3 (What the peer is trusted as): node 2
+// actor), spec/sync-opens.md §3 (A record names what its last session's proofs counted for): node 2
 // removes its sibling node 1 from account 1 while node 1 stays connected to node 0, apart from
 // node 2; node 0 is handed the removal (node 1's proof of account 1 counts no more there) and then
 // grants account 1 a thing. Its inbox blob, deposited, is never offered to node 1 (which could not
