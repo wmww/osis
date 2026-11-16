@@ -3,3 +3,4 @@
 - The seed "hang" (seed 5) was a slow loop with no checkpoint: 22 deliveries per turn, so neither the settle guard nor the storm cap fired within the 600 s seed timeout. `OSIS_SYNC_TRACE=all` then counting `+entry` per (node, S) found it in minutes; worth a line in notes/sync-test-harness.md if it recurs.
 - `OSIS_SYNC_TRACE=<nodes>:step` matches every line with "Step" in it (path steps), not only script steps.
 - A full-size shrink is 10-20 min single-threaded; run several seeds' shrinks in parallel, unlocked.
+- A rule refusing writes surfaces as storms, not errors: an owed duty (addenda) failing NotHeld inside an ingest transaction failed every delivery for good. A per-transaction "refused and why" counter in the trace would have named it at once; a backtrace probe in `check_written` did.
