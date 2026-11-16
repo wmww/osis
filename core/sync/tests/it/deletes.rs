@@ -219,7 +219,7 @@ fn a_source_coming_back_judges_only_what_is_owed_there() {
 #[test]
 fn a_sync_id_kept_unread_by_ticket_stays_synced_across_a_restart_spec_sync_set_2() {
     let (mut w, t, s) = setup();
-    let unread = Some((t, osis_engine::sync::Holding::Unread));
+    let unread = Some((std::collections::BTreeSet::from([t]), osis_engine::sync::Holding::Unread));
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread before");
     w.power_off(1);
     w.power_on(1);
