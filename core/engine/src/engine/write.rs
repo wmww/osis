@@ -689,7 +689,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         Some(at) => Some(at),
         None => tx.core.account_signing(&node)?,
     };
-    b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone() });
+    let more = plan.rotation.as_ref().map(|r| r.more.clone()).unwrap_or_default();
+    b.account = account.as_ref().map(|(epoch, k)| osis_commit::AccountSigner { epoch: *epoch, inner: k.inner.clone(), node: tx.core.id.tid(), node_key: tx.core.id.keys().signing.clone(), more });
     let built = {
         let core: &Core = tx.core;
         let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published: &published };

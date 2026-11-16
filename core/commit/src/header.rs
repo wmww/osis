@@ -684,6 +684,13 @@ impl Signed {
     }
 }
 
+/// How many more times an account commit carrying `rotation` seals its inner signature
+/// (`Sigs::more`, spec/wire.md §4): a plain rotation's once more (the epoch it mints), a merge
+/// certificate's once per named tip and once for the merge epoch, any other commit's never.
+pub fn inner_seals(rotation: Option<&RotationHeader>) -> usize {
+    rotation.map_or(0, |r| r.names.len() + 1)
+}
+
 /// A merge epoch's ID from its signing key and its tips, ascending (spec/crypto.md §9).
 pub fn merge_epoch(signing_key: &VerifyingKey, tips: &[CommitId]) -> CommitId {
     let mut h = osis_base::hash::Hasher::new();

@@ -75,7 +75,7 @@ pub(crate) fn note_role_sigs(core: &mut Core, h: &osis_commit::Header, id: &Comm
     // a rotation is a role commit at an epoch (`osis_commit::validate`): what an open reads back
     // from the records (`index::load`)
     if h.kind == osis_commit::Kind::Role && h.epoch.is_some() && (sigs.inner.is_some() || !sigs.merge.is_empty()) {
-        core.ix.role_sigs.insert(*id, Arc::new(crate::engine::RoleSigs { inner: sigs.inner, merge: sigs.merge.clone() }));
+        core.ix.role_sigs.insert(*id, Arc::new(crate::engine::RoleSigs { inner: sigs.inner, more: sigs.more.clone(), merge: sigs.merge.clone() }));
     }
 }
 

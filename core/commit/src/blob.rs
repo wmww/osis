@@ -41,30 +41,39 @@ pub struct CommitBlob {
 }
 
 /// A commit's signatures (spec/wire.md §4): the author's; an account's commit's sealed inner
-/// signature; a merge's signatures at the forks its rotation names, in that order.
+/// signature, and a rotation's sealed again under each other epoch it opens with (`more`); a
+/// merge's signatures at the forks its rotation names, in that order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sigs {
     pub signature: Signature,
     pub inner: Option<[u8; INNER_LEN]>,
+    /// A rotation's inner signature sealed again (spec/crypto.md §3): a plain rotation's under
+    /// the epoch it mints; a merge certificate's under each tip it names, in that order, then the
+    /// merge epoch. Carried after `inner` in its byte string.
+    pub more: Vec<[u8; INNER_LEN]>,
     pub merge: Vec<Signature>,
 }
 
 impl Sigs {
-    /// The signatures of commit `id` by `key`, its inner and merge signatures bound in.
-    pub fn signed(id: &CommitId, key: &SigningSecret, inner: Option<[u8; INNER_LEN]>, merge: Vec<Signature>) -> Sigs {
-        let mut sigs = Sigs { signature: Signature([0; 64]), inner, merge };
+    /// The signatures of commit `id` by `key`, its inner (and `more`) and merge signatures bound
+    /// in.
+    pub fn signed(id: &CommitId, key: &SigningSecret, inner: Option<[u8; INNER_LEN]>, more: Vec<[u8; INNER_LEN]>, merge: Vec<Signature>) -> Sigs {
+        let mut sigs = Sigs { signature: Signature([0; 64]), inner, more, merge };
         sigs.signature = key.sign(Domain::Commit, &sigs.digest(id));
         sigs
     }
 
     /// What the author's signature signs (spec/crypto.md §2): the commit ID, and for an account's
-    /// commit also the inner and merge signatures, which the commit ID cannot cover (each signs
-    /// that ID), so a relay swaps neither.
+    /// commit also the inner (each seal) and merge signatures, which the commit ID cannot cover
+    /// (each signs that ID), so a relay swaps none.
     pub fn digest(&self, id: &CommitId) -> [u8; 32] {
         let Some(inner) = &self.inner else { return id.0 };
-        let mut b = Vec::with_capacity(32 + INNER_LEN + 64 * self.merge.len());
+        let mut b = Vec::with_capacity(32 + INNER_LEN * (1 + self.more.len()) + 64 * self.merge.len());
         b.extend_from_slice(&id.0);
         b.extend_from_slice(inner);
+        for m in &self.more {
+            b.extend_from_slice(m);
+        }
         for s in &self.merge {
             b.extend_from_slice(&s.0);
         }
@@ -80,15 +89,26 @@ impl Sigs {
 
     fn encode_into(&self, out: &mut Vec<u8>) {
         encode_into(&self.signature.to_value(), out);
-        encode_into(&Value::opt(self.inner.map(|i| Value::bytes(&i))), out);
+        let inner = self.inner.map(|i| Value::Bytes(i.iter().chain(self.more.iter().flatten()).copied().collect()));
+        encode_into(&Value::opt(inner), out);
         encode_into(&Value::List(self.merge.iter().map(Signature::to_value).collect()), out);
     }
 
     fn read(sv: Item, iv: Item, mv: Item) -> Result<Sigs, Error> {
         let signature = Signature::from_value(&sv.to_value()?)?;
-        let inner = item::opt(iv)?.map(item::bytes::<INNER_LEN>).transpose()?;
+        let seals: Vec<[u8; INNER_LEN]> = match item::opt(iv)? {
+            None => Vec::new(),
+            Some(b) => {
+                let b = b.as_bytes().filter(|b| !b.is_empty() && b.len() % INNER_LEN == 0).ok_or(Error::Malformed("inner signatures"))?;
+                b.chunks(INNER_LEN).map(|c| c.try_into().map_err(|_| Error::Malformed("inner signatures"))).collect::<Result<_, _>>()?
+            }
+        };
+        let (inner, more) = match seals.split_first() {
+            Some((i, rest)) => (Some(*i), rest.to_vec()),
+            None => (None, Vec::new()),
+        };
         let merge = item::list(mv)?.iter().map(|s| Ok(Signature::from_value(&s.to_value()?)?)).collect::<Result<Vec<_>, Error>>()?;
-        Ok(Sigs { signature, inner, merge })
+        Ok(Sigs { signature, inner, more, merge })
     }
 }
 

@@ -22,7 +22,8 @@ pub enum Wake {
     At(u64),
     /// A blob stored (a page, a header list's tree: `Reason::WaitBlobs`).
     Blobs,
-    /// A commit held here (the rotation minting an epoch, `Reason::Epoch`).
+    /// A commit held here (the rotation minting an epoch, `Reason::Epoch`), or the merge epoch a
+    /// certificate held here mints.
     Commit(CommitId),
     /// What is value-less on this thing changing (a purge request, an expiry): what reaches a
     /// stored copy writing on it (`retention::pending_drops`).
@@ -433,8 +434,16 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
         keys.push(Wake::Open);
     }
     keys.extend(std::mem::take(&mut core.waits.lists_moved).into_iter().map(Wake::Thing));
+    // a commit held, and the merge epoch a held certificate mints (an epoch's ID, no commit's)
     match core.waits.held_feed.as_mut() {
-        Some(f) => keys.extend(f.added().into_iter().map(Wake::Commit)),
+        Some(f) => {
+            for c in f.added() {
+                keys.push(Wake::Commit(c));
+                if let Some(e) = core.ix.commits.get(&c).and_then(|m| m.header.rotation.as_ref().filter(|r| r.is_merge()).map(|r| r.mints(&c))) {
+                    keys.push(Wake::Commit(e));
+                }
+            }
+        }
         None => core.waits.held_feed = Some(core.ix.commits.feed()),
     }
     let now = core.now().0;

@@ -33,6 +33,10 @@ use std::sync::Arc;
 pub(crate) struct AccountRotation {
     pub header: RotationHeader,
     pub merge_keys: Vec<SigningSecret>,
+    /// The inner secret of each other epoch its inner signature is sealed under
+    /// (`osis_commit::Sigs::more`): a plain rotation's new epoch; a merge's named tips, then its
+    /// own.
+    pub more: Vec<Secret32>,
     pub lists: Lists,
     /// A merge's: the head it is signed at and that epoch's keys (else the open epoch).
     pub at: Option<(CommitId, Arc<AccountEpochKeys>)>,
@@ -112,7 +116,7 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     // D's deposit seed is the account's: fresh with each rotation carrying a removal (someone
     // leaves, spec/crypto.md §3); one carrying none keeps it
     let fresh_deposit = !members.removes.is_empty();
-    let rotation = AccountRotation { header, merge_keys: Vec::new(), lists, at: None };
+    let rotation = AccountRotation { header, merge_keys: Vec::new(), more: vec![keys.inner.clone()], lists, at: None };
     commit_rotation(tx, p, held.devices, &keys, fresh_deposit, &roster, rotation)
 }
 
@@ -150,7 +154,8 @@ pub(crate) fn merge_heads(tx: &mut Tx<'_>, p: Tid) -> Result<Option<CommitId>> {
     .ok_or(Error::Misuse("list tree"))?;
     let header = RotationHeader { signing_key: keys.signing.verifying_key(), kem_key: keys.kem.public().clone(), supersedes: tips.clone(), names: tips.iter().skip(1).copied().collect(), takes: Vec::new(), revokes: false, devices: Vec::new(), list_root: root, seeds };
     let merge_keys = tip_keys.iter().skip(1).map(|k| k.signing.clone()).collect();
-    let rotation = AccountRotation { header, merge_keys, lists: Vec::new(), at: Some((at, at_keys)) };
+    let more = tip_keys.iter().skip(1).map(|k| k.inner.clone()).chain([keys.inner.clone()]).collect();
+    let rotation = AccountRotation { header, merge_keys, more, lists: Vec::new(), at: Some((at, at_keys)) };
     commit_rotation(tx, p, held.devices, &keys, false, &roster, rotation)
 }
 

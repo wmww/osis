@@ -1029,6 +1029,8 @@ pub type CommitListeners = Arc<dyn Fn(&Tid) -> bool + Send + Sync>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoleSigs {
     pub inner: Option<[u8; osis_crypto::INNER_LEN]>,
+    /// A rotation's inner signature sealed again (`osis_commit::Sigs::more`).
+    pub more: Vec<[u8; osis_crypto::INNER_LEN]>,
     pub merge: Vec<osis_crypto::Signature>,
 }
 

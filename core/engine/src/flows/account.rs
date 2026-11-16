@@ -258,12 +258,6 @@ impl AccountView {
         self.epochs.get(e).is_some_and(|x| self.revoked(&x.signing.to_bytes()))
     }
 
-    /// The order the chain reads receipts in.
-    #[cfg(test)]
-    pub(crate) fn received(&self) -> &[CommitId] {
-        &self.received
-    }
-
     /// The held rotations.
     pub(crate) fn rotation_ids(&self) -> Vec<CommitId> {
         self.rotations.iter().map(|r| r.id).collect()
@@ -605,9 +599,17 @@ impl Core {
     /// epoch's seed. `at`: each held rotation's epoch and header.
     fn devices_read(&self, p: &Tid, a: &HeldAccount, epochs: &BTreeMap<CommitId, EpochPublic>, at: &BTreeMap<CommitId, (CommitId, osis_commit::RotationHeader)>) -> osis_perm::Devices<CommitId, Tid> {
         let mut d = osis_perm::Devices::default();
-        let signer = |c: &CommitId, e: &CommitId| self.ix.role_sigs.get(c).and_then(|s| s.inner).and_then(|inner| self.inner_signer(a, &epochs.get(e)?.signing, c, &inner));
+        // sealed under the epoch it is signed at, then (`Sigs::more`) a plain rotation's under the
+        // epoch it mints, a certificate's under each tip it names, then the merge epoch: it opens
+        // with any of those seeds held (spec/crypto.md §3)
+        let signer = |c: &CommitId, e: &CommitId, r: &osis_commit::RotationHeader| -> Option<Tid> {
+            let s = self.ix.role_sigs.get(c)?;
+            let keys = std::iter::once(epochs.get(e).map(|x| x.signing)).chain(r.names.iter().map(|n| epochs.get(n).map(|x| x.signing))).chain([Some(r.signing_key)]);
+            let seals = s.inner.iter().chain(s.more.iter());
+            keys.zip(seals).find_map(|(k, inner)| self.inner_signer(a, &k?, c, inner))
+        };
         for (id, (e, r)) in at {
-            let Some(m) = signer(id, e) else { continue };
+            let Some(m) = signer(id, e, r) else { continue };
             // a merge certificate: its maker certifies the merge, carrying nothing else
             if r.is_merge() {
                 d.certifiers.entry(r.mints(id)).or_default().insert(m);
@@ -1077,7 +1079,7 @@ impl Engine {
     pub fn sign_forged(&self, cb: &mut osis_commit::CommitBuilder) -> osis_crypto::SigningSecret {
         let held = self.core.me().and_then(|me| self.core.account_signing(&me).ok().flatten());
         let Some((epoch, k)) = held else { return self.core.id.keys().signing.clone() };
-        cb.account = Some(osis_commit::AccountSigner { epoch, inner: k.inner.clone(), node: self.core.id.tid(), node_key: self.core.id.keys().signing.clone() });
+        cb.account = Some(osis_commit::AccountSigner { epoch, inner: k.inner.clone(), node: self.core.id.tid(), node_key: self.core.id.keys().signing.clone(), more: Vec::new() });
         k.signing.clone()
     }
 
@@ -1089,7 +1091,7 @@ impl Engine {
             Some((_, k)) => (k.signing.clone(), Some(osis_crypto::seal_inner(&k.inner, &id.0, &self.core.id.tid(), &self.core.id.keys().signing))),
             None => (self.core.id.keys().signing.clone(), None),
         };
-        blob.sigs = osis_commit::Sigs::signed(&id, &key, inner, Vec::new());
+        blob.sigs = osis_commit::Sigs::signed(&id, &key, inner, Vec::new(), Vec::new());
     }
 
     /// The KEM secrets of account `p`'s epochs held here: what opens an inbox blob sealed to it

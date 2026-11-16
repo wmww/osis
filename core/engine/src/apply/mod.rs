@@ -302,6 +302,9 @@ pub(crate) fn author_key(core: &crate::engine::Core, h: &osis_commit::Header, si
     if sigs.merge.len() != h.rotation.as_ref().map_or(0, |r| r.names.len()) {
         return Err(Error::BadInput("a merge signature count other than the rotation's names"));
     }
+    if sigs.more.len() != osis_commit::inner_seals(h.rotation.as_ref()) {
+        return Err(Error::BadInput("an inner seal count other than the rotation's"));
+    }
     epoch_key(core, &h.author, h.epoch, public_key)
 }
 

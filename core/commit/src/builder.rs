@@ -83,6 +83,10 @@ pub struct AccountSigner {
     pub inner: Secret32,
     pub node: Tid,
     pub node_key: SigningSecret,
+    /// A rotation's: the inner secret of each other epoch its inner signature is sealed under
+    /// (`Sigs::more`: a plain rotation's minted epoch; a certificate's named tips, then its
+    /// merge epoch).
+    pub more: Vec<Secret32>,
 }
 
 /// A built commit: the blob holding every delta.
@@ -172,6 +176,9 @@ impl CommitBuilder {
         if self.rotation.as_ref().is_some_and(|(r, keys)| r.names.len() != keys.len()) {
             return Err(Error::Build("a merge signature per named tip"));
         }
+        if self.account.as_ref().map_or(0, |a| a.more.len()) != crate::inner_seals(self.rotation.as_ref().map(|r| &r.0)) {
+            return Err(Error::Build("an inner seal per epoch a rotation opens with"));
+        }
         header.validate().map_err(build_err)?;
 
         // lists above the threshold go by link
@@ -207,12 +214,13 @@ impl CommitBuilder {
 
         let id = header.id();
         let inner = self.account.as_ref().map(|a| seal_inner(&a.inner, &id.0, &a.node, &a.node_key));
+        let more = self.account.as_ref().map(|a| a.more.iter().map(|k| seal_inner(k, &id.0, &a.node, &a.node_key)).collect()).unwrap_or_default();
         // a merge certificate's tips sign the epoch it mints, alike in every certificate of it
         let merge = self.rotation.iter().flat_map(|(r, keys)| {
             let epoch = r.mints(&id);
             keys.iter().map(move |k| k.sign(Domain::Merge, &epoch.0))
         }).collect();
-        let sigs = Sigs::signed(&id, key, inner, merge);
+        let sigs = Sigs::signed(&id, key, inner, more, merge);
         let parts = deltas.into_iter().enumerate().map(|(ai, delta)| Part { ai, delta }).collect();
         let commit = CommitBlob { header, sigs, parts };
         // paging keeps deltas far below a blob; a commit whose paged roots still pass it is

@@ -425,6 +425,28 @@ fn concurrent_rotations_fork_and_their_merges_are_one_epoch_spec_crypto_9() {
     assert!(lp.peers[3].engine.account_disputes().is_empty());
 }
 
+// spec/commits.md §4 (a commit at an epoch whose minting rotation is not held is pending): a
+// write at a merge epoch reaching an outsider before any certificate of it pends on the merge's
+// ID, which no commit has, and applies once a certificate arrives
+#[test]
+fn a_write_at_a_merge_applies_once_a_certificate_arrives_spec_commits_4() {
+    let (mut lp, a, t) = world(4, 3);
+    let d0 = remove(&mut lp, 0, a.devices, 2);
+    let d1 = remove(&mut lp, 1, a.devices, 2);
+    send(&mut lp, 1, 0, &d1.commits);
+    let m0 = lp.peers[0].engine.signing_due().unwrap().commits[0];
+    let e = lp.peers[0].engine.header(&m0).unwrap().rotation.clone().unwrap().mints(&m0);
+    let w0 = write(&mut lp, 0, t, "at the merge");
+    assert_eq!(lp.peers[0].engine.header(&w0).unwrap().epoch, Some(e));
+    send(&mut lp, 0, 3, &d0.commits);
+    send(&mut lp, 1, 3, &d1.commits);
+    send(&mut lp, 0, 3, &[w0]);
+    assert!(lp.peers[3].engine.pends(&w0), "pending before the merge is held");
+    send(&mut lp, 0, 3, &[m0]);
+    assert!(!lp.peers[3].engine.pends(&w0), "still pending with a certificate of its epoch held");
+    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("at the merge".into())));
+}
+
 // spec/requirements.md Cost, notes/coordination.md (Check scaling): a removal lists the commits
 // of the epoch it closes, never the account's earlier history: the second rotation's lists are
 // as long after n writes at the first epoch as after 10n
@@ -761,9 +783,7 @@ fn header_naming_anothers_removal(sealed_as_n1: bool) {
         let made_up = super::tests_account::rotation_at(rec, (at, &at_keys), &[], &next, header, osis_base::Ts::make(e.now(), 0).unwrap());
         // and the same header sealed as N1 itself: its minter is the removal's, its epoch is not
         let mut b = osis_commit::CommitBlob::decode(&made_up).unwrap();
-        let id = b.header.id();
-        let inner = osis_crypto::seal_inner(&at_keys.inner, &id.0, &e.core.id.tid(), &e.core.id.keys().signing);
-        b.sigs = osis_commit::Sigs::signed(&id, &at_keys.signing, Some(inner), Vec::new());
+        super::tests_account::seal_inner_as(&mut b, &at_keys, &[&next.inner], &e.core.id.tid(), &e.core.id.keys().signing);
         if sealed_as_n1 { b.encode() } else { made_up }
     };
     let f = give(&mut lp, &fb, &[2]);
@@ -1200,12 +1220,12 @@ fn a_rotations_late_list_restores_the_accounts_earlier_word_at_an_outsider_spec_
 }
 
 /// Commit `id` of peer `from` as a holder of its epoch's keys `k` re-signs it: its inner signature
-/// sealed as key actor `z` (whose identity `zid` signs), the account's signature over it again.
-fn inner_as(lp: &mut LocalPeer, from: usize, id: &CommitId, k: &osis_crypto::AccountEpochKeys, zid: &crate::identity::Identity) -> crate::local_peer::Package {
+/// sealed as key actor `z` (whose identity `zid` signs), a rotation's again under the inner
+/// secrets `more` (`Sigs::more`), the account's signature over it again.
+fn inner_as(lp: &mut LocalPeer, from: usize, id: &CommitId, k: &osis_crypto::AccountEpochKeys, more: &[&osis_crypto::Secret32], zid: &crate::identity::Identity) -> crate::local_peer::Package {
     let mut pk = lp.peers[from].engine.package(id).unwrap().unwrap();
     let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    let inner = osis_crypto::seal_inner(&k.inner, &id.0, &zid.tid(), &zid.keys().signing);
-    b.sigs = osis_commit::Sigs::signed(id, &k.signing, Some(inner), b.sigs.merge.clone());
+    super::tests_account::seal_inner_as(&mut b, k, more, &zid.tid(), &zid.keys().signing);
     pk.bytes = b.encode();
     pk
 }
@@ -1226,7 +1246,7 @@ fn a_removed_nodes_fork_signed_as_another_key_actor_counts_nowhere_spec_permissi
     let fork = lp.peers[2].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
     let (_, k1) = lp.peers[2].engine.core.account_signing(&a.account).unwrap().unwrap();
     let late = write(&mut lp, 2, t, "removed at its fork");
-    let forged = [inner_as(&mut lp, 2, &fork, &k0, &z), inner_as(&mut lp, 2, &late, &k1, &z)];
+    let forged = [inner_as(&mut lp, 2, &fork, &k0, &[&k1.inner], &z), inner_as(&mut lp, 2, &late, &k1, &[], &z)];
     for to in [0, 1, 3] {
         lp.advance(1);
         for pk in &forged {
@@ -1785,7 +1805,7 @@ fn a_head_it_cannot_merge_owes_no_rotation_spec_permissions_5_5() {
     let fb = forge(&mut lp, x, &a, head, &[], &[], 91);
     let f = give(&mut lp, &fb, &[x]);
     let me = lp.peers[x].engine.core.id.clone();
-    let pk = inner_as(&mut lp, x, &f, &k0, &me);
+    let pk = inner_as(&mut lp, x, &f, &k0, &[&osis_crypto::AccountEpochKeys::from_seed(&osis_crypto::Secret32::from_bytes([91; 32])).inner], &me);
     lp.advance(1);
     lp.deliver(b, &pk).unwrap();
     let v = lp.peers[b].engine.core.account_view(&a.account).unwrap();

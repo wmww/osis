@@ -37,8 +37,9 @@
 //!   with a revocation not taken, on no line a counting rotation answered, that it has not
 //!   answered), or for a taken revocation its preferred line does not carry when it cannot merge;
 //!   then, following several heads and holding every tip's seed, it certifies the merge of them
-//!   all; it re-seals its heads' tip seeds to roster devices it sees without them; after a
-//!   removal it rotates t at the new epoch; it writes at its preferred head (on t under its
+//!   all; it re-seals its heads' tip seeds to roster devices it sees without them; it rotates t
+//!   at the new epoch when a taken revocation is not carried by the P epoch its newest t epoch
+//!   is boxed at; it writes at its preferred head (on t under its
 //!   newest t epoch) and lists its own writes at every other epoch.
 //!
 //! Parties: account P with A (removes X at tick 1, may rotate plainly at 0), B (may be offline,
@@ -524,6 +525,9 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
     j.warning = rejs.iter().any(|(r, _, q)| j.counting.contains(r) != fol_elem(*q));
     // t epochs and writes: custody first, then validity (a least fixpoint; under `StaleShut` the
     // t epochs open only at open P epochs or by a counting commit, one fixpoint with validity)
+    // the epoch rule (spec/permissions.md §5.5): at an open epoch, at a held one no counting
+    // rotation carrying a removal closes (one not on its line), or named
+    let unrevoked = |e: &Line| (e.is_empty() || e.iter().all(|x| j.chain.contains(x)) && (w.single(e) || j.merges.contains(e))) && !j.followed.iter().any(|q| !e.contains(q) && !w.removes(*q).is_empty());
     let mut valid: BTreeSet<u32> = BTreeSet::new();
     loop {
         let tkeys: BTreeSet<u32> = std::iter::once(0).filter(|_| own || v == R1).chain(held.iter().copied().filter(|k| {
@@ -535,7 +539,7 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
         loop {
             next = held.iter().copied().filter(|id| {
                 let i = w.item(*id);
-                matches!(i.kind, Kind::Content | Kind::Listing { .. } | Kind::TRot) && i.on_t.is_none_or(|te| tkeys.contains(&te)) && (j.heads.contains(&i.epoch) || named.contains(id))
+                matches!(i.kind, Kind::Content | Kind::Listing { .. } | Kind::TRot) && i.on_t.is_none_or(|te| tkeys.contains(&te)) && (j.heads.contains(&i.epoch) || unrevoked(&i.epoch) || named.contains(id))
             }).collect();
             let more: Vec<u32> = next.iter().filter_map(|id| match &w.item(*id).kind {
                 Kind::Listing { names } => Some(names.iter().copied().filter(|n| w.item(*n).author == w.item(*id).author).collect::<Vec<_>>()),
@@ -684,12 +688,12 @@ fn seen_holding(w: &World, j: &View, d: usize, e: &Line) -> bool {
 
 /// The t epoch node `n` encrypts under: of the t epochs it holds whose rotation counts there or
 /// is its own, the newest.
-fn t_epoch(w: &World, j: &View, n: usize) -> Option<u32> {
+pub fn t_epoch(w: &World, j: &View, n: usize) -> Option<u32> {
     j.tkeys.iter().copied().filter(|k| *k == 0 || j.valid.contains(k) || w.item(*k).author == n).max()
 }
 
 /// Honest node `n` acts at `now` (the policy in the module doc). `removes`: the world's script
-/// has it remove that node.
+/// has it remove that node, in a plain rotation of its own, then act as at the end of a pass.
 pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool) -> Vec<u32> {
     let mut made = vec![];
     let j = judge(w, n, now);
@@ -713,12 +717,15 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
         boxed[*m] = Some(*m) != removes;
     }
     let mut head = h.clone();
-    let mut rotated_for_removal = false;
     if !carries && (removes.is_some() || !answers.is_empty() || !takes.is_empty() && !mergeable) {
         let id = w.add(Kind::Plain { at: h.clone(), removes: removes.into_iter().collect(), adds: vec![], takes: takes.clone(), answers: answers.clone() }, n, n, h.clone(), None, now, boxed);
         made.push(id);
         head = w.line(id);
-        rotated_for_removal = removes.is_some();
+        // then what it owes at the end of the pass, its removal taken
+        if removes.is_some() {
+            made.extend(act(w, n, now, None, write));
+            return made;
+        }
     }
     // the merge of every head, by a holder of every tip's seed
     let j2 = if made.is_empty() { j.clone() } else { judge(w, n, now) };
@@ -757,10 +764,13 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
             }
         }
     }
-    // after a removal, t rotates at the new epoch (boxed to P there and to R1)
+    // t rotates at the new epoch (boxed to P there and to R1) once a taken revocation is not
+    // carried by the P epoch the t epoch it encrypts under is boxed at: a device removed since
+    // may hold it
     let j4 = if made.is_empty() { j3 } else { judge(w, n, now) };
-    if rotated_for_removal {
-        let prev = t_epoch(w, &j4, n);
+    let prev = t_epoch(w, &j4, n);
+    let boxed_at = prev.filter(|k| *k != 0).map(|k| w.item(k).epoch.clone()).unwrap_or_default();
+    if prev.is_some() && j4.taken.iter().any(|r| !j4.carries(w, &boxed_at, *r)) {
         let mut bx = [false; N];
         bx[R1] = true;
         made.push(w.add(Kind::TRot, n, n, head.clone(), prev, now, bx));
@@ -1223,7 +1233,7 @@ impl Stats {
 }
 
 /// Every seed and t epoch secret a view holds, over the world's epochs.
-fn secrets(w: &World, j: &View) -> (BTreeSet<Line>, BTreeSet<u32>) {
+pub fn secrets(w: &World, j: &View) -> (BTreeSet<Line>, BTreeSet<u32>) {
     let mut s: BTreeSet<Line> = BTreeSet::new();
     if j.keys.holds(w, &Line::new()) {
         s.insert(Line::new());
@@ -1661,11 +1671,11 @@ mod tests {
         assert!(judge(&w, A, 5).heads.len() > 1);
     }
 
-    /// C, apart, removes T and rotates t at its own epoch c, writing on t under it; A merges c
-    /// closed. C's listing at the merge names its writes, under the t epoch boxed to P at c: A
-    /// opens it with c's seed, closed or not, so C's writes count. Reading only boxes at open
-    /// epochs (`StaleShut`), the listing waits on the t rotation counting, which waits on the
-    /// listing.
+    /// A removes X while C, apart, removes T and rotates t at its own epoch c, writing on t under
+    /// it; A receives C's commits and merges, then C merges, c closed and revoked by A's removal beside
+    /// it at A. A holds C's t epoch by its box to P at c, whatever closes c, and C's writes count
+    /// at A by C's listing (under t's re-key at the merge). Reading only boxes at open epochs
+    /// (`StaleShut`), A loses C's t epoch once c closes.
     fn thing_listing(control: Control) -> (World, u32) {
         let mut w = World { control, sched: Sched::Lockstep, ..World::default() };
         let mut made = act(&mut w, A, 1, Some(X), false);
@@ -1673,25 +1683,27 @@ mod tests {
         let cs = act(&mut w, C, 1, Some(T), true);
         let w1 = *cs.iter().find(|id| w.item(**id).on_t.is_some() && matches!(w.item(**id).kind, Kind::Content)).unwrap();
         made.extend(cs);
-        // A merges at once on receipt, so c is closed at A before it reads C's t epoch
         to(&mut w, &made, &[A, C, R1], 2);
-        for t in [2, 3, 4] {
-            let made: Vec<u32> = [A, C].iter().flat_map(|n| act(&mut w, *n, t, None, false)).collect();
+        // A merges before C's listing reaches it
+        for (t, ns) in [(3, vec![A]), (5, vec![C]), (7, vec![A, C])] {
+            let made: Vec<u32> = ns.iter().flat_map(|n| act(&mut w, *n, t, None, false)).collect();
             to(&mut w, &made, &[A, C, R1], t + 1);
         }
         (w, w1)
     }
 
     #[test]
-    fn a_siblings_thing_listing_opens_at_a_closed_epoch() {
+    fn a_siblings_thing_epoch_stays_held_and_its_writes_count_at_a_closed_epoch() {
+        let tkeys = |w: &World| -> Vec<BTreeSet<u32>> { (2..=8).map(|t| judge(w, A, t).tkeys).collect() };
         let (w, w1) = thing_listing(Control::None);
-        let j = judge(&w, A, 5);
+        let j = judge(&w, A, 8);
         assert_eq!(j.heads.len(), 1);
         assert!(!j.heads.contains(&w.item(w1).epoch), "C's epoch is closed at A");
+        assert!(tkeys(&w).windows(2).all(|x| x[0].is_subset(&x[1])), "held t epochs only grow");
         assert!(j.valid.contains(&w1), "{j:?}");
-        assert!(judge(&w, R1, 5).valid.contains(&w1));
-        let (w, w1) = thing_listing(Control::StaleShut);
-        assert!(!judge(&w, A, 5).valid.contains(&w1), "stale-shut: the listing opens");
+        assert!(judge(&w, R1, 8).valid.contains(&w1));
+        let (w, _) = thing_listing(Control::StaleShut);
+        assert!(!tkeys(&w).windows(2).all(|x| x[0].is_subset(&x[1])), "stale-shut: A keeps C's t epoch");
     }
 
     /// X revokes A in a rotation taking one it keeps to itself, so no node holds it with its

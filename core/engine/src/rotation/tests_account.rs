@@ -142,9 +142,20 @@ pub(super) fn rotation_at(rec: CreationRecord, at: (CommitId, &AccountEpochKeys)
     aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
     cb.aspects.push(aw);
     let node = osis_crypto::KeyActorKeys::from_seed(&Secret32::from_bytes([9; 32]));
-    cb.account = Some(AccountSigner { epoch, inner: first.inner.clone(), node: Tid::from_bytes([9; 15]), node_key: node.signing });
+    let more = forks.iter().map(|k| k.inner.clone()).chain([next.inner.clone()]).collect();
+    cb.account = Some(AccountSigner { epoch, inner: first.inner.clone(), node: Tid::from_bytes([9; 15]), node_key: node.signing, more });
     cb.rotation = Some((header, forks.iter().map(|k| k.signing.clone()).collect()));
     cb.build(&first.signing, &Dedup(rec, first.signing.verifying_key()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
+}
+
+/// Blob `b` (signed at the epoch keyed `at`) with its inner signature sealed as node `node`
+/// (signing with `key`): under `at`, and a rotation's again under each of `more` (`Sigs::more`);
+/// the account's signature over it again.
+pub(super) fn seal_inner_as(b: &mut CommitBlob, at: &AccountEpochKeys, more: &[&Secret32], node: &Tid, key: &osis_crypto::SigningSecret) {
+    let id = b.header.id();
+    let inner = osis_crypto::seal_inner(&at.inner, &id.0, node, key);
+    let more = more.iter().map(|k| osis_crypto::seal_inner(k, &id.0, node, key)).collect();
+    b.sigs = osis_commit::Sigs::signed(&id, &at.signing, Some(inner), more, b.sigs.merge.clone());
 }
 
 // spec/crypto.md §4 (Account keysets), spec/permissions.md §5.5 (Revoked): at an outsider, a box

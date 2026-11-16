@@ -19,7 +19,7 @@ mod tests_account;
 #[cfg(test)]
 mod tests_signing;
 #[cfg(test)]
-mod tests_forks;
+mod tests_custody;
 
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};

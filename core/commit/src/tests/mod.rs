@@ -171,20 +171,21 @@ fn id_covers_fields() {
 fn sign_verify() {
     let h = sample_header();
     let k = SigningSecret::from_seed(&Secret32::from_bytes([3; 32]));
-    let sigs = crate::Sigs::signed(&h.id(), &k, None, Vec::new());
+    let sigs = crate::Sigs::signed(&h.id(), &k, None, Vec::new(), Vec::new());
     verify_signature(&h.id(), &sigs, &k.verifying_key()).unwrap();
     let mut h2 = h.clone();
     h2.ts = ts(1_000_001);
     assert!(matches!(verify_signature(&h2.id(), &sigs, &k.verifying_key()), Err(Error::BadSignature)));
 }
 
-// spec/crypto.md §2: an account's commit signature covers its inner and merge signatures, so a relay swaps neither
+// spec/crypto.md §2: an account's commit signature covers its inner signature (every seal of it)
+// and merge signatures, so a relay swaps none; the seals round-trip in the blob
 #[test]
 fn signature_binds_inner_and_merge_spec_crypto_2() {
     let h = sample_header();
     let id = h.id();
     let k = SigningSecret::from_seed(&Secret32::from_bytes([3; 32]));
-    let good = crate::Sigs::signed(&id, &k, Some([1; osis_crypto::INNER_LEN]), vec![Signature([2; 64])]);
+    let good = crate::Sigs::signed(&id, &k, Some([1; osis_crypto::INNER_LEN]), vec![[4; osis_crypto::INNER_LEN]], vec![Signature([2; 64])]);
     verify_signature(&id, &good, &k.verifying_key()).unwrap();
     let mut swapped_inner = good.clone();
     swapped_inner.inner = Some([9; osis_crypto::INNER_LEN]);
@@ -192,6 +193,11 @@ fn signature_binds_inner_and_merge_spec_crypto_2() {
     let mut swapped_merge = good.clone();
     swapped_merge.merge = vec![Signature([8; 64])];
     assert!(matches!(verify_signature(&id, &swapped_merge, &k.verifying_key()), Err(Error::BadSignature)));
+    let mut swapped_more = good.clone();
+    swapped_more.more = vec![[5; osis_crypto::INNER_LEN]];
+    assert!(matches!(verify_signature(&id, &swapped_more, &k.verifying_key()), Err(Error::BadSignature)));
+    let blob = crate::CommitBlob { header: h, sigs: good.clone(), parts: Vec::new() };
+    assert_eq!(crate::CommitBlob::decode(&blob.encode()).unwrap().sigs, good);
 }
 
 // spec/versioning.md §2: an unknown (higher) format version parks; version 0 is malformed.

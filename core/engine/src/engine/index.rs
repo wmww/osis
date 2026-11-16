@@ -117,17 +117,22 @@ impl Rec for Role {
 impl Rec for Arc<crate::engine::RoleSigs> {
     fn to(&self) -> Value {
         let inner = self.inner.as_ref().map_or(Value::bytes(&[]), |i| Value::bytes(i));
-        Value::List(vec![inner, Value::List(self.merge.iter().map(|s| Value::bytes(&s.0)).collect())])
+        let more = Value::List(self.more.iter().map(|i| Value::bytes(i)).collect());
+        Value::List(vec![inner, Value::List(self.merge.iter().map(|s| Value::bytes(&s.0)).collect()), more])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(top) = v else { return None };
-        let [Value::Bytes(inner), Value::List(xs)] = top.as_slice() else { return None };
+        let [Value::Bytes(inner), Value::List(xs), Value::List(ms)] = top.as_slice() else { return None };
         let inner = if inner.is_empty() { None } else { Some(inner.as_slice().try_into().ok()?) };
+        let more = ms.iter().map(|x| match x {
+            Value::Bytes(b) => b.as_slice().try_into().ok(),
+            _ => None,
+        }).collect::<Option<Vec<_>>>()?;
         let merge = xs.iter().map(|x| match x {
             Value::Bytes(b) => Some(osis_crypto::Signature(b.as_slice().try_into().ok()?)),
             _ => None,
         }).collect::<Option<Vec<_>>>()?;
-        Some(Arc::new(crate::engine::RoleSigs { inner, merge }))
+        Some(Arc::new(crate::engine::RoleSigs { inner, more, merge }))
     }
 }
 impl Rec for Arc<crate::flows::account::JudgedEpochs> {

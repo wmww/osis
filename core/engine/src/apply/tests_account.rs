@@ -46,7 +46,7 @@ mod tests {
         }
         let node = KeyActorKeys::from_seed(&Secret32::from_bytes([seed ^ 2; 32]));
         // without: an account author signing as a key actor would
-        cb.account = inner.then(|| AccountSigner { epoch, inner: key.inner.clone(), node: Tid::from_bytes([seed; 15]), node_key: node.signing.clone() });
+        cb.account = inner.then(|| AccountSigner { epoch, inner: key.inner.clone(), node: Tid::from_bytes([seed; 15]), node_key: node.signing.clone(), more: Vec::new() });
         let built = cb.build(&key.signing, &Dedup(vec![p, t]), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
         (pt, built.commit.encode())
     }

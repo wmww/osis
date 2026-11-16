@@ -841,7 +841,7 @@ fn memory_commit_waits_only_signed_spec_sync_9() {
     let pk = forge_snapshot_in(&mut w, 1, &ak, now, forged_map(now, ENTRIES, 0x80), &|_, _| {}, true);
     assert!(pk.blobs.len() >= 2, "paged");
     let mut forged = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    forged.sigs = osis_commit::Sigs::signed(&pk.id, &osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32])), forged.sigs.inner, Vec::new());
+    forged.sigs = osis_commit::Sigs::signed(&pk.id, &osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32])), forged.sigs.inner, Vec::new(), Vec::new());
     let e = &mut w.lp.peers[3].engine;
     let err = e.ingest_memory(&forged.encode(), u64::MAX).unwrap_err();
     assert_eq!(osis_base::Classified::class(&err), osis_base::ErrorClass::BadInput, "{err}");
