@@ -15,7 +15,8 @@ import os, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-PATH = re.compile(r"\b((?:notes|issues|spec)/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\.md)")
+# `\b` written as a lookbehind after each literal: sre scans fast for a pattern starting with literals
+PATH = re.compile(r"((?:notes(?<!\wnotes)|issues(?<!\wissues)|spec(?<!\wspec))/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*\.md)")
 NUM = r"\d+(?:\.\d+)*"
 # Section numbers right after the path: §N, then more joined by `,`/and/or/to (each with its §) or a range.
 SECS = re.compile(rf"[ \t]+§ ?{NUM}(?:(?:\s*[-–]\s*§?|(?:\s*,\s*|\s+(?:and|or|to)\s+)§) ?{NUM})*")
@@ -25,8 +26,11 @@ WRAP = re.compile(r"\s*\n\s*(?://[/!]?|#|\(\*|\*)?\s*")
 HEADING = re.compile(rf"^(#+)\s+({NUM})\.?\s", re.M)
 
 
+SPACES, MARKUP = re.compile(r"\s+"), re.compile(r"[`*_§]")
+
+
 def norm(s):
-    return re.sub(r"\s+", " ", re.sub(r"[`*_§]", "", s)).strip().lower()
+    return SPACES.sub(" ", MARKUP.sub("", s)).strip().lower()
 
 
 def section(text, num):

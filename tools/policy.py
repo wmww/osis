@@ -12,7 +12,7 @@ and no code names a thing's destruction by the old word "ended" (`ended_names`),
 item is used only by its own crate's tests or not at all unless tools/dead_pub_allow.txt lists it (tools/dead_pub.py).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
-import functools, glob, os, re, sys
+import functools, glob, multiprocessing, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import code_refs, dead_pub, doc_refs, gate_failures
@@ -285,7 +285,7 @@ def product_lines(pat, skip):
         for path in glob.glob(os.path.join(m, "src/**/*.rs"), recursive=True):
             rel = os.path.relpath(path, ROOT)
             # `pat` matches within a line, so a file it misses has no line it matches
-            if not skip(rel) and not rel.startswith("core/test/") and pat.search(code_of(path)):
+            if not skip(rel) and not rel.startswith("core/test/") and has(pat, code_of(path)):
                 for n, line in enumerate(code_of(path).split("\n"), 1):
                     if pat.search(line):
                         yield rel, n
@@ -406,17 +406,22 @@ ENDED_NAMES = re.compile(
 # Every match holds one of these: only lines holding one are searched (a whole-text search is slow).
 END_HINT = re.compile(r"end|End|END")
 
+def hinted(text, hint, pat):
+    """(line number, match) of the first match of `pat` on each line of `text` holding `hint`:
+    `pat` matches within a line, and every match of it holds a match of `hint`, a fast literal scan."""
+    last = -1
+    for h in hint.finditer(text):
+        if h.start() <= last:
+            continue
+        a, last = text.rfind("\n", 0, h.start()) + 1, text.find("\n", h.start()) % (len(text) + 1)
+        m = pat.search(text, a, last)
+        if m:
+            yield text.count("\n", 0, a) + 1, m
+
 def ended_names():
     for path, rel in walk(CODE_TOPS + ("schema", "tools"), (".rs", ".tla", ".cfg", ".osis", ".sh")):
-        text, last = read(path), -1
-        for h in END_HINT.finditer(text):
-            if h.start() <= last:
-                continue
-            a, last = text.rfind("\n", 0, h.start()) + 1, text.find("\n", h.start()) % (len(text) + 1)
-            m = ENDED_NAMES.search(text[a:last])
-            if m:
-                n = text.count("\n", 0, a) + 1
-                yield f"{rel}:{n}: `{m.group(0)}`: a thing is destroyed, not ended (issues/deprecated-terms.md)"
+        for n, m in hinted(read(path), END_HINT, ENDED_NAMES):
+            yield f"{rel}:{n}: `{m.group(0)}`: a thing is destroyed, not ended (issues/deprecated-terms.md)"
 
 # issues/deprecated-terms.md: the old words for sync IDs (label), for a node keeping data unread
 # (host), for logging an entry (upload), for the account actor (person) and for a saved peer list
@@ -426,15 +431,14 @@ OLD_WORDS = re.compile(
     r"\bosis[-_]label\b|\bLabel(Role|Id)\b|\blabel_role_\w+|\blabeling\b|\bk_label\b|\bto_label\b"
     r'|"osis v1 label id"|"label (sync|write|delete|deposit|claim)"'
     r"|\bhost_prefix\b|\bhosts\b|\b[Uu]pload(s|ed|ing|er|ers)?\b|\bpersons?_\w+|\bpersons\b|\bsaved peers?\b")
+OLD_HINT = re.compile(r"abel|host|pload|erson|saved peer")  # in every OLD_WORDS match (`hinted`)
 
 def old_words():
     for path, rel in walk(("core", "cli", "libs/chat", "schema"), (".rs", ".osis", ".sh")):
         if rel.startswith(("core/test/tla/", "core/transport/")):
             continue
-        for n, line in enumerate(read(path).split("\n"), 1):
-            m = OLD_WORDS.search(line)
-            if m:
-                yield f"{rel}:{n}: `{m.group(0)}`: a deprecated term (issues/deprecated-terms.md)"
+        for n, m in hinted(read(path), OLD_HINT, OLD_WORDS):
+            yield f"{rel}:{n}: `{m.group(0)}`: a deprecated term (issues/deprecated-terms.md)"
 
 # Local-row keys share one namespace per store (the engine's, sync's): each kind of row is a byte
 # constant, `const NAME: &[u8] = b"...";`, written nowhere else as a literal, and no key constant is
@@ -479,24 +483,18 @@ def record_tags():
         if rel.startswith("core/sync/src/") and rel.endswith(".rs") and RECORD_CALL.search(code_of(path)):
             yield f"{rel}: a record row written with a literal tag (name it in {RECORD_TAGS}'s `tag`)"
 
-errs.extend(row_prefixes())
-errs.extend(record_tags())
-errs.extend(doc_refs.check())
-errs.extend(code_refs.check())
-errs.extend(ended_names())
-errs.extend(old_words())
-errs.extend(dead_pub.check())
-errs.extend(known_failures())
-errs.extend(union_lists())
-errs.extend(test_copies())
-errs.extend(checked_bytes())
-errs.extend(kept_verdicts())
-errs.extend(sync_hashed())
-errs.extend(pinned_seeds())
-errs.extend(real_lan_tests())
-errs.extend(peer_ticks())
-errs.extend(env_vars())
-errs.extend(dispute_types())
+# the slowest first, so the pool balances
+CHECKS = [dead_pub.check, doc_refs.check, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, union_lists, test_copies, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
+
+
+def run(check):
+    return list(check())
+
+
+# the checks are independent: forked workers share what is read so far, each check's output kept in order
+with multiprocessing.get_context("fork").Pool(min(4, os.cpu_count() or 1)) as pool:
+    for out in pool.map(run, CHECKS, chunksize=1):
+        errs.extend(out)
 
 for e in errs:
     print(e)
