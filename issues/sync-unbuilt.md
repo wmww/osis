@@ -48,4 +48,4 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - A stale copy (spec/permissions.md §3: `open_entry` takes none of it, `Opened::NotOpen`) keeps its bytes in the store as an entry that did not open, and is opened again only when S's read secrets move, not when this node gets secrets of the part's actor (the engine names such waits in `Wakes`, `Engine::take_wakes`, which only its test peer takes, nothing in osis-sync).
 
 ## Own issues
-issues/sync-link-first-contact.md, issues/sync-pending-leftovers.md, issues/holder-actor-sync-record.md; missing tests: issues/sync-tests-owed.md.
+issues/sync-link-first-contact.md, issues/sync-pending-leftovers.md; missing tests: issues/sync-tests-owed.md.

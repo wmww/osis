@@ -28,7 +28,8 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | `MAX_DELTA_BARE` 2^18 | R | no content-less runs / a small delta creates unbounded records |
 | `MAX_PAGE_ITEMS` 2^21 | R (validity rule, every durable reader alike; honest worst case about 1.4 x 2^20, notes/crdt.md Page items) | every delta invalid / one blob decodes to GBs |
 | `MAX_RELAY_BLOB` 64 KiB | R | no relay-only blobs / relays as big as blobs |
-| `MAX_DRIFT_MS` 1 h, `ROLE_KEEP_MS` 90 days, `INBOX_LIFETIME_MS` 90 days, `TOMBSTONE_LIFETIME_MS` 30 days, `MAX_CLAIMS` 65 536 | O | what each trades: issues/magic-number-review.md |
+| `MAX_DRIFT_MS` 1 h, `ROLE_KEEP_MS` 90 days, `TOMBSTONE_LIFETIME_MS` 30 days, `MAX_CLAIMS` 65 536 | O | what each trades: issues/magic-number-review.md |
+| `INBOX_LIFETIME` 90 days (spec: the default history the account's creation sets for the inbox's signals, spec/sync-inbox.md §1) | O | no fire is kept, so a node paired later enters an accepted thing only by a ticket the app kept elsewhere / the inbox's history only grows |
 | `MAX_RETENTION_ENTRIES` 64 | R | no setting can say anything / `MAX_VALUE_BYTES` of AKs in every node's memory per `retention^.0` delta; past it the delta is no setting, a writer refuses it |
 | `LIST_TREE_DEPTH` 32 (format) | R | a rotator listing more than 2^32 things refuses the rotation (0: one thing per rotation; ∞: unbounded paths); the largest useful size, so a path (1 KiB) shows nothing of how many things a rotator lists, where padding to the actual depth shows its log |
 | `MAX_CHAIN_DEPTH` 64 | R | only key actors / unbounded chain walks; deeper is invalid everywhere alike |

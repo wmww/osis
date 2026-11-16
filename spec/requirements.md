@@ -4,9 +4,10 @@
 Items are hard unless their section says goal. **Limit** marks something the design accepts. Where a property holds only generally, the subsystem specs (spec/*.md) state exactly when.
 
 Terms:
-- **Thing**: anything with an identity. **Aspect**: one typed datum of a thing. **Group**: a thing that lists things; the unit of sync.
+- **Thing**: anything with an identity. **Aspect**: one typed datum of a thing. **Reference**: a value pointing at a thing. A **strong** reference says its target belongs with the thing holding it; a **weak** one only points; a **ticket** also carries what is needed to sync its target. Holding a reference grants nothing.
+- **Closure** of a thing: it and everything it references strongly, directly or through other things. **Sync unit** of a thing: the part of its closure it can itself read, which is what syncs as one.
 - **Commit**: one signed, atomic edit. **Part**: what a commit writes on one aspect.
-- A thing is **created** by its creation record and **destroyed** when it is released (explicitly or by the collector), purged or expired.
+- A thing is **created** by its creation record and **destroyed** when its creation is purged or expires. A node **releases** a thing when nothing it holds references it strongly any more; a released thing is not considered destroyed.
 - **Actor**: a thing that can hold roles and act (a node, an account, a team, a shared space). **Holder**: an actor with a role (sync, read, write, admin) on something; sync holds and serves data without reading it.
 - **Node**: a running osis instance with its own identity and store. It reads what it holds keys for and stores and serves the rest encrypted, in any mix; nothing else separates nodes. A node is **untrusted** for data it cannot read.
 - **Peer**: another node a node syncs with directly. **Relay**: forwards a connection's encrypted bytes and stores nothing; not a node. **Client**: anything using the osis client protocol to reach a node out of process, on the same machine or another; a node may be one too, for data it doesn't sync itself. **Thin client**: a client that is not a node. Machine, transport and acting actor are independent: which actors a client may act as is a node's policy, not a property of where the client runs.
@@ -25,7 +26,7 @@ Terms:
 - No central or trusted coordinator, consensus or sequencer. Peer-to-peer like git; any node may be offline indefinitely and return.
 - No global registry. Identifiers are minted offline and cannot be hijacked. Total data may exceed what any node tracks.
 - Every node that can read data verifies identity and authorization itself from what travels with the data. Nothing trusts the word of the node it came from.
-- No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
+- No unit that must be synced whole. References overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
 - Deterministic: what a node reads and which writes it counts as valid are functions of the data it holds and its trust set (Permissions). Nodes holding the same data and trust sets read alike; a node missing some data reads as if it never had it until it arrives.
 - What a node holds generally does not depend on arrival order either. Limit: data a node dropped because it did not count then (an edit judged invalid, a removed holder's edit) or because a write it later judged invalid let it, comes back once it counts again only as copies arrive, and with no copy left is gone at every node; an expiring edit still incomplete at a node when it expires never applies there, so that node may read what came before it, and so may a node that never held an expiring or purged edit. Nodes can read differently until a writer of that data notices the difference or writes enough more of it; for an expired edit, at most until a writer that held it has seen the data unchanged for about an hour.
@@ -41,31 +42,31 @@ Terms:
 - Nothing is special-cased by how much of a store is readable: a normal store holds some data it can read and some it cannot.
 - No dependence on one transport. Sync works over any ordered byte stream, including files carried by hand.
 - Which nodes a node connects to, identifies itself to and syncs with is its account's (and node's) choice.
-- Nothing syncs by being created under an actor: apps add things to synced groups or share them explicitly, and a thing in no synced group, shared with no one, stays local.
+- Nothing syncs by being created under an actor: a node holds exactly what its own references reach, and a thing is shared only by granting a role and handing over a ticket. A thing is made only where something the node holds references it.
 
 ## Cost (goal)
 - Bytes transferred are close to the size of the commit: about 1.2x for large commits is fine, 2x-10x is not. Small commits may carry a fixed overhead of a few hundred bytes.
 - Round trips: a small constant in the common incremental case, logarithmic at worst; a holder that missed k key changes (each removal makes one) may need k.
-- Nothing a node already holds is sent again. A thing in many groups is stored and transferred once per node.
-- Dropping replaced content and deleting cost proportional to what changed, not to group size or history.
+- Nothing a node already holds is sent again. A thing referenced from many places is stored and transferred once per node.
+- Dropping replaced content and deleting cost proportional to what changed, not to the size of what holds it or to history.
 - Removing a holder costs in proportion to the rosters of what it could read and to its edits the other writers hold, each writer listing only what it holds; nothing scales with history.
-- Removing a node costs each group it edited in proportion to its edits there since its account's last node removal; no node pays for a group it does not sync, and nothing scales with history.
+- Removing a node costs each thing it edited in proportion to its edits there since its account's last node removal; no node pays for a thing it does not sync, and nothing scales with history.
 - Connected nodes see each other's commits promptly, pushed, not polled.
 
 ## Data a node cannot read
-- Holding and serving data it cannot read is a first-class feature of every node; one node may read some groups and not others.
-- For such data a node may learn volume and the structure selective sync needs: which opaque groups each stored item is in and how groups overlap (a commit spanning groups links them), counts, padded sizes, timing, addresses, and what it must act on: each item's expiry, whether it is durable, ephemeral or only relayed, which kinds of right may delete it, and whether someone without write left it. It must not learn identifiers, keys, values, authors, role grants, node identities, or structure beyond that.
-- What a connection reveals (its address, the groups it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
+- Holding and serving data it cannot read is a first-class feature of every node; one node may read some things and not others.
+- For such data a node may learn volume and the structure selective sync needs: which opaque sync units each stored item is in and how they overlap (a commit spanning them links them), counts, padded sizes, timing, addresses, and what it must act on: each item's expiry, whether it is durable, ephemeral or only relayed, which kinds of right may delete it, and whether someone without write left it. It must not learn identifiers, keys, values, authors, role grants, node identities, or structure beyond that.
+- What a connection reveals (its address, the sync units it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - One protocol for all nodes. Peers differ only in which keys they hold.
 - A node that cannot read data may hold its only copy. Reading never allows deleting data or forcing a re-upload.
 - For data it cannot read, a node knows no role holders and never waits on their liveness.
-- Read access never allows storing arbitrary content at a node that cannot read it. Such a node stores content only with a writer's signature, beyond a small budget per group open to anyone who must reach the group's readers (grants, readers' own role changes, such as leaving). Limit: whoever may use that budget (anyone holding an actor's public keys, for the actor's inbox; a group's readers, for the group) can fill it at a node, up to that node's rates, while none of that actor's or group's admin nodes is online, or by flooding without pause; meanwhile grants and readers' changes wait and unanswered invites may be pushed out.
+- Read access never allows storing arbitrary content at a node that cannot read it. Such a node stores content only with a writer's signature, beyond a small budget per thing open to anyone who must reach the thing's readers (invitations and removal notices, for an account's inbox; readers' own role changes, such as leaving). Limit: whoever may use that budget (anyone holding a thing's public keys, for its open signals such as an inbox's; a thing's readers) can fill it at a node, up to that node's rates, while none of the thing's writer nodes is online, or by flooding without pause; meanwhile invitations and readers' changes wait and unanswered invitations may be pushed out.
 - Goal: a node can limit abuse (storage, rate) of data it cannot read without learning identities.
 
 ## Confidentiality between readers
 - A reader learns only what it may read. Sharing one thing does not reveal values from another, and only metadata if both things are part of the same commit.
 - No identifier on the wire is predictable without a read key. Nothing derives from plaintext that could be guessed.
-- Readers of shared data learn which accounts take part, never which device made a change; a node you sync with directly can tell your devices apart as connections, not by anything they wrote. They may learn the roster of every actor holding a role on it (directly or through other actors) and the chain that authorizes each author, never the entries of other rosters. They can generally not tell which device made a change; they may tell that changes were made in one session, or at the same time on different devices, and when a device was removed.
+- Readers of shared data learn which accounts take part, never which node made a change; a node you sync with directly can tell your nodes apart as connections, not by anything they wrote. They may learn the roster of every actor holding a role on it (directly or through other actors) and the chain that authorizes each author, never the entries of other rosters. They can generally not tell which node made a change; they may tell that changes were made in one session, or at the same time on different nodes, and when a node was removed.
 - Deleting content leaves the fact, time, author and aspect of the edit visible to readers.
 - No secret ever passes where a node without the keys meant to open it could read it.
 - Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
@@ -74,7 +75,7 @@ Terms:
 - Who may purge an edit is set per edit (admins, the author or admins, any writer): a default per aspect, overridable per write, immutable once written; admins may always purge. What happens to replaced content is set per thing and aspect by the thing's admins and may change at any time: by default nothing is promised; kept at least a while after it is replaced and/or until a time; or purged once replaced. A change reaches the history nodes still hold: what has left never returns, and a longer window brings back nothing a node already dropped. A default expiry is set the same way and is only what a writer fills in: an edit keeps the expiry it was written with.
 - A purge counts only if its author had the right to make it, judged as the validity of an edit is (removals and re-grants included). Limit: at nodes that cannot read the data, a demoted holder can still delete what its old role allowed, until a writer holding the data uploads it again.
 - Data may carry an expiry at which every node, whether or not it can read it, drops it with nobody online.
-- Purging or expiring a thing's creation destroys the thing at every node: each drops it and ignores later writes to it. If that thing is an account or group, what was made under it stays: anything else it was an admin or member of keeps working for its other members, and what it wrote still shows as written by it. A destroyed thing may come back if the purge is later revealed to be invalid.
+- Purging or expiring a thing's creation destroys the thing at every node: each drops it and ignores later writes to it. If that thing is an account or another actor, what was made under it stays: anything it held a role on keeps working for its other holders, and what it wrote still shows as written by it. A destroyed thing may come back if the purge is later revealed to be invalid.
 - Purge is prompt: no honest node keeps purged content once it holds the deletion and what it needs to check it. No batching. Undo never brings back what another party purged, once the undoing node has seen the purge; an earlier undo is its own commit, purged on its own. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
 - Limit: deletion does not reach offline copies, copies a removed holder kept, dishonest nodes, memory or swap.
 - A node deletes data on its own only where nothing promises to keep it: at expiry, and history its thing's settings no longer keep. Purging is the act of a right holder, taking effect elsewhere when it arrives.
@@ -88,12 +89,12 @@ Terms:
 - Ephemeral state lives in memory, converges among the nodes holding it like any state, outlives contact with its author, and may be lost when no node holds it. A node that restarts gets it back from those that still do.
 - A value that should live only while its author is there (a cursor, a selection) is ephemeral with an expiry its author renews by rewriting it while there; once the author is gone it is gone everywhere by its last write's expiry, with no departure seen by anyone.
 - A signal has no current value, only entries; an entry's author can replace it, and readers see the newest version in the original's place. If a signal is ephemeral it is held by nobody: it reaches the nodes connected at the time, once, with no delivery guarantee. Otherwise its entries are kept in history at least as long as its thing's settings say.
-- Ephemeral writes need the rights the durable write would need and are verified like it; readers cannot write ephemeral data. Memory spent on others' ephemeral data is bounded per group, with a defined outcome past the bound.
+- Ephemeral writes need the rights the durable write would need and are verified like it; readers cannot write ephemeral data. Memory spent on others' ephemeral data is bounded per thing, with a defined outcome past the bound.
 - "Deterministic" and "Convergence" bind ephemeral data too.
 - Nothing is kept "until everyone has seen it". Whether others are alive is never a protocol condition.
 
 ## Scale
-- Many GB per node, multi-GB single values, maps with millions of keys, millions of stored items per group. No operation is O(total data) or O(content history). A change inside a huge value costs O(change).
+- Many GB per node, multi-GB single values, maps with millions of keys, millions of things referenced from one thing. No operation is O(total data) or O(content history). A change inside a huge value costs O(change).
 - State grows with the number of edits and removals ever made, a few bytes each, not only with live data. No horizon ever drops an edit.
 - A thing's permission history is kept whole: every role change ever made, a few hundred bytes each, and a node that starts holding the thing fetches and checks all of it.
 - Cost the app chooses: under "purge on replace", every edit that replaces earlier content costs O(the aspect's state) at each writer holding the replaced content, where an edit with no history promised costs O(the change).
@@ -120,7 +121,8 @@ Binds released formats only; until a stable release formats change in place.
 ## Data model
 - One canonical serialization and one hash function: equal values compare equal on every node.
 - Every datum is an aspect of a thing. Values are typed by the writer's schema. References may dangle.
-- If a thing has a retainer set, it is automatically released by garbage collection once all its retainers either do not contain references to it, or are themselves released, purged or expired. Garbage collection is not a guarantee of prompt or permanent deletion, and may only function when a single node syncs, can read all relevant things, and may release the thing. If a retain cycle is not retained by anything outside the cycle, the whole cycle is released. Things with no retainer set act as garbage-collection roots.
+- A thing is kept while something references it strongly and released when nothing does. A thing takes with it, to whoever syncs it, what it references and can itself read (its sync unit); a reference from something that cannot read its target does not keep it. Release is not prompt and is not erasure: a released thing may still exist on, and come back from, a node that holds it. Changes not yet synced when a thing is released are lost. A cycle nothing outside it references is released whole.
+- A node stores what it holds, and its own and its account's identity: releasing everything returns it to that. Limit: data purged elsewhere can come back through a node that kept it.
 - Per-aspect merge with one conflict rule everywhere: at a position the later write wins, and a removal is final.
   - At a position (a register, a struct's field, an aspect) a write newer than a concurrent reset shows.
   - A write inside a map entry, list element or enum case shows while the entry is not removed (the case not switched away from) and holds content from any write; an expired or purged write takes only its own content. A write never brings back what was removed or switched away from; only a new creation does. So an edit concurrent with the removal of what it is in is lost.
@@ -129,9 +131,9 @@ Binds released formats only; until a stable release formats change in place.
 
 ## Permissions
 - Two concepts only: actor and role. Every thing's creation names its first admin, fixed in its identity; the first admin is an ordinary admin, removable like any other. Sharing never changes a thing's identity.
-- Grouping for sync grants no rights. A membership may be written together with a grant tied to it, which ends when the membership does.
-- Readers only read: posting into a shared space needs write on its actor.
-- Every write is attributable to an account (or a share link) and verifiable by anyone who may read it. Which of the account's devices made it is visible only to the account's own devices. Hiding authorship is a deliberate choice, never the default.
+- Referencing a thing grants no rights, and removing a reference revokes none. A grant lasts until it expires or someone who may remove it does.
+- Readers only read: posting into a shared space needs write on its actor, except a thing's open signals (such as an inbox's), which anyone holding its public keys may fire; a fire changes no value.
+- Every write is attributable to an account (or a share link) and verifiable by anyone who may read it. Which of the account's nodes made it is visible only to the account's own nodes. Hiding authorship is a deliberate choice, never the default.
 - Rights held by different parties never combine into a right neither has alone. Limit: a writer who lies about when it received an edit can make a removed party's own signed edit count.
 - When an editor is removed their edits the remover or other remaining editors had seen at the time of the removal are generally kept. Edits not seen by any remaining editors are discarded, as there's no way to verify they were actually created before the removal.
 - Removing a node from an account works like removing a holder.
@@ -142,7 +144,7 @@ Binds released formats only; until a stable release formats change in place.
 - A secret once shared cannot be un-shared: a party that held a key keeps everything it opens, and any holder of a key may hand it to another. Removing a holder never re-encrypts existing content; what it could read before removal stays readable to it, from a copy it kept or from a dishonest node. The holder stops reading new content of an actor once a writer or admin of that actor has written after the removal; readers never change keys.
 - A role an actor M holds on A reaches the parties holding roles on M; A never depends on who they are. A party removed from M stops reading A's new content once M's keys were changed knowing the removal (normally by the removal itself) and a writer or admin of A has written since. Limit: until then it may read A's content written since the removal, not only new content.
 - Actors may hold roles on each other in a cycle; the grant that would close a cycle of read access gives its holder no read access through it (the earlier grant wins). Limit: a party removed from an actor on such a cycle may read the other actors' new content until a writer that has seen every grant of the cycle has written.
-- Limit: a holder granted access concurrently with a change of keys, or that missed key changes for longer than nodes that cannot read the data keep what it needs to catch up (90 days), cannot read through those nodes until a holder with the right to change keys acts for it, which nothing guarantees.
+- Limit: a holder granted access concurrently with a change of keys, or that missed key changes for longer than nodes that cannot read the data keep what it needs to catch up (90 days), cannot read through those nodes until a holder with the right to change keys acts for it, which nothing guarantees. A node added later that starts from an old ticket reaches the data only through a node that can read it.
 
 ## API
 - Plain values and listeners. No CRDT concepts, no conflict UI, no correctness that depends on "surfacing it to the user". Diagnostics are informational.

@@ -32,7 +32,7 @@ Format version 1, spec/versioning.md §1:
 | `MAX_DRIFT` | 1 hour |
 | `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync-ids.md §6; spec/sync-compaction.md §2) |
 | `ROLE_KEEP` | 90 days |
-| `INBOX_LIFETIME` | 90 days |
+| `INBOX_LIFETIME` | 90 days: the history the account's creation sets for its inbox's signals (spec/sync-inbox.md §1) |
 | `DEPOSITS_WAITING`, `DEPOSITS_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves waiting under a sync ID it clears (spec/sync-inbox.md §4) |
 | `LIST_TREE_DEPTH` | 32: levels of a rotation's list tree, at most 2^32 thing lists per rotation (§4, List tree; spec/permissions.md §5.5) |
 | `MAX_CHAIN_DEPTH` | 64 links from a thing up its record chain to its key actor (spec/permissions.md §1) |
@@ -70,7 +70,7 @@ Not format constants. A value marked recommended is advice.
 
 ## 3. Creation records and agility enums
 - Agility enums (spec/crypto.md §8) are values: `signing_key = enum { ed25519 1 (blob) }` (32 bytes), `kem_key = enum { x25519_mlkem768 1 (blob) }` (`pk_x || pk_m`, 1216 bytes), `sealed = enum { x25519_mlkem768 1 (blob) }` (`ct_x || ct_m || AEAD`). Each encodes as `1617([1, h'...'])`.
-- A **creation record** is the value `creation = struct { admin 0: tid, key 1: signing_key, nonce 2: blob, link 3: tid, account 4: bool }` holding exactly one of fields 0 and 1, and a 32-byte nonce: a thing `{0: admin, 2: nonce}` (its first admin, spec/permissions.md §1), a link's actor K `{0: admin, 2: nonce, 3: target}` (the thing it was made for, spec/permissions.md §7), a key actor `{1: key, 2: nonce}`, an account `{1: key, 2: nonce, 4: true}` (`key` its first epoch's, spec/crypto.md §3). Field 3 is only beside field 0; field 4 only ever true and only beside field 1. Its canonical encoding is what the tid hashes: tid = first 15 bytes of BLAKE3(canonical bytes). `created.0` holds this value (spec/data-model.md §9); a `created.0` whose read does not hash to its tid, holds not exactly one of fields 0 and 1, a field 3 not a tid or beside field 1, a field 4 not `true` or beside field 0, or any field other than 0 to 4, is bad input (a closed struct, not parked); an unknown `signing_key` case parks the thing (spec/versioning.md §2).
+- A **creation record** is the value `creation = struct { admin 0: weak, key 1: signing_key, nonce 2: blob, link 3: weak, account 4: bool }` holding exactly one of fields 0 and 1, and a 32-byte nonce: a thing `{0: admin, 2: nonce}` (its first admin, spec/permissions.md §1), a link's actor K `{0: admin, 2: nonce, 3: target}` (the thing it was made for, spec/permissions.md §7), a key actor `{1: key, 2: nonce}`, an account `{1: key, 2: nonce, 4: true}` (`key` its first epoch's, spec/crypto.md §3). Field 3 is only beside field 0; field 4 only ever true and only beside field 1. Its canonical encoding is what the tid hashes: tid = first 15 bytes of BLAKE3(canonical bytes). `created.0` holds this value (spec/data-model.md §9); a `created.0` whose read does not hash to its tid, holds not exactly one of fields 0 and 1, a field 3 not a weak or beside field 1, a field 4 not `true` or beside field 0, or any field other than 0 to 4, is bad input (a closed struct, not parked); an unknown `signing_key` case parks the thing (spec/versioning.md §2).
 - A link key's nonce is `kdf("creation nonce", seed, "")`; an account's is `kdf("first device", first seed, creation device's tid)` (spec/crypto.md §3); a node's is random.
 - **Record blob** (spec/permissions.md §4): a blob whose plaintext, in place of a `CommitBlobPlaintext`, is `RecordBlobPlaintext := ["records", [creation+]]`, the creation records ascending by tid, distinct, each read as `created.0` reads one; with no commitments and no expiry, durable. A reader takes each record's tid from its hash: a record needs no signature. Anything else is bad input.
 
@@ -133,9 +133,8 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - an aspect of the wrong class for its kind (`created.0` fits either kind);
   - `created.0` in a kind without own writes or with the ephemeral marker;
   - a role compaction snapshot of `roles.0`;
-  - a role-class, `addenda.0`, `retention^.0`, `purge.0` or `released.0` aspect whose retention is not its fixed one (spec/commits.md §5);
-  - `expires` on a commit with such an aspect but `released.0`;
-  - `released.0` in a commit that is not a release request: one of kind 0 (content), durable, with `released.0` aspects alone, no purge item, and `expires` = `wall_ms(ts) + ROLE_KEEP` (spec/commits.md §5 Destruction);
+  - a role-class, `addenda.0`, `retention^.0` or `purge.0` aspect whose retention is not its fixed one (spec/commits.md §5);
+  - `expires` on a commit with such an aspect;
   - `nobody` on an aspect other than `created.0` without fixed retention (spec/commits.md §5);
   - a content compaction snapshot's delta without fixed retention whose `by` is not writer;
   - `expires` or a purge item on a role commit;
@@ -158,10 +157,10 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 
 - The ciphertext runs from the end of the groups to the end of the blob: XChaCha20-Poly1305 under the blob key, nonce 24 zero bytes, AD = the prefix bytes, plaintext = the padded plaintext. **Blob ID** = BLAKE3(whole blob).
 - **Padding** (Padmé; Nikitin et al., PURBs): for a plaintext P, let `L = len(P) + 1`, `E = floor(log2 L)`; if `E = 0`, `padme(L) = L`; else with `S` the bit length of `E` and `m = 2^(E - S) - 1`, `padme(L) = (L + m) & ~m`. The padded plaintext is `P || 0x80 || 0x00^(padme(L) - L)`. To unpad: strip trailing `0x00` bytes, then one `0x80`, which MUST be present; the padded length MUST equal `padme(len(P) + 1)`. Anything else is bad input.
-- Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; inbox blob: §9 (its ciphertext is a sealed box, not the AEAD above).
-- Class: a commit blob's class is that of its header's ephemeral marker (none: durable, 0: ephemeral, 1: relay-only); a mismatch is bad input. Inbox blobs are durable; a chunk, tree node, page or link page has the class of the commit whose delta introduced it. A commit blob's expiry `T`: none for a header-only blob (no section); else a relay-only commit's header `ts` (wall ms) plus `MAX_DRIFT` (its header carries no `expires`), any other commit's header `expires`; any other is bad input.
+- Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; sealed fire: §9 (its ciphertext is a sealed box, not the AEAD above).
+- Class: a commit blob's class is that of its header's ephemeral marker (none: durable, 0: ephemeral, 1: relay-only); a mismatch is bad input. Sealed fires take their commit's class; a chunk, tree node, page or link page has the class of the commit whose delta introduced it. A commit blob's expiry `T`: none for a header-only blob (no section); else a relay-only commit's header `ts` (wall ms) plus `MAX_DRIFT` (its header carries no `expires`), any other commit's header `expires`; any other is bad input.
 - Commitments, blinded by the blob's own salt and its blind (a commit blob: its header's; a chunk, tree node, page or link page: its thing blind), one per level within a group (spec/crypto.md §7):
-  - a commit blob carries one group per distinct delete-key set among the aspects its sections list (opened or not), each group the keys of that set in header key order, groups in order of their first aspect; a `nobody` aspect's set is empty, so its group is (a Delete by level then never verifies, spec/sync-ids.md §6); a header-only blob carries no group;
+  - a commit blob carries one group per distinct delete-key set among the aspects its sections list (opened or not; a sealed fire: the aspects its commit lists), each group the keys of that set in header key order, groups in order of their first aspect; a `nobody` aspect's set is empty, so its group is (a Delete by level then never verifies, spec/sync-ids.md §6); a header-only blob carries no group;
   - a chunk, tree node or page carries one group: the delete keys of the delta that created it;
   - a chunk or tree node of a linked header list (§4) carries one group holding the commitment of the commit's level-2 key only (empty when the header lists none); its expiry is the commit's `expires`.
 - **Wrap**: XChaCha20-Poly1305 under `kdf("wrap", read secret)` (the read secret of the sync ID's thing), nonce = first 24 bytes of the blob ID, empty AD, plaintext `suite (1) || blob key (32) || order (8, little-endian)`: 57 bytes. A filler is 57 random bytes.
@@ -186,7 +185,7 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
   - For an account holder, `[sn, snonce]` of the symmetric form is its epoch name (spec/crypto.md §3), `s` its role secret at that epoch.
 - **Entry box** (spec/sync-ids.md §2): a `box` value in the sealed form with no keyset epoch, AD = `[sync_id, step_key, form]`, payload `[role, n, secret, earlier, sync]` with the read role, `earlier` `[n, secret]` of the earlier read epoch (spec/sync-ids.md §2) or `[]`, `sync` `[n, secret]` of the sync epoch whose key the step registers; its epochs are the sync ID's thing's. A claim set holding a box of another form is malformed.
 - **Superseded list** (spec/crypto.md §4): a keyset's field 4 `supersedes` (spec/data-model.md §9), `set<epoch>`: each epoch `[n, nonce]` the rotation lists. A rotation commit writes the whole keyset (a replace), so the list is read from its `keys.0` delta.
-- **Left out** (spec/crypto.md §4, Holder actors): a keyset's field 6 `left_out`, `map<tid, set<epoch>>`: per holder actor M the rotation left out of the keyset's role, the epochs `[n, nonce]` of M's keysets of that role it records M left out at; empty for every other rotation.
+- **Left out** (spec/crypto.md §4, Holder actors): a keyset's field 6 `left_out`, `map<weak, set<epoch>>`: per holder actor M the rotation left out of the keyset's role, the epochs `[n, nonce]` of M's keysets of that role it records M left out at; empty for every other rotation.
 - **Box records** (spec/crypto.md §4, Stale): `keys.0` field 8 `sealed`, `map<box_key, set<epoch>>` (reader default empty): per box of the actor to a holder actor (an account or an actor other than a key actor), keyed by that box's `box_key`, the epochs `[n, nonce]` of the holder's keysets the box names (each, for a joint box). Put in the commit that writes the box, as the box is (remove + put, or a put alone where the box is: an invite grant); removed with the box. An entry needs the role its key names, as the box (spec/permissions.md §3).
 - **Carried demotions** (spec/crypto.md §4): a keyset's field 7 `demotions`, `set<blob>`: the 32-byte IDs of the other commits whose demotions it carries, and field 8 `demotes`, a bool: whether its own rotation commit is one. Every keyset a rotation writes carries the same.
 - **Names digest** (spec/crypto.md §4): a keyset's field 5 `names`, 32 bytes: the unkeyed BLAKE3 of the canonical bytes of the rotation's names as the history box carries them (`[[name*], Opt([ts, author, blind])]`, below).
@@ -207,40 +206,20 @@ ClaimSet := [[claim+], {entry: box}]
 - **Closing step** (spec/sync-judgement.md §6 Closes): a child step whose `step_key` is 32 zero bytes (no genuine step has it: a fresh X25519 key is never zero). Its `claims_hash` is 32 zero bytes and its four public keys are its parent's (Register refuses one that is not, code 2); it is signed as any child step, carried with no claim set; nothing is registered after it.
 - `sync.0` stores a step as the canonical bytes of `Step` and its claim set as those of `ClaimSet` (`step_record`, spec/data-model.md §9).
 
-## 9. Inbox blobs
-- **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's wall ms + `INBOX_LIFETIME` and no commitments, then the raw bytes of a sealed box (§7, not a `sealed` value) to the recipient's newest read keyset KEM key.
-- AD = `[recipient, "inbox", prefix bytes]` (`"inbox"` a text string).
-- Payload: the padded (§5) canonical bytes of an `InboxPayload`, a `BoxesPayload` or a `StrandedNotice` (below):
-  ```
-  InboxPayload := [CommitBlobPlaintext, [[tid, Opt(sync_id), Opt([admin_pk, write_pk])]*], [CommitBlobPlaintext*], [creation*], Opt([dialable, [url*]])]
-  ```
-  - **Position 0**: the role commit with the parts about the recipient (§4); a lowering or removal, its `roles.0` parts only (spec/sync-inbox.md §2).
-  - **Position 1**: for each thing it names, sorted by tid: if the thing has a sync ID of its own (its `sync.0`, never a group's holding it), that sync ID and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7).
-  - **Positions 2 and 3**: empty unless a thing the commit touches has no sync ID of its own and the recipient reads it now, as the sender judges it. Otherwise they hold, a chain that would not fit the blob left out:
-    - the author's chain certificates for the carried parts (spec/permissions.md §4): its commits, each projected to its chain deltas and without any `keys.0` but the author's own, in position 2, and its creation records, ascending by tid and distinct, in position 3;
-    - when the commit boxes the recipient (a grant, a re-seal), the current `keys.0` commits (spec/permissions.md §4) of each thing it boxes it on, each projected to that delta, in position 2.
-  - **Position 4**: the sending node's dialable key (32 bytes) and its URLs (each at most 256 bytes, at most 16), a dial hint for the recipient (spec/sync-inbox.md §2); absent when the sender publishes none.
-- A recipient ingests the chain before the commit, only once the blob is taken (spec/sync-inbox.md §2), and only its records, `roles.0` and `keys.0` deltas and accounts' rotations.
-- **Boxes payload** (spec/sync-inbox.md §2): to a recipient holding less than read on every thing the commit names (sync alone, or removed since), in place of an `InboxPayload`, the recipient's own boxes of the role commit and nothing else of it:
-  ```
-  BoxesPayload := ["boxes", Opt(GrantSig), [BoxedThing+], Opt([dialable, [url*]])]
-  GrantSig     := [author, Opt(epoch_id), signature]
-  BoxedThing   := [tid, Opt(sync_id), [[role, epoch, box]+]]
-  ```
-  - `GrantSig`: present iff the commit writes an edge naming the recipient (a grant); `author` the commit header's author, `epoch_id` the epoch the author signs at, as header position 14 names one (§4), present iff the author is an account; `signature` by the author's key (an account's: the signing key of epoch `epoch_id`) under `"osis v1 inbox boxes"` (spec/crypto.md §2) over BLAKE3 of the canonical bytes of `[recipient, author, Opt(epoch_id), [BoxedThing+]]`. It carries no creation record or rotation: it verifies only where the author's key is held (spec/sync-inbox.md §2 Taking).
-  - `BoxedThing`, one per thing the commit's `secrets.0` deltas box the recipient on, sorted by tid, distinct: its sync ID as position 1 of `InboxPayload` names it, and each box of that thing's `secrets.0` delta keyed with the recipient as holder: the key's `role` and `epoch` and the `box` value (§7), sorted by the canonical bytes of `[role, epoch]`, distinct.
-  - Position 3: as position 4 of `InboxPayload`.
-  - A receiver opens a box with the AD it rebuilds from the payload (`[tid, recipient, role, n, nonce, form]`, §7).
-- **Stranded notice** (spec/permissions.md §4): an inbox blob whose payload is `StrandedNotice := ["stranded", sync_id, holder, HolderKeys]` (flattened: `HolderKeys` is two positions) in place of an `InboxPayload`: the sync ID the holder (an actor tid) is stranded on, and its holder keys. It carries no role commit and asks only for a re-seal the recipient judges itself.
-- **Holder keys**: `HolderKeys := [CommitBlobPlaintext*], [creation*]`: the holder's current `keys.0` commits (spec/permissions.md §4), each projected to its `keys.0` delta on the holder, with their authors' chain certificates for those deltas, each projected to its chain deltas (as position 2 of `InboxPayload`); then that chain's creation records, ascending by tid, distinct. A receiver ingests only what is on things in the holder's authority chain as it judges it while taking them (spec/permissions.md §4): `keys.0` deltas on the named holder and on the authors of the holder's `keys.0` commits carried (their cards), records, and `roles.0` deltas, each kept only if judged valid; it ignores the rest.
+## 9. Sealed fires and holder keys
+- **Sealed fire** (spec/crypto.md §5, spec/sync-inbox.md §2): the prefix of its commit's encryption (§5: its `expires`, the commitments of the delete keys its header lists), then the raw bytes of a sealed box (§7, not a `sealed` value) to the fired thing's read keyset KEM key the sender chose.
+- AD = `[thing, "fire", n, nonce, prefix bytes]` (`"fire"` a text string), `[n, nonce]` the read epoch of that keyset.
+- Payload: the padded (§5) canonical bytes of `SealedFire := [CommitBlobPlaintext, [CommitBlobPlaintext*], [creation*]]`: the fire's commit (§4); its author's chain certificates for its actor (spec/permissions.md §4), each projected to its chain deltas (an account's rotations as header-only copies); their creation records, ascending by tid, distinct.
+- A receiver ingests the chain before the commit, and only its records and accounts' rotations.
+- **Holder keys**: `HolderKeys := [CommitBlobPlaintext*], [creation*]`: the holder's current `keys.0` commits (spec/permissions.md §4), each projected to its `keys.0` delta on the holder, with their authors' chain certificates for those deltas, each projected to its chain deltas (as the chain of a `SealedFire`); then that chain's creation records, ascending by tid, distinct. A receiver ingests only what is on things in the holder's authority chain as it judges it while taking them (spec/permissions.md §4): `keys.0` deltas on the named holder and on the authors of the holder's `keys.0` commits carried (their cards), records, and `roles.0` deltas, each kept only if judged valid; it ignores the rest.
 
 ## 10. Links
 ```
 Link := [1, seed, target, k, k_sync_id, [peer*], ? flags]
 peer := [dialable, [url*]]
 ```
-- `Link` (spec/permissions.md §7): format 1, L's 32-byte seed, the target tid, K's tid, K's sync ID, and the nodes to dial for first contact, each a `dialable` 32-byte key and the transport `url`s it is dialed at (as a dial hint, §9 position 4): first the sharer node, its dialable key with one `peer://` URL of its relays (the relay items of `reach.0`, spec/data-model.md §9, spec/sync-transport.md §3, in order, those that would take the URL past 256 bytes left out; no relay: `peer://`), then each of the sharer node's configured addresses (spec/sync-opens.md §1) of another key, in order, its key with its URL, while there is room. The redeemer dials each peer, its first URL first; one holding K's sync ID serves it as at any peer (spec/permissions.md §7). `flags` (uint): bit 0 single use (the redemption removes L's own grant, spec/permissions.md §7); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
-- The sync ID a link names is K's home sync ID (spec/sync-ids.md §2): K is created with it.
+- `Link` (spec/permissions.md §7): format 1, L's 32-byte seed, the target tid, K's tid, K's sync ID, and the nodes to dial for first contact, each a `dialable` 32-byte key and the transport `url`s it is dialed at (as `dial^.0` gives them, spec/data-model.md §9): first the sharer node, its dialable key with one `peer://` URL of its relays (the relay items of `reach.0`, spec/data-model.md §9, spec/sync-transport.md §3, in order, those that would take the URL past 256 bytes left out; no relay: `peer://`), then each of the sharer node's configured addresses (spec/sync-opens.md §1) of another key, in order, its key with its URL, while there is room. The redeemer dials each peer, its first URL first; one holding K's sync ID serves it as at any peer (spec/permissions.md §7). `flags` (uint): bit 0 single use (the redemption removes L's own grant, spec/permissions.md §7); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
+- The sync ID a link names is K's sync ID (spec/sync-ids.md §2): K is created with it.
 - Caps: at most 4 peers, 4 URLs per peer; URLs at most 256 bytes (§12).
 - Text form: `osis://link/` followed by the unpadded base64url of the canonical bytes.
 
@@ -328,7 +307,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - Status gives one code per item in order.
 - **Events**: 0 an entry added or a deposited one stamped, its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 the sender is full for the sync ID (`full` a bool: true full, false room again; only in a Stream with no cursor, spec/sync-streams.md §4), 3 a new head (without claim set), 4 the sender refused a pulled entry for anything but room, with the refusal's code (neither 0 nor 12; only in a Stream with no cursor, spec/sync-streams.md §4). Expiry produces no event.
 - **Fetch** (spec/sync-streams.md §4): items in request order, possibly a prefix of the request when the reply would exceed `max_reply` (in `SMALL_REPLY..=REPLY_BUDGET`), possibly none below `REPLY_BUDGET`; the requester asks the rest again under `REPLY_BUDGET`.
-- **Stranded** and **Suspect** (spec/permissions.md §4): node to node only, answered Ok whatever the receiver does with them. Stranded names a sync ID the sender is stranded on and the holder (a tid) it reads the sync ID's actor through, with that holder's holder keys (§9); Suspect carries suspect entries of things in the sync ID's closure, `thing` a tid, `ak` an AK, `digest` 16 bytes, as many as fit `MAX_MESSAGE` per message.
+- **Stranded** and **Suspect** (spec/permissions.md §4): node to node only, answered Ok whatever the receiver does with them. Stranded names a sync ID the sender is stranded on and the holder (a tid) it reads the sync ID's actor through, with that holder's holder keys (§9 Holder keys); Suspect carries suspect entries of things in the sync ID's sync unit, `thing` a tid, `ak` an AK, `digest` 16 bytes, as many as fit `MAX_MESSAGE` per message.
 - **Client port** (kinds 24-29): served on every connection of a node, at every listener and on those it dialed (spec/sync-transport.md §5, One key). `session_id` is 16 bytes; `secret` is exactly 32 bytes.
   - **Auth**: answered Reply `[0, []]`.
     - A main session (the unix transport, spec/sync-transport.md §6) sends Auth without `secret`.
@@ -339,8 +318,8 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - **End of a client-actor session**: it ends when its entry goes, its `secret_hash` changes or its `until` passes. Each request is checked at the time it runs and does not run if any of those holds.
   - **A client actor's rights**: every method of a client-actor session runs as its client actor, by that actor's rights at that time.
     - A thing the actor may not read (spec/sync-judgement.md §1, and not a kept copy it reads, spec/permissions.md §3) answers every method as a thing the node does not know.
-    - A write the actor may not make is code 3, adding a thing it may not read to a group code 1, a `link` value anywhere in its write code 8.
-    - A revert needs the actor's rights on every write it makes (of a thing it deletes: every aspect, and its memberships in every group both the node and the actor may write; a membership in any other group stays, as for a delete) and on everything the reverted commit touched, and lists nothing the actor may not read (code 3).
+    - A write the actor may not make is code 3, a `link` value anywhere in its write code 8.
+    - A revert needs the actor's rights on every write it makes and on everything the reverted commit touched, and lists nothing the actor may not read (code 3).
     - Methods carrying state beyond a thing the actor may read are for main sessions only, code 11 otherwise.
     - This is the client's node's own rule, not a validity rule: receivers judge its commits by the author account's rights (spec/permissions.md §1), and its header's actor only by whether the author acts for it (spec/permissions.md §5.2), never by the actor's rights on what it writes.
   - **Write nonces**: a write's nonce is below 2^62, from 1 per (identity, session id).
@@ -355,18 +334,18 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 
     | method | row | args -> value |
     |---|---|---|
-    | 0 | whoami | `[] -> [me, node, home]` |
+    | 0 | whoami | `[] -> [me, node, root]`, `root` the account root (spec/sync-set.md §1) |
     | 1 | get | `[tid, ak, path] -> read result` |
     | 2 | aspects | `[tid] -> [ak*]` |
     | 3 | has content | `[tid] -> bool` |
     | 4 | holds | `[tid] -> bool` (its creation is held) |
-    | 5 | groups of | `[tid] -> [[item_of*], [subgroup_of*], [within*]]`, only groups the actor may read |
-    | 6 | grants | `[tid] -> [[holder, role, Opt(until), Opt(may_grant), with_membership, from_now]*]` |
+    | 5 | backlinks | `[tid] -> [[thing, ak, kind]*]`, kind 0 strong, 1 weak, 2 ticket: the known references to it (spec/data-model.md §8), only from things the actor may read |
+    | 6 | grants | `[tid] -> [[holder, role, Opt(until), Opt(may_grant), from_now]*]` |
     | 7 | role on | `[tid] -> Opt(role)`, the actor's |
     | 8 | created | `[tid] -> Opt(stamp)` |
     | 9 | changed | `[tid] -> Opt(stamp)` |
     | 10 | write | `[nonce, actor, [ak*], [op*], Opt(expiry)] -> Opt(commit)` |
-    | 11 | undo | `[nonce, scope] -> Opt(commit)`, scope `[0, tid]`, `[1, [[tid, ak]*]]` or `[2, group]` |
+    | 11 | undo | `[nonce, scope] -> Opt(commit)`, scope `[0, tid]` or `[1, [[tid, ak]*]]` |
     | 12 | redo | `[nonce, scope] -> Opt(commit)` |
     | 13 | revert | `[nonce, commit id] -> commit` |
     | 14 | undo target | `[scope] -> Opt(commit)` |
@@ -376,12 +355,10 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 18 | contact card | `[] -> text`; main only |
     | 19 | settle | `[] -> []`, after every Notify for changes before it |
     | 20 | now | `[] -> wall ms` |
-    | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*], [kept tid*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; kept: things held and synced no more (a share that ended, not unsynced, spec/sync-set.md §3); for a client actor only the things it may read, `connected` the connections with one of them open |
+    | 21 | status | `[] -> [connected, [[tid, state, not_taking, leaving]*], [kept tid*]]`, state 0 synced, 1 syncing, 2 not connected, 3 stranded; kept: things held and synced no more (retained copies, spec/permissions.md §3 Retain); for a client actor only the things it may read, `connected` the connections with one of them open |
     | 22 | holders | `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`, kind 0 actor, 1 link, 2 key; nothing behind an actor the actor may not read |
     | 23 | profile | `[] -> tid`; main only |
     | 24 | profile of | `[account] -> Opt(tid)`; main only |
-    | 25 | invitations | `[] -> [[thing, role, Opt(from), taken, acted]*]`; main only |
-    | 26 | accept invite | `[thing, into] -> []`; main only |
     | 27 | wait synced | `[scope] -> []`, scope `[0]` all, `[1, tid]` a thing, `[2]` deliveries; waits; main only |
     | 28 | import contact | `[card text] -> account`; waits; main only |
     | 29 | redeem | `[link text] -> tid`; waits; main only |
@@ -394,7 +371,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | `[1, tid]` | `[[ak, read result]*]`, the aspects present | `[ak, read result, origin]`; `[2, [ak, max_reply]]` above it |
     | `[2, tid]` | as row 6 | as row 6 |
     | `[3]` | as row 21 | as row 21 |
-    | `[4]` | `[]` | `[kind, [tid*], Opt(commit id), Opt(peer), detail]`, one per diagnostic of the node, kind 0 bad input, 1 colliding record, 2 parked, 3 pending, 4 overlapping counters, 5 removed, 6 callback, 7 not synced, 8 stranded, 9 uncommitted, 10 ephemeral refused, 11 mismatch, 12 storage, 13 repair, 14 own write invalid, 15 unreadable, 16 disputes unexamined, 17 own write failed, 18 sync stopped, 19 clock skew, 20 input capped, 21 connection (an unknown kind reads as 0); main only |
+    | `[4]` | `[]` | `[kind, [tid*], Opt(commit id), Opt(peer), detail]`, one per diagnostic of the node, kind 0 bad input, 1 colliding record, 2 parked, 3 pending, 4 overlapping counters, 5 removed, 6 callback, 7 not carried (spec/sync-set.md §2 Not carried), 8 stranded, 9 uncommitted, 10 ephemeral refused, 11 mismatch, 12 storage, 13 repair, 14 own write invalid, 15 unreadable, 16 disputes unexamined, 17 own write failed, 18 sync stopped, 19 clock skew, 20 input capped, 21 connection (an unknown kind reads as 0); main only |
     | `[5, method, [arg*]]` | `[]` | `[0, value]` or `[1, code, detail*]`: the row's outcome, once, whatever the room; an Unsub or the connection's end cancels it; main only |
     | `[6, address]` | `[]` | `[0, commit id, Opt(commit)]` a commit reading otherwise at the address (as row 17 reads it then), `[1]` read the address again, `[2, code, detail*]` ended |
 

@@ -117,7 +117,7 @@ Built as notes/api.md Lifetimes says: `core::RETAINERS` (beside `core::RETENTION
 - a walk passes through a pending thing like any known thing: reading it as failed releases a live thing when a batch makes the pending thing reachable and brings a thing under it (`a_stale_pending_thing_is_walked_through`); its own walk fails anyway, so it keeps nothing;
 - cost: counted at n and 10n.
 
-Dependents are not in this model: their side is the destruction model's (held-model `model.rs`, roles-model), with a release request as one more kind of destruction evidence under the What is kept rule (open: issues/thing-lifetimes.md).
+Dependents are not in this model: their side is the destruction model's (held-model `model.rs`, roles-model), with a release request as one more kind of destruction evidence under the What is kept rule.
 
 Not modelled: what a reference reads (validity), hearing out, the request's own validity and spread (the purge right), disputes.
 

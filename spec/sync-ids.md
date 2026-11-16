@@ -7,7 +7,7 @@
 - A **blob** is one of:
   - an encrypted commit (header plus unpurged deltas; spec/commits.md);
   - an encrypted chunk, tree node or page (spec/data-model.md §6, spec/crdt.md §8, a header list spec/commits.md §1);
-  - an inbox blob (spec/sync-inbox.md §2).
+  - a sealed fire (spec/sync-inbox.md §2).
 - A node keeping S unread cannot tell them apart except as §5 states.
 - **Layout**: **clear prefix** || ciphertext. The prefix holds a salt, an optional expiry `T`, the blob's **class** and the delete-key commitments, one per level (spec/crypto.md §7). Ciphertext: spec/crypto.md §5. Bytes, padding, **Blob ID** and the `MAX_BLOB` bound: spec/wire.md §5.
 - An add event or fetch answer whose bytes do not hash to its blob ID is ignored, whoever sends it.
@@ -37,12 +37,11 @@
   - How often is local policy.
 
 ## 2. Sync IDs and role keys
-- **One sync ID per actor**: a commit that gives a thing role secrets of its own (spec/permissions.md §3) MUST also create its sync ID (unless it already has one) and record it in `sync.0`, in that one commit. That sync ID is the thing's **home sync ID**, for its life: holders are removed, the sync ID is never replaced or retired.
+- **One sync ID per actor**: a commit that gives a thing role secrets of its own (spec/permissions.md §3) MUST also create its sync ID (unless it already has one) and record it in `sync.0`, in that one commit. It is the thing's one sync ID, for its life: holders are removed, the sync ID is never replaced or retired.
   - Every holder of a role on a thing with secrets of its own syncs it through that sync ID, whatever else holds the thing.
-  - A plain thing has none: it syncs under the sync IDs of the groups holding it (spec/sync-judgement.md §1). Key actors (nodes, link keys) have no role secrets of their own and so no sync ID: a link key reaches its K's sync ID from its link text (§3 static entry), a node through its account's secrets or pairing.
-  - The home closure holds the actor thing and what its `group.0` lists, nothing by record chain.
-  - The nearest actor with a home sync ID up the record chain of a thing with a home sync ID carries that thing's `sync.0` and `created.0` writes, while the record edges between them stand at the writer (spec/sync-judgement.md §1). An account, which has none, counts as its devices actor D.
-  - A link's sync ID is its K's home sync ID.
+  - A plain thing has none: it syncs under the sync IDs of the sync units holding it (spec/sync-set.md §2, spec/sync-judgement.md §1). Key actors (nodes, link keys) have no role secrets of their own and so no sync ID: a link key reaches its K's sync ID from its link text (§3 static entry), a node through its account's secrets or pairing.
+  - The nearest actor with a sync ID up the record chain of a thing with a sync ID carries that thing's `sync.0` and `created.0` writes, while the record edges between them stand at the writer (spec/sync-judgement.md §1). An account, which has none, counts as its account root D.
+  - A link's sync ID is its K's sync ID.
 - **Sync ID** value: derived from the genesis step's delete public key (spec/wire.md §8). The genesis step derives from the admin secret current when the sync ID is created.
 - **Role keys**: Ed25519 keys, the first three from the thing's own role secrets (spec/crypto.md §3):
   - **sync** `kdf("sync key", sync secret, "")`: every holder of sync or above derives it (spec/permissions.md §1);
@@ -53,8 +52,8 @@
 - **What sync gives**: the sync key, so its holder opens S at peers (spec/sync-opens.md §4), pulls it, holds it and serves it; what its store takes and removes, reading nothing: spec/sync-judgement.md §6.
 - **Who grants sync**: the one grant rule (spec/permissions.md §2): an admin, or a holder whose grant carries `invite` at sync or above.
 - **Removing a sync holder** is a departure that rotates the sync role (spec/permissions.md §3): the head's sync key moves with the next step, ending every open by the old key (spec/sync-opens.md §6). Removing a reader rotates read and sync.
-- **What a sync holder learns**: of the thing, its tid alone, as an opaque identifier (its grant names the thing and its account files it by tid, spec/sync-set.md §4); never its creation record (first admin, link target, record chain), the tids of what it holds (a group's items and subgroups: S's blobs are opaque, and a thing kept unread is a leaf, spec/sync-set.md §2), its roster, content or members. Besides: its sync IDs, the account that granted it (its grant's signer, spec/wire.md §9 Boxes payload; no other role commit's author or ID), the path with its claim-set size padded to a power of two, entry counts, sizes and timing, and which accounts' nodes open S with it. Through holder actors: a grant to G on H boxes H's sync secret to G's sync keyset, and a sync holder of G never learns H's sync ID.
-- A sync grant on D makes nobody a node of the account: a node of P is a node key actor holding read or above on D.
+- **What a sync holder learns**: of the thing, its tid alone, as an opaque identifier (its grant and its ticket name the thing by tid, spec/data-model.md §8 Tickets); never its creation record (first admin, link target, record chain), the tids of what its sync unit holds (S's blobs are opaque, and the node closure stops at a thing kept unread, spec/sync-set.md §2), its roster, content or members. Besides: its sync IDs, the profile its ticket names (an unsigned hint; no role commit's author or ID), the path with its claim-set size padded to a power of two, entry counts, sizes and timing, and which accounts' nodes open S with it. Through holder actors: a grant to G on H boxes H's sync secret to G's sync keyset, and a sync holder of G never learns H's sync ID.
+- No edge write targets D: a node of P is a node on D's roster (spec/permissions.md §1, §5.4 Roster).
 
 ## 3. Steps and claim sets
 - **Steps**: a tree. Layout, signature and **Step ID**: spec/wire.md §8.
@@ -71,13 +70,13 @@
   - It holds the epoch's read secret and, when the epoch supersedes one whose secret the registrar holds, the secret of the one with the greatest n, ties by lowest nonce (what its rotation commit is wrapped under, spec/crypto.md §5), and the sync secret whose sync key the step registers (its holder checks it derives the step's sync key).
   - A key actor holding no secret of the thing reads S from the current step; the rotation commit's history box (spec/crypto.md §4) opens the rest.
   - Each secret names its epoch of the thing (spec/crypto.md §4); it is held as that epoch's secret, which establishes nothing.
-  - Other readers get none: they read the rotations they missed in order (spec/crypto.md §5), or a re-seal (spec/sync-inbox.md §2).
+  - Other readers get none: they read the rotations they missed in order (spec/crypto.md §5), or a re-seal (spec/permissions.md §3).
 - **Role keys in use**: a node acts at a peer keeping S unread with the role keys of the epochs that peer's head registers; it derives them from the matching epochs it holds. Every holder of a key in use holds the older secrets through the history boxes, except a holder granted without history, which opens only from its grant's step on: a walk (§6) never strands it for an older step.
 
 ## 4. `sync.0`
 - **`sync.0`** on a thing with secrets of its own: `map<sync ID, { steps: map<step ID, step> }>`. Role-class, admin-only.
   - Each step is held with its claim set and entry boxes, which an admin MAY drop once the step has been superseded for `ROLE_KEEP` (counted from the `ts` of the write recording its first child).
-  - **Owner**: a node takes an entry of a thing g's `sync.0` as g's sync ID only when some step on a verified path from the sync ID's genesis step (each step signed by its parent's delete key, the genesis by its own, whose delete key hashes to the sync ID) bears the sync key of a sync secret of g the node holds. It ignores any other entry wherever it reads `sync.0`; forgetting g without g's secrets, it keeps what a thing it keeps owns. While the node holds no sync secret of g's own (it reads g by derived secrets, spec/crypto.md §3), it takes g's entries as sync ID hints (spec/sync-inbox.md §2). A node keeping g unread takes g's sync IDs from its account's sync record alone (spec/sync.md §3).
+  - **Owner**: a node takes an entry of a thing g's `sync.0` as g's sync ID only when some step on a verified path from the sync ID's genesis step (each step signed by its parent's delete key, the genesis by its own, whose delete key hashes to the sync ID) bears the sync key of a sync secret of g the node holds. It ignores any other entry wherever it reads `sync.0`; forgetting g without g's secrets, it keeps what a thing it keeps owns. While the node holds no sync secret of g's own (it reads g by derived secrets, spec/crypto.md §3), it takes g's entries as sync ID hints (spec/sync-inbox.md §5 Ticket sync IDs). A node keeping g unread takes g's sync IDs from the tickets it holds and its own reading alone (spec/sync.md §3).
   - A step enters `sync.0` only by an admin's write; no node records a step on a peer's word.
   - One role commit may carry the `sync.0` deltas of many things.
 
@@ -86,7 +85,7 @@ A node keeps one store of ciphertext for all the sync IDs it holds, read and kep
 
 Per sync ID:
 - **Path**: the steps from the genesis step to the head (§3): every step's role keys, step key, `prev` and signature; each step's claim set and entry boxes until it has been superseded for `ROLE_KEEP`, longer by policy. A node reading S holds the path its `sync.0` records; a node keeping S unread the path registered with it.
-- **Entries**: blob ID; wrap or, for chunk/tree/page and inbox blobs, a random filler; stamp or none; deposited flag; optional pending deletion time. An unstamped entry's charge to the peer that brought it lives in that peer's record (Peer budget).
+- **Entries**: blob ID; wrap or, for chunk/tree/page blobs and sealed fires, a random filler; stamp or none; deposited flag; optional pending deletion time. An unstamped entry's charge to the peer that brought it lives in that peer's record (Peer budget).
 - **Tombstones** (blob ID) of deleted entries, kept `TOMBSTONE_LIFETIME`; an ephemeral entry's `MAX_DRIFT`, in memory.
 - Its events go in the store's one node log (spec/sync-streams.md §3).
 
@@ -117,7 +116,7 @@ Each operation names a sync ID S. Writes are signed with the role keys of the re
   - **Refused for now** (codes 4, 12): the registrar keeps its open and registers again after a back-off (local policy, bounded), never at once.
   - A restart of S at a registrar (S dropped and synced again) forgets what it registered where.
 - **Walk** (a reader opening S at a store source, spec/sync-opens.md §4, and moving it along the path). The one rule: a reader opens S at a source only by a credential of that source's **step**, the newest step it knows the source's path holds, and knows a step there only once it verifies.
-  - **Known steps** there: the steps its `sync.0` records (every branch), and the steps that source gave (the head event of its stream, spec/sync-streams.md §4; Behind answers), each verified under its parent (the first of an answer under the named step's delete key; a path from genesis from its genesis step, §2). It keeps the source's step in their record (spec/sync-opens.md §3). A step it cannot verify (a sync ID known by ID alone, spec/sync-inbox.md §2) is tested and asked on, nothing more.
+  - **Known steps** there: the steps its `sync.0` records (every branch), and the steps that source gave (the head event of its stream, spec/sync-streams.md §4; Behind answers), each verified under its parent (the first of an answer under the named step's delete key; a path from genesis from its genesis step, §2). It keeps the source's step in their record (spec/sync-opens.md §3). A step it cannot verify (a sync ID known by ID alone, spec/sync-inbox.md §5 Ticket sync IDs) is tested and asked on, nothing more.
   - **Test**: when spec/sync-opens.md §5 Testing says (this node's own changes and re-marks, never a peer's filter alone), it tests its credentials of the known steps, deepest first across every branch, then the sync key of each sync secret it holds, newest first, each distinct credential once. A step's credential is its sync key when the reader holds its sync secret, else its claim key while it holds the step's claim set, else the static entries it claims as; a step whose claim set it dropped gives no claim. The filter shows only the credentials of the source's step (spec/sync-opens.md §4 Admissible: with no head, those of each sync secret it holds), so the first shown is Hit and opens S. A Hit refused counts as none shown. A source's newly shown credentials are found by its own test (spec/sync-opens.md §4 Admissible: it tests its step's sync proof, which the reader shows).
   - **Behind**: none shown, it asks Behind (below) by a credential of the newest known step it holds one of; the verified answer becomes known there and it tests again. Refused (14) on a step: that step is off the source's path (another admin's branch), and it asks on the nearest earlier known step it holds a credential of, each step once per walk. Answered 13: the source does not keep S; nothing follows (once it keeps S its own test opens it). A test asks Behind at most once per sync ID it covers.
   - **Stranded** there (spec/permissions.md §4): it holds no credential of the newest step known there, or Behind refused the newest step the source gave.
