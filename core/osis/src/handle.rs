@@ -172,6 +172,8 @@ pub(crate) struct Inner {
     pub eng: Mutex<Locked>,
     pub dispatch: Dispatch,
     pub node: Tid,
+    /// The node root (spec/sync-set.md §1): where this node's settings live.
+    pub node_root: Tid,
     pub me: Tid,
     pub devices: Tid,
     pub limit: usize,
@@ -633,6 +635,7 @@ impl Osis {
             }
         }
         let node = engine.tid();
+        let node_root = engine.node_root().ok_or_else(|| Error::Storage("no node root".into()))?;
         let events = engine.subscribe();
         let secret = node_secret(&mut engine, cfg, salt)?;
         let key = secret.public_key();
@@ -651,6 +654,7 @@ impl Osis {
             eng: Mutex::new(locked),
             dispatch,
             node,
+            node_root,
             me,
             devices: home,
             limit: cfg.app.read_limit,

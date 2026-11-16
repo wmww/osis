@@ -27,7 +27,7 @@
 A part of an applied commit arriving later: one that waits is kept pending under the commit's ID and joined once it can be; an invalid one joins and un-merges as on apply. Late `created.0` records and `roles.0` parts reach perm as on apply (the commit's edge writes re-added from every held part: a certificate copy may bring `roles.0` after `created.0`), then held deltas are re-judged. Late `secrets.0` parts establish epochs with the commit's held `keys.0` (`with_held`; notes/engine-roles.md). A snapshot part that comes back judged invalid gives nothing: the parts dropped under its cover alone go missing again (`retention::uncover`), as when a held snapshot turns invalid.
 
 ## Synced things (`Core::carried`)
-What the node syncs is the facade's sync set (notes/sync-leave.md): the node closure, sync unit by sync unit (lane (b) of issues/reference-graph.md).
+What the node syncs is the facade's sync set (notes/sync-leave.md): the node closure, sync unit by sync unit (notes/node-closure.md).
 
 ## Unjudgeable commits and parts (`apply/waits.rs`; notes/expiry-creation-design.md §3)
 - **One parking place** (notes/sync.md Arriving early): what cannot be judged yet is kept as anything that waits, a whole commit or a part of an applied one, in the commit's pending copy while a carrier holds it (spec/commits.md §4 Pending storage), and examined again when what it awaits arrives. Nothing is thrown out to be fetched again: sync keeps an entry whose commit `pends` as its carrier (`Opening::Pends`), so an applied commit's part arriving before its record is never lost to an entry already taken.

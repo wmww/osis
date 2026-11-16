@@ -253,7 +253,7 @@ fn auth(db: &ReadOnly, conn: ConnId, secret: Option<[u8; 32]>, id: [u8; 16]) -> 
 /// The `clients^.0` entries that authenticate now (`until` not passed): actor to secret hash.
 fn clients(db: &ReadOnly) -> BTreeMap<Tid, [u8; 32]> {
     let now = db.inner.clock.now_wall_ms();
-    let entries = db.read_local(|r| r.get(db.inner.node, &osis_schema::core_types::CLIENTS)).ok().flatten().unwrap_or_default();
+    let entries = db.read_local(|r| r.get(db.inner.node_root, &osis_schema::core_types::CLIENTS)).ok().flatten().unwrap_or_default();
     entries.into_iter().filter(|(_, c)| c.until.is_none_or(|u| u.0 > now.0)).map(|(a, c)| (a.0, c.secret_hash)).collect()
 }
 

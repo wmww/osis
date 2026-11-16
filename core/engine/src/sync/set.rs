@@ -295,10 +295,11 @@ impl Engine {
         Ok(None)
     }
 
-    /// `caps^.0` of this node (spec/data-model.md §9; absent: the defaults, an empty policy).
+    /// `caps^.0` of this node, on its node root (spec/data-model.md §9, spec/sync-set.md §1;
+    /// absent: the defaults, an empty policy).
     pub fn caps(&mut self) -> Result<Arc<Caps>> {
-        let me = self.core.id.tid();
-        let c = self.get_typed(&me, &ct::CAPS)?.unwrap_or_default();
+        let Some(root) = self.core.node_root else { return Ok(Arc::default()) };
+        let c = self.get_typed(&root, &ct::CAPS)?.unwrap_or_default();
         Ok(Arc::new(Caps { policy: c.policy, things: c.things.into_iter().map(|(t, x)| (t.0, ThingCaps { entries: x.entries, bytes: x.bytes })).collect() }))
     }
 }

@@ -48,6 +48,7 @@ impl Osis {
             eng: Mutex::new(locked),
             dispatch: Dispatch::new(&Dispatcher::Thread),
             node: i.node,
+            node_root: i.node_root,
             me: i.me,
             devices: i.devices,
             limit: i.limit,

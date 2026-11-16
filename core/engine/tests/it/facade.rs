@@ -35,13 +35,13 @@ fn read_credentials_and_claim_key_spec_sync_ids_3() {
     assert!(claims.claims.contains(&ck.verifying_key().to_bytes()));
 }
 
-// spec/data-model.md §9 (`caps^.0`: on the node thing), spec/sync-ids.md §5 (caps).
+// spec/data-model.md §9 (`caps^.0`: on the node root), spec/sync-ids.md §5 (caps).
 #[test]
 fn caps_read_from_the_node_spec_sync_ids_5() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
     assert!(e.caps().unwrap().things.is_empty(), "absent: the defaults");
-    let me = e.tid();
+    let me = e.node_root().unwrap();
     let t = Tid::from_bytes([9; 15]);
     let mut m = Mutation::new();
     m.set(me, &ct::CAPS, &ct::Caps { policy: [("entries".to_string(), 7)].into(), things: [(t.into(), ct::ThingCaps { entries: 3, bytes: 4 })].into() }).unwrap();

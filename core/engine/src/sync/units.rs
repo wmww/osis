@@ -66,6 +66,9 @@ pub struct Closure {
     /// The things that left the node closure and are not released yet, each with the contexts it
     /// was in when it left (`Engine::left_closure`).
     left: JMap<Tid, BTreeSet<Ctx>>,
+    /// Things kept unread whose sync ID reached a closing head (`Engine::close_kept`): entered
+    /// kept unread no more. Not persisted: a start judges each such sync ID closed again.
+    closed: JSet<Tid>,
     /// The things sourced at another node whose paths the sync set's walk takes not
     /// (`Engine::set_sourced`, spec/sync-set.md §5), the account root never among them.
     pub(crate) cut: JSet<Tid>,
@@ -96,8 +99,9 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = [usize; 10];
+    type Mark = [usize; 11];
     fn commit(&mut self) {
+        self.closed.commit();
         self.vx.commit();
         self.rows.commit();
         self.out.commit();
@@ -110,9 +114,10 @@ impl Journaled for Closure {
         self.cut.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        [self.out.mark(), self.inn.mark(), self.parent.mark(), self.children.mark(), self.held.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.vx.mark(), self.rows.mark()]
+        [self.out.mark(), self.inn.mark(), self.parent.mark(), self.children.mark(), self.held.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.vx.mark(), self.rows.mark(), self.closed.mark()]
     }
     fn rollback_to(&mut self, m: Self::Mark) {
+        self.closed.rollback_to(m[10]);
         self.vx.rollback_to(m[8]);
         self.rows.rollback_to(m[9]);
         self.out.rollback_to(m[0]);
@@ -271,7 +276,7 @@ impl Core {
         let e = self.epochs(y)?;
         if e.role(Role::Read).holds_any() {
             Some(Ctx::Read(*y))
-        } else if e.role(Role::Sync).holds_any() {
+        } else if e.role(Role::Sync).holds_any() && !self.ix.closure.closed.contains(y) {
             Some(Ctx::Unread(*y))
         } else {
             None
@@ -559,9 +564,42 @@ impl Engine {
         self.core.ix.closure.contexts(t).into_iter().filter_map(|c| if let Ctx::Read(u) = c { Some(u) } else { None }).collect()
     }
 
+    /// The targets of `x`'s strongs that are neither carried where the strong is nor held
+    /// otherwise (spec/sync-set.md §2 Not carried), key actors aside: none when the node closure
+    /// does not hold `x`. O(`x`'s strongs).
+    pub fn not_carried_from(&mut self, x: &Tid) -> Result<Vec<Tid>> {
+        if !self.core.ix.closure.holds(x) {
+            return Ok(Vec::new());
+        }
+        let x = *x;
+        let ys = self.run(|tx| strongs_from(tx, &x))?;
+        Ok(ys.into_iter().filter(|y| !self.core.is_key_actor(y) && !self.core.ix.closure.holds(y)).collect())
+    }
+
+    /// Every strong of the node closure `not_carried_from` names, (thing, target): O(the node
+    /// closure's strongs).
+    pub fn not_carried(&mut self) -> Result<Vec<(Tid, Tid)>> {
+        let things: Vec<Tid> = self.core.ix.closure.things().copied().collect();
+        let mut out = Vec::new();
+        for t in things {
+            out.extend(self.not_carried_from(&t)?.into_iter().map(|y| (t, y)));
+        }
+        Ok(out)
+    }
+
     /// Whether the node closure holds `t` (spec/sync-set.md §2).
     pub fn closure_holds(&self, t: &Tid) -> bool {
         self.core.ix.closure.holds(t)
+    }
+
+    /// Kept-unread `s` reached a closing head (spec/sync-judgement.md §6 Closes): its thing is
+    /// entered kept unread no more, so it leaves the node closure (spec/sync-set.md §3).
+    pub fn close_kept(&mut self, s: &osis_base::SyncId) -> Result<()> {
+        let Some((t, _)) = self.sync_holder(s)? else { return Ok(()) };
+        self.run(|tx| {
+            tx.core.ix.closure.closed.insert(t);
+            Ok(())
+        })
     }
 
     /// Whether `t` is kept unread: in the node closure by a sync secret alone (spec/sync-set.md

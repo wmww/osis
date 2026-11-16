@@ -7,7 +7,7 @@ use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
-use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, Strong, SyncId, Ticket, Value, WallMs, Weak};
+use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, SyncId, Ticket, Value, WallMs, Weak};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
@@ -356,7 +356,7 @@ pub type DialList = BTreeMap<Vec<u8>, Vec<String>>;
 pub const DIAL: Aspect<DialList> = Aspect::new("dial^.0", &CORE);
 pub const CAPS: Aspect<Caps> = Aspect::new("caps^.0", &CORE);
 /// `clients^.0`: by client actor, a strong (the node root holds each client's actor).
-pub const CLIENTS: Aspect<BTreeMap<Strong, Client>> = Aspect::new("clients^.0", &CORE);
+pub const CLIENTS: Aspect<BTreeMap<Weak, Client>> = Aspect::new("clients^.0", &CORE);
 /// `retention^.0`: what the thing keeps of replaced content (spec/commits.md §5); fixed retention.
 pub const RETENTION: Aspect<RetentionSetting> = Aspect::new("retention^.0", &CORE);
 /// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).

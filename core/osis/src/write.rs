@@ -364,16 +364,24 @@ impl<'d> Write<'d> {
                 }
             }
             let who = self.actor;
+            let things = self.things();
             let mut m = self.build(&mut Reader { e, limit, actor }, expires)?;
             // whatever actor the write names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
                 m.confine(a);
             }
-            // refgraph: (b) a write adding a strong whose target is not carried reports `NotCarried`
             let r = match e.write(m)? {
                 Some(w) => Some(crate::commits::written_in(&mut Reader { e, limit, actor }, w, who)?.reporting(db)),
                 None => None,
             };
+            // a strong whose target nothing carries is no error: it is reported at once
+            // (spec/sync-set.md §2 Not carried)
+            for t in things {
+                for target in e.not_carried_from(&t)? {
+                    let detail = format!("{t} references {target}, which is neither in its sync unit nor held otherwise: it reaches no other node by it");
+                    e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::NotCarried, tids: vec![t, target], commit: None, peer: None, detail });
+                }
+            }
             Ok(r)
         })?;
         Ok(r)

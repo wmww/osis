@@ -180,7 +180,11 @@ impl Unread {
             acted = true;
             // at a head past its keys its copy goes and it takes nothing (§6)
             cx.store.set_unheld(&s, k.stranded)?;
-            // refgraph: (b) a closed S is released (`k.closed`)
+            // at a closing head S's thing is kept no more: it leaves the node closure, and S
+            // with it (§6 Closes; spec/sync-set.md §3)
+            if k.closed {
+                cx.engine.close_kept(&s)?;
+            }
             self.kept.insert(s, k);
         }
         Ok(acted)

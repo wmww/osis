@@ -1,8 +1,9 @@
-//! Clients of this node by a secret (notes/client-port.md §3): `clients^.0` on the node thing
-//! (spec/data-model.md §9) lists a client actor per client with the hash of its bearer secret
+//! Clients of this node by a secret (notes/client-port.md §3): `clients^.0` on the node root
+//! (spec/data-model.md §9, spec/sync-set.md §1) lists a client actor per client, by a weak, with
+//! the hash of its bearer secret
 //! and its end. The node mints the actor (an actor whose first admin is the account, like a link's K) and
 //! acts as it for the client's session (the client port, spec/wire.md §11.2); what the client may read and write is
-//! that actor's grants, nothing else. Any admin of the node thing may edit the registry.
+//! that actor's grants, nothing else. Only the node writes its node root.
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
@@ -60,14 +61,22 @@ impl Osis {
         }
         let secret = ClientSecret::generate();
         let entry = secret.entry(until);
-        let (me, node) = (self.me(), self.node());
-        // refgraph: (b) the client's actor held from the account root
-        let (actor, _) = self.engine(|e| e.mint_actor(&me, |_| Ok(osis_engine::Mutation::new())))?;
-        // a commit of the node's own: only it writes its thing (a crash before it leaves an
+        let (me, root) = (self.me(), self.inner.node_root);
+        // the account root holds the actor by a strong, in the transaction minting it
+        // (spec/sync-set.md §2 Making a thing)
+        let (actor, _) = self.engine(|e| {
+            let d = e.account_root().ok_or(osis_engine::Error::Misuse("not a node of an account"))?;
+            e.mint_actor(&me, |actor| {
+                let mut m = osis_engine::Mutation::new();
+                m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(actor)) })?;
+                Ok(m)
+            })
+        })?;
+        // a commit of the node's own: only it writes its node root (a crash before it leaves an
         // actor no client can reach, holding nothing)
         self.engine(|e| {
             let mut m = osis_engine::Mutation::new();
-            m.op(node, &ct::CLIENTS, PathOp { path: vec![PathSeg::Key(Value::Strong(actor))], op: Op::Set(entry.to_value()) })?;
+            m.op(root, &ct::CLIENTS, PathOp { path: vec![PathSeg::Key(Value::Weak(actor))], op: Op::Set(entry.to_value()) })?;
             e.commit(m)
         })?;
         Ok((actor, secret))
@@ -77,7 +86,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn clients(&self) -> Result<Vec<Client>> {
         self.local("clients")?;
-        Ok(self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor: actor.into(), until: c.until }).collect())
+        Ok(self.at(self.inner.node_root, ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor: actor.into(), until: c.until }).collect())
     }
 
     /// Removes a client: its sessions end at once, its actor loses every role it holds, then
@@ -92,20 +101,20 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
         self.local("remove_client")?;
-        let node = self.node();
-        let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Strong(actor)) else { return Ok(false) };
+        let node = self.inner.node_root;
+        let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Weak(actor)) else { return Ok(false) };
         // ended under any clock: one moved back revives no half-removed client
         let ended = Some(Time(0));
         if e.until != ended {
             let mut w = self.write();
-            w.at(node, ct::CLIENTS).path(p![osis_base::Strong(actor)]).set(&ct::Client { until: ended, ..e })?;
+            w.at(node, ct::CLIENTS).path(p![osis_base::Weak(actor)]).set(&ct::Client { until: ended, ..e })?;
             w.commit()?;
         }
         for t in self.engine(|x| x.grants_of(&actor)) {
             self.engine(|x| x.demote(&t, &Demotion { holder: actor, new: None, retain: None }))?;
         }
         let mut w = self.write();
-        w.at(node, ct::CLIENTS).path(p![osis_base::Strong(actor)]).remove()?;
+        w.at(node, ct::CLIENTS).path(p![osis_base::Weak(actor)]).remove()?;
         w.commit()?;
         Ok(true)
     }
@@ -115,12 +124,12 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn rotate_client_secret(&self, actor: Tid) -> Result<ClientSecret> {
         self.local("rotate_client_secret")?;
-        let node = self.node();
-        let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Strong(actor)).ok_or_else(|| Error::Invalid(format!("no client {actor}")))?;
+        let node = self.inner.node_root;
+        let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Weak(actor)).ok_or_else(|| Error::Invalid(format!("no client {actor}")))?;
         let secret = ClientSecret::generate();
         let entry = secret.entry(e.until);
         let mut w = self.write();
-        w.at(node, ct::CLIENTS).path(p![osis_base::Strong(actor)]).set(&entry)?;
+        w.at(node, ct::CLIENTS).path(p![osis_base::Weak(actor)]).set(&entry)?;
         w.commit()?;
         Ok(secret)
     }

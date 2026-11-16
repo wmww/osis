@@ -109,7 +109,8 @@ pub(crate) fn account_two_nodes() -> (LocalPeer, Tid) {
 
 fn account_two_nodes_built() -> (LocalPeer, Tid) {
     let mut lp = net_bare(2, 0);
-    let (p, _) = lp.peers[0].engine.create_account().unwrap();
+    let (p, done) = lp.peers[0].engine.create_account().unwrap();
+    assert_eq!(done.commits.len(), 5, "the account's creation, the profile's and the inbox's keys, the inbox's history setting, the account root's strongs");
     // the new node's card over the direct connection
     let n = lp.peers[1].engine.tid();
     let card: Vec<CommitId> = lp.peers[1].engine.commit_ids();

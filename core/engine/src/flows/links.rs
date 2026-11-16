@@ -20,7 +20,7 @@ use osis_blob::ShareLink;
 use osis_schema::core_types::{self as ct, Edge};
 use std::sync::Arc;
 
-/// The untyped aspect of the sharer-only thing that keeps a link's seed.
+/// The untyped aspect of the thing under the account root that keeps a link's seed.
 pub const LINK_SEED: &str = "link:seed.0";
 
 /// A link whose seed this node holds (`Engine::held_links`).
@@ -28,8 +28,8 @@ pub const LINK_SEED: &str = "link:seed.0";
 pub struct HeldLink {
     pub k: Tid,
     pub l: Tid,
-    /// The seed thing's first admin (the sharer's actor): only a K with that first admin counts
-    /// (a seed thing a co-reader made and placed in a shared group names no link of ours).
+    /// K's first admin (the sharer's actor). Only a seed thing made under this node's account
+    /// root counts: its readers are the account's nodes alone.
     pub first_admin: Tid,
     pub target: Tid,
     pub single_use: bool,
@@ -54,7 +54,7 @@ impl Engine {
     /// K (first admin `sharer`, secrets of its own, home sync ID listing L by
     /// static entry), L (key actor from a fresh seed, `created.0` and `keys.0` signed by itself),
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
-    /// sharer-only thing keeping the seed. Returns the link and the seed thing.
+    /// thing under the account root keeping the seed. Returns the link and the seed thing.
     pub fn create_link(&mut self, sharer: &Tid, spec: &LinkSpec) -> Result<(ShareLink, Tid, Done)> {
         // redeeming reads K's sync ID as L (its roster shows K's grant on the target), which a
         // role below read does not give (spec/permissions.md §7)
@@ -178,7 +178,7 @@ impl Engine {
         self.demote(k, &crate::flows::Demotion { holder: *l, new: None, retain: Some(false) })
     }
 
-    /// The links whose seed this node holds (a sharer-only thing's `link:seed.0`, readable on
+    /// The links whose seed this node holds (a `link:seed.0` on a thing under the account root, readable on
     /// every node of the sharer; `Core::links`).
     pub fn held_links(&mut self) -> Result<Arc<Vec<HeldLink>>> {
         osis_base::memo::Memo::get_in(self, |e| &e.core.links, &(), Self::held_links_read)
@@ -193,7 +193,8 @@ impl Engine {
                 && let (Some(Value::Weak(k)), Some(Value::Bytes(b))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)))
                 && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
                 && let (Some(Value::Weak(target)), Some(Value::Bool(single_use))) = (m.get(&Value::Int(2)), m.get(&Value::Int(3)))
-                && let Some(first_admin) = self.first_admin(&t)
+                && self.first_admin(&t).is_some_and(|a| Some(a) == self.account_root())
+                && let Some(first_admin) = self.first_admin(k)
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
                 let here = ids.iter().any(|c| self.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local && m.view.aspect(&t, LINK_SEED).is_some()));
@@ -218,7 +219,7 @@ impl Engine {
         let mut out = Vec::new();
         for h in self.held_links()?.iter() {
             let (k, l) = (&h.k, &h.l);
-            let Some(tl) = self.core.timelines.get(k).filter(|_| self.first_admin(k) == Some(h.first_admin)) else { continue };
+            let Some(tl) = self.core.timelines.get(k) else { continue };
             let due = match tl.edges_at(None).get(l, k) {
                 Some(e) => (!e.alive_at(Some(ts))).then_some(e.until),
                 None => tl.lowered_unaudited(l, k).then_some(None),
@@ -240,7 +241,7 @@ impl Engine {
         let mut next: Option<u64> = None;
         for h in self.held_links()?.iter() {
             let (k, l) = (&h.k, &h.l);
-            let Some(tl) = self.core.timelines.get(k).filter(|_| self.first_admin(k) == Some(h.first_admin)) else { continue };
+            let Some(tl) = self.core.timelines.get(k) else { continue };
             if let Some(e) = tl.edges_at(None).get(l, k)
                 && let Some(u) = e.until
                 && e.alive_at(Some(ts))
@@ -317,12 +318,16 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let target_edge = Edge { role: spec.role, until: None, invite: None, floor: None };
     // K is new: the grant demotes nobody, so it carries no frontier
     done.extend(grant_in(tx, None, spec.target, k, &target_edge, false, None)?);
-    // the seed on a thing only the sharer's actor reads (derived secrets)
+    // the seed on a thing made under the account root, which holds it and K by strongs: every
+    // node of the account holds the seed, may finalize and serves K's sync ID to redeemers
+    // (spec/permissions.md §7)
+    let d = tx.core.account_devices().map(|(_, d)| d).ok_or(Error::Misuse("not a node of an account"))?;
     let mut m = Mutation::new();
-    let keep = m.create(crate::identity::thing_record(sharer, &mut *tx.rng));
+    let keep = m.create(crate::identity::thing_record(d, &mut *tx.rng));
+    for t in [keep, k] {
+        m.op(d, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(t)) })?;
+    }
     m.op(keep, &super::ak(LINK_SEED)?, PathOp { path: Vec::new(), op: Op::Set(Value::Map([(Value::Int(0), Value::Weak(k)), (Value::Int(1), Value::Bytes(seed.expose().to_vec())), (Value::Int(2), Value::Weak(spec.target)), (Value::Int(3), Value::Bool(spec.single_use))].into_iter().collect())) })?;
-    // refgraph: (b) the seed thing and K held from the account root, so every node of the account
-    // holds the seed, may finalize and serves K's sync ID to redeemers (spec/permissions.md §7)
     done.add(Engine::commit_tx(tx, m)?);
     Ok((k, sync_id, keep, done))
 }

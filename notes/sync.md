@@ -39,7 +39,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 ## Spec areas in code
 | spec | code |
 |---|---|
-| spec/sync-set.md (what a node syncs) | engine `sync/set.rs` (`sync_things`, `thing_sync`, `sync_set`, `sync_holder`), `forget_local`; osis-sync `set.rs`; `leave` (what the node syncs, and leaving) |
+| spec/sync-set.md (what a node syncs) | engine `sync/set.rs` (`sync_things`, `thing_sync`, `sync_set`, `sync_holder`), `released`; osis-sync `set.rs`; `leave` (what the node syncs, and leaving) |
 | spec/sync-ids.md (sync IDs, steps, the store, Register, Behind, Walk) | engine `sync_ids`; `store` (entries, paths, caps, Register, Delete, Behind); `opens` (Walk); `inbox/register.rs` |
 | spec/sync-opens.md (dials, proofs, records, the shared set) | `driver/dials.rs`, `session` (proofs), `opens` |
 | spec/sync-judgement.md, spec/sync-compaction.md | `read` (reader), `unread` (kept unread); engine `sync/facts.rs`, `bodies.rs`, retention |

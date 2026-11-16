@@ -25,11 +25,8 @@ impl Engine {
     }
 
     /// Removes `s` from the node root's `holds.0`: what only it held leaves the node closure
-    /// (spec/sync-set.md §3). The strong to the account root stays (`Invalid`).
+    /// (spec/sync-set.md §3). The strong to the account root stays (`keeps_root_strongs`).
     pub fn unhold(&mut self, s: Strong) -> Result<()> {
-        if Some(s.0) == self.account_root() {
-            return Err(Error::Misuse("the node root's strong to the account root stays"));
-        }
         let root = self.core.node_root.ok_or(Error::Misuse("no node root"))?;
         let mut m = Mutation::new();
         m.op(root, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Remove(Value::Strong(s.0)) })?;
@@ -59,4 +56,36 @@ pub(crate) fn hold_in(tx: &mut Tx<'_>, t: Tid) -> Result<()> {
     let mut m = Mutation::new();
     m.op(root, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(t)) })?;
     crate::engine::write::commit_in(tx, m).map(|_| ())
+}
+
+/// Refuses a local write removing a strong the node's roots keep (spec/sync-set.md §1): the node
+/// root's to the account root, the account root's to the profile and the inbox. A write
+/// replacing or resetting such a `holds.0` whole keeps them only by naming them again.
+pub(crate) fn keeps_root_strongs(tx: &mut Tx<'_>, m: &Mutation) -> Result<()> {
+    let holds = osis_base::Ak::new("holds.0").map_err(|_| Error::Misuse("ak"))?;
+    let mut kept: Vec<(Tid, Tid)> = Vec::new();
+    if let (Some(root), Some((p, d))) = (tx.core.node_root, tx.core.account_devices()) {
+        kept.push((root, d));
+        kept.extend(tx.core.profile_of(&p).map(|x| (d, x)));
+        if let Some(i) = crate::engine::Core::keys_in(tx, &p)?.and_then(|k| k.inbox) {
+            kept.push((d, i.into()));
+        }
+    }
+    for (from, to) in kept {
+        let removes = |v: &Value| matches!(v, Value::Strong(t) if *t == to);
+        let names = |v: &Value| matches!(v, Value::Set(s) if s.iter().any(|x| matches!(x, Value::Strong(t) if *t == to)));
+        let key = (from, holds.clone());
+        let reset = m.dead_resets.contains_key(&key) || m.fresh_resets.contains_key(&key) || m.sweeps.contains(&key) || m.purge.iter().any(|p| *p.tid() == from && *p.ak() == holds);
+        let cut = m.aspects.get(&key).is_some_and(|w| {
+            w.ops.iter().any(|o| match &o.op {
+                Op::Remove(v) => o.path.is_empty() && removes(v),
+                Op::Set(v) | Op::Replace(v) => o.path.is_empty() && !names(v),
+                _ => false,
+            })
+        });
+        if reset || cut {
+            return Err(Error::Misuse("the node root's strong to the account root, and the account root's to the profile and the inbox, stay"));
+        }
+    }
+    Ok(())
 }

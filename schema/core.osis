@@ -279,8 +279,8 @@ type client = struct {
     until 1: option<timestamp>,
 };
 
-/// The thin clients this device serves, by the client's actor.
-admin aspect clients^.0: map<strong, client>;
+/// The thin clients this node serves, by the client's actor (on the node root).
+admin aspect clients^.0: map<weak, client>;
 
 // ---- Retention ----
 // What a thing keeps of replaced content, set by its admins per aspect (spec/commits.md §5).
