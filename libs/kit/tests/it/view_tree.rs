@@ -95,15 +95,6 @@ fn undo_works_on_a_kit_created_thing() {
     assert_eq!(d.name(t).unwrap(), "one");
 }
 
-/// Every block of a page's tree.
-fn blocks(n: &osis_kit::views::Node) -> Vec<Block> {
-    let mut out = n.out.blocks.clone();
-    for c in &n.children {
-        out.extend(blocks(c));
-    }
-    out
-}
-
 /// A thing made here from an offer is to have its title typed in: the field to type in next
 /// names that, and the thing's page has the field.
 #[test]
@@ -116,5 +107,5 @@ fn a_new_things_title_is_the_field_to_type_in() {
     let t = d.opened().unwrap().unwrap();
     assert_eq!(w.graph.peek(TYPE_IN), Some((t, TITLE)));
     let n = page(&Cx::new(&d, &w, false), t).unwrap();
-    assert!(blocks(&n).iter().any(|b| matches!(b, Block::Editor { thing, ak, .. } if *thing == t && ak == TITLE)));
+    assert!(n.blocks().iter().any(|b| matches!(b, Block::Editor { thing, ak, .. } if *thing == t && ak == TITLE)));
 }
