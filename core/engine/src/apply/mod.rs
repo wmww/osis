@@ -2264,6 +2264,19 @@ pub(crate) fn held_part_at(tx: &mut Tx<'_>, id: &CommitId, ai: usize, at: &osis_
     };
     let stamp = tx.commit_stamp(id);
     let kept = stored.as_ref().and_then(|p| tx.core.decoded.page_index(id, stamp, p));
+    // a part with no pages is its skeleton: read decoded once per write of its record, not
+    // streamed whole at each read
+    if let Some(p) = &stored
+        && kept.as_ref().is_some_and(|k| k.unpaged())
+        && let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone())
+    {
+        let d = decoded_part(tx, &h, id, stamp, p)?;
+        let gives = match &*d {
+            Decoded::Snapshot(x) => Some((x.frontiers.clone(), x.absorbed.iter().map(|(c, t)| (*c, *t)).collect(), x.facts.clone())),
+            Decoded::Delta(_) => None,
+        };
+        return Ok((d.fragment().part_at(at), Some(gives)));
+    }
     let wanted = kept.as_ref().map(|k| k.wanted(at));
     let want = wanted.as_ref().map(|w| move |path: &[osis_crdt::Step], x: osis_crdt::PageAt| w.wants(path, x));
     let mut part = osis_crdt::Fragment::default();
@@ -2299,15 +2312,7 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
     let at = tx.commit_stamp(id);
     let mut out = Vec::new();
     for p in stored.parts.iter().filter(|p| keep(p.ai)) {
-        let d = match tx.core.decoded.part(id, at, p) {
-            Some(d) => d,
-            None => {
-                drop(osis_base::costs::span("part decode"));
-                let d = Arc::new(examine_stored(tx, &header, [p], id)?.pop().map(|x| x.1).ok_or(Error::Corrupt("stored delta"))?);
-                tx.core.decoded.keep_part(*id, at, p, d.clone());
-                d
-            }
-        };
+        let d = decoded_part(tx, &header, id, at, p)?;
         out.push((p.ai, (*d).clone()));
     }
     // cost tests: bodies read, decoded or kept
@@ -2320,6 +2325,18 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
         out.insert(at, (ai, d));
     }
     Ok(out)
+}
+
+/// Stored part `p` of commit `id` (header `header`, record stamp `at`) decoded, once per write
+/// of the record (`Core::decoded`).
+fn decoded_part(tx: &mut Tx<'_>, header: &Header, id: &CommitId, at: u64, p: &osis_commit::Part) -> Result<Arc<Decoded>> {
+    if let Some(d) = tx.core.decoded.part(id, at, p) {
+        return Ok(d);
+    }
+    drop(osis_base::costs::span("part decode"));
+    let d = Arc::new(examine_stored(tx, header, [p], id)?.pop().map(|x| x.1).ok_or(Error::Corrupt("stored delta"))?);
+    tx.core.decoded.keep_part(*id, at, p, d.clone());
+    Ok(d)
 }
 
 /// A commit as a thing's time (`Engine::creation`, `Engine::changed`).

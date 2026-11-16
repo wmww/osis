@@ -1079,6 +1079,26 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
     }
 }
 
+impl<K: Ord + Hash + Clone + Send + Sync + 'static, V> Stamped<K, V> {
+    /// `update`, giving a key absent before to the `feed`.
+    pub fn update_fed(&mut self, k: K, f: impl FnOnce(Option<V>) -> Option<V>) {
+        let was = self.map.remove(&k);
+        let had = was.is_some();
+        match f(was) {
+            Some(v) => {
+                self.stamps.wrote_added(&k, true, !had);
+                self.map.insert(k, v);
+            }
+            None if had => self.stamps.wrote(&k, false),
+            None => {}
+        }
+    }
+    /// A reader's cursor over the keys `update_fed` adds from now on (`Feed`).
+    pub fn feed(&self) -> Feed<K> {
+        self.stamps.feed()
+    }
+}
+
 /// A clock outside the journal (node-sync's time) whose readers say how long their answer
 /// holds: `get` is a read of the time itself (any move of it moves the reader), `until(t)` of
 /// the time only as far as `t` (the reader's answer holds while the clock is before `t`). A move

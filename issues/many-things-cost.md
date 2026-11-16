@@ -1,11 +1,10 @@
 # What a node holding many things still pays per write
-> Summary: osis `it` tests that make hundreds or thousands of things grow faster than linear: making the n-th plain thing costs about 51 M instructions at 100 things and 87 M at 400 (debug); `commits::changes_on_as_many_things_spec_requirements_decentralization` takes 96 G, 40% of it `Engine::may_log` → `wrap_under` → `opened::header_passes` → `Core::secret_actor` per content part of a 2000-part commit, under memo stamp recording. Not yet fixed.
+> Summary: Whole-set values kept per read thing or per sync ID still cost O(things) per make: `certificate_records(s)` (read's `cert_blobs` effect) filters a read thing's every certified record at each change; the n-th made thing's apply, validity rejudge and timelines updates are unmeasured for growth. Linear but heavy: a 2000-thing commit costs about 23 M instructions per thing (debug).
 > Priority: normal
 > Tags: engine, sync, performance
 
-Measured with `tools/icount` and `tools/cpuprof` on osis `it` (debug):
+Measured with `tools/icount` and `tools/cpuprof` on osis `it` (debug).
 
-- `commits::changes_on_as_many_things_spec_requirements_decentralization` (2000 things in 4 commits of 500, then one commit on all 2000): 96 G. 40% inclusive is read's `judge::body` → `Engine::may_log` → `section_secret` → `wrap_under` → `passes_on_parts` → `sync_ids::opened::header_passes`, which asks `Core::secret_actor` (a record-chain walk) for every content part of the commit, with each step recorded into the running memo frame (`Stamps::record`, about 16%). The judgment is re-run as what it read moves, so a 2000-part commit pays parts × re-runs.
-- `tracking::dispatch_counts_matched_listeners_at_n_and_10n` (40 and 400 things): 30 G. Per made thing the growth is in cover judgments reading the account root's `holds.0` snapshot whole (`snapshot::covered_read` via `held_part_at`, about 10%: below the paging size a snapshot part is one piece), the compaction trigger's weighing (`Engine::compactions`, 8%) and `body_facts`.
-
-Look first at `header_passes`: one judgment per part where one per commit (or per thing's secret actor, a memo) would do.
+- **Certificate records per sync ID.** `Engine::certificate_records(s)` (osis-sync read's `cert_blobs` effect per (S, records), via `cert_blobs_missing`) folds `records_of(t)` per read thing: every record its certificates name, filtered by `ctx.holds` and `reads`. The account root's records grow with every plain thing made under it, so each make re-runs O(things): about 7% of `tracking::dispatch_counts_matched_listeners_at_n_and_10n`. Follow it per record as `sync::listed` follows carriers (`Certified::namers` already gives the read things naming each record), with the effect reading the records not carried per key.
+- **Still to count at n and 10n held things** (each shows a few % of that test, growth unknown): `apply::validity::rejudge_all`/`misjudged`, `Timelines::update_touched`, `rotation::members::keyless_in`.
+- **Per thing of a big commit** (`commits::changes_on_as_many_things_spec_requirements_decentralization`, linear: 5.2 G at 200 things, 54 G at 2000 before the certified rows): `CommitSecrets::key` → `Core::own_epochs` → `ActorEpochs::derived` per thing, `write::framing_for`, `Core::delete_base`, `follow_certificates` (a `Piece::Chain` per thing, each naming the account's commits).

@@ -352,11 +352,13 @@ impl Engine {
 
     /// The epoch and secret a fresh encryption's section of commit `id` (header `h`) holding
     /// `parts` on thing `t` goes under (`of_thing`: every held part of `id` on `t`, which choose
-    /// the epoch, `wrap_under`). A write goes under this node's epoch only where
+    /// the epoch, `epoch_under`). A write goes under this node's epoch only where
     /// `opened::passes_on` (its invariant and the floor clause, at that epoch's floor), else as a
-    /// held section of it or not at all (`None`). `seal` and `may_log` alike.
+    /// held section of it or not at all (`None`). A section carries no header, so the header's
+    /// gate is the wrap's alone (`wrap_under`): a commit's sections cost its parts once each.
+    /// `seal` and `may_log` alike.
     pub(crate) fn section_secret(&mut self, id: &CommitId, h: &osis_commit::Header, t: &Tid, of_thing: &[usize], parts: &[usize]) -> Option<(Epoch, WrapKey)> {
-        let (e, k) = self.wrap_under(t, Some((id, of_thing))).ok().flatten()?;
+        let (e, k) = self.epoch_under(t, Some((id, of_thing))).ok().flatten()?;
         if !self.passes_on_all(id, h, parts, self.core.read_floor(t, &e)).ok()? {
             return None;
         }
@@ -532,6 +534,8 @@ impl Engine {
     /// the chains placed under a sync ID are the same at every node. Never an access, sealing,
     /// boxing or opening decision: there `reads_in`.
     pub(crate) fn cert_reads_in(&self, g: &Tid, t: &Tid) -> bool {
+        // counted: tests read how many (read thing, thing) pairs a change judges
+        osis_base::costs::count("sync: cert reads judged", 1);
         let actor = self.core.reader_of(g);
         let reader = self.core.devices_of(&actor).unwrap_or(actor);
         self.core.may_read(&reader, &self.core.reader_of(t))
@@ -638,8 +642,26 @@ impl Engine {
         parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|x| x.tid == a && osis_keys::under_roles(x.ak.as_str()))
     }
 
-    /// `wrap_secret` with its epoch (`entry`: the blob's wrap, else a section's).
+    /// `wrap_secret` with its epoch: `epoch_under`, where the commit's header may go under it.
     fn wrap_under(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<(Epoch, WrapKey)>> {
+        let Some((ep, k)) = self.epoch_under(g, c)? else { return Ok(None) };
+        // the wrap gates the header, and a copy's whole content: under this node's epoch only
+        // where the commit's header may go so, at that epoch's floor (`Engine::header_passes`,
+        // spec/crypto.md §5 Passing on: every part it carries is content of the header)
+        if let Some((c, _)) = c
+            && let Some(e) = self.epochs(g)
+            && !self.header_passes(c, &super::opened::Wrapping { thing: *g, actor: self.core.reader_of(g), floor: e.read.floor(&ep) })?
+        {
+            return Ok(None);
+        }
+        Ok(Some((ep, k)))
+    }
+
+    /// The epoch this node encrypts parts `c` names (all on `g`'s secret actor's things, for a
+    /// section; the blob's, for a wrap) under at `g`: the newest current read epoch held, a
+    /// commit giving read epochs under one they supersede (`giving_wrap_epoch`), none under an
+    /// epoch blocked here (`wrap_blocked`).
+    fn epoch_under(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<(Epoch, WrapKey)>> {
         let Some(e) = self.epochs(g) else { return Ok(None) };
         let giving = match c {
             Some((c, parts)) if self.carries_secrets(g, c, parts) => match self.giving_wrap_epoch(g, c, parts)? {
@@ -662,14 +684,6 @@ impl Engine {
         // spec/crypto.md §4 Encrypting under: wrapping is encrypting under the epoch, so none
         // under one blocked here (a rotation's own wrap excepted: it is what unblocks it)
         if !own_wrap && self.wrap_blocked(&self.core.reader_of(g), c.map(|x| x.0))? {
-            return Ok(None);
-        }
-        // the wrap gates the header, and a copy's whole content: under this node's epoch only
-        // where every part it carries may go so and the commit's header may, at that epoch's
-        // floor (`Engine::passes_on_parts`, spec/crypto.md §5 Passing on)
-        if let Some((c, parts)) = c
-            && !self.passes_on_parts(c, parts, &super::opened::Wrapping { thing: *g, actor: self.core.reader_of(g), floor: e.read.floor(&ep) })?
-        {
             return Ok(None);
         }
         Ok(Some((ep, k)))

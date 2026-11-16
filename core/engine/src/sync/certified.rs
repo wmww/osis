@@ -31,11 +31,93 @@ pub(crate) struct Named {
 }
 
 impl Named {
+    /// The parts, header and mintings named.
+    fn size(&self) -> usize {
+        self.parts.len() + usize::from(self.header) + self.mints.len()
+    }
+
     fn of(certs: &Certs, c: &CommitId) -> Option<Named> {
         let parts = certs.commits.get(c).cloned().unwrap_or_default();
         let header = certs.headers.contains(c);
         let mints = certs.mintings.get(c).cloned().unwrap_or_default();
         (header || !parts.is_empty() || !mints.is_empty()).then_some(Named { parts, header, mints })
+    }
+}
+
+/// What the pieces under a read thing name of one commit, each part, header and minting with
+/// how many name it: the union (`Certified::of`'s row) moves only where a count leaves or
+/// reaches 0, so a piece coming or going costs what it names, not the pieces beside it.
+#[derive(Clone, Debug, Default)]
+struct Counted {
+    parts: BTreeMap<usize, usize>,
+    header: usize,
+    mints: BTreeMap<Tid, usize>,
+}
+
+/// The union's moves from one piece's change (`Counted::add`, `Counted::sub`).
+#[derive(Default)]
+struct Moved {
+    came: Named,
+    gone: Named,
+    /// The header went from named to not, or back.
+    header: bool,
+}
+
+impl Moved {
+    fn is_empty(&self) -> bool {
+        !self.header && self.came == Named::default() && self.gone == Named::default()
+    }
+}
+
+impl Counted {
+    fn is_empty(&self) -> bool {
+        self.parts.is_empty() && self.header == 0 && self.mints.is_empty()
+    }
+
+    fn add(&mut self, n: &Named, m: &mut Moved) {
+        for ai in &n.parts {
+            let c = self.parts.entry(*ai).or_default();
+            *c += 1;
+            if *c == 1 {
+                m.came.parts.insert(*ai);
+            }
+        }
+        for x in &n.mints {
+            let c = self.mints.entry(*x).or_default();
+            *c += 1;
+            if *c == 1 {
+                m.came.mints.insert(*x);
+            }
+        }
+        if n.header {
+            self.header += 1;
+            m.header ^= self.header == 1;
+        }
+    }
+
+    fn sub(&mut self, n: &Named, m: &mut Moved) {
+        for ai in &n.parts {
+            if let Some(c) = self.parts.get_mut(ai) {
+                *c -= 1;
+                if *c == 0 {
+                    self.parts.remove(ai);
+                    m.gone.parts.insert(*ai);
+                }
+            }
+        }
+        for x in &n.mints {
+            if let Some(c) = self.mints.get_mut(x) {
+                *c -= 1;
+                if *c == 0 {
+                    self.mints.remove(x);
+                    m.gone.mints.insert(*x);
+                }
+            }
+        }
+        if n.header && self.header > 0 {
+            self.header -= 1;
+            m.header ^= self.header == 0;
+        }
     }
 }
 
@@ -123,8 +205,8 @@ pub(crate) struct Certified {
     /// the read thing while any does.
     chain_by: BTreeMap<(Piece, Tid), BTreeSet<Tid>>,
     placed: BTreeMap<Piece, Placed>,
-    /// Per (commit, read thing), what each piece under the thing names of the commit.
-    named: BTreeMap<(CommitId, Tid), BTreeMap<Piece, Named>>,
+    /// Per (commit, read thing), what the pieces under the thing name of the commit, counted.
+    named: BTreeMap<(CommitId, Tid), Counted>,
     /// Per read thing, each record its pieces name, with how many name it.
     record_counts: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Per (read thing, account), the pieces under the thing that name the account
@@ -137,6 +219,9 @@ pub(crate) struct Certified {
     naming: Stamped<CommitId, Arc<BTreeSet<Tid>>>,
     /// Per read thing, the records its certificates name.
     records: Stamped<Tid, Arc<BTreeSet<Tid>>>,
+    /// Per record, the read things whose certificates name it (`records` the other way; new
+    /// keys by its feed, `sync::listed`).
+    pub(crate) namers: Stamped<Tid, Arc<BTreeSet<Tid>>>,
     /// Whether a row of `of` or `records` was written since the running follow began.
     wrote: bool,
 }
@@ -216,34 +301,46 @@ impl Certified {
         }
         let commits: BTreeSet<&CommitId> = was.commits.keys().chain(&was.headers).chain(was.mintings.keys()).chain(now.commits.keys()).chain(&now.headers).chain(now.mintings.keys()).collect();
         for c in commits {
-            let n = Named::of(now, c);
-            if Named::of(was, c) == n {
+            let (a, b) = (Named::of(was, c), Named::of(now, c));
+            if a == b {
                 continue;
             }
             let k = (*c, t);
-            let by = self.named.entry(k).or_default();
-            match n {
-                Some(n) => by.insert(p, n),
-                None => by.remove(&p),
-            };
-            let union = (!by.is_empty()).then(|| {
-                by.values().fold(Named::default(), |mut u, n| {
-                    u.parts.extend(n.parts.iter().copied());
-                    u.header |= n.header;
-                    u.mints.extend(n.mints.iter().copied());
-                    u
-                })
-            });
-            if by.is_empty() {
+            // counted: tests read what a piece's change costs the rows of the commits it names
+            osis_base::costs::count("certified: names counted", (a.as_ref().map_or(0, Named::size) + b.as_ref().map_or(0, Named::size)) as u64);
+            let counted = self.named.entry(k).or_default();
+            // `b` first: a part both name keeps its count above 0, so `came` and `gone` are
+            // disjoint
+            let mut m = Moved::default();
+            if let Some(b) = &b {
+                counted.add(b, &mut m);
+            }
+            if let Some(a) = &a {
+                counted.sub(a, &mut m);
+            }
+            let named = !counted.is_empty();
+            if !named {
                 self.named.remove(&k);
             }
-            let was = self.of.get(&k).cloned();
-            if was == union {
+            if m.is_empty() {
                 continue;
             }
             self.wrote = true;
-            if was.is_some() != union.is_some() {
-                let named = union.is_some();
+            let had = self.of.contains_key(&k);
+            self.of.update(k, |u| {
+                let mut u = u.unwrap_or_default();
+                u.parts.extend(m.came.parts.iter().copied());
+                u.mints.extend(m.came.mints.iter().copied());
+                for ai in &m.gone.parts {
+                    u.parts.remove(ai);
+                }
+                for x in &m.gone.mints {
+                    u.mints.remove(x);
+                }
+                u.header ^= m.header;
+                named.then_some(u)
+            });
+            if had != named {
                 self.naming.update(*c, |naming| {
                     let mut naming = naming.unwrap_or_default();
                     let set = Arc::make_mut(&mut naming);
@@ -254,41 +351,59 @@ impl Certified {
                     (!set.is_empty()).then_some(naming)
                 });
             }
-            match union {
-                Some(u) => self.of.insert(k, u),
-                None => self.of.remove(&k),
-            };
         }
         if was.records == now.records {
             return;
         }
         let counts = self.record_counts.entry(t).or_default();
-        let mut moved = false;
+        let (mut came, mut gone) = (Vec::new(), Vec::new());
         for r in was.records.difference(&now.records) {
             if let Some(n) = counts.get_mut(r) {
                 *n -= 1;
                 if *n == 0 {
                     counts.remove(r);
-                    moved = true;
+                    gone.push(*r);
                 }
             }
         }
         for r in now.records.difference(&was.records) {
             let n = counts.entry(*r).or_default();
             *n += 1;
-            moved |= *n == 1;
+            if *n == 1 {
+                came.push(*r);
+            }
         }
-        if !moved {
+        if came.is_empty() && gone.is_empty() {
             return;
         }
         self.wrote = true;
         if counts.is_empty() {
             self.record_counts.remove(&t);
-            self.records.remove(&t);
-        } else {
-            let set: BTreeSet<Tid> = counts.keys().copied().collect();
-            self.records.insert(t, Arc::new(set));
         }
+        for r in &gone {
+            self.namers.update_fed(*r, |set| {
+                let mut set = set.unwrap_or_default();
+                Arc::make_mut(&mut set).remove(&t);
+                (!set.is_empty()).then_some(set)
+            });
+        }
+        for r in &came {
+            self.namers.update_fed(*r, |set| {
+                let mut set = set.unwrap_or_default();
+                Arc::make_mut(&mut set).insert(t);
+                Some(set)
+            });
+        }
+        // edited in place: a record coming or going costs itself, not the thing's every record
+        self.records.update(t, |set| {
+            let mut set = set.unwrap_or_default();
+            let edit = Arc::make_mut(&mut set);
+            for r in &gone {
+                edit.remove(r);
+            }
+            edit.extend(came);
+            (!edit.is_empty()).then_some(set)
+        });
     }
 }
 

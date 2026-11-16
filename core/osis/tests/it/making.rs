@@ -48,11 +48,10 @@ fn next(n: usize, plain: bool) -> BTreeMap<&'static str, u64> {
 
 /// The kinds whose count at 10n grew past half again that at n: work in proportion to what is
 /// held grows tenfold, while a driver's rounds to quiet differ by one or two between makes.
-/// Bytes streamed aside: a snapshot of the account root's aspects is read a page at a time, and
-/// at these sizes it fits in one page (counted against size by the engine's paged-read tests,
-/// `decoded`).
+/// Bytes streamed included: a snapshot of the account root's aspects below a page is decoded
+/// once per write of it, not streamed whole at each cover judgment of a body against it.
 fn grown(small: &BTreeMap<&'static str, u64>, big: &BTreeMap<&'static str, u64>) -> Vec<(&'static str, u64, u64)> {
-    big.iter().filter(|(k, _)| **k != "stream: bytes").filter_map(|(k, b)| {
+    big.iter().filter_map(|(k, b)| {
         let s = small.get(k).copied().unwrap_or(0);
         (*b > s + s / 2 + 2).then_some((*k, s, *b))
     }).collect()
@@ -76,3 +75,4 @@ fn making_a_thing_with_own_keys_costs_what_it_changed_spec_sync_set_2() {
     let (small, big) = (next(4, false), next(40, false));
     assert_eq!(grown(&small, &big), [], "work of the next thing with own keys grew with the things held");
 }
+

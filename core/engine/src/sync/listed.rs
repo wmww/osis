@@ -2,10 +2,11 @@
 //! kept per (read thing, rotation) (`Listed`): `certificate_lists(s, r)` reads one row. A read
 //! thing carries the lists of the things of its closure its actor reads as chain certificates
 //! place (`Engine::cert_reads_in`: a thing list is a chain certificate) and of the things whose
-//! records its certificates name (`Engine::certified_records`); which things it carries is
-//! followed per read thing (`Effects`), the read things are `sync::certified`'s (its set's feed,
-//! so the sync set is followed once), and the lists held come from `Indexes::lists_on`'s feed, so
-//! a commit that moves neither re-derives nothing, and a rotation's lists cost the rows of the
+//! records its certificates name (`Certified::namers`). Which read things carry a thing's lists
+//! is followed per thing (`Effects`; candidates from the closure's members, the read things and
+//! the records named, each by its feed), so a thing entering a sync unit judges itself alone,
+//! never the unit's other members, and the lists held come from `Indexes::lists_on`'s feed: a
+//! commit that moves neither re-derives nothing, and a rotation's lists cost the rows of the
 //! things they name.
 
 use crate::Engine;
@@ -21,8 +22,12 @@ use std::sync::Arc;
 struct Followers {
     /// The read things `sync::certified` adds from the first follow on (`Certified::read`).
     read: Option<Feed<Tid>>,
-    /// Per read thing, the things whose lists it carries.
-    carried: Effects<Tid, Arc<BTreeSet<Tid>>>,
+    /// The closure's members added from the first follow on.
+    members: Option<Feed<(crate::sync::units::Ctx, Tid)>>,
+    /// The records named from the first follow on (`Certified::namers`).
+    named: Option<Feed<Tid>>,
+    /// Per thing, the read things carrying its lists.
+    carriers: Effects<Tid, Arc<BTreeSet<Tid>>>,
     /// The (thing, rotation) lists held from the first follow on (`Indexes::lists_on`).
     lists: Option<Feed<(Tid, CommitId)>>,
     /// The follow's fixed point (`certified`'s inside it).
@@ -31,7 +36,7 @@ struct Followers {
 
 impl Default for Followers {
     fn default() -> Self {
-        Followers { read: None, carried: Effects::new("sync: listed carried"), lists: None, quiet: Quiet::default() }
+        Followers { read: None, members: None, named: None, carriers: Effects::new("sync: listed carriers"), lists: None, quiet: Quiet::default() }
     }
 }
 
@@ -40,10 +45,8 @@ impl Default for Followers {
 #[derive(Clone)]
 pub(crate) struct Listed {
     followers: Followers,
-    /// Each read thing's carried things, as placed.
-    carried: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
-    /// Per carried thing, the read things carrying it.
-    carriers: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Per carried thing, the read things carrying it, as placed.
+    carriers: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     rows: Stamped<(Tid, CommitId), Arc<BTreeSet<Tid>>>,
     /// Each row as it comes (`Engine::lists_feed`).
     added: Stamps,
@@ -53,7 +56,7 @@ pub(crate) struct Listed {
 
 impl Default for Listed {
     fn default() -> Self {
-        Listed { followers: Followers::default(), carried: BTreeMap::new(), carriers: BTreeMap::new(), rows: Stamped::default(), added: Stamps::named("sync: list rows"), wrote: false }
+        Listed { followers: Followers::default(), carriers: BTreeMap::new(), rows: Stamped::default(), added: Stamps::named("sync: list rows"), wrote: false }
     }
 }
 
@@ -92,24 +95,35 @@ impl Listed {
 }
 
 impl Engine {
-    /// The things whose lists read thing `t`'s sync IDs carry (spec/sync-judgement.md §1 List
-    /// blobs): its closure's things whose lists go there (`closure_lists`), and the things whose
-    /// records its certificates name; none once `t` is read no more.
+    /// The read things whose sync IDs carry thing `x`'s lists (spec/sync-judgement.md §1 List
+    /// blobs): those whose sync unit holds it and whose actor may read it as it places chain
+    /// certificates (`cert_reads_in`, a role at now on the memo clock, so they are the same at
+    /// every node), and those whose certificates name its record. Reads per (read thing, `x`).
+    fn carriers_of(&mut self, x: &Tid) -> Arc<BTreeSet<Tid>> {
+        let read = |e: &Engine, t: &Tid| e.core.certified.read.contains(t);
+        let mut out: BTreeSet<Tid> = self.core.certified.namers.get(x).into_iter().flat_map(|n| n.iter()).filter(|t| read(self, t)).copied().collect();
+        let mut under = self.units_holding(x);
+        under.insert(*x);
+        for t in under {
+            if read(self, &t) && self.core.ix.closure.unit_holds(&t, x) && self.cert_reads_in(&t, x) {
+                out.insert(t);
+            }
+        }
+        Arc::new(out)
+    }
+
+    /// The things whose lists read thing `t`'s sync IDs carry, derived whole (`carriers_of` the
+    /// other way): its closure's things its actor reads as chain certificates place, and the
+    /// things whose records its certificates name; none once `t` is read no more.
+    #[cfg(test)]
     fn carried_lists(&mut self, t: &Tid) -> Result<Arc<BTreeSet<Tid>>> {
         let records = self.certified_records(t)?;
         if !self.core.certified.read.contains(t) {
             return Ok(Arc::default());
         }
-        let mut out = self.closure_lists(t);
+        let mut out: BTreeSet<Tid> = self.sync_unit(t).iter().filter(|x| self.cert_reads_in(t, x)).copied().collect();
         out.extend(records.iter().copied());
         Ok(Arc::new(out))
-    }
-
-    /// The things of `t`'s closure whose lists its sync IDs carry: those its actor may read as it
-    /// places chain certificates (a thing list is one: `cert_reads_in`, a role at now on the memo
-    /// clock), so they are the same at every node.
-    pub(crate) fn closure_lists(&self, t: &Tid) -> BTreeSet<Tid> {
-        self.sync_unit(t).iter().filter(|x| self.cert_reads_in(t, x)).copied().collect()
     }
 
     /// The rotations whose held lists name `x` (`Indexes::lists_on`, read whole: only while
@@ -119,13 +133,13 @@ impl Engine {
     }
 
     /// Brings `Certified` and then `Listed` up to date with what moved since the last call: the
-    /// read things whose carried things moved, and the lists held since. Called by the facade's readers of the
+    /// things whose carriers moved, and the lists held since. Called by the facade's readers of the
     /// rows and `Engine::follow`; never inside a transaction, by its type: a `Tx` holds the
     /// `Core` alone, and following reads the engine whole. Whether a row of either moved.
     pub(crate) fn follow_lists(&mut self) -> Result<bool> {
         let f = &self.core.listed.followers;
         // `certified`'s follow runs inside: at its fixed point too
-        if f.quiet.holds(f.carried.idle()) && self.certificates_quiet() {
+        if f.quiet.holds(f.carriers.idle()) && self.certificates_quiet() {
             return Ok(false);
         }
         let _u = Unrecorded::start();
@@ -145,22 +159,39 @@ impl Engine {
             // the lists held before are found as their things are placed
             f.lists = Some(self.core.ix.lists_on.feed());
         }
-        let came: Vec<Tid> = match f.read.as_mut() {
-            Some(feed) => feed.added(),
+        // the candidates: what is there at the first follow, then as each comes
+        let mut came: Vec<Tid> = Vec::new();
+        match f.members.as_mut() {
+            Some(feed) => came.extend(feed.added().into_iter().map(|(_, x)| x)),
+            None => {
+                f.members = Some(self.core.ix.closure.member_feed());
+                came.extend(self.core.ix.closure.things().copied());
+            }
+        }
+        match f.read.as_mut() {
+            Some(feed) => came.extend(feed.added()),
             None => {
                 f.read = Some(self.core.certified.read.feed());
-                self.core.certified.read.iter().copied().collect()
+                came.extend(self.core.certified.read.iter().copied());
             }
-        };
-        for t in came {
-            f.carried.want(t);
         }
-        // a thing read no more settles to nothing (`carried_lists`) and is followed no more
-        for t in f.carried.due() {
-            let Some((_, now)) = f.carried.try_settle(&t, || self.carried_lists(&t))? else { continue };
-            self.place_lists(t, &now);
-            if now.is_empty() && !self.core.certified.read.contains(&t) {
-                f.carried.unwant(&t);
+        match f.named.as_mut() {
+            Some(feed) => came.extend(feed.added()),
+            None => {
+                f.named = Some(self.core.certified.namers.feed());
+                came.extend(self.core.certified.namers.keys().copied());
+            }
+        }
+        for x in came {
+            f.carriers.want(x);
+        }
+        // followed while it may come to be carried: held in the closure, read or named; once
+        // none, again as a feed gives it
+        for x in f.carriers.due() {
+            let Some((_, now)) = f.carriers.try_settle(&x, || Ok::<_, crate::error::Error>(self.carriers_of(&x)))? else { continue };
+            self.place_carriers(x, &now);
+            if now.is_empty() && !self.core.ix.closure.holds(&x) && !self.core.certified.read.contains(&x) && self.core.certified.namers.get(&x).is_none() {
+                f.carriers.unwant(&x);
             }
         }
         let added = f.lists.as_mut().map(Feed::added).unwrap_or_default();
@@ -169,7 +200,7 @@ impl Engine {
             if !self.core.ix.lists_on.contains(&(x, r)) {
                 continue;
             }
-            let under: Vec<Tid> = self.core.listed.carriers.get(&x).into_iter().flatten().copied().collect();
+            let under: Vec<Tid> = self.core.listed.carriers.get(&x).into_iter().flat_map(|c| c.iter()).copied().collect();
             for t in under {
                 self.core.listed.set(t, r, x, true);
             }
@@ -177,28 +208,22 @@ impl Engine {
         Ok(())
     }
 
-    /// Read thing `t` carries the lists of `now`: the rows of the things that came or went.
-    fn place_lists(&mut self, t: Tid, now: &BTreeSet<Tid>) {
+    /// Thing `x`'s lists go under the read things of `now`: the rows of those that came or went.
+    fn place_carriers(&mut self, x: Tid, now: &Arc<BTreeSet<Tid>>) {
         let was = match now.is_empty() {
-            true => self.core.listed.carried.remove(&t),
-            false => self.core.listed.carried.insert(t, Arc::new(now.clone())),
+            true => self.core.listed.carriers.remove(&x),
+            false => self.core.listed.carriers.insert(x, now.clone()),
         }
         .unwrap_or_default();
-        for x in now.difference(&was) {
-            self.core.listed.carriers.entry(*x).or_default().insert(t);
-            for r in self.rotations_listing(*x) {
-                self.core.listed.set(t, r, *x, true);
+        let rotations = self.rotations_listing(x);
+        for t in now.difference(&was) {
+            for r in &rotations {
+                self.core.listed.set(*t, *r, x, true);
             }
         }
-        for x in was.difference(now) {
-            if let Some(c) = self.core.listed.carriers.get_mut(x) {
-                c.remove(&t);
-                if c.is_empty() {
-                    self.core.listed.carriers.remove(x);
-                }
-            }
-            for r in self.rotations_listing(*x) {
-                self.core.listed.set(t, r, *x, false);
+        for t in was.difference(now) {
+            for r in &rotations {
+                self.core.listed.set(*t, *r, x, false);
             }
         }
     }

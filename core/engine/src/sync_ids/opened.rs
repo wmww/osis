@@ -390,9 +390,13 @@ fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header, w: &Wra
     if !wraps.is_empty() && !wraps.iter().any(|(t, e)| tx.core.read_established(t, e)) {
         return Ok(false);
     }
-    let all = openings(tx, c, None)?;
+    let mut all: std::collections::BTreeMap<usize, Vec<Opening>> = std::collections::BTreeMap::new();
+    for o in openings(tx, c, None)? {
+        all.entry(o.0).or_default().push(o);
+    }
+    osis_base::costs::count("sync: header parts judged", content.len() as u64);
     for (ai, t) in content {
-        let under: Vec<_> = all.iter().filter(|o| o.0 == ai).cloned().collect();
+        let under = all.remove(&ai).unwrap_or_default();
         let f = (tx.core.secret_actor(&t) == Some(w.actor)).then_some(w.floor);
         let passes = match above_floor(tx, &t, under, f) {
             None => false,
@@ -433,23 +437,13 @@ pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
 }
 
 impl Engine {
-    /// Whether this node may wrap a blob of commit `c` carrying parts `ais` under an epoch of its
-    /// choosing (`w`; the wrap gates the header, and a copy's whole content): for each, `passes_on`
-    /// (the floor clause for a part on a thing whose secrets are the wrap's actor's) or an opening
-    /// under an epoch of the wrap's own thing (`opened_under_wrap`); and `header_passes`.
-    pub(super) fn passes_on_parts(&mut self, c: &CommitId, ais: &[usize], w: &Wrapping) -> Result<bool> {
+    /// Whether this node may wrap a blob of commit `c` under an epoch of its choosing (`w`; the
+    /// wrap gates the header, and a copy's whole content): `header_passes`. Every content part a
+    /// blob carries is one of the header's, and passing the header's clauses it passes `passes_on`.
+    pub(super) fn header_passes(&mut self, c: &CommitId, w: &Wrapping) -> Result<bool> {
         let c = *c;
         let Some(h) = self.header(&c) else { return Ok(true) };
-        self.read(|tx| {
-            for ai in ais {
-                let Some(a) = h.aspects.get(*ai) else { continue };
-                let f = (tx.core.secret_actor(&a.tid) == Some(w.actor)).then_some(w.floor);
-                if !passes_on(tx, &c, *ai, &a.tid, a.ak.as_str(), f)? && !opened_under_wrap(tx, &c, *ai, w)? {
-                    return Ok(false);
-                }
-            }
-            header_passes(tx, &c, &h, w)
-        })
+        self.read(|tx| header_passes(tx, &c, &h, w))
     }
 
     /// `passes_on` for each part of `ais` of commit `c` (header `h`; a fresh encryption's

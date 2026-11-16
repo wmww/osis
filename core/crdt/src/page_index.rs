@@ -93,6 +93,11 @@ impl PageIndex {
         l.leaves.push(Leaf { at: *at, first, reach });
     }
 
+    /// Whether the part has no paged collection: it streams as its skeleton alone.
+    pub fn unpaged(&self) -> bool {
+        self.paths.is_empty()
+    }
+
     /// About the bytes held (`Fragment::approx_bytes`'s measure).
     pub fn approx_bytes(&self) -> usize {
         self.paths.iter().map(|(p, l)| size_of::<Leaves>() + p.len() * size_of::<Step>() + l.leaves.len() * size_of::<Leaf>()).sum()
