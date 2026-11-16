@@ -199,7 +199,7 @@ fn scalar(t: &ValueType) -> Option<Edit> {
         ValueType::Float => Edit::Float,
         ValueType::Bool => Edit::Bool,
         ValueType::Cases(c) if c.iter().all(|c| c.value.is_none()) => Edit::Case,
-        ValueType::Thing | ValueType::Bytes => Edit::None,
+        ValueType::Strong | ValueType::Weak | ValueType::Ref | ValueType::Ticket | ValueType::Bytes => Edit::None,
         _ => return None,
     })
 }

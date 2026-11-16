@@ -43,7 +43,7 @@ type run_state = enum {
     refused 3 (string),        // not allowed, expired, bad request
     lost 4,                    // outpost restarted while it ran
 };
-aspect outpost:run.0: struct { request 0: request_id, sender 1: tid, kind 2: request, state 3: run_state };
+aspect outpost:run.0: struct { request 0: request_id, sender 1: weak, kind 2: request, state 3: run_state };
 signal outpost:output~0: struct { stream 0: enum { stdout 0, stderr 1 }, bytes 1: bytes };
 ```
 `input` and `cancel` name the `exec` request, not the run, so they can be fired before it is taken.

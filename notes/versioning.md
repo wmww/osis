@@ -37,7 +37,7 @@ Policy inputs, all local: whether g is exact; whether recent writes in this grou
 Cost where the new form is used: old apps see stale or missing data on that item, and their later edit wins through f at the granularity of the converted value. Nothing can do better: old code cannot know what new data means.
 
 ## Blessed paths for hard changes
-- **Restructuring across things** (inline tasks become task things): f cannot mint tids on read, and only writers of an actor can create things under it. Model the new structure as a case (a task gains `ref: option<tid>`; with a ref its inline fields are a stale copy that wins only by timestamp). Convert an element when a user edits or shares it, never in bulk.
+- **Restructuring across things** (inline tasks become task things): f cannot mint tids on read, and only writers of an actor can create things under it. Model the new structure as a case (a task gains `ref: option<strong>`; with a ref its inline fields are a stale copy that wins only by timestamp). Convert an element when a user edits or shares it, never in bulk.
 - **Whole redesign**: an import (read old forms through f, write new forms) once policy says the group moved on; drop f only after that, or data "vanishes" on update.
 - **Enums**: cases are never removed; document dead ones. A new case is a value g cannot express, so where old readers matter it goes into a succeeding item; otherwise add it in place.
 - **Semantic reuse** (same ID, new meaning): the one cursed path cheaper than the blessed one and uncatchable by the checker. New ID, always.
@@ -47,7 +47,7 @@ Cost where the new form is used: old apps see stale or missing data on that item
 ## Worked example
 v1 notes app: `note:tasks.0: list<task>`, `task { 1 title: string, 2 done: bool }`. v2 wants a status enum and shareable tasks.
 - Status: add `3 status: option<status>`. v2 reads status, falls back to done; g sets done from status, exact for todo and done, impossible for blocked. Blocked tasks are the only ones old apps see wrong.
-- Tasks as things: add `4 ref: option<tid>`, converted per task when shared. Old apps edit the inline copy, which wins when newer.
+- Tasks as things: add `4 ref: option<strong>`, converted per task when shared. Old apps edit the inline copy, which wins when newer.
 - Later v2 drops `done`: reserve ID 2; v1 fails to type tasks created after that, so only once v1 readers no longer matter.
 
 ## Version numbers on the wire

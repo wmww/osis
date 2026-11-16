@@ -17,7 +17,7 @@
 
 ## Tags
 - A tag is a thing with `holds.0` and `tag.0`, and usually `name.0`: what it tags is what its `holds.0` references (spec/data-model.md §8), nesting is a tag referencing a tag. Graph, cycles allowed, a thing or tag may be in many tags.
-- Why references on the tag and not a `tags.0: set<tid>` on the thing: they are written on the tag, so a reader can tag a thing it cannot write, and one account's tags of a shared thing never reach the thing's other readers. Each reader's tags are private by construction.
+- Why references on the tag and not a `tags.0: set<weak>` on the thing: they are written on the tag, so a reader can tag a thing it cannot write, and one account's tags of a shared thing never reach the thing's other readers. Each reader's tags are private by construction.
 - A strong in a tag grants nothing (spec/permissions.md §1): whether a tagged thing syncs with the tag is its sync unit's rule (spec/sync-set.md §2).
 - Internal containers (buckets, app indexes) have no `tag.0`; generic tools list only tags.
 
