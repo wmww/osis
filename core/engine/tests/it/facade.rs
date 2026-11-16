@@ -633,35 +633,6 @@ fn own_secrets_and_the_sync_id_come_in_one_commit_spec_sync_ids_2() {
     }
 }
 
-// spec/permissions.md §3: a thing made under an account has secrets of its own and its sync ID
-// from its creating transaction, whatever made it; one made under the account root stays plain.
-// What own keys cost per thing against a plain one, in commits and store bytes, over n of each
-// (each kind made once first, so neither pays a first write's rows).
-#[test]
-fn a_thing_made_under_an_account_has_own_keys_spec_permissions_3() {
-    let (mut lp, _) = people(1);
-    let (p, d) = lp.peers[0].engine.account().unwrap().unwrap();
-    let n = 10;
-    let made = |lp: &mut LocalPeer, admin: Tid, n: usize| {
-        let bytes = |lp: &LocalPeer| lp.peers[0].backend.dump().iter().map(|(k, v)| k.len() + v.len()).sum::<usize>();
-        let (c0, b0) = (lp.peers[0].engine.commit_ids().len(), bytes(lp));
-        let ts: Vec<Tid> = (0..n).map(|_| thing_of(lp, 0, admin)).collect();
-        (ts[0], (lp.peers[0].engine.commit_ids().len() - c0) / n, bytes(lp).saturating_sub(b0) / n)
-    };
-    made(&mut lp, d, 1);
-    made(&mut lp, p, 1);
-    let (plain, c_plain, b_plain) = made(&mut lp, d, n);
-    let (own, c_own, b_own) = made(&mut lp, p, n);
-    let e = &mut lp.peers[0].engine;
-    assert!(e.home_sync_id(&plain).unwrap().is_none(), "under the account root: plain");
-    assert!(e.home_sync_id(&own).unwrap().is_some(), "under the account: own keys and their sync ID");
-    eprintln!("per thing: own keys {c_own} commits, {b_own} bytes stored; plain {c_plain}, {b_plain}");
-    assert_eq!((c_plain, c_own), (1, 3), "its record, its rotation, then what the plain one writes");
-    // about 27 KB more here: a rotation of every role (keysets, boxes, history) and a sync ID,
-    // what any thing pays at its first grant (notes/node-closure.md Writing and making a thing)
-    assert!(b_own > b_plain);
-}
-
 // spec/commits.md §5 Destruction: nobody writes a destroyed thing, so no role commit is owed
 // there. Peer 0 grants a reader with an `until`, destroys t and the `until` passes: the derived
 // duty owes nothing on t, its secrets still held, past the purge's floor too.

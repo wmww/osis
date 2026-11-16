@@ -219,6 +219,13 @@ impl Engine {
         Ok(out)
     }
 
+    /// Every logical store row by family (`Transaction::census`): count and key plus value
+    /// bytes. Tests counting what a thing costs (notes/thing-cost.md).
+    #[doc(hidden)]
+    pub fn census(&mut self) -> Result<std::collections::BTreeMap<String, (usize, usize)>> {
+        self.read(|tx| Ok(tx.txn.census()?))
+    }
+
     /// What the store holds, decrypted (`Store::dump`): tests compare two nodes' stores.
     #[doc(hidden)]
     pub fn store_dump(&mut self) -> Result<Vec<(String, Vec<u8>)>> {

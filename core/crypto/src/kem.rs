@@ -173,6 +173,7 @@ impl KemSecret {
     /// keys come from `derive`.
     #[doc(hidden)]
     pub fn from_parts(mut mlkem_seed: [u8; 64], x25519: &Secret32) -> KemSecret {
+        osis_base::costs::count("kem: keygen", 1);
         let (sk, pk) = mlkem768::generate_key_pair(mlkem_seed).into_parts();
         mlkem_seed.zeroize();
         let m = MlKemSk(Box::new(sk));
@@ -195,6 +196,7 @@ impl KemSecret {
         &self.x
     }
     pub(crate) fn decapsulate(&self, ct: &[u8; MLKEM_CT_LEN]) -> Secret32 {
+        osis_base::costs::count("kem: decapsulate", 1);
         Secret32::from_bytes(mlkem768::decapsulate(&self.m.0, &(*ct).into()))
     }
 }
@@ -207,6 +209,7 @@ impl fmt::Debug for KemSecret {
 
 /// ML-KEM encapsulation with explicit randomness: `(ct_m, ss_m)`.
 pub(crate) fn encapsulate(pk: &KemPublicKey, m: &[u8; 32]) -> ([u8; MLKEM_CT_LEN], Secret32) {
+    osis_base::costs::count("kem: encapsulate", 1);
     let (ct, ss) = mlkem768::encapsulate(&pk.mlkem(), *m);
     (*ct.as_slice(), Secret32::from_bytes(ss))
 }

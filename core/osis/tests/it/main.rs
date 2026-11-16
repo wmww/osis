@@ -17,6 +17,7 @@ mod codegen;
 mod text;
 mod tracking;
 mod making;
+mod thing_cost;
 mod sync;
 mod port;
 mod runtime;

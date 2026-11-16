@@ -917,6 +917,55 @@ impl Transaction<'_> {
         self.cat_remove(&W::new().u8(kind::PENDING).raw(&id.0).take(), shred)
     }
 
+    /// Every logical row, by family: `aspect <ak>` (units), `table <ak> <idx>` (an aspect's
+    /// table rows), `index <name>`, `local <prefix>` (a local key up to its first `/`, else 3
+    /// bytes), else the catalog kind: count and key plus value bytes, memory rows included. Tests
+    /// counting what a thing costs (notes/thing-cost.md).
+    #[doc(hidden)]
+    pub fn census(&mut self) -> Result<std::collections::BTreeMap<String, (usize, usize)>, Error> {
+        let mut out = std::collections::BTreeMap::<String, (usize, usize)>::new();
+        let add = |out: &mut std::collections::BTreeMap<String, (usize, usize)>, f: String, n: usize| {
+            let e = out.entry(f).or_default();
+            e.0 += 1;
+            e.1 += n;
+        };
+        let ak_of = |k: &[u8]| -> String {
+            let n = k.get(16..20).and_then(|b| <[u8; 4]>::try_from(b).ok()).map_or(0, |b| u32::from_be_bytes(b) as usize);
+            String::from_utf8_lossy(k.get(20..20 + n).unwrap_or_default()).into_owned()
+        };
+        for (k, v) in self.cat_scan(b"", b"", usize::MAX)? {
+            let size = k.len() + v.len();
+            match k.first().copied() {
+                Some(kind::ASPECT) => add(&mut out, format!("aspect {}", ak_of(&k)), size),
+                Some(kind::TABLE) => {
+                    let name = format!("table {} {}", ak_of(&k), k.last().copied().unwrap_or(0));
+                    let root = u64_value(Some(v))?.unwrap_or(0);
+                    for (tk, tv) in self.table_range(Table(root, owner(&k)), b"", None, usize::MAX)? {
+                        add(&mut out, name.clone(), tk.len() + tv.len());
+                    }
+                }
+                Some(kind::INDEX) => {
+                    let name = format!("index {}", String::from_utf8_lossy(k.get(5..).unwrap_or_default()));
+                    let root = u64_value(Some(v))?.unwrap_or(0);
+                    for (tk, tv) in self.table_range(Table(root, owner(&k)), b"", None, usize::MAX)? {
+                        add(&mut out, name.clone(), tk.len() + tv.len());
+                    }
+                }
+                Some(kind::LOCAL) => {
+                    let l = k.get(1..).unwrap_or_default();
+                    let end = l.iter().position(|b| *b == b'/').map_or(3.min(l.len()), |p| (p + 1).min(l.len()));
+                    add(&mut out, format!("local {}", String::from_utf8_lossy(l.get(..end).unwrap_or(l))), size);
+                }
+                k => add(&mut out, format!("kind {k:?}"), size),
+            }
+        }
+        let blobs: Vec<usize> = self.mem.o.blobs.values().map(Vec::len).collect();
+        for n in blobs {
+            add(&mut out, "memory blob".into(), n);
+        }
+        Ok(out)
+    }
+
     // Node-local records with no dedicated kind.
 
     pub fn put_local(&mut self, key: &[u8], val: &[u8], shred: Shred) -> Result<(), Error> {

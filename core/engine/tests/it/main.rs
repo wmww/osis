@@ -36,3 +36,4 @@ mod destruction;
 mod refs;
 mod tickets;
 mod strangers;
+mod thing_cost;

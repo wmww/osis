@@ -95,6 +95,7 @@ impl SigningSecret {
     /// Signs `domain || digest`.
     pub fn sign(&self, domain: Domain, digest: &[u8; 32]) -> Signature {
         use ed25519_dalek::Signer;
+        osis_base::costs::count("sign", 1);
         Signature(self.0.sign(&domain.message(digest)).to_bytes())
     }
 }
