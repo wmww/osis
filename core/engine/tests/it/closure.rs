@@ -509,10 +509,18 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     strong(e1, d1, x, true);
     let read = |lp: &mut osis_engine::local_peer::LocalPeer| lp.peers[1].engine.get(&x, &crate::common::ak("t:reg.0")).unwrap();
     assert_eq!(read(&mut lp), Some(Value::Str("before".into())));
-    let seen: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
     let e = &mut lp.peers[0].engine;
-    e.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: Some(crate::flows::edge_of(osis_base::Role::Sync)), retain: None }).unwrap();
-    put(e, "after");
+    let lowering = e.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: Some(crate::flows::edge_of(osis_base::Role::Sync)), retain: None }).unwrap();
+    // the lowering's role commits reach account 1, as its sync role keeps them coming
+    for c in &lowering.commits {
+        let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+    }
+    assert_eq!(lp.peers[1].engine.roster(&x).get(&ps[1]).map(|e| e.role), Some(osis_base::Role::Sync), "lowered, as account 1 reads its roster");
+    // as sync's Life drops what a lowering lost (spec/permissions.md §3 Lost access)
+    lp.peers[1].engine.drop_lost_secrets().unwrap();
+    let seen: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    put(&mut lp.peers[0].engine, "after");
     let ids: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !seen.contains(c)).collect();
     let pks = lp.sealed(0, &ids).unwrap();
     lp.deliver_sealed(1, &pks).unwrap();
