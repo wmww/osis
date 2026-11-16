@@ -332,7 +332,7 @@ impl Run {
     /// (on thing t), or every observer; never Z.
     fn reach_of(&self, k: usize, c: &CommitId) -> [bool; N] {
         let h = self.lp.peers[k].engine.header(c).unwrap();
-        let tids: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).chain([h.actor]).filter(|t| *t != self.ids.p).collect();
+        let tids: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
         let d_only = !tids.is_empty() && tids.iter().all(|t| *t == self.ids.d);
         let on_t = tids.contains(&self.ids.t);
         std::array::from_fn(|m| m != Z && (m < OWN || !d_only && (!on_t || m == R1)))

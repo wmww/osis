@@ -208,6 +208,12 @@ impl AccountView {
         self.devices.as_ref().map(|d| self.rule.chain().roster_joining(heads, d)).unwrap_or_default()
     }
 
+    /// This node's account: whether held epoch `e`'s line keeps `node` a node, under the
+    /// removals on it alone (`osis_perm::Chain::nodes_of`).
+    pub(crate) fn keeps(&self, e: &CommitId, node: &Tid) -> bool {
+        self.devices.as_ref().is_some_and(|d| self.rule.chain().nodes_of(e, d).contains(node))
+    }
+
     /// This node's account: D's roster (`roster`).
     pub(crate) fn roster(&self) -> &BTreeSet<Tid> {
         &self.roster

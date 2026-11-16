@@ -613,6 +613,16 @@ impl<E: Ord + Copy> Chain<E> {
         self.roster_of_line(heads, d)
     }
 
+    /// At a node of the account, the nodes of held epoch `e`'s line under the removals carried on
+    /// it alone (no taken revocation from beside it): whom that line keeps a node.
+    pub fn nodes_of<M: Ord + Copy>(&self, e: &E, d: &Devices<E, M>) -> BTreeSet<M> {
+        let ix = ByDevice::new(d);
+        let Some(line) = self.place(e).and_then(|i| self.lines.get(i)) else { return d.first.clone() };
+        let on_l = |x: &E| self.place(x).is_some_and(|i| line.contains(i as u32));
+        let rs = |x: &E| on_l(x) && d.removes.get(x).is_some_and(|y| !y.is_empty());
+        self.nodes_on(line.iter().filter_map(|i| self.topo.get(i as usize).copied()), &on_l, &rs, d, &ix)
+    }
+
     fn roster_of_line<M: Ord + Copy>(&self, heads: &[E], d: &Devices<E, M>) -> BTreeSet<M> {
         let ix = ByDevice::new(d);
         let line = heads.iter().filter_map(|h| self.place(h).and_then(|h| self.lines.get(h))).fold(PSet::new(), |l, h| l.union(h));

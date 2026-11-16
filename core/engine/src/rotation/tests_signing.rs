@@ -2141,8 +2141,32 @@ fn a_removal_by_a_node_removed_first_removes_no_one_spec_permissions_3() {
     let e = &mut lp.peers[2].engine;
     assert!(e.roster(&a.devices).contains_key(&two), "on D's roster");
     let v = e.core.account_view(&a.account).unwrap();
-    assert!(crate::flows::signing::kept(&v, &e.core.accounts[&a.account]), "node 0's line keeps it");
+    assert!(crate::flows::signing::kept(&v, &e.core.accounts[&a.account], &two), "node 0's line keeps it");
     assert!(e.core.accounts.contains_key(&a.account), "it stays");
+}
+
+// spec/crypto.md §9 (Custody: a node leaves only when no held line keeps it a node): node 2
+// rotates plainly from the setup's head boxing its seed to no one. Node 1 follows that rotation
+// (minted by a node, removing no one), whose seed it does not hold: its line keeps node 1 a node,
+// so node 1 stays, holding its seeds
+#[test]
+fn a_counting_rotation_boxing_a_node_nothing_does_not_make_it_leave_spec_crypto_9() {
+    let (mut lp, a, _) = world(3, 3);
+    let head = setup_head(&lp, &a);
+    let k0 = {
+        let h = lp.peers[2].engine.core.accounts.get(&a.account).unwrap();
+        let key = lp.peers[2].engine.header(&head).unwrap().rotation.as_ref().unwrap().signing_key;
+        h.keys.get(&key).unwrap().clone()
+    };
+    let fb = forge(&mut lp, 2, &a, head, &[], &[], 91);
+    let f = give(&mut lp, &fb, &[2]);
+    let me = lp.peers[2].engine.core.id.clone();
+    let pk = inner_as(&mut lp, 2, &f, &k0, &[&osis_crypto::AccountEpochKeys::from_seed(&osis_crypto::Secret32::from_bytes([91; 32])).inner], &me);
+    lp.advance(1);
+    lp.deliver(1, &pk).unwrap();
+    let v = lp.peers[1].engine.core.account_view(&a.account).unwrap();
+    assert!(v.rotation_counts(&f) && v.heads() == vec![f], "node 1 follows the rotation");
+    assert!(lp.peers[1].engine.core.accounts.contains_key(&a.account), "node 1 stays");
 }
 
 // spec/crypto.md §9 (Custody: a node holds a seed iff it opened a box to its own device key,

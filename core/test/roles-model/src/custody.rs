@@ -323,6 +323,9 @@ pub struct View {
     /// Held line elements a counting rotation rejects.
     pub rejected: BTreeSet<u32>,
     pub valid: BTreeSet<u32>,
+    /// Held items whose seed boxes count here (a counting rotation's, a certificate standing,
+    /// a re-seal at an open or unrevoked epoch): what a node sees another holding by.
+    pub boxes_counting: BTreeSet<u32>,
     pub chosen: Option<u32>,
     /// Held certificates of chain-held merge epochs that stand here (at P's nodes: by a node of
     /// the line no taken removal hits).
@@ -458,7 +461,8 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
     let pos: BTreeMap<u32, usize> = order.iter().enumerate().map(|(i, x)| (*x, i)).collect();
     // rejections: (rejector's epoch, the epoch it is signed at, rejected element) (spec/permissions.md
     // §5.4, Rejects): contested only from below, so none where a held rotation signed at the
-    // rejector's epoch (the rejector included) is on a line with the rejected one
+    // rejector's epoch (the rejector included; a certificate at each epoch it joins) is on a line
+    // with the rejected one
     let placed = |id: u32| -> Option<Line> {
         match w.item(id).kind {
             Kind::Plain { .. } if j.chain.contains(&id) => Some(w.line(id)),
@@ -472,7 +476,12 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
         let e = &w.item(id).epoch;
         for q in w.answers(id).iter().copied().filter(|q| j.chain.contains(q)) {
             let lq = w.line(q);
-            let through = held.iter().filter(|s| w.item(**s).epoch == *e).filter_map(|s| placed(*s)).any(|ls| ls.is_subset(&lq) || ls.contains(&q));
+            // a certificate is signed at every epoch it joins (each one's merge signature)
+            let signed_at_e = |s: u32| match &w.item(s).kind {
+                Kind::Cert { joined, .. } => joined.contains(e),
+                _ => w.item(s).epoch == *e,
+            };
+            let through = held.iter().filter(|s| signed_at_e(**s)).filter_map(|s| placed(*s)).any(|ls| ls.is_subset(&lq) || ls.contains(&q));
             if !through {
                 rejs.push((rejector.clone(), e.clone(), q));
             }
@@ -534,6 +543,12 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
     // the epoch rule (spec/permissions.md §5.5): at an open epoch, at a held one no counting
     // rotation carrying a removal closes (one not on its line), or named
     let unrevoked = |e: &Line| (e.is_empty() || e.iter().all(|x| j.chain.contains(x)) && (w.single(e) || j.merges.contains(e))) && !j.followed.iter().any(|q| !e.contains(q) && !w.removes(*q).is_empty());
+    j.boxes_counting = held.iter().copied().filter(|id| match &w.item(*id).kind {
+        Kind::Plain { .. } => j.counting.contains(&w.line(*id)),
+        Kind::Cert { .. } => j.counting.contains(&w.mints(*id)) && (w.seedy(*id) || j.standing.contains(id)),
+        Kind::Reseal { .. } => j.heads.contains(&w.item(*id).epoch) || unrevoked(&w.item(*id).epoch),
+        _ => false,
+    }).collect();
     let mut valid: BTreeSet<u32> = BTreeSet::new();
     loop {
         let tkeys: BTreeSet<u32> = std::iter::once(0).filter(|_| own || v == R1).chain(held.iter().copied().filter(|k| {
@@ -678,10 +693,11 @@ fn roster(w: &World, j: &View, l: &Line) -> BTreeSet<usize> {
     nodes
 }
 
-/// Who `n` (judging `j`) sees holding epoch `e`'s seed: boxed to it in an item `n` holds, or
-/// derivable from those.
+/// Who `n` (judging `j`) sees holding epoch `e`'s seed: boxed to it in an item whose boxes count
+/// at `n` (a box elsewhere may be one a holder of an old seed tagged for it and sealed to no one),
+/// or derivable from those.
 fn seen_holding(w: &World, j: &View, d: usize, e: &Line) -> bool {
-    let boxed = |e: &Line| e.is_empty() && d < OWN || j.held.iter().any(|id| {
+    let boxed = |e: &Line| e.is_empty() && d < OWN || j.boxes_counting.iter().any(|id| {
         let i = w.item(*id);
         i.boxed[d] && match &i.kind {
             Kind::Plain { .. } | Kind::Cert { .. } => w.mints(*id) == *e,
@@ -741,8 +757,9 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
         let mut joined: Vec<Line> = vec![j2.preferred.clone()];
         joined.extend(j2.heads.iter().filter(|e| **e != j2.preferred).cloned());
         let e: Line = union.clone();
+        // its roster: that of the line it makes (the heads it joins)
         let mut bx = [false; N];
-        for m in &j2.roster {
+        for m in &roster(w, &j2, &e) {
             bx[*m] = w.control == Control::MergeRandom || !seen_holding(w, &j2, *m, &e);
         }
         let (tk, an) = if carries { (takes.clone(), answers.clone()) } else { (vec![], vec![]) };
