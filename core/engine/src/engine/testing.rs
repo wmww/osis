@@ -20,7 +20,8 @@ pub struct HeldBody {
 impl Engine {
     /// Tests only: rotates `roles` of `a` boxing every holder this node would but `skip`, as a
     /// rotation that left them out (a holder left out of a rotation, spec/permissions.md §4
-    /// Stranded). The commit made.
+    /// Stranded), firing its tickets to the holders boxed that cannot open it from the sync ID
+    /// (`rotation::unreached`). The commit made.
     #[doc(hidden)]
     pub fn rotate_leaving_out(&mut self, a: &Tid, roles: &[osis_base::Role], skip: &[Tid]) -> Result<Option<CommitId>> {
         let (a, roles): (Tid, BTreeSet<osis_base::Role>) = (*a, roles.iter().copied().collect());
@@ -31,8 +32,9 @@ impl Engine {
             let holders = crate::rotation::recipients(tx, &me, &a, &skip)?;
             let mut m = crate::Mutation::new();
             let r = crate::rotation::rotation_into(tx, &mut m, a, &roles, &held, &holders, crate::rotation::Departs::No)?;
+            let unreached = crate::rotation::unreached(tx, &a, &r)?;
             let c = Engine::commit_tx(tx, m)?;
-            crate::rotation::record(tx, a, &r)?;
+            crate::rotation::recorded(tx, a, c, &r, &unreached, &mut crate::flows::Done::default())?;
             Ok(c)
         })
     }
@@ -111,6 +113,22 @@ impl Engine {
     pub fn ticket_of(&mut self, target: &Tid, role: osis_base::Role, holder: &Tid) -> Result<Option<osis_base::Ticket>> {
         let (t, h) = (*target, *holder);
         self.run(|tx| crate::flows::inbox::make_ticket(tx, t, role, h))
+    }
+
+    /// Tests: ticket `k` boxing `secret` at epoch `n` of its role instead, as anyone holding its
+    /// holder's public record can box one (a ticket is unsigned), to place by hand.
+    #[doc(hidden)]
+    pub fn reboxed_ticket(&mut self, k: &osis_base::Ticket, n: u64, secret: &osis_crypto::Secret32) -> Result<osis_base::Ticket> {
+        let k = k.clone();
+        let secret = secret.clone();
+        self.run(|tx| {
+            let e = osis_crypto::Epoch::derive(&k.target, k.role, n, &secret)?;
+            let rcpt = crate::flows::recipient(tx, k.holder, k.role)?;
+            let w = osis_keys::produce::box_epoch(&k.target, &rcpt, k.role, e, &secret, &mut *tx.rng)?.ok_or(crate::error::Error::Misuse("no box for the ticket's holder"))?;
+            let key = osis_schema::core_types::BoxKey { holder: k.holder.into(), role: k.role, epoch: osis_keys::aspects::to_schema(&e) };
+            let b = w.boxes.get(&key).ok_or(crate::error::Error::Misuse("no box for the ticket's holder"))?;
+            Ok(osis_base::Ticket { epoch: (e.n(), *e.nonce()), boxed: osis_schema::Codec::to_value(b), ..k })
+        })
     }
 
     /// Commits `m` past the writer's rules, as a hostile node would: its role check, commit

@@ -144,12 +144,13 @@ Terms in this section depend on each other; each is defined once, under its bold
   - A holder of an epoch's secret may put an entry at its history key with any names, bound to nothing: it establishes the epoch where the genuine entry would not (a secret once shared cannot be un-shared) and covers nothing.
 
 ### Established and current
-- **Established**: an epoch e of r is established at a node in either of two cases.
+- **Established**: an epoch e of r is established at a node in any of three cases.
   - It is a key actor's fixed epoch, or derived (§3) from an established epoch of the base actor.
   - All of these hold:
     - the node holds a valid rotation commit of e (its own included) with both its `keys.0` and `secrets.0` deltas on the actor, or a compaction snapshot of `secrets.0` that keys a box or history box with e;
     - e's n is at most 2^62, or the node holds another established epoch of r with n at least e's n − 1;
     - if the node holds e's secret (other than for reading only), some live entry of e's history box that opens under that secret has its names met.
+  - At a node keeping a sync ID S of the actor unread (spec/sync.md §3), which reads none of its role commits: r is sync, the node holds e's secret, and a step of its stored path of S bears that secret's sync key; e is established under S alone.
 - A `secrets.0` compaction snapshot leaves out every live box and history box record at an epoch that would not be established at its writer were the names condition dropped (spec/crdt.md §8): it keys only epochs its writer verified, and a body writing such a record is not covered by it (spec/commits.md §5) nor listed in its `Absorbed` (spec/crdt.md §8), and stays beside it.
 - **Current**: a role's current epochs are its established epochs that no established rotation superseded, whose floor is at least the node's own floor on the actor (Floors).
 - **Unsuperseded**: the epochs that would be current at the node were the names condition of Established dropped (as a node holding none of their secrets counts them). One unsuperseded and not current has names the node does not meet, and is current wherever its secret is not held.
@@ -157,7 +158,7 @@ Terms in this section depend on each other; each is defined once, under its bold
   - A node counts a commit as encrypting under such an epoch when it sealed the commit's section of the thing, or of a plain thing whose derivation chain (§3) runs through it, under that epoch or one derived from it, while the thing was plain at the node.
   - Limit: such a write concurrent with its writer's removal from the thing is read only by holders of the base actor's secrets, as the writer may no longer rotate (one stamped after the removal is invalid anyway).
 - **Newest**: a role's newest epoch is the current one with the greatest order n (its n, a derived epoch's per §3), ties by lowest nonce; "newer" compares alike.
-- **Uses**: a node uses an epoch (encrypts under it, boxes its secret, puts it in a history box) only when it is established, but for its account's ticket for a thing it keeps unread (spec/sync-set.md §1), which boxes to its own account a sync secret it was given.
+- **Uses**: a node uses an epoch (encrypts under it, boxes its secret, puts it in a history box) only when it is established.
 
 ### Departures and covering
 - **Holders for keys**: the holders of A by the role timeline (spec/permissions.md §5.1) with every applied edge write in effect and `until` disregarded, a removal's value saying retain (`until` 0, spec/permissions.md §2) counting as no edge; the record edge counts while it stands. A destroyed actor other than a key actor (spec/commits.md §5) is none: its own holders for keys stand in its place, each at the lesser of its role there and the destroyed actor's on A, and so on through destroyed actors among them, a holder reached more than one way at the greatest such role, A itself never (Holder actors, Destroyed). Keys read no clock: an edge past its `until` stays a holder until its finalize (spec/permissions.md §2). "Current holder" in this section and in spec/permissions.md §3 means a holder for keys.

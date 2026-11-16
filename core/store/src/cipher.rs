@@ -75,6 +75,9 @@ pub trait CipherTx {
     /// Whether the path the store keeps of sync ID `s` ends at a closing step (spec/sync-judgement.md
     /// §6 Closes): none in a store of blobs only.
     fn closed(&mut self, s: &osis_base::SyncId) -> Result<bool, Error>;
+    /// Whether a step of the path the store keeps of sync ID `s` bears sync key `key`
+    /// (spec/sync.md §3): none in a store of blobs only.
+    fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Result<bool, Error>;
 }
 
 /// A store that can be an engine's ciphertext store, behind a `Mutex` (`Ciphertext`): the
@@ -102,6 +105,11 @@ pub trait CipherHost: Send + Any {
     /// `CipherTx::closed`.
     fn closed(&mut self, s: &osis_base::SyncId) -> Result<bool, Error> {
         let _ = s;
+        Ok(false)
+    }
+    /// `CipherTx::bears`.
+    fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Result<bool, Error> {
+        let _ = (s, key);
         Ok(false)
     }
     /// Tests only: every key the store's tree yields, its open writes committed first.
@@ -219,6 +227,9 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
     }
     fn closed(&mut self, s: &osis_base::SyncId) -> Result<bool, Error> {
         self.g.closed(s)
+    }
+    fn bears(&mut self, s: &osis_base::SyncId, key: &osis_crypto::VerifyingKey) -> Result<bool, Error> {
+        self.g.bears(s, key)
     }
 }
 

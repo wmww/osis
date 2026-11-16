@@ -330,3 +330,53 @@ fn a_stale_ticket_enters_nothing_and_is_not_retaken_spec_sync_set_2() {
     assert_eq!(quiet_deliveries(&mut w), base, "nothing fetched again");
     assert!(!w.engine(1).in_sync_things(&t).unwrap(), "still nothing entered");
 }
+
+/// D's tickets for `t` at node `i`, by (sync ID, epoch n).
+fn d_tickets(w: &mut World, i: usize, t: &Tid) -> Vec<(SyncId, u64)> {
+    let d = w.engine(i).account_root().unwrap();
+    w.engine(i).get_typed(&d, &ct::TICKETS).unwrap().unwrap_or_default().iter().filter(|k| k.target == *t).map(|k| (k.sync_id, k.epoch.0)).collect()
+}
+
+/// Node 1 holds `k` in its profile, which any writer of a thing it holds could have it hold; run.
+fn hold_in_profile(w: &mut World, k: Ticket) {
+    let profile = w.node(1).profile.unwrap();
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        m.op(profile, &ct::TICKETS, PathOp { path: vec![], op: Op::Add(Value::Ticket(Box::new(k))) }).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+}
+
+// spec/sync-set.md §1 (The account's tickets), spec/sync.md §3 (Kept sync IDs), spec/crypto.md
+// §4 Uses: Bob keeps T unread by Alice's sync grant. A ticket for T naming its sync ID at a
+// higher epoch with a secret of its maker's choosing (what any holder of Bob's public record can
+// box), held before Bob accepts T or after, is established by no step of T's path, so D's ticket
+// boxes the grant's secret and never the forged one: a node of Bob's paired later enters T by
+// D's tickets alone. A genuine rotation's secret, which the next step bears, replaces it in D.
+#[test]
+fn ds_ticket_for_a_thing_kept_unread_boxes_the_newest_established_secret_spec_sync_set_1() {
+    for forged_first in [true, false] {
+        let mut w = contacts();
+        let t = make(&mut w, 0, "hi");
+        let bob = w.node(1).account.unwrap();
+        w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Sync, until: None, invite: None, floor: None })).unwrap();
+        w.run();
+        let genuine = w.engine(1).ticket_for(&t).unwrap().expect("the grant's ticket");
+        let s = genuine.sync_id;
+        let k = w.engine(1).reboxed_ticket(&genuine, genuine.epoch.0 + 5, &osis_crypto::Secret32::from_bytes([9; 32])).unwrap();
+        if forged_first {
+            hold_in_profile(&mut w, k.clone());
+        }
+        accept(&mut w, t, &[]);
+        assert_eq!(w.engine(1).sync_held(&s).unwrap().map(|x| x.1), Some(Holding::Unread), "T kept unread");
+        if !forged_first {
+            hold_in_profile(&mut w, k);
+        }
+        assert_eq!(d_tickets(&mut w, 1, &t), vec![(s, genuine.epoch.0)], "D boxes the grant's secret alone (forged first: {forged_first})");
+        // Alice rotates sync: Bob's new secret's key is on the next step of his path
+        w.write(0, |e| e.rotate_leaving_out(&t, &[Role::Sync], &[])).unwrap().expect("a rotation");
+        w.run();
+        assert_eq!(d_tickets(&mut w, 1, &t), vec![(s, genuine.epoch.0 + 1)], "the rotation's secret replaces the grant's in D (forged first: {forged_first})");
+    }
+}

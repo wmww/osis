@@ -90,6 +90,12 @@ fn steps(t: &mut Transaction<'_>, s: &SyncId) -> Result<Vec<Step>> {
     Ok(out)
 }
 
+/// Whether a step of S's path bears sync key `key` (spec/sync.md §3: what keeps S, and what
+/// establishes a sync secret at a node keeping S unread).
+pub(crate) fn bears(t: &mut Transaction<'_>, s: &SyncId, key: &VerifyingKey) -> Result<bool> {
+    Ok(steps(t, s)?.iter().any(|st| st.keys.sync == *key))
+}
+
 /// Bytes a step and its claim set count toward the caps.
 fn step_bytes(step: &Step, claims: Option<&ClaimSet>) -> u64 {
     (step.to_bytes().len() + claims.map_or(0, |c| c.to_bytes().len())) as u64
