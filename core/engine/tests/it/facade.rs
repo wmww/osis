@@ -1678,6 +1678,65 @@ fn two_followed_links_naming_one_sync_id_own_it_neither_spec_sync_set_2() {
     assert_eq!(owner(e), (Some(b.k), true), "a let go: b's text alone names it");
 }
 
+/// The key actors `e` proves as besides its account (`provers`: what it acts for on the wire).
+fn link_keys_held(e: &mut osis_engine::Engine) -> BTreeSet<Tid> {
+    let me = e.account().unwrap().map(|(a, _)| a);
+    e.provers(false).unwrap().iter().map(|(_, r)| r.tid()).filter(|t| Some(*t) != me).collect()
+}
+
+// spec/permissions.md §7 (First contact: the redeemer proves L until its join is held; then it
+// keeps the link's peers, not the seed): a link key is held exactly while a followed link names
+// it. Two link texts sharing one seed: letting one go keeps the key the other still uses, across
+// a reload; it goes with the last. A key held by `hold_key_actor` stays when a link naming it goes.
+#[test]
+fn a_link_key_goes_with_the_last_followed_link_naming_it_spec_permissions_7() {
+    let (mut lp, ps) = people(2);
+    let target = thing_of(&mut lp, 0, ps[0]);
+    let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
+    let a = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
+    let b = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
+    // b's text with a's seed
+    let shared = osis_blob::ShareLink { seed: a.seed.clone(), ..b.clone() };
+    let l = osis_engine::identity::key_actor_tid(&a.seed);
+    let e = &mut lp.peers[1].engine;
+    assert!(link_keys_held(e).is_empty());
+    e.follow_link(&a).unwrap();
+    e.follow_link(&shared).unwrap();
+    e.unfollow_link(&a.k);
+    assert_eq!(link_keys_held(e), BTreeSet::from([l]), "b's text still names L");
+    e.reload().unwrap();
+    assert_eq!(link_keys_held(e), BTreeSet::from([l]), "and after a reload");
+    e.unfollow_link(&shared.k);
+    assert!(link_keys_held(e).is_empty(), "L goes with the last link naming it");
+    e.hold_key_actor(a.seed.clone()).unwrap();
+    e.follow_link(&a).unwrap();
+    e.unfollow_link(&a.k);
+    assert_eq!(link_keys_held(e), BTreeSet::from([l]), "held by hold_key_actor: kept");
+    e.drop_key_actor(&l);
+    assert!(link_keys_held(e).is_empty());
+}
+
+// spec/permissions.md §7 (First contact): following a link again under another seed holds the new
+// key and lets the old go (no other link names it), across a reload; letting the link go holds none.
+#[test]
+fn following_a_link_again_under_another_seed_lets_its_old_key_go_spec_permissions_7() {
+    let (mut lp, ps) = people(2);
+    let target = thing_of(&mut lp, 0, ps[0]);
+    let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
+    let a = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
+    let b = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
+    let reseeded = osis_blob::ShareLink { seed: b.seed.clone(), ..a.clone() };
+    let lb = osis_engine::identity::key_actor_tid(&b.seed);
+    let e = &mut lp.peers[1].engine;
+    e.follow_link(&a).unwrap();
+    e.follow_link(&reseeded).unwrap();
+    assert_eq!(link_keys_held(e), BTreeSet::from([lb]), "a's old key let go");
+    e.reload().unwrap();
+    assert_eq!(link_keys_held(e), BTreeSet::from([lb]), "and after a reload");
+    e.unfollow_link(&a.k);
+    assert!(link_keys_held(e).is_empty());
+}
+
 // spec/permissions.md §3 (When it learns it: a node syncing a sync ID of the actor keeps syncing it,
 // and keeps the secrets, until a complete pass of it begun after the role commit ends; then it
 // judges again): peer 1, removed from t, owes the drop (`lost_due`) but keeps t's

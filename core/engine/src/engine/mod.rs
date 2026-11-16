@@ -1263,10 +1263,12 @@ pub struct Core {
     /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
     #[cfg(test)]
     pub(crate) lie_floor: Option<u64>,
-    /// Key actors other than the node whose seed this node holds for now (a link key from
-    /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
-    /// open their boxes. In memory only.
+    /// Key actors other than the node whose seed this node holds for now: they sign commits
+    /// (`Mutation::sign_as`) and open their boxes. Derived: each is held exactly while
+    /// `held_keys` or a followed link names it (`Engine::settle_key_actor`). In memory only.
     pub key_actors: memo::Stamped<Tid, Arc<Identity>>,
+    /// Key actors held by `Engine::hold_key_actor` until `drop_key_actor` (role flows, bearer use).
+    pub(crate) held_keys: BTreeMap<Tid, Arc<Identity>>,
     /// Links this node redeems (`Engine::follow_link`): K to its sync ID from the link text and
     /// the link key L, held in `key_actors`. K's sync ID is in the sync set while followed
     /// (spec/sync-set.md §2). In memory only: sync holds the link durably and follows it again
@@ -1546,6 +1548,7 @@ impl Core {
             #[cfg(test)]
             lie_floor: self.lie_floor,
             key_actors: self.key_actors.clone(),
+            held_keys: self.held_keys.clone(),
             followed_links: self.followed_links.clone(),
             account: self.account.clone(),
             time: self.time.clone(),
@@ -2154,6 +2157,7 @@ impl Core {
             forged: _,
             header_fault: _,
             key_actors: _,
+            held_keys: _,
             followed_links: _,
             account: _,
             time: _,
@@ -2359,6 +2363,7 @@ impl Core {
             #[cfg(test)]
             lie_floor: None,
             key_actors: Default::default(),
+            held_keys: Default::default(),
             followed_links: Default::default(),
             epochs_of: memo::Memo::new("epochs"),
             store_rows,
@@ -3866,6 +3871,7 @@ impl Engine {
         let mut fresh = self.blank_core();
         fresh.events = std::mem::take(&mut self.core.events);
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
+        fresh.held_keys = std::mem::take(&mut self.core.held_keys);
         // links followed are this session's, as the key actors they hold
         fresh.followed_links = std::mem::take(&mut self.core.followed_links);
         // the pass place never goes back: passes under way began at places below it

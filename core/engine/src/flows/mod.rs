@@ -376,32 +376,37 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 impl Engine {
-    /// Takes up a key actor from its seed (a link key from its link)
-    /// for this session: it can sign (`Mutation::sign_as`) and its boxes open. Returns its tid.
+    /// Takes up a key actor from its seed (a link key from its link) until `drop_key_actor`: it
+    /// can sign (`Mutation::sign_as`) and its boxes open. Returns its tid.
     pub fn hold_key_actor(&mut self, seed: Secret32) -> Result<Tid> {
-        let id = Identity::from_seed(seed);
+        let id = Arc::new(Identity::from_seed(seed));
         let t = id.tid();
-        self.core.key_actors.insert(t, Arc::new(id));
-        if let Some(ch) = &mut self.core.wakes {
-            ch.reopen_awaits = true;
-        }
-        self.run(reopen_all)?;
+        self.core.held_keys.insert(t, id);
+        self.settle_key_actor(&t);
+        self.reopen_held()?;
         Ok(t)
     }
 
     /// Follows a link being redeemed (spec/sync-set.md §2, spec/sync-inbox.md §6): holds its key
-    /// L (`hold_key_actor`) and keeps K's sync ID from the link text in the sync set, read,
-    /// until `unfollow_link`. Returns L.
+    /// L while a followed link names it and keeps K's sync ID from the link text in the sync set,
+    /// read, until `unfollow_link`. Returns L.
     pub fn follow_link(&mut self, link: &osis_blob::ShareLink) -> Result<Tid> {
-        let l = self.hold_key_actor(link.seed.clone())?;
-        self.core.followed_links.insert(link.k, link.k_sync_id, l);
+        let id = Arc::new(Identity::from_seed(link.seed.clone()));
+        let l = id.tid();
+        let old = self.core.followed_links.insert(link.k, link.k_sync_id, id);
+        self.settle_key_actor(&l);
+        if let Some(o) = old {
+            self.settle_key_actor(&o);
+        }
+        self.reopen_held()?;
         Ok(l)
     }
 
-    /// Stops following link K (its join is held elsewhere) and forgets its key (spec/permissions.md §7).
+    /// Stops following link K (its join is held elsewhere); its key goes with the last link naming
+    /// it (spec/permissions.md §7).
     pub fn unfollow_link(&mut self, k: &Tid) {
         if let Some(l) = self.core.followed_links.remove(k) {
-            self.drop_key_actor(&l);
+            self.settle_key_actor(&l);
         }
     }
 
@@ -411,9 +416,28 @@ impl Engine {
         self.read(|tx| is_node(tx, &t))
     }
 
-    /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §7).
+    /// Lets go of a key actor held by `hold_key_actor`; a followed link naming it still holds it.
     pub fn drop_key_actor(&mut self, tid: &Tid) {
-        self.core.key_actors.remove(tid);
+        self.core.held_keys.remove(tid);
+        self.settle_key_actor(tid);
+    }
+
+    /// Holds key actor `t` exactly while `hold_key_actor` or a followed link names it.
+    fn settle_key_actor(&mut self, t: &Tid) {
+        let want = self.core.held_keys.get(t).or_else(|| self.core.followed_links.key(t)).cloned();
+        match want {
+            Some(id) if !self.core.key_actors.contains_key(t) => drop(self.core.key_actors.insert(*t, id)),
+            None if self.core.key_actors.contains_key(t) => drop(self.core.key_actors.remove(t)),
+            _ => {}
+        }
+    }
+
+    /// Opens what the key actors held may open now.
+    fn reopen_held(&mut self) -> Result<()> {
+        if let Some(ch) = &mut self.core.wakes {
+            ch.reopen_awaits = true;
+        }
+        self.run(reopen_all)
     }
 
     /// Commits `m` in a running transaction.

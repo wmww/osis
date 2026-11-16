@@ -11,6 +11,7 @@ use osis_crypto::{RoleKey, role_key};
 use osis_keys::ActorEpochs;
 use osis_blob::{ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
+use crate::identity::Identity;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -234,12 +235,16 @@ impl Engine {
 /// The links this node redeems (`Engine::follow_link`): link K to its sync ID from the link text
 /// and its link key L, read per key three ways (by K; by L, an author this node writes as; by
 /// sync ID), so a reader asking about one link, actor or sync ID moves only when that one does,
-/// not at every link followed or let go. In memory only (`Core::followed_links`).
+/// not at every link followed or let go. Each key L is kept exactly while some followed link names
+/// it, so it goes with the last link naming it (`Engine::settle_key_actor`). In memory only
+/// (`Core::followed_links`).
 #[derive(Clone, Default)]
 pub(crate) struct FollowedLinks {
     by_k: Stamped<Tid, (SyncId, Tid)>,
     /// Per link key L, the links K it is the key of.
     by_actor: Stamped<Tid, BTreeSet<Tid>>,
+    /// Per link key L, its identity from the seed: kept exactly while `by_actor` names L.
+    keys: BTreeMap<Tid, Arc<Identity>>,
     /// Per sync ID, the links K whose text names it.
     by_sync: Stamped<SyncId, BTreeSet<Tid>>,
 }
@@ -264,27 +269,39 @@ impl FollowedLinks {
         self.by_actor.contains_key(a)
     }
 
+    /// Link key `l` while a followed link names it.
+    pub(crate) fn key(&self, l: &Tid) -> Option<&Arc<Identity>> {
+        self.keys.get(l)
+    }
+
     /// The links whose text names sync ID `s`, read per sync ID.
     pub(crate) fn naming(&self, s: &SyncId) -> BTreeSet<Tid> {
         self.by_sync.get(s).cloned().unwrap_or_default()
     }
 
-    /// Follows link `k` under `(s, l)`; the same again moves nothing.
-    pub(crate) fn insert(&mut self, k: Tid, s: SyncId, l: Tid) {
-        if self.by_k.get(&k) == Some(&(s, l)) {
-            return;
+    /// Follows link `k` under sync ID `s` and key `l`; the same again moves nothing. Returns the
+    /// key `k` was followed under before, if any.
+    pub(crate) fn insert(&mut self, k: Tid, s: SyncId, l: Arc<Identity>) -> Option<Tid> {
+        let lt = l.tid();
+        if self.by_k.get(&k) == Some(&(s, lt)) {
+            return None;
         }
-        self.remove(&k);
-        self.by_k.insert(k, (s, l));
-        Self::add(&mut self.by_actor, l, k);
+        let old = self.remove(&k);
+        self.by_k.insert(k, (s, lt));
+        Self::add(&mut self.by_actor, lt, k);
         Self::add(&mut self.by_sync, s, k);
+        self.keys.insert(lt, l);
+        old
     }
 
-    /// Lets link `k` go: its key, if it was followed.
+    /// Lets link `k` go: its key, if it was followed (gone here with the last link naming it).
     pub(crate) fn remove(&mut self, k: &Tid) -> Option<Tid> {
         let (s, l) = self.by_k.remove(k)?;
         Self::take(&mut self.by_actor, &l, k);
         Self::take(&mut self.by_sync, &s, k);
+        if !self.by_actor.contains_key(&l) {
+            self.keys.remove(&l);
+        }
         Some(l)
     }
 
