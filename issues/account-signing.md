@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: perm, crypto, sync, spec
 
-Model: roles-model `epochs` (README there). Decided design and rejected alternatives: spec/permissions.md §5.4-§5.5, notes/engine-validity-epochs.md.
+Model: roles-model `custody` and `epochs` (README there). Decided design and rejected alternatives: spec/permissions.md §5.4-§5.5, notes/engine-validity-epochs.md.
 
 ## Left
 - **Own cover at the account level** (spec/permissions.md §5.5 Own cover, marked target): before its rotation the rotator snapshots each aspect where a live write of P stamped since the oldest closed epoch opened stands only through a cover (`retention::snapshot::carried_only`), signed at the closed open epoch, and its lists name them; lands in `flows::signing::rotate_in`. Tests: the rotation names what it holds and its own cover for what it forgot; an outsider reads the forgotten writes from it; a later rotation writes none for epochs already closed.

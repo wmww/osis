@@ -1,5 +1,5 @@
 //! Account custody (notes/engine-validity-epochs.md): seed custody follows holding, the chain is
-//! D's roster, a merge is only a join. Greenfield: shares no code with `epochs`.
+//! D's roster, a merge is only a join. Greenfield; `epochs` judges layer 2 over it.
 //!
 //! The design under test.
 //! - **Custody.** A plain rotation boxes its fresh seed to each device on its maker's roster; any
@@ -136,7 +136,8 @@ pub enum Kind {
     /// `takes` (revocations its maker took off its line; held only with them), `answers`
     /// (rotations it supersedes unnamed).
     Plain { at: Line, removes: Vec<usize>, adds: Vec<usize>, takes: Vec<u32>, answers: Vec<u32> },
-    /// A certificate of the merge of `joined`, signed at `joined[0]`. `takes` and `answers` only
+    /// A certificate of the merge whose tips' lines are `joined` (in tie order), signed at each
+    /// (its epoch `joined[0]`). `takes` and `answers` only
     /// under `MergeCarries`.
     Cert { joined: Vec<Line>, takes: Vec<u32>, answers: Vec<u32> },
     /// A box of epoch `e`'s seed to the device it is boxed to.
@@ -410,16 +411,19 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
     for id in held.iter().copied().filter(|id| matches!(w.item(*id).kind, Kind::Cert { .. }) && !w.seedy(*id)) {
         certs.entry(w.mints(id)).or_default().push(id);
     }
-    // held with chain, in ID order (everything an item needs is older): when and depth
-    let mut when: BTreeMap<u32, u32> = BTreeMap::new();
+    // held with chain, in ID order (everything an item needs is older): when (the latest receipt
+    // of it or of what it needs, receipts of one tick in tie order) and depth
+    type When = (u32, u64);
+    let mut when: BTreeMap<u32, When> = BTreeMap::new();
     let mut depth: BTreeMap<u32, usize> = BTreeMap::new();
-    let epoch_when = |e: &Line, when: &BTreeMap<u32, u32>| -> Option<u32> {
-        let mut t = 0;
+    let merge_tie = |e: &Line| w.merge_tie.get(e).copied().unwrap_or(u64::MAX);
+    let epoch_when = |e: &Line, when: &BTreeMap<u32, When>| -> Option<When> {
+        let mut t = (0, 0);
         for x in e {
             t = t.max(*when.get(x)?);
         }
         if !w.single(e) {
-            t = t.max(certs.get(e)?.iter().map(|c| recv(*c)).min()?);
+            t = t.max((certs.get(e)?.iter().map(|c| recv(*c)).min()?, merge_tie(e)));
         }
         Some(t)
     };
@@ -439,7 +443,7 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
         // one more than what it needs: its epoch (a merge one more than its tips) and its takes
         let at_depth = if base.is_empty() { 0 } else if w.single(&base) { depth[&w.tips(&base)[0]] } else { 1 + w.tips(&base).iter().map(|q| depth[q]).max().unwrap_or(0) };
         let d = w.takes(id).iter().map(|q| depth[q]).chain([at_depth]).max().unwrap_or(0) + 1;
-        when.insert(id, t.max(recv(id)));
+        when.insert(id, t.max((recv(id), w.tie(id))));
         depth.insert(id, d);
     }
     j.chain = when.keys().copied().collect();
@@ -506,12 +510,12 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
     } else {
         // one line, grown in the order held: a rotation or merge epoch is followed iff it
         // descends from everything followed and no rejection runs between its line and it
-        let mut placeables: Vec<(Line, (bool, u32, usize, u64))> = order.iter().map(|x| (w.line(*x), key(*x))).collect();
+        let mut placeables: Vec<(Line, (bool, When, usize, u64))> = order.iter().map(|x| (w.line(*x), key(*x))).collect();
         for e in &j.merges {
             let t = epoch_when(e, &when).unwrap();
             let d = e.iter().map(|x| depth[x]).max().unwrap_or(0) + 1;
             let first = !e.iter().all(|x| needs.contains(x));
-            placeables.push((e.clone(), (first, t, d, w.merge_tie.get(e).copied().unwrap_or(u64::MAX))));
+            placeables.push((e.clone(), (first, t, d, merge_tie(e))));
         }
         placeables.sort_by_key(|p| p.1);
         let mut fol: Line = Line::new();
@@ -793,8 +797,10 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
     let union: Line = j2.heads.iter().flatten().copied().collect();
     let can = if w.control == Control::MergeRandom { j2.heads.iter().all(|e| j2.keys.holds(w, e)) } else { j2.keys.holds(w, &union) };
     if j2.heads.len() > 1 && can {
-        let mut joined: Vec<Line> = vec![j2.preferred.clone()];
-        joined.extend(j2.heads.iter().filter(|e| **e != j2.preferred).cloned());
+        // signed at its tips (each one's merge signature), the first by tie order
+        let mut tips = w.tips(&union);
+        tips.sort_by_key(|x| w.tie(*x));
+        let joined: Vec<Line> = tips.iter().map(|x| w.line(*x)).collect();
         let e: Line = union.clone();
         // its roster: that of the line it makes (the heads it joins)
         let mut bx = [false; N];
@@ -802,7 +808,8 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
             bx[*m] = w.control == Control::MergeRandom || !seen_holding(w, &j2, *m, &e);
         }
         let (tk, an) = if carries { (takes.clone(), answers.clone()) } else { (vec![], vec![]) };
-        let id = w.add(Kind::Cert { joined, takes: tk, answers: an }, n, n, j2.preferred.clone(), None, now, bx);
+        let at = joined[0].clone();
+        let id = w.add(Kind::Cert { joined, takes: tk, answers: an }, n, n, at, None, now, bx);
         made.push(id);
         head = w.mints(id);
         // a device it boxes (one that cannot derive the seed) gets besides every seed it holds of
@@ -1058,13 +1065,21 @@ fn x_step(w: &mut World, p: &mut impl Pick, now: u32, small: bool) -> Vec<u32> {
                 made.push(w.add(Kind::Listing { names: vec![c] }, X, X, e.clone(), on_t, now, [false; N]));
             }
         }
-        // a certificate of the merge of two epochs whose seeds it holds, not on one line
+        // a certificate of the merge of two epochs, not on one line, every tip's seed held (signed
+        // at each tip)
         9 => {
-            let pairs: Vec<(Line, Line)> = eps.iter().flat_map(|a| eps.iter().map(move |b| (a.clone(), b.clone()))).filter(|(a, b)| a < b && !a.is_subset(b) && !b.is_subset(a)).collect();
+            let tip_lines = |a: &Line, b: &Line| -> Vec<Line> {
+                let mut tips = w.tips(&a.union(b).copied().collect());
+                tips.sort_by_key(|x| w.tie(*x));
+                tips.iter().map(|x| w.line(*x)).collect()
+            };
+            let pairs: Vec<(Line, Line)> = eps.iter().flat_map(|a| eps.iter().map(move |b| (a.clone(), b.clone()))).filter(|(a, b)| a < b && !a.is_subset(b) && !b.is_subset(a)).filter(|(a, b)| tip_lines(a, b).iter().all(|l| j.keys.holds(w, l))).collect();
             if !pairs.is_empty() {
                 let (a, b) = pairs[p.pick(pairs.len())].clone();
                 let signer = [X, Z][p.pick(2)];
-                made.push(w.add(Kind::Cert { joined: vec![a.clone(), b], takes: vec![], answers: vec![] }, X, signer, a, None, now, all_p));
+                let joined = tip_lines(&a, &b);
+                let at = joined[0].clone();
+                made.push(w.add(Kind::Cert { joined, takes: vec![], answers: vec![] }, X, signer, at, None, now, all_p));
             }
         }
         // a re-seal of a seed it holds to an honest node

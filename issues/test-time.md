@@ -14,7 +14,7 @@ The reference graph rebuild (issues/reference-graph.md) replaces the sync differ
 - Per binary (`tools/icount`): osis-sync `it` largest (1,541 G against notes/sync-test-harness.md's 1,200 G budget), osis-engine `it` 1,252 G, engine lib 588 G, osis `it` 321 G. Tests over 20 G were 59% of the total.
 - osis-sync `it` (cpuprof): read's settle about a third (`judge::body`: `read_facts`, `may_log`), building differential worlds 17% (`introduce`: 620-760 deliveries, about 4,600 judgements per 3-node world), `Engine::follow` 12%, `follow_certificates` 8%, memo bookkeeping about a sixth.
 - Costliest tests: the sync differential and sims (replaced by the rebuild), `order::held_set_decides` (218 G), the forensic attack in `shred::past_expiry_and_purge_alike` (brute force by design).
-- Properties: `held_set_decides_exhaustive` 705 CPU-s, `_plain` 408, `incremental_equals_from_scratch_large` 293, `rotation_holds_large` 228, `epochs_model_agrees_large` 194; the custody differential `engine_agrees_with_custody_model_large` about 75 s wall at small size (a candidate to split or slim).
+- Properties: `held_set_decides_exhaustive` 705 CPU-s, `_plain` 408, `incremental_equals_from_scratch_large` 293, `rotation_holds_large` 228, `epochs_model_agrees_large` about 50; the custody differential `engine_agrees_with_custody_model_large` about 75 s wall at small size (a candidate to split or slim).
 - Builds after a rebase: main moving under a low crate rebuilds every dependent's test binaries (5-17x the `build` share); even a warm comment-only change in osis-base costs 330-390 CPU-s. `gate.gui-tests` compiles kit, app and masonry test binaries inside its stage; prebuilding them in `build` would put the cost where its share counts it.
 
 ## Levers left, biggest first

@@ -23,13 +23,12 @@
 //! - `forget`: forgetting a commit's ID under a cover and the remover's own cover
 //!   (spec/commits.md §5 Forgetting), per node with real body drops, against listing every
 //!   commit. Search `forget`.
-//! - `epochs`: account signing epochs (issues/account-signing.md): node removal as
-//!   rotation, per-sync-ID list parts and per-thing lists, listings, witnesses' addenda,
-//!   successive removals, re-adds, the part bound, forks and thieves (README.md, results).
-//!   osis-perm `epochs_model_agrees`.
 //! - `custody`: notes/engine-validity-epochs.md, greenfield: seed custody follows holding, the
 //!   chain is D's roster, a merge is only a join (README.md, results). osis-engine
 //!   `rotation::tests_custody`.
+//! - `epochs`: layer 2 of the account (§5.5) over `custody`'s chain: P's commits on things in
+//!   sync IDs, thing lists, listings, outside writers' addenda, the cutoff and the bound (README.md,
+//!   results). osis-perm `epochs_model_agrees` (chain and layer 2).
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
 //! Each model's library API: `walk(h)`, the timeline as a pure function of a history;
 //! `random_hist`; `quiescent(h)` (every node's walk over the writes in its delivery order

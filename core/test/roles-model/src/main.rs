@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|forget|epochs|epochs-exh|epochs-exh-c|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
+//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|forget|epochs|epochs-no-cutoff|epochs-own-only|epochs-void-uncounted|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
 
 use roles_model::{edges, joint};
 
@@ -11,8 +11,15 @@ fn main() {
                 println!("{name} {d:016x}");
             }
         }
-        Some(m @ ("epochs" | "epochs-exh" | "epochs-exh-c")) => {
-            if roles_model::epochs::run(samples, m) > 0 {
+        Some(m) if m.starts_with("epochs") => {
+            use roles_model::epochs::{run, Control};
+            let control = match m {
+                "epochs-no-cutoff" => Control::NoCutoff,
+                "epochs-own-only" => Control::OwnOnly,
+                "epochs-void-uncounted" => Control::VoidUncounted,
+                _ => Control::None,
+            };
+            if run(samples, control) > 0 {
                 std::process::exit(1);
             }
         }
