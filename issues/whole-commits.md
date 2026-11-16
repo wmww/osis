@@ -5,7 +5,7 @@
 
 Built: 2a (one expiry per commit), 2b (one blob per commit, sections per thing), 3 (apply never waits for a part); the spec carries them (spec/wire.md §4, §5, §11.2; spec/commits.md §4-§6; spec/sync-ids.md §1, spec/sync-judgement.md §1, spec/sync-ids.md §6), design in notes/whole-commits.md.
 
-Not built from step 3: "sealed sections of things not synced stay unopened": a receiver cannot tell from the blob whether a section's thing is synced before the commit's own `group.0` membership write applies (a commit creating a thing in a group would leave the thing's record sealed), so it needs held blobs reopened as the sync set grows.
+Not built from step 3: "sealed sections of things not synced stay unopened": a receiver cannot tell from the blob whether a section's thing is synced before the commit's own strong reaching it applies (a commit creating a thing under a referencing thing would leave the thing's record sealed), so it needs held blobs reopened as the sync set grows.
 
 Left:
 - **4, per-part strip** (notes/whole-commits.md Left to build).

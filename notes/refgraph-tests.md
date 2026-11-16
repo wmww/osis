@@ -1,5 +1,5 @@
 # Reference graph tests
-> Summary: The test plan for issues/reference-graph.md (Execution step 6): 37 properties in what users observe, the cheapest test of each with its crate and lane, the new sync differential and sim set against held-model `closure`, the surviving tests the set replaces, the order to write them in, and the count/CPU budget against the 3,493-test, 2,372 CPU-s baseline.
+> Summary: The test plan for issues/reference-graph.md (Execution step 6): 38 properties in what users observe, the cheapest test of each with its crate and lane, the new sync differential and sim set against held-model `closure`, the surviving tests the set replaces, the order to write them in, and the count/CPU budget against the 3,493-test, 2,372 CPU-s baseline.
 
 ## Budget
 Costs per test at baseline (`~/osis-refgraph-baseline/pertest`): engine `it` facade test about 0.1 CPU-s, osis `it` 0.3-1, a sync `it` world test 1-7, a differential seed about 9, a sim seed about 6. So each rule is tested at the lowest layer that shows it: engine facade or plain-value first, a sync world only where crossing nodes is the point.
@@ -47,6 +47,7 @@ Lane: (a) refs, tickets as values, schema, API, index; (b) node root, walk, sync
 | L7 | role changes travel: revoking Z's read on T reaches a node syncing only Z and drops A (plain from T) there for good; the chain form too | the Hole's smallest history, two arms (plain, chain) | sync (three nodes) | b |
 | L8 | an ephemeral strong holds while a connected peer holds the value; with nobody connected a restart drops it; once every holder restarted it is released everywhere | example (`p6_restart_drops_only_without_a_peer`) | sync (two_nodes) | b |
 | L9 | lowering read to sync is no release: the thing is kept unread with its store | example | engine | b |
+| L10 | a released thing's ephemeral state goes with it, the node's own ephemeral writes included; back in the closure, it is fetched again from nodes that kept it | example beside L1 | engine | b |
 
 ### Tickets and accepting
 | # | property | test | crate | lane |

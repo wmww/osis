@@ -134,6 +134,7 @@ Rules:
 - Which search the edge-removal uses first (other referrers, or the subtree): each loses in one shape (notes/closure-model.md, counts); running both in step meets both.
 - What `tools/spec_map.py` needs once the removed sections go (`tools/policy_test.py` plants appended text in a missing file afresh).
 - No bound on how many sync IDs one commit is carried under (nothing limits the sync units a thing is in): measure with issues/many-sync-ids-cost.md.
+- Settings (issues/settings.md) wanted `caps^.0` and `clients^.0` on a per-node data thing synced among the account's nodes, so a sibling can change an offline node's caps; this plan puts them on the local node root. Pick one.
 
 Not blocking: issues/many-sync-ids-cost.md (the cost of many things with their own sync ID, which a shared tag of notes makes).
 

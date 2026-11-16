@@ -6,7 +6,7 @@
 ## Current shape
 - The store places a row by its transaction's mode (`Transaction::set_memory`), by an aspect key's `+` marker (`Ak::ephemeral`), or by where the row already is (notes/local-store.md, Memory overlay).
 - Engine code sets the mode around work on memory-class data: `set_memory()` at entry points (`ingest_memory`, `apply_waiting_memory`, `memory_charge`, ephemeral snapshots, compaction weighing, blob reads), `in_class(is_memory_commit(c), ..)` around single rows (timers, aspect records, `forget_commits`, reverts), and the "if `ak.ephemeral()` set memory" pattern in compaction and snapshot code and their tests.
-- The same mode also decides, through `Core::memory_tx`: which counter moves (`memory_generation`, `Core::touch`, `rollback_to`), whether the HLC is persisted at apply, whether `group.0` cuts are noted, and which end-of-transaction work runs (`wake_covers`, `apply_destructions`, persisted indexes).
+- The same mode also decides, through `Core::memory_tx`: which counter moves (`memory_generation`, `Core::touch`, `rollback_to`), whether the HLC is persisted at apply, and which end-of-transaction work runs (`wake_covers`, `apply_destructions`, persisted indexes).
 - `Core::memory_tx` copies the store transaction's mode so Core methods without the transaction can read it. `set_memory`, `in_class`, the rollback mark and two resets keep the copies in step.
 
 ## Direction

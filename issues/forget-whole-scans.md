@@ -1,6 +1,6 @@
 # Forgetting still scans four whole tables
-> Summary: `retention::forget::forget` (unsyncing, lost access) finds its things, aspects and commits through the indexes and moves the indexes in place, but still scans every pending row (decoding each), every timer (`x/`, keyed by time), every `z/` named-permanent row (a thing's half of the key is second) and every freed row (`fl/` + `Indexes::freed`, keyed by blob first): O(those tables) per forgetting.
-> Priority: normal
+> Summary: `retention::forget::forget` (release, lost access) finds its things, aspects and commits through the indexes and moves the indexes in place, but still scans every pending row (decoding each), every timer (`x/`, keyed by time), every `z/` named-permanent row (a thing's half of the key is second) and every freed row (`fl/` + `Indexes::freed`, keyed by blob first): O(those tables) per forgetting.
+> Priority: low
 > Tags: engine, performance
 
 - Where: core/engine/src/retention/forget.rs (`each_pending`, `remove_scanned(TIMER)`, `remove_scanned(NAMED_PERMANENT)`), core/engine/src/retention/freed.rs `lost` (`remove_scanned(FREED)`, `ix.freed.keys()`).

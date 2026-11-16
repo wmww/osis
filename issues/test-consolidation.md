@@ -1,5 +1,5 @@
 # Test code that can go: duplicates, vacuous tests, copied helpers
-> Summary: A read of the tests under core/ (not run; osis-sync's came later): medium- and low-confidence candidates for deletion or merging, each with what covers it, and some forty helper families copied between test files. The gain is less code to compile, read and keep, not time (issues/tests-4x.md has the time). Lists per file below, each with why it is safe and how sure the reader was.
+> Summary: A read of the tests under core/ (not run; osis-sync's came later): medium- and low-confidence candidates for deletion or merging, each with what covers it, and some forty helper families copied between test files. The gain is less code to compile, read and keep, not time (issues/test-time.md has the time). Lists per file below, each with why it is safe and how sure the reader was.
 > Priority: low
 > Tags: tests
 
@@ -98,7 +98,6 @@ Helpers are listed in (c). Per-test items:
 - osis `text.rs:230` | delete | `text_edit_random_against_reference` checks single-merge cases exactly | medium
 - roles-model `single.rs` (14 tests, used by nothing outside the model, mostly rejected rule variants) | Tess's call: it is a design record | low
 
-Width (issues/tests-4x.md, Patterns), no coverage loss:
 
 
 ## Helpers to add or unify
@@ -113,6 +112,6 @@ Width (issues/tests-4x.md, Patterns), no coverage loss:
 
 ## Not covered
 - **Bodies only skimmed** (names and comments only): engine `it` order's scripted bodies, scale, finalize, sessions, crash; osis port, runtime, listing, watch, commits, ephemeral, tracking, undo; engine most rotation files, undo, retention/mod.rs, sync_ids; perm scale and robust bodies; held-model most `spec_*` bodies; keys `established`/`names`, store `nodelog`/`record`, roles-model addenda/epochs/forget/edges/trust bodies.
-- **Not read**: osis-sync's tests (written after this read; issues/tests-4x.md).
+- **Not read**: osis-sync's tests (written after this read).
 - **Not done**: the ephemeral random harnesses; whether `judgment_vectors_spec_permissions_5_2`'s replay repeats `check()`; whether the crdt Slots mode reaches a deleted embedded character.
 - **Doc follow-ups if the removals land**: notes/crdt.md "Beside it" list; notes/engine-validity.md (names `unmerge_spec_4_6`).

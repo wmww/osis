@@ -29,6 +29,6 @@
 - sync §6: "the sync ID lacks" a body unless a blob of its commit holds every delta of it no snapshot under the sync ID covers. `Upload`, `Relay`, `Deposit` use it; `Converge` checks it rather than an identical body.
 - sync §6 clock samples by round trip, request timeouts, sync §9 signal replay window: outside the model (no clock skew, no connections, no signals).
 
-## History modes (issues/retention-modes.md step 0)
+## History modes
 - **S19. No drop but as covered, purged or expired.** Keep-at-most bounds, carriers, snapshot-first drops and timed deletes are gone; a `none` body is must-not-hold once a held snapshot covers it (`NoneGone`, so every node drops it and a writer deletes it at the host under the carrier rule), and a writer holding a replaced `none` body with no cover owes one (`OwesCover`, a due snapshot). `StateCarried` holds as an invariant in every instance: no step leaves a live write in a node's state that no held body or snapshot carries, so crdt §4.6's own-state clause is not needed. `KeptUntil` holds: before T nothing but purge or expiry removes a kept body.
 

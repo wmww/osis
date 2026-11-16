@@ -1,0 +1,7 @@
+# The wait after losing read by an `until`
+> Summary: After a loss by an `until` alone (spec/permissions.md §2) a node keeps the sync ID until it is heard out or `LOST_HEARD_WAIT_MS` (`ROLE_KEEP`) passes. Two edges: a peer that judges the node departed never resumes its kept record, so the node waits the whole bound; and at the bound the node drops its own writes from before the `until` that are held nowhere else.
+> Priority: low
+> Tags: sync, permissions
+
+- **Departed peer stalls the wait.** A peer whose kept record holds S counts as waited for until that record resumes or goes. A peer judging the node departed shares nothing with it and proves nothing it would resume the record with, so with only such peers reachable the node keeps the thing to the bound. A stall, not a loss. A fix needs such a peer's holding (or its closing of S) to reach the node another way.
+- **Own writes lost at the bound.** A device offline (or reaching only peers that judge it departed) for `ROLE_KEEP` past its `until`, whose writes from before the `until` were never sent, loses them while some peer would still take them (one holding a renewal the device has not heard). Without a renewal every peer refuses them anyway (spec §2, Meanwhile). Fix if convenient: keep own commits held nowhere else through the drop as kept-unread entries to push to a peer that opens S later, so the drop erases what the node read and nothing it wrote.

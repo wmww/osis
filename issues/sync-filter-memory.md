@@ -1,6 +1,6 @@
 # Peer filters are memory nobody bounds in total
 > Summary: Each peer's filter (up to 2^22 entries plus additions, 8 bytes each: 32-64 MiB) is held per connection with no cap on connections, and each kept record stores one, so a few strangers' full filters (about 5 MB each on the wire) take hundreds of MiB or evict every record under RECORD_BUDGET.
-> Priority: low
+> Priority: normal
 > Tags: sync, security
 
 - Unkept filters: one per served connection; spec/sync-transport.md §5 bounds frame buffers but not the state a connection builds (filters, members).

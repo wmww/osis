@@ -8,7 +8,7 @@ The leak (reproduced: `rotation::tests_reseal`): a2 removes reader M (W); R, hol
 The rule and where it lives: notes/crypto.md (Passing on content), notes/sync-facade.md (Sealing). Facade tests: `rotation::tests_reseal::facade_*`.
 
 ## Open
-- **Content read in no section passes on** (`sync_ids::opened::passes_on`): a part whose openings are empty passes as the node's own, into a fresh encryption or a snapshot. A copy is not such a path (its content counts as opened under its wrap's epoch, of the sync ID's thing: `cross_thing_copy_content_never_resealed_spec_crypto_5`); left are plaintext ingests: an inbox payload (the sender's own flow commit) and LocalPeer's plain delivery (the engine tests' main harness, which carries every commit so; 13 engine tests compact aspects so). Fail closed is safe and live in the model (`RS_closed`); close it once that harness delivers sections.
+- **Content read in no section passes on** (`sync_ids::opened::passes_on`): a part whose openings are empty passes as the node's own, into a fresh encryption or a snapshot. A copy is not such a path (its content counts as opened under its wrap's epoch, of the sync ID's thing: `cross_thing_copy_content_never_resealed_spec_crypto_5`); left is a plaintext ingest: LocalPeer's plain delivery (the engine tests' main harness, which carries every commit so; 13 engine tests compact aspects so). Fail closed is safe and live in the model (`RS_closed`); close it once that harness delivers sections.
 - Reseal.tla models section openings only: the header opening by a wrap's epoch (`note_unwrapped`) and a copy's opening by it are not in it.
 
 ## Limits

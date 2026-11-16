@@ -24,20 +24,19 @@ Each line: what is missing, what it costs now. The module notes (notes/sync-*.md
 - `SrcView::role_unheld` is always false: deletes toward a source do not wait for a role commit it lacks.
 - A peer's entry counting as lacking for its wrap (Duplicates, spec/sync-ids.md §6 Wraps).
 - Freed links (spec/sync-compaction.md §1): a judgment waiting on a node blob not held (`Engine::freed_wants`) is not fetched, and nothing calls `judge_freed`/`judge_freed_page`, so a waiting row is judged again only when its thing's next freed link is, and a start judges none; freed deletes do not wait on Role entries first (spec/sync-judgement.md §3). A row is judged once, not again at each delete sent: a body arriving later that links the blob (another writer's reuse) does not stop deletes toward store sources that show it from then on, nor un-free its bytes here (`is_freed`); the reusing author's repair is then what restores it.
-- Pieces: a thing leaving a group leaves its pieces under the old sync ID (Retag, spec/sync-judgement.md §1); a non-writer's pieces reach a store source only as deposits (inbox's offers), never relayed under the writer's stamp.
+- Pieces: a thing leaving a sync unit leaves its pieces under the old sync ID (Retag, spec/sync-judgement.md §1); a non-writer's pieces reach a store source only as deposits (inbox's offers), never relayed under the writer's stamp.
 - HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does) is the engine's `fall_mark`, untested end to end.
 - A reader's copy under a superseded stamp (spec/sync-judgement.md §3 Reader that is not a writer, notes/inbox.md) is not deposited once the source's head moved: seen in a World (writer writes an ephemeral value, rotates write and goes off while the reader is partitioned; the node keeping S unread restarts, losing it): the source pulled the reader's entry, refused it (9) under its new head, and the reader's `Live::deposit` ran only while its view of the source's head was the old one (relay under stamp); nothing deposited it after the head event.
 - `Live::fresh` (the held blobs it hands `Engine::seal_body`) has no World test: a mutation passing none fails no osis-sync test; the engine's `rotation::tests_reseal::facade_*` cover the contract. Cheapest found: a purge of one thing's part of a commit spanning two things, the other thing's section then logged again verbatim.
 
 ## inbox
 - Clearing at sources keeping S unread: needs streams' `known` to carry each entry's deposited flag and blob size.
-- A decline stamping in place.
 - Opens' members are not stamped, so a source's step moving reaches Register only through its next join.
 - A deposit-only step (a refreshed seed, no newer role epoch) is issued without the waits spec/permissions.md §3 and spec/sync-ids.md §6 put on it (every entry it can open opened at the sources it reaches; no valid `keys.0` part of the actor missing; `flows::sync_ids::due_at`).
 
 ## status and API
 - Connection diagnostics never dedup (each detail names its connection, `dN`/`aN`) and share one local rate bucket, so a peer opening and dropping connections pushes out real connection and dial-failure reports; key them per remote instead.
-- Diagnostics name connections and failed dials only (`DiagnosticKind::Connection`): not an open refused (sync ID, code), a grant held but not accepted, nor a peer clock offset past a few seconds (spec/sync-streams.md §1: `Session::clock_offset` estimates it, nothing reports it).
+- Diagnostics name connections and failed dials only (`DiagnosticKind::Connection`): not an open refused (sync ID, code), nor a peer clock offset past a few seconds (spec/sync-streams.md §1: `Session::clock_offset` estimates it, nothing reports it).
 - Covered by a snapshot at a source (spec/sync-status.md §2): needs the engine's covering snapshots of a commit; a body a source dropped under a snapshot before showing it never counts (an under-claim).
 - `caps()`/`set_caps` in the osis API over `caps^.0` (the engine reads `caps^.0`; nothing writes it but a raw write).
 

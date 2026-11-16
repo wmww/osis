@@ -14,3 +14,5 @@ Left, each its own task, cost no object; order 3, 4, 7, with 6 alongside:
 4. **Brute-force refetch.** A body counting as never received is asked for by ID on every sync, from every peer, until it arrives (rate-limited, idempotent). No reliance on others' must-hold rules.
 6. **Reference model** (notes/test-design.md, What finds bugs): from spec/ alone, what a node holding body set H reads; oracles compare each node with it after exchange.
 7. **Revoker snapshot** (issues/session-sources.md): the revoker compacts the aspects the demoted node wrote before stamping; its snapshot carries the content it never saw deleted, so a node that wrongly dropped it gets the copy with the revocation. Shrinks the frontier only for data whose history may be dropped.
+
+Tess floated (not important, not built): edits dated before a re-grant stay invalid even when their author is re-added, so a re-grant never revives old edits. That would remove refetch on re-grant entirely (a body dropped while invalid could never turn valid again from a re-grant).
