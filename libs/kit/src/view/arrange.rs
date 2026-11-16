@@ -219,27 +219,21 @@ pub fn stream_page(cx: &Reader, things: &[Tid], at: &At, n: usize) -> Result<Pag
     let mut rows: Vec<(String, Entry)> = Vec::new();
     let mut more = false;
     match at {
-        At::End => {
+        // the end is the rows before no key
+        At::End | At::Before(..) => {
+            let k = match at {
+                At::Before(k, _) => Some(k.as_str()),
+                _ => None,
+            };
             for t in things {
                 let h = head(cx, *t)?;
-                more |= h.len() >= STREAM_HEAD;
-                rows.extend(h.iter().map(|e| (sort_key(e), e.clone())));
-            }
-            rows.sort_by(|a, b| a.0.cmp(&b.0));
-            more |= rows.len() > n;
-            let cut = rows.len().saturating_sub(n);
-            rows.drain(..cut);
-        }
-        At::Before(k, _) => {
-            for t in things {
-                let h = head(cx, *t)?;
-                let older = h.iter().filter(|e| sort_key(e) < *k).count();
+                let older = h.iter().filter(|e| k.is_none_or(|k| sort_key(e).as_str() < k)).count();
                 // the head holds a page past the anchor, or all there is
                 if h.len() < STREAM_HEAD || older >= n {
                     more |= older > n || h.len() >= STREAM_HEAD;
-                    rows.extend(h.iter().filter(|e| sort_key(e) < *k).map(|e| (sort_key(e), e.clone())));
+                    rows.extend(h.iter().filter(|e| k.is_none_or(|k| sort_key(e).as_str() < k)).map(|e| (sort_key(e), e.clone())));
                 } else {
-                    let got = stream_rows(cx, *t, Some(k), n + 1);
+                    let got = stream_rows(cx, *t, k, n + 1);
                     more |= got.len() > n;
                     rows.extend(got.into_iter().map(|e| (sort_key(&e), e)));
                 }
