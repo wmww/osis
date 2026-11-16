@@ -60,15 +60,21 @@ pub(crate) fn fire_ticket(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[T
 }
 
 /// A ticket for `target` of `role` (read or sync) boxed to `holder` (spec/data-model.md §8
-/// Tickets): the secret of the newest current epoch of that role held here, boxed as a
-/// `secrets.0` box to the holder is, naming the target's sync ID and this node's account's
-/// profile. `None` when no such secret, sync ID or keyset of the holder is held.
+/// Tickets): the secret of the newest epoch of that role the node holds the target by
+/// (`held_by`), boxed as a `secrets.0` box to the holder is, naming the target's sync ID
+/// (`sync_id`; none: its home's) and this node's account's profile. `None` when no such
+/// secret, sync ID or keyset of the holder is held.
 pub(crate) fn make_ticket(tx: &mut Tx<'_>, target: Tid, role: Role, holder: Tid) -> Result<Option<Ticket>> {
+    make_ticket_under(tx, target, role, holder, None)
+}
+
+fn make_ticket_under(tx: &mut Tx<'_>, target: Tid, role: Role, holder: Tid, sync_id: Option<osis_base::SyncId>) -> Result<Option<Ticket>> {
     let Some(epochs) = tx.core.epochs(&target) else { return Ok(None) };
-    let Some(e) = epochs.role(role).current().into_iter().filter(|e| epochs.role(role).secret(e).is_some()).max_by_key(|e| (e.n(), *e.nonce())) else { return Ok(None) };
-    let Some(sync_id) = super::home_sync_id(tx, &target)? else { return Ok(None) };
+    let Some(e) = held_by(&epochs, role).into_iter().max_by_key(|e| (e.n(), *e.nonce())) else { return Ok(None) };
+    let Some(secret) = epochs.role(role).secret(&e) else { return Ok(None) };
+    let Some(sync_id) = sync_id.or(super::home_sync_id(tx, &target)?) else { return Ok(None) };
     let Ok(rcpt) = super::recipient(tx, holder, role) else { return Ok(None) };
-    let Some(w) = osis_keys::box_holder(&target, &epochs, &Default::default(), &rcpt, &BTreeSet::from([role]), &mut *tx.rng)? else { return Ok(None) };
+    let Some(w) = osis_keys::produce::box_epoch(&target, &rcpt, role, e, secret, &mut *tx.rng)? else { return Ok(None) };
     let key = ct::BoxKey { holder: holder.into(), role, epoch: osis_keys::aspects::to_schema(&e) };
     let Some(b) = w.boxes.get(&key) else { return Ok(None) };
     let me = tx.core.account.get();
@@ -81,6 +87,17 @@ pub(crate) fn make_ticket(tx: &mut Tx<'_>, target: Tid, role: Role, holder: Tid)
     };
     let Some(profile) = profile else { return Ok(None) };
     Ok(Some(Ticket { target, sync_id, role, epoch: (e.n(), *e.nonce()), boxed: osis_schema::Codec::to_value(b), holder, profile }))
+}
+
+/// The epochs of role `r` the node holds a thing by, secrets held (spec/sync-set.md §1 The
+/// account's tickets): its current ones; a thing kept unread (sync, no read secret held: it reads
+/// none of its role commits, so it establishes none of its epochs) by each sync secret it holds.
+fn held_by(epochs: &osis_keys::ActorEpochs, r: Role) -> Vec<osis_crypto::Epoch> {
+    let re = epochs.role(r);
+    if r == Role::Sync && !epochs.role(Role::Read).holds_any() {
+        return re.held().map(|(e, _)| e).collect();
+    }
+    re.current().into_iter().filter(|e| re.secret(e).is_some()).collect()
 }
 
 /// Fires on `holder`'s inbox the removal notice of role commit `c` lowering its edge on `target`
@@ -494,18 +511,36 @@ impl Engine {
 
 /// The account's tickets (spec/sync-set.md §1): D's tickets for `t` this node owes now. `Some`
 /// while the walk enters `t` at a strong outside the local part at role `r` (read, or sync kept
-/// unread) and D's `tickets.0` holds no ticket for `t` of that role, to the account, at a current
-/// epoch of that role held here.
+/// unread) and D's `tickets.0` lacks, for one of the sync IDs it syncs `t` under (`ticket_sync_ids`),
+/// a ticket for `t` of that role, to the account, at an epoch it holds `t` by (`held_by`).
 pub(crate) fn account_ticket_due(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Role>> {
+    Ok(owed_account_tickets(tx, t)?.map(|(r, _)| r))
+}
+
+/// `account_ticket_due`, with the sync IDs lacking D's ticket.
+fn owed_account_tickets(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<(Role, Vec<osis_base::SyncId>)>> {
     let (Some((p, d)), Some(r)) = (tx.core.account_devices(), tx.core.ix.closure.entered_outside(t)) else { return Ok(None) };
     let Some(epochs) = tx.core.epochs(t) else { return Ok(None) };
-    let current: BTreeSet<(u64, [u8; 32])> = epochs.role(r).current().into_iter().filter(|e| epochs.role(r).secret(e).is_some()).map(|e| (e.n(), *e.nonce())).collect();
-    if current.is_empty() {
+    let by: BTreeSet<(u64, [u8; 32])> = held_by(&epochs, r).into_iter().map(|e| (e.n(), *e.nonce())).collect();
+    if by.is_empty() {
         return Ok(None);
     }
     let held = account_tickets(tx, &d)?;
-    let has = held.iter().any(|k| k.target == *t && k.role == r && k.holder == p && current.contains(&k.epoch));
-    Ok((!has).then_some(r))
+    let lacking: Vec<osis_base::SyncId> = ticket_sync_ids(tx, t, r)?.into_iter().filter(|s| !held.iter().any(|k| k.target == *t && k.role == r && k.holder == p && k.sync_id == *s && by.contains(&k.epoch))).collect();
+    Ok((!lacking.is_empty()).then_some((r, lacking)))
+}
+
+/// The sync IDs a node syncs `t` under at role `r`: its home's (its held `sync.0`); one it keeps
+/// unread, whose `sync.0` it never reads, each its held tickets name (spec/sync-inbox.md §5 Ticket
+/// sync IDs).
+fn ticket_sync_ids(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<Vec<osis_base::SyncId>> {
+    if let Some(s) = super::home_sync_id(tx, t)? {
+        return Ok(vec![s]);
+    }
+    if r != Role::Sync {
+        return Ok(Vec::new());
+    }
+    Ok(tx.core.ix.closure.ticket_ids(t).into_iter().map(|(s, _)| s).collect::<BTreeSet<_>>().into_iter().collect())
 }
 
 /// D's `tickets.0` as held.
@@ -518,21 +553,28 @@ fn account_tickets(tx: &mut Tx<'_>, d: &Tid) -> Result<BTreeSet<Ticket>> {
     })
 }
 
-/// Writes D's ticket for `t` this node owes (`account_ticket_due`): a fresh one sealed to the
-/// account (a node's ticket for its own account, spec/data-model.md §8), removing in the same
-/// commit D's tickets for `t` of that role at older epochs.
+/// Writes D's tickets for `t` this node owes (`account_ticket_due`): a fresh one per sync ID
+/// lacking it, sealed to the account (a node's ticket for its own account, spec/data-model.md
+/// §8), removing in the same commit D's tickets for `t` of that role at older epochs.
 pub(crate) fn write_account_ticket(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<CommitId>> {
-    let Some(r) = account_ticket_due(tx, t)? else { return Ok(None) };
+    let Some((r, lacking)) = owed_account_tickets(tx, t)? else { return Ok(None) };
     let Some((p, d)) = tx.core.account_devices() else { return Ok(None) };
-    let Some(k) = make_ticket(tx, *t, r, p)? else { return Ok(None) };
-    // older epochs only: a sibling's ticket at a newer epoch, or at a concurrent one of the same
-    // n (a fork's other side), stays, so two nodes never undo each other
-    let old: Vec<Ticket> = account_tickets(tx, &d)?.into_iter().filter(|x| x.target == *t && x.role == r && x.epoch.0 < k.epoch.0).collect();
     let mut m = Mutation::new();
-    for o in old {
-        m.op(d, &ct::TICKETS, PathOp { path: vec![], op: Op::Remove(Value::Ticket(Box::new(o))) })?;
+    let mut any = false;
+    for s in lacking {
+        let Some(k) = make_ticket_under(tx, *t, r, p, Some(s))? else { continue };
+        // older epochs only: a sibling's ticket at a newer epoch, or at a concurrent one of the
+        // same n (a fork's other side), stays, so two nodes never undo each other
+        let old: Vec<Ticket> = account_tickets(tx, &d)?.into_iter().filter(|x| x.target == *t && x.role == r && x.epoch.0 < k.epoch.0).collect();
+        for o in old {
+            m.op(d, &ct::TICKETS, PathOp { path: vec![], op: Op::Remove(Value::Ticket(Box::new(o))) })?;
+        }
+        m.op(d, &ct::TICKETS, PathOp { path: vec![], op: Op::Add(Value::Ticket(Box::new(k))) })?;
+        any = true;
     }
-    m.op(d, &ct::TICKETS, PathOp { path: vec![], op: Op::Add(Value::Ticket(Box::new(k))) })?;
+    if !any {
+        return Ok(None);
+    }
     Engine::commit_tx(tx, m)
 }
 

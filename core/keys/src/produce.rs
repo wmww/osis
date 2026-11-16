@@ -459,6 +459,13 @@ pub fn box_holder(
     Ok(out)
 }
 
+/// A box of `role`'s secret `secret` at `epoch` of `actor` to `rcpt` alone (a ticket's).
+/// `Ok(None)` when a needed keyset is unknown.
+pub fn box_epoch(actor: &Tid, rcpt: &Recipient, role: Role, epoch: Epoch, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Option<SecretsWrite>, Error> {
+    let mut out = SecretsWrite::default();
+    Ok(box_items(actor, rcpt, &[Item { role, epoch, secret }], rng, &mut out)?.map(|()| out))
+}
+
 /// The **tip add** (spec/crypto.md §4, Floors): boxes of the dropped epochs `epochs` (secrets
 /// held) to `rcpt`, each that its floor allows. `Ok(None)` when a needed keyset is unknown.
 pub fn box_dropped(actor: &Tid, held: &ActorEpochs, rcpt: &Recipient, epochs: &BTreeSet<Epoch>, rng: &mut dyn CryptoRngCore) -> Result<Option<SecretsWrite>, Error> {

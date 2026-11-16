@@ -225,3 +225,15 @@ fn a_sync_id_kept_unread_by_ticket_stays_synced_across_a_restart_spec_sync_set_2
     w.power_on(1);
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread after the restart");
 }
+
+// spec/sync-set.md §1 (The account's tickets): node 1 keeps S unread by the ticket its grant fired
+// on its inbox; past the inbox's lifetime that fire is gone, and D's ticket, written as the walk
+// entered the thing, keeps it kept unread.
+#[test]
+fn a_sync_id_kept_unread_outlives_its_inbox_ticket_spec_sync_set_1() {
+    let (mut w, t, s) = setup();
+    w.advance(osis_base::format::INBOX_LIFETIME_MS + 86_400_000);
+    w.run();
+    let unread = Some((std::collections::BTreeSet::from([t]), osis_engine::sync::Holding::Unread));
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread past the inbox's lifetime");
+}
