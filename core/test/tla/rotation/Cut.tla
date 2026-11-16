@@ -1,5 +1,5 @@
 --------------------------------- MODULE Cut ---------------------------------
-(* History cuts (issues/history-less-grant.md): a grant without history is a *)
+(* History cuts (notes/history-less-grant.md): a grant without history is a *)
 (* read rotation at the grant (the cut) whose history box carries no earlier *)
 (* secret. One actor, one key role. Admins rotate, grant, re-seal, remove    *)
 (* and rotate where a current epoch's floor is below a holder's (Merge);    *)

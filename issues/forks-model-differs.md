@@ -1,0 +1,10 @@
+# Forks differential: three seeds where the engine and the model differ
+> Summary: `rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4` fails on main at three seeds: 67 (a rebuild judges a role commit invalid that the live index holds valid), 786082893264 (the engine counts fewer revocations than the model) and 615470545354 (the model rotates to take a forged removal, the engine does not). Either side may be wrong at each.
+> Priority: normal
+> Tags: engine, perm, tests
+
+Replay: `OSIS_FORKS_START=<seed> OSIS_FORKS_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4`. All three are lines in tools/known_failures.txt. The seeds may share a cause with each other or with issues/account-removal-before-its-rotation.md (seed 916629000175).
+
+- **Seed 67, rebuild differs**: `check_index` fails: rebuilt from the commit records, a role commit of an account at its first epoch (`roles.0` and `secrets.0` on another actor) reads `valid: [false, false]` where the live index holds `[true, true]`. Seeds 786082893277, 712821043685 and 712821043852 fail the same way. A rebuild differing from the live index means the judgment depends on arrival order or on state the rebuild reads otherwise (inner signatures, `role_sigs`, the held set): find which input the commit's validity reads differently.
+- **Seed 786082893264, counting**: at t12 on node 1, `counting: engine {2} ... model {2, 4} taken [4]`: the engine leaves out a revocation (4) the model counts once taken. Find which and why.
+- **Seed 615470545354, forged removal not taken**: at t14 on node 1, `model rotates Some(Rot { at: 11, ..., takes: [17] }), engine None`. X forges two removals as 2 (#16 removes 1, #17 removes 0); the model's node 1 rotates to take #17, the engine's does not rotate. #17 removes node 1's peer 0 and is signed by 2, whom 0 removed at #5: find whether the engine should take #17 or the model counts a removal it must not.

@@ -101,7 +101,8 @@ A map by area; rustdoc has the full list.
 ## The engine-* notes
 - notes/engine-store.md: store records and index tables, the persisted index, open, lazy headers, saved walks.
 - notes/engine-apply.md: receiving commits, counters and the HLC, the writer-side rules, apply costs.
-- notes/engine-validity.md: index of the validity notes.
+- notes/engine-validity.md: re-judging, un-merge by one rebuild, snapshot authority and carried writes, uncovering.
+- notes/engine-validity-epochs.md: the epoch rule (spec/permissions.md §5.4-§5.5).
 - notes/engine-retention.md: index of the retention notes; bodies, invalid bodies, bodies coming back.
 - notes/engine-suspects.md: suspect flags and their repair.
 - notes/engine-roles.md: role commits in the engine (edge writes, `secrets.0` and `keys.0`, established epochs, writer-side role rules, rotation invariants).

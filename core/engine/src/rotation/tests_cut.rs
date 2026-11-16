@@ -1342,7 +1342,7 @@ fn own_snapshots(lp: &LocalPeer, i: usize) -> usize {
 // of any writer) fetches the role commits first, then the bodies from before the cut, the cut's
 // snapshots after them (a first sync goes by order, spec/crypto.md §5 Order). Those bodies are covered by the
 // cut's snapshots, so it owes no snapshot of its own: it writes none, however its fetch is cut
-// into steps (node-sync writes owed snapshots after each, `SyncEngine::engine_events`).
+// into steps (the test writes owed snapshots after each, as a pass end would).
 #[test]
 fn late_bodies_a_cut_covers_owe_no_snapshot_spec_crypto_4() {
     let mut lp = synced(3);

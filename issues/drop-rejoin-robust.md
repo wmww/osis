@@ -7,7 +7,7 @@ Most arrival-order bugs (notes/testing.md What finds bugs, notes/convergence-stu
 
 Rejected (Tess): deletions final against later revocation (a removed or stolen device keeps delete power forever); history kept so drops roll back (no prompt permanent deletion); a writer's compaction vouching for a deletion (still diverges when every writer saw the revocation first).
 
-Built (notes/engine-validity-rebuild.md, notes/engine-retention-purge.md Leftovers, notes/test-harnesses.md Rebuild check): 1 one path (`apply::rebuild`), 2 leftovers are held bodies, 5 the rebuild check.
+Built (notes/engine-validity.md, notes/engine-retention-purge.md Leftovers, notes/test-harnesses.md Rebuild check): 1 one path (`apply::rebuild`), 2 leftovers are held bodies, 5 the rebuild check.
 
 Left, each its own task, cost no object; order 3, 4, 7, with 6 alongside:
 3. **The holder logs it.** A node that receives a purge request (or a replacing write under purge on replace) it judges invalid makes sure the targeted body is held at the sync ID's sources. Closes a stated gap: after a purge's fall where no writer holds a whole copy (the fallen value's delta gone everywhere, whole carriers only at readers), a node reads the write absent while those readers read it. Refetching carrier leftovers does not close it: a writer that stripped the carrier deletes its blob at its sources once its own re-snapshot is held there.

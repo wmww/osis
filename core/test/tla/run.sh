@@ -75,7 +75,7 @@ instances=(
   "depth0 rotation Depth0MC D0_destroyed_cycle_old.cfg fail" # negative control: a frozen holder always keyed closes the key cycle
   "lockout rotation Lockout L_rogue.cfg pass"    # notes/crypto.md (Lockouts)
   "lockout rotation Lockout L_none.cfg fail"     # negative control: no re-key
-  "cut rotation Cut X_names.cfg pass"            # history cuts (issues/history-less-grant.md)
+  "cut rotation Cut X_names.cfg pass"            # history cuts (notes/history-less-grant.md)
   "cut rotation Cut X_race.cfg pass"             # ... and with them it does (Roster)
   "cut rotation Cut X_cut_old.cfg fail"          # negative control: no floor
   "cut rotation Cut X_cut_oldadd.cfg fail"       # negative control: the History add without the carry rule
