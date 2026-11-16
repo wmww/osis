@@ -2580,7 +2580,13 @@ impl Core {
         // scale checks: each call walks every part of the commit
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         let had = self.ix.commits.get(&id).map(missing_of).unwrap_or_default();
-        self.index_missing(&id, &had, &missing_of(&m));
+        let now = missing_of(&m);
+        // the things it is on may be needed by nothing more once a part stops waiting
+        // (`retention::needed`)
+        if had.difference(&now).next().is_some() {
+            self.note_on(&m);
+        }
+        self.index_missing(&id, &had, &now);
         let was = self.ix.commits.get(&id).map(signers_elsewhere).unwrap_or_default();
         self.note_signed(&was, &signers_elsewhere(&m));
         self.index_own(&id, &m, true);
@@ -2613,7 +2619,11 @@ impl Core {
         // its signers' chains may be needed by nothing more (`retention::needed`)
         self.note_pass_due(m.view.author);
         self.note_pass_due(m.view.actor);
-        self.index_missing(id, &missing_of(&m), &BTreeSet::new());
+        let had = missing_of(&m);
+        if !had.is_empty() {
+            self.note_on(&m);
+        }
+        self.index_missing(id, &had, &BTreeSet::new());
         self.note_signed(&signers_elsewhere(&m), &[]);
         self.note_rotation(&m);
         self.index_own(id, &m, false);
@@ -2621,6 +2631,13 @@ impl Core {
         self.note_none(&m);
         self.touches.note(id, &m);
         Some(m)
+    }
+
+    /// Notes every thing `m` is on for the pass's need judgement (`retention::needed`).
+    fn note_on(&mut self, m: &Meta) {
+        for a in &m.view.aspects {
+            self.note_pass_due(a.tid);
+        }
     }
 
     /// Moves commit `id` in `Indexes::missing` from aspects `was` to `now` (`missing_of`).

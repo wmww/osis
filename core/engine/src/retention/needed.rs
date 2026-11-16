@@ -5,7 +5,8 @@
 //! references it (any kind: `refs::to`; an account's `keys.0`, its inbox), one whose record names it first admin, one whose held edge write
 //! names it holder (`Held::named_on`), one a held or pending commit it authored or acted in is on
 //! (body held or not; a pending one by the things it writes on, `Indexes::pend_by`), one a pending
-//! commit awaiting its record writes on (`Wake::Record`). A thing is rooted, kept for itself: in
+//! commit awaiting its record writes on (`Wake::Record`), one a held commit on it has a part
+//! missing on (`Meta::missing_parts`). A thing is rooted, kept for itself: in
 //! the node closure or leaving it, reached by a held strong with a ticket for it held
 //! (`Closure::accepted`: what judges the ticket stays, spec/sync-set.md §2), this node's, its
 //! account's, the account it is being paired into (`Core::joining`) or the node's own (its record
@@ -18,7 +19,8 @@
 //! Judged once the pass in flight ends (`Engine::settle_needs`): a thing arrived (a record
 //! learned, `apply::atomic::learn_record`, or awaited by a commit that pends, `apply::set_pending`)
 //! or lost a need (a reference row gone, `refs::note`; a signer's commit dropping a part or
-//! forgotten, `Core::note_signed`, `Core::take_meta`, or leaving pending; a holder unnamed,
+//! forgotten, `Core::note_signed`, `Core::take_meta`, or leaving pending; a commit's part no longer missing,
+//! `Core::note_on`; a holder unnamed,
 //! `Held::take_unnamed`) is noted in `Core::pass_due` until then, so a parent's record arriving
 //! before what needs it stays. A release judges what it released in its own transaction
 //! (`Engine::released`). Either way at the end of a transaction (`Engine::run`, in turn with
@@ -108,8 +110,9 @@ fn rooted(core: &Core, t: &Tid) -> bool {
 /// The things that need `t` held (the module doc), but `t`: those naming it, those in the node
 /// closure whose state references it (`refs::to`, any kind, durable aspects; an account's `keys.0` naming its inbox too), those a held commit it
 /// authored (an account's: `Indexes::by_epoch`) or acted in (`Indexes::by_actor`) has an aspect
-/// on, its parts held or not (a header alone is judged by its author's chain), and those a pending
-/// commit it signed (`Indexes::pend_by`) or awaiting its record (`Wake::Record`) writes on.
+/// on, its parts held or not (a header alone is judged by its author's chain), those a pending
+/// commit it signed (`Indexes::pend_by`) or awaiting its record (`Wake::Record`) writes on, and
+/// those a held commit on it has a part missing on.
 fn needers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Tid>> {
     let core = &*tx.core;
     let lo = osis_base::CommitId([0; 32]);
@@ -120,7 +123,10 @@ fn needers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Tid>> {
     // writes on (`Wake::Thing`), as if held
     let awaiting = core.ix.pend_on.get(&crate::apply::Wake::Record(*t)).into_iter().flatten();
     let pending = core.ix.pend_by.get(t).into_iter().flatten().chain(awaiting).flat_map(|c| core.ix.pend_keys.get(c).into_iter().flat_map(|ws| ws.iter()).filter_map(|w| if let crate::apply::Wake::Thing(x) = w { Some(*x) } else { None }));
-    let mut out: BTreeSet<Tid> = core.ix.held.named_on(t).copied().chain(signed).chain(pending).collect();
+    // a held commit on it still waiting for a part (counted missing), by the things those parts
+    // are on: what arrives there may reference it, and the commit stays whole for it
+    let waiting = core.on_thing(t).flat_map(|c| core.ix.commits.get(&c).into_iter().flat_map(|m| m.missing_parts().filter_map(|ai| m.view.aspects.get(ai).map(|a| a.tid))));
+    let mut out: BTreeSet<Tid> = core.ix.held.named_on(t).copied().chain(signed).chain(pending).chain(waiting).collect();
     // a reference from a thing the node closure holds (one kept only as a certificate needs
     // nothing by what its state names), and an account's from its `keys.0` (its inbox, part of
     // its chain)

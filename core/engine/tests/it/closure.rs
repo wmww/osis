@@ -680,3 +680,31 @@ fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
     let only = |x: &BTreeSet<osis_base::CommitId>, y: &BTreeSet<osis_base::CommitId>| x.difference(y).copied().collect::<Vec<_>>();
     assert_eq!(a, b, "held only early {:?}, only late {:?}; pending only early {:?}, only late {:?}", only(&a.0, &b.0), only(&b.0, &a.0), only(&a.1, &b.1), only(&b.1, &a.1));
 }
+
+// spec/commits.md §5 What a held thing needs: a held commit waiting for a part keeps what it is on.
+// Peer 0 makes U under G (read by a fresh observer) in one commit, U's record with G's strong to
+// it; the observer gets the commit without its part on G, which it then counts missing. At the
+// pass's end U stays (the commit waits for that part, which may reference U), so the part, fetched
+// again as counted missing, shows G's strong to U and U's record.
+#[test]
+fn a_commit_waiting_for_a_part_keeps_what_it_is_on_spec_commits_5() {
+    let mut lp = crate::common::net(1, 0);
+    let g = crate::common::new_thing(&mut lp, 0);
+    let mut r = crate::common::reader(&mut lp, 0, g, 1);
+    let (u, done) = lp.peers[0].engine.create_with_admin(&g).unwrap();
+    let c = *done.commits.last().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let on_g = b.header.aspects.iter().position(|a| a.tid == g).expect("the commit writes G's strong");
+    b.parts.retain(|p| p.ai != on_g);
+    r.receive(&b.encode(), pk.blobs.clone()).unwrap();
+    r.engine.settle_needs().unwrap();
+    // the sync exchange: what it counts missing is fetched again
+    if r.engine.commit_parts_missing().get(&c).is_some_and(|m| m.contains(&on_g)) {
+        r.receive(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    r.engine.settle_needs().unwrap();
+    let holds = r.engine.get(&g, &osis_base::Ak::new("holds.0").unwrap()).unwrap();
+    assert!(matches!(&holds, Some(Value::Set(s)) if s.contains(&Value::Strong(u))), "G's strong to U: {holds:?}");
+    assert!(r.engine.core.created(&u).is_some(), "U's record");
+}

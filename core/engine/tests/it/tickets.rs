@@ -158,29 +158,37 @@ fn a_ticket_enters_its_target_at_a_strong_spec_sync_set_2() {
 }
 
 // spec/sync-inbox.md §5 Ticket sync IDs (refgraph T5): a sync ID the tickets of several things
-// name is synced once and what arrives under it is judged for each of them, whatever their tid
-// order. Account 1 takes A's and B's grants' tickets from its inbox and holds one for A naming
-// B's sync ID (what anyone holding its public record can box): that sync ID is A's and B's, and
-// an entry of either arriving under it is judged as under its own thing's sync ID.
+// name is synced once and what arrives under it is judged for each of them, until the genuine
+// thing's own `sync.0` arrives and the sync ID is its alone. Account 1 takes A's and B's grants'
+// tickets from its inbox and holds one for A naming B's sync ID (what anyone holding its public
+// record can box): that sync ID is A's and B's. A's entries arriving under it before B's open for
+// A; arriving after B's (B's `sync.0` held), they open nothing there. Each arm with A the first
+// and the second thing made, so tids fall both ways.
 #[test]
 fn a_sync_id_two_things_tickets_name_is_judged_for_each_spec_sync_inbox_5() {
+    for (forged_on, a_first) in [(0, true), (1, true), (0, false), (1, false)] {
+        two_things_one_sync_id(forged_on, a_first);
+    }
+}
+
+fn two_things_one_sync_id(forged_on: usize, a_first: bool) {
     use osis_engine::sync::{Holding, Opened};
+    let arm = format!("forged on thing {forged_on}, A's entries {}", if a_first { "first" } else { "after B's" });
     let (mut lp, ps) = people(2);
     let before: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
     let reg = osis_base::Ak::new("t:reg.0").unwrap();
     let e0 = &mut lp.peers[0].engine;
     let p0 = e0.me();
-    let mut ts = Vec::new();
+    let mut made = Vec::new();
     for v in ["x", "y"] {
         let mut m = Mutation::new();
         let t = e0.new_thing(&mut m, p0);
         m.set(t, &REG, &Value::Str(v.into())).unwrap();
         e0.commit(m).unwrap();
         e0.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
-        ts.push(t);
+        made.push((t, v));
     }
-    ts.sort();
-    let (a, b) = (ts[0], ts[1]);
+    let ((a, va), (b, vb)) = (made[forged_on], made[1 - forged_on]);
     let fires: Vec<_> = e0.fires_owed().iter().map(|f| e0.sealed_fire(f).unwrap().expect("sealed")).collect();
     let e1 = &mut lp.peers[1].engine;
     for f in &fires {
@@ -198,10 +206,9 @@ fn a_sync_id_two_things_tickets_name_is_judged_for_each_spec_sync_inbox_5() {
     }
     e1.commit(m).unwrap();
     e1.take_ticket_fires().unwrap();
-    assert_eq!(e1.sync_held(&sb).unwrap(), Some(([a, b].into(), Holding::Read)), "B's sync ID is both things'");
-    assert_eq!(e1.sync_held(&sa).unwrap(), Some(([a].into(), Holding::Read)), "A's own is A's");
-    // every new commit on A or B as node 0 logs it under its thing's sync ID, offered to node 1
-    // under its own thing's sync ID and under B's
+    assert_eq!(e1.sync_held(&sb).unwrap(), Some(([a, b].into(), Holding::Read)), "{arm}: B's sync ID is both things'");
+    assert_eq!(e1.sync_held(&sa).unwrap(), Some(([a].into(), Holding::Read)), "{arm}: A's own is A's");
+    // every new commit on A or B as node 0 logs it under its thing's sync ID
     let ids: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
     let mut rng = osis_crypto::SeededRng::from_u64(1);
     let mut offered = Vec::new();
@@ -214,21 +221,24 @@ fn a_sync_id_two_things_tickets_name_is_judged_for_each_spec_sync_inbox_5() {
     }
     let e1 = &mut lp.peers[1].engine;
     let opens = |e: &mut osis_engine::Engine, u: &osis_base::SyncId, x: &(osis_base::SyncId, osis_base::BlobId, osis_engine::sync::Wrap, Vec<u8>)| matches!(e.open_entry(u, &x.1, &x.2, &x.3, u64::MAX).unwrap(), Opened::Commit(..));
-    // under B's sync ID alone first (an entry waiting on another opens once that one is held)
-    let mut under_b = BTreeSet::new();
-    for _ in 0..2 {
-        for (i, x) in offered.iter().enumerate() {
-            if opens(e1, &sb, x) {
-                under_b.insert(i);
-            }
+    // one thing's entries, then the other's, all under B's sync ID (an entry waiting on another
+    // opens once that one is held, so twice)
+    let under_b = |e: &mut osis_engine::Engine, of: osis_base::SyncId| {
+        let mut n = 0;
+        for _ in 0..2 {
+            n += offered.iter().filter(|x| x.0 == of).filter(|x| opens(e, &sb, x)).count();
         }
-    }
-    assert!(offered.iter().enumerate().any(|(i, x)| x.0 == sa && under_b.contains(&i)), "A's entries open under B's sync ID");
-    assert!(offered.iter().enumerate().any(|(i, x)| x.0 == sb && under_b.contains(&i)), "B's entries open under it");
-    // the rest under each one's own (A's `sync.0` taken, B's sync ID is no longer A's)
+        n
+    };
+    let (first, second) = if a_first { (sa, sb) } else { (sb, sa) };
+    let (n_first, n_second) = (under_b(e1, first), under_b(e1, second));
+    let (na, nb) = if a_first { (n_first, n_second) } else { (n_second, n_first) };
+    assert!(nb > 0, "{arm}: B's entries open under its sync ID");
+    assert_eq!(na > 0, a_first, "{arm}: A's entries open under B's sync ID until B's sync.0 is held");
+    // the rest under each one's own (B's sync ID is B's alone once its `sync.0` is held)
     for x in &offered {
         opens(e1, &x.0, x);
     }
-    assert_eq!(e1.get(&a, &reg).unwrap(), Some(Value::Str("x".into())), "A read");
-    assert_eq!(e1.get(&b, &reg).unwrap(), Some(Value::Str("y".into())), "B read");
+    assert_eq!(e1.get(&a, &reg).unwrap(), Some(Value::Str(va.into())), "{arm}: A read");
+    assert_eq!(e1.get(&b, &reg).unwrap(), Some(Value::Str(vb.into())), "{arm}: B read");
 }
