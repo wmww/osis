@@ -1,4 +1,4 @@
-//! Role flows (spec/permissions.md; notes/permissions.md Implementation): accounts, pairing,
+//! Role flows (spec/permissions.md; notes/engine-roles.md, Role flows): accounts, pairing,
 //! grants and inbox delivery, changes and removals with their rotation,
 //! demotions with their frontier, invite grants and self-removal,
 //! re-seal, registration steps, links, lost-access cleanup. Rotations, the

@@ -1,4 +1,4 @@
-//! Named scenarios of notes/permissions.md and core/test/roles-model, layer 1 (spec/permissions.md
+//! Named scenarios of notes/role-timeline.md and core/test/roles-model, layer 1 (spec/permissions.md
 //! §1, §2, §3, §5.1, §7). Receipt times give each demoter's frontier.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -486,7 +486,7 @@ fn writer_cannot_write_edges() {
     }
 }
 
-/// §5.1 step 4 (sticky residue, notes/permissions.md): n1 removes n2 (admin) from G, a genuine
+/// §5.1 step 4 (sticky residue, notes/role-timeline.md): n1 removes n2 (admin) from G, a genuine
 /// fall that drops n2's grant of n3 (unseen by n1): no residue. Then n0 removes n1, dropping
 /// n1's removal of n2; the grant stays dropped though its cause no longer applies: residue.
 #[test]
@@ -512,7 +512,7 @@ fn residue_classifies_sticky_and_genuine_spec_perm_5() {
 /// does not apply and n2's own lowering of that edge to write is a raise through P's record
 /// edge, which k's removal of n2 audits. That removal also drops n2's removal of n1; on the
 /// restart n1's grant applies, so at k's removal n2 keeps admin on G by that grant: no fall on
-/// G in the settled walk explains the dropped raise (sticky residue, notes/permissions.md).
+/// G in the settled walk explains the dropped raise (sticky residue, notes/role-timeline.md).
 #[test]
 fn self_removal_dropped_with_sticky_residue_spec_permissions_5_1() {
     let mut w = World::new();

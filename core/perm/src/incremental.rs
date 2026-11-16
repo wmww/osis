@@ -1,4 +1,4 @@
-//! Incremental evaluation (notes/permissions.md Implementation): the timeline split into connected components of
+//! Incremental evaluation (notes/perm-impl.md): the timeline split into connected components of
 //! things (edges join holder, target and author; a record joins a thing and its first admin),
 //! each cached by its exact
 //! inputs. A held-set change touches only the components whose inputs changed: continued in

@@ -1,7 +1,7 @@
 //! osis-perm: role validity rules as pure logic over an abstract held set
 //! (spec/permissions.md): the layer-1 role timeline, layer-2 content validity, an account's signing chain, certificates
 //! and purge rights. The node implements `HeldSet` and adapts commits into the records of `types`.
-//! Layer 1 (notes/architecture.md). Design and readings: notes/permissions.md, Implementation.
+//! Layer 1 (notes/architecture.md). Design and readings: notes/perm-impl.md.
 #![forbid(unsafe_code)]
 
 mod cache;

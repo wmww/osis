@@ -1,5 +1,5 @@
-//! A component's walk as bytes, for the node's rebuildable store cache (notes/permissions.md,
-//! Implementation; notes/local-store.md). Local format, never on the wire. A saved walk is
+//! A component's walk as bytes, for the node's rebuildable store cache (notes/perm-impl.md,
+//! Saved walks; notes/local-store.md). Local format, never on the wire. A saved walk is
 //! restored only over exactly the inputs it was walked from: the bytes carry a BLAKE3 tag over
 //! the format, the caller's salt (the rules), the walk's whole input (record links, every
 //! role commit, frontiers by their sizes: a record's frontier is

@@ -1,5 +1,5 @@
 -------------------------------- MODULE Depth0 --------------------------------
-(* Depth-0 sealing (notes/crypto.md, Holder actors at depth 0): a     *)
+(* Depth-0 sealing (notes/holder-actors.md): a     *)
 (* rotation, re-seal or write of actor a never looks inside a holder actor h  *)
 (* past what the node itself holds: an epoch of h whose secret it holds and  *)
 (* that misses a departure from h it knows, not its own, is blocked          *)
@@ -15,13 +15,13 @@
 (* descending from every anchor is not made here (the build seals h jointly *)
 (* at both forks: Joint.tla), and any removal may go without its rotation   *)
 (* (a superset of the built cases: a self-removal, Authority failing).      *)
-(* Rotating needs only the right to rotate (notes/crypto.md): a rotation     *)
+(* Rotating needs only the right to rotate (notes/keys.md): a rotation        *)
 (* supersedes every current epoch, those whose secret the rotator lacks too  *)
 (* (such an epoch covers nothing at it: it rotates), and any holder of an    *)
 (* earlier secret that no history entry of a current epoch it holds lists    *)
 (* adds one (HistAdd), unless that epoch is blocked at it.                   *)
 (* Every rule judges the boxes a node holds valid. Role cycles (rule 4,      *)
-(* notes/crypto.md (Holder actors at depth 0)):                                                   *)
+(* notes/holder-actors.md):                                                   *)
 (* no key cycles: actor grants in an agreed order, one closing a cycle over  *)
 (* the earlier ones gives no key access, judged over the grants a node     *)
 (* holds; a keyset boxing a holder without key access is stale (taint).     *)
@@ -177,7 +177,7 @@ Possession == FALSE
 \* removal), once: it rotates h listing every honest keyset of h made so far
 \* (a keyset descending from h's knowing one), sealing h's holder actors at
 \* the newest keyset it holds the secret of, then rotates a sealing h at that
-\* keyset (notes/crypto.md, Carried demotions, the first leak)
+\* keyset (notes/holder-actors.md, Carried demotions, the first leak)
 Rogue == {}
 \* box records, judged alone (spec/crypto.md \S 4 Stale, Seal): BoxBlind
 \* {<<node, actor>>}: the node holds the actor's keysets (certificates under
@@ -864,7 +864,7 @@ NoLeakDirect == \A c \in wr : \A dp \in c.p1 : ~Opens(RD(dp[1], c.a), c)
 NoLeakMember == \A c \in wr : \A dp \in c.p2 : ~Opens(RD(dp[1], c.a), c)
 \* ... where every admin of a held it (the study's "the group's writers")
 \* and the writer held every re-seal box of the epoch (an ignorant boxer's
-\* box it has not seen is the residual of notes/crypto.md, as today)
+\* box it has not seen is the residual of notes/holder-actors.md, as today)
 NoLeakMemberAll == \A c \in wr : \A dp \in c.p3 : ~Opens(RD(dp[1], c.a), c)
 \* rule 4 with a hidden grant, the stated limit: a device removed from a or
 \* from an actor with no key path to a reads no content written knowing the

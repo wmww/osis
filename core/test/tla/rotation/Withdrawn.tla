@@ -1,6 +1,6 @@
 ------------------------------ MODULE Withdrawn ------------------------------
 (* Whether any rule passes on a withdrawn epoch's secret both safely and      *)
-(* live (spec/crypto.md §4 Unsuperseded and withdraw; notes/crypto.md).    *)
+(* live (spec/crypto.md §4 Unsuperseded and withdraw; notes/keys-establishment.md).*)
 (* A demotes admin a2 (D); a2, unaware, removes M                            *)
 (* (W); R, holding W alone, rotates read (Rot: e_R, naming W, boxing A, a2,   *)
 (* R, a3 and not M) and writes under it (a2 judges as A, M and N decide     *)

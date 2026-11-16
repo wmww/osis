@@ -1,7 +1,7 @@
 //! Layer 1: the joint walk over every held edge write (spec/permissions.md §5.1). From
 //! scratch, deterministic, a pure function of the held set.
 //!
-//! Readings of the spec (notes/permissions.md, "Implementation"):
+//! Readings of the spec (notes/perm-impl.md):
 //! - R demotes X on N when R is an explicit write (applied, not a self-removal, finalize or
 //!   invite grant) on edge (M, T), X is M or reaches M, N is T
 //!   or reachable from T (edges of any role and `until`, record edges included), and X's class on N after

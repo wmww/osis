@@ -5,7 +5,7 @@
 
 The leak (reproduced: `rotation::tests_reseal`): a2 removes reader M (W); R, holding W, rotates read (e_R, boxing V and not M) and writes under it. V holds e_R's secret but not W (a peer withholds it, or V holds A's demotion of a2 that voids W: the withdrawn-epoch shape), so e_R is not established at V and V's newest epoch is one M holds. A fresh encryption of R's write by V, a wrap of a blob of it, or V's compaction snapshot of the aspect, put R's content under V's epoch: M read it. Breaks spec/requirements.md Permissions ("removing a holder never re-encrypts existing content"; "stops reading new content once a writer has written after the removal").
 
-The rule and where it lives: notes/crypto.md (Passing on content), notes/sync-facade.md (Sealing). Facade tests: `rotation::tests_reseal::facade_*`.
+The rule and where it lives: notes/keys-establishment.md (Passing on content), notes/sync-facade.md (Sealing). Facade tests: `rotation::tests_reseal::facade_*`.
 
 ## Open
 - **Content read in no section passes on** (`sync_ids::opened::passes_on`): a part whose openings are empty passes as the node's own, into a fresh encryption or a snapshot. A copy is not such a path (its content counts as opened under its wrap's epoch, of the sync ID's thing: `cross_thing_copy_content_never_resealed_spec_crypto_5`); left is a plaintext ingest: LocalPeer's plain delivery (the engine tests' main harness, which carries every commit so; 13 engine tests compact aspects so). Fail closed is safe and live in the model (`RS_closed`); close it once that harness delivers sections.

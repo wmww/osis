@@ -83,7 +83,7 @@ EncEp(x) == NewestOf(IF HeldCur(x) # {} THEN HeldCur(x) ELSE Enc(x) \cap Est(x))
 \* the actor's labels, so every node learns its boxes).
 Holders(x, e) == (IF e \in kn[x] THEN ep[e].ob ELSE {})
                  \cup {b.m : b \in {c \in rd[x] : e \in c.eps}}
-\* Frozen coverage (notes/crypto.md, Frozen coverage): e covers exactly
+\* Frozen coverage (notes/keys-coverage.md, Frozen coverage): e covers exactly
 \* the departures its names name: the removals carried by the rotation
 \* commits its rotator held (nm) and by itself (the departs mark). Boxes
 \* decide nothing (NoBoxCovers: a box-less holder covered, a negative control).

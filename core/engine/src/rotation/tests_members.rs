@@ -2179,7 +2179,7 @@ fn the_driver_rotates_past_a_stale_box_below_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (Stale; Encrypting under), notes/crypto.md (Stale): the
+// spec/crypto.md §4 (Stale; Encrypting under), notes/holder-actors.md (Stale): the
 // remover is A's only admin. Its removal of R from M rotates M, whose box from A at M's old
 // keyset is then stale; the removal's own rotation is not followed upward, and nothing arrives
 // from elsewhere, so the derived duty on A rotates it, else A's epoch would stay blocked at its

@@ -1,5 +1,5 @@
 //! Throwaway model of the role rules (spec/permissions.md §5; findings in
-//! notes/permissions.md). Independent of any real implementation: a differential oracle for
+//! notes/role-timeline.md). Independent of any real implementation: a differential oracle for
 //! osis-perm. Patched only to follow the spec where it had simplified it (osis-perm's
 //! differential runs exposed each): `joint` judges a demotion against the edge restored as
 //! if the holder still held its role (spec §5.1) and treats removing a holder one is admin of
@@ -18,7 +18,7 @@
 //!   fixpoint, bodies dropped and refetched, forged addenda, cost, which covered commits
 //!   lists leave out (`Cover`). Searches `addenda` (random), `addenda-exh` (exhaustive
 //!   families, about 2 CPU-hours), `addenda-covers`, `addenda-cost`. Every property passes;
-//!   drop-at-once loses writes; leaving out another writer's covers loses writes. Results: notes/permissions.md, Role timeline.
+//!   drop-at-once loses writes; leaving out another writer's covers loses writes. Results: notes/addenda.md, Addenda model.
 //! - `forget`, `forget_account`: can a node forget a commit's ID (own-snapshot cover, a
 //!   snapshot inside the removal, the account level), per-node with real body drops, against
 //!   listing every commit. Searches `forget`, `forget-account`, `forget-costs`, `forget-min`.

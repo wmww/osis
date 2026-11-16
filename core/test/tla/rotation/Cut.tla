@@ -352,7 +352,7 @@ NewReads == Settled => \A x \in Final \ Full : ({CutOf(x)} \cup Desc(CutOf(x))) 
 NewReadsAll == Settled => \A x \in Final \ Full : {CutOf(x)} \cup Desc(CutOf(x)) \subseteq Fresh(x)
 \* settled: every holder holds every current epoch, established, and all alike, but epochs hostile
 \* parties made (a hostile rotation commit wrapped where a holder cannot open it leaves its epoch
-\* unestablished there: a lockout any writer may cause, notes/crypto.md Lockouts)
+\* unestablished there: a lockout any writer may cause, notes/keys.md Lockouts)
 Unlocked == Settled => \A v \in Final : Cur(v) # {} /\ Cur(v) \subseteq Sec(v)
 HostileEpochs == {e \in EIds : C[e].by \in Hostile \cup Accomp}
 Alike == Settled => \A v, w \in Final : Cur(v) \ HostileEpochs = Cur(w) \ HostileEpochs

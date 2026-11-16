@@ -4,7 +4,7 @@
 ## Wire choices
 - The blob prefix is a fixed byte layout so a node keeping the blob unread parses it without a CBOR decoder; the AEAD binds it as AD so a reader cannot re-prefix a ciphertext (new expiry or commitments) under a fresh blob ID.
 - Padmé length recovery: a `0x80` marker then zeros inside the ciphertext (ISO 7816-4 style). One byte, no length field, and canonical because the padded length must equal `padme(len + 1)`.
-- Header lists, the delete-key list and purge go by link above `CHUNK_THRESHOLD` (128 KiB) up to `MAX_LIST_BYTES` (64 MiB); header-list chunks carry the level-2 commitments only (notes/crypto.md).
+- Header lists, the delete-key list and purge go by link above `CHUNK_THRESHOLD` (128 KiB) up to `MAX_LIST_BYTES` (64 MiB); header-list chunks carry the level-2 commitments only (notes/delete-keys.md).
 - Request/reply by id over length-prefixed frames; both Hellos go out at once, so negotiation costs no round trip; per-entry status, so a batch partly succeeds; no refusal carries the head, code 9 included (notes/sync-access.md).
 - Open signatures and Hits bind the signer's side, the other side's Hello challenge and the listener's static key (no replay elsewhere); stamps, deposits and deletes do not, so stamped entries, deposits and deletes stay relayable.
 - Retired wire kinds (4-6, 8-10, 12, 13, 15-18, 21-23) and status codes (10, 15) decode as unknown; their numbers are never reused.

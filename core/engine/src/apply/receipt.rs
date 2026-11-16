@@ -1,4 +1,4 @@
-//! Receipts (spec/permissions.md §5.1, notes/permissions.md Revocation): what a demotion's
+//! Receipts (spec/permissions.md §5.1, notes/revocation.md): what a demotion's
 //! frontier lists, by commit ID only. A held commit counts as received at its meta's receipt
 //! time. Pending and parked commits are not received; snapshot frontiers and `Absorbed` are no
 //! receipts (spec/crdt.md §8).

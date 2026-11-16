@@ -1,15 +1,15 @@
 # roles-model
 > Summary: Rust reference models of the role rules (spec/permissions.md §5) and of account signing epochs (issues/account-signing.md): modules, searches with their sizes, and the latest results.
 
-Independent of any osis crate: an oracle, never patched to match the implementation (osis-perm dev-depends on it for its differentials). Module map and API: `src/lib.rs`; findings behind the role timeline: notes/permissions.md; disputes: notes/disputes.md. Choices the spec or plan left open: AMBIGUITIES.md.
+Independent of any osis crate: an oracle, never patched to match the implementation (osis-perm dev-depends on it for its differentials). Module map and API: `src/lib.rs`; findings behind the role timeline: notes/role-timeline.md; disputes: notes/disputes.md. Choices the spec or plan left open: AMBIGUITIES.md.
 
 ## Searches
 `cargo run --bin roles-model -- <samples> <mode>`; random searches split their samples over every core, exhaustive ones their families.
 
 | Mode | Size | Checks |
 |---|---|---|
-| `joint`, `edges`, `disputes` | 2,000,000 | notes/permissions.md, notes/disputes.md |
-| `addenda` | 1,000,000 (4 min) | notes/permissions.md, Addenda model |
+| `joint`, `edges`, `disputes` | 2,000,000 | notes/role-timeline.md, notes/disputes.md |
+| `addenda` | 1,000,000 (4 min) | notes/addenda.md, Addenda model |
 | `addenda-exh` | 0 (the cover family, then 2.83M worlds, 11 min) | as above |
 | `addenda-covers` | 0 (the cover family alone, 38,656 worlds, 8 s) | as above, Cover rules |
 | `epochs` | 600,000 (about 4,000 CPU-s) | below |

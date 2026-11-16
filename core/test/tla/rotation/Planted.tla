@@ -1,6 +1,6 @@
 ------------------------------- MODULE Planted -------------------------------
 (* What a `secrets.0` compaction snapshot carries when the state keys an
-   epoch no valid rotation made (spec/crypto.md §4 Established; notes/crypto.md,
+   epoch no valid rotation made (spec/crypto.md §4 Established; notes/keys-establishment.md,
    What a `secrets.0` snapshot vouches for). A history add needs only the role
    its key names and a box only write, so a reader (Hp, at p) and a writer (Bp,
    at q) put entries at made-up epochs. Genuine rotations R1..R3 make g1..g3

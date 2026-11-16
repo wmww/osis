@@ -676,7 +676,7 @@ fn patched_view_equals_cloned_edges() {
 /// received of each demoted node's writes on the things `demotion_scope` gives, plus its chain
 /// certificates): R's audit drops no write the author had received, and each fall below a role
 /// it records is in the scope (`roles`; below write also `content`). R's audit can drop a write
-/// that held up another standing, widening the fall (notes/permissions.md, Readings of §5.1).
+/// that held up another standing, widening the fall (notes/perm-impl.md, Readings of §5.1).
 fn scope_check(w: &World, nodes: &[Tid], things: &[Tid], rng: &mut Rng) -> Option<String> {
     use osis_perm::{EdgeOp, Frontier, RoleCommit};
     use std::collections::BTreeSet;

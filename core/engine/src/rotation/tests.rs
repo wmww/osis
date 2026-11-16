@@ -1063,7 +1063,7 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, was: [Option<Role>; 5]) {
         }
         for e in &at0 {
             // re-sealed by a node that may rotate `r`; an epoch only non-rotators hold is a fork
-            // the merge supersedes, or the lockout a removal ends (notes/crypto.md, Lockouts)
+            // the merge supersedes, or the lockout a removal ends (notes/keys.md, Lockouts)
             let any = stay.iter().any(|&p| role[p] >= Some(r.max(Role::Write)) && ep(p).secret(e).is_some());
             let lacking: Vec<usize> = stay.iter().copied().filter(|h| role[*h] >= Some(r) && ep(*h).secret(e).is_none()).collect();
             assert!(!any || lacking.is_empty(), "{r:?} holders {lacking:?} lack current epoch {e:?} another node holds");

@@ -1,5 +1,5 @@
 -------------------------------- MODULE Tail --------------------------------
-(* The pin (spec/crypto.md §4 Covers; notes/crypto.md The pin), checked over *)
+(* The pin (spec/crypto.md §4 Covers; notes/keys-coverage.md The pin), checked over *)
 (* every small history of one holder M's edge into an actor, read role.     *)
 (* A world: M's start (its grant before any write, maybe timed) and N edge  *)
 (* writes in key order, each a set (a value, maybe timed: past an `until`)  *)

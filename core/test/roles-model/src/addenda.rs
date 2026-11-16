@@ -1,4 +1,4 @@
-//! Addenda (spec/permissions.md §5.2, Addenda; notes/permissions.md Revocation): layer 2 over the
+//! Addenda (spec/permissions.md §5.2, Addenda; notes/addenda.md): layer 2 over the
 //! joint role timeline (`joint`, unchanged) with several content authors. A removal R of X
 //! (an explicit demotion below write, §5.2) lists what its author had received; a writer W
 //! that received X's plain content before R's `ts` and R did not list it publishes an
@@ -30,7 +30,7 @@
 //! from any node holding it; a body nobody holds stays lost. An addendum's list is its body.
 //!
 //! Search: `roles-model -- N addenda` (random) and `addenda-exh` (exhaustive small family).
-//! Results: notes/permissions.md, Role timeline (Addenda model).
+//! Results: notes/addenda.md, Addenda model.
 
 use crate::joint::{self, JHist};
 use crate::shrink::LATE;

@@ -538,7 +538,7 @@ fn invite_power_spec_perm_2() {
     assert_eq!(rot.commits.len(), 1);
 }
 
-// notes/permissions.md Revocation; spec/permissions.md §5.1, §5.2: the demoter's frontier,
+// notes/revocation.md; spec/permissions.md §5.1, §5.2: the demoter's frontier,
 // from its receipt record, keeps the edits it received and drops the demoted holder's edits
 // it never saw (made before) and those made after.
 // spec/permissions.md §5.1 (frontier received)
@@ -566,7 +566,7 @@ fn demotion_frontier_spec_perm_5_1() {
     }
 }
 
-// notes/permissions.md (roles model: mutual removal): two admins removing each other
+// notes/role-timeline.md (roles model: mutual removal): two admins removing each other
 // concurrently resolve to the earlier removal; the later one's author was already out, and
 // keeps its own side (notes/disputes.md, Detection and sides).
 // spec/permissions.md §5.1
@@ -1714,7 +1714,7 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
     assert!(!e.is_empty() && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
 }
 
-// spec/permissions.md §5.1 Frontier, §5.2 Acting; notes/permissions.md, Frontier encoding (a kick
+// spec/permissions.md §5.1 Frontier, §5.2 Acting; notes/revocation.md, Frontier encoding (a kick
 // never scales with history): node 1 writes doc X many times as its account P, compacted, and
 // once as P on its own thing Y. A demotion of P lists only what no snapshot covers: Y's write
 // (it would go invalid unlisted, though the node's own right on Y never fell), not every

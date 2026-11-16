@@ -25,7 +25,7 @@ One workspace, root `Cargo.toml`: members `core/*` (library crates in unprefixed
 | 10 | `osis-bench` | bench harness (no deps) and benches; size budgets (by hand) |
 | 10 | `osis-sim` (`core/test/sim/`) | deterministic simulator: engine-to-engine runs and the reachability model (notes/test-sim.md) |
 | - | `crdt-model` (`core/test/crdt-model`) | reference model of spec/crdt.md (notes/crdt.md) |
-| - | `roles-model` (`core/test/roles-model`) | model of the role rules (notes/permissions.md) |
+| - | `roles-model` (`core/test/roles-model`) | model of the role rules (notes/role-timeline.md) |
 | - | `held-model` (`core/test/held-model`) | what a node holding a body set reads, from spec/ alone (notes/test-properties.md, Models) |
 
 **GUI** (workspace members outside default-members, notes/app.md): `osis-kit` (`libs/kit/`, UI toolkit over Masonry), `osis-app` (`app/`, the first-party app) and `osis-android` (`app/android`, notes/android.md), reaching core only through `osis`, `osis-schema` and `osis-chat`. A bare cargo command never builds them (notes/build.md).
@@ -34,7 +34,7 @@ One workspace, root `Cargo.toml`: members `core/*` (library crates in unprefixed
 
 **Over the API**: `osis-chat` (`libs/chat`, osis only): chat's shared rules (creation, the edit model) for the CLI and apps; `osis-cli` depends on it.
 
-**Per-crate notes** (module map, decisions): core and schema notes/base-schema.md (schema evolution notes/versioning.md); crypto and keys notes/crypto.md (Implementation); crdt and commit notes/crdt.md (Implementation); perm notes/permissions.md (Implementation); store notes/local-store.md (Implementation); blob notes/sync-protocol.md (osis-blob); proto notes/sync-protocol.md (osis-proto); transport notes/networking.md (Implementation); engine notes/engine.md (and the engine-* notes it lists); sync notes/sync.md (and one note per module); osis notes/api-implementation.md; cli notes/cli.md; kit and app notes/app.md (Prototype); sim notes/test-sim.md; vectors, bench and test tooling notes/testing.md.
+**Per-crate notes** (module map, decisions): core and schema notes/base-schema.md (schema evolution notes/versioning.md); crypto notes/crypto.md (Implementation), keys notes/keys-impl.md; crdt and commit notes/crdt.md (Implementation); perm notes/perm-impl.md; store notes/local-store.md (Implementation); blob notes/sync-protocol.md (osis-blob); proto notes/sync-protocol.md (osis-proto); transport notes/networking.md (Implementation); engine notes/engine.md (and the engine-* notes it lists); sync notes/sync.md (and one note per module); osis notes/api-implementation.md; cli notes/cli.md; kit and app notes/app.md (Prototype); sim notes/test-sim.md; vectors, bench and test tooling notes/testing.md.
 
 ## 2. Fixed abstractions
 Each is a trait (or small trait family) in the named crate with an in-memory or no-op implementation in the same crate for tests. Layers above never reach around them.
@@ -46,7 +46,7 @@ Each is a trait (or small trait family) in the named crate with an in-memory or 
 - **`View`** (crdt defines, schema implements): projection of read values onto what the writer's schema can type, for the structural diff (spec/crdt.md §9).
 - **`PageSink` / `PageSource`, `BlobFetch`** (crdt defines the first two, blob implements them with the engine): write pages of a paged fragment (any delta or snapshot) as blobs and return links; fetch pages (all before the commit applies), chunks and tree nodes (lazily) by link. Chunk trees: osis-commit's `tree` (`TreeSink` / `LinkSource`, one implementation); its `BlobSink` / `BlobSource` (prefix inputs in, plaintext out; content hashes checked by commit) carry header lists, blob's `BlobWriter` / `BlobReader` large values and pages.
 - **Engine events** (osis-engine): typed events (commit applied with its changed `(tid, ak)` set, origin, author, `ts`, receipt time; roster change; ephemeral change; history change, fired ephemeral signals among them; sync status; diagnostic) on a channel after durability and outside locks; the `osis` API builds watches on them and never reaches into engine internals. The data API is synchronous (notes/api.md): blocking reads and writes, async only where another node is waited on.
-- **Held-set queries for perm** (osis-engine implements perm's trait `HeldSet`): "edge writes held for thing N", "created.0 of N"; perm holds no state (notes/permissions.md, Implementation).
+- **Held-set queries for perm** (osis-engine implements perm's trait `HeldSet`): "edge writes held for thing N", "created.0 of N"; perm holds no state (notes/perm-impl.md).
 
 ## 3. Errors and pervasive rules
 - Three error classes, distinct in every crate's `Error` enum: **BadInput** (peer or stored data violates the format or a rule: reject, diagnostic, never panic, never store), **Parked** (data this build cannot interpret: unknown version, encoding, tag, field, case, suite; store and relay as bytes, re-examine after upgrade; spec/versioning.md §2), **Local** (storage, I/O, bug class: surfaced to the app, never attributed to a peer). Every error reports its class (`osis_base::ErrorClass` via a `class()` method); the node maps classes to behaviour mechanically. Note: an unknown CBOR tag is not an error at all (it decodes to `Value::Unknown`); parking happens where a typed read fails.

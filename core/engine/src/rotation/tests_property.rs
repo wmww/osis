@@ -488,7 +488,7 @@ fn rotation_history(seed: u64) -> Reached {
                     let rot: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= ri && run.rng.next(2) == 0).collect();
                     if !rot.is_empty() {
                         // boxing nobody, itself included, is no honest node's rotation: a
-                        // vandal's lockout (notes/crypto.md, Lockouts), so its node is hostile
+                        // vandal's lockout (notes/keys.md, Lockouts), so its node is hostile
                         // from here on, and never the actor's first admin (whom nobody removes)
                         let nobody = run.rng.next(8) == 0 && i != o;
                         if run.rotate(i, t, &rot, nobody) && nobody {
@@ -564,7 +564,7 @@ fn rotation_history(seed: u64) -> Reached {
         run.record(x, &before);
         run.note();
     }
-    // the re-key after a hostile node's lockout (notes/crypto.md, Lockouts): an honest admin
+    // the re-key after a hostile node's lockout (notes/keys.md, Lockouts): an honest admin
     // removes each hostile peer still holding an edge on an actor, and each holder actor whose
     // first admin is hostile (no keyset of it may ever know a departure from it)
     run.lp.sync_all().unwrap();
@@ -700,7 +700,7 @@ fn check(run: &mut Run, seed: u64, rotated: bool) {
         let direct: Vec<(usize, Role)> = (0..N).filter(|p| !run.hostile.contains(p)).filter_map(|p| run.key_role(o, &t, p).map(|r| (p, r))).collect();
         let role = |p: usize| direct.iter().find(|x| x.0 == p).map(|x| x.1);
         // a hostile first admin is never removed and acts no more: nothing recovers its lockouts
-        // (notes/crypto.md, Lockouts), so the actor need not settle
+        // (notes/keys.md, Lockouts), so the actor need not settle
         if rotated && !run.hostile.contains(&o) {
             let blocked = super::tests::blocked_at(&mut run.lp, o, t);
             assert!(blocked.is_empty(), "seed {seed}: the first admin of {t:?} settles with {blocked:?} blocked");

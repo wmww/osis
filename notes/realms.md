@@ -39,7 +39,7 @@ The management screen, and what each control writes:
 - First-party apps confirm before adding to a realm, showing who will see it (the tags guideline).
 
 ## Removal at depth 0
-Removing a member rotates R in the removal commit. A group never looks inside its member actors (notes/crypto.md, Holder actors at depth 0): each thing R holds a grant on sealed its boxes to R's old keyset, which R's rotation lists as superseded, so those boxes go stale and each thing's next writer rotates it before encrypting. Nested realms cascade one level at a time. One commit protects new content everywhere; the rotations are lazy and per thing. Depth 0's limit applies: an ignorant concurrent rotation of R lets the removed member read until R's next rotation that knows. Costs as measured for chats and shared tags: 2.7 KB per remaining holder for R, a few KB per thing below.
+Removing a member rotates R in the removal commit. A group never looks inside its member actors (notes/holder-actors.md): each thing R holds a grant on sealed its boxes to R's old keyset, which R's rotation lists as superseded, so those boxes go stale and each thing's next writer rotates it before encrypting. Nested realms cascade one level at a time. One commit protects new content everywhere; the rotations are lazy and per thing. Depth 0's limit applies: an ignorant concurrent rotation of R lets the removed member read until R's next rotation that knows. Costs as measured for chats and shared tags: 2.7 KB per remaining holder for R, a few KB per thing below.
 
 ## Realms and tags compared
 | | tag | realm |

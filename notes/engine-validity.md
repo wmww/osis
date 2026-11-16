@@ -1,7 +1,7 @@
 # Engine: validity
 > Summary: How the engine keeps every delta's validity, and so every read, a function of the held set (spec/permissions.md §5, spec/crdt.md §4.6): what is re-judged after a held-set change and its cost, un-merge by one rebuild path, snapshot authority and carried writes, covered bodies going missing again, and why validity flips against dropped data converge on delivery (the rule, rejected removal rules, holes left). The spec states the rules; this note keeps reasons, costs and tests.
 
-Elsewhere: the epoch rule (notes/engine-validity-epochs.md), reasons and Tess's decisions (notes/permissions.md Snapshots and history, Revocation, Implementation), invalid bodies dropping (notes/engine-retention.md Invalid bodies), suspect flags (notes/engine-suspects.md).
+Elsewhere: the epoch rule (notes/engine-validity-epochs.md), reasons and Tess's decisions (notes/revocation.md Snapshots and history, Revocation, Implementation), invalid bodies dropping (notes/engine-retention.md Invalid bodies), suspect flags (notes/engine-suspects.md).
 
 ## Principle
 Validity is a function of the held set, never of arrival order: an invalid delta changes no value, and a node that held it reads as one that never did. So every judgment input is held or persisted with its commit, re-judging follows what changed, and every change of what counts goes through one rebuild from the held valid bodies.
@@ -109,8 +109,8 @@ The one class of honest-use read divergence: validity is a non-monotone function
   - Bounded reach-back by a first witness (a signed receipt frontier, or a log stamp under an epoch the author never held): deterministic but still retroactive; reduces loss, closes no divergence, adds a receipt frontier to every delta.
   - A reach-back window on `ts` (backdated vandalism is what removal prevents); the demoter compacting first (not needed with the rule).
 - **Holes left** (F forged by an authenticated writer, bounded; C clock or arrival, transient; L nodes alike but something lost):
-  - Sticky drops in the role timeline (L; notes/permissions.md Role timeline).
-  - A valid snapshot's copy differing from a held delta's joins by the copy order wherever held (F, no divergence; notes/permissions.md Snapshots and history). Equivocation by a valid writer whose first commit's writes are all dead: nodes that held the first void both, those that forgot it count the second (F; spec/commits.md §5 Forgetting). A forged snapshot listing a part shows the commit partly until the part arrives (F; Authority, above).
+  - Sticky drops in the role timeline (L; notes/role-timeline.md).
+  - A valid snapshot's copy differing from a held delta's joins by the copy order wherever held (F, no divergence; notes/revocation.md Snapshots and history). Equivocation by a valid writer whose first commit's writes are all dead: nodes that held the first void both, those that forgot it count the second (F; spec/commits.md §5 Forgetting). A forged snapshot listing a part shows the commit partly until the part arrives (F; Authority, above).
   - A keep-at-least bound or an `until` straddled by two clocks (C, seconds; notes/sync-convergence.md); a value read past its T until the next call or Tick, a relay-only signal twice after a restart (C).
   - Session-sources double removal: a write left out of A's frontier because Y's snapshot covered it, then Y removed by a frontier not covering that snapshot: lost alike (L; roles-model `forget-any`; a demoter listing every commit avoids it).
   - Writes the revoker had not received: lost alike, a re-grant brings back only what some node still holds (the designed semantics). Every writer dropped what only a reader kept: lasts to the next write (spec/requirements.md Deterministic).

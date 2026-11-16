@@ -2,7 +2,7 @@
 //! opening, history boxes, derived secrets, the covers rule, holder actors (sealing, staleness, key
 //! access), the things a removal reaches, wrap epoch
 //! choice, sync ID epochs and delete keys (spec/crypto.md §3–§5, §7; spec/permissions.md §3).
-//! Layer 3 (notes/architecture.md). Notes: notes/crypto.md (osis-keys).
+//! Layer 3 (notes/architecture.md). Notes: notes/keys-impl.md.
 #![forbid(unsafe_code)]
 
 pub mod account;

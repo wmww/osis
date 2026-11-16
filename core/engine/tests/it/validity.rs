@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Validity through perm at the engine level, with hand-fed role commits: the Bob
-//! revocation scenario and the Carol variant (notes/permissions.md, Revocation), re-grant,
+//! revocation scenario and the Carol variant (notes/revocation.md), re-grant,
 //! overlapping counters.
 
 use crate::common;
@@ -56,7 +56,7 @@ fn setup_built() -> (LocalPeer, Tid, Tid, Tid) {
     (lp, d, b, c)
 }
 
-// notes/permissions.md Revocation; spec/permissions.md §5.2: Bob's edit X made offline before
+// notes/revocation.md; spec/permissions.md §5.2: Bob's edit X made offline before
 // the revoke and Y after it are both invalid wherever the revoke is held; his edit Alice had
 // received stays (the frontier covers it); Bob's own node un-merges both.
 #[test]
@@ -92,7 +92,7 @@ fn bob_revocation_spec_perm_5_2() {
     }
 }
 
-// notes/permissions.md Revocation, Carol variant: Carol, a writer offline with Bob, applied X
+// notes/revocation.md, The reference scenario (Carol variant): Carol, a writer offline with Bob, applied X
 // before the revoke; once she holds the revoke she vouches for X (spec/permissions.md §5.2,
 // Addenda), so X stays everywhere, her own edit too.
 #[test]
@@ -942,7 +942,7 @@ fn put_at(lp: &mut LocalPeer, i: usize, t: Tid, path: &[&str], v: Value) {
     lp.peers[i].commit(m).unwrap().unwrap();
 }
 
-// spec/permissions.md §5.2 (a valid s vouches for every write it carries), Tess's decision, notes/permissions.md "Snapshots vouch": Bob, removed, creates entries
+// spec/permissions.md §5.2 (a valid s vouches for every write it carries), Tess's decision, notes/revocation.md, Snapshots vouch: Bob, removed, creates entries
 // "early" and "late" offline; Carol, not yet aware, writes inside "late" and compacts. Her
 // snapshot vouches for Bob's entries: Dave, holding only Alice's and Carol's commits, and Alice,
 // who also holds Bob's commit (invalid), both keep them with Carol's write.
@@ -1089,7 +1089,7 @@ fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[osis_base::CommitId])
 }
 
 // spec/permissions.md §5.1 step 4 (D only grows): osis-perm joint neutrality seed 6's shape
-// (notes/permissions.md, sticky residue). n0 removes A2 from A0 (W, unseen by n1) and grants n1
+// (notes/role-timeline.md, Sticky drops leave residue). n0 removes A2 from A0 (W, unseen by n1) and grants n1
 // write on A2 (G, unseen too); n1 lowers A1 to write on A0 (R). The full walk drops W (R is a
 // fall on A0 while W stands) and keeps it dropped after R stops being one; G stands, n0 keeping
 // admin on A2 through A1 (one class: a path lost while another keeps it is no fall).
@@ -2282,7 +2282,7 @@ fn snapshot_extra_dot_of_dropped_delta_joins_alike_spec_perm_5_2() {
     }
 }
 
-// spec/permissions.md §5.2 (a valid s vouches for every write it carries): revocation is exact where no valid snapshot carries the write; Tess's decision "Snapshots vouch", notes/permissions.md, spec/requirements.md Permissions: Bob's "mon" reaches Alice;
+// spec/permissions.md §5.2 (a valid s vouches for every write it carries): revocation is exact where no valid snapshot carries the write; Tess's decision "Snapshots vouch", notes/revocation.md, spec/requirements.md Permissions: Bob's "mon" reaches Alice;
 // his "x" reaches only Carol, who compacts the tags before she learns of his removal; his "y"
 // reaches only Carol after her compaction. Alice removes Bob with what she received. "x" stays,
 // "y" goes, alike at Alice, at Carol, at a new node holding everything but Bob's own commits,
@@ -3206,7 +3206,7 @@ fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
 }
 
 // spec/permissions.md §5.1 (frontier; a commit is listed whether a still holds its body, dropped it or compacted it),
-// notes/permissions.md, Frontier encoding: Bob writes a kept register twice and Carol, any writer, snapshots it
+// notes/revocation.md, Frontier encoding: Bob writes a kept register twice and Carol, any writer, snapshots it
 // just before Alice removes Bob. The snapshot keeps only "two"; Alice lists both, so Bob's
 // superseded "one" stays valid where held; a new node never given it reads alike. Past the
 // keep-at-least window both are still listed.

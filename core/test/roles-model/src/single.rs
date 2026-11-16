@@ -1,5 +1,5 @@
 //! The single-actor model of the layer-1 rule and its rejected variants (spec/permissions.md
-//! §5.1; findings in notes/permissions.md, "Role timeline"). One group actor G; actor i
+//! §5.1; findings in notes/role-timeline.md). One group actor G; actor i
 //! has exactly one node i; actor 0 is G's first admin (admin by genesis; nobody writes its
 //! edge here). `Rule::Frontier`
 //! is the demoter-frontier rule the spec adopted; the others are the rejected as-written rule

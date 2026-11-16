@@ -9,4 +9,4 @@
 
 ## Open
 - A removed admin's rotation covered by a role snapshot loses its record of which commit started the key epoch: an extra safe rotation, not a hole. Simplest fix: always list role commits in a frontier.
-- A commit whose held parts are covered is left out of a frontier even if it also touches a thing the demoter does not hold; spec/permissions.md §5.1 says it should be listed. notes/permissions.md Frontier encoding's dropped heads design ("lists every received commit of X in scope that is not droppable now", heads per (aspect, node) for permanent aspects) would settle both.
+- A commit whose held parts are covered is left out of a frontier even if it also touches a thing the demoter does not hold; spec/permissions.md §5.1 says it should be listed. notes/revocation.md Frontier encoding's dropped heads design ("lists every received commit of X in scope that is not droppable now", heads per (aspect, node) for permanent aspects) would settle both.

@@ -53,7 +53,7 @@ instances=(
   "jointrule rotation JointRule JR_every.cfg pass"    # a joint box blocked by departures only when every keyset misses one
   "jointrule rotation JointRule JR_party.cfg fail"    # negative control: per departed party leaks
   "jointrule rotation JointRule JR_any.cfg fail"      # negative control: blocked by any keyset leaves M out needlessly
-  "depth0 rotation Depth0MC D0_nc.cfg pass"      # rule 4, no key cycles (notes/crypto.md (Holder actors at depth 0))
+  "depth0 rotation Depth0MC D0_nc.cfg pass"      # rule 4, no key cycles (notes/key-access.md)
   "depth0 rotation Depth0MC D0_nc3.cfg pass"
   "depth0 rotation Depth0MC D0_fa_flip.cfg pass" # first admin removed: a keyless grant turns keyed
   "depth0 rotation Depth0MC D0_fa_dmerge.cfg pass" # liveness: a derived write is merged
@@ -73,7 +73,7 @@ instances=(
   "depth0 rotation Depth0MC D0_destroyed_off.cfg fail"  # negative control: a destroyed actor boxed as any other strands a newcomer
   "depth0 rotation Depth0MC D0_destroyed_cycle.cfg pass" # a frozen holder keyed only through keyed grants (spec/crypto.md §4 Destroyed)
   "depth0 rotation Depth0MC D0_destroyed_cycle_old.cfg fail" # negative control: a frozen holder always keyed closes the key cycle
-  "lockout rotation Lockout L_rogue.cfg pass"    # notes/crypto.md (Lockouts)
+  "lockout rotation Lockout L_rogue.cfg pass"    # notes/keys.md (Lockouts)
   "lockout rotation Lockout L_none.cfg fail"     # negative control: no re-key
   "cut rotation Cut X_names.cfg pass"            # history cuts (notes/history-less-grant.md)
   "cut rotation Cut X_race.cfg pass"             # ... and with them it does (Roster)
@@ -92,9 +92,9 @@ instances=(
   "cut rotation Cut X_readd_fresh.cfg pass"      # a re-added member's new node opens what it read before its removal
   "cut rotation Cut X_readd_fresh_noreadd.cfg fail" # negative control: the re-add boxes m only at the cut
   "cut rotation Cut X_two_strict.cfg fail"       # accepted: two history-less adds at once each read content beside the other's
-  "finalize rotation Finalize F_named_bogus.cfg pass" # notes/permissions.md (Keys)
+  "finalize rotation Finalize F_named_bogus.cfg pass" # notes/timed-ends.md
   "finalize rotation Finalize F_old_seed3.cfg fail"   # negative control: a name met by its commit alone
-  "cover rotation Cover C_drop.cfg pass"         # notes/crypto.md (The pin)
+  "cover rotation Cover C_drop.cfg pass"         # notes/keys-coverage.md (The pin)
   "cover rotation Cover C_dup.cfg pass"          # concurrent removals each pin
   "tail rotation Tail T_raise2.cfg pass"         # the pin over every small edge history (raises; T_raise, T_raise4 by hand)
   "tail rotation Tail T_fin2.cfg pass"           # ... (finalizes; T_fin by hand)

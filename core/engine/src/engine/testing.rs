@@ -124,7 +124,7 @@ impl Engine {
     }
 
     /// Rotates `roles` of each of `actors` in one commit as a hostile writer would: boxing only
-    /// those of its current holders in `boxed` (itself alone locks out the rest: notes/crypto.md,
+    /// those of its current holders in `boxed` (itself alone locks out the rest: notes/keys.md,
     /// Lockouts).
     #[doc(hidden)]
     pub fn rotate_boxing_only(&mut self, actors: &[Tid], roles: &[osis_base::Role], boxed: &[Tid]) -> Result<Option<CommitId>> {

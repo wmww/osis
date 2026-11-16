@@ -26,7 +26,7 @@
 - The tag becomes an actor (secrets of its own, a sync ID, a roster). Rights chain through role grants (spec/permissions.md §1): a holder on T reaches an item of sub-tag U by the path T → U → item, role = the minimum along it.
 - Rosters nest: U's roster lists T as one holder actor. Removing Bob from T rotates T, then lazily each sub-tag and item below it once (the cascade of spec/permissions.md §3), whatever the graph shape.
 - **Only what you may share**: granting T a grant on a sub-tag or item needs admin on it (or `may_grant`). A tag or thing someone shared with me read-only, added to my tag T, is not shared on when I share T; the client shows the tag's reach and what is excluded. This is the honest property the grant model gives over inherited folder ACLs; keep it.
-- Cost: a few KB of secrets per item and sub-tag once, one lazy rotation per thing below the tag per roster change (Tess accepted for tags in the thousands of items). A removal of one of my nodes also rotates every shared item I own (notes/permissions.md Nesting cost).
+- Cost: a few KB of secrets per item and sub-tag once, one lazy rotation per thing below the tag per roster change (Tess accepted for tags in the thousands of items). A removal of one of my nodes also rotates every shared item I own (notes/keys-rotation.md Nesting cost).
 
 ## Guideline for first-party apps (Tess)
 Adding a thing or a tag to a shared tag has significant privacy implications and gets a **confirmation** showing who will see it (as Drive does for moving into a shared folder). Same when sharing a tag that already has contents: show the reach. Not an API-level rule: the `osis` crate is used by apps and agents that know what they are doing.

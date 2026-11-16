@@ -298,7 +298,7 @@ fn build_team() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
 // Bob's write after the removal) vouches for the part on N; Bob still writes T, so the Acting
 // part needs no vouching and the write counts. The same as a lying witness for a removed
 // holder acting for itself: a writer can always vouch for the removed side's earlier writes on
-// a thing it writes (stated limit, notes/permissions.md Revocation).
+// a thing it writes (stated limit, notes/revocation.md).
 #[test]
 fn lying_writer_vouches_for_a_removed_teams_write_spec_perm_5_2() {
     let (mut lp, n, _, r, e) = team_world();
