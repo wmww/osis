@@ -210,7 +210,7 @@ impl crate::Osis {
                 if let Lan::On { also_announce_to } = &cfg.lan {
                     lan.to.extend(also_announce_to.iter().copied());
                 }
-                let multi = osis_transport::Multi { quic: Some(osis_transport::Quic::new()), p2p: Some(osis_transport::P2p::new(osis_transport::QuicUdp::new()).lan(lan)), unix: Some(osis_transport::Unix), unix_dial: cfg.app.internals.thin };
+                let multi = osis_transport::Multi { quic: osis_transport::Quic::new(), p2p: osis_transport::P2p::new(osis_transport::QuicUdp::new()).lan(lan), unix_dial: cfg.app.internals.thin };
                 let clock: Arc<dyn Clock> = self.inner.clock.clone();
                 let links = TransportLinks::new(Arc::new(multi), clock);
                 let start = Start { listen: cfg.direct_sync.then(|| (peer_urls(&relays), secret)), discover: cfg.direct_sync && matches!(cfg.lan, Lan::On { .. }) };

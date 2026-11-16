@@ -126,12 +126,11 @@ pub struct BlobWriter<'a> {
     written: Vec<Written>,
     reuse: Option<&'a Reuse>,
     reused: usize,
-    page_params: PageParams,
 }
 
 impl<'a> BlobWriter<'a> {
     pub fn new(framing: &'a Framing, store: &'a mut dyn BlobStore, rng: &'a mut dyn CryptoRngCore) -> BlobWriter<'a> {
-        BlobWriter { framing, store, rng, written: Vec::new(), reuse: None, reused: 0, page_params: PageParams::FORMAT }
+        BlobWriter { framing, store, rng, written: Vec::new(), reuse: None, reused: 0 }
     }
 
     /// Dedup by reuse against an index of the current tree, framing with the index's framing
@@ -140,12 +139,6 @@ impl<'a> BlobWriter<'a> {
         let mut w = BlobWriter::new(&reuse.framing, store, rng);
         w.reuse = Some(reuse);
         w
-    }
-
-    /// Page parameters reported to osis-crdt (`FORMAT` on the wire; tests shrink them).
-    pub fn with_page_params(mut self, p: PageParams) -> BlobWriter<'a> {
-        self.page_params = p;
-        self
     }
 
     /// Blobs reused instead of written.
@@ -207,7 +200,7 @@ impl PageSink for BlobWriter<'_> {
         Ok(self.put_blob(link_hash(&self.framing.dedup, plaintext), plaintext)?)
     }
     fn params(&self) -> PageParams {
-        self.page_params
+        PageParams::FORMAT
     }
 }
 
@@ -313,19 +306,13 @@ impl Reuse {
 pub struct BlobReader<'a> {
     pub dedup: &'a Secret32,
     fetch: &'a mut dyn BlobFetch,
-    page_params: PageParams,
 }
 
 impl<'a> BlobReader<'a> {
     pub fn new(dedup: &'a Secret32, fetch: &'a mut dyn BlobFetch) -> BlobReader<'a> {
-        BlobReader { dedup, fetch, page_params: PageParams::FORMAT }
+        BlobReader { dedup, fetch }
     }
 
-    /// Page parameters reported to osis-crdt (`FORMAT` on the wire; tests shrink them).
-    pub fn with_page_params(mut self, p: PageParams) -> BlobReader<'a> {
-        self.page_params = p;
-        self
-    }
 }
 
 impl BlobReader<'_> {
@@ -356,7 +343,7 @@ impl PageSource for BlobReader<'_> {
         Ok(pt)
     }
     fn params(&self) -> PageParams {
-        self.page_params
+        PageParams::FORMAT
     }
 }
 
@@ -473,17 +460,16 @@ mod tests {
     fn paged_snapshot() {
         use osis_crdt::{AnyView, CounterRange, DeltaCtx, DeltaKind, Frontiers, Interner, Snapshot, Source, Writer, create, decode_snapshot, encode_snapshot};
         use osis_base::{Tid, Ts};
-        let params = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
         let ts = Ts::from_u64(1 << 40).unwrap();
         let own = Source::session(osis_crdt::Session { node: Tid::from_bytes([5; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] });
-        let elems: osis_base::ValueSet = (0..500).map(|i| Value::Str(format!("element {i}"))).collect();
+        let elems: osis_base::ValueSet = (0..20_000).map(|i| Value::Str(format!("element {i}"))).collect();
         let fragment = create(&mut Writer::new(ts, own.clone(), 1), &AnyView, &Value::Set(elems)).unwrap();
         let snap = Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment, frontiers: Frontiers::default() };
         let cx = DeltaCtx { ts, own: Source::session(osis_crdt::Session { node: Tid::from_bytes([250; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
         let f = framing();
         let mut store = MemoryBlobs::default();
         let mut rng = SeededRng::from_u64(0);
-        let mut w = BlobWriter::new(&f, &mut store, &mut rng).with_page_params(params);
+        let mut w = BlobWriter::new(&f, &mut store, &mut rng);
         let bytes = encode_snapshot(&snap, &cx, Some(&mut w)).unwrap();
         let written = w.written().to_vec();
         assert!(written.len() > 3);
@@ -491,10 +477,10 @@ mod tests {
             let p = Prefix::parse(&store.0[&wr.id]).unwrap();
             assert_eq!((p.expiry(), p.commitments().count()), (f.expiry, 2));
         }
-        let mut r = BlobReader::new(&f.dedup, &mut store).with_page_params(params);
+        let mut r = BlobReader::new(&f.dedup, &mut store);
         assert_eq!(decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut r)).unwrap().fragment, snap.fragment);
         store.0.remove(&written[1].id);
-        let mut r = BlobReader::new(&f.dedup, &mut store).with_page_params(params);
+        let mut r = BlobReader::new(&f.dedup, &mut store);
         assert!(matches!(decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut r)), Err(osis_crdt::Error::Page(PageError::Missing))));
     }
 

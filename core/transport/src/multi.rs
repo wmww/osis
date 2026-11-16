@@ -1,6 +1,6 @@
 //! `Multi`: one transport over several, picked by URL scheme (spec/sync-transport.md §1):
 //! `quic://` to `Quic`, `peer://` to `P2p`, `unix://` to `Unix` (listened on; dialed only with
-//! `unix_dial`). A scheme without its transport is `UnknownScheme`.
+//! `unix_dial`). Any other scheme is `UnknownScheme`.
 
 use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, Transport};
 use crate::p2p::{P2pRecv, P2pSend, SConn};
@@ -8,12 +8,11 @@ use crate::{P2p, P2pConn, P2pListener, QuicUdp};
 use crate::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
 use crate::{Unix, UnixConn, UnixListener, UnixRecv, UnixSend};
 
-/// The transports a `Multi` dispatches to; `None`: that scheme is unknown.
-#[derive(Clone, Default)]
+/// The transports a `Multi` dispatches to.
+#[derive(Clone)]
 pub struct Multi {
-    pub quic: Option<Quic>,
-    pub p2p: Option<P2p<QuicUdp>>,
-    pub unix: Option<Unix>,
+    pub quic: Quic,
+    pub p2p: P2p<QuicUdp>,
     /// `unix://` is dialed too: a local client of a node's socket (spec/sync-transport.md §6),
     /// which syncs nothing. Never on a node's own transports: an address another node published
     /// must not make a node dial a local socket.
@@ -29,12 +28,11 @@ enum Pick<'a> {
 impl Multi {
     fn pick(&self, url: &str) -> Result<Pick<'_>, Error> {
         let scheme = url.split_once("://").map(|(s, _)| s).ok_or_else(|| Error::BadUrl(url.to_owned()))?;
-        let unknown = || Error::UnknownScheme(scheme.to_owned());
         match scheme {
-            "quic" => self.quic.as_ref().map(Pick::Quic).ok_or_else(unknown),
-            crate::unix::SCHEME => self.unix.as_ref().map(Pick::Unix).ok_or_else(unknown),
-            crate::PEER_SCHEME => self.p2p.as_ref().map(Pick::P2p).ok_or_else(unknown),
-            _ => Err(unknown()),
+            crate::quic::SCHEME => Ok(Pick::Quic(&self.quic)),
+            crate::unix::SCHEME => Ok(Pick::Unix(&Unix)),
+            crate::PEER_SCHEME => Ok(Pick::P2p(&self.p2p)),
+            _ => Err(Error::UnknownScheme(scheme.to_owned())),
         }
     }
 
@@ -117,10 +115,7 @@ impl Transport for Multi {
 
     /// LAN discovery runs over the peer transport.
     async fn discover(&self) -> Result<crate::Discovery<MultiConn>, Error> {
-        match &self.p2p {
-            Some(p) => p.discover_as(MultiConn::P2p).await,
-            None => Err(Error::UnknownScheme(crate::PEER_SCHEME.to_owned())),
-        }
+        self.p2p.discover_as(MultiConn::P2p).await
     }
 }
 
@@ -207,24 +202,21 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    // spec/sync-transport.md §1: the URL scheme picks the transport; a scheme without its transport
-    // is unknown (parked); unix:// is dialed only by a local client.
+    // spec/sync-transport.md §1: the URL scheme picks the transport; any other scheme is unknown
+    // (parked); unix:// is dialed only by a local client.
     #[test]
     fn dispatch_by_scheme_spec_sync_10() {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let key = [5; 32];
-            let none = Multi::default();
-            for url in [crate::peer_url(&[]), "quic://x:1".into(), "mem://b".into()] {
-                assert!(matches!(none.dial(&Address { url, key }).await, Err(Error::UnknownScheme(_))));
-            }
-            assert!(matches!(none.dial(&Address { url: "nothing".into(), key }).await, Err(Error::BadUrl(_))));
-            // unix:// is listened on, never dialed through a Multi (a published address cannot reach a local socket)
-            let u = Multi { unix: Some(Unix), ..Multi::default() };
-            assert!(matches!(u.dial(&Address { url: "unix:///tmp/x.sock".into(), key }).await, Err(Error::UnknownScheme(_))));
+            let node = Multi { quic: Quic::new(), p2p: P2p::new(QuicUdp::new()), unix_dial: false };
+            assert!(matches!(node.dial(&Address { url: "mem://b".into(), key }).await, Err(Error::UnknownScheme(_))));
+            assert!(matches!(node.dial(&Address { url: "nothing".into(), key }).await, Err(Error::BadUrl(_))));
+            // unix:// is listened on, never dialed by a node (a published address cannot reach a local socket)
+            assert!(matches!(node.dial(&Address { url: "unix:///tmp/x.sock".into(), key }).await, Err(Error::UnknownScheme(_))));
             // a local client dials it (no socket there: an error of the socket's, not the scheme's)
-            let c = Multi { unix: Some(Unix), unix_dial: true, ..Multi::default() };
-            assert!(!matches!(c.dial(&Address { url: "unix:///nonexistent/x.sock".into(), key }).await, Err(Error::UnknownScheme(_)) | Ok(_)));
+            let client = Multi { unix_dial: true, ..node };
+            assert!(!matches!(client.dial(&Address { url: "unix:///nonexistent/x.sock".into(), key }).await, Err(Error::UnknownScheme(_)) | Ok(_)));
         });
     }
 }
