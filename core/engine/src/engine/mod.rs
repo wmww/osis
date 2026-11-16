@@ -202,7 +202,10 @@ pub struct KeysetRec {
 }
 
 /// A valid keyset body noted (`Indexes::keysets`): the epochs the supersedes lists of the bodies
-/// writing it name, joined, its KEM key (the first such body's of suite 1 noted), the key of its
+/// writing it name, joined, the key of its earliest body carrying a KEM key of suite 1 (the key
+/// itself is read from that body when sealing to it, `apply::keys::keyset_kem`: an index row of
+/// it would be its third copy; earliest, so two bodies naming different keys give every node
+/// the same), the key of its
 /// earliest body (Seal's order fallback and the order rule read it), the names digests they
 /// publish, each with its body's author (what binds a history entry to a rotator,
 /// spec/crypto.md §4: a forger's body binds entries to the forger), the left-out keysets they
@@ -212,7 +215,7 @@ pub struct KeysetRec {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldKeyset {
     pub lists: BTreeSet<osis_crypto::Epoch>,
-    pub kem: Option<osis_crypto::KemPublicKey>,
+    pub kem_in: Option<osis_perm::Point>,
     /// The key of its earliest valid body; `None` only before one is noted.
     pub since: Option<osis_perm::Point>,
     pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,

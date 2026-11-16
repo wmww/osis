@@ -264,11 +264,11 @@ fn forged(s: &mut Shape, a: Tid, m: Tid, to: Option<(Epoch, osis_crypto::KemPubl
 }
 
 /// X1's knowing keyset (B's newest read keyset of X1) and its KEM key, as B holds it.
-fn knowing(s: &Shape) -> (Epoch, osis_crypto::KemPublicKey) {
+fn knowing(s: &mut Shape) -> (Epoch, osis_crypto::KemPublicKey) {
     let x1 = s.x1();
-    let (r, e, k) = s.lp.peers[B].engine.core.keysets_of(&x1).filter(|x| x.0 == Role::Write).max_by_key(|x| x.1.n()).unwrap();
+    let (r, e, _) = s.lp.peers[B].engine.core.keysets_of(&x1).filter(|x| x.0 == Role::Write).max_by_key(|x| x.1.n()).unwrap();
     assert_eq!(r, Role::Write);
-    (e, k.kem.clone().unwrap())
+    (e, s.lp.peers[B].engine.keyset_kem(&x1, r, &e).unwrap().unwrap())
 }
 
 /// W attacks as `how`; its commits reach A. Returns the secrets W holds, its own new epochs
@@ -286,7 +286,8 @@ fn attack(s: &mut Shape, how: Attack, rm: &Removal) -> BTreeSet<Key> {
             let (c, made) = forged(s, x1, s.xs.get(1).copied().unwrap_or(x1), None, None);
             known.extend(made);
             let ks = keys_part(&s.lp, W, &c, x1);
-            let k = s.lp.peers[W].engine.core.keysets_of(&x1).filter(|x| x.0 == Role::Write).max_by_key(|x| x.1.n()).map(|x| (x.1, x.2.kem.clone().unwrap())).unwrap();
+            let e = s.lp.peers[W].engine.core.keysets_of(&x1).filter(|x| x.0 == Role::Write).max_by_key(|x| x.1.n()).map(|x| x.1).unwrap();
+            let k = (e, s.lp.peers[W].engine.keyset_kem(&x1, Role::Write, &e).unwrap().unwrap());
             assert!(!ks.is_empty());
             known.extend(forged(s, g, x1, Some(k), None).1);
         }
@@ -386,7 +387,7 @@ fn keyset_held_only_with_its_demotions_spec_crypto_4() {
     let mut s = shape(2);
     let x1 = s.x1();
     let rm = removed(&mut s, W, Carry::Honest);
-    let k = knowing(&s).0;
+    let k = knowing(&mut s).0;
     let held = |s: &Shape| s.lp.peers[A].engine.core.keyset(&x1, Role::Write, &k).is_some();
     assert!(held(&s), "with what travels");
     // a peer holding X1's rotation alone
@@ -507,7 +508,8 @@ fn demoted_member_writes_nothing_after_the_knowing_keyset_spec_crypto_4() {
     let parts = keys_part(&s.lp, B, &x1_rot, x1);
     deliver_certified(&mut s.lp, B, A, x1_rot, parts);
     assert_eq!(s.lp.peers[A].engine.core.role_now(&w, &g), Some(Role::Read), "A holds W's demotion with X1's keyset");
-    let k = s.lp.peers[B].engine.core.keysets_of(&x1).filter(|x| x.0 == Role::Write).max_by_key(|x| x.1.n()).map(|x| (x.1, x.2.kem.clone().unwrap())).unwrap();
+    let e = s.lp.peers[B].engine.core.keysets_of(&x1).filter(|x| x.0 == Role::Write).max_by_key(|x| x.1.n()).map(|x| x.1).unwrap();
+            let k = (e, s.lp.peers[B].engine.keyset_kem(&x1, Role::Write, &e).unwrap().unwrap());
     known.extend(forged(&mut s, g, x1, Some(k), None).1);
     super::tests::send_skipping(&mut s.lp, W, A, &BTreeSet::new());
     let (_, still) = s.lp.peers[A].engine.ensure_rotated(&g).unwrap();
@@ -535,7 +537,7 @@ fn removed_member_reads_nothing_randomized_spec_crypto_4() {
         let bare = rng.next(3) == 0;
         let mut s = shape(d);
         let rm = removed_with(&mut s, W, carry, again, (!bare).then_some(Some(&mut rng)));
-        let k = knowing(&s).0;
+        let k = knowing(&mut s).0;
         let x1 = s.x1();
         let known = attack(&mut s, how, &rm);
         let held = s.lp.peers[A].engine.core.keyset(&x1, Role::Write, &k).is_some();

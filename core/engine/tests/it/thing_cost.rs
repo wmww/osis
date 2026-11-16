@@ -122,7 +122,7 @@ fn what_a_thing_costs() {
     assert!(e.home_sync_id(&pt).unwrap().is_none() && e.home_sync_id(&kt).unwrap().is_some());
     assert_eq!((plain.commits, keyed.commits), (1, 3), "its record, its rotation, then what the plain one writes");
     assert!(plain.maker_rows < 1_900 && plain.reader_rows < 1_800 && plain.download < 800, "{plain:?}");
-    assert!(keyed.maker_rows < 29_000 && keyed.reader_rows < 29_000 && keyed.download < 9_800, "{keyed:?}");
+    assert!(keyed.maker_rows < 24_500 && keyed.reader_rows < 24_500 && keyed.download < 9_800, "{keyed:?}");
     assert_eq!(keyed.maker_ops.get("kem: keygen"), Some(&4), "a KEM key per role");
     assert!(!keyed.reader_ops.keys().any(|k| k.starts_with("kem")), "the account's node opens symmetric boxes");
 }
@@ -172,5 +172,5 @@ fn what_a_reader_costs() {
     }
     eprintln!("grant read to another account: (commits, grant bytes, granter rows, reader rows, granter ops, reader ops) {:?}", each[1]);
     let (commits, bytes, _, reader, _, _) = &each[1];
-    assert!(*commits == 1 && *bytes < 4_200 && *reader < 36_500, "{:?}", each[1]);
+    assert!(*commits == 1 && *bytes < 4_200 && *reader < 32_000, "{:?}", each[1]);
 }

@@ -144,7 +144,7 @@ impl Rec for Arc<crate::flows::account::JudgedEpochs> {
 }
 impl Rec for super::HeldKeyset {
     fn to(&self) -> Value {
-        let kem = Value::List(self.kem.iter().map(|k| Value::bytes(k.as_bytes())).collect());
+        let kem = Value::List(self.kem_in.iter().map(Rec::to).collect());
         let lists: Vec<osis_crypto::Epoch> = self.lists.iter().copied().collect();
         let since = Value::List(self.since.iter().map(Rec::to).collect());
         let names = Value::List(self.names.iter().map(|(d, a)| Value::List(vec![Value::bytes(d), Value::bytes(a.as_bytes())])).collect());
@@ -179,16 +179,16 @@ impl Rec for super::HeldKeyset {
             },
             _ => return None,
         };
-        let kem = match kem {
+        let kem_in = match kem {
             Value::List(x) => match x.as_slice() {
                 [] => None,
-                [Value::Bytes(b)] => Some(osis_crypto::KemPublicKey::from_slice(b).ok()?),
+                [p] => Some(Rec::from(p)?),
                 _ => return None,
             },
             _ => return None,
         };
         let lists: Vec<osis_crypto::Epoch> = Rec::from(lists)?;
-        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem, since, names, left_out: out, demotions, demotes: *demotes })
+        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem_in, since, names, left_out: out, demotions, demotes: *demotes })
     }
 }
 /// `[holder, epoch]` pairs of a by-holder set map.

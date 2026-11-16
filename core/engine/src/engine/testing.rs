@@ -226,6 +226,13 @@ impl Engine {
         self.read(|tx| Ok(tx.txn.census()?))
     }
 
+    /// The KEM key of held keyset `e` of role `r` of `m`, as sealing reads it
+    /// (`apply::keys::keyset_kem`).
+    #[doc(hidden)]
+    pub fn keyset_kem(&mut self, m: &Tid, r: osis_base::Role, e: &osis_crypto::Epoch) -> Result<Option<osis_crypto::KemPublicKey>> {
+        self.read(|tx| crate::apply::keys::keyset_kem(tx, m, r, e))
+    }
+
     /// What the store holds, decrypted (`Store::dump`): tests compare two nodes' stores.
     #[doc(hidden)]
     pub fn store_dump(&mut self) -> Result<Vec<(String, Vec<u8>)>> {

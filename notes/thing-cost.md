@@ -1,0 +1,38 @@
+# What one thing costs
+> Summary: Measured breakdown of a plain thing and a thing with own keys (stored rows by family, bytes downloaded, commits, KEM and signature work, maker and readers), why each line exists, and the ranked changes: built, designed, and those waiting on a model or Tess.
+
+Principle: **a thing costs its record, its content and what its readers need to open it, once each**. A second copy of the same bytes in the store, or a commit whose only job is ordering inside one transaction, is a defect; key material is paid per role a holder can be boxed at (notes/keys.md, A KEM key per role).
+
+## Measured
+Tests print the tables with `THING_COST=1`: engine `thing_cost::what_a_thing_costs`, `thing_cost::what_a_reader_costs`; osis `thing_cost::what_a_thing_costs_as_the_app_makes_it`. Stored bytes are logical rows (key plus value, `Engine::census` over `Transaction::census`); the osis test also gives both stores' physical bytes. KEM and signature counts are `osis_base::costs` counts in osis-crypto (`kem: keygen`, `kem: encapsulate`, `kem: decapsulate`, `sign`, `verify: *`).
+
+Engine, the maker and its account's second node (`account_two_nodes`), each kind made once first:
+
+| | plain (under the account root) | keyed (under the account) |
+|---|---|---|
+| commits | 1 (content: record, content, the root's `holds.0`) | 3 (record alone; rotation: `keys.0` 6288 B, `secrets.0` 1409 B, `sync.0` 451 B; content) |
+| downloaded by the second node | 703 B (header 357 B) | 9716 B (471 + 8663 + 582) |
+| stored, maker | 1789 B | 23.9 KB |
+| stored, second node | 1684 B | about the same as the maker |
+| maker work | 2 signs | 4 ML-KEM keygens, 7 signs |
+| second node work | 1 commit verify | 3 commit verifies, no KEM |
+
+Keyed, stored rows at the maker: commit records `c/` 9974 B (the three commits whole); aspect states `keys.0` 6396, `secrets.0` 1524, `sync.0` 545, `created.0` 178, content 118; `node/keysets` 948; `k/` (opened epochs) 1443; `node/metas` 603, `node/sealed` 592, `node/epoch intro` 408, `node/boxes to` 400, refs 354, `node/edges` 66; small local rows about 300. Plain: `c/` 789, `node/metas` 255, refs 178, states 330, `t/` 74, `a/` 56, counters 104.
+
+The KEM public keys (1216 B each, one per role, four roles) are 4864 B of the 9716 B a reader downloads, and are stored twice at every holder, in the commit record and the `keys.0` state: 9.7 KB of 23.9 KB.
+
+Through the API, as the app makes them (osis, per thing over 10 makes; home is a plain thing under the account root): a plain thing under home (record, `retention^.0`, home's `holds.0`) 1.5 commits, 2.3 KB stored, 1.2 KB downloaded; a keyed thing held by home (as `osis-chat` makes a chat) 4.5 commits (the three above plus the account root's ticket for it, `tickets.0`, about 640 B, then compactions of home's `holds.0` and the root's `tickets.0`), 25.5 KB stored (28.0 KB physical), 11.2 KB downloaded, 10 signs, 14 sync-step verifications at the maker and 15 at the second node.
+
+Another account granted read on a keyed thing (engine `what_a_reader_costs`): one role commit of 3975 B (`secrets.0` 3093 B: sealed boxes at read and sync, each about 1.2 KB, and the history boxes again), 3 KEM encapsulations at the granter, 2 decapsulations at the reader; the reader stores about 31 KB for the thing and the grant.
+
+## Ranked changes
+By bytes saved per keyed thing at every holder, against complexity. Item 1 is built; the others are what is left.
+
+1. **Built: the keyset index names its body, not its KEM key** (`HeldKeyset::kem_in`, the earliest body carrying one; `apply::keys::keyset_kem` reads the key from that body or its dropped record when sealing, a rare path). Saves 4.9 KB stored per keyed thing at every node, and the same in memory (`Indexes::keysets` is in memory). No wire or key change; the key sealed to is still one a valid noted body of the keyset carries. Earliest by body order, so two bodies of one epoch naming different keys (a writer re-publishing a keyset with junk) give every node the same key in any arrival order (`parts::` index checks compare a rebuild with the live index).
+2. **Designed: an aspect's state by reference while it is one held body.** For keyed things the states duplicate their single bodies: `keys.0` 6.4 KB, `secrets.0` 1.5 KB, `sync.0` 0.5 KB, plus `created.0` (stored three times, notes/growth.md row 5) and content. −8.7 KB per keyed thing, −0.3 KB per plain one, at every node. A store and read-path change touching every state reader (and the decoded-record cache, `Core::decoded`): needs its own study; no wire change.
+3. **Designed: the record in the own-keys rotation commit.** A thing keyed in its creating transaction needs no record commit of its own: one role commit carrying `created.0`, `keys.0`, `secrets.0` and `sync.0`, then the content commit (spec/permissions.md §3 asks only for one transaction). −1 commit, −471 B downloaded, about −1.3 KB stored (record, metas, refs), −2 signatures. Role and content stay apart: role commits travel as certificates under other sync IDs, so content riding in one would leak to them. `rotation::own_secrets_rot` computes holders and derived epochs from the applied record (`Core::epochs`, `key_holders`, perm's timeline): building it from a record in the same mutation is the work. Touches rotation code the custody work is changing: build after it settles.
+4. **Tess call: KEM keys only for actors that can hold roles.** The four KEM keys are half of what a reader downloads and two copies stored. Every keyed thing publishes them so that any granter, offline and holding none of its secrets, can box it as a holder; most keyed things (chats, notes in a shared tag) are never holders. A thing declared a holder kind at creation (accounts, teams, tags, realms) would publish them; others not, and granting such a thing a role would be refused. −4.9 KB downloaded and −9.7 KB stored per non-holder thing. It restricts Generality (any actor may hold), so it is a requirements question. Publishing lazily when a thing is first granted something does not work: a granter that is not its admin cannot write its `keys.0` and would wait on one that is. The variants that keep Generality (one ML-KEM key per actor with an X25519 key per role; roles sharing a key while their holders coincide) were declined (notes/keys.md).
+5. **Needs a model: no history boxes in a newborn thing's own-keys rotation.** They carry the derived secrets, about 800 B, stored twice; the derived era of a thing keyed in its creating transaction holds nothing but its record and the rotation's own wrap. A key rule change (spec/crypto.md §3 Giving a thing secrets of its own): roles-model first, and after the custody work.
+6. **Left: the account root's ticket as a commit of its own** (osis path, about 640 B downloaded and 1 KB stored per keyed thing held outside the root's unit). The ticket duty runs after the closure settles (`flows::inbox::write_account_ticket`); folding it into the making commit would special-case the duty for things made in that transaction.
+7. **Left, CPU: sync-step verifications** (14 per keyed make at the maker, 15 at the second node, constant in what is held): the new sync ID's steps verified again at each read. A verified-step memo keyed by step ID would make it one; about half a millisecond per make.
+8. **Plain things**: 1.7 KB is the commit record (789 B, of which the header is 357 B: three aspect entries with their delta hashes, the delete-key commitment, blind and signatures), the metas row (255 B, the header's view again), reference rows (178 B) and the duplicated states (2 above). Nothing big beyond 2.

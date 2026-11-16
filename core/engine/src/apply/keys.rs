@@ -159,8 +159,8 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &T
         let mut held = core.ix.keysets.get(&key).cloned().unwrap_or_default();
         let before = held.clone();
         held.lists.extend(k.lists.iter().copied());
-        if held.kem.is_none() {
-            held.kem = k.kem.clone();
+        if k.kem.is_some() {
+            held.kem_in = Some(held.kem_in.map_or(at, |x| x.min(at)));
         }
         held.since = Some(held.since.map_or(at, |x| x.min(at)));
         held.names.insert((k.names, h.author));
@@ -174,6 +174,20 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, id: &CommitId, actor: &T
             core.touch();
         }
     }
+}
+
+/// The KEM key of held keyset `e` of role `r` of actor `m` (spec/crypto.md §3), read from the
+/// body `HeldKeyset::kem_in` names: its held part, or its record once the body dropped
+/// (`Dropped::keysets`). Read only to seal to `m`.
+pub(crate) fn keyset_kem(tx: &mut Tx<'_>, m: &Tid, r: Role, e: &osis_crypto::Epoch) -> Result<Option<osis_crypto::KemPublicKey>> {
+    let Some(id) = tx.core.keyset(m, r, e).and_then(|k| k.kem_in).map(|p| p.commit) else { return Ok(None) };
+    let Some(meta) = tx.core.ix.commits.get(&id) else { return Ok(None) };
+    let Some(ai) = meta.view.aspect(m, "keys.0") else { return Ok(None) };
+    let pick = |recs: &[KeysetRec]| recs.iter().find(|k| k.role == r && k.epoch == *e).and_then(|k| k.kem.clone());
+    if let Some(k) = meta.dropped(ai).and_then(|d| pick(&d.keysets)) {
+        return Ok(Some(k));
+    }
+    Ok(super::held_part(tx, &id, ai)?.and_then(|d| pick(&KeysBody::of(d.fragment()).recs)))
 }
 
 /// Notes the box records a valid `keys.0` body of `actor` (commit `id`) puts (`KeysBody::sealed`):

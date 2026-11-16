@@ -288,7 +288,7 @@ fn sealing_at(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Resul
         let (mut row, mut wrap) = (Vec::new(), None);
         for k in &ks {
             let secret = own.as_ref().filter(|e| e.role(r).is_established(k)).and_then(|e| e.role(r).secret(k)).cloned();
-            let written = tx.core.keyset(m, r, k).and_then(|x| x.kem.clone());
+            let written = crate::apply::keys::keyset_kem(tx, m, r, k)?;
             let Some(kem) = written.or_else(|| secret.as_ref().map(|s| osis_crypto::role_kem(s).public().clone())) else {
                 cut = true;
                 break;
