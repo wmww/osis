@@ -165,6 +165,8 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> 
 pub(crate) fn new_sync_id(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32) -> Result<SyncId> {
     let (step, set) = issue(tx, &group, epochs, None, readers, deposit)?;
     put_step(m, group, step.sync_id, &step, &set, true)?;
+    // named in its `keys.0` too: the public key record a sender fires by (spec/crypto.md §3)
+    m.op(group, &ct::KEYS, PathOp { path: vec![PathSeg::Field(9)], op: Op::Set(Some(step.sync_id).to_value()) })?;
     drop_old_claims(tx, m, group)?;
     Ok(step.sync_id)
 }

@@ -215,8 +215,9 @@ impl Engine {
     /// (spec/permissions.md §4, §5.5 Chains travel), added to `out`: the current `keys.0` commits
     /// projected to `keys.0` (`current_keys`), every other held rotation as a header-only copy
     /// (`Certs::headers`): a commit at an old epoch verifies by the key its rotation's header
-    /// carries, and the rotation's `keys.0` part (that epoch's deposit seed) is the readers' for
-    /// nothing. Nothing for an actor that is no account.
+    /// carries, and the rotation's `keys.0` part is the readers' for nothing; and its inbox's
+    /// record and current `keys.0` commits (its public record, spec/sync-inbox.md §1). Nothing
+    /// for an actor that is no account.
     pub(crate) fn account_chain(&mut self, p: &Tid, out: &mut Certs) {
         if !self.core.is_account(p) {
             return;
@@ -227,6 +228,11 @@ impl Engine {
         let Ok(keys) = osis_base::Ak::new("keys.0") else { return };
         let rots: Vec<CommitId> = self.core.ix.by_aspect.get(&(*p, keys)).into_iter().flatten().map(|(_, c)| *c).filter(|c| !current.contains(c) && self.core.ix.commits.get(c).is_some_and(|m| m.view.author == *p && m.view.epoch.is_some()) && self.header(c).is_some_and(|h| h.rotation.is_some())).collect();
         out.headers.extend(rots);
+        // and its inbox's public key record (spec/sync-inbox.md §1)
+        if let Some(i) = self.inbox_thing(p).filter(|i| self.core.created(i).is_some()) {
+            out.records.insert(i);
+            self.current_keys_into(&i, out);
+        }
     }
 
     /// What a sync ID of `g` holds as certificates, whoever logs them (spec/permissions.md §4,

@@ -764,8 +764,9 @@ fn thing_wait(
         }
     }
     // it is on the record chain, or held edge writes lead from it to the chain (a revoked author
-    // keeps its certificates and still applies, judged invalid)
-    (!chain.contains(&h.author) && !validity::reaches(core, &h.author, &chain)).then_some(Reason::MissingChain(h.author))
+    // keeps its certificates and still applies, judged invalid); an open fire needs no path
+    // (spec/permissions.md §5.2 Open fires)
+    (!a.ak.open() && !chain.contains(&h.author) && !validity::reaches(core, &h.author, &chain)).then_some(Reason::MissingChain(h.author))
 }
 
 /// Applies or stores one decoded commit blob.
@@ -2015,6 +2016,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     }
     crate::rotation::load_lost(tx)?;
     crate::rotation::load_kept(tx)?;
+    crate::flows::inbox::load(tx)?;
     crate::retention::leaving::load(tx)?;
     let mut pend = Vec::new();
     tx.each_pending(|id, p| pend.push((id, p.kind)))?;

@@ -77,6 +77,8 @@ pub struct Mutation {
     pub(crate) rotation: Option<crate::flows::signing::AccountRotation>,
     /// A seed re-seal of an epoch of the signing account's chain (spec/crypto.md §9, Custody).
     pub(crate) reseal: Option<osis_commit::SeedReseal>,
+    /// A sealed fire's commit (spec/sync-inbox.md §2): built, never applied here.
+    pub(crate) sealed: bool,
 }
 
 impl Default for Mutation {
@@ -91,7 +93,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), ts: None, blind: None, rotation: None, reseal: None }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), ts: None, blind: None, rotation: None, reseal: None, sealed: false }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -289,6 +291,10 @@ pub(crate) fn check_authority_with(core: &Core, node: Tid, records: Records<'_>,
 
 /// `check_authority_with` needing role `need`.
 pub(crate) fn check_role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ak: &str, need: Role, ts: Ts) -> Result<()> {
+    // an open fire needs no role on its thing (spec/permissions.md §5.2 Open fires)
+    if Ak::markers_of(ak).open {
+        return Ok(());
+    }
     let role = role_with(core, node, records, tid, ts);
     if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, records, tid)) { Ok(()) } else { Err(Error::Permission { tid: *tid }) }
 }
@@ -592,6 +598,31 @@ pub(crate) fn nonce_of(form: Form) -> [u8; osis_crdt::SESSION_NONCE_LEN] {
 
 /// Encodes, pages, reserves counters, builds, signs and applies locally. Returns the ID.
 pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<CommitId> {
+    let rotation = plan.rotation.clone();
+    let built = build(tx, plan, deltas)?;
+    let id = built.commit.id();
+    // a rotation's thing lists are held before it applies, so what they name never falls here
+    if let Some(r) = &rotation {
+        crate::flows::lists::keep_certs(tx, &r.certs(id))?;
+    }
+    // rights are checked before anything leaves the node: a request dropping nothing is refused
+    if !tx.core.skip_writer_rules {
+        crate::retention::check_request(tx.core, &built.commit.header, &id)?;
+    }
+    // hostile test authors: the blob as sent, whatever this node's own copy drops of it
+    if !tx.core.forge_bad.is_empty() || tx.core.skip_writer_rules {
+        tx.core.forged = Some(built.commit.encode());
+    }
+    let received = tx.now();
+    crate::apply::apply_local(tx, &built.commit, built.signed, received)?;
+    // the epoch each content part was made under, where it has a floor (spec/crypto.md §5
+    // Passing on)
+    crate::sync_ids::opened::note_own(tx, &built.commit)?;
+    Ok(id)
+}
+
+/// Encodes, pages, reserves counters, builds and signs.
+fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osis_commit::Built> {
     let node = plan.signer;
     let published = super::secrets::published_keys(tx, &plan.creates, deltas.iter().map(|d| d.tid))?;
     let mut writes = Vec::with_capacity(deltas.len());
@@ -667,25 +698,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         Err(osis_commit::Error::Build(osis_commit::COMMIT_PAST_BLOB)) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral commit does not fit a blob")),
         b => b?,
     };
-    let id = built.commit.id();
-    // a rotation's thing lists are held before it applies, so what they name never falls here
-    if let Some(r) = &plan.rotation {
-        crate::flows::lists::keep_certs(tx, &r.certs(id))?;
-    }
-    // rights are checked before anything leaves the node: a request dropping nothing is refused
-    if !tx.core.skip_writer_rules {
-        crate::retention::check_request(tx.core, &built.commit.header, &id)?;
-    }
-    // hostile test authors: the blob as sent, whatever this node's own copy drops of it
-    if !tx.core.forge_bad.is_empty() || tx.core.skip_writer_rules {
-        tx.core.forged = Some(built.commit.encode());
-    }
-    let received = tx.now();
-    crate::apply::apply_local(tx, &built.commit, built.signed, received)?;
-    // the epoch each content part was made under, where it has a floor (spec/crypto.md §5
-    // Passing on)
-    crate::sync_ids::opened::note_own(tx, &built.commit)?;
-    Ok(id)
+    Ok(built)
 }
 
 impl Engine {
@@ -708,7 +721,28 @@ impl Engine {
 }
 
 /// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing.
-pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
+pub(crate) fn commit_in(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
+    if m.sealed {
+        return Err(Error::Misuse("a sealed fire is built by `sealed_commit`"));
+    }
+    Ok(commit_or_build(tx, m)?.map(|(id, _)| id))
+}
+
+/// The commit of sealed fire mutation `m` (one fire of an open signal on a thing this node need
+/// not hold, spec/sync-inbox.md §2), built and signed, never applied here: the sender holds no
+/// setting of the thing and is bound by none (spec/commits.md §5 The setting).
+pub(crate) fn sealed_commit(tx: &mut Tx<'_>, mut m: Mutation) -> Result<osis_commit::CommitBlob> {
+    m.sealed = true;
+    let one = matches!(m.aspects.keys().collect::<Vec<_>>().as_slice(), [(_, ak)] if ak.open());
+    if !one || !m.creates.is_empty() || !m.purge.is_empty() || !m.purge_named.is_empty() || m.undoes.is_some() || tx.txn.is_memory() {
+        return Err(Error::Misuse("a sealed fire is one fire of an open signal"));
+    }
+    commit_or_build(tx, m)?.and_then(|(_, b)| b).ok_or(Error::Misuse("a sealed fire writes nothing"))
+}
+
+/// `commit_in`, or for a sealed mutation the built commit, unapplied.
+fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId, Option<osis_commit::CommitBlob>)>> {
+    let sealed = m.sealed;
     let node = match m.signer {
         Some(k) if tx.core.key_actors.contains_key(&k) || tx.core.accounts.contains_key(&k) => k,
         Some(_) => return Err(Error::Misuse("signer not held")),
@@ -768,7 +802,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Err(Error::Misuse("a role commit acts for its signer only"));
     }
     if let Some(u) = m.undoes {
-        return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node), m.ts, m.confined).map(Some).or_else(|e| match e {
+        return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node), m.ts, m.confined).map(|c| Some((c, None))).or_else(|e| match e {
             Error::Misuse("nothing to undo") => Ok(None),
             e => Err(e),
         });
@@ -783,7 +817,8 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     let mut aspects = Vec::with_capacity(m.aspects.len());
     for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
-        if !base.creates.contains_key(&tid) && !tx.core.writable(&tid) {
+        // a sealed fire's thing: known by its public key record alone
+        if !base.creates.contains_key(&tid) && !(if sealed { tx.core.created(&tid).is_some() } else { tx.core.writable(&tid) }) {
             return Err(Error::UnknownThing(tid));
         }
         if !m.unchecked {
@@ -791,7 +826,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         }
         // a content write is written under the setting: one known and not held yet is waited
         // for, never read as none (`secrets::usable_role`, spec/commits.md §5 The setting)
-        if kind == Kind::Content && super::secrets::awaits_setting(tx.core, &tid) {
+        if kind == Kind::Content && !sealed && super::secrets::awaits_setting(tx.core, &tid) {
             return Err(Error::Permission { tid });
         }
         let (r, e) = {
@@ -823,7 +858,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             // a fire is history from its own `ts`: one the settings held would not keep would be
             // in no history at all
             let wall = ts.wall_ms().0;
-            if !memory && crate::retention::history::of(tx.core, &tid, &ak).leaves_at(Some(wall)) <= wall {
+            if !memory && !sealed && crate::retention::history::of(tx.core, &tid, &ak).leaves_at(Some(wall)) <= wall {
                 return Err(Error::Misuse("a fire is history: the thing's setting keeps no history for this signal"));
             }
         }
@@ -890,6 +925,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(framing) = &framing {
             chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, &edits, am.schema.as_deref(), framing, &m.fresh)?;
         }
+        // a sealed fire carries its value inline: its receivers fetch no blob of it
+        if sealed && !chunks.is_empty() {
+            return Err(Error::Misuse("a sealed fire's value fits inline"));
+        }
         let lo = match form {
             Form::Commit => next_ctr,
             // a session's counters: memory rows, gone with the session
@@ -953,8 +992,12 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     {
         return Err(Error::Clash(format!("a purge goes under a write of its thing, and this commit writes nothing on {}. Write the purge as a commit of its own", p.tid())));
     }
+    if sealed {
+        let built = build(tx, plan, deltas)?;
+        return Ok(Some((built.commit.id(), Some(built.commit))));
+    }
     let id = build_and_apply(tx, plan, deltas)?;
-    Ok(Some(id))
+    Ok(Some((id, None)))
 }
 
 /// `w` for ops `ops` on aspect `(tid, ak)`: a removal of a tid among them covers the parts held

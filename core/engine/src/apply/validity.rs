@@ -381,10 +381,9 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
         return Some(Role::Admin);
     }
     let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return Some(Role::Write) };
-    // the admin keyset, a key actor's KEM key, the inbox and the deposit seed need admin
-    // (spec/crypto.md §3: inbox and deposit seed by an admin); sync, read and write keysets
-    // their rotator
-    if (2..=5).any(|id| st.field(id).is_some()) {
+    // the admin keyset, a key actor's KEM key, the inbox, the deposit seed and the sync ID need
+    // admin (spec/crypto.md §3: by an admin); sync, read and write keysets their rotator
+    if (2..=5).chain([9]).any(|id| st.field(id).is_some()) {
         return Some(Role::Admin);
     }
     let Some(field) = st.field(crate::flows::SEALED) else { return Some(Role::Write) };
@@ -760,6 +759,11 @@ impl<'a> Judge<'a> {
         }
         if !self.acts(h, id) {
             return false;
+        }
+        // an open fire: valid whatever its author's role on the thing, its signature and chain to
+        // its actor verified (spec/permissions.md §5.2 Open fires)
+        if a.ak.open() {
+            return true;
         }
         // a thing more than `MAX_CHAIN_DEPTH` record links below its key actor: nothing written on
         // it applies (spec/permissions.md §1); judged per delta from creation records alone

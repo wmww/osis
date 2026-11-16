@@ -953,6 +953,9 @@ indexes! {
     pub resnapshots_owed: JNested<Tid, Ak, BTreeSet<CommitId>>,
     /// The node closure (`sync::units`): derived, built again by an open.
     pub closure: crate::sync::units::Closure,
+    /// Sealed fires this node owes until a peer takes one (`flows::inbox`, spec/sync-inbox.md §2),
+    /// by fire ID: durable (`flows::inbox::FIRES`).
+    pub fires: JMap<crate::flows::inbox::FireId, Arc<crate::flows::inbox::OwedFire>>,
 }
 
 /// The steps run inside a transaction, each applied fully or not at all (`Tx::step`).

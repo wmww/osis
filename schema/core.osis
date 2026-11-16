@@ -165,6 +165,8 @@ aspect keys.0: struct {
     /// Per box of the actor's secrets to a holder actor, keyed as that box, the keysets of the
     /// holder it names: written with the box, whoever boxes (spec/crypto.md §4, Stale).
     sealed 8: map<box_key, set<epoch>> = {},
+    /// 16 bytes. Its sync ID (spec/sync-ids.md §2), where open fires on it go.
+    sync_id 9: option<blob>,
 };
 
 type box_key = struct {
