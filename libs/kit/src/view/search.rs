@@ -1,6 +1,6 @@
 //! Search over summaries and facets' text: one way to find anything.
 
-use crate::store::Reader;
+use crate::store::{Reader, sort_by};
 use osis::{Result, Tid};
 use std::rc::Rc;
 
@@ -87,14 +87,9 @@ fn compute(cx: &Reader, q: &str) -> Result<Found> {
             }
         }
     }
-    let by_name = |v: &mut Vec<Tid>| {
-        let mut k: Vec<(String, Tid)> = v.iter().map(|t| (cx.summary(*t).map(|s| s.name.to_lowercase()).unwrap_or_default(), *t)).collect();
-        k.sort();
-        *v = k.into_iter().map(|x| x.1).collect();
-    };
-    by_name(&mut f.scopes);
-    by_name(&mut f.named);
-    by_name(&mut f.in_scopes);
+    for v in [&mut f.scopes, &mut f.named, &mut f.in_scopes] {
+        sort_by(v, |t| Ok(cx.summary(t).map(|s| s.name.to_lowercase()).unwrap_or_default()))?;
+    }
     Ok(f)
 }
 

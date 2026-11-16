@@ -95,7 +95,7 @@ fn shell(r: &Reader, &(_, main): &(&'static str, Tid)) -> osis::Result<Shell> {
     let t = r.opened()?.unwrap_or(main);
     let home = t == main;
     let (theme, mode) = r.look()?;
-    let color = if home { None } else { views::main_color(r, t)? };
+    let color = if home { None } else { crate::view::source::main_color(r, t)? };
     Ok(Shell { t, home, theme, mode, color, searching: !r.local(QUERY)?.trim().is_empty() })
 }
 

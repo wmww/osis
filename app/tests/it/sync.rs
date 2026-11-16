@@ -219,7 +219,7 @@ fn malformed_aspects_do_not_break_reads() {
         let w = osis_kit::view::WindowState::default();
         let cx = osis_kit::view::Cx::new(&a, &w, false);
         cx.summary(*t).unwrap();
-        osis_kit::views::main_color(&cx, *t).unwrap();
+        osis_kit::view::source::main_color(&cx, *t).unwrap();
         osis_kit::views::page(&cx, *t).unwrap();
     }
     a.favorites().unwrap();

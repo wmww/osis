@@ -14,7 +14,7 @@ pub use opener::open_spec;
 pub use shell::RAIL;
 
 use crate::view::graph::{Graph, NodeId};
-use crate::view::{Block, Cx, Section, ViewSpec, source};
+use crate::view::{Block, Cx, Section, ViewSpec};
 use crate::store::{Data, Reader};
 use osis::{Result, Tid};
 use std::rc::Rc;
@@ -201,7 +201,6 @@ impl Node {
     pub fn find(&self, view_type: &str) -> Option<&Node> {
         self.walk().into_iter().find(|n| n.spec.view_type == view_type)
     }
-    /// Every block in the tree.
     /// Every block shown, a filled block's head and foot blocks after it.
     pub fn blocks(&self) -> Vec<&Block> {
         fn add<'a>(b: &'a Block, out: &mut Vec<&'a Block>) {
@@ -216,11 +215,6 @@ impl Node {
         }
         out
     }
-}
-
-/// The main colour of `t`'s page.
-pub fn main_color(cx: &Reader, t: Tid) -> Result<Option<String>> {
-    source::main_color(cx, t)
 }
 
 /// `t` opened: the opener's tree (`Summary`'s words beside it for a test).

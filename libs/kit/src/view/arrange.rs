@@ -2,7 +2,7 @@
 //! are `Cx::list`, so what a page holds is at most its window.
 
 use crate::store::Reader;
-use super::paged::{At, Item, ListRow, Page, Row, Shape, Style, page_of};
+use super::paged::{At, Item, Page, Row, Shape, Style, page_of};
 use super::{Block, Cx, Day, Do, Entry, Span, source};
 use crate::schema::{Arrange, Collection};
 use crate::time::{DAY, fmt_day, fmt_time, monday_of};
@@ -358,9 +358,4 @@ fn spans(cx: &Reader, t: Tid, from: i64, to: i64) -> Result<Rc<Vec<Entry>>> {
         }
         Ok(out)
     })
-}
-
-/// The row keys of a list, in order: what a test reads.
-pub fn keys(rows: &[ListRow]) -> Vec<String> {
-    rows.iter().map(|r| r.key.clone()).collect()
 }

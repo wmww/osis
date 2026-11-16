@@ -25,9 +25,6 @@ impl Action for SetMode {
     }
 }
 
-/// The window is dark now.
-fn dark_of(cx: &Cx) -> Result<bool> { cx.dark() }
-
 fn hex(c: crate::masonry::peniko::Color) -> String {
     let r = c.to_rgba8();
     format!("#{:02x}{:02x}{:02x}", r.r, r.g, r.b)
@@ -51,7 +48,7 @@ impl Facet for LookFacet {
     }
     fn show(&self, cx: &Cx, _t: Tid) -> Result<Section> {
         let (theme, mode) = cx.look()?;
-        let dark = dark_of(cx)?;
+        let dark = cx.dark()?;
         let current = Theme::named(theme.as_deref()).id;
         let themes = Theme::defaults()
             .iter()

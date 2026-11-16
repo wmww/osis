@@ -367,15 +367,7 @@ impl Reader {
     }
 
     fn sort_by_name(&self, v: &mut [Tid]) -> Result<()> {
-        let mut keyed = Vec::with_capacity(v.len());
-        for t in v.iter() {
-            keyed.push((self.name(*t)?.to_lowercase(), *t));
-        }
-        keyed.sort();
-        for (slot, (_, t)) in v.iter_mut().zip(keyed) {
-            *slot = t;
-        }
-        Ok(())
+        sort_by(v, |t| Ok(self.name(t)?.to_lowercase()))
     }
 
     /// Every tag, by name.
@@ -400,7 +392,6 @@ impl Reader {
         Ok(None)
     }
 
-
     /// Which thing view the viewer chose for `t` (`None`: the default).
     pub fn viewed_as(&self, t: Tid) -> Result<Option<String>> {
         for g in self.groups()? {
@@ -410,10 +401,6 @@ impl Reader {
         }
         Ok(None)
     }
-
-
-
-
 
     /// Whether `undo(t)` has a commit to undo; `NotUndoable` when that commit cannot be undone.
     pub fn can_undo(&self, t: Tid) -> Result<bool> {
@@ -473,9 +460,6 @@ impl Reader {
         })
     }
 
-
-
-
     // ---- the look (per account, on the app group)
 
     /// The chosen theme id (`None`: the default) and mode.
@@ -488,8 +472,6 @@ impl Reader {
         }
         Ok((theme, mode.unwrap_or(Mode::Auto)))
     }
-
-
 
     // ---- navigation (per-node ephemeral view state on the main group)
 
@@ -522,17 +504,12 @@ impl Reader {
         })?)
     }
 
-
     /// The thing this window has open; `None`: home (also when it was deleted meanwhile).
     pub fn opened(&self) -> Result<Option<Tid>> {
         let Some(w) = self.window_opt()? else { return Ok(None) };
         let Some(t) = self.db.at(w, OPEN).get()? else { return Ok(None) };
         Ok(Some(t).filter(|t| self.things().is_ok_and(|all| all.contains(t))))
     }
-
-
-
-
 }
 
 impl Data {
@@ -754,6 +731,19 @@ pub fn keep_a_day(w: &mut osis::Write<'_>, t: Tid) -> Result<()> {
     let day = osis::History::Keep { until: osis::Time(0), after_replaced: std::time::Duration::from_secs(86_400) };
     let entry = osis::core::RetentionEntry { history: Some(day), ..Default::default() };
     w.at(t, osis::core::RETENTION).set(&osis::core::RetentionSetting { default: Some(entry), ..Default::default() })
+}
+
+/// `v` ordered by `key`, ties by tid.
+pub(crate) fn sort_by<K: Ord>(v: &mut [Tid], mut key: impl FnMut(Tid) -> Result<K>) -> Result<()> {
+    let mut keyed = Vec::with_capacity(v.len());
+    for t in v.iter() {
+        keyed.push((key(*t)?, *t));
+    }
+    keyed.sort();
+    for (slot, (_, t)) in v.iter_mut().zip(keyed) {
+        *slot = t;
+    }
+    Ok(())
 }
 
 /// "just now", "5 min ago", "3 h ago", "2 d ago" for an age in ms.

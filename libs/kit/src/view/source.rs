@@ -1,6 +1,7 @@
 //! Sources: what a view looks at, narrowed by aspects present and ordered.
 
-use crate::store::Reader;
+use crate::store::{Reader, sort_by};
+use std::cmp::Reverse;
 use crate::schema::{CollectionOrder as Order, CollectionSource as Source};
 use crate::schema::Collection;
 use osis::{Result, Tid};
@@ -75,35 +76,14 @@ pub fn having(cx: &Reader, t: Tid, view: &Collection) -> Result<bool> {
     Ok(false)
 }
 
-fn sort(cx: &Reader, v: &mut Vec<Tid>, view: &Collection) -> Result<()> {
+fn sort(cx: &Reader, v: &mut [Tid], view: &Collection) -> Result<()> {
     match view.order {
-        Order::Own => {}
-        Order::Name => {
-            let mut k = Vec::with_capacity(v.len());
-            for t in v.iter() {
-                k.push((cx.summary(*t).map(|s| s.name.to_lowercase()).unwrap_or_default(), *t));
-            }
-            k.sort();
-            *v = k.into_iter().map(|x| x.1).collect();
-        }
-        Order::Changed => {
-            let mut k = Vec::with_capacity(v.len());
-            for t in v.iter() {
-                k.push((cx.changed(*t)?.unwrap_or(0), *t));
-            }
-            k.sort_by(|a, b| b.cmp(a));
-            *v = k.into_iter().map(|x| x.1).collect();
-        }
-        Order::Time => {
-            let mut k = Vec::with_capacity(v.len());
-            for t in v.iter() {
-                k.push((cx.summary(*t).ok().and_then(|s| s.time).unwrap_or(i64::MAX), *t));
-            }
-            k.sort();
-            *v = k.into_iter().map(|x| x.1).collect();
-        }
+        Order::Own => Ok(()),
+        Order::Name => sort_by(v, |t| Ok(cx.summary(t).map(|s| s.name.to_lowercase()).unwrap_or_default())),
+        // newest first, ties by tid descending
+        Order::Changed => sort_by(v, |t| Ok(Reverse((cx.changed(t)?.unwrap_or(0), t)))),
+        Order::Time => sort_by(v, |t| Ok(cx.summary(t).ok().and_then(|s| s.time).unwrap_or(i64::MAX))),
     }
-    Ok(())
 }
 
 /// The one main colour of a page showing `t` (notes/theming.md): its own, else the first among
