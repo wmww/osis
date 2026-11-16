@@ -518,14 +518,15 @@ fn unit_sources_are_kept_notes_client_port() {
 fn a_write_whose_answer_was_lost_applies_once_spec_sync_transport_6() {
     let w = world(Some(Role::Write));
     let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
-    let before = w.a.writes(&osis::Scope::Thing(w.t), &osis::CommitQuery::default()).unwrap().commits.len();
+    let listed = || w.a.writes(&osis::Scope::Thing(w.t), &osis::CommitQuery::default()).unwrap().commits.into_iter().map(|c| c.stamp.id).collect::<Vec<_>>();
+    let before = listed();
     w.net.lose_next_bytes_to(1);
     let mut x = cl.write();
     x.at(w.t, v()).overwrite(&Value::Int(6)).unwrap();
     let made = x.commit().unwrap().unwrap();
-    let after = w.a.writes(&osis::Scope::Thing(w.t), &osis::CommitQuery::default()).unwrap().commits;
-    assert_eq!(after.len(), before + 1, "applied once");
-    assert_eq!(after[0].stamp.id, made.stamp.id);
+    let after = listed();
+    assert_eq!(after.iter().filter(|c| !before.contains(c)).collect::<Vec<_>>(), vec![&made.stamp.id], "applied once");
+    assert_eq!(after[0], made.stamp.id);
 }
 
 // spec/sync-transport.md §6 (`unix:///path`), over the product's transports: a socket client

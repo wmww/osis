@@ -525,7 +525,8 @@ fn created_not_a_snapshot_spec_commits_2() {
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
     let mut w = a.write();
-    let t = w.create().unwrap();
+    // plain: its creation is the write's own commit
+    let t = w.create_with_admin(a.account_root()).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("v")).unwrap();
     let done = w.commit().unwrap().unwrap();
     c.advance(60_000);

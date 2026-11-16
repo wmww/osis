@@ -1201,7 +1201,8 @@ mod tests {
         use osis_schema::{core_types as ct, Codec};
         let mut lp = LocalPeer::fresh(3, osis_base::WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let [a, b, c] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
+        let [b, c] = [1, 2].map(|i| lp.peers[i].engine.me());
+        let a = lp.peers[0].engine.plain_admin();
         let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
         // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
         let mut m = Mutation::new();

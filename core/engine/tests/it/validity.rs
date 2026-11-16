@@ -611,7 +611,15 @@ pub(crate) fn forge_by(by: &osis_engine::Engine, rec: osis_base::CreationRecord,
 fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     let mut lp = net(3, 0);
     lp.sync_all().unwrap();
-    let d = new_thing(&mut lp, 0);
+    // made under the account: secrets of its own from its creation
+    let d = {
+        let me = lp.peers[0].engine.me();
+        let mut m = Mutation::new();
+        let d = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(d, &REG, &s("new")).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        d
+    };
     let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
     let inv = osis_schema::core_types::Edge { invite: Some(Role::Read), ..edge(Role::Read) };
     lp.peers[0].engine.grant(&d, &b, &inv).unwrap();
@@ -3356,7 +3364,7 @@ fn stranger_sync_id_listing_sync_ids_nothing_spec_sync_2() {
     lp.sync_all().unwrap();
     let (p, _) = lp.peers[0].engine.create_account().unwrap();
     let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, p.account);
+    let t = lp.peers[0].engine.new_thing(&mut m, p.devices);
     lp.peers[0].commit(m).unwrap();
     let e = &mut lp.peers[0].engine;
     assert!(e.things_with_sync_ids().contains(&p.devices), "the account's home sync ID");

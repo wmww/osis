@@ -773,7 +773,7 @@ mod tests {
     fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let me = lp.peers[0].engine.me();
+        let me = lp.peers[0].engine.plain_admin();
         let b = lp.peers[1].engine.me();
         let thing = |lp: &mut LocalPeer| {
             let mut m = Mutation::new();

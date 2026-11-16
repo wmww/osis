@@ -21,6 +21,8 @@ Spec: spec/sync-set.md. Model: notes/closure-model.md (held-model `closure`). Co
 - Not yet incremental: `sync_things` folds the closure whole when a thing enters or leaves (a memo, as the sync set rows fold per thing anyway), and a cut (things sourced elsewhere) walks it from scratch (`Closure::uncut`).
 
 ## Making a thing
+- A thing a local commit makes under an account is due own keys (`Core::own_keys_due`): before the first content write on it (`write::keyed_first`, as `Engine::mint_actor` mints: its record alone, `rotation::own_secrets`, then the rest of the commit under its own keys), else at its creating transaction's end (`rotation::own_keys_due`). Role writes go first as they are, so a maker keying it itself (a link's K, its sync ID listing L) is not keyed twice. Content under derived keys would be re-encrypted, chunks and all, by the first write after the rotation.
+- Cost per such thing (engine `facade::a_thing_made_under_an_account_has_own_keys_spec_permissions_3`): 3 commits and about 28 KB stored against 1 commit and 1.6 KB for a plain thing under the account root; the same as any thing pays at its first grant. Things an app keeps account-wide and plain go under the account root.
 - Not enforced yet (spec/sync-set.md §2 Making a thing): the check after the settle (each non-key-actor thing a transaction's own commits make held at its end, else refused) refuses about 700 engine tests whose helpers make things under the account with no strong. It lands with the planned test set (issues/reference-graph.md Execution step 6).
 
 ## Not carried

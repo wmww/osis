@@ -71,8 +71,6 @@ pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
     let c = w.create()?;
     w.at(c, RETENTION).set(&setting)?;
     w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge), purge })?;
-    // refgraph: a root made under the account takes own keys at creation (issues/own-keys-at-creation.md):
-    // until core gives them, the chat stays on this node until its first grant or link
     w.at(holder, HOLDS).path(osis::p![]).add(&Ref::Strong(Strong(c)))?;
     w.commit()?;
     Ok(c)

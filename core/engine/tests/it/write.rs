@@ -39,7 +39,7 @@ fn node_identity_spec_dm_1() {
 #[test]
 fn write_and_read_spec_crdt_4_5() {
     let mut p = peer(0);
-    let me = p.engine.me();
+    let me = p.engine.plain_admin();
     p.drain_events();
     let mut m = Mutation::new();
     let t = p.engine.new_thing(&mut m, me);

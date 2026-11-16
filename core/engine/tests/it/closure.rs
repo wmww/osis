@@ -163,17 +163,19 @@ fn the_node_roots_strong_to_the_account_root_stays_spec_sync_set_1() {
     }
 }
 
-// spec/sync-set.md §2 Not carried: X in D's sync unit strongly references Y, made under the
-// account, which D's keys do not open and nothing else holds: the strong is named, from X's
+// spec/sync-set.md §2 Not carried: X in D's sync unit strongly references Y, a thing this node
+// never got, so D's keys do not open it and nothing else holds it: the strong is named, from X's
 // written strongs and in the whole list; a strong to a held thing is not.
 #[test]
 fn a_strong_nothing_carries_is_named_spec_sync_set_2() {
     let (mut lp, _) = people(1);
     let e = &mut lp.peers[0].engine;
     let d = e.account_root().unwrap();
-    let p = e.account().unwrap().unwrap().0;
     let x = make(e, d, d);
-    let y = make(e, p, x);
+    let y = Tid::from_bytes([7; 15]);
+    let mut m = Mutation::new();
+    m.op(x, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(y)) }).unwrap();
+    e.commit(m).unwrap();
     let z = make(e, d, x);
     assert!(!e.closure_holds(&y) && e.closure_holds(&z));
     assert_eq!(e.not_carried_among(&x, &[y, z].into()).unwrap(), vec![y]);

@@ -923,7 +923,7 @@ mod tests {
         use crate::Mutation;
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.plain_admin();
         let (o, _) = e.create_with_admin(&me).unwrap();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, o);

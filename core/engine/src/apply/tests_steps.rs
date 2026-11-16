@@ -64,7 +64,7 @@ fn pending_then_applied(f: Option<StepFault>) -> (LocalPeer, CommitId) {
 fn pending_setup() -> (LocalPeer, (CommitId, CommitId)) {
     let mut lp = LocalPeer::fresh(2, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.plain_admin();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
@@ -103,7 +103,7 @@ fn two_parts(f: Option<StepFault>) -> (LocalPeer, CommitId) {
 fn two_parts_setup() -> (LocalPeer, CommitId) {
     let mut lp = LocalPeer::fresh(2, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.plain_admin();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
@@ -142,7 +142,7 @@ fn removal_to_answer() -> (LocalPeer, Tid, CommitId) {
 fn removal_setup() -> (LocalPeer, Tid, CommitId) {
     let mut lp = LocalPeer::fresh(3, T0);
     lp.sync_all().unwrap();
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.plain_admin();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(0)).unwrap();

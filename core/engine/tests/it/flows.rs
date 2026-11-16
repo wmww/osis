@@ -2236,8 +2236,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
 
 // spec/permissions.md §1 (first admin), §3; spec/wire.md §3: account 0
 // creates O (a chat) with itself as first admin: its creation commit
-// carries `created.0` alone, and O derives from account 0's secrets until the first grant gives
-// it secrets of its own. It grants account 1 admin, accounts 2 and 3 write. Its admins are
+// carries `created.0` alone, and O, made under an account, has secrets of its own from then. It grants account 1 admin, accounts 2 and 3 write. Its admins are
 // equal: account 1 removes account 0's record edge, stored nowhere. Writer 2 rotates
 // O to itself; the remaining admin recovers. O's admin grants on a thing below O through its record
 // chain.
@@ -2251,12 +2250,10 @@ fn chat_by_record_spec_perm_1() {
     assert_eq!(aks, BTreeSet::from(["created.0"]));
     assert_eq!(lp.peers[0].engine.first_admin(&o), Some(ps[0]));
     assert_eq!(lp.peers[0].engine.role_on(&o), Some(Role::Admin));
-    assert_eq!(newest_read(&lp, 0, o).map(|e| e.n()), newest_read(&lp, 0, ps[0]).map(|e| e.n()), "derived from the first admin's");
-    assert_eq!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap(), None);
+    assert!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap().is_some(), "secrets of its own at its creation");
     for (p, r) in [(ps[1], Role::Admin), (ps[2], Role::Write), (ps[3], Role::Write)] {
         lp.peers[0].engine.grant(&o, &p, &edge_of(r)).unwrap();
     }
-    assert!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap().is_some(), "secrets of its own before the first grant");
     spread(&mut lp);
     for (i, r) in [Role::Admin, Role::Admin, Role::Write, Role::Write].into_iter().enumerate() {
         assert_eq!(lp.peers[i].engine.role_on(&o), Some(r), "peer {i}");
@@ -2330,14 +2327,15 @@ fn record_edge_removal_any_order_spec_perm_2() {
     }
 }
 
-// spec/permissions.md §3, spec/crypto.md §3: a plain thing derives from its first
-// admin; the first grant gives it secrets of its own first (its rotation before the grant,
-// history carrying the derived epochs), and once the first admin is removed it opens nothing
-// written since.
+// spec/permissions.md §3, spec/crypto.md §3: a plain thing (here under account 0's root D)
+// derives from its first admin; the first grant gives it secrets of its own first (its rotation
+// before the grant, history carrying the derived epochs), and once the first admin is removed it
+// opens nothing written since.
 #[test]
 fn first_grant_on_plain_thing_rotates_first_spec_perm_3() {
     let (mut lp, ps) = people(3);
-    let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
+    let d = lp.peers[0].engine.plain_admin();
+    let (o, _) = lp.peers[0].engine.create_with_admin(&d).unwrap();
     let mut m = Mutation::new();
     m.set(o, &REG, &s("derived")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -2350,19 +2348,20 @@ fn first_grant_on_plain_thing_rotates_first_spec_perm_3() {
     assert!(aks(&new[1]).contains("roles.0"));
     spread(&mut lp);
     assert_eq!(lp.peers[1].engine.get(&o, &ak("t:reg.0")).unwrap(), Some(s("derived")), "the grantee reads the derived write");
-    lp.peers[1].engine.demote(&o, &remove(ps[0])).unwrap();
+    lp.peers[1].engine.demote(&o, &remove(d)).unwrap();
     spread_sealed(&mut lp);
     assert_eq!(lp.peers[0].engine.role_on(&o), None);
     assert_eq!(sealed_write(&mut lp, 1, o, "after"), BTreeSet::new(), "the removed first admin opens nothing new");
 }
 
 // spec/permissions.md §1 (last admin of a plain thing): the last admin edge of a plain thing is not removed (refused
-// locally); signed anyway (here by its first admin, an account, removing itself) it applies, the
-// thing stays plain, the first admin still reads it by derivation, and nobody writes it.
+// locally); signed anyway (here by a node of its first admin, the account root, removing it) it
+// applies, the thing stays plain, the first admin still reads it by derivation, and nobody
+// writes it.
 #[test]
 fn last_admin_of_plain_thing_refused_spec_perm_1() {
     let (mut lp, _) = people(2);
-    let n = lp.peers[0].engine.me();
+    let n = lp.peers[0].engine.plain_admin();
     let (o, _) = lp.peers[0].engine.create_with_admin(&n).unwrap();
     let mut m = Mutation::new();
     m.set(o, &REG, &s("v")).unwrap();

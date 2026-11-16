@@ -734,6 +734,18 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
     own_secrets_listing(tx, t, &[], done)
 }
 
+/// Gives each thing this transaction made under an account and keyed no other way secrets of
+/// its own, at the transaction's end (spec/permissions.md §3; one its maker keyed itself, as a
+/// link's K, or whose creation went since, is skipped).
+pub(crate) fn own_keys_due(tx: &mut Tx<'_>) -> Result<()> {
+    for t in std::mem::take(&mut tx.core.own_keys_due) {
+        if tx.core.created(&t).is_some() {
+            own_secrets(tx, t, &mut Done::default())?;
+        }
+    }
+    Ok(())
+}
+
 /// `own_secrets`, its genesis step listing `also` besides the holders it boxes (a link's key,
 /// granted next).
 pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<()> {

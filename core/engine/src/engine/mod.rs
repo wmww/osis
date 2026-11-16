@@ -1326,6 +1326,10 @@ pub struct Core {
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
+    /// Things this transaction's own commits made under an account and gave no own keys yet:
+    /// given them before a content write on them (`write::keyed_first`), else at its end
+    /// (`rotation::own_keys_due`).
+    pub own_keys_due: BTreeSet<Tid>,
     /// Freed rows (thing, blob) added this transaction: judged at its end, once their states are
     /// rebuilt (`retention::freed::settle_due`).
     pub freed_due: BTreeSet<(Tid, osis_base::BlobId)>,
@@ -1549,6 +1553,7 @@ impl Core {
             setting_waits_due: self.setting_waits_due.clone(),
             setting_waits_judging: self.setting_waits_judging,
             drop_due: self.drop_due.clone(),
+            own_keys_due: self.own_keys_due.clone(),
             freed_due: self.freed_due.clone(),
             forgotten_names_due: self.forgotten_names_due.clone(),
             handed_due: self.handed_due.clone(),
@@ -2085,6 +2090,7 @@ impl Core {
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
             drop_due: _,
+            own_keys_due: _,
             freed_due: _,
             forgotten_names_due: _,
             handed_due: _,
@@ -2372,6 +2378,7 @@ impl Core {
             setting_waits_due: BTreeSet::new(),
             setting_waits_judging: false,
             drop_due: BTreeSet::new(),
+            own_keys_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
             forgotten_names_due: BTreeSet::new(),
             handed_due: BTreeSet::new(),
@@ -3660,6 +3667,12 @@ impl Engine {
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
                 _after = memo::Unrecorded::start();
+                // a thing made under an account has own keys by its creating transaction's end
+                // (spec/permissions.md §3)
+                if r.is_ok() && !tx.core.own_keys_due.is_empty() {
+                    r = r.and_then(|v| crate::rotation::own_keys_due(&mut tx).map(|_| v));
+                }
+                tx.core.own_keys_due.clear();
                 // explicit demotions applied get this node's addenda (spec/permissions.md §5.2)
                 if r.is_ok()
                     && !tx.txn.is_memory()

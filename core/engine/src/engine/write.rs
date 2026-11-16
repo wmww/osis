@@ -720,16 +720,53 @@ impl Engine {
     }
 }
 
-/// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing. Refused when
-/// it would take away a strong the node's roots keep (`roots::kept`), however it is written.
+/// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing. Except: a thing
+/// made under an account (in no sync unit) has secrets of its own before any content is written
+/// on it (spec/permissions.md §3), as `Engine::mint_actor` mints (`keyed_first`). Refused when it
+/// would take away a strong the node's roots keep (`roots::kept`), however it is written.
 pub(crate) fn commit_in(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
     if m.sealed {
         return Err(Error::Misuse("a sealed fire is built by `sealed_commit`"));
     }
     let kept = crate::flows::roots::kept(tx)?;
-    let r = commit_or_build(tx, m)?.map(|(id, _)| id);
+    let r = keyed_first(tx, m)?;
     crate::flows::roots::still_kept(tx, &kept)?;
     Ok(r)
+}
+
+/// `commit_in`'s commits. A thing `m` makes under an account is due own keys
+/// (`Core::own_keys_due`); one due that `m` writes content on gets them first: its record alone
+/// where `m` makes it, its rotation, then the rest of `m` under its own keys, the last commit
+/// returned. Role writes (a maker keying it itself, a grant) come before as they are.
+fn keyed_first(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
+    for (t, r) in &m.creates {
+        if r.first_admin().is_some_and(|a| tx.core.is_account(&a)) {
+            tx.core.own_keys_due.insert(*t);
+        }
+    }
+    let content = |t: &Tid| m.aspects.keys().any(|(x, ak)| x == t && ak.as_str() != CREATED.ak() && !is_role_class(ak.as_str()));
+    let now: Vec<Tid> = tx.core.own_keys_due.iter().filter(|t| content(t)).copied().collect();
+    if now.is_empty() {
+        return Ok(commit_or_build(tx, m)?.map(|(id, _)| id));
+    }
+    let mut records = Mutation::new();
+    records.signer = m.signer;
+    // an expiring write's creation expires with it (`fit_creations`)
+    let expires = m.aspects.iter().filter(|((_, ak), _)| ak.as_str() != CREATED.ak() && ak.as_str() != osis_commit::retention::RETENTION).find_map(|(_, am)| am.expires);
+    for t in &now {
+        if let Some(r) = m.creates.remove(t) {
+            records.creates.insert(*t, r);
+            if expires.is_some() {
+                records.aspects.entry((*t, Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default().expires = expires;
+            }
+        }
+    }
+    let c = if records.creates.is_empty() { None } else { commit_or_build(tx, records)?.map(|(id, _)| id) };
+    for t in now {
+        tx.core.own_keys_due.remove(&t);
+        crate::rotation::own_secrets(tx, t, &mut crate::flows::Done::default())?;
+    }
+    Ok(commit_or_build(tx, m)?.map(|(id, _)| id).or(c))
 }
 
 /// The commit of sealed fire mutation `m` (one fire of an open signal on a thing this node need

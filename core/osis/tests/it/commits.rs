@@ -312,7 +312,8 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
     while things.len() < n {
         let mut w = a.write();
         let k = (n - things.len()).min(500);
-        things.extend((0..k).map(|_| w.create().unwrap()));
+        // plain: made under the account root, whose keys they take
+        things.extend((0..k).map(|_| w.create_with_admin(a.account_root()).unwrap()));
         w.commit().unwrap();
     }
     deliver(&a, &b);
@@ -320,7 +321,7 @@ fn changes_on_as_many_things_spec_requirements_decentralization() {
     let big: Vec<u8> = (0..osis_base::format::MAX_BLOB + 1).map(|i| (i % 251) as u8).collect();
     let before: std::collections::BTreeSet<_> = a.engine(|e| e.commit_ids()).into_iter().collect();
     let mut w = a.write();
-    let large = w.create().unwrap();
+    let large = w.create_with_admin(a.account_root()).unwrap();
     w.at(large, key.clone()).path(osis::p![]).set_stream(&big[..]).unwrap();
     for (i, t) in things.iter().enumerate() {
         w.at(*t, key.clone()).set(&Value::Int(i as i64)).unwrap();
@@ -377,7 +378,8 @@ fn commit_work(n: usize) -> std::collections::BTreeMap<String, u64> {
     costs::take();
     let r0 = osis_perm::roles_reached();
     let mut w = a.write();
-    let things: Vec<_> = (0..n).map(|_| w.create().unwrap()).collect();
+    // plain: made under the account root, whose keys they take
+    let things: Vec<_> = (0..n).map(|_| w.create_with_admin(a.account_root()).unwrap()).collect();
     w.commit().unwrap();
     deliver(&a, &b);
     add("create", costs::take(), osis_perm::roles_reached() - r0);

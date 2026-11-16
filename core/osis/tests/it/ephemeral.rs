@@ -46,7 +46,7 @@ fn s(x: &str) -> Value {
 fn write_and_watch_without_commit_spec_data_model_2() {
     let (db, _c) = setup(0);
     let state = db.aspect_key("win:state+.0").unwrap();
-    let made = commit_with(&db, |w| w.create().map(drop));
+    let made = commit_with(&db, |w| w.create_with_admin(db.account_root()).map(drop));
     let win = db.engine(|e| e.header(&made.stamp.id.raw())).unwrap().aspects.iter().find(|a| a.ak.as_str() == "created.0").unwrap().tid;
     let c = db.created(win).unwrap().unwrap();
     // a record alone acts for its signer (spec/commits.md §2)

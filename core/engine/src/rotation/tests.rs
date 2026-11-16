@@ -2645,7 +2645,7 @@ fn derived_write_after_own_secrets_is_merged_spec_crypto_4() {
 #[test]
 fn derived_written_goes_with_its_destroyed_thing() {
     let mut lp = synced(1);
-    let me = lp.peers[0].engine.me();
+    let me = lp.peers[0].engine.plain_admin();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();

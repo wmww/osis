@@ -1810,7 +1810,7 @@ mod tests {
         let end = |keys_first: bool| {
             let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
-            let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+            let (alice, bob, carol) = (lp.peers[0].engine.plain_admin(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
             let x = Ak::new("x:v.0").unwrap();
             let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
             let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
@@ -1877,7 +1877,7 @@ mod tests {
     fn reader_actor_up_the_record_chain_spec_sync_3() {
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        let (a, b) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+        let (a, b) = (lp.peers[0].engine.plain_admin(), lp.peers[1].engine.me());
         let e = &mut lp.peers[0].engine;
         let p = e.create_with_admin(&a).unwrap().0;
         let r = e.create_with_admin(&p).unwrap().0;

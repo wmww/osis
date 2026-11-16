@@ -154,7 +154,7 @@ pub fn net_off(n: usize, seed: u64) -> LocalPeer {
     lp
 }
 
-/// A new thing whose first admin is peer `i`'s node.
+/// A new plain thing of peer `i`: its first admin `Engine::plain_admin`.
 pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
     new_thing_keeping(lp, i, &[])
 }
@@ -162,9 +162,9 @@ pub fn new_thing(lp: &mut LocalPeer, i: usize) -> Tid {
 /// `new_thing` whose setting also keeps `extra` (each AK's history beside `test_setting`'s).
 pub fn new_thing_keeping(lp: &mut LocalPeer, i: usize, extra: &[(&str, osis_schema::History)]) -> Tid {
     let p = lp.peer(i).unwrap();
-    let me = p.engine.me();
+    let admin = p.engine.plain_admin();
     let mut m = Mutation::new();
-    let t = p.engine.new_thing(&mut m, me);
+    let t = p.engine.new_thing(&mut m, admin);
     m.set(t, &REG, &s("new")).unwrap();
     let mut x = test_setting();
     x.rules.extend(setting(extra).rules);

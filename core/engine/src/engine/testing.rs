@@ -93,6 +93,18 @@ impl Engine {
         self.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.4.len()).collect()
     }
 
+    /// Tests: the first admin of a plain thing this node makes: its account root where it acts as
+    /// its account (a thing made under an account has own keys, spec/permissions.md §3), else
+    /// what it acts as.
+    #[doc(hidden)]
+    pub fn plain_admin(&self) -> Tid {
+        let me = self.me();
+        match self.core.account_devices() {
+            Some((p, d)) if p == me => d,
+            _ => me,
+        }
+    }
+
     /// Commits `m` past the writer's rules, as a hostile node would: its role check, commit
     /// shape rules and refusal to emit a delta it judges invalid. A receiver's judgment of what
     /// no writer makes can be tested so.
@@ -978,7 +990,7 @@ mod tests {
         use osis_base::{Value, WallMs};
         let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let e = &mut lp.peers[0].engine;
-        let me = e.me();
+        let me = e.plain_admin();
         let mut m = crate::Mutation::new();
         let (one, many) = (e.new_thing(&mut m, me), e.new_thing(&mut m, me));
         m.set(one, &Ak::new("x:a.0").unwrap(), &Value::Str("PLANTED-ONE".into())).unwrap();

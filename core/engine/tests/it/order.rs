@@ -1126,7 +1126,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             }
             Step::NewTop { by } => {
                 let mut m = Mutation::new();
-                let t = lp.peers[by].engine.new_thing(&mut m, ids[by]);
+                let t = { let a = lp.peers[by].engine.plain_admin(); lp.peers[by].engine.new_thing(&mut m, a) };
                 m.set(t, &REG, &s("top")).unwrap();
                 m.set(t, &osis_schema::core_types::RETENTION, &base_setting(lp.peers[by].engine.now(), things.len() % 2 == 1)).unwrap();
                 let id = lp.peers[by].commit(m).unwrap().expect("a creation writes");
@@ -1244,7 +1244,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let po = |path: Vec<PathSeg>, op: Op| PathOp { path, op };
                 let tag = s(&format!("t{}", v % 4));
                 let mut m = Mutation::new();
-                let t = lp.peers[by].engine.new_thing(&mut m, ids[by]);
+                let t = { let a = lp.peers[by].engine.plain_admin(); lp.peers[by].engine.new_thing(&mut m, a) };
                 let made = lp.peers[by].commit(m).unwrap().expect("a creation writes");
                 assert_eq!(lp.peers[by].engine.header(&made).unwrap().aspects.len(), 1, "a creation alone");
                 things.push(t);
