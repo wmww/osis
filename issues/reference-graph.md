@@ -123,7 +123,7 @@ Rules:
 - D's deposit seed: the inbox is its own thing, so a fresh deposit seed on a device removal rests on every sync-role rotation writing a new one (the inbox thing and D rotate inside each P rotation); check it holds in the rebuild.
 - Whether reading a weak must tell "destroyed" from "not held" (both read absent today).
 - Which search the edge-removal uses first (other referrers, or the subtree): each loses in one shape (notes/closure-model.md, counts); running both in step meets both.
-- What `tools/policy_test.py` and `tools/spec_map.py` need once `life.rs` and the removed sections go.
+- What `tools/spec_map.py` needs once the removed sections go (`tools/policy_test.py` plants appended text in a missing file afresh).
 - How long a revoked role's certificate stays carried under the former grantee's sync ID (candidate: `ROLE_KEEP`, as a replaced role body).
 - No bound on how many sync IDs one commit is carried under (nothing limits the sync units a thing is in): measure with issues/many-sync-ids-cost.md.
 

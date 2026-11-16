@@ -2,10 +2,11 @@
 """The gate steps a branch's changed paths select (notes/gate.md, Components pay for themselves).
 
   tools/gate_paths.py [-v] BASE [REV]   the paths changed from BASE to the working tree (untracked
-      files included), or to commit REV; prints gate.sh's `core= gui= unify= doc=` assignments.
+      files included), or to commit REV; prints gate.sh's `core= gui= unify= doc= tooling=` assignments.
       -v: why a diff of docs and Rust is not comments-only (each line that is not)
 
 gui=1: a path under libs/kit/ or app/. unify=1: a Cargo.toml, Cargo.lock or .cargo/ path.
+tooling=1: a path under tools/, .gitattributes or notes/time-limits.md (the tools' own tests run).
 core: '' when every path is the GUI's; `docs` when the rest is Markdown under spec/, notes/ or
 issues/; `comments` when the rest is that Markdown and .rs files whose every changed line, removed
 or added, is a whole-line `//` comment (below); else 1. Under docs or comments, a Rust line that
@@ -37,6 +38,8 @@ from rustsrc import lex, sanitize
 
 GUI = ("libs/kit/", "app/")
 DOCS = re.compile(r"(spec|notes|issues)/.*\.md")
+# what the tools' own tests read: the tools, the union lists' attributes, the time-limit tables
+TOOLING = re.compile(r"tools/|\.gitattributes$|notes/time-limits\.md$")
 UNIFY = re.compile(r"(.*/)?Cargo\.toml|Cargo\.lock|\.cargo/.*", re.S)
 READERS = r"(include(_str|_bytes)?!|read_to_string|fs::read|File::open|\.join)\(.*(spec|notes|issues)/"
 SOURCE_READERS = r'(include_str!|include_bytes!|read_to_string|fs::read|File::open)\(.*\.rs"'
@@ -235,11 +238,12 @@ def readers():
 
 
 def classify(base, rev=None, verbose=False):
-    """{core, gui, unify, doc} for the paths changed from base to rev (None: the working tree)."""
+    """{core, gui, unify, doc, tooling} for the paths changed from base to rev (None: the working tree)."""
     paths = changed(base, rev)
     rest = [p for p in paths if not p.startswith(GUI)]
     res = dict(core="1" if rest else "", gui="1" if len(rest) < len(paths) else "",
-               unify="1" if any(UNIFY.fullmatch(p) for p in paths) else "", doc="")
+               unify="1" if any(UNIFY.fullmatch(p) for p in paths) else "", doc="",
+               tooling="1" if any(TOOLING.match(p) for p in paths) else "")
     rs = [p for p in rest if not DOCS.fullmatch(p)]
     if not rest or any(not p.endswith(".rs") for p in rs):
         return res
@@ -272,7 +276,7 @@ def main():
     if len(args) not in (1, 2):
         sys.exit(__doc__)
     res = classify(args[0], args[1] if len(args) == 2 else None, verbose)
-    for k in ("core", "gui", "unify", "doc"):
+    for k in ("core", "gui", "unify", "doc", "tooling"):
         print(f"{k}={shlex.quote(res[k])}")
 
 

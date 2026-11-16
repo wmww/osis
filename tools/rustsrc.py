@@ -1,4 +1,4 @@
-"""The workspace's crates and Rust sources, as tools/policy.py, dead_pub.py and loc.py read them."""
+"""The workspace's crates and Rust sources, as tools/policy.py, gate_paths.py and loc.py read them."""
 import functools, glob, os, re, tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

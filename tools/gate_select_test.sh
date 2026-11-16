@@ -30,7 +30,7 @@ case_() {
   sh -c "$3"; git status --porcelain | grep -q . || { echo "FAIL $1: changed nothing"; fail=1; }; git add -A; git commit -qm "$1"
   check "$1" "$2"
 }
-check "on main" "core=1 gui=1 unify=1 select=all"
+check "on main" "core=1 gui=1 unify=1 select=all tooling=1"
 case_ "kit only" "core=0 gui=1 unify=0 select=none" "echo x >> libs/kit/src/a.rs"
 case_ "libs/chat is core" "core=1 gui=0 unify=0 select=diff" "echo x >> libs/chat/a.rs"
 case_ "app only" "core=0 gui=1 unify=0 select=none" "echo x >> app/a.rs"
@@ -45,6 +45,7 @@ case_ "kit manifest" "core=0 gui=1 unify=1 select=none" "echo x > libs/kit/Cargo
 case_ "cargo config" "core=1 gui=0 unify=1 select=diff" "mkdir .cargo; echo x > .cargo/config.toml"
 case_ "a file ending in Cargo.toml" "core=1 gui=0 unify=0 select=diff" "echo x > core/osis/NotCargo.toml"
 case_ "notes only" "core=docs gui=0 unify=0 select=none" "echo x >> notes/n.md"
+case_ "time-limit tables" "core=docs gui=0 unify=0 select=none tooling=1" "echo x >> notes/time-limits.md"
 case_ "spec, notes, issues" "core=docs gui=0 unify=0 select=none" "echo x >> spec/s.md; echo x >> notes/n.md; git rm -q issues/i.md"
 case_ "notes and core" "core=1 gui=0 unify=0 select=diff" "echo x >> notes/n.md; echo x >> core/osis/a.rs"
 case_ "notes and kit" "core=docs gui=1 unify=0 select=none" "echo x >> notes/n.md; echo x >> libs/kit/src/a.rs"
@@ -60,14 +61,14 @@ case_ "comments, notes and kit" "core=comments gui=1 unify=0 select=none" "echo 
 case_ "new comment-only file" "core=1 gui=0 unify=0 select=diff" "echo '// x' > core/osis/c.rs"
 case_ "comment and a manifest" "core=1 gui=0 unify=1 select=diff" "echo '// x' >> core/osis/a.rs; echo x >> Cargo.toml"
 case_ "doc comment, no cargo metadata" "core=1 gui=0 unify=0 select=diff" "echo '/// x' >> core/osis/a.rs"
-case_ "gate itself" "core=1 gui=0 unify=0 select=diff" "echo '#' >> tools/gate.sh"
+case_ "gate itself" "core=1 gui=0 unify=0 select=diff tooling=1" "echo '#' >> tools/gate.sh"
 case_ "kit and core" "core=1 gui=1 unify=0 select=diff" "echo x >> libs/kit/src/a.rs; echo x >> core/osis/a.rs"
 case_ "core deleted" "core=1 gui=0 unify=0 select=diff" "git rm -q core/osis/a.rs"
 case_ "kit, core and a manifest: not everything" "core=1 gui=1 unify=1 select=diff" "echo x >> libs/kit/src/a.rs; echo x >> Cargo.toml"
 case_ "core moved into kit" "core=1 gui=1 unify=0 select=diff" "git mv core/osis/a.rs libs/kit/src/moved.rs"
 case_ "engine file moved into app" "core=1 gui=1 unify=0 select=diff" "git mv core/engine/a.rs app/moved.rs"
-check "--all" "core=1 gui=1 unify=1 select=all" --all
-check "--base HEAD" "core=1 gui=1 unify=1 select=all" --base HEAD
+check "--all" "core=1 gui=1 unify=1 select=all tooling=1" --all
+check "--base HEAD" "core=1 gui=1 unify=1 select=all tooling=1" --base HEAD
 check "--base bad" "exit 2: fatal: Needed a single revision" --base nonexistent
 case_ "kit commit" "core=0 gui=1 unify=0 select=none" "echo x >> libs/kit/src/a.rs"
 cd libs/kit/src  # not a subshell: check's counters must survive
@@ -96,10 +97,10 @@ case_ "notes only, a source reads notes" "gate: docs or comments diff, but these
 core/osis/r.rs:1:let _ = std::fs::read_to_string(\"../notes/n.md\");
 core=1 gui=0 unify=0 select=diff" "echo x >> notes/n.md"
 git checkout -q main; git checkout -qb fresh; echo x >> libs/kit/src/a.rs
-check "uncommitted kit edit, no commits (base = HEAD)" "core=1 gui=1 unify=1 select=all"
+check "uncommitted kit edit, no commits (base = HEAD)" "core=1 gui=1 unify=1 select=all tooling=1"
 git checkout -q libs/kit/src/a.rs
 git checkout -q --orphan orph; git commit -qm orphan
-check "no merge base" "core=1 gui=1 unify=1 select=all"
+check "no merge base" "core=1 gui=1 unify=1 select=all tooling=1"
 # local main behind origin/main (pushed from another checkout): origin's work is not the branch's
 git checkout -q main; echo x >> core/osis/a.rs; git commit -qam "merged elsewhere"; git push -q origin main; git reset -q --hard HEAD^
 git checkout -q -b lag origin/main; echo x >> libs/kit/src/a.rs; git commit -qam lag
@@ -113,7 +114,7 @@ git remote set-url origin ../missing.git
 check "fetch fails" "gate: fetching origin main failed; using the last fetched one
 core=0 gui=1 unify=0 select=none"
 git checkout -q t; git remote remove origin
-check "no origin/main" "core=1 gui=1 unify=1 select=all"
+check "no origin/main" "core=1 gui=1 unify=1 select=all tooling=1"
 # the hold's runner (--held): only under tools/heavy (HEAVY_HELD), each `run LIMIT CMD` line in order with
 # stdin closed, every one run, `LIMIT EXIT LOG` per run in runs.res; exit 1 if any failed; `build` lines are not its
 held() {

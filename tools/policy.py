@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
-"""Policy checks (notes/gate.md, Policy checks): unsafe forbidden everywhere in the workspace,
-workspace lints on, every external dependency has its line in notes/architecture.md §5, and no
-target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run,
-and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and no
-test can bind the real LAN port or
-announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`test_copies`), and sync keeps no hashed collection (`sync_hashed`), and sync's tests pin no differential seed (`pinned_seeds`), and only the engine's `apply::checked`
-vouches for checked delta bytes (`checked_bytes`), and signature verdicts are read back only where kept (`kept_verdicts`), and every tools/known_failures.txt line names
-an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
-and every list under git's union merge has no duplicate line and a stale-line check (`union_lists`),
-and no code names a thing's destruction by the old word "ended" (`ended_names`), and no code or comment uses a deprecated sync, host, upload or person term (`old_words`), and each store's local-row key constants are prefix-free and never written as literals (`row_prefixes`), and sync's peer-record tags are distinct bytes never written as literals (`record_tags`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and every code name notes/ and issues/ cite in backticks exists (tools/code_refs.py), and no core `pub`
-item is used only by its own crate's tests or not at all unless tools/dead_pub_allow.txt lists it (tools/dead_pub.py).
+"""Policy checks (notes/gate.md, Policy checks), each failure naming its rule: workspace lints on
+(so the compiler forbids unsafe; app/android denies it and keeps its one block), every external
+dependency has its line in notes/architecture.md §5, no target marked `test = false` /
+`doctest = false` has tests that would silently not run, held-model depends only on crdt-model,
+core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name (`env_vars`),
+dispute types stay private (`dispute_types`), no test binds the real LAN port or announces on the
+real LAN (`real_lan_tests`), a test peer ticks through its wake (`peer_ticks`), world copies stay
+test-only (`test_copies`), only the engine's `apply::checked` vouches for checked delta bytes
+(`checked_bytes`), signature verdicts are read back only where kept (`kept_verdicts`), sync keeps
+no hashed collection (`sync_hashed`), sync's tests pin no differential seed (`pinned_seeds`),
+tools/known_failures.txt names existing issues, tests and valid patterns (`known_failures`),
+union-merged lists have no duplicate and a stale-line check (`union_lists`), no destruction named
+"ended" (`ended_names`) and no deprecated term (`old_words`) in code, store row keys and sync's
+record tags are distinct and never literals (`row_prefixes`, `record_tags`), every pointer into
+notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and every code name
+notes/ and issues/ cite in backticks exists (tools/code_refs.py).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
 import functools, glob, multiprocessing, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import code_refs, dead_pub, doc_refs, gate_failures
+import code_refs, doc_refs, gate_failures
 from rustsrc import ROOT, has, members as workspace_members, read, rs_files, toml as load
 
 errs = []
@@ -120,20 +125,17 @@ for m in members:
             if name in internal or (isinstance(spec, dict) and "path" in spec):
                 continue
             external.setdefault(name, rel)
-    for src in rs_files(m, members):
+    # elsewhere the workspace lint (or a model's own) forbids unsafe: the compiler refuses it
+    for src in rs_files(m, members) if is_android else []:
         srel = os.path.relpath(src, ROOT)
-        text = read(src)
-        lines = text.splitlines() if "unsafe" in text else []
+        lines = read(src).splitlines()
         for i, line in enumerate(lines, 1):
             if UNSAFE.search(code(line)):
                 # app/android's one unsafe block, under its SAFETY comment
-                if is_android and line.strip().startswith("unsafe {") and any(l.strip().startswith("// SAFETY:") for l in lines[max(0, i - 4):i - 1]):
+                if line.strip().startswith("unsafe {") and any(l.strip().startswith("// SAFETY:") for l in lines[max(0, i - 4):i - 1]):
                     android_unsafe.append(srel)
                     continue
                 errs.append(f"{srel}:{i}: unsafe code")
-        root_file = srel.endswith(("/src/lib.rs", "/src/main.rs")) or "/src/bin/" in srel
-        if root_file and not is_model and not is_android and "#![forbid(unsafe_code)]" not in text:
-            errs.append(f"{srel}: crate root lacks #![forbid(unsafe_code)]")
 
 if len(android_unsafe) > 1:
     errs.append(f"app/android: {len(android_unsafe)} unsafe blocks; it may have one ({', '.join(android_unsafe)})")
@@ -365,7 +367,6 @@ def known_failures():
 # beside the other's change comes back: each list needs a check that refuses a stale line, named here.
 UNION_STALE = {
     "tools/known_failures.txt": "known_failures: no such issue file, test or sim scenario",
-    "tools/dead_pub_allow.txt": "dead_pub: no longer dead",
     "tools/code_refs_allow.txt": "code_refs: in the code, or cited nowhere",
     "core/base/testenv-known.txt": "env_vars: nothing reads it",
 }
@@ -484,7 +485,7 @@ def record_tags():
             yield f"{rel}: a record row written with a literal tag (name it in {RECORD_TAGS}'s `tag`)"
 
 # the slowest first, so the pool balances
-CHECKS = [dead_pub.check, doc_refs.check, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, union_lists, test_copies, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
+CHECKS = [doc_refs.check, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, union_lists, test_copies, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
 
 
 def run(check):

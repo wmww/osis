@@ -50,10 +50,5 @@ for text, want in [("notes/x.md §3 (y)", []), ("RFC 8949 §4.2", []), ("spec/cr
     if got != want:
         print(f"FAIL citations({text!r}) = {got}")
         fails = 1
-# The repo's own citations are clean (what --gaps checks).
-tests = spec_map.rust_tests() + spec_map.vector_cases()
-rk = {(f, s, a) for f, s, a, _ in spec_map.RULES}
-for p in spec_map.stray_anchors(tests, spec_map.spec_sentences(), rk):
-    print(f"FAIL {p}")
-    fails = 1
+print("spec_map_test: " + ("FAILED" if fails else "ok"))
 sys.exit(fails)

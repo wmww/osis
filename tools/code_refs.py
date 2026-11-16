@@ -25,7 +25,7 @@ from rustsrc import members
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALLOW = "tools/code_refs_allow.txt"
 # lists of names, not code: a renamed name they still hold would pass (their own checks catch it)
-LISTS = {ALLOW, "tools/dead_pub_allow.txt", "tools/known_failures.txt"}
+LISTS = {ALLOW, "tools/known_failures.txt"}
 NOT_SRC = (".md", ".ttf", ".snap", ".vec")
 PATH_EXTS = (".rs", ".tla", ".cfg", ".py", ".sh", ".toml", ".osis", ".java", ".kt")
 WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")

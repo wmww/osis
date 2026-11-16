@@ -79,11 +79,12 @@ om=$(git rev-parse -q --verify refs/remotes/origin/main || true)
 core=1
 gui=1
 unify=1
+tooling=1
 every=1
 doc=
 if [ -z "$all" ] && [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; then
   every=
-  # the steps the paths changed since the merge base (committed or not) select: core= gui= unify= doc=
+  # the steps the paths changed since the merge base (committed or not) select: core= gui= unify= doc= tooling=
   paths=$(python3 "$tools/gate_paths.py" "$base") || exit 2
   eval "$paths"
 fi
@@ -95,7 +96,7 @@ elif [ -n "$every" ]; then
 else
   select=diff
 fi
-if [ -n "$plan" ]; then echo "core=${core:-0} gui=${gui:-0} unify=${unify:-0} select=$select${doc:+ doc=$doc}"; exit 0; fi
+if [ -n "$plan" ]; then echo "core=${core:-0} gui=${gui:-0} unify=${unify:-0} select=$select${doc:+ doc=$doc}${tooling:+ tooling=1}"; exit 0; fi
 # a branch not on origin's main gates code other than what merges: refuse it
 if [ -n "$om" ] && ! git merge-base --is-ancestor "$om" HEAD; then
   echo "gate: HEAD does not contain origin/main ($(git rev-list --count "HEAD..$om") commits behind): git rebase origin/main" >&2; exit 2
@@ -163,18 +164,15 @@ locks() {
 step locks
 step python3 tools/policy.py
 if [ -z "$core" ]; then gui_only "GUI-only change"; fi
-# instant checks first, so a missing citation fails before minutes of tests
+# instant checks first, so a missing citation fails before minutes of tests; the tools' own tests
+# (every tools/*_test.*) only when what they read changed (tooling)
 instant() {
-  step sh tools/gate_select_test.sh
-  step python3 tools/test_select_test.py
-  step python3 tools/gate_failures_test.py
-  step python3 tools/gate_paths_test.py
-  step python3 tools/limits_test.py
-  step python3 tools/doc_refs_test.py
-  step python3 tools/code_refs_test.py
-  step python3 tools/spec_map_test.py
-  step python3 tools/policy_test.py
-  step python3 tools/limits.py split
+  if [ -n "$tooling" ]; then
+    for t in tools/*_test.*; do
+      case $t in *.sh) step sh "$t" ;; *) step python3 "$t" ;; esac
+    done
+    step python3 tools/limits.py split
+  fi
   step python3 tools/spec_map.py --uncited --gaps
 }
 limited gate.checks instant

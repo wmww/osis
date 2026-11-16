@@ -69,7 +69,7 @@ check("d8b89848d string lines", len(strings), 14)
 check("d8b89848d strings named", all('"' in b for b in strings), True)
 check("d8b89848d docs in a macro", len([b for b in bad if "doc comment inside a macro" in b]), 2)
 check("d8b89848d", g.classify("d8b89848d^", "d8b89848d")["core"], "1")
-check("6050ae05f", g.classify("6050ae05f^", "6050ae05f"), dict(core="comments", gui="", unify="", doc=""))
+check("6050ae05f", g.classify("6050ae05f^", "6050ae05f"), dict(core="comments", gui="", unify="", doc="", tooling=""))
 
 # doc comments: a crate's doctests, unless a proc macro may read them or no crate owns the file
 check("doc crates", g.doc_crates(["core/base/src/ids.rs", "core/engine/tests/it/judgment.rs"]), (["osis-base", "osis-engine"], []))

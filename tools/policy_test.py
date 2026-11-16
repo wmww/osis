@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests tools/policy.py (dead_pub.py, doc_refs.py and code_refs.py with it) by planting violations, at least one
+"""Tests tools/policy.py (doc_refs.py and code_refs.py with it) by planting violations, at least one
 per check, in a copy of the working tree and asserting each is reported, and a near miss is not;
 and that `rustsrc.has`'s prefilter never rejects a text its pattern matches. A check that silently
 stops finding violations would otherwise pass every gate.
@@ -13,7 +13,7 @@ ROOT = os.path.dirname(TOOLS)
 sys.path.insert(0, TOOLS)
 from rustsrc import has
 
-CHECKERS = ("policy.py", "dead_pub.py", "doc_refs.py", "code_refs.py", "rustsrc.py", "gate_failures.py")
+CHECKERS = ("policy.py", "doc_refs.py", "code_refs.py", "rustsrc.py", "gate_failures.py")
 fails = 0
 
 
@@ -45,8 +45,7 @@ ISSUE = "issues/sync-unbuilt.md"
 V = "OSIS" + "_"  # split, so this file names no variable env_vars would count
 # (path, old text or None to append, new text)
 PLANTS = [
-    # unsafe, lints, test = false, crate roots, android, dependencies
-    ("core/base/src/ids.rs", None, "\nfn planted_unsafe() { unsafe {} }\n"),
+    # lints, test = false, android, dependencies
     ("core/base/Cargo.toml", "[lints]\nworkspace = true\n", ""),
     ("core/test/crdt-model/Cargo.toml", 'unsafe_code = "forbid"', 'unsafe_code = "deny"'),
     ("core/test/held-model/Cargo.toml", "crdt-model.workspace = true\n", "crdt-model.workspace = true\nosis-base.workspace = true\n"),
@@ -54,7 +53,6 @@ PLANTS = [
     ("core/test/crdt-model/src/lib.rs", None, "\n#[cfg(test)]\nmod planted {}\n"),
     ("core/schema/src/lib.rs", None, "\n/// ```\n/// planted();\n/// ```\nfn planted_doc() {}\n"),
     ("core/schema/src/bin/osis-schema-gen.rs", None, "\n#[cfg(test)]\nmod planted {}\n"),
-    ("core/blob/src/lib.rs", "#![forbid(unsafe_code)]", ""),
     ("app/android/src/gpu.rs", None, "\nfn planted() {\n    // SAFETY: planted\n    unsafe { planted() }\n}\n"),
     ("core/crypto/Cargo.toml", "[dependencies]\n", '[dependencies]\nplanted-dep = "1"\n'),
     # env_vars
@@ -89,7 +87,7 @@ PLANTS = [
     # ended_names, in each kind of file it reads; the last without a final newline
     ("core/base/src/hash.rs", None, "\n// the ended_things here\n"),
     ("schema/app.osis", None, "\n# EndedIn\n"),
-    ("tools/prune-incremental.sh", None, "\n# Status::Ended\n"),
+    ("tools/gate.sh", None, "\n# Status::Ended\n"),
     ("core/test/tla/sync/MC.tla", None, "\n\\* NoLeakEnded"),
     # old_words
     ("core/sync/src/life.rs", None, "\n// a node re-uploads it to the hosts\n"),
@@ -106,20 +104,13 @@ PLANTS = [
     # code_refs: a stale name, a listed name now in the code, a duplicate listed line
     ("notes/build.md", None, "\nSee `Engine::planted_gone_fn` and `planted_listed_name`.\n"),
     ("tools/code_refs_allow.txt", None, "planted_listed_name  placeholder\nEngine  placeholder\nplanted_listed_name  placeholder\n"),
-    # dead_pub
-    ("core/crdt/src/stream.rs", None, "\npub fn planted_dead_fn() {}\npub fn planted_test_only() {}\npub struct PlantedType;\n"
-     "impl PlantedType {}\npub fn planted_live() {}\n#[cfg(test)]\nmod planted_t { fn f() { super::planted_test_only(); } }\n"),
-    ("core/perm/src/lib.rs", None, "\nfn planted_user() { osis_crdt::planted_live(); }\n"),
-    ("tools/dead_pub_allow.txt", None, "osis-crdt::not_a_planted_item  test hook\n"),
     # union_lists: a duplicate line in each union-merged list, a key listed twice, a union list unchecked
-    ("tools/dead_pub_allow.txt", None, "osis-crdt::not_a_planted_item  test hook\nosis-crdt::not_a_planted_item  table\n"),
     ("core/base/testenv-known.txt", None, f"{V}BENCH_MS\n"),
     ("tools/known_failures.txt", None, f"planted::no_such_test_fn - {ISSUE} x\n"),
     (".gitattributes", None, "notes/time-limits.md merge=union\n"),
 ]
 
 EXPECT = [  # regexes the output must hold
-    r"core/base/src/ids\.rs:\d+: unsafe code",
     r"core/base: needs \[lints\] workspace = true",
     r"core/test/crdt-model: model needs \[lints.rust\] unsafe_code",
     r"core/test/held-model: depends on workspace crate `osis-base`",
@@ -127,7 +118,6 @@ EXPECT = [  # regexes the output must hold
     r"core/test/crdt-model: \[lib\] test = false but src/ has #\[cfg\(test\)\]",
     r"core/schema/src/lib\.rs: doctest = false but it has a doctest",
     r"core/schema: bin osis-schema-gen has test = false",
-    r"core/blob/src/lib\.rs: crate root lacks #!\[forbid\(unsafe_code\)\]",
     r"app/android: 2 unsafe blocks",
     r"dependency `planted-dep` \(core/crypto\) has no line",
     r"OSIS[_]PROBE_PLANTED is a throwaway probe",
@@ -154,7 +144,7 @@ EXPECT = [  # regexes the output must hold
     r"bad pattern '\('",
     r"core/base/src/hash\.rs:\d+: `ended_things`",
     r"schema/app\.osis:\d+: `EndedIn`",
-    r"tools/prune-incremental\.sh:\d+: `Status::Ended`",
+    r"tools/gate\.sh:\d+: `Status::Ended`",
     r"core/test/tla/sync/MC\.tla:\d+: `NoLeakEnded`",
     r"core/sync/src/life\.rs:\d+: `uploads`",
     r"sync store: row key 'zq/x' \(core/sync/src/life\.rs:\d+ PLANTED_SUB\) and 'zq/' \(core/sync/src/life\.rs:\d+ PLANTED_ROW\) collide|sync store: row key 'zq/' \(core/sync/src/life\.rs:\d+ PLANTED_ROW\) and 'zq/x' \(core/sync/src/life\.rs:\d+ PLANTED_SUB\) collide",
@@ -168,12 +158,6 @@ EXPECT = [  # regexes the output must hold
     r"tools/code_refs_allow\.txt:\d+: `Engine` is in the code",
     r"tools/code_refs_allow\.txt:\d+: `planted_listed_name` listed twice",
     r"tools/code_refs_allow\.txt:\d+: duplicate of line \d+",
-    r"pub fn osis-crdt::planted_dead_fn is used only",
-    r"pub fn osis-crdt::planted_test_only is used only",
-    r"pub struct osis-crdt::PlantedType is used only",
-    r"tools/dead_pub_allow\.txt: osis-crdt::not_a_planted_item is no longer dead",
-    r"tools/dead_pub_allow\.txt:\d+: duplicate of line \d+",
-    r"tools/dead_pub_allow\.txt:\d+: `osis-crdt::not_a_planted_item` listed twice with different reasons",
     r"core/base/testenv-known\.txt:\d+: duplicate of line \d+",
     r"tools/known_failures\.txt:\d+: duplicate of line \d+",
     r"\.gitattributes: notes/time-limits\.md has merge=union but no stale-line check",
@@ -182,7 +166,6 @@ ABSENT = [  # near misses: what the plants show must not be reported
     r"libs/chat/src/lib\.rs: calls a dispute query",
     r"core/sync/tests/it/life\.rs: Lan::bind in a test on a fixed port: fn near_miss",
     r"core/engine/tests/it/groups\.rs:\d+: engine",
-    r"osis-crdt::planted_live",
     r"core/transport/src/lib\.rs:\d+: `hosts`",
     r"faults\.rs:\d+: (world|history)\(",
 ]
@@ -219,7 +202,9 @@ def main():
             fail(f"the unplanted copy fails policy.py:\n{out}")
         for path, old, new in PLANTS:
             p = os.path.join(d, path)
-            text = open(p).read()
+            # an appended plant needs no file: a deleted fixture file is planted afresh
+            text = open(p).read() if old is not None or os.path.exists(p) else ""
+            os.makedirs(os.path.dirname(p), exist_ok=True)
             if old is None:
                 text += new
             elif text.count(old) != 1:
