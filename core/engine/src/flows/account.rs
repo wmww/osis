@@ -1297,24 +1297,10 @@ impl Engine {
         })
     }
 
-    /// Pairing, new node side, before applying what `pair` sent: the node keeps account `p`'s
-    /// chain as it arrives, as its own account's (spec/commits.md §5 What a held thing needs),
-    /// until `paired`. In memory: a restart ends the pairing.
-    pub fn joining(&mut self, p: &Tid) -> Result<()> {
-        self.core.joining = Some(*p);
-        Ok(())
-    }
-
-    /// Pairing, new node side, after applying what `pair` sent: joins account `p`, checking the
-    /// chain puts it on D's roster. Ends `joining` either way.
+    /// Pairing, new node side, after applying what `pair` sent, in the same hold of the engine
+    /// (no pass ends between, so what arrived is still held, spec/commits.md §5 What a held thing
+    /// needs): joins account `p`, checking the chain puts it on D's roster.
     pub fn paired(&mut self, p: &Tid) -> Result<()> {
-        let r = self.pair_take_up(p);
-        self.core.joining = None;
-        r
-    }
-
-    /// `paired` but ending `joining`.
-    fn pair_take_up(&mut self, p: &Tid) -> Result<()> {
         let node = self.tid();
         let d = self.root_held(p).ok_or(Error::UnknownThing(*p))?;
         self.hold_account(p, &d)?;

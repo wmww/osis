@@ -38,7 +38,6 @@ fn two_nodes() -> (LocalPeer, Tid) {
         let n = lp.peers[1].engine.tid();
         let card = lp.peers[1].engine.commit_ids();
         send(&mut lp, 1, 0, &card);
-        lp.peers[1].engine.joining(&p.account).unwrap();
         let (_, out) = lp.peers[0].engine.pair(&n).unwrap();
         send(&mut lp, 0, 1, &out);
         lp.peers[1].engine.paired(&p.account).unwrap();

@@ -1,21 +1,22 @@
 //! What stays of a thing only while something held needs it (spec/commits.md §5 Forgetting,
 //! spec/permissions.md §4): another account's chain (its record, its `keys.0` commits, its
-//! inbox's), and a released thing's record and role-class state. A thing outside the node closure
-//! is kept while a thing that needs it is kept: one in the node closure whose durable state
-//! holds a strong to it (`refs::to`; a weak or ticket only points and needs nothing), an account
-//! by its `keys.0` (its inbox), one whose record names it first admin, one whose held edge write
-//! names it holder (`Held::named_on`), one a held or pending commit it authored or acted in is on
-//! (body held or not; a pending one by the things it writes on, `Indexes::pend_by`), one a pending
-//! commit awaiting its record writes on (`Wake::Record`), one a held commit on it has a part
-//! missing on (`Meta::missing_parts`). A thing is rooted, kept for itself: in
-//! the node closure or leaving it, reached by a held strong with a ticket for it held
-//! (`Closure::accepted`: what judges the ticket stays, spec/sync-set.md §2), this node's, its
-//! account's, the account it is being paired into (`Core::joining`) or the node's own (its record
-//! chain's key actor), a key actor that is no account (a node, a link key), the K of a followed
-//! link, one a key actor held here is named on (a link being redeemed, a bearer), a kept copy,
-//! or a thing an own self-removal still waits to seal
-//! under. Everything else goes whole, as never received, when the pass that brought it ends or its
-//! last need went (`settle`).
+//! inbox's), and a released thing's record and role-class state, whoever's it is. A thing outside
+//! the node closure is kept while a thing that needs it is kept: one in the node closure whose
+//! durable state holds a strong to it (`refs::to`; a weak or ticket only points and needs
+//! nothing), an account by its `keys.0` (its inbox), one whose record names it first admin, one
+//! whose held edge write names it holder (`Held::named_on`), one a held or pending commit it
+//! authored or acted in is on (body held or not; a pending one by the things it writes on,
+//! `Indexes::pend_by`), one a pending commit awaiting its record writes on (`Wake::Record`), one a
+//! held commit on it has a part missing on (`Meta::missing_parts`). A thing is rooted, kept for
+//! itself: in the node closure or leaving it, reached by a held strong with a ticket for it held
+//! (`Closure::accepted`: what judges the ticket stays, spec/sync-set.md §2), a key actor that is
+//! no account (a node, a link key), the K of a followed link, one a key actor held here is named
+//! on (a link being redeemed, a bearer), a kept copy, or a thing an own self-removal still waits
+//! to seal under. Nothing is rooted by whose it is: this node's account is needed by its root
+//! (D's record names it), and a thing made under the node or the account goes as any once
+//! released. A pairing node takes the account up (`Engine::paired`) in the hold of the engine
+//! that applied what pairing sent, before any pass ends. Everything else goes whole, as never
+//! received, when the pass that brought it ends or its last need went (`settle`).
 //!
 //! Judged once the pass in flight ends (`Engine::settle_needs`): a thing arrived (a record
 //! learned, `apply::atomic::learn_record`, or awaited by a commit that pends, `apply::set_pending`)
@@ -32,7 +33,7 @@
 
 use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
-use osis_base::{ChainStep, Tid};
+use osis_base::Tid;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -89,15 +90,6 @@ fn rooted(core: &Core, t: &Tid) -> bool {
     }
     // a key actor that is no account, or the K of a link this node follows
     if (core.is_key_actor(t) && !core.is_account(t)) || core.followed_links.contains(t) {
-        return true;
-    }
-    // the key actor its record chain climbs to; an unknown link reads as another's
-    let top = match core.record_chain(t).last() {
-        Some(ChainStep::Key(y)) => Some(y),
-        Some(ChainStep::Unknown(_)) | None => None,
-        Some(ChainStep::Up { .. }) | Some(ChainStep::TooDeep) => return true,
-    };
-    if top.is_some_and(|y| y == core.id.tid() || core.account.get() == Some(y) || core.joining == Some(y) || core.accounts.contains_key(&y) || core.key_actors.contains_key(&y) || core.ix.bearers.contains(&y)) {
         return true;
     }
     // a key actor held here (a link being redeemed, a bearer) is named on it

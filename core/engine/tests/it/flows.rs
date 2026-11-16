@@ -129,7 +129,6 @@ fn account_two_nodes_built() -> (LocalPeer, Tid) {
     let n = lp.peers[1].engine.tid();
     let card: Vec<CommitId> = lp.peers[1].engine.commit_ids();
     send(&mut lp, 1, 0, &card);
-    lp.peers[1].engine.joining(&p.account).unwrap();
     let (_, send_) = lp.peers[0].engine.pair(&n).unwrap();
     send(&mut lp, 0, 1, &send_);
     lp.peers[1].engine.paired(&p.account).unwrap();
@@ -845,7 +844,6 @@ fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
     let d1 = lp.peers[0].engine.tid();
     let ids = lp.peers[0].engine.commit_ids();
     send(&mut lp, 0, 1, &ids);
-    lp.peers[0].engine.joining(&p.account).unwrap();
     let (_, send_) = lp.peers[1].engine.pair(&d1).unwrap();
     send(&mut lp, 1, 0, &send_);
     lp.peers[0].engine.paired(&p.account).unwrap();

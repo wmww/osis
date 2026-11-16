@@ -770,3 +770,34 @@ fn a_weak_to_an_account_keeps_nothing_a_strong_to_its_profile_keeps_its_chain_sp
     assert!(!kept(Value::Weak(q)), "a weak to Q keeps nothing of it");
     assert!(kept(Value::Strong(profile)), "a strong to Q's profile keeps Q's chain");
 }
+
+// spec/sync-set.md §3 (Nothing of R stays), spec/commits.md §5 (What a held thing needs): a node's
+// own things are released whole as another's are. A plain thing under the account root, a thing
+// with own keys under the account and a plain thing under the node root, each written and then
+// released, keep no record, secret or part here: their record chains topping at this node or
+// its account keep nothing of them.
+#[test]
+fn own_things_are_released_whole_spec_sync_set_3() {
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let (root, d) = (e.node_root().unwrap(), e.account_root().unwrap());
+    let p = e.account().unwrap().unwrap().0;
+    let (a, c) = (make(e, d, d), make(e, root, root));
+    let b = e.create_with_admin(&p).unwrap().0;
+    for t in [a, b, c] {
+        let mut m = Mutation::new();
+        m.set(t, &crate::common::REG, &crate::common::s("new")).unwrap();
+        e.commit(m).unwrap();
+    }
+    strong(e, d, a, false);
+    strong(e, d, b, false);
+    strong(e, root, c, false);
+    e.released(&[a, b, c].into()).unwrap();
+    for t in [a, b, c] {
+        assert!(e.core.created(&t).is_none(), "{t:?}: its record");
+        assert!(!e.held_actors_has(&t), "{t:?}: its secrets");
+        // a commit with a part held elsewhere (the strong's, on D) keeps its header alone
+        let held = e.core.on_thing(&t).filter(|c| e.core.ix.commits.get(c).is_some_and(|m| m.view.aspects.iter().enumerate().any(|(i, x)| x.tid == t && m.holds(i)))).count();
+        assert_eq!(held, 0, "{t:?}: its parts");
+    }
+}

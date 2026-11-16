@@ -171,7 +171,6 @@ pub fn net_one(n: usize) -> LocalPeer {
 /// direct connection).
 pub fn pair_into(lp: &mut LocalPeer, by: usize, p: &mut osis_engine::local_peer::Peer) {
     let account = lp.peers[by].engine.me();
-    p.engine.joining(&account).unwrap();
     for id in p.engine.commit_ids() {
         let pk = p.engine.package(&id).unwrap().unwrap();
         lp.deliver(by, &pk).unwrap();

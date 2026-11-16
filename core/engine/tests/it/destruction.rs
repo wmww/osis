@@ -77,25 +77,31 @@ fn a_destroyed_thing_is_held_and_released_as_any_thing_spec_commits_5() {
 }
 
 // spec/commits.md §5 (Destruction: a destroyed thing keeps its record while a held thing needs
-// it: a dependent, by a held creation record naming it first admin): t, u's first admin,
-// destroyed and released from the node closure, keeps its record while u lives; u destroyed and
-// released too, t keeps nothing.
+// it: a dependent, by a held creation record naming it first admin): t, under the account and
+// held from D, is u's first admin; u is held from the node root. t destroyed and released from
+// the node closure keeps its record while u lives; u destroyed and released too, t keeps nothing
+// once the pass ends (it lost its last need), its chain topping at this node's own account.
 #[test]
-#[ignore = "issues/writes-on-unheld-things-tests.md"]
 fn a_dependent_keeps_a_destroyed_things_record_spec_commits_5() {
     let (mut lp, ps) = people(1);
     let t = thing_of(&mut lp, 0, ps[0]);
     let u = thing_of(&mut lp, 0, t);
+    lp.peers[0].engine.hold(Strong(u)).unwrap();
     purge(&mut lp, t);
     let e = &mut lp.peers[0].engine;
-    e.unhold(Strong(t)).unwrap();
+    let d = e.account_root().unwrap();
+    let mut m = Mutation::new();
+    m.op(d, &ct::HOLDS, holds(t, false)).unwrap();
+    e.commit(m).unwrap();
     e.released(&[t].into()).unwrap();
+    assert!(!e.closure_holds(&t), "t released");
     assert!(keeps(&mut lp, &t), "u names t first admin: t keeps its record");
     assert_eq!(lp.peers[0].engine.get_typed(&u, &REG).unwrap(), Some(s("new")), "u reads on");
     purge(&mut lp, u);
     let e = &mut lp.peers[0].engine;
     e.unhold(Strong(u)).unwrap();
     e.released(&[u].into()).unwrap();
+    e.settle_needs().unwrap();
     assert!(!keeps(&mut lp, &u), "nothing needs u");
     assert!(!keeps(&mut lp, &t), "u let go of t: t keeps nothing");
 }

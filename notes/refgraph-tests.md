@@ -99,7 +99,8 @@ Part 2 (sync worlds on fixture copies; the differential and sims on fresh worlds
 - Sharing through a thing: sync `holding::{a_reader_of_a_thing_reads_what_it_is_granted_spec_sync_set_2, a_keyless_grant_reads_nothing_through_it_spec_crypto_4}`.
 - Pairing: sync `flows::{a_paired_node_pairs_another_spec_sync_inbox_1, a_node_pairs_another_after_removing_its_pairer_spec_sync_inbox_1}`.
 - What a held ticket does (spec/sync-set.md §2): T7 (`holding::a_ticket_enters_at_the_lower_of_its_role_and_the_holders_spec_sync_set_2`), T6's granted-again arm (`tickets::a_reader_granted_again_reads_again_spec_sync_set_2`), a stale ticket not taken again (`tickets::a_stale_ticket_enters_nothing_and_is_not_retaken_spec_sync_set_2`).
-- Not written: L6, L7, L8, I2's promotion table, I3, I4, I6, I7, S1.
+- S1, its own-things arm: sync `growth::releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3` (things under D, under the account and under the node root, made, written and released, 2 and 20 rounds against a fresh node; ignored for issues/storage-owners.md 12, 13). Its engine half, default: `closure::own_things_are_released_whole_spec_sync_set_3`.
+- Not written: L6, L7, L8, I2's promotion table, I3, I4, I6, I7, S1's grant, revoke, fire, redeem, accept and decline rounds.
 - Old tests deleted: sync links' test of a sibling's join ending a redeem (T4), osis `sync::{the_contact_card_is_a_read_link_to_the_profile_spec_sync_inbox_5, a_paired_node_knows_the_accounts_profile_spec_sync_set_1}` (the differential's cards; sync `tickets::a_paired_node_enters_the_profile_by_ds_ticket_spec_sync_set_1`). Kept: sync `links::a_held_join_forgets_the_link_and_k_stays_synced_spec_permissions_7` (a single-use link forgotten, no second join: nothing else checks it), osis `sync::importing_a_card_gives_the_account_spec_sync_inbox_5` (card import, under repair by its own worker).
 
 ## Differential and sim set

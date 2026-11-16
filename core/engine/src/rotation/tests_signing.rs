@@ -46,7 +46,6 @@ fn world(n: usize, nodes: usize) -> (LocalPeer, CreatedAccount, Tid) {
             let node = lp.peers[i].engine.tid();
             let ids = lp.peers[i].engine.commit_ids();
             send(&mut lp, i, 0, &ids);
-            lp.peers[i].engine.joining(&a.account).unwrap();
             let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
             send(&mut lp, 0, i, &all);
             lp.peers[i].engine.paired(&a.account).unwrap();
@@ -1144,7 +1143,6 @@ fn a_re_added_nodes_later_rotation_is_authorized_spec_permissions_5_4() {
     send(&mut lp, 0, 2, &done.commits);
     lp.advance(5);
     let node = lp.peers[2].engine.tid();
-    lp.peers[2].engine.joining(&a.account).unwrap();
     let (done, all) = lp.peers[0].engine.pair(&node).unwrap();
     send(&mut lp, 0, 2, &all);
     send(&mut lp, 0, 1, &done.commits);
@@ -1485,7 +1483,6 @@ fn pair_from(lp: &mut LocalPeer, a: &CreatedAccount, by: usize, new: usize) -> C
     let node = lp.peers[new].engine.tid();
     let ids = lp.peers[new].engine.commit_ids();
     send(lp, new, by, &ids);
-    lp.peers[new].engine.joining(&a.account).unwrap();
     let (done, all) = lp.peers[by].engine.pair(&node).unwrap();
     send(lp, by, new, &all);
     lp.peers[new].engine.paired(&a.account).unwrap();
@@ -1746,8 +1743,8 @@ fn a_reader_paired_into_the_account_judges_its_chain_as_a_node_spec_permissions_
         let mut lp = LocalPeer::new_bare(3, 0, WallMs(1_700_000_000_000)).unwrap();
         let (a, _) = lp.peers[0].engine.create_account().unwrap();
         pair(&mut lp, &a, 1);
-        // reader 2 is to be paired: it keeps the account's chain meanwhile
-        lp.peers[2].engine.joining(&a.account).unwrap();
+        // reader 2 is to be paired: a strong to the account keeps its chain meanwhile
+        lp.peers[2].engine.hold(osis_base::Strong(a.account)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(1000);
         (lp, a)
@@ -1786,7 +1783,6 @@ fn pair(lp: &mut LocalPeer, a: &CreatedAccount, i: usize) {
     let node = lp.peers[i].engine.tid();
     let ids = lp.peers[i].engine.commit_ids();
     send(lp, i, 0, &ids);
-    lp.peers[i].engine.joining(&a.account).unwrap();
     let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
     send(lp, 0, i, &all);
     lp.peers[i].engine.paired(&a.account).unwrap();
@@ -1985,7 +1981,6 @@ fn a_node_paired_after_a_removal_reads_its_maker_spec_permissions_5_4() {
         let node = lp.peers[i].engine.tid();
         let ids = lp.peers[i].engine.commit_ids();
         send(lp, i, 0, &ids);
-        lp.peers[i].engine.joining(&a.account).unwrap();
         let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
         let ids: Vec<CommitId> = lp.peers[0].engine.commit_ids();
         let all: Vec<CommitId> = if marked_last { ids } else { all };
@@ -2195,7 +2190,6 @@ fn a_node_paired_beside_a_concurrent_rotation_stays_spec_permissions_5_5() {
         let node = lp.peers[i].engine.tid();
         let ids = lp.peers[i].engine.commit_ids();
         send(&mut lp, i, 0, &ids);
-        lp.peers[i].engine.joining(&a.account).unwrap();
         let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
         send(&mut lp, 0, i, &all);
         lp.peers[i].engine.paired(&a.account).unwrap();
@@ -2401,7 +2395,6 @@ fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
         let node = lp.peers[1].engine.tid();
         let ids = lp.peers[1].engine.commit_ids();
         send(&mut lp, 1, 0, &ids);
-        lp.peers[1].engine.joining(&a.account).unwrap();
         let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
         send(&mut lp, 0, 1, &all);
         lp.peers[1].engine.paired(&a.account).unwrap();
@@ -2426,7 +2419,6 @@ fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
         let n2 = lp.peers[2].engine.tid();
         let ids = lp.peers[2].engine.commit_ids();
         send(&mut lp, 2, 0, &ids);
-        lp.peers[2].engine.joining(&a.account).unwrap();
         let (_, all) = lp.peers[0].engine.pair(&n2).unwrap();
         lp.peers[2].engine.core.faults.stale_shut = shut;
         send(&mut lp, 0, 2, &all);

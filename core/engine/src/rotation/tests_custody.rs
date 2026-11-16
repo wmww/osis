@@ -72,7 +72,6 @@ fn setup() -> (LocalPeer, Ids) {
                 let pk = lp.peers[i].engine.package(&id).unwrap().unwrap();
                 lp.deliver(A, &pk).unwrap();
             }
-            lp.peers[i].engine.joining(&a.account).unwrap();
             let (_, all) = lp.peers[A].engine.pair(&node).unwrap();
             for c in &all {
                 let pk = lp.peers[A].engine.package(c).unwrap().unwrap();

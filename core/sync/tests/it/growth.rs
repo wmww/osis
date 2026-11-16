@@ -423,3 +423,83 @@ fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
     let (a, b) = (head_move(&mut w, 3), head_move(&mut w, 30));
     assert!(b.0 <= a.0 + 64 && b.1 <= a.1 + 64, "bytes (store to reader, reader to store) across a head move: {a:?} at n, {b:?} at 10n");
 }
+
+/// Node 0 makes a plain thing under its account root D held from D, a thing with own keys under
+/// its account (held from D), and a plain thing under its node root held from it, writes each,
+/// removes every strong to them and lets them go (a run releases them); then the tombstone
+/// lifetime and two days pass. `rounds` times; what it holds then.
+/// Node 0 makes a plain thing under its account root D held from D, a thing with own keys under
+/// its account (held from D), and a plain thing under its node root held from it, writes each,
+/// removes every strong to them and runs (a pass releases them), `rounds` times; then snapshots
+/// the roots' `holds.0` and D's `tickets.0` (what the trigger leaves held moves in a cycle; a
+/// snapshot ends it at the same place) and lets the tombstone lifetime and two days pass. What
+/// it holds then.
+fn own_rounds(w: &mut World, rounds: usize) -> Held {
+    use osis_schema::core_types::{HOLDS, TICKETS};
+    let (root, d) = (w.engine(0).node_root().unwrap(), w.engine(0).account_root().unwrap());
+    let p = w.engine(0).account().unwrap().unwrap().0;
+    let strong = |m: &mut Mutation, from: Tid, to: Tid, on: bool| {
+        let v = Value::Strong(to);
+        let op = if on { osis_crdt::Op::Add(v) } else { osis_crdt::Op::Remove(v) };
+        m.op(from, &HOLDS, osis_crdt::PathOp { path: vec![], op }).unwrap();
+    };
+    for _ in 0..rounds {
+        let ts = w.write(0, |e| {
+            let mut ts = Vec::new();
+            for from in [d, root] {
+                let mut m = Mutation::new();
+                let t = m.create(e.thing_record(from));
+                strong(&mut m, from, t, true);
+                e.commit(m).unwrap();
+                ts.push((t, from));
+            }
+            ts.push((e.create_with_admin(&p).unwrap().0, d));
+            for (t, _) in &ts {
+                let mut m = Mutation::new();
+                m.set(*t, &value_ak(), &Value::Str("new".into())).unwrap();
+                e.commit(m).unwrap();
+            }
+            ts
+        });
+        w.run();
+        w.write(0, |e| {
+            for (t, from) in &ts {
+                let mut m = Mutation::new();
+                strong(&mut m, *from, *t, false);
+                e.commit(m).unwrap();
+            }
+        });
+        w.run();
+        for (t, _) in &ts {
+            assert!(w.engine(0).core.created(t).is_none(), "released: {t:?} keeps its record");
+        }
+        w.advance(1_000);
+    }
+    w.write(0, |e| {
+        for (t, ak) in [(d, HOLDS.name()), (d, TICKETS.name()), (root, HOLDS.name())] {
+            e.snapshot(&t, &ak).unwrap();
+        }
+    });
+    w.run();
+    w.advance(TOMBSTONE_LIFETIME_MS + 2 * DAY_MS);
+    w.run();
+    held(w, 0)
+}
+
+// S1, its own-things arm (notes/refgraph-tests.md; issues/reference-graph.md Storage),
+// spec/sync-set.md §3 (Nothing of R stays): what a node makes under its account root, its account
+// and its node root, written and then released, leaves its rows and blobs as a fresh node's of the
+// same account once tombstones have aged out, at 2 and 20 rounds, but for the schemas it learned
+// (`d/`, the node's own).
+#[test]
+#[ignore = "issues/storage-owners.md 12, 13: set tombstones in the roots' holds.0 and tickets.0, entries of forgotten commits under D's sync ID"]
+fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
+    let fresh = own_rounds(&mut world(0, 1), 0);
+    let learned = |mut h: Held| {
+        h.0.remove("d/");
+        h
+    };
+    for n in [2, 20] {
+        assert_eq!(learned(own_rounds(&mut world(0, 1), n)), fresh, "{n} rounds");
+    }
+}

@@ -1279,9 +1279,6 @@ pub struct Core {
     /// durable): what it owes its signing chain is looked at at the end of the next complete
     /// pass of its account root's sync IDs (`Engine::pass_end`, `Engine::signing_due`).
     pub signing_due: bool,
-    /// The account this node is being paired into (`Engine::joining`): kept as its own until
-    /// `Engine::paired`.
-    pub joining: Option<Tid>,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
     /// What `receipt::fit` fits a frontier to: `MAX_LIST_BYTES` (tests: `Engine::list_bound`).
@@ -1552,7 +1549,6 @@ impl Core {
             accounts: self.accounts.clone(),
             left: self.left.clone(),
             signing_due: self.signing_due.clone(),
-            joining: self.joining,
             keep_bodies: self.keep_bodies.clone(),
             list_bound: self.list_bound.clone(),
             valueless_dirty: self.valueless_dirty.clone(),
@@ -2133,7 +2129,6 @@ impl Core {
             accounts: _,
             left: _,
             signing_due: _,
-            joining: _,
             keep_bodies: _,
             list_bound: _,
             sourced_elsewhere: _,
@@ -2372,7 +2367,6 @@ impl Core {
             left: BTreeSet::new(),
             // judged once after an open: a commit applied before a restart left it owed
             signing_due: true,
-            joining: None,
             accounts: Default::default(),
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
