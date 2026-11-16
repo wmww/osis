@@ -1,5 +1,5 @@
 //! `box/`: hybrid sealed boxes, `secrets.0` boxes in both forms, entry boxes, history boxes, box names and the
-//! inbox sealed box (spec/crypto.md §1, §4, spec/wire.md §7, §9). Generated. Randomness a box
+//! sealed fire (spec/crypto.md §1, §4, spec/wire.md §7, §9). Generated. Randomness a box
 //! draws is listed in draw order: `ephemeral` (X25519 private key), then `mlkem-m`.
 
 use super::{FixedRng, case, generated_header, s32};
@@ -165,13 +165,14 @@ pub fn boxes() -> VecFile {
     assert_eq!(open_history(&s32(0x09), &actor, Role::Write, &e3, &h), Err(Error::Decrypt));
     cases.push(case("history box wrong role", "spec/wire.md §7").with("secret", hex(s32(0x09).expose())).with("actor", hex(actor.as_bytes())).with("role", "1").with("n", "3").with("nonce", hex(e3.nonce())).with("box", hex(&h)).with("reject", "decrypt"));
 
-    // Inbox sealed box over an opaque prefix (the prefix layout is osis-blob's, inbox/).
+    // Sealed fire over an opaque prefix (the prefix layout is osis-blob's).
     let prefix = super::PREFIX;
-    let r_tid = Tid::from_bytes([0x03; 15]);
-    let ib = seal_inbox(&prefix, &r_tid, recipient.public(), b"role commit", &mut FixedRng::new(&[&EPH, &M])).unwrap();
-    assert_eq!(open_inbox(&ib, prefix.len(), &r_tid, &recipient).unwrap(), b"role commit");
-    let ad = encode(&Value::List(vec![Value::Bytes(r_tid.as_bytes().to_vec()), Value::Str("inbox".into()), Value::Bytes(prefix.to_vec())]));
-    let r = case("inbox sealed box", "spec/wire.md §9").with("recipient-kem-seed", hex(kem_seed.expose())).with("recipient", hex(r_tid.as_bytes())).with("prefix", hex(&prefix));
-    cases.push(randomness(r.with("ad", hex(&ad))).with("payload", hex(b"role commit")).with("padded", hex(&pad(b"role commit"))).with("blob", hex(&ib)));
+    let thing = Tid::from_bytes([0x03; 15]);
+    let fe = osis_crypto::Epoch::new(2, [0x05; 32]).unwrap();
+    let ib = seal_fire(&prefix, &thing, &fe, recipient.public(), b"fire commit", &mut FixedRng::new(&[&EPH, &M])).unwrap();
+    assert_eq!(open_fire(&ib, prefix.len(), &thing, &fe, &recipient).unwrap(), b"fire commit");
+    let ad = encode(&Value::List(vec![Value::Bytes(thing.as_bytes().to_vec()), Value::Str("fire".into()), Value::Int(2), Value::Bytes(fe.nonce().to_vec()), Value::Bytes(prefix.to_vec())]));
+    let r = case("sealed fire", "spec/wire.md §9").with("thing-kem-seed", hex(kem_seed.expose())).with("thing", hex(thing.as_bytes())).with("n", "2").with("nonce", hex(fe.nonce())).with("prefix", hex(&prefix));
+    cases.push(randomness(r.with("ad", hex(&ad))).with("payload", hex(b"fire commit")).with("padded", hex(&pad(b"fire commit"))).with("blob", hex(&ib)));
     VecFile { header: generated_header("box", "spec/wire.md §7"), cases }
 }

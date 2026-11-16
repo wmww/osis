@@ -25,7 +25,7 @@ pub use blob::{Class, Group, Level, Prefix, blob_id, check_size, frame, frame_un
 pub use chunks::{LargeParams, chunk_value, read_value, string_head};
 pub use error::Error;
 pub use sync_ids::{StepRecord, SyncEntry, SyncIds, parse_record, step_record, sync_steps};
-pub use fire::{open_fire, seal_fire};
+pub use fire::{SealedFire, open_fire, seal_fire};
 pub use holder::HolderKeys;
 pub use link::{DialHint, ShareLink, link_peers};
 pub use step::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_sync_id, open_entry_box, path_to, register, register_with, verify_path};

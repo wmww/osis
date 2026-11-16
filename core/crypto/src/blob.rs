@@ -1,4 +1,4 @@
-//! Blob encryption with Padmé padding, wraps and inbox blobs (spec/crypto.md §5, spec/wire.md §5,
+//! Blob encryption with Padmé padding, wraps and sealed fires (spec/crypto.md §5, spec/wire.md §5,
 //! §9). The clear prefix layout is osis-blob's: this module takes its bytes.
 
 use crate::aead::{self, TAG_LEN, ZERO_NONCE};
@@ -246,7 +246,7 @@ fn unwrap_section_under(section_key: &Secret32, commit: &CommitId, wrap: &[u8]) 
     Ok(Secret32::from_bytes(k))
 }
 
-/// Random bytes in a wrap's place: an inbox, chunk, tree or page blob.
+/// Random bytes in a wrap's place: a sealed fire, chunk, tree or page blob.
 pub fn filler_wrap(rng: &mut dyn CryptoRngCore) -> [u8; WRAP_LEN] {
     let mut w = [0u8; WRAP_LEN];
     rng.fill_bytes(&mut w);
@@ -259,30 +259,32 @@ fn wrap_nonce(blob: &BlobId) -> [u8; 24] {
     n
 }
 
-/// Inbox blob: `prefix || sealed box(pad(payload))` to the recipient's read KEM key, AD =
-/// `[recipient, "inbox", prefix]` (spec/wire.md §9).
-pub fn seal_inbox(prefix: &[u8], recipient: &Tid, kem: &KemPublicKey, payload: &[u8], rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
+/// Sealed fire (spec/wire.md §9): `prefix || sealed box(pad(payload))` to the read KEM key of
+/// `thing`'s keyset at read epoch `epoch`, AD = `[thing, "fire", n, nonce, prefix]`.
+pub fn seal_fire(prefix: &[u8], thing: &Tid, epoch: &crate::Epoch, kem: &KemPublicKey, payload: &[u8], rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
     let total = prefix.len().saturating_add(padme(payload.len().saturating_add(1))).saturating_add(SEALED_OVERHEAD);
     if total > MAX_BLOB {
         return Err(Error::TooLarge);
     }
     let mut blob = Vec::with_capacity(total);
     blob.extend_from_slice(prefix);
-    blob.extend_from_slice(&seal(kem, &inbox_ad(recipient, prefix), &pad(payload), rng)?);
+    blob.extend_from_slice(&seal(kem, &fire_ad(thing, epoch, prefix), &pad(payload), rng)?);
     Ok(blob)
 }
 
-pub fn open_inbox(blob: &[u8], prefix_len: usize, recipient: &Tid, kem: &KemSecret) -> Result<Vec<u8>, Error> {
+/// Opens a sealed fire whose prefix is `prefix_len` bytes with the read KEM secret of `thing`'s
+/// keyset at `epoch`: the payload.
+pub fn open_fire(blob: &[u8], prefix_len: usize, thing: &Tid, epoch: &crate::Epoch, kem: &KemSecret) -> Result<Vec<u8>, Error> {
     if blob.len() > MAX_BLOB {
         return Err(Error::Malformed("blob too large"));
     }
     let (prefix, sealed) = blob.split_at_checked(prefix_len).ok_or(Error::Malformed("blob shorter than prefix"))?;
-    let padded = open_sealed(kem, &inbox_ad(recipient, prefix), sealed)?;
+    let padded = open_sealed(kem, &fire_ad(thing, epoch, prefix), sealed)?;
     Ok(unpad(&padded)?.to_vec())
 }
 
-fn inbox_ad(recipient: &Tid, prefix: &[u8]) -> Vec<u8> {
-    encode(&Value::List(vec![Value::Bytes(recipient.as_bytes().to_vec()), Value::Str("inbox".into()), Value::Bytes(prefix.to_vec())]))
+fn fire_ad(thing: &Tid, epoch: &crate::Epoch, prefix: &[u8]) -> Vec<u8> {
+    encode(&Value::List(vec![Value::Bytes(thing.as_bytes().to_vec()), Value::Str("fire".into()), Value::Int(i64::try_from(epoch.n()).unwrap_or(i64::MAX)), Value::Bytes(epoch.nonce().to_vec()), Value::Bytes(prefix.to_vec())]))
 }
 
 #[cfg(test)]
@@ -397,17 +399,18 @@ mod tests {
         assert!(Trial::new(s.expose()).unwraps(&BlobId([4; 32]), &wraps).is_empty());
     }
 
-    // spec/wire.md §9: inbox blob AD binds recipient and prefix.
+    // spec/wire.md §9: a sealed fire's AD binds thing, epoch and prefix.
     #[test]
-    fn inbox() {
+    fn sealed_fire() {
         let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&Secret32::from_bytes([1; 32]));
-        let r = Tid::from_bytes([1; 15]);
-        let b = seal_inbox(&[9; 26], &r, kem.public(), b"commit", &mut rng).unwrap();
-        assert_eq!(open_inbox(&b, 26, &r, &kem).unwrap(), b"commit");
-        assert_eq!(open_inbox(&b, 26, &Tid::from_bytes([2; 15]), &kem), Err(Error::Decrypt));
+        let (r, e) = (Tid::from_bytes([1; 15]), crate::Epoch::new(1, [3; 32]).unwrap());
+        let b = seal_fire(&[9; 26], &r, &e, kem.public(), b"commit", &mut rng).unwrap();
+        assert_eq!(open_fire(&b, 26, &r, &e, &kem).unwrap(), b"commit");
+        assert_eq!(open_fire(&b, 26, &Tid::from_bytes([2; 15]), &e, &kem), Err(Error::Decrypt));
+        assert_eq!(open_fire(&b, 26, &r, &crate::Epoch::new(2, [3; 32]).unwrap(), &kem), Err(Error::Decrypt));
         let mut t = b.clone();
         t[3] ^= 1;
-        assert_eq!(open_inbox(&t, 26, &r, &kem), Err(Error::Decrypt));
+        assert_eq!(open_fire(&t, 26, &r, &e, &kem), Err(Error::Decrypt));
     }
 }
