@@ -6,7 +6,8 @@
 ## Status
 - On main: this plan, the spec (it describes the rebuilt design, not the code), the requirements wording (Tess approved), the model (notes/closure-model.md, held-model `closure`).
 - Execution steps 3 (demolition) and 4 (foundation, Lanes below) are done; the lanes are next; the spec's account parts are in the account forks terms (notes/engine-validity-epochs.md: seeds boxed to device keys, the chain is D's roster, merges only join).
-- Lane (b) built (notes/node-closure.md); the making rule (spec/sync-set.md §2 Making a thing) is not enforced yet: it refuses about 700 engine tests whose helpers make things with no strong, so it lands with step 6. Tickets entering a thing wait on lane (c)'s `ticket_for`.
+- Lane (b) built (notes/node-closure.md); the making rule (spec/sync-set.md §2 Making a thing) is not enforced yet: it refuses about 700 engine tests whose helpers make things with no strong, so it lands with step 6.
+- Lane (c) built (notes/inbox.md Sealed fires and tickets, notes/sync-inbox.md): sealed fires out and in, tickets entering at a strong, the account's tickets, removal and stranded notices. Not built: a grant's `profile` ticket to a stranger (spec/sync-inbox.md §5 Delivery of a grant: the fire carries none, so a stranger cannot dial the granter by it); a ticket's sync ID kept unread is tied by its issuer's word only through `ticket_sync_secrets` (no test of the Tied rule's forged-ID case, refgraph-tests T5).
 
 ## Principles (Tess)
 - **A strong grants nothing.** It says the target belongs to this closure; anyone knowing a tid may write one. Permission is a separate act by someone who may grant, and removing a reference revokes nothing.
