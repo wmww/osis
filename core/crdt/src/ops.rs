@@ -45,8 +45,8 @@ impl Writer {
         self.keyed = on;
         self
     }
-    /// The parts of this aspect the writer holds as headers only (§2.4): a removal of a tid
-    /// covers their elements of it (§5.5). Sorted and merged here.
+    /// The parts of this aspect the writer holds as headers only (§2.4): a removal of a
+    /// reference covers their elements of it (§5.5). Sorted and merged here.
     pub fn seen_headers(mut self, mut seen: Vec<DotRange>) -> Writer {
         seen.sort();
         let mut out: Vec<DotRange> = Vec::with_capacity(seen.len());
@@ -639,7 +639,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
             let enc = view.encoding().or_else(|| cur.map(|c| c.chosen().encoding()));
             let slot = enc.and_then(|e| present_slot(cur, e));
             match (enc, slot.as_deref()) {
-                // the live elements held, and a tid's elements in parts held as headers (§5.5)
+                // the live elements held, and a reference's elements in parts held as headers (§5.5)
                 (Some(Encoding::Set), slot @ (Some(Fragment::Set(_)) | None)) => {
                     let mut elems: BTreeMap<Dot, Elem> = match slot {
                         Some(Fragment::Set(s)) => {

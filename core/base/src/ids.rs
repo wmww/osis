@@ -620,7 +620,7 @@ mod tests {
         assert!(l.is_link() && !r.is_link());
         assert_eq!(l.link_target(), Some(Tid::from_bytes([8; 15])));
         assert_eq!(CreationRecord::from_value(&l.to_value()), Some(l.clone()));
-        // `link` only a tid, and only beside admin
+        // `link` only a weak, and only beside admin
         let with = |f: &dyn Fn(&mut crate::ValueMap)| {
             let Value::Map(mut m) = l.to_value() else { panic!() };
             f(&mut m);

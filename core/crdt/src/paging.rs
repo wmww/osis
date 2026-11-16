@@ -284,9 +284,9 @@ pub struct PagedTouch {
     pub elems: BTreeMap<Vec<Step>, Vec<Dot>>,
     /// Per paged sequence, the delta's fragment there (what its placement follows).
     pub seqs: BTreeMap<Vec<Step>, Fragment>,
-    /// Per paged set, the tids its elements and value removals name: the records of each,
+    /// Per paged set, the references its elements and value removals name: the records of each,
     /// wherever they are, hide or are hidden by them (§5.5).
-    pub tids: BTreeMap<Vec<Step>, Vec<Value>>,
+    pub refs: BTreeMap<Vec<Step>, Vec<Value>>,
 }
 
 impl Fragment {
@@ -454,9 +454,9 @@ fn touched_walk(d: &Fragment, t: &Paths, path: &mut Vec<Step>, out: &mut PagedTo
             out.seqs.insert(path.clone(), d.clone());
         }
         if let Fragment::Set(x) = d {
-            let tids: std::collections::BTreeSet<&Value> = x.elems.values().flat_map(crate::fragment::Elem::tids).collect();
-            if !tids.is_empty() {
-                out.tids.entry(path.clone()).or_default().extend(tids.into_iter().cloned());
+            let refs: std::collections::BTreeSet<&Value> = x.elems.values().flat_map(crate::fragment::Elem::references).collect();
+            if !refs.is_empty() {
+                out.refs.entry(path.clone()).or_default().extend(refs.into_iter().cloned());
             }
         }
         out.elems.entry(path.clone()).or_default().extend(dots);

@@ -590,8 +590,8 @@ mod tests {
     
 
     // `check_revertible` runs the revert's own writes in a transaction rolled back after: it
-    // changes nothing, whatever it answers. A creates a thing (its creation's undo would delete
-    // it) and sets register `x` twice keeping history, C overwriting the first. Probing the creation, the
+    // changes nothing, whatever it answers. A creates a thing writing `x` on it, keeping history
+    // (its creation's undo clears it), and sets register `x` twice keeping history, C overwriting the first. Probing the creation, the
     // first set (superseded) and the second (revertible) leaves the state, the clock, the
     // generations, the session counters and the events as they were; the revert then writes.
     #[test]
@@ -608,6 +608,7 @@ mod tests {
         let mut m = Mutation::new();
         let n = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(n, &x, &Value::Int(1)).unwrap();
+        m.set(n, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(86_400_000) })).unwrap();
         let made = lp.peers[0].commit(m).unwrap().unwrap();
         let first = set(&mut lp, 0, 1);
         lp.sync_all().unwrap();

@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// An organization: key actor K is first admin of root actor R (10 admins), first admin of
 /// 20 teams; each team is first admin of 10 docs; 300 holder nodes; `n` edge writes (grants,
 /// changes, removals on teams and docs) by admins, a few percent received late.
-fn org(n: usize) -> (World, Vec<Tid>, Tid) {
+fn org(n: usize) -> (World, Vec<Tid>, Tid, Vec<Tid>) {
     let mut rng = Rng(0x5eed_0401);
     let mut w = World::new();
     let nodes = w.nodes(311);
@@ -43,7 +43,7 @@ fn org(n: usize) -> (World, Vec<Tid>, Tid) {
         let recv: Vec<(Tid, u64)> = admins.iter().map(|a| (*a, if late { LATE } else { t })).collect();
         w.set(author, target, holder, e, t, &recv);
     }
-    (w, nodes, root)
+    (w, nodes, root, docs)
 }
 
 /// The commits `f` walked, and its result.
@@ -63,7 +63,7 @@ const N: usize = 100;
 fn evaluate_walks_linear_in_edge_writes() {
     let mut per = Vec::new();
     for n in [N, 10 * N] {
-        let (w, _, _) = org(n);
+        let (w, ..) = org(n);
         let held = w.held();
         let (scratch, tl) = walked(|| Timeline::evaluate(&held));
         let (inc, _) = walked(|| Timelines::new().update(&held));
@@ -78,8 +78,8 @@ fn evaluate_walks_linear_in_edge_writes() {
 /// The org at `n` with one write arriving late, ordered in the middle (its author's later commits
 /// list it), held without it; the late write's ID, a doc and the nodes.
 fn org_late(n: usize) -> (World, BTreeSet<CommitId>, Tid, Vec<Tid>) {
-    let (mut w, nodes, _) = org(n);
-    let doc = *w.created.keys().last().unwrap();
+    let (mut w, nodes, _, docs) = org(n);
+    let doc = docs[docs.len() - 1];
     let late = w.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
     (w, BTreeSet::from([late]), doc, nodes)
 }
@@ -155,7 +155,7 @@ fn late_write_placed_without_rewalk() {
 /// admin grant, a write grant on a team, a read grant by the key actor at the top.
 fn late_walks(n: usize) -> Vec<u64> {
     {
-        let (mut w, nodes, _) = org(n);
+        let (mut w, nodes, ..) = org(n);
         let mid = n as u64 / 2;
         // a thing with a first admin that is a thing, and a node holding an edge on it just
         // before the middle (by the last write on it)
@@ -242,9 +242,12 @@ fn deep_record_chain_walks_each_commit_once() {
 /// removes it from the root at once (dropping that write) and grants it back; the doc written
 /// unseen, the root and the nodes.
 fn org_drops(n: usize) -> (World, Tid, Tid, Vec<Tid>) {
-    let (mut w, nodes, root) = org(n);
+    let (mut w, nodes, root, docs) = org(n);
     let admins = nodes[1..11].to_vec();
-    let doc = *w.created.keys().last().unwrap();
+    // a doc with a node holder, which the demotion test removes
+    let doc = docs[docs.len() - 1];
+    let seen: Vec<(Tid, u64)> = admins.iter().map(|x| (*x, n as u64 + 5)).collect();
+    w.set(nodes[1], doc, nodes[11], edge(Write), n as u64 + 5, &seen);
     let mut rng = Rng(0);
     for i in (0..n).step_by(40) {
         let t = n as u64 + 10 + 4 * i as u64;
@@ -418,7 +421,7 @@ fn backdated_chain(n: usize) -> (u64, usize) {
 fn chained_writes_found_linear_in_edge_writes_spec_permissions_4() {
     let mut per = Vec::new();
     for n in [N, 10 * N] {
-        let (w, _, root) = org(n);
+        let (w, _, root, _) = org(n);
         let tl = Timeline::evaluate(&w.held());
         let s0 = osis_perm::chain_steps();
         tl.certificates_into(&[root].into());

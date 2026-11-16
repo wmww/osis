@@ -509,7 +509,7 @@ fn snapshot_carries_no_own_writes_spec_2_4() {
 }
 
 /// §3.2, §3.3 rule 7: a set's value removal `[Dot, R, Opt(Fragment), Stamp, Value, [Seen+]]`
-/// names a tid and the parts it covers, ascending and apart. One naming another value or no
+/// names a reference and the parts it covers, ascending and apart. One naming another value or no
 /// part, parts out of order, touching or empty, a record with no write, or a removal in a bag is
 /// bad input. Model and implementation agree on each.
 #[test]

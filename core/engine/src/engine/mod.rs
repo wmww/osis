@@ -720,7 +720,7 @@ indexes! {
     /// Commits with a part invalid here, per aspect (`Core::index_validity`).
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held commits with a part not held (`Hold::Missing`), per aspect, AK first: the groups whose
-    /// the commits a removal of a tid there must cover (`write::seeing`).
+    /// the commits a removal of a reference there must cover (`write::seeing`).
     pub missing: JSetMap<(Ak, Tid), CommitId>,
     /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
     /// and whether its body is held. Invariant (also for `by_thing`): it finds

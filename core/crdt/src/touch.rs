@@ -43,12 +43,12 @@ fn walk(f: &Fragment, at: &mut Pos, out: &mut Vec<Pos>) {
     match f {
         Fragment::Register(_) | Fragment::Slots(_) => out.push(at.clone()),
         Fragment::Bag(x) => x.elems.keys().for_each(|d| under(Seg::Dot(d.clone()), out)),
-        // a tid element or value removal under its tid too: a removal's undo reads every
+        // a reference element or value removal under its reference too: a removal's undo reads every
         // element of its value (§5.5)
         Fragment::Set(x) => {
             for (d, e) in &x.elems {
                 under(Seg::Dot(d.clone()), out);
-                for v in e.tids() {
+                for v in e.references() {
                     let mut p = at.clone();
                     p.extend([Seg::Key(Key(std::sync::Arc::new(v.clone()))), Seg::Dot(d.clone())]);
                     out.push(p);

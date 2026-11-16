@@ -128,9 +128,4 @@ impl Ticket {
             profile: tid(profile)?,
         })
     }
-
-    /// As a weak to its target (spec/data-model.md §8: a ticket is a weak).
-    pub fn weak(&self) -> Weak {
-        Weak(self.target)
-    }
 }

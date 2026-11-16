@@ -190,9 +190,9 @@ fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
     out
 }
 
-// spec/crdt.md §5.5, spec/requirements.md Scale (deleting costs what changed): removing a tid from
+// spec/crdt.md §5.5, spec/requirements.md Scale (deleting costs what changed): removing a reference from
 // a paged set and adding it back, each in a new session, loads and writes only their pages (the
-// value index finds the tid's records), and the commit is one record, at n and 10n members.
+// value index finds the reference's records), and the commit is one record, at n and 10n members.
 #[test]
 fn tid_removal_is_flat() {
     let (small, big) = (tid_removals(4000), tid_removals(40_000));

@@ -349,7 +349,7 @@ pub fn set_add(w: &mut Writer, state: Option<&Frag>, v: &Value) -> Option<Frag> 
     Some(f)
 }
 
-/// `remove v` (§5.5): an element reset of each live element of `v` held, and for a tid a value
+/// `remove v` (§5.5): an element reset of each live element of `v` held, and for a reference a value
 /// removal over `seen`, the parts the writer holds as headers only (each `(first dot, hi)`,
 /// ascending and apart), on a fresh dot at the delta's stamp.
 pub fn set_remove(w: &mut Writer, state: Option<&Frag>, v: &Value, seen: &[(Dot, u64)]) -> Option<Frag> {

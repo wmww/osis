@@ -170,7 +170,7 @@ impl Elem {
         }
     }
     /// The references the record's element holds and its value removal names (§5.5).
-    pub(crate) fn tids(&self) -> impl Iterator<Item = &Value> {
+    pub(crate) fn references(&self) -> impl Iterator<Item = &Value> {
         self.removes().into_iter().chain(self.written().and_then(|w| w.0)).filter(|v| v.is_reference())
     }
 }
@@ -499,14 +499,14 @@ impl Fragment {
                 }
                 Fragment::Map(Map::new(s.meta.clone(), keep))
             }
-            // a set: also the records of the tids `x`'s elements and value removals name, which hide
+            // a set: also the records of the references `x`'s elements and value removals name, which hide
             // or are hidden by them (§5.5)
             (Fragment::Set(s), Fragment::Set(d)) => {
                 let mut keep: BTreeMap<Dot, Elem> = d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect();
-                let tids: BTreeSet<&Value> = d.elems.values().flat_map(Elem::tids).collect();
-                if !tids.is_empty() {
+                let refs: BTreeSet<&Value> = d.elems.values().flat_map(Elem::references).collect();
+                if !refs.is_empty() {
                     for (k, e) in &s.elems {
-                        if e.tids().any(|v| tids.contains(v)) {
+                        if e.references().any(|v| refs.contains(v)) {
                             keep.entry(k.clone()).or_insert_with(|| e.clone());
                         }
                     }
