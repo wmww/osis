@@ -1684,8 +1684,8 @@ fn link_keys_held(e: &mut osis_engine::Engine) -> BTreeSet<Tid> {
     e.provers(false).unwrap().iter().map(|(_, r)| r.tid()).filter(|t| Some(*t) != me).collect()
 }
 
-// spec/permissions.md §7 (First contact: the redeemer proves L until its join is held; then it
-// keeps the link's peers, not the seed): a link key is held exactly while a followed link names
+// spec/permissions.md §7 (First contact: the redeemer proves L until its join is held, then keeps
+// the link's peers, not the seed): a link key is held exactly while a followed link names
 // it. Two link texts sharing one seed: letting one go keeps the key the other still uses, across
 // a reload; it goes with the last. A key held by `hold_key_actor` stays when a link naming it goes.
 #[test]
