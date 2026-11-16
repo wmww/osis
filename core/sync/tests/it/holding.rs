@@ -174,9 +174,9 @@ fn accepted_after_a_change(lowered: bool) -> (World, Tid) {
     (w, t)
 }
 
-// spec/sync-set.md §2: refgraph T7. A ticket enters at the lower of its own role and the
-// holder's; a read ticket whose holder holds sync alone on T enters T kept unread, one whose
-// holder holds no role enters nothing. Alice grants Bob read and, before he accepts, lowers him to sync
+// spec/sync-set.md §2: refgraph T7. A ticket supplies up to the lower of its own role and the
+// holder's; a read ticket whose holder holds sync alone on T keeps T unread, one whose holder
+// holds no role enters nothing. Alice grants Bob read and, before he accepts, lowers him to sync
 // or removes him; his accept takes the removal notice on his inbox with the ticket's fire, so T
 // is kept unread (lowered) or not entered (removed).
 #[test]
@@ -389,4 +389,29 @@ fn a_keyless_grant_reads_nothing_through_it_spec_crypto_4() {
         assert!(w.engine(1).read_secrets(&t0).is_empty(), "direct {direct}: nor holds its read secrets");
         assert_eq!(holding(&mut w, 1, &t0), direct.then_some(Holding::Unread), "direct {direct}");
     }
+}
+
+// spec/sync-set.md §2 (What a held ticket does), §4 (Declining is doing nothing): Alice's T1 is
+// made under T0 and held from it; Bob keeps T1 unread by a sync ticket, then is granted read on
+// T0, T1's first admin, which gives him read on T1 by chain. He never accepts T0, so he holds no
+// secret of T0, no role commit of T1 and no read secret of T1: the implementation keeps T1
+// unread, where held-model reads it (its ring takes every open ticket's keys, accepted or not).
+// Which is right is open (issues/reference-graph.md Status); accepting T0 too, Bob reads T1.
+#[test]
+#[ignore = "issues/reference-graph.md"]
+fn repro_a_sync_ticket_beside_a_read_role_by_chain_reads_the_thing_spec_sync_set_2() {
+    let mut w = contacts();
+    let t0 = make(&mut w, 0, None, "v1");
+    let t1 = make(&mut w, 0, Some(t0), "v2");
+    strong(&mut w, 0, Some(t0), t1, true);
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Sync))).unwrap();
+    w.run();
+    strong(&mut w, 1, None, t1, true);
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Unread), "kept unread by the sync ticket");
+    w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Read))).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 1, &t1), Some(Value::Str("v2".into())), "Bob reads T1");
+    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Read));
 }

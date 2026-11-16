@@ -838,15 +838,15 @@ fn given_by(core: &Core, v: Vx, y: Tid, closed: bool) -> BTreeSet<Vx> {
     if keyed && Ctx::Read(y) != c && let Some(e) = core.enter(&y, closed) {
         out.insert((e, y));
     }
-    // no own keys here: entered on a ticket's word at the role its tickets enter at
-    // (`tickets::entry_role`, read again here so a role change judges the edge again), by a
+    // no own keys here: entered on a ticket's word, where a ticket was taken, at the node's
+    // role (`tickets::entry_role`, read again here so a role change judges the edge again), by a
     // secret of that role held: read fetches under the tickets' sync IDs (spec/sync-inbox.md §5
     // Ticket sync IDs), none of its data held for it; sync keeps them unread, which a close ends
     if !keyed {
         let best = core.ix.closure.ticket_ids(&y).into_iter().map(|(_, r)| r).max();
-        let role = best.min(super::tickets::entry_role(core, &y, Role::Read));
+        let role = best.and_then(|k| super::tickets::entry_role(core, &y, k));
         let holds = |r: Role| core.ix.secrets.get(&y).is_some_and(|e| e.role(r).holds_any());
-        if role == Some(Role::Read) && holds(Role::Read) {
+        if role >= Some(Role::Read) && holds(Role::Read) {
             out.insert((Ctx::Ticket(y), y));
         } else if role.is_some() && holds(Role::Sync) && !closed {
             out.insert((Ctx::Unread(y), y));

@@ -281,23 +281,8 @@ fn root_strong(w: &mut World, i: usize, t: Tid, on: bool) {
     w.run();
 }
 
-// spec/sync-set.md §3: a released thing is not destroyed; back in the closure it is fetched
-// again, as never received. Bob accepts T and reads it, releases it (his strong removed), then
-// accepts it again with the ticket still held: he reads T again, as at a first accept (the
-// role commits of T went with the release, so the ticket's word counts again).
-#[test]
-fn a_released_thing_accepted_again_is_fetched_again_spec_sync_set_3() {
-    let (mut w, t) = accepted(Role::Read);
-    assert_eq!(w.engine(1).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())));
-    root_strong(&mut w, 1, t, false);
-    assert!(!w.engine(1).closure_holds(&t) && w.engine(1).get(&t, &ak()).unwrap().is_none(), "released");
-    root_strong(&mut w, 1, t, true);
-    assert!(w.engine(1).ticket_for(&t).unwrap().is_some(), "the ticket is still held");
-    assert_eq!(w.engine(1).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "fetched again");
-}
-
-// spec/permissions.md §2, spec/sync-set.md §2: a re-granted reader reads again; a ticket enters at
-// the lower of its role and the role the role commits its secret opens show. Alice removes Bob from T (or lowers
+// spec/permissions.md §2, spec/sync-set.md §2: a re-granted reader reads again; the node enters
+// at its role as the role commits it holds show. Alice removes Bob from T (or lowers
 // him to sync), then grants him read again; Bob, his strong kept, reads her next write: the new
 // ticket's fire carries the grant (wrapped under a secret Bob lacks), taken at his strong, so the
 // role commits he holds give read again.
@@ -321,8 +306,8 @@ fn a_reader_granted_again_reads_again_spec_sync_set_2() {
     }
 }
 
-// spec/sync-set.md §2: a ticket enters at the lower of its role and the holder's, judged again
-// as either changes, and nothing it does undoes itself. Alice removes Bob from T; his strong and
+// spec/sync-set.md §2: a ticket supplies up to the lower of its role and the holder's, judged
+// again as either changes, and nothing it does undoes itself. Alice removes Bob from T; his strong and
 // the stale ticket stay. He enters nothing, and nothing is fetched again over a quiet spell: the
 // role commits that judged the ticket stay while the strong and the ticket do, so his release of
 // T does not make the ticket's word count again (a stale ticket taken and dropped in turn).

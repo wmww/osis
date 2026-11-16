@@ -55,10 +55,20 @@ impl Gives {
 }
 
 /// Who a grant names: node j's account, or thing k (a chain: thing k's readers hold through it).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Holder {
     Node(usize),
     Thing(usize),
+}
+
+/// Printed as a script names it (`Holder::Node(1)`), so a printed step pastes into a test.
+impl std::fmt::Debug for Holder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Holder::Node(j) => write!(f, "Holder::Node({j})"),
+            Holder::Thing(k) => write!(f, "Holder::Thing({k})"),
+        }
+    }
 }
 
 /// The one aspect a history writes.
@@ -578,7 +588,7 @@ impl Model {
     /// Account `a`'s node closure, the keys it reads with and the things it keeps unread: its
     /// root entered by keys, and a ticket for each thing given
     /// the account directly, open where its role there at the end (by any chain) is read or
-    /// above, sync-only where it is sync, none where it has none (a ticket enters at the lower of
+    /// above, sync-only where it is sync, none where it has none (a ticket supplies up to the lower of
     /// its role and its holder's, spec/sync-set.md §2).
     fn closure(&self, h: &Made, a: usize) -> (hc::Closure, hc::Set, hc::Set) {
         let roles = self.world.roles_from(a);
