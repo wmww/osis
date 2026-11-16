@@ -1204,7 +1204,7 @@ impl Engine {
     /// into `synced^.0`) is replaced, however it sits under home.
     fn under_home(&mut self, d: Tid, node: &Tid) -> Result<bool> {
         let Some(g) = self.get_typed(&d, &ct::SYNCED)?.and_then(|m| m.get(node).copied()) else { return Ok(false) };
-        Ok(self.core.first_admin(&g) == Some(d) && self.closure(&g).contains(&d) && self.closure(&d).contains(&g))
+        Ok(self.core.first_admin(&g) == Some(d) && self.core.under_home(&d, &g))
     }
 }
 

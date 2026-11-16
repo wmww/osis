@@ -253,6 +253,33 @@ fn inbox_blob_offered_only_while_the_recipient_counts_spec_sync_inbox_3() {
     assert!(blobs.len() == 2 && blobs.contains(&first), "both offers went: {blobs:?}");
 }
 
+// spec/sync-inbox.md §3 (Sending; Refused for now: sent again after a back-off until taken or
+// moot): a back-off whose wake came while the peer could not take the offer (its recipient counted no more there) waits for nothing: S joining
+// that connection, or its filter showing S's deposit key, offers it there again.
+#[test]
+fn a_back_off_over_while_untakeable_waits_for_nothing_spec_sync_inbox_3() {
+    for by_filter in [false, true] {
+        let mut t = T::new();
+        t.connect(conn(2), &[tid(0)]);
+        let s = sync_id(100);
+        t.deposit(s, 1, Target::Recipient(tid(0)));
+        let (c, id, ..) = t.deposits_sent()[0];
+        t.reply(c, id, T::shared(Code::RATE_LIMITED));
+        t.uncounted.insert(tid(0));
+        t.advance(osis_sync::inbox::backoff_ms(0));
+        assert_eq!(t.deposits_sent().len(), 1, "not offered while the recipient counts no more");
+        if by_filter {
+            let key = deposit_key(&deposit_seed(s.0[0]), &s).verifying_key().to_bytes();
+            t.net.shown.insert((conn(2), s, key));
+            t.net.generation.insert(conn(2), 1);
+            t.settle();
+        } else {
+            t.join(conn(2), s, SourceClass::Reader);
+        }
+        assert_eq!(t.deposits_sent().len(), 2, "offered again (by filter: {by_filter})");
+    }
+}
+
 // spec/sync-inbox.md §3 (sending): an inbox blob also goes to a peer whose filter shows the
 // inbox's deposit key (a node keeping it unread shows it to every connection,
 // spec/sync-opens.md §5 Filter), once that filter arrives; never to one showing another key.

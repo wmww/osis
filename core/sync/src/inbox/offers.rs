@@ -9,7 +9,8 @@
 //!
 //! Per connection: one Deposit item unanswered at a time; answered 0, it is done there and every
 //! other offer of S backed off there is ready again (one taken ends the others' back-off); 4, 5
-//! or 12 (refused for now) back it off, doubling from `BACKOFF_MIN_MS` to `BACKOFF_MAX_MS`; 14
+//! or 12 (refused for now) back it off, doubling from `BACKOFF_MIN_MS` to `BACKOFF_MAX_MS` (once
+//! its wake came it waits for nothing, though the peer could not take it then); 14
 //! (or any other refusal) sends it again only when signing again changes the signature (the
 //! deposit key moved), else not until the receiver's next filter arrives. An offer whose entry
 //! was stamped, dropped or sealed again is removed (moot).
@@ -124,7 +125,7 @@ impl Offers {
     /// ready, or refused for now and backed off. One refused (14) waits for the peer's next filter,
     /// which a later connection sends.
     pub(super) fn may_land(&self, conn: ConnId) -> bool {
-        self.conns.get(&conn).is_some_and(|c| c.out.is_some() || !c.ready.is_empty() || !c.backoff.is_empty())
+        self.conns.get(&conn).is_some_and(|c| c.out.is_some() || !c.ready.is_empty() || c.backoff.keys().any(|k| backed_off(&self.wakes, conn, c, k)))
     }
 
     pub fn add(&mut self, s: SyncId, b: BlobId, target: Target) {
@@ -180,7 +181,7 @@ impl Offers {
         }
         let Some(c) = self.conns.get_mut(&conn) else { return };
         for k in self.items.range((*s, BlobId([0; 32]))..=(*s, BlobId([0xff; 32]))).map(|(k, _)| *k) {
-            if !c.backoff.contains_key(&k) && !c.parked.contains_key(&k) {
+            if !backed_off(&self.wakes, conn, c, &k) && !c.parked.contains_key(&k) {
                 c.ready.insert(k);
             }
         }
@@ -212,8 +213,7 @@ impl Offers {
             // judged out as each of its offers comes up (`may_take`)
             for a in actors.iter().filter(|a| !c.actors.contains(a)) {
                 let ks = self.to.get(a).into_iter().flatten();
-                // a back-off already over is no wait: its wake found the actor uncounted
-                let fresh: Vec<Key> = ks.filter(|k| c.backoff.get(*k).is_none_or(|(at, _)| *at <= now) && !c.parked.contains_key(*k) && c.out.is_none_or(|(_, o, _)| o != **k)).copied().collect();
+                let fresh: Vec<Key> = ks.filter(|k| !backed_off(&self.wakes, conn, c, k) && !c.parked.contains_key(*k) && c.out.is_none_or(|(_, o, _)| o != **k)).copied().collect();
                 osis_base::costs::count("inbox: offer placed", fresh.len() as u64);
                 c.ready.extend(fresh);
             }
@@ -257,7 +257,7 @@ impl Offers {
             }
             c.filter = arrived;
             let inbox = self.items.iter().filter(|(_, t)| matches!(t, Target::Recipient(_))).map(|(k, _)| *k);
-            let fresh: Vec<Key> = inbox.filter(|k| !c.backoff.contains_key(k) && !c.parked.contains_key(k) && c.out.is_none_or(|(_, o, _)| o != *k)).collect();
+            let fresh: Vec<Key> = inbox.filter(|k| !backed_off(&self.wakes, *id, c, k) && !c.parked.contains_key(k) && c.out.is_none_or(|(_, o, _)| o != *k)).collect();
             osis_base::costs::count("inbox: offer placed", fresh.len() as u64);
             if !fresh.is_empty() {
                 c.ready.extend(fresh);
@@ -381,6 +381,13 @@ impl Target {
             Target::Stores => None,
         }
     }
+}
+
+/// Whether offer `k` waits out a back-off on `conn`: its wake is still to come. One whose wake
+/// came waits for nothing, though the peer could not take it then (the count stays, for the
+/// next refusal's back-off).
+fn backed_off(wakes: &BTreeSet<(WallMs, ConnId, Key)>, conn: ConnId, c: &Conn, k: &Key) -> bool {
+    c.backoff.get(k).is_some_and(|(at, _)| wakes.contains(&(*at, conn, *k)))
 }
 
 /// Drops offer `k` and its index entry; whether it was held.

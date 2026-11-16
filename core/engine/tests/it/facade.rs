@@ -48,8 +48,8 @@ fn group_op(g: Tid, field: u64, op: osis_crdt::Op) -> Mutation {
 }
 
 // spec/sync-set.md §1 (Home stays under it): a write after which this node's synced group G no
-// longer holds D is refused locally (nothing written); one cutting a path while another keeps it
-// is taken. G stays under D whatever D lists: D is its key home (spec/sync-set.md §2 Closure).
+// longer holds D, or synced^.0 names it a group D is not under, is refused locally (nothing
+// written); one cutting a path while another keeps it is taken. G stays under D whatever D lists: D is its key home (spec/sync-set.md §2 Closure).
 #[test]
 fn a_write_cutting_home_from_a_synced_group_is_refused_spec_sync_set_1() {
     use osis_base::Value;
@@ -74,6 +74,16 @@ fn a_write_cutting_home_from_a_synced_group_is_refused_spec_sync_set_1() {
     assert!(e.closure(&g).contains(&d), "D still under G, through H");
     assert!(refused(e.commit(group_op(h, 1, Op::Remove(Value::Tid(d))))), "then H's listing is the one path left");
     assert!(refused(e.commit(group_op(g, 1, Op::Remove(Value::Tid(h))))), "and H's place in G");
+    // synced^.0 naming this node a group D is not under
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, d);
+    m.set(x, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(d, &ct::SYNCED, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(e.tid()))], op: Op::Set(Value::Tid(x)) }).unwrap();
+    assert!(refused(e.commit(m)), "synced^.0 naming a group cut from D");
+    assert_eq!(e.commit_ids().len(), held + 4, "only the four writes taken");
+    assert!(e.closure(&g).contains(&d), "D under G after the refusals");
 }
 
 // spec/sync-ids.md §3 (claim key: a listed reader derives it from its own key and the step key),

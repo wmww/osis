@@ -186,6 +186,8 @@ fn pairing_reply_carries_the_new_nodes_synced_group_spec_sync_set_1() {
     lp.peers[1].commit(sub(g1, osis_crdt::Op::Add(osis_base::Value::Tid(h)))).unwrap().unwrap();
     spread(&mut lp);
     lp.peers[0].commit(sub(g1, osis_crdt::Op::Remove(osis_base::Value::Tid(d)))).unwrap().unwrap();
+    // peer 0 cutting the last path of peer 1's group alone: refused (some node of its account)
+    assert!(matches!(lp.peers[0].commit(sub(g1, osis_crdt::Op::Remove(osis_base::Value::Tid(h)))), Err(osis_engine::Error::Misuse(_))), "a sibling's synced group cut");
     lp.peers[1].commit(sub(g1, osis_crdt::Op::Remove(osis_base::Value::Tid(h)))).unwrap().unwrap();
     spread(&mut lp);
     assert!(!lp.peers[1].engine.closure(&g1).contains(&d), "cut");

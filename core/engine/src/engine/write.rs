@@ -1047,15 +1047,14 @@ fn check_lifetimes(tx: &mut Tx<'_>, kept: &[Tid], references: &[(Tid, Ak, Tid)])
     Ok(())
 }
 
-/// The nodes of this node's account whose synced group (`synced^.0` on D) and D each hold the
-/// other in their closure (spec/sync-set.md §1 Home stays under it).
+/// The nodes of this node's account whose synced group (`synced^.0` on D) stands under home
+/// (`Core::under_home`, spec/sync-set.md §1 Home stays under it), whoever made it: an app may
+/// list a group of its own making.
 fn under_home(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
     let Some((_, d)) = tx.core.account_devices() else { return Ok(BTreeSet::new()) };
     let synced = tx.state(&d, &ct::SYNCED.name())?.and_then(Fragment::read).and_then(|v| ct::SYNCED.decode(&v).ok()).unwrap_or_default();
     let me = tx.core.id.tid();
-    let groups = &tx.core.ix.groups;
-    let home = groups.closure(&d);
-    Ok(synced.into_iter().filter(|(n, g)| (*n == me || tx.core.own_node(n)) && home.contains(g) && groups.closure(g).contains(&d)).map(|(n, _)| n).collect())
+    Ok(synced.into_iter().filter(|(n, g)| (*n == me || tx.core.own_node(n)) && tx.core.under_home(&d, g)).map(|(n, _)| n).collect())
 }
 
 /// Refuses a write after which a node of `before` (`under_home` before it) has its synced group

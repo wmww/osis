@@ -285,6 +285,12 @@ impl Engine {
 }
 
 impl super::Core {
+    /// Whether group `g` and home `d` each hold the other in their closure (spec/sync-set.md §1
+    /// Home stays under it).
+    pub(crate) fn under_home(&self, d: &Tid, g: &Tid) -> bool {
+        self.ix.groups.closure(d).contains(g) && self.ix.groups.closure(g).contains(d)
+    }
+
     /// `t`'s **key home** (spec/sync-set.md §2): the nearest thing above `t` on its record chain
     /// with secrets of its own. While `t` is plain it is the actor `t`'s secrets derive from
     /// (`secret_actor`); it stays so once `t` has secrets of its own (spec/permissions.md §3, Own

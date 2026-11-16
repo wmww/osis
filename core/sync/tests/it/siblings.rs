@@ -731,3 +731,32 @@ fn a_removed_node_still_connected_is_offered_no_delivery_to_its_account_spec_syn
     // node 2 is apart from it: any Deposit item went to node 1
     assert_eq!(offered, 0, "the removed node was offered the delivery");
 }
+
+// spec/sync-inbox.md §2 Re-send (an open of a sync ID the blob names, the recipient proven there,
+// shows a delivery taken), spec/sync-opens.md §3 (A record names what its last session's proofs counted for):
+// node 0 owes account 1 a sync grant on t and, once node 2 removed node 1, the account's
+// rotation. Node 1, connected to node 0 since before node 0 held the removal, accepts the grant
+// and opens t's sync ID there by its sync key: its proof of account 1 counts no more, so neither
+// delivery is seen taken; they stay owed for the account's remaining node.
+#[test]
+fn a_removed_nodes_open_takes_no_delivery_to_its_account_spec_sync_inbox_2() {
+    let mut w = stranger_siblings();
+    let (t, _) = granted(&mut w, Role::Sync);
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let a1 = w.node(1).account.unwrap();
+    let owed = |w: &mut World| w.engine(0).deliveries().unwrap().iter().filter(|(_, h)| *h == a1).count();
+    assert_eq!(owed(&mut w), 1, "the sync grant waits for an accept");
+    w.partition(0, 2);
+    w.partition(1, 2);
+    w.flush();
+    remove_sibling(&mut w, 2, 1);
+    let before = w.links_of(0);
+    assert!(crate::harness::history::hand(&mut w, 2, 0), "node 0 is handed the removal");
+    assert_eq!(owed(&mut w), 2, "and owes the account its rotation");
+    let g1 = synced_group(&mut w, 1);
+    w.write(1, |e| e.accept_invite(&t, &g1)).unwrap();
+    w.flush();
+    assert!(w.store(1).synced(&s).is_some(), "node 1 opened t's sync ID");
+    assert!(w.links_of(0).iter().all(|l| before.contains(l)), "on the connection proved before the removal");
+    assert_eq!(owed(&mut w), 2, "a removed node's open took a delivery to its account");
+}
