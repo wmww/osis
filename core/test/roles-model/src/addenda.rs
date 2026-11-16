@@ -22,9 +22,9 @@
 //! (`Ctx::fixpoint`). A valid compaction snapshot (`Kind::Snap`) keeps what it carries
 //! visible (§5.2), and is itself a plain write of its author.
 //!
-//! Variants: `Rerem` (on a re-removal, do earlier removals' addenda or frontiers still count)
-//! and `Cover` (which covered commits a removal's frontier and addenda leave out, against
-//! listing every commit).
+//! On a re-removal every removal's frontier counts, whatever the order, and addenda naming any
+//! later removal. Variant: `Cover` (which covered commits a removal's frontier and addenda leave
+//! out, against listing every commit).
 //!
 //! Bodies (`Sim`): every node drops an invalid body at once and fetches a valid one it lacks
 //! from any node holding it; a body nobody holds stays lost. An addendum's list is its body.
@@ -92,8 +92,8 @@ impl Item {
     /// Plain content commits and addenda (rule 4): no role-class, admin-only or purge write;
     /// a compaction snapshot only where the cover rule lets addenda name one
     /// (spec/permissions.md §5.2, Addenda).
-    fn listable(&self, rules: Rules) -> bool {
-        matches!(self.kind, Kind::Plain | Kind::Add { .. }) || matches!(self.kind, Kind::Snap(_)) && rules.cover != Cover::ListAll
+    fn listable(&self, rules: Cover) -> bool {
+        matches!(self.kind, Kind::Plain | Kind::Add { .. }) || matches!(self.kind, Kind::Snap(_)) && rules != Cover::ListAll
     }
     fn content(&self) -> bool {
         matches!(self.kind, Kind::Plain | Kind::Special)
@@ -106,19 +106,6 @@ impl Item {
     fn held(&self, v: usize, tau: u32) -> bool {
         self.recv[v] < LATE && self.recv[v] < tau
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Rerem {
-    /// Only the newest removal's frontier and addenda count.
-    Newest,
-    /// Addenda naming any later removal count; frontiers the newest only.
-    AnyAddenda,
-    /// Every removal's frontier counts, whatever the order (§5.2), and addenda naming any later
-    /// removal.
-    Any,
-    /// As `Any`, but a frontier counts only for writes ordered before its removal.
-    Later,
 }
 
 /// Which of the leaver's commits a lister (a demoter's frontier, a witness's addendum) leaves
@@ -136,19 +123,8 @@ pub enum Cover {
     OmitOwn,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Rules {
-    pub rerem: Rerem,
-    pub cover: Cover,
-    /// A listed commit (frontier or addendum) counts only if its author held write at its key.
-    pub held_only: bool,
-    /// Bodies (`Sim`): a node keeps what an addendum it holds lists, and its own addenda,
-    /// however it judges them.
-    pub keep_listed: bool,
-}
-
 /// The plan as decided for the model.
-pub const PLAN: Rules = Rules { rerem: Rerem::Any, cover: Cover::ListAll, held_only: false, keep_listed: false };
+pub const PLAN: Cover = Cover::ListAll;
 
 /// The cover rules compared with listing every commit (`check`).
 pub const COVERS: [(&str, Cover); 2] = [("omit others' covers", Cover::OmitOthers), ("omit own covers", Cover::OmitOwn)];
@@ -231,13 +207,13 @@ pub struct Eval {
 pub struct Ctx<'a> {
     w: &'a World,
     v: View<'a>,
-    rules: Rules,
+    rules: Cover,
     /// (removal, thing) -> held addenda with bodies: (item, listed IDs).
     adds: HashMap<(u32, usize), Vec<(usize, HashSet<u32>)>>,
 }
 
 impl<'a> Ctx<'a> {
-    pub fn new(w: &'a World, v: View<'a>, rules: Rules) -> Self {
+    pub fn new(w: &'a World, v: View<'a>, rules: Cover) -> Self {
         let mut adds: HashMap<(u32, usize), Vec<(usize, HashSet<u32>)>> = HashMap::new();
         for (i, it) in w.items.iter().enumerate() {
             if let Kind::Add { removal, lists } = &it.kind {
@@ -278,38 +254,23 @@ impl<'a> Ctx<'a> {
         if held && !dems.iter().any(|d| d.key >= key) {
             return true;
         }
-        if self.rules.held_only && !held {
-            return false;
-        }
-        let Some(newest) = dems.iter().copied().max_by_key(|d| d.key) else { return false };
-        let lists = |d: &Dem| self.w.frontier.get(&d.rid).map_or(false, |f| f.contains(&it.id));
         // a frontier is what its demoter had received: it saves what it lists whatever the order
-        let saving: Vec<&Dem> = match self.rules.rerem {
-            Rerem::Any => dems.clone(),
-            Rerem::Later => dems.iter().copied().filter(|d| d.key >= key).collect(),
-            _ => vec![newest],
-        };
-        if saving.iter().any(|d| lists(d)) {
+        if dems.iter().any(|d| self.w.frontier.get(&d.rid).map_or(false, |f| f.contains(&it.id))) {
             return true;
         }
-        let cands: Vec<&Dem> = match self.rules.rerem {
-            Rerem::Newest => vec![newest],
-            _ => dems.iter().copied().filter(|d| d.key >= key).collect(),
-        };
         if !it.listable(self.rules) {
             return false;
         }
-        cands.iter().any(|d| self.adds.get(&(d.rid, m)).map_or(false, |v| v.iter().any(|(a, l)| valid[*a] && l.contains(&it.id) && self.vouches(*a, c, m, d))))
+        dems.iter().filter(|d| d.key >= key).any(|d| self.adds.get(&(d.rid, m)).map_or(false, |v| v.iter().any(|(a, l)| valid[*a] && l.contains(&it.id) && self.vouches(*a, c, m, d))))
     }
 
     fn step(&self, valid: &[bool]) -> Vec<bool> {
         (0..self.w.items.len()).map(|c| self.v.hdr[c] && self.w.items[c].parts().all(|m| self.part_ok(c, m, valid))).collect()
     }
 
-    /// The least fixpoint from the writes valid without addenda (`from_top`: the greatest,
-    /// from everything held, for comparison only).
-    pub fn fixpoint(&self, from_top: bool) -> (Vec<bool>, usize) {
-        let mut valid: Vec<bool> = if from_top { self.v.hdr.to_vec() } else { vec![false; self.w.items.len()] };
+    /// The least fixpoint from the writes valid without addenda.
+    pub fn fixpoint(&self) -> (Vec<bool>, usize) {
+        let mut valid = vec![false; self.w.items.len()];
         let mut rounds = 0;
         loop {
             rounds += 1;
@@ -322,7 +283,7 @@ impl<'a> Ctx<'a> {
     }
 
     pub fn eval(&self) -> Eval {
-        let (valid, rounds) = self.fixpoint(false);
+        let (valid, rounds) = self.fixpoint();
         let w = self.w;
         let held = |i: usize| self.v.hdr[i] && self.v.body[i] && valid[i];
         let visible = (0..w.items.len())
@@ -344,7 +305,7 @@ impl World {
     }
 
     /// Everything held, every body: the reference result.
-    pub fn ideal(&self, rules: Rules) -> Eval {
+    pub fn ideal(&self, rules: Cover) -> Eval {
         let l1 = L1::new(&self.roles, |_| true);
         let all = vec![true; self.items.len()];
         Ctx::new(self, View { l1: &l1, hdr: &all, body: &all }, rules).eval()
@@ -359,7 +320,7 @@ impl World {
     }
 
     /// Node v's view before time `tau`, every body it received held.
-    fn view_at(&self, v: usize, tau: u32, rules: Rules) -> (L1, Eval) {
+    fn view_at(&self, v: usize, tau: u32, rules: Cover) -> (L1, Eval) {
         let r = &self.roles;
         let l1 = L1::new(r, |i| r.recv[i][v] < LATE && r.recv[i][v].max(r.writes[i].t) < tau);
         let hdr: Vec<bool> = self.items.iter().map(|it| it.held(v, tau)).collect();
@@ -370,9 +331,9 @@ impl World {
     /// The commits a list by node v before `tau` leaves out (`Cover`): those a snapshot v holds
     /// valid carries, by another writer than the commit's author (`OmitOthers`) or by the
     /// author itself where `saves` says the list saves that snapshot.
-    fn omitted(&self, v: usize, tau: u32, rules: Rules, saves: impl Fn(&Item) -> bool) -> HashSet<u32> {
+    fn omitted(&self, v: usize, tau: u32, rules: Cover, saves: impl Fn(&Item) -> bool) -> HashSet<u32> {
         let mut out = HashSet::new();
-        if rules.cover == Cover::ListAll {
+        if rules == Cover::ListAll {
             return out;
         }
         let (_, e) = self.view_at(v, tau, rules);
@@ -383,7 +344,7 @@ impl World {
             }
             for c in self.items.iter().filter(|c| cs.contains(&c.id)) {
                 let own = c.author == it.author;
-                if own && saves(it) || !own && rules.cover == Cover::OmitOthers {
+                if own && saves(it) || !own && rules == Cover::OmitOthers {
                     out.insert(c.id);
                 }
             }
@@ -395,7 +356,7 @@ impl World {
     /// view at the time. Every random draw is made whatever the rules decide, so worlds
     /// generated from one seed under different rules share their base.
     /// `add_recv`: receipts of addenda (author, t), else random.
-    fn derive(&mut self, rng: &mut Rng, rules: Rules, snaps: &[(usize, u32, usize)], ids: &mut HashSet<u32>, add_recv: Option<&dyn Fn(usize, u32) -> Vec<u32>>) {
+    fn derive(&mut self, rng: &mut Rng, rules: Cover, snaps: &[(usize, u32, usize)], ids: &mut HashSet<u32>, add_recv: Option<&dyn Fn(usize, u32) -> Vec<u32>>) {
         let g = L1::new(&self.roles, |_| true);
         let nn = self.nodes();
         enum Trig {
@@ -541,7 +502,7 @@ fn recv_row(rng: &mut Rng, nn: usize, author: usize, t: u32, early: bool) -> Vec
 /// A random world: a `joint` role history (its things are actors), 1-6 content commits (two
 /// thirds by a node some removal demotes, on that thing, before it; a sixth acting for
 /// another actor, an eighth special), up to two snapshots, and the honest addenda.
-pub fn random_world(rng: &mut Rng, rules: Rules) -> World {
+pub fn random_world(rng: &mut Rng, rules: Cover) -> World {
     let roles = joint::random_hist(rng);
     let (nn, na) = (roles.nodes, roles.admins.len());
     let mut ids: HashSet<u32> = roles.writes.iter().map(|w| w.id).collect();
@@ -592,7 +553,7 @@ pub struct Sim {
 }
 
 impl World {
-    pub fn simulate(&self, rules: Rules, shuffle: Option<&mut Rng>) -> Sim {
+    pub fn simulate(&self, rules: Cover, shuffle: Option<&mut Rng>) -> Sim {
         let (nn, n, nr) = (self.nodes(), self.items.len(), self.roles.writes.len());
         let mut hdr = vec![vec![false; n]; nn];
         let mut body = vec![vec![false; n]; nn];
@@ -645,15 +606,8 @@ impl World {
                         fetched = true;
                     }
                 }
-                // `keep_listed`: what a held addendum lists, and one's own addenda, stay.
-                let listed: HashSet<u32> = if rules.keep_listed {
-                    (0..n).filter(|&a| hdr[v][a] && body[v][a]).filter_map(|a| if let Kind::Add { lists, .. } = &self.items[a].kind { Some(lists.iter().copied()) } else { Option::None }).flatten().collect()
-                } else {
-                    HashSet::new()
-                };
-                let keep = |i: usize| rules.keep_listed && (listed.contains(&self.items[i].id) || self.items[i].author == v && matches!(self.items[i].kind, Kind::Add { .. }));
                 for i in 0..n {
-                    if hdr[v][i] && !e.valid[i] && body[v][i] && !keep(i) {
+                    if hdr[v][i] && !e.valid[i] && body[v][i] {
                         body[v][i] = false;
                         changed = true;
                     }
@@ -762,11 +716,11 @@ pub struct Cost {
 }
 
 impl Cost {
-    fn add(&mut self, w: &World, rules: Rules) {
+    fn add(&mut self, w: &World, rules: Cover) {
         let l1 = L1::new(&w.roles, |_| true);
         let all = vec![true; w.items.len()];
         let ctx = Ctx::new(w, View { l1: &l1, hdr: &all, body: &all }, rules);
-        let (valid, _) = ctx.fixpoint(false);
+        let (valid, _) = ctx.fixpoint();
         let base = ctx.step(&vec![false; w.items.len()]);
         for d in &l1.dems {
             self.removals += 1;
@@ -837,24 +791,12 @@ pub struct Stats {
     pub disagree: u64,
     pub sim_gains: u64,
     pub attack_gain: u64,
-    pub variant_order: u64,
     /// Measured.
-    pub gfp_differs: u64,
     pub sim_lost: u64,
     pub sim_lost_ids: u64,
     /// Of those, writes valid only through addenda (the rest are valid without them).
     pub sim_lost_addenda: u64,
-    /// `Rules::held_only`: worlds reading otherwise, and addenda-only writes lost.
-    pub held_only_differs: u64,
-    pub held_only_lost_addenda: u64,
-    /// `Rules::keep_listed`: writes lost, and of those valid only through addenda.
-    pub keep_listed_lost: u64,
-    pub keep_listed_lost_addenda: u64,
-    pub both_lost_addenda: u64,
     pub shuffle_differs: u64,
-    pub newest_vs_any_addenda: u64,
-    pub newest_vs_any: u64,
-    pub later_vs_any: u64,
     pub cost: Cost,
     /// Per `COVERS` variant, against listing every commit.
     pub covers: [CoverStats; 2],
@@ -872,20 +814,10 @@ impl Stats {
         self.disagree += o.disagree;
         self.sim_gains += o.sim_gains;
         self.attack_gain += o.attack_gain;
-        self.variant_order += o.variant_order;
-        self.gfp_differs += o.gfp_differs;
         self.sim_lost += o.sim_lost;
         self.sim_lost_ids += o.sim_lost_ids;
         self.sim_lost_addenda += o.sim_lost_addenda;
-        self.held_only_differs += o.held_only_differs;
-        self.held_only_lost_addenda += o.held_only_lost_addenda;
-        self.keep_listed_lost += o.keep_listed_lost;
-        self.keep_listed_lost_addenda += o.keep_listed_lost_addenda;
-        self.both_lost_addenda += o.both_lost_addenda;
         self.shuffle_differs += o.shuffle_differs;
-        self.newest_vs_any_addenda += o.newest_vs_any_addenda;
-        self.newest_vs_any += o.newest_vs_any;
-        self.later_vs_any += o.later_vs_any;
         let [c0, c1] = o.covers;
         let mut costs = vec![(&mut self.cost, o.cost)];
         for (a, b) in self.covers.iter_mut().zip([c0, c1]) {
@@ -913,7 +845,7 @@ impl Stats {
     }
 
     pub fn failures(&self) -> u64 {
-        self.order_dep + self.nonmonotone + self.disagree + self.sim_gains + self.attack_gain + self.variant_order
+        self.order_dep + self.nonmonotone + self.disagree + self.sim_gains + self.attack_gain
     }
 
     /// Failures of cover variant `k` (`COVERS`).
@@ -924,24 +856,22 @@ impl Stats {
 
     pub fn print(&self) {
         println!(
-            "addenda: {} worlds ({} with addenda, {} with a write rescued) | max fixpoint rounds {} | FAIL order-dependent {}, non-monotone {}, nodes disagreeing {}, bodies gaining over ideal {}, attack gains {}, variants not nested {}",
-            self.worlds, self.with_addenda, self.rescued_worlds, self.max_rounds, self.order_dep, self.nonmonotone, self.disagree, self.sim_gains, self.attack_gain, self.variant_order
+            "addenda: {} worlds ({} with addenda, {} with a write rescued) | max fixpoint rounds {} | FAIL order-dependent {}, non-monotone {}, nodes disagreeing {}, bodies gaining over ideal {}, attack gains {}",
+            self.worlds, self.with_addenda, self.rescued_worlds, self.max_rounds, self.order_dep, self.nonmonotone, self.disagree, self.sim_gains, self.attack_gain
         );
         println!(
-            "  measured: greatest fixpoint differs {} | drop-at-once loses visible writes in {} worlds ({} writes, {} valid only through addenda), shuffled arrival changes the result {} | re-removal: any-addenda differs from newest {}, any (frontiers too) {}; frontiers only for earlier writes differs {}",
-            self.gfp_differs, self.sim_lost, self.sim_lost_ids, self.sim_lost_addenda, self.shuffle_differs, self.newest_vs_any_addenda, self.newest_vs_any, self.later_vs_any
+            "  measured: drop-at-once loses visible writes in {} worlds ({} writes, {} valid only through addenda), shuffled arrival changes the result {}",
+            self.sim_lost, self.sim_lost_ids, self.sim_lost_addenda, self.shuffle_differs
         );
         for ((name, _), c) in COVERS.iter().zip(&self.covers) {
             println!("  {name}: FAIL loses visible writes in {} worlds, attack gains {}, non-monotone {} | gains in {} worlds", c.loses, c.attack_gain, c.nonmonotone, c.gains);
         }
-        println!("  held-only listing: reads otherwise in {} worlds, addenda-only writes lost {}", self.held_only_differs, self.held_only_lost_addenda);
-        println!("  keeping what held addenda list: writes lost {} ({} valid only through addenda); with held-only too: addenda-only writes lost {}", self.keep_listed_lost, self.keep_listed_lost_addenda, self.both_lost_addenda);
         self.cost.print("listing every commit");
         for ((name, _), c) in COVERS.iter().zip(&self.covers) {
             c.cost.print(name);
         }
         for (label, w) in &self.ex {
-            let shrinkable = !matches!(*label, "attack gain" | "order dependence" | "bodies gain" | "variants not nested") && !label.starts_with("cover");
+            let shrinkable = !matches!(*label, "attack gain" | "order dependence" | "bodies gain") && !label.starts_with("cover");
             let fails = |x: &World| fails_check(label, x);
             let w = if shrinkable && fails(w) { crate::shrink::shrink(w.clone(), fails) } else { w.clone() };
             println!("  {label} example:\n{w}");
@@ -962,33 +892,12 @@ fn fails_check(label: &str, w: &World) -> bool {
             let s = w.simulate(PLAN, None);
             s.visible != w.ideal(PLAN).visible
         }
-        "held-only addenda loss" => {
-            let ho = Rules { held_only: true, ..PLAN };
-            let (eh, sh, base) = (w.ideal(ho), w.simulate(ho, None), w.ideal_base());
-            (0..w.items.len()).any(|c| eh.visible[c] && !sh.visible[c] && !base[c])
-        }
-        "keep-listed addenda loss" => {
-            let (e, sk, base) = (w.ideal(PLAN), w.simulate(Rules { keep_listed: true, ..PLAN }, None), w.ideal_base());
-            (0..w.items.len()).any(|c| e.visible[c] && !sk.visible[c] && !base[c])
-        }
-        "both addenda loss" => {
-            let both = Rules { keep_listed: true, held_only: true, ..PLAN };
-            let (e, sb, base) = (w.ideal(both), w.simulate(both, None), w.ideal_base());
-            (0..w.items.len()).any(|c| e.visible[c] && !sb.visible[c] && !base[c])
-        }
-        "re-removal variants differ" => w.ideal(Rules { rerem: Rerem::Newest, ..PLAN }).valid != w.ideal(Rules { rerem: Rerem::AnyAddenda, ..PLAN }).valid,
-        "gfp differs" => {
-            let l1 = L1::new(&w.roles, |_| true);
-            let all = vec![true; w.items.len()];
-            let c = Ctx::new(w, View { l1: &l1, hdr: &all, body: &all }, PLAN);
-            c.fixpoint(false).0 != c.fixpoint(true).0
-        }
         _ => true,
     }
 }
 
 /// Removing one honest addendum turns some write valid (or visible).
-fn nonmonotone(w: &World, rules: Rules) -> bool {
+fn nonmonotone(w: &World, rules: Cover) -> bool {
     let e = w.ideal(rules);
     (0..w.items.len()).filter(|&a| matches!(w.items[a].kind, Kind::Add { .. })).any(|a| {
         let wa = w.without(a);
@@ -1003,13 +912,13 @@ fn nonmonotone(w: &World, rules: Rules) -> bool {
 /// where a valid forged addendum on m has its author holding write at its key: nothing beyond
 /// the attacker's own write power on that thing (a part attributed to an actor is vouched for
 /// on the actor by a writer of it, as a frontier lists it).
-fn attack_gains(w: &World, f: &World, rules: Rules) -> bool {
+fn attack_gains(w: &World, f: &World, rules: Cover) -> bool {
     let l1 = L1::new(&w.roles, |_| true);
     let (a0, a1) = (vec![true; w.items.len()], vec![true; f.items.len()]);
     let c0 = Ctx::new(w, View { l1: &l1, hdr: &a0, body: &a0 }, rules);
     let c1 = Ctx::new(f, View { l1: &l1, hdr: &a1, body: &a1 }, rules);
-    let (v0, _) = c0.fixpoint(false);
-    let (v1, _) = c1.fixpoint(false);
+    let (v0, _) = c0.fixpoint();
+    let (v1, _) = c1.fixpoint();
     (0..w.items.len()).any(|c| {
         let it = &w.items[c];
         it.parts().any(|m| {
@@ -1052,14 +961,6 @@ pub fn check(w: &World, covers: Option<&[World; 2]>, st: &mut Stats, rng: &mut R
     if fail(st, "non-monotone", nonmonotone(w, PLAN), w) {
         st.nonmonotone += 1;
     }
-    {
-        let l1 = L1::new(&w.roles, |_| true);
-        let all = vec![true; w.items.len()];
-        let c = Ctx::new(w, View { l1: &l1, hdr: &all, body: &all }, PLAN);
-        if fail(st, "gfp differs", c.fixpoint(true).0 != e.valid, w) {
-            st.gfp_differs += 1;
-        }
-    }
     // Bodies dropped and refetched.
     let s = w.simulate(PLAN, None);
     if fail(st, "nodes disagree", !s.agree, w) {
@@ -1081,55 +982,17 @@ pub fn check(w: &World, covers: Option<&[World; 2]>, st: &mut Stats, rng: &mut R
             fail(st, "body loss", true, w);
         }
     }
-    {
-        let ho = Rules { held_only: true, ..PLAN };
-        let (eh, sh) = (w.ideal(ho), w.simulate(ho, None));
-        st.held_only_differs += (eh.visible != e.visible) as u64;
-        let base = w.ideal_base();
-        let n = (0..w.items.len()).filter(|&c| eh.visible[c] && !sh.visible[c] && !base[c]).count() as u64;
-        st.held_only_lost_addenda += n;
-        fail(st, "held-only addenda loss", n > 0, w);
-    }
-    {
-        let kl = Rules { keep_listed: true, ..PLAN };
-        let sk = w.simulate(kl, None);
-        let base = w.ideal_base();
-        let n = (0..w.items.len()).filter(|&c| e.visible[c] && !sk.visible[c] && !base[c]).count() as u64;
-        st.keep_listed_lost_addenda += n;
-        st.keep_listed_lost += (0..w.items.len()).filter(|&c| e.visible[c] && !sk.visible[c]).count() as u64;
-        fail(st, "keep-listed addenda loss", n > 0, w);
-        let both = Rules { keep_listed: true, held_only: true, ..PLAN };
-        let (eb, sb) = (w.ideal(both), w.simulate(both, None));
-        let n = (0..w.items.len()).filter(|&c| eb.visible[c] && !sb.visible[c] && !base[c]).count() as u64;
-        st.both_lost_addenda += n;
-        fail(st, "both addenda loss", n > 0, w);
-    }
     let s2 = w.simulate(PLAN, Some(rng));
     st.shuffle_differs += (s2.visible != s.visible) as u64;
-    // Re-removal variants.
-    let en = w.ideal(Rules { rerem: Rerem::Newest, ..PLAN });
-    let ea = w.ideal(Rules { rerem: Rerem::AnyAddenda, ..PLAN });
-    st.newest_vs_any_addenda += (ea.valid != en.valid) as u64;
-    fail(st, "re-removal variants differ", ea.valid != en.valid, w);
-    st.newest_vs_any += (e.valid != en.valid) as u64;
-    let el = w.ideal(Rules { rerem: Rerem::Later, ..PLAN });
-    st.later_vs_any += (e.valid != el.valid) as u64;
-    if fail(st, "variants not nested", !subset(&en.valid, &ea.valid) || !subset(&ea.valid, &e.valid) || !subset(&el.valid, &e.valid), w) {
-        st.variant_order += 1;
-    }
-    // Attacks, under every variant.
+    // Attacks.
     let nn = w.roles.nodes;
     let att: Vec<usize> = if rng.below(2) == 0 { vec![rng.below(nn)] } else { vec![rng.below(nn), rng.below(nn)] };
     let f = w.forge(rng, &att);
-    for rerem in [Rerem::Newest, Rerem::AnyAddenda, Rerem::Any, Rerem::Later] {
-        let rules = Rules { rerem, ..PLAN };
-        if fail(st, "attack gain", attack_gains(w, &f, rules), &f) {
-            st.attack_gain += 1;
-            break;
-        }
+    if fail(st, "attack gain", attack_gains(w, &f, PLAN), &f) {
+        st.attack_gain += 1;
     }
     for (k, o) in covers.into_iter().flatten().enumerate() {
-        let rules = Rules { cover: COVERS[k].1, ..PLAN };
+        let rules = COVERS[k].1;
         st.covers[k].cost.add(o, rules);
         let eo = o.ideal(rules);
         let (vi, vo) = (w.ids(&e.visible), o.ids(&eo.visible));
@@ -1158,7 +1021,7 @@ pub fn random(samples: u64, seed: u64) -> Stats {
                     for _ in 0..samples / threads {
                         let s0 = rng.next();
                         let w = random_world(&mut Rng(s0), PLAN);
-                        let o = COVERS.map(|(_, cover)| random_world(&mut Rng(s0), Rules { cover, ..PLAN }));
+                        let o = COVERS.map(|(_, cover)| random_world(&mut Rng(s0), cover));
                         check(&w, Some(&o), &mut st, &mut rng);
                     }
                     st
@@ -1172,36 +1035,6 @@ pub fn random(samples: u64, seed: u64) -> Stats {
         all.merge(s);
     }
     all
-}
-
-// ---------- cost sweep ----------
-
-/// Cost at sizes the random worlds do not reach: one thing, Alice (first admin) removes Bob
-/// at t=10; `writers` other writers; Bob's `m` commits before it, each received by each node
-/// with probability 1/2 (Alice's frontier and each writer's receipts). Prints, per removal,
-/// frontier IDs, addenda, listed IDs and duplicate copies (listed more than once, or by
-/// more addenda than one), averaged over `samples`.
-pub fn cost_sweep(samples: u64) {
-    for writers in [1usize, 3, 10, 30] {
-        for m in [1usize, 10, 100] {
-            let nn = writers + 2;
-            let mut rng = Rng(0xc057 ^ (writers * 1000 + m) as u64);
-            let mut c = Cost::default();
-            for _ in 0..samples {
-                let mut genesis = vec![vec![Role::Write]; nn + 1];
-                genesis[0][0] = Role::Admin;
-                genesis[nn][0] = Role::None;
-                let roles = JHist { nodes: nn, admins: vec![0], genesis, writes: vec![joint::JWrite { author: 0, t: 10, id: 1, target: 0, holder: 1, role: Role::None }], recv: vec![(0..nn).map(|v| if v == 0 { 10 } else { 11 }).collect()] };
-                let items = (0..m).map(|k| Item { kind: Kind::Plain, author: 1, t: 1 + (k % 8) as u32, id: 10 + k as u32, thing: 0, acting: Option::None, recv: (0..nn).map(|v| if v == 1 { 1 + (k % 8) as u32 } else if rng.below(2) == 0 { LATE } else { 9 }).collect(), forged: false }).collect();
-                let mut w = World { roles, items, frontier: HashMap::new() };
-                let mut ids: HashSet<u32> = (0..1000).collect();
-                w.derive(&mut rng, PLAN, &[], &mut ids, Option::None);
-                c.add(&w, PLAN);
-            }
-            let r = c.removals.max(1) as f64;
-            println!("  writers {writers:>2}, Bob's commits {m:>3}: frontier {:>6.1} IDs | addenda {:>5.1} | listed {:>7.1} IDs, of which duplicate copies {:>7.1} | rescued {:>6.1}", c.frontier as f64 / r, c.addenda as f64 / r, c.listed as f64 / r, c.dup as f64 / r, c.rescued as f64 / r);
-        }
-    }
 }
 
 // ---------- exhaustive ----------
@@ -1324,12 +1157,12 @@ pub fn cover_worlds(share: (usize, usize), mut f: impl FnMut([World; 3])) {
                                     roles.recv.push(row(by, t2, t2 + 1, r2m));
                                 }
                                 let add_recv = |a: usize, t: u32| -> Vec<u32> { (0..nn).map(|v| if v == a { t } else { t + 1 }).collect() };
-                                let make = |rules: Rules| {
+                                let make = |rules: Cover| {
                                     let mut w = World { roles: roles.clone(), items: vec![c.clone(), snap.clone()], frontier: HashMap::new() };
                                     w.derive(&mut Rng(0), rules, &[], &mut (0..2000).collect(), Some(&add_recv));
                                     w
                                 };
-                                f([make(PLAN), make(Rules { cover: COVERS[0].1, ..PLAN }), make(Rules { cover: COVERS[1].1, ..PLAN })]);
+                                f([make(PLAN), make(COVERS[0].1), make(COVERS[1].1)]);
                             }
                         }
                     }
@@ -1424,7 +1257,7 @@ mod tests {
         fn derive(self, unseen: &[usize]) -> World {
             self.derive_by(PLAN, unseen)
         }
-        fn derive_by(mut self, rules: Rules, unseen: &[usize]) -> World {
+        fn derive_by(mut self, rules: Cover, unseen: &[usize]) -> World {
             let mut ids: HashSet<u32> = (0..1000).collect();
             let add_recv = |a: usize, t: u32| -> Vec<u32> { (0..NN).map(|v| if v == a { t } else if unseen.contains(&v) { LATE } else { t + 1 }).collect() };
             self.w.derive(&mut Rng(0), rules, &[], &mut ids, Some(&add_recv));
@@ -1561,7 +1394,7 @@ mod tests {
         }
     }
 
-    fn visible(w: &World, rules: Rules, id: u32) -> bool {
+    fn visible(w: &World, rules: Cover, id: u32) -> bool {
         w.ideal(rules).visible[w.items.iter().position(|it| it.id == id).unwrap()]
     }
 
@@ -1572,7 +1405,7 @@ mod tests {
     /// snapshot covers, keeps it.
     #[test]
     fn another_writers_cover_falls_with_its_author() {
-        let make = |rules: Rules| {
+        let make = |rules: Cover| {
             let mut b = B::new();
             b.w.roles.genesis[CAROL][0] = Admin;
             let e = b.write(BOB, 1, &[(ALICE, 2), (DAVE, 2)]);
@@ -1584,7 +1417,7 @@ mod tests {
             (b.derive_by(rules, &[]), e)
         };
         for (cover, keeps) in [(Cover::ListAll, true), (Cover::OmitOthers, false), (Cover::OmitOwn, true)] {
-            let rules = Rules { cover, ..PLAN };
+            let rules = cover;
             let (w, e) = make(rules);
             assert_eq!(visible(&w, rules, e), keeps, "{cover:?}");
         }
@@ -1595,7 +1428,7 @@ mod tests {
     /// and her addendum names the snapshot alone, which keeps the edit visible.
     #[test]
     fn leavers_own_cover_is_named() {
-        let rules = Rules { cover: Cover::OmitOwn, ..PLAN };
+        let rules = Cover::OmitOwn;
         let mut b = B::new();
         let e = b.write(BOB, 1, &[(CAROL, 2)]);
         let s = b.item(Kind::Snap(vec![e]), BOB, 4, &[(CAROL, 5)]);

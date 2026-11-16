@@ -1,5 +1,5 @@
 //! Account custody (notes/engine-validity-epochs.md): seed custody follows holding, the chain is
-//! D's roster, a merge is only a join. Greenfield: shares no code with `forks`.
+//! D's roster, a merge is only a join. Greenfield: shares no code with `epochs`.
 //!
 //! The design under test.
 //! - **Custody.** A plain rotation boxes its fresh seed to each device on its maker's roster; any

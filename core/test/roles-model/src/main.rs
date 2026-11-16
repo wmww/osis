@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [forks|forks-stand|forks-blind|forks-anyone|forks-first-grants|forks-no-takes|forks-every-answer|as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|addenda-cost|forget|forget-window|epochs|epochs-exh|epochs-exh-c|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
+//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|forget|as|exempt|strat|stratw|frontier|epochs|epochs-exh|epochs-exh-c|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
 
 use roles_model::{edges, joint, single};
 
@@ -13,13 +13,6 @@ fn main() {
         }
         Some(m @ ("epochs" | "epochs-exh" | "epochs-exh-c")) => {
             if roles_model::epochs::run(samples, m) > 0 {
-                std::process::exit(1);
-            }
-        }
-        Some(m @ ("forks" | "forks-stand" | "forks-blind" | "forks-anyone" | "forks-first-grants" | "forks-no-takes" | "forks-every-answer")) => {
-            let c = match m { "forks-stand" => 1, "forks-blind" => 2, "forks-anyone" => 3, "forks-first-grants" => 4, "forks-no-takes" => 5, "forks-every-answer" => 6, _ => 0 };
-            roles_model::forks::CONTROL.store(c, std::sync::atomic::Ordering::Relaxed);
-            if roles_model::forks::run(samples) > 0 {
                 std::process::exit(1);
             }
         }
@@ -40,24 +33,16 @@ fn main() {
         }
         Some("disputes") => roles_model::trust::run(samples, false),
         Some("disputes-random") => roles_model::trust::run(samples, true),
-        Some("forget") => roles_model::forget::exhaustive(),
-        Some("forget-min") => roles_model::forget::minimal(),
-        Some("forget-prev") => roles_model::forget::prev_search(),
-        Some("forget-any") => roles_model::forget::any_search(),
-        Some("forget-costs") => roles_model::forget::costs(),
-        Some("forget-window") => {
-            if roles_model::forget::window_search() > 0 {
+        Some("forget") => {
+            if roles_model::forget::search() > 0 {
                 std::process::exit(1);
             }
         }
-        Some("forget-account") => roles_model::forget_account::exhaustive(),
         Some("addenda") => roles_model::addenda::random(samples, 0x5eed).print(),
-        Some("addenda-cost") => roles_model::addenda::cost_sweep(samples),
         Some("addenda-exh") => roles_model::addenda::exhaustive(false).print(),
         Some("addenda-covers") => roles_model::addenda::exhaustive(true).print(),
         Some("joint") => joint::random(samples, 0x5eed).print(),
-        Some("edges") => edges::run(samples, edges::Drops::Sticky),
-        Some("edges-prov") => edges::run(samples, edges::Drops::Provenance),
+        Some("edges") => edges::run(samples),
         rule => single::run(samples, rule),
     }
 }

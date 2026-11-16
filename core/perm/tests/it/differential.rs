@@ -420,7 +420,7 @@ fn edges_trust_diff(h: &edges::EHist) -> Option<String> {
         let s = side(h, *bits);
         let trust = trust_of(h, *bits);
         // the settled walk again, for its dropped ops (the side's result lists commits)
-        let dropped = h.eval_from(edges::Drops::Sticky, s.d0).0.dropped;
+        let dropped = h.eval_from(true, s.d0).0.dropped;
         let check = |tl: &Timeline| edges_check(h, &ew, tl, &s.res.0, s.applied, dropped).or_else(|| side_check(h, &s, tl, |x| ew.nodes[x]));
         let tl = Timeline::evaluate_with(&held, &trust);
         if let Some(d) = check(&tl) {

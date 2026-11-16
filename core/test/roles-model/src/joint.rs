@@ -16,7 +16,7 @@
 //! earlier applied writes on N attributed to a class in (new, held] audited by A's frontier
 //! (A's receipts before t; nothing else counts, A's own chain writes included), and the walk
 //! restarts on
-//! any drop. Drops are sticky. No invites, `until` or snapshots here (edges.rs, snapshot.rs).
+//! any drop. Drops are sticky. No invites, `until` or snapshots here (`edges`, `content`).
 //!
 //! Checked (`cargo run --bin roles-model [samples] joint`, `cargo test`): termination, input-order
 //! independence (with commit-ID ties), nothing dropped with nobody offline.

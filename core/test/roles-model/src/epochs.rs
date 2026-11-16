@@ -407,13 +407,12 @@ impl World {
         cands.iter().copied().find(|&c| cands.iter().all(|&d| d == c || beats(c, d)))
     }
 
-    /// The rotations observer `seen` follows (spec/permissions.md §5.4, Placing), as
-    /// core/test/roles-model `forks` states the rule: outside P each placed rotation is followed
+    /// The rotations observer `seen` follows (spec/permissions.md §5.4, Placing), the first-seen
+    /// rule: outside P each placed rotation is followed
     /// with its line unless a followed one is beside it or a rotation on its line rejects or is
     /// rejected by a followed one; a node of P (`own`) takes the revocations first-seen as a
     /// consistent set and follows every rotation whose line they leave standing and whose
-    /// revocations are all taken (no rotation here takes a revocation off its line: `forks`
-    /// models what a rotation takes).
+    /// revocations are all taken (no rotation here takes a revocation off its line).
     fn follow(&self, held: &[bool], lines: &Lines, chosen: Option<usize>, seen: Option<usize>, own: bool) -> Vec<usize> {
         let order = self.place_order(held, lines, chosen, seen);
         let on = |a: usize, b: usize| lines.on(a, b);

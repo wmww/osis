@@ -92,7 +92,7 @@ mod tests {
             let h = joint::random_hist(&mut rng);
             assert_eq!(joint::quiescent(&h), Ok(()), "{h}");
             let h = edges::random_hist(&mut rng);
-            assert_eq!(edges::quiescent(&h, edges::Drops::Sticky), Ok(()), "{h}");
+            assert_eq!(edges::quiescent(&h), Ok(()), "{h}");
         }
     }
 

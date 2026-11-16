@@ -9,28 +9,29 @@
 //! section:
 //! - `single`: §5.1 on one actor, the adopted demoter-frontier rule and rejected variants.
 //! - `joint`: §5.1 steps 1-5 over several actors (record edges, actor holders, mutual
-//!   roles, commit-ID ties); `joint::walk`, `joint::random_hist`.
+//!   roles, commit-ID ties); `joint::walk`, `joint::random_hist`. osis-perm `joint_model_agrees`.
 //! - `edges`: §2 (`until`, invite power, self-removal) and §7 (links) on one target, with
-//!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`.
-//! - `content`: §5.2 per-delta content validity.
-//! - `addenda`: addenda (spec/permissions.md §5.2): layer 2 with several
-//!   authors over `joint` timelines (`JHist::steps`), witnesses' addenda as a least
-//!   fixpoint, bodies dropped and refetched, forged addenda, cost, which covered commits
-//!   lists leave out (`Cover`). Searches `addenda` (random), `addenda-exh` (exhaustive
-//!   families, about 2 CPU-hours), `addenda-covers`, `addenda-cost`. Every property passes;
-//!   drop-at-once loses writes; leaving out another writer's covers loses writes. Results: notes/addenda.md, Addenda model.
-//! - `forget`, `forget_account`: can a node forget a commit's ID (own-snapshot cover, a
-//!   snapshot inside the removal, the account level), per-node with real body drops, against
-//!   listing every commit. Searches `forget`, `forget-account`, `forget-costs`, `forget-min`.
-//! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
-//! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes.md
-//!   step 3), below.
+//!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`. osis-perm
+//!   `edges_model_agrees`.
+//! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes.md), below.
+//!   osis-perm `trust_model_agrees`.
+//! - `content`: §5.2 per-delta content validity: scenarios.
+//! - `addenda`: addenda (spec/permissions.md §5.2): layer 2 with several authors over `joint`
+//!   timelines (`JHist::steps`), witnesses' addenda as a least fixpoint, bodies dropped and
+//!   refetched, forged addenda, cost, which covered commits lists leave out (`Cover`).
+//!   Searches `addenda` (random), `addenda-exh` (exhaustive families), `addenda-covers`.
+//!   osis-perm `addenda_model_agrees`; results: notes/addenda.md, Addenda model.
+//! - `forget`: forgetting a commit's ID under a cover and the remover's own cover
+//!   (spec/commits.md §5 Forgetting), per node with real body drops, against listing every
+//!   commit. Search `forget`.
 //! - `epochs`: account signing epochs (issues/account-signing.md): node removal as
 //!   rotation, per-sync-ID list parts and per-thing lists, listings, witnesses' addenda,
 //!   successive removals, re-adds, the part bound, forks and thieves (README.md, results).
-//! - `forks`: an account's forked signing chain, the first-seen rule (§5.4).
+//!   osis-perm `epochs_model_agrees`.
 //! - `custody`: notes/engine-validity-epochs.md, greenfield: seed custody follows holding, the
-//!   chain is D's roster, a merge is only a join (README.md, results).
+//!   chain is D's roster, a merge is only a join (README.md, results). osis-engine
+//!   `rotation::tests_custody`.
+//! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
 //! Each model's library API: `walk(h)`, the timeline as a pure function of a history;
 //! `random_hist`; `quiescent(h)` (every node's walk over the writes in its delivery order
 //! agrees with the canonical one); `Display` on a history prints it as a trace. The joint
@@ -47,7 +48,7 @@
 //! lose their seeds for good, all at once, and the walk is redone from scratch. A dispute is
 //! an unapplied R that applies as an explicit demotion of X once its seeds are added to D,
 //! keyed (R, X). `edges::random_shaped` limits who may lower whom and who is online. Both
-//! walks gain `eval_from` (D seeded) and the demotions they applied; `edges` gains
+//! walks' `eval_from` takes D's seeds and returns the demotions applied; `edges` models
 //! finalizes (`EWrite::fin`, spec/permissions.md §2). Searches: `roles-model -- N disputes`
 //! (exhaustive edge tiers, then N random histories per shape: who may lower whom × online or
 //! offline, then N joint histories); `disputes-random` skips the exhaustive tiers. Hard
@@ -63,8 +64,6 @@ pub mod custody;
 pub mod edges;
 pub mod epochs;
 pub mod forget;
-pub mod forks;
-pub mod forget_account;
 pub mod joint;
 pub mod shrink;
 pub mod single;
@@ -168,17 +167,16 @@ impl Rng {
 /// Digest of every walk verdict (edges, roles, applied and dropped sets, attributions, passes)
 /// over `samples` random histories of each model. A refactor of the rule code must leave it
 /// unchanged (`roles-model -- N digest`).
-pub fn digest(samples: u64, seed: u64) -> [(&'static str, u64); 3] {
+pub fn digest(samples: u64, seed: u64) -> [(&'static str, u64); 2] {
     use std::hash::{Hash, Hasher};
-    let mut hs: [std::collections::hash_map::DefaultHasher; 3] = Default::default();
+    let mut hs: [std::collections::hash_map::DefaultHasher; 2] = Default::default();
     let mut rng = Rng(seed);
     for _ in 0..samples {
         let h = joint::random_hist(&mut rng);
         format!("{:?}", joint::walk(&h)).hash(&mut hs[0]);
         let h = edges::random_hist(&mut rng);
         format!("{:?}", edges::walk(&h)).hash(&mut hs[1]);
-        format!("{:?}", h.eval_mode(edges::Drops::Provenance)).hash(&mut hs[2]);
     }
-    let [a, b, c] = hs;
-    [("joint", a.finish()), ("edges", b.finish()), ("edges-prov", c.finish())]
+    let [a, b] = hs;
+    [("joint", a.finish()), ("edges", b.finish())]
 }
