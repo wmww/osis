@@ -128,7 +128,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 
 ### `holds.0`, `tickets.0` and tags
 - `holds.0` (`set<ref>`: strongs and weaks, never a ticket) is a plain container: its references count as any (What counts). The node root and the account root hold their strongs there (spec/sync-set.md §1).
-- `tickets.0` (`set<ticket>`) is a plain container of tickets, as `holds.0` is of strongs and weaks: its tickets work as any held ticket (spec/sync-set.md §2). The account root holds its tickets there (spec/sync-set.md §1, §4).
+- `tickets.0` (`set<ticket>`) is a plain container of tickets, as `holds.0` is of strongs and weaks: its tickets work as any held ticket (spec/sync-set.md §2). The account root holds its tickets there (spec/sync-set.md §1 The account's tickets).
 - A **tag** is a thing with `holds.0` and `tag.0`: what it tags is what its `holds.0` references. `tag.0` marks it as one users see.
 
 ## 9. Core schema

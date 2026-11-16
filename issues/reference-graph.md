@@ -1,5 +1,5 @@
 # The reference graph: one plan for sync, holding, lifetime, invitations and storage
-> Summary: Tess's design, decided with her. Every reference is a strong, a weak or a ticket; a strong says "this belongs here" and grants nothing; a node holds exactly what its node root reaches by strongs, entering a thing with its own keys only by a ticket it can open; a thing is deleted when its last reference goes. What a sync ID carries stays today's rule (what its keys can open). Invitations become tickets fired on an account's inbox thing, on a signal anyone holding the account's public record may fire. Removes retainers, release requests, synced groups, default filing, the group concept, inbox blobs, grant copies, the acted-on set, the account's sync records, tied grants and the `delete` call. Built after the account forks work, by demolition and rebuild on main.
+> Summary: Tess's design, decided with her. Every reference is a strong, a weak or a ticket; a strong says "this belongs here" and grants nothing; a node holds exactly what its node root reaches by strongs, entering a thing with its own keys only by a ticket it can open; a thing goes when its last reference goes. What a sync ID carries stays today's rule (what its keys can open). Invitations become tickets fired on an account's inbox thing, on a signal anyone holding the account's public record may fire. Removes retainers, release requests, synced groups, default filing, the group concept, inbox blobs, grant copies, the acted-on set, the account's sync records, tied grants and the `delete` call. Built after the account forks work, by demolition and rebuild on main.
 > Priority: normal
 > Tags: engine, sync, data-model, permissions
 
@@ -9,7 +9,7 @@
 
 ## Principles (Tess)
 - **A strong grants nothing.** It says the target belongs to this closure; anyone knowing a tid may write one. Permission is a separate act by someone who may grant, and removing a reference revokes nothing.
-- **A thing is deleted when its last reference goes.** That is the intended result, never a risk to design around: no rule waits on an absent peer, and nothing is kept because a deletion might be a mistake.
+- **A thing goes when its last reference goes**: every node holding it releases it, waiting for no absent peer; once no node holds it, a strong to it reads as not held (spec/sync-set.md §3). That is the intended result, never a risk to design around: nothing is kept because a release might be a mistake.
 - **Core holds only what cannot be built correctly on top of it.** Home, which invitations to accept, contact lists and "what is on my other nodes" are the app's.
 - **Lean on osis for storing data.** Node and account state are ordinary things and aspects. No aspect is exempt from sync; what is local is local by where it sits.
 - **One mechanism, reused.** A ticket is the one way to say "here is how to sync this", wherever it is stored.
@@ -39,10 +39,10 @@
 - **What counts**: every strong in the current state of a thing, in any aspect, at any depth and value size (issues/refs-in-chunked-elements.md), ephemeral aspects included while the value is held. History never counts. A signal has no current value, so a strong in a signal entry keeps nothing.
 - **Index**: one index of every ref in data the node holds and may read, held signal entries included, with its kind. It serves the closure walk, the ticket lookup and backlinks. Backlinks list everything: no excluded aspect. Creation records and role records hold weaks; a role record's current value is its roster.
 - `osis://` links in text become weaks: issues/text-links-as-references.md (independent).
-- `holds.0`: the plain container for the node root, the account root and tags; `tickets.0` the plain container of tickets a thing holds (the account root's for the profile, the inbox, link actors and redeemed targets). `tid.0` and `groups.0` stop being aspects (the API's calls stay).
+- `holds.0`: the plain container for the node root, the account root and tags; `tickets.0` the plain container of tickets a thing holds (the account root's for the profile, the inbox, link actors and redeemed targets). `tid.0` and `groups.0` go, as aspects and as calls (`groups_of` with them): a handle carries its tid, and what holds a thing is its backlinks, each with its kind and AK (a tag's strongs are in its `holds.0`).
 
 ### Sync units: what a sync ID carries
-- **The rule, in one sentence: a thing's sync unit is what it can reach by strongs and itself has read access to; it stops at the first thing it has no read access to.** A closure is what is referenced; a sync unit is the part of it that syncs as one, under one sync ID, and equals the closure only where the root reads all of it. Nothing is called a sync closure. Read access is the root thing's own (it is above the target in its chain of admins, or was granted read on it, directly or through a thing it holds a role on), never that of a person using it. With it: one also holds a thing one reaches by a strong where one was granted a role on that thing oneself (a ticket); and a thing is deleted when nothing carries it and nobody holds it so. Diagnostics and errors use these words ("B references T but has no read access to it, so T is not in B's sync unit").
+- **The rule, in one sentence: a thing's sync unit is what it can reach by strongs and itself has read access to; it stops at the first thing it has no read access to.** A closure is what is referenced; a sync unit is the part of it that syncs as one, under one sync ID, and equals the closure only where the root reads all of it. Nothing is called a sync closure. Read access is the root thing's own (it is above the target in its chain of admins, or was granted read on it, directly or through a thing it holds a role on), never that of a person using it. With it: one also holds a thing one reaches by a strong where one was granted a role on that thing oneself (a ticket); and a thing goes when nothing carries it and nobody holds it so. Diagnostics and errors use these words ("B references T but has no read access to it, so T is not in B's sync unit").
 - Stated behaviour that follows: Alice's closure A is admin of T and references it; Bob, a reader of A, adds a strong to T in his closure B; Alice removes hers. B never carried T (Bob had read on T, B did not), so T is gone for both. It survives where Alice shared T with Bob or with B. Likewise a thing reached only through a thing the root loses its role on is carried no more.
 - Why carrying is not tied to the unit of permission: a closure granted read on a large thing carries just what it references of it, so one row of a table syncs without the table and without a set of keys per cell (spec/requirements.md, no unit synced whole).
 - The API has no notion of a thing with or without own keys: a first grant makes them. Apps choose a thing's first admin: content is created under the thing it lives in (whose readers read it). A thing made under the account is in no sync unit and stays on the node that made it; a new root made under the account gets its own keys at creation and is held by ticket; account-wide plain things are made under the account root. Sharing a thing shares its sync unit, never what it only references: to share a tag of notes made under home, the app grants the tag a role on each note (when the tag is shared, and for each note added later), and the warning below names each one it missed. A call that does that sweep is the API's to consider (notes/api-design.md).
@@ -54,13 +54,14 @@
 - Limit, as today: an edit of a thing carried under two sync IDs reaches a node syncing only one of them through a node that syncs both.
 - A role change travels, as today, as a certificate under every sync ID whose sync unit depends on it, ahead of the deletes it causes (spec/permissions.md §4 Role changes travel, spec/sync-judgement.md §2, §3): a revoked grant reaches every node holding what the grant carried. Without it two nodes undo each other for good (notes/closure-model.md).
 - No rule is special to the account: a thing made under the account itself is in no sync unit (nothing but the account has read access to it), so it stays on the node that made it. Apps make account-wide things under the account root.
-- Making a thing: the commit must leave it in the node closure, or the write is refused. Nothing is filed by default. Key actors (accounts, nodes, link keys) are exempt.
+- Making a thing: the commits a node makes in one storage transaction must leave every thing they make in the node closure at its end, or they are refused. That covers the account's creation (P, D, the profile, the inbox and the node thing, with the node root's strong to D, as separate commits by P and by the node) like any write. Key actors (accounts, nodes, link keys) are in no closure and exempt. Nothing is filed by default.
 
 ### Holding and release
 - The node root is local: it has no sync ID and nothing references it. It holds the node's strongs (`holds.0`), its settings, its strong to the account root (never removed), and what is local to a node today (`caps^.0`, `clients^.0`).
 - The node closure is walked sync unit by sync unit: within a sync unit by its strongs; into a thing with own keys that the sync unit's keys cannot open only where the node holds a ticket for it that it can open (found by tid in the index) or already holds its keys. With none the walk stops there: reading it is an error, nothing else is affected. With a ticket for the sync role only, the node stores that sync unit unread and the walk stops.
 - The walk does not enter a key actor (an account, a node, a link key): it has no sync unit. What a node holds of a sibling's node thing is its public record under the account root's sync ID.
-- A strong to a thing the node never got holds nothing: if its last holder releases it first, it is gone, and the strong reads as not held.
+- A strong to a thing the node never got holds nothing: if its last holder releases it first, it is gone, and the strong reads as not held. Destroyed, released and never held all read absent: no marker tells them apart.
+- A ticket enters its target at the lower of its role and the holder's: a read ticket whose holder was lowered to sync keeps the thing unread; one whose holder has no role enters nothing.
 - Core gives sibling nodes no view of what a node holds. An app may publish a list of weaks.
 - A diagnostic (`NotCarried`) lists each strong in the node closure whose target is not carried where the strong is and not held otherwise, strongs to key actors excluded. A write adding such a strong is not refused: it reports the same diagnostic at once, as a warning.
 - One wait stays: a node that removed itself from a thing keeps its secrets until its removal is held elsewhere (spec/permissions.md §3): that delivers a message, it preserves no data.
@@ -74,9 +75,10 @@
 - A ticket holds: the target's tid, its sync ID, one secret of it (read, or sync for a holder that only stores) with its epoch, sealed to a named actor, and the issuer's profile tid. No addresses. About 1.3 KB (a seal to an actor's KEM key).
 - It is a weak: it keeps nothing. It is ordinary data and works wherever the node holds it: an inbox entry, a message attachment, a document's source, the account root's ref to home. Core never copies one.
 - A ticket is made by a node that may grant the role, by a node changing the thing's keys for each holder the change boxes, or by a node for its own account of a thing it holds a secret of (it grants nothing: the account already holds the role). Anyone may copy one.
-- A redeem and a contact-card import write, with their strongs in the account root, such tickets in its `tickets.0`, so the account's other nodes enter K, the target and the contact's profile. A node that changes the keys of the profile or the inbox, or sees the account root's ticket for one at an old epoch while holding a current secret, replaces that ticket.
-- **Accepting** is writing a strong to the target; the node finds the ticket. **Declining** is doing nothing. There is no invitation list in core and no record of what was acted on. A node added later starts from a ticket in data it holds, so an account that wants that keeps the ticket (the inbox's history setting, or the app's own copy).
+- **The account's tickets**: D's `tickets.0` holds a ticket sealed to the account for each thing with own keys that the walk enters at a strong outside the node root's local part, at a current epoch: a node entering one or holding a newer epoch with none in D writes it (replacing older ones), and a node releasing the thing removes it. One rule gives the profile's and the inbox's tickets, a link's K, a redeem's and a card import's, and every accept's, and keeps D's tickets to what is held. So the account's other nodes, one paired later or one offline past the inbox's history included, enter what the others accepted.
+- **Accepting** is writing a strong to the target; the node finds the ticket and so writes D's. **Declining** is doing nothing. There is no invitation list in core and no record of what was acted on.
 - A ticket's sync ID is its issuer's word until a step of that sync ID bears a key of the ticket's secret.
+- **Left out**: a holder whose grant and a rotation were made concurrently (neither maker held the other) holds no box at that epoch until a node that may rotate re-seals it or a rotation supersedes it (spec/permissions.md §3 Left out): the requirements' limit, computable from the history.
 - **An old ticket**: as today, an old secret alone opens nothing. A reader that is behind catches up where a reading peer opens on its role (spec/sync-opens.md §4); a node changing a thing's keys fires a fresh ticket to each holder that only stores it and to a holder granted again after a gap. Limit: a new node starts from an old ticket only where it reaches a peer that reads the thing. A possible follow-up: issues/one-open-proof.md.
 - The profile tid in a ticket is a dial hint, never proof of the issuer. Addresses live in one place per account, its profile's dial list; a node tries every connected peer for a sync ID it wants; a contact card is the one thing that carries addresses.
 
@@ -90,7 +92,7 @@
 - Nothing an arriving ticket names is fetched, dialed or applied until a strong in the node closure reaches its target. The walk enters at any strong in the node closure where the node holds a ticket it can open, not only one the account wrote. Limit: a writer of a thing the node holds, who can also get a ticket to the node's account, makes the node fetch that ticket's target.
 - Whoever changes a thing's keys or removes a member reaches that member's inbox by the member's public record, which every fellow member holds.
 - **Contact card**: a link giving read on the profile; the profile's sync ID carries the account's public record. An invitation from a stranger carries a ticket for the thing and one for the sender's profile.
-- The account's things: the account root strongly references the profile, the inbox and the node things, holds in its `tickets.0` a ticket sealed to the account for the profile and for the inbox (it has no role on them, as on home; both have own keys from the account's creation), and may hold a ticket to home.
+- The account's things: the account root strongly references the profile, the inbox and the node things, holds in its `tickets.0` a ticket sealed to the account for the profile and for the inbox (it has no role on them, as on home; both have own keys from the account's creation), and by the same rule (The account's tickets) one for each other thing the account's nodes enter, home among them.
 
 ### What goes
 The full inventory, with paths, callers and tests: issues/reference-graph-demolition.md. In short:
@@ -99,7 +101,15 @@ The full inventory, with paths, callers and tests: issues/reference-graph-demoli
 - The old tid value (320 sites) is not demolition's: lane (a) replaces it.
 
 ### Storage
-Every stored row hangs off something the node closure holds, a store entry of a sync ID it syncs, a peer record, or the node root; a row goes with its last owner. Releasing everything leaves the node root, the account root, the profile, the inbox and the node thing: nothing that grows with history. The audit of today's exceptions: issues/storage-follows-groups.md.
+Every stored row hangs off something the node closure holds, a store entry of a sync ID it syncs, a peer record, or the node root; a row goes with its last owner. Releasing everything leaves the node root, the account root, the profile, the inbox and the node thing, plus only these, each bounded:
+- fires on the inbox, for its history setting (`INBOX_LIFETIME` by default);
+- siblings' node things under D, while they are on D's roster;
+- a link's sync ID while it is redeemed, until the join is held or the redeemer stops (spec/sync-inbox.md §6);
+- a destroyed thing's sync IDs until emptied, at the latest past its destroying requests' expiry (spec/sync-judgement.md §5);
+- role changes carried under a former grantee's sync ID, for `ROLE_KEEP` after replaced (a removal: after its `ts`, spec/sync-judgement.md §2);
+- tombstones for `TOMBSTONE_LIFETIME`, peer records within `RECORD_BUDGET`.
+
+The audit of today's exceptions: issues/storage-follows-groups.md.
 
 ## Execution
 Main may be broken for as long as this takes: nobody runs it. No small steps that keep things working, no long-lived branch.
@@ -107,8 +117,8 @@ Main may be broken for as long as this takes: nobody runs it. No small steps tha
 2. **Baselines**, by the executing coordinator on its own box: the default tests' count and CPU seconds (`tools/pertest.py run`), and `tools/loc.py`.
 3. **Demolition**, one sync unit of work: delete everything in the inventory and every test of it, including tests that could be ported. The tree only has to compile.
 4. **Foundation**: one commit declaring the new types and empty modules, so the lanes do not collide.
-5. **Rebuild in three lanes at once**, each one worker and one reviewer, committing to main: (a) ref and ticket values in place of the tid value, schema, API and the index; (b) the node root, the closure walk, sync units by strongs, release; (c) `@` signals, the inbox thing, tickets in sync, removal notices. Then one agent brings app, kit and chat back: they create each thing under the thing it lives in (its first admin, whose keys it takes), not under the account, since a thing made under the account is in no sync unit and stays on the node that made it (a new root made under the account gets its own keys at creation and is held by ticket; account-wide plain things go under the account root); default filing goes.
-6. **New tests last**, from the properties here and the model: small and cheap, plus the count test of Storage, a new sync differential and sim set.
+5. **Rebuild in three lanes at once**, each one worker and one reviewer, committing to main: (a) ref and ticket values in place of the tid value, schema, API and the index; (b) the node root, the closure walk, sync units by strongs, release; (c) `@` signals, the inbox thing, tickets in sync, removal notices. Lane workers write only the tests they need to develop their lane; the planned set (notes/refgraph-tests.md) waits for step 6. Then one agent brings app, kit and chat back: they create each thing under the thing it lives in (its first admin, whose keys it takes), not under the account, since a thing made under the account is in no sync unit and stays on the node that made it (a new root made under the account gets its own keys at creation and is held by ticket; account-wide plain things go under the account root); default filing goes.
+6. **New tests last**, the planned set of notes/refgraph-tests.md, from the properties here and the model: small and cheap, plus the count test of Storage, a new sync differential and sim set.
 7. **One gate**, at the end.
 
 Rules:
@@ -121,10 +131,8 @@ Rules:
 
 ## To settle while building
 - D's deposit seed: the inbox is its own thing, so a fresh deposit seed on a device removal rests on every sync-role rotation writing a new one (the inbox thing and D rotate inside each P rotation); check it holds in the rebuild.
-- Whether reading a weak must tell "destroyed" from "not held" (both read absent today).
 - Which search the edge-removal uses first (other referrers, or the subtree): each loses in one shape (notes/closure-model.md, counts); running both in step meets both.
 - What `tools/spec_map.py` needs once the removed sections go (`tools/policy_test.py` plants appended text in a missing file afresh).
-- How long a revoked role's certificate stays carried under the former grantee's sync ID (candidate: `ROLE_KEEP`, as a replaced role body).
 - No bound on how many sync IDs one commit is carried under (nothing limits the sync units a thing is in): measure with issues/many-sync-ids-cost.md.
 
 Not blocking: issues/many-sync-ids-cost.md (the cost of many things with their own sync ID, which a shared tag of notes makes).
