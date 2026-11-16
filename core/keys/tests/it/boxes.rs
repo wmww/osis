@@ -126,7 +126,7 @@ fn rotation_keeps_other_roles_boxes() {
     want.push(box_key(k, Role::Write, &rot.rotated[0].epoch));
     want.push(box_key(k, Role::Sync, &f.view.sync.newest().unwrap()));
     want.sort();
-    assert_eq!(s.boxes.keys().filter(|b| b.holder == k).cloned().collect::<Vec<_>>(), want);
+    assert_eq!(s.boxes.keys().filter(|b| b.holder == osis_base::Weak(k)).cloned().collect::<Vec<_>>(), want);
     let holders = [Holder { holder: k, role: Role::Write }];
     assert!(reseal_missing(&s, &v, &k, Role::Read).is_empty());
     assert!(reseal_needed(&s, &v, &holders).is_empty());
@@ -225,7 +225,7 @@ fn sizes() {
         let enc = osis_base::cbor::encode(&osis_schema::Codec::to_value(b));
         assert!((1200..1300).contains(&enc.len()), "{}", enc.len());
     }
-    for (k, b) in f.s.boxes.iter().filter(|(k, _)| k.holder == tid(2)) {
+    for (k, b) in f.s.boxes.iter().filter(|(k, _)| k.holder == osis_base::Weak(tid(2))) {
         let enc = osis_base::cbor::encode(&osis_schema::Codec::to_value(b));
         assert!(enc.len() < 180, "{k:?} {}", enc.len());
     }
@@ -484,7 +484,7 @@ fn box_to_an_account_names_its_epoch_spec_crypto_4() {
         let (opened, failed) = open_boxes(&a, &s, &Opener::Account { holder: p, keys: &seeds });
         assert!(failed.is_empty(), "{failed:?}");
         assert_eq!(opened.len(), ROLES.len());
-        for (_, b) in s.boxes.iter().filter(|(k, _)| k.holder == p) {
+        for (_, b) in s.boxes.iter().filter(|(k, _)| k.holder == osis_base::Weak(p)) {
             match (b, &writer_holds) {
                 (SecretBox::Sealed(x), None) => assert_eq!(x.keyset, Some(to_schema(&name))),
                 (SecretBox::Symmetric(x), Some(_)) => assert_eq!(x.epoch, to_schema(&name)),

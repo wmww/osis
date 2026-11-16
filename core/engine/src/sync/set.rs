@@ -235,7 +235,7 @@ impl Engine {
     pub fn caps(&mut self) -> Result<Arc<Caps>> {
         let me = self.core.id.tid();
         let c = self.get_typed(&me, &ct::CAPS)?.unwrap_or_default();
-        Ok(Arc::new(Caps { policy: c.policy, things: c.things.into_iter().map(|(t, x)| (t, ThingCaps { entries: x.entries, bytes: x.bytes })).collect() }))
+        Ok(Arc::new(Caps { policy: c.policy, things: c.things.into_iter().map(|(t, x)| (t.0, ThingCaps { entries: x.entries, bytes: x.bytes })).collect() }))
     }
 }
 

@@ -96,10 +96,11 @@ pub fn random_seen(r: &mut Rng, own: &crate::stamp::Source) -> Vec<(crate::stamp
     out
 }
 
-/// A set element: a register set holds a tid half the time, whose removal may name parts (§5.5).
+/// A set element: a register set holds a reference half the time, whose removal may name parts (§5.5).
 fn elem_value(r: &mut Rng, et: &Ty, depth: u32) -> Value {
     if matches!(et, Ty::Register) && r.chance(1, 2) {
-        return Value::Tid([r.below(3) as u8; 15]);
+        let t = [r.below(3) as u8; 15];
+        return if r.chance(1, 2) { Value::Strong(t) } else { Value::Weak(t) };
     }
     random_value(r, et, depth)
 }

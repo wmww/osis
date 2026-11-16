@@ -383,7 +383,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     let empty = osis_crdt::Fragment::default();
     let form = crate::common::session_of(&lp, 0);
     let mut builder = DeltaBuilder::new(&empty, Writer::new(ts, form.own_source(a, osis_base::CommitId([0; 32])), holders.lo));
-    builder.apply(&PathOp { path: vec![PathSeg::Key(Value::Tid(c))], op: Op::Set(edge(Role::Read).to_value()) }, &AnyView).unwrap();
+    builder.apply(&PathOp { path: vec![PathSeg::Key(Value::Weak(c))], op: Op::Set(edge(Role::Read).to_value()) }, &AnyView).unwrap();
     let (f, range) = builder.finish().unwrap();
     assert!(range.lo < holders.hi && holders.lo < range.hi, "the ranges overlap");
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Role, ts, a, range.lo, range.hi), None).unwrap();
@@ -411,7 +411,7 @@ fn malformed_frontier_is_bad_input_spec_wire_4() {
     let empty = osis_crdt::Fragment::default();
     let mut builder = DeltaBuilder::new(&empty, Writer::new(ts, Form::Commit.own_source(a, osis_base::CommitId([0; 32])), 1).keyed_removals(true));
     let view = osis_schema::core_schema().view("roles.0").unwrap();
-    builder.apply(&PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(b))], op: Op::Set(edge(Role::Read).to_value()) }, &view).unwrap();
+    builder.apply(&PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(b))], op: Op::Set(edge(Role::Read).to_value()) }, &view).unwrap();
     let (f, range) = builder.finish().unwrap();
     let cx = writer_ctx(Form::Commit, Kind::Role, ts, a, range.lo, range.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
@@ -433,7 +433,7 @@ fn malformed_frontier_is_bad_input_spec_wire_4() {
 #[test]
 fn role_content_rules_spec_commits_2() {
     let (mut lp, d, b, c) = setup();
-    let put = |x: Tid, r: Role| osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(x))], op: osis_crdt::Op::Set(edge(r).to_value()) };
+    let put = |x: Tid, r: Role| osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(x))], op: osis_crdt::Op::Set(edge(r).to_value()) };
     let mut m = Mutation::new();
     for x in [b, c] {
         m.op(d, &osis_schema::core_types::ROLES, put(x, Role::Admin)).unwrap();
@@ -620,7 +620,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     lp.advance(1_000);
     lp.peers[1].engine.demote(&d, &osis_engine::flows::Demotion { holder: b, new: None, retain: None }).unwrap();
     lp.advance(1_000);
-    let grant = Value::Map(osis_base::ValueMap::from([(Value::Tid(c), edge(Role::Read).to_value())]));
+    let grant = Value::Map(osis_base::ValueMap::from([(Value::Weak(c), edge(Role::Read).to_value())]));
     let forged = forge_role_commit(&mut lp, 1, d, &ak("roles.0"), &grant, 1 << 40);
     lp.sync_all().unwrap();
     lp.peers[2].receive(&forged, Vec::new()).unwrap();
@@ -1271,7 +1271,7 @@ fn edge_change_is_remove_and_put_spec_perm_2() {
     lp.advance(1_000);
     // the role field alone, into the entry the last change created
     let mut m = Mutation::new();
-    let path = vec![osis_crdt::PathSeg::Key(Value::Tid(c))];
+    let path = vec![osis_crdt::PathSeg::Key(Value::Weak(c))];
     m.op(d, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(edge(Role::Admin).to_value()) }).unwrap();
     assert_eq!(lp.peers[0].engine.commit(m).unwrap_err().class(), osis_base::ErrorClass::BadInput);
     set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Edge { until, ..edge(Role::Admin) }), None);
@@ -3575,8 +3575,8 @@ fn frontier_iff_the_write_audits_spec_wire_4() {
     let (mut lp, d, b, _) = setup();
     let write = |e: &mut osis_engine::Engine, x: ct::Edge, frontier: bool| {
         let mut m = Mutation::new();
-        m.op(d, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
-        m.op(d, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(x.to_value()) }).unwrap();
+        m.op(d, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(b)) }).unwrap();
+        m.op(d, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(b))], op: Op::Set(x.to_value()) }).unwrap();
         if frontier {
             m.frontier(ct::Frontier::default().to_value());
         }

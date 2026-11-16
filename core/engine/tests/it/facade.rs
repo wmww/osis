@@ -44,7 +44,7 @@ fn caps_read_from_the_node_spec_sync_ids_5() {
     let me = e.tid();
     let t = Tid::from_bytes([9; 15]);
     let mut m = Mutation::new();
-    m.set(me, &ct::CAPS, &ct::Caps { policy: [("entries".to_string(), 7)].into(), things: [(t, ct::ThingCaps { entries: 3, bytes: 4 })].into() }).unwrap();
+    m.set(me, &ct::CAPS, &ct::Caps { policy: [("entries".to_string(), 7)].into(), things: [(t.into(), ct::ThingCaps { entries: 3, bytes: 4 })].into() }).unwrap();
     e.commit(m).unwrap().unwrap();
     let c = e.caps().unwrap();
     assert_eq!(c.policy.get("entries"), Some(&7));

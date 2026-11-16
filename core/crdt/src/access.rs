@@ -193,7 +193,8 @@ fn value_bytes(v: &Value) -> usize {
         Value::Enum(_, p) => p.as_deref().map_or(0, |p| size_of::<Value>() + value_bytes(p)),
         Value::Link(_) => size_of::<osis_base::Link>(),
         Value::Unknown(u) => size_of::<osis_base::Unknown>() + u.content().as_bytes().len(),
-        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Tid(_) => 0,
+        Value::Ticket(_) => size_of::<osis_base::Ticket>() + 1024,
+        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Strong(_) | Value::Weak(_) => 0,
     }
 }
 

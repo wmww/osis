@@ -169,9 +169,9 @@ impl Elem {
             _ => None,
         }
     }
-    /// The tids the record's element holds and its value removal names (§5.5).
+    /// The references the record's element holds and its value removal names (§5.5).
     pub(crate) fn tids(&self) -> impl Iterator<Item = &Value> {
-        self.removes().into_iter().chain(self.written().and_then(|w| w.0)).filter(|v| matches!(v, Value::Tid(_)))
+        self.removes().into_iter().chain(self.written().and_then(|w| w.0)).filter(|v| v.is_reference())
     }
 }
 

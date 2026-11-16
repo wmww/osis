@@ -88,7 +88,7 @@ fn a_removed_node_naming_anothers_key_drops_no_entry_spec_sync_set_1() {
     let p = lp.peers[0].engine.account().unwrap().unwrap().0;
     let n1 = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
-    m.set(n1, &ct::REACH, &ct::Reach { dialable: key(0), items: items(1), account: Some(p) }).unwrap();
+    m.set(n1, &ct::REACH, &ct::Reach { dialable: key(0), items: items(1), account: Some(osis_base::Weak(p)) }).unwrap();
     lp.peers[1].engine.commit(m).unwrap();
     spread(&mut lp);
     let profile = lp.peers[0].engine.profile_of(&p).expect("P's profile");

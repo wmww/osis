@@ -78,9 +78,9 @@ fn own_secrets_switch() {
         }
         other => panic!("{other:?}"),
     }
-    assert!(!s.boxes.keys().any(|k| k.holder == w.m && k.role > Role::Read));
+    assert!(!s.boxes.keys().any(|k| k.holder == osis_base::Weak(w.m) && k.role > Role::Read));
     // L: a box at sync, read and write.
-    let mut lkeys: Vec<_> = s.boxes.keys().filter(|k| k.holder == w.l).collect();
+    let mut lkeys: Vec<_> = s.boxes.keys().filter(|k| k.holder == osis_base::Weak(w.l)).collect();
     lkeys.sort();
     let mut want = [box_key(w.l, Role::Sync, &e(Role::Sync)), box_key(w.l, Role::Read, &e(Role::Read)), box_key(w.l, Role::Write, &e(Role::Write))];
     want.sort();

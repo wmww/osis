@@ -1,4 +1,4 @@
-//! Backlinks (notes/api.md Backlinks): the things whose current values hold a thing's tid, read
+//! Backlinks (notes/api.md Backlinks): the things whose current values reference a thing, read
 //! from the engine's reference index (notes/engine-refs.md) a page at a time, as the acting actor
 //! may read them, and live through the dispatcher as any value listener is. spec: none (a local
 //! read; the port's rows: notes/client-port.md).
@@ -8,22 +8,24 @@ use crate::handle::{Osis, ReadOnly};
 use crate::read::Reader;
 use crate::track::thing_key;
 use crate::watch::{Delivery, Filter, Subscription, Watch};
-use osis_base::{Ak, Tid};
+use osis_base::{Ak, RefKind, Tid};
 
 /// Backlinks a page holds when the query names no limit, and at most. Resource bound: 0 returns
 /// nothing, infinity reads every backlink of a thing in one call under the node lock.
 pub const BACKLINK_PAGE: usize = 256;
 
-/// A thing whose current value on an aspect holds another thing's tid.
+/// A thing whose current value on an aspect references another thing.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Backlink {
-    /// The thing holding the tid.
+    /// The thing holding the reference.
     pub tid: Tid,
     /// The aspect whose value holds it.
     pub ak: Ak,
+    /// Whether it is a strong, a weak or a ticket.
+    pub kind: RefKind,
 }
 
-/// Which backlinks a page holds: in `Backlink` order (by thing, then aspect).
+/// Which backlinks a page holds: in `Backlink` order (by thing, then aspect, then kind).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BacklinkQuery {
     /// Start past this one (`None`: at the first).
@@ -46,15 +48,15 @@ impl Reader<'_> {
     /// the acting actor may not read. O(page + skipped) rows read.
     pub(crate) fn backlinks(&mut self, target: Tid, q: &BacklinkQuery) -> Result<BacklinkPage> {
         let limit = q.limit.unwrap_or(BACKLINK_PAGE).min(BACKLINK_PAGE);
-        let mut after = q.after.as_ref().map(|b| (b.tid, b.ak.clone()));
+        let mut after = q.after.as_ref().map(|b| (b.tid, b.ak.clone(), b.kind));
         let mut page = BacklinkPage::default();
         loop {
             // one past the page: whether there are more
             let want = limit + 1 - page.backlinks.len();
-            let rows = self.e.references_page(&target, after.as_ref().map(|(t, a)| (t, a)), want)?;
+            let rows = self.e.references_page(&target, after.as_ref().map(|(t, a, k)| (t, a, *k)), want)?;
             let n = rows.len();
-            for (tid, ak) in rows {
-                after = Some((tid, ak.clone()));
+            for (tid, ak, kind) in rows {
+                after = Some((tid, ak.clone(), kind));
                 if self.hidden(tid) {
                     continue;
                 }
@@ -62,7 +64,7 @@ impl Reader<'_> {
                     page.more = true;
                     return Ok(page);
                 }
-                page.backlinks.push(Backlink { tid, ak });
+                page.backlinks.push(Backlink { tid, ak, kind });
             }
             if n < want {
                 return Ok(page);
@@ -78,8 +80,8 @@ fn watch(db: &ReadOnly, tid: Tid) -> Filter {
 }
 
 impl ReadOnly {
-    /// The things whose current values reference `tid` (hold its tid, at any depth), each with the
-    /// aspect, a page at a time. Only what this node holds and the handle may read counts, never
+    /// The things whose current values reference `tid` (a strong, a weak or a ticket, at any
+    /// depth), each with the aspect and the kind, a page at a time. Only what this node holds and the handle may read counts, never
     /// history. `tid` itself need not be known here.
     pub fn backlinks(&self, tid: Tid, q: &BacklinkQuery) -> Result<BacklinkPage> {
         self.local_at(tid, "backlinks")?;

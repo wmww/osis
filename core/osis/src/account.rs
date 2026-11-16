@@ -157,7 +157,7 @@ impl Osis {
             x.offers.push((s, now.saturating_add(OFFER_LIFETIME_MS)));
             s
         });
-        Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::Tid(me), Value::Tid(home), Value::Tid(node), Value::Tid(profile), Value::Bytes(secret.to_vec())]))))
+        Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::bytes(me.as_bytes()), Value::bytes(home.as_bytes()), Value::bytes(node.as_bytes()), Value::bytes(profile.as_bytes()), Value::Bytes(secret.to_vec())]))))
     }
 
     /// Accepts a new node's request to an offer of this node: makes it an admin of the
@@ -167,7 +167,9 @@ impl Osis {
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
         self.local("pair_accept")?;
         let items = req.parse()?;
-        let [_, Value::Tid(node), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing request".into())) };
+        let malformed = || Error::Invalid("malformed pairing request".into());
+        let [_, node, pks, Value::Bytes(_)] = items.as_slice() else { return Err(malformed()) };
+        let node = node.as_array().map(Tid::from_bytes).ok_or_else(malformed)?;
         let now = self.inner.clock.now_wall_ms().0;
         let secret = self
             .locked(|x| {
@@ -176,7 +178,6 @@ impl Osis {
                 Some(x.offers.remove(i).0)
             })
             .ok_or(Error::Invalid("pairing request matches no open offer".into()))?;
-        let node = *node;
         let pks = packages_of(pks)?;
         let (grant, mine) = self.locked(|x| -> Result<(RawCommitId, Vec<Package>)> {
             for (bytes, blobs, lists) in pks {
@@ -199,8 +200,11 @@ impl Osis {
     pub fn pair(store: Store, offer: &PairOffer, cfg: Config) -> Result<Joining> {
         cfg.check()?;
         let items = offer.parse()?;
-        let [_, Value::Tid(account), Value::Tid(home), Value::Tid(_), Value::Tid(profile), Value::Bytes(secret)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
-        let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing offer".into()))?;
+        let malformed = || Error::Invalid("malformed pairing offer".into());
+        let [_, account, home, _, profile, Value::Bytes(secret)] = items.as_slice() else { return Err(malformed()) };
+        let tid = |v: &Value| v.as_array().map(Tid::from_bytes).ok_or_else(malformed);
+        let (account, home, profile) = (&tid(account)?, &tid(home)?, tid(profile)?);
+        let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| malformed())?;
         let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
         engine.set_app_record(crate::handle::PROFILE, profile.as_bytes())?;
         let db = Osis::start(engine, sync, clock, store, &cfg, *account, *home, 0)?;
@@ -213,7 +217,7 @@ impl Osis {
             }
             Ok(v)
         })?;
-        let request = PairRequest(seal(REQUEST, &secret, "osis pair request", vec![Value::Tid(node), packages_value(&pks)]));
+        let request = PairRequest(seal(REQUEST, &secret, "osis pair request", vec![Value::bytes(node.as_bytes()), packages_value(&pks)]));
         Ok(Joining { db, secret, account: *account, request })
     }
 }

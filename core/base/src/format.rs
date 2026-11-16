@@ -13,8 +13,8 @@ const DAY_MS: u64 = 24 * HOUR_MS;
 // CBOR tags (spec/data-model.md §5).
 /// Set: tag 258 around a sorted array. fixed.
 pub const TAG_SET: u64 = 258;
-/// Tid: tag around a 15-byte byte string. fixed.
-pub const TAG_TID: u64 = 1616;
+/// Retired, never reused: a decoder rejects it. fixed.
+pub const TAG_RETIRED: u64 = 1616;
 /// Enum: tag around `[case]` or `[case, payload]`. fixed.
 pub const TAG_ENUM: u64 = 1617;
 /// Link: tag around `[content hash, blob ID, suite || key]`. fixed.

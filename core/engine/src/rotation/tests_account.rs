@@ -223,7 +223,7 @@ fn grant_boxes_at_the_open_epoch_spec_crypto_4() {
     let e = &mut lp.peers[1].engine;
     let name = account_epoch(1, &next.signing.verifying_key()).unwrap();
     let s = e.run(|tx| crate::flows::secrets_in(tx, &t)).unwrap();
-    let named: Vec<_> = s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(_, b)| osis_keys::box_keysets(b)).collect();
+    let named: Vec<_> = s.boxes.iter().filter(|(k, _)| k.holder == osis_base::Weak(a.account)).map(|(_, b)| osis_keys::box_keysets(b)).collect();
     assert!(!named.is_empty() && named.iter().all(|x| *x == [name]), "{named:?}");
     let key = e.run(|tx| crate::flows::sync_ids::reader_key(tx, &a.account)).unwrap();
     match key {
@@ -296,7 +296,7 @@ fn a_box_at_an_account_epoch_carries_its_rotation_spec_crypto_4() {
     let t = actor_of(&mut lp, &a.account);
     let e = &mut lp.peers[1].engine;
     let s = e.run(|tx| crate::flows::secrets_in(tx, &t)).unwrap();
-    let w = osis_keys::SecretsWrite { boxes: s.boxes.iter().filter(|(k, _)| k.holder == a.account).map(|(k, b)| (k.clone(), b.clone())).collect(), removed: Default::default(), history: Default::default(), sealed: Default::default() };
+    let w = osis_keys::SecretsWrite { boxes: s.boxes.iter().filter(|(k, _)| k.holder == osis_base::Weak(a.account)).map(|(k, b)| (k.clone(), b.clone())).collect(), removed: Default::default(), history: Default::default(), sealed: Default::default() };
     assert_eq!(crate::rotation::members::carried(&e.core, &w, None), vec![id], "the box's epoch travels with it");
 }
 

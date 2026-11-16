@@ -75,7 +75,7 @@ fn key_actor_demoted_keeps_lower_roles() {
     let (es, er, ew) = (v.sync.newest().unwrap(), v.read.newest().unwrap(), v.write.newest().unwrap());
     let mut want = vec![box_key(k, Role::Sync, &es), box_key(k, Role::Read, &er), box_key(k, Role::Write, &ew)];
     want.sort();
-    assert_eq!(s.boxes.keys().filter(|b| b.holder == k).cloned().collect::<Vec<_>>(), want);
+    assert_eq!(s.boxes.keys().filter(|b| b.holder == osis_base::Weak(k)).cloned().collect::<Vec<_>>(), want);
     let mut kv = ActorEpochs::default();
     ingest(&a, &s, &Opener::KeyActor { holder: k, keys: &osis_crypto::KeyActorKeys::from_seed(&seed) }, &mut kv, None).unwrap();
     assert!(kv.read.secret(&er).is_some());

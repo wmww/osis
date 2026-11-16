@@ -1,38 +1,37 @@
-//! The reference index (notes/engine-refs.md): per
-//! (target, source thing, AK) how many times the target's tid occurs in the held values of the
-//! source's state on that aspect. Local and rebuildable (`write_all`), in two store index tables,
-//! kept in the transaction that changes a state: a join counts the tids at its reach before and
-//! after (`Delta::reach`), a whole write (a rebuild: validity, expiry, purge, destruction) the whole
-//! state against the stored rows (`resync`), a dropped aspect clears them. An ephemeral aspect's
-//! rows are memory rows, as its state is. A row appearing or going is told as
-//! `Event::References` once someone listens (`Engine::watch_references`). spec: none (local;
-//! notes/engine-refs.md).
+//! The reference index (notes/engine-refs.md): per (target, source thing, AK, kind) how many
+//! times the source's held state on that aspect holds a reference of that kind to the target
+//! (spec/data-model.md §8 Known references). Local and rebuildable (`write_all`), in two store
+//! index tables, kept in the transaction that changes a state: a join counts the references at its
+//! reach before and after (`Delta::reach`), a whole write (a rebuild: validity, expiry, purge,
+//! destruction) the whole state against the stored rows (`resync`), a dropped aspect clears them.
+//! An ephemeral aspect's rows are memory rows, as its state is. A row appearing or going is told
+//! as `Event::References` once someone listens (`Engine::watch_references`).
 
 use super::{Tx, records, scan_table};
 use crate::error::{Error, Result};
 use crate::events::Event;
-use osis_base::{Ak, Tid, Value};
+use osis_base::{Ak, RefKind, Tid, Value};
 use osis_crdt::Fragment;
 use osis_store::Shred;
 use std::collections::BTreeMap;
 
-/// Rows by target: target ‖ source ‖ AK, empty.
+/// Rows by target: target ‖ source ‖ AK ‖ 0 ‖ kind, empty.
 pub(crate) const TO: &[u8] = b"node/refs to";
-/// Rows by source: source ‖ AK length (u16) ‖ AK ‖ target, the count (u64).
+/// Rows by source: source ‖ AK length (u16) ‖ AK ‖ target ‖ kind, the count (u64).
 pub(crate) const FROM: &[u8] = b"node/refs from";
 
-/// Whether the values of `ak` are indexed: every aspect with a state but `created.0` and the
-/// role-class aspects (they say who has authority over a thing, not what it points to).
+/// Whether the values of `ak` are indexed: every aspect with a state (a signal has none).
 pub fn indexed(ak: &Ak) -> bool {
-    !ak.signal() && ak.as_str() != "created.0" && !osis_schema::core_types::is_role_class(ak.as_str())
+    !ak.signal()
 }
 
-/// One row: `source` holds `target`'s tid `count` times in its values on `ak`.
+/// One row: `source` holds a `kind` reference to `target` `count` times in its values on `ak`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Reference {
     pub target: Tid,
     pub source: Tid,
     pub ak: Ak,
+    pub kind: RefKind,
     pub count: u64,
 }
 
@@ -43,19 +42,19 @@ impl Reference {
     }
 }
 
-/// Count changes by target.
+/// Count changes by target and kind.
 #[derive(Default, Debug, PartialEq, Eq)]
-pub(crate) struct Delta(BTreeMap<Tid, i64>);
+pub(crate) struct Delta(BTreeMap<(Tid, RefKind), i64>);
 
 impl Delta {
-    /// Adds `sign` for every tid in the values `f` holds (`Fragment::each_value`).
+    /// Adds `sign` for every reference in the values `f` holds (`Fragment::each_value`).
     pub(crate) fn add(&mut self, f: &Fragment, sign: i64) {
         f.each_value(&mut |v| {
             drop(osis_base::costs::span("refs: value read"));
-            tids(v, &mut |t| *self.0.entry(t).or_default() += sign);
+            references(v, &mut |k, t| *self.0.entry((t, k)).or_default() += sign);
         });
     }
-    /// The tids at the reach of `delta` in `st` (`Fragment::reach`: all a join of it can
+    /// The references at the reach of `delta` in `st` (`Fragment::reach`: all a join of it can
     /// change), counted `sign` times.
     pub(crate) fn reach(st: &Fragment, delta: &Fragment, sign: i64) -> Delta {
         let mut d = Delta::default();
@@ -70,28 +69,33 @@ impl Delta {
         }
         d
     }
-    fn sub(&mut self, o: &BTreeMap<Tid, u64>) {
+    fn sub(&mut self, o: &BTreeMap<(Tid, RefKind), u64>) {
         for (t, n) in o {
             *self.0.entry(*t).or_default() -= *n as i64;
         }
     }
 }
 
-/// Calls `f` on every tid at any depth of `v`: map keys, set elements, unknown tags' content;
-/// not inside a link (a chunked value) or a string.
-fn tids(v: &Value, f: &mut dyn FnMut(Tid)) {
+/// Calls `f` on every reference at any depth of `v`, with its kind: map keys, set elements, enum
+/// payloads, unknown tags' content; not inside a ticket (its tids are no references), a link (a
+/// chunked value) or a string.
+pub(crate) fn references(v: &Value, f: &mut dyn FnMut(RefKind, Tid)) {
     match v {
-        Value::Tid(t) => f(*t),
-        Value::Enum(_, Some(p)) => tids(p, f),
+        Value::Strong(_) | Value::Weak(_) | Value::Ticket(_) => {
+            if let Some((k, t)) = RefKind::of(v) {
+                f(k, t);
+            }
+        }
+        Value::Enum(_, Some(p)) => references(p, f),
         Value::Map(m) => m.iter().for_each(|(k, x)| {
-            tids(k, f);
-            tids(x, f);
+            references(k, f);
+            references(x, f);
         }),
-        Value::List(x) => x.iter().for_each(|x| tids(x, f)),
-        Value::Set(x) => x.iter().for_each(|x| tids(x, f)),
+        Value::List(x) => x.iter().for_each(|x| references(x, f)),
+        Value::Set(x) => x.iter().for_each(|x| references(x, f)),
         Value::Unknown(u) => {
             if let Ok(x) = u.content().to_value() {
-                tids(&x, f);
+                references(&x, f);
             }
         }
         _ => {}
@@ -100,6 +104,20 @@ fn tids(v: &Value, f: &mut dyn FnMut(Tid)) {
 
 fn from_prefix(source: &Tid, ak: &Ak) -> Vec<u8> {
     records::aspect_key(&[], source, ak)
+}
+
+fn to_key(target: &Tid, source: &Tid, ak: &Ak, kind: RefKind) -> Vec<u8> {
+    [target.as_bytes().as_slice(), source.as_bytes(), ak.as_str().as_bytes(), &[0, kind.id()]].concat()
+}
+
+/// A `TO` key's source, AK and kind, past the target.
+fn parse_to(rest: &[u8]) -> Result<(Tid, Ak, RefKind)> {
+    let bad = || Error::Corrupt("reference row");
+    let (s, a) = rest.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;
+    let source = Tid::from_bytes(s.try_into().map_err(|_| bad())?);
+    let [a @ .., 0, k] = a else { return Err(bad()) };
+    let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or_else(bad)?;
+    Ok((source, ak, RefKind::from_id(u64::from(*k)).ok_or_else(bad)?))
 }
 
 fn count_of(v: &[u8]) -> Result<u64> {
@@ -119,10 +137,10 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
     tx.in_class(ak.ephemeral(), |tx| {
         let (to, from) = (tx.txn.index(TO)?, tx.txn.index(FROM)?);
         let pre = from_prefix(source, ak);
-        for (target, n) in d.0.into_iter().filter(|x| x.1 != 0) {
+        for ((target, kind), n) in d.0.into_iter().filter(|x| x.1 != 0) {
             drop(osis_base::costs::span("refs: row written"));
-            let fk = [pre.as_slice(), target.as_bytes()].concat();
-            let tk = [target.as_bytes().as_slice(), source.as_bytes(), ak.as_str().as_bytes()].concat();
+            let fk = [pre.as_slice(), target.as_bytes(), &[kind.id()]].concat();
+            let tk = to_key(&target, source, ak, kind);
             let old = tx.txn.table_get(from, &fk)?.map(|v| count_of(&v)).transpose()?.unwrap_or(0);
             let new = u64::try_from(old as i64 + n).map_err(|_| Error::Corrupt("reference count below zero"))?;
             if new == 0 {
@@ -141,25 +159,27 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
         Ok(())
     })?;
     if tx.core.refs_watched && !moved.is_empty() {
+        moved.dedup();
         tx.core.events.queue(Event::References(std::sync::Arc::new(moved)));
     }
     Ok(())
 }
 
-/// The stored counts of `(source, ak)` by target.
-pub(crate) fn stored(tx: &mut Tx<'_>, source: &Tid, ak: &Ak) -> Result<BTreeMap<Tid, u64>> {
+/// The stored counts of `(source, ak)` by target and kind.
+pub(crate) fn stored(tx: &mut Tx<'_>, source: &Tid, ak: &Ak) -> Result<BTreeMap<(Tid, RefKind), u64>> {
     let from = tx.txn.index(FROM)?;
     let pre = from_prefix(source, ak);
-    let end = [pre.as_slice(), &[0xff; 16]].concat();
+    let end = [pre.as_slice(), &[0xff; 17]].concat();
     let mut out = BTreeMap::new();
     scan_table(&mut tx.txn, from, &pre, Some(&end), |k, v| {
-        let t = k.get(pre.len()..).and_then(|b| <[u8; osis_base::format::TID_LEN]>::try_from(b).ok()).ok_or(Error::Corrupt("reference row"))?;
-        out.insert(Tid::from_bytes(t), count_of(&v)?);
+        let bad = || Error::Corrupt("reference row");
+        let (kind, t) = k.get(pre.len()..).and_then(|b| b.split_last()).ok_or_else(bad)?;
+        let t = <[u8; osis_base::format::TID_LEN]>::try_from(t).map_err(|_| bad())?;
+        out.insert((Tid::from_bytes(t), RefKind::from_id(u64::from(*kind)).ok_or_else(bad)?), count_of(&v)?);
         Ok(())
     })?;
     Ok(out)
 }
-
 /// Sets the rows of `(source, ak)` to what the whole state `f` holds (`None`: no state).
 pub(crate) fn resync(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, f: Option<&Fragment>) -> Result<()> {
     if !indexed(ak) {
@@ -188,36 +208,29 @@ pub(crate) fn to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<Reference>> {
     let mut out = Vec::new();
     for k in keys {
         let bad = || Error::Corrupt("reference row");
-        let rest = k.get(pre.len()..).ok_or_else(bad)?;
-        let (s, a) = rest.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;
-        let source = Tid::from_bytes(s.try_into().map_err(|_| bad())?);
-        let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or_else(bad)?;
-        let fk = [from_prefix(&source, &ak).as_slice(), target.as_bytes()].concat();
+        let (source, ak, kind) = parse_to(k.get(pre.len()..).ok_or_else(bad)?)?;
+        let fk = [from_prefix(&source, &ak).as_slice(), target.as_bytes(), &[kind.id()]].concat();
         let count = tx.txn.table_get(from, &fk)?.map(|v| count_of(&v)).transpose()?.ok_or_else(bad)?;
-        out.push(Reference { target: *target, source, ak, count });
+        out.push(Reference { target: *target, source, ak, kind, count });
     }
     Ok(out)
 }
 
-/// Up to `n` rows naming `target` after `after` (a source and AK, exclusive; `None`: from the
-/// first), in (source, AK) order: the sources and AKs, `n` rows read.
-pub(crate) fn to_page(tx: &mut Tx<'_>, target: &Tid, after: Option<(&Tid, &Ak)>, n: usize) -> Result<Vec<(Tid, Ak)>> {
+/// Up to `n` rows naming `target` after `after` (exclusive; `None`: from the first), in (source,
+/// AK, kind) order: `n` rows read.
+pub(crate) fn to_page(tx: &mut Tx<'_>, target: &Tid, after: Option<(&Tid, &Ak, RefKind)>, n: usize) -> Result<Vec<(Tid, Ak, RefKind)>> {
     let to = tx.txn.index(TO)?;
     let pre = target.as_bytes().to_vec();
     let start = match after {
-        Some((s, ak)) => [pre.as_slice(), s.as_bytes(), ak.as_str().as_bytes(), &[0]].concat(),
+        // the least key past it
+        Some((s, ak, kind)) => [to_key(target, s, ak, kind).as_slice(), &[0]].concat(),
         None => pre.clone(),
     };
     let end = [pre.as_slice(), &[0xff; 16]].concat();
     let mut out = Vec::new();
     for (k, _) in tx.txn.table_range(to, &start, Some(&end), n)? {
         drop(osis_base::costs::span("refs: row read"));
-        let bad = || Error::Corrupt("reference row");
-        let rest = k.get(pre.len()..).ok_or_else(bad)?;
-        let (s, a) = rest.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;
-        let source = Tid::from_bytes(s.try_into().map_err(|_| bad())?);
-        let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or_else(bad)?;
-        out.push((source, ak));
+        out.push(parse_to(k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?)?);
     }
     Ok(out)
 }
@@ -231,7 +244,9 @@ pub(crate) fn from(tx: &mut Tx<'_>, source: &Tid) -> Result<Vec<Reference>> {
     scan_table(&mut tx.txn, from, &pre, Some(&end), |k, v| {
         let mut r = records::Rd::new(&k);
         let (source, ak, target) = (r.tid()?, r.ak()?, r.tid()?);
-        out.push(Reference { target, source, ak, count: count_of(&v)? });
+        let kind = RefKind::from_id(u64::from(r.u8()?)).ok_or(Error::Corrupt("reference row"))?;
+        r.end()?;
+        out.push(Reference { target, source, ak, kind, count: count_of(&v)? });
         Ok(())
     })?;
     Ok(out)
@@ -268,32 +283,8 @@ pub(crate) fn check(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, f: Option<&Fragment>
     if !indexed(ak) {
         return Ok(());
     }
-    let want: BTreeMap<Tid, u64> = Delta::of(f).0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
+    let want: BTreeMap<(Tid, RefKind), u64> = Delta::of(f).0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
     let got = stored(tx, source, ak)?;
     debug_assert_eq!(got, want, "reference rows of {source:?} {ak:?} differ from its state");
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-    use super::*;
-    use osis_base::{CanonicalBytes, Unknown};
-
-    // notes/engine-refs.md (Counted: found without a schema): a tid at any depth,
-    // map keys, set elements, enum payloads and unknown tags' content included; not in a string
-    #[test]
-    fn tids_at_any_depth() {
-        let (a, b) = (Tid::from_bytes([1; 15]), Tid::from_bytes([2; 15]));
-        let unknown = Unknown::new(70_000, CanonicalBytes::from_value(&Value::List(vec![Value::Tid(b)]))).unwrap();
-        let v = Value::List(vec![
-            Value::Map([(Value::Tid(a), Value::Set([Value::Tid(b)].into_iter().collect()))].into_iter().collect()),
-            Value::Enum(3, Some(Box::new(Value::Tid(a)))),
-            Value::Unknown(Box::new(unknown)),
-            Value::Str(a.to_uri()),
-        ]);
-        let mut got: BTreeMap<Tid, u32> = BTreeMap::new();
-        tids(&v, &mut |t| *got.entry(t).or_default() += 1);
-        assert_eq!(got, [(a, 2), (b, 2)].into());
-    }
 }

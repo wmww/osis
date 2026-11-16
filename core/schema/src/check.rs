@@ -141,7 +141,10 @@ impl Checker<'_> {
             | (Type::Bool, Type::Bool)
             | (Type::Int, Type::Int)
             | (Type::Float, Type::Float)
-            | (Type::Tid, Type::Tid)
+            | (Type::Strong, Type::Strong)
+            | (Type::Weak, Type::Weak)
+            | (Type::Ref, Type::Ref)
+            | (Type::Ticket, Type::Ticket)
             | (Type::Any, Type::Any)
             | (Type::Text, Type::Text) => {}
             (Type::Param(a), Type::Param(b)) if a == b => {}

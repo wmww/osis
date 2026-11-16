@@ -202,19 +202,22 @@
 //! ```
 //!
 //! # Backlinks
-//! `backlinks(t, query)` pages through the things whose current values hold `t`'s tid, with the
-//! aspect. `on_backlinks_change` hears a page now and on each change.
+//! A value names a thing only by a reference, and the writer always says which kind: a `Strong`
+//! says the target belongs with the thing holding it, a `Weak` only points. `Tid` converts into
+//! either with `.into()`.
+//! `backlinks(t, query)` pages through the things whose current values reference `t`, with the
+//! aspect and the kind. `on_backlinks_change` hears a page now and on each change.
 //! ```
-//! # use osis::{BacklinkQuery, Config, MemStore, Osis, Store, Value};
+//! # use osis::{BacklinkQuery, Config, MemStore, Osis, RefKind, Store, Value, Weak};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let link = db.aspect_key("note:link.0")?;
 //! let mut w = db.write();
 //! let (a, b) = (w.create()?, w.create()?);
-//! w.at(a, link.clone()).set(&Value::Tid(b))?;
+//! w.at(a, link.clone()).set(&Weak(b).into())?;
 //! w.commit()?;
 //! let page = db.backlinks(b, &BacklinkQuery::default())?;
-//! let found: Vec<_> = page.backlinks.iter().map(|l| (l.tid, l.ak.as_str())).collect();
-//! assert_eq!(found, vec![(a, "note:link.0")]);
+//! let found: Vec<_> = page.backlinks.iter().map(|l| (l.tid, l.ak.as_str(), l.kind)).collect();
+//! assert_eq!(found, vec![(a, "note:link.0", RefKind::Weak)]);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -494,7 +497,7 @@ pub use track::ReadSet;
 pub use watch::{Change, DerivedFrom, Dispatcher, Origin, Subscription};
 pub use write::{AspectWrite, Expiry, PathWrite, Purge, SpliceItems, Write};
 
-pub use osis_base::{Ak, Float, Ref, Role, Strong, Ticket, Tid, Value, ValueMap, ValueSet, Weak};
+pub use osis_base::{Ak, Float, Ref, RefKind, Role, Strong, Ticket, Tid, Value, ValueMap, ValueSet, Weak};
 pub use osis_base::{AkError, Time, TidParseError};
 pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, PathErrorKind, PurgeBy, Signal, SignalKey, Step, ValueKey, p};
 
@@ -506,6 +509,6 @@ pub mod generated {
 
     /// The value types generated code names.
     pub mod osis_base {
-        pub use osis_base::{Float, Tid, Value};
+        pub use osis_base::{Float, Ref, Strong, Ticket, Tid, Value, Weak};
     }
 }

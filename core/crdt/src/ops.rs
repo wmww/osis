@@ -199,10 +199,10 @@ pub(crate) fn set_elem(w: &mut Writer, v: Value) -> (Dot, Elem) {
     (d, Elem::of_frag(reg(w, v)))
 }
 
-/// A value removal of tid `v` over the parts the writer holds as headers only (§5.5): a fresh
+/// A value removal of reference `v` over the parts the writer holds as headers only (§5.5): a fresh
 /// dot, stamped as the delta's resets; `None` when there are none.
 pub(crate) fn set_removal(w: &mut Writer, v: &Value) -> Option<(Dot, Elem)> {
-    if w.seen.is_empty() || !matches!(v, Value::Tid(_)) {
+    if w.seen.is_empty() || !v.is_reference() {
         return None;
     }
     let d = w.fresh().dot;

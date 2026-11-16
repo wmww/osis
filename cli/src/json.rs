@@ -78,7 +78,7 @@ impl J {
 }
 
 /// Keys of the marker objects (`{"$set": …}`).
-pub const MARKERS: [&str; 7] = ["$blob", "$set", "$case", "$payload", "$map", "$tag", "$bytes"];
+pub const MARKERS: [&str; 10] = ["$blob", "$set", "$case", "$payload", "$map", "$tag", "$bytes", "$strong", "$weak", "$ticket"];
 
 fn b64(b: &[u8]) -> J {
     J::Str(base64url::encode(b))
@@ -101,7 +101,9 @@ pub fn value(v: &Value, ty: Ty<'_>) -> J {
         Value::Bool(b) => J::Bool(*b),
         Value::Str(x) => J::str(x.clone()),
         Value::Bytes(b) => J::obj([("$blob", b64(b))]),
-        Value::Tid(t) => J::tid(*t),
+        Value::Strong(t) => J::obj([("$strong", J::tid(*t))]),
+        Value::Weak(t) => J::obj([("$weak", J::tid(*t))]),
+        Value::Ticket(t) => J::obj([("$ticket", value(&t.to_value(), None))]),
         Value::Enum(c, p) => {
             let cs = match &kind {
                 Kind::Enum(e) => case(e, *c),

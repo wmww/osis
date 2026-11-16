@@ -3,7 +3,8 @@ use crate::cbor::{self, Item};
 use std::cmp::Ordering;
 
 pub const TAG_SET: u64 = 258;
-pub const TAG_TID: u64 = 1616;
+pub const TAG_STRONG: u64 = 1620;
+pub const TAG_WEAK: u64 = 1621;
 pub const TAG_ENUM: u64 = 1617;
 
 #[derive(Clone, Debug)]
@@ -14,7 +15,8 @@ pub enum Value {
     Float(u64),
     Str(String),
     Bytes(Vec<u8>),
-    Tid([u8; 15]),
+    Strong([u8; 15]),
+    Weak([u8; 15]),
     List(Vec<Value>),
     /// Sorted by canonical key bytes, unique keys. Structs are maps with int keys.
     Map(Vec<(Value, Value)>),
@@ -48,7 +50,7 @@ impl Value {
         }
         match self {
             Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bytes(_) => 0,
-            Value::Tid(_) => 1,
+            Value::Strong(_) | Value::Weak(_) => 1,
             Value::List(l) => 1 + max(l.iter()),
             Value::Map(m) => 1 + max(m.iter().flat_map(|(k, v)| [k, v])),
             Value::Set(s) => 2 + max(s.iter()),
@@ -62,7 +64,8 @@ impl Value {
             Value::Float(b) => Item::Float(*b),
             Value::Str(s) => Item::Text(s.clone()),
             Value::Bytes(b) => Item::Bytes(b.clone()),
-            Value::Tid(t) => Item::Tag(TAG_TID, Box::new(Item::Bytes(t.to_vec()))),
+            Value::Strong(t) => Item::Tag(TAG_STRONG, Box::new(Item::Bytes(t.to_vec()))),
+            Value::Weak(t) => Item::Tag(TAG_WEAK, Box::new(Item::Bytes(t.to_vec()))),
             Value::List(l) => Item::Array(l.iter().map(|v| v.to_item()).collect()),
             Value::Map(m) => Item::Map(m.iter().map(|(k, v)| (k.to_item(), v.to_item())).collect()),
             Value::Set(s) => Item::Tag(TAG_SET, Box::new(Item::Array(s.iter().map(|v| v.to_item()).collect()))),
@@ -91,9 +94,12 @@ impl Value {
                 // Decoder already enforced sorted unique keys on items; values' order is the same.
                 Value::Map(kv)
             }
-            Item::Tag(TAG_TID, b) => match &**b {
-                Item::Bytes(x) if x.len() == 15 => Value::Tid(x[..].try_into().unwrap()),
-                _ => return Err(cbor::Error::Bad("tid")),
+            Item::Tag(t @ (TAG_STRONG | TAG_WEAK), b) => match &**b {
+                Item::Bytes(x) if x.len() == 15 => {
+                    let x = x[..].try_into().unwrap();
+                    if *t == TAG_STRONG { Value::Strong(x) } else { Value::Weak(x) }
+                }
+                _ => return Err(cbor::Error::Bad("reference")),
             },
             Item::Tag(TAG_SET, b) => match &**b {
                 Item::Array(a) => {

@@ -314,7 +314,7 @@ fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
     let q = lp.peers[3].engine.me();
     let mut m = crate::Mutation::new();
     let u = lp.peers[3].engine.new_thing(&mut m, q);
-    m.op(u, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(a.account))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
+    m.op(u, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(a.account))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
     lp.peers[3].commit(m).unwrap();
     lp.peers[3].engine.grant(&u, &a.account, &edge(Role::Write)).unwrap();
     let pks = lp.packages(3).unwrap();
@@ -623,7 +623,7 @@ fn a_listing_named_late_names_again_spec_permissions_5_5() {
 fn read_box_at(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid) -> Option<osis_crypto::Epoch> {
     let e = super::tests::newest_read(lp, i, a)?;
     let s = lp.peers[i].engine.get_typed(&a, &ct::SECRETS).unwrap()?;
-    s.boxes.iter().find(|(k, _)| k.holder == m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)).and_then(|(_, b)| osis_keys::box_keysets(b).into_iter().next())
+    s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(m) && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)).and_then(|(_, b)| osis_keys::box_keysets(b).into_iter().next())
 }
 
 // spec/crypto.md §4 (Encrypting under: an account's epochs minted before a node's removal from

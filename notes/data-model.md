@@ -2,7 +2,7 @@
 > Summary: Why spec/data-model.md looks the way it does (tids, CBOR profile, large values, AK grammar, groups), the schema DSL as implemented in osis-schema, storage layering, rejected options. Mostly Tess's decisions; shapes of `any` and the core aspects' types are proposals.
 
 ## Tids
-- Self-certifying tids bind a thing to its first admin so nobody can publish a competing creation. The nonce keeps a bare tid from revealing its first admin and seeds the dedup secret. References stay bare tids; the record is checked only when the thing's data arrives.
+- Self-certifying tids bind a thing to its first admin so nobody can publish a competing creation. The nonce keeps a bare tid from revealing its first admin and seeds the dedup secret. A reference carries the bare tid (inside a strong, weak or ticket); the record is checked only when the thing's data arrives.
 - Created only by the tid generator (takes the first admin; nonce from system entropy) or by parsing. No collision checking. In Rust: a wrapper around a private u128. Uniformly distributed, so hashing a tid is free.
 - Margin: a second record for a given tid costs 2^120; for any of N known tids 2^120/N (N = 2^30: 2^90 hashes, roughly $10^8–10^9 at Bitcoin-ASIC efficiency in 2026, far more on GPUs). Below Bitcoin addresses (160 bits), above retired Tor v2 names (80 bits). Adequate, not generous.
 - A crafted collision pair (2^60, about $10^4 on rented GPUs) can be replayed against every node, hence "keep what we have, diagnostic, never panic"; both records of such a pair are the attacker's own. Panic only if the local generator produces a tid the node already holds.
@@ -30,7 +30,8 @@
 - Node (osis-engine `engine/large.rs`, `engine/blobs.rs`; osis `large.rs`): the write path chunks large registers, blobs, strings, set elements and map keys; pages are fetched before their commit applies; the API offers `stream`, `len`, `set_stream`. A `set` over a large value reuses the current tree's chunks, so an edit writes and logs O(change) (notes/engine-paged.md, Large values).
 
 ## Wire choices (spec/wire.md)
-- Tags 1616-1619 sit in the IANA registry's unassigned 1401-18299 block (checked against the registry); every tag >= 256 costs a 3-byte head, so no cheaper choice existed in the allowed range. Registering them is optional.
+- Tags 1617-1622 sit in the IANA registry's unassigned 1401-18299 block (1616 retired) (checked against the registry); every tag >= 256 costs a 3-byte head, so no cheaper choice existed in the allowed range. Registering them is optional.
+- A reference is three tags, not one tag with a kind field: each kind costs nothing beyond its tag, and a decoder or index tells a strong from a weak by its head alone. A ticket's content is a structure (tids as byte strings, the role a uint), not a struct value: nothing in it is a reference.
 - The creation record is a struct value so `created.0` stores exactly the hashed bytes. A link key derives its nonce from the seed, so the link alone names the key actor's tid.
 - Tree-node content hashes cover their children's hashes, not the bytes below: an edit rehashes one path (O(change)), while covered-bytes hashing rehashes up to the whole value per level. The root stays a function of the value's bytes, so equality by content holds. Nodes close on a content-hash byte (prolly-tree style) so an insert does not shift every later node.
 - `MAX_BLOB / CHUNK_THRESHOLD = 64`: 128 KiB keeps ordinary documents inline; 8 MiB blobs fit one protocol message and browser memory.

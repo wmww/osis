@@ -64,7 +64,7 @@ fn core_delta(ak: &str, form: Form, kind: Kind, at: Ts, lo: u64, v: Value, nonce
 /// A `roles.0` value granting `role` (an enum case id) to the tid of bytes `m`.
 fn grant(m: u8, role: u64) -> Value {
     let edge = Value::Map([(Value::Int(0), Value::Enum(role, None))].into_iter().collect());
-    Value::Map([(Value::Tid(Tid::from_bytes([m; 15])), edge)].into_iter().collect())
+    Value::Map([(Value::Weak(Tid::from_bytes([m; 15])), edge)].into_iter().collect())
 }
 
 fn built(b: CommitBuilder) -> CommitBlob {

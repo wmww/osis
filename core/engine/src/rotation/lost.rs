@@ -176,7 +176,7 @@ pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_
     if core.ix.commits.contains_key(id) {
         return BTreeSet::new();
     }
-    let newer = |x: &Tid, k: &BoxKey| ours(core, &k.holder) && k.role == Role::Read && held.get(x).is_none_or(|n| k.epoch.n > *n);
+    let newer = |x: &Tid, k: &BoxKey| ours(core, &k.holder.0) && k.role == Role::Read && held.get(x).is_none_or(|n| k.epoch.n > *n);
     crate::apply::keys::pending_secrets_writes(blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| newer(x, k)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x, known)).map(|(x, _)| x).collect()
 }
 

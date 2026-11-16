@@ -47,7 +47,7 @@ fn past(lp: &mut LocalPeer, until: WallMs, by: u64) {
 /// writer's own rules.
 fn raw_finalize(lp: &mut LocalPeer, by: usize, t: Tid, holder: Tid) -> CommitId {
     let mut m = Mutation::new();
-    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(holder)) }).unwrap();
     lp.peers[by].engine.commit_hostile(m).unwrap().unwrap()
 }
 
@@ -220,7 +220,7 @@ fn a_finalize_lets_the_guest_hear_out_spec_permissions_2() {
 fn a_frontierless_removal_of_an_unended_edge_is_refused_spec_commits_2() {
     let (mut lp, t, ps, _) = shared(Role::Read);
     let mut m = Mutation::new();
-    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(ps[2])) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(ps[2])) }).unwrap();
     let r = lp.peers[0].engine.commit(m);
     assert!(matches!(r, Err(osis_engine::Error::BadInput(e)) if e.contains("not past its until")), "{r:?}");
     assert!(holds(&lp, 0, t, ps[2]));

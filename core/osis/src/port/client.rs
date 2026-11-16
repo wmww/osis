@@ -691,7 +691,7 @@ impl crate::Osis {
     /// A value watch at the node at `at`: `f` hears the value at `path` of `tid`'s `ak` once,
     /// then each time it reads otherwise (a lost connection as an `Err`, then the value again).
     pub(crate) fn remote_watch(&self, at: &Address, tid: Tid, ak: Ak, path: &Path, mut f: impl FnMut(&crate::Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
-        let filter = Value::List(vec![Value::uint(super::filter::VALUE), Value::Tid(tid), codec::ak_to(&ak), codec::path_to(path)]);
+        let filter = Value::List(vec![Value::uint(super::filter::VALUE), codec::tid_to(&tid), codec::ak_to(&ak), codec::path_to(path)]);
         let mut last = None;
         self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
             let (value, origin) = match got {
@@ -715,7 +715,7 @@ impl crate::Osis {
     /// `on_thing_change` at the node at `at`: each aspect once, then each change; a lost
     /// connection as an `Err` for each aspect it told, then each that reads otherwise once back.
     pub(crate) fn remote_thing_watch(&self, at: &Address, tid: Tid, mut f: impl FnMut(&crate::Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
-        let filter = Value::List(vec![Value::uint(super::filter::THING), Value::Tid(tid)]);
+        let filter = Value::List(vec![Value::uint(super::filter::THING), codec::tid_to(&tid)]);
         let mut last: BTreeMap<Ak, Option<crate::watch::Digest>> = BTreeMap::new();
         self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
             let told: Result<Vec<Told>> = match got {
@@ -745,7 +745,7 @@ impl crate::Osis {
     /// `on_grants_change` at the node at `at`: the grants once, then each time they read
     /// otherwise; a lost connection as an `Err`, then the grants again once back.
     pub(crate) fn remote_grants_watch(&self, at: &Address, thing: Tid, mut f: impl FnMut(&crate::Osis, Result<crate::Grants>) + Send + 'static) -> Result<Subscription> {
-        let filter = Value::List(vec![Value::uint(super::filter::GRANTS), Value::Tid(thing)]);
+        let filter = Value::List(vec![Value::uint(super::filter::GRANTS), codec::tid_to(&thing)]);
         let mut last = None;
         self.remote_sub(std::slice::from_ref(at), filter, true, move |db, _, got| {
             let now = match got {

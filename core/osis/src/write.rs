@@ -199,13 +199,13 @@ impl<'d> Write<'d> {
     /// [ak*], [op*], Opt(expiry)]`, the nonce put before it as it is sent; an expiry `[0, at]`
     /// or `[1, ms from now]`.
     fn wire(self) -> Result<Vec<Value>> {
-        use crate::port::codec::{ak_to, opt, write_op_to};
+        use crate::port::codec::{ak_to, opt, tid_to, write_op_to};
         let expires = self.expires.map(|e| match e {
             Expiry::At(t) => Value::List(vec![Value::uint(0), Value::uint(t.0)]),
             Expiry::In(d) => Value::List(vec![Value::uint(1), Value::uint(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))]),
         });
         Ok(vec![
-            Value::Tid(self.actor),
+            tid_to(&self.actor),
             Value::List(self.keys.iter().map(|k| ak_to(&k.ak)).collect()),
             Value::List(self.ops.iter().map(write_op_to).collect::<Result<Vec<_>>>()?),
             opt(expires),

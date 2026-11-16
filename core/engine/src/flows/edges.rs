@@ -226,7 +226,7 @@ fn current_entry(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Option<(osis_crdt::
     let view = &tx.core.ix.commits.get(&c)?.view;
     let ai = view.aspect(target, "roles.0")?;
     let own = crate::engine::Owned::of_view(view, &c, ai)?;
-    tx.core.ix.holder_keys.iter().find(|((t, d), m)| t == target && *m == holder && own.owns(d.origin())).map(|((_, d), m)| (d.clone(), osis_base::Value::Tid(*m)))
+    tx.core.ix.holder_keys.iter().find(|((t, d), m)| t == target && *m == holder && own.owns(d.origin())).map(|((_, d), m)| (d.clone(), osis_base::Value::Weak(*m)))
 }
 
 /// Resets `holder`'s current entry on `target` in `m`, if it has one (spec/permissions.md §2):
@@ -243,7 +243,7 @@ pub(crate) fn reset_current(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: 
 /// holds (spec/permissions.md §2), so it applies in any arrival order.
 pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
     if !reset_current(tx, m, target, holder)? {
-        m.fresh_resets.entry((target, super::ak("roles.0")?)).or_default().push(osis_base::Value::Tid(holder));
+        m.fresh_resets.entry((target, super::ak("roles.0")?)).or_default().push(osis_base::Value::Weak(holder));
     }
     Ok(())
 }

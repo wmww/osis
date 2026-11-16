@@ -7,7 +7,7 @@ use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
-use osis_base::{Ak, CommitId, CreationRecord, SyncId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, CommitId, CreationRecord, Ref, Role, Strong, SyncId, Ticket, Value, WallMs, Weak};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
@@ -141,11 +141,11 @@ codec_struct! {
     /// the demotions it carries: other commits', and whether its own commit is one
     /// (spec/crypto.md §3, §4, §7, §8).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 names: [u8; 32], 6 left_out: BTreeMap<Tid, BTreeSet<Epoch>>, 7 demotions: BTreeSet<CommitId>, 8 demotes: bool }
+    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 names: [u8; 32], 6 left_out: BTreeMap<Weak, BTreeSet<Epoch>>, 7 demotions: BTreeSet<CommitId>, 8 demotes: bool }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct BoxKey { 0 holder: Tid, 1 role: Role, 2 epoch: Epoch }
+    pub struct BoxKey { 0 holder: Weak, 1 role: Role, 2 epoch: Epoch }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,7 +210,7 @@ codec_struct! {
 codec_struct! {
     /// `reach.0` (spec/sync-transport.md §1, §3): 32-byte P2P key, `peer://` items (global addresses, then relays), and the account the node says it belongs to (a dial hint only, never proof).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Reach { 0 dialable: [u8; 32], 1 items: Vec<String>, 2 account: Option<Tid> }
+    pub struct Reach { 0 dialable: [u8; 32], 1 items: Vec<String>, 2 account: Option<Weak> }
 }
 codec_struct! {
     /// One thing's limits at a node keeping it unread, in place of the policy's.
@@ -221,7 +221,7 @@ codec_struct! {
     /// `caps^.0` (spec/data-model.md §9): what peers may make this node store of the sync IDs it
     /// keeps unread; per-thing limits apply to each sync ID the thing owns.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Caps { 0 policy: BTreeMap<String, u64>, 1 things: BTreeMap<Tid, ThingCaps> }
+    pub struct Caps { 0 policy: BTreeMap<String, u64>, 1 things: BTreeMap<Weak, ThingCaps> }
 }
 codec_struct! {
     /// One entry of `clients^.0` (spec/data-model.md §9): a thin client's secret hash and end.
@@ -335,7 +335,7 @@ pub type Account = BTreeSet<Vec<u8>>;
 /// `listing.0`: a rotation's commit ID to the commit IDs a listing names (spec/permissions.md §5.5).
 pub type Listings = BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>;
 
-pub type Holders = BTreeMap<Tid, Edge>;
+pub type Holders = BTreeMap<Weak, Edge>;
 pub type SyncIds = BTreeMap<SyncId, SyncEntry>;
 
 pub const ASPECTS: Aspect<BTreeSet<String>> = Aspect::new("aspects.0", &CORE);
@@ -355,8 +355,8 @@ pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
 pub type DialList = BTreeMap<Vec<u8>, Vec<String>>;
 pub const DIAL: Aspect<DialList> = Aspect::new("dial^.0", &CORE);
 pub const CAPS: Aspect<Caps> = Aspect::new("caps^.0", &CORE);
-/// `clients^.0`: by client actor.
-pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients^.0", &CORE);
+/// `clients^.0`: by client actor, a strong (the node root holds each client's actor).
+pub const CLIENTS: Aspect<BTreeMap<Strong, Client>> = Aspect::new("clients^.0", &CORE);
 /// `retention^.0`: what the thing keeps of replaced content (spec/commits.md §5); fixed retention.
 pub const RETENTION: Aspect<RetentionSetting> = Aspect::new("retention^.0", &CORE);
 /// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).
@@ -364,3 +364,7 @@ pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
 pub const NAME: Aspect<String> = Aspect::new("name.0", &CORE);
 pub const BODY: Aspect<String> = Aspect::new("body.0", &CORE);
 pub const TAG: Aspect<Tag> = Aspect::new("tag.0", &CORE);
+/// `holds.0`: a plain set of strongs and weaks (spec/data-model.md §8).
+pub const HOLDS: Aspect<BTreeSet<Ref>> = Aspect::new("holds.0", &CORE);
+/// `tickets.0`: a plain set of tickets (spec/data-model.md §8).
+pub const TICKETS: Aspect<BTreeSet<Ticket>> = Aspect::new("tickets.0", &CORE);

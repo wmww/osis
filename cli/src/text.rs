@@ -139,7 +139,21 @@ fn plain(o: &mut String, v: &Value) {
             o.push_str(&hex::encode(b));
             o.push('\'');
         }
-        Value::Tid(t) => o.push_str(&t.to_uri()),
+        Value::Strong(t) => {
+            o.push_str("strong(");
+            o.push_str(&t.to_uri());
+            o.push(')');
+        }
+        Value::Weak(t) => {
+            o.push_str("weak(");
+            o.push_str(&t.to_uri());
+            o.push(')');
+        }
+        Value::Ticket(t) => {
+            o.push_str("ticket(");
+            plain(o, &t.to_value());
+            o.push(')');
+        }
         Value::Enum(c, p) => {
             o.push('#');
             o.push_str(&c.to_string());
@@ -527,6 +541,31 @@ impl<'a> Parser<'a> {
         self.take(|_, c| is_word(c))
     }
 
+    /// `osis://…` at the cursor.
+    fn tid(&mut self) -> Result<Tid, String> {
+        self.pos += 7;
+        let w = self.take(|_, c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        Tid::parse(w).map_err(|_| self.err("bad tid"))
+    }
+
+    /// A reference's target: a tid or an alias.
+    fn target(&mut self) -> Result<Tid, String> {
+        if self.rest().starts_with("osis://") {
+            return self.tid();
+        }
+        let w = self.word().to_string();
+        (self.aliases)(&w).ok_or_else(|| self.err("expected a tid or an alias"))
+    }
+
+    /// A bare tid or alias: a reference of the kind the type fixes; else the writer names it.
+    fn bare_ref(&self, ty: Ty<'_>, t: Tid) -> Result<Value, String> {
+        match ty {
+            Some(ValueType::Strong) => Ok(Value::Strong(t)),
+            Some(ValueType::Weak) => Ok(Value::Weak(t)),
+            _ => Err(self.err("say which reference: strong(…) or weak(…)")),
+        }
+    }
+
     fn value(&mut self, ty: Ty<'_>) -> Result<Value, String> {
         self.depth += 1;
         if self.depth > 200 {
@@ -583,9 +622,8 @@ impl<'a> Parser<'a> {
             return base64url::decode(&norm).map(Value::Bytes).ok_or_else(|| self.err("bad base64"));
         }
         if r.starts_with("osis://") {
-            self.pos += 7;
-            let w = self.take(|_, c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-            return Tid::parse(w).map(Value::Tid).map_err(|_| self.err("bad tid"));
+            let t = self.tid()?;
+            return self.bare_ref(ty, t);
         }
         if r.starts_with("tag(") {
             self.pos += 4;
@@ -667,11 +705,25 @@ impl<'a> Parser<'a> {
                     "false" => Ok(Value::Bool(false)),
                     "NaN" => Ok(Value::float(f64::NAN)),
                     "Infinity" => Ok(Value::float(f64::INFINITY)),
+                    "strong" | "weak" | "ticket" if self.peek() == Some('(') => {
+                        self.pos += 1;
+                        self.ws();
+                        let v = if w == "ticket" {
+                            let c = self.value(None)?;
+                            osis::Ticket::from_value(&c).map(Value::from).ok_or_else(|| self.err("not a ticket's content"))?
+                        } else {
+                            let t = self.target()?;
+                            if w == "strong" { Value::Strong(t) } else { Value::Weak(t) }
+                        };
+                        self.ws();
+                        self.expect(')')?;
+                        Ok(v)
+                    }
                     _ => match (self.aliases)(&w) {
-                        Some(t) => Ok(Value::Tid(t)),
+                        Some(t) => self.bare_ref(ty, t),
                         None => {
                             self.pos = start;
-                            Err(self.err(&format!("unknown word {w:?} (strings need quotes, tids osis://)")))
+                            Err(self.err(&format!("unknown word {w:?} (strings need quotes, references strong(osis://…) or weak(osis://…))")))
                         }
                     },
                 }

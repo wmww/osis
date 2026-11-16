@@ -959,7 +959,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
 /// `w` for ops `ops` on aspect `(tid, ak)`: a removal of a tid among them covers the parts held
 /// as headers only too (`header_only_parts`, spec/crdt.md §5.5).
 pub(crate) fn seeing(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &[PathOp], w: Writer) -> Result<Writer> {
-    if !ops.iter().any(|o| matches!(o.op, Op::Remove(Value::Tid(_)))) {
+    if !ops.iter().any(|o| matches!(o.op, Op::Remove(Value::Weak(_)))) {
         return Ok(w);
     }
     Ok(w.seen_headers(header_only_parts(tx, tid, ak)?))

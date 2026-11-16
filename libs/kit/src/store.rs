@@ -440,7 +440,7 @@ impl Reader {
         let views = self.view_map()?;
         for g in self.groups()? {
             for t in self.db.at(g, FAVORITES).get()?.unwrap_or_default() {
-                let t = self.shown_as(&views, t)?;
+                let t = self.shown_as(&views, t.0)?;
                 if !out.contains(&t) && all.contains(&t) {
                     out.push(t);
                 }
@@ -501,7 +501,7 @@ impl Reader {
         Ok(*self.memo(("window_opt", ()), |r, _| {
             let node = r.db.node();
             for g in r.groups()? {
-                if let Some(w) = r.db.at(g, WINDOWS).get()?.and_then(|m| m.get(&node).copied()) {
+                if let Some(w) = r.db.at(g, WINDOWS).get()?.and_then(|m| m.get(&osis_base::Weak(node)).copied()) {
                     return Ok(Some(w));
                 }
             }
@@ -513,7 +513,7 @@ impl Reader {
     pub fn opened(&self) -> Result<Option<Tid>> {
         let Some(w) = self.window_opt()? else { return Ok(None) };
         let Some(t) = self.db.at(w, OPEN).get()? else { return Ok(None) };
-        Ok(Some(t).filter(|t| self.things().is_ok_and(|all| all.contains(t))))
+        Ok(Some(t).filter(|t| self.things().is_ok_and(|all| all.contains(t.0))))
     }
 }
 
@@ -574,7 +574,7 @@ impl Data {
                 let base = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
                 let mut new = Vec::with_capacity(base.len());
                 for x in &base {
-                    if self.shown_as(&views, *x)? != t {
+                    if self.shown_as(&views, x.0)? != t {
                         new.push(*x);
                     }
                 }
@@ -586,7 +586,7 @@ impl Data {
             let g = self.main_group()?;
             let base = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
             let mut new = base.clone();
-            new.push(t);
+            new.push(osis_base::Weak(t));
             edits.push((g, base, new));
         }
         self.write_favorites(&edits)
@@ -608,7 +608,7 @@ impl Data {
             let list = self.db.at(g, FAVORITES).get()?.unwrap_or_default();
             let mut shown = Vec::with_capacity(list.len());
             for e in &list {
-                shown.push(self.shown_as(&views, *e)?);
+                shown.push(self.shown_as(&views, e.0)?);
             }
             let Some(i) = shown.iter().position(|t| *t == x) else { continue };
             // the first entry of this list that comes after `x` in the new order
@@ -695,7 +695,7 @@ impl Data {
         }
         let mut w = self.db.write();
         match t {
-            Some(t) => w.at(win, OPEN).set(&t)?,
+            Some(t) => w.at(win, OPEN).set(&osis_base::Weak(t))?,
             None => w.at(win, OPEN).remove()?,
         }
         w.commit()?;

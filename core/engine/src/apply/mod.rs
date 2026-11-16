@@ -2307,7 +2307,7 @@ mod tests {
         let mut m = Mutation::new();
         for x in [b, c] {
             let e = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
-            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(e.to_value()) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(x))], op: Op::Set(e.to_value()) }).unwrap();
         }
         lp.peers[0].engine.core.skip_writer_rules = true;
         let id = lp.peers[0].commit(m).unwrap().unwrap();
@@ -2342,7 +2342,7 @@ mod tests {
         let (x, y) = (things[0], things[1]);
         let mut m = Mutation::new();
         let e = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
-        m.op(x, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(e.to_value()) }).unwrap();
+        m.op(x, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a1))], op: Op::Set(e.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
         let p1 = &mut lp.peers[1];
@@ -2385,7 +2385,7 @@ mod tests {
             for _ in 0..depth {
                 cur = p1.engine.new_thing(&mut m, cur);
             }
-            m.op(cur, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(adm.to_value()) }).unwrap();
+            m.op(cur, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a1))], op: Op::Set(adm.to_value()) }).unwrap();
             assert!(matches!(p1.commit(m), Err(crate::Error::Permission { .. })), "depth {depth}");
         }
         // under Y (no role there) the tree is refused

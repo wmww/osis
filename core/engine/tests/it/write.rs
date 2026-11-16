@@ -29,7 +29,6 @@ fn node_identity_spec_dm_1() {
     assert!(p.engine.get_typed(&me, &ct::NODE).unwrap().is_some());
     let keys = p.engine.get_typed(&me, &ct::KEYS).unwrap().unwrap();
     assert!(keys.key.is_some());
-    assert_eq!(p.engine.get(&me, &ak("tid.0")).unwrap(), Some(Value::Tid(me)));
     let aspects = p.engine.aspects(&me).unwrap();
     assert!(aspects.contains(&ak("created.0")) && aspects.contains(&ak("node.0")) && aspects.contains(&ak("keys.0")));
     assert_eq!(p.engine.core.role_now(&me, &me), Some(osis_base::Role::Admin));

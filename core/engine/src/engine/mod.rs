@@ -4015,8 +4015,8 @@ mod tests {
 
     fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
         let (path, op) = match role {
-            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, floor: None }.to_value())),
-            None => (Vec::new(), Op::Remove(Value::Tid(m))),
+            Some(role) => (vec![PathSeg::Key(Value::Weak(m))], Op::Set(ct::Edge { role, until: None, invite: None, floor: None }.to_value())),
+            None => (Vec::new(), Op::Remove(Value::Weak(m))),
         };
         let mut mu = Mutation::new();
         mu.op(t, &ct::ROLES, PathOp { path, op }).unwrap();

@@ -29,7 +29,6 @@ type type_expr = enum {
     bool 2,
     int 3,
     float 4,
-    tid 5,
     any 6,
     text 7,
     list 8 (type_expr),
@@ -58,6 +57,12 @@ type type_expr = enum {
     }),
     /// A parameter of the enclosing `type_def`.
     param 17 (string),
+    strong 18,
+    weak 19,
+    /// A strong or a weak, the writer's choice per value.
+    ref 20,
+    ticket 21,
+    reserved 5,
 };
 
 type field_def = struct {

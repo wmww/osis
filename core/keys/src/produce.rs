@@ -306,7 +306,7 @@ pub fn rotate_leaving_out(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpoch
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
         let mut ks = keyset(&epoch, &secret, &listed, names);
         for (m, out) in left_out.get(&r).into_iter().flatten() {
-            ks.left_out.insert(*m, out.iter().map(to_schema).collect());
+            ks.left_out.insert((*m).into(), out.iter().map(to_schema).collect());
         }
         ks.demotions = carried.demotions.clone();
         ks.demotes = carried.demotes;

@@ -818,7 +818,7 @@ fn dec_elems(it: &Item, cx: &Ctx, set: bool) -> Result<BTreeMap<Dot, Elem>, Erro
         let gone = match a.get(3..6) {
             Some([s, v, parts]) => {
                 let v = Value::from_item(v).map_err(|_| Error::Bad("value removal"))?;
-                if !set || !matches!(v, Value::Tid(_)) {
+                if !set || !matches!(v, Value::Strong(_) | Value::Weak(_)) {
                     return Err(Error::Bad("value removal"));
                 }
                 let mut seen: Vec<(Dot, u64)> = Vec::new();
@@ -1299,7 +1299,7 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
             // one per commit entry: a class, with an actor where not the author (not modeled)
             let class = |x: &Item| x.uint().is_ok_and(|c| c <= 3);
             let fact = |x: &Item| match x {
-                Item::Array(v) => matches!(v.as_slice(), [c, Item::Tag(crate::value::TAG_TID, t)] if class(c) && matches!(&**t, Item::Bytes(b) if b.len() == 15)),
+                Item::Array(v) => matches!(v.as_slice(), [c, Item::Bytes(b)] if class(c) && b.len() == 15),
                 x => class(x),
             };
             if facts.len() != cx.commits.len() || !facts.iter().all(fact) {

@@ -70,7 +70,7 @@ aspect event:repeat.0: struct {
 
 /// This event replaces one occurrence of a repeating event (that occurrence, changed).
 aspect event:overrides.0: struct {
-    series 0: tid,
+    series 0: weak,
     at 1: occurrence,
 };
 

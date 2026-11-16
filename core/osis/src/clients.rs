@@ -67,7 +67,7 @@ impl Osis {
         // actor no client can reach, holding nothing)
         self.engine(|e| {
             let mut m = osis_engine::Mutation::new();
-            m.op(node, &ct::CLIENTS, PathOp { path: vec![PathSeg::Key(Value::Tid(actor))], op: Op::Set(entry.to_value()) })?;
+            m.op(node, &ct::CLIENTS, PathOp { path: vec![PathSeg::Key(Value::Strong(actor))], op: Op::Set(entry.to_value()) })?;
             e.commit(m)
         })?;
         Ok((actor, secret))
@@ -77,7 +77,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn clients(&self) -> Result<Vec<Client>> {
         self.local("clients")?;
-        Ok(self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor, until: c.until }).collect())
+        Ok(self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor: actor.into(), until: c.until }).collect())
     }
 
     /// Removes a client: its sessions end at once, its actor loses every role it holds, then
@@ -93,19 +93,19 @@ impl Osis {
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
         self.local("remove_client")?;
         let node = self.node();
-        let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor) else { return Ok(false) };
+        let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Strong(actor)) else { return Ok(false) };
         // ended under any clock: one moved back revives no half-removed client
         let ended = Some(Time(0));
         if e.until != ended {
             let mut w = self.write();
-            w.at(node, ct::CLIENTS).path(p![actor]).set(&ct::Client { until: ended, ..e })?;
+            w.at(node, ct::CLIENTS).path(p![osis_base::Strong(actor)]).set(&ct::Client { until: ended, ..e })?;
             w.commit()?;
         }
         for t in self.engine(|x| x.grants_of(&actor)) {
             self.engine(|x| x.demote(&t, &Demotion { holder: actor, new: None, retain: None }))?;
         }
         let mut w = self.write();
-        w.at(node, ct::CLIENTS).path(p![actor]).remove()?;
+        w.at(node, ct::CLIENTS).path(p![osis_base::Strong(actor)]).remove()?;
         w.commit()?;
         Ok(true)
     }
@@ -116,11 +116,11 @@ impl Osis {
     pub fn rotate_client_secret(&self, actor: Tid) -> Result<ClientSecret> {
         self.local("rotate_client_secret")?;
         let node = self.node();
-        let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor).ok_or_else(|| Error::Invalid(format!("no client {actor}")))?;
+        let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&osis_base::Strong(actor)).ok_or_else(|| Error::Invalid(format!("no client {actor}")))?;
         let secret = ClientSecret::generate();
         let entry = secret.entry(e.until);
         let mut w = self.write();
-        w.at(node, ct::CLIENTS).path(p![actor]).set(&entry)?;
+        w.at(node, ct::CLIENTS).path(p![osis_base::Strong(actor)]).set(&entry)?;
         w.commit()?;
         Ok(secret)
     }

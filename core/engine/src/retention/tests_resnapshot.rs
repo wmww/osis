@@ -29,7 +29,7 @@ fn world(keys: bool) -> (LocalPeer, Tid, Vec<crate::local_peer::Package>) {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         // the writer's role by a raw edge write, so it holds the role without the grant's keys
-        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(w))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
+        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(w))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
         let pks = lp.packages(0).unwrap();

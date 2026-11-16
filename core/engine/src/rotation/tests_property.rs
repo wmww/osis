@@ -159,12 +159,12 @@ impl Run {
         let core = &self.lp.peers[p].engine.core;
         let new = |k, b| !self.states.iter().any(|x| x.0 == a && x.1.boxes.get(k) == Some(b));
         // a joint box is stale where any keyset it names is
-        let sealed = s.boxes.iter().filter(|(k, b)| !self.tids.contains(&k.holder) && new(*k, *b)).flat_map(|(k, b)| {
+        let sealed = s.boxes.iter().filter(|(k, b)| !self.tids.contains(&k.holder.0) && new(*k, *b)).flat_map(|(k, b)| {
             let e = from_schema(&k.epoch).ok();
             osis_keys::box_keysets(b).into_iter().filter_map(move |via| Some((k, e?, via)))
         });
         let superseded = |m: &Tid, r: Role, k: &Epoch| core.epochs(m).is_some_and(|ep| ep.role(r).epochs().any(|(_, info)| info.rotations.iter().any(|(_, list)| list.contains(k))));
-        sealed.filter(|(k, _, via)| superseded(&k.holder, k.role, via)).map(|(k, e, _)| (a, k.role, e, k.holder)).collect()
+        sealed.filter(|(k, _, via)| superseded(&k.holder.0, k.role, via)).map(|(k, e, _)| (a, k.role, e, k.holder.0)).collect()
     }
 
     /// Peer `i` granted peer `j` role `r` on `t`: notes what that handed `j` (`handed`), on `t`
@@ -202,12 +202,12 @@ impl Run {
         let after = self.lp.peers[p].engine.get_typed(&t, &ct::SECRETS).ok().flatten().unwrap_or_default();
         let held = super::tests::commit_ids(&mut self.lp, p);
         use osis_keys::aspects::from_schema;
-        for (k, b) in after.boxes.iter().filter(|(k, b)| before.boxes.get(k) != Some(b) && !self.tids.contains(&k.holder)) {
+        for (k, b) in after.boxes.iter().filter(|(k, b)| before.boxes.get(k) != Some(b) && !self.tids.contains(&k.holder.0)) {
             for via in osis_keys::box_keysets(b) {
                 if let Ok(e) = from_schema(&k.epoch)
-                    && !self.ever[p].contains(&(k.holder, k.role, via))
+                    && !self.ever[p].contains(&(k.holder.0, k.role, via))
                 {
-                    self.resealed.push(((t, k.role, e, k.holder), via, held.clone()));
+                    self.resealed.push(((t, k.role, e, k.holder.0), via, held.clone()));
                 }
             }
         }
@@ -279,7 +279,7 @@ impl Run {
     fn boxed_actors(&mut self, i: usize, a: Tid, r: Role, e: &Epoch) -> BTreeSet<(Tid, Epoch)> {
         let s = self.lp.peers[i].engine.get_typed(&a, &ct::SECRETS).ok().flatten().unwrap_or_default();
         let at = |k: &ct::BoxKey| k.role == r && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == *e);
-        s.boxes.iter().filter(|(k, _)| at(k) && !self.tids.contains(&k.holder)).flat_map(|(k, b)| osis_keys::box_keysets(b).into_iter().map(move |x| (k.holder, x))).collect()
+        s.boxes.iter().filter(|(k, _)| at(k) && !self.tids.contains(&k.holder.0)).flat_map(|(k, b)| osis_keys::box_keysets(b).into_iter().map(move |x| (k.holder.0, x))).collect()
     }
 
     /// Whether keyset `k` of role `r` of holder actor `m` is superseded where the commits `held`
@@ -834,7 +834,7 @@ fn dump(run: &mut Run, o: usize, d: usize, k: Key, own: &BTreeSet<Key>, limit: &
                 Some(Via::Box(a, r, e, h, ks)) => {
                     at = ks.first().map(|ks| (*h, *r, *ks)).filter(|_| *h != run.tids[d]);
                     let b = (*a, *r, *e, *h);
-                    let step = run.states.iter().zip(&run.state_step).find(|((t, s), _)| t == a && s.boxes.iter().any(|(bk, _)| bk.holder == *h && bk.role == *r && osis_keys::aspects::from_schema(&bk.epoch).ok() == Some(*e))).map(|x| *x.1);
+                    let step = run.states.iter().zip(&run.state_step).find(|((t, s), _)| t == a && s.boxes.iter().any(|(bk, _)| bk.holder == osis_base::Weak(*h) && bk.role == *r && osis_keys::aspects::from_schema(&bk.epoch).ok() == Some(*e))).map(|x| *x.1);
                     format!("box to {} at keyset {:?} (first met at step {step:?}, stale {}, within the limit {})", name(run, h), ks.iter().map(ep).collect::<Vec<_>>(), run.stale.contains(&b), limit.contains(&b))
                 }
             };

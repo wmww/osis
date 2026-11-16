@@ -211,7 +211,7 @@ fn keyed_map_removal_only_in_role_class_aspects_spec_crdt_5_6() {
     let dot = osis_crdt::Dot::new(SESSION.own_source(t(9), CommitId([0; 32])), 4);
     let w = Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1);
     let check = |b: &mut CommitBlob, keyed: bool, ak: &str| {
-        let fragment = osis_crdt::reset_entries(&w.clone().keyed_removals(keyed), &[(dot.clone(), Value::Tid(t(5)))]);
+        let fragment = osis_crdt::reset_entries(&w.clone().keyed_removals(keyed), &[(dot.clone(), Value::Weak(t(5)))]);
         let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, 1, 2), None).unwrap();
         b.header.aspects[0].ak = osis_base::Ak::new(ak).unwrap();
         b.header.aspects[0].hash = delta_hash(&sec(0xd0, &t(3)), &delta);

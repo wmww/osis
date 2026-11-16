@@ -39,7 +39,7 @@ mod tests {
         assert!(lp.peers[0].engine.core.ix.commits.get(&grant).unwrap().valid[ai], "an honest grant");
         // a grant of c that also writes a box keyed to b
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let (bk, bx) = s.boxes.iter().find(|(k, _)| k.holder == b).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let (bk, bx) = s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(b)).map(|(k, v)| (k.clone(), v.clone())).unwrap();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &edge).unwrap();
         let w = osis_keys::SecretsWrite { boxes: [(bk, bx)].into_iter().collect(), ..Default::default() };
@@ -77,7 +77,7 @@ mod tests {
         assert!(noted, "the receiver notes the team's records");
         // the invite holder grants c and records a box keyed to the admin as well
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let ak = s.boxes.keys().find(|k| k.holder == a).unwrap().clone();
+        let ak = s.boxes.keys().find(|k| k.holder == osis_base::Weak(a)).unwrap().clone();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &read).unwrap();
         let w = osis_keys::SecretsWrite { sealed: [(ak, Default::default())].into_iter().collect(), ..Default::default() };
@@ -104,7 +104,7 @@ mod tests {
         lp.sync_all().unwrap();
         // the role field alone, into the grant's entry: admin, with the `until` left behind
         let mut m = Mutation::new();
-        let path = vec![osis_crdt::PathSeg::Key(Value::Tid(b)), osis_crdt::PathSeg::Field(0)];
+        let path = vec![osis_crdt::PathSeg::Key(Value::Weak(b)), osis_crdt::PathSeg::Field(0)];
         m.op(t, &ct::ROLES, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(Value::Enum(2, None)) }).unwrap();
         lp.peers[0].engine.core.skip_writer_rules = true;
         let id = lp.peers[0].commit(m).unwrap().unwrap();
@@ -127,7 +127,7 @@ mod tests {
         lp.sync_all().unwrap();
         // the invite holder grants c and also writes a box keyed to the admin
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let (ak, ab) = s.boxes.iter().find(|(k, _)| k.holder == a).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let (ak, ab) = s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(a)).map(|(k, v)| (k.clone(), v.clone())).unwrap();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &read).unwrap();
         let w = osis_keys::SecretsWrite { boxes: [(ak, ab)].into_iter().collect(), ..Default::default() };
@@ -169,7 +169,7 @@ mod tests {
         let ge = lp.peers[0].engine.package(&ge).unwrap().unwrap();
         lp.deliver(1, &ge).unwrap();
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let ek = s.boxes.keys().find(|k| k.holder == e).unwrap().clone();
+        let ek = s.boxes.keys().find(|k| k.holder == osis_base::Weak(e)).unwrap().clone();
         let hk = s.history.keys().next().unwrap().clone();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &read).unwrap();
@@ -299,9 +299,9 @@ mod tests {
         let st = lp.peers[0].engine.state(&t, &ak).unwrap().unwrap();
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         // the admin's own box entry
-        let (a_dot, a_key) = box_entries(&st).into_iter().find_map(|(d, k)| Some((d, ct::BoxKey::from_value(&k?).ok().filter(|k| k.holder == a)?))).unwrap();
+        let (a_dot, a_key) = box_entries(&st).into_iter().find_map(|(d, k)| Some((d, ct::BoxKey::from_value(&k?).ok().filter(|k| k.holder == osis_base::Weak(a))?))).unwrap();
         let bx = s.boxes.get(&a_key).unwrap().clone();
-        let g_key = ct::BoxKey { holder: g, role: Role::Read, epoch: a_key.epoch.clone() };
+        let g_key = ct::BoxKey { holder: osis_base::Weak(g), role: Role::Read, epoch: a_key.epoch.clone() };
         let schema = osis_schema::core_schema();
         let view = schema.view("secrets.0").unwrap();
         let ts = osis_base::Ts::make(WallMs(1_700_000_000_100), 0).unwrap();
@@ -420,7 +420,7 @@ mod tests {
         let shallow = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
         let edge_in = |m: &mut Mutation, t: Tid, holder: Tid| {
-            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, floor: None }.to_value()) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, floor: None }.to_value()) }).unwrap();
         };
         let edge = |t: Tid, holder: Tid| {
             let mut m = Mutation::new();
@@ -459,14 +459,14 @@ mod tests {
         lp.peers[0].engine.grant(&t, &r, &read).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let (rk, rb) = before.boxes.iter().find(|(k, _)| k.holder == r).map(|(k, v)| (k.clone(), v.clone())).unwrap();
-        let zk = ct::BoxKey { holder: z, role: Role::Admin, epoch: rk.epoch.clone() };
+        let (rk, rb) = before.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(r)).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let zk = ct::BoxKey { holder: osis_base::Weak(z), role: Role::Admin, epoch: rk.epoch.clone() };
         let hk = ct::HistoryKey { role: Role::Admin, epoch: rk.epoch.clone() };
         let commit = |lp: &mut LocalPeer, who: Tid, edge: ct::Edge, i: usize| {
             let mut m = Mutation::new();
-            m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(lp.peers[i].engine.me())) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(lp.peers[i].engine.me())) }).unwrap();
             crate::flows::put_edge(&mut m, t, who, &edge).unwrap();
-            let k = ct::BoxKey { holder: who, role: edge.role, ..zk.clone() };
+            let k = ct::BoxKey { holder: osis_base::Weak(who), role: edge.role, ..zk.clone() };
             let h = ct::HistoryKey { role: edge.role, ..hk.clone() };
             let w = osis_keys::SecretsWrite { boxes: [(k, rb.clone())].into_iter().collect(), history: [(h, vec![0; 48])].into_iter().collect(), ..Default::default() };
             crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
@@ -647,7 +647,7 @@ mod keys_tests {
         lp.peers[0].engine.grant(&t, &w2, &we).unwrap();
         let g = *lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, ..we.clone() }).unwrap().commits.last().unwrap();
         lp.sync_all().unwrap();
-        let rk = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.holder == r).unwrap().clone();
+        let rk = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.holder == osis_base::Weak(r)).unwrap().clone();
         let rm = |lp: &mut LocalPeer, i: usize| {
             let mut m = Mutation::new();
             m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(rk.to_value()) }).unwrap();
@@ -753,7 +753,7 @@ mod keys_tests {
         let grant = *lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None }).unwrap().commits.last().unwrap();
         let grant = lp.peers[0].engine.package(&grant).unwrap().unwrap();
         lp.deliver(1, &grant).unwrap();
-        let rk = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.holder == r).unwrap().clone();
+        let rk = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.holder == osis_base::Weak(r)).unwrap().clone();
         let mut m = Mutation::new();
         m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(rk.to_value()) }).unwrap();
         let id = lp.peers[1].commit(m).unwrap().unwrap();

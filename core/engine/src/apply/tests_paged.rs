@@ -66,7 +66,7 @@ fn build(seed: u64) -> (LocalPeer, Tid) {
     for w in [1, 2, 3] {
         let w = lp.peers[w].engine.me();
         let mut m = Mutation::new();
-        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, floor: None }.to_value()) }).unwrap();
+        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, floor: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
     }
     lp.sync_all().unwrap();
@@ -180,7 +180,7 @@ fn demote_peer(w: &mut World, who: usize) -> CommitId {
     let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]), content: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]) };
     let f = w.lp.peers[0].engine.frontier(&scope, T0).unwrap();
     let mut m = Mutation::new();
-    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(x)) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(x)) }).unwrap();
     m.frontier(f.to_value());
     w.lp.peers[0].commit(m).unwrap().unwrap()
 }

@@ -168,7 +168,7 @@ fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
     let t = |i: usize| {
         let mut b = [0u8; 15];
         b[7..].copy_from_slice(&(i as u64).to_be_bytes());
-        Value::Tid(Tid::from_bytes(b))
+        Value::Weak(Tid::from_bytes(b))
     };
     let mut m = Mutation::new();
     m.set(x, &REFS, &Value::Set((0..n).map(t).collect())).unwrap();
@@ -552,7 +552,7 @@ fn validity_flip(n: usize) -> [Work; 2] {
     let now = lp.peers[2].engine.now();
     let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
     let mut m = Mutation::new();
-    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(b)) }).unwrap();
     m.frontier(f.to_value());
     let rv = lp.peers[2].commit(m).unwrap().unwrap();
     let late = add(&mut lp, 1, t, &TAGS, "late".into());

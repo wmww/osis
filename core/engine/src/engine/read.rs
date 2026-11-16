@@ -39,15 +39,15 @@ impl Core {
 }
 
 impl Engine {
-    /// The reference index's rows naming `target` (`refs`): who holds its tid in a held value,
-    /// on which aspect, how many times.
+    /// The reference index's rows naming `target` (`refs`): who holds a reference to it in a
+    /// held value, on which aspect, of which kind, how many times.
     pub fn references_to(&mut self, target: &Tid) -> Result<Vec<super::refs::Reference>> {
         self.read(|tx| super::refs::to(tx, target))
     }
 
-    /// Up to `n` of the reference index's rows naming `target` after `after` (source, AK;
-    /// exclusive), in (source, AK) order: O(n) rows read.
-    pub fn references_page(&mut self, target: &Tid, after: Option<(&Tid, &Ak)>, n: usize) -> Result<Vec<(Tid, Ak)>> {
+    /// Up to `n` of the reference index's rows naming `target` after `after` (source, AK, kind;
+    /// exclusive), in that order: O(n) rows read.
+    pub fn references_page(&mut self, target: &Tid, after: Option<(&Tid, &Ak, osis_base::RefKind)>, n: usize) -> Result<Vec<(Tid, Ak, osis_base::RefKind)>> {
         self.read(|tx| super::refs::to_page(tx, target, after, n))
     }
 
@@ -71,7 +71,7 @@ impl Engine {
             "aspects.0" => Some(Value::Set(self.aspects(&tid)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
             "roles.0" => {
                 let r = self.core.roster_of(&tid);
-                (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
+                (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Weak(*m), edge_value(e))).collect()))
             }
             _ => self.read(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };

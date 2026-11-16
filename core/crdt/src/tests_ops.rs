@@ -965,7 +965,7 @@ fn diff_writes_every_stored_key_of_a_projected_key_spec_9() {
 fn tid_removal_covers_what_the_remover_saw_spec_5_5() {
     use crate::stamp::DotRange;
     let view = TyView(Ty::Set(Box::new(Ty::Register)));
-    let t = Value::Tid(Tid::from_bytes([7; 15]));
+    let t = Value::Weak(Tid::from_bytes([7; 15]));
     let node = |n: u8| sess(Tid::from_bytes([n; 15]));
     let writer = |n: u8, at: u64| Writer::new(ts(at << 16), node(n), 1);
     let one = |w: &mut Writer, op: Op, st: Option<&Fragment>| crate::ops::leaf(w, st, &view, &op, true).unwrap().unwrap();

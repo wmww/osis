@@ -235,9 +235,9 @@ fn tracked_backlinks_hear_their_thing() {
     let (a, x, y) = (thing(&db), thing(&db), thing(&db));
     let (_set, n, h) = tracked(&db);
     assert!(h.backlinks(x, &Default::default()).unwrap().backlinks.is_empty());
-    db.commit_with(|w| w.at(a, untyped("t:a.0")).set(&Value::Tid(y))).unwrap();
+    db.commit_with(|w| w.at(a, untyped("t:a.0")).set(&Value::Weak(y))).unwrap();
     assert_eq!(fired(&db, &n), 0);
-    db.commit_with(|w| w.at(a, untyped("t:b.0")).set(&Value::Tid(x))).unwrap();
+    db.commit_with(|w| w.at(a, untyped("t:b.0")).set(&Value::Weak(x))).unwrap();
     assert_eq!(fired(&db, &n), 1);
 }
 

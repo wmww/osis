@@ -222,7 +222,7 @@ fn mixed_commit_not_absorbed_spec_crdt_8() {
     assert!(!based(&lp, 3, g, &e), "e verified at C without its rotation commit");
     let s = lp.peers[3].engine.snapshot(&g, &secrets_ak()).unwrap().unwrap();
     let boxes = |lp: &mut LocalPeer, p: usize| lp.peers[p].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap().boxes;
-    assert!(boxes(&mut lp, 3).keys().any(|k| k.holder == tids[4] && k.role == Role::Write), "C lacks N's write box");
+    assert!(boxes(&mut lp, 3).keys().any(|k| k.holder == osis_base::Weak(tids[4]) && k.role == Role::Write), "C lacks N's write box");
     // F gets the snapshot whole and the grant as a header alone
     let pk = lp.peers[3].engine.package(&s).unwrap().unwrap();
     lp.peers[5].receive(&pk.bytes, pk.blobs.clone()).unwrap();

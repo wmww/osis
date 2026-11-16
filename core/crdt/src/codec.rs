@@ -683,13 +683,13 @@ pub(crate) fn decode_elem_items(cx: &mut Dec, items: List, set: bool, out: &mut 
         };
         let dot = cx.dot(d)?;
         let reset = cx.opt_level_stamp(r)?;
-        // a value removal: a set's, naming a tid and at least one part, its parts ascending and
+        // a value removal: a set's, naming a reference and at least one part, its parts ascending and
         // apart (§3.3 rule 7)
         let gone = match gone {
             Some((g, v, seen)) => {
                 let stamp = cx.level_stamp(g)?;
                 let value = v.to_value()?;
-                if !set || !matches!(value, Value::Tid(_)) {
+                if !set || !value.is_reference() {
                     return Err(Error::Malformed("value removal"));
                 }
                 let mut out: Vec<DotRange> = Vec::new();

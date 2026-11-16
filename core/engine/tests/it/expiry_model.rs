@@ -316,8 +316,8 @@ fn forged_copy_linking_a_thing_leaves_backlinks_at_expiry_spec_crdt_4_7() {
     let mut lp = net(3, 0);
     let t = new_thing(&mut lp, 0);
     let target = new_thing(&mut lp, 0);
-    forged_copies(&mut lp, t, &Value::Tid(target));
-    let lists = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.references_page(&target, None, 10).unwrap().contains(&(t, big()));
+    forged_copies(&mut lp, t, &Value::Weak(target));
+    let lists = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.references_page(&target, None, 10).unwrap().contains(&(t, big(), osis_base::RefKind::Weak));
     for i in 0..3 {
         assert!(lists(&mut lp, i), "peer {i}: before T the copies link the target");
     }

@@ -15,17 +15,17 @@ revision 1;
 /// the viewer favorites, unfavorites or reorders; reordering is a sequence move, so a concurrent
 /// unfavorite wins. Nodes that raced on two account groups keep their own list; readers take the
 /// union.
-aspect ui:favorites.0: list<tid>;
+aspect ui:favorites.0: list<weak>;
 
 /// How the viewer places a collection: by thing, the arrangement that beats the thing's stored one.
 /// Written from the chooser every collection offers, on the account group so it works on a thing the
 /// viewer cannot write.
-aspect ui:arranged.0: map<tid, arrange>;
+aspect ui:arranged.0: map<weak, arrange>;
 
 /// Which content view the viewer opens a thing in, by view type id. Written when the viewer picks a
 /// tab; a stored id that no longer fits the thing falls back to the best fit. Raw is not recorded
 /// here: it is per window (`ui:raw.0`).
-aspect ui:viewed_as.0: map<tid, string>;
+aspect ui:viewed_as.0: map<weak, string>;
 
 /// The chosen theme's id. Absent: the default theme. The value is kept even if a build does not know
 /// the id (it shows the default).
@@ -45,7 +45,7 @@ aspect ui:mode.0: enum {
 
 /// On the account group: each device's window (node tid to window thing). A device adds its entry the
 /// first time it writes window state; reading makes nothing.
-aspect ui:windows.0: map<tid, tid>;
+aspect ui:windows.0: map<weak, strong>;
 
 /// Marks a subgroup of the account group as internal: it holds the kit's own things (windows). The
 /// universe excludes it and its members by the same rule that excludes the account group.
@@ -53,7 +53,7 @@ aspect ui:internal.0: bool;
 
 /// On a window: the thing it has open; absent: the account group's own page (home). Durable, so a
 /// window reopens where it was; a thing deleted since shows home instead.
-aspect ui:open.0: tid;
+aspect ui:open.0: weak;
 
 // ---- Node state: per window, per node of the view tree ----
 // Each view type declares its state as its own aspect on the window: a map keyed by node path. A path

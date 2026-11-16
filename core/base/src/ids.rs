@@ -79,7 +79,7 @@ pub enum CreationRecord {
     KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32], account: bool },
 }
 
-// spec/wire.md §3: `creation = struct { admin 0: tid, key 1: signing_key, nonce 2: blob, link 3: tid, account 4: bool }`.
+// spec/wire.md §3: `creation = struct { admin 0: weak, key 1: signing_key, nonce 2: blob, link 3: weak, account 4: bool }`.
 const REC_ADMIN: i64 = 0;
 const REC_KEY: i64 = 1;
 const REC_NONCE: i64 = 2;
@@ -94,10 +94,10 @@ impl CreationRecord {
         let mut m = crate::ValueMap::new();
         match self {
             CreationRecord::Thing { admin, nonce, link } => {
-                m.insert(Value::Int(REC_ADMIN), Value::Tid(*admin));
+                m.insert(Value::Int(REC_ADMIN), Value::Weak(*admin));
                 m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
                 if let Some(t) = link {
-                    m.insert(Value::Int(REC_LINK), Value::Tid(*t));
+                    m.insert(Value::Int(REC_LINK), Value::Weak(*t));
                 }
             }
             CreationRecord::KeyActor { alg, public_key, nonce, account } => {
@@ -121,7 +121,7 @@ impl CreationRecord {
         };
         let link = match m.get(&Value::Int(REC_LINK)) {
             None => None,
-            Some(Value::Tid(t)) if m.contains_key(&Value::Int(REC_ADMIN)) => Some(*t),
+            Some(Value::Weak(t)) if m.contains_key(&Value::Int(REC_ADMIN)) => Some(*t),
             _ => return None,
         };
         let account = match m.get(&Value::Int(REC_ACCOUNT)) {
@@ -130,7 +130,7 @@ impl CreationRecord {
             _ => return None,
         };
         match (m.get(&Value::Int(REC_ADMIN)), m.get(&Value::Int(REC_KEY)), m.len() - usize::from(link.is_some()) - usize::from(account)) {
-            (Some(Value::Tid(admin)), None, 2) => Some(CreationRecord::Thing { admin: *admin, nonce, link }),
+            (Some(Value::Weak(admin)), None, 2) => Some(CreationRecord::Thing { admin: *admin, nonce, link }),
             (None, Some(Value::Enum(SIGNING_KEY_ED25519, Some(p))), 2) => match p.as_ref() {
                 Value::Bytes(pk) if pk.len() == 32 => {
                     Some(CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: pk.clone(), nonce, account })
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn creation_record_bytes() {
         let r = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: None };
-        let rb = hex(&format!("a2 00 d90650 4f{} 02 5820{}", "07".repeat(15), "01".repeat(32)));
+        let rb = hex(&format!("a2 00 d90655 4f{} 02 5820{}", "07".repeat(15), "01".repeat(32)));
         let l = CreationRecord::Thing { admin: Tid::from_bytes([7; 15]), nonce: [1; 32], link: Some(Tid::from_bytes([8; 15])) };
         assert_ne!(l.tid(), r.tid(), "the link's target is in the tid");
         assert!(l.is_link() && !r.is_link());

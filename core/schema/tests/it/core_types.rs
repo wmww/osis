@@ -17,8 +17,8 @@ fn epoch(n: u64) -> Epoch {
 /// (vector name, AK, encoded sample) per core aspect a commit can write.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let holders: Holders = BTreeMap::from([
-        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), floor: None }),
-        (tid(7), Edge { role: Role::Admin, until: None, invite: None, floor: None }),
+        (tid(5).into(), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), floor: None }),
+        (tid(7).into(), Edge { role: Role::Admin, until: None, invite: None, floor: None }),
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), names: [6; 32], left_out: BTreeMap::new(), demotions: BTreeSet::new(), demotes: false }),
@@ -29,10 +29,10 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let secrets = Secrets {
         boxes: BTreeMap::from([
             (
-                BoxKey { holder: tid(13), role: Role::Read, epoch: epoch(2) },
+                BoxKey { holder: tid(13).into(), role: Role::Read, epoch: epoch(2) },
                 SecretBox::Sealed(SealedBox { keyset: Some(epoch(1)), suite: 1, sealed: Sealed::X25519MlKem768(vec![15; 40]) }),
             ),
-            (BoxKey { holder: tid(13), role: Role::Write, epoch: epoch(2) }, SecretBox::Symmetric(SymmetricBox { epoch: epoch(1), wrap: vec![16; 48] })),
+            (BoxKey { holder: tid(13).into(), role: Role::Write, epoch: epoch(2) }, SecretBox::Symmetric(SymmetricBox { epoch: epoch(1), wrap: vec![16; 48] })),
         ]),
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
@@ -47,8 +47,8 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], account: None })),
         ("dial", "dial^.0", DIAL.encode(&BTreeMap::from([(vec![36; 32], vec!["peer://203.0.113.7:4040".to_string()])]))),
-        ("caps", "caps^.0", CAPS.encode(&Caps { policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]), things: BTreeMap::from([(tid(33), ThingCaps { entries: 5, bytes: 6 })]) })),
-        ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),
+        ("caps", "caps^.0", CAPS.encode(&Caps { policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]), things: BTreeMap::from([(tid(33).into(), ThingCaps { entries: 5, bytes: 6 })]) })),
+        ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34).into(), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),
     ]
 }
 
@@ -117,23 +117,23 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     let e = KemKey::from_value(&Value::Enum(2, Some(Box::new(Value::Bytes(vec![]))))).unwrap_err();
     assert_eq!((e.kind.clone(), e.class()), (PathErrorKind::UnknownCase(2), ErrorClass::Parked));
     // An unknown role case in a holder edge: parked, with the path.
-    let mut m = ROLES.encode(&BTreeMap::from([(tid(1), Edge { role: Role::Read, until: None, invite: None, floor: None })]));
+    let mut m = ROLES.encode(&BTreeMap::from([(tid(1).into(), Edge { role: Role::Read, until: None, invite: None, floor: None })]));
     if let Value::Map(mm) = &mut m {
-        let e = mm.get_mut(&Value::Tid(tid(1))).unwrap();
+        let e = mm.get_mut(&Value::Weak(tid(1))).unwrap();
         if let Value::Map(f) = e {
             f.insert(Value::Int(0), Value::Enum(9, None));
         }
     }
     let e = ROLES.decode(&m).unwrap_err();
     assert_eq!(e.kind, PathErrorKind::UnknownCase(9));
-    assert_eq!(e.path, p![tid(1), FieldId(0)]);
+    assert_eq!(e.path, p![osis_schema::osis_base::Weak(tid(1)), FieldId(0)]);
     // created.0: an unknown signing key case parks; both admin and key is bad input.
     let rec = CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32], account: false }.to_value();
     let Value::Map(mut f) = rec else { panic!() };
     f.insert(Value::Int(1), Value::Enum(7, Some(Box::new(Value::Bytes(vec![0; 40])))));
     assert_eq!(CREATED.decode(&Value::Map(f.clone())).unwrap_err().class(), ErrorClass::Parked);
     f.insert(Value::Int(1), Value::Enum(1, Some(Box::new(Value::Bytes(vec![3; 32])))));
-    f.insert(Value::Int(0), Value::Tid(tid(1)));
+    f.insert(Value::Int(0), Value::Weak(tid(1)));
     assert_eq!(CREATED.decode(&Value::Map(f)).unwrap_err().class(), ErrorClass::BadInput);
     // Reader defaults: an keys.0 written with only some fields reads with none for the rest.
     let k = KEYS.decode(&Value::Map(osis_base::ValueMap::new())).unwrap();

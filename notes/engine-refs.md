@@ -1,17 +1,18 @@
 # Reference index
-> Summary: The engine's local, rebuildable index of references in held readable data (`engine/refs.rs`): rows (target, source thing, AK) with a count, what counts as a reference, how every state change keeps the rows in its own transaction, the paged read and change event backlinks use, costs and checks. Serves backlinks (notes/api.md Backlinks); lane (a) of issues/reference-graph.md makes it the index of strongs, weaks and tickets the closure walk and ticket lookup read.
+> Summary: The engine's local, rebuildable index of references in held readable data (`engine/refs.rs`): rows (target, source thing, AK, kind) with a count, what counts as a reference (strongs, weaks, tickets), how every state change keeps the rows in its own transaction, the paged read and change event backlinks use, costs and checks. Serves backlinks (notes/api.md Backlinks), the closure walk and the ticket lookup (spec/data-model.md §8 Known references).
 
 ## Principle
 A row says exactly what the source's held state on that aspect holds: it changes in the transaction that changes the state and never outlives the value it came from.
 
 ## Rows
-- Store index tables (rebuildable, dropped and refilled from every state by `index::write_all`): `node/refs to` (target ‖ source ‖ AK, empty) and `node/refs from` (source ‖ AK length ‖ AK ‖ target, the count as u64). A removed row is shredded. No in-memory copy: an open loads nothing; a read is a prefix scan (`Engine::references_to`, `references_from`, `refs::Reference`).
+- Store index tables (rebuildable, dropped and refilled from every state by `index::write_all`): `node/refs to` (target ‖ source ‖ AK ‖ 0 ‖ kind, empty) and `node/refs from` (source ‖ AK length ‖ AK ‖ target ‖ kind, the count as u64). The kind is `RefKind` (0 strong, 1 weak, 2 ticket): one source and AK may hold a strong and a weak to one target, two rows. The 0 before the kind keeps `to` rows in (source, AK, kind) order (no AK holds a 0 byte), so a page resumes past a row by appending a 0 to its key. A removed row is shredded. No in-memory copy: an open loads nothing; a read is a prefix scan (`Engine::references_to`, `references_from`, `refs::Reference`).
 - Class by AK: an ephemeral (`+`) aspect's rows are memory rows, as its state is (live ephemeral), the rest durable.
-- Indexed: every aspect with a state but `created.0` and the role-class aspects (`refs::indexed`).
-- Counted: every tid (`Value::Tid`, tag 1616) at any depth of a value the state holds as written (`Fragment::each_value`: register and slot values, set elements, list items, the keys of map records holding their creation), map keys, enum payloads and unknown tags' content included. Not counted: a value-less write (the state holds none), an invalid write (un-merged), a link's chunked content, a tid spelled in a string, text chars.
+- Indexed: every aspect with a state (`refs::indexed`), core aspects included: a creation record's `admin` and `link`, a roster's holders, box keys' holders are weaks (spec/data-model.md §9), so they are backlinks and hold nothing.
+- Counted: every strong, weak and ticket (`refs::references`) at any depth of a value the state holds as written (`Fragment::each_value`: register and slot values, set elements, list items, the keys of map records holding their creation), map keys, enum payloads and unknown tags' content included; a ticket counts once, as a ticket to its target (the tids inside it are no references). Not counted: a value-less write (the state holds none), an invalid write (un-merged), a link's chunked content (issues/refs-in-chunked-elements.md), a tid spelled in a string, text chars.
+- Not yet indexed: references in held fires of durable signals (spec/data-model.md §8 Known references; a signal has no state, so no row follows it), which the ticket lookup of `ticket@~0` fires needs.
 
 ## Reading it
-- `Engine::references_page(target, after, n)`: up to n `(source, AK)` after a cursor, by a range read of `node/refs to`, O(n) rows (cost span `refs: row read`); backlinks pages over it.
+- `Engine::references_page(target, after, n)`: up to n `(source, AK, kind)` after a cursor, by a range read of `node/refs to`, O(n) rows (cost span `refs: row read`); backlinks pages over it.
 - `Event::References(targets)`: queued by `refs::note` when a row appears or goes (a count staying above zero is no change), in the transaction, so a rollback drops it; only once `Engine::watch_references` turned it on for the open (sticky, as `watch_commits`): a resync of a fall of an aspect would otherwise list every target with no one to tell.
 
 ## Keeping it
@@ -23,4 +24,4 @@ A row says exactly what the source's held state on that aspect holds: it changes
 - Check: `apply::check_rebuilt` (debug, end of transaction, sampled like the state check) asserts each checked aspect's rows equal its whole state's count (`refs::check`).
 
 ## Tests
-osis `references::` (rows follow values; any arrival order; expiry and purge; a validity flip; lost access; a path write counted at n and 10n, a paged reset; a rebuild in place, a reopen), engine `refs::tests`, and the crdt differential's law that a join changes held values only at its reach (`tests_model::reach_holds_the_change`, every mode, hostile included).
+osis `references::` (rows follow values; any arrival order; expiry and purge; a validity flip; lost access; a path write counted at n and 10n, a paged reset; a rebuild in place, a reopen), the debug check above on every checked aspect, and the crdt differential's law that a join changes held values only at its reach (`tests_model::reach_holds_the_change`, every mode, hostile included). The planned R2 property (notes/refgraph-tests.md) replaces the old unit test.

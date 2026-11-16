@@ -179,10 +179,10 @@ impl EdgeParts {
             let es = entries(d.fragment())
                 .into_iter()
                 // a removal record keyed by no tid acts on no holder's entry (spec/crdt.md §5.6)
-                .filter(|(_, k, x)| x.is_some() || k.as_ref().is_none_or(|k| matches!(k, Value::Tid(_))))
+                .filter(|(_, k, x)| x.is_some() || k.as_ref().is_none_or(|k| matches!(k, Value::Weak(_))))
                 .filter_map(|(d, k, x)| {
                     let m = match k {
-                        Some(Value::Tid(m)) => Some(m),
+                        Some(Value::Weak(m)) => Some(m),
                         _ => None,
                     };
                     let edge = match x {
@@ -262,8 +262,8 @@ pub(crate) fn edge_holders(core: &Core, target: &Tid, f: &Fragment) -> Vec<Tid> 
     entries(f)
         .into_iter()
         .filter_map(|(d, k, v)| match (k, v) {
-            (Some(Value::Tid(m)), Some(_)) => Some(m),
-            (k, None) => core.ix.holder_keys.get(&(*target, d)).copied().filter(|m| k.as_ref().is_none_or(|k| *k == Value::Tid(*m))),
+            (Some(Value::Weak(m)), Some(_)) => Some(m),
+            (k, None) => core.ix.holder_keys.get(&(*target, d)).copied().filter(|m| k.as_ref().is_none_or(|k| *k == Value::Weak(*m))),
             _ => None,
         })
         .collect()
@@ -483,7 +483,7 @@ pub(super) fn grantee_boxes_only(actor: &Tid, ak: &str, f: &Fragment, granted: &
     }
     let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return false };
     let top = granted.iter().filter(|((t, _), _)| t == actor).map(|(_, r)| *r).max();
-    let fits = |k: &ct::BoxKey| granted.get(&(*actor, k.holder)).is_some_and(|r| k.role <= *r);
+    let fits = |k: &ct::BoxKey| granted.get(&(*actor, k.holder.0)).is_some_and(|r| k.role <= *r);
     let fields: &[u64] = if ak == "keys.0" { &[crate::flows::SEALED] } else { &[0, 1] };
     if ak == "keys.0" && st.field_ids().any(|id| id != crate::flows::SEALED) {
         return false;
@@ -1116,7 +1116,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
         }
         for (dot, k, frag) in entries(d.fragment()) {
             match k {
-                Some(Value::Tid(m)) => changed.push((a.tid, m, frag.and_then(|f| f.read()).as_ref().and_then(edge_of))),
+                Some(Value::Weak(m)) => changed.push((a.tid, m, frag.and_then(|f| f.read()).as_ref().and_then(edge_of))),
                 _ => {
                     if let Some(m) = core.ix.holder_keys.get(&(a.tid, dot)) {
                         changed.push((a.tid, *m, None));

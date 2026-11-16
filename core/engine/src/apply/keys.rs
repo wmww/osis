@@ -36,7 +36,7 @@ fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
 /// `flows::reopen_dependents`; a load notes every held part alike).
 pub(crate) fn note_boxes_to(core: &mut Core, actor: &Tid, delta: &Fragment) {
     for (bk, k) in written_boxes(delta) {
-        core.ix.boxes_to.insert(bk.holder, (*actor, k.clone()));
+        core.ix.boxes_to.insert(bk.holder.0, (*actor, k.clone()));
     }
 }
 
@@ -74,7 +74,7 @@ impl KeysBody {
                 let lists = ks.supersedes.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect();
                 let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
                 let kem = (ks.suite == osis_keys::SUITE).then(|| osis_crypto::KemPublicKey::from_slice(b).ok()).flatten();
-                let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((*m, osis_keys::aspects::from_schema(x).ok()?)))).collect();
+                let left_out = ks.left_out.iter().flat_map(|(m, xs)| xs.iter().filter_map(|x| Some((m.0, osis_keys::aspects::from_schema(x).ok()?)))).collect();
                 Some(KeysetRec { role: *role, epoch, lists, kem, names: ks.names, left_out, demotions: ks.demotions.iter().copied().collect(), demotes: ks.demotes })
             })
             .collect();
@@ -93,7 +93,7 @@ fn sealed_recs(body: &Fragment) -> Vec<SealedRec> {
             let k = BoxKey::from_value(&typed(k?, "box_key")?).ok()?;
             let v = typed_read(osis_schema::core_schema(), &f?.read()?, &set).ok()?;
             let ks = std::collections::BTreeSet::<ct::Epoch>::from_value(&v).ok()?;
-            Some(SealedRec { role: k.role, epoch: osis_keys::aspects::from_schema(&k.epoch).ok()?, holder: k.holder, keysets: ks.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect() })
+            Some(SealedRec { role: k.role, epoch: osis_keys::aspects::from_schema(&k.epoch).ok()?, holder: k.holder.0, keysets: ks.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect() })
         })
         .collect();
     out.sort();
@@ -120,7 +120,7 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
     if h.kind != Kind::Role || a.ak.as_str() != "secrets.0" {
         return Ok(());
     }
-    let mut gone: std::collections::BTreeSet<(Tid, Value)> = bodies.iter().flat_map(written_boxes).map(|(bk, k)| (bk.holder, k.clone())).collect();
+    let mut gone: std::collections::BTreeSet<(Tid, Value)> = bodies.iter().flat_map(written_boxes).map(|(bk, k)| (bk.holder.0, k.clone())).collect();
     let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for id in ids {
         let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
@@ -130,7 +130,7 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
         }
         if let Some(Decoded::Delta(d)) = super::held_part(tx, &id, xi)? {
             for (bk, k) in written_boxes(&d.fragment) {
-                gone.remove(&(bk.holder, k.clone()));
+                gone.remove(&(bk.holder.0, k.clone()));
             }
         }
     }

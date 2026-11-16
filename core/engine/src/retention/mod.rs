@@ -1685,7 +1685,7 @@ mod tests {
         for w in [1, 2] {
             let w = lp.peers[w].engine.me();
             let mut m = Mutation::new();
-            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, floor: None }.to_value()) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, floor: None }.to_value()) }).unwrap();
             lp.peers[0].commit(m).unwrap();
         }
         lp.sync_all().unwrap();
@@ -1716,7 +1716,7 @@ mod tests {
         let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(r, BTreeSet::from([t]))]), content: BTreeMap::from([(r, BTreeSet::from([t]))]) };
         let f = lp.peers[0].engine.frontier(&scope, WallMs(1_700_000_000_000)).unwrap();
         let mut m = Mutation::new();
-        m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(r)) }).unwrap();
+        m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(r)) }).unwrap();
         m.frontier(f.to_value());
         lp.advance(10);
         let demote = lp.peers[0].commit(m).unwrap().unwrap();
@@ -1805,7 +1805,7 @@ mod tests {
             // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
             let mut m = Mutation::new();
             let t = lp.peers[0].engine.new_thing(&mut m, alice);
-            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(bob))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(bob))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
             lp.peers[0].commit(m).unwrap();
             let mut m = Mutation::new();
             m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::PurgeOnReplace)).unwrap();

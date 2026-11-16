@@ -21,8 +21,14 @@ pub enum ValueType {
     Int,
     /// `Value::Float`.
     Float,
-    /// A thing's id (`Value::Tid`).
-    Thing,
+    /// A strong reference to a thing (`Value::Strong`).
+    Strong,
+    /// A weak reference to a thing (`Value::Weak`).
+    Weak,
+    /// A strong or a weak, the writer's choice (`Value::Strong`, `Value::Weak`).
+    Ref,
+    /// A ticket (`Value::Ticket`).
+    Ticket,
     /// A moment, in milliseconds (`Value::Int`).
     Time,
     /// A length of time, in milliseconds (`Value::Int`).
@@ -127,7 +133,10 @@ fn type_name(t: &Type) -> String {
         Type::Bool => "bool".into(),
         Type::Int => "int".into(),
         Type::Float => "float".into(),
-        Type::Tid => "tid".into(),
+        Type::Strong => "strong".into(),
+        Type::Weak => "weak".into(),
+        Type::Ref => "ref".into(),
+        Type::Ticket => "ticket".into(),
         Type::Any => "any".into(),
         Type::Text => "text".into(),
         Type::List(e) => format!("list<{}>", type_name(e)),
@@ -177,7 +186,10 @@ fn describe(s: &Arc<Schema>, t: &Type) -> ValueType {
         Type::Bool => ValueType::Bool,
         Type::Int => ValueType::Int,
         Type::Float => ValueType::Float,
-        Type::Tid => ValueType::Thing,
+        Type::Strong => ValueType::Strong,
+        Type::Weak => ValueType::Weak,
+        Type::Ref => ValueType::Ref,
+        Type::Ticket => ValueType::Ticket,
         Type::Any | Type::Named(..) | Type::Param(_) => ValueType::Any,
         Type::List(e) => ValueType::List(nested(e)),
         Type::Set(e) => ValueType::Set(nested(e)),

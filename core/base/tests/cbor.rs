@@ -1,9 +1,9 @@
 //! Canonical CBOR profile tests (spec/data-model.md §5).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)] // test code
 
-use osis_base::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_STRUCT_RESERVED, TAG_TID};
+use osis_base::format::{TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_STRUCT_RESERVED, TAG_TICKET, TAG_WEAK};
 use osis_base::cbor::{Item, check};
-use osis_base::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Tid, Unknown, Value, decode, decode_prefix, encode, item_prefix};
+use osis_base::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Role, SyncId, Ticket, Tid, Unknown, Value, decode, decode_prefix, encode, item_prefix};
 use proptest::prelude::*;
 
 /// `decode`, checking that `cbor::check` decides alike, with the same error.
@@ -17,6 +17,12 @@ fn d(b: &[u8]) -> Result<Value, DecodeError> {
     dl(b, &Limits::DEFAULT)
 }
 
+/// A ticket for target `b` with fixed fields but `role` and the epoch's `n`.
+fn ticket(b: [u8; 15], role: Role, n: u64) -> Value {
+    let boxed = Value::Enum(0, Some(Box::new(Value::bytes(&[5]))));
+    Ticket { target: Tid::from_bytes(b), sync_id: SyncId([1; 16]), role, epoch: (n, [2; 32]), boxed, holder: Tid::from_bytes([3; 15]), profile: Tid::from_bytes([4; 15]) }.into()
+}
+
 /// An `Item` reads as the value it encodes, every navigation of it included.
 fn reads_as(i: Item, v: &Value) -> Result<(), TestCaseError> {
     prop_assert_eq!(i.to_value(), Ok(v.clone()));
@@ -25,7 +31,7 @@ fn reads_as(i: Item, v: &Value) -> Result<(), TestCaseError> {
     prop_assert_eq!(i.as_bool(), if let Value::Bool(b) = v { Some(*b) } else { None });
     prop_assert_eq!(i.as_bytes(), v.as_bytes());
     prop_assert_eq!(i.as_str(), if let Value::Str(s) = v { Some(s.as_str()) } else { None });
-    prop_assert_eq!(i.as_tid(), if let Value::Tid(t) = v { Some(*t) } else { None });
+    prop_assert_eq!(i.as_tid(), v.as_array().map(Tid::from_bytes));
     prop_assert_eq!(i.as_link(), if let Value::Link(l) = v { Some(**l) } else { None });
     prop_assert_eq!(i.is_empty_list(), matches!(v, Value::List(l) if l.is_empty()));
     match (i.as_list(), v) {
@@ -81,7 +87,9 @@ fn leaf() -> impl Strategy<Value = Value> {
         any::<bool>().prop_map(Value::Bool),
         prop::collection::vec(any::<char>(), 0..6).prop_map(|c| Value::Str(c.into_iter().collect())),
         prop::collection::vec(any::<u8>(), 0..30).prop_map(Value::Bytes),
-        any::<[u8; 15]>().prop_map(|b| Value::Tid(Tid::from_bytes(b))),
+        any::<[u8; 15]>().prop_map(|b| Value::Strong(Tid::from_bytes(b))),
+        any::<[u8; 15]>().prop_map(|b| Value::Weak(Tid::from_bytes(b))),
+        (any::<[u8; 15]>(), any::<bool>(), any::<u64>()).prop_map(|(b, read, n)| ticket(b, if read { Role::Read } else { Role::Sync }, n >> 1)),
         (any::<[u8; 32]>(), any::<[u8; 32]>(), any::<u8>(), any::<[u8; 32]>(), any::<[u8; 16]>(), 0u8..8)
             .prop_map(|(hash, blob, suite, key, salt, levels)| Value::link(Link { hash, blob: BlobId(blob), suite, key, salt, del: del_of(levels, key) })),
         prop_oneof![Just(0u64), Just(23), Just(300), Just(i64::MAX as u64)].prop_map(|c| Value::Enum(c, None)),
@@ -256,8 +264,16 @@ fn known_encodings() {
         assert_eq!(encode(&v), hex(h), "{v:?}");
         assert_eq!(d(&hex(h)), Ok(v));
     }
-    let t = Value::Tid(Tid::from_bytes([0xab; 15]));
-    assert_eq!(encode(&t), hex(&format!("{} 4f {}", tag_head(TAG_TID), "ab".repeat(15))));
+    let t = Value::Strong(Tid::from_bytes([0xab; 15]));
+    assert_eq!(encode(&t), hex(&format!("{} 4f {}", tag_head(TAG_STRONG), "ab".repeat(15))));
+    let t = Value::Weak(Tid::from_bytes([0xab; 15]));
+    assert_eq!(encode(&t), hex(&format!("{} 4f {}", tag_head(TAG_WEAK), "ab".repeat(15))));
+    // [target, sync_id, role, [n, nonce], box, holder, profile]
+    let t = ticket([0xab; 15], Role::Sync, 2);
+    let th = format!("{} 87 4f{} 50{} 03 82 02 5820{} {} 81 00 4f{} 4f{}", tag_head(TAG_TICKET), "ab".repeat(15), "01".repeat(16), "02".repeat(32), tag_head(TAG_ENUM), "03".repeat(15), "04".repeat(15));
+    let th = th.replacen(&format!("{} 81 00", tag_head(TAG_ENUM)), &format!("{} 82 00 41 05", tag_head(TAG_ENUM)), 1);
+    assert_eq!(encode(&t), hex(&th));
+    assert_eq!(d(&hex(&th)), Ok(t));
     let e = Value::Enum(3, Some(Box::new(Value::Bool(true))));
     assert_eq!(encode(&e), hex(&format!("{} 82 03 f5", tag_head(TAG_ENUM))));
     assert_eq!(encode(&Value::Enum(0, None)), hex(&format!("{} 81 00", tag_head(TAG_ENUM))));
@@ -360,7 +376,9 @@ fn links_sort_by_bytes() {
 #[test]
 fn rejections() {
     use DecodeError::*;
-    let tid = tag_head(TAG_TID);
+    let strong = tag_head(TAG_STRONG);
+    let weak = tag_head(TAG_WEAK);
+    let tk = tag_head(TAG_TICKET);
     let en = tag_head(TAG_ENUM);
     let ln = tag_head(TAG_LINK);
     let set = tag_head(TAG_SET);
@@ -409,8 +427,14 @@ fn rejections() {
         (format!("{set} 82 01 01"), SetOrder),
         (format!("{set} a0"), TagContent(TAG_SET)),
         // Known tags with the wrong content.
-        (format!("{tid} 4e {}", "00".repeat(14)), TagContent(TAG_TID)),
-        (format!("{tid} 6f {}", "61".repeat(15)), TagContent(TAG_TID)),
+        (format!("{strong} 4e {}", "00".repeat(14)), TagContent(TAG_STRONG)),
+        (format!("{weak} 6f {}", "61".repeat(15)), TagContent(TAG_WEAK)),
+        // the retired tid tag
+        (format!("{} 4f {}", tag_head(TAG_RETIRED), "00".repeat(15)), TagContent(TAG_RETIRED)),
+        // a ticket of the write role (1), of six items, and with a box that is no enum
+        (format!("{tk} 87 4f{t} 50{s} 01 82 02 5820{n} {en} 82 00 41 05 4f{t} 4f{t}", t = "00".repeat(15), s = "01".repeat(16), n = "02".repeat(32)), TagContent(TAG_TICKET)),
+        (format!("{tk} 86 4f{t} 50{s} 00 82 02 5820{n} {en} 82 00 41 05 4f{t}", t = "00".repeat(15), s = "01".repeat(16), n = "02".repeat(32)), TagContent(TAG_TICKET)),
+        (format!("{tk} 87 4f{t} 50{s} 00 82 02 5820{n} 41 05 4f{t} 4f{t}", t = "00".repeat(15), s = "01".repeat(16), n = "02".repeat(32)), TagContent(TAG_TICKET)),
         (format!("{en} 80"), TagContent(TAG_ENUM)),
         (format!("{en} 83 00 00 00"), TagContent(TAG_ENUM)),
         (format!("{en} 81 20"), TagContent(TAG_ENUM)),
@@ -478,7 +502,7 @@ fn floats_identity() {
 #[test]
 fn unknown_rejects_known_tags() {
     let c = CanonicalBytes::from_value(&Value::Int(0));
-    for t in [TAG_SET, TAG_TID, TAG_ENUM, TAG_LINK] {
+    for t in [TAG_SET, TAG_RETIRED, TAG_ENUM, TAG_LINK, TAG_STRONG, TAG_WEAK, TAG_TICKET] {
         assert!(Unknown::new(t, c.clone()).is_none());
     }
     assert!(Unknown::new(TAG_STRUCT_RESERVED, c).is_some());
@@ -546,7 +570,7 @@ fn hostile_shapes() -> Vec<Shape> {
         ("unknown tag", |n| repeated(n, &[0xc0, 0])),
         ("unknown tag around a list", |n| [&[0xc0][..], &repeated(n, &[0])].concat()),
         ("unknown tags at the depth limit", |n| repeated(n, &[&[0xc0; 63][..], &[0]].concat())),
-        ("tid", |n| repeated(n, &[&[0xd9, 0x06, 0x50, 0x4f][..], &[1; 15][..]].concat())),
+        ("strong", |n| repeated(n, &[&[0xd9, 0x06, 0x54, 0x4f][..], &[1; 15][..]].concat())),
         ("lists at the depth limit", |n| repeated(n, &nested(63, &[0]))),
         ("maps at the depth limit", |n| repeated(n, &[&[0xa1, 0][..]; 63].concat().into_iter().chain([0]).collect::<Vec<u8>>())),
         ("big map", |n| {
@@ -783,7 +807,7 @@ proptest! {
         prop_assert_eq!(w(&|o| put_bytes(o, &b)), encode(&Value::Bytes(b.clone())));
         prop_assert_eq!(w(&|o| put_text(o, &s)), encode(&Value::Str(s.clone())));
         prop_assert_eq!(w(&|o| put_bool(o, n % 2 == 0)), encode(&Value::Bool(n % 2 == 0)));
-        prop_assert_eq!(w(&|o| put_tid(o, &Tid::from_bytes(t))), encode(&Value::Tid(Tid::from_bytes(t))));
+        prop_assert_eq!(w(&|o| put_tid(o, &Tid::from_bytes(t))), encode(&Value::bytes(&t)));
         let l = Link { hash, blob: BlobId(hash), suite, key: hash, salt: [suite; 16], del: del_of(suite, hash) };
         prop_assert_eq!(w(&|o| put_link(o, &l)), encode(&Value::link(l)));
         prop_assert_eq!(link_len(&l), encode(&Value::link(l)).len());

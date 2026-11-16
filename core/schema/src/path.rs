@@ -1,7 +1,7 @@
 //! Paths into values (notes/api.md Reads) and typed-read errors that carry them
 //! (spec/versioning.md §5).
 
-use osis_base::{Classified, ErrorClass, Tid, Value};
+use osis_base::{Classified, ErrorClass, Strong, Value, Weak};
 use std::fmt;
 
 /// One step into a value.
@@ -47,9 +47,14 @@ impl From<&str> for Step {
         Step::Key(Value::Str(k.into()))
     }
 }
-impl From<Tid> for Step {
-    fn from(k: Tid) -> Step {
-        Step::Key(Value::Tid(k))
+impl From<Strong> for Step {
+    fn from(k: Strong) -> Step {
+        Step::Key(k.into())
+    }
+}
+impl From<Weak> for Step {
+    fn from(k: Weak) -> Step {
+        Step::Key(k.into())
     }
 }
 impl From<Value> for Step {
@@ -76,7 +81,7 @@ impl Path {
 }
 
 /// Builds a `Path` from steps: list indices (`usize` literals), field and case constants, keys
-/// (`&str`, `Tid`, `Value`). `p![2, task::DONE]`.
+/// (`&str`, `Strong`, `Weak`, `Value`). `p![2, task::DONE]`.
 #[macro_export]
 macro_rules! p {
     ($($s:expr),* $(,)?) => { $crate::Path(vec![$($crate::Step::from($s)),*]) };

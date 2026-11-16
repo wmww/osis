@@ -22,7 +22,7 @@ use crate::error::ParseError;
 use crate::lex::{Tok, Token, lex};
 use crate::schema::{AspectDef, Flag, PurgeBy, Retention, Schema, TypeDef};
 use crate::types::{Case, EnumType, Field, StructType, Type};
-use osis_base::{Ak, Tid, Value};
+use osis_base::{Ak, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Deepest nesting of types and literals in a source file.
@@ -336,7 +336,10 @@ impl<'a> Parser<'a> {
                     "bool" => none(self, &args, Type::Bool)?,
                     "int" => none(self, &args, Type::Int)?,
                     "float" => none(self, &args, Type::Float)?,
-                    "tid" => none(self, &args, Type::Tid)?,
+                    "strong" => none(self, &args, Type::Strong)?,
+                    "weak" => none(self, &args, Type::Weak)?,
+                    "ref" => none(self, &args, Type::Ref)?,
+                    "ticket" => none(self, &args, Type::Ticket)?,
                     "any" => none(self, &args, Type::Any)?,
                     "text" => none(self, &args, Type::Text)?,
                     "list" => Type::List(one(self, args)?),
@@ -488,7 +491,6 @@ fn lit_value(s: &Schema, lit: &Lit, ty: &Type) -> Result<Value, String> {
         (Type::String | Type::Text, Lit::Str(x)) => Value::Str(x.clone()),
         (Type::Blob, Lit::Hex(b)) => Value::Bytes(b.clone()),
         (Type::Bool, Lit::Bool(b)) => Value::Bool(*b),
-        (Type::Tid, Lit::Str(x)) => Value::Tid(Tid::parse(x).map_err(|_| "bad tid".to_string())?),
         (Type::List(e), Lit::List(items)) => Value::List(items.iter().map(|l| lit_value(s, l, e)).collect::<Result<_, _>>()?),
         (Type::Set(e), Lit::List(items)) => Value::Set(items.iter().map(|l| lit_value(s, l, e)).collect::<Result<_, _>>()?),
         (Type::Map(k, v), Lit::Map(items)) => {

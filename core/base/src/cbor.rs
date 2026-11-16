@@ -1,7 +1,7 @@
 //! Canonical encoder and strict decoder for the osis CBOR profile (spec/data-model.md §5).
 //! Accepted bytes are canonical, so they are hashed and stored as received, never re-encoded.
 
-use crate::format::{MAX_VALUE_BYTES, MAX_VALUE_DEPTH, TAG_ENUM, TAG_LINK, TAG_SET, TAG_TID, TID_LEN};
+use crate::format::{MAX_VALUE_BYTES, MAX_VALUE_DEPTH, TAG_ENUM, TAG_LINK, TAG_RETIRED, TAG_SET, TAG_STRONG, TAG_TICKET, TAG_WEAK, TID_LEN};
 use crate::ids::{BlobId, Del, Link, Tid};
 use crate::sorted::{ValueMap, ValueSet};
 use crate::value::{Float, Unknown, Value};
@@ -157,7 +157,9 @@ pub fn encoded_len(v: &Value) -> usize {
         Value::Bool(_) => 1,
         Value::Str(s) => bytes(s.len()),
         Value::Bytes(b) => bytes(b.len()),
-        Value::Tid(t) => head_len(TAG_TID) + bytes(t.as_bytes().len()),
+        Value::Strong(t) => head_len(TAG_STRONG) + bytes(t.as_bytes().len()),
+        Value::Weak(t) => head_len(TAG_WEAK) + bytes(t.as_bytes().len()),
+        Value::Ticket(t) => head_len(TAG_TICKET) + encoded_len(&t.to_value()),
         Value::Enum(case, payload) => head_len(TAG_ENUM) + 1 + head_len(*case) + payload.as_deref().map_or(0, encoded_len),
         Value::Map(m) => head_len(m.len() as u64) + m.iter().map(|(k, v)| encoded_len(k) + encoded_len(v)).sum::<usize>(),
         Value::List(l) => head_len(l.len() as u64) + l.iter().map(encoded_len).sum::<usize>(),
@@ -231,8 +233,8 @@ pub fn put_bool(out: &mut Vec<u8>, b: bool) {
     out.push(if b { TRUE } else { FALSE });
 }
 
+/// A tid inside a structure (spec/wire.md §1): a 15-byte byte string.
 pub fn put_tid(out: &mut Vec<u8>, t: &Tid) {
-    head(out, MAJOR_TAG, TAG_TID);
     put_bytes(out, t.as_bytes());
 }
 
@@ -277,7 +279,18 @@ pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
         Value::Bool(b) => put_bool(out, *b),
         Value::Str(s) => put_text(out, s),
         Value::Bytes(b) => put_bytes(out, b),
-        Value::Tid(t) => put_tid(out, t),
+        Value::Strong(t) => {
+            head(out, MAJOR_TAG, TAG_STRONG);
+            put_bytes(out, t.as_bytes());
+        }
+        Value::Weak(t) => {
+            head(out, MAJOR_TAG, TAG_WEAK);
+            put_bytes(out, t.as_bytes());
+        }
+        Value::Ticket(t) => {
+            head(out, MAJOR_TAG, TAG_TICKET);
+            encode_into(&t.to_value(), out);
+        }
         Value::Enum(case, payload) => {
             head(out, MAJOR_TAG, TAG_ENUM);
             head(out, MAJOR_ARRAY, if payload.is_some() { 2 } else { 1 });
@@ -424,10 +437,9 @@ impl<'a> Item<'a> {
         self.reader().text().ok()
     }
 
+    /// A tid inside a structure (spec/wire.md §1): a 15-byte byte string.
     pub fn as_tid(self) -> Option<Tid> {
-        let mut r = self.reader();
-        r.tag(TAG_TID).ok()?;
-        r.fixed::<TID_LEN>().ok().map(Tid::from_bytes)
+        self.as_array::<TID_LEN>().map(Tid::from_bytes)
     }
 
     pub fn as_link(self) -> Option<Link> {
@@ -1010,7 +1022,9 @@ impl<'a> Decoder<'a> {
                 self.link_keys |= link && n > 1;
                 Ok(link)
             }
-            TAG_TID => self.fixed_bytes::<TID_LEN>(tag).map(|_| false),
+            TAG_STRONG | TAG_WEAK => self.fixed_bytes::<TID_LEN>(tag).map(|_| false),
+            TAG_TICKET => self.ticket(inner).map(|_| false),
+            TAG_RETIRED => Err(DecodeError::TagContent(tag)),
             TAG_ENUM => {
                 let (_, payload) = self.enum_head(inner)?;
                 if payload { self.check(inner + 1) } else { Ok(false) }
@@ -1121,6 +1135,12 @@ impl<'a> Decoder<'a> {
         Ok(Link { hash, blob, suite, key, salt, del })
     }
 
+    /// A ticket's content (spec/data-model.md §8 Tickets).
+    fn ticket(&mut self, inner: usize) -> Result<crate::refs::Ticket, DecodeError> {
+        let v = self.item(inner)?;
+        crate::refs::Ticket::from_value(&v).ok_or(DecodeError::TagContent(TAG_TICKET))
+    }
+
     fn tagged(&mut self, tag: u64, depth: usize) -> Result<Value, DecodeError> {
         let inner = depth + 1;
         self.enter(inner)?;
@@ -1136,7 +1156,10 @@ impl<'a> Decoder<'a> {
                 }
                 ValueSet::from_decoded(s).map(Value::Set).ok_or(DecodeError::EqualLinks)
             }
-            TAG_TID => Ok(Value::Tid(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?))),
+            TAG_STRONG => Ok(Value::Strong(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?))),
+            TAG_WEAK => Ok(Value::Weak(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?))),
+            TAG_TICKET => self.ticket(inner).map(|t| Value::Ticket(Box::new(t))),
+            TAG_RETIRED => Err(DecodeError::TagContent(tag)),
             TAG_ENUM => {
                 let (case, payload) = self.enum_head(inner)?;
                 let payload = if payload { Some(Box::new(self.item(inner + 1)?)) } else { None };

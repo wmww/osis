@@ -231,7 +231,7 @@ fn big_map_apply_memory() {
         let mut pks = decode_packages(&bytes);
         let (target, t) = (pks.pop().unwrap(), pks.pop().unwrap());
         let Value::List(t) = osis_base::decode(&t.bytes, &osis_base::Limits { max_depth: 4, max_bytes: t.bytes.len() }).unwrap() else { panic!() };
-        let (Value::Tid(t), Value::Int(now)) = (&t[0], &t[1]) else { panic!() };
+        let (Value::Weak(t), Value::Int(now)) = (&t[0], &t[1]) else { panic!() };
         let mut p = osis_engine::local_peer::Peer::new(5, WallMs(*now as u64)).unwrap();
         for pk in &pks {
             p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
@@ -282,7 +282,7 @@ fn big_map_apply_memory() {
     println!("n={n}: commit {} KiB, snapshot {} KiB with pages", size_of(&fill) / 1024, size_of(&snap) / 1024);
     // the thing and the clock, as a package for the child
     let now = lp.peers[0].clock.now_wall_ms().0 as i64;
-    let meta = osis_engine::local_peer::Package { id: fill.id, bytes: osis_base::encode(&Value::List(vec![Value::Tid(t), Value::Int(now)])), blobs: Vec::new(), lists: Vec::new() };
+    let meta = osis_engine::local_peer::Package { id: fill.id, bytes: osis_base::encode(&Value::List(vec![Value::Weak(t), Value::Int(now)])), blobs: Vec::new(), lists: Vec::new() };
     drop(lp);
     for (what, pk) in [("commit", &fill), ("snapshot", &snap), ("covered", &snap)] {
         let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("big-map-apply-{}.bin", std::process::id()));

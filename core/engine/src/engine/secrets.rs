@@ -303,7 +303,7 @@ impl Core {
         }
         let me = self.id.tid();
         // only a holder with a box here opens anything: not O(actors known) per ingest
-        let holders: std::collections::BTreeSet<Tid> = secrets.boxes.keys().map(|k| k.holder).filter(|t| t != actor).collect();
+        let holders: std::collections::BTreeSet<Tid> = secrets.boxes.keys().map(|k| k.holder.0).filter(|t| t != actor).collect();
         let openers: Vec<(Tid, &ActorEpochs)> = holders.iter().filter_map(|t| Some((*t, self.ix.secrets.get(t)?))).collect();
         let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { holder: me, keys: self.id.keys() }, &mut epochs, unchecked);
         for (t, k) in &self.key_actors {

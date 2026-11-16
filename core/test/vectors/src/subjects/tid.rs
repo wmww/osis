@@ -31,12 +31,12 @@ pub fn thing() -> VecFile {
     // Field numbers of spec/wire.md §3: 0 admin, 1 key, 2 nonce.
     let key = Value::Enum(1, Some(Box::new(Value::Bytes(vec![3; 32]))));
     let both = BTreeMap::from([
-        (Value::Int(0), Value::Tid(admin)),
+        (Value::Int(0), Value::Weak(admin)),
         (Value::Int(1), key),
         (Value::Int(2), Value::Bytes(nonce.to_vec())),
     ]);
     let neither = BTreeMap::from([(Value::Int(2), Value::Bytes(nonce.to_vec()))]);
-    let extra = BTreeMap::from([(Value::Int(0), Value::Tid(admin)), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(5), Value::Tid(admin))]);
+    let extra = BTreeMap::from([(Value::Int(0), Value::Weak(admin)), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(5), Value::Weak(admin))]);
     for (name, m) in [("both admin and key", both), ("neither admin nor key", neither), ("an unknown field", extra)] {
         let v = Value::Map(m.into_iter().collect());
         assert!(CreationRecord::from_value(&v).is_none(), "{name} must be rejected");

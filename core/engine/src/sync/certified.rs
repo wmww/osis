@@ -613,7 +613,7 @@ mod tests {
     fn a_writers_grant_of_a_private_actor_logs_nothing_of_it_spec_permissions_4() {
         let (mut lp, _, y, t, on_y) = private_world();
         let mut m = Mutation::new();
-        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(y))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&ct::Edge { role: Role::Read, until: None, invite: None, floor: None })) }).unwrap();
+        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(y))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&ct::Edge { role: Role::Read, until: None, invite: None, floor: None })) }).unwrap();
         lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
         lp.sync_all().unwrap();
         assert!(!lp.peers[0].engine.roster(&t).contains_key(&y), "the grant applies nowhere");

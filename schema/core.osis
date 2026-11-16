@@ -23,10 +23,10 @@ type signing_key = enum {
 /// `account`, only ever set to true and only beside `key`: the thing is an account, whose keys
 /// change by rotations (spec/crypto.md §9).
 type creation = struct {
-    admin 0: tid,
+    admin 0: weak,
     key 1: signing_key,
     nonce 2: blob,
-    link 3: tid,
+    link 3: weak,
     account 4: bool,
 };
 
@@ -40,6 +40,17 @@ aspect name.0: string;
 
 /// Freeform content: a note's text, or notes on anything else.
 aspect body.0: markdown;
+
+// ---- References ----
+// What a thing holds (spec/data-model.md §8): a strong says its target belongs with this thing,
+// a weak only points, a ticket also carries what syncing its target needs.
+
+/// Strongs and weaks. A node holds what its node root reaches by strongs; a tag tags what its
+/// `holds.0` references.
+aspect holds.0: set<ref>;
+
+/// Tickets the thing holds: the account root's for the things the account's nodes hold.
+aspect tickets.0: set<ticket>;
 
 // ---- Tags ----
 
@@ -81,7 +92,7 @@ type edge = struct {
 };
 
 /// Who holds which rights on the thing, by holder.
-aspect roles.0: map<tid, edge>;
+aspect roles.0: map<weak, edge>;
 
 /// A set of 32-byte commit IDs.
 type frontier = struct {
@@ -127,7 +138,7 @@ type keyset = struct {
     names 5: blob,
     /// Per holder actor this change of secrets left out of the role, the keysets of it it was
     /// left out at: nobody seals it at a keyset not past each (spec/crypto.md §4).
-    left_out 6: map<tid, set<epoch>>,
+    left_out 6: map<weak, set<epoch>>,
     /// 32-byte IDs of other commits demoting a writer or admin of the actor or of an actor
     /// below it, which travel with the keyset (spec/crypto.md §4, Carried demotions).
     demotions 7: set<blob>,
@@ -157,7 +168,7 @@ aspect keys.0: struct {
 };
 
 type box_key = struct {
-    holder 0: tid,
+    holder 0: weak,
     role 1: role,
     epoch 2: epoch,
 };
@@ -237,7 +248,7 @@ aspect node.0: struct {
 aspect reach.0: struct {
     dialable 0: blob,
     items 1: list<string>,
-    account 2: option<tid>,
+    account 2: option<weak>,
 };
 
 /// The account's dial list, on its profile: each of its devices' 32-byte public key to the URLs
@@ -257,7 +268,7 @@ admin aspect caps^.0: struct {
     /// Tuning settings by name.
     policy 0: map<string, int>,
     /// Per-thing limits, applied to each sync ID the thing owns.
-    things 1: map<tid, thing_caps>,
+    things 1: map<weak, thing_caps>,
 };
 
 /// A thin client: an app that uses this device's data from elsewhere instead of keeping its own.
@@ -269,7 +280,7 @@ type client = struct {
 };
 
 /// The thin clients this device serves, by the client's actor.
-admin aspect clients^.0: map<tid, client>;
+admin aspect clients^.0: map<strong, client>;
 
 // ---- Retention ----
 // What a thing keeps of replaced content, set by its admins per aspect (spec/commits.md §5).

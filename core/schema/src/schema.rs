@@ -177,7 +177,7 @@ impl Schema {
     /// Merge encoding writes at this type use (spec/crdt.md §3.1); `None` for `any`.
     pub fn encoding(&self, ty: &Type) -> Option<Encoding> {
         Some(match self.expand(ty).ok()?.as_ref() {
-            Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Tid => Encoding::Register,
+            Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Strong | Type::Weak | Type::Ref | Type::Ticket => Encoding::Register,
             Type::Any => return None,
             Type::Text => Encoding::Text,
             Type::List(_) => Encoding::List,
@@ -355,7 +355,7 @@ impl Schema {
                     }
                 }
             }
-            Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Tid | Type::Any | Type::Text => {}
+            Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Strong | Type::Weak | Type::Ref | Type::Ticket | Type::Any | Type::Text => {}
         }
     }
 }

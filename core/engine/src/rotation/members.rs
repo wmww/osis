@@ -192,7 +192,7 @@ fn tainted(tx: &mut Tx<'_>, a: &Tid, r: Role) -> Result<BTreeSet<Epoch>> {
         return Ok(BTreeSet::new());
     }
     let s = secrets_in(tx, a)?;
-    let boxes: Vec<(Tid, Epoch)> = s.boxes.iter().map(|x| x.0).filter(|k| k.role == r).filter_map(|k| Some((k.holder, osis_keys::aspects::from_schema(&k.epoch).ok()?))).collect();
+    let boxes: Vec<(Tid, Epoch)> = s.boxes.iter().map(|x| x.0).filter(|k| k.role == r).filter_map(|k| Some((k.holder.0, osis_keys::aspects::from_schema(&k.epoch).ok()?))).collect();
     Ok(osis_keys::boxing_keyless(boxes, |h| none.contains(h)))
 }
 
@@ -203,7 +203,7 @@ fn anchors(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>
     let s = secrets_in(tx, a)?;
     Ok(s.boxes
         .iter()
-        .filter(|(k, _)| k.holder == *m && k.role == r)
+        .filter(|(k, _)| k.holder == osis_base::Weak(*m) && k.role == r)
         .filter(|(k, _)| osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.role(r).is_current(&e)))
         .flat_map(|(_, b)| osis_keys::box_keysets(b))
         .collect())
@@ -398,8 +398,8 @@ pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Res
     Ok(s.boxes
         .iter()
         .filter(|(k, _)| k.role == r && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == *e))
-        .filter(|(k, _)| !tx.core.is_key_actor(&k.holder) || tx.core.is_account(&k.holder))
-        .map(|(k, b)| (k.holder, osis_keys::box_keysets(b)))
+        .filter(|(k, _)| !tx.core.is_key_actor(&k.holder.0) || tx.core.is_account(&k.holder.0))
+        .map(|(k, b)| (k.holder.0, osis_keys::box_keysets(b)))
         .collect())
 }
 
@@ -437,16 +437,16 @@ pub(crate) fn carried(core: &Core, w: &osis_keys::SecretsWrite, keys: Option<&os
     let mut out: Vec<osis_base::CommitId> = boxed
         .chain(out)
         .flat_map(|(m, r, e)| {
-            if core.is_account(&m) {
-                return core.account_view(&m).and_then(|v| v.rotation_named(&e)).into_iter().collect();
+            if core.is_account(&m.0) {
+                return core.account_view(&m.0).and_then(|v| v.rotation_named(&e)).into_iter().collect();
             }
-            if core.is_key_actor(&m) {
+            if core.is_key_actor(&m.0) {
                 return Vec::new();
             }
-            let carries = core.keyset(&m, r, &e).into_iter().flat_map(|x| x.demotions.iter().copied());
+            let carries = core.keyset(&m.0, r, &e).into_iter().flat_map(|x| x.demotions.iter().copied());
             // the epoch's box records travel with its keyset (spec/crypto.md §4, Stale)
-            let records = core.ix.sealed.get(&(m, r, e)).into_iter().flat_map(|x| x.by.iter().copied());
-            core.ix.epoch_intro.get(&(m, r, e)).map(|x| x.1).into_iter().chain(carries).chain(records).collect::<Vec<_>>()
+            let records = core.ix.sealed.get(&(m.0, r, e)).into_iter().flat_map(|x| x.by.iter().copied());
+            core.ix.epoch_intro.get(&(m.0, r, e)).map(|x| x.1).into_iter().chain(carries).chain(records).collect::<Vec<_>>()
         })
         .collect();
     out.sort();

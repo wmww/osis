@@ -352,7 +352,7 @@ fn created_reads_through_run_time_key_spec_data_model_9() {
     let t = w.create().unwrap();
     w.commit().unwrap();
     let v = db.at(t, db.aspect_key("created.0").unwrap()).get().unwrap().unwrap();
-    assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Tid(db.me()))));
+    assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Weak(db.me()))));
 }
 
 // notes/api.md Large values, spec/data-model.md §6: a blob above the bound is read by stream
@@ -684,7 +684,7 @@ fn value_type_describes_a_key_api_design() {
         "revision 1;
 type tree = struct { label 0: string, kids 1: list<tree> };
 type mood = enum { calm 0, odd 1 (int) };
-type rec = struct { name 0: string, when 1: timestamp, span 2: duration, nick 3: option<string>, mood 4: mood, tags 5: set<string>, sizes 6: map<string, int>, n 7: counter<int>, body 8: markdown, who 9: tid, data 10: blob, ok 11: bool, x 12: float, tree 13: tree };
+type rec = struct { name 0: string, when 1: timestamp, span 2: duration, nick 3: option<string>, mood 4: mood, tags 5: set<string>, sizes 6: map<string, int>, n 7: counter<int>, body 8: markdown, who 9: weak, data 10: blob, ok 11: bool, x 12: float, tree 13: tree };
 aspect t:rec.0: rec;
 ",
     )
@@ -697,7 +697,7 @@ aspect t:rec.0: rec;
     assert!(matches!(by("when").ty.get(), V::Time));
     assert!(matches!(by("span").ty.get(), V::Duration));
     assert!(matches!(by("body").ty.get(), V::Text));
-    assert!(matches!(by("who").ty.get(), V::Thing));
+    assert!(matches!(by("who").ty.get(), V::Weak));
     assert!(matches!(by("data").ty.get(), V::Bytes));
     assert!(matches!(by("ok").ty.get(), V::Bool));
     assert!(matches!(by("x").ty.get(), V::Float));

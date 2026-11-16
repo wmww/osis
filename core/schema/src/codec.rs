@@ -5,11 +5,11 @@
 //! missing field is an error here; typed keys run the typed read first.
 
 use crate::path::{PathError, PathErrorKind, Step};
-use osis_base::{Ak, BlobId, CommitId, Float, SyncId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, BlobId, CommitId, Float, Ref, Role, Strong, SyncId, Ticket, Ts, Value, WallMs, Weak};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A type a key's value or a path's position reads and writes as: `Value` for any value, the plain
-/// types (`String`, `bool`, `i64`, `u64`, `f64`, `Vec<u8>`, `Tid`), `Option`, `Vec`, sets and maps of
+/// types (`String`, `bool`, `i64`, `u64`, `f64`, `Vec<u8>`), references (`Strong`, `Weak`, `Ref`, `Ticket`), `Option`, `Vec`, sets and maps of
 /// those, and what a schema generates.
 pub trait Codec: Sized {
     /// `from_value` validates the raw value completely, so typed keys skip the schema's typed
@@ -52,8 +52,52 @@ macro_rules! scalar {
 scalar!(String, Str, "string");
 scalar!(bool, Bool, "bool");
 scalar!(i64, Int, "int");
-scalar!(Tid, Tid, "tid");
 scalar!(Float, Float, "float");
+
+impl Codec for Strong {
+    fn to_value(&self) -> Value {
+        (*self).into()
+    }
+    fn from_value(v: &Value) -> Result<Strong, PathError> {
+        match v {
+            Value::Strong(t) => Ok(Strong(*t)),
+            _ => Err(mismatch("strong")),
+        }
+    }
+}
+
+impl Codec for Weak {
+    fn to_value(&self) -> Value {
+        (*self).into()
+    }
+    fn from_value(v: &Value) -> Result<Weak, PathError> {
+        match v {
+            Value::Weak(t) => Ok(Weak(*t)),
+            _ => Err(mismatch("weak")),
+        }
+    }
+}
+
+impl Codec for Ref {
+    fn to_value(&self) -> Value {
+        (*self).into()
+    }
+    fn from_value(v: &Value) -> Result<Ref, PathError> {
+        v.as_ref_value().ok_or_else(|| mismatch("ref"))
+    }
+}
+
+impl Codec for Ticket {
+    fn to_value(&self) -> Value {
+        self.clone().into()
+    }
+    fn from_value(v: &Value) -> Result<Ticket, PathError> {
+        match v {
+            Value::Ticket(t) => Ok((**t).clone()),
+            _ => Err(mismatch("ticket")),
+        }
+    }
+}
 
 impl Codec for f64 {
     fn to_value(&self) -> Value {

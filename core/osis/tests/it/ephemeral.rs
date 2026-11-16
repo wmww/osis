@@ -15,7 +15,7 @@ const SCHEMA: &str = "revision 1;\n\
 type win = struct { title 0: string, notes 1: list<string> };\n\
 ephemeral aspect win:state+.0: win;\n\
 expires(5s) ephemeral aspect win:typing+.0: bool;\n\
-expires(30s) ephemeral aspect win:cursor+.0: map<tid, int>;\n\
+expires(30s) ephemeral aspect win:cursor+.0: map<weak, int>;\n\
 ephemeral signal win:ring+~0: string;\n\
 aspect win:saved.0: string;\n";
 

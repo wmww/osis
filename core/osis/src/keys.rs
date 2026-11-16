@@ -87,6 +87,9 @@ pub mod core {
     /// Marks a thing as a tag.
     pub use osis_schema::core_types::TAG;
     pub use osis_schema::core_types::Tag;
+    /// What a thing references: strongs (what belongs with it: a tag's members, what a node
+    /// keeps) and weaks.
+    pub use osis_schema::core_types::HOLDS;
     pub use crate::retention::{RetentionEntry, RetentionSetting};
     /// What a thing keeps of replaced content, by aspect, and the expiry its writes get. An admin
     /// sets it, at any time.

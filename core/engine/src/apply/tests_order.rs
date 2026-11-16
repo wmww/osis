@@ -31,8 +31,8 @@ fn reg() -> Ak {
 fn edge(lp: &mut LocalPeer, by: usize, t: Tid, m: Tid, role: Option<Role>, frontier: Option<Value>) -> CommitId {
     let mut mu = Mutation::new();
     let op = match role {
-        Some(role) => PathOp { path: vec![PathSeg::Key(Value::Tid(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, floor: None }.to_value()) },
-        None => PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(m)) },
+        Some(role) => PathOp { path: vec![PathSeg::Key(Value::Weak(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, floor: None }.to_value()) },
+        None => PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(m)) },
     };
     mu.op(t, &ct::ROLES, op).unwrap();
     if let Some(f) = frontier {

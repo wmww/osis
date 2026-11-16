@@ -169,7 +169,7 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
         let s = secrets_in(tx, a)?;
         for k in s.boxes.keys() {
             if osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).is_current(&e)) {
-                note(k.holder, current.get(&k.holder).copied(), k.role);
+                note(k.holder.0, current.get(&k.holder.0).copied(), k.role);
             }
         }
         // the maker of a current epoch holds its secret whatever the boxes say: one holding

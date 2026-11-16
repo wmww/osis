@@ -88,7 +88,6 @@ Replaces `convergence::` (8 tests, 389 CPU-s) and `sims::` (9 tests, 360 CPU-s).
 
 ## Old tests
 Survivors this set makes redundant, to delete once it lands (demolition deleted the rest):
-- engine lib `engine::refs::tests::tids_at_any_depth`: R2.
 - sync `links::{a_held_join_forgets_the_link_and_k_syncs_by_its_filing_spec_permissions_7, a_siblings_join_ends_a_redeem_spec_permissions_7}`: T4.
 - osis `sync::{importing_a_card_gives_the_account_spec_sync_inbox_5, the_contact_card_is_a_read_link_to_the_profile_spec_sync_inbox_5, a_paired_node_knows_the_accounts_profile_spec_sync_set_1}`: U3, U4, T4, the sims.
 - held-model `spec_closure`: all 24 stay (0.8 s): they are the oracle's self-checks.

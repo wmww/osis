@@ -22,9 +22,9 @@ use std::sync::Arc;
 fn try_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Option<Role>) {
     // remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
-    m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(holder)) }).unwrap();
     if let Some(r) = role {
-        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge(r).to_value()) }).unwrap();
+        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(edge(r).to_value()) }).unwrap();
     }
     // an explicit removal (with no frontier, a finalize) or a write that audits carries one
     // (spec/permissions.md §2, §5.1)

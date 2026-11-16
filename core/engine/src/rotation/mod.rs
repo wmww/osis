@@ -340,7 +340,7 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid, mode: Due, kept: &BTreeSet<
 fn orphaned(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Result<bool> {
     let secrets = secrets_in(tx, a)?;
     let boxed = secrets.boxes.keys().filter(|k| k.role == r && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == *e));
-    Ok(!boxed.into_iter().any(|k| may_rotate(tx.core, &k.holder, a).contains(&r)))
+    Ok(!boxed.into_iter().any(|k| may_rotate(tx.core, &k.holder.0, a).contains(&r)))
 }
 
 /// Whether a rotation of `a` by `who` would box a holder that may rotate `r` at `r`, so that
@@ -481,14 +481,14 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
     let me = tx.core.writer()?;
-    let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.holder).filter(|m| *m != me).collect();
+    let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.holder.0).filter(|m| *m != me).collect();
     out.sort();
     out.dedup();
     // reached: boxed at the epoch the commit is wrapped under (a current one: held by box), or,
     // with none, at a current epoch. A holder a floor bars from that epoch (spec/crypto.md §4,
     // Floors: a fork beside its cut) is boxed at another and must take the commit by inbox
     let wrap = rot.wrap_epoch();
-    out.retain(|m| !secrets.boxes.keys().any(|k| k.holder == *m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| wrap.map_or(epochs.read.is_current(&e), |w| e == w))));
+    out.retain(|m| !secrets.boxes.keys().any(|k| k.holder == osis_base::Weak(*m) && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| wrap.map_or(epochs.read.is_current(&e), |w| e == w))));
     Ok(out)
 }
 
@@ -1079,7 +1079,7 @@ pub(crate) fn tip_add(tx: &mut Tx<'_>, a: Tid) -> Result<Done> {
 /// The read epochs of the actor holder `x` opens from the live boxes `secrets` to it and, through
 /// them, the entries this node opens (`EpochInfo::supersedes`).
 fn opened_from(epochs: &ActorEpochs, secrets: &osis_schema::core_types::Secrets, x: &Tid) -> BTreeSet<osis_crypto::Epoch> {
-    let mut out: BTreeSet<osis_crypto::Epoch> = secrets.boxes.keys().filter(|k| k.holder == *x && k.role == Role::Read).filter_map(|k| osis_keys::aspects::from_schema(&k.epoch).ok()).collect();
+    let mut out: BTreeSet<osis_crypto::Epoch> = secrets.boxes.keys().filter(|k| k.holder == osis_base::Weak(*x) && k.role == Role::Read).filter_map(|k| osis_keys::aspects::from_schema(&k.epoch).ok()).collect();
     let mut todo: Vec<osis_crypto::Epoch> = out.iter().copied().collect();
     while let Some(e) = todo.pop() {
         for f in epochs.read.get(&e).map(|i| i.supersedes.clone()).unwrap_or_default() {

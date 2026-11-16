@@ -52,7 +52,7 @@ fn listening_publishes_where_the_node_is_dialed_spec_sync_transport_3() {
     let (node, profile) = (a.node(), a.profile().unwrap());
     let (reach, list) = a.engine(|e| (e.get_typed(&node, &ct::REACH).unwrap(), e.get_typed(&profile, &ct::DIAL).unwrap()));
     let reach = reach.expect("reach.0 written");
-    assert_eq!((reach.dialable, reach.items.clone(), reach.account), (key, vec!["203.0.113.5:4040".to_string()], Some(a.me())), "global addresses only");
+    assert_eq!((reach.dialable, reach.items.clone(), reach.account), (key, vec!["203.0.113.5:4040".to_string()], Some(a.me().into())), "global addresses only");
     assert_eq!(list.unwrap(), [(key.to_vec(), vec!["peer://203.0.113.5:4040".to_string()])].into());
     a.rotate_peer_address().unwrap();
     let list = a.engine(|e| e.get_typed(&profile, &ct::DIAL).unwrap()).unwrap();
@@ -194,7 +194,7 @@ fn auth(secret: Option<[u8; 32]>) -> Msg {
 }
 
 fn get(t: osis::Tid, ak: &str) -> Msg {
-    Msg::Call { id: 2, max_reply: 65_536, method: osis::internals::port_method::GET, args: vec![Value::Tid(t), Value::Str(ak.into()), Value::List(Vec::new())] }
+    Msg::Call { id: 2, max_reply: 65_536, method: osis::internals::port_method::GET, args: vec![Value::bytes(t.as_bytes()), Value::Str(ak.into()), Value::List(Vec::new())] }
 }
 
 fn ok_reply(m: &Msg) -> bool {

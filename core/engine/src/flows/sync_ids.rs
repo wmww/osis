@@ -41,7 +41,7 @@ pub(crate) fn readers(tx: &mut Tx<'_>, group: &Tid, e: &Epoch) -> Result<Vec<Rea
     let secrets = super::secrets_in(tx, group)?;
     for k in secrets.boxes.keys() {
         if k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|ke| ke == *e) {
-            holders.push(k.holder);
+            holders.push(k.holder.0);
         }
     }
     holders.sort();

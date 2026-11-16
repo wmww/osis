@@ -43,10 +43,10 @@ fn generated_types_round_trip_through_keys_spec_versioning_5() {
     }
     assert!(example::Task::try_from(&old).is_ok());
     // Parametric type and a signal aspect.
-    let pinned = BTreeMap::from([(Tid::from_bytes([1; 15]), example::Tagged { label: "l".into(), value: 3i64 })]);
+    let pinned = BTreeMap::from([(osis::Strong(Tid::from_bytes([1; 15])), example::Tagged { label: "l".into(), value: 3i64 })]);
     let v = example::PINNED.encode(&pinned);
     assert_eq!(example::PINNED.decode(&v).unwrap(), pinned);
-    let ty = example::Typing { who: Tid::from_bytes([2; 15]), at: 5 };
+    let ty = example::Typing { who: osis::Ref::Weak(Tid::from_bytes([2; 15]).into()), at: 5 };
     assert_eq!(example::TYPING.decode(&example::TYPING.encode(&ty)).unwrap(), ty);
     // Field and case constants build paths.
     assert_eq!(p![0, example::task::DONE], Path(vec![Step::Index(0), Step::Field(2)]));

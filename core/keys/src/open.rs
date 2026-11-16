@@ -41,7 +41,7 @@ pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opene
     let holder = opener.holder();
     let mut out = Vec::new();
     let mut failed = Vec::new();
-    for (k, b) in secrets.boxes.iter().filter(|(k, _)| k.holder == holder) {
+    for (k, b) in secrets.boxes.iter().filter(|(k, _)| k.holder.0 == holder) {
         match open_one(actor, k, b, opener) {
             Ok(Some(o)) => out.push(o),
             Ok(None) => {}
@@ -54,7 +54,7 @@ pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opene
 /// `Ok(None)`: the opener holds no key for this box.
 fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<Option<Opened>, Error> {
     let epoch = from_schema(&k.epoch)?;
-    let slot = BoxSlot::Secrets { actor: *actor, holder: k.holder, role: k.role, epoch };
+    let slot = BoxSlot::Secrets { actor: *actor, holder: k.holder.0, role: k.role, epoch };
     match b {
         SecretBox::Sealed(sb) => {
             let keyset = sb.keyset.as_ref().map(from_schema).transpose()?;

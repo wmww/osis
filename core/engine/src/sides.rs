@@ -71,13 +71,15 @@ impl Sides {
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
             match f.as_slice() {
-                [Value::Bytes(c), Value::Int(op), Value::Tid(holder), Value::Int(flags)] => {
+                [Value::Bytes(c), Value::Int(op), holder @ Value::Bytes(_), Value::Int(flags)] => {
                     let commit = CommitId(c.as_slice().try_into().map_err(|_| bad())?);
                     let op = u32::try_from(*op).map_err(|_| bad())?;
-                    map.insert((WriteId(commit, op), *holder), Side { trust: flags & 1 == 1, chosen: flags & 2 == 2 });
+                    let holder = Tid::from_bytes(holder.as_array().ok_or_else(bad)?);
+                    map.insert((WriteId(commit, op), holder), Side { trust: flags & 1 == 1, chosen: flags & 2 == 2 });
                 }
-                [Value::Tid(account), Value::Bytes(c)] => {
-                    accounts.insert(*account, CommitId(c.as_slice().try_into().map_err(|_| bad())?));
+                [account @ Value::Bytes(_), Value::Bytes(c)] => {
+                    let account = Tid::from_bytes(account.as_array().ok_or_else(bad)?);
+                    accounts.insert(account, CommitId(c.as_slice().try_into().map_err(|_| bad())?));
                 }
                 _ => return Err(bad()),
             }
@@ -88,8 +90,8 @@ impl Sides {
     }
 
     fn encode(&self) -> Vec<u8> {
-        let mut items: Vec<Value> = self.map.iter().map(|((w, m), s)| Value::List(vec![Value::Bytes(w.0 .0.to_vec()), Value::Int(i64::from(w.1)), Value::Tid(*m), Value::Int(i64::from(s.trust) | i64::from(s.chosen) << 1)])).collect();
-        items.extend(self.accounts.iter().map(|(a, c)| Value::List(vec![Value::Tid(*a), Value::Bytes(c.0.to_vec())])));
+        let mut items: Vec<Value> = self.map.iter().map(|((w, m), s)| Value::List(vec![Value::Bytes(w.0 .0.to_vec()), Value::Int(i64::from(w.1)), Value::bytes(m.as_bytes()), Value::Int(i64::from(s.trust) | i64::from(s.chosen) << 1)])).collect();
+        items.extend(self.accounts.iter().map(|(a, c)| Value::List(vec![Value::bytes(a.as_bytes()), Value::Bytes(c.0.to_vec())])));
         Value::List(items).to_bytes()
     }
 

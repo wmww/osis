@@ -130,7 +130,7 @@ pub(crate) fn put_keysets(m: &mut Mutation, actor: Tid, w: &KeysWrite) -> Result
 /// written into a held entry. The reset of the holder's current entry is the caller's
 /// (`edges::reset_current`, spec/permissions.md §2).
 pub(crate) fn put_edge(m: &mut Mutation, target: Tid, holder: Tid, e: &ct::Edge) -> Result<()> {
-    m.op(target, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Put(e.to_value()) })?;
+    m.op(target, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Put(e.to_value()) })?;
     Ok(())
 }
 

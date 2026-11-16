@@ -18,7 +18,7 @@ pub fn from_schema(e: &ct::Epoch) -> Result<Epoch, Error> {
 }
 
 pub fn box_key(holder: osis_base::Tid, role: Role, epoch: &Epoch) -> BoxKey {
-    BoxKey { holder, role, epoch: to_schema(epoch) }
+    BoxKey { holder: holder.into(), role, epoch: to_schema(epoch) }
 }
 
 pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {

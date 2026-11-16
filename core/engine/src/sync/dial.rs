@@ -150,7 +150,7 @@ impl Engine {
     pub fn publish_reach(&mut self, dialable: [u8; 32], items: Vec<String>) -> Result<()> {
         let Some((p, _)) = self.core.account_devices() else { return Ok(()) };
         let me = self.core.id.tid();
-        let reach = ct::Reach { dialable, items, account: Some(p) };
+        let reach = ct::Reach { dialable, items, account: Some(osis_base::Weak(p)) };
         let before = self.get_typed(&me, &ct::REACH)?;
         if before.as_ref() != Some(&reach) {
             // a commit of its own, touching nothing else (spec/permissions.md §4)

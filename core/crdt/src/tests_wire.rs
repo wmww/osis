@@ -523,7 +523,7 @@ fn value_removal_form_spec_3_2() {
     let part = |n: u8, lo: u64, hi: u64| DotRange { first: Dot::new(sess(tid(n)), lo), hi };
     let rm = |v: Value, seen: Option<Vec<DotRange>>| Elem { reset: None, frag: None, gone: seen.map(|seen| Removal { stamp: r.clone(), value: v, seen }) };
     let set = |e: Elem| Fragment::Set(Set::new(Meta::default(), BTreeMap::from([(own(1), e)])));
-    let t = Value::Tid(tid(3));
+    let t = Value::Weak(tid(3));
     let ok = set(rm(t.clone(), Some(vec![part(2, 1, 3), part(2, 4, 5), part(4, 1, 9)])));
     let bytes = encode_delta(&Delta { nonce: [1; 16], fragment: ok.clone() }, &cx, None).unwrap();
     assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment, ok);

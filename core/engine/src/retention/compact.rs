@@ -1206,7 +1206,7 @@ mod tests {
         // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
-        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(b))], op: osis_crdt::Op::Set(edge(Role::Write).to_value()) }).unwrap();
+        m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(b))], op: osis_crdt::Op::Set(edge(Role::Write).to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync(0, 1).unwrap();
         let m_ak = Ak::new("x:m.0").unwrap();

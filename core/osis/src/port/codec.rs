@@ -33,11 +33,13 @@ pub(crate) fn uint(v: &Value, what: &str) -> Result<u64> {
     v.as_uint().ok_or_else(|| bad(what))
 }
 
+/// A tid in a structure (spec/wire.md §1): a 15-byte byte string.
 pub(crate) fn tid(v: &Value) -> Result<Tid> {
-    match v {
-        Value::Tid(t) => Ok(*t),
-        _ => Err(bad("tid")),
-    }
+    v.as_array().map(Tid::from_bytes).ok_or_else(|| bad("tid"))
+}
+
+pub(crate) fn tid_to(t: &Tid) -> Value {
+    Value::bytes(t.as_bytes())
 }
 
 pub(crate) fn ak(v: &Value) -> Result<Ak> {
@@ -207,13 +209,13 @@ pub(crate) fn write_op_to(o: &WriteOp) -> Result<Value> {
     let k = |k: &u32| u(u64::from(*k));
     Ok(Value::List(match o {
         WriteOp::Create(rec) => vec![u(0), rec.to_value()],
-        WriteOp::Path { tid, key, op } => vec![u(2), Value::Tid(*tid), k(key), path_op_to(op)?],
-        WriteOp::Fire { tid, key, v, replaces } => vec![u(3), Value::Tid(*tid), k(key), v.clone(), opt(replaces.as_ref().map(commit_id_to))],
-        WriteOp::Retention { tid, key, r } => vec![u(4), Value::Tid(*tid), k(key), retention_to(r)],
-        WriteOp::Purge { tid, key } => vec![u(5), Value::Tid(*tid), k(key)],
-        WriteOp::PurgeCommit { tid, key, commit } => vec![u(6), Value::Tid(*tid), k(key), commit_id_to(commit)],
-        WriteOp::PurgeAuthor { tid, key, actor } => vec![u(7), Value::Tid(*tid), k(key), Value::Tid(*actor)],
-        WriteOp::PurgeThing(t) => vec![u(9), Value::Tid(*t)],
+        WriteOp::Path { tid, key, op } => vec![u(2), tid_to(tid), k(key), path_op_to(op)?],
+        WriteOp::Fire { tid, key, v, replaces } => vec![u(3), tid_to(tid), k(key), v.clone(), opt(replaces.as_ref().map(commit_id_to))],
+        WriteOp::Retention { tid, key, r } => vec![u(4), tid_to(tid), k(key), retention_to(r)],
+        WriteOp::Purge { tid, key } => vec![u(5), tid_to(tid), k(key)],
+        WriteOp::PurgeCommit { tid, key, commit } => vec![u(6), tid_to(tid), k(key), commit_id_to(commit)],
+        WriteOp::PurgeAuthor { tid, key, actor } => vec![u(7), tid_to(tid), k(key), tid_to(actor)],
+        WriteOp::PurgeThing(t) => vec![u(9), tid_to(t)],
     }))
 }
 
@@ -281,7 +283,7 @@ pub(crate) fn read_from(v: Value) -> Result<Result<Option<Value>>> {
 }
 
 fn stamp_to(s: &Stamp) -> Value {
-    Value::List(vec![commit_id_to(&s.id.0), Value::Tid(s.actor), Value::uint(s.ts.to_u64()), Value::uint(s.received.0)])
+    Value::List(vec![commit_id_to(&s.id.0), tid_to(&s.actor), Value::uint(s.ts.to_u64()), Value::uint(s.received.0)])
 }
 
 fn stamp_from(v: Value) -> Result<Stamp> {
@@ -326,7 +328,7 @@ fn body_to(b: &Body<Value>) -> Value {
     Value::List(match b {
         Body::Held(v) => vec![u(0), opt(v.clone())],
         Body::TooLarge { limit } => vec![u(1), u(*limit)],
-        Body::Purged { by, actor } => vec![u(2), commit_id_to(&by.0), opt(actor.map(Value::Tid))],
+        Body::Purged { by, actor } => vec![u(2), commit_id_to(&by.0), opt(actor.as_ref().map(tid_to))],
         Body::NotFetched => vec![u(3)],
     })
 }
@@ -357,7 +359,7 @@ fn pos_from(v: Value) -> Result<CommitPos> {
 pub(crate) fn commit_to(c: &Commit) -> Value {
     let parts = c
         .parts()
-        .map(|(t, ak, p)| Value::List(vec![Value::Tid(t), ak_to(ak), Value::Bool(p.valid), body_to(&p.body), opt(p.edited.as_ref().map(pos_to))]))
+        .map(|(t, ak, p)| Value::List(vec![tid_to(&t), ak_to(ak), Value::Bool(p.valid), body_to(&p.body), opt(p.edited.as_ref().map(pos_to))]))
         .collect();
     Value::List(vec![
         stamp_to(&c.stamp),
@@ -389,7 +391,7 @@ pub(crate) fn commit_from(v: Value) -> Result<Commit> {
 }
 
 fn tids_to(t: &[Tid]) -> Value {
-    Value::List(t.iter().map(|t| Value::Tid(*t)).collect())
+    Value::List(t.iter().map(tid_to).collect())
 }
 
 fn tids_from(v: Value, what: &str) -> Result<Vec<Tid>> {
@@ -415,7 +417,7 @@ pub(crate) fn role_from(v: &Value) -> Result<Role> {
 /// `grants`: `[[holder, role, Opt(until), Opt(may_grant), from_now]*]`.
 impl Form for Grants {
     fn to_wire(&self) -> Value {
-        Value::List(self.iter().map(|(h, g)| Value::List(vec![Value::Tid(*h), role_to(g.role), time_to(g.until), opt(g.may_grant.map(role_to)), Value::Bool(g.from_now)])).collect())
+        Value::List(self.iter().map(|(h, g)| Value::List(vec![tid_to(h), role_to(g.role), time_to(g.until), opt(g.may_grant.map(role_to)), Value::Bool(g.from_now)])).collect())
     }
     fn from_wire(v: Value) -> Result<Grants> {
         list(v, "grants")?
@@ -435,7 +437,7 @@ const HOLDER_KINDS: [HolderKind; 3] = [HolderKind::Actor, HolderKind::Link, Hold
 /// link's, 2 a key.
 impl Form for Holder {
     fn to_wire(&self) -> Value {
-        Value::List(vec![Value::Tid(self.actor), Value::uint(HOLDER_KINDS.iter().position(|k| *k == self.kind).unwrap_or(0) as u64), role_to(self.role), time_to(self.until), tids_to(&self.through)])
+        Value::List(vec![tid_to(&self.actor), Value::uint(HOLDER_KINDS.iter().position(|k| *k == self.kind).unwrap_or(0) as u64), role_to(self.role), time_to(self.until), tids_to(&self.through)])
     }
     fn from_wire(v: Value) -> Result<Holder> {
         let [actor, kind, role, until, through] = <[Value; 5]>::try_from(list(v, "holder")?).map_err(|_| bad("holder"))?;
@@ -447,7 +449,7 @@ impl Form for Holder {
 /// `created`, `changed` (in an `Opt`): `[commit id, actor, ts, received]`.
 impl Form for ThingStamp {
     fn to_wire(&self) -> Value {
-        Value::List(vec![commit_id_to(&self.id.0), Value::Tid(self.actor), Value::uint(self.ts.to_u64()), Value::uint(self.received.0)])
+        Value::List(vec![commit_id_to(&self.id.0), tid_to(&self.actor), Value::uint(self.ts.to_u64()), Value::uint(self.received.0)])
     }
     fn from_wire(v: Value) -> Result<ThingStamp> {
         stamp_from(v).map(|s| ThingStamp { id: s.id, actor: s.actor, written: s.written, received: s.received, ts: s.ts })
@@ -460,7 +462,7 @@ const STATES: [SyncState; 4] = [SyncState::Synced, SyncState::Syncing, SyncState
 /// connected, 3 stranded.
 impl Form for Status {
     fn to_wire(&self) -> Value {
-        let units = self.units.iter().map(|(t, g)| Value::List(vec![Value::Tid(*t), Value::uint(STATES.iter().position(|x| *x == g.state).unwrap_or(0) as u64), usize_to(g.not_taking)]));
+        let units = self.units.iter().map(|(t, g)| Value::List(vec![tid_to(t), Value::uint(STATES.iter().position(|x| *x == g.state).unwrap_or(0) as u64), usize_to(g.not_taking)]));
         Value::List(vec![usize_to(self.connected), Value::List(units.collect())])
     }
     fn from_wire(v: Value) -> Result<Status> {
@@ -480,8 +482,8 @@ impl Form for Status {
 /// A scope: `[0, tid]` a thing, `[1, [[tid, ak]*]]` aspects.
 pub(crate) fn scope_to(s: &Scope) -> Value {
     Value::List(match s {
-        Scope::Thing(t) => vec![Value::uint(0), Value::Tid(*t)],
-        Scope::Aspects(v) => vec![Value::uint(1), Value::List(v.iter().map(|(t, a)| Value::List(vec![Value::Tid(*t), ak_to(a)])).collect())],
+        Scope::Thing(t) => vec![Value::uint(0), tid_to(t)],
+        Scope::Aspects(v) => vec![Value::uint(1), Value::List(v.iter().map(|(t, a)| Value::List(vec![tid_to(t), ak_to(a)])).collect())],
     })
 }
 
@@ -516,12 +518,12 @@ const REASONS: [NotUndoableReason; 2] = [NotUndoableReason::NotKept, NotUndoable
 pub(crate) fn outcome_of(e: &Error) -> Outcome {
     let text = |s: &str| vec![Value::Str(s.to_string())];
     let (code, detail) = match e {
-        Error::UnknownThing { tid } => (ApiCode::UNKNOWN_THING, vec![Value::Tid(*tid)]),
-        Error::UnknownActor { tid } => (ApiCode::UNKNOWN_ACTOR, vec![Value::Tid(*tid)]),
-        Error::Permission { tid, needs } => (ApiCode::PERMISSION, vec![Value::Tid(*tid), Value::uint(u64::from(needs.id()))]),
+        Error::UnknownThing { tid } => (ApiCode::UNKNOWN_THING, vec![tid_to(tid)]),
+        Error::UnknownActor { tid } => (ApiCode::UNKNOWN_ACTOR, vec![tid_to(tid)]),
+        Error::Permission { tid, needs } => (ApiCode::PERMISSION, vec![tid_to(tid), Value::uint(u64::from(needs.id()))]),
         Error::Type { path, reason } => (ApiCode::TYPE, vec![path_to(path), Value::Str(reason.clone())]),
         Error::TooLarge { limit } => (ApiCode::TOO_LARGE, vec![Value::uint(*limit as u64)]),
-        Error::Stranded { things } => (ApiCode::STRANDED, vec![Value::List(things.iter().map(|g| Value::Tid(*g)).collect())]),
+        Error::Stranded { things } => (ApiCode::STRANDED, vec![Value::List(things.iter().map(tid_to).collect())]),
         Error::Invalid(m) => (ApiCode::INVALID, text(m)),
         Error::Storage(m) => (ApiCode::STORAGE, text(m)),
         Error::Network(m) => (ApiCode::NETWORK, text(m)),
@@ -626,7 +628,7 @@ impl Form for bool {
 
 impl Form for Tid {
     fn to_wire(&self) -> Value {
-        Value::Tid(*self)
+        tid_to(self)
     }
     fn from_wire(v: Value) -> Result<Tid> {
         tid(&v)
@@ -721,8 +723,8 @@ impl Form for Address {
     fn to_wire(&self) -> Value {
         Value::List(match self {
             Address::Writes(s) => vec![Value::uint(0), scope_to(s)],
-            Address::Fired(t, a) => vec![Value::uint(1), Value::Tid(*t), ak_to(a)],
-            Address::Versions(t, a, c) => vec![Value::uint(2), Value::Tid(*t), ak_to(a), commit_ref_to(*c)],
+            Address::Fired(t, a) => vec![Value::uint(1), tid_to(t), ak_to(a)],
+            Address::Versions(t, a, c) => vec![Value::uint(2), tid_to(t), ak_to(a), commit_ref_to(*c)],
         })
     }
     fn from_wire(v: Value) -> Result<Address> {
@@ -856,7 +858,7 @@ impl Form for SyncScope {
     fn to_wire(&self) -> Value {
         Value::List(match self {
             SyncScope::All => vec![Value::uint(0)],
-            SyncScope::Thing(t) => vec![Value::uint(1), Value::Tid(*t)],
+            SyncScope::Thing(t) => vec![Value::uint(1), tid_to(t)],
         })
     }
     fn from_wire(v: Value) -> Result<SyncScope> {

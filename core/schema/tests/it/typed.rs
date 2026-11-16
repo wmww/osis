@@ -150,7 +150,7 @@ fn view_projects_onto_writer_schema_spec_crdt_9() {
     let full = st(&[(1, s("a")), (2, Value::Bool(false)), (3, none()), (4, Value::float(1.5))]);
     assert_eq!(el2.project(&old).unwrap().into_owned(), full);
     // Maps, sets, bags.
-    let s3 = schema(1, "aspect n:m.0: map<string, set<tid>>; aspect n:c.0: counter<int>;");
+    let s3 = schema(1, "aspect n:m.0: map<string, set<weak>>; aspect n:c.0: counter<int>;");
     let m = s3.view("n:m.0").unwrap();
     assert_eq!(m.key().unwrap().encoding(), Some(Encoding::Register));
     assert_eq!(m.element().unwrap().encoding(), Some(Encoding::Set));
@@ -201,7 +201,15 @@ fn arb(schema: &Schema, ty: &Type, depth: u32) -> BoxedStrategy<Value> {
             Type::Bool => any::<bool>().prop_map(Value::Bool).boxed(),
             Type::Int => any::<i64>().prop_map(Value::Int).boxed(),
             Type::Float => any::<f64>().prop_map(Value::float).boxed(),
-            Type::Tid => any::<[u8; 15]>().prop_map(|b| Value::Tid(Tid::from_bytes(b))).boxed(),
+            Type::Strong => any::<[u8; 15]>().prop_map(|b| Value::Strong(Tid::from_bytes(b))).boxed(),
+            Type::Weak => any::<[u8; 15]>().prop_map(|b| Value::Weak(Tid::from_bytes(b))).boxed(),
+            Type::Ticket => any::<[u8; 15]>()
+                .prop_map(|b| {
+                    let boxed = Value::Enum(0, Some(Box::new(Value::bytes(&[5]))));
+                    osis_base::Ticket { target: Tid::from_bytes(b), sync_id: osis_base::SyncId([1; 16]), role: osis_base::Role::Read, epoch: (1, [2; 32]), boxed, holder: Tid::from_bytes([3; 15]), profile: Tid::from_bytes([4; 15]) }.into()
+                })
+                .boxed(),
+            Type::Ref => (any::<bool>(), any::<[u8; 15]>()).prop_map(|(s, b)| if s { Value::Strong(Tid::from_bytes(b)) } else { Value::Weak(Tid::from_bytes(b)) }).boxed(),
             _ => any::<i64>().prop_map(Value::Int).boxed(),
         }
     };
@@ -277,8 +285,8 @@ fn link_only_where_the_type_takes_one_spec_dm_6() {
     let sc = schema(
         1,
         "type role = enum { read 0, write 1 };
-type pair = struct { who 0: tid, note 1: string };
-aspect n:a.0: struct { tids 0: set<tid>, ints 1: set<int>, roles 2: set<role>, strs 3: set<string>, pairs 4: set<pair>, by 5: map<tid, string>, named 6: map<string, int>, one 7: tid, text 8: string };",
+type pair = struct { who 0: weak, note 1: string };
+aspect n:a.0: struct { tids 0: set<weak>, ints 1: set<int>, roles 2: set<role>, strs 3: set<string>, pairs 4: set<pair>, by 5: map<weak, string>, named 6: map<string, int>, one 7: weak, text 8: string };",
     );
     let ty = sc.aspects["n:a.0"].ty.clone();
     let link = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32], salt: [0; 16], del: osis_base::Del::NONE });
@@ -291,9 +299,9 @@ aspect n:a.0: struct { tids 0: set<tid>, ints 1: set<int>, roles 2: set<role>, s
         (3, set(link.clone()), true),
         (4, set(link.clone()), true),
         (4, set(st(&[(0, link.clone()), (1, s("x"))])), false),
-        (4, set(st(&[(0, Value::Tid(Tid::from_bytes([1; 15]))), (1, link.clone())])), true),
+        (4, set(st(&[(0, Value::Weak(Tid::from_bytes([1; 15]))), (1, link.clone())])), true),
         (5, map(link.clone(), s("x")), false),
-        (5, map(Value::Tid(Tid::from_bytes([1; 15])), link.clone()), true),
+        (5, map(Value::Weak(Tid::from_bytes([1; 15])), link.clone()), true),
         (6, map(link.clone(), Value::Int(1)), true),
         (6, map(s("k"), link.clone()), false),
         (7, link.clone(), false),
@@ -319,12 +327,12 @@ fn fragment_fits_its_type_spec_crdt_3_3() {
     let sc = schema(
         1,
         "type role = enum { read 0, write 1 (int) };
-aspect n:a.0: struct { tids 0: set<tid>, r 1: role, free 2: any, n 3: counter<int> };",
+aspect n:a.0: struct { tids 0: set<weak>, r 1: role, free 2: any, n 3: counter<int> };",
     );
     let view = Schema::view(&sc, "n:a.0").unwrap();
     let ts = osis_base::Ts::make(osis_base::WallMs(1), 0).unwrap();
     let w = || Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), 1);
-    let tid = Value::Tid(Tid::from_bytes([1; 15]));
+    let tid = Value::Weak(Tid::from_bytes([1; 15]));
     let set = |v: Value| Value::Set([v].into_iter().collect());
     let cases = [
         (st(&[(0, set(tid.clone()))]), true),
@@ -342,7 +350,7 @@ aspect n:a.0: struct { tids 0: set<tid>, r 1: role, free 2: any, n 3: counter<in
     }
     // the same values in the wrong encodings: a map where the struct is, a list where the set is
     assert!(!create(&mut w(), &AnyView, &st(&[(0, set(tid.clone()))])).unwrap().fits(&view));
-    let other = schema(1, "aspect n:a.0: struct { tids 0: list<tid>, r 1: int };");
+    let other = schema(1, "aspect n:a.0: struct { tids 0: list<weak>, r 1: int };");
     let ov = Schema::view(&other, "n:a.0").unwrap();
     assert!(!create(&mut w(), &ov, &st(&[(0, Value::List(vec![tid]))])).unwrap().fits(&view), "a list where the set is");
     assert!(!create(&mut w(), &ov, &st(&[(1, Value::Int(0))])).unwrap().fits(&view), "a register int where the enum is");

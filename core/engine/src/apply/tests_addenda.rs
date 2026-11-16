@@ -285,7 +285,7 @@ fn build_team() -> (LocalPeer, Tid, Tid, CommitId, CommitId) {
     lp.peers[0].engine.grant(&n, &team, &edge(Role::Write)).unwrap();
     // T is peer 3's own actor: a plain edge write, as for an account's nodes
     let mut m = Mutation::new();
-    m.op(team, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(bob))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
+    m.op(team, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(bob))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
     lp.peers[3].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     lp.advance(1000);

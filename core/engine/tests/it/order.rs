@@ -536,9 +536,9 @@ fn write_op(m: &mut Mutation, e: &mut osis_engine::Engine, t: Tid, op: u8, k: u8
 /// `holder`'s edge on `t` as remove + put (`None`: removed), spec/permissions.md §2.
 fn edge_write(by: &osis_engine::Engine, t: Tid, holder: Tid, e: Option<osis_schema::core_types::Edge>) -> Mutation {
     let mut m = Mutation::new();
-    m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(holder)) }).unwrap();
     if let Some(e) = &e {
-        m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) }).unwrap();
+        m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(e.to_value()) }).unwrap();
     }
     // an explicit removal, or a write that audits, carries a frontier: an empty one unless the
     // caller sets its own (with none a removal is a finalize, spec/permissions.md §2, §5.1)
@@ -996,8 +996,8 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 let other = ids[(by + 1 + v as usize % 2) % 3];
                 let mut m = Mutation::new();
                 let edge_on = |m: &mut Mutation, t: Tid, holder: Tid, e: osis_schema::core_types::Edge| {
-                    m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(holder)) }).unwrap();
-                    m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) }).unwrap();
+                    m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(holder)) }).unwrap();
+                    m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(e.to_value()) }).unwrap();
                 };
                 match how % 4 {
                     // half of them acting for thing `b` (spec/permissions.md §5.2, Acting): valid
@@ -1046,7 +1046,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     bad.insert((b, Ak::new("t:reg.0").unwrap()));
                 } else {
                     for x in [a, b] {
-                        m.op(x, &roles, PathOp { path: vec![PathSeg::Key(Value::Tid(other))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
+                        m.op(x, &roles, PathOp { path: vec![PathSeg::Key(Value::Weak(other))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
                     }
                     bad.insert((b, Ak::new("roles.0").unwrap()));
                 }
@@ -1217,8 +1217,8 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
             Step::TwoEdges { by, a, b, holder, role } => {
                 let mut m = Mutation::new();
                 for x in [th(a), th(b)] {
-                    m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(ids[holder])) }).unwrap();
-                    m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(ids[holder]))], op: Op::Set(edge(role).to_value()) }).unwrap();
+                    m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(ids[holder])) }).unwrap();
+                    m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(ids[holder]))], op: Op::Set(edge(role).to_value()) }).unwrap();
                 }
                 no = why(&noting(lp.peers[by].engine.commit_hostile(m), &mut unchecked));
                 Some(by)

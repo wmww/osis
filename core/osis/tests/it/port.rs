@@ -231,8 +231,8 @@ fn auth_as(secret: Option<&ClientSecret>, session: u8) -> Msg {
 
 /// A WRITE of nonce `nonce` overwriting `t`'s `x:v.0` with `n` (an overwrite always writes).
 fn write_call(nonce: u64, actor: Tid, t: Tid, n: i64) -> Msg {
-    let op = Value::List(vec![Value::uint(2), Value::Tid(t), Value::uint(0), Value::List(vec![Value::List(vec![]), Value::List(vec![Value::uint(1), Value::Int(n)])])]);
-    let args = vec![Value::uint(nonce), Value::Tid(actor), Value::List(vec![Value::Str("x:v.0".into())]), Value::List(vec![op]), Value::List(vec![])];
+    let op = Value::List(vec![Value::uint(2), Value::bytes(t.as_bytes()), Value::uint(0), Value::List(vec![Value::List(vec![]), Value::List(vec![Value::uint(1), Value::Int(n)])])]);
+    let args = vec![Value::uint(nonce), Value::bytes(actor.as_bytes()), Value::List(vec![Value::Str("x:v.0".into())]), Value::List(vec![op]), Value::List(vec![])];
     Msg::Call { id: 3, max_reply: 1 << 20, method: osis::internals::port_method::WRITE, args }
 }
 
@@ -384,7 +384,7 @@ fn clients_together_are_bounded_spec_wire_11() {
 #[test]
 fn subscriptions_per_connection_are_bounded_spec_wire_11() {
     let w = world(None);
-    let filter = Value::List(vec![Value::uint(0), Value::Tid(w.t), Value::Str("x:v.0".into()), Value::List(vec![])]);
+    let filter = Value::List(vec![Value::uint(0), Value::bytes(w.t.as_bytes()), Value::Str("x:v.0".into()), Value::List(vec![])]);
     let sub = |id: u32| Msg::Sub { id, max_reply: 1 << 16, filter: filter.clone() };
     let mut msgs = vec![auth_as(None, 1)];
     msgs.extend((1..=4096).map(sub));
@@ -664,7 +664,7 @@ fn undo_through_a_thin_client_spec_wire_11() {
 fn undo_resends_run_once_spec_wire_11() {
     let w = world(Some(Role::Write));
     crate::common::keep_day(&w.a, w.t, &["x:v.0"]);
-    let scope = Value::List(vec![Value::uint(0), Value::Tid(w.t)]);
+    let scope = Value::List(vec![Value::uint(0), Value::bytes(w.t.as_bytes())]);
     let row = |nonce: u64, method: u64, arg: Value| Msg::Call { id: 3, max_reply: 1 << 20, method, args: vec![Value::uint(nonce), arg] };
     let (undo, redo, revert) = (osis::internals::port_method::UNDO, osis::internals::port_method::REDO, osis::internals::port_method::REVERT);
     let r = osis::internals::port_answers(&w.a, 1, false, vec![auth_as(Some(&w.secret), 1), write_call(1, w.actor, w.t, 6), write_call(2, w.actor, w.t, 7)]);

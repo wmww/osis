@@ -131,8 +131,8 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     }
     let mut m = Mutation::new();
     for x in [t, u] {
-        m.op(x, &ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(a)) }).unwrap();
-        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a))], op: Op::Set(Edge { role: Role::Admin, until: None, invite: None, floor: None }.to_value()) }).unwrap();
+        m.op(x, &ROLES, PathOp { path: vec![], op: Op::Remove(Value::Weak(a)) }).unwrap();
+        m.op(x, &ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a))], op: Op::Set(Edge { role: Role::Admin, until: None, invite: None, floor: None }.to_value()) }).unwrap();
     }
     let forged = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     let forged = packages(&mut lp, 0).into_iter().find(|p| p.id == forged).unwrap();

@@ -25,7 +25,7 @@ aspect t:lo.0: min<int>;
 aspect t:rec.0: item;
 aspect t:shape.0: shape;
 aspect t:tags.0: set<string>;
-aspect t:refs.0: set<tid>;
+aspect t:refs.0: set<ref>;
 aspect t:map.0: map<string, item>;
 aspect t:big.0: map<string, string>;
 purgeable_by(writer) aspect t:gone.0: string;
@@ -190,10 +190,10 @@ pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>,
     }
     // an edge change is remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
-    m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(holder)) }).unwrap();
     let needs = e.needs_frontier(&thing, &holder, edge.as_ref());
     if let Some(x) = edge {
-        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(x.to_value()) }).unwrap();
+        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(x.to_value()) }).unwrap();
     }
     if let Some(f) = frontier.or_else(|| needs.then(|| ct::Frontier::default().to_value())) {
         m.frontier(f);

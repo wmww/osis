@@ -88,7 +88,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync-ids.md §1). A **link** = (keyed content hash of the subtree, blob ID, suite byte || 32-byte blob key, the blob's 16-byte prefix salt, its delete keys: `[level, pk]` pairs, levels 1 to 3 strictly ascending, `pk` 32 bytes) (spec/crypto.md §6, §7): what reads the blob and what deletes it. A decoder rejects any other shape (as tag content); a link's salt and delete keys are its writer's claim, never checked when reading; the root's content hash is a function of the value's canonical bytes alone (spec/wire.md §6).
 - Equality of a large value is equality of its keyed content hash, never of its link bytes.
 - A link stands only where the type takes one: a blob, string or `any` position, or a set element or map key (or a position inside one) whose type is not **small**.
-  - Small types can never exceed `CHUNK_THRESHOLD`: `bool`, `int`, `float`, `strong`, `weak`, `ref`, counter, max, min, and an enum whose cases carry no payload.
+  - Small types can never exceed `CHUNK_THRESHOLD`: `bool`, `int`, `float`, `strong`, `weak`, `ref`, `ticket`, counter, max, min, and an enum whose cases carry no payload.
   - A link anywhere else is a type mismatch (spec/versioning.md §5): a typed read reports it without fetching the link.
   - In a core aspect (§9) it is bad input (spec/crdt.md §3.3 rule 7).
 - A read that materializes a link it cannot read (a blob of its tree not held, which includes a blob ID nothing holds, or failing to decrypt or verify under the thing's dedup secret, spec/crypto.md §6) MUST fail only that position: the link reads as absent (its list or set element, its map entry or struct field, and an enum whose payload it is, read as absent; at the aspect root the aspect reads absent), the rest of the value reads, and the node reports a diagnostic.
@@ -107,13 +107,13 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - A **reference** (ref) is a strong, a weak or a ticket inside a value. A **strong** makes its target part of the closure of the thing holding it (spec/sync-set.md §2); a **weak** only points; a **ticket** is a weak that also carries what syncing its target needs (Tickets). A strong and a weak to one tid are different values.
 - A reference grants nothing: anyone who may write a value may write a reference to any tid in it, and removing one revokes nothing (spec/permissions.md §1).
 - Types bind the local writer only (spec/versioning.md §5): a reference counts by the kind written, whatever type its position has or whether any schema types it.
-- **What counts**: a thing's references are those in the current value of each of its aspects as an untyped read returns it (`roles.0`: its roster, §9), at any depth (map keys, set elements and unknown tags' content included) and any value size (§6), an ephemeral aspect's while the node holds its value. History never counts, nor a value-less write. A signal has no current value: a reference in a fire adds nothing to a closure.
+- **What counts**: a thing's references are those in the current value of each of its aspects as an untyped read returns it (`roles.0`: its roster, §9), at any depth (map keys, set elements and unknown tags' content included; a ticket's content holds tids, no references) and any value size (§6), an ephemeral aspect's while the node holds its value. History never counts, nor a value-less write. A signal has no current value: a reference in a fire adds nothing to a closure.
 - **Known references**: a node knows every reference in the current values (What counts) and in the held fires of the things it holds and may read, each with its kind, the thing and AK holding it. Backlinks of a thing list every known reference to it, from any aspect. A ticket for a thing is found among them by the thing's tid (spec/sync-set.md §2).
 
 ### Tickets
 - A ticket's content is `[target, sync_id, role, epoch, box, holder, profile]`:
   - `target`: the target's tid; `sync_id`: its sync ID (spec/sync-ids.md §2), 16 bytes;
-  - `role`: the role of the secret, the `role` case ID (§9): read or sync;
+  - `role`: the role of the secret as a uint, its `role` case ID (§9): read (0) or sync (3);
   - `epoch`: `[n, nonce]`, the secret's epoch (spec/crypto.md §4), `n` a uint, `nonce` 32 bytes;
   - `box`: a `box` value (§9) holding the target's secret of `role` at `epoch`, boxed to `holder` exactly as a `secrets.0` box of the target to that holder is (spec/crypto.md §4 Boxes; AD and payload: spec/wire.md §7);
   - `holder`: the tid of the actor the box is to; `profile`: the tid of the issuer's profile (spec/sync-set.md §1).

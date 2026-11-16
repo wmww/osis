@@ -35,7 +35,8 @@ fn leaf() -> impl Strategy<Value = Value> {
         any::<bool>().prop_map(Value::Bool),
         prop::collection::vec(any::<char>(), 0..6).prop_map(|c| Value::Str(c.into_iter().collect())),
         prop::collection::vec(any::<u8>(), 0..30).prop_map(Value::Bytes),
-        any::<[u8; 15]>().prop_map(|b| Value::Tid(Tid::from_bytes(b))),
+        any::<[u8; 15]>().prop_map(|b| Value::Strong(Tid::from_bytes(b))),
+        any::<[u8; 15]>().prop_map(|b| Value::Weak(Tid::from_bytes(b))),
         prop_oneof![Just(0u64), Just(23), Just(300), Just(i64::MAX as u64)].prop_map(|c| Value::Enum(c, None)),
     ]
 }
@@ -56,7 +57,7 @@ fn value() -> impl Strategy<Value = Value> {
 const SRC: &str = "revision 1;
 type prio = enum { low 0, high 1 (int), tagged 2 (list<string>) };
 type rec = struct { title 0: string, done 1: bool, when 2: timestamp, tags 3: set<string>, prio 4: prio,
-  waits 5: map<int, duration>, score 6: option<float>, extra 7: any, parent 8: tid, body 9: markdown,
+  waits 5: map<int, duration>, score 6: option<float>, extra 7: any, parent 8: weak, body 9: markdown,
   n 10: counter<int>, at 11: map<timestamp, int>, lens 12: map<duration, bool>, when_set 13: set<timestamp> };
 aspect t:rec.0: rec;
 ";
@@ -102,7 +103,7 @@ fn rec() -> impl Strategy<Value = Value> {
             Value::Map(waits.into_iter().collect()),
             score,
             extra,
-            Value::Tid(Tid::from_bytes(parent)),
+            Value::Weak(Tid::from_bytes(parent)),
             body,
             Value::Int(n),
             Value::Map(at.into_iter().collect()),
@@ -164,7 +165,8 @@ fn printed_forms_plan_cli_3() {
         Value::float(f64::NAN),
         Value::float(f64::NEG_INFINITY),
         Value::float(1e300),
-        Value::Tid(t),
+        Value::Strong(t),
+        Value::Weak(t),
         m(vec![(Value::Int(1), Value::Int(2))]),
         Value::Set(osis::ValueSet::from([Value::Int(1)])),
         Value::Enum(3, None),
@@ -173,7 +175,7 @@ fn printed_forms_plan_cli_3() {
     ]);
     assert_eq!(
         print(&v, None),
-        r#"["a\"\n\u0001é", h'00ff', true, -3, 1.0, 0.0025, -0.0, NaN, -Infinity, 1e300, osis://AAAAAAAAAAAAAAAAAAAA, {1: 2}, #{1}, #3, #3(5), tag(259, 7)]"#
+        r#"["a\"\n\u0001é", h'00ff', true, -3, 1.0, 0.0025, -0.0, NaN, -Infinity, 1e300, strong(osis://AAAAAAAAAAAAAAAAAAAA), weak(osis://AAAAAAAAAAAAAAAAAAAA), {1: 2}, #{1}, #3, #3(5), tag(259, 7)]"#
     );
 }
 
@@ -195,7 +197,8 @@ fn input_forms_plan_cli_3() {
     assert!(p("tag(258, [])").is_err(), "a known tag has its own form");
     let t = Tid::from_bytes([1; 15]);
     let al = move |w: &str| (w == "me").then_some(t);
-    assert_eq!(parse("[me]", None, &al), Ok(Value::List(vec![Value::Tid(t)])));
+    assert_eq!(parse("[weak(me)]", None, &al), Ok(Value::List(vec![Value::Weak(t)])));
+    assert!(parse("[me]", None, &al).is_err(), "an untyped reference names its kind");
     // with a schema, JSON objects read as the struct
     let sc = schema();
     let ty = osis::internals::of_schema(sc.clone().into(), sc.aspects["t:rec.0"].ty.clone());
@@ -244,7 +247,7 @@ fn json_mapping_plan_cli_5() {
     assert_eq!(j(&Value::float(1.0)), "1.0");
     assert_eq!(j(&Value::float(f64::NAN)), "\"NaN\"");
     assert_eq!(j(&Value::float(f64::INFINITY)), "\"Infinity\"");
-    assert_eq!(j(&Value::Tid(Tid::from_bytes([0; 15]))), "\"osis://AAAAAAAAAAAAAAAAAAAA\"");
+    assert_eq!(j(&Value::Strong(Tid::from_bytes([0; 15]))), r#"{"$strong":"osis://AAAAAAAAAAAAAAAAAAAA"}"#);
     assert_eq!(j(&Value::Bytes(vec![0, 255])), r#"{"$blob":"AP8"}"#);
     assert_eq!(j(&Value::Set(osis::ValueSet::from([Value::Int(1)]))), r#"{"$set":[1]}"#);
     assert_eq!(j(&Value::Enum(2, None)), r#"{"$case":2}"#);

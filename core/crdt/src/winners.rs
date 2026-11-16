@@ -24,10 +24,10 @@ pub enum Place {
     /// The content of the entry or element above: below its own writes (its reset prunes it,
     /// its content's writes supersede none of its own).
     In,
-    /// A set element's register holding a tid, in place of `In`: what a value removal of the
-    /// tid prunes (§5.5).
-    Tid(Key),
-    /// A set's value removal, beside its elements (§5.5): its tid, its record's dot and the parts
+    /// A set element's register holding a reference, in place of `In`: what a value removal of the
+    /// reference prunes (§5.5).
+    Ref(Key),
+    /// A set's value removal, beside its elements (§5.5): its reference, its record's dot and the parts
     /// it names.
     Gone(Key, Dot, Vec<DotRange>),
 }
@@ -154,7 +154,7 @@ impl<T> ByWrite<T> {
         let mut best: Option<Ts> = None;
         // a set element's tid: the value removals of it, which hide it (§5.5)
         if w.kind == Kind::Value
-            && let [up @ .., Place::Elem(d), Place::Tid(t)] = w.path.as_slice()
+            && let [up @ .., Place::Elem(d), Place::Ref(t)] = w.path.as_slice()
         {
             let tid = |p: &Vec<Place>| match p.split_last() {
                 Some((Place::Gone(g, _, seen), at)) if at == up && g == t => Some(seen.iter().any(|r| r.covers(d))),
@@ -326,8 +326,8 @@ fn elems<S: Sink>(out: &mut S, path: &mut Vec<Place>, m: &Meta, es: &BTreeMap<Do
         path.push(Place::Elem(d.clone()));
         opt(out, path, Kind::Reset, &e.reset);
         match (e.frag.as_deref(), e.written()) {
-            (Some(Fragment::Register(r)), Some((Some(v @ osis_base::Value::Tid(_)), _))) => {
-                path.push(Place::Tid(Key(std::sync::Arc::new(v.clone()))));
+            (Some(Fragment::Register(r)), Some((Some(v @ (osis_base::Value::Strong(_) | osis_base::Value::Weak(_) | osis_base::Value::Ticket(_))), _))) => {
+                path.push(Place::Ref(Key(std::sync::Arc::new(v.clone()))));
                 if !crate::fragment::hidden(d, e, &gone) {
                     reg(out, path, r);
                 }

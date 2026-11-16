@@ -18,14 +18,14 @@ type Opened = BTreeSet<(Tid, Role, Epoch)>;
 
 /// Whether `a`'s `secrets.0` at peer `i` boxes `h` at all.
 fn boxes(lp: &mut LocalPeer, i: usize, a: Tid, h: Tid) -> bool {
-    lp.peers[i].engine.get_typed(&a, &ct::SECRETS).unwrap().is_some_and(|s| s.boxes.keys().any(|k| k.holder == h))
+    lp.peers[i].engine.get_typed(&a, &ct::SECRETS).unwrap().is_some_and(|s| s.boxes.keys().any(|k| k.holder == osis_base::Weak(h)))
 }
 
 /// The keyset of `m` the box of `a`'s newest read epoch to `m` names, at peer `i`.
 fn sealed_at(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid) -> Option<Epoch> {
     let e = newest_read(lp, i, a)?;
     let s = lp.peers[i].engine.get_typed(&a, &ct::SECRETS).unwrap()?;
-    s.boxes.iter().find(|(k, _)| k.holder == m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)).and_then(|(_, b)| osis_keys::box_keysets(b).into_iter().next())
+    s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(m) && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)).and_then(|(_, b)| osis_keys::box_keysets(b).into_iter().next())
 }
 
 /// Peer `i` rotates `rot` of `g` leaving out the holders `skip` (a rotation that, by rule 1 or
@@ -506,7 +506,7 @@ fn merge_moves_off_losing_ignorant_fork_spec_crypto_4() {
 fn sealed_keysets(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid) -> BTreeSet<Epoch> {
     let Some(e) = newest_read(lp, i, a) else { return BTreeSet::new() };
     let s = lp.peers[i].engine.get_typed(&a, &ct::SECRETS).unwrap().unwrap_or_default();
-    s.boxes.iter().filter(|(k, _)| k.holder == m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)).flat_map(|(_, b)| osis_keys::box_keysets(b)).collect()
+    s.boxes.iter().filter(|(k, _)| k.holder == osis_base::Weak(m) && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == e)).flat_map(|(_, b)| osis_keys::box_keysets(b)).collect()
 }
 
 /// `two_admin_holder` with M forked by its admins m1 (0) and m2 (2) (keysets k1, k2) and A forked
@@ -1053,8 +1053,8 @@ fn reader_junk_boxes_force_no_rotation_spec_crypto_4() {
     for _ in 0..3 {
         lp.peers[1].clock.advance(1_000);
         let s = lp.peers[1].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
-        let own = s.boxes.iter().find(|(k, _)| k.holder == r && k.role == Role::Read).map(|(_, b)| b.clone()).unwrap();
-        let key = ct::BoxKey { holder: p, role: Role::Read, epoch: osis_keys::aspects::to_schema(&e0) };
+        let own = s.boxes.iter().find(|(k, _)| k.holder == osis_base::Weak(r) && k.role == Role::Read).map(|(_, b)| b.clone()).unwrap();
+        let key = ct::BoxKey { holder: osis_base::Weak(p), role: Role::Read, epoch: osis_keys::aspects::to_schema(&e0) };
         let w = osis_keys::SecretsWrite { boxes: [(key, own)].into(), ..Default::default() };
         lp.peers[1]
             .engine
@@ -1931,7 +1931,7 @@ fn frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4() {
     assert!([t2, u].iter().all(|y| lp.peers[0].engine.core.destroyed(y)));
     assert!(lp.peers[0].engine.core.key_holders(&x).contains(&(mm, Role::Admin)), "M holds X admin in T2's place");
     settle(&mut lp, &[0], &[x]);
-    let roles: BTreeSet<Role> = lp.peers[0].engine.get_typed(&x, &ct::SECRETS).unwrap().unwrap().boxes.keys().filter(|k| k.holder == mm).map(|k| k.role).collect();
+    let roles: BTreeSet<Role> = lp.peers[0].engine.get_typed(&x, &ct::SECRETS).unwrap().unwrap().boxes.keys().filter(|k| k.holder == osis_base::Weak(mm)).map(|k| k.role).collect();
     assert!(roles.contains(&Role::Read) && roles.iter().all(|r| *r <= Role::Read), "X boxes M read and below alone: {roles:?}");
     // taint per role: a box to M of X's admin goes past M's key access, one of its read does not
     let core = &lp.peers[0].engine.core;
@@ -1949,13 +1949,13 @@ fn unrecorded(lp: &mut LocalPeer, boxer: usize, other: usize, a: Tid) -> Vec<(Ti
     let mut out = Vec::new();
     for (k, b) in &s.boxes {
         let e = osis_keys::aspects::from_schema(&k.epoch).unwrap();
-        if !epochs.role(k.role).current().contains(&e) || (core.is_key_actor(&k.holder) && !core.is_account(&k.holder)) {
+        if !epochs.role(k.role).current().contains(&e) || (core.is_key_actor(&k.holder.0) && !core.is_account(&k.holder.0)) {
             continue;
         }
         let ks = osis_keys::box_keysets(b);
-        let rec = core.ix.sealed.get(&(a, k.role, e)).and_then(|x| x.keysets.get(&k.holder));
+        let rec = core.ix.sealed.get(&(a, k.role, e)).and_then(|x| x.keysets.get(&k.holder.0));
         if !ks.iter().all(|x| rec.is_some_and(|r| r.contains(x))) {
-            out.push((k.holder, k.role, e, ks));
+            out.push((k.holder.0, k.role, e, ks));
         }
     }
     out

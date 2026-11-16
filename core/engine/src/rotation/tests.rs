@@ -251,13 +251,13 @@ pub(super) fn opens_by(lp: &LocalPeer, states: &[(Tid, ct::Secrets)], secrets: &
         for (a, s) in states {
             for (k, b) in &s.boxes {
                 let Ok(e) = from_schema(&k.epoch) else { continue };
-                if skip.contains(&(*a, k.role, e, k.holder)) {
+                if skip.contains(&(*a, k.role, e, k.holder.0)) {
                     continue;
                 }
                 // a joint box opens for a holder of each keyset it names
                 let via = osis_keys::box_keysets(b);
-                if k.holder == party || !via.is_empty() && via.iter().all(|x| out.contains_key(&(k.holder, k.role, *x))) {
-                    out.entry((*a, k.role, e)).or_insert(Via::Box(*a, k.role, e, k.holder, via));
+                if k.holder == osis_base::Weak(party) || !via.is_empty() && via.iter().all(|x| out.contains_key(&(k.holder.0, k.role, *x))) {
+                    out.entry((*a, k.role, e)).or_insert(Via::Box(*a, k.role, e, k.holder.0, via));
                 }
             }
             // a history box opened under a secret known carries the earlier secrets it lists
@@ -617,7 +617,7 @@ fn reseal_puts_missing_boxes_replaces_none_spec_permissions_3() {
     assert_eq!(e.write.current().len(), 2, "write forked");
     assert_eq!(lp.peers[0].engine.rotated_already(&g).unwrap(), Some(BTreeSet::new()), "A merges nothing");
     let before = lp.peers[0].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
-    let had: BTreeMap<ct::BoxKey, ct::SecretBox> = before.boxes.iter().filter(|(k, _)| k.holder == b).map(|(k, v)| (k.clone(), v.clone())).collect();
+    let had: BTreeMap<ct::BoxKey, ct::SecretBox> = before.boxes.iter().filter(|(k, _)| k.holder == osis_base::Weak(b)).map(|(k, v)| (k.clone(), v.clone())).collect();
     assert!(!all_boxed(&mut lp, 0, &[g]), "B lacks a box at D's fork");
     lp.peers[0]
         .engine
@@ -731,7 +731,7 @@ fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, h
             let state = crate::flows::secrets_in(tx, &g)?;
             let at = ct::Epoch { n: s.n(), nonce: *s.nonce() };
             let key = ct::HistoryKey { role: Role::Read, epoch: at.clone() };
-            let bk = ct::BoxKey { holder, role: Role::Read, epoch: at };
+            let bk = ct::BoxKey { holder: osis_base::Weak(holder), role: Role::Read, epoch: at };
             let w = osis_keys::SecretsWrite { history: [(key.clone(), state.history[&key].clone())].into(), boxes: [(bk.clone(), state.boxes[&bk].clone())].into(), ..Default::default() };
             let mut m = Mutation::new();
             crate::flows::put_keysets(&mut m, g, &osis_keys::KeysWrite { keysets: [(Role::Read, ks)].into() })?;
@@ -1234,7 +1234,7 @@ fn finalize_without_its_until_unmet_spec_crypto_4() {
     assert!(at_x.read.secret(&e).is_some(), "X holds e's secret");
     assert!(!at_x.read.is_established(&e), "e established at X, where its finalize applies nothing");
     lp.peers[2].engine.reseal_after_pass(&g).unwrap();
-    let to_d = ct::BoxKey { holder: tids[1], role: Role::Read, epoch: osis_keys::aspects::to_schema(&e) };
+    let to_d = ct::BoxKey { holder: osis_base::Weak(tids[1]), role: Role::Read, epoch: osis_keys::aspects::to_schema(&e) };
     let at_x = lp.peers[2].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
     assert!(!at_x.boxes.contains_key(&to_d), "X re-sealed e to D");
     withheld_arrives(&mut lp, 2, g, e, &all, &u);
@@ -1714,7 +1714,7 @@ fn reader_history_add_valid_box_put_not_spec_permissions_3() {
 /// The box keys of `x`'s boxes in `t`'s `secrets.0` at peer `i`.
 fn boxes_of(lp: &mut LocalPeer, i: usize, t: Tid, x: Tid) -> BTreeSet<ct::BoxKey> {
     let s = lp.peers[i].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-    s.boxes.keys().filter(|k| k.holder == x).cloned().collect()
+    s.boxes.keys().filter(|k| k.holder == osis_base::Weak(x)).cloned().collect()
 }
 
 // spec/permissions.md §3 (a grant or re-seal boxes the holder at the current epochs held; after the rotations the node may make), spec/crypto.md §4: as
@@ -2691,7 +2691,7 @@ fn a_held_grant_again_after_a_self_removal_serves_the_state_held_spec_perm_3() {
     let pks = lp.packages(0).unwrap();
     lp.peers[1].restart(0).unwrap();
     let (before, _) = served_secrets(&mut lp, g);
-    assert!(before.boxes.keys().any(|b| b.holder == tids[1]), "W's boxes held");
+    assert!(before.boxes.keys().any(|b| b.holder == osis_base::Weak(tids[1])), "W's boxes held");
     lp.peers[1].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
     lp.sync_all().unwrap();
     let waiting = lp.peers[1].engine.waiting_removals();
