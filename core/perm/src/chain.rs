@@ -188,6 +188,9 @@ pub struct Chain<E> {
     /// At a node of the account: each held merge's line's nodes under the taken revocations
     /// (`standing_certifiers`).
     merge_nodes: BTreeMap<E, PSet>,
+    /// At a node of the account: the held rotations whose line stands under the removals on it
+    /// alone (every one minted by a node of the line before it, none hit).
+    stands_alone: BTreeSet<E>,
 }
 
 /// What a rejection can be among: the pairs (m, r) with r a held epoch m supersedes off its own
@@ -271,7 +274,7 @@ impl<E: Ord + Copy> Chain<E> {
                 }
             }
         }
-        let mut c = Chain { root, rots, topo, idx, lines, rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), taken: Vec::new(), merge_nodes: BTreeMap::new() };
+        let mut c = Chain { root, rots, topo, idx, lines, rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), taken: Vec::new(), merge_nodes: BTreeMap::new(), stands_alone: BTreeSet::new() };
         c.chosen = chosen.filter(|s| c.rots.contains_key(s));
         // the chosen rotation's line first and, at a node of the account, what it stands with
         // (what a rotation on it takes, and that one's line; outside, takes decide nothing more)
@@ -365,6 +368,7 @@ impl<E: Ord + Copy> Chain<E> {
             }
         }
         let s = self.standing(d, &ix, &hits, None);
+        self.stands_alone = self.topo.iter().enumerate().filter(|(i, _)| s.stands.get(*i) == Some(&true)).map(|(_, r)| *r).collect();
         let stands = |c: &Chain<E>, r: E, w: &dyn Fn(&E) -> bool| match c.place(&r) {
             Some(i) if hits.get(i).is_some_and(|h| h.iter().any(w)) => c.stands_walk(r, w, d, &ix),
             Some(i) => s.stands.get(i).copied().unwrap_or(false),
@@ -611,6 +615,12 @@ impl<E: Ord + Copy> Chain<E> {
     /// `roster` of the line joining the held epochs `heads` (a merge's, before it is made).
     pub fn roster_joining<M: Ord + Copy>(&self, heads: &[E], d: &Devices<E, M>) -> BTreeSet<M> {
         self.roster_of_line(heads, d)
+    }
+
+    /// At a node of the account: whether held rotation `r`'s line stands under the removals on it
+    /// alone (every rotation on it minted by a node of the line before it, none hit).
+    pub fn stands_alone(&self, r: &E) -> bool {
+        self.stands_alone.contains(r)
     }
 
     /// At a node of the account, the nodes of held epoch `e`'s line under the removals carried on

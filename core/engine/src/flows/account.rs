@@ -214,6 +214,12 @@ impl AccountView {
         self.devices.as_ref().is_some_and(|d| self.rule.chain().nodes_of(e, d).contains(node))
     }
 
+    /// This node's account: whether held rotation `r`'s line stands under the removals on it
+    /// alone (`osis_perm::Chain::stands_alone`): one minted by no node of its line removes no one.
+    pub(crate) fn stands_alone(&self, r: &CommitId) -> bool {
+        self.rule.chain().stands_alone(r)
+    }
+
     /// This node's account: D's roster (`roster`).
     pub(crate) fn roster(&self) -> &BTreeSet<Tid> {
         &self.roster

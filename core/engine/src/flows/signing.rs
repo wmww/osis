@@ -465,11 +465,13 @@ pub(crate) fn judge_account_again(tx: &mut Tx<'_>, p: Tid, d: Tid) -> Result<()>
 }
 
 /// A node of account `p` leaves it only when no held line keeps it a node (spec/crypto.md §9,
-/// Custody): of the held rotations that count here or whose seed it holds, no tip (one on no
-/// other's line) has it among the nodes of its line, under the removals on that line alone (with
-/// none, the first epoch keeps it). So it leaves on a counting removal of it past every line
-/// keeping it; a rotation that merely boxes it nothing (a forgery boxing others) removes no one,
-/// and one it neither follows nor holds the seed of (a line it disregards) moves nothing. Leaving, it drops the account's seeds, so it signs and opens
+/// Custody): of the held rotations that count here or whose seed it holds and whose line stands
+/// under the removals on it alone, no tip (one on no other's line) has it among the nodes of its
+/// line, under those removals (with none, the first epoch keeps it). So it leaves on a counting
+/// removal of it past every line keeping it; a rotation that merely boxes it nothing (a forgery
+/// boxing others) removes no one, nor one minted by no node of its line, and one it neither
+/// follows nor holds the seed of (a line it disregards) moves nothing. Leaving, it drops the
+/// account's seeds, so it signs and opens
 /// nothing as it, and everything it read only as the account is lost (spec/permissions.md §3, Lost
 /// access; an account's retain default does not reach its nodes, §2): every held actor is judged
 /// again. D's roster decides nothing here: a grant unnamed at a node is no removal of it, and a
@@ -486,7 +488,7 @@ pub(crate) fn leave_if_removed(tx: &mut Tx<'_>) -> Result<()> {
 
 /// Whether some held line keeps this node a node of its account (`leave_if_removed`).
 pub(crate) fn kept(v: &super::account::AccountView, held: &super::account::HeldAccount, me: &Tid) -> bool {
-    let rots: Vec<CommitId> = v.rotation_ids().into_iter().filter(|r| v.holds(r) && (v.rotation_counts(r) || v.keys_of(r, held).is_some())).collect();
+    let rots: Vec<CommitId> = v.rotation_ids().into_iter().filter(|r| v.holds(r) && v.stands_alone(r) && (v.rotation_counts(r) || v.keys_of(r, held).is_some())).collect();
     let set: BTreeSet<CommitId> = rots.into_iter().collect();
     let mut tips = v.tips(|r| set.contains(r)).into_iter().peekable();
     tips.peek().is_none() || tips.any(|t| v.keeps(&t, me))
