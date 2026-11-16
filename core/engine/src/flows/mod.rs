@@ -311,12 +311,15 @@ pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
 
 /// Re-opens the `secrets.0` of every actor that boxes to `learned` after this node learned
 /// secrets of `learned` (an actor's boxes open only once its holder's epochs are held), to a
-/// fixpoint. Called by node-core's state observation (engine hook). Terminates without a step
-/// cap: an actor is pushed only when its held epochs grew, and they only grow, bounded by the
-/// boxes held (a cap would leave secrets of deep holder chains unopened).
+/// fixpoint, and has the walk judge again each held ticket boxed to an actor on the way
+/// (`Closure::opener_moved`). Called by node-core's state observation (engine hook) and by a
+/// take-up (`take_up_opener`). Terminates without a step cap: an actor is pushed only when its
+/// held epochs grew, and they only grow, bounded by the boxes held (a cap would leave secrets of
+/// deep holder chains unopened).
 pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     let mut work = vec![learned];
     while let Some(m) = work.pop() {
+        tx.core.ix.closure.opener_moved(&m);
         // the boxes keyed to `m`, per actor: from the index of keyed `secrets.0` entries
         let mut per: std::collections::BTreeMap<Tid, Vec<osis_base::Value>> = std::collections::BTreeMap::new();
         for (a, k) in tx.core.ix.boxes_to.get(&m).into_iter().flatten() {
@@ -361,19 +364,28 @@ pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Re-opens every held `secrets.0` (after a key actor or an account was taken up), to a
-/// fixpoint: what an actor learns reopens its dependents at once (`reopen_dependents`, so a
-/// holder-actor chain opens in one sweep whatever its tid order); sweeps repeat until one learns
-/// nothing (held epochs only grow, so no round cap is needed; a cap left deep chains unopened).
-/// Held tickets open by the same openers, so the node closure follows every edge afresh
-/// (`Follow::refollow`): a ticket an open's walk could not open yet enters its thing now.
+/// Opener `h` taken up (a key actor, or the account): the boxes keyed to it open, and what they
+/// give opens the boxes keyed to that in turn (`reopen_dependents`), each held ticket boxed to
+/// one of them judged again by the walk; boxes the node's roles kept out are taken where the
+/// roles as `h` give them (`retake`). O(what `h` opens), never the held actors or the node
+/// closure.
+fn take_up_opener(tx: &mut Tx<'_>, h: Tid) -> Result<()> {
+    reopen_dependents(tx, h)?;
+    retake(tx)
+}
+
+/// The open's sweep (`Engine::take_account`), O(the held actors) as an open is: re-opens every
+/// held `secrets.0` to a fixpoint, listing again the boxes the node's roles keep out
+/// (`Waits::untaken`, in memory). What an actor learns reopens its dependents at once
+/// (`reopen_dependents`, so a holder-actor chain opens in one sweep whatever its tid order);
+/// sweeps repeat until one learns nothing (held epochs only grow, so no round cap is needed).
 fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
-    tx.core.closure_follow.refollow();
     let secrets_ak = ak("secrets.0")?;
     let actors: BTreeSet<Tid> = tx.core.ix.aspect_things.get(&secrets_ak).cloned().unwrap_or_default();
     loop {
         let mut any = false;
         for a in &actors {
+            osis_base::costs::count("reopen: actors", 1);
             let s = secrets_in(tx, a)?;
             let alts = secrets_alts(tx, a)?;
             tx.core.touch();
@@ -398,7 +410,7 @@ impl Engine {
         let t = id.tid();
         self.core.held_keys.insert(t, id);
         self.settle_key_actor(&t);
-        self.reopen_held()?;
+        self.reopen_held(t)?;
         Ok(t)
     }
 
@@ -413,7 +425,7 @@ impl Engine {
         if let Some(o) = old {
             self.settle_key_actor(&o);
         }
-        self.reopen_held()?;
+        self.reopen_held(l)?;
         Ok(l)
     }
 
@@ -447,12 +459,12 @@ impl Engine {
         }
     }
 
-    /// Opens what the key actors held may open now.
-    fn reopen_held(&mut self) -> Result<()> {
+    /// Opens what key actor `t`, taken up, may open now (`take_up_opener`).
+    fn reopen_held(&mut self, t: Tid) -> Result<()> {
         if let Some(ch) = &mut self.core.wakes {
             ch.reopen_awaits = true;
         }
-        self.run(reopen_all)
+        self.run(|tx| take_up_opener(tx, t))
     }
 
     /// Commits `m` in a running transaction.

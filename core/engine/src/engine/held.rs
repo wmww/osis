@@ -122,6 +122,12 @@ impl Held {
         self.holders.get(holder).into_iter().flat_map(|m| m.keys())
     }
 
+    /// Whether `holder` is named on `thing` (`named_on`): a read of that pair alone.
+    pub fn is_named(&self, holder: &Tid, thing: &Tid) -> bool {
+        self.pairs.read(&(*holder, *thing));
+        self.holders.get(holder).is_some_and(|m| m.contains_key(thing))
+    }
+
     /// A reader's cursor over the (holder, thing) pairs named from now on (`is_named`): one
     /// named and then undone is given too.
     pub fn pairs_feed(&self) -> osis_base::memo::Feed<(Tid, Tid)> {

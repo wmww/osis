@@ -1153,10 +1153,11 @@ impl Engine {
         self.core.accounts.insert(*p, Arc::new(HeldAccount { devices: *d, first, keys }));
         let (p, d) = (*p, *d);
         let r = self.run(|tx| {
-            if judge {
-                super::signing::judge_account_again(tx, p, d)?;
+            match judge {
+                true => super::signing::judge_account_again(tx, p, d)?,
+                false => super::reopen_all(tx)?,
             }
-            super::reopen_all(tx)
+            super::take_up_opener(tx, p)
         });
         if r.is_err() {
             self.core.account.set(was);

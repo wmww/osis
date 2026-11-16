@@ -61,17 +61,30 @@ fn opened_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Ticket, Opened)>> {
     Ok(held_in(tx, t)?.into_iter().filter_map(|k| tx.core.open_ticket(&k).map(|o| (k, o))).collect())
 }
 
+/// What the walk's ticket step took of a thing's held tickets (`take_in`).
+pub(crate) struct Taken {
+    /// The sync IDs and roles of the tickets the node can open.
+    pub(crate) ids: BTreeSet<(SyncId, Role)>,
+    /// The holders every held ticket is boxed to, opened or not.
+    pub(crate) openers: BTreeSet<Tid>,
+}
+
 /// The walk's ticket taking, at a strong to `t` whose read secret is
 /// not established (spec/sync-set.md §2): each held ticket's secret taken, and the sync IDs and
-/// roles of the tickets the node can open.
-pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<(SyncId, Role)>> {
+/// roles of the tickets the node can open; and its openers, the holders every held ticket for
+/// `t` is boxed to, which the step is judged again by as they can open more
+/// (`Closure::opener_moved`).
+pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Taken> {
     let mut ids = BTreeSet::new();
+    let held = held_in(tx, t)?;
+    let openers = held.iter().map(|k| k.holder).collect();
     // the role commits held of `t` decide (spec/sync-set.md §2: a ticket whose holder holds no
     // role on `t` enters nothing); with none held, the ticket's word
     if tx.core.timelines.get(t).is_some() && !crate::rotation::may_take(tx.core, t) {
-        return Ok(ids);
+        return Ok(Taken { ids, openers });
     }
-    for (k, o) in opened_in(tx, t)? {
+    let opened: Vec<(Ticket, Opened)> = held.into_iter().filter_map(|k| tx.core.open_ticket(&k).map(|o| (k, o))).collect();
+    for (k, o) in opened {
         crate::apply::keys::learn_secret_in(tx, &k.target, o.role, o.epoch, o.secret)?;
         ids.insert((k.sync_id, o.role.min(k.role)));
     }
@@ -85,7 +98,7 @@ pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<(SyncId, Role
             }
         }
     }
-    Ok(ids)
+    Ok(Taken { ids, openers })
 }
 
 impl Engine {

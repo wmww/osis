@@ -239,7 +239,7 @@ impl Engine {
     /// spec/sync-judgement.md §2): the union of `g`'s pieces (`Piece`): `g`'s own
     /// (`own_piece`); the author's chain of each held commit on a thing of `g`'s closure its actor
     /// may read, which goes with the commit (`certificate_chains`, `chain_piece`); `g`'s own chain
-    /// to each thing an edge write names it holder on (`held_on`: role changes travel). Nothing else:
+    /// to each thing an edge write names it holder on (`holds_on`: role changes travel). Nothing else:
     /// a chain into an item of the closure that no write there needs (the roster of a holder
     /// private to others holding a role on an item under S) is none of S's readers'. Parts the closure's bodies carry
     /// are `sync_bodies`' to leave out. Derived whole, O(all of it): what sync reads is
@@ -247,7 +247,7 @@ impl Engine {
     #[cfg(test)]
     pub(crate) fn sync_certificates(&mut self, g: &Tid) -> Certs {
         let mut out = self.own_piece(g);
-        let held_on: Vec<(Tid, Tid)> = self.held_on(g).iter().map(|x| (*g, *x)).collect();
+        let held_on: Vec<(Tid, Tid)> = self.core.ix.held.named_on(g).filter(|x| *x != g && self.core.first_admin(x) != Some(*g)).map(|x| (*g, *x)).collect();
         for (a, x) in self.certificate_chains(g).into_iter().chain(held_on) {
             out.extend(self.chain_piece(&a, &x));
         }

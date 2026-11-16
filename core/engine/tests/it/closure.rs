@@ -591,3 +591,29 @@ fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_
     assert!(knows(&mut lp, 2, ps[0]), "U needs peer 0's chain");
     assert!(lp.peers[2].engine.closure_holds(&u));
 }
+
+// spec/sync-set.md §2 Cost: taking up an opener (a key actor, as a bearer does) and making a
+// link cost what the new opener can open, never the node closure or every held actor: counted
+// (`closure:` and `reopen:`) with n and 10n things with own keys held.
+#[test]
+fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
+    let work = |n: usize| {
+        let (mut lp, _) = people(1);
+        let e = &mut lp.peers[0].engine;
+        let (d, p) = (e.account_root().unwrap(), e.me());
+        let things: Vec<Tid> = (0..n).map(|_| make(e, p, d)).collect();
+        let counted = |e: &mut Engine, f: &dyn Fn(&mut Engine)| {
+            osis_base::costs::take();
+            f(e);
+            osis_base::costs::take().into_iter().filter(|(k, _, _)| k.starts_with("closure:") || k.starts_with("reopen:")).map(|(_, _, c)| c).sum::<u64>()
+        };
+        let take_up = counted(e, &|e| { e.hold_key_actor(osis_crypto::Secret32::from_bytes([0x5a; 32])).unwrap(); });
+        let spec = osis_engine::flows::LinkSpec { target: things[0], role: osis_base::Role::Read, until: None, peers: vec![], single_use: false };
+        let link = counted(e, &|e| drop(e.create_link(&p, &spec).unwrap()));
+        e.check_closure();
+        (take_up, link)
+    };
+    let (small, large) = (work(5), work(50));
+    eprintln!("take-up and create_link work at n, 10n: {small:?} {large:?}");
+    assert_eq!(small, large);
+}

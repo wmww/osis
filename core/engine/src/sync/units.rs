@@ -128,6 +128,12 @@ pub struct Closure {
     ticket_ids: JMap<Tid, BTreeSet<(osis_base::SyncId, Role)>>,
     /// Per sync ID, the things whose `ticket_ids` name it.
     by_ticket_id: JSetMap<osis_base::SyncId, Tid>,
+    /// The ticket step's openers: per thing whose held tickets the walk last took, the holders
+    /// those tickets are boxed to, opened or not (`judge`).
+    openers: JSetMap<Tid, Tid>,
+    /// Per holder, the things whose `openers` name it: the edges into them are judged again when
+    /// the holder can open more (`opener_moved`).
+    by_opener: JSetMap<Tid, Tid>,
     /// Ticket fires whose ticket the walk took, their role parts not taken yet
     /// (`Engine::take_ticket_fires`).
     pub(crate) fires_due: JSet<osis_base::CommitId>,
@@ -153,6 +159,8 @@ impl Default for Closure {
             rejudge: JSet::default(),
             ticket_ids: JMap::default(),
             by_ticket_id: JSetMap::default(),
+            openers: JSetMap::default(),
+            by_opener: JSetMap::default(),
             fires_due: JSet::default(),
             members: JSetMap::by_element(),
             left: JMap::default(),
@@ -192,12 +200,6 @@ impl Follow {
         }
     }
 
-    /// The openers moved (an account or key actor taken up): every held vertex is followed
-    /// afresh at the next settle, O(the node closure), as held tickets may open now.
-    pub(crate) fn refollow(&mut self) {
-        self.reset = true;
-    }
-
     /// The open transaction committed.
     pub(crate) fn committed(&mut self) {
         self.acted = false;
@@ -205,10 +207,12 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 11]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 13]);
     fn commit(&mut self) {
         self.ticket_ids.commit();
         self.by_ticket_id.commit();
+        self.openers.commit();
+        self.by_opener.commit();
         self.fires_due.commit();
         self.tree.commit();
         self.synced.commit();
@@ -222,7 +226,7 @@ impl Journaled for Closure {
         self.cut.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark(), self.openers.mark(), self.by_opener.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -238,6 +242,8 @@ impl Journaled for Closure {
         self.ticket_ids.rollback_to(m[8]);
         self.by_ticket_id.rollback_to(m[9]);
         self.fires_due.rollback_to(m[10]);
+        self.openers.rollback_to(m[11]);
+        self.by_opener.rollback_to(m[12]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -247,6 +253,8 @@ impl Journaled for Closure {
         self.cut.name("index: closure cut");
         self.ticket_ids.name("index: closure ticket ids");
         self.by_ticket_id.name("index: closure by ticket id");
+        self.openers.name("index: closure ticket openers");
+        self.by_opener.name("index: closure by ticket opener");
     }
     #[cfg(test)]
     fn contents(&self) -> String {
@@ -463,6 +471,28 @@ impl Closure {
         }
     }
 
+    /// Sets the holders `t`'s held tickets are boxed to (`openers`) to `holders`.
+    fn set_openers(&mut self, t: Tid, holders: BTreeSet<Tid>) {
+        let old = self.openers.get(&t).cloned().unwrap_or_default();
+        for h in old.difference(&holders) {
+            self.openers.remove(&t, h);
+            self.by_opener.remove(h, &t);
+        }
+        for h in holders.difference(&old) {
+            self.openers.insert(t, *h);
+            self.by_opener.insert(*h, t);
+        }
+    }
+
+    /// Holder `h` can open more (taken up, or its secrets grew): the edges into each thing with a
+    /// held ticket boxed to it are judged again at the next settle, O(those things).
+    pub(crate) fn opener_moved(&mut self, h: &Tid) {
+        for t in self.by_opener.get(h).cloned().unwrap_or_default() {
+            osis_base::costs::count("closure: opener rejudged", 1);
+            self.rejudge.insert(t);
+        }
+    }
+
     /// The contexts holding `t`.
     pub(crate) fn contexts(&self, t: &Tid) -> BTreeSet<Ctx> {
         self.tree.held.get(t).cloned().unwrap_or_default()
@@ -592,6 +622,7 @@ impl Closure {
         self.members.remove(&x.0, &x.1);
         if !self.tree.held.contains_key(&x.1) {
             self.set_ticket_ids(x.1, BTreeSet::new());
+            self.set_openers(x.1, BTreeSet::new());
         }
     }
 
@@ -901,8 +932,9 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     // it, and its sync ID noted (spec/sync-set.md §2, spec/sync-inbox.md §5 Nothing before the
     // strong): O(its tickets)
     if !tx.core.is_key_actor(&y) && !tx.core.reads_established(&y) && !tx.core.keys_open_from(v.0, &y) {
-        let ids = super::tickets::take_in(tx, &y)?;
-        tx.core.ix.closure.set_ticket_ids(y, ids);
+        let taken = super::tickets::take_in(tx, &y)?;
+        tx.core.ix.closure.set_ticket_ids(y, taken.ids);
+        tx.core.ix.closure.set_openers(y, taken.openers);
     }
     let closed = closed_kept(tx, &y)?;
     let core = &*tx.core;
