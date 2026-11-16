@@ -1,12 +1,12 @@
-//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess` (with a NAT model, `nat`), QUIC (`quic`), P2P by dialable key with relaying and hole punching (`p2p`), LAN discovery (`lan`, run by `Transport::discover`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`) (spec/sync-transport.md §1).
+//! osis-transport: `Transport`: confidential authenticated byte streams; QUIC (`quic`), P2P by dialable key with relaying and hole punching (`p2p`), LAN discovery (`lan`, run by `Transport::discover`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`); the in-process test net (`mem`, `nat`, run by `Sched`) (spec/sync-transport.md §1).
 //!
 //! The boundary sync's driver uses: `Transport` (`dial`, `listen`, `discover`, `listen_all`) and
 //! `Connection` (`peer_key`, `rank`, streams). Nothing above it names a transport or learns how a
 //! peer is reached beyond a connection's `Rank`.
 //! Layer 1 (notes/architecture.md). Notes: notes/networking.md (Implementation); P2P: notes/networking.md.
 //!
-//! Traits use `impl Future + Send` returns and no runtime types: `InProcess` and `Sched` run
-//! without tokio; the QUIC transport needs a tokio runtime. Framing is proto's job.
+//! Traits use `impl Future + Send` returns and no runtime types: `P2p` over `MemUdp` runs under
+//! `Sched` without tokio; the QUIC transport needs a tokio runtime. Framing is proto's job.
 #![forbid(unsafe_code)]
 
 mod error;
@@ -22,7 +22,7 @@ pub mod nat;
 pub mod p2p;
 
 pub use error::Error;
-pub use mem::{Faults, InProcess, MemConn, MemListener, MemRecv, MemSend, Net};
+pub use mem::{MemConn, MemRecv, MemSend, Net};
 pub use sched::{Sched, Spawner};
 pub use manage::Backoff;
 pub use lan::{Discovery, Found, LanConfig};
@@ -137,7 +137,7 @@ impl core::fmt::Debug for StaticSecret {
     }
 }
 
-/// What to listen on: a URL (`mem://name`, `quic://host:port`) and the static secret.
+/// What to listen on: a URL (`quic://host:port`, `peer://ip:port`) and the static secret.
 #[derive(Clone, Debug)]
 pub struct ListenConfig {
     pub url: String,

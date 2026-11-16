@@ -81,7 +81,7 @@ Each only made a bug unlikely (class X); the code ends by a fixpoint, a window o
 | p2p `COPY_BUF` 16 KiB (per forwarded direction) | M (memory per stream vs reads per byte) | no progress / unbounded buffer |
 | p2p `PARK_MS` = `IDLE_TIMEOUT` (a direct connection found after a relayed one waits for the redial) | M (past it the next dial goes relayed and punches again) | never switches / an unclaimed connection kept forever |
 | lan `ROUTE_POLL` 5 s (`lan.rs` reads the routes' local addresses, provisional) | M (a network change is seen this much later) | busy loop / no fresh LAN key per network; registrations renew only at their relay connections' idle timeout |
-| nat model `RESEND_MS` 100, `DIAL_MS` = `IDLE_TIMEOUT` (per net `Net::set_dial_ms`) | M (test timing only) | busy loop / a failing dial never ends |
+| nat model `RESEND_MS` 100, `DIAL_MS` = `IDLE_TIMEOUT` | M (test timing only) | busy loop / a failing dial never ends |
 
 ### Sync (spec constants and policy)
 | value | class | 0 / ∞ |

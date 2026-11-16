@@ -1,4 +1,4 @@
-//! Redial backoff and a frame-shaped loopback session over InProcess (no tokio, no sleeps).
+//! Redial backoff and a frame-shaped loopback session over the in-process net (no tokio, no sleeps).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -20,24 +20,18 @@ fn backoff_grows_and_is_seeded() {
     assert!(b.next_delay_ms() <= 100);
 }
 
-// spec/wire.md §11.1: framed requests and replies on one stream, then a graceful close, under
-// latency, jitter and a bandwidth cap; nothing lost at the close.
+// spec/wire.md §11.1: framed requests and replies on one stream over a `peer://` connection,
+// then a graceful close; nothing lost at the close.
 #[test]
 fn framed_session_loopback() {
-    for seed in 0..4 {
-        let net = Net::new(seed);
-        net.set_faults(Faults { latency: 1, jitter: 3, bandwidth: Some(2000) });
-        let mut s = Sched::new(seed, Some(net.clone()));
-        let serving = net.endpoint("listener");
-        let mut l = s
-            .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
-            .unwrap();
-        let addr = l.address();
-        s.spawn(async move { common::serve(l.accept().await.unwrap()).await });
-        let cli = net.endpoint("cli");
-        let out = s.block_on(async move { common::client(cli.dial(&addr).await.unwrap(), 23).await }).unwrap();
-        assert_eq!(out.len(), 23);
-        assert_eq!(s.run(), 0, "host task finished");
-        assert_eq!(net.connections(), 0);
-    }
+    let net = Net::new(0);
+    let mut s = Sched::new(0, Some(net.clone()));
+    let serving = P2p::new(net.udp("192.0.2.1".parse().unwrap(), None));
+    let mut l = s.block_on(async move { serving.listen(ListenConfig { url: "peer://192.0.2.1:7000".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() }).unwrap();
+    let addr = l.address();
+    s.spawn(async move { common::serve(l.accept().await.unwrap()).await });
+    let cli = P2p::new(net.udp("192.0.2.2".parse().unwrap(), None));
+    let out = s.block_on(async move { common::client(cli.dial(&addr).await.unwrap(), 23).await }).unwrap();
+    assert_eq!(out.len(), 23);
+    assert_eq!(net.connections(), 0);
 }

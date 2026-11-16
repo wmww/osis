@@ -4,7 +4,7 @@
 //! every stream the dialer opens as a session (spec/sync-transport.md §2), finishes its side when a session
 //! ends, and closes only once the dialer closed or the connection sat idle without sessions.
 
-use crate::{Address, Connection, Error, Listener, Peer, PublicKey, Rank, RecvStream, SendStream, Source, Transport, RANK_DIRECT};
+use crate::{Address, Connection, Error, Listener, Peer, PublicKey, Rank, RecvStream, SendStream, Source, Transport};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -182,37 +182,6 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, wait: Duration) -> Result
     Ok(session(&c, send, recv, Some(c.clone()), None, wait))
 }
 
-/// Two ends of one in-process session, no transport between them: `a` sees `b_key` as its
-/// peer and `b` sees `a_key`. A node reaches its own listeners over one.
-pub fn pair(a_key: PublicKey, b_key: PublicKey) -> (Link, Link) {
-    let (a_tx, b_rx) = pipe();
-    let (b_tx, a_rx) = pipe();
-    (Link { peer_key: b_key, peer: Peer::Key(b_key), source: None, rank: RANK_DIRECT, tx: a_tx, rx: a_rx }, Link { peer_key: a_key, peer: Peer::Key(a_key), source: None, rank: RANK_DIRECT, tx: b_tx, rx: b_rx })
-}
-
-/// One direction of a `pair`: a pump moves what is sent into the receiver's bounded queue,
-/// counting it taken. Dropping the sender ends the receiver once the queue is drained.
-fn pipe() -> (LinkTx, LinkRx) {
-    let (tx, mut wrx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let queued = Arc::new(AtomicUsize::new(0));
-    let taken = Arc::new(AtomicU64::new(0));
-    let moved = Arc::new(tokio::sync::Notify::new());
-    let (q, t, m) = (queued.clone(), taken.clone(), moved.clone());
-    let (rtx, rrx) = mpsc::channel(1);
-    tokio::spawn(async move {
-        while let Some(b) = wrx.recv().await {
-            let n = b.len();
-            if rtx.send(b).await.is_err() {
-                break;
-            }
-            q.fetch_sub(n, Ordering::AcqRel);
-            t.fetch_add(n as u64, Ordering::AcqRel);
-            m.notify_one();
-        }
-    });
-    (LinkTx { tx, queued, taken, moved }, LinkRx { rx: rrx, want: Arc::default() })
-}
-
 /// Accepts connections on `l` and hands each stream they open to `out` as a session, until
 /// `out` or the listener closes; any number of them (spec/sync-transport.md §5 served connections). One
 /// with no live session for `idle` is closed. The listener, once `out` closes (to listen again
@@ -254,19 +223,18 @@ pub async fn serve_conn<C: Connection>(c: C, idle: Duration, wait: Duration, out
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::{ListenConfig, Net, StaticSecret};
+    use crate::{ListenConfig, Quic, StaticSecret};
 
     const W: Duration = Duration::from_secs(5);
 
     // spec/sync-transport.md §2, spec/wire.md §11.1: a session per dialer stream, peer keys as the transport authenticated them, bytes in order both ways, the end of one side ends the other's link
     #[tokio::test]
     async fn session_round_trip_and_end() {
-        let net = Net::new(0);
-        let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
+        let l = Quic::new().listen(ListenConfig { url: "quic://127.0.0.1:0".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(4);
         tokio::spawn(serve(l, W, W, out));
-        let mut a = dial(&net.endpoint("c"), &addr, W).await.unwrap();
+        let mut a = dial(&Quic::new(), &addr, W).await.unwrap();
         assert_eq!(a.peer_key, addr.key);
         assert!(a.tx.send(b"hi".to_vec(), usize::MAX));
         let mut b = incoming.recv().await.unwrap();
@@ -280,31 +248,14 @@ mod tests {
         assert_eq!(b.rx.recv().await, None);
     }
 
-    // spec/sync-transport.md §1: an in-process pair carries bytes in order both ways with each side's key,
-    // counts them taken, and ends the other side's link when one sender is dropped
-    #[tokio::test]
-    async fn pair_round_trip_and_end() {
-        let (mut a, mut b) = pair([1; 32], [2; 32]);
-        assert_eq!((a.peer_key, b.peer_key), ([2; 32], [1; 32]));
-        assert!(a.tx.send(b"one".to_vec(), usize::MAX) && a.tx.send(b"two".to_vec(), usize::MAX));
-        assert_eq!(b.rx.recv().await.unwrap(), b"one");
-        assert_eq!(b.rx.recv().await.unwrap(), b"two");
-        assert!(b.tx.send(b"back".to_vec(), usize::MAX));
-        assert_eq!(a.rx.recv().await.unwrap(), b"back");
-        assert_eq!(a.tx.taken(), 6);
-        drop(a.tx);
-        assert_eq!(b.rx.recv().await, None);
-    }
-
     // spec/sync-streams.md §1: `taken` counts what the transport took, piece by piece, for the stall timeout
     #[tokio::test]
     async fn taken_counts_written_bytes() {
-        let net = Net::new(0);
-        let l = net.endpoint("s").listen(ListenConfig { url: "mem://s".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
+        let l = Quic::new().listen(ListenConfig { url: "quic://127.0.0.1:0".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap();
         let addr = l.address();
         let (out, mut incoming) = mpsc::channel(4);
         tokio::spawn(serve(l, W, W, out));
-        let a = dial(&net.endpoint("c"), &addr, W).await.unwrap();
+        let a = dial(&Quic::new(), &addr, W).await.unwrap();
         let n = 3 * WRITE_CHUNK + 5;
         assert!(a.tx.send(vec![7; n], usize::MAX));
         let mut b = incoming.recv().await.unwrap();

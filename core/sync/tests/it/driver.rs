@@ -645,18 +645,6 @@ async fn dial_up<T: osis_transport::Transport>(ta: T, tb: T, url: &str) {
     served.abort();
 }
 
-// spec/sync-transport.md §1 (address): a configured address is dialed through the
-// product's `TransportLinks` over an in-process transport; the dial comes up and the peer's
-// session answers.
-#[test]
-fn transport_links_dial_in_process_spec_sync_transport_1() {
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    rt.block_on(async {
-        let net = osis_transport::Net::new(0);
-        dial_up(net.endpoint("a"), net.endpoint("b"), "mem://b").await;
-    });
-}
-
 // spec/sync-transport.md §5 (Key change: every listener moves to the new key): a listener set
 // listened again at the port it holds, under a new key, finds the port free (its listeners are
 // closed when `listen` returns), over real QUIC and `peer://` sockets on loopback; another set
@@ -754,10 +742,9 @@ fn a_listener_set_with_a_live_connection_listens_again_spec_sync_transport_5() {
     });
 }
 
-// spec/sync-transport.md §2 (QUIC v1), by hand: real QUIC on loopback: as above over `quic://`. Run with
-// `cargo test -p osis-sync --test it -- --ignored quic_loopback`.
+// spec/sync-transport.md §1 (address), §2 (QUIC v1): a configured address is dialed through the
+// product's `TransportLinks` over loopback QUIC; the dial comes up and the peer's session answers.
 #[test]
-#[ignore = "by hand: real sockets"]
 fn quic_loopback_smoke() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     rt.block_on(dial_up(osis_transport::Quic::new(), osis_transport::Quic::new(), "quic://127.0.0.1:0"));

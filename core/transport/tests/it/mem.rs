@@ -1,14 +1,30 @@
-//! InProcess transport and Sched: the trait contract (spec/sync-transport.md §1) without tokio or sleeps.
+//! The in-process net (`Net`, `MemUdp`) under `Sched`: the connection contract
+//! (spec/sync-transport.md §1) without tokio or sleeps, and `listen_all` over it.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{Classified, ErrorClass};
+use osis_transport::p2p::{Alpn, Sock, Udp};
 use osis_transport::*;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::net::SocketAddr;
 
 fn secret(b: u8) -> StaticSecret {
     StaticSecret::from_bytes([b; 32])
 }
+
+fn sa(s: &str) -> SocketAddr {
+    s.parse().unwrap()
+}
+
+/// A net under a scheduler, a socket accepting at `192.0.2.1:7000` (secret 7) and a host to dial from.
+fn setup() -> (Net, Sched, MemSock, MemSock) {
+    let net = Net::new(0);
+    let s = Sched::new(0, Some(net.clone()));
+    let l = net.udp(sa("192.0.2.1:0").ip(), None).bind(sa("192.0.2.1:7000"), Some(&secret(7))).unwrap();
+    let d = net.udp(sa("192.0.2.2:0").ip(), None).bind(sa("192.0.2.2:0"), None).unwrap();
+    (net, s, l, d)
+}
+
+const AT: &str = "192.0.2.1:7000";
 
 async fn read_to_end<R: RecvStream>(r: &mut R) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
@@ -22,371 +38,122 @@ async fn read_to_end<R: RecvStream>(r: &mut R) -> Result<Vec<u8>, Error> {
     }
 }
 
-/// Echo listener: for each connection, each stream: read to end, write it back, finish.
-fn echo_listener(sp: &Spawner, mut l: MemListener) {
-    let sp2 = sp.clone();
-    sp.spawn(async move {
-        while let Ok(c) = l.accept().await {
-            let sp3 = sp2.clone();
-            sp2.spawn(async move {
-                while let Ok((mut tx, mut rx)) = c.accept_stream().await {
-                    sp3.spawn(async move {
-                        if let Ok(d) = read_to_end(&mut rx).await {
-                            let _ = tx.write_all(&d).await;
-                            let _ = tx.finish().await;
-                        }
-                    });
-                }
-            });
-        }
-    });
-}
-
-/// A net under a scheduler, both seeded with `seed`, and a listener at `mem://listener` (secret 7).
-fn setup(seed: u64) -> (Net, Sched, MemListener, Address) {
-    let net = Net::new(seed);
-    let mut s = Sched::new(seed, Some(net.clone()));
-    let ep = net.endpoint("listener");
-    let l = s.block_on(async move { ep.listen(ListenConfig { url: "mem://listener".into(), secret: secret(7) }).await.unwrap() }).unwrap();
-    let addr = l.address();
-    (net, s, l, addr)
-}
-
-async fn echo(c: &MemConn, data: &[u8]) -> Vec<u8> {
-    let (mut tx, mut rx) = c.open_stream().await.unwrap();
-    tx.write_all(data).await.unwrap();
-    tx.finish().await.unwrap();
-    read_to_end(&mut rx).await.unwrap()
-}
-
-// spec/sync-transport.md §1: ordered bidirectional byte stream; the dialer checks the listener's key; ephemeral dialer keys.
+// spec/sync-transport.md §1: ordered bidirectional streams; the dialer checks the listener's key
+// and presents a fresh ephemeral key per connection.
 #[test]
 fn round_trip_and_keys() {
-    let (net, mut s, l, addr) = setup(0);
-    assert_eq!(addr.key, secret(7).public_key());
-    echo_listener(&s.spawner(), l);
-    let cli = net.endpoint("cli");
+    let (_net, mut s, l, d) = setup();
+    let key = secret(7).public_key();
+    let mut bad = key;
+    bad[0] ^= 1;
     let out = s
         .block_on(async move {
-            let c1 = cli.dial(&addr).await.unwrap();
-            let c2 = cli.dial(&addr).await.unwrap();
-            assert_eq!(c1.peer_key(), addr.key);
-            let a = echo(&c1, b"hello").await;
-            let b = echo(&c2, b"world").await;
-            (a, b)
-        })
-        .unwrap();
-    assert_eq!(out, (b"hello".to_vec(), b"world".to_vec()));
-}
-
-// spec/sync-transport.md §1: each connection gets a fresh ephemeral dialer key, the listener's peer key.
-#[test]
-fn ephemeral_client_keys_differ() {
-    let (net, mut s, mut l, addr) = setup(0);
-    let cli = net.endpoint("cli");
-    let keys = s
-        .block_on(async move {
-            let _c1 = cli.dial(&addr).await.unwrap();
-            let _c2 = cli.dial(&addr).await.unwrap();
-            let s1 = l.accept().await.unwrap();
-            let s2 = l.accept().await.unwrap();
-            (s1.peer_key(), s2.peer_key(), addr.key)
-        })
-        .unwrap();
-    assert_ne!(keys.0, keys.1);
-    assert_ne!(keys.0, keys.2);
-}
-
-// spec/sync-transport.md §1 (node key check): the dialer checks the listener's key against the address.
-#[test]
-fn pinned_key_mismatch_refused() {
-    let (net, mut s, _l, mut addr) = setup(0);
-    addr.key[0] ^= 1;
-    let cli = net.endpoint("cli");
-    let r = s.block_on(async move { cli.dial(&addr).await.map(|_| ()) }).unwrap();
-    assert_eq!(r, Err(Error::KeyMismatch));
-    assert_eq!(Error::KeyMismatch.class(), ErrorClass::BadInput);
-    assert_eq!(net.connections(), 0);
-}
-
-// spec: none (URL scheme dispatch; an unknown scheme parks, notes/architecture.md §3)
-#[test]
-fn unknown_scheme_and_unreachable() {
-    let net = Net::new(0);
-    let mut s = Sched::new(0, Some(net.clone()));
-    let cli = net.endpoint("cli");
-    let r = s
-        .block_on(async move {
-            let a = cli.dial(&Address { url: "carrier-pigeon://x".into(), key: [0; 32] }).await.map(|_| ());
-            let b = cli.dial(&Address { url: "mem://nobody".into(), key: [0; 32] }).await.map(|_| ());
-            (a, b)
-        })
-        .unwrap();
-    assert_eq!(r.0, Err(Error::UnknownScheme("carrier-pigeon".into())));
-    assert_eq!(r.0.unwrap_err().class(), ErrorClass::Parked);
-    assert!(matches!(r.1, Err(Error::Unreachable(_))));
-}
-
-// spec/sync-transport.md §1: a partition holds data and refuses dials; after healing the stream completes intact.
-#[test]
-fn partition_heals() {
-    let (net, mut s, l, addr) = setup(0);
-    echo_listener(&s.spawner(), l);
-    let cli = net.endpoint("cli");
-    let (c1, a1) = (cli.clone(), addr.clone());
-    let c = s.block_on(async move { c1.dial(&a1).await.unwrap() }).unwrap();
-    net.partition("cli", "listener");
-    let a2 = addr.clone();
-    let refused = s.block_on(async move { cli.dial(&a2).await.map(|_| ()) }).unwrap();
-    assert!(matches!(refused, Err(Error::Unreachable(_))));
-    let got = Rc::new(RefCell::new(None));
-    let g = got.clone();
-    s.spawn(async move {
-        *g.borrow_mut() = Some(echo(&c, b"through the cut").await);
-    });
-    assert!(s.run() > 0);
-    assert!(got.borrow().is_none());
-    net.heal("cli", "listener");
-    s.run();
-    assert_eq!(got.borrow().as_deref(), Some(&b"through the cut"[..]));
-}
-
-// spec/sync-transport.md §1: a reset connection fails pending and later operations on both sides.
-#[test]
-fn disconnect_resets() {
-    let (net, mut s, mut l, addr) = setup(0);
-    let cli = net.endpoint("cli");
-    let res = Rc::new(RefCell::new(Vec::new()));
-    let r1 = res.clone();
-    s.spawn(async move {
-        let c = l.accept().await.unwrap();
-        let (_tx, mut rx) = c.accept_stream().await.unwrap();
-        let mut b = [0u8; 8];
-        let a = rx.read(&mut b).await;
-        r1.borrow_mut().push(a);
-        let a = rx.read(&mut b).await;
-        r1.borrow_mut().push(a);
-        let a = c.accept_stream().await.map(|_| 1);
-        r1.borrow_mut().push(a);
-    });
-    let n2 = net.clone();
-    let c = s
-        .block_on(async move {
-            let c = cli.dial(&addr).await.unwrap();
-            let (mut tx, _rx) = c.open_stream().await.unwrap();
-            tx.write_all(b"x").await.unwrap();
-            n2.sleep(1).await;
-            (c, tx)
-        })
-        .unwrap();
-    net.disconnect("listener", "cli");
-    s.run();
-    assert_eq!(*res.borrow(), vec![Ok(1), Err(Error::Closed), Err(Error::Closed)]);
-    let (c, mut tx) = c;
-    let w = s.block_on(async move { tx.write_all(b"y").await }).unwrap();
-    assert_eq!(w, Err(Error::Closed));
-    assert!(s.block_on(async move { c.open_stream().await.map(|_| ()) }).unwrap().is_err());
-    assert_eq!(net.connections(), 0);
-}
-
-// spec: none (dropping the last handle of a side closes the connection)
-#[test]
-fn drop_closes() {
-    let (net, mut s, mut l, addr) = setup(0);
-    let cli = net.endpoint("cli");
-    let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
-    let sc = s.block_on(async move { l.accept().await.unwrap() }).unwrap();
-    assert_eq!(net.connections(), 1);
-    drop(c);
-    assert_eq!(net.connections(), 0);
-    assert!(s.block_on(async move { sc.accept_stream().await.map(|_| ()) }).unwrap().is_err());
-}
-
-/// Runs a faulty-network scenario; returns the delivery log (virtual step, client, bytes so far).
-fn scenario(seed: u64) -> Vec<(u64, usize, usize)> {
-    let (net, mut s, l, addr) = setup(seed);
-    net.set_faults(Faults { latency: 2, jitter: 5, bandwidth: Some(1000) });
-    echo_listener(&s.spawner(), l);
-    let log = Rc::new(RefCell::new(Vec::new()));
-    for i in 0..3usize {
-        let (cli, addr, log, net) = (net.endpoint(&format!("c{i}")), addr.clone(), log.clone(), net.clone());
-        s.spawn(async move {
-            let c = cli.dial(&addr).await.unwrap();
-            let data: Vec<u8> = (0..5000u32).map(|k| (k as usize * 7 + i) as u8).collect();
-            let (mut tx, mut rx) = c.open_stream().await.unwrap();
-            for part in data.chunks(700) {
+            assert_eq!(d.dial(sa(AT), bad, None, Alpn::Osis).await.map(|_| ()), Err(Error::KeyMismatch));
+            let (c1, _) = d.dial(sa(AT), key, None, Alpn::Osis).await.unwrap();
+            let (c2, _) = d.dial(sa(AT), key, None, Alpn::Osis).await.unwrap();
+            assert_eq!(c1.peer_key(), key);
+            let (s1, _, _) = l.accept().await.unwrap();
+            let (s2, _, _) = l.accept().await.unwrap();
+            assert_ne!(s1.peer_key(), s2.peer_key());
+            assert_ne!(s1.peer_key(), key);
+            let (mut tx, mut rx) = c1.open_stream().await.unwrap();
+            for part in [&b"hel"[..], b"lo"] {
                 tx.write_all(part).await.unwrap();
             }
             tx.finish().await.unwrap();
-            let mut got = Vec::new();
-            let mut buf = [0u8; 512];
-            loop {
-                let n = rx.read(&mut buf).await.unwrap();
-                if n == 0 {
-                    break;
-                }
-                got.extend_from_slice(&buf[..n]);
-                log.borrow_mut().push((net.now(), i, got.len()));
-            }
-            assert_eq!(got, data);
-        });
-    }
-    assert_eq!(s.run(), 1); // the echo accept loop stays blocked
-    log.take()
+            let (mut tx2, mut rx2) = s1.accept_stream().await.unwrap();
+            let got = read_to_end(&mut rx2).await.unwrap();
+            tx2.write_all(&got).await.unwrap();
+            tx2.finish().await.unwrap();
+            drop(c2);
+            read_to_end(&mut rx).await.unwrap()
+        })
+        .unwrap();
+    assert_eq!(out, b"hello");
+    assert_eq!(Error::KeyMismatch.class(), ErrorClass::BadInput);
 }
 
-// spec/sync-transport.md §1: ordered streams under latency, jitter and a bandwidth cap; same seed, same run.
+// spec/sync-transport.md §1: a reset connection fails pending and later operations on both
+// sides; dropping a side's last handle resets it; nothing stays behind.
 #[test]
-fn deterministic_under_seed() {
-    let a = scenario(0);
-    assert_eq!(a.iter().filter(|e| e.2 == 5000).count(), 3);
-    assert!(a.last().unwrap().0 >= 10, "bandwidth cap spreads delivery over steps");
-    assert_eq!(a, scenario(0));
-    assert_ne!(a, scenario(1));
+fn close_resets_both_sides() {
+    let (net, mut s, l, d) = setup();
+    let key = secret(7).public_key();
+    let (c, a) = s.block_on(async move { (d.dial(sa(AT), key, None, Alpn::Osis).await.unwrap().0, l.accept().await.unwrap().0) }).unwrap();
+    let (c2, a2) = (c.clone(), a.clone());
+    let pending = s.block_on(async move {
+        let (mut tx, _rx) = c2.open_stream().await.unwrap();
+        tx.write_all(b"x").await.unwrap();
+        let (_tx, mut rx) = a2.accept_stream().await.unwrap();
+        let mut b = [0u8; 8];
+        assert_eq!(rx.read(&mut b).await, Ok(1));
+        (tx, rx)
+    });
+    let (mut tx, mut rx) = pending.unwrap();
+    a.close();
+    let r = s.block_on(async move { (rx.read(&mut [0u8; 8]).await, tx.write_all(b"y").await) }).unwrap();
+    assert_eq!(r, (Err(Error::Closed), Err(Error::Closed)));
+    let c2 = c.clone();
+    assert!(s.block_on(async move { c2.open_stream().await.map(|_| ()) }).unwrap().is_err());
+    assert_eq!(net.connections(), 0);
+    // dropping the last handle of a side closes it for the other
+    let d = net.udp(sa("192.0.2.4:0").ip(), None).bind(sa("192.0.2.4:0"), None).unwrap();
+    drop((c, a));
+    let l = net.udp(sa("192.0.2.5:0").ip(), None).bind(sa("192.0.2.5:7000"), Some(&secret(7))).unwrap();
+    let (c, a) = s.block_on(async move { (d.dial(sa("192.0.2.5:7000"), key, None, Alpn::Osis).await.unwrap().0, l.accept().await.unwrap().0) }).unwrap();
+    assert_eq!(net.connections(), 1);
+    drop(c);
+    assert_eq!(net.connections(), 0);
+    assert!(s.block_on(async move { a.accept_stream().await.map(|_| ()) }).unwrap().is_err());
 }
 
-// spec/sync-transport.md §1: a large transfer arrives intact and in order through a capped link.
+// spec/sync-transport.md §1: closing a socket resets connections it never accepted: the dialer
+// sees Closed, no hang.
 #[test]
-fn large_transfer_capped() {
-    let (net, mut s, l, addr) = setup(0);
-    net.set_faults(Faults { latency: 1, jitter: 0, bandwidth: Some(64 * 1024) });
-    echo_listener(&s.spawner(), l);
-    let cli = net.endpoint("cli");
-    let data: Vec<u8> = (0..(4u32 << 20)).map(|k| (k ^ (k >> 11)) as u8).collect();
-    let d2 = data.clone();
-    let got = s.block_on(async move { echo(&cli.dial(&addr).await.unwrap(), &d2).await }).unwrap();
-    assert!(got == data);
-    assert!(net.now() >= 128, "two directions of 64 steps each");
+fn socket_close_resets_queued() {
+    let (net, mut s, l, d) = setup();
+    let key = secret(7).public_key();
+    let c = s.block_on(async move { d.dial(sa(AT), key, None, Alpn::Osis).await.unwrap().0 }).unwrap();
+    drop(l);
+    assert_eq!(s.block_on(async move { c.open_stream().await.map(|_| ()) }).unwrap(), Err(Error::Closed));
+    assert_eq!(net.connections(), 0);
 }
 
-// spec: none (virtual timers fire by step, never by wall time)
+// spec: none (virtual timers fire by model time, never by wall time)
 #[test]
 fn virtual_sleep() {
     let net = Net::new(0);
     let mut s = Sched::new(0, Some(net.clone()));
     let n = net.clone();
-    let at = s.block_on(async move {
+    assert_eq!(s.block_on(async move {
         n.sleep(5).await;
         n.now()
-    });
-    assert_eq!(at, Some(5));
-}
-
-// spec/sync-transport.md §1: closing a listener resets connections it never accepted; the dialer sees Closed, no hang.
-#[test]
-fn listener_close_resets_queued() {
-    let (net, mut s, l, addr) = setup(0);
-    let cli = net.endpoint("cli");
-    let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
-    drop(l);
-    let r = s.block_on(async move { c.open_stream().await.map(|_| ()) }).unwrap();
-    assert_eq!(r, Err(Error::Closed));
-    assert_eq!(net.connections(), 0);
-}
-
-// spec/sync-transport.md §1: a pending read on a queued connection ends when the listener closes.
-#[test]
-fn listener_close_ends_pending_read() {
-    let (net, mut s, l, addr) = setup(0);
-    let cli = net.endpoint("cli");
-    let got = Rc::new(RefCell::new(None));
-    let g = got.clone();
-    s.spawn(async move {
-        let c = cli.dial(&addr).await.unwrap();
-        let (mut tx, mut rx) = c.open_stream().await.unwrap();
-        tx.write_all(b"hello").await.unwrap();
-        let mut b = [0u8; 4];
-        let r = rx.read(&mut b).await;
-        *g.borrow_mut() = Some(r);
-    });
-    assert_eq!(s.run(), 1);
-    drop(l);
-    assert_eq!(s.run(), 0);
-    assert_eq!(*got.borrow(), Some(Err(Error::Closed)));
-}
-
-type Log = Vec<(u64, usize, usize)>;
-
-/// Three clients echo through a partition, a heal and a kill; returns the delivery log and outcomes.
-fn faulty(seed: u64) -> (Log, Vec<(usize, bool)>) {
-    let (net, mut s, l, addr) = setup(seed);
-    net.set_faults(Faults { latency: 1, jitter: 4, bandwidth: Some(0) }); // 0 is taken as 1
-    s.set_max_steps(200_000);
-    echo_listener(&s.spawner(), l);
-    let log = Rc::new(RefCell::new(Vec::new()));
-    let ends = Rc::new(RefCell::new(Vec::new()));
-    for i in 0..3usize {
-        let (cli, addr, log, ends, net) = (net.endpoint(&format!("c{i}")), addr.clone(), log.clone(), ends.clone(), net.clone());
-        s.spawn(async move {
-            let c = cli.dial(&addr).await.unwrap();
-            let (mut tx, mut rx) = c.open_stream().await.unwrap();
-            let data = vec![i as u8; 300];
-            let r = async {
-                tx.write_all(&data).await?;
-                tx.finish().await?;
-                let mut got = 0;
-                let mut buf = [0u8; 64];
-                loop {
-                    let n = rx.read(&mut buf).await?;
-                    if n == 0 {
-                        return Ok::<_, Error>(got);
-                    }
-                    got += n;
-                    log.borrow_mut().push((net.now(), i, got));
-                }
-            }
-            .await;
-            ends.borrow_mut().push((i, r == Ok(300)));
-        });
-    }
-    let n2 = net.clone();
-    s.spawn(async move {
-        n2.sleep(5).await;
-        n2.partition("c0", "listener");
-        n2.sleep(40).await;
-        n2.heal("c0", "listener");
-        n2.kill("c2");
-    });
-    s.run();
-    assert!(!s.capped());
-    (log.take(), ends.take())
-}
-
-// spec/sync-transport.md §1: partitions, heals and kills replay identically under one seed; streams never corrupt.
-#[test]
-fn deterministic_with_partition_heal_kill() {
-    let a = faulty(0);
-    let mut ends = a.1.clone();
-    ends.sort();
-    assert_eq!(ends, vec![(0, true), (1, true), (2, false)]);
-    assert_eq!(a, faulty(0));
+    }), Some(5));
 }
 
 // spec/sync-transport.md §5 (one key; key change): every listener listens under the one key; a
 // URL that cannot be listened on is an error naming it, never an `Ok`, and leaves none of the
-// others listening; the old listeners handed in close first, so the new key listens at the same URLs.
+// others listening; the old listeners handed in keep their sockets under the new key.
 #[test]
 fn listen_all_is_all_or_none() {
     let net = Net::new(0);
     let mut s = Sched::new(0, Some(net.clone()));
-    let ep = net.endpoint("n");
-    let other = net.endpoint("o");
-    let urls: Vec<String> = vec!["mem://n-1".into(), "mem://n-2".into()];
+    let host = net.udp(sa("192.0.2.1:0").ip(), None);
+    let (p, other) = (P2p::new(host.clone()), P2p::new(net.udp(sa("192.0.2.9:0").ip(), None)));
+    let urls: Vec<String> = vec!["peer://192.0.2.1:7001".into(), "peer://192.0.2.1:7002".into()];
     let done = s.block_on(async move {
-        let ls = listen_all(&ep, Vec::new(), &urls, &secret(1)).await.unwrap();
+        let ls = listen_all(&p, Vec::new(), &urls, &secret(1)).await.unwrap();
         assert!(ls.iter().all(|l| l.address().key == secret(1).public_key()));
-        // a relisten while the old listeners hold the URLs fails, naming the URL, and closes what it made
-        let taken = ep.listen(ListenConfig { url: "mem://n-3".into(), secret: secret(9) }).await.unwrap();
-        let more = [urls.clone(), vec!["mem://n-3".into()]].concat();
-        // the old listeners close before the fresh ones listen
-        let err = listen_all(&ep, ls, &more, &secret(2)).await.err();
-        assert!(matches!(&err, Some(Error::Listen(u, _)) if u == "mem://n-3"), "{err:?}");
+        let taken = host.bind(sa("192.0.2.1:7003"), None).unwrap();
+        let more = [urls.clone(), vec!["peer://192.0.2.1:7003".into()]].concat();
+        let err = listen_all(&p, ls, &more, &secret(2)).await.err();
+        assert!(matches!(&err, Some(Error::Listen(u, _)) if u == "peer://192.0.2.1:7003"), "{err:?}");
         let key2 = secret(2).public_key();
-        assert!(matches!(other.dial(&Address { url: "mem://n-1".into(), key: key2 }).await, Err(Error::Unreachable(_))), "none left listening");
+        assert!(other.dial(&Address { url: "peer://192.0.2.1:7001".into(), key: key2 }).await.is_err(), "none left listening");
         drop(taken);
-        let ls = listen_all(&ep, Vec::new(), &more, &secret(2)).await.unwrap();
-        assert!(other.dial(&Address { url: "mem://n-1".into(), key: key2 }).await.is_ok());
-        assert!(matches!(other.dial(&Address { url: "mem://n-2".into(), key: secret(1).public_key() }).await, Err(Error::KeyMismatch)), "nothing under the old key");
+        let ls = listen_all(&p, Vec::new(), &more, &secret(2)).await.unwrap();
+        assert!(other.dial(&Address { url: "peer://192.0.2.1:7001".into(), key: key2 }).await.is_ok());
+        assert!(matches!(other.dial(&Address { url: "peer://192.0.2.1:7002".into(), key: secret(1).public_key() }).await, Err(Error::KeyMismatch)), "nothing under the old key");
         ls.len()
     });
     assert_eq!(done, Some(3));

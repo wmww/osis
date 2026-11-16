@@ -1,4 +1,4 @@
-//! Frame-shaped sessions shared by the InProcess and QUIC loopback tests: 4-byte big-endian
+//! Frame-shaped sessions shared by the in-process and QUIC loopback tests: 4-byte big-endian
 //! length frames (spec/wire.md §11.1), without proto.
 
 use osis_transport::*;

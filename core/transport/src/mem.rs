@@ -1,81 +1,43 @@
-//! `InProcess`: endpoints on a shared `Net`, connections as in-memory pipes, faults driven by
-//! a virtual step counter and a seeded rng. Runs under `Sched` (deterministic, no tokio) or any
-//! executor. With no latency, jitter or bandwidth cap, a write is readable at once; otherwise
-//! data waits for `Net::step` (which `Sched` calls when every task is blocked).
-//!
-//! Faults: per-chunk `latency` plus seeded `jitter` (per-stream order is kept, so jitter only
-//! reorders deliveries across streams and connections); a per-pipe `bandwidth` cap in bytes per
-//! step; `partition` (dials fail, in-flight data waits until `heal`); `disconnect`/`kill`
-//! (connections reset). Streams never lose or reorder bytes: that is the contract.
+//! `Net`: the in-process network under the NAT model (`nat`; a test network, spec: none): virtual
+//! time (model milliseconds, timers), a seeded rng, and connections as in-memory pipes. Runs under
+//! `Sched` (deterministic, no tokio). A write is readable at once; streams never lose or reorder
+//! bytes.
 
 use crate::util::{lock, Rng};
-use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, Transport};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::net::SocketAddr;
+use crate::{Connection, Error, PublicKey, RecvStream, SendStream};
+use std::collections::{BTreeMap, VecDeque};
 use std::future::{poll_fn, Future};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
-
-/// URL scheme of in-process listeners: `mem://name`.
-pub const SCHEME: &str = "mem";
-
-/// Wall milliseconds between `Net::run_on_tokio`'s looks at the clock (minor: how late a model
-/// timer fires, at most about this; 0: the task spins).
-const PUMP_MS: u64 = 1;
-
-/// Fault settings; the default is a perfect network.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Faults {
-    /// Steps between a write and its delivery.
-    pub latency: u64,
-    /// Extra seeded delay per chunk, `0..=jitter` steps.
-    pub jitter: u64,
-    /// Bytes per step per stream direction; `None` = unlimited.
-    pub bandwidth: Option<usize>,
-}
 
 /// The shared in-process network. Clones share it.
 #[derive(Clone)]
 pub struct Net(Arc<Mutex<State>>);
 
 pub(crate) struct State {
-    step: u64,
+    now: u64,
     rng: Rng,
-    faults: Faults,
-    listeners: BTreeMap<String, Lst>,
     conns: BTreeMap<u64, Conn>,
-    cut: BTreeSet<(String, String)>,
     timers: BTreeMap<(u64, u64), Waker>,
     next_id: u64,
     /// Hosts, NATs and sockets of the NAT model (`nat`).
     pub(crate) udp: crate::nat::Udp,
     /// Tasks spawned through the net (`Net::spawn`), for `Sched` to take.
     spawned: Vec<Spawned>,
-    /// Where `Net::spawn` runs tasks instead (`Net::run_on_tokio`).
-    tokio: Option<tokio::runtime::Handle>,
 }
 
 /// A task spawned through a `Net`.
 pub(crate) type Spawned = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
 
-struct Lst {
-    id: u64,
-    endpoint: String,
-    key: PublicKey,
-    queue: VecDeque<u64>,
-    waker: Option<Waker>,
-}
-
 /// Side 0 dialed, side 1 accepted.
 struct Conn {
-    ends: [String; 2],
     keys: [PublicKey; 2],
     streams: BTreeMap<u64, Strm>,
     accept: [VecDeque<u64>; 2],
     accept_waker: [Option<Waker>; 2],
     next_stream: u64,
-    /// Reset: operations fail; kept until the other side's handle drops so a `finish` can
-    /// still tell whether its data got through.
+    /// Reset: operations fail; kept until both sides' handles drop.
     closed: bool,
     /// Sides whose last handle dropped (side 1 counts as dropped until accepted); the entry
     /// goes when both have.
@@ -91,19 +53,29 @@ struct Strm {
     opener: usize,
     /// `pipes[i]` carries what side `i` writes.
     pipes: [Pipe; 2],
+    /// The opener's first write or finish showed the stream to the peer's `accept_stream`.
+    announced: bool,
     /// Live halves (`MemSend`, `MemRecv`) per side; the stream goes once the peer accepted it
     /// and every half dropped.
     halves: [u8; 2],
     accepted: bool,
 }
 
-impl Conn {
-    /// A connection between endpoints `ends` (side 0 dialed) presenting `keys`, side 1 not yet
-    /// accepted; side `i` may have `limit[i]` streams open at once.
-    fn new(ends: [String; 2], keys: [PublicKey; 2], limit: [usize; 2]) -> Conn {
-        Conn { ends, keys, streams: BTreeMap::new(), accept: [VecDeque::new(), VecDeque::new()], accept_waker: [None, None], next_stream: 0, closed: false, dropped: [false, true], limit, open_waker: [None, None] }
-    }
+#[derive(Default)]
+struct Pipe {
+    data: VecDeque<u8>,
+    /// The writer finished: the reader reads `Ok(0)` after `data`.
+    fin: bool,
+    waker: Option<Waker>,
+}
 
+pub(crate) fn wake(w: &mut Option<Waker>) {
+    if let Some(w) = w.take() {
+        w.wake();
+    }
+}
+
+impl Conn {
     /// Drops one half of stream `s` on `side`, and the stream once nothing can use it.
     fn drop_half(&mut self, s: u64, side: usize) {
         let Some(st) = self.streams.get_mut(&s) else { return };
@@ -123,175 +95,25 @@ impl Conn {
         self.streams.values().filter(|s| s.opener == side && !(s.accepted && s.halves.get(1 - side) == Some(&0))).count()
     }
 
-    /// Its endpoints, ordered as `pair`.
-    fn pair(&self) -> (String, String) {
-        let [a, b] = &self.ends;
-        pair(a, b)
-    }
-
-    /// A handle on side `side` (0 or 1) of this connection `id`, which sees the other end at
-    /// `remote` (a NAT-model socket's connection) or else by its endpoint name.
-    fn handle(&self, net: &Net, id: u64, side: usize, remote: Option<SocketAddr>) -> MemConn {
-        let ([k0, k1], [e0, e1]) = (&self.keys, &self.ends);
-        let (peer, end) = if side == 0 { (*k1, e1) } else { (*k0, e0) };
-        let source = remote.map_or_else(|| name_source(end), |r| crate::ip_source(r.ip()));
-        MemConn(Arc::new(Handle { net: net.clone(), id, side, peer, source }))
-    }
-}
-
-#[derive(Default)]
-struct Pipe {
-    flight: VecDeque<Chunk>,
-    ready: VecDeque<u8>,
-    fin: bool,
-    fin_sent: bool,
-    announced: bool,
-    last_at: u64,
-    /// (step, bytes delivered in that step) for the bandwidth cap.
-    used: (u64, usize),
-    waker: Option<Waker>,
-    /// A `finish` waiting for the flight to drain.
-    send_waker: Option<Waker>,
-}
-
-struct Chunk {
-    at: u64,
-    data: Vec<u8>,
-    fin: bool,
-}
-
-fn pair(a: &str, b: &str) -> (String, String) {
-    if a <= b { (a.to_owned(), b.to_owned()) } else { (b.to_owned(), a.to_owned()) }
-}
-
-pub(crate) fn wake(w: &mut Option<Waker>) {
-    if let Some(w) = w.take() {
-        w.wake();
-    }
-}
-
-impl Conn {
-    fn wake_all(&mut self) {
-        for s in self.streams.values_mut() {
-            for p in &mut s.pipes {
-                wake(&mut p.waker);
-                wake(&mut p.send_waker);
-            }
-        }
-        for w in self.accept_waker.iter_mut().chain(&mut self.open_waker) {
-            wake(w);
-        }
-    }
-
-    /// Moves due chunks to the readers, within the bandwidth cap.
-    fn deliver(&mut self, step: u64, bandwidth: Option<usize>) {
-        for (&id, s) in self.streams.iter_mut() {
-            for side in 0..2 {
-                let Some(p) = s.pipes.get_mut(side) else { continue };
-                let mut moved = false;
-                while let Some(c) = p.flight.front_mut() {
-                    if c.at > step {
-                        break;
-                    }
-                    if p.used.0 != step {
-                        p.used = (step, 0);
-                    }
-                    let room = bandwidth.map_or(usize::MAX, |b| b.saturating_sub(p.used.1));
-                    if room == 0 && !c.data.is_empty() {
-                        break;
-                    }
-                    let n = c.data.len().min(room);
-                    p.ready.extend(c.data.drain(..n));
-                    p.used.1 = p.used.1.saturating_add(n);
-                    moved = true;
-                    if !c.data.is_empty() {
-                        break;
-                    }
-                    if c.fin {
-                        p.fin = true;
-                    }
-                    p.flight.pop_front();
-                }
-                if moved {
-                    wake(&mut p.waker);
-                    if p.flight.is_empty() {
-                        wake(&mut p.send_waker);
-                    }
-                    if side == s.opener && !p.announced {
-                        p.announced = true;
-                        let peer = 1 - side;
-                        if let (Some(q), Some(w)) = (self.accept.get_mut(peer), self.accept_waker.get_mut(peer)) {
-                            q.push_back(id);
-                            wake(w);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn has_flight(&self) -> bool {
-        self.streams.values().any(|s| s.pipes.iter().any(|p| !p.flight.is_empty()))
+    /// A handle on side `side` (0 or 1) of this connection `id`, which sees the other end at `remote`.
+    fn handle(&self, net: &Net, id: u64, side: usize, remote: SocketAddr) -> MemConn {
+        let peer = self.keys.get(1 - side).copied().unwrap_or_default();
+        MemConn(Arc::new(Handle { net: net.clone(), id, side, peer, source: crate::ip_source(remote.ip()) }))
     }
 }
 
 impl State {
-    fn is_cut(&self, c: &Conn) -> bool {
-        self.cut.contains(&c.pair())
-    }
-
-    /// Whether data not held by a partition is in flight.
-    fn in_flight(&self) -> bool {
-        self.conns.values().any(|c| !self.is_cut(c) && c.has_flight())
-    }
-
-    /// Resets every open connection `f` picks.
-    fn close_where(&mut self, f: impl Fn(&Conn) -> bool) {
-        let ids: Vec<u64> = self.conns.iter().filter(|(_, c)| !c.closed && f(c)).map(|(i, _)| *i).collect();
-        for id in ids {
-            self.close(id);
-        }
-    }
-
-    fn deliver_conn(&mut self, id: u64) {
-        let (step, bw) = (self.step, self.faults.bandwidth);
-        let cut = match self.conns.get(&id) {
-            Some(c) => self.is_cut(c),
-            None => return,
-        };
-        if let (false, Some(c)) = (cut, self.conns.get_mut(&id)) {
-            c.deliver(step, bw);
-        }
-    }
-
-    fn deliver_all(&mut self) {
-        let ids: Vec<u64> = self.conns.keys().copied().collect();
-        for id in ids {
-            self.deliver_conn(id);
-        }
-    }
-
     pub(crate) fn close(&mut self, id: u64) {
         if let Some(c) = self.conns.get_mut(&id).filter(|c| !c.closed) {
             c.closed = true;
-            for st in c.streams.values_mut() {
-                for p in &mut st.pipes {
-                    p.flight.clear();
-                    p.ready.clear();
+            for s in c.streams.values_mut() {
+                for p in &mut s.pipes {
+                    p.data.clear();
+                    wake(&mut p.waker);
                 }
             }
-            c.wake_all();
-        }
-    }
-
-    /// Removes listener `name` (if `id` matches) and resets the connections queued on it.
-    fn drop_listener(&mut self, name: &str, id: Option<u64>) {
-        if self.listeners.get(name).is_some_and(|l| id.is_none_or(|i| i == l.id))
-            && let Some(mut l) = self.listeners.remove(name)
-        {
-            wake(&mut l.waker);
-            for c in l.queue {
-                self.close(c);
+            for w in c.accept_waker.iter_mut().chain(&mut c.open_waker) {
+                wake(w);
             }
         }
     }
@@ -309,24 +131,19 @@ impl State {
         &mut self.rng
     }
 
-    /// Whether endpoints `a` and `b` are partitioned.
-    pub(crate) fn cut(&self, a: &str, b: &str) -> bool {
-        self.cut.contains(&pair(a, b))
-    }
-
-    /// A new connection between endpoints `ends` (side 0 dialed) presenting `keys`, side 1 not
-    /// yet accepted (`accept_conn`), side `i` opening at most `limit[i]` streams at once; the
-    /// dialer's handle, which sees side 1 at `remote` (`Conn::handle`).
-    pub(crate) fn new_conn(&mut self, net: &Net, ends: [String; 2], keys: [PublicKey; 2], limit: [usize; 2], remote: Option<SocketAddr>) -> (u64, MemConn) {
+    /// A new connection presenting `keys` (side 0 dialed), side 1 not yet accepted
+    /// (`accept_conn`), side `i` opening at most `limit[i]` streams at once; the dialer's
+    /// handle, which sees side 1 at `remote`.
+    pub(crate) fn new_conn(&mut self, net: &Net, keys: [PublicKey; 2], limit: [usize; 2], remote: SocketAddr) -> (u64, MemConn) {
         let id = self.id();
-        let c = Conn::new(ends, keys, limit);
+        let c = Conn { keys, streams: BTreeMap::new(), accept: [VecDeque::new(), VecDeque::new()], accept_waker: [None, None], next_stream: 0, closed: false, dropped: [false, true], limit, open_waker: [None, None] };
         let h = c.handle(net, id, 0, remote);
         self.conns.insert(id, c);
         (id, h)
     }
 
-    /// Side 1 of connection `id`, which sees side 0 at `remote` (`Conn::handle`); `None` once reset.
-    pub(crate) fn accept_conn(&mut self, net: &Net, id: u64, remote: Option<SocketAddr>) -> Option<MemConn> {
+    /// Side 1 of connection `id`, which sees side 0 at `remote`; `None` once reset.
+    pub(crate) fn accept_conn(&mut self, net: &Net, id: u64, remote: SocketAddr) -> Option<MemConn> {
         let c = self.live(id)?;
         let [_, d1] = &mut c.dropped;
         *d1 = false;
@@ -336,111 +153,33 @@ impl State {
 
 impl Net {
     pub fn new(seed: u64) -> Net {
-        Net(Arc::new(Mutex::new(State {
-            step: 0,
-            rng: Rng::new(seed),
-            faults: Faults::default(),
-            listeners: BTreeMap::new(),
-            conns: BTreeMap::new(),
-            cut: BTreeSet::new(),
-            timers: BTreeMap::new(),
-            next_id: 0,
-            udp: crate::nat::Udp::default(),
-            spawned: Vec::new(),
-            tokio: None,
-        })))
+        Net(Arc::new(Mutex::new(State { now: 0, rng: Rng::new(seed), conns: BTreeMap::new(), timers: BTreeMap::new(), next_id: 0, udp: crate::nat::Udp::default(), spawned: Vec::new() })))
     }
 
     pub(crate) fn state(&self) -> std::sync::MutexGuard<'_, State> {
         lock(&self.0)
     }
 
-    /// Runs `f` as a task of the `Sched` stepping this net (from its next turn), or of the tokio
-    /// runtime after `run_on_tokio`.
+    /// Runs `f` as a task of the `Sched` stepping this net (from its next turn).
     pub fn spawn(&self, f: impl Future<Output = ()> + Send + 'static) {
-        let mut st = lock(&self.0);
-        match st.tokio.clone() {
-            Some(h) => {
-                drop(st);
-                h.spawn(f);
-            }
-            None => st.spawned.push(Box::pin(f)),
-        }
-    }
-
-    /// Drives this net on the current tokio runtime, for nodes whose drivers run there: what
-    /// `Sched` does, with `Net::spawn` onto that runtime and a task stepping the net. One model
-    /// millisecond is one wall millisecond (late steps catch up), so the transport's timers and
-    /// the engine's reactions share a clock. A dial nothing answers runs its full give-up
-    /// (`Net::set_dial_ms`).
-    ///
-    /// Panics outside a tokio runtime.
-    #[allow(clippy::expect_used)]
-    pub fn run_on_tokio(&self) {
-        let handle = tokio::runtime::Handle::try_current().expect("Net::run_on_tokio: on a tokio runtime");
-        lock(&self.0).tokio = Some(handle.clone());
-        let net = self.clone();
-        handle.spawn(async move {
-            let (start, base) = (std::time::Instant::now(), net.now());
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(PUMP_MS)).await;
-                let to = base.saturating_add(start.elapsed().as_millis() as u64);
-                while net.now() < to {
-                    net.step();
-                }
-            }
-        });
+        lock(&self.0).spawned.push(Box::pin(f));
     }
 
     pub(crate) fn take_spawned(&self) -> Vec<Spawned> {
         std::mem::take(&mut lock(&self.0).spawned)
     }
 
-    /// A transport whose dials and listeners belong to endpoint `name` (for partitions).
-    pub fn endpoint(&self, name: &str) -> InProcess {
-        InProcess { net: self.clone(), name: name.to_owned() }
+    /// Whether a timer is set.
+    pub(crate) fn pending(&self) -> bool {
+        !lock(&self.0).timers.is_empty()
     }
 
-    /// A `bandwidth` of `Some(0)` is taken as `Some(1)` (zero would stall forever).
-    pub fn set_faults(&self, mut f: Faults) {
-        f.bandwidth = f.bandwidth.map(|b| b.max(1));
-        lock(&self.0).faults = f;
-    }
-
-    /// Cuts endpoints `a` and `b` apart: dials fail, data in flight waits.
-    pub fn partition(&self, a: &str, b: &str) {
-        lock(&self.0).cut.insert(pair(a, b));
-    }
-
-    pub fn heal(&self, a: &str, b: &str) {
+    /// Moves time to the next timer and fires every timer due then.
+    pub(crate) fn advance(&self) {
         let mut st = lock(&self.0);
-        st.cut.remove(&pair(a, b));
-        st.deliver_all();
-    }
-
-    /// Resets every connection between endpoints `a` and `b`.
-    pub fn disconnect(&self, a: &str, b: &str) {
-        let p = pair(a, b);
-        lock(&self.0).close_where(|c| c.pair() == p);
-    }
-
-    /// Resets every connection of endpoint `a` and closes its listeners.
-    pub fn kill(&self, a: &str) {
-        let mut st = lock(&self.0);
-        st.close_where(|c| c.ends.iter().any(|e| e == a));
-        let names: Vec<String> = st.listeners.iter().filter(|(_, l)| l.endpoint == a).map(|(n, _)| n.clone()).collect();
-        for n in names {
-            st.drop_listener(&n, None);
-        }
-        st.kill_socks(a);
-    }
-
-    /// Advances virtual time one step: delivers due data, fires due timers.
-    pub fn step(&self) {
-        let mut st = lock(&self.0);
-        st.step = st.step.saturating_add(1);
-        st.deliver_all();
-        let now = st.step;
+        let Some(&(at, _)) = st.timers.keys().next() else { return };
+        st.now = st.now.max(at);
+        let now = st.now;
         while let Some(e) = st.timers.first_entry() {
             if e.key().0 > now {
                 break;
@@ -449,22 +188,9 @@ impl Net {
         }
     }
 
-    /// Jumps to the step before the next timer when nothing is in flight, so `step` fires it.
-    pub(crate) fn skip_idle(&self) {
-        let mut st = lock(&self.0);
-        if let (false, Some(&(at, _))) = (st.in_flight(), st.timers.keys().next()) {
-            st.step = st.step.max(at.saturating_sub(1));
-        }
-    }
-
+    /// Model milliseconds since the net was made.
     pub fn now(&self) -> u64 {
-        lock(&self.0).step
-    }
-
-    /// Whether stepping would deliver something or fire a timer (data held by a partition does not count).
-    pub fn pending(&self) -> bool {
-        let st = lock(&self.0);
-        !st.timers.is_empty() || st.in_flight()
+        lock(&self.0).now
     }
 
     /// Open connections.
@@ -472,14 +198,8 @@ impl Net {
         lock(&self.0).conns.values().filter(|c| !c.closed).count()
     }
 
-    /// Open connections between endpoints `a` and `b`.
-    pub fn connections_between(&self, a: &str, b: &str) -> usize {
-        let p = pair(a, b);
-        lock(&self.0).conns.values().filter(|c| !c.closed && c.pair() == p).count()
-    }
-
-    /// Completes after `steps` virtual steps.
-    pub fn sleep(&self, steps: u64) -> impl Future<Output = ()> + Send + use<> {
+    /// Completes after `ms` model milliseconds.
+    pub fn sleep(&self, ms: u64) -> impl Future<Output = ()> + Send + use<> {
         let net = self.clone();
         let mut key: Option<(u64, u64)> = None;
         poll_fn(move |cx| {
@@ -487,12 +207,12 @@ impl Net {
             let k = match key {
                 Some(k) => k,
                 None => {
-                    let k = (st.step.saturating_add(steps), st.id());
+                    let k = (st.now.saturating_add(ms), st.id());
                     key = Some(k);
                     k
                 }
             };
-            if st.step >= k.0 {
+            if st.now >= k.0 {
                 st.timers.remove(&k);
                 return Poll::Ready(());
             }
@@ -502,146 +222,14 @@ impl Net {
     }
 }
 
-/// An endpoint of a `Net`.
-#[derive(Clone)]
-pub struct InProcess {
-    net: Net,
-    name: String,
-}
-
-impl InProcess {
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-fn mem_name(url: &str) -> Result<&str, Error> {
-    crate::check_url(url)?;
-    match url.split_once("://") {
-        Some((SCHEME, n)) if !n.is_empty() => Ok(n),
-        Some((SCHEME, _)) | None => Err(Error::BadUrl(url.to_owned())),
-        Some((s, _)) => Err(Error::UnknownScheme(s.to_owned())),
-    }
-}
-
-impl Transport for InProcess {
-    type Conn = MemConn;
-    type Listener = MemListener;
-
-    fn dial(&self, addr: &Address) -> impl Future<Output = Result<MemConn, Error>> + Send {
-        std::future::ready(self.connect(addr))
-    }
-
-    fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<MemListener, Error>> + Send {
-        let r = (|| {
-            let name = mem_name(&cfg.url)?.to_owned();
-            let key = cfg.secret.public_key();
-            let mut st = lock(&self.net.0);
-            if st.listeners.contains_key(&name) {
-                return Err(Error::Io(format!("address in use: {}", cfg.url)));
-            }
-            let id = st.id();
-            st.listeners.insert(name.clone(), Lst { id, endpoint: self.name.clone(), key, queue: VecDeque::new(), waker: None });
-            Ok(MemListener { net: self.net.clone(), name, id, addr: Address { url: cfg.url, key } })
-        })();
-        std::future::ready(r)
-    }
-}
-
-impl InProcess {
-    fn connect(&self, addr: &Address) -> Result<MemConn, Error> {
-        let mut st = lock(&self.net.0);
-        let name = mem_name(&addr.url)?;
-        let Some(l) = st.listeners.get(name) else { return Err(Error::Unreachable(addr.url.clone())) };
-        let (lend, lkey) = (l.endpoint.clone(), l.key);
-        if st.cut(&self.name, &lend) {
-            return Err(Error::Unreachable(addr.url.clone()));
-        }
-        if lkey != addr.key {
-            return Err(Error::KeyMismatch);
-        }
-        let mine = st.rng.bytes32();
-        let (id, c) = st.new_conn(&self.net, [self.name.clone(), lend], [mine, lkey], [usize::MAX; 2], None);
-        if let Some(l) = st.listeners.get_mut(name) {
-            l.queue.push_back(id);
-            wake(&mut l.waker);
-        }
-        Ok(c)
-    }
-}
-
-pub struct MemListener {
-    net: Net,
-    name: String,
-    id: u64,
-    addr: Address,
-}
-
-impl Listener for MemListener {
-    type Conn = MemConn;
-
-    fn accept(&mut self) -> impl Future<Output = Result<MemConn, Error>> + Send {
-        poll_fn(|cx| {
-            let mut st = lock(&self.net.0);
-            loop {
-                let Some(l) = st.listeners.get_mut(&self.name).filter(|l| l.id == self.id) else {
-                    return Poll::Ready(Err(Error::Closed));
-                };
-                match l.queue.pop_front() {
-                    Some(id) => {
-                        if let Some(c) = st.accept_conn(&self.net, id, None) {
-                            return Poll::Ready(Ok(c));
-                        }
-                        // reset before accept: side 0 dropping removes it
-                    }
-                    None => {
-                        l.waker = Some(cx.waker().clone());
-                        return Poll::Pending;
-                    }
-                }
-            }
-        })
-    }
-
-    fn address(&self) -> Address {
-        self.addr.clone()
-    }
-
-    /// A closed listener frees its name at once.
-    async fn relisten(&mut self, _: &ListenConfig) -> Result<bool, Error> {
-        Ok(false)
-    }
-
-    fn close(&self) {
-        lock(&self.net.0).drop_listener(&self.name, Some(self.id));
-    }
-}
-
-impl Drop for MemListener {
-    fn drop(&mut self) {
-        self.close();
-    }
-}
-
 /// One side of a connection; the connection resets when the last handle of either side drops.
 struct Handle {
     net: Net,
     id: u64,
     side: usize,
     peer: PublicKey,
-    /// The other end's endpoint name hashed, or (a NAT-model socket) its address's source.
+    /// The other end's address's source.
     source: crate::Source,
-}
-
-fn name_source(name: &str) -> crate::Source {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    name.hash(&mut h);
-    let mut s = [0u8; 16];
-    if let Some(d) = s.get_mut(..8) {
-        d.copy_from_slice(&h.finish().to_be_bytes());
-    }
-    s
 }
 
 impl Drop for Handle {
@@ -693,7 +281,7 @@ impl Connection for MemConn {
             if let Some(n) = halves.get_mut(side) {
                 *n = 2;
             }
-            c.streams.insert(s, Strm { opener: side, pipes: [Pipe::default(), Pipe::default()], halves, accepted: false });
+            c.streams.insert(s, Strm { opener: side, pipes: [Pipe::default(), Pipe::default()], announced: false, halves, accepted: false });
             Poll::Ready(Ok(self.halves(s)))
         })
     }
@@ -740,78 +328,51 @@ pub struct MemSend {
 }
 
 impl MemSend {
-    /// Runs `f` on our pipe with the connection's closed flag.
-    fn pipe<R>(&self, f: impl FnOnce(&mut Pipe, bool) -> R) -> Option<R> {
-        let mut st = lock(&self.h.net.0);
-        let side = self.h.side;
-        let c = st.conns.get_mut(&self.h.id)?;
-        let closed = c.closed;
-        c.streams.get_mut(&self.s).and_then(|s| s.pipes.get_mut(side)).map(|p| f(p, closed))
-    }
-
+    /// Hands `data` (then, with `fin`, the end) to the reader; the opener's first push shows the
+    /// stream to the peer.
     fn push(&mut self, data: &[u8], fin: bool) -> Result<(), Error> {
         let mut st = lock(&self.h.net.0);
-        let (step, f) = (st.step, st.faults);
-        let delay = f.latency.saturating_add(st.rng.below(f.jitter.saturating_add(1)));
         let side = self.h.side;
-        let p = st
-            .live(self.h.id)
-            .and_then(|c| c.streams.get_mut(&self.s))
-            .and_then(|s| s.pipes.get_mut(side))
-            .ok_or(Error::Closed)?;
-        if p.fin_sent {
+        let c = st.live(self.h.id).ok_or(Error::Closed)?;
+        let s = c.streams.get_mut(&self.s).ok_or(Error::Closed)?;
+        let p = s.pipes.get_mut(side).ok_or(Error::Closed)?;
+        if p.fin {
             return Err(Error::Closed);
         }
-        let at = step.saturating_add(delay).max(p.last_at);
-        p.last_at = at;
-        p.fin_sent = fin;
-        p.flight.push_back(Chunk { at, data: data.to_vec(), fin });
-        st.deliver_conn(self.h.id);
+        p.data.extend(data);
+        p.fin = fin;
+        wake(&mut p.waker);
+        if s.opener == side && !s.announced {
+            s.announced = true;
+            if let (Some(q), Some(w)) = (c.accept.get_mut(1 - side), c.accept_waker.get_mut(1 - side)) {
+                q.push_back(self.s);
+                wake(w);
+            }
+        }
         Ok(())
+    }
+
+    /// Whether this side finished the stream.
+    fn finished(&self) -> bool {
+        let st = lock(&self.h.net.0);
+        st.conns.get(&self.h.id).and_then(|c| c.streams.get(&self.s)).and_then(|s| s.pipes.get(self.h.side)).is_some_and(|p| p.fin)
     }
 }
 
 impl SendStream for MemSend {
     fn write_all(&mut self, buf: &[u8]) -> impl Future<Output = Result<(), Error>> + Send {
-        let r = if buf.is_empty() { Ok(()) } else { self.push(buf, false) };
-        std::future::ready(r)
+        std::future::ready(if buf.is_empty() { Ok(()) } else { self.push(buf, false) })
     }
 
+    /// Done at once: what was written is the reader's already, even if the connection closed since.
     fn finish(&mut self) -> impl Future<Output = Result<(), Error>> + Send {
-        let mut pushed = None;
-        poll_fn(move |cx| {
-            if pushed.is_none() {
-                let sent = self.pipe(|p, closed| (p.fin_sent, closed));
-                pushed = Some(match sent {
-                    Some((false, false)) => self.push(&[], true),
-                    Some((true, _)) => Ok(()),
-                    _ => Err(Error::Closed),
-                });
-            }
-            if let Some(Err(e)) = &pushed {
-                return Poll::Ready(Err(e.clone()));
-            }
-            let w = cx.waker().clone();
-            // done once the fin (so all data) reached the peer, even if it closed since
-            match self.pipe(move |p, closed| {
-                if !p.fin && !closed {
-                    p.send_waker = Some(w);
-                }
-                (p.fin, closed)
-            }) {
-                Some((true, _)) => Poll::Ready(Ok(())),
-                Some((false, false)) => Poll::Pending,
-                _ => Poll::Ready(Err(Error::Closed)),
-            }
-        })
+        std::future::ready(if self.finished() { Ok(()) } else { self.push(&[], true) })
     }
 }
 
 impl Drop for MemSend {
     fn drop(&mut self) {
-        if self.pipe(|p, closed| p.fin_sent || closed) == Some(false) {
-            let _ = self.push(&[], true);
-        }
+        let _ = self.push(&[], true);
         if let Some(c) = lock(&self.h.net.0).conns.get_mut(&self.h.id) {
             c.drop_half(self.s, self.h.side);
         }
@@ -835,9 +396,9 @@ impl RecvStream for MemRecv {
             let Some(p) = st.live(self.h.id).and_then(|c| c.streams.get_mut(&self.s)).and_then(|s| s.pipes.get_mut(peer)) else {
                 return Poll::Ready(Err(Error::Closed));
             };
-            if !p.ready.is_empty() {
-                let n = buf.len().min(p.ready.len());
-                for (d, b) in buf.iter_mut().zip(p.ready.drain(..n)) {
+            if !p.data.is_empty() {
+                let n = buf.len().min(p.data.len());
+                for (d, b) in buf.iter_mut().zip(p.data.drain(..n)) {
                     *d = b;
                 }
                 return Poll::Ready(Ok(n));
@@ -863,64 +424,25 @@ impl Drop for MemRecv {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use crate::p2p::{Alpn, Sock, Udp};
     use crate::{Sched, StaticSecret};
 
-    // spec: none (no leaked entries: a dial never accepted is removed when the dialer drops)
+    // spec: none (bounded memory): a connection keeps no state of streams both sides are done
+    // with, accepted or not yet when the opener finished, nor of a dial never accepted
     #[test]
-    fn unaccepted_conn_removed_on_drop() {
+    fn finished_streams_and_dials_dropped() {
         let net = Net::new(0);
         let mut s = Sched::new(0, Some(net.clone()));
-        let serving = net.endpoint("listener");
-        let l = s
-            .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap() })
-            .unwrap();
-        let (cli, addr) = (net.endpoint("cli"), l.address());
-        let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
-        drop(c);
-        assert_eq!(lock(&net.0).conns.len(), 0);
-        drop(l);
-    }
-
-    // spec/sync-transport.md §3: `peer://` names routes, which `InProcess` has none of: a listener's key
-    // alone reaches nobody here (`P2p<MemUdp>` is what dials `peer://` in process).
-    #[test]
-    fn peer_url_finds_no_listener_by_key_spec_sync_10() {
-        let net = Net::new(0);
-        let mut s = Sched::new(0, Some(net.clone()));
-        let serving = net.endpoint("listener");
-        let l = s
-            .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
-            .unwrap();
-        let key = l.address().key;
-        let cli = net.endpoint("cli");
-        let url = crate::peer_url(&["https://relay.example".into()]);
-        assert_eq!(crate::peer_items(&url), Some(vec!["https://relay.example".to_owned()]));
-        assert_eq!(crate::peer_items(&crate::peer_url(&[])), Some(vec![]));
-        let r = s.block_on(async move { cli.dial(&Address { url, key }).await.map(|_| ()) }).unwrap();
-        assert!(matches!(r, Err(Error::UnknownScheme(_))), "{r:?}");
-        drop(l);
-    }
-
-    // spec: none (bounded memory): a long-lived connection keeps no state of sessions both
-    // sides are done with, accepted or not yet when the opener finished
-    #[test]
-    fn finished_streams_dropped() {
-        let net = Net::new(0);
-        let mut s = Sched::new(0, Some(net.clone()));
-        let serving = net.endpoint("listener");
-        let mut l = s
-            .block_on(async move { serving.listen(ListenConfig { url: "mem://listener".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap() })
-            .unwrap();
-        let (cli, addr) = (net.endpoint("cli"), l.address());
-        let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
-        let a = s.block_on(async move { l.accept().await.unwrap() }).unwrap();
+        let l = net.udp("192.0.2.1".parse().unwrap(), None).bind("192.0.2.1:7000".parse().unwrap(), Some(&StaticSecret::from_bytes([1; 32]))).unwrap();
+        let d = net.udp("192.0.2.2".parse().unwrap(), None).bind("192.0.2.2:0".parse().unwrap(), None).unwrap();
+        let key = StaticSecret::from_bytes([1; 32]).public_key();
+        let (c, a) = s.block_on(async move { (d.dial("192.0.2.1:7000".parse().unwrap(), key, None, Alpn::Osis).await.unwrap().0, l.accept().await.unwrap().0) }).unwrap();
         let streams = |net: &Net| lock(&net.0).conns.values().map(|c| c.streams.len()).sum::<usize>();
         for i in 0..100u8 {
             let (c2, a2) = (c.clone(), a.clone());
             s.block_on(async move {
                 let (mut tx, rx) = c2.open_stream().await.unwrap();
                 tx.write_all(&[i]).await.unwrap();
-                // the opener is done before the peer accepts
                 tx.finish().await.unwrap();
                 drop((tx, rx));
                 let (mut tx2, mut rx2) = a2.accept_stream().await.unwrap();
@@ -932,11 +454,19 @@ mod tests {
             .unwrap();
             assert_eq!(streams(&net), 0, "after session {i}");
         }
-        // a stream still held on one side stays
         let c2 = c.clone();
         let kept = s.block_on(async move { c2.open_stream().await.unwrap() }).unwrap();
         assert_eq!(streams(&net), 1);
         drop(kept);
         assert_eq!(streams(&net), 1, "not accepted yet: the peer may still read its fin");
+        drop((c, a));
+        assert_eq!(lock(&net.0).conns.len(), 0);
+        // a dial never accepted goes when the dialer drops
+        let l = net.udp("192.0.2.3".parse().unwrap(), None).bind("192.0.2.3:7000".parse().unwrap(), Some(&StaticSecret::from_bytes([1; 32]))).unwrap();
+        let d = net.udp("192.0.2.4".parse().unwrap(), None).bind("192.0.2.4:0".parse().unwrap(), None).unwrap();
+        let c = s.block_on(async move { d.dial("192.0.2.3:7000".parse().unwrap(), key, None, Alpn::Osis).await.unwrap().0 }).unwrap();
+        drop(c);
+        assert_eq!(lock(&net.0).conns.len(), 0);
+        drop(l);
     }
 }

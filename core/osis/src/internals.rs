@@ -119,8 +119,6 @@ pub struct Knobs {
     pub text_save: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     /// A test network in place of the transports: the node joins it and nothing else.
     pub net: Option<crate::net::ManualNet>,
-    /// An in-process transport (`mem://`) beside the product's, under a runtime.
-    pub transport: Option<osis_transport::InProcess>,
     /// A thin client's scratch node (`sources::scratch`): it dials its node's socket.
     pub(crate) thin: bool,
 }

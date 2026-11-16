@@ -22,8 +22,8 @@ fn ip(s: &str) -> IpAddr {
 }
 
 /// A host at `at` on LAN segment `seg`.
-fn on_lan(net: &Net, name: &str, at: &str, seg: &str) -> MemUdp {
-    let u = net.udp(name, ip(at), None);
+fn on_lan(net: &Net, at: &str, seg: &str) -> MemUdp {
+    let u = net.udp(ip(at), None);
     u.on_lan(seg, ip(at));
     u
 }
@@ -78,9 +78,9 @@ fn joins_are_dialed_once_per_key() {
     let net = Net::new(0);
     let mut sched = Sched::new(0, Some(net.clone()));
     let hosts = vec![
-        node(on_lan(&net, "a", "10.0.0.1", "home")),
-        node(on_lan(&net, "b", "10.0.0.2", "home")),
-        node(on_lan(&net, "c", "10.9.0.3", "away")),
+        node(on_lan(&net, "10.0.0.1", "home")),
+        node(on_lan(&net, "10.0.0.2", "home")),
+        node(on_lan(&net, "10.9.0.3", "away")),
     ];
     let mut ds = start(&mut sched, hosts).into_iter();
     let (da, db, dc) = (ds.next().unwrap(), ds.next().unwrap(), ds.next().unwrap());
@@ -108,7 +108,7 @@ fn joins_are_dialed_once_per_key() {
 fn lan_connection_ranks_zero_at_both_ends() {
     let net = Net::new(1);
     let mut sched = Sched::new(1, Some(net.clone()));
-    let (a, b) = (node(on_lan(&net, "a", "10.0.0.1", "home")), node(on_lan(&net, "b", "10.0.0.2", "home")));
+    let (a, b) = (node(on_lan(&net, "10.0.0.1", "home")), node(on_lan(&net, "10.0.0.2", "home")));
     let mut ds = start(&mut sched, vec![a.clone(), b.clone()]).into_iter();
     let (da, db) = (ds.next().unwrap(), ds.next().unwrap());
     let (da, ea) = drain(&mut sched, da);
@@ -138,8 +138,8 @@ fn lan_connection_ranks_zero_at_both_ends() {
 fn an_announced_dialable_key_ranks_one_at_both_ends() {
     let net = Net::new(2);
     let mut sched = Sched::new(2, Some(net.clone()));
-    let bu = on_lan(&net, "b", "10.0.0.2", "home");
-    let (a, b) = (node(on_lan(&net, "a", "10.0.0.1", "home")), node(bu.clone()));
+    let bu = on_lan(&net, "10.0.0.2", "home");
+    let (a, b) = (node(on_lan(&net, "10.0.0.1", "home")), node(bu.clone()));
     let mut ds = start(&mut sched, vec![a.clone()]).into_iter();
     let da = ds.next().unwrap();
     let (b2, l2) = (b, bu);

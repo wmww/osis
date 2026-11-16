@@ -51,7 +51,7 @@ fn world(seed: u64, cfg: RelayConfig) -> World {
 fn world_at(seed: u64, cfg: RelayConfig, at: &str, nat: Option<IpAddr>) -> World {
     let net = Net::new(seed);
     let mut sched = Sched::new(seed, Some(net.clone()));
-    let r = P2p::new(net.udp("r", ip(at), nat)).relaying(cfg).unwrap();
+    let r = P2p::new(net.udp(ip(at), nat)).relaying(cfg).unwrap();
     let url = format!("peer://{at}:4040");
     let l = sched.block_on(async move { r.listen(ListenConfig { url, secret: secret(1) }).await.unwrap() }).unwrap();
     let relay = Relay { key: l.address().key, addr: sa(&format!("{at}:4040")) };
@@ -72,13 +72,13 @@ fn anyone() -> RelayConfig {
 }
 
 /// A host at `inside`, behind a NAT at `public` with `nat` (none: `inside` is public).
-fn host(net: &Net, name: &str, inside: &str, public: &str, nat: Option<Nat>) -> MemUdp {
+fn host(net: &Net, inside: &str, public: &str, nat: Option<Nat>) -> MemUdp {
     match nat {
         Some(n) => {
             net.add_nat(ip(public), n);
-            net.udp(name, ip(inside), Some(ip(public)))
+            net.udp(ip(inside), Some(ip(public)))
         }
-        None => net.udp(name, ip(inside), None),
+        None => net.udp(ip(inside), None),
     }
 }
 
@@ -143,7 +143,7 @@ fn punch_counted(seed: u64, nat_a: Option<Nat>, nat_b: Option<Nat>) -> ((bool, b
     let w = world(seed, anyone());
     let at = |inside, public, nat: Option<Nat>| if nat.is_some() { inside } else { public };
     let b_at = at("10.0.0.2", "203.0.113.2", nat_b);
-    let (a, b) = (host(&w.net, "a", at("10.0.1.2", "203.0.113.1", nat_a), "203.0.113.1", nat_a), host(&w.net, "b", b_at, "203.0.113.2", nat_b));
+    let (a, b) = (host(&w.net, at("10.0.1.2", "203.0.113.1", nat_a), "203.0.113.1", nat_a), host(&w.net, b_at, "203.0.113.2", nat_b));
     let net = w.net.clone();
     let r = punch_in(w, a, b, b_at, "203.0.113.2");
     (r, net.punches())
@@ -198,11 +198,11 @@ fn punch_in(mut w: World, a: MemUdp, b: MemUdp, b_at: &str, seen: &str) -> (bool
 #[test]
 fn punch_before_stream_open_stays_relayed_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::CONE));
+    let b = host(&w.net, "10.0.0.2", "203.0.113.2", Some(Nat::CONE));
     let lb = listen_via(&mut w, b, "10.0.0.2", 2);
     let addr = Address { url: peer_url(&[w.relay.item()]), key: lb.address().key };
     let _seen = echo(&w.sched, lb);
-    let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", Some(Nat::CONE)));
+    let a = P2p::new(host(&w.net, "10.0.1.2", "203.0.113.1", Some(Nat::CONE)));
     let net = w.net.clone();
     w.sched
         .block_on(async move {
@@ -261,8 +261,8 @@ fn one_punch_and_none_to_a_refused_address_spec_sync_10() {
     let (_, sent) = punch_counted(0, Some(Nat::CONE), Some(Nat::CONE));
     assert_eq!(sent, 1, "one datagram per relayed connection");
     let mut w = world(0, anyone());
-    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::CONE));
-    let a = host(&w.net, "a", "10.0.1.2", "", None);
+    let b = host(&w.net, "10.0.0.2", "203.0.113.2", Some(Nat::CONE));
+    let a = host(&w.net, "10.0.1.2", "", None);
     let lb = listen_via(&mut w, b, "10.0.0.2", 2);
     let addr = Address { url: peer_url(&[w.relay.item()]), key: lb.address().key };
     let _seen = echo(&w.sched, lb);
@@ -338,7 +338,7 @@ fn punch_over_a_relay_on_the_pairs_lan_is_direct_spec_sync_10() {
             w.sched.run();
             w
         };
-        let (a, b) = (w.net.udp("a", ip("10.0.0.1"), Some(public)), w.net.udp("b", ip("10.0.0.2"), Some(public)));
+        let (a, b) = (w.net.udp(ip("10.0.0.1"), Some(public)), w.net.udp(ip("10.0.0.2"), Some(public)));
         let (_, direct) = punch_in(w, a, b, "10.0.0.2", "10.0.0.2");
         assert!(direct, "{nat:?}");
     }
@@ -349,12 +349,12 @@ fn punch_over_a_relay_on_the_pairs_lan_is_direct_spec_sync_10() {
 #[test]
 fn direct_items_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = P2p::new(host(&w.net, "b", "192.0.2.7", "", None));
+    let b = P2p::new(host(&w.net, "192.0.2.7", "", None));
     let lb = w.sched.block_on(async move { b.listen(ListenConfig { url: "peer://192.0.2.7:7000".into(), secret: secret(3) }).await.unwrap() }).unwrap();
     let kb = lb.address().key;
     assert_eq!(lb.address().url, "peer://192.0.2.7:7000");
     let _seen = echo(&w.sched, lb);
-    let a = P2p::new(host(&w.net, "a", "10.9.0.2", "203.0.113.9", Some(Nat::SYMMETRIC)));
+    let a = P2p::new(host(&w.net, "10.9.0.2", "203.0.113.9", Some(Nat::SYMMETRIC)));
     let r = w.sched.block_on(async move {
         let c = a.dial(&Address { url: "peer://192.0.2.7:7000".into(), key: kb }).await.unwrap();
         assert_eq!(c.rank(), RANK_DIRECT);
@@ -376,10 +376,10 @@ fn direct_items_spec_sync_10() {
 #[test]
 fn relayed_keys_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
+    let b = host(&w.net, "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
     let mut lb = listen_via(&mut w, b, "10.0.0.2", 2);
     let kb = lb.address().key;
-    let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
+    let a = P2p::new(host(&w.net, "10.0.1.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
     let url = peer_url(&[w.relay.item()]);
     let (a2, u2) = (a.clone(), url.clone());
     let got = w.sched.block_on(async move {
@@ -406,10 +406,10 @@ fn relayed_keys_spec_sync_10() {
 #[test]
 fn a_relayed_listener_relistens_under_a_new_key_spec_sync_transport_5() {
     let mut w = world(0, anyone());
-    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
+    let b = host(&w.net, "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
     let mut lb = listen_via(&mut w, b, "10.0.0.2", 2);
     let old = lb.address();
-    let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
+    let a = P2p::new(host(&w.net, "10.0.1.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
     let via = peer_url(&[w.relay.item()]);
     let (a2, via2, old2) = (a.clone(), via.clone(), old.clone());
     let (lb, c1, s1) = w
@@ -454,7 +454,7 @@ fn a_relayed_listener_relistens_under_a_new_key_spec_sync_transport_5() {
 fn relistens_leave_no_registrations_behind_spec_sync_transport_5() {
     fn tasks_after(n: u8) -> usize {
         let mut w = world(0, anyone());
-        let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
+        let b = host(&w.net, "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
         let lb = listen_via(&mut w, b, "10.0.0.2", 2);
         let url = lb.address().url;
         let lb = Rc::new(RefCell::new(Some(lb)));
@@ -496,10 +496,10 @@ async fn pipe(mut r: impl RecvStream, mut t: impl SendStream) {
 fn relay_dial_grants_relay_no_streams() {
     let net = Net::new(0);
     let mut sched = Sched::new(0, Some(net.clone()));
-    let m = host(&net, "m", "198.51.100.9", "", None);
+    let m = host(&net, "198.51.100.9", "", None);
     let msock = Arc::new(m.bind(sa("198.51.100.9:4040"), Some(&secret(9))).unwrap());
     let (to, key) = (msock.local(), secret(9).public_key());
-    let a = host(&net, "a", "192.0.2.5", "", None);
+    let a = host(&net, "192.0.2.5", "", None);
     let opened = sched.block_on(async move {
         let mut opened = Vec::new();
         for own in [None, Some(secret(2))] {
@@ -521,12 +521,12 @@ fn relay_dial_grants_relay_no_streams() {
 fn relay_cannot_impersonate_spec_sync_10() {
     let mut w = world(0, anyone());
     let (rk, ra) = (w.relay.key, w.relay.addr);
-    let z = host(&w.net, "z", "192.0.2.3", "", None);
+    let z = host(&w.net, "192.0.2.3", "", None);
     let lz = listen_via(&mut w, z, "192.0.2.3", 3);
     let kz = lz.address().key;
     let _seen = echo(&w.sched, lz);
     // the hostile relay: answers any dial with a stream to Z through the honest relay
-    let m = host(&w.net, "m", "198.51.100.9", "", None);
+    let m = host(&w.net, "198.51.100.9", "", None);
     let msock = Arc::new(m.bind(sa("198.51.100.9:4040"), Some(&secret(9))).unwrap());
     let hostile = Relay { key: secret(9).public_key(), addr: msock.local() };
     let net = w.net.clone();
@@ -545,7 +545,7 @@ fn relay_cannot_impersonate_spec_sync_10() {
         pipe(ur, t).await;
         let _ = (c, up);
     });
-    let a = P2p::new(host(&w.net, "a", "192.0.2.5", "", None));
+    let a = P2p::new(host(&w.net, "192.0.2.5", "", None));
     let want = secret(2).public_key();
     let addr = Address { url: peer_url(&[hostile.item()]), key: want };
     let r = w.sched.block_on(async move { a.dial(&addr).await.err() });
@@ -586,8 +586,8 @@ fn relay_wire_spec_sync_10() {
     let allowed = secret(2).public_key();
     let mut w = world(0, RelayConfig::new(Arc::new(move |k| *k == allowed)));
     let (rk, ra) = (w.relay.key, w.relay.addr);
-    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::CONE));
-    let a = host(&w.net, "a", "192.0.2.5", "", None);
+    let b = host(&w.net, "10.0.0.2", "203.0.113.2", Some(Nat::CONE));
+    let a = host(&w.net, "192.0.2.5", "", None);
     let done = w.sched.block_on(async move {
         let sb = b.bind(sa("0.0.0.0:6000"), None).unwrap();
         let cb = sb.dial(ra, rk, Some(secret(2)), Alpn::Relay).await.unwrap().0;
@@ -649,9 +649,9 @@ fn relay_limits_spec_sync_10() {
     cfg.max_conns = 3;
     let mut w = world(0, cfg);
     let (rk, ra) = (w.relay.key, w.relay.addr);
-    let b = host(&w.net, "b", "192.0.2.2", "", None);
-    let a = host(&w.net, "a", "192.0.2.5", "", None);
-    let c = host(&w.net, "c", "192.0.2.6", "", None);
+    let b = host(&w.net, "192.0.2.2", "", None);
+    let a = host(&w.net, "192.0.2.5", "", None);
+    let c = host(&w.net, "192.0.2.6", "", None);
     let net = w.net.clone();
     let done = w.sched.block_on(async move {
         let sb = b.bind(sa("0.0.0.0:6000"), None).unwrap();
@@ -700,10 +700,10 @@ fn relay_limits_spec_sync_10() {
 fn registration_refused_spec_sync_10() {
     let mut w = world(0, RelayConfig::new(Arc::new(|_| false)));
     w.sched.set_max_steps(200);
-    let b = host(&w.net, "b", "192.0.2.2", "", None);
+    let b = host(&w.net, "192.0.2.2", "", None);
     let lb = listen_via(&mut w, b, "192.0.2.2", 2);
     assert!(lb.observed().is_empty());
-    let a = P2p::new(host(&w.net, "a", "192.0.2.5", "", None));
+    let a = P2p::new(host(&w.net, "192.0.2.5", "", None));
     let addr = Address { url: peer_url(&[w.relay.item()]), key: lb.address().key };
     let r = w.sched.block_on(async move { a.dial(&addr).await.err() });
     assert!(matches!(r, Some(Some(Error::Unreachable(_)))), "{r:?}");
@@ -715,9 +715,9 @@ fn nat_model() {
     let net = Net::new(0);
     let mut sched = Sched::new(0, Some(net.clone()));
     net.add_nat(ip("203.0.113.1"), Nat::SYMMETRIC);
-    let a = net.udp("a", ip("10.0.0.2"), Some(ip("203.0.113.1")));
-    let lan = net.udp("lan", ip("10.0.0.3"), Some(ip("203.0.113.1")));
-    let p = net.udp("p", ip("192.0.2.1"), None);
+    let a = net.udp(ip("10.0.0.2"), Some(ip("203.0.113.1")));
+    let lan = net.udp(ip("10.0.0.3"), Some(ip("203.0.113.1")));
+    let p = net.udp(ip("192.0.2.1"), None);
     let r = sched.block_on(async move {
         let sp = p.bind(sa("0.0.0.0:80"), Some(&secret(1))).unwrap();
         let sp2 = p.bind(sa("0.0.0.0:81"), Some(&secret(1))).unwrap();
@@ -933,17 +933,17 @@ async fn raw_dials(m: &MemUdp, relay: &Relay, key: [u8; 32], n: usize) -> (Vec<u
 #[test]
 fn silent_dials_do_not_block_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
+    let b = host(&w.net, "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC));
     let lb = listen_via(&mut w, b, "10.0.0.2", 2);
     let kb = lb.address().key;
     let _seen = echo(&w.sched, lb);
-    let m = host(&w.net, "m", "192.0.2.66", "", None);
+    let m = host(&w.net, "192.0.2.66", "", None);
     let relay = w.relay.clone();
     let flood = p2p::MAX_FORWARDED + 64;
     let (answers, mut held, _conns) = w.sched.block_on(async move { raw_dials(&m, &relay, kb, flood).await }).unwrap();
     assert!(answers.iter().all(|a| *a == 0), "every silent dial forwarded");
     w.sched.run();
-    let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
+    let a = P2p::new(host(&w.net, "10.0.1.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
     let addr = Address { url: peer_url(&[w.relay.item()]), key: kb };
     let ok = w.sched.block_on(async move {
         let c = a.dial(&addr).await.unwrap();
@@ -964,8 +964,8 @@ fn silent_dials_do_not_block_spec_sync_10() {
 fn relay_busy_spec_sync_10() {
     let mut w = world(0, anyone());
     let (rk, ra) = (w.relay.key, w.relay.addr);
-    let b = host(&w.net, "b", "192.0.2.2", "", None);
-    let m = host(&w.net, "m", "192.0.2.66", "", None);
+    let b = host(&w.net, "192.0.2.2", "", None);
+    let m = host(&w.net, "192.0.2.66", "", None);
     let relay = w.relay.clone();
     let done = w.sched.block_on(async move {
         let sb = b.bind(sa("0.0.0.0:6000"), None).unwrap();
@@ -1010,23 +1010,23 @@ fn allow_rechecked_spec_sync_10() {
     let o2 = ok.clone();
     let net = Net::new(0);
     let mut sched = Sched::new(0, Some(net.clone()));
-    let r = P2p::new(net.udp("r", ip(RELAY_IP), None)).relaying(RelayConfig::new(Arc::new(move |_| o2.load(Ordering::SeqCst)))).unwrap();
+    let r = P2p::new(net.udp(ip(RELAY_IP), None)).relaying(RelayConfig::new(Arc::new(move |_| o2.load(Ordering::SeqCst)))).unwrap();
     let r2 = r.clone();
     let _lr = sched.block_on(async move { r2.listen(ListenConfig { url: format!("peer://{RELAY_IP}:4040"), secret: secret(1) }).await.unwrap() }).unwrap();
     let relay = Relay { key: secret(1).public_key(), addr: sa(&format!("{RELAY_IP}:4040")) };
-    let listen = |sched: &mut Sched, name: &str, ipa: &str, s: u8| {
-        let b = P2p::new(net.udp(name, ip(ipa), None));
+    let listen = |sched: &mut Sched, ipa: &str, s: u8| {
+        let b = P2p::new(net.udp(ip(ipa), None));
         let url = format!("peer://{ipa}:7000 {}", relay.item());
         sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(s) }).await.unwrap() }).unwrap()
     };
-    let lb = listen(&mut sched, "b", "192.0.2.2", 2);
-    let lc = listen(&mut sched, "c", "192.0.2.3", 3);
+    let lb = listen(&mut sched, "192.0.2.2", 2);
+    let lc = listen(&mut sched, "192.0.2.3", 3);
     sched.set_max_steps(100);
     sched.run();
     let (kb, kc) = (lb.address().key, lc.address().key);
     assert_eq!(r.relayed_keys().len(), 2);
     ok.store(false, Ordering::SeqCst);
-    let m = net.udp("m", ip("192.0.2.66"), None);
+    let m = net.udp(ip("192.0.2.66"), None);
     let rl = relay.clone();
     let answers = sched.block_on(async move { raw_dials(&m, &rl, kb, 1).await.0 }).unwrap();
     assert_eq!(answers, vec![2]);
@@ -1120,15 +1120,10 @@ fn quic_dial_mixed_families_spec_sync_10() {
     });
 }
 
-// ---- `peer://` routes through `Multi` over the NAT model ----
-
-/// A `Multi` whose `peer://` is `P2p` on `udp`.
-fn multi(udp: MemUdp) -> Multi<MemUdp> {
-    Multi { p2p: Some(P2p::new(udp)), ..Multi::default() }
-}
+// ---- `peer://` routes over the NAT model ----
 
 /// `to` listens at `url` under `w`'s scheduler (registered at relays it lists).
-fn listen_at(w: &mut World, to: Multi<MemUdp>, url: String, s: u8) -> MultiListener<MemUdp> {
+fn listen_at(w: &mut World, to: P2p<MemUdp>, url: String, s: u8) -> P2pListener<MemUdp> {
     let l = w.sched.block_on(async move { to.listen(ListenConfig { url, secret: secret(s) }).await.unwrap() }).unwrap();
     w.sched.run();
     l
@@ -1136,7 +1131,7 @@ fn listen_at(w: &mut World, to: Multi<MemUdp>, url: String, s: u8) -> MultiListe
 
 /// `from` dials `addr`, and the connection carries bytes both ways (the listener's side echoes
 /// one stream); the dial's error if it fails.
-fn dial_route(w: &mut World, from: Multi<MemUdp>, addr: Address, mut l: MultiListener<MemUdp>) -> Result<(), Error> {
+fn dial_route(w: &mut World, from: P2p<MemUdp>, addr: Address, mut l: P2pListener<MemUdp>) -> Result<(), Error> {
     let sp = w.sched.spawner();
     let sp2 = sp.clone();
     sp.spawn(async move {
@@ -1180,9 +1175,9 @@ fn peer_addr(items: &[String], s: u8) -> Address {
 #[test]
 fn peer_no_route_fails_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = multi(host(&w.net, "b", "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
+    let b = P2p::new(host(&w.net, "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
     let lb = listen_at(&mut w, b, "peer://10.0.0.2:7000".into(), 2);
-    let a = multi(host(&w.net, "a", "10.9.0.2", "203.0.113.1", Some(Nat::CONE)));
+    let a = P2p::new(host(&w.net, "10.9.0.2", "203.0.113.1", Some(Nat::CONE)));
     for items in [vec![], vec!["10.0.0.2:7000".to_owned()], vec![w.relay.item()]] {
         let (a2, addr) = (a.clone(), peer_addr(&items, 2));
         let r = w.sched.block_on(async move { a2.dial(&addr).await.map(drop) }).unwrap();
@@ -1195,9 +1190,9 @@ fn peer_no_route_fails_spec_sync_10() {
 #[test]
 fn peer_direct_item_connects_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = multi(host(&w.net, "b", B_PUBLIC, B_PUBLIC, None));
+    let b = P2p::new(host(&w.net, B_PUBLIC, B_PUBLIC, None));
     let lb = listen_at(&mut w, b, format!("peer://{B_PUBLIC}:7000"), 2);
-    let a = multi(host(&w.net, "a", "10.9.0.2", "203.0.113.1", Some(Nat::CONE)));
+    let a = P2p::new(host(&w.net, "10.9.0.2", "203.0.113.1", Some(Nat::CONE)));
     dial_route(&mut w, a, peer_addr(&[format!("{B_PUBLIC}:7000")], 2), lb).unwrap();
 }
 
@@ -1205,10 +1200,10 @@ fn peer_direct_item_connects_spec_sync_10() {
 #[test]
 fn peer_relay_connects_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = multi(host(&w.net, "b", "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
+    let b = P2p::new(host(&w.net, "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
     let item = w.relay.item();
     let lb = listen_at(&mut w, b, format!("peer://10.0.0.2:7000 {item}"), 2);
-    let a = multi(host(&w.net, "a", "10.9.0.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
+    let a = P2p::new(host(&w.net, "10.9.0.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
     dial_route(&mut w, a, peer_addr(&[item], 2), lb).unwrap();
 }
 
@@ -1217,9 +1212,9 @@ fn peer_relay_connects_spec_sync_10() {
 #[test]
 fn peer_lan_address_connects_spec_sync_10() {
     let mut w = world(0, anyone());
-    let b = multi(host(&w.net, "b", "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
+    let b = P2p::new(host(&w.net, "10.0.0.2", B_PUBLIC, Some(Nat::SYMMETRIC)));
     let lb = listen_at(&mut w, b, "peer://10.0.0.2:7000".into(), 2);
-    let a = multi(w.net.udp("a", ip("10.0.0.3"), Some(ip(B_PUBLIC))));
+    let a = P2p::new(w.net.udp(ip("10.0.0.3"), Some(ip(B_PUBLIC))));
     dial_route(&mut w, a, peer_addr(&["10.0.0.2:7000".to_owned()], 2), lb).unwrap();
 }
 

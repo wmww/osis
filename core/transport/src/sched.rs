@@ -114,8 +114,7 @@ impl Sched {
                             self.capped = true;
                             return self.tasks.len();
                         }
-                        net.skip_idle();
-                        net.step();
+                        net.advance();
                         steps += 1;
                         continue;
                     }

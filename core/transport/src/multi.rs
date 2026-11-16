@@ -1,21 +1,18 @@
-//! `Multi`: one transport over several, picked by URL scheme (spec/sync-transport.md §1): `mem://` to
-//! `InProcess`, `quic://` to `Quic`, `peer://` to `P2p` (over `QuicUdp`, or `MemUdp` in a test
-//! net), `unix://` to `Unix` (listened on; dialed only with `unix_dial`). A scheme without its
-//! transport is `UnknownScheme`.
+//! `Multi`: one transport over several, picked by URL scheme (spec/sync-transport.md §1):
+//! `quic://` to `Quic`, `peer://` to `P2p`, `unix://` to `Unix` (listened on; dialed only with
+//! `unix_dial`). A scheme without its transport is `UnknownScheme`.
 
-use crate::{Address, Connection, Error, InProcess, ListenConfig, Listener, MemConn, MemListener, MemRecv, MemSend, PublicKey, RecvStream, SendStream, Transport};
-use crate::p2p::{P2pRecv, P2pSend};
-use crate::p2p::{SConn, Udp};
+use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, Transport};
+use crate::p2p::{P2pRecv, P2pSend, SConn};
 use crate::{P2p, P2pConn, P2pListener, QuicUdp};
 use crate::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
 use crate::{Unix, UnixConn, UnixListener, UnixRecv, UnixSend};
 
 /// The transports a `Multi` dispatches to; `None`: that scheme is unknown.
-#[derive(Clone)]
-pub struct Multi<U: Udp = QuicUdp> {
-    pub mem: Option<InProcess>,
+#[derive(Clone, Default)]
+pub struct Multi {
     pub quic: Option<Quic>,
-    pub p2p: Option<P2p<U>>,
+    pub p2p: Option<P2p<QuicUdp>>,
     pub unix: Option<Unix>,
     /// `unix://` is dialed too: a local client of a node's socket (spec/sync-transport.md §6),
     /// which syncs nothing. Never on a node's own transports: an address another node published
@@ -23,34 +20,26 @@ pub struct Multi<U: Udp = QuicUdp> {
     pub unix_dial: bool,
 }
 
-impl<U: Udp> Default for Multi<U> {
-    fn default() -> Self {
-        Multi { mem: None, quic: None, p2p: None, unix: None, unix_dial: false }
-    }
-}
-
-enum Pick<'a, U: Udp> {
-    Mem(&'a InProcess),
+enum Pick<'a> {
     Quic(&'a Quic),
-    P2p(&'a P2p<U>),
+    P2p(&'a P2p<QuicUdp>),
     Unix(&'a Unix),
 }
 
-impl<U: Udp> Multi<U> {
-    fn pick(&self, url: &str) -> Result<Pick<'_, U>, Error> {
+impl Multi {
+    fn pick(&self, url: &str) -> Result<Pick<'_>, Error> {
         let scheme = url.split_once("://").map(|(s, _)| s).ok_or_else(|| Error::BadUrl(url.to_owned()))?;
         let unknown = || Error::UnknownScheme(scheme.to_owned());
         match scheme {
             "quic" => self.quic.as_ref().map(Pick::Quic).ok_or_else(unknown),
             crate::unix::SCHEME => self.unix.as_ref().map(Pick::Unix).ok_or_else(unknown),
             crate::PEER_SCHEME => self.p2p.as_ref().map(Pick::P2p).ok_or_else(unknown),
-            crate::mem::SCHEME => self.mem.as_ref().map(Pick::Mem).ok_or_else(unknown),
             _ => Err(unknown()),
         }
     }
 
     /// `pick` for a dial: `unix://` only with `unix_dial`.
-    fn pick_dial(&self, url: &str) -> Result<Pick<'_, U>, Error> {
+    fn pick_dial(&self, url: &str) -> Result<Pick<'_>, Error> {
         match self.pick(url)? {
             Pick::Unix(_) if !self.unix_dial => Err(Error::UnknownScheme(crate::unix::SCHEME.to_owned())),
             p => Ok(p),
@@ -60,29 +49,23 @@ impl<U: Udp> Multi<U> {
 
 /// Defines an enum over the per-transport types, with `From` each of them.
 macro_rules! either {
-    ($name:ident, $mem:ty, $quic:ty, $p2p:ty, $unix:ty) => {
-        pub enum $name<U: Udp = QuicUdp> {
-            Mem($mem),
+    ($name:ident, $quic:ty, $p2p:ty, $unix:ty) => {
+        pub enum $name {
             Quic($quic),
             P2p($p2p),
             Unix($unix),
         }
-        impl<U: Udp> From<$unix> for $name<U> {
+        impl From<$unix> for $name {
             fn from(x: $unix) -> Self {
                 Self::Unix(x)
             }
         }
-        impl<U: Udp> From<$mem> for $name<U> {
-            fn from(x: $mem) -> Self {
-                Self::Mem(x)
-            }
-        }
-        impl<U: Udp> From<$quic> for $name<U> {
+        impl From<$quic> for $name {
             fn from(x: $quic) -> Self {
                 Self::Quic(x)
             }
         }
-        impl<U: Udp> From<$p2p> for $name<U> {
+        impl From<$p2p> for $name {
             fn from(x: $p2p) -> Self {
                 Self::P2p(x)
             }
@@ -97,7 +80,6 @@ macro_rules! each {
     };
     ($e:ident; $v:expr, $x:ident => $body:expr) => {
         match $v {
-            $e::Mem($x) => $body,
             $e::Quic($x) => $body,
             $e::P2p($x) => $body,
             $e::Unix($x) => $body,
@@ -105,36 +87,36 @@ macro_rules! each {
     };
 }
 
-either!(MultiConn, MemConn, QuicConn, P2pConn<SConn<U>>, UnixConn);
-either!(MultiListener, MemListener, QuicListener, P2pListener<U>, UnixListener);
-either!(MultiSend, MemSend, QuicSend, P2pSend<SConn<U>>, UnixSend);
-either!(MultiRecv, MemRecv, QuicRecv, P2pRecv<SConn<U>>, UnixRecv);
+either!(MultiConn, QuicConn, P2pConn<SConn<QuicUdp>>, UnixConn);
+either!(MultiListener, QuicListener, P2pListener<QuicUdp>, UnixListener);
+either!(MultiSend, QuicSend, P2pSend<SConn<QuicUdp>>, UnixSend);
+either!(MultiRecv, QuicRecv, P2pRecv<SConn<QuicUdp>>, UnixRecv);
 
-impl<U: Udp> Clone for MultiConn<U> {
+impl Clone for MultiConn {
     fn clone(&self) -> Self {
         each!(self, c => Self::from(c.clone()))
     }
 }
 
-impl<U: Udp> Transport for Multi<U> {
-    type Conn = MultiConn<U>;
-    type Listener = MultiListener<U>;
+impl Transport for Multi {
+    type Conn = MultiConn;
+    type Listener = MultiListener;
 
     /// `unix://` is listened on, and dialed only with `unix_dial` (the client port,
     /// notes/client-port.md §5): an address another node published never makes a node dial a
     /// local socket.
-    async fn dial(&self, addr: &Address) -> Result<MultiConn<U>, Error> {
+    async fn dial(&self, addr: &Address) -> Result<MultiConn, Error> {
         let p = self.pick_dial(&addr.url)?;
         each!(Pick; p, t => t.dial(addr).await.map(Into::into))
     }
 
-    async fn listen(&self, cfg: ListenConfig) -> Result<MultiListener<U>, Error> {
+    async fn listen(&self, cfg: ListenConfig) -> Result<MultiListener, Error> {
         let p = self.pick(&cfg.url)?;
         each!(Pick; p, t => t.listen(cfg).await.map(Into::into))
     }
 
     /// LAN discovery runs over the peer transport.
-    async fn discover(&self) -> Result<crate::Discovery<MultiConn<U>>, Error> {
+    async fn discover(&self) -> Result<crate::Discovery<MultiConn>, Error> {
         match &self.p2p {
             Some(p) => p.discover_as(MultiConn::P2p).await,
             None => Err(Error::UnknownScheme(crate::PEER_SCHEME.to_owned())),
@@ -142,10 +124,10 @@ impl<U: Udp> Transport for Multi<U> {
     }
 }
 
-impl<U: Udp> Listener for MultiListener<U> {
-    type Conn = MultiConn<U>;
+impl Listener for MultiListener {
+    type Conn = MultiConn;
 
-    async fn accept(&mut self) -> Result<MultiConn<U>, Error> {
+    async fn accept(&mut self) -> Result<MultiConn, Error> {
         each!(self, l => l.accept().await.map(MultiConn::from))
     }
 
@@ -156,7 +138,6 @@ impl<U: Udp> Listener for MultiListener<U> {
     /// A URL of another scheme names another listener's socket.
     async fn relisten(&mut self, cfg: &ListenConfig) -> Result<bool, Error> {
         let mine = match self {
-            Self::Mem(_) => crate::mem::SCHEME,
             Self::Quic(_) => crate::quic::SCHEME,
             Self::P2p(_) => crate::PEER_SCHEME,
             Self::Unix(_) => crate::unix::SCHEME,
@@ -172,9 +153,9 @@ impl<U: Udp> Listener for MultiListener<U> {
     }
 }
 
-impl<U: Udp> Connection for MultiConn<U> {
-    type Send = MultiSend<U>;
-    type Recv = MultiRecv<U>;
+impl Connection for MultiConn {
+    type Send = MultiSend;
+    type Recv = MultiRecv;
 
     fn peer_key(&self) -> PublicKey {
         each!(self, c => c.peer_key())
@@ -192,11 +173,11 @@ impl<U: Udp> Connection for MultiConn<U> {
         each!(self, c => c.rank())
     }
 
-    async fn open_stream(&self) -> Result<(MultiSend<U>, MultiRecv<U>), Error> {
+    async fn open_stream(&self) -> Result<(MultiSend, MultiRecv), Error> {
         each!(self, c => c.open_stream().await.map(|(s, r)| (s.into(), r.into())))
     }
 
-    async fn accept_stream(&self) -> Result<(MultiSend<U>, MultiRecv<U>), Error> {
+    async fn accept_stream(&self) -> Result<(MultiSend, MultiRecv), Error> {
         each!(self, c => c.accept_stream().await.map(|(s, r)| (s.into(), r.into())))
     }
 
@@ -205,7 +186,7 @@ impl<U: Udp> Connection for MultiConn<U> {
     }
 }
 
-impl<U: Udp> SendStream for MultiSend<U> {
+impl SendStream for MultiSend {
     async fn write_all(&mut self, buf: &[u8]) -> Result<(), Error> {
         each!(self, s => s.write_all(buf).await)
     }
@@ -215,7 +196,7 @@ impl<U: Udp> SendStream for MultiSend<U> {
     }
 }
 
-impl<U: Udp> RecvStream for MultiRecv<U> {
+impl RecvStream for MultiRecv {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         each!(self, r => r.read(buf).await)
     }
@@ -225,35 +206,25 @@ impl<U: Udp> RecvStream for MultiRecv<U> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::{Net, Sched, StaticSecret};
 
-    // spec/sync-transport.md §1: the URL scheme picks the transport; `peer://` without `P2p` is a scheme
-    // without its transport, which is unknown (parked); unix:// is dialed only by a local client.
+    // spec/sync-transport.md §1: the URL scheme picks the transport; a scheme without its transport
+    // is unknown (parked); unix:// is dialed only by a local client.
     #[test]
     fn dispatch_by_scheme_spec_sync_10() {
-        let net = Net::new(0);
-        let mut sched = Sched::new(0, Some(net.clone()));
-        let (a, b): (Multi, Multi) = (Multi { mem: Some(net.endpoint("a")), ..Multi::default() }, Multi { mem: Some(net.endpoint("b")), ..Multi::default() });
-        let secret = StaticSecret::from_bytes([5; 32]);
-        let done = sched.block_on(async move {
-            let l = b.listen(ListenConfig { url: "mem://b".into(), secret: secret.clone() }).await.unwrap();
-            let key = l.address().key;
-            assert_eq!(key, secret.public_key());
-            let c = a.dial(&Address { url: "mem://b".into(), key }).await.unwrap();
-            assert_eq!(c.peer_key(), key);
-            assert!(matches!(a.dial(&Address { url: crate::peer_url(&[]), key }).await, Err(Error::UnknownScheme(_))));
-            let none: Multi = Multi::default();
-            assert!(matches!(none.dial(&Address { url: "mem://b".into(), key }).await, Err(Error::UnknownScheme(_))));
-            assert!(matches!(a.dial(&Address { url: "quic://x:1".into(), key }).await, Err(Error::UnknownScheme(_))));
-            assert!(matches!(a.dial(&Address { url: "nothing".into(), key }).await, Err(Error::BadUrl(_))));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let key = [5; 32];
+            let none = Multi::default();
+            for url in [crate::peer_url(&[]), "quic://x:1".into(), "mem://b".into()] {
+                assert!(matches!(none.dial(&Address { url, key }).await, Err(Error::UnknownScheme(_))));
+            }
+            assert!(matches!(none.dial(&Address { url: "nothing".into(), key }).await, Err(Error::BadUrl(_))));
             // unix:// is listened on, never dialed through a Multi (a published address cannot reach a local socket)
-            let u: Multi = Multi { unix: Some(Unix), ..Multi::default() };
+            let u = Multi { unix: Some(Unix), ..Multi::default() };
             assert!(matches!(u.dial(&Address { url: "unix:///tmp/x.sock".into(), key }).await, Err(Error::UnknownScheme(_))));
             // a local client dials it (no socket there: an error of the socket's, not the scheme's)
-            let c: Multi = Multi { unix: Some(Unix), unix_dial: true, ..Multi::default() };
+            let c = Multi { unix: Some(Unix), unix_dial: true, ..Multi::default() };
             assert!(!matches!(c.dial(&Address { url: "unix:///nonexistent/x.sock".into(), key }).await, Err(Error::UnknownScheme(_)) | Ok(_)));
-            drop(l);
         });
-        assert!(done.is_some());
     }
 }

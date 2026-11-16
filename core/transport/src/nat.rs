@@ -1,10 +1,9 @@
-//! The NAT model of `InProcess` (a test network; spec: none): hosts with IP addresses, some
+//! The NAT model of the in-process net (`mem`; a test network, spec: none): hosts with IP addresses, some
 //! behind NATs (RFC 4787 mapping and filtering behaviour), and UDP sockets (`MemUdp`, `MemSock`)
 //! whose dials, accepts and hole punches pass through them, for `p2p` over the in-process net.
 //!
 //! A dial is a packet from a socket to an address, resent every `RESEND_MS` until it reaches a
-//! socket that accepts connections or the net's give-up passes (`DIAL_MS` unless
-//! `Net::set_dial_ms`; QUIC's retransmission and idle timeout);
+//! socket that accepts connections or `DIAL_MS` passes (QUIC's retransmission and idle timeout);
 //! the first packet that arrives makes the connection, which then carries data both ways (the
 //! reply goes back through the mapping the packet came in on). A punch is one packet, kept by
 //! nobody. NAT mappings never expire; two hosts behind one NAT reach each other only at their
@@ -14,8 +13,7 @@
 //! A LAN segment is a broadcast domain a host joins at an address of its own there
 //! (`MemUdp::on_lan`, several for a host on several links): an announcement socket (`MemLan`)
 //! delivers one sent to the broadcast address or the all-nodes group to every socket at that
-//! port on each segment the sender is on, showing the sender's address there, subject to the
-//! segment's loss (`Net::set_lan_loss`). Packets between two hosts' addresses on a shared
+//! port on each segment the sender is on, showing the sender's address there. Packets between two hosts' addresses on a shared
 //! segment pass directly, whatever NATs they are behind.
 
 use crate::mem::{wake, MemConn, Net, State};
@@ -86,10 +84,6 @@ pub(crate) struct Udp {
     socks: BTreeMap<SocketAddr, Entry>,
     /// Announcement sockets, by host and port.
     lan_socks: BTreeMap<SocketAddr, LanEntry>,
-    /// Per segment: percent of deliveries lost (`Net::set_lan_loss`), and how many were.
-    lan_loss: BTreeMap<String, (u64, u64)>,
-    /// `Net::set_dial_ms`; `None`: `DIAL_MS`.
-    dial_ms: Option<u64>,
     /// Punch packets sent (`Net::punches`).
     punches: u64,
 }
@@ -101,20 +95,18 @@ struct Host {
     lans: BTreeMap<String, IpAddr>,
 }
 
-/// A bound announcement socket: its endpoint (for partitions and `kill`), what it heard.
+/// A bound announcement socket: what it heard.
 struct LanEntry {
     id: u64,
-    endpoint: String,
     heard: VecDeque<(Announce, SocketAddr)>,
     waker: Option<Waker>,
 }
 
-/// A bound socket: its endpoint (for partitions), the key it accepts with (none: dials only),
+/// A bound socket: the key it accepts with (none: dials only),
 /// whether it is a LAN listener's (serving `osis-lan` only, else `osis` and `osis-relay`), and
 /// connections that reached it, not yet accepted (connection id, ALPN, where it came from).
 struct Entry {
     id: u64,
-    endpoint: String,
     key: Option<PublicKey>,
     lan: bool,
     queue: VecDeque<(u64, Alpn, SocketAddr)>,
@@ -200,21 +192,9 @@ impl Udp {
 }
 
 impl State {
-    /// Closes the sockets of endpoint `a`.
-    pub(crate) fn kill_socks(&mut self, a: &str) {
-        let at: Vec<SocketAddr> = self.udp.socks.iter().filter(|(_, e)| e.endpoint == a).map(|(s, _)| *s).collect();
-        for s in at {
-            self.unbind(s, None);
-        }
-        let at: Vec<SocketAddr> = self.udp.lan_socks.iter().filter(|(_, e)| e.endpoint == a).map(|(s, _)| *s).collect();
-        for s in at {
-            self.lan_unbind(s, None);
-        }
-    }
-
     /// Removes announcement socket `at` (if `id` matches) and wakes its receiver.
-    fn lan_unbind(&mut self, at: SocketAddr, id: Option<u64>) {
-        if self.udp.lan_socks.get(&at).is_some_and(|e| id.is_none_or(|i| i == e.id))
+    fn lan_unbind(&mut self, at: SocketAddr, id: u64) {
+        if self.udp.lan_socks.get(&at).is_some_and(|e| e.id == id)
             && let Some(mut e) = self.udp.lan_socks.remove(&at)
         {
             wake(&mut e.waker);
@@ -222,7 +202,7 @@ impl State {
     }
 
     /// Delivers an announcement from the host at `from` to `to` on each segment it is on.
-    fn lan_send(&mut self, name: &str, from: SocketAddr, a: &Announce, to: SocketAddr) {
+    fn lan_send(&mut self, from: SocketAddr, a: &Announce, to: SocketAddr) {
         let Some(host) = self.udp.hosts.get(&from.ip()) else { return };
         let every = to.ip() == IpAddr::V4(std::net::Ipv4Addr::BROADCAST) || to.ip() == IpAddr::V6(ALL_NODES);
         let mut to_each = Vec::new();
@@ -231,7 +211,7 @@ impl State {
                 // broadcast and multicast stop at the segment; one address is routed to
                 let reached = if every { h.lans.get(seg).is_some_and(|a| a.is_ipv6() == to.is_ipv6()) } else { h.lans.values().any(|a| *a == to.ip()) };
                 if reached {
-                    to_each.push((seg.clone(), at, SocketAddr::new(*own, from.port())));
+                    to_each.push((at, SocketAddr::new(*own, from.port())));
                 }
             }
             // one address is sent once, from the first segment
@@ -239,16 +219,7 @@ impl State {
                 break;
             }
         }
-        for (seg, at, src) in to_each {
-            let endpoint = self.udp.lan_socks.get(&at).map(|e| e.endpoint.clone()).unwrap_or_default();
-            let loss = self.udp.lan_loss.get(&seg).map_or(0, |l| l.0);
-            let lost = loss > 0 && self.rng().below(100) < loss;
-            if lost && let Some(l) = self.udp.lan_loss.get_mut(&seg) {
-                l.1 += 1;
-            }
-            if lost || self.cut(name, &endpoint) {
-                continue;
-            }
+        for (at, src) in to_each {
             if let Some(e) = self.udp.lan_socks.get_mut(&at) {
                 e.heard.push_back((*a, src));
                 wake(&mut e.waker);
@@ -257,8 +228,8 @@ impl State {
     }
 
     /// Removes socket `at` (if `id` matches) and resets the connections waiting on it.
-    fn unbind(&mut self, at: SocketAddr, id: Option<u64>) {
-        if self.udp.socks.get(&at).is_some_and(|e| id.is_none_or(|i| i == e.id))
+    fn unbind(&mut self, at: SocketAddr, id: u64) {
+        if self.udp.socks.get(&at).is_some_and(|e| e.id == id)
             && let Some(mut e) = self.udp.socks.remove(&at)
         {
             wake(&mut e.waker);
@@ -270,22 +241,9 @@ impl State {
 }
 
 impl Net {
-    /// How long a dial is resent before it fails, on this net, in place of `DIAL_MS` (a test whose
-    /// dials wait for nothing's answer, on a net where model time is wall time). 0: one packet;
-    /// `u64::MAX`: a dial nothing answers never ends.
-    pub fn set_dial_ms(&self, ms: u64) {
-        self.state().udp.dial_ms = Some(ms);
-    }
-
     /// Adds a NAT whose public address is `public`.
     pub fn add_nat(&self, public: IpAddr, nat: Nat) {
         self.state().udp.nats.insert(public, NatState { nat, ports: BTreeMap::new(), back: BTreeMap::new(), out: BTreeSet::new(), next: 40000 });
-    }
-
-    /// Loses `pct` percent (seeded; 0..=100) of what is delivered on LAN segment `segment` from
-    /// now on.
-    pub fn set_lan_loss(&self, segment: &str, pct: u64) {
-        self.state().udp.lan_loss.entry(segment.to_owned()).or_default().0 = pct;
     }
 
     /// How many punch packets this net's sockets have sent.
@@ -293,16 +251,10 @@ impl Net {
         self.state().udp.punches
     }
 
-    /// How many deliveries segment `segment` has lost.
-    pub fn lan_lost(&self, segment: &str) -> u64 {
-        self.state().udp.lan_loss.get(segment).map_or(0, |l| l.1)
-    }
-
     /// A host at `ip` (behind the NAT whose public address is `nat`, if any) whose sockets belong
-    /// to endpoint `name` (partitions and `kill` apply to them).
-    pub fn udp(&self, name: &str, ip: IpAddr, nat: Option<IpAddr>) -> MemUdp {
+    pub fn udp(&self, ip: IpAddr, nat: Option<IpAddr>) -> MemUdp {
         self.state().udp.hosts.insert(ip, Host { nat, lans: BTreeMap::new() });
-        MemUdp { net: self.clone(), name: name.to_owned(), ip }
+        MemUdp { net: self.clone(), ip }
     }
 }
 
@@ -310,7 +262,6 @@ impl Net {
 #[derive(Clone)]
 pub struct MemUdp {
     net: Net,
-    name: String,
     ip: IpAddr,
 }
 
@@ -340,8 +291,8 @@ impl MemUdp {
         let mut st = self.net.state();
         let addr = self.free(&st.udp.lan_socks, port)?;
         let id = st.id();
-        st.udp.lan_socks.insert(addr, LanEntry { id, endpoint: self.name.clone(), heard: VecDeque::new(), waker: None });
-        Ok(MemLan { net: self.net.clone(), name: self.name.clone(), addr, id })
+        st.udp.lan_socks.insert(addr, LanEntry { id, heard: VecDeque::new(), waker: None });
+        Ok(MemLan { net: self.net.clone(), addr, id })
     }
 }
 
@@ -355,8 +306,8 @@ impl MemUdp {
         let addr = self.free(&st.udp.socks, at.port())?;
         let id = st.id();
         let key = secret.map(StaticSecret::public_key);
-        st.udp.socks.insert(addr, Entry { id, endpoint: self.name.clone(), key, lan, queue: VecDeque::new(), waker: None });
-        Ok(MemSock { net: self.net.clone(), name: self.name.clone(), addr, id })
+        st.udp.socks.insert(addr, Entry { id, key, lan, queue: VecDeque::new(), waker: None });
+        Ok(MemSock { net: self.net.clone(), addr, id })
     }
 }
 
@@ -396,7 +347,6 @@ impl UdpT for MemUdp {
 /// An announcement socket on a host's LAN segments (`Udp::lan`). Dropping it unbinds it.
 pub struct MemLan {
     net: Net,
-    name: String,
     addr: SocketAddr,
     id: u64,
 }
@@ -408,7 +358,7 @@ impl LanSocket for MemLan {
 
     fn announce<'a>(&'a self, a: &'a Announce, to: SocketAddr) -> LanFuture<'a, ()> {
         Box::pin(async move {
-            self.net.state().lan_send(&self.name, self.addr, a, to);
+            self.net.state().lan_send(self.addr, a, to);
             Ok(())
         })
     }
@@ -435,14 +385,13 @@ impl LanSocket for MemLan {
 
 impl Drop for MemLan {
     fn drop(&mut self) {
-        self.net.state().lan_unbind(self.addr, Some(self.id));
+        self.net.state().lan_unbind(self.addr, self.id);
     }
 }
 
 /// A bound socket of the NAT model. Dropping it unbinds it; its connections stay.
 pub struct MemSock {
     net: Net,
-    name: String,
     addr: SocketAddr,
     id: u64,
 }
@@ -457,10 +406,7 @@ impl MemSock {
         }
         let Some((at, src)) = st.udp.route(self.addr, to) else { return Ok(None) };
         let Some(e) = st.udp.socks.get(&at) else { return Ok(None) };
-        let (Some(theirs), endpoint, lan) = (e.key, e.endpoint.clone(), e.lan) else { return Ok(None) };
-        if st.cut(&self.name, &endpoint) {
-            return Ok(None);
-        }
+        let (Some(theirs), lan) = (e.key, e.lan) else { return Ok(None) };
         if theirs != key {
             return Err(Error::KeyMismatch);
         }
@@ -471,7 +417,7 @@ impl MemSock {
             None => st.rng().bytes32(),
         };
         let limit = [crate::quic::MAX_STREAMS as usize, crate::p2p::dialer_limits(alpn, own.is_some()).0 as usize];
-        let (id, c) = st.new_conn(&self.net, [self.name.clone(), endpoint], [mine, theirs], limit, Some(to));
+        let (id, c) = st.new_conn(&self.net, [mine, theirs], limit, to);
         if let Some(e) = st.udp.socks.get_mut(&at) {
             e.queue.push_back((id, chosen, src));
             wake(&mut e.waker);
@@ -488,7 +434,7 @@ impl Sock for MemSock {
     }
 
     async fn dial(&self, to: SocketAddr, key: PublicKey, own: Option<StaticSecret>, alpn: Alpn) -> Result<(MemConn, Alpn), Error> {
-        let give_up = self.net.state().udp.dial_ms.unwrap_or(DIAL_MS);
+        let give_up = DIAL_MS;
         let end = self.net.now().saturating_add(give_up);
         loop {
             if let Some(c) = self.try_dial(to, key, own.as_ref(), alpn)? {
@@ -510,7 +456,7 @@ impl Sock for MemSock {
                     e.waker = Some(cx.waker().clone());
                     return Poll::Pending;
                 };
-                if let Some(conn) = st.accept_conn(&self.net, c, Some(src)) {
+                if let Some(conn) = st.accept_conn(&self.net, c, src) {
                     return Poll::Ready(Ok((conn, alpn, src)));
                 }
             }
@@ -531,7 +477,7 @@ impl Sock for MemSock {
     }
 
     fn close(&self) {
-        self.net.state().unbind(self.addr, Some(self.id));
+        self.net.state().unbind(self.addr, self.id);
     }
 }
 
