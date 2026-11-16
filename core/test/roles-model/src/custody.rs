@@ -40,7 +40,8 @@
 //!   answered), or for a taken revocation neither its preferred line nor a plain rotation of its
 //!   own carries when it cannot merge;
 //!   then, following several heads and holding every tip's seed, it certifies the merge of them
-//!   all; it re-seals its heads' tip seeds to roster devices it sees without them; it rotates
+//!   all; it re-seals each head's seed (its line's riding along) to roster devices it sees
+//!   without it (a merge's: nor every tip's); it rotates
 //!   t at its head while no t epoch is current there or a current one (counting, carried by no
 //!   other's history) is boxed to P at an epoch that does not count there or lacks a taken
 //!   revocation the head carries, the history carrying its counting t epochs; it writes at its
@@ -837,24 +838,29 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
             }
         }
     }
-    // re-seals: its heads' tip seeds to roster devices it sees without them
+    // re-seals (spec/crypto.md §9, Seed re-seal): per head whose seed it holds, to the roster
+    // devices it sees without it (a merge's: nor every tip's), one box each of the head's seed with
+    // the seeds of its line it holds riding along
     let j3 = if made.is_empty() { j2 } else { judge(w, n, now) };
     let mine: BTreeSet<Line> = j3.held.iter().filter_map(|i| match &w.item(*i).kind {
-        Kind::Reseal { e, .. } if w.item(*i).author == n => Some(e.clone()),
+        Kind::Reseal { e, tagged: true } if w.item(*i).author == n => Some(e.clone()),
         _ => None,
     }).collect();
     for hd in j3.heads.clone() {
-        for m in w.tips(&hd) {
-            let e = w.line(m);
-            if !j3.keys.holds(w, &e) || mine.contains(&e) {
-                continue;
-            }
-            let lacking: Vec<usize> = j3.roster.iter().copied().filter(|d| *d != n && *d < OWN && !seen_holding(w, &j3, *d, &e)).collect();
-            for d in lacking {
-                let mut bx = [false; N];
-                bx[d] = true;
-                made.push(w.add(Kind::Reseal { e: e.clone(), tagged: true }, n, n, head.clone(), None, now, bx));
-            }
+        if hd.is_empty() || !j3.keys.holds(w, &hd) || mine.contains(&hd) {
+            continue;
+        }
+        let mut bx = [false; N];
+        for d in j3.roster.iter().copied().filter(|d| *d != n && *d < OWN && !seen_holding(w, &j3, *d, &hd)) {
+            bx[d] = true;
+        }
+        if !bx.iter().any(|b| *b) {
+            continue;
+        }
+        made.push(w.add(Kind::Reseal { e: hd.clone(), tagged: true }, n, n, head.clone(), None, now, bx));
+        let riders: BTreeSet<Line> = hd.iter().map(|x| w.line(*x)).filter(|f| *f != hd && j3.keys.holds(w, f)).collect();
+        for f in riders {
+            made.push(w.add(Kind::Reseal { e: f, tagged: false }, n, n, head.clone(), None, now, bx));
         }
     }
     // t rotates at the head (boxed to P there and to R1, its history carrying the t epochs it holds
@@ -1883,6 +1889,24 @@ mod tests {
         let m2 = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Cert { .. })).unwrap();
         assert_eq!(w.tips(&w.mints(m2)), vec![x, b2]);
         assert!(w.item(m2).boxed[B]);
+    }
+
+    /// B merges its b with X's x (whose seed A and T lack), boxing them the merge seed with x's
+    /// riding along. C, following that merge, sees A and T holding its seed: it re-seals per head
+    /// (spec/crypto.md §9, Seed re-seal), not per tip, so it re-seals x's seed to no one.
+    #[test]
+    fn a_reseal_is_owed_per_head_not_per_tip() {
+        let mut w = World::default();
+        let x = plain(&mut w, X, X, &Line::new(), &[], &[], &[B, C, X], 1);
+        let b = plain(&mut w, B, B, &Line::new(), &[], &[], &PS, 1);
+        to(&mut w, &[x, b], &[B, C], 2);
+        let made = act(&mut w, B, 2, None, false);
+        let m = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Cert { .. })).unwrap();
+        assert!(w.item(m).boxed[A] && w.item(m).boxed[T]);
+        to(&mut w, &made, &[C], 3);
+        assert_eq!(judge(&w, C, 3).preferred, w.mints(m));
+        let made = act(&mut w, C, 3, None, false);
+        assert!(!made.iter().any(|id| matches!(w.item(*id).kind, Kind::Reseal { .. })), "C re-seals nothing");
     }
 
     /// X also merges a fork it signed as a made-up key actor into its revocation's line: the
