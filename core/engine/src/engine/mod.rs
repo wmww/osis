@@ -2268,13 +2268,15 @@ impl Core {
     /// `me`, for what only an account may do.
     /// A node removed from its account writes nothing as it (`member`), nor one D's roster does
     /// not hold (one whose taken revocations remove it: spec/permissions.md §5.5, it signs
-    /// nothing for P while it may still be a node of P).
+    /// nothing for P while it may still be a node of P), nor one not holding its preferred head's
+    /// seed (it signs only there: spec/crypto.md §9, Custody), until it does.
     pub(crate) fn writer(&self) -> Result<Tid> {
         let p = self.account.get().ok_or(Error::Misuse("this node has joined no account"))?;
         self.member().ok_or(Error::Misuse("this node was removed from its account"))?;
         if !self.account_view(&p).is_some_and(|v| v.roster().contains(&self.id.tid())) {
             return Err(Error::Misuse("this node is off its account's roster: it signs nothing as it"));
         }
+        self.account_signing(&p)?;
         Ok(p)
     }
 

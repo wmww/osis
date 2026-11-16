@@ -176,7 +176,7 @@ struct Run {
     reached: Reached,
     /// What each node held at the last compare: seeds (lines), t's read epochs.
     seeds: [BTreeSet<Line>; N],
-    tkeys: [usize; N],
+    tkeys: [BTreeSet<osis_crypto::Epoch>; N],
     /// Taken revocations (P) or followed rotations (outside) at the last compare.
     taken: [Vec<u32>; N],
     switched_at: [bool; N],
@@ -228,7 +228,7 @@ impl Run {
             rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
             reached: Reached::default(),
             seeds: Default::default(),
-            tkeys: [0; N],
+            tkeys: Default::default(),
             taken: Default::default(),
             switched_at: [false; N],
         }
@@ -1218,11 +1218,13 @@ impl Run {
                 }
                 self.taken[v] = fol;
             }
-            // t's read epochs only grow
+            // the secrets of t's own read epochs only grow (reading-only ones included: opened
+            // whatever counts; t's epochs derived from P's come and go with P's current epochs)
             if v < OWN || v == R1 {
-                let tk = self.lp.peers[v].engine.epochs(&self.ids.t).map_or(0, |e| e.read.held().count());
-                if tk < self.tkeys[v] {
-                    self.fail(&format!("t{t} node {}: t's read epochs shrank {} -> {tk}", cm::NAMES[v], self.tkeys[v]));
+                let tk: BTreeSet<osis_crypto::Epoch> = self.lp.peers[v].engine.core.ix.secrets.get(&self.ids.t).map(|e| e.read.epochs().filter(|(x, _)| e.read.secret(x).is_some()).map(|(x, _)| *x).collect()).unwrap_or_default();
+                if !self.tkeys[v].is_subset(&tk) {
+                    let lost: Vec<u64> = self.tkeys[v].difference(&tk).map(|e| e.n()).collect();
+                    self.fail(&format!("t{t} node {}: t's read epochs shrank {} -> {} (lost n {lost:?})", cm::NAMES[v], self.tkeys[v].len(), tk.len()));
                 }
                 self.tkeys[v] = tk;
             }
