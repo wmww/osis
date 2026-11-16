@@ -1,12 +1,8 @@
 //! View types (notes/app.md Terms): content views, the opener, the tile. Only this registry
 //! lists them; a view type never names another except by the spec it hands a child.
 
-mod chrome;
-mod collection;
-mod look;
-mod note;
+mod content;
 mod opener;
-mod raw;
 mod shell;
 mod tile;
 
@@ -102,11 +98,11 @@ pub fn grow_tag(d: &Data, t: Tid, n: usize) {
 }
 
 /// The raw view.
-pub use raw::RAW;
+pub use content::RAW;
 
 /// Kit's view types, in fit-tie order.
 pub fn kit() -> [&'static ViewType; 10] {
-    [&collection::VIEW, &look::VIEW, &note::VIEW, &RAW, &opener::OPENER, &opener::BAR, &chrome::CHROME, &tile::TILE, &shell::RESULTS, &shell::CREATING]
+    [&content::COLLECTION, &content::LOOK, &content::NOTE, &RAW, &opener::OPENER, &opener::BAR, &content::CHROME, &tile::TILE, &shell::RESULTS, &shell::CREATING]
 }
 
 type RenderKey = (&'static str, String, ViewSpec);
