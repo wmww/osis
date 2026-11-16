@@ -149,7 +149,8 @@ fn seed_box(tx: &mut Tx<'_>, p: &Tid, epoch: &VerifyingKey, m: &Tid, payload: &[
 pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> {
     let Some((p, d)) = tx.core.account_devices() else { return Ok(Vec::new()) };
     let (Some(v), Some(held)) = (tx.core.account_view(&p), tx.core.accounts.get(&p).cloned()) else { return Ok(Vec::new()) };
-    if !super::signing::signs_for(tx.core, &d, &v) {
+    // a re-seal is signed at the preferred head: none while its seed is not here
+    if !super::signing::signs_for(tx.core, &d, &v) || tx.core.account_open_key(&p).is_none() {
         return Ok(Vec::new());
     }
     // this node holds every seed it re-seals

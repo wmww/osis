@@ -7,7 +7,8 @@
 //!   devices that cannot derive it. A node holds a seed iff it holds a box to its own key (X also
 //!   Z's: a key it made up) or derives it (a merge epoch from every tip's seed), whether or not
 //!   the item counts. Inner signatures open with the seed of the epoch signed at (or the item's
-//!   own; a certificate's with any epoch it joins). Thing t's epochs are boxed to P at a P epoch and to its outside holder R1: a node of P
+//!   own; a certificate's with any epoch it joins); a plain rotation's membership changes with
+//!   the seed of the epoch signed at alone, and one whose changes do not open is minted by none. Thing t's epochs are boxed to P at a P epoch and to its outside holder R1: a node of P
 //!   opens a t epoch with any held seed of that P epoch, and every t epoch the history of a t
 //!   epoch it holds carries. Judging decides only what counts and
 //!   where a node signs and what it encrypts under.
@@ -143,8 +144,9 @@ pub enum Kind {
     /// (its epoch `joined[0]`). `takes` and `answers` only
     /// under `MergeCarries`.
     Cert { joined: Vec<Line>, takes: Vec<u32>, answers: Vec<u32> },
-    /// A box of epoch `e`'s seed to the device it is boxed to.
-    Reseal { e: Line },
+    /// A box of epoch `e`'s seed to the device it is boxed to; `tagged`: its box's tag names it
+    /// (its first seed), else it rides along in a box tagged for another (seen by no one else).
+    Reseal { e: Line, tagged: bool },
     Content,
     /// The author's word that its writes `names` count.
     Listing { names: Vec<u32> },
@@ -303,7 +305,7 @@ impl Keys {
                 Kind::Plain { .. } | Kind::Cert { .. } => {
                     boxes.insert(w.mints(*id));
                 }
-                Kind::Reseal { e } => {
+                Kind::Reseal { e, .. } => {
                     boxes.insert(e.clone());
                 }
                 _ => {}
@@ -390,7 +392,7 @@ pub fn judge(w: &World, v: usize, now: u32) -> View {
         let mut j = judge_with(w, v, now, &held, keys.clone());
         for _ in 0..8 {
             let next = Keys::of(w, v, &held, &|id| match &w.item(id).kind {
-                Kind::Reseal { e } => j.epoch_counts(e),
+                Kind::Reseal { e, .. } => j.epoch_counts(e),
                 _ => j.epoch_counts(&w.mints(id)),
             });
             if next == keys {
@@ -461,6 +463,11 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
             _ => false,
         };
         let opens = joined || j.keys.holds(w, &i.epoch) || w.is_rot(*id) && j.keys.holds(w, &w.mints(*id));
+        // a plain rotation's membership changes open with the seed of the epoch it is signed at
+        // alone (spec/crypto.md §9, Roster): one carrying changes that do not open is minted by
+        // none here
+        let changes = !w.removes(*id).is_empty() || !w.adds(*id).is_empty();
+        let opens = opens && (!changes || j.keys.holds(w, &i.epoch));
         j.signers.insert(*id, opens.then_some(i.signer));
     }
     // order of placing: the chosen line (and at P's nodes what it stands with) first, then when
@@ -732,7 +739,7 @@ fn seen_holding(w: &World, j: &View, d: usize, e: &Line) -> bool {
         let i = w.item(*id);
         i.boxed[d] && match &i.kind {
             Kind::Plain { .. } | Kind::Cert { .. } => w.mints(*id) == *e,
-            Kind::Reseal { e: f } => f == e,
+            Kind::Reseal { e: f, tagged } => *tagged && f == e,
             _ => false,
         }
     });
@@ -826,14 +833,14 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
             nb[n] = false;
             let line_seeds: Vec<Line> = secrets(w, &j2).0.into_iter().filter(|f| !f.is_empty() && *f != e && f.is_subset(&e) && w.single(f)).collect();
             for f in line_seeds {
-                made.push(w.add(Kind::Reseal { e: f }, n, n, e.clone(), None, now, nb));
+                made.push(w.add(Kind::Reseal { e: f, tagged: false }, n, n, e.clone(), None, now, nb));
             }
         }
     }
     // re-seals: its heads' tip seeds to roster devices it sees without them
     let j3 = if made.is_empty() { j2 } else { judge(w, n, now) };
     let mine: BTreeSet<Line> = j3.held.iter().filter_map(|i| match &w.item(*i).kind {
-        Kind::Reseal { e } if w.item(*i).author == n => Some(e.clone()),
+        Kind::Reseal { e, .. } if w.item(*i).author == n => Some(e.clone()),
         _ => None,
     }).collect();
     for hd in j3.heads.clone() {
@@ -846,7 +853,7 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
             for d in lacking {
                 let mut bx = [false; N];
                 bx[d] = true;
-                made.push(w.add(Kind::Reseal { e: e.clone() }, n, n, head.clone(), None, now, bx));
+                made.push(w.add(Kind::Reseal { e: e.clone(), tagged: true }, n, n, head.clone(), None, now, bx));
             }
         }
     }
@@ -1093,7 +1100,7 @@ fn x_step(w: &mut World, p: &mut impl Pick, now: u32, small: bool) -> Vec<u32> {
         _ => {
             let to = [A, B, C, T][p.pick(4)];
             if !e.is_empty() {
-                made.push(w.add(Kind::Reseal { e: e.clone() }, X, X, e.clone(), None, now, only(&[to])));
+                made.push(w.add(Kind::Reseal { e: e.clone(), tagged: true }, X, X, e.clone(), None, now, only(&[to])));
             }
         }
     }
@@ -1832,6 +1839,50 @@ mod tests {
     fn a_removal_acts_on_the_roster_only_inside_its_rotation() {
         assert!(bare(Control::None)[A]);
         assert!(!bare(Control::RosterBare)[A], "roster-bare: B boxes A");
+    }
+
+    /// X forks x1 boxed to B and itself alone, then revokes A at x1 boxed to everyone: C holds
+    /// the revocation's seed but not x1's, so its membership changes do not open there (spec/
+    /// crypto.md §9, Roster): minted by none, not taken, not counting. B reads and takes it.
+    #[test]
+    fn a_rotation_whose_changes_do_not_open_is_minted_by_none() {
+        let mut w = World::default();
+        let x1 = plain(&mut w, X, X, &Line::new(), &[], &[], &[B, X], 1);
+        let l1 = w.line(x1);
+        let x2 = plain(&mut w, X, X, &l1, &[A], &[], &PS, 1);
+        to(&mut w, &[x1, x2], &[B, C], 2);
+        let c = judge(&w, C, 2);
+        assert!(c.keys.holds(&w, &w.line(x2)) && !c.keys.holds(&w, &l1));
+        assert_eq!(c.signers[&x2], None);
+        assert!(!c.taken.contains(&x2) && !c.counting.contains(&w.line(x2)));
+        let b = judge(&w, B, 2);
+        assert_eq!(b.signers[&x2], Some(X));
+        assert!(b.taken.contains(&x2));
+    }
+
+    /// C merges B's b with X's x (whose seed B lacks), boxing the merge seed to B with x's seed
+    /// riding along; B rotates on b before it holds the merge. C's next merge joins x and B's new
+    /// rotation: B holds every tip's seed, but the box carrying x's is tagged for the first merge's
+    /// seed (spec/crypto.md §9, Custody), so C sees B lacking x's and boxes it the new merge.
+    #[test]
+    fn a_seed_riding_along_is_seen_by_no_one() {
+        let mut w = World::default();
+        let x = plain(&mut w, X, X, &Line::new(), &[], &[], &[A, C, X], 1);
+        let b = plain(&mut w, B, B, &Line::new(), &[], &[], &PS, 1);
+        to(&mut w, &[x, b], &[C], 2);
+        let made = act(&mut w, C, 2, None, false);
+        let m1 = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Cert { .. })).unwrap();
+        assert!(w.item(m1).boxed[B]);
+        assert!(made.iter().any(|id| matches!(&w.item(*id).kind, Kind::Reseal { e, tagged: false } if *e == w.line(x)) && w.item(*id).boxed[B]));
+        to(&mut w, &made, &[B], 3);
+        assert!(judge(&w, B, 3).keys.holds(&w, &w.line(x)));
+        let lb = w.line(b);
+        let b2 = plain(&mut w, B, B, &lb, &[], &[], &PS, 3);
+        to(&mut w, &[b2], &[C], 4);
+        let made = act(&mut w, C, 4, None, false);
+        let m2 = *made.iter().find(|id| matches!(w.item(**id).kind, Kind::Cert { .. })).unwrap();
+        assert_eq!(w.tips(&w.mints(m2)), vec![x, b2]);
+        assert!(w.item(m2).boxed[B]);
     }
 
     /// X also merges a fork it signed as a made-up key actor into its revocation's line: the

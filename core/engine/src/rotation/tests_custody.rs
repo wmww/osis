@@ -640,7 +640,7 @@ impl Run {
             match &i.kind {
                 MK::Plain { at, removes, takes, answers, .. } => p.plain = Some((at.clone(), removes.iter().copied().collect(), takes.iter().copied().collect(), answers.iter().map(|q| answered(&wc, *q)).collect(), bx)),
                 MK::Cert { .. } => p.cert = Some((wc.mints(id), bx)),
-                MK::Reseal { e } => {
+                MK::Reseal { e, .. } => {
                     for d in bx {
                         p.reseals.insert((e.clone(), d));
                     }
@@ -705,7 +705,7 @@ impl Run {
                     cert = Some(id);
                     // the seeds its boxes carry besides the merge's (`add_cert`)
                     for x in self.w.items[id as usize..].iter().filter(|x| self.eid[x.id as usize - 1] == c) {
-                        if let MK::Reseal { e } = &x.kind {
+                        if let MK::Reseal { e, .. } = &x.kind {
                             reseals.extend((0..N).filter(|d| x.boxed[*d]).map(|d| (e.clone(), d)));
                         }
                     }
@@ -716,7 +716,7 @@ impl Run {
             } else if h.author == self.ids.p && h.reseal.is_some() {
                 let ids = self.add_reseal(n, &c);
                 for id in &ids {
-                    if let MK::Reseal { e } = &self.w.item(*id).kind {
+                    if let MK::Reseal { e, .. } = &self.w.item(*id).kind {
                         for d in (0..N).filter(|d| self.w.item(*id).boxed[*d]) {
                             reseals.insert((e.clone(), d));
                         }
@@ -861,7 +861,7 @@ impl Run {
             let bx: [bool; N] = std::array::from_fn(|m| newcomers.contains(&m));
             let extra: Vec<Line> = self.held_lines(k).into_iter().filter(|e| *e != line && !e.is_empty() && e.is_subset(&line) && self.w.single(e)).collect();
             for e in extra {
-                self.add(MK::Reseal { e }, k, k, line.clone(), None, *c, None, bx, reach);
+                self.add(MK::Reseal { e, tagged: false }, k, k, line.clone(), None, *c, None, bx, reach);
             }
         }
         self.reached.certs = true;
@@ -890,9 +890,9 @@ impl Run {
                 }
             }
         }
-        let mut out = vec![self.add(MK::Reseal { e: head }, k, k, at.clone(), None, *c, pk, boxed, reach)];
+        let mut out = vec![self.add(MK::Reseal { e: head, tagged: true }, k, k, at.clone(), None, *c, pk, boxed, reach)];
         for e in lines.into_iter().skip(1) {
-            out.push(self.add(MK::Reseal { e }, k, k, at.clone(), None, *c, None, boxed, reach));
+            out.push(self.add(MK::Reseal { e, tagged: false }, k, k, at.clone(), None, *c, None, boxed, reach));
         }
         out
     }
@@ -1089,7 +1089,7 @@ impl Run {
         let pk = self.x_resign(&c, e)?;
         let id = pk.id;
         let reach: [bool; N] = std::array::from_fn(|m| m < OWN);
-        let item = self.add(MK::Reseal { e: e.clone() }, X, X, e.clone(), None, id, Some(pk), bx, reach);
+        let item = self.add(MK::Reseal { e: e.clone(), tagged: true }, X, X, e.clone(), None, id, Some(pk), bx, reach);
         self.reached.x_reseals = true;
         self.note(format!("t{} X re-seals {e:?} to {}: #{item}", self.tick, cm::NAMES[to]));
         Some(item)
@@ -1672,6 +1672,23 @@ fn a_seed_reseal_is_made_with_its_key_in_account_already_spec_crypto_9() {
     // fails inside where the model re-seals and the engine does not
     r.act(C, None, false);
     assert!(r.w.items.iter().any(|i| matches!(i.kind, MK::Reseal { .. }) && i.author == C && i.boxed[T]), "C re-seals X's epoch's seed to T");
+}
+
+// spec/crypto.md §9 (Custody, Seed re-seal): X's forks x0 (boxed to B alone of the honest
+// nodes) and x1 (to C alone) both count at C, x0 its preferred head: C signs nowhere, so it
+// re-seals x1's seed to no one (a re-seal is signed at the preferred head) and acts not at all.
+#[test]
+fn no_reseal_without_the_preferred_heads_seed_spec_crypto_9() {
+    let mut r = Run::new(0);
+    let to = |ms: &[usize]| -> [bool; N] { std::array::from_fn(|m| ms.contains(&m)) };
+    let x0 = r.x_rotation(&Line::new(), vec![], vec![], X, vec![], vec![], to(&[B, X]), false).unwrap();
+    let x1 = r.x_rotation(&Line::new(), vec![], vec![], X, vec![], vec![], to(&[C, X]), false).unwrap();
+    r.send(x0, C);
+    r.send(x1, C);
+    let j = r.judge(C);
+    assert!(j.heads.len() == 2 && j.preferred == r.w.line(x0));
+    // fails inside where the engine signs a re-seal at a head whose seed it lacks
+    assert!(r.act(C, None, false).is_empty(), "C makes nothing");
 }
 
 // spec/permissions.md §5.5 (Honest nodes of P): B takes X's revocation of A (its seed not boxed
