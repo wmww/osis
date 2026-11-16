@@ -426,25 +426,29 @@ fn concurrent_rotations_fork_and_their_merges_are_one_epoch_spec_crypto_9() {
 }
 
 // spec/commits.md §4 (a commit at an epoch whose minting rotation is not held is pending): a
-// write at a merge epoch reaching an outsider before any certificate of it pends on the merge's
-// ID, which no commit has, and applies once a certificate arrives
+// write at a merge epoch reaching an outsider before the merge is held pends on the merge's ID,
+// which no commit has, and applies once the merge is held, whether a certificate or a tip comes
+// last
 #[test]
-fn a_write_at_a_merge_applies_once_a_certificate_arrives_spec_commits_4() {
-    let (mut lp, a, t) = world(4, 3);
-    let d0 = remove(&mut lp, 0, a.devices, 2);
-    let d1 = remove(&mut lp, 1, a.devices, 2);
-    send(&mut lp, 1, 0, &d1.commits);
-    let m0 = lp.peers[0].engine.signing_due().unwrap().commits[0];
-    let e = lp.peers[0].engine.header(&m0).unwrap().rotation.clone().unwrap().mints(&m0);
-    let w0 = write(&mut lp, 0, t, "at the merge");
-    assert_eq!(lp.peers[0].engine.header(&w0).unwrap().epoch, Some(e));
-    send(&mut lp, 0, 3, &d0.commits);
-    send(&mut lp, 1, 3, &d1.commits);
-    send(&mut lp, 0, 3, &[w0]);
-    assert!(lp.peers[3].engine.pends(&w0), "pending before the merge is held");
-    send(&mut lp, 0, 3, &[m0]);
-    assert!(!lp.peers[3].engine.pends(&w0), "still pending with a certificate of its epoch held");
-    assert_eq!(read(&mut lp, 3, t), Some(Value::Str("at the merge".into())));
+fn a_write_at_a_merge_applies_once_the_merge_is_held_spec_commits_4() {
+    for cert_last in [true, false] {
+        let (mut lp, a, t) = world(4, 3);
+        let d0 = remove(&mut lp, 0, a.devices, 2);
+        let d1 = remove(&mut lp, 1, a.devices, 2);
+        send(&mut lp, 1, 0, &d1.commits);
+        let m0 = lp.peers[0].engine.signing_due().unwrap().commits[0];
+        let e = lp.peers[0].engine.header(&m0).unwrap().rotation.clone().unwrap().mints(&m0);
+        let w0 = write(&mut lp, 0, t, "at the merge");
+        assert_eq!(lp.peers[0].engine.header(&w0).unwrap().epoch, Some(e));
+        send(&mut lp, 0, 3, &d0.commits);
+        let (first, last) = if cert_last { (d1.commits.clone(), vec![m0]) } else { (vec![m0], d1.commits.clone()) };
+        send(&mut lp, if cert_last { 1 } else { 0 }, 3, &first);
+        send(&mut lp, 0, 3, &[w0]);
+        assert!(lp.peers[3].engine.pends(&w0), "cert last {cert_last}: pending before the merge is held");
+        send(&mut lp, if cert_last { 0 } else { 1 }, 3, &last);
+        assert!(!lp.peers[3].engine.pends(&w0), "cert last {cert_last}: still pending with the merge held");
+        assert_eq!(read(&mut lp, 3, t), Some(Value::Str("at the merge".into())));
+    }
 }
 
 // spec/requirements.md Cost, notes/coordination.md (Check scaling): a removal lists the commits

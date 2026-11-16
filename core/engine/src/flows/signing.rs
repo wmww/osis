@@ -546,9 +546,11 @@ fn ends(v: &super::account::AccountView, departures: Option<&Departures>, e: &Co
 /// answers once (its own answer may be so contested too). One answer per line: a reader following
 /// it holds that rejection already, so two sides never answer each other's answers; a rotation
 /// signed at the answer's epoch that puts the rejected one on a line through it ends that
-/// rejection, and is answered in turn.
+/// rejection, and is answered in turn. A merge is never answered itself: it is on every line its
+/// tips are, so one whose tips all count is on the followed line, and one with a tip disregarded
+/// is answered by that tip's answer.
 fn unanswered(v: &super::account::AccountView, me: &Tid) -> Vec<CommitId> {
-    v.rotation_ids().into_iter().filter(|r| v.disregarded(r) && !v.superseded_by(r, me) && !v.line(r).into_iter().flatten().any(|q| v.rejected(&q))).collect()
+    v.rotation_ids().into_iter().filter(|r| !v.is_merge(r) && v.disregarded(r) && !v.superseded_by(r, me) && !v.line(r).into_iter().flatten().any(|q| v.rejected(&q))).collect()
 }
 
 /// What a node of the account owes its signing chain (spec/permissions.md §5.5), made now. Any

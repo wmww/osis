@@ -22,8 +22,8 @@ pub enum Wake {
     At(u64),
     /// A blob stored (a page, a header list's tree: `Reason::WaitBlobs`).
     Blobs,
-    /// A commit held here (the rotation minting an epoch, `Reason::Epoch`), or the merge epoch a
-    /// certificate held here mints.
+    /// A commit held here, or an epoch an account's chain came to hold (the rotation minting it
+    /// held with its chain, a merge's tips and a certificate: `Reason::Epoch`).
     Commit(CommitId),
     /// What is value-less on this thing changing (a purge request, an expiry): what reaches a
     /// stored copy writing on it (`retention::pending_drops`).
@@ -270,6 +270,10 @@ pub(crate) struct Waits {
     pub blobs_due: bool,
     /// Things whose value-less lists or purge requests moved since the last `wake`: `Wake::Thing`.
     pub lists_moved: BTreeSet<Tid>,
+    /// Epochs an account's chain came to hold since the last `wake` (`account::refresh_epochs`):
+    /// `Wake::Commit` of each, as a merge's ID is no commit's and a rotation may be held before its
+    /// chain is.
+    pub epochs_held: BTreeSet<CommitId>,
     /// The commits held since the last `wake` (`Wake::Commit`); started at the first, and again
     /// after a load (whose `Wake::Open` examines every pending commit).
     pub held_feed: Option<osis_base::memo::Feed<CommitId>>,
@@ -434,18 +438,11 @@ pub(crate) fn wake(core: &mut Core) -> BTreeSet<CommitId> {
         keys.push(Wake::Open);
     }
     keys.extend(std::mem::take(&mut core.waits.lists_moved).into_iter().map(Wake::Thing));
-    // a commit held, and the merge epoch a held certificate mints (an epoch's ID, no commit's)
     match core.waits.held_feed.as_mut() {
-        Some(f) => {
-            for c in f.added() {
-                keys.push(Wake::Commit(c));
-                if let Some(e) = core.ix.commits.get(&c).and_then(|m| m.header.rotation.as_ref().filter(|r| r.is_merge()).map(|r| r.mints(&c))) {
-                    keys.push(Wake::Commit(e));
-                }
-            }
-        }
+        Some(f) => keys.extend(f.added().into_iter().map(Wake::Commit)),
         None => core.waits.held_feed = Some(core.ix.commits.feed()),
     }
+    keys.extend(std::mem::take(&mut core.waits.epochs_held).into_iter().map(Wake::Commit));
     let now = core.now().0;
     keys.extend(pend_on.range(Wake::At(0)..=Wake::At(now)).map(|(w, _)| *w));
     if std::mem::take(&mut core.waits.every_due) {

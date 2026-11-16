@@ -212,17 +212,26 @@ pub(crate) fn derive_merges(tx: &mut Tx<'_>, p: &Tid) -> Result<()> {
     Ok(())
 }
 
-/// The tags of every seed box in a commit of account `p` on D that counts here: a counting
-/// rotation's, a counting re-seal's (both write D's `account.0`).
+/// The tags of every seed box in a commit of the account that counts here: a counting rotation's
+/// (a plain rotation, a certificate: its header), a counting re-seal's (on D's `account.0`).
 fn counting_tags(core: &Core, v: &AccountView, d: &Tid) -> BTreeSet<[u8; osis_crypto::SEED_TAG_LEN]> {
-    let Ok(ak) = osis_base::Ak::new("account.0") else { return BTreeSet::new() };
     let mut out = BTreeSet::new();
+    let mut take = |c: &osis_base::CommitId| {
+        let Some(h) = core.ix.commits.get(c).map(|m| m.header.arc()) else { return };
+        if let Some((_, boxes)) = seed_boxes_of(&h) {
+            out.extend(boxes.iter().map(|b| b.tag));
+        }
+    };
+    for e in v.rotation_ids() {
+        for c in v.minting(&e).iter().filter(|c| v.rotation_counts(c)) {
+            take(c);
+        }
+    }
+    let Ok(ak) = osis_base::Ak::new("account.0") else { return out };
     for (_, c) in core.ix.by_aspect.get(&(*d, ak)).into_iter().flatten() {
         let Some(m) = core.ix.commits.get(c) else { continue };
-        let counts = if v.is_rotation(c) { v.rotation_counts(c) } else { core.standing(c, &m.view) == osis_perm::EpochStanding::Counts };
-        let h = m.header.arc();
-        if counts && let Some((_, boxes)) = seed_boxes_of(&h) {
-            out.extend(boxes.iter().map(|b| b.tag));
+        if !v.is_rotation(c) && m.header.reseal.is_some() && core.standing(c, &m.view) == osis_perm::EpochStanding::Counts {
+            take(c);
         }
     }
     out

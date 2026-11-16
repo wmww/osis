@@ -456,19 +456,25 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
     let mut order: Vec<u32> = j.chain.iter().copied().collect();
     order.sort_by_key(|x| key(*x));
     let pos: BTreeMap<u32, usize> = order.iter().enumerate().map(|(i, x)| (*x, i)).collect();
-    // rejections: (rejector's epoch, the epoch it is signed at, rejected element); contested only
-    // from below: no rejection of an element descending from the rejector's signed-at epoch
+    // rejections: (rejector's epoch, the epoch it is signed at, rejected element) (spec/permissions.md
+    // §5.4, Rejects): contested only from below, so none where a held rotation signed at the
+    // rejector's epoch (the rejector included) is on a line with the rejected one
+    let placed = |id: u32| -> Option<Line> {
+        match w.item(id).kind {
+            Kind::Plain { .. } if j.chain.contains(&id) => Some(w.line(id)),
+            Kind::Cert { .. } if j.chain.contains(&id) || j.merges.contains(&w.mints(id)) => Some(w.mints(id)),
+            _ => None,
+        }
+    };
     let mut rejs: Vec<(Line, Line, u32)> = vec![];
     for id in held.iter().copied() {
-        let rejector = match w.item(id).kind {
-            Kind::Plain { .. } if j.chain.contains(&id) => w.line(id),
-            Kind::Cert { .. } if j.chain.contains(&id) || j.merges.contains(&w.mints(id)) => w.mints(id),
-            _ => continue,
-        };
+        let Some(rejector) = placed(id) else { continue };
+        let e = &w.item(id).epoch;
         for q in w.answers(id).iter().copied().filter(|q| j.chain.contains(q)) {
             let lq = w.line(q);
-            if !w.item(id).epoch.is_subset(&lq) && !rejector.contains(&q) {
-                rejs.push((rejector.clone(), w.item(id).epoch.clone(), q));
+            let through = held.iter().filter(|s| w.item(**s).epoch == *e).filter_map(|s| placed(*s)).any(|ls| ls.is_subset(&lq) || ls.contains(&q));
+            if !through {
+                rejs.push((rejector.clone(), e.clone(), q));
             }
         }
     }

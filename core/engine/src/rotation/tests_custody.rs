@@ -682,7 +682,10 @@ impl Run {
         if let Some((e, d)) = model.reseals.iter().find(|x| !reseals.contains(x)) {
             self.fail(&format!("t{t} {} acting: the model re-seals {e:?} to {}, the engine not (engine {reseals:?})", cm::NAMES[n], cm::NAMES[*d]));
         }
-        if trot != model.trot {
+        // the model's t has no forks of its own (each t epoch follows one): the engine also
+        // re-keys t where two of t's epochs are current (siblings re-keyed it apart), so only the
+        // model's re-key is required
+        if model.trot && !trot {
             let what: Vec<String> = made.iter().chain(&[]).map(|id| format!("#{id} {:?}", self.w.item(*id).kind)).collect();
             let hs: Vec<String> = rest.iter().map(|c| { let h = self.lp.peers[n].engine.header(c).unwrap(); format!("{:?} {:?}", h.kind, h.aspects.iter().map(|a| format!("{}:{}", if a.tid == self.ids.t { "t" } else if a.tid == self.ids.d { "D" } else if a.tid == self.ids.p { "P" } else { "?" }, a.ak.as_str())).collect::<Vec<_>>()) }).collect();
             self.fail(&format!("t{t} {} acting: engine re-keys t {trot}, model {} (made {what:?}; besides {hs:?})", cm::NAMES[n], model.trot));
@@ -1117,7 +1120,9 @@ impl Run {
             }
             let warn = view.doubt().is_some();
             if warn != j.warning {
-                self.fail(&at("warning", format!("{warn}"), format!("{}", j.warning)));
+                let rej: Vec<u32> = chain.iter().copied().filter(|r| view.rejected(&self.eid[*r as usize - 1])).collect();
+                let answers: Vec<(u32, Vec<u32>)> = self.w.items.iter().filter(|i| !self.w.answers(i.id).is_empty()).map(|i| (i.id, self.w.answers(i.id).to_vec())).collect();
+                self.fail(&at("warning", format!("{warn} (rejected {rej:?}, contested {:?})", view.contested().iter().map(|c| self.line_of(c)).collect::<Vec<_>>()), format!("{} (rejected {:?}; answers {answers:?})", j.warning, j.rejected)));
             }
             self.reached.warned |= warn;
             if v < OWN {
@@ -1387,7 +1392,7 @@ impl Run {
                     self.compare();
                 }
             }
-            if round + 1 == cm::ROUNDS && made.iter().any(|id| self.w.is_rot(*id)) {
+            if round + 1 == cm::ROUNDS && made.iter().any(|id| self.w.is_rot(*id) || matches!(self.w.item(*id).kind, MK::TRot)) {
                 self.fail(&format!("restless: an honest node still rotates in the last settle round ({made:?})"));
             }
         }
@@ -1469,8 +1474,13 @@ impl Run {
                 let c = self.eid[i.id as usize - 1];
                 let e = &self.lp.peers[v].engine;
                 let counts = e.core.ix.commits.get(&c).is_some_and(|m| e.core.standing(&c, &m.view) == osis_perm::EpochStanding::Counts);
-                if self.w.hostile(i.id) && counts {
-                    self.fail(&format!("settled: {} counts X's write #{}", cm::NAMES[v], i.id));
+                // an honest node of P holding X's write before X's removal may name it (its
+                // cutoff: spec/permissions.md §5.5, Limit), which counts wherever its word does
+                let removal_at = |n: usize| self.w.item(removal).recv[n];
+                let excused = [A, B, C, T].iter().any(|n| i.recv[*n] < removal_at(*n));
+                if self.w.hostile(i.id) && counts && !excused {
+                    let why = self.why(v, &c);
+                    self.fail(&format!("settled: {} counts X's write #{} ({why})", cm::NAMES[v], i.id));
                 }
                 if i.author == X || !reads_t && i.on_t.is_some() || self.left[i.author] {
                     continue;

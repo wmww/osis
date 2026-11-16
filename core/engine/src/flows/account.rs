@@ -76,6 +76,10 @@ pub(crate) struct AccountView {
     /// The held merge certificates (verified: every tip's signature), each with the epoch it
     /// mints (spec/crypto.md §9, Merges).
     certs: BTreeMap<CommitId, CommitId>,
+    /// The held certificates that stand here: at a node of the account, those whose maker is a
+    /// node of the merge's line no taken removal hits (`osis_perm::Chain::standing_certifiers`);
+    /// elsewhere every one. Another stands with nothing, whatever its epoch does: it counts not.
+    standing_certs: BTreeSet<CommitId>,
     /// Per held epoch but the first, when this node came to hold it (a merge: its first
     /// certificate).
     held_at: BTreeMap<CommitId, osis_base::WallMs>,
@@ -137,7 +141,7 @@ impl AccountView {
     /// A merge certificate counts as its epoch does.
     fn judged(&self) -> BTreeMap<CommitId, (EpochStanding<CommitId>, Option<bool>)> {
         let c = self.rule.chain();
-        let certs = self.certs.iter().map(|(id, m)| (*id, (EpochStanding::Closed(BTreeSet::new()), c.holds(m).then(|| c.counts(m)))));
+        let certs = self.certs.iter().map(|(id, m)| (*id, (EpochStanding::Closed(BTreeSet::new()), c.holds(m).then(|| c.counts(m) && self.standing_certs.contains(id)))));
         self.epochs.keys().map(|e| (*e, (self.rule.unnamed(e), (*e != FIRST_EPOCH && c.holds(e)).then(|| c.counts(e))))).chain(certs).collect()
     }
 
@@ -359,6 +363,9 @@ impl AccountView {
     /// Whether held rotation `r` (an epoch, or a rotation commit: a merge certificate counts as
     /// its epoch) counts.
     pub(crate) fn rotation_counts(&self, r: &CommitId) -> bool {
+        if self.certs.contains_key(r) && !self.standing_certs.contains(r) {
+            return false;
+        }
         let r = self.certs.get(r).unwrap_or(r);
         self.rule.chain().holds(r) && self.rule.chain().counts(r)
     }
@@ -597,8 +604,9 @@ impl Core {
     /// does not open here, or whose `revokes` belies it, is left out: minted by no node it
     /// knows); and the account's creation device, read from the creation nonce with the first
     /// epoch's seed. `at`: each held rotation's epoch and header.
-    fn devices_read(&self, p: &Tid, a: &HeldAccount, epochs: &BTreeMap<CommitId, EpochPublic>, at: &BTreeMap<CommitId, (CommitId, osis_commit::RotationHeader)>) -> osis_perm::Devices<CommitId, Tid> {
+    fn devices_read(&self, p: &Tid, a: &HeldAccount, epochs: &BTreeMap<CommitId, EpochPublic>, at: &BTreeMap<CommitId, (CommitId, osis_commit::RotationHeader)>) -> (osis_perm::Devices<CommitId, Tid>, BTreeMap<CommitId, Tid>) {
         let mut d = osis_perm::Devices::default();
+        let mut certifier = BTreeMap::new();
         // sealed under the epoch it is signed at, then (`Sigs::more`) a plain rotation's under the
         // epoch it mints, a certificate's under each tip it names, then the merge epoch: it opens
         // with any of those seeds held (spec/crypto.md §3)
@@ -613,6 +621,7 @@ impl Core {
             // a merge certificate: its maker certifies the merge, carrying nothing else
             if r.is_merge() {
                 d.certifiers.entry(r.mints(id)).or_default().insert(m);
+                certifier.insert(*id, m);
                 continue;
             }
             let (adds, removes) = if r.devices.is_empty() {
@@ -639,7 +648,7 @@ impl Core {
             let named = d.minter.values().chain(d.adds.values().flatten()).chain(d.removes.values().flatten()).copied().chain([self.id.tid()]);
             d.first = named.filter(|y| osis_crypto::first_device_nonce(k.seed(), y) == *nonce).collect();
         }
-        d
+        (d, certifier)
     }
 
     fn build_account_view(&self, p: &Tid) -> Option<AccountView> {
@@ -693,10 +702,14 @@ impl Core {
         let rotations: Vec<Rotation<CommitId>> = rotations.into_values().collect();
         // a node of the account reads the chain as D's roster: who minted each rotation and the
         // membership changes it carries (spec/permissions.md §5.4, Following, at a node of P)
-        let devices = self.accounts.get(p).map(|a| {
+        let read = self.accounts.get(p).map(|a| {
             let at: BTreeMap<CommitId, (CommitId, osis_commit::RotationHeader)> = rots.iter().map(|(id, at, r)| (*id, (*at, r.clone()))).collect();
             self.devices_read(p, a, &epochs, &at)
         });
+        let (devices, certifier) = match read {
+            Some((d, c)) => (Some(d), Some(c)),
+            None => (None, None),
+        };
         // the order this node came to hold the epochs in: by receipt (a merge's first
         // certificate's), one millisecond's by ID
         let mut held_at: BTreeMap<CommitId, osis_base::WallMs> = BTreeMap::new();
@@ -714,7 +727,14 @@ impl Core {
         let rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, devices.as_ref(), &carrying, &[], &[]);
         let roster = devices.as_ref().map(|d| rule.chain().roster(&rule.chain().preferred(), d)).unwrap_or_default();
         let revoked = epochs.iter().filter(|(e, _)| rule.revoked(e)).map(|(_, e)| e.signing.to_bytes()).collect();
-        let mut v = AccountView { rule, rotations, chosen, received, devices, roster, epochs, certs, held_at, by_name: BTreeMap::new(), carrying, revoked };
+        let standing_certs = match (devices.as_ref(), certifier) {
+            (Some(d), Some(by)) => {
+                let ok = rule.chain().standing_certifiers(d);
+                certs.iter().filter(|(c, m)| by.get(*c).is_some_and(|y| ok.get(*m).is_some_and(|ys| ys.contains(y)))).map(|(c, _)| *c).collect()
+            }
+            _ => certs.keys().copied().collect(),
+        };
+        let mut v = AccountView { rule, rotations, chosen, received, devices, roster, epochs, certs, standing_certs, held_at, by_name: BTreeMap::new(), carrying, revoked };
         // a name repeated (two rotations minting one key) is read as its lowest ID
         for (id, e) in v.epochs.iter().filter(|(id, _)| v.rule.chain().epoch_counts(id)) {
             if let Some(name) = v.name(e) {
@@ -852,6 +872,8 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         };
         let old: BTreeSet<CommitId> = was.as_ref().map_or_else(|| [FIRST_EPOCH].into(), |j| j.epochs.keys().copied().collect());
         let moved: BTreeSet<CommitId> = now.keys().copied().chain(old).filter(|e| now.get(e).cloned() != get(&was, e)).collect();
+        // an epoch come to be held: what pends on it is examined again (`waits::Wake::Commit`)
+        tx.core.waits.epochs_held.extend(moved.iter().filter(|e| now.get(*e).is_some_and(|x| x.1.is_some()) && get(&was, e).is_none_or(|x| x.1.is_none())).copied());
         let mut cands: BTreeSet<CommitId> = due;
         for e in &moved {
             cands.extend(tx.core.ix.by_epoch.get(&(p, *e)).into_iter().flatten().copied());

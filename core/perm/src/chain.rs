@@ -185,6 +185,9 @@ pub struct Chain<E> {
     contested: BTreeSet<E>,
     /// At a node of the account: the revocations it takes, in the order taken.
     taken: Vec<E>,
+    /// At a node of the account: each held merge's line's nodes under the taken revocations
+    /// (`standing_certifiers`).
+    merge_nodes: BTreeMap<E, PSet>,
 }
 
 /// What a rejection can be among: the pairs (m, r) with r a held epoch m supersedes off its own
@@ -268,7 +271,7 @@ impl<E: Ord + Copy> Chain<E> {
                 }
             }
         }
-        let mut c = Chain { root, rots, topo, idx, lines, rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), taken: Vec::new() };
+        let mut c = Chain { root, rots, topo, idx, lines, rejects: BTreeSet::new(), counting: BTreeSet::new(), disregarded: BTreeSet::new(), chosen: None, heads: BTreeSet::new(), preferred: root, contested: BTreeSet::new(), taken: Vec::new(), merge_nodes: BTreeMap::new() };
         c.chosen = chosen.filter(|s| c.rots.contains_key(s));
         // the chosen rotation's line first and, at a node of the account, what it stands with
         // (what a rotation on it takes, and that one's line; outside, takes decide nothing more)
@@ -388,6 +391,7 @@ impl<E: Ord + Copy> Chain<E> {
             }
         }
         let fin = self.standing(d, &ix, &hits, Some(&taken_set));
+        self.merge_nodes = self.topo.iter().enumerate().filter(|(_, r)| self.is_merge(r)).filter_map(|(i, r)| Some((*r, fin.nodes.get(i)?.clone()))).collect();
         for &r in order {
             let parents_count = self.parents(r).iter().all(|p| self.counting.contains(p));
             match self.place(&r) {
@@ -537,6 +541,19 @@ impl<E: Ord + Copy> Chain<E> {
             }
         }
         Some((ps.iter().all(|p| st.stands.get(*p) == Some(&true)), nodes))
+    }
+
+    /// At a node of the account, per held merge, the certifiers whose certificate stands: a node
+    /// of its line no taken removal hits (`certified`). A certificate by any other stands with
+    /// nothing, whatever its epoch does (spec/permissions.md §5.4).
+    pub fn standing_certifiers<M: Ord + Copy>(&self, d: &Devices<E, M>) -> BTreeMap<E, BTreeSet<M>> {
+        let ix = ByDevice::new(d);
+        let taken: BTreeSet<E> = self.taken.iter().copied().collect();
+        self.merge_nodes.iter().map(|(m, nodes)| {
+            let all = |e: &E| (d.removes.get(e).is_some_and(|x| !x.is_empty()) && self.on(*e, *m)) || taken.contains(e);
+            let ys = d.certifiers.get(m).into_iter().flatten().filter(|y| nodes.contains(ix.n(y)) && !ix.removes_of.get(*y).into_iter().flatten().any(|r| all(r) && !self.on(*r, *m) && !self.on(*m, *r))).copied().collect();
+            (*m, ys)
+        }).collect()
     }
 
     /// Whether merge `m` has a certificate by a node of its line (`node`) that no removal of
