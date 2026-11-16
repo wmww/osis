@@ -37,8 +37,8 @@ pub fn run(name: &str, s: Seeds, f: Scenario) -> Res<Report> {
     let r = match catch_unwind(AssertUnwindSafe(|| f(s))) {
         Ok(r) => r,
         Err(p) => {
-            let msg = p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
-            Err(Failure { scenario: name.into(), setup: s.setup, seed: s.seed, step: 0, what: format!("panic: {msg}"), trace: Vec::new() })
+            let what = format!("panic: {}", osis_base::testenv::panic_message(&*p));
+            Err(Failure { scenario: name.into(), setup: s.setup, seed: s.seed, step: 0, what, trace: Vec::new() })
         }
     };
     r.map_err(|f| Failure { setup: s.setup, seed: s.seed, ..f })

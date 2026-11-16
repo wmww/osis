@@ -369,7 +369,6 @@ def known_failures():
 # both, so a line both sides added comes twice (`union_lists` refuses it) and a line one side removed
 # beside the other's change comes back: each list needs a check that refuses a stale line, named here.
 UNION_STALE = {
-    "tools/known_failures.txt": "known_failures: no such issue file, test or sim scenario",
     "tools/code_refs_allow.txt": "code_refs: in the code, or cited nowhere",
     "core/base/testenv-known.txt": "env_vars: nothing reads it",
 }

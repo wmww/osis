@@ -40,14 +40,18 @@ HUNG_TEST = re.compile(r"^gate: hung test: (.+)$")
 
 def known(root=ROOT):
     """({NAME: [(issue, pattern), ...]}, [error, ...]) from the known-failures list."""
-    names, errs = {}, []
+    names, errs, seen = {}, [], {}
     path = os.path.join(root, KNOWN)
     if not os.path.exists(path):
         return names, [f"{KNOWN}: missing"]
-    for n, line in enumerate(open(path), 1):  # policy.py refuses a duplicate line
+    for n, line in enumerate(open(path), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
+        if line in seen:
+            errs.append(f"{KNOWN}:{n}: duplicate of line {seen[line]} (drop one)")
+            continue
+        seen[line] = n
         f = line.split(None, 3)
         if len(f) != 4:
             errs.append(f"{KNOWN}:{n}: want `NAME REPRO ISSUE PATTERN`, got {line!r}")

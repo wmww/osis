@@ -1,5 +1,0 @@
-# keel-lane-c
-- `cargo test -p osis-engine` stops at the lib binary's failures (other lanes' and pre-existing ones) and never runs `it`: use `--no-fail-fast`, or a change's own `it` tests read as passing unrun.
-- Telling own failures from main's needed a second worktree on origin/main (a full build, ~5 min): no recorded per-test baseline of the broken-main state to diff against.
-- `ugrep` refuses `.{0,250}` context patterns on long note lines ("exceeds complexity limits"): python slicing instead.
-- Pre-existing on main, not fixed: `rotation::tests_signing::{a_node_paired_after_a_removal_reads_its_maker, a_siblings_thing_rotation_and_its_listing_open_without_each_other, sibling_removals_apart_both_hold}`, `sync::certified::tests::a_chain_to_an_acted_for_actor_leaves...`: the debug index check finds live `secrets` rows the persisted ones lack after sibling removals. The profile and inbox having own keys (lane c) makes osis-sync's `duties::sibling_removals_apart_both_hold_through_sync` hit the same check.

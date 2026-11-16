@@ -899,6 +899,10 @@ pub enum IndexField {
     Table(&'static str),
 }
 
+/// The characters of each side `IndexDigest::first_diff` shows: enough for a few entries of a
+/// table around the difference, short of the whole table (some are hundreds of KB on one line).
+const SHOWN: usize = 1_200;
+
 impl IndexDigest {
     /// Every field where `self` and `other` differ, in field order.
     pub fn diff(&self, other: &Self) -> Vec<IndexField> {
@@ -925,10 +929,24 @@ impl IndexDigest {
         }
     }
 
-    /// The first difference from `other` (`None`: equal), described.
+    /// The first difference from `other` (`None`: equal), described: a long field (a whole
+    /// table's `Debug`) is shown from shortly before its first differing byte.
     pub fn first_diff(&self, other: &Self) -> Option<String> {
         let f = self.diff(other).into_iter().next()?;
-        Some(format!("index {f:?}:\n  want {}\n  got  {}", self.show(&f).unwrap_or("<none>".into()), other.show(&f).unwrap_or("<none>".into())))
+        let (want, got) = (self.show(&f).unwrap_or("<none>".into()), other.show(&f).unwrap_or("<none>".into()));
+        let at = want.bytes().zip(got.bytes()).position(|(a, b)| a != b).unwrap_or(want.len().min(got.len()));
+        let floor = |t: &str, mut i: usize| {
+            while !t.is_char_boundary(i) {
+                i -= 1;
+            }
+            i
+        };
+        let cut = |t: &str| {
+            let from = floor(t, at.saturating_sub(SHOWN / 4).min(t.len()));
+            let to = floor(t, (from + SHOWN).min(t.len()));
+            format!("{}{}{}", if from > 0 { "..." } else { "" }, &t[from..to], if to < t.len() { "..." } else { "" })
+        };
+        Some(format!("index {f:?} (first differing at byte {at} of {} and {}):\n  want {}\n  got  {}", want.len(), got.len(), cut(&want), cut(&got)))
     }
 
     /// Without the held set (`held`): what validity tests compare.

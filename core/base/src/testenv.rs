@@ -53,6 +53,19 @@ pub fn u64_var(var: &str) -> Option<u64> {
     Some(n)
 }
 
+/// `var` as a string, `None` when unset or empty; panics when not in `known()`, and on any
+/// unknown `OSIS_*` variable.
+pub fn str_var(var: &str) -> Option<String> {
+    assert!(is_known(var), "{var} is not in core/base/testenv-known.txt");
+    check_known();
+    std::env::var(var).ok().filter(|v| !v.is_empty())
+}
+
+/// A panic payload's message (`panic!` gives a `&str` or a `String`), else empty.
+pub fn panic_message(p: &(dyn std::any::Any + Send)) -> &str {
+    p.downcast_ref::<&str>().copied().or_else(|| p.downcast_ref::<String>().map(String::as_str)).unwrap_or("")
+}
+
 /// A harness's seed range: `default`, or from `start_var` (first seed) and `seeds_var` (how
 /// many). Panics on an unparsable value or zero seeds. `Display` says the range and which
 /// variables set it; `announce` prints that.
@@ -219,8 +232,7 @@ pub fn pooled_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T +
 /// `f`, a panic as an error.
 pub fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|e| {
-        let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
-        Err(format!("panicked: {msg}"))
+        Err(format!("panicked: {}", panic_message(&*e)))
     })
 }
 
@@ -716,7 +728,8 @@ pub fn quiet() -> bool {
 /// run's script is shrunk (`shrink`, `SHRINK_CANDIDATES`) while `replay(steps, false)` still
 /// fails, each candidate replayed silent and once (`false`: the replay may skip checks of the run
 /// itself, such as playing it twice); each smaller failing script is printed as found, past
-/// libtest's capture. Then the shrunk run is replayed with `replay(steps, true)` and fails as the
+/// libtest's capture. With `OSIS_SHRINK_MATCH` set, a run fails only when its panic message
+/// contains that text, so a seed failing two ways shrinks toward the one studied. Then the shrunk run is replayed with `replay(steps, true)` and fails as the
 /// original failure, printing its script.
 pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: impl FnOnce(), replay: impl Fn(&[A], bool), simpler: impl Fn(&A) -> Vec<A>) {
     use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -724,6 +737,12 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
         return run();
     }
     let Err(first) = catch_unwind(AssertUnwindSafe(run)) else { return };
+    let pattern = str_var("OSIS_SHRINK_MATCH");
+    let matches = |p: &(dyn std::any::Any + Send)| pattern.as_ref().is_none_or(|m| panic_message(p).contains(m.as_str()));
+    if !matches(&*first) {
+        eprintln!("shrink: the failure does not contain OSIS_SHRINK_MATCH={pattern:?}; not shrunk");
+        resume_unwind(first)
+    }
     let Some(steps) = FAILED.take().and_then(|b| b.downcast::<Vec<A>>().ok()).map(|b| *b) else { resume_unwind(first) };
     // a hook that stays silent for a shrink's replays, installed once for the process
     static HOOK: std::sync::Once = std::sync::Once::new();
@@ -737,7 +756,7 @@ pub fn shrinking<A: std::fmt::Debug + Clone + 'static>(shrink_var: &str, run: im
     });
     let fails = |h: &[A]| {
         QUIET.set(true);
-        let failed = catch_unwind(AssertUnwindSafe(|| replay(h, false))).is_err();
+        let failed = catch_unwind(AssertUnwindSafe(|| replay(h, false))).is_err_and(|p| matches(&*p));
         QUIET.set(false);
         FAILED.take();
         failed

@@ -4025,7 +4025,7 @@ impl Engine {
             // compared typed; the digests' text only for the message
             if !self.core.same_index(&fresh) {
                 let d = self.core.index_digest().first_diff(&fresh.index_digest());
-                assert!(d.is_none(), "{at}, the {}", d.unwrap_or_default());
+                assert!(d.is_none(), "{at} (want: this node's live index, got: its store loaded afresh), the {}", d.unwrap_or_default());
                 assert_eq!(fresh.perm_digest(false), self.core.perm_digest(false), "{at}: role timelines");
             }
             if !rebuild {

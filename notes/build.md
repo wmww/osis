@@ -13,7 +13,7 @@ A task is a branch in a warm worktree; main only fast-forwards and is never buil
 ## Profile and command forms
 One dev profile for all branch work (Cargo.toml; details: notes/build-internals.md, Profile). `.cargo/config.toml` sets the test env (`PROPTEST_CASES=32`, `PROPTEST_DISABLE_FAILURE_PERSISTENCE`: Footguns). Every new combination of profile, features, `RUSTFLAGS`, `CARGO_INCREMENTAL` or target dir is another full artifact set (a `-p` subset is not), so there are exactly these forms:
 - **Default tests**: `cargo test --no-fail-fast` (without it cargo stops at the first failing binary); `--no-run` to build.
-- **One crate**: `cargo test -p <crate>`, narrowed with `--test it <module>::` and name filters after `--`. Never `--test it <filter>` without `-p`: it prints a `0 passed` line for every other crate's `it`, hiding the one that ran.
+- **One crate**: `cargo test -p <crate>`, narrowed with `--test it -- <module>:: <name>...`: filters go after `--` (before it cargo takes one filter and refuses a second), and `--no-fail-fast` whenever the lib binary may fail, or `it` never runs. Never `--test it <filter>` without `-p`: it prints a `0 passed` line for every other crate's `it`, hiding the one that ran.
 - **Lint**: `cargo clippy --all-targets -- -D warnings`. GUI: `cargo clippy -p osis-kit -p osis-app -p osis-android --all-targets -- -D warnings`, `cargo test -p osis-kit -p osis-app --no-fail-fast` (an app failure otherwise skips kit's tests), `cargo run -p osis-app -- DIR`.
 - **A property or by-hand test by name**: `cargo test -p <crate> --test it -- --ignored <name>`. Seeds and env vars: notes/test-harnesses.md.
 - **Sim**: `cargo run --bin sim-sweep -- --seeds N --budget-secs T` (notes/test-sim.md).
@@ -39,7 +39,7 @@ One all-core run at a time per box: `tools/heavy [--limit NAME] <cmd...>` runs a
 - **Broken link** after a stopped build (`rust-lld: undefined hidden symbol anon.*`): `cargo clean -p <crate>` for the crate whose rlib the error names, then rebuild.
 - **Processes**: `.claude/settings.json` denies `git stash`, `pkill`, `killall` and `pgrep` anywhere in a command (a call holding `git stash list` is denied whole); stop your own background task with TaskStop.
 - **grep** in agent shells may be Claude Code's ugrep shim, which rejects bounded repeats (`.\{0,150\}`): use `command grep` or python.
-- **Debuggers**: `gdb`, `rust-gdb` and `perf` are installed; `ptrace_scope` is 1, so gdb debugs only what it starts: `gdb --batch -ex run -ex 'thread apply all bt' --args <copied test binary> --exact <name>`.
+- **Debuggers**: ostrich has no `gdb` (so `rust-gdb` fails) and no `perf`; `strace`, `tools/icount` and `tools/cpuprof` (a SIGPROF sampler; `--report` symbolizes against the binary as it is now, so profile a copied binary) work, and a hung test is found by its libtest "running for over 60 seconds" line, then a round counter or `eprintln!` in the suspect loop. Where gdb is installed, `ptrace_scope` 1 lets it debug only what it starts: `gdb --batch -ex run -ex 'thread apply all bt' --args <copied test binary> --exact <name>`.
 - **Stdin**: `cat > file` (or `python3 -`) with no heredoc after it waits on stdin forever.
 - **`tools/icount`** needs an absolute binary path (else `INSTR 0`, exit 127).
 - **Silent when clean**: `tools/dup_windows.py` and `tools/spec_map.py --gaps --uncited` print nothing on a clean run.
