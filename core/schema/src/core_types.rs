@@ -194,7 +194,7 @@ codec_struct! {
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Keys {
         0 read: Option<Keyset>, 1 write: Option<Keyset>, 2 admin: Option<Keyset>,
-        3 key: Option<KemKey>, 4 inbox: Option<Tid>, 5 deposit_seed: Option<[u8; 32]>, 6 signing: Option<SigningKey>,
+        3 key: Option<KemKey>, 4 inbox: Option<Weak>, 5 deposit_seed: Option<[u8; 32]>, 6 signing: Option<SigningKey>,
         7 sync: Option<Keyset>, 8 sealed: BTreeMap<BoxKey, BTreeSet<Epoch>>,
     }
 }

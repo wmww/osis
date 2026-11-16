@@ -1319,7 +1319,7 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     // D's own deposit seed (spec/crypto.md §3), fresh with each of its sync rotations
     let dep = rotation::fresh_deposit_seed(tx, &mut m, d)?;
     new_sync_id(tx, &mut m, d, &after, &[ReaderKey::Dh(node_kem.x25519())], &dep)?;
-    m.set(p, &ct::KEYS, &Keys { inbox: Some(inbox), ..osis_keys::aspects::account_keys(keys) })?;
+    m.set(p, &ct::KEYS, &Keys { inbox: Some(osis_base::Weak(inbox)), ..osis_keys::aspects::account_keys(keys) })?;
     // this node is the creation device, fixed by the account's tid (`create_account`): D bears
     // no edge write, its roster is the chain's
     m.op(d, &ct::ACCOUNT, PathOp { path: vec![], op: Op::Add(Value::bytes(&keys.signing.verifying_key().to_bytes())) })?;

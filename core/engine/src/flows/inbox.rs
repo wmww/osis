@@ -54,7 +54,7 @@ impl Engine {
     /// own keys that is no account is its own inbox.
     pub fn inbox_thing(&mut self, a: &Tid) -> Option<Tid> {
         if self.core.is_account(a) {
-            return self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox);
+            return self.get_typed(a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox).map(Tid::from);
         }
         self.core.has_own_secrets(a).then_some(*a)
     }

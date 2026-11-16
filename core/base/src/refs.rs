@@ -33,7 +33,7 @@ pub struct Ticket {
     pub profile: Tid,
 }
 
-/// Which kind of reference a value is: its byte in a structure (spec/wire.md §13 backlinks).
+/// Which kind of reference a value is: its byte in a structure (spec/wire.md §11.2, the port's backlinks).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RefKind {
     Strong = 0,

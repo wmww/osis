@@ -155,7 +155,7 @@ aspect keys.0: struct {
     /// A key actor's one encryption key; an account's, its current epoch's.
     key 3: option<kem_key>,
     /// An account's inbox thing (spec/sync-inbox.md §1).
-    inbox 4: option<tid>,
+    inbox 4: option<weak>,
     /// 32 bytes. Lets others add data for the actor at nodes keeping it unread without being able to read it
     /// (spec/sync-ids.md §2).
     deposit_seed 5: option<blob>,
