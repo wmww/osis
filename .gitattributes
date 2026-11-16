@@ -4,4 +4,5 @@
 # notes/time-limits.md: a digest deleting hits beside an append would bring the hits back.
 tools/known_failures.txt merge=union
 tools/dead_pub_allow.txt merge=union
+tools/code_refs_allow.txt merge=union
 core/base/testenv-known.txt merge=union

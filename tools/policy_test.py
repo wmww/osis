@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests tools/policy.py (dead_pub.py and doc_refs.py with it) by planting violations, at least one
+"""Tests tools/policy.py (dead_pub.py, doc_refs.py and code_refs.py with it) by planting violations, at least one
 per check, in a copy of the working tree and asserting each is reported, and a near miss is not;
 and that `rustsrc.has`'s prefilter never rejects a text its pattern matches. A check that silently
 stops finding violations would otherwise pass every gate.
@@ -13,7 +13,7 @@ ROOT = os.path.dirname(TOOLS)
 sys.path.insert(0, TOOLS)
 from rustsrc import has
 
-CHECKERS = ("policy.py", "dead_pub.py", "doc_refs.py", "rustsrc.py", "gate_failures.py")
+CHECKERS = ("policy.py", "dead_pub.py", "doc_refs.py", "code_refs.py", "rustsrc.py", "gate_failures.py")
 fails = 0
 
 
@@ -103,6 +103,9 @@ PLANTS = [
     ("core/sync/tests/it/faults.rs", None, "\nfn planted_seed() { converge(77, 3, &[], String::new()); let _ = world(0, 3); let _ = w.history(5); }\n"),
     # doc_refs
     ("notes/build.md", None, "\nSee notes/no-such-planted.md and notes/gate.md, Planted Nonexistent Section.\n"),
+    # code_refs: a stale name, a listed name now in the code, a duplicate listed line
+    ("notes/build.md", None, "\nSee `Engine::planted_gone_fn` and `planted_listed_name`.\n"),
+    ("tools/code_refs_allow.txt", None, "planted_listed_name  placeholder\nEngine  placeholder\nplanted_listed_name  placeholder\n"),
     # dead_pub
     ("core/crdt/src/stream.rs", None, "\npub fn planted_dead_fn() {}\npub fn planted_test_only() {}\npub struct PlantedType;\n"
      "impl PlantedType {}\npub fn planted_live() {}\n#[cfg(test)]\nmod planted_t { fn f() { super::planted_test_only(); } }\n"),
@@ -161,6 +164,10 @@ EXPECT = [  # regexes the output must hold
     r"core/sync/tests/it/faults\.rs:\d+: converge\(77, \.\.\) pins a seed",
     r"notes/build\.md:\d+: notes/no-such-planted\.md does not exist",
     r"notes/build\.md:\d+: notes/gate\.md, \"planted nonexistent section\": no such section",
+    r"notes/build\.md:\d+: `planted_gone_fn`: no such name",
+    r"tools/code_refs_allow\.txt:\d+: `Engine` is in the code",
+    r"tools/code_refs_allow\.txt:\d+: `planted_listed_name` listed twice",
+    r"tools/code_refs_allow\.txt:\d+: duplicate of line \d+",
     r"pub fn osis-crdt::planted_dead_fn is used only",
     r"pub fn osis-crdt::planted_test_only is used only",
     r"pub struct osis-crdt::PlantedType is used only",

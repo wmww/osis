@@ -171,6 +171,7 @@ instant() {
   step python3 tools/gate_paths_test.py
   step python3 tools/limits_test.py
   step python3 tools/doc_refs_test.py
+  step python3 tools/code_refs_test.py
   step python3 tools/spec_map_test.py
   step python3 tools/policy_test.py
   step python3 tools/limits.py split

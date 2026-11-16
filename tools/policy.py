@@ -8,14 +8,14 @@ announce on the real LAN (`real_lan_tests`), and world copies stay test-only (`t
 vouches for checked delta bytes (`checked_bytes`), and signature verdicts are read back only where kept (`kept_verdicts`), and every tools/known_failures.txt line names
 an existing issue file, an existing test or sim scenario and a valid pattern (`known_failures`),
 and every list under git's union merge has no duplicate line and a stale-line check (`union_lists`),
-and no code names a thing's destruction by the old word "ended" (`ended_names`), and no code or comment uses a deprecated sync, host, upload or person term (`old_words`), and each store's local-row key constants are prefix-free and never written as literals (`row_prefixes`), and sync's peer-record tags are distinct bytes never written as literals (`record_tags`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and no core `pub`
+and no code names a thing's destruction by the old word "ended" (`ended_names`), and no code or comment uses a deprecated sync, host, upload or person term (`old_words`), and each store's local-row key constants are prefix-free and never written as literals (`row_prefixes`), and sync's peer-record tags are distinct bytes never written as literals (`record_tags`), and every pointer into notes/, issues/ or spec/ names an existing file and section (tools/doc_refs.py), and every code name notes/ and issues/ cite in backticks exists (tools/code_refs.py), and no core `pub`
 item is used only by its own crate's tests or not at all unless tools/dead_pub_allow.txt lists it (tools/dead_pub.py).
 Usage: python3 tools/policy.py   (every workspace member, the GUI's included; vendored crates under
 libs/kit/patches/ are not ours and are skipped; exit 1 on any violation)"""
 import functools, glob, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import dead_pub, doc_refs, gate_failures
+import code_refs, dead_pub, doc_refs, gate_failures
 from rustsrc import ROOT, has, members as workspace_members, read, rs_files, toml as load
 
 errs = []
@@ -366,6 +366,7 @@ def known_failures():
 UNION_STALE = {
     "tools/known_failures.txt": "known_failures: no such issue file, test or sim scenario",
     "tools/dead_pub_allow.txt": "dead_pub: no longer dead",
+    "tools/code_refs_allow.txt": "code_refs: in the code, or cited nowhere",
     "core/base/testenv-known.txt": "env_vars: nothing reads it",
 }
 
@@ -481,6 +482,7 @@ def record_tags():
 errs.extend(row_prefixes())
 errs.extend(record_tags())
 errs.extend(doc_refs.check())
+errs.extend(code_refs.check())
 errs.extend(ended_names())
 errs.extend(old_words())
 errs.extend(dead_pub.check())

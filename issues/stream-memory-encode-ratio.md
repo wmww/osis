@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: crdt, tests
 
-Reproduce: `cargo test -p osis-crdt --lib -- --ignored --exact tests_stream::stream_memory_big_map --nocapture`. Decide whether the 3x bound is stale (the encoder writes bytes directly) or the encoder regressed, then fix the bound or the cost. The release-check crdt line in notes/coordination.md (Release checks) runs it too (no `--skip stream_memory`), so it fails there as well.
+Reproduce: `cargo test -p osis-crdt --lib -- --ignored --exact tests_stream::stream_memory_big_map --nocapture`. Decide whether the 3x bound is stale (the encoder writes bytes directly) or the encoder regressed, then fix the bound or the cost. The release-check crdt line in notes/coordination.md (Release checks) runs it too (no `--skip stream_memory_big_map`), so it fails there as well.

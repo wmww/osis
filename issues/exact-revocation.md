@@ -15,4 +15,4 @@ What would make it buildable, each a format and model change (frontier wire form
 1. Frontiers and addenda list dot ranges (session, counter up to n) beside commit IDs, filled only from headers the demoter verified, plus a rule for writes received only through a snapshot (counted as received by whom, and when?). This undoes "commit IDs, never counters" (notes/permissions.md).
 2. Or snapshots name each carried session range's commit (a forger could map a late write to a listed commit, but that only keeps a write the forger could make itself), and a late joiner's frontier lists commits named this way.
 
-Either way the requirements Limit stays until the receipt question in point 1 has an answer. Sim oracles `revocation_bob`, `revocation_carol` and `coverer_revoked` stay loose until then.
+Either way the requirements Limit stays until the receipt question in point 1 has an answer.

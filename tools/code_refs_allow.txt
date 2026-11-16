@@ -1,0 +1,73 @@
+# Names notes/ and issues/ cite in backticks that are not in our code, kept on purpose (tools/code_refs.py).
+# `<name>  <reason>`. Kinds of reason: third-party (a library, OS, platform or tool name), placeholder
+# (an example or a math name), planned (a design or issue names it before it is built), rejected (a
+# design names what it chose not to build), removed (notes/arbitrary-values-table.md, Caps that must not come back).
+
+accesskit_android  third-party: accesskit's Android adapter
+ACTION_PROCESS_TEXT  third-party: Android
+ANativeWindow_fromSurface  third-party: Android NDK
+CursorAnchorInfo  third-party: Android
+EXTRA_PROCESS_TEXT  third-party: Android
+EXTRA_PROCESS_TEXT_READONLY  third-party: Android
+google_apis  third-party: Android emulator image
+Intent  third-party: Android
+OnBackInvokedCallback  third-party: Android
+PackageManager  third-party: Android
+PROCESS_TEXT  third-party: Android
+queryIntentActivities  third-party: Android
+setType  third-party: Android
+SHOW_AS_ACTION_IF_ROOM  third-party: Android
+set_surrounding_text  third-party: winit IME (text-input protocol)
+delete_surrounding_text  third-party: winit IME (text-input protocol)
+set_content_type  third-party: winit IME (text-input protocol)
+long_about  third-party: clap
+set_receive_window  third-party: quinn
+num_alive_tasks  third-party: tokio
+posix_fadvise  third-party: libc
+F_NOCACHE  third-party: macOS fcntl
+SO_REUSEPORT  third-party: socket option
+ptrace_scope  third-party: Linux sysctl
+GLIBC_TUNABLES  third-party: glibc
+trim_threshold  third-party: glibc tunable
+mmap_threshold  third-party: glibc tunable
+RUSTC_BOOTSTRAP  third-party: rustc
+PROPTEST_RNG_SEED  third-party: proptest
+WAYLAND_DISPLAY  third-party: Wayland
+isdir  third-party: Python os.path
+run_in_background  third-party: Claude Code's Bash tool
+prune_incremental  third-party: the wt tool (reasonable-rust-builds plugin)
+prune_target  third-party: the wt tool (reasonable-rust-builds plugin)
+
+do_x  placeholder
+do_y  placeholder
+do_z  placeholder
+actually_do_y  placeholder
+x_or_y  placeholder
+X_Y  placeholder
+WxH  placeholder: a window size
+r_B  placeholder: math
+last_modified  placeholder: an example schema field
+
+app_group  planned: issues/app-group-helper.md
+node_data  planned: issues/settings.md
+materialize_limit  planned: issues/cli-proxy.md
+QUERY_PAGE  planned: issues/cli-proxy.md, notes/client-port.md
+MAX_QUERY_SUBS  planned: issues/cli-proxy.md, notes/client-port.md
+MAX_SCHEMA_BYTES  planned: notes/client-port.md (schemas over the port, not built)
+STREAM_CHUNK  planned: notes/client-port.md (streams over the port, not built)
+ForgedSecrets  planned: issues/test-consolidation.md
+recv_all  planned: issues/test-consolidation.md
+run_until_loaded  planned: issues/test-consolidation.md
+REALM  planned: notes/realms.md
+create_realm  planned: notes/realms.md
+
+HostAddr  rejected: notes/api-design.md
+ListenerId  rejected: notes/api.md
+make_group  rejected: notes/api.md
+load_schema  rejected: notes/data-model.md
+on_versions  rejected: notes/signal-edits-design.md
+
+MAX_DEPTH  removed
+MAX_INBOX_TRIES  removed
+HANDSHAKE_TIMEOUT  removed
+CLOSE_WAIT  removed

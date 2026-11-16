@@ -162,7 +162,7 @@ The spec fixes only the identity rule and `read(join(S, diff)) == v`; osis-crdt'
 - register: write iff `read(S) != v` (bit-exact for floats) or S absent.
 - bag: counter: `inc(v - read(S))` if different; max/min: reset + contribution if `v != read(S)` (a max cannot go down otherwise).
 - struct: per field of `v`, recurse into `S.fields[id]`. Fields in S but not in `v` are left alone (open structs: the writer knows only its fields; a typed `v` has all of them). A field absent in S whose value in `v` equals its declared default produces no write (defaults are never materialized).
-- enum: same case → recurse into the payload; different case → `set_case`.
+- enum: same case → recurse into the payload; different case → `Op::Set` of the new value.
 - set: adds for values in `v` whose `view` matches no live element; removes for live, non-opaque elements whose `view` is not in `v` (one reset stamp). Large values compare by keyed content hash.
 - map: keys (under `view`) only in `v` → put; non-opaque keys only in S → remove; both → recurse with the key's read (the join of its live entries) as S, the writes going into the key's live records by `key_writes` (§5.6 Ops).
 - list: opaque elements are set aside and keep their place; LCS (Myers) over the rest with equality = `view(read(elem)) == item` (deep); unmatched old elements and new items are **paired in order** while both remain and recursed into (a changed entry is an edit, not delete+insert); leftover old → delete (element reset), leftover new → insert after the preceding matched/paired element.
