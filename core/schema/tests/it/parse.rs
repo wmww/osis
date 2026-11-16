@@ -375,3 +375,13 @@ fn purge_classes_spec_commits_5() {
         assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
     }
 }
+
+// spec: none (diagnostic): an embedded source that does not parse panics at its first use,
+// naming its file and line, not as every write through it refused far away.
+#[test]
+fn an_embedded_schema_that_does_not_parse_names_its_line() {
+    static BAD: StaticSchema = StaticSchema::new("bad.osis", "revision 1;\naspect k:x.0: map<string;\n");
+    let e = std::panic::catch_unwind(|| BAD.get().declares_core()).expect_err("panics");
+    let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(msg.contains("bad.osis:2:"), "{msg}");
+}

@@ -19,6 +19,10 @@ names, its unit `hung: no test finished for N s`. Anything the parser cannot acc
 stage that did not run, a target that ended before its summary (a crash, a signal, a hung-seed
 exit, a hang naming no test) or exited non-zero after it, an `error` cargo printed outside a target, a failed-target count that does not
 add up, a sim sweep without its closing tally. tools/policy.py checks the list (`known`).
+
+A listed NAME that ran and passed in every stage that ran it (a `test NAME ... ok` line, a sim
+tally of 0 failed) and failed in none is reported `KNOWN but passed`: its issue may be fixed and
+its line stale. It changes no exit code (a property's random seeds may miss a known failure).
 """
 import collections, os, re, sys
 
@@ -27,6 +31,7 @@ KNOWN = "tools/known_failures.txt"
 SEGMENT = re.compile(r"^\s+(Running |Doc-tests )")
 RESULT = re.compile(r"^test result: (ok|FAILED)\.")
 FAILED = re.compile(r"^test (.+) \.\.\. FAILED$")
+PASSED = re.compile(r"^test (.+) \.\.\. ok$")
 HINT = re.compile(r"^error: (?:doc)?test failed, to rerun pass `(.*)`$")
 TARGETS = re.compile(r"^error: (\d+) targets? failed:$")
 # `seed N (replay: CMD): why` (osis_base::testenv) or `seed N, EMPHASIS (replay: CMD; ...` (order)
@@ -153,6 +158,18 @@ def units(lines, name, names):
     return (seeded or ["\n".join(sec)]), shown
 
 
+def passed(text, sim):
+    """The tests a stage log shows passing: its `test X ... ok` lines, or a sim sweep's
+    scenarios tallied with no failing seed (`sim-sweep:SCENARIO`)."""
+    lines = text.split("\n")
+    if not sim:
+        return {m.group(1) for l in lines if (m := PASSED.match(l))}
+    if "scenario seeds failed" not in lines:
+        return set()
+    t = lines.index("scenario seeds failed")
+    return {f"sim-sweep:{m.group(1)}" for l in lines[t + 1:] if (m := SIM_TALLY.match(l)) and m.group(3) == "0"}
+
+
 def sim_failures(text):
     """Each failing scenario of a sim-sweep log with its seeds' lines as units, or (None, why, [])
     when the sweep did not end with its tally or the tally and the failing list disagree."""
@@ -186,19 +203,23 @@ def main():
     ran = collections.Counter(r[0] for r in results)
     names, errs = known(root)
     rows = []  # (kind, stage, text)
+    ok, bad = collections.defaultdict(set), set()  # passing name -> stages; names failing anywhere
     for e in errs:
         rows.append(("NEW", "known list", e))
     for stage, n in (expected - ran).items():
         rows.append(("NEW", stage, f"did not run{f' ({n} of its runs)' if n > 1 else ''} (the heavy-lock hold ended early: read its output)"))
     for r in results:
         stage, rc, log = (r + ["", ""])[:3]
+        text = open(log, errors="replace").read() if os.path.exists(log) else ""
+        for n in passed(text, stage == "gate.sim"):
+            ok[n].add(stage)
         if rc == "0":
             continue
-        text = open(log, errors="replace").read() if os.path.exists(log) else ""
         fails = sim_failures(text) if stage == "gate.sim" else cargo_failures(text)
         if not fails:
             fails = [(None, f"exited {rc or '?'} without naming a failing test (a build error, a crash): read its output", [])]
         for name, us, shown in fails:
+            bad.add(name)
             if name is None:
                 rows.append(("NEW", stage, us))
                 continue
@@ -216,6 +237,8 @@ def main():
     print(f"== test stages: {len(results)} run of {max(sum(expected.values()), len(results))}, {failed} failed")
     for kind, stage, text in rows:
         print(f"   {kind:5} {stage}  {text}" if kind else f"         {text}")
+    for name in sorted(n for n in names if n in ok and n not in bad):
+        print(f"   KNOWN but passed: {name} ({', '.join(sorted(ok[name]))}): fixed? drop its {KNOWN} line once its issue is")
     new = sum(1 for k, _, _ in rows if k == "NEW")
     old = sum(1 for k, _, _ in rows if k == "KNOWN")
     if new:

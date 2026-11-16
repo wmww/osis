@@ -772,12 +772,14 @@ fn body_clauses(w: &mut World, r: &mut Peer) {
 /// refetch source of one and each such commit is forgotten once no source shows an entry.
 fn invalid_clauses(w: &mut World) {
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
+    let things = w.history.things.clone();
     for i in on {
         for s in w.store(i).held_ids().expect("sync IDs") {
+            let thing = things.iter().position(|(t, _)| w.engine(i).home_sync_id(t).ok().flatten() == Some(s));
             for e in w.store(i).entries(&s).expect("entries") {
                 let Some(c) = w.engine(i).blob_commit(&e.blob) else { continue };
                 if w.engine(i).holds_commit(&c) {
-                    assert!(!w.engine(i).body_facts(&s, &c).expect("facts").invalid, "node {i} keeps an entry of {c:?}, a body it judges invalid, under {s:?}");
+                    assert!(!w.engine(i).body_facts(&s, &c).expect("facts").invalid, "node {i} keeps an entry of {c:?}, a body it judges invalid, under {s:?} (history thing {thing:?})");
                 }
             }
         }

@@ -1944,7 +1944,7 @@ mod tests {
     // position the snapshot does not hold.
     #[test]
     fn invalid_snapshot_is_live_by_dot_spec_commits_5() {
-        static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; aspect k:s.0: struct { 0 a: int, 1 m: map<string, int> };\n");
+        static TS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("t.osis", "revision 1; aspect k:s.0: struct { a 0: int, m 1: map<string, int> };\n");
         let key: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:s.0", &TS);
         let ak = Ak::new("k:s.0").unwrap();
         let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));

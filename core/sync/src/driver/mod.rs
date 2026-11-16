@@ -168,6 +168,43 @@ pub struct Node {
     life: Life,
 }
 
+/// What acted in one settle round (`Node::settle`), shown when its loop guard fires.
+#[derive(Clone, Copy)]
+enum Act {
+    InboxStart,
+    Follow,
+    Leave,
+    Store,
+    Unread,
+    Opens,
+    Read,
+    Inbox,
+    Streams,
+    Status,
+    Pull,
+    Life,
+}
+
+const ACTS: [&str; 12] = ["inbox start", "engine follow", "leave", "store", "unread", "opens", "read", "inbox", "streams", "status", "pull again", "life"];
+
+/// The `Act`s of one round, a bit each.
+#[derive(Clone, Copy)]
+struct Acts(u16);
+
+impl Acts {
+    /// `acted`, noted as `a`'s when true.
+    fn by(&mut self, a: Act, acted: bool) -> bool {
+        self.0 |= u16::from(acted) << a as u16;
+        acted
+    }
+}
+
+impl std::fmt::Debug for Acts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(ACTS.iter().enumerate().filter(|(i, _)| self.0 >> i & 1 == 1).map(|(_, n)| n)).finish()
+    }
+}
+
 /// The `Cx` over a node's fields, borrowed apart from its modules.
 macro_rules! cx {
     ($n:expr, $out:expr) => {
@@ -679,58 +716,71 @@ impl Node {
     /// once it is refreshed): opens before read and inbox, so they act on this round's shared set.
     fn settle(&mut self, out: &mut Vec<Out>) -> Result<()> {
         let mut moved = Vec::new();
+        let mut guard = osis_base::loop_guard::LoopGuard::new("node-sync settle loop (Node::settle)");
         loop {
             self.rounds += 1;
+            let mut acts = Acts(0);
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
             // inbox's start first: what it has the engine follow is part of the sync set, so only
             // then does the engine let go of what it keeps for sync IDs not read
-            let mut acted = self.inbox.start(&mut cx)?;
+            let mut acted = acts.by(Act::InboxStart, self.inbox.start(&mut cx)?);
             if acted {
                 cx.engine.forget_unread()?;
             }
-            acted |= cx.engine.follow()?;
+            acted |= acts.by(Act::Follow, cx.engine.follow()?);
             // leave first: what this node syncs, which every other module follows
-            acted |= self.leave.settle(&mut crate::leave::Live { cx: &mut cx, status: &self.status })?;
-            acted |= self.driver.store.settle(cx.engine, cx.store, cx.now)?;
-            acted |= self.unread.settle(&mut cx)?;
-            acted |= self.opens.settle(&mut cx, sessions, &self.unread, &mut moved)?;
+            acted |= acts.by(Act::Leave, self.leave.settle(&mut crate::leave::Live { cx: &mut cx, status: &self.status })?);
+            acted |= acts.by(Act::Store, self.driver.store.settle(cx.engine, cx.store, cx.now)?);
+            acted |= acts.by(Act::Unread, self.unread.settle(&mut cx)?);
+            acted |= acts.by(Act::Opens, self.opens.settle(&mut cx, sessions, &self.unread, &mut moved)?);
             self.moved(&mut moved, out);
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
             let mut fetches = Vec::new();
-            acted |= cx.engine.follow()?;
-            acted |= self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread, &mut fetches)?;
+            acted |= acts.by(Act::Follow, cx.engine.follow()?);
+            acted |= acts.by(Act::Read, self.read.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status, &self.unread, &mut fetches)?);
             for (conn, s, b) in fetches {
                 let mut cx = cx!(self, out);
                 self.streams.fetch_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, s, b, &mut self.driver.reported);
             }
             let mut cx = cx!(self, out);
             let sessions = &mut self.driver.sessions;
-            acted |= cx.engine.follow()?;
-            acted |= self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status)?;
-            acted |= self.streams.settle(&mut cx, sessions, &self.opens, &mut self.driver.reported)?;
+            acted |= acts.by(Act::Follow, cx.engine.follow()?);
+            acted |= acts.by(Act::Inbox, self.inbox.settle(&mut cx, sessions, &self.opens, &self.streams, &self.status)?);
+            acted |= acts.by(Act::Streams, self.streams.settle(&mut cx, sessions, &self.opens, &mut self.driver.reported)?);
             self.reports(out);
             let mut cx = cx!(self, out);
             let mut pulls = Vec::new();
-            acted |= self.status.settle(&mut cx, &self.opens, &self.streams, &self.read, &self.unread, &self.leave, &mut pulls)?;
+            acted |= acts.by(Act::Status, self.status.settle(&mut cx, &self.opens, &self.streams, &self.read, &self.unread, &self.leave, &mut pulls)?);
             for conn in pulls {
                 let mut cx = cx!(self, out);
                 self.streams.pull_again(&mut cx, &mut self.driver.sessions, &self.opens, conn, &mut self.driver.reported);
-                acted = true;
+                acted = acts.by(Act::Pull, true);
             }
             self.reports(out);
             // the lifecycle duties the engine judges (`life`), on what this round settled
             let (status, opens, store) = (&self.status, &self.opens, &self.store);
             // a sync ID no peer is to be waited for on is heard out at once (the rule a leave's
             // wait reads)
-            acted |= self.life.settle(&mut self.engine, &mut LifeHears { status, opens, store })?;
+            acted |= acts.by(Act::Life, self.life.settle(&mut self.engine, &mut LifeHears { status, opens, store })?);
             // the engine read its store again (a write of unknown outcome): every feed followed is
             // stale, so the settle ends and the step restarts the modules (`engine_reloaded`)
             if !acted || self.engine.loads() != self.driver.engine_loads {
                 return Ok(());
             }
+            guard.round(acts, || self.settle_bound());
         }
+    }
+
+    /// The most settle rounds one step can take (debug builds, `LoopGuard`): each act a round
+    /// runs again for is one module moving one sync ID's or connection's state, and each of those
+    /// settles once every module has read it, so a step takes at most every module acting once
+    /// per sync ID and connection. At 0 every step that acts panics; at infinity a settle loop of
+    /// two modules undoing each other's acts hangs the node instead of failing.
+    fn settle_bound(&self) -> (u64, String) {
+        let (syncs, conns) = (self.store.syncs().len(), self.driver.sessions.conns().count());
+        (ACTS.len() as u64 * (syncs + conns + 1) as u64, format!("{syncs} sync IDs, {conns} connections"))
     }
 
     /// The end of a step: opens writes what changed of its records and evicts past

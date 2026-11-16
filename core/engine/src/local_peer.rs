@@ -154,6 +154,12 @@ impl Peer {
     }
 
     fn wake(&mut self) -> Result<()> {
+        // each round ingests some of the entries held at the start (an entry kept is one of
+        // those), again only after another's ingest moved the engine: at most every entry once
+        // after each other's, (e + 1)^2 rounds. At 0 every redelivery panics; at infinity a wake
+        // the engine keeps giving for an ingest that moves nothing hangs the test.
+        let e = self.discarded.len() as u64;
+        let mut guard = osis_base::loop_guard::LoopGuard::new("LocalPeer::wake (redelivering kept carriers and copies)");
         loop {
             self.engine.reexamine()?;
             let w = self.engine.take_wakes();
@@ -180,6 +186,8 @@ impl Peer {
             if now.is_empty() {
                 return Ok(());
             }
+            let point = self.engine.point();
+            let ingested: Vec<CommitId> = now.iter().map(|d| d.commit).collect();
             for d in now {
                 self.redelivered += u64::from(d.carries);
                 let r = self.engine.ingest(&d.bytes, d.blobs.clone());
@@ -191,6 +199,8 @@ impl Peer {
             for c in &again {
                 self.engine.redelivered(c)?;
             }
+            let moved = self.engine.point() != point;
+            guard.round((ingested, moved), || ((e + 1).pow(2), format!("{e} entries kept at the start")));
         }
     }
 

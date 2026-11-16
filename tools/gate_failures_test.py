@@ -227,6 +227,11 @@ rc, out = summary(LISTED, [], ["default-tests"])
 check("no results at all (the hold never ran) is NEW", (rc, "NEW   default-tests  did not run" in out), (1, True))
 rc, out = summary(LISTED, [("default-tests", "0", ""), ("gate.sim", "0", "")])
 check("pass", (rc, out), (0, "== test stages: 2 run of 2, 0 failed\n"))
+# a listed test that ran and passed is reported, its exit unchanged; one failing elsewhere is not
+rc, out = summary(f"{LISTED}ok 1 issues/known.md x\nfine 1 issues/known.md x\ndrift_parks 1 issues/sim.md x\nsim-sweep:drift_parks 1 issues/sim.md x\n", [("default-tests", "101", KNOWN_ONLY + COUNT1), ("gate.gui", "0", HUNG.replace("test fine ... ok", "test ok ... ok")), ("gate.sim", "1", SIM)])
+check("known but passed", (rc, [l for l in out.split("\n") if "KNOWN but passed" in l]), (3, ["   KNOWN but passed: ok (default-tests, gate.gui): fixed? drop its tools/known_failures.txt line once its issue is", "   KNOWN but passed: sim-sweep:drift_parks (gate.sim): fixed? drop its tools/known_failures.txt line once its issue is"]))
+rc, out = summary(f"{LISTED}quick 1 issues/known.md x\n", [("default-tests", "0", "test quick ... ok\n"), ("gate.gui", "101", "     Running tests/q.rs (q-1)\n\nrunning 1 test\ntest quick ... FAILED\n\nfailures:\n\n---- quick stdout ----\nx\n\nfailures:\n    quick\n\ntest result: FAILED. 0 passed; 1 failed\n\nerror: test failed, to rerun pass `--test q`\n" + COUNT1)])
+check("known, passed in one stage, failed in another: not reported", (rc, "KNOWN but passed" in out), (3, False))
 rc, out = summary("x 1 issues/gone.md p\n", [("default-tests", "0", "")])
 check("a bad list fails the gate", (rc, "NEW   known list" in out), (1, True))
 

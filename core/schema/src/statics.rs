@@ -5,8 +5,9 @@ use crate::schema::Schema;
 use std::sync::OnceLock;
 
 /// A schema source compiled into the binary. The source was checked when it was embedded
-/// (tests, codegen), so parsing cannot fail; if it does anyway (a bug), `get` returns a schema
-/// that declares nothing, so every typed write through it fails validation loudly.
+/// (tests, codegen), so parsing cannot fail; if it does anyway (a bug, or a test's hand-written
+/// source), a debug build panics at the first `get` naming the file and line, and a release build
+/// gets a schema that declares nothing, so every typed write through it fails validation.
 pub struct StaticSchema {
     file: &'static str,
     src: &'static str,
@@ -18,7 +19,17 @@ impl StaticSchema {
         StaticSchema { file, src, cell: OnceLock::new() }
     }
     pub fn get(&self) -> &Schema {
-        self.cell.get_or_init(|| parse(self.file, self.src).unwrap_or_else(|_| Schema::new(0)))
+        self.cell.get_or_init(|| {
+            parse(self.file, self.src).unwrap_or_else(|e| {
+                // a debug-build diagnostic: else the error shows only as every write through the
+                // schema refused, far from the source
+                #[allow(clippy::panic)]
+                if cfg!(debug_assertions) {
+                    panic!("embedded schema does not parse: {e}");
+                }
+                Schema::new(0)
+            })
+        })
     }
     pub fn file(&self) -> &'static str {
         self.file

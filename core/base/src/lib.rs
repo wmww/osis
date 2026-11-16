@@ -12,6 +12,8 @@ pub mod costs;
 #[doc(hidden)]
 pub mod copying;
 mod error;
+// a debug-build round bound on fixpoint loops (a hang panics with its cause)
+pub mod loop_guard;
 pub mod format;
 pub mod hash;
 pub mod hex;

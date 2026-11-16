@@ -194,6 +194,8 @@ struct Run {
     same_ms: bool,
     /// Each seed's signing key (`held_lines`, every compare): derived once.
     seed_keys: std::cell::RefCell<BTreeMap<[u8; 32], [u8; 32]>>,
+    /// The seed of a generated world (`play`), for the replay line a failure ends with.
+    seed: Option<u64>,
 }
 
 impl Run {
@@ -248,6 +250,7 @@ impl Run {
             switched_at: [false; N],
             same_ms: false,
             seed_keys: Default::default(),
+            seed: None,
         }
     }
 
@@ -264,6 +267,11 @@ impl Run {
         }
         for (n, t, c) in &self.w.switches {
             s.push_str(&format!("  switch {} at {t} to #{c}\n", cm::NAMES[*n]));
+        }
+        // the difference again past the dump, where a reader of the output's end looks
+        s.push_str(&format!("differs: {what}\n"));
+        if let Some(seed) = self.seed {
+            s.push_str(&format!("replay: {}\n", replay(seed)));
         }
         panic!("{s}");
     }
@@ -1175,7 +1183,7 @@ impl Run {
             }
             let j = cm::judge(&self.w, v, now);
             let view = self.view(v);
-            let at = |what: &str, e: String, m: String| format!("t{t} node {}: {what}: engine {e}, model {m}", cm::NAMES[v]);
+            let at = |what: &str, e: String, m: String| format!("t{t} node {}, account P: {what}: engine {e}, model {m}", cm::NAMES[v]);
             let chain: BTreeSet<u32> = plain.iter().copied().filter(|r| view.holds(&self.eid[*r as usize - 1])).collect();
             if chain != j.chain {
                 self.fail(&at("held with chain", format!("{chain:?}"), format!("{:?}", j.chain)));
@@ -1610,6 +1618,7 @@ pub(super) fn custody_world(seed: u64) -> Reached {
 
 fn play(seed: u64, control: Control) -> Reached {
     let mut r = Run::new(seed);
+    r.seed = Some(seed);
     for k in [A, B, C, T, R1, R2] {
         let core = &mut r.lp.peers[k].engine.core;
         match control {
