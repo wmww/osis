@@ -45,7 +45,7 @@
     - it has a source, each of its own commits with an entry under it is held elsewhere (spec/sync-status.md §2), and a complete pass (spec/sync-status.md §1) begun since it found the role gone ended; or
     - no peer is to be waited for on it (spec/sync-set.md §3 Leaving) but those refusing it.
       - **A peer refuses it** while, on a connection up, it refused the node's ByRole on the sync ID, judged a reader by the node, and has not opened it there since (spec/sync-opens.md §4-§5), or the node's walk of the sync ID stopped there (stranded there, spec/sync-ids.md §6), whenever the refusal came.
-      - **A refusal ends the wait on its peer alone**: own writes held nowhere else still wait for every other peer to be waited for.
+      - **A refusal ends the wait on its peer alone**: own writes held nowhere else still wait for every other peer to be waited for. The peer is the one the node met (its record), not every peer proving the same actors: a refusal by one node of another account ends no wait on another node of it.
       - Limit: a peer that proves nothing to it (one that judges it departed and knows it by nothing else) refuses nothing, so with only such peers reachable it keeps what it lost until `LOST_HEARD_WAIT_MS`.
   - Meanwhile its writes from before the `until` go out (a peer that judges it departed, or that keeps the sync ID unread under a later sync key, shares nothing with it), and a renewal held by then keeps its role.
   - Then it drops.

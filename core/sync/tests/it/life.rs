@@ -328,3 +328,63 @@ fn a_loss_by_an_until_keeps_its_own_write_past_a_refusal_spec_permissions_2() {
         assert!(!holds(&mut w, 1, &t), "{at}: node 1 dropped t");
     }
 }
+
+// spec/permissions.md §2 (A refusal ends the wait on its peer alone): nodes 1 and 2 are sibling
+// nodes reading t, one peer by what they prove (their account); node 2 filed t and synced it with
+// node 3, then went away; node 1 has not heard of the filing and refuses node 3's ByRole on t's
+// sync ID. Node 3, cut off, writes t; node 0, its clock ahead, finalizes node 3's grant and
+// refuses it too once node 3's `until` passes. Node 1's refusal ends no wait on node 2, which may
+// still take the write: node 3 keeps t, and node 2 takes the write once back.
+#[test]
+fn a_refusal_by_one_node_ends_no_wait_on_its_sibling_spec_permissions_2() {
+    let mut w = crate::harness::siblings();
+    w.add_node();
+    let cards: Vec<_> = (0..2).map(|i| w.make_link(i, w.node(i).profile.unwrap(), osis_base::Role::Read)).collect();
+    for c in &cards {
+        w.redeem(3, c);
+    }
+    w.run();
+    w.cap = 4 * crate::harness::RULE_CAP;
+    w.partition(1, 2);
+    let (a0, a1, a3) = (w.node(0).account.unwrap(), w.node(1).account.unwrap(), w.node(3).account.unwrap());
+    let until = osis_base::WallMs(w.now().0 + UNTIL_MS);
+    let t = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a0);
+        m.set(t, &v(), &Value::Str("x".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    file(&mut w, 0, vec![t], Vec::new());
+    w.write(0, |e| e.grant(&t, &a3, &ct::Edge { role: osis_base::Role::Write, until: Some(until), invite: None, tied: None, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&t, &a1, &crate::flows::edge(osis_base::Role::Read))).unwrap();
+    w.run();
+    file(&mut w, 3, Vec::new(), vec![t]);
+    file(&mut w, 2, Vec::new(), vec![t]);
+    w.run();
+    assert_eq!(w.engine(3).get(&t, &v()).unwrap(), Some(Value::Str("x".into())), "node 3 reads t");
+    assert_eq!(w.engine(2).get(&t, &v()).unwrap(), Some(Value::Str("x".into())), "node 2 reads t");
+    let s = match w.engine(3).thing_sync(&t).unwrap() {
+        osis_engine::sync::ThingSync::Read(ids) => ids[0],
+        other => panic!("node 3 reads t's sync ID: {other:?}"),
+    };
+    assert!(!w.node(3).node.opens().refusers(&s).is_empty(), "node 1 refuses");
+    for i in [0, 3] {
+        w.partition(i, 2);
+    }
+    w.partition(0, 3);
+    w.write(3, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &v(), &Value::Str("y".into())).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.skew(0, UNTIL_MS as i64);
+    w.run();
+    w.rejoin(0, 3);
+    w.skew(3, UNTIL_MS as i64);
+    w.run();
+    assert!(holds(&mut w, 3, &t), "dropped while node 2 may take its write");
+    w.heal();
+    w.run();
+    assert_eq!(w.engine(2).get(&t, &v()).unwrap(), Some(Value::Str("y".into())), "node 2 holds node 3's write");
+}

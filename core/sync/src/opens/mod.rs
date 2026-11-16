@@ -699,19 +699,19 @@ impl Opens {
     /// rosters say may hold S (`Peer::MayHold`) no kept record of which (by who it names: a
     /// peer is what it proves, its account at any key, `Who`) has acknowledged S's current
     /// credentials (`acked_pos` below `changed_at(S)`; every record before S has one), each of
-    /// those records judged by `peer` on what it names. A peer whose record acknowledged them
+    /// those records judged by `peer` on the record and what it names. A peer whose record acknowledged them
     /// with S not a member does not hold S; one with no record was never met; a record evicted
     /// (`RECORD_BUDGET`) goes with its wait. Before the
     /// records are indexed (the first settle), waited. Stamped per S (`peers`); what `peer`
     /// reads is the caller's to follow. O(connections and records holding S, and records not
     /// acknowledging S).
-    pub fn wait_for(&self, store: &Store, s: &SyncId, mut peer: impl FnMut(&Named) -> Peer) -> Result<bool> {
+    pub fn wait_for(&self, store: &Store, s: &SyncId, mut peer: impl FnMut(Option<&RecordId>, &Named) -> Peer) -> Result<bool> {
         self.peers.read(s);
-        if self.holding.get(s).into_iter().flatten().any(|c| self.conns.get(c).is_some_and(|k| peer(&k.named) != Peer::Skipped)) {
+        if self.holding.get(s).into_iter().flatten().any(|c| self.conns.get(c).is_some_and(|k| peer(k.rec.as_ref(), &k.named) != Peer::Skipped)) {
             return Ok(true);
         }
         for id in self.holders_of(store, s)? {
-            if peer(&self.named_of(store, &id)?) != Peer::Skipped {
+            if peer(Some(&id), &self.named_of(store, &id)?) != Peer::Skipped {
                 return Ok(true);
             }
         }
@@ -719,7 +719,7 @@ impl Opens {
         let below = self.changed.at.get(s).map_or(u64::MAX, |(p, ..)| *p);
         // a peer none of whose records reached `below`: every record of it is below
         let records = acks.by_pos.range(..(below, Who::default())).flat_map(|(_, a)| acks.by_actors.get(a).into_iter().flatten());
-        Ok(records.filter_map(|(_, id)| acks.rec.get(id)).any(|(_, n)| peer(n) == Peer::MayHold))
+        Ok(records.filter_map(|(_, id)| acks.rec.get(id).map(|(_, n)| (id, n))).any(|(id, n)| peer(Some(id), n) == Peer::MayHold))
     }
 
     /// `wait_for` judged by the rosters held here (`Engine::roster_holders`) on who each peer may
@@ -735,14 +735,14 @@ impl Opens {
         self.waited_but(engine, store, s, |engine, _, actors| !own && actors.iter().any(|t| Some(*t) == me || engine.own_node(t)))
     }
 
-    /// `waited`, a peer `skip` names (on what it names and the actors it is now) skipped too.
-    fn waited_but(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId, mut skip: impl FnMut(&mut osis_engine::Engine, &Named, &[osis_base::Tid]) -> bool) -> Result<bool> {
+    /// `waited`, a peer `skip` names (on its record and the actors it is now) skipped too.
+    fn waited_but(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId, mut skip: impl FnMut(&mut osis_engine::Engine, Option<&RecordId>, &[osis_base::Tid]) -> bool) -> Result<bool> {
         let roster = engine.roster_holders(s)?;
-        self.wait_for(store, s, |named| {
+        self.wait_for(store, s, |rec, named| {
             let actors = awaited(engine, named);
             // a removed node of this account, or one of another proved at a revoked key
             let gone = actors.is_empty() && *named != Named::default();
-            if gone || skip(engine, named, &actors) {
+            if gone || skip(engine, rec, &actors) {
                 Peer::Skipped
             } else if roster.may_hold(&actors) {
                 Peer::MayHold
@@ -752,14 +752,16 @@ impl Opens {
         })
     }
 
-    /// The peers refusing S here (spec/permissions.md §2, a loss by an `until` alone), by who
-    /// they are: on a connection up, a peer this side judged a reader refused its ByRole on S, S
-    /// not open there since; or the walk of S stopped at it (`walk_stop`). Stamped per S.
+    /// The peers refusing S here (spec/permissions.md §2, a loss by an `until` alone), by their
+    /// records: on a connection up, a peer this side judged a reader refused its ByRole on S, S
+    /// not open there since; or the walk of S stopped at it (`walk_stop`). A record, not what it
+    /// proves: two nodes of another account prove only the account, and one refusing must end
+    /// no wait on the other. A connection with no record holds no wait. Stamped per S.
     /// O(connections refusing S).
-    pub fn refusers(&self, s: &SyncId) -> BTreeSet<Who> {
+    pub fn refusers(&self, s: &SyncId) -> BTreeSet<RecordId> {
         let refused = self.refusals.get(s).into_iter().flatten().copied();
         let stopped = self.stops.get(s).into_iter().flat_map(|m| m.keys().copied());
-        refused.chain(stopped).filter_map(|c| self.conns.get(&c)).map(|c| Who::from(&c.named)).collect()
+        refused.chain(stopped).filter_map(|c| self.conns.get(&c)?.rec).collect()
     }
 
     /// `waited` with this account's own nodes counted, a peer refusing S here (`refusers`)
@@ -767,7 +769,7 @@ impl Opens {
     /// `until` alone heard out).
     pub fn waited_unrefused(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId) -> Result<bool> {
         let refusers = self.refusers(s);
-        self.waited_but(engine, store, s, |_, named, _| refusers.contains(&Who::from(named)))
+        self.waited_but(engine, store, s, |_, rec, _| rec.is_some_and(|r| refusers.contains(r)))
     }
 
     /// Sets whether `conn`'s peer refuses S (`refusers`).
