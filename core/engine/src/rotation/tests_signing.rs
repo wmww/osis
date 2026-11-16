@@ -1700,8 +1700,25 @@ fn pass_end(lp: &mut LocalPeer, k: usize) -> Vec<CommitId> {
 // comes to count at the non-merger only once its seed is taken up, and is answered then)
 #[test]
 fn sibling_removals_apart_both_hold_spec_permissions_3() {
+    siblings_apart(4);
+}
+
+// spec/crypto.md §9 (Custody), spec/permissions.md §5.5 (Listings): the same with P's thing t
+// held by a writer outside P (peer 4), so each node re-keys t after its removal at its own epoch
+// (the knowing rotation, boxing P there). Once the merge closes those epochs, each node's
+// rotation of t and its writes count at the other by its listing, which is wrapped under t's
+// newest epoch there: the box to P at the closed epoch opens with the seed held, so neither
+// waits on the other (the listing-cycle shape)
+#[test]
+fn a_siblings_thing_rotation_and_its_listing_open_without_each_other_spec_crypto_9() {
+    siblings_apart(5);
+}
+
+/// `sibling_removals_apart_both_hold_*` in a world of `n` peers: P's nodes 0-3, peer 4 (when
+/// there) a writer of t outside P.
+fn siblings_apart(n: usize) {
     for (first, handed) in [(0, false), (1, false), (0, true), (1, true)] {
-        let (mut lp, a, t) = world(4, 4);
+        let (mut lp, a, t) = world(n, 4);
         let p = a.account;
         let d0 = remove(&mut lp, 0, a.devices, 2);
         let d1 = remove(&mut lp, 1, a.devices, 3);
@@ -1736,6 +1753,14 @@ fn sibling_removals_apart_both_hold_spec_permissions_3() {
                 let m = lp.peers[k].engine.core.ix.commits.get(&w).cloned();
                 assert!(m.is_some_and(|m| lp.peers[k].engine.core.standing(&w, &m.view) == osis_perm::EpochStanding::Counts), "{case}: node {k}: a write made apart does not count");
             }
+            // with a holder outside P each node re-keyed t at its own epoch after its removal
+            if n == 5 {
+                let held = lp.peers[k].engine.core.epochs(&t).map_or(0, |e| e.read.held().count());
+                assert!(held >= 3, "{case}: node {k}: t's re-keys made apart: {held} read epochs");
+            }
+            // the last write made apart is t's value at both
+            let last = if lp.peers[0].engine.core.ix.commits.get(&w0).map(|m| m.view.ts) > lp.peers[0].engine.core.ix.commits.get(&w1).map(|m| m.view.ts) { "zero" } else { "one" };
+            assert_eq!(read(&mut lp, k, t), Some(Value::Str(last.into())), "{case}: node {k}: t's value");
         }
     }
 }

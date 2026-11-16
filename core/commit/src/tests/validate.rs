@@ -54,7 +54,7 @@ fn validate_kinds() {
     x.validate().unwrap();
 }
 
-// spec/wire.md §4 field 16: the own-cover marker is a trailing `true` on a durable content
+// spec/wire.md §4 field 17: the own-cover marker is a trailing `true` on a durable content
 // snapshot only, absent on every other header (which keeps its bytes); any other value is bad.
 #[test]
 fn own_cover_marker_spec_wire_4() {

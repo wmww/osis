@@ -1098,8 +1098,9 @@ fn engine_agrees_with_forks_model_spec_permissions_5_4() {
 
 /// Small size (a tenth of large) or large under `OSIS_FULL=1`; seeds: OSIS_FORKS_START,
 /// OSIS_FORKS_SEEDS.
+// Interim (issues/custody-engine-differential.md): rebuilt against roles-model `custody`
 #[test]
-#[ignore = "property"]
+#[ignore = "the forks model's merges name forks and carry answers; merges only join now"]
 fn engine_agrees_with_forks_model_large_spec_permissions_5_4() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_FORKS_START", "OSIS_FORKS_SEEDS", osis_base::testenv::large(0..2_000));
     tally(&s.run("rotation::tests_forks::engine_agrees_with_forks_model_large_spec_permissions_5_4", replay, forks_world));

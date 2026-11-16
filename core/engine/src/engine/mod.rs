@@ -398,7 +398,7 @@ pub struct View {
     /// The epoch an account's commit is signed at (spec/wire.md §4): what the epoch rule reads
     /// (`Core::standing`); `None` for any other author.
     pub epoch: Option<CommitId>,
-    /// The header's own-cover marker (spec/wire.md §4 field 16; `retention::others_own_cover`).
+    /// The header's own-cover marker (spec/wire.md §4 field 17; `retention::others_own_cover`).
     pub own_cover: bool,
 }
 
