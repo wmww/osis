@@ -211,3 +211,17 @@ fn a_source_coming_back_judges_only_what_is_owed_there() {
     let (few, many) = (toward(2), toward(6));
     assert_eq!(few, many, "toward judged {few} with 2 entries shown, {many} with 6");
 }
+
+// spec/sync-set.md §2 (the sync set is the node closure's walk over what is held): node 1 keeps
+// S unread by the ticket the grant fired on its inbox; a restart, which takes the account up
+// after the open's walk (the ticket opens to the account), enters it again, so S stays in its
+// sync set.
+#[test]
+fn a_sync_id_kept_unread_by_ticket_stays_synced_across_a_restart_spec_sync_set_2() {
+    let (mut w, t, s) = setup();
+    let unread = Some((t, osis_engine::sync::Holding::Unread));
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread before");
+    w.power_off(1);
+    w.power_on(1);
+    assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread after the restart");
+}

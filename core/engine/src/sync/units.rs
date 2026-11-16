@@ -172,6 +172,12 @@ impl Follow {
         }
     }
 
+    /// The openers moved (an account or key actor taken up): every held vertex is followed
+    /// afresh at the next settle, O(the node closure), as held tickets may open now.
+    pub(crate) fn refollow(&mut self) {
+        self.reset = true;
+    }
+
     /// The open transaction committed.
     pub(crate) fn committed(&mut self) {
         self.acted = false;

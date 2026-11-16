@@ -361,11 +361,14 @@ pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Re-opens every held `secrets.0` (after a key actor was taken up), to a fixpoint: what an
-/// actor learns reopens its dependents at once (`reopen_dependents`, so a holder-actor chain
-/// opens in one sweep whatever its tid order); sweeps repeat until one learns nothing (held
-/// epochs only grow, so no round cap is needed; a cap left deep chains unopened).
+/// Re-opens every held `secrets.0` (after a key actor or an account was taken up), to a
+/// fixpoint: what an actor learns reopens its dependents at once (`reopen_dependents`, so a
+/// holder-actor chain opens in one sweep whatever its tid order); sweeps repeat until one learns
+/// nothing (held epochs only grow, so no round cap is needed; a cap left deep chains unopened).
+/// Held tickets open by the same openers, so the node closure follows every edge afresh
+/// (`Follow::refollow`): a ticket an open's walk could not open yet enters its thing now.
 fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
+    tx.core.closure_follow.refollow();
     let secrets_ak = ak("secrets.0")?;
     let actors: BTreeSet<Tid> = tx.core.ix.aspect_things.get(&secrets_ak).cloned().unwrap_or_default();
     loop {
