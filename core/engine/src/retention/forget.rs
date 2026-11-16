@@ -36,6 +36,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// no secret.
 const KEPT: [&str; 5] = ["created.0", "retention^.0", "roles.0", "keys.0", "sync.0"];
 
+/// Whether `ak` is content: not role-class (the certificate material a forgotten thing keeps,
+/// `KEPT`; `secrets.0`; a devices actor's `account.0`).
+pub(crate) fn content(ak: &Ak) -> bool {
+    !KEPT.contains(&ak.as_str()) && !matches!(ak.as_str(), "secrets.0" | "account.0")
+}
+
 /// What `forget` forgets.
 #[derive(Clone, Copy)]
 pub(crate) enum Scope<'a> {
@@ -43,6 +49,9 @@ pub(crate) enum Scope<'a> {
     Lost(&'a BTreeSet<Tid>),
     /// These things' local copies, their secrets kept.
     Local(&'a BTreeSet<Tid>),
+    /// These things whole, role-class aspects and secrets included: nothing held needs them
+    /// (`retention::needed`).
+    Whole(&'a BTreeSet<Tid>),
 }
 
 /// What goes of a thing `forget` reaches.
@@ -55,6 +64,8 @@ enum Fate {
     Erased,
     /// Its local copy goes (`Scope::Local`): everything an erased thing loses but `secrets.0`.
     Local,
+    /// Every aspect goes (`Scope::Whole`).
+    Whole,
 }
 
 /// What one forgetting removed.
@@ -85,6 +96,7 @@ fn fate(core: &Core, scope: Scope<'_>, t: &Tid) -> Fate {
     let lost = match scope {
         Scope::Lost(l) => l,
         Scope::Local(ts) => return if ts.contains(t) { Fate::Local } else { Fate::Stays },
+        Scope::Whole(ts) => return if ts.contains(t) { Fate::Whole } else { Fate::Stays },
     };
     let Some(a) = core.secret_actor(t) else { return Fate::Stays };
     if !lost.contains(&a) || read_path(core, t) {
@@ -99,6 +111,7 @@ fn forgotten_ak(fate: Fate, ak: &Ak) -> bool {
         Fate::Kept => ak.as_str() == "secrets.0",
         Fate::Erased => !KEPT.contains(&ak.as_str()),
         Fate::Local => !KEPT.contains(&ak.as_str()) && ak.as_str() != "secrets.0",
+        Fate::Whole => true,
     }
 }
 
@@ -194,7 +207,7 @@ fn unreceive(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, rest: Option
 pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64>) -> Result<Forgotten> {
     let mut out = Forgotten::default();
     if match scope {
-        Scope::Lost(x) | Scope::Local(x) => x.is_empty(),
+        Scope::Lost(x) | Scope::Local(x) | Scope::Whole(x) => x.is_empty(),
     } {
         return Ok(out);
     }
@@ -203,7 +216,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     // held in states or in commits
     let cands: BTreeSet<Tid> = match scope {
         Scope::Lost(lost) => under(tx.core, lost),
-        Scope::Local(ts) => ts.clone(),
+        Scope::Local(ts) | Scope::Whole(ts) => ts.clone(),
     };
     let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     // every aspect held of a thing reached, forgotten or not
@@ -250,7 +263,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         let rest = blob.as_ref().map(|b| osis_commit::rewrite(b, |ai| ais.contains(&ai)));
         if rest.as_ref().is_some_and(|r| r.parts.is_empty()) {
             crate::apply::unindex_unreceived(tx, &id)?;
-            if matches!(scope, Scope::Local(_)) {
+            if matches!(scope, Scope::Local(_) | Scope::Whole(_)) {
                 out.blobs.extend(tx.core.ix.commit_blobs.get(&id).into_iter().flatten().copied());
                 crate::sync::bodies::forget(tx, &id)?;
             }
@@ -359,7 +372,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     }
     // the API's watches see the loss
     if !aspects.is_empty() {
-        let cause = if matches!(scope, Scope::Local(_)) { Cause::Released } else { Cause::LostAccess };
+        let cause = if matches!(scope, Scope::Lost(_)) { Cause::LostAccess } else { Cause::Released };
         tx.core.events.queue(Event::Changed { cause, changed: aspects.into_iter().collect() });
     }
     out.parts = parts;

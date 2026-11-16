@@ -1,6 +1,6 @@
 //! What a stranger's open fires leave on the node they reach (spec/commits.md §5 The setting,
 //! spec/sync-inbox.md §2, §4): only a setting entry naming an open signal keeps its fires, and a
-//! sealed fire's records and chain go with it.
+//! sealed fire's records and chain go with the last of its fires.
 
 use crate::common::{ak, s, set_setting};
 use crate::flows::send;
@@ -91,16 +91,12 @@ type Rows = (usize, usize);
 
 type Census = std::collections::BTreeMap<String, Rows>;
 
-/// The families a stranger's chain to its account holds at peer 0: its records (`t/`), its
-/// `keys.0` commits (`c/`), their aspect and own-keys rows (`a/`, `g/`), role arrivals (`ra/`).
-const CHAIN: [&str; 5] = ["t/", "c/", "a/", "g/", "ra/"];
-
 // spec/sync-inbox.md §4 A sealed fire, spec/commits.md §5 Forgetting: a stranger's fires go
-// whole once out of history (each forgettable, its commit, blob row and per-aspect rows gone): N
-// strangers each firing on a named and an unnamed open signal leave peer 0 only their chains,
-// whose commits are all role commits. Limit (issues/stranger-fire-bounds.md): the chain stays.
+// whole once out of history, and with the last of them its chain (its records, its and its
+// inbox's `keys.0` commits), which nothing held needs then: N strangers each firing on a named
+// and an unnamed open signal leave peer 0's rows exactly as before.
 #[test]
-fn strangers_fires_leave_only_their_chains_spec_sync_inbox_4() {
+fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
     for n in [1, 3] {
         let (mut lp, inbox) = strangers(n);
         lp.peers[0].tick().unwrap();
@@ -111,16 +107,14 @@ fn strangers_fires_leave_only_their_chains_spec_sync_inbox_4() {
             fires.push(fire(&mut lp, i, inbox, NOTE, "note"));
             fires.push(fire(&mut lp, i, inbox, JUNK, "junk"));
         }
+        assert!(lp.peers[0].engine.local_census().unwrap() != before, "n={n}: the fires and chains arrived");
         lp.advance(HOUR_MS + 1_000);
         lp.peers[0].tick().unwrap();
         settle(&mut lp, &fires);
         let e = &mut lp.peers[0].engine;
         let new: Vec<_> = e.commit_ids().into_iter().filter(|c| !ids.contains(c)).collect();
-        assert!(new.iter().all(|c| crate::common::is_role(e, c)), "n={n}: only chain commits stay");
-        assert_eq!(new.len(), 2 * n, "n={n}: each stranger's chain");
-        let after = e.local_census().unwrap();
-        let other: Vec<_> = changed(&before, &after).into_iter().filter(|(k, ..)| !CHAIN.contains(&k.as_str())).collect();
-        assert!(other.is_empty(), "n={n}: rows beyond the chains: {other:?}");
+        assert_eq!(new, vec![], "n={n}: no commit stays");
+        assert_eq!(changed(&before, &e.local_census().unwrap()), vec![], "n={n}: rows by family");
     }
 }
 

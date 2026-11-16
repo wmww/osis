@@ -530,3 +530,64 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     assert!(e1.in_sync_things(&x).unwrap(), "its sync ID kept");
     assert_ne!(read(&mut lp), Some(Value::Str("after".into())), "unread");
 }
+
+/// Whether peer `i` holds anything of account `a`'s chain: its record, its inbox's, or a
+/// commit it authored.
+fn knows(lp: &mut osis_engine::local_peer::LocalPeer, i: usize, a: Tid) -> bool {
+    let e = &mut lp.peers[i].engine;
+    let inbox = e.inbox_thing(&a);
+    let commits = e.commit_ids();
+    e.core.created(&a).is_some() || inbox.is_some_and(|x| e.core.created(&x).is_some()) || commits.iter().any(|c| e.header(c).is_some_and(|h| h.author == a))
+}
+
+// spec/commits.md §5 What a held thing needs, spec/sync-set.md §3 Release: another account's
+// chain stays while a held thing needs it and goes with the last. Peer 0 makes T (peer 1 a
+// writer who writes there, peer 2 a reader) and U (peer 2 a reader); peer 2 holds both and of
+// peer 1 only what certifies it (its role commits). Released, T goes whole, and peer 1's chain
+// with it; peer 0's stays, U needing it.
+#[test]
+fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_5() {
+    let mut lp = crate::common::net_bare(3, 0);
+    let ps: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.create_account().unwrap().0.account).collect();
+    // each peer's commits to the others, twice (chains first); of peer 1 only role commits
+    let pass = |lp: &mut osis_engine::local_peer::LocalPeer| {
+        for _ in 0..2 {
+            for from in 0..3 {
+                let ids: Vec<_> = lp.peers[from].engine.commit_ids().into_iter().filter(|c| from != 1 || crate::common::is_role(&lp.peers[from].engine, c)).collect();
+                for to in (0..3).filter(|to| *to != from) {
+                    crate::flows::send(lp, from, to, &ids);
+                }
+            }
+        }
+    };
+    pass(&mut lp);
+    let d0 = lp.peers[0].engine.account_root().unwrap();
+    let (t, u) = (make(&mut lp.peers[0].engine, d0, d0), make(&mut lp.peers[0].engine, d0, d0));
+    let e0 = &mut lp.peers[0].engine;
+    e0.grant(&t, &ps[1], &crate::flows::edge_of(osis_base::Role::Write)).unwrap();
+    e0.grant(&t, &ps[2], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e0.grant(&u, &ps[2], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    pass(&mut lp);
+    let mut m = Mutation::new();
+    m.set(t, &osis_base::Ak::new("x:v.0").unwrap(), &Value::Str("by 1".into())).unwrap();
+    let w = lp.peers[1].engine.commit(m).unwrap().unwrap();
+    pass(&mut lp);
+    crate::flows::send(&mut lp, 1, 2, &[w]);
+    let e2 = &mut lp.peers[2].engine;
+    assert!(e2.commit_ids().contains(&w), "peer 2 holds peer 1's write");
+    let d2 = e2.account_root().unwrap();
+    strong(e2, d2, t, true);
+    strong(e2, d2, u, true);
+    assert!(e2.closure_holds(&t) && e2.closure_holds(&u), "peer 2 holds T and U");
+    assert!(knows(&mut lp, 2, ps[1]) && knows(&mut lp, 2, ps[0]), "peer 2 met both");
+    let e2 = &mut lp.peers[2].engine;
+    strong(e2, d2, t, false);
+    assert!(knows(&mut lp, 2, ps[1]), "T, left but not released, still needs peer 1's chain");
+    let e2 = &mut lp.peers[2].engine;
+    e2.released(&[t].into()).unwrap();
+    e2.check_index();
+    assert!(e2.core.created(&t).is_none(), "T released whole");
+    assert!(!knows(&mut lp, 2, ps[1]), "nothing held needs peer 1's chain");
+    assert!(knows(&mut lp, 2, ps[0]), "U needs peer 0's chain");
+    assert!(lp.peers[2].engine.closure_holds(&u));
+}

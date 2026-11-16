@@ -41,6 +41,7 @@ pub(crate) mod snapshot;
 #[cfg(test)]
 mod oracle;
 pub(crate) mod destroy;
+pub(crate) mod needed;
 pub use destroy::{End, Minting, Standing, highest};
 /// A request's point in an `End` (`ts`, author, commit ID).
 pub use osis_perm::Point;

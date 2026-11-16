@@ -1278,6 +1278,12 @@ pub struct Core {
     /// Destroyed things whose keep is judged again at the end of the transaction (`retention::destroy`):
     /// what needs their evidence may have gone.
     pub destroyed_due: BTreeSet<Tid>,
+    /// Things judged again at the end of the transaction for whether a held thing still needs
+    /// them (`retention::needed`): something naming them or a commit they signed moved.
+    pub needs_due: BTreeSet<Tid>,
+    /// Things released in this transaction (`Engine::released`): Interim
+    /// (issues/needed-interim-roots.md), what `retention::needed` judges without the interim roots.
+    pub released_now: BTreeSet<Tid>,
     /// Destroyed things kept here that a held thing may need (`retention::destroy::needs_evidence`,
     /// `Engine::destroyed_needed`), read through `Core::destroyed_kept`.
     pub(crate) destroyed_kept: DestroyedKept,
@@ -1539,6 +1545,8 @@ impl Core {
             list_bound: self.list_bound.clone(),
             valueless_dirty: self.valueless_dirty.clone(),
             destroyed_due: self.destroyed_due.clone(),
+            needs_due: self.needs_due.clone(),
+            released_now: self.released_now.clone(),
             destroyed_kept: self.destroyed_kept.clone(),
             batched: self.batched.clone(),
             touches: self.touches.clone(),
@@ -2107,6 +2115,8 @@ impl Core {
             setting_waits_judging: _,
             valueless_dirty: _,
             destroyed_due: _,
+            needs_due: _,
+            released_now: _,
             destroyed_kept: _,
             wakes: _,
             resnapshots_due: _,
@@ -2366,6 +2376,8 @@ impl Core {
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
             destroyed_due: BTreeSet::new(),
+            needs_due: BTreeSet::new(),
+            released_now: BTreeSet::new(),
             destroyed_kept: DestroyedKept::default(),
             batched: None,
             touches: Default::default(),
@@ -2541,6 +2553,8 @@ impl Core {
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
+        // its signers' chains may be needed by nothing more (`retention::needed`)
+        self.needs_due.extend([m.view.author, m.view.actor]);
         self.index_missing(id, &missing_of(&m), &BTreeSet::new());
         self.note_signed(&signers_elsewhere(&m), &[]);
         self.note_rotation(&m);
@@ -2582,7 +2596,8 @@ impl Core {
     }
 
     /// Moves `Indexes::signed` from a commit's signers `was` to `now` (`signers_elsewhere`). A
-    /// key actor left with none is judged again (`retention::destroy::apply_destructions`).
+    /// signer losing one is judged again for whether anything held needs it (`retention::needed`);
+    /// a key actor left with none, if destroyed (`retention::destroy::apply_destructions`).
     fn note_signed(&mut self, was: &[Tid], now: &[Tid]) {
         for k in now.iter().filter(|k| !was.contains(k)) {
             let n = self.ix.signed.get(k).copied().unwrap_or(0);
@@ -2592,11 +2607,13 @@ impl Core {
             match self.ix.signed.get(k).copied().unwrap_or(0) {
                 0 | 1 => {
                     self.ix.signed.remove(k);
+                    self.needs_due.insert(*k);
                     if self.is_key_actor(k) {
                         self.destroyed_due.insert(*k);
                     }
                 }
                 n => {
+                    self.needs_due.insert(*k);
                     self.ix.signed.insert(*k, n - 1);
                 }
             }
@@ -3716,10 +3733,26 @@ impl Engine {
                     r = r.and_then(|v| crate::retention::settle_none(&mut tx).map(|_| v));
                 }
                 tx.core.none_due.clear();
-                if r.is_ok() && !tx.txn.is_memory() {
+                // destructions and what nothing held needs any more, each letting more go
+                // (`retention::needed`), judged on the node closure as it stands
+                while r.is_ok() && !tx.txn.is_memory() {
                     r = r.and_then(|v| crate::retention::destroy::apply_destructions(&mut tx).map(|_| v));
+                    if r.is_err() || tx.core.needs_due.is_empty() {
+                        break;
+                    }
+                    r = r.and_then(|v| crate::sync::units::settle(&mut tx).map(|_| v));
+                    let mut went = false;
+                    r = r.and_then(|v| crate::retention::needed::settle(&mut tx).map(|w| {
+                        went = w;
+                        v
+                    }));
+                    if !went {
+                        break;
+                    }
                 }
                 tx.core.destroyed_due.clear();
+                tx.core.needs_due.clear();
+                tx.core.released_now.clear();
                 if r.is_ok() {
                     r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
                 }

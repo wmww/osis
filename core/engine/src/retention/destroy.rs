@@ -250,7 +250,7 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     // edge naming it went)
     let mut again: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| osis_commit::retention::destroying_request(ak.as_str())).map(|(t, _)| *t).collect();
     again.extend(std::mem::take(&mut tx.core.destroyed_due));
-    again.extend(tx.core.ix.held.take_unnamed());
+    again.extend(unnamed(tx.core));
     again.retain(|t| !due.contains(t) && !fell.contains(t) && tx.core.created(t).is_some() && tx.core.destroyed(t));
     if due.is_empty() && fell.is_empty() && again.is_empty() {
         return Ok(());
@@ -267,7 +267,7 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     // a kept destroyed thing goes once nothing keeps it (what that drops may let more go)
     loop {
         again.extend(std::mem::take(&mut tx.core.destroyed_due));
-        again.extend(tx.core.ix.held.take_unnamed());
+        again.extend(unnamed(tx.core));
         let Some(t) = again.pop_first() else { break };
         if tx.core.destroyed(&t) && tx.core.created(&t).is_some() && !keeps(tx, &t)? {
             held_changed |= destroy_thing(tx, &t, &mut changed)?;
@@ -281,6 +281,15 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
     }
     Ok(())
+}
+
+/// The holders some thing stopped naming since the last call (`Held::take_unnamed`): each is
+/// judged again here if destroyed, and for whether anything held still needs it
+/// (`retention::needed`).
+fn unnamed(core: &mut Core) -> BTreeSet<Tid> {
+    let u = core.ix.held.take_unnamed();
+    core.needs_due.extend(u.iter().copied());
+    u
 }
 
 /// `t`'s destruction fell: the parts it dropped are fetched again (spec/commits.md §5 Destruction).

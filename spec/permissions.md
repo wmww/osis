@@ -188,6 +188,7 @@
 - The grantee's current `keys.0` commits (an account's: its public record, with its rotations, §5.5, and its inbox's public key record, spec/sync-inbox.md §1) go under the target's sync ID as a certificate, so every admin can seal and list the grantee and every holder reaches its inbox.
 - A commit's **author's chain** is its author's chain certificates for each thing it has a delta on and for its actor (§5.2, Acting; an open fire's: for its actor alone, §5.2 Open fires): every chain its validity reads, so it travels with each body of the commit. A commit whose author's chain to the things it writes has not arrived is pending (spec/commits.md §4); one whose chain to its actor has not is invalid until it arrives. An account's commit at an epoch whose minting rotation the node does not hold is pending (§5.5).
 - A node that does not sync a thing applies the certificate deltas it holds; its timeline for that thing runs over the entries it was given.
+- A node keeps another actor's chain (its record, its `keys.0` commits, an account's rotations and inbox record) only while a held thing needs it (spec/commits.md §5 Forgetting, What a held thing needs).
 
 ## 5. Validity
 Validity is a deterministic function of the commits a node holds and its trust set (§5.1, Trust set) and side (§5.4). An account's commit first passes the epoch rule (§5.5); one that does not count there is judged by nothing below.
