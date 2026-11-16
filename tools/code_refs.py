@@ -24,6 +24,8 @@ from rustsrc import members
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALLOW = "tools/code_refs_allow.txt"
+# lists of names, not code: a renamed name they still hold would pass (their own checks catch it)
+LISTS = {ALLOW, "tools/dead_pub_allow.txt", "tools/known_failures.txt"}
 NOT_SRC = (".md", ".ttf", ".snap", ".vec")
 PATH_EXTS = (".rs", ".tla", ".cfg", ".py", ".sh", ".toml", ".osis", ".java", ".kt")
 WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -109,7 +111,7 @@ def code_names(root, tracked):
     words = set()
     for rel in tracked:
         # not the tools' own test fixtures, whose planted names are none
-        if (rel.startswith("spec/") or not rel.endswith(NOT_SRC)) and rel != ALLOW and not rel.startswith("docs/") \
+        if (rel.startswith("spec/") or not rel.endswith(NOT_SRC)) and rel not in LISTS and not rel.startswith("docs/") \
                 and not re.match(r"tools/\w+_test\.", rel) and os.path.isfile(os.path.join(root, rel)):
             words.update(WORD.findall(open(os.path.join(root, rel), errors="replace").read()))
     words |= {SPEC_TAIL.sub("", w) for w in words if "_spec_" in w}
