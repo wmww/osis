@@ -175,7 +175,7 @@ pub(crate) struct Inner {
     /// The node root (spec/sync-set.md §1): where this node's settings live.
     pub node_root: Tid,
     pub me: Tid,
-    pub devices: Tid,
+    pub account_root: Tid,
     pub limit: usize,
     pub idle_commit: Duration,
     /// `Knobs::text_save`.
@@ -656,7 +656,7 @@ impl Osis {
             node,
             node_root,
             me,
-            devices: home,
+            account_root: home,
             limit: cfg.app.read_limit,
             idle_commit: cfg.app.idle_commit,
             text_save: cfg.app.internals.text_save.clone(),
@@ -747,10 +747,11 @@ impl ReadOnly {
         self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.me, |t| t.me))
     }
 
-    /// The account's devices actor D (spec/permissions.md §1). On a client with its own actor it
-    /// is that actor.
-    pub(crate) fn devices(&self) -> Tid {
-        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.devices, |t| t.devices))
+    /// The account root (spec/sync-set.md §1): the private thing beside the account that its
+    /// nodes read and hold. Account-wide things an app keeps are made under it (`create_with_admin`)
+    /// and held by its `holds.0`. On a client with its own actor it is that actor.
+    pub fn account_root(&self) -> Tid {
+        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.account_root, |t| t.account_root))
     }
 
     /// Runs `f` on the engine under the node lock, then queues its events for the

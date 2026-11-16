@@ -367,7 +367,7 @@ fn on<A: Form, R: Form>(args: Value, f: impl FnOnce(A) -> Result<R>) -> Result<V
 /// reply at most `limit` bytes.
 fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value> {
     match method {
-        method::WHOAMI => on(args, |()| Ok((h.me(), h.node(), h.devices()))),
+        method::WHOAMI => on(args, |()| Ok((h.me(), h.node(), h.account_root()))),
         method::GET => on(args, |(t, k, p): (Tid, Ak, Path)| {
             here(h, t)?;
             Ok(h.read_local(|r| r.get_path(t, &crate::DynamicAspectKey::untyped(k), &p)))

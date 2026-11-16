@@ -146,7 +146,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn pair_offer(&self) -> Result<PairOffer> {
         self.local("pair_offer")?;
-        let (me, home, node) = (self.me(), self.devices(), self.node());
+        let (me, home, node) = (self.me(), self.account_root(), self.node());
         // every node of the account learns the profile from the offer it paired by
         let profile = self.profile()?;
         let now = self.inner.clock.now_wall_ms().0;

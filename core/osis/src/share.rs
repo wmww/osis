@@ -520,7 +520,7 @@ impl Osis {
     fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         let new = self.lowered_edge(t, m, role)?;
         // an account's default does not reach its nodes (spec/permissions.md §2)
-        let retain = o.retain_copy.or((t == self.inner.devices).then_some(false));
+        let retain = o.retain_copy.or((t == self.inner.account_root).then_some(false));
         let fd = flows::Demotion { holder: m, new, retain };
         self.engine(|e| e.demote(&t, &fd).map_err(needs_admin))?;
         Ok(())
@@ -781,7 +781,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
         self.local("nodes")?;
-        let home = self.devices();
+        let home = self.account_root();
         let node_ak = ct::NODE.name();
         self.engine(|e| -> Result<Vec<AccountNode>> {
             let mut out = Vec::new();
@@ -801,7 +801,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn remove_node(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
         self.local("remove_node")?;
-        let home = self.devices();
+        let home = self.account_root();
         let was = self.grants(home)?.contains_key(&node);
         self.set_role(home, node, None, o)?;
         if was { self.links() } else { Ok(Vec::new()) }

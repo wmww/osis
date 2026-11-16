@@ -50,7 +50,7 @@ impl Osis {
             node: i.node,
             node_root: i.node_root,
             me: i.me,
-            devices: i.devices,
+            account_root: i.account_root,
             limit: i.limit,
             idle_commit: i.idle_commit,
             text_save: None,

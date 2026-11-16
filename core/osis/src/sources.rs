@@ -291,14 +291,14 @@ impl Osis {
     /// pass of each sync ID carrying the sync unit: at most `PASS_WAIT_MS` past a holder away); until
     /// then the sync unit stays read at its node, and a call dropped before it answers leaves it so,
     /// syncing here too until a restart (moving it again ends that). `Invalid` for a node not connected, for
-    /// the account's devices actor (it always syncs here), or when the sync unit moved away again before it caught up.
+    /// the account root (it always syncs here), or when the sync unit moved away again before it caught up.
     pub async fn unit_source(&self, unit: Tid, to: UnitSource) -> Result<()> {
         self.local("unit_source")?;
         let homing = self.locked(|l| -> Result<bool> {
             match &to {
                 UnitSource::Node(a) if !l.remotes.iter().any(|r| r.addr == *a) => Err(Error::Invalid(format!("not connected to {a} (connect_node)"))),
-                // the node's own records live on the devices actor: it always syncs here
-                UnitSource::Node(_) if unit == self.devices() => Err(Error::Invalid("the account's devices actor is never sourced at another node".into())),
+                // the node's own records live on the account root: it always syncs here
+                UnitSource::Node(_) if unit == self.account_root() => Err(Error::Invalid("the account root is never sourced at another node".into())),
                 UnitSource::Node(a) => {
                     l.unit_sources.insert(unit, a.clone());
                     l.homing.remove(&unit);

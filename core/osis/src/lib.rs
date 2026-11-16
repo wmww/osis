@@ -438,7 +438,7 @@
 //! let a = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let b = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = a.write();
-//! w.at(b.home(), a.aspect_key("app:x.0")?).set(&osis::Value::Int(1))?;
+//! w.at(b.account_root(), a.aspect_key("app:x.0")?).set(&osis::Value::Int(1))?;
 //! assert!(matches!(w.commit(), Err(Error::UnknownThing { .. })));
 //! # Ok::<(), osis::Error>(())
 //! ```
