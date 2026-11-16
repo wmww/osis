@@ -590,15 +590,16 @@ impl Fragment {
         }
     }
 
-    /// Calls `f` on every value this fragment holds as written: register and slot values, set
-    /// elements, list items' content, and the keys of map records holding their creation
-    /// (a value-less write holds none; text chars and bag numbers are not values).
+    /// Calls `f` on every value this fragment holds as written where a read looks: register
+    /// values, set elements, list items' content, and the keys of map records holding their
+    /// creation, at a position written in several encodings its chosen slot's alone (§7 Read; a
+    /// value-less write holds none; text chars and bag numbers are not values).
     pub fn each_value(&self, f: &mut dyn FnMut(&Value)) {
         self.values_with(false, f);
     }
 
-    /// `values` (`all`) or `each_value`: bag contributions and the keys of map records without
-    /// their creation count only for the former.
+    /// `values` (`all`) or `each_value`: bag contributions, the keys of map records without
+    /// their creation and the slots a read does not choose count only for the former.
     pub(crate) fn values_with(&self, all: bool, f: &mut dyn FnMut(&Value)) {
         match self {
             Fragment::Register(r) => {
@@ -631,12 +632,20 @@ impl Fragment {
                     }
                 }
             }
-            Fragment::Slots(s) => {
+            Fragment::Slots(s) if all => {
                 if let Some(v) = s.reg.as_ref().and_then(|r| r.write.as_ref()).and_then(|w| w.value.as_ref()) {
                     f(v);
                 }
                 s.slots.values().for_each(|x| x.values_with(all, f));
             }
+            Fragment::Slots(_) => match self.chosen_slot() {
+                SlotRef::Reg(r) => {
+                    if let Some(v) = r.write.as_ref().and_then(|w| w.value.as_ref()) {
+                        f(v);
+                    }
+                }
+                SlotRef::Frag(x) => x.values_with(all, f),
+            },
         }
     }
 

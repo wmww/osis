@@ -107,7 +107,8 @@ fn index_and_scan(e: &mut osis_engine::Engine, sources: &[Tid], targets: &[Tid])
 // spec/data-model.md §8 Known references (refgraph R2): after every commit the known references,
 // with kind, equal a scan of the current values of every held aspect: at any depth (map keys,
 // enum payloads, sets in lists), a large value, an expiring write while it lasts, a removed
-// aspect's and a replaced value's gone (never history). Random nested writes on one node.
+// aspect's and a replaced value's gone, whatever shape replaced it (never history). Random
+// nested writes on one node.
 #[test]
 fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
     for seed in 1..=4u64 {
@@ -123,28 +124,26 @@ fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
             let t = targets[rng.below(targets.len() as u64) as usize];
             if rng.below(2) == 0 { Value::Strong(t) } else { Value::Weak(t) }
         };
-        // each position keeps one shape, by aspect and depth (a value of another shape replacing
-        // one: `a_value_of_another_shape_leaves_no_references_spec_data_model_8`)
-        let nested = |rng: &mut crate::order::Rng, aspect: usize, depth: u32| -> Value {
-            fn go(rng: &mut crate::order::Rng, shape: usize, depth: u32, r: &dyn Fn(&mut crate::order::Rng) -> Value) -> Value {
-                match if depth == 0 { 4 } else { (shape + depth as usize) % 4 } {
-                    0 => Value::List((0..rng.below(3)).map(|_| go(rng, shape, depth - 1, r)).collect()),
+        // any shape at any position, so a value of one shape replaces one of another
+        let nested = |rng: &mut crate::order::Rng, depth: u32| -> Value {
+            fn go(rng: &mut crate::order::Rng, depth: u32, r: &dyn Fn(&mut crate::order::Rng) -> Value) -> Value {
+                match if depth == 0 { 4 } else { rng.below(5) } {
+                    0 => Value::List((0..rng.below(3)).map(|_| go(rng, depth - 1, r)).collect()),
                     1 => Value::Set((0..rng.below(3)).map(|_| r(rng)).collect()),
-                    2 => Value::Map((0..rng.below(3)).map(|i| (if rng.below(2) == 0 { r(rng) } else { Value::Int(i as i64) }, go(rng, shape, depth - 1, r))).collect()),
-                    3 => Value::Enum(1, Some(Box::new(go(rng, shape, depth - 1, r)))),
+                    2 => Value::Map((0..rng.below(3)).map(|i| (if rng.below(2) == 0 { r(rng) } else { Value::Int(i as i64) }, go(rng, depth - 1, r))).collect()),
+                    3 => Value::Enum(1, Some(Box::new(go(rng, depth - 1, r)))),
                     _ => r(rng),
                 }
             }
-            go(rng, aspect, depth, &reference)
+            go(rng, depth, &reference)
         };
         for step in 0..30 {
             let t = things[rng.below(3) as usize];
-            let ai = rng.below(2) as usize;
-            let a = &aks[ai];
+            let a = &aks[rng.below(2) as usize];
             let mut m = Mutation::new();
             let expiring = match rng.below(7) {
                 0..=2 => {
-                    m.set(t, a, &nested(&mut rng, ai, 3)).unwrap();
+                    m.set(t, a, &nested(&mut rng, 3)).unwrap();
                     false
                 }
                 3 => {
@@ -154,7 +153,7 @@ fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
                 4 => {
                     // a large value: paged in the store
                     let pad = Value::Str("p".repeat(70_000));
-                    m.set(t, &ak("x:big.0"), &Value::List(vec![pad, nested(&mut rng, 0, 2), reference(&mut rng)])).unwrap();
+                    m.set(t, &ak("x:big.0"), &Value::List(vec![pad, nested(&mut rng, 2), reference(&mut rng)])).unwrap();
                     false
                 }
                 5 => {
@@ -164,7 +163,7 @@ fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
                 }
                 _ => {
                     let now = lp.peers[0].engine.now();
-                    m.set(t, &ak("x:e.0"), &nested(&mut rng, 1, 2)).unwrap();
+                    m.set(t, &ak("x:e.0"), &nested(&mut rng, 2)).unwrap();
                     m.expires(t, &ak("x:e.0"), osis_base::WallMs(now.0 + 1_000)).unwrap();
                     true
                 }
@@ -219,7 +218,6 @@ fn core_aspects_hold_nothing_spec_data_model_8() {
 // spec/data-model.md §8 What counts: a value of another shape set over an untyped aspect (a map
 // over a list, a set or a reference) reads as the new value alone, and so do its references.
 #[test]
-#[ignore = "refgraph: issues/reference-graph.md Status, a replaced value's references"]
 fn a_value_of_another_shape_leaves_no_references_spec_data_model_8() {
     let x = Value::Weak(Tid::from_bytes([3; 15]));
     for first in [Value::List(vec![x.clone()]), Value::Set([x.clone()].into_iter().collect()), x.clone()] {

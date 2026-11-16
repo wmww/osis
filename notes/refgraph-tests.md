@@ -79,7 +79,7 @@ Lane: (a) refs, tickets as values, schema, API, index; (b) node root, walk, sync
 ## Written
 Part 1 (engine, one node or LocalPeer worlds; sealed delivery where reads matter: plain `LocalPeer` packages carry bodies a reader's keys need not open; a lowered reader drops what it lost only where `drop_lost_secrets` runs, as sync's Life does). Each fails with its rule undone by hand, H4's cycle arm aside (not tried):
 - R1: core/test/vectors/cbor/values.vec (tags 1620-1622, 1616 and bad tickets rejected). I1: base `ids::tests::ak_rules`.
-- R2: engine `refs::known_references_are_a_scan_of_held_values_spec_data_model_8` (each position keeps one shape until `refs::a_value_of_another_shape_leaves_no_references_spec_data_model_8`, ignored, is fixed: issues/reference-graph.md Status).
+- R2: engine `refs::known_references_are_a_scan_of_held_values_spec_data_model_8` (any shape at any position; a value of another shape replacing one: `refs::a_value_of_another_shape_leaves_no_references_spec_data_model_8`).
 - R3: engine `refs::core_aspects_hold_nothing_spec_data_model_8`.
 - U1, U2: engine `closure::sync_units_are_the_models_spec_sync_set_2` (against held-model `closure::unit` and `closure`).
 - U3: engine `closure::a_thing_is_made_only_where_it_is_held_spec_sync_set_2` (engine, not osis: osis maps `NotHeld` to `Invalid` like any local refusal).
