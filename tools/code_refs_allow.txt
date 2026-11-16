@@ -33,7 +33,6 @@ mmap_threshold  third-party: glibc tunable
 RUSTC_BOOTSTRAP  third-party: rustc
 PROPTEST_RNG_SEED  third-party: proptest
 WAYLAND_DISPLAY  third-party: Wayland
-isdir  third-party: Python os.path
 run_in_background  third-party: Claude Code's Bash tool
 
 do_x  placeholder
