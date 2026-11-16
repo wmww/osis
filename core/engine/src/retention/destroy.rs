@@ -288,7 +288,9 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
 /// (`retention::needed`).
 fn unnamed(core: &mut Core) -> BTreeSet<Tid> {
     let u = core.ix.held.take_unnamed();
-    core.needs_due.extend(u.iter().copied());
+    for t in &u {
+        core.note_pass_due(*t);
+    }
     u
 }
 

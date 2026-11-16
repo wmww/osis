@@ -663,7 +663,7 @@ fn noting<E>(r: Result<Option<CommitId>, E>, unchecked: &mut BTreeSet<CommitId>)
 /// A reader of G holding it, given what its access needs (`Played::reader`), so it keeps what it
 /// receives of what it holds in any order; opened over a copy of that node, so each held set's oracle (`made`, a copy that
 /// never opened) also compares every order against a node that never opened.
-fn fresh(played: &Played) -> Peer {
+pub(crate) fn fresh(played: &Played) -> Peer {
     let p = played.reader.lock().unwrap_or_else(|e| e.into_inner()).fork(FRESH).unwrap();
     under_test(p, played.now)
 }
@@ -690,13 +690,16 @@ fn fresh_base() -> std::sync::MutexGuard<'static, Peer> {
 }
 
 /// Peer `by`, an admin of `g`, grants the fresh nodes under test read on it (`fresh`), their
-/// account's chain delivered to it first: the grant's commits.
+/// account's chain delivered to it first, every peer keeping their account: the grant's commits.
 fn grant_fresh(lp: &mut LocalPeer, by: usize, g: Tid) -> Vec<CommitId> {
     let (reader, pks) = {
         let mut b = fresh_base();
         let pks: Vec<Package> = b.engine.commit_ids().iter().map(|id| b.engine.package(id).unwrap().unwrap()).collect();
         (b.engine.me(), pks)
     };
+    for p in &mut lp.peers {
+        p.know(&[reader]).unwrap();
+    }
     for pk in &pks {
         lp.deliver(by, pk).unwrap();
     }
@@ -732,21 +735,22 @@ fn setup(seed: u64, addenda: bool) -> (LocalPeer, (Vec<Tid>, Tid)) {
     m.set(g, &REG, &s("g")).unwrap();
     m.set(g, &osis_schema::core_types::RETENTION, &base_setting(lp.peers[0].engine.now(), false)).unwrap();
     lp.peers[0].commit(m).unwrap();
-    let writers = [set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None), set_edge(&mut lp.peers[0].engine, g, ids[2], Some(edge(Role::Admin)), None)];
-    grant_fresh(&mut lp, 0, g);
+    lp.hold(g);
+    set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, g, ids[2], Some(edge(Role::Admin)), None);
+    let grant = grant_fresh(&mut lp, 0, g);
     lp.sync_all().unwrap();
-    // the node under test (`Played::reader`), apart from the three: peer 3, holding G and given
-    // what 0's account wrote in the setup but its grants to 1 and 2 (histories may withhold those
-    // and the rest of the setup, `setup_grant`), as a node granted G fetches it
-    let mut reader = under_test(fresh_base().fork(FRESH).unwrap(), lp.peers[0].engine.now());
+    // the node under test (`Played::reader`), apart from the three: peer 3, from its access
+    // alone, parked at `ACCOUNT_AT` (its own writes date from before any clock under test, so an
+    // earlier clock judges the rest as it arrives): holding G, given its grant (waiting for G's
+    // record, which the history brings)
+    let mut reader = under_test(fresh_base().fork(FRESH).unwrap(), ACCOUNT_AT);
     reader.engine.hold(osis_base::Strong(g)).unwrap();
-    let by_0 = |lp: &LocalPeer, id: &CommitId| lp.peers[0].engine.header(id).is_some_and(|h| h.author == ids[0]);
-    let access: Vec<Package> = lp.packages(0).unwrap().into_iter().filter(|p| !writers.contains(&p.id) && by_0(&lp, &p.id)).collect();
-    for pk in access {
+    for id in &grant {
+        let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
         reader.receive(&pk.bytes, pk.blobs.clone()).unwrap();
     }
     reader.reexamine().unwrap();
-    assert!(reader.engine.closure_holds(&g), "the node under test holds G");
     lp.peers.push(reader);
     (lp, (ids, g))
 }
@@ -786,6 +790,22 @@ fn share_top(lp: &mut LocalPeer, by: usize, t: Tid, reader: Tid, write: Option<u
     seen.extend(grants.iter().copied());
     access.extend(grants.iter().map(|id| lp.peers[by].engine.package(id).unwrap().unwrap()));
     grants
+}
+
+/// Peer `to` learns `t`'s record chain as peer `from` holds it (each record up to the first
+/// admin that is a key actor), as the certificates a grant comes with bring it.
+fn give_chain(lp: &mut LocalPeer, from: usize, to: usize, t: Tid) {
+    let mut recs = Vec::new();
+    let mut x = Some(t);
+    while let Some(y) = x {
+        let Some(r) = lp.peers[from].engine.core.created(&y).cloned() else { break };
+        x = match &r {
+            osis_base::CreationRecord::Thing { admin, .. } => Some(*admin),
+            _ => None,
+        };
+        recs.push(r);
+    }
+    lp.peers[to].engine.learn_records(recs).unwrap();
 }
 
 pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
@@ -950,6 +970,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     m.set(t, &REG, &s("n")).unwrap();
                 }
                 let r = lp.peers[by].commit(m);
+                lp.hold(t);
                 no = why(&r);
                 if let Ok(Some(id)) = r {
                     things.push(t);
@@ -1356,6 +1377,8 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 sent.push(one(&mut lp, by, &TEXT, po(vec![], Op::Insert { at: 0, items: vec![s("abcd")] })));
                 sent.extend(share_top(&mut lp, by, t, reader_id, Some(other), &mut seen, &mut access));
                 tops.push(t);
+                // its record chain first, as certificates bring it (`by`'s account root's record)
+                give_chain(&mut lp, by, other, t);
                 for id in sent {
                     let pk = lp.peers[by].engine.package(&id).unwrap().unwrap();
                     lp.deliver(other, &pk).unwrap();
@@ -1566,6 +1589,7 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
         }
     }
     p.tick().unwrap();
+    p.engine.settle_needs().unwrap();
     crate::disputes::walk_sides(&mut p);
     // a purge drops at this node too: what one that fell left missing comes back as anywhere
     fetch_missing(&mut p, played, held);
@@ -1892,7 +1916,7 @@ fn settle(played: &Played, p: &mut Peer, drops: Option<&std::cell::RefCell<crate
 }
 
 /// A delivery's end (`each` after each step): a late-parts delivery reexamines, then what is due
-/// runs, as a node runs it before every read (a purge request's floor passing judges its
+/// runs and the pass ends (`Engine::settle_needs`), as a node runs it before every read (a purge request's floor passing judges its
 /// purge-on-replace bodies again, spec/commits.md §5). Then the wakes have missed nothing a full
 /// scan of the pending commits would apply: checked once a delivery, at its end, where a wake lost
 /// on the way shows unless a later wake made it up (a scan after every ingest cost a quarter of
@@ -1904,6 +1928,8 @@ fn finish(p: &mut Peer, late: bool, each: &mut dyn FnMut(&mut Peer)) {
         each(p);
     }
     p.tick().unwrap();
+    // the pass ended: what it brought that nothing held needs goes
+    p.engine.settle_needs().unwrap();
     each(p);
     let lost = p.engine.lost_wakes().unwrap();
     assert!(lost.is_empty(), "applied by a full scan, missed by the wakes: {lost:?}");
@@ -3298,7 +3324,6 @@ fn held_set_decides_at(sizes: Vec<Size>) {
 // (`generate`), every node in every order judged by `node_checks` against the node keeping
 // every body and against held-model.
 #[test]
-#[ignore = "unneeded chains linger by arrival order: issues/needed-arrival-order.md"]
 fn held_set_decides() {
     held_set_decides_at(quick());
 }
@@ -3568,7 +3593,7 @@ fn settling(mut played: Played, steps: &[Step]) -> Played {
 // history newest first (dropping the write while invalid) and the compactions last reads "v5" as
 // the node keeping every body does, before its sync exchange too.
 #[test]
-#[ignore = "unneeded chains linger by arrival order: issues/needed-arrival-order.md"]
+#[ignore = "its scripted dispute no longer reaches the case: issues/settled-writers-dispute-script.md"]
 fn settled_writers_fetch_what_their_first_side_dropped_before_compacting() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
@@ -3662,6 +3687,7 @@ fn register_deaths_purged_killer_spec_crdt_4_8() {
     m.set(t, &REG, &s("g")).unwrap();
     m.set(t, &osis_schema::core_types::RETENTION, &base_setting(lp.peers[0].engine.now(), false)).unwrap();
     lp.peers[0].commit(m).unwrap();
+    lp.hold(t);
     grant_fresh(&mut lp, 0, t);
     // each commit packaged as made, before a later purge drops its body
     let mut packs: Vec<Package> = lp.peers[0].engine.commit_ids().iter().map(|id| lp.peers[0].engine.package(id).unwrap().unwrap()).collect();
@@ -3787,6 +3813,7 @@ fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     m.set(g, &KEPT, &s("k")).unwrap();
     lp.peers[0].commit(m).unwrap();
+    lp.hold(g);
     set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, g, ids[2], Some(edge(Role::Write)), None);
     grant_fresh(&mut lp, 0, g);
@@ -3871,6 +3898,7 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     m.set(g, &KEPT, &s("k")).unwrap();
     lp.peers[0].commit(m).unwrap();
+    lp.hold(g);
     set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
     set_edge(&mut lp.peers[0].engine, g, ids[2], Some(edge(Role::Write)), None);
     grant_fresh(&mut lp, 0, g);
@@ -3936,6 +3964,7 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap();
+    lp.hold(g);
     set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
     grant_fresh(&mut lp, 0, g);
     lp.sync_all().unwrap();
@@ -4048,7 +4077,7 @@ fn held_model_agrees_on_purge_rights_spec_commits_5() {
         Sync { from: 2, to: 1 },
         Sync { from: 1, to: 2 },
         Purge { by: 1, t: 0, of: 2, back: 0, v: 3 },
-        Purge { by: 2, t: 0, of: 1, back: 1, v: 4 },
+        Purge { by: 2, t: 0, of: 1, back: 0, v: 4 },
     ];
     let seen = check(0, &h, Cfg { model: true, ..NAMED }).unwrap();
     assert!(seen.model.compared > 0 && seen.model.reached.get("purged").is_some_and(|n| *n > 0), "{:?}", seen.model);
@@ -4254,7 +4283,8 @@ fn harness_judges_a_drop_of_a_body_seen_out_of_scope_spec_commits_5() {
     for &i in setup.iter().chain([&(n - 1)]) {
         p.receive(&played.packs[i].bytes, played.packs[i].blobs.clone()).unwrap();
     }
-    assert!(p.engine.pending().is_empty());
+    p.engine.settle_needs().unwrap();
+    assert!(p.engine.pending().is_empty(), "{:?}", p.engine.pending());
     p.engine.drop_body(&first, &t, &a).unwrap();
     p.engine.drop_body(&second, &t, &a).unwrap();
     let d = crate::held::compare(&mut p.engine, &hist, &mut cov, Some(&mut drops)).expect("the second drop is flagged");
@@ -4332,6 +4362,7 @@ fn record_from_drift_parked_creation_wakes_thrown_out_write_spec_commits_4() {
     assert!(matches!(p.receive(&creation.bytes, creation.blobs.clone()).unwrap(), osis_engine::Ingested::Pending(..)));
     p.clock.set(played.now);
     p.tick().unwrap();
+    p.engine.settle_needs().unwrap();
     let all: Vec<usize> = (0..played.packs.len()).collect();
     assert_eq!(shown(&mut p, &played.things), shown(&mut deliver(&played, &all), &played.things));
 }
@@ -4357,6 +4388,7 @@ fn caught_up(h: &[Step], first: usize, then: usize, late: bool) {
     if late {
         p.receive(&b.bytes, b.blobs.clone()).unwrap();
     }
+    p.engine.settle_needs().unwrap();
     let all: Vec<usize> = (0..played.packs.len()).collect();
     assert_eq!(shown(&mut p, &played.things), shown(&mut deliver(&played, &all), &played.things));
 }
@@ -4500,7 +4532,6 @@ fn a_removal_from_an_actor_audits_what_the_actors_grants_reach_spec_permissions_
 // at the reset and, out of history hours later, a node drops it under a writer's snapshot; held-model
 // agrees it is no live body.
 #[test]
-#[ignore = "unneeded chains linger by arrival order: issues/needed-arrival-order.md"]
 fn a_creation_pruned_under_a_later_delete_is_replaced_spec_commits_5() {
     use Step::*;
     let a = |s| Aim(Box::new(s));

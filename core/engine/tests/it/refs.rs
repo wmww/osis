@@ -40,6 +40,8 @@ fn a_fires_references_go_with_it_spec_data_model_8() {
     let x = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     m.set(d, &ct::RETENTION, &setting(&[(log.as_str(), History::FOREVER)])).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
+    lp.hold(d);
+    lp.hold(x);
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(osis_base::Role::Write)), None);
     lp.sync_all().unwrap();
     let mut m = Mutation::new();

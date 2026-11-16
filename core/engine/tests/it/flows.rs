@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 /// Every peer's new commits to every other peer, twice (cheaper than `sync_all`'s n rounds);
 /// commits that arrive before their chain wait and apply on the second pass.
 pub(crate) fn spread(lp: &mut LocalPeer) {
+    lp.know_all().unwrap();
     let n = lp.peers.len();
     let mut sent: Vec<BTreeSet<CommitId>> = vec![BTreeSet::new(); n];
     for _ in 0..2 {
@@ -29,6 +30,7 @@ pub(crate) fn spread(lp: &mut LocalPeer) {
             sent[a].extend(ids);
         }
     }
+    lp.settle_needs().unwrap();
 }
 
 /// Delivers commits `ids` of peer `from` to peer `to`.
@@ -42,6 +44,7 @@ pub(crate) fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId])
 /// `spread` as sync IDs carry commits (`SealedPackage`): each peer opens only what the read
 /// secrets it holds unwrap.
 pub(crate) fn spread_sealed(lp: &mut LocalPeer) {
+    lp.know_all().unwrap();
     let n = lp.peers.len();
     for _ in 0..2 {
         for a in 0..n {
@@ -53,6 +56,7 @@ pub(crate) fn spread_sealed(lp: &mut LocalPeer) {
             }
         }
     }
+    lp.settle_needs().unwrap();
 }
 
 /// Peer `from` writes `v` on `t` and sends it sealed (`SealedPackage`) to every other peer: the
@@ -92,13 +96,23 @@ fn add_tag(lp: &mut LocalPeer, i: usize, t: Tid, tag: &str) {
     lp.peers[i].commit(m).unwrap().unwrap();
 }
 
-/// A thing whose first admin is actor `admin`, written by peer `i`.
+/// Every peer but the sharer (0) follows `link` (`Engine::follow_link`), as a redeemer does before
+/// it downloads K's sync ID: each keeps K and L's chain once received.
+pub(crate) fn follow(lp: &mut LocalPeer, link: &osis_blob::ShareLink) {
+    for p in lp.peers.iter_mut().skip(1) {
+        p.engine.follow_link(link).unwrap();
+    }
+}
+
+/// A thing whose first admin is actor `admin`, written by peer `i`, held by every peer
+/// (`LocalPeer::hold`): each keeps what it receives of it once it reads it.
 pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
     let e = &mut lp.peers[i].engine;
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, admin);
     m.set(t, &REG, &s("new")).unwrap();
     e.commit(m).unwrap().unwrap();
+    lp.hold(t);
     t
 }
 
@@ -115,6 +129,7 @@ fn account_two_nodes_built() -> (LocalPeer, Tid) {
     let n = lp.peers[1].engine.tid();
     let card: Vec<CommitId> = lp.peers[1].engine.commit_ids();
     send(&mut lp, 1, 0, &card);
+    lp.peers[1].engine.joining(&p.account).unwrap();
     let (_, send_) = lp.peers[0].engine.pair(&n).unwrap();
     send(&mut lp, 0, 1, &send_);
     lp.peers[1].engine.paired(&p.account).unwrap();
@@ -261,7 +276,7 @@ fn lost_setup_from(from_e: bool) -> Lost {
 
 fn lost_built(from_e: bool) -> (LocalPeer, (Tid, Tid, Tid, Tid)) {
     let faults = osis_store::Faults::new();
-    let mut lp = LocalPeer::of(vec![forensic_peer(0, &osis_store::Faults::new()), forensic_peer(1, &faults)], 0);
+    let mut lp = LocalPeer::of(vec![forensic_peer(0, &osis_store::Faults::new()), forensic_peer(1, &faults)], 0).unwrap();
     let pa = lp.peers[0].engine.create_account().unwrap().0.account;
     let pb = lp.peers[1].engine.create_account().unwrap().0.account;
     spread(&mut lp);
@@ -482,6 +497,7 @@ fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
     let mut lp = net_bare(2, 0);
     let pa = lp.peers[0].engine.create_account().unwrap().0.account;
     let pb = lp.peers[1].engine.create_account().unwrap().0.account;
+    lp.peers[0].know(&[pb]).unwrap();
     let bobs: Vec<CommitId> = lp.peers[1].engine.commit_ids();
     send(&mut lp, 1, 0, &bobs);
     let g = thing_of(&mut lp, 0, pa);
@@ -829,10 +845,13 @@ fn nodes_and_alice_built() -> (LocalPeer, Tid, Tid, SyncId) {
     let d1 = lp.peers[0].engine.tid();
     let ids = lp.peers[0].engine.commit_ids();
     send(&mut lp, 0, 1, &ids);
+    lp.peers[0].engine.joining(&p.account).unwrap();
     let (_, send_) = lp.peers[1].engine.pair(&d1).unwrap();
     send(&mut lp, 1, 0, &send_);
     lp.peers[0].engine.paired(&p.account).unwrap();
     let pa = lp.peers[2].engine.create_account().unwrap().0.account;
+    // alice grants P's devices actor: she keeps it
+    lp.peers[2].know(&[p.devices]).unwrap();
     spread(&mut lp);
     assert_eq!(lp.peers[0].engine.role_on(&p.devices), Some(Role::Admin));
     let home = *lp.peers[1].engine.get_typed(&p.devices, &ct::SYNC).unwrap().unwrap().keys().next().unwrap();
@@ -903,6 +922,7 @@ fn commit_form_redemption_canonical_spec_crdt_3_2() {
         // links until one whose L sorts as wanted against the sharer node
         let link = loop {
             let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+            follow(&mut lp, &link);
             if (osis_engine::identity::Identity::from_seed(link.seed.clone()).tid() < sharer) == l_first {
                 break link;
             }
@@ -923,6 +943,7 @@ fn redeem_with_the_clock_set_back_spec_crdt_2() {
     let (pa, ps1) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
+    follow(&mut lp, &link);
     sync(&mut lp, 0, 1);
     let back = lp.peers[1].clock.now_wall_ms().0 - 120 * 60_000;
     lp.peers[1].clock.set(osis_base::WallMs(back));
@@ -941,6 +962,7 @@ fn a_link_naming_another_target_grants_nothing_spec_permissions_7() {
     let d = thing_of(&mut lp, 0, pa);
     let other = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
+    follow(&mut lp, &link);
     sync(&mut lp, 0, 1);
     let forged = osis_blob::ShareLink { target: other, ..link.clone() };
     assert!(!lp.peers[1].engine.redeemable(&forged));
@@ -958,6 +980,7 @@ fn link_redeem_single_use_spec_perm_7() {
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, keep, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
+    follow(&mut lp, &link);
     let text = link.to_text().unwrap();
     assert_eq!(osis_blob::ShareLink::from_text(&text).unwrap(), link);
     assert_eq!(lp.peers[0].engine.roster(&link.k).get(&lp.peers[0].engine.tid()), None);
@@ -993,6 +1016,7 @@ fn single_use_finalization_audits_spec_perm_7() {
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
+    follow(&mut lp, &link);
     spread(&mut lp);
     let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
     // the forger redeems first (earlier ts) but the sharer never hears of it before finalizing
@@ -1020,6 +1044,7 @@ fn single_use_loser_keeps_secrets_until_finalized_spec_perm_7() {
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
+    follow(&mut lp, &link);
     spread(&mut lp);
     let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
     let early = lp.peers[2].engine.redeem(&link, &ps2, true).unwrap().commits;
@@ -1060,6 +1085,7 @@ fn link_bearer_and_until_spec_perm_7() {
     let d = thing_of(&mut lp, 0, pa);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, Some(until))).unwrap();
+    follow(&mut lp, &link);
     sync(&mut lp, 0, 1);
     let before = lp.peers[1].engine.commit_ids().len();
     lp.peers[1].engine.bear(&link).unwrap();
@@ -1102,6 +1128,7 @@ fn until_link_backdated_grant_void_spec_perm_7() {
     let d = thing_of(&mut lp, 0, p);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
     let (link, keep, _) = lp.peers[0].engine.create_link(&p, &link_spec(d, Role::Read, Some(until))).unwrap();
+    follow(&mut lp, &link);
     let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
     spread(&mut lp);
     lp.peers[2].engine.redeem(&link, &joiner, false).unwrap();
@@ -1205,6 +1232,7 @@ fn two_links(late_reads_k1: bool) -> (LocalPeer, Tid, Tid, Tid) {
 
 /// `spread`, but peer `to` gets every commit without its `secrets.0` parts of `hidden`.
 fn spread_hiding(lp: &mut LocalPeer, to: usize, hidden: Tid) {
+    lp.know_all().unwrap();
     for _ in 0..2 {
         for a in 0..lp.peers.len() {
             let ids = lp.peers[a].engine.commit_ids();
@@ -1498,9 +1526,12 @@ fn write_link_rotates_as_signer_spec_perm_3() {
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+    follow(&mut lp, &link);
     spread(&mut lp);
     lp.peers[1].engine.redeem(&link, &ps1, false).unwrap();
     spread(&mut lp);
+    // its join held elsewhere: it follows the link no more
+    lp.peers[1].engine.unfollow_link(&link.k);
     lp.peers[1].engine.demote(&link.k, &Demotion { holder: ps1, new: None, retain: None }).unwrap();
     spread(&mut lp);
     let e0 = newest_read(&lp, 0, link.k).unwrap();
@@ -1575,6 +1606,7 @@ fn link_key_writes_commit_form_spec_commits_3() {
     let (pa, ps1) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+    follow(&mut lp, &link);
     sync(&mut lp, 0, 1);
     let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
     let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
@@ -2250,6 +2282,7 @@ fn frontier_lists_covered_deltas_of_every_retention_spec_perm_5_1() {
 fn chat_by_record_spec_perm_1() {
     let (mut lp, ps) = people(4);
     let (o, done) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
+    lp.hold(o);
     assert_eq!(done.commits.len(), 1);
     let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
     let aks: BTreeSet<&str> = h.aspects.iter().filter(|a| a.tid == o).map(|a| a.ak.as_str()).collect();
@@ -2316,6 +2349,7 @@ fn chat_by_record_spec_perm_1() {
 fn record_edge_removal_any_order_spec_perm_2() {
     let (mut lp, ps) = people(4);
     let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
+    lp.hold_at(1, o);
     lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
     // 2 and 3 read o
     for i in [2, 3] {
@@ -2348,6 +2382,7 @@ fn first_grant_on_plain_thing_rotates_first_spec_perm_3() {
     let (mut lp, ps) = people(3);
     let d = lp.peers[0].engine.plain_admin();
     let (o, _) = lp.peers[0].engine.create_with_admin(&d).unwrap();
+    lp.hold(o);
     let mut m = Mutation::new();
     m.set(o, &REG, &s("derived")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -2375,6 +2410,7 @@ fn last_admin_of_plain_thing_refused_spec_perm_1() {
     let (mut lp, _) = people(2);
     let n = lp.peers[0].engine.plain_admin();
     let (o, _) = lp.peers[0].engine.create_with_admin(&n).unwrap();
+    lp.hold(o);
     let mut m = Mutation::new();
     m.set(o, &REG, &s("v")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -2405,6 +2441,7 @@ fn last_admin_of_plain_thing_refused_spec_perm_1() {
 fn first_admin_record_edge_removed_by_its_node_spec_permissions_2() {
     let (mut lp, ps) = people(2);
     let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
+    lp.hold(o);
     lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
     let done = lp.peers[0].engine.demote(&o, &remove(ps[0])).unwrap();

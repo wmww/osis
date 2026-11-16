@@ -113,7 +113,7 @@ fn carol_variant_spec_perm_5_2() {
         assert_eq!(tags(&mut lp, i, d), BTreeSet::from(["carol".to_string(), "x".to_string()]), "node {i}");
     }
     // the result is a function of the held set, not of arrival order
-    let mut lp2 = LocalPeer::of(vec![obs], 1);
+    let mut lp2 = LocalPeer::of(vec![obs], 1).unwrap();
     lp2.advance(2 * DAY);
     let mut pks: Vec<_> = [0, 1, 2].iter().flat_map(|i| lp.packages(*i).unwrap()).collect();
     pks.reverse();
@@ -258,7 +258,7 @@ fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
     lp.advance(1_000);
     let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
     let forged = forge_reg(&mut lp, d, &reg, lo, ts, "forged");
-    let mut fresh = LocalPeer::of(vec![obs], 1);
+    let mut fresh = LocalPeer::of(vec![obs], 1).unwrap();
     fresh.advance(3 * DAY);
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != first) {
         fresh.deliver(0, &p).unwrap();
@@ -328,6 +328,7 @@ fn frontier_lists_compacted_too_snapshot_vouches_at_fresh_node_spec_perm_5_1() {
     assert!(f.commits.contains(&reg) && f.commits.contains(&tag), "{f:?}");
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
     let mut fresh = net(1, 1); // a node apart from lp's (its own seeds)
+    fresh.hold(d);
     fresh.advance(3 * DAY);
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != tag) {
         fresh.deliver(0, &p).unwrap();
@@ -620,6 +621,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
         let d = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(d, &REG, &s("new")).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(d);
         d
     };
     let (b, c) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
@@ -768,6 +770,7 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
     for revoke_first in [false, true] {
         let (mut lp, d, b, _) = setup();
         lp.peers.push(osis_engine::local_peer::Peer::new(4700, T0).unwrap());
+        lp.hold_at(lp.peers.len() - 1, d);
         lp.sync_all().unwrap();
         add_tag(&mut lp, 1, d, "mon");
         sync(&mut lp, 1, 0);
@@ -975,6 +978,7 @@ fn entry_created_after_demotion_write_first_spec_perm_5_1() {
 fn entry_created_after_demotion(snapshot_first: bool) {
     let (mut lp, d, b, _) = setup();
     lp.peers.push(osis_engine::local_peer::Peer::new(6100, T0).unwrap());
+    lp.hold_at(3, d);
     lp.sync_all().unwrap();
     let one = |k: &str, v: &str| Value::Map(osis_base::ValueMap::from([(s(k), s(v))]));
     put_at(&mut lp, 1, d, &["k"], one("a", "1"));
@@ -1120,6 +1124,7 @@ fn sticky_residue_spec_perm_5_1() {
         let t = lp.peers[1].engine.new_thing(&mut m, a0);
         m.set(t, &REG, &s("a2")).unwrap();
         lp.peers[1].commit(m).unwrap();
+        lp.hold(t);
         t
     };
     edge_write(&mut lp.peers[1].engine, a0, a1, Some(edge(Role::Admin)), None);
@@ -1186,22 +1191,25 @@ fn record_then_edge_chain_applies_spec_perm_1() {
     let certs = lp.peers[0].engine.certificates(&c);
     assert!(certs.records.contains(&a));
     assert!(certs.commits.contains_key(&ab) && certs.commits.contains_key(&bc));
-    let mut fresh = LocalPeer::of(vec![obs], 1);
+    let mut fresh = LocalPeer::of(vec![obs], 1).unwrap();
     for id in certs.commits.keys() {
         let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
         fresh.deliver(0, &pk).unwrap();
     }
     let rec = |lp: &LocalPeer, t: &Tid| lp.peers[0].engine.core.created(t).cloned().unwrap();
-    let others = certs.records.iter().filter(|t| **t != a).map(|t| rec(&lp, t)).collect();
-    fresh.peers[0].engine.learn_records(others).unwrap();
     let pk = lp.peers[0].engine.package(&w).unwrap().unwrap();
     let r = fresh.deliver(0, &pk).unwrap();
     assert!(matches!(r, Ingested::Pending(_, osis_engine::Reason::MissingChain(_) | osis_engine::Reason::UnknownCreated(_))), "{r:?}");
-    let ra = rec(&lp, &a);
-    fresh.peers[0].engine.learn_records(vec![ra]).unwrap();
+    // the records it awaits, with their chains (a record nothing awaits is not kept)
+    let all = certs.records.iter().map(|t| rec(&lp, t)).collect();
+    fresh.peers[0].engine.learn_records(all).unwrap();
     // what was thrown out is fetched again once its record came
+    for id in certs.commits.keys() {
+        let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
+        fresh.deliver(0, &pk).unwrap();
+    }
     fresh.deliver(0, &pk).unwrap();
-    assert!(fresh.peers[0].engine.pending().is_empty());
+    assert!(fresh.peers[0].engine.pending().is_empty(), "{:?}", fresh.peers[0].engine.pending());
     assert_eq!(fresh.peers[0].engine.get(&c, &ak("t:reg.0")).unwrap(), Some(s("n0")));
 }
 
@@ -1324,6 +1332,7 @@ fn churn_resets(k: usize) -> (usize, usize) {
     let d = lp.peers[0].engine.new_thing(&mut m, ps[0]);
     m.set(d, &REG, &s("x")).unwrap();
     lp.peers[0].commit(m).unwrap();
+    lp.hold(d);
     let mut last = (0, 0);
     for _ in 0..k {
         lp.advance(10);
@@ -1469,7 +1478,9 @@ fn unmerge_paged_matches_fresh_large_spec_crdt_4_6() {
 fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     let (mut lp, d, b, _) = setup();
     lp.peers.push(osis_engine::local_peer::Peer::new(9100, T0).unwrap());
+    lp.hold_at(lp.peers.len() - 1, d);
     lp.peers.push(osis_engine::local_peer::Peer::new(9101, T0).unwrap());
+    lp.hold_at(lp.peers.len() - 1, d);
     let u = new_thing(&mut lp, 1);
     lp.sync_all().unwrap();
     let one = |k: &str, v: &str| Value::Map(osis_base::ValueMap::from([(s(k), s(v))]));
@@ -1529,6 +1540,10 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         let i = lp.peers.len();
         let now = lp.peers[0].engine.now();
         lp.peers.push(osis_engine::local_peer::Peer::new(9200 + k as u64, now).unwrap());
+        lp.hold_at(lp.peers.len() - 1, d);
+        // it keeps the accounts Eve keeps (`LocalPeer::sync_all` introduced her)
+        let all: Vec<Tid> = (0..4).map(|j| lp.peers[j].engine.me()).collect();
+        lp.peers[i].know(&all).unwrap();
         feed(&mut lp, i, seq);
         assert_eq!(look(&mut lp, i), want, "order {k}");
     }
@@ -1539,6 +1554,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         let i = lp.peers.len();
         let now = lp.peers[0].engine.now();
         lp.peers.push(osis_engine::local_peer::Peer::new(9300 + k as u64, now).unwrap());
+        lp.hold_at(lp.peers.len() - 1, d);
         feed(&mut lp, i, &seq.map(|x| x.as_slice()));
         seen.push(look(&mut lp, i));
     }
@@ -1551,6 +1567,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         let i = lp.peers.len();
         let now = lp.peers[0].engine.now();
         lp.peers.push(osis_engine::local_peer::Peer::new(9400 + k as u64, now).unwrap());
+        lp.hold_at(lp.peers.len() - 1, d);
         feed(&mut lp, i, &seq.map(|x| x.as_slice()));
         seen.push(look(&mut lp, i));
     }
@@ -1694,6 +1711,7 @@ fn valueless_copy_loses_to_held_value_spec_crdt_4_7() {
     assert_eq!(e.covered(&later, &real, &d, &reg).unwrap(), Some(true), "the valued body is covered");
     assert_eq!(e.covered(&vl, &real, &d, &reg).unwrap(), Some(false), "a value-less copy never covers a valued body");
     lp.peers.push(osis_engine::local_peer::Peer::new(0x5fe1, lp.peers[0].engine.now()).unwrap());
+    lp.hold_at(3, d);
     for p in &base {
         lp.deliver(3, p).unwrap();
     }
@@ -2078,6 +2096,7 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
         lp.sync_all().unwrap();
         // Dave gets only what is delivered below
         lp.peers.push(osis_engine::local_peer::Peer::new(6100, lp.peers[0].engine.now()).unwrap());
+        lp.hold_at(lp.peers.len() - 1, d);
         let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).collect();
         lp.advance(DAY);
         let snap = lp.peers[2].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
@@ -2370,6 +2389,7 @@ fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     for (n, order) in orders.iter().enumerate() {
         let i = lp.peers.len();
         lp.peers.push(osis_engine::local_peer::Peer::new(0x5f8b + n as u64, lp.peers[0].engine.now()).unwrap());
+        lp.hold_at(i, d);
         for p in base.iter().cloned().chain(order.iter().map(|id| pk(*id))) {
             lp.deliver(i, &p).unwrap();
         }
@@ -2895,6 +2915,7 @@ fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
     for (n, order) in [[snap, rv], [rv, snap]].into_iter().enumerate() {
         let i = lp.peers.len();
         lp.peers.push(osis_engine::local_peer::Peer::new(0x5fc1 + n as u64, lp.peers[0].engine.now()).unwrap());
+        lp.hold_at(i, d);
         for p in &base {
             lp.deliver(i, p).unwrap();
         }
@@ -2946,11 +2967,12 @@ fn listed_part_setup(commit_form: bool) -> (LocalPeer, Tid, Vec<osis_engine::loc
     (lp, d, pks, [x, snap, rv])
 }
 
-/// A fresh peer given Alice's packages, with S, R and X (without its tags part) in `order`.
-fn listed_part_peer(lp: &mut LocalPeer, pks: &[osis_engine::local_peer::Package], ids: [osis_base::CommitId; 3], order: &[osis_base::CommitId], seed: u64) -> usize {
+/// A fresh peer holding `d`, given Alice's packages, with S, R and X (without its tags part) in `order`.
+fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_engine::local_peer::Package], ids: [osis_base::CommitId; 3], order: &[osis_base::CommitId], seed: u64) -> usize {
     let [x, ..] = ids;
     let i = lp.peers.len();
     lp.peers.push(osis_engine::local_peer::Peer::new(seed, lp.peers[0].engine.now()).unwrap());
+    lp.hold_at(i, d);
     for p in pks.iter().filter(|p| !ids.contains(&p.id)) {
         lp.deliver(i, p).unwrap();
     }
@@ -2977,7 +2999,7 @@ fn part_listed_by_invalid_snapshot_applies_spec_commits_4() {
     for commit_form in [false, true] {
         let (mut lp, d, pks, ids) = listed_part_setup(commit_form);
         let [x, snap, rv] = ids;
-        let i = listed_part_peer(&mut lp, &pks, ids, &[rv, snap, x], 0x5fd9);
+        let i = listed_part_peer(&mut lp, d, &pks, ids, &[rv, snap, x], 0x5fd9);
         assert!(lp.peers[i].engine.pending().is_empty(), "commit form {commit_form}: {:?}", lp.peers[i].engine.pending());
         assert_eq!(lp.peers[i].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("bob")), "commit form {commit_form}");
         assert!(!tags(&mut lp, i, d).contains("bob"), "commit form {commit_form}");
@@ -2995,7 +3017,7 @@ fn listed_part_alike_in_any_order_spec_commits_4() {
     let [x, snap, rv] = ids;
     let orders = [[snap, x, rv], [x, snap, rv], [snap, rv, x], [rv, snap, x], [x, rv, snap], [rv, x, snap]];
     for (n, order) in orders.iter().enumerate() {
-        let i = listed_part_peer(&mut lp, &pks, ids, order, 0x5fdb + n as u64);
+        let i = listed_part_peer(&mut lp, d, &pks, ids, order, 0x5fdb + n as u64);
         for restarted in [false, true] {
             if restarted {
                 lp.peers[i].restart(0x5fe9 + n as u64).unwrap();
@@ -3017,13 +3039,18 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     let (mut lp, d, b, _) = setup();
     add_tag(&mut lp, 1, d, "bob");
     sync(&mut lp, 1, 2);
-    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b)).collect();
+    // Bob's commits on d
+    let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.tid == d))).collect();
     lp.advance(1_000);
     let snap = lp.peers[2].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
     sync(&mut lp, 2, 0);
     let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
     let i = lp.peers.len();
     lp.peers.push(osis_engine::local_peer::Peer::new(0x5fd1, lp.peers[0].engine.now()).unwrap());
+    lp.hold_at(i, d);
+    // it keeps the writers' accounts, Carol's chain among them, as it arrives
+    let writers: Vec<Tid> = (0..3).map(|j| lp.peers[j].engine.me()).collect();
+    lp.peers[i].know(&writers).unwrap();
     for p in pks.iter().filter(|p| p.id != snap) {
         lp.deliver(i, p).unwrap();
     }
@@ -3091,6 +3118,7 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         // S claims the late tag's counter, but was stamped before it: the header alone shows nothing
         let i = lp.peers.len();
         lp.peers.push(osis_engine::local_peer::Peer::new(0x6110 + n as u64, lp.peers[0].engine.now()).unwrap());
+        lp.hold_at(i, d);
         for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != rv) {
             lp.deliver(i, &p).unwrap();
         }
@@ -3103,6 +3131,7 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         for (k, removal_first) in [true, false].into_iter().enumerate() {
             let j = lp.peers.len();
             lp.peers.push(osis_engine::local_peer::Peer::new(0x6120 + 2 * n as u64 + k as u64, lp.peers[0].engine.now()).unwrap());
+            lp.hold_at(j, d);
             let (first, second): (Vec<_>, Vec<_>) = all.iter().cloned().partition(|p| (p.id == rv) == removal_first || (!late.contains(&p.id) && p.id != rv));
             for p in first.iter().chain(&second) {
                 lp.deliver(j, p).unwrap();
@@ -3153,6 +3182,7 @@ fn padded_durable_created_refused_spec_commits_2() {
     let x = lp.peers[1].engine.new_thing(&mut m, d);
     m.set(x, &REG, &s("x")).unwrap();
     let honest = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.hold(x);
     let rec = lp.peers[1].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let r = rec.to_value();
     let created = |lp: &mut LocalPeer| lp.peers[0].engine.get_typed(&x, &osis_schema::core_types::CREATED).unwrap();
@@ -3292,6 +3322,7 @@ fn frontier_lists_kept_writes_compacted_or_not_spec_perm_5_1() {
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
     assert_eq!(lp.peers[0].engine.body_valid(&one, &d, &kept), Some(true), "kept history stays valid at the holder");
     let mut fresh = net(1, 1); // a node apart from lp's (its own seeds)
+    fresh.hold(d);
     fresh.advance(DAY);
     for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != one) {
         fresh.deliver(0, &p).unwrap();
@@ -3384,6 +3415,7 @@ fn stranger_card_makes_no_node_spec_perm_4() {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, p.account);
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         let spec = osis_engine::flows::LinkSpec { target: t, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
         let (link, _, _) = lp.peers[0].engine.create_link(&p.account, &spec).unwrap();
         let l = osis_engine::identity::Identity::from_seed(link.seed.clone()).tid();
@@ -3414,6 +3446,7 @@ fn stranger_sync_id_listing_sync_ids_nothing_spec_sync_2() {
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, p.devices);
     lp.peers[0].commit(m).unwrap();
+    lp.hold(t);
     let e = &mut lp.peers[0].engine;
     assert!(e.things_with_sync_ids().contains(&p.devices), "the account's home sync ID");
     let before = e.published_under(&p.devices);
@@ -3679,6 +3712,7 @@ fn kick_reads_bodies_down_to_its_winner() {
             let mut m = Mutation::new();
             let d = lp.peers[0].engine.new_thing(&mut m, alice);
             lp.peers[0].commit(m).unwrap().unwrap();
+            lp.hold(d);
             set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Write)), None);
             lp.sync_all().unwrap();
             let write = |lp: &mut LocalPeer, i: usize, schema: &'static osis_schema::StaticSchema, v: Value| {
@@ -3764,6 +3798,7 @@ fn invalid_insert_leaves_no_trace_in_order_spec_crdt_6_1() {
         let i = lp.peers.len();
         let now = lp.peers[0].engine.now();
         lp.peers.push(osis_engine::local_peer::Peer::new(9500 + k as u64, now).unwrap());
+        lp.hold_at(lp.peers.len() - 1, d);
         for p in order {
             lp.deliver(i, p).unwrap();
         }
@@ -3819,6 +3854,7 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
         let mut m = Mutation::new();
         let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
         lp.peers[0].commit(m).unwrap().unwrap();
+        lp.hold(d);
         set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
         set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
         lp.sync_all().unwrap();
@@ -3894,10 +3930,12 @@ fn a_removed_writers_write_at_the_removals_ts_reads_alike_whatever_the_tids_spec
                 }
             }
             lp.peers[3].reexamine().unwrap();
-            let held: Vec<BTreeSet<_>> = (0..3).map(|i| lp.peers[i].engine.commit_ids().into_iter().collect()).collect();
+            // each keeps its own roots' commits and the chains it needs: compared on t
+            let on_t = |e: &osis_engine::Engine, c: &osis_base::CommitId| e.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t));
+            let held: Vec<BTreeSet<_>> = (0..3).map(|i| lp.peers[i].engine.commit_ids().into_iter().filter(|c| on_t(&lp.peers[i].engine, c)).collect()).collect();
             let reads: Vec<_> = (0..4).map(|i| lp.peers[i].engine.get_typed(&t, &REG).unwrap()).collect();
             let at = format!("Alice {a}, Bob {b}, Carol {c}, Carol first {carol_first}");
-            assert!(held.iter().all(|h| *h == held[0]), "{at}: every node holds the same commits");
+            assert!(held.iter().all(|h| *h == held[0]), "{at}: every node holds the same commits on t");
             let want = s(if carol_first { "v5" } else { "v4" });
             assert!(reads.iter().all(|r| *r == Some(want.clone())), "{at}: every node and the fresh one read {want:?}; reads {reads:?}");
         }

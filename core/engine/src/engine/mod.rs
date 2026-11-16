@@ -823,12 +823,12 @@ indexes! {
     pub pend_on: JSetMap<crate::apply::Wake, CommitId>,
     /// `pend_on`'s keys per pending commit.
     pub pend_keys: JMap<CommitId, Arc<Vec<crate::apply::Wake>>>,
-    /// Pending commits per signer (author, and actor where it differs), from their headers: what
-    /// a pending commit needs held, as a held one does (`retention::needed`). Derived from
-    /// `pending` with `pend_on`, never persisted.
+    /// Pending commits per thing they need held (`retention::needed`): each signer (author, and
+    /// actor where it differs, from the header), as a held commit's, and the thing whose record
+    /// or chain it awaits. Derived from `pending` with `pend_on`, never persisted.
     pub pend_by: JSetMap<Tid, CommitId>,
     /// `pend_by`'s keys per pending commit.
-    pub pend_signers: JMap<CommitId, Arc<Vec<Tid>>>,
+    pub pend_needs: JMap<CommitId, Arc<Vec<Tid>>>,
     /// Link keys this node keeps reading as, their seed forgotten (`Engine::keep_bearer`,
     /// spec/permissions.md §7, Bearer use).
     pub bearers: JSet<Tid>,
@@ -1283,6 +1283,9 @@ pub struct Core {
     /// durable): what it owes its signing chain is looked at at the end of the next complete
     /// pass of its devices actor's sync IDs (`Engine::pass_end`, `Engine::signing_due`).
     pub signing_due: bool,
+    /// The account this node is being paired into (`Engine::joining`): kept as its own until
+    /// `Engine::paired`.
+    pub joining: Option<Tid>,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
     /// What `receipt::fit` fits a frontier to: `MAX_LIST_BYTES` (tests: `Engine::list_bound`).
@@ -1292,9 +1295,14 @@ pub struct Core {
     /// Destroyed things whose keep is judged again at the end of the transaction (`retention::destroy`):
     /// what needs their evidence may have gone.
     pub destroyed_due: BTreeSet<Tid>,
-    /// Things judged again at the end of the transaction for whether a held thing still needs
-    /// them (`retention::needed`): something naming them or a commit they signed moved.
+    /// Things judged at the end of the transaction for whether a held thing still needs them
+    /// (`retention::needed`): a release, `pass_due` at a pass end.
     pub needs_due: BTreeSet<Tid>,
+    /// Things judged once the pass in flight ends (`Engine::settle_needs`, `retention::needed`):
+    /// one arrived (a record learned or awaited) or lost a need (a reference to it gone, a commit
+    /// it signed moved or left pending, a holder unnamed, an accepted ticket's strong gone). `None`
+    /// after an open: every held record and awaited record is judged then.
+    pub pass_due: Option<BTreeSet<Tid>>,
     /// Destroyed things kept here that a held thing may need (`retention::destroy::needs_evidence`,
     /// `Engine::destroyed_needed`), read through `Core::destroyed_kept`.
     pub(crate) destroyed_kept: DestroyedKept,
@@ -1554,11 +1562,13 @@ impl Core {
             accounts: self.accounts.clone(),
             left: self.left.clone(),
             signing_due: self.signing_due.clone(),
+            joining: self.joining,
             keep_bodies: self.keep_bodies.clone(),
             list_bound: self.list_bound.clone(),
             valueless_dirty: self.valueless_dirty.clone(),
             destroyed_due: self.destroyed_due.clone(),
             needs_due: self.needs_due.clone(),
+            pass_due: self.pass_due.clone(),
             destroyed_kept: self.destroyed_kept.clone(),
             batched: self.batched.clone(),
             touches: self.touches.clone(),
@@ -2131,6 +2141,7 @@ impl Core {
             valueless_dirty: _,
             destroyed_due: _,
             needs_due: _,
+            pass_due: _,
             destroyed_kept: _,
             wakes: _,
             resnapshots_due: _,
@@ -2168,6 +2179,7 @@ impl Core {
             accounts: _,
             left: _,
             signing_due: _,
+            joining: _,
             keep_bodies: _,
             list_bound: _,
             sourced_elsewhere: _,
@@ -2406,12 +2418,15 @@ impl Core {
             left: BTreeSet::new(),
             // judged once after an open: a commit applied before a restart left it owed
             signing_due: true,
+            joining: None,
             accounts: Default::default(),
             keep_bodies: false,
             list_bound: osis_commit::MAX_LIST_BYTES,
             valueless_dirty: BTreeSet::new(),
             destroyed_due: BTreeSet::new(),
             needs_due: BTreeSet::new(),
+            // what arrived before the open but was not judged yet: all judged at the first settle
+            pass_due: None,
             destroyed_kept: DestroyedKept::default(),
             batched: None,
             touches: Default::default(),
@@ -2584,11 +2599,19 @@ impl Core {
         self.ix.commits.insert(id, m);
     }
 
+    /// `t` arrived or lost a need: judged at the next `Engine::settle_needs`.
+    pub(crate) fn note_pass_due(&mut self, t: Tid) {
+        if let Some(a) = &mut self.pass_due {
+            a.insert(t);
+        }
+    }
+
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         // its signers' chains may be needed by nothing more (`retention::needed`)
-        self.needs_due.extend([m.view.author, m.view.actor]);
+        self.note_pass_due(m.view.author);
+        self.note_pass_due(m.view.actor);
         self.index_missing(id, &missing_of(&m), &BTreeSet::new());
         self.note_signed(&signers_elsewhere(&m), &[]);
         self.note_rotation(&m);
@@ -2641,13 +2664,13 @@ impl Core {
             match self.ix.signed.get(k).copied().unwrap_or(0) {
                 0 | 1 => {
                     self.ix.signed.remove(k);
-                    self.needs_due.insert(*k);
+                    self.note_pass_due(*k);
                     if self.is_key_actor(k) {
                         self.destroyed_due.insert(*k);
                     }
                 }
                 n => {
-                    self.needs_due.insert(*k);
+                    self.note_pass_due(*k);
                     self.ix.signed.insert(*k, n - 1);
                 }
             }
@@ -4211,10 +4234,10 @@ mod tests {
         }
         assert!(failed >= 6 + pks.len() / 2, "{failed} of {} failed", 6 + pks.len());
         lp.sync(0, 2).unwrap();
-        // every commit applied (what waited came again, then as node-sync fetches what it lacks);
-        // beside them only peer 2's own (its hold of g, its addendum to the removal)
+        // every commit on g applied (what waited came again, then as node-sync fetches what it
+        // lacks); beside them only peer 2's own (its addendum to the removal)
         let own = [c, lp.peers[2].engine.tid()];
-        let others = |p: &Peer| p.engine.core.ix.commits.iter().filter(|(_, m)| !own.contains(&m.view.author)).map(|(id, _)| *id).collect::<BTreeSet<_>>();
+        let others = |p: &Peer| p.engine.core.ix.commits.iter().filter(|(_, m)| !own.contains(&m.view.author) && m.view.aspects.iter().any(|a| a.tid == g)).map(|(id, _)| *id).collect::<BTreeSet<_>>();
         assert_eq!(others(&lp.peers[2]), others(&lp.peers[0]));
         assert!(lp.peers[2].engine.core.ix.pending.is_empty());
     }

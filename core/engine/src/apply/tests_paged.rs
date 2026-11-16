@@ -63,6 +63,7 @@ fn build(seed: u64) -> (LocalPeer, Tid) {
     let [big, mix, _, reg] = aks();
     m.set(t, &ct::RETENTION, &ct::RetentionSetting::from(BTreeMap::from([(big, keep), (mix, keep), (reg, purge)]))).unwrap();
     lp.peers[0].commit(m).unwrap();
+    lp.hold(t);
     for w in [1, 2, 3] {
         let w = lp.peers[w].engine.me();
         let mut m = Mutation::new();

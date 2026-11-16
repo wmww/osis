@@ -128,6 +128,7 @@ impl Joining {
         let pks = packages_of(pks)?;
         let account = self.account;
         self.db.engine(|e| -> Result<_> {
+            e.joining(&account)?;
             for (bytes, blobs, lists) in pks {
                 e.ingest_with_lists(&bytes, blobs, None, &lists)?;
             }

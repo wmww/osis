@@ -224,6 +224,7 @@ mod tests {
         let g = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
         lp.peers[0].engine.commit(m).unwrap();
+        lp.hold(g);
         let mut ids = Vec::new();
         for v in ["x", "y"] {
             // the same seed: the same session nonce, counter 1 in each

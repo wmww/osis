@@ -527,6 +527,8 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     let key = [records::CREATED, t.as_bytes()].concat();
     tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
     tx.core.ix.held.create(rec);
+    // judged once the pass that brought it ends (`Engine::settle_needs`)
+    tx.core.note_pass_due(t);
     if tx.core.destroyed(&t) {
         tx.core.note_destroyed_kept(&t, true);
         crate::retention::destroy::record_back(tx, &t)?;
@@ -785,7 +787,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     observe_all(tx, &j)?;
     super::keys::after_join(tx, &h, with_keys.all(), &meta.valid, pend)?;
     let flipped = rejudged(tx, held_changed)?;
-    // late role parts arrived: a pass after them is one after the commit (spec/permissions.md §3)
+    // late role parts pass_due: a pass after them is one after the commit (spec/permissions.md §3)
     if meta.origin == Origin::Remote && h.kind.is_role() {
         crate::sync::held::note_arrival(tx, &h)?;
     }

@@ -134,6 +134,7 @@ fn a_removal_leads_no_author_to_a_thing_spec_commits_4() {
     let u = lp.peers[1].engine.new_thing(&mut m, t);
     m.set(u, &REG, &s("u")).unwrap();
     lp.peers[1].commit(m).unwrap();
+    lp.hold(u);
     lp.peers[1].engine.demote(&t, &osis_engine::flows::Demotion { holder: a, new: None, retain: None }).unwrap();
     // the grant that makes 0 able to sign, held back from 2 till the end
     lp.peers[1].engine.grant(&t, &a, &Edge { role: Role::Read, until: None, invite: None, floor: None }).unwrap();
@@ -231,6 +232,7 @@ fn drift_parks_spec_crdt_2_2() {
     let t2 = lp.peers[1].engine.new_thing(&mut m, me);
     m.set(t2, &REG, &s("x")).unwrap();
     let id = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.hold(t2);
     let theirs = lp.peers[0].engine.header(&pk.id).unwrap().ts;
     assert!(lp.peers[1].engine.header(&id).unwrap().ts > theirs);
 }

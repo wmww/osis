@@ -1330,6 +1330,7 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, o);
     lp.peers[0].commit(m).unwrap();
+    lp.hold(g);
     lp.peers[0].engine.give_own_secrets(&g).unwrap();
     lp.peers[0].engine.grant(&g, &tids[3], &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
@@ -1371,6 +1372,7 @@ fn newest_event_names_departure_spec_crypto_4() {
         let mut m = Mutation::new();
         let g = lp.peers[0].engine.new_thing(&mut m, o);
         lp.peers[0].commit(m).unwrap();
+        lp.hold(g);
         lp.peers[0].engine.give_own_secrets(&g).unwrap();
         lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
@@ -1509,12 +1511,14 @@ fn keyset_before_box_reads_only_spec_permissions_4() {
     let mut m = Mutation::new();
     let o = lp.peers[0].engine.new_thing(&mut m, a);
     lp.peers[0].commit(m).unwrap();
+    lp.hold(o);
     lp.peers[0].engine.give_own_secrets(&o).unwrap();
     lp.peers[0].engine.grant(&o, &b, &admin).unwrap();
     lp.sync(0, 1).unwrap();
     let mut m = Mutation::new();
     let k = lp.peers[0].engine.new_thing(&mut m, o);
     lp.peers[0].commit(m).unwrap();
+    lp.hold(k);
     lp.peers[0].engine.give_own_secrets(&k).unwrap();
     deliver_without_secrets(&mut lp, 0, 1, k);
     deliver_without_secrets(&mut lp, 0, 2, k);
@@ -2323,6 +2327,7 @@ fn drop_over_older_raise_resealed_spec_crypto_4() {
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, o);
     lp.peers[0].commit(m).unwrap();
+    lp.hold(g);
     lp.peers[0].engine.give_own_secrets(&g).unwrap();
     lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
     for h in [3, 4, 5] {
@@ -2536,6 +2541,7 @@ fn orphaned_rotations_do_not_trade_spec_crypto_4() {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, h);
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         t
     };
     let d = with_own_keys(&mut lp, 0);
@@ -2593,6 +2599,7 @@ fn derived_write_after_own_secrets_is_merged_spec_crypto_4() {
     let t = lp.peers[0].engine.new_thing(&mut m, f);
     m.set(t, &x, &osis_base::Value::Str("first".into())).unwrap();
     lp.peers[0].commit(m).unwrap();
+    lp.hold(t);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&t, &tids[2], &edge(Role::Read)).unwrap();
     lp.sync(0, 2).unwrap();
@@ -2652,6 +2659,7 @@ fn derived_written_goes_with_its_destroyed_thing() {
     m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
     m.expires_all(WallMs(T0.0 + 50_000));
     let w = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.hold(t);
     let body = lp.peers[0].engine.body(&w).unwrap().unwrap();
     lp.peers[0].engine.seal(&body, osis_blob::Class::Durable, &[], &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
     let written = |lp: &LocalPeer| lp.peers[0].engine.core.ix.derived_written.get(&t).is_some_and(|s| !s.is_empty());

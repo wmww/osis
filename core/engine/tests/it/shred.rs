@@ -72,7 +72,7 @@ fn holding(mut p: Peer, setup: &[osis_engine::local_peer::Package]) -> Peer {
 /// `net2` with peer 1 a node of 0's account, so it holds what it is given of 0's things.
 fn net2_one() -> LocalPeer {
     LocalPeer::cached("shred::net2_one", || {
-        let mut lp = LocalPeer::of(vec![peer(0)], 0);
+        let mut lp = LocalPeer::of(vec![peer(0)], 0).unwrap();
         let mut p = peer_bare(1);
         pair_into(&mut lp, 0, &mut p);
         lp.peers.push(p);
@@ -83,7 +83,7 @@ fn net2_one() -> LocalPeer {
 
 /// Two peers (seeds 0 and 1): built once (`LocalPeer::cached`).
 fn net2() -> LocalPeer {
-    LocalPeer::cached("shred::net2", || (LocalPeer::of(vec![peer(0), peer(1)], 0), ())).0
+    LocalPeer::cached("shred::net2", || (LocalPeer::of(vec![peer(0), peer(1)], 0).unwrap(), ())).0
 }
 
 fn big(marker: &str) -> String {
@@ -1004,7 +1004,7 @@ struct Fallen {
 fn fallen_snapshot_rig() -> Fallen {
     use osis_base::Role;
     use osis_engine::flows::Demotion;
-    let mut lp = LocalPeer::of(vec![peer(0), peer(1), peer(2)], 0);
+    let mut lp = LocalPeer::of(vec![peer(0), peer(1), peer(2)], 0).unwrap();
     lp.sync_all().unwrap();
     let t = new_shared(&mut lp, 0);
     let x = lp.peers[2].engine.me();
@@ -1209,6 +1209,7 @@ fn undo_revives_no_purged_value_spec_crdt_4_6() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     keep_in(&mut m, t, &setting(&[("t:reg.0", DAY)]));
     lp.peers[0].commit(m).unwrap();
+    lp.hold(t);
     let marker = "PURGED-UNDO-5c1e";
     let k = ak("t:reg.0");
     let mut m = Mutation::new();

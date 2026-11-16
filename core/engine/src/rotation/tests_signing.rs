@@ -46,6 +46,7 @@ fn world(n: usize, nodes: usize) -> (LocalPeer, CreatedAccount, Tid) {
             let node = lp.peers[i].engine.tid();
             let ids = lp.peers[i].engine.commit_ids();
             send(&mut lp, i, 0, &ids);
+            lp.peers[i].engine.joining(&a.account).unwrap();
             let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
             send(&mut lp, 0, i, &all);
             lp.peers[i].engine.paired(&a.account).unwrap();
@@ -58,6 +59,7 @@ fn world(n: usize, nodes: usize) -> (LocalPeer, CreatedAccount, Tid) {
         let t = lp.peers[0].engine.new_thing(&mut m, a.account);
         m.set(t, &x(), &Value::Str("p".into())).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         if nodes < n {
             let o = lp.peers[nodes].engine.me();
             lp.peers[0].engine.grant(&t, &o, &edge(Role::Write)).unwrap();
@@ -317,6 +319,7 @@ fn a_listing_waits_for_its_things_delete_keys_spec_permissions_5_5() {
     let u = lp.peers[3].engine.new_thing(&mut m, q);
     // made and held, then its raw edge (a role commit)
     lp.peers[3].commit(m).unwrap();
+    lp.hold(u);
     let mut m = crate::Mutation::new();
     m.op(u, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(a.account))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&edge(Role::Write))) }).unwrap();
     lp.peers[3].commit(m).unwrap();
@@ -1073,6 +1076,7 @@ fn a_re_added_nodes_later_rotation_is_authorized_spec_permissions_5_4() {
     send(&mut lp, 0, 2, &done.commits);
     lp.advance(5);
     let node = lp.peers[2].engine.tid();
+    lp.peers[2].engine.joining(&a.account).unwrap();
     let (done, all) = lp.peers[0].engine.pair(&node).unwrap();
     send(&mut lp, 0, 2, &all);
     send(&mut lp, 0, 1, &done.commits);
@@ -1217,6 +1221,7 @@ fn a_listing_is_one_commit_per_thing_spec_permissions_5_5() {
     let u = lp.peers[2].engine.new_thing(&mut m, a.account);
     m.set(u, &x(), &Value::Str("mine".into())).unwrap();
     lp.peers[2].commit(m).unwrap().unwrap();
+    lp.hold(u);
     write(&mut lp, 2, t, "offline");
     let done = remove(&mut lp, 0, a.devices, 1);
     for id in &done.commits {
@@ -1411,6 +1416,7 @@ fn pair_from(lp: &mut LocalPeer, a: &CreatedAccount, by: usize, new: usize) -> C
     let node = lp.peers[new].engine.tid();
     let ids = lp.peers[new].engine.commit_ids();
     send(lp, new, by, &ids);
+    lp.peers[new].engine.joining(&a.account).unwrap();
     let (done, all) = lp.peers[by].engine.pair(&node).unwrap();
     send(lp, by, new, &all);
     lp.peers[new].engine.paired(&a.account).unwrap();
@@ -1671,6 +1677,8 @@ fn a_reader_paired_into_the_account_judges_its_chain_as_a_node_spec_permissions_
         let mut lp = LocalPeer::new_bare(3, 0, WallMs(1_700_000_000_000)).unwrap();
         let (a, _) = lp.peers[0].engine.create_account().unwrap();
         pair(&mut lp, &a, 1);
+        // reader 2 is to be paired: it keeps the account's chain meanwhile
+        lp.peers[2].engine.joining(&a.account).unwrap();
         lp.sync_all().unwrap();
         lp.advance(1000);
         (lp, a)
@@ -1709,6 +1717,7 @@ fn pair(lp: &mut LocalPeer, a: &CreatedAccount, i: usize) {
     let node = lp.peers[i].engine.tid();
     let ids = lp.peers[i].engine.commit_ids();
     send(lp, i, 0, &ids);
+    lp.peers[i].engine.joining(&a.account).unwrap();
     let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
     send(lp, 0, i, &all);
     lp.peers[i].engine.paired(&a.account).unwrap();
@@ -1720,7 +1729,10 @@ fn pair(lp: &mut LocalPeer, a: &CreatedAccount, i: usize) {
 /// thing lists; again while anything new opens. The commits none of whose wraps opened at `to`.
 fn carry_sealed(lp: &mut LocalPeer, from: usize, to: usize) -> Vec<CommitId> {
     loop {
-        let ids: Vec<CommitId> = lp.peers[from].engine.commit_ids().into_iter().filter(|id| !lp.peers[to].engine.holds_whole(id)).collect();
+        // the sender's node root is local: no sync ID carries it
+        let root = lp.peers[from].engine.node_root();
+        let local = |e: &crate::Engine, id: &CommitId| e.header(id).is_some_and(|h| h.aspects.iter().all(|a| Some(a.tid) == root));
+        let ids: Vec<CommitId> = lp.peers[from].engine.commit_ids().into_iter().filter(|id| !lp.peers[to].engine.holds_whole(id) && !local(&lp.peers[from].engine, id)).collect();
         let mut opened = false;
         let mut shut = Vec::new();
         for sp in lp.sealed(from, &ids).unwrap() {
@@ -1904,6 +1916,7 @@ fn a_node_paired_after_a_removal_reads_its_maker_spec_permissions_5_4() {
         let node = lp.peers[i].engine.tid();
         let ids = lp.peers[i].engine.commit_ids();
         send(lp, i, 0, &ids);
+        lp.peers[i].engine.joining(&a.account).unwrap();
         let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
         let ids: Vec<CommitId> = lp.peers[0].engine.commit_ids();
         let all: Vec<CommitId> = if marked_last { ids } else { all };
@@ -2113,6 +2126,7 @@ fn a_node_paired_beside_a_concurrent_rotation_stays_spec_permissions_5_5() {
         let node = lp.peers[i].engine.tid();
         let ids = lp.peers[i].engine.commit_ids();
         send(&mut lp, i, 0, &ids);
+        lp.peers[i].engine.joining(&a.account).unwrap();
         let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
         send(&mut lp, 0, i, &all);
         lp.peers[i].engine.paired(&a.account).unwrap();
@@ -2318,6 +2332,7 @@ fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
         let node = lp.peers[1].engine.tid();
         let ids = lp.peers[1].engine.commit_ids();
         send(&mut lp, 1, 0, &ids);
+        lp.peers[1].engine.joining(&a.account).unwrap();
         let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
         send(&mut lp, 0, 1, &all);
         lp.peers[1].engine.paired(&a.account).unwrap();
@@ -2329,6 +2344,7 @@ fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
         let mut m = crate::Mutation::new();
         let t = lp.peers[3].engine.new_thing(&mut m, q.account);
         lp.peers[3].commit(m).unwrap();
+        lp.hold(t);
         lp.peers[3].engine.grant(&t, &a.account, &edge(Role::Read)).unwrap();
         // written under t's own epoch, which the grant boxes P at e
         write(&mut lp, 3, t, "q");
@@ -2341,6 +2357,7 @@ fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
         let n2 = lp.peers[2].engine.tid();
         let ids = lp.peers[2].engine.commit_ids();
         send(&mut lp, 2, 0, &ids);
+        lp.peers[2].engine.joining(&a.account).unwrap();
         let (_, all) = lp.peers[0].engine.pair(&n2).unwrap();
         lp.peers[2].engine.core.faults.stale_shut = shut;
         send(&mut lp, 0, 2, &all);

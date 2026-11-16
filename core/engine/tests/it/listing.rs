@@ -276,6 +276,7 @@ fn not_fetched_part_reads_so_and_late_body_tells_the_watch() {
     let mut m = Mutation::new();
     let e = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap().unwrap();
+    lp.hold(e);
     lp.advance(1_000);
     lp.sync_all().unwrap();
     let base = all(&mut lp, 0);

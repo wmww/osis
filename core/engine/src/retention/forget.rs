@@ -285,6 +285,16 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         if ais.is_empty() {
             continue;
         }
+        // every thing it is on gone whole: it goes, header and all, as never received
+        if matches!(scope, Scope::Whole(_)) && ais.len() == blob.header.aspects.len() {
+            for (ai, a) in blob.header.aspects.iter().enumerate() {
+                super::leftover::remove(tx, &a.tid, &a.ak, &id, ai)?;
+            }
+            tx.txn.remove_pending(&id, Shred::Yes)?;
+            crate::apply::pending_left(tx.core, &id);
+            crate::apply::set_pending(tx.core, &id, None);
+            continue;
+        }
         // a grant that may still apply keeps its boxes (applied later without them, the node
         // would hold the role and no secret), marked sealed: read as candidates again, they
         // would keep the lost secrets for good

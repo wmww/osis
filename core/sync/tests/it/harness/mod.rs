@@ -551,6 +551,7 @@ impl World {
             send.iter().filter_map(|c| e.package(c).ok().flatten()).collect::<Vec<_>>()
         });
         self.write(n, |e| {
+            e.joining(&account).expect("joining");
             for pk in &sent {
                 e.ingest_with_lists(&pk.bytes, pk.blobs.clone(), None, &pk.lists).expect("pairing's commits");
             }

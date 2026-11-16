@@ -366,6 +366,10 @@ fn note_rows(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<()> {
                 tx.txn.table_remove(from, &fk, Shred::Yes)?;
                 tx.txn.table_remove(to, &tk, Shred::Yes)?;
                 moved.push((target, ak.clone()));
+                // a need of the target went: judged once the pass ends (`retention::needed`)
+                if !ak.ephemeral() {
+                    tx.core.note_pass_due(target);
+                }
                 if kind == RefKind::Strong {
                     tx.core.ix.closure.note_row(*source, target);
                 }

@@ -93,6 +93,7 @@ fn siblings_granted() -> (LocalPeer, Tid, Tid) {
         let n = lp.peers[1].engine.tid();
         let card = lp.peers[1].engine.commit_ids();
         crate::flows::send(&mut lp, 1, 0, &card);
+        lp.peers[1].engine.joining(&a).unwrap();
         let (_, sent) = lp.peers[0].engine.pair(&n).unwrap();
         crate::flows::send(&mut lp, 0, 1, &sent);
         lp.peers[1].engine.paired(&a).unwrap();

@@ -13,7 +13,7 @@ const JUNK: &str = "x:junk@~0";
 const HOUR_MS: u64 = 3_600_000;
 
 /// Peer 0's account and `n` strangers, each its own account holding peer 0's public records
-/// (all peer 0 made, one way): peer 0 knows none of them. Peer 0's inbox keeps `NOTE` an hour
+/// (all peer 0 made, one way) by a weak to its inbox: peer 0 knows none of them. Peer 0's inbox keeps `NOTE` an hour
 /// beside its three signals, and every other aspect for good by default. Its inbox.
 fn strangers(n: usize) -> (LocalPeer, Tid) {
     let mut lp = crate::common::net_bare(n + 1, 0);
@@ -28,6 +28,8 @@ fn strangers(n: usize) -> (LocalPeer, Tid) {
     set_setting(&mut lp, 0, inbox, &x);
     let ids = lp.peers[0].engine.commit_ids();
     for i in 1..=n {
+        // the stranger keeps peer 0's inbox, which it means to fire on
+        lp.peers[i].know(&[inbox]).unwrap();
         send(&mut lp, 0, i, &ids);
         send(&mut lp, 0, i, &ids);
     }
@@ -37,8 +39,13 @@ fn strangers(n: usize) -> (LocalPeer, Tid) {
 /// Stranger `i` fires `ak` on `inbox` with `v`, sealed; peer 0 opens it under the inbox's sync
 /// ID. The fire's commit.
 fn fire(lp: &mut LocalPeer, i: usize, inbox: Tid, ak: &str, v: &str) -> osis_base::CommitId {
+    fire_value(lp, i, inbox, ak, s(v))
+}
+
+/// `fire` of value `v`.
+fn fire_value(lp: &mut LocalPeer, i: usize, inbox: Tid, ak: &str, v: osis_base::Value) -> osis_base::CommitId {
     let e = &mut lp.peers[i].engine;
-    e.fire_open(&inbox, ak, s(v)).unwrap();
+    e.fire_open(&inbox, ak, v).unwrap();
     let id = *e.fires_owed().last().expect("owed sealed");
     let out = e.sealed_fire(&id).unwrap().expect("sealed");
     e.fire_taken(&id).unwrap();
@@ -50,12 +57,13 @@ fn fire(lp: &mut LocalPeer, i: usize, inbox: Tid, ak: &str, v: &str) -> osis_bas
 }
 
 /// What node-sync does once no entry of a fire's blob is left (its body out of history): peer 0
-/// forgets each fire it may (`Engine::forgettable`).
+/// forgets each fire it may (`Engine::forgettable`), and the pass ends (`Engine::settle_needs`).
 fn settle(lp: &mut LocalPeer, fires: &[osis_base::CommitId]) {
     let e = &mut lp.peers[0].engine;
     let gone: Vec<_> = fires.iter().copied().filter(|c| e.forgettable(c).unwrap()).collect();
     assert_eq!(gone.len(), fires.len(), "every fire out of history may be forgotten");
     e.forget_commits(&gone).unwrap();
+    e.settle_needs().unwrap();
 }
 
 fn listed(lp: &mut LocalPeer, c: &osis_base::CommitId, inbox: Tid, a: &str) -> bool {
@@ -91,10 +99,11 @@ type Rows = (usize, usize);
 
 type Census = std::collections::BTreeMap<String, Rows>;
 
-// spec/sync-inbox.md §4 A sealed fire, spec/commits.md §5 Forgetting: a stranger's fires go
-// whole once out of history, and with the last of them its chain (its records, its and its
-// inbox's `keys.0` commits), which nothing held needs then: N strangers each firing on a named
-// and an unnamed open signal leave peer 0's rows exactly as before.
+// spec/sync-inbox.md §4 A sealed fire, spec/commits.md §5 Forgetting, What a held thing needs: a
+// stranger's fires go whole once out of history, and with the last of them its chain (its
+// records, its and its inbox's `keys.0` commits), which nothing held needs then, though a fire
+// named its account: N strangers each firing on a named and an unnamed open signal leave peer
+// 0's rows exactly as before.
 #[test]
 fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
     for n in [1, 3] {
@@ -104,7 +113,9 @@ fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
         let ids: std::collections::BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
         let mut fires = Vec::new();
         for i in 1..=n {
-            fires.push(fire(&mut lp, i, inbox, NOTE, "note"));
+            // a fire naming its sender's account: a need only while the fire is held
+            let me = lp.peers[i].engine.me();
+            fires.push(fire_value(&mut lp, i, inbox, NOTE, osis_base::Value::Weak(me)));
             fires.push(fire(&mut lp, i, inbox, JUNK, "junk"));
         }
         assert!(lp.peers[0].engine.local_census().unwrap() != before, "n={n}: the fires and chains arrived");

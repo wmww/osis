@@ -640,8 +640,9 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
     let counts = |w: &BobWrite| regrant || w.ts <= r_ts && (w.to_alice || w.to_carol);
     let want = Some(Value::Int(bobs.iter().filter(|w| counts(w)).map(|w| w.ts).max().and_then(|ts| bobs.iter().position(|w| w.ts == ts)).map_or(0, |i| i as i64 + 1)));
     let at = format!("seed {seed}: Alice {a}, Bob {b}, Carol {c}, tie {tie}, regrant {regrant}, writes {:?}", bobs.iter().map(|w| (w.to_alice, w.to_carol)).collect::<Vec<_>>());
-    let held: Vec<Vec<CommitId>> = (0..3).map(|i| lp.peers[i].engine.commit_ids()).collect();
-    assert!(held.iter().all(|h| *h == held[0]), "{at}: every peer holds the same commits");
+    // on t (each keeps its own roots' and the chains it needs)
+    let held: Vec<Vec<CommitId>> = (0..3).map(|i| lp.peers[i].engine.commit_ids().into_iter().filter(|c| lp.peers[i].engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t))).collect()).collect();
+    assert!(held.iter().all(|h| *h == held[0]), "{at}: every peer holds the same commits on t");
     for i in 0..3 {
         assert_eq!(reads(&mut lp, i, t, "x:v.0"), want, "{at}: peer {i}");
     }

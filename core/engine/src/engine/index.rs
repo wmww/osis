@@ -1137,6 +1137,7 @@ mod tests {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         let c = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.hold(t);
         let mut m = Mutation::new();
         for k in ["a", "b", "c", "d", "e", "f", "g"] {
             m.set(t, &Ak::new(format!("x:{k}.0")).unwrap(), &Value::Int(1)).unwrap();

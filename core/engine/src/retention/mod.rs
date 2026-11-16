@@ -1544,6 +1544,7 @@ mod tests {
             let t = lp.peers[0].engine.new_thing(&mut m, a);
             m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
             lp.peers[0].commit(m).unwrap();
+            lp.hold(t);
             let mut m = Mutation::new();
             m.set(t, &x, &Value::Map((0..n).map(|i| (Value::Str(format!("k{i}")), Value::Int(i as i64))).collect())).unwrap();
             let fill = lp.peers[0].commit(m).unwrap().unwrap();
@@ -1576,6 +1577,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         let write = |lp: &mut LocalPeer, ak: &Ak, v: i64| {
             let mut m = Mutation::new();
             m.set(t, ak, &Value::Int(v)).unwrap();
@@ -1611,6 +1613,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         (lp, t, x)
     }
 
@@ -1774,6 +1777,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &x, &Value::Int(1)).unwrap();
         let c = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.hold(t);
         let e = &mut lp.peers[0].engine;
         let ai = e.core.ix.commits.get(&c).unwrap().aspect(&t, &x).unwrap();
         let runs = |name: &str| osis_base::costs::take().iter().filter(|s| s.0 == name).map(|s| s.2).sum::<u64>();
@@ -1829,6 +1833,7 @@ mod tests {
             let t = lp.peers[0].engine.new_thing(&mut m, g);
             m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::PurgeOnReplace)).unwrap();
             lp.peers[0].commit(m).unwrap();
+            lp.hold(t);
             lp.sync(0, 1).unwrap();
             assert!(lp.peers[1].engine.holds_delete_keys(&t).unwrap());
             // alice keeps both bodies uncovered (as when her cover is still on its way)
@@ -1913,6 +1918,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         let write = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
         let admin = ct::Edge { role: Role::Admin, ..write.clone() };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
@@ -1951,6 +1957,7 @@ mod tests {
         lp.sync_all().unwrap();
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.hold(t);
         lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
         use osis_crdt::{Op, PathOp, PathSeg};
         let mut m = Mutation::new();
@@ -1991,6 +1998,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &reg, &Value::Str("old".into())).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         lp.advance(10);
         let now = lp.peers[0].engine.now();
         let mut m = Mutation::new();
@@ -2298,6 +2306,7 @@ mod tests {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         lp.advance(10);
         let expires = lp.peers[0].engine.now().0 + 100_000;
         let mut m = Mutation::new();
@@ -2325,6 +2334,7 @@ mod tests {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         let set = |lp: &mut LocalPeer, v: i64, purge: Option<CommitId>| {
             lp.advance(10);
             let mut m = Mutation::new();
@@ -2364,7 +2374,9 @@ mod tests {
         let a = lp.peers[0].engine.me();
         let r = lp.peers[1].engine.me();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.hold(t);
         let (u, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.hold(u);
         let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
         lp.peers[0].engine.grant(&u, &r, &edge(Role::Admin)).unwrap();

@@ -987,7 +987,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
 /// judged for what it still needs (`retention::needed`).
 fn set_accepted(tx: &mut Tx<'_>, y: Tid, v: Vx, on: bool) {
     if tx.core.ix.closure.set_accepted(y, v, on) {
-        tx.core.needs_due.insert(y);
+        tx.core.note_pass_due(y);
     }
 }
 

@@ -159,6 +159,9 @@ impl Ground for Live<'_, '_> {
         for actor in self.cx.engine.sync_owners(s)? {
             self.cx.engine.pass_end(&actor)?;
         }
+        // what the pass brought that nothing held needs goes (spec/commits.md §5 What a held
+        // thing needs)
+        self.cx.engine.settle_needs()?;
         Ok(())
     }
 }

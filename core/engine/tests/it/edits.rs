@@ -183,6 +183,7 @@ fn a_valid_edit_of_an_invalid_original_stands_alone_spec_commits_5() {
     let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     keep_in(&mut m, d, &setting(&[(log().as_str(), History::FOREVER)]));
     lp.peers[0].commit(m).unwrap().unwrap();
+    lp.hold(d);
     set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Read)), None);
     lp.sync_all().unwrap();
     lp.advance(1_000);

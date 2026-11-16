@@ -264,6 +264,7 @@ fn big_map_apply_memory() {
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap().unwrap();
+    lp.hold(t);
     let setup = lp.packages(0).unwrap();
     let kv: osis_base::ValueMap = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
     let mut fill = None;

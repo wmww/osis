@@ -649,6 +649,7 @@ mod tests {
         let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
         let a = lp.peers[0].engine.me();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.hold(t);
         let mut m = Mutation::new();
         m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), history)).unwrap();
         lp.peers[0].commit(m).unwrap();
@@ -747,6 +748,7 @@ mod tests {
             let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
             let me = lp.peers[0].engine.me();
             let (t, _) = lp.peers[0].engine.create_with_admin(&me).unwrap();
+            lp.hold(t);
             let mut m = Mutation::new();
             m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: Some(4_000_000_000_000), after: None })).unwrap();
             lp.peers[0].commit(m).unwrap();
@@ -862,6 +864,7 @@ mod tests {
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
         let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.hold(t);
         lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
         // history kept a day after replaced on `x:m.0` and `x:r.0`
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
@@ -954,6 +957,7 @@ mod tests {
         let a = lp.peers[0].engine.me();
         let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.hold(t);
         let r = lp.peers[1].engine.me();
         lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None }).unwrap();
         let x = Ak::new("x:m.0").unwrap();
@@ -1005,6 +1009,9 @@ mod tests {
         lp.sync_all().unwrap();
         let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
         let ts: Vec<_> = (0..n).map(|_| lp.peers[0].engine.create_with_admin(&a).unwrap().0).collect();
+        for t in &ts {
+            lp.hold(*t);
+        }
         // history kept a day after replaced on every aspect: only kept writes are undone
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let setting = ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(day), ..Default::default() }), ..Default::default() };

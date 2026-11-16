@@ -1009,6 +1009,7 @@ mod tests {
             lp.sync_all().unwrap();
             let [a, b, x] = [0, 1, 2].map(|i| lp.peers[i].engine.me());
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+            lp.hold(t);
             for w in [b, x] {
                 lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
             }
@@ -1038,6 +1039,8 @@ mod tests {
                     let snaps = p.engine.compactions().unwrap();
                     let c = osis_base::costs::take();
                     weighed += c.iter().find(|x| x.0 == "compact: aspects weighed").map_or(0, |x| x.2);
+                    // t's: a node's own roots' snapshots (its hold of t) are its own
+                    let snaps: Vec<_> = snaps.into_iter().filter(|(x, _, _)| *x == t).collect();
                     written += snaps.len() as u64;
                     for (_, _, s) in snaps {
                         o.push(p.engine.package(&s).unwrap().unwrap().bytes);
@@ -1050,8 +1053,8 @@ mod tests {
             let (quiet, busy) = (run(rounds, 0), run(rounds, 5));
             println!("{rounds} rounds (weighed, written): third writer quiet {quiet:?}, five held-back bodies a round {busy:?}");
             assert!(busy.0 <= quiet.0 + 4 && busy.1 <= quiet.1 + 2, "{rounds} rounds: the held-back bodies weighed: {quiet:?} against {busy:?}");
-            // one weigh more: the account root's `holds.0`, which holds `t`
-            assert!(busy.0 <= rounds as u64 / 2 + 5, "{rounds} rounds: {busy:?}");
+            // a few weighs more: the account root's `holds.0` and the node root's, which hold `t`
+            assert!(busy.0 <= rounds as u64 / 2 + 7, "{rounds} rounds: {busy:?}");
         }
     }
 
@@ -1069,6 +1072,7 @@ mod tests {
         lp.sync_all().unwrap();
         let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.hold(t);
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
         lp.sync_all().unwrap();
         let ak = Ak::new("x:m+.0").unwrap();
@@ -1094,6 +1098,7 @@ mod tests {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         let big = Ak::new("x:big.0").unwrap();
         let mut m = Mutation::new();
         m.set(t, &big, &Value::Bytes((0..n * 65536).map(|i| (i * 7 % 251) as u8).collect())).unwrap();
@@ -1149,6 +1154,7 @@ mod tests {
             lp.sync_all().unwrap();
             let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
             let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+            lp.hold(t);
             let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
             lp.peers[0].engine.grant(&t, &b, &edge(Role::Write)).unwrap();
             lp.sync_all().unwrap();
@@ -1210,6 +1216,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         // made and held, then its raw edge (a role commit)
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         let mut m = Mutation::new();
         m.op(t, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Weak(b))], op: osis_crdt::Op::Set(edge(Role::Write).to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();

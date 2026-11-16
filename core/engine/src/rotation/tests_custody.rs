@@ -69,6 +69,7 @@ fn setup() -> (LocalPeer, Ids) {
                 let pk = lp.peers[i].engine.package(&id).unwrap().unwrap();
                 lp.deliver(A, &pk).unwrap();
             }
+            lp.peers[i].engine.joining(&a.account).unwrap();
             let (_, all) = lp.peers[A].engine.pair(&node).unwrap();
             for c in &all {
                 let pk = lp.peers[A].engine.package(c).unwrap().unwrap();
@@ -86,6 +87,7 @@ fn setup() -> (LocalPeer, Ids) {
         let t = lp.peers[A].engine.new_thing(&mut m, a.account);
         m.set(t, &x(), &Value::Str("t".into())).unwrap();
         lp.peers[A].commit(m).unwrap();
+        lp.hold(t);
         let o = lp.peers[R1].engine.me();
         lp.peers[A].engine.grant(&t, &o, &super::tests::edge(Role::Write)).unwrap();
         let r = lp.peers[R2].engine.me();
@@ -1601,7 +1603,9 @@ impl Run {
                     let why = self.why(v, &c);
                     self.fail(&format!("settled: {} counts X's write #{} ({why})", cm::NAMES[v], i.id));
                 }
-                if i.author == X || !reads_t && i.on_t.is_some() || self.left[i.author] {
+                // a node outside P keeps what it holds needs alone: of P's writes, those on t
+                // (spec/commits.md §5 What a held thing needs)
+                if i.author == X || !reads_t && i.on_t.is_some() || v >= OWN && i.on_t.is_none() || self.left[i.author] {
                     continue;
                 }
                 let ja = cm::judge(&self.w, i.author, end);

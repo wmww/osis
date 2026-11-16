@@ -422,11 +422,12 @@ fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
     let b = make(e, y, y);
     e.grant(&y, &x, &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
     e.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    let d1 = e1.account_root().unwrap();
+    strong(e1, d1, x, true);
     lp.sync_all().unwrap();
     let e1 = &mut lp.peers[1].engine;
     assert!(e1.held_tickets(&y).unwrap().is_empty(), "no ticket for Y");
-    let d1 = e1.account_root().unwrap();
-    strong(e1, d1, x, true);
     for t in [x, y, b] {
         assert!(e1.closure_holds(&t) && e1.sync_unit(&x).contains(&t), "{t:?}");
     }
@@ -509,10 +510,10 @@ fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
     };
     put(e, "before");
     e.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
-    lp.sync_all().unwrap();
     let e1 = &mut lp.peers[1].engine;
     let d1 = e1.account_root().unwrap();
     strong(e1, d1, x, true);
+    lp.sync_all().unwrap();
     let read = |lp: &mut osis_engine::local_peer::LocalPeer| lp.peers[1].engine.get(&x, &crate::common::ak("t:reg.0")).unwrap();
     assert_eq!(read(&mut lp), Some(Value::Str("before".into())));
     let e = &mut lp.peers[0].engine;
@@ -591,6 +592,8 @@ fn another_accounts_chain_goes_with_the_last_held_thing_needing_it_spec_commits_
     assert!(knows(&mut lp, 2, ps[1]), "T, left but not released, still needs peer 1's chain");
     let e2 = &mut lp.peers[2].engine;
     e2.released(&[t].into()).unwrap();
+    // the pass ends: what T's commits needed goes
+    e2.settle_needs().unwrap();
     e2.check_index();
     assert!(e2.core.created(&t).is_none(), "T released whole");
     assert!(!knows(&mut lp, 2, ps[1]), "nothing held needs peer 1's chain");
@@ -622,4 +625,58 @@ fn a_take_up_costs_what_the_opener_opens_spec_sync_set_2() {
     let (small, large) = (work(5), work(50));
     eprintln!("take-up and create_link work at n, 10n: {small:?} {large:?}");
     assert_eq!(small, large);
+}
+
+// spec/commits.md §5 What a held thing needs (dropped when the pass that brought it ends): what a
+// node holds outside its node closure at quiet does not depend on arrival order. Account Q (peer
+// 1, never met by peer 0) makes T and grants peer 0's account read; peer 0 holds T, takes Q's
+// commits, then releases T. Q's write on its own profile arrives before the release, or after
+// it: either way, at the pass's end nothing held needs Q's chain or that write, and peer 0 holds
+// the same.
+#[test]
+fn what_nothing_needs_goes_whatever_the_arrival_order_spec_commits_5() {
+    let mut lp = osis_engine::local_peer::LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
+    let (p0, q) = (lp.peers[0].engine.me(), lp.peers[1].engine.me());
+    let mut end = |late: bool| {
+        let mut lp = lp.copy().unwrap();
+        // Q keeps peer 0's account, which it grants
+        lp.peers[1].know(&[p0]).unwrap();
+        let mine: Vec<_> = lp.peers[0].engine.commit_ids();
+        crate::flows::send(&mut lp, 0, 1, &mine);
+        let e1 = &mut lp.peers[1].engine;
+        let mut m = Mutation::new();
+        let t = e1.new_thing(&mut m, q);
+        m.set(t, &crate::common::REG, &Value::Str("t".into())).unwrap();
+        e1.commit(m).unwrap();
+        e1.grant(&t, &p0, &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+        let profile = e1.profile_of(&q).unwrap();
+        let mut m = Mutation::new();
+        m.set(profile, &crate::common::REG, &Value::Str("q".into())).unwrap();
+        let x = e1.commit(m).unwrap().unwrap();
+        let rest: Vec<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|c| *c != x).collect();
+        let e0 = &mut lp.peers[0].engine;
+        e0.hold(osis_base::Strong(t)).unwrap();
+        crate::flows::send(&mut lp, 1, 0, &rest);
+        if !late {
+            crate::flows::send(&mut lp, 1, 0, &[x]);
+        }
+        let e0 = &mut lp.peers[0].engine;
+        assert!(e0.closure_holds(&t), "late {late}: peer 0 holds T");
+        e0.unhold(osis_base::Strong(t)).unwrap();
+        e0.released(&[t].into()).unwrap();
+        if late {
+            crate::flows::send(&mut lp, 1, 0, &[x]);
+        }
+        let e0 = &mut lp.peers[0].engine;
+        e0.settle_needs().unwrap();
+        // of Q's commits (peer 0's own hold and unhold differ by their stamps)
+        let qs: BTreeSet<_> = rest.iter().copied().chain([x]).collect();
+        let held: BTreeSet<_> = e0.commit_ids().into_iter().filter(|c| qs.contains(c)).collect();
+        let pending: BTreeSet<_> = e0.pending().into_iter().map(|p| p.0).collect();
+        assert!(e0.core.created(&q).is_none(), "late {late}: nothing held needs Q's chain");
+        (held, pending)
+    };
+    let (a, b) = (end(false), end(true));
+    let only = |x: &BTreeSet<osis_base::CommitId>, y: &BTreeSet<osis_base::CommitId>| x.difference(y).copied().collect::<Vec<_>>();
+    assert_eq!(a, b, "held only early {:?}, only late {:?}; pending only early {:?}, only late {:?}", only(&a.0, &b.0), only(&b.0, &a.0), only(&a.1, &b.1), only(&b.1, &a.1));
 }

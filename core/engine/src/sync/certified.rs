@@ -691,6 +691,7 @@ mod tests {
             let t = e.new_thing(&mut m, a);
             m.set(t, &acting_ak(), &Value::Int(0)).unwrap();
             e.commit(m).unwrap();
+            lp.hold(t);
             t
         };
         let y = new(&mut lp, 2, a2.account);
@@ -768,6 +769,8 @@ mod tests {
         e.commit(m).unwrap();
         e.grant(&t, &w.account, &edge(Role::Write)).unwrap();
         let on_y = e.grant(&y, &c.account, &edge(Role::Read)).unwrap().commits;
+        lp.hold(t);
+        lp.hold(y);
         lp.sync_all().unwrap();
         (lp, w.account, y, t, on_y)
     }

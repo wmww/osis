@@ -760,6 +760,7 @@ fn plain_thing_below_a_cut_keeps_its_floor_spec_crypto_4() {
         let mut m = crate::Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, g);
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         t
     };
     put(&mut lp, 0, t, "before");

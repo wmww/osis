@@ -145,12 +145,14 @@ fn judged(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
     v
 }
 
-/// Delivers `order` of the entries to a fresh node at `now`; what it judges, as the
-/// expected fields of a case (README.md, `judgment/`).
+/// Delivers `order` of the entries to a fresh node at `now` within one pass (its end never
+/// comes, `Engine::settle_needs`: the node keeps all it took, holding nothing itself, so what it
+/// judges is a function of the entries alone, spec/commits.md §5 What a held thing needs); what
+/// it judges, as the expected fields of a case (README.md, `judgment/`).
 fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
     let ents = entries(bytes);
     // a fresh node at `now`: built once per `now` (`LocalPeer::cached`)
-    let mut p = LocalPeer::cached(&format!("judgment::fresh/{}", now.0), || (LocalPeer::of(vec![Peer::new(FRESH, now).unwrap()], 0), ())).0.peers.remove(0);
+    let mut p = LocalPeer::cached(&format!("judgment::fresh/{}", now.0), || (LocalPeer::of(vec![Peer::new(FRESH, now).unwrap()], 0).unwrap(), ())).0.peers.remove(0);
     let mut ids = BTreeSet::new();
     // a filler wrap opens under no read secret (spec/crypto.md §5)
     // an entry delivers its sync ID's section: the one sealed under the read secret its wrap
@@ -829,7 +831,6 @@ fn judgment_vectors_spec_permissions_5_2() {
 // spec/requirements.md Decentralization, spec/commits.md §4: one held set, its parts in two
 // orders: the H part, its chain away, waits alone either way and G's write stands.
 #[test]
-#[ignore = "unneeded chains linger by arrival order: issues/needed-arrival-order.md"]
 fn chainless_part_order_spec_commits_4() {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
@@ -845,7 +846,6 @@ fn chainless_part_order_spec_commits_4() {
 // spec/requirements.md Decentralization, spec/commits.md §4: the same with a role commit: 2 (admin
 // on G, a write edge on H not delivered) sets 1's edge on G and H; either order changes G's roster.
 #[test]
-#[ignore = "unneeded chains linger by arrival order: issues/needed-arrival-order.md"]
 fn chainless_role_part_order_spec_commits_4() {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };

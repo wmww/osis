@@ -733,13 +733,14 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use crate::flows::Demotion;
 
-    /// A thing whose first admin is `admin`, made by peer `i`.
+    /// A thing whose first admin is `admin`, made by peer `i`, held by every peer.
     fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
         let e = &mut lp.peers[i].engine;
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, admin);
         m.set(t, &osis_base::Ak::new("x:reg.0").unwrap(), &Value::Str("new".into())).unwrap();
         e.commit(m).unwrap().unwrap();
+        lp.hold(t);
         t
     }
 
@@ -780,6 +781,7 @@ mod tests {
             let t = lp.peers[0].engine.new_thing(&mut m, me);
             m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
             let c = lp.peers[0].commit(m).unwrap().unwrap();
+            lp.hold(t);
             (t, c)
         };
         let ((t1, c1), (t2, _)) = (thing(&mut lp), thing(&mut lp));
@@ -821,6 +823,7 @@ mod tests {
         let u = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(u, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(u);
         lp.peers[0].engine.grant(&u, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
         assert!(lp.peers[1].engine.core.epochs(&u).is_some_and(|e| !e.read.current().is_empty()), "the grantee holds u's established epochs");
@@ -828,6 +831,7 @@ mod tests {
         let a = lp.peers[0].engine.new_thing(&mut m, u);
         m.set(a, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(2)).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(a);
         let g = *lp.peers[0].engine.grant(&a, &b, &edge).unwrap().commits.last().unwrap();
         let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
         lp.deliver(1, &p).unwrap();
@@ -849,6 +853,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         (lp, t)
     }
 
@@ -1020,6 +1025,7 @@ mod tests {
             let t = lp.peers[0].engine.new_thing(&mut mu, me);
             mu.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
             lp.peers[0].commit(mu).unwrap();
+            lp.hold(t);
             let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
             lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
             lp.peers[0].engine.grant(&t, &m, &edge(Role::Read)).unwrap();
@@ -1083,6 +1089,7 @@ mod tests {
         let me2 = lp.peers[2].engine.me();
         let t2 = lp.peers[2].engine.new_thing(&mut m, me2);
         lp.peers[2].commit(m).unwrap();
+        lp.hold(t2);
         let c = *lp.peers[2].engine.refresh_deposit_seed(&t2).unwrap().commits.last().unwrap();
         let pk = lp.peers[2].engine.package(&c).unwrap().unwrap();
         assert!(matches!(lp.deliver(1, &pk).unwrap(), crate::Ingested::Pending(_, crate::Reason::MissingChain(_) | crate::Reason::UnknownCreated(_))));

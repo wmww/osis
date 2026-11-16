@@ -147,7 +147,7 @@ pub fn net(n: usize, seed: u64) -> LocalPeer {
 
 /// `n` peers, each its own account, that have met no other (`LocalPeer::new` at `T0`).
 pub fn net_apart(n: usize, seed: u64) -> LocalPeer {
-    LocalPeer::cached(&format!("common::net_apart/{n}/{seed}"), || (LocalPeer::new(n, seed, T0).unwrap(), ())).0
+    LocalPeer::cached(&format!("common::net_apart/{n}/{seed}"), || (LocalPeer::new_apart(n, seed, T0).unwrap(), ())).0
 }
 
 /// `n` peers, the nodes of one account (peer 0 made it, the others paired, nothing else synced):
@@ -171,6 +171,7 @@ pub fn net_one(n: usize) -> LocalPeer {
 /// direct connection).
 pub fn pair_into(lp: &mut LocalPeer, by: usize, p: &mut osis_engine::local_peer::Peer) {
     let account = lp.peers[by].engine.me();
+    p.engine.joining(&account).unwrap();
     for id in p.engine.commit_ids() {
         let pk = p.engine.package(&id).unwrap().unwrap();
         lp.deliver(by, &pk).unwrap();
@@ -282,6 +283,7 @@ pub fn edge_write(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge
 /// node, given what the test gives it.
 pub fn reader(lp: &mut LocalPeer, admin: usize, t: Tid, seed: u64) -> osis_engine::local_peer::Peer {
     let mut p = osis_engine::local_peer::Peer::new(seed, lp.peers[admin].engine.now()).unwrap();
+    lp.peers[admin].know(&[p.engine.me()]).unwrap();
     for id in p.engine.commit_ids() {
         let pk = p.engine.package(&id).unwrap().unwrap();
         lp.deliver(admin, &pk).unwrap();

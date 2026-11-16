@@ -234,6 +234,7 @@ fn creation_record_applies_alone_spec_commits_4() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &REG, &s("first")).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.hold(t);
     lp.peers[0].clock.advance(10);
     let mut m = Mutation::new();
     m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
@@ -250,8 +251,10 @@ fn creation_record_applies_alone_spec_commits_4() {
     e.ingest(&pks.iter().find(|p| p.id == c2).unwrap().bytes, Vec::new()).unwrap();
     assert!(e.get(&t, &ak("t:tags.0")).unwrap().is_some(), "the next commit shows");
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None);
-    // the rest of it joins when it comes
-    e.ingest(&pk1.bytes, Vec::new()).unwrap();
+    // the rest of it joins when it comes (its part on peer 0's account root fetched with that
+    // root's record, then gone as needed by nothing)
+    lp.peers[1].receive(&pk1.bytes, Vec::new()).unwrap();
+    let e = &mut lp.peers[1].engine;
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("first")));
     assert!(e.pending().is_empty(), "{:?}", e.pending());
 }
@@ -268,6 +271,7 @@ fn creation_record_then_the_rest_join_spec_commits_4() {
     m.set(t, &REG, &s("t")).unwrap();
     m.set(u, &REG, &s("u")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.hold(t);
     let pks = packages(&mut lp, 0);
     for pk in pks.iter().filter(|p| p.id != c) {
         lp.deliver(1, pk).unwrap();
@@ -435,11 +439,12 @@ fn purged_list_element_keeps_edit_in_any_order_spec_crdt_4_7() {
     let mut digests = Vec::new();
     for order in [[&body, &edit, &request], [&request, &edit, &body], [&request, &body, &edit], [&edit, &request, &body]] {
         let mut q = osis_engine::local_peer::Peer::new(0x7a1c, lp.peers[0].engine.now()).unwrap();
+        q.engine.hold(osis_base::Strong(t)).unwrap();
         for x in &rest {
-            let _ = q.engine.ingest(&x.bytes, x.blobs.clone());
+            let _ = q.receive(&x.bytes, x.blobs.clone());
         }
         for x in order {
-            let _ = q.engine.ingest(&x.bytes, x.blobs.clone());
+            let _ = q.receive(&x.bytes, x.blobs.clone());
         }
         assert_eq!(q.engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])));
         digests.push(q.engine.state_digest(&t, &k).unwrap());
@@ -533,15 +538,16 @@ fn list_element_expiry_in_any_order_spec_crdt_5_7() {
     let mut digests = Vec::new();
     for (first, second, past) in [(a, b, false), (b, a, false), (a, b, true), (b, a, true)] {
         let mut p = osis_engine::local_peer::Peer::new(0x7a08, lp.peers[1].engine.now()).unwrap();
+        p.engine.hold(osis_base::Strong(t)).unwrap();
         for x in &rest {
-            let _ = p.engine.ingest(&x.bytes, x.blobs.clone());
+            let _ = p.receive(&x.bytes, x.blobs.clone());
         }
-        let _ = p.engine.ingest(&first.bytes, first.blobs.clone());
+        let _ = p.receive(&first.bytes, first.blobs.clone());
         if past {
             p.clock.advance(2 * 3_600_000);
             p.tick().unwrap();
         }
-        let _ = p.engine.ingest(&second.bytes, second.blobs.clone());
+        let _ = p.receive(&second.bytes, second.blobs.clone());
         if !past {
             assert_eq!(p.engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("edited")])));
             p.clock.advance(2 * 3_600_000);
@@ -1134,6 +1140,11 @@ fn once_each(seed: u64, n: usize, m: usize) -> (Vec<Option<Value>>, Vec<Option<V
     (want, got, lp.peers[1].engine.pending().len())
 }
 
+/// Peer `i`'s package carrying `t`'s creation record.
+fn creation_of(lp: &mut LocalPeer, i: usize, t: Tid) -> osis_engine::local_peer::Package {
+    packages(lp, i).into_iter().find(|p| osis_commit::CommitBlob::decode(&p.bytes).unwrap().header.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "created.0")).unwrap()
+}
+
 // spec/commits.md §4 (Unjudgeable; Pending storage), spec/requirements.md Deterministic: a part
 // of an applied commit on a thing whose record is away waits in the commit's pending copy (its
 // carrier kept) and joins when the record comes, the commit not given again; the facade names it
@@ -1144,7 +1155,7 @@ fn an_applied_commits_part_joins_when_its_record_comes_spec_commits_4() {
     let u = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let x = new_thing(&mut lp, 0);
-    let xc = packages(&mut lp, 0).into_iter().find(|p| lp.peers[1].engine.header(&p.id).is_none()).unwrap();
+    let xc = creation_of(&mut lp, 0, x);
     let mut m = Mutation::new();
     m.set(u, &REG, &s("u")).unwrap();
     m.set(x, &REG, &s("x")).unwrap();
@@ -1172,7 +1183,7 @@ fn each_waiting_part_joins_at_its_own_record_spec_commits_4() {
         let mut made = Vec::new();
         for _ in 0..2 {
             let t = new_thing(&mut lp, 0);
-            let pk = packages(&mut lp, 0).into_iter().find(|p| lp.peers[1].engine.header(&p.id).is_none() && !made.iter().any(|(_, q): &(Tid, osis_engine::local_peer::Package)| q.id == p.id)).unwrap();
+            let pk = creation_of(&mut lp, 0, t);
             made.push((t, pk));
         }
         let mut m = Mutation::new();
@@ -1199,7 +1210,7 @@ fn an_applied_commits_waiting_part_goes_with_its_carrier_spec_commits_4() {
     let u = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let x = new_thing(&mut lp, 0);
-    let xc = packages(&mut lp, 0).into_iter().find(|p| lp.peers[1].engine.header(&p.id).is_none()).unwrap();
+    let xc = creation_of(&mut lp, 0, x);
     let mut m = Mutation::new();
     m.set(u, &REG, &s("u")).unwrap();
     m.set(x, &REG, &s("x")).unwrap();

@@ -1,30 +1,82 @@
 //! What stays of a thing only while something held needs it (spec/commits.md §5 Forgetting,
 //! spec/permissions.md §4): another account's chain (its record, its `keys.0` commits, its
 //! inbox's), and a released thing's record and role-class state. A thing outside the node closure
-//! is kept while a thing that needs it is kept: one whose record names it first admin, one whose
-//! held edge write names it holder (`Held::named_on`), one a held or pending commit it authored or
-//! acted in is on (body held or not; a pending one by the things it writes on, `Indexes::pend_by`).
-//! A thing is rooted, kept for itself: in the node closure or leaving it, reached by a held
-//! strong with a ticket for it held (`Closure::accepted`: what judges the ticket stays,
-//! spec/sync-set.md §2), this node's account's or the node's own (its record chain's key actor), a key actor that is
-//! no account (a node, a link key), one a key actor held here is named on (a link being
-//! redeemed, a bearer), a kept copy, destroyed (`retention::destroy` keeps it), or a
-//! thing an own self-removal still waits to seal under. Everything else goes whole, as never
-//! received, in the transaction its last need went (`settle`).
+//! is kept while a thing that needs it is kept: one in the node closure whose durable state
+//! references it (any kind: `refs::to`; an account's `keys.0`, its inbox), one whose record names it first admin, one whose held edge write
+//! names it holder (`Held::named_on`), one a held or pending commit it authored or acted in is on
+//! (body held or not; a pending one by the things it writes on, `Indexes::pend_by`), one a pending
+//! commit awaiting its record writes on (`Wake::Record`). A thing is rooted, kept for itself: in
+//! the node closure or leaving it, reached by a held strong with a ticket for it held
+//! (`Closure::accepted`: what judges the ticket stays, spec/sync-set.md §2), this node's, its
+//! account's, the account it is being paired into (`Core::joining`) or the node's own (its record
+//! chain's key actor), a key actor that is no account (a node, a link key), the K of a followed
+//! link, one a key actor held here is named on (a link being redeemed, a bearer), a kept copy,
+//! destroyed (`retention::destroy` keeps it), or a thing an own self-removal still waits to seal
+//! under. Everything else goes whole, as never received, when the pass that brought it ends or its
+//! last need went (`settle`).
 //!
-//! Judged again when a need goes: a signer's commit dropping a part or forgotten
-//! (`Core::note_signed`, `Core::take_meta`) or leaving pending (`apply::set_pending`), a holder
-//! unnamed (`Held::take_unnamed`), a thing released (`Engine::released`), at the end of the transaction (`Engine::run`, in turn with
-//! destructions, on the node closure settled). The judgement
-//! walks the needs up from the thing (`needed`) and stops at the first rooted one, so it costs
-//! O(1) while the thing is needed and the unrooted things reached when it is not, which go
-//! together: needs may form cycles (holder actors granted on each other).
+//! Judged once the pass in flight ends (`Engine::settle_needs`): a thing arrived (a record
+//! learned, `apply::atomic::learn_record`, or awaited by a commit that pends, `apply::set_pending`)
+//! or lost a need (a reference row gone, `refs::note`; a signer's commit dropping a part or
+//! forgotten, `Core::note_signed`, `Core::take_meta`, or leaving pending; a holder unnamed,
+//! `Held::take_unnamed`) is noted in `Core::pass_due` until then, so a parent's record arriving
+//! before what needs it stays. A release judges what it released in its own transaction
+//! (`Engine::released`). Either way at the end of a transaction (`Engine::run`, in turn with
+//! destructions, on the node closure settled). The judgement walks the needs up from the thing
+//! (`needed`) and stops at the first rooted one, so it costs O(1) while the thing is needed and
+//! the unrooted things reached when it is not, which go together: needs may form cycles (holder
+//! actors granted on each other).
 
-use crate::engine::{Core, Tx};
+use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
 use osis_base::{ChainStep, Tid};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
+
+impl Engine {
+    /// A pass ended (sync: every connected peer's pass in flight; a test: a delivery batch): what
+    /// arrived outside the node closure since the last call and nothing held needs goes
+    /// (spec/commits.md §5 What a held thing needs), as at a release. The first call after an
+    /// open judges every held record and every record a pending commit awaits, as an open keeps
+    /// no list of what arrived. O(what arrived).
+    pub fn settle_needs(&mut self) -> Result<()> {
+        let due: BTreeSet<Tid> = match self.core.pass_due.replace(BTreeSet::new()) {
+            Some(a) => a,
+            None => {
+                let awaited = self.core.ix.pend_on.keys().filter_map(|w| if let crate::apply::Wake::Record(t) = w { Some(*t) } else { None });
+                self.core.ix.held.things().copied().chain(awaited).collect()
+            }
+        };
+        let cl = &self.core.ix.closure;
+        let due: Vec<Tid> = due.into_iter().filter(|t| !cl.holds(t)).collect();
+        if due.is_empty() {
+            return Ok(());
+        }
+        // judged in a read first: a pass that leaves everything needed writes nothing
+        let goes = self.read(|tx| {
+            for t in &due {
+                if holds_any(tx.core, t) && !needed(tx, t, &mut BTreeSet::new())? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })?;
+        if !goes {
+            return Ok(());
+        }
+        let r = self.run(|tx| {
+            tx.core.needs_due.extend(due.iter().copied());
+            Ok(())
+        });
+        // judged again at the next pass's end
+        if r.is_err() {
+            for t in due {
+                self.core.note_pass_due(t);
+            }
+        }
+        r
+    }
+}
 
 /// Whether `t` is kept for itself (the module doc).
 fn rooted(core: &Core, t: &Tid) -> bool {
@@ -32,7 +84,8 @@ fn rooted(core: &Core, t: &Tid) -> bool {
     if cl.holds(t) || cl.left().contains_key(t) || cl.accepted(t) || core.ix.kept.contains_key(t) || super::forget::copy_of(core, t).is_some() || core.destroyed(t) {
         return true;
     }
-    if core.is_key_actor(t) && !core.is_account(t) {
+    // a key actor that is no account, or the K of a link this node follows
+    if (core.is_key_actor(t) && !core.is_account(t)) || core.followed_links.contains(t) {
         return true;
     }
     // the key actor its record chain climbs to; an unknown link reads as another's
@@ -41,7 +94,7 @@ fn rooted(core: &Core, t: &Tid) -> bool {
         Some(ChainStep::Unknown(_)) | None => None,
         Some(ChainStep::Up { .. }) | Some(ChainStep::TooDeep) => return true,
     };
-    if top.is_some_and(|y| y == core.id.tid() || core.account.get() == Some(y) || core.accounts.contains_key(&y) || core.key_actors.contains_key(&y) || core.ix.bearers.contains(&y)) {
+    if top.is_some_and(|y| y == core.id.tid() || core.account.get() == Some(y) || core.joining == Some(y) || core.accounts.contains_key(&y) || core.key_actors.contains_key(&y) || core.ix.bearers.contains(&y)) {
         return true;
     }
     // a key actor held here (a link being redeemed, a bearer) is named on it
@@ -52,41 +105,62 @@ fn rooted(core: &Core, t: &Tid) -> bool {
     core.ix.held_wait.iter().any(|c| core.ix.commits.get(c).is_some_and(|m| m.view.aspect(t, "roles.0").is_some()))
 }
 
-/// The things that need `t` held (the module doc), but `t`: those naming it, those a held commit
-/// it authored (an account's: `Indexes::by_epoch`) or acted in (`Indexes::by_actor`) has an aspect
+/// The things that need `t` held (the module doc), but `t`: those naming it, those in the node
+/// closure whose state references it (`refs::to`, any kind, durable aspects; an account's `keys.0` naming its inbox too), those a held commit it
+/// authored (an account's: `Indexes::by_epoch`) or acted in (`Indexes::by_actor`) has an aspect
 /// on, its parts held or not (a header alone is judged by its author's chain), and those a pending
-/// commit it signed writes on (`Indexes::pend_by`).
-fn needers<'a>(core: &'a Core, t: &'a Tid) -> impl Iterator<Item = Tid> + 'a {
+/// commit it signed (`Indexes::pend_by`) or awaiting its record (`Wake::Record`) writes on.
+fn needers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Tid>> {
+    let core = &*tx.core;
     let lo = osis_base::CommitId([0; 32]);
-    let authored = core.ix.by_epoch.range((*t, lo)..).take_while(move |((a, _), _)| a == t).flat_map(|(_, cs)| cs.iter());
-    let acted = core.ix.by_actor.range((*t, Tid::from_bytes([0; 15]))..).take_while(move |((a, _), _)| a == t).flat_map(|(_, cs)| cs.iter());
-    let signed = authored.chain(acted).flat_map(move |c| core.ix.commits.get(c).into_iter().flat_map(|m| m.view.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()));
-    // a pending commit it signed, on the things it writes on (`Wake::Thing`), as if held
-    let pending = core.ix.pend_by.get(t).into_iter().flatten().flat_map(move |c| core.ix.pend_keys.get(c).into_iter().flat_map(|ws| ws.iter().filter_map(|w| if let crate::apply::Wake::Thing(x) = w { Some(*x) } else { None }).collect::<Vec<_>>()));
-    core.ix.held.named_on(t).copied().chain(signed).chain(pending).filter(move |x| x != t)
+    let authored = core.ix.by_epoch.range((*t, lo)..).take_while(|((a, _), _)| a == t).flat_map(|(_, cs)| cs.iter());
+    let acted = core.ix.by_actor.range((*t, Tid::from_bytes([0; 15]))..).take_while(|((a, _), _)| a == t).flat_map(|(_, cs)| cs.iter());
+    let signed = authored.chain(acted).flat_map(|c| core.ix.commits.get(c).into_iter().flat_map(|m| m.view.aspects.iter().map(|a| a.tid)));
+    // a pending commit it signed or whose record it awaits (`Wake::Record`), on the things it
+    // writes on (`Wake::Thing`), as if held
+    let awaiting = core.ix.pend_on.get(&crate::apply::Wake::Record(*t)).into_iter().flatten();
+    let pending = core.ix.pend_by.get(t).into_iter().flatten().chain(awaiting).flat_map(|c| core.ix.pend_keys.get(c).into_iter().flat_map(|ws| ws.iter()).filter_map(|w| if let crate::apply::Wake::Thing(x) = w { Some(*x) } else { None }));
+    let mut out: BTreeSet<Tid> = core.ix.held.named_on(t).copied().chain(signed).chain(pending).collect();
+    // a reference from a thing the node closure holds (one kept only as a certificate needs
+    // nothing by what its state names), and an account's from its `keys.0` (its inbox, part of
+    // its chain)
+    let refs = crate::engine::refs::to(tx, t)?;
+    let core = &*tx.core;
+    out.extend(refs.into_iter().filter(|r| core.ix.closure.holds(&r.source) || (r.ak.as_str() == "keys.0" && core.is_account(&r.source))).map(|r| r.source));
+    // an account's devices actor, whose roster its chain is, and its profile
+    out.extend(core.devices_of(t));
+    if let Some(a) = core.first_admin(t).filter(|a| core.is_account(a)) {
+        let inbox = crate::flows::inbox::inbox_in(tx, &a)?;
+        if tx.core.profile_of(&a, inbox) == Some(*t) {
+            out.insert(a);
+        }
+    }
+    out.remove(t);
+    Ok(out)
 }
 
 /// Whether something rooted needs `t`, through any chain of needs; when not, `reached` holds `t`
 /// and every thing needing it, none rooted.
-fn needed(core: &Core, t: &Tid, reached: &mut BTreeSet<Tid>) -> bool {
+fn needed(tx: &mut Tx<'_>, t: &Tid, reached: &mut BTreeSet<Tid>) -> Result<bool> {
     reached.insert(*t);
     let mut todo = vec![*t];
     while let Some(x) = todo.pop() {
-        if rooted(core, &x) {
-            return true;
+        if rooted(tx.core, &x) {
+            return Ok(true);
         }
-        for y in needers(core, &x) {
+        for y in needers(tx, &x)? {
             if reached.insert(y) {
                 todo.push(y);
             }
         }
     }
-    false
+    Ok(false)
 }
 
-/// Whether anything of `t` is held: its record, a commit on it, or its secrets.
+/// Whether anything of `t` is held: its record, a commit on it, its secrets, or a pending commit
+/// awaiting its record.
 fn holds_any(core: &Core, t: &Tid) -> bool {
-    core.created(t).is_some() || core.on_thing(t).next().is_some() || core.ix.secrets.get(t).is_some()
+    core.created(t).is_some() || core.on_thing(t).next().is_some() || core.ix.secrets.get(t).is_some() || core.ix.pend_on.contains_key(&crate::apply::Wake::Record(*t))
 }
 
 /// Judges the things due (`Core::needs_due`) and drops every one nothing rooted needs, with what
@@ -100,7 +174,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
             continue;
         }
         let mut reached = BTreeSet::new();
-        if needed(tx.core, &t, &mut reached) {
+        if needed(tx, &t, &mut reached)? {
             continue;
         }
         gone.extend(reached);

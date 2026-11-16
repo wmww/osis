@@ -244,6 +244,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     assert!(lp.peers[0].engine.frontier(&scope, now).unwrap().commits.contains(&bs), "received, though invalid");
     let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
     let mut lp2 = net(1, 1); // a node apart from lp's (its own seeds)
+    lp2.hold(t);
     lp2.advance(100);
     for p in lp.packages(0).unwrap() {
         let h = lp.peers[0].engine.header(&p.id).unwrap();

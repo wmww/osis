@@ -79,7 +79,11 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
         for w in &wakes {
             core.ix.pend_on.insert(*w, *id);
             match w {
-                Wake::Record(t) => core.waits.loose.want(t),
+                Wake::Record(t) => {
+                    core.waits.loose.want(t);
+                    // judged once the pass ends: a record nothing needs is not awaited (`retention::needed`)
+                    core.note_pass_due(*t);
+                }
                 // a tick is due then (`Engine::next_timer`)
                 Wake::At(t) => core.timer_floor = core.timer_floor.min(*t),
                 _ => {}
@@ -90,29 +94,35 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
             false => core.ix.pend_keys.insert(*id, std::sync::Arc::new(wakes)),
         };
     }
-    // its signers, needed while it pends as a held commit's are (`retention::needed`); those of
-    // one leaving unapplied are judged again where it leaves (`pending_left`)
-    let signers: Vec<Tid> = match &r {
+    // what it needs while it pends (`retention::needed`): its signers, as a held commit's, and the
+    // thing whose record or chain it awaits; those of one leaving unapplied are judged again
+    // where it leaves (`pending_left`)
+    let awaits = match &r {
+        Some((Reason::MissingChain(t) | Reason::UnknownCreated(t), _)) => Some(*t),
+        _ => None,
+    };
+    let needs: Vec<Tid> = match &r {
         Some((_, Some(h))) => {
             let mut v = vec![h.author, h.actor];
+            v.extend(awaits);
             v.sort();
             v.dedup();
             v
         }
         // pending still, its header not read this time: as it was
-        Some((_, None)) => core.ix.pend_signers.get(id).map(|v| v.to_vec()).unwrap_or_default(),
+        Some((_, None)) => core.ix.pend_needs.get(id).map(|v| v.to_vec()).unwrap_or_default(),
         None => Vec::new(),
     };
-    if core.ix.pend_signers.get(id).map(|w| w.as_slice()) != Some(signers.as_slice()) {
-        for k in core.ix.pend_signers.get(id).cloned().unwrap_or_default().iter() {
+    if core.ix.pend_needs.get(id).map(|w| w.as_slice()) != Some(needs.as_slice()) {
+        for k in core.ix.pend_needs.get(id).cloned().unwrap_or_default().iter() {
             core.ix.pend_by.remove(k, id);
         }
-        for k in &signers {
+        for k in &needs {
             core.ix.pend_by.insert(*k, *id);
         }
-        match signers.is_empty() {
-            true => core.ix.pend_signers.remove(id),
-            false => core.ix.pend_signers.insert(*id, std::sync::Arc::new(signers)),
+        match needs.is_empty() {
+            true => core.ix.pend_needs.remove(id),
+            false => core.ix.pend_needs.insert(*id, std::sync::Arc::new(needs)),
         };
     }
     match r {
@@ -130,10 +140,12 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
 }
 
 /// Pending commit `id` leaves unapplied (its last carrier gone, its things forgotten): a need of
-/// its signers goes, so each is judged again (`retention::needed`). Call before it unpends.
+/// what it needed goes, so each is judged again (`retention::needed`). Call before it unpends.
 pub(crate) fn pending_left(core: &mut Core, id: &CommitId) {
-    let signers = core.ix.pend_signers.get(id).cloned().unwrap_or_default();
-    core.needs_due.extend(signers.iter().copied());
+    let signers = core.ix.pend_needs.get(id).cloned().unwrap_or_default();
+    for k in signers.iter() {
+        core.note_pass_due(*k);
+    }
 }
 
 /// Whether a commit here awaits record `t`: one pending, or a waiting part of one (what names a

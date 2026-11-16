@@ -59,8 +59,15 @@ pub fn drive<T>(net: &ManualNet, f: impl std::future::Future<Output = T>) -> T {
     panic!("did not resolve");
 }
 
-/// Delivers every commit `from` holds to `to`.
+/// Delivers every commit `from` holds to `to`, `to`'s account keeping `from`'s (a weak in its
+/// account root's `holds.0`: spec/commits.md §5 What a held thing needs).
 pub fn deliver(from: &Osis, to: &Osis) {
+    let (root, who) = (to.account_root(), from.me());
+    if who != to.me() && !to.engine(|e| e.references_from(&root).unwrap().iter().any(|r| r.target == who && r.ak.as_str() == "holds.0")) {
+        let mut w = to.write();
+        w.at(root, osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Weak(osis::Weak(who))).unwrap();
+        w.commit().unwrap();
+    }
     let pks = from.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
     for pk in pks {
         to.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());

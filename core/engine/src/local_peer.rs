@@ -212,6 +212,22 @@ impl Peer {
         Ok(p)
     }
 
+    /// This node's account keeps the accounts `who` (a contact, a peer it will grant): a weak to
+    /// each in its account root's `holds.0`, so their chains stay once received (spec/commits.md
+    /// §5 What a held thing needs). One commit; none when it keeps each already.
+    pub fn know(&mut self, who: &[osis_base::Tid]) -> Result<()> {
+        let root = self.engine.account_root().ok_or(crate::error::Error::Misuse("no account root"))?;
+        let kept: BTreeSet<osis_base::Tid> = self.engine.references_from(&root)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Weak && r.ak.as_str() == "holds.0").map(|r| r.target).collect();
+        let mut m = Mutation::new();
+        for t in who.iter().filter(|t| **t != self.engine.me() && !kept.contains(*t)) {
+            m.op(root, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Weak(*t)) })?;
+        }
+        if !m.is_empty() {
+            self.commit(m)?;
+        }
+        Ok(())
+    }
+
     /// A fresh node at wall time `t` that has joined no account yet.
     pub fn new_bare(seed: u64, t: WallMs) -> Result<Peer> {
         let clock = Arc::new(ManualClock::new(t));
@@ -423,10 +439,27 @@ struct SyncMemo {
 type Hashed = Arc<Vec<(Package, u64)>>;
 
 impl LocalPeer {
-    /// `n` fresh nodes, each its own account, seeds derived from `seed`, all at wall time `t`.
+    /// `n` fresh nodes, each its own account, seeds derived from `seed`, all at wall time `t`,
+    /// each keeping the others' accounts (`of`).
     pub fn new(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
         let peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
-        Ok(LocalPeer::of(peers, seed))
+        LocalPeer::of(peers, seed)
+    }
+
+    /// `new` whose accounts have met no other: none keeps another's chain.
+    pub fn new_apart(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
+        let peers = (0..n).map(|i| Peer::new(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
+        Ok(LocalPeer::apart(peers, seed))
+    }
+
+    /// Every peer that may write as its account keeps every other peer's account (`Peer::know`);
+    /// a node off its account's roster writes nothing as it.
+    pub fn know_all(&mut self) -> Result<()> {
+        let all: Vec<osis_base::Tid> = self.peers.iter().filter(|p| p.engine.account_root().is_some()).map(|p| p.engine.me()).collect();
+        for p in self.peers.iter_mut().filter(|p| p.engine.account_root().is_some() && p.engine.core.writer().is_ok()) {
+            p.know(&all)?;
+        }
+        Ok(())
     }
 
     /// `new(n, 0, t)`, a copy of the one built per test process (`cached`): a copy costs about
@@ -439,11 +472,19 @@ impl LocalPeer {
     /// `n` fresh nodes that have joined no account yet (`Peer::new_bare`).
     pub fn new_bare(n: usize, seed: u64, t: WallMs) -> Result<LocalPeer> {
         let peers = (0..n).map(|i| Peer::new_bare(seed.wrapping_mul(1000).wrapping_add(i as u64), t)).collect::<Result<Vec<_>>>()?;
-        Ok(LocalPeer::of(peers, seed))
+        Ok(LocalPeer::apart(peers, seed))
     }
 
-    /// Peers made elsewhere; `seed` seeds the sealing rng.
-    pub fn of(peers: Vec<Peer>, seed: u64) -> LocalPeer {
+    /// Peers made elsewhere, each keeping the others' accounts (`know_all`; `sync` and
+    /// `sync_all` introduce those made later); `seed` seeds the sealing rng.
+    pub fn of(peers: Vec<Peer>, seed: u64) -> Result<LocalPeer> {
+        let mut lp = LocalPeer::apart(peers, seed);
+        lp.know_all()?;
+        Ok(lp)
+    }
+
+    /// `of` whose peers keep no other's account.
+    pub fn apart(peers: Vec<Peer>, seed: u64) -> LocalPeer {
         LocalPeer { peers, rng: SeededRng::from_u64(seed ^ 0x5ea1), memo: SyncMemo::default() }
     }
 
@@ -484,10 +525,12 @@ impl LocalPeer {
         self.peers.get_mut(i)
     }
 
-    /// Every commit `from` holds (applied), packaged.
+    /// Every commit `from` holds (applied), packaged, but those on its node root alone (local: no
+    /// sync ID carries them, spec/sync-set.md §1).
     pub fn packages(&mut self, from: usize) -> Result<Vec<Package>> {
         let Some(p) = self.peers.get_mut(from) else { return Ok(Vec::new()) };
-        let ids = p.engine.commit_ids();
+        let root = p.engine.node_root();
+        let ids: Vec<CommitId> = p.engine.commit_ids().into_iter().filter(|id| !p.engine.header(id).is_some_and(|h| h.aspects.iter().all(|a| Some(a.tid) == root))).collect();
         let mut out = Vec::new();
         for id in ids {
             if let Some(pk) = p.engine.package(&id)? {
@@ -552,10 +595,18 @@ impl LocalPeer {
         }
     }
 
-    /// Sends everything `from` holds to `to` (in `ts` order), but what `to` already took as a
-    /// duplicate that changed nothing and still holds whole (`Engine::holds_whole`).
+    /// Every peer keeps every other's account (`know_all`), then sends everything `from` holds to
+    /// `to` (in `ts` order), but what `to` already took as a duplicate that changed nothing and
+    /// still holds whole (`Engine::holds_whole`); a pass, so `to` settles its needs after
+    /// (`Engine::settle_needs`).
     pub fn sync(&mut self, from: usize, to: usize) -> Result<()> {
-        self.sync_changed(from, to).map(|_| ())
+        self.know_all()?;
+        self.sync_changed(from, to)?;
+        // the pass ended: what it brought that `to` needs nothing of goes
+        match self.peers.get_mut(to) {
+            Some(p) => p.engine.settle_needs(),
+            None => Ok(()),
+        }
     }
 
     /// `packages`, hashed, kept while `from`'s engine stands.
@@ -598,10 +649,12 @@ impl LocalPeer {
         Ok(changed)
     }
 
-    /// Syncs every ordered pair until a round changes nothing (at most `n` rounds). A round in
-    /// which every delivery was a duplicate is a fixpoint: the next would deliver the same
-    /// packages to the same states.
+    /// Every peer keeps every other's account (`know_all`), then syncs every ordered pair until a
+    /// round changes nothing (at most `n` rounds), then every peer settles its needs
+    /// (`Engine::settle_needs`). A round in which every delivery was a duplicate is a fixpoint:
+    /// the next would deliver the same packages to the same states.
     pub fn sync_all(&mut self) -> Result<()> {
+        self.know_all()?;
         let n = self.peers.len();
         for _ in 0..n.max(1) {
             let mut changed = false;
@@ -615,6 +668,15 @@ impl LocalPeer {
             if !changed {
                 break;
             }
+        }
+        self.settle_needs()
+    }
+
+    /// Every peer's passes ended (`Engine::settle_needs`): what they brought that nothing held
+    /// needs goes.
+    pub fn settle_needs(&mut self) -> Result<()> {
+        for p in &mut self.peers {
+            p.engine.settle_needs()?;
         }
         Ok(())
     }

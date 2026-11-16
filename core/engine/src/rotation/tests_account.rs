@@ -340,6 +340,7 @@ fn closed_world() -> (LocalPeer, Tid, Tid, CommitId, CommitId, Vec<u8>) {
         let t = lp.peers[1].engine.new_thing(&mut m, me);
         m.set(t, &Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
         lp.peers[1].commit(m).unwrap();
+        lp.hold(t);
         lp.peers[1].engine.grant(&t, &a, &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
         lp.advance(1000);

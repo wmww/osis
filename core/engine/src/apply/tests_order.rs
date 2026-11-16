@@ -136,6 +136,7 @@ fn sample(shape: Shape) -> usize {
         item2
     };
     lp.peers[0].commit(m).unwrap();
+    lp.hold(sub);
     lp.sync_all().unwrap();
     let by = shape.by;
     let mut marks = vec![lp.peers[by].clock.now_wall_ms()];
@@ -184,8 +185,9 @@ fn sample(shape: Shape) -> usize {
     }
     let base: Vec<Package> = base.iter().filter_map(|id| packs.get(id).cloned()).collect();
     let rest: Vec<Package> = packs.values().filter(|p| !base.iter().any(|q| q.id == p.id)).cloned().collect();
-    let ids: Vec<CommitId> = packs.keys().copied().collect();
     let things = [g, item, item2, sub];
+    // the commits on the things (each node keeps its own roots' and the chains it needs)
+    let ids: Vec<CommitId> = packs.iter().filter(|(_, p)| osis_commit::CommitBlob::decode(&p.bytes).is_ok_and(|b| b.header.aspects.iter().any(|a| things.contains(&a.tid)))).map(|(id, _)| *id).collect();
     let want = seen(&mut lp.peers[0], &ids, &things);
     assert_eq!(want.1, 0, "A holds everything");
     assert_eq!(seen(&mut lp.peers[1], &ids, &things), want, "B judges as A");

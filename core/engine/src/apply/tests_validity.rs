@@ -9,6 +9,7 @@ fn thing(lp: &mut LocalPeer, admin: Tid) -> Tid {
     let t = lp.peers[0].engine.new_thing(&mut m, admin);
     m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
     lp.peers[0].commit(m).unwrap();
+    lp.hold(t);
     t
 }
 
@@ -65,6 +66,7 @@ mod tests {
         let mut m = Mutation::new();
         let team = lp.peers[2].engine.new_thing(&mut m, c);
         lp.peers[2].commit(m).unwrap();
+        lp.hold(team);
         lp.peers[2].engine.give_own_secrets(&team).unwrap();
         lp.sync_all().unwrap();
         let done = lp.peers[1].engine.grant(&t, &team, &read).unwrap();
@@ -236,6 +238,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         let read = ct::Edge { role: Role::Read, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
         lp.peers[0].engine.grant(&t, &h, &ct::Edge { role: Role::Write, ..read.clone() }).unwrap();
@@ -339,6 +342,7 @@ mod tests {
             let t = lp.peers[0].engine.new_thing(&mut m, up);
             m.set(t, &x, &Value::Int(1)).unwrap();
             lp.peers[0].commit(m).unwrap();
+            lp.hold(t);
             if i == 0 {
                 shallow = t;
             }
@@ -355,6 +359,7 @@ mod tests {
         assert!(lp.peers[0].commit(m.clone()).is_err(), "the writer refuses it");
         lp.peers[0].engine.core.skip_writer_rules = true;
         let c = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.hold(d);
         let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
         for r in [0, 1, 2] {
             if r > 0 {
@@ -381,6 +386,7 @@ mod tests {
                 let mut m = Mutation::new();
                 let t = lp.peers[0].engine.new_thing(&mut m, up);
                 lp.peers[0].commit(m).unwrap();
+                lp.hold(t);
                 t
             };
             let mut m = Mutation::new();
@@ -424,6 +430,7 @@ mod tests {
         let mut m = Mutation::new();
         let shallow = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
+        lp.hold(shallow);
         let edge_in = |m: &mut Mutation, t: Tid, holder: Tid| {
             m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, floor: None }.to_value()) }).unwrap();
         };
@@ -437,6 +444,7 @@ mod tests {
         let deep = lp.peers[0].engine.new_thing(&mut m, up);
         // made and held, then its raw edge (a role commit)
         lp.peers[0].commit(m).unwrap();
+        lp.hold(deep);
         let mut m = Mutation::new();
         edge_in(&mut m, deep, x);
         let c = lp.peers[0].commit(m).unwrap().unwrap();

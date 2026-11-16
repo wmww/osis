@@ -233,6 +233,7 @@ fn grant_on_first_admin_keyless_until_record_edge_goes_spec_crypto_4() {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, x);
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         t
     };
     lp.peers[0].clock.advance(1);
@@ -1792,6 +1793,7 @@ fn build_destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
     m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
     m.expires_all(WallMs(T0.0 + 50_000));
     lp.peers[0].commit(m).unwrap();
+    lp.hold(t);
     lp.peers[0].engine.give_own_secrets(&t).unwrap();
     let x = with_own_keys(&mut lp, 0);
     let g = with_own_keys(&mut lp, 2);
@@ -1880,6 +1882,7 @@ fn frozen_holder_through_a_keyless_grant_is_boxed_nothing_spec_crypto_4() {
     m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(0)).unwrap();
     m.expires_all(WallMs(T0.0 + 50_000));
     lp.peers[0].commit(m).unwrap();
+    lp.hold(t);
     lp.peers[0].engine.give_own_secrets(&t).unwrap();
     let (x, g) = (with_own_keys(&mut lp, 0), with_own_keys(&mut lp, 1));
     lp.sync_all().unwrap();

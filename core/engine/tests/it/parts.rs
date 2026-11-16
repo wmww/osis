@@ -39,12 +39,17 @@ fn part(played: &Played, i: usize, t: Option<Tid>) -> Vec<u8> {
     b.encode()
 }
 
+/// A fresh node holding the history's things given `order`, one pass.
 fn deliver(played: &Played, order: &[Tok]) -> Peer {
     let mut p = Peer::new(FRESH, played.now).unwrap();
+    for t in &played.things {
+        p.engine.hold(osis_base::Strong(*t)).unwrap();
+    }
     for (i, t) in order {
         let _ = p.engine.ingest(&part(played, *i, *t), played.packs[*i].blobs.clone());
     }
     p.reexamine().unwrap();
+    p.engine.settle_needs().unwrap();
     p
 }
 
@@ -505,7 +510,7 @@ fn bad_part_every_shape_reads_alike_spec_commits_4() {
         {
             let mut want = None;
             for shape in shapes(&played, last) {
-                let mut p = Peer::new(FRESH, played.now).unwrap();
+                let mut p = crate::order::fresh(&played);
                 for pk in &played.packs[..last] {
                     p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
                 }
@@ -513,6 +518,7 @@ fn bad_part_every_shape_reads_alike_spec_commits_4() {
                     let _ = p.engine.ingest(x, Vec::new());
                 }
                 p.reexamine().unwrap();
+                p.engine.settle_needs().unwrap();
                 let roster: Vec<String> = played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect();
                 let got = (observe(&mut p.engine, &ids), roster, p.engine.pending());
                 assert!(got.2.is_empty(), "how {how}: nothing waits for a part held bad: {:?}", got.2);
