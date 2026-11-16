@@ -140,16 +140,16 @@ struct Held {
     by: Vec<Point>,
 }
 
-/// The held requests with an item on `t`'s `created.0`, found among the
-/// commits on `t` (a request has a delta on each thing it names), with their headers. Held
-/// whether or not `t` keeps its mintings: a destroyed thing keeping nothing still holds them.
+/// The held requests with an item on `t`'s `created.0`, found among the requests with a delta
+/// on `t` (`Indexes::purges_on`: a request has one on each thing it names), with their headers.
+/// Held whether or not `t` keeps its mintings: a destroyed thing keeping nothing still holds them.
 fn creation_requests<'a>(core: &'a Core, t: &'a Tid) -> impl Iterator<Item = (CommitId, &'a Header)> + 'a {
     let on_t = move |p: &Header| p.purge.iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
-    core.on_thing(t).filter_map(move |pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header)))
+    core.ix.purges_on.get(t).into_iter().flatten().filter_map(move |pc| core.ix.commits.get(pc).filter(|m| on_t(&m.header)).map(|m| (*pc, &*m.header)))
 }
 
 /// Each held minting of `t` (`Held`; its requests each a request with an item on `t`'s
-/// `created.0`, found among the commits on `t`: a request has a delta on each thing it names).
+/// `created.0`, `creation_requests`).
 fn per_minting(core: &Core, t: &Tid) -> Vec<Held> {
     let requests: Vec<(CommitId, &Header)> = creation_requests(core, t).collect();
     // `Core::mintings` lists held commits alone: each has its header

@@ -525,8 +525,8 @@ fn owed_account_tickets(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<(Role, Vec<os
     if by.is_empty() {
         return Ok(None);
     }
-    let held = account_tickets(tx, &d)?;
-    let lacking: Vec<osis_base::SyncId> = ticket_sync_ids(tx, t, r)?.into_iter().filter(|s| !held.iter().any(|k| k.target == *t && k.role == r && k.holder == p && k.sync_id == *s && by.contains(&k.epoch))).collect();
+    let held = account_tickets(tx, &d, t)?;
+    let lacking: Vec<osis_base::SyncId> = ticket_sync_ids(tx, t, r)?.into_iter().filter(|s| !held.iter().any(|k| k.role == r && k.holder == p && k.sync_id == *s && by.contains(&k.epoch))).collect();
     Ok((!lacking.is_empty()).then_some((r, lacking)))
 }
 
@@ -543,14 +543,11 @@ fn ticket_sync_ids(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<Vec<osis_base::S
     Ok(tx.core.ix.closure.ticket_ids(t).into_iter().map(|(s, _)| s).collect::<BTreeSet<_>>().into_iter().collect())
 }
 
-/// D's `tickets.0` as held.
-fn account_tickets(tx: &mut Tx<'_>, d: &Tid) -> Result<BTreeSet<Ticket>> {
+/// D's tickets for `t` in its `tickets.0` as held, from `t`'s ticket rows alone
+/// (`refs::tickets_to`): a ticket for another thing moves nothing here.
+fn account_tickets(tx: &mut Tx<'_>, d: &Tid, t: &Tid) -> Result<BTreeSet<Ticket>> {
     let ak = super::ak("tickets.0")?;
-    let Some(v) = tx.state(d, &ak)?.and_then(osis_crdt::Fragment::read) else { return Ok(BTreeSet::new()) };
-    Ok(match v {
-        Value::Set(s) => s.iter().filter_map(|x| if let Value::Ticket(k) = x { Some((**k).clone()) } else { None }).collect(),
-        _ => BTreeSet::new(),
-    })
+    Ok(crate::engine::refs::tickets_to(tx, t)?.into_iter().filter(|r| r.source == *d && r.ak == ak && r.fire.is_none()).flat_map(|r| r.tickets).collect())
 }
 
 /// Writes D's tickets for `t` this node owes (`account_ticket_due`): a fresh one per sync ID
@@ -565,7 +562,7 @@ pub(crate) fn write_account_ticket(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Co
         let Some(k) = make_ticket_under(tx, *t, r, p, Some(s))? else { continue };
         // older epochs only: a sibling's ticket at a newer epoch, or at a concurrent one of the
         // same n (a fork's other side), stays, so two nodes never undo each other
-        let old: Vec<Ticket> = account_tickets(tx, &d)?.into_iter().filter(|x| x.target == *t && x.role == r && x.epoch.0 < k.epoch.0).collect();
+        let old: Vec<Ticket> = account_tickets(tx, &d, t)?.into_iter().filter(|x| x.role == r && x.epoch.0 < k.epoch.0).collect();
         for o in old {
             m.op(d, &ct::TICKETS, PathOp { path: vec![], op: Op::Remove(Value::Ticket(Box::new(o))) })?;
         }
@@ -584,7 +581,10 @@ pub(crate) fn drop_account_tickets(tx: &mut Tx<'_>, ts: &BTreeSet<Tid>) -> Resul
     if ts.contains(&d) {
         return Ok(());
     }
-    let gone: Vec<Ticket> = account_tickets(tx, &d)?.into_iter().filter(|k| ts.contains(&k.target)).collect();
+    let mut gone: Vec<Ticket> = Vec::new();
+    for t in ts {
+        gone.extend(account_tickets(tx, &d, t)?);
+    }
     if gone.is_empty() {
         return Ok(());
     }

@@ -151,6 +151,12 @@ impl Engine {
         Ok(Arc::new(out))
     }
 
+    /// Commit `c`'s body at read sync ID `s` (`sync_bodies`' entry for `s`), a read of that pair
+    /// alone (`sync_body_now`).
+    pub fn sync_body(&mut self, s: &SyncId, c: &CommitId) -> Result<Option<BodyMeta>> {
+        self.sync_body_now(s, c)
+    }
+
     /// Commit `c`'s body at read sync ID `s` (`sync_bodies`' entry for `s`), read from `s`'s
     /// thing alone: a body coming or going at another sync ID moves nothing here. A memo
     /// (`Core::sync_body`): each judgement of a body asks it from several facade calls.

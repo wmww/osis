@@ -50,7 +50,7 @@ impl Engine {
             for g in things {
                 let ThingSync::Read(ids) = self.thing_sync_now(&g)? else { continue };
                 let ctx = self.body_ctx(&g);
-                let parts: Vec<usize> = c.blob.parts.iter().map(|p| p.ai).filter(|ai| h.aspects.get(*ai).is_some_and(|a| ctx.closure.contains(&a.tid))).collect();
+                let parts: Vec<usize> = c.blob.parts.iter().map(|p| p.ai).filter(|ai| h.aspects.get(*ai).is_some_and(|a| ctx.holds(&self.core, &a.tid))).collect();
                 if parts.is_empty() {
                     continue;
                 }

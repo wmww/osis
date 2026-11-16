@@ -872,9 +872,11 @@ fn a_memo_over_the_store_moves_with_the_rows_it_read() {
     t.put_aspect(&t1, &a, &AspectUnit { state: b"u".to_vec() }, Shred::No).unwrap();
     assert_eq!(ask(&mut t, 2), b"v".to_vec());
     let tb = t.table(&t1, &a, 0).unwrap().unwrap();
+    t.table_put(tb, b"j", b"x".to_vec(), Shred::No).unwrap();
+    assert_eq!(ask(&mut t, 2), b"v".to_vec());
     t.table_put(tb, b"k", b"w".to_vec(), Shred::No).unwrap();
     assert_eq!(ask(&mut t, 2), b"w".to_vec());
-    assert_eq!(runs(), 2, "the table's aspect unit, a row of the table");
+    assert_eq!(runs(), 1, "a row of the table, not the table's aspect unit");
     t.put_local(b"r/a", b"4", Shred::No).unwrap();
     assert_eq!(ask(&mut t, 0), b"4".to_vec());
     drop(t);

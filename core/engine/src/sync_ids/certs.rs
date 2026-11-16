@@ -326,8 +326,7 @@ impl Engine {
     /// author's chain (its card) goes under D's home alone, with D's nodes' cards.
     #[cfg(test)]
     fn certificate_chains(&mut self, g: &Tid) -> Vec<(Tid, Tid)> {
-        let ctx = self.body_ctx(g);
-        let things: Vec<Tid> = ctx.closure.iter().filter(|t| self.cert_reads_in(g, t)).copied().collect();
+        let things: Vec<Tid> = self.sync_unit(g).iter().filter(|t| self.cert_reads_in(g, t)).copied().collect();
         let pairs: Vec<(Tid, Tid)> = things.into_iter().flat_map(|x| self.core.ix.chains_on.get(&x).into_iter().flatten().copied().collect::<Vec<_>>()).collect();
         pairs.into_iter().filter(|(a, _)| !self.is_node(a).unwrap_or(false)).collect()
     }
@@ -337,13 +336,12 @@ impl Engine {
     /// destroyed actor. A walk of the held holders, few beside the unit's things, and up from the
     /// destroyed ones among them.
     pub fn destroyed_upstream(&self, g: &Tid) -> BTreeSet<Tid> {
-        let closure = self.sync_unit(g);
         let held = &self.core.ix.held;
         let destroyed: Vec<Tid> = held.holders().filter(|e| self.core.destroyed(e)).copied().collect();
         let mut out = BTreeSet::new();
         // to a fixpoint: a destroyed actor counts once it is named on a live closure thing or on one counted
         loop {
-            let more: Vec<Tid> = destroyed.iter().filter(|e| !out.contains(*e) && held.named_on(e).any(|x| x != *e && (closure.contains(x) && !self.core.destroyed(x) || out.contains(x)))).copied().collect();
+            let more: Vec<Tid> = destroyed.iter().filter(|e| !out.contains(*e) && held.named_on(e).any(|x| x != *e && (self.core.ix.closure.unit_holds(g, x) && !self.core.destroyed(x) || out.contains(x)))).copied().collect();
             if more.is_empty() {
                 return out;
             }

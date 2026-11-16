@@ -500,7 +500,7 @@ fn loss_seen(core: &Core, a: &Tid) -> bool {
     // made them readable is gone
     let stale = core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| !core.waits.read_any(&u.commit)))));
     // an edge of ours ended, or lowered (to sync: it stays alive) on an actor reaching `a`
-    stale || reaching(core, a).iter().any(|x| core.timelines.get(x).is_some_and(|tl| tl.ended(x, ts).keys().chain(tl.lowered(x, ts).iter()).any(|h| ours(core, h))))
+    stale || reaching(core, a).iter().any(|x| core.timelines.on(x).is_some_and(|on| on.holders_gone(ts).keys().chain(on.holders_lowered(ts).iter()).any(|h| ours(core, h))))
 }
 
 /// Whether held actor `a` is lost and its drop is this trigger's (spec/permissions.md §3): lost

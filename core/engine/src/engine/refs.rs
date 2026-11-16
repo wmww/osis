@@ -10,7 +10,7 @@
 use super::{Tx, records, scan_table};
 use crate::error::{Error, Result};
 use crate::events::Event;
-use osis_base::{Ak, CommitId, RefKind, Tid, Value};
+use osis_base::{Ak, CommitId, RefKind, Ticket, Tid, Value};
 use osis_crdt::Fragment;
 use osis_store::Shred;
 use std::collections::BTreeMap;
@@ -21,8 +21,9 @@ pub(crate) const TO: &[u8] = b"node/refs to";
 /// Rows by source: source ‖ AK length (u16) ‖ AK ‖ target ‖ kind, the count (u64).
 pub(crate) const FROM: &[u8] = b"node/refs from";
 /// Ticket rows by target, a signal's per fire: target ‖ source ‖ AK ‖ 0 ‖ the fire's commit ID
-/// (none for a state), the count (u64). Finding a target's tickets reads its rows alone
-/// (`tickets_to`), never the source's other references or a signal's other fires.
+/// (none for a state), the tickets held there with their counts (`TicketCounts`). Finding a
+/// target's tickets reads its rows alone (`tickets_to`), never the source's state, its other
+/// references or a signal's other fires.
 pub(crate) const TICKETS: &[u8] = b"node/refs tickets";
 
 /// Whether `ak` is indexed: every aspect with a state, and every durable signal by its held
@@ -58,9 +59,10 @@ pub(crate) fn resync_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let old = stored(tx, tid, ak)?;
     // the ticket rows it had, per fire, go; each fire's are written again
     for (t, _) in old.keys().filter(|(_, k)| *k == RefKind::Ticket) {
-        for (fire, n) in ticket_rows(tx, t, tid, ak)? {
+        for (fire, held) in ticket_rows(tx, t, tid, ak)? {
             let mut d = Delta::default();
-            d.0.insert((*t, RefKind::Ticket), -(n as i64));
+            d.0.insert((*t, RefKind::Ticket), -(held.count() as i64));
+            d.1 = held.0.into_iter().map(|(k, n)| (k, -(n as i64))).collect();
             note_tickets(tx, tid, ak, fire.as_ref(), &d)?;
         }
     }
@@ -75,31 +77,59 @@ pub(crate) fn resync_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     note_rows(tx, tid, ak, d)
 }
 
-/// The ticket rows of `(source, ak)` naming `target`, by fire (none: a state's), with counts.
-fn ticket_rows(tx: &mut Tx<'_>, target: &Tid, source: &Tid, ak: &Ak) -> Result<Vec<(Option<CommitId>, u64)>> {
+/// The ticket rows of `(source, ak)` naming `target`, by fire (none: a state's), with what they
+/// hold.
+fn ticket_rows(tx: &mut Tx<'_>, target: &Tid, source: &Tid, ak: &Ak) -> Result<Vec<(Option<CommitId>, TicketCounts)>> {
     let tk = tx.txn.index(TICKETS)?;
     let pre = ticket_key(target, source, ak, None);
     let end = [pre.as_slice(), &[0xff; 33]].concat();
     let mut out = Vec::new();
     scan_table(&mut tx.txn, tk, &pre, Some(&end), |k, v| {
         let fire = k.get(pre.len()..).filter(|b| !b.is_empty()).map(|b| <[u8; 32]>::try_from(b).map(CommitId)).transpose().map_err(|_| Error::Corrupt("ticket row"))?;
-        out.push((fire, count_of(&v)?));
+        out.push((fire, TicketCounts::decode(&v)?));
         Ok(())
     })?;
     Ok(out)
+}
+
+/// A ticket row's value: each ticket for the target its source holds there, with how many times.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TicketCounts(pub BTreeMap<Ticket, u64>);
+
+impl TicketCounts {
+    /// How many tickets for the target it counts.
+    pub(crate) fn count(&self) -> u64 {
+        self.0.values().sum()
+    }
+    fn encode(&self) -> Vec<u8> {
+        let items = self.0.iter().flat_map(|(k, n)| [Value::Ticket(Box::new(k.clone())), Value::Int(*n as i64)]).collect();
+        osis_base::encode(&Value::List(items))
+    }
+    fn decode(v: &[u8]) -> Result<TicketCounts> {
+        let bad = || Error::Corrupt("ticket row");
+        let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: v.len() };
+        let Value::List(items) = osis_base::decode(v, &lim).map_err(|_| bad())? else { return Err(bad()) };
+        let mut out = BTreeMap::new();
+        for pair in items.chunks(2) {
+            let [Value::Ticket(k), Value::Int(n)] = pair else { return Err(bad()) };
+            out.insert((**k).clone(), u64::try_from(*n).map_err(|_| bad())?);
+        }
+        Ok(TicketCounts(out))
+    }
 }
 
 fn ticket_key(target: &Tid, source: &Tid, ak: &Ak, fire: Option<&CommitId>) -> Vec<u8> {
     [target.as_bytes().as_slice(), source.as_bytes(), ak.as_str().as_bytes(), &[0], fire.map(|c| c.0.as_slice()).unwrap_or_default()].concat()
 }
 
-/// One ticket row (`tickets_to`): `source`'s state on `ak`, or its fire `fire` there, holds a
-/// ticket for the target.
+/// One ticket row (`tickets_to`): `source`'s state on `ak`, or its fire `fire` there, holds
+/// `tickets` for the target.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct TicketRow {
     pub source: Tid,
     pub ak: Ak,
     pub fire: Option<CommitId>,
+    pub tickets: Vec<Ticket>,
 }
 
 /// The ticket rows naming `target`: O(its tickets).
@@ -108,7 +138,7 @@ pub(crate) fn tickets_to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<TicketRow>
     let pre = target.as_bytes().to_vec();
     let end = [pre.as_slice(), &[0xff; 16]].concat();
     let mut out = Vec::new();
-    scan_table(&mut tx.txn, tk, &pre, Some(&end), |k, _| {
+    scan_table(&mut tx.txn, tk, &pre, Some(&end), |k, v| {
         osis_base::costs::count("tickets: rows read", 1);
         let bad = || Error::Corrupt("ticket row");
         let rest = k.get(pre.len()..).ok_or_else(bad)?;
@@ -118,31 +148,43 @@ pub(crate) fn tickets_to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<TicketRow>
         let (a, fire) = (a.get(..z).ok_or_else(bad)?, a.get(z + 1..).ok_or_else(bad)?);
         let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or_else(bad)?;
         let fire = (!fire.is_empty()).then(|| <[u8; 32]>::try_from(fire).map(CommitId)).transpose().map_err(|_| bad())?;
-        out.push(TicketRow { source, ak, fire });
+        let tickets = TicketCounts::decode(&v)?.0.into_keys().collect();
+        out.push(TicketRow { source, ak, fire, tickets });
         Ok(())
     })?;
     Ok(out)
 }
 
-/// Applies the ticket count changes of `d` to the ticket rows of `(source, ak)` (fire `fire`
-/// of a signal), telling the node closure of a row appearing or going (`Closure::note_ticket`).
+/// Applies the ticket changes of `d` (`Delta`'s tickets) to the ticket rows of `(source, ak)`
+/// (fire `fire` of a signal), telling the node closure of a row appearing or going
+/// (`Closure::note_ticket`).
 fn note_tickets(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitId>, d: &Delta) -> Result<()> {
-    let ts: Vec<(Tid, i64)> = d.0.iter().filter(|((_, k), n)| *k == RefKind::Ticket && **n != 0).map(|((t, _), n)| (*t, *n)).collect();
-    if ts.is_empty() {
+    let mut by_target: BTreeMap<Tid, Vec<(&Ticket, i64)>> = BTreeMap::new();
+    for (k, n) in d.1.iter().filter(|x| *x.1 != 0) {
+        by_target.entry(k.target).or_default().push((k, *n));
+    }
+    if by_target.is_empty() {
         return Ok(());
     }
     tx.in_class(ak.ephemeral(), |tx| {
         let tk = tx.txn.index(TICKETS)?;
-        for (target, n) in ts {
+        for (target, moved) in by_target {
             let key = ticket_key(&target, source, ak, fire);
-            let old = tx.txn.table_get(tk, &key)?.map(|v| count_of(&v)).transpose()?.unwrap_or(0);
-            let new = u64::try_from(old as i64 + n).map_err(|_| Error::Corrupt("ticket count below zero"))?;
-            if new == 0 {
+            let mut row = tx.txn.table_get(tk, &key)?.map(|v| TicketCounts::decode(&v)).transpose()?.unwrap_or_default();
+            let was = row.0.is_empty();
+            for (k, n) in moved {
+                let new = u64::try_from(row.0.get(k).copied().unwrap_or(0) as i64 + n).map_err(|_| Error::Corrupt("ticket count below zero"))?;
+                match new {
+                    0 => drop(row.0.remove(k)),
+                    _ => drop(row.0.insert(k.clone(), new)),
+                }
+            }
+            if row.0.is_empty() {
                 tx.txn.table_remove(tk, &key, Shred::Yes)?;
             } else {
-                tx.txn.table_put(tk, &key, new.to_be_bytes().to_vec(), Shred::No)?;
+                tx.txn.table_put(tk, &key, row.encode(), Shred::No)?;
             }
-            if (old == 0) != (new == 0) {
+            if was != row.0.is_empty() {
                 tx.core.ix.closure.rejudge(target);
             }
         }
@@ -167,16 +209,21 @@ impl Reference {
     }
 }
 
-/// Count changes by target and kind.
+/// Count changes by target and kind, and of each ticket.
 #[derive(Default, Debug, PartialEq, Eq)]
-pub(crate) struct Delta(BTreeMap<(Tid, RefKind), i64>);
+pub(crate) struct Delta(BTreeMap<(Tid, RefKind), i64>, BTreeMap<Ticket, i64>);
 
 impl Delta {
     /// Adds `sign` for every reference in the values `f` holds (`Fragment::each_value`).
     pub(crate) fn add(&mut self, f: &Fragment, sign: i64) {
         f.each_value(&mut |v| {
             drop(osis_base::costs::span("refs: value read"));
-            references(v, &mut |k, t| *self.0.entry((t, k)).or_default() += sign);
+            references(v, &mut |k, t, v| {
+                *self.0.entry((t, k)).or_default() += sign;
+                if let Value::Ticket(x) = v {
+                    *self.1.entry((**x).clone()).or_default() += sign;
+                }
+            });
         });
     }
     /// The references at the reach of `delta` in `st` (`Fragment::reach`: all a join of it can
@@ -201,14 +248,14 @@ impl Delta {
     }
 }
 
-/// Calls `f` on every reference at any depth of `v`, with its kind: map keys, set elements, enum
-/// payloads, unknown tags' content; not inside a ticket (its tids are no references), a link (a
-/// chunked value) or a string.
-pub(crate) fn references(v: &Value, f: &mut dyn FnMut(RefKind, Tid)) {
+/// Calls `f` on every reference at any depth of `v`, with its kind and the reference itself: map
+/// keys, set elements, enum payloads, unknown tags' content; not inside a ticket (its tids are no
+/// references), a link (a chunked value) or a string.
+pub(crate) fn references(v: &Value, f: &mut dyn FnMut(RefKind, Tid, &Value)) {
     match v {
         Value::Strong(_) | Value::Weak(_) | Value::Ticket(_) => {
             if let Some((k, t)) = RefKind::of(v) {
-                f(k, t);
+                f(k, t, v);
             }
         }
         Value::Enum(_, Some(p)) => references(p, f),
@@ -335,8 +382,25 @@ pub(crate) fn resync(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, f: Option<&Fragment
         return Ok(());
     }
     let mut d = Delta::of(f);
-    d.sub(&stored(tx, source, ak)?);
+    let old = stored(tx, source, ak)?;
+    for (k, n) in stored_tickets(tx, source, ak, &old)? {
+        *d.1.entry(k).or_default() -= n as i64;
+    }
+    d.sub(&old);
     note(tx, source, ak, None, d)
+}
+
+/// The tickets the state rows of `(source, ak)` hold (`old` its stored counts), with counts.
+fn stored_tickets(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, old: &BTreeMap<(Tid, RefKind), u64>) -> Result<BTreeMap<Ticket, u64>> {
+    let mut out = BTreeMap::new();
+    for (t, _) in old.keys().filter(|(_, k)| *k == RefKind::Ticket) {
+        for (fire, held) in ticket_rows(tx, t, source, ak)? {
+            if fire.is_none() {
+                out.extend(held.0);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Removes every row of `(source, ak)` (its state is dropped).
@@ -460,9 +524,12 @@ pub(crate) fn check(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, f: Option<&Fragment>
     if !indexed(ak) {
         return Ok(());
     }
-    let want: BTreeMap<(Tid, RefKind), u64> = Delta::of(f).0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
+    let all = Delta::of(f);
+    let want: BTreeMap<(Tid, RefKind), u64> = all.0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
     let got = stored(tx, source, ak)?;
     debug_assert_eq!(got, want, "reference rows of {source:?} {ak:?} differ from its state");
+    let tickets: BTreeMap<Ticket, u64> = all.1.into_iter().filter(|x| x.1 != 0).map(|(k, n)| (k, n as u64)).collect();
+    debug_assert_eq!(stored_tickets(tx, source, ak, &got)?, tickets, "ticket rows of {source:?} {ak:?} differ from its state");
     Ok(())
 }
 

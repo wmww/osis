@@ -405,17 +405,18 @@ fn lowered_deliveries(tx: &mut Tx<'_>, target: Tid, c: CommitId, unreached: &[Ti
 /// at most `who`'s own there, `who` holding write; not its own (that is a self-removal).
 pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -> Vec<(Tid, PermEdge, bool)> {
     let ts = now_ts(core);
-    let Some(tl) = core.timelines.get(target) else { return Vec::new() };
-    let role = tl.role(who, target, At::now(ts));
+    // read by the edges into `target` and what reaches it (`Timelines::on`, `role`)
+    let Some(on) = core.timelines.on(target) else { return Vec::new() };
+    let role = core.timelines.role(who, target, At::now(ts));
     if role < Some(Role::Write) {
         return Vec::new();
     }
-    let ended: Vec<(Tid, PermEdge)> = tl.edges_at(None).holders(target).filter(|(m, e)| *m != who && e.until.is_some() && !e.says_retain() && !e.alive_at(Some(ts)) && Some(e.role) <= role).map(|(m, e)| (*m, *e)).collect();
+    let ended: Vec<(Tid, PermEdge)> = on.holders().into_iter().filter(|(m, e)| m != who && e.until.is_some() && !e.says_retain() && !e.alive_at(Some(ts)) && Some(e.role) <= role).collect();
     if ended.is_empty() {
         return Vec::new();
     }
     // it says what the expiry would (spec/permissions.md §3, Retain): the default at its key
-    let ends = tl.ended(target, ts);
+    let ends = on.holders_gone(ts);
     ended
         .into_iter()
         .map(|(m, e)| {

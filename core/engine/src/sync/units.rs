@@ -107,7 +107,7 @@ impl Edges<'_> {
 /// The node closure as a spanning tree over vertices (module doc), and the sync set's tree over
 /// the same out-lists. Journaled: a failed transaction undoes its changes; derived, so an open
 /// builds it again.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Closure {
     /// The node closure's tree.
     tree: Tree,
@@ -139,6 +139,26 @@ pub struct Closure {
     /// The things sourced at another node whose paths the sync set's walk takes not
     /// (`Engine::set_sourced`, spec/sync-set.md §5), the account root never among them.
     cut: JSet<Tid>,
+}
+
+impl Default for Closure {
+    fn default() -> Closure {
+        Closure {
+            tree: Tree::default(),
+            synced: Tree::default(),
+            out: JSetMap::default(),
+            inn: JSetMap::default(),
+            moved: JSet::default(),
+            rows: JSet::default(),
+            rejudge: JSet::default(),
+            ticket_ids: JMap::default(),
+            by_ticket_id: JSetMap::default(),
+            fires_due: JSet::default(),
+            members: JSetMap::by_element(),
+            left: JMap::default(),
+            cut: JSet::default(),
+        }
+    }
 }
 
 /// An edge followed: a held vertex and a target of its thing's strongs.
@@ -448,9 +468,19 @@ impl Closure {
         self.tree.held.get(t).cloned().unwrap_or_default()
     }
 
-    /// The things of context `c`.
+    /// The things of context `c` (a read of them whole).
     pub(crate) fn members(&self, c: &Ctx) -> Option<&BTreeSet<Tid>> {
         self.members.get(c)
+    }
+
+    /// Whether `t` is in `g`'s sync unit (`Engine::sync_unit`): a read of that member alone.
+    pub(crate) fn unit_holds(&self, g: &Tid, t: &Tid) -> bool {
+        t == g || self.members.contains(&Ctx::Read(*g), t)
+    }
+
+    /// A cursor over the (context, thing) members added from now on.
+    pub(crate) fn member_feed(&self) -> osis_base::memo::Feed<(Ctx, Tid)> {
+        self.members.element_feed()
     }
 
     /// Every thing of the node closure (a read of it whole).
@@ -946,7 +976,7 @@ impl Grow for GrowClosure<'_, '_> {
 /// Adds the target of every strong at any depth of `v` to `out` (the reference index's reading,
 /// spec/data-model.md §8 What counts).
 pub fn strongs_in(v: &osis_base::Value, out: &mut BTreeSet<Tid>) {
-    crate::engine::refs::references(v, &mut |k, t| {
+    crate::engine::refs::references(v, &mut |k, t, _| {
         if k == osis_base::RefKind::Strong {
             out.insert(t);
         }

@@ -680,6 +680,14 @@ impl<'a> On<'a> {
     pub fn applied(&self) -> impl Iterator<Item = (&'a RoleCommit, &'a osis_perm::EdgeOp)> + 'a {
         self.tl.applied_on(&self.thing)
     }
+    /// The holders whose edge on it ended by `ts` (`Timeline::ended`).
+    pub fn holders_gone(&self, ts: osis_base::Ts) -> BTreeMap<Tid, (osis_perm::EdgeEnd, Option<osis_perm::Point>, Role)> {
+        self.tl.ended(&self.thing, ts)
+    }
+    /// The holders whose edge on it is lowered at `ts` (`Timeline::lowered`).
+    pub fn holders_lowered(&self, ts: osis_base::Ts) -> BTreeSet<Tid> {
+        self.tl.lowered(&self.thing, ts)
+    }
     /// `Timeline::standing_since` of it.
     pub fn standing_since(&self) -> BTreeMap<Tid, Option<osis_perm::Point>> {
         self.tl.standing_since(&self.thing)

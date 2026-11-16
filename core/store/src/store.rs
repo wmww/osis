@@ -173,14 +173,24 @@ fn family(key: &[u8]) -> Option<usize> {
     }
 }
 
-/// The catalog row owning a table: its family and stamp key.
+/// The catalog row owning a table: its family and stamp key. A table's rows are stamped in its
+/// owner's family as the owner's key bytes then the row's key (`row_key`), so a read of a row, or
+/// of a range sharing a prefix, moves with the writes there alone; a read of the table whole (its
+/// length, a rank, an open range) reads the owner, which every write of a row moves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Owner(usize, StampKey);
+
+impl Owner {
+    /// The stamp bytes of row `key` of the table.
+    fn row_key(&self, key: &[u8]) -> Vec<u8> {
+        [self.1.bytes().as_slice(), key].concat()
+    }
+}
 
 #[derive(Clone)]
 enum Logged {
     Row(Vec<u8>),
-    Owner(Owner),
+    TableRow(Owner, Vec<u8>),
 }
 
 impl Stamping {
@@ -209,6 +219,15 @@ impl Stamping {
     fn stamp(&self, key: &[u8]) -> u64 {
         family(key).and_then(|f| self.table(f)).map_or(0, |t| t.stamp(key))
     }
+    /// Row `key` of `o`'s table is read, or (`prefix`) every row starting with it.
+    fn read_table_rows(&self, o: Owner, key: &[u8], prefix: bool) {
+        if let Some(t) = self.table(o.0) {
+            match prefix {
+                true => t.read_prefix(&o.row_key(key)),
+                false => t.read(&o.row_key(key)[..]),
+            }
+        }
+    }
     fn read_owner(&self, o: Owner) {
         if let Some(t) = self.table(o.0) {
             t.read_key(o.1);
@@ -230,9 +249,16 @@ impl Stamping {
         self.stamp_row(key, present);
         self.log.push(Logged::Row(key.to_vec()));
     }
-    fn owner(&mut self, o: Owner) {
+    /// Row `key` of `o`'s table was written: moves what read it, a prefix of it or the table whole.
+    fn table_row(&mut self, o: Owner, key: &[u8], present: bool) {
+        self.stamp_table_row(o, key, present);
+        self.log.push(Logged::TableRow(o, key.to_vec()));
+    }
+    fn stamp_table_row(&self, o: Owner, key: &[u8], present: bool) {
+        if let Some(t) = self.table(o.0) {
+            t.wrote_bytes(&o.row_key(key), present);
+        }
         self.stamp_owner(o, true);
-        self.log.push(Logged::Owner(o));
     }
     /// Stamps again what was written after the first `len` of the log, and forgets it. Each is
     /// stamped as removed, whether the undo leaves it there or not: a removal moves the key and
@@ -243,7 +269,10 @@ impl Stamping {
         for l in undone {
             match l {
                 Logged::Row(k) => self.stamp_row(&k, false),
-                Logged::Owner(o) => self.stamp_owner(o, false),
+                Logged::TableRow(o, k) => {
+                    self.stamp_table_row(o, &k, false);
+                    self.stamp_owner(o, false);
+                }
             }
         }
     }
@@ -264,9 +293,10 @@ impl Drop for StampTxn<'_> {
     }
 }
 
-/// The stamps of a table owned by catalog row `key`.
+/// The stamps of a table owned by catalog row `key`: in its family, apart from the row's own
+/// stamp, so a write of a table row moves no read of the catalog row (a table's handle).
 fn owner(key: &[u8]) -> Owner {
-    Owner(family(key).unwrap_or(0), Stamps::key(key))
+    Owner(family(key).unwrap_or(0), Stamps::key(&(b"table", key)))
 }
 
 impl Store {
@@ -536,7 +566,9 @@ impl Transaction<'_> {
     /// A read of the unit and tables of aspect `(tid, ak)` answered from a copy the caller keeps
     /// of them (the engine's decoded states): a memo computing depends on them as on a read here.
     pub fn noted_aspect(&self, tid: &Tid, ak: &Ak) {
-        self.st.s.read(&aspect_key(kind::ASPECT, tid, ak)[..]);
+        let key = aspect_key(kind::ASPECT, tid, ak);
+        self.st.s.read(&key[..]);
+        self.st.s.read_owner(owner(&key));
     }
 
     /// `noted_aspect` of local record `key` (the engine's decoded commit records).
@@ -670,11 +702,22 @@ impl Transaction<'_> {
     /// counters stay: a session never takes a counter twice.
     pub fn drop_aspect(&mut self, tid: &Tid, ak: &Ak) -> Result<(), Error> {
         self.cat_remove(&aspect_key(kind::ASPECT, tid, ak), Shred::Yes)?;
+        let o = owner(&aspect_key(kind::ASPECT, tid, ak));
         while let Some((_, v)) = self.cat_pop_prefix(&aspect_key(kind::TABLE, tid, ak), Shred::Yes)? {
             let root = u64_value(Some(v))?.ok_or(Error::Corrupt("table"))?;
-            self.drop_root(root)?;
+            self.drop_rows(Table(root, o))?;
         }
+
         Ok(())
+    }
+
+    /// Drops table `t` whole, each row stamped as removed: what read a row, a range or the table
+    /// moves, as at the row's own removal (work in proportion to what is dropped).
+    fn drop_rows(&mut self, t: Table) -> Result<(), Error> {
+        for (k, _) in self.table_range(t, b"", None, usize::MAX)? {
+            self.st.s.table_row(t.1, &k, false);
+        }
+        self.drop_root(t.0)
     }
 
     /// Drops every row of the table rooted at `root`, in memory and durable.
@@ -711,8 +754,7 @@ impl Transaction<'_> {
     pub fn drop_table(&mut self, tid: &Tid, ak: &Ak, idx: u8) -> Result<(), Error> {
         let Some(t) = self.table(tid, ak, idx)? else { return Ok(()) };
         self.cat_remove(&[aspect_key(kind::TABLE, tid, ak), vec![idx]].concat(), Shred::Yes)?;
-        self.st.s.owner(t.1);
-        self.drop_root(t.0)
+        self.drop_rows(t)
     }
 
     /// A memory-only table, or a durable one holding no memory rows.
@@ -727,7 +769,7 @@ impl Transaction<'_> {
     }
 
     pub fn table_get(&mut self, t: Table, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        self.st.s.read_owner(t.1);
+        self.st.s.read_table_rows(t.1, key, false);
         if let Some(v) = self.mem.row_get(t.0, key) {
             return Ok(Some(v.clone()));
         }
@@ -739,7 +781,7 @@ impl Transaction<'_> {
     /// Inserts or replaces; true if the key was new. Keys are at most a quarter page. A row goes
     /// to memory in a memory table, in memory mode or when held there already.
     pub fn table_put(&mut self, t: Table, key: &[u8], val: Vec<u8>, shred: Shred) -> Result<bool, Error> {
-        self.st.s.owner(t.1);
+        self.st.s.table_row(t.1, key, true);
         if t.0 & MEM_TABLE != 0 || self.memory || self.mem.row_get(t.0, key).is_some() {
             debug_assert!(t.0 & MEM_TABLE != 0 || btree::get(self, t.0, key)?.is_none(), "a memory row over a durable one");
             return Ok(self.mem.row_put(t.0, key, val));
@@ -748,7 +790,7 @@ impl Transaction<'_> {
     }
     /// Removes; true if the key was present.
     pub fn table_remove(&mut self, t: Table, key: &[u8], shred: Shred) -> Result<bool, Error> {
-        self.st.s.owner(t.1);
+        self.st.s.table_row(t.1, key, false);
         let removed = self.mem.row_remove(t.0, key);
         if t.0 & MEM_TABLE != 0 {
             return Ok(removed);
@@ -758,7 +800,14 @@ impl Transaction<'_> {
     /// Up to `limit` entries with `start <= key < end` in key order: a page of a stream (continue
     /// from the last key with a 0 byte appended).
     pub fn table_range(&mut self, t: Table, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, Error> {
-        self.st.s.read_owner(t.1);
+        // every key in [start, end) starts with what start and end share
+        match end {
+            Some(end) => {
+                let n = start.iter().zip(end).take_while(|(a, b)| a == b).count();
+                self.st.s.read_table_rows(t.1, start.get(..n).unwrap_or_default(), true);
+            }
+            None => self.st.s.read_owner(t.1),
+        }
         let mem = crate::overlay::range(self.mem.o.tables.get(&t.0), start, end, limit);
         if t.0 & MEM_TABLE != 0 {
             return Ok(mem);
@@ -814,7 +863,7 @@ impl Transaction<'_> {
         let mut names = Vec::new();
         while let Some((k, v)) = self.cat_pop_prefix(&[kind::INDEX], Shred::Yes)? {
             let root = u64_value(Some(v))?.ok_or(Error::Corrupt("index"))?;
-            self.drop_root(root)?;
+            self.drop_rows(Table(root, owner(&k)))?;
             names.push(R::new(k.get(1..).unwrap_or_default()).bytes()?.to_vec());
         }
         Ok(names)

@@ -802,6 +802,10 @@ indexes! {
     /// `by_thing` for role commits alone: what an account's chain reads of its role commits on
     /// its devices actor (`Core::devices_read`), so filing into D moves no account's chain.
     pub role_on: JSetMap<(Tid, Tid), CommitId>,
+    /// Held commits carrying a purge request, per thing they have a delta on (a request has one
+    /// on each thing it names, spec/commits.md §5): what finds a thing's requests
+    /// (`retention::destroy`) without reading its other commits.
+    pub purges_on: JSetMap<Tid, CommitId>,
     /// Held commits per (header actor, author), where those differ: re-judging
     /// `validity::acts_for` when the actor's timeline changes, a demotion's frontier, the
     /// actors this node acts for (`Core::acting`).
@@ -1734,11 +1738,14 @@ impl Core {
         v.demotions.iter().all(held) && (!v.demotes || self.ix.epoch_intro.get(k).is_some_and(|x| held(&x.1)))
     }
 
-    /// The first time after now that a grant's `until` or a role commit's `ts` falls due in the
-    /// components of `actors` (wall ms): until then the clock alone moves no role there.
+    /// The first time after now that a grant's `until` or a role commit's `ts` falls due on what
+    /// reaches `actors` (wall ms): until then the clock alone moves no role on them. Read by the
+    /// edges into each actor and what holds a role on it (`Timelines::roles_on`, `on`), so a
+    /// change elsewhere in their components moves nothing here.
     pub fn horizon(&self, actors: impl Iterator<Item = Tid>) -> Option<u64> {
         let now = self.now().0;
-        let mut seen: Vec<*const osis_perm::Timeline> = Vec::new();
+        let at = osis_perm::At::now(crate::flows::now_ts(self));
+        let mut seen: BTreeSet<Tid> = BTreeSet::new();
         let mut out: Option<u64> = None;
         let mut later = |t: u64| {
             if t > now {
@@ -1746,19 +1753,19 @@ impl Core {
             }
         };
         for t in actors {
-            let Some(tl) = self.timelines.get(&t) else { continue };
-            if seen.contains(&std::ptr::from_ref(tl)) {
-                continue;
-            }
-            seen.push(std::ptr::from_ref(tl));
-            for (_, _, e) in tl.edges_at(None).iter() {
-                if let Some(u) = e.until {
-                    later(u.0);
+            let up = self.timelines.roles_on(&t, at, &BTreeSet::new());
+            for x in std::iter::once(t).chain(up.keys().copied()) {
+                if !seen.insert(x) {
+                    continue;
                 }
-            }
-            for wid in tl.applied().keys() {
-                if let Some(ts) = tl.role_commit(&wid.0).map(|m| m.ts) {
-                    later(ts.wall_ms().0);
+                let Some(on) = self.timelines.on(&x) else { continue };
+                for (_, e) in on.holders() {
+                    if let Some(u) = e.until {
+                        later(u.0);
+                    }
+                }
+                for (mc, _) in on.applied() {
+                    later(mc.ts.wall_ms().0);
                 }
             }
         }

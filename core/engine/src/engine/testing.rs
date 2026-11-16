@@ -667,6 +667,7 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("acting_on", &*ix.acting_on),
         ("by_actor", &*ix.by_actor),
         ("role_on", &*ix.role_on),
+        ("purges_on", &*ix.purges_on),
         ("by_aspect", &*ix.by_aspect),
         ("aspect_things", &*ix.aspect_things),
         ("originals", &*ix.originals),

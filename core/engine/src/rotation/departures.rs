@@ -200,13 +200,16 @@ pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
 /// so holds none of `a`'s epochs to judge a rotation due by: it leaves rotating to those that do
 /// (spec/crypto.md §4, Key access).
 pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
-    let Some(tl) = core.timelines.get(a) else { return BTreeSet::new() };
     let at = At::now(now_ts(core));
     let keyless = super::members::key_access(core);
-    if keyless.is_empty() {
-        return tl.may_rotate(who, a, at).into_iter().collect();
-    }
-    let role = tl.roles_without(who, at, &keyless).get(a).copied();
+    // the role read back from `a` (`Timelines::role`): moved by the edges into what reaches it
+    let role = match keyless.is_empty() {
+        true => core.timelines.role(who, a, at),
+        false => {
+            let Some(tl) = core.timelines.get(a) else { return BTreeSet::new() };
+            tl.roles_without(who, at, &keyless).get(a).copied()
+        }
+    };
     osis_keys::ROLES.into_iter().filter(|r| role >= Some(Role::Write) && Some(*r) <= role).collect()
 }
 

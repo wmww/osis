@@ -340,11 +340,42 @@ pub struct JSetMap<K: Ord + Clone + Hash, T: Ord + Clone> {
     log: Vec<(K, T, bool)>,
     /// Each key's run (`by_run`), as `JMap`'s.
     run: Option<fn(&K) -> u64>,
+    /// Each element's own stamps, written by a map made `by_element` (`elem_write`): its (key,
+    /// element) pair as it comes or goes, which `contains` reads and `element_feed` follows.
+    elems: Stamps,
+    elem_write: Option<ElemWrite<K, T>>,
 }
+
+/// How a `by_element` map stamps an element (`JSetMap::elems`).
+type ElemWrite<K, T> = fn(&Stamps, &K, &T, bool);
 
 impl<K: Ord + Clone + Hash, T: Ord + Clone> Default for JSetMap<K, T> {
     fn default() -> Self {
-        JSetMap { map: BTreeMap::new(), stamps: Stamps::of::<Self>(), log: Vec::new(), run: None }
+        JSetMap { map: BTreeMap::new(), stamps: Stamps::of::<Self>(), log: Vec::new(), run: None, elems: Stamps::of::<Self>(), elem_write: None }
+    }
+}
+
+impl<K: Ord + Clone + Hash + Send + Sync + 'static, T: Ord + Clone + Hash + Send + Sync + 'static> JSetMap<K, T> {
+    /// A map whose elements are each readable alone (`contains`) and followed as they come
+    /// (`element_feed`): a reader of one element moves with that element alone, not with its set.
+    pub fn by_element() -> Self {
+        fn wrote<K: Clone + Hash + Send + Sync + 'static, T: Clone + Hash + Send + Sync + 'static>(s: &Stamps, k: &K, t: &T, present: bool) {
+            s.wrote_added(&(k.clone(), t.clone()), present, present);
+        }
+        JSetMap { elem_write: Some(wrote::<K, T>), ..JSetMap::default() }
+    }
+    /// Whether `k`'s set holds `t`: a read of that element alone (`by_element`).
+    pub fn contains(&self, k: &K, t: &T) -> bool {
+        match self.elem_write {
+            Some(_) => self.elems.read(&(k.clone(), t.clone())),
+            None => self.stamps.read(k),
+        }
+        self.map.get(k).is_some_and(|s| s.contains(t))
+    }
+    /// A reader's cursor over the (key, element) pairs added from now on, an undo restoring one
+    /// included: of a `by_element` map (another adds none).
+    pub fn element_feed(&self) -> osis_base::memo::Feed<(K, T)> {
+        self.elems.feed()
     }
 }
 
@@ -395,7 +426,10 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, T: Ord + Clone> JSetMap<K, T
     }
     /// Stamps `k`, a `Feed`'s key when its set was empty before (`added`), its run, and the
     /// keys (`keys_held`) when it came or went.
-    fn stamp(&mut self, k: &K, added: bool) {
+    fn stamp(&mut self, k: &K, t: &T, added: bool) {
+        if let Some(wrote) = self.elem_write {
+            wrote(&self.elems, k, t, self.map.get(k).is_some_and(|x| x.contains(t)));
+        }
         let present = self.map.contains_key(k);
         self.stamps.wrote_added(k, present, added);
         if let Some(f) = self.run {
@@ -420,7 +454,7 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, T: Ord + Clone> JSetMap<K, T
         let added = !self.map.contains_key(&k);
         let new = Self::raw_insert(&mut self.map, k.clone(), t.clone());
         if new {
-            self.stamp(&k, added);
+            self.stamp(&k, &t, added);
             self.log.push((k, t, false));
         }
         new
@@ -428,7 +462,7 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, T: Ord + Clone> JSetMap<K, T
     pub fn remove(&mut self, k: &K, t: &T) -> bool {
         let was = Self::raw_remove(&mut self.map, k, t);
         if was {
-            self.stamp(k, false);
+            self.stamp(k, t, false);
             self.log.push((k.clone(), t.clone(), true));
         }
         was
@@ -457,6 +491,7 @@ impl<K: Ord + Clone + Hash + Debug + Send + Sync + 'static, T: Ord + Clone + Deb
     type Mark = usize;
     fn name(&mut self, name: &'static str) {
         self.stamps.rename(name);
+        self.elems.rename(name);
     }
     fn commit(&mut self) {
         self.log.clear();
@@ -469,11 +504,11 @@ impl<K: Ord + Clone + Hash + Debug + Send + Sync + 'static, T: Ord + Clone + Deb
             let Some((k, t, was)) = self.log.pop() else { break };
             let added = !self.map.contains_key(&k);
             if was {
-                Self::raw_insert(&mut self.map, k.clone(), t);
+                Self::raw_insert(&mut self.map, k.clone(), t.clone());
             } else {
                 Self::raw_remove(&mut self.map, &k, &t);
             }
-            self.stamp(&k, added);
+            self.stamp(&k, &t, added);
         }
     }
 }

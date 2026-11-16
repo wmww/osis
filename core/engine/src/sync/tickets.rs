@@ -5,26 +5,11 @@
 use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
 use std::collections::BTreeSet;
-use osis_base::{Role, SyncId, Tid, Ticket, Value};
+use osis_base::{Role, SyncId, Tid, Ticket};
 use osis_crypto::{Epoch, Secret32};
 use osis_keys::{Opened, Opener};
 use osis_schema::Codec;
 use osis_schema::core_types::{self as ct, SecretBox, Secrets};
-
-/// Every ticket for `t` in `v`, at any depth.
-fn tickets_in(v: &Value, t: &Tid, out: &mut Vec<Ticket>) {
-    match v {
-        Value::Ticket(x) if x.target == *t => out.push((**x).clone()),
-        Value::Enum(_, Some(p)) => tickets_in(p, t, out),
-        Value::Map(m) => m.iter().for_each(|(k, x)| {
-            tickets_in(k, t, out);
-            tickets_in(x, t, out);
-        }),
-        Value::List(x) => x.iter().for_each(|x| tickets_in(x, t, out)),
-        Value::Set(x) => x.iter().for_each(|x| tickets_in(x, t, out)),
-        _ => {}
-    }
-}
 
 impl Core {
     /// The secret ticket `k` boxes, when this node holds a key its box opens under (spec/data-model.md
@@ -52,28 +37,19 @@ impl Core {
     }
 }
 
-/// The tickets for `t` among the known references (spec/data-model.md §8), as held now: O(its
-/// ticket rows), a signal's read in the fires naming `t` alone.
+/// The tickets for `t` among the known references (spec/data-model.md §8), as held now, read from
+/// its ticket rows alone (`refs::tickets_to`: each row holds its tickets), never a source's state
+/// or a signal's other fires.
 pub(crate) fn held_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Ticket>> {
     let mut out = Vec::new();
     for r in crate::engine::refs::tickets_to(tx, t)? {
-        match r.fire {
-            // a signal's references are its held valid fires' (spec/data-model.md §8 Known references)
-            Some(c) => {
-                let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&r.source, &r.ak).filter(|ai| m.holds(*ai) && m.valid_at(*ai))) else { continue };
-                crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
-                    if let Some(v) = f.read() {
-                        tickets_in(&v, t, &mut out);
-                    }
-                    Ok(())
-                })?;
-            }
-            None => {
-                if let Some(v) = tx.state(&r.source, &r.ak)?.and_then(osis_crdt::Fragment::read) {
-                    tickets_in(&v, t, &mut out);
-                }
-            }
+        // a signal's references are its held valid fires' (spec/data-model.md §8 Known references)
+        if let Some(c) = r.fire
+            && !tx.core.ix.commits.get(&c).is_some_and(|m| m.aspect(&r.source, &r.ak).is_some_and(|ai| m.holds(ai) && m.valid_at(ai)))
+        {
+            continue;
         }
+        out.extend(r.tickets);
     }
     out.sort();
     out.dedup();

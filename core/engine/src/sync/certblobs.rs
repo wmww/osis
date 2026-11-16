@@ -144,7 +144,7 @@ impl Engine {
     fn records_of(&mut self, t: &Tid) -> Result<BTreeSet<Tid>> {
         let records = self.certified_records(t)?;
         let ctx = self.body_ctx(t);
-        Ok(records.iter().filter(|x| !(ctx.closure.contains(x) && self.reads(&ctx, x)) && self.core.created(x).is_some()).copied().collect())
+        Ok(records.iter().filter(|x| !(ctx.holds(&self.core, x) && self.reads(&ctx, x)) && self.core.created(x).is_some()).copied().collect())
     }
 
     /// Whether a record blob can be sealed under `s` now (a current read epoch of its thing to

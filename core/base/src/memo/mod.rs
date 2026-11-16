@@ -203,6 +203,13 @@ fn prefix_hash(p: &[u8]) -> u64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StampKey(u64);
 
+impl StampKey {
+    /// The key's bytes: a prefix naming what it owns (a store table's rows, `wrote_bytes`).
+    pub fn bytes(&self) -> [u8; 8] {
+        self.0.to_be_bytes()
+    }
+}
+
 /// A container's change stamps, owned by the container: its writes call `wrote`, its reads
 /// `read`. Dropped with the container, after which nothing that read it holds.
 #[derive(Debug)]

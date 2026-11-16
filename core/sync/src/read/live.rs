@@ -146,16 +146,38 @@ impl Live<'_, '_> {
         Ok(self.cx.engine.seal_body(s, c, &held, self.cx.rng)?)
     }
 
+    /// The sync IDs with an entry of blob `b` that carry a body of `c` (`Engine::sync_body`), in
+    /// order.
+    fn homes_naming(&mut self, b: &BlobId, c: &CommitId) -> Result<Vec<SyncId>> {
+        let mut named = self.cx.store.naming(b)?;
+        named.sort_unstable();
+        named.dedup();
+        let mut out = Vec::new();
+        for x in named {
+            if self.cx.engine.sync_body(&x, c)?.is_some() {
+                out.push(x);
+            }
+        }
+        Ok(out)
+    }
+
     /// The blobs of `c` opened or sealed here whose bytes the store holds, each with an entry
     /// naming it under a sync ID read here that carries a body of `c` (so its wrap opens here):
     /// what a fresh encryption carries and a verbatim log passes on, and so what
     /// `Engine::may_log` reads (one truth: what this node may log is what it can).
     fn held_blobs(&mut self, c: &CommitId) -> Result<Vec<(BlobId, SyncId, Entry)>> {
-        let homes = self.cx.engine.sync_bodies(c)?;
         let mut out = Vec::new();
         for b in self.cx.engine.commit_blobs(c)?.iter() {
-            // the entry first: its row moves when the bytes arrive, so a reader follows them
-            let Some((x, e)) = self.cx.store.naming(b)?.into_iter().filter(|x| homes.contains_key(x)).find_map(|x| self.cx.store.entry(&x, b).ok().flatten().map(|e| (x, e))) else { continue };
+            // the entry first: its row moves when the bytes arrive, so a reader follows them; a
+            // sync ID's body asked per sync ID naming the blob, never every sync ID's
+            let mut found = None;
+            for x in self.homes_naming(b, c)? {
+                if let Some(e) = self.cx.store.entry(&x, b).ok().flatten() {
+                    found = Some((x, e));
+                    break;
+                }
+            }
+            let Some((x, e)) = found else { continue };
             if self.cx.store.blob_len(b)?.is_none() {
                 continue;
             }
@@ -270,6 +292,18 @@ impl Ground for Live<'_, '_> {
         Ok(self.cx.engine.publishes_reach()?)
     }
     fn may_log(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
+        // S's own entries first, read by key: what may be logged only grows with the blobs
+        // held, so where they do, no other sync ID's entries are read (a commit logged under
+        // many sync IDs judges each without the others)
+        let mut own = Vec::new();
+        for b in self.cx.engine.commit_blobs(c)?.iter() {
+            if self.cx.store.entry(s, b)?.is_some() && self.cx.store.blob_len(b)?.is_some() {
+                own.push(*b);
+            }
+        }
+        if !own.is_empty() && self.cx.engine.may_log(s, c, &own)? {
+            return Ok(true);
+        }
         let held: Vec<BlobId> = self.held_blobs(c)?.into_iter().map(|(b, _, _)| b).collect();
         Ok(self.cx.engine.may_log(s, c, &held)?)
     }
@@ -422,15 +456,14 @@ impl Ground for Live<'_, '_> {
         self.cx.store.stand(*at, s, &c.0)
     }
     fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool) -> Result<Option<BlobId>> {
-        let class = if self.cx.engine.sync_bodies(c)?.get(s).is_some() { Class::Durable } else { return Ok(None) };
+        let class = if self.cx.engine.sync_body(s, c)?.is_some() { Class::Durable } else { return Ok(None) };
         if !fresh {
             // a held blob of the commit not tombstoned under S, verbatim under a wrap for S
-            let homes: Vec<SyncId> = self.cx.engine.sync_bodies(c)?.keys().copied().collect();
             for b in self.cx.engine.commit_blobs(c)?.iter() {
                 if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() || self.cx.engine.blob_dropped(b) {
                     continue;
                 }
-                for from in &homes {
+                for from in &self.homes_naming(b, c)? {
                     // a peer's deposit under S is stamped only as promoted (`Ground::promotion`)
                     let Some(e) = self.cx.store.entry(from, b)?.filter(|e| from != s || !e.deposited || e.own) else { continue };
                     let Some(wrap) = self.cx.engine.rewrap(c, b, from, &e.wrap, s)? else { continue };

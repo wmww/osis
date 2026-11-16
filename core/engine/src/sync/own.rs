@@ -1,7 +1,7 @@
 //! This node's own commits per read sync ID (spec/sync-status.md §2, `Engine::own_commits`),
 //! kept as rows moved by what changed: each (sync ID, commit) candidate is followed alone
-//! (`Effects`), new candidates come from the commits added (`Feed`) and from things entering the
-//! sync ID's closure, so a pass costs what moved, never every own commit again.
+//! (`Effects`), new candidates come from the commits added and from things entering the sync
+//! ID's sync unit (`Feed`s), so a pass costs what moved, never every own commit again.
 
 use crate::Engine;
 use crate::error::Result;
@@ -10,15 +10,19 @@ use osis_base::{CommitId, SyncId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// What decides a sync ID's candidates: its read thing's closure and the authors written as.
+/// What decides a sync ID's candidates: its read things (whose sync units' members come by
+/// `Closure::member_feed`) and the authors written as.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Scope {
-    closure: Arc<BTreeSet<Tid>>,
+    things: BTreeSet<Tid>,
     authors: BTreeSet<Tid>,
 }
 
+/// The commits held, the self-removals waiting and the sync unit members, each from now on.
+type Feeds = (Feed<CommitId>, Feed<CommitId>, Feed<(crate::sync::units::Ctx, Tid)>);
+
 /// The own commits of each sync ID asked (`own_commits`). Bounded by the candidates: an own
-/// commit on a thing of a followed sync ID's closure, or a self-removal waiting; a sync ID read
+/// commit on a thing of a followed sync ID's sync unit, or a self-removal waiting; a sync ID read
 /// here no more takes its rows with it.
 #[derive(Clone)]
 pub(crate) struct OwnCommits {
@@ -28,8 +32,9 @@ pub(crate) struct OwnCommits {
     pairs: Effects<(SyncId, CommitId), bool>,
     /// The candidates of each followed sync ID, and the scope they were found in.
     candidates: BTreeMap<SyncId, (Option<Scope>, BTreeSet<CommitId>)>,
-    /// Commits held and self-removals waiting from now on; `None` until the first follow.
-    feeds: Option<(Feed<CommitId>, Feed<CommitId>)>,
+    /// Commits held, self-removals waiting and sync unit members from now on; `None` until the
+    /// first follow.
+    feeds: Option<Feeds>,
     /// The rows: per followed sync ID, its own commits (read whole).
     rows: Stamped<SyncId, Arc<BTreeSet<CommitId>>>,
     /// The follow's fixed point.
@@ -94,15 +99,11 @@ impl Engine {
         }
         let links = self.core.followed_links.all().values().map(|(_, l)| *l);
         let authors = self.core.me().into_iter().chain([self.core.id.tid()]).chain(links).collect();
-        let closure = match things.as_slice() {
-            [t] => self.sync_unit(t),
-            _ => Arc::new(things.iter().flat_map(|t| self.sync_unit(t).iter().copied().collect::<Vec<_>>()).collect()),
-        };
-        Ok(Some(Scope { closure, authors }))
+        Ok(Some(Scope { things: things.into_iter().collect(), authors }))
     }
 
     /// Whether `c` is an own commit with a body under `s` (spec/sync-status.md §2): written here
-    /// on a thing of `s`'s closure by one of its authors, or a self-removal sync waits on
+    /// on a thing of `s`'s sync unit by one of its authors, or a self-removal sync waits on
     /// (`waiting_removals`, a sibling's among them), and with a body under `s`.
     fn own_under(&mut self, s: &SyncId, c: &CommitId) -> Result<bool> {
         let waits = self.core.ix.held_wait.contains(c);
@@ -113,7 +114,7 @@ impl Engine {
                 let core = &self.core;
                 core.ix.commits.get(c).is_some_and(|m| {
                     let a = &m.view.author;
-                    m.origin == crate::events::Origin::Local && (core.me() == Some(*a) || core.id.tid() == *a || core.followed_links.is_key(a)) && m.view.aspects.iter().any(|x| ctx.closure.contains(&x.tid))
+                    m.origin == crate::events::Origin::Local && (core.me() == Some(*a) || core.id.tid() == *a || core.followed_links.is_key(a)) && m.view.aspects.iter().any(|x| ctx.holds(core, &x.tid))
                 })
             };
             if own && !self.commit_bodies_under(&ctx, c)?.is_empty() {
@@ -123,8 +124,13 @@ impl Engine {
         Ok(false)
     }
 
+    /// The commits on `x` by `authors`.
+    fn authored_on(&self, x: &Tid, authors: &BTreeSet<Tid>) -> Vec<CommitId> {
+        authors.iter().flat_map(|a| self.core.ix.by_thing.get(&(*x, *a)).into_iter().flatten().copied()).collect()
+    }
+
     /// Brings the own commits of each followed sync ID up to date: work in proportion to the
-    /// commits added, the things entering a closure and the candidates whose reads moved.
+    /// commits added, the things entering a sync unit and the candidates whose reads moved.
     pub(crate) fn follow_own(&mut self) -> Result<()> {
         let o = &self.core.own_commits;
         if o.quiet.holds(o.scope.idle() && o.pairs.idle()) {
@@ -140,7 +146,20 @@ impl Engine {
     }
 
     fn follow_own_in(&mut self, o: &mut OwnCommits) -> Result<()> {
-        // scopes first: a thing entering a closure brings its own commits
+        // things entering a sync unit since: their commits by the authors of each sync ID of it
+        // (before the scopes: a scope settled now finds its unit whole)
+        let entered = o.feeds.as_mut().map(|f| f.2.added()).unwrap_or_default();
+        for (ctx, x) in entered {
+            let crate::sync::units::Ctx::Read(u) = ctx else { continue };
+            let ids: Vec<(SyncId, BTreeSet<Tid>)> = o.candidates.iter().filter_map(|(s, (sc, _))| sc.as_ref().filter(|sc| sc.things.contains(&u)).map(|sc| (*s, sc.authors.clone()))).collect();
+            for (s, authors) in ids {
+                for c in self.authored_on(&x, &authors) {
+                    o.want(s, c);
+                }
+            }
+        }
+        // scopes: a sync ID followed afresh, or written as other authors, finds its candidates
+        // in its sync unit whole
         for s in o.scope.due() {
             let Some((_, now)) = o.scope.try_settle(&s, || self.own_scope(&s))? else { continue };
             let Some(now) = now else {
@@ -148,24 +167,32 @@ impl Engine {
                 o.unfollow(&s);
                 continue;
             };
-            let was = o.candidates.get(&s).and_then(|x| x.0.clone()).filter(|w| w.authors == now.authors);
-            let new: Vec<Tid> = now.closure.iter().filter(|x| !was.as_ref().is_some_and(|w| w.closure.contains(*x))).copied().collect();
-            let ix = &self.core.ix;
-            let found: Vec<CommitId> = new.iter().flat_map(|x| now.authors.iter().flat_map(move |a| ix.by_thing.get(&(*x, *a)).into_iter().flatten().copied())).chain(was.is_none().then(|| ix.held_wait.iter().copied()).into_iter().flatten()).collect();
+            let was = o.candidates.get(&s).and_then(|x| x.0.clone());
+            let mut found: Vec<CommitId> = Vec::new();
+            if was.as_ref() != Some(&now) {
+                for t in &now.things {
+                    for x in self.sync_unit(t).iter() {
+                        found.extend(self.authored_on(x, &now.authors));
+                    }
+                }
+            }
+            if was.is_none() {
+                found.extend(self.core.ix.held_wait.iter().copied());
+            }
             o.candidates.entry(s).or_default().0 = Some(now);
             for c in found {
                 o.want(s, c);
             }
         }
-        // commits held and removals waiting since: candidates of each sync ID whose closure
+        // commits held and removals waiting since: candidates of each sync ID whose sync unit
         // holds one of their things
-        let (held, waits) = o.feeds.as_mut().map(|(h, w)| (h.added(), w.added())).unwrap_or_default();
+        let (held, waits) = o.feeds.as_mut().map(|(h, w, _)| (h.added(), w.added())).unwrap_or_default();
         if !held.is_empty() || !waits.is_empty() {
-            let ids: Vec<(SyncId, Arc<BTreeSet<Tid>>)> = o.candidates.iter().filter_map(|(s, (sc, _))| sc.as_ref().map(|sc| (*s, sc.closure.clone()))).collect();
+            let ids: Vec<(SyncId, BTreeSet<Tid>)> = o.candidates.iter().filter_map(|(s, (sc, _))| sc.as_ref().map(|sc| (*s, sc.things.clone()))).collect();
             for c in held {
                 let things: Vec<Tid> = self.core.ix.commits.get(&c).map(|m| m.view.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default();
-                for (s, closure) in &ids {
-                    if things.iter().any(|x| closure.contains(x)) {
+                for (s, us) in &ids {
+                    if things.iter().any(|x| us.iter().any(|u| self.core.ix.closure.unit_holds(u, x))) {
                         o.want(*s, c);
                     }
                 }
@@ -199,7 +226,7 @@ impl Engine {
         {
             let o = &mut self.core.own_commits;
             if o.feeds.is_none() {
-                o.feeds = Some((self.core.ix.commits.feed(), self.core.ix.held_wait.feed()));
+                o.feeds = Some((self.core.ix.commits.feed(), self.core.ix.held_wait.feed(), self.core.ix.closure.member_feed()));
             }
             if !o.candidates.contains_key(s) {
                 o.candidates.insert(*s, (None, BTreeSet::new()));

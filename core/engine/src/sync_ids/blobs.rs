@@ -112,15 +112,22 @@ fn framed(key: osis_crypto::BlobKey, env: &Envelope, resolved: &osis_commit::Hea
 
 /// A sync unit as `Engine::commit_bodies_under` sees it.
 pub struct BodyCtx {
-    pub closure: std::sync::Arc<BTreeSet<Tid>>,
+    /// The sync unit's thing: its members are asked one at a time (`holds`), so a judgement
+    /// moves with the things it names, never with the unit's other members.
+    pub unit: Tid,
     pub actor: Tid,
     pub published: super::published::PublishedView,
 }
 
 impl BodyCtx {
+    /// Whether the sync unit holds `t`.
+    pub(crate) fn holds(&self, core: &crate::engine::Core, t: &Tid) -> bool {
+        core.ix.closure.unit_holds(&self.unit, t)
+    }
+
     /// Whether a commit (its `View`) may have bodies under the sync IDs of this sync unit's thing.
-    pub(crate) fn touches(&self, v: &crate::engine::View) -> bool {
-        v.aspects.iter().any(|a| self.closure.contains(&a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"))
+    pub(crate) fn touches(&self, core: &crate::engine::Core, v: &crate::engine::View) -> bool {
+        v.aspects.iter().any(|a| self.holds(core, &a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"))
     }
 }
 
@@ -454,7 +461,7 @@ impl Engine {
     pub fn sync_id_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let ctx = self.body_ctx(g);
         let core = &self.core;
-        let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.on_thing(t)).collect();
+        let mut ids: BTreeSet<CommitId> = self.sync_unit(g).iter().flat_map(|t| core.on_thing(t)).collect();
         for t in ctx.published.iter() {
             for ak in ["sync.0", "created.0"] {
                 let Ok(ak) = osis_base::Ak::new(ak) else { continue };
@@ -462,7 +469,7 @@ impl Engine {
             }
         }
         #[cfg(debug_assertions)]
-        debug_assert_eq!(ids, core.ix.commits.iter().filter(|(_, m)| ctx.touches(&m.view)).map(|(id, _)| *id).collect::<BTreeSet<_>>(), "sync ID commits by index");
+        debug_assert_eq!(ids, core.ix.commits.iter().filter(|(_, m)| ctx.touches(core, &m.view)).map(|(id, _)| *id).collect::<BTreeSet<_>>(), "sync ID commits by index");
         let mut out = Vec::new();
         for id in ids {
             out.extend(self.commit_bodies_under(&ctx, &id)?);
@@ -473,7 +480,7 @@ impl Engine {
     /// What `commit_bodies_under` needs of a sync unit's root: the unit, actor and the things its home
     /// sync ID publishes.
     pub fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
-        BodyCtx { closure: self.sync_unit(g), actor: self.core.reader_of(g), published: self.published_view(g) }
+        BodyCtx { unit: *g, actor: self.core.reader_of(g), published: self.published_view(g) }
     }
 
     /// The parts of commit `id` (its held parts, or `parts`) the actor of `ctx` may read
@@ -534,7 +541,7 @@ impl Engine {
     /// §1): those on things of the sync unit its reader actor may read. A chain certificate's part on any other thing goes
     /// there as a certificate copy (spec/permissions.md §4).
     pub fn body_carried(&self, ctx: &BodyCtx, h: &osis_commit::Header) -> std::collections::BTreeSet<usize> {
-        h.aspects.iter().enumerate().filter(|(_, a)| ctx.closure.contains(&a.tid) && self.reads(ctx, &a.tid)).map(|(i, _)| i).collect()
+        h.aspects.iter().enumerate().filter(|(_, a)| ctx.holds(&self.core, &a.tid) && self.reads(ctx, &a.tid)).map(|(i, _)| i).collect()
     }
 
     /// The body of commit `id` a sync ID of `ctx`'s sync unit must hold (`sync_id_bodies_meta`):
@@ -554,10 +561,10 @@ impl Engine {
         let id = *id;
         // the view: the header is decoded only for bodies the cache misses
         let Some(h) = self.core.ix.commits.get(&id).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
-        if !ctx.touches(&h) {
+        if !ctx.touches(&self.core, &h) {
             return Ok(Vec::new());
         }
-        let touches = h.aspects.iter().any(|a| ctx.closure.contains(&a.tid));
+        let touches = h.aspects.iter().any(|a| ctx.holds(&self.core, &a.tid));
         let mut body = Memo::get_in(self, |e| &e.core.bodies, &id, |e| e.body_with(&id, false))?;
         let gone: Vec<usize> = if unheld { self.core.ix.commits.get(&id).map(|m| m.missing_parts().chain(m.dropped_parts().map(|(ai, _)| ai)).collect()).unwrap_or_default() } else { Vec::new() };
         if !gone.is_empty() {
@@ -573,8 +580,8 @@ impl Engine {
         }
         let mut out = Vec::new();
         if let Some(mut b) = body {
-            let published = |ai: usize| h.aspects.get(ai).is_some_and(|a| !ctx.closure.contains(&a.tid) && ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"));
-            let inside = |ai: usize| h.aspects.get(ai).is_some_and(|a| touches && ctx.closure.contains(&a.tid)) || published(ai);
+            let published = |ai: usize| h.aspects.get(ai).is_some_and(|a| !ctx.holds(&self.core, &a.tid) && ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"));
+            let inside = |ai: usize| h.aspects.get(ai).is_some_and(|a| touches && ctx.holds(&self.core, &a.tid)) || published(ai);
             let parts: Vec<usize> = b.parts.iter().copied().filter(|ai| inside(*ai)).collect();
             let readable = self.readable_parts(ctx, &id, &parts);
             if !readable.is_empty() {
@@ -586,7 +593,7 @@ impl Engine {
                 // (certificate blobs are copies for the same reason), or a part whose thing's
                 // secret neither derives from the actor's nor comes through the closure (a destroyed
                 // actor's boxes went with it: its secrets come through nothing)
-                let derivable = |ai: usize| h.aspects.get(ai).is_some_and(|a| self.core.secret_actor(&a.tid).is_some_and(|x| x == ctx.actor || (ctx.closure.contains(&x) && !self.core.destroyed(&x))));
+                let derivable = |ai: usize| h.aspects.get(ai).is_some_and(|a| self.core.secret_actor(&a.tid).is_some_and(|x| x == ctx.actor || (ctx.holds(&self.core, &x) && !self.core.destroyed(&x))));
                 // (a `created.0` part carries no boxes: a records-only role commit is shared)
                 let role_elsewhere = h.kind.is_role() && readable.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid != ctx.actor && a.ak.as_str() != "created.0"));
                 b.to_sync_id = role_elsewhere || readable.iter().any(|ai| !derivable(*ai));
@@ -599,7 +606,7 @@ impl Engine {
         let now = self.now().0;
         let forever = |a: &crate::engine::AspectView| !h.memory && osis_commit::retention::fixed_retention(a.ak.as_str()).is_none() && crate::retention::history::of(&self.core, &a.tid, &a.ak).forever(now);
         if out.is_empty() && touches && (h.purges || h.aspects.iter().any(forever)) {
-            let on = |core: &crate::engine::Core, t: &Tid| ctx.closure.contains(t) && core.may_read(&ctx.actor, &core.reader_of(t));
+            let on = |core: &crate::engine::Core, t: &Tid| ctx.holds(core, t) && core.may_read(&ctx.actor, &core.reader_of(t));
             if self.run(|tx| crate::retention::lasting(tx, &id, &on))?
                 && let Some(blind) = self.core.ix.commits.get(&id).map(|m| m.header.blind)
             {
