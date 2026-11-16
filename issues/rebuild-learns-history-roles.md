@@ -4,4 +4,5 @@
 > Tags: engine, keys, tests
 
 - Seen at the delivery of X's fork to A (the fork's epoch comes to be held and named; A holds its seed). Re-reading every actor boxing to P whole (not only its boxes keyed to P) when a keyset of P comes to be held (`account::refresh_epochs`, `JudgedEpochs::keyed`) was tried and does not close it, so the live path missing it is not the box ingest: find which history box the rebuild opens (`ingest_view`'s history alternatives, `open_histories`) and with which secret, and why the live arrival of the fork does not reach it.
+- Seeds 1362, 1377, 1751 at large size (`OSIS_CUSTODY_START=1362 OSIS_CUSTODY_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_custody::engine_agrees_with_custody_model_large_spec_permissions_5_4`).
 - Reproduce by the differential with `CUSTODY_PROBE=1` (index checked after every delivery) and `--nocapture`; build the minimal test from the history box found (never pin the seed).

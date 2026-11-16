@@ -2280,7 +2280,7 @@ fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
         let ids = lp.peers[2].engine.commit_ids();
         send(&mut lp, 2, 0, &ids);
         let (_, all) = lp.peers[0].engine.pair(&n2).unwrap();
-        lp.peers[2].engine.core.stale_shut = shut;
+        lp.peers[2].engine.core.faults.stale_shut = shut;
         send(&mut lp, 0, 2, &all);
         lp.peers[2].engine.paired(&a.account).unwrap();
         // the account's commits first, the removal among them; Q's grant after

@@ -1065,10 +1065,7 @@ impl Run {
         let seeds = self.boxes(&seed, &bx);
         let (p, d) = (self.ids.p, self.ids.d);
         self.lp.advance(1);
-        let mut m = crate::Mutation::new();
-        m.sign_as(p);
-        m.op(d, &osis_schema::core_types::ACCOUNT, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::bytes(&key.to_bytes())) }).unwrap();
-        m.reseal = Some(osis_commit::SeedReseal { signing_key: key, seeds });
+        let m = crate::flows::custody::reseal_commit(p, d, key, seeds).unwrap();
         let c = self.lp.peers[X].commit(m).ok()??;
         self.fresh(X);
         let pk = self.x_resign(&c, e)?;
@@ -1617,7 +1614,7 @@ fn fails_under(control: Control, n: u64) {
 
 // The differential's negative controls (roles-model `custody`'s, planted in the engine): each
 // fails. By hand: `cargo test -p osis-engine --lib -- --ignored rotation::tests_custody::control_`.
-// `stale-shut`'s counterpart (`Core::stale_shut`) shuts only a box arriving after its epoch went
+// `stale-shut`'s counterpart (`Faults::stale_shut`) shuts only a box arriving after its epoch went
 // stale, which these worlds seldom deliver: `a_box_at_a_revoked_account_epoch_is_read_*` is its
 // check.
 #[test]
@@ -1636,6 +1633,25 @@ fn control_roster_bare_fails() {
 #[ignore = "control"]
 fn control_merge_random_fails() {
     fails_under(Control::MergeRandom, 100);
+}
+
+// spec/crypto.md §9 (Seed re-seal), spec/wire.md §4: C holds X's rotation's seed only by X's
+// re-seal (which put that epoch's key in D's `account.0` here) and re-seals it to T, which no
+// box reaches: a re-seal adds the key afresh, so its commit is made whatever `account.0` holds.
+#[test]
+fn a_seed_reseal_is_made_with_its_key_in_account_already_spec_crypto_9() {
+    let mut r = Run::new(0);
+    let mut bx = [false; N];
+    bx[B] = true;
+    bx[X] = true;
+    let f = r.x_rotation(&Line::new(), vec![A], vec![], X, vec![], vec![], bx, false).unwrap();
+    r.send(f, C);
+    let e = r.w.line(f);
+    let s = r.x_reseal(&e, C).unwrap();
+    r.send(s, C);
+    // fails inside where the model re-seals and the engine does not
+    r.act(C, None, false);
+    assert!(r.w.items.iter().any(|i| matches!(i.kind, MK::Reseal { .. }) && i.author == C && i.boxed[T]), "C re-seals X's epoch's seed to T");
 }
 
 fn tally(runs: &[Reached]) {

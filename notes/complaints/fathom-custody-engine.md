@@ -12,3 +12,6 @@
 - Phase 3: `refresh_epochs` building the account view to derive merge seeds at its top broke the "an open builds no chain" invariant in ~800 tests at once; anything done per account belongs inside its per-account loop.
 - Phase 4: an engine panic inside a sampled `check_index` (a rebuild mismatch) carries no context of the run that led there; the differential's `CUSTODY_TRACE` / `CUSTODY_PROBE` hooks (print every act and item, check the index after every delivery) found the late-named box in minutes. A debug `want`/`got` legend in the mismatch message (which is live, which rebuilt) would have saved an hour.
 - Phase 4: heavy-lock waits of several minutes for a single 64-seed run when another branch's gate held it.
+- Review: the custody `_large` property at OSIS_FULL (2000 worlds) took 667 s wall, 9957 CPU-s under `tools/heavy`, past its limit (598 s / 5060 CPU-s): a release-size run, not a gate stage.
+- Review: notes/engine-validity-epochs.md and notes/crypto.md still described Waiting, D frontiers, D-list seed placement and the merge-storm limit after phase 2-3; `tools/policy.py` caught only the stale code names, not the stale prose.
+- Review: a set `Add` of a value already live writes no delta and a commit with no delta is silently not made (`commit_in` → `Ok(None)`), so seed re-seals (carried by such an add) were never made; nothing errors.

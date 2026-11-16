@@ -1030,6 +1030,9 @@ pub(crate) struct Faults {
     pub custody_judged: bool,
     pub roster_bare: bool,
     pub merge_random: bool,
+    /// Boxes to an account at a stale epoch (revoked, or not counting) stay shut, as if stale
+    /// meant unread (`Core::account_keys_by_name`).
+    pub stale_shut: bool,
 }
 
 /// A held role commit's signatures beyond its outer one (`Indexes::role_sigs`): its sealed
@@ -1274,13 +1277,10 @@ pub struct Core {
     /// Tests: the original's floor this node's edits claim, over the true one (`commit_in`).
     #[cfg(test)]
     pub(crate) lie_floor: Option<u64>,
-    /// Tests, a fault: boxes to an account at a stale epoch (revoked, or not counting) stay shut,
-    /// as if stale meant unread (`Core::account_keys_by_name`).
-    #[cfg(test)]
-    pub(crate) stale_shut: bool,
     /// Tests, faults the custody differential plants (roles-model `custody` controls): seeds held
     /// only from counting epochs (`custody_judged`), a held revocation acting on D's roster apart
-    /// from its rotation (`roster_bare`), merges with fresh seeds (`merge_random`).
+    /// from its rotation (`roster_bare`), merges with fresh seeds (`merge_random`), stale boxes shut
+    /// (`stale_shut`).
     #[cfg(test)]
     pub(crate) faults: Faults,
     /// Key actors other than the node whose seed this node holds for now: they sign commits
@@ -1567,8 +1567,6 @@ impl Core {
             lie_facts: self.lie_facts.clone(),
             #[cfg(test)]
             lie_floor: self.lie_floor,
-            #[cfg(test)]
-            stale_shut: self.stale_shut,
             #[cfg(test)]
             faults: self.faults,
             key_actors: self.key_actors.clone(),
@@ -2209,8 +2207,6 @@ impl Core {
             #[cfg(test)]
             lie_floor: _,
             #[cfg(test)]
-            stale_shut: _,
-            #[cfg(test)]
             faults: _,
         } = c;
     }
@@ -2398,8 +2394,6 @@ impl Core {
             lie_facts: None,
             #[cfg(test)]
             lie_floor: None,
-            #[cfg(test)]
-            stale_shut: false,
             #[cfg(test)]
             faults: Faults::default(),
             key_actors: Default::default(),
@@ -3956,7 +3950,6 @@ impl Engine {
         {
             fresh.check_ingest = self.core.check_ingest;
             fresh.whole_apply = self.core.whole_apply;
-            fresh.stale_shut = self.core.stale_shut;
             fresh.faults = self.core.faults;
         }
         fresh

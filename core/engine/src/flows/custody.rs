@@ -140,7 +140,8 @@ fn seed_box(tx: &mut Tx<'_>, p: &Tid, epoch: &VerifyingKey, m: &Tid, payload: &[
 
 /// Seed re-seals (spec/crypto.md §9, Custody), at the end of a complete pass of D's sync IDs:
 /// for each head of this node's account whose seed it holds, the
-/// other devices on D's roster no counting box of that seed is tagged for are boxed it, with the seeds
+/// other devices on D's roster no counting box of that seed is tagged for (nor, a merge's, of
+/// every tip's seed: they derive it) are boxed it, with the seeds
 /// of its line held here, one commit per head. Bounded by structure: once held, a re-seal is a
 /// counting box, so each (head, device) is re-sealed once per node that sees it lacking before it
 /// holds another's. A box counts only in a commit that counts here, so a holder of an old seed (a
@@ -159,7 +160,10 @@ pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> 
     for h in v.heads() {
         let Some(keys) = v.keys_of(&h, &held) else { continue };
         let seed = keys.seed().clone();
-        let lacking: Vec<Tid> = roster.iter().filter(|m| !boxed.contains(&osis_crypto::seed_tag(&seed, m))).copied().collect();
+        // a merge's seed: a device holding a counting box of every tip's derives it (Merges)
+        let tips: Vec<Secret32> = if v.is_merge(&h) { v.tips_of(&h).iter().filter_map(|t| v.keys_of(t, &held)).map(|k| k.seed().clone()).collect() } else { Vec::new() };
+        let derives = |m: &Tid| !tips.is_empty() && tips.iter().all(|t| boxed.contains(&osis_crypto::seed_tag(t, m)));
+        let lacking: Vec<Tid> = roster.iter().filter(|m| !boxed.contains(&osis_crypto::seed_tag(&seed, m)) && !derives(m)).copied().collect();
         if lacking.is_empty() {
             continue;
         }
@@ -173,15 +177,23 @@ pub(crate) fn reseal_seeds(tx: &mut Tx<'_>) -> Result<Vec<osis_base::CommitId>> 
             seeds.push(seed_box(tx, &p, &epoch, m, &payload)?);
         }
         seeds.sort_by_key(|b| b.tag);
-        // its carrier: the epoch added to D's `account.0` again, so it travels under D's sync IDs
-        // to every device
-        let mut m = crate::Mutation::new();
-        m.sign_as(p);
-        m.op(d, &ct::ACCOUNT, PathOp { path: vec![], op: Op::Add(Value::bytes(&epoch.to_bytes())) })?;
-        m.reseal = Some(SeedReseal { signing_key: epoch, seeds });
-        out.extend(crate::Engine::commit_tx(tx, m)?);
+        out.extend(crate::Engine::commit_tx(tx, reseal_commit(p, d, epoch, seeds)?)?);
     }
     Ok(out)
+}
+
+/// A seed re-seal of account `p` (devices actor `d`) of the epoch with signing key `epoch`:
+/// boxes `seeds`, carried by the epoch's key added to D's `account.0` afresh (its live elements
+/// removed in the same delta: an add of a key already there writes nothing, and a commit with no
+/// delta is never made), so it travels under D's sync IDs to every device.
+pub(crate) fn reseal_commit(p: Tid, d: Tid, epoch: VerifyingKey, seeds: Vec<SeedBox>) -> Result<crate::Mutation> {
+    let key = Value::bytes(&epoch.to_bytes());
+    let mut m = crate::Mutation::new();
+    m.sign_as(p);
+    m.op(d, &ct::ACCOUNT, PathOp { path: vec![], op: Op::Remove(key.clone()) })?;
+    m.op(d, &ct::ACCOUNT, PathOp { path: vec![], op: Op::Add(key) })?;
+    m.reseal = Some(SeedReseal { signing_key: epoch, seeds });
+    Ok(m)
 }
 
 /// The roster devices this node sees holding every seed of `tips` (a merge's tip keys): a box of

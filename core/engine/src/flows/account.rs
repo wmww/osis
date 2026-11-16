@@ -859,7 +859,7 @@ impl Core {
     pub(crate) fn account_keys_by_name(&self, p: &Tid) -> BTreeMap<Epoch, Arc<AccountEpochKeys>> {
         let (Some(a), Some(v)) = (self.accounts.get(p), self.account_view(p)) else { return BTreeMap::new() };
         #[cfg(test)]
-        let shut = |id: &CommitId, e: &EpochPublic| self.stale_shut && (*id != FIRST_EPOCH && !v.rotation_counts(id) || v.revoked(&e.signing.to_bytes()));
+        let shut = |id: &CommitId, e: &EpochPublic| self.faults.stale_shut && (*id != FIRST_EPOCH && !v.rotation_counts(id) || v.revoked(&e.signing.to_bytes()));
         #[cfg(not(test))]
         let shut = |_: &CommitId, _: &EpochPublic| false;
         v.epochs.iter().filter(|(id, e)| !shut(id, e)).filter_map(|(_, e)| Some((v.name(e)?, a.keys.get(&e.signing)?.clone()))).collect()
