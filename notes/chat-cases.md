@@ -232,12 +232,12 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 | Does the sidebar show channel names without reading each channel? | yes | yes⁵⁰ |
 | Can non-members see that a private channel exists? | no | opt⁵¹ |
 | Can a member post as a realm (the role actor)? | no | opt³⁹ |
-| Can a member choose which channels to sync, with none by default? | yes | core s |
+| Can a member choose which channels to sync, with none by default? | yes | opt⁵⁰ |
 | Unread counts for channels not synced? | yes | opt⁵² |
 | Mentions in channels not synced? | yes | core h |
 | Threads without a new chat per thread? | yes | yes⁵³ |
 | A document anyone in the realm can edit, synced to every member? | yes | yes⁵⁴ |
-| Can a member remove another member's document from the realm's auto-synced content? | no | no⁵⁴ |
+| Can a member remove another member's document from the realm's auto-synced content? | no | yes⁵⁴! |
 | The same chat in two realms? | yes | yes |
 | Move a chat between realms without copying it? | yes | yes |
 | A realm inside a realm, members inherited? | yes | yes |
@@ -255,7 +255,6 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 - **n** History-less grant: a cut (a read rotation at the add carrying no history), a floor per read epoch that history entries and boxes respect, role commits opened by every holder under roles secrets (notes/history-less-grant.md, model-checked); segments (footnote 33) are the fallback without core change.
 - **o** A node that stops fetching short of old messages (issues/partial-history-fetch.md); fetch is newest first (spec/sync-judgement.md §2).
 - **r** Pure readers place nothing under big sync IDs: no chain certificates or node card from a reader unless asked (realms past a few thousand members).
-- **s** Default-off sync: a device holding a realm's secret does not sync the sync IDs of the things the realm holds until the app chooses (a node syncs its node closure, spec/sync-set.md).
 
 ## Footnotes
 
@@ -288,10 +287,10 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 47. Admin passes only through admin, and admins of a realm manage its roster; direct per-channel admin grants avoid it at one grant per channel.
 48. A sibling chat the members write carries the reactions; the app shows them under the announcement.
 49. Adding a channel is a grant for the realm on the chat, needing admin on the chat and on the realm's layout; a member creates a chat and asks an admin to add it.
-50. The realm's grants are its contents (every member holds them through the realm's inbox copies); names and categories are a chat-app layout aspect on the realm. Channels are not in the realm's group, so nothing of theirs is under its sync ID.
+50. Names and categories are a chat-app layout aspect on the realm, naming each channel by a weak, so nothing of a channel is in the realm's sync unit; a member's app syncs a channel by holding a strong to it (spec/sync-set.md §1).
 51. Grant the private channel only to a role realm. Left: the nodes keeping it unread see its sync ID, a device-removal frontier head names its tid under public sync IDs (frontier-study format), and a purge across children shows their tids.
 52. Entry counts are drowned by certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
-54. A thing under the realm or holding a grant for it is in the realm; as a member of the realm's group it syncs under the realm's sync ID, one with its own sync ID syncs under that. With plain grants (notes/realms.md open question 1) a writer's removing it from the group only stops the auto-sync; removing it from the realm is an admin's grant removal.
+54. A thing the realm reads (made under it, or granted to it) is in the realm's sync unit while the realm's `holds.0` strongly references it; one with own keys syncs under its own sync ID too. Any member writes the realm, so any member may remove the strong: the thing leaves the realm's sync unit, and goes where nothing else references it (spec/sync-set.md §3).
 55. Every thing's role history is kept forever and readable by its holders.
 56. Rights: lower the top realm's role on each child, one commit per child; one step only as a client-honored flag.

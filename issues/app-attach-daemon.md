@@ -3,4 +3,4 @@
 > Priority: low
 > Tags: app, cli
 
-Every CLI command but `group source` runs through the daemon (`chat join` and `kick` included), so connecting would lose nothing the app uses.
+Every CLI command but `source` runs through the daemon (`chat join` and `kick` included), so connecting would lose nothing the app uses.

@@ -359,7 +359,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 22 | holders | `[tid] -> [[actor, kind, role, Opt(until), [through*]]*]`, kind 0 actor, 1 link, 2 key; nothing behind an actor the actor may not read |
     | 23 | profile | `[] -> tid`; main only |
     | 24 | profile of | `[account] -> Opt(tid)`; main only |
-    | 27 | wait synced | `[scope] -> []`, scope `[0]` all, `[1, tid]` a thing, `[2]` deliveries; waits; main only |
+    | 27 | wait synced | `[scope] -> []`, scope `[0]` all, `[1, tid]` a thing; waits; main only |
     | 28 | import contact | `[card text] -> account`; waits; main only |
     | 29 | redeem | `[link text] -> tid`; waits; main only |
 

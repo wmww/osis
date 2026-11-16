@@ -38,7 +38,7 @@ A link is the whole authority to read and to delete its blob: whoever holds the 
 - **Deleter lacking the tree**: deletes nothing until it holds the nodes. If every copy of a node is gone, its subtree stays until expiry or a clear by the sync ID's delete key.
 - **Removed reader**: deleting needs the sync ID's current delete key besides the delete key; lost access discards its freed set.
 - **What a storing node learns**: per-piece deletes under their own salt and thing blind; no list whose length tracks how many blobs a commit introduced or a value links.
-- **Cross-group**: a piece under G1 and G2 is one blob with one entry per sync ID; a delete removes one entry and needs that sync ID's key.
+- **Across sync IDs**: a piece under G1 and G2 is one blob with one entry per sync ID; a delete removes one entry and needs that sync ID's key.
 
 ## Rejected
 - **Parent/child refcount at the storing node**: a node keeping it unread would learn tree shape.

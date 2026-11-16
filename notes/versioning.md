@@ -30,15 +30,15 @@ The core does four things (spec/versioning.md): IDs never reused, open structs w
 ## Which form is written
 An app update must never by itself change what is stored. Per write into a form with a transition, codegen chooses:
 - **old only**, g(new): the default when g is exact or its approximation is declared acceptable. Old apps stay fully functional.
-- **new only**: when g is impossible for this value, or policy says the group has moved on. Optionally reset the old form in the same commit.
+- **new only**: when g is impossible for this value, or policy says the thing's writers have moved on. Optionally reset the old form in the same commit.
 - **new plus lossy old**: when g approximates usefully and old readers still matter.
-Policy inputs, all local: whether g is exact; whether recent writes in this group still touch the old form alone (an old writer; pair with an age cutoff for dead nodes); the version's age; an explicit per-group or per-app setting, which overrides. Two nodes deciding differently produce a mix the tie-break reads correctly. A thing shared later into a group with old writers goes back to old-only if g is exact.
+Policy inputs, all local: whether g is exact; whether recent writes in this thing's sync unit still touch the old form alone (an old writer; pair with an age cutoff for dead nodes); the version's age; an explicit per-thing or per-app setting, which overrides. Two nodes deciding differently produce a mix the tie-break reads correctly. A thing shared later with old writers goes back to old-only if g is exact.
 
 Cost where the new form is used: old apps see stale or missing data on that item, and their later edit wins through f at the granularity of the converted value. Nothing can do better: old code cannot know what new data means.
 
 ## Blessed paths for hard changes
 - **Restructuring across things** (inline tasks become task things): f cannot mint tids on read, and only writers of an actor can create things under it. Model the new structure as a case (a task gains `ref: option<strong>`; with a ref its inline fields are a stale copy that wins only by timestamp). Convert an element when a user edits or shares it, never in bulk.
-- **Whole redesign**: an import (read old forms through f, write new forms) once policy says the group moved on; drop f only after that, or data "vanishes" on update.
+- **Whole redesign**: an import (read old forms through f, write new forms) once policy says its writers moved on; drop f only after that, or data "vanishes" on update.
 - **Enums**: cases are never removed; document dead ones. A new case is a value g cannot express, so where old readers matter it goes into a succeeding item; otherwise add it in place.
 - **Semantic reuse** (same ID, new meaning): the one cursed path cheaper than the blessed one and uncatchable by the checker. New ID, always.
 - **A new required field**: give it a default, or make a succeeding struct.
@@ -54,10 +54,10 @@ v1 notes app: `note:tasks.0: list<task>`, `task { 1 title: string, 2 done: bool 
 Format version 1 is the header's first field; the blob prefix has its own framing version byte so a node that cannot read the blob can tell a framing it cannot parse (it then keeps the blob without expiry or commitments); the node-to-node protocol negotiates its version in Hello, independent of both. Links and cards carry a format number of their own.
 
 ## Rejected
-- Terminal reset / retire marker in the lattice (irreversible, per-thing markers forever, half-migrated groups).
+- Terminal reset / retire marker in the lattice (irreversible, per-thing markers forever, half-migrated sync units).
 - Conversion code or a lens language in the schema format; core-managed mirroring between forms (duplicates aspects, needs a path language in the core). Cambria-style lenses over ops.
 - Pre-declared enum fallback case or generated `Unknown` variant (apps cannot do anything useful with an unknown case).
-- Schema written into every group it is used in (needs a first admin per writer; concurrent first writers mint two things).
+- Schema written into every sync unit it is used in (needs a first admin per writer; concurrent first writers mint two things).
 - `succeeds` resolved by comparing old with g(new): needs g∘f exact, which float conversions break.
 - Schema-relative AK indexes or hashed AK names (deltas unjoinable until the schema arrives).
 - Per-delta type hash in the header (a node types an AK by the schema it holds).

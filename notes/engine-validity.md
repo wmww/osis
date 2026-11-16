@@ -35,7 +35,7 @@ An addendum's validity reads its header and the timeline, never its body: `ix.ad
 - perm `incremental::incremental_equals_from_scratch` checks reported moves against every timeline answer (`update_moved`). Arrival order: `apply/tests_order.rs`, perm `incremental` late leaves, `late_holder_judges_revoke_alike_*`.
 
 ### Possible holders (`Held::ever_admins`, `ever_writers`)
-The one helper for "could this signer ever have held the role" where the answer must not depend on arrival (purge rights; spec/commits.md §4); a timeline read would. A least set grown from the thing through first admins and grants signed by members, of any validity, so it only grows. One set over the thing and its members, not one per member thing (a member could name the holder on the thing anyway; per-thing sets took 20 s per call on a chain of 1000 groups).
+The one helper for "could this signer ever have held the role" where the answer must not depend on arrival (purge rights; spec/commits.md §4); a timeline read would. A least set grown from the thing through first admins and grants signed by members, of any validity, so it only grows. One set over the thing and its members, not one per member thing (a member could name the holder on the thing anyway; per-thing sets took 20 s per call on a chain of 1000 nested holders).
 
 ## Un-merge and the one rebuild path
 ### Un-merge is skipping invalid bodies

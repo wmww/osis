@@ -19,10 +19,10 @@ Part of moving agent orchestration onto osis; useful for any remote control of m
 - **queued**: a request with no run yet. **Taken**: it has one.
 
 ## Data model
-Per box, one group (the box's security context) whose readers are everyone who may see the box; outpost is its admin. In it:
+Per box, one thing with own keys (the box's security context) whose readers are everyone who may see the box; outpost is its admin. In it:
 - **The box thing**: `specs` (durable, rewritten when they change) and `vitals` (ephemeral, an expiring write outpost renews, `osis::KeepAlive`). Vitals present = the box is up; when outpost dies they lapse.
 - **The console**: a thing on which the box's commanders hold write and nothing else. Its one aspect is the request signal: durable (`~`, not `+`), so a request fired while the box is offline waits, and the record of what was asked is kept as long as the console's `retention^.0` says.
-- **Runs**: one thing per taken request, written by outpost only. State as a value; output as a durable signal on the run, one fire per chunk (each write small however long the run; chunks kept or expired per the run's `retention^.0`, read as the signal's history). The box thing lists no runs (a growing list is the scaling problem); runs are found through the group.
+- **Runs**: one thing per taken request, written by outpost only. State as a value; output as a durable signal on the run, one fire per chunk (each write small however long the run; chunks kept or expired per the run's `retention^.0`, read as the signal's history). The box thing lists no runs (a growing list on it is the scaling problem); the context thing's `holds.0` holds them by strongs.
 
 Sketch (DSL shapes, not final):
 ```

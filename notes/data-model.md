@@ -1,5 +1,5 @@
 # Data model and serialization: rationale
-> Summary: Why spec/data-model.md looks the way it does (tids, CBOR profile, large values, AK grammar, groups), the schema DSL as implemented in osis-schema, storage layering, rejected options. Mostly Tess's decisions; shapes of `any` and the core aspects' types are proposals.
+> Summary: Why spec/data-model.md looks the way it does (tids, CBOR profile, large values, AK grammar, closures), the schema DSL as implemented in osis-schema, storage layering, rejected options. Mostly Tess's decisions; shapes of `any` and the core aspects' types are proposals.
 
 ## Tids
 - Self-certifying tids bind a thing to its first admin so nobody can publish a competing creation. The nonce keeps a bare tid from revealing its first admin and seeds the dedup secret. A reference carries the bare tid (inside a strong, weak or ticket); the record is checked only when the thing's data arrives.
@@ -46,8 +46,8 @@
 - Markers carry meaning, each independent, for every key, typed or not (no schema flag): `+` ephemeral (`Ak::ephemeral`: where writes go), `~` in place of the `.` signal (`Ak::signal`: no current value), `^` admin-only (`Ak::admin_only`; `write::required_role`, spec/permissions.md §5.2). Every code path asks one of them, never a combined class. A node decides storage class from the key alone: a writer refuses a mismatched commit (`commit_in`, `Misuse`), a receiver drops the part (`apply::examine`), both by `apply::fits_class` (`+` matches the commit's class; a `+~` part is in no content commit, it travels relay-only). A signal without `+` goes in durable content commits; its part is in no snapshot (`apply::fits_part`), and a writer refuses a fire its thing's setting keeps no history for. `Ak::markers_of` reads all three from a key's text tail (`RawKey`'s keys are text).
 - Generated constant names: the AK's name segments joined by `_`, upper-cased, the first dropped when every key of the schema shares it, `_V<n>` appended for a version above 0 (`note:last_opened.0` -> `LAST_OPENED`); not injective (`a:b_c.0` and `a_b:c.0`, `x:y.1` and `x:y_v1.0`, keys differing only in tid or markers), so codegen refuses a schema whose names collide (also with `SCHEMA`).
 
-## Groups
-Example: spreadsheet thing = group of two axis things, each a group of row/column things, each a group of cells (each cell in two groups). Nothing is in a group by its first admin (Tess): apps add things to groups explicitly (spec/requirements.md, Offline and network).
+## Closures
+Example: a spreadsheet thing holds strongs to two axis things, each holding strongs to its row or column things, each holding strongs to its cells (each cell in two closures). Nothing belongs anywhere by its first admin (Tess): an app writes each strong (spec/sync-set.md §2 Making a thing).
 
 ## Schema DSL (`*.osis` files; implemented in osis-schema)
 Rust-like syntax, hand-written recursive-descent parser (no parser libraries, Tess's decision); grammar in `core/schema/src/parse.rs`. Two passes: the first collects items, the second types field defaults against the then-known types. `///` docs attach to the next item (type, field, case, aspect), `//!` to the schema, and are kept in the schema value. Errors carry file, line, column; validation errors point at the item. No `load_schema!()` proc macro (compile time; codegen covers it).

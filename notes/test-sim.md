@@ -11,7 +11,7 @@
 
 ## Phase A: engines (`Sim`)
 `Sim::new(name, seed, Config)` boots real engines, each over its own `MemoryBackend` + `MemoryRoot` sharing one `osis_store::Faults` plan, a `ManualClock` and a seeded rng; all randomness comes from one `Dice` seeded by the run seed. `Config`: per-node `ClockSpec { skew_ms, drift_ppm }`, `NetFaults { drop_pct, dup_pct, max_delay_ms, reorder }`, scheduler `Weights { write, gossip, deliver, tick, crash, restart }`. `step()` picks a random write, a gossip (an oracle standing in for reconciliation), a due delivery, a tick, a crash (now or at a durable write) or a restart.
-- Per-step invariants (`check`): every group of up nodes holding the same parts of the same applied commits reads the same values; own `ts` strictly increasing across restarts and within `MAX_DRIFT` of the wall clock; no remote commit applied more than `MAX_DRIFT` ahead; no counter range of one session overlapping another commit's on one aspect; at quiescence every node holds the same parts and nothing pends. Engine errors on honest input and panics are failures.
+- Per-step invariants (`check`): every set of up nodes holding the same parts of the same applied commits reads the same values; own `ts` strictly increasing across restarts and within `MAX_DRIFT` of the wall clock; no remote commit applied more than `MAX_DRIFT` ahead; no counter range of one session overlapping another commit's on one aspect; at quiescence every node holds the same parts and nothing pends. Engine errors on honest input and panics are failures.
 - Scenarios: `two_nodes`, `three_random`, `crash_restart`, `drift_parks` (a commit pends with `Drift` until the receiver's clock catches up), `revoke_while_writing`.
 
 ## Shared setups

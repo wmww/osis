@@ -3,7 +3,7 @@
 
 ## Tess's decisions
 - **From now means current state**: a newcomer granted without history reads the current state but never a commit from before (no earlier version, no past signal fire): a document shows its finished text, a chat no past message but its settings and name. A grant with history stays for whoever wants the past. Hiding existing content while showing new additions is not wanted.
-- **Per grant, with a default**: a grant may say "without history"; a group or thing default is an aspect, set the way the history retention setting is (spec/commits.md §5 The setting).
+- **Per grant, with a default**: a grant may say "without history"; a per-thing default is an aspect, set the way the history retention setting is (spec/commits.md §5 The setting).
 - **Two choices only**: a newcomer sees history from when it was granted, or all of it. No admin-chosen start point.
 - **Showing history later**: allowed if easy (it is a later grant with history to that holder).
 - **Removed and re-added without history**: keeps what it could read before its removal, and must not get what was written between its removal and its re-add.

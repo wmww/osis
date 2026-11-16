@@ -1,7 +1,7 @@
 # Tags and the standard core aspects
 > Summary: The user-facing organization layer decided with Tess: toplevel core aspects (`name.0`, `body.0`, `tag.0` in the core schema), tags as things whose `holds.0` references what they tag, in a graph (not a tree), sharing a tag per item through one nested roster, recursive sharing semantics, the "only share what you may share" property, the confirmation guideline for first-party apps, the logical-document convention, costs, other conventions.
 
-> In discussion: tags and realms may become one concept, or realms the user face of actors that are first admins while tags collect; see notes/realms.md "Current state of the discussion".
+> In discussion: tags and realms may become one concept, or realms the user face of actors that are first admins while tags collect; see notes/realms.md "Status of the discussion".
 
 ## Direction (Tess)
 - Generic aspects go toplevel in the core schema (single-segment AKs are the core schema, spec/data-model.md §2), not under a `common:` first segment.
