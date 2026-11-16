@@ -67,6 +67,11 @@ Standard footer: CLAUDE.md, notes/build.md, `claudewait`, no wait loops, start n
 - Name the agent's own scratch dir (`<scratchpad>/<branch>-<random>`), with the gate log's path inside it, and say `mkdir -p` it first (notes/build.md, Footguns).
 - Name a commit only once it is on a pushed ref, with that ref (`<sha> on origin/<branch>`). A file only on an unmerged branch is named as `git show <commit>:<path>`. Name sections of big notes and issues, not whole files (the Read tool pages at about 25k tokens). Grep a rule's words, an item's name or an env var before citing it (a wrong env var name silently runs the default seeds).
 - Say "first re-run the issue's repro on current main" (issue seeds go stale), and name the commit a measurement or lead came from. A cost or cause a review claims is a lead to measure, not the task. Before naming a mechanism for an item, read the item's own issue.
+- While main is red by design, land with `python3 tools/policy.py --baseline`; say so in the brief.
+- Don't brief work against a commit that hasn't landed ("if the foundation has landed"): start it after, or state plainly it is absent.
+- A repro brief allows "or show the code already holds the rule" (the gap may be the model's).
+- Name known-failing tests in the crates a brief runs, and use `--no-fail-fast` on multi-crate runs.
+- The first `wt release` in a worktree marks for minutes: run it in the background.
 - A brief's preamble is one set of rules: a contract that supersedes a rule replaces it there.
 - A worker brief names no property the reviewer will run, unless that oracle is the task's repro; then the worker runs that one test at its default size.
 - Put the reviewer's "check these cases" questions in the worker brief too, with the simplicity question ("is there a rule with no points/windows/caches that meets the budget?"). Say "do not loosen an existing test: report it".
