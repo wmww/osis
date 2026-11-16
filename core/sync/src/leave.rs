@@ -59,8 +59,8 @@ pub trait Ground {
     fn pass_seq(&mut self) -> u64;
     /// A complete pass of S begun after pass place `since` ended (status's, spec/sync-status.md §1).
     fn passed(&mut self, s: &SyncId, since: u64) -> bool;
-    /// This node knows the group whose closure it syncs (`Engine::sync_rooted`): before, its sync
-    /// set is empty for want of it, and nothing it holds counts as left.
+    /// This node has joined an account (`Engine::sync_rooted`): before, its sync set is empty for
+    /// want of an account root, and nothing it holds counts as left.
     fn rooted(&mut self) -> bool;
     /// The things that left the node closure and are not released yet, each with the sync units
     /// that held it when it left (`Engine::left_closure`), a stamped read.
@@ -92,10 +92,9 @@ enum Wait {
     /// sync set is empty for want of one, not because anything left).
     #[default]
     Not,
-    /// It left and waits: for a complete pass begun after it left, then for its own writes.
+    /// It left and waits for a complete pass begun after it left.
     Waiting,
-    /// A complete pass of S since it left, then what it logged itself is elsewhere, or no peer
-    /// shares S to take it: it stops.
+    /// A complete pass of S since it left, or none with no source: it stops.
     Done,
     /// After that pass, this node's keys no longer hold S as they did: it stops at once.
     Lost,
@@ -137,8 +136,8 @@ impl std::fmt::Debug for Leave {
 
 impl Leave {
     /// Follows the sync set into what this node syncs, and stops each sync ID that left it once
-    /// a complete pass after it left ended and what it logged itself there is elsewhere
-    /// (spec/sync-set.md §3). Whether it acted.
+    /// a complete pass after it left ended, or at once with no source (spec/sync-set.md §3).
+    /// Whether it acted.
     pub fn settle(&mut self, g: &mut impl Ground) -> Result<bool> {
         let mut acted = false;
         for s in g.held_added(&mut self.set_feed)? {
@@ -278,7 +277,7 @@ impl Leave {
 
 /// S, out of the sync set: whether it left (its entry: as synced, else as this node's keys hold
 /// it; neither, or no account joined yet: not), noting when it first did; then a complete
-/// pass since it left, then its own keys, then its own writes.
+/// pass since it left, then its own keys.
 fn judge(g: &mut impl Ground, s: &SyncId, leaving: &mut Stamped<SyncId, Left>) -> Result<Wait> {
     let holder = g.holder(s)?;
     let left = match leaving.get(s) {

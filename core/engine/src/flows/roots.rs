@@ -25,7 +25,7 @@ impl Engine {
     }
 
     /// Removes `s` from the node root's `holds.0`: what only it held leaves the node closure
-    /// (spec/sync-set.md §3). The strong to the account root stays (`keeps_root_strongs`).
+    /// (spec/sync-set.md §3). The strong to the account root stays (`kept`).
     pub fn unhold(&mut self, s: Strong) -> Result<()> {
         let root = self.core.node_root.ok_or(Error::Misuse("no node root"))?;
         let mut m = Mutation::new();
@@ -58,11 +58,9 @@ pub(crate) fn hold_in(tx: &mut Tx<'_>, t: Tid) -> Result<()> {
     crate::engine::write::commit_in(tx, m).map(|_| ())
 }
 
-/// Refuses a local write removing a strong the node's roots keep (spec/sync-set.md §1): the node
-/// root's to the account root, the account root's to the profile and the inbox. A write
-/// replacing or resetting such a `holds.0` whole keeps them only by naming them again.
-pub(crate) fn keeps_root_strongs(tx: &mut Tx<'_>, m: &Mutation) -> Result<()> {
-    let holds = osis_base::Ak::new("holds.0").map_err(|_| Error::Misuse("ak"))?;
+/// The strongs the node's roots keep that are held now (spec/sync-set.md §1), (from, to): the
+/// node root's to the account root, the account root's to the profile and the inbox. O(1).
+pub(crate) fn kept(tx: &mut Tx<'_>) -> Result<Vec<(Tid, Tid)>> {
     let mut kept: Vec<(Tid, Tid)> = Vec::new();
     if let (Some(root), Some((p, d))) = (tx.core.node_root, tx.core.account_devices()) {
         kept.push((root, d));
@@ -70,19 +68,20 @@ pub(crate) fn keeps_root_strongs(tx: &mut Tx<'_>, m: &Mutation) -> Result<()> {
         kept.extend(tx.core.profile_of(&p, inbox).map(|x| (d, x)));
         kept.extend(inbox.map(|i| (d, i)));
     }
+    let mut out = Vec::new();
     for (from, to) in kept {
-        let removes = |v: &Value| matches!(v, Value::Strong(t) if *t == to);
-        let names = |v: &Value| matches!(v, Value::Set(s) if s.iter().any(|x| matches!(x, Value::Strong(t) if *t == to)));
-        let key = (from, holds.clone());
-        let reset = m.dead_resets.contains_key(&key) || m.fresh_resets.contains_key(&key) || m.sweeps.contains(&key) || m.purge.iter().any(|p| *p.tid() == from && *p.ak() == holds);
-        let cut = m.aspects.get(&key).is_some_and(|w| {
-            w.ops.iter().any(|o| match &o.op {
-                Op::Remove(v) => o.path.is_empty() && removes(v),
-                Op::Set(v) | Op::Replace(v) => o.path.is_empty() && !names(v),
-                _ => false,
-            })
-        });
-        if reset || cut {
+        if crate::engine::refs::strong_from(tx, &from, &to)? {
+            out.push((from, to));
+        }
+    }
+    Ok(out)
+}
+
+/// Refuses a local commit that took away one of `kept` (spec/sync-set.md §1): a removal, a whole
+/// write or reset not naming it, a removed aspect, an undo, a purge alike.
+pub(crate) fn still_kept(tx: &mut Tx<'_>, kept: &[(Tid, Tid)]) -> Result<()> {
+    for (from, to) in kept {
+        if !crate::engine::refs::strong_from(tx, from, to)? {
             return Err(Error::Misuse("the node root's strong to the account root, and the account root's to the profile and the inbox, stay"));
         }
     }

@@ -603,16 +603,16 @@ impl Engine {
     }
 
     /// The sync IDs held here carrying thing `t` (spec/sync-status.md §3: a wait on a thing):
-    /// its own and its enclosing groups', read or kept unread (spec/sync-judgement.md §1: a thing
-    /// travels under the sync IDs of itself and of the groups enclosing it).
+    /// its own and those of the sync units holding it, read or kept unread (spec/sync-set.md §2:
+    /// what a sync ID carries).
     pub fn carrying(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
         Ok(self.carrying_now(t, false)?.into_iter().collect())
     }
 
-    /// Whether this node has known the group whose closure it syncs: it joined an account (made
-    /// or paired). Before (a node pairing), its sync set is empty for want of the group, not
-    /// because anything left it, so nothing it holds counts as left; a node removed from its
-    /// account since knows no group any more, and everything it held has left.
+    /// Whether this node has joined an account (made or paired). Before (a node pairing), its
+    /// node closure reaches no account root, so its sync set is empty for want of one, not
+    /// because anything left it: nothing it holds counts as left. A node removed from its
+    /// account since has no account, and everything it held has left.
     pub fn sync_rooted(&mut self) -> bool {
         self.core.account.get().is_some()
     }

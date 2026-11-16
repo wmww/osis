@@ -15,7 +15,7 @@ use osis_commit::PurgeItem;
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 
-/// Node 0 makes thing 0 (a value, filed in its D) and gives it a sync ID of its own, granting
+/// Node 0 makes thing 0 (a value, held from its D) and gives it a sync ID of its own, granting
 /// node 1's account sync and node 2's write; both accept (after the first run) and sync.
 fn three() -> (World, Tid, SyncId) {
     let mut w = world(0, 3);

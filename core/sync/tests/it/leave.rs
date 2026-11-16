@@ -42,7 +42,7 @@ struct Fake {
     passing: StampedSet<SyncId>,
     /// Things with a role commit held but uncounted for want of its lists.
     uncounted: StampedSet<Tid>,
-    /// This node does not know its synced group yet (pairing).
+    /// This node has joined no account yet (pairing).
     unrooted: Stamped<(), bool>,
     synced: BTreeMap<SyncId, Held>,
     shredded: Vec<SyncId>,
@@ -288,24 +288,24 @@ fn a_loss_waiting_for_lists_waits_for_a_pass_with_a_source_spec_sync_set_3() {
 }
 
 // spec/sync-set.md §3 (its list may still come): a sync
-// ID waiting for a pass with a source whose thing leaves the closure (the user unsyncs it) stops
+// ID waiting for a pass with a source whose thing leaves the closure (the user removes its strong) stops
 // at once, no pass with a source needed; one already out of the closure waits for none.
 #[test]
-fn an_unsync_ends_a_wait_for_lists_spec_sync_set_3() {
-    for unsync_first in [false, true] {
+fn leaving_the_closure_ends_a_wait_for_lists_spec_sync_set_3() {
+    for out_first in [false, true] {
         let (mut g, mut l) = settled();
         g.passing.insert(sid(1));
         g.clock = 10;
         g.holders.remove(&sid(1));
         g.uncounted.insert(tid(1));
-        if unsync_first {
+        if out_first {
             g.closure(&[2, 3]);
         }
         l.settle(&mut g).unwrap();
         g.clock = 12;
         g.passes.insert(sid(1), 11);
         l.settle(&mut g).unwrap();
-        if !unsync_first {
+        if !out_first {
             assert!(g.shredded.is_empty() && l.pass_sourced(&sid(1)), "waits for a pass with a source");
             g.closure(&[2, 3]);
             l.settle(&mut g).unwrap();

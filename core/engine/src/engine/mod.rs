@@ -1416,7 +1416,7 @@ pub struct Core {
     pub(crate) own_commits: crate::sync::own::OwnCommits,
     /// `Engine::held_links` (`memo`).
     pub(crate) links: memo::Memo<(), std::sync::Arc<Vec<crate::flows::HeldLink>>>,
-    /// `Engine::caught_up` per group (`memo`).
+    /// `Engine::caught_up` per sync unit (`memo`).
     pub(crate) caught_up: memo::Memo<Tid, bool>,
     /// The follower of the node closure's out-lists (`sync::units::settle`).
     pub(crate) closure_follow: crate::sync::units::Follow,
@@ -1424,7 +1424,7 @@ pub struct Core {
     pub(crate) unit_of: memo::Memo<Tid, Arc<BTreeSet<Tid>>>,
     /// This node's node root (spec/sync-set.md §1), from its first start (`records::NODE_ROOT`).
     pub(crate) node_root: Option<Tid>,
-    /// Groups the handle reads and writes at another node (`osis` sources): what is here of them
+    /// Sync units the handle reads and writes at another node (`osis` sources): what is here of them
     /// may be behind, syncing or not (`readable_by`). `Engine::set_sourced` sets it.
     pub(crate) sourced_elsewhere: BTreeSet<Tid>,
 }
@@ -1856,6 +1856,7 @@ impl Core {
 
     /// The running transaction committed: its journal is forgotten.
     fn commit_journal(&mut self) {
+        self.closure_follow.committed();
         self.ix.commit();
         self.schemas.commit();
         self.sides.commit();
@@ -1939,8 +1940,8 @@ impl Core {
         let sides_back = self.sides.journaled() > m.sides.0 + m.sides.1;
         self.sides.rollback_to(m.sides);
         if self.changed_since(&m) {
-            // the node closure's follower acted on what goes back (`sync::units::Follow`)
-            self.closure_follow.reset();
+            // the node closure's follower, if it acted on what goes back (`sync::units::Follow`)
+            self.closure_follow.rolled_back();
             self.touches.clear();
             if self.memory_tx {
                 self.memory_generation += 1;
@@ -3430,8 +3431,7 @@ impl Engine {
         // what this node may not write could not be compacted: weighed once it may
         self.owe_unwritable_held()?;
         self.core.timer_floor = self.next_timer()?.unwrap_or(u64::MAX);
-        // the node closure, walked afresh at each transaction's end (`sync::units::settle`)
-        self.run(|_| Ok(()))
+        Ok(())
     }
 
     /// The ciphertext store's notes against this store (`blobs::Cipher`): a transaction this
@@ -3850,7 +3850,7 @@ impl Engine {
         // a feed of the old index's commits: started again on the fresh one
         fresh.waits.held_feed = None;
         fresh.wakes = self.core.wakes.take();
-        // the group sources are the handle's, set between transactions (`set_sourced`)
+        // the sync units' sources are the handle's, set between transactions (`set_sourced`)
         fresh.sourced_elsewhere = std::mem::take(&mut self.core.sourced_elsewhere);
         fresh.node_root = self.core.node_root;
         self.core = fresh;
@@ -3900,6 +3900,7 @@ impl Engine {
         // key actors are derived: held exactly while `hold_key_actor` or a followed link names them
         let named: BTreeSet<Tid> = self.core.held_keys.keys().chain(self.core.followed_links.all().values().map(|(_, l)| l)).copied().collect();
         assert_eq!(self.core.key_actors.keys().copied().collect::<BTreeSet<_>>(), named, "key actors: held or named by a followed link");
+        self.check_closure();
         for rebuild in [false, true] {
             let mut fresh = self.blank_core();
             fresh.key_actors = self.core.key_actors.clone();
@@ -3964,10 +3965,10 @@ impl Engine {
                 }
                 index::write_all(tx)
             })?;
-        } else if self.core.timelines.due(self.core.walk_cache_min) {
-            // walks evaluated or continued at open saved for the next (a cache: a failure
-            // leaves the open as it is)
-            let _ = self.run(|_| Ok(()));
+        } else {
+            // the node closure walked afresh (`sync::units::settle`), and walks evaluated or
+            // continued at open saved for the next
+            self.run(|_| Ok(()))?;
         }
         self.start_detection();
         Ok(())

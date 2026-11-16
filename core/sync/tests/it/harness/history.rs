@@ -281,8 +281,8 @@ pub fn world(seed: u64, n: usize) -> World {
 }
 
 /// Every account becomes every other's contact by contact cards (spec/sync-inbox.md §5): each
-/// node makes a read link to its account's profile, every other node redeems it, the join filing
-/// the profile in its account's D (a redeem is an accept, spec/sync-set.md §4). Before any
+/// node makes a read link to its account's profile, every other node redeems it, the join holding
+/// the profile from its account's D (a redeem is an accept, spec/sync-set.md §4). Before any
 /// history only; nothing is handed by hand.
 pub fn introduce(w: &mut World) {
     assert!(w.history.things.is_empty(), "introduce before any history only");

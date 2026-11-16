@@ -13,6 +13,7 @@ fn strong(e: &mut Engine, from: Tid, to: Tid, on: bool) {
     let mut m = Mutation::new();
     m.op(from, &ct::HOLDS, PathOp { path: vec![], op: if on { Op::Add(v) } else { Op::Remove(v) } }).unwrap();
     e.commit(m).unwrap();
+    e.check_closure();
 }
 
 /// A plain thing made under `admin`, strongly referenced from `from` in the same transaction.
@@ -22,6 +23,7 @@ fn make(e: &mut Engine, admin: Tid, from: Tid) -> Tid {
     let t = m.create(rec);
     m.op(from, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
     e.commit(m).unwrap();
+    e.check_closure();
     t
 }
 
@@ -122,4 +124,58 @@ fn removal_costs_what_it_held_spec_sync_set_2() {
     }
     let (a, b) = (work(n, subtree), work(m, subtree));
     assert!(b >= 9 * a && b <= 11 * a, "subtree: {a} at {n}, {b} at {m}");
+}
+
+// spec/sync-set.md §3 Release: a thing that leaves waits for each sync ID that carried it when it
+// left. X is plain under A (own keys, under D), so in D's and A's sync units; one write removing
+// A -> X takes it out of both, and both are noted, whatever order the walk drops them in.
+#[test]
+fn a_thing_leaving_two_units_at_once_notes_both_spec_sync_set_3() {
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let d = e.account_root().unwrap();
+    let a = make(e, d, d);
+    e.give_own_secrets(&a).unwrap();
+    let x = make(e, a, a);
+    assert_eq!(e.units_holding(&x), [d, a].into());
+    strong(e, a, x, false);
+    assert_eq!(e.left_closure().get(&x), Some(&[d, a].into()));
+}
+
+// spec/sync-set.md §1: a local write that would leave the node root without its strong to the
+// account root is refused, however it is written: a removal, a whole-aspect removal, a purge.
+#[test]
+fn the_node_roots_strong_to_the_account_root_stays_spec_sync_set_1() {
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let (root, d) = (e.node_root().unwrap(), e.account_root().unwrap());
+    let removal = |m: &mut Mutation| {
+        m.op(root, &ct::HOLDS, PathOp { path: vec![], op: Op::Remove(Value::Strong(d)) }).unwrap();
+    };
+    let whole = |m: &mut Mutation| {
+        m.remove_aspect(root, &ct::HOLDS).unwrap();
+    };
+    for (name, w) in [("removal", &removal as &dyn Fn(&mut Mutation)), ("whole aspect", &whole)] {
+        let mut m = Mutation::new();
+        w(&mut m);
+        assert!(e.commit(m).is_err(), "{name}");
+        assert!(e.closure_holds(&d), "{name}");
+    }
+}
+
+// spec/sync-set.md §2 Not carried: X in D's sync unit strongly references Y, made under the
+// account, which D's keys do not open and nothing else holds: the strong is named, from X's
+// written strongs and in the whole list; a strong to a held thing is not.
+#[test]
+fn a_strong_nothing_carries_is_named_spec_sync_set_2() {
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let d = e.account_root().unwrap();
+    let p = e.account().unwrap().unwrap().0;
+    let x = make(e, d, d);
+    let y = make(e, p, x);
+    let z = make(e, d, x);
+    assert!(!e.closure_holds(&y) && e.closure_holds(&z));
+    assert_eq!(e.not_carried_among(&x, &[y, z].into()).unwrap(), vec![y]);
+    assert_eq!(e.not_carried().unwrap(), vec![(x, y)]);
 }

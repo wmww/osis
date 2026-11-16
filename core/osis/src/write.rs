@@ -195,6 +195,32 @@ impl<'d> Write<'d> {
         ts
     }
 
+    /// Per thing written, the targets of the strongs its ops write (spec/sync-set.md §2 Not
+    /// carried): O(the ops' values).
+    fn strongs_written(&self) -> BTreeMap<Tid, std::collections::BTreeSet<Tid>> {
+        let mut out: BTreeMap<Tid, std::collections::BTreeSet<Tid>> = BTreeMap::new();
+        for o in &self.ops {
+            let (tid, vals): (Tid, Vec<&Value>) = match o {
+                WriteOp::Path { tid, op, .. } => {
+                    let mut v: Vec<&Value> = op.path.iter().filter_map(|s| if let PathSeg::Key(k) = s { Some(k) } else { None }).collect();
+                    match &op.op {
+                        Op::Set(x) | Op::Replace(x) | Op::Put(x) | Op::Add(x) | Op::Inc(x) | Op::Edit { new: x, .. } => v.push(x),
+                        Op::Insert { items, .. } | Op::InsertAfter { items, .. } => v.extend(items),
+                        _ => {}
+                    }
+                    (*tid, v)
+                }
+                WriteOp::Fire { tid, v, .. } => (*tid, vec![v]),
+                _ => continue,
+            };
+            for v in vals {
+                osis_engine::strongs_in(v, out.entry(tid).or_default());
+            }
+        }
+        out.retain(|_, t| !t.is_empty());
+        out
+    }
+
     /// The write as the client port carries it (`WRITE`, notes/client-port.md §2): `[actor,
     /// [ak*], [op*], Opt(expiry)]`, the nonce put before it as it is sent; an expiry `[0, at]`
     /// or `[1, ms from now]`.
@@ -364,7 +390,7 @@ impl<'d> Write<'d> {
                 }
             }
             let who = self.actor;
-            let things = self.things();
+            let strongs = self.strongs_written();
             let mut m = self.build(&mut Reader { e, limit, actor }, expires)?;
             // whatever actor the write names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
@@ -374,10 +400,10 @@ impl<'d> Write<'d> {
                 Some(w) => Some(crate::commits::written_in(&mut Reader { e, limit, actor }, w, who)?.reporting(db)),
                 None => None,
             };
-            // a strong whose target nothing carries is no error: it is reported at once
-            // (spec/sync-set.md §2 Not carried)
-            for t in things {
-                for target in e.not_carried_from(&t)? {
+            // a strong it writes whose target nothing carries is no error: it is reported at once
+            // (spec/sync-set.md §2 Not carried), O(the strongs written)
+            for (t, ys) in strongs {
+                for target in e.not_carried_among(&t, &ys)? {
                     let detail = format!("{t} references {target}, which is neither in its sync unit nor held otherwise: it reaches no other node by it");
                     e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::NotCarried, tids: vec![t, target], commit: None, peer: None, detail });
                 }

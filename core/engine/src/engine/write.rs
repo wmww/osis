@@ -720,12 +720,16 @@ impl Engine {
     }
 }
 
-/// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing.
+/// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing. Refused when
+/// it would take away a strong the node's roots keep (`roots::kept`), however it is written.
 pub(crate) fn commit_in(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
     if m.sealed {
         return Err(Error::Misuse("a sealed fire is built by `sealed_commit`"));
     }
-    Ok(commit_or_build(tx, m)?.map(|(id, _)| id))
+    let kept = crate::flows::roots::kept(tx)?;
+    let r = commit_or_build(tx, m)?.map(|(id, _)| id);
+    crate::flows::roots::still_kept(tx, &kept)?;
+    Ok(r)
 }
 
 /// The commit of sealed fire mutation `m` (one fire of an open signal on a thing this node need
@@ -772,7 +776,6 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
     if !tx.core.skip_writer_rules && m.aspects.keys().any(|(_, ak)| !crate::apply::fits_class(ak, memory)) {
         return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
     }
-    crate::flows::roots::keeps_root_strongs(tx, &m)?;
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
     for (&t, rec) in &m.creates {
         let e = m.aspects.entry((t, Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default();

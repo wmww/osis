@@ -85,18 +85,31 @@ type Edge = (Vx, Tid);
 pub(crate) struct Follow {
     fx: Effects<Edge, BTreeSet<Vx>>,
     reset: bool,
+    /// A settle ran in the open transaction: a rollback of it undoes what the follower acted on.
+    acted: bool,
+    /// Per thing a vertex of which the running settle dropped, those vertices' contexts.
+    gone: std::collections::BTreeMap<Tid, BTreeSet<Ctx>>,
 }
 
 impl Default for Follow {
     fn default() -> Follow {
-        Follow { fx: Effects::new("closure: edges"), reset: true }
+        Follow { fx: Effects::new("closure: edges"), reset: true, acted: false, gone: Default::default() }
     }
 }
 
 impl Follow {
-    /// A rollback undid changes the follower acted on: every held vertex is followed afresh.
-    pub(crate) fn reset(&mut self) {
-        self.reset = true;
+    /// A rollback: when it undoes a settle of the open transaction, every held vertex is
+    /// followed afresh, O(the node closure). A rollback of what ran before the settle (a step, a
+    /// refused write) leaves the follower right: what it restores stamps what it read.
+    pub(crate) fn rolled_back(&mut self) {
+        if std::mem::take(&mut self.acted) {
+            self.reset = true;
+        }
+    }
+
+    /// The open transaction committed.
+    pub(crate) fn committed(&mut self) {
+        self.acted = false;
     }
 }
 
@@ -268,11 +281,6 @@ impl Closure {
         self.vx.remove(&x);
         self.held.remove(&x.1, &x.0);
         self.members.remove(&x.0, &x.1);
-        if !self.held.contains_key(&x.1) {
-            let mut was = self.left.get(&x.1).cloned().unwrap_or_default();
-            was.insert(x.0);
-            self.left.insert(x.1, was);
-        }
     }
 
     /// The vertices of `v`'s out-list that its edge to `y` gives.
@@ -373,9 +381,13 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
+    f.acted = true;
+    f.gone.clear();
     if std::mem::take(&mut f.reset) {
         f.fx = Effects::new("closure: edges");
-        for v in tx.core.ix.closure.vertices() {
+        let all = tx.core.ix.closure.vertices();
+        osis_base::costs::count("closure: refollowed", all.len() as u64);
+        for v in all {
             want_edges(tx, f, v)?;
         }
     }
@@ -416,6 +428,16 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
         }
         let due = f.fx.due();
         if due.is_empty() && tx.core.ix.closure.rows.is_empty() && tx.core.ix.closure.tickets.is_empty() {
+            // each thing out of the node closure now, noted with every context it was dropped
+            // from in this transaction: the sync units that carried it when it left
+            let cl = &mut tx.core.ix.closure;
+            for (t, cs) in std::mem::take(&mut f.gone) {
+                if !cl.held.contains_key(&t) {
+                    let mut was = cl.left.get(&t).cloned().unwrap_or_default();
+                    was.extend(cs);
+                    cl.left.insert(t, was);
+                }
+            }
             return Ok(());
         }
         for (v, y) in due {
@@ -488,6 +510,7 @@ fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<V
     for w in gone {
         if tx.core.ix.closure.parent.get(&w) == Some(&v) {
             for x in detach(tx, rv, w) {
+                f.gone.entry(x.1).or_default().insert(x.0);
                 // its edges are followed no more
                 if !matches!(x.0, Ctx::Unread(_)) {
                     for y in strongs_from(tx, &x.1)? {
@@ -535,8 +558,7 @@ fn detach(tx: &mut Tx<'_>, rv: Vx, w: Vx) -> Vec<Vx> {
         cl.children.remove(&p, &w);
     }
     // search A: each other referrer's tree path, up to the root (outside) or to `w` (below)
-    let refs: Vec<Vx> = cl.inn.get(&w).map(|s| s.iter().copied().collect()).unwrap_or_default();
-    let mut next_ref = 0;
+    let mut last_ref: Option<Vx> = None;
     let mut at: Option<(Vx, Vx)> = None;
     let mut a_live = true;
     // search B: `w`'s subtree
@@ -548,13 +570,20 @@ fn detach(tx: &mut Tx<'_>, rv: Vx, w: Vx) -> Vec<Vx> {
         if a_live {
             osis_base::costs::count("closure: removal steps", 1);
             match at {
-                None => match refs.get(next_ref) {
-                    Some(r) => {
-                        at = Some((*r, *r));
-                        next_ref += 1;
+                None => {
+                    // the next referrer, read one at a time: never a copy of `w`'s fan-in
+                    let next = cl.inn.get(&w).and_then(|s| match last_ref {
+                        None => s.iter().next().copied(),
+                        Some(l) => s.range((std::ops::Bound::Excluded(l), std::ops::Bound::Unbounded)).next().copied(),
+                    });
+                    match next {
+                        Some(r) => {
+                            at = Some((r, r));
+                            last_ref = Some(r);
+                        }
+                        None => a_live = false,
                     }
-                    None => a_live = false,
-                },
+                }
                 Some((_, c)) if c == w => at = None,
                 Some((r, c)) if c == rv => {
                     // `r` is outside `w`'s subtree: `w` hangs from it, its subtree as it was
@@ -612,6 +641,48 @@ fn detach(tx: &mut Tx<'_>, rv: Vx, w: Vx) -> Vec<Vx> {
     rest.into_iter().collect()
 }
 
+/// Adds the target of every strong at any depth of `v` to `out` (the reference index's reading,
+/// spec/data-model.md §8 What counts).
+pub fn strongs_in(v: &osis_base::Value, out: &mut BTreeSet<Tid>) {
+    crate::engine::refs::references(v, &mut |k, t| {
+        if k == osis_base::RefKind::Strong {
+            out.insert(t);
+        }
+    });
+}
+
+/// Debug: the node closure as followed equals one walked afresh from the node root by
+/// `given_by` over every strong, and its tree hangs every held vertex from a held referrer
+/// (`Engine::check_index`, `Engine::check_closure`).
+pub(crate) fn check_whole(tx: &mut Tx<'_>) -> Result<()> {
+    let Some(root) = tx.core.node_root else { return Ok(()) };
+    let rv = (Ctx::Local, root);
+    let mut seen = BTreeSet::from([rv]);
+    let mut stack = vec![rv];
+    while let Some(v) = stack.pop() {
+        if matches!(v.0, Ctx::Unread(_)) {
+            continue;
+        }
+        for y in strongs_from(tx, &v.1)? {
+            for w in given_by(tx.core, v, y) {
+                if seen.insert(w) {
+                    stack.push(w);
+                }
+            }
+        }
+    }
+    let cl = &tx.core.ix.closure;
+    let held: BTreeSet<Vx> = cl.vx.iter().copied().collect();
+    assert_eq!(held, seen, "the node closure differs from one walked afresh");
+    for v in &held {
+        if *v != rv {
+            let p = cl.parent.get(v);
+            assert!(p.is_some_and(|p| cl.out.get(p).is_some_and(|o| o.contains(v))), "{v:?} hangs from {p:?}, which does not reach it");
+        }
+    }
+    Ok(())
+}
+
 impl Engine {
     /// The sync unit of `t` (spec/sync-set.md §2): `t` and what it reaches by strongs and itself
     /// may read, stopping at the first thing it may not read. Of a thing this node reads in no
@@ -644,6 +715,24 @@ impl Engine {
         Ok(ys.into_iter().filter(|y| !self.core.is_key_actor(y) && !self.core.ix.closure.holds(y)).collect())
     }
 
+    /// Those of `ys` that `x` strongly references and `not_carried_from` would name: O(`ys`).
+    pub fn not_carried_among(&mut self, x: &Tid, ys: &BTreeSet<Tid>) -> Result<Vec<Tid>> {
+        if !self.core.ix.closure.holds(x) {
+            return Ok(Vec::new());
+        }
+        let x = *x;
+        let ys: Vec<Tid> = ys.iter().filter(|y| !self.core.is_key_actor(y) && !self.core.ix.closure.holds(y)).copied().collect();
+        self.run(|tx| {
+            let mut out = Vec::new();
+            for y in ys {
+                if strong_to(tx, &x, &y)? {
+                    out.push(y);
+                }
+            }
+            Ok(out)
+        })
+    }
+
     /// Every strong of the node closure `not_carried_from` names, (thing, target): O(the node
     /// closure's strongs).
     pub fn not_carried(&mut self) -> Result<Vec<(Tid, Tid)>> {
@@ -653,6 +742,13 @@ impl Engine {
             out.extend(self.not_carried_from(&t)?.into_iter().map(|y| (t, y)));
         }
         Ok(out)
+    }
+
+    /// Tests: panics unless the node closure as followed equals one walked afresh.
+    #[doc(hidden)]
+    pub fn check_closure(&mut self) {
+        let r = osis_base::costs::paused(|| osis_base::memo::unrecorded(|| self.read(check_whole)));
+        assert!(r.is_ok(), "node closure walked afresh: {:?}", r.err());
     }
 
     /// Whether the node closure holds `t` (spec/sync-set.md §2).
