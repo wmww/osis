@@ -37,9 +37,8 @@
 //!   with a revocation not taken, on no line a counting rotation answered, that it has not
 //!   answered), or for a taken revocation its preferred line does not carry when it cannot merge;
 //!   then, following several heads and holding every tip's seed, it certifies the merge of them
-//!   all; it re-seals its heads' tip seeds to roster devices it sees without them; it rotates t
-//!   at the new epoch when a taken revocation is not carried by the P epoch its newest t epoch
-//!   is boxed at; it writes at its preferred head (on t under its
+//!   all; it re-seals its heads' tip seeds to roster devices it sees without them; after a
+//!   removal it rotates t at the new epoch; it writes at its preferred head (on t under its
 //!   newest t epoch) and lists its own writes at every other epoch.
 //!
 //! Parties: account P with A (removes X at tick 1, may rotate plainly at 0), B (may be offline,
@@ -726,6 +725,11 @@ pub fn t_epoch(w: &World, j: &View, n: usize) -> Option<u32> {
 /// Honest node `n` acts at `now` (the policy in the module doc). `removes`: the world's script
 /// has it remove that node, in a plain rotation of its own, then act as at the end of a pass.
 pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool) -> Vec<u32> {
+    act_in(w, n, now, removes, write, false)
+}
+
+/// `act`; `rekey_t`: it removed a node in this act, so t rotates at the new epoch.
+fn act_in(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: bool, rekey_t: bool) -> Vec<u32> {
     let mut made = vec![];
     let j = judge(w, n, now);
     if j.out(n) || !j.keys.holds(w, &j.preferred) {
@@ -755,13 +759,14 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
         boxed[*m] = Some(*m) != removes;
     }
     let mut head = h.clone();
+    let rotated_for_removal = !carries && removes.is_some();
     if !carries && (removes.is_some() || !answers.is_empty() || !takes.is_empty() && !mergeable) {
         let id = w.add(Kind::Plain { at: h.clone(), removes: removes.into_iter().collect(), adds: vec![], takes: takes.clone(), answers: answers.clone() }, n, n, h.clone(), None, now, boxed);
         made.push(id);
         head = w.line(id);
-        // then what it owes at the end of the pass, its removal taken
-        if removes.is_some() {
-            made.extend(act(w, n, now, None, write));
+        // then what it owes at the end of the pass, its removal taken, and t's re-key
+        if rotated_for_removal {
+            made.extend(act_in(w, n, now, None, write, true));
             return made;
         }
     }
@@ -813,13 +818,10 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
             }
         }
     }
-    // t rotates at the new epoch (boxed to P there and to R1) once a taken revocation is not
-    // carried by the P epoch the t epoch it encrypts under is boxed at: a device removed since
-    // may hold it
-    let j4 = if made.is_empty() { j3 } else { judge(w, n, now) };
-    let prev = t_epoch(w, &j4, n);
-    let boxed_at = prev.filter(|k| *k != 0).map(|k| w.item(k).epoch.clone()).unwrap_or_default();
-    if prev.is_some() && j4.taken.iter().any(|r| !j4.carries(w, &boxed_at, *r)) {
+    // after a removal, t rotates at the new epoch (boxed to P there and to R1)
+    if rekey_t {
+        let j4 = judge(w, n, now);
+        let prev = t_epoch(w, &j4, n);
         let mut bx = [false; N];
         bx[R1] = true;
         made.push(w.add(Kind::TRot, n, n, head.clone(), prev, now, bx));

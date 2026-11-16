@@ -1,0 +1,8 @@
+# A node switching back to the honest side can carry X's writes in with its words
+> Summary: The custody differential (`rotation::tests_custody`) finds, in about 1 world in 1000, X's write made after its removal counting at A once settled: named by words B wrote at X's revocation's epoch while on X's side, which B then names again as its own commits after its user switches to A's removal. No minimal reproducer yet.
+> Priority: normal
+> Tags: engine, security, tests
+
+- Seen: `settled: A counts X's write #N`, named by commits at the epoch of X's revocation of A (B's listings or rotation lists there). B took X's revocation first, held A's removal before X's write (so the unaware-sibling limit, spec/permissions.md §5.5 Limit, does not cover it), named X's write by its cutoff while X's line was open at B, then switched. After the switch B's cutoff names X's write no more, but B's earlier words are B's own commits (by inner signature), which B's later listings name, and a named word counts whole with what it names.
+- A first hand-built attempt (X removes A, A removes X, B takes X's, holds A's, counts X's write, rotates on X's line, switches) does not reproduce it: the word that carries it is not the listing answering B's own rotation there. Find which word (a rotation's thing list, a listing, or a chain of them across a merge) and build the test from that.
+- Question for the fix: whether a node's own words made while it followed another side should be named after a switch at all (its content, yes: a switch takes and counts every honest write; its words name others' commits by a cutoff the switch moved), or whether a word names only what the namer's cutoff names now.

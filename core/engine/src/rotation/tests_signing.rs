@@ -425,8 +425,8 @@ fn concurrent_rotations_fork_and_their_merges_are_one_epoch_spec_crypto_9() {
     assert!(lp.peers[3].engine.account_disputes().is_empty());
 }
 
-// spec/commits.md §4 (a commit at an epoch whose minting rotation is not held is pending): a
-// write at a merge epoch reaching an outsider before the merge is held pends on the merge's ID,
+// spec/commits.md §4, spec/permissions.md §5.5 (Epoch rule: a commit at an epoch whose minting
+// rotation is not held is pending): a write at a merge epoch reaching an outsider before the merge is held pends on the merge's ID,
 // which no commit has, and applies once the merge is held, whether a certificate or a tip comes
 // last
 #[test]
@@ -451,9 +451,8 @@ fn a_write_at_a_merge_applies_once_the_merge_is_held_spec_commits_4() {
     }
 }
 
-// spec/crypto.md §3 (an epoch's name is its height, one more than every epoch it supersedes),
-// §4 (Account keysets: held once its minting rotation and every epoch it supersedes are): a
-// node answers a fork minted by no node; its re-key of t (a writer outside P) boxes t's new
+// spec/crypto.md §3, §4 (Account keysets: held once its minting rotation and every epoch it
+// supersedes are, its name its height): a node answers a fork minted by no node; its re-key of t (a writer outside P) boxes t's new
 // epoch to P at the answer's epoch. Another node holding the answer but not the fork cannot
 // name that epoch; once the fork arrives it opens the box, and a rebuild from the commit records
 // opens it alike
@@ -2164,9 +2163,9 @@ fn a_node_switching_sides_answers_the_line_it_rotated_on_spec_permissions_5_5() 
     assert!(h.supersedes.contains(&rx.commits[0]) && h.supersedes.contains(&rb), "both answered: {:?}", h.supersedes);
 }
 
-// spec/permissions.md §5.4 (a merge stands iff some certificate of it was made by a node of its
-// line), §5.5 (a node makes the merge of its heads unless it holds a certificate of it that
-// stands): nodes 0 and 2 rotate apart; node 2 certifies their merge, its inner signature sealed
+// spec/permissions.md §5.4, §5.5 (Honest nodes of P): a merge stands iff some certificate of it
+// was made by a node of its line, and a node makes the merge of its heads unless it holds a
+// certificate of it that stands. Nodes 0 and 2 rotate apart; node 2 certifies their merge, its inner signature sealed
 // as a key actor no node of P. Node 1 holds both rotations and that certificate, which stands
 // with nothing: its heads stay two, and it makes the merge itself
 #[test]

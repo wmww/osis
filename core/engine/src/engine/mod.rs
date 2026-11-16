@@ -1023,6 +1023,15 @@ pub(crate) struct StepFault {
 /// Whether a commit listener is on a thing (`Engine::listen_commits`).
 pub type CommitListeners = Arc<dyn Fn(&Tid) -> bool + Send + Sync>;
 
+/// Tests: faults the custody differential plants (`Core::faults`).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Faults {
+    pub custody_judged: bool,
+    pub roster_bare: bool,
+    pub merge_random: bool,
+}
+
 /// A held role commit's signatures beyond its outer one (`Indexes::role_sigs`): its sealed
 /// inner signature (which node made it, read by the account's nodes) and, a rotation, its merge
 /// signatures.
@@ -1269,6 +1278,11 @@ pub struct Core {
     /// as if stale meant unread (`Core::account_keys_by_name`).
     #[cfg(test)]
     pub(crate) stale_shut: bool,
+    /// Tests, faults the custody differential plants (roles-model `custody` controls): seeds held
+    /// only from counting epochs (`custody_judged`), a held revocation acting on D's roster apart
+    /// from its rotation (`roster_bare`), merges with fresh seeds (`merge_random`).
+    #[cfg(test)]
+    pub(crate) faults: Faults,
     /// Key actors other than the node whose seed this node holds for now: they sign commits
     /// (`Mutation::sign_as`) and open their boxes. Derived: each is held exactly while
     /// `held_keys` or a followed link names it (`Engine::settle_key_actor`). In memory only.
@@ -1555,6 +1569,8 @@ impl Core {
             lie_floor: self.lie_floor,
             #[cfg(test)]
             stale_shut: self.stale_shut,
+            #[cfg(test)]
+            faults: self.faults,
             key_actors: self.key_actors.clone(),
             held_keys: self.held_keys.clone(),
             followed_links: self.followed_links.clone(),
@@ -2194,6 +2210,8 @@ impl Core {
             lie_floor: _,
             #[cfg(test)]
             stale_shut: _,
+            #[cfg(test)]
+            faults: _,
         } = c;
     }
 
@@ -2382,6 +2400,8 @@ impl Core {
             lie_floor: None,
             #[cfg(test)]
             stale_shut: false,
+            #[cfg(test)]
+            faults: Faults::default(),
             key_actors: Default::default(),
             held_keys: Default::default(),
             followed_links: Default::default(),
@@ -3937,6 +3957,7 @@ impl Engine {
             fresh.check_ingest = self.core.check_ingest;
             fresh.whole_apply = self.core.whole_apply;
             fresh.stale_shut = self.core.stale_shut;
+            fresh.faults = self.core.faults;
         }
         fresh
     }

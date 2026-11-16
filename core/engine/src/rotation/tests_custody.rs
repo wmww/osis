@@ -123,10 +123,13 @@ pub(super) struct Reached {
 }
 
 /// What the model's `act` made, read off the mirror copy.
+/// A plain rotation as the policy compares it: signed at, removes, takes, answers (each a line: a
+/// merge's for a certificate), boxed (but its maker).
+type PlainAct = (Line, BTreeSet<usize>, BTreeSet<u32>, BTreeSet<Line>, BTreeSet<usize>);
+
 #[derive(Debug, Default)]
 struct Policy {
-    /// Signed at, removes, takes, answers (each a line: a merge's for a certificate), boxed.
-    plain: Option<(Line, BTreeSet<usize>, BTreeSet<u32>, BTreeSet<Line>, BTreeSet<usize>)>,
+    plain: Option<PlainAct>,
     cert: Option<(Line, BTreeSet<usize>)>,
     reseals: BTreeSet<(Line, usize)>,
     trot: bool,
@@ -176,6 +179,8 @@ struct Run {
     reached: Reached,
     /// What each node held at the last compare: seeds (lines), t's read epochs.
     seeds: [BTreeSet<Line>; N],
+    /// The read epoch of t each mirrored t rotation mints (its maker's newest after it).
+    trot_epoch: BTreeMap<u32, osis_crypto::Epoch>,
     tkeys: [BTreeSet<osis_crypto::Epoch>; N],
     /// Taken revocations (P) or followed rotations (outside) at the last compare.
     taken: [Vec<u32>; N],
@@ -228,6 +233,7 @@ impl Run {
             rng: Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1),
             reached: Reached::default(),
             seeds: Default::default(),
+            trot_epoch: BTreeMap::new(),
             tkeys: Default::default(),
             taken: Default::default(),
             switched_at: [false; N],
@@ -708,7 +714,11 @@ impl Run {
                 bx[R1] = true;
                 let reach = self.reach_of(n, &c);
                 let pk = self.lp.peers[n].engine.package(&c).unwrap();
-                made.push(self.add(MK::TRot, n, n, e, te, c, pk, bx, reach));
+                let id = self.add(MK::TRot, n, n, e, te, c, pk, bx, reach);
+                if let Some(x) = self.lp.peers[n].engine.core.ix.secrets.get(&self.ids.t).and_then(|x| x.read.newest_held().map(|y| y.0)) {
+                    self.trot_epoch.insert(id, x);
+                }
+                made.push(id);
                 trot = true;
                 self.reached.t_rekeyed = true;
             } else {
@@ -769,7 +779,7 @@ impl Run {
 
     /// Plain rotation item `id` as the policy compares it: signed at, removes, takes, answers,
     /// boxed (but its maker).
-    fn plain_of(&self, id: u32) -> (Line, BTreeSet<usize>, BTreeSet<u32>, BTreeSet<Line>, BTreeSet<usize>) {
+    fn plain_of(&self, id: u32) -> PlainAct {
         let i = self.w.item(id);
         let MK::Plain { at, removes, takes, answers, .. } = &i.kind else { unreachable!() };
         (at.clone(), removes.iter().copied().collect(), takes.iter().copied().collect(), answers.iter().map(|q| answered(&self.w, *q)).collect(), (0..N).filter(|m| i.boxed[*m] && *m != i.author).collect())
@@ -1222,6 +1232,11 @@ impl Run {
             // whatever counts; t's epochs derived from P's come and go with P's current epochs)
             if v < OWN || v == R1 {
                 let tk: BTreeSet<osis_crypto::Epoch> = self.lp.peers[v].engine.core.ix.secrets.get(&self.ids.t).map(|e| e.read.epochs().filter(|(x, _)| e.read.secret(x).is_some()).map(|(x, _)| *x).collect()).unwrap_or_default();
+                // custody of t: the t epochs the model holds (boxed to P at an epoch whose seed is
+                // held, whatever counts) are held
+                if let Some(k) = j.tkeys.iter().find(|k| self.trot_epoch.get(*k).is_some_and(|x| !tk.contains(x))) {
+                    self.fail(&format!("t{t} node {}: t's epoch of #{k} not held (the model holds it)", cm::NAMES[v]));
+                }
                 if !self.tkeys[v].is_subset(&tk) {
                     let lost: Vec<u64> = self.tkeys[v].difference(&tk).map(|e| e.n()).collect();
                     self.fail(&format!("t{t} node {}: t's read epochs shrank {} -> {} (lost n {lost:?})", cm::NAMES[v], self.tkeys[v].len(), tk.len()));
@@ -1413,8 +1428,8 @@ impl Run {
                             let ids = self.act(n, None, false);
                             for id in &ids {
                                 let reach = self.reach[id];
-                                for m in 0..N {
-                                    if m != n && reach[m] {
+                                for (m, r) in reach.into_iter().enumerate() {
+                                    if m != n && r {
                                         self.sched.get_mut(id).unwrap()[m] = t;
                                         self.send(*id, m);
                                     }
@@ -1439,8 +1454,8 @@ impl Run {
                     self.goto(t);
                     for id in made.clone() {
                         let (author, reach) = (self.w.item(id).author, self.reach[&id]);
-                        for m in 0..N {
-                            if m != author && reach[m] {
+                        for (m, r) in reach.into_iter().enumerate() {
+                            if m != author && r {
                                 self.sched.get_mut(&id).unwrap()[m] = t;
                                 self.send(id, m);
                             }
@@ -1561,13 +1576,66 @@ impl Run {
     }
 }
 
+/// The engine counterparts of roles-model `custody`'s negative controls, planted at every peer
+/// (`merge-carries` has none: a certificate carrying takes or answers is bad input).
+#[derive(Clone, Copy, Debug)]
+enum Control {
+    None,
+    CustodyJudged,
+    RosterBare,
+    MergeRandom,
+}
+
 /// One world from `seed`, played and checked; what it reached.
 pub(super) fn custody_world(seed: u64) -> Reached {
+    play(seed, Control::None)
+}
+
+fn play(seed: u64, control: Control) -> Reached {
     let mut r = Run::new(seed);
+    for k in [A, B, C, T, R1, R2] {
+        let core = &mut r.lp.peers[k].engine.core;
+        match control {
+            Control::None => {}
+            Control::CustodyJudged => core.faults.custody_judged = true,
+            Control::RosterBare => core.faults.roster_bare = true,
+            Control::MergeRandom => core.faults.merge_random = true,
+        }
+    }
     r.generate();
     r.settle();
     r.settled();
     r.reached
+}
+
+/// The differential fails on some world of seeds `0..n` under `control`.
+fn fails_under(control: Control, n: u64) {
+    let failed = (0..n).find(|s| std::panic::catch_unwind(|| play(*s, control)).is_err());
+    eprintln!("custody control {control:?}: first failing seed {failed:?} of {n}");
+    assert!(failed.is_some(), "{control:?}: the differential passed {n} worlds");
+}
+
+// The differential's negative controls (roles-model `custody`'s, planted in the engine): each
+// fails. By hand: `cargo test -p osis-engine --lib -- --ignored rotation::tests_custody::control_`.
+// `stale-shut`'s counterpart (`Core::stale_shut`) shuts only a box arriving after its epoch went
+// stale, which these worlds seldom deliver: `a_box_at_a_revoked_account_epoch_is_read_*` is its
+// check.
+#[test]
+#[ignore = "control"]
+fn control_custody_judged_fails() {
+    fails_under(Control::CustodyJudged, 100);
+}
+
+#[test]
+#[ignore = "control"]
+fn control_roster_bare_fails() {
+    fails_under(Control::RosterBare, 100);
+}
+
+#[test]
+#[ignore = "control"]
+fn control_merge_random_fails() {
+    fails_under(Control::MergeRandom, 100);
 }
 
 fn tally(runs: &[Reached]) {

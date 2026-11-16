@@ -137,6 +137,9 @@ pub(crate) fn merge_heads(tx: &mut Tx<'_>, p: Tid) -> Result<Option<CommitId>> {
     let v = tx.core.account_view(&p).ok_or(Error::Misuse("no signing chain for the account"))?;
     let heads = v.heads();
     let Some((tips, keys)) = merge_of(&v, &held, &heads) else { return Ok(None) };
+    // tests, a fault: a merge mints its own epoch with a fresh seed, boxed to the whole roster
+    #[cfg(test)]
+    let keys = if tx.core.faults.merge_random { AccountEpochKeys::from_seed(&Secret32::random(&mut *tx.rng)) } else { keys };
     let epoch = osis_commit::merge_epoch(&keys.signing.verifying_key(), &tips);
     if v.minting(&epoch).iter().any(|c| v.rotation_counts(c)) {
         return Ok(None);
@@ -146,6 +149,8 @@ pub(crate) fn merge_heads(tx: &mut Tx<'_>, p: Tid) -> Result<Option<CommitId>> {
     let roster = v.roster_joining(&heads);
     let me = tx.core.id.tid();
     let derive = super::custody::derivers(tx.core, &v, &held.devices, &tip_keys);
+    #[cfg(test)]
+    let derive = if tx.core.faults.merge_random { BTreeSet::new() } else { derive };
     let lacking: BTreeSet<Tid> = roster.iter().filter(|m| **m != me && !derive.contains(*m)).copied().collect();
     // at least one box (spec/wire.md §4): its maker's own when every device derives it
     let boxed: BTreeSet<Tid> = if lacking.is_empty() { [me].into() } else { lacking.clone() };

@@ -424,6 +424,12 @@ impl JudgedEpochs {
         self.epochs.contains_key(e)
     }
 
+    /// Whether held rotation `e` counted (tests: the custody-judged fault).
+    #[cfg(test)]
+    pub(crate) fn counts(&self, e: &CommitId) -> bool {
+        self.epochs.get(e).is_some_and(|x| x.1 == Some(true))
+    }
+
     /// Whether the chain was read in doubt (`AccountView::doubt`).
     pub(crate) fn doubt(&self) -> bool {
         self.doubt
@@ -629,9 +635,15 @@ impl Core {
         // sealed under the epoch it is signed at, then (`Sigs::more`) a plain rotation's under the
         // epoch it mints, a certificate's under each tip it names, then the merge epoch: it opens
         // with any of those seeds held (spec/crypto.md §3)
+        // tests, a fault: seeds of epochs the last judgment counted alone open anything (judgment
+        // gates custody)
+        #[cfg(test)]
+        let gated = |e: &CommitId| !self.faults.custody_judged || *e == FIRST_EPOCH || self.ix.epochs.get(p).is_some_and(|j| j.counts(e));
+        #[cfg(not(test))]
+        let gated = |_: &CommitId| true;
         let signer = |c: &CommitId, e: &CommitId, r: &osis_commit::RotationHeader| -> Option<Tid> {
             let s = self.ix.role_sigs.get(c)?;
-            let keys = std::iter::once(epochs.get(e).map(|x| x.signing)).chain(r.names.iter().map(|n| epochs.get(n).map(|x| x.signing))).chain([Some(r.signing_key)]);
+            let keys = std::iter::once(epochs.get(e).filter(|_| gated(e)).map(|x| x.signing)).chain(r.names.iter().map(|n| epochs.get(n).filter(|_| gated(n)).map(|x| x.signing))).chain([gated(&r.mints(c)).then_some(r.signing_key)]);
             let seals = s.inner.iter().chain(s.more.iter());
             keys.zip(seals).find_map(|(k, inner)| self.inner_signer(a, &k?, c, inner))
         };
@@ -646,7 +658,7 @@ impl Core {
             let (adds, removes) = if r.devices.is_empty() {
                 (Vec::new(), Vec::new())
             } else {
-                let Some(k) = epochs.get(e).and_then(|x| a.keys.get(&x.signing)) else { continue };
+                let Some(k) = epochs.get(e).filter(|_| gated(e)).and_then(|x| a.keys.get(&x.signing)) else { continue };
                 let Some(x) = osis_crypto::open_devices(&k.inner, &r.signing_key, &r.devices) else { continue };
                 x
             };
@@ -744,7 +756,23 @@ impl Core {
         // node, a node of P included (only a rotation counting here revokes)
         let carrying: BTreeSet<CommitId> = rots.iter().filter(|(_, _, r)| r.revokes).map(|(id, ..)| *id).collect();
         let rule = Epochs::new(FIRST_EPOCH, rotations.clone(), chosen, &received, devices.as_ref(), &carrying, &[], &[]);
-        let roster = devices.as_ref().map(|d| rule.chain().roster(&rule.chain().preferred(), d)).unwrap_or_default();
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut roster = devices.as_ref().map(|d| rule.chain().roster(&rule.chain().preferred(), d)).unwrap_or_default();
+        // tests, a fault: a held revocation by a node on the roster removes from it, its rotation
+        // followed or not
+        #[cfg(test)]
+        if self.faults.roster_bare
+            && let Some(d) = &devices
+        {
+            let makers = roster.clone();
+            for (r, ys) in &d.removes {
+                if d.minter.get(r).is_some_and(|m| makers.contains(m)) {
+                    for y in ys {
+                        roster.remove(y);
+                    }
+                }
+            }
+        }
         let revoked = epochs.iter().filter(|(e, _)| rule.revoked(e)).map(|(_, e)| e.signing.to_bytes()).collect();
         let standing_certs = match (devices.as_ref(), certifier) {
             (Some(d), Some(by)) => {
