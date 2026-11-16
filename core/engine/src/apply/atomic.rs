@@ -344,8 +344,17 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let (tid, ak) = (a.tid, a.ak.clone());
     // a signal joins no state (spec/data-model.md §2): its body is held as history, heard
-    // through `Event::Commits` (spec/commits.md §5 Signals)
+    // through `Event::Commits` (spec/commits.md §5 Signals); a valid fire's references are
+    // known references (spec/data-model.md §8)
     if ak.signal() {
+        if v && crate::engine::refs::indexed(&ak) {
+            let mut d = crate::engine::refs::Delta::default();
+            each_piece(tx, h, id, blob, part, &mut |_, f| {
+                d.add(&f, 1);
+                Ok(())
+            })?;
+            crate::engine::refs::note(tx, &tid, &ak, d)?;
+        }
         return Ok(());
     }
     let gives = part.gives();
@@ -1060,8 +1069,8 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
         }
         let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
         let (want, got) = osis_base::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, None)?, tx.state(&tid, &ak)?.cloned())) })?;
-        // and the reference index, derived from it
-        osis_base::costs::paused(|| crate::engine::refs::check(tx, &tid, &ak, got.as_ref()))?;
+        // and the reference index, derived from it (a signal's from its held fires)
+        osis_base::costs::paused(|| if ak.signal() { crate::engine::refs::check_fires(tx, &tid, &ak) } else { crate::engine::refs::check(tx, &tid, &ak, got.as_ref()) })?;
         match cached.0 {
             Some(s) => tx.core.states.insert(k.clone(), s),
             None => tx.core.states.remove(&k),
@@ -1120,9 +1129,14 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// instead (`strip_state`).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     // a signal has no state: a validity change or a drop only changes which bodies count
-    // (spec/commits.md §5 Signals)
+    // (spec/commits.md §5 Signals), and so which fires' references are known
     if ak.signal() {
-        return Ok(());
+        let memory = tx.core.memory_tx;
+        if let Some(b) = &mut tx.core.batched {
+            b.entry((*tid, ak.clone())).or_default().memory |= memory;
+            return Ok(());
+        }
+        return crate::engine::refs::resync_fires(tx, tid, ak);
     }
     tx.core.rebuilds += 1;
     let k = (*tid, ak.clone());

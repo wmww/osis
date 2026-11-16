@@ -10,7 +10,7 @@
 use super::{Tx, records, scan_table};
 use crate::error::{Error, Result};
 use crate::events::Event;
-use osis_base::{Ak, RefKind, Tid, Value};
+use osis_base::{Ak, CommitId, RefKind, Tid, Value};
 use osis_crdt::Fragment;
 use osis_store::Shred;
 use std::collections::BTreeMap;
@@ -20,9 +20,36 @@ pub(crate) const TO: &[u8] = b"node/refs to";
 /// Rows by source: source ‖ AK length (u16) ‖ AK ‖ target ‖ kind, the count (u64).
 pub(crate) const FROM: &[u8] = b"node/refs from";
 
-/// Whether the values of `ak` are indexed: every aspect with a state (a signal has none).
+/// Whether `ak` is indexed: every aspect with a state, and every durable signal by its held
+/// valid fires (an ephemeral signal's fires are held by none).
 pub fn indexed(ak: &Ak) -> bool {
-    !ak.signal()
+    !(ak.signal() && ak.ephemeral())
+}
+
+/// What the held valid fires of signal `(tid, ak)` hold: each fire read (a rebuild's cost, as a
+/// state aspect's rebuild reads its held bodies).
+fn fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Delta> {
+    let mut d = Delta::default();
+    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    for c in held {
+        let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak).filter(|ai| m.holds(*ai) && m.valid_at(*ai))) else { continue };
+        crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
+            d.add(&f, 1);
+            Ok(())
+        })?;
+    }
+    Ok(d)
+}
+
+/// Sets the rows of signal `(tid, ak)` to what its held valid fires hold (`apply::rebuild`: a
+/// fire dropped, forgotten or judged again).
+pub(crate) fn resync_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    if !indexed(ak) {
+        return Ok(());
+    }
+    let mut d = fires(tx, tid, ak)?;
+    d.sub(&stored(tx, tid, ak)?);
+    note(tx, tid, ak, d)
 }
 
 /// One row: `source` holds a `kind` reference to `target` `count` times in its values on `ak`.
@@ -261,6 +288,11 @@ pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
         aspects.push((r.tid()?, r.ak()?));
         Ok(())
     })?;
+    // a signal has no aspect record: its held fires are found by the commits naming it
+    let signals: Vec<(Tid, Ak)> = tx.core.ix.by_aspect.keys().filter(|(_, ak)| ak.signal() && indexed(ak)).cloned().collect();
+    for (t, ak) in signals {
+        resync_fires(tx, &t, &ak)?;
+    }
     for (t, ak) in aspects.into_iter().filter(|(_, ak)| indexed(ak)) {
         let k = (t, ak.clone());
         let cached = tx.core.states.contains_key(&k);
@@ -286,5 +318,17 @@ pub(crate) fn check(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, f: Option<&Fragment>
     let want: BTreeMap<(Tid, RefKind), u64> = Delta::of(f).0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
     let got = stored(tx, source, ak)?;
     debug_assert_eq!(got, want, "reference rows of {source:?} {ak:?} differ from its state");
+    Ok(())
+}
+
+/// Debug: the rows of signal `(tid, ak)` are what its held valid fires hold.
+#[cfg(debug_assertions)]
+pub(crate) fn check_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    if !indexed(ak) {
+        return Ok(());
+    }
+    let want: BTreeMap<(Tid, RefKind), u64> = fires(tx, tid, ak)?.0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
+    let got = stored(tx, tid, ak)?;
+    debug_assert_eq!(got, want, "reference rows of signal {tid:?} {ak:?} differ from its held fires");
     Ok(())
 }

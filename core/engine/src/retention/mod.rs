@@ -279,6 +279,15 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragment(tx, c, ai)?.into_iter().collect() } else { Vec::new() };
     let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
+    // a valid fire's references leave the index with it: O(the fire), no rebuild
+    let fire = a.ak.signal() && m.holds(ai) && m.valid_at(ai) && crate::engine::refs::indexed(&a.ak);
+    let mut fire_refs = crate::engine::refs::Delta::default();
+    if fire {
+        crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
+            fire_refs.add(&f, -1);
+            Ok(())
+        })?;
+    }
     // what it links joins its thing's freed set first; an invalid body's stays at peers with its
     // pieces, a refetch source (spec/permissions.md §6)
     if !invalid {
@@ -310,6 +319,9 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // it carried (spec/permissions.md §5.2). A destroyed thing's aspects rebuild once, after its last part (`retention::destroy`).
     // An invalid part gave nothing (`apply::rebuilt`): its drop leaves the state as it is
     // unless it uncovered a part.
+    if a.ak.signal() {
+        return crate::engine::refs::note(tx, &a.tid, &a.ak, fire_refs);
+    }
     if why == DropFor::Destroyed || (invalid && !uncovered) {
         return Ok(());
     }
