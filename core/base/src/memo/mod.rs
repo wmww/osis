@@ -1051,22 +1051,19 @@ impl<K: Ord + Hash, V> Stamped<K, V> {
         }
         v
     }
-    /// Sets `k` to what `f` makes of its value (`None`: absent, removed), stamping only a
-    /// change: an edit in place, never a removal and an insert (which would move the stamp of
-    /// every absent key of `k`'s bucket).
-    pub fn update(&mut self, k: K, f: impl FnOnce(Option<V>) -> Option<V>)
-    where
-        V: Clone + PartialEq,
-    {
-        let was = self.map.get(&k).cloned();
-        match f(was.clone()) {
-            now if now == was => {}
+    /// Sets `k` to what `f` makes of its value, handed over owned (`None`: absent, removed): an
+    /// edit in place, stamped as an insert, never a removal and an insert (which would move the
+    /// stamp of every absent key of `k`'s bucket); absent before and after stamps nothing. `f`
+    /// holds the only copy, so a shared value (`Arc::make_mut`) is edited, not copied.
+    pub fn update(&mut self, k: K, f: impl FnOnce(Option<V>) -> Option<V>) {
+        let was = self.map.remove(&k);
+        let had = was.is_some();
+        match f(was) {
             Some(v) => {
                 self.insert(k, v);
             }
-            None => {
-                self.remove(&k);
-            }
+            None if had => self.stamps.wrote(&k, false),
+            None => {}
         }
     }
     /// A handle reading this map's keys (`Reader`, as `get` reads them).
@@ -1611,10 +1608,31 @@ mod tests {
         assert!(ran > 0 && ran < 20, "only the removed key's bucket moved: {ran}");
     }
 
+    // spec: none (internal). `Stamped::update` hands its value over owned: a shared value it
+    // edits (`Arc::make_mut`) is edited in place, not copied whole at each edit.
+    #[test]
+    fn an_update_edits_a_shared_value_in_place() {
+        let mut m: Stamped<u8, Arc<std::collections::BTreeSet<u8>>> = Stamped::default();
+        let add = |x: u8| {
+            move |s: Option<Arc<std::collections::BTreeSet<u8>>>| {
+                let mut s = s.unwrap_or_default();
+                Arc::make_mut(&mut s).insert(x);
+                Some(s)
+            }
+        };
+        m.update(1, add(1));
+        let at = Arc::as_ptr(m.get(&1).unwrap());
+        m.update(1, add(2));
+        assert!(std::ptr::eq(at, Arc::as_ptr(m.get(&1).unwrap())), "edited in place");
+        assert_eq!(m.get(&1).unwrap().len(), 2);
+    }
+
     // spec: none (internal: notes/engine.md, Stamps). Over random writes, removals, opens
     // (`wrote_all`: rows present with no stamp of their own), undos (a row put back, stamped as a
-    // removal) and whole moves of keys sharing two buckets: a key's stamp equal at two times means
-    // its value is; each memo's answer, and each followed key not due, is what a fresh read gives.
+    // removal) and whole moves of keys sharing two buckets, and a `Stamped` map's inserts, removals
+    // (of absent keys too) and updates (a no-op, an edit, a removal) over the same keys: a key's
+    // stamp equal at two times means its value is; each memo's answer, and each followed key not
+    // due, is what a fresh read gives.
     #[test]
     fn stamps_hold_only_over_an_unchanged_value() {
         let keys: Vec<u8> = {
@@ -1632,20 +1650,24 @@ mod tests {
             };
             let stamps = Stamps::default();
             let rows: RefCell<HashMap<u8, u8>> = RefCell::default();
-            let memos: Vec<Memo<u8, Option<u8>>> = (0..3).map(|_| Memo::new("test random")).collect();
+            let map: RefCell<Stamped<u8, u8>> = RefCell::default();
+            type Both = (Option<u8>, Option<u8>);
+            let memos: Vec<Memo<u8, Both>> = (0..3).map(|_| Memo::new("test random")).collect();
             let sum: Memo<(), u64> = Memo::new("test random sum");
-            let mut effects: Effects<u8, Option<u8>> = Effects::new("test random effects");
+            let mut effects: Effects<u8, Both> = Effects::new("test random effects");
+            let fresh = |k: u8| (rows.borrow().get(&k).copied(), map.borrow().map.get(&k).copied());
             let read = |k: u8| {
                 stamps.read(&k);
-                rows.borrow().get(&k).copied()
+                (rows.borrow().get(&k).copied(), map.borrow().get(&k).copied())
             };
-            let mut seen: HashMap<u8, (u64, Option<u8>)> = HashMap::new();
+            let total = || rows.borrow().values().chain(map.borrow().map.values()).map(|v| u64::from(*v)).sum::<u64>();
+            let mut seen: HashMap<u8, (u64, u64, Both)> = HashMap::new();
             // a follower that skips its follow at its fixed point (`Quiet`), with its values
-            let (mut quiet, mut follower, mut held) = (Quiet::default(), Effects::<u8, Option<u8>>::new("test random quiet"), HashMap::new());
+            let (mut quiet, mut follower, mut held) = (Quiet::default(), Effects::<u8, Both>::new("test random quiet"), HashMap::new());
             for step in 0..150 {
                 let k = keys[next(keys.len() as u64) as usize];
                 let at = format!("seed {seed} step {step} key {k}");
-                match next(9) {
+                match next(13) {
                     0 | 1 => {
                         let v = next(3) as u8;
                         rows.borrow_mut().insert(k, v);
@@ -1663,15 +1685,31 @@ mod tests {
                     }
                     6 => stamps.moved(),
                     7 => {
-                        let total = sum.get(&(), || {
+                        let got = sum.get(&(), || {
                             stamps.read_all();
-                            rows.borrow().values().map(|v| u64::from(*v)).sum()
+                            map.borrow().values().count();
+                            total()
                         });
-                        assert_eq!(total, rows.borrow().values().map(|v| u64::from(*v)).sum::<u64>(), "{at}: whole");
+                        assert_eq!(got, total(), "{at}: whole");
+                    }
+                    9 => {
+                        map.borrow_mut().insert(k, next(3) as u8);
+                    }
+                    10 => {
+                        map.borrow_mut().remove(&k);
+                    }
+                    11 | 12 => {
+                        let (op, v) = (next(4), next(3) as u8);
+                        map.borrow_mut().update(k, |was| match op {
+                            0 => was,
+                            1 => Some(v),
+                            2 => None,
+                            _ => Some(was.unwrap_or(0).wrapping_add(1) % 3),
+                        });
                     }
                     _ => {
                         let m = &memos[next(3) as usize];
-                        assert_eq!(m.get(&k, || read(k)), rows.borrow().get(&k).copied(), "{at}: memo");
+                        assert_eq!(m.get(&k, || read(k)), fresh(k), "{at}: memo");
                         effects.want(k);
                         if next(2) == 0 {
                             follower.want(k);
@@ -1680,7 +1718,7 @@ mod tests {
                 }
                 if quiet.holds(follower.idle()) {
                     for (x, v) in &held {
-                        assert_eq!(*v, rows.borrow().get(x).copied(), "{at}: quiet follower skipped over {x}'s change");
+                        assert_eq!(*v, fresh(*x), "{at}: quiet follower skipped over {x}'s change");
                     }
                 } else {
                     let from = Quiet::begin();
@@ -1692,9 +1730,10 @@ mod tests {
                     quiet.ended(from, true);
                 }
                 for x in &keys {
-                    let (now, stamp) = (rows.borrow().get(x).copied(), stamps.stamp(x));
-                    if let Some((s, v)) = seen.insert(*x, (stamp, now)) {
-                        assert!(s != stamp || v == now, "{at}: {x}'s stamp {stamp} held over {v:?} -> {now:?}");
+                    let (now, stamp, mstamp) = (fresh(*x), stamps.stamp(x), map.borrow().stamps.stamp(x));
+                    if let Some((s, m, v)) = seen.insert(*x, (stamp, mstamp, now)) {
+                        assert!(s != stamp || v.0 == now.0, "{at}: {x}'s stamp {stamp} held over {v:?} -> {now:?}");
+                        assert!(m != mstamp || v.1 == now.1, "{at}: {x}'s map stamp {mstamp} held over {v:?} -> {now:?}");
                     }
                 }
                 let due = effects.due();
