@@ -97,6 +97,24 @@ fn a_silent_dial_times_out_and_redials_spec_sync_opens_1() {
     assert_eq!(ups_to(&w, 0, 1), 1);
 }
 
+// spec/sync-opens.md §1 (Redial: it dials it again `REDIAL_MS` after its last dial): the pause
+// is the node's to keep whatever its wall clock does: with both nodes' clocks gone back an hour
+// while each waits to redial the other, they connect within a pause of the heal, not an hour on.
+#[test]
+#[ignore = "issues/clock-back-stalls-timers.md"]
+fn repro_a_clock_gone_back_delays_no_redial_spec_sync_opens_1() {
+    let mut w = contacts();
+    w.partition(0, 1);
+    w.advance(REDIAL_MS + 5_000);
+    assert!(dials_to(&w, 0, 1) > 0 && !connected(&w, 0, 1), "node 0 dialed node 1 and waits to again");
+    for i in [0, 1] {
+        w.skew(i, -3_600_000);
+    }
+    w.heal();
+    w.advance(2 * REDIAL_MS);
+    assert!(connected(&w, 0, 1), "connected within a pause of the heal");
+}
+
 // spec/sync-opens.md §1 (redial): a failed dial is dialed again `REDIAL_MS` after it, not sooner
 // without a change; a new address for the peer is a change: dialed at once.
 #[test]

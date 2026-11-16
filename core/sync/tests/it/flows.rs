@@ -526,6 +526,28 @@ fn unfile(w: &mut World, i: usize, t: osis_base::Tid) {
     });
 }
 
+// spec/sync-set.md §3 (One rule ends syncing it; shreds S's entries in its store),
+// spec/sync-judgement.md §6 (Keeps: once the closure no longer holds it): node 1, keeping S unread with node 0's writes
+// held, unsyncs the thing: once node 0 holds what it logged, S stops and every entry goes; a
+// restart after finds nothing of S either. It neither keeps S's entries unserved nor serves them.
+#[test]
+fn an_unsynced_sync_id_kept_unread_leaves_nothing_behind_spec_sync_set_3() {
+    let (mut w, t) = kept_unread(true);
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    unfile(&mut w, 1, t);
+    w.run();
+    for restart in [false, true] {
+        if restart {
+            w.power_off(1);
+            w.power_on(1);
+            w.run();
+        }
+        assert!(!w.engine(1).sync_set().unwrap().ids.contains_key(&s), "left the sync set");
+        assert!(w.store(1).synced(&s).is_none(), "stopped");
+        assert!(w.store(1).entries(&s).unwrap().is_empty() && !w.store(1).held_ids().unwrap().contains(&s), "nothing of S held");
+    }
+}
+
 // spec/sync-set.md §3 (it waits only while some peer is to be waited for on S: one the rosters name, never told of S): node 1
 // makes a thing outside its synced group and grants node 0's account write, which node 0
 // accepts; apart from node 0, node 1 files the thing, writes it and unfiles it. No record holds
