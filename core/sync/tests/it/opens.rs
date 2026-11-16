@@ -84,7 +84,7 @@ fn a_record_resumes_its_shared_set_spec_sync_opens_3() {
 fn waited_by_a_connection_or_a_kept_record_spec_sync_set_3() {
     let mut p = readers();
     let other = |a: &osis_store::Named| if a.actors().contains(&tid(2)) { Peer::Skipped } else { Peer::Unlisted };
-    let wait = |p: &Pair, s: &SyncId, f: &dyn Fn(&osis_store::Named) -> Peer| p.a.opens.wait_for(&p.a.store, s, |_, n| f(n)).unwrap();
+    let wait = |p: &Pair, s: &SyncId, f: &dyn Fn(&osis_store::Named) -> Peer| p.a.opens.wait_for(&p.a.store, s, f).unwrap();
     assert!(wait(&p, &S, &|_| Peer::Unlisted), "open on a connection");
     assert!(!wait(&p, &S, &other), "only a skipped peer");
     assert!(!wait(&p, &sid(9), &|_| Peer::Unlisted), "held by nobody");
@@ -105,7 +105,7 @@ fn a_sync_id_just_joined_waits_for_a_peer_the_rosters_name_spec_sync_set_3() {
     let mut p = readers();
     p.close();
     let may = |_: &osis_store::Named| Peer::MayHold;
-    let wait = |p: &Pair, f: &dyn Fn(&osis_store::Named) -> Peer| p.a.opens.wait_for(&p.a.store, &sid(7), |_, n| f(n)).unwrap();
+    let wait = |p: &Pair, f: &dyn Fn(&osis_store::Named) -> Peer| p.a.opens.wait_for(&p.a.store, &sid(7), f).unwrap();
     let st = StepKeys::new(2, 0);
     p.a.table.set(s2, Some(reader(&s2, &read_secret(2, 0), &st, &[], &[], &[])));
     p.a.settle();
@@ -158,7 +158,7 @@ fn an_evicted_record_ends_its_wait_spec_sync_set_3() {
     let st = StepKeys::new(2, 0);
     p.a.table.set(s2, Some(reader(&s2, &read_secret(2, 0), &st, &[], &[], &[])));
     p.a.settle();
-    let wait = |p: &Pair| p.a.opens.wait_for(&p.a.store, &s2, |_, _| Peer::MayHold).unwrap();
+    let wait = |p: &Pair| p.a.opens.wait_for(&p.a.store, &s2, |_| Peer::MayHold).unwrap();
     assert!(wait(&p) && wait_s(&p), "b's record: not told of s2, holding S");
     p.a.opens.set_record_budget(0);
     assert_eq!(p.a.flush().len(), 1);
@@ -166,7 +166,7 @@ fn an_evicted_record_ends_its_wait_spec_sync_set_3() {
 }
 
 fn wait_s(p: &Pair) -> bool {
-    p.a.opens.wait_for(&p.a.store, &S, |_, _| Peer::Unlisted).unwrap()
+    p.a.opens.wait_for(&p.a.store, &S, |_| Peer::Unlisted).unwrap()
 }
 
 fn sid(n: u8) -> SyncId {
@@ -295,27 +295,6 @@ fn byrole_opens_on_j_spec_sync_opens_5() {
     p.run();
     assert!(p.a.open(p.ca, &S) && p.b.open(p.cb, &S));
     assert_eq!(p.a.opens.members(p.ca)[&S].by, Credential::J);
-}
-
-// spec/permissions.md §2 (A peer refuses it): a loss by an `until` alone: a ByRole refused by a
-// peer this side judges a reader makes it a refuser of S while the connection lasts and S is not
-// open there; an accepted one is none.
-#[test]
-fn a_byrole_refused_by_a_reader_is_a_refusal_spec_permissions_2() {
-    for refuses in [true, false] {
-        let mut a = Side::new(1);
-        let mut b = Side::new(2);
-        a.table.set(S, Some(reader(&S, &read_secret(1, 0), &StepKeys::new(1, 0), &[], &[], &[])));
-        b.table.set(S, Some(reader(&S, &read_secret(9, 0), &StepKeys::new(9, 0), &[], &[], &[])));
-        a.table.judge_as(S, tid(2), J::Reader);
-        b.table.judge_as(S, tid(1), if refuses { J::Departed } else { J::Reader });
-        let mut p = Pair::new(a, b, account(1), account(2));
-        p.run();
-        assert_eq!(p.a.open(p.ca, &S), !refuses);
-        assert_eq!(!p.a.opens.refusers(&S).is_empty(), refuses);
-        p.close();
-        assert!(p.a.opens.refusers(&S).is_empty(), "goes with the connection");
-    }
 }
 
 // spec/sync-opens.md §3 (agreement): a member only one side's record holds closes there, with

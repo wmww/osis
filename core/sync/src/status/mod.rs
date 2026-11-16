@@ -792,21 +792,23 @@ impl Status {
     }
 }
 
-/// Whether own commit `c`'s body under S is held at a source (§2): nothing S must hold (by
-/// read's verdict), an entry recorded held, or one a source's stream showed present (a self-
-/// removal: not at this account's own nodes), or a reader reported a position at or past where
-/// this node's log first held it (for a member being ended, only an entry first logged at or below
-/// its `until`). A store's position says nothing of an entry: it applies past what it refused for
+/// Whether own commit `c`'s body under S is held at a source (§2): an entry recorded held, or one
+/// a source's stream showed present (a self-removal: not at this account's own nodes), or a reader
+/// reported a position at or past where this node's log first held it (for a member being ended,
+/// only an entry first logged at or below its `until`); else nothing S must hold (by read's
+/// verdict). A source holding it is recorded whatever the verdict: one that is may-hold only as
+/// this node may not log it (it lost access) still counts as held only there, for what reads the
+/// recorded mark (a leave, a loss by an `until`). A store's position says nothing of an entry: it applies past what it refused for
 /// room or does not pull (unstamped), so a store counts by its stream alone. `sources` gives S's
 /// sources, asked only past the recorded check (a commit held elsewhere moves at no source joining
 /// or leaving), each with where it stood as it left, for one that left since the last settle (its
 /// stream's word still counts: a report and the close that follows it come in one step).
 fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl FnOnce() -> Vec<(ConnId, Src, Option<LeftAt>)>, removal: bool) -> Result<Held> {
-    match g.verdict(s, c) {
-        Some(Verdict::Must) => {}
-        Some(Verdict::May | Verdict::MustNot(_)) => return Ok(Held::Yes(None)),
+    let must = match g.verdict(s, c) {
+        Some(Verdict::Must) => true,
+        Some(Verdict::May | Verdict::MustNot(_)) => false,
         Some(Verdict::Unjudged) | None => return Ok(Held::No),
-    }
+    };
     let mut sources = Some(sources);
     let mut srcs = Vec::new();
     for b in g.commit_entries(s, c)? {
@@ -832,7 +834,7 @@ fn held_at(g: &mut impl Ground, s: &SyncId, c: &CommitId, sources: impl FnOnce()
             }
         }
     }
-    Ok(Held::No)
+    Ok(if must { Held::No } else { Held::Yes(None) })
 }
 
 /// Whether sync is done waiting for self-removal `c` (spec/permissions.md §3 Lost access): under

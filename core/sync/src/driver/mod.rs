@@ -915,7 +915,7 @@ impl crate::life::Hears for LifeHears<'_> {
     }
 
     fn timed_heard(&mut self, engine: &mut Engine, s: &SyncId, passed: bool) -> Result<bool> {
-        if !self.opens.waited_unrefused(engine, self.store, s)? {
+        if !self.opens.waited(engine, self.store, s, true)? {
             return Ok(true);
         }
         Ok(passed && self.status.sourced(s) && crate::leave::own_elsewhere(engine, self.store, s)?)

@@ -25,9 +25,8 @@
 //!   and drops it. A loss by an `until` alone (`Engine::lost_timed`, spec/permissions.md §2) on
 //!   the same key drops once each sync ID of the actor read here is heard out for it
 //!   (`Hears::timed_heard`: with a source, a complete pass begun after the loss ended and what
-//!   this node logged itself there is elsewhere; or no peer to be waited for on it but those
-//!   refusing it), or
-//!   at its wait's end (`LOST_HEARD_WAIT_MS`, read on the memo clock). One key over `Engine::copies_due` judges the kept copies again
+//!   this node logged itself there is elsewhere; or no peer to be waited for on it), or at its
+//!   wait's end (`LOST_HEARD_WAIT_MS`, read on the memo clock). One key over `Engine::copies_due` judges the kept copies again
 //!   (`Engine::rejudge_copies`) where a role commit moved what one hangs on.
 //! - **Joiner's leave** (spec/permissions.md §7): per thing named a holder, whether it is a link
 //!   this account joined whose K's edge on its target ended (`Engine::joined_link_ended`); one
@@ -63,8 +62,7 @@ pub trait Hears {
     fn heard_out(&mut self, engine: &mut Engine, s: &SyncId) -> Result<bool>;
     /// A loss by an `until` alone heard S out (spec/permissions.md §2): with a source of S, a
     /// complete pass of S begun after the loss ended (`passed`) and each own commit with an
-    /// entry under S is held elsewhere; or no peer is to be waited for on S but those refusing
-    /// it (a refusal ends the wait on its peer alone).
+    /// entry under S is held elsewhere; or no peer is to be waited for on S.
     fn timed_heard(&mut self, engine: &mut Engine, s: &SyncId, passed: bool) -> Result<bool>;
 }
 

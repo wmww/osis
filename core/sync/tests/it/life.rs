@@ -285,106 +285,114 @@ fn three_until() -> (World, Tid) {
     })
 }
 
-// spec/permissions.md §2 (A refusal ends the wait on its peer alone): node 1, cut off from node
-// 0, writes t, and its `until` passes by its clock alone; node 2, a reader of t not syncing it,
-// refuses node 1's ByRole on t's sync ID, before the loss or after it. Node 1's write is held
-// nowhere else and node 0, its clock behind, would take it: node 1 keeps t until node 0 holds the
-// write, then drops.
+// spec/permissions.md §2 (no peer is to be waited for on it; spec/sync-set.md §3 Leaving): node 1,
+// cut off from node 0, writes t, and its `until` passes by its clock alone; node 2, a reader of t
+// not syncing it, is connected throughout, no source of t's sync ID and no peer to wait for on it.
+// Node 1's write is held nowhere else and node 0, its clock behind, would take it: node 1 keeps t
+// until node 0 holds the write, then drops.
 #[test]
-fn a_loss_by_an_until_keeps_its_own_write_past_a_refusal_spec_permissions_2() {
-    for refused_first in [true, false] {
-        let at = format!("refused before the loss: {refused_first}");
-        let (mut w, t) = three_until();
-        // three nodes, two of them dialing a partitioned peer for a while
-        w.cap = 3 * crate::harness::RULE_CAP;
-        let s = match w.engine(1).thing_sync(&t).unwrap() {
-            osis_engine::sync::ThingSync::Read(ids) => ids[0],
-            other => panic!("node 1 reads t's sync ID: {other:?}"),
-        };
-        w.partition(0, 1);
-        if !refused_first {
-            w.partition(1, 2);
-        }
-        w.write(1, |e| {
-            let mut m = Mutation::new();
-            m.set(t, &v(), &Value::Str("y".into())).unwrap();
-            e.commit(m).unwrap();
-        });
-        w.run();
-        if refused_first {
-            assert!(!w.node(1).node.opens().refusers(&s).is_empty(), "{at}: node 2 refuses before the loss");
-        }
-        w.skew(1, UNTIL_MS as i64);
-        w.run();
-        if !refused_first {
-            w.rejoin(1, 2);
-            w.run();
-            assert!(!w.node(1).node.opens().refusers(&s).is_empty(), "{at}: node 2 refuses after the loss");
-        }
-        assert!(holds(&mut w, 1, &t), "{at}: dropped while its write is held nowhere else");
-        w.heal();
-        w.run();
-        assert_eq!(w.engine(0).get(&t, &v()).unwrap(), Some(Value::Str("y".into())), "{at}: node 0 holds node 1's write");
-        assert!(!holds(&mut w, 1, &t), "{at}: node 1 dropped t");
-    }
-}
-
-// spec/permissions.md §2 (A refusal ends the wait on its peer alone): nodes 1 and 2 are sibling
-// nodes reading t, one peer by what they prove (their account); node 2 filed t and synced it with
-// node 3, then went away; node 1 has not heard of the filing and refuses node 3's ByRole on t's
-// sync ID. Node 3, cut off, writes t; node 0, its clock ahead, finalizes node 3's grant and
-// refuses it too once node 3's `until` passes. Node 1's refusal ends no wait on node 2, which may
-// still take the write: node 3 keeps t, and node 2 takes the write once back.
-#[test]
-fn a_refusal_by_one_node_ends_no_wait_on_its_sibling_spec_permissions_2() {
-    let mut w = crate::harness::siblings();
-    w.add_node();
-    let cards: Vec<_> = (0..2).map(|i| w.make_link(i, w.node(i).profile.unwrap(), osis_base::Role::Read)).collect();
-    for c in &cards {
-        w.redeem(3, c);
-    }
-    w.run();
-    w.cap = 4 * crate::harness::RULE_CAP;
-    w.partition(1, 2);
-    let (a0, a1, a3) = (w.node(0).account.unwrap(), w.node(1).account.unwrap(), w.node(3).account.unwrap());
-    let until = osis_base::WallMs(w.now().0 + UNTIL_MS);
-    let t = w.write(0, |e| {
-        let mut m = Mutation::new();
-        let t = e.new_thing(&mut m, a0);
-        m.set(t, &v(), &Value::Str("x".into())).unwrap();
-        e.commit(m).unwrap();
-        t
-    });
-    file(&mut w, 0, vec![t], Vec::new());
-    w.write(0, |e| e.grant(&t, &a3, &ct::Edge { role: osis_base::Role::Write, until: Some(until), invite: None, tied: None, floor: None })).unwrap();
-    w.write(0, |e| e.grant(&t, &a1, &crate::flows::edge(osis_base::Role::Read))).unwrap();
-    w.run();
-    file(&mut w, 3, Vec::new(), vec![t]);
-    file(&mut w, 2, Vec::new(), vec![t]);
-    w.run();
-    assert_eq!(w.engine(3).get(&t, &v()).unwrap(), Some(Value::Str("x".into())), "node 3 reads t");
-    assert_eq!(w.engine(2).get(&t, &v()).unwrap(), Some(Value::Str("x".into())), "node 2 reads t");
-    let s = match w.engine(3).thing_sync(&t).unwrap() {
-        osis_engine::sync::ThingSync::Read(ids) => ids[0],
-        other => panic!("node 3 reads t's sync ID: {other:?}"),
-    };
-    assert!(!w.node(3).node.opens().refusers(&s).is_empty(), "node 1 refuses");
-    for i in [0, 3] {
-        w.partition(i, 2);
-    }
-    w.partition(0, 3);
-    w.write(3, |e| {
+fn a_loss_by_an_until_keeps_its_own_write_past_a_reader_not_syncing_spec_permissions_2() {
+    let (mut w, t) = three_until();
+    // three nodes, two of them dialing a partitioned peer for a while
+    w.cap = 3 * crate::harness::RULE_CAP;
+    w.partition(0, 1);
+    w.write(1, |e| {
         let mut m = Mutation::new();
         m.set(t, &v(), &Value::Str("y".into())).unwrap();
         e.commit(m).unwrap();
     });
-    w.skew(0, UNTIL_MS as i64);
     w.run();
-    w.rejoin(0, 3);
-    w.skew(3, UNTIL_MS as i64);
+    w.skew(1, UNTIL_MS as i64);
     w.run();
+    assert!(holds(&mut w, 1, &t), "dropped while its write is held nowhere else");
+    w.heal();
+    w.run();
+    assert_eq!(w.engine(0).get(&t, &v()).unwrap(), Some(Value::Str("y".into())), "node 0 holds node 1's write");
+    assert!(!holds(&mut w, 1, &t), "node 1 dropped t");
+}
+
+/// `siblings` plus node 3, a contact of both accounts: node 0's thing t granted to node 3's
+/// account for writing for `UNTIL_MS` and to node 1's for reading, filed by nodes 3 and 2 (node 1
+/// cut off from node 2 throughout, so it has not heard of the filing). Then node 2 goes away;
+/// node 3, cut off from node 0, writes y; node 0, its clock ahead, finalizes node 3's grant; node
+/// 3's `until` passes by its own clock with node 0 back: (world, t, when node 3 found the role
+/// gone, by its clock).
+fn sibling_until() -> (World, Tid, u64) {
+    let (w, (t, at)) = fixture_with("life write until, a sibling away", || {
+        let mut w = crate::harness::siblings();
+        w.add_node();
+        let cards: Vec<_> = (0..2).map(|i| w.make_link(i, w.node(i).profile.unwrap(), osis_base::Role::Read)).collect();
+        for c in &cards {
+            w.redeem(3, c);
+        }
+        w.run();
+        w.cap = 4 * crate::harness::RULE_CAP;
+        w.partition(1, 2);
+        let (a0, a1, a3) = (w.node(0).account.unwrap(), w.node(1).account.unwrap(), w.node(3).account.unwrap());
+        let until = osis_base::WallMs(w.now().0 + UNTIL_MS);
+        let t = w.write(0, |e| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a0);
+            m.set(t, &v(), &Value::Str("x".into())).unwrap();
+            e.commit(m).unwrap();
+            t
+        });
+        file(&mut w, 0, vec![t], Vec::new());
+        w.write(0, |e| e.grant(&t, &a3, &ct::Edge { role: osis_base::Role::Write, until: Some(until), invite: None, tied: None, floor: None })).unwrap();
+        w.write(0, |e| e.grant(&t, &a1, &crate::flows::edge(osis_base::Role::Read))).unwrap();
+        w.run();
+        file(&mut w, 3, Vec::new(), vec![t]);
+        file(&mut w, 2, Vec::new(), vec![t]);
+        w.run();
+        assert_eq!(w.engine(3).get(&t, &v()).unwrap(), Some(Value::Str("x".into())), "node 3 reads t");
+        assert_eq!(w.engine(2).get(&t, &v()).unwrap(), Some(Value::Str("x".into())), "node 2 reads t");
+        for i in [0, 3] {
+            w.partition(i, 2);
+        }
+        w.partition(0, 3);
+        w.write(3, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &v(), &Value::Str("y".into())).unwrap();
+            e.commit(m).unwrap();
+        });
+        w.skew(0, UNTIL_MS as i64);
+        w.run();
+        w.rejoin(0, 3);
+        w.skew(3, UNTIL_MS as i64);
+        let at = w.node_now(3).0;
+        w.run();
+        (w, (t, at))
+    });
+    (w, t, at)
+}
+
+// spec/permissions.md §2 (no peer is to be waited for on it; spec/sync-set.md §3 Leaving: a peer
+// whose kept record holds S): in `sibling_until`, nodes 1 and 2 are one peer by what they prove
+// (their account); node 1, not syncing t, acknowledged t's sync ID, while node 2's kept record
+// holds it. Node 1 ends no wait on node 2, which may still take node 3's write: node 3 keeps t,
+// and node 2 takes the write once back.
+#[test]
+fn a_sibling_not_syncing_ends_no_wait_on_one_that_does_spec_permissions_2() {
+    let (mut w, t, _) = sibling_until();
     assert!(holds(&mut w, 3, &t), "dropped while node 2 may take its write");
     w.heal();
     w.run();
     assert_eq!(w.engine(2).get(&t, &v()).unwrap(), Some(Value::Str("y".into())), "node 2 holds node 3's write");
+}
+
+// spec/permissions.md §2 (it has a source, each of its own commits held elsewhere by a source's
+// report; spec/sync-status.md §2: recorded whatever it judges the commit must hold now): in
+// `sibling_until`, everything heals and node 3's write reaches every node. Node 3, having lost
+// access, may log none of its own commits, yet the sources showing its write mark it held there:
+// it drops t after its pass, long before `LOST_HEARD_WAIT_MS`.
+#[test]
+fn a_loss_by_an_until_drops_once_its_write_is_held_everywhere_spec_permissions_2() {
+    let (mut w, t, at) = sibling_until();
+    w.heal();
+    w.run();
+    for i in 0..3 {
+        assert_eq!(w.engine(i).get(&t, &v()).unwrap(), Some(Value::Str("y".into())), "node {i} holds node 3's write");
+    }
+    assert!(!holds(&mut w, 3, &t), "node 3 keeps t");
+    assert!(w.node_now(3).0 < at + osis_engine::rotation::LOST_HEARD_WAIT_MS / 2, "dropped only near the wait's end");
 }
