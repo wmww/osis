@@ -431,7 +431,7 @@ pub struct Stats {
     ex_loss: Option<EHist>,
 }
 
-impl Stats {
+impl crate::Tally for Stats {
     fn merge(&mut self, o: Stats) {
         self.histories += o.histories;
         self.max_passes = self.max_passes.max(o.max_passes);
@@ -459,6 +459,9 @@ impl Stats {
         pick(&mut self.ex_gain, o.ex_gain);
         pick(&mut self.ex_loss, o.ex_loss);
     }
+}
+
+impl Stats {
 
     pub fn print(&self, name: &str) {
         println!(
@@ -807,29 +810,13 @@ pub fn random_hist(rng: &mut Rng) -> EHist {
     h
 }
 
-fn parallel(f: impl Fn(usize, usize) -> Stats + Sync) -> Stats {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let f = &f;
-    let stats: Vec<Stats> = std::thread::scope(|s| {
-        let hs: Vec<_> = (0..threads).map(|th| s.spawn(move || f(th, threads))).collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    let mut all = Stats::default();
-    for s in stats {
-        all.merge(s);
-    }
-    all
-}
-
 pub fn random(samples: u64, seed: u64) -> Stats {
-    parallel(|th, threads| {
-        let mut rng = Rng(seed ^ (th as u64 + 1).wrapping_mul(0x9E3779B97F4A7C15));
-        let mut st = Stats::default();
+    crate::on_every_core(|th, threads, st| {
+        let mut rng = Rng::thread(seed, th);
         for _ in 0..samples / threads as u64 {
             let h = random_hist(&mut rng);
-            check(&h, &mut st, &mut rng);
+            check(&h, st, &mut rng);
         }
-        st
     })
 }
 
@@ -841,21 +828,30 @@ pub fn exhaustive(k: usize, edges: &[Option<Edge>], recv_opts: &[u32], recv_at: 
     let w = |role, invite| Some(Edge { role, until: NEVER, invite });
     let genesis = vec![w(Role::Admin, Role::Admin), w(Role::Admin, Role::Admin), w(Role::Write, Role::Write), None];
     let n = genesis.len();
-    let mut menu = Vec::new();
-    let mut ops_menu: Vec<(usize, Vec<(usize, Option<Edge>)>)> = Vec::new();
+    let mut ops_menu = Vec::new();
     for author in 0..n {
         for target in 1..n {
             for &e in edges {
-                ops_menu.push((author, vec![(target, e)]));
+                ops_menu.push((author, vec![(target, e)], false));
             }
         }
     }
-    ops_menu.push((2, vec![(3, w(Role::Write, Role::None)), (2, None)]));
-    for (author, ops) in &ops_menu {
+    ops_menu.push((2, vec![(3, w(Role::Write, Role::None)), (2, None)], false));
+    let menu = menu(n, &ops_menu, recv_opts, recv_at);
+    crate::on_every_core(|th, threads, st| {
+        let mut rng = Rng::thread(0x5eed, th);
+        each_set(k, &genesis, &menu, (th, threads), |h| check(&h, st, &mut rng));
+    })
+}
+
+/// Every write of `ops_menu` (author, ops, finalize) at times {2,4,6}, received by each node of
+/// `recv_at` but its author at each of `recv_opts` (the others at 0).
+fn menu(n: usize, ops_menu: &[(usize, Vec<(usize, Option<Edge>)>, bool)], recv_opts: &[u32], recv_at: &[usize]) -> Vec<(EWrite, Vec<u32>)> {
+    let mut menu = Vec::new();
+    for (author, ops, fin) in ops_menu {
         for t in [2, 4, 6] {
-            let others: Vec<usize> = recv_at.iter().copied().filter(|&m| m != *author).collect();
-            let combos = recv_opts.len().pow(others.len() as u32);
-            for c in 0..combos {
+            let others: Vec<usize> = recv_at.iter().copied().filter(|m| m != author).collect();
+            for c in 0..recv_opts.len().pow(others.len() as u32) {
                 let mut r = vec![0; n];
                 r[*author] = t;
                 let mut c = c;
@@ -864,41 +860,39 @@ pub fn exhaustive(k: usize, edges: &[Option<Edge>], recv_opts: &[u32], recv_at: 
                     c /= recv_opts.len();
                 }
                 let id = menu.len() as u32;
-                menu.push((EWrite { author: *author, t, id, ops: ops.clone(), fin: false }, r));
+                menu.push((EWrite { author: *author, t, id, ops: ops.clone(), fin: *fin }, r));
             }
         }
     }
+    menu
+}
+
+/// Every history of `k` distinct writes from `menu` with one write per (t, author), this
+/// thread's share (`share`: thread, threads).
+fn each_set(k: usize, genesis: &[Option<Edge>], menu: &[(EWrite, Vec<u32>)], share: (usize, usize), mut f: impl FnMut(EHist)) {
     let total = menu.len().pow(k as u32);
-    let menu = &menu;
-    let genesis = &genesis;
-    parallel(|th, threads| {
-        let mut st = Stats::default();
-        let mut rng = Rng(0x5eed ^ (th as u64 + 1).wrapping_mul(0x9E3779B97F4A7C15));
-        let mut idx = th;
-        'next: while idx < total {
-            let mut x = idx;
-            idx += threads;
-            let mut h = EHist { genesis: genesis.clone(), writes: vec![], recv: vec![] };
-            let mut prev = 0;
-            for j in 0..k {
-                let wi = x % menu.len();
-                x /= menu.len();
-                // canonical order to skip permutations of the same set
-                if j > 0 && wi < prev {
-                    continue 'next;
-                }
-                prev = wi;
-                h.writes.push(menu[wi].0.clone());
-                h.recv.push(menu[wi].1.clone());
+    let mut idx = share.0;
+    'next: while idx < total {
+        let mut x = idx;
+        idx += share.1;
+        let mut h = EHist { genesis: genesis.to_vec(), writes: vec![], recv: vec![] };
+        let mut prev = 0;
+        for j in 0..k {
+            let wi = x % menu.len();
+            x /= menu.len();
+            // canonical order to skip permutations of the same set
+            if j > 0 && wi <= prev {
+                continue 'next;
             }
-            let mut s = HashSet::new();
-            if !h.writes.iter().all(|w| s.insert((w.t, w.author))) {
-                continue;
-            }
-            check(&h, &mut st, &mut rng);
+            prev = wi;
+            h.writes.push(menu[wi].0.clone());
+            h.recv.push(menu[wi].1.clone());
         }
-        st
-    })
+        let mut s = HashSet::new();
+        if h.writes.iter().all(|w| s.insert((w.t, w.author))) {
+            f(h);
+        }
+    }
 }
 
 pub fn run(samples: u64) {
@@ -1101,51 +1095,10 @@ pub fn exhaustive_disputes(k: usize, edges: &[Option<Edge>], recv_opts: &[u32]) 
         }
     }
     ops_menu.push((2, vec![(3, e(Role::Write, Role::None, NEVER)), (2, None)], false));
-    let mut menu = Vec::new();
-    for (author, ops, fin) in &ops_menu {
-        for t in [2, 4, 6] {
-            let others: Vec<usize> = [0, 1].into_iter().filter(|m| m != author).collect();
-            for c in 0..recv_opts.len().pow(others.len() as u32) {
-                let mut r = vec![0; n];
-                r[*author] = t;
-                let mut c = c;
-                for &m in &others {
-                    r[m] = recv_opts[c % recv_opts.len()];
-                    c /= recv_opts.len();
-                }
-                let id = menu.len() as u32;
-                menu.push((EWrite { author: *author, t, id, ops: ops.clone(), fin: *fin }, r));
-            }
-        }
-    }
-    let total = menu.len().pow(k as u32);
-    let (menu, genesis) = (&menu, &genesis);
-    crate::trust::parallel(|th, threads| {
-        let mut st = crate::trust::Stats::default();
-        let mut rng = Rng(0x5eed ^ (th as u64 + 1).wrapping_mul(0x9E3779B97F4A7C15));
-        let mut idx = th;
-        'next: while idx < total {
-            let mut x = idx;
-            idx += threads;
-            let mut h = EHist { genesis: genesis.clone(), writes: vec![], recv: vec![] };
-            let mut prev = 0;
-            for j in 0..k {
-                let wi = x % menu.len();
-                x /= menu.len();
-                if j > 0 && wi <= prev {
-                    continue 'next;
-                }
-                prev = wi;
-                h.writes.push(menu[wi].0.clone());
-                h.recv.push(menu[wi].1.clone());
-            }
-            let mut s = HashSet::new();
-            if !h.writes.iter().all(|w| s.insert((w.t, w.author))) {
-                continue;
-            }
-            crate::trust::check(&h, &mut st, &mut rng);
-        }
-        st
+    let menu = menu(n, &ops_menu, recv_opts, &[0, 1]);
+    crate::on_every_core(|th, threads, st: &mut crate::trust::Stats<EHist>| {
+        let mut rng = Rng::thread(0x5eed, th);
+        each_set(k, &genesis, &menu, (th, threads), |h| crate::trust::check(&h, st, &mut rng));
     })
 }
 

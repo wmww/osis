@@ -1274,8 +1274,8 @@ pub struct Stats {
     pub unaware_leak: u64,
 }
 
-impl Stats {
-    pub fn merge(&mut self, o: Stats) {
+impl crate::Tally for Stats {
+    fn merge(&mut self, o: Stats) {
         self.worlds += o.worlds;
         self.failures += o.failures;
         for (k, n) in o.kinds {
@@ -1297,6 +1297,9 @@ impl Stats {
         self.own_window += o.own_window;
         self.unaware_leak += o.unaware_leak;
     }
+}
+
+impl Stats {
     pub fn print(&self, name: &str) {
         println!("{name}: {} worlds, {} failing checks", self.worlds, self.failures);
         for (k, n) in &self.kinds {
@@ -1572,26 +1575,6 @@ pub fn explain(msg: &str, w0: &World) {
     }
 }
 
-fn parallel(f: impl Fn(usize, usize, &mut Stats) + Sync) -> Stats {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let out: Vec<Stats> = std::thread::scope(|s| {
-        let hs: Vec<_> = (0..threads).map(|th| {
-            let f = &f;
-            s.spawn(move || {
-                let mut st = Stats::default();
-                f(th, threads, &mut st);
-                st
-            })
-        }).collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    let mut all = Stats::default();
-    for st in out {
-        all.merge(st);
-    }
-    all
-}
-
 /// The setup prefixes of the small family (`gen_world`'s first choices: schedule, B's switch,
 /// B offline, C apart removing T, X's tick-0 rotation).
 pub fn small_prefixes() -> Vec<Vec<usize>> {
@@ -1621,14 +1604,14 @@ pub fn run(samples: u64, mode: &str, control: Control) -> u64 {
     let st = if mode == "exh" {
         let prefixes = small_prefixes();
         let next = std::sync::atomic::AtomicUsize::new(0);
-        parallel(|_, _, st| loop {
+        crate::on_every_core(|_, _, st| loop {
             let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let Some(p) = prefixes.get(k) else { break };
             small_family(p.clone(), control, st);
         })
     } else {
-        parallel(|th, threads, st| {
-            let mut rng = Rng(0xc057 ^ (th as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        crate::on_every_core(|th, threads, st| {
+            let mut rng = Rng::thread(0xc057, th);
             for _ in 0..samples / threads as u64 {
                 check(&random_world(&mut rng, control), st);
             }
@@ -1930,8 +1913,8 @@ mod tests {
         let start = var("OSIS_ROLES_START").unwrap_or(0);
         let n = var("OSIS_ROLES_SEEDS").unwrap_or(if var("OSIS_FULL") == Some(1) { 20_000 } else { 2000 });
         eprintln!("custody::random_worlds_hold_large: {n} worlds from {start}");
-        let st = parallel(|th, threads, st| {
-            let mut rng = Rng((start ^ (th as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1);
+        let st = crate::on_every_core(|th, threads, st| {
+            let mut rng = Rng(Rng::thread(start, th).0 | 1);
             for _ in 0..n.div_ceil(threads as u64) {
                 check(&random_world(&mut rng, Control::None), st);
             }

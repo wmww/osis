@@ -225,14 +225,8 @@ pub fn fails<H: Trusting>(label: &str, h: &H) -> bool {
     st.ex.iter().any(|(l, _)| *l == label)
 }
 
-impl<H: Trusting> Stats<H> {
-    fn note(&mut self, label: &'static str, h: &H) {
-        if !self.ex.iter().any(|(l, _)| *l == label) {
-            self.ex.push((label, h.clone()));
-        }
-    }
-
-    pub fn merge(&mut self, o: Stats<H>) {
+impl<H: Trusting> crate::Tally for Stats<H> {
+    fn merge(&mut self, o: Stats<H>) {
         self.histories += o.histories;
         self.with_dispute += o.with_dispute;
         self.unexplained += o.unexplained;
@@ -253,6 +247,15 @@ impl<H: Trusting> Stats<H> {
             self.note(l, &h);
         }
     }
+}
+
+impl<H: Trusting> Stats<H> {
+    fn note(&mut self, label: &'static str, h: &H) {
+        if !self.ex.iter().any(|(l, _)| *l == label) {
+            self.ex.push((label, h.clone()));
+        }
+    }
+
 
     /// Failures of the checks that must never fail.
     pub fn hard_failures(&self) -> u64 {
@@ -340,31 +343,14 @@ pub fn check<H: Trusting>(h: &H, st: &mut Stats<H>, rng: &mut Rng) {
     }
 }
 
-/// Runs `f` on every thread, merging the stats.
-pub fn parallel<H: Trusting>(f: impl Fn(usize, usize) -> Stats<H> + Sync) -> Stats<H> {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let f = &f;
-    let stats: Vec<Stats<H>> = std::thread::scope(|s| {
-        let hs: Vec<_> = (0..threads).map(|th| s.spawn(move || f(th, threads))).collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    let mut all = Stats::default();
-    for s in stats {
-        all.merge(s);
-    }
-    all
-}
-
 /// `samples` random histories from `gen`, every check on each.
 pub fn random<H: Trusting>(samples: u64, seed: u64, gen: impl Fn(&mut Rng) -> H + Sync) -> Stats<H> {
-    parallel(|th, threads| {
-        let mut rng = Rng(seed ^ (th as u64 + 1).wrapping_mul(0x9E3779B97F4A7C15));
-        let mut st = Stats::default();
+    crate::on_every_core(|th, threads, st| {
+        let mut rng = Rng::thread(seed, th);
         for _ in 0..samples / threads as u64 {
             let h = gen(&mut rng);
-            check(&h, &mut st, &mut rng);
+            check(&h, st, &mut rng);
         }
-        st
     })
 }
 

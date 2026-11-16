@@ -1031,8 +1031,8 @@ pub struct Stats {
     pub fail_live: Option<World>,
 }
 
-impl Stats {
-    pub fn merge(&mut self, o: Stats) {
+impl crate::Tally for Stats {
+    fn merge(&mut self, o: Stats) {
         macro_rules! add {
             ($($f:ident),*) => { $( self.$f += o.$f; )* };
         }
@@ -1044,6 +1044,9 @@ impl Stats {
             self.fail_live = o.fail_live;
         }
     }
+}
+
+impl Stats {
     pub fn hard_failures(&self) -> u64 {
         self.hostile_valid_owner_sided + self.hostile_valid_concurrent_epoch + self.liveness_fail + self.upper_fail + self.monotone_fail + self.removal_voided + self.removal_unlisted + self.refork_hides
     }
@@ -2692,28 +2695,9 @@ fn print_world(w: &World) {
     }
 }
 
+/// `f` on every core; the worlds it reports and the stats, summed.
 fn parallel(f: impl Fn(usize, usize, &mut Stats) -> u64 + Sync) -> (u64, Stats) {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let results: Vec<(u64, Stats)> = std::thread::scope(|s| {
-        let hs: Vec<_> = (0..threads)
-            .map(|th| {
-                let f = &f;
-                s.spawn(move || {
-                    let mut st = Stats::default();
-                    let n = f(th, threads, &mut st);
-                    (n, st)
-                })
-            })
-            .collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    let mut st = Stats::default();
-    let mut n = 0;
-    for (c, s) in results {
-        n += c;
-        st.merge(s);
-    }
-    (n, st)
+    crate::on_every_core(|th, threads, (n, st): &mut (u64, Stats)| *n += f(th, threads, st))
 }
 
 /// Runs search `mode` (`epochs`, `epochs-exh`: families A and B, `epochs-exh-c`: family C) and
@@ -2736,7 +2720,7 @@ pub fn run(samples: u64, mode: &str) -> u64 {
         fails.push(st);
     } else {
         let (_, st) = parallel(|th, threads, st| {
-            let mut rng = Rng(0x5eed ^ (th as u64 + 1).wrapping_mul(0x9E3779B97F4A7C15));
+            let mut rng = Rng::thread(0x5eed, th);
             for _ in 0..samples / threads as u64 {
                 check(&random_world(&mut rng), st);
             }
@@ -3364,7 +3348,7 @@ mod tests {
         let n = var("OSIS_ROLES_SEEDS").unwrap_or(if var("OSIS_FULL") == Some(1) { 30_000 } else { 3000 });
         eprintln!("epochs::random_worlds_hold_large: {n} worlds from {start}");
         let (_, st) = parallel(|th, threads, st| {
-            let mut rng = Rng((start ^ (th as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1);
+            let mut rng = Rng(Rng::thread(start, th).0 | 1);
             for _ in 0..n.div_ceil(threads as u64) {
                 check(&random_world(&mut rng), st);
             }

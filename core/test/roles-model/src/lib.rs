@@ -136,9 +136,63 @@ pub fn fmt_recv(recv: &[u32], author: usize) -> String {
     format!("recv {}", v.join(", "))
 }
 
+/// Counters a search sums over threads.
+pub trait Tally: Default + Send {
+    fn merge(&mut self, o: Self);
+}
+
+impl Tally for u64 {
+    fn merge(&mut self, o: u64) {
+        *self += o;
+    }
+}
+
+impl<const N: usize> Tally for [u64; N]
+where
+    [u64; N]: Default,
+{
+    fn merge(&mut self, o: Self) {
+        for (a, b) in self.iter_mut().zip(o) {
+            *a += b;
+        }
+    }
+}
+
+impl<A: Tally, B: Tally> Tally for (A, B) {
+    fn merge(&mut self, o: Self) {
+        self.0.merge(o.0);
+        self.1.merge(o.1);
+    }
+}
+
+/// `f(thread, threads, tally)` on a thread per core, the tallies summed.
+pub fn on_every_core<T: Tally>(f: impl Fn(usize, usize, &mut T) + Sync) -> T {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let f = &f;
+    std::thread::scope(|s| {
+        let hs: Vec<_> = (0..threads)
+            .map(|th| {
+                s.spawn(move || {
+                    let mut t = T::default();
+                    f(th, threads, &mut t);
+                    t
+                })
+            })
+            .collect();
+        hs.into_iter().fold(T::default(), |mut all, h| {
+            all.merge(h.join().unwrap());
+            all
+        })
+    })
+}
+
 /// Seeded xorshift generator: every history is a seed (0 included).
 pub struct Rng(pub u64);
 impl Rng {
+    /// Thread `th`'s generator of a search seeded `seed`.
+    pub fn thread(seed: u64, th: usize) -> Rng {
+        Rng(seed ^ (th as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+    }
     pub fn next(&mut self) -> u64 {
         // (xorshift never leaves a zero state, nor reaches one)
         if self.0 == 0 {

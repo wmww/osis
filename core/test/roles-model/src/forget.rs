@@ -639,53 +639,37 @@ fn lost(reference: &Out, other: &Out, v: usize) -> Vec<u32> {
 /// (`FORGET_SLICE`).
 pub fn search() -> u64 {
     let slice = std::env::var("FORGET_SLICE").ok().and_then(|x| x.parse().ok()).unwrap_or(8);
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     // [worlds, loses what Any shows, removal stands and a receipt lost, kept dropped, other,
     // loses vs list all, attacks, Any loses vs list all]
-    let res: Vec<[u64; 8]> = std::thread::scope(|sc| {
-        let hs: Vec<_> = (0..threads)
-            .map(|th| {
-                sc.spawn(move || {
-                    let mut rng = Rng(0x5eed ^ th as u64);
-                    let mut c = [0u64; 8];
-                    let mut first = true;
-                    member_family((th * slice, threads * slice), |base_s| {
-                        for kept in 0..3 {
-                            let mut s = base_s.clone();
-                            s.kept = match kept { 0 => HashSet::new(), 1 => [1].into(), _ => [1, 2].into() };
-                            let (b, a) = (run(&s, Policy::ListAll), run(&s, Policy::Any));
-                            c[7] += (0..FRANK).any(|v| !lost(&b, &a, v).is_empty()) as u64;
-                            let (loses, other) = judge(&s, Policy::HeldList, &b, &mut rng);
-                            let o = run(&s, Policy::HeldList);
-                            let alice_got: Vec<u32> = s.writes.iter().filter(|w| w.author == BOB && w.recv[ALICE] < 6).map(|w| w.id).collect();
-                            let stand_lost = (0..FRANK).any(|v| o.applied[v].contains(&1000) && alice_got.iter().any(|id| b.visible[v].contains(id) && !o.visible[v].contains(id)));
-                            let bad_any = (0..FRANK).any(|v| a.visible[v].iter().any(|id| !o.visible[v].contains(id)));
-                            let bad_kept = (0..FRANK).any(|v| !o.kept_dropped[v].is_empty());
-                            c[0] += 1;
-                            c[1] += bad_any as u64;
-                            c[2] += stand_lost as u64;
-                            c[3] += bad_kept as u64;
-                            c[4] += other;
-                            c[5] += loses as u64;
-                            if first && (bad_any || bad_kept || other > 0) {
-                                first = false;
-                                println!("failure (any {bad_any}, kept {bad_kept}, other {other}), kept {:?}:\n{}", s.kept, show(&s));
-                            }
-                        }
-                    });
-                    attack_family((th, threads), |s| c[6] += attack_fails(&s, Policy::HeldList, &run(&s, Policy::ListAll), &mut rng) as u64);
-                    c
-                })
-            })
-            .collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    let c = crate::on_every_core(|th, threads, c: &mut [u64; 8]| {
+        let mut rng = Rng(0x5eed ^ th as u64);
+        let mut first = true;
+        member_family((th * slice, threads * slice), |base_s| {
+            for kept in 0..3 {
+                let mut s = base_s.clone();
+                s.kept = match kept { 0 => HashSet::new(), 1 => [1].into(), _ => [1, 2].into() };
+                let (b, a) = (run(&s, Policy::ListAll), run(&s, Policy::Any));
+                c[7] += (0..FRANK).any(|v| !lost(&b, &a, v).is_empty()) as u64;
+                let (loses, other) = judge(&s, Policy::HeldList, &b, &mut rng);
+                let o = run(&s, Policy::HeldList);
+                let alice_got: Vec<u32> = s.writes.iter().filter(|w| w.author == BOB && w.recv[ALICE] < 6).map(|w| w.id).collect();
+                let stand_lost = (0..FRANK).any(|v| o.applied[v].contains(&1000) && alice_got.iter().any(|id| b.visible[v].contains(id) && !o.visible[v].contains(id)));
+                let bad_any = (0..FRANK).any(|v| a.visible[v].iter().any(|id| !o.visible[v].contains(id)));
+                let bad_kept = (0..FRANK).any(|v| !o.kept_dropped[v].is_empty());
+                c[0] += 1;
+                c[1] += bad_any as u64;
+                c[2] += stand_lost as u64;
+                c[3] += bad_kept as u64;
+                c[4] += other;
+                c[5] += loses as u64;
+                if first && (bad_any || bad_kept || other > 0) {
+                    first = false;
+                    println!("failure (any {bad_any}, kept {bad_kept}, other {other}), kept {:?}:\n{}", s.kept, show(&s));
+                }
+            }
+        });
+        attack_family((th, threads), |s| c[6] += attack_fails(&s, Policy::HeldList, &run(&s, Policy::ListAll), &mut rng) as u64);
     });
-    let mut c = [0u64; 8];
-    for r in res {
-        for k in 0..8 {
-            c[k] += r[k];
-        }
-    }
     println!("{}: {} worlds | loses what Any shows {} | kept body dropped {} | disagree/order/forget-reads {} | attacks (gain or honest loss) {}", Policy::HeldList.name(), c[0], c[1], c[3], c[4], c[6]);
     println!("  counted: loses against listing all {} (Any: {}); removal stands, remover's receipt lost {}", c[5], c[7], c[2]);
     c[1] + c[3] + c[4] + c[6]

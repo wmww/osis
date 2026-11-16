@@ -734,7 +734,7 @@ pub struct Stats {
     ex_disagree: Option<JHist>,
 }
 
-impl Stats {
+impl crate::Tally for Stats {
     fn merge(&mut self, o: Stats) {
         self.histories += o.histories;
         self.max_passes = self.max_passes.max(o.max_passes);
@@ -747,6 +747,9 @@ impl Stats {
         self.ex_honest = self.ex_honest.take().or(o.ex_honest);
         self.ex_disagree = self.ex_disagree.take().or(o.ex_disagree);
     }
+}
+
+impl Stats {
 
     pub fn print(&self) {
         println!(
@@ -819,28 +822,13 @@ fn honest_drops(h: &JHist) -> bool {
 }
 
 pub fn random(samples: u64, seed: u64) -> Stats {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()) as u64;
-    let stats: Vec<Stats> = std::thread::scope(|s| {
-        let hs: Vec<_> = (0..threads)
-            .map(|th| {
-                s.spawn(move || {
-                    let mut rng = Rng(seed ^ (th + 1).wrapping_mul(0x9E3779B97F4A7C15));
-                    let mut st = Stats::default();
-                    for _ in 0..samples / threads {
-                        let h = random_hist(&mut rng);
-                        check(&h, &mut st, &mut rng);
-                    }
-                    st
-                })
-            })
-            .collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    let mut all = Stats::default();
-    for s in stats {
-        all.merge(s);
-    }
-    all
+    crate::on_every_core(|th, threads, st| {
+        let mut rng = Rng::thread(seed, th);
+        for _ in 0..samples / threads as u64 {
+            let h = random_hist(&mut rng);
+            check(&h, st, &mut rng);
+        }
+    })
 }
 
 // ---------- scenarios ----------

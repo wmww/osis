@@ -803,7 +803,7 @@ pub struct Stats {
     pub ex: Vec<(&'static str, World)>,
 }
 
-impl Stats {
+impl crate::Tally for Stats {
     fn merge(&mut self, o: Stats) {
         self.worlds += o.worlds;
         self.with_addenda += o.with_addenda;
@@ -843,6 +843,9 @@ impl Stats {
             }
         }
     }
+}
+
+impl Stats {
 
     pub fn failures(&self) -> u64 {
         self.order_dep + self.nonmonotone + self.disagree + self.sim_gains + self.attack_gain
@@ -1011,30 +1014,15 @@ pub fn check(w: &World, covers: Option<&[World; 2]>, st: &mut Stats, rng: &mut R
 }
 
 pub fn random(samples: u64, seed: u64) -> Stats {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()) as u64;
-    let stats: Vec<Stats> = std::thread::scope(|s| {
-        let hs: Vec<_> = (0..threads)
-            .map(|th| {
-                s.spawn(move || {
-                    let mut rng = Rng(seed ^ (th + 1).wrapping_mul(0x9E3779B97F4A7C15));
-                    let mut st = Stats::default();
-                    for _ in 0..samples / threads {
-                        let s0 = rng.next();
-                        let w = random_world(&mut Rng(s0), PLAN);
-                        let o = COVERS.map(|(_, cover)| random_world(&mut Rng(s0), cover));
-                        check(&w, Some(&o), &mut st, &mut rng);
-                    }
-                    st
-                })
-            })
-            .collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    let mut all = Stats::default();
-    for s in stats {
-        all.merge(s);
-    }
-    all
+    crate::on_every_core(|th, threads, st| {
+        let mut rng = Rng::thread(seed, th);
+        for _ in 0..samples / threads as u64 {
+            let s0 = rng.next();
+            let w = random_world(&mut Rng(s0), PLAN);
+            let o = COVERS.map(|(_, cover)| random_world(&mut Rng(s0), cover));
+            check(&w, Some(&o), st, &mut rng);
+        }
+    })
 }
 
 // ---------- exhaustive ----------
@@ -1174,28 +1162,13 @@ pub fn cover_worlds(share: (usize, usize), mut f: impl FnMut([World; 3])) {
 
 /// Both exhaustive families: `cover_worlds` (with `covers_only`, alone) and `exhaustive_worlds`.
 pub fn exhaustive(covers_only: bool) -> Stats {
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let stats: Vec<Stats> = std::thread::scope(|s| {
-        let hs: Vec<_> = (0..threads)
-            .map(|th| {
-                s.spawn(move || {
-                    let mut rng = Rng(0x5eed ^ (th as u64 + 1).wrapping_mul(0x9E3779B97F4A7C15));
-                    let mut st = Stats::default();
-                    cover_worlds((th, threads), |[w, o, p]| check(&w, Some(&[o, p]), &mut st, &mut rng));
-                    if !covers_only {
-                        exhaustive_worlds((th, threads), |w| check(&w, None, &mut st, &mut rng));
-                    }
-                    st
-                })
-            })
-            .collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    let mut all = Stats::default();
-    for s in stats {
-        all.merge(s);
-    }
-    all
+    crate::on_every_core(|th, threads, st| {
+        let mut rng = Rng::thread(0x5eed, th);
+        cover_worlds((th, threads), |[w, o, p]| check(&w, Some(&[o, p]), st, &mut rng));
+        if !covers_only {
+            exhaustive_worlds((th, threads), |w| check(&w, None, st, &mut rng));
+        }
+    })
 }
 
 // ---------- scenarios ----------
