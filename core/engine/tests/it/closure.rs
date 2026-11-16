@@ -742,3 +742,31 @@ fn a_node_writes_only_what_it_holds_spec_sync_set_2() {
     e1.commit(m).unwrap();
     assert_eq!(e1.get(&t, &v).unwrap(), Some(Value::Str("held".into())));
 }
+
+// spec/commits.md §5 What a held thing needs: a weak only points and keeps nothing; a strong
+// keeps. Peer 0 (never met Q) refers to Q from its account root and takes Q's commits: by a weak
+// to Q, nothing needs Q's chain at the pass's end and it goes; by a strong to Q's profile (a
+// contact), the profile needs Q (its first admin) and Q's chain stays.
+#[test]
+fn a_weak_to_an_account_keeps_nothing_a_strong_to_its_profile_keeps_its_chain_spec_commits_5() {
+    let mut lp = osis_engine::local_peer::LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
+    let q = lp.peers[1].engine.me();
+    let profile = lp.peers[1].engine.profile_of(&q).unwrap();
+    let mut kept = |v: Value| {
+        let mut lp = lp.copy().unwrap();
+        let e0 = &mut lp.peers[0].engine;
+        let d0 = e0.account_root().unwrap();
+        let mut m = Mutation::new();
+        m.op(d0, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(v) }).unwrap();
+        e0.commit(m).unwrap();
+        let qs = lp.peers[1].engine.commit_ids();
+        crate::flows::send(&mut lp, 1, 0, &qs);
+        crate::flows::send(&mut lp, 1, 0, &qs);
+        let e0 = &mut lp.peers[0].engine;
+        e0.settle_needs().unwrap();
+        e0.check_index();
+        e0.core.created(&q).is_some()
+    };
+    assert!(!kept(Value::Weak(q)), "a weak to Q keeps nothing of it");
+    assert!(kept(Value::Strong(profile)), "a strong to Q's profile keeps Q's chain");
+}

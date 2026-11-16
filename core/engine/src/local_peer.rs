@@ -212,15 +212,16 @@ impl Peer {
         Ok(p)
     }
 
-    /// This node's account keeps the accounts `who` (a contact, a peer it will grant): a weak to
+    /// This node's account keeps the accounts `who` (a contact, a peer it will grant): a strong to
     /// each in its account root's `holds.0`, so their chains stay once received (spec/commits.md
-    /// §5 What a held thing needs). One commit; none when it keeps each already.
+    /// §5 What a held thing needs; a strong to a key actor enters nothing). One commit; none when
+    /// it keeps each already.
     pub fn know(&mut self, who: &[osis_base::Tid]) -> Result<()> {
         let root = self.engine.account_root().ok_or(crate::error::Error::Misuse("no account root"))?;
-        let kept: BTreeSet<osis_base::Tid> = self.engine.references_from(&root)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Weak && r.ak.as_str() == "holds.0").map(|r| r.target).collect();
+        let kept: BTreeSet<osis_base::Tid> = self.engine.references_from(&root)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong && r.ak.as_str() == "holds.0").map(|r| r.target).collect();
         let mut m = Mutation::new();
         for t in who.iter().filter(|t| **t != self.engine.me() && !kept.contains(*t)) {
-            m.op(root, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Weak(*t)) })?;
+            m.op(root, &osis_schema::core_types::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(osis_base::Value::Strong(*t)) })?;
         }
         if !m.is_empty() {
             self.commit(m)?;

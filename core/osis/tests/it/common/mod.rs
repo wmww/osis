@@ -200,15 +200,15 @@ pub fn recv<T>(rx: &Receiver<T>) -> T {
     rx.recv_timeout(Duration::from_secs(20)).expect("callback did not run")
 }
 
-/// `db`'s account keeps account `who` (a contact, a peer it grants): a weak in its account
+/// `db`'s account keeps account `who` (a contact, a peer it grants): a strong in its account
 /// root's `holds.0`, so `who`'s chain stays once received (spec/commits.md §5 What a held thing
-/// needs). Nothing when it keeps it already.
+/// needs; a strong to a key actor enters nothing). Nothing when it keeps it already.
 pub fn know(db: &Osis, who: Tid) {
     let root = db.account_root();
-    if who == db.me() || db.engine(|e| e.references_from(&root).unwrap().iter().any(|r| r.target == who && r.ak.as_str() == "holds.0")) {
+    if who == db.me() || db.engine(|e| e.references_from(&root).unwrap().iter().any(|r| r.target == who && r.kind == osis::RefKind::Strong && r.ak.as_str() == "holds.0")) {
         return;
     }
-    db.commit_with(|w| w.at(root, osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Weak(osis::Weak(who)))).unwrap();
+    db.commit_with(|w| w.at(root, osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(who)))).unwrap();
 }
 
 /// Delivers every commit `from` holds to `to` (the engine-level path `LocalPeer` uses), `to`

@@ -132,6 +132,10 @@ fn since_goes_by_arrival() {
     let c = create(&alice, &Options::default(), alice.account_root()).unwrap();
     alice.grant(c, bob.me(), Role::Write, Default::default()).unwrap();
     deliver(&alice, &bob);
+    // bob accepts the chat: he writes only what he holds (spec/sync-set.md §2 Writing)
+    let mut w = bob.write();
+    w.at(bob.account_root(), osis::core::HOLDS).path(osis::p![]).add(&osis::Ref::Strong(osis::Strong(c))).unwrap();
+    w.commit().unwrap();
     c0.advance(10);
     let late = post(&bob, c, "made offline");
     c0.advance(10);

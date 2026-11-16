@@ -13,7 +13,7 @@ const JUNK: &str = "x:junk@~0";
 const HOUR_MS: u64 = 3_600_000;
 
 /// Peer 0's account and `n` strangers, each its own account holding peer 0's public records
-/// (all peer 0 made, one way) by a weak to its inbox: peer 0 knows none of them. Peer 0's inbox keeps `NOTE` an hour
+/// (all peer 0 made, one way) by a strong to its account: peer 0 knows none of them. Peer 0's inbox keeps `NOTE` an hour
 /// beside its three signals, and every other aspect for good by default. Its inbox.
 fn strangers(n: usize) -> (LocalPeer, Tid) {
     let mut lp = crate::common::net_bare(n + 1, 0);
@@ -28,8 +28,8 @@ fn strangers(n: usize) -> (LocalPeer, Tid) {
     set_setting(&mut lp, 0, inbox, &x);
     let ids = lp.peers[0].engine.commit_ids();
     for i in 1..=n {
-        // the stranger keeps peer 0's inbox, which it means to fire on
-        lp.peers[i].know(&[inbox]).unwrap();
+        // the stranger keeps peer 0's account (and so its inbox), on which it means to fire
+        lp.peers[i].know(&[p0]).unwrap();
         send(&mut lp, 0, i, &ids);
         send(&mut lp, 0, i, &ids);
     }
@@ -101,8 +101,8 @@ type Census = std::collections::BTreeMap<String, Rows>;
 
 // spec/sync-inbox.md §4 A sealed fire, spec/commits.md §5 Forgetting, What a held thing needs: a
 // stranger's fires go whole once out of history, and with the last of them its chain (its
-// records, its and its inbox's `keys.0` commits), which nothing held needs then, though a fire
-// named its account: N strangers each firing on a named and an unnamed open signal leave peer
+// records, its and its inbox's `keys.0` commits), which nothing held needs then (a weak a fire
+// carries to its account needs nothing): N strangers each firing on a named and an unnamed open signal leave peer
 // 0's rows exactly as before.
 #[test]
 fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
@@ -113,7 +113,7 @@ fn strangers_fires_leave_no_row_spec_sync_inbox_4() {
         let ids: std::collections::BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
         let mut fires = Vec::new();
         for i in 1..=n {
-            // a fire naming its sender's account: a need only while the fire is held
+            // a fire naming its sender's account by a weak, which needs nothing
             let me = lp.peers[i].engine.me();
             fires.push(fire_value(&mut lp, i, inbox, NOTE, osis_base::Value::Weak(me)));
             fires.push(fire(&mut lp, i, inbox, JUNK, "junk"));
