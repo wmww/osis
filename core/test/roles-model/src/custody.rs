@@ -432,7 +432,9 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
         if !ok {
             continue;
         }
-        let d = base.iter().chain(w.takes(id)).map(|q| depth[q]).max().unwrap_or(0) + 1;
+        // one more than what it needs: its epoch (a merge one more than its tips) and its takes
+        let at_depth = if base.is_empty() { 0 } else if w.single(&base) { depth[&w.tips(&base)[0]] } else { 1 + w.tips(&base).iter().map(|q| depth[q]).max().unwrap_or(0) };
+        let d = w.takes(id).iter().map(|q| depth[q]).chain([at_depth]).max().unwrap_or(0) + 1;
         when.insert(id, t.max(recv(id)));
         depth.insert(id, d);
     }
