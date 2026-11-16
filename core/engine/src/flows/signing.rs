@@ -595,8 +595,8 @@ fn ends(v: &super::account::AccountView, departures: Option<&Departures>, e: &Co
 
 /// The held rotations of this node's account this node disregards (placed in conflict with the
 /// line it follows: a removed node's fork, one no node of the account minted, another side's)
-/// with no rotation on their line a counting one rejects, that no rotation of this node's
-/// answers (supersedes besides the epoch it is signed at: one signed at it, made while this node
+/// on no line (descending from) a rotation a counting one rejects, a merge included, that no
+/// rotation of this node's answers (supersedes besides the epoch it is signed at: one signed at it, made while this node
 /// followed it, answers nothing): superseded unnamed by its next rotation, so every reader that followed one is told
 /// (spec/permissions.md §5.4, Warning). Another node's rotation superseding it may reject nothing
 /// (signed at its epoch: contested from below), so only a rejection answers it, and each node
@@ -607,7 +607,9 @@ fn ends(v: &super::account::AccountView, departures: Option<&Departures>, e: &Co
 /// followed: one whose tips all count joins the followed lines, and this node's certificate of
 /// it makes it stand.
 fn unanswered(v: &super::account::AccountView, me: &Tid) -> Vec<CommitId> {
-    v.rotation_ids().into_iter().filter(|r| !v.is_merge(r) || v.tips_of(r).iter().any(|t| !v.rotation_counts(t))).filter(|r| v.disregarded(r) && !v.answered_by(r, me) && !v.line(r).into_iter().flatten().any(|q| v.rejected(&q))).collect()
+    let ids = v.rotation_ids();
+    let rejected: Vec<CommitId> = ids.iter().copied().filter(|q| v.rejected(q)).collect();
+    ids.into_iter().filter(|r| !v.is_merge(r) || v.tips_of(r).iter().any(|t| !v.rotation_counts(t))).filter(|r| v.disregarded(r) && !v.answered_by(r, me) && !rejected.iter().any(|q| v.on_line(q, r))).collect()
 }
 
 /// What a node of the account owes its signing chain (spec/permissions.md §5.5), made now. Any

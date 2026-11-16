@@ -577,6 +577,12 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
         Kind::Reseal { .. } => j.heads.contains(&w.item(*id).epoch) || unrevoked(&w.item(*id).epoch),
         _ => false,
     }).collect();
+    // a node of P that signs (on D's roster, holding its preferred head's seed) names its own
+    // commits at an epoch once a rotation closing it counts, by its listing written as that
+    // rotation applies (spec/permissions.md §5.5, Listings): at the node its own commits count
+    // before anything it decides
+    let signs = own && v != X && !j.out(v) && j.keys.holds(w, &j.preferred);
+    let own_named: BTreeSet<u32> = held.iter().copied().filter(|i| signs && w.item(*i).author == v && matches!(w.item(*i).kind, Kind::Content | Kind::Listing { .. } | Kind::TRot { .. })).collect();
     let mut valid: BTreeSet<u32> = BTreeSet::new();
     loop {
         let mut tkeys: BTreeSet<u32> = std::iter::once(0).filter(|_| own || v == R1).chain(held.iter().copied().filter(|k| {
@@ -594,7 +600,7 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
             }
             tkeys.extend(more);
         }
-        let mut named: BTreeSet<u32> = BTreeSet::new();
+        let mut named: BTreeSet<u32> = own_named.clone();
         let mut next: BTreeSet<u32>;
         loop {
             next = held.iter().copied().filter(|id| {
