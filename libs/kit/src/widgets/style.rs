@@ -98,7 +98,7 @@ pub fn heading(look: &Look, text: &str, t: Text) -> NewWidget<dyn Widget> {
 }
 
 /// Read-only text in a text role, broken at word boundaries (not selectable yet:
-/// issues/read-only-text-selection.md). It takes all the width it is offered: not for a non-flex child of a row.
+/// issues/text-input-gaps.md). It takes all the width it is offered: not for a non-flex child of a row.
 pub fn prose(look: &Look, text: &str, t: Text) -> NewWidget<Prose> {
     let color = role(look, t).2;
     let mut area = TextArea::new_immutable(text);

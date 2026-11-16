@@ -78,7 +78,7 @@ The only other rule is spec/crdt.md §4.6's writer rule: an undo or undelete cop
 
 ## 4. Open limits
 - issues/eph-expired-anchors-fill-cap.md: unpruned expired creations stay as anchors for live neighbours.
-- issues/text-creation-undelete-dating.md.
+- issues/seq-retention-dating.md.
 - The carried bound is a hull per source: a session writing lasting values on an aspect both before and after an expiring write (a disappearing setting turned off and on in one session) puts that write inside an honest snapshot's hull, so its expiry rebuilds the aspect (O(aspect), correct). A hostile snapshot carrying copies at a source's extreme counters does so for every expiry of that source while held: the cost every expiry pays without the bound. Ranges per source would grow with how often a session alternates.
 - A destroyed group thing strands its items silently, as an expired subgroup does.
 

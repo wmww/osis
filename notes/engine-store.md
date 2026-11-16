@@ -51,4 +51,4 @@ Rebuildable `node/*` tables (`engine/index.rs`), an index, never the truth: a st
 - Test: the debug index check after sampled transactions (`Engine::check_index`, notes/test-harnesses.md Index check: an open and a rebuild equal the running node); damage, crashes and restores in `caches::`.
 
 ## Open costs
-An open restores the persisted index and the saved walks, rebuilding nothing (`scale::grant_is_flat_in_content_commits`), but is still O(commits): it reads every header (issues/node-core-gaps.md).
+An open restores the persisted index and the saved walks, rebuilding nothing (`scale::grant_is_flat_in_content_commits`), but is still O(commits): it reads every header (issues/long-aspect-cost.md).

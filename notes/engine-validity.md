@@ -55,7 +55,7 @@ Newest body first, `rebuilt` stops once the state's root reset or register write
 Debug builds check after every transaction that the state equals a rebuild (`apply::check_rebuilt`: every aspect changed other than by a valid join, and a sample of those). osis-crdt `unmerge_spec_4_6` checks un-merge per delta (`Fragment::remove_writes`) on random histories.
 
 ### Cost
-O(aspect history) per flip (`scale::validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2`: n + 1 body reads, commits re-judged flat). Accepted as rare (issues/node-core-gaps.md). An invalid arrival reads no other body (the same test).
+O(aspect history) per flip (`scale::validity_flip_is_linear_and_invalid_arrival_flat_spec_permissions_5_2`: n + 1 body reads, commits re-judged flat). Accepted as rare (issues/long-aspect-cost.md). An invalid arrival reads no other body (the same test).
 
 ## Snapshot authority and carried writes
 ### Authority
