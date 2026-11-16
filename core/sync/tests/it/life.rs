@@ -233,8 +233,8 @@ fn a_loss_by_an_until_cut_off_drops_at_the_waits_end_spec_permissions_2() {
     assert!(!holds(&mut w, 1, &t), "dropped at the wait's end");
 }
 
-// spec/permissions.md §2 (heard out with a source: each of its own commits there is held
-// elsewhere; meanwhile its writes from before the `until` go out): node 1 writes t while cut off
+// spec/permissions.md §2 (it has a source, each of its own commits with an entry under it is held
+// elsewhere; Meanwhile its writes from before the `until` go out): node 1 writes t while cut off
 // from node 0, then its `until` passes by its clock alone (node 0's lags: it still judges node 1
 // a writer). Back in touch, node 1 drops t only once node 0 holds its write: the write survives.
 #[test]
