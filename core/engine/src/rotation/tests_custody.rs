@@ -245,6 +245,14 @@ impl Run {
         panic!("{s}");
     }
 
+    /// Logs `l` (printed at once under `CUSTODY_TRACE`, for a panic inside an engine).
+    fn note(&mut self, l: String) {
+        if std::env::var_os("CUSTODY_TRACE").is_some() {
+            eprintln!("{l}");
+        }
+        self.log.push(l);
+    }
+
     /// Milliseconds since the run began: the mirror's time.
     fn now(&self) -> u32 {
         (self.lp.peers[A].engine.now().0 - self.base.0 + 1) as u32
@@ -312,6 +320,10 @@ impl Run {
         self.extras_at.insert(id, self.extras[author].len());
         if author == X {
             self.xrecv.insert(id, now);
+        }
+        if std::env::var_os("CUSTODY_TRACE").is_some() {
+            let i = self.w.item(id);
+            eprintln!("  #{id} {:.12} {:?} by {} as {} at {:?} on {:?} boxed {:?}", format!("{c:?}"), i.kind, cm::NAMES[author], cm::NAMES[i.signer], i.epoch, i.on_t, (0..N).filter(|m| i.boxed[*m]).map(|m| cm::NAMES[m]).collect::<Vec<_>>());
         }
         id
     }
@@ -413,10 +425,25 @@ impl Run {
                 if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local {
                     self.fail(&format!("delivering {what} to {to}: {e}"));
                 }
-                self.log.push(format!("t{} {what} refused at {}: {e}", self.tick, cm::NAMES[to]));
+                self.note(format!("t{} {what} refused at {}: {e}", self.tick, cm::NAMES[to]));
             }
-            Ok(crate::apply::Ingested::Pending(_, why)) => self.log.push(format!("t{} {what} pending at {}: {why:?}", self.tick, cm::NAMES[to])),
+            Ok(crate::apply::Ingested::Pending(_, why)) => self.note(format!("t{} {what} pending at {}: {why:?}", self.tick, cm::NAMES[to])),
             Ok(_) => {}
+        }
+        if std::env::var_os("CUSTODY_PROBE").is_some() {
+            eprintln!("t{} probe {what} ({:.12}) at {}", self.tick, format!("{:?}", pk.id), cm::NAMES[to]);
+            if let Some(v) = self.lp.peers[to].engine.core.account_view(&self.ids.p) {
+                let e = &self.lp.peers[to].engine;
+                let st: Vec<String> = self.w.items.iter().filter(|i| matches!(i.kind, MK::TRot | MK::Plain { .. } | MK::Cert { .. })).map(|i| {
+                    let c = self.eid[i.id as usize - 1];
+                    let s = e.core.ix.commits.get(&c).map(|m| format!("{:?}", e.core.standing(&c, &m.view)).chars().take(6).collect::<String>());
+                    format!("#{}:{}:{:?}", i.id, v.rotation_counts(&c), s)
+                }).collect();
+                eprintln!("   heads {:?} taken {:?} {st:?}", v.heads().iter().map(|h| self.line_of(h)).collect::<Vec<_>>(), v.taken().iter().map(|c| self.mid.get(c)).collect::<Vec<_>>());
+                let names: Vec<String> = e.core.account_keys_by_name(&self.ids.p).keys().map(|n| format!("{n:?}").chars().take(40).collect()).collect();
+                eprintln!("   names {names:?}");
+            }
+            self.lp.peers[to].engine.check_index();
         }
     }
 
@@ -535,7 +562,7 @@ impl Run {
             if !self.left[k] && !self.lp.peers[k].engine.core.accounts.contains_key(&self.ids.p) {
                 self.left[k] = true;
                 self.reached.left = true;
-                self.log.push(format!("t{} {} left the account", self.tick, cm::NAMES[k]));
+                self.note(format!("t{} {} left the account", self.tick, cm::NAMES[k]));
                 // leaving is a node's own removal: no held line keeps it a node
                 let j = self.judge(k);
                 if !j.out(k) {
@@ -615,6 +642,10 @@ impl Run {
         self.take_up(n);
         let t = self.tick;
         let model = self.policy(n, removes, write);
+        if std::env::var_os("CUSTODY_TRACE").is_some() {
+            let j = self.judge(n);
+            eprintln!("t{t} {} to act: model {model:?}; taken {:?} heads {:?} pref {:?} roster {:?}", cm::NAMES[n], j.taken, j.heads, j.preferred, j.roster);
+        }
         let te = self.t_epoch(n);
         self.lp.advance(1);
         if let Some(y) = removes {
@@ -698,7 +729,7 @@ impl Run {
             }
             None => self.extras[n].extend(sides),
         }
-        self.log.push(format!("t{t} {} acts (removes {removes:?}): made {made:?}", cm::NAMES[n]));
+        self.note(format!("t{t} {} acts (removes {removes:?}): made {made:?}", cm::NAMES[n]));
         if write {
             let mut writes = Vec::new();
             for (thing, on_t) in [(self.ids.u, false), (self.ids.t, true)] {
@@ -827,7 +858,7 @@ impl Run {
             Ok(Some(c)) => c,
             Ok(None) => self.fail(&format!("t{} {} wrote nothing", self.tick, cm::NAMES[n])),
             Err(e) => {
-                self.log.push(format!("t{} {} cannot write: {e}", self.tick, cm::NAMES[n]));
+                self.note(format!("t{} {} cannot write: {e}", self.tick, cm::NAMES[n]));
                 return None;
             }
         };
@@ -852,7 +883,7 @@ impl Run {
         let id = self.add_plain(n, &c, true);
         let comp: Vec<Side> = others.iter().map(|x| self.side(n, x)).collect();
         self.comp.insert(id, comp);
-        self.log.push(format!("t{} {} rotates plainly: #{id}", self.tick, cm::NAMES[n]));
+        self.note(format!("t{} {} rotates plainly: #{id}", self.tick, cm::NAMES[n]));
         Some(id)
     }
 
@@ -863,7 +894,7 @@ impl Run {
         let e = self.eid[c as usize - 1];
         let _ = self.lp.peers[n].engine.choose_line(self.ids.p, e);
         self.switched_at[n] = true;
-        self.log.push(format!("t{} {} chooses #{c}", self.tick, cm::NAMES[n]));
+        self.note(format!("t{} {} chooses #{c}", self.tick, cm::NAMES[n]));
     }
 
     // ---- X
@@ -934,7 +965,7 @@ impl Run {
             self.reached.withheld = true;
         }
         self.reached.as_z |= signer == Z;
-        self.log.push(format!("t{} X forges #{id} at {e:?} as {}", self.tick, cm::NAMES[signer]));
+        self.note(format!("t{} X forges #{id} at {e:?} as {}", self.tick, cm::NAMES[signer]));
         Some(id)
     }
 
@@ -964,7 +995,7 @@ impl Run {
         let id = self.add(MK::Cert { joined: tlines, takes: vec![], answers: vec![] }, X, signer, at, None, c, Some(pk), boxed, Self::everyone());
         self.reached.x_certs = true;
         self.reached.as_z |= signer == Z;
-        self.log.push(format!("t{} X certifies #{id}: {line:?} as {}", self.tick, cm::NAMES[signer]));
+        self.note(format!("t{} X certifies #{id}: {line:?} as {}", self.tick, cm::NAMES[signer]));
         Some(id)
     }
 
@@ -991,7 +1022,7 @@ impl Run {
         let pk = self.x_resign(&c, e)?;
         let id = pk.id;
         let item = self.add(MK::Content, X, X, e.clone(), None, id, Some(pk), [false; N], Self::everyone());
-        self.log.push(format!("t{} X writes #{item} at {e:?}", self.tick));
+        self.note(format!("t{} X writes #{item} at {e:?}", self.tick));
         Some(item)
     }
 
@@ -1015,7 +1046,7 @@ impl Run {
         let reach: [bool; N] = std::array::from_fn(|m| m < OWN);
         let item = self.add(MK::Reseal { e: e.clone() }, X, X, e.clone(), None, id, Some(pk), bx, reach);
         self.reached.x_reseals = true;
-        self.log.push(format!("t{} X re-seals {e:?} to {}: #{item}", self.tick, cm::NAMES[to]));
+        self.note(format!("t{} X re-seals {e:?} to {}: #{item}", self.tick, cm::NAMES[to]));
         Some(item)
     }
 
@@ -1083,6 +1114,10 @@ impl Run {
     fn compare(&mut self) {
         for n in [A, B, C, T, R1, R2] {
             self.take_up(n);
+            if std::env::var_os("CUSTODY_PROBE").is_some() {
+                eprintln!("t{} probe {}", self.tick, cm::NAMES[n]);
+                self.lp.peers[n].engine.check_index();
+            }
         }
         self.check_left();
         self.sync_recv();

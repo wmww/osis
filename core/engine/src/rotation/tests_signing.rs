@@ -451,6 +451,33 @@ fn a_write_at_a_merge_applies_once_the_merge_is_held_spec_commits_4() {
     }
 }
 
+// spec/crypto.md §3 (an epoch's name is its height, one more than every epoch it supersedes),
+// §4 (Account keysets: held once its minting rotation and every epoch it supersedes are): a
+// node answers a fork minted by no node; its re-key of t (a writer outside P) boxes t's new
+// epoch to P at the answer's epoch. Another node holding the answer but not the fork cannot
+// name that epoch; once the fork arrives it opens the box, and a rebuild from the commit records
+// opens it alike
+#[test]
+fn a_box_at_an_epoch_named_once_its_answered_fork_arrives_opens_alike_on_rebuild_spec_crypto_4() {
+    let (mut lp, a, t) = world(5, 4);
+    let head = setup_head(&lp, &a);
+    let fb = forge(&mut lp, 2, &a, head, &[], &[], 91);
+    let f = give(&mut lp, &fb, &[1]);
+    let q = lp.peers[1].engine.signing_due().unwrap().commits;
+    assert!(lp.peers[1].engine.header(&q[0]).unwrap().rotation.clone().unwrap().supersedes.contains(&f), "the fork answered");
+    let rk = lp.peers[1].engine.run(|tx| {
+        let who = tx.core.writer()?;
+        crate::rotation::rotate_now(tx, who, t, &osis_keys::ROLES.into_iter().collect())
+    }).unwrap();
+    send(&mut lp, 1, 0, &q);
+    send(&mut lp, 1, 0, &rk.commits);
+    assert_ne!(super::tests::newest_read(&lp, 0, t), super::tests::newest_read(&lp, 1, t), "t's new epoch opens with the answer's epoch unnamed");
+    lp.peers[0].engine.check_index();
+    give(&mut lp, &fb, &[0]);
+    assert_eq!(super::tests::newest_read(&lp, 0, t), super::tests::newest_read(&lp, 1, t), "t's new epoch opens once the fork arrives");
+    lp.peers[0].engine.check_index();
+}
+
 // spec/requirements.md Cost, notes/coordination.md (Check scaling): a removal lists the commits
 // of the epoch it closes, never the account's earlier history: the second rotation's lists are
 // as long after n writes at the first epoch as after 10n

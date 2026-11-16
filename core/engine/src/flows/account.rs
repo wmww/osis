@@ -394,6 +394,10 @@ pub struct JudgedEpochs {
     named: BTreeSet<CommitId>,
     /// The chain is read in doubt (`AccountView::doubt`), so the user was told.
     doubt: bool,
+    /// At a node of the account: the names of its epochs whose keysets are held here (a seed
+    /// held, the name known: spec/crypto.md §4, Account keysets). One come to be held reopens the
+    /// boxes sealed to the account (`refresh_epochs`).
+    keyed: BTreeSet<Epoch>,
 }
 
 impl JudgedEpochs {
@@ -442,7 +446,8 @@ impl JudgedEpochs {
             };
             Value::List(vec![id(e), s, Value::uint(r.map_or(0, |c| 1 + u64::from(c)))])
         }).collect());
-        Value::List(vec![epochs, Value::List(self.named.iter().map(id).collect()), Value::Bool(self.doubt)])
+        let keyed = Value::List(self.keyed.iter().map(|e| Value::List(vec![Value::uint(e.n()), Value::bytes(e.nonce())])).collect());
+        Value::List(vec![epochs, Value::List(self.named.iter().map(id).collect()), Value::Bool(self.doubt), keyed])
     }
 
     pub(crate) fn from_value(v: &osis_base::Value) -> Option<JudgedEpochs> {
@@ -452,7 +457,14 @@ impl JudgedEpochs {
             _ => None,
         };
         let Value::List(top) = v else { return None };
-        let [Value::List(xs), Value::List(named), Value::Bool(doubt)] = top.as_slice() else { return None };
+        let [Value::List(xs), Value::List(named), Value::Bool(doubt), Value::List(keyed)] = top.as_slice() else { return None };
+        let keyed = keyed.iter().map(|k| match k {
+            Value::List(f) => match f.as_slice() {
+                [Value::Int(n), Value::Bytes(b)] => Epoch::new(u64::try_from(*n).ok()?, b.as_slice().try_into().ok()?).ok(),
+                _ => None,
+            },
+            _ => None,
+        }).collect::<Option<BTreeSet<Epoch>>>()?;
         let named = named.iter().map(id).collect::<Option<BTreeSet<CommitId>>>()?;
         let mut epochs = BTreeMap::new();
         for x in xs {
@@ -471,7 +483,7 @@ impl JudgedEpochs {
             };
             epochs.insert(id(e)?, (s, r));
         }
-        Some(JudgedEpochs { epochs, named, doubt: *doubt })
+        Some(JudgedEpochs { epochs, named, doubt: *doubt, keyed })
     }
 }
 
@@ -953,19 +965,27 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             }
         }
         let doubt = v.doubt();
-        let judged = Arc::new(JudgedEpochs { epochs: now, named, doubt: doubt.is_some() });
+        let keyed: BTreeSet<Epoch> = if tx.core.accounts.contains_key(&p) { tx.core.account_keys_by_name(&p).into_keys().collect() } else { BTreeSet::new() };
+        let more_keyed = keyed.iter().any(|e| was.as_ref().is_none_or(|j| !j.keyed.contains(e)));
+        let judged = Arc::new(JudgedEpochs { epochs: now, named, doubt: doubt.is_some(), keyed });
         if was.as_deref() == Some(&*judged) {
             continue;
         }
+
         if let Some((lines, side)) = doubt.filter(|_| !was.as_ref().is_some_and(|j| j.doubt)) {
             tx.core.events.queue(crate::events::Event::AccountDisputed { account: p, lines, side });
         }
         // the first epoch alone, open, named nothing, is what no entry says: the index is a
         // function of what is held, a rotation dropped included
-        if judged.epochs.len() == 1 && judged.named.is_empty() && !judged.doubt && get(&None, &FIRST_EPOCH) == judged.epochs.get(&FIRST_EPOCH).cloned() {
+        if judged.epochs.len() == 1 && judged.named.is_empty() && !judged.doubt && judged.keyed.is_empty() && get(&None, &FIRST_EPOCH) == judged.epochs.get(&FIRST_EPOCH).cloned() {
             tx.core.ix.epochs.remove(&p);
         } else {
             tx.core.ix.epochs.insert(p, judged.clone());
+        }
+        // a keyset of the account come to be held (a seed taken up, or a name known once every
+        // epoch its rotation supersedes is held): the boxes sealed to the account open now
+        if more_keyed {
+            super::reopen_dependents(tx, p)?;
         }
         for c in cands {
             let Some(m) = tx.core.ix.commits.get(&c) else { continue };
