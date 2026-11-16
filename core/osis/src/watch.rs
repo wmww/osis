@@ -119,9 +119,9 @@ pub(crate) enum Watch {
     CommitsOf(Tid),
     /// A roster or a key changed: `role_on`'s reach is the role graph, not one thing.
     Roles,
-    /// The thing's backlinks (a reference index row naming it); with an acting actor (`true`),
-    /// also what it may read: a roster or key change anywhere, as `Roles`.
-    Backlinks(Tid, bool),
+    /// The thing's backlinks (a reference index row naming it), on one aspect where given; with
+    /// an acting actor (`true`), also what it may read: a roster or key change anywhere, as `Roles`.
+    Backlinks(Tid, Option<Ak>, bool),
 }
 
 /// Where a subscription is found by an event: one slot per way an event names what it changed.
@@ -137,7 +137,7 @@ enum Slot {
     Status,
     CommitsOf(Tid),
     Roles,
-    Backlinks(Tid),
+    Backlinks(Tid, Option<Ak>),
 }
 
 impl Filter {
@@ -160,8 +160,8 @@ impl Filter {
             Filter::Text | Filter::Remote => Vec::new(),
             Filter::Due(Watch::CommitsOf(t)) => vec![Slot::CommitsOf(*t)],
             Filter::Due(Watch::Roles) => vec![Slot::Roles],
-            Filter::Due(Watch::Backlinks(t, false)) => vec![Slot::Backlinks(*t)],
-            Filter::Due(Watch::Backlinks(t, true)) => vec![Slot::Backlinks(*t), Slot::Roles],
+            Filter::Due(Watch::Backlinks(t, on, false)) => vec![Slot::Backlinks(*t, on.clone())],
+            Filter::Due(Watch::Backlinks(t, on, true)) => vec![Slot::Backlinks(*t, on.clone()), Slot::Roles],
         }
     }
 
@@ -169,7 +169,7 @@ impl Filter {
     /// one the role graph decides (`Slot::Roles`), which the clock moves with no event; a grants
     /// read is followed per thing (`Filter::Grants`).
     pub(crate) fn follows(&self) -> bool {
-        matches!(self, Filter::Due(Watch::Roles | Watch::Backlinks(_, true)))
+        matches!(self, Filter::Due(Watch::Roles | Watch::Backlinks(_, _, true)))
     }
 
     /// The things a commit listener is on, for the engine (`Engine::listen_commits`).
@@ -723,7 +723,8 @@ fn targets(sh: &Shared, _db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             out.extend(due(&[Slot::Roles], Delivery::Due));
             out
         }
-        Msg::Event(Event::References(targets)) => due(&targets.iter().map(|t| Slot::Backlinks(*t)).collect::<Vec<_>>(), Delivery::Due),
+        // a row names its target on one aspect: the watches of every aspect and of that one
+        Msg::Event(Event::References(rows)) => due(&rows.iter().flat_map(|(t, ak)| [Slot::Backlinks(*t, None), Slot::Backlinks(*t, Some(ak.clone()))]).collect::<Vec<_>>(), Delivery::Due),
         Msg::Event(Event::Diagnostic(d)) => due(&[Slot::Diagnostics], Delivery::Diagnostic(d.clone())),
         Msg::Status => due(&[Slot::Status], Delivery::Due),
         Msg::Event(Event::DisputeDetected { commit, op, holder, target, author, trust }) => {

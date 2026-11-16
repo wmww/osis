@@ -241,6 +241,25 @@ fn tracked_backlinks_hear_their_thing() {
     assert_eq!(fired(&db, &n), 1);
 }
 
+// notes/api.md Backlinks: a tracked page of one aspect's backlinks reads that aspect's alone and
+// hears nothing of a reference to its thing on another aspect.
+#[test]
+fn tracked_backlinks_of_an_aspect_hear_that_aspect() {
+    let db = pumped(15);
+    let (a, x) = (thing(&db), thing(&db));
+    let q = osis::BacklinkQuery { aspect: Some(ak("t:b.0")), ..Default::default() };
+    let (_set, n, h) = tracked(&db);
+    assert!(h.backlinks(x, &q).unwrap().backlinks.is_empty());
+    db.commit_with(|w| w.at(a, untyped("t:a.0")).set(&Value::Weak(x))).unwrap();
+    assert_eq!(fired(&db, &n), 0, "another aspect's reference");
+    assert!(db.backlinks(x, &q).unwrap().backlinks.is_empty());
+    db.commit_with(|w| w.at(a, untyped("t:b.0")).set(&Value::Weak(x))).unwrap();
+    assert_eq!(fired(&db, &n), 1);
+    let page = db.backlinks(x, &q).unwrap();
+    assert_eq!(page.backlinks.iter().map(|b| (b.tid, b.ak.as_str())).collect::<Vec<_>>(), vec![(a, "t:b.0")]);
+    assert_eq!(db.backlinks(x, &Default::default()).unwrap().backlinks.len(), 2, "every aspect's");
+}
+
 // spec/commits.md §7 listing: a tracked page hears a commit at its address (and none elsewhere).
 #[test]
 fn tracked_listing_hears_the_address() {

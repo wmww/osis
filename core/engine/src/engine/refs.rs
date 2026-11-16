@@ -15,7 +15,8 @@ use osis_crdt::Fragment;
 use osis_store::Shred;
 use std::collections::BTreeMap;
 
-/// Rows by target: target ‖ source ‖ AK ‖ 0 ‖ kind, empty.
+/// Rows by target: target ‖ AK ‖ 0 ‖ source ‖ kind, empty: one aspect's rows naming a target
+/// are one range.
 pub(crate) const TO: &[u8] = b"node/refs to";
 /// Rows by source: source ‖ AK length (u16) ‖ AK ‖ target ‖ kind, the count (u64).
 pub(crate) const FROM: &[u8] = b"node/refs from";
@@ -134,16 +135,26 @@ fn from_prefix(source: &Tid, ak: &Ak) -> Vec<u8> {
 }
 
 fn to_key(target: &Tid, source: &Tid, ak: &Ak, kind: RefKind) -> Vec<u8> {
-    [target.as_bytes().as_slice(), source.as_bytes(), ak.as_str().as_bytes(), &[0, kind.id()]].concat()
+    [to_prefix(target, Some(ak)).as_slice(), source.as_bytes(), &[kind.id()]].concat()
+}
+
+/// The `TO` keys of `target`'s rows, on `ak` alone where given: target ‖ AK ‖ 0 (no AK holds a
+/// 0 byte, so one AK's rows are never another's).
+fn to_prefix(target: &Tid, ak: Option<&Ak>) -> Vec<u8> {
+    match ak {
+        Some(ak) => [target.as_bytes().as_slice(), ak.as_str().as_bytes(), &[0]].concat(),
+        None => target.as_bytes().to_vec(),
+    }
 }
 
 /// A `TO` key's source, AK and kind, past the target.
 fn parse_to(rest: &[u8]) -> Result<(Tid, Ak, RefKind)> {
     let bad = || Error::Corrupt("reference row");
-    let (s, a) = rest.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;
-    let source = Tid::from_bytes(s.try_into().map_err(|_| bad())?);
-    let [a @ .., 0, k] = a else { return Err(bad()) };
+    let z = rest.iter().position(|b| *b == 0).ok_or_else(bad)?;
+    let (a, past) = (rest.get(..z).ok_or_else(bad)?, rest.get(z + 1..).ok_or_else(bad)?);
     let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or_else(bad)?;
+    let [s @ .., k] = past else { return Err(bad()) };
+    let source = Tid::from_bytes(s.try_into().map_err(|_| bad())?);
     Ok((source, ak, RefKind::from_id(u64::from(*k)).ok_or_else(bad)?))
 }
 
@@ -174,7 +185,7 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
                 // the data it came from went: no local copy of the row stays
                 tx.txn.table_remove(from, &fk, Shred::Yes)?;
                 tx.txn.table_remove(to, &tk, Shred::Yes)?;
-                moved.push(target);
+                moved.push((target, ak.clone()));
                 if kind == RefKind::Strong {
                     tx.core.ix.closure.note_row(*source, target);
                 }
@@ -182,7 +193,7 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
                 tx.txn.table_put(from, &fk, new.to_be_bytes().to_vec(), Shred::No)?;
                 if old == 0 {
                     tx.txn.table_put(to, &tk, Vec::new(), Shred::No)?;
-                    moved.push(target);
+                    moved.push((target, ak.clone()));
                     // the node closure follows a strong appearing or going (`sync::units`), and
                     // a ticket appearing for what a strong reaches
                     match kind {
@@ -253,17 +264,22 @@ pub(crate) fn to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<Reference>> {
     Ok(out)
 }
 
-/// Up to `n` rows naming `target` after `after` (exclusive; `None`: from the first), in (source,
-/// AK, kind) order: `n` rows read.
-pub(crate) fn to_page(tx: &mut Tx<'_>, target: &Tid, after: Option<(&Tid, &Ak, RefKind)>, n: usize) -> Result<Vec<(Tid, Ak, RefKind)>> {
+/// Up to `n` rows naming `target`, on `on` alone where given, after `after` (exclusive; `None`:
+/// from the first), in (AK, source, kind) order: `n` rows read.
+pub(crate) fn to_page(tx: &mut Tx<'_>, target: &Tid, on: Option<&Ak>, after: Option<(&Tid, &Ak, RefKind)>, n: usize) -> Result<Vec<(Tid, Ak, RefKind)>> {
     let to = tx.txn.index(TO)?;
     let pre = target.as_bytes().to_vec();
+    let first = to_prefix(target, on);
     let start = match after {
         // the least key past it
-        Some((s, ak, kind)) => [to_key(target, s, ak, kind).as_slice(), &[0]].concat(),
-        None => pre.clone(),
+        Some((s, ak, kind)) => [to_key(target, s, ak, kind).as_slice(), &[0]].concat().max(first.clone()),
+        None => first.clone(),
     };
-    let end = [pre.as_slice(), &[0xff; 16]].concat();
+    // past every key of the prefix: an AK's rows end before its 0 turns 1, a target's before 0xff
+    let end = match on {
+        Some(ak) => [pre.as_slice(), ak.as_str().as_bytes(), &[1]].concat(),
+        None => [pre.as_slice(), &[0xff; 16]].concat(),
+    };
     let mut out = Vec::new();
     for (k, _) in tx.txn.table_range(to, &start, Some(&end), n)? {
         drop(osis_base::costs::span("refs: row read"));
@@ -272,17 +288,22 @@ pub(crate) fn to_page(tx: &mut Tx<'_>, target: &Tid, after: Option<(&Tid, &Ak, R
     Ok(out)
 }
 
-/// Whether `source` holds a strong to `target`, in any aspect: O(its rows naming it).
+/// Whether `source` holds a strong to `target`, in any aspect: one probe per aspect holding a
+/// reference to `target` (aspect names are static), never its other referrers.
 pub(crate) fn strong_from(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result<bool> {
     let to = tx.txn.index(TO)?;
-    let pre = [target.as_bytes().as_slice(), source.as_bytes()].concat();
-    let end = [pre.as_slice(), &[0xff]].concat();
-    let mut found = false;
-    scan_table(&mut tx.txn, to, &pre, Some(&end), |k, _| {
-        found |= k.last() == Some(&RefKind::Strong.id());
-        Ok(())
-    })?;
-    Ok(found)
+    let pre = target.as_bytes().to_vec();
+    let end = [pre.as_slice(), &[0xff; 16]].concat();
+    let mut start = pre.clone();
+    loop {
+        // the next aspect's first row
+        let Some((k, _)) = tx.txn.table_range(to, &start, Some(&end), 1)?.into_iter().next() else { return Ok(false) };
+        let (_, ak, _) = parse_to(k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?)?;
+        if tx.txn.table_get(to, &to_key(target, source, &ak, RefKind::Strong))?.is_some() {
+            return Ok(true);
+        }
+        start = [pre.as_slice(), ak.as_str().as_bytes(), &[1]].concat();
+    }
 }
 
 /// The rows of `source`, every aspect.

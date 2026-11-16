@@ -53,10 +53,7 @@ mod rows {
         let c2 = step(&mut tree, &mut screen, &w);
         assert_eq!(c2.renders, 1, "one collection render: {c2:?}");
         let inserted = std::mem::take(&mut screen.rows);
-        // an unrelated write: nothing (the window opening it last referenced `added`, a backlink
-        // of a row: home first)
-        d.set_open(None).unwrap();
-        step(&mut tree, &mut screen, &w);
+        // an unrelated write: nothing (a window opening it moves only backlinks off `holds.0`)
         let other = d.create_note().unwrap();
         name(&d, other, "elsewhere");
         w.graph.record();

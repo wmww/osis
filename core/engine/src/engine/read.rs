@@ -45,10 +45,10 @@ impl Engine {
         self.read(|tx| super::refs::to(tx, target))
     }
 
-    /// Up to `n` of the reference index's rows naming `target` after `after` (source, AK, kind;
-    /// exclusive), in that order: O(n) rows read.
-    pub fn references_page(&mut self, target: &Tid, after: Option<(&Tid, &Ak, osis_base::RefKind)>, n: usize) -> Result<Vec<(Tid, Ak, osis_base::RefKind)>> {
-        self.read(|tx| super::refs::to_page(tx, target, after, n))
+    /// Up to `n` of the reference index's rows naming `target`, on aspect `on` alone where given,
+    /// after `after` (source, AK, kind; exclusive), in (AK, source, kind) order: O(n) rows read.
+    pub fn references_page(&mut self, target: &Tid, on: Option<&Ak>, after: Option<(&Tid, &Ak, osis_base::RefKind)>, n: usize) -> Result<Vec<(Tid, Ak, osis_base::RefKind)>> {
+        self.read(|tx| super::refs::to_page(tx, target, on, after, n))
     }
 
     /// Turns `Event::References` on for this open; it stays on (as `watch_commits`).

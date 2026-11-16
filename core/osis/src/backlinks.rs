@@ -17,17 +17,20 @@ pub const BACKLINK_PAGE: usize = 256;
 /// A thing whose current value on an aspect references another thing.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Backlink {
-    /// The thing holding the reference.
-    pub tid: Tid,
     /// The aspect whose value holds it.
     pub ak: Ak,
+    /// The thing holding the reference.
+    pub tid: Tid,
     /// Whether it is a strong, a weak or a ticket.
     pub kind: RefKind,
 }
 
-/// Which backlinks a page holds: in `Backlink` order (by thing, then aspect, then kind).
+/// Which backlinks a page holds: in `Backlink` order (by aspect, then thing, then kind).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BacklinkQuery {
+    /// Only those on this aspect (`None`: on every aspect). A page and its listener then read
+    /// and wake for this aspect's references alone.
+    pub aspect: Option<Ak>,
     /// Start past this one (`None`: at the first).
     pub after: Option<Backlink>,
     /// At most this many (`None`: as many as a page holds).
@@ -53,7 +56,7 @@ impl Reader<'_> {
         loop {
             // one past the page: whether there are more
             let want = limit + 1 - page.backlinks.len();
-            let rows = self.e.references_page(&target, after.as_ref().map(|(t, a, k)| (t, a, *k)), want)?;
+            let rows = self.e.references_page(&target, q.aspect.as_ref(), after.as_ref().map(|(t, a, k)| (t, a, *k)), want)?;
             let n = rows.len();
             for (tid, ak, kind) in rows {
                 after = Some((tid, ak.clone(), kind));
@@ -64,7 +67,7 @@ impl Reader<'_> {
                     page.more = true;
                     return Ok(page);
                 }
-                page.backlinks.push(Backlink { tid, ak, kind });
+                page.backlinks.push(Backlink { ak, tid, kind });
             }
             if n < want {
                 return Ok(page);
@@ -73,10 +76,10 @@ impl Reader<'_> {
     }
 }
 
-/// What may change `tid`'s backlinks as the handle reads them: a row naming it, and with an acting
-/// actor what it may read.
-fn watch(db: &ReadOnly, tid: Tid) -> Filter {
-    Filter::Due(Watch::Backlinks(tid, db.acting.is_some()))
+/// What may change `tid`'s backlinks on `on` as the handle reads them: a row naming it there,
+/// and with an acting actor what it may read.
+fn watch(db: &ReadOnly, tid: Tid, on: Option<&Ak>) -> Filter {
+    Filter::Due(Watch::Backlinks(tid, on.cloned(), db.acting.is_some()))
 }
 
 impl ReadOnly {
@@ -89,7 +92,7 @@ impl ReadOnly {
             self.engine(|e| e.watch_references());
         }
         let q2 = q.clone();
-        self.read_answer(|| format!("{} {q:?}", thing_key("backlinks", tid)), watch(self, tid), move |r| r.backlinks(tid, &q2))
+        self.read_answer(|| format!("{} {q:?}", thing_key("backlinks", tid)), watch(self, tid, q.aspect.as_ref()), move |r| r.backlinks(tid, &q2))
     }
 }
 
@@ -102,7 +105,7 @@ impl Osis {
         self.local_at(tid, "on_backlinks_change")?;
         let (q, limit, actor) = (q.clone(), self.inner.limit, self.acting);
         let mut failed = None;
-        let sub = self.subscribe(watch(self, tid), true, |r| {
+        let sub = self.subscribe(watch(self, tid, q.aspect.as_ref()), true, |r| {
             r.e.watch_references();
             let mut last = match r.backlinks(tid, &q) {
                 Ok(p) => Some(p),

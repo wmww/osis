@@ -64,9 +64,10 @@ pub enum Event {
     Roster { thing: Tid },
     /// A creation record arrived: `thing`'s first-admin edge, the start of its roster.
     Created { thing: Tid },
-    /// A reference index row naming each of these targets appeared or went (`refs`): their
-    /// backlinks changed. Only once a backlinks watch was asked for (`Engine::watch_references`).
-    References(Arc<Vec<Tid>>),
+    /// A reference index row naming each of these targets on that aspect appeared or went
+    /// (`refs`): their backlinks changed. Only once a backlinks watch was asked for
+    /// (`Engine::watch_references`).
+    References(Arc<Vec<(Tid, Ak)>>),
     /// Ephemeral state changed in memory (notes/ephemeral.md): `id` is the ephemeral commit that
     /// carried the change.
     Ephemeral { id: CommitId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },

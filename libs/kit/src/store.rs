@@ -298,10 +298,10 @@ impl Reader {
     pub fn held_by(&self, t: Tid) -> Result<Rc<Vec<Tid>>> {
         self.memo(("held_by", t), |r, &(_, t)| {
             let mut out = Vec::new();
-            let mut q = BacklinkQuery::default();
+            let mut q = BacklinkQuery { aspect: Some(HOLDS.name()), ..BacklinkQuery::default() };
             loop {
                 let page = r.db.backlinks(t, &q)?;
-                out.extend(page.backlinks.iter().filter(|b| b.ak == HOLDS.name()).map(|b| b.tid));
+                out.extend(page.backlinks.iter().map(|b| b.tid));
                 match page.backlinks.last() {
                     Some(last) if page.more => q.after = Some(last.clone()),
                     _ => break,
