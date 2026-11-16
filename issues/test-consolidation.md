@@ -96,7 +96,6 @@ Helpers are listed in (c). Per-test items:
 - crdt `tests_laws.rs:129 forged_edge_copy_cached_placement` (a pinned seed) | hand-written reproducer or delete | low-medium
 - held-model `spec_thing_history.rs:161`, `:188` plus ~50 lines of test-only src (`Eager`, `Body`, `history`, `replaced_at`) | delete | the `ev_*` twins run the same properties on the real `evaluate` | medium-high
 - osis `text.rs:230` | delete | `text_edit_random_against_reference` checks single-merge cases exactly | medium
-- roles-model `single.rs` (14 tests, used by nothing outside the model, mostly rejected rule variants) | Tess's call: it is a design record | low
 
 
 

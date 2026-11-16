@@ -367,7 +367,7 @@ fn models() -> Vec<Scenario> {
         Scenario {
             name: "concurrent cross removals, the earlier wins",
             spec: "spec/permissions.md §5.1",
-            source: "roles-model single::mutual_removal_earlier_wins, joint::concurrent_cross_removals",
+            source: "roles-model joint::concurrent_cross_removals",
             steps: vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, tick.clone(), Edge { by: 1, t: 0, holder: 2, role: None }, tick.clone(), Edge { by: 2, t: 0, holder: 1, role: None }],
             orders: None,
         },

@@ -1,6 +1,6 @@
-//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|forget|as|exempt|strat|stratw|frontier|epochs|epochs-exh|epochs-exh-c|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
+//! Search driver for the roles model: `[samples] [edges|joint|disputes|disputes-random|digest|addenda|addenda-exh|addenda-covers|forget|epochs|epochs-exh|epochs-exh-c|custody|custody-exh|custody-judged|custody-roster-bare|custody-merge-random|custody-stale-shut|custody-merge-carries]`.
 
-use roles_model::{edges, joint, single};
+use roles_model::{edges, joint};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -43,6 +43,9 @@ fn main() {
         Some("addenda-covers") => roles_model::addenda::exhaustive(true).print(),
         Some("joint") => joint::random(samples, 0x5eed).print(),
         Some("edges") => edges::run(samples),
-        rule => single::run(samples, rule),
+        m => {
+            eprintln!("unknown mode {m:?}");
+            std::process::exit(2);
+        }
     }
 }

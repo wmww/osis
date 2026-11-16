@@ -7,7 +7,6 @@
 //! demoter's chain writes: only its frontier covers them (§5.1). Every actor's first admin
 //! holds its record edge (admin) in genesis, removable like any edge (§1). Modules by spec
 //! section:
-//! - `single`: §5.1 on one actor, the adopted demoter-frontier rule and rejected variants.
 //! - `joint`: §5.1 steps 1-5 over several actors (record edges, actor holders, mutual
 //!   roles, commit-ID ties); `joint::walk`, `joint::random_hist`. osis-perm `joint_model_agrees`.
 //! - `edges`: §2 (`until`, invite power, self-removal) and §7 (links) on one target, with
@@ -66,7 +65,6 @@ pub mod epochs;
 pub mod forget;
 pub mod joint;
 pub mod shrink;
-pub mod single;
 pub mod trust;
 
 /// Roles, `None` below read. The build's sync role (below read) is not modelled: §5.1 judges it as
