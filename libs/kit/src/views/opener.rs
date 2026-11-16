@@ -2,19 +2,9 @@
 //! content view. Everything else comes through specs: a content view never knows it was opened.
 
 use super::ViewType;
-use crate::view::{Act, Action, Block, Chip, Cx, Do, Icon, Input, Open, Section, Tab, ViewSpec};
+use crate::view::{Act, Action, Block, Chip, Cx, Do, Icon, Input, Open, Section, Tab, Toggle, ViewSpec};
 use crate::schema::{MENU, RAW as RAW_ON};
 use osis::{Result, Tid};
-
-/// Switches between raw and the designed view, in this window only.
-#[derive(Clone, Debug, PartialEq)]
-struct ToggleRaw(String);
-
-impl Action for ToggleRaw {
-    fn run(&self, act: &Act, _: &Input) -> Result<()> {
-        if act.state(RAW_ON, &self.0)?.unwrap_or(false) { act.clear_state(RAW_ON, &self.0) } else { act.set_state(RAW_ON, &self.0, &true) }
-    }
-}
 
 /// Selects a content view, remembered per account.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,14 +25,6 @@ impl Action for Delete {
     fn run(&self, act: &Act, _: &Input) -> Result<()> {
         act.window.sessions.commit(self.0)?;
         act.delete(self.0)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct ToggleMenu(String);
-impl Action for ToggleMenu {
-    fn run(&self, act: &Act, _: &Input) -> Result<()> {
-        if act.state(MENU, &self.0)?.unwrap_or(false) { act.clear_state(MENU, &self.0) } else { act.set_state(MENU, &self.0, &true) }
     }
 }
 
@@ -79,7 +61,7 @@ fn fitting(cx: &Cx, t: Tid) -> Result<Vec<&'static ViewType>> {
 }
 
 fn selected(cx: &Cx, node: &str, t: Tid, fits: &[&'static ViewType]) -> Result<&'static ViewType> {
-    if cx.state(RAW_ON, node)?.unwrap_or(false) {
+    if cx.flag(RAW_ON, node)? {
         return Ok(&super::RAW);
     }
     if let Some(id) = cx.viewed_as(t)?
@@ -117,17 +99,17 @@ fn opener(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
 fn bar(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
     let t = spec.subject;
     let opener = spec.config.get("opener").unwrap_or_default().to_string();
-    let open = cx.state(MENU, &opener)?.unwrap_or(false);
-    let raw_on = cx.state(RAW_ON, &opener)?.unwrap_or(false);
+    let open = cx.flag(MENU, &opener)?;
+    let raw_on = cx.flag(RAW_ON, &opener)?;
     let mut menu = Vec::new();
     if open {
-        menu.push(Chip::action(Icon::List, if raw_on { "Back to view" } else { "All fields" }, Do::new(ToggleRaw(opener.clone()))));
+        menu.push(Chip::action(Icon::List, if raw_on { "Back to view" } else { "All fields" }, Do::new(Toggle(RAW_ON, opener.clone()))));
         menu.push(Chip::action(Icon::Trash, "Delete", Do::new(Delete(t))));
     }
     // a memo: a body edit moves the summary, not its words
     let descriptor = (*cx.memo(("words", t), |r, &(_, t)| Ok(r.summary(t)?.words.join(" · ")))?).clone();
     let back = spec.config.flag("back").then(|| Do::new(Open(None)));
-    Ok(Section::of(vec![Block::Bar { back, descriptor, favorite: cx.is_favorite(t)?, star: Do::new(ToggleFavorite(t)), more: Do::new(ToggleMenu(opener)), menu }]))
+    Ok(Section::of(vec![Block::Bar { back, descriptor, favorite: cx.is_favorite(t)?, star: Do::new(ToggleFavorite(t)), more: Do::new(Toggle(MENU, opener)), menu }]))
 }
 
 pub static OPENER: ViewType = ViewType { id: "opener", label: "Opener", fits: None, parts: &[], always_offered: false, custom: Some(opener), sample: super::sample_note, grow: None };

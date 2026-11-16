@@ -1,7 +1,6 @@
 //! The shell's two slots that show more than a nested view: search results and the New chips.
 
 use super::ViewType;
-use crate::facets::members::creating as is_creating;
 use crate::view::arrange::one;
 use crate::view::paged::{Item, Row, Shape, Style, page_of};
 use crate::view::search::{Paste, classify, search};
@@ -88,7 +87,7 @@ fn results(cx: &Cx, spec: &ViewSpec) -> Result<Section> {
 }
 
 fn creating(cx: &Cx, _: &ViewSpec) -> Result<Section> {
-    let show = is_creating(cx)? && cx.local(QUERY)?.trim().is_empty();
+    let show = cx.flag(crate::schema::CREATING, "shell")? && cx.local(QUERY)?.trim().is_empty();
     Ok(Section::of(if show { vec![Block::Chips(cx.offer_chips(None)?)] } else { Vec::new() }))
 }
 

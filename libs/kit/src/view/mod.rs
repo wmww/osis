@@ -568,6 +568,25 @@ impl<'a> Act<'a> {
     }
 }
 
+/// A node's flag on this window (`map<node path, bool>`): set is `true`, clear is no entry.
+pub type Flag = osis::generated::Aspect<BTreeMap<String, bool>>;
+
+/// Flips the flag at a node (a menu, a picker, raw mode).
+#[derive(Clone, Debug)]
+pub struct Toggle(pub Flag, pub NodePath);
+
+impl PartialEq for Toggle {
+    fn eq(&self, other: &Toggle) -> bool {
+        self.0.name() == other.0.name() && self.1 == other.1
+    }
+}
+
+impl Action for Toggle {
+    fn run(&self, act: &Act, _: &Input) -> Result<()> {
+        if act.flag(self.0, &self.1)? { act.clear_state(self.0, &self.1) } else { act.set_state(self.0, &self.1, &true) }
+    }
+}
+
 /// Runs an offer on `t`, or makes a new thing with it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UseOffer(pub &'static str, pub Option<Tid>);

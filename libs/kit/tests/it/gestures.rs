@@ -61,7 +61,7 @@ impl Screen {
         let _ = root.redraw();
         let alarms = Rc::new(RefCell::new(Vec::new()));
         let a = alarms.clone();
-        let input = Input::new(THRESHOLDS, Box::new(move |seq, _| a.borrow_mut().push(seq)));
+        let input = Input::new(THRESHOLDS, Box::new(move |seq, _| a.borrow_mut().push(seq)), crate::input::look());
         Screen { root, signals, input, platform: Recorder::default(), alarms, now: 1_000_000_000, scale }
     }
 

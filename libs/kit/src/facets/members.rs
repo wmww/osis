@@ -4,7 +4,7 @@ use crate::store::Reader;
 use crate::schema::{Arrange, CREATING, WEEK};
 use crate::store::Data;
 use crate::view::source::of;
-use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Mark, Offer, Section, Summary, arrange};
+use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Mark, Offer, Section, Summary, Toggle, arrange};
 use crate::view::paged::{Shape, Style};
 use osis::core::{TAG, Tag};
 use osis::{Member, Result, Tid};
@@ -88,7 +88,7 @@ impl Facet for MembersFacet {
         let arranged = cfg.get("arrange").and_then(arrange_named).unwrap_or(arranged);
         let shape = Shape {
             cols: cfg.get("cols").and_then(|c| c.parse().ok()).unwrap_or(0),
-            new: (favorites && cfg.get("cols").is_none()).then(|| Do::new(ToggleCreating)),
+            new: (favorites && cfg.get("cols").is_none()).then(toggle_creating),
             reorder: favorites.then(|| Do::new(MoveFavorite)),
             ..Shape::new(Style::Card)
         };
@@ -130,16 +130,7 @@ fn arrange_named(s: &str) -> Option<Arrange> {
     })
 }
 
-/// Shows or hides the list of what can be made new.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ToggleCreating;
-impl Action for ToggleCreating {
-    fn run(&self, act: &Act, _: &Input) -> Result<()> {
-        if creating(act)? { act.clear_state(CREATING, "shell") } else { act.set_state(CREATING, "shell", &true) }
-    }
-}
-
-/// Whether the list of what can be made new is shown.
-pub fn creating(cx: &Reader) -> Result<bool> {
-    Ok(cx.state(CREATING, "shell")?.unwrap_or(false))
+/// Shows or hides the list of what can be made new (the shell's New).
+pub fn toggle_creating() -> Do {
+    Do::new(Toggle(CREATING, "shell".into()))
 }

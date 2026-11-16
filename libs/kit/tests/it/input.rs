@@ -12,7 +12,13 @@ use osis_kit::masonry::properties::types::CrossAxisAlignment;
 use osis_kit::masonry::widgets::{Flex, TextArea};
 use osis_kit::platform::{Platform, SelectionMenu, Thresholds};
 use std::sync::mpsc::{Receiver, channel};
+use std::sync::Arc;
 use std::time::Duration;
+
+/// The look kit's menu is drawn in.
+pub fn look() -> Arc<osis_kit::theme::Look> {
+    Arc::new(osis_kit::theme::Look::new(&osis_kit::theme::Theme::named(None), false, None))
+}
 
 const A: WidgetTag<TextArea<true>> = WidgetTag::new("a");
 const B: WidgetTag<TextArea<true>> = WidgetTag::new("b");
@@ -85,7 +91,7 @@ impl Screen {
         let mut root = RenderRoot::new(NewWidget::new(col).erased(), move |s| drop(tx.send(s)), opts);
         osis_kit::fonts::register(&mut root);
         let _ = root.redraw();
-        Screen { root, signals, input: Input::new(THRESHOLDS, Box::new(|_, _| {})), platform: Recorder::default(), now: 1_000_000_000 }
+        Screen { root, signals, input: Input::new(THRESHOLDS, Box::new(|_, _| {}), look()), platform: Recorder::default(), now: 1_000_000_000 }
     }
 
     fn id(&self, tag: WidgetTag<TextArea<true>>) -> WidgetId {

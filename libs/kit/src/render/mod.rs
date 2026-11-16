@@ -10,7 +10,7 @@ mod start;
 pub use start::{Start, Started};
 
 use crate::edit::{map_byte, shown_edits};
-use crate::facets::members::ToggleCreating;
+use crate::facets::members::toggle_creating;
 use crate::schema::Mode;
 use crate::store::{Data, Reader};
 use crate::view::search::{Paste, classify, search};
@@ -195,7 +195,7 @@ impl Default for Host {
 impl Host {
     /// Takes the shell's platform; `alarm` hears long presses (`input::Alarm`).
     fn attach(&mut self, platform: Box<dyn Platform>, alarm: crate::input::Alarm, look: Arc<Look>) {
-        self.attached = Some(Attached { input: Pointers::new(platform.thresholds(), alarm).with_look(look), platform, ticking: false });
+        self.attached = Some(Attached { input: Pointers::new(platform.thresholds(), alarm, look), platform, ticking: false });
     }
 
     /// The focused field or its selection may have changed: the selection menu follows it.
@@ -615,7 +615,7 @@ impl Ui {
         let home = NewWidget::new(crate::widgets::Tile::new(crate::widgets::TileStyle::Row, crate::widgets::TileIcon::Icon(Icon::Home), "osis", "Home", None, look.clone()));
         self.acts.at(home.id()).press = Some(Do::new(Open(None)));
         let new = NewWidget::new(crate::widgets::Tile::new(crate::widgets::TileStyle::Row, crate::widgets::TileIcon::Icon(Icon::Plus), "New", "", None, look.clone()));
-        self.acts.at(new.id()).press = Some(Do::new(ToggleCreating));
+        self.acts.at(new.id()).press = Some(toggle_creating());
         let search = self.search_field(false);
         let rail_list = self.slot("rail");
         let rail_results = self.slot(&views::child_path(RAIL, "results"));

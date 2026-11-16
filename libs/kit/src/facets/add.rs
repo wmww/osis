@@ -1,24 +1,12 @@
 //! "Add" on every designed view: the same offers that made it (notes/app.md Create).
 
 use crate::store::Reader;
-use crate::view::{Act, Action, Block, Chip, Cx, Do, Facet, Icon, Input, Section};
+use crate::view::{Block, Chip, Cx, Do, Facet, Icon, Section, Toggle};
 use crate::schema::ADDING;
 use osis::{Result, Tid};
 
 pub struct AddFacet;
 pub static FACET: AddFacet = AddFacet;
-
-#[derive(Clone, Debug, PartialEq)]
-struct Toggle(String);
-impl Action for Toggle {
-    fn run(&self, act: &Act, _: &Input) -> Result<()> {
-        if act.state(ADDING, &self.0)?.unwrap_or(false) {
-            act.clear_state(ADDING, &self.0)
-        } else {
-            act.set_state(ADDING, &self.0, &true)
-        }
-    }
-}
 
 impl Facet for AddFacet {
     fn id(&self) -> &'static str {
@@ -34,8 +22,8 @@ impl Facet for AddFacet {
         true
     }
     fn show(&self, cx: &Cx, t: Tid) -> Result<Section> {
-        let open = cx.state(ADDING, &cx.path())?.unwrap_or(false);
-        let mut blocks = vec![Block::Chips(vec![Chip::action(Icon::Plus, if open { "Done" } else { "Add" }, Do::new(Toggle(cx.path())))])];
+        let open = cx.flag(ADDING, &cx.path())?;
+        let mut blocks = vec![Block::Chips(vec![Chip::action(Icon::Plus, if open { "Done" } else { "Add" }, Do::new(Toggle(ADDING, cx.path())))])];
         if open {
             blocks.push(Block::Chips(cx.offer_chips(Some(t))?));
         }

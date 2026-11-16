@@ -43,8 +43,8 @@ use crate::masonry::dpi::PhysicalPosition;
 use crate::masonry::kurbo::{Point, Vec2};
 use crate::masonry::widgets::{SelectionEnd, TextArea};
 use crate::platform::{Place, Platform, SelectionMenu, Thresholds};
-use crate::theme::{Look, Theme};
-use crate::widgets::Menu;
+use crate::theme::Look;
+use crate::widgets::{Menu, primary};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -143,20 +143,14 @@ pub struct Input {
 }
 
 impl Input {
-    pub fn new(thresholds: Thresholds, alarm: Alarm) -> Input {
-        let look = Arc::new(Look::new(&Theme::named(None), false, None));
+    /// Gestures by `thresholds`, long presses timed by `alarm`, kit's menu drawn in `look`.
+    pub fn new(thresholds: Thresholds, alarm: Alarm, look: Arc<Look>) -> Input {
         Input { thresholds, alarm, last: None, click: None, touch: None, fling: None, seq: 0, menu: None, was_open: false, pressing: None, look }
     }
 
     /// kit's drawing of the selection menu, if it shows: its layer's root (a `widgets::Menu`).
     pub fn drawn_menu(&self) -> Option<WidgetId> {
         self.menu.as_ref().and_then(|m| m.drawn)
-    }
-
-    /// kit's menu drawn in `look`.
-    pub fn with_look(mut self, look: Arc<Look>) -> Input {
-        self.look = look;
-        self
     }
 
     /// kit's menu is drawn in `look` (one shown is drawn again).
@@ -628,10 +622,6 @@ fn info(e: &PointerEvent) -> Option<&PointerInfo> {
         PointerEvent::Scroll(s) => Some(&s.pointer),
         PointerEvent::Gesture(g) => Some(&g.pointer),
     }
-}
-
-fn primary(b: &PointerButtonEvent) -> bool {
-    matches!(b.button, None | Some(PointerButton::Primary))
 }
 
 fn secondary_buttons() -> PointerButtons {

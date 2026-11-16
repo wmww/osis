@@ -207,6 +207,11 @@ impl Reader {
         self.db.at(w, key).path(osis::Path::root().push(node)).get()
     }
 
+    /// Whether the flag `key` is set at `node` on this window.
+    pub fn flag(&self, key: crate::view::Flag, node: &str) -> Result<bool> {
+        Ok(self.state(key, node)?.unwrap_or(false))
+    }
+
     /// The account groups, the main one first.
     pub fn groups(&self) -> Result<Vec<Tid>> {
         Ok((*self.memo(("groups", ()), |r, _| r.account.groups(&r.db))?).clone())
