@@ -117,3 +117,72 @@ fn a_forged_ticket_keeps_no_plain_thing_held_spec_sync_set_2() {
     e1.commit(m).unwrap();
     assert!(!e1.closure_holds(&p) && !e1.sync_things().unwrap().contains(&p), "nothing of P left");
 }
+
+// spec/sync-set.md §1 (The account's tickets), spec/sync.md §3 (Kept sync IDs: only a step
+// bearing a held secret's sync key keeps S): Bob keeps T unread by Alice's sync grant, and D's
+// ticket for T is to box the grant's sync secret. A ticket for T at a higher epoch with a secret
+// of its maker's choosing, naming T's sync ID (what any holder of Bob's public record can box),
+// held when D's ticket is written or after it, must not take the genuine secret out of D's
+// tickets: a node of Bob's paired later enters T by D's tickets alone.
+#[test]
+#[ignore = "issues/kept-unread-account-ticket-forged.md"]
+fn a_forged_sync_ticket_keeps_the_genuine_one_in_ds_tickets_spec_sync_set_1() {
+    for forged_first in [false, true] {
+        forged_sync_ticket(forged_first);
+    }
+}
+
+fn forged_sync_ticket(forged_first: bool) {
+    let (mut lp, [_, bob]) = two();
+    let e0 = &mut lp.peers[0].engine;
+    let d0 = e0.account_root().unwrap();
+    let mut m = Mutation::new();
+    let t = e0.new_thing(&mut m, d0);
+    m.op(d0, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+    e0.commit(m).unwrap();
+    e0.grant(&t, &bob, &ct::Edge { role: Role::Sync, until: None, invite: None, floor: None }).unwrap();
+    let fires = e0.fires_owed();
+    let out = e0.sealed_fire(&fires[0]).unwrap().unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    let b = osis_blob::blob_id(&out.blob);
+    e1.open_entry(&out.sync_id, &b, &[0; 57], &out.blob, u64::MAX).unwrap();
+    let genuine = e1.ticket_for(&t).unwrap().expect("the grant's ticket");
+    assert_eq!(genuine.role, Role::Sync);
+    // a sync ticket of a made-up epoch above it, naming T's sync ID
+    let k = lp.peers[1]
+        .engine
+        .run(|tx| {
+            let s = Secret32::from_bytes([9; 32]);
+            let e = Epoch::derive(&t, Role::Sync, genuine.epoch.0 + 5, &s).unwrap();
+            let rcpt = crate::flows::recipient(tx, bob, Role::Sync)?;
+            let w = osis_keys::produce::box_epoch(&t, &rcpt, Role::Sync, e, &s, &mut *tx.rng)?.unwrap();
+            let key = ct::BoxKey { holder: bob.into(), role: Role::Sync, epoch: osis_keys::aspects::to_schema(&e) };
+            Ok(Ticket { epoch: (e.n(), *e.nonce()), boxed: w.boxes.get(&key).unwrap().to_value(), ..genuine.clone() })
+        })
+        .unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    let d1 = e1.account_root().unwrap();
+    // the forged ticket held in Bob's profile, D's tickets.0 his own nodes' alone
+    let profile = e1.profile_of(&bob).unwrap();
+    let place = |e: &mut crate::Engine, v: Value| {
+        let mut m = Mutation::new();
+        let op = PathOp { path: vec![], op: Op::Add(v.clone()) };
+        if matches!(v, Value::Ticket(_)) {
+            m.op(profile, &ct::TICKETS, op).unwrap();
+        } else {
+            m.op(d1, &ct::HOLDS, op).unwrap();
+        }
+        e.commit(m).unwrap();
+        e.write_account_ticket(&t).unwrap();
+    };
+    if forged_first {
+        place(e1, Value::Ticket(Box::new(k.clone())));
+    }
+    place(e1, Value::Strong(t));
+    assert_eq!(e1.sync_held(&genuine.sync_id).unwrap().map(|x| x.1), Some(crate::sync::Holding::Unread));
+    if !forged_first {
+        place(e1, Value::Ticket(Box::new(k)));
+    }
+    let held: Vec<Ticket> = e1.run(|tx| crate::flows::inbox::account_tickets(tx, &d1, &t)).unwrap().into_iter().filter(|x| x.holder == bob).collect();
+    assert!(held.iter().any(|x| x.epoch == genuine.epoch && x.sync_id == genuine.sync_id), "the genuine secret is in D's tickets (forged first: {forged_first}): epochs {:?}", held.iter().map(|x| x.epoch.0).collect::<Vec<_>>());
+}

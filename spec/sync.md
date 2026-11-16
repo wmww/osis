@@ -27,7 +27,7 @@ A node holds S of thing T, at each moment, by the secrets it holds of T:
 - **Kept for T**: the sync ID of each ticket for T the node holds and can open (spec/sync-set.md §2), but one closed here (spec/sync-judgement.md §6 Closes), and, from its own reading, the sync IDs T owned as it judged them (spec/sync-ids.md §4 Owner) when it stopped reading T while holding a sync secret of it (spec/sync-judgement.md §6 Read and unread move).
 - **Held sync secrets** of T: those of the tickets for T it holds that open here, and those it held of T when it stopped reading it.
 - **S's things**: every thing S is kept for (spec/sync-inbox.md §5 Ticket sync IDs). S is kept unread for each of them alike (spec/sync-set.md §2): the held sync secrets of each are shown (spec/sync-opens.md §4) and keep S at a head whose key one derives (spec/sync-judgement.md §6), and each one's tickets' profiles are dialed for S (spec/sync-opens.md §1). A secret no step of S's path bears keeps nothing and proves nothing there, so a thing claiming S by a forged ticket changes nothing a step decides.
-- It syncs only the sync IDs it keeps; the node keeps this state as its own, and nothing of it is shared with its account's other nodes.
+- It syncs only the sync IDs it keeps; the node keeps this state as its own, and shares none of it with its account's other nodes but D's tickets for T (spec/sync-set.md §1 The account's tickets).
 
 ## 4. Areas
 Each area has one principle; every rule in its file follows from it, and a rule whose reason does not follow from its principle is a defect of the rule, not an exception to the principle.

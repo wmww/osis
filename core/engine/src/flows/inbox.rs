@@ -545,7 +545,7 @@ fn ticket_sync_ids(tx: &mut Tx<'_>, t: &Tid, r: Role) -> Result<Vec<osis_base::S
 
 /// D's tickets for `t` in its `tickets.0` as held, from `t`'s ticket rows alone
 /// (`refs::tickets_to`): a ticket for another thing moves nothing here.
-fn account_tickets(tx: &mut Tx<'_>, d: &Tid, t: &Tid) -> Result<BTreeSet<Ticket>> {
+pub(crate) fn account_tickets(tx: &mut Tx<'_>, d: &Tid, t: &Tid) -> Result<BTreeSet<Ticket>> {
     let ak = super::ak("tickets.0")?;
     Ok(crate::engine::refs::tickets_to(tx, t)?.into_iter().filter(|r| r.source == *d && r.ak == ak && r.fire.is_none()).flat_map(|r| r.tickets).collect())
 }
