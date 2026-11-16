@@ -73,15 +73,24 @@ fn at(w: &mut World, t: Tid, by: &[usize], from: usize, to: usize) -> Vec<Held> 
     (0..3).map(|i| held(w, i)).collect()
 }
 
+/// A store's per-entry attribution rows: who brought an entry uncharged (`B/`), who it is charged
+/// to (`W/`). One per entry at most, and which peer's copy came first is the run's order, not the
+/// number of writes (an author whose own entry went and came back holds a peer's copy, or logs
+/// its own, by which arrives first): each is bounded by the entries (`E/`), not compared.
+const ATTRIBUTION: [&str; 2] = ["B/", "W/"];
+
 /// No more rows of any kind at 10n than at n, nor blobs (a few bytes for a counter that
-/// widened).
+/// widened); a store's attribution rows at most one per entry.
 #[track_caller]
 fn flat(a: &[Held], b: &[Held]) {
     for (i, (x, y)) in a.iter().zip(b).enumerate() {
         for (d, p, q) in [("engine", &x.0, &y.0), ("store", &x.1, &y.1)] {
-            let bytes = |c: &Census| c.values().map(|v| v.1).sum::<usize>();
-            let fewer = q.iter().all(|(k, v)| v.0 <= p.get(k).map_or(0, |x| x.0));
-            assert!(fewer && bytes(q) <= bytes(p) + 64, "node {i} {d}: rows by kind (count, bytes) {p:?} at n, {q:?} at 10n");
+            let compared = |k: &String| d == "engine" || !ATTRIBUTION.contains(&k.as_str());
+            let bytes = |c: &Census| c.iter().filter(|(k, _)| compared(k)).map(|(_, v)| v.1).sum::<usize>();
+            let fewer = q.iter().filter(|(k, _)| compared(k)).all(|(k, v)| v.0 <= p.get(k).map_or(0, |x| x.0));
+            let entries = q.get("E/").map_or(0, |e| e.0);
+            let bounded = q.iter().filter(|(k, _)| !compared(k)).all(|(_, v)| v.0 <= entries);
+            assert!(fewer && bounded && bytes(q) <= bytes(p) + 64, "node {i} {d}: rows by kind (count, bytes) {p:?} at n, {q:?} at 10n");
         }
         for (d, p, q) in [("engine", x.2[0], y.2[0]), ("store", x.2[1], y.2[1])] {
             assert!(q.0 <= p.0 && q.1 <= p.1 + 64, "node {i} {d} disk: blobs (count, bytes) {p:?} at n, {q:?} at 10n");
