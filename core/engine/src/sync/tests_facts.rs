@@ -111,3 +111,27 @@ fn a_blob_under_another_expiry_is_refused_spec_sync_ids_1() {
     assert!(framed(None).is_err(), "no expiry");
     assert!(framed(Some(expires)).is_ok(), "the commit's own");
 }
+
+// spec/sync-judgement.md §1 (Certificate blobs; spec/wire.md §4: a header-only copy has no
+// section): a blob of no section, a header alone, holds a header-only body whichever kind it was
+// noted as. Opening it again (a peer relaying it under another sync ID, where nothing in its
+// bytes says copy) leaves it the body, so the node logs no fresh encryption of it each time.
+#[test]
+fn a_header_alone_holds_a_header_only_body_of_either_kind_spec_sync_judgement_1() {
+    let (mut lp, _) = two_nodes();
+    let e = &mut lp.peers[0].engine;
+    let ids: Vec<osis_base::SyncId> = e.sync_set().unwrap().ids.keys().copied().collect();
+    let mut found = None;
+    for c in e.commit_ids() {
+        for s in &ids {
+            if e.sync_body(s, &c).unwrap().is_some_and(|m| m.header_only && m.copy) {
+                found = found.or(Some((*s, c)));
+            }
+        }
+    }
+    let (s, c) = found.expect("a header-only certificate body under a held sync ID");
+    for (b, copy) in [(7, true), (8, false)] {
+        let id = opened(&mut lp, 0, b, &c, &[], copy);
+        assert!(lp.peers[0].engine.holds_body(&s, &id).unwrap(), "a header alone noted as {}", if copy { "a copy" } else { "shared" });
+    }
+}

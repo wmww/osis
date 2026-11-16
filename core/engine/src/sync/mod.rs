@@ -80,6 +80,15 @@ pub struct BlobOf {
     pub ais: PartSet,
 }
 
+impl BlobOf {
+    /// Of the body kind `copy` (a per-sync-ID copy or the shared blob): a blob of no section, a
+    /// header alone, is of either, as its bytes tell neither (spec/wire.md §4: a header-only copy
+    /// has no section), so opening it again under another sync ID changes nothing it holds.
+    pub(crate) fn of_kind(&self, copy: bool) -> bool {
+        self.copy == copy || self.ais.is_empty()
+    }
+}
+
 /// A commitment group's delete keys (level, key), with the thing whose chain holds its level-1
 /// and level-3 secrets.
 pub(crate) type DeleteGroup = (Tid, Vec<(u8, [u8; 32])>);

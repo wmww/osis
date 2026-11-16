@@ -217,7 +217,7 @@ impl Engine {
     /// spec/sync-judgement.md §1 Per-sync-ID copies).
     fn carried_by(&self, c: &CommitId, copy: bool, x: &BlobId) -> Option<Arc<BlobOf>> {
         let p = self.core.ix.blob_parts.get(x)?;
-        (p.commit == *c && p.copy == copy && !self.blob_dropped(x)).then(|| p.clone())
+        (p.commit == *c && p.of_kind(copy) && !self.blob_dropped(x)).then(|| p.clone())
     }
 
     /// Whether blob `b` holds S's body of its commit (spec/sync-judgement.md §1): a blob of the
@@ -226,7 +226,7 @@ impl Engine {
     pub fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
         let Some(row) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(false) };
         let Some(meta) = self.sync_body_now(s, &row.commit)? else { return Ok(false) };
-        Ok(row.copy == meta.copy && meta.parts.iter().all(|ai| row.parts.contains(ai)))
+        Ok(row.of_kind(meta.copy) && meta.parts.iter().all(|ai| row.parts.contains(ai)))
     }
 
     /// spec/sync-judgement.md §2 must-not-hold: blob `b` of commit C, whose delta set is a strict
@@ -242,7 +242,7 @@ impl Engine {
         let Some(copy) = self.sync_body_now(s, &c)?.map(|m| m.copy) else { return Ok(false) };
         // a blob of the other kind holds no body of it here (a certificate copy beside the shared
         // blob carries parts S's readers cannot open there, whatever this node opens of it)
-        if mine.copy != copy {
+        if !mine.of_kind(copy) {
             return Ok(false);
         }
         let larger: Vec<Arc<BlobOf>> = held
