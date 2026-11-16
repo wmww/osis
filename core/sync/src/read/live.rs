@@ -728,7 +728,7 @@ impl Ground for Live<'_, '_> {
     }
     fn forget(&mut self, s: &SyncId) -> Result<()> {
         let things = self.things(s);
-        self.cx.store.shred(s)?;
+        self.cx.store.shred(s, false)?;
         for t in &things {
             if self.cx.engine.destruction(t).is_some() {
                 self.cx.engine.forget_destroyed(t)?;

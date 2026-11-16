@@ -1463,8 +1463,10 @@ impl Store {
     }
 
     /// Leaving S (spec/sync-set.md §3): every row of S goes, wraps and keys shredded, with S's
-    /// log events, its usage, and S in every peer record (the one transaction that stops it).
-    pub fn shred(&mut self, s: &SyncId) -> Result<()> {
+    /// log events, its usage, and S in every peer record (the one transaction that stops it);
+    /// with `keep_path`, its path stays, which takes nothing more (a close kept for a held ticket
+    /// naming S, spec/sync-judgement.md §6 Closes), its usage its steps' bytes.
+    pub fn shred(&mut self, s: &SyncId, keep_path: bool) -> Result<()> {
         let mut g = self.lock();
         let now = g.now;
         g.write(|t, env| {
@@ -1476,9 +1478,15 @@ impl Store {
                 let (_, b) = rows::tail_ids(&k)?;
                 entries::lift(t, env, s, &b)?;
             }
-            path::erase(t, env, s)?;
+            let kept = match keep_path {
+                true => Usage { bytes: path::bytes(t, s)?, ..Usage::default() },
+                false => {
+                    path::erase(t, env, s)?;
+                    Usage::default()
+                }
+            };
             let u = entries::usage(t, s)?;
-            entries::put_usage(t, env, s, u, Usage::default())?;
+            entries::put_usage(t, env, s, u, kept)?;
             t.log_forget(*s)?;
             // S's rows in every record go with its `changed_at` (spec/sync-opens.md §3)
             t.changed_forget(s)?;

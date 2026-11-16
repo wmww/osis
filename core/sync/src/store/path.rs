@@ -119,6 +119,16 @@ pub(crate) fn append(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, ste
     Ok(())
 }
 
+/// The bytes S's path rows take (its steps and claim sets).
+pub(crate) fn bytes(t: &mut Transaction<'_>, s: &SyncId) -> Result<u64> {
+    let mut n = 0;
+    for i in 0..len(t, s)? {
+        n += step_row(t, s, i)?.map_or(0, |r| r.step.len() as u64);
+        n += t.get_local(&rows::claims_key(s, i))?.map_or(0, |c| c.len() as u64);
+    }
+    Ok(n)
+}
+
 /// Drops S's path rows (its usage with them).
 pub(crate) fn erase(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId) -> Result<()> {
     let n = len(t, s)?;

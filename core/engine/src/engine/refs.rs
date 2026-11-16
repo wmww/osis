@@ -25,6 +25,9 @@ pub(crate) const FROM: &[u8] = b"node/refs from";
 /// target's tickets reads its rows alone (`tickets_to`), never the source's state, its other
 /// references or a signal's other fires.
 pub(crate) const TICKETS: &[u8] = b"node/refs tickets";
+/// Ticket rows by the sync IDs their tickets name: sync ID ‖ the row's `TICKETS` key, empty.
+/// Finding the tickets naming a sync ID (`naming_sync_id`) reads its rows alone.
+pub(crate) const TICKET_IDS: &[u8] = b"node/refs ticket ids";
 
 /// Whether `ak` is indexed: every aspect with a state, and every durable signal by its held
 /// valid fires (an ephemeral signal's fires are held by none).
@@ -97,6 +100,10 @@ fn ticket_rows(tx: &mut Tx<'_>, target: &Tid, source: &Tid, ak: &Ak) -> Result<V
 pub(crate) struct TicketCounts(pub BTreeMap<Ticket, u64>);
 
 impl TicketCounts {
+    /// The sync IDs its tickets name.
+    fn sync_ids(&self) -> std::collections::BTreeSet<osis_base::SyncId> {
+        self.0.keys().map(|k| k.sync_id).collect()
+    }
     /// How many tickets for the target it counts.
     pub(crate) fn count(&self) -> u64 {
         self.0.values().sum()
@@ -155,6 +162,20 @@ pub(crate) fn tickets_to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<TicketRow>
     Ok(out)
 }
 
+/// The targets of the ticket rows whose tickets name sync ID `s` (`TICKET_IDS`): O(those rows).
+pub(crate) fn naming_sync_id(tx: &mut Tx<'_>, s: &osis_base::SyncId) -> Result<std::collections::BTreeSet<Tid>> {
+    let ti = tx.txn.index(TICKET_IDS)?;
+    let pre = s.0.to_vec();
+    let end = [pre.as_slice(), &[0xff; 17]].concat();
+    let mut out = std::collections::BTreeSet::new();
+    scan_table(&mut tx.txn, ti, &pre, Some(&end), |k, _| {
+        let t = k.get(pre.len()..pre.len() + osis_base::format::TID_LEN).and_then(|b| b.try_into().ok()).ok_or(Error::Corrupt("ticket id row"))?;
+        out.insert(Tid::from_bytes(t));
+        Ok(())
+    })?;
+    Ok(out)
+}
+
 /// Applies the ticket changes of `d` (`Delta`'s tickets) to the ticket rows of `(source, ak)`
 /// (fire `fire` of a signal), telling the node closure of a row appearing or going
 /// (`Closure::note_ticket`).
@@ -167,11 +188,12 @@ fn note_tickets(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitId>,
         return Ok(());
     }
     tx.in_class(ak.ephemeral(), |tx| {
-        let tk = tx.txn.index(TICKETS)?;
+        let (tk, ti) = (tx.txn.index(TICKETS)?, tx.txn.index(TICKET_IDS)?);
         for (target, moved) in by_target {
             let key = ticket_key(&target, source, ak, fire);
             let mut row = tx.txn.table_get(tk, &key)?.map(|v| TicketCounts::decode(&v)).transpose()?.unwrap_or_default();
             let was = row.0.is_empty();
+            let ids_was = row.sync_ids();
             for (k, n) in moved {
                 let new = u64::try_from(row.0.get(k).copied().unwrap_or(0) as i64 + n).map_err(|_| Error::Corrupt("ticket count below zero"))?;
                 match new {
@@ -183,6 +205,13 @@ fn note_tickets(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitId>,
                 tx.txn.table_remove(tk, &key, Shred::Yes)?;
             } else {
                 tx.txn.table_put(tk, &key, row.encode(), Shred::No)?;
+            }
+            let ids = row.sync_ids();
+            for s in ids_was.difference(&ids) {
+                tx.txn.table_remove(ti, &[s.0.as_slice(), &key].concat(), Shred::Yes)?;
+            }
+            for s in ids.difference(&ids_was) {
+                tx.txn.table_put(ti, &[s.0.as_slice(), &key].concat(), Vec::new(), Shred::No)?;
             }
             if was != row.0.is_empty() {
                 tx.core.ix.closure.rejudge(target);

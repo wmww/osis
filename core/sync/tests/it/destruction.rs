@@ -94,31 +94,31 @@ fn a_write_after_the_destruction_counts_nowhere_spec_commits_5() {
 }
 
 // spec/commits.md §5 (Destruction: once no request is in force and nothing needs it, it keeps
-// nothing, and every entry under its own sync IDs is must-not-hold), spec/sync-judgement.md §5
-// (Emptying: but the destroying requests, which leave at their expiry): past a purge's window
-// (`ROLE_KEEP`), S keeps only the request's entries at node 0's, node 2's and node 1's stores
-// (node 1 keeps S unread; record blobs gone too, spec/sync-judgement.md §2). The purge has no
-// expiry: S stays with it, so a node away for the window learns of the destruction.
+// nothing, its requests included, and every entry under its own sync IDs is must-not-hold),
+// spec/sync-judgement.md §5 (Emptying: the requests leave as the node keeps them no more; the
+// closing step at a source keeping S unread), §6 Closes: past a purge's window (`ROLE_KEEP`; the
+// purge has no expiry), S keeps nothing at any node's store (record blobs too,
+// spec/sync-judgement.md §2), and node 1, which keeps S unread, is closed and lets t go.
 #[test]
-fn a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_judgement_5() {
+fn a_destroyed_things_sync_id_empties_past_its_window_spec_sync_judgement_5() {
     let (mut w, t, s) = three();
     let q = purge_thing(&mut w, 0, t);
     w.run();
+    let request = w.engine(0).commit_blobs(&q).unwrap();
+    assert!(w.store(1).entries(&s).unwrap().iter().any(|e| request.contains(&e.blob)), "node 1 keeps the request in its window");
     w.advance(ROLE_KEEP_MS + 60_000);
     w.run();
-    let request = w.engine(0).commit_blobs(&q).unwrap();
     for i in 0..3 {
-        let left: Vec<_> = w.store(i).entries(&s).unwrap().into_iter().filter(|e| !request.contains(&e.blob)).collect();
-        assert!(left.is_empty(), "node {i} holds {} entries under S but the request's", left.len());
+        assert!(w.store(i).entries(&s).unwrap().is_empty(), "node {i} holds entries under S");
     }
-    assert!(w.store(1).entries(&s).unwrap().iter().any(|e| request.contains(&e.blob)), "node 1 lost the request");
-    assert!(w.engine(0).destruction(&t).is_some_and(|d| d.requests == vec![q]), "the purge is a destroying request");
+    assert!(!w.engine(1).closure_holds(&t), "node 1 keeps t");
+    assert_eq!(w.store(1).synced(&s), None, "node 1 syncs S");
 }
 
 // spec/sync-judgement.md §6 Closes, spec/sync-set.md §2-§3: a closing step registered at node 1,
 // which keeps S unread (entered by its sync secret alone), takes t out of node 1's node closure
-// while node 1 holds the ticket naming S, read from the path its store keeps. A restart after
-// S stopped: issues/kept-unread-by-ticket.md.
+// while node 1 holds the ticket naming S, read from the path its store keeps, also across a
+// restart after S stopped.
 #[test]
 fn a_closing_head_takes_a_kept_thing_out_spec_sync_judgement_6() {
     let (mut w, t, s) = three();
@@ -131,4 +131,9 @@ fn a_closing_head_takes_a_kept_thing_out_spec_sync_judgement_6() {
     w.write(1, |_| ());
     w.run();
     assert!(!w.engine(1).closure_holds(&t), "closed: t left");
+    w.power_off(1);
+    w.power_on(1);
+    w.run();
+    assert!(!w.engine(1).closure_holds(&t), "closed: t taken back after a restart");
 }
+

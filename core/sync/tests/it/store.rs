@@ -1285,7 +1285,7 @@ fn shred_drops_everything_of_s_spec_sync_ids_5() {
     .unwrap();
     st.set_first_synced(&s.id).unwrap();
     assert!(st.first_synced(&s.id).unwrap());
-    st.shred(&s.id).unwrap();
+    st.shred(&s.id, false).unwrap();
     assert!(!st.first_synced(&s.id).unwrap(), "S's first sync goes with it (spec/sync-streams.md §5)");
     assert!(st.with_tx(|t| t.record_get_row(&rec, b'O', &s.id, b"k")).unwrap().is_none(), "S's rows in every record go");
     assert!(st.with_tx(|t| t.record_get_row(&rec, b'O', &other, b"k")).unwrap().is_some());
@@ -1328,7 +1328,7 @@ fn ops(st: &mut Store, s: &Sid, rec: RecordId, child: &(Step, ClaimSet), step: u
         }
         11 => st.take_register(&s.id, &child.0, Some(&child.1)).unwrap(),
         12 => code_of(st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 2_000)).unwrap()),
-        _ => code_of(st.shred(&s.id).is_ok()),
+        _ => code_of(st.shred(&s.id, false).is_ok()),
     };
     assert_eq!(code, Code::OK, "op {step}");
 }

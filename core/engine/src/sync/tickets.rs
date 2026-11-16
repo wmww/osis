@@ -164,6 +164,21 @@ impl Engine {
         Ok(all.pop().map(|(k, _)| k))
     }
 
+    /// Whether a held ticket names sync ID `s` (`held_in`, of the things whose ticket rows name
+    /// it): what keeps a closed kept-unread `s`'s path in the store (spec/sync-judgement.md §6
+    /// Closes). O(the ticket rows naming `s`).
+    pub fn ticket_names(&mut self, s: &SyncId) -> Result<bool> {
+        let s = *s;
+        self.read(|tx| {
+            for t in crate::engine::refs::naming_sync_id(tx, &s)? {
+                if held_in(tx, &t)?.iter().any(|k| k.sync_id == s) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+    }
+
     /// The sync secrets of kept-unread `s`'s things that the tickets held here naming `s` give,
     /// by epoch: every one of its things alike (spec/sync.md §3 Kept sync IDs).
     pub fn ticket_sync_secrets(&mut self, s: &SyncId) -> Vec<(Epoch, Secret32)> {

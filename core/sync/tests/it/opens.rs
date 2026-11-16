@@ -355,7 +355,7 @@ fn a_shred_drops_where_a_member_stopped_spec_sync_opens_3() {
     p.a.settle();
     p.run();
     assert!(!p.b.open(p.cb, &S));
-    p.b.store.shred(&S).unwrap();
+    p.b.store.shred(&S, false).unwrap();
     p.b.moved.clear();
     p.a.table.set(S, Some(c));
     p.a.settle();
