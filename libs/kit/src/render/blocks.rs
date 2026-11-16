@@ -12,7 +12,7 @@ use crate::masonry::widgets::{Flex, SizedBox, TextInput};
 use crate::theme::{Look, parse};
 use crate::widgets::style::{self, Text};
 use crate::view::keyed::Op;
-use crate::widgets::{Chip as KChip, ChipMark as KMark, Panel, PanelKind, Tile, TileGrid, TileIcon, TileStyle, Page, VirtualList, Wrap};
+use crate::widgets::{Chip as KChip, Panel, PanelKind, Tile, TileGrid, TileIcon, TileStyle, Page, VirtualList, Wrap};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -210,7 +210,7 @@ impl R<'_> {
             Block::Tabs(tabs) => {
                 let mut wrap = Wrap::new(look.clone());
                 for t in tabs {
-                    let w = NewWidget::new(KChip::new(&t.label, None, KMark::Icon(Icon::List), look.clone()).flat(!t.current));
+                    let w = NewWidget::new(KChip::new(&t.label, None, ChipMark::Icon(Icon::List), look.clone()).flat(!t.current));
                     self.press(w.id(), t.press.clone());
                     wrap = wrap.with_child(w);
                 }
@@ -297,11 +297,7 @@ impl R<'_> {
         let look = self.look.clone();
         let mut wrap = Wrap::new(look.clone());
         for m in chips {
-            let mark = match m.mark {
-                ChipMark::Dot => KMark::Dot,
-                ChipMark::Icon(i) => KMark::Icon(i),
-            };
-            let w = NewWidget::new(KChip::new(&m.label, tint(&m.color), mark, look.clone()).flat(m.flat).removable(m.remove.is_some()));
+            let w = NewWidget::new(KChip::new(&m.label, tint(&m.color), m.mark, look.clone()).flat(m.flat).removable(m.remove.is_some()));
             if let Some(d) = &m.press {
                 self.press(w.id(), d.clone());
             }
@@ -394,7 +390,7 @@ impl R<'_> {
                 day = day.with_child(w);
             }
             if d.more() > 0 {
-                let w = NewWidget::new(KChip::new(&format!("+{} more", d.more()), None, KMark::Icon(Icon::List), look.clone()).flat(true));
+                let w = NewWidget::new(KChip::new(&format!("+{} more", d.more()), None, ChipMark::Icon(Icon::List), look.clone()).flat(true));
                 self.press(w.id(), d.see_all().clone());
                 day = day.with_child(w);
             }
@@ -500,7 +496,7 @@ impl R<'_> {
             self.built.inputs.push(id);
             if i == last {
                 self.hook(id).enter = Some(c.send.clone());
-                let send = NewWidget::new(KChip::new("Send", None, KMark::Icon(Icon::Plus), look.clone()));
+                let send = NewWidget::new(KChip::new("Send", None, ChipMark::Icon(Icon::Plus), look.clone()));
                 self.press(send.id(), c.send.clone());
                 let row = Flex::row().with_gap(Length::px(look.sp(8.0))).with_flex_child(panel, 1.0).with_child(send);
                 col = col.with_child(NewWidget::new(row));

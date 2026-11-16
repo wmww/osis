@@ -1,12 +1,11 @@
 //! A borderless icon button (back, favorite, delete, ...): the icon on a faint hover fill;
 //! `on` fills the icon in the main colour (a set favorite). Emits `Press`.
 
-use super::Press;
+use super::{Press, key_press, primary, repaint_on};
 use crate::icons::Icon;
 use crate::theme::{Look, fade};
 use masonry::accesskit::{Node, Role};
-use masonry::core::keyboard::{Key, NamedKey};
-use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerButton, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget, WidgetMut};
+use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget};
 use masonry::kurbo::{Affine, RoundedRect, Size};
 use masonry::peniko::Fill;
 use masonry::vello::Scene;
@@ -28,13 +27,6 @@ impl IconButton {
         self.on = on;
         self
     }
-
-    pub fn set_on(this: &mut WidgetMut<'_, Self>, on: bool) {
-        if this.widget.on != on {
-            this.widget.on = on;
-            this.ctx.request_render();
-        }
-    }
 }
 
 impl Widget for IconButton {
@@ -42,8 +34,7 @@ impl Widget for IconButton {
 
     fn on_pointer_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &PointerEvent) {
         match event {
-            // a press is the primary button's: a secondary press (a touch's long press) is not
-            PointerEvent::Down(e) if matches!(e.button, None | Some(PointerButton::Primary)) => {
+            PointerEvent::Down(e) if primary(e) => {
                 ctx.capture_pointer();
                 ctx.request_paint_only();
             }
@@ -58,10 +49,7 @@ impl Widget for IconButton {
     }
 
     fn on_text_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &TextEvent) {
-        if let TextEvent::Keyboard(k) = event
-            && k.state.is_up()
-            && (matches!(&k.key, Key::Character(c) if c == " ") || k.key == Key::Named(NamedKey::Enter))
-        {
+        if key_press(event) {
             ctx.submit_action::<Press>(Press);
         }
     }
@@ -73,9 +61,7 @@ impl Widget for IconButton {
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
-        if matches!(event, Update::HoveredChanged(_) | Update::ActiveChanged(_) | Update::FocusChanged(_)) {
-            ctx.request_paint_only();
-        }
+        repaint_on(ctx, event);
     }
 
     fn register_children(&mut self, _ctx: &mut RegisterCtx<'_>) {}

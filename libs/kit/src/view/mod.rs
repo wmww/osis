@@ -105,7 +105,8 @@ pub enum Mark {
     Initials(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a chip shows before its label: a dot in its colour (a tag), or an icon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChipMark {
     Dot,
     Icon(Icon),

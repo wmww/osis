@@ -15,7 +15,8 @@ pub(crate) use vlist::LAID_OUT;
 mod wrap;
 
 pub use button::IconButton;
-pub use chip::{Chip, ChipMark, ChipPress};
+pub use crate::view::ChipMark;
+pub use chip::{Chip, ChipPress};
 pub use grid::TileGrid;
 pub use mark::Mark;
 pub use menu::{Menu, MenuItem, MenuPick};
@@ -29,6 +30,25 @@ pub use wrap::Wrap;
 /// What a pressed kit button or tile reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Press;
+
+/// A press begins with the primary button: a secondary press (a touch's long press) is none.
+pub(crate) fn primary(e: &masonry::core::PointerButtonEvent) -> bool {
+    matches!(e.button, None | Some(masonry::core::PointerButton::Primary))
+}
+
+/// Enter or Space released on a focused button: a press.
+pub(crate) fn key_press(event: &masonry::core::TextEvent) -> bool {
+    use masonry::core::keyboard::{Key, NamedKey};
+    matches!(event, masonry::core::TextEvent::Keyboard(k) if k.state.is_up() && (matches!(&k.key, Key::Character(c) if c == " ") || k.key == Key::Named(NamedKey::Enter)))
+}
+
+/// A pressable's look follows hover, press and focus.
+pub(crate) fn repaint_on(ctx: &mut masonry::core::UpdateCtx<'_>, event: &masonry::core::Update) {
+    use masonry::core::Update;
+    if matches!(event, Update::HoveredChanged(_) | Update::ActiveChanged(_) | Update::FocusChanged(_)) {
+        ctx.request_paint_only();
+    }
+}
 
 use crate::theme::{Card, Look};
 use masonry::kurbo::{Affine, Rect, RoundedRect, Shape, Size};

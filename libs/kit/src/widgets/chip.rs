@@ -3,12 +3,12 @@
 //! the theme's slant like other cards; a flat chip has no fill until hovered. A removable chip
 //! has a × at its end. Emits `ChipPress::Open` for a click on the chip, `Remove` on the ×.
 
-use crate::icons::Icon;
+use crate::view::ChipMark;
 use crate::text;
-use super::{brighten, fill_card, lean};
+use super::{brighten, fill_card, lean, primary, repaint_on};
 use crate::theme::{Card, Look, fade};
 use masonry::accesskit::{Node, Role};
-use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerButton, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget};
+use masonry::core::{AccessCtx, AccessEvent, BoxConstraints, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, PaintCtx, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx, Widget};
 use masonry::kurbo::{Affine, Circle, Line, Point, RoundedRect, Size, Stroke};
 use masonry::parley::Layout;
 use masonry::peniko::{Color, Fill};
@@ -19,15 +19,6 @@ use std::sync::Arc;
 pub enum ChipPress {
     Open,
     Remove,
-}
-
-/// What a chip shows before its label.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ChipMark {
-    /// A dot in the chip's colour (a tag).
-    Dot,
-    Icon(Icon),
-    None,
 }
 
 pub struct Chip {
@@ -61,12 +52,8 @@ impl Chip {
         self
     }
 
-    fn lead(&self) -> f64 {
-        match self.mark {
-            ChipMark::None => 11.0,
-            _ => 28.0,
-        }
-    }
+    /// Where the label starts, past the mark.
+    const LEAD: f64 = 28.0;
 }
 
 impl Widget for Chip {
@@ -74,8 +61,7 @@ impl Widget for Chip {
 
     fn on_pointer_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &PointerEvent) {
         match event {
-            // a press is the primary button's: a secondary press (a touch's long press) is not
-            PointerEvent::Down(e) if matches!(e.button, None | Some(PointerButton::Primary)) => {
+            PointerEvent::Down(e) if primary(e) => {
                 let x = ctx.local_position(e.state.position).x;
                 self.down_on_x = self.removable && x > ctx.size().width - X_W - 4.0;
                 ctx.capture_pointer();
@@ -93,7 +79,7 @@ impl Widget for Chip {
 
     fn on_text_event(&mut self, ctx: &mut EventCtx<'_>, _props: &mut PropertiesMut<'_>, event: &TextEvent) {
         use masonry::core::keyboard::{Key, NamedKey};
-        if let TextEvent::Keyboard(k) = event
+                if let TextEvent::Keyboard(k) = event
             && k.state.is_up()
         {
             match &k.key {
@@ -112,9 +98,7 @@ impl Widget for Chip {
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>, event: &Update) {
-        if matches!(event, Update::HoveredChanged(_) | Update::ActiveChanged(_) | Update::FocusChanged(_)) {
-            ctx.request_paint_only();
-        }
+        repaint_on(ctx, event);
     }
 
     fn register_children(&mut self, _ctx: &mut RegisterCtx<'_>) {}
@@ -123,7 +107,7 @@ impl Widget for Chip {
         let look = self.look.clone();
         let (fcx, lcx) = ctx.text_contexts();
         let l = text::layout(fcx, lcx, &look, &self.label, look.text_px(13.0), look.text_weight(), None);
-        let w = self.lead() + f64::from(l.width()) + if self.removable { X_W } else { 12.0 };
+        let w = Self::LEAD + f64::from(l.width()) + if self.removable { X_W } else { 12.0 };
         self.text = Some(l);
         bc.constrain(Size::new(w, H))
     }
@@ -152,11 +136,10 @@ impl Widget for Chip {
         match self.mark {
             ChipMark::Dot => scene.fill(Fill::NonZero, Affine::IDENTITY, tint, None, &Circle::new((15.0, mid), 4.0)),
             ChipMark::Icon(i) => i.paint(scene, (8.0, mid - 7.0), 14.0, if self.flat { muted } else { fg }, false),
-            ChipMark::None => {}
         }
         if let Some(l) = &self.text {
             let c = if self.flat { muted } else { fg };
-            text::draw(scene, l, Point::new(self.lead(), mid - f64::from(l.height()) / 2.0), c);
+            text::draw(scene, l, Point::new(Self::LEAD, mid - f64::from(l.height()) / 2.0), c);
         }
         if self.removable {
             let cx = size.width - X_W / 2.0 - 3.0;
