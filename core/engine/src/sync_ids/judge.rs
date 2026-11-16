@@ -7,7 +7,6 @@ use crate::engine::{Core, Engine};
 use crate::error::Result;
 use osis_base::{CreationRecord, Role, Tid};
 use osis_crypto::VerifyingKey;
-use osis_perm::At;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// J(L) for a connection's proven actors (spec/sync-opens.md §4).
