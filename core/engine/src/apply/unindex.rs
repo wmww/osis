@@ -78,8 +78,9 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
         }
         super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
         // a memory commit's aspect holds no durable one (ephemeral aspects): one row per aspect;
-        // an invalid part replaced nothing (`undo::parts_before` skips it), so it stands for none
-        if marks && m.valid_at(ai) && core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
+        // an invalid part replaced nothing (`undo::parts_before` skips it), so it stands for none;
+        // nor does a fire: a signal reads absent before and after any write (spec/commits.md §7)
+        if marks && m.valid_at(ai) && !a.ak.signal() && core.ix.forgotten.get(&k).is_none_or(|t| *t < v.ts) {
             if !v.memory {
                 tx.txn.put_local(&records::aspect_key(records::FORGOTTEN, &a.tid, &a.ak), &v.ts.to_u64().to_be_bytes(), Shred::No)?;
             }
@@ -140,6 +141,10 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     let keys: BTreeSet<Tid> = v.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).collect();
     super::keys::rebuild_keysets(tx, &keys)?;
     super::keys::refresh_own_keys(tx, &keys, false)?;
+    // a signal with no fire left held keeps no cursor (`retention::leaving`)
+    for a in m.header.aspects.iter().filter(|a| a.ak.signal()) {
+        crate::retention::leaving::unplaced(tx, &a.tid, &a.ak)?;
+    }
     tx.remove_commit(id)
 }
 

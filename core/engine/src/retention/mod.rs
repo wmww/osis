@@ -1356,8 +1356,10 @@ impl Engine {
 
     /// Whether commit `c` may be forgotten, ID included, once node-sync knows no entry of it
     /// (spec/commits.md §5, Forgetting): only where forgetting changes no read, every part of
-    /// it covered or dropped as invalid, nothing waiting. A content commit or content snapshot
-    /// every part of which dropped as covered (by any writer's cover) or as invalid, no purge
+    /// it covered, dropped as invalid or a fire dropped out of history, nothing waiting. A content
+    /// commit or content snapshot every part of which dropped as covered (by any writer's cover),
+    /// as invalid or as a fire out of history or expired (a stranger's open fires, each its own
+    /// commit, would leave a header for good), no purge
     /// request (else each write another writer compacts, and each snapshot under a later one,
     /// would leave a header for good: `growth::several_writers_grow_nothing`; and a writer,
     /// removed or not, could pile up invalid headers for good:
@@ -1377,7 +1379,9 @@ impl Engine {
             return Ok(false);
         }
         let covered = |ai: usize| m.dropped(ai).is_some_and(|d| d.why == DropFor::Cover);
-        let gone = |ai: usize| covered(ai) || m.dropped_invalid(ai);
+        // a fire out of history (or expired) is past every bound and listed nowhere
+        let spent = |ai: usize| m.header.aspects.get(ai).is_some_and(|a| a.ak.signal()) && m.dropped(ai).is_some_and(|d| d.why == DropFor::Other);
+        let gone = |ai: usize| covered(ai) || m.dropped_invalid(ai) || spent(ai);
         if matches!(m.view.kind, Kind::Content | Kind::ContentSnapshot) && !m.view.purges && (0..m.view.aspects.len()).all(gone) {
             return Ok(true);
         }

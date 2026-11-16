@@ -1,0 +1,3 @@
+# keel-stranger-bounds
+- `inbox::a_writer_promotes_a_deposit_spec_sync_inbox_4` fails on main (`history::introduce`: "0 redeems 1's card"), so every World test built on `introduce` is unusable; the stranger count and flood tests went to osis-engine's `LocalPeer` instead, with node-sync's forgetting done by hand (`forgettable` + `forget_commits`).
+- The brief assumed a mechanism dropping records and certificates of released things; none exists (`retention::forget` keeps certificate material on purpose; loose records only cover record blobs never learned). Checking this before briefing would have scoped item 2.

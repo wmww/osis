@@ -222,6 +222,15 @@ pub(crate) fn passed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     walk(tx, tid, ak, &k, now)
 }
 
+/// Signal `(tid, ak)` lost a fire: with none left held its cursor goes (every fire held later is
+/// placed afresh, `fire_held`), so a signal leaves no row once its fires are gone.
+pub(crate) fn unplaced(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    if !ak.signal() || places(tx.core, tid, ak).is_some_and(|s| !s.is_empty()) {
+        return Ok(());
+    }
+    set_from(tx, tid, ak, None)
+}
+
 /// The aspects whose timers are due by `now`, and when the first of the others is (`u64::MAX`:
 /// none).
 pub(crate) fn due(core: &Core, now: u64) -> (Vec<(Tid, Ak)>, u64) {

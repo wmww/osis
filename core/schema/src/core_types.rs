@@ -280,7 +280,8 @@ impl RetentionEntry {
 }
 
 codec_struct! {
-    /// A thing's `retention^.0` setting: an entry by AK, `default` for every AK with no entry;
+    /// A thing's `retention^.0` setting: an entry by AK, `default` for every AK with no entry but
+    /// an open signal's;
     /// `retain`: a removal from the thing retains a read-only copy unless its remover says
     /// otherwise.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -293,9 +294,10 @@ impl RetentionSetting {
         BTreeMap::from([(ak, RetentionEntry { history: Some(history), ..RetentionEntry::default() })]).into()
     }
 
-    /// The entry governing `ak`: its own, else the default.
+    /// The entry governing `ak`: its own, else the default; an open signal's own only, since anyone
+    /// may fire one (spec/commits.md §5 The setting).
     pub fn entry(&self, ak: &Ak) -> Option<&RetentionEntry> {
-        self.rules.get(ak).or(self.default.as_ref())
+        self.rules.get(ak).or(self.default.as_ref().filter(|_| !ak.open()))
     }
 }
 

@@ -412,9 +412,10 @@ impl Engine {
 impl Engine {
     /// Opens entry `b` (`bytes`) of thing `t`'s sync ID as a sealed fire (spec/sync-inbox.md §4
     /// A sealed fire): with the read secret of each keyset of `t` held, newest first; takes the
-    /// author's records and its chain's commits it carries as certificates (each kept only if
-    /// judged valid), then the commit, which holds one delta: a fire of an open signal of `t`
-    /// whose hash and prefix agree with its header. `NotOpen` when no held key opens it.
+    /// commit, which holds one delta: a fire of an open signal of `t` whose hash and prefix agree
+    /// with its header, with the author's records and its chain's commits it carries as
+    /// certificates, all or nothing: `Bad` unless the fire applies valid. `NotOpen` when no held
+    /// key opens it.
     pub(crate) fn open_sealed_fire(&mut self, t: &Tid, b: &osis_base::BlobId, bytes: &[u8]) -> Result<crate::sync::Opened> {
         use crate::sync::Opened;
         let mut found = None;
@@ -432,6 +433,7 @@ impl Engine {
             return Ok(Opened::Bad);
         }
         let ais: Vec<usize> = (0..h.aspects.len()).collect();
+        let removal: Vec<bool> = h.aspects.iter().map(|a| a.ak.as_str() == REMOVAL_FIRE).collect();
         let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
         if !prefix.agrees(osis_commit::prefix_expiry(h, &ais).map(osis_base::WallMs), &h.blind, &groups, osis_blob::Class::of_marker(h.ephemeral)) {
             return Ok(Opened::Bad);
@@ -441,27 +443,18 @@ impl Engine {
         {
             return Ok(Opened::Bad);
         }
-        // the author's chain to its actor: its records, then its chain commits, each kept only
-        // where valid (`ingest_valid`)
+        // the author's records and chain to its actor with the fire, kept only if the fire applies
+        // valid (`ingest_sealed_fire`)
         let records: Vec<osis_base::CreationRecord> = fire.records.into_iter().filter(|r| self.core.created(&r.tid()).is_none()).collect();
-        if !records.is_empty() {
-            self.learn_records(records)?;
-        }
-        for c in &fire.chain {
-            self.ingest_valid(&osis_base::encode(c))?;
-        }
+        let chain: Vec<Vec<u8>> = fire.chain.iter().map(osis_base::encode).collect();
         let id = commit.id();
-        let ingested = match self.ingest(&commit.encode(), Vec::new()) {
-            Ok(i) => i,
-            Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
-            Err(_) => return Ok(Opened::Bad),
-        };
+        let parts: Vec<usize> = commit.parts.iter().map(|p| p.ai).collect();
+        let Some(ingested) = self.ingest_sealed_fire(records, &chain, commit)? else { return Ok(Opened::Bad) };
         // a removal notice is acted on as it is taken
-        if commit.parts.iter().any(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == REMOVAL_FIRE)) {
+        if parts.iter().any(|ai| removal.get(*ai) == Some(&true)) {
             self.take_removal_notice(&id)?;
         }
-        let parts = commit.parts.iter().map(|p| p.ai).collect();
-        let row = crate::sync::BlobOf { commit: id, parts, sealed: Default::default(), copy: false, unchecked: false, salt: *prefix.salt(), ais: ais.into_iter().collect() };
+        let row = crate::sync::BlobOf { commit: id, parts: parts.into_iter().collect(), sealed: Default::default(), copy: false, unchecked: false, salt: *prefix.salt(), ais: ais.into_iter().collect() };
         let b = *b;
         self.run(|tx| crate::sync::bodies::note_blob(tx, &b, row))?;
         Ok(Opened::Commit(id, ingested))

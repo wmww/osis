@@ -1321,6 +1321,76 @@ impl Engine {
         self.ingest_kept(bytes, |core, id, ais, out| matches!(out, Ingested::Parked(_)) || (matches!(out, Ingested::Applied(_)) && !crate::sync_ids::judged_valid(core, id, ais)))
     }
 
+    /// A sealed fire's bundle taken whole or not at all (spec/sync-inbox.md §4 A sealed fire):
+    /// `records` and `chain` (its author's chain to its actor) then `fire`, in one transaction
+    /// kept only when the fire applies valid and no chain commit brought is parked or applies
+    /// invalid; else nothing of it is written (`None`), so a stranger's records and chain are
+    /// learned only with a fire that checks out. Decode errors of `fire` are the caller's.
+    pub(crate) fn ingest_sealed_fire(&mut self, records: Vec<CreationRecord>, chain: &[Vec<u8>], fire: CommitBlob) -> Result<Option<Ingested>> {
+        let mut blobs = Vec::new();
+        for c in chain {
+            match CommitBlob::decode(c) {
+                Ok(b) if b.header.ephemeral.is_none() => blobs.push(b),
+                _ => return Ok(None),
+            }
+        }
+        let ids: Vec<CommitId> = blobs.iter().map(|b| b.id()).chain([fire.id()]).collect();
+        let id = fire.id();
+        let ais: Vec<usize> = fire.parts.iter().map(|p| p.ai).collect();
+        let mut refused = false;
+        let mut applied = false;
+        let r = self.run(|tx| {
+            let mut n = 0;
+            for rec in records {
+                n += usize::from(atomic::learn_record(tx, rec)?);
+            }
+            if n > 0 {
+                tx.core.update_timelines();
+                atomic::rejudged(tx, true)?;
+            }
+            for b in blobs {
+                let (c, parts): (CommitId, Vec<usize>) = (b.id(), b.parts.iter().map(|p| p.ai).collect());
+                hold_rotation_lists(tx, &b, &[])?;
+                match ingest_blob(tx, b, Origin::Remote) {
+                    Ok(Ingested::Parked(_)) => refused = true,
+                    Ok(Ingested::Applied(_)) if !crate::sync_ids::judged_valid(tx.core, &c, &parts) => refused = true,
+                    Ok(Ingested::Applied(_)) => applied = true,
+                    Ok(_) => {}
+                    Err(e) if e.class() == ErrorClass::Local => return Err(e),
+                    Err(_) => refused = true,
+                }
+                if refused {
+                    return Err(Error::Misuse("refused"));
+                }
+            }
+            let out = match ingest_blob(tx, fire, Origin::Remote) {
+                Ok(o) => o,
+                Err(e) if e.class() == ErrorClass::Local => return Err(e),
+                Err(_) => Ingested::Parked(id),
+            };
+            if !matches!(out, Ingested::Applied(_) | Ingested::Duplicate(_)) || !crate::sync_ids::judged_valid(tx.core, &id, &ais) {
+                refused = true;
+                // rolled back
+                return Err(Error::Misuse("refused"));
+            }
+            applied |= matches!(out, Ingested::Applied(_));
+            for c in &ids {
+                crate::sync_ids::opened::persist(tx, c)?;
+            }
+            Ok(out)
+        });
+        for c in &ids {
+            self.openings_done(c);
+        }
+        if refused {
+            return Ok(None);
+        }
+        if r.is_ok() && applied {
+            self.reexamine()?;
+        }
+        r.map(Some)
+    }
+
     /// `ingest` of a commit nothing carries (a Prove's rotation, spec/sync-opens.md §2): one that
     /// would pend or park keeps nothing, as if never received (`None`); decided in the one
     /// transaction, so nothing of it is written.

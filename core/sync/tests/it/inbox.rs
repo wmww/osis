@@ -605,3 +605,31 @@ fn a_writer_promotes_a_deposit_spec_sync_inbox_4() {
     }
     assert_eq!(promotion(&mut w), Promotion::Yes, "the chain under S again");
 }
+
+// spec/sync-inbox.md §4 Clearing deposits: a stranger flooding an inbox with deposits nobody can
+// act on (junk, fires with no expiry or one far off, a blob past the byte bound) leaves at most
+// `DEPOSITS_WAITING` entries and `DEPOSITS_WAITING_BYTES` bytes, whatever the flood's size: those
+// with no expiry go first, then earliest to expire; under the bounds nothing goes.
+#[test]
+fn a_deposit_flood_leaves_the_bounds_spec_sync_inbox_4() {
+    use osis_base::format::{DEPOSITS_WAITING, DEPOSITS_WAITING_BYTES};
+    let blob_of = |i: usize| {
+        let mut b = [0u8; 32];
+        b[..8].copy_from_slice(&(i as u64).to_be_bytes());
+        BlobId(b)
+    };
+    let entry = |i: usize, expires: Option<u64>| Entry { blob: blob_of(i), wrap: [0; osis_crypto::WRAP_LEN], stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: expires.map(WallMs) };
+    let under: Vec<(Entry, u64)> = (0..DEPOSITS_WAITING).map(|i| (entry(i, None), 1)).collect();
+    assert!(osis_sync::inbox::to_clear(under).is_empty(), "under the bounds nothing goes");
+    for flood in [DEPOSITS_WAITING + 1, 10 * DEPOSITS_WAITING] {
+        // every third has no expiry; one blob alone past the byte bound, the first to expire
+        let mut idle: Vec<(Entry, u64)> = (0..flood).map(|i| (entry(i, (i % 3 != 0).then_some(T0 + i as u64)), 1_000)).collect();
+        idle.push((entry(flood, Some(T0)), DEPOSITS_WAITING_BYTES as u64 + 1));
+        let gone: BTreeSet<BlobId> = osis_sync::inbox::to_clear(idle.clone()).into_iter().collect();
+        let kept: Vec<&(Entry, u64)> = idle.iter().filter(|(e, _)| !gone.contains(&e.blob)).collect();
+        assert!(kept.len() <= DEPOSITS_WAITING, "{flood}: {} kept", kept.len());
+        assert!(kept.iter().map(|(_, n)| *n).sum::<u64>() <= DEPOSITS_WAITING_BYTES as u64, "{flood}: bytes kept");
+        let latest_gone = idle.iter().filter(|(e, _)| gone.contains(&e.blob)).filter_map(|(e, _)| e.expires).max();
+        assert!(kept.iter().all(|(e, _)| e.expires.is_some() && e.expires >= latest_gone), "{flood}: no expiry first, then earliest");
+    }
+}
