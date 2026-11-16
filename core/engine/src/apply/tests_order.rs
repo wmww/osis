@@ -93,27 +93,31 @@ struct Shape {
     tie: bool,
 }
 
-/// One history of `shape`, the rest random. Peer 0 (A) is first admin of G, gives peer 1 (B) write and
-/// peer 2 (C) admin; A creates two items under G in one commit, and maybe an item under the first
+/// One history of `shape`, the rest random. Peer 0 (A) is first admin of G, gives peer 1 (B) write,
+/// peer 2 (C) admin and peer 3 (D, which then receives nothing more) read; A creates two items under G in one commit, and maybe an item under the first
 /// (a grandchild of G) in that commit or the next; B writes on G or on one of them, the demoter receiving each at once or not
 /// before the demotion; the demoter removes B with a frontier as of `shape.at`; then the tail.
 /// Returns how many orders ran.
 fn sample(shape: Shape) -> usize {
     let mut rng = Rng(1); // xorshift needs a nonzero state
     let (mut lp, (g, base)) = LocalPeer::cached("apply::tests_order::sample", || {
-        let mut lp = LocalPeer::fresh(3, T0);
+        let mut lp = LocalPeer::fresh(4, T0);
         lp.sync_all().unwrap();
-        let (a, b, c) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+        let (a, b, c, d) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[3].engine.me());
         let mut m = Mutation::new();
         let g = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(g, &reg(), &Value::Str("g".into())).unwrap();
         lp.peers[0].commit(m).unwrap();
-        edge(&mut lp, 0, g, b, Some(Role::Write), None);
-        edge(&mut lp, 0, g, c, Some(Role::Admin), None);
+        lp.hold(g);
+        for (h, role) in [(b, Role::Write), (c, Role::Admin), (d, Role::Read)] {
+            lp.peers[0].engine.grant(&g, &h, &ct::Edge { role, until: None, invite: None, floor: None }).unwrap();
+        }
         lp.sync_all().unwrap();
         let base: Vec<CommitId> = lp.peers[0].engine.commit_ids();
         (lp, (g, base))
     });
+    // a node apart from A, B and C, a reader of G holding it, as of the base
+    let fresh = lp.peers.pop().unwrap();
     let b = lp.peers[1].engine.me();
     lp.advance(1_000);
     let mut m = Mutation::new();
@@ -186,11 +190,8 @@ fn sample(shape: Shape) -> usize {
     assert_eq!(want.1, 0, "A holds everything");
     assert_eq!(seen(&mut lp.peers[1], &ids, &things), want, "B judges as A");
     assert_eq!(seen(&mut lp.peers[2], &ids, &things), want, "C judges as A");
-    // a fresh node per order: copies of one, a node apart from A, B and C
-    let mut fresh = Peer::new(3, lp.peers[0].clock.now_wall_ms()).unwrap();
-    for pk in &base {
-        fresh.receive(&pk.bytes, pk.blobs.clone()).unwrap();
-    }
+    // a fresh node per order: copies of D as of the base
+    fresh.clock.set(lp.peers[0].clock.now_wall_ms());
     each_order(fresh, &rest, &mut Vec::new(), &mut |order, p| assert_eq!(seen(p, &ids, &things), want, "arrival order {order:?}"))
 }
 

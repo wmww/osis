@@ -693,6 +693,7 @@ mod tests {
         lp.peers[0].commit(m).unwrap();
         let read = Edge { role: Role::Read, until: None, invite: None, floor: None };
         for t in [t1, t2] {
+            lp.hold(t);
             lp.peers[0].engine.grant(&t, &v, &read).unwrap();
         }
         lp.sync_all().unwrap();

@@ -530,6 +530,19 @@ pub(crate) fn note_settings(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
 }
 
+/// A `retention^.0` part of commit `id` on `t` no longer held (dropped, forgotten, unindexed):
+/// a setting not held is in no timeline (spec/commits.md §5 In force).
+pub(crate) fn forget_setting(core: &mut Core, t: &Tid, id: &CommitId) {
+    let Some(mut settings) = core.ix.retention.get(t).cloned() else { return };
+    settings.retain(|x| x.0.commit != *id);
+    if settings.is_empty() {
+        core.ix.retention.remove(t);
+    } else {
+        core.ix.retention.insert(*t, settings);
+    }
+    core.settings_due.insert(*t);
+}
+
 /// Re-derives the edge writes of commits whose removed keys were unknown.
 pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
     let ids: Vec<CommitId> = tx.core.ix.unresolved.iter().copied().collect();

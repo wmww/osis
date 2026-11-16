@@ -30,6 +30,7 @@ fn build(n: usize, roles: &[Role]) -> (LocalPeer, Tid) {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &ak("x:a.0"), &Value::Int(0)).unwrap();
     lp.peers[0].commit(m).unwrap();
+    lp.hold(t);
     for (i, r) in roles.iter().enumerate() {
         let who = lp.peers[i + 1].engine.me();
         lp.peers[0].engine.grant(&t, &who, &edge(*r)).unwrap();
@@ -574,6 +575,7 @@ fn removed_writers_writes(seed: u64) -> (usize, bool) {
     let t = lp.peers[a].engine.new_thing(&mut m, alice);
     m.set(t, &ak("x:v.0"), &Value::Int(0)).unwrap();
     lp.peers[a].commit(m).unwrap();
+    lp.hold(t);
     for i in [b, c] {
         let who = lp.peers[i].engine.me();
         lp.peers[a].engine.grant(&t, &who, &edge(Role::Write)).unwrap();
@@ -679,6 +681,7 @@ fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
             let t = lp.peers[a].engine.new_thing(&mut m, alice);
             m.set(t, &ak("x:v.0"), &Value::Int(0)).unwrap();
             lp.peers[a].commit(m).unwrap();
+            lp.hold(t);
             let (bob, carol) = (lp.peers[b].engine.me(), lp.peers[c].engine.me());
             for who in [bob, carol] {
                 lp.peers[a].engine.grant(&t, &who, &edge(Role::Write)).unwrap();
@@ -738,18 +741,19 @@ fn a_compaction_around_a_write_at_its_removals_ts_reads_alike_spec_perm_5_2() {
 
 // spec/permissions.md §5.2 (Position; re-grant: security): Alice grants Bob write, and a write of
 // Bob's (forged: he did not hold write yet) carries the grant's very `ts`. Ordered before the
-// grant whatever the tids, it is invalid at every peer though Bob holds write for good; his next
+// grant whatever the tids, it is invalid at both though Bob holds write for good; his next
 // write, after the grant, stands.
 #[test]
 fn a_write_at_its_authors_grants_ts_is_before_the_grant_spec_perm_5_2() {
     for [a, b] in [[0, 1], [1, 0]] {
-        let mut lp = LocalPeer::fresh(3, T0);
+        let mut lp = LocalPeer::fresh(2, T0);
         lp.sync_all().unwrap();
         let alice = lp.peers[a].engine.me();
         let mut m = Mutation::new();
         let t = lp.peers[a].engine.new_thing(&mut m, alice);
         m.set(t, &ak("x:v.0"), &Value::Int(0)).unwrap();
         lp.peers[a].commit(m).unwrap();
+        lp.hold(t);
         let bob = lp.peers[b].engine.me();
         lp.peers[a].engine.grant(&t, &bob, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
@@ -765,13 +769,13 @@ fn a_write_at_its_authors_grants_ts_is_before_the_grant_spec_perm_5_2() {
         assert_eq!(lp.peers[b].engine.header(&w).unwrap().ts, lp.peers[a].engine.header(&g).unwrap().ts, "{at}: the tie");
         lp.advance(1);
         lp.sync_all().unwrap();
-        for p in 0..3 {
+        for p in 0..2 {
             assert!(!valid(&lp, p, &w, t, "x:v.0"), "{at}: peer {p}: the write at the grant's ts");
             assert_eq!(reads(&mut lp, p, t, "x:v.0"), Some(Value::Int(0)), "{at}: peer {p}");
         }
         let later = write(&mut lp, b, t, "x:v.0", 6);
         lp.sync_all().unwrap();
-        for p in 0..3 {
+        for p in 0..2 {
             assert!(valid(&lp, p, &later, t, "x:v.0"), "{at}: peer {p}: the write after the grant");
         }
     }
@@ -791,6 +795,7 @@ fn an_addendum_at_its_authors_removals_ts_counts_when_vouched_for_spec_perm_5_2(
         let t = lp.peers[a].engine.new_thing(&mut m, alice);
         m.set(t, &ak("x:a.0"), &Value::Int(0)).unwrap();
         lp.peers[a].commit(m).unwrap();
+        lp.hold(t);
         let (bob, carol) = (lp.peers[b].engine.me(), lp.peers[c].engine.me());
         for i in [b, c, d] {
             let who = lp.peers[i].engine.me();

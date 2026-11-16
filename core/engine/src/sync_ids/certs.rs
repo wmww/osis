@@ -681,8 +681,11 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &ak, &Value::Int(1)).unwrap();
         let good = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.hold(t);
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
+        let c = lp.peers[2].engine.me();
+        lp.peers[0].engine.grant(&t, &c, &edge).unwrap();
         lp.sync_all().unwrap();
         lp.advance(60_000);
         let mut m = Mutation::new();

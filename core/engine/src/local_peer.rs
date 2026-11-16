@@ -9,7 +9,7 @@ use crate::engine::{Config, Engine, ReadPoint};
 use crate::error::Result;
 use crate::events::Event;
 use crate::{Ingested, Mutation};
-use osis_base::{BlobId, Classified, Clock, CommitId, Link, ManualClock, WallMs};
+use osis_base::{BlobId, Classified, Clock, CommitId, Link, ManualClock, Tid, WallMs};
 use osis_commit::CommitBlob;
 use osis_crypto::SeededRng;
 use osis_store::{MemoryBackend, MemoryRoot};
@@ -451,6 +451,23 @@ impl LocalPeer {
     #[allow(clippy::panic)] // test harness: a copy that fails fails the test
     pub fn cached<T: Clone + Send + 'static>(key: &str, build: impl FnOnce() -> (LocalPeer, T)) -> (LocalPeer, T) {
         osis_base::copying::cached(key, build, |(lp, t)| (lp.copy().unwrap_or_else(|e| panic!("copy of {key}: {e}")), t.clone()))
+    }
+
+    /// Every peer not holding `t` holds it from its node root (`hold_at`).
+    pub fn hold(&mut self, t: Tid) {
+        for i in 0..self.peers.len() {
+            self.hold_at(i, t);
+        }
+    }
+
+    /// Peer `i` holds `t` from its node root (`Engine::hold`) unless its node closure does: a
+    /// node keeps what it receives only while something it holds needs it, so a peer a test
+    /// shares a thing with holds it, as a real node takes only what it holds.
+    #[allow(clippy::panic)] // test harness: a hold that fails fails the test
+    pub fn hold_at(&mut self, i: usize, t: Tid) {
+        if let Some(p) = self.peers.get_mut(i).filter(|p| !p.engine.closure_holds(&t)) {
+            p.engine.hold(osis_base::Strong(t)).unwrap_or_else(|e| panic!("hold {t:?}: {e}"));
+        }
     }
 
     pub fn peer(&mut self, i: usize) -> Option<&mut Peer> {

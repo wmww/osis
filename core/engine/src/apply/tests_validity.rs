@@ -229,7 +229,7 @@ mod tests {
     fn invite_grant_turned_audited_any_order_spec_perm_5_1() {
         let mut lp = LocalPeer::fresh(5, WallMs(1_700_000_000_000));
         lp.sync_all().unwrap();
-        // 0 admin, 1 invite holder, 2 holder, 3 and 4 receivers
+        // 0 admin, 1 invite holder, 2 holder, 3 and 4 readers receiving
         let (a, b, h) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
         let ak = osis_base::Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
@@ -239,6 +239,11 @@ mod tests {
         let read = ct::Edge { role: Role::Read, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
         lp.peers[0].engine.grant(&t, &h, &ct::Edge { role: Role::Write, ..read.clone() }).unwrap();
+        for r in [3, 4] {
+            let who = lp.peers[r].engine.me();
+            lp.peers[0].engine.grant(&t, &who, &read).unwrap();
+        }
+        lp.hold(t);
         lp.sync_all().unwrap();
         // the holder writes (no one hears yet), then gives its edge up
         lp.advance(1000);

@@ -3,7 +3,7 @@
 //! §5.4-§5.5, spec/crypto.md §9; notes/engine-validity-epochs.md): real engines play the model's
 //! custody worlds, the model judging the same commits. Peers are the model's parties: A, B, C,
 //! X and T account P's nodes, R1 and R2 readers with accounts of their own (R1 a writer of P's
-//! thing t, so t keeps epochs of its own), Z a bare peer whose keys X uses as a key actor it made
+//! thing t, so t keeps epochs of its own, R2 a reader of it; both hold it), Z a bare peer whose keys X uses as a key actor it made
 //! up. P's plain thing u carries the writes the model makes at P epochs.
 //!
 //! Every commit an engine makes that the model knows becomes an item of a mirror
@@ -56,7 +56,8 @@ struct Ids {
 }
 
 /// Peers 0..8 as the model's parties: P created on A with B, C, X and T paired; R1 and R2
-/// accounts of their own; Z bare. A makes thing u and thing t, and grants R1 write on t.
+/// accounts of their own; Z bare. A makes thing u and thing t, and grants R1 write and R2 read on
+/// t, which both hold.
 fn setup() -> (LocalPeer, Ids) {
     LocalPeer::cached("rotation::tests_custody::setup", || {
         let mut lp = LocalPeer::new_bare(N, 0, WallMs(1_700_000_000_000)).unwrap();
@@ -86,6 +87,10 @@ fn setup() -> (LocalPeer, Ids) {
         lp.peers[A].commit(m).unwrap();
         let o = lp.peers[R1].engine.me();
         lp.peers[A].engine.grant(&t, &o, &super::tests::edge(Role::Write)).unwrap();
+        let r = lp.peers[R2].engine.me();
+        lp.peers[A].engine.grant(&t, &r, &super::tests::edge(Role::Read)).unwrap();
+        lp.hold_at(R1, t);
+        lp.hold_at(R2, t);
         lp.sync_all().unwrap();
         lp.advance(1000);
         (lp, Ids { p: a.account, d: a.devices, t, u })

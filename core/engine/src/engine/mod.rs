@@ -4044,9 +4044,8 @@ mod tests {
     use crate::local_peer::{LocalPeer, Peer};
     use crate::Mutation;
     use osis_base::{Ak, Role, Tid, Value, WallMs};
-    use osis_crdt::{Op, PathOp, PathSeg};
     use osis_schema::core_types as ct;
-    use osis_schema::Codec;
+    use std::collections::BTreeSet;
 
     // spec/commits.md §5 (Dropping a body): what each part state answers. One state per part, so
     // no part is both held and dropped or missing, and only a held one is a whole replace.
@@ -4109,18 +4108,8 @@ mod tests {
         }
     }
 
-    fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
-        let (path, op) = match role {
-            Some(role) => (vec![PathSeg::Key(Value::Weak(m))], Op::Set(ct::Edge { role, until: None, invite: None, floor: None }.to_value())),
-            None => (Vec::new(), Op::Remove(Value::Weak(m))),
-        };
-        let mut mu = Mutation::new();
-        mu.op(t, &ct::ROLES, PathOp { path, op }).unwrap();
-        // an explicit removal: with no frontier it would be a finalize (spec/permissions.md §2)
-        if role.is_none() {
-            mu.frontier(ct::Frontier::default().to_value());
-        }
-        mu
+    fn edge(role: Role) -> ct::Edge {
+        ct::Edge { role, until: None, invite: None, floor: None }
     }
 
     fn write(m: &mut Mutation, t: Tid, v: &str) {
@@ -4162,8 +4151,9 @@ mod tests {
             e.commit(m).map(|_| t)
         };
         let g = failing(&mut lp.peers[0], &mut failed, |e| new_thing(e, a));
-        failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, b, Some(Role::Write))));
-        failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, c, Some(Role::Admin))));
+        lp.hold(g);
+        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &b, &edge(Role::Write)));
+        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &c, &edge(Role::Admin)));
         lp.sync(0, 1).unwrap();
         lp.advance(1_000);
         failing(&mut lp.peers[1], &mut failed, |e| {
@@ -4174,7 +4164,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         lp.advance(1_000);
         failing(&mut lp.peers[0], &mut failed, |e| new_thing(e, g));
-        failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, b, None)));
+        failing(&mut lp.peers[0], &mut failed, |e| e.demote(&g, &crate::flows::Demotion { holder: b, new: None, retain: None }));
         // received in reverse: most wait for what they depend on, then apply together
         let mut pks = lp.packages(0).unwrap();
         pks.retain(|p| !lp.peers[2].engine.core.ix.commits.contains_key(&p.id));
@@ -4187,9 +4177,12 @@ mod tests {
             failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&pk.bytes, pk.blobs.clone()));
         }
         assert!(failed >= 6 + pks.len() / 2, "{failed} of {} failed", 6 + pks.len());
-        // every commit applied; beside them only peer 2's own (its addendum to the removal)
-        let received = lp.peers[2].engine.core.ix.commits.values().filter(|m| m.view.author != c || m.view.aspects.iter().all(|a| a.ak.as_str() != "addenda.0")).count();
-        assert_eq!(received, lp.peers[0].engine.core.ix.commits.len());
+        lp.sync(0, 2).unwrap();
+        // every commit applied (what waited came again, then as node-sync fetches what it lacks);
+        // beside them only peer 2's own (its hold of g, its addendum to the removal)
+        let own = [c, lp.peers[2].engine.tid()];
+        let others = |p: &Peer| p.engine.core.ix.commits.iter().filter(|(_, m)| !own.contains(&m.view.author)).map(|(id, _)| *id).collect::<BTreeSet<_>>();
+        assert_eq!(others(&lp.peers[2]), others(&lp.peers[0]));
         assert!(lp.peers[2].engine.core.ix.pending.is_empty());
     }
 
@@ -4212,8 +4205,12 @@ mod tests {
             m.set(t, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(kept.clone(), osis_schema::History::PurgeOnReplace)).unwrap();
             e.commit(m).map(|_| t)
         });
-        failing(&mut lp.peers[0], &mut failed, |e| e.commit(holder(g, b, Some(Role::Write))));
+        lp.hold(g);
+        let c = lp.peers[2].engine.me();
+        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &b, &edge(Role::Write)));
+        failing(&mut lp.peers[0], &mut failed, |e| e.grant(&g, &c, &edge(Role::Read)));
         lp.sync(0, 1).unwrap();
+        lp.sync(0, 2).unwrap();
         lp.advance(10);
         // an older write by 1, delivered last
         let mut m = Mutation::new();

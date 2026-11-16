@@ -61,6 +61,7 @@ fn world(n: usize, nodes: usize) -> (LocalPeer, CreatedAccount, Tid) {
         if nodes < n {
             let o = lp.peers[nodes].engine.me();
             lp.peers[0].engine.grant(&t, &o, &edge(Role::Write)).unwrap();
+            lp.hold_at(nodes, t);
         }
         lp.sync_all().unwrap();
         lp.advance(1000);
@@ -359,6 +360,7 @@ fn a_writers_addendum_keeps_what_it_received_spec_permissions_5_5() {
     let (mut lp, a, t) = world(4, 2);
     let o = lp.peers[3].engine.me();
     lp.peers[0].engine.grant(&t, &o, &edge(Role::Read)).unwrap();
+    lp.hold_at(3, t);
     lp.sync_all().unwrap();
     // the soon removed node's write reaches the outside writer (peer 2), not the rotator
     let w = write(&mut lp, 1, t, "seen outside");

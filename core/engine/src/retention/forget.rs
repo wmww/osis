@@ -184,6 +184,9 @@ fn unreceive(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, rest: Option
         if osis_schema::core_types::is_addenda(a.ak.as_str()) {
             crate::apply::validity::forget_addendum_body(tx.core, id, &a.tid);
         }
+        if a.ak.as_str() == osis_commit::retention::RETENTION {
+            crate::apply::validity::forget_setting(tx.core, &a.tid, id);
+        }
         // its validity stands: it reads the author's roles, not the body
         tx.core.touch();
         m.set_hold(ai, crate::engine::Hold::Missing(crate::engine::Missing::Plain));

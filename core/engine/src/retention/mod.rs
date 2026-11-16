@@ -241,16 +241,8 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // its keep-at-least bound, judged while it is held: peers delete it `MAX_DRIFT` past
     let keep = if why == DropFor::Cover { bounds::part_keep(tx, c, &a.tid, &a.ak)? } else { 0 };
     let hosts_from = if keep == 0 { 0 } else { keep.saturating_add(osis_base::format::MAX_DRIFT_MS) };
-    // a setting not held is in no timeline (spec/commits.md §5 In force)
     if a.ak.as_str() == osis_commit::retention::RETENTION {
-        let mut settings = tx.core.ix.retention.get(&a.tid).cloned().unwrap_or_default();
-        settings.retain(|x| x.0.commit != *c);
-        if settings.is_empty() {
-            tx.core.ix.retention.remove(&a.tid);
-        } else {
-            tx.core.ix.retention.insert(a.tid, settings);
-        }
-        tx.core.settings_due.insert(a.tid);
+        crate::apply::validity::forget_setting(tx.core, &a.tid, c);
     }
     let k = (a.tid, a.ak.clone());
     // a stripped part's body is its leftover: read below as the held body, forgotten after
@@ -1699,11 +1691,11 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::Keep { until: None, after: Some(3_600_000) })).unwrap();
         lp.peers[0].commit(m).unwrap();
-        for w in [1, 2] {
+        lp.hold(t);
+        lp.sync_all().unwrap();
+        for (w, role) in [(1, Role::Write), (2, Role::Write), (3, Role::Read)] {
             let w = lp.peers[w].engine.me();
-            let mut m = Mutation::new();
-            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, floor: None }.to_value()) }).unwrap();
-            lp.peers[0].commit(m).unwrap();
+            lp.peers[0].engine.grant(&t, &w, &ct::Edge { role, until: None, invite: None, floor: None }).unwrap();
         }
         lp.sync_all().unwrap();
         let check = |lp: &mut LocalPeer, what: &str| {
@@ -1815,19 +1807,19 @@ mod tests {
         let end = |keys_first: bool| {
             let mut lp = LocalPeer::fresh(3, WallMs(1_700_000_000_000));
             lp.sync_all().unwrap();
-            let (alice, bob, carol) = (lp.peers[0].engine.plain_admin(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
+            let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
             let x = Ak::new("x:v.0").unwrap();
             let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
             let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
-            // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
+            // bob writes `t` by his write on its first admin `g`, which holds it: `t` keeps g's
+            // secrets
             let mut m = Mutation::new();
-            let t = lp.peers[0].engine.new_thing(&mut m, alice);
-            // made and held, then its raw edge (a role commit)
+            let g = lp.peers[0].engine.new_thing(&mut m, alice);
             lp.peers[0].commit(m).unwrap();
+            lp.hold(g);
+            lp.peers[0].engine.grant(&g, &bob, &edge(Role::Write)).unwrap();
             let mut m = Mutation::new();
-            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(bob))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
-            lp.peers[0].commit(m).unwrap();
-            let mut m = Mutation::new();
+            let t = lp.peers[0].engine.new_thing(&mut m, g);
             m.set(t, &ct::RETENTION, &ct::RetentionSetting::of(x.clone(), osis_schema::History::PurgeOnReplace)).unwrap();
             lp.peers[0].commit(m).unwrap();
             lp.sync(0, 1).unwrap();
@@ -2031,6 +2023,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &other, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         let write = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &x, &ct::Edge { role: Role::Admin, ..write.clone() }).unwrap();
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
@@ -2089,6 +2082,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &other, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         let write = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &x, &ct::Edge { role: Role::Admin, ..write.clone() }).unwrap();
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
@@ -2150,6 +2144,7 @@ mod tests {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
+        lp.hold(t);
         let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Read)).unwrap();
@@ -2495,6 +2490,7 @@ mod tests {
         let a = lp.peers[0].engine.me();
         let r = lp.peers[1].engine.me();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
+        lp.hold(t);
         let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
         let r2 = lp.peers[2].engine.me();

@@ -160,6 +160,7 @@ pub(super) fn with_own_keys(lp: &mut LocalPeer, i: usize) -> Tid {
     let g = lp.peers[i].engine.new_thing(&mut m, me);
     lp.peers[i].commit(m).unwrap();
     lp.peers[i].engine.give_own_secrets(&g).unwrap();
+    lp.hold(g);
     g
 }
 
