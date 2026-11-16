@@ -186,7 +186,7 @@ pub struct Unchecked {
 pub const UNKNOWN_AUTHOR: Tid = Tid::from_bytes([0; 15]);
 
 /// Most epochs held through reading-only secrets per role of one actor, and per author node
-/// (local policy: each costs a KEM or DH per open, claim and inbox blob, since wraps name no
+/// (local policy: each costs a KEM or DH per open, claim and sealed fire, since wraps name no
 /// epoch).
 pub const MAX_READING: usize = 256;
 pub const MAX_READING_PER_AUTHOR: usize = 64;

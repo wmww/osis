@@ -304,6 +304,13 @@ impl Core {
         }
     }
 
+    /// Whether the node holds an established read secret of `y`: until then a held ticket's
+    /// secret is taken at each strong reaching it, since a secret held but not established may be
+    /// anyone's (a ticket's epoch is its maker's to choose) and must not keep an honest one out.
+    pub(crate) fn reads_established(&self, y: &Tid) -> bool {
+        self.epochs(y).is_some_and(|e| e.role(Role::Read).held_established().next().is_some())
+    }
+
     /// How the walk enters thing `y` with own keys at a strong from a context that does not
     /// follow it (spec/sync-set.md §2): read where the node holds a read secret of it, kept
     /// unread where it holds a sync secret only, else not at all.
@@ -393,7 +400,7 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
         let tickets: Vec<Tid> = tx.core.ix.closure.tickets.iter().copied().collect();
         for y in tickets {
             tx.core.ix.closure.tickets.remove(&y);
-            if tx.core.enter(&y).is_some() || !tx.core.has_own_secrets(&y) {
+            if tx.core.reads_established(&y) {
                 continue;
             }
             let from: Vec<Tid> = crate::engine::refs::to(tx, &y)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong).map(|r| r.source).collect();
@@ -444,7 +451,7 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     // a thing with own keys the secrets held do not enter: entered by a held ticket for it the
     // node can open, its secret taken now the strong reaches it (spec/sync-set.md §2,
     // spec/sync-inbox.md §5 Nothing before the strong)
-    if !tx.core.is_key_actor(&y) && tx.core.enter(&y).is_none() && !tx.core.keys_open_from(v.0, &y) {
+    if !tx.core.is_key_actor(&y) && !tx.core.reads_established(&y) && !tx.core.keys_open_from(v.0, &y) {
         super::tickets::take_in(tx, &y)?;
     }
     let core = &*tx.core;

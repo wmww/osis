@@ -281,7 +281,7 @@ impl Follow {
     /// the engine's parking place): empty when a new read secret, opening the parked entries
     /// alone, opens what opening every entry would. An entry that never opened to a commit is
     /// parked by the feed or S's start and unparked only by `open_parked`, as it opens to
-    /// something no later read secret changes (records taken, bad bytes, a linked or inbox blob).
+    /// something no later read secret changes (records taken, bad bytes, a linked blob).
     pub fn lost_parks(&self, engine: &mut Engine, store: &Store) -> Result<Vec<(SyncId, BlobId)>> {
         let mut parked = self.parked.clone();
         // entries the feed has not yet given (a clone of the cursor reads on alone)

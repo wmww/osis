@@ -318,6 +318,14 @@ impl Engine {
     /// thing's public key record is not held.
     pub fn sealed_fire(&mut self, id: &FireId) -> Result<Option<SealedFireOut>> {
         let Some(o) = self.core.ix.fires.get(id).cloned() else { return Ok(None) };
+        // a stranded notice past its expiry is owed no more: no receiver would keep it
+        if let Fire::Expiring(_, t) = &o.what
+            && self.now().0 >= *t
+        {
+            let id = *id;
+            self.run(|tx| drop_fire(tx, &id))?;
+            return Ok(None);
+        }
         let Some((epoch, kem, sync_id)) = self.fire_keys(&o.thing)? else { return Ok(None) };
         let blob = match &o.commit {
             Some(b) => osis_commit::CommitBlob::decode(b)?,
@@ -493,7 +501,9 @@ pub(crate) fn write_account_ticket(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Co
     let Some(r) = account_ticket_due(tx, t)? else { return Ok(None) };
     let Some((p, d)) = tx.core.account_devices() else { return Ok(None) };
     let Some(k) = make_ticket(tx, *t, r, p)? else { return Ok(None) };
-    let old: Vec<Ticket> = account_tickets(tx, &d)?.into_iter().filter(|x| x.target == *t && x.role == r).collect();
+    // older epochs only: a sibling's ticket at a newer epoch, or at a concurrent one of the same
+    // n (a fork's other side), stays, so two nodes never undo each other
+    let old: Vec<Ticket> = account_tickets(tx, &d)?.into_iter().filter(|x| x.target == *t && x.role == r && x.epoch.0 < k.epoch.0).collect();
     let mut m = Mutation::new();
     for o in old {
         m.op(d, &ct::TICKETS, PathOp { path: vec![], op: Op::Remove(Value::Ticket(Box::new(o))) })?;

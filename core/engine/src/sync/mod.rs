@@ -33,6 +33,8 @@ pub use stranded::Stranding;
 pub use crate::flows::inbox::{FireId, SealedFireOut};
 #[cfg(test)]
 mod tests_facts;
+#[cfg(test)]
+mod tests_tickets;
 
 pub use osis_blob::DialHint;
 
