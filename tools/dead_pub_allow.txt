@@ -35,7 +35,6 @@ osis-transport::set_max_steps  test hook: scheduler step cap
 osis-engine::body_min_ts  deferred: durable-compaction/chunk-blind (retention/bounds.rs)
 
 osis-engine::drop_lost_secrets  test hook: engine tests drop every lost actor at once (an app driving the engine alone); sync drops per actor (`removal_done`, `drop_lost_due`)
-osis-engine::carried_dots  test hook (tests/it): a write held only through a snapshot (notes/engine-validity.md)
 osis-engine::compact_memory_now  test hook: compaction tests run the ephemeral trigger now
 osis-engine::compaction_load  test hook: compaction tests read each aspect's load
 osis-engine::counts_at_epoch  deferred: no caller since the sync rebuild; flows/account.rs is Fathom's
