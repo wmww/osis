@@ -70,8 +70,17 @@ impl Engine {
                     }
                 }
             }
-            // refgraph: (c) its ticket's issuer, by the issuer's profile dial list
             Holding::Unread => {}
+        }
+        // the issuer of each ticket for S's thing held here, by its profile's dial list where
+        // the profile is held (spec/sync-opens.md §1: a ticket carries no address)
+        let profiles: BTreeSet<Tid> = self.held_tickets(&t)?.into_iter().map(|k| k.profile).collect();
+        for p in profiles {
+            for (k, urls) in self.get_typed(&p, &ct::DIAL)?.unwrap_or_default() {
+                if let Some(x) = address(&k, &urls) {
+                    out.entry(x.key).or_insert(x);
+                }
+            }
         }
         Ok(Arc::new(out.into_values().collect()))
     }

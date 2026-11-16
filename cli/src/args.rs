@@ -147,6 +147,10 @@ pub enum Cmd {
     Init,
     /// This store's account and node
     Whoami,
+    /// Hold things on this node (a strong in its node root): accepts the tickets held for them
+    Hold { t: Vec<String> },
+    /// Stop holding things on this node
+    Unhold { t: Vec<String> },
     /// Add a node to this account
     #[command(subcommand)]
     Pair(PairCmd),

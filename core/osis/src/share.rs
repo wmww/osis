@@ -369,6 +369,22 @@ impl ReadOnly {
         Ok(self.read_answer(|| crate::track::thing_key("holders", target), crate::watch::Filter::Due(crate::watch::Watch::Roles), move |r| holders_in(r, target)))
     }
 
+    /// Holds `t` on this node: a strong in its node root (spec/sync-set.md §1), so its node closure
+    /// takes `t` in, entering a thing with own keys by a ticket it holds (accepting it,
+    /// spec/sync-set.md §4). This node alone holds it so, and writes no ticket for its account.
+    /// `Unsupported` on a client with its own actor.
+    pub fn hold(&self, t: Tid) -> Result<()> {
+        self.local("hold")?;
+        Ok(self.engine(|e| e.hold(t.into()))?)
+    }
+
+    /// Removes this node's strong to `t` (`hold`): what only it held leaves the node closure.
+    /// `Unsupported` on a client with its own actor.
+    pub fn unhold(&self, t: Tid) -> Result<()> {
+        self.local("unhold")?;
+        Ok(self.engine(|e| e.unhold(t.into()))?)
+    }
+
     /// The profile thing of an account whose card this node imported, if any.
     /// `Unsupported` on a client with its own actor.
     pub fn profile_of(&self, account: Tid) -> Result<Option<Tid>> {

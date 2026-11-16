@@ -316,6 +316,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
     match cmd {
         Cmd::Init | Cmd::Pair(PairCmd::Join { .. }) => whoami(ctx),
         Cmd::Whoami => whoami(ctx),
+        Cmd::Hold { t } => t.iter().try_for_each(|x| Ok(db.hold(ctx.tid(x)?)?)),
+        Cmd::Unhold { t } => t.iter().try_for_each(|x| Ok(db.unhold(ctx.tid(x)?)?)),
         Cmd::Pair(PairCmd::Offer) => {
             // print the offer, read the new node's request, print the reply and its node
             let o = db.pair_offer()?;

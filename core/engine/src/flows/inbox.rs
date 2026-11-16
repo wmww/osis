@@ -104,11 +104,37 @@ impl Engine {
         self.core.has_own_secrets(a).then_some(*a)
     }
 
-    /// Acts on a removal notice fired on this account's inbox (spec/sync-inbox.md §5): checked
-    /// against the member list held for its thing, then the thing released or a copy retained.
+    /// Acts on removal notice `fire` held here (spec/sync-inbox.md §5): only while this node reads
+    /// its thing T and holds T's roster, it learns the notice's records and takes its chain and
+    /// then its role commit, each only where judged valid (`ingest_valid`): an edit write taking
+    /// this node below read then applies like any, and lost access releases T or keeps the
+    /// retained copy it says (spec/permissions.md §3). Any other notice changes nothing.
     pub fn take_removal_notice(&mut self, fire: &CommitId) -> Result<()> {
-        let _ = fire;
-        todo!("refgraph: (c) removal notices")
+        let id = *fire;
+        let Some(v) = self.read(|tx| fire_value(tx, &id, REMOVAL_FIRE))? else { return Ok(()) };
+        let Some(Value::Map(m)) = Some(v) else { return Ok(()) };
+        let bytes = |k: i64| match m.get(&Value::Int(k)) {
+            Some(Value::Bytes(b)) => vec![b.clone()],
+            Some(Value::List(l)) => l.iter().filter_map(|x| if let Value::Bytes(b) = x { Some(b.clone()) } else { None }).collect(),
+            _ => Vec::new(),
+        };
+        let Some(commit) = bytes(0).into_iter().next() else { return Ok(()) };
+        let Ok(blob) = osis_commit::CommitBlob::decode(&commit) else { return Ok(()) };
+        let things: BTreeSet<Tid> = blob.header.aspects.iter().filter(|a| a.ak.as_str() == "roles.0").map(|a| a.tid).collect();
+        let ours = |e: &Engine, t: &Tid| e.core.epochs(t).is_some_and(|x| x.role(Role::Read).holds_any()) && e.core.timelines.get(t).is_some();
+        if blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() != "roles.0")) || things.is_empty() || !things.iter().all(|t| ours(self, t)) {
+            return Ok(());
+        }
+        let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB };
+        let records: Vec<osis_base::CreationRecord> = bytes(2).iter().filter_map(|b| osis_base::decode(b, &limits).ok()).filter_map(|v| osis_base::CreationRecord::from_value(&v)).filter(|r| self.core.created(&r.tid()).is_none()).collect();
+        if !records.is_empty() {
+            self.learn_records(records)?;
+        }
+        for c in bytes(1) {
+            self.ingest_valid(&c)?;
+        }
+        self.ingest_valid(&commit)?;
+        Ok(())
     }
 
     /// Fires a stranded notice on the thing of sync ID `s` (spec/sync-inbox.md §5), naming
@@ -422,6 +448,10 @@ impl Engine {
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
             Err(_) => return Ok(Opened::Bad),
         };
+        // a removal notice is acted on as it is taken
+        if commit.parts.iter().any(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == REMOVAL_FIRE)) {
+            self.take_removal_notice(&id)?;
+        }
         let parts = commit.parts.iter().map(|p| p.ai).collect();
         let row = crate::sync::BlobOf { commit: id, parts, sealed: Default::default(), copy: false, unchecked: false, salt: *prefix.salt(), ais: ais.into_iter().collect() };
         let b = *b;
@@ -507,4 +537,16 @@ impl Engine {
         let t = *t;
         self.run(|tx| write_account_ticket(tx, &t))
     }
+}
+
+/// The value fire commit `c` holds on open signal `ak`, as held here.
+fn fire_value(tx: &mut Tx<'_>, c: &CommitId, ak: &str) -> Result<Option<Value>> {
+    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
+    let Some(ai) = m.header.aspects.iter().position(|a| a.ak.as_str() == ak) else { return Ok(None) };
+    let mut out = None;
+    crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
+        out = out.take().or_else(|| f.read());
+        Ok(())
+    })?;
+    Ok(out)
 }

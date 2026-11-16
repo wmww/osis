@@ -114,9 +114,21 @@ impl Engine {
             return Err(Error::Misuse("K's grant on the link's target is not held here"));
         }
         let grant = Edge { role: edge.role, until: None, invite: None, floor: None };
-        // L signs with its own role, so the grant deposits only below write
-        // refgraph: (c) the redeem writes, with strongs in the account root, tickets for K and the target in its `tickets.0`
-        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, |_| Ok(()))
+        // L signs with its own role, so the grant deposits only below write; a redeem is an
+        // accept (spec/sync-set.md §4): strongs to K and the target in the account root, unless
+        // the node closure holds them, and so D's tickets for both (`inbox::write_account_ticket`)
+        let target = link.target;
+        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, move |tx| {
+            let Some((_, d)) = tx.core.account_devices() else { return Ok(()) };
+            let mut m = Mutation::new();
+            for t in [k, target].into_iter().filter(|t| !tx.core.ix.closure.holds(t)) {
+                m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) })?;
+            }
+            if !m.is_empty() {
+                Engine::commit_tx(tx, m)?;
+            }
+            Ok(())
+        })
     }
 
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or

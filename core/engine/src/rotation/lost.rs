@@ -409,10 +409,21 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
     let lost: Vec<Tid> = lost.into_iter().chain(gone).collect();
     let held: BTreeMap<Tid, u64> = lost.iter().filter_map(|a| Some((*a, tx.core.ix.secrets.get(a)?.read.held().map(|(e, _)| e.n()).max()?))).collect();
     for a in &lost {
-        // refgraph: (c) lowered to sync: S becomes kept unread by the account's own ticket of it
-        // (spec/sync-judgement.md §6 Read and unread move)
-        tx.core.ix.secrets.remove(a);
-        tx.txn.remove_local(&[crate::engine::records::SECRETS, a.as_bytes()].concat(), osis_store::Shred::Yes)?;
+        // lowered to sync: its sync secrets stay, so it is kept unread, and D's sync ticket for it
+        // follows (spec/sync-judgement.md §6 Read and unread move, spec/sync-set.md §1)
+        let sync = tx.core.ix.secrets.get(a).filter(|_| holds_at(tx.core, a, Role::Sync)).map(|e| e.role(Role::Sync).clone()).filter(|r| r.holds_any());
+        match sync {
+            Some(r) => {
+                let mut kept = ActorEpochs::default();
+                *kept.role_mut(Role::Sync) = r;
+                tx.core.ix.secrets.insert(*a, kept);
+                crate::flows::save_epochs(tx, a)?;
+            }
+            None => {
+                tx.core.ix.secrets.remove(a);
+                tx.txn.remove_local(&[crate::engine::records::SECRETS, a.as_bytes()].concat(), osis_store::Shred::Yes)?;
+            }
+        }
         crate::sync::stranded::drop_asks(tx, a, |_| false)?;
         crate::sync::held::forget_actor(tx, a)?;
         let now = tx.now();

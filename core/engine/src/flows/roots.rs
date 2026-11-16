@@ -66,10 +66,9 @@ pub(crate) fn keeps_root_strongs(tx: &mut Tx<'_>, m: &Mutation) -> Result<()> {
     let mut kept: Vec<(Tid, Tid)> = Vec::new();
     if let (Some(root), Some((p, d))) = (tx.core.node_root, tx.core.account_devices()) {
         kept.push((root, d));
-        kept.extend(tx.core.profile_of(&p).map(|x| (d, x)));
-        if let Some(i) = crate::engine::Core::keys_in(tx, &p)?.and_then(|k| k.inbox) {
-            kept.push((d, i.into()));
-        }
+        let inbox = super::inbox::inbox_in(tx, &p)?;
+        kept.extend(tx.core.profile_of(&p, inbox).map(|x| (d, x)));
+        kept.extend(inbox.map(|i| (d, i)));
     }
     for (from, to) in kept {
         let removes = |v: &Value| matches!(v, Value::Strong(t) if *t == to);
