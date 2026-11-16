@@ -273,6 +273,12 @@ impl Node {
         &self.life
     }
 
+    /// Tests only: the opens (`Opens`).
+    #[doc(hidden)]
+    pub fn opens(&self) -> &Opens {
+        &self.opens
+    }
+
     /// Tests only: read's verdict of commit `c`'s body under `s`.
     #[doc(hidden)]
     pub fn verdict(&self, s: &SyncId, c: &osis_base::CommitId) -> Option<crate::read::Verdict> {
@@ -909,7 +915,7 @@ impl crate::life::Hears for LifeHears<'_> {
     }
 
     fn timed_heard(&mut self, engine: &mut Engine, s: &SyncId, passed: bool) -> Result<bool> {
-        if self.opens.refused(s) || !self.opens.waited(engine, self.store, s, true)? {
+        if !self.opens.waited_unrefused(engine, self.store, s)? {
             return Ok(true);
         }
         Ok(passed && self.status.sourced(s) && crate::leave::own_elsewhere(engine, self.store, s)?)

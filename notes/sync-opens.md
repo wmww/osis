@@ -58,7 +58,7 @@ The core (`Opens::message`, `tick`, `closed`) runs over `opens::Ctx { holds: &mu
 - A peer with no record has its unstamped charges per connection (spec/sync-ids.md §5 Peer budget): dropping and fetching again beats a row keyed by a node key.
 - `RESYNC_MS` (30 s): after a refused generation a whole filter follows; streams has its own `RESYNC_MS` for a refused join. They are separate constants of the same value.
 
-- **Refusals** (`Opens::refused`, spec/permissions.md §2): per S, the connections whose peer, judged a reader when the ByRole went, refused it, S not open there since; and walk stops. Life's timed-loss drop reads it (notes/sync-driver.md). Gone with the connection, S opening there or leaving the sync set.
+- **Refusals** (`Opens::refusers`, spec/permissions.md §2): per S, the connections whose peer, judged a reader when the ByRole went, refused it, S not open there since; and walk stops; read as who the peers are. Life's timed-loss drop waits on S by `Opens::waited_unrefused` (`waited` with those peers skipped: a refusal ends the wait on its peer alone, never on S, so a stale refusal or one by a reader not syncing S drops no own write another peer would take). Gone with the connection, S opening there or leaving the sync set.
 
 ## Not built
 issues/sync-unbuilt.md (opens): static entries claimed in the walk's tests.

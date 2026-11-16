@@ -441,8 +441,8 @@ pub struct Opens {
     /// the connection, S opening there, and S leaving the sync set (`walk_stop`: status follows it).
     stops: osis_base::memo::Stamped<SyncId, BTreeMap<ConnId, Stop>>,
     /// Per S, the connections whose peer, judged a reader here, refused this side's ByRole on S,
-    /// S not open there since (spec/permissions.md §2: a source refuses it). Goes with the
-    /// connection, S opening there, and S leaving the sync set (`refused`: life follows it).
+    /// S not open there since (spec/permissions.md §2: a peer refuses it). Goes with the
+    /// connection, S opening there, and S leaving the sync set (`refusers`: life follows it).
     refusals: osis_base::memo::Stamped<SyncId, BTreeSet<ConnId>>,
     /// Records of twinned connections that closed (spec/sync-opens.md §1 Twin): removed at
     /// `flush` once no connection holds or lists one.
@@ -730,14 +730,19 @@ impl Opens {
     /// and a peer proving only this account: its node unproven, a dialer lacking this node's
     /// `reach.0`, spec/sync-status.md §2).
     pub fn waited(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId, own: bool) -> Result<bool> {
-        let roster = engine.roster_holders(s)?;
         let me = if own { None } else { engine.account()?.map(|(p, _)| p) };
+        // (`!own`) this account or one of its nodes
+        self.waited_but(engine, store, s, |engine, _, actors| !own && actors.iter().any(|t| Some(*t) == me || engine.own_node(t)))
+    }
+
+    /// `waited`, a peer `skip` names (on what it names and the actors it is now) skipped too.
+    fn waited_but(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId, mut skip: impl FnMut(&mut osis_engine::Engine, &Named, &[osis_base::Tid]) -> bool) -> Result<bool> {
+        let roster = engine.roster_holders(s)?;
         self.wait_for(store, s, |named| {
             let actors = awaited(engine, named);
-            // a removed node of this account, one of another proved at a revoked key, or
-            // (`!own`) this account or one of its nodes
+            // a removed node of this account, or one of another proved at a revoked key
             let gone = actors.is_empty() && *named != Named::default();
-            if gone || !own && actors.iter().any(|t| Some(*t) == me || engine.own_node(t)) {
+            if gone || skip(engine, named, &actors) {
                 Peer::Skipped
             } else if roster.may_hold(&actors) {
                 Peer::MayHold
@@ -747,18 +752,25 @@ impl Opens {
         })
     }
 
-    /// Whether this node's walk of S stopped at some source (spec/sync-ids.md §6 Stranded there:
-    /// no credential of the newest step known there, or Behind refused it), and where: a stop
-    /// naming a step it reached before one naming none, the lowest connection first. Stamped
-    /// per S. O(connections stopped on S).
-    /// Whether a source refuses S here (spec/permissions.md §2, a loss by an `until` alone): on a
-    /// connection up, a peer this side judged a reader refused its ByRole on S, S not open
-    /// there since; or the walk of S stopped at a source keeping S unread (`walk_stop`).
-    pub fn refused(&self, s: &SyncId) -> bool {
-        self.refusals.get(s).is_some_and(|x| !x.is_empty()) || self.stops.get(s).is_some()
+    /// The peers refusing S here (spec/permissions.md §2, a loss by an `until` alone), by who
+    /// they are: on a connection up, a peer this side judged a reader refused its ByRole on S, S
+    /// not open there since; or the walk of S stopped at it (`walk_stop`). Stamped per S.
+    /// O(connections refusing S).
+    pub fn refusers(&self, s: &SyncId) -> BTreeSet<Who> {
+        let refused = self.refusals.get(s).into_iter().flatten().copied();
+        let stopped = self.stops.get(s).into_iter().flat_map(|m| m.keys().copied());
+        refused.chain(stopped).filter_map(|c| self.conns.get(&c)).map(|c| Who::from(&c.named)).collect()
     }
 
-    /// Sets whether `conn`'s peer refuses S (`refused`).
+    /// `waited` with this account's own nodes counted, a peer refusing S here (`refusers`)
+    /// skipped: a refusal ends the wait on its peer alone (spec/permissions.md §2, a loss by an
+    /// `until` alone heard out).
+    pub fn waited_unrefused(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId) -> Result<bool> {
+        let refusers = self.refusers(s);
+        self.waited_but(engine, store, s, |_, named, _| refusers.contains(&Who::from(named)))
+    }
+
+    /// Sets whether `conn`'s peer refuses S (`refusers`).
     fn index_refusal(&mut self, conn: ConnId, s: SyncId, refuses: bool) {
         if let Some(c) = self.conns.get_mut(&conn) {
             if refuses {
@@ -779,6 +791,10 @@ impl Opens {
         }
     }
 
+    /// Whether this node's walk of S stopped at some source (spec/sync-ids.md §6 Stranded there:
+    /// no credential of the newest step known there, or Behind refused it), and where: a stop
+    /// naming a step it reached before one naming none, the lowest connection first. Stamped
+    /// per S. O(connections stopped on S).
     pub fn walk_stop(&self, s: &SyncId) -> Option<Stop> {
         let at = self.stops.get(s)?;
         at.values().find(|x| x.is_some()).or_else(|| at.values().next()).copied()

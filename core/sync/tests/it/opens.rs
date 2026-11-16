@@ -297,9 +297,9 @@ fn byrole_opens_on_j_spec_sync_opens_5() {
     assert_eq!(p.a.opens.members(p.ca)[&S].by, Credential::J);
 }
 
-// spec/permissions.md §2 (a source refuses it): a loss by an `until` alone: a ByRole refused by
-// a peer this side judges a reader counts as a refusal of S while the connection lasts and S is
-// not open there; an accepted one is none.
+// spec/permissions.md §2 (A peer refuses it): a loss by an `until` alone: a ByRole refused by a
+// peer this side judges a reader makes it a refuser of S while the connection lasts and S is not
+// open there; an accepted one is none.
 #[test]
 fn a_byrole_refused_by_a_reader_is_a_refusal_spec_permissions_2() {
     for refuses in [true, false] {
@@ -312,9 +312,9 @@ fn a_byrole_refused_by_a_reader_is_a_refusal_spec_permissions_2() {
         let mut p = Pair::new(a, b, account(1), account(2));
         p.run();
         assert_eq!(p.a.open(p.ca, &S), !refuses);
-        assert_eq!(p.a.opens.refused(&S), refuses);
+        assert_eq!(!p.a.opens.refusers(&S).is_empty(), refuses);
         p.close();
-        assert!(!p.a.opens.refused(&S), "goes with the connection");
+        assert!(p.a.opens.refusers(&S).is_empty(), "goes with the connection");
     }
 }
 

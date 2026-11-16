@@ -254,3 +254,77 @@ fn a_loss_by_an_until_sends_its_own_writes_first_spec_permissions_2() {
     assert_eq!(w.engine(0).get(&t, &v()).unwrap(), Some(Value::Str("y".into())), "node 0 holds node 1's write");
     assert!(!holds(&mut w, 1, &t), "node 1 dropped t");
 }
+
+/// Three contacts: node 0's thing t granted to node 1's account for writing for `UNTIL_MS` and
+/// to node 2's for reading, filed by node 1 and not by node 2: (world, t).
+fn three_until() -> (World, Tid) {
+    fixture_with("life write until, a reader not filing", || {
+        let mut w = World::new(0);
+        for _ in 0..3 {
+            w.add_node();
+        }
+        crate::harness::history::introduce(&mut w);
+        w.run();
+        let (a0, a1, a2) = (w.node(0).account.unwrap(), w.node(1).account.unwrap(), w.node(2).account.unwrap());
+        let until = osis_base::WallMs(w.now().0 + UNTIL_MS);
+        let t = w.write(0, |e| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, a0);
+            m.set(t, &v(), &Value::Str("x".into())).unwrap();
+            e.commit(m).unwrap();
+            t
+        });
+        file(&mut w, 0, vec![t], Vec::new());
+        w.write(0, |e| e.grant(&t, &a1, &ct::Edge { role: osis_base::Role::Write, until: Some(until), invite: None, tied: None, floor: None })).unwrap();
+        w.write(0, |e| e.grant(&t, &a2, &crate::flows::edge(osis_base::Role::Read))).unwrap();
+        w.run();
+        file(&mut w, 1, Vec::new(), vec![t]);
+        w.run();
+        assert_eq!(w.engine(1).get(&t, &v()).unwrap(), Some(Value::Str("x".into())), "node 1 reads t");
+        (w, t)
+    })
+}
+
+// spec/permissions.md §2 (A refusal ends the wait on its peer alone): node 1, cut off from node
+// 0, writes t, and its `until` passes by its clock alone; node 2, a reader of t not syncing it,
+// refuses node 1's ByRole on t's sync ID, before the loss or after it. Node 1's write is held
+// nowhere else and node 0, its clock behind, would take it: node 1 keeps t until node 0 holds the
+// write, then drops.
+#[test]
+fn a_loss_by_an_until_keeps_its_own_write_past_a_refusal_spec_permissions_2() {
+    for refused_first in [true, false] {
+        let at = format!("refused before the loss: {refused_first}");
+        let (mut w, t) = three_until();
+        // three nodes, two of them dialing a partitioned peer for a while
+        w.cap = 3 * crate::harness::RULE_CAP;
+        let s = match w.engine(1).thing_sync(&t).unwrap() {
+            osis_engine::sync::ThingSync::Read(ids) => ids[0],
+            other => panic!("node 1 reads t's sync ID: {other:?}"),
+        };
+        w.partition(0, 1);
+        if !refused_first {
+            w.partition(1, 2);
+        }
+        w.write(1, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &v(), &Value::Str("y".into())).unwrap();
+            e.commit(m).unwrap();
+        });
+        w.run();
+        if refused_first {
+            assert!(!w.node(1).node.opens().refusers(&s).is_empty(), "{at}: node 2 refuses before the loss");
+        }
+        w.skew(1, UNTIL_MS as i64);
+        w.run();
+        if !refused_first {
+            w.rejoin(1, 2);
+            w.run();
+            assert!(!w.node(1).node.opens().refusers(&s).is_empty(), "{at}: node 2 refuses after the loss");
+        }
+        assert!(holds(&mut w, 1, &t), "{at}: dropped while its write is held nowhere else");
+        w.heal();
+        w.run();
+        assert_eq!(w.engine(0).get(&t, &v()).unwrap(), Some(Value::Str("y".into())), "{at}: node 0 holds node 1's write");
+        assert!(!holds(&mut w, 1, &t), "{at}: node 1 dropped t");
+    }
+}
