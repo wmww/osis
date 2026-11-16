@@ -1212,14 +1212,25 @@ pub enum Step {
     Lies(usize, Lie),
     /// A node tells the truth again.
     Truth(usize),
-    /// The differential's writes (`history`): node i makes a thing (its account the first admin,
-    /// a value written); writes thing k; grants node j's account a role on thing k; removes node
-    /// j's account from thing k; rotates thing k's secrets.
+    /// The differential's writes (`history`), each by node i: makes a thing under its account
+    /// root (`New`) or under thing k (`NewIn`), a value written, held by a strong from where it
+    /// was made; writes thing k; gives a holder a role on thing k (`Give`: nothing accepted);
+    /// `Grant`, a rule test's shorthand: gives node j's account the role and node j accepts;
+    /// lowers a holder to a role; removes node j's account (`Remove`) or any holder (`Revoke`);
+    /// rotates thing k's secrets; adds or removes a strong from its account root (`None`: an
+    /// accept) or from a thing to thing k; pairs a new node to its account (the next index).
     New(usize),
+    NewIn(usize, usize),
     Write(usize, usize),
+    Give(usize, usize, history::Holder, history::Gives),
     Grant(usize, usize, usize, history::Gives),
+    Lower(usize, usize, history::Holder, history::Gives),
     Remove(usize, usize, usize),
+    Revoke(usize, usize, history::Holder),
     Rotate(usize, usize),
+    Strong(usize, Option<usize>, usize),
+    Unstrong(usize, Option<usize>, usize),
+    Pair(usize),
 }
 
 /// Every name a printed script uses.
@@ -1229,6 +1240,7 @@ pub mod script {
     pub use super::Loss;
     pub use super::Step::*;
     pub use super::history::Gives::*;
+    pub use super::history::Holder;
     pub use super::lies::Lie::*;
 }
 
@@ -1266,6 +1278,7 @@ impl Step {
                 v
             }
             Step::Grant(i, k, j, g) => g.lesser().map(|x| Step::Grant(*i, *k, *j, x)).into_iter().collect(),
+            Step::Give(i, k, h, g) => g.lesser().map(|x| Step::Give(*i, *k, *h, x)).into_iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -1283,7 +1296,10 @@ pub fn step(w: &mut World, s: &Step) -> String {
 
 fn step_of(w: &mut World, s: &Step) -> String {
     match s {
-        Step::Run => w.run(),
+        Step::Run => {
+            w.run();
+            history::ran(w);
+        }
         Step::Advance(ms) => w.advance(*ms),
         Step::Partition(a, b) => w.partition(*a, *b),
         Step::Heal => w.heal(),
@@ -1295,7 +1311,7 @@ fn step_of(w: &mut World, s: &Step) -> String {
         Step::Disk(i, n, f) => w.disk_fault(*i, *n, *f),
         Step::Lies(i, l) => w.lie(*i, Some(*l)),
         Step::Truth(i) => w.lie(*i, None),
-        Step::New(..) | Step::Write(..) | Step::Grant(..) | Step::Remove(..) | Step::Rotate(..) => return history::step(w, s),
+        Step::New(..) | Step::NewIn(..) | Step::Write(..) | Step::Give(..) | Step::Grant(..) | Step::Lower(..) | Step::Remove(..) | Step::Revoke(..) | Step::Rotate(..) | Step::Strong(..) | Step::Unstrong(..) | Step::Pair(..) => return history::step(w, s),
     }
     String::new()
 }

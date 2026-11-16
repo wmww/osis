@@ -211,3 +211,113 @@ fn a_stale_or_unheld_targets_forged_ticket_opens_and_retries_nothing_spec_sync_h
         assert_eq!(quiet_deliveries(&mut w), base, "{arm}: nothing retried");
     }
 }
+
+// spec/sync-inbox.md §1, §5 (Delivery of a grant): an account that paired a second node before
+// its contact card was made is reached all the same: its contact knows its inbox and a grant's
+// ticket reaches it.
+#[test]
+fn a_card_made_after_pairing_carries_the_inbox_spec_sync_inbox_5() {
+    let mut w = World::new(0);
+    w.add_node();
+    w.add_node();
+    w.pair(0);
+    crate::harness::history::introduce(&mut w);
+    w.run();
+    let a0 = w.node(0).account.unwrap();
+    assert!(w.engine(1).inbox_thing(&a0).is_some(), "node 1 knows account 0's inbox");
+    let t = make(&mut w, 1, "hi");
+    w.write(1, |e| e.grant(&t, &a0, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
+    w.run();
+    assert!(w.engine(0).ticket_for(&t).unwrap().is_some(), "the ticket reached account 0");
+}
+
+// spec/sync-set.md §2, spec/sync-ids.md §5: a ticket it can open enters the thing at a
+// strong, and the store is the truth after a crash. Bob's node loses power at the second durable write of
+// its accept of a granted thing (the write's outcome unknown) and restarts in place. Its strong
+// and the ticket stand, so
+// it enters the thing and reads it; it neither holds it nor syncs its sync ID
+// (issues/reference-graph.md Status).
+#[test]
+#[ignore = "issues/reference-graph.md"]
+fn repro_a_crash_after_accepting_keeps_the_thing_entered_spec_sync_set_2() {
+    let (mut w, t) = granted();
+    w.disk_fault(1, 2, crate::harness::DiskFault::Crash);
+    let r = w.write(1, |e| {
+        let d = e.account_root().unwrap();
+        let mut m = Mutation::new();
+        m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+        e.commit(m).map(|_| ())
+    });
+    assert!(r.is_err() && w.crashes == 1, "the accept's write crashed, its outcome unknown");
+    w.run();
+    let d = w.engine(1).account_root().unwrap();
+    assert!(w.engine(1).get_typed(&d, &ct::HOLDS).unwrap().unwrap_or_default().contains(&osis_base::Ref::Strong(osis_base::Strong(t))), "the strong stands");
+    assert!(w.engine(1).ticket_for(&t).unwrap().is_some(), "the ticket stands");
+    assert_eq!(w.engine(1).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "Bob reads T");
+}
+
+/// Node 0 makes T and gives node 1's account `role` on it; node 1 accepts; run.
+fn accepted(role: Role) -> (World, Tid) {
+    let mut w = contacts();
+    let t = make(&mut w, 0, "hi");
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role, until: None, invite: None, floor: None })).unwrap();
+    w.run();
+    accept(&mut w, t, &[]);
+    (w, t)
+}
+
+/// Node `i` adds (`on`) or removes its account root's strong to `t`; run.
+fn root_strong(w: &mut World, i: usize, t: Tid, on: bool) {
+    w.write(i, |e| {
+        let d = e.account_root().unwrap();
+        let mut m = Mutation::new();
+        let v = Value::Strong(t);
+        m.op(d, &ct::HOLDS, PathOp { path: vec![], op: if on { Op::Add(v) } else { Op::Remove(v) } }).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+}
+
+// spec/sync-set.md §3: a released thing is not destroyed; back in the closure it is fetched
+// again, as never received. Bob accepts T and reads it, releases it (his strong removed), then
+// accepts it again with the ticket still held: he reads T again. He never enters it again
+// (issues/reference-graph.md Status).
+#[test]
+#[ignore = "issues/reference-graph.md"]
+fn repro_a_released_thing_accepted_again_is_fetched_again_spec_sync_set_3() {
+    let (mut w, t) = accepted(Role::Read);
+    assert_eq!(w.engine(1).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())));
+    root_strong(&mut w, 1, t, false);
+    assert!(!w.engine(1).closure_holds(&t) && w.engine(1).get(&t, &ak()).unwrap().is_none(), "released");
+    root_strong(&mut w, 1, t, true);
+    assert!(w.engine(1).ticket_for(&t).unwrap().is_some(), "the ticket is still held");
+    assert_eq!(w.engine(1).get(&t, &ak()).unwrap(), Some(Value::Str("hi".into())), "fetched again");
+}
+
+// spec/permissions.md §2, spec/sync-set.md §2: a re-granted reader reads again; a ticket enters at
+// the lower of its role and the role the role commits its secret opens show. Alice removes Bob from T (or lowers
+// him to sync), then grants him read again; Bob, his strong kept, reads her next write. He reads
+// nothing: his node takes no secret of the new ticket while the role commits it holds show the
+// removal, and the grant that would show otherwise is under that secret
+// (issues/reference-graph.md Status).
+#[test]
+#[ignore = "issues/reference-graph.md"]
+fn repro_a_reader_granted_again_reads_again_spec_sync_set_2() {
+    for lowered in [false, true] {
+        let (mut w, t) = accepted(Role::Read);
+        let bob = w.node(1).account.unwrap();
+        let new = lowered.then_some(ct::Edge { role: Role::Sync, until: None, invite: None, floor: None });
+        w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new, retain: None })).unwrap();
+        w.run();
+        w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
+        w.run();
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            m.set(t, &ak(), &Value::Str("again".into())).unwrap();
+            e.commit(m).unwrap();
+        });
+        w.run();
+        assert_eq!(w.engine(1).get(&t, &ak()).unwrap(), Some(Value::Str("again".into())), "lowered {lowered}: Bob reads again");
+    }
+}

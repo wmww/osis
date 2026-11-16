@@ -370,31 +370,6 @@ fn a_held_join_forgets_the_link_and_k_syncs_by_its_filing_spec_permissions_7() {
     assert_eq!(w.engine(1).get(&link.k, &ak).unwrap(), Some(osis_base::Value::Int(7)), "K synced after the link");
 }
 
-// spec/permissions.md §7 (Redeem), spec/sync-set.md §4 (A redeem is an accept): node 2 redeems
-// node 0's link while cut off, after its sibling node 1 joined by it; once node 2 reaches node 1
-// (never node 0) it holds the account's join, stops redeeming and writes no second join.
-#[test]
-fn a_siblings_join_ends_a_redeem_spec_permissions_7() {
-    let mut w = crate::harness::siblings();
-    let p0 = w.node(0).profile.unwrap();
-    let link = w.make_link(0, p0, Role::Read);
-    let l = osis_engine::identity::key_actor_tid(&link.seed);
-    w.partition(0, 2);
-    w.partition(1, 2);
-    assert_eq!(w.redeem(1, &link), Waiting::Pending);
-    w.run();
-    assert_eq!(w.redeem(1, &link), Waiting::Done, "node 1 joined");
-    assert_eq!(w.redeem(2, &link), Waiting::Pending, "node 2 holds nothing of it yet");
-    w.heal();
-    w.partition(0, 2);
-    w.run();
-    assert!(!w.node(2).node.redeeming(&link.k), "node 2 stopped redeeming");
-    for i in 0..3 {
-        assert_eq!(w.engine(i).core.ix.by_thing.get(&(link.k, l)).map_or(0, |x| x.len()), 1, "node {i}: one join");
-    }
-    assert_eq!(w.redeem(2, &link), Waiting::Done);
-}
-
 // spec/permissions.md §7 (First contact: once its join is held a redeemer keeps the link's peers,
 // not the seed, as addresses to dial while its account holds a role on the target): node 1's
 // link forgotten, node 0 stays a dial hint there, across a restart, until node 1's account

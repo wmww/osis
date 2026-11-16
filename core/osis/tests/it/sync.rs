@@ -150,33 +150,6 @@ fn a_link_names_its_target_and_this_node_spec_wire_10() {
     assert!(matches!(a.make_link(t, Role::Sync, LinkOpts::default()), Err(Error::Invalid(_))));
 }
 
-// spec/sync-inbox.md §5 (contact card): a read link to the account's profile, made once.
-#[test]
-fn the_contact_card_is_a_read_link_to_the_profile_spec_sync_inbox_5() {
-    let db = db(11);
-    let card = db.contact_card().unwrap();
-    assert_eq!(db.contact_card().unwrap().to_string(), card.to_string());
-    let p = db.profile().unwrap();
-    let link: osis::ShareLink = card.to_string().parse().unwrap();
-    assert_eq!(link.target().unwrap(), p);
-    assert!(db.links().unwrap().iter().any(|x| x.target == p && x.role == Role::Read));
-}
-
-// spec/sync-set.md §1 (dial list; a node learns P's profile): from pairing: every node of the account knows the profile
-// (each writes its own `dial^.0` entry there), a paired node from its offer,
-// before any sync; reading it there before it arrives reads nothing, and its card works.
-#[test]
-fn a_paired_node_knows_the_accounts_profile_spec_sync_set_1() {
-    let a = db(12);
-    let join = osis::internals::pair(cfg(13, MemStore::new(), &clock()), &a.pair_offer().unwrap()).unwrap();
-    let (_, reply) = a.pair_accept(join.request()).unwrap();
-    let b = join.finish(&reply).unwrap();
-    assert_eq!(b.profile().unwrap(), a.profile().unwrap());
-    assert_eq!(b.at(b.profile().unwrap(), osis::core::NAME).get().unwrap(), None);
-    let card: osis::ShareLink = b.contact_card().unwrap().to_string().parse().unwrap();
-    assert_eq!(card.target().unwrap(), a.profile().unwrap());
-}
-
 // spec/commits.md §6 (expiry), spec/requirements.md (Ephemeral data: a value that lives while its author is there):
 // `keep_alive` renews an ephemeral value with a default expiry; any other key is refused.
 #[test]

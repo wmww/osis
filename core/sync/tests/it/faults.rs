@@ -248,7 +248,7 @@ fn simpler_steps_are_smaller() {
             Step::Lossy(l) => u128::from(l.drop) + u128::from(l.dup) + u128::from(l.delay) + u128::from(l.delay_ms),
             Step::Skew(_, ms) => u128::from(ms.unsigned_abs()),
             Step::Disk(_, n, f) => u128::from(*n) * 3 + *f as u128,
-            Step::Grant(_, _, _, g) => *g as u128,
+            Step::Grant(_, _, _, g) | Step::Give(_, _, _, g) => *g as u128,
             _ => 0,
         }
     };

@@ -29,6 +29,8 @@ default = ["driver"]
 driver = ["dep:tokio"]
 
 [dev-dependencies]
+# The differential's oracle (tests/it/harness/history.rs): the node closure of held-model `closure`.
+held-model.workspace = true
 osis-commit.workspace = true
 osis-crdt.workspace = true
 osis-schema.workspace = true

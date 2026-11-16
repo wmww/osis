@@ -63,3 +63,15 @@ fn repro_a_removal_is_logged_before_what_was_written_before_it_spec_permissions_
     let (pc, pr) = (at(&mut w, c), at(&mut w, r));
     assert!(pr < pc, "the removal ({pr:?}) logged before the write ({pc:?})");
 }
+
+// spec/sync-inbox.md §1, spec/permissions.md §1: a node paired to an account pairs another
+// (pairing): the third node is on D's roster and joins (`paired`). It
+// is refused `Permission` on D (issues/pair-from-a-paired-node.md).
+#[test]
+#[ignore = "issues/pair-from-a-paired-node.md"]
+fn repro_a_paired_node_pairs_another_spec_sync_inbox_1() {
+    let mut w = crate::harness::siblings();
+    let n = w.pair(2);
+    w.run();
+    assert!(w.engine(n).account_root().is_some());
+}

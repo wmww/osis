@@ -2907,6 +2907,7 @@ dependencies = [
 name = "osis-sync"
 version = "0.1.0"
 dependencies = [
+ "held-model",
  "osis-base",
  "osis-blob",
  "osis-commit",
