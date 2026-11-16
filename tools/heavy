@@ -21,7 +21,7 @@ Time limits (notes/build.md): the hold's CPU-s and wall are checked against NAME
 over-limit line and logs the hit. The wait is not part of the hold: with HEAVY_WAIT_FILE set, its
 seconds are written there (the gate's own limit leaves them out).
 """
-import fcntl, json, os, resource, shlex, signal, subprocess, sys, time
+import errno, fcntl, json, os, resource, shlex, signal, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import limits  # noqa: E402
@@ -100,8 +100,14 @@ def run(cmd, name):
         except OSError as e:
             print(f"heavy: {e}", file=sys.stderr)
     ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
+    env = dict(os.environ, HEAVY_HELD="1")
     try:
-        p = subprocess.Popen(cmd, pass_fds=(fd,), env=dict(os.environ, HEAVY_HELD="1"))
+        try:
+            p = subprocess.Popen(cmd, pass_fds=(fd,), env=env)
+        except OSError as e:
+            if e.errno != errno.ENOEXEC:
+                raise
+            p = subprocess.Popen(["sh", *cmd], pass_fds=(fd,), env=env)  # a script without a #! line, as a shell runs it
     except OSError as e:
         log("rel", held=round(time.time() - t1, 1), cpu=0, rc=127)
         sys.exit(f"heavy: {cmd[0]}: {e}")
