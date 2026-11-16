@@ -16,14 +16,14 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, channel};
-use osis_kit::render::{ROOT, Ui, rail_needs, tree};
+use osis_kit::render::{ROOT, Started, Ui, rail_needs, tree};
 use osis_kit::store::Data;
 use osis_kit::theme::{Look, Theme};
 use osis_kit::window::Waker;
 use std::sync::Arc;
 
 struct Screen {
-    ui: Ui,
+    ui: Started,
     rr: RenderRoot,
     d: Data,
     /// What widgets reported.
@@ -82,7 +82,11 @@ impl Screen {
     }
 
     fn show(d: Data, width: u32, height: u32) -> Screen {
-        let ui = Ui::new(d.clone(), Waker::new(|| {})).unwrap();
+        Screen::with_platform(d, width, height, Box::new(crate::input::Recorder::default()))
+    }
+
+    fn with_platform(d: Data, width: u32, height: u32, platform: Box<dyn Platform>) -> Screen {
+        let ui = Started::from(Ui::new(d.clone(), Waker::new(|| {})).unwrap());
         let opts = RenderRootOptions {
             default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
             use_system_fonts: false,
@@ -94,7 +98,7 @@ impl Screen {
         let (tx, signals) = channel();
         let rr = RenderRoot::new(tree(ui.look()), move |s| drop(tx.send(s)), opts);
         let mut s = Screen { ui, rr, d, signals };
-        s.ui.start(&mut s.rr, Box::new(crate::input::Recorder::default()), 1.0, false);
+        s.ui.start(&mut s.rr, platform, 1.0, false);
         s.ui.wake(&mut s.rr);
         s
     }
@@ -430,7 +434,7 @@ impl Platform for Keys {
 }
 
 /// Runs the actions widgets reported, as a shell does.
-fn pump(ui: &mut Ui, rr: &mut RenderRoot, signals: &Receiver<RenderRootSignal>) {
+fn pump(ui: &mut Started, rr: &mut RenderRoot, signals: &Receiver<RenderRootSignal>) {
     for _ in 0..8 {
         let got: Vec<_> = signals.try_iter().collect();
         if got.is_empty() {
@@ -447,7 +451,7 @@ fn pump(ui: &mut Ui, rr: &mut RenderRoot, signals: &Receiver<RenderRootSignal>) 
 
 /// Presses what a screen reader calls `label` (or a label starting so), then runs what follows.
 /// `seen` gathers the screen reader's tree from its updates, which carry only what changed.
-fn press(ui: &mut Ui, rr: &mut RenderRoot, signals: &Receiver<RenderRootSignal>, seen: &mut Vec<(NodeId, String)>, label: &str) {
+fn press(ui: &mut Started, rr: &mut RenderRoot, signals: &Receiver<RenderRootSignal>, seen: &mut Vec<(NodeId, String)>, label: &str) {
     rr.handle_window_event(WindowEvent::EnableAccessTree);
     for _ in 0..2 {
         let (_, update) = rr.redraw();
@@ -472,20 +476,8 @@ fn a_new_things_title_asks_for_the_keyboard_once() {
     let d = data();
     let first = d.create_note().unwrap();
     d.set_open(Some(first)).unwrap();
-    let ui = Ui::new(d.clone(), Waker::new(|| {})).unwrap();
-    let (tx, signals) = channel();
-    let opts = RenderRootOptions {
-        default_properties: Arc::new(osis_kit::masonry::theme::default_property_set()),
-        use_system_fonts: false,
-        size_policy: WindowSizePolicy::User,
-        size: PhysicalSize::new(1200, 700),
-        scale_factor: 1.0,
-        test_font: None,
-    };
-    let rr = RenderRoot::new(tree(ui.look()), move |s| drop(tx.send(s)), opts);
     let keys = Rc::new(RefCell::new(Vec::new()));
-    let mut s = Screen { ui, rr, d, signals };
-    s.ui.start(&mut s.rr, Box::new(Keys(keys.clone())), 1.0, false);
+    let mut s = Screen::with_platform(d, 1200, 700, Box::new(Keys(keys.clone())));
     s.ui.wake(&mut s.rr);
     let mut seen = Vec::new();
     press(&mut s.ui, &mut s.rr, &s.signals, &mut seen, "New");

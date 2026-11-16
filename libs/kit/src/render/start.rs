@@ -5,7 +5,7 @@
 //! deleted), says where, and opens a new one in its place. A store in use elsewhere, a later step
 //! failing, or nothing at the path to move: no action.
 
-use super::{Attached, ROOT, Ui, set_root_insets};
+use super::{Host, ROOT, Ui};
 use crate::masonry::app::RenderRoot;
 use crate::masonry::core::{ErasedAction, Handled, NewWidget, PointerEvent, Properties, TextCommand, TextEvent, Widget, WidgetId};
 use crate::masonry::peniko::Color;
@@ -16,6 +16,7 @@ use crate::platform::Platform;
 use crate::store::Data;
 use crate::theme::{Look, Theme};
 use crate::widgets::style::{self, Text};
+use crate::icons::Icon;
 use crate::widgets::{Chip, ChipMark, ChipPress, Frame, Page, Panel, PanelKind, Root};
 use crate::window::Waker;
 use osis::{Address, Osis};
@@ -35,11 +36,10 @@ pub struct Start {
 impl Start {
     /// The UI over the store in `dir`, or the screen saying why it could not open.
     pub fn open(self) -> Started {
-        let shown = match self.ui() {
+        Started(match self.ui() {
             Ok(ui) => Shown::Ui(Box::new(ui)),
-            Err(e) => Shown::Failed(Failed::new(e, &self.dir)),
-        };
-        Started { start: self, shown, attached: None, scale: 1.0, dark: false, insets: [0.0; 4] }
+            Err(e) => Shown::Failed(Box::new(Failed::new(e, self, Host::default()))),
+        })
     }
 
     fn ui(&self) -> Result<Ui, Failure> {
@@ -72,24 +72,19 @@ struct Failure {
 }
 
 /// What a shell started: the UI over its store, or the screen saying why the store could not
-/// open. The shell hosts it as it would `Ui`: the same calls, on the UI thread.
-pub struct Started {
-    start: Start,
-    shown: Shown,
-    /// The platform and pointer input while the failure screen shows (`Ui` holds its own).
-    attached: Option<Attached>,
-    scale: f64,
-    /// The system's dark mode.
-    dark: bool,
-    insets: [f64; 4],
-}
+/// open. The shell hosts it on the UI thread; the calls needing only the platform go to `Host`,
+/// whichever shows.
+pub struct Started(Shown);
 
 enum Shown {
     Ui(Box<Ui>),
-    Failed(Failed),
+    Failed(Box<Failed>),
 }
 
 struct Failed {
+    /// What start fresh tries again.
+    start: Start,
+    host: Host,
     error: String,
     /// Where start fresh moves the store; `None`: not offered, or nothing is there to move.
     aside: Option<PathBuf>,
@@ -99,13 +94,14 @@ struct Failed {
 }
 
 impl Failed {
-    fn new(f: Failure, dir: &Path) -> Failed {
-        Failed { error: f.error, aside: aside(dir).filter(|_| f.fresh), look: Arc::new(Look::new(&Theme::named(None), false, None)), fresh: None }
+    fn new(f: Failure, start: Start, host: Host) -> Failed {
+        let aside = aside(&start.dir).filter(|_| f.fresh);
+        Failed { start, host, error: f.error, aside, look: Arc::new(Look::new(&Theme::named(None), false, None)), fresh: None }
     }
 
     /// Shows the failure screen under the root, in the default theme.
-    fn show(&mut self, rr: &mut RenderRoot, dark: bool) {
-        self.look = Arc::new(Look::new(&Theme::named(None), dark, None));
+    fn show(&mut self, rr: &mut RenderRoot) {
+        self.look = Arc::new(Look::new(&Theme::named(None), self.host.dark, None));
         let look = self.look.clone();
         let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(18.0)));
         col = col.with_child(style::heading(&look, "osis", Text::Brand)).with_child(style::prose(&look, "The store could not be opened", Text::Title));
@@ -114,7 +110,7 @@ impl Failed {
         self.fresh = None;
         if let Some(to) = &self.aside {
             let says = format!("Start fresh keeps it, moved to {}, and opens a new, empty store in its place.", to.display());
-            let chip = NewWidget::new(Chip::new("Start fresh", None, ChipMark::None, look.clone()));
+            let chip = NewWidget::new(Chip::new("Start fresh", None, ChipMark::Icon(Icon::Plus), look.clone()));
             self.fresh = Some(chip.id());
             col = col.with_child(style::prose(&look, &says, Text::Muted)).with_child(NewWidget::new(Flex::row().with_child(chip)));
         }
@@ -147,10 +143,17 @@ fn move_aside(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// A UI made by hand (tests): no failure screen to fall back to.
+impl From<Ui> for Started {
+    fn from(ui: Ui) -> Started {
+        Started(Shown::Ui(Box::new(ui)))
+    }
+}
+
 impl Started {
     /// Why the store could not open, while the failure screen shows.
     pub fn error(&self) -> Option<&str> {
-        match &self.shown {
+        match &self.0 {
             Shown::Failed(f) => Some(&f.error),
             Shown::Ui(_) => None,
         }
@@ -160,7 +163,7 @@ impl Started {
     /// leaves it locked until the node's runtime has shut down). `StillOpen` while something
     /// else holds a handle.
     pub fn close(self) -> osis::Result<osis::Close> {
-        match self.shown {
+        match self.0 {
             Shown::Ui(ui) => {
                 let db = ui.data.db.clone();
                 drop(ui);
@@ -171,32 +174,42 @@ impl Started {
     }
 
     /// Start fresh: the store goes aside (to the path the screen named, unless that was taken
-    /// since: then the screen names the next free one) and a new one opens in its place.
+    /// since: then the screen names the next free one) and a new one opens in its place, handed
+    /// what the shell has told so far.
     fn start_fresh(&mut self, rr: &mut RenderRoot) {
-        let Shown::Failed(f) = &mut self.shown else { return };
+        let Shown::Failed(f) = &mut self.0 else { return };
         let Some(to) = f.aside.clone() else { return };
-        if let Err(e) = move_aside(&self.start.dir, &to) {
+        if let Err(e) = move_aside(&f.start.dir, &to) {
             match e.kind() {
-                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty => f.aside = aside(&self.start.dir),
-                _ => f.error = format!("could not move {} to {}: {e}", self.start.dir.display(), to.display()),
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::DirectoryNotEmpty => f.aside = aside(&f.start.dir),
+                _ => f.error = format!("could not move {} to {}: {e}", f.start.dir.display(), to.display()),
             }
-        } else {
-            match self.start.ui() {
-                Ok(ui) => return self.run(rr, ui),
-                Err(e) => *f = Failed::new(e, &self.start.dir),
+            return f.show(rr);
+        }
+        match f.start.ui() {
+            Ok(mut ui) => {
+                let mut host = std::mem::take(&mut f.host);
+                let platform = host.attached.take().map(|a| a.platform);
+                ui.host = host;
+                if let Some(p) = platform {
+                    ui.attach(p);
+                }
+                ui.host.resized(rr, ui.host.scale, ui.host.insets);
+                ui.wake(rr);
+                self.0 = Shown::Ui(Box::new(ui));
+            }
+            Err(e) => {
+                (f.error, f.aside) = (e.error, aside(&f.start.dir).filter(|_| e.fresh));
+                f.show(rr);
             }
         }
-        f.show(rr, self.dark);
     }
 
-    /// Hands the window to `ui`, with what the shell has told so far.
-    fn run(&mut self, rr: &mut RenderRoot, mut ui: Ui) {
-        if let Some(a) = self.attached.take() {
-            ui.attach(a.platform, self.scale, self.dark);
+    fn host(&mut self) -> &mut Host {
+        match &mut self.0 {
+            Shown::Ui(ui) => &mut ui.host,
+            Shown::Failed(f) => &mut f.host,
         }
-        ui.set_insets(rr, self.insets);
-        ui.wake(rr);
-        self.shown = Shown::Ui(Box::new(ui));
     }
 }
 
@@ -204,136 +217,116 @@ impl Started {
 impl Started {
     /// The first look, for the initial root widget.
     pub fn look(&self) -> Arc<Look> {
-        match &self.shown {
+        match &self.0 {
             Shown::Ui(ui) => ui.look(),
             Shown::Failed(f) => f.look.clone(),
         }
     }
 
-    /// As `Ui::start`.
+    /// The window exists: register the fonts, take the platform, show the screen. `scale` is
+    /// physical pixels per logical pixel, `dark` the system's dark mode.
     pub fn start(&mut self, rr: &mut RenderRoot, platform: Box<dyn Platform>, scale: f64, dark: bool) {
-        crate::fonts::register(rr);
-        (self.scale, self.dark) = (scale, dark);
-        match &mut self.shown {
-            Shown::Ui(ui) => ui.attach(platform, scale, dark),
+        match &mut self.0 {
+            Shown::Ui(ui) => ui.start(rr, platform, scale, dark),
             Shown::Failed(f) => {
+                crate::fonts::register(rr);
+                (f.host.scale, f.host.dark) = (scale, dark);
                 // no long press here: nothing on the failure screen has a meaning for one
-                self.attached = Some(Attached::new(platform, Box::new(|_, _| {}), f.look.clone()));
-                f.show(rr, dark);
+                f.host.attach(platform, Box::new(|_, _| {}), f.look.clone());
+                f.show(rr);
             }
         }
     }
 
+    /// The window's size or scale changed.
     pub fn resized(&mut self, rr: &mut RenderRoot, scale: f64) {
-        match &mut self.shown {
-            Shown::Ui(ui) => ui.resized(rr, scale),
-            Shown::Failed(_) => {
-                self.scale = scale;
-                set_root_insets(rr, scale, self.insets);
+        let insets = self.host().insets;
+        self.resize(rr, scale, insets);
+    }
+
+    /// What covers the window's edges changed (physical pixels: left, top, right, bottom): the
+    /// screen is laid out clear of it, and the width that leaves is what the layout follows.
+    pub fn set_insets(&mut self, rr: &mut RenderRoot, insets: [f64; 4]) {
+        let scale = self.host().scale;
+        self.resize(rr, scale, insets);
+    }
+
+    fn resize(&mut self, rr: &mut RenderRoot, scale: f64, insets: [f64; 4]) {
+        match &mut self.0 {
+            Shown::Ui(ui) => ui.resized(rr, scale, insets),
+            Shown::Failed(f) => f.host.resized(rr, scale, insets),
+        }
+    }
+
+    /// The system's dark mode changed.
+    pub fn theme_changed(&mut self, rr: &mut RenderRoot, dark: bool) {
+        match &mut self.0 {
+            Shown::Ui(ui) => ui.theme_changed(rr, dark),
+            Shown::Failed(f) => {
+                f.host.dark = dark;
+                f.show(rr);
             }
         }
     }
 
-    pub fn theme_changed(&mut self, rr: &mut RenderRoot, dark: bool) {
-        self.dark = dark;
-        match &mut self.shown {
-            Shown::Ui(ui) => ui.theme_changed(rr, dark),
-            Shown::Failed(f) => f.show(rr, dark),
-        }
-    }
-
+    /// The system's Back; false when there is nowhere to go back to, so the system handles it.
     pub fn back(&mut self, rr: &mut RenderRoot) -> bool {
-        match &mut self.shown {
+        match &mut self.0 {
             Shown::Ui(ui) => ui.back(rr),
             Shown::Failed(_) => false,
         }
     }
 
-    pub fn set_insets(&mut self, rr: &mut RenderRoot, insets: [f64; 4]) {
-        match &mut self.shown {
-            Shown::Ui(ui) => ui.set_insets(rr, insets),
-            Shown::Failed(_) => {
-                self.insets = insets;
-                set_root_insets(rr, self.scale, insets);
-            }
-        }
-    }
-
     pub fn pointer(&mut self, rr: &mut RenderRoot, e: PointerEvent) {
-        match (&mut self.shown, self.attached.as_mut()) {
-            (Shown::Ui(ui), _) => ui.pointer(rr, e),
-            (Shown::Failed(_), Some(a)) => a.pointer(rr, e),
-            (Shown::Failed(_), None) => drop(rr.handle_pointer_event(e)),
-        }
+        self.host().pointer(rr, e);
     }
 
     pub fn text_event(&mut self, rr: &mut RenderRoot, e: TextEvent) -> Handled {
-        match (&mut self.shown, self.attached.as_mut()) {
-            (Shown::Ui(ui), _) => ui.text_event(rr, e),
-            (Shown::Failed(_), Some(a)) => a.text_event(rr, e),
-            (Shown::Failed(_), None) => rr.handle_text_event(e),
-        }
+        self.host().text_event(rr, e)
     }
 
     pub fn menu_pick(&mut self, rr: &mut RenderRoot, c: TextCommand) {
-        match (&mut self.shown, self.attached.as_mut()) {
-            (Shown::Ui(ui), _) => ui.menu_pick(rr, c),
-            (Shown::Failed(_), Some(a)) => a.pick(rr, c),
-            (Shown::Failed(_), None) => {}
-        }
+        self.host().menu_pick(rr, c);
     }
 
     pub fn menu_gone(&mut self) {
-        match (&mut self.shown, self.attached.as_mut()) {
-            (Shown::Ui(ui), _) => ui.menu_gone(),
-            (Shown::Failed(_), Some(a)) => a.input.menu_gone(),
-            (Shown::Failed(_), None) => {}
-        }
+        self.host().menu_gone();
     }
 
     pub fn text_focus(&mut self, rr: &mut RenderRoot) {
-        match (&mut self.shown, self.attached.as_mut()) {
-            (Shown::Ui(ui), _) => ui.text_focus(rr),
-            (Shown::Failed(_), Some(a)) => a.input.text_focus(rr, &mut *a.platform),
-            (Shown::Failed(_), None) => {}
-        }
+        self.host().text_focus(rr);
     }
 
     pub fn paste(&mut self, rr: &mut RenderRoot) {
-        match (&mut self.shown, self.attached.as_mut()) {
-            (Shown::Ui(ui), _) => ui.paste(rr),
-            (Shown::Failed(_), Some(a)) => crate::input::paste(rr, &mut *a.platform),
-            (Shown::Failed(_), None) => {}
-        }
+        self.host().paste(rr);
     }
 
     pub fn copy(&mut self, text: String) {
-        match (&mut self.shown, self.attached.as_mut()) {
-            (Shown::Ui(ui), _) => ui.copy(text),
-            (Shown::Failed(_), Some(a)) => a.platform.set_clipboard(text),
-            (Shown::Failed(_), None) => {}
-        }
+        self.host().copy(text);
     }
 
+    /// The colour under everything, for the shell to clear with.
     pub fn base_color(&self) -> Color {
-        match &self.shown {
+        match &self.0 {
             Shown::Ui(ui) => ui.base_color(),
             Shown::Failed(f) => f.look.bg,
         }
     }
 
+    /// A `Waker` woke the UI thread.
     pub fn wake(&mut self, rr: &mut RenderRoot) {
-        if let Shown::Ui(ui) = &mut self.shown {
+        if let Shown::Ui(ui) = &mut self.0 {
             ui.wake(rr);
         }
     }
 
+    /// A widget submitted an action.
     pub fn action(&mut self, rr: &mut RenderRoot, id: WidgetId, action: ErasedAction) {
-        match &mut self.shown {
+        match &mut self.0 {
             Shown::Ui(ui) => ui.action(rr, id, action),
             Shown::Failed(f) => {
-                if let (Some(Frame(interval)), Some(a)) = (action.downcast_ref::<Frame>().copied(), self.attached.as_mut()) {
-                    a.frame(rr, interval);
+                if let Some(Frame(interval)) = action.downcast_ref::<Frame>().copied() {
+                    f.host.frame(rr, interval);
                 } else if f.fresh == Some(id) && action.downcast_ref::<ChipPress>().is_some() {
                     self.start_fresh(rr);
                 }

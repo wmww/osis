@@ -11,7 +11,7 @@ pub use start::{Start, Started};
 
 use crate::edit::{map_byte, shown_edits};
 use crate::facets::members::ToggleCreating;
-use crate::schema::Mode as ModeChoice;
+use crate::schema::Mode;
 use crate::store::{Data, Reader};
 use crate::view::search::{Paste, classify, search};
 use crate::input::Input as Pointers;
@@ -29,7 +29,7 @@ use crate::masonry::core::{ErasedAction, Handled, NewWidget, PointerEvent, Prope
 use crate::masonry::properties::Padding;
 use crate::masonry::properties::types::{CrossAxisAlignment, Length};
 use crate::masonry::widgets::{Flex, IndexedStack, Prose, SizedBox, TextAction, TextArea};
-use crate::theme::{Look, Mode, Theme, parse};
+use crate::theme::{Look, Theme, parse};
 use crate::widgets::style::{self, Text};
 use crate::widgets::{Blur, ChipPress, Frame, GUTTER, ListAction, MenuPick, Page, Panel, PanelKind, Press, ROW_MIN, Root, VirtualList};
 use crate::window::Waker;
@@ -86,7 +86,7 @@ struct Shell {
     t: Tid,
     home: bool,
     theme: Option<String>,
-    mode: ModeChoice,
+    mode: Mode,
     color: Option<String>,
     searching: bool,
 }
@@ -166,7 +166,7 @@ impl Surface for Draw<'_> {
     }
 }
 
-/// The platform a shell gave `Ui::start`, and the pointer input through it.
+/// The platform a shell gave at `start`, and the pointer input through it.
 struct Attached {
     platform: Box<dyn Platform>,
     input: Pointers,
@@ -174,48 +174,121 @@ struct Attached {
     ticking: bool,
 }
 
-impl Attached {
-    fn new(platform: Box<dyn Platform>, alarm: crate::input::Alarm, look: Arc<Look>) -> Attached {
-        Attached { input: Pointers::new(platform.thresholds(), alarm).with_look(look), platform, ticking: false }
+/// What the shell told about the window, and the platform from `start` on: what the UI and the
+/// failure screen (start.rs) both take input through.
+pub(crate) struct Host {
+    attached: Option<Attached>,
+    /// Physical pixels per logical pixel.
+    scale: f64,
+    /// The system's dark mode, followed by `Mode::Auto`.
+    dark: bool,
+    /// What covers the window's edges (physical px: left, top, right, bottom).
+    insets: [f64; 4],
+}
+
+impl Default for Host {
+    fn default() -> Host {
+        Host { attached: None, scale: 1.0, dark: false, insets: [0.0; 4] }
+    }
+}
+
+impl Host {
+    /// Takes the shell's platform; `alarm` hears long presses (`input::Alarm`).
+    fn attach(&mut self, platform: Box<dyn Platform>, alarm: crate::input::Alarm, look: Arc<Look>) {
+        self.attached = Some(Attached { input: Pointers::new(platform.thresholds(), alarm).with_look(look), platform, ticking: false });
     }
 
-    /// A pointer event, on its way to `rr` through the gestures.
-    fn pointer(&mut self, rr: &mut RenderRoot, e: PointerEvent) {
-        self.input.pointer(rr, &mut *self.platform, e);
-        self.tick(rr);
-    }
-
-    /// A text event, on its way to `rr` past the selection menu.
-    fn text_event(&mut self, rr: &mut RenderRoot, e: TextEvent) -> Handled {
-        self.input.text_event(rr, &mut *self.platform, e)
-    }
-
-    /// The focused field may have changed: the selection menu follows it.
+    /// The focused field or its selection may have changed: the selection menu follows it.
     fn follow(&mut self, rr: &mut RenderRoot) {
-        self.input.follow(rr, &mut *self.platform);
+        if let Some(a) = self.attached.as_mut() {
+            a.input.follow(rr, &mut *a.platform);
+        }
     }
 
-    /// The selection menu's item `c` was picked.
-    fn pick(&mut self, rr: &mut RenderRoot, c: TextCommand) {
-        self.input.pick(rr, &mut *self.platform, c);
+    /// Gives Root the insets in logical px.
+    fn set_root_insets(&self, rr: &mut RenderRoot) {
+        let (s, i) = (self.scale.max(0.1), self.insets);
+        let i = crate::masonry::kurbo::Insets::new(i[0] / s, i[1] / s, i[2] / s, i[3] / s);
+        rr.edit_widget_with_tag(ROOT, |mut r| Root::set_insets(&mut r, i));
+    }
+
+    /// The window's scale or insets changed.
+    fn resized(&mut self, rr: &mut RenderRoot, scale: f64, insets: [f64; 4]) {
+        (self.scale, self.insets) = (scale, insets);
+        self.set_root_insets(rr);
+        self.follow(rr);
     }
 
     /// An animation frame Root reported (`Frame`): a fling moves on; with none going on Root
-    /// stops reporting (also when an `Attached` before this one asked it to).
+    /// stops reporting.
     fn frame(&mut self, rr: &mut RenderRoot, interval: u64) {
-        self.input.frame(rr, interval);
-        if !self.input.flinging() {
-            self.ticking = false;
+        let Some(a) = self.attached.as_mut() else { return };
+        a.input.frame(rr, interval);
+        if !a.input.flinging() {
+            a.ticking = false;
             rr.edit_widget_with_tag(ROOT, |mut r| Root::set_ticking(&mut r, false));
         }
     }
 
-    /// Root reports animation frames while a fling goes on.
-    fn tick(&mut self, rr: &mut RenderRoot) {
-        let on = self.input.flinging();
-        if on != self.ticking {
-            self.ticking = on;
+    /// A pointer event, on its way to `rr` through the gestures (`input`). Root reports animation
+    /// frames while a fling goes on.
+    pub(crate) fn pointer(&mut self, rr: &mut RenderRoot, e: PointerEvent) {
+        let Some(a) = self.attached.as_mut() else {
+            rr.handle_pointer_event(e);
+            return;
+        };
+        a.input.pointer(rr, &mut *a.platform, e);
+        let on = a.input.flinging();
+        if on != a.ticking {
+            a.ticking = on;
             rr.edit_widget_with_tag(ROOT, |mut r| Root::set_ticking(&mut r, on));
+        }
+    }
+
+    /// A text event (a key, an input method's edit, a command such as a keyboard's own Copy
+    /// button, the window's focus), on its way to `rr`: every shell's go through here.
+    pub(crate) fn text_event(&mut self, rr: &mut RenderRoot, e: TextEvent) -> Handled {
+        match self.attached.as_mut() {
+            Some(a) => a.input.text_event(rr, &mut *a.platform, e),
+            None => rr.handle_text_event(e),
+        }
+    }
+
+    /// The selection menu had item `c` picked.
+    pub(crate) fn menu_pick(&mut self, rr: &mut RenderRoot, c: TextCommand) {
+        if let Some(a) = self.attached.as_mut() {
+            a.input.pick(rr, &mut *a.platform, c);
+        }
+    }
+
+    /// The platform closed its selection menu by itself.
+    pub(crate) fn menu_gone(&mut self) {
+        if let Some(a) = self.attached.as_mut() {
+            a.input.menu_gone();
+        }
+    }
+
+    /// An input-method session started or ended (a text field gained or lost the focus).
+    pub(crate) fn text_focus(&mut self, rr: &mut RenderRoot) {
+        if let Some(a) = self.attached.as_mut() {
+            a.input.text_focus(rr, &mut *a.platform);
+        }
+        self.follow(rr);
+    }
+
+    /// The focused widget asked to paste (`RenderRootSignal::ClipboardRead`): the clipboard's
+    /// text replaces its selection (`input::paste`).
+    pub(crate) fn paste(&mut self, rr: &mut RenderRoot) {
+        if let Some(a) = self.attached.as_mut() {
+            crate::input::paste(rr, &mut *a.platform);
+        }
+        self.follow(rr);
+    }
+
+    /// A widget cut or copied `text` (`RenderRootSignal::ClipboardStore`).
+    pub(crate) fn copy(&mut self, text: String) {
+        if let Some(a) = self.attached.as_mut() {
+            a.platform.set_clipboard(text);
         }
     }
 }
@@ -233,19 +306,12 @@ pub struct Ui {
     /// The views on screen.
     tree: Tree,
     slots: HashMap<String, Slot>,
-    /// The system's dark mode, followed by `Mode::Auto`.
-    system_dark: bool,
-    /// Physical pixels per logical pixel.
-    scale: f64,
-    /// What covers the window's edges (physical px: left, top, right, bottom).
-    insets: [f64; 4],
     search_ids: Vec<WidgetId>,
     /// Stacks showing what is there without a search (child 0) or the results (child 1).
     search_stacks: Vec<WidgetId>,
     /// What the search stacks show.
     searching: bool,
-    /// The platform and the pointer input through it, from `start` on.
-    attached: Option<Attached>,
+    pub(crate) host: Host,
     /// Fields built to type in (`TYPE_IN`), served after the update.
     typing: Vec<WidgetId>,
     /// The widgets that report an action and what it does.
@@ -261,9 +327,8 @@ impl Ui {
     pub fn new(data: Data, waker: Waker) -> osis::Result<Ui> {
         // osis callbacks run on this thread, inside the `settle` that the Wakeup drains after
         let (tx, rx) = channel();
-        let (theme, mode) = data.look().unwrap_or((None, ModeChoice::Auto));
+        let (theme, mode) = data.look().unwrap_or((None, Mode::Auto));
         let theme = Theme::named(theme.as_deref());
-        let mode = kit_mode(&mode);
         let m = tx.clone();
         let diag_sub = data.db.on_diagnostic(move |_, d| {
             let _ = m.send(Msg::Diagnostic(d.to_string()));
@@ -299,13 +364,10 @@ impl Ui {
             state,
             tree: Tree::default(),
             slots: HashMap::new(),
-            system_dark: false,
-            scale: 1.0,
-            insets: [0.0; 4],
             search_ids: Vec::new(),
             search_stacks: Vec::new(),
             searching: false,
-            attached: None,
+            host: Host::default(),
             typing: Vec::new(),
             acts: blocks::Acts::default(),
             _diag_sub: diag_sub,
@@ -324,14 +386,14 @@ impl Ui {
         match self.mode {
             Mode::Light => false,
             Mode::Dark => true,
-            Mode::Auto => self.system_dark,
+            Mode::Auto => self.host.dark,
         }
     }
 
     /// Whether the rail fits in the window's width clear of its insets, in `look`.
     fn rail_fits(&self, rr: &RenderRoot, look: &Look) -> bool {
-        let [l, _, r, _] = self.insets;
-        (f64::from(rr.size().width) - l - r) / self.scale.max(0.1) >= rail_needs(look)
+        let [l, _, r, _] = self.host.insets;
+        (f64::from(rr.size().width) - l - r) / self.host.scale.max(0.1) >= rail_needs(look)
     }
 
     /// Brings the screen to what the graph says.
@@ -346,9 +408,7 @@ impl Ui {
             self.status(rr, format!("error: {e}"));
         }
         // what was rebuilt or merged may have moved, changed or removed the focused field
-        if let Some(a) = self.attached.as_mut() {
-            a.follow(rr);
-        }
+        self.host.follow(rr);
     }
 
     fn update_inner(&mut self, rr: &mut RenderRoot, force: bool) -> osis::Result<()> {
@@ -357,7 +417,7 @@ impl Ui {
         let main = self.data.main_group()?;
         let sh = Graph::view(&self.state.graph, ("shell", main), move |r| shell(r, &("shell", main)))?.value;
         self.theme = Theme::named(sh.theme.as_deref());
-        self.mode = kit_mode(&sh.mode);
+        self.mode = sh.mode.clone();
         let dark = self.dark();
         self.state.set_local(DARK, dark);
         if self.state.graph.peek(TICK) == 0
@@ -374,7 +434,7 @@ impl Ui {
         let in_search = rr.focused_widget().and_then(|f| self.search_ids.iter().position(|i| *i == f));
         if rebuild {
             self.look = Arc::new(look);
-            if let Some(a) = self.attached.as_mut() {
+            if let Some(a) = self.host.attached.as_mut() {
                 a.input.set_look(rr, &mut *a.platform, self.look.clone());
             }
             // before the new screen's slots exist: what leaves takes its slot along
@@ -414,7 +474,7 @@ impl Ui {
     /// never will.
     fn serve_typing(&mut self, rr: &mut RenderRoot) {
         if let Some(id) = std::mem::take(&mut self.typing).into_iter().find(|id| rr.has_widget(*id)) {
-            match self.attached.as_mut() {
+            match self.host.attached.as_mut() {
                 Some(a) => a.input.type_in(rr, &mut *a.platform, id),
                 None => {
                     rr.focus_on(Some(id));
@@ -454,7 +514,7 @@ impl Ui {
                 s
             };
             if !l.home {
-                let spec = self.rail_spec(main);
+                let spec = ViewSpec::new("collection", main).config_rail();
                 self.fill_blocks(rr, "rail", vec![Block::View { key: "favorites".into(), spec: spec.clone() }], None)?;
                 keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, rr }, &views::child_path("rail", "favorites"), &spec));
                 keep_err(&mut failed, tree.show(&window, &mut Draw { ui: self, rr }, &views::child_path(RAIL, "results"), &results(true)));
@@ -578,11 +638,6 @@ impl Ui {
             .with_child(NewWidget::new(SizedBox::new(rail).width(Length::px(rail_width(&look)))))
             .with_flex_child(page, 1.0);
         NewWidget::new_with_props(row, Properties::new().with(Padding::all(sp(EDGE)))).erased()
-    }
-
-    /// The rail, a collection view of the favorites.
-    fn rail_spec(&self, main: Tid) -> ViewSpec {
-        ViewSpec::new("collection", main).config_rail()
     }
 
     /// Shows `model` in the slot `key` if it changed: rows that changed in their lists alone, else
@@ -843,13 +898,6 @@ impl Ui {
     }
 }
 
-/// Gives Root `insets` (physical px) in logical px at `scale`.
-fn set_root_insets(rr: &mut RenderRoot, scale: f64, insets: [f64; 4]) {
-    let (s, i) = (scale.max(0.1), insets);
-    let i = crate::masonry::kurbo::Insets::new(i[0] / s, i[1] / s, i[2] / s, i[3] / s);
-    rr.edit_widget_with_tag(ROOT, |mut r| Root::set_insets(&mut r, i));
-}
-
 /// Keeps the first failure of several things all tried.
 fn keep_err(failed: &mut Option<osis::Error>, r: osis::Result<()>) {
     if let Err(e) = r {
@@ -861,31 +909,24 @@ fn seed_of(s: &str) -> u64 {
     s.bytes().fold(7u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)))
 }
 
-fn kit_mode(m: &ModeChoice) -> Mode {
-    match m {
-        ModeChoice::Auto => Mode::Auto,
-        ModeChoice::Light => Mode::Light,
-        ModeChoice::Dark => Mode::Dark,
-    }
-}
-
 /// The first 8 characters of a tid, for the status line.
 fn short(t: Tid) -> String {
     t.to_string().chars().take(8).collect()
 }
 
-/// What a platform shell calls: it owns the window and its `RenderRoot`, and calls these on the UI
-/// thread (desktop: `window::App`; Android: osis-android), through `Started` (start.rs).
+/// What `Started` (start.rs) passes on from a platform shell, on the UI thread (desktop:
+/// `window::App`; Android: osis-android); the calls needing only the platform go to `Host`.
 impl Ui {
     /// The window exists: register the fonts, run what is due, update once. `platform` is the
     /// shell's, `scale` physical pixels per logical pixel, `dark` the system's dark mode.
-    pub fn start(&mut self, rr: &mut RenderRoot, platform: Box<dyn Platform>, scale: f64, dark: bool) {
+    pub(crate) fn start(&mut self, rr: &mut RenderRoot, platform: Box<dyn Platform>, scale: f64, dark: bool) {
         crate::fonts::register(rr);
-        self.attach(platform, scale, dark);
+        (self.host.scale, self.host.dark) = (scale, dark);
+        self.attach(platform);
     }
 
-    /// `start` for a window whose fonts are registered.
-    fn attach(&mut self, platform: Box<dyn Platform>, scale: f64, dark: bool) {
+    /// Takes the shell's platform, its long presses heard here.
+    pub(crate) fn attach(&mut self, platform: Box<dyn Platform>) {
         let (m, w) = (self.tx.clone(), self.waker.clone());
         let alarm = Box::new(move |seq, after| {
             let (m, w) = (m.clone(), w.clone());
@@ -896,32 +937,16 @@ impl Ui {
                 }
             });
         });
-        self.attached = Some(Attached::new(platform, alarm, self.look.clone()));
-        self.scale = scale;
-        self.system_dark = dark;
+        self.host.attach(platform, alarm, self.look.clone());
         self.data.db.settle();
         while self.rx.try_recv().is_ok() {}
         self.waker.wake();
     }
 
-    /// The window's size or scale changed: the rail coming or going rebuilds the screen.
-    pub fn resized(&mut self, rr: &mut RenderRoot, scale: f64) {
-        if scale != self.scale {
-            self.scale = scale;
-            self.root_insets(rr);
-        }
-        self.rail_check(rr);
-        self.follow(rr);
-    }
-
-    /// The layout may have moved the focused field's selection: the selection menu follows it.
-    fn follow(&mut self, rr: &mut RenderRoot) {
-        if let Some(a) = self.attached.as_mut() {
-            a.follow(rr);
-        }
-    }
-
-    fn rail_check(&mut self, rr: &mut RenderRoot) {
+    /// The window's size, scale or insets changed (insets: physical px, left, top, right,
+    /// bottom; the screen is laid out clear of them): the rail coming or going rebuilds the screen.
+    pub(crate) fn resized(&mut self, rr: &mut RenderRoot, scale: f64, insets: [f64; 4]) {
+        self.host.resized(rr, scale, insets);
         let flips = self.built.as_ref().is_some_and(|b| !b.home && self.rail_fits(rr, &self.look) != b.rail);
         if flips {
             self.update(rr, false);
@@ -929,8 +954,8 @@ impl Ui {
     }
 
     /// The system's dark mode changed: Auto follows it.
-    pub fn theme_changed(&mut self, rr: &mut RenderRoot, dark: bool) {
-        self.system_dark = dark;
+    pub(crate) fn theme_changed(&mut self, rr: &mut RenderRoot, dark: bool) {
+        self.host.dark = dark;
         if self.mode == Mode::Auto {
             self.update(rr, false);
         }
@@ -938,8 +963,8 @@ impl Ui {
 
     /// The system's Back: an open selection menu closes; else an open thing goes home (as its bar's
     /// back button does). False when there is nowhere to go back to, so the system handles it.
-    pub fn back(&mut self, rr: &mut RenderRoot) -> bool {
-        if let Some(a) = self.attached.as_mut()
+    pub(crate) fn back(&mut self, rr: &mut RenderRoot) -> bool {
+        if let Some(a) = self.host.attached.as_mut()
             && a.input.back(rr, &mut *a.platform)
         {
             return true;
@@ -954,84 +979,13 @@ impl Ui {
         true
     }
 
-    /// What covers the window's edges (physical pixels: left, top, right, bottom): the screen is
-    /// laid out clear of it, and the width that leaves is what the layout follows.
-    pub fn set_insets(&mut self, rr: &mut RenderRoot, insets: [f64; 4]) {
-        self.insets = insets;
-        self.root_insets(rr);
-        self.rail_check(rr);
-        self.follow(rr);
-    }
-
-    /// Gives Root the insets in logical px at the current scale.
-    fn root_insets(&mut self, rr: &mut RenderRoot) {
-        set_root_insets(rr, self.scale, self.insets);
-    }
-
-    /// A pointer event, on its way to `rr` through the gestures (`input`).
-    pub fn pointer(&mut self, rr: &mut RenderRoot, e: PointerEvent) {
-        match self.attached.as_mut() {
-            Some(a) => a.pointer(rr, e),
-            None => {
-                rr.handle_pointer_event(e);
-            }
-        }
-    }
-
-    /// A text event (a key, an input method's edit, a command such as a keyboard's own Copy
-    /// button, the window's focus), on its way to `rr`: every shell's go through here.
-    pub fn text_event(&mut self, rr: &mut RenderRoot, e: TextEvent) -> Handled {
-        match self.attached.as_mut() {
-            Some(a) => a.text_event(rr, e),
-            None => rr.handle_text_event(e),
-        }
-    }
-
-    /// The platform's selection menu had item `c` picked.
-    pub fn menu_pick(&mut self, rr: &mut RenderRoot, c: TextCommand) {
-        if let Some(a) = self.attached.as_mut() {
-            a.pick(rr, c);
-        }
-    }
-
-    /// The platform closed its selection menu by itself.
-    pub fn menu_gone(&mut self) {
-        if let Some(a) = self.attached.as_mut() {
-            a.input.menu_gone();
-        }
-    }
-
-    /// An input-method session started or ended (a text field gained or lost the focus).
-    pub fn text_focus(&mut self, rr: &mut RenderRoot) {
-        if let Some(a) = self.attached.as_mut() {
-            a.input.text_focus(rr, &mut *a.platform);
-            a.follow(rr);
-        }
-    }
-
-    /// The focused widget asked to paste (`RenderRootSignal::ClipboardRead`): the clipboard's
-    /// text replaces its selection (`input::paste`).
-    pub fn paste(&mut self, rr: &mut RenderRoot) {
-        if let Some(a) = self.attached.as_mut() {
-            crate::input::paste(rr, &mut *a.platform);
-            a.follow(rr);
-        }
-    }
-
-    /// A widget cut or copied `text` (`RenderRootSignal::ClipboardStore`).
-    pub fn copy(&mut self, text: String) {
-        if let Some(a) = self.attached.as_mut() {
-            a.platform.set_clipboard(text);
-        }
-    }
-
     /// The colour under everything, for the shell to clear with.
-    pub fn base_color(&self) -> Color {
+    pub(crate) fn base_color(&self) -> Color {
         self.look.bg
     }
 
     /// A `Waker` woke the UI thread: run osis callbacks and what they posted, then update.
-    pub fn wake(&mut self, rr: &mut RenderRoot) {
+    pub(crate) fn wake(&mut self, rr: &mut RenderRoot) {
         self.data.db.settle();
         for m in self.rx.try_iter().collect::<Vec<_>>() {
             match m {
@@ -1047,7 +1001,7 @@ impl Ui {
                     }
                 }
                 Msg::LongPress(seq) => {
-                    if let Some(a) = self.attached.as_mut() {
+                    if let Some(a) = self.host.attached.as_mut() {
                         a.input.long_press(rr, &mut *a.platform, seq);
                     }
                 }
@@ -1057,11 +1011,9 @@ impl Ui {
     }
 
     /// A widget submitted an action.
-    pub fn action(&mut self, rr: &mut RenderRoot, id: WidgetId, action: ErasedAction) {
+    pub(crate) fn action(&mut self, rr: &mut RenderRoot, id: WidgetId, action: ErasedAction) {
         if let Some(Frame(interval)) = action.downcast_ref::<Frame>().copied() {
-            if let Some(a) = self.attached.as_mut() {
-                a.frame(rr, interval);
-            }
+            self.host.frame(rr, interval);
         } else if action.is::<Press>() {
             if let Some(d) = self.acts.pressed(id) {
                 self.run(rr, d, Input::Press);
@@ -1099,14 +1051,10 @@ impl Ui {
                 self.run(rr, d, Input::Press);
             }
         } else if let Some(MenuPick(c)) = action.downcast_ref::<MenuPick>().copied() {
-            if let Some(a) = self.attached.as_mut() {
-                a.pick(rr, c);
-            }
+            self.host.menu_pick(rr, c);
         } else if let Ok(a) = action.downcast::<TextAction>() {
             self.typed(rr, id, *a);
-            if let Some(a) = self.attached.as_mut() {
-                a.follow(rr);
-            }
+            self.host.follow(rr);
         }
     }
 }

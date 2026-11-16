@@ -8,15 +8,6 @@
 use masonry::peniko::Color;
 use masonry::peniko::color::{AlphaColor, Oklab, Srgb, parse_color};
 
-/// Light or dark (a user setting outside the theme); `Auto` follows the system.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Mode {
-    #[default]
-    Auto,
-    Light,
-    Dark,
-}
-
 /// A theme colour: one per mode, plus how much of the contextual colour mixes in (0..1, in
 /// Oklab, the mode's alpha kept).
 #[derive(Clone, Copy, Debug, PartialEq)]
