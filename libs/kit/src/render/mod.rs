@@ -613,9 +613,9 @@ impl Ui {
             return NewWidget::new_with_props(col, Properties::new().with(Padding::all(sp(EDGE)))).erased();
         }
         let home = NewWidget::new(crate::widgets::Tile::new(crate::widgets::TileStyle::Row, crate::widgets::TileIcon::Icon(Icon::Home), "osis", "Home", None, look.clone()));
-        self.acts.press(home.id(), Do::new(Open(None)));
+        self.acts.at(home.id()).press = Some(Do::new(Open(None)));
         let new = NewWidget::new(crate::widgets::Tile::new(crate::widgets::TileStyle::Row, crate::widgets::TileIcon::Icon(Icon::Plus), "New", "", None, look.clone()));
-        self.acts.press(new.id(), Do::new(ToggleCreating));
+        self.acts.at(new.id()).press = Some(Do::new(ToggleCreating));
         let search = self.search_field(false);
         let rail_list = self.slot("rail");
         let rail_results = self.slot(&views::child_path(RAIL, "results"));
@@ -739,7 +739,7 @@ impl Ui {
     /// A list asked for another window: its anchor is named by key, so what the graph answers is
     /// placed around that row.
     fn list_moved(&mut self, id: WidgetId, anchor: usize, before: usize, after: usize, stuck: bool) {
-        let Some((window, slot, block)) = self.acts.list_of(id) else { return };
+        let Some((window, slot, block)) = self.acts.get(id).and_then(|h| h.list.clone()) else { return };
         let Some(m) = self.slots.get(&slot) else { return };
         let scope = match m.model.get(block) {
             Some(Block::List(l)) => l.shape.scope.clone(),
@@ -760,7 +760,7 @@ impl Ui {
 
     /// A list asked for the window around a row it has no key for.
     fn list_jump(&mut self, id: WidgetId, row: usize, before: usize, after: usize) {
-        let Some((window, slot, block)) = self.acts.list_of(id) else { return };
+        let Some((window, slot, block)) = self.acts.get(id).and_then(|h| h.list.clone()) else { return };
         let scope = match self.slots.get(&slot).and_then(|s| s.model.get(block)) {
             Some(Block::List(l)) => l.shape.scope.clone(),
             _ => String::new(),
@@ -833,7 +833,7 @@ impl Ui {
             }
             return;
         }
-        if let Some(key) = self.acts.editor(id) {
+        if let Some(key) = self.acts.get(id).and_then(|h| h.editor.clone()) {
             match a {
                 TextAction::Changed(text) => {
                     if let Err(e) = self.state.sessions.typed(&key, &text) {
@@ -841,32 +841,34 @@ impl Ui {
                     }
                 }
                 TextAction::Entered(_) => {
-                    if let Some(d) = self.acts.on_enter(id) {
+                    if let Some(d) = self.acts.get(id).and_then(|h| h.enter.clone()) {
                         self.run(rr, d, Input::Press);
                     }
                 }
             }
             return;
         }
-        if self.acts.has_form(id) {
-            match a {
-                TextAction::Changed(t) => self.acts.set_form_text(id, t),
-                TextAction::Entered(t) => {
-                    self.acts.set_form_text(id, t);
-                    self.save_form(rr, id);
-                }
+        if let Some(f) = self.acts.get_mut(id).and_then(|h| h.form.as_mut()) {
+            let entered = matches!(a, TextAction::Entered(_));
+            let (TextAction::Changed(t) | TextAction::Entered(t)) = a;
+            f.text = t;
+            if entered {
+                self.save_form(rr, id);
             }
         }
     }
 
     /// Saves a form input's text unless it is what was saved last.
     fn save_form(&mut self, rr: &mut RenderRoot, id: WidgetId) {
-        let Some((d, text)) = self.acts.form_dirty(id) else { return };
+        let Some(f) = self.acts.get(id).and_then(|h| h.form.as_ref()).filter(|f| f.text.trim() != f.saved.trim()) else { return };
+        let (d, text) = (f.save.clone(), f.text.clone());
         let r = d.run(&Act::new(&self.data, &self.state), &Input::Text(text.clone()));
         match r {
             Ok(()) => {
                 // only once written: a rejected text is reported again on the next Enter or blur
-                self.acts.set_form_saved(id, text);
+                if let Some(f) = self.acts.get_mut(id).and_then(|h| h.form.as_mut()) {
+                    f.saved = text;
+                }
             }
             Err(e) => self.status(rr, format!("error: {e}")),
         }
@@ -1015,11 +1017,11 @@ impl Ui {
         if let Some(Frame(interval)) = action.downcast_ref::<Frame>().copied() {
             self.host.frame(rr, interval);
         } else if action.is::<Press>() {
-            if let Some(d) = self.acts.pressed(id) {
+            if let Some(d) = self.acts.get(id).and_then(|h| h.press.clone()) {
                 self.run(rr, d, Input::Press);
             }
         } else if action.is::<Blur>() {
-            if let Some(input) = self.acts.blur_input(id) {
+            if let Some(input) = self.acts.get(id).and_then(|h| h.blur) {
                 self.save_form(rr, input);
             }
         } else if let Some(a) = action.downcast_ref::<ListAction>().copied() {
@@ -1033,20 +1035,20 @@ impl Ui {
                     self.update(rr, false);
                 }
                 ListAction::Reorder { from, to } => {
-                    let first = self.acts.list_of(id).and_then(|(_, s, b)| match self.slots.get(&s)?.model.get(b)? {
+                    let first = self.acts.get(id).and_then(|h| h.list.clone()).and_then(|(_, s, b)| match self.slots.get(&s)?.model.get(b)? {
                         Block::List(l) => l.first(),
                         _ => None,
                     });
-                    if let (Some(d), Some(f)) = (self.acts.reorder(id), first) {
+                    if let (Some(d), Some(f)) = (self.acts.get(id).and_then(|h| h.reorder.clone()), first) {
                         self.run(rr, d, Input::Reorder { from: from + f, to: to + f });
                     }
                 }
             }
         } else if let Some(p) = action.downcast_ref::<ChipPress>().copied() {
-            let d = match p {
-                ChipPress::Open => self.acts.pressed(id),
-                ChipPress::Remove => self.acts.removed(id),
-            };
+            let d = self.acts.get(id).and_then(|h| match p {
+                ChipPress::Open => h.press.clone(),
+                ChipPress::Remove => h.remove.clone(),
+            });
             if let Some(d) = d {
                 self.run(rr, d, Input::Press);
             }

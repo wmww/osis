@@ -17,10 +17,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// A form input: what it saves, the value last saved, the text it shows now.
-struct FormInput {
-    save: Do,
-    saved: String,
-    text: String,
+pub struct FormInput {
+    pub save: Do,
+    pub saved: String,
+    pub text: String,
 }
 
 /// What a slot's widgets registered, so it can be forgotten with them.
@@ -73,83 +73,50 @@ impl RowList {
     }
 }
 
-/// The widgets that report an action, and what it does.
+/// What a widget reporting an action does with it.
 #[derive(Default)]
-pub struct Acts {
-    press: HashMap<WidgetId, Do>,
-    remove: HashMap<WidgetId, Do>,
-    reorder: HashMap<WidgetId, Do>,
+pub struct Hooks {
+    pub press: Option<Do>,
+    /// A chip's ×.
+    pub remove: Option<Do>,
+    pub reorder: Option<Do>,
     /// A list widget's path for its window (`LIST_WINDOW`), and the slot and block holding it.
-    lists: HashMap<WidgetId, (String, String, usize)>,
-    forms: HashMap<WidgetId, FormInput>,
-    blur: HashMap<WidgetId, WidgetId>,
-    editors: HashMap<WidgetId, crate::view::sessions::Key>,
-    enter: HashMap<WidgetId, Do>,
+    pub list: Option<(String, String, usize)>,
+    pub form: Option<FormInput>,
+    /// A field panel reporting its input's blur: that input.
+    pub blur: Option<WidgetId>,
+    pub editor: Option<crate::view::sessions::Key>,
+    /// Run on Enter.
+    pub enter: Option<Do>,
 }
+
+/// The widgets that report an action, and what each does.
+#[derive(Default)]
+pub struct Acts(HashMap<WidgetId, Hooks>);
 
 impl Acts {
     pub fn clear(&mut self) {
-        *self = Acts::default();
+        self.0.clear();
     }
-    pub fn press(&mut self, id: WidgetId, d: Do) {
-        self.press.insert(id, d);
+    pub fn get(&self, id: WidgetId) -> Option<&Hooks> {
+        self.0.get(&id)
     }
-    pub fn pressed(&self, id: WidgetId) -> Option<Do> {
-        self.press.get(&id).cloned()
+    pub fn get_mut(&mut self, id: WidgetId) -> Option<&mut Hooks> {
+        self.0.get_mut(&id)
     }
-    pub fn removed(&self, id: WidgetId) -> Option<Do> {
-        self.remove.get(&id).cloned()
-    }
-    pub fn reorder(&self, id: WidgetId) -> Option<Do> {
-        self.reorder.get(&id).cloned()
-    }
-    /// The list widget's window key, slot and block.
-    pub fn list_of(&self, id: WidgetId) -> Option<(String, String, usize)> {
-        self.lists.get(&id).cloned()
-    }
-    pub fn blur_input(&self, id: WidgetId) -> Option<WidgetId> {
-        self.blur.get(&id).copied()
-    }
-    pub fn editor(&self, id: WidgetId) -> Option<crate::view::sessions::Key> {
-        self.editors.get(&id).cloned()
+    pub fn at(&mut self, id: WidgetId) -> &mut Hooks {
+        self.0.entry(id).or_default()
     }
     /// The widget of the editor of this session.
     pub fn editor_for(&self, key: &crate::view::sessions::Key) -> Option<WidgetId> {
-        self.editors.iter().find(|(_, k)| *k == key).map(|(id, _)| *id)
-    }
-    pub fn on_enter(&self, id: WidgetId) -> Option<Do> {
-        self.enter.get(&id).cloned()
-    }
-    pub fn has_form(&self, id: WidgetId) -> bool {
-        self.forms.contains_key(&id)
-    }
-    pub fn set_form_text(&mut self, id: WidgetId, t: String) {
-        if let Some(f) = self.forms.get_mut(&id) {
-            f.text = t;
-        }
-    }
-    pub fn form_dirty(&self, id: WidgetId) -> Option<(Do, String)> {
-        let f = self.forms.get(&id)?;
-        (f.text.trim() != f.saved.trim()).then(|| (f.save.clone(), f.text.clone()))
-    }
-    pub fn set_form_saved(&mut self, id: WidgetId, t: String) {
-        if let Some(f) = self.forms.get_mut(&id) {
-            f.saved = t;
-        }
+        self.0.iter().find(|(_, h)| h.editor.as_ref() == Some(key)).map(|(id, _)| *id)
     }
     pub fn forget(&mut self, b: &Built) {
         for (_, row) in b.lists.values().flat_map(|l| &l.rows) {
             self.forget(row);
         }
         for id in &b.ids {
-            self.press.remove(id);
-            self.remove.remove(id);
-            self.reorder.remove(id);
-            self.lists.remove(id);
-            self.forms.remove(id);
-            self.blur.remove(id);
-            self.editors.remove(id);
-            self.enter.remove(id);
+            self.0.remove(id);
         }
     }
 }
@@ -223,9 +190,14 @@ fn tile_icon(m: &Mark) -> TileIcon {
 }
 
 impl R<'_> {
-    fn press(&mut self, id: WidgetId, d: Do) {
-        self.acts.press.insert(id, d);
+    /// What `id` does, to fill in; forgotten with the slot.
+    fn hook(&mut self, id: WidgetId) -> &mut Hooks {
         self.built.ids.push(id);
+        self.acts.at(id)
+    }
+
+    fn press(&mut self, id: WidgetId, d: Do) {
+        self.hook(id).press = Some(d);
     }
 
     fn block(&mut self, b: &Block) -> Option<NewWidget<dyn Widget>> {
@@ -334,8 +306,7 @@ impl R<'_> {
                 self.press(w.id(), d.clone());
             }
             if let Some(d) = &m.remove {
-                self.acts.remove.insert(w.id(), d.clone());
-                self.built.ids.push(w.id());
+                self.hook(w.id()).remove = Some(d.clone());
             }
             wrap = wrap.with_child(w);
         }
@@ -399,12 +370,10 @@ impl R<'_> {
         let w = NewWidget::new(w);
         if let (Some(i), Some(slot)) = (listing, self.list_slot.clone()) {
             self.built.lists.insert(i, RowList { widget: w.id(), rows: keyed });
-            self.acts.lists.insert(w.id(), (l.id.clone(), slot, i));
-            self.built.ids.push(w.id());
+            self.hook(w.id()).list = Some((l.id.clone(), slot, i));
         }
         if let Some(d) = &l.shape.reorder {
-            self.acts.reorder.insert(w.id(), d.clone());
-            self.built.ids.push(w.id());
+            self.hook(w.id()).reorder = Some(d.clone());
         }
         w.erased()
     }
@@ -484,9 +453,8 @@ impl R<'_> {
         let hints = TextInputHints { capitalize: Capitalize::None, suggest: false, enter: EnterKey::Done, ..Default::default() };
         let (input, id) = style::input(self.look, value, placeholder, Text::Body, false, hints);
         let panel = NewWidget::new(Panel::new(input, self.look.clone(), PanelKind::Field, (5.0, 8.0)).report_blur(true));
-        self.acts.forms.insert(id, FormInput { save, saved: value.to_string(), text: value.to_string() });
-        self.acts.blur.insert(panel.id(), id);
-        self.built.ids.extend([id, panel.id()]);
+        self.hook(id).form = Some(FormInput { save, saved: value.to_string(), text: value.to_string() });
+        self.hook(panel.id()).blur = Some(id);
         self.built.inputs.push(id);
         panel
     }
@@ -504,8 +472,7 @@ impl R<'_> {
         };
         let hints = TextInputHints { suggest: true, enter: EnterKey::Done, ..Default::default() };
         let (w, id): (NewWidget<TextInput>, _) = style::input(&look, &shown, placeholder, role_t, multiline, hints);
-        self.acts.editors.insert(id, key);
-        self.built.ids.push(id);
+        self.hook(id).editor = Some(key);
         if self.built.typing.is_none() && self.window.graph.peek(TYPE_IN).is_some_and(|(t, a)| t == thing && a == ak) {
             self.built.typing = Some(id);
         }
@@ -529,11 +496,10 @@ impl R<'_> {
             let hints = TextInputHints { suggest: true, enter, ..Default::default() };
             let (input, id) = style::input(&look, &text, &f.placeholder, Text::Body, false, hints);
             let panel = NewWidget::new(Panel::new(input, look.clone(), PanelKind::Field, (8.0, 12.0)));
-            self.acts.editors.insert(id, key);
-            self.built.ids.push(id);
+            self.hook(id).editor = Some(key);
             self.built.inputs.push(id);
             if i == last {
-                self.acts.enter.insert(id, c.send.clone());
+                self.hook(id).enter = Some(c.send.clone());
                 let send = NewWidget::new(KChip::new("Send", None, KMark::Icon(Icon::Plus), look.clone()));
                 self.press(send.id(), c.send.clone());
                 let row = Flex::row().with_gap(Length::px(look.sp(8.0))).with_flex_child(panel, 1.0).with_child(send);
