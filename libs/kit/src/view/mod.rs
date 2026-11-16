@@ -185,21 +185,6 @@ pub struct Day {
     pub(crate) see_all: Do,
 }
 
-impl Day {
-    /// What the day shows.
-    pub fn entries(&self) -> &[Entry] {
-        &self.entries
-    }
-    /// How many more than it shows.
-    pub fn more(&self) -> usize {
-        self.more
-    }
-    /// What pressing "+n more" does.
-    pub fn see_all(&self) -> &Do {
-        &self.see_all
-    }
-}
-
 /// A row of a form: a label and an input saved on Enter or leaving it, or a value shown.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FormRow {

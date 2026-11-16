@@ -110,24 +110,6 @@ struct Layout {
     rail: bool,
 }
 
-/// What `fill_blocks` did.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Filled {
-    Same,
-    /// Rows changed in their lists; the widgets around them stayed.
-    Patched,
-    /// As `Patched`, and rows that are child views came or went: the tree reconciles them.
-    PatchedChildren,
-    Rebuilt,
-}
-
-impl Filled {
-    /// The node's children must be reconciled.
-    fn children(self) -> bool {
-        matches!(self, Filled::Rebuilt | Filled::PatchedChildren)
-    }
-}
-
 /// `Ui` as the tree's surface.
 struct Draw<'u> {
     ui: &'u mut Ui,
@@ -150,9 +132,9 @@ impl Surface for Draw<'_> {
         if filled {
             let key = format!("{path}#foot");
             let foot_changed = ui.fill_blocks(self.rr, &key, foot, None)?;
-            return Ok(changed.children() || foot_changed.children());
+            return Ok(changed || foot_changed);
         }
-        Ok(changed.children())
+        Ok(changed)
     }
 
     fn gone(&mut self, path: &str) {
@@ -642,11 +624,12 @@ impl Ui {
 
     /// Shows `model` in the slot `key` if it changed: rows that changed in their lists alone, else
     /// a rebuild, where a form input with the focus keeps it (by place, caret at the end). Unknown
-    /// slots are not on screen.
-    fn fill_blocks(&mut self, rr: &mut RenderRoot, key: &str, model: Vec<Block>, current: Option<Tid>) -> osis::Result<Filled> {
-        let Some(slot) = self.slots.get(key) else { return Ok(Filled::Same) };
+    /// slots are not on screen. Returns whether the slot's child views must be reconciled: it was
+    /// rebuilt, or rows that are child views came or went.
+    fn fill_blocks(&mut self, rr: &mut RenderRoot, key: &str, model: Vec<Block>, current: Option<Tid>) -> osis::Result<bool> {
+        let Some(slot) = self.slots.get(key) else { return Ok(false) };
         if slot.model == model {
-            return Ok(Filled::Same);
+            return Ok(false);
         }
         if let Some(steps) = keyed::steps(&slot.model, &model)
             && steps.iter().all(|(i, _)| slot.built.lists.contains_key(i))
@@ -655,7 +638,7 @@ impl Ui {
             if let Some(slot) = self.slots.get_mut(key) {
                 slot.model = model;
             }
-            return Ok(if children { Filled::PatchedChildren } else { Filled::Patched });
+            return Ok(children);
         }
         let id = slot.id;
         let focused = rr.focused_widget();
@@ -695,7 +678,7 @@ impl Ui {
             slot.model = model;
             slot.built = built;
         }
-        Ok(Filled::Rebuilt)
+        Ok(true)
     }
 
     /// Applies row steps to the lists of the slot `key`: only the rows named are touched, and the

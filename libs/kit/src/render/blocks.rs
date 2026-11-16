@@ -380,18 +380,18 @@ impl R<'_> {
         for d in days {
             let mut day = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(4.0)));
             day = day.with_child(style::label(&look, &d.label, if d.today { Text::Body } else { Text::Muted }));
-            if d.entries().is_empty() {
+            if d.entries.is_empty() {
                 day = day.with_child(style::label(&look, "Free", Text::Small));
             }
-            for e in d.entries() {
+            for e in &d.entries {
                 self.window.graph.add_row();
                 let w = NewWidget::new(Tile::new(TileStyle::Row, TileIcon::Bar, &e.title, &e.text, tint(&e.color), look.clone()));
                 self.press(w.id(), Do::new(crate::view::Open(Some(e.thing))));
                 day = day.with_child(w);
             }
-            if d.more() > 0 {
-                let w = NewWidget::new(KChip::new(&format!("+{} more", d.more()), None, ChipMark::Icon(Icon::List), look.clone()).flat(true));
-                self.press(w.id(), d.see_all().clone());
+            if d.more > 0 {
+                let w = NewWidget::new(KChip::new(&format!("+{} more", d.more), None, ChipMark::Icon(Icon::List), look.clone()).flat(true));
+                self.press(w.id(), d.see_all.clone());
                 day = day.with_child(w);
             }
             let kind = if d.today { PanelKind::Highlight } else { PanelKind::Inset };
