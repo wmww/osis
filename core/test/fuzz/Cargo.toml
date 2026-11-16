@@ -82,13 +82,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "inbox"
-path = "fuzz_targets/inbox.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "link"
 path = "fuzz_targets/link.rs"
 test = false

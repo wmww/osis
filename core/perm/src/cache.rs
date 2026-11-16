@@ -15,7 +15,7 @@ use crate::graph::{Class, Edges, Records};
 use osis_base::RecordLink;
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::types::{Edge, Frontier, RoleCommit, Point, Tie, TieSource, WriteId};
+use crate::types::{Edge, Frontier, RoleCommit, Point, WriteId};
 use crate::walk::{Applied, Attr, Change, Demotion, Fall, Input, Outcome, Undo, Walked};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -103,24 +103,7 @@ impl W {
         self.role(e.role);
         self.opt(e.until, |w, u| w.n(u.0));
         self.opt(e.invite, W::role);
-        self.opt(e.tied.as_ref(), W::tie);
         self.opt(e.floor, W::n);
-    }
-    fn tie(&mut self, t: &Tie) {
-        self.ts(t.ts);
-        match t.src {
-            TieSource::Commit(c) => {
-                self.u8(0);
-                self.cid(&c);
-            }
-            TieSource::Session(n, nonce) => {
-                self.u8(1);
-                self.tid(&n);
-                self.out.extend_from_slice(&nonce);
-            }
-        }
-        self.n(t.ctr);
-        self.bool(t.subgroup);
     }
     fn wid(&mut self, w: &WriteId) {
         self.cid(&w.0);
@@ -490,18 +473,8 @@ impl<'a> R<'a> {
         let role = self.role()?;
         let until = self.opt(|r| r.n().map(WallMs))?;
         let invite = self.opt(R::role)?;
-        let tied = self.opt(R::tie)?;
         let floor = self.opt(R::n)?;
-        Some(Edge { role, until, invite, tied, floor })
-    }
-    fn tie(&mut self) -> Option<Tie> {
-        let ts = self.ts()?;
-        let src = match self.u8()? {
-            0 => TieSource::Commit(self.cid()?),
-            1 => TieSource::Session(self.tid()?, self.take(16)?.try_into().ok()?),
-            _ => return None,
-        };
-        Some(Tie { ts, src, ctr: self.n()?, subgroup: self.bool()? })
+        Some(Edge { role, until, invite, floor })
     }
     fn wid(&mut self) -> Option<WriteId> {
         Some(WriteId(self.cid()?, u32::try_from(self.n()?).ok()?))

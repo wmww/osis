@@ -158,15 +158,6 @@ impl Value {
         self.as_bytes()?.try_into().ok()
     }
     #[doc(hidden)]
-    /// `Opt(X)`: a list of zero or one item.
-    pub fn as_opt(&self) -> Option<Option<&Value>> {
-        match self.as_list()? {
-            [] => Some(None),
-            [x] => Some(Some(x)),
-            _ => None,
-        }
-    }
-    #[doc(hidden)]
     /// Nesting depth as the decoder counts it: arrays, maps and tags on the deepest path.
     pub fn depth(&self) -> usize {
         fn max(it: impl Iterator<Item = usize>) -> usize {

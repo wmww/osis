@@ -74,9 +74,7 @@ impl Engine {
     /// `hold_key_actor(link.seed)` came first so L's boxes open): signing as L, an invite grant
     /// of `grantee` (this node's actor, or this node) to K with the link's role and K's boxes;
     /// `single_use` also removes L's own edge in the same commit. Deposited under K's sync ID
-    /// unless the role is write or above. Redeemed for the account, the same transaction files the
-    /// target as a subgroup of D (an accept, spec/sync-set.md §4) unless a synced group's closure
-    /// holds it already. Leaves the seed held as it was: a caller holding it
+    /// unless the role is write or above. Leaves the seed held as it was: a caller holding it
     /// keeps it (a redeemer proves L until its join is at a source, spec/permissions.md §7).
     pub fn redeem(&mut self, link: &ShareLink, grantee: &Tid, single_use: bool) -> Result<Done> {
         let l = crate::identity::key_actor_tid(&link.seed);
@@ -115,11 +113,10 @@ impl Engine {
         if !self.roster(&link.target).get(&k).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default()))) {
             return Err(Error::Misuse("K's grant on the link's target is not held here"));
         }
-        let grant = Edge { role: edge.role, until: None, invite: None, tied: None, floor: None };
-        let target = link.target;
-        // L signs with its own role, so the grant deposits only below write; a redeem for the
-        // account is an accept (spec/sync-set.md §4), in the join's transaction
-        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, |tx| crate::sync::inbox::accept_redeemed(tx, &grantee, &k, &target))
+        let grant = Edge { role: edge.role, until: None, invite: None, floor: None };
+        // L signs with its own role, so the grant deposits only below write
+        // refgraph: (c) the redeem writes, with strongs in the account root, tickets for K and the target in its `tickets.0`
+        self.grant_signed_then(Some(l), k, grantee, &grant, single_use, crate::flows::edges::History::All, |_| Ok(()))
     }
 
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or
@@ -306,7 +303,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let hist = crate::rotation::history_boxes(tx, &sharer, &k)?;
     let boxes = box_holder(&k, &epochs, &hist, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
     let mut m = Mutation::new();
-    put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), tied: None, floor: None })?;
+    put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), floor: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
     done.add(Engine::commit_tx(tx, m)?);
     let sync_id = super::home_sync_id(tx, &k)?.ok_or(Error::Misuse("K's sync ID"))?;
@@ -317,20 +314,15 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
         done.add(Engine::commit_tx(tx, m)?);
     }
     // K on the target
-    let target_edge = Edge { role: spec.role, until: None, invite: None, tied: None, floor: None };
+    let target_edge = Edge { role: spec.role, until: None, invite: None, floor: None };
     // K is new: the grant demotes nobody, so it carries no frontier
     done.extend(grant_in(tx, None, spec.target, k, &target_edge, false, None)?);
     // the seed on a thing only the sharer's actor reads (derived secrets)
     let mut m = Mutation::new();
     let keep = m.create(crate::identity::thing_record(sharer, &mut *tx.rng));
     m.op(keep, &super::ak(LINK_SEED)?, PathOp { path: Vec::new(), op: Op::Set(Value::Map([(Value::Int(0), Value::Tid(k)), (Value::Int(1), Value::Bytes(seed.expose().to_vec())), (Value::Int(2), Value::Tid(spec.target)), (Value::Int(3), Value::Bool(spec.single_use))].into_iter().collect())) })?;
-    // the seed thing and K are items of the sharer's D: every node of the account holds the seed
-    // and may finalize, and serves K's sync ID to redeemers (spec/permissions.md §7)
-    if let Some((_, d)) = tx.core.account_devices() {
-        for t in [keep, k] {
-            m.op(d, &ct::GROUP, PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(t)) })?;
-        }
-    }
+    // refgraph: (b) the seed thing and K held from the account root, so every node of the account
+    // holds the seed, may finalize and serves K's sync ID to redeemers (spec/permissions.md §7)
     done.add(Engine::commit_tx(tx, m)?);
     Ok((k, sync_id, keep, done))
 }

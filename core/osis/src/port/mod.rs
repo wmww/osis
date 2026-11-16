@@ -27,9 +27,7 @@ pub mod method {
     /// `[tid] -> bool`: the thing is known here, content or not (where a thin client of several
     /// nodes finds a thing).
     pub const HOLDS: u64 = 4;
-    /// `[tid] -> [[item_of*], [subgroup_of*], [within*]]`
-    pub const GROUPS_OF: u64 = 5;
-    /// `[tid] -> [[holder, role, Opt(until), Opt(may_grant), with_membership, from_now]*]`
+    /// `[tid] -> [[holder, role, Opt(until), Opt(may_grant), from_now]*]`
     pub const GRANTS: u64 = 6;
     /// `[tid] -> Opt(role)`
     pub const ROLE_ON: u64 = 7;
@@ -70,14 +68,10 @@ pub mod method {
     pub const PROFILE: u64 = 23;
     /// `[account] -> Opt(tid)` (`profile_of`)
     pub const PROFILE_OF: u64 = 24;
-    /// `[] -> [[thing, role, Opt(from), taken, acted]*]` (`invitations`)
-    pub const INVITATIONS: u64 = 25;
-    /// `[thing, into] -> []` (`accept_invite`)
-    pub const ACCEPT_INVITE: u64 = 26;
 
     // Rows that wait: never a Call, only as a Sub `[filter::WAIT, method, [arg*]]`.
 
-    /// `[sync scope] -> []` (`wait_synced`), scope `[0]` all, `[1, tid]`, `[2]` deliveries.
+    /// `[sync scope] -> []` (`wait_synced`), scope `[0]` all, `[1, tid]`.
     pub const WAIT_SYNCED: u64 = 27;
     /// `[card text] -> account` (`import_contact`)
     pub const IMPORT_CONTACT: u64 = 28;

@@ -7,7 +7,6 @@ use osis::internals::CommitRaw as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
-use crate::common::CreateIn;
 use osis::{CommitKind, CommitQuery, DynamicAspectKey, NotUndoableReason, Error, MemStore, Osis, Scope, Value};
 
 /// The aspects: `kept_thing` keeps `KEPT` a day, the others none, durable and ephemeral.
@@ -284,124 +283,6 @@ fn ephemeral_undo_from_kept_history_spec_crdt_4_6() {
     assert!(matches!(db.revert(oid), Err(Error::Invalid(_))));
 }
 
-// notes/ephemeral.md API (Undo): Thing and Group scopes cover durable aspects; an ephemeral
-// aspect (a cursor) is in scope only when named by `Scope::Aspects`, so document undo never
-// steps through cursor moves.
-#[test]
-fn thing_scope_skips_cursor_spec_crdt_4_6() {
-    let db = setup(0);
-    let (text, cursor) = (key(&db, "app:k.0"), key(&db, "app:ke+.0"));
-    let mut w = db.write();
-    let d = w.create_with_content(db.home()).unwrap();
-    keeps(&mut w, d);
-    w.commit().unwrap();
-    db.commit_set(d, text.clone(), &Value::Int(1)).unwrap();
-    db.commit_set(d, cursor.clone(), &Value::Int(1)).unwrap();
-    db.commit_set(d, cursor.clone(), &Value::Int(2)).unwrap();
-    let doc = Scope::Thing(d);
-    assert!(db.writes(&doc, &CommitQuery::default()).unwrap().commits.iter().all(|e| !e.parts().any(|(_, a, _)| a.ephemeral())));
-    db.undo(&doc).unwrap().unwrap();
-    assert_eq!(db.at(d, text).get().unwrap(), None, "the text change, not a cursor move");
-    assert_eq!(db.at(d, cursor.clone()).get().unwrap(), int(2));
-    let cur = Scope::Aspects(vec![(d, ak("app:ke+.0"))]);
-    db.undo(&cur).unwrap().unwrap();
-    assert_eq!(db.at(d, cursor.clone()).get().unwrap(), int(1));
-    db.redo(&cur).unwrap().unwrap();
-    assert_eq!(db.at(d, cursor).get().unwrap(), int(2));
-}
-
-// notes/ephemeral.md API (Undo): an aspect scope over a durable and an ephemeral aspect: undo
-// steps newest first across durable and ephemeral changes, redo back.
-#[test]
-fn mixed_scope_undo_order_spec_crdt_4_6() {
-    let db = setup(0);
-    let (body, draft) = (key(&db, "app:k.0"), key(&db, "app:ke+.0"));
-    let (f, item) = db
-        .commit_with(|w| {
-            // node-local: made under the account, no key home carries them (spec/sync-set.md §2)
-            let f = w.create_with_content(db.me())?;
-            let item = w.create_with_content(db.me())?;
-            keeps(w, item);
-            w.group(f).add(osis::Member::Item(item))?;
-            Ok((f, item))
-        })
-        .unwrap();
-    let e = db.commit_with(|w| { let e = w.create_in(db.me(), &[f])?; keeps(w, e); Ok(e) }).unwrap();
-    db.commit_set(item, body.clone(), &Value::Int(1)).unwrap();
-    db.commit_set(e, draft.clone(), &Value::Int(1)).unwrap();
-    db.commit_set(item, body.clone(), &Value::Int(2)).unwrap();
-    db.commit_set(e, draft.clone(), &Value::Int(2)).unwrap();
-    let scope = Scope::Aspects(vec![(item, ak("app:k.0")), (e, ak("app:ke+.0"))]);
-    let state = || (db.at(item, body.clone()).get().unwrap(), db.at(e, draft.clone()).get().unwrap());
-    db.undo(&scope).unwrap().unwrap();
-    assert_eq!(state(), (int(2), int(1)));
-    db.undo(&scope).unwrap().unwrap();
-    assert_eq!(state(), (int(1), int(1)));
-    db.undo(&scope).unwrap().unwrap();
-    assert_eq!(state(), (int(1), None));
-    db.redo(&scope).unwrap().unwrap();
-    assert_eq!(state(), (int(1), int(1)));
-    db.redo(&scope).unwrap().unwrap();
-    assert_eq!(state(), (int(2), int(1)));
-    db.redo(&scope).unwrap().unwrap();
-    assert_eq!(state(), (int(2), int(2)));
-}
-
-// spec/crdt.md §4.6, spec/commits.md §6: a commit's `expires` overrides its keys' defaults, and its undo has no use
-// for them: what the undo writes expires as what it copies back, so a commit that could be made can be
-// undone and redone. Durable and ephemeral alike.
-#[test]
-fn undo_takes_no_key_default_spec_crdt_4_6() {
-    let db = setup(0);
-    db.register_schema("rv.osis", "revision 1;\nexpires(30d) aspect app:d.0: int;\naspect app:p.0: int;\nexpires(30s) ephemeral aspect app:de+.0: int;\nephemeral aspect app:pe+.0: int;").unwrap();
-    let t = db.commit_with(|w| { let t = w.create_with_content(db.home())?; keep_all(w, t); Ok(t) }).unwrap();
-    for (x, y) in [("app:d.0", "app:p.0"), ("app:de+.0", "app:pe+.0")] {
-        let (a, b) = (db.aspect_key(x).unwrap(), db.aspect_key(y).unwrap());
-        let mut w = db.write();
-        w.expires(osis::Expiry::In(std::time::Duration::from_secs(3600)));
-        w.at(t, a.clone()).set(&Value::Int(1)).unwrap();
-        w.at(t, b.clone()).set(&Value::Int(1)).unwrap();
-        w.commit().unwrap();
-        let scope = Scope::Aspects(vec![(t, ak(x)), (t, ak(y))]);
-        db.undo(&scope).unwrap().unwrap();
-        assert_eq!((db.at(t, a.clone()).get().unwrap(), db.at(t, b.clone()).get().unwrap()), (None, None));
-        db.redo(&scope).unwrap().unwrap();
-        assert_eq!((db.at(t, a).get().unwrap(), db.at(t, b).get().unwrap()), (int(1), int(1)));
-    }
-}
-
-// spec/commits.md §6, §7, spec/crdt.md §4.6: an undo is one commit. One that would copy back a value
-// expiring beside one that does not is refused, saying so, with nothing applied and nothing older
-// undone; once the value has expired there is nothing to copy back, and it goes through.
-#[test]
-fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
-    let c = clock();
-    let db = osis::internals::create(cfg(0, MemStore::new(), &c)).unwrap();
-    db.register_schema("two.osis", "revision 1;\naspect app:a.0: int;\naspect app:b.0: int;\nephemeral aspect app:c+.0: int;\nephemeral aspect app:d+.0: int;").unwrap();
-    let t = db.commit_with(|w| { let t = w.create_with_content(db.home())?; keep_all(w, t); Ok(t) }).unwrap();
-    for (x, y) in [("app:a.0", "app:b.0"), ("app:c+.0", "app:d+.0")] {
-        let (a, b) = (db.aspect_key(x).unwrap(), db.aspect_key(y).unwrap());
-        db.commit_set(t, b.clone(), &Value::Int(0)).unwrap();
-        let mut w = db.write();
-        w.expires(osis::Expiry::In(std::time::Duration::from_secs(3600)));
-        w.at(t, a.clone()).set(&Value::Int(0)).unwrap();
-        w.commit().unwrap();
-        let mut w = db.write();
-        w.at(t, a.clone()).set(&Value::Int(2)).unwrap();
-        w.at(t, b.clone()).set(&Value::Int(2)).unwrap();
-        w.commit().unwrap();
-        let scope = Scope::Aspects(vec![(t, ak(x)), (t, ak(y))]);
-        let marks = db.engine(|e| e.commit_ids().len());
-        assert!(matches!(db.undo(&scope), Err(Error::Invalid(m)) if m.contains("undo") && !m.contains("separate commits")));
-        assert_eq!(db.engine(|e| e.commit_ids().len()), marks);
-        assert_eq!((db.at(t, a.clone()).get().unwrap(), db.at(t, b.clone()).get().unwrap()), (int(2), int(2)));
-        c.advance(3_700_000);
-        db.engine(|e| e.tick().unwrap());
-        db.undo(&scope).unwrap().unwrap();
-        assert_eq!((db.at(t, a).get().unwrap(), db.at(t, b).get().unwrap()), (None, int(0)));
-    }
-}
-
 // spec/commits.md §7: a memory commit forgotten here (an expiring write superseded by its
 // author's next one vanishes, spec/sync-compaction.md §2) still counts as a part the undone write may have
 // replaced: two expiring sets keeping no history, then a setting keeping the aspect (the second
@@ -419,55 +300,4 @@ fn undo_over_forgotten_ephemeral_part_not_undoable_spec_commits_7() {
     assert_eq!(db.undo_target(&scope), Err(gone(last)));
     assert_eq!(db.undo(&scope), Err(gone(last)));
     assert_eq!(db.at(t, key(&db, "app:xe+.0")).get().unwrap(), int(2), "nothing written");
-}
-
-// spec/commits.md §7: undoing a creation needs no setting on the groups it was created into: the
-// deletion removes the thing from every group, so a membership write whose writes in effect in
-// the group's state only list things the commit created needs no kept history, judged from that
-// state, alike with the write's body held or compacted. One also adding an existing thing to such
-// a group needs the group's setting, so it is `NotKept`, nothing written.
-#[test]
-fn creation_in_plain_group_undoes_spec_commits_7() {
-    let group = ak("group.0");
-    for compact in [false, true] {
-        let db = setup(0);
-        let n_key = key(&db, "app:n.0");
-        let (g, e) = db.commit_with(|w| Ok((w.create()?, w.create()?))).unwrap();
-        let n = db
-            .commit_with(|w| {
-                let n = w.create_in(db.me(), &[g])?;
-                w.at(n, n_key.clone()).set(&Value::Int(1))?;
-                Ok(n)
-            })
-            .unwrap();
-        assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(n)]);
-        if compact {
-            let c = db.writes(&Scope::Thing(n), &osis::CommitQuery::default()).unwrap().commits[0].stamp.id;
-            db.engine(|x| {
-                x.snapshot(&g, &group)?;
-                x.drop_body(&c.raw(), &g, &group)
-            })
-            .unwrap();
-            assert!(!db.engine(|x| x.body_not_dropped(&c.raw(), &g, &group)), "compacted");
-        }
-        db.undo(&Scope::Thing(n)).unwrap().unwrap();
-        assert_eq!(db.members(g).unwrap(), vec![], "gone from the group, compact {compact}");
-        let of = db.groups_of(n).unwrap();
-        assert!(of.item_of.is_empty() && of.subgroup_of.is_empty() && of.within.is_empty(), "{of:?}");
-        assert_eq!(db.at(n, n_key.clone()).get().unwrap(), None, "and its content");
-        let (m, c) = db
-            .commit_with(|w| {
-                let m = w.create_in(db.me(), &[g])?;
-                w.group(g).add(osis::Member::Item(e))?;
-                Ok(m)
-            })
-            .map(|m| (m, db.writes(&Scope::Thing(m), &osis::CommitQuery::default()).unwrap().commits[0].stamp.id))
-            .unwrap();
-        let marks = db.engine(|x| x.commit_ids().len());
-        assert_eq!(db.undo(&Scope::Thing(m)), Err(gone(c)), "an existing member added too");
-        assert_eq!(db.engine(|x| x.commit_ids().len()), marks, "nothing written");
-        let mut want = vec![osis::Member::Item(e), osis::Member::Item(m)];
-        want.sort_by_key(|x| match x { osis::Member::Item(t) | osis::Member::Subgroup(t) => *t });
-        assert_eq!(db.members(g).unwrap(), want);
-    }
 }

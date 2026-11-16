@@ -52,8 +52,8 @@ pub enum DerivedFrom {
     Arrived,
     /// This node lost read access.
     LostAccess,
-    /// This node stopped syncing the thing and forgot its copy (it left every synced group).
-    Unsynced,
+    /// The node closure released the thing and this node forgot its copy.
+    Released,
     /// After a failed write the store was read again and a commit reported failed had landed
     /// after all.
     Recovered,
@@ -68,7 +68,7 @@ impl From<Cause> for DerivedFrom {
             Cause::Purge => DerivedFrom::Purged,
             Cause::LateDelta | Cause::Fetched => DerivedFrom::Arrived,
             Cause::LostAccess => DerivedFrom::LostAccess,
-            Cause::Unsynced => DerivedFrom::Unsynced,
+            Cause::Released => DerivedFrom::Released,
         }
     }
 }
@@ -117,8 +117,6 @@ pub(crate) enum Watch {
     Thing(Tid),
     /// A commit on the thing was added or judged otherwise (when it was made or last changed).
     CommitsOf(Tid),
-    /// Which groups the thing is in.
-    Groups(Tid),
     /// A roster or a key changed: `role_on`'s reach is the role graph, not one thing.
     Roles,
     /// The thing's backlinks (a reference index row naming it); with an acting actor (`true`),
@@ -134,12 +132,10 @@ enum Slot {
     Grants(Tid),
     Commits(Tid, Ak),
     CommitsThing(Tid),
-    CommitsGroup(Tid),
     Diagnostics,
     Disputes,
     Status,
     CommitsOf(Tid),
-    Groups(Tid),
     Roles,
     Backlinks(Tid),
 }
@@ -156,7 +152,6 @@ impl Filter {
             Filter::Commits(crate::commits::Address::Fired(t, ak) | crate::commits::Address::Versions(t, ak, _)) => vec![Slot::Commits(*t, ak.clone())],
             Filter::Commits(crate::commits::Address::Writes(s)) => match s {
                 crate::commits::Scope::Thing(t) => vec![Slot::CommitsThing(*t)],
-                crate::commits::Scope::Group(g) => vec![Slot::CommitsGroup(*g)],
                 crate::commits::Scope::Aspects(v) => v.iter().map(|(t, ak)| Slot::Commits(*t, ak.clone())).collect(),
             },
             Filter::Diagnostics => vec![Slot::Diagnostics],
@@ -164,7 +159,6 @@ impl Filter {
             Filter::Status => vec![Slot::Status],
             Filter::Text | Filter::Remote => Vec::new(),
             Filter::Due(Watch::CommitsOf(t)) => vec![Slot::CommitsOf(*t)],
-            Filter::Due(Watch::Groups(t)) => vec![Slot::Groups(*t)],
             Filter::Due(Watch::Roles) => vec![Slot::Roles],
             Filter::Due(Watch::Backlinks(t, false)) => vec![Slot::Backlinks(*t)],
             Filter::Due(Watch::Backlinks(t, true)) => vec![Slot::Backlinks(*t), Slot::Roles],
@@ -282,8 +276,6 @@ struct Registry {
     index: BTreeMap<Slot, BTreeSet<u64>>,
     /// Commit listeners per thing, for the engine.
     commits_on: BTreeMap<Tid, usize>,
-    /// Listeners on a group's writes: without one, an event looks up no thing's groups.
-    group_listeners: usize,
 }
 
 impl Registry {
@@ -294,7 +286,6 @@ impl Registry {
         for t in s.filter.commit_things() {
             *self.commits_on.entry(t).or_default() += 1;
         }
-        self.group_listeners += usize::from(matches!(s.filter, Filter::Commits(crate::commits::Address::Writes(crate::commits::Scope::Group(_)))));
         self.subs.insert(s.id, s);
     }
 
@@ -316,7 +307,6 @@ impl Registry {
                 }
             }
         }
-        self.group_listeners -= usize::from(matches!(s.filter, Filter::Commits(crate::commits::Address::Writes(crate::commits::Scope::Group(_)))));
         Some(s)
     }
 
@@ -332,9 +322,6 @@ impl Registry {
         self.subs.get(&id).filter(|s| s.since.load(Ordering::Acquire) <= seq).cloned()
     }
 
-    fn has_group_listener(&self) -> bool {
-        self.group_listeners > 0
-    }
 }
 
 /// Where watch callbacks run (`AppConfig::dispatch`).
@@ -615,21 +602,13 @@ enum Pre {
 
 /// Which subscriptions a message reaches: the slots it names looked up in the registry, in
 /// subscription order, O(log S + matched).
-fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
+fn targets(sh: &Shared, _db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     if let Msg::Initial(id) = m {
         return lock(&sh.registry).subs.get(id).map(|s| (s.clone(), Pre::Ready(Delivery::Initial))).into_iter().collect();
     }
     if let Msg::Deliver(id, d) = m {
         return lock(&sh.registry).sub(*id, seq).map(|s| (s, Pre::Ready(d.clone()))).into_iter().collect();
     }
-    // the engine lock is taken before the registry's everywhere (the engine asks it under its
-    // lock): a group listener's groups are read here, before the registry is locked
-    let groups: HashMap<Tid, BTreeSet<Tid>> = match m {
-        Msg::Event(Event::Commits(changes)) if lock(&sh.registry).has_group_listener() => {
-            changes.iter().map(|c| c.tid).collect::<BTreeSet<_>>().into_iter().map(|t| (t, db.engine(|e| e.groups_of(&t)))).collect()
-        }
-        _ => HashMap::new(),
-    };
     let r = lock(&sh.registry);
     let due = |slots: &[Slot], d: Delivery| {
         let mut ids = BTreeSet::new();
@@ -703,7 +682,6 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     }
     if let Msg::Event(Event::Commits(changes)) = m {
         let mut out = Vec::new();
-        let in_group = |t: &Tid, g: Tid| *t == g || groups.get(t).is_some_and(|s| s.contains(&g));
         let mut hits: BTreeMap<u64, Vec<&osis_engine::CommitChange>> = BTreeMap::new();
         let mut due = BTreeSet::new();
         for c in changes.iter() {
@@ -714,10 +692,6 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             };
             look(&Slot::Commits(c.tid, c.ak.clone()));
             look(&Slot::CommitsThing(c.tid));
-            look(&Slot::CommitsGroup(c.tid));
-            for g in groups.get(&c.tid).into_iter().flatten() {
-                look(&Slot::CommitsGroup(*g));
-            }
             r.each(&Slot::CommitsOf(c.tid), |id| {
                 due.insert(id);
             });
@@ -728,7 +702,7 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             // one call per commit, however many of its parts are at the address
             let mut told: BTreeMap<CommitId, (Vec<Tid>, Option<osis_engine::engine::listing::CommitRow>)> = BTreeMap::new();
             for c in cs {
-                if a.holds(c.tid, &c.ak, |g| in_group(&c.tid, g)) {
+                if a.holds(c.tid, &c.ak) {
                     let x = told.entry(CommitId(c.id)).or_default();
                     if !x.0.contains(&c.tid) {
                         x.0.push(c.tid);
@@ -749,7 +723,6 @@ fn targets(sh: &Shared, db: &Osis, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             out.extend(due(&[Slot::Roles], Delivery::Due));
             out
         }
-        Msg::Event(Event::Groups(things)) => due(&things.iter().map(|t| Slot::Groups(*t)).collect::<Vec<_>>(), Delivery::Due),
         Msg::Event(Event::References(targets)) => due(&targets.iter().map(|t| Slot::Backlinks(*t)).collect::<Vec<_>>(), Delivery::Due),
         Msg::Event(Event::Diagnostic(d)) => due(&[Slot::Diagnostics], Delivery::Diagnostic(d.clone())),
         Msg::Status => due(&[Slot::Status], Delivery::Due),

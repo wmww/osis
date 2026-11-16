@@ -351,7 +351,7 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
     }
     let live: Vec<BlobId> = held.iter().copied().filter(|b| !subsets.contains(b)).collect();
     let (f, verdict) = match mine.meta(s, c) {
-        None if !g.closure_settled(s)? => (None, Verdict::Unjudged),
+        None if !g.unit_settled(s)? => (None, Verdict::Unjudged),
         None => {
             let (v, wait) = outside(g, mine, s, c);
             j.wait = wait;

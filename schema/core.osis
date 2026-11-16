@@ -1,13 +1,10 @@
 //! Core schema: the aspects every osis node understands. Apps mostly use the "Content" and
-//! "Groups" sections and the read-only identity aspects; the rest are records osis itself keeps
+//! "Tags" sections and the read-only identity aspects; the rest are records osis itself keeps
 //! (who may do what, keys, syncing, devices), whose exact rules are in the spec section named.
 revision 1;
 
 // ---- Identity ----
 // What every thing has from the start: its tid, which aspects it has, and how it was created.
-
-/// The thing's own tid.
-synthetic guaranteed aspect tid.0: tid;
 
 /// The AKs present on the thing.
 synthetic guaranteed aspect aspects.0: set<string>;
@@ -44,26 +41,9 @@ aspect name.0: string;
 /// Freeform content: a note's text, or notes on anything else.
 aspect body.0: markdown;
 
-// ---- Groups ----
-// Things are organized, shared and synced as groups: a group lists its items and subgroups, and
-// syncing a group syncs everything it reaches. Tags are the groups users see.
+// ---- Tags ----
 
-/// Makes the thing a group.
-aspect group.0: struct {
-    items 0: set<tid> = [],
-    subgroups 1: set<tid> = [],
-};
-
-/// The groups this device knows that hold the thing, directly or through subgroups.
-synthetic guaranteed aspect groups.0: set<tid>;
-
-/// The things that keep this thing alive (absent: it lives until destroyed). While present (also
-/// empty) the thing is released once no listed retainer that is itself kept references it in
-/// its current data (spec/data-model.md §9).
-admin aspect retainers^.0: set<tid>;
-
-/// Marks a group as a tag users see: its items are what is tagged, its subgroups are sub-tags.
-/// Groups without it are internal and never shown.
+/// Marks a thing as a tag users see.
 aspect tag.0: struct {
     /// `#rrggbb`.
     color 0: option<string>,
@@ -71,7 +51,7 @@ aspect tag.0: struct {
 
 // ---- Rights ----
 // Who may read, write or administer a thing. Rights are granted to actors (people, devices,
-// groups) and pass along chains of grants (spec/permissions.md).
+// teams) and pass along chains of grants (spec/permissions.md).
 
 /// Each role includes the ones below it: sync < read < write < admin. Sync holds and serves the
 /// thing's data without reading it.
@@ -88,14 +68,6 @@ type source = enum {
     session 1 (blob),
 };
 
-/// Names one membership in a `group.0`: when it was added, and whether as a subgroup.
-type tie = struct {
-    ts 0: int,
-    source 1: source,
-    ctr 2: int,
-    subgroup 3: bool,
-};
-
 /// One grant of rights to one holder (spec/permissions.md §2).
 type edge = struct {
     role 0: role,
@@ -103,8 +75,6 @@ type edge = struct {
     until 1: option<timestamp>,
     /// The highest role the holder may grant to others.
     invite 2: option<role>,
-    /// The membership this grant goes with: taking the thing out of that group removes the grant.
-    tied 3: option<tie>,
     /// Granted without earlier history: the holder reads from this change of secrets on
     /// (spec/crypto.md §4).
     floor 4: option<int>,
@@ -257,24 +227,6 @@ type sync_entry = struct {
 /// A thing's sync IDs, by 16-byte sync ID (spec/sync-ids.md §4).
 aspect sync.0: map<blob, sync_entry>;
 
-/// Each node of the account to its synced group, on the devices actor (spec/sync-set.md §1).
-admin aspect synced^.0: map<tid, tid>;
-
-/// The things the account acted on as invitations (accepted, declined by filing elsewhere, or
-/// unsynced), on the devices actor (spec/sync-set.md §4).
-admin aspect acted^.0: set<tid>;
-
-/// What the account keeps of a thing it holds sync alone on: its sync IDs, sync secrets, and the
-/// sync IDs tied to it (spec/sync.md §3).
-type kept = struct {
-    ids 0: set<blob>,
-    secrets 1: map<epoch, blob>,
-    tied 2: set<blob>,
-};
-
-/// The account's sync records, by thing, on the devices actor (spec/sync.md §3).
-admin aspect kept^.0: map<tid, kept>;
-
 // ---- Devices ----
 // Each device running osis (a node) is itself a thing, with these aspects about it.
 
@@ -361,6 +313,3 @@ admin aspect retention^.0: retention_setting;
 /// Written by a request to purge by name or by author; the time is all it says.
 aspect purge.0: timestamp;
 
-/// Written by a release request on each thing it releases (a reclaim, not an erasure); the time is
-/// all it says. Its commit expires `ROLE_KEEP` after it.
-aspect released.0: timestamp;

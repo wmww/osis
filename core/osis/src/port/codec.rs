@@ -6,9 +6,9 @@
 use crate::commit_id::{CommitFrom, CommitId, CommitPos};
 use crate::commits::{Address, Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 use crate::error::{Error, Result};
-use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
-use crate::share::{ContactCard, Holder, HolderKind, Invitation, ShareLink};
-use crate::syncing::{GroupSync, Status, SyncScope, SyncState};
+use crate::read::{Grant, Grants, Stamp, ThingStamp};
+use crate::share::{ContactCard, Holder, HolderKind, ShareLink};
+use crate::syncing::{Status, SyncScope, SyncState, UnitSync};
 use crate::watch::{DerivedFrom, Origin};
 use crate::write::WriteOp;
 use osis_base::{Ak, CommitId as RawCommitId, CreationRecord, Role, Tid, Time, Ts, Value};
@@ -207,17 +207,13 @@ pub(crate) fn write_op_to(o: &WriteOp) -> Result<Value> {
     let k = |k: &u32| u(u64::from(*k));
     Ok(Value::List(match o {
         WriteOp::Create(rec) => vec![u(0), rec.to_value()],
-        WriteOp::Group { g, member, items, add } => vec![u(1), Value::Tid(*g), Value::Tid(*member), Value::Bool(*items), Value::Bool(*add)],
         WriteOp::Path { tid, key, op } => vec![u(2), Value::Tid(*tid), k(key), path_op_to(op)?],
         WriteOp::Fire { tid, key, v, replaces } => vec![u(3), Value::Tid(*tid), k(key), v.clone(), opt(replaces.as_ref().map(commit_id_to))],
         WriteOp::Retention { tid, key, r } => vec![u(4), Value::Tid(*tid), k(key), retention_to(r)],
         WriteOp::Purge { tid, key } => vec![u(5), Value::Tid(*tid), k(key)],
         WriteOp::PurgeCommit { tid, key, commit } => vec![u(6), Value::Tid(*tid), k(key), commit_id_to(commit)],
         WriteOp::PurgeAuthor { tid, key, actor } => vec![u(7), Value::Tid(*tid), k(key), Value::Tid(*actor)],
-        WriteOp::Delete(t) => vec![u(8), Value::Tid(*t)],
         WriteOp::PurgeThing(t) => vec![u(9), Value::Tid(*t)],
-        WriteOp::Release(t) => vec![u(10), Value::Tid(*t)],
-        WriteOp::Retain { by, key, thing } => vec![u(11), Value::Tid(*by), k(key), Value::Tid(*thing)],
     }))
 }
 
@@ -232,10 +228,6 @@ pub(crate) fn write_op_from(v: Value) -> Result<WriteOp> {
         0 => {
             want(2)?;
             WriteOp::Create(CreationRecord::from_value(arg(1)?).ok_or_else(|| bad("creation record"))?)
-        }
-        1 => {
-            want(5)?;
-            WriteOp::Group { g: t(1)?, member: t(2)?, items: bool_from(arg(3)?, "items")?, add: bool_from(arg(4)?, "add")? }
         }
         2 => {
             want(4)?;
@@ -262,21 +254,9 @@ pub(crate) fn write_op_from(v: Value) -> Result<WriteOp> {
             want(4)?;
             WriteOp::PurgeAuthor { tid: t(1)?, key: k(2)?, actor: t(3)? }
         }
-        8 => {
-            want(2)?;
-            WriteOp::Delete(t(1)?)
-        }
         9 => {
             want(2)?;
             WriteOp::PurgeThing(t(1)?)
-        }
-        10 => {
-            want(2)?;
-            WriteOp::Release(t(1)?)
-        }
-        11 => {
-            want(4)?;
-            WriteOp::Retain { by: t(1)?, key: k(2)?, thing: t(3)? }
         }
         _ => return Err(bad("write op")),
     };
@@ -310,7 +290,7 @@ fn stamp_from(v: Value) -> Result<Stamp> {
     Ok(Stamp::new(CommitId(commit_id_from(&id)?), tid(&actor)?, ts, Time(uint(&received, "stamp")?)))
 }
 
-const DERIVED: [DerivedFrom; 7] = [DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Recovered, DerivedFrom::Unsynced];
+const DERIVED: [DerivedFrom; 7] = [DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess, DerivedFrom::Recovered, DerivedFrom::Released];
 
 /// An origin: `[0] | [1, stamp] | [2, stamp] | [3, derived]`.
 pub(crate) fn origin_to(o: &Origin) -> Value {
@@ -432,29 +412,18 @@ pub(crate) fn role_from(v: &Value) -> Result<Role> {
     Role::from_id(uint(v, "role")?).ok_or_else(|| bad("role"))
 }
 
-/// `groups_of`: `[[item_of*], [subgroup_of*], [within*]]`.
-impl Form for GroupsOf {
-    fn to_wire(&self) -> Value {
-        Value::List(vec![tids_to(&self.item_of), tids_to(&self.subgroup_of), tids_to(&self.within)])
-    }
-    fn from_wire(v: Value) -> Result<GroupsOf> {
-        let [i, s, w] = <[Value; 3]>::try_from(list(v, "groups")?).map_err(|_| bad("groups"))?;
-        Ok(GroupsOf { item_of: tids_from(i, "groups")?, subgroup_of: tids_from(s, "groups")?, within: tids_from(w, "groups")? })
-    }
-}
-
-/// `grants`: `[[holder, role, Opt(until), Opt(may_grant), with_membership, from_now]*]`.
+/// `grants`: `[[holder, role, Opt(until), Opt(may_grant), from_now]*]`.
 impl Form for Grants {
     fn to_wire(&self) -> Value {
-        Value::List(self.iter().map(|(h, g)| Value::List(vec![Value::Tid(*h), role_to(g.role), time_to(g.until), opt(g.may_grant.map(role_to)), Value::Bool(g.with_membership), Value::Bool(g.from_now)])).collect())
+        Value::List(self.iter().map(|(h, g)| Value::List(vec![Value::Tid(*h), role_to(g.role), time_to(g.until), opt(g.may_grant.map(role_to)), Value::Bool(g.from_now)])).collect())
     }
     fn from_wire(v: Value) -> Result<Grants> {
         list(v, "grants")?
             .into_iter()
             .map(|g| {
-                let [h, role, until, may, with, from_now] = <[Value; 6]>::try_from(list(g, "grant")?).map_err(|_| bad("grant"))?;
+                let [h, role, until, may, from_now] = <[Value; 5]>::try_from(list(g, "grant")?).map_err(|_| bad("grant"))?;
                 let may_grant = opt_from(may, "grant")?.map(|r| role_from(&r)).transpose()?;
-                Ok((tid(&h)?, Grant { role: role_from(&role)?, until: time_from(until, "grant")?, may_grant, with_membership: bool_from(&with, "grant")?, from_now: bool_from(&from_now, "grant")? }))
+                Ok((tid(&h)?, Grant { role: role_from(&role)?, until: time_from(until, "grant")?, may_grant, from_now: bool_from(&from_now, "grant")? }))
             })
             .collect()
     }
@@ -487,33 +456,32 @@ impl Form for ThingStamp {
 
 const STATES: [SyncState; 4] = [SyncState::Synced, SyncState::Syncing, SyncState::NotConnected, SyncState::Stranded];
 
-/// `status`: `[connected, [[tid, state, not_taking, leaving]*], [kept tid*]]`, state 0 synced, 1
-/// syncing, 2 not connected, 3 stranded.
+/// `status`: `[connected, [[tid, state, not_taking]*]]`, state 0 synced, 1 syncing, 2 not
+/// connected, 3 stranded.
 impl Form for Status {
     fn to_wire(&self) -> Value {
-        let groups = self.groups.iter().map(|(t, g)| Value::List(vec![Value::Tid(*t), Value::uint(STATES.iter().position(|x| *x == g.state).unwrap_or(0) as u64), usize_to(g.not_taking), Value::Bool(g.leaving)]));
-        Value::List(vec![usize_to(self.connected), Value::List(groups.collect()), tids_to(&self.kept.iter().copied().collect::<Vec<_>>())])
+        let units = self.units.iter().map(|(t, g)| Value::List(vec![Value::Tid(*t), Value::uint(STATES.iter().position(|x| *x == g.state).unwrap_or(0) as u64), usize_to(g.not_taking)]));
+        Value::List(vec![usize_to(self.connected), Value::List(units.collect())])
     }
     fn from_wire(v: Value) -> Result<Status> {
-        let [connected, groups, kept] = <[Value; 3]>::try_from(list(v, "status")?).map_err(|_| bad("status"))?;
-        let groups = list(groups, "status")?
+        let [connected, units] = <[Value; 2]>::try_from(list(v, "status")?).map_err(|_| bad("status"))?;
+        let units = list(units, "status")?
             .into_iter()
             .map(|g| {
-                let [t, state, not_taking, leaving] = <[Value; 4]>::try_from(list(g, "status")?).map_err(|_| bad("status"))?;
+                let [t, state, not_taking] = <[Value; 3]>::try_from(list(g, "status")?).map_err(|_| bad("status"))?;
                 let state = *STATES.get(usize_from(&state)?).ok_or_else(|| bad("sync state"))?;
-                Ok((tid(&t)?, GroupSync { state, not_taking: usize_from(&not_taking)?, leaving: bool_from(&leaving, "status")? }))
+                Ok((tid(&t)?, UnitSync { state, not_taking: usize_from(&not_taking)? }))
             })
             .collect::<Result<_>>()?;
-        Ok(Status { connected: usize_from(&connected)?, groups, kept: tids_from(kept, "status")?.into_iter().collect() })
+        Ok(Status { connected: usize_from(&connected)?, units })
     }
 }
 
-/// A scope: `[0, tid]` a thing, `[1, [[tid, ak]*]]` aspects, `[2, tid]` a group.
+/// A scope: `[0, tid]` a thing, `[1, [[tid, ak]*]]` aspects.
 pub(crate) fn scope_to(s: &Scope) -> Value {
     Value::List(match s {
         Scope::Thing(t) => vec![Value::uint(0), Value::Tid(*t)],
         Scope::Aspects(v) => vec![Value::uint(1), Value::List(v.iter().map(|(t, a)| Value::List(vec![Value::Tid(*t), ak_to(a)])).collect())],
-        Scope::Group(g) => vec![Value::uint(2), Value::Tid(*g)],
     })
 }
 
@@ -530,7 +498,6 @@ pub(crate) fn scope_from(v: Value) -> Result<Scope> {
                 })
                 .collect::<Result<_>>()?,
         ),
-        2 => Scope::Group(tid(&x)?),
         _ => return Err(bad("scope")),
     })
 }
@@ -554,7 +521,7 @@ pub(crate) fn outcome_of(e: &Error) -> Outcome {
         Error::Permission { tid, needs } => (ApiCode::PERMISSION, vec![Value::Tid(*tid), Value::uint(u64::from(needs.id()))]),
         Error::Type { path, reason } => (ApiCode::TYPE, vec![path_to(path), Value::Str(reason.clone())]),
         Error::TooLarge { limit } => (ApiCode::TOO_LARGE, vec![Value::uint(*limit as u64)]),
-        Error::Stranded { groups } => (ApiCode::STRANDED, vec![Value::List(groups.iter().map(|g| Value::Tid(*g)).collect())]),
+        Error::Stranded { things } => (ApiCode::STRANDED, vec![Value::List(things.iter().map(|g| Value::Tid(*g)).collect())]),
         Error::Invalid(m) => (ApiCode::INVALID, text(m)),
         Error::Storage(m) => (ApiCode::STORAGE, text(m)),
         Error::Network(m) => (ApiCode::NETWORK, text(m)),
@@ -591,7 +558,7 @@ pub(crate) fn error_of(code: u64, detail: &[Value]) -> Error {
             _ => Error::Invalid(text()),
         },
         ApiCode::TOO_LARGE => Error::TooLarge { limit: detail.first().and_then(Value::as_uint).map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX)) },
-        ApiCode::STRANDED => Error::Stranded { groups: detail.first().cloned().and_then(|g| list(g, "groups").ok()).unwrap_or_default().iter().filter_map(|g| tid(g).ok()).collect() },
+        ApiCode::STRANDED => Error::Stranded { things: detail.first().cloned().and_then(|g| list(g, "things").ok()).unwrap_or_default().iter().filter_map(|g| tid(g).ok()).collect() },
         ApiCode::STORAGE => Error::Storage(text()),
         ApiCode::NETWORK => Error::Network(text()),
         ApiCode::UNSUPPORTED => Error::Unsupported(text()),
@@ -884,25 +851,12 @@ macro_rules! form_text {
 }
 form_text!(ContactCard, ShareLink);
 
-/// `[thing, role, Opt(from), taken, acted]`.
-impl Form for Invitation {
-    fn to_wire(&self) -> Value {
-        Value::List(vec![Value::Tid(self.thing), role_to(self.role), self.from.to_wire(), Value::Bool(self.taken), Value::Bool(self.acted)])
-    }
-    fn from_wire(v: Value) -> Result<Invitation> {
-        let [thing, role, from, taken, acted] = <[Value; 5]>::try_from(list(v, "invitation")?).map_err(|_| bad("invitation"))?;
-        Ok(Invitation { thing: tid(&thing)?, role: role_from(&role)?, from: Form::from_wire(from)?, taken: bool_from(&taken, "invitation")?, acted: bool_from(&acted, "invitation")? })
-    }
-}
-
-/// `[0]` all, `[1, tid]` a thing, `[2]` deliveries, `[3, thing, to]` the deliveries to `to` about `thing`.
+/// `[0]` all, `[1, tid]` a thing.
 impl Form for SyncScope {
     fn to_wire(&self) -> Value {
         Value::List(match self {
             SyncScope::All => vec![Value::uint(0)],
             SyncScope::Thing(t) => vec![Value::uint(1), Value::Tid(*t)],
-            SyncScope::Deliveries => vec![Value::uint(2)],
-            SyncScope::Delivery { thing, to } => vec![Value::uint(3), Value::Tid(*thing), Value::Tid(*to)],
         })
     }
     fn from_wire(v: Value) -> Result<SyncScope> {
@@ -910,8 +864,6 @@ impl Form for SyncScope {
         Ok(match a.as_slice() {
             [c] if c.as_uint() == Some(0) => SyncScope::All,
             [c, t] if c.as_uint() == Some(1) => SyncScope::Thing(tid(t)?),
-            [c] if c.as_uint() == Some(2) => SyncScope::Deliveries,
-            [c, t, to] if c.as_uint() == Some(3) => SyncScope::Delivery { thing: tid(t)?, to: tid(to)? },
             _ => return Err(bad("sync scope")),
         })
     }
@@ -946,7 +898,7 @@ impl Form for Time {
     }
 }
 
-const DIAGNOSTICS: [DiagnosticKind; 22] = {
+const DIAGNOSTICS: [DiagnosticKind; 21] = {
     use DiagnosticKind as K;
     [
         K::BadInput,
@@ -956,7 +908,6 @@ const DIAGNOSTICS: [DiagnosticKind; 22] = {
         K::OverlappingCounters,
         K::Removed,
         K::Callback,
-        K::NotSynced,
         K::Stranded,
         K::Uncommitted,
         K::EphemeralRefused,

@@ -4,18 +4,18 @@
 //! call's `Network`.
 //!
 //! **The rule** (`decide`), for a thing `t`: on a thin client, its node (the first of several
-//! that holds `t`, an unreachable one stopping the search); else a group in S = `t` and the
-//! groups holding it here that is sourced at another node: that node, connected or not;
+//! that holds `t`, an unreachable one stopping the search); else a sync unit in S = `t` and the
+//! sync units holding it here that is sourced at another node: that node, connected or not;
 //! else this engine. A write goes to one source and is refused while the thing is split
-//! (`split`): carried also by a group that syncs here or is sourced at a second node.
+//! (`split`): carried also by a sync unit that syncs here or is sourced at a second node.
 //!
-//! Group sources persist as the app record `sources` (a line `tid url#key` per group), holding
+//! Sync unit sources persist as the app record `sources` (a line `tid url#key` per sync unit), holding
 //! no secret: `connect_node` brings the connection after each open.
 //!
-//! **Hand-off** (spec/sync-set.md §5): the engine's sync set leaves a group sourced at another
+//! **Hand-off** (spec/sync-set.md §5): the engine's sync set leaves a sync unit sourced at another
 //! node (`Engine::set_sourced`), so its sync IDs stop by spec/sync-set.md §3, once this node's
 //! own commits there are held elsewhere: the move away waits for nothing itself. Moving home, the
-//! group syncs here again while still read at its node (`Locked::homing`), and the move answers
+//! sync unit syncs here again while still read at its node (`Locked::homing`), and the move answers
 //! once it caught up (`Engine::caught_up`: history complete, spec/sync-status.md §3, so a source
 //! gone ends it by `PASS_WAIT_MS`); only then is it recorded home. A client of this node reads
 //! nothing of it until then.
@@ -38,10 +38,10 @@ pub struct NodeLogin {
     pub secret: crate::ClientSecret,
 }
 
-/// Where a group's calls go (`Osis::group_source`).
+/// Where a sync unit's calls go (`Osis::unit_source`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum GroupSource {
-    /// This node: it syncs the group.
+pub enum UnitSource {
+    /// This node: it syncs the sync unit.
     Local,
     /// The node at this address, which must be connected (`Osis::connect_node`).
     Node(Address),
@@ -56,7 +56,7 @@ pub(crate) enum Source {
     Node(Address),
 }
 
-/// The app record of the group sources.
+/// The app record of the sync unit sources.
 const SOURCES: &str = "sources";
 
 /// A decision made under the lock: `Ask` needs the nodes' answers, off it.
@@ -76,25 +76,25 @@ fn decide(db: &ReadOnly, l: &mut Locked, t: Tid) -> Decided {
     Decided::At(sourced_in(l, t).map_or(Source::Local, Source::Node))
 }
 
-/// The node `t` is read at through a group sourced there, under the lock (a node's own
+/// The node `t` is read at through a sync unit sourced there, under the lock (a node's own
 /// handle; a thin client's every thing is at its node).
 pub(crate) fn sourced_in(l: &mut Locked, t: Tid) -> Option<Address> {
-    if l.group_sources.is_empty() {
+    if l.unit_sources.is_empty() {
         return None;
     }
-    let mut s = l.engine().enclosing(&t);
+    let mut s = l.engine().units_holding(&t);
     s.insert(t);
-    s.iter().find_map(|g| l.group_sources.get(g)).cloned()
+    s.iter().find_map(|g| l.unit_sources.get(g)).cloned()
 }
 
-/// `t` is split (spec/sync-set.md §5): sourced at `at`, and carried by a group that syncs here
+/// `t` is split (spec/sync-set.md §5): sourced at `at`, and carried by a sync unit that syncs here
 /// (under a sync ID of its own in the sync set, spec/sync-judgement.md §1) or is sourced at
 /// another node.
 fn split(l: &mut Locked, t: Tid, at: &Address) -> Result<Option<Tid>> {
     let synced: std::collections::BTreeSet<Tid> = l.engine().sync_set()?.ids.values().map(|(g, _)| *g).collect();
-    let mut s = l.engine().enclosing(&t);
+    let mut s = l.engine().units_holding(&t);
     s.insert(t);
-    Ok(s.into_iter().find(|g| match l.group_sources.get(g) {
+    Ok(s.into_iter().find(|g| match l.unit_sources.get(g) {
         Some(a) => a != at,
         None => synced.contains(g),
     }))
@@ -148,7 +148,7 @@ impl ReadOnly {
         {
             for t in things {
                 if let Some(g) = self.locked(|l| split(l, *t, a))? {
-                    return Err(Error::Invalid(format!("{t} is read at {a} and also carried by {g}, which syncs elsewhere: move one of the groups so the write reaches every holder")));
+                    return Err(Error::Invalid(format!("{t} is read at {a} and also carried by {g}, which syncs elsewhere: move one of the sync units so the write reaches every holder")));
                 }
             }
         }
@@ -201,21 +201,21 @@ impl ReadOnly {
     }
 }
 
-/// The engine's copy of the source table (`Engine::set_sourced`): the sync set leaves a group
+/// The engine's copy of the source table (`Engine::set_sourced`): the sync set leaves a sync unit
 /// read elsewhere unless it is moving home, and a client of this node reads nothing of it, its
 /// copy here maybe behind (`readable_by`).
 fn mirror(l: &mut Locked) {
-    let g = l.group_sources.keys().copied().collect();
+    let g = l.unit_sources.keys().copied().collect();
     let homing = l.homing.clone();
     l.engine().set_sourced(g, &homing);
 }
 
 /// Writes the source table to its app record and the engine (`mirror`).
 fn record(db: &ReadOnly, l: &mut Locked) -> Result<()> {
-    let text: String = l.group_sources.iter().map(|(g, a)| format!("{g} {a}\n")).collect();
+    let text: String = l.unit_sources.iter().map(|(g, a)| format!("{g} {a}\n")).collect();
     l.engine().set_app_record(SOURCES, text.as_bytes())?;
     mirror(l);
-    db.inner.has_sources.store(!l.remotes.is_empty() || !l.group_sources.is_empty(), Ordering::Release);
+    db.inner.has_sources.store(!l.remotes.is_empty() || !l.unit_sources.is_empty(), Ordering::Release);
     Ok(())
 }
 
@@ -276,41 +276,41 @@ impl Osis {
     }
 
     /// Makes this node a client of the node at `login`'s address, beside its own store:
-    /// `group_source` can then make it the source of groups. Lasts until `disconnect_node` or
+    /// `unit_source` can then make it the source of sync units. Lasts until `disconnect_node` or
     /// this handle closes; a connection lost is dialed again.
     pub async fn connect_node(&self, login: &NodeLogin) -> Result<()> {
         self.local("connect_node")?;
         self.add_remote(login.addr.clone(), Some(login.secret.clone())).await.map(drop)
     }
 
-    /// Moves where `group` is read and written, between this node and a node it is connected to
-    /// (`connect_node`). At a node, the group's things are read there and written there, and a
-    /// write on one also carried by a group that syncs here or at a third node fails `Invalid`;
-    /// this node keeps the copy it had and stops syncing the group once its own writes there
+    /// Moves where `sync unit` is read and written, between this node and a node it is connected to
+    /// (`connect_node`). At a node, the sync unit's things are read there and written there, and a
+    /// write on one also carried by a sync unit that syncs here or at a third node fails `Invalid`;
+    /// this node keeps the copy it had and stops syncing the sync unit once its own writes there
     /// reached another holder. Moving home answers once this node's copy caught up (a complete
-    /// pass of each sync ID carrying the group: at most `PASS_WAIT_MS` past a holder away); until
-    /// then the group stays read at its node, and a call dropped before it answers leaves it so,
+    /// pass of each sync ID carrying the sync unit: at most `PASS_WAIT_MS` past a holder away); until
+    /// then the sync unit stays read at its node, and a call dropped before it answers leaves it so,
     /// syncing here too until a restart (moving it again ends that). `Invalid` for a node not connected, for
-    /// `home()` (it always syncs here), or when the group moved away again before it caught up.
-    pub async fn group_source(&self, group: Tid, to: GroupSource) -> Result<()> {
-        self.local("group_source")?;
+    /// the account's devices actor (it always syncs here), or when the sync unit moved away again before it caught up.
+    pub async fn unit_source(&self, unit: Tid, to: UnitSource) -> Result<()> {
+        self.local("unit_source")?;
         let homing = self.locked(|l| -> Result<bool> {
             match &to {
-                GroupSource::Node(a) if !l.remotes.iter().any(|r| r.addr == *a) => Err(Error::Invalid(format!("not connected to {a} (connect_node)"))),
-                // the node's own records live on home: it always syncs here (spec/sync-set.md §5)
-                GroupSource::Node(_) if group == self.home() => Err(Error::Invalid("home is never sourced at another node".into())),
-                GroupSource::Node(a) => {
-                    l.group_sources.insert(group, a.clone());
-                    l.homing.remove(&group);
+                UnitSource::Node(a) if !l.remotes.iter().any(|r| r.addr == *a) => Err(Error::Invalid(format!("not connected to {a} (connect_node)"))),
+                // the node's own records live on the devices actor: it always syncs here
+                UnitSource::Node(_) if unit == self.devices() => Err(Error::Invalid("the account's devices actor is never sourced at another node".into())),
+                UnitSource::Node(a) => {
+                    l.unit_sources.insert(unit, a.clone());
+                    l.homing.remove(&unit);
                     record(self, l)?;
                     // the sync set moved: sync steps now, as moving home does
                     l.handle(osis_sync::Input::Wrote);
                     Ok(false)
                 }
-                GroupSource::Local if !l.group_sources.contains_key(&group) => Ok(false),
-                GroupSource::Local => {
+                UnitSource::Local if !l.unit_sources.contains_key(&unit) => Ok(false),
+                UnitSource::Local => {
                     // syncing here again, read at its node until it caught up
-                    if l.homing.insert(group) {
+                    if l.homing.insert(unit) {
                         mirror(l);
                         l.handle(osis_sync::Input::Wrote);
                     }
@@ -323,17 +323,17 @@ impl Osis {
         }
         self.waiting(move |db| {
             db.locked(|l| -> Option<Result<()>> {
-                if !l.group_sources.contains_key(&group) {
+                if !l.unit_sources.contains_key(&unit) {
                     return Some(Ok(()));
                 }
-                if !l.homing.contains(&group) {
-                    return Some(Err(Error::Invalid(format!("{group} moved away again before it caught up"))));
+                if !l.homing.contains(&unit) {
+                    return Some(Err(Error::Invalid(format!("{unit} moved away again before it caught up"))));
                 }
-                match l.engine().caught_up(&group) {
+                match l.engine().caught_up(&unit) {
                     Ok(false) => None,
                     Ok(true) => {
-                        l.group_sources.remove(&group);
-                        l.homing.remove(&group);
+                        l.unit_sources.remove(&unit);
+                        l.homing.remove(&unit);
                         Some(record(db, l))
                     }
                     Err(e) => Some(Err(e.into())),
@@ -348,12 +348,12 @@ impl Osis {
         Ok(self.drop_remote(addr))
     }
 
-    /// The groups whose source is another node, with its address (`group_source`).
-    pub fn group_sources(&self) -> BTreeMap<Tid, Address> {
-        self.locked(|l| l.group_sources.clone())
+    /// The sync units whose source is another node, with its address (`unit_source`).
+    pub fn unit_sources(&self) -> BTreeMap<Tid, Address> {
+        self.locked(|l| l.unit_sources.clone())
     }
 
-    /// Reads the group sources this store keeps (`Osis::start`).
+    /// Reads the sync unit sources this store keeps (`Osis::start`).
     pub(crate) fn load_sources(&self) -> Result<()> {
         let rec = self.engine(|e| e.app_record(SOURCES))?;
         let Some(b) = rec else { return Ok(()) };
@@ -366,7 +366,7 @@ impl Osis {
         }
         let any = !m.is_empty();
         self.locked(|l| {
-            l.group_sources = m;
+            l.unit_sources = m;
             mirror(l);
         });
         self.inner.has_sources.store(any, Ordering::Release);

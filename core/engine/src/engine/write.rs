@@ -14,7 +14,7 @@ use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, W
 use osis_crdt::{AnyView, DeltaBuilder, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_blob::{BlobWriter, Framing};
 use osis_perm::At;
-use osis_schema::core_types::{self as ct, CREATED, is_role_class};
+use osis_schema::core_types::{CREATED, is_role_class};
 use osis_schema::{RawKey, Retention, Schema};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -68,20 +68,10 @@ pub struct Mutation {
     pub(crate) sweeps: BTreeSet<(Tid, Ak)>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
     pub(crate) fresh: std::collections::BTreeSet<osis_base::BlobId>,
-    /// Things this mutation deletes (`delete`): their ephemeral state is dropped here with the
-    /// durable commit (`Engine::write`).
-    pub(crate) deleting: std::collections::BTreeSet<Tid>,
     /// The commit's `ts`, when taken before the commit (an ephemeral mutation's, a revert's).
     pub(crate) ts: Option<Ts>,
     /// The header's blind, when taken before the commit (a rotation's departs mark names it).
     pub(crate) blind: Option<[u8; 16]>,
-    /// Memberships (thing, group) the commit must not leave unsynced (`require_synced`).
-    pub(crate) synced: Vec<(Tid, Tid)>,
-    /// Things the commit must not leave unreachable (`require_kept`).
-    pub(crate) kept: Vec<Tid>,
-    /// (source, AK, target): the source's aspect must reference the target after the commit
-    /// (`require_reference`).
-    pub(crate) references: Vec<(Tid, Ak, Tid)>,
     /// A rotation of the signing account's chain, with the key of each tip a merge names
     /// (spec/crypto.md §9; `flows::signing`).
     pub(crate) rotation: Option<crate::flows::signing::AccountRotation>,
@@ -101,7 +91,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), deleting: Default::default(), ts: None, blind: None, synced: Vec::new(), kept: Vec::new(), references: Vec::new(), rotation: None, reseal: None }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), purge_named: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), ts: None, blind: None, rotation: None, reseal: None }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -147,36 +137,6 @@ impl Mutation {
             e.schema = key.shared_schema();
         }
         Ok(e)
-    }
-
-    /// Marks `tid` deleted by this mutation (`delete`): the durable commit purges its ephemeral
-    /// state (`delete_purges`).
-    pub fn deleting(&mut self, tid: Tid) -> &mut Self {
-        self.deleting.insert(tid);
-        self
-    }
-
-    /// The commit fails `Error::Unsynced` when, after it, `tid` is durable and in no synced
-    /// group's closure while `group` is: a membership in a group that is an item of a
-    /// synced group but no subgroup of one (spec/sync-set.md §2).
-    pub fn require_synced(&mut self, tid: Tid, group: Tid) -> &mut Self {
-        self.synced.push((tid, group));
-        self
-    }
-
-    /// The commit fails `Error::Clash` when, after it, `tid` is known and unreachable as this
-    /// node judges it (notes/lifetimes.md, The judgment): the writer refusing its own
-    /// change of a thing's retainers, never a rule receivers apply.
-    pub fn require_kept(&mut self, tid: Tid) -> &mut Self {
-        self.kept.push(tid);
-        self
-    }
-
-    /// The commit fails `Error::Clash` unless, after it, `source`'s aspect `ak` references
-    /// `target` in a live durable value (the reference index).
-    pub fn require_reference<K: RawKey>(&mut self, source: Tid, key: &K, target: Tid) -> Result<&mut Self> {
-        self.references.push((source, ak_of(key)?, target));
-        Ok(self)
     }
 
     /// An op at a path (validated by the crdt against the writer's view).
@@ -271,7 +231,7 @@ impl Mutation {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.purge_named.is_empty() && self.undoes.is_none() && self.deleting.is_empty()
+        self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.purge_named.is_empty() && self.undoes.is_none()
     }
 }
 
@@ -747,33 +707,6 @@ impl Engine {
     }
 }
 
-/// Whether each of `writers` may delete each of `things` at `ts` (spec/crdt.md §4.6): write on
-/// the thing, judged before anything is written (a thing in `creates` by its record there). A
-/// delete needs it whether or not a commit carries it (`Engine::write`, an undone creation).
-pub(crate) fn check_delete(tx: &Tx<'_>, writers: &[Tid], creates: &Creates, things: &BTreeSet<Tid>, ts: Ts) -> Result<()> {
-    for w in writers {
-        for t in things {
-            check_authority(tx.core, *w, creates, t, CREATED.ak(), ts)?;
-        }
-    }
-    Ok(())
-}
-
-/// A delete's ephemeral side (spec/sync-compaction.md §2 delete): its durable commit carries a purge request
-/// naming each of `t`'s ephemeral aspects that may hold content (`read::purged_aspects`), so every
-/// node applying it, this one first, holds `t`'s ephemeral writes stamped before it value-less,
-/// as a reset leaves its durable ones dead. The items; with no other part on `t` the commit places
-/// the request by a `purge.0` write (`purge_placer`).
-pub(crate) fn delete_purges(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<PurgeItem>> {
-    Ok(super::read::purged_aspects(tx, t)?.into_iter().map(|ak| PurgeItem::Aspect { tid: *t, ak }).collect())
-}
-
-/// The `purge.0` write placing a purge request on its thing (spec/commits.md §5 Purge).
-pub(crate) fn purge_placer(ts: Ts) -> PathOp {
-    use osis_schema::Codec;
-    PathOp { path: Vec::new(), op: Op::Replace(ts.wall_ms().to_value()) }
-}
-
 /// Commits `m` in `tx` as one commit (`one_commit`); none when it changes nothing.
 pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
     let node = match m.signer {
@@ -806,13 +739,6 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
-    for t in m.deleting.clone() {
-        let items = delete_purges(tx, &t)?;
-        if !items.is_empty() && !m.aspects.keys().any(|(x, _)| *x == t) {
-            m.op(t, &osis_schema::core_types::PURGE, purge_placer(ts))?;
-        }
-        m.purge.extend(items);
-    }
     for (&t, rec) in &m.creates {
         let e = m.aspects.entry((t, Ak::new(CREATED.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default();
         e.schema = Some(core_schema.clone());
@@ -822,8 +748,6 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     for k in dead {
         m.aspects.entry(k).or_default();
     }
-    // spec/sync-set.md §1 Home stays under it: judged only for a write that may move a listing
-    let homed = if m.aspects.keys().any(|(_, ak)| ak.as_str() == ct::GROUP.ak() || ak.as_str() == ct::SYNCED.ak()) || !m.deleting.is_empty() { Some(under_home(tx)?) } else { None };
     let role_commit = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && is_role_class(ak.as_str()));
     let content = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && !is_role_class(ak.as_str()));
     if role_commit && content {
@@ -907,8 +831,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     fit_creations(&mut aspects);
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
-    let way = if m.deleting.is_empty() { "Write them as separate commits" } else { "A delete removes every aspect of its thing and takes it out of its groups: do these in commits of their own first, then delete" };
-    let expires = one_commit(&entries, way)?;
+    let expires = one_commit(&entries, "Write them as separate commits")?;
     place_requests(&mut aspects, expires);
     // role commits use commit form: a later commit by the same node can never void them by
     // reusing their counters; content commits write under this open's session unless asked
@@ -977,7 +900,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let keyed = osis_schema::core_types::is_role_class(ak.as_str());
         // a hostile writer (tests) mints a held record again: as over no state
         let remint = tx.core.skip_writer_rules && ak.as_str() == CREATED.ak();
-        let w = super::groups::seeing(tx, &tid, &ak, &am.ops, Writer::new(ts, own_source(form, node), lo).keyed_removals(keyed))?;
+        let w = seeing(tx, &tid, &ak, &am.ops, Writer::new(ts, own_source(form, node), lo).keyed_removals(keyed))?;
         let run = |tx: &Tx<'_>| {
             let state = if remint { &empty } else { tx.cached(&tid, &ak).unwrap_or(&empty) };
             let w = w.clone();
@@ -1030,61 +953,39 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Err(Error::Clash(format!("a purge goes under a write of its thing, and this commit writes nothing on {}. Write the purge as a commit of its own", p.tid())));
     }
     let id = build_and_apply(tx, plan, deltas)?;
-    if let Some(before) = homed {
-        check_home(tx, &before)?;
-    }
-    check_synced(tx.core, &m.synced)?;
-    check_lifetimes(tx, &m.kept, &m.references)?;
     Ok(Some(id))
 }
 
-/// `Mutation::require_reference`, then `Mutation::require_kept`, over the state the commit left.
-fn check_lifetimes(tx: &mut Tx<'_>, kept: &[Tid], references: &[(Tid, Ak, Tid)]) -> Result<()> {
-    for (s, ak, t) in references {
-        if !super::refs::references_in(tx, s, ak, t)? {
-            return Err(Error::Clash(format!("{ak} of {s} does not reference {t} after this write: write the reference where it retains")));
-        }
+/// `w` for ops `ops` on aspect `(tid, ak)`: a removal of a tid among them covers the parts held
+/// as headers only too (`header_only_parts`, spec/crdt.md §5.5).
+pub(crate) fn seeing(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &[PathOp], w: Writer) -> Result<Writer> {
+    if !ops.iter().any(|o| matches!(o.op, Op::Remove(Value::Tid(_)))) {
+        return Ok(w);
     }
-    for t in kept {
-        if crate::retention::lifetimes::unreachable_now(tx, t)? {
-            return Err(Error::Clash(format!("{t} would be unreachable after this write: no retainer it lists that is itself kept references it (list one that does, or release it)")));
-        }
-    }
-    Ok(())
+    Ok(w.seen_headers(header_only_parts(tx, tid, ak)?))
 }
 
-/// The nodes of this node's account whose synced group (`synced^.0` on D) stands under home
-/// (`Core::under_home`, spec/sync-set.md §1 Home stays under it), whoever made it: an app may
-/// list a group of its own making.
-fn under_home(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
-    let Some((_, d)) = tx.core.account_devices() else { return Ok(BTreeSet::new()) };
-    let synced = tx.state(&d, &ct::SYNCED.name())?.and_then(Fragment::read).and_then(|v| ct::SYNCED.decode(&v).ok()).unwrap_or_default();
-    let me = tx.core.id.tid();
-    Ok(synced.into_iter().filter(|(n, g)| (*n == me || tx.core.own_node(n)) && tx.core.under_home(&d, g)).map(|(n, _)| n).collect())
-}
-
-/// Refuses a write after which a node of `before` (`under_home` before it) has its synced group
-/// no longer under home or home no longer under it (spec/sync-set.md §1): that node would follow
-/// no change of its synced group until paired again.
-fn check_home(tx: &mut Tx<'_>, before: &BTreeSet<Tid>) -> Result<()> {
-    if before.is_empty() {
-        return Ok(());
+/// The parts of aspect `(tid, ak)` this node holds as headers only, by their dots (spec/crdt.md
+/// §2.4): valid here, not received yet (`Hold::Missing`), and not stamped below a held root
+/// reset, which leaves them nothing. What a removal of a tid there covers beside the elements
+/// held (§5.5).
+fn header_only_parts(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<osis_crdt::DotRange>> {
+    let cs: Vec<CommitId> = tx.core.ix.missing.get(&(ak.clone(), *tid)).into_iter().flatten().copied().collect();
+    if cs.is_empty() {
+        return Ok(Vec::new());
     }
-    let now = under_home(tx)?;
-    match before.iter().find(|n| !now.contains(*n) && (**n == tx.core.id.tid() || tx.core.own_node(n))) {
-        Some(_) => Err(Error::Misuse("a node's synced group and the account's devices group must each stay under the other")),
-        None => Ok(()),
-    }
-}
-
-/// `Mutation::require_synced`, over the state the commit left.
-fn check_synced(core: &Core, memberships: &[(Tid, Tid)]) -> Result<()> {
-    for (t, g) in memberships {
-        if core.created(t).is_some() && !core.carried(t) && core.carried(g) {
-            return Err(Error::Unsynced { tid: *t, group: *g });
+    // the root's reset, held whatever pages are loaded
+    tx.load_lazy(tid, ak)?;
+    let reset = tx.cached(tid, ak).and_then(Fragment::reset).map(|r| r.ts);
+    let mut out = Vec::new();
+    for c in cs {
+        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+        let Some(a) = m.aspect(tid, ak).filter(|ai| m.valid_at(*ai) && m.missing(*ai)).and_then(|ai| m.view.aspects.get(ai)) else { continue };
+        if a.lo < a.hi && reset.is_none_or(|r| m.view.ts >= r) {
+            out.push(osis_crdt::DotRange { first: osis_crdt::Dot::new(m.view.form.own_source(m.view.author, c), a.lo), hi: a.hi });
         }
     }
-    Ok(())
+    Ok(out)
 }
 
 /// Records schema `s` as the local schema of each AK it declares, in memory and in the store

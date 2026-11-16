@@ -7,15 +7,11 @@
 use super::write::{check_authority, check_authority_with, check_role_with, Mutation, Records, Resolved};
 use super::{Engine, Tx};
 use crate::error::{Error, Result};
-use crate::engine::groups::gains;
 use crate::undo::Reverted;
 use crate::flows::Done;
 use crate::rotation;
-use osis_base::{Ak, CommitId, Role, Tid, Ts, Value};
-use osis_crdt::Op;
+use osis_base::{Ak, CommitId, Role, Tid, Ts};
 use osis_perm::At;
-use osis_schema::core_types::GROUP;
-use osis_schema::RawKey;
 use std::collections::BTreeSet;
 
 impl Engine {
@@ -31,10 +27,11 @@ impl Engine {
     /// Whether a client of this node, `actor`, reads `t` here now: `entitled` and this node's copy
     /// is current, or a kept copy it reads (`copy_readable_by`).
     pub fn readable_by(&self, actor: &Tid, t: &Tid) -> bool {
-        // in a group read at another node, or still catching up on its way home: stale here, and
-        // this node would serve it to a client as if current (notes/client-port.md §6)
-        if !self.core.sourced_elsewhere.is_empty() && self.enclosing(t).iter().any(|g| self.core.sourced_elsewhere.contains(g)) {
-            return false;
+        // in a sync unit read at another node, or still catching up on its way home: stale here,
+        // and this node would serve it to a client as if current (notes/client-port.md §6)
+        if !self.core.sourced_elsewhere.is_empty() {
+            let _ = t;
+            todo!("refgraph: (b) whether a sync unit sourced elsewhere holds t")
         }
         self.entitled(actor, t) || self.copy_readable_by(actor, t)
     }
@@ -46,12 +43,8 @@ impl Engine {
     }
 
     /// Fails `Permission` unless `actor` itself may do all of a confined `m`: every aspect's write,
-    /// every creation (write on the first admin), every thing it deletes. A purge needs write:
-    /// what it drops receivers judge by this node's and the actor's rights together
-    /// (spec/permissions.md §6). `group.0` gains only what it may
-    /// read or this mutation creates (`UnknownThing`, as for a tid nobody knows), by whatever op: else
-    /// the answer would tell a hidden thing from an unknown one and its name would reach the
-    /// group's readers (its data would not: spec/sync-judgement.md §1 entitlement judges the group's actor).
+    /// every creation (write on the first admin). A purge needs write: what it drops receivers
+    /// judge by this node's and the actor's rights together (spec/permissions.md §6).
     pub(crate) fn check_confined(&self, m: &Mutation, actor: &Tid) -> Result<()> {
         let ts = self.acting_ts();
         let creates = &m.creates;
@@ -60,32 +53,11 @@ impl Engine {
         for (t, ak) in m.aspects.keys() {
             check_authority_with(&self.core, *actor, records, t, ak.as_str(), ts)?;
         }
-        for t in m.creates.keys().chain(&m.deleting) {
+        for t in m.creates.keys() {
             check_authority_with(&self.core, *actor, records, t, created, ts)?;
         }
         for p in &m.purge {
             check_role_with(&self.core, *actor, records, p.tid(), p.ak().as_str(), Role::Write, ts)?;
-        }
-        for ((_, ak), a) in &m.aspects {
-            if ak.as_str() != GROUP.ak() {
-                continue;
-            }
-            for op in &a.ops {
-                let added: &[Value] = match &op.op {
-                    Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Add(v) | Op::Edit { new: v, .. } => std::slice::from_ref(v),
-                    Op::Insert { items, .. } | Op::InsertAfter { items, .. } => items,
-                    _ => &[],
-                };
-                let hidden = |t: &Tid| !m.creates.contains_key(t) && !self.readable_by(actor, t);
-                if let Some(t) = added.iter().find_map(|v| find_tid(v, &hidden)) {
-                    return Err(Error::UnknownThing(t));
-                }
-                // a copy it reads: frozen, for its group's readers too
-                let copy = |t: &Tid| crate::retention::forget::copy_of(&self.core, t).is_some();
-                if let Some(t) = added.iter().find_map(|v| find_tid(v, &copy)) {
-                    return Err(Error::Permission { tid: t });
-                }
-            }
         }
         Ok(())
     }
@@ -93,8 +65,7 @@ impl Engine {
     /// Reverts change `id` for `actor`, held to its rights: on everything the change touched,
     /// whether or not the revert still writes it (the answer tells nothing of what it may not
     /// read), and on every write the revert really makes (`undo_in`, `revert_inner`). An error
-    /// names only what it reads. A deleted thing's membership in a group the actor may not write
-    /// stays, as for `Write::delete`: the answer tells nothing of it.
+    /// names only what it reads.
     pub fn revert_as(&mut self, id: CommitId, actor: Tid) -> Result<Reverted> {
         self.as_actor(id, actor, |e| e.revert_inner(id, actor, true))
     }
@@ -102,7 +73,7 @@ impl Engine {
     /// What `revert_as` fails with before writing anything (`Permission`, then `NotKept`),
     /// named as it would, and whether it writes anything (`Engine::check_revertible`).
     pub fn check_revertible_as(&mut self, id: CommitId, actor: Tid) -> Result<bool> {
-        self.as_actor(id, actor, |e| e.check_revert(id, actor, true))
+        self.as_actor(id, actor, |e| e.check_revert(id))
     }
 
     /// `f` once `actor` holds write on everything commit `id` touched; an error names only what
@@ -147,28 +118,10 @@ impl Engine {
 }
 
 /// A confined revert's durable writes, as `undo_in` is about to make them: `actor`'s rights on
-/// each, and `group.0` gains only what it may read (a revert of a member removal puts a thing back).
+/// each.
 pub(crate) fn check_undo(tx: &mut Tx<'_>, actor: Tid, deltas: &[Resolved], ts: Ts) -> Result<()> {
     for d in deltas {
         check_authority(tx.core, actor, &Default::default(), &d.tid, d.ak.as_str(), ts)?;
-        if d.ak.as_str() == GROUP.ak() {
-            let gained = gains(tx.state(&d.tid, &d.ak)?, &d.fragment);
-            if let Some(t) = gained.iter().find(|t| !tx.core.may_read(&actor, t)) {
-                return Err(Error::Permission { tid: *t });
-            }
-        }
     }
     Ok(())
-}
-
-/// The first tid inside `v` that `f` holds of.
-fn find_tid(v: &Value, f: &dyn Fn(&Tid) -> bool) -> Option<Tid> {
-    match v {
-        Value::Tid(t) => f(t).then_some(*t),
-        Value::List(l) => l.iter().find_map(|x| find_tid(x, f)),
-        Value::Set(s) => s.iter().find_map(|x| find_tid(x, f)),
-        Value::Map(m) => m.iter().find_map(|(k, x)| find_tid(k, f).or_else(|| find_tid(x, f))),
-        Value::Enum(_, Some(p)) => find_tid(p, f),
-        _ => None,
-    }
 }

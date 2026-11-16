@@ -56,7 +56,7 @@ pub struct Global {
     #[arg(long = "client-secret", global = true, value_name = "FILE", requires = "node")]
     pub client_secret: Option<PathBuf>,
     /// Beside this store, connect to this node as its client (URL#KEY; needs --connect-secret):
-    /// for the groups whose `group source` it is
+    /// for the sync units whose `source` it is
     #[arg(long, global = true, value_name = "ADDR", requires = "connect_secret", conflicts_with = "node")]
     pub connect: Option<String>,
     /// The file holding that client's secret (64 hex digits)
@@ -64,7 +64,7 @@ pub struct Global {
     pub connect_secret: Option<PathBuf>,
 }
 
-/// When the commit expires (`group add`, and the write flags).
+/// When the commit expires (the write flags).
 #[derive(Args, Debug, Clone, Default)]
 pub struct ExpiryFlags {
     /// The commit expires after DUR
@@ -94,9 +94,6 @@ pub struct Scope {
     /// These aspects (repeatable)
     #[arg(long, num_args = 2, value_names = ["T", "AK"], action = clap::ArgAction::Append)]
     pub aspect: Vec<String>,
-    /// A group and everything in it
-    #[arg(long, value_name = "G")]
-    pub group: Option<String>,
 }
 
 /// A page of commits and its filters, or `--follow`.
@@ -136,17 +133,6 @@ pub struct ListArgs {
     pub count: Option<usize>,
 }
 
-/// Groups a new thing goes into (none: on this node alone, or a group synced itself).
-#[derive(Args, Debug, Clone, Default)]
-pub struct GroupsArgs {
-    /// Item of group G
-    #[arg(long = "in", value_name = "G")]
-    pub in_: Option<String>,
-    /// Item of each group (comma-separated)
-    #[arg(long, value_name = "G,G", value_delimiter = ',', conflicts_with = "in_")]
-    pub in_all: Vec<String>,
-}
-
 /// How a role is taken away.
 #[derive(Args, Debug, Clone, Default)]
 pub struct SetRoleFlags {
@@ -157,9 +143,9 @@ pub struct SetRoleFlags {
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// Create a store: a new node, account and home group
+    /// Create a store: a new node and account
     Init,
-    /// This store's account (also its home group) and node
+    /// This store's account and node
     Whoami,
     /// Add a node to this account
     #[command(subcommand)]
@@ -177,7 +163,7 @@ pub enum Cmd {
         #[arg(long, value_name = "URL")]
         listen: Vec<String>,
     },
-    /// Create a thing, optionally setting aspects: create --in home note:title.0 '"x"'. Listed nowhere (no --in), it stays on this node
+    /// Create a thing, optionally setting aspects: create note:title.0 '"x"'
     Create(CreateArgs),
     /// Read an aspect (or a path in it); absent exits 3
     Get {
@@ -211,9 +197,9 @@ pub enum Cmd {
         #[arg(long, value_name = "VALUE")]
         base: Option<String>,
     },
-    /// Run a script from stdin as one commit (lines: create, set, overwrite, rm, op, group add, group rm, delete)
+    /// Run a script from stdin as one commit (lines: create, set, overwrite, rm, op)
     Write,
-    /// Every aspect of a thing, its groups and role
+    /// Every aspect of a thing and its role
     Show {
         t: String,
         /// Truncate values to N chars (0: no limit)
@@ -222,10 +208,6 @@ pub enum Cmd {
     },
     /// Aspect keys of a thing
     Aspects { t: String },
-    /// Delete every aspect and membership of a thing
-    Delete { t: String },
-    /// Things in a group, by query (not built yet: `members` lists them)
-    Ls { g: String },
     /// Things whose current values reference T, as `tid aspect` lines: every page; with --watch
     /// the first page, again on each change
     Backlinks {
@@ -294,10 +276,6 @@ pub enum Cmd {
     },
     /// Revert any commit by its id
     Revert { id: String },
-    /// Groups listing T as an item or a subgroup, and every group holding T (within)
-    Groups { t: String },
-    /// What group G contains: its items and subgroups
-    Members { g: String },
     /// The roles granted on T, by holder (--watch: one line per change)
     Grants {
         t: String,
@@ -332,18 +310,6 @@ pub enum Cmd {
         #[arg(long, value_name = "WHAT")]
         reads: Option<String>,
     },
-    /// Things this account was granted that no node of it syncs yet: thing, role, granting account
-    /// (`-`: not known here), `taken` once this node holds the grant's keys, `acted` once accepted,
-    /// filed elsewhere or unsynced before
-    Invitations,
-    /// Sync each T: list it as a subgroup of G, a synced group (default home). Check `invitations`
-    /// first: a T whose grant has not arrived is listed and syncs nothing until it does
-    Accept {
-        #[arg(required = true)]
-        t: Vec<String>,
-        #[arg(long, value_name = "G", default_value = "home")]
-        into: String,
-    },
     /// Make HOLDER's role on T this one: read, write, admin, or none to remove. A role waits as
     /// `grant` does; a removal waits for nothing
     SetRole {
@@ -360,24 +326,10 @@ pub enum Cmd {
         #[arg(long, value_name = "ACTOR")]
         holder: Option<String>,
     },
-    /// Stop syncing T here for having shared it (a grant or link made on this node): it still
-    /// syncs while a synced group holds it, else it leaves this node once its writes reached
-    /// another holder
-    Unsync { t: String },
     /// List this node's read-only copies of what it was removed from, or erase ACTOR's
     Retained {
         #[arg(long, value_name = "ACTOR")]
         drop: Option<String>,
-    },
-    /// Add T to group G and grant G ROLE on it, tied together: the grant goes when T leaves G.
-    /// Waits as `grant` does
-    AddWithGrant {
-        t: String,
-        g: String,
-        role: String,
-        /// T joins as a subgroup of G, not an item
-        #[arg(long)]
-        subgroup: bool,
     },
     /// Share links
     #[command(subcommand)]
@@ -391,20 +343,21 @@ pub enum Cmd {
     /// Admin disputes: fights this node settles for itself
     #[command(subcommand)]
     Disputes(DisputeCmd),
-    /// Sync connections up, then how each group's sync stands
+    /// Sync connections up, then how each sync unit's sync stands
     Status {
         #[arg(long)]
         watch: bool,
     },
-    /// Sync now and wait until everything (or G) is caught up with every connected node; a group another node may hold waits for it to be connected (until --timeout)
+    /// Sync now and wait until everything (or T) is caught up with every connected node; a sync ID another node may hold waits for it to be connected (until --timeout)
     #[command(visible_alias = "wait")]
     Sync {
-        #[arg(long, value_name = "G")]
-        group: Option<String>,
+        #[arg(long, value_name = "T")]
+        thing: Option<String>,
     },
-    /// Group sync configuration
-    #[command(subcommand)]
-    Group(GroupCmd),
+    /// Where sync unit T's calls go: shows it, or moves it to TO: `local`, or ADDR (URL#KEY) of
+    /// the node connected by --connect; held in the store. Local: this store syncs it, and it is
+    /// caught up before calls come home
+    Source { t: String, to: Option<String> },
     /// Engine internals (format not stable)
     #[command(subcommand)]
     Inspect(InspectCmd),
@@ -420,11 +373,9 @@ pub enum Cmd {
 
 #[derive(Args, Debug, Clone)]
 pub struct CreateArgs {
-    /// First admin in place of the acting actor: a thin client's way to create, naming a group that outlives it
-    #[arg(long, value_name = "G")]
+    /// First admin in place of the acting actor: a thin client's way to create, naming a thing that outlives it
+    #[arg(long, value_name = "A")]
     pub admin: Option<String>,
-    #[command(flatten)]
-    pub groups: GroupsArgs,
     /// Bind $NAME to the new tid (write scripts)
     #[arg(long = "as", value_name = "NAME")]
     pub as_: Option<String>,
@@ -533,28 +484,6 @@ pub enum ClientsCmd {
     Rotate { actor: String },
 }
 
-/// A group's members (`group add`, `group rm`).
-#[derive(Subcommand, Debug, Clone)]
-pub enum MemberCmd {
-    /// Add T to group G: an item, or with --subgroup a subgroup
-    Add {
-        g: String,
-        t: String,
-        #[arg(long)]
-        subgroup: bool,
-        // the membership goes when the commit expires
-        #[command(flatten)]
-        e: ExpiryFlags,
-    },
-    /// Remove T from group G: an item, or with --subgroup a subgroup
-    Rm {
-        g: String,
-        t: String,
-        #[arg(long)]
-        subgroup: bool,
-    },
-}
-
 #[derive(Subcommand, Debug)]
 pub enum LinkCmd {
     /// Make a link giving ROLE (read, write or admin) on T, and sync T if it does not yet; prints
@@ -613,8 +542,7 @@ pub enum ChatCmd {
     /// Joins by link: prints the chat's tid
     Join { link: String },
     /// Lets ACCOUNT's nodes carry the chat without reading it: sync on it and on the K of each of
-    /// its links that works (joiners redeem a link where K syncs). Prints what it granted; ACCOUNT
-    /// then `accept`s each. A link made later needs `relay` again. Waits as `grant` does
+    /// its links that works (joiners redeem a link where K syncs). Prints what it granted. A link made later needs `relay` again. Waits as `grant` does
     Relay { chat: String, account: String },
     /// Removes a participant
     Kick {
@@ -691,19 +619,8 @@ pub enum CardCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum GroupCmd {
-    #[command(flatten)]
-    Member(MemberCmd),
-    /// Where G's calls go: shows it, or moves it to TO: `local`, or ADDR (URL#KEY) of the node
-    /// connected by --connect; held in the store. Local: this store syncs it, and it is caught up
-    /// before calls come home
-    Source { g: String, to: Option<String> },
-}
-
-#[derive(Subcommand, Debug)]
 pub enum InspectCmd {
     Thing { t: String },
-    Group { g: String },
     Actor { a: String },
     Commit { id: String },
 }
@@ -740,7 +657,4 @@ pub enum ScriptCmd {
     Fire(FireArgs),
     Rm(RmArgs),
     Op(OpArgs),
-    #[command(subcommand)]
-    Group(MemberCmd),
-    Delete { t: String },
 }

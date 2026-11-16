@@ -1,3 +1,0 @@
----- MODULE MCTrust ----
-EXTENDS NetTrust
-====

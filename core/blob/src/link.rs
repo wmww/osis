@@ -3,12 +3,42 @@
 
 use osis_base::base64url;
 use crate::cbor::{get_bytes, get_tid, get_uint, tid};
-use crate::DialHint;
 use crate::Error;
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::format::MAX_URL_BYTES;
 use osis_base::{SyncId, Tid, Value};
 use osis_crypto::Secret32;
+
+/// A node's dialable key and URLs: a dial hint (spec/wire.md §10 `peer`).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DialHint {
+    pub dialable: [u8; 32],
+    pub urls: Vec<String>,
+}
+
+impl DialHint {
+    /// `[dialable, [url*]]` (spec/wire.md §10 `peer`).
+    pub fn to_value(&self) -> Value {
+        Value::List(vec![Value::bytes(&self.dialable), Value::List(self.urls.iter().map(|u| Value::Str(u.clone())).collect())])
+    }
+
+    /// From `[dialable, [url*]]`: at most `max_urls` URLs, each at most `MAX_URL_BYTES`.
+    pub fn from_value(v: &Value, max_urls: usize, what: &'static str) -> Result<DialHint, Error> {
+        let Value::List(d) = v else { return Err(Error::Malformed(what)) };
+        let [k, Value::List(urls)] = d.as_slice() else { return Err(Error::Malformed(what)) };
+        if urls.len() > max_urls {
+            return Err(Error::Malformed(what));
+        }
+        let urls = urls
+            .iter()
+            .map(|u| match u {
+                Value::Str(u) if u.len() <= MAX_URL_BYTES => Ok(u.clone()),
+                _ => Err(Error::Malformed(what)),
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(DialHint { dialable: get_bytes(k, "dialable key")?, urls })
+    }
+}
 
 const MAX_PEERS: usize = 4;
 const MAX_URLS: usize = 4;

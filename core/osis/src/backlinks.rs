@@ -80,7 +80,7 @@ fn watch(db: &ReadOnly, tid: Tid) -> Filter {
 impl ReadOnly {
     /// The things whose current values reference `tid` (hold its tid, at any depth), each with the
     /// aspect, a page at a time. Only what this node holds and the handle may read counts, never
-    /// history; a group listing `tid` is one (on `group.0`). `tid` itself need not be known here.
+    /// history. `tid` itself need not be known here.
     pub fn backlinks(&self, tid: Tid, q: &BacklinkQuery) -> Result<BacklinkPage> {
         self.local_at(tid, "backlinks")?;
         if self.tracking.is_some() {

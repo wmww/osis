@@ -44,10 +44,8 @@ impl Engine {
 
     /// Writes `m` as one commit, durable or memory. `Clash` when the ops ask for both (a new
     /// thing's record is durable, so a `+` write on a thing created in the same mutation is one), or
-    /// signals beside either. A delete (`Mutation::deleting`) purges its things' ephemeral state
-    /// in its durable commit (`write::delete_purges`), writing no memory commit. When the commit
-    /// or any op fails, nothing applies. `None` when no commit is written. A durable write that
-    /// acts on an invitation also marks it on D, in a commit of its own (`sync::inbox::mark_acted`).
+    /// signals beside either. When the commit or any op fails, nothing applies. `None` when no
+    /// commit is written.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.core.writer()?;
         let actor = m.actor.unwrap_or(node);
@@ -67,23 +65,14 @@ impl Engine {
             }
         }
         if eph_ops.is_empty() {
-            let deleting = m.deleting.clone();
-            let creates = m.creates.clone();
-            let writers: &[Tid] = if m.unchecked { &[] } else { &[node] };
-            let ts = Ts::make(self.now(), 0).unwrap_or_default();
-            let id = self.run(|tx| {
-                crate::engine::write::check_delete(tx, writers, &creates, &deleting, ts)?;
-                let id = commit_in(tx, m)?;
-                crate::sync::inbox::mark_acted(tx)?;
-                Ok(id)
-            })?;
+            let id = self.run(|tx| commit_in(tx, m))?;
             return Ok(id.map(|id| self.written(id)));
         }
         // a memory commit's writes and a durable commit's are not one (spec/commits.md §2)
         // a purge request is durable whatever it names (its `purge.0` delta is no write of the app's)
         let durable = (!m.purge.is_empty()).then(|| "a purge".to_string());
         let durable = durable.or_else(|| m.aspects.keys().next().map(|(t, k)| format!("{t} {k}"))).or_else(|| m.creates.keys().next().map(|t| format!("the creation of {t}")));
-        let durable = durable.or_else(|| (!(m.dead_resets.is_empty() && m.fresh_resets.is_empty() && m.undoes.is_none() && m.deleting.is_empty())).then(|| "the rest".to_string()));
+        let durable = durable.or_else(|| (!(m.dead_resets.is_empty() && m.fresh_resets.is_empty() && m.undoes.is_none())).then(|| "the rest".to_string()));
         if let (Some(d), Some((t, k, _))) = (&durable, eph_ops.first()) {
             return Err(Error::Clash(format!("a commit is durable or ephemeral, and this write is both: {t} {k} is ephemeral, {d} is not. Write them as separate commits")));
         }

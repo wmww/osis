@@ -124,9 +124,10 @@ pub trait Ground {
     /// body): one coming to be read judges its bodies, which a judgement while it was not read
     /// left unfollowed.
     fn holdings_moved(&mut self) -> Vec<SyncId>;
-    /// No group of S's closure holds a part of its `group.0` as a header only (spec/sync-judgement.md
-    /// §2 outside the required set, §3 Header-only parts): until then nothing is judged outside it.
-    fn closure_settled(&mut self, s: &SyncId) -> Result<bool>;
+    /// No thing of S's sync unit holds a part that may hold a strong as a header only
+    /// (spec/sync-judgement.md §2 outside the required set, §3 Header-only parts): until then
+    /// nothing is judged outside it.
+    fn unit_settled(&mut self, s: &SyncId) -> Result<bool>;
     /// A reader can pull S from here: this node publishes `reach.0`, or a connection shares S
     /// (spec/sync-judgement.md §3 Own store).
     fn pullable(&mut self, s: &SyncId) -> Result<bool>;

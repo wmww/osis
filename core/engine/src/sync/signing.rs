@@ -34,21 +34,6 @@ impl Engine {
         Ok(out)
     }
 
-    /// The sync IDs delivery (`c`, `holder`)'s blob names (spec/wire.md §9 position 1).
-    pub fn delivery_names(&mut self, c: &CommitId, holder: &Tid) -> Result<Arc<Vec<SyncId>>> {
-        let Some(o) = self.core.ix.owed_inbox.get(&(*c, *holder)).cloned() else { return Ok(Arc::default()) };
-        let mut out = Vec::new();
-        for t in &o.things {
-            let t = *t;
-            if let Some(s) = self.read(|tx| crate::flows::home_sync_id(tx, &t))? {
-                out.push(s);
-            }
-        }
-        out.sort();
-        out.dedup();
-        Ok(Arc::new(out))
-    }
-
     /// The role commits of `s`'s thing that recorded step `step`'s epochs depend on: the held
     /// rotations of the epochs it registers and of those they supersede (spec/sync-ids.md §6
     /// Steps). A role's epoch is the one whose key the step carries; where no secret held here

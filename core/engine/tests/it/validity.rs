@@ -1286,15 +1286,6 @@ fn accounts(lp: &mut LocalPeer) -> Vec<Tid> {
     ps
 }
 
-/// Hands `done`'s inbox blobs to every other peer.
-fn carry(lp: &mut LocalPeer, from: usize, done: &osis_engine::flows::Done) {
-    for (_, blob) in lp.inbox_blobs(from, done).unwrap() {
-        for i in (0..lp.peers.len()).filter(|i| *i != from) {
-            let _ = lp.peers[i].engine.take_inbox_blob(&blob, true);
-        }
-    }
-}
-
 /// The entry resets in the `roles.0` deltas on `d` of `done`'s commits at peer 0.
 fn roles_resets(lp: &mut LocalPeer, d: Tid, done: &osis_engine::flows::Done) -> usize {
     let mut n = 0;
@@ -1335,94 +1326,6 @@ fn holder_churn_resets_are_flat_spec_perm_2() {
     let (small, big) = (churn_resets(3), churn_resets(30));
     assert_eq!(small, (0, 1), "a grant after a removal resets nothing; a removal its grant's entry");
     assert_eq!(small, big);
-}
-
-// spec/permissions.md §2: two admins grant B concurrently (a fork of its grant); A sees both and
-// removes B. A's removal resets only its current entry, yet ends both grants: B holds nothing at
-// A, C and nodes given the setup then the three writes in every order.
-#[test]
-fn a_removal_ends_both_forked_grants_it_saw_spec_perm_2() {
-    use osis_engine::flows::Demotion;
-    // the remover: A, then C (each one's current entry is a different grant)
-    for (r, other) in [(0, 2), (2, 0)] {
-        let mut lp = net(9, 0);
-        let ps = accounts(&mut lp);
-        let (pb, pc) = (ps[1], ps[2]);
-        let mut m = Mutation::new();
-        let d = lp.peers[0].engine.new_thing(&mut m, ps[0]);
-        m.set(d, &REG, &s("x")).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        let done = lp.peers[0].engine.grant(&d, &pc, &edge(Role::Admin)).unwrap();
-        carry(&mut lp, 0, &done);
-        lp.sync_all().unwrap();
-        let base = lp.peers[0].engine.commit_ids();
-        lp.advance(10);
-        let ga = lp.peers[0].engine.grant(&d, &pb, &edge(Role::Write)).unwrap().commits;
-        let gc = lp.peers[2].engine.grant(&d, &pb, &edge(Role::Read)).unwrap().commits;
-        lp.advance(10);
-        send(&mut lp, 2, 0, &gc);
-        send(&mut lp, 0, 2, &ga);
-        lp.advance(10);
-        let x = lp.peers[r].engine.demote(&d, &Demotion { holder: pb, new: None, retain: None }).unwrap();
-        send(&mut lp, r, 0, &x.commits);
-        assert_eq!(roles_resets(&mut lp, d, &x), 1, "the removal resets its writer's current entry alone");
-        send(&mut lp, r, other, &x.commits);
-        let writes = [ga, gc, x.commits];
-        let orders = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
-        for (o, order) in orders.iter().enumerate() {
-            let to = 3 + o;
-            let held = lp.peers[to].engine.commit_ids();
-            let from_base: Vec<_> = base.iter().filter(|c| !held.contains(c)).cloned().collect();
-            send(&mut lp, 0, to, &from_base);
-            for (k, i) in order.iter().enumerate() {
-                send(&mut lp, 0, to, &writes[*i]);
-                if !order[..=k].contains(&2) {
-                    assert!(lp.peers[to].engine.roster(&d).contains_key(&pb), "peer {to}: a grant alone stands");
-                }
-            }
-        }
-        for i in [0, 2, 3, 4, 5, 6, 7, 8] {
-            assert_eq!(lp.peers[i].engine.roster(&d).get(&pb), None, "remover {r}, peer {i}: B removed");
-        }
-    }
-}
-
-// spec/permissions.md §2, §5.1: C grants B write; A removes C with a frontier that misses the
-// grant, so the walk drops it, but its entry stays live in the `roles.0` state. A grants B
-// again (same role or another): the grant resets that entry and puts a new one, and B reads its
-// edge (was: the grant flow diffed into the dropped entry: nothing, or a field write B never
-// resolved).
-#[test]
-fn regrant_over_dropped_entry_spec_perm_2() {
-    for again in [Role::Write, Role::Admin] {
-        use osis_engine::flows::Demotion;
-        let mut lp = net(3, 0);
-        let ps = accounts(&mut lp);
-        let (pb, pc) = (ps[1], ps[2]);
-        let mut m = Mutation::new();
-        let d = lp.peers[0].engine.new_thing(&mut m, ps[0]);
-        m.set(d, &REG, &s("x")).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        let done = lp.peers[0].engine.grant(&d, &pc, &edge(Role::Admin)).unwrap();
-        carry(&mut lp, 0, &done);
-        lp.sync_all().unwrap();
-        lp.advance(10);
-        let g = lp.peers[2].engine.grant(&d, &pb, &edge(Role::Write)).unwrap().commits;
-        lp.advance(10);
-        let done = lp.peers[0].engine.demote(&d, &Demotion { holder: pc, new: None, retain: None }).unwrap();
-        carry(&mut lp, 0, &done);
-        lp.advance(10);
-        // A holds the dropped grant; B never does
-        send(&mut lp, 2, 0, &g);
-        assert_eq!(lp.peers[0].engine.roster(&d).get(&pb), None, "the grant is dropped");
-        lp.advance(10);
-        let done = lp.peers[0].engine.grant(&d, &pb, &edge(again)).unwrap();
-        carry(&mut lp, 0, &done);
-        let ids: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !g.contains(c)).collect();
-        send(&mut lp, 0, 1, &ids);
-        assert_eq!(lp.peers[0].engine.roster(&d).get(&pb).map(|e| e.role), Some(again), "at A");
-        assert_eq!(lp.peers[1].engine.roster(&d).get(&pb).map(|e| e.role), Some(again), "at B");
-    }
 }
 
 // spec/crdt.md §4.6, spec/permissions.md §5.2, spec/requirements.md Decentralization: paged

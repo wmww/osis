@@ -9,16 +9,15 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
-use crate::share::Member;
 use crate::keys::DynamicAspectKey;
 use crate::read::{Reader, ak_of};
-use osis_base::{Ak, CreationRecord, Role, Tid, Value, Time};
+use osis_base::{Ak, CreationRecord, Tid, Value, Time};
 use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use crate::commit_id::CommitId;
 use osis_engine::Mutation;
 use osis_schema::{AspectKey, SignalKey, ValueKey};
-use osis_schema::core_types::{GROUP, RELEASED, RETAINERS, is_role_class};
+use osis_schema::core_types::is_role_class;
 use osis_schema::{RawKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
 use crate::commits::Commit;
 use std::collections::BTreeMap;
@@ -57,8 +56,6 @@ pub enum Purge {
 pub(crate) enum WriteOp {
     /// A new thing; its record fixes its tid.
     Create(CreationRecord),
-    /// Adds (removes) `member` to the items, or the subgroups, of `g`.
-    Group { g: Tid, member: Tid, items: bool, add: bool },
     /// An op at a path of a value aspect (whole-value ops at the root).
     Path { tid: Tid, key: u32, op: PathOp },
     /// A fire of a signal with `v`, replacing fire `replaces`.
@@ -71,15 +68,8 @@ pub(crate) enum WriteOp {
     PurgeCommit { tid: Tid, key: u32, commit: osis_base::CommitId },
     /// Purges an author's deltas on the aspect.
     PurgeAuthor { tid: Tid, key: u32, actor: Tid },
-    /// Removes the thing's aspects and the memberships this node may remove, as held at commit.
-    Delete(Tid),
     /// Destroys the thing for everyone: purges its creation.
     PurgeThing(Tid),
-    /// Releases the thing: a release request on it.
-    Release(Tid),
-    /// Adds `by` to `thing`'s retainers; `by`'s aspect `key` must reference `thing` after the
-    /// commit.
-    Retain { by: Tid, key: u32, thing: Tid },
 }
 
 /// Writes that become one commit (two: below), all or nothing. Reads meanwhile do not see them. What cannot share
@@ -114,10 +104,7 @@ pub struct Write<'d> {
     /// A thing that must still be known (`Osis::knows`) when the write commits, checked under
     /// the commit's lock: a text session never recreates a thing deleted since it knew it.
     pub(crate) alive: Option<Tid>,
-    /// `Osis::add_with_grant`: a grant follows; no report that holders may not read what this
-    /// places.
-    pub(crate) sharing: bool,
-    /// Why a chained modifier (`retention`, `retaining`) could not be recorded: `commit` fails
+    /// Why a chained modifier (`retention`) could not be recorded: `commit` fails
     /// with it.
     refused: Option<Error>,
 }
@@ -125,24 +112,17 @@ pub struct Write<'d> {
 impl Osis {
     /// A new write acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), expires: None, alive: None, sharing: false, refused: None }
+        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), expires: None, alive: None, refused: None }
     }
 }
 
 /// Synthetic aspects and `created.0`: never written by ops.
 fn read_only(ak: &str) -> bool {
-    matches!(ak, "tid.0" | "aspects.0" | "groups.0" | "created.0")
+    matches!(ak, "aspects.0" | "created.0")
 }
 
-/// Why no op may name `ak`: the engine's, the sharing calls', or a group's members, which change
-/// by the group calls alone (they check sync and clean up grants made with the membership).
+/// Why no op may name `ak`: the engine's or the sharing calls'.
 fn not_writable(ak: &str) -> Option<String> {
-    if ak == GROUP.ak() {
-        return Some(format!("{ak} is written only by Write::group"));
-    }
-    if ak == RELEASED.ak() {
-        return Some(format!("{ak} is written only by Write::release"));
-    }
     (read_only(ak) || is_role_class(ak)).then(|| format!("{ak} is written only by the engine or the sharing calls"))
 }
 
@@ -156,12 +136,6 @@ pub(crate) fn segs(p: &Path) -> Result<Vec<PathSeg>> {
             Step::Elem(_) => Err(Error::Invalid("a set element is atomic: no path into it".into())),
         })
         .collect()
-}
-
-pub(crate) fn group_op(items: bool, member: Tid, add: bool) -> PathOp {
-    let v = Value::Tid(member);
-    let f = if items { crate::internals::GROUP_ITEMS } else { crate::internals::GROUP_SUBGROUPS };
-    PathOp { path: vec![PathSeg::Field(f.0)], op: if add { Op::Add(v) } else { Op::Remove(v) } }
 }
 
 /// The wall time of `e`; `Invalid` unless it is in the future.
@@ -185,8 +159,8 @@ impl<'d> Write<'d> {
     }
 
     /// When this commit expires, in place of what its keys say. A later call replaces it. `commit`
-    /// fails `Invalid` when the time is not in the future, or beside what cannot expire: a removal
-    /// from a group, a `delete`, a `purge` of a thing, or a purge naming anything but commits expiring no
+    /// fails `Invalid` when the time is not in the future, or beside what cannot expire: a `purge`
+    /// of a thing, or a purge naming anything but commits expiring no
     /// later on a thing the write also writes. A commit writing into
     /// a value that expires sooner (a reaction to a disappearing message) expires with that value,
     /// whatever this says: it means nothing once the value is gone.
@@ -211,10 +185,8 @@ impl<'d> Write<'d> {
                     CreationRecord::Thing { admin, .. } => vec![r.tid(), *admin],
                     CreationRecord::KeyActor { .. } => vec![r.tid()],
                 },
-                WriteOp::Group { g, member, .. } => vec![*g, *member],
                 WriteOp::Path { tid, .. } | WriteOp::Fire { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => vec![*tid],
-                WriteOp::Delete(t) | WriteOp::PurgeThing(t) | WriteOp::Release(t) => vec![*t],
-                WriteOp::Retain { by, thing, .. } => vec![*by, *thing],
+                WriteOp::PurgeThing(t) => vec![*t],
             })
             .filter(|t| !self.created.contains(t))
             .collect();
@@ -299,16 +271,15 @@ impl<'d> Write<'d> {
     /// commit on a thin client's handle: its actor goes with the client, so what it makes
     /// names who stays (`create_with_admin`).
     ///
-    /// It stays on this node until a write lists it in a group that syncs (or under a thing that
-    /// does) or shares it.
+    /// It syncs where the node closure holds it by a strong.
     pub fn create(&mut self) -> Result<Tid> {
         self.create_with_admin(self.actor)
     }
 
-    /// `create`, with `admin` as the first admin in place of the acting actor: a group or account
+    /// `create`, with `admin` as the first admin in place of the acting actor: a thing or account
     /// this actor may write (`Permission` at commit otherwise). Beside `create` because a thing's
     /// first admin is fixed when it is made: a thin client's things need one that outlives the
-    /// client, and a thing made for a group's holders needs no grant to reach them. The first
+    /// client, and a thing made under the thing it lives in needs no grant to reach its readers. The first
     /// admin is an ordinary admin, removable like any other (spec/permissions.md §1).
     pub fn create_with_admin(&mut self, admin: Tid) -> Result<Tid> {
         let admin = self.known(admin)?;
@@ -319,34 +290,8 @@ impl<'d> Write<'d> {
         Ok(t)
     }
 
-    /// The members of `group`: what it contains, to add or remove.
-    pub fn group(&mut self, group: Tid) -> GroupWrite<'_, 'd> {
-        GroupWrite { w: self, group }
-    }
-
-    fn member(&mut self, g: Tid, m: Member, add: bool) -> Result<()> {
-        let g = self.known(g)?;
-        let (member, subgroup) = m.parts();
-        self.ops.push(WriteOp::Group { g, member, items: !subgroup, add });
-        Ok(())
-    }
-
-    /// Removes every durable aspect of `tid` that may hold content (present here, or written by a
-    /// part not received yet and not covered by a held reset) and its memberships in every group
-    /// this node may write that may list it (one it may not keeps listing it; it reads deleted
-    /// there): the adds of it this node holds, and those in parts it holds as headers only, so
-    /// an add it never heard of stays. Afterwards `has_content(tid)` is `false`; the tid stays
-    /// valid and a later write recreates the thing. Its ephemeral (`+`) values written before
-    /// the delete are purged by the same commit, at every node that applies it; one written
-    /// later stands. With nothing to remove the write commits nothing.
-    pub fn delete(&mut self, tid: Tid) -> Result<()> {
-        let t = self.known(tid)?;
-        self.ops.push(WriteOp::Delete(t));
-        Ok(())
-    }
-
     /// Destroys `tid` for everyone by purging its creation: every node drops the thing, whole, and
-    /// ignores what is written on it later. Unlike `delete` it cannot be undone. What depends on it
+    /// ignores what is written on it later. It cannot be undone. What depends on it
     /// lives on: rights others held through it stand as they were, and what a destroyed account
     /// signed still verifies. Only an admin of the thing may purge it (`Permission` otherwise); an
     /// account purges itself. An expiring commit that creates a thing destroys it the same way when
@@ -354,21 +299,6 @@ impl<'d> Write<'d> {
     pub fn purge(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         self.ops.push(WriteOp::PurgeThing(t));
-        Ok(())
-    }
-
-    /// Releases `tid`: it goes from every node, as a purged thing does, but as storage reclaim,
-    /// not erasure: nothing of it is kept for good, so a node still holding a copy of it may bring
-    /// it back later. It goes whatever lists or references it (a reference to it then reads as
-    /// gone, as after `purge`), and stays gone wherever a thing listing or referencing it is held.
-    /// What only it kept alive (things listing it as their retainer) is released after it, by the
-    /// node's own judgment. Needs the right to purge it (`Permission` otherwise, as `purge`). A
-    /// release is a commit of its own: `commit` fails `Invalid` beside any other op or an
-    /// `expires`. Beside `purge`, which erases: release is for a thing no longer needed, `purge` for
-    /// one that must be gone for good.
-    pub fn release(&mut self, tid: Tid) -> Result<()> {
-        let t = self.known(tid)?;
-        self.ops.push(WriteOp::Release(t));
         Ok(())
     }
 
@@ -396,7 +326,7 @@ impl<'d> Write<'d> {
     }
 
     /// Writes every op as one commit (two for what `Write` names); `None` when it writes none (nothing
-    /// changes, or only a `delete`'s ephemeral values here). Fails before anything applies
+    /// changes). Fails before anything applies
     /// with `Permission`, `UnknownThing`, or `Invalid` (also when the ops cannot share a commit:
     /// `Write`, or past 1024 ops through another node); `OutcomeUnknown`, only through another node,
     /// may have applied: read before repeating it.
@@ -417,7 +347,7 @@ impl<'d> Write<'d> {
         let r = db.locked(|l| {
             // the source invariant's second half: under the lock this commit takes, every thing it
             // writes is still this engine's. A write decided Local before a move fails here, never
-            // lands in a group that no longer syncs (crate::sources)
+            // lands in a sync unit that no longer syncs (crate::sources)
             let e = l.engine();
             if let Some(t) = self.alive
                 && !crate::read::knows_in(e, t)?
@@ -434,19 +364,14 @@ impl<'d> Write<'d> {
                 }
             }
             let who = self.actor;
-            let sharing = self.sharing;
-            let Built { mut m, added } = self.build(&mut Reader { e, limit, actor }, expires)?;
+            let mut m = self.build(&mut Reader { e, limit, actor }, expires)?;
             // whatever actor the write names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
                 m.confine(a);
             }
+            // refgraph: (b) a write adding a strong whose target is not carried reports `NotCarried`
             let r = match e.write(m)? {
-                Some(w) => {
-                    if !e.holds_memory(&w.id) {
-                        not_synced(e, &added, sharing);
-                    }
-                    Some(crate::commits::written_in(&mut Reader { e, limit, actor }, w, who)?.reporting(db))
-                }
+                Some(w) => Some(crate::commits::written_in(&mut Reader { e, limit, actor }, w, who)?.reporting(db)),
                 None => None,
             };
             Ok(r)
@@ -454,32 +379,24 @@ impl<'d> Write<'d> {
         Ok(r)
     }
 
-    /// The engine mutation of the recorded ops, against the state `r` holds (`delete`).
-    fn build(self, r: &mut Reader<'_>, expires: Option<Time>) -> Result<Built> {
-        let (acting, db) = (self.db.acting, self.db);
-        let Write { ops, keys, actor, created, .. } = self;
-        let gk = DynamicAspectKey { ak: GROUP.name(), schema: Some(crate::keys::core_schema()) };
-        let mut b = Built { m: Mutation::new(), added: Vec::new() };
+    /// The engine mutation of the recorded ops, against the state `r` holds.
+    fn build(self, r: &mut Reader<'_>, expires: Option<Time>) -> Result<Mutation> {
+        let acting = self.db.acting;
+        let Write { ops, keys, actor, .. } = self;
+        let mut m = Mutation::new();
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
-        // a release request carries `released.0` deltas alone (spec/commits.md §5 Destruction)
-        let releases = ops.iter().filter(|o| matches!(o, WriteOp::Release(_))).count();
-        if releases > 0 && (releases < ops.len() || expires.is_some()) {
-            return Err(Error::Invalid("a release is a commit of its own: write it in a Write with no other op and no expiry".into()));
-        }
         for op in ops {
             match op {
                 WriteOp::Create(rec) => {
-                    // the account's nodes administer what a client makes through the groups;
                     // the client's actor goes away with the client (notes/client-port.md §3)
                     if let (Some(a), CreationRecord::Thing { admin, .. }) = (acting, &rec)
                         && *admin == a
                     {
-                        return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing of its own: name a group that stays (create_with_admin)".into()));
+                        return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing of its own: name a thing that stays (create_with_admin)".into()));
                     }
-                    b.m.create(rec);
+                    m.create(rec);
                 }
-                WriteOp::Group { add: false, .. } | WriteOp::Delete(_) | WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group, a delete or a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
-                WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
+                WriteOp::PurgeThing(_) if expires.is_some() => return Err(Error::Invalid("a purge of a thing does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 // a dynamic key's kind is known only now: a write of the other kind never
                 // silently does nothing
                 WriteOp::Path { tid, key: k, op } => {
@@ -487,31 +404,14 @@ impl<'d> Write<'d> {
                     if k.signal() {
                         return Err(Error::Invalid(format!("{} is a signal: it is fired, not written (fire)", k.ak)));
                     }
-                    // the writer refuses its own change of a list that leaves the thing
-                    // unreachable (notes/lifetimes.md, API)
-                    if k.ak.as_str() == RETAINERS.ak() {
-                        b.m.require_kept(tid);
-                    }
-                    b.m.op(tid, k, op)?;
-                }
-                WriteOp::Retain { by, key: k, thing } => {
-                    let k = key(k)?;
-                    if k.signal() || k.ak.ephemeral() {
-                        return Err(Error::Invalid(format!("{} holds no live durable value: it retains nothing", k.ak)));
-                    }
-                    b.m.op(thing, &RETAINERS, PathOp { path: Vec::new(), op: Op::Add(Value::Tid(by)) })?;
-                    b.m.require_reference(by, k, thing)?;
-                    b.m.require_kept(thing);
-                }
-                WriteOp::Release(tid) => {
-                    b.m.op(tid, &RELEASED, PathOp { path: Vec::new(), op: Op::Set(r.e.now().to_value()) })?;
+                    m.op(tid, k, op)?;
                 }
                 WriteOp::Fire { tid, key: k, v, replaces } => {
                     let k = key(k)?;
                     if !k.signal() {
                         return Err(Error::Invalid(format!("{} is a value aspect: it is written, not fired (set)", k.ak)));
                     }
-                    b.m.op(tid, k, PathOp { path: Vec::new(), op: Op::Set(v) })?;
+                    m.op(tid, k, PathOp { path: Vec::new(), op: Op::Set(v) })?;
                     // a replacement is written only where it is honored: never one standing as a
                     // fire of its own elsewhere (spec/commits.md §5 Signals)
                     if let Some(o) = replaces {
@@ -521,11 +421,11 @@ impl<'d> Write<'d> {
                         if !r.e.replaceable(&tid, &k.ak, &o, &acting.unwrap_or(actor))? {
                             return Err(Error::Invalid(format!("{} on {tid} is not a fire of this actor listed here, valid, that replaces none itself", CommitId(o))));
                         }
-                        b.m.replaces(tid, k, o)?;
+                        m.replaces(tid, k, o)?;
                     }
                 }
                 WriteOp::Retention { tid, key: k, r } => {
-                    b.m.retention(tid, key(k)?, r)?;
+                    m.retention(tid, key(k)?, r)?;
                 }
                 // each request carries a delta on its thing: a value aspect's removal, else
                 // `purge.0` (the engine leaves it out of a commit that expires)
@@ -534,134 +434,37 @@ impl<'d> Write<'d> {
                     // an ephemeral aspect's removal would be an ephemeral write: the request
                     // alone holds its writes value-less
                     if k.signal() || k.ephemeral() {
-                        b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
+                        m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
                     } else {
-                        b.m.op(tid, k, PathOp { path: Vec::new(), op: Op::RemoveAspect })?;
+                        m.op(tid, k, PathOp { path: Vec::new(), op: Op::RemoveAspect })?;
                     }
-                    b.m.purge(PurgeItem::Aspect { tid, ak: k.ak.clone() });
+                    m.purge(PurgeItem::Aspect { tid, ak: k.ak.clone() });
                 }
                 WriteOp::PurgeCommit { tid, key: k, commit } => {
-                    b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
+                    m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
                     let ak = key(k)?.ak.clone();
                     // a fire's replacements held here go with it: a purge of a message purges
                     // every version of it
                     for v in r.e.claims_on(&tid, &ak, &commit) {
-                        b.m.purge_commit(v, tid, ak.clone());
+                        m.purge_commit(v, tid, ak.clone());
                     }
-                    b.m.purge_commit(commit, tid, ak);
+                    m.purge_commit(commit, tid, ak);
                 }
                 WriteOp::PurgeAuthor { tid, key: k, actor } => {
-                    b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
-                    b.m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), actor });
+                    m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
+                    m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), actor });
                 }
                 WriteOp::PurgeThing(tid) => {
-                    b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
-                    b.m.purge(PurgeItem::Aspect { tid, ak: osis_schema::core_types::CREATED.name() });
-                }
-                WriteOp::Delete(t) => {
-                    // the durable aspects that may hold content, bodies held or not
-                    // (`Engine::deleted_aspects`); its ephemeral state the engine purges in the
-                    // same commit (`Mutation::deleting`). Each removal typed as `aspect_key` types it, so it
-                    // keeps the history its schema keeps and the delete undoes (spec/crdt.md §4.6)
-                    let aks = if r.hidden(t) { Vec::new() } else { r.e.deleted_aspects(&t)? };
-                    for ak in &aks {
-                        b.m.remove_aspect(t, &db.aspect_key(ak.as_str())?)?;
-                    }
-                    // removed from every group that may list it, its adds held here and those in
-                    // parts held as headers only (`Engine::listing_groups`, spec/crdt.md §5.5),
-                    // where it may write
-                    let (item_of, subgroup_of) = r.e.listing_groups(&t)?;
-                    let mut writable = |g: &Tid| -> Result<bool> { Ok(*g != t && !r.hidden(*g) && (created.contains(g) || r.holds(*g)) && matches!(r.role_on(*g)?, Some(Role::Write | Role::Admin))) };
-                    let mut out = Vec::new();
-                    for (gs, items) in [(item_of, true), (subgroup_of, false)] {
-                        for g in gs {
-                            if writable(&g)? {
-                                out.push((g, items));
-                            }
-                        }
-                    }
-                    for (g, items) in out {
-                        b.group(&gk, g, t, items, false)?;
-                    }
-                    b.m.deleting(t);
+                    m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
+                    m.purge(PurgeItem::Aspect { tid, ak: osis_schema::core_types::CREATED.name() });
                 }
             }
         }
-        b.m.act_as(actor);
+        m.act_as(actor);
         if let Some(at) = expires {
-            b.m.expires_all(at);
+            m.expires_all(at);
         }
-        Ok(b)
-    }
-}
-
-/// A write's engine mutation and the memberships its commit acts on.
-struct Built {
-    m: Mutation,
-    /// Things added to groups and the group (the `NotSynced` check).
-    added: Vec<(Tid, Tid)>,
-}
-
-impl Built {
-    fn group(&mut self, gk: &DynamicAspectKey, g: Tid, member: Tid, items: bool, add: bool) -> Result<()> {
-        self.m.op(g, gk, group_op(items, member, add))?;
-        if items && add {
-            self.m.require_synced(member, g);
-            self.added.push((member, g));
-        }
-        Ok(())
-    }
-}
-
-/// Reports added things that no synced group holds (spec/requirements.md, Offline
-/// and network).
-fn not_synced(e: &mut osis_engine::Engine, added: &[(Tid, Tid)], sharing: bool) {
-    if added.is_empty() {
-        return;
-    }
-    let with_sync_ids = e.things_with_sync_ids();
-    for (t, g) in added {
-        // entitlement (spec/sync-judgement.md §1): the group's holders read what is under it or was given
-        if with_sync_ids.contains(g) && !e.may_read(&e.group_actor(g), t) {
-            if sharing {
-                continue;
-            }
-            e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "in a group whose holders may not read it: it does not reach them (add_with_grant)".into() });
-        } else if !e.carried(t) {
-            e.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "only in groups no synced group holds: it stays on this node".into() });
-        }
-    }
-}
-
-/// The members of one group inside a `Write`.
-pub struct GroupWrite<'w, 'd> {
-    w: &'w mut Write<'d>,
-    group: Tid,
-}
-
-impl<'w, 'd> GroupWrite<'w, 'd> {
-    /// Adds a member. A thing becomes a group with its first member. In a commit that expires
-    /// (`Write::expires`) the member leaves by itself at that time: a disappearing message leaves
-    /// its group.
-    ///
-    /// A group's items sync only through groups listing it as a subgroup (a synced group carries
-    /// itself, its subgroups and their items, not its items' items). So when an item is carried
-    /// by no synced group, and the group is (an item of a synced group, no subgroup of one), the
-    /// commit fails `Invalid` before anything applies: add the group as a subgroup. An item only in groups that do not sync at all (node-local
-    /// data) is allowed and reported by a `NotSynced` diagnostic, as is one in a synced group
-    /// whose holders may not read it: it does not reach them (`Osis::add_with_grant`).
-    pub fn add(&mut self, member: Member) -> Result<()> {
-        self.w.member(self.group, member, true)
-    }
-
-    /// Removes a member: the adds of it to the group this node holds, or holds as a commit
-    /// header only; an add it never heard of, or a later one, keeps it. A grant made with the membership (`Osis::add_with_grant`) goes in a
-    /// commit right after when this node may remove it as a self-removal; otherwise a node that
-    /// may remove it does so later (sync's tied-grant duty). What a removed subgroup was the last way into a synced group
-    /// for stops syncing, each reported `NotSynced` (as when a subgroup's expiring membership ends). `commit` fails `Invalid` in a commit that
-    /// expires.
-    pub fn remove(&mut self, member: Member) -> Result<()> {
-        self.w.member(self.group, member, false)
+        Ok(m)
     }
 }
 
@@ -752,40 +555,6 @@ impl<K: SignalKey> AspectWrite<'_, '_, K> {
 
 /// The value writes. `Invalid` at `commit` on a dynamic key of a signal.
 impl<'w, 'd, K: ValueKey> AspectWrite<'w, 'd, K> {
-    /// Makes this aspect keep `thing` alive: adds this thing to `thing`'s retainers
-    /// (`core::RETAINERS`), for the reference to it that this aspect holds or the ops after
-    /// this call write, in the same commit. One call for the list entry and the reference it
-    /// stands on, so neither goes without the other: `commit` fails `Invalid` unless, after it,
-    /// this aspect references `thing` in its value (a tid at any depth), and `Permission` without
-    /// admin on `thing` (writing its list is as strong as releasing it), applying nothing; on a
-    /// key no write may name here (`group.0`), `Invalid` too.
-    /// ```
-    /// # use osis::{Config, MemStore, Osis, Store, p};
-    /// # static S: osis::generated::StaticSchema = osis::generated::StaticSchema::new("t.osis", "revision 1;\naspect t:files.0: set<tid>;\n");
-    /// # const FILES: osis::Aspect<std::collections::BTreeSet<osis::Tid>> = osis::Aspect::new("t:files.0", &S);
-    /// # let db = Osis::create(Store::Memory(MemStore::new()), Config::default()).unwrap();
-    /// # let mut w = db.write();
-    /// # let chat = w.create().unwrap();
-    /// # w.commit().unwrap();
-    /// // a file that lives while the chat lists it, made in one commit
-    /// let mut w = db.write();
-    /// let file = w.create()?;
-    /// w.at(chat, FILES).retaining(file).path(p![]).add(&file)?;
-    /// w.commit()?;
-    /// # Ok::<(), osis::Error>(())
-    /// ```
-    /// Taking it out of the list is a write of `core::RETAINERS` (move: `retaining` the new place,
-    /// the old reference and list entry removed, in one `Write`). Beside a plain write of
-    /// `core::RETAINERS`, which also adds a retainer, because this one checks the reference the
-    /// entry needs.
-    pub fn retaining(mut self, thing: Tid) -> Self {
-        match self.ix.clone() {
-            Ok(key) => self.push(WriteOp::Retain { by: self.tid, key, thing }),
-            Err(e) => self.refuse(e),
-        }
-        self
-    }
-
     fn op(&mut self, op: PathOp) -> Result<()> {
         let key = self.ok()?;
         self.push(WriteOp::Path { tid: self.tid, key, op });

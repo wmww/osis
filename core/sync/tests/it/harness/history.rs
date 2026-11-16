@@ -75,35 +75,12 @@ pub struct Made {
     pub hidden: BTreeMap<String, (usize, BTreeSet<usize>)>,
     /// Hand commits to the reference (`World::differential`); off, a step only writes.
     pub harvest: bool,
-    /// Things granted to a node's account, which its user accepts: each filed as a subgroup of
-    /// that node's D (`accept`) once the node is on, and again while a write of it was lost.
-    pub accepts: BTreeSet<(Tid, usize)>,
 }
 
 impl Made {
     fn value(&mut self) -> String {
         self.written += 1;
         format!("v{}", self.written)
-    }
-}
-
-/// Every user accepts what it was granted (spec/sync-set.md §4): each grant's thing not yet a
-/// subgroup of its grantee node's D is filed there, at the nodes on now; and accepted again
-/// (`Engine::accept_invite`) while it is an invitation there not taken (an offer whose sync ID the
-/// account does not keep yet: spec/sync.md §3).
-pub fn accept(w: &mut World) {
-    let pending: Vec<(Tid, usize)> = w.history.accepts.iter().copied().filter(|(_, i)| w.online(*i)).collect();
-    for (t, i) in pending {
-        let Some((_, d)) = w.engine(i).account().ok().flatten() else { continue };
-        let filed = w.engine(i).get_typed(&d, &osis_schema::core_types::GROUP).ok().flatten().is_some_and(|g| g.subgroups.contains(&t));
-        let invited = w.engine(i).invitations().is_ok_and(|v| v.iter().any(|x| x.thing == t && !x.taken));
-        // done once it holds the thing (reads it, or keeps it unread)
-        let holds = w.engine(i).sync_record(&t).is_some() || w.engine(i).epochs(&t).is_some_and(|e| e.read.holds_any());
-        if filed && !invited && holds {
-            w.history.accepts.remove(&(t, i));
-        } else if !filed || invited {
-            let _ = w.write(i, |e| e.accept_invite(&t, &d));
-        }
     }
 }
 
@@ -146,12 +123,7 @@ pub fn step(w: &mut World, s: &Step) -> String {
                 let mut m = Mutation::new();
                 let t = e.new_thing(&mut m, admin);
                 m.set(t, &ak, &Value::Str(v.clone()))?;
-                // filed in its maker's D in the same commit (in every synced group's closure)
-                if let Some((_, d)) = e.account()? {
-                    let mut g = e.get_typed(&d, &osis_schema::core_types::GROUP)?.unwrap_or_default();
-                    g.items.insert(t);
-                    m.set(d, &osis_schema::core_types::GROUP, &g)?;
-                }
+                // refgraph: held from its maker's node root by a strong (rewritten at the end)
                 Ok((t, e.commit(m)?))
             }) {
                 Ok((t, c)) => {
@@ -184,7 +156,7 @@ pub fn step(w: &mut World, s: &Step) -> String {
         }
         Step::Grant(_, k, j, g) => {
             let (Some(t), Some(holder)) = (thing(w, k), account(w, j)) else { return "skipped: no such thing or holder".into() };
-            let edge = Edge { role: g.role(), until: None, invite: None, tied: None, floor: None };
+            let edge = Edge { role: g.role(), until: None, invite: None, floor: None };
             let r = w.write(i, |e| e.grant(&t, &holder, &edge)).map(|_| String::new()).map_err(|e| e.to_string());
             if r.is_ok() || stands(w, i, &t, &holder, g.role()) {
                 let h = &mut w.history;
@@ -193,8 +165,7 @@ pub fn step(w: &mut World, s: &Step) -> String {
                 }
                 // granted again: what it is shown from now on is the reference's to say
                 h.removals.remove(&(*k, *j));
-                // its user accepts it (spec/sync-set.md §4): filed as soon as the node is on
-                h.accepts.insert((t, *j));
+                // refgraph: the differential's grantee holds the thing by a strong (rewritten at the end)
                 h.hidden.retain(|_, (thing, nodes)| {
                     if thing == k {
                         nodes.remove(j);
@@ -310,22 +281,6 @@ pub fn introduce(w: &mut World) {
             assert_eq!(w.redeem(j, c), osis_sync::types::Waiting::Done, "{j} redeems {i}'s card");
         }
     }
-}
-
-/// Node `i` files `items` and `subgroups` in its account's D, in every synced group's closure of
-/// the account (a thing it made; an accepted one, spec/sync-set.md §4).
-pub fn file(w: &mut World, i: usize, items: Vec<Tid>, subgroups: Vec<Tid>) {
-    w.write(i, |e| {
-        let Some((_, d)) = e.account().ok().flatten() else { return };
-        let mut g = e.get_typed(&d, &osis_schema::core_types::GROUP).ok().flatten().unwrap_or_default();
-        g.items.extend(items);
-        g.subgroups.extend(subgroups);
-        let mut m = Mutation::new();
-        // as the product writes (`Engine::write`): an accept marks the invitation acted on
-        if m.set(d, &osis_schema::core_types::GROUP, &g).is_ok() {
-            let _ = e.write(m);
-        }
-    });
 }
 
 /// Delivery without sync, by hand: every commit node `from` holds that node `to` lacks is

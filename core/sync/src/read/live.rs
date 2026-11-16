@@ -254,9 +254,9 @@ impl Ground for Live<'_, '_> {
     fn holdings_moved(&mut self) -> Vec<SyncId> {
         self.feeds.syncs.as_mut().map(|f| f.added()).unwrap_or_default()
     }
-    fn closure_settled(&mut self, s: &SyncId) -> Result<bool> {
+    fn unit_settled(&mut self, s: &SyncId) -> Result<bool> {
         match self.thing(s)? {
-            Some(t) => Ok(self.cx.engine.closure_whole(&t)?),
+            Some(t) => Ok(self.cx.engine.unit_settled(&t)?),
             None => Ok(false),
         }
     }

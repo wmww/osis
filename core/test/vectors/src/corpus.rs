@@ -62,7 +62,6 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
     vec![
         ("blob_prefix", prefixes),
         ("step", steps),
-        ("inbox", field_bytes("inbox", "payload")),
         ("link", links),
         ("cbor_decode", cbor),
         ("proto_frame", proto),

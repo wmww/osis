@@ -35,7 +35,7 @@ pub enum RelayOpened {
 
 impl Engine {
     /// This node's relay-only commits not sent yet (`fire`), each sealed under every read sync
-    /// ID whose closure holds a thing it writes (spec/sync-compaction.md §2: one a node sends
+    /// ID whose sync unit holds a thing it writes (spec/sync-compaction.md §2: one a node sends
     /// goes to every peer sharing S), wrapped as `wrap_secret` says for its parts. One no read
     /// sync ID carries goes nowhere.
     pub fn take_relays(&mut self, rng: &mut dyn NodeRng) -> Result<Vec<Relay>> {
@@ -45,7 +45,7 @@ impl Engine {
             let mut things = BTreeSet::new();
             for a in &h.aspects {
                 things.insert(a.tid);
-                things.extend(self.enclosing(&a.tid));
+                things.extend(self.units_holding(&a.tid));
             }
             for g in things {
                 let ThingSync::Read(ids) = self.thing_sync_now(&g)? else { continue };

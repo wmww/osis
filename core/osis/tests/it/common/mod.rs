@@ -263,42 +263,5 @@ pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Resu
 /// `Osis::members` split by how each is in the group.
 pub trait MembersOf {
     fn items(&self, g: osis::Tid) -> osis::Result<Vec<osis::Tid>>;
-    fn subgroups(&self, g: osis::Tid) -> osis::Result<Vec<osis::Tid>>;
-}
-
-impl MembersOf for Osis {
-    fn items(&self, g: osis::Tid) -> osis::Result<Vec<osis::Tid>> {
-        Ok(self.members(g)?.into_iter().filter_map(|m| if let osis::Member::Item(t) = m { Some(t) } else { None }).collect())
-    }
-    fn subgroups(&self, g: osis::Tid) -> osis::Result<Vec<osis::Tid>> {
-        Ok(self.members(g)?.into_iter().filter_map(|m| if let osis::Member::Subgroup(t) = m { Some(t) } else { None }).collect())
-    }
-}
-
-/// `n` new things, made in one write and listed nowhere.
-pub fn new_things(db: &Osis, n: usize) -> Vec<Tid> {
-    db.commit_with(|w| (0..n).map(|_| w.create()).collect()).unwrap()
-}
-
-pub trait CreateIn {
-    /// `create` and add to `groups` in one commit.
-    fn create_in(&mut self, admin: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid>;
-    /// `create` with a write (`t:made.0`), so the thing has content.
-    fn create_with_content(&mut self, admin: osis::Tid) -> osis::Result<osis::Tid>;
-}
-
-impl CreateIn for osis::Write<'_> {
-    fn create_in(&mut self, admin: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid> {
-        let t = self.create_with_admin(admin)?;
-        for g in groups {
-            self.group(*g).add(osis::Member::Item(t))?;
-        }
-        Ok(t)
-    }
-    fn create_with_content(&mut self, admin: osis::Tid) -> osis::Result<osis::Tid> {
-        let t = self.create_with_admin(admin)?;
-        self.at(t, osis::DynamicAspectKey::untyped(ak("t:made.0"))).set(&osis::Value::Bool(true))?;
-        Ok(t)
-    }
 }
 

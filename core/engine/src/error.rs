@@ -16,9 +16,6 @@ pub enum Error {
     Permission { tid: Tid },
     /// The thing's `created.0` record is not held.
     UnknownThing(Tid),
-    /// A placement left `tid` in no synced group while `group`'s own data syncs
-    /// (`Mutation::require_synced`). Local.
-    Unsynced { tid: Tid, group: Tid },
     /// No commit with this ID is held (or its body was dropped).
     UnknownCommit(CommitId),
     /// Undoing this commit needs a part or content not in kept history (spec/commits.md §7, spec/crdt.md §4.6). Local.
@@ -44,7 +41,6 @@ osis_base::impl_error!(Error {
     Path(e) => ("value: {e}"),
     Permission { tid } => ("no permission to write {tid}"),
     UnknownThing(t) => ("unknown thing {t}"),
-    Unsynced { tid, group } => ("{tid} placed in {group}, whose own data syncs but whose items reach no synced group"),
     UnknownCommit(c) => ("unknown commit {c:?}"),
     NotKept(c) => ("undoing {c:?} needs content not in kept history"),
     BadInput(m) => ("bad input: {m}"),
@@ -64,7 +60,7 @@ impl Classified for Error {
             Error::Crypto(e) => e.class(),
             Error::Path(e) => e.class(),
             Error::BadInput(_) => ErrorClass::BadInput,
-            Error::Permission { .. } | Error::UnknownThing(_) | Error::Unsynced { .. } | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::NotBuilt(_) => ErrorClass::Local,
+            Error::Permission { .. } | Error::UnknownThing(_) | Error::UnknownCommit(_) | Error::NotKept(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) | Error::NotBuilt(_) => ErrorClass::Local,
         }
     }
 }

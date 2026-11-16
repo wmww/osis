@@ -1,8 +1,8 @@
 //! Deposit items out (spec/sync-inbox.md §3 Sending).
 //!
 //! An offer is an own deposited entry (S, blob) and who may take it: a source of S keeping S
-//! unread (`Target::Stores`: readers pull deposited entries), or, for an inbox blob, a peer that
-//! may hold that inbox (`Target::Recipient`): one where S is open, one where the recipient is
+//! unread (`Target::Stores`: readers pull deposited entries), or, for a sealed fire on another's
+//! thing, a peer that may hold it (`Target::Recipient`): one where S is open, one where the recipient is
 //! proven (its own nodes read it), or one whose filter shows S's deposit key (a node keeping S
 //! unread shows it to every connection, spec/sync-opens.md §5 Filter). Never another peer: a
 //! deposit tells its taker that this connection's node sends to that inbox.

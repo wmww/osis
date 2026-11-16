@@ -449,12 +449,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Things `things` forgotten (`forget`): their cursors and rows go.
-pub(crate) fn forget_things(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
-    let keys: Vec<(Tid, Ak)> = tx.core.ix.leave_from.keys().filter(|(t, _)| things.contains(t)).cloned().collect();
-    forget_aspects(tx, keys)
-}
-
 /// `forget_things` of the aspects `keys` (those without a cursor are skipped).
 pub(crate) fn forget_aspects(tx: &mut Tx<'_>, keys: impl IntoIterator<Item = (Tid, Ak)>) -> Result<()> {
     for (tid, ak) in keys {

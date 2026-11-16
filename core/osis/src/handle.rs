@@ -148,9 +148,9 @@ pub(crate) struct Locked {
     /// The nodes this process is a client of (`Osis::connect`, `connect_node`), in the order
     /// connected.
     pub remotes: Vec<crate::port::client::Remote>,
-    /// Groups read and written at another node (`group_source`), by its address.
-    pub group_sources: std::collections::BTreeMap<Tid, Address>,
-    /// Of `group_sources`, the groups moving home (`group_source`): they sync here while they
+    /// Groups read and written at another node (`unit_source`), by its address.
+    pub unit_sources: std::collections::BTreeMap<Tid, Address>,
+    /// Of `unit_sources`, the groups moving home (`unit_source`): they sync here while they
     /// catch up, still read at their node.
     pub homing: std::collections::BTreeSet<Tid>,
 }
@@ -173,7 +173,7 @@ pub(crate) struct Inner {
     pub dispatch: Dispatch,
     pub node: Tid,
     pub me: Tid,
-    pub home: Tid,
+    pub devices: Tid,
     pub limit: usize,
     pub idle_commit: Duration,
     /// `Knobs::text_save`.
@@ -600,7 +600,7 @@ pub(crate) fn sync_config(cfg: &Config, key: [u8; 32]) -> osis_sync::SyncConfig 
 }
 
 impl Osis {
-    /// Creates a node and a new account with this node its admin; `home()` is its devices actor D.
+    /// Creates a node and a new account with this node its admin.
     pub fn create(store: Store, cfg: Config) -> Result<Osis> {
         cfg.check()?;
         let Fresh { mut engine, clock, sync } = fresh_engine(&store, &cfg)?;
@@ -642,7 +642,7 @@ impl Osis {
         if let crate::net::Net::Manual { net: m, index } = &mut net {
             *index = m.join();
         }
-        let locked = Locked { node: sync, events, seq: 0, offers: Vec::new(), out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), group_sources: Default::default(), homing: Default::default() };
+        let locked = Locked { node: sync, events, seq: 0, offers: Vec::new(), out: Vec::new(), wake: None, stepped: false, secret, port: Default::default(), remotes: Vec::new(), unit_sources: Default::default(), homing: Default::default() };
         let store_dir = match &store {
             Store::Dir(p) => Some(p.clone()),
             Store::Memory(_) => None,
@@ -652,7 +652,7 @@ impl Osis {
             dispatch,
             node,
             me,
-            home,
+            devices: home,
             limit: cfg.app.read_limit,
             idle_commit: cfg.app.idle_commit,
             text_save: cfg.app.internals.text_save.clone(),
@@ -743,10 +743,10 @@ impl ReadOnly {
         self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.me, |t| t.me))
     }
 
-    /// The group private to this account: what is in it reaches every node of the account and
-    /// nobody else. On a client with its own actor it is that actor.
-    pub fn home(&self) -> Tid {
-        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.home, |t| t.home))
+    /// The account's devices actor D (spec/permissions.md §1). On a client with its own actor it
+    /// is that actor.
+    pub(crate) fn devices(&self) -> Tid {
+        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.devices, |t| t.devices))
     }
 
     /// Runs `f` on the engine under the node lock, then queues its events for the

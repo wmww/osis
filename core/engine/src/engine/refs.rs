@@ -1,4 +1,4 @@
-//! The reference index (notes/lifetimes.md, Index and backlinks; notes/engine-refs.md): per
+//! The reference index (notes/engine-refs.md): per
 //! (target, source thing, AK) how many times the target's tid occurs in the held values of the
 //! source's state on that aspect. Local and rebuildable (`write_all`), in two store index tables,
 //! kept in the transaction that changes a state: a join counts the tids at its reach before and
@@ -20,9 +20,6 @@ use std::collections::BTreeMap;
 pub(crate) const TO: &[u8] = b"node/refs to";
 /// Rows by source: source ‖ AK length (u16) ‖ AK ‖ target, the count (u64).
 pub(crate) const FROM: &[u8] = b"node/refs from";
-/// The list of a thing's retainers: indexed like any aspect, its rows say who lists a target
-/// (they are not references for lifetime).
-pub const RETAINERS: &str = "retainers^.0";
 
 /// Whether the values of `ak` are indexed: every aspect with a state but `created.0` and the
 /// role-class aspects (they say who has authority over a thing, not what it points to).
@@ -43,10 +40,6 @@ impl Reference {
     /// Of the live ephemeral class (an ephemeral aspect), else live durable.
     pub fn ephemeral(&self) -> bool {
         self.ak.ephemeral()
-    }
-    /// A `retainers^.0` row: `source` lists `target` as a retainer (not a reference).
-    pub fn lists(&self) -> bool {
-        self.ak.as_str() == RETAINERS
     }
 }
 
@@ -118,10 +111,6 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
     if !indexed(ak) {
         return Ok(());
     }
-    // the thing whose list changed is judged (also a list set empty or removed, no row moving)
-    if ak.as_str() == RETAINERS {
-        crate::retention::lifetimes::queue(tx, source)?;
-    }
     if d.0.values().all(|n| *n == 0) {
         return Ok(());
     }
@@ -151,20 +140,6 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
         }
         Ok(())
     })?;
-    // a thing a durable reference to which appeared or went is judged
-    if !ak.ephemeral() && ak.as_str() != RETAINERS {
-        for t in &moved {
-            crate::retention::lifetimes::queue(tx, t)?;
-        }
-    }
-    // a destroyed thing whose evidence a list or reference kept: its keep is judged again
-    if crate::retention::destroy::needs_from(ak) {
-        for t in &moved {
-            if tx.core.destroyed(t) {
-                tx.core.destroyed_due.insert(*t);
-            }
-        }
-    }
     if tx.core.refs_watched && !moved.is_empty() {
         tx.core.events.queue(Event::References(std::sync::Arc::new(moved)));
     }
@@ -222,52 +197,6 @@ pub(crate) fn to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<Reference>> {
         out.push(Reference { target: *target, source, ak, count });
     }
     Ok(out)
-}
-
-/// The things whose `retainers^.0` lists `target` (its durable rows of that AK).
-pub(crate) fn listers(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<Tid>> {
-    let to = tx.txn.index(TO)?;
-    let pre = target.as_bytes().to_vec();
-    let end = [pre.as_slice(), &[0xff; 16]].concat();
-    let mut out = Vec::new();
-    scan_table(&mut tx.txn, to, &pre, Some(&end), |k, _| {
-        let rest = k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?;
-        let (s, a) = rest.split_at_checked(osis_base::format::TID_LEN).ok_or(Error::Corrupt("reference row"))?;
-        if a == RETAINERS.as_bytes() {
-            out.push(Tid::from_bytes(s.try_into().map_err(|_| Error::Corrupt("reference row"))?));
-        }
-        Ok(())
-    })?;
-    Ok(out)
-}
-
-/// Whether `source` references `target` for lifetime: a durable row other than `retainers^.0`
-/// (notes/lifetimes.md, What a reference is).
-pub(crate) fn references(tx: &mut Tx<'_>, source: &Tid, target: &Tid) -> Result<bool> {
-    let to = tx.txn.index(TO)?;
-    let pre = [target.as_bytes().as_slice(), source.as_bytes()].concat();
-    let end = [pre.as_slice(), &[0xff]].concat();
-    let mut any = false;
-    for (k, _) in tx.txn.table_range(to, &pre, Some(&end), usize::MAX)? {
-        drop(osis_base::costs::span("refs: row read"));
-        let a = k.get(pre.len()..).ok_or(Error::Corrupt("reference row"))?;
-        let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or(Error::Corrupt("reference row"))?;
-        if !ak.ephemeral() && ak.as_str() != RETAINERS {
-            any = true;
-            break;
-        }
-    }
-    Ok(any)
-}
-
-/// Whether `source`'s aspect `ak` references `target` in a live durable value (a durable row).
-pub(crate) fn references_in(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, target: &Tid) -> Result<bool> {
-    if ak.ephemeral() || !indexed(ak) {
-        return Ok(false);
-    }
-    let to = tx.txn.index(TO)?;
-    let k = [target.as_bytes().as_slice(), source.as_bytes(), ak.as_str().as_bytes()].concat();
-    Ok(tx.txn.table_get(to, &k)?.is_some())
 }
 
 /// Up to `n` rows naming `target` after `after` (a source and AK, exclusive; `None`: from the

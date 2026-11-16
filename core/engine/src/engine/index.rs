@@ -38,7 +38,6 @@ const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
 const KEYSETS: &[u8] = b"node/keysets";
 const SEALED: &[u8] = b"node/sealed";
-const DELETE_HINTS: &[u8] = b"node/delete hints";
 const RETENTION: &[u8] = b"node/retention";
 const ORIGINALS: &[u8] = b"node/originals";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
@@ -420,17 +419,13 @@ impl<T: Rec> Rec for Option<T> {
 }
 impl Rec for osis_perm::Edge {
     fn to(&self) -> Value {
-        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), self.tied.map(crate::flows::tied::tie_ct).as_ref().map(Codec::to_value).to(), self.floor.to()])
+        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), self.floor.to()])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let [role, until, invite, tied, floor] = x.as_slice() else { return None };
+        let [role, until, invite, floor] = x.as_slice() else { return None };
         let until = <Option<u64> as Rec>::from(until)?.map(WallMs);
-        let tied = match <Option<Value> as Rec>::from(tied)? {
-            None => None,
-            Some(t) => Some(crate::flows::tied::tie_perm(osis_schema::core_types::Tie::from_value(&t).ok()?)),
-        };
-        Some(osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, tied, floor: Rec::from(floor)? })
+        Some(osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, floor: Rec::from(floor)? })
     }
 }
 impl Rec for u64 {
@@ -739,7 +734,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     out.extend_from_slice(&(m.valid.len() as u32).to_be_bytes());
     for (ai, v) in m.valid.iter().enumerate() {
         let role = core.ix.rotation_role.get(&(*id, ai)).map_or(0, |r| 1 + *r as u8);
-        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing(ai)) << 5) | (u8::from(m.whole(ai)) << 6) | (u8::from(m.missing_as(ai) == Some(super::Missing::Forgot)) << 7));
+        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 4) | (u8::from(m.missing(ai)) << 5) | (u8::from(m.whole(ai)) << 6));
     }
     let v = &m.view;
     let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8);
@@ -921,7 +916,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
     put_map(txn, KEYSETS, &c.ix.keysets, all)?;
     put_map(txn, SEALED, &c.ix.sealed, all)?;
-    put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
     put_map(txn, RETENTION, &c.ix.retention, all)?;
     put_setmap(txn, ORIGINALS, &c.ix.originals, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
@@ -1053,7 +1047,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         let mut hold = Vec::with_capacity(parts.len());
         for (ai, p) in parts.iter().enumerate() {
             valid.push(p & 1 != 0);
-            hold.push(super::Hold::stored(ai, &mut head, p & 32 != 0, p & 64 != 0, p & 128 != 0));
+            hold.push(super::Hold::stored(ai, &mut head, p & 32 != 0, p & 64 != 0));
             if let Some(r) = Role::ALL.get(<usize as From<u8>>::from((p >> 1) & 7).wrapping_sub(1)) {
                 tx.core.ix.rotation_role.insert((id, ai), *r);
             }
@@ -1092,9 +1086,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, SEALED)? {
         tx.core.ix.sealed.insert(k, dec(&v)?);
-    }
-    for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
-        tx.core.ix.delete_hints.insert(k, dec(&v)?);
     }
     for ((k, x), _) in scan::<((Tid, osis_base::Ak), (Ts, CommitId))>(tx, ORIGINALS)? {
         tx.core.ix.originals.insert(k, x);
@@ -1163,7 +1154,6 @@ mod tests {
             Hold::Dropped(cover),
             Hold::Dropped(invalid),
             Hold::Missing(Missing::Plain),
-            Hold::Missing(Missing::Forgot),
         ];
         assert_eq!(meta.hold.len(), states.len());
         meta.hold = states.to_vec();
@@ -1171,7 +1161,7 @@ mod tests {
         let row = super::meta_row(&e.core, &id, &meta);
         let (mut head, _) = super::parse_head(&head).unwrap();
         let (parts, _) = super::parse_meta_row(&row).unwrap();
-        let back: Vec<Hold> = parts.iter().enumerate().map(|(ai, p)| Hold::stored(ai, &mut head, p & 32 != 0, p & 64 != 0, p & 128 != 0)).collect();
+        let back: Vec<Hold> = parts.iter().enumerate().map(|(ai, p)| Hold::stored(ai, &mut head, p & 32 != 0, p & 64 != 0)).collect();
         assert_eq!(back, states.to_vec());
         // an own commit and an own repair (`Meta::repair`) read back as written
         assert!(head.origin == crate::events::Origin::Local && head.repair.is_none());

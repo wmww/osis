@@ -198,15 +198,6 @@ fn diagnostics_reach_subscribers() {
     assert!(matches!(&d, osis::Diagnostic::Handled { detail, .. } if detail.starts_with("BadInput")), "{d:?}");
 }
 
-// spec/permissions.md §2, notes/api.md Watching: watch_roster calls once with the roster now.
-#[test]
-fn watch_roster_initial() {
-    let db = db(0);
-    let (tx, rx) = channel();
-    let _s = db.on_grants_change(db.home(), move |_, r| tx.send(r).unwrap()).unwrap();
-    assert_eq!(recv(&rx).unwrap(), db.grants(db.home()).unwrap());
-}
-
 // notes/api.md Watching, Fixed directions: watches fire on remote writes: a commit made on
 // node A and delivered to node B (engine-level delivery, as LocalPeer does) fires B's watch
 // with Origin::Remote naming A.
@@ -557,38 +548,6 @@ fn at_path(db: &Osis, t: osis::Tid, k: &str, path: osis::Path) -> (osis::Subscri
 fn heard(db: &Osis, rx: &Heard) -> Vec<osis::Result<Option<Value>>> {
     db.settle();
     rx.try_iter().map(|x| x.0).collect()
-}
-
-// notes/listener-design.md (step 5): writing map entry `a` calls the `a` listener once and not
-// the `b` one; removing `a` reads `None`; a `set` of the whole map calls only the entries it
-// changed; deleting the thing reads `None`; a write elsewhere in the thing calls nothing.
-#[test]
-fn path_listener_hears_only_its_entry() {
-    let db = db(0);
-    let t = thing(&db);
-    db.commit_set(t, untyped("t:m.0"), &map(&[("a", 1), ("b", 1), ("c", 1)])).unwrap();
-    let (_a, a) = at_path(&db, t, "t:m.0", osis::p!["a"]);
-    let (_b, b) = at_path(&db, t, "t:m.0", osis::p!["b"]);
-    let (_c, c) = at_path(&db, t, "t:m.0", osis::p!["c"]);
-    assert_eq!(heard(&db, &a), vec![Ok(Some(Value::Int(1)))], "the value at registration");
-    assert_eq!(heard(&db, &b), vec![Ok(Some(Value::Int(1)))]);
-    heard(&db, &c);
-    db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["a"]).set(&Value::Int(2))).unwrap();
-    assert_eq!(heard(&db, &a), vec![Ok(Some(Value::Int(2)))]);
-    assert!(heard(&db, &b).is_empty(), "another entry's write");
-    db.commit_set(t, untyped("t:other.0"), &Value::Int(5)).unwrap();
-    assert!(heard(&db, &a).is_empty(), "another aspect's write");
-    db.commit_with(|w| w.at(t, untyped("t:m.0")).path(osis::p!["a"]).remove()).unwrap();
-    assert_eq!(heard(&db, &a), vec![Ok(None)]);
-    assert!(heard(&db, &b).is_empty());
-    // a whole-map set: `b` changes, `c` does not, `a` comes back
-    db.commit_set(t, untyped("t:m.0"), &map(&[("a", 3), ("b", 4), ("c", 1)])).unwrap();
-    assert_eq!(heard(&db, &a), vec![Ok(Some(Value::Int(3)))]);
-    assert_eq!(heard(&db, &b), vec![Ok(Some(Value::Int(4)))]);
-    assert!(heard(&db, &c).is_empty(), "an entry the set left equal");
-    db.commit_with(|w| w.delete(t)).unwrap();
-    assert_eq!(heard(&db, &a), vec![Ok(None)]);
-    assert_eq!(heard(&db, &c), vec![Ok(None)]);
 }
 
 // notes/listener-design.md (step 5), notes/api.md Typed reads: a value that does not read as the

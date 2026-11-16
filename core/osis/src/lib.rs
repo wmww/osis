@@ -4,24 +4,21 @@
 //!
 //! The data is made of **things**. A thing has an identity (a `Tid`) and any number of **aspects**,
 //! each one typed value under a name like `note:title.0`, so many apps can share one thing and each
-//! read the parts it understands. **Groups** are things that list other things; they are what syncs.
+//! read the parts it understands. A thing references others in its values; a node holds what its
+//! node root reaches by strong references.
 //! A running osis with its own store is a **node**, and `Osis` is a handle to one. An **account** is
 //! an identity held by a set of nodes: a person's, a team's, a bot's. Anything that can hold a role and
 //! act (an account, a node, a shared space) is an **actor**.
 //!
 //! # A first write
-//! You are the first admin of a thing you create. `me()` is your account; `home()` is a private group synced to
-//! all your nodes. A thing you create stays on this node until a write lists it in a group that
-//! syncs (here `home()`) or shares it.
+//! You are the first admin of a thing you create. `me()` is your account.
 //! ```
-//! use osis::{Config, Member, MemStore, Osis, Store, Value};
+//! use osis::{Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
 //! let mut w = db.write();
 //! let note = w.create()?;
-//! w.group(db.home()).add(Member::Item(note))?;
 //! w.at(note, db.aspect_key("note:title.0")?).set(&Value::Str("Groceries".into()))?;
 //! w.commit()?;
-//! assert!(db.members(db.home())?.contains(&Member::Item(note)));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -206,7 +203,7 @@
 //!
 //! # Backlinks
 //! `backlinks(t, query)` pages through the things whose current values hold `t`'s tid, with the
-//! aspect; a group listing `t` is one. `on_backlinks_change` hears a page now and on each change.
+//! aspect. `on_backlinks_change` hears a page now and on each change.
 //! ```
 //! # use osis::{BacklinkQuery, Config, MemStore, Osis, Store, Value};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
@@ -218,27 +215,6 @@
 //! let page = db.backlinks(b, &BacklinkQuery::default())?;
 //! let found: Vec<_> = page.backlinks.iter().map(|l| (l.tid, l.ak.as_str())).collect();
 //! assert_eq!(found, vec![(a, "note:link.0")]);
-//! # Ok::<(), osis::Error>(())
-//! ```
-//!
-//! # Lifetimes
-//! A thing that lists retainers (`core::RETAINERS`) lives while one of them that is itself alive
-//! holds its tid in a current value, and is released by itself afterwards. `retaining` writes the
-//! list entry with the reference in one call; `release` lets a thing go at once.
-//! ```
-//! # use osis::{Config, MemStore, Osis, Store, Value, p};
-//! # let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
-//! let files = db.aspect_key("chat:files.0")?;
-//! # let mut w = db.write(); let chat = w.create()?; w.commit()?;
-//! let mut w = db.write();
-//! let file = w.create()?;
-//! w.at(chat, files.clone()).retaining(file).path(p![]).add(&Value::Tid(file))?;
-//! w.commit()?;
-//! // unreferenced, the file goes by itself
-//! let mut w = db.write();
-//! w.at(chat, files).remove()?;
-//! w.commit()?;
-//! assert_eq!(db.created(file)?, None);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -302,11 +278,8 @@
 //!
 //! # Sharing
 //! A role says who may; sync says where the data goes. `grant` gives an actor a role on a thing and
-//! needs the actor's keys (a contact card, a shared group). The holder reads once a synced group it
-//! reads holds the thing, or the grant gives the thing a sync ID of its own. `set_role` changes or
-//! removes a role. A link needs no keys and syncs its thing. The node that grants or makes the link
-//! syncs the thing from then on, wherever it is listed, until `unsync` there. Being in a group grants nothing: `add_with_grant` adds a
-//! member and lets the group's holders read it.
+//! needs the actor's keys (a contact card, a shared thing). `set_role` changes or removes a role.
+//! A link needs no keys.
 //! ```
 //! # use osis::{Config, GrantOpts, MemStore, Osis, Role, Store};
 //! let db = Osis::create(Store::Memory(MemStore::new()), Config::default())?;
@@ -509,17 +482,17 @@ pub use account::{Joining, PairOffer, PairReply, PairRequest};
 pub use keep::KeepAlive;
 pub use keys::{DynamicAspectKey, core};
 pub use large::ValueStream;
-pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp, ThingStamp};
+pub use read::{AspectRef, Grant, Grants, PathRef, Stamp, ThingStamp};
 pub use retention::{History, Retention};
-pub use share::{AccountNode, Address, ContactCard, GrantOpts, Holder, HolderKind, Invitation, LinkId, LinkInfo, LinkOpts, Member, Reads, SetRoleOpts, ShareLink, Url};
-pub use syncing::{GroupSync, Status, SyncScope, SyncState};
-pub use sources::{GroupSource, NodeLogin};
+pub use share::{AccountNode, Address, ContactCard, GrantOpts, Holder, HolderKind, LinkId, LinkInfo, LinkOpts, Reads, SetRoleOpts, ShareLink, Url};
+pub use syncing::{Status, SyncScope, SyncState, UnitSync};
+pub use sources::{UnitSource, NodeLogin};
 pub use text::{Splice, TextSession};
 pub use commits::{Body, Commit, CommitEvent, CommitKind, CommitPage, CommitQuery, NotUndoableReason, Part, Scope};
 pub use value_type::{NestedType, RecordField, TypeCase, ValueType};
 pub use track::ReadSet;
 pub use watch::{Change, DerivedFrom, Dispatcher, Origin, Subscription};
-pub use write::{AspectWrite, Expiry, GroupWrite, PathWrite, Purge, SpliceItems, Write};
+pub use write::{AspectWrite, Expiry, PathWrite, Purge, SpliceItems, Write};
 
 pub use osis_base::{Ak, Float, Role, Tid, Value, ValueMap, ValueSet};
 pub use osis_base::{AkError, Time, TidParseError};

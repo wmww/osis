@@ -28,7 +28,7 @@ pub(crate) fn edge_of(v: &Value) -> Option<Edge> {
     if e.invite.is_some_and(|i| i > e.role) {
         return None;
     }
-    Some(Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(crate::flows::tied::tie_perm), floor: e.floor })
+    Some(Edge { role: e.role, until: e.until, invite: e.invite, floor: e.floor })
 }
 
 fn frontier_of(f: ct::Frontier) -> Frontier {
@@ -62,7 +62,7 @@ fn plain_part(h: &Header, a: &osis_commit::AspectEntry) -> bool {
 
 /// Whether commit `h` may be vouched for at all (`plain_part`).
 fn plain_commit(h: &Header) -> bool {
-    h.kind == Kind::Content && !h.has_request()
+    h.kind == Kind::Content && h.purge.is_empty()
 }
 
 /// What a commit's `addenda.0` deltas say (`Indexes::addenda`), per thing: the removals the

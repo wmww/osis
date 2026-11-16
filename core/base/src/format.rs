@@ -92,14 +92,13 @@ pub const MAX_DRIFT_MS: u64 = HOUR_MS;
 /// Role-class deltas are kept at least this long after replaced (spec/wire.md §2,
 /// spec/commits.md §5). fixed.
 pub const ROLE_KEEP_MS: u64 = 90 * DAY_MS;
-/// Inbox blob lifetime (spec/wire.md §2, §9). fixed.
+/// How long an inbox keeps its open-signal fires (spec/wire.md §2, spec/sync-inbox.md §1). fixed.
 pub const INBOX_LIFETIME_MS: u64 = 90 * DAY_MS;
 /// Deposits an admin leaves waiting under a sync ID per peer (spec/wire.md §2, spec/sync-inbox.md §4
 /// Clearing deposits): half the recommended minimum budget, so the rest stays free. Resource bound
-/// against a fill by a stranger (an inbox) or a reader; past it what is no invite request goes
-/// first, then the requests earliest to expire (a sender re-sends after `INBOX_LIFETIME`). 0:
-/// nobody unconnected can invite, and a reader's deposit not judged yet may go; infinity: a filler
-/// holds the budget for good.
+/// against a fill by a stranger (an inbox) or a reader; past it those with no expiry go first,
+/// then earliest to expire. 0: nobody unconnected can fire on an inbox, and a reader's deposit
+/// not judged yet may go; infinity: a filler holds the budget for good.
 pub const DEPOSITS_WAITING: usize = 32;
 /// See `DEPOSITS_WAITING`, in bytes: that many recommended budget entries of 32 KiB.
 pub const DEPOSITS_WAITING_BYTES: usize = DEPOSITS_WAITING * 32 * 1024;

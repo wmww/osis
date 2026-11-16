@@ -10,7 +10,7 @@ use osis_base::{ChainStep, CreationRecord, RecordLink, RecordChain, Role, Tid, V
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
 use osis_keys::{ActorEpochs, HistoryAlts, Name, Opener, Own, Provenance, ROLES, Unchecked};
 use osis_schema::RawKey;
-use osis_schema::core_types::{HistoryKey, Keys, Secrets, SigningKey};
+use osis_schema::core_types::{HistoryKey, Secrets, SigningKey};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -152,7 +152,7 @@ impl Core {
             return None;
         }
         let rotated = || ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.rotated()));
-        (rotated() || self.ix.delete_hints.contains_key(tid) || self.valid_secrets_part(tid)).then_some(e)
+        (rotated() || self.valid_secrets_part(tid)).then_some(e)
     }
 
     /// Whether a held role commit's `secrets.0` part on `tid` is valid (only a thing with
@@ -431,16 +431,6 @@ impl Core {
             }
         }
     }
-
-    /// Notes the `keys.0` state of `actor`: its published delete keys replace any inbox hint. It
-    /// names no epoch in the held epochs (`keys.0` vouches for no secret, spec/crypto.md §4: a
-    /// keyset alone would make them depend on which of `keys.0` and `secrets.0` joined first).
-    /// Whether it has secrets of its own is the parts' (`apply::keys::refresh_own_keys`).
-    pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
-        if keys.sync.is_some() || keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
-            self.ix.delete_hints.remove(actor);
-        }
-    }
 }
 
 /// What a `secrets.0` read handed to `Core::ingest_secrets` stands for.
@@ -613,10 +603,6 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
             }
         }
     }
-    if !need.is_empty() {
-        // the keys an inbox payload named stand in until `keys.0` arrives
-        tx.core.promote_hints();
-    }
     let mut out = BTreeMap::new();
     for (b, r) in need {
         let keys = Core::keys_in(tx, &b)?;
@@ -625,11 +611,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
             Some(SigningKey::Ed25519(k)) => VerifyingKey::from_slice(&k).ok(),
             _ => None,
         };
-        let hinted = || match tx.core.ix.delete_hints.get(&b) {
-            Some(Value::List(x)) => x.get(usize::from(r != Role::Admin)).and_then(|v| if let Value::Bytes(k) = v { VerifyingKey::from_slice(k).ok() } else { None }),
-            _ => None,
-        };
-        if let Some(vk) = published.or_else(hinted) {
+        if let Some(vk) = published {
             out.insert((b, r), vk);
         }
     }
@@ -687,23 +669,6 @@ pub(crate) fn usable_role_now(tx: &mut crate::engine::Tx<'_>, who: &Tid, t: &Tid
     usable_role(tx, t, role)
 }
 
-/// The admin and write delete keys of `t` from its delete base `b` (`e` its held epochs): from
-/// held secrets, else published or hinted.
-fn base_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid, b: Tid, e: Option<ActorEpochs>) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
-    let published = published_keys(tx, &Default::default(), [*t])?;
-    let key = |r: Role| e.as_ref().and_then(|e| newest_delete_key(e, r)).or_else(|| published.get(&(b, r)).copied());
-    Ok(key(Role::Admin).zip(key(Role::Write)))
-}
-
-/// The current admin and write delete keys of `t` when it is its own delete base (it has
-/// secrets of its own); for an inbox payload.
-pub(crate) fn own_delete_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
-    match tx.core.delete_base(t) {
-        Some(DeleteBase::Actor(b, e)) if b == *t => base_keys(tx, t, b, e),
-        _ => Ok(None),
-    }
-}
-
 impl crate::Engine {
     /// [`holds_delete_keys_in`], for tests.
     #[cfg(test)]
@@ -712,75 +677,10 @@ impl crate::Engine {
         self.run(|tx| holds_delete_keys_in(tx, &t))
     }
 
-    /// [`usable_role`]: `role` on `t` as this node can use it now. A transaction, not a read
-    /// (`Engine::read`): `published_keys` takes up applied inbox hints (`Core::promote_hints`),
-    /// which a read would undo, to take up again (every cache dropped) at each call.
+    /// [`usable_role`]: `role` on `t` as this node can use it now.
     pub fn usable_role(&mut self, t: &Tid, role: Option<Role>) -> Result<Option<Role>> {
         let t = *t;
         self.run(|tx| usable_role(tx, &t, role))
-    }
-
-    /// Notes the delete keys the inbox payload of commit `c` names (spec/wire.md §9) as
-    /// candidates: kept only once `c` applies valid ([`Core::promote_hints`]).
-    pub fn note_delete_hints(&mut self, c: CommitId, things: &[osis_blob::InboxThing]) -> Result<()> {
-        let hints: Vec<(Tid, Value)> = things.iter().filter_map(|t| t.delete_keys.map(|(a, w)| (t.tid, Value::List(vec![Value::Bytes(a.to_bytes().to_vec()), Value::Bytes(w.to_bytes().to_vec())])))).collect();
-        if hints.is_empty() {
-            return Ok(());
-        }
-        // an applied commit's hints are judged at once (a hint once kept stays, so taking the
-        // same payload again writes nothing); only an unapplied one waits as a candidate
-        self.run(|tx| {
-            if tx.core.ix.commits.contains_key(&c) {
-                tx.core.keep_hints(&c, hints);
-                return Ok(());
-            }
-            let cands = &mut tx.core.ix.hint_candidates;
-            if !cands.contains_key(&c) {
-                if cands.len() >= MAX_HINT_COMMITS
-                    && let Some(first) = cands.keys().next().copied()
-                {
-                    cands.remove(&first);
-                }
-                cands.insert(c, hints);
-            }
-            Ok(())
-        })
-    }
-}
-
-/// Inbox commits whose hints wait for their commit to apply.
-const MAX_HINT_COMMITS: usize = 64;
-
-impl Core {
-    /// Keeps the hints of candidate commits that applied (`keep_hints`).
-    pub(crate) fn promote_hints(&mut self) {
-        let applied: Vec<CommitId> = self.ix.hint_candidates.keys().filter(|c| self.ix.commits.contains_key(c)).copied().collect();
-        for c in applied {
-            let Some(hints) = self.ix.hint_candidates.remove(&c) else { continue };
-            self.keep_hints(&c, hints);
-        }
-    }
-
-    /// Keeps the hints of applied commit `c` that are valid: a thing's hint only from a commit
-    /// touching it with valid deltas, by an author with admin on it at the commit's `ts`, and
-    /// only while no hint and no `keys.0` with keysets is held for it (the first stays, so
-    /// keeping the same hints again writes nothing).
-    fn keep_hints(&mut self, c: &CommitId, hints: Vec<(Tid, Value)>) {
-        let Some(m) = self.ix.commits.get(c) else { return };
-        let h = m.header.clone();
-        let ok: Vec<(Tid, Value)> = hints
-            .into_iter()
-            .filter(|(t, _)| {
-                let mut touched = h.aspects_on(t).peekable();
-                touched.peek().is_some() && touched.all(|i| m.valid_at(i))
-            })
-            .filter(|(t, _)| crate::engine::write::role_of(self, &h.author, t, h.ts) == Some(Role::Admin))
-            .collect();
-        for (t, v) in ok {
-            if !self.ix.delete_hints.contains_key(&t) && !self.ix.own_keys.contains(&t) {
-                self.ix.delete_hints.insert(t, v);
-            }
-        }
     }
 }
 
@@ -994,10 +894,6 @@ pub(crate) fn secrets_value(v: &Value) -> Option<Secrets> {
         }
     }
     osis_schema::core_types::SECRETS.decode(&v).ok()
-}
-
-pub(crate) fn keys_value(v: &Value) -> Option<Keys> {
-    osis_schema::core_types::KEYS.decode(v).ok()
 }
 
 #[cfg(test)]

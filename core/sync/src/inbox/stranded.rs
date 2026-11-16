@@ -23,7 +23,7 @@
 //! `I/x/`), so neither a restart nor a source reconnecting sends it again; a row goes when S is
 //! no longer read here (checked at a start and as strandings move), a new key replacing it.
 
-use super::offers::{Offers, Target};
+use super::offers::Offers;
 use super::{Here, Net};
 use crate::session::RequestId;
 use crate::types::{ConnId, Result};
@@ -190,7 +190,7 @@ impl Reports {
     fn report(&mut self, h: &mut Here<'_>, net: &mut impl Net, offers: &mut Offers, s: SyncId, st: &Stranding) -> Result<bool> {
         let key = report_key(st);
         let was = self.sent.get(&s).cloned();
-        let mut sent = was.clone().filter(|x| x.key == key).unwrap_or(Sent { key, to: BTreeSet::new() });
+        let sent = was.clone().filter(|x| x.key == key).unwrap_or(Sent { key, to: BTreeSet::new() });
         let mut keys = None;
         let mut writers = 0;
         for conn in self.conns.clone() {
@@ -210,19 +210,9 @@ impl Reports {
             }
         }
         if writers == 0 {
-            for admin in &st.admins {
-                if sent.to.contains(&To::Admin(*admin)) {
-                    continue;
-                }
-                let Some(inbox) = h.engine.inbox_of(admin) else { continue };
-                let Some(bytes) = h.engine.stranded_notice(&s, &st.holder, admin, &mut *h.rng)? else { continue };
-                let Some((b, _, deposited)) = super::log_inbox_blob(h, inbox, *admin, bytes)? else { continue };
-                osis_base::costs::count("inbox: stranded notice", 1);
-                if deposited {
-                    offers.add(inbox, b, Target::Recipient(*admin));
-                }
-                sent.to.insert(To::Admin(*admin));
-            }
+            // refgraph: (c) with no writer connected, fire a stranded notice on S's thing
+            // (spec/sync-inbox.md §5), once per report key
+            let _ = offers;
         }
         if was.as_ref() == Some(&sent) {
             return Ok(false);

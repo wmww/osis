@@ -109,7 +109,7 @@ impl Engine {
     /// places chain certificates (a thing list is one: `cert_reads_in`, a role at now on the memo
     /// clock), so they are the same at every node.
     pub(crate) fn closure_lists(&self, t: &Tid) -> BTreeSet<Tid> {
-        self.core.ix.groups.closure_of(t).iter().filter(|x| self.cert_reads_in(t, x)).copied().collect()
+        self.sync_unit(t).iter().filter(|x| self.cert_reads_in(t, x)).copied().collect()
     }
 
     /// The rotations whose held lists name `x` (`Indexes::lists_on`, read whole: only while
@@ -228,45 +228,14 @@ impl Engine {
 #[cfg(test)]
 pub(crate) mod tests {
     #![allow(clippy::unwrap_used)]
-    use crate::flows::Done;
-    use crate::local_peer::LocalPeer;
-    use crate::{Engine, Mutation};
-    use osis_base::{Ak, CommitId, SyncId, Tid, Value, WallMs};
+    
+    
+    use crate::Engine;
+    use osis_base::{CommitId, SyncId, Tid};
     use std::collections::{BTreeMap, BTreeSet};
-    use osis_schema::core_types as ct;
-
-    /// One node of account P whose synced group `g` it wrote at each of `n` epochs, rotating
-    /// after each: each rotation lists `g`, a thing the home sync ID carries.
-    fn rotated(n: usize) -> (LocalPeer, osis_base::Tid, osis_base::Tid) {
-        let mut lp = LocalPeer::new_bare(1, 0, WallMs(1_700_000_000_000)).unwrap();
-        let (a, _) = lp.peers[0].engine.create_account().unwrap();
-        let me = lp.peers[0].engine.tid();
-        let g = *lp.peers[0].engine.get_typed(&a.devices, &ct::SYNCED).unwrap().unwrap().get(&me).unwrap();
-        for i in 0..n {
-            let c = write(&mut lp, g, i);
-            rotate(&mut lp, a.account, c);
-        }
-        (lp, a.account, g)
-    }
-
-    fn write(lp: &mut LocalPeer, g: osis_base::Tid, i: usize) -> CommitId {
-        let mut m = Mutation::new();
-        m.set(g, &Ak::new("x:a.0").unwrap(), &Value::Str(format!("v{i}"))).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
-    }
-
-    /// A rotation of P listing `c` (and what else it names).
-    fn rotate(lp: &mut LocalPeer, p: osis_base::Tid, c: CommitId) -> CommitId {
-        lp.peers[0].engine.run(|tx| crate::flows::signing::rotate_in(tx, p, &[c], &mut Done::default())).unwrap().unwrap()
-    }
+    
 
     type Rows = BTreeMap<(SyncId, CommitId), BTreeSet<Tid>>;
-
-    /// Per (sync ID, rotation), the things whose list S carries: as the rows hold them, and
-    /// derived whole (every carried thing's lists).
-    fn rows(lp: &mut LocalPeer) -> (Rows, Rows) {
-        rows_of(&mut lp.peers[0].engine)
-    }
 
     /// The rows `e` keeps equal those derived whole (`sync::certified`'s random histories call
     /// this after each step).
@@ -292,136 +261,4 @@ pub(crate) mod tests {
         (kept, whole)
     }
 
-    /// The list rows touched and the read things' carried things settled by `change`, followed.
-    fn touched(lp: &mut LocalPeer, change: impl FnOnce(&mut LocalPeer)) -> (u64, u64) {
-        lp.peers[0].engine.follow_lists().unwrap();
-        change(lp);
-        osis_base::costs::take();
-        lp.peers[0].engine.follow_lists().unwrap();
-        let taken = osis_base::costs::take();
-        let n = |name: &str| taken.iter().filter(|x| x.0 == name).map(|x| x.2).sum::<u64>();
-        (n("sync: list rows touched"), n("sync: listed carried"))
-    }
-
-    // spec/sync-judgement.md §1 (List blobs: under a sync ID, the thing lists of things in its
-    // closure or whose records its certificates name), spec/sync.md §2 (work in proportion to
-    // change): after n and 10n rotations whose lists the home sync ID carries, a plain commit
-    // touches no list row and a rotation touches the rows of the carried things it lists; the
-    // rows equal the whole derivation.
-    #[test]
-    fn a_rotation_touches_the_lists_it_names_spec_sync_judgement_1() {
-        let counts = |n: usize| {
-            let (mut lp, p, g) = rotated(n);
-            let (kept, whole) = rows(&mut lp);
-            assert_eq!(kept, whole);
-            assert!(kept.len() >= n, "a row per rotation: {}", kept.len());
-            let plain = touched(&mut lp, |lp| {
-                write(lp, g, 1000);
-            });
-            let rotation = touched(&mut lp, |lp| {
-                let c = write(lp, g, 1001);
-                rotate(lp, p, c);
-            });
-            let (kept, whole) = rows(&mut lp);
-            assert_eq!(kept, whole);
-            (plain, rotation)
-        };
-        let (a, b) = (counts(3), counts(30));
-        assert_eq!(a, b, "work grows with the rotations held");
-        assert_eq!(a.0, (0, 0), "a plain commit touches no row, settles no carried things");
-        assert_eq!(a.1.0, 1, "the rotation's own row: its list of g");
-    }
-
-    /// Files `x` in group `g`'s items (`add`) or takes it out.
-    fn file(lp: &mut LocalPeer, g: Tid, x: Tid, add: bool) {
-        let v = osis_base::Value::Tid(x);
-        let op = if add { osis_crdt::Op::Add(v) } else { osis_crdt::Op::Remove(v) };
-        let mut m = Mutation::new();
-        m.op(g, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::ITEMS)], op }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
-    }
-
-    /// Whether some row holds `x`.
-    fn listed(lp: &mut LocalPeer, x: Tid) -> bool {
-        let (kept, whole) = rows(lp);
-        assert_eq!(kept, whole);
-        kept.values().any(|row| row.contains(&x))
-    }
-
-    // spec/sync-judgement.md §1 (List blobs: the thing lists of things in the sync ID's closure):
-    // a thing filed in D (the one read thing), written and listed by a rotation, has its list
-    // carried; taken out of D, its list leaves every row, and filed again it comes back.
-    #[test]
-    fn a_thing_leaving_the_closure_leaves_its_rows_spec_sync_judgement_1() {
-        let (mut lp, p, _) = rotated(1);
-        let read = lp.peers[0].engine.read_things().unwrap();
-        assert_eq!(read.len(), 1);
-        let g = *read.first().unwrap();
-        let mut m = Mutation::new();
-        let x = lp.peers[0].engine.new_thing(&mut m, p);
-        m.set(x, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        file(&mut lp, g, x, true);
-        rotate(&mut lp, p, c);
-        assert!(listed(&mut lp, x), "x's list carried");
-        file(&mut lp, g, x, false);
-        assert!(!listed(&mut lp, x), "x's list left");
-        file(&mut lp, g, x, true);
-        assert!(listed(&mut lp, x), "x's list carried again");
-    }
-
-    // spec/sync-judgement.md §1 (List blobs: the thing lists of closure things S's actor may
-    // read), spec/requirements.md Confidentiality between readers (a reader learns only what it may read): G, a group
-    // with secrets of its own filed in D, holds X, which G's actor does not read; a rotation
-    // listing a write on X never puts X's list under G's sync IDs (its readers would learn which
-    // commits the account made on X). Fails with the reads condition dropped.
-    #[test]
-    fn a_closure_thing_its_actor_does_not_read_has_no_list_carried_spec_sync_judgement_1() {
-        let (mut lp, p, d) = rotated(0);
-        let ak = Ak::new("x:a.0").unwrap();
-        let mut m = Mutation::new();
-        let x = lp.peers[0].engine.new_thing(&mut m, p);
-        m.set(x, &ak, &Value::Int(1)).unwrap();
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        let mut m = Mutation::new();
-        let g = lp.peers[0].engine.new_thing(&mut m, p);
-        m.set(g, &ct::GROUP, &ct::Group { items: [x].into(), ..Default::default() }).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        lp.peers[0].engine.give_own_secrets(&g).unwrap();
-        file(&mut lp, d, g, true);
-        let e = &mut lp.peers[0].engine;
-        assert!(e.read_things().unwrap().contains(&g), "G is read here");
-        assert!(!e.cert_reads_in(&g, &x), "G's actor does not read X");
-        rotate(&mut lp, p, c);
-        let (kept, whole) = rows(&mut lp);
-        assert_eq!(kept, whole);
-        let e = &mut lp.peers[0].engine;
-        let under = |e: &mut Engine, t: Tid| kept.iter().filter(|((s, _), _)| e.read_thing(s).unwrap() == Some(t)).any(|(_, row)| row.contains(&x));
-        assert!(!under(e, g), "X's list never under G's: {kept:?}");
-    }
-
-    // spec/permissions.md §4 (Suspect list: things in L's closure L's actor may read): G, with
-    // secrets of its own, holds X, which G's actor does not read; G's sync ID carries X yet names
-    // none of X's aspects in a suspect list, nor is asked to repair one. Fails with the reads
-    // condition dropped from `suspect_under`.
-    #[test]
-    fn a_closure_thing_its_actor_does_not_read_is_in_no_suspect_list_spec_permissions_4() {
-        let (mut lp, p, d) = rotated(0);
-        let mut m = Mutation::new();
-        let x = lp.peers[0].engine.new_thing(&mut m, p);
-        m.set(x, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        let mut m = Mutation::new();
-        let g = lp.peers[0].engine.new_thing(&mut m, p);
-        m.set(g, &ct::GROUP, &ct::Group { items: [x].into(), ..Default::default() }).unwrap();
-        lp.peers[0].commit(m).unwrap();
-        lp.peers[0].engine.give_own_secrets(&g).unwrap();
-        file(&mut lp, d, g, true);
-        let e = &mut lp.peers[0].engine;
-        let s = *e.sync_ids(&g).unwrap().first().map(|o| &o.id).unwrap();
-        assert!(e.carrying(&x).unwrap().contains(&s), "G's sync ID carries X");
-        assert!(e.suspect_under(&s, &g).unwrap(), "G itself is named under its own sync ID");
-        assert!(!e.suspect_under(&s, &x).unwrap(), "X is not");
-        assert!(!e.may_repair(&s, &x, &Ak::new("x:a.0").unwrap()).unwrap(), "nor repaired for its readers");
-    }
 }

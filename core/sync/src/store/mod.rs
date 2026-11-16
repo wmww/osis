@@ -627,15 +627,6 @@ impl Store {
         g.read(|t, _| Ok(entries::get(t, s, b)?.map(|r| entries::to_entry(*b, &r))))
     }
 
-    /// Whether entry `b` of S carries a stamp that verifies under the write key of S's head held
-    /// here: a current writer of S stamped it (spec/sync-inbox.md §2 Taking; an earlier step's
-    /// key is held by whoever was removed since). A peer's stamp is kept unverified (charged as
-    /// unstamped), so its being there says nothing.
-    pub fn stamp_verifies(&self, s: &SyncId, b: &BlobId) -> Result<bool> {
-        let Some((_, head)) = self.lock().read(|t, _| path::head(t, s))? else { return Ok(false) };
-        self.stamp_under(s, b, &[head.keys.write])
-    }
-
     /// Whether held entry `b` of S carries a stamp that verifies under one of `keys`, in either
     /// domain: the one door for checking a held entry's stamp. The verdict kept where it entered
     /// (`rows::Vouch`) answers when it is one of these checks'; else the stamp is checked, and

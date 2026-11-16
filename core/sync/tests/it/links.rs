@@ -31,53 +31,6 @@ fn a_link_opens_k_by_its_static_entry_spec_sync_inbox_6() {
     assert!(!w.engine(1).read_credentials(&s).unwrap().unwrap().read_secrets.is_empty(), "K's read secret from the entry box");
 }
 
-// spec/permissions.md §7 (Redeem), §4 (Chain certificates; Logging certificates):
-// node 1, holding nothing of node 0's account, joins K from the link alone: K's commits apply
-// there by the certificates and records K's sync ID carries; the join is held at node 0, and node
-// 1 reads K's roster and the content node 0 writes after.
-#[test]
-fn a_redeemer_joins_k_spec_permissions_7() {
-    let (mut w, link) = redeemed();
-    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
-    assert!(w.engine(1).roster(&link.k).contains_key(&a1), "node 1's account joined K here");
-    assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
-    assert_eq!(w.engine(1).roster(&link.k).get(&a0).map(|e| e.role), Some(Role::Admin), "K's roster as the sharer's");
-    assert_eq!(w.redeem(1, &link), Waiting::Done);
-    // node 1's user files the profile (spec/sync-set.md §4): it syncs K as any thing of its D
-    let p0 = w.node(0).profile.unwrap();
-    w.write(1, |e| {
-        let (_, d) = e.account().unwrap().unwrap();
-        let mut g = e.get_typed(&d, &osis_schema::core_types::GROUP).unwrap().unwrap_or_default();
-        g.items.insert(p0);
-        let mut m = osis_engine::Mutation::new();
-        m.set(d, &osis_schema::core_types::GROUP, &g).unwrap();
-        e.commit(m).unwrap().unwrap();
-    });
-    w.run();
-    w.write(0, |e| {
-        let mut m = osis_engine::Mutation::new();
-        m.set(p0, &osis_base::Ak::new("t:reg.0").unwrap(), &osis_base::Value::Int(7)).unwrap();
-        e.commit(m).unwrap();
-    });
-    w.run();
-    assert_eq!(w.engine(1).get(&p0, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap(), Some(osis_base::Value::Int(7)), "K's content read");
-}
-
-// spec/sync-inbox.md §2 (Re-send: the sender reads the inbox it logged the blob under): making a
-// link owes K its grant on the target, and the join owes the redeemer's own account its grant on
-// K; each sender reads that inbox (K's, its own account's), so each delivery ends once logged and
-// a wait on deliveries is done at both.
-#[test]
-fn a_delivery_to_an_inbox_the_sender_reads_ends_once_logged_spec_sync_inbox_2() {
-    use osis_sync::types::Scope;
-    let (mut w, link) = redeemed();
-    assert_eq!(w.redeem(1, &link), Waiting::Done);
-    for i in 0..2 {
-        assert!(w.engine(i).deliveries().unwrap().is_empty(), "node {i} owes nothing");
-        assert_eq!(w.wait(i, Scope::Deliveries), Waiting::Done);
-    }
-}
-
 /// Node 0's read link to its profile, followed at node 1 (not run): node 1 knows K only from the
 /// link text.
 fn followed() -> (World, ShareLink) {
@@ -125,43 +78,6 @@ fn a_static_grant_is_verified_before_it_is_learned_spec_sync_opens_5() {
     assert!(learned_nothing(&mut w, &s), "opened, not learned before the signature verifies");
     w.write(1, |e| e.learn_grant(&g)).unwrap();
     assert!(!learned_nothing(&mut w, &s), "learned once the caller takes it");
-}
-
-// spec/sync-opens.md §1 (where to dial: the granting node of each grant it holds, by the inbox
-// blob's hint), spec/sync-inbox.md §2 (Taking: a blob taken once is judged again from its commit
-// alone): after a link's join, node 0 grants node 1's account read on a thing; once node 1's
-// account leaves K, node 0 stays a dial hint there by the grant's inbox blob, through writes
-// that judge the taken blob again.
-#[test]
-fn a_taken_grants_dial_hint_outlives_the_link_spec_sync_opens_1() {
-    use osis_sync::driver::dials::Why;
-    let (mut w, link) = redeemed();
-    let sharer = w.node(0).key.0;
-    let a1 = w.node(1).account.unwrap();
-    let x = w.write(0, |e| {
-        let me = e.account().unwrap().unwrap().0;
-        let mut m = osis_engine::Mutation::new();
-        let x = e.new_thing(&mut m, me);
-        e.commit(m).unwrap();
-        e.give_own_secrets(&x).unwrap();
-        e.grant(&x, &a1, &osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }).unwrap();
-        x
-    });
-    w.run();
-    assert!(w.engine(1).invitations().unwrap().iter().any(|i| i.thing == x && i.taken), "the grant taken");
-    w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
-    w.run();
-    assert!(!w.engine(1).roster(&link.k).contains_key(&a1), "node 1's account left K");
-    let hinted = |w: &World| w.dials(1).why(&sharer).contains(&Why::Hint);
-    for i in 0..3 {
-        assert!(hinted(&w), "the grant's hint, after {i} writes");
-        w.write(0, |e| {
-            let mut m = osis_engine::Mutation::new();
-            m.set(x, &osis_base::Ak::new("u:v.0").unwrap(), &osis_base::Value::Int(i)).unwrap();
-            e.commit(m).unwrap();
-        });
-        w.run();
-    }
 }
 
 // spec/sync-set.md §2 (Sync set: a link's sync ID while its redeemer redeems it): the link text is untrusted. A link
@@ -229,46 +145,6 @@ fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
     }
 }
 
-// spec/sync-inbox.md §5 (Contact card), §2 (Inbox blob), spec/sync-opens.md §2 (Order):
-// nodes 0 and 1 exchange contact cards (each redeems the other's read link to its
-// profile, and accepts the profile), then node 0 grants node 1's account read on a thing and
-// node 1 accepts it: node 1 reads it. The connection node 1 dialed by node 0's link proved node
-// 1's account too, held at node 0 before it knew the account, so the grant's inbox blob goes there.
-#[test]
-fn a_grant_reaches_a_contact_by_card_spec_sync_inbox_5() {
-    use crate::harness::history::file;
-    let mut w = two_nodes();
-    let cards: Vec<ShareLink> = (0..2).map(|i| {
-        let p = w.node(i).profile.unwrap();
-        w.make_link(i, p, Role::Read)
-    }).collect();
-    for (j, i) in [(1, 0), (0, 1)] {
-        w.redeem(j, &cards[i]);
-    }
-    w.run();
-    for (j, i) in [(1, 0), (0, 1)] {
-        assert_eq!(w.redeem(j, &cards[i]), Waiting::Done, "{j} redeems {i}'s card");
-        file(&mut w, j, Vec::new(), vec![cards[i].target]);
-    }
-    w.run();
-    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
-    let ak = osis_base::Ak::new("u:v.0").unwrap();
-    let t = w.write(0, |e| {
-        let mut m = osis_engine::Mutation::new();
-        let t = e.new_thing(&mut m, a0);
-        m.set(t, &ak, &osis_base::Value::Str("x".into())).unwrap();
-        e.commit(m).unwrap();
-        t
-    });
-    file(&mut w, 0, vec![t], Vec::new());
-    let read = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
-    w.write(0, |e| e.grant(&t, &a1, &read)).unwrap();
-    w.run();
-    file(&mut w, 1, Vec::new(), vec![t]);
-    w.run();
-    assert_eq!(w.engine(1).get(&t, &ak).unwrap(), Some(osis_base::Value::Str("x".into())));
-}
-
 // spec/sync-inbox.md §5 (Grant copy), §2 (Re-send), spec/permissions.md §7 (Redeem):
 // node 0 makes a link and its inbox blob of K's grant on the target expires before node 1
 // redeems it: K's grant on the target is still under K's sync ID as node 0's grant copy, so node
@@ -312,7 +188,7 @@ fn a_joiner_leaves_k_once_its_edge_on_the_target_expired_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     let until = osis_base::WallMs(w.now().0 + 60_000);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), invite: None, tied: None, floor: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), invite: None, floor: None };
     w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
     w.run();
     assert!(w.now() >= until, "the run reached the expiry");
@@ -331,7 +207,7 @@ fn a_joiner_stays_when_k_was_granted_again_before_it_heard_spec_permissions_7() 
     let a1 = w.node(1).account.unwrap();
     w.partition(0, 1);
     w.write(0, |e| e.demote(&link.target, &osis_engine::flows::Demotion { holder: link.k, new: None, retain: None })).unwrap();
-    w.write(0, |e| e.grant(&link.target, &link.k, &osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None })).unwrap();
+    w.write(0, |e| e.grant(&link.target, &link.k, &osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
     w.heal();
     w.run();
     assert!(w.engine(1).roster(&link.target).contains_key(&link.k), "K on the target at node 1");
@@ -348,7 +224,7 @@ fn a_joiner_leaves_k_by_its_clock_alone_spec_permissions_7() {
     let (mut w, link) = redeemed();
     let a1 = w.node(1).account.unwrap();
     let until = osis_base::WallMs(w.now().0 + 60_000);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), invite: None, tied: None, floor: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: Some(until), invite: None, floor: None };
     w.write(0, |e| e.grant(&link.target, &link.k, &edge)).unwrap();
     w.advance(1000);
     assert!(w.engine(1).roster(&link.target).contains_key(&link.k) && w.engine(1).roster(&link.k).contains_key(&a1), "node 1 holds the edge, joined");
@@ -557,45 +433,4 @@ fn a_joined_links_peers_stay_dial_hints_while_it_holds_k_spec_permissions_7() {
     w.run();
     assert!(!w.engine(1).roster(&link.k).contains_key(&w.node(1).account.unwrap()), "node 1's account left K");
     assert!(!hinted(&w), "the peer dropped with the join");
-}
-
-// spec/sync-set.md §2 (Sync set: a link's sync ID while its redeemer redeems it), spec/sync-status.md
-// §2 (Held elsewhere: a commit by a key actor it holds, a followed link's key): a redeem judges
-// again none of what the redeemer wrote before: the own commits judged again are the same after
-// n and 10n writes of its own.
-#[test]
-fn a_redeem_judges_none_of_the_redeemers_own_writes_spec_sync_set_2() {
-    let judged = |n: i64| -> u64 {
-        // the link made once, before node 1 writes: it moves nothing of node 1's
-        let (mut w, link) = crate::harness::fixture_with("two nodes, a link to node 0's profile", || {
-            let mut w = two_nodes();
-            let p0 = w.node(0).profile.unwrap();
-            let link = w.make_link(0, p0, Role::Read);
-            w.run();
-            (w, link)
-        });
-        let t = w.write(1, |e| {
-            let me = e.account().unwrap().unwrap().0;
-            let mut m = osis_engine::Mutation::new();
-            let t = e.new_thing(&mut m, me);
-            e.commit(m).unwrap();
-            t
-        });
-        crate::harness::history::file(&mut w, 1, vec![t], Vec::new());
-        w.write(1, |e| {
-            for i in 0..n {
-                let mut m = osis_engine::Mutation::new();
-                m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(i)).unwrap();
-                e.commit(m).unwrap();
-            }
-        });
-        w.run();
-        osis_base::costs::take();
-        w.redeem(1, &link);
-        w.run();
-        // judged again: due by a read that moved (`Effects` causes), not first judgements
-        let c = osis_base::costs::take();
-        c.iter().filter(|x| x.0.strip_prefix("own: commits <- ").is_some_and(|cause| cause != "unsettled")).map(|x| x.2).sum::<u64>()
-    };
-    assert_eq!(judged(1), judged(10), "own commits judged again by a redeem at n and 10n own writes");
 }

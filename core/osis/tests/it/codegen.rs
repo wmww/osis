@@ -2,7 +2,7 @@
 //! (core/schema/tests/example.osis) round-trip through spec/versioning.md §5 typed reads, and the
 //! generated core and meta modules agree with the hand-written ones.
 
-use crate::schemas::{core_gen, example, meta};
+use crate::schemas::{example, meta};
 use osis_base::{Float, Tid, Value};
 use osis_schema::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -51,16 +51,6 @@ fn generated_types_round_trip_through_keys_spec_versioning_5() {
     // Field and case constants build paths.
     assert_eq!(p![0, example::task::DONE], Path(vec![Step::Index(0), Step::Field(2)]));
     assert_eq!(example::priority::CUSTOM, CaseId(3));
-}
-
-#[test]
-fn generated_core_matches_hand_written_spec_data_model_9() {
-    use osis_schema::core_types as hw;
-    let g = core_gen::Group { items: BTreeSet::from([Tid::from_bytes([1; 15])]), subgroups: BTreeSet::new() };
-    let v = core_gen::GROUP.encode(&g);
-    assert_eq!(hw::GROUP.decode(&v).unwrap().items, g.items);
-    let r = core_gen::Role::Admin;
-    assert_eq!(Codec::to_value(&r), Codec::to_value(&osis_base::Role::Admin));
 }
 
 #[test]

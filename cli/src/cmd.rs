@@ -9,7 +9,7 @@ use crate::{Ctx, exit, open, opt_ts, parse_ak, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
 use osis::{
-    Change, Store, CommitId, CommitKind, CommitQuery, DynamicAspectKey, Error, GrantOpts, LinkOpts, Member, Origin, Osis, Role, SetRoleOpts, SyncScope, Tid, Value,
+    Change, Store, CommitId, CommitKind, CommitQuery, DynamicAspectKey, Error, GrantOpts, LinkOpts, Origin, Osis, Role, SetRoleOpts, SyncScope, Tid, Value,
 };
 use std::future::Future;
 use std::io::BufRead;
@@ -136,15 +136,9 @@ pub(crate) fn delivered(ctx: &Ctx<'_>, scopes: &[SyncScope]) -> anyhow::Result<(
     }
 }
 
-/// What a grant of `t` to `holder` delivers: `t` synced, holding the grant, and the grant's inbox
-/// item taken by `holder` (only this grant's: another's grantee away holds up nothing here).
-pub(crate) fn granted(t: Tid, holder: Tid) -> [SyncScope; 2] {
-    [SyncScope::Thing(t), SyncScope::Delivery { thing: t, to: holder }]
-}
-
-/// `NAME\tTID` lines, each list under its name.
-fn tagged(rel: &[(&str, &Vec<Tid>)]) -> Vec<String> {
-    rel.iter().flat_map(|(n, v)| v.iter().map(move |t| format!("{n}\t{}", t.to_uri()))).collect()
+/// What a grant of `t` delivers: `t` synced, holding the grant.
+pub(crate) fn granted(t: Tid) -> [SyncScope; 1] {
+    [SyncScope::Thing(t)]
 }
 
 fn links_j(ls: &[osis::LinkInfo]) -> J {
@@ -152,19 +146,18 @@ fn links_j(ls: &[osis::LinkInfo]) -> J {
 }
 
 fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<osis::Scope> {
-    opt_scope(ctx, s)?.ok_or_else(|| usage("give exactly one scope: --thing T, --aspect T AK..., --group G"))
+    opt_scope(ctx, s)?.ok_or_else(|| usage("give exactly one scope: --thing T, --aspect T AK..."))
 }
 
 /// At most one scope.
 fn opt_scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<Option<osis::Scope>> {
-    match (&s.thing, s.aspect.is_empty(), &s.group) {
-        (None, true, None) => Ok(None),
-        (Some(t), true, None) => Ok(Some(osis::Scope::Thing(ctx.tid(t)?))),
-        (None, false, None) => Ok(Some(osis::Scope::Aspects(
+    match (&s.thing, s.aspect.is_empty()) {
+        (None, true) => Ok(None),
+        (Some(t), true) => Ok(Some(osis::Scope::Thing(ctx.tid(t)?))),
+        (None, false) => Ok(Some(osis::Scope::Aspects(
             s.aspect.chunks(2).map(|p| Ok((ctx.tid(&p[0])?, parse_ak(&p[1], "AK")?))).collect::<anyhow::Result<_>>()?,
         ))),
-        (None, true, Some(g)) => Ok(Some(osis::Scope::Group(ctx.tid(g)?))),
-        _ => Err(usage("give at most one scope: --thing T, --aspect T AK..., --group G")),
+        _ => Err(usage("give at most one scope: --thing T, --aspect T AK...")),
     }
 }
 
@@ -200,7 +193,6 @@ fn needs_net(c: &Cmd) -> bool {
         Cmd::Node(NodeCmd::Rm { .. })
             | Cmd::SetRole { .. }
             | Cmd::Grant { .. }
-            | Cmd::AddWithGrant { .. }
             | Cmd::Link(LinkCmd::Make { .. })
             | Cmd::Card(CardCmd::Show)
             | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
@@ -208,7 +200,7 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Chat(_)
             | Cmd::Status { .. }
             | Cmd::Sync { .. }
-            | Cmd::Group(GroupCmd::Source { to: Some(_), .. })
+            | Cmd::Source { to: Some(_), .. }
     ) || stays_up(c)
 }
 
@@ -364,8 +356,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Fire(a) => one_write(ctx, ScriptCmd::Fire(a)),
         Cmd::Rm(a) => one_write(ctx, ScriptCmd::Rm(a)),
         Cmd::Op(a) => one_write(ctx, ScriptCmd::Op(a)),
-        Cmd::Group(GroupCmd::Member(m)) => one_write(ctx, ScriptCmd::Group(m)),
-        Cmd::Delete { t } => one_write(ctx, ScriptCmd::Delete { t }),
         Cmd::Get { t, ak, path, stream, len } => get(ctx, &t, &ak, path.as_deref(), stream, len),
         Cmd::Edit { t, ak, path, base } => edit(ctx, &t, &ak, path.as_deref(), base),
         Cmd::Write => write_script(ctx),
@@ -374,7 +364,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let a = db.aspects(ctx.tid(&t)?)?;
             ctx.list(&a.iter().map(|a| a.as_str().to_string()).collect::<Vec<_>>())
         }
-        Cmd::Ls { .. } => Err(not_built("query")),
         Cmd::Backlinks { t, watch: false, .. } => {
             let t = ctx.tid(&t)?;
             let (mut q, mut all) = (osis::BacklinkQuery::default(), Vec::new());
@@ -399,7 +388,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let sc = match (t, ak) {
                 (Some(t), Some(ak)) if opt_scope(ctx, &s)?.is_none() => osis::Scope::Aspects(vec![(ctx.tid(&t)?, parse_ak(&ak, "AK")?)]),
                 (None, None) => scope(ctx, &s)?,
-                _ => return Err(usage("give T AK or one scope: --thing T, --aspect T AK..., --group G")),
+                _ => return Err(usage("give T AK or one scope: --thing T, --aspect T AK...")),
             };
             // the one commit undo or redo would revert: a question of its own, about a scope
             if let Some(n) = next {
@@ -443,18 +432,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let c = db.revert(parse_id(&id)?)?;
             emit_commit(ctx, Some(c.stamp.id))
         }
-        Cmd::Groups { t } => {
-            let gs = db.groups_of(ctx.tid(&t)?)?;
-            let rel = [("item", &gs.item_of), ("subgroup", &gs.subgroup_of), ("within", &gs.within)];
-            ctx.emit(&tagged(&rel), J::obj([("item_of", J::tids(&gs.item_of)), ("subgroup_of", J::tids(&gs.subgroup_of)), ("within", J::tids(&gs.within))]))
-        }
-        Cmd::Members { g } => {
-            let g = ctx.tid(&g)?;
-            let members = db.members(g)?;
-            let of = |want: fn(Member) -> Option<Tid>| members.iter().copied().filter_map(want).collect::<Vec<_>>();
-            let (items, subs) = (of(|m| if let Member::Item(t) = m { Some(t) } else { None }), of(|m| if let Member::Subgroup(t) = m { Some(t) } else { None }));
-            ctx.emit(&tagged(&[("item", &items), ("subgroup", &subs)]), J::obj([("items", J::tids(&items)), ("subgroups", J::tids(&subs))]))
-        }
         Cmd::Grants { t, watch: false, .. } => grants(ctx, &t),
         Cmd::Grants { t, watch: true, count } => {
             let (t, raw) = (ctx.tid(&t)?, ctx.g.raw);
@@ -487,20 +464,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
             db.grant(t, m, role, GrantOpts { until: opt_ts(&until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()?, reads: parse_reads(reads.as_deref())? })?;
-            delivered(ctx, &granted(t, m))
-        }
-        Cmd::Invitations => {
-            let inv = db.invitations()?;
-            let lines: Vec<String> = inv.iter().map(|i| format!("{} {} {} {} {}", i.thing.to_uri(), role_text(i.role), i.from.map_or("-".into(), |a| a.to_uri()), if i.taken { "taken" } else { "-" }, if i.acted { "acted" } else { "-" })).collect();
-            let j = J::Arr(inv.iter().map(|i| J::obj([("thing", J::tid(i.thing)), ("role", J::str(role_text(i.role))), ("from", J::opt(i.from.map(J::tid))), ("taken", J::Bool(i.taken)), ("acted", J::Bool(i.acted))])).collect());
-            ctx.emit(&lines, j)
-        }
-        Cmd::Accept { t, into } => {
-            let into = ctx.tid(&into)?;
-            for t in t {
-                db.accept_invite(ctx.tid(&t)?, into)?;
-            }
-            Ok(())
+            delivered(ctx, &granted(t))
         }
         Cmd::SetRole { t, holder, role, d } => {
             let role = if role == "none" { None } else { Some(parse_role(&role)?) };
@@ -508,7 +472,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             db.set_role(t, m, role, o)?;
             // a role given is a grant; a removal gives nobody anything and waits for nothing
             match role {
-                Some(_) => delivered(ctx, &granted(t, m)),
+                Some(_) => delivered(ctx, &granted(t)),
                 None => Ok(()),
             }
         }
@@ -516,14 +480,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
             Ok(db.leave(holder, ctx.tid(&t)?)?)
         }
-        Cmd::Unsync { t } => Ok(db.unsync(ctx.tid(&t)?)?),
         Cmd::Retained { drop: Some(a) } => Ok(db.drop_retained_copy(ctx.tid(&a)?)?),
         Cmd::Retained { drop: None } => ctx.list(&db.retained_copies()?.iter().map(Tid::to_uri).collect::<Vec<_>>()),
-        Cmd::AddWithGrant { t, g, role, subgroup } => {
-            let (t, g) = (ctx.tid(&t)?, ctx.tid(&g)?);
-            db.add_with_grant(write::member(t, subgroup), g, parse_role(&role)?)?;
-            delivered(ctx, &granted(t, g))
-        }
         Cmd::Chat(c) => crate::chat::run(ctx, c),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
             let t = ctx.tid(&t)?;
@@ -613,8 +571,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             stream_pages(ctx, &rx, None)
         }
         // `wait_synced` asks its peers to sync first: `sync` and `wait` are one call
-        Cmd::Sync { group } => {
-            let s = match group {
+        Cmd::Sync { thing } => {
+            let s = match thing {
                 Some(g) => SyncScope::Thing(ctx.tid(&g)?),
                 None => SyncScope::All,
             };
@@ -623,17 +581,17 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 false => Err(Error::Network("timed out".into()).into()),
             }
         }
-        Cmd::Group(GroupCmd::Source { g, to }) => {
+        Cmd::Source { t, to } => {
             // the source's connection and its secret are in the process that holds the store
             if !db.has_store() {
-                return Err(exit(1, "group source needs the store itself: stop `osis serve` on this store, run it with --connect, start `serve` again"));
+                return Err(exit(1, "source needs the store itself: stop `osis serve` on this store, run it with --connect, start `serve` again"));
             }
-            let g = ctx.tid(&g)?;
+            let g = ctx.tid(&t)?;
             let Some(to) = to else {
-                return ctx.one("source", db.group_sources().get(&g).map_or("local".to_string(), |a| a.to_string()));
+                return ctx.one("source", db.unit_sources().get(&g).map_or("local".to_string(), |a| a.to_string()));
             };
-            let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Node(to.parse()?) };
-            wait(ctx, db.group_source(g, to))
+            let to = if to == "local" { osis::UnitSource::Local } else { osis::UnitSource::Node(to.parse()?) };
+            wait(ctx, db.unit_source(g, to))
         }
         Cmd::Inspect(i) => inspect(ctx, i),
         Cmd::Diag { follow } => diag(ctx, follow, false),
@@ -647,12 +605,11 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         Store::Memory(_) => "(memory)".into(),
     };
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
-    let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("home\t{}", db.home().to_uri()), format!("node\t{}", db.node().to_uri())];
+    let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri())];
     lines.push(format!("store\t{store}"));
     lines.push(format!("software\t{sw}"));
     let j = J::obj([
         ("me", J::tid(db.me())),
-        ("home", J::tid(db.home())),
         ("node", J::tid(db.node())),
         ("store", J::str(store)),
         ("software", J::str(sw)),
@@ -817,12 +774,8 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
         lines.push(format!("{}\t{}", ak.as_str(), truncate(s, width)));
         fields.push((ak.as_str().to_string(), j));
     }
-    let groups = db.groups_of(t)?;
     let role = db.role_on(t)?;
-    let uris = |v: &[Tid]| v.iter().map(Tid::to_uri).collect::<Vec<_>>().join(" ");
     lines.push(format!("state\t{}", if known { "present" } else { "empty" }));
-    lines.push(format!("groups\t{}", uris(&groups.within)));
-    lines.push(format!("subgroup_of\t{}", uris(&groups.subgroup_of)));
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
     let changed = db.changed(t)?;
     let stamp = |c: Option<osis::ThingStamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, c.written.0), c.actor.to_uri()));
@@ -832,8 +785,6 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
         ("tid", J::tid(t)),
         ("aspects", J::Obj(fields)),
         ("empty", J::Bool(!known)),
-        ("groups", J::tids(&groups.within)),
-        ("subgroup_of", J::tids(&groups.subgroup_of)),
         ("role", J::opt(role.map(|r| J::str(role_text(r))))),
         ("created", J::opt(created.map(stamp_json))),
         ("changed", J::opt(changed.map(stamp_json))),
@@ -1089,7 +1040,7 @@ fn grants_lines(r: &osis::Grants, raw: bool) -> Vec<String> {
     r.iter()
         .map(|(m, e)| {
             let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
-            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.may_grant.map_or("-", role_text), if e.with_membership { " with-membership" } else { "" }) + if e.from_now { " from-now" } else { "" }
+            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.may_grant.map_or("-", role_text), if e.from_now { " from-now" } else { "" })
         })
         .collect()
 }
@@ -1097,7 +1048,7 @@ fn grants_lines(r: &osis::Grants, raw: bool) -> Vec<String> {
 fn grants_json(r: &osis::Grants) -> J {
     J::Arr(
         r.iter()
-            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::opt(e.may_grant.map(|r| J::str(role_text(r))))), ("with_membership", J::Bool(e.with_membership)), ("from_now", J::Bool(e.from_now))]))
+            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::opt(e.may_grant.map(|r| J::str(role_text(r))))), ("from_now", J::Bool(e.from_now))]))
             .collect(),
     )
 }
@@ -1115,23 +1066,19 @@ fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 }
 
 fn status_lines(s: &osis::Status) -> Vec<String> {
-    let groups = s.groups.iter().map(|(g, x)| {
+    let units = s.units.iter().map(|(g, x)| {
         let mut line = format!("{} {:?}", g.to_uri(), x.state);
-        if x.leaving {
-            line.push_str(" leaving");
-        }
         if x.not_taking > 0 {
             line.push_str(&format!(" not taking: {}", x.not_taking));
         }
         line
     });
-    let kept = s.kept.iter().map(|t| format!("{} kept", t.to_uri()));
-    std::iter::once(format!("connected {}", s.connected)).chain(groups).chain(kept).collect()
+    std::iter::once(format!("connected {}", s.connected)).chain(units).collect()
 }
 
 fn status_json(s: &osis::Status) -> J {
-    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("leaving", J::Bool(x.leaving)), ("not_taking", J::int(x.not_taking as u64))]));
-    J::obj([("groups", J::Arr(groups.collect())), ("kept", J::Arr(s.kept.iter().map(|t| J::tid(*t)).collect())), ("connected", J::int(s.connected as u64))])
+    let units = s.units.iter().map(|(g, x)| J::obj([("thing", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("not_taking", J::int(x.not_taking as u64))]));
+    J::obj([("units", J::Arr(units.collect())), ("connected", J::int(s.connected as u64))])
 }
 
 /// One diagnostic as `diag` prints it (text or a JSON line): its kind, what it names, its detail.
@@ -1139,13 +1086,12 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
     use osis::Diagnostic as D;
     let shown;
     let (kind, tids, commit, peer, detail): (&str, Vec<Tid>, Option<osis::CommitId>, Option<Tid>, &str) = match d {
-        D::NotSynced { thing, group, detail } => ("NotSynced", std::iter::once(*thing).chain(*group).collect(), None, None, detail),
         D::Uncommitted { thing, detail } => ("Uncommitted", vec![*thing], None, None, detail),
         D::OwnWriteInvalid { commit, things, detail } => ("OwnWriteInvalid", things.clone(), Some(*commit), None, detail),
         D::Mismatch { thing, detail } => ("Mismatch", vec![*thing], None, None, detail),
         D::Unreadable { thing, detail } => ("Unreadable", vec![*thing], None, None, detail),
         D::LostAccess { actor, detail } => ("LostAccess", vec![*actor], None, None, detail),
-        D::Stranded { group, detail } => ("Stranded", vec![*group], None, None, detail),
+        D::Stranded { thing, detail } => ("Stranded", vec![*thing], None, None, detail),
         D::EphemeralRefused { things, detail } => ("EphemeralRefused", things.clone(), None, None, detail),
         D::Storage { detail } => ("Storage", vec![], None, None, detail),
         D::Callback { detail } => ("Callback", vec![], None, None, detail),
@@ -1265,25 +1211,8 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
                     lines.push(format!("  state {f}"));
                 }
             }
-            for g in db.groups_of(t)?.within {
-                lines.push(format!("group {}", g.to_uri()));
-            }
             for (m, e) in db.grants(t)? {
                 lines.push(format!("holder {} {:?}", m.to_uri(), e));
-            }
-        }
-        InspectCmd::Group { g } => {
-            let g = ctx.tid(&g)?;
-            let all = db.engine(|e| e.all_aspects())?;
-            let mut things: Vec<Tid> = all.into_iter().map(|(t, _)| t).collect();
-            things.dedup();
-            for t in things {
-                if db.groups_of(t)?.within.contains(&g) {
-                    lines.push(format!("item {}", t.to_uri()));
-                }
-            }
-            for (id, reason) in db.engine(|e| e.pending()) {
-                lines.push(format!("pending {} {reason:?}", commit_text(&id)));
             }
         }
         InspectCmd::Actor { a } => {
@@ -1460,15 +1389,15 @@ mod tests {
         assert!(matches!(crate::config(&cli.g, super::network(&cli.cmd)).unwrap().lan, osis::Lan::On { .. }));
     }
 
-    // notes/api.md Sync configuration and status: `status` shows a thing's `leaving` and
-    // `not_taking`, in both forms.
+    // notes/api.md Sync configuration and status: `status` shows a thing's `not_taking`, in
+    // both forms.
     #[test]
-    fn status_shows_leaving_and_not_taking_notes_api() {
+    fn status_shows_not_taking_notes_api() {
         let g = osis::Tid::from_bytes([7; 15]);
         let mut s = osis::Status::default();
-        s.groups.insert(g, osis::GroupSync { state: osis::SyncState::Syncing, not_taking: 2, leaving: true });
-        assert_eq!(super::status_lines(&s)[1], format!("{} Syncing leaving not taking: 2", g.to_uri()));
-        assert!(super::status_json(&s).text().contains("\"leaving\":true,\"not_taking\":2"));
+        s.units.insert(g, osis::UnitSync { state: osis::SyncState::Syncing, not_taking: 2 });
+        assert_eq!(super::status_lines(&s)[1], format!("{} Syncing not taking: 2", g.to_uri()));
+        assert!(super::status_json(&s).text().contains("\"not_taking\":2"));
     }
 
     // notes/cli.md Design: `edit`'s temp file is new (`create_new`), randomly named, owner-only.

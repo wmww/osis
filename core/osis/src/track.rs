@@ -132,19 +132,6 @@ impl ReadOnly {
         id
     }
 
-    /// Listens at `w` for what names no value (`Delivery::Due` calls `on_change`), under the
-    /// lock `l` of the read it goes with.
-    fn track_due(&self, l: &mut Locked, set: &Arc<SetInner>, key: String, w: Watch) {
-        let weak = Arc::downgrade(set);
-        self.track_in(l, set, key, None, |gate| {
-            (Filter::Due(w), Box::new(move |db, d| {
-                if let Delivery::Due = d {
-                    gate.fire(&weak, db);
-                }
-            }))
-        });
-    }
-
     /// The value `read` reads at `(tid, ak)`, listened to at that address on a tracking handle.
     pub(crate) fn read_value(&self, tid: Tid, ak: &Ak, key: String, read: ReadAt) -> Result<Option<Value>> {
         let Some(set) = self.tracking.clone() else { return self.read_local(|r| read.0(r)) };
@@ -195,10 +182,6 @@ impl ReadOnly {
         let mine = move |id: CommitId| only.is_none_or(|c| c == id);
         let a = a.clone();
         self.locked(|l| {
-            // the group's own writes say nothing of a member joining: what it holds is its answer too
-            if let Address::Writes(crate::commits::Scope::Group(g)) = &a {
-                self.track_due(l, &set, format!("holds {g}"), Watch::Groups(*g));
-            }
             self.track_in(l, &set, key, None, |gate| {
                 let w = Arc::downgrade(&set);
                 (Filter::Commits(a), Box::new(move |db, d| {
@@ -242,7 +225,7 @@ fn answer_callback(gate: Arc<Gate>, set: Weak<SetInner>, read: impl Fn(&mut Read
 }
 
 /// A digest of an answer no listener delivers: from its `Debug` text, which shows everything a
-/// `Grants`, a `GroupsOf`, a stamp or a role holds.
+/// `Grants`, a stamp or a role holds.
 pub(crate) fn answer_digest<A: std::fmt::Debug>(a: &A) -> Digest {
     *blake3::hash(format!("{a:?}").as_bytes()).as_bytes()
 }

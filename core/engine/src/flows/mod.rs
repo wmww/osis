@@ -19,14 +19,12 @@ pub(crate) mod account;
 pub(crate) mod custody;
 pub mod lists;
 pub(crate) mod signing;
-pub mod tied;
 
 
-pub use edges::{Demotion, inbox_chain};
+pub use edges::{Demotion, Removal};
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
 pub use account::CreatedAccount;
 pub use lists::ListsHeld;
-pub use tied::Untie;
 
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};

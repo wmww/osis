@@ -28,8 +28,8 @@ pub enum Cause {
     LateDelta,
     /// This node lost read access and forgot the aspects (spec/permissions.md §3).
     LostAccess,
-    /// This node forgot its local copy of an unsynced thing (spec/sync-set.md §3 Unsyncing).
-    Unsynced,
+    /// This node forgot its local copy of a released thing (spec/sync.md Release).
+    Released,
     /// A blob arrived that a read of these aspects had missed (spec/data-model.md §6).
     Fetched,
 }
@@ -64,8 +64,6 @@ pub enum Event {
     Roster { thing: Tid },
     /// A creation record arrived: `thing`'s first-admin edge, the start of its roster.
     Created { thing: Tid },
-    /// What `Engine::groups_of` and `listed_in` answer for these things changed.
-    Groups(Arc<Vec<Tid>>),
     /// A reference index row naming each of these targets appeared or went (`refs`): their
     /// backlinks changed. Only once a backlinks watch was asked for (`Engine::watch_references`).
     References(Arc<Vec<Tid>>),
@@ -108,10 +106,6 @@ pub enum DiagnosticKind {
     Removed,
     /// An app callback panicked (the `osis` dispatcher reports it and lives on).
     Callback,
-    /// A thing reaches no synced group (spec/requirements.md Offline and network): placed only
-    /// in groups none holds (the `osis` API), or a subgroup cut here by any cause, a write here
-    /// or elsewhere or an expiry, held it and no synced group carries it now (`Engine::report_cut`).
-    NotSynced,
     /// This node cannot open a sync ID it should read: it waits for a re-seal
     /// (spec/permissions.md §3).
     Stranded,

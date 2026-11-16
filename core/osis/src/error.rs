@@ -13,7 +13,7 @@ use osis_schema::{Path, PathError};
 pub enum Error {
     /// A write or call names a thing not known here.
     UnknownThing { tid: Tid },
-    /// An actor whose keys are not known here (grants need them: a contact card, a shared group).
+    /// An actor whose keys are not known here (grants need them: a contact card, a shared thing).
     UnknownActor { tid: Tid },
     /// The acting actor lacks `needs` on `tid`, or this node cannot write `tid` yet (`role_on`
     /// reads `Read` meanwhile). Checked locally before signing.
@@ -27,9 +27,9 @@ pub enum Error {
     /// The newest commit in an undo or redo scope cannot be undone (its body was dropped, or a
     /// register it wrote is no longer its winner). Nothing older is undone instead.
     NotUndoable { commit: CommitId, reason: NotUndoableReason },
-    /// These groups are stranded here: they cannot catch up, and waiting would not help
-    /// (`wait_synced`, `group_source`).
-    Stranded { groups: Vec<Tid> },
+    /// These things' sync IDs are stranded here: they cannot catch up, and waiting would not help
+    /// (`wait_synced`, `unit_source`).
+    Stranded { things: Vec<Tid> },
     /// What was asked cannot be done as asked: a malformed argument (value, link, card, path, op,
     /// retention), or writes that cannot share a commit. The text says which.
     Invalid(String),
@@ -64,7 +64,7 @@ osis_base::impl_error!(Error {
     Type { path, reason } => ("type error at {path}: {reason}"),
     TooLarge { limit } => ("value larger than the materialization bound ({limit} bytes)"),
     NotUndoable { commit, reason } => ("cannot revert {commit:?}: {reason:?}"),
-    Stranded { groups } => ("{} group(s) stranded: they cannot sync", groups.len()),
+    Stranded { things } => ("{} thing(s) stranded: they cannot sync", things.len()),
     Invalid(m) => ("invalid: {m}"),
     Storage(m) => ("storage: {m}"),
     InUse => ("store in use by another process or another open node"),
@@ -98,7 +98,6 @@ impl From<osis_engine::Error> for Error {
             N::Corrupt(m) => Error::Storage(m.into()),
             N::Misuse(m) => Error::Invalid(m.into()),
             N::Clash(m) => Error::Invalid(m),
-            N::Unsynced { tid, group } => Error::Invalid(format!("{tid} is in {group}, whose own aspects sync but whose items reach no synced group: add {group} as a subgroup of a synced group (same commit or before), or add {tid} elsewhere")),
             e => Error::Invalid(e.to_string()),
         }
     }

@@ -9,8 +9,7 @@
 //! place above `n` (spec/permissions.md §3 Complete pass: a Pull sent before a commit arrived
 //! ends no pass after it), whatever the clock reads.
 //!
-//! A rule that waits for a pass after its cause (a tied grant's explicit demotion, the
-//! lost-access drop) waits for one begun after the place this node first judged the cause at
+//! A rule that waits for a pass after its cause (the lost-access drop) waits for one begun after the place this node first judged the cause at
 //! (`Cause`), not after the newest role arrival: role commits arriving faster than a pass ends
 //! never hold it off. The place is kept while the cause holds and forgotten once it does not.
 
@@ -34,20 +33,17 @@ const ARRIVALS: &[u8] = b"ra/";
 /// `jc/` + cause: the place this node first judged it at (u64 BE).
 const CAUSES: &[u8] = b"jc/";
 
-/// A cause a rule waits a complete pass after (spec/permissions.md §2 Tied grants, §3 Lost access).
+/// A cause a rule waits a complete pass after (spec/permissions.md §3 Lost access).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Cause {
     /// Read access to the actor lost by every path (`lost_due`).
     Lost(Tid),
-    /// Tied grant (target, group) held dead, removable here as an explicit demotion.
-    Tie(Tid, Tid),
 }
 
 impl Cause {
     fn key(&self) -> Vec<u8> {
         match self {
             Cause::Lost(a) => [CAUSES, b"l", a.as_bytes()].concat(),
-            Cause::Tie(t, g) => [CAUSES, b"t", t.as_bytes(), g.as_bytes()].concat(),
         }
     }
 
@@ -55,10 +51,6 @@ impl Cause {
         let tid = |b: &[u8]| Some(Tid::from_bytes(b.try_into().ok()?));
         match k.split_first()? {
             (b'l', a) => Some(Cause::Lost(tid(a)?)),
-            (b't', r) => {
-                let (t, g) = r.split_at_checked(r.len() / 2)?;
-                Some(Cause::Tie(tid(t)?, tid(g)?))
-            }
             _ => None,
         }
     }
@@ -242,8 +234,6 @@ impl Engine {
     ///   on S's actor;
     /// - spec/permissions.md §3 Lost access: the loss of S's actor, from when it was judged
     ///   (`Cause::Lost`);
-    /// - spec/permissions.md §2 Tied grants: every sync ID of a tie's demotion scope
-    ///   (`tied_wants`), from when the tie was judged dead (`Cause::Tie`);
     /// - spec/commits.md §5 Waiting for it: every read sync ID carrying a thing whose setting this
     ///   node waits for, from where the wait began (`sync::setting`);
     /// - spec/sync-status.md §3 History complete: one pass of every sync ID read here.
@@ -260,23 +250,8 @@ impl Engine {
         // lost-access drop waits on (`lost_passed`); a stranded report's re-seal ask
         // (spec/permissions.md §3, §4): met at a pass's end; an open setting wait on a thing S
         // carries (spec/commits.md §5)
-        let since = [self.role_arrival(&a), self.cause_place(&Cause::Lost(a)), self.asked_at(&a), self.tie_wants()?.get(s).copied(), self.setting_wants()?.get(s).copied()].into_iter().flatten().max().unwrap_or(0);
+        let since = [self.role_arrival(&a), self.cause_place(&Cause::Lost(a)), self.asked_at(&a), self.setting_wants()?.get(s).copied()].into_iter().flatten().max().unwrap_or(0);
         Ok(self.core.ix.passes.get(s).is_none_or(|b| *b <= since).then_some(since))
-    }
-
-    /// Per sync ID a tie's explicit demotion waits a pass of, the place it must begin after
-    /// (`tied_wants`, folded). A memo: ties are few and change rarely.
-    fn tie_wants(&mut self) -> Result<Arc<BTreeMap<SyncId, u64>>> {
-        osis_base::memo::Memo::get_in(self, |e| &e.core.tie_wants, &(), |e| {
-            let mut out: BTreeMap<SyncId, u64> = BTreeMap::new();
-            for (since, ids) in e.tied_wants()? {
-                for s in ids {
-                    let x = out.entry(s).or_insert(since);
-                    *x = (*x).max(since);
-                }
-            }
-            Ok(Arc::new(out))
-        })
     }
 
     /// Per sync ID an open setting wait wants a pass of (`setting_wait_ids`, folded), the place
@@ -330,31 +305,13 @@ impl Engine {
     }
 
     /// At an open: forgets each cause whose subject went while the node was down or before its
-    /// follower judged it again (a loss of an actor no longer held, a tie whose group holds no
-    /// edge on its target): rows `jc/` stay bounded by what is held.
+    /// follower judged it again (a loss of an actor no longer held): rows `jc/` stay bounded by what is held.
     pub(crate) fn forget_gone_causes(&mut self) -> Result<()> {
         let gone: Vec<Cause> = self.core.ix.cause_at.keys().filter(|c| match c {
             Cause::Lost(a) => !self.core.ix.secrets.contains_key(a),
-            Cause::Tie(t, g) => !self.core.ix.held.holders_of(t).any(|x| x == g),
         }).copied().collect();
         for c in gone {
             self.judge_cause(c, false)?;
-        }
-        Ok(())
-    }
-
-    /// The tied grants on `t` judged dead and removable explicitly here: their places kept, every
-    /// other tie on `t` forgotten (`judge_cause`).
-    pub(crate) fn judge_ties(&mut self, t: &Tid, now: &BTreeSet<Tid>) -> Result<()> {
-        let gone: Vec<Tid> = self.core.ix.cause_at.keys().filter_map(|c| match c {
-            Cause::Tie(x, g) if x == t && !now.contains(g) => Some(*g),
-            _ => None,
-        }).collect();
-        for g in gone {
-            self.judge_cause(Cause::Tie(*t, g), false)?;
-        }
-        for g in now {
-            self.judge_cause(Cause::Tie(*t, *g), true)?;
         }
         Ok(())
     }
@@ -378,60 +335,6 @@ impl Engine {
         self.core.ix.reseal_asks.iter().filter(|((a, _), k)| a == actor && !k.met).map(|(_, k)| k.at).max()
     }
 
-    /// spec/permissions.md §2 Tied grants: per tied grant (G, T) this node holds dead and would
-    /// remove as an explicit demotion (`may_remove`, as `untie_due` reads it), the sync IDs whose
-    /// bodies carry a thing of the demotion's pre-sync scope, from where it was judged dead.
-    fn tied_wants(&mut self) -> Result<Vec<(u64, BTreeSet<SyncId>)>> {
-        let mut out = Vec::new();
-        for (t, g) in self.tied_unplaced(&BTreeSet::new(), &BTreeSet::new(), true)? {
-            if self.may_remove(&t, &g)? != Some(crate::flows::Untie::Explicit) {
-                continue;
-            }
-            out.extend(self.tie_scope(&t, &g)?);
-        }
-        Ok(out)
-    }
-
-    /// The sync IDs tied grant (`t`, `g`)'s explicit demotion waits a complete pass of, and the
-    /// pass place each pass must begin after: where this node judged the tie dead (`Cause::Tie`,
-    /// noted by `untie_due`; `None` before) (spec/permissions.md §2 Tied grants).
-    fn tie_scope(&mut self, t: &Tid, g: &Tid) -> Result<Option<(u64, BTreeSet<SyncId>)>> {
-        let Some(since) = self.cause_place(&Cause::Tie(*t, *g)) else { return Ok(None) };
-        Ok(Some((since, self.demotion_scope_sync_ids(t)?)))
-    }
-
-    /// Whether every pass tied grant (`t`, `g`)'s explicit demotion waits (`tie_scope`) is noted.
-    pub(crate) fn tie_passes_done(&mut self, t: &Tid, g: &Tid) -> Result<bool> {
-        let Some((since, ids)) = self.tie_scope(t, g)? else { return Ok(false) };
-        Ok(self.passed_after(ids.iter(), since))
-    }
-
-    /// The read sync IDs whose bodies carry a thing of a demotion's pre-sync scope on `t`
-    /// (spec/permissions.md §2, §5.3: the things the demoted authority gave write on, read as `t`
-    /// and the things it encloses; spec/sync-judgement.md §1: a thing travels under the sync IDs
-    /// of itself and of the groups enclosing it). Only those this node's sync set reads: a pass
-    /// of another is never noted (`note_complete_pass_now`), so waiting on it would wait forever.
-    fn demotion_scope_sync_ids(&mut self, t: &Tid) -> Result<BTreeSet<SyncId>> {
-        let mut things: BTreeSet<Tid> = self.closure(t).iter().copied().collect();
-        things.insert(*t);
-        for x in things.clone() {
-            things.extend(self.enclosing(&x));
-        }
-        let mut out = BTreeSet::new();
-        for x in things {
-            if let ThingSync::Read(ids) = self.thing_sync_now(&x)? {
-                out.extend(ids);
-            }
-        }
-        let mut read = BTreeSet::new();
-        for s in out {
-            if self.sync_held(&s)?.is_some_and(|(_, h)| h == Holding::Read) {
-                read.insert(s);
-            }
-        }
-        Ok(read)
-    }
-
     /// Whether each sync ID of `actor` read here had a complete pass begun after the newest role
     /// commit on it applied from elsewhere (spec/permissions.md §3 Complete pass: the re-seal
     /// trigger waits for one). False for an actor with no sync ID read here.
@@ -442,17 +345,17 @@ impl Engine {
     }
 
     /// spec/sync-status.md §3 History complete for `thing`: a complete pass of every sync ID
-    /// carrying it (its own and its enclosing groups' read here) noted.
+    /// carrying it (its own and those of the sync units holding it, read here) noted.
     pub fn history_complete(&mut self, thing: &Tid) -> Result<bool> {
         let ids = self.carrying_now(thing, true)?;
         Ok(!ids.is_empty() && ids.iter().all(|s| self.core.ix.passes.contains_key(s)))
     }
 
-    /// The sync IDs carrying `thing`: its own and its enclosing groups', read here (`read`), or
-    /// read or kept unread.
+    /// The sync IDs carrying `thing`: its own and those of the sync units holding it, read here
+    /// (`read`), or read or kept unread.
     pub(crate) fn carrying_now(&mut self, thing: &Tid, read: bool) -> Result<BTreeSet<SyncId>> {
         let mut ids = BTreeSet::new();
-        for x in std::iter::once(*thing).chain(self.enclosing(thing)) {
+        for x in std::iter::once(*thing).chain(self.units_holding(thing)) {
             match self.thing_sync_now(&x)? {
                 ThingSync::Read(v) => ids.extend(v),
                 ThingSync::Unread(v) if !read => ids.extend(v),

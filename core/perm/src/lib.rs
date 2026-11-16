@@ -33,7 +33,7 @@ pub use osis_base::PurgeBy;
 pub use scope::DemotionScope;
 pub use timeline::{At, EdgeEnd, Timeline};
 pub use trust::{Detected, Detection, Dispute, Trust, DETECT_MAX};
-pub use types::{Edge, EdgeOp, Frontier, RoleCommit, Point, Tie, TieSource, WriteId, ROLES};
+pub use types::{Edge, EdgeOp, Frontier, RoleCommit, Point, WriteId, ROLES};
 pub use walk::{Applied, Attr, Demotion, Fall};
 #[doc(hidden)]
 pub use walk::{commits_walked, entries_moved, roles_reached, uncounted};

@@ -72,8 +72,8 @@ fn reaches(item: &PurgeItem, t: &Target) -> bool {
 fn names_t(p: &Header, t: &Target) -> bool {
     t.own_writes
         && stamped_before(p.ts, &t.ak, t.ts)
-        && (p.is_release() || p.expires.is_none_or(|e| t.expires.is_some_and(|x| x <= e)))
-        && p.requests().iter().any(|i| i.tid() == &t.tid && i.ak() == &t.ak && reaches(i, t))
+        && (p.expires.is_none_or(|e| t.expires.is_some_and(|x| x <= e)))
+        && p.purge.iter().any(|i| i.tid() == &t.tid && i.ak() == &t.ak && reaches(i, t))
 }
 
 /// `names_t` of delta `a` of commit `c` (header `ch`).
@@ -174,11 +174,11 @@ impl HeldSet for Cut<'_> {
 /// request is refused (`Permission` on the item's thing). An item naming none held is written: a
 /// request naming a delta that arrives later is honored then.
 pub(crate) fn check_request(core: &Core, p: &Header, pc: &CommitId) -> Result<()> {
-    for item in p.requests().iter() {
+    for item in p.purge.iter() {
         // a purge that expires reaches only deltas expiring no later: one naming a held delta
         // beyond it is refused, never written to drop less than it says (no request names a
         // snapshot, `names`)
-        if let Some(e) = p.expires.filter(|_| !p.is_release()) {
+        if let Some(e) = p.expires {
             for c in named_by(core, item, p.ts) {
                 let Some(m) = core.ix.commits.get(&c).filter(|m| m.header.kind.has_own_writes() && m.aspect(item.tid(), item.ak()).is_some()) else { continue };
                 let Some(a) = m.aspect(item.tid(), item.ak()).and_then(|ai| m.header.aspects.get(ai)) else { continue };
@@ -255,9 +255,8 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -> bool) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(false) };
     let now = tx.now().0;
-    // a released thing's drops are no erasure's (spec/commits.md §5 Destruction): none lasts; nor
-    // does a drop as invalid (an invalid delta shows nothing, spec/permissions.md §5.2)
-    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped(ai) || (m.is_dropped(ai) && !m.dropped_invalid(ai))) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now) && !super::destroy::released(tx.core, &a.tid, now)) {
+    // a drop as invalid lasts not (an invalid delta shows nothing, spec/permissions.md §5.2)
+    if m.header.aspects.iter().enumerate().any(|(ai, a)| (m.stripped(ai) || (m.is_dropped(ai) && !m.dropped_invalid(ai))) && on(tx.core, &a.tid) && super::history::permanent(tx.core, &m.header, a, now)) {
         return Ok(true);
     }
     if !m.view.purges {
@@ -279,7 +278,7 @@ pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -
 /// re-grant giving it the right back brings it again as any forgotten commit.
 pub(crate) fn drops_nothing(core: &Core, pc: &CommitId, p: &Header) -> bool {
     let reach = core.ix.held.reach(&BTreeSet::from([p.author]));
-    p.requests().iter().all(|item| {
+    p.purge.iter().all(|item| {
         let up = core.ix.held.upstream(&BTreeSet::from([*item.tid()]));
         std::iter::once(&p.author).chain(reach.intersection(&up)).all(|actor| !right_holds(core, p, pc, &Right { tid: *item.tid(), ak: item.ak().clone(), by: osis_base::PurgeBy::Writer, actor: *actor }))
     })
@@ -373,7 +372,7 @@ pub(crate) fn requests_resting_on(core: &Core, node: &Tid, things: &BTreeSet<Tid
             continue;
         }
         let on = |t: &Tid| *reach.entry(*t).or_insert_with(|| things.contains(t) || !core.ix.held.ever_writers(t).is_disjoint(things));
-        if m.header.requests().iter().map(|i| *i.tid()).collect::<BTreeSet<_>>().iter().any(on) {
+        if m.header.purge.iter().map(|i| *i.tid()).collect::<BTreeSet<_>>().iter().any(on) {
             out.push(*pc);
         }
     }
@@ -404,7 +403,7 @@ pub(crate) fn purged_aspects(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, whole: &BT
     }
     for c in whole {
         let Some(h) = tx.core.ix.commits.get(c).filter(|m| m.view.purges).map(|m| m.header.clone()) else { continue };
-        out.extend(h.requests().iter().map(|i| (*i.tid(), i.ak().clone())));
+        out.extend(h.purge.iter().map(|i| (*i.tid(), i.ak().clone())));
     }
     Ok(out)
 }
@@ -427,7 +426,7 @@ impl AspectRequests {
         let mut out = AspectRequests { named: BTreeMap::new(), wide: Vec::new(), newest: BTreeMap::new() };
         for pc in aspect_requests(tx, tid, ak)? {
             let Some(p) = tx.core.ix.commits.get(&pc).map(|m| m.header.clone()) else { continue };
-            for item in p.requests().iter().filter(|i| i.tid() == tid && i.ak() == ak) {
+            for item in p.purge.iter().filter(|i| i.tid() == tid && i.ak() == ak) {
                 match item {
                     PurgeItem::Commit { ts, src, .. } => out.named.entry((*ts, src.clone())).or_default().push((pc, p.clone())),
                     _ => out.wide.push((pc, item.clone(), p.clone())),
@@ -658,14 +657,12 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     if !stands(tx.core, &p.header, pc, a, &m.header, c) {
         return Ok(false);
     }
-    let release = p.header.is_release();
     let m = m.clone();
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(false) };
     // the part may have gone already, for another reason: its entry now reads purged
     tx.core.commits_named(a.tid, a.ak.clone(), *c);
-    // a lasting header from now on (`lasting`), whichever came first: erasure's alone, never a
-    // release's (spec/commits.md §5)
-    if !release && super::history::permanent(tx.core, &m.header, &a, tx.now().0) {
+    // a lasting header from now on (`lasting`), whichever came first (spec/commits.md §5)
+    if super::history::permanent(tx.core, &m.header, &a, tx.now().0) {
         tx.txn.put_local(&records::named_permanent_key(pc, &a.tid), &[], Shred::No)?;
     }
     // every held body carrying the purged values, snapshots included, is stripped of them by the
@@ -682,8 +679,8 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
 /// changes nothing, so it asks for no snapshot.
 pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     // pending copies writing on what it names are looked at again (`apply::Wake::Thing`)
-    tx.core.waits.lists_moved.extend(h.requests().iter().map(|i| *i.tid()));
-    for item in h.requests().iter() {
+    tx.core.waits.lists_moved.extend(h.purge.iter().map(|i| *i.tid()));
+    for item in h.purge.iter() {
         // one that is not by name asks of every delta: the right once per class and actor, so a
         // request with none costs a look per delta
         let mut rights: BTreeMap<(u64, Tid), bool> = BTreeMap::new();
@@ -708,7 +705,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
         }
     }
     // the copies of commits not held here (`rejudge_carried`), once per named aspect
-    let aspects: BTreeSet<(Tid, Ak)> = h.requests().iter().map(|i| (*i.tid(), i.ak().clone())).collect();
+    let aspects: BTreeSet<(Tid, Ak)> = h.purge.iter().map(|i| (*i.tid(), i.ak().clone())).collect();
     for (tid, ak) in aspects {
         rejudge_carried(tx, &tid, &ak, purged)?;
     }
@@ -786,25 +783,9 @@ fn request_key(item: &PurgeItem) -> Vec<u8> {
 /// its commit's joins: a kill and the request naming the killed body in one commit purges it,
 /// its leftover bare, so no cover drops it.
 pub(crate) fn note_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Result<()> {
-    for item in h.requests().iter() {
+    for item in h.purge.iter() {
         let key = request_key(item);
         note_request(tx, &key, id)?;
-    }
-    Ok(())
-}
-
-/// Request `id` (header `h`) leaves the lists `note_requests` put it on, a list it alone was on
-/// with it.
-pub(crate) fn unnote_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Result<()> {
-    for item in h.requests().iter() {
-        let key = request_key(item);
-        let Some(b) = tx.txn.get_local(&key)? else { continue };
-        let rest: Vec<u8> = b.chunks(32).filter(|x| *x != id.0).flatten().copied().collect();
-        if rest.is_empty() {
-            tx.txn.remove_local(&key, Shred::Yes)?;
-        } else if rest.len() != b.len() {
-            tx.txn.put_local(&key, &rest, Shred::No)?;
-        }
     }
     Ok(())
 }

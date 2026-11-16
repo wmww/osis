@@ -17,11 +17,6 @@ pub use osis_schema::core_types;
 pub use osis_store::{Fault, Faults};
 pub use crate::net::{MANUAL_CAP, MANUAL_HORIZON_MS, ManualNet};
 
-/// `group.0`'s field of items, for path reads and writes of it (spec/data-model.md §8).
-pub const GROUP_ITEMS: osis_schema::FieldId = osis_schema::FieldId(0);
-/// `group.0`'s field of subgroups.
-pub const GROUP_SUBGROUPS: osis_schema::FieldId = osis_schema::FieldId(1);
-
 /// What a `ReadSet` listens to (its addresses, e.g. `value {tid} {ak} Path([])`, `aspects {tid}`)
 /// and how often the last pass read each: a harness finds a read made twice by one node.
 pub fn read_counts(set: &crate::ReadSet) -> Vec<(String, u32)> {

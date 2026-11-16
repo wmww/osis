@@ -26,19 +26,10 @@ pub const RETENTION: &str = "retention^.0";
 /// The AK of the delta a purge request with nothing to reset carries.
 pub const PURGE: &str = "purge.0";
 
-/// The AK of a release request's delta on each thing it releases (spec/commits.md §5 Destruction).
-pub const RELEASED: &str = "released.0";
-
 /// Whether a delta of `ak` is a destroying request's, what tells another node its thing was
-/// destroyed (spec/commits.md §5 Destruction): a purge's `purge.0`, a release's `released.0`.
+/// destroyed (spec/commits.md §5 Destruction): a purge's `purge.0`.
 pub fn destroying_request(ak: &str) -> bool {
-    ak == PURGE || ak == RELEASED
-}
-
-/// The expiry a commit carrying `released.0` deltas has: `wall_ms(ts) + ROLE_KEEP`
-/// (spec/commits.md §5 Destruction).
-pub fn release_expires(ts: Ts) -> u64 {
-    ts.wall_ms().0.saturating_add(ROLE_KEEP_MS)
+    ak == PURGE
 }
 
 /// Role-class aspects and `addenda.0`: fixed `ROLE_RETENTION`, each replaced delta kept
@@ -103,12 +94,8 @@ pub fn snapshot_retention(ak: &str) -> Retention {
 }
 
 /// Expiry of a write: an explicit T, else the schema's default duration from the write's `ts`.
-/// Aspects with fixed retention never expire, but `released.0`, which expires `ROLE_KEEP` after
-/// its `ts`. A T above 2^63 - 1 is refused.
+/// Aspects with fixed retention never expire. A T above 2^63 - 1 is refused.
 pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: Option<u64>) -> Result<Option<u64>, Error> {
-    if ak == RELEASED {
-        return Ok(Some(release_expires(ts)));
-    }
     if fixed_retention(ak).is_some() {
         return Ok(None);
     }

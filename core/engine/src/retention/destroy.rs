@@ -27,7 +27,7 @@
 //! unknown thing.
 
 use crate::engine::records;
-use crate::engine::{Core, DropFor, Hold, Missing, Tx};
+use crate::engine::{Core, DropFor, Tx};
 use crate::error::Result;
 use crate::events::{Cause, Event};
 use osis_base::{Ak, CommitId, PurgeBy, Tid};
@@ -140,11 +140,11 @@ struct Held {
     by: Vec<Point>,
 }
 
-/// The held requests with an item on `t`'s `created.0` (purge or release), found among the
+/// The held requests with an item on `t`'s `created.0`, found among the
 /// commits on `t` (a request has a delta on each thing it names), with their headers. Held
 /// whether or not `t` keeps its mintings: a destroyed thing keeping nothing still holds them.
 fn creation_requests<'a>(core: &'a Core, t: &'a Tid) -> impl Iterator<Item = (CommitId, &'a Header)> + 'a {
-    let on_t = move |p: &Header| p.requests().iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
+    let on_t = move |p: &Header| p.purge.iter().any(|i| i.tid() == t && i.ak().as_str() == CREATED);
     core.on_thing(t).filter_map(move |pc| core.ix.commits.get(&pc).filter(|m| m.view.purges && on_t(&m.header)).map(|m| (pc, &*m.header)))
 }
 
@@ -196,58 +196,15 @@ pub(crate) fn destroying_requests(core: &Core, t: &Tid) -> BTreeSet<CommitId> {
     per_minting(core, t).into_iter().flat_map(|h| h.by).map(|p| p.commit).collect()
 }
 
-/// How `t` was destroyed, read at wall ms `now`: by release alone (storage reclaim, never erasure:
-/// every held minting dropped by a standing release request, none by a purge or its own
-/// expiry), and then whether every such request is past its expiry (spec/commits.md §5
-/// Destruction, Forgetting). `None`: not destroyed by release alone.
-fn release_state(core: &Core, t: &Tid, now: u64) -> Option<bool> {
-    let per = per_minting(core, t);
-    let mut spent = true;
-    for Held { expires: x, by, .. } in &per {
-        if by.is_empty() || x.is_some_and(|x| x <= now) {
-            return None;
-        }
-        for p in by {
-            let m = core.ix.commits.get(&p.commit)?;
-            if !m.header.is_release() {
-                return None;
-            }
-            spent &= m.header.expires.is_some_and(|x| x <= now);
-        }
-    }
-    (!per.is_empty()).then_some(spent)
-}
-
-/// Whether `t` was destroyed by release alone (`release_state`): nothing of it is erasure's, so no
-/// header of it lasts (`purge::lasting`).
-pub(crate) fn released(core: &Core, t: &Tid, now: u64) -> bool {
-    release_state(core, t, now).is_some()
-}
-
-/// Whether something held here needs the evidence that `t` was destroyed (notes/lifetimes.md,
-/// What is kept): a dependent (`dependents`), or another held thing listing it in
-/// `retainers^.0` or referencing it in a live durable value other than `group.0` (the
-/// reference index, `needs_from`). One rule
-/// for every destruction: while it holds, `t`'s record, value-less creation, `roles.0` and destruction
+/// Whether something held here needs the evidence that `t` was destroyed: a dependent
+/// (`dependents`). While it holds, `t`'s record, value-less creation, `roles.0` and destruction
 /// request parts stay and travel under that thing's sync IDs (`Engine::certificates`).
 pub(crate) fn needs_evidence(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
-    if dependents(tx.core, t) {
-        return Ok(true);
-    }
-    Ok(crate::engine::refs::to(tx, t)?.iter().any(|r| r.source != *t && needs_from(&r.ak)))
-}
-
-/// Whether a reference row in aspect `ak` makes its source need the evidence that its target
-/// destroyed: a live durable value, but not `group.0` (a group contains its members, it does not
-/// depend on them: readers show nothing for an unknown member; it still keeps a member alive
-/// for the lifetime judgment).
-pub(crate) fn needs_from(ak: &Ak) -> bool {
-    !ak.ephemeral() && ak.as_str() != osis_schema::RawKey::ak(&osis_schema::core_types::GROUP)
+    Ok(dependents(tx.core, t))
 }
 
 /// Whether a request destroying `t` is in force here: until the latest held request standing
-/// over a minting of it passes `wall_ms(ts) + ROLE_KEEP` or its `expires`, the earlier (a release's
-/// `expires`; a purge's floor, `purge_keep_until`: while its blobs are kept for nodes that have not
+/// over a minting of it passes `wall_ms(ts) + ROLE_KEEP` or its `expires`, the earlier (a purge's floor, `purge_keep_until`: while its blobs are kept for nodes that have not
 /// seen it, and a role write ordered before it may make it fall). Judging it reads `t`'s record and
 /// frozen edges. Judged again at that end: the request's part on `t` going value-less, or its floor's
 /// timer (`T_KEPT`). Not for a thing whose every creation is past its expiry: nothing can make that
@@ -258,7 +215,7 @@ fn in_force(tx: &Tx<'_>, t: &Tid) -> bool {
     }
     let now = tx.now().0;
     destroying_requests(tx.core, t).iter().filter_map(|pc| tx.core.ix.commits.get(pc)).any(|m| {
-        let end = osis_commit::retention::release_expires(m.view.ts).min(m.header.expires.unwrap_or(u64::MAX));
+        let end = m.view.ts.wall_ms().0.saturating_add(osis_base::format::ROLE_KEEP_MS).min(m.header.expires.unwrap_or(u64::MAX));
         end > now
     })
 }
@@ -268,14 +225,14 @@ fn in_force(tx: &Tx<'_>, t: &Tid) -> bool {
 /// (`in_force`). A purge request standing past its window cannot fall here any more: `t` is
 /// marked destroyed for good (`Indexes::destroyed_for_good`), the verdict kept without its
 /// evidence, so no minting of it arriving later is taken (`apply::thing_wait`). Erasure's tombstone
-/// (notes/deletion.md); a release leaves none, an expiry needs none (a copy carries its `expires`).
+/// (notes/deletion.md); an expiry needs none (a copy carries its `expires`).
 fn keeps(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
     let needs = needs_evidence(tx, t)?;
     tx.core.note_destroyed_kept(t, needs);
     if in_force(tx, t) {
         return Ok(true);
     }
-    let purged = destroying_requests(tx.core, t).iter().any(|pc| tx.core.ix.commits.get(pc).is_some_and(|m| !m.header.is_release()));
+    let purged = destroying_requests(tx.core, t).iter().any(|pc| tx.core.ix.commits.contains_key(pc));
     if purged && tx.core.ix.destroyed_for_good.insert(*t) {
         tx.txn.put_local(&[records::DESTROYED, t.as_bytes()].concat(), &[], Shred::No)?;
     }
@@ -288,8 +245,8 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     let dirty: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| ak.as_str() == CREATED).map(|(t, _)| *t).collect();
     let (due, fell): (BTreeSet<Tid>, BTreeSet<Tid>) = dirty.into_iter().partition(|t| tx.core.destroyed(t));
     // destroyed things whose keep may have gone: a destroying request's part on it expired, its
-    // window ended, or something that needed it let go of it (`Core::destroyed_due`: a reference
-    // or list went, a key actor's last commit held elsewhere; `Held::take_unnamed`: a record or
+    // window ended, or something that needed it let go of it (`Core::destroyed_due`: a
+    // key actor's last commit held elsewhere; `Held::take_unnamed`: a record or
     // edge naming it went)
     let mut again: BTreeSet<Tid> = tx.core.valueless_dirty.iter().filter(|(_, ak)| osis_commit::retention::destroying_request(ak.as_str())).map(|(t, _)| *t).collect();
     again.extend(std::mem::take(&mut tx.core.destroyed_due));
@@ -297,10 +254,6 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
     again.retain(|t| !due.contains(t) && !fell.contains(t) && tx.core.created(t).is_some() && tx.core.destroyed(t));
     if due.is_empty() && fell.is_empty() && again.is_empty() {
         return Ok(());
-    }
-    // known again or destroyed: judged, with what lists it
-    for t in due.iter().chain(&fell) {
-        super::lifetimes::queue_with_listers(tx, t)?;
     }
     let mut changed = BTreeSet::new();
     for t in &fell {
@@ -400,8 +353,6 @@ pub(crate) fn dependents(core: &crate::engine::Core, t: &Tid) -> bool {
 /// timelines' inputs changed: they do when it keeps nothing.
 fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<bool> {
     let keep = keeps(tx, t)?;
-    // released, every request past its expiry: with what it drops the node forgets it
-    let forget = !keep && release_state(tx.core, t, tx.now().0) == Some(true);
     if keep {
         // what stays still reads as gone (`Core::exists`): observers hear it
         reads_again(t, changed);
@@ -483,95 +434,12 @@ fn destroy_thing(tx: &mut Tx<'_>, t: &Tid, changed: &mut BTreeSet<(Tid, Ak)>) ->
         hold_secrets(tx, t)?;
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::Yes)?;
         tx.core.ix.held.forget_record(t);
-        tx.core.rehome(&[*t]);
         tx.core.tree_reach.remove(t);
         crate::rotation::merge::forget(tx, t)?;
-        if forget {
-            forget_released(tx, t)?;
-        }
         // the destroyed actors on its authority paths, kept for it alone, go in
         // `apply_destructions`'s loop: its record and edges going unname them (`Held::take_unnamed`)
     }
     Ok(held_changed || !keep)
-}
-
-/// Forgets released `t` once its release requests are past their expiry and nothing keeps it
-/// (spec/commits.md §5 Forgetting; `destroy_thing` dropped every part of it and its record). Of each
-/// commit on `t`, a part elsewhere is marked forgotten (`Missing::Forgot`: on a released thing
-/// forgotten here before, this transaction's included, whose record is not held again), missing on a thing whose record is not
-/// held (unknown here, maybe alive elsewhere), or other (on a thing held here):
-/// - all marked: it goes whole, header and ID included; node-sync deletes its entries where it
-///   may, then forgets them (`MemoryDrop::Gone`);
-/// - none other, some unknown: it goes here alone, as a commit thrown out awaiting records; its
-///   entries stay at peers, node-sync skipping them until one of those records arrives
-///   (`MemoryDrop::Awaits`);
-/// - else it keeps its header, its parts on `t` counting as never received, marked forgotten:
-///   not fetched, joined (the mark going) if a copy comes (spec/commits.md §5 Never received).
-///
-/// `t` is then unknown here, as on a node that never held it.
-fn forget_released(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
-    let aks: Vec<Ak> = tx.core.aspects_of(t).map(|((_, ak), _)| ak.clone()).collect();
-    let commits: Vec<CommitId> = tx.core.on_thing(t).collect();
-    // aspects elsewhere of commits that went: unindexing marked them forgotten
-    let mut others: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    for c in commits {
-        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        let aspects = &m.header.aspects;
-        let on_t: Vec<usize> = m.view.aspects_on(t).collect();
-        // not held (missing, or dropped) on a thing whose record is not held
-        let unknown = |ai: &usize| !m.holds(*ai) && aspects.get(*ai).is_some_and(|a| tx.core.created(&a.tid).is_none());
-        // a marked part whose thing's record came back is live again until its copy joins
-        let elsewhere = (0..aspects.len()).filter(|ai| !on_t.contains(ai) && !(m.missing_as(*ai) == Some(Missing::Forgot) && unknown(ai)));
-        let (mut awaited, mut held) = (Vec::new(), false);
-        for ai in elsewhere {
-            if unknown(&ai) {
-                awaited.extend(aspects.get(ai).map(|a| a.tid));
-            } else {
-                held = true;
-            }
-        }
-        if !held {
-            others.extend(aspects.iter().filter(|a| a.tid != *t).map(|a| (a.tid, a.ak.clone())));
-            let header = m.header.arc();
-            crate::apply::unindex_commit(tx, &c)?;
-            // as a node that never held it: no purge list names it (one on a thing never held)
-            super::purge::unnote_requests(tx, &c, &header)?;
-            let _ = awaited;
-            continue;
-        }
-        let mut m = m.clone();
-        for ai in on_t.iter().copied().filter(|ai| m.is_dropped(*ai)).collect::<Vec<_>>() {
-            super::reopen_in(tx, &c, &mut m, ai);
-        }
-        // dead at every node: one to be fetched is not (`Missing::ToFetch` goes)
-        for ai in on_t.into_iter().filter(|ai| m.missing(*ai)).collect::<Vec<_>>() {
-            m.set_hold(ai, Hold::Missing(Missing::Forgot));
-        }
-        if let Some(blob) = tx.get_commit(&c)? {
-            tx.put_commit(&c, &blob, &m, Shred::No, None)?;
-        }
-        tx.core.put_meta(c, m);
-    }
-    // as a node that never held it: no per-aspect row of it stays
-    for ak in &aks {
-        forget_aspect_rows(tx, t, ak)?;
-    }
-    // with no held part left on one, as a node that never held it: of a thing whose record is
-    // not held, every per-aspect row (a request's purge items and value-less list on a thing never
-    // held here); of a held one, the FORGOTTEN row unindexing wrote
-    for (u, ak) in others {
-        if tx.core.ix.by_aspect.get(&(u, ak.clone())).is_some_and(|s| !s.is_empty()) {
-            continue;
-        }
-        if tx.core.created(&u).is_none() {
-            forget_aspect_rows(tx, &u, &ak)?;
-        } else {
-            tx.core.ix.forgotten.remove(&(u, ak.clone()));
-            tx.txn.remove_local(&records::aspect_key(records::FORGOTTEN, &u, &ak), Shred::Yes)?;
-        }
-    }
-    super::leaving::forget_things(tx, &BTreeSet::from([*t]))?;
-    Ok(())
 }
 
 /// Destroyed `t` keeps nothing here (its record goes): its own secrets, if held, are noted as
@@ -655,7 +523,7 @@ impl crate::engine::Engine {
         if !self.core.ix.destroyed_secrets.contains(t) {
             return None;
         }
-        // every request destroying it, purge or release (spec/sync-judgement.md §5 Telling)
+        // every request destroying it (spec/sync-judgement.md §5 Telling)
         let requests = creation_requests(&self.core, t).map(|(c, _)| c).collect();
         let sync_ids = self.core.ix.destroyed_sync_ids.get(t).map(|v| v.iter().map(|o| o.id).collect()).unwrap_or_default();
         let keyed = self.core.on_thing(t).chain(self.core.acting_for(t)).collect();
@@ -667,11 +535,7 @@ impl crate::engine::Engine {
     /// its secrets, last (`drop_destroyed_secrets`).
     pub fn forget_destroyed(&mut self, t: &Tid) -> Result<()> {
         let t = *t;
-        // its sync IDs emptied, it is shared here no more (spec/sync-set.md §2)
-        self.run(|tx| {
-            unkeep_sync_ids(tx, &t)?;
-            crate::sync::set::unshare_here(tx, &t)
-        })?;
+        self.run(|tx| unkeep_sync_ids(tx, &t))?;
         self.drop_destroyed_secrets(&BTreeSet::from([t]))
     }
 

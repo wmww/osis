@@ -55,7 +55,6 @@ generated! {
     blob_prefix => "blob/prefix",
     blob_blobs => "blob/blobs",
     step_steps => "step/steps",
-    inbox_inbox => "inbox/inbox",
     link_link => "link/link",
     lan_announce => "lan/announce",
 }

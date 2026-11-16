@@ -10,7 +10,7 @@ use crate::identity::thing_record;
 use crate::rotation;
 use crate::Mutation;
 use osis_base::{CommitId, CreationRecord, Role, Tid, Value, SIGNING_KEY_ED25519};
-use osis_crdt::{Op, PathOp, PathSeg};
+use osis_crdt::{Op, PathOp};
 use osis_commit::{CommitBlob, FIRST_EPOCH};
 use osis_crypto::{AccountEpochKeys, Epoch, KemPublicKey, Secret32, VerifyingKey, open_inner, verify_inner};
 use osis_keys::{ActorEpochs, HolderKeys, Keysets, ROLES, Recipient, account_epoch, account_keysets};
@@ -1094,7 +1094,7 @@ impl Engine {
     /// Creates an account (spec/permissions.md §1): the account at its first epoch (its creation
     /// nonce naming this node as its creation device, spec/crypto.md §3), its devices actor D
     /// (secrets of its own boxed to this node, its home sync ID, `account.0`) and its profile, one
-    /// commit signed as the account; then this node's synced group (`synced_group_in`).
+    /// commit signed as the account.
     pub fn create_account(&mut self) -> Result<(CreatedAccount, Done)> {
         let (seed, nonce_d) = self.run(|tx| Ok((Secret32::random(&mut *tx.rng), thing_record(Tid::from_bytes([0; 15]), &mut *tx.rng))))?;
         // the creation nonce names this node, the creation device, to holders of the first seed
@@ -1177,7 +1177,7 @@ impl Engine {
         blob.sigs = osis_commit::Sigs::signed(&id, &key, inner, Vec::new(), Vec::new());
     }
 
-    /// The KEM secrets of account `p`'s epochs held here: what opens an inbox blob sealed to it
+    /// The KEM secrets of account `p`'s epochs held here: what opens what is sealed to it
     /// (spec/crypto.md §5).
     pub fn account_kems(&self, p: &Tid) -> Vec<osis_crypto::KemSecret> {
         self.core.accounts.get(p).map(|a| a.keys.values().map(|k| k.kem.clone()).collect()).unwrap_or_default()
@@ -1207,7 +1207,7 @@ impl Engine {
         if !self.core.accounts.contains_key(&p) {
             self.run(|tx| super::signing::leave(tx, p, d))?;
         }
-        self.run(crate::sync::records::observe_own)
+        Ok(())
     }
 
     /// Pairing, existing node side (spec/sync-inbox.md §1: the only way a node joins an account):
@@ -1217,10 +1217,7 @@ impl Engine {
     /// spec/crypto.md §9) and D's new secrets; one on it (stranded) is re-sealed D's secrets, its
     /// seeds following by the seed re-seals. Returns the commits to send it directly: the
     /// rotation or re-seal, D's and P's certificates and D's `sync.0` commits (the new node
-    /// downloads the rest under the home sync ID), and last the new node's synced group
-    /// (spec/sync-set.md §1: a copy of this node's synced group's items and subgroups) unless the
-    /// account lists one for it still under home (a re-sealed stranded node keeps its own; one
-    /// whose group was cut from home gets a new one: the spec's "until it is paired again").
+    /// downloads the rest under the home sync ID).
     pub fn pair(&mut self, node: &Tid) -> Result<(Done, Vec<CommitId>)> {
         let (p, d) = self.account()?.ok_or(Error::Misuse("not a node of an account"))?;
         let n = *node;
@@ -1239,15 +1236,6 @@ impl Engine {
                 Ok(inner)
             })?
         };
-        let synced = if self.under_home(d, &n)? {
-            None
-        } else {
-            let mine = match self.synced_group()? {
-                Some(g) => self.get_typed(&g, &ct::GROUP)?.unwrap_or_default(),
-                None => ct::Group::default(),
-            };
-            self.run(|tx| synced_group_in(tx, p, d, n, mine, None))?.1
-        };
         let mut all: Vec<CommitId> = self.certificates(&d).commits.into_keys().collect();
         let sync_id = osis_base::Ak::new("sync.0").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.ix.by_aspect.get(&(d, sync_id)).into_iter().flatten().map(|(_, c)| *c));
@@ -1257,10 +1245,8 @@ impl Engine {
         let seeds = osis_base::Ak::new("account.0").map_err(|_| Error::Misuse("ak"))?;
         all.extend(self.core.ix.by_aspect.get(&(d, seeds)).into_iter().flatten().map(|(_, c)| *c));
         all.sort_by_key(|c| self.header(c).map(|h| h.ts));
-        // the rotation or re-seal last (owed to the node in its transaction: `deliveries`), then
-        // the synced group, which it lets the node read
+        // the rotation or re-seal last
         all.extend(done.commits.iter().copied());
-        all.extend(synced);
         // each commit once, in the order collected
         let mut seen = BTreeSet::new();
         all.retain(|c| seen.insert(*c));
@@ -1295,8 +1281,7 @@ impl Engine {
             return Err(Error::Permission { tid: d });
         }
         self.core.account.set(Some(*p));
-        self.save_account(p, &d)?;
-        self.run(crate::sync::records::observe_own)
+        self.save_account(p, &d)
     }
 
     /// The devices actor of account `p` as held here: a thing with `account.0` whose devices
@@ -1324,37 +1309,6 @@ impl Core {
     }
 }
 
-impl Engine {
-    /// Whether `synced^.0` on D lists a synced group for `node` whose first admin is D, that D's
-    /// closure holds and whose closure holds D (spec/sync-set.md §1, Home stays under it): one
-    /// pairing need not replace. A group another actor made (a since-removed device writing one
-    /// into `synced^.0`) is replaced, however it sits under home.
-    fn under_home(&mut self, d: Tid, node: &Tid) -> Result<bool> {
-        let Some(g) = self.get_typed(&d, &ct::SYNCED)?.and_then(|m| m.get(node).copied()) else { return Ok(false) };
-        Ok(self.core.first_admin(&g) == Some(d) && self.core.under_home(&d, &g))
-    }
-}
-
-/// Node `node`'s synced group (spec/sync-set.md §1): a plain group whose first admin is `d`
-/// holding `copy`'s items and subgroups and `d` as a subgroup, an item of `d`'s `group.0`, and
-/// `synced^.0` on `d` naming it for `node`: one commit, signed as account `p`. At the account's
-/// creation it also lists `profile` as an item of `d`: every node of the account syncs it (its
-/// dial list, spec/sync-set.md §1).
-fn synced_group_in(tx: &mut Tx<'_>, p: Tid, d: Tid, node: Tid, mut copy: ct::Group, profile: Option<Tid>) -> Result<(Tid, Option<CommitId>)> {
-    let mut m = Mutation::new();
-    let g = m.create(thing_record(d, &mut *tx.rng));
-    m.sign_as(p);
-    copy.subgroups.insert(d);
-    m.set(g, &ct::GROUP, &copy)?;
-    m.op(d, &ct::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(g)) })?;
-    if let Some(profile) = profile {
-        m.op(d, &ct::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(profile)) })?;
-    }
-    m.op(d, &ct::SYNCED, PathOp { path: vec![PathSeg::Key(Value::Tid(node))], op: Op::Set(Value::Tid(g)) })?;
-    let c = Engine::commit_tx(tx, m)?;
-    Ok((g, c))
-}
-
 fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: CreationRecord, keys: &AccountEpochKeys) -> Result<(Tid, Option<CommitId>)> {
     let p = record.tid();
     let me = tx.core.id.tid();
@@ -1378,8 +1332,7 @@ fn create_account_in(tx: &mut Tx<'_>, record: CreationRecord, d_record: Creation
     super::custody::keep(tx, &p, keys.seed())?;
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, d, &rot)?;
-    let me = tx.core.id.tid();
-    synced_group_in(tx, p, d, me, ct::Group::default(), Some(profile))?;
+    // refgraph: (b) the account root, strongly referencing the profile, the inbox and the node things
     Ok((profile, c))
 }
 

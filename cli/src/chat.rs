@@ -153,7 +153,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         ChatCmd::Add { chat, account, role } => {
             let (t, a) = (ctx.tid(&chat)?, ctx.tid(&account)?);
             db.grant(t, a, parse_role(&role)?, GrantOpts::default())?;
-            crate::cmd::delivered(ctx, &crate::cmd::granted(t, a))
+            crate::cmd::delivered(ctx, &crate::cmd::granted(t))
         }
         ChatCmd::Link { chat, role, single_use } => {
             let t = ctx.tid(&chat)?;
@@ -171,7 +171,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let granted = osis_chat::relay(&db, ctx.tid(&chat)?, a)?;
             ctx.list(&granted.iter().map(Tid::to_uri).collect::<Vec<_>>())?;
             // each grant as `grant` waits on it
-            let waits: Vec<osis::SyncScope> = granted.iter().flat_map(|t| crate::cmd::granted(*t, a)).collect();
+            let waits: Vec<osis::SyncScope> = granted.iter().flat_map(|t| crate::cmd::granted(*t)).collect();
             crate::cmd::delivered(ctx, &waits)
         }
         ChatCmd::Kick { chat, account, erase, retain_copy, purge } => {

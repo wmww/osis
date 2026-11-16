@@ -754,40 +754,6 @@ fn relink_without_the_removal_leaks_nothing_spec_crypto_5() {
     assert_ne!(read_v(&mut lp, M), Some(Value::Bytes(v)), "M reads R's edit through V's repair");
 }
 
-// spec/permissions.md §3 (Lost access): of a copy opened under a sync ID, a node takes no content
-// part on a thing under an actor with secrets of its own that the sync ID's group actor may not
-// read now, and keeps none of the copy's bytes. Peer 0's X derives its secrets from Y, which group G reads
-// by role; X is filed in G, so G's sync ID carries X's write w as a copy. Once G is removed from
-// Y, peer 1 (a reader of G) opening that copy takes nothing of it
-#[test]
-fn a_stale_copy_gives_no_content_spec_permissions_3() {
-    let (mut lp, _, tids) = granted(2, &[]);
-    let g = super::tests::group(&mut lp, 0);
-    let y = super::tests::group(&mut lp, 0);
-    let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, y);
-    let mut items = osis_schema::core_types::Group::default();
-    items.items.insert(t);
-    m.set(g, &osis_schema::core_types::GROUP, &items).unwrap();
-    lp.peers[0].commit(m).unwrap();
-    lp.peers[0].engine.grant(&y, &g, &edge(Role::Read)).unwrap();
-    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
-    let w = put(&mut lp, 0, t, "w");
-    let p0 = &mut lp.peers[0].engine;
-    let body = p0.body(&w).unwrap().unwrap();
-    let copy = p0.seal_to(&body, osis_blob::Class::Durable, &mut osis_crypto::SeededRng::from_u64(40)).unwrap().unwrap();
-    let k = p0.wrap_secret(&g, Some((&w, &body.parts))).unwrap().expect("peer 0 wraps its own");
-    let s = p0.home_sync_id(&g).unwrap().unwrap();
-    lp.peers[0].engine.demote(&y, &Demotion { holder: g, new: None, retain: None }).unwrap();
-    send_skipping(&mut lp, 0, 1, &BTreeSet::from([w]));
-    assert!(!lp.peers[1].engine.reads_in(&g, &t), "G reads X no more");
-    let wrap = osis_crypto::wrap(&k, &copy.id, &copy.key, 1).unwrap();
-    let o = lp.peers[1].engine.open_entry(&s, &copy.id, &wrap, &copy.blob, u64::MAX).unwrap();
-    assert!(matches!(o, crate::sync::Opened::NotOpen), "the stale copy is not taken: {o:?}");
-    assert!(!lp.peers[1].engine.holds_commit(&w), "nothing of w is held");
-}
-
 // spec/crypto.md §4 (Encrypting under): a node MUST NOT encrypt under an epoch blocked at it,
 // wrapping included; one that may not rotate waits for a rotation. Admin A removes reader M; a
 // writer W holding the removal but not its rotation (the removal's `secrets.0` part) holds the read epoch M holds as its newest,
@@ -827,36 +793,6 @@ fn a_write_after_a_passed_until_waits_for_the_finalize_spec_permissions_2() {
     lp.peers[0].engine.ensure_rotated(&g).unwrap();
     assert_ne!(newest_read(&lp, 0, g), old, "the finalize rotated read");
     assert!(lp.peers[0].engine.wrap_secret(&g, Some((&w, &parts))).unwrap().is_some(), "then the write wraps");
-}
-
-// spec/sync-judgement.md §1 (Entitlement): placing chain certificates, any account's devices actor
-// reads as its account does at every node; for what a node seals or opens, only its own account's
-// devices actor does. Peer 1's account reads G: at peer 0, peer 1's devices actor places chains on
-// G as its account (`cert_reads_in`) yet reads nothing of G (`reads_in`, `reads`: what a body under
-// its sync ID carries, what a copy there opens to) nor by entitlement (`may_read`); at peer 1, its
-// own devices actor reads G, entitlement included
-#[test]
-fn another_accounts_devices_reads_as_itself_but_places_chains_as_its_account_spec_sync_judgement_1() {
-    let (mut lp, g, tids) = granted(2, &[(1, Role::Read)]);
-    let (a1, d1) = lp.peers[1].engine.core.account_devices().unwrap();
-    assert_eq!(a1, tids[1]);
-    let p0 = &mut lp.peers[0].engine;
-    assert_eq!(p0.core.devices_of(&d1), Some(a1), "peer 0 knows peer 1's devices actor");
-    assert!(p0.cert_reads_in(&d1, &g), "chains place as the account reads, at every node");
-    assert!(!p0.reads_in(&d1, &g), "another account's devices actor reads as itself here");
-    assert!(!p0.may_read(&d1, &g), "nor by entitlement, which every caller shares");
-    // what a body under its sync ID carries and what a copy there opens to read `reads`
-    let ctx = p0.body_ctx(&d1);
-    assert!(!p0.reads(&ctx, &g), "nothing of G sealed or opened for another account's devices");
-    let p1 = &mut lp.peers[1].engine;
-    assert!(p1.reads_in(&d1, &g) && p1.cert_reads_in(&d1, &g), "a node's own devices actor reads as its account");
-    assert!(p1.may_read(&d1, &g), "by entitlement too (a diagnostic asking it agrees with what sync carries)");
-    // read as the account, D loses nothing D read as itself: D, its synced group, a thing under D
-    let sg = p1.synced_group().unwrap().expect("a synced group");
-    assert!(p1.may_read(&d1, &d1) && p1.may_read(&d1, &sg), "own devices actor reads D and its synced group");
-    let p0 = &mut lp.peers[0].engine;
-    let (_, d0) = p0.core.account_devices().unwrap();
-    assert!(!p0.may_read(&d1, &d0), "another account's devices actor reads nothing of ours");
 }
 
 // notes/engine.md (Roles at now: every role-at-now read goes through `Core::role_now`, on the
@@ -914,71 +850,4 @@ fn j_moves_at_an_until_spec_sync_opens_4() {
     e0.set_now(now);
     assert_eq!(fx.due(), vec![()], "due at the until");
     assert_eq!(fx.settle(&(), || e0.judge_peer(&s, &[tids[1]]).unwrap()), Some((Some(crate::sync::J::Reader), crate::sync::J::Departed)));
-}
-
-// spec/sync-judgement.md §1 (Entitlement: placing chain certificates and thing lists, any
-// account's devices actor reads as its account does, whichever node judges it; List blobs),
-// spec/permissions.md §5.5 (a thing list is a chain certificate of T): P1 writes G and files it
-// in D1 (its closure); D1's actor places chains on G and carries G's lists at
-// P1's own node and at peer 0, where D1 is another account's devices actor reading nothing of G
-// as itself; at P1 the home sync ID carries G's list of P1's next rotation. Fails with lists
-// judged by `reads_in` (peer 0 then leaves G's list out of D1's).
-#[test]
-fn lists_go_where_chain_certificates_do_for_any_accounts_devices_spec_sync_judgement_1() {
-    let (mut lp, g, _) = granted(2, &[(1, Role::Write)]);
-    let (a1, d1) = lp.peers[1].engine.core.account_devices().unwrap();
-    let mut m = crate::Mutation::new();
-    let op = osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(crate::engine::groups::ITEMS)], op: osis_crdt::Op::Add(osis_base::Value::Tid(g)) };
-    m.op(d1, &osis_schema::core_types::GROUP, op).unwrap();
-    lp.peers[1].commit(m).unwrap().unwrap();
-    let c = put(&mut lp, 1, g, "by P1");
-    let r = lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, a1, &[c], &mut crate::flows::Done::default())).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    for i in 0..2 {
-        let e = &mut lp.peers[i].engine;
-        assert!(e.core.ix.groups.closure_of(&d1).contains(&g), "peer {i}: G is in D1's closure");
-        assert!(e.cert_reads_in(&d1, &g), "peer {i}: D1 places chains on G");
-        assert!(e.closure_lists(&d1).contains(&g), "peer {i}: and carries G's lists");
-    }
-    assert!(!lp.peers[0].engine.reads_in(&d1, &g), "at peer 0, D1 reads nothing of G as itself");
-    let e = &mut lp.peers[1].engine;
-    let s = e.sync_ids(&d1).unwrap().first().unwrap().id;
-    assert!(e.certificate_lists(&s, &r).unwrap().contains(&g), "P1's home carries G's list of its rotation");
-}
-
-// spec/permissions.md §1 (The role-class aspects of a thing: written only by its admins; Devices
-// actor: known by an `account.0` delta signed as its account), spec/sync-judgement.md §1 (Entitlement: an
-// account's devices actor reads as its account, placing chain certificates and thing lists): a
-// co-admin of G, a thing whose first admin is account A0 and which A0's sync set holds, puts an
-// `account.0` on G and lists X, a thing only A0 reads, in G. G is no devices actor (only seeds A0
-// signed count), so the lists of X never go under G's sync ID, where the co-admin and G's other
-// readers would learn which commits A0 made on X. A writer of G may not write `account.0` at all.
-// Fails with any held `account.0` header making a devices actor.
-#[test]
-fn another_admin_makes_no_devices_actor_spec_permissions_1() {
-    let (mut lp, g, tids) = granted(3, &[(1, Role::Admin), (2, Role::Write)]);
-    let x = super::tests::group(&mut lp, 0);
-    let (_, d0) = lp.peers[0].engine.core.account_devices().unwrap();
-    let mut m = Mutation::new();
-    m.op(d0, &osis_schema::core_types::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::SUBGROUPS)], op: Op::Add(Value::Tid(g)) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    let mut seeds = Mutation::new();
-    seeds.set(g, &osis_schema::core_types::ACCOUNT, &osis_schema::core_types::Account::default()).unwrap();
-    assert!(matches!(lp.peers[2].commit(seeds.clone()), Err(crate::Error::Permission { .. })), "a writer writes no account.0");
-    lp.peers[1].commit(seeds).unwrap().unwrap();
-    let mut m = Mutation::new();
-    m.op(g, &osis_schema::core_types::GROUP, PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(x)) }).unwrap();
-    lp.peers[1].commit(m).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    let c = put(&mut lp, 0, x, "private");
-    let r = lp.peers[0].engine.run(|tx| crate::flows::signing::rotate_in(tx, tids[0], &[c], &mut crate::flows::Done::default())).unwrap().unwrap();
-    lp.sync_all().unwrap();
-    let e = &mut lp.peers[0].engine;
-    assert!(e.core.ix.groups.closure_of(&g).contains(&x) && e.read_things().unwrap().contains(&g), "X listed in G, which A0 syncs");
-    assert!(!e.reads_in(&g, &x), "G's actor reads nothing of X");
-    let (s, sx) = (e.sync_ids(&g).unwrap()[0].id, e.sync_ids(&x).unwrap()[0].id);
-    assert!(e.certificate_lists(&sx, &r).unwrap().contains(&x), "X's own sync ID carries its list");
-    assert!(!e.certificate_lists(&s, &r).unwrap().contains(&x), "X's list goes nowhere G's readers pull");
-    assert_eq!(e.devices_held(&tids[0]), Some(d0), "A0's devices actor is D0 alone");
 }

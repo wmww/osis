@@ -339,90 +339,6 @@ fn cross_thing_part_shows_spec_commits_4() {
     assert_eq!(read(), (Some(s("t")), Some(s("t")), Some(s("u"))));
 }
 
-// spec/commits.md §4 (nothing waits for a part): a writer of a synced group lists a thing the
-// node never reads. A commit across it and a held thing shows the held thing's part at once.
-#[test]
-fn listed_thing_never_read_holds_nothing_back_spec_commits_4() {
-    let mut lp = net(2, 0);
-    let (g, t) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    sync(&mut lp, 0, 1);
-    // created now: its record never reaches peer 1
-    let v = new_thing(&mut lp, 0);
-    let write_group = |lp: &mut LocalPeer, items: &[Tid]| {
-        lp.peers[0].clock.advance(10);
-        let mut m = Mutation::new();
-        m.set(g, &osis_schema::core_types::GROUP, &osis_schema::core_types::Group { items: items.iter().copied().collect(), subgroups: Default::default() }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
-    };
-    let listed = write_group(&mut lp, &[t, v]);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("t")).unwrap();
-    m.set(v, &REG, &s("v")).unwrap();
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&id).unwrap();
-    let pks = packages(&mut lp, 0);
-    let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap();
-    let e = &mut lp.peers[1].engine;
-    e.ingest(&pk(&listed).bytes, Vec::new()).unwrap();
-    assert!(e.closure(&g).contains(&v));
-    assert_eq!(e.ingest(&only(&pk(&id).bytes, &h, |x, _| x == t), Vec::new()).unwrap(), Ingested::Applied(id));
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")));
-    assert!(e.pending().is_empty(), "{:?}", e.pending());
-}
-
-// spec/commits.md §4: what a node syncs is a function of the `group.0` it holds, so with a thing
-// out of the synced group in the end, a commit across it reads alike in every order of the
-// group's writes, of which one had the thing in.
-#[test]
-fn sync_set_of_final_group_reads_alike_in_any_order_spec_commits_4() {
-    let mut lp = net(2, 0);
-    let (root, sub, t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    sync(&mut lp, 0, 1);
-    let def = |items: &[Tid], subs: &[Tid]| osis_schema::core_types::Group { items: items.iter().copied().collect(), subgroups: subs.iter().copied().collect() };
-    let write = |lp: &mut LocalPeer, g: Tid, d: &osis_schema::core_types::Group| {
-        lp.peers[0].clock.advance(10);
-        let mut m = Mutation::new();
-        m.set(g, &osis_schema::core_types::GROUP, d).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap()
-    };
-    let cs = [
-        write(&mut lp, sub, &def(&[u], &[])),
-        write(&mut lp, root, &def(&[t], &[sub])),
-        write(&mut lp, root, &def(&[t], &[])),
-    ];
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("t")).unwrap();
-    m.set(u, &REG, &s("u")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&c).unwrap();
-    let pks = packages(&mut lp, 0);
-    let pk = |id: &osis_base::CommitId| pks.iter().find(|p| p.id == *id).unwrap();
-    let held = only(&pk(&c).bytes, &h, |x, _| x == t);
-    let base: Vec<_> = pks.iter().filter(|p| p.id != c && !cs.contains(&p.id)).collect();
-    let mut seqs: Vec<Vec<usize>> = vec![vec![]];
-    for i in 0..4 {
-        seqs = seqs.into_iter().flat_map(|v| (0..=v.len()).map(move |k| { let mut w = v.clone(); w.insert(k, i); w })).collect();
-    }
-    assert_eq!(seqs.len(), 24);
-    for seq in seqs {
-        let mut p = osis_engine::local_peer::Peer::new(0x1000, lp.peers[0].engine.now()).unwrap();
-        for b in &base {
-            p.engine.ingest(&b.bytes, b.blobs.clone()).unwrap();
-        }
-        for &i in &seq {
-            match cs.get(i) {
-                Some(g) => p.engine.ingest(&pk(g).bytes, pk(g).blobs.clone()).unwrap(),
-                None => p.engine.ingest(&held, Vec::new()).unwrap(),
-            };
-        }
-        p.reexamine().unwrap();
-        assert!(!p.engine.closure(&root).contains(&u), "{seq:?}");
-        assert!(p.engine.closure(&root).contains(&t), "{seq:?}");
-        assert_eq!(p.engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")), "{seq:?}");
-        assert!(p.engine.pending().is_empty(), "{seq:?}: {:?}", p.engine.pending());
-    }
-}
-
 // spec/crdt.md §5.7 Live: an expiring list element whose content another lasting write replaced
 // whole stays past T with that value, rebuilt and at a late node holding a snapshot alike.
 #[test]
@@ -1097,7 +1013,7 @@ fn record_and_reach(seed: u64) -> (Reason, Tid, Option<Value>) {
     sync(&mut lp, 0, 1);
     let y = new_thing(&mut lp, 1);
     sync(&mut lp, 1, 0);
-    lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
+    lp.peers[1].engine.grant(&y, &a, &Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
     let grant = packages(&mut lp, 1).pop().unwrap();
     sync(&mut lp, 1, 0);
     let x = new_thing(&mut lp, 0);

@@ -300,15 +300,6 @@ fn header_openings(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<(Tid, Epoch)>> {
     Ok(rows(tx, c, Some(HEADER))?.into_iter().map(|(_, t, e, _)| (t, e)).collect())
 }
 
-/// The epochs of thing `t` held commit `c`'s parts on `t` opened under here, written or not:
-/// the epoch its writer sealed each under, kept through every passing on (spec/crypto.md §5);
-/// none for a part read in no section.
-pub(crate) fn opened_epochs(tx: &mut Tx<'_>, c: &CommitId, t: &Tid) -> Result<Vec<Epoch>> {
-    let Some(view) = tx.core.ix.commits.get(c).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
-    let on = |ai: usize| view.aspects.get(ai).is_some_and(|a| a.tid == *t);
-    Ok(openings(tx, c, None)?.into_iter().filter(|o| on(o.0) && o.1 == *t).map(|o| o.2).collect())
-}
-
 /// Whether one of `under` (part `ai`'s openings) is genuine and under an epoch of `t`
 /// established here now: its delta checked against the header, else equal to the held delta.
 fn established_genuine(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, mut under: Vec<Opening>) -> Result<bool> {

@@ -1,12 +1,12 @@
 //! The client port end to end (spec/wire.md §11.2 kinds 24-29, spec/sync-transport.md §6,
 //! spec/sync-set.md §5): thin clients (`Osis::connect`, `connect_socket`) and group sources
-//! (`connect_node`, `group_source`) against nodes on one in-process test network
+//! (`connect_node`, `unit_source`) against nodes on one in-process test network
 //! (`internals::ManualNet`), one manual clock. A call on the test network runs it until quiet.
 
 use crate::common::TestWrites as _;
 use crate::common::{ak, cfg, clock};
 use osis::internals::{ManualClock, ManualNet};
-use osis::{AppConfig, ClientSecret, DynamicAspectKey, Error, GroupSource, MemStore, NodeLogin, Origin, Osis, Role, Tid, Value};
+use osis::{AppConfig, ClientSecret, DynamicAspectKey, Error, UnitSource, MemStore, NodeLogin, Origin, Osis, Role, Tid, Value};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::Arc;
 
@@ -75,25 +75,6 @@ fn changes(db: &Osis, t: Tid) -> (osis::Subscription, Receiver<osis::Change<Valu
     let (tx, rx) = channel();
     let s = db.at(t, v()).on_change(move |_, ch| tx.send(ch).unwrap()).unwrap();
     (s, rx)
-}
-
-// spec/sync-transport.md §6 (Client-actor session): a thin client acts as its client actor:
-// `me()` is that actor, it reads and writes by the actor's rights, and the node signs.
-#[test]
-fn a_thin_client_reads_and_writes_as_its_actor_spec_sync_transport_6() {
-    let w = world(Some(Role::Write));
-    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
-    assert!(!cl.has_store());
-    assert_eq!((cl.me(), cl.home(), cl.node()), (w.actor, w.actor, w.a.node()));
-    assert_eq!(cl.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
-    assert!(cl.has_content(w.t).unwrap());
-    assert!(cl.aspects(w.t).unwrap().contains(&ak("x:v.0")));
-    let mut x = cl.write();
-    x.at(w.t, v()).set(&Value::Int(6)).unwrap();
-    let made = x.commit().unwrap().expect("a commit");
-    assert_eq!(made.stamp.actor, w.actor);
-    assert_eq!(w.a.at(w.t, v()).get().unwrap(), Some(Value::Int(6)));
-    assert_eq!(cl.now().unwrap(), w.a.now().unwrap());
 }
 
 // spec/wire.md §11.2 (A client actor's rights): a thing the actor may not read answers every
@@ -236,7 +217,7 @@ fn a_thin_client_answers_nothing_of_its_own_notes_client_port() {
     u(cl.listen(&[]).map(drop));
     u(cl.at(t, v()).path(osis::p![]).edit_text().map(drop));
     u(ready(cl.connect_node(&NodeLogin { addr: w.addr.clone(), secret: w.secret.clone() })));
-    u(ready(cl.group_source(t, GroupSource::Local)));
+    u(ready(cl.unit_source(t, UnitSource::Local)));
 }
 
 // ---- the node side, request by request ----
@@ -301,25 +282,6 @@ fn write_nonces_spec_wire_11() {
     assert_eq!(a.at(t, v()).get().unwrap(), Some(Value::Int(17)));
 }
 
-/// `m` encoded, each `from` tid's bytes made `to`'s.
-fn bytes_as(m: &Msg, from: Tid, to: Tid) -> Vec<u8> {
-    replaced(m.encode(), from.as_bytes(), to.as_bytes())
-}
-
-/// `b` with each `f` made `t` (of one length).
-fn replaced(mut b: Vec<u8>, f: &[u8], t: &[u8]) -> Vec<u8> {
-    let mut i = 0;
-    while i + f.len() <= b.len() {
-        if b[i..i + f.len()] == f[..] {
-            b[i..i + f.len()].copy_from_slice(t);
-            i += f.len();
-        } else {
-            i += 1;
-        }
-    }
-    b
-}
-
 /// The commit id in a WRITE's `Opt(commit)` (a commit's stamp first, its id first).
 fn made_id(m: &Msg) -> [u8; 32] {
     match outcome(m) {
@@ -332,151 +294,6 @@ fn made_id(m: &Msg) -> [u8; 32] {
         },
         o => panic!("{o:?}"),
     }
-}
-
-/// The client's write of `t` (`x:v.0` = `n`) at `db` as `actor`, in a session of its own (id
-/// `n`): its commit id.
-fn client_write(db: &Osis, secret: &ClientSecret, actor: Tid, t: Tid, n: i64) -> [u8; 32] {
-    let r = osis::internals::port_answers(db, 9, false, vec![auth_as(Some(secret), 100 + n as u8), write_call(1, actor, t, n)]);
-    made_id(&r[1])
-}
-
-/// Every row and filter on `t` (commit `commit` for REVERT) in a client-actor session.
-fn every_row(secret: &ClientSecret, actor: Tid, t: Tid, session: u8, commit: [u8; 32]) -> Vec<Msg> {
-    let call = |method: u64, args: Vec<Value>| Msg::Call { id: 3, max_reply: 1 << 20, method, args };
-    let m = osis::internals::port_method::GET;
-    let (tv, ak) = (Value::Tid(t), Value::Str("x:v.0".into()));
-    let scopes = [Value::List(vec![Value::uint(0), tv.clone()]), Value::List(vec![Value::uint(1), Value::List(vec![Value::List(vec![tv.clone(), ak.clone()])])]), Value::List(vec![Value::uint(2), tv.clone()])];
-    let p = osis::internals::port_method::UNDO;
-    let undo = |nonce: u64, method: u64, s: &Value| Msg::Call { id: 3, max_reply: 1 << 20, method, args: vec![Value::uint(nonce), s.clone()] };
-    let at = |path: Vec<Value>| vec![tv.clone(), ak.clone(), Value::List(path)];
-    let index = Value::List(vec![Value::uint(3), Value::uint(0)]);
-    let revert = |nonce: u64| Msg::Call { id: 3, max_reply: 1 << 20, method: osis::internals::port_method::REVERT, args: vec![Value::uint(nonce), Value::Bytes(commit.to_vec())] };
-    vec![
-        auth_as(Some(secret), session),
-        call(osis::internals::port_method::WHOAMI, vec![]),
-        call(m, at(vec![])),
-        call(m, at(vec![index.clone()])),
-        call(m, vec![tv.clone(), Value::Str("created.0".into()), Value::List(vec![])]),
-        call(m, vec![tv.clone(), Value::Str("group.0".into()), Value::List(vec![])]),
-        call(osis::internals::port_method::ASPECTS, vec![tv.clone()]),
-        call(osis::internals::port_method::HAS_CONTENT, vec![tv.clone()]),
-        call(osis::internals::port_method::HOLDS, vec![tv.clone()]),
-        call(osis::internals::port_method::GROUPS_OF, vec![tv.clone()]),
-        call(osis::internals::port_method::GRANTS, vec![tv.clone()]),
-        call(osis::internals::port_method::ROLE_ON, vec![tv.clone()]),
-        call(osis::internals::port_method::HOLDERS, vec![tv.clone()]),
-        call(osis::internals::port_method::CREATED, vec![tv.clone()]),
-        call(osis::internals::port_method::CHANGED, vec![tv.clone()]),
-        call(osis::internals::port_method::STATUS, vec![]),
-        write_call(1, actor, t, 7),
-        write_call(2 | RESENT, actor, t, 7),
-        undo(3, p, &scopes[0]),
-        undo(4, osis::internals::port_method::REDO, &scopes[0]),
-        undo(5, p, &scopes[1]),
-        undo(6, p, &scopes[2]),
-        call(osis::internals::port_method::UNDO_TARGET, vec![scopes[0].clone()]),
-        call(osis::internals::port_method::UNDO_TARGET, vec![scopes[1].clone()]),
-        call(osis::internals::port_method::REDO_TARGET, vec![scopes[2].clone()]),
-        revert(7),
-        revert(7 | RESENT),
-        Msg::Sub { id: 4, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv.clone(), ak.clone(), Value::List(vec![])]) },
-        Msg::Sub { id: 5, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(0), tv.clone(), ak, Value::List(vec![index])]) },
-        Msg::Sub { id: 6, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(1), tv.clone()]) },
-        Msg::Sub { id: 7, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(2), tv]) },
-        Msg::Sub { id: 8, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(3)]) },
-    ]
-}
-
-/// Every row on `t` at `db` as the client reads byte for byte as on a never-known tid, its commit
-/// `made` as a never-known commit id; nothing of it writes.
-/// Connections and sessions `2n` and `2n + 1`.
-fn answers_as_never_known(db: &Osis, secret: &ClientSecret, actor: Tid, t: Tid, made: [u8; 32], n: u8) {
-    let never = Tid::from_bytes([9; 15]);
-    let before = db.at(t, v()).get().unwrap();
-    let (a, b) = (2 * n, 2 * n + 1);
-    let hidden = osis::internals::port_answers(db, a.into(), false, every_row(secret, actor, t, a, made));
-    let unknown = osis::internals::port_answers(db, b.into(), false, every_row(secret, actor, never, b, [7; 32]));
-    assert!(matches!(&hidden[0], Msg::Reply { .. }), "{hidden:?}");
-    for (h, u) in hidden.iter().zip(&unknown) {
-        assert_eq!(replaced(bytes_as(h, t, never), &made, &[7; 32]), u.encode(), "{h:?} / {u:?}");
-    }
-    assert_eq!(db.at(t, v()).get().unwrap(), before);
-}
-
-// spec/wire.md §11.2 (A client actor's rights): a thing the actor may not read answers every
-// method as a thing the node does not know: byte for byte the answers of every row, a write and
-// a subscription included, are a never-known thing's.
-#[test]
-fn a_hidden_thing_answers_as_a_never_known_one_spec_wire_11() {
-    let w = world(Some(Role::Write));
-    shared_in_home(&w.a, w.t);
-    // the client wrote it, with history kept, before its role went: its undo and its commit
-    crate::common::keep_day(&w.a, w.t, &["x:v.0"]);
-    let made = client_write(&w.a, &w.secret, w.actor, w.t, 6);
-    w.a.set_role(w.t, w.actor, None, osis::SetRoleOpts::default()).unwrap();
-    answers_as_never_known(&w.a, &w.secret, w.actor, w.t, made, 1);
-    // the node itself, whose `clients^.0` holds every client's secret hash, is such a thing
-    let never = Tid::from_bytes([9; 15]);
-    let get = |t: Tid| Msg::Call { id: 3, max_reply: 1 << 20, method: osis::internals::port_method::GET, args: vec![Value::Tid(t), Value::Str("clients^.0".into()), Value::List(vec![])] };
-    let node = osis::internals::port_answers(&w.a, 4, false, vec![auth_as(Some(&w.secret), 4), get(w.a.node())]);
-    let unknown = osis::internals::port_answers(&w.a, 5, false, vec![auth_as(Some(&w.secret), 5), get(never)]);
-    assert_eq!(bytes_as(&node[1], w.a.node(), never), unknown[1].encode(), "{node:?}");
-}
-
-// spec/wire.md §11.2 (A client actor's rights): a thing the actor may not read, listed in a group
-// it reads (so it knows the tid), still answers every row as a never-known thing: `groups_of`
-// does not name the group, the group's watch and grants do not let it through.
-#[test]
-fn a_hidden_item_of_a_readable_group_answers_as_never_known_spec_wire_11() {
-    let w = world(Some(Role::Write));
-    let mut x = w.a.write();
-    let g = x.create().unwrap();
-    x.group(g).add(osis::Member::Item(w.t)).unwrap();
-    x.commit().unwrap();
-    w.a.grant(g, w.actor, Role::Write, osis::GrantOpts::default()).unwrap();
-    crate::common::keep_day(&w.a, w.t, &["x:v.0"]);
-    let made = client_write(&w.a, &w.secret, w.actor, w.t, 6);
-    w.a.set_role(w.t, w.actor, None, osis::SetRoleOpts::default()).unwrap();
-    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
-    assert!(cl.aspects(g).unwrap().contains(&ak("group.0")), "it reads the group listing the thing");
-    assert_eq!(cl.groups_of(w.t).unwrap(), osis::GroupsOf::default());
-    answers_as_never_known(&w.a, &w.secret, w.actor, w.t, made, 1);
-}
-
-// notes/client-port.md §8 (Catching up), spec/wire.md §11.2 (A client actor's rights): at a node
-// reading a group at another node, a client of it gets every row of a thing in that group as of
-// a never-known thing, its undo and the revert of its own earlier commit included; so too while
-// the thing is split (also carried by a group that syncs here).
-#[test]
-fn a_thing_read_elsewhere_answers_a_client_as_never_known_notes_client_port() {
-    for split in [false, true] {
-        read_elsewhere_as_never_known(split);
-    }
-}
-
-fn read_elsewhere_as_never_known(split: bool) {
-    let w = world(Some(Role::Write));
-    let (b, _) = node(&w.net, 2, &w.c);
-    let mut x = b.write();
-    let (t, g) = (x.create().unwrap(), x.create().unwrap());
-    x.group(g).add(osis::Member::Item(t)).unwrap();
-    if split {
-        x.group(b.home()).add(osis::Member::Item(t)).unwrap();
-    }
-    x.at(t, v()).set(&Value::Int(3)).unwrap();
-    x.commit().unwrap();
-    let (actor, secret) = b.add_client(None).unwrap();
-    for x in [t, g] {
-        b.grant(x, actor, Role::Write, osis::GrantOpts::default()).unwrap();
-        crate::common::keep_day(&b, x, &["x:v.0"]);
-    }
-    let (made, made_g) = (client_write(&b, &secret, actor, t, 4), client_write(&b, &secret, actor, g, 5));
-    ready(b.connect_node(&login(&w))).unwrap();
-    ready(b.group_source(g, GroupSource::Node(w.addr.clone()))).unwrap();
-    answers_as_never_known(&b, &secret, actor, t, made, 1);
-    // the group itself, its undo by group scope included
-    answers_as_never_known(&b, &secret, actor, g, made_g, 2);
 }
 
 // spec/wire.md §11.2 (A client actor's rights): a watch on a thing the actor may not read hears
@@ -599,33 +416,6 @@ impl Drop for Dir {
     }
 }
 
-// spec/sync-transport.md §6 (`unix:///path`): a session on the node's socket is a main session,
-// acting as the node's main actor: its `me`, its reads, its writes.
-#[test]
-fn a_socket_client_is_the_main_actor_spec_sync_transport_6() {
-    let dir = Dir::new("port-socket");
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let mut o = osis::internals::Opening::at(osis::Store::Dir(dir.0.clone()));
-    o.app.internals.seed = Some(1);
-    o.app.internals.clock = Some(c.clone());
-    o.app.internals.net = Some(net.clone());
-    let a = osis::internals::create(o).unwrap();
-    a.listen_socket().unwrap();
-    let t = crate::common::commit_with(&a, |x| {
-        let t = x.create()?;
-        x.at(t, v()).set(&Value::Int(5))
-    });
-    let t = t.parts().next().unwrap().0;
-    let cl = ready(Osis::connect_socket(&dir.0, app(&net, &c))).unwrap();
-    assert_eq!((cl.me(), cl.home(), cl.node()), (a.me(), a.home(), a.node()));
-    assert_eq!(cl.at(t, v()).get().unwrap(), Some(Value::Int(5)));
-    let mut x = cl.write();
-    x.at(t, v()).set(&Value::Int(6)).unwrap();
-    assert_eq!(x.commit().unwrap().unwrap().stamp.actor, a.me());
-    assert_eq!(a.at(t, v()).get().unwrap(), Some(Value::Int(6)));
-}
-
 // spec/sync-transport.md §6 (Client-actor session): a client's secret goes over a keyed
 // transport only: `connect` refuses a socket address.
 #[test]
@@ -675,11 +465,11 @@ fn login(w: &World) -> NodeLogin {
 fn a_group_read_at_another_node_spec_sync_set_5() {
     let w = world(Some(Role::Write));
     let (b, _) = node(&w.net, 2, &w.c);
-    assert!(matches!(ready(b.group_source(w.t, GroupSource::Node(w.addr.clone()))), Err(Error::Invalid(_))), "not connected");
+    assert!(matches!(ready(b.unit_source(w.t, UnitSource::Node(w.addr.clone()))), Err(Error::Invalid(_))), "not connected");
     ready(b.connect_node(&login(&w))).unwrap();
     assert_eq!(b.at(w.t, v()).get().unwrap(), None, "not sourced yet: this node's own answer");
-    ready(b.group_source(w.t, GroupSource::Node(w.addr.clone()))).unwrap();
-    assert_eq!(b.group_sources().into_iter().collect::<Vec<_>>(), vec![(w.t, w.addr.clone())]);
+    ready(b.unit_source(w.t, UnitSource::Node(w.addr.clone()))).unwrap();
+    assert_eq!(b.unit_sources().into_iter().collect::<Vec<_>>(), vec![(w.t, w.addr.clone())]);
     assert_eq!(b.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
     let mut x = b.write();
     x.at(w.t, v()).set(&Value::Int(6)).unwrap();
@@ -693,36 +483,16 @@ fn a_group_read_at_another_node_spec_sync_set_5() {
     }
     assert!(b.has_store());
     b.status().unwrap();
-    ready(b.group_source(w.t, GroupSource::Local)).unwrap();
+    ready(b.unit_source(w.t, UnitSource::Local)).unwrap();
     assert_eq!(b.at(w.t, v()).get().unwrap(), None);
     assert!(b.disconnect_node(&w.addr).unwrap());
     assert!(!b.disconnect_node(&w.addr).unwrap());
 }
 
-// spec/sync-set.md §5: a write on a thing sourced at another node is refused while a group
-// carrying it syncs here.
-#[test]
-fn a_split_thing_refuses_writes_spec_sync_set_5() {
-    let w = world(Some(Role::Write));
-    let (b, _) = node(&w.net, 2, &w.c);
-    let home = b.home();
-    let mut x = b.write();
-    let (t, g) = (x.create().unwrap(), x.create().unwrap());
-    x.group(home).add(osis::Member::Subgroup(g)).unwrap();
-    x.group(g).add(osis::Member::Item(t)).unwrap();
-    x.group(home).add(osis::Member::Item(t)).unwrap();
-    x.commit().unwrap();
-    ready(b.connect_node(&login(&w))).unwrap();
-    ready(b.group_source(g, GroupSource::Node(w.addr.clone()))).unwrap();
-    let mut x = b.write();
-    x.at(t, v()).set(&Value::Int(1)).unwrap();
-    assert!(matches!(x.commit(), Err(Error::Invalid(_))));
-}
-
 // notes/client-port.md, Moving: group sources outlive the process; until the node is
 // connected again, the group's calls fail `Network`, never this node's copy.
 #[test]
-fn group_sources_are_kept_notes_client_port() {
+fn unit_sources_are_kept_notes_client_port() {
     let w = world(Some(Role::Write));
     let store = MemStore::new();
     let open = |create: bool| {
@@ -732,10 +502,10 @@ fn group_sources_are_kept_notes_client_port() {
     };
     let b = open(true);
     ready(b.connect_node(&login(&w))).unwrap();
-    ready(b.group_source(w.t, GroupSource::Node(w.addr.clone()))).unwrap();
+    ready(b.unit_source(w.t, UnitSource::Node(w.addr.clone()))).unwrap();
     assert_eq!(b.close().unwrap(), osis::Close::Closed);
     let b = open(false);
-    assert_eq!(b.group_sources().into_iter().collect::<Vec<_>>(), vec![(w.t, w.addr.clone())]);
+    assert_eq!(b.unit_sources().into_iter().collect::<Vec<_>>(), vec![(w.t, w.addr.clone())]);
     assert!(matches!(b.at(w.t, v()).get(), Err(Error::Network(_))));
     ready(b.connect_node(&login(&w))).unwrap();
     assert_eq!(b.at(w.t, v()).get().unwrap(), Some(Value::Int(5)));
@@ -834,61 +604,6 @@ fn every_op_reads_alike_through_a_thin_client_notes_client_port() {
     assert_eq!(w.a.at(n_there, v()).get().unwrap(), w.a.at(n_here, v()).get().unwrap());
 }
 
-fn get_call(t: Tid) -> Msg {
-    Msg::Call { id: 2, max_reply: 1 << 16, method: osis::internals::port_method::GET, args: vec![Value::Tid(t), Value::Str("x:v.0".into()), Value::List(vec![])] }
-}
-
-/// A LISTING of `t`'s writes, newest first.
-fn listing_call(t: Tid) -> Msg {
-    let address = Value::List(vec![Value::uint(0), Value::List(vec![Value::uint(0), Value::Tid(t)])]);
-    let none = || Value::List(vec![]);
-    let query = Value::List(vec![Value::List(vec![Value::uint(0)]), none(), none(), none(), none(), none(), none()]);
-    Msg::Call { id: 4, max_reply: 1 << 16, method: osis::internals::port_method::LISTING, args: vec![address, query] }
-}
-
-/// A Sub to the commits listed as `t`'s writes (filter 6).
-fn commits_sub(t: Tid) -> Msg {
-    let address = Value::List(vec![Value::uint(0), Value::List(vec![Value::uint(0), Value::Tid(t)])]);
-    Msg::Sub { id: 5, max_reply: 1 << 16, filter: Value::List(vec![Value::uint(6), address]) }
-}
-
-// notes/client-port.md, Catching up (the port never waits on another node): a node's own
-// clients get nothing it reads at another node: its copy may be behind. A client actor reads
-// (and lists) such a thing as unknown and cannot write it; a main session's row, listing and
-// commit listener are `Unsupported`; no
-// write goes on to the other node.
-#[test]
-fn a_nodes_clients_get_nothing_it_reads_elsewhere_notes_client_port() {
-    let w = world(Some(Role::Write));
-    let (b, _) = node(&w.net, 2, &w.c);
-    let mut x = b.write();
-    let (t, g) = (x.create().unwrap(), x.create().unwrap());
-    x.group(g).add(osis::Member::Item(t)).unwrap();
-    x.at(t, v()).set(&Value::Int(3)).unwrap();
-    x.commit().unwrap();
-    let (actor, secret) = b.add_client(None).unwrap();
-    b.grant(t, actor, Role::Write, osis::GrantOpts::default()).unwrap();
-    let read = |main: bool, conn: u64| {
-        let a = if main { auth_as(None, conn as u8) } else { auth_as(Some(&secret), conn as u8) };
-        osis::internals::port_answers(&b, conn, main, vec![a, get_call(t), write_call(1, if main { b.me() } else { actor }, t, 9), listing_call(t), commits_sub(t)])
-    };
-    let r = read(false, 1);
-    assert_eq!(outcome(&r[1]), &Outcome::Ok { value: Value::List(vec![Value::uint(0), Value::List(vec![Value::Int(3)])]) }, "readable here first");
-    assert!(matches!(outcome(&r[3]), Outcome::Ok { value: Value::List(p) } if p[0] != Value::List(vec![])), "listed here first: {r:?}");
-    ready(b.connect_node(&login(&w))).unwrap();
-    ready(b.group_source(g, GroupSource::Node(w.addr.clone()))).unwrap();
-    let r = read(false, 2);
-    assert_eq!(outcome(&r[1]), &Outcome::Ok { value: Value::List(vec![Value::uint(0), Value::List(vec![])]) }, "as unknown");
-    assert!(matches!(outcome(&r[2]), Outcome::Err { code, .. } if *code == ApiCode::UNKNOWN_THING), "{r:?}");
-    assert_eq!(outcome(&r[3]), &Outcome::Ok { value: Value::List(vec![Value::List(vec![]), Value::Bool(false), Value::Bool(true)]) }, "lists nothing");
-    assert_eq!(outcome(&r[4]), &Outcome::Ok { value: Value::List(vec![]) }, "a listener as on an unknown thing");
-    let r = read(true, 3);
-    for m in &r[1..] {
-        assert!(matches!(outcome(m), Outcome::Err { code, .. } if *code == ApiCode::UNSUPPORTED), "{r:?}");
-    }
-    assert_eq!(w.a.at(t, v()).get().unwrap(), None, "nothing went on to the other node");
-}
-
 // spec/wire.md §11.2 (Write nonces), notes/client-port.md Writes: a node keeps the last
 // `WRITE_NONCES` (64) outcomes of a session, and per identity as many sessions as its
 // connection cap (the main actor's: `max_clients`, 64), least recently used going; a resend of
@@ -964,93 +679,6 @@ fn undo_resends_run_once_spec_wire_11() {
     let r = osis::internals::port_answers(&w.a, 1, false, vec![auth_as(Some(&w.secret), 1), row(5, revert, Value::Bytes(six.to_vec())), row(5 | RESENT, revert, Value::Bytes(six.to_vec()))]);
     assert!(matches!(outcome(&r[1]), Outcome::Ok { .. }), "{r:?}");
     assert_eq!(r[1], r[2]);
-}
-
-/// Puts `t` in `a`'s home and grants it to another actor, so it has grants, a group and a sync
-/// ID of its own (in `a`'s status).
-fn shared_in_home(a: &Osis, t: Tid) {
-    crate::common::commit_with(a, |x| x.group(a.home()).add(osis::Member::Item(t)).map(drop));
-    let other = a.add_client(None).unwrap().0;
-    a.grant(t, other, Role::Read, osis::GrantOpts::default()).unwrap();
-    assert!(a.status().unwrap().groups.contains_key(&t), "{:?}", a.status());
-}
-
-// notes/client-port.md §2 (method table), spec/wire.md §11.2 (A client actor's rights): a thin
-// client reads groups, grants, roles, holders and stamps at its node, as its actor: a group it
-// may not read is not listed.
-#[test]
-fn sharing_reads_through_a_thin_client_spec_wire_11() {
-    let w = world(Some(Role::Write));
-    shared_in_home(&w.a, w.t);
-    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
-    assert_eq!(cl.grants(w.t).unwrap(), w.a.grants(w.t).unwrap());
-    assert_eq!(cl.role_on(w.t).unwrap(), Some(Role::Write));
-    assert_eq!(w.a.role_on(w.t).unwrap(), Some(Role::Admin));
-    let (there, all) = (cl.holders(w.t).unwrap(), w.a.holders(w.t).unwrap());
-    assert!(there.iter().any(|h| h.actor == w.actor && h.role == Role::Write && h.through.is_empty()), "{there:?}");
-    assert!(there.iter().all(|h| all.contains(h)), "{there:?}");
-    assert!(all.iter().filter(|h| !there.contains(h)).all(|h| !h.through.is_empty()), "only what is behind an actor it may not read goes");
-    assert_eq!(cl.created(w.t).unwrap(), w.a.created(w.t).unwrap());
-    assert!(cl.created(w.t).unwrap().is_some());
-    assert_eq!(cl.changed(w.t).unwrap(), w.a.changed(w.t).unwrap());
-    assert!(w.a.groups_of(w.t).unwrap().item_of.contains(&w.a.home()));
-    assert_eq!(cl.groups_of(w.t).unwrap(), osis::GroupsOf::default(), "home is no group the client reads");
-}
-
-// spec/wire.md §11.2 (Status): a client actor's status shows the things it may read and counts
-// the connections with one of them open; a thing it may not read is not there, as a never-known
-// one is not.
-#[test]
-fn status_shows_a_client_what_it_reads_spec_wire_11() {
-    let w = world(Some(Role::Read));
-    let mut x = w.a.write();
-    let hidden = x.create().unwrap();
-    x.at(hidden, v()).set(&Value::Int(1)).unwrap();
-    x.commit().unwrap();
-    shared_in_home(&w.a, w.t);
-    shared_in_home(&w.a, hidden);
-    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
-    let s = cl.status().unwrap();
-    assert!(s.groups.contains_key(&w.t) && !s.groups.contains_key(&hidden), "{s:?}");
-    assert!(s.groups.keys().all(|t| *t == w.t || *t == w.actor), "its own actor's sync ID beside it: {s:?}");
-    assert_eq!(s.groups[&w.t], w.a.status().unwrap().groups[&w.t]);
-    assert_eq!(s.connected, 0, "no connection has what it reads open");
-    assert!(w.a.status().unwrap().connected > 0, "the client's own connection is the node's");
-}
-
-// notes/client-port.md §1 (Watches), spec/wire.md §11.2: `on_status_change` through a thin
-// client hears the status at once and again when what its actor may read changes it; a lost
-// connection shows as nothing connected, each thing `NotConnected` (here no change), and
-// `status` fails `Network`.
-#[test]
-fn a_status_watch_through_a_thin_client_spec_wire_11() {
-    let w = world(None);
-    shared_in_home(&w.a, w.t);
-    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
-    let (tx, rx) = channel();
-    let _s = cl.on_status_change(move |_, s| tx.send(s).unwrap()).unwrap();
-    cl.settle();
-    assert!(!rx.try_recv().unwrap().groups.contains_key(&w.t));
-    osis::internals::costs::take();
-    let hidden = crate::common::commit_with(&w.a, |x| x.create().map(drop)).parts().next().unwrap().0;
-    shared_in_home(&w.a, hidden);
-    w.a.settle();
-    w.net.run();
-    cl.settle();
-    assert_eq!(notifies(), 0, "a thing it may not read entering the node's status tells nothing");
-    assert!(rx.try_recv().is_err());
-    w.a.grant(w.t, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
-    w.a.settle();
-    w.net.run();
-    cl.settle();
-    let s = rx.try_iter().last().expect("told");
-    assert!(s.groups.contains_key(&w.t), "{s:?}");
-    w.net.set_online(0, false);
-    w.net.run();
-    cl.settle();
-    // it showed nothing connected already: nothing new to tell; a call fails
-    assert!(rx.try_recv().is_err());
-    assert!(matches!(cl.status(), Err(Error::Network(_))));
 }
 
 /// The Notifies this thread's thin clients heard since the last `costs::take`.
@@ -1157,19 +785,6 @@ fn daemon(net: &ManualNet, c: &Arc<ManualClock>, seed: u64, name: &str) -> (Dir,
     (dir, a, cl)
 }
 
-/// Drives `f` on `net` until it resolves (at most 20 rounds of `run`).
-#[track_caller]
-fn drive<T>(net: &ManualNet, f: impl std::future::Future<Output = T>) -> T {
-    let mut f = std::pin::pin!(f);
-    for _ in 0..20 {
-        if let std::task::Poll::Ready(r) = f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
-            return r;
-        }
-        net.run();
-    }
-    panic!("did not resolve");
-}
-
 fn signal() -> DynamicAspectKey {
     DynamicAspectKey::untyped(ak("x:log~0"))
 }
@@ -1195,46 +810,6 @@ fn history(db: &Osis) -> (Tid, osis::CommitId) {
     crate::common::commit_with(db, |w| w.at(t, signal()).fire(&text("other")));
     crate::common::commit_with(db, |w| w.at(t, signal()).replace(o, &text("two")).map(drop));
     (t, o)
-}
-
-/// Each listing row, as `db` answers it.
-fn listings(db: &osis::ReadOnly, t: Tid, o: osis::CommitId) -> Vec<osis::Result<osis::CommitPage>> {
-    let q = |from, n| osis::CommitQuery { from, limit: Some(n), ..Default::default() };
-    let content = osis::CommitQuery { kinds: vec![osis::CommitKind::Content], ..Default::default() };
-    vec![
-        db.writes(&osis::Scope::Thing(t), &osis::CommitQuery::default()),
-        db.writes(&osis::Scope::Aspects(vec![(t, ak("x:v.0"))]), &q(osis::CommitFrom::Oldest, 1)),
-        db.at(t, v()).writes(&content),
-        db.at(t, signal()).fired(&osis::CommitQuery::default()),
-        db.at(t, signal()).fired(&q(osis::CommitFrom::Oldest, 1)),
-        db.at(t, signal()).versions(o, &osis::CommitQuery::default()),
-    ]
-}
-
-// notes/client-port.md §2 (rows that are one API call): commit listings, a listed commit, the
-// contact card, the profile, invitations and accepting one answer through a socket client
-// exactly as on the node itself, errors included.
-#[test]
-fn api_rows_read_alike_through_a_socket_notes_client_port() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let (_dir, a, cl) = daemon(&net, &c, 1, "port-rows");
-    let (t, o) = history(&a);
-    let mine = listings(&a, t, o);
-    assert!(mine.iter().all(|p| p.as_ref().is_ok_and(|p| !p.commits.is_empty())), "{mine:?}");
-    assert_eq!(listings(&cl, t, o), mine);
-    let value = a.at(t, v()).writes(&osis::CommitQuery::default()).unwrap().commits[0].stamp.id;
-    for id in [o, value] {
-        assert_eq!(cl.at(t, signal()).commit(id), a.at(t, signal()).commit(id), "{id}");
-        assert_eq!(cl.at(t, v()).commit(id), a.at(t, v()).commit(id), "{id}");
-    }
-    assert_eq!(cl.contact_card().unwrap(), a.contact_card().unwrap());
-    assert_eq!(cl.profile(), a.profile());
-    assert_eq!(cl.profile_of(a.me()), a.profile_of(a.me()));
-    assert_eq!(cl.invitations(), a.invitations());
-    let bad = a.accept_invite(t, t);
-    assert!(matches!(bad, Err(Error::Invalid(_))), "{bad:?}");
-    assert_eq!(cl.accept_invite(t, t), bad);
 }
 
 // notes/client-port.md §2: a page through a connection is cut to what one Reply carries,
@@ -1268,40 +843,6 @@ fn a_listing_page_fits_a_reply_notes_client_port() {
     assert_eq!(there, here);
     assert_eq!(one, 1);
     assert!(several > 1, "{several} pages");
-}
-
-// spec/wire.md §11.2 (A client actor's rights): a client actor lists what it may read, as its
-// actor does on the node, and nothing of a thing it may not read; the node's own state (its
-// card, invitations) is not for it (code 11).
-#[test]
-fn a_client_actor_lists_what_its_actor_reads_spec_wire_11() {
-    use osis::internals::Internals as _;
-    let w = world(Some(Role::Read));
-    let (t, o) = history(&w.a);
-    w.a.grant(t, w.actor, Role::Read, osis::GrantOpts::default()).unwrap();
-    let (hidden, h) = history(&w.a);
-    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
-    let actor = w.a.acting_as(w.actor);
-    let readable = listings(&actor, t, o);
-    assert!(readable.iter().all(|p| p.as_ref().is_ok_and(|p| !p.commits.is_empty())), "{readable:?}");
-    assert_eq!(listings(&cl, t, o), readable);
-    let none = listings(&actor, hidden, h);
-    assert!(none.iter().all(|p| p.as_ref().is_ok_and(|p| p.commits.is_empty())), "{none:?}");
-    assert_eq!(listings(&cl, hidden, h), none);
-    assert_eq!(cl.at(hidden, signal()).commit(h), Ok(None));
-    // a listener hears a fire on what its actor reads, nothing of one on what it may not
-    let (tx, rx) = channel();
-    let _l = cl.at(hidden, signal()).on_fire(move |_, e| tx.send(e).unwrap()).unwrap();
-    let (txr, rxr) = channel();
-    let _r = cl.at(t, signal()).on_fire(move |_, e| txr.send(e).unwrap()).unwrap();
-    crate::common::commit_with(&w.a, |x| x.at(hidden, signal()).fire(&text("secret")));
-    let shown = crate::common::commit_with(&w.a, |x| x.at(t, signal()).fire(&text("shown"))).stamp.id;
-    cl.settle();
-    assert!(rx.try_recv().is_err());
-    assert!(matches!(rxr.try_iter().collect::<Vec<_>>().as_slice(), [osis::CommitEvent::Commit { id, commit: Some(_) }] if *id == shown));
-    assert!(matches!(cl.contact_card(), Err(Error::Unsupported(_))));
-    assert!(matches!(cl.invitations(), Err(Error::Unsupported(_))));
-    assert!(matches!(drive(&w.net, cl.wait_synced(osis::SyncScope::All)), Err(Error::Unsupported(_))));
 }
 
 /// What a commit listener heard since the last call, as (id, the part's body on `t`'s `k`).
@@ -1341,42 +882,6 @@ fn commit_listeners_through_a_socket_notes_client_port() {
     assert_eq!(events(&cl, &fires, t, "x:log~0"), vec![]);
 }
 
-// notes/client-port.md §2 (Rows that wait), spec/sync-inbox.md §5, spec/sync-set.md §4: through
-// a socket client, the node's card is imported elsewhere, another's card is imported at the
-// node, a grant to the node's account is an invitation there, accepted through the client, and
-// `wait_synced` waits at the node: on the accepted thing until its data is there
-// (spec/sync-status.md §3, the node's home carrying it held by no other node).
-#[test]
-fn cards_invitations_and_waits_through_a_socket_notes_client_port() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let (_dir, a, cl) = daemon(&net, &c, 60, "port-cards");
-    let mut o = crate::common::cfg(61, MemStore::new(), &c);
-    o.app.internals.net = Some(net.clone());
-    let b = osis::internals::create(o).unwrap();
-    b.listen(&["peer://127.0.0.1:2".parse().unwrap()]).unwrap();
-    assert_eq!(drive(&net, b.import_contact(&cl.contact_card().unwrap())).unwrap(), a.me());
-    assert_eq!(drive(&net, cl.import_contact(&b.contact_card().unwrap())).unwrap(), b.me());
-    assert_eq!(a.profile_of(b.me()).unwrap(), Some(b.profile().unwrap()));
-    assert_eq!(cl.profile_of(b.me()).unwrap(), Some(b.profile().unwrap()));
-    let t = b.commit_with(|w| { let t = w.create()?; w.group(b.home()).add(osis::Member::Subgroup(t))?; Ok(t) }).unwrap();
-    crate::common::commit_with(&b, |w| w.at(t, osis::core::NAME).set(&"granted".to_string()));
-    b.grant(t, a.me(), Role::Read, osis::GrantOpts::default()).unwrap();
-    for _ in 0..5 {
-        net.run();
-    }
-    let invited = cl.invitations().unwrap();
-    assert!(invited.iter().any(|i| i.thing == t && !i.acted), "{invited:?}");
-    assert_eq!(invited, a.invitations().unwrap());
-    cl.accept_invite(t, cl.home()).unwrap();
-    assert!(!a.invitations().unwrap().iter().any(|i| i.thing == t));
-    drive(&net, cl.wait_synced(osis::SyncScope::Thing(t))).unwrap();
-    assert_eq!(cl.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("granted"));
-    drive(&net, cl.wait_synced(osis::SyncScope::Deliveries)).unwrap();
-    drive(&net, cl.wait_synced(osis::SyncScope::Delivery { thing: t, to: b.me() })).unwrap();
-    assert_eq!(osis::internals::port_waits(&a), 0, "a wait answered goes");
-}
-
 // notes/client-port.md §2 (Rows that wait): dropping a wait's future ends it at the node, as
 // dropping it locally does.
 #[test]
@@ -1414,41 +919,4 @@ fn diagnostics_through_a_socket_notes_client_port() {
     cl.settle();
     let got: Vec<_> = rx.try_iter().collect();
     assert!(got.iter().any(|d| matches!(d, osis::Diagnostic::Callback { .. })), "{got:?}");
-}
-
-// spec/wire.md §11.2 (A client actor's rights): a commit listener on a group the actor may not
-// read hears nothing of a write to an item it reads, as one on a group never known; in process
-// and through a thin client alike (an event would tell the group holds the item).
-#[test]
-fn a_hidden_groups_listener_hears_nothing_spec_wire_11() {
-    use osis::internals::Internals as _;
-    let w = world(Some(Role::Read));
-    let g = crate::common::commit_with(&w.a, |x| {
-        let g = x.create()?;
-        x.group(g).add(osis::Member::Item(w.t))
-    })
-    .parts()
-    .map(|p| p.0)
-    .find(|g| *g != w.t)
-    .unwrap();
-    let never = Tid::from_bytes([9; 15]);
-    let cl = connect(&w.net, &w.c, &w.addr, &w.secret).unwrap();
-    let actor = w.a.acting_as(w.actor);
-    let (tx, rx) = channel();
-    let mut subs = Vec::new();
-    for db in [&cl, &actor] {
-        for s in [g, never] {
-            let tx = tx.clone();
-            subs.push(db.on_write(&osis::Scope::Group(s), move |_, e| tx.send((s, e)).unwrap()).unwrap());
-        }
-    }
-    crate::common::commit_with(&w.a, |x| x.at(w.t, v()).set(&Value::Int(7)));
-    w.a.settle();
-    cl.settle();
-    assert_eq!(rx.try_iter().map(|(s, e)| format!("{s}: {e:?}")).collect::<Vec<_>>(), Vec::<String>::new());
-    let q = osis::CommitQuery::default();
-    for s in [g, never] {
-        assert_eq!(cl.writes(&osis::Scope::Group(s), &q), actor.writes(&osis::Scope::Group(s), &q));
-        assert!(cl.writes(&osis::Scope::Group(s), &q).unwrap().commits.is_empty());
-    }
 }

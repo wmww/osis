@@ -4,7 +4,6 @@ mod spec_closure;
 mod spec_commits;
 mod spec_fetch;
 mod spec_freed;
-mod spec_lifetimes;
 mod spec_crdt;
 mod spec_permissions;
 mod spec_records;

@@ -1,11 +1,11 @@
 //! Write commands (notes/cli.md One call): each applies to a `Write`, so a
 //! single command and a `write` script line share one implementation.
 
-use crate::args::{CreateArgs, ExpiryFlags, FireArgs, MemberCmd, OpArgs, GroupsArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
+use crate::args::{CreateArgs, ExpiryFlags, FireArgs, OpArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
 use crate::text::{self, PStep};
 use crate::{Ctx, parse_dur, parse_ts, usage};
 use clap::Parser;
-use osis::{AspectWrite, DynamicAspectKey, Expiry, Member, Path, PurgeBy, Retention, Step, Tid, Time, Value, ValueType};
+use osis::{AspectWrite, DynamicAspectKey, Expiry, Path, PurgeBy, Retention, Step, Tid, Time, Value, ValueType};
 use std::ops::Range;
 
 /// What a write command produced.
@@ -15,11 +15,6 @@ pub struct Did {
     pub created: Vec<(String, Tid)>,
     /// The expiry asked for so far.
     pub expires: Option<Expiry>,
-}
-
-/// The groups a new thing goes into (none: added later, or on this node alone).
-pub fn groups(ctx: &Ctx<'_>, p: &GroupsArgs) -> anyhow::Result<Vec<Tid>> {
-    p.in_.iter().chain(&p.in_all).map(|g| ctx.tid(g)).collect()
 }
 
 /// Parses a path (empty: the whole aspect). `[n]` on an untyped position: for a read, a list index if the saved value
@@ -115,7 +110,6 @@ fn index(s: &str) -> anyhow::Result<usize> {
 
 pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &mut Did) -> anyhow::Result<()> {
     let admin = a.admin.as_deref().map(|o| ctx.tid(o)).transpose()?;
-    let groups = groups(ctx, &a.groups)?;
     if !a.pairs.len().is_multiple_of(2) {
         return Err(usage("create takes AK VALUE pairs"));
     }
@@ -123,9 +117,6 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
         Some(a) => w.create_with_admin(a)?,
         None => w.create()?,
     };
-    for g in groups {
-        w.group(g).add(Member::Item(t))?;
-    }
     for pair in a.pairs.chunks(2) {
         let key = ctx.aspect_key(&pair[0])?;
         let v = ctx.value(&pair[1], key.value_type().map(|t| t.get()).as_ref())?;
@@ -247,16 +238,11 @@ pub fn apply(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mu
         ScriptCmd::Set(SetArgs { t, ak, .. }) | ScriptCmd::Overwrite(SetArgs { t, ak, .. }) | ScriptCmd::Rm(RmArgs { t, ak, .. }) | ScriptCmd::Op(OpArgs { t, ak, .. }) => {
             Some((ctx.tid(t)?, ak.clone()))
         }
-        ScriptCmd::Delete { t } => Some((ctx.tid(t)?, String::new())),
         ScriptCmd::Create(_) => did.created.last().map(|(_, t)| (*t, String::new())),
         _ => None,
     };
     ctx.pending.extend(touched);
     Ok(())
-}
-
-pub(crate) fn member(t: osis::Tid, subgroup: bool) -> Member {
-    if subgroup { Member::Subgroup(t) } else { Member::Item(t) }
 }
 
 fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
@@ -270,13 +256,6 @@ fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mu
         ScriptCmd::Fire(a) => fire(ctx, w, a),
         ScriptCmd::Rm(a) => rm(ctx, w, a),
         ScriptCmd::Op(a) => op(ctx, w, a),
-        ScriptCmd::Group(MemberCmd::Add { g, t, subgroup, e }) => {
-            let (g, m) = (ctx.tid(g)?, member(ctx.tid(t)?, *subgroup));
-            commit_expiry(w, did, expiry(e)?)?;
-            Ok(w.group(g).add(m)?)
-        }
-        ScriptCmd::Group(MemberCmd::Rm { g, t, subgroup }) => Ok(w.group(ctx.tid(g)?).remove(member(ctx.tid(t)?, *subgroup))?),
-        ScriptCmd::Delete { t } => Ok(w.delete(ctx.tid(t)?)?),
     }
 }
 

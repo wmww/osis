@@ -10,7 +10,7 @@ use osis_schema::core_types as ct;
 use std::collections::BTreeMap;
 
 fn edge(r: Role) -> ct::Edge {
-    ct::Edge { role: r, until: None, invite: None, tied: None, floor: None }
+    ct::Edge { role: r, until: None, invite: None, floor: None }
 }
 
 /// Delivers `ids` a millisecond on: what a node received earlier it received in an earlier

@@ -2,7 +2,7 @@
 //! Core aspect Rust types and typed keys (spec/data-model.md §9, spec/wire.md §3). Canonical
 //! encodings are the `schema/core` generator of osis-vectors.
 
-use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, SyncId, Limits, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, Classified, CreationRecord, ErrorClass, SyncId, Limits, Role, Tid, Value, WallMs};
 use osis_schema::core_types::*;
 use osis_schema::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,8 +17,8 @@ fn epoch(n: u64) -> Epoch {
 /// (vector name, AK, encoded sample) per core aspect a commit can write.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let holders: Holders = BTreeMap::from([
-        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), tied: Some(Tie { ts: Ts::make(WallMs(1_700_000_000_000), 3).unwrap(), source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }), floor: None }),
-        (tid(7), Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None }),
+        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), floor: None }),
+        (tid(7), Edge { role: Role::Admin, until: None, invite: None, floor: None }),
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), names: [6; 32], left_out: BTreeMap::new(), demotions: BTreeSet::new(), demotes: false }),
@@ -48,11 +48,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], account: None })),
         ("dial", "dial^.0", DIAL.encode(&BTreeMap::from([(vec![36; 32], vec!["peer://203.0.113.7:4040".to_string()])]))),
         ("caps", "caps^.0", CAPS.encode(&Caps { policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]), things: BTreeMap::from([(tid(33), ThingCaps { entries: 5, bytes: 6 })]) })),
-        ("synced", "synced^.0", SYNCED.encode(&BTreeMap::from([(tid(31), tid(32))]))),
-        ("acted", "acted^.0", ACTED.encode(&BTreeSet::from([tid(37)]))),
-        ("kept", "kept^.0", KEPT.encode(&BTreeMap::from([(tid(38), Kept { ids: BTreeSet::from([SyncId([39; 16])]), secrets: BTreeMap::from([(epoch(3), [40; 32])]), tied: BTreeSet::from([SyncId([39; 16])]) })]))),
         ("clients", "clients^.0", CLIENTS.encode(&BTreeMap::from([(tid(34), Client { secret_hash: [35; 32], until: Some(WallMs(1_700_000_000_000)) })]))),
-        ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
     ]
 }
 
@@ -102,11 +98,7 @@ fn core_aspects_round_trip_spec_data_model_9() {
             "reach.0" => REACH.encode(&REACH.decode(v).unwrap()),
             "dial^.0" => DIAL.encode(&DIAL.decode(v).unwrap()),
             "caps^.0" => CAPS.encode(&CAPS.decode(v).unwrap()),
-            "synced^.0" => SYNCED.encode(&SYNCED.decode(v).unwrap()),
-            "acted^.0" => ACTED.encode(&ACTED.decode(v).unwrap()),
-            "kept^.0" => KEPT.encode(&KEPT.decode(v).unwrap()),
             "clients^.0" => CLIENTS.encode(&CLIENTS.decode(v).unwrap()),
-            "group.0" => GROUP.encode(&GROUP.decode(v).unwrap()),
             _ => panic!("{ak}"),
         }
     };
@@ -125,7 +117,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     let e = KemKey::from_value(&Value::Enum(2, Some(Box::new(Value::Bytes(vec![]))))).unwrap_err();
     assert_eq!((e.kind.clone(), e.class()), (PathErrorKind::UnknownCase(2), ErrorClass::Parked));
     // An unknown role case in a holder edge: parked, with the path.
-    let mut m = ROLES.encode(&BTreeMap::from([(tid(1), Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None })]));
+    let mut m = ROLES.encode(&BTreeMap::from([(tid(1), Edge { role: Role::Read, until: None, invite: None, floor: None })]));
     if let Value::Map(mm) = &mut m {
         let e = mm.get_mut(&Value::Tid(tid(1))).unwrap();
         if let Value::Map(f) = e {
@@ -157,14 +149,14 @@ fn key_defaults_and_identity_spec_commits_5() {
         assert_eq!(a.retention.by, PurgeBy::Admin, "{ak}");
         assert!(is_role_class(ak));
     }
-    assert!(!is_role_class("group.0"));
+    assert!(!is_role_class("tag.0"));
     assert_eq!(CREATED.defaults().retention, osis_schema::Retention { by: PurgeBy::Admin });
     assert_eq!(NODE.defaults(), AspectDefaults::default());
-    assert!(GROUP.schema().is_some_and(Schema::declares_core));
+    assert!(TAG.schema().is_some_and(Schema::declares_core));
     let untyped = Ak::new("x:y.0").unwrap();
     assert!(untyped.schema().is_none());
     assert_eq!(untyped.defaults(), AspectDefaults::default());
     assert_eq!(RawKey::decode(&untyped, &Value::Int(3)).unwrap(), Value::Int(3));
-    assert!(core_schema().aspects["tid.0"].flags.contains(&Flag::Synthetic));
+    assert!(core_schema().aspects["aspects.0"].flags.contains(&Flag::Synthetic));
     assert!(core_schema().aspects["created.0"].flags.contains(&Flag::Guaranteed));
 }

@@ -8,12 +8,10 @@
 
 pub(crate) mod bodies;
 pub(crate) mod certified;
-pub(crate) mod deliveries;
 pub(crate) mod dial;
 pub(crate) mod facts;
 pub(crate) mod falls;
 pub(crate) mod held;
-pub(crate) mod inbox;
 pub(crate) mod listed;
 pub(crate) mod own;
 pub(crate) mod rows;
@@ -23,18 +21,18 @@ pub use pieces::PieceLink;
 pub(crate) mod certblobs;
 pub use certblobs::{CertBlobs, CertKind};
 pub(crate) use certblobs::with_chains;
-pub(crate) mod records;
 mod relay;
 pub use relay::{Relay, RelayOpened};
 pub(crate) mod set;
 pub(crate) mod setting;
 mod signing;
 pub(crate) mod stranded;
+pub(crate) mod tickets;
+pub(crate) mod units;
 pub use stranded::Stranding;
 #[cfg(test)]
 mod tests_facts;
 
-pub use inbox::WaitingBlob;
 pub use osis_blob::DialHint;
 
 use crate::apply::reach::Wants;
@@ -116,8 +114,6 @@ pub enum Opened {
     Commit(CommitId, Ingested),
     /// A chunk, tree node or page a held commit links: stored.
     Linked,
-    /// An inbox blob, opened and taken.
-    Inbox(InboxOpened),
     /// A record blob (spec/wire.md §3): its records learned.
     Records(BTreeSet<Tid>),
     /// A list blob (spec/wire.md §4, List tree): the thing lists of this rotation held, or kept
@@ -127,32 +123,6 @@ pub enum Opened {
     NotOpen,
     /// It opened and is bad (its sender is to blame).
     Bad,
-}
-
-/// What taking an inbox blob did (spec/sync-inbox.md §2).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InboxOpened {
-    /// The role commit (`None`: a stranded notice, no role commit to take).
-    pub commit: Option<CommitId>,
-    pub taken: Taken,
-    /// Sync IDs of things whose box in the blob opened (spec/sync-inbox.md §2 hints).
-    pub hints: Vec<(Tid, SyncId)>,
-    /// The sending node's dial hint (spec/wire.md §9 position 4), for dialing only.
-    pub dial: Option<DialHint>,
-}
-
-/// Whether the inbox blob's grant applied.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Taken {
-    /// Applied here.
-    Applied,
-    /// Waits for the user (an invitation, spec/sync-set.md §4).
-    Waiting,
-    /// A boxes payload (or a blob boxing sync alone), held as an offer: never taken
-    /// (spec/sync-inbox.md §2; spec/sync.md §3).
-    Offered,
-    /// Not for this node, or refused.
-    Refused,
 }
 
 /// One sync ID's body of a commit: what S carries of it (spec/sync-judgement.md §1).
@@ -276,18 +246,18 @@ pub struct SyncSet {
 /// The sync set's rows' cursor over the things that may have entered `Engine::sync_things`
 /// (`Engine::things_entered`); unstarted until its first read.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ThingsFeed(pub(crate) Option<set::Entered>);
+pub(crate) struct ThingsFeed;
 
 /// How this node syncs one thing of N's closure (spec/sync-set.md §2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThingSync {
     /// Read: its home sync ID (a destroyed thing being emptied: its own sync IDs).
     Read(Vec<SyncId>),
-    /// Kept unread: the sync IDs its sync record names.
+    /// Kept unread: by a ticket for the sync role (spec/sync.md).
     Unread(Vec<SyncId>),
     /// Secrets of its own, neither a read nor a sync secret held (`Unsyncable`).
     Unsyncable,
-    /// No secrets of its own: it travels under the sync IDs of the groups holding it.
+    /// No secrets of its own: it travels under the sync IDs of the sync units holding it.
     Plain,
 }
 
@@ -383,33 +353,6 @@ pub struct Signers {
     pub delete: Option<SigningSecret>,
 }
 
-/// A thing this node keeps unread, as its account's sync record and the boxes payloads held give
-/// it (spec/sync.md §3 Sync record).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SyncRecord {
-    /// The kept sync IDs (`kept^.0` on D).
-    pub sync_ids: Vec<SyncId>,
-    /// The kept sync IDs tied to this thing (spec/sync.md §3 Tied).
-    pub tied: BTreeSet<SyncId>,
-    /// The held sync secrets: the recorded ones and those of the boxes payloads held.
-    pub secrets: BTreeMap<Epoch, Secret32>,
-    /// Which of `secrets` are recorded.
-    pub recorded: BTreeSet<Epoch>,
-    /// The dial hints of the boxes payloads held whose sync IDs are kept (spec/sync-inbox.md
-    /// §2), distinct: for dialing only (spec/sync-opens.md §1). Every one, so an accepted
-    /// forger's hint hides no granter's.
-    pub dials: Vec<DialHint>,
-}
-
-/// The things sync ID `s` is synced for among those whose record keeps it (`kept`, each with
-/// its record): those tied to it when any is, else every one (spec/sync.md §3 A kept sync ID's
-/// things). So which thing came first never decides: a step this account verified does.
-pub fn kept_things<'a>(s: &SyncId, kept: &'a [(Tid, Arc<SyncRecord>)]) -> impl Iterator<Item = &'a (Tid, Arc<SyncRecord>)> + 'a {
-    let any_tied = kept.iter().any(|(_, r)| r.tied.contains(s));
-    let s = *s;
-    kept.iter().filter(move |(_, r)| !any_tied || r.tied.contains(&s))
-}
-
 /// Who may hold a sync ID besides this node, by the rosters (`Engine::roster_holders`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RosterHolders {
@@ -440,18 +383,6 @@ pub enum J {
     SyncHolder,
     Departed,
     Unknown,
-}
-
-/// An invitation waiting for the user (spec/sync-set.md §4).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Invitation {
-    pub thing: Tid,
-    pub role: Role,
-    /// The granting account, where this node can tell it (spec/sync-inbox.md §2).
-    pub from: Option<Tid>,
-    pub taken: bool,
-    /// The account acted on it before (`acted^.0` on D): accepted, filed elsewhere or unsynced.
-    pub acted: bool,
 }
 
 /// `caps^.0` of this node (spec/sync-ids.md §5 Caps).
@@ -566,31 +497,13 @@ impl Engine {
         self.run(|tx| certblobs::forget_blob(tx, &s, r, &b))
     }
 
-    /// This node shares `t` no more (spec/sync-set.md §2 Shared here): it syncs it only while N's
-    /// closure holds it (its synced group's, another shared thing's), else `t` leaves the sync set
-    /// by spec/sync-set.md §3; kept here after a share ended (`kept_local`), it stays local no
-    /// more (sync forgets it, `osis_sync::Node::unsync`). `false`: it neither shared nor kept `t`.
-    pub fn unshare(&mut self, t: &Tid) -> Result<bool> {
-        if !self.shares(t)? && !self.core.stays_local(t) {
-            return Ok(false);
-        }
-        self.run(|tx| set::unshare_here(tx, t))?;
-        Ok(true)
-    }
-
-    /// Forgets this node's local copies of `ts`, unsynced (spec/sync-set.md §3 Unsyncing): the
-    /// content of each and of each thing whose secrets are one of theirs, but those N's closure
-    /// holds (`node_closure`: its synced group's and its shared things') and those that stay
-    /// local (`Core::stays_local`: a share ended, unsynced by no one here); their role-class aspects
-    /// (`secrets.0` included) and secrets stay, and what arrives again counts as never received.
-    /// One forgetting for all of them, however many left at once, in proportion to what it
-    /// forgets. The blobs of the commits it deleted whole, whose rows go with them: their entries
-    /// anywhere stand for nothing held.
+    /// Forgets this node's local copies of `ts`, released (spec/sync.md Release): the content of
+    /// each and of each thing whose secrets are one of theirs, but those the node closure holds;
+    /// their role-class aspects (`secrets.0` included) and secrets stay, and what arrives again
+    /// counts as never received. The blobs of the commits it deleted whole.
     pub fn forget_local(&mut self, ts: &BTreeSet<Tid>) -> Result<BTreeSet<BlobId>> {
-        let closure = self.node_closure()?;
-        // a thing whose share ended unsynced by no one here stays local (`Core::stays_local`)
-        let ts: BTreeSet<Tid> = ts.iter().filter(|t| !self.core.stays_local(t)).copied().collect();
-        let mut things = crate::retention::forget::under(&self.core, &ts);
+        let closure = self.sync_things()?;
+        let mut things = crate::retention::forget::under(&self.core, ts);
         things.extend(ts.iter().copied());
         things.retain(|x| !closure.contains(x));
         if things.is_empty() {
@@ -759,11 +672,6 @@ impl Engine {
         }
         self.learn_secret(&g.thing, osis_base::Role::Sync, x.sync.0, x.sync.1.clone())?;
         Ok(())
-    }
-
-    /// A cursor over the things whose sync record is made from now on (`memo::Feed`).
-    pub fn sync_record_feed(&self) -> osis_base::memo::Feed<Tid> {
-        self.core.ix.sync_records.feed()
     }
 
     // Grants, removals, peers
@@ -952,24 +860,6 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.roster_holders, s, |e| e.roster_holders_now(s))
     }
 
-    /// The things delivery `c` to `holder` names (a grant's: its target); none once not owed.
-    pub fn delivery_things(&self, c: &CommitId, holder: &Tid) -> Vec<Tid> {
-        self.core.ix.owed_inbox.get(&(*c, *holder)).map(|o| o.things.clone()).unwrap_or_default()
-    }
-
-    /// A cursor over the deliveries owed from now on (`memo::Feed`).
-    pub fn delivery_feed(&self) -> osis_base::memo::Feed<(CommitId, Tid)> {
-        self.core.ix.owed_inbox.feed()
-    }
-
-    /// Sync stops delivering `c` to `holder`: it saw the holder take it (`delivery_taken`, or an
-    /// open of a sync ID the blob names by the holder), or gave up re-sending. The row goes: a
-    /// delivery is owed from its commit's transaction to here, or until its commit is forgotten.
-    pub fn delivered(&mut self, c: &CommitId, holder: &Tid) -> Result<()> {
-        let (c, h) = (*c, *holder);
-        self.run(|tx| deliveries::drop_owed(tx, &c, &h))
-    }
-
     /// The commit a held blob opened or was sealed as (`blob_parts`' row).
     pub fn blob_commit(&mut self, b: &BlobId) -> Option<CommitId> {
         self.core.ix.blob_parts.get(b).map(|x| x.commit)
@@ -1027,21 +917,46 @@ impl Engine {
         Ok(Arc::new(self.logged_with_now(c)?))
     }
 
-    /// The inbox sync ID of actor `a` (spec/sync-inbox.md §1): the one its `keys.0` names.
-    pub fn inbox_of(&mut self, a: &Tid) -> Option<SyncId> {
-        self.inbox(a)
+    /// The commits logged with role commit `c` under the sync IDs it goes under (spec/crypto.md
+    /// §4 Carried, names): the held rotation commits of the keysets its boxes to holder actors
+    /// name, and of those its keysets record holder actors were left out at; and, for a rotation,
+    /// the held commits its names point to (each epoch it introduces, as its history entries
+    /// opened here name them).
+    pub(crate) fn logged_with_now(&mut self, c: &CommitId) -> Result<Vec<CommitId>> {
+        let Some(h) = self.header(c) else { return Ok(Vec::new()) };
+        let id = *c;
+        let mut out = Vec::new();
+        for a in h.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).collect::<BTreeSet<Tid>>() {
+            let Some(ep) = self.epochs(&a) else { continue };
+            for r in osis_keys::ROLES {
+                for (e, info) in ep.role(r).epochs() {
+                    if self.core.ix.epoch_intro.get(&(a, r, *e)).is_some_and(|x| x.1 == id) {
+                        out.extend(info.names.iter().flat_map(|n| n.list.iter().map(|x| x.key.commit)).filter(|x| self.core.ix.commits.contains_key(x)));
+                    }
+                }
+            }
+        }
+        let actors: BTreeSet<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "secrets.0").map(|a| a.tid).collect();
+        for a in actors {
+            let (Some(si), ki) = (h.aspect_index(&a, "secrets.0"), h.aspect_index(&a, "keys.0")) else { continue };
+            let (w, k) = self.read(|tx| {
+                let w = crate::apply::held_fragment(tx, &id, si)?.map(|f| crate::apply::keys::secrets_write(&f));
+                let k = match ki {
+                    Some(ki) => crate::apply::held_fragment(tx, &id, ki)?.map(|f| crate::apply::keys::keys_write(&f)),
+                    None => None,
+                };
+                Ok((w, k))
+            })?;
+            if let Some(w) = w {
+                out.extend(crate::rotation::members::carried(&self.core, &w, k.as_ref()));
+            }
+        }
+        out.sort();
+        out.dedup();
+        out.retain(|x| x != c);
+        Ok(out)
     }
 
-    /// Takes the inbox blob `blob` held under `s` (its bytes from the ciphertext store), or
-    /// judges it again (spec/sync-inbox.md §2 Taking); `vouched`: a writer of the inbox stamped
-    /// it in place (a node of the account took it). A boxes payload is held as an offer, never
-    /// taken. `None`: its bytes are not held or nothing here opens it.
-    pub fn take_inbox(&mut self, s: &SyncId, blob: &BlobId, vouched: bool) -> Result<Option<InboxOpened>> {
-        osis_base::costs::count("inbox: take", 1);
-        let b = *blob;
-        let Some(bytes) = self.run(|tx| tx.blobs.get(&b))? else { return Ok(None) };
-        self.take_inbox_bytes(s, blob, &bytes, vouched)
-    }
 
     /// Begins a complete pass: the next pass place, one count with the role commits' arrivals
     /// from elsewhere, so a pass begun at place `p` counts for a want at `since` only when

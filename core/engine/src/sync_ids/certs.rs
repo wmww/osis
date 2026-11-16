@@ -110,20 +110,6 @@ impl Engine {
             .collect()
     }
 
-    /// Every applied commit with a valid delta on `(tid, ak)`, with its aspects there.
-    pub fn aspect_commits(&self, tid: &Tid, ak: &str) -> Vec<(CommitId, BTreeSet<usize>)> {
-        let Some(held) = Ak::new(ak).ok().and_then(|k| self.core.ix.by_aspect.get(&(*tid, k))) else { return Vec::new() };
-        let mut out = Vec::new();
-        for (_, c) in held {
-            let Some(m) = self.core.ix.commits.get(c).filter(|_| !self.core.ix.pending.contains_key(c)) else { continue };
-            let ais: BTreeSet<usize> = m.view.aspect(tid, ak).filter(|i| m.valid_at(*i)).into_iter().collect();
-            if !ais.is_empty() {
-                out.push((*c, ais));
-            }
-        }
-        out
-    }
-
     /// The holders each `roles.0` or `secrets.0` aspect of applied role commit `c` is
     /// about (spec/sync-inbox.md §5): those whose edge a `roles.0` delta writes, those a `secrets.0`
     /// delta boxes. Empty for any other commit kind.
@@ -246,8 +232,7 @@ impl Engine {
     /// What a sync ID of `g` holds as certificates, whoever logs them (spec/permissions.md §4,
     /// spec/sync-judgement.md §2): the union of `g`'s pieces (`Piece`): `g`'s own
     /// (`own_piece`); the author's chain of each held commit on a thing of `g`'s closure its actor
-    /// may read, which goes with the commit (`certificate_chains`, `chain_piece`); and under an
-    /// actor's inbox its grant copies (`kept_grant_copy`, one per thing it is named on). Nothing else:
+    /// may read, which goes with the commit (`certificate_chains`, `chain_piece`). Nothing else:
     /// a chain into an item of the closure that no write there needs (a private group's roster
     /// holding a role on an item under S) is none of S's readers'. Parts the closure's bodies carry
     /// are `sync_bodies`' to leave out. Derived whole, O(all of it): what sync reads is
@@ -259,12 +244,6 @@ impl Engine {
             out.extend(self.chain_piece(&a, &x));
         }
         self.expand_accounts(&mut out);
-        for a in self.inbox_actors_of(g) {
-            let things: Vec<Tid> = self.core.ix.held.named_on(&a).filter(|t| **t != a).copied().collect();
-            for t in things {
-                out.extend(self.kept_grant_copy(&a, &t));
-            }
-        }
         out
     }
 
@@ -345,130 +324,12 @@ impl Engine {
         pairs.into_iter().filter(|(a, _)| !self.is_node(a).unwrap_or(false)).collect()
     }
 
-    /// The actors whose inbox (spec/sync-inbox.md §1) is a sync ID `g` owns.
-    pub(crate) fn inbox_actors_of(&mut self, g: &Tid) -> Vec<Tid> {
-        let Ok(owned) = self.owned_sync_ids(g) else { return Vec::new() };
-        let mut out: Vec<Tid> = owned.iter().flat_map(|o| self.inbox_actors_at(&o.id)).collect();
-        out.sort();
-        out.dedup();
-        out
-    }
-
-    /// Actor `a`'s grant copy for thing `t` (spec/sync-inbox.md §5), logged under `a`'s inbox: the
-    /// newest edge write naming `a` on `t` the timeline applies (a removal included: it tells `a`'s
-    /// other nodes the grant ended), projected as the grant's inbox blob projects it (spec/sync-
-    /// inbox.md §2, `inbox_blob`): one boxing `a` while it reads `t` gives its `secrets.0` and
-    /// `roles.0` parts on `t`; one not boxing `a` (a removal or lowering of a reader) its `roles.0`
-    /// part; any other (`a` holding sync alone after it) none: its account's sync record holds
-    /// what it keeps (spec/sync.md §3). While `a` reads `t`, also what the blob carries beside it (`carried_chain`),
-    /// every commit writing `t`'s `sync.0` with its author's chain, and `t`'s records with their
-    /// mintings; below read, nothing more (a sync holder learns none of them, spec/sync-ids.md
-    /// §2). Nothing for a commit not applied here. One per (actor, thing), read from `t`'s edges
-    /// alone (`Timelines::on`): a newer write replaces it, and the older copy leaves the required
-    /// set. Whether `a`'s inbox keeps it is `kept_grant_copy`'s.
-    pub fn grant_copy(&mut self, a: &Tid, t: &Tid) -> Certs {
-        let mut out = Certs::default();
-        let Some((c, read_before)) = self.newest_edge(a, t) else { return out };
-        if self.core.ix.pending.contains_key(&c) || !self.core.ix.commits.contains_key(&c) {
-            return out;
-        }
-        let on = BTreeSet::from([*t]);
-        let boxes = {
-            let named = self.holders_named(&c);
-            self.parts_of(&c, &on, &["secrets.0"]).iter().any(|ai| named.get(ai).is_some_and(|hs| hs.contains(a)))
-        };
-        let reads = self.core.role_now(a, t) >= Some(osis_base::Role::Read);
-        let aks: &[&str] = match (boxes, reads) {
-            // a lowering or removal of a reader
-            (false, _) if read_before || reads => &["roles.0"],
-            (true, true) => &["roles.0", "secrets.0"],
-            // `a` holding sync alone after it: none, its account's sync record holds what it
-            // keeps (spec/sync.md §3)
-            _ => return out,
-        };
-        let parts = self.parts_of(&c, &on, aks);
-        if !reads {
-            out.add(c, parts);
-            return out;
-        }
-        let boxed = if boxes { on.clone() } else { BTreeSet::new() };
-        let Some(chain) = self.carried_chain(&c, &parts, &boxed) else { return out };
-        out.extend(chain);
-        out.add(c, parts);
-        for (x, ais) in self.aspect_commits(t, "sync.0") {
-            if let Some(chain) = self.carried_chain(&x, &ais, &BTreeSet::new()) {
-                out.extend(chain);
-            }
-            out.add(x, ais);
-        }
-        out.records.extend(self.core.record_chain(t).filter_map(|s| s.thing()));
-        let records: Vec<Tid> = out.records.iter().copied().collect();
-        for x in records {
-            self.minting_evidence(&x, &mut out);
-        }
-        out.records.retain(|x| self.core.created(x).is_some());
-        out
-    }
-
-    /// Actor `a`'s grant copy for `t` as `a`'s inbox keeps it (spec/sync-inbox.md §5): `grant_copy`
-    /// once the newest edge write naming `a` there is `a`'s own to keep, else nothing (it reaches
-    /// `a`'s holders by its inbox blob alone, within the deposit budget). Its own: the author held
-    /// write on `a` at its `ts`, as promotion judges its author (§4); or `a` is this node's account
-    /// and accepted the thing (`acted^.0` on D lists it, spec/sync-set.md §4).
-    pub(crate) fn kept_grant_copy(&mut self, a: &Tid, t: &Tid) -> Certs {
-        let Some(h) = self.newest_edge(a, t).and_then(|(c, _)| self.header(&c)) else { return Certs::default() };
-        let writes = crate::engine::write::role_of(&self.core, &h.author, a, h.ts) >= Some(osis_base::Role::Write);
-        if writes || self.accepted(a, t) {
-            return self.grant_copy(a, t);
-        }
-        Certs::default()
-    }
-
-    /// The newest applied edge write naming `a` on `t`, and whether `a` read `t` just before it.
-    fn newest_edge(&self, a: &Tid, t: &Tid) -> Option<(CommitId, bool)> {
-        let on = self.core.timelines.on(t)?;
-        let (_, c, _) = on.held().filter(|(w, _, o)| o.holder == *a && on.is_applied(w)).max_by_key(|(_, c, _)| c.point())?;
-        Some((c.id, on.edge_at(a, Some(c.point())).is_some_and(|e| e.role >= osis_base::Role::Read)))
-    }
-
-    /// Whether `a` is this node's account and `acted^.0` on its D lists `t` (spec/sync-set.md §4).
-    fn accepted(&mut self, a: &Tid, t: &Tid) -> bool {
-        match self.core.account_devices() {
-            Some((acc, d)) if acc == *a => self.get_typed(&d, &osis_schema::core_types::ACTED).ok().flatten().is_some_and(|x| x.contains(t)),
-            _ => false,
-        }
-    }
-
-    /// The author's chain an inbox blob of commit `c` carries for its `parts` (spec/wire.md §9
-    /// position 2), and a grant copy with it (spec/sync-inbox.md §5): `author_chain` without any
-    /// `keys.0` but the author's own, plus the current `keys.0` commits of each thing in `boxed`
-    /// (those it boxes the recipient on), each projected to that delta, with their records.
-    /// `None` while `c` is pending.
-    pub(crate) fn carried_chain(&mut self, c: &CommitId, parts: &Parts, boxed: &BTreeSet<Tid>) -> Option<Certs> {
-        let author = self.header(c)?.author;
-        let mut certs = self.author_chain(c, parts)?;
-        for (x, ps) in certs.commits.iter_mut() {
-            let Some(h) = self.header(x) else { continue };
-            ps.retain(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == author));
-        }
-        certs.commits.retain(|_, p| !p.is_empty());
-        for t in boxed {
-            for k in self.current_keys(t) {
-                if let Some(ai) = self.header(&k).and_then(|h| h.aspect_index(t, "keys.0")) {
-                    certs.commits.entry(k).or_default().insert(ai);
-                }
-            }
-            certs.records.insert(*t);
-        }
-        Some(certs)
-    }
-
-    /// The destroyed actors held here on an authority path into `g`'s closure (spec/commits.md §5
-    /// Destruction): named first admin or holder on a live thing of the closure, or on such a destroyed
-    /// actor. A walk of the held holders, few beside the closure's things, and up from the
+    /// The destroyed actors held here on an authority path into `g`'s sync unit (spec/commits.md
+    /// §5 Destruction): named first admin or holder on a live thing of the unit, or on such a
+    /// destroyed actor. A walk of the held holders, few beside the unit's things, and up from the
     /// destroyed ones among them.
     pub fn destroyed_upstream(&self, g: &Tid) -> BTreeSet<Tid> {
-        let closure = self.closure(g);
+        let closure = self.sync_unit(g);
         let held = &self.core.ix.held;
         let destroyed: Vec<Tid> = held.holders().filter(|e| self.core.destroyed(e)).copied().collect();
         let mut out = BTreeSet::new();
@@ -483,27 +344,9 @@ impl Engine {
     }
 
     /// The destroyed things held here whose evidence the closure of `g` needs (spec/commits.md §5
-    /// Destruction, notes/lifetimes.md What is kept): on an authority path into it
-    /// (`destroyed_upstream`), or listed in `retainers^.0` or referenced in a live durable value by
-    /// a live thing of it. O(kept destroyed things something needs and the reference rows naming
-    /// them): bounded by live things, not by what was destroyed.
+    /// Destruction): on an authority path into it (`destroyed_upstream`).
     pub fn destroyed_needed(&mut self, g: &Tid) -> Result<BTreeSet<Tid>> {
-        let mut out = self.destroyed_upstream(g);
-        let closure = self.closure(g);
-        for x in self.core.destroyed_kept() {
-            osis_base::costs::count("destroyed needed: candidates", 1);
-            if out.contains(&x) {
-                continue;
-            }
-            let rows: Vec<_> = self.references_to(&x)?.into_iter().filter(|r| r.source != x && crate::retention::destroy::needs_from(&r.ak)).collect();
-            if rows.iter().any(|r| closure.contains(&r.source) && self.core.exists(&r.source)) {
-                out.insert(x);
-            } else if rows.is_empty() && !crate::retention::destroy::dependents(&self.core, &x) {
-                // needed by nothing held: no candidate until a reference to it comes (`apply_destructions`)
-                self.core.note_destroyed_kept(&x, false);
-            }
-        }
-        Ok(out)
+        Ok(self.destroyed_upstream(g))
     }
 
     /// What goes with `t`'s record, added to `out` (spec/commits.md §5, A thing's mintings travel
@@ -832,7 +675,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &ak, &Value::Int(1)).unwrap();
         let good = lp.peers[0].commit(m).unwrap().unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync_all().unwrap();
         lp.advance(60_000);

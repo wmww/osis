@@ -292,41 +292,6 @@ fn own(b: BlobId, class: Class, expiry: u64) -> Entry {
 
 const SID: SyncId = SyncId([7; 16]);
 
-// spec/sync-opens.md §1 (where to dial: the granting node of each grant it holds, by the inbox
-// blob's hint), scenario store-reopen: after a restart in place, a grant taken from node 1's
-// inbox blob and accepted makes node 1 a hinted candidate of node 0 (the hints are followed
-// afresh).
-#[test]
-fn hints_are_followed_after_a_restart_in_place_spec_sync_opens_1() {
-    let mut w = crate::harness::contacts();
-    let t = w.now().0;
-    let mut st = w.node(0).store.clone();
-    let (d, dx) = blob(80, Class::Durable, t + 60_000);
-    assert_eq!(st.log(&SID, own(d, Class::Durable, t + 60_000), Some(dx), None).unwrap(), osis_proto::Code::OK);
-    w.write(0, |_| ());
-    w.store_faults(0).at(0, Fault::Fail);
-    w.advance(60_000);
-    assert_eq!(w.restarts(0), 1);
-    w.run();
-    let (a0, a1) = (w.node(0).account.unwrap(), w.node(1).account.unwrap());
-    let x = w.write(1, |e| {
-        let mut m = osis_engine::Mutation::new();
-        let x = e.new_thing(&mut m, a1);
-        e.commit(m).unwrap();
-        e.give_own_secrets(&x).unwrap();
-        e.grant(&x, &a0, &osis_schema::core_types::Edge { role: osis_base::Role::Sync, until: None, invite: None, tied: None, floor: None }).unwrap();
-        x
-    });
-    w.run();
-    // an offered grant's hint is dialed once its sync ID is kept: accepted
-    w.write(0, |e| {
-        let d = e.account().unwrap().unwrap().1;
-        e.accept_invite(&x, &d).unwrap();
-    });
-    w.run();
-    assert!(w.dials(0).why(&w.node(1).key.0).contains(&Why::Hint), "{:?}", w.dials(0).why(&w.node(1).key.0));
-}
-
 // scenario store-reopen and eph-sim-unlisted (spec/sync-opens.md §1 redial): a failed store
 // write closes every connection and restarts the node's modules from the store, once per
 // stretch until a commit lands; the ephemeral entries it holds in memory stay (a store failure
@@ -816,28 +781,4 @@ fn dead_addresses_take_turns_at_the_redial_pace_spec_sync_opens_1() {
     all.sort();
     assert_eq!(seen, all, "each distinct address once a turn");
     assert_eq!(turns[1], turns[0], "then again in the same order");
-}
-
-// spec/sync-set.md §1 (dial list: a node removed from D has no entry), spec/sync-opens.md §1
-// (whom to dial: the nodes of accounts holding a role, by their dial list): a contact dials a
-// node of an account holding a role on what it reads; once that node is removed (and gone
-// quiet, powered off), the contact dials it no more.
-#[test]
-fn a_removed_node_is_dialed_no_more_by_a_contact_spec_sync_set_1() {
-    let (mut w, t, _) = crate::flows::granted_and_read(osis_base::Role::Write);
-    let s = w.engine(1).sync_ids(&t).unwrap()[0].id;
-    let n = w.pair(0);
-    w.run();
-    let nk = w.node(n).key.0;
-    let listed = |w: &mut World| w.engine(1).dial_peers(&s).unwrap().iter().any(|a| a.key == nk);
-    assert!(listed(&mut w), "a node of a holding account: a candidate");
-    let (node, d) = (w.engine(n).tid(), w.engine(0).account().unwrap().unwrap().1);
-    w.write(0, |e| e.demote(&d, &osis_engine::flows::Demotion { holder: node, new: None, retain: None })).unwrap();
-    w.power_off(n);
-    w.run();
-    assert!(!listed(&mut w), "removed: no candidate");
-    let before = dials_to(&w, 1, n);
-    w.advance(10 * REDIAL_MS);
-    w.run();
-    assert_eq!(dials_to(&w, 1, n), before, "never dialed again");
 }

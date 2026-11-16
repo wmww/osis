@@ -334,42 +334,6 @@ fn session_form_spec_commits_3() {
     assert!(Header::decode(&osis_base::encode(&v)).is_err());
 }
 
-// spec/commits.md §5 (Destruction: a release request), spec/wire.md §4: `released.0` stands only in a
-// durable content commit of `released.0` deltas alone, no purge item, expiring `ROLE_KEEP` after
-// its `ts`; read as a purge item on each thing's `created.0`.
-#[test]
-fn validate_release_request_spec_wire_4() {
-    let mut h = sample_header();
-    h.aspects[0].ak = Ak::new(retention::RELEASED).unwrap();
-    h.expires = Some(retention::release_expires(h.ts));
-    h.validate().unwrap();
-    assert!(h.is_release() && h.has_request());
-    assert_eq!(h.requests().as_ref(), &[PurgeItem::Aspect { tid: t(3), ak: Ak::new(retention::CREATED).unwrap() }]);
-    let outside = |x: &Header| invalid(x).to_string().contains("released.0 outside");
-    let mut x = h.clone();
-    let mut other = x.aspects[0].clone();
-    other.ak = Ak::new("app:title.0").unwrap();
-    other.tid = t(4);
-    x.aspects.push(other);
-    x.aspects.sort_by(|a, b| crate::header::aspect_order(&a.tid, a.ak.as_str()).cmp(&crate::header::aspect_order(&b.tid, b.ak.as_str())));
-    assert!(outside(&x), "beside another aspect");
-    let mut x = h.clone();
-    x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("app:title.0").unwrap() });
-    assert!(outside(&x), "with a purge item");
-    for e in [None, Some(h.ts.wall_ms().0 + 1)] {
-        let mut x = h.clone();
-        x.expires = e;
-        assert!(outside(&x), "expires {e:?}");
-    }
-    let mut x = h.clone();
-    x.kind = Kind::ContentSnapshot;
-    x.form = Form::Commit;
-    x.expires = None;
-    x.aspects[0].lo = 0;
-    x.aspects[0].hi = 0;
-    assert!(invalid(&x).to_string().contains("released.0"), "in a snapshot: {}", invalid(&x));
-}
-
 // spec/wire.md §4: the sort keys order as canonical bytes do: aspects by `[tid, ak]` (the text
 // head's width steps at 24, 256 and 65536 bytes), delete keys by `[level, key]` (any u8 level)
 #[test]

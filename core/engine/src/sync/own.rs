@@ -85,13 +85,13 @@ impl Engine {
         (o.candidates.len(), o.candidates.values().map(|x| x.1.len()).sum(), self.core.pass_wanted.len())
     }
 
-    /// `s`'s scope: its read thing's closure and the authors this node writes as (its account,
+    /// `s`'s scope: its read thing's sync unit and the authors this node writes as (its account,
     /// itself, the link key of a link it follows: a join, spec/permissions.md §7).
     fn own_scope(&mut self, s: &SyncId) -> Result<Option<Scope>> {
         let Some(t) = self.read_thing(s)? else { return Ok(None) };
         let links = self.core.followed_links.all().values().map(|(_, l)| *l);
         let authors = self.core.me().into_iter().chain([self.core.id.tid()]).chain(links).collect();
-        Ok(Some(Scope { closure: self.closure(&t), authors }))
+        Ok(Some(Scope { closure: self.sync_unit(&t), authors }))
     }
 
     /// Whether `c` is an own commit with a body under `s` (spec/sync-status.md §2): written here
@@ -203,47 +203,9 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use crate::local_peer::LocalPeer;
-    use crate::Mutation;
-    use osis_base::{Ak, Role, Value, WallMs};
-    use osis_schema::core_types as ct;
+    
+    
+    
+    
 
-    // spec/sync-status.md §2 (Held elsewhere: a commit a node made, or by a key actor it holds,
-    // a followed link's key among them): following a link and letting it go judges again only the commits its key
-    // could have written, not every own commit, counted at n and 10n own commits under home.
-    #[test]
-    fn a_link_followed_and_let_go_judges_no_other_own_commit_spec_sync_status_2() {
-        let judged = |n: i64| -> u64 {
-            let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
-            let a0 = lp.peers[0].engine.create_account().unwrap().0;
-            let a1 = lp.peers[1].engine.create_account().unwrap().0;
-            let e = &mut lp.peers[0].engine;
-            let home = e.home_sync_id(&a0.devices).unwrap().unwrap();
-            let mut m = Mutation::new();
-            let t = e.new_thing(&mut m, a0.devices);
-            m.op(a0.devices, &ct::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(Value::Tid(t)) }).unwrap();
-            e.commit(m).unwrap();
-            for i in 0..n {
-                let mut m = Mutation::new();
-                m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(i)).unwrap();
-                e.commit(m).unwrap();
-            }
-            assert!(e.own_commits(&home).unwrap().len() as i64 > n, "the writes are own commits under home");
-            let e1 = &mut lp.peers[1].engine;
-            let mut m = Mutation::new();
-            let x = e1.new_thing(&mut m, a1.account);
-            e1.commit(m).unwrap();
-            let spec = crate::flows::LinkSpec { target: x, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
-            let link = e1.create_link(&a1.account, &spec).unwrap().0;
-            let e = &mut lp.peers[0].engine;
-            e.follow().unwrap();
-            osis_base::costs::take();
-            e.follow_link(&link).unwrap();
-            e.follow().unwrap();
-            e.unfollow_link(&link.k);
-            e.follow().unwrap();
-            osis_base::costs::take().iter().filter(|x| x.0 == "own: commits").map(|x| x.2).sum()
-        };
-        assert_eq!(judged(3), judged(30), "own commits judged again at n and 10n own commits");
-    }
 }

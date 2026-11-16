@@ -1,5 +1,5 @@
-//! Stranded reports (spec/permissions.md §4 Stranded, spec/wire.md §9 Holder keys and Stranded
-//! notice, §11.2): what a stranded node tells, and what an admin does with a report.
+//! Stranded reports (spec/permissions.md §4 Stranded, spec/wire.md §11.2
+//! Stranded): what a stranded node tells, and what an admin does with a report.
 //!
 //! Principle: a report asks only for the re-seal any node that may rotate owes a current holder
 //! anyway (spec/permissions.md §3 Re-seal); the receiver judges it from what it holds, never
@@ -9,10 +9,8 @@
 //!
 //! - Sending side: `stranded(s)` (S read here, a current read epoch of its thing known and none
 //!   held), or `stranding(s, step)` where sync judged it (a walk stopped), with the holder this
-//!   node reads the actor through, its current `keys.0` commits and the step's sync key; `holder_keys(holder)` (the report's keys); `stranded_notice` (the inbox
-//!   blob to an admin); `writer_of(s, proven)` (who a Stranded message goes to).
-//! - Receiving side: `take_stranded(s, holder, keys)` (a Stranded message, or a stranded notice
-//!   taken from this node's inbox): the keys taken (`take_holder_keys`) and the ask recorded
+//!   node reads the actor through, its current `keys.0` commits and the step's sync key; `holder_keys(holder)` (the report's keys); `writer_of(s, proven)` (who a Stranded message goes to).
+//! - Receiving side: `take_stranded(s, holder, keys)` (a Stranded message): the keys taken (`take_holder_keys`) and the ask recorded
 //!   (rows `rs/`, durable), keyed by the holder's current `keys.0` commits as held after taking:
 //!   a report again with nothing new asks nothing (a notice taken again as its reads move, a
 //!   peer repeating a message). `passes_wanted` wants a pass of the actor's sync IDs from an
@@ -32,8 +30,7 @@ use crate::error::{Error, Result};
 use crate::sync_ids::Certs;
 use osis_base::{CommitId, CreationRecord, Role, SyncId, Tid, Value};
 use osis_commit::CommitBlob;
-use osis_crypto::NodeRng;
-use osis_blob::{HolderKeys, StrandedNotice};
+use osis_blob::HolderKeys;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -178,7 +175,7 @@ impl Engine {
         holders.into_iter().find(|h| !self.core.is_key_actor(h) && self.core.role_now(&me, h).is_some()).unwrap_or(me)
     }
 
-    /// A stranded report's holder keys of `holder` (spec/wire.md §9 Holder keys): its current
+    /// A stranded report's holder keys of `holder` (spec/wire.md §11.2 Stranded): its current
     /// `keys.0` commits each projected to that delta, with their authors' chain certificates for
     /// it (projected, no `keys.0` but the author's own), and that chain's records.
     pub fn holder_keys(&mut self, holder: &Tid) -> Result<HolderKeys> {
@@ -198,21 +195,6 @@ impl Engine {
         certs.records.insert(*holder);
         let (commits, records) = self.certs_values(&certs)?;
         Ok(HolderKeys { commits, records })
-    }
-
-    /// A stranded notice (spec/wire.md §9) for `s` naming `holder`, sealed to `admin`'s inbox key:
-    /// with the holder's keys, or without them where they do not fit the blob. `None` when
-    /// `admin`'s keys are not held here.
-    pub fn stranded_notice(&mut self, s: &SyncId, holder: &Tid, admin: &Tid, rng: &mut dyn NodeRng) -> Result<Option<Vec<u8>>> {
-        let a = *admin;
-        let Some(kem) = self.read(|tx| crate::flows::edges::inbox_kem(tx, &a))? else { return Ok(None) };
-        let notice = StrandedNotice { sync_id: *s, holder: *holder, keys: self.holder_keys(holder)? };
-        let now = self.now();
-        match osis_blob::seal_stranded_notice(admin, &kem, &notice, now, rng) {
-            Ok(b) => Ok(Some(b)),
-            Err(osis_blob::Error::TooLarge(_)) => Ok(Some(osis_blob::seal_stranded_notice(admin, &kem, &StrandedNotice { keys: HolderKeys::default(), ..notice }, now, rng)?)),
-            Err(e) => Err(e.into()),
-        }
     }
 
     /// The account among `proven` holding write or above on read sync ID `s`'s actor, as this
@@ -269,7 +251,7 @@ impl Engine {
         crate::rotation::may_rotate(&self.core, &me, a).iter().any(|r| *r <= role)
     }
 
-    /// Takes a report's holder keys of `holder` (spec/permissions.md §4, spec/wire.md §9): only
+    /// Takes a report's holder keys of `holder` (spec/permissions.md §4, spec/wire.md §11.2): only
     /// what is on the holder's authority chain as judged while taking them (the holder, then
     /// each one's first admin and current holders, transitively, judged again as what is taken
     /// extends it): records of chain things, `keys.0` deltas on the holder and on the authors of
@@ -338,7 +320,7 @@ impl Engine {
     }
 
     /// `certs` as `CommitBlobPlaintext` values projected to their parts and creation records
-    /// (spec/wire.md §9 position 2 and 3, Holder keys).
+    /// (spec/wire.md §11.2 Stranded).
     pub(crate) fn certs_values(&mut self, certs: &Certs) -> Result<(Vec<Value>, Vec<CreationRecord>)> {
         let mut out = Vec::new();
         for (x, ps) in &certs.commits {

@@ -387,12 +387,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         if !v {
             return Ok(());
         }
-        if ak.as_str() == "group.0" {
-            let tids = crate::engine::groups::touched(tx, &tid, &ak, &f)?;
-            j.touched.group(&tid, &ak, tids);
-        } else {
-            j.touched.note(&tid, &ak, &f);
-        }
+        j.touched.note(&tid, &ak, &f);
         // the oracle world joins whole (`tests_paged`): only the join differs
         #[cfg(test)]
         if tx.core.whole_apply {
@@ -520,12 +515,10 @@ pub(crate) fn learn_record(tx: &mut Tx<'_>, rec: CreationRecord) -> Result<bool>
     let key = [records::CREATED, t.as_bytes()].concat();
     tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
     tx.core.ix.held.create(rec);
-    tx.core.rehome(&[t]);
     if tx.core.destroyed(&t) {
         tx.core.note_destroyed_kept(&t, true);
         crate::retention::destroy::record_back(tx, &t)?;
     }
-    crate::retention::lifetimes::queue_with_listers(tx, &t)?;
     Ok(true)
 }
 
@@ -867,16 +860,14 @@ fn with_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Resul
     Ok((out, n))
 }
 
-/// What a commit's joins touched, per aspect: the `secrets.0` entries, the tids a `group.0`
-/// lists or stops listing (`None`: anything may have changed, read the whole state).
+/// What a commit's joins touched, per aspect: the `secrets.0` entries (`None`: anything may have
+/// changed, read the whole state).
 #[derive(Default)]
 pub(super) struct Touched(std::collections::BTreeMap<(Tid, Ak), Option<Seen>>);
 
 enum Seen {
     /// Keys of the box and history-box entries.
     Secrets(Vec<Value>, Vec<Value>),
-    /// Tids whose listing may have changed (`groups::touched`).
-    Group(BTreeSet<Tid>),
 }
 
 impl Touched {
@@ -893,23 +884,15 @@ impl Touched {
             (slot, _) => *slot = None,
         }
     }
-    /// A `group.0` join that may change the listing of `tids` (`None`: of any).
-    pub(super) fn group(&mut self, tid: &Tid, ak: &Ak, tids: Option<BTreeSet<Tid>>) {
-        match (self.0.entry((*tid, ak.clone())).or_insert_with(|| Some(Seen::Group(BTreeSet::new()))), tids) {
-            (Some(Seen::Group(acc)), Some(t)) => acc.extend(t),
-            (slot, _) => *slot = None,
-        }
-    }
     pub(super) fn whole(&mut self, tid: &Tid, ak: &Ak) {
         self.0.insert((*tid, ak.clone()), None);
     }
 }
 
-/// `observe_state`, reading only the touched `secrets.0` entries and `group.0` records where known.
+/// `observe_state`, reading only the touched `secrets.0` entries where known.
 fn observe_touched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, touched: &Touched) -> Result<()> {
     match touched.0.get(&(*tid, ak.clone())) {
         Some(Some(Seen::Secrets(boxes, history))) => observe_secrets_keys(tx, tid, boxes, history),
-        Some(Some(Seen::Group(tids))) => crate::engine::groups::refresh(tx, tid, ak, tids),
         _ => observe_state(tx, tid, ak),
     }
 }
@@ -960,51 +943,24 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
     Ok(())
 }
 
-/// Keeps the indexes derived from states current: secrets opened from `secrets.0`, inbox
-/// delete-key hints `keys.0` replaces, group definitions.
+/// Keeps the indexes derived from states current: secrets opened from `secrets.0`.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0") {
+    if ak.as_str() != "secrets.0" {
         return Ok(());
     }
     let v = tx.state(tid, ak)?.and_then(Fragment::read);
-    match ak.as_str() {
-        "secrets.0" => {
-            let alts = tx.state(tid, ak)?.map(crate::engine::secrets::history_alts).unwrap_or_default();
-            // no state (every delta stripped) holds no live entry
-            let s = v.as_ref().and_then(crate::engine::secrets::secrets_value).unwrap_or_default();
-            if tx.core.ingest_secrets(tid, &s, crate::engine::secrets::SecretsRead::State, &alts)
-                && let Some(e) = tx.core.ix.secrets.get(tid)
-            {
-                let b = crate::engine::secrets::encode_epochs(e);
-                tx.txn.put_local(&[crate::engine::records::SECRETS, tid.as_bytes()].concat(), &b, Shred::Yes)?;
-                // boxes sealed to this actor elsewhere open now (role flows hook)
-                crate::flows::reopen_dependents(tx, *tid)?;
-            }
-        }
-        "keys.0" => {
-            if let Some(k) = v.as_ref().and_then(crate::engine::secrets::keys_value) {
-                tx.core.observe_keys(tid, &k);
-            }
-        }
-        // every path that changes a `group.0` (late deltas, re-judging) updates `groups.0`
-        "group.0" => {
-            let _s = osis_base::costs::span("group.0 read whole");
-            let def = group_def(v);
-            // an ephemeral membership carries nothing durable away (`Core::note_cut`)
-            if !tx.core.memory_tx {
-                let cut: Vec<Tid> = tx.core.ix.groups.listing(tid, crate::engine::groups::SUBGROUPS).filter(|s| !def.as_ref().is_some_and(|d| d.1.contains(*s))).copied().collect();
-                tx.core.note_cut(tid, &cut);
-            }
-            tx.core.ix.groups.set(*tid, def)
-        }
-        _ => {}
+    let alts = tx.state(tid, ak)?.map(crate::engine::secrets::history_alts).unwrap_or_default();
+    // no state (every delta stripped) holds no live entry
+    let s = v.as_ref().and_then(crate::engine::secrets::secrets_value).unwrap_or_default();
+    if tx.core.ingest_secrets(tid, &s, crate::engine::secrets::SecretsRead::State, &alts)
+        && let Some(e) = tx.core.ix.secrets.get(tid)
+    {
+        let b = crate::engine::secrets::encode_epochs(e);
+        tx.txn.put_local(&[crate::engine::records::SECRETS, tid.as_bytes()].concat(), &b, Shred::Yes)?;
+        // boxes sealed to this actor elsewhere open now (role flows hook)
+        crate::flows::reopen_dependents(tx, *tid)?;
     }
     Ok(())
-}
-
-/// A `group.0` value's (items, subgroups).
-pub(crate) fn group_def(v: Option<Value>) -> Option<(BTreeSet<Tid>, BTreeSet<Tid>)> {
-    v.and_then(|v| osis_schema::RawKey::decode(&osis_schema::core_types::GROUP, &v).ok()).map(|g| (g.items, g.subgroups))
 }
 
 /// What a transaction changed (`check_rebuilt`).
@@ -1122,11 +1078,6 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
         let (got, want) = (plain(got), plain(want));
         let same = got.as_ref().map(encode).transpose()? == want.as_ref().map(encode).transpose()?;
         debug_assert!(same, "state of {tid:?} {ak:?} differs from a rebuild from held bodies:\n{}", text_diff(&format!("{got:#?}"), &format!("{want:#?}")));
-        // and the group index, derived from it
-        if ak.as_str() == "group.0" {
-            let def = group_def(got.as_ref().and_then(Fragment::read));
-            debug_assert_eq!(tx.core.ix.groups.def(&tid), def, "the group index of {tid:?} differs from its state");
-        }
     }
     Ok(change)
 }
@@ -1194,10 +1145,6 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         crate::retention::strip_carried(tx, c, *ai)?;
     }
     tx.set_state(tid, ak, st, Shred::Yes)?;
-    // members gone by expiry, purge, a keep bound or validity leave the group index with them
-    if ak.as_str() == "group.0" {
-        observe_state(tx, tid, ak)?;
-    }
     crate::retention::mark_bounded(tx, tid, ak);
     Ok(())
 }
@@ -1242,10 +1189,6 @@ pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, ow
     tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
     crate::engine::refs::note(tx, tid, ak, refs.unwrap_or_default())?;
     crate::retention::compact::Trigger::unlinked(tx, tid, ak, &roots, &after)?;
-    // members gone by expiry leave the group index with them
-    if ak.as_str() == "group.0" {
-        observe_state(tx, tid, ak)?;
-    }
     Ok(())
 }
 

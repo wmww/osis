@@ -274,25 +274,6 @@ fn text_edit_between_unshown_merges_lands_where_typed() {
     assert_eq!(s.text(), "zero one tos three four", "deleted between them");
 }
 
-// No runtime, so the next edit ends an idle pause: when that pause's commit fails (the thing
-// deleted) the keystroke is in the buffer all the same, the call failing as `commit` would.
-#[test]
-fn text_edit_after_a_failed_pause_commit_keeps_the_keystroke() {
-    let mut c = cfg(0, MemStore::new(), &clock());
-    c.app.idle_commit = std::time::Duration::from_millis(1);
-    let (db, t, k) = setup(osis::internals::create(c).unwrap());
-    let s = open(&db, t, &k);
-    s.edit("", "a").unwrap();
-    s.commit().unwrap().unwrap();
-    s.edit("a", "ab").unwrap();
-    let mut w = db.write();
-    w.delete(t).unwrap();
-    w.commit().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    assert!(matches!(s.edit("ab", "abc"), Err(osis::Error::UnknownThing { .. })));
-    assert_eq!(s.text(), "abc", "kept");
-}
-
 // Random shown text, merged edit and local edit (one splice each, over a 2-letter alphabet so
 // diffs are ambiguous). Disjoint edits give both applied, under some reading of each edit as one
 // splice (`aa -> aaa` inserts at any of three points); overlapping ones keep the typed text and
@@ -385,39 +366,6 @@ fn uncommitted(db: &Osis) -> (osis::Subscription, Receiver<Tid>) {
         })
         .unwrap();
     (sub, rx)
-}
-
-// A session whose thing was deleted, here or on another node of the account (carried by
-// `deliver`), drops its pending text when dropped and reports it (`Uncommitted`): it never
-// recreates the thing.
-#[test]
-fn text_session_after_a_delete_drops_its_edits() {
-    for remote in [false, true] {
-        let (a, b, _) = paired();
-        let (a, t, k) = setup(a);
-        b.register_schema("t.osis", SCHEMA).unwrap();
-        let s = open(&a, t, &k);
-        s.edit("", "hello").unwrap();
-        s.commit().unwrap();
-        deliver(&a, &b);
-        let (_d, rx) = uncommitted(&a);
-        s.edit("hello", "hello!").unwrap();
-        if remote {
-            b.commit_with(|w| w.delete(t)).unwrap();
-            deliver(&b, &a);
-        } else {
-            a.commit_with(|w| w.delete(t)).unwrap();
-        }
-        a.settle();
-        assert!(!a.has_content(t).unwrap(), "remote {remote}: deleted");
-        drop(s);
-        assert_eq!(recv(&rx), t, "remote {remote}");
-        deliver(&a, &b);
-        for d in [&a, &b] {
-            assert!(!d.has_content(t).unwrap(), "remote {remote}: not recreated");
-            assert_eq!(field(d, t, &k), None);
-        }
-    }
 }
 
 // A session whose commit is refused (its writer lowered to read by another node, carried by

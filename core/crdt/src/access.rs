@@ -86,19 +86,6 @@ impl Fragment {
         }
     }
 
-    /// The value of the live element created at `dot` in the set at struct field `field` of this
-    /// state (§5.5); `None` when it is not live here.
-    pub fn set_elem_value(&self, field: u64, dot: &Dot) -> Option<Value> {
-        let (set, _) = self.struct_set(field)?;
-        crate::fragment::live_elems(&set?.elems).find(|(d, _, _)| *d == dot).map(|(_, _, v)| v)
-    }
-
-    /// The greatest creation stamp of a live element of value `v` in the set at struct field
-    /// `field` of this state (§5.5).
-    pub fn set_live_elem(&self, field: u64, v: &Value) -> Option<Stamp> {
-        let (set, _) = self.struct_set(field)?;
-        crate::fragment::live_elems(&set?.elems).filter(|(_, _, x)| x == v).filter_map(|(_, e, _)| Some(e.written()?.1.clone())).max()
-    }
     /// The stamp of a register's write (`None`: no register, or none written).
     pub fn write_stamp(&self) -> Option<&Stamp> {
         match self {

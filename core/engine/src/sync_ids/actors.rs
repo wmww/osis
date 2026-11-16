@@ -151,13 +151,6 @@ impl Engine {
         self.core.may_read(x, t)
     }
 
-    /// The things of a group's closure (spec/sync-set.md §2): the group and every thing it contains
-    /// through `group.0`, transitively through subgroups. The same `Arc` while it does not change
-    /// (`Groups::closure`), so node-sync reuses what it derived from it.
-    pub fn closure(&self, g: &Tid) -> std::sync::Arc<BTreeSet<Tid>> {
-        self.core.ix.groups.closure(g)
-    }
-
     /// Things with a `sync.0` state.
     pub fn things_with_sync_ids(&self) -> Vec<Tid> {
         self.core.ix.sync_recorded.iter().copied().collect()
@@ -185,18 +178,6 @@ impl Engine {
         Memo::get_in(self, |e| &e.core.inbox_actors, &(), read).unwrap_or_default()
     }
 
-    /// The actors whose inbox is sync ID `s` (`inbox_actors`' entry): a read of that entry alone
-    /// (`Core::inboxes`), up to date when asked; `refresh_inboxes` brings it up to date for
-    /// followers.
-    pub(crate) fn inbox_actors_at(&mut self, s: &SyncId) -> Vec<Tid> {
-        osis_base::memo::Spread::get_in(self, |e| &e.core.inboxes, s, |e| Ok::<_, ()>(e.inbox_actors().as_ref().clone())).ok().flatten().unwrap_or_default()
-    }
-
-    /// Brings `Core::inboxes` up to date (`inbox_actors_at`).
-    pub(crate) fn refresh_inboxes(&mut self) {
-        let _ = osis_base::memo::Spread::refresh_in(self, |e| &e.core.inboxes, |e| Ok::<_, ()>(e.inbox_actors().as_ref().clone()));
-    }
-
     /// The sync IDs `g` owns as its `sync.0` records them (`owns`), each with its recorded path;
     /// hints while this node holds no sync secret of `g`'s own. Decoded once per write of the
     /// `sync.0` (`Core::sync_ids`). A destroyed thing has the ones its destruction kept
@@ -212,16 +193,6 @@ impl Engine {
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
             let m = e.get_typed(g, &ct::SYNC)?.unwrap_or_default();
             let mut out = owned_in(&e.core, g, &m);
-            // a sync ID a taken inbox blob named, until a `sync.0` here gives one, while no applied
-            // `sync.0` records it and the blob is unexpired (spec/sync-inbox.md §2): followed with
-            // no recorded path
-            if out.is_empty()
-                && let Some((s, expires)) = e.core.ix.inbox_hints.get(g).copied()
-                && !crate::sync::inbox::recorded(e, &s)
-                && e.core.time.until(Some(expires.0)) < expires.0
-            {
-                out.push(OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true });
-            }
             if out.is_empty()
                 && let Some(h) = followed(e, g)
             {
@@ -324,28 +295,26 @@ impl FollowedLinks {
 /// A link being redeemed (`Engine::follow_link`): K's sync ID from its link text, followed with no
 /// recorded path while the link text is all this node has of it (spec/sync-set.md §2). The link
 /// text is untrusted: its K must be a link's K or unknown here (`followable`), and its sync ID no
-/// other thing's here (no applied `sync.0` records it, no sync record, destroyed thing, inbox hint
-/// or other followed link names it), else it is nobody's.
+/// other thing's here (no applied `sync.0` records it, no destroyed thing or other followed link
+/// names it), else it is nobody's.
 fn followed(e: &Engine, k: &Tid) -> Option<OwnedSyncId> {
     let (s, _) = e.core.followed_links.get(k)?;
     let ix = &e.core.ix;
-    let elsewhere = crate::sync::inbox::recorded(e, &s)
-        || ix.record_ids.get(&s).is_some_and(|x| !x.is_empty())
+    let elsewhere = ix.sync_recorders.get(&s).is_some_and(|x| !x.is_empty())
         || ix.destroyed_sync_ids.values().any(|v| v.iter().any(|o| o.id == s))
-        || ix.hinted.get(&s).is_some_and(|x| x.iter().any(|t| t != k))
         || e.core.followed_links.naming(&s).iter().any(|t| t != k);
     (followable(e, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true })
 }
 
 /// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K
-/// (its creation record has the `link` field), or one it knows nothing of yet (no record, sync
-/// record or destruction). A link text naming any other thing as K changes nothing of it.
+/// (its creation record has the `link` field), or one it knows nothing of yet (no record or
+/// destruction). A link text naming any other thing as K changes nothing of it.
 pub(crate) fn followable(e: &Engine, k: &Tid) -> bool {
     if !e.core.followed_links.contains(k) {
         return false;
     }
     match e.core.created(k) {
         Some(r) => r.link_target().is_some(),
-        None => !e.core.ix.sync_records.contains_key(k) && !e.core.ix.destroyed_sync_ids.contains_key(k),
+        None => !e.core.ix.destroyed_sync_ids.contains_key(k),
     }
 }

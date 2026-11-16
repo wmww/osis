@@ -9,7 +9,6 @@ pub(crate) mod blobs;
 pub(crate) mod clock;
 pub(crate) mod decoded;
 pub(crate) mod edits;
-pub(crate) mod groups;
 pub(crate) mod held;
 pub(crate) use held::On;
 pub mod listing;
@@ -111,9 +110,6 @@ pub enum Hold {
 pub enum Missing {
     #[default]
     Plain,
-    /// Dropped with a released thing forgotten here (spec/commits.md §5 Forgetting): dead at
-    /// every node, so it keeps no header; a copy arriving joins it as any missing part.
-    Forgot,
     /// Reopened to be fetched again (`retention::reopen_to_fetch`: valid again, uncovered, a
     /// fall), memory class: a memory commit holding no part stays known while one is
     /// (`retention::kept_invalid`), so a superseded part beside it does not take the commit, and
@@ -259,7 +255,7 @@ impl Meta {
     /// A commit's meta from its decoded header: parts in `missing` missing, the rest as `head`
     /// says (`Hold::stored`).
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, mut head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false, false)).collect();
+        let hold = (0..valid.len()).map(|ai| Hold::stored(ai, &mut head, missing.contains(&ai), false)).collect();
         Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, repair: head.repair.clone(), signed: head.signed, valid, hold }
     }
     /// The index of aspect `(tid, ak)` in the commit.
@@ -360,14 +356,14 @@ impl Meta {
 
 impl Hold {
     /// Part `ai` as stored: `head`'s dropped and stripped parts (its `Dropped` taken), then the
-    /// meta row's `missing`, `whole` and `forgot` bits (`index::meta_row`).
-    pub(crate) fn stored(ai: usize, head: &mut index::RecordHead, missing: bool, whole: bool, forgot: bool) -> Hold {
+    /// meta row's `missing` and `whole` bits (`index::meta_row`).
+    pub(crate) fn stored(ai: usize, head: &mut index::RecordHead, missing: bool, whole: bool) -> Hold {
         if let Some(d) = head.dropped.remove(&ai) {
             Hold::Dropped(d)
         } else if head.stripped.contains(&ai) {
             Hold::Leftover { whole, valued: head.valued.contains(&ai) }
         } else if missing {
-            Hold::Missing(if forgot { Missing::Forgot } else { Missing::Plain })
+            Hold::Missing(Missing::Plain)
         } else {
             Hold::Body { whole }
         }
@@ -429,7 +425,7 @@ impl View {
             memory: h.ephemeral.is_some(),
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, replaces: a.replaces, original_floor: a.original_floor }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
-            purges: h.has_request(),
+            purges: !h.purge.is_empty(),
             epoch: h.epoch,
             own_cover: h.own_cover,
         }
@@ -724,7 +720,7 @@ indexes! {
     /// Commits with a part invalid here, per aspect (`Core::index_validity`).
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held commits with a part not held (`Hold::Missing`), per aspect, AK first: the groups whose
-    /// `group.0` may list what a delete removes (`Engine::listing_groups`).
+    /// the commits a removal of a tid there must cover (`write::seeing`).
     pub missing: JSetMap<(Ak, Tid), CommitId>,
     /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
     /// and whether its body is held. Invariant (also for `by_thing`): it finds
@@ -835,23 +831,8 @@ indexes! {
     /// Destroyed things' own sync IDs, read from the destruction until emptied
     /// (`records::DESTROYED_SYNC_IDS`, `retention::destroy::keep_sync_ids`).
     pub destroyed_sync_ids: JMap<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
-    /// Per thing, the account's grants live on it when this node stopped sharing it
-    /// (`records::UNSHARED`, `sync::set::unshare_here`): it is shared again by another one alone.
-    pub unshared: JSetMap<Tid, CommitId>,
-    /// The account's sync records (`kept^.0` on D, by thing; `sync::records::observe`).
-    pub sync_kept: JMap<Tid, Arc<osis_schema::core_types::Kept>>,
-    /// The boxes payloads held (`sync::records`, persisted), and those offering each thing.
-    pub offers: JMap<osis_base::BlobId, Arc<crate::sync::records::Offer>>,
-    pub offered: JSetMap<Tid, osis_base::BlobId>,
-    /// The sync record view per thing kept unread (`sync::records::refresh`: `sync_kept` with
-    /// `offers`, spec/sync.md §3).
-    pub sync_records: JMap<Tid, Arc<crate::sync::SyncRecord>>,
-    /// The things whose sync record names each sync ID (`sync_records` inverted).
-    pub record_ids: JSetMap<SyncId, Tid>,
     /// Freed links judged freed, by (blob, thing) (`retention::freed`): what sync deletes.
     pub freed: JMap<(osis_base::BlobId, Tid), Arc<crate::retention::freed::Freed>>,
-    /// Inbox deliveries owed per (commit, holder) (`sync::deliveries`).
-    pub owed_inbox: JMap<(CommitId, Tid), Arc<crate::sync::deliveries::Owed>>,
     /// The commit, parts and unopened sections each opened or sealed blob holds (`sync::bodies`).
     pub blob_parts: JMap<osis_base::BlobId, Arc<crate::sync::BlobOf>>,
     /// `blob_parts`' blobs per commit: they go with it (`sync::bodies::forget`).
@@ -882,13 +863,6 @@ indexes! {
     /// Per (actor, holder), a re-seal a stranded report asked for (`sync::stranded`, rows `rs/`):
     /// an event, so no rebuild compares it.
     pub reseal_asks: JMap<(Tid, Tid), crate::sync::stranded::Ask>,
-    /// Inbox blobs held untaken (`sync::inbox`, spec/sync-inbox.md §2 invite requests).
-    pub waiting_inbox: JMap<osis_base::BlobId, Arc<crate::sync::WaitingBlob>>,
-    /// Per thing, the sync ID a taken inbox blob's payload named for it while no applied `sync.0`
-    /// records one it owns (`sync::inbox`, spec/sync-inbox.md §2 Following a payload sync ID).
-    pub inbox_hints: JMap<Tid, (SyncId, WallMs)>,
-    /// The things `inbox_hints` names each sync ID for (`inbox_hints` inverted).
-    pub hinted: JSetMap<SyncId, Tid>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
@@ -912,12 +886,6 @@ indexes! {
     pub sync_recorders: JSetMap<SyncId, Tid>,
     /// Per thing with a `sync.0` state, the sync IDs it records (`sync_recorders` inverted).
     pub sync_recorded_ids: JMap<Tid, BTreeSet<SyncId>>,
-    /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),
-    /// listed until their `keys.0` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
-    /// a commit that applied valid, by an admin of the thing, touching it; the first kept.
-    pub delete_hints: JMap<Tid, osis_base::Value>,
-    /// `group.0` definitions and `groups.0` (thing -> groups containing it, transitively).
-    pub groups: groups::Groups,
     /// Keyed `roles.0` entries seen: (target, entry dot) -> (holder, created value).
     pub holder_keys: JMap<(Tid, Dot), Tid>,
     /// Role commits whose removed keys are not known yet.
@@ -970,8 +938,6 @@ indexes! {
     pub timed_lost: JMap<Tid, u64>,
     /// Kept copies (`rotation::lost`): each lost actor kept and the holders it hangs on.
     pub kept: JMap<Tid, BTreeSet<Tid>>,
-    /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
-    pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
     /// Things holding a purge-on-replace body this node would cover, an aspect the trigger owes
     /// a weighing (`compact::Trigger::owe`) or an owed re-snapshot (`resnapshots_owed`), but may
     /// not write on yet (`MayWrite::Later`: their minting or delete keys are not here), under
@@ -1096,10 +1062,6 @@ pub struct Core {
     pub(crate) sync_things: memo::Memo<(), Arc<BTreeSet<Tid>>>,
     /// `Engine::thing_sync` per thing and `Engine::sync_set` (`memo`): sync reads them every step.
     pub(crate) thing_sync: memo::Memo<Tid, crate::sync::ThingSync>,
-    /// `Engine::shares` per thing (`memo`).
-    pub(crate) shares: memo::Memo<Tid, bool>,
-    /// `Engine::shared_here` (`memo`).
-    pub(crate) shared_here: memo::Memo<(), Arc<BTreeSet<Tid>>>,
     pub(crate) sync_set: memo::Memo<(), Arc<crate::sync::SyncSet>>,
     /// `Engine::dial_peers` per sync ID (`memo`): sync's dials read it at each move of what it read.
     pub(crate) dial_peers: memo::Memo<SyncId, Arc<Vec<osis_base::Address>>>,
@@ -1205,10 +1167,6 @@ pub struct Core {
     pub(crate) commits_watched: bool,
     /// Someone may listen to backlinks (`Engine::watch_references`).
     pub(crate) refs_watched: bool,
-    /// The role timelines changed since the lifetime judgment last ran: its pending things are
-    /// judged again, a right may have come (`retention::lifetimes`). Stamped: sync follows
-    /// `Engine::lifetimes_due`.
-    pub(crate) lifetimes_rights: osis_base::memo::Tracked<bool>,
     /// What `Core::commits_named` noted in the running transaction.
     commits_named: Vec<(Tid, Ak, CommitId)>,
     /// Whether a commit listener is on a thing (`Engine::listen_commits`).
@@ -1380,10 +1338,6 @@ pub struct Core {
     /// Freed rows (thing, blob) whose judgment waits for a node blob not held, by that blob:
     /// judged again once it is (`retention::freed`). Memory only: a start judges every row.
     pub freed_waits: BTreeMap<osis_base::BlobId, BTreeSet<(Tid, osis_base::BlobId)>>,
-    /// Subgroups cut this transaction from under a synced group (`Core::note_cut`): what they
-    /// held is reported at its end where nothing carries it now (`Core::stranded_by_cut`); forgotten with
-    /// the journal.
-    pub cut_subs: BTreeSet<Tid>,
     /// The commits on durable signal aspects `edits::settle` refolds besides those the journal
     /// names: a keep bound passed with no meta changing (`edits::time_passed`).
     pub refold: BTreeSet<(Tid, Ak, CommitId)>,
@@ -1449,14 +1403,10 @@ pub struct Core {
     pub(crate) walks: crate::apply::reach::Walks,
     /// `Engine::owned_sync_ids` per thing (`memo`).
     pub(crate) sync_ids: memo::Memo<Tid, Arc<Vec<crate::sync::OwnedSyncId>>>,
-    /// `Engine::sync_roots` (`memo`).
-    pub(crate) sync_roots: memo::Memo<(), [Option<Tid>; 2]>,
     /// The sync set per sync ID (`sync::rows`), followed per thing.
     pub(crate) sync_rows: crate::sync::rows::SyncRows,
     /// `Engine::pass_wanted` per sync ID asked (`memo::Cutoff`), refreshed by `follow`.
     pub(crate) pass_wanted: memo::Cutoff<SyncId, Option<u64>>,
-    /// The tied grants' pass wants, folded (`memo`).
-    pub(crate) tie_wants: memo::Memo<(), Arc<BTreeMap<SyncId, u64>>>,
     /// `Engine::setting_wants` (`memo`).
     pub(crate) setting_wants: memo::Memo<(), Arc<BTreeMap<SyncId, u64>>>,
     /// `Engine::published_under` for every actor, followed per thing with a sync ID
@@ -1490,8 +1440,6 @@ impl Core {
             read_credentials: self.read_credentials.clone(),
             sync_things: self.sync_things.clone(),
             thing_sync: self.thing_sync.clone(),
-            shares: self.shares.clone(),
-            shared_here: self.shared_here.clone(),
             sync_set: self.sync_set.clone(),
             dial_peers: self.dial_peers.clone(),
             roster_holders: self.roster_holders.clone(),
@@ -1536,7 +1484,6 @@ impl Core {
             skip_writer_rules: self.skip_writer_rules.clone(),
             commits_watched: self.commits_watched.clone(),
             refs_watched: self.refs_watched.clone(),
-            lifetimes_rights: self.lifetimes_rights.clone(),
             commits_named: self.commits_named.clone(),
             commit_listeners: None,
             listed_before: self.listed_before.clone(),
@@ -1602,7 +1549,6 @@ impl Core {
             forgotten_names_due: self.forgotten_names_due.clone(),
             handed_due: self.handed_due.clone(),
             freed_waits: self.freed_waits.clone(),
-            cut_subs: self.cut_subs.clone(),
             refold: self.refold.clone(),
             wakes: self.wakes.clone(),
             resnapshots_due: self.resnapshots_due.clone(),
@@ -1626,10 +1572,8 @@ impl Core {
             memory_waits: self.memory_waits.clone(),
             walks: self.walks.clone(),
             sync_ids: self.sync_ids.clone(),
-            sync_roots: self.sync_roots.clone(),
             sync_rows: self.sync_rows.clone(),
             pass_wanted: self.pass_wanted.clone(),
-            tie_wants: self.tie_wants.clone(),
             setting_wants: self.setting_wants.clone(),
             published: self.published.clone(),
             own_commits: self.own_commits.clone(),
@@ -1877,7 +1821,6 @@ impl Core {
             let ever = self.ix.held.take_ever();
             self.timelines.ever_moved(&ever);
             self.timelines_changed(changed);
-            self.lifetimes_rights.set(true);
             if self.detect {
                 crate::sides::after_update(self);
             }
@@ -1911,7 +1854,6 @@ impl Core {
         self.sides.commit();
         self.waits.retake_committed();
         self.written.clear();
-        self.cut_subs.clear();
         self.reach_log.clear();
         self.dirty = false;
     }
@@ -2084,8 +2026,6 @@ impl Core {
             read_credentials: _,
             sync_things: _,
             thing_sync: _,
-            shares: _,
-            shared_here: _,
             sync_set: _,
             dial_peers: _,
             roster_holders: _,
@@ -2104,10 +2044,8 @@ impl Core {
             held_writes_rows: _,
             acting_of: _,
             sync_ids: _,
-            sync_roots: _,
             sync_rows: _,
             pass_wanted: _,
-            tie_wants: _,
             setting_wants: _,
             links: _,
             caught_up: _,
@@ -2140,7 +2078,6 @@ impl Core {
             forgotten_names_due: _,
             handed_due: _,
             freed_waits: _,
-            cut_subs: _,
             refold: _,
             none_due: _,
             settings_due: _,
@@ -2149,7 +2086,6 @@ impl Core {
             valueless_dirty: _,
             destroyed_due: _,
             destroyed_kept: _,
-            lifetimes_rights: _,
             wakes: _,
             resnapshots_due: _,
             openings: _,
@@ -2305,8 +2241,6 @@ impl Core {
             read_credentials: memo::Memo::new("sync: read credentials"),
             sync_things: memo::Memo::new("sync: things"),
             thing_sync: memo::Memo::new("sync: thing sync"),
-            shares: memo::Memo::new("sync: shares"),
-            shared_here: memo::Memo::new("sync: shared here"),
             sync_set: memo::Memo::new("sync: sync set"),
             dial_peers: memo::Memo::new("sync: dial peers"),
             roster_holders: memo::Memo::new("sync: roster holders"),
@@ -2359,11 +2293,6 @@ impl Core {
             skip_writer_rules: false,
             commits_watched: false,
             refs_watched: false,
-            lifetimes_rights: {
-                let mut t = osis_base::memo::Tracked::default();
-                t.set(true);
-                t
-            },
             commits_named: Vec::new(),
             commit_listeners: None,
             listed_before: Vec::new(),
@@ -2432,7 +2361,6 @@ impl Core {
             forgotten_names_due: BTreeSet::new(),
             handed_due: BTreeSet::new(),
             freed_waits: BTreeMap::new(),
-            cut_subs: BTreeSet::new(),
             refold: BTreeSet::new(),
             wakes: None,
             resnapshots_due: BTreeSet::new(),
@@ -2456,10 +2384,8 @@ impl Core {
             memory_waits: BTreeSet::new(),
             walks: Default::default(),
             sync_ids: memo::Memo::new("sync IDs of"),
-            sync_roots: memo::Memo::new("sync: roots"),
             sync_rows: Default::default(),
             pass_wanted: memo::Cutoff::new("sync: pass wanted"),
-            tie_wants: memo::Memo::new("sync: tie wants"),
             setting_wants: memo::Memo::new("sync: setting wants"),
             published: Default::default(),
             own_commits: Default::default(),
@@ -2542,13 +2468,6 @@ impl Core {
         Ok(())
     }
 
-    /// At the end of a transaction: the things whose `groups_of` answer it changed are told.
-    fn groups_moved(&mut self) {
-        let moved = std::mem::take(&mut self.ix.groups.moved);
-        if !moved.is_empty() {
-            self.events.queue(crate::events::Event::Groups(Arc::new(moved.into_iter().collect())));
-        }
-    }
 
     /// A held commit changed: if it is a rotation, its account gets the next rotation number
     /// (`Indexes::rotations`: what `refresh_epochs` judges the account again by,
@@ -3118,9 +3037,6 @@ impl Tx<'_> {
     /// Keeps the index derived from states at the state `f` of `(tid, ak)`, whatever wrote it:
     /// `Indexes::sync_recorded`.
     fn derive(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
-        if ak.as_str() == "kept^.0" && self.core.account_devices().is_some_and(|(_, d)| d == *tid) {
-            crate::sync::records::observe(self.core, f);
-        }
         if ak.as_str() == "sync.0" {
             let before = self.core.ix.sync_recorded_ids.get(tid).cloned().unwrap_or_default();
             let after = f.map(crate::sync::recorded_ids).unwrap_or_default();
@@ -3481,7 +3397,6 @@ impl Engine {
         self.take_account()?;
         self.reexamine()?;
         self.forget_gone_causes()?;
-        crate::sync::set::prune_unshared(self)?;
         self.rejudge_setting_waits()?;
         // a leftover held from before goes uncovered no longer than a quiet time from here
         // (spec/sync-compaction.md §1 trigger)
@@ -3676,7 +3591,6 @@ impl Engine {
         }
         drop(tx);
         self.core.rollback_to(start);
-        self.core.cut_subs.clear();
         r
     }
 
@@ -3797,9 +3711,6 @@ impl Engine {
                 if r.is_ok() {
                     r = r.and_then(|v| Core::commit_changes(&mut tx).map(|_| v));
                 }
-                if r.is_ok() {
-                    tx.core.groups_moved();
-                }
                 // every validity change was judged before the index is persisted
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty() && tx.core.ix.epochs_due.is_empty()), "stale validity left unjudged: {:?} {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits, *tx.core.ix.epochs_due);
                 #[cfg(debug_assertions)]
@@ -3866,10 +3777,7 @@ impl Engine {
                 if let Some(d) = self.core.walks_done.take() {
                     self.core.timelines.aside().saved(d);
                 }
-                let now = self.now();
-                let stranded = self.core.stranded_by_cut();
                 self.core.commit_journal();
-                self.report_cut(stranded, now);
                 self.core.memory_tx = false;
                 self.core.events.flush();
                 // what the transaction moved may end a setting wait or start one again
@@ -3890,7 +3798,6 @@ impl Engine {
             }
             Err(e) => {
                 self.core.walks_done = None;
-                self.core.cut_subs.clear();
                 self.core.forget_reach_since(start.reached);
                 self.core.rollback_to(start);
                 Err(e)
@@ -3918,7 +3825,6 @@ impl Engine {
         fresh.wakes = self.core.wakes.take();
         // the group sources are the handle's, set between transactions (`set_sourced`)
         fresh.sourced_elsewhere = std::mem::take(&mut self.core.sourced_elsewhere);
-        let cut = self.core.ix.groups.cut().clone();
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;
@@ -3926,7 +3832,6 @@ impl Engine {
             crate::apply::load(&mut tx, rebuild)
         };
         crate::apply::load_waits(&mut self.core);
-        self.core.ix.groups.set_cut(cut);
         #[cfg(debug_assertions)]
         self.core.rebuilt_edges.clear();
         self.core.commit_journal();
@@ -4036,8 +3941,6 @@ impl Engine {
             // leaves the open as it is)
             let _ = self.run(|_| Ok(()));
         }
-        // the account's sync records, read once its D is known (`take_account` at an open)
-        self.run(crate::sync::records::observe_own)?;
         self.start_detection();
         Ok(())
     }
@@ -4123,7 +4026,7 @@ mod tests {
 
     fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
         let (path, op) = match role {
-            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, tied: None, floor: None }.to_value())),
+            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, floor: None }.to_value())),
             None => (Vec::new(), Op::Remove(Value::Tid(m))),
         };
         let mut mu = Mutation::new();
@@ -4275,41 +4178,6 @@ mod tests {
         assert!(failed >= 12, "{failed} failed");
         assert_eq!(lp.peers[2].engine.get(&g, &kept).unwrap(), lp.peers[0].engine.get(&g, &kept).unwrap());
         assert!(lp.peers[2].engine.core.ix.pending.is_empty());
-    }
-
-    // spec/wire.md §9: a transaction that promotes delete-key hints and then fails (here by an
-    // error, which leaves the store usable: no reopen drops the candidates) keeps them.
-    #[test]
-    fn failed_promotion_keeps_hint_candidates_spec_wire_9() {
-        let mut lp = LocalPeer::fresh(2, WallMs(1_700_000_000_000));
-        lp.sync_all().unwrap();
-        let a = lp.peers[0].engine.me();
-        let mut m = Mutation::new();
-        let g = lp.peers[0].engine.new_thing(&mut m, a);
-        write(&mut m, g, "new");
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([7; 32])).verifying_key();
-        let hint = osis_blob::InboxThing { tid: g, sync_id: None, delete_keys: Some((dk, dk)) };
-        let e = &mut lp.peers[1].engine;
-        e.note_delete_hints(c, &[hint]).unwrap();
-        assert_eq!(e.core.ix.hint_candidates.len(), 1);
-        lp.sync(0, 1).unwrap();
-        let e = &mut lp.peers[1].engine;
-        assert!(!e.core.ix.delete_hints.contains_key(&g) && !e.core.ix.own_keys.contains(&g));
-        let r: crate::Result<()> = e.run(|tx| {
-            tx.core.promote_hints();
-            assert!(tx.core.ix.delete_hints.contains_key(&g));
-            Err(crate::Error::Misuse("fails after promoting"))
-        });
-        assert!(r.is_err());
-        assert!(!e.core.ix.delete_hints.contains_key(&g));
-        assert_eq!(e.core.ix.hint_candidates.len(), 1, "the candidate went with the failed transaction");
-        e.run(|tx| {
-            tx.core.promote_hints();
-            Ok(())
-        })
-        .unwrap();
-        assert!(e.core.ix.delete_hints.contains_key(&g));
     }
 
     // spec: none (the local schema of an app AK, notes/data-model.md AKs): the highest

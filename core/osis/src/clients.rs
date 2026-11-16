@@ -61,14 +61,8 @@ impl Osis {
         let secret = ClientSecret::generate();
         let entry = secret.entry(until);
         let (me, node) = (self.me(), self.node());
-        let home = self.home();
-        let (actor, _) = self.engine(|e| {
-            e.mint_actor(&me, |a| {
-                let mut m = osis_engine::Mutation::new();
-                m.op(home, &ct::GROUP, crate::write::group_op(true, a, true))?;
-                Ok(m)
-            })
-        })?;
+        // refgraph: (b) the client's actor held from the account root
+        let (actor, _) = self.engine(|e| e.mint_actor(&me, |_| Ok(osis_engine::Mutation::new())))?;
         // a commit of the node's own: only it writes its thing (a crash before it leaves an
         // actor no client can reach, holding nothing)
         self.engine(|e| {
@@ -94,7 +88,7 @@ impl Osis {
     /// wrote went through this node, so there is nothing elsewhere to catch up on, and a client's
     /// actor has no node to keep a copy. A role this node may not remove fails here, as does one
     /// on a thing this node reads at another node (`Unsupported`, the sessions ended, the entry
-    /// staying: move its group home and call this again).
+    /// staying: move its sync unit home and call this again).
     /// `Unsupported` on a client with its own actor.
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
         self.local("remove_client")?;

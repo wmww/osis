@@ -1187,22 +1187,6 @@ pub fn siblings() -> World {
     })
 }
 
-/// `two_nodes` with node 2 paired to node 1's account, and only node 0's account holding
-/// account 1's contact card (account 1 holds nothing of account 0's: a stranger to it), quiet.
-pub fn stranger_siblings() -> World {
-    fixture("stranger siblings", || {
-        let mut w = two_nodes();
-        let card = w.make_link(1, w.node(1).profile.expect("a profile"), osis_base::Role::Read);
-        w.redeem(0, &card);
-        w.run();
-        assert_eq!(w.redeem(0, &card), osis_sync::types::Waiting::Done, "node 0 redeems node 1's card");
-        history::file(&mut w, 0, Vec::new(), vec![card.target]);
-        w.pair(1);
-        w.run();
-        w
-    })
-}
-
 /// One step of a scripted run: what a random layer generates and `play` replays. Printed as
 /// Rust on failure (`osis_base::testenv::Script`; `use crate::harness::script::*` brings every
 /// name a printed step uses).
@@ -1293,7 +1277,6 @@ pub const SHRINK_VAR: &str = "OSIS_SYNC_SHRINK";
 /// Plays one step on `w`; a note of what it did (empty: nothing to say).
 pub fn step(w: &mut World, s: &Step) -> String {
     let note = step_of(w, s);
-    history::accept(w);
     w.check_parks();
     note
 }

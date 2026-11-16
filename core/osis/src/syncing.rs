@@ -8,12 +8,12 @@ use crate::handle::{Locked, Osis, ReadOnly, WeakOsis};
 use crate::watch::{Delivery, Filter, Subscription, lock};
 use osis_base::Tid;
 use osis_sync::status::SyncStatus;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-/// How a thing's sync stands here (`GroupSync::state`), best first. A thing syncing under
+/// How a thing's sync stands here (`UnitSync::state`), best first. A thing syncing under
 /// several sync IDs shows the worst of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SyncState {
@@ -31,16 +31,12 @@ pub enum SyncState {
 
 /// How one thing syncs here.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GroupSync {
+pub struct UnitSync {
     /// Where its sync has got to.
     pub state: SyncState,
     /// Connected nodes with it open that take no more of it for now: full, or refusing what
     /// this node sends. Informational: they are not waited for.
     pub not_taking: usize,
-    /// It left this node's synced groups and is still synced here until what this node wrote to
-    /// it is held elsewhere, or no peer is to be waited for on it (spec/sync-set.md §3), then
-    /// forgotten here.
-    pub leaving: bool,
 }
 
 /// How sync stands: connections and each thing this node syncs, read or kept unread.
@@ -49,32 +45,19 @@ pub struct Status {
     /// Sync connections up now, whichever side dialed.
     pub connected: usize,
     /// How each thing with a sync ID here stands.
-    pub groups: BTreeMap<Tid, GroupSync>,
-    /// Things kept here that sync no more: shared once, the share ended, and not unsynced here
-    /// (`Osis::unsync` forgets one).
-    pub kept: BTreeSet<Tid>,
+    pub units: BTreeMap<Tid, UnitSync>,
 }
 
 /// What `Osis::wait_synced` waits for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncScope {
-    /// Everything this node syncs and every delivery it owes.
+    /// Everything this node syncs.
     All,
     /// What this thing travels under: every sync ID carrying it, each with a node connected and
     /// caught up and this node's own changes held there (spec/sync-status.md §3). Runs to the
     /// caller's timeout while one of them has no node connected, or this node does not hold
     /// the thing.
     Thing(Tid),
-    /// This node's pending deliveries (grants and other inbox items), nothing else.
-    Deliveries,
-    /// This node's pending deliveries to one actor about one thing (a grant of it), nothing
-    /// else: each ends once a node of that actor takes it.
-    Delivery {
-        /// The thing the delivery is about.
-        thing: Tid,
-        /// Whom it goes to.
-        to: Tid,
-    },
 }
 
 /// A thing's state from its sync IDs' (worst first).
@@ -95,20 +78,13 @@ fn state_of(s: &SyncStatus) -> SyncState {
 pub(crate) fn status_in(l: &mut Locked, actor: Option<Tid>) -> Result<Status> {
     let per_id = l.node.status();
     let mut connected = l.node.connections();
-    let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
-    // kept here, synced no more; a thing still waiting to stop shows in `groups`
-    let mut kept = l.engine().kept_local()?;
-    if let Some(a) = actor {
-        let e = l.engine();
-        kept.retain(|t| e.readable_by(&a, t));
-    }
+    let mut units: BTreeMap<Tid, UnitSync> = BTreeMap::new();
     if per_id.is_empty() {
-        return Ok(Status { connected: if actor.is_some() { 0 } else { connected }, groups, kept });
+        return Ok(Status { connected: if actor.is_some() { 0 } else { connected }, units });
     }
     // what this node syncs: the sync set, and each sync ID that left it while it waits to stop
     let syncs = l.node.store().syncs();
     let e = l.engine();
-    let set = e.sync_set()?;
     let mut seen = std::collections::BTreeSet::new();
     for (s, st) in per_id {
         let Some((t, _)) = syncs.get(&s).copied() else { continue };
@@ -116,24 +92,22 @@ pub(crate) fn status_in(l: &mut Locked, actor: Option<Tid>) -> Result<Status> {
             continue;
         }
         seen.extend(st.sources.keys().copied());
-        let g = GroupSync { state: state_of(&st), not_taking: st.sources.values().filter(|x| !x.waited()).count(), leaving: !set.ids.contains_key(&s) };
-        merge(&mut groups, t, g);
+        let g = UnitSync { state: state_of(&st), not_taking: st.sources.values().filter(|x| !x.waited()).count() };
+        merge(&mut units, t, g);
     }
     if actor.is_some() {
         connected = seen.len();
     }
-    kept.retain(|t| !groups.contains_key(t));
-    Ok(Status { connected, groups, kept })
+    Ok(Status { connected, units })
 }
 
-/// Adds `g`, how `t` stands under one sync ID or at one node, to `groups`: the worst state.
-pub(crate) fn merge(groups: &mut BTreeMap<Tid, GroupSync>, t: Tid, g: GroupSync) {
-    groups
+/// Adds `g`, how `t` stands under one sync ID or at one node, to `units`: the worst state.
+pub(crate) fn merge(units: &mut BTreeMap<Tid, UnitSync>, t: Tid, g: UnitSync) {
+    units
         .entry(t)
         .and_modify(|x| {
             x.state = x.state.max(g.state);
             x.not_taking += g.not_taking;
-            x.leaving &= g.leaving;
         })
         .or_insert(g);
 }
@@ -179,10 +153,9 @@ impl Osis {
 
     /// Resolves once everything in `scope` is synced: each sync ID carrying it heard out (every
     /// connected node with it open caught up both ways, none of them full or refusing it left
-    /// waited for) and each commit of this node's on it held elsewhere, and in `All` and
-    /// `Deliveries` every delivery taken (in `Delivery` those it names). A sync ID no other node may hold (no other account has
-    /// a role on its thing, no other node of this account syncs it) holds nothing up, so a
-    /// one-node account's home does not, and nor does a delivery no other node may take; it never
+    /// waited for) and each commit of this node's on it held elsewhere. A sync ID no other node
+    /// may hold (no other account has a role on its thing, no other node of this account) holds
+    /// nothing up; it never
     /// resolves while one some other node may hold is unconnected.
     /// It fails `Stranded` while a sync ID in scope is stranded here (naming its things); with no
     /// network (`Runtime::None`) one not done at once fails `Network`.
@@ -199,8 +172,6 @@ impl Osis {
         let s = match scope {
             SyncScope::All => osis_sync::types::Scope::All,
             SyncScope::Thing(t) => osis_sync::types::Scope::Thing(t),
-            SyncScope::Deliveries => osis_sync::types::Scope::Deliveries,
-            SyncScope::Delivery { thing, to } => osis_sync::types::Scope::Delivery { thing, to },
         };
         self.waiting(move |db| match db.locked(|l| l.node.wait(s)) {
             osis_sync::types::Waiting::Done => Some(Ok(())),
@@ -208,13 +179,13 @@ impl Osis {
             // a stranded sync ID fails the wait (notes/api-design.md), naming the things whose
             // sync IDs are stranded
             osis_sync::types::Waiting::Stranded(ids) => Some(db.locked(|l| {
-                let mut groups = Vec::new();
+                let mut things = Vec::new();
                 for s in &ids {
-                    groups.extend(l.engine().sync_owner(s)?);
+                    things.extend(l.engine().sync_owner(s)?);
                 }
-                groups.sort();
-                groups.dedup();
-                Err(Error::Stranded { groups })
+                things.sort();
+                things.dedup();
+                Err(Error::Stranded { things })
             })),
             // spec/sync-status.md §3 has no wait sure never to end: sync's `Never` here is a part
             // of it not built yet, never an answer about the thing

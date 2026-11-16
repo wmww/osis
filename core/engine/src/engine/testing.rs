@@ -657,22 +657,11 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("keyset_parts", &*ix.keyset_parts),
         ("holder_keys", &*ix.holder_keys),
         ("unresolved", &*ix.unresolved),
-        ("groups", &ix.groups),
         ("secrets", &*ix.secrets),
         ("void", &*ix.void),
         ("destroyed_for_good", &*ix.destroyed_for_good),
         ("destroyed_secrets", &*ix.destroyed_secrets),
         ("destroyed_sync_ids", &*ix.destroyed_sync_ids),
-        ("unshared", &*ix.unshared),
-        ("sync_kept", &*ix.sync_kept),
-        ("offers", &*ix.offers),
-        ("offered", &*ix.offered),
-        ("sync_records", &*ix.sync_records),
-        ("record_ids", &*ix.record_ids),
-        ("waiting_inbox", &*ix.waiting_inbox),
-        ("inbox_hints", &*ix.inbox_hints),
-        ("hinted", &*ix.hinted),
-        ("owed_inbox", &*ix.owed_inbox),
         ("suspects", &*ix.suspects),
         ("held_wait", &*ix.held_wait),
         ("blob_parts", &*ix.blob_parts),
@@ -703,7 +692,6 @@ fn tables(ix: &super::Indexes) -> Vec<(&'static str, &dyn Table)> {
         ("resnapshots_owed", &*ix.resnapshots_owed),
         ("bearers", &*ix.bearers),
         ("freed", &*ix.freed),
-        ("delete_hints", &*ix.delete_hints),
         ("kept", &*ix.kept),
         ("timed_lost", &*ix.timed_lost),
     ]
@@ -967,11 +955,11 @@ mod tests {
         const OWN: &[&str] = &["held", "commits", "snapshots", "dropped_snapshots", "derived_written"];
         // node-local or re-derived by an open, so they differ from a fresh load by design: a
         // cache counter (`rotations`); a transaction's work queues (`epochs_due`, `names_due`,
-        // `hint_candidates`, `cover_waits`); what an open parks anew (`pending`, `pend_on`,
+        // `cover_waits`); what an open parks anew (`pending`, `pend_on`,
         // `pend_keys`: each examined again); rows not persisted for ephemeral aspects
         // (`forgotten`); events, not the held set (`falls`, `passes`, `role_arrivals`,
         // `cause_at`, `reseal_asks`).
-        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "hint_candidates", "cover_waits"];
+        const LEFT_OUT: &[&str] = &["rotations", "epochs_due", "names_due", "forgotten", "pending", "pend_on", "pend_keys", "falls", "passes", "role_arrivals", "cause_at", "setting_waits", "reseal_asks", "cover_waits"];
         let ix = super::super::Indexes::default();
         let compared: BTreeSet<&str> = tables(&ix).into_iter().map(|(n, _)| n).collect();
         for n in super::super::INDEX_NAMES {

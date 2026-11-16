@@ -291,14 +291,13 @@ fn listed_by_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Commi
     Ok(out)
 }
 
-/// Whether a commit listener may be on `(tid, ak)`: on the thing or a group it is in
-/// (`Engine::listen_commits`).
+/// Whether a commit listener may be on `(tid, ak)`: on the thing (`Engine::listen_commits`).
 pub(crate) fn listened(core: &crate::engine::Core, tid: &Tid, ak: &Ak) -> bool {
     if !core.commits_watched || ak.signal() {
         return false;
     }
     let Some(on) = core.commit_listeners.as_ref() else { return false };
-    on(tid) || core.ix.groups.groups_of(tid).iter().any(|g| on(g))
+    on(tid)
 }
 
 /// Before the state of `(tid, ak)` is written whole (a rebuild): the commits
@@ -391,7 +390,7 @@ impl Engine {
         self.core.commits_watched = true;
     }
 
-    /// `f` says whether a commit listener is on a thing (a group's: its things too): at the end of
+    /// `f` says whether a commit listener is on a thing: at the end of
     /// each transaction the listing of each of their aspects it touched is judged
     /// (`listing_moved`), and a part leaving history by time alone is told
     /// (`retention::leaving`). Nothing to arm per listener: the history rows are kept whoever
@@ -518,18 +517,11 @@ impl Engine {
         if from.newer() { all.iter().take(n).map(pos).collect() } else { all.iter().rev().take(n).map(pos).collect() }
     }
 
-    /// The aspects a revert of held commit `c` may touch: those `c` touches, and, for things it
-    /// created, every aspect of theirs a held header names (the revert deletes them,
-    /// `read::deleted_aspects`). Signals left out: a revert writes nothing for one.
+    /// The aspects a revert of held commit `c` may touch: those `c` touches. Signals left out: a
+    /// revert writes nothing for one.
     pub fn revert_reach(&self, c: &CommitId) -> BTreeSet<(Tid, Ak)> {
         let Some(m) = self.core.ix.commits.get(c) else { return BTreeSet::new() };
-        let mut out: BTreeSet<(Tid, Ak)> = m.view.aspects.iter().filter(|a| !a.ak.signal()).map(|a| (a.tid, a.ak.clone())).collect();
-        if let Some(h) = m.header.decoded() {
-            for t in crate::undo::made_by(&h, &m.valid) {
-                out.extend(self.core.aspects_of(&t).map(|(k, _)| k.clone()).filter(|k| !k.1.signal()));
-            }
-        }
-        out
+        m.view.aspects.iter().filter(|a| !a.ak.signal()).map(|a| (a.tid, a.ak.clone())).collect()
     }
 
     /// The held commits reverting `c` (among the commits on `revert_reach` stamped after it),

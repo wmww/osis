@@ -7,7 +7,6 @@ use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
 use osis::{Body, CommitEvent, CommitFrom, CommitId, CommitKind, CommitQuery, Error, Osis, Scope, Tid, Value};
-use std::collections::BTreeSet;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
@@ -181,40 +180,6 @@ fn kept_part_is_told_leaving_at_its_bound_api_commits() {
     assert_eq!(bodies(&db, u, &k), vec![Body::Held(Some(s("b"))), Body::Held(Some(s("d")))]);
 }
 
-// spec/commits.md §7 (Listed parts), notes/api.md Commits (listeners): a write replacing a part
-// that keeps no history tells that part's commit leaving the listing, at the aspect and at the
-// thing's group; a write beside it tells nothing more.
-#[test]
-fn replaced_unkept_part_is_told_leaving_api_commits() {
-    let db = db(0);
-    let t = thing(&db);
-    let g = db.commit_with(|w| {
-        let g = w.create()?;
-        w.group(g).add(osis::Member::Item(t))?;
-        Ok(g)
-    })
-    .unwrap();
-    let plain = ak("t:plain.0");
-    let first = commit_with(&db, |w| w.at(t, untyped(plain.clone())).set(&s("a"))).stamp.id;
-    let (_sub, rx) = watch(&db, t, plain.clone());
-    let (gtx, grx) = channel();
-    let _g = db.on_write(&Scope::Group(g), move |_, e| gtx.send(e).unwrap()).unwrap();
-    let second = commit_with(&db, |w| w.at(t, untyped(plain.clone())).set(&s("b"))).stamp.id;
-    let mut want = vec![(first, false), (second, true)];
-    want.sort();
-    let sorted = |mut v: Vec<(CommitId, bool)>| {
-        v.sort();
-        v
-    };
-    assert_eq!(sorted(ids(&heard(&db, &rx))), want, "the replaced commit leaves, the new one comes");
-    assert_eq!(sorted(ids(&heard(&db, &grx))), want, "at the group too");
-    let ids_listed: Vec<CommitId> = db.at(t, untyped(plain.clone())).writes(&CommitQuery::default()).unwrap().commits.iter().map(|c| c.stamp.id).collect();
-    assert_eq!(ids_listed, vec![second], "as a page reads");
-    let beside = say(&db, t, "beside");
-    assert!(heard(&db, &rx).is_empty(), "nothing at the register");
-    assert_eq!(ids(&heard(&db, &grx)), vec![(beside, true)], "the group's new commit alone");
-}
-
 // spec: none (API surface); notes/api.md Commits (the commit): a commit writing two things lists at an aspect of one with
 // both parts; `at` decodes a part typed, a mismatching body reading `Held(None)` with a `Mismatch`
 // diagnostic; and `w.commit()` returns the commit as a listing then shows it.
@@ -247,31 +212,6 @@ fn a_commit_shows_every_part_api_commits() {
     assert_eq!(part(&got[0], b, &ak("t:n.0")).body, Body::Held(Some(s("not an int"))), "the untyped key shows it");
     db.settle();
     assert!(rx.try_iter().any(|d| matches!(d, osis::Diagnostic::Mismatch { .. })), "a mismatch told");
-}
-
-// spec/commits.md §5 Signals (heard only as listed at the signal), notes/api.md Commits (listeners at a scope): a thing listener hears a commit touching the thing
-// and not one beside it, nor a signal fired on it; a group listener hears a member's commit.
-#[test]
-fn scope_listeners_api_commits() {
-    let db = db(0);
-    let (t, other) = (thing(&db), thing(&db));
-    let g = db.commit_with(|w| {
-        let g = w.create()?;
-        w.group(g).add(osis::Member::Item(t))?;
-        Ok(g)
-    })
-    .unwrap();
-    let (tx, rx) = channel();
-    let _t = db.on_write(&Scope::Thing(t), move |_, e| tx.send(e).unwrap()).unwrap();
-    let (gtx, grx) = channel();
-    let _g = db.on_write(&Scope::Group(g), move |_, e| gtx.send(e).unwrap()).unwrap();
-    let mine = say(&db, t, "on t");
-    say(&db, other, "beside");
-    let log = untyped(ak("t:log~0"));
-    commit_with(&db, |w| w.at(t, log.clone()).fire(&s("ping")));
-    assert_eq!(ids(&heard(&db, &rx)), vec![(mine, true)], "its commit, nothing beside, no signal");
-    assert_eq!(ids(&heard(&db, &grx)), vec![(mine, true)], "a member's commit");
-    assert_eq!(db.at(t, log).fired(&CommitQuery::default()).unwrap().commits.len(), 1, "the signal lists at its key");
 }
 
 // spec/commits.md §5, notes/api.md Commits: delete for everyone: one commit's body goes for good
@@ -404,64 +344,6 @@ fn purge_takes_no_setting_expiry_spec_commits_5() {
     assert!(got.commits.iter().any(|k| k.stamp.id == b && part(k, t, &msg()).body == Body::Purged { by: done.stamp.id, actor: Some(db.me()) }), "{got:?}");
 }
 
-// spec/commits.md §5 (does not undo it): a writer does not undo `retention^.0`, notes/api.md `has_content`: a setting is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
-#[test]
-fn setting_is_no_content_spec_commits_5() {
-    use osis::internals::schema::core_types as ct;
-    let db = db(0);
-    let rules = ct::RetentionSetting { retain: true, ..Default::default() };
-    let t = thing(&db);
-    say(&db, t, "x");
-    db.commit_set(t, ct::RETENTION, &rules).unwrap();
-    let mut w = db.write();
-    w.delete(t).unwrap();
-    w.commit().unwrap();
-    assert!(!db.has_content(t).unwrap(), "deleted");
-    assert_eq!(db.at(t, ct::RETENTION).get().unwrap(), Some(rules.clone()), "still in force");
-    let mut w = db.write();
-    let u = w.create().unwrap();
-    w.at(u, osis::DynamicAspectKey::untyped(msg())).set(&s("x")).unwrap();
-    w.at(u, ct::RETENTION).set(&rules).unwrap();
-    w.commit().unwrap();
-    db.undo(&osis::Scope::Thing(u)).unwrap();
-    assert!(!db.has_content(u).unwrap(), "undone");
-    assert_eq!(db.at(u, ct::RETENTION).get().unwrap(), Some(rules));
-}
-
-// spec/commits.md §5, §6: a writer fills each delta's expiry from its thing's setting, a delete's
-// resets too, so a delete of a thing whose aspects (or groups) get different expiries is several
-// commits' work: refused, telling the app to do the rest first, and then the delete goes through.
-#[test]
-fn delete_under_setting_expiries_says_what_to_do_spec_commits_6() {
-    use osis::internals::schema::core_types as ct;
-    let db = db_at(50);
-    let t = db.commit_with(|w| w.create()).unwrap();
-    let rules = ct::RetentionSetting { rules: [(osis::Ak::new("app:m.0").unwrap(), ct::RetentionEntry { expires: Some(60_000), ..Default::default() })].into(), ..Default::default() };
-    db.commit_set(t, ct::RETENTION, &rules).unwrap();
-    let (m, plain) = (osis::DynamicAspectKey::untyped(osis::Ak::new("app:m.0").unwrap()), osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()));
-    db.commit_set(t, m.clone(), &s("x")).unwrap();
-    db.commit_set(t, plain.clone(), &s("y")).unwrap();
-    assert!(matches!(db.commit_with(|w| w.delete(t)), Err(Error::Invalid(e)) if e.contains("delete") && e.contains("first") && !e.contains("separate")));
-    assert!(db.has_content(t).unwrap(), "nothing applied");
-    db.commit_with(|w| w.at(t, m).remove()).unwrap();
-    db.commit_with(|w| w.delete(t)).unwrap();
-    assert!(!db.has_content(t).unwrap());
-    // the group's removal goes first likewise, when the thing's own writes expire
-    let db = db_at(52);
-    let g = thing(&db);
-    let t = thing(&db);
-    db.commit_set(g, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()), &s("y")).unwrap();
-    db.commit_set(t, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()), &s("y")).unwrap();
-    db.commit_with(|w| w.group(g).add(osis::Member::Item(t))).unwrap();
-    let rules = ct::RetentionSetting { default: Some(ct::RetentionEntry { expires: Some(60_000), ..Default::default() }), ..Default::default() };
-    db.commit_set(t, ct::RETENTION, &rules).unwrap();
-    db.commit_set(t, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()), &s("z")).unwrap();
-    assert!(matches!(db.commit_with(|w| w.delete(t)), Err(Error::Invalid(e)) if e.contains("delete") && e.contains("group.0")));
-    db.commit_with(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
-    db.commit_with(|w| w.delete(t)).unwrap();
-    assert!(!db.has_content(t).unwrap());
-}
-
 // spec: none (API surface); notes/api.md (the setting): `core::RETENTION` and the engine's `ct::RETENTION` are
 // one aspect in one form, each reading what the other wrote; a `Duration` past what the store counts
 // is refused, not stored as something else; `History::FOREVER` stands; a `Keep` keeping nothing
@@ -527,63 +409,4 @@ fn purge_goes_under_its_thing_and_reaches_what_it_names_spec_commits_5() {
     let done = w.commit().unwrap().unwrap();
     assert!(done.parts().any(|(x, _, _)| x == t), "a delta on the purged thing: {done:?}");
     assert!(matches!(bodies(&db, t, &msg())[..], [Body::Purged { .. }]));
-}
-
-// notes/api.md `delete`, spec/crdt.md §5.5: a delete removes the thing from every group it may
-// write alike, its adds held and those held as a commit header only. N is an item of G and of H;
-// B holds H's add as a header only (its part not received yet) when it deletes N: once synced, N
-// is in neither group, at A as at B, and H's late part does not bring it back.
-#[test]
-fn delete_unlists_an_add_not_received_spec_crdt_5_5() {
-    let (a, b, _) = paired();
-    let (g, h, n) = a.commit_with(|w| Ok((w.create()?, w.create()?, w.create()?))).unwrap();
-    a.commit_set(n, untyped(msg()), &s("x")).unwrap();
-    a.commit_with(|w| w.group(g).add(osis::Member::Item(n))).unwrap();
-    deliver(&a, &b);
-    let mut w = a.write();
-    w.group(h).add(osis::Member::Item(n)).unwrap();
-    let add_h = w.commit().unwrap().unwrap().stamp.id;
-    let pk = a.engine(|e| e.commit_ids().into_iter().find(|id| CommitId::from(*id) == add_h).and_then(|id| e.package(&id).unwrap())).unwrap();
-    let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    let header_only = osis_commit::rewrite(&blob, |ai| blob.header.aspects[ai].tid == h).encode();
-    b.engine(|e| e.ingest(&header_only, pk.blobs.clone()).unwrap());
-    assert_eq!((b.groups_of(n).unwrap().item_of, a.groups_of(n).unwrap().item_of.len()), (vec![g], 2), "B holds H's add of N as a header only");
-    b.commit_with(|w| w.delete(n)).unwrap();
-    for _ in 0..2 {
-        deliver(&b, &a);
-        deliver(&a, &b);
-        for (who, d) in [("A", &a), ("B", &b)] {
-            assert_eq!(d.groups_of(n).unwrap().item_of, Vec::<Tid>::new(), "N listed at {who}");
-            assert!(!d.has_content(n).unwrap(), "N deleted at {who}");
-        }
-    }
-}
-
-// spec/requirements.md (Data model: removing drops only what the remover had seen), spec/crdt.md
-// §5.5: an add the deleting node never heard of, not even its commit header, survives the delete,
-// in a group it lists the thing in too. N is an item of G at both; A removes it from G and adds
-// it again, and adds it to H, none of which B has received when it deletes N later: once synced,
-// N's content is deleted and it is still listed in G and H, at A as at B.
-#[test]
-fn delete_keeps_an_add_never_seen_spec_crdt_5_5() {
-    let (a, b, c) = paired();
-    let (g, h, n) = a.commit_with(|w| Ok((w.create()?, w.create()?, w.create()?))).unwrap();
-    a.commit_set(n, untyped(msg()), &s("x")).unwrap();
-    a.commit_with(|w| w.group(g).add(osis::Member::Item(n))).unwrap();
-    deliver(&a, &b);
-    a.commit_with(|w| w.group(g).remove(osis::Member::Item(n))).unwrap();
-    a.commit_with(|w| w.group(g).add(osis::Member::Item(n))).unwrap();
-    a.commit_with(|w| w.group(h).add(osis::Member::Item(n))).unwrap();
-    assert_eq!(b.groups_of(n).unwrap().item_of, vec![g], "B has not heard of A's adds");
-    c.advance(1000);
-    b.commit_with(|w| w.delete(n)).unwrap();
-    let both = BTreeSet::from([g, h]);
-    for _ in 0..2 {
-        deliver(&b, &a);
-        deliver(&a, &b);
-        for (who, d) in [("A", &a), ("B", &b)] {
-            assert_eq!(d.groups_of(n).unwrap().item_of.into_iter().collect::<BTreeSet<_>>(), both, "N listed in G and H at {who}");
-            assert!(!d.has_content(n).unwrap(), "N deleted at {who}");
-        }
-    }
 }

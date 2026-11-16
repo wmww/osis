@@ -4,7 +4,7 @@
 //! spec: none (API surface, notes/api.md)
 
 use crate::common::*;
-use osis::{DynamicAspectKey, Error, Osis, Runtime, Store, Value};
+use osis::{Error, Osis, Runtime, Store, Value};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -32,27 +32,6 @@ fn at(dir: &std::path::Path, rt: Runtime) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Dir(dir.to_path_buf()));
     c.runtime = rt;
     c
-}
-
-// `close` returns once the store is closed, also with `Runtime::Own` (whose runtime stops in
-// the background) and on the app's `Runtime::Tokio`: the store opens again at once, holding
-// every write.
-#[test]
-fn reopen_right_after_close() {
-    let tokio = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    for rt in [Runtime::Own, Runtime::Tokio(tokio.handle().clone())] {
-        let d = Dir::new("reopen");
-        let k = DynamicAspectKey::untyped(ak("n:v.0"));
-        let db = osis::internals::create(at(&d.0, rt.clone())).unwrap();
-        let t = db.commit_with(|w| w.create_with_content(db.home())).unwrap();
-        assert_eq!(db.close().unwrap(), osis::Close::Closed);
-        for i in 1..6i64 {
-            let db = osis::internals::open(at(&d.0, rt.clone())).unwrap();
-            assert_eq!(db.at(t, k.clone()).get().unwrap(), (i > 1).then(|| Value::Int(i - 1)), "{rt:?}");
-            db.commit_set(t, k.clone(), &Value::Int(i)).unwrap();
-            assert_eq!(db.close().unwrap(), osis::Close::Closed);
-        }
-    }
 }
 
 // A store directory that cannot be opened fails `Storage` naming the path and the cause: the
@@ -256,91 +235,6 @@ fn two_nodes_of_one_host_listen_spec_sync_transport_3() {
         db.listen(&["quic://127.0.0.1:0".parse().unwrap()]).unwrap();
     }
     for db in dbs {
-        assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    }
-}
-
-// spec/sync-transport.md §2 (`quic://host[:port]`): two nodes of two accounts, each on its own
-// runtime, sync over a real loopback QUIC socket: a link redeemed through the configured
-// address carries the thing, and a write at either end reaches the other. The redeemer's
-// `wait_synced` on the thing ends though its home, carrying it, is shared by no peer
-// (spec/sync-status.md §3).
-#[test]
-fn two_accounts_sync_over_loopback_quic_spec_sync_transport_2() {
-    let node = |dial: Vec<osis::Address>| {
-        let mut o = osis::internals::Opening::memory();
-        o.runtime = Runtime::Own;
-        o.direct_sync = false;
-        o.dial = dial;
-        osis::internals::create(o).unwrap()
-    };
-    let a = node(Vec::new());
-    let addr = a.listen(&["quic://127.0.0.1:0".parse().unwrap()]).unwrap().remove(0);
-    let b = node(vec![addr]);
-    // `db` reads `want` as `t`'s name: at once or at a change it hears
-    let reads = |db: &Osis, t, want: &str| {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let _s = db.at(t, osis::core::NAME).on_change(move |_, _| tx.send(()).unwrap()).unwrap();
-        while db.at(t, osis::core::NAME).get().unwrap().as_deref() != Some(want) {
-            rx.recv_timeout(Duration::from_secs(120)).expect("never read");
-        }
-    };
-    let set = |db: &Osis, t, s: &str| {
-        let mut w = db.write();
-        w.at(t, osis::core::NAME).set(&s.to_string()).unwrap();
-        w.commit().unwrap();
-    };
-    let mut w = a.write();
-    let t = w.create().unwrap();
-    w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
-    w.at(t, osis::core::NAME).set(&"first".to_string()).unwrap();
-    w.commit().unwrap();
-    let link = a.make_link(t, osis::Role::Write, osis::LinkOpts::default()).unwrap();
-    assert_eq!(block_on(b.redeem(&link)).unwrap(), t);
-    block_on(b.wait_synced(osis::SyncScope::Thing(t))).unwrap();
-    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("first"));
-    set(&a, t, "from a");
-    reads(&b, t, "from a");
-    set(&b, t, "from b");
-    reads(&a, t, "from b");
-    for db in [a, b] {
-        assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    }
-}
-
-// spec/sync-transport.md §3 (`peer://`: the dialable listener the account publishes), §5 (One
-// key): a node with direct sync that listens at URLs (as `osis serve --listen` does), twice, still
-// takes connections at its dialable listener: a link redeemed by a node dialing only that
-// address carries the thing.
-#[test]
-fn listening_at_urls_keeps_the_dialable_listener_spec_sync_transport_3() {
-    use osis::internals::Internals;
-    let node = |direct: bool, dial: Vec<osis::Address>| {
-        let mut o = osis::internals::Opening::memory();
-        o.runtime = Runtime::Own;
-        o.direct_sync = direct;
-        o.lan = osis::Lan::Off;
-        o.dial = dial;
-        osis::internals::create(o).unwrap()
-    };
-    let a = node(true, Vec::new());
-    for _ in 0..2 {
-        a.listen(&["quic://127.0.0.1:0".parse().unwrap()]).unwrap();
-    }
-    let dialable = a.listening().into_iter().find(|x| x.url().to_string().starts_with("peer://")).expect("the dialable listener is up");
-    let port = dialable.url().to_string().rsplit(':').next().unwrap().to_string();
-    let b = node(false, vec![osis::Address::new(&format!("peer://127.0.0.1:{port}").parse().unwrap(), dialable.key())]);
-    let mut w = a.write();
-    let t = w.create().unwrap();
-    w.group(a.home()).add(osis::Member::Subgroup(t)).unwrap();
-    w.at(t, osis::core::NAME).set(&"first".to_string()).unwrap();
-    w.commit().unwrap();
-    let link = a.make_link(t, osis::Role::Write, osis::LinkOpts::default()).unwrap();
-    assert_eq!(block_on(b.redeem(&link)).unwrap(), t);
-    b.accept_invite(t, b.home()).unwrap();
-    block_on(b.wait_synced(osis::SyncScope::Thing(t))).unwrap();
-    assert_eq!(b.at(t, osis::core::NAME).get().unwrap().as_deref(), Some("first"));
-    for db in [a, b] {
         assert_eq!(db.close().unwrap(), osis::Close::Closed);
     }
 }

@@ -7,7 +7,7 @@ use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
-use osis_base::{Ak, CommitId, CreationRecord, SyncId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, CreationRecord, SyncId, Role, Tid, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
@@ -32,12 +32,10 @@ pub fn is_content(ak: &str) -> bool {
     !is_role_class(ak) && !is_addenda(ak) && ak != "created.0" && ak != "retention^.0"
 }
 
-/// Whether a delete resets `ak` and `has_content` reads it: content, but the thing's retainer
-/// list, which says what keeps the thing, not what it holds (a deleted thing stays judged by its
-/// retainers, notes/lifetimes.md Interactions), and `purge.0`, which only places a purge
-/// request (spec/commits.md §5 Purge; a delete's own, spec/sync-compaction.md §2 delete).
-pub fn deletable(ak: &str) -> bool {
-    is_content(ak) && ak != "retainers^.0" && ak != "purge.0"
+/// Whether `has_content` reads `ak`: content, but `purge.0`, which only places a purge request
+/// (spec/commits.md §5 Purge).
+pub fn counts_as_content(ak: &str) -> bool {
+    is_content(ak) && ak != "purge.0"
 }
 
 /// Whether `ak` is a core schema key by its form: one name segment, no tid (spec/data-model.md
@@ -132,17 +130,10 @@ codec_enum! {
     pub enum Source { 0 Commit(c: CommitId), 1 Session(s: [u8; 31]) }
 }
 codec_struct! {
-    /// The `group.0` element a tied edge names: its creation stamp and whether it is a subgroup
-    /// (spec/permissions.md §2).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct Tie { 0 ts: Ts, 1 source: Source, 2 ctr: u64, 3 subgroup: bool }
-}
-codec_struct! {
-    /// A role edge; `tied`: the membership of the target in its holder, a group, the edge goes
-    /// with (spec/permissions.md §2); `floor`: the read n its holder reads from, granted without
+    /// A role edge; `floor`: the read n its holder reads from, granted without
     /// history (spec/crypto.md §4, Floors).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 tied: Option<Tie>, 4 floor: Option<u64> }
+    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 4 floor: Option<u64> }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, the epochs its rotation
@@ -235,12 +226,6 @@ codec_struct! {
     /// keeps unread; per-thing limits apply to each sync ID the thing owns.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Caps { 0 policy: BTreeMap<String, u64>, 1 things: BTreeMap<Tid, ThingCaps> }
-}
-codec_struct! {
-    /// An account's sync record of a thing it keeps unread (spec/sync.md §3): its kept sync IDs,
-    /// recorded sync secrets by epoch, and the kept sync IDs tied to it.
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Kept { 0 ids: BTreeSet<SyncId>, 1 secrets: BTreeMap<Epoch, [u8; 32]>, 2 tied: BTreeSet<SyncId> }
 }
 codec_struct! {
     /// One entry of `clients^.0` (spec/data-model.md §9): a thin client's secret hash and end.
@@ -342,12 +327,6 @@ pub fn setting_fits(s: &RetentionSetting) -> bool {
 }
 
 codec_struct! {
-    /// `group.0`: a field never written reads empty, its default in the schema. A first member
-    /// so needs no write of the other field, which beside a concurrent add would risk it.
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Group { 0 items: BTreeSet<Tid>, 1 subgroups: BTreeSet<Tid> }
-}
-codec_struct! {
     /// A tag's own settings.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Tag { 0 color: Option<String> }
@@ -363,7 +342,6 @@ pub type Listings = BTreeMap<Vec<u8>, BTreeSet<Vec<u8>>>;
 pub type Holders = BTreeMap<Tid, Edge>;
 pub type SyncIds = BTreeMap<SyncId, SyncEntry>;
 
-pub const TID: Aspect<Tid> = Aspect::new("tid.0", &CORE);
 pub const ASPECTS: Aspect<BTreeSet<String>> = Aspect::new("aspects.0", &CORE);
 pub const CREATED: Aspect<CreationRecord> = Aspect::new("created.0", &CORE);
 pub const ROLES: Aspect<Holders> = Aspect::new("roles.0", &CORE);
@@ -381,25 +359,12 @@ pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
 pub type DialList = BTreeMap<Vec<u8>, Vec<String>>;
 pub const DIAL: Aspect<DialList> = Aspect::new("dial^.0", &CORE);
 pub const CAPS: Aspect<Caps> = Aspect::new("caps^.0", &CORE);
-/// `synced^.0` on an account's devices actor: each node to its synced group (spec/sync-set.md §1).
-pub const SYNCED: Aspect<BTreeMap<Tid, Tid>> = Aspect::new("synced^.0", &CORE);
-/// `acted^.0` on an account's devices actor: the things it acted on as invitations (spec/sync-set.md §4).
-pub const ACTED: Aspect<BTreeSet<Tid>> = Aspect::new("acted^.0", &CORE);
-/// `kept^.0` on an account's devices actor: its sync records (spec/sync.md §3).
-pub const KEPT: Aspect<BTreeMap<Tid, Kept>> = Aspect::new("kept^.0", &CORE);
 /// `clients^.0`: by client actor.
 pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients^.0", &CORE);
 /// `retention^.0`: what the thing keeps of replaced content (spec/commits.md §5); fixed retention.
 pub const RETENTION: Aspect<RetentionSetting> = Aspect::new("retention^.0", &CORE);
 /// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).
 pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
-/// `released.0`: a release request's delta on each thing it releases (spec/commits.md §5 Destruction);
-/// fixed retention, expiring `ROLE_KEEP` after its `ts`.
-pub const RELEASED: Aspect<WallMs> = Aspect::new("released.0", &CORE);
-pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);
-pub const GROUPS: Aspect<BTreeSet<Tid>> = Aspect::new("groups.0", &CORE);
-/// `retainers^.0`: the things that keep this thing alive (notes/lifetimes.md); admin-only.
-pub const RETAINERS: Aspect<BTreeSet<Tid>> = Aspect::new("retainers^.0", &CORE);
 pub const NAME: Aspect<String> = Aspect::new("name.0", &CORE);
 pub const BODY: Aspect<String> = Aspect::new("body.0", &CORE);
 pub const TAG: Aspect<Tag> = Aspect::new("tag.0", &CORE);

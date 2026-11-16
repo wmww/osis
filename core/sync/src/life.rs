@@ -1,17 +1,6 @@
 //! Lifecycle duties the engine judges and sync drives, each as an `Effects` value over what makes
 //! it due (notes/sync-driver.md, Duties).
 //!
-//! - **Lifetimes** (spec/commits.md §5 Lifetimes): the engine's judgment (`Engine::judge_lifetimes`)
-//!   runs when its work list or the rights mark moved (`Engine::lifetimes_due`, stamped), and its
-//!   held things again when a sync ID this node syncs is newly heard out. A group is heard out
-//!   when every sync ID this node syncs of it is: one with no peer to wait for (`Opens::waited`:
-//!   none has it open or in its kept record, none the rosters name has a record not acknowledging
-//!   it; as a leave's wait reads it) at once, else once its
-//!   sources are (spec/sync-status.md §1, `Status::heard_out`); a group with none here is at once
-//!   (a thing under no sync ID is judged at once). So a node alone (one device, no contact
-//!   sharing the group) releases at once, and one whose sharing peers are away releases nothing
-//!   under what they share.
-//!
 //! - **Role duties** (spec/permissions.md §2 Finalize, §3 Required rotation and Lost access):
 //!   per actor this node holds secrets of, one `Effects` key over `Engine::role_duty_due` (a
 //!   value derived from the state: the finalize or rotation this node owes before it next
@@ -31,35 +20,22 @@
 //! - **Joiner's leave** (spec/permissions.md §7): per thing named a holder, whether it is a link
 //!   this account joined whose K's edge on its target ended (`Engine::joined_link_ended`); one
 //!   that became so is left (`Engine::leave_link`).
-//! - **Tied grants** (spec/permissions.md §2): per thing named a holder, the groups whose tied
-//!   edge on it this node removes now (`Engine::untie_due`: the tie held dead, a self-removal at
-//!   once, an explicit demotion once its scope's complete passes are noted); each is removed
-//!   (`Engine::untie`).
 //!
-//! The last two (holder duties) follow every thing a holder is named on (`Engine::role_things`,
-//! then its feed): what each value reads is stamped (records, timelines, placements, passes, the
-//! clock up to the next `until`), so a thing is judged again only when one of those moves. A
-//! holder duty's write refused for any reason but a store failure is tried again at the next move
-//! of what the value read. A thing named a holder no more is followed no more (`untie_due` reads
-//! its holders, so it is due then).
+//! The joiner's leave follows every thing a holder is named on (`Engine::role_things`, then its
+//! feed): what each value reads is stamped (records, timelines, passes, the clock up to the next
+//! `until`), so a thing is judged again only when one of those moves. A holder duty's write refused for any reason but a store failure is tried again at the next move
+//! of what the value read. A thing named a holder no more is followed no more.
 //!
-//! State: the sync IDs synced here with their things (`SyncsFollow`), each one's heard-out value
-//! and whether one became heard out since the last judgment. Bounded by the sync IDs synced; the
-//! holder duties, two values per thing named a holder here (unwanted when its last holder goes). A restart settles every key afresh
-//! (every held thing is judged again once heard out, every holder duty once).
+//! State: one value per thing named a holder here (unwanted when its last holder goes) and per
+//! held actor. A restart settles every key afresh.
 
-use crate::set::SyncsFollow;
-use crate::store::Store;
 use crate::types::Result;
 use osis_base::memo::{Effects, Feed};
 use osis_base::{SyncId, Tid};
 use osis_engine::Engine;
-use std::collections::{BTreeMap, BTreeSet};
 
 /// What life reads of sync per sync ID: stamped reads, so a duty is due again when one moves.
 pub trait Hears {
-    /// S heard out now (no peer to wait for on S counts as heard out): lifetimes.
-    fn heard_out(&mut self, engine: &mut Engine, s: &SyncId) -> Result<bool>;
     /// A loss by an `until` alone heard S out (spec/permissions.md §2): with a source of S, a
     /// complete pass of S begun after the loss ended (`passed`) and each own commit with an
     /// entry under S is held elsewhere; or no peer is to be waited for on S.
@@ -68,17 +44,6 @@ pub trait Hears {
 
 #[derive(Clone)]
 pub struct Life {
-    syncs: SyncsFollow,
-    /// Per thing, the sync IDs this node syncs of it.
-    ids: BTreeMap<Tid, BTreeSet<SyncId>>,
-    /// Per sync ID synced, whether it is heard out, as last settled.
-    heard: Effects<SyncId, bool>,
-    heard_now: BTreeMap<SyncId, bool>,
-    /// `Engine::lifetimes_due` (work due, things held), as last settled.
-    due: Effects<(), (bool, bool)>,
-    last: (bool, bool),
-    /// A sync ID became heard out since the last judgment: the held things are judged again.
-    newly: bool,
     /// `Engine::copies_due`, as last settled.
     copies: Effects<(), bool>,
     /// Per actor held, whether its drop is due and its pass done (`lost_due`, `lost_passed`).
@@ -93,32 +58,26 @@ pub struct Life {
     pairs: Option<Feed<(Tid, Tid)>>,
     /// Per thing named a holder: a link this account joined that ended (`joined_link_ended`).
     leaves: Effects<Tid, bool>,
-    /// Per thing named a holder: the groups whose tied edge on it this node removes now
-    /// (`untie_due`).
-    unties: Effects<Tid, BTreeSet<Tid>>,
 }
 
 impl Default for Life {
     fn default() -> Life {
-        let mut due = Effects::new("life: lifetimes due");
-        due.want(());
         let mut copies = Effects::new("life: kept copies");
         copies.want(());
-        Life { syncs: SyncsFollow::default(), ids: BTreeMap::new(), heard: Effects::new("life: heard out"), heard_now: BTreeMap::new(), due, last: (false, false), newly: false, copies, lost: Effects::new("life: lost access"), actors: None, owed: Effects::new("life: role duty owed"), pairs: None, leaves: Effects::new("life: joiner's leave"), unties: Effects::new("life: tied grants") }
+        Life { copies, lost: Effects::new("life: lost access"), actors: None, owed: Effects::new("life: role duty owed"), pairs: None, leaves: Effects::new("life: joiner's leave") }
     }
 }
 
 impl std::fmt::Debug for Life {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Life").field("last", &self.last).field("newly", &self.newly).finish_non_exhaustive()
+        f.debug_struct("Life").finish_non_exhaustive()
     }
 }
 
 impl Life {
-    /// Follows what moved; runs each duty when due. `heard_out(s)`: S heard out now (stamped
-    /// reads; no peer to wait for on S counts as heard out). Whether one ran (the engine's rows moved:
+    /// Follows what moved; runs each duty when due. Whether one ran (the engine's rows moved:
     /// the next round settles them).
-    pub fn settle(&mut self, engine: &mut Engine, store: &Store, hears: &mut impl Hears) -> Result<bool> {
+    pub fn settle(&mut self, engine: &mut Engine, hears: &mut impl Hears) -> Result<bool> {
         // the role duties first: a finalize or rotation goes before anything encrypts again,
         // then the lost-access drop
         if self.owe(engine)? {
@@ -143,8 +102,7 @@ impl Life {
                 }
             }
         }
-        let acted = self.holders(engine)?;
-        Ok(self.lifetimes(engine, store, hears)? || acted)
+        self.holders(engine)
     }
 
     /// Writes the role commits this node owes on each held actor whose `role_duty_due` moved
@@ -206,52 +164,8 @@ impl Life {
         Ok(false)
     }
 
-    fn lifetimes(&mut self, engine: &mut Engine, store: &Store, hears: &mut impl Hears) -> Result<bool> {
-        for (s, was, now) in self.syncs.settle(store) {
-            if let Some((t, _)) = was
-                && let Some(ids) = self.ids.get_mut(&t)
-            {
-                ids.remove(&s);
-                if ids.is_empty() {
-                    self.ids.remove(&t);
-                }
-            }
-            match now {
-                Some((t, _)) => {
-                    self.ids.entry(t).or_default().insert(s);
-                    self.heard.want(s);
-                }
-                None => {
-                    self.heard.unwant(&s);
-                    self.heard_now.remove(&s);
-                }
-            }
-        }
-        for s in self.heard.due() {
-            if let Some((was, now)) = self.heard.try_settle(&s, || hears.heard_out(engine, &s))? {
-                self.newly |= now && was != Some(true);
-                self.heard_now.insert(s, now);
-            }
-        }
-        if !self.due.due().is_empty()
-            && let Some((_, v)) = self.due.try_settle(&(), || engine.lifetimes_due())?
-        {
-            self.last = v;
-        }
-        let (work, held) = self.last;
-        if !work && !(held && self.newly) {
-            return Ok(false);
-        }
-        let (ids, heard_now) = (&self.ids, &self.heard_now);
-        // a group is heard out when every sync ID synced of it is (none: at once)
-        let heard = |g: &Tid| ids.get(g).is_none_or(|ss| ss.iter().all(|s| heard_now.get(s) == Some(&true)));
-        engine.judge_lifetimes(&heard, self.newly)?;
-        self.newly = false;
-        Ok(true)
-    }
-
-    /// The holder duties: each thing named a holder whose value moved, a joined link that ended
-    /// left, the tied edges due removed; a thing named a holder no more is followed no more.
+    /// The holder duty: each thing named a holder whose value moved, a joined link that ended
+    /// left; a thing named a holder no more is followed no more.
     /// Whether it wrote.
     fn holders(&mut self, engine: &mut Engine) -> Result<bool> {
         let added: Vec<Tid> = match &mut self.pairs {
@@ -264,27 +178,13 @@ impl Life {
         };
         for t in added {
             self.leaves.want(t);
-            self.unties.want(t);
         }
         let mut acted = false;
-        // `untie_due` reads the thing's holders, so its key is due when the last one goes
-        for t in self.unties.due() {
-            if !engine.named_a_holder(&t) {
-                // judged once more with no holder: the engine forgets its ties' places (`jc/`)
-                isolate(engine.untie_due(&t))?;
-                self.unties.unwant(&t);
-                self.leaves.unwant(&t);
+        for k in self.leaves.due() {
+            if !engine.named_a_holder(&k) {
+                self.leaves.unwant(&k);
                 continue;
             }
-            // acted on whenever judged, not only when it changed: a write refused is tried again
-            // when what the value read moves
-            let mut gs = BTreeSet::new();
-            self.unties.try_settle(&t, || isolate(engine.untie_due(&t)).map(|v| v.unwrap_or_default()).inspect(|v| gs.clone_from(v)))?;
-            for g in gs {
-                acted |= wrote(engine.untie(&t, &g))?;
-            }
-        }
-        for k in self.leaves.due() {
             let mut ended = false;
             self.leaves.settle(&k, || {
                 ended = engine.joined_link_ended(&k);
@@ -300,7 +200,7 @@ impl Life {
     /// Tests: whether a holder duty follows `t`.
     #[doc(hidden)]
     pub fn holder_duties_follow(&self, t: &Tid) -> bool {
-        self.leaves.wants(t) || self.unties.wants(t)
+        self.leaves.wants(t)
     }
 }
 

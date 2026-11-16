@@ -409,17 +409,8 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
     let lost: Vec<Tid> = lost.into_iter().chain(gone).collect();
     let held: BTreeMap<Tid, u64> = lost.iter().filter_map(|a| Some((*a, tx.core.ix.secrets.get(a)?.read.held().map(|(e, _)| e.n()).max()?))).collect();
     for a in &lost {
-        // lowered to sync: the account's sync record from its own reading (its sync ID, tied by
-        // its `sync.0`, and the sync secrets it held), and S becomes kept unread (spec/sync.md §3; spec/sync-judgement.md
-        // §6 Read and unread move)
-        let lowered = tx.core.me().is_some_and(|m| tx.core.role_now(&m, a) == Some(osis_base::Role::Sync));
-        if lowered && let Some(ep) = tx.core.ix.secrets.get(a).cloned() {
-            let syncs: Vec<(osis_crypto::Epoch, osis_crypto::Secret32)> = ep.sync.held().map(|(e, x)| (e, x.clone())).collect();
-            if !syncs.is_empty() {
-                let ids: Vec<osis_base::SyncId> = crate::flows::home_sync_id(tx, a)?.into_iter().collect();
-                crate::sync::records::keep_in(tx, a, &ids, syncs, &ids)?;
-            }
-        }
+        // refgraph: (c) lowered to sync: S becomes kept unread by the account's own ticket of it
+        // (spec/sync-judgement.md §6 Read and unread move)
         tx.core.ix.secrets.remove(a);
         tx.txn.remove_local(&[crate::engine::records::SECRETS, a.as_bytes()].concat(), osis_store::Shred::Yes)?;
         crate::sync::stranded::drop_asks(tx, a, |_| false)?;

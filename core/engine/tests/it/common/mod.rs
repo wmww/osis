@@ -174,7 +174,7 @@ pub fn new_thing_keeping(lp: &mut LocalPeer, i: usize, extra: &[(&str, osis_sche
 }
 
 pub fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, tied: None, floor: None }
+    ct::Edge { role, until: None, invite: None, floor: None }
 }
 
 /// Peer `i` writes `holder`'s edge on `thing` as remove + put (`None` removes it), with an

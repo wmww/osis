@@ -763,10 +763,6 @@ pub(crate) fn carried_only(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, of: &dyn Fn(&Tid
 /// receiver judges invalid). `write_snapshot`'s check, so what a purge-on-replace cover asks
 /// (`replace::settle_none`).
 pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts: Ts) -> Result<MayWrite> {
-    // a release request is a content commit of its own (spec/wire.md §4): never compacted
-    if ak.as_str() == osis_commit::retention::RELEASED {
-        return Ok(MayWrite::No);
-    }
     let Ok(node) = tx.core.writer_for(tid) else { return Ok(MayWrite::No) };
     if is_content(ak.as_str()) && !carried_passes_on(tx, tid, ak)? {
         return Ok(MayWrite::Later);
@@ -876,10 +872,10 @@ pub(crate) fn build_snapshot(tx: &mut Tx<'_>, tid: Tid, ak: Ak, st: Fragment, ts
 }
 
 /// Whether `ak` is ever compacted (spec/commits.md §2): not role-class, `created.0`,
-/// `addenda.0`, `released.0` or a signal (no state).
+/// `addenda.0` or a signal (no state).
 pub(crate) fn compacted(ak: &Ak) -> bool {
     let a = ak.as_str();
-    !is_role_class(a) && a != "created.0" && a != osis_commit::retention::RELEASED && !osis_schema::core_types::is_addenda(a) && !ak.signal()
+    !is_role_class(a) && a != "created.0" && !osis_schema::core_types::is_addenda(a) && !ak.signal()
 }
 
 /// The re-snapshot owed on `(tid, ak)` (`Indexes::resnapshots_owed`), in `tx`: one this node may
@@ -978,9 +974,6 @@ impl Engine {
         }
         if ak.as_str() == "created.0" {
             return Err(Error::Misuse("created.0 is never compacted"));
-        }
-        if ak.as_str() == osis_commit::retention::RELEASED {
-            return Err(Error::Misuse("released.0 is never compacted"));
         }
         // the judgment reads every addendum delta (spec/permissions.md §5.2)
         if osis_schema::core_types::is_addenda(ak.as_str()) {

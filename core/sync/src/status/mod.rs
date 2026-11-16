@@ -756,8 +756,7 @@ impl Status {
     /// Where a wait on `scope`'s sync IDs stands (§3): each heard out with its own commits held
     /// elsewhere, or held by no other node (nothing anyone else holds to wait for); never while
     /// one some other node may hold is unconnected; failed `Stranded` while one is stranded here
-    /// (notes/api-design.md: a wait on `Stranded` fails). Deliveries are not status's: their
-    /// scope holds no sync ID. Reads only.
+    /// (notes/api-design.md: a wait on `Stranded` fails). Reads only.
     /// `ids_of`: the sync IDs carrying a thing (the engine's `carrying`); `others`: whether some
     /// other node may hold S (the engine's `roster_holders`).
     pub fn wait(&self, net: &impl Net, scope: Scope, ids_of: impl FnOnce(&Tid) -> Result<Vec<SyncId>>, mut others: impl FnMut(&SyncId) -> bool) -> Waiting {
@@ -768,7 +767,6 @@ impl Status {
                 Ok(ids) if !ids.is_empty() => ids,
                 _ => return Waiting::Pending,
             },
-            Scope::Deliveries | Scope::Delivery { .. } => Vec::new(),
         };
         let stranded: Vec<SyncId> = ids.iter().filter(|s| net.stranded(s) || self.strandings.contains_key(*s)).copied().collect();
         if !stranded.is_empty() {

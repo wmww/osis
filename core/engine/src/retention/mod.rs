@@ -43,7 +43,6 @@ pub(crate) mod destroy;
 pub use destroy::{End, Minting, Standing, highest};
 /// A request's point in an `End` (`ts`, author, commit ID).
 pub use osis_perm::Point;
-pub mod lifetimes;
 pub(crate) mod forget;
 pub mod freed;
 pub(crate) mod memory;
@@ -1270,9 +1269,6 @@ impl Engine {
             if !changed.is_empty() {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             }
-            // inbox blobs expired: their invite requests go
-            crate::sync::inbox::expire_waiting(tx, osis_base::WallMs(now))?;
-            crate::sync::records::expire_offers(tx, osis_base::WallMs(now))?;
             // quiet times passed: after the expiries, which end an aspect's quiet time
             tx.core.compaction.quiet_passed(now);
             tx.core.timer_floor = tx.core.timer_floor.min(tx.core.compaction.next_at());
@@ -1303,11 +1299,10 @@ impl Engine {
         let core = &self.core;
         let aspect = core.ix.leave_due.keys().next().copied();
         let live = Some(core.compaction.next_at()).filter(|t| *t != u64::MAX);
-        let inbox = core.ix.waiting_inbox.values().map(|w| w.expires.0).chain(core.ix.offers.values().map(|o| o.expires.0)).min();
         let fallen = (!core.fallen.is_empty()).then(|| self.now().0);
         // a commit pending for its `ts` ahead (`apply::Wake::At`)
         let drift = crate::apply::next_at(core);
-        Ok(part.into_iter().chain(aspect).chain(live).chain(inbox).chain(fallen).chain(drift).min())
+        Ok(part.into_iter().chain(aspect).chain(live).chain(fallen).chain(drift).min())
     }
 
     /// Whether held commit `c` is an own replace of `(tid, ak)` (`snapshot::covered`).
@@ -1689,7 +1684,7 @@ mod tests {
         for w in [1, 2] {
             let w = lp.peers[w].engine.me();
             let mut m = Mutation::new();
-            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }.to_value()) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, floor: None }.to_value()) }).unwrap();
             lp.peers[0].commit(m).unwrap();
         }
         lp.sync_all().unwrap();
@@ -1805,7 +1800,7 @@ mod tests {
             let (alice, bob, carol) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
             let x = Ak::new("x:v.0").unwrap();
             let none = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
-            let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
+            let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
             // bob writes `t` by a raw edge write: `t` keeps its first admin's secrets
             let mut m = Mutation::new();
             let t = lp.peers[0].engine.new_thing(&mut m, alice);
@@ -1880,7 +1875,7 @@ mod tests {
         let readers = |e: &crate::Engine| [p, q, r, s].map(|t| e.core.reader_of(&t));
         assert_eq!(readers(&lp.peers[0].engine), [a; 4], "plain: every reader actor is A");
         let e = &mut lp.peers[0].engine;
-        e.grant(&p, &b, &ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }).unwrap();
+        e.grant(&p, &b, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None }).unwrap();
         assert!(e.core.ix.own_keys.contains(&p), "the grant gave P secrets of its own");
         assert_eq!(readers(&lp.peers[0].engine), [p, p, p, a], "P's own, S still A's");
     }
@@ -1898,7 +1893,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
         let admin = ct::Edge { role: Role::Admin, ..write.clone() };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.peers[0].engine.grant(&t, &x, &admin).unwrap();
@@ -1936,7 +1931,7 @@ mod tests {
         lp.sync_all().unwrap();
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
-        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
         use osis_crdt::{Op, PathOp, PathSeg};
         let mut m = Mutation::new();
         m.op(t, &key, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Value::Int(1)) }).unwrap();
@@ -2015,7 +2010,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &other, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &x, &ct::Edge { role: Role::Admin, ..write.clone() }).unwrap();
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
@@ -2073,7 +2068,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &other, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &x, &ct::Edge { role: Role::Admin, ..write.clone() }).unwrap();
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
@@ -2134,7 +2129,7 @@ mod tests {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         lp.peers[0].commit(m).unwrap();
-        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
@@ -2347,7 +2342,7 @@ mod tests {
         let r = lp.peers[1].engine.me();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         let (u, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
-        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
         lp.peers[0].engine.grant(&u, &r, &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
@@ -2393,7 +2388,7 @@ mod tests {
         assert!(e.kept_invalid(&c) && e.forgettable(&c).unwrap(), "arrived again: dropped again");
         e.forget_commits(&[c]).unwrap();
         lp.advance(10);
-        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
         lp.deliver(0, &pk).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(!e.forgettable(&c).unwrap() && e.get(&t, &x).unwrap() == Some(Value::Int(1)), "re-granted: held and read");
@@ -2459,7 +2454,7 @@ mod tests {
         assert_eq!(e.get(&u, &y).unwrap(), None, "admin on u: its request drops the write there");
         assert!(!e.forgettable(&q_u).unwrap(), "a request dropping a write is kept");
         lp.advance(10);
-        lp.peers[0].engine.demote(&u, &Demotion { holder: r, new: Some(ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }), retain: None }).unwrap();
+        lp.peers[0].engine.demote(&u, &Demotion { holder: r, new: Some(ct::Edge { role: Role::Read, until: None, invite: None, floor: None }), retain: None }).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(!e.forgettable(&q_u).unwrap(), "a demotion whose frontier lists it leaves the purge standing: still kept");
         e.forget_commits(&[q_t]).unwrap();
@@ -2479,7 +2474,7 @@ mod tests {
         let a = lp.peers[0].engine.me();
         let r = lp.peers[1].engine.me();
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
-        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None, floor: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
         lp.peers[0].engine.grant(&t, &r, &edge(Role::Write)).unwrap();
         let r2 = lp.peers[2].engine.me();
         lp.peers[0].engine.grant(&t, &r2, &edge(Role::Read)).unwrap();

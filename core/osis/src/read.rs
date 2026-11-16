@@ -4,13 +4,11 @@
 use crate::error::{Error, Result};
 use crate::handle::{Osis, ReadOnly};
 use std::borrow::Borrow;
-use crate::share::Member;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Origin, ReadAt, Subscription, Watch, digest};
 use crate::commit_id::{CommitId, CommitPos};
 use osis_base::{Ak, Role, Tid, Ts, Value, Time};
 use osis_engine::{Diagnostic, Engine};
 use osis_schema::{AspectKey, ValueKey};
-use osis_schema::core_types::GROUP;
 use crate::track::{thing, thing_key};
 use osis_schema::{Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,9 +23,6 @@ pub struct Grant {
     pub until: Option<Time>,
     /// The role this holder may grant others.
     pub may_grant: Option<Role>,
-    /// The holder is a group and this grant goes when the thing stops being its member
-    /// (`Osis::add_with_grant`). Not a member now (`Osis::groups_of`), it is on its way out.
-    pub with_membership: bool,
     /// The holder reads the values as they stood at its first grant and what was written after,
     /// no earlier commit (`Reads::FromNow`).
     pub from_now: bool,
@@ -89,18 +84,6 @@ impl ThingStamp {
 
 fn stamp(c: osis_engine::Creation) -> ThingStamp {
     ThingStamp { id: CommitId(c.commit), written: c.ts.wall_ms(), ts: c.ts, actor: c.actor, received: c.received }
-}
-
-/// The groups a thing is in (`Osis::groups_of`), each list in tid order.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct GroupsOf {
-    /// Groups it is an item of.
-    pub item_of: Vec<Tid>,
-    /// Groups it is a subgroup of (its items count as theirs).
-    pub subgroup_of: Vec<Tid>,
-    /// Every group holding it as an item, directly or through subgroups: what carries its own
-    /// aspects when they sync. Not the groups it is only a subgroup of.
-    pub within: Vec<Tid>,
 }
 
 /// The grants on a thing, by holder.
@@ -208,12 +191,7 @@ impl Reader<'_> {
         if self.hidden(tid) {
             return Ok((tid, None));
         }
-        let v = self.e.get(&tid, ak)?;
-        // `groups.0`: the local index, shown as `groups_of` shows it
-        if let (Some(_), "groups.0", Some(Value::Set(s))) = (self.actor, ak.as_str(), &v) {
-            return Ok((tid, Some(Value::Set(s.iter().filter(|g| !matches!(g, Value::Tid(t) if self.hidden(*t))).cloned().collect()))));
-        }
-        Ok((tid, v))
+        Ok((tid, self.e.get(&tid, ak)?))
     }
 
     /// `v` (of `tid`'s `ak`) materialized up to the bound; an unreadable link reads as absent at
@@ -339,17 +317,6 @@ impl Reader<'_> {
         Ok(self.e.aspects(&tid)?)
     }
 
-    /// The groups the thing is in: those listing it as an item or as a subgroup, and every
-    /// group holding it transitively. Local indexes only.
-    pub fn groups_of(&self, tid: Tid) -> GroupsOf {
-        if self.hidden(tid) {
-            return GroupsOf::default();
-        }
-        let (items, subs) = self.e.listed_in(&tid);
-        let seen = |s: std::collections::BTreeSet<Tid>| s.into_iter().filter(|g| !self.hidden(*g)).collect();
-        GroupsOf { item_of: seen(items), subgroup_of: seen(subs), within: seen(self.e.groups_of(&tid)) }
-    }
-
     /// What actor `t` is, from its creation record.
     pub(crate) fn holder_kind(&self, t: Tid) -> crate::HolderKind {
         match self.e.core.created(&t) {
@@ -364,7 +331,7 @@ impl Reader<'_> {
         if !self.shows_roster(thing) {
             return Grants::new();
         }
-        self.e.roster(&thing).into_iter().map(|(m, e)| (m, Grant { role: e.role, until: e.until, may_grant: e.invite, with_membership: e.tied.is_some(), from_now: e.floor.is_some() })).collect()
+        self.e.roster(&thing).into_iter().map(|(m, e)| (m, Grant { role: e.role, until: e.until, may_grant: e.invite, from_now: e.floor.is_some() })).collect()
     }
 
     /// Whether `thing`'s roster is shown here: to a reader of it, or of the target a link's actor
@@ -395,9 +362,8 @@ impl Reader<'_> {
     }
 
     /// Whether the thing is here with content: its creation is held and some aspect a `Write`
-    /// sets is present. `false` for an unknown thing and for one with no content: deleted, and
-    /// equally never written (a thing just created and added to a group, an actor carrying only
-    /// role data).
+    /// sets is present. `false` for an unknown thing and for one with no content, never written
+    /// or cleared (a thing just created, an actor carrying only role data).
     pub fn knows(&mut self, tid: Tid) -> Result<bool> {
         if self.hidden(tid) {
             return Ok(false);
@@ -419,9 +385,8 @@ impl Reader<'_> {
         self.e.creation(&tid).map(stamp)
     }
 
-    /// When the thing's content last changed: of the held commits and reverts writing its aspects (not `created.0`, `group.0` or role-class ones: membership and
-    /// sharing are no content write; not ephemeral writes), the one with the latest
-    /// `shown()`, else its creation. A delete is one. A commit known here only from a
+    /// When the thing's content last changed: of the held commits and reverts writing its aspects (not `created.0` or role-class ones: sharing is no
+    /// content write; not ephemeral writes), the one with the latest `shown()`, else its creation. A commit known here only from a
     /// snapshot is not seen.
     pub fn changed(&self, tid: Tid) -> Option<ThingStamp> {
         if self.hidden(tid) || self.e.destroyed(&tid) {
@@ -474,23 +439,6 @@ impl ReadOnly {
         Ok(project(s, ty, &from, field, tid, &ak, &v))
     }
 
-    /// The groups the thing is in: those listing it as an item or as a subgroup, and every group
-    /// holding it transitively.
-    pub fn groups_of(&self, tid: Tid) -> Result<GroupsOf> {
-        if let Some(at) = self.remote(tid, "groups_of")? {
-            return self.forward(&at, crate::port::method::GROUPS_OF, (tid,));
-        }
-        Ok(self.read_answer(|| thing_key("groups_of", tid), Filter::Due(Watch::Groups(tid)), move |r| r.groups_of(tid)))
-    }
-
-    /// What `group` contains: its items, then its subgroups, each in tid order (empty when it has
-    /// never had a member). A thing both item and subgroup appears as both. Being in a group grants
-    /// nothing: who holds a role on it is `grants`.
-    pub fn members(&self, group: Tid) -> Result<Vec<Member>> {
-        let d = self.at(group, GROUP).get()?.unwrap_or_default();
-        Ok(d.items.into_iter().map(Member::Item).chain(d.subgroups.into_iter().map(Member::Subgroup)).collect())
-    }
-
     /// The roles granted on `thing`, by holder; empty unless this node reads `thing` (or the
     /// thing a link's actor stands for): a node holds others' grants it is not entitled to show.
     /// Whoever holds through those: `holders`.
@@ -512,8 +460,8 @@ impl ReadOnly {
     }
 
     /// Whether the thing is here with content. `false` for an unknown thing and for one with no
-    /// content, which is a deleted one and equally one never written: a thing just created, or
-    /// only added to a group or granted. Its creation being here needs no content, and is all a write needs.
+    /// content, one cleared and equally one never written: a thing just created, or only
+    /// granted. Its creation being here needs no content, and is all a write needs.
     pub fn has_content(&self, tid: Tid) -> Result<bool> {
         if let Some(at) = self.remote(tid, "has_content")? {
             return self.forward(&at, crate::port::method::HAS_CONTENT, (tid,));
@@ -526,7 +474,7 @@ impl ReadOnly {
     }
 
     /// When the thing was created: the oldest valid commit carrying its creation; `None` while it
-    /// is unknown here, or once it was destroyed (`Write::purge`, `Write::release`, an expiry).
+    /// is unknown here, or once it was destroyed (`Write::purge`, an expiry).
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let Some(at) = self.remote(tid, "created")? {
             return self.forward(&at, crate::port::method::CREATED, (tid,));

@@ -348,7 +348,7 @@ impl Ground for Fake {
     fn holdings_moved(&mut self) -> Vec<SyncId> {
         std::mem::take(&mut self.holdings_feed)
     }
-    fn closure_settled(&mut self, s: &SyncId) -> Result<bool> {
+    fn unit_settled(&mut self, s: &SyncId) -> Result<bool> {
         Ok(!self.unsettled.contains_key(s))
     }
     fn pullable(&mut self, s: &SyncId) -> Result<bool> {

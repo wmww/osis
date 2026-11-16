@@ -1,9 +1,9 @@
 //! Whom a node dials and where (spec/sync-opens.md §1 Where to dial, Whom to dial): `dial_peers`
-//! per sync ID, from the dial records it holds (its own nodes' `reach.0`, contacts' `dial^.0`, a
-//! grant's dial hint in a sync record), and what this node publishes of itself
+//! per sync ID, from the dial records it holds (its own nodes' `reach.0`, contacts' `dial^.0`),
+//! and what this node publishes of itself
 //! (`publish_reach`). For dialing only, never proof.
 
-use super::{DialHint, Holding, RosterHolders};
+use super::{Holding, RosterHolders};
 use crate::engine::{Core, Engine, Step, Tx};
 use crate::error::Result;
 use crate::Mutation;
@@ -49,8 +49,8 @@ impl Engine {
         let Some((t, holding)) = self.synced_thing(s)? else { return Ok(Arc::default()) };
         let mut out: BTreeMap<[u8; 32], Address> = BTreeMap::new();
         let own = self.core.account_devices();
-        // own nodes whose sync sets hold S's thing, by their `reach.0`
-        for n in self.own_nodes_syncing(&t)? {
+        // own nodes, by their `reach.0`
+        for n in self.own_nodes() {
             if let Some(r) = self.get_typed(&n, &ct::REACH)? {
                 out.entry(r.dialable).or_insert(Address { url: peer_url(&r.items), key: r.dialable });
             }
@@ -69,15 +69,8 @@ impl Engine {
                     }
                 }
             }
-            // its granters, by the grants' dial hints, of every thing S is synced for
-            Holding::Unread => {
-                let kept = self.kept_records(s);
-                for DialHint { dialable, urls } in super::kept_things(s, &kept).flat_map(|(_, r)| r.dials.iter()) {
-                    if let Some(x) = address(dialable, urls) {
-                        out.entry(x.key).or_insert(x);
-                    }
-                }
-            }
+            // refgraph: (c) its ticket's issuer, by the issuer's profile dial list
+            Holding::Unread => {}
         }
         Ok(Arc::new(out.into_values().collect()))
     }
@@ -99,36 +92,16 @@ impl Engine {
         if holding == Holding::Unread {
             return Ok(Arc::new(RosterHolders { anyone: true, ..RosterHolders::default() }));
         }
-        let nodes = self.own_nodes_syncing(&t)?.into_iter().collect();
+        let nodes = self.own_nodes().into_iter().collect();
         let own = self.core.account_devices().map(|(p, _)| p);
         let accounts = self.holder_accounts(&t).into_iter().filter(|a| Some(*a) != own).collect();
         Ok(Arc::new(RosterHolders { anyone: false, nodes, accounts }))
     }
 
-    /// This account's other nodes whose synced group's closure holds `t`.
-    fn own_nodes_syncing(&mut self, t: &Tid) -> Result<Vec<Tid>> {
-        let Some((_, d)) = self.core.account_devices() else { return Ok(Vec::new()) };
-        let synced = self.get_typed(&d, &ct::SYNCED)?.unwrap_or_default();
-        Ok(self.core.key_holders(&d).into_iter().map(|(n, _)| n).filter(|n| self.core.own_node(n) && self.closure(synced.get(n).unwrap_or(&d)).contains(t)).collect())
-    }
-
-    /// Whether a node other than this one may take a delivery to `holder` (spec/sync-status.md §3:
-    /// as for a sync ID, what no other node may take holds no wait): another node of this
-    /// account, another account, this account while it has another node, or an actor another
-    /// account or another node of this account holds, by the rosters held here.
-    pub fn delivery_awaited(&mut self, holder: &Tid) -> Result<bool> {
-        let own = self.core.account_devices();
-        if self.core.own_node(holder) {
-            return Ok(true);
-        }
-        if self.core.is_account(holder) {
-            return Ok(match own {
-                Some((p, d)) if p == *holder => self.core.key_holders(&d).into_iter().any(|(n, _)| self.core.own_node(&n)),
-                _ => true,
-            });
-        }
-        let others = self.holders_from(*holder).into_iter().any(|a| own.is_none_or(|(p, _)| p != a));
-        Ok(others || !self.own_nodes_syncing(holder)?.is_empty())
+    /// This account's other nodes (no node sees what a sibling holds: spec/sync.md).
+    fn own_nodes(&self) -> Vec<Tid> {
+        let Some((_, d)) = self.core.account_devices() else { return Vec::new() };
+        self.core.key_holders(&d).into_iter().map(|(n, _)| n).filter(|n| self.core.own_node(n)).collect()
     }
 
     /// The accounts holding a role on `t`'s reader actor, directly or through the actors holding

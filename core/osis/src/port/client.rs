@@ -41,7 +41,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 pub(crate) struct Thin {
     pub me: Tid,
     pub node: Tid,
-    pub home: Tid,
+    pub devices: Tid,
 }
 
 /// The wait before dialing again a node whose connection could not be made while a watch is
@@ -383,8 +383,8 @@ pub(crate) fn reply(db: &ReadOnly, conn: ConnId, id: RequestId, m: Msg) {
 }
 
 fn who(v: Value) -> Result<Thin> {
-    let (me, node, home) = Form::from_wire(v)?;
-    Ok(Thin { me, node, home })
+    let (me, node, devices) = Form::from_wire(v)?;
+    Ok(Thin { me, node, devices })
 }
 
 /// A connection ended (or its dial failed): one that was up is dialed again at once; one that
@@ -596,7 +596,7 @@ impl ReadOnly {
                 let o = l.node.disconnect(c);
                 l.out.extend(o);
             }
-            if l.remotes.is_empty() && l.group_sources.is_empty() {
+            if l.remotes.is_empty() && l.unit_sources.is_empty() {
                 self.inner.has_sources.store(false, std::sync::atomic::Ordering::Release);
             }
             true
@@ -619,8 +619,8 @@ fn fixed<const N: usize>(v: Value, what: &str) -> Result<[Value; N]> {
 
 /// A status as nothing reaches its node now: no connection, each thing not connected.
 fn unreachable(s: &Status) -> Status {
-    let groups = s.groups.iter().map(|(t, g)| (*t, crate::GroupSync { state: crate::SyncState::NotConnected, not_taking: 0, leaving: g.leaving })).collect();
-    Status { connected: 0, groups, kept: s.kept.clone() }
+    let units = s.units.keys().map(|t| (*t, crate::UnitSync { state: crate::SyncState::NotConnected, not_taking: 0 })).collect();
+    Status { connected: 0, units }
 }
 
 /// The statuses of several nodes as one.
@@ -628,14 +628,10 @@ fn merged<'a>(all: impl Iterator<Item = &'a Status>) -> Status {
     let mut out = Status::default();
     for s in all {
         out.connected += s.connected;
-        for (t, g) in &s.groups {
-            crate::syncing::merge(&mut out.groups, *t, g.clone());
+        for (t, g) in &s.units {
+            crate::syncing::merge(&mut out.units, *t, g.clone());
         }
-        out.kept.extend(s.kept.iter().copied());
     }
-    // kept at one node, synced at another: it syncs
-    let groups = &out.groups;
-    out.kept.retain(|t| !groups.contains_key(t));
     out
 }
 

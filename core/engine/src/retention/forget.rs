@@ -308,14 +308,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         tx.txn.drop_aspect(t, ak)?;
         super::destroy::forget_aspect_rows(tx, t, ak)?;
     }
-    for t in &out.things {
-        // unknown now: what lists it is judged again
-        super::lifetimes::queue_with_listers(tx, t)?;
-    }
-    // the things' history cursors and rows (`leaving`), and the sync IDs inbox blobs hinted
+    // the things' history cursors and rows (`leaving`)
     super::leaving::forget_aspects(tx, all)?;
     for t in &out.things {
-        crate::sync::inbox::set_hint(tx, t, None)?;
         // its role arrival and loss place: nothing left names it
         crate::sync::held::forget_actor(tx, t)?;
     }
@@ -364,14 +359,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     }
     // the API's watches see the loss
     if !aspects.is_empty() {
-        let cause = if matches!(scope, Scope::Local(_)) { Cause::Unsynced } else { Cause::LostAccess };
+        let cause = if matches!(scope, Scope::Local(_)) { Cause::Released } else { Cause::LostAccess };
         tx.core.events.queue(Event::Changed { cause, changed: aspects.into_iter().collect() });
-    }
-    // a thing forgotten on losing read access is shared here no more (spec/sync-set.md §2)
-    if matches!(scope, Scope::Lost(_)) {
-        for t in &out.things {
-            crate::sync::set::unshare_here(tx, t)?;
-        }
     }
     out.parts = parts;
     // a rotation forgotten whole moves its account's chain: judged again in this transaction

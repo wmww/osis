@@ -31,35 +31,14 @@ pub struct Edge {
     /// The edge counts as removed from `wall_ms(t) >= until` (spec/permissions.md §2).
     pub until: Option<WallMs>,
     pub invite: Option<Role>,
-    /// The placement of the target in its holder group this edge is tied to
-    /// (spec/permissions.md §2): carried, never an authority.
-    pub tied: Option<Tie>,
     /// Granted without history: the read n the holder reads from (spec/crypto.md §4, Floors);
     /// `None` is 0.
     pub floor: Option<u64>,
 }
 
-/// The `group.0` element a tied edge names (spec/permissions.md §2): its creation stamp (`ts`,
-/// dot source, counter, spec/crdt.md §2) and the set it is in.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Tie {
-    pub ts: Ts,
-    pub src: TieSource,
-    pub ctr: u64,
-    pub subgroup: bool,
-}
-
-/// A dot's source (spec/crdt.md §2.1): a placement is durable, never `Derived`.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum TieSource {
-    Commit(CommitId),
-    /// A session of the node: its 16-byte nonce.
-    Session(Tid, [u8; 16]),
-}
-
 impl Edge {
     pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, invite: None, tied: None, floor: None }
+        Edge { role, until: None, invite: None, floor: None }
     }
     /// The value a removal saying retain writes (spec/permissions.md §3): `until` 0, gone at every
     /// clock.

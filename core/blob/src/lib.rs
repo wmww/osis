@@ -1,6 +1,6 @@
 //! osis-blob: what every node knows of blobs and sync IDs, read or not: blob framing and
 //! wraps, chunk trees and blob-backed pages, large values, registration steps, claim sets, entry
-//! boxes, stamp/deposit/delete signatures, delete-key checks, inbox blobs, the `sync.0` types,
+//! boxes, stamp/deposit/delete signatures, delete-key checks, the `sync.0` types,
 //! addresses, links (spec/sync.md, spec/wire.md §5, §6, §8-§10, spec/crypto.md §5-§7). Pure
 //! functions; randomness injected.
 //! Layer 4 (notes/architecture.md). Notes: notes/sync-protocol.md (osis-blob); notes/data-model.md (Large values).
@@ -12,8 +12,8 @@ pub mod blob;
 mod cbor;
 pub mod chunks;
 mod error;
-pub mod inbox;
 pub mod sync_ids;
+pub mod holder;
 pub mod link;
 pub mod step;
 pub mod tree;
@@ -23,8 +23,8 @@ pub use auth::{DeleteItem, cover_levels, delete_digest, entry_digest, key_for_le
 pub use blob::{Class, Group, Level, Prefix, blob_id, check_size, frame, frame_under, open, clear_prefix, unwrap_any, wrap_order};
 pub use chunks::{LargeParams, chunk_value, read_value, string_head};
 pub use error::Error;
-pub use inbox::{BoxedThing, BoxesPayload, DialHint, GrantSig, HolderKeys, Inbox, InboxPayload, InboxRest, InboxThing, MAX_DIAL_URLS, StrandedNotice, open_inbox_blob, open_inbox_item, seal_boxes_payload, seal_inbox_blob, seal_stranded_notice};
 pub use sync_ids::{StepRecord, SyncEntry, SyncIds, parse_record, step_record, sync_steps};
-pub use link::{ShareLink, link_peers};
+pub use holder::HolderKeys;
+pub use link::{DialHint, ShareLink, link_peers};
 pub use step::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_sync_id, open_entry_box, path_to, register, register_with, verify_path};
 pub use tree::{BlobFetch, BlobReader, BlobSink, BlobStore, BlobWriter, Framing, Reuse, HashSink, LinkSource, MemoryBlobs, TreeReader, TreeSink, TreeWriter, Written, linked_prefix_inputs, read_tree, write_tree};

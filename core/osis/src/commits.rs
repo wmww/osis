@@ -27,8 +27,8 @@ use std::sync::Weak;
 #[doc(hidden)]
 pub const COMMIT_PAGE: usize = 256;
 
-/// Which aspects a listing, a listener, undo or redo ranges over; resolved when used. `Thing` and
-/// `Group` cover durable value aspects; an ephemeral aspect (a cursor, a selection) is in scope
+/// Which aspects a listing, a listener, undo or redo ranges over; resolved when used. `Thing`
+/// covers durable value aspects; an ephemeral aspect (a cursor, a selection) is in scope
 /// only when named by `Aspects`. A signal is in none: its fires are listed at its key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -36,8 +36,6 @@ pub enum Scope {
     Thing(Tid),
     /// These aspects (a form).
     Aspects(Vec<(Tid, Ak)>),
-    /// The group and every thing in it, transitively (a folder).
-    Group(Tid),
 }
 
 /// What a commit is, from its header.
@@ -258,20 +256,18 @@ impl Address {
     /// The things it is on.
     pub(crate) fn things(&self) -> Vec<Tid> {
         match self {
-            Address::Writes(Scope::Thing(t) | Scope::Group(t)) | Address::Fired(t, _) | Address::Versions(t, _, _) => vec![*t],
+            Address::Writes(Scope::Thing(t)) | Address::Fired(t, _) | Address::Versions(t, _, _) => vec![*t],
             Address::Writes(Scope::Aspects(v)) => v.iter().map(|(t, _)| *t).collect::<BTreeSet<_>>().into_iter().collect(),
         }
     }
 
-    /// Whether a part on `ak` of `tid` is at this address (`in_group`: whether `tid` is the
-    /// group or in it, asked only for a group's scope).
-    pub(crate) fn holds(&self, tid: Tid, ak: &Ak, in_group: impl FnOnce(Tid) -> bool) -> bool {
+    /// Whether a part on `ak` of `tid` is at this address.
+    pub(crate) fn holds(&self, tid: Tid, ak: &Ak) -> bool {
         match self {
             Address::Fired(t, a) | Address::Versions(t, a, _) => *t == tid && a == ak && ak.signal(),
             Address::Writes(_) if ak.signal() => false,
             Address::Writes(Scope::Aspects(v)) => v.iter().any(|(t, a)| *t == tid && a == ak),
             Address::Writes(Scope::Thing(t)) => *t == tid && !ak.ephemeral(),
-            Address::Writes(Scope::Group(g)) => !ak.ephemeral() && in_group(*g),
         }
     }
 }
@@ -388,15 +384,9 @@ impl ReadOnly {
         let (mat, actor) = (self.inner.limit, self.acting);
         let c = self.locked(|l| {
             let mut r = Reader { e: l.engine(), limit: mat, actor };
-            // a group the caller may not read names nothing (`scope_aspects`)
-            if let Address::Writes(Scope::Group(g)) = a
-                && r.hidden(*g)
-            {
-                return Ok(None);
-            }
             // the commit's aspects at `a` the caller may read: judged from the commit, never from
             // the whole scope
-            let at = |r: &Reader<'_>, t: Tid, k: &Ak| !r.hidden(t) && a.holds(t, k, |g| t == g || r.e.groups_of(&t).contains(&g));
+            let at = |r: &Reader<'_>, t: Tid, k: &Ak| !r.hidden(t) && a.holds(t, k);
             match fired {
                 Some(mut row) => {
                     row.parts.retain(|p| !r.hidden(p.tid));
@@ -451,10 +441,9 @@ impl Osis {
 /// `on_fire`, and their subscriptions through the port).
 pub(crate) fn commit_event(db: &Osis, acting: Option<Tid>, a: &Address, d: Delivery) -> Option<CommitEvent> {
     match d {
-        // what it may not read is not told: an event would tell the commit is there (on a group
-        // it may not read, that the group holds the item: the group names nothing, `scope_aspects`)
+        // what it may not read is not told: an event would tell the commit is there
         Delivery::Commit { tids, .. }
-            if acting.is_some_and(|x| db.engine(|e| !tids.iter().any(|t| e.readable_by(&x, t)) || matches!(a, Address::Writes(Scope::Group(g)) if !e.readable_by(&x, g)))) => None,
+            if acting.is_some_and(|x| db.engine(|e| !tids.iter().any(|t| e.readable_by(&x, t)))) => None,
         Delivery::Commit { id, fired, .. } => {
             let told = match acting {
                 Some(x) => db.act_as(x).commit_told_here(a, id, fired),
@@ -851,15 +840,6 @@ impl crate::handle::ReadOnly {
         Ok(match s {
             Scope::Aspects(v) => self.engine(|e| v.iter().filter(|(t, a)| !a.signal() && shown(e, t)).cloned().collect()),
             Scope::Thing(t) => things(&|_, x| x == t)?,
-            Scope::Group(g) => {
-                let g = *g;
-                // acting as an actor: a group it may not read names nothing, not even an item it
-                // reads (that would tell the group from an unknown tid)
-                if self.read_local(|r| r.hidden(g)) {
-                    return Ok(Vec::new());
-                }
-                things(&|e, x| *x == g || e.groups_of(x).contains(&g))?
-            }
         })
     }
 }

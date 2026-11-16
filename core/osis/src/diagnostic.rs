@@ -12,9 +12,6 @@ use osis_engine::DiagnosticKind as K;
 // each variant's doc says what its fields are
 #[allow(missing_docs)]
 pub enum Diagnostic {
-    /// `thing` reaches no other node: no synced group holds it, or `group`, which was to, has holders
-    /// who may not read it. Add it to a synced group, `sync` it, or grant the group a role on it.
-    NotSynced { thing: Tid, group: Option<Tid>, detail: String },
     /// A background write could not commit (a text session, a kept-alive value), and is still waiting.
     Uncommitted { thing: Tid, detail: String },
     /// A write of this node turned invalid after it was written: it no longer reads, and nothing
@@ -26,8 +23,8 @@ pub enum Diagnostic {
     Unreadable { thing: Tid, detail: String },
     /// This node lost read access to `actor` and dropped its secrets (a copy may stay: `retained_copies`).
     LostAccess { actor: Tid, detail: String },
-    /// This node cannot open `group`'s sync (`SyncState::Stranded`) until a holder gives it the keys.
-    Stranded { group: Tid, detail: String },
+    /// This node cannot open `thing`'s sync (`SyncState::Stranded`) until a holder gives it the keys.
+    Stranded { thing: Tid, detail: String },
     /// Ephemeral data was not synced or not applied: a cap was reached.
     EphemeralRefused { things: Vec<Tid>, detail: String },
     /// Something about the local store, such as a file others can read.
@@ -38,7 +35,7 @@ pub enum Diagnostic {
     /// A clock far behind holds back others' writes here; one far ahead has this node's writes
     /// held back elsewhere. Fix the device's clock if it is this one.
     ClockSkew { detail: String },
-    /// Other nodes sent more unverified data under a group than this node keeps: what came past
+    /// Other nodes sent more unverified data under a sync ID than this node keeps: what came past
     /// the bound was dropped. Real data among it arrives again from the nodes that hold it; a
     /// lasting flood means another node misbehaves.
     InputCapped { detail: String },
@@ -61,13 +58,12 @@ impl From<osis_engine::Diagnostic> for Diagnostic {
         let osis_engine::Diagnostic { kind, tids, commit, peer, detail } = d;
         let first = tids.first().copied();
         match (kind, first, tids.get(1).copied(), commit) {
-            (K::NotSynced, Some(thing), group, _) => Diagnostic::NotSynced { thing, group, detail },
             (K::Uncommitted, Some(thing), ..) => Diagnostic::Uncommitted { thing, detail },
             (K::OwnWriteInvalid, _, _, Some(c)) => Diagnostic::OwnWriteInvalid { commit: c.into(), things: tids, detail },
             (K::Mismatch, Some(thing), ..) => Diagnostic::Mismatch { thing, detail },
             (K::Unreadable, Some(thing), ..) => Diagnostic::Unreadable { thing, detail },
             (K::Removed, Some(actor), ..) => Diagnostic::LostAccess { actor, detail },
-            (K::Stranded, Some(group), ..) => Diagnostic::Stranded { group, detail },
+            (K::Stranded, Some(thing), ..) => Diagnostic::Stranded { thing, detail },
             (K::EphemeralRefused, ..) => Diagnostic::EphemeralRefused { things: tids, detail },
             (K::Storage, ..) => Diagnostic::Storage { detail },
             (K::Callback, ..) => Diagnostic::Callback { detail },
@@ -84,7 +80,6 @@ impl From<osis_engine::Diagnostic> for Diagnostic {
 impl std::fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (what, detail) = match self {
-            Diagnostic::NotSynced { detail, .. } => ("not synced", detail),
             Diagnostic::Uncommitted { detail, .. } => ("uncommitted", detail),
             Diagnostic::OwnWriteInvalid { detail, .. } => ("own write invalid", detail),
             Diagnostic::Mismatch { detail, .. } => ("mismatch", detail),

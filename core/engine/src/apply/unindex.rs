@@ -31,11 +31,10 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     if marks {
         crate::retention::handed::note(tx, id)?;
     }
-    // what sync's facade kept of it: section epochs, blob parts, deliveries owed
+    // what sync's facade kept of it: section epochs, blob parts
     if marks {
         crate::sync::bodies::forget(tx, id)?;
     }
-    crate::sync::deliveries::forget(tx, id)?;
     tx.core.redeliver.remove(id);
     // a memory commit's held parts go with it: what they link joins the freed sets
     // (`retention::freed`), memory rows; node-sync deletes the pieces as durable ones

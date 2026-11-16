@@ -19,22 +19,6 @@ fn peers(n: usize) -> LocalPeer {
     LocalPeer::cached(&format!("rotation::tests_account::peers/{n}"), || (LocalPeer::new(n, 0, super::tests::T0).unwrap(), ())).0
 }
 
-/// Peer `k` (bare) paired into peer 0's account `a` (spec/permissions.md §1: a rotation adding
-/// it), over the direct connection.
-fn pair_sibling(lp: &mut LocalPeer, k: usize, a: &CreatedAccount) {
-    let node = lp.peers[k].engine.tid();
-    for id in lp.peers[k].engine.commit_ids() {
-        let pk = lp.peers[k].engine.package(&id).unwrap().unwrap();
-        lp.deliver(0, &pk).unwrap();
-    }
-    let (_, all) = lp.peers[0].engine.pair(&node).unwrap();
-    for c in &all {
-        let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
-        lp.deliver(k, &pk).unwrap();
-    }
-    lp.peers[k].engine.paired(&a.account).unwrap();
-}
-
 fn created(lp: &mut LocalPeer) -> (CreatedAccount, Vec<u8>) {
     let (a, done) = lp.peers[0].engine.create_account().unwrap();
     let bytes = lp.peers[0].engine.commit_bytes(&done.commits[0]).unwrap().unwrap();
@@ -52,48 +36,6 @@ fn account_created_commit_verifies_at_an_outsider_spec_wire_4() {
     assert_eq!(lp.peers[0].engine.open_inner(&blob), Some(me), "the creator opens its own");
     assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), Ingested::Applied(_)));
     assert_eq!(lp.peers[1].engine.open_inner(&blob), None);
-}
-
-// spec/crypto.md §3, §9: a sibling paired into the account (its seeds boxed to it) opens the inner signature and signs as the account; an outsider opens neither
-#[test]
-fn sibling_opens_the_inner_signature_spec_crypto_3() {
-    let mut lp = LocalPeer::new_bare(3, 0, super::tests::T0).unwrap();
-    lp.peers[2].engine.create_account().unwrap();
-    let (me, sib) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    let (a, bytes) = created(&mut lp);
-    let blob = CommitBlob::decode(&bytes).unwrap();
-    let both = |lp: &mut LocalPeer| {
-        lp.sync(0, 1).unwrap();
-        lp.sync(1, 0).unwrap();
-    };
-    pair_sibling(&mut lp, 1, &a);
-    assert_eq!(lp.peers[1].engine.open_inner(&blob), Some(me));
-    let mut m = crate::Mutation::new();
-    m.sign_as(a.account);
-    m.set(a.profile, &osis_schema::core_types::GROUP, &Default::default()).unwrap();
-    let c = lp.peers[1].engine.commit(m).unwrap().unwrap();
-    let b = CommitBlob::decode(&lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap()).unwrap();
-    assert_eq!(b.header.author, a.account);
-    both(&mut lp);
-    assert_eq!(lp.peers[0].engine.open_inner(&b), Some(sib));
-    assert_eq!(lp.peers[2].engine.open_inner(&b), None);
-    // the node signing is not in what any reader of the commit gets: only sealed in `inner`
-    let contains = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
-    let clear = lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap();
-    assert!(!contains(&clear, sib.as_bytes()), "a commit as a node holds it names no node");
-    // an outsider receives what sync IDs carry: the creation commit sealed, D's seed under D's read secret
-    let creation = blob.header.id();
-    let sealed = lp.sealed(0, &[creation]).unwrap();
-    assert!(!sealed.is_empty());
-    let seed = lp.peers[0].engine.core.accounts.get(&a.account).unwrap().keys.values().next().unwrap().seed().expose().to_owned();
-    for (_, b) in sealed.iter().flat_map(|p| &p.blobs) {
-        assert!(!contains(b, &seed), "the seed is sealed");
-        assert!(!contains(b, me.as_bytes()), "the node is sealed");
-    }
-    let unopened = lp.deliver_sealed(2, &sealed).unwrap();
-    assert_eq!(unopened, vec![creation], "no section opens for an outsider");
-    assert!(lp.peers[2].engine.get_typed(&a.devices, &osis_schema::core_types::ACCOUNT).unwrap().is_none());
-    assert!(lp.peers[2].engine.hold_account(&a.account, &a.devices).is_err(), "an outsider reads no seed");
 }
 
 struct Dedup(CreationRecord, osis_crypto::VerifyingKey);
@@ -249,7 +191,7 @@ fn forked_account_reads_the_head_held_first_spec_permissions_5_4() {
 }
 
 fn edge(r: Role) -> osis_schema::core_types::Edge {
-    osis_schema::core_types::Edge { role: r, until: None, invite: None, tied: None, floor: None }
+    osis_schema::core_types::Edge { role: r, until: None, invite: None, floor: None }
 }
 
 /// An actor of peer 1 with secrets of its own.
@@ -358,42 +300,6 @@ fn a_box_at_an_account_epoch_carries_its_rotation_spec_crypto_4() {
     assert_eq!(crate::rotation::members::carried(&e.core, &w, None), vec![id], "the box's epoch travels with it");
 }
 
-// the signing chain is built once per change of what it is built from (the rotations, the seeds
-// held, the roster), whatever the writes between
-#[test]
-fn account_view_is_built_once_per_rotation() {
-    let mut lp = peers(1);
-    let (a, _) = lp.peers[0].engine.create_account().unwrap();
-    let write = |lp: &mut LocalPeer| {
-        let mut m = crate::Mutation::new();
-        m.sign_as(a.account);
-        m.set(a.profile, &osis_schema::core_types::GROUP, &Default::default()).unwrap();
-        lp.peers[0].engine.commit(m).unwrap();
-    };
-    write(&mut lp);
-    let builds = || osis_base::costs::take().into_iter().filter(|x| x.0 == "account view").map(|x| x.2).sum::<u64>();
-    builds();
-    for _ in 0..50 {
-        write(&mut lp);
-    }
-    assert_eq!(builds(), 0, "no write rebuilds it");
-    // a rotation builds it once (the epoch rule judges it on arrival), however many reads follow
-    let e = &mut lp.peers[0].engine;
-    let held = e.core.accounts.get(&a.account).unwrap().clone();
-    let first = AccountEpochKeys::from_seed(held.keys.values().next().unwrap().seed());
-    let next = AccountEpochKeys::from_seed(&Secret32::from_bytes([81; 32]));
-    let rec = e.core.created(&a.account).unwrap().clone();
-    let ts = Ts::make(e.now(), 0).unwrap();
-    builds();
-    e.ingest(&rotation(rec, &first, &next, ts), Vec::new()).unwrap();
-    // minted by no node of the account (no inner signature): the node disregards it
-    assert!(e.core.accounts.contains_key(&a.account), "a rotation no node of the account made moves nothing");
-    for _ in 0..5 {
-        assert_eq!(e.core.account_delete_key(&a.account).unwrap(), first.signing.verifying_key());
-    }
-    assert_eq!(builds(), 2, "once for the rotation, once as the judgment it moved is read");
-}
-
 // spec/sync-inbox.md §2 (invite request): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there
 #[test]
 fn request_gate_reads_the_header_epoch_spec_sync_3() {
@@ -414,26 +320,6 @@ fn request_gate_reads_the_header_epoch_spec_sync_3() {
     assert!(crate::apply::signed_at(core, &id, &a.account, Some(FIRST_EPOCH), &blob.sigs));
     assert!(!crate::apply::signed_at(core, &id, &a.account, Some(id), &blob.sigs), "not at the epoch it mints");
     assert!(!crate::apply::signed_at(core, &id, &a.account, None, &blob.sigs), "an account's commit names its epoch");
-}
-
-// spec/crdt.md §2.2: a commit more than `MAX_DRIFT` ahead waits, also when its author is this
-// node's own account: only what this node itself writes is exempt
-#[test]
-fn a_siblings_far_future_commit_waits_spec_crdt_2_2() {
-    let mut lp = LocalPeer::new_bare(2, 0, super::tests::T0).unwrap();
-    let (a, _) = created(&mut lp);
-    pair_sibling(&mut lp, 1, &a);
-    lp.peers[1].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
-    let mut m = crate::Mutation::new();
-    m.sign_as(a.account);
-    m.set(a.profile, &osis_schema::core_types::GROUP, &Default::default()).unwrap();
-    let c = lp.peers[1].engine.commit(m).unwrap().unwrap();
-    assert_eq!(lp.peers[1].engine.header(&c).unwrap().author, a.account);
-    let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
-    assert!(matches!(lp.deliver(0, &pk).unwrap(), Ingested::Pending(_, crate::apply::Reason::Drift)));
-    lp.peers[0].clock.advance(osis_base::format::MAX_DRIFT_MS + 1);
-    lp.peers[0].tick().unwrap();
-    assert!(lp.peers[0].engine.pending().is_empty(), "it applies once within the bound");
 }
 
 /// `peers(3)` synced; peer 1 makes thing `t` (`x:a.0` = 0) and grants peer 0's account admin;

@@ -1478,7 +1478,7 @@ fn waiting_snapshot_drops_a_purged_copy_spec_commits_5() {
         lp.sync_all().unwrap();
         let a = lp.peers[0].engine.me();
         let t = new_thing(&mut lp, 1);
-        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None, floor: None };
+        let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, floor: None };
         lp.peers[1].engine.grant(&t, &a, &edge).unwrap();
         lp.sync(1, 0).unwrap();
         lp.advance(5);
@@ -1528,7 +1528,7 @@ fn waiting_snapshots_judged(n: usize) -> [u64; 4] {
     lp.sync_all().unwrap();
     let a = lp.peers[0].engine.me();
     let t = new_thing(&mut lp, 1);
-    let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, tied: None, floor: None };
+    let edge = osis_schema::core_types::Edge { role: osis_base::Role::Write, until: None, invite: None, floor: None };
     lp.peers[1].engine.grant(&t, &a, &edge).unwrap();
     lp.sync(1, 0).unwrap();
     lp.advance(5);
@@ -1663,38 +1663,6 @@ fn a_flag_moving_rejudges_that_flag_alone_spec_perm_4() {
     }
 }
 
-
-// spec/sync-compaction.md §1 (Repair): a writer judges a suspect entry only for a thing the sync
-// ID carries and an aspect it holds state of; an equal digest repairs nothing; a different one is
-// snapshotted, and not again while its state is the one it last snapshotted for that reporter.
-#[test]
-fn a_suspect_entry_is_repaired_once_per_state_spec_sync_compaction_1() {
-    use osis_engine::retention::suspect::Repaired;
-    let (mut lp, ps) = crate::flows::people(2);
-    let t = crate::flows::thing_of(&mut lp, 0, ps[0]);
-    // filed in its account's devices group: a synced thing
-    let d = lp.peers[0].engine.account().unwrap().unwrap().1;
-    let mut m = Mutation::new();
-    m.op(d, &osis_schema::core_types::GROUP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Add(Value::Tid(t)) }).unwrap();
-    lp.peers[0].engine.commit(m).unwrap().unwrap();
-    set(&mut lp, 0, t, &REG, "v");
-    let a = ak("t:reg.0");
-    let e = &mut lp.peers[0].engine;
-    let s = *e.carrying(&t).unwrap().iter().next().expect("a sync ID carries it");
-    let reporter = Tid::from_bytes([9; 15]);
-    let own = e.state_digest(&t, &a).unwrap().unwrap();
-    assert_eq!(e.repair_suspect(&s, &t, &a, &own, &reporter, None).unwrap(), Repaired::Same, "same state");
-    let before = e.commit_ids().len();
-    let Repaired::Wrote { from, .. } = e.repair_suspect(&s, &t, &a, &[0; 16], &reporter, None).unwrap() else { panic!("a different digest is repaired") };
-    assert_eq!(e.commit_ids().len(), before + 1, "one snapshot");
-    assert_eq!(Some(from), e.state_digest(&t, &a).unwrap(), "from the state as it stands");
-    assert_eq!(e.repair_suspect(&s, &t, &a, &[0; 16], &reporter, Some(from)).unwrap(), Repaired::Already);
-    assert_eq!(e.commit_ids().len(), before + 1, "not again from that state");
-    assert_eq!(e.repair_suspect(&osis_base::SyncId([7; 16]), &t, &a, &[0; 16], &reporter, None).unwrap(), Repaired::Skipped, "a sync ID not carrying the thing");
-    assert_eq!(e.repair_suspect(&s, &t, &ak("t:count.0"), &[0; 16], &reporter, None).unwrap(), Repaired::Skipped, "no state of the aspect");
-    let r = &mut lp.peers[1].engine;
-    assert_eq!(r.repair_suspect(&s, &t, &a, &[0; 16], &reporter, None).unwrap(), Repaired::Skipped, "a node not syncing it");
-}
 
 // spec/permissions.md §4 (Suspect list): a writer judging a reader's list digests each listed
 // aspect once per state of it: at a 100- and a 1,000-element list, judging three entries again

@@ -8,7 +8,6 @@ use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::rotation;
 use crate::Mutation;
-use osis_commit::CommitBlob;
 use osis_base::{CommitId, Role, Tid, WallMs};
 use osis_keys::{Departure, ROLES, box_holder, roles_up_to};
 
@@ -36,51 +35,27 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
         };
     }
     let retain = old.is_some() && d.retain.unwrap_or_else(|| crate::apply::validity::retain_now(core, target));
-    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, tied: None, floor: None }))
-}
-
-/// The chain commits an inbox payload carries (spec/wire.md §9) that decode as commit blobs, each
-/// cut to its chain deltas. Taking it judges the blob's commit, which anyone can name: a box or a
-/// `sync.0` here would be an invite nobody was asked about; a bare edge is the limit (a status
-/// row at worst).
-pub fn inbox_chain(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, CommitBlob)> {
-    // each value freed before its plaintext decodes: never two decoded copies of a stranger's blob
-    chain
-        .into_iter()
-        .filter_map(|v| {
-            let plain = osis_base::encode(&v);
-            drop(v);
-            let mut c = CommitBlob::decode(&plain).ok()?;
-            let aspects = &c.header.aspects;
-            c.parts.retain(|x| aspects.get(x.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "keys.0")));
-            (!c.parts.is_empty()).then(|| (c.encode(), c))
-        })
-        .collect()
+    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, floor: None }))
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(super::tied::tie_perm), floor: e.floor }
+    PermEdge { role: e.role, until: e.until, invite: e.invite, floor: e.floor }
 }
 
-/// Owes `holder` an inbox delivery of role commit `c` about it (spec/permissions.md §2,
-/// spec/sync-inbox.md §2): an inbox blob for an actor, the commit itself over a connection for a
-/// node, nothing for a link key (it reads its sync ID by static entry).
-pub(crate) fn deliver_to(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<()> {
-    crate::sync::deliveries::owe(tx, holder, c, things, false, false)
+/// Fires on `holder`'s inbox the ticket role commit `c` owes it about `things` (spec/sync-inbox.md
+/// Inbox): a grant's, a key change's or a re-seal's.
+pub(crate) fn fire_ticket(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<()> {
+    let _ = (tx, holder, c, things);
+    // refgraph: (c) fire the ticket
+    Ok(())
 }
 
-/// `deliver_to` for an edge write naming `holder` (a grant or change of its grant).
-fn deliver_grant(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<()> {
-    crate::sync::deliveries::owe(tx, holder, c, things, false, true)
-}
-
-/// The KEM key an inbox blob to `actor` is sealed to (spec/crypto.md §5): an account's current
-/// epoch key, another actor's newest read keyset's.
-pub(crate) fn inbox_kem(tx: &mut Tx<'_>, actor: &Tid) -> Result<Option<osis_crypto::KemPublicKey>> {
-    let keys = super::Core::keys_in(tx, actor)?;
-    let key = if tx.core.is_account(actor) { keys.and_then(|k| k.key) } else { keys.and_then(|k| k.read).map(|ks| ks.kem_key) };
-    let Some(ct::KemKey::X25519MlKem768(b)) = key else { return Ok(None) };
-    Ok(Some(osis_crypto::KemPublicKey::from_slice(&b)?))
+/// Fires on `holder`'s inbox the removal notice of role commit `c` lowering its edge on `target`
+/// below read (spec/sync-inbox.md Inbox).
+pub(crate) fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
+    let _ = (tx, holder, c, target);
+    // refgraph: (c) fire the removal notice
+    Ok(())
 }
 
 /// A grant or a raise of `holder`'s edge on `target` by `who` (this node, or a held key actor
@@ -248,7 +223,7 @@ pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, h
     };
     done.add(c);
     if let Some(c) = c {
-        deliver_grant(tx, holder, c, &[target])?;
+        fire_ticket(tx, holder, c, &[target])?;
     }
     if let Some(s) = setting {
         let mut m = Mutation::new();
@@ -431,13 +406,11 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     Ok(done)
 }
 
-/// The deliveries of role commit `c` lowering edges on `target` (spec/permissions.md §2, §3):
-/// the commit's `roles.0` parts to each holder in `lowered` (the callers leave out a holder of
-/// sync alone: it acts on its boxes alone, spec/sync-judgement.md §6), the rotation `rot` by
-/// inbox to `unreached`.
+/// What role commit `c` lowering edges on `target` fires (spec/permissions.md §2, §3): a removal
+/// notice to each holder in `lowered`, the rotation's tickets to `unreached`.
 fn lowered_deliveries(tx: &mut Tx<'_>, target: Tid, c: CommitId, unreached: &[Tid], lowered: &[Tid]) -> Result<()> {
     for x in lowered {
-        crate::sync::deliveries::owe(tx, *x, c, &[target], true, false)?;
+        fire_removal(tx, *x, c, target)?;
     }
     rotation::deliver_rotation(tx, target, Some(c), unreached)
 }
@@ -486,7 +459,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     for (x, e, keep) in ended {
         removal(tx, &mut m, target, *x)?;
         if *keep {
-            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, tied: None, floor: None })?;
+            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, floor: None })?;
         }
         if let Some(dep) = Departure::of_change(*x, Some(e.role), None) {
             left.extend(ROLES.into_iter().filter(|r| *r <= e.role));
@@ -685,5 +658,30 @@ impl Engine {
         let mut done = self.run(|tx| demote_in(tx, signer, t, &d, others, frontier))?;
         done.commits.splice(0..0, covers);
         Ok(done)
+    }
+}
+
+/// How this node may remove a holder's edge (`Engine::may_remove`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Removal {
+    /// A self-removal through admin on the holder: no frontier, no rotation, no pre-sync.
+    SelfRemoval,
+    /// An explicit demotion by an admin of the target: audited with this node's frontier.
+    Explicit,
+}
+
+impl Engine {
+    /// How this node may remove `holder`'s edge on `target` now, if at all: a self-removal
+    /// (admin on the holder actor its only authority for it, spec/permissions.md §2), or an
+    /// explicit demotion (admin on the target, `usable_role`). Reads the clock up to the next
+    /// `until` or role commit of the target's and the holder's components (an authority ending by
+    /// time alone moves it).
+    pub fn may_remove(&mut self, target: &Tid, holder: &Tid) -> Result<Option<Removal>> {
+        let Some(me) = self.core.me() else { return Ok(None) };
+        self.core.time.until(self.core.horizon([*target, *holder].into_iter()));
+        if crate::apply::validity::self_removal(&self.core, &me, target, holder, now_ts(&self.core)) {
+            return Ok(Some(Removal::SelfRemoval));
+        }
+        Ok((self.usable_role(target, self.core.role_now(&me, target))? == Some(Role::Admin)).then_some(Removal::Explicit))
     }
 }

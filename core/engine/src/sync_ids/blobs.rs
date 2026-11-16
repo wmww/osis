@@ -41,7 +41,7 @@ pub struct Body {
 /// purge request (what it names does not show first), else the commit's `ts`. Read only to order
 /// this node's fetches.
 pub fn fetch_order(h: &osis_commit::Header) -> u64 {
-    let foundation = h.kind.is_role() || h.has_request() || h.aspects.iter().any(|a| matches!(a.ak.as_str(), "created.0" | "retention^.0" | "group.0") || osis_schema::core_types::is_role_class(a.ak.as_str()));
+    let foundation = h.kind.is_role() || !h.purge.is_empty() || h.aspects.iter().any(|a| matches!(a.ak.as_str(), "created.0" | "retention^.0") || osis_schema::core_types::is_role_class(a.ak.as_str()));
     if foundation { 0 } else { h.ts.to_u64().max(1) }
 }
 
@@ -110,9 +110,9 @@ fn framed(key: osis_crypto::BlobKey, env: &Envelope, resolved: &osis_commit::Hea
     Ok(Sealed { id: osis_blob::blob_id(&blob), blob, key, salt, ais, parts, unopened })
 }
 
-/// A group as `Engine::commit_bodies_under` sees it.
+/// A sync unit as `Engine::commit_bodies_under` sees it.
 pub struct BodyCtx {
-    pub closure: crate::engine::groups::Closure,
+    pub closure: std::sync::Arc<BTreeSet<Tid>>,
     pub actor: Tid,
     pub published: super::published::PublishedView,
 }
@@ -470,10 +470,10 @@ impl Engine {
         Ok(out)
     }
 
-    /// What `commit_bodies_under` needs of a group: its closure, actor and the things its home
+    /// What `commit_bodies_under` needs of a sync unit's root: the unit, actor and the things its home
     /// sync ID publishes.
     pub fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
-        BodyCtx { closure: self.core.ix.groups.closure_of(g), actor: self.group_actor(g), published: self.published_view(g) }
+        BodyCtx { closure: self.sync_unit(g), actor: self.group_actor(g), published: self.published_view(g) }
     }
 
     /// The parts of commit `id` (its held parts, or `parts`) the actor of `ctx` may read
@@ -913,7 +913,7 @@ enum GivingWrap {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use osis_schema::core_types as ct;
+    
 
     // spec/crypto.md §3, spec/wire.md §4: a record chain of two plain things under the node: O,
     // whose first admin is the node, derives from the node's epochs and T, whose first admin is
@@ -935,45 +935,6 @@ mod tests {
         assert_eq!(*e.core.epochs(&t).unwrap(), ActorEpochs::derived(&of_o, &t));
         assert_eq!(e.section_chain(&t), vec![o, me]);
         assert_eq!(e.section_chain(&o), vec![me]);
-    }
-
-    // spec/sync-judgement.md §3 (driven by events): convergence after each change; the pass's cost: a group's bodies are
-    // projected per commit once and kept until what they read changes, so one more commit
-    // leaves every other commit's bodies kept.
-    #[test]
-    fn sync_id_bodies_cached_per_commit_spec_sync_6() {
-        use crate::Mutation;
-        let mut lp = crate::local_peer::LocalPeer::fresh(1, WallMs(1_700_000_000_000));
-        let e = &mut lp.peers[0].engine;
-        let me = e.me();
-        let mut m = Mutation::new();
-        let g = e.new_thing(&mut m, me);
-        e.commit(m).unwrap();
-        let ak = osis_base::Ak::new("x:a.0").unwrap();
-        let mut group = ct::Group::default();
-        let add = |e: &mut Engine, group: &mut ct::Group| {
-            let mut m = Mutation::new();
-            let t = e.new_thing(&mut m, g);
-            m.set(t, &ak, &osis_base::Value::Int(1)).unwrap();
-            group.items.insert(t);
-            m.set(g, &ct::GROUP, group).unwrap();
-            e.commit(m).unwrap().unwrap()
-        };
-        for _ in 0..30 {
-            add(e, &mut group);
-        }
-        let runs = || osis_base::costs::take().iter().filter(|x| x.0 == "sync ID body").map(|x| x.2).sum::<u64>();
-        osis_base::costs::take();
-        let first = e.sync_id_bodies_meta(&g).unwrap();
-        assert!(first.len() >= 30 && first.iter().all(|b| b.plaintext.is_empty()));
-        assert!(runs() >= 30);
-        let c = add(e, &mut group);
-        osis_base::costs::take();
-        let again = e.sync_id_bodies_meta(&g).unwrap();
-        assert!(again.iter().any(|b| b.commit == c));
-        assert_eq!(runs(), 1, "a new commit leaves the others' bodies kept");
-        let b = again.iter().find(|b| b.commit == c).unwrap();
-        assert!(!e.body_plaintext(b).unwrap().is_empty(), "the plaintext is projected on demand");
     }
 
     // spec/crypto.md §4: a secret learned only from a pending or invalid commit is never

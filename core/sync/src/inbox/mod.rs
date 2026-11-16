@@ -1,27 +1,22 @@
-//! Inbox, deposits, steps and Register (spec/sync-inbox.md, spec/sync-ids.md §6 Steps and
-//! Register, spec/wire.md §9-§10).
+//! Deposits, steps and Register (spec/sync-inbox.md, spec/sync-ids.md §6 Steps and Register,
+//! spec/wire.md §10).
 //!
-//! Principle: an inbox is a sync ID like any other; a deposit is the one way a non-writer adds an
-//! entry. This module carries what this node owes others and what others left in its store:
-//! - `deliveries`: the inbox blobs this node owes (the engine's `deliveries`), logged stamped or
-//!   deposited under the recipient's inbox, sealed again at their expiry or once the inbox moved,
-//!   until the recipient is seen taking the grant (a commit of its, the engine's; an open of a
-//!   sync ID the blob names with the recipient proven, this module's).
+//! Principle: a deposit is the one way a non-writer adds an entry. This module carries what this
+//! node owes others and what others left in its store:
 //! - `offers`: Deposit items out, one unanswered per connection, refused-for-now backed off.
-//! - `held`: entries in this node's store to act on: inbox blobs taken (and stamped in place by a
-//!   writer), deposits promoted by a writer, own deposits offered, clearing past the bounds.
+//! - `held`: entries in this node's store to act on: deposits promoted by a writer, own deposits
+//!   offered, clearing past the bounds.
 //! - `register`: the recorded steps a source keeping S unread lacks, each once its stream showed
 //!   the role commits it depends on.
 //! - `serve`: Register, Delete and Stranded from peers (a Stranded report taken by the
 //!   engine's `take_stranded`).
 //! - `stranded`: this node's own stranded reports (status's `strandings`), by message to a
-//!   connected writer of S's actor, else by notice to its admins' inboxes.
+//!   connected writer of S's actor.
 //! - `suspect`: suspect lists out (the engine's flags per S) and in (a writer's repair).
 //! - `links`: first contact through a link, durable until the join is held elsewhere.
 //!
 //! Work follows change: the engine's values are read through `Effects` keys, the store's entries
-//! through its entry feed, peers' moves through `moved`; a re-send is due at its blob's expiry
-//! (a timer per delivery), never by walking what was sent.
+//! through its entry feed, peers' moves through `moved`, never by walking what was sent.
 //!
 //! It reads the engine through its facade (`osis_engine::sync`) and the store directly; `Net`
 //! is how it reads and sends through sessions, opens and streams (`Links` is the product's).
@@ -29,7 +24,6 @@
 //! `held::to_clear`, `register::plan`) that tests drive directly; `Offers` reads the
 //! engine through `offers::Judge`, so it runs over a test's `Net`, `Judge` and store as in a node.
 
-mod deliveries;
 mod held;
 mod links;
 mod offers;
@@ -38,8 +32,7 @@ mod serve;
 mod stranded;
 mod suspect;
 
-pub use deliveries::Sent;
-pub use held::{Act, Facts, Judged, Promotion, act_of, adds_delta, goes_last, promotion, to_clear};
+pub use held::{Act, Facts, Judged, Promotion, act_of, adds_delta, promotion, to_clear};
 pub use offers::{BACKOFF_MAX_MS, BACKOFF_MIN_MS, Judge, Offers, Target, backoff_ms};
 pub use osis_engine::sync::Signers;
 pub use register::{Plan, Progress, plan};
@@ -48,9 +41,8 @@ use crate::opens::{Member, Moved, Opens};
 use crate::session::{Incoming, RequestId, Sessions, To};
 use crate::store::{Source, Store};
 use crate::streams::Streams;
-use crate::types::{ConnId, Cx, Entry, Result, Waiting, Wrap};
+use crate::types::{ConnId, Cx, Result, Waiting};
 use osis_base::{BlobId, SyncId, Tid, WallMs};
-use osis_crypto::NodeRng;
 use osis_engine::Engine;
 use osis_blob::{DialHint, ShareLink, StepId};
 use osis_proto::Msg;
@@ -125,7 +117,6 @@ impl Net for Links<'_> {
 #[derive(Clone, Default)]
 pub struct Inbox {
     started: bool,
-    deliveries: deliveries::Deliveries,
     offers: offers::Offers,
     held: held::Held,
     register: register::Register,
@@ -140,32 +131,31 @@ impl std::fmt::Debug for Inbox {
     }
 }
 
-/// One step's context for the module: the engine, the store, the time and the rng; status at a
+/// One step's context for the module: the engine, the store and the time; status at a
 /// settle (own commits held elsewhere).
 pub(crate) struct Here<'a> {
     pub engine: &'a mut Engine,
     pub status: Option<&'a crate::status::Status>,
     pub store: &'a mut Store,
     pub now: WallMs,
-    pub rng: &'a mut dyn NodeRng,
     pub policy: &'a crate::types::Policy,
 }
 
 impl Inbox {
     /// Whether anything acted.
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status) -> Result<bool> {
-        let Cx { engine, store, now, rng, policy, .. } = cx;
-        let mut here = Here { engine, status: Some(status), store, now: *now, rng: &mut **rng, policy };
+        let Cx { engine, store, now, policy, .. } = cx;
+        let mut here = Here { engine, status: Some(status), store, now: *now, policy };
         let mut net = Links { sessions, opens, streams };
         self.step(&mut here, &mut net)
     }
 
-    /// A start: what this module makes the engine follow (links being redeemed, deliveries) is
+    /// A start: what this module makes the engine follow (links being redeemed) is
     /// followed again from the store, before any module reads the sync set (`leave` judges what
     /// left it by the set as it stands). Whether it started now.
     pub fn start(&mut self, cx: &mut Cx) -> Result<bool> {
-        let Cx { engine, store, now, rng, policy, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng, policy };
+        let Cx { engine, store, now, policy, .. } = cx;
+        let mut here = Here { engine, status: None, store, now: *now, policy };
         self.begin(&mut here)
     }
 
@@ -174,7 +164,6 @@ impl Inbox {
             return Ok(false);
         }
         self.links.start(h)?;
-        self.deliveries.start(h, &mut self.offers)?;
         self.held.start(h, &mut self.offers)?;
         self.reports.start(h)?;
         self.suspects.start(h);
@@ -184,7 +173,6 @@ impl Inbox {
 
     fn step(&mut self, h: &mut Here<'_>, net: &mut impl Net) -> Result<bool> {
         let mut acted = self.begin(h)?;
-        acted |= self.deliveries.settle(h, &mut self.offers)?;
         acted |= self.held.settle(h, &mut self.offers)?;
         acted |= self.links.settle(h)?;
         acted |= self.register.settle(h, net)?;
@@ -196,8 +184,8 @@ impl Inbox {
 
     /// Register, Delete, Stranded and Suspect requests; Deposit, Stranded and Register answers.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, conn: ConnId, m: Incoming) {
-        let Cx { engine, store, now, rng, policy, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng, policy };
+        let Cx { engine, store, now, policy, .. } = cx;
+        let mut here = Here { engine, status: None, store, now: *now, policy };
         let mut net = Links { sessions, opens, streams };
         self.receive(&mut here, &mut net, conn, m);
     }
@@ -227,10 +215,9 @@ impl Inbox {
     }
 
     /// A member joined or left a connection's shared set.
-    pub fn moved(&mut self, engine: &mut Engine, m: &Moved, net: &impl Net) {
+    pub fn moved(&mut self, m: &Moved, net: &impl Net) {
         match *m {
             Moved::Joined(conn, s, _) => {
-                self.deliveries.opened(engine, conn, &s, net);
                 self.offers.joined(conn, &s, net);
                 self.register.joined(conn, s);
                 self.suspects.joined(conn, s, net);
@@ -254,8 +241,8 @@ impl Inbox {
     /// First contact through a link (spec/sync-inbox.md §6): durable until the join is held
     /// elsewhere. `Done` once the join is written.
     pub fn redeem(&mut self, cx: &mut Cx, link: &ShareLink) -> Waiting {
-        let Cx { engine, store, now, rng, policy, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, rng: &mut **rng, policy };
+        let Cx { engine, store, now, policy, .. } = cx;
+        let mut here = Here { engine, status: None, store, now: *now, policy };
         self.redeem_on(&mut here, link)
     }
 
@@ -272,11 +259,11 @@ impl Inbox {
         self.links.redeeming(k)
     }
 
-    /// Dial hints from inbox blobs taken and links being redeemed: dial candidates
+    /// Dial hints from links being redeemed: dial candidates
     /// (spec/sync-opens.md §1), for dialing only. Stamped reads: the driver follows them in an
     /// `Effects` key, read again only as they move.
     pub fn dial_hints(&self) -> BTreeSet<DialHint> {
-        self.held.hints().chain(self.links.hints()).cloned().collect()
+        self.links.hints().cloned().collect()
     }
 
     /// Whether a deposit to `conn` may land (spec/sync-opens.md §1 Keep or close).
@@ -285,31 +272,6 @@ impl Inbox {
     }
 
     pub fn next_wake(&self) -> Option<WallMs> {
-        [self.deliveries.next_wake(), self.offers.next_wake(), self.register.next_wake(), self.held.next_wake()].into_iter().flatten().min()
+        [self.offers.next_wake(), self.register.next_wake(), self.held.next_wake()].into_iter().flatten().min()
     }
-}
-
-/// Logs inbox blob `bytes` to `recipient` under its inbox `s`: stamped where this node writes
-/// `s`, else deposited (the caller offers it). Its blob ID, prefix expiry and whether it was
-/// deposited; `None` when it was not logged (no key to sign with, or the store refused it).
-fn log_inbox_blob(h: &mut Here<'_>, s: SyncId, recipient: Tid, bytes: Vec<u8>) -> Result<Option<(BlobId, WallMs, bool)>> {
-    let b = osis_blob::blob_id(&bytes);
-    let expires = osis_blob::Prefix::parse(&bytes).ok().and_then(|p| p.expiry()).unwrap_or(WallMs(h.now.0.saturating_add(osis_base::format::INBOX_LIFETIME_MS)));
-    let keys = h.engine.signers(&s, Some(&recipient))?;
-    let wrap = osis_crypto::filler_wrap(&mut *h.rng);
-    let (stamp, deposited) = match (&keys.stamp, &keys.deposit) {
-        (Some(w), _) => (Some(osis_blob::sign_stamp(w, &s, &b, &wrap, false)), false),
-        (None, Some(_)) => (None, true),
-        // no key to sign with: nothing here reaches the inbox
-        (None, None) => return Ok(None),
-    };
-    if h.store.log(&s, own_entry(b, wrap, stamp, Some(expires)), Some(bytes), None)? != osis_proto::Code::OK {
-        return Ok(None);
-    }
-    Ok(Some((b, expires, deposited)))
-}
-
-/// An entry this node logs of its own.
-fn own_entry(blob: BlobId, wrap: Wrap, stamp: Option<osis_crypto::Signature>, expires: Option<WallMs>) -> Entry {
-    Entry { blob, wrap, stamp, deposited: stamp.is_none(), own: true, role: false, class: osis_blob::Class::Durable, expires }
 }

@@ -41,37 +41,12 @@ pub enum Reads {
     All,
 }
 
-/// What a group contains. Being a member grants nothing: who may read a thing is who holds a role
-/// on it (`Osis::grants`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Member {
-    /// A thing in the group.
-    Item(Tid),
-    /// A group whose own members count as members of this one.
-    Subgroup(Tid),
-}
-
-impl Member {
-    /// The member's tid, whichever way it is in the group.
-    pub fn tid(self) -> Tid {
-        self.parts().0
-    }
-
-    /// The thing, and whether it is a subgroup.
-    pub(crate) fn parts(self) -> (Tid, bool) {
-        match self {
-            Member::Item(t) => (t, false),
-            Member::Subgroup(t) => (t, true),
-        }
-    }
-}
-
 /// What a holder is, as its creator declared: an actor's creation fixes this, so it reads alike on
 /// every node and never changes, and nothing checks it. A holder whose creation has not reached
 /// this node reads as `Actor`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HolderKind {
-    /// An account, team, group or other actor.
+    /// An account, team or other actor.
     Actor,
     /// The actor of a share link: those who joined by the link hold through it.
     Link,
@@ -83,7 +58,7 @@ pub enum HolderKind {
 /// Whether this node may end `holder`'s grant on `t` for `Osis::leave`.
 fn leave_allowed(e: &mut osis_engine::Engine, holder: Tid, t: Tid, own: bool) -> Result<()> {
     match e.may_remove(&t, &holder)? {
-        Some(flows::Untie::Explicit) if !own => Err(Error::Invalid(format!("this node is an admin of {t}: use set_role"))),
+        Some(flows::Removal::Explicit) if !own => Err(Error::Invalid(format!("this node is an admin of {t}: use set_role"))),
         None if !own => Err(Error::Permission { tid: holder, needs: Role::Admin }),
         _ => Ok(()),
     }
@@ -166,24 +141,6 @@ pub struct LinkInfo {
     pub until: Option<Time>,
     /// The first redemption ends it.
     pub single_use: bool,
-}
-
-/// A thing this account was given a role on that no node of it syncs yet (`Osis::invitations`):
-/// `accept_invite` syncs it, `leave` turns it down.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Invitation {
-    /// The thing.
-    pub thing: Tid,
-    /// The role given.
-    pub role: Role,
-    /// The account that gave it, where this node can tell: `None` for a holder of sync alone
-    /// granted by an account whose keys this node does not hold.
-    pub from: Option<Tid>,
-    /// This node took the grant's delivery: its keys are here.
-    pub taken: bool,
-    /// This account acted on it before: accepted it, filed it outside the synced groups, or
-    /// stopped syncing it. False for an invitation not acted on yet.
-    pub acted: bool,
 }
 
 fn bad(what: &str) -> impl Fn(osis_blob::Error) -> Error + '_ {
@@ -337,7 +294,7 @@ pub struct AccountNode {
 }
 
 fn edge(role: Role, o: GrantOpts) -> ct::Edge {
-    ct::Edge { role, until: o.until, invite: o.may_grant, tied: None, floor: None }
+    ct::Edge { role, until: o.until, invite: o.may_grant, floor: None }
 }
 
 /// Whether an admin's grant of `role` to `h` on `t` would lower `h`'s grant still in the state (a
@@ -398,7 +355,7 @@ fn needs_admin(e: osis_engine::Error) -> Error {
 
 impl ReadOnly {
     /// Everyone who holds a role on `target`, directly or through an actor that holds one (an account
-    /// through a group, a joiner through a link), nearest first. An actor with several ways in is
+    /// through a team, a joiner through a link), nearest first. An actor with several ways in is
     /// listed once per way: the shortest to each grant it holds them by, and a longer one when it
     /// gives more, so its best role and latest end are among its entries. Who holds through an actor:
     /// `holders` of that actor, or those here with it in `through`. Grants one level down, with
@@ -442,13 +399,13 @@ impl Osis {
     /// (it left, or its grant ended and was removed) undoes what it wrote with that role that this
     /// node had not received.
     ///
-    /// A thing's first grant to anyone but its first admin also makes it sync (`sync`), so every
-    /// holder of a role on it can read it, whatever groups it is in.
+    /// A thing's first grant to anyone but its first admin also gives it keys of its own, so every
+    /// holder of a role on it can read it.
     ///
     /// Needs admin on the target (or a `may_grant` of at least `role`, for someone with no grant yet;
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
-    /// and the holder's keys here (a contact card, a shared group, pairing), else `UnknownActor`.
-    /// Each grant costs about 2.6 KB of keys: to share with many, grant one group. `Unsupported` on
+    /// and the holder's keys here (a contact card, a shared thing, pairing), else `UnknownActor`.
+    /// Each grant costs about 2.6 KB of keys: to share with many, grant one team. `Unsupported` on
     /// a client with its own actor.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
         self.local_at(target, "grant")?;
@@ -458,79 +415,17 @@ impl Osis {
         self.locked(|l| {
             let e = l.engine();
             known_actor(e, holder)?;
-            // a change keeps the tie to a membership; a new hand grant has none
             let cur = e.roster(&target).get(&holder).copied();
             if cur.is_some_and(|x| role < x.role) || below_held(e, &target, &holder, role) {
                 return Err(Error::Invalid("a lower role takes set_role".into()));
             }
-            let tied = cur.and_then(|x| x.tied).map(flows::tied::tie_ct);
             match (opts.reads, cur.map(|x| x.floor)) {
-                (Reads::FromNow, None) => e.grant_with(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }, flows::edges::History::None).map_err(needs_admin),
+                (Reads::FromNow, None) => e.grant_with(&target, &holder, &edge(role, opts), flows::edges::History::None).map_err(needs_admin),
                 (Reads::FromNow, Some(None)) => Err(Error::Invalid(format!("{holder} already reads what was written on {target} before"))),
                 // a change keeps the floor: still from its first grant on
-                (Reads::FromNow | Reads::Kept, Some(floor)) => e.grant(&target, &holder, &ct::Edge { tied, floor, ..edge(role, opts) }).map_err(needs_admin),
-                (Reads::Kept | Reads::All, _) => e.grant(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin),
+                (Reads::FromNow | Reads::Kept, Some(floor)) => e.grant(&target, &holder, &ct::Edge { floor, ..edge(role, opts) }).map_err(needs_admin),
+                (Reads::Kept | Reads::All, _) => e.grant(&target, &holder, &edge(role, opts)).map_err(needs_admin),
             }
-        })?;
-        Ok(())
-    }
-
-    /// Adds `member` to `group` and grants the group `role` on it, tied together: the grant goes
-    /// when the membership goes (`GroupWrite::remove`), so the group's holders
-    /// reach what is in the group for as long as it is, through the group's sync. Being a member
-    /// alone grants nothing, and a plain `grant` to the group stays when the membership goes.
-    ///
-    /// Already a member, nothing more is written to the group. A grant of the group at `role` or
-    /// above stays as it is, tied or not, and a raise of a grant made by hand stays untied.
-    ///
-    /// Two commits, not one: the membership, the grant. A crash between them
-    /// leaves the earlier ones, and calling this again finishes the rest.
-    ///
-    /// Needs write on the group and admin on the thing (or a `may_grant` of at least `role`, the
-    /// group having no grant yet), else `Permission` before anything is written. `Invalid`, as for
-    /// `grant`, below a grant of the group ended and still on record. To add without granting: `Write::group`. `Unsupported` on a client with its own actor.
-    pub fn add_with_grant(&self, member: Member, group: Tid, role: Role) -> Result<()> {
-        self.local_at(group, "add_with_grant")?;
-        let (tid, subgroup) = member.parts();
-        for x in [tid, group] {
-            if !self.holds(x) {
-                return Err(Error::UnknownThing { tid: x });
-            }
-        }
-        let existing = self.grants(tid)?.get(&group).copied();
-        // a tied grant whose membership is gone here is tied again to the new one
-        let retie = existing.is_some_and(|x| x.with_membership) && self.engine(|e| e.tie_dead(&tid, &group))?;
-        let role = existing.filter(|_| retie).map_or(role, |x| x.role.max(role));
-        let grant = retie || existing.is_none_or(|e| e.role < role);
-        if grant && !self.engine(|e| e.may_grant(&tid, &group, role))? {
-            return Err(Error::Permission { tid, needs: Role::Admin });
-        }
-        if grant && existing.is_none() && self.engine(|e| below_held(e, &tid, &group, role)) {
-            return Err(Error::Invalid("the group held a higher role: set_role first".into()));
-        }
-        let listed = self.read_local(|r| {
-            let gs = r.groups_of(tid);
-            if subgroup { gs.subgroup_of.contains(&group) } else { gs.item_of.contains(&group) }
-        });
-        if !listed {
-            let mut w = self.write();
-            w.sharing = true;
-            w.group(group).add(member)?;
-            w.commit()?;
-        }
-        if !grant {
-            return Ok(());
-        }
-        // tied to the membership's live element (written above, or already there); a grant made
-        // by hand stays untied
-        let tied = existing.is_none_or(|x| x.with_membership);
-        self.engine(|e| {
-            let tie = match tied {
-                true => Some(e.placement(&tid, &group, subgroup)?.ok_or_else(|| Error::Invalid(format!("{tid} is not in {group} here")))?),
-                false => None,
-            };
-            let edge = ct::Edge { role, until: None, invite: None, tied: tie.map(flows::tied::tie_ct), floor: None };
-            e.grant(&tid, &group, &edge).map_err(needs_admin)
         })?;
         Ok(())
     }
@@ -567,7 +462,7 @@ impl Osis {
     /// made by a writer it keeps, the lowering applies without changing the keys, and nothing is
     /// written under the thing here until that writer changes them (or is removed too).
     ///
-    /// `Unsupported` on a client with its own actor, and on a thing this node reads at another node: move its group
+    /// `Unsupported` on a client with its own actor, and on a thing this node reads at another node: move its sync unit
     /// home first. A removal written to the copy here would never leave it.
     pub fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         self.local_at(target, "set_role")?;
@@ -612,12 +507,12 @@ impl Osis {
     }
 
     /// The edge `m` holds on `t` after lowering it to `role` (`None`: removed): `until` kept,
-    /// `may_grant` capped, the tie kept.
+    /// `may_grant` capped.
     fn lowered_edge(&self, t: Tid, m: Tid, role: Option<Role>) -> Result<Option<ct::Edge>> {
         let Some(role) = role else { return Ok(None) };
         let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
         let held = self.engine(|e| e.roster(&t).get(&m).copied());
-        Ok(Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), tied: held.and_then(|x| x.tied).map(flows::tied::tie_ct), floor: held.and_then(|x| x.floor) }))
+        Ok(Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), floor: held.and_then(|x| x.floor) }))
     }
 
     /// Lowers or removes the grant of `m` on `t`: the demotion with this node's frontier and the
@@ -625,15 +520,15 @@ impl Osis {
     fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         let new = self.lowered_edge(t, m, role)?;
         // an account's default does not reach its nodes (spec/permissions.md §2)
-        let retain = o.retain_copy.or((t == self.inner.home).then_some(false));
+        let retain = o.retain_copy.or((t == self.inner.devices).then_some(false));
         let fd = flows::Demotion { holder: m, new, retain };
         self.engine(|e| e.demote(&t, &fd).map_err(needs_admin))?;
         Ok(())
     }
 
     /// Ends `holder`'s ways in that exist for `target`: its own grant on it, and its join of any link
-    /// to it. `holder` is `me()`, or a group or other actor this node is an admin of (as when a group's
-    /// admin drops a thing that was shared into it). The keys change when the target's next writer or
+    /// to it. `holder` is `me()`, or a team or other actor this node is an admin of (as when a team's
+    /// admin drops a thing that was shared with it). The keys change when the target's next writer or
     /// admin writes, or at once when this node is an admin of `target` by another way. No way in at all
     /// writes nothing.
     ///
@@ -688,26 +583,6 @@ impl Osis {
         Ok(())
     }
 
-    /// Stops this node syncing `thing` for having shared it. While a role this account granted on a
-    /// thing to another account or a group (or a link to it) stands, every node of the account
-    /// syncs it, wherever it is listed, so those it shared with can get it; revoking that role,
-    /// the grantee leaving, or a grant tied to a group membership ending with it stops that.
-    /// Unsyncing stops it at this node alone, until the account grants a role on `thing` again.
-    /// Afterwards `thing` syncs here only while a group this node syncs holds it;
-    /// otherwise this node keeps syncing it until what it wrote there reached another holder
-    /// (or no other holder is left to wait for), then forgets its copy, as moving a thing out of
-    /// every synced group does. A thing kept here after its share ended (`Status::kept`) is
-    /// forgotten at once. A thing this node neither shared nor kept: nothing changes.
-    /// `Unsupported` through a connection to a node and on a client with its own actor.
-    pub fn unsync(&self, thing: Tid) -> Result<()> {
-        self.local("unsync")?;
-        if self.acting.is_some() {
-            return Err(Error::Unsupported("unsync: on a client with its own actor".into()));
-        }
-        self.locked(|l| l.node.unsync(&thing)).map_err(crate::handle::sync_err)?;
-        Ok(())
-    }
-
     /// The actors this node retains a read-only copy of after being removed from them (for a client
     /// with its own actor, those it reads). A copy reads as before, and nothing syncs or writes it.
     /// `drop_retained_copy` erases one.
@@ -747,9 +622,7 @@ impl Osis {
         self.locked(|l| osis_blob::link_peers(l.secret.public_key(), &self.inner.relays, &l.node.config().dial))
     }
 
-    /// Redeems a link: reaches what it names and joins it, returning the thing. The join lists the
-    /// thing in `home()` as a subgroup, unless a synced group holds it already, so it syncs as
-    /// one this account made (move it elsewhere afterwards to file it in another group). Returns once
+    /// Redeems a link: reaches what it names and joins it, returning the thing. Returns once
     /// this account holds a role on the thing here; it waits for the link's node meanwhile, for
     /// about an hour from the first call (this node's policy), then fails with `Network` and
     /// keeps nothing: redeem it again to try again. A link this account already reaches the thing
@@ -805,8 +678,8 @@ impl Osis {
             .collect())
     }
 
-    /// The links whose seed thing is the account's and whose K's first admin it is (a co-reader can place a
-    /// seed thing in a shared group: it names no link of ours).
+    /// The links whose seed thing is the account's and whose K's first admin it is (a co-reader can reference a
+    /// seed thing from a shared thing: it names no link of ours).
     fn held_links(&self) -> Result<Vec<flows::HeldLink>> {
         let me = self.me();
         self.engine(|e| account_links(e, me))
@@ -903,41 +776,12 @@ impl Osis {
         }))
     }
 
-    /// The things this account was given a role on that no node of it syncs yet (spec/sync-set.md
-    /// §4), newest grant last.
-    pub fn invitations(&self) -> Result<Vec<Invitation>> {
-        if let Some(at) = self.process_at("invitations")? {
-            return self.forward(&at, crate::port::method::INVITATIONS, ());
-        }
-        let v = self.engine(|e| e.invitations())?;
-        Ok(v.iter().map(|i| Invitation { thing: i.thing, role: i.role, from: i.from, taken: i.taken, acted: i.acted }).collect())
-    }
-
-    /// Accepts an invitation: `thing` becomes a subgroup of `into`, a group this node syncs or
-    /// one under it (`Invalid` otherwise), so every node of the account syncs it. The same write
-    /// as `w.group(into).add(Member::Subgroup(thing))`, but also an accept where `into` lists
-    /// `thing` already (a sync grant on a thing filed here before).
-    pub fn accept_invite(&self, thing: Tid, into: Tid) -> Result<()> {
-        if let Some(at) = self.process_at("accept_invite")? {
-            return self.forward(&at, crate::port::method::ACCEPT_INVITE, (thing, into));
-        }
-        let synced = self.engine(|e| -> Result<bool> {
-            let set = e.sync_set()?;
-            Ok(set.ids.values().any(|(t, _)| *t == into))
-        })?;
-        if !synced {
-            return Err(Error::Invalid(format!("{into} is not synced here: accept into a synced group")));
-        }
-        self.engine(|e| e.accept_invite(&thing, &into))?;
-        Ok(())
-    }
-
     /// This account's nodes: those holding read or above on it (a holder of sync alone keeps
     /// the account's inbox and is no node).
     /// `Unsupported` on a client with its own actor.
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
         self.local("nodes")?;
-        let home = self.home();
+        let home = self.devices();
         let node_ak = ct::NODE.name();
         self.engine(|e| -> Result<Vec<AccountNode>> {
             let mut out = Vec::new();
@@ -957,7 +801,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor.
     pub fn remove_node(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
         self.local("remove_node")?;
-        let home = self.home();
+        let home = self.devices();
         let was = self.grants(home)?.contains_key(&node);
         self.set_role(home, node, None, o)?;
         if was { self.links() } else { Ok(Vec::new()) }

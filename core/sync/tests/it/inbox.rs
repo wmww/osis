@@ -4,16 +4,16 @@
 //! spec/sync-ids.md §6 Steps and Register it implements. The module in a node over the engine
 //! (a delivery logged deposited, an inbox blob taken) is tests/it/keep.rs.
 
-use osis_base::format::{DEPOSITS_WAITING, INBOX_LIFETIME_MS};
+use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::memo::{Stamped, StampedSet};
-use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, SyncId, Tid, WallMs};
 use osis_crypto::{Epoch, RoleKey, Secret32, SeededRng, SigningSecret, deposit_key, role_key};
-use osis_engine::sync::{Holding, InboxOpened, Path, SyncSet, Taken};
+use osis_engine::sync::{Holding, Path, SyncSet};
 use osis_blob::{ClaimSet, Class, Parent, Prefix, Step, StepId, StepKeys};
 use osis_proto::{Code, Msg, OfferItem, SharedItem};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::Result;
-use osis_sync::inbox::{Act, Facts, Judge, Net, Offers, Plan, Progress, Judged, Promotion, Target, act_of, adds_delta, goes_last, plan, to_clear};
+use osis_sync::inbox::{Judge, Net, Offers, Plan, Progress, Judged, Promotion, Target, adds_delta, plan};
 use osis_sync::opens::{Member, Moved};
 use osis_sync::session::RequestId;
 use osis_sync::store::Source;
@@ -35,12 +35,6 @@ fn sync_id(i: u32) -> SyncId {
     let mut b = [1u8; 16];
     b[..4].copy_from_slice(&i.to_le_bytes());
     SyncId(b)
-}
-
-fn commit(i: u32) -> CommitId {
-    let mut b = [0xc0; 32];
-    b[..4].copy_from_slice(&i.to_le_bytes());
-    CommitId(b)
 }
 
 fn conn(i: u64) -> ConnId {
@@ -384,58 +378,6 @@ fn own_deposit_offered_to_store_sources_only_spec_sync_inbox_3() {
     assert_eq!(t.deposits_sent().len(), 1, "answered: done there");
 }
 
-const LIFE: u64 = T0 + INBOX_LIFETIME_MS;
-
-/// An inbox blob held deposited, as taking it went.
-fn inbox_facts(taken: Option<Taken>, c: u32, writer: bool, expiry: u64) -> Facts {
-    let (b, _) = blob(c as u64, 64, Some(expiry));
-    let o = taken.map(|taken| InboxOpened { commit: Some(commit(c)), taken, hints: vec![], dial: None });
-    Facts { blob: b, deposited: true, own: false, expires: Some(WallMs(expiry)), inbox: Some(o), stamped: None, writer, holding: Some(Holding::Read), promote: None }
-}
-
-// spec/sync-inbox.md §2 (stamping in place): a writer of the inbox stamps a deposited inbox blob
-// whose commit applied, one per commit, never one whose expiry is more than `INBOX_LIFETIME + 2 ×
-// MAX_DRIFT` ahead; an invite request (waiting), a blob nothing opens, or a node not writing the
-// inbox stamps none. Taking is judged again as the node's state moves (waiting, then applied).
-#[test]
-fn writer_stamps_taken_inbox_blob_in_place_spec_sync_inbox_2() {
-    let now = WallMs(T0);
-    let stamps = |f: &Facts| matches!(act_of(f, now), Act::StampInbox(..));
-    let a = inbox_facts(Some(Taken::Applied), 1, true, LIFE);
-    assert!(stamps(&a));
-    let twin = Facts { stamped: Some(BlobId([9; 32])), ..inbox_facts(Some(Taken::Applied), 1, true, LIFE) };
-    assert!(!stamps(&twin), "one blob per commit");
-    assert!(stamps(&Facts { stamped: Some(a.blob), ..a.clone() }), "the one stamped stays");
-    assert!(!stamps(&inbox_facts(Some(Taken::Applied), 2, true, LIFE + 3 * 60 * 60 * 1000)), "expiry too far ahead");
-    assert!(!stamps(&inbox_facts(Some(Taken::Waiting), 3, true, LIFE)), "an invite request stays deposited");
-    assert!(!stamps(&inbox_facts(None, 4, true, LIFE)), "nothing here opens it");
-    assert!(!stamps(&inbox_facts(Some(Taken::Applied), 5, false, LIFE)), "not a writer of the inbox");
-    let Act::Inbox { taken, commit: c, .. } = act_of(&inbox_facts(Some(Taken::Waiting), 6, true, LIFE), now) else { panic!() };
-    assert_eq!((taken, c), (Some(Taken::Waiting), Some(commit(6))));
-}
-
-/// A deposit under a read S held by a writer, the engine's word on promoting it.
-fn deposit_facts(promote: Option<Promotion>, own: bool) -> Facts {
-    let (b, _) = blob(3, 100, None);
-    Facts { blob: b, deposited: true, own, expires: None, inbox: None, stamped: None, writer: true, holding: Some(Holding::Read), promote }
-}
-
-// spec/sync-inbox.md §4 (Promotion; Clearing deposits): a deposit a writer promotes (read stamps it,
-// `promotion`) is no deposit it can do nothing with; one not promoted yet waits; scenario
-// promote-covered-only-deposit: one never promoted (its parts a held snapshot carries) stays
-// deposited; a node that does not write S is given no promotion (its facts carry none); an own
-// deposit is offered until stamped, promotable or not.
-#[test]
-fn writer_promotes_promotable_deposit_spec_sync_inbox_4() {
-    let now = WallMs(T0);
-    assert_eq!(act_of(&deposit_facts(Some(Promotion::Yes), false), now), Act::Promote);
-    assert_eq!(act_of(&deposit_facts(Some(Promotion::Wait), false), now), Act::Waiting { never: false });
-    assert_eq!(act_of(&deposit_facts(Some(Promotion::No), false), now), Act::Waiting { never: true });
-    assert_eq!(act_of(&deposit_facts(None, false), now), Act::Waiting { never: false }, "no writer: nothing to promote");
-    assert_eq!(act_of(&deposit_facts(None, true), now), Act::Offer, "an own deposit is offered");
-    assert_eq!(act_of(&deposit_facts(Some(Promotion::Yes), true), now), Act::Offer, "an own deposit is offered");
-}
-
 /// A blob as a promoter judges it: the parts it opened and checked, its other sections by
 /// their bytes (one byte each, as a digest).
 fn opened(parts: &[usize], sealed: &[u8]) -> Judged {
@@ -494,38 +436,6 @@ fn one_stamped_copy_per_delta_spec_sync_inbox_4() {
     assert!(!adds_delta(&need, &opened(&[0, 2], &[]), &stamped), "part 2 is no part S must hold");
     assert!(adds_delta(&need, &opened(&[0, 1], &[]), &stamped), "part 1 not held stamped");
     assert!(adds_delta(&need, &opened(&[0], &[]), &[]), "the first copy");
-}
-
-// spec/sync-inbox.md §4 (clearing): a node holding S's delete key keeps at most
-// `DEPOSITS_WAITING` deposits it can do nothing with; past it, those with no expiry (or a later
-// one) go first, then the earliest to expire, invite requests last.
-#[test]
-fn clearing_keeps_at_most_deposits_waiting_spec_sync_inbox_4() {
-    let now = WallMs(T0);
-    let entry = |tag: u64, expiry: Option<u64>| {
-        let (b, _) = blob(tag, 64, expiry);
-        Entry { blob: b, wrap: [5; 57], stamp: None, deposited: true, own: false, role: false, class: Class::Durable, expires: expiry.map(WallMs) }
-    };
-    let requests: Vec<Entry> = (0..4).map(|i| entry(900 + i, Some(LIFE - i))).collect();
-    let others: Vec<Entry> = (0..DEPOSITS_WAITING as u64).map(|i| entry(i + 1, if i < 2 { None } else { Some(LIFE + i) })).collect();
-    let mut idle: Vec<(Entry, u64, bool)> = requests.iter().map(|e| (e.clone(), 64, true)).collect();
-    idle.extend(others.iter().map(|e| (e.clone(), 64, false)));
-    let dropped: BTreeSet<BlobId> = to_clear(idle, now).into_iter().collect();
-    assert_eq!(dropped.len(), 4);
-    assert!(requests.iter().all(|e| !dropped.contains(&e.blob)), "invite requests last");
-    assert!(dropped.contains(&others[0].blob) && dropped.contains(&others[1].blob), "no expiry first");
-    assert!(dropped.contains(&others[2].blob) && dropped.contains(&others[3].blob), "then the earliest to expire");
-}
-
-// spec/sync-inbox.md §4 (clearing: opened invite requests and boxes payloads go last): an inbox
-// blob waiting for the user and a boxes payload held as an offer go last; a refused, applied or
-// unopened one does not.
-#[test]
-fn invite_requests_and_offers_go_last_spec_sync_inbox_4() {
-    use osis_engine::sync::Taken;
-    let inbox = |taken: Option<Taken>| Act::Inbox { stamped: false, taken, commit: None, dial: None, expires: None };
-    assert!(goes_last(&inbox(Some(Taken::Waiting))) && goes_last(&inbox(Some(Taken::Offered))));
-    assert!(![inbox(Some(Taken::Refused)), inbox(Some(Taken::Applied)), inbox(None), Act::Waiting { never: false }].iter().any(goes_last));
 }
 
 /// Steps of one sync ID: genesis and children, as an admin issues them.

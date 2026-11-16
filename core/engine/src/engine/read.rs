@@ -1,6 +1,6 @@
-//! Reads (notes/api.md Reads): aspect values from local state, the synthetic aspects `tid.0`,
-//! `aspects.0`, `groups.0` (spec/data-model.md §8, §9), `roles.0` as the role timeline's
-//! roster (spec/permissions.md §2) and roles.
+//! Reads (notes/api.md Reads): aspect values from local state, the synthetic aspect `aspects.0`
+//! (spec/data-model.md §9), `roles.0` as the role timeline's roster (spec/permissions.md §2) and
+//! roles.
 
 use super::{Core, Engine, records};
 use crate::error::{Error, Result};
@@ -15,11 +15,11 @@ use std::sync::Arc;
 
 /// Aspects read from the in-memory indexes, not from a state.
 fn synthetic_ak(ak: &str) -> bool {
-    matches!(ak, "tid.0" | "aspects.0" | "groups.0" | "roles.0")
+    matches!(ak, "aspects.0" | "roles.0")
 }
 
 fn edge_value(e: &Edge) -> Value {
-    ct::Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(crate::flows::tied::tie_ct), floor: e.floor }.to_value()
+    ct::Edge { role: e.role, until: e.until, invite: e.invite, floor: e.floor }.to_value()
 }
 
 impl Core {
@@ -28,7 +28,7 @@ impl Core {
     /// (`Engine::clock_next`).
     pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
         if let Some(h) = self.devices_holders(thing) {
-            return h.into_iter().map(|(m, role)| (m, Edge { role, until: None, invite: None, tied: None, floor: None })).collect();
+            return h.into_iter().map(|(m, role)| (m, Edge { role, until: None, invite: None, floor: None })).collect();
         }
         let now = self.now();
         let ts = osis_base::Ts::make(now, 0).unwrap_or_default();
@@ -68,9 +68,7 @@ impl Engine {
             return Ok(None);
         }
         let v = match ak.as_str() {
-            "tid.0" => Some(Value::Tid(tid)),
             "aspects.0" => Some(Value::Set(self.aspects(&tid)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
-            "groups.0" => Some(Value::Set(self.groups_of(&tid).into_iter().map(Value::Tid).collect())),
             "roles.0" => {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
@@ -135,12 +133,6 @@ impl Engine {
             Some(v) => Ok(Some(key.decode(&v)?)),
             None => Ok(None),
         }
-    }
-
-    /// The aspects a delete of `tid` resets (`deleted_aspects`).
-    pub fn deleted_aspects(&mut self, tid: &Tid) -> Result<Vec<Ak>> {
-        let tid = *tid;
-        self.read(|tx| deleted_aspects(tx, &tid))
     }
 
     /// AKs present on the thing (`aspects.0`).
@@ -232,43 +224,6 @@ impl Engine {
     }
 }
 
-/// The aspects a delete of `t` resets (spec/crdt.md §4.6): of its durable content aspects some held
-/// commit header names (not `created.0`, `retainers^.0`, role-class, signal or ephemeral ones), each that may hold
-/// content: present here, or written by a valid part not received yet that no held root reset
-/// stamped after it covers (one so covered may never arrive: holders drop it). So once synced a
-/// delete leaves the same reads at every node, whichever bodies it held; an aspect that cannot
-/// hold content needs no reset (it would change no read).
-pub(crate) fn deleted_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>> {
-    may_hold(tx, t, false)
-}
-
-/// The ephemeral aspects a delete of `t` purges (spec/sync-compaction.md §2 delete): of its `+` value
-/// aspects some held commit header names, each that may hold content, as `deleted_aspects`
-/// judges the durable ones.
-pub(crate) fn purged_aspects(tx: &mut super::Tx<'_>, t: &Tid) -> Result<Vec<Ak>> {
-    may_hold(tx, t, true)
-}
-
-/// `deleted_aspects` (`ephemeral` false) or `purged_aspects` (true).
-fn may_hold(tx: &mut super::Tx<'_>, t: &Tid, ephemeral: bool) -> Result<Vec<Ak>> {
-    // each named aspect with the newest `ts` of its valid parts not received yet
-    let named: Vec<(Ak, Option<osis_base::Ts>)> = tx
-        .core
-        .aspects_of(t)
-        .filter(|((_, ak), _)| ct::deletable(ak.as_str()) && ak.ephemeral() == ephemeral && !ak.signal())
-        .map(|((_, ak), cs)| (ak.clone(), cs.iter().rev().find(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(t, ak).is_some_and(|ai| m.valid_at(ai) && m.missing(ai)))).map(|(ts, _)| *ts)))
-        .collect();
-    let mut out = Vec::new();
-    for (ak, missing) in named {
-        let state = tx.state(t, &ak)?;
-        let reset = state.and_then(Fragment::reset);
-        if state.is_some_and(Fragment::present) || missing.is_some_and(|ts| reset.is_none_or(|r| ts >= r.ts)) {
-            out.push(ak);
-        }
-    }
-    Ok(out)
-}
-
 /// `Engine::has_content` in `tx`.
 pub(crate) fn has_content_in(tx: &mut super::Tx<'_>, tid: &Tid) -> Result<bool> {
     if !tx.core.exists(tid) {
@@ -281,7 +236,7 @@ pub(crate) fn has_content_in(tx: &mut super::Tx<'_>, tid: &Tid) -> Result<bool> 
         aks.push(r.ak()?);
         Ok(())
     })?;
-    for ak in aks.iter().filter(|a| ct::deletable(a.as_str())) {
+    for ak in aks.iter().filter(|a| ct::counts_as_content(a.as_str())) {
         if tx.state(tid, ak)?.is_some_and(Fragment::present) {
             return Ok(true);
         }

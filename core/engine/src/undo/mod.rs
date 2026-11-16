@@ -11,16 +11,16 @@
 
 pub(crate) mod touch;
 
-use crate::engine::write::{CommitPlan, Resolved, build_one, check_acts, check_authority};
+use crate::engine::write::{CommitPlan, Resolved, build_one, check_acts};
 use crate::engine::{Core, Engine, Mutation, Owned, Tx};
 use crate::ephemeral::Written;
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
-use osis_base::{Ak, CommitId, Role, Tid, Ts, Value};
+use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_schema::RawKey;
-use osis_schema::core_types::{CREATED, GROUP};
-use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Op, PathOp, PathSeg, Source, Undone, Writer};
-use std::collections::{BTreeMap, BTreeSet};
+use osis_schema::core_types::CREATED;
+use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Source, Undone, Writer};
+use std::collections::BTreeSet;
 
 /// What a revert did.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -309,27 +309,19 @@ pub(crate) fn copy_expiry(copies: &Copies) -> Result<Option<u64>> {
 }
 
 /// Builds and applies the undo commit of `target` (spec/crdt.md §4.6), in its class (an
-/// ephemeral commit's undo is a memory commit): the things it created are deleted.
-/// `confined`: every write it makes is held to `actor`'s rights (`Engine::revert_as`).
+/// ephemeral commit's undo is a memory commit). `confined`: every write it makes is held to `actor`'s rights (`Engine::revert_as`).
 /// `Misuse("nothing to undo")` when it writes nothing (`undo_writes`).
 pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, confined: bool) -> Result<CommitId> {
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
-    let Some((deltas, nonce)) = undo_writes(tx, target, actor, ts, confined)? else { return Err(Error::Misuse("nothing to undo")) };
+    let Some((deltas, nonce)) = undo_writes(tx, target, ts)? else { return Err(Error::Misuse("nothing to undo")) };
     let node = tx.core.writer()?;
     // rights: its own commit applies only if valid here, as at every receiver (`apply_local`)
     check_acts(tx.core, node, &|_| None, &actor, ts)?;
     if confined {
         crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
     }
-    // the things it deletes have their ephemeral state purged, as a delete's (`unmake_ops`)
-    let mut purge = Vec::new();
-    if let Some(m) = tx.core.ix.commits.get(&target).cloned() {
-        for t in made_by(&m.header, &m.valid) {
-            purge.extend(crate::engine::write::delete_purges(tx, &t)?);
-        }
-    }
     // an undo writes under this open's session, like any content commit (spec/commits.md §3)
-    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge, undoes: Some(target), frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None, reseal: None , own_cover: false };
+    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false, rotation: None, reseal: None , own_cover: false };
     build_one(tx, plan, deltas)
 }
 
@@ -339,21 +331,18 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
 /// copying back an expiring value is under the open's expiring session (spec/crdt.md §2.1).
 /// `NotKept` when a part is not in kept history or its inverse writes back replaced content not
 /// kept (`undone_parts`).
-fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: bool) -> Result<Option<(Vec<Resolved>, [u8; osis_crdt::SESSION_NONCE_LEN])>> {
+fn undo_writes(tx: &mut Tx<'_>, target: CommitId, ts: Ts) -> Result<Option<(Vec<Resolved>, [u8; osis_crdt::SESSION_NONCE_LEN])>> {
     let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
     if !matches!(h.kind, Kind::Content) {
         return Err(Error::Misuse("only content commits are undone here"));
     }
     let memory = m.view.memory;
-    let node = tx.core.writer()?;
-    let made = made_by(&h, &m.valid);
-    let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
     // the parts it undoes, each with the state before it as kept history gives it, without what
     // the node holds value-less or what has expired by the undo's `ts`
     let wall = ts.wall_ms().0;
     let mut parts = Vec::new();
-    let (undone, relist) = undone_parts(tx, &target, ts, writers)?;
+    let undone = undone_parts(tx, &target, ts)?;
     for (a, delta, source) in undone {
         let (tid, ak) = (a.tid, a.ak.clone());
         let carried: Vec<(u64, Owned)> = crate::retention::snapshot::expiring_copies(tx, &tid, &ak)?.into_iter().flat_map(|(t, os)| os.into_iter().map(move |o| (t, o))).collect();
@@ -370,11 +359,7 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
     let [plain, expiring] = [tx.core.session.nonce, tx.core.expiring.nonce];
     let mut nonce = plain;
     let (mut deltas, expires) = loop {
-        let mut unmade = unmake_ops(tx, &made, ts, node, writers)?;
-        for (k, ops) in &relist {
-            unmade.entry(k.clone()).or_default().extend(ops.iter().cloned());
-        }
-        let (deltas, copies) = inverse(tx, &parts, unmade, ts, nonce)?;
+        let (deltas, copies) = inverse(tx, &parts, ts, nonce)?;
         // tests: a writer predating the undo expiry rule (spec/crdt.md §4.6)
         let expires = if tx.core.skip_writer_rules { None } else { copy_expiry(&copies)? };
         if !memory || expires.is_none() || nonce == expiring {
@@ -391,50 +376,25 @@ fn undo_writes(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Ts, confined: 
 
 /// The parts of content commit `target` its undo inverts, each with its delta and its writer's
 /// source. Left out: one invalid here, a signal's (it reads absent before and after), the creation
-/// record, a `purge.0` part (it only places a request, and a purge is never undone,
-/// spec/commits.md §5) and the parts on things the commit created (those are deleted, `unmake_ops`). Every
-/// other part is reverted, or there is no undo (`NotKept`): it is not received yet; or it is not
-/// in kept history by its thing's setting at the undo's `ts` (spec/commits.md §7:
-/// `bounds::setting_keeps`, whatever is held, so an undo is the same on every node whatever
-/// compaction did) or its body is gone (purged, expired), unless it is a membership part whose
-/// writes in effect only list things the commit created (`lists_only`: left out, the deletion
-/// takes them out); or it writes back replaced content (`osis_crdt::restores`) not kept
-/// (`replaced_kept`). A kept part is inverted even when `lists_only`, so the group reads as before
-/// the commit (spec/crdt.md §4.6 SHOULD). With them, the `group.0` ops putting back the one
-/// thing the commit deleted (`relisted`), for each group part left out so.
-fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts, writers: &[Tid]) -> Result<(Vec<Inverted>, Relist)> {
+/// record and a `purge.0` part (it only places a request, and a purge is never undone,
+/// spec/commits.md §5). Every other part is reverted, or there is no undo (`NotKept`): it is not
+/// received yet; or it is not in kept history by its thing's setting at the undo's `ts`
+/// (spec/commits.md §7: `bounds::setting_keeps`, whatever is held, so an undo is the same on
+/// every node whatever compaction did) or its body is gone (purged, expired); or it writes back
+/// replaced content (`osis_crdt::restores`) not kept (`replaced_kept`).
+fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts) -> Result<Vec<Inverted>> {
     let m = tx.core.ix.commits.get(target).cloned().ok_or(Error::UnknownCommit(*target))?;
     let h = m.header.clone();
-    let made = made_by(&h, &m.valid);
     let now = ts.wall_ms().0;
-    // asked only once a group part is out of kept history
-    let mut deleted: Option<Option<Tid>> = None;
-    let mut relist = Relist::new();
     let mut parts = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || a.ak.as_str() == osis_commit::retention::PURGE || made.contains(&a.tid) {
+        if !m.valid_at(ai) || a.ak.signal() || a.ak.as_str() == CREATED.ak() || a.ak.as_str() == osis_commit::retention::RETENTION || a.ak.as_str() == osis_commit::retention::PURGE {
             continue;
         }
         if m.missing(ai) {
             return Err(Error::NotKept(*target));
         }
         if m.body_gone(ai) || !crate::retention::bounds::setting_keeps(tx, target, ai, now)? {
-            if lists_only(tx, &h, target, ai, &made, writers, ts)? {
-                continue;
-            }
-            if deleted.is_none() && a.ak.as_str() == GROUP.ak() {
-                deleted = Some(deleted_one(tx, &h, &m, target, &made)?);
-            }
-            if let Some(Some(x)) = deleted
-                && let Some(ops) = relisted(tx, &h, target, ai, x, writers, ts)?
-            {
-                relist.entry((a.tid, a.ak.clone())).or_default().extend(ops);
-                continue;
-            }
-            if let Some(ops) = unrelisted(tx, &h, target, ai, writers, ts)? {
-                relist.entry((a.tid, a.ak.clone())).or_default().extend(ops);
-                continue;
-            }
             return Err(Error::NotKept(*target));
         }
         let Some(Decoded::Delta(d)) = crate::apply::held_part(tx, target, ai)? else { return Err(Error::Corrupt("content part held without its delta")) };
@@ -445,138 +405,11 @@ fn undone_parts(tx: &mut Tx<'_>, target: &CommitId, ts: Ts, writers: &[Tid]) -> 
         }
         parts.push((a.clone(), d.fragment, source));
     }
-    Ok((parts, relist))
-}
-
-/// For `group.0` part `ai` of undo commit `target` (header `h`), on a group other than `x`:
-/// where every write of it in effect in the group's current state creates a live element listing
-/// one thing `x` the commit also writes parts on (an undone delete's or creation's re-listing,
-/// `relisted`), the removals of `x` at those fields, judged from the state alone (its elements
-/// keep their values), so undoing that restore needs no history of the group either. None
-/// otherwise.
-fn unrelisted(tx: &mut Tx<'_>, h: &Header, target: &CommitId, ai: usize, writers: &[Tid], ts: Ts) -> Result<Option<Vec<PathOp>>> {
-    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
-    if h.undoes.is_none() || a.ak.as_str() != GROUP.ak() || !writers.iter().all(|w| check_authority(tx.core, *w, &Default::default(), &a.tid, GROUP.ak(), ts).is_ok()) {
-        return Ok(None);
-    }
-    let Some(own) = crate::engine::Owned::of(h, target, ai) else { return Ok(None) };
-    let Some(state) = tx.state(&a.tid, &a.ak)? else { return Ok(None) };
-    let (mut x, mut fields) = (None, BTreeSet::new());
-    for w in state.winners().iter().filter(|w| own.owns(&w.stamp.dot)) {
-        let listed = match w.path.as_slice() {
-            [osis_crdt::Place::Field(f), osis_crdt::Place::Elem(d), osis_crdt::Place::In | osis_crdt::Place::Tid(_)] if w.kind == osis_crdt::Kind::Value && w.stamp.dot == *d && [crate::engine::groups::ITEMS, crate::engine::groups::SUBGROUPS].contains(f) => match state.set_elem_value(*f, d) {
-                Some(Value::Tid(t)) => Some((*f, t)),
-                _ => None,
-            },
-            _ => None,
-        };
-        let Some((f, t)) = listed else { return Ok(None) };
-        if x.is_some_and(|y| y != t) {
-            return Ok(None);
-        }
-        x = Some(t);
-        fields.insert(f);
-    }
-    let Some(x) = x else { return Ok(None) };
-    if x == a.tid || !h.aspects.iter().any(|p| p.tid == x && p.ak.as_str() != GROUP.ak()) {
-        return Ok(None);
-    }
-    Ok(Some(fields.into_iter().map(|f| PathOp { path: vec![PathSeg::Field(f)], op: Op::Remove(Value::Tid(x)) }).collect()))
+    Ok(parts)
 }
 
 /// A part an undo inverts: its entry, delta and writer's source.
 type Inverted = (osis_commit::AspectEntry, Fragment, Source);
-
-/// `group.0` ops per `(group, ak)` an undo writes beside its inverse.
-type Relist = BTreeMap<(Tid, Ak), Vec<PathOp>>;
-
-/// The one thing content commit `target` (header `h`) deleted, if it is one (spec/commits.md §7):
-/// it reads no content now, and the commit either undid its creation (`undoes` a commit that
-/// made it alone) or holds parts on it, each a reset of an aspect's root alone (a `delete`, or
-/// an undone creation's deletion), read from their bodies. None when no thing or several are.
-fn deleted_one(tx: &mut Tx<'_>, h: &Header, m: &crate::engine::Meta, target: &CommitId, made: &BTreeSet<Tid>) -> Result<Option<Tid>> {
-    if h.kind != Kind::Content {
-        return Ok(None);
-    }
-    let mut found: BTreeSet<Tid> = BTreeSet::new();
-    if let Some(u) = h.undoes
-        && let Some(um) = tx.core.ix.commits.get(&u)
-        && let Some(uh) = um.header.decoded()
-    {
-        found.extend(made_by(&uh, &um.valid));
-    }
-    let mut on: BTreeMap<Tid, bool> = BTreeMap::new();
-    for (ai, a) in h.aspects.iter().enumerate() {
-        let ak = a.ak.as_str();
-        if !m.valid_at(ai) || a.ak.signal() || ak == CREATED.ak() || ak == osis_commit::retention::RETENTION || ak == osis_commit::retention::PURGE || made.contains(&a.tid) {
-            continue;
-        }
-        let reset = match crate::apply::held_part(tx, target, ai)? {
-            Some(Decoded::Delta(d)) => d.fragment.reset().is_some() && d.fragment.winners().iter().all(|w| w.path.is_empty() && w.kind == osis_crdt::Kind::Reset),
-            _ => false,
-        };
-        // a group part is judged as the group's (`relisted`) unless it is the thing's own reset
-        if ak == GROUP.ak() && !reset {
-            continue;
-        }
-        *on.entry(a.tid).or_insert(true) &= reset;
-    }
-    found.extend(on.into_iter().filter(|(_, r)| *r).map(|(t, _)| t));
-    let [x] = found.into_iter().collect::<Vec<_>>()[..] else { return Ok(None) };
-    Ok((!crate::engine::read::has_content_in(tx, &x)?).then_some(x))
-}
-
-/// For `group.0` part `ai` of `target` (header `h`), on a group other than `x`, the thing it
-/// deleted (`deleted_one`): adds of `x` at each field where the part's writes in effect in the
-/// group's current state removed elements, when every one of them is such a removal and all of
-/// `writers` may write the group at `ts`. Fresh adds, needing nothing of the old elements, so no
-/// history of the group; only `x` ever goes back, whatever else the part removed. Read from the
-/// state, never the part's body. None when the part does anything else there.
-fn relisted(tx: &mut Tx<'_>, h: &Header, target: &CommitId, ai: usize, x: Tid, writers: &[Tid], ts: Ts) -> Result<Option<Vec<PathOp>>> {
-    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
-    if a.ak.as_str() != GROUP.ak() || a.tid == x || !writers.iter().all(|w| check_authority(tx.core, *w, &Default::default(), &a.tid, GROUP.ak(), ts).is_ok()) {
-        return Ok(None);
-    }
-    let Some(own) = crate::engine::Owned::of(h, target, ai) else { return Ok(None) };
-    let Some(state) = tx.state(&a.tid, &a.ak)? else { return Ok(Some(Vec::new())) };
-    let mut fields = BTreeSet::new();
-    for w in state.winners().iter().filter(|w| own.owns(&w.stamp.dot)) {
-        match w.path.as_slice() {
-            [osis_crdt::Place::Field(f), osis_crdt::Place::Elem(_)] if w.kind == osis_crdt::Kind::Reset && [crate::engine::groups::ITEMS, crate::engine::groups::SUBGROUPS].contains(f) => {
-                fields.insert(*f);
-            }
-            [osis_crdt::Place::Field(f), osis_crdt::Place::Gone(..)] if [crate::engine::groups::ITEMS, crate::engine::groups::SUBGROUPS].contains(f) => {
-                fields.insert(*f);
-            }
-            _ => return Ok(None),
-        }
-    }
-    Ok(Some(fields.into_iter().map(|f| PathOp { path: vec![PathSeg::Field(f)], op: Op::Add(Value::Tid(x)) }).collect()))
-}
-
-/// Whether part `ai` of `target` (header `h`) is a `group.0` part the deletion of the things the
-/// commit created (`made`) undoes whole (spec/commits.md §7): every write of it still in effect
-/// in the group's current state (`Fragment::winners`, a set keeping each add and removal there
-/// with its stamp until superseded, spec/crdt.md §5.5) is the creation of a live element listing
-/// one of `made`, and all of `writers` may write the group at `ts` (`unmake_ops` takes them out there).
-/// Read from the state alone, never the part's body, so the answer is the same on every node
-/// whatever compaction did. One that also adds or removes another member, or resets a field,
-/// is judged as any part.
-fn lists_only(tx: &mut Tx<'_>, h: &Header, target: &CommitId, ai: usize, made: &BTreeSet<Tid>, writers: &[Tid], ts: Ts) -> Result<bool> {
-    let Some(a) = h.aspects.get(ai) else { return Ok(false) };
-    if a.ak.as_str() != GROUP.ak() || made.is_empty() || !writers.iter().all(|w| check_authority(tx.core, *w, &Default::default(), &a.tid, GROUP.ak(), ts).is_ok()) {
-        return Ok(false);
-    }
-    let Some(own) = crate::engine::Owned::of(h, target, ai) else { return Ok(false) };
-    let Some(state) = tx.state(&a.tid, &a.ak)? else { return Ok(true) };
-    let listing = |w: &osis_crdt::Won| match w.path.as_slice() {
-        [osis_crdt::Place::Field(f), osis_crdt::Place::Elem(d), osis_crdt::Place::In | osis_crdt::Place::Tid(_)] if w.kind == osis_crdt::Kind::Value && w.stamp.dot == *d && [crate::engine::groups::ITEMS, crate::engine::groups::SUBGROUPS].contains(f) => {
-            matches!(state.set_elem_value(*f, d), Some(Value::Tid(x)) if made.contains(&x))
-        }
-        _ => false,
-    };
-    Ok(state.winners().iter().filter(|w| own.owns(&w.stamp.dot)).all(|w| listing(&w)))
-}
 
 /// A part an undo inverts: the undone delta with its writer's source, and the state before it
 /// where the undo reads it (`kept_before`).
@@ -593,9 +426,9 @@ struct Undoing {
     whole: Option<Fragment>,
 }
 
-/// The undo's deltas of `parts` and of the creations' undoing (`unmade`), stamped under session
+/// The undo's deltas of `parts`, stamped under session
 /// `nonce`, with the expiries of what they copy back.
-fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], mut unmade: BTreeMap<(Tid, Ak), Vec<PathOp>>, ts: Ts, nonce: [u8; osis_crdt::SESSION_NONCE_LEN]) -> Result<(Vec<Resolved>, Copies)> {
+fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], ts: Ts, nonce: [u8; osis_crdt::SESSION_NONCE_LEN]) -> Result<(Vec<Resolved>, Copies)> {
     let own = Form::Session(nonce).own_source(tx.core.writer()?, CommitId([0; 32]));
     let mut deltas = Vec::new();
     let mut copies = Copies::new();
@@ -641,14 +474,7 @@ fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], mut unmade: BTreeMap<(Tid, Ak), V
         if let Some((f, r, e)) = out {
             copies.extend(e);
             deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, replaces: None, original_floor: 0, frontiers: None, chunks: Vec::new() });
-            // joined into the delta just pushed, so its counters stay the last allocated
-            if let Some(ops) = unmade.remove(&(a.tid, a.ak.clone())) {
-                unmake_one(tx, (a.tid, a.ak.clone()), ops, ts, &own, nonce, &mut deltas)?;
-            }
         }
-    }
-    for (k, ops) in unmade {
-        unmake_one(tx, k, ops, ts, &own, nonce, &mut deltas)?;
     }
     Ok((deltas, copies))
 }
@@ -657,95 +483,6 @@ fn inverse(tx: &mut Tx<'_>, parts: &[Undoing], mut unmade: BTreeMap<(Tid, Ak), V
 /// defaults as any write of it does: the registered one, else the core schema for a core key.
 fn schema_of(core: &Core, ak: &Ak) -> Option<std::sync::Arc<osis_schema::Schema>> {
     core.schemas.get(ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())))
-}
-
-/// The things content commit `m` created: those whose `created.0` it validly carries.
-pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> {
-    if h.kind != Kind::Content {
-        return BTreeSet::new();
-    }
-    h.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == "created.0" && valid.get(*ai).copied().unwrap_or(false)).map(|(_, a)| a.tid).collect()
-}
-
-/// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
-/// `made`, its aspects that may hold content reset (`read::deleted_aspects`; its ephemeral
-/// state purged, `undo_in`) and removed from every `group.0` that may list it
-/// (`groups::listing_groups`) and all of `writers` may write (this node, a confined revert's
-/// actor too), each
-/// resolved after the undo's own delta of that aspect and
-/// joined into it (`unmake_one`). `Permission` when this node may not write one of `made`
-/// (`delete` would refuse; never a partial revert).
-fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, writers: &[Tid]) -> Result<BTreeMap<(Tid, Ak), Vec<PathOp>>> {
-    if made.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let mut ops: BTreeMap<(Tid, Ak), Vec<PathOp>> = BTreeMap::new();
-    for x in made {
-        if crate::engine::write::role_of(tx.core, &node, x, ts) < Some(Role::Write) {
-            return Err(Error::Permission { tid: *x });
-        }
-        let resets = crate::engine::read::deleted_aspects(tx, x)?;
-        // its ephemeral state is purged by the undo commit (`undo_in`), placed on `x` by a
-        // `purge.0` write when nothing else of it is
-        if resets.is_empty() && !crate::engine::write::delete_purges(tx, x)?.is_empty() {
-            ops.entry((*x, Ak::new(osis_schema::core_types::PURGE.ak()).map_err(|_| Error::Misuse("ak"))?)).or_default().push(crate::engine::write::purge_placer(ts));
-        }
-        for ak in resets {
-            ops.entry((*x, ak)).or_default().push(PathOp { path: Vec::new(), op: Op::RemoveAspect });
-        }
-    }
-    let gak = Ak::new(GROUP.ak()).map_err(|_| Error::Misuse("ak"))?;
-    // per group, its fields that may list each thing (`listing_groups`: held, or as a header only)
-    let mut by_group: BTreeMap<Tid, Vec<PathOp>> = BTreeMap::new();
-    for x in made {
-        let (items, subs) = crate::engine::groups::listing_groups(tx, x)?;
-        for (field, gs) in [(crate::engine::groups::ITEMS, items), (crate::engine::groups::SUBGROUPS, subs)] {
-            for g in gs {
-                by_group.entry(g).or_default().push(PathOp { path: vec![PathSeg::Field(field)], op: Op::Remove(Value::Tid(*x)) });
-            }
-        }
-    }
-    for (g, v) in by_group {
-        if made.contains(&g) || !writers.iter().all(|w| crate::engine::write::check_authority(tx.core, *w, &Default::default(), &g, GROUP.ak(), ts).is_ok()) {
-            continue;
-        }
-        ops.entry((g, gak.clone())).or_default().extend(v);
-    }
-    Ok(ops)
-}
-
-/// Runs `unmake_ops`' ops on `k` under the undo's own source `own` (of session `nonce`), joined into the undo's
-/// delta of `k` when it is the last one in `deltas` (its counters the last allocated).
-fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, own: &Source, nonce: [u8; osis_crdt::SESSION_NONCE_LEN], deltas: &mut Vec<Resolved>) -> Result<()> {
-    let mut state = tx.state(&tid, &ak)?.cloned().unwrap_or_default();
-    let joined = deltas.last().is_some_and(|d| d.tid == tid && d.ak == ak);
-    // joined: one delta, so its commit-level writes keep that delta's stamp (spec/crdt.md §2.3)
-    let (lo, resume) = match deltas.last() {
-        Some(d) if joined => {
-            state.join(d.fragment.clone());
-            (d.lo, d.hi)
-        }
-        _ => {
-            let c = tx.txn.counter(&tid, &ak, &nonce)?;
-            (c, c)
-        }
-    };
-    let schema = schema_of(tx.core, &ak);
-    let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
-    let w = crate::engine::groups::seeing(tx, &tid, &ak, &ops, Writer::new(ts, own.clone(), lo).resume(resume).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str())))?;
-    let out = match &view {
-        Some(v) => crate::engine::write::run_ops(&state, w, &ops, v)?,
-        None => crate::engine::write::run_ops(&state, w, &ops, &AnyView)?,
-    };
-    let Some((f, r)) = out else { return Ok(()) };
-    match deltas.last_mut() {
-        Some(d) if joined => {
-            d.fragment.join(f);
-            d.hi = r.hi;
-        }
-        _ => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, replaces: None, original_floor: 0, frontiers: None, chunks: Vec::new() }),
-    }
-    Ok(())
 }
 
 /// A held commit as the `osis` commit query reads it: its signed header and, per aspect it
@@ -777,16 +514,16 @@ impl Engine {
     /// part is not in kept history or its inverse writes back content no kept history holds). Computes
     /// the revert's writes in a transaction rolled back after.
     pub fn check_revertible(&mut self, c: &CommitId) -> Result<bool> {
-        let me = self.core.writer()?;
-        self.check_revert(*c, me, false)
+        self.core.writer()?;
+        self.check_revert(*c)
     }
 
     /// `check_revertible` acting as `actor`; `confined` as `revert_inner`.
-    pub(crate) fn check_revert(&mut self, c: CommitId, actor: Tid, confined: bool) -> Result<bool> {
+    pub(crate) fn check_revert(&mut self, c: CommitId) -> Result<bool> {
         let memory = self.core.ix.commits.get(&c).is_some_and(|m| m.view.memory);
         // a read stamps nothing: the clock is not stepped
         let ts = self.core.hlc.peek();
-        self.read(|tx| tx.in_class(memory, |tx| undo_writes(tx, c, actor, ts, confined)).map(|w| w.is_some()))
+        self.read(|tx| tx.in_class(memory, |tx| undo_writes(tx, c, ts)).map(|w| w.is_some()))
     }
 
     /// Reverts commit `id`, durable or ephemeral, acting as `actor`, by an undo commit of its
@@ -796,28 +533,11 @@ impl Engine {
     }
 
     /// `revert_commit`; `confined`: held to `actor`'s rights on every write it really makes
-    /// (`Engine::revert_as`), before anything applies. Undoing a creation deletes the thing
-    /// (spec/crdt.md §4.6) as a delete does (`write::check_delete`), its ephemeral state purged
-    /// by the undo commit (`undo_in`).
+    /// (`Engine::revert_as`), before anything applies.
     pub(crate) fn revert_inner(&mut self, c: CommitId, actor: Tid, confined: bool) -> Result<Reverted> {
-        let mut del: BTreeSet<Tid> = BTreeSet::new();
-        let mut memory = false;
-        if let Some(m) = self.core.ix.commits.get(&c) {
-            memory = m.view.memory;
-            if let Some(h) = m.header.decoded() {
-                del.extend(made_by(&h, &m.valid));
-            }
-        }
+        let memory = self.core.ix.commits.get(&c).is_some_and(|m| m.view.memory);
         let ts = self.core.hlc.next();
-        let node = self.core.writer()?;
-        // who must hold write on all it does: this node (spec/crdt.md §4.6), a confined revert's
-        // actor too; things it deletes count though no write is left to make
-        let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
         let done = self.run(|tx| {
-            if !del.is_empty() {
-                check_acts(tx.core, node, &|_| None, &actor, ts)?;
-            }
-            crate::engine::write::check_delete(tx, writers, &Default::default(), &del, ts)?;
             let mut m = Mutation::new();
             m.act_as(actor).undo(c);
             m.confined = confined;
@@ -865,9 +585,9 @@ mod tests {
     use crate::error::Error;
     use crate::local_peer::LocalPeer;
     use osis_base::{Ak, Role, Value, WallMs};
-    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_crdt::{Op, PathOp};
     use osis_schema::core_types as ct;
-    use std::collections::BTreeSet;
+    
 
     // `check_revertible` runs the revert's own writes in a transaction rolled back after: it
     // changes nothing, whatever it answers. A creates a thing (its creation's undo would delete
@@ -1140,7 +860,7 @@ mod tests {
         let [a, c] = [0, 1].map(|i| lp.peers[i].engine.me());
         let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
-        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &c, &ct::Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
         // history kept a day after replaced on `x:m.0` and `x:r.0`
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let mut setting = ct::RetentionSetting::of(Ak::new("x:m.0").unwrap(), day);
@@ -1233,7 +953,7 @@ mod tests {
         let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer };
         let (t, _) = lp.peers[0].engine.create_with_admin(&a).unwrap();
         let r = lp.peers[1].engine.me();
-        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, tied: None, floor: None }).unwrap();
+        lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, floor: None }).unwrap();
         let x = Ak::new("x:m.0").unwrap();
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let mut m = Mutation::new();
@@ -1287,7 +1007,7 @@ mod tests {
         let day = osis_schema::History::Keep { until: None, after: Some(86_400_000) };
         let setting = ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(day), ..Default::default() }), ..Default::default() };
         for t in &ts {
-            lp.peers[0].engine.grant(t, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
+            lp.peers[0].engine.grant(t, &b, &ct::Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
             let mut m = Mutation::new();
             m.set(*t, &ct::RETENTION, &setting).unwrap();
             lp.peers[0].commit(m).unwrap();
@@ -1318,88 +1038,6 @@ mod tests {
         let a = &mut lp.peers[0].engine;
         a.revert(&t).unwrap().unwrap();
         assert_eq!((a.get(&p, &x).unwrap(), a.get(&q, &y).unwrap()), (None, None));
-    }
-
-    // spec/crdt.md §4.6: undoing a creation deletes the thing, alike at every node: B holds the
-    // header of A's later write of `y` on N but not its body; B's undo of N's creation resets `y`
-    // too (it may hold content), so once synced N has no content.
-    #[test]
-    fn undo_creation_resets_unfetched_writes_spec_crdt_4_6() {
-        let (mut lp, ts, x, y) = writable(1);
-        let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
-        let mut m = Mutation::new();
-        let n = lp.peers[0].engine.new_thing(&mut m, a);
-        m.set(n, &x, &Value::Int(1)).unwrap().set(ts[0], &x, &Value::Int(1)).unwrap();
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        lp.peers[0].engine.grant(&n, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
-        lp.advance(10);
-        let mut m = Mutation::new();
-        m.set(n, &y, &Value::Int(2)).unwrap();
-        let w = lp.peers[0].commit(m).unwrap().unwrap();
-        deliver_leaving(&mut lp, 0, 1, w, n);
-        lp.advance(10);
-        assert_eq!(lp.peers[1].engine.get(&n, &y).unwrap(), None, "B holds `y`'s header only");
-        lp.peers[1].engine.revert(&c).unwrap().unwrap();
-        lp.sync(1, 0).unwrap();
-        let e = &mut lp.peers[0].engine;
-        assert_eq!((e.get(&n, &x).unwrap(), e.get(&n, &y).unwrap(), e.get(&ts[0], &x).unwrap()), (None, None, None));
-    }
-
-    // spec/crdt.md §4.6, §5.5: undoing a creation removes the thing from every group alike, its
-    // adds held and those held as a header only. N is an item of G (held by both) and of H, whose
-    // add B holds as a header only; B's undo of N's creation leaves N in neither once synced, as
-    // A's does.
-    #[test]
-    fn undo_creation_unlists_unfetched_adds_spec_crdt_4_6() {
-        for undoer in [0, 1] {
-            let (mut lp, ts, x, _) = writable(2);
-            let (g, h) = (ts[0], ts[1]);
-            let [a, b] = [0, 1].map(|i| lp.peers[i].engine.me());
-            let mut m = Mutation::new();
-            let n = lp.peers[0].engine.new_thing(&mut m, a);
-            m.set(n, &x, &Value::Int(1)).unwrap();
-            let c = lp.peers[0].commit(m).unwrap().unwrap();
-            lp.peers[0].engine.grant(&n, &b, &ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None }).unwrap();
-            lp.advance(10);
-            let add = || PathOp { path: vec![PathSeg::Field(crate::engine::groups::ITEMS)], op: Op::Add(Value::Tid(n)) };
-            let mut m = Mutation::new();
-            m.op(g, &ct::GROUP, add()).unwrap();
-            lp.peers[0].commit(m).unwrap().unwrap();
-            lp.sync(0, 1).unwrap();
-            let mut m = Mutation::new();
-            m.op(h, &ct::GROUP, add()).unwrap();
-            let w = lp.peers[0].commit(m).unwrap().unwrap();
-            deliver_leaving(&mut lp, 0, 1, w, h);
-            lp.advance(10);
-            assert_eq!(lp.peers[1].engine.listed_in(&n).0, BTreeSet::from([g]), "B holds H's add as a header only");
-            lp.peers[undoer].engine.revert(&c).unwrap().unwrap();
-            lp.sync_all().unwrap();
-            for i in [0, 1] {
-                assert_eq!(lp.peers[i].engine.listed_in(&n), (BTreeSet::new(), BTreeSet::new()), "undone by {undoer}: N listed at {i}");
-            }
-        }
-    }
-
-    // spec/crdt.md §4.6: a part not received yet that a held reset stamped after it covers holds
-    // no content, so a delete leaves its aspect alone (it may never arrive: holders drop it as
-    // covered). B holds W's part on `y` as missing, then A's removal of `y`.
-    #[test]
-    fn delete_skips_covered_unfetched_writes_spec_crdt_4_6() {
-        let (mut lp, ts, _, y) = writable(1);
-        let p = ts[0];
-        let mut m = Mutation::new();
-        m.set(p, &y, &Value::Int(1)).unwrap();
-        let w = lp.peers[0].commit(m).unwrap().unwrap();
-        deliver_leaving(&mut lp, 0, 1, w, p);
-        lp.advance(10);
-        assert_eq!(lp.peers[1].engine.deleted_aspects(&p).unwrap(), vec![y.clone()], "W's part may hold content");
-        let mut m = Mutation::new();
-        m.remove_aspect(p, &y).unwrap();
-        let r = lp.peers[0].commit(m).unwrap().unwrap();
-        for pk in lp.packages(0).unwrap().into_iter().filter(|pk| pk.id == r) {
-            lp.peers[1].receive(&pk.bytes, pk.blobs.clone()).unwrap();
-        }
-        assert_eq!(lp.peers[1].engine.deleted_aspects(&p).unwrap(), Vec::<Ak>::new(), "the removal covers W");
     }
 
     // spec/commits.md §7, spec/crdt.md §8: a snapshot holds an expiring delta's writes

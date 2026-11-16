@@ -232,21 +232,6 @@ impl Node {
         &mut self.engine
     }
 
-    /// The owner unsyncs `t` here (spec/sync-set.md §2-3): this node shares it no more
-    /// (`Engine::unshare`); a thing kept here after its share ended, synced no more (none of its
-    /// sync IDs still waiting to stop), is forgotten at once, as a stopped sync ID's thing is.
-    /// `false`: it neither shared nor kept `t`. After it, `handle(Input::Wrote)`.
-    pub fn unsync(&mut self, t: &Tid) -> Result<bool> {
-        let kept = self.engine.kept_local()?.contains(t) && !self.store.syncs().values().any(|(x, _)| x == t);
-        if !self.engine.unshare(t)? {
-            return Ok(false);
-        }
-        if kept {
-            crate::leave::forget_local(&mut self.engine, &mut self.store, &[*t].into())?;
-        }
-        Ok(true)
-    }
-
     /// The node's store per sync ID, for reads (status views, tests).
     pub fn store(&self) -> &Store {
         &self.store
@@ -424,35 +409,17 @@ impl Node {
         self.driver.sessions.idle()
     }
 
-    /// Where a wait on `scope` stands (spec/sync-status.md §3): status's for its sync IDs, and
-    /// for `All` and `Deliveries` every delivery this node owes taken (the engine owes none), for
-    /// `Delivery` those it owes `to` naming `thing`.
+    /// Where a wait on `scope` stands (spec/sync-status.md §3): status's for its sync IDs.
     pub fn wait(&mut self, scope: Scope) -> Waiting {
         let net = NetView { streams: &self.streams, unread: &self.unread };
         let engine = &mut self.engine;
         let carrying = match scope {
             Scope::Thing(t) => engine.carrying(&t).map(|x| x.into_iter().collect()).map_err(Into::into),
-            Scope::All | Scope::Deliveries | Scope::Delivery { .. } => Ok(Vec::new()),
+            Scope::All => Ok(Vec::new()),
         };
         // by the rosters, not by who has S open: a sync ID just joined is open at no peer yet;
         // a failed read keeps the wait waiting
-        let w = self.status.wait(&net, scope, |_| carrying, |s| engine.roster_holders(s).map_or(true, |r| r.any()));
-        // a delivery no other node may take holds nothing up, as a sync ID no other node may hold;
-        // a failed read keeps the wait waiting
-        let mut owes = || {
-            let Ok(d) = engine.deliveries() else { return true };
-            d.iter().any(|(c, h)| {
-                let ours = match scope {
-                    Scope::Delivery { thing, to } => *h == to && engine.delivery_things(c, h).contains(&thing),
-                    _ => true,
-                };
-                ours && engine.delivery_awaited(h).unwrap_or(true)
-            })
-        };
-        match (w, scope) {
-            (Waiting::Done, Scope::All | Scope::Deliveries | Scope::Delivery { .. }) if owes() => Waiting::Pending,
-            (w, _) => w,
-        }
+        self.status.wait(&net, scope, |_| carrying, |s| engine.roster_holders(s).map_or(true, |r| r.any()))
     }
 
     fn net(&self) -> NetView<'_> {
@@ -643,7 +610,7 @@ impl Node {
         for m in moved.drain(..) {
             self.status.moved(&self.driver.sessions, &self.opens, &m);
             self.read.moved(&m, &self.opens);
-            self.inbox.moved(cx.engine, &m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
+            self.inbox.moved(&m, &crate::inbox::Links { sessions: &mut self.driver.sessions, opens: &self.opens, streams: &self.streams });
             let c = m.conn();
             self.driver.dials.sharing(c, !self.opens.members(c).is_empty());
             self.streams.moved(&mut cx, &mut self.driver.sessions, &self.opens, m, &mut self.driver.reported);
@@ -754,11 +721,10 @@ impl Node {
             }
             self.reports(out);
             // the lifecycle duties the engine judges (`life`), on what this round settled
-            let net = NetView { streams: &self.streams, unread: &self.unread };
             let (status, opens, store) = (&self.status, &self.opens, &self.store);
             // a sync ID no peer is to be waited for on is heard out at once (the rule a leave's
             // wait reads)
-            acted |= self.life.settle(&mut self.engine, &self.store, &mut LifeHears { status, opens, store, net })?;
+            acted |= self.life.settle(&mut self.engine, &mut LifeHears { status, opens, store })?;
             // the engine read its store again (a write of unknown outcome): every feed followed is
             // stale, so the settle ends and the step restarts the modules (`engine_reloaded`)
             if !acted || self.engine.loads() != self.driver.engine_loads {
@@ -906,13 +872,9 @@ struct LifeHears<'a> {
     status: &'a Status,
     opens: &'a Opens,
     store: &'a Store,
-    net: NetView<'a>,
 }
 
 impl crate::life::Hears for LifeHears<'_> {
-    fn heard_out(&mut self, engine: &mut Engine, s: &SyncId) -> Result<bool> {
-        self.status.heard_out_or_alone(self.opens, engine, self.store, s, &self.net)
-    }
 
     fn timed_heard(&mut self, engine: &mut Engine, s: &SyncId, passed: bool) -> Result<bool> {
         if !self.opens.waited(engine, self.store, s, true)? {

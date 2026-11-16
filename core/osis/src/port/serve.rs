@@ -367,7 +367,7 @@ fn on<A: Form, R: Form>(args: Value, f: impl FnOnce(A) -> Result<R>) -> Result<V
 /// reply at most `limit` bytes.
 fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value> {
     match method {
-        method::WHOAMI => on(args, |()| Ok((h.me(), h.node(), h.home()))),
+        method::WHOAMI => on(args, |()| Ok((h.me(), h.node(), h.devices()))),
         method::GET => on(args, |(t, k, p): (Tid, Ak, Path)| {
             here(h, t)?;
             Ok(h.read_local(|r| r.get_path(t, &crate::DynamicAspectKey::untyped(k), &p)))
@@ -375,7 +375,6 @@ fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value>
         method::ASPECTS => thing(h, args, |r, t| r.aspects(t)),
         method::HAS_CONTENT => thing(h, args, |r, t| r.knows(t)),
         method::HOLDS => thing(h, args, |r, t| Ok(r.holds(t))),
-        method::GROUPS_OF => thing(h, args, |r, t| Ok(r.groups_of(t))),
         method::GRANTS => thing(h, args, |r, t| Ok(r.grants(t))),
         method::ROLE_ON => thing(h, args, |r, t| r.role_on(t)),
         method::HOLDERS => thing(h, args, |r, t| Ok(crate::share::holders_in(r, t))),
@@ -403,8 +402,6 @@ fn row(h: &crate::Osis, method: u64, args: Value, limit: usize) -> Result<Value>
         method::CONTACT_CARD => on(args, |()| h.contact_card()),
         method::PROFILE => on(args, |()| h.profile()),
         method::PROFILE_OF => on(args, |(a,)| h.profile_of(a)),
-        method::INVITATIONS => on(args, |()| h.invitations()),
-        method::ACCEPT_INVITE => on(args, |(t, into)| h.accept_invite(t, into)),
         m => Err(Error::Unsupported(format!("unknown method {m}"))),
     }
 }

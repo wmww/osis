@@ -4,7 +4,7 @@
 use super::generated_header;
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{CommitId, CreationRecord, SyncId, Role, Tid, Ts, Value, WallMs, encode};
+use osis_base::{CommitId, CreationRecord, SyncId, Role, Tid, Value, WallMs, encode};
 use osis_schema::core_types::*;
 use osis_schema::{RawKey, core_schema};
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,18 +17,11 @@ fn tid(n: u8) -> Tid {
 fn epoch(n: u64) -> Epoch {
     Epoch { n, nonce: [8; 32] }
 }
-fn tie_ts() -> Ts {
-    match Ts::make(WallMs(1_700_000_000_000), 3) {
-        Some(t) => t,
-        None => unreachable!("fixed input in range"),
-    }
-}
-
 /// (case, AK, value) per core aspect a commit writes; inputs are repeated bytes.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let holders: Holders = BTreeMap::from([
-        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), tied: Some(Tie { ts: tie_ts(), source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }), floor: None }),
-        (tid(7), Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None }),
+        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), floor: None }),
+        (tid(7), Edge { role: Role::Admin, until: None, invite: None, floor: None }),
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), names: [6; 32], left_out: BTreeMap::new(), demotions: BTreeSet::from([CommitId([7; 32])]), demotes: true }),
@@ -57,7 +50,6 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("sync", "sync.0", SYNC.encode(&sync_ids)),
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], items: vec!["https://relay.example".into()], account: None })),
-        ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
         ("name", "name.0", NAME.encode(&"Trip".to_string())),
         ("body", "body.0", BODY.encode(&"# Plan\n".to_string())),
         ("tag", "tag.0", TAG.encode(&Tag { color: Some("#ff8800".into()) })),

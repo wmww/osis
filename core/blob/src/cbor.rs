@@ -25,6 +25,3 @@ pub(crate) fn get_uint(v: &Value, what: &'static str) -> Result<u64, Error> {
     v.as_uint().ok_or(Error::Malformed(what))
 }
 
-pub(crate) fn get_opt<'a>(v: &'a Value, what: &'static str) -> Result<Option<&'a Value>, Error> {
-    v.as_opt().ok_or(Error::Malformed(what))
-}

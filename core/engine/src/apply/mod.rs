@@ -338,17 +338,6 @@ pub(crate) fn signature(core: &crate::engine::Core, id: &CommitId, sigs: &osis_c
     osis_commit::verify_signature(id, sigs, key).ok()
 }
 
-/// `author`'s signing key at epoch `epoch` (`None` for a key actor other than an account) as held
-/// here, an account's only while that epoch is open here (a head, spec/permissions.md §5.4): a
-/// closed epoch's key is held by whoever was removed from the account since.
-pub(crate) fn open_key(core: &crate::engine::Core, author: &Tid, epoch: Option<CommitId>) -> Option<VerifyingKey> {
-    let Some(CreationRecord::KeyActor { public_key, account, .. }) = core.created(author) else { return None };
-    if *account != epoch.is_some() || epoch.is_some_and(|e| !core.account_view(author).is_some_and(|v| v.is_open(&e))) {
-        return None;
-    }
-    epoch_key(core, author, epoch, public_key).ok().flatten()
-}
-
 /// Whether `sigs` are `author`'s for commit `id` at epoch `epoch` (`None` for a key actor other
 /// than an account, spec/wire.md §4), from what is held: `false` when that cannot be told.
 pub fn signed_at(core: &crate::engine::Core, id: &CommitId, author: &Tid, epoch: Option<CommitId>, sigs: &osis_commit::Sigs) -> bool {
@@ -1728,7 +1717,7 @@ impl Engine {
         })
     }
 
-    /// The thing's last content change: of the held content commits (changes, reverts) validly writing one of its aspects other than `created.0`, `group.0` and the
+    /// The thing's last content change: of the held content commits (changes, reverts) validly writing one of its aspects other than `created.0` and the
     /// role-class ones, the one shown latest by `min(ts, received)` (an author's clock may
     /// run ahead; `received` is this node's), else its creation. Snapshots are no change, and
     /// ephemeral writes do not count.
@@ -1738,7 +1727,7 @@ impl Engine {
         let aspects = self.core.ix.by_aspect.range((*tid, osis_base::Ak::MIN)..).take_while(|((t, _), _)| t == tid);
         for ((_, ak), ids) in aspects {
             let a = ak.as_str();
-            if a == "group.0" || !osis_schema::core_types::is_content(a) {
+            if !osis_schema::core_types::is_content(a) {
                 continue;
             }
             for (ts, id) in ids.iter().rev() {
@@ -1809,13 +1798,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let ids = crate::sync_ids::actors::owned_in_value(tx.core, &t, &v);
         tx.core.ix.destroyed_sync_ids.insert(t, std::sync::Arc::new(ids));
     }
-    crate::sync::records::load(tx)?;
-    crate::sync::inbox::load(tx)?;
-    crate::sync::deliveries::load(tx)?;
     crate::retention::suspect::load(tx)?;
     crate::retention::freed::load(tx)?;
     crate::sync::held::load(tx)?;
-    crate::sync::set::load_unshared(tx)?;
     crate::sync::setting::load(tx)?;
     crate::sync::stranded::load(tx)?;
     crate::sync::falls::load(tx)?;
@@ -2050,8 +2035,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     })?;
     for (tid, ak) in aspects {
         match ak.as_str() {
-            // a page at a time, no definition read whole
-            "group.0" => crate::engine::groups::load(tx, &tid, &ak)?,
             // what observing a `keys.0` state derives is the delete hints it ends, which a load
             // reads from the index or not at all (a rebuild holds none to end)
             "keys.0" => {}
@@ -2060,8 +2043,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             // takes them up after (`Engine::take_account`), a reload keeps those held
             "account.0" => {}
             // a state-list row is a state (`Tx::derive`)
-            // the account's, read once the account is known (`records::observe_own`)
-            "kept^.0" => {}
             "sync.0" => {
                 tx.core.ix.sync_recorded.insert(tid);
                 if let Some(f) = tx.state(&tid, &ak)?.cloned() {
@@ -2092,8 +2073,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let actors: BTreeSet<Tid> = tx.core.ix.commits.values().flat_map(|m| m.view.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid)).collect();
         keys::rebuild_keysets(tx, &actors)?;
     }
-    // the account's sync records, where its D is known (else once it is: `records::observe_own`)
-    crate::sync::records::observe_own(tx)?;
     if fast {
         return Ok(None);
     }
@@ -2327,7 +2306,7 @@ mod tests {
         let c = osis_base::Tid::from_bytes([7; 15]);
         let mut m = Mutation::new();
         for x in [b, c] {
-            let e = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
+            let e = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
             m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(e.to_value()) }).unwrap();
         }
         lp.peers[0].engine.core.skip_writer_rules = true;
@@ -2362,7 +2341,7 @@ mod tests {
         }
         let (x, y) = (things[0], things[1]);
         let mut m = Mutation::new();
-        let e = ct::Edge { role: Role::Write, until: None, invite: None, tied: None, floor: None };
+        let e = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
         m.op(x, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(e.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
@@ -2398,7 +2377,7 @@ mod tests {
         let levels: Vec<u8> = wf.keys.iter().map(|i| h.keys[*i].level).collect();
         assert_eq!(levels, [1, 2, 3]);
         // a writer of X gets no admin on what it creates below X: no edges there
-        let adm = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None, floor: None };
+        let adm = ct::Edge { role: Role::Admin, until: None, invite: None, floor: None };
         for depth in [1, 3] {
             let p1 = &mut lp.peers[1];
             let mut m = Mutation::new();
