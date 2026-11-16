@@ -1201,6 +1201,10 @@ pub struct Core {
     /// another build's rules), so the rebuild check (`apply::check_rebuilt`) skips it.
     #[cfg(debug_assertions)]
     pub(crate) unchecked_tx: bool,
+    /// Debug builds: per aspect, the transactions that dropped bodies of it as covered and
+    /// changed nothing else of it (`apply::check_rebuilt` samples them).
+    #[cfg(debug_assertions)]
+    pub(crate) covered_drops_seen: BTreeMap<(Tid, Ak), u64>,
     /// Debug builds: what a load from the commit records read of each role commit's edge writes
     /// (`apply::load`), for `Engine::check_index` to compare with the persisted rows.
     #[cfg(debug_assertions)]
@@ -1517,6 +1521,8 @@ impl Core {
             forge_bad: self.forge_bad.clone(),
             #[cfg(debug_assertions)]
             unchecked_tx: self.unchecked_tx.clone(),
+            #[cfg(debug_assertions)]
+            covered_drops_seen: self.covered_drops_seen.clone(),
             #[cfg(debug_assertions)]
             rebuilt_edges: self.rebuilt_edges.clone(),
             forged: self.forged.clone(),
@@ -2168,6 +2174,8 @@ impl Core {
             #[cfg(debug_assertions)]
             unchecked_tx: _,
             #[cfg(debug_assertions)]
+            covered_drops_seen: _,
+            #[cfg(debug_assertions)]
             rebuilt_edges: _,
             #[cfg(debug_assertions)]
             #[cfg(test)]
@@ -2346,6 +2354,8 @@ impl Core {
             forge_bad: BTreeSet::new(),
             #[cfg(debug_assertions)]
             unchecked_tx: false,
+            #[cfg(debug_assertions)]
+            covered_drops_seen: BTreeMap::new(),
             #[cfg(debug_assertions)]
             rebuilt_edges: BTreeMap::new(),
             forged: None,

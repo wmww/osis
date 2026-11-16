@@ -286,6 +286,13 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     if !invalid {
         freed::free_part(tx, c, ai)?;
     }
+    // as covered the state keeps its value (its coverer carries the body's writes): the rows
+    // holding the body go shredded, read while it is held (`apply::shred_covered`); while the
+    // aspect's value-less list changed in this transaction the rebuild below strips carriers
+    let in_place = why == DropFor::Cover && !a.ak.signal() && !tx.core.valueless_dirty.contains(&k);
+    if in_place {
+        crate::apply::shred_covered(tx, c, ai, &a.tid, &a.ak)?;
+    }
     if stripped {
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
@@ -315,7 +322,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     if a.ak.signal() {
         return crate::engine::refs::note(tx, &a.tid, &a.ak, Some(c), fire_refs);
     }
-    if why == DropFor::Destroyed || (invalid && !uncovered) {
+    if why == DropFor::Destroyed || (invalid && !uncovered) || in_place {
         return Ok(());
     }
     crate::apply::rebuild(tx, &a.tid, &a.ak)

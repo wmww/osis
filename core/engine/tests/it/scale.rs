@@ -120,6 +120,45 @@ fn map_edit_is_flat() {
     }
 }
 
+/// A covered drop at n entries of a paged map: two one-entry edits (one replacing the other's
+/// write, one live), a snapshot covering both, then each dropped as covered: (store bytes,
+/// pages written) per drop.
+fn covered_drop(n: usize) -> [u64; 2] {
+    let mut lp = net(1, 0);
+    let b = lp.peers[0].backend.clone();
+    let t = new_thing(&mut lp, 0);
+    let a = ak("app:big.0");
+    let fill: osis_base::ValueMap = (0..n).map(|i| (s(&format!("k{i:06}")), long(i))).collect();
+    let mut m = Mutation::new();
+    m.set(t, &a, &Value::Map(fill)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let edit = |lp: &mut LocalPeer, k: usize, v: &str| {
+        let mut m = Mutation::new();
+        set_key(&mut m, t, &a, vec![PathSeg::Key(s(&format!("k{k:06}")))], s(v));
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let (dead, live) = (edit(&mut lp, n / 2, "x"), edit(&mut lp, n / 3, "y"));
+    edit(&mut lp, n / 2, "z");
+    lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+    let (_, w) = measured(&b, || {
+        for c in [dead, live] {
+            lp.peers[0].engine.drop_body(&c, &t, &a).unwrap();
+        }
+    });
+    assert_eq!(lp.peers[0].engine.get_at(&t, &a, &[PathSeg::Key(s(&format!("k{:06}", n / 3)))]).unwrap(), Some(s("y")));
+    [w.io.written_bytes / 2, w.page_writes() / 2]
+}
+
+// spec/commits.md §5 (Covered: every local copy of a dropped body goes), spec/requirements.md
+// (Scale: O(change)): a body dropped as covered rewrites shredded the pages holding its writes,
+// not the whole state: store bytes and pages written per drop flat from n to 10n entries.
+#[test]
+fn covered_drop_is_flat() {
+    let (small, big) = (covered_drop(500), covered_drop(5000));
+    flat("covered drop: store bytes", small[0], big[0]);
+    flat("covered drop: pages written", small[1], big[1]);
+}
+
 /// Set ops by value at n elements, each in a new session: pages loaded and written per op.
 fn set_ops(n: usize) -> Vec<(u64, u64)> {
     let mut lp = net(1, 0);
@@ -416,19 +455,20 @@ fn replacing_edit(n: usize, map: &osis_schema::Aspect<Value>) -> u64 {
     w.io.written_bytes / edits
 }
 
-// spec/commits.md §5 (purge on replace); spec/requirements.md, Scale: under purge on replace every
-// edit that replaces earlier content
-// costs a snapshot of the aspect, O(its state) ("on a 2000-entry map about 0.5 MB written ...
-// against 36 KB with no history promised"); with no history promised an edit costs O(change).
-// Store bytes per replacing edit at n and 10n entries, and the stated sizes at 2000 (rows and
-// blobs: 465 KB rows and the snapshot's 246 KB body blob; the requirement's figure counts rows).
+// spec/commits.md §5 (purge on replace); spec/requirements.md (Cost the app chooses): under
+// purge on replace every edit that replaces earlier content costs a snapshot of the aspect,
+// O(its state); with no history promised an edit costs O(change). Store bytes per replacing edit
+// at n and 10n entries (rows and blobs; at 2000 about 300 KB, 246 KB of it the snapshot's body
+// blob, against about 30 KB): what purge on replace adds grows with the state.
 #[test]
 fn purge_on_replace_pays_its_state() {
     let (gone, plain) = ([replacing_edit(200, &GONEMAP), replacing_edit(2000, &GONEMAP)], [replacing_edit(200, &BIG), replacing_edit(2000, &BIG)]);
     linear("purge on replace: store bytes per edit", gone[0], gone[1]);
-    assert!(gone[1] >= 5 * gone[0], "purge on replace pays O(state): {gone:?}");
     flat("no history: store bytes per edit", plain[0], plain[1]);
-    assert!(gone[1] <= 800_000 && plain[1] <= 40_000, "at 2000 entries: {} B with purge on replace, {} B with no history", gone[1], plain[1]);
+    // what purge on replace adds, its snapshot, grows with the state
+    let extra = |i: usize| gone[i].saturating_sub(plain[i]);
+    assert!(extra(1) >= 5 * extra(0), "purge on replace pays O(state): {gone:?} against {plain:?}");
+    assert!(gone[1] <= 400_000 && plain[1] <= 40_000, "at 2000 entries: {} B with purge on replace, {} B with no history", gone[1], plain[1]);
 }
 /// pending commits read again, perm commits walked and entries moved) added as spans.
 fn measured_at<T>(lp: &mut LocalPeer, i: usize, f: impl FnOnce(&mut LocalPeer) -> T) -> (T, Work) {

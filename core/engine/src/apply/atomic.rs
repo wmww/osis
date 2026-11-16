@@ -996,11 +996,13 @@ pub(crate) enum TxChange {
 #[cfg(debug_assertions)]
 pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
     use crate::engine::state::encode;
-    // per aspect, the new commits joining it whole and valid (`fresh`: sampled below), and
-    // whether some other change touched it (a part's status, valid, dropped or missing, changed
-    // or arrived otherwise; a state written otherwise: always checked)
+    // per aspect, the new commits joining it whole and valid (`fresh`) and the bodies dropped
+    // as covered (`covered`), both sampled below, and whether some other change touched it (a
+    // part's status, valid, dropped or missing, changed or arrived otherwise; a state written
+    // otherwise: always checked)
     let mut fresh: BTreeMap<(Tid, Ak), usize> = BTreeMap::new();
     let mut always: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut covered: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let status = |m: &Meta, ai: usize| (m.valid_at(ai), m.is_dropped(ai), m.missing(ai), m.stripped(ai));
     for (id, old) in tx.core.ix.commits.before() {
         let new = tx.core.ix.commits.get(id);
@@ -1010,6 +1012,9 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
             match (old, new) {
                 (None, Some(n)) if status(n, ai) == (true, false, false, false) => *fresh.entry(k).or_default() += 1,
                 (Some(o), Some(n)) if status(n, ai) == status(o, ai) => {}
+                (Some(o), Some(n)) if !o.is_dropped(ai) && n.dropped(ai).is_some_and(|d| d.why == crate::engine::DropFor::Cover) => {
+                    covered.insert(k);
+                }
                 _ => {
                     always.insert(k);
                 }
@@ -1020,16 +1025,34 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<TxChange> {
     // joined is checked when its held commits pass a power of four from 4 (O(1) bodies read per
     // commit). Not below 4: the first joins of every aspect were four fifths of the check's cost
     // and no known bug showed there first (notes/test-harnesses.md Rebuild check).
+    // A transaction dropping bodies of an aspect as covered and changing nothing else of it is
+    // checked at the 1st, 2nd, 4th, 8th ... such transaction on the aspect (a rebuild per drop
+    // made the check O(n) per body)
+    covered.retain(|k| !always.contains(k));
+    let mut covered_due = BTreeSet::new();
+    for k in &covered {
+        let n = tx.core.covered_drops_seen.entry(k.clone()).or_default();
+        *n += 1;
+        if n.is_power_of_two() {
+            covered_due.insert(k.clone());
+        }
+    }
     let core = &*tx.core;
     let quarters = |n: usize| if n < 4 { 0 } else { n.ilog2() / 2 };
-    let sampled = |k: &(Tid, Ak)| match fresh.get(k) {
-        Some(added) if !always.contains(k) => {
+    let sampled = |k: &(Tid, Ak)| {
+        if always.contains(k) {
+            return true;
+        }
+        let joined = fresh.get(k).map(|added| {
             let n = core.ix.by_aspect.get(k).map_or(0, |s| s.len());
             quarters(n) != quarters(n.saturating_sub(*added))
+        });
+        match (joined, covered.contains(k)) {
+            (None, false) => true,
+            (j, c) => j.unwrap_or(false) || (c && covered_due.contains(k)),
         }
-        _ => true,
     };
-    let change = if !always.is_empty() {
+    let change = if !always.is_empty() || !covered.is_empty() {
         TxChange::More
     } else if !fresh.is_empty() || !core.written.is_empty() {
         TxChange::Joins
@@ -1206,6 +1229,56 @@ pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, ow
     tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
     crate::engine::refs::note(tx, tid, ak, None, refs.unwrap_or_default())?;
     crate::retention::compact::Trigger::unlinked(tx, tid, ak, &roots, &after)?;
+    Ok(())
+}
+
+/// A covered drop's change to `(tid, ak)` (spec/commits.md §5 Covered): its coverer carries the
+/// writes of part `ai` of `c`, so the state keeps its value, and every local copy of the body
+/// goes. So the rows that held its writes are written again shredded, which makes their earlier
+/// versions unrecoverable: the pages its positions reach (`pages::touch_of`, piece by piece: a
+/// page whose element moved went shredded then, `pages::rewrite_set`), and the skeleton where it
+/// reaches outside them; an unpaged state, one unit, or a body reaching above a paged collection
+/// is written whole. `rebuild`'s result, at O(pages holding the body). Called while the part is
+/// still held. A rebuild asked in this batch already writes the aspect whole.
+pub(crate) fn shred_covered(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Result<()> {
+    let k = (*tid, ak.clone());
+    if tx.core.batched.as_ref().is_some_and(|b| b.contains_key(&k)) {
+        return Ok(());
+    }
+    let _s = osis_base::costs::span("covered drop: shred");
+    tx.load_lazy(tid, ak)?;
+    tx.core.touch();
+    tx.core.wrote(k.clone());
+    let mut whole = !tx.core.pages.contains_key(&k);
+    if !whole {
+        super::each_held_piece(tx, c, ai, &mut |tx, piece| {
+            if whole {
+                return Ok(());
+            }
+            let touch = crate::engine::pages::touch_of(&piece, tx.core.pages.get(&k));
+            if touch.is_none() {
+                whole = true;
+                return Ok(());
+            }
+            tx.ensure_touch(tid, ak, &touch)?;
+            let st = match tx.core.states.get_mut(&k).and_then(Option::take) {
+                Some(st) => tx.kept(tid, ak, st)?,
+                None => None,
+            };
+            tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
+            tx.evict_pages(tid, ak);
+            Ok(())
+        })?;
+    }
+    if whole {
+        let st = tx.core.states.get_mut(&k).and_then(Option::take);
+        tx.set_state_touched(tid, ak, st, &None, Shred::Yes)?;
+    }
+    // the part leaves its listing (`listing::listed`: a dropped part is listed nowhere); the
+    // state, so every other commit's listing, stays
+    if crate::engine::listing::listened(tx.core, tid, ak) {
+        tx.core.commits_named(*tid, ak.clone(), *c);
+    }
     Ok(())
 }
 
