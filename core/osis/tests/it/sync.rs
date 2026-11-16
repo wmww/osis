@@ -6,7 +6,7 @@ use crate::common::{cfg, clock, db};
 use osis::internals::proto::Msg;
 use osis::internals::proto::api::{ApiCode, Outcome};
 use osis::internals::{ManualClock, ManualNet};
-use osis::{Error, LinkOpts, MemStore, Osis, Role, SyncScope, Value};
+use osis::{Error, LinkOpts, MemStore, Osis, Role, Value};
 use std::sync::Arc;
 
 /// Node `seed` on `net`, at `clock`.
@@ -282,25 +282,6 @@ fn drive<T>(net: &ManualNet, f: impl std::future::Future<Output = T>) -> T {
     panic!("did not resolve");
 }
 
-// spec/sync-set.md §2 (Shared here), spec/sync-inbox.md §6: a link to a thing listed nowhere
-// shares it at the node making it: a redeemer joins through that node and gets the thing.
-#[test]
-fn a_link_to_a_thing_listed_nowhere_is_served_spec_sync_set_2() {
-    let c = clock();
-    let net = ManualNet::new(c.clone());
-    let a = on(&net, 57, &c);
-    a.listen(&["peer://127.0.0.1:1".parse().unwrap()]).unwrap();
-    let b = on(&net, 58, &c);
-    let mut w = a.write();
-    let t = w.create().unwrap();
-    w.at(t, osis::core::NAME).set(&"linked".to_string()).unwrap();
-    w.commit().unwrap();
-    let link = a.make_link(t, Role::Read, LinkOpts::default()).unwrap();
-    assert_eq!(drive(&net, b.redeem(&link)).unwrap(), t);
-    drive(&net, b.wait_synced(SyncScope::Thing(t))).unwrap();
-    assert_eq!(name(&b, t).as_deref(), Some("linked"));
-}
-
 // spec/sync-inbox.md §6 (First contact: a node may stop following a link after a time of its
 // choosing), notes/api-design.md (a wait sure never to finish fails): with the sharer away the
 // whole follow time, `redeem` fails `Network` at it, and nothing is held.
@@ -346,9 +327,5 @@ fn importing_a_card_gives_the_account_spec_sync_inbox_5() {
 }
 
 // ---- leaving (spec/sync-set.md §3) ----
-
-fn name(db: &Osis, t: osis::Tid) -> Option<String> {
-    db.at(t, osis::core::NAME).get().unwrap()
-}
 
 // ---- group sources: the hand-off (spec/sync-set.md §5) ----

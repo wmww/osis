@@ -67,24 +67,6 @@ fn role_duties_are_judged_once_per_held_actor_at_a_start_spec_permissions_3() {
     }
 }
 
-// spec/sync-set.md §3 (Before the group is known: only before a node first joins an account; A
-// node removed by another can open S nowhere): node 2, removed from its account's devices actor,
-// knows no synced group any more, yet everything it synced has left: once its passes end it
-// syncs nothing and holds no rows.
-#[test]
-fn a_node_removed_from_its_account_stops_syncing_spec_sync_set_3() {
-    let mut w = crate::harness::siblings();
-    w.run();
-    assert!(!w.store(2).syncs().is_empty(), "node 2 syncs its account's sync IDs");
-    remove_node(&mut w, 1, 2);
-    w.run();
-    // a pass waits for each recorded peer at most PASS_WAIT_MS
-    w.advance(osis_proto::limits::PASS_WAIT_MS);
-    w.run();
-    assert!(w.store(2).syncs().is_empty(), "node 2 syncs nothing: {:?}", w.store(2).syncs());
-    assert!(w.store(2).held_ids().unwrap().is_empty(), "and holds no rows");
-}
-
 // spec/permissions.md §3 (Required rotation: a node's removal from D: any node of P holding a
 // removal no counting rotation on its line names makes that rotation, at the end of a complete
 // pass of D's sync IDs), §5.4, spec/crypto.md §4 (Established and current), §5 (Who wraps under

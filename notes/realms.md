@@ -15,7 +15,7 @@ Not chat-specific: "to actors what tags are to groups". User-visible, user-manag
 - **A realm** is an actor thing with `realm.0` (usually `name.0` too). Nothing else marks it. Without `realm.0` an actor is app machinery (account, node, link key, client, a plain chat, a shared tag) and generic tools never list it.
 - **Members** are R's holders, each with a role: read (sees), write (takes part, edits), admin (manages members and contents). A holder may be an account or another realm. Shown are `holders`' `HolderKind::Actor` entries that hold R directly or through a link, with each `Link` shown as an invite link; nodes and link keys (`Key`) are machinery.
 - **In the realm** is every thing R is first admin of or holds a grant on. A member's role on it is the minimum along the path (member's role on R, then R's role on the thing); rights are the maximum over paths (spec/permissions.md §1).
-- **Seeing the contents**: grants naming R reach R's inbox, and R's admins copy them under R's sync ID (grant copies, spec/sync-inbox.md §5), so every member's node holds the list. Needed: an `osis` query "what does actor X hold a grant on, at which role" over held state (API only).
+- **Seeing the contents**: grants naming R reach R as tickets on its inbox, held in R's `holds.0` (spec/sync-inbox.md §5), so every member's node holds the list. Needed: an `osis` query "what does actor X hold a grant on, at which role" over held state (API only).
 - **Its own sync ID**: created like a chat root, synced under its own sync ID, in no group (notes/tags.md, Other conventions). The sync ID carries the roster, `name.0`, the copied grants and what is in R's group.
 - **Sync of contents**: a thing with its own sync ID (chat, calendar, large document) syncs under it. A small thing without one is also added to R's group so it travels under R's sync ID (one sync ID for many small things). Membership is only how it syncs; the grant is what puts it in the realm.
 
@@ -46,7 +46,7 @@ Removing a member rotates R in the removal commit. A group never looks inside it
 |---|---|---|
 | marks | a group (`tag.0`) | an actor (`realm.0`) |
 | is about | organization | permission |
-| contents | membership (`group.0`) | grants to the realm, and what it is first admin of |
+| contents | strong references (`holds.0`) | grants to the realm, and what it is first admin of |
 | who sees it | its reader; my tags of a shared thing never reach others | every member: roster and contents are shared |
 | nesting | subgroups, a graph | grants between realms, a graph |
 
@@ -56,7 +56,7 @@ A shared tag is already an actor (notes/tags.md, Sharing a tag) and may also car
 - **"A chat is a faction"**: a chat is a thing a realm holds write on or administers. A plain 1:1 or group chat is no realm; a server or team is a realm, a channel a chat in it, a mod role a realm holding admin on it or on some chats.
 - **The directory aspect** (`faction:children^.0`): the contents list is R's grants. A chat app wanting categories, order or names of channels it has not synced keeps its own layout aspect on R.
 - **Tied content**: a document in the realm is a grant to R; removing it from R's group does not revoke.
-- **Chat core asks become realm asks**: default-off sync (a member chooses which of a realm's sync IDs to sync; a node syncs its synced group's closure, spec/sync-set.md) and pure readers placing nothing under big sync IDs. Both matter more, since realms gather any number of things.
+- **Chat core asks become realm asks**: default-off sync (a member chooses which of a realm's sync IDs to sync; a node syncs its node closure, spec/sync-set.md) and pure readers placing nothing under big sync IDs. Both matter more, since realms gather any number of things.
 
 ## Core changes
 - `realm.0: struct { color 0: option<string> }` in spec/data-model.md §9, default retention (`admin`), typed key `osis::core::REALM`.

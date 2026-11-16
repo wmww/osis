@@ -225,7 +225,7 @@ pub fn paired() -> (Osis, Osis, Arc<ManualClock>) {
 const HUNG: Duration = Duration::from_secs(120);
 
 /// Runs a future to completion on this thread (no runtime: the API's futures are resolved by
-/// the node, notes/api.md Design rules). Panics if it hangs.
+/// the node, notes/api-design.md). Panics if it hangs.
 pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
     within(HUNG, f).expect("a wait hung")
 }

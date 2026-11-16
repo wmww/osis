@@ -2,9 +2,9 @@
 > Summary: The full list of what a node keeping a sync ID unread learns and what it must not, the padding and wrap costs, and an index of the choices elsewhere that keep the list this short (each with where its reason lives). The requirement: spec/requirements.md, Data a node cannot read; the stated limits: spec/sync-hostile.md §2. Neighbours: notes/sync-reasons.md, notes/sync-access.md, notes/networking.md (transport keys).
 
 ## Learns
-- Of each thing it keeps unread, its account's sync record: the tid, its sync IDs and secrets, and the granting account where the grant's signer's key is held (spec/sync-ids.md §2 What a sync holder learns, spec/sync.md §3).
+- Of each thing it keeps unread, the tickets it holds: the tid, its sync ID and sync secret, and the issuer's profile tid (spec/sync-ids.md §2 What a sync holder learns, spec/data-model.md §8 Tickets).
 - Overlaps between sync IDs (shared commit blobs and certificate copies; inbox, list and record blobs and per-sync-ID copies share nothing). Nesting only as far as overlap shows it.
-- Blob counts, padded sizes, each blob's class (durable, ephemeral, relay-only), which entries carry a filler wrap (chunk, tree-node, page and inbox blobs), the delete-key commitments per level (which kinds of right may delete), expiry times, arrival times, deletions and pending deletion times.
+- Blob counts, padded sizes, each blob's class (durable, ephemeral, relay-only), which entries carry a filler wrap (chunk, tree-node and page blobs), the delete-key commitments per level (which kinds of right may delete), expiry times, arrival times, deletions and pending deletion times.
 - Which sync IDs one connection opens (so: holds a credential of), and client addresses.
 - Which actors dial it: a dialer proves its account and the key actors it acts for to every key it chose to dial (spec/sync-opens.md §2), so the node links them to the sync IDs the connection opens; a node key only between nodes of one account.
 - The roster bucket of each step's claim set (and of a rotation commit, by its padded size), which claim slots were used, when, and how many steps behind the claimant was (two late nodes of one account use one slot); roughly how many key actors read the thing (static entries are not points about half the time).
@@ -24,7 +24,7 @@ AKs, tids other than its dialers' proven actors and the things it keeps unread, 
 - Delete-key commitments are blinded per blob, so a node cannot tell which blobs carry one author's or actor's deletes (notes/sync-reasons.md, Blob prefix).
 - Opens gated by the head's credentials, Behind answers one sync key at a time, refusals carrying a code alone, opens ending at a new sync key (notes/sync-access.md).
 - Claim-set padding keys are valid points; static entries are hashes until claimed (notes/sync-access.md).
-- A node keeping S unread holds only a sync record of its thing: no roster, chain, `keys.0` or commit (spec/sync.md §3).
+- A node keeping S unread holds only the tickets for its thing: no roster, chain, `keys.0` or commit (spec/sync.md §3).
 - The log ID is random per store, so a wiped node invalidates old cursors and two nodes' logs are unrelated (notes/local-store.md, Node log).
 - A node dials with an ephemeral transport key per connection, each QUIC dial on its own UDP socket, and listens under its one dialable key (spec/sync-transport.md §1, §3, §5).
 - Wake-up push tokens, if built, must not link sync IDs (notes/networking.md, Proposal).

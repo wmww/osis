@@ -263,7 +263,7 @@ impl AccountView {
     }
 
     /// Whether the held epoch whose signing key is `key` is revoked (spec/permissions.md §5.5
-    /// Revoked; spec/sync-set.md §3 Leaving): a counting rotation closing it carries a removal. A
+    /// Revoked): a counting rotation closing it carries a removal. A
     /// key of no held epoch is not.
     pub(crate) fn revoked(&self, key: &[u8; 32]) -> bool {
         self.revoked.contains(key)

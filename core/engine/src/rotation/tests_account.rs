@@ -615,14 +615,14 @@ fn a_proved_answer_warns_and_can_be_chosen_spec_permissions_5_4() {
     assert!(v.rotation_counts(&sid) && v.rotation_counts(&r1id) && !v.rotation_counts(&fid), "the chosen line followed");
 }
 
-// spec/sync-set.md §3 (Leaving: a record of a node of another account A proved at epoch E is
+// spec/permissions.md §5.5 (Revoked: a record of a node of another account A proved at epoch E is
 // waited for no more once a rotation of A's chain as this node follows it, past E, carries a
 // removal): at an outsider, a rotation whose header says it removes no one revokes nothing; one
 // saying it removes revokes every epoch it descends from, never its own (its header's word,
 // spec/permissions.md §5.5 Revoked); a fork this node does not follow revokes nothing; a removal
 // deeper in the chain revokes the epochs below it.
 #[test]
-fn a_rotation_carrying_a_removal_revokes_the_epochs_below_it_spec_sync_set_3() {
+fn a_rotation_carrying_a_removal_revokes_the_epochs_below_it_spec_permissions_5_5() {
     let ts_of = |e: &crate::Engine| Ts::make(e.now(), 0).unwrap();
     let key = |k: &AccountEpochKeys| k.signing.verifying_key().to_bytes();
     let header = |next: &AccountEpochKeys, sup: CommitId, revokes: bool| RotationHeader { signing_key: next.signing.verifying_key(), kem_key: next.kem.public().clone(), supersedes: vec![sup], names: Vec::new(), takes: Vec::new(), revokes, devices: Vec::new(), list_root: [0; 32], seeds: Vec::new() };

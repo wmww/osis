@@ -1366,7 +1366,6 @@ mod tests {
             (&["osis", "link", "make", "t", "read"], Sync),
             (&["osis", "grant", "t", "h", "read"], Sync),
             (&["osis", "set-role", "t", "h", "none"], Sync),
-            (&["osis", "add-with-grant", "t", "g", "read"], Sync),
             (&["osis", "card", "show"], Sync),
             (&["osis", "chat", "relay", "c", "a"], Sync),
             (&["osis", "leave", "t"], None),

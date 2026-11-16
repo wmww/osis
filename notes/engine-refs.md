@@ -1,12 +1,12 @@
 # Reference index
-> Summary: The engine's local, rebuildable index of references in held readable data (`engine/refs.rs`): rows (target, source thing, AK) with a count, what counts as a reference, how every state change keeps the rows in its own transaction, the paged read and change event backlinks use, costs and checks. Serves backlinks (notes/api.md Backlinks) and the lifetime judgment (notes/lifetimes.md).
+> Summary: The engine's local, rebuildable index of references in held readable data (`engine/refs.rs`): rows (target, source thing, AK) with a count, what counts as a reference, how every state change keeps the rows in its own transaction, the paged read and change event backlinks use, costs and checks. Serves backlinks (notes/api.md Backlinks); lane (a) of issues/reference-graph.md makes it the index of strongs, weaks and tickets the closure walk and ticket lookup read.
 
 ## Principle
 A row says exactly what the source's held state on that aspect holds: it changes in the transaction that changes the state and never outlives the value it came from.
 
 ## Rows
 - Store index tables (rebuildable, dropped and refilled from every state by `index::write_all`): `node/refs to` (target ‖ source ‖ AK, empty) and `node/refs from` (source ‖ AK length ‖ AK ‖ target, the count as u64). A removed row is shredded. No in-memory copy: an open loads nothing; a read is a prefix scan (`Engine::references_to`, `references_from`, `refs::Reference`).
-- Class by AK: an ephemeral (`+`) aspect's rows are memory rows, as its state is (live ephemeral), the rest durable. `retainers^.0` rows are kept like any (`Reference::lists`): who lists a target, not a reference for lifetime.
+- Class by AK: an ephemeral (`+`) aspect's rows are memory rows, as its state is (live ephemeral), the rest durable.
 - Indexed: every aspect with a state but `created.0` and the role-class aspects (`refs::indexed`).
 - Counted: every tid (`Value::Tid`, tag 1616) at any depth of a value the state holds as written (`Fragment::each_value`: register and slot values, set elements, list items, the keys of map records holding their creation), map keys, enum payloads and unknown tags' content included. Not counted: a value-less write (the state holds none), an invalid write (un-merged), a link's chunked content, a tid spelled in a string, text chars.
 

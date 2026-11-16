@@ -22,7 +22,7 @@ A view system where listening is declared apart from reading, every change re-re
 - `ReadSet::new(on_change)`, `db.tracking(&set) -> ReadOnly`, the read-only handle `Osis` derefs to, and `set.sweep()`.
 - On a tracking handle, every read subscribes as it reads, under the lock `subscribe` already takes. So there is no gap between read and listen, on any dispatcher.
 - It keeps listeners already in the set; `sweep` drops those not read since the last sweep.
-- It uses the existing filters, with no initial call. Reads with no public listener get an internal one: `aspects` (set of names only), `groups_of`, `role_on`, `has_content`, `created`, `changed`.
+- It uses the existing filters, with no initial call. Reads with no public listener get an internal one: `aspects` (set of names only), `role_on`, `has_content`, `created`, `changed`.
 - `undo_target` listens as `on_write(scope)`.
 - Value listeners keep a hash of the last value, not the value.
 - Dispatch is indexed by (tid, ak) and tid: O(log S + matched). `listing_moved` judges only the commits a join superseded.
@@ -59,7 +59,7 @@ For each view the harness checks:
 - **Precision:** every aspect of the things it read, each moved in turn, and each aspect set and group membership it read: only the nodes that read that address (and what depends on them, and what reads the whole thing: `changed`, its commits) run, each reader exactly once; a write to an unread thing runs nothing.
 - **Nothing stale:** after every such write the screen equals a fresh render of the current data, which catches a read no listener covers.
 - **Reach:** a view whose sample shows no block, or none of whose reads could be moved, fails; a sample that shows a thin view (no rows) is not detected.
-- **No duplicates:** no node reads an address twice. Nodes reading one address separately are not checked (raw's name, body and aspects; the opener's `groups_of` and `ui:raw.0`; a profile in results): one read per node and per address, a constant.
+- **No duplicates:** no node reads an address twice. Nodes reading one address separately are not checked (raw's name, body and aspects; the opener's `ui:raw.0`; a profile in results): one read per node and per address, a constant.
 - **Scale and window:** a view that lists something growable names how (`ViewType::grow`, required: `None` for a view that lists nothing that grows). The harness shows it at n and 10n: rows built at most a window; adding one more costs (renders, memo runs, addresses those runs read) within a fixed ratio and builds at most two rows. A chat grows by messages each quoting its first.
 
 Hand-written, for what the harness cannot generate:

@@ -145,25 +145,6 @@ fn a_third_redeemer_sharing_another_link_joins_spec_permissions_7() {
     }
 }
 
-// spec/sync-inbox.md §5 (Grant copy), §2 (Re-send), spec/permissions.md §7 (Redeem):
-// node 0 makes a link and its inbox blob of K's grant on the target expires before node 1
-// redeems it: K's grant on the target is still under K's sync ID as node 0's grant copy, so node
-// 1 joins.
-#[test]
-fn a_link_redeemed_after_inbox_lifetime_joins_spec_sync_inbox_5() {
-    let mut w = two_nodes();
-    let p0 = w.node(0).profile.unwrap();
-    let link = w.make_link(0, p0, Role::Read);
-    w.run();
-    w.advance(osis_base::format::INBOX_LIFETIME_MS + 3 * osis_base::format::MAX_DRIFT_MS);
-    w.run();
-    assert_eq!(w.redeem(1, &link), Waiting::Pending);
-    w.run();
-    assert_eq!(w.redeem(1, &link), Waiting::Done, "the join written");
-    let a1 = w.node(1).account.unwrap();
-    assert!(w.engine(0).roster(&link.k).contains_key(&a1), "the join held at the sharer");
-}
-
 // spec/permissions.md §7 (joiner's leave): a node of the joining account writes its leave of K
 // once it holds K's edge on the link's target removed: node 0 takes K off its profile; node 1's
 // account leaves K, at node 1 and at node 0.

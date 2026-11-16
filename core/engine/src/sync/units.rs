@@ -16,7 +16,7 @@ impl Engine {
     }
 
     /// Whether `t`'s sync unit is known whole here: no thing in it holds a part that may hold a
-    /// strong as a header only (spec/sync-judgement.md §2, §3 Header-only parts).
+    /// strong as a header only (spec/sync-judgement.md §2).
     pub fn unit_settled(&mut self, t: &Tid) -> crate::error::Result<bool> {
         let _ = t;
         todo!("refgraph: (b) whether the sync unit is known whole")

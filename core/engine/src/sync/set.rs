@@ -204,7 +204,7 @@ impl Engine {
 
     /// The thing that owns sync ID `s` here by its `sync.0` (`sync_ids`); `None` when none does.
     /// `s`'s thing and how this node's keys let it hold `s`, whatever lists the thing: its owner
-    /// (by `sync.0`, a destroyed thing's kept sync IDs, or a sync record naming it) whose
+    /// (by `sync.0`, a destroyed thing's kept sync IDs, or a ticket naming it) whose
     /// `thing_sync` lists `s`. The sync set's entry for `s` when the closure holds that thing.
     pub fn sync_holder(&mut self, s: &SyncId) -> Result<Option<(Tid, Holding)>> {
         let owners: Vec<Tid> = self.sync_owner_of(s)?.into_iter().collect();

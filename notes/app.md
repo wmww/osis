@@ -55,7 +55,7 @@ Used exactly, in code and notes.
 - **Everything held** is the closure from the app groups and every group this store syncs (each thing in `status().groups` and its subgroups at any depth, which it carries, less home and the app groups) through tags' members. Nothing has to have been made by this app to appear.
 - **Create** is an empty thing plus what the chosen facet offers; the default-view rule then opens it in the view that now fits. **Add** on any thing offers the same list, so a note gains a time and a chat gains a body by the path that made them.
 - Every search hit, list and favorite goes through the same summary. Placing into a shared tag should confirm the reach (notes/tags.md guideline; unbuilt).
-- Tagging never shares: tagging a tag nests it as a subgroup, sharing through a tag is core's `add_with_grant` (notes/tags.md); the app grants nothing itself (Tess). Backlinks from markdown (`body.0` has no tid reference syntax) are a library-side question (Tess).
+- Tagging never shares: tagging a tag nests it (a reference in its `holds.0`); sharing through a tag grants the tag a role on what it holds (notes/tags.md, Sharing a tag). Backlinks from markdown (`body.0` has no tid reference syntax) are a library-side question (Tess).
 
 ## Code shape
 Kit owns the view system, so a small app gets all of it; the app is a registry and its own facets.

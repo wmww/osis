@@ -1,5 +1,5 @@
 //! Stranded reports out (spec/permissions.md §4 Stranded, spec/sync-status.md §3 Stranded,
-//! spec/wire.md §9 Stranded notice, §11.2 Stranded).
+//! spec/wire.md §11.2 Stranded).
 //!
 //! Status says where this node is stranded (`Status::strandings`: a read S heard out with no
 //! current read secret held, and what the report names). Per such S this part sends a Stranded

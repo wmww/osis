@@ -255,7 +255,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 - **n** History-less grant: a cut (a read rotation at the add carrying no history), a floor per read epoch that history entries and boxes respect, role commits opened by every holder under roles secrets (notes/history-less-grant.md, model-checked); segments (footnote 33) are the fallback without core change.
 - **o** A node that stops fetching short of old messages (issues/partial-history-fetch.md); fetch is newest first (spec/sync-judgement.md §2).
 - **r** Pure readers place nothing under big sync IDs: no chain certificates or node card from a reader unless asked (realms past a few thousand members).
-- **s** Default-off sync: a device holding a realm's secret does not sync the sync IDs of the things the realm holds until the app chooses (a node syncs its synced group's closure, spec/sync-set.md).
+- **s** Default-off sync: a device holding a realm's secret does not sync the sync IDs of the things the realm holds until the app chooses (a node syncs its node closure, spec/sync-set.md).
 
 ## Footnotes
 

@@ -4,7 +4,7 @@
 #   tools/dogfood-member.sh host PIN LISTEN            the shared node: new store host-SHORT, its card and account, its daemon listening at LISTEN (quic://IP:PORT)
 #   tools/dogfood-member.sh create NAME PIN ADDR HOST  new own store NAME-SHORT dialing ADDR (URL#KEY), a new channel, its link,
 #                                                      `chat relay` to the shared node's account (HOST: its host-SHORT dir copied here, or card and account files)
-#   tools/dogfood-member.sh accept PIN CHAT K          on the shared node: keep the channel and K unread (lists the invitations, accepts both)
+#   tools/dogfood-member.sh accept PIN CHAT K          on the shared node: keep the channel and K unread (not built: lane (c) of issues/reference-graph.md)
 #   tools/dogfood-member.sh join NAME PIN ADDR LINK    new own store NAME-SHORT dialing ADDR, joined by LINK through the shared node
 #   tools/dogfood-member.sh start NAME PIN             its daemon again after a stop (`systemctl --user stop UNIT`); NAME host: the shared node
 # Store dirs keep address, chat, k, link, cursor (members) or card, account, address, listen (host): never commit them.
@@ -81,9 +81,8 @@ create)
 	;;
 accept)
 	pin=$1 c=$2 k=$3; s=$(short "$pin"); bin="$DF/bin/osis-$s"; dir="$DF/host-$s"
-	# both must be invitations here first: one whose grant has not arrived accepts nothing
-	"$bin" --no-lan -s "$dir/store" invitations
-	"$bin" --no-lan -s "$dir/store" accept "$c" "$k"
+	# refgraph: (c) holding a fired ticket replaces accepting invitations; this step waits on it
+	echo "accept: not built (issues/reference-graph.md lane (c))" >&2; exit 1
 	"$bin" --no-lan -s "$dir/store" status
 	;;
 join)

@@ -68,7 +68,7 @@ Lane: (a) refs, tickets as values, schema, API, index; (b) node root, walk, sync
 | I3 | a fire's delivery stays pending through a restart, is sealed again on a key change, and ends when a peer takes it | example | sync (contacts) | c |
 | I4 | a removal notice fires for any change taking a reader below read; the node acts only on one that checks against its roster, releasing or keeping the retained copy; any other changes nothing | example, three arms (release, retain, forged) | sync (contacts) | c |
 | I5 | an actor that is not an account is its own inbox: a grant to a team fires on the team, and its members' nodes enter the target | example | sync (contacts) | c |
-| I6 | a stranded node with no writer connected fires `stranded@~0`; a writer acts on it later | rewrite of `stranded::a_holder_with_no_writer_connected_leaves_a_notice_spec_permissions_4` | sync | c |
+| I6 | a stranded node with no writer connected fires `stranded@~0`; a writer acts on it later | new (demolition deleted the stranded-notice tests) | sync | c |
 | I7 | D's deposit seed is fresh after a device removal: the removed node's deposit to the inbox is refused (To settle) | example | sync (siblings) | c |
 
 ### Storage
@@ -87,18 +87,14 @@ Replaces `convergence::` (8 tests, 389 CPU-s) and `sims::` (9 tests, 360 CPU-s).
 - **Sims** (each 4 seeds small, 40 large, same oracle plus its stated outcome): a reader through a node keeping it unread (sync-only ticket), crashes and restarts in place (ephemeral strongs, pending fires), lost and repeated messages, a peer refusing role entries (role changes travel), store failures. The old full-peer, held-open and lying-in-own-log scenarios fold into these as fault weights; skewed clocks into the differential's faulted seeds.
 
 ## Old tests
-Survivors this set makes redundant, to delete once it lands (name per module; where demolition already deletes one, nothing to do):
-- osis `references::{rows_follow_the_values, rows_follow_the_value_in_any_arrival_order, rows_survive_what_their_states_survive, an_expiry_and_a_purge_remove_rows}`, `backlinks::{a_reference_shows_and_stops_showing, backlinks_follow_writes_in_any_arrival_order, live_through_add_remove_expiry_purge, only_what_the_actor_may_read}`; engine lib `engine::refs::tests::tids_at_any_depth`: R2. Keep `references::a_path_write_costs_what_it_writes`, `backlinks::paged_at_n_and_10n`, `backlinks::a_validity_flip_reaches_backlinks_and_listeners_spec_permissions_5_1`.
-- sync `leave::{nothing_leaves_before_the_synced_group_is_known, unshared_stops_at_once, an_unsync_ends_a_wait_for_lists, unsynced_stays_synced_until_own_writes_are_elsewhere}`: L1, L2. The other nine `leave::` tests are the release timing rule, renamed.
-- sync `destruction::{a_node_alone_forgets_a_released_things_sync_id, a_released_thing_reads_absent_and_its_sync_id_is_forgotten}`: L1.
-- sync `siblings::{a_sync_grant_accepted_on_one_sibling_is_kept_at_both_spec_sync_3, a_sibling_paired_after_inbox_lifetime_keeps_an_accepted_grant_spec_sync_3, a_rotation_reaches_kept_siblings_without_an_accept_spec_sync_3, unsyncing_on_one_sibling_leaves_the_other_its_copy_spec_sync_set_3}`: T4, T6.
+Survivors this set makes redundant, to delete once it lands (demolition deleted the rest):
+- engine lib `engine::refs::tests::tids_at_any_depth`: R2.
 - sync `links::{a_held_join_forgets_the_link_and_k_syncs_by_its_filing_spec_permissions_7, a_siblings_join_ends_a_redeem_spec_permissions_7}`: T4.
-- osis `sync::{a_thing_listed_nowhere_stays_on_its_node_spec_sync_set_2, a_shared_thing_syncs_at_the_sharing_node_spec_sync_set_2, a_link_to_a_thing_listed_nowhere_is_served_spec_sync_set_2, a_thing_whose_share_ended_is_kept_until_unsynced_spec_sync_set_3, an_unsynced_thing_is_forgotten_here_spec_sync_set_3, an_unsynced_thing_no_peer_shares_goes_at_once_spec_sync_set_3, an_unsynced_write_goes_out_before_the_copy_goes_spec_sync_set_3, redeeming_a_link_joins_and_files_its_thing_spec_sync_set_4, importing_a_card_gives_the_account_spec_sync_inbox_5, the_contact_card_is_a_read_link_to_the_profile_spec_sync_inbox_5, a_paired_node_knows_the_accounts_profile_spec_sync_set_1, a_write_reaches_the_accounts_other_node_spec_sync_set_1, a_third_accounts_node_relays_a_group_it_keeps_unread_spec_sync_3, accepting_into_a_group_not_synced_is_invalid_spec_sync_set_4, an_unsynced_invitation_is_acted_on_spec_sync_set_4}`: U3, U4, L1, L2, T4, the sims.
-- engine `facade::` sync-set and kept tests not named by the inventory: `a_grant_shares_its_thing_at_the_granting_node_spec_sync_set_2`, `a_grant_to_a_node_shares_nothing_spec_sync_set_2`, `a_grantee_leaving_ends_the_share_spec_sync_set_2`, `a_share_is_the_accounts_and_ends_with_its_grant_spec_sync_set_2`, `a_shared_thing_lost_is_shared_no_more_spec_sync_set_2`, `unsync_ends_a_share_until_a_new_grant_spec_sync_set_2`, `sharing_one_more_thing_walks_the_closure_once_spec_sync_set_2`, `marking_an_add_costs_its_size_spec_sync_set_2`, `the_sync_set_rows_name_every_sync_id_entering_spec_sync_set_2`, `forget_local_*_spec_sync_set_3` (4), and the `_spec_sync_3` accept/offer/forger tests (`a_forgers_earlier_accept_*`, `an_accept_keeps_the_offered_sync_id_*`, `an_accept_with_a_forgers_offer_held_*`, `an_offer_after_the_accept_attaches_nothing_*`, `a_thing_accepted_under_a_sync_id_tied_to_another_*`): U1, H1, H4, T5.
+- osis `sync::{importing_a_card_gives_the_account_spec_sync_inbox_5, the_contact_card_is_a_read_link_to_the_profile_spec_sync_inbox_5, a_paired_node_knows_the_accounts_profile_spec_sync_set_1}`: U3, U4, T4, the sims.
 - held-model `spec_closure`: all 24 stay (0.8 s): they are the oracle's self-checks.
 
 ## Order
-The foundation commit is not on main yet; check signatures once it lands.
+The foundation stubs and which lane fills each: issues/reference-graph.md, Lanes.
 - **Now, before any lane**: the differential's oracle adapter (history to held-model `World`, `Edges`, `NodeView`, with the ticket fixpoint) and the new `Step` variants, as pure code in the sync harness; the S1 skeleton (rounds, `disk_use` counts) on today's harness.
 - **After (a)**: R1, R2, R3, I1 (if the AK parser is lane a's).
 - **After (b)** on (a): U1-U5, H1-H4, L1, L3, L9, T1 (tickets placed by hand), T7, T5's engine part; then, once sync carries by sync units, R4, L2, L4-L8.

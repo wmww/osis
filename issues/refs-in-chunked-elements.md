@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: engine, crdt, data-model
 
-- Where: `Fragment::each_value` walks values the state holds as written; a chunked set element or map key (spec/data-model.md §5: one whose canonical encoding exceeds `CHUNK_THRESHOLD`) is held as a link and its content is not read (notes/engine-refs.md, Counted; notes/lifetimes.md Rules, "Not references").
+- Where: `Fragment::each_value` walks values the state holds as written; a chunked set element or map key (spec/data-model.md §5: one whose canonical encoding exceeds `CHUNK_THRESHOLD`) is held as a link and its content is not read (notes/engine-refs.md, Counted).
 - Only set elements and map keys can hide one: the other chunked kinds (blobs, strings) hold no values.
 - Why it matters: with strong references (issues/reference-graph.md) the rule "a thing is held while a strong reference in current state reaches it" would have a size-dependent exception, and the thing would be dropped silently.
 - Needed: the index reads references of a chunked element when it is written or applied (the writer and each reader hold its chunks then, or fetch them), at a cost in proportion to the element, and removes them when the element goes, without reading it again (the rows name their source and AK; whether a count per element is enough to remove them is to check).

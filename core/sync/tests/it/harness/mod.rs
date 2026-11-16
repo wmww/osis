@@ -1176,8 +1176,8 @@ pub fn contacts() -> World {
     })
 }
 
-/// `contacts` with node 2 paired to node 1's account (`World::pair`: the product's pairing,
-/// its synced group a copy of node 1's), quiet: two sibling nodes and a contact.
+/// `contacts` with node 2 paired to node 1's account (`World::pair`: the product's pairing),
+/// quiet: two sibling nodes and a contact.
 pub fn siblings() -> World {
     fixture("siblings", || {
         let mut w = contacts();

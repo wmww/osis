@@ -686,7 +686,7 @@ impl Opens {
     }
 
     /// Whether some peer is to be waited for on S (spec/sync-set.md §3, spec/permissions.md §3
-    /// Lost access, spec/commits.md §5 Lifetimes, spec/sync-judgement.md §5 Emptying: the duties
+    /// Lost access, spec/sync-judgement.md §5 Emptying: the duties
     /// that act once no peer could still take or tell what S holds): a peer `peer` does not skip
     /// with S open on a connection up now, or whose kept record holds S as a member, or that the
     /// rosters say may hold S (`Peer::MayHold`) no kept record of which (by who it names: a
@@ -716,10 +716,10 @@ impl Opens {
     }
 
     /// `wait_for` judged by the rosters held here (`Engine::roster_holders`) on who each peer may
-    /// be (`awaited`): the one rule every duty reads (leave, a self-removal's drop, life's heard
-    /// out, read's emptying, a pass with no source). A removed node of this account is no one to
+    /// be (`awaited`): the one rule every duty reads (leave, a self-removal's drop, read's
+    /// emptying, a pass with no source). A removed node of this account is no one to
     /// wait for; a node of another account whose key epoch closed is still that account, until
-    /// a rotation past that epoch carrying a removal (spec/sync-set.md §3 Leaving). `own`: this account's own nodes count (a self-removal skips them,
+    /// a rotation past that epoch carrying a removal (spec/permissions.md §5.5 Revoked). `own`: this account's own nodes count (a self-removal skips them,
     /// and a peer proving only this account: its node unproven, a dialer lacking this node's
     /// `reach.0`, spec/sync-status.md §2).
     pub fn waited(&self, engine: &mut osis_engine::Engine, store: &Store, s: &SyncId, own: bool) -> Result<bool> {

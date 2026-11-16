@@ -280,7 +280,7 @@ mod tests {
     use super::*;
     use osis_base::{CanonicalBytes, Unknown};
 
-    // notes/lifetimes.md (What a reference is: found without a schema): a tid at any depth,
+    // notes/engine-refs.md (Counted: found without a schema): a tid at any depth,
     // map keys, set elements, enum payloads and unknown tags' content included; not in a string
     #[test]
     fn tids_at_any_depth() {

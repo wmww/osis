@@ -832,8 +832,8 @@ impl Engine {
 
     /// [for Fathom's review] Whether `key`, with which account `account` proved before, is the
     /// signing key of an epoch that a counting rotation of the chain this node follows for the
-    /// account supersedes while carrying a removal (spec/sync-set.md §3 Leaving: such a record
-    /// is waited for no more). An account this node holds nothing of: not. O(log) on the
+    /// account supersedes while carrying a removal (spec/permissions.md §5.5 Revoked: such a
+    /// record is waited for no more). An account this node holds nothing of: not. O(log) on the
     /// account's chain, a memo.
     pub fn account_key_revoked(&mut self, account: &Tid, key: &[u8; 32]) -> bool {
         self.core.account_view(account).is_some_and(|v| v.revoked(key))
@@ -841,9 +841,9 @@ impl Engine {
 
     /// The nodes this node may dial for S (spec/sync-opens.md §1 Whom to dial), each at the
     /// address it is known by here: of S read, the nodes of each account holding a role on S's
-    /// thing by that account's dial list (`dial^.0` on its profile); of S kept unread, its granting
-    /// node (the newest grant's dial hint, kept in the sync record, spec/sync-inbox.md §2); either
-    /// way this node's own other nodes whose synced group's closure holds S's thing, by their
+    /// thing by that account's dial list (`dial^.0` on its profile); of S kept unread, its ticket's
+    /// issuer (the ticket's profile, spec/data-model.md §8); either way this node's own other
+    /// nodes whose node closure holds S's thing, by their
     /// `reach.0` (the driver never dials its own key). A memo per sync ID; for dialing only, never
     /// proof.
     pub fn dial_peers(&mut self, s: &SyncId) -> Result<Arc<Vec<Address>>> {
@@ -853,7 +853,7 @@ impl Engine {
     /// The nodes other than this one that may hold S, by the rosters and records held here
     /// (spec/sync-status.md §3 held by no other node; spec/sync-set.md §3 the peers a leave waits
     /// for): of S read, the accounts other than this one holding a role on S's thing and the
-    /// other nodes of this account whose synced group's closure holds it; S kept unread, anyone
+    /// other nodes of this account whose node closure holds it; S kept unread, anyone
     /// (its granters, whom the rosters do not name). The nodes `dial_peers` lists, by who they
     /// are, whether or not an address is known. A memo per sync ID.
     pub fn roster_holders(&mut self, s: &SyncId) -> Result<Arc<RosterHolders>> {
@@ -981,7 +981,7 @@ impl Engine {
 
     /// Whether a role commit on `t` is held here but does not count, its epoch revoked and no
     /// held word (a thing list, a listing) naming it yet (spec/permissions.md §5.5): what may give
-    /// this node its role on `t` again once the lists arrive (spec/sync-set.md §3 Leaving).
+    /// this node its role on `t` again once the lists arrive.
     /// Stamped per thing: moves as one counts or arrives.
     pub fn uncounted_role_on(&self, t: &Tid) -> bool {
         self.core.ix.held.uncounted_on(t)

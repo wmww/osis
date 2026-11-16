@@ -51,84 +51,6 @@ fn caps_read_from_the_node_spec_sync_ids_5() {
     assert_eq!(c.things.get(&t).map(|x| (x.entries, x.bytes)), Some((3, 4)));
 }
 
-// spec/sync-set.md §2 (Shared here: it leaves when N forgets the thing on losing read access):
-// an admin node that shared a thing and is then removed from it forgets it, and shares it no more.
-#[test]
-fn a_shared_thing_lost_is_shared_no_more_spec_sync_set_2() {
-    let (mut lp, ps) = people(3);
-    let t = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Admin)).unwrap();
-    spread(&mut lp);
-    lp.peers[1].engine.grant(&t, &ps[2], &edge_of(Role::Read)).unwrap();
-    spread(&mut lp);
-    assert!(lp.peers[1].engine.sync_things().unwrap().contains(&t), "shared at node 1");
-    lp.peers[0].engine.demote(&t, &Demotion { holder: ps[1], new: None, retain: Some(false) }).unwrap();
-    spread(&mut lp);
-    let e = &mut lp.peers[1].engine;
-    assert!(e.drop_lost_secrets().unwrap().contains(&t), "lost");
-    assert!(!e.sync_things().unwrap().contains(&t), "forgotten: shared no more");
-}
-
-// spec/sync-set.md §2 (Shared here: while a grant its account wrote is live, at every node of the
-// account): a grant node 0 writes shares the thing at node 1 too once node 1 holds the grant;
-// revoking the grantee ends it at both, and the thing stays local (§3 Unsyncing).
-#[test]
-fn a_share_is_the_accounts_and_ends_with_its_grant_spec_sync_set_2() {
-    let (mut lp, a, _) = siblings_granted();
-    let b = lp.peers[2].engine.account().unwrap().unwrap().0;
-    let t = thing_of(&mut lp, 0, a);
-    lp.peers[0].engine.grant(&t, &b, &edge_of(Role::Read)).unwrap();
-    spread(&mut lp);
-    for i in [0, 1] {
-        assert!(lp.peers[i].engine.sync_things().unwrap().contains(&t), "node {i}: shared");
-    }
-    lp.peers[1].engine.demote(&t, &Demotion { holder: b, new: None, retain: None }).unwrap();
-    spread(&mut lp);
-    for i in [0, 1] {
-        assert!(!lp.peers[i].engine.sync_things().unwrap().contains(&t), "node {i}: revoked, shared no more");
-    }
-    // spec/sync-set.md §3 (Unsyncing): shared with no one, it stays local
-    let e = &mut lp.peers[0].engine;
-    e.forget_local(&[t].into()).unwrap();
-    assert_eq!(e.get_typed(&t, &REG).unwrap(), Some(s("new")), "kept: no one unsynced it");
-}
-
-// spec/sync-set.md §2 (Cost: a thing joining the shared set costs at most work in proportion to
-// N's closure): sharing one more thing listed nowhere walks O(N's closure) once, at 5 and at 50
-// things shared, and a write moving no closure walks nothing.
-#[test]
-fn sharing_one_more_thing_walks_the_closure_once_spec_sync_set_2() {
-    let (mut lp, ps) = people(2);
-    let mut shared = 0;
-    let mut cost = |lp: &mut LocalPeer, n: usize| -> (u64, u64) {
-        let walked = |e: &mut osis_engine::Engine| {
-            osis_base::costs::take();
-            e.sync_things().unwrap();
-            osis_base::costs::take().iter().find(|x| x.0 == "sync: things walked").map_or(0, |x| x.2)
-        };
-        let mut last = None;
-        while shared < n {
-            let t = thing_of(lp, 0, ps[0]);
-            lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Read)).unwrap();
-            shared += 1;
-            last = Some(t);
-            if shared < n {
-                lp.peers[0].engine.sync_things().unwrap();
-            }
-        }
-        let e = &mut lp.peers[0].engine;
-        let share = walked(e);
-        let mut m = Mutation::new();
-        m.set(last.unwrap(), &REG, &s("again")).unwrap();
-        e.commit(m).unwrap().unwrap();
-        (share, walked(e))
-    };
-    let (small, quiet) = cost(&mut lp, 5);
-    let (big, _) = cost(&mut lp, 50);
-    assert!(small > 0 && big <= 11 * small, "walked {small} at 5 shared, {big} at 50");
-    assert_eq!(quiet, 0, "a write moving no closure: nothing walked");
-}
-
 // spec/sync-ids.md §6 (Steps: an admin issues a step when it holds an epoch newer than its
 // recorded head registers, a child of that head, after logging the rotation commits it registers):
 // nothing is due until a removal rotates; then the step is due, naming the removal's rotation
@@ -438,56 +360,6 @@ fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
     }
 }
 
-// spec/sync-set.md §2 (A received grant syncs nothing until the account lists its thing: a link's
-// sync ID is read while the redeemer redeems the link): a link followed is this session's, as the
-// key it holds; the engine reading its store again (`reload`, after a forgetting drop) keeps it, so K's
-// sync ID stays in the sync set and nothing it syncs leaves for a round.
-#[test]
-fn a_followed_link_stays_across_a_reload_spec_sync_set_2() {
-    let (mut lp, ps) = people(2);
-    let target = thing_of(&mut lp, 0, ps[0]);
-    let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
-    let link = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
-    let e = &mut lp.peers[1].engine;
-    e.follow_link(&link).unwrap();
-    assert!(e.sync_set().unwrap().ids.contains_key(&link.k_sync_id), "K's sync ID followed");
-    e.reload().unwrap();
-    assert!(e.sync_set().unwrap().ids.contains_key(&link.k_sync_id), "still followed after a reload");
-}
-
-// spec/sync-set.md §2 (A received grant syncs nothing until the account lists its thing: a link's
-// sync ID is in the redeemer's sync set while it redeems the link), spec/sync-inbox.md §6: two
-// links followed under one sync ID leave it nobody's (a link text is untrusted); letting either go, or following it
-// again under its own sync ID, gives it back to the other. Asked between steps, so a stale
-// answer kept from before a step shows.
-#[test]
-fn two_followed_links_naming_one_sync_id_own_it_neither_spec_sync_set_2() {
-    let (mut lp, ps) = people(2);
-    let target = thing_of(&mut lp, 0, ps[0]);
-    let spec = osis_engine::flows::LinkSpec { target, role: Role::Read, until: None, peers: Vec::new(), single_use: false };
-    let a = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
-    let b = lp.peers[0].engine.create_link(&ps[0], &spec).unwrap().0;
-    let s = a.k_sync_id;
-    // b's text naming a's sync ID
-    let forged = osis_blob::ShareLink { k_sync_id: s, ..b.clone() };
-    let e = &mut lp.peers[1].engine;
-    let owner = |e: &mut osis_engine::Engine| (e.sync_owner(&s).unwrap(), e.sync_set().unwrap().ids.contains_key(&s));
-    e.follow_link(&a).unwrap();
-    assert_eq!(owner(e), (Some(a.k), true), "one link: its sync ID is its K's");
-    e.follow_link(&forged).unwrap();
-    assert_eq!(owner(e), (None, false), "two links naming it: nobody's");
-    e.unfollow_link(&forged.k);
-    assert_eq!(owner(e), (Some(a.k), true), "the other let go: K's again");
-    e.follow_link(&forged).unwrap();
-    assert_eq!(owner(e), (None, false));
-    e.follow_link(&b).unwrap();
-    assert_eq!(owner(e), (Some(a.k), true), "the other followed again under its own sync ID");
-    assert_eq!(e.sync_owner(&b.k_sync_id).unwrap(), Some(b.k));
-    e.follow_link(&forged).unwrap();
-    e.unfollow_link(&a.k);
-    assert_eq!(owner(e), (Some(b.k), true), "a let go: b's text alone names it");
-}
-
 /// The key actors `e` proves as besides its account (`provers`: what it acts for on the wire).
 fn link_keys_held(e: &mut osis_engine::Engine) -> BTreeSet<Tid> {
     let me = e.account().unwrap().map(|(a, _)| a);
@@ -702,60 +574,6 @@ fn a_loose_author_record_is_learned_when_its_commit_comes_spec_commits_4() {
     assert_eq!(lp.peers[0].engine.core.created(&b), Some(&rec), "the author's record, awaited");
 }
 
-/// The certificate pieces `follow` derives (`sync::certified`) after `change`, on peer 0 of
-/// `lp`, once everything before it is followed.
-fn pieces_derived(lp: &mut LocalPeer, change: impl FnOnce(&mut LocalPeer)) -> u64 {
-    lp.peers[0].engine.follow().unwrap();
-    change(lp);
-    osis_base::costs::take();
-    lp.peers[0].engine.follow().unwrap();
-    osis_base::costs::take().iter().find(|x| x.0 == "sync: certificate pieces derived").map_or(0, |x| x.2)
-}
-
-// spec/sync-inbox.md §5 (Grant copy: one per thing an edge write names the actor on): a new
-// thing the actor is named on adds its own copy under the actor's inbox and derives no other;
-// counted at n and 10n things.
-#[test]
-fn a_new_grant_copy_lists_in_proportion_to_change_spec_sync_inbox_5() {
-    let derived = |n: usize| {
-        let (mut lp, ps) = people(1);
-        for _ in 0..n {
-            thing_of(&mut lp, 0, ps[0]);
-        }
-        pieces_derived(&mut lp, |lp| {
-            thing_of(lp, 0, ps[0]);
-        })
-    };
-    crate::scale::flat("certificate pieces derived", derived(3), derived(30));
-}
-
-// spec/sync-inbox.md §5 (Grant copy), spec/permissions.md §4: an account granted read on n
-// things (each grant copy carries the thing's keys and chains) re-derives, for a grant on one
-// more and for a rotation of one of them, the pieces that thing's paths and keys make, not one
-// per thing; counted at n and 10n things.
-#[test]
-fn an_account_named_on_many_things_derives_in_proportion_to_change_spec_sync_inbox_5() {
-    let derived = |n: usize| {
-        let (mut lp, ps) = people(2);
-        let grant = |lp: &mut LocalPeer| {
-            let t = thing_of(lp, 1, ps[1]);
-            lp.peers[1].engine.grant(&t, &ps[0], &edge_of(Role::Read)).unwrap();
-            lp.sync(1, 0).unwrap();
-            t
-        };
-        let things: Vec<Tid> = (0..n).map(|_| grant(&mut lp)).collect();
-        let one = pieces_derived(&mut lp, |lp| {
-            grant(lp);
-        });
-        let rotated = pieces_derived(&mut lp, |lp| {
-            lp.peers[1].engine.demote(&things[0], &Demotion { holder: ps[0], new: Some(edge_of(Role::Sync)), retain: None }).unwrap();
-            lp.sync(1, 0).unwrap();
-        });
-        one + rotated
-    };
-    crate::scale::flat("certificate pieces derived", derived(3), derived(30));
-}
-
 // spec/commits.md §4 (Records: learned once something awaits it; Examined again): a pending
 // commit that, examined again for one record arriving, comes to await a second record kept
 // loose learns that one too, in the same `reexamine`, whichever record it awaits first.
@@ -838,28 +656,4 @@ fn a_destroyed_thing_owes_no_role_commit_spec_sync_judgement_5() {
     let e = &mut lp.peers[0].engine;
     assert!(e.destruction(&t).is_some(), "keeps nothing");
     assert!(!e.role_duty_due(&t).unwrap(), "keeping nothing: nothing owed on t");
-}
-
-// spec/sync-set.md §3 (Unsyncing: its content goes), notes/growth.md: a commit forgotten whole
-// keeps no row naming it; its blobs come back from `forget_local` (sync unlogs their entries)
-// and are no blobs of it after, through a restart too.
-#[test]
-fn forget_local_keeps_no_blob_row_of_a_commit_forgotten_whole_spec_sync_set_3() {
-    let (mut lp, ps) = people(1);
-    let t = thing_of(&mut lp, 0, ps[0]);
-    lp.peers[0].engine.give_own_secrets(&t).unwrap();
-    let e = &mut lp.peers[0].engine;
-    let mut m = Mutation::new();
-    m.set(t, &ct::NAME, &"own".to_string()).unwrap();
-    let c = e.commit(m).unwrap().unwrap();
-    let s = e.home_sync_id(&t).unwrap().unwrap();
-    let (sealed, _) = e.seal_body(&s, &c, &[], &mut SeededRng::from_u64(3)).unwrap().expect("an own commit seals");
-    let held = e.commit_blobs(&c).unwrap();
-    assert_eq!(*held, vec![sealed.id], "noted");
-    let gone = e.forget_local(&[t].into()).unwrap();
-    assert!(e.commit_bytes(&c).unwrap().is_none(), "forgotten whole");
-    assert!(held.iter().all(|b| gone.contains(b)), "its blobs returned");
-    assert!(e.commit_blobs(&c).unwrap().is_empty(), "no blob row names a commit forgotten whole");
-    lp.peers[0].restart(71).unwrap();
-    assert!(lp.peers[0].engine.commit_blobs(&c).unwrap().is_empty(), "nor after a restart");
 }

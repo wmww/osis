@@ -11,17 +11,17 @@
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
 //! but a re-grant's boxes that may still apply (`rotation::boxes_kept`),
-//! value-less lists, leftovers, purge lists and what they dropped, timers, `secrets.0` waits, the sync records of the
-//! sync IDs of forgotten groups and of the commit blobs holding forgotten parts, and their blob
+//! value-less lists, leftovers, purge lists and what they dropped, timers, `secrets.0` waits, the
+//! sync IDs of forgotten things and the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
 //!
-//! Forgetting a local copy (spec/sync-set.md §3 Unsyncing, `Engine::forget_local`) goes the same
+//! Forgetting a local copy (spec/sync-set.md §3, `Engine::forget_local`) goes the same
 //! way for the things named, whose secrets stay: `secrets.0` stays with the role-class aspects,
 //! so the thing reads again once synced, and what arrives again counts as never received.
 //!
 //! A kept copy (spec/permissions.md §3, Retain) goes the same way but for its content, which stays
-//! whole, state and bodies and timers: only `secrets.0`, the sync IDs' sync records and the blob
-//! ciphertexts nothing still lists go.
+//! whole, state and bodies and timers: only `secrets.0` and the blob ciphertexts nothing still
+//! lists go.
 
 use crate::engine::records::{self, Rd};
 use crate::engine::{Core, Tx};

@@ -60,7 +60,6 @@ create_realm  planned: notes/realms.md
 
 HostAddr  rejected: notes/api-design.md
 ListenerId  rejected: notes/api.md
-make_group  rejected: notes/api.md
 load_schema  rejected: notes/data-model.md
 on_versions  rejected: notes/signal-edits-design.md
 

@@ -35,9 +35,6 @@ pub struct Held {
     /// Thing -> holders an edge write puts a grant for on it, with counts: the edges a path may
     /// climb (a removal names a holder but gives it none).
     granted: BTreeMap<Tid, BTreeMap<Tid, usize>>,
-    /// Actor -> things an edge write it wrote puts a grant for on, to a holder other than
-    /// itself, with counts: where it may share (`sync::set`, spec/sync-set.md §2 Shared here).
-    granted_by: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// First admin -> the things whose creation record names it: the record chain's
     /// links down (spec/permissions.md §1).
     first_admin_of: BTreeMap<Tid, BTreeSet<Tid>>,
@@ -77,7 +74,6 @@ enum Row<'a> {
     Holder(&'a Tid),
     Named(&'a Tid),
     Granted(&'a Tid),
-    GrantedBy(&'a Tid),
     FirstAdminOf(&'a Tid),
     Id(&'a CommitId),
 }
@@ -142,13 +138,6 @@ impl Held {
     pub fn granted_on(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
         self.rest.read(&Row::Granted(thing));
         self.granted.get(thing).into_iter().flat_map(|m| m.keys())
-    }
-
-    /// Things an edge write `actor` wrote (header actor) puts a grant for on, to a holder other
-    /// than `actor`, of any validity and whatever followed.
-    pub fn granted_by(&self, actor: &Tid) -> impl Iterator<Item = &Tid> {
-        self.rest.read(&Row::GrantedBy(actor));
-        self.granted_by.get(actor).into_iter().flat_map(|m| m.keys())
     }
 
     /// `from` and everything authority flows to from them: what they own, the things they are
@@ -354,22 +343,6 @@ impl Held {
             }
             self.rest.wrote(&Row::Granted(&o.target), self.granted.contains_key(&o.target));
         }
-        for o in c.ops.iter().filter(|o| o.edge.is_some() && o.holder != c.actor) {
-            let by = self.granted_by.entry(c.actor).or_default();
-            let n = by.entry(o.target).or_default();
-            if add {
-                *n += 1;
-            } else {
-                *n = n.saturating_sub(1);
-                if *n == 0 {
-                    by.remove(&o.target);
-                }
-            }
-            if by.is_empty() {
-                self.granted_by.remove(&c.actor);
-            }
-            self.rest.wrote(&Row::GrantedBy(&c.actor), self.granted_by.contains_key(&c.actor));
-        }
     }
 
     fn put_commit(&mut self, c: Arc<RoleCommit>) {
@@ -514,7 +487,7 @@ impl Held {
 impl Journaled for Held {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.granted, self.granted_by, self.first_admin_of, self.ids, self.uncounted)
+        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.granted, self.first_admin_of, self.ids, self.uncounted)
     }
     type Mark = usize;
     fn commit(&mut self) {

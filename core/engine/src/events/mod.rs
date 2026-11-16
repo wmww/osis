@@ -28,7 +28,7 @@ pub enum Cause {
     LateDelta,
     /// This node lost read access and forgot the aspects (spec/permissions.md §3).
     LostAccess,
-    /// This node forgot its local copy of a released thing (spec/sync.md Release).
+    /// This node forgot its local copy of a released thing (spec/sync-set.md §3).
     Released,
     /// A blob arrived that a read of these aspects had missed (spec/data-model.md §6).
     Fetched,

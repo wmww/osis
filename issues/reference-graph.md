@@ -4,8 +4,8 @@
 > Tags: engine, sync, data-model, permissions
 
 ## Status
-- On main: this plan, the spec (it describes the rebuilt design, not the code), the requirements wording (Tess approved), the model (notes/closure-model.md, held-model `closure`) and the demolition inventory (issues/reference-graph-demolition.md).
-- Execution step 3 (demolition) is under way; the spec's account parts are in the account forks terms (notes/engine-validity-epochs.md: seeds boxed to device keys, the chain is D's roster, merges only join).
+- On main: this plan, the spec (it describes the rebuilt design, not the code), the requirements wording (Tess approved), the model (notes/closure-model.md, held-model `closure`).
+- Execution steps 3 (demolition) and 4 (foundation, Lanes below) are done; the lanes are next; the spec's account parts are in the account forks terms (notes/engine-validity-epochs.md: seeds boxed to device keys, the chain is D's roster, merges only join).
 
 ## Principles (Tess)
 - **A strong grants nothing.** It says the target belongs to this closure; anyone knowing a tid may write one. Permission is a separate act by someone who may grant, and removing a reference revokes nothing.
@@ -95,10 +95,8 @@
 - The account's things: the account root strongly references the profile, the inbox and the node things, holds in its `tickets.0` a ticket sealed to the account for the profile and for the inbox (it has no role on them, as on home; both have own keys from the account's creation), and by the same rule (The account's tickets) one for each other thing the account's nodes enter, home among them.
 
 ### What goes
-The full inventory, with paths, callers and tests: issues/reference-graph-demolition.md. In short:
-- Spec (done): the requirements wording; the lifetime rules of spec/commits.md (§5) and the release half of its Destruction; spec/data-model.md §8, §9 (`group.0`, `groups.0`, `tid.0`, `retainers^.0`, `released.0`, `synced^.0`, `acted^.0`, `kept^.0`, the never-logged clauses); spec/sync-set.md whole; spec/sync-inbox.md inbox blobs, Taking, hints, grant copies; spec/sync.md §3 sync record; spec/permissions.md tied grants; the tid tag; `schema/core.osis` with the code.
-- Code: engine `retention/lifetimes.rs` and its rows, release paths in `retention/destroy.rs` and purge, `refs.rs` exclusions, `engine/groups.rs` as a group index; osis `Write::release`, `retaining`, `RETAINERS`, `Write::group`, `delete`, `home()` as the account root; app and chat default filing; osis-sync the lifetime and tied-grant duties of `life`, the inbox blob paths, accepting in the step loop; held-model `lifetimes`; TLA `NetTrust`; and every test of these, the sync differential and the sim set included (rewritten at the end).
-- The old tid value (320 sites) is not demolition's: lane (a) replaces it.
+Gone (step 3): retainers, release requests, `released.0`, lifetimes, synced groups and `synced^.0`, shared here, default filing, the group concept (`group.0`, `groups.0`, the group index and key homes, `Write::group`, `Member`, `groups_of`, `members`, `add_with_grant`), tied grants, inbox blobs (every payload kind, taking, hints, deliveries, grant copies), invitations and `acted^.0`, the account's sync records (`kept^.0`, offers), `delete`, `tid.0`, `home()` as a public call, the NetTrust model, and every test of these, the sync differential and the sim set included (rewritten at the end).
+Left to the lanes: the tid value (lane a), the reference index's exclusions (lane a), `caps^.0` and `clients^.0` on the node root (lane b), app, kit and chat (the agent after the lanes).
 
 ### Storage
 Every stored row hangs off something the node closure holds, a store entry of a sync ID it syncs, a peer record, or the node root; a row goes with its last owner. Releasing everything leaves the node root, the account root, the profile, the inbox and the node thing, plus only these, each bounded:
@@ -128,6 +126,12 @@ Rules:
 - **"Group" is never renamed by search and replace.** Each use is read and becomes a closure, a sync unit, a tag, `holds.0`, or is deleted with what it described; about a quarter of its uses mean something else (delete-key groups, block-list groups) and stay. Reviewers sample each outcome.
 - No benchmark or timing run is part of the preparation: each is a step for the executing coordinator.
 - About ten agents in all.
+
+## Lanes
+Each lane owns its files; a stub's body is `todo!("refgraph: (x) ...")` or a no-op marked `// refgraph: (x)`, its doc comment naming the spec section (`rg 'refgraph: \(a\)'` lists a lane's).
+- **(a) references**: `core/base/src/refs.rs` (`Strong`, `Weak`, `Ref`, `Ticket`, `Ticket::{to_value, from_value}`), `core/base/src/format.rs` `TAG_STRONG`/`TAG_WEAK`/`TAG_TICKET` (and retiring `TAG_TID`), `Value`'s variants and `cbor.rs`, the schema types `strong`/`weak`/`ticket`/`ref` (`core/schema/src/{types,parse,schema,typed,codegen}.rs`) and `holds.0`/`tickets.0` in `schema/core.osis` and `core_types.rs`, the osis re-exports (`core/osis/src/lib.rs`) and the write and read API for references, the reference index (`core/engine/src/engine/refs.rs`: every aspect indexed, the kind per row), vectors.
+- **(b) holding**: `core/engine/src/flows/roots.rs` (`node_root`, `account_root`, `hold`, `unhold`), `core/engine/src/sync/units.rs` (`sync_unit`, `units_holding`, `unit_settled`), `core/engine/src/sync/set.rs` (`sync_things`, `in_sync_things`, `things_entered`, `caught_up`, kept unread in `thing_sync_now`, `set_sourced`'s cut), `core/engine/src/retention/release.rs` (`left_closure`, `released`) with sync's `leave`, `Engine::readable_by`'s sourced check (`engine/acting.rs`), the `NotCarried` diagnostic (`DiagnosticKind::NotCarried`, osis `Diagnostic::NotCarried`) and the write path's warning (`core/osis/src/write.rs`), the account creation's roots (`flows/account.rs` `create_account_in`), the seed thing and K of a link and a client's actor held from the account root (`flows/links.rs`, `core/osis/src/clients.rs`), the differential's holding (`core/sync/tests/it/harness/history.rs`).
+- **(c) inbox**: `core/base/src/ids.rs` `Ak::open`, `core/blob/src/fire.rs` (`seal_fire`, `open_fire`), `core/engine/src/flows/inbox.rs` (`fire_ticket`, `fire_removal`, `inbox_thing`, `ticket_for`, `take_removal_notice`, `fire_stranded`), `core/engine/src/sync/tickets.rs` (`ticket_sync_secrets`), a sync secret of a thing not read (`apply/keys.rs` `learn_secret`), the lowered-to-sync keep (`rotation/lost.rs`), a redeem's tickets (`flows/links.rs` `redeem_in`), dialing a ticket's issuer (`sync/dial.rs`), the stranded notice with no writer connected (`core/sync/src/inbox/stranded.rs`), promotion of sealed fires (`core/sync/src/inbox/held.rs`).
 
 ## To settle while building
 - D's deposit seed: the inbox is its own thing, so a fresh deposit seed on a device removal rests on every sync-role rotation writing a new one (the inbox thing and D rotate inside each P rotation); check it holds in the rebuild.

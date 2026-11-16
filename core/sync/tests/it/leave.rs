@@ -198,18 +198,6 @@ fn unshared_stops_at_once_spec_sync_set_3() {
     assert_eq!((g.forgot.clone(), g.syncs(2)), (vec![tid(1), tid(2)], None));
 }
 
-// spec/sync-set.md §3 (Unsyncing): read sync IDs that stop in one settle forget their things'
-// copies in one forgetting, before any of them is shredded.
-#[test]
-fn sync_ids_stopping_together_forget_once_spec_sync_set_3() {
-    let (mut g, mut l) = settled();
-    g.unshared.insert(sid(1));
-    g.unshared.insert(sid(2));
-    g.closure(&[3]);
-    l.settle(&mut g).unwrap();
-    assert_eq!((g.forgot.clone(), g.shredded.clone(), g.forgettings), (vec![tid(1), tid(2)], vec![sid(1), sid(2)], 1));
-}
-
 // spec/sync-set.md §3 (synced again before then, S is kept as it was): a leaving sync ID listed
 // again is neither forgotten nor shredded when its entries are elsewhere later.
 #[test]
@@ -276,38 +264,6 @@ fn a_start_finds_what_left_while_down_spec_sync_set_3() {
     g.present.insert(sid(8));
     l.settle(&mut g).unwrap();
     assert_eq!(g.shredded, vec![sid(1), sid(8)]);
-}
-
-// spec/sync-set.md §3 (One rule ends syncing it: a complete pass after it left first): a read sync ID that left because
-// this node's keys lost it (a loss a later arrival may undo: a rotation's thing list after the
-// rotation) stays synced until a complete pass begun after it left ends; a pass begun before
-// counts for nothing; synced again meanwhile, it is kept; once the pass ends and the loss stands,
-// it stops at once, nothing forgotten. Leave wants that pass (`passes_wanted`) only while it waits.
-#[test]
-fn a_leaving_sync_id_waits_for_a_complete_pass_spec_sync_set_3() {
-    let (mut g, mut l) = settled();
-    g.passing.insert(sid(1));
-    g.passes.insert(sid(1), 5);
-    g.clock = 10;
-    g.holders.remove(&sid(1));
-    l.settle(&mut g).unwrap();
-    assert!(g.shredded.is_empty() && g.syncs(1) == Some(Holding::Read), "waits for a pass");
-    assert_eq!(l.passes_wanted(), BTreeMap::from([(sid(1), 10)]));
-    // the loss undone by what the pass brings: kept as it was
-    g.holders.insert(sid(1), Holding::Read);
-    l.settle(&mut g).unwrap();
-    assert!(g.shredded.is_empty() && !l.waits(&sid(1)) && l.passes_wanted().is_empty());
-    // lost again; a pass begun since ends with the loss standing
-    g.clock = 20;
-    g.holders.remove(&sid(1));
-    l.settle(&mut g).unwrap();
-    g.passes.insert(sid(1), 20);
-    l.settle(&mut g).unwrap();
-    assert!(g.shredded.is_empty(), "a pass begun before it left counts for nothing");
-    g.passes.insert(sid(1), 21);
-    l.settle(&mut g).unwrap();
-    assert_eq!(g.shredded, vec![sid(1)]);
-    assert!(g.forgot.is_empty() && g.syncs(1).is_none() && l.passes_wanted().is_empty());
 }
 
 // spec/sync-set.md §3 (its list may still come): a read sync ID whose holder went because a
@@ -380,20 +336,4 @@ fn an_unsync_ends_a_wait_for_lists_spec_sync_set_3() {
         assert_eq!(g.shredded, vec![sid(1)], "out of the closure: no list gives S back");
         assert!(!l.pass_sourced(&sid(1)) && g.syncs(1).is_none());
     }
-}
-
-// spec/sync-set.md §3 (Before the group is known: nothing counts as having left): a node pairing, its sync set empty for want of its synced group, starts with rows of a sync
-// ID its keys hold and leaves none; once it knows the group and the closure lacks it, it leaves.
-#[test]
-fn nothing_leaves_before_the_synced_group_is_known_spec_sync_set_3() {
-    let mut g = Fake::default();
-    g.unrooted.insert((), true);
-    g.holders.insert(sid(1), Holding::Read);
-    g.stored.insert((), [sid(1)].into());
-    let mut l = Leave::default();
-    l.settle(&mut g).unwrap();
-    assert!(g.shredded.is_empty() && !l.waits(&sid(1)) && l.passes_wanted().is_empty(), "nothing left, no pass wanted");
-    g.unrooted.insert((), false);
-    l.settle(&mut g).unwrap();
-    assert!(l.waits(&sid(1)) && g.syncs(1) == Some(Holding::Read), "known: S left, synced while it waits");
 }

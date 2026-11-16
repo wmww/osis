@@ -8,44 +8,6 @@ use osis_base::{Ak, Role, Value};
 use osis_engine::Mutation;
 use osis_engine::sync::Holding;
 
-/// The work (`osis_base::costs`) and deliveries of one write by node 0 to a thing node 1's
-/// account was granted read on and one by node 1 to its own account's group, each run to quiet,
-/// after `n` writes by node 0.
-fn one_write_after(n: usize) -> std::collections::BTreeMap<&'static str, u64> {
-    use crate::harness::Step::*;
-    use crate::harness::history::{Gives, world};
-    let mut w = world(0, 2);
-    let mut steps = vec![New(0), Grant(0, 0, 1, Gives::Reads), Run];
-    steps.extend((0..n).flat_map(|_| [Write(0, 0), Run]));
-    for s in &steps {
-        crate::harness::step(&mut w, s);
-    }
-    osis_base::costs::take();
-    let d = w.deliveries;
-    for s in [Write(0, 0), Run, New(1), Run] {
-        crate::harness::step(&mut w, &s);
-    }
-    let mut c: std::collections::BTreeMap<_, _> = osis_base::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect();
-    c.insert("deliveries", w.deliveries - d);
-    c
-}
-
-// spec/sync-inbox.md §2 (Taking): an inbox blob is taken once: while its commit is held, a
-// write moving what the take read (the reader's own account) takes nothing again, and an entry
-// whose prefix no inbox blob has (the inbox's own commits) is tried with no key; so writes open
-// nothing as an inbox blob, take only their own new entries, and cost the same after n and 10n
-// writes.
-#[test]
-fn a_taken_inbox_blob_is_taken_once_spec_sync_inbox_2() {
-    let (a, b) = (one_write_after(2), one_write_after(20));
-    let n = |m: &std::collections::BTreeMap<&str, u64>, k: &str| m.get(k).copied().unwrap_or(0);
-    assert_eq!((n(&a, "inbox: open tried"), n(&b, "inbox: open tried")), (0, 0), "{a:?}");
-    assert!(n(&a, "inbox: take") <= n(&a, "inbox: entry fed"), "an entry taken again: {a:?}");
-    for k in ["inbox: take", "inbox: held judged", "ingest", "tx", "deliveries"] {
-        assert_eq!(n(&a, k), n(&b, k), "{k} per write grows with the writes before it");
-    }
-}
-
 // spec/sync-judgement.md §3 (Own store: stamped when it writes S, a pulled entry stamped in place;
 // Reader that is not a writer), spec/sync-ids.md §6 (Taking a stamped entry: a stamp under a
 // superseded write key is refused; Steps: the registrar logs the rotation stamped under the

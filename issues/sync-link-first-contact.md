@@ -1,5 +1,5 @@
 # Link redeemer: the refusal end, and first contact without a relay
-> Summary: A redeemer joins K from the link alone (K's sync ID carries the author chain as certificate copies and the records as a record blob; `links::a_redeemer_joins_k_spec_permissions_7`), but its refusal end (spec/permissions.md §7: every route of K's sync ID refused L's static entry) is unbuilt, so a revoked link whose sources all refuse L is followed for good.
+> Summary: A redeemer joins K from the link alone (K's sync ID carries the author chain as certificate copies and the records as a record blob), but its refusal end (spec/permissions.md §7: every route of K's sync ID refused L's static entry) is unbuilt, so a revoked link whose sources all refuse L is followed for good.
 > Priority: normal
 > Tags: sync, tests
 
