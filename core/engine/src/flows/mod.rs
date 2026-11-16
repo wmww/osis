@@ -320,6 +320,10 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     let mut work = vec![learned];
     while let Some(m) = work.pop() {
         tx.core.ix.closure.opener_moved(&m);
+        // `m`'s own invalid commits: their history boxes open with what it learned
+        if crate::apply::keys::reread_invalid(tx, &m)? {
+            work.push(m);
+        }
         // the boxes keyed to `m`, per actor: from the index of keyed `secrets.0` entries
         let mut per: std::collections::BTreeMap<Tid, Vec<osis_base::Value>> = std::collections::BTreeMap::new();
         for (a, k) in tx.core.ix.boxes_to.get(&m).into_iter().flatten() {
@@ -328,7 +332,9 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
             }
         }
         for (a, keys) in per {
-            if crate::apply::ingest_secrets_keys(tx, &a, &keys, &[])? {
+            let learned = crate::apply::ingest_secrets_keys(tx, &a, &keys, &[])?;
+            // boxes of commits invalid here open for reading too (custody follows holding)
+            if crate::apply::keys::reread_invalid(tx, &a)? | learned {
                 save_epochs(tx, &a)?;
                 work.push(a);
             }

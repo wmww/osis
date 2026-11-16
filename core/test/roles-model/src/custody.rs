@@ -151,10 +151,11 @@ pub enum Kind {
     Content,
     /// The author's word that its writes `names` count.
     Listing { names: Vec<u32> },
-    /// A rotation of thing t, signed at P epoch `epoch` and boxing t's new epoch to P there and to
-    /// R1 (`boxed[R1]`); its history carries the t epochs its maker held whose rotation counted
-    /// there.
-    TRot { history: BTreeSet<u32> },
+    /// A rotation of thing t, signed at P epoch `epoch` and boxing t's new epoch to P and to R1
+    /// (`boxed[R1]`); its history carries the t epochs its maker held whose rotation counted
+    /// there. `sealed`: the epochs of P its box to P is sealed at, jointly (the heads its maker follows,
+    /// spec/crypto.md §4 Account keysets): only a node holding each one's seed opens it.
+    TRot { history: BTreeSet<u32>, sealed: BTreeSet<Line> },
 }
 
 #[derive(Clone, Debug)]
@@ -587,12 +588,12 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
     loop {
         let mut tkeys: BTreeSet<u32> = std::iter::once(0).filter(|_| own || v == R1).chain(held.iter().copied().filter(|k| {
             let i = w.item(*k);
-            matches!(i.kind, Kind::TRot { .. }) && (v == R1 || i.author == v || j.keys.holds(w, &i.epoch) && (w.control != Control::StaleShut || j.heads.contains(&i.epoch) || valid.contains(k)))
+            matches!(&i.kind, Kind::TRot { sealed, .. } if v == R1 || i.author == v || sealed.iter().all(|l| j.keys.holds(w, l)) && (w.control != Control::StaleShut || j.heads.contains(&i.epoch) || valid.contains(k)))
         })).collect();
         // what the histories of the t epochs held carry
         loop {
             let more: Vec<u32> = tkeys.iter().filter(|k| **k != 0).flat_map(|k| match &w.item(*k).kind {
-                Kind::TRot { history } => history.iter().copied().collect(),
+                Kind::TRot { history, .. } => history.iter().copied().collect(),
                 _ => vec![],
             }).filter(|k| !tkeys.contains(k)).collect();
             if more.is_empty() {
@@ -757,7 +758,7 @@ fn seen_holding(w: &World, j: &View, d: usize, e: &Line) -> bool {
 /// of no other such one carries.
 pub fn t_current(w: &World, j: &View) -> Vec<u32> {
     let counting: Vec<u32> = j.tkeys.iter().copied().filter(|k| *k == 0 || j.valid.contains(k)).collect();
-    let carried = |k: u32| counting.iter().any(|q| *q != k && *q != 0 && matches!(&w.item(*q).kind, Kind::TRot { history } if history.contains(&k)));
+    let carried = |k: u32| counting.iter().any(|q| *q != k && *q != 0 && matches!(&w.item(*q).kind, Kind::TRot { history, .. } if history.contains(&k)));
     counting.iter().copied().filter(|k| !carried(*k)).collect()
 }
 
@@ -883,7 +884,7 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
         let mut bx = [false; N];
         bx[R1] = true;
         let history = j4.tkeys.iter().copied().filter(|k| *k == 0 || j4.valid.contains(k)).collect();
-        made.push(w.add(Kind::TRot { history }, n, n, head.clone(), prev, now, bx));
+        made.push(w.add(Kind::TRot { history, sealed: j4.heads.clone() }, n, n, head.clone(), prev, now, bx));
     }
     if write {
         made.push(w.add(Kind::Content, n, n, head.clone(), None, now, [false; N]));

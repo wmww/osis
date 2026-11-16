@@ -29,7 +29,7 @@ impl Core {
             return try_with(&Opener::KeyActor { holder: h, keys: a.keys() });
         }
         if self.accounts.contains_key(&h) {
-            let keys = self.account_keys_by_name(&h);
+            let keys = self.account_keys(&h);
             return try_with(&Opener::Account { holder: h, keys: &keys });
         }
         let e = self.ix.secrets.get(&h)?;

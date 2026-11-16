@@ -15,8 +15,9 @@ use std::sync::Arc;
 pub enum Opener<'a> {
     KeyActor { holder: Tid, keys: &'a KeyActorKeys },
     Actor { holder: Tid, epochs: &'a ActorEpochs },
-    /// An account by the epoch keys it holds, by epoch name (spec/crypto.md §3).
-    Account { holder: Tid, keys: &'a BTreeMap<Epoch, Arc<AccountEpochKeys>> },
+    /// An account by the epoch keys it holds, by signing key: an epoch name's key half
+    /// (spec/crypto.md §3), so a box opens with its seed whatever else is held.
+    Account { holder: Tid, keys: &'a BTreeMap<[u8; 32], Arc<AccountEpochKeys>> },
 }
 
 impl Opener<'_> {
@@ -68,7 +69,7 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
                     }
                     None => return Ok(None),
                 },
-                (Opener::Account { keys, .. }, Some(ks)) => match keys.get(&ks) {
+                (Opener::Account { keys, .. }, Some(ks)) => match keys.get(ks.nonce()) {
                     Some(e) => &e.kem,
                     None => return Ok(None),
                 },
@@ -89,7 +90,7 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
                         Some(s) => roles.push(role_kem(s)),
                         None => return Ok(None),
                     },
-                    Opener::Account { keys, .. } => match keys.get(ks) {
+                    Opener::Account { keys, .. } => match keys.get(ks.nonce()) {
                         Some(e) => kems.push(&e.kem),
                         None => return Ok(None),
                     },
@@ -110,7 +111,7 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener) -> Result<O
                     Some(s) => s.clone(),
                     None => return Ok(None),
                 },
-                Opener::Account { keys, .. } => match keys.get(&epoch_s) {
+                Opener::Account { keys, .. } => match keys.get(epoch_s.nonce()) {
                     Some(e) => key_actor_role_secret(e.seed(), k.role),
                     None => return Ok(None),
                 },

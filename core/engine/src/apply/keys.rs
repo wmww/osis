@@ -478,9 +478,20 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &su
     Ok(out)
 }
 
-/// After the joins: the applied rotations, and `secrets.0` compaction snapshots held.
+/// After the joins: the applied rotations, `secrets.0` compaction snapshots held, and the boxes
+/// of invalid `secrets.0` deltas (`read_invalid`).
 pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], valid: &[bool], pending: Vec<Pending>) -> Result<()> {
     tx.core.touch();
+    if h.kind == Kind::Role {
+        for (ai, d) in parts {
+            if let (Some(a), Decoded::Delta(d)) = (h.aspects.get(*ai), d)
+                && a.ak.as_str() == "secrets.0"
+                && !valid.get(*ai).copied().unwrap_or(false)
+            {
+                read_invalid(tx, &h.id(), h.author, a.tid, &d.fragment)?;
+            }
+        }
+    }
     // per part, the write of all its held deltas at once
     let mut done = std::collections::BTreeSet::new();
     for p in pending {
@@ -513,9 +524,10 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
 }
 
 /// A held commit's `secrets.0` delta became invalid: its rotations, or a snapshot's keying, no
-/// longer count (another valid commit of the same epoch keeps it).
+/// longer count (another valid commit of the same epoch keeps it); its boxes stay open for
+/// reading (`read_invalid`).
 pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
-    let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai)).cloned() else { return Ok(()) };
+    let Some((a, author)) = tx.core.ix.commits.get(c).and_then(|m| Some((m.header.aspects.get(ai)?.clone(), m.view.author))) else { return Ok(()) };
     if a.ak.as_str() != "secrets.0" {
         return Ok(());
     }
@@ -523,7 +535,70 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     if let Some(e) = tx.core.ix.secrets.get_mut(&a.tid) {
         e.invalidate(c);
     }
-    crate::flows::save_epochs(tx, &a.tid)
+    crate::flows::save_epochs(tx, &a.tid)?;
+    if let Some(Decoded::Delta(d)) = super::held_part(tx, c, ai)? {
+        read_invalid(tx, c, author, a.tid, &d.fragment)?;
+    }
+    Ok(())
+}
+
+/// Opens, for reading only, the boxes and history boxes of held role commit `id`'s invalid
+/// `secrets.0` delta on `actor` (spec/crypto.md §4 Reading-only secrets; custody follows holding:
+/// a box opens whether or not its commit counts), then what that opens in turn
+/// (`flows::reopen_dependents`: the history boxes of `actor`'s other invalid commits, the boxes
+/// sealed to `actor`). What it gives is never encrypted under, and goes with the commit
+/// (`unindex`) or once an applied valid box carries it.
+pub(crate) fn read_invalid(tx: &mut Tx<'_>, id: &CommitId, author: Tid, actor: Tid, delta: &Fragment) -> Result<()> {
+    if read_invalid_delta(tx, id, author, actor, delta)? {
+        crate::flows::reopen_dependents(tx, actor)?;
+    }
+    Ok(())
+}
+
+/// `read_invalid` of one delta alone; whether it gave anything.
+fn read_invalid_delta(tx: &mut Tx<'_>, id: &CommitId, author: Tid, actor: Tid, delta: &Fragment) -> Result<bool> {
+    let w = secrets_write(delta);
+    if w.boxes.is_empty() && w.history.is_empty() {
+        return Ok(false);
+    }
+    let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
+    read_for_reading(tx, &actor, &s, osis_keys::Unchecked { author, commit: *id })
+}
+
+/// The invalid `secrets.0` deltas on `actor` held (`read_invalid`), opened again: an opener of
+/// theirs came to be held, `actor` itself included (`flows::reopen_dependents`). O(the commits
+/// invalid there). Whether anything was learned.
+pub(crate) fn reread_invalid(tx: &mut Tx<'_>, actor: &Tid) -> Result<bool> {
+    let ak = osis_base::Ak::new("secrets.0").map_err(|_| crate::Error::Misuse("ak"))?;
+    let ids: Vec<(CommitId, usize, Tid)> = (tx.core.ix.invalid.get(&(*actor, ak.clone())).into_iter().flatten())
+        .filter_map(|c| {
+            let m = tx.core.ix.commits.get(c)?;
+            let ai = m.aspect(actor, &ak)?;
+            (m.header.kind == Kind::Role && !m.valid_at(ai) && m.holds(ai)).then_some((*c, ai, m.view.author))
+        })
+        .collect();
+    let mut learned = false;
+    for (c, ai, author) in ids {
+        if let Some(Decoded::Delta(d)) = super::held_part(tx, &c, ai)? {
+            learned |= read_invalid_delta(tx, &c, author, *actor, &d.fragment)?;
+        }
+    }
+    Ok(learned)
+}
+
+/// Ingests `s` of `actor` for reading only, sourced from `from` (`SecretsRead::Pending`);
+/// whether it gave anything.
+fn read_for_reading(tx: &mut Tx<'_>, actor: &Tid, s: &ct::Secrets, from: osis_keys::Unchecked) -> Result<bool> {
+    tx.core.touch();
+    if tx.core.ingest_secrets(actor, s, crate::engine::secrets::SecretsRead::Pending(from), &osis_keys::HistoryAlts::new()) {
+        tx.core.waits.read_from(from.commit);
+        crate::flows::save_epochs(tx, actor)?;
+        return Ok(true);
+    }
+    if tx.core.reading_full(actor) {
+        tx.core.waits.box_refused(from.commit);
+    }
+    Ok(false)
 }
 
 /// What a `secrets.0` compaction snapshot carries (spec/crypto.md §4): `state` less every entry
@@ -608,13 +683,7 @@ pub(crate) fn sealed_key(c: &CommitId, a: &Tid) -> Vec<u8> {
 /// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
     for (a, s, from) in pending_boxes(tx, blob, id)? {
-        tx.core.touch();
-        if tx.core.ingest_secrets(&a, &s, crate::engine::secrets::SecretsRead::Pending(from), &osis_keys::HistoryAlts::new()) {
-            tx.core.waits.read_from(*id);
-            crate::flows::save_epochs(tx, &a)?;
-        } else if tx.core.reading_full(&a) {
-            tx.core.waits.box_refused(*id);
-        }
+        read_for_reading(tx, &a, &s, from)?;
     }
     Ok(())
 }
@@ -634,9 +703,10 @@ pub(crate) fn pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id:
     Ok(out)
 }
 
-/// Drops the reading-only secrets pending commit `id` gave: it applied (its boxes are checked
-/// now, or stripped as invalid) or was dropped (spec/crypto.md §4). An actor they were the only
-/// secrets of is left to the lost-access trigger, which drops them with what they read.
+/// Drops the reading-only secrets commit `id` gave: it applied (its boxes are checked now), was
+/// dropped or forgotten (spec/crypto.md §4). Those of an actor its held `secrets.0` part on is
+/// invalid stay (`read_invalid`). An actor they were the only secrets of is left to the
+/// lost-access trigger, which drops them with what they read.
 pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let prefix = [SEALED, &id.0[..]].concat();
     let mut sealed = Vec::new();
@@ -648,6 +718,10 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         tx.txn.remove_local(&k, Shred::No)?;
     }
     let actors: Vec<Tid> = tx.core.ix.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.sources().any(|u| u.commit == *id)))).map(|(t, _)| *t).collect();
+    let invalid_on = |core: &crate::engine::Core, a: &Tid| {
+        core.ix.commits.get(id).is_some_and(|m| m.header.kind == Kind::Role && m.header.aspect_index(a, "secrets.0").is_some_and(|ai| !m.valid_at(ai) && m.holds(ai)))
+    };
+    let (kept, actors): (Vec<Tid>, Vec<Tid>) = actors.into_iter().partition(|a| invalid_on(tx.core, a));
     let mut lost = Vec::new();
     for a in actors {
         let Some(mut e) = tx.core.ix.secrets.get(&a).cloned() else { continue };
@@ -661,7 +735,9 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         tx.core.ix.secrets.insert(a, e);
         crate::flows::save_epochs(tx, &a)?;
     }
-    tx.core.waits.forgot(id);
+    if kept.is_empty() {
+        tx.core.waits.forgot(id);
+    }
     crate::rotation::touch_held(tx, lost);
     Ok(())
 }
@@ -1210,6 +1286,42 @@ mod tests {
         assert!(lp.peers[0].engine.lost_due(&x).unwrap());
         lp.peers[0].engine.role_duties().unwrap();
         assert!(lp.peers[0].engine.core.ix.secrets.get(&x).is_none_or(|e| !e.read.holds_any()));
+    }
+
+    // spec/crypto.md §4 (Reading-only secrets): a box opens whether or not its commit counts. Admin
+    // A of T, demoted by T's first admin O, rotates T's read role; writer W holds the rotation
+    // before the demotion and writes under A's epoch. Reader R and O hold the demotion first, so
+    // A's rotation is invalid on arrival there, yet W's write, sealed as a sync ID carries it,
+    // opens and reads by value at both.
+    #[test]
+    fn a_write_under_an_invalid_rotations_epoch_reads_spec_crypto_4() {
+        let mut lp = LocalPeer::fresh(4, WallMs(1_700_000_000_000));
+        lp.sync_all().unwrap();
+        let (o, a, w, r) = (0, 1, 2, 3);
+        let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.me()).collect();
+        let edge = |role| ct::Edge { role, until: None, invite: None, floor: None };
+        let t = thing_of(&mut lp, o, tids[o]);
+        lp.peers[o].engine.grant(&t, &tids[a], &edge(Role::Admin)).unwrap();
+        lp.peers[o].engine.grant(&t, &tids[w], &edge(Role::Write)).unwrap();
+        lp.peers[o].engine.grant(&t, &tids[r], &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.peers[o].engine.demote(&t, &Demotion { holder: tids[a], new: None, retain: None }).unwrap();
+        lp.sync(o, r).unwrap();
+        // A's clock runs ahead: its rotation is stamped after its demotion
+        lp.peers[a].clock.advance(120_000);
+        let rot = lp.peers[a].engine.rotate_leaving_out(&t, &[Role::Read], &[]).unwrap().unwrap();
+        send(&mut lp, a, w, &[rot]);
+        let ak = osis_base::Ak::new("x:a.0").unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Int(7)).unwrap();
+        let wc = lp.peers[w].engine.commit(m).unwrap().unwrap();
+        let sealed = lp.sealed(w, &[wc]).unwrap();
+        for i in [r, o] {
+            send(&mut lp, a, i, &[rot]);
+            assert!(lp.peers[i].engine.core.ix.commits.get(&rot).is_some_and(|m| !m.valid.iter().any(|v| *v)), "peer {i}: A's rotation is invalid");
+            assert!(lp.deliver_sealed(i, &sealed).unwrap().is_empty(), "peer {i}: W's write opens");
+            assert_eq!(lp.peers[i].engine.get(&t, &ak).unwrap(), Some(Value::Int(7)), "peer {i} reads W's write");
+        }
     }
 
     // spec/crypto.md §3 (secrets of its own): a thing has secrets of its own while a valid `keys.0` part wrote a

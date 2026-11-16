@@ -482,8 +482,8 @@ impl Run {
                     format!("#{}:{}:{:?}", i.id, v.rotation_counts(&c), s)
                 }).collect();
                 eprintln!("   heads {:?} taken {:?} {st:?}", v.heads().iter().map(|h| self.line_of(h)).collect::<Vec<_>>(), v.taken().iter().map(|c| self.mid.get(c)).collect::<Vec<_>>());
-                let names: Vec<String> = e.core.account_keys_by_name(&self.ids.p).keys().map(|n| format!("{n:?}").chars().take(40).collect()).collect();
-                eprintln!("   names {names:?}");
+                let names: Vec<String> = e.core.account_keys(&self.ids.p).keys().map(|n| format!("{:?}", &n[..4])).collect();
+                eprintln!("   seeds {names:?}");
             }
             self.lp.peers[to].engine.check_index();
         }
@@ -754,7 +754,7 @@ impl Run {
                 if self.t_setup.iter().any(|x| t_before.contains(x)) {
                     history.insert(0);
                 }
-                let id = self.add(MK::TRot { history }, n, n, e, te, c, pk, bx, reach);
+                let id = self.add(MK::TRot { history, sealed: j.heads.clone() }, n, n, e, te, c, pk, bx, reach);
                 if let Some(x) = self.lp.peers[n].engine.core.epochs(&self.ids.t).and_then(|x| x.read.newest_held().map(|y| y.0)) {
                     self.trot_epoch.insert(id, x);
                 }
@@ -815,7 +815,8 @@ impl Run {
     /// supersedes and carries.
     fn t_current_held(&self, n: usize) -> BTreeSet<osis_crypto::Epoch> {
         let Some(e) = self.lp.peers[n].engine.core.epochs(&self.ids.t) else { return BTreeSet::new() };
-        e.role(Role::Read).current().into_iter().collect()
+        let r = e.role(Role::Read);
+        r.current().into_iter().filter(|x| r.secret(x).is_some()).collect()
     }
 
     /// Whether commit c made at peer k is a rotation of thing t (it writes t's keysets).
@@ -1275,13 +1276,10 @@ impl Run {
             // the secrets of t's own read epochs only grow (reading-only ones included: opened
             // whatever counts; t's epochs derived from P's come and go with P's current epochs)
             if v < OWN || v == R1 {
-                let tk: BTreeSet<osis_crypto::Epoch> = self.lp.peers[v].engine.core.ix.secrets.get(&self.ids.t).map(|e| e.read.epochs().filter(|(x, _)| e.read.secret(x).is_some()).map(|(x, _)| *x).collect()).unwrap_or_default();
+                let tk: BTreeSet<osis_crypto::Epoch> = self.lp.peers[v].engine.core.ix.secrets.get(&self.ids.t).map(|e| e.read.epochs().filter(|(x, _)| e.read.reading_secret(x).is_some()).map(|(x, _)| *x).collect()).unwrap_or_default();
                 // custody of t: the t epochs the model holds (boxed to P at an epoch whose seed is
-                // held, whatever counts) are held. Interim (issues/custody-t-epochs-unheld.md): off,
-                // as R1 and A miss t epochs boxed to them in about a quarter of worlds
-                if std::env::var_os("OSIS_CUSTODY_T_HELD").is_some()
-                    && let Some(k) = j.tkeys.iter().find(|k| self.trot_epoch.get(*k).is_some_and(|x| !tk.contains(x)))
-                {
+                // held, or to R1, whatever counts) are held
+                if let Some(k) = j.tkeys.iter().find(|k| self.trot_epoch.get(*k).is_some_and(|x| !tk.contains(x))) {
                     self.fail(&format!("t{t} node {}: t's epoch of #{k} not held (the model holds it)", cm::NAMES[v]));
                 }
                 if !self.tkeys[v].is_subset(&tk) {

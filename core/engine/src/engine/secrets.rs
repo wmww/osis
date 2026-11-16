@@ -313,7 +313,7 @@ impl Core {
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { holder: *m, epochs: e }, &mut epochs, unchecked);
         }
         for t in self.accounts.keys().filter(|t| holders.contains(t)) {
-            let keys = self.account_keys_by_name(t);
+            let keys = self.account_keys(t);
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Account { holder: *t, keys: &keys }, &mut epochs, unchecked);
         }
         // a node holds no secret of an actor it cannot read (spec/permissions.md §3): an applied

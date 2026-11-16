@@ -459,13 +459,13 @@ fn a_write_at_a_merge_applies_once_the_merge_is_held_spec_commits_4() {
     }
 }
 
-// spec/crypto.md §3, §4 (Account keysets: held once its minting rotation and every epoch it
-// supersedes are, its name its height): a node answers a fork minted by no node; its re-key of t (a writer outside P) boxes t's new
-// epoch to P at the answer's epoch. Another node holding the answer but not the fork cannot
-// name that epoch; once the fork arrives it opens the box, and a rebuild from the commit records
-// opens it alike
+// spec/crypto.md §4 (Account keysets: a box to the account opens by its epoch's seed, whatever
+// its height): a node answers a fork minted by no node; its re-key of t (a writer outside P)
+// boxes t's new epoch to P at the answer's epoch. Another node holding the answer and its seed
+// but not the fork, so not the answer's height, opens the box, and the write under t's new
+// epoch, sealed as a sync ID carries it, reads by value there; a rebuild opens it alike
 #[test]
-fn a_box_at_an_epoch_named_once_its_answered_fork_arrives_opens_alike_on_rebuild_spec_crypto_4() {
+fn a_box_at_an_epoch_whose_answered_fork_is_not_held_opens_spec_crypto_4() {
     let (mut lp, a, t) = world(5, 4);
     let head = setup_head(&lp, &a);
     let fb = forge(&mut lp, 2, &a, head, &[], &[], 91);
@@ -476,12 +476,14 @@ fn a_box_at_an_epoch_named_once_its_answered_fork_arrives_opens_alike_on_rebuild
         let who = tx.core.writer()?;
         crate::rotation::rotate_now(tx, who, t, &osis_keys::ROLES.into_iter().collect())
     }).unwrap();
+    let w = write(&mut lp, 1, t, "under the re-key");
+    let sealed = lp.sealed(1, &[w]).unwrap();
     send(&mut lp, 1, 0, &q);
     send(&mut lp, 1, 0, &rk.commits);
-    assert_ne!(super::tests::newest_read(&lp, 0, t), super::tests::newest_read(&lp, 1, t), "t's new epoch opens with the answer's epoch unnamed");
-    lp.peers[0].engine.check_index();
-    give(&mut lp, &fb, &[0]);
-    assert_eq!(super::tests::newest_read(&lp, 0, t), super::tests::newest_read(&lp, 1, t), "t's new epoch opens once the fork arrives");
+    assert!(!lp.peers[0].engine.core.ix.commits.contains_key(&f), "the fork is not held");
+    assert_eq!(super::tests::newest_read(&lp, 0, t), super::tests::newest_read(&lp, 1, t), "t's new epoch opens with the answer's height unknown");
+    assert!(lp.deliver_sealed(0, &sealed).unwrap().is_empty(), "the write opens");
+    assert_eq!(read(&mut lp, 0, t), Some(Value::Str("under the re-key".into())));
     lp.peers[0].engine.check_index();
 }
 

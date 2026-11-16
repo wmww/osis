@@ -146,6 +146,10 @@ fn unindex(tx: &mut Tx<'_>, id: &CommitId, marks: bool) -> Result<()> {
     let keys: BTreeSet<Tid> = v.aspects.iter().filter(|a| a.ak.as_str() == "keys.0").map(|a| a.tid).collect();
     super::keys::rebuild_keysets(tx, &keys)?;
     super::keys::refresh_own_keys(tx, &keys, false)?;
+    // the reading-only secrets its invalid boxes gave go with it (`keys::read_invalid`)
+    if tx.core.waits.read_any(id) {
+        super::keys::forget_unchecked(tx, id)?;
+    }
     // a signal with no fire left held keeps no cursor (`retention::leaving`)
     for a in m.header.aspects.iter().filter(|a| a.ak.signal()) {
         crate::retention::leaving::unplaced(tx, &a.tid, &a.ak)?;

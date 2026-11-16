@@ -419,10 +419,10 @@ pub struct JudgedEpochs {
     named: BTreeSet<CommitId>,
     /// The chain is read in doubt (`AccountView::doubt`), so the user was told.
     doubt: bool,
-    /// At a node of the account: the names of its epochs whose keysets are held here (a seed
-    /// held, the name known: spec/crypto.md §4, Account keysets). One come to be held reopens the
-    /// boxes sealed to the account (`refresh_epochs`).
-    keyed: BTreeSet<Epoch>,
+    /// At a node of the account: the signing keys of its epochs whose seeds are held here
+    /// (`Core::account_keys`). One come to be held reopens the boxes sealed to the account
+    /// (`refresh_epochs`).
+    keyed: BTreeSet<[u8; 32]>,
 }
 
 impl JudgedEpochs {
@@ -477,7 +477,7 @@ impl JudgedEpochs {
             };
             Value::List(vec![id(e), s, Value::uint(r.map_or(0, |c| 1 + u64::from(c)))])
         }).collect());
-        let keyed = Value::List(self.keyed.iter().map(|e| Value::List(vec![Value::uint(e.n()), Value::bytes(e.nonce())])).collect());
+        let keyed = Value::List(self.keyed.iter().map(|k| Value::bytes(k)).collect());
         Value::List(vec![epochs, Value::List(self.named.iter().map(id).collect()), Value::Bool(self.doubt), keyed])
     }
 
@@ -490,12 +490,9 @@ impl JudgedEpochs {
         let Value::List(top) = v else { return None };
         let [Value::List(xs), Value::List(named), Value::Bool(doubt), Value::List(keyed)] = top.as_slice() else { return None };
         let keyed = keyed.iter().map(|k| match k {
-            Value::List(f) => match f.as_slice() {
-                [Value::Int(n), Value::Bytes(b)] => Epoch::new(u64::try_from(*n).ok()?, b.as_slice().try_into().ok()?).ok(),
-                _ => None,
-            },
+            Value::Bytes(b) => b.as_slice().try_into().ok(),
             _ => None,
-        }).collect::<Option<BTreeSet<Epoch>>>()?;
+        }).collect::<Option<BTreeSet<[u8; 32]>>>()?;
         let named = named.iter().map(id).collect::<Option<BTreeSet<CommitId>>>()?;
         let mut epochs = BTreeMap::new();
         for x in xs {
@@ -866,17 +863,20 @@ impl Core {
         })
     }
 
-    /// The epoch keys of `p` held, by epoch name (spec/crypto.md §3): every held one, whether or
-    /// not its epoch counts, is open or is revoked (custody follows holding: stale means not
-    /// encrypted under, re-sealed or rotated from, never unread, spec/crypto.md §4 Account
-    /// keysets).
-    pub(crate) fn account_keys_by_name(&self, p: &Tid) -> BTreeMap<Epoch, Arc<AccountEpochKeys>> {
-        let (Some(a), Some(v)) = (self.accounts.get(p), self.account_view(p)) else { return BTreeMap::new() };
+    /// The epoch keys of `p` held, by signing key (the key half of an epoch's name,
+    /// spec/crypto.md §3): every seed in custody, whether or not its epoch counts, is open, is
+    /// revoked or has a known name (custody follows holding: stale means not encrypted under,
+    /// re-sealed or rotated from, never unread, spec/crypto.md §4 Account keysets).
+    pub(crate) fn account_keys(&self, p: &Tid) -> BTreeMap<[u8; 32], Arc<AccountEpochKeys>> {
+        let Some(a) = self.accounts.get(p) else { return BTreeMap::new() };
         #[cfg(test)]
-        let shut = |id: &CommitId, e: &EpochPublic| self.faults.stale_shut && (*id != FIRST_EPOCH && !v.rotation_counts(id) || v.revoked(&e.signing.to_bytes()));
+        let shut = |k: &VerifyingKey| {
+            self.faults.stale_shut
+                && self.account_view(p).is_some_and(|v| v.epochs.iter().any(|(id, e)| e.signing == *k && (*id != FIRST_EPOCH && !v.rotation_counts(id) || v.revoked(&k.to_bytes()))))
+        };
         #[cfg(not(test))]
-        let shut = |_: &CommitId, _: &EpochPublic| false;
-        v.epochs.iter().filter(|(id, e)| !shut(id, e)).filter_map(|(_, e)| Some((v.name(e)?, a.keys.get(&e.signing)?.clone()))).collect()
+        let shut = |_: &VerifyingKey| false;
+        a.keys.iter().filter(|(k, _)| !shut(k)).map(|(k, e)| (k.to_bytes(), e.clone())).collect()
     }
 
     /// An account's delete key (spec/crypto.md §7): the signing key of its preferred head.
@@ -1020,7 +1020,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
             }
         }
         let doubt = v.doubt();
-        let keyed: BTreeSet<Epoch> = if tx.core.accounts.contains_key(&p) { tx.core.account_keys_by_name(&p).into_keys().collect() } else { BTreeSet::new() };
+        let keyed: BTreeSet<[u8; 32]> = tx.core.account_keys(&p).into_keys().collect();
         let more_keyed = keyed.iter().any(|e| was.as_ref().is_none_or(|j| !j.keyed.contains(e)));
         let judged = Arc::new(JudgedEpochs { epochs: now, named, doubt: doubt.is_some(), keyed });
         if was.as_deref() == Some(&*judged) {
@@ -1037,8 +1037,7 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
         } else {
             tx.core.ix.epochs.insert(p, judged.clone());
         }
-        // a keyset of the account come to be held (a seed taken up, or a name known once every
-        // epoch its rotation supersedes is held): the boxes sealed to the account open now
+        // a seed of the account come to be held: the boxes sealed to the account open now
         if more_keyed {
             super::reopen_dependents(tx, p)?;
         }

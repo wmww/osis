@@ -475,7 +475,7 @@ fn box_to_an_account_names_its_epoch_spec_crypto_4() {
     let name = osis_keys::account_epoch(4, &vk).unwrap();
     let held = ActorEpochs::derived(&ActorEpochs::key_actor(&Secret32::from_bytes([5; 32])), &a);
     let e = std::sync::Arc::new(e);
-    let seeds = [(name, e.clone())].into_iter().collect();
+    let seeds = [(vk.to_bytes(), e.clone())].into_iter().collect();
     for writer_holds in [None, Some(e.clone())] {
         let r = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::Account { epoch: name, kem: e.kem.public().clone(), keys: writer_holds.clone() }, floor: 0 };
         let rot = rotate(&a, &ROLES.into_iter().collect(), &held, &Default::default(), &[r], &Default::default(), &mut *rg).unwrap();

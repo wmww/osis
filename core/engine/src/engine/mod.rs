@@ -1012,7 +1012,7 @@ pub(crate) struct Faults {
     pub roster_bare: bool,
     pub merge_random: bool,
     /// Boxes to an account at a stale epoch (revoked, or not counting) stay shut, as if stale
-    /// meant unread (`Core::account_keys_by_name`).
+    /// meant unread (`Core::account_keys`).
     pub stale_shut: bool,
 }
 
