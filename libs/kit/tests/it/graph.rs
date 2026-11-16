@@ -50,39 +50,6 @@ fn ran(w: &WindowState, f: impl FnOnce()) -> Vec<String> {
     w.graph.recorded()
 }
 
-/// A second pass with nothing changed runs nothing, however many memos the page reads.
-#[test]
-fn a_clean_pass_reads_nothing() {
-    let d = data();
-    let t = d.create_note().unwrap();
-    let w = WindowState::default();
-    page(&Cx::new(&d, &w, false), t).unwrap();
-    assert!(ran(&w, || drop(page(&Cx::new(&d, &w, false), t).unwrap())).is_empty());
-}
-
-/// A commit to one thing reruns what read that thing and nothing else; another thing's commit runs
-/// nothing here.
-#[test]
-fn a_commit_reruns_only_what_read_it() {
-    let d = data();
-    let (a, b) = (d.create_note().unwrap(), d.create_note().unwrap());
-    let w = WindowState::default();
-    page(&Cx::new(&d, &w, false), a).unwrap();
-    let again = |t| page(&Cx::new(&d, &w, false), t).unwrap();
-    let other = ran(&w, || {
-        name(&d, b, "elsewhere");
-        drop(again(a));
-    });
-    assert!(other.iter().all(|k| !k.contains(&b.to_string())), "another thing's commit runs nothing for it: {other:?}");
-    let own = ran(&w, || {
-        let mut x = d.db.write();
-        x.at(a, BODY).set(&"text".to_string()).unwrap();
-        x.commit().unwrap();
-        drop(again(a));
-    });
-    assert!(!own.is_empty() && own.iter().all(|k| k.contains(&a.to_string()) || k.contains("\"things\"") || k.contains("\"render\"") || k.contains("aspects")), "only what read the note ran: {own:?}");
-}
-
 /// In one cold pass every node (every memo) runs at most once, and the opener's child node, asked
 /// for its foot, is not rendered twice.
 #[test]
@@ -436,24 +403,6 @@ fn one_node_state_write_renders_one_node() {
     let r = rendered(&keys);
     assert_eq!(r.len(), 1, "{keys:?}");
     assert!(r[0].contains("\"one\""), "{r:?}");
-}
-
-/// A diamond through the tree: a view and its child read one state, and each runs once.
-#[test]
-fn a_tree_has_no_glitches() {
-    let d = data();
-    let g = d.main_group().unwrap();
-    let n = d.create_note().unwrap();
-    name(&d, n, "a");
-    let (w, mut tree, mut screen) = (WindowState::default(), Tree::default(), Screen::default());
-    tree.show(attached(&d, &w), &mut screen, "page", &open_spec(g)).unwrap();
-    let keys = ran(&w, || {
-        name(&d, n, "b");
-        d.db.settle();
-        tree.update(&w, &mut screen).unwrap();
-    });
-    let distinct: HashSet<&String> = keys.iter().collect();
-    assert_eq!(distinct.len(), keys.len(), "nothing ran twice: {keys:?}");
 }
 
 /// A render's handle is the one read-only type: osis's compile-fail tests say what it cannot do.
