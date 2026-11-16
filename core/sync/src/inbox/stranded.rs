@@ -5,9 +5,8 @@
 //! current read secret held, and what the report names). Per such S this part sends a Stranded
 //! message, naming the holder with its holder keys, to each connected peer that proved an
 //! account holding write or above on S's actor (`Engine::writer_of`); with none connected, it
-//! logs a stranded notice under the inbox of each admin of the actor (stamped where it writes
-//! that inbox, else deposited and offered). Each once per peer's account and per admin for each
-//! report key: the step's sync key and the holder's current `keys.0` commits, so a report goes
+//! fires a stranded notice on S's thing (`Engine::fire_stranded`, a sealed fire its writers see
+//! later). Each once per peer's account, and the fire once, for each report key: the step's sync key and the holder's current `keys.0` commits, so a report goes
 //! again when the node reaches a newer step or its holder's keys move. A peer counts as told on
 //! its Ok answer: one closed first, or answering otherwise (a store failure there), is told again
 //! at the next proof of a connection.
@@ -23,7 +22,6 @@
 //! `I/x/`), so neither a restart nor a source reconnecting sends it again; a row goes when S is
 //! no longer read here (checked at a start and as strandings move), a new key replacing it.
 
-use super::offers::Offers;
 use super::{Here, Net};
 use crate::session::RequestId;
 use crate::types::{ConnId, Result};
@@ -42,8 +40,8 @@ const ROWS: &[u8] = b"I/x/";
 enum To {
     /// A connected peer, by the account it proved holding write or above.
     Peer(Tid),
-    /// An admin's inbox.
-    Admin(Tid),
+    /// A stranded notice fired on S's thing, naming this holder.
+    Fire(Tid),
 }
 
 /// The reports sent for one S, at one report key.
@@ -59,7 +57,7 @@ impl Sent {
         for t in &self.to {
             let (k, x) = match t {
                 To::Peer(x) => (0u8, x),
-                To::Admin(x) => (1u8, x),
+                To::Fire(x) => (1u8, x),
             };
             v.push(k);
             v.extend_from_slice(x.as_bytes());
@@ -71,7 +69,7 @@ impl Sent {
         let mut to = BTreeSet::new();
         for c in v.get(32..)?.chunks(16) {
             let x = Tid::from_bytes(c.get(1..)?.try_into().ok()?);
-            to.insert(if c.first() == Some(&0) { To::Peer(x) } else { To::Admin(x) });
+            to.insert(if c.first() == Some(&0) { To::Peer(x) } else { To::Fire(x) });
         }
         Some(Sent { key, to })
     }
@@ -157,7 +155,7 @@ impl Reports {
         true
     }
 
-    pub(super) fn settle(&mut self, h: &mut Here<'_>, net: &mut impl Net, offers: &mut Offers) -> Result<bool> {
+    pub(super) fn settle(&mut self, h: &mut Here<'_>, net: &mut impl Net) -> Result<bool> {
         if let Some(status) = h.status
             && !self.seen.due().is_empty()
             && let Some((_, now)) = self.seen.settle(&(), || Arc::new(status.strandings().iter().map(|(s, x)| (*s, x.clone())).collect()))
@@ -180,14 +178,14 @@ impl Reports {
             return Ok(acted);
         }
         for (s, st) in self.now.clone().iter() {
-            acted |= self.report(h, net, offers, *s, st)?;
+            acted |= self.report(h, net, *s, st)?;
         }
         Ok(acted)
     }
 
     /// Sends what is owed of S's report: a Stranded message to each connected writer's account
-    /// not told at this key, else a notice to each admin not told.
-    fn report(&mut self, h: &mut Here<'_>, net: &mut impl Net, offers: &mut Offers, s: SyncId, st: &Stranding) -> Result<bool> {
+    /// not told at this key; with none connected, a stranded notice fired once at this key.
+    fn report(&mut self, h: &mut Here<'_>, net: &mut impl Net, s: SyncId, st: &Stranding) -> Result<bool> {
         let key = report_key(st);
         let was = self.sent.get(&s).cloned();
         let sent = was.clone().filter(|x| x.key == key).unwrap_or(Sent { key, to: BTreeSet::new() });
@@ -209,10 +207,11 @@ impl Reports {
                 self.out.insert((conn, id), (s, key, acct));
             }
         }
-        if writers == 0 {
-            // refgraph: (c) with no writer connected, fire a stranded notice on S's thing
-            // (spec/sync-inbox.md §5), once per report key
-            let _ = offers;
+        let mut sent = sent;
+        if writers == 0 && !sent.to.contains(&To::Fire(st.holder)) {
+            h.engine.fire_stranded(&s, &st.holder)?;
+            osis_base::costs::count("inbox: stranded fired", 1);
+            sent.to.insert(To::Fire(st.holder));
         }
         if was.as_ref() == Some(&sent) {
             return Ok(false);

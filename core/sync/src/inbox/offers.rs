@@ -1,9 +1,10 @@
 //! Deposit items out (spec/sync-inbox.md §3 Sending).
 //!
 //! An offer is an own deposited entry (S, blob) and who may take it: a source of S keeping S
-//! unread (`Target::Stores`: readers pull deposited entries), or, for a sealed fire on another's
-//! thing, a peer that may hold it (`Target::Recipient`): one where S is open, one where the recipient is
-//! proven (its own nodes read it), or one whose filter shows S's deposit key (a node keeping S
+//! unread (`Target::Stores`: readers pull deposited entries), or a sealed fire on a thing this
+//! node does not sync, held outside the store (`add_fire`), for a peer that may hold it
+//! (`Target::Fire`): one where S is open, one where an account holding a role on the thing is
+//! proven (an inbox's account: its own nodes read it), or one whose filter shows S's deposit key (a node keeping S
 //! unread shows it to every connection, spec/sync-opens.md §5 Filter). Never another peer: a
 //! deposit tells its taker that this connection's node sends to that inbox.
 //!
@@ -38,6 +39,8 @@ use osis_crypto::{Signature, SigningSecret, VerifyingKey};
 use osis_proto::{Code, DepositItem, Msg, OfferItem};
 use osis_store::Named;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use crate::types::Wrap;
 
 /// The first back-off after a refusal for now (local policy; minor consequence: how soon a
 /// deposit is offered again). At 0 a full peer is asked again at once, every settle; at infinity
@@ -51,15 +54,15 @@ type Key = (SyncId, BlobId);
 
 /// What offers read of the engine: the engine in a node, a test's values in tests.
 pub trait Judge {
-    /// The deposit key S's offers are signed with, for a recipient's inbox from its deposit seed.
-    fn deposit_key(&mut self, s: &SyncId, recipient: Option<Tid>) -> Result<Option<SigningSecret>>;
+    /// The deposit key S's offers are signed with, for a fired thing from its deposit seed.
+    fn deposit_key(&mut self, s: &SyncId, thing: Option<Tid>) -> Result<Option<SigningSecret>>;
     /// The actors a connection naming `named` counts as now (`opens::counted`).
     fn counted(&mut self, named: &Named) -> Vec<Tid>;
 }
 
 impl Judge for osis_engine::Engine {
-    fn deposit_key(&mut self, s: &SyncId, recipient: Option<Tid>) -> Result<Option<SigningSecret>> {
-        Ok(self.signers(s, recipient.as_ref())?.deposit)
+    fn deposit_key(&mut self, s: &SyncId, thing: Option<Tid>) -> Result<Option<SigningSecret>> {
+        Ok(self.signers(s, thing.as_ref())?.deposit)
     }
     fn counted(&mut self, named: &Named) -> Vec<Tid> {
         crate::opens::counted(self, named)
@@ -71,9 +74,9 @@ impl Judge for osis_engine::Engine {
 pub enum Target {
     /// Sources of S keeping S unread.
     Stores,
-    /// A peer where S is open, where this recipient is proven, or whose filter shows S's
-    /// deposit key.
-    Recipient(Tid),
+    /// A sealed fire on `thing`: a peer where S is open, where `to` is proven, or whose filter
+    /// shows S's deposit key.
+    Fire { thing: Tid, to: Option<Tid> },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -93,6 +96,10 @@ struct Conn {
 #[derive(Clone)]
 pub struct Offers {
     items: BTreeMap<Key, Target>,
+    /// Sealed fires' blobs and filler wraps, held outside the store (`add_fire`).
+    loose: BTreeMap<Key, (Arc<Vec<u8>>, Wrap)>,
+    /// Sealed fires a peer took (answer 0), for `taken`.
+    took: Vec<Key>,
     /// The offers to each recipient, for an actor counted anew at a connection.
     to: BTreeMap<Tid, BTreeSet<Key>>,
     /// Each connection's counted actors (`Judge::counted` of what its proofs named).
@@ -110,7 +117,7 @@ pub struct Offers {
 
 impl Default for Offers {
     fn default() -> Self {
-        Offers { items: BTreeMap::new(), to: BTreeMap::new(), who: Effects::new("inbox: offer peers"), keys: Effects::new("inbox: deposit keys"), conns: BTreeMap::new(), active: BTreeSet::new(), wakes: BTreeSet::new(), parked: BTreeSet::new() }
+        Offers { items: BTreeMap::new(), loose: BTreeMap::new(), took: Vec::new(), to: BTreeMap::new(), who: Effects::new("inbox: offer peers"), keys: Effects::new("inbox: deposit keys"), conns: BTreeMap::new(), active: BTreeSet::new(), wakes: BTreeSet::new(), parked: BTreeSet::new() }
     }
 }
 
@@ -128,16 +135,32 @@ impl Offers {
         self.conns.get(&conn).is_some_and(|c| c.out.is_some() || !c.ready.is_empty() || c.backoff.keys().any(|k| backed_off(&self.wakes, conn, c, k)))
     }
 
+    /// Offers sealed fire `blob` (id `b`, its entry's wrap `wrap`) under S, held here outside
+    /// the store until taken or removed.
+    pub fn add_fire(&mut self, s: SyncId, b: BlobId, blob: Arc<Vec<u8>>, wrap: Wrap, target: Target) {
+        self.loose.insert((s, b), (blob, wrap));
+        self.add(s, b, target);
+    }
+
+    /// The sealed fires a peer took since the last call (`add_fire`): each is offered no more.
+    pub fn taken(&mut self) -> Vec<(SyncId, BlobId)> {
+        let took = std::mem::take(&mut self.took);
+        for (s, b) in &took {
+            self.remove(s, b);
+        }
+        took
+    }
+
     pub fn add(&mut self, s: SyncId, b: BlobId, target: Target) {
         let k = (s, b);
         match self.items.get(&k) {
-            // a recipient's offer goes wherever a store's would
-            Some(Target::Recipient(_)) => return,
+            // a fire's offer goes wherever a store's would
+            Some(Target::Fire { .. }) => return,
             Some(t) if *t == target => return,
             _ => {}
         }
         self.items.insert(k, target);
-        if let Target::Recipient(r) = target {
+        if let Target::Fire { to: Some(r), .. } = target {
             self.to.entry(r).or_default().insert(k);
         }
         osis_base::costs::count("inbox: offer placed", self.conns.len() as u64);
@@ -150,6 +173,7 @@ impl Offers {
 
     pub fn remove(&mut self, s: &SyncId, b: &BlobId) {
         let k = (*s, *b);
+        self.loose.remove(&k);
         if !drop_item(&mut self.items, &mut self.to, &k) {
             return;
         }
@@ -256,7 +280,7 @@ impl Offers {
                 continue;
             }
             c.filter = arrived;
-            let inbox = self.items.iter().filter(|(_, t)| matches!(t, Target::Recipient(_))).map(|(k, _)| *k);
+            let inbox = self.items.iter().filter(|(_, t)| matches!(t, Target::Fire { .. })).map(|(k, _)| *k);
             let fresh: Vec<Key> = inbox.filter(|k| !backed_off(&self.wakes, *id, c, k) && !c.parked.contains_key(k) && c.out.is_none_or(|(_, o, _)| o != *k)).collect();
             osis_base::costs::count("inbox: offer placed", fresh.len() as u64);
             if !fresh.is_empty() {
@@ -274,7 +298,7 @@ impl Offers {
                     Some(g) => g != generation,
                     // just refused: again at once only if signing again changes the signature
                     None => match self.items.get(&k) {
-                        Some(target) => item(store, judge, &k, target)?.is_some_and(|i| i.sig != sig),
+                        Some(target) => item(store, &self.loose, judge, &k, target)?.is_some_and(|i| i.sig != sig),
                         None => true,
                     },
                 };
@@ -307,7 +331,7 @@ impl Offers {
                 if !may_take(net, conn, &c.actors, &k.0, *target, &key.verifying_key().to_bytes()) {
                     continue;
                 }
-                let Some(item) = item(store, judge, &k, target)? else {
+                let Some(item) = item(store, &self.loose, judge, &k, target)? else {
                     drop_item(&mut self.items, &mut self.to, &k);
                     continue;
                 };
@@ -337,6 +361,9 @@ impl Offers {
         if self.items.contains_key(&k) {
             match code {
                 Code::OK => {
+                    if self.loose.contains_key(&k) {
+                        self.took.push(k);
+                    }
                     // one taken ends the back-off of the others of S at this peer
                     c.backoff.remove(&k);
                     let s = k.0;
@@ -374,10 +401,10 @@ pub fn backoff_ms(n: u32) -> u64 {
 }
 
 impl Target {
-    /// The actor whose `keys.0` names the deposit seed.
+    /// The thing whose `keys.0` names the deposit seed.
     pub fn actor(self) -> Option<Tid> {
         match self {
-            Target::Recipient(r) => Some(r),
+            Target::Fire { thing, .. } => Some(thing),
             Target::Stores => None,
         }
     }
@@ -393,7 +420,7 @@ fn backed_off(wakes: &BTreeSet<(WallMs, ConnId, Key)>, conn: ConnId, c: &Conn, k
 /// Drops offer `k` and its index entry; whether it was held.
 fn drop_item(items: &mut BTreeMap<Key, Target>, to: &mut BTreeMap<Tid, BTreeSet<Key>>, k: &Key) -> bool {
     let Some(target) = items.remove(k) else { return false };
-    if let Target::Recipient(r) = target
+    if let Target::Fire { to: Some(r), .. } = target
         && let Some(ks) = to.get_mut(&r)
     {
         ks.remove(k);
@@ -410,14 +437,19 @@ fn may_take(net: &impl Net, conn: ConnId, actors: &[Tid], s: &SyncId, target: Ta
     let member = net.member(conn, s);
     match target {
         Target::Stores => member.is_some_and(|m| m.class == SourceClass::Store),
-        Target::Recipient(r) => member.is_some() || actors.contains(&r) || net.shows_deposit_key(conn, s, key),
+        Target::Fire { to, .. } => member.is_some() || to.is_some_and(|r| actors.contains(&r)) || net.shows_deposit_key(conn, s, key),
     }
 }
 
 /// The Deposit item of offer `k`, signed with the deposit key now; `None`: moot (its entry is
 /// no longer an own deposit, or no deposit key is held).
-fn item(store: &Store, judge: &mut dyn Judge, k: &Key, target: &Target) -> Result<Option<DepositItem>> {
+fn item(store: &Store, loose: &BTreeMap<Key, (Arc<Vec<u8>>, Wrap)>, judge: &mut dyn Judge, k: &Key, target: &Target) -> Result<Option<DepositItem>> {
     let (s, b) = k;
+    if let Some((blob, wrap)) = loose.get(k) {
+        let Some(key) = judge.deposit_key(s, target.actor())? else { return Ok(None) };
+        let sig = osis_blob::sign_deposit(&key, s, b, wrap, false);
+        return Ok(Some(DepositItem { sync_id: *s, blob: blob.to_vec(), wrap: *wrap, sig }));
+    }
     let Some(e) = store.entry(s, b)? else { return Ok(None) };
     if !e.deposited || !e.own {
         return Ok(None);

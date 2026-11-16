@@ -4,6 +4,7 @@
 //! Principle: a deposit is the one way a non-writer adds an entry. This module carries what this
 //! node owes others and what others left in its store:
 //! - `offers`: Deposit items out, one unanswered per connection, refused-for-now backed off.
+//! - `fires`: sealed fires this node owes, offered until a peer takes one.
 //! - `held`: entries in this node's store to act on: deposits promoted by a writer, own deposits
 //!   offered, clearing past the bounds.
 //! - `register`: the recorded steps a source keeping S unread lacks, each once its stream showed
@@ -24,6 +25,7 @@
 //! `held::to_clear`, `register::plan`) that tests drive directly; `Offers` reads the
 //! engine through `offers::Judge`, so it runs over a test's `Net`, `Judge` and store as in a node.
 
+mod fires;
 mod held;
 mod links;
 mod offers;
@@ -118,6 +120,7 @@ impl Net for Links<'_> {
 pub struct Inbox {
     started: bool,
     offers: offers::Offers,
+    fires: fires::Fires,
     held: held::Held,
     register: register::Register,
     links: links::Redemptions,
@@ -165,6 +168,7 @@ impl Inbox {
         }
         self.links.start(h)?;
         self.held.start(h, &mut self.offers)?;
+        self.fires.start(h);
         self.reports.start(h)?;
         self.suspects.start(h);
         self.started = true;
@@ -174,9 +178,10 @@ impl Inbox {
     fn step(&mut self, h: &mut Here<'_>, net: &mut impl Net) -> Result<bool> {
         let mut acted = self.begin(h)?;
         acted |= self.held.settle(h, &mut self.offers)?;
+        acted |= self.fires.settle(h, &mut self.offers)?;
         acted |= self.links.settle(h)?;
         acted |= self.register.settle(h, net)?;
-        acted |= self.reports.settle(h, net, &mut self.offers)?;
+        acted |= self.reports.settle(h, net)?;
         acted |= self.suspects.settle(h, net)?;
         acted |= self.offers.settle(h.now, h.store, net, &mut *h.engine)?;
         Ok(acted)

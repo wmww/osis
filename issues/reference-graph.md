@@ -139,7 +139,9 @@ Each lane owns its files; a stub's body is `todo!("refgraph: (x) ...")` or a no-
 - `caps^.0` and `clients^.0` sit on the local node root (spec/sync-set.md §1): simpler, and reversible; a sibling changing an offline node's caps waits on issues/settings.md.
 
 ## To settle while building
-- D's deposit seed: the inbox is its own thing, so a fresh deposit seed on a device removal rests on every sync-role rotation writing a new one (the inbox thing and D rotate inside each P rotation); check it holds in the rebuild.
+- D's deposit seed (settled, lane c): D has a deposit seed of its own in its `keys.0`, fresh in every account rotation (each rotates D's sync role); the account holds none. The inbox is P's thing held by its record edge, so a device removal (P's rotation revoking the epoch the inbox's boxes to P are sealed at) makes those boxes stale and the inbox rotates all four roles, its sync role writing a fresh deposit seed (`rotation::refreshes_deposit`, no exception for D): the removed node holds neither seed.
+- Actor inboxes (settled, lane c): an actor that is no account takes the three signals' fires its own history setting keeps; core writes no setting on it (an app making a team sets one), so without one a fire there is out of history at once.
+- Sync ID in `keys.0` (settled, lane c): field 9 names an actor's sync ID, written with its genesis step, so a sender holding only the public key record knows where a sealed fire goes.
 - What `tools/spec_map.py` needs once the removed sections go (`tools/policy_test.py` plants appended text in a missing file afresh).
 - No bound on how many sync IDs one commit is carried under (nothing limits the sync units a thing is in): measure with issues/many-sync-ids-cost.md.
 

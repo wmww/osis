@@ -10,9 +10,9 @@ use osis_crdt::{Op, PathOp};
 use osis_store::Shred;
 use std::sync::Arc;
 use osis_base::format::INBOX_LIFETIME_MS;
-use osis_base::{Ak, CommitId, Tid, Ticket, Value};
+use osis_base::{Ak, CommitId, Role, Tid, Ticket, Value};
 use osis_schema::core_types::{self as ct, RetentionEntry, RetentionSetting};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Arriving tickets (spec/sync-inbox.md §1).
 pub const TICKET_FIRE: &str = Ak::check("ticket@~0", true);
@@ -36,20 +36,62 @@ pub(crate) fn make_inbox(tx: &mut Tx<'_>, i: Tid, done: &mut Done) -> Result<()>
     Ok(())
 }
 
-/// Fires on `holder`'s inbox the ticket role commit `c` owes it about `things` (spec/sync-inbox.md
-/// §5): a grant's, a key change's or a re-seal's.
+/// Fires on `holder`'s inbox a ticket for each of `things` (spec/sync-inbox.md §5), after role
+/// commit `c` (a grant's, a key change's or a re-seal's): of the read secret where the holder
+/// holds read or above there, else of the sync secret. A holder with no inbox here (a key actor
+/// other than an account: a node or a link key) is fired nothing.
 pub(crate) fn fire_ticket(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<()> {
-    let _ = (tx, holder, c, things);
-    // refgraph: (c) fire the ticket
+    let _ = c;
+    let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
+    let to = tx.core.is_account(&holder).then_some(holder);
+    for t in things {
+        let role = if tx.core.role_now(&holder, t) >= Some(Role::Read) { Role::Read } else { Role::Sync };
+        let Some(ticket) = make_ticket(tx, *t, role, holder)? else { continue };
+        let v = osis_schema::codec::rt::struct_value(vec![(0, Value::Ticket(Box::new(ticket)))]);
+        fire(tx, inbox, TICKET_FIRE, v, to)?;
+    }
     Ok(())
 }
 
+/// A ticket for `target` of `role` (read or sync) boxed to `holder` (spec/data-model.md §8
+/// Tickets): the secret of the newest current epoch of that role held here, boxed as a
+/// `secrets.0` box to the holder is, naming the target's sync ID and this node's account's
+/// profile. `None` when no such secret, sync ID or keyset of the holder is held.
+pub(crate) fn make_ticket(tx: &mut Tx<'_>, target: Tid, role: Role, holder: Tid) -> Result<Option<Ticket>> {
+    let Some(epochs) = tx.core.epochs(&target) else { return Ok(None) };
+    let Some(e) = epochs.role(role).current().into_iter().filter(|e| epochs.role(role).secret(e).is_some()).max_by_key(|e| (e.n(), *e.nonce())) else { return Ok(None) };
+    let Some(sync_id) = super::home_sync_id(tx, &target)? else { return Ok(None) };
+    let Ok(rcpt) = super::recipient(tx, holder, role) else { return Ok(None) };
+    let Some(w) = osis_keys::box_holder(&target, &epochs, &Default::default(), &rcpt, &BTreeSet::from([role]), &mut *tx.rng)? else { return Ok(None) };
+    let key = ct::BoxKey { holder: holder.into(), role, epoch: osis_keys::aspects::to_schema(&e) };
+    let Some(b) = w.boxes.get(&key) else { return Ok(None) };
+    let me = tx.core.account.get();
+    let profile = match me {
+        Some(p) => {
+            let i = inbox_in(tx, &p)?;
+            tx.core.profile_of(&p, i)
+        }
+        None => None,
+    };
+    let Some(profile) = profile else { return Ok(None) };
+    Ok(Some(Ticket { target, sync_id, role, epoch: (e.n(), *e.nonce()), boxed: osis_schema::Codec::to_value(b), holder, profile }))
+}
+
 /// Fires on `holder`'s inbox the removal notice of role commit `c` lowering its edge on `target`
-/// below read (spec/sync-inbox.md §5).
+/// below read (spec/sync-inbox.md §5): its value, the commit's `roles.0` parts on `target` with
+/// their author's chain, is made when the fire is first sealed, `c` applied by then.
 pub(crate) fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
-    let _ = (tx, holder, c, target);
-    // refgraph: (c) fire the removal notice
-    Ok(())
+    let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
+    let to = tx.core.is_account(&holder).then_some(holder);
+    save(tx, OwedFire { thing: inbox, ak: super::ak(REMOVAL_FIRE)?, what: Fire::Removal { commit: c, target }, to, commit: None })
+}
+
+/// `Engine::inbox_thing` in a transaction.
+pub(crate) fn inbox_in(tx: &mut Tx<'_>, a: &Tid) -> Result<Option<Tid>> {
+    if tx.core.is_account(a) {
+        return Ok(crate::engine::Core::keys_in(tx, a)?.and_then(|k| k.inbox).map(Tid::from));
+    }
+    Ok(tx.core.has_own_secrets(a).then_some(*a))
 }
 
 impl Engine {
@@ -62,13 +104,6 @@ impl Engine {
         self.core.has_own_secrets(a).then_some(*a)
     }
 
-    /// The held ticket for `t` this node can open (spec/data-model.md §8 Tickets, spec/sync-set.md §2):
-    /// found among the known references by `t`'s tid.
-    pub fn ticket_for(&mut self, t: &Tid) -> Result<Option<Ticket>> {
-        let _ = t;
-        todo!("refgraph: (c) ticket lookup")
-    }
-
     /// Acts on a removal notice fired on this account's inbox (spec/sync-inbox.md §5): checked
     /// against the member list held for its thing, then the thing released or a copy retained.
     pub fn take_removal_notice(&mut self, fire: &CommitId) -> Result<()> {
@@ -79,8 +114,14 @@ impl Engine {
     /// Fires a stranded notice on the thing of sync ID `s` (spec/sync-inbox.md §5), naming
     /// `holder` for its writers to re-seal.
     pub fn fire_stranded(&mut self, s: &osis_base::SyncId, holder: &Tid) -> Result<()> {
-        let _ = (s, holder);
-        todo!("refgraph: (c) stranded notices")
+        let Some(t) = self.sync_owner_of(s)? else { return Ok(()) };
+        let keys = self.holder_keys(holder)?;
+        let blobs = |v: &[Value]| Value::List(v.iter().map(|x| Value::Bytes(osis_base::encode(x))).collect());
+        let records = Value::List(keys.records.iter().map(|r| Value::Bytes(osis_base::encode(&r.to_value()))).collect());
+        let v = osis_schema::codec::rt::struct_value(vec![(0, Value::Bytes(s.0.to_vec())), (1, Value::Weak(*holder)), (2, blobs(&keys.commits)), (3, records)]);
+        let expires = self.now().0.saturating_add(INBOX_LIFETIME_MS);
+        let ak = super::ak(STRANDED_FIRE)?;
+        self.run(|tx| save(tx, OwedFire { thing: t, ak, what: Fire::Expiring(v, expires), to: None, commit: None }))
     }
 }
 
@@ -98,25 +139,55 @@ pub(crate) const FIRES: &[u8] = b"node/fires/";
 pub struct OwedFire {
     pub thing: Tid,
     pub ak: Ak,
-    pub value: Value,
+    pub what: Fire,
     pub to: Option<Tid>,
     pub commit: Option<Arc<Vec<u8>>>,
 }
 
+/// What a fire carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fire {
+    Value(Value),
+    /// A value whose commit expires at wall ms `expires` (a stranded notice).
+    Expiring(Value, u64),
+    /// A removal notice of role commit `commit` on `target` (`fire_removal`).
+    Removal { commit: CommitId, target: Tid },
+}
+
+impl Fire {
+    fn to_value(&self) -> Value {
+        match self {
+            Fire::Value(v) => Value::List(vec![Value::Int(0), v.clone()]),
+            Fire::Expiring(v, t) => Value::List(vec![Value::Int(2), v.clone(), Value::Int(i64::try_from(*t).unwrap_or(i64::MAX))]),
+            Fire::Removal { commit, target } => Value::List(vec![Value::Int(1), Value::Bytes(commit.0.to_vec()), Value::Bytes(target.as_bytes().to_vec())]),
+        }
+    }
+    fn from_value(v: &Value) -> Option<Fire> {
+        let Value::List(f) = v else { return None };
+        match f.as_slice() {
+            [Value::Int(0), v] => Some(Fire::Value(v.clone())),
+            [Value::Int(2), v, Value::Int(t)] => Some(Fire::Expiring(v.clone(), u64::try_from(*t).ok()?)),
+            [Value::Int(1), Value::Bytes(c), Value::Bytes(t)] => Some(Fire::Removal { commit: CommitId(c.as_slice().try_into().ok()?), target: Tid::from_bytes(t.as_slice().try_into().ok()?) }),
+            _ => None,
+        }
+    }
+}
+
 impl OwedFire {
     fn id(&self) -> FireId {
-        let v = Value::List(vec![Value::Bytes(self.thing.as_bytes().to_vec()), Value::Str(self.ak.as_str().into()), self.value.clone()]);
+        let v = Value::List(vec![Value::Bytes(self.thing.as_bytes().to_vec()), Value::Str(self.ak.as_str().into()), self.what.to_value()]);
         osis_base::hash::hash(&osis_base::encode(&v))
     }
     fn encode(&self) -> Vec<u8> {
         let opt = |b: Option<Vec<u8>>| Value::List(b.into_iter().map(Value::Bytes).collect());
-        osis_base::encode(&Value::List(vec![Value::Bytes(self.thing.as_bytes().to_vec()), Value::Str(self.ak.as_str().into()), self.value.clone(), opt(self.to.map(|t| t.as_bytes().to_vec())), opt(self.commit.as_ref().map(|c| c.to_vec()))]))
+        osis_base::encode(&Value::List(vec![Value::Bytes(self.thing.as_bytes().to_vec()), Value::Str(self.ak.as_str().into()), self.what.to_value(), opt(self.to.map(|t| t.as_bytes().to_vec())), opt(self.commit.as_ref().map(|c| c.to_vec()))]))
     }
     fn decode(b: &[u8]) -> Result<OwedFire> {
         let bad = || Error::Corrupt("owed fire");
         let v = osis_base::decode(b, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() }).map_err(|_| bad())?;
         let Value::List(f) = v else { return Err(bad()) };
-        let [Value::Bytes(t), Value::Str(ak), value, Value::List(to), Value::List(c)] = f.as_slice() else { return Err(bad()) };
+        let [Value::Bytes(t), Value::Str(ak), what, Value::List(to), Value::List(c)] = f.as_slice() else { return Err(bad()) };
+        let what = Fire::from_value(what).ok_or_else(bad)?;
         let tid = |b: &[u8]| -> Result<Tid> { Ok(Tid::from_bytes(b.try_into().map_err(|_| bad())?)) };
         let to = match to.as_slice() {
             [] => None,
@@ -128,7 +199,7 @@ impl OwedFire {
             [Value::Bytes(b)] => Some(Arc::new(b.clone())),
             _ => return Err(bad()),
         };
-        Ok(OwedFire { thing: tid(t)?, ak: Ak::new(ak.as_str()).map_err(|_| bad())?, value: value.clone(), to, commit })
+        Ok(OwedFire { thing: tid(t)?, ak: Ak::new(ak.as_str()).map_err(|_| bad())?, what, to, commit })
     }
 }
 
@@ -141,6 +212,13 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     })?;
     for o in rows {
         tx.core.ix.fires.insert(o.id(), Arc::new(o));
+    }
+    Ok(())
+}
+
+fn drop_fire(tx: &mut Tx<'_>, id: &FireId) -> Result<()> {
+    if tx.core.ix.fires.remove(id).is_some() {
+        tx.txn.remove_local(&[FIRES, id].concat(), Shred::No)?;
     }
     Ok(())
 }
@@ -158,12 +236,18 @@ fn save(tx: &mut Tx<'_>, o: OwedFire) -> Result<()> {
 pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: Option<Tid>) -> Result<()> {
     let ak = super::ak(ak)?;
     if tx.core.epochs(&thing).is_some_and(|e| e.role(osis_base::Role::Read).holds_any()) {
+        // a fire the thing's setting would not keep is in no history: none is written (an actor
+        // that is no account takes the fires its own setting keeps, spec/sync-inbox.md §1)
+        let wall = tx.core.hlc.peek().wall_ms().0;
+        if crate::retention::history::of(tx.core, &thing, &ak).leaves_at(Some(wall)) <= wall {
+            return Ok(());
+        }
         let mut m = Mutation::new();
         m.op(thing, &ak, PathOp { path: Vec::new(), op: Op::Set(value) })?;
         Engine::commit_tx(tx, m)?;
         return Ok(());
     }
-    save(tx, OwedFire { thing, ak, value, to, commit: None })
+    save(tx, OwedFire { thing, ak, what: Fire::Value(value), to, commit: None })
 }
 
 /// A sealed fire ready to go (`Engine::sealed_fire`): its Deposit item's sync ID and blob, the
@@ -212,15 +296,40 @@ impl Engine {
         let blob = match &o.commit {
             Some(b) => osis_commit::CommitBlob::decode(b)?,
             None => {
+                let (value, expires) = match &o.what {
+                    Fire::Value(v) => (v.clone(), None),
+                    Fire::Expiring(v, t) => (v.clone(), Some(osis_base::WallMs(*t))),
+                    Fire::Removal { commit, target } => match self.removal_notice(commit, target)? {
+                        Some(v) => (v, None),
+                        None => return Ok(None),
+                    },
+                };
                 let o = (*o).clone();
-                self.run(|tx| {
+                let reads = self.core.epochs(&o.thing).is_some_and(|e| e.role(osis_base::Role::Read).holds_any());
+                let made = self.run(|tx| {
                     let mut m = Mutation::new();
-                    m.op(o.thing, &o.ak, PathOp { path: Vec::new(), op: Op::Set(o.value.clone()) })?;
+                    m.op(o.thing, &o.ak, PathOp { path: Vec::new(), op: Op::Set(value) })?;
+                    if let Some(t) = expires {
+                        m.expires(o.thing, &o.ak, t)?;
+                    }
+                    // a node reading the thing fires as it writes (spec/sync-inbox.md §2)
+                    if reads {
+                        let wall = tx.core.hlc.peek().wall_ms().0;
+                        if crate::retention::history::of(tx.core, &o.thing, &o.ak).leaves_at(Some(wall)) > wall {
+                            Engine::commit_tx(tx, m)?;
+                        }
+                        drop_fire(tx, &o.id())?;
+                        return Ok(None);
+                    }
                     m.commit_form();
                     let b = crate::engine::write::sealed_commit(tx, m)?;
                     save(tx, OwedFire { commit: Some(Arc::new(b.encode())), ..o })?;
-                    Ok(b)
-                })?
+                    Ok(Some(b))
+                })?;
+                match made {
+                    Some(b) => b,
+                    None => return Ok(None),
+                }
             }
         };
         let h = &blob.header;
@@ -241,11 +350,82 @@ impl Engine {
     /// A peer took fire `id` (answer 0, spec/sync-inbox.md §3): its delivery ends.
     pub fn fire_taken(&mut self, id: &FireId) -> Result<()> {
         let id = *id;
-        self.run(|tx| {
-            if tx.core.ix.fires.remove(&id).is_some() {
-                tx.txn.remove_local(&[FIRES, &id].concat(), Shred::No)?;
+        self.run(|tx| drop_fire(tx, &id))
+    }
+
+    /// The removal notice of role commit `c` on `target` (spec/sync-inbox.md §5, spec/data-model.md
+    /// §9): `c` projected to its `roles.0` parts on `target`, its author's chain certificates for
+    /// them (each projected to its chain deltas, no `keys.0` but the author's own), and their
+    /// creation records. `None` while `c` is not applied here.
+    fn removal_notice(&mut self, c: &CommitId, target: &Tid) -> Result<Option<Value>> {
+        let id = *c;
+        let Some(full) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
+        let parts: crate::sync_ids::Parts = full.header.aspects.iter().enumerate().filter(|(_, a)| a.tid == *target && a.ak.as_str() == "roles.0").map(|(i, _)| i).collect();
+        let Some(mut chain) = self.author_chain(c, &parts) else { return Ok(None) };
+        for (x, ps) in chain.commits.iter_mut() {
+            let Some(hx) = self.header(x) else { continue };
+            ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.author));
+        }
+        chain.commits.retain(|_, p| !p.is_empty());
+        let (chain, records) = self.certs_values(&chain)?;
+        let commit = osis_commit::rewrite(&full, |ai| !parts.contains(&ai));
+        let blobs = |v: Vec<Value>| Value::List(v.iter().map(|x| Value::Bytes(osis_base::encode(x))).collect());
+        let records = Value::List(records.iter().map(|r| Value::Bytes(osis_base::encode(&r.to_value()))).collect());
+        Ok(Some(osis_schema::codec::rt::struct_value(vec![(0, Value::Bytes(commit.encode())), (1, blobs(chain)), (2, records)])))
+    }
+}
+
+impl Engine {
+    /// Opens entry `b` (`bytes`) of thing `t`'s sync ID as a sealed fire (spec/sync-inbox.md §4
+    /// A sealed fire): with the read secret of each keyset of `t` held, newest first; takes the
+    /// author's records and its chain's commits it carries as certificates (each kept only if
+    /// judged valid), then the commit, which holds one delta: a fire of an open signal of `t`
+    /// whose hash and prefix agree with its header. `NotOpen` when no held key opens it.
+    pub(crate) fn open_sealed_fire(&mut self, t: &Tid, b: &osis_base::BlobId, bytes: &[u8]) -> Result<crate::sync::Opened> {
+        use crate::sync::Opened;
+        let mut found = None;
+        for (e, secret) in self.read_epochs(t, &[]).into_iter().rev() {
+            if let Ok(x) = osis_blob::open_fire(bytes, t, &e, &osis_crypto::role_kem(&secret)) {
+                found = Some(x);
+                break;
             }
-            Ok(())
-        })
+        }
+        let Some((prefix, fire)) = found else { return Ok(Opened::NotOpen) };
+        let Ok(commit) = osis_commit::CommitBlob::decode(&osis_base::encode(&fire.commit)) else { return Ok(Opened::Bad) };
+        let h = &commit.header;
+        let one = matches!(commit.parts.as_slice(), [p] if h.aspects.get(p.ai).is_some_and(|a| a.tid == *t && a.ak.open()));
+        if !one || !h.is_resolved() {
+            return Ok(Opened::Bad);
+        }
+        let ais: Vec<usize> = (0..h.aspects.len()).collect();
+        let groups = osis_commit::prefix_groups(h, ais.iter().copied())?;
+        if !prefix.agrees(osis_commit::prefix_expiry(h, &ais).map(osis_base::WallMs), &h.blind, &groups, osis_blob::Class::of_marker(h.ephemeral)) {
+            return Ok(Opened::Bad);
+        }
+        if let (Some(r), Some(p)) = (self.core.created(t), commit.parts.first())
+            && h.aspects.get(p.ai).is_some_and(|a| osis_crypto::delta_hash(&osis_crypto::dedup_secret(r.nonce()), &p.delta) != a.hash)
+        {
+            return Ok(Opened::Bad);
+        }
+        // the author's chain to its actor: its records, then its chain commits, each kept only
+        // where valid (`ingest_valid`)
+        let records: Vec<osis_base::CreationRecord> = fire.records.into_iter().filter(|r| self.core.created(&r.tid()).is_none()).collect();
+        if !records.is_empty() {
+            self.learn_records(records)?;
+        }
+        for c in &fire.chain {
+            self.ingest_valid(&osis_base::encode(c))?;
+        }
+        let id = commit.id();
+        let ingested = match self.ingest(&commit.encode(), Vec::new()) {
+            Ok(i) => i,
+            Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
+            Err(_) => return Ok(Opened::Bad),
+        };
+        let parts = commit.parts.iter().map(|p| p.ai).collect();
+        let row = crate::sync::BlobOf { commit: id, parts, sealed: Default::default(), copy: false, unchecked: false, salt: *prefix.salt(), ais: ais.into_iter().collect() };
+        let b = *b;
+        self.run(|tx| crate::sync::bodies::note_blob(tx, &b, row))?;
+        Ok(Opened::Commit(id, ingested))
     }
 }

@@ -30,6 +30,7 @@ pub(crate) mod stranded;
 pub(crate) mod tickets;
 pub(crate) mod units;
 pub use stranded::Stranding;
+pub use crate::flows::inbox::{FireId, SealedFireOut};
 #[cfg(test)]
 mod tests_facts;
 

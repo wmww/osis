@@ -692,7 +692,7 @@ fn pending_deltas(blob: &osis_commit::CommitBlob, id: &CommitId, keep: impl Fn(&
 
 impl crate::engine::Engine {
     /// Records a read or sync secret learned from an entry box (a link key opening
-    /// by static entry, spec/sync-ids.md §3) when it is the secret of epoch `e` of `g`'s role `r` (spec/crypto.md
+    /// by static entry, spec/sync-ids.md §3) or a ticket (spec/sync-inbox.md §5) when it is the secret of epoch `e` of `g`'s role `r` (spec/crypto.md
     /// §4; anyone holding the head's step key, a removed admin among them, can write the box, so
     /// it establishes nothing). False when it is not, or when the node lost `g` (`rotation::may_learn`,
     /// spec/permissions.md §3).
@@ -701,8 +701,15 @@ impl crate::engine::Engine {
             return Ok(false);
         }
         let g = *g;
+        // a sync secret of a thing not read (a ticket's, spec/sync.md §3): held as its epoch's,
+        // nothing of the thing opened by it
         if r == Role::Sync && !self.core.epochs(&g).is_some_and(|x| x.role(Role::Read).holds_any()) {
-            todo!("refgraph: (c) a sync secret of a thing not read, held as a ticket gives it")
+            return self.run(|tx| {
+                tx.core.touch();
+                tx.core.ix.secrets.entry_or_default(g).role_mut(r).set_secret(e, secret);
+                crate::flows::save_epochs(tx, &g)?;
+                Ok(true)
+            });
         }
         self.run(|tx| {
             tx.core.touch();

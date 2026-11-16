@@ -2,7 +2,7 @@
 //! (`act_of`, `adds_delta`, `to_clear`, `plan`), and Deposit items out (`Offers`) over a real
 //! store and a `Net` that records what is sent. One test per rule of spec/sync-inbox.md §2-§4 and
 //! spec/sync-ids.md §6 Steps and Register it implements. The module in a node over the engine
-//! (a delivery logged deposited, an inbox blob taken) is tests/it/keep.rs.
+//! (a sealed fire offered and taken) is tests/it/keep.rs.
 
 use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::memo::{Stamped, StampedSet};
@@ -35,6 +35,11 @@ fn sync_id(i: u32) -> SyncId {
     let mut b = [1u8; 16];
     b[..4].copy_from_slice(&i.to_le_bytes());
     SyncId(b)
+}
+
+/// A sealed fire on `THING` offered where `to` is proven.
+fn fire(to: Tid) -> Target {
+    Target::Fire { thing: THING, to: Some(to) }
 }
 
 fn conn(i: u64) -> ConnId {
@@ -178,9 +183,15 @@ impl T {
             self.keys.insert(s, s.0[0]);
         }
         let (b, bytes) = blob(tag, 64, Some(T0 + INBOX_LIFETIME_MS));
-        let e = Entry { blob: b, wrap: [5; 57], stamp: None, deposited: true, own: true, role: false, class: Class::Durable, expires: Some(WallMs(T0 + INBOX_LIFETIME_MS)) };
-        assert_eq!(self.store.log(&s, e, Some(bytes), None).unwrap(), Code::OK);
-        self.offers.add(s, b, target);
+        match target {
+            // a sealed fire: held outside the store
+            Target::Fire { .. } => self.offers.add_fire(s, b, Arc::new(bytes), [5; 57], target),
+            Target::Stores => {
+                let e = Entry { blob: b, wrap: [5; 57], stamp: None, deposited: true, own: true, role: false, class: Class::Durable, expires: Some(WallMs(T0 + INBOX_LIFETIME_MS)) };
+                assert_eq!(self.store.log(&s, e, Some(bytes), None).unwrap(), Code::OK);
+                self.offers.add(s, b, target);
+            }
+        }
         self.settle();
         b
     }
@@ -205,16 +216,16 @@ impl T {
     }
 }
 
-// spec/sync-inbox.md §3 (sending): an inbox blob deposited is offered as a Deposit item signed by
+// spec/sync-inbox.md §3 (sending): a sealed fire is offered as a Deposit item signed by
 // the inbox's deposit key to a peer that may hold the inbox (the recipient proven there), never
 // to an unrelated peer.
 #[test]
-fn inbox_blob_offered_to_recipient_spec_sync_inbox_3() {
+fn sealed_fire_offered_to_recipient_spec_sync_inbox_3() {
     let mut t = T::new();
     t.connect(conn(1), &[tid(9)]);
     t.connect(conn(2), &[tid(0)]);
     let s = sync_id(100);
-    let b = t.deposit(s, 1, Target::Recipient(tid(0)));
+    let b = t.deposit(s, 1, fire(tid(0)));
     assert_eq!(t.deposits_sent().iter().map(|x| (x.0, x.3)).collect::<Vec<_>>(), vec![(conn(2), b)], "only to the recipient's node");
     let Msg::Offer { items, .. } = &t.net.requests[0].2 else { panic!() };
     let [OfferItem::Deposit(d)] = items.as_slice() else { panic!() };
@@ -227,15 +238,15 @@ fn inbox_blob_offered_to_recipient_spec_sync_inbox_3() {
 // account removed the proving node, its key's epoch closed), nothing more is offered there for
 // it, also what was ready or backed off; counted again, its offers go there again.
 #[test]
-fn inbox_blob_offered_only_while_the_recipient_counts_spec_sync_inbox_3() {
+fn sealed_fire_offered_only_while_the_recipient_counts_spec_sync_inbox_3() {
     let mut t = T::new();
     t.connect(conn(2), &[tid(0)]);
     let s = sync_id(100);
-    let first = t.deposit(s, 1, Target::Recipient(tid(0)));
+    let first = t.deposit(s, 1, fire(tid(0)));
     let (c, id, ..) = t.deposits_sent()[0];
     t.reply(c, id, T::shared(Code::RATE_LIMITED));
     t.uncounted.insert(tid(0));
-    t.deposit(s, 2, Target::Recipient(tid(0)));
+    t.deposit(s, 2, fire(tid(0)));
     t.advance(osis_sync::inbox::backoff_ms(0));
     assert_eq!(t.deposits_sent().len(), 1, "no offer for a recipient no longer counted there: {:?}", t.deposits_sent());
     t.uncounted.remove(&tid(0));
@@ -256,7 +267,7 @@ fn a_back_off_over_while_untakeable_waits_for_nothing_spec_sync_inbox_3() {
         let mut t = T::new();
         t.connect(conn(2), &[tid(0)]);
         let s = sync_id(100);
-        t.deposit(s, 1, Target::Recipient(tid(0)));
+        t.deposit(s, 1, fire(tid(0)));
         let (c, id, ..) = t.deposits_sent()[0];
         t.reply(c, id, T::shared(Code::RATE_LIMITED));
         t.uncounted.insert(tid(0));
@@ -274,16 +285,16 @@ fn a_back_off_over_while_untakeable_waits_for_nothing_spec_sync_inbox_3() {
     }
 }
 
-// spec/sync-inbox.md §3 (sending): an inbox blob also goes to a peer whose filter shows the
+// spec/sync-inbox.md §3 (sending): a sealed fire also goes to a peer whose filter shows the
 // inbox's deposit key (a node keeping it unread shows it to every connection,
 // spec/sync-opens.md §5 Filter), once that filter arrives; never to one showing another key.
 #[test]
-fn inbox_blob_offered_where_filter_shows_deposit_key_spec_sync_inbox_3() {
+fn sealed_fire_offered_where_filter_shows_deposit_key_spec_sync_inbox_3() {
     let mut t = T::new();
     t.connect(conn(1), &[tid(9)]);
     t.connect(conn(2), &[tid(8)]);
     let s = sync_id(100);
-    t.deposit(s, 1, Target::Recipient(tid(0)));
+    t.deposit(s, 1, fire(tid(0)));
     assert!(t.deposits_sent().is_empty(), "no peer may hold the inbox");
     let key = deposit_key(&deposit_seed(s.0[0]), &s).verifying_key().to_bytes();
     t.net.shown.insert((conn(1), s, key));
@@ -302,7 +313,7 @@ fn inbox_blob_offered_where_filter_shows_deposit_key_spec_sync_inbox_3() {
 fn one_deposit_item_unanswered_per_connection_spec_sync_inbox_3() {
     let mut t = T::new();
     for i in 0..3 {
-        t.deposit(sync_id(100), i, Target::Recipient(tid(0)));
+        t.deposit(sync_id(100), i, fire(tid(0)));
     }
     t.connect(conn(2), &[tid(0)]);
     assert_eq!(t.deposits_sent().len(), 1);
@@ -318,7 +329,7 @@ fn one_deposit_item_unanswered_per_connection_spec_sync_inbox_3() {
 fn refused_for_now_backs_off_spec_sync_inbox_3() {
     let mut t = T::new();
     for i in 0..2 {
-        t.deposit(sync_id(100), i, Target::Recipient(tid(0)));
+        t.deposit(sync_id(100), i, fire(tid(0)));
     }
     t.connect(conn(2), &[tid(0)]);
     let (c, id, s, first) = t.deposits_sent()[0];
@@ -343,7 +354,7 @@ fn refused_for_now_backs_off_spec_sync_inbox_3() {
 #[test]
 fn refused_waits_for_filter_or_new_key_spec_sync_inbox_3() {
     let mut t = T::new();
-    t.deposit(sync_id(100), 1, Target::Recipient(tid(0)));
+    t.deposit(sync_id(100), 1, fire(tid(0)));
     t.connect(conn(2), &[tid(0)]);
     let (c, id, ..) = t.deposits_sent()[0];
     t.reply(c, id, T::shared(Code::DECLINED));

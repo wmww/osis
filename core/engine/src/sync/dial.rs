@@ -34,12 +34,13 @@ impl Core {
     /// Account `a`'s profile (spec/permissions.md §1): the thing created with `a` (in the commit
     /// creating it, which `a` authors: a record needs no authority, so another author's commit
     /// carrying `a`'s record again creates no profile of `a`'s) whose first admin is `a`, other
-    /// than its devices actor. `None` until that commit is held here.
-    pub(crate) fn profile_of(&self, a: &Tid) -> Option<Tid> {
+    /// than its devices actor and its inbox (`inbox`, as `a`'s `keys.0` names it). `None` until
+    /// that commit is held here.
+    pub(crate) fn profile_of(&self, a: &Tid, inbox: Option<Tid>) -> Option<Tid> {
         let created = ct::CREATED.name();
         let by = self.ix.by_aspect.get(&(*a, created.clone()))?;
         let meta = by.iter().filter_map(|(_, c)| self.ix.commits.get(c)).find(|m| m.header.author == *a)?;
-        meta.view.aspects.iter().filter(|x| x.ak == created && x.tid != *a).map(|x| x.tid).find(|x| self.first_admin(x) == Some(*a) && self.devices_of(x).is_none())
+        meta.view.aspects.iter().filter(|x| x.ak == created && x.tid != *a && Some(x.tid) != inbox).map(|x| x.tid).find(|x| self.first_admin(x) == Some(*a) && self.devices_of(x).is_none())
     }
 }
 
@@ -131,8 +132,9 @@ impl Engine {
     }
 
     /// See `Core::profile_of`.
-    pub fn profile_of(&self, a: &Tid) -> Option<Tid> {
-        self.core.profile_of(a)
+    pub fn profile_of(&mut self, a: &Tid) -> Option<Tid> {
+        let inbox = self.inbox_thing(a);
+        self.core.profile_of(a, inbox)
     }
 
     /// Account `a`'s dial list: `dial^.0` on its profile, as held here.
@@ -185,7 +187,8 @@ pub(crate) type Departed = Option<(Tid, BTreeSet<Vec<u8>>)>;
 /// profile (no account, or the profile not held or not writable here).
 fn departed(tx: &mut Tx<'_>) -> Result<Departed> {
     let Some((p, d)) = tx.core.account_devices() else { return Ok(None) };
-    let Some(profile) = tx.core.profile_of(&p).filter(|x| tx.core.writable(x)) else { return Ok(None) };
+    let inbox = crate::flows::inbox::inbox_in(tx, &p)?;
+    let Some(profile) = tx.core.profile_of(&p, inbox).filter(|x| tx.core.writable(x)) else { return Ok(None) };
     let list = typed(tx, &profile, &ct::DIAL)?.unwrap_or_default();
     if list.is_empty() {
         return Ok(Some((profile, BTreeSet::new())));

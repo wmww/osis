@@ -51,7 +51,7 @@ fn indices(rest: &[u8]) -> Option<(PartSet, &[u8])> {
 
 /// Notes blob `b` as this node opened or sealed it (`row`), in place of what an earlier opening
 /// noted (opened again once more is checked, `BlobOf::unchecked`).
-pub(super) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, row: BlobOf) -> Result<()> {
+pub(crate) fn note_blob(tx: &mut Tx<'_>, b: &BlobId, row: BlobOf) -> Result<()> {
     match tx.core.ix.blob_parts.get(b) {
         Some(old) if **old == row => return Ok(()),
         Some(_) => unnote_blob(tx, b)?,
@@ -569,7 +569,9 @@ impl Engine {
             return Ok(Opened::Linked);
         }
         let Some(t) = self.opening_thing(s)? else { return Ok(Opened::NotOpen) };
-        let Some((_, key)) = osis_blob::unwrap_any(self.read_secrets(&t).iter(), blob, wrap) else { return Ok(Opened::NotOpen) };
+        // a wrap no held secret opens: a sealed fire's filler, opened by the read KEM key
+        // (spec/sync-inbox.md §4 A sealed fire)
+        let Some((_, key)) = osis_blob::unwrap_any(self.read_secrets(&t).iter(), blob, wrap) else { return self.open_sealed_fire(&t, blob, bytes) };
         let opened = match self.open_commit(bytes, &key) {
             Ok(o) => o,
             Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::Local => return Err(e),
@@ -654,7 +656,7 @@ impl Engine {
 
     /// Whether a writer may promote deposited commit `c` under `s` (spec/sync-inbox.md §4): only
     /// once it holds `c` applied, with a body `s` must hold, and its author held write on `s`'s
-    /// actor at `c`'s `ts` (as this node judges it); then with the author's chain for those parts
+    /// actor at `c`'s `ts` (as this node judges it), or it fires an open signal; then with the author's chain for those parts
     /// to log beside it (`NotYet` while that chain is not complete here). `Never` when `s` carries
     /// nothing of `c` or its author lacked write then.
     pub fn promotable(&mut self, s: &SyncId, c: &CommitId) -> Result<Promote> {
@@ -666,7 +668,9 @@ impl Engine {
         let Some(b) = self.commit_bodies_under(&ctx, c)?.into_iter().next() else { return Ok(Promote::Never) };
         let Some(h) = self.header(c) else { return Ok(Promote::NotYet) };
         let actor = self.group_actor(&t);
-        if crate::engine::write::role_of(&self.core, &h.author, &actor, h.ts) < Some(Role::Write) || !self.judged_valid(c, &b.parts) {
+        // a fire of an open signal is promoted whatever its author's role (spec/sync-inbox.md §4)
+        let open = b.parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.open()));
+        if !open && crate::engine::write::role_of(&self.core, &h.author, &actor, h.ts) < Some(Role::Write) || !self.judged_valid(c, &b.parts) {
             return Ok(Promote::Never);
         }
         let parts: crate::sync_ids::Parts = b.parts.iter().copied().collect();
