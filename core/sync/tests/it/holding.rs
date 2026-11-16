@@ -177,11 +177,10 @@ fn accepted_after_a_change(lowered: bool) -> (World, Tid) {
 // spec/sync-set.md §2: refgraph T7. A ticket enters at the lower of its own role and the
 // holder's; a read ticket whose holder holds sync alone on T enters T kept unread, one whose
 // holder holds no role enters nothing. Alice grants Bob read and, before he accepts, lowers him to sync
-// or removes him. His accept syncs T read on the ticket's word for good, reading nothing
-// (issues/reference-graph.md Status).
+// or removes him; his accept takes the removal notice on his inbox with the ticket's fire, so T
+// is kept unread (lowered) or not entered (removed).
 #[test]
-#[ignore = "issues/reference-graph.md"]
-fn repro_a_ticket_enters_at_the_lower_of_its_role_and_the_holders_spec_sync_set_2() {
+fn a_ticket_enters_at_the_lower_of_its_role_and_the_holders_spec_sync_set_2() {
     for lowered in [true, false] {
         let (mut w, t) = accepted_after_a_change(lowered);
         assert_eq!(value(&mut w, 1, &t), None, "lowered {lowered}");

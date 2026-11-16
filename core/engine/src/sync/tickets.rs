@@ -61,49 +61,68 @@ fn opened_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Ticket, Opened)>> {
     Ok(held_in(tx, t)?.into_iter().filter_map(|k| tx.core.open_ticket(&k).map(|o| (k, o))).collect())
 }
 
+/// The role a held ticket of role `k` for `t` enters `t` at (spec/sync-set.md §2): the lower of
+/// `k` and the node's role on `t` now, as the role commits it holds of `t` show (`None`: no role);
+/// on the ticket's word while it holds none. The one rule of what a held ticket does: the walk's
+/// ticket taking (`take_in`) and its judge (`units::given_by`, which reads it so a role change
+/// judges the edge again) read it alone.
+pub(crate) fn entry_role(core: &Core, t: &Tid, k: Role) -> Option<Role> {
+    match core.timelines.on(t).is_some_and(|o| o.held().next().is_some()) {
+        true => crate::rotation::role_here(core, t).map(|r| r.min(k)),
+        false => Some(k),
+    }
+}
+
 /// What the walk's ticket step took of a thing's held tickets (`take_in`).
 pub(crate) struct Taken {
-    /// The sync IDs and roles of the tickets the node can open.
+    /// The sync IDs and entry roles of the tickets that enter.
     pub(crate) ids: BTreeSet<(SyncId, Role)>,
     /// The holders every held ticket is boxed to, opened or not.
     pub(crate) openers: BTreeSet<Tid>,
+    /// Whether any held ticket opens here (`Closure::accepted`).
+    pub(crate) opened: bool,
 }
 
-/// The walk's ticket taking, at a strong to `t` whose read secret is
-/// not established (spec/sync-set.md §2): each held ticket's secret taken, and the sync IDs and
-/// roles of the tickets the node can open; and its openers, the holders every held ticket for
+/// The walk's ticket taking at a strong to `t` whose read secret is not established
+/// (spec/sync-set.md §2): each held ticket the node can open enters at `entry_role`, its secret
+/// taken where that is the ticket's own role; and its openers, the holders every held ticket for
 /// `t` is boxed to, which the step is judged again by as they can open more
-/// (`Closure::opener_moved`).
+/// (`Closure::opener_moved`). The role commits a read ticket's fires carry, and the removal
+/// notices on `t`, are noted for taking where not held (`Engine::take_ticket_fires`): what they
+/// show is what `entry_role` judges by next. O(its tickets).
 pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Taken> {
-    let mut ids = BTreeSet::new();
     let held = held_in(tx, t)?;
     let openers = held.iter().map(|k| k.holder).collect();
-    // the role commits held of `t` decide (spec/sync-set.md §2: a ticket whose holder holds no
-    // role on `t` enters nothing); with none held, the ticket's word
-    if tx.core.timelines.get(t).is_some() && !crate::rotation::may_take(tx.core, t) {
-        return Ok(Taken { ids, openers });
-    }
     let opened: Vec<(Ticket, Opened)> = held.into_iter().filter_map(|k| tx.core.open_ticket(&k).map(|o| (k, o))).collect();
+    let any = !opened.is_empty();
+    let reads = opened.iter().any(|(k, o)| k.role.min(o.role) == Role::Read);
+    let mut ids = BTreeSet::new();
     for (k, o) in opened {
-        crate::apply::keys::learn_secret_in(tx, &k.target, o.role, o.epoch, o.secret)?;
-        ids.insert((k.sync_id, o.role.min(k.role)));
+        let Some(e) = entry_role(tx.core, t, o.role.min(k.role)) else { continue };
+        if e >= o.role {
+            crate::apply::keys::learn_secret_in(tx, &k.target, o.role, o.epoch, o.secret)?;
+        }
+        ids.insert((k.sync_id, e));
     }
-    // the role commits a read ticket's fire carries are taken now the strong reaches `t`, while
-    // it has no own keys here (`Engine::take_ticket_fires`); a node keeping `t` unread holds no
-    // role commit of it (spec/sync.md §3)
-    if ids.iter().any(|(_, r)| *r >= Role::Read) && !tx.core.keyed(t) {
+    // only a read ticket's: a sync ticket enters at sync at most, and a node keeping `t` unread
+    // by its word reads no role commit of it (spec/sync.md §3)
+    if reads {
         for r in crate::engine::refs::tickets_to(tx, t)? {
-            if let Some(c) = r.fire.filter(|_| r.ak.as_str() == crate::flows::inbox::TICKET_FIRE) {
+            let Some(c) = r.fire else { continue };
+            if crate::flows::inbox::fire_untaken(tx, &c, r.ak.as_str())? {
                 tx.core.ix.closure.fires_due.insert(c);
             }
         }
+        for c in crate::flows::inbox::removals_untaken(tx, t)? {
+            tx.core.ix.closure.fires_due.insert(c);
+        }
     }
-    Ok(Taken { ids, openers })
+    Ok(Taken { ids, openers, opened: any })
 }
 
 impl Engine {
-    /// Takes the role parts of each ticket fire whose ticket the walk took
-    /// (`Engine::take_ticket_fire`); whether any was due.
+    /// Takes the role parts of each fire `take_in` noted (`Engine::take_fire`); whether any was
+    /// due.
     pub fn take_ticket_fires(&mut self) -> Result<bool> {
         let due: Vec<osis_base::CommitId> = self.core.ix.closure.fires_due.iter().copied().collect();
         if due.is_empty() {
@@ -116,7 +135,7 @@ impl Engine {
             Ok(())
         })?;
         for c in &due {
-            self.take_ticket_fire(c)?;
+            self.take_fire(c)?;
         }
         Ok(true)
     }

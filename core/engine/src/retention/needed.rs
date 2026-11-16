@@ -4,7 +4,9 @@
 //! is kept while a thing that needs it is kept: one whose record names it first admin, one whose
 //! held edge write names it holder (`Held::named_on`), one a held or pending commit it authored or
 //! acted in is on (body held or not; a pending one by the things it writes on, `Indexes::pend_by`).
-//! A thing is rooted, kept for itself: in the node closure or leaving it, this node's account's or the node's own (its record chain's key actor), a key actor that is
+//! A thing is rooted, kept for itself: in the node closure or leaving it, reached by a held
+//! strong with a ticket for it held (`Closure::accepted`: what judges the ticket stays,
+//! spec/sync-set.md §2), this node's account's or the node's own (its record chain's key actor), a key actor that is
 //! no account (a node, a link key), one a key actor held here is named on (a link being
 //! redeemed, a bearer), a kept copy, destroyed (`retention::destroy` keeps it), or a
 //! thing an own self-removal still waits to seal under. Everything else goes whole, as never
@@ -27,7 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Whether `t` is kept for itself (the module doc).
 fn rooted(core: &Core, t: &Tid) -> bool {
     let cl = &core.ix.closure;
-    if cl.holds(t) || cl.left().contains_key(t) || core.ix.kept.contains_key(t) || super::forget::copy_of(core, t).is_some() || core.destroyed(t) {
+    if cl.holds(t) || cl.left().contains_key(t) || cl.accepted(t) || core.ix.kept.contains_key(t) || super::forget::copy_of(core, t).is_some() || core.destroyed(t) {
         return true;
     }
     if core.is_key_actor(t) && !core.is_account(t) {

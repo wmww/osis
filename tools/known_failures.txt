@@ -5,6 +5,5 @@
 # (tools/gate_failures.py).
 props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
 validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-depend-on-store-rng.md one rebuild per flipped aspect\s+left: 7\s+right: 5
-differential::histories_hold_their_closure OSIS_SYNC_SEED=7 issues/reference-graph.md the model reads it|, the model (Some\(Unread\)|None)|must-hold bodies a caught-up reader lacks
-sims::a_peer_refusing_role_entries OSIS_SYNC_SEED=0 issues/reference-graph.md node 1 reads thing 0: None, the model reads it
+differential::histories_hold_their_closure OSIS_SYNC_SEED=1 issues/reference-graph.md unlike the reference|must-hold bodies a caught-up reader lacks
 destruction::a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_judgement_5 - issues/kept-unread-by-ticket.md node 1 lost the request

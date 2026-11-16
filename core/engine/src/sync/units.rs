@@ -134,8 +134,13 @@ pub struct Closure {
     /// Per holder, the things whose `openers` name it: the edges into them are judged again when
     /// the holder can open more (`opener_moved`).
     by_opener: JSetMap<Tid, Tid>,
-    /// Ticket fires whose ticket the walk took, their role parts not taken yet
-    /// (`Engine::take_ticket_fires`).
+    /// Per thing, the held vertices whose strong reaches it, the thing not followed by their
+    /// keys, while the node holds a ticket for it that opens here, as last judged: the role
+    /// commits that judge those tickets stay while any does (`retention::needed`), whether or not
+    /// they enter it.
+    accepted: JSetMap<Tid, Vx>,
+    /// Fires whose role parts the walk's ticket step would take, not taken yet
+    /// (`tickets::take_in`, `Engine::take_ticket_fires`).
     pub(crate) fires_due: JSet<osis_base::CommitId>,
     /// Per context, its things: a read context's are its root's sync unit.
     members: JSetMap<Ctx, Tid>,
@@ -161,6 +166,7 @@ impl Default for Closure {
             by_ticket_id: JSetMap::default(),
             openers: JSetMap::default(),
             by_opener: JSetMap::default(),
+            accepted: JSetMap::default(),
             fires_due: JSet::default(),
             members: JSetMap::by_element(),
             left: JMap::default(),
@@ -207,12 +213,13 @@ impl Follow {
 }
 
 impl Journaled for Closure {
-    type Mark = ([usize; 4], [usize; 4], [usize; 13]);
+    type Mark = ([usize; 4], [usize; 4], [usize; 14]);
     fn commit(&mut self) {
         self.ticket_ids.commit();
         self.by_ticket_id.commit();
         self.openers.commit();
         self.by_opener.commit();
+        self.accepted.commit();
         self.fires_due.commit();
         self.tree.commit();
         self.synced.commit();
@@ -226,7 +233,7 @@ impl Journaled for Closure {
         self.cut.commit();
     }
     fn mark(&mut self) -> Self::Mark {
-        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark(), self.openers.mark(), self.by_opener.mark()])
+        (self.tree.mark(), self.synced.mark(), [self.out.mark(), self.inn.mark(), self.moved.mark(), self.rows.mark(), self.rejudge.mark(), self.members.mark(), self.left.mark(), self.cut.mark(), self.ticket_ids.mark(), self.by_ticket_id.mark(), self.fires_due.mark(), self.openers.mark(), self.by_opener.mark(), self.accepted.mark()])
     }
     fn rollback_to(&mut self, (t, s, m): Self::Mark) {
         self.tree.rollback_to(t);
@@ -244,6 +251,7 @@ impl Journaled for Closure {
         self.fires_due.rollback_to(m[10]);
         self.openers.rollback_to(m[11]);
         self.by_opener.rollback_to(m[12]);
+        self.accepted.rollback_to(m[13]);
     }
     fn name(&mut self, _name: &'static str) {
         self.tree.name("index: closure held");
@@ -255,6 +263,7 @@ impl Journaled for Closure {
         self.by_ticket_id.name("index: closure by ticket id");
         self.openers.name("index: closure ticket openers");
         self.by_opener.name("index: closure by ticket opener");
+        self.accepted.name("index: closure accepted");
     }
     #[cfg(test)]
     fn contents(&self) -> String {
@@ -451,6 +460,22 @@ impl Closure {
     /// The things whose held tickets name sync ID `s`.
     pub(crate) fn naming_ticket_id(&self, s: &osis_base::SyncId) -> BTreeSet<Tid> {
         self.by_ticket_id.get(s).cloned().unwrap_or_default()
+    }
+
+    /// Whether a held vertex's strong reaches `t` with a ticket for it held (`accepted`).
+    pub(crate) fn accepted(&self, t: &Tid) -> bool {
+        self.accepted.get(t).is_some_and(|v| !v.is_empty())
+    }
+
+    /// Sets whether `v`'s strong to `t` is one `accepted` counts; whether `t` lost its last.
+    fn set_accepted(&mut self, t: Tid, v: Vx, on: bool) -> bool {
+        if on {
+            self.accepted.insert(t, v);
+            return false;
+        }
+        let had = self.accepted(&t);
+        self.accepted.remove(&t, &v);
+        had && !self.accepted(&t)
     }
 
     /// Sets `t`'s ticket sync IDs (`ticket_ids`) to `ids`.
@@ -732,17 +757,13 @@ impl Core {
         }
     }
 
-    /// Whether `y` has own keys here (spec/sync-set.md §2): by the role commits held of it, by an
-    /// established secret of its own (not one derived from its first admin's), or by a held sync
-    /// secret where it holds no read secret of it and does not open it plainly. A read secret not established (a
-    /// ticket's) may be anyone's, so it makes no thing keyed: it only has the walk fetch under its
-    /// ticket's sync IDs (`Ctx::Ticket`) until the role commits arrive. A node keeping a thing
-    /// unread never reads its role commits: its sync secret (a ticket's) is all it holds of it, so
-    /// that keys it (entered `Ctx::Unread`, which a close ends), except where the node reads it
-    /// plainly, which a forged one must not cut off.
+    /// Whether `y` has own keys here (spec/sync-set.md §2): by the role commits held of it, or by
+    /// an established secret of its own (not one derived from its first admin's). A ticket's
+    /// secret establishes nothing (it may be anyone's): a thing without own keys whose tickets the
+    /// walk took is entered on their word (`given_by`), read fetching under their sync IDs
+    /// (`Ctx::Ticket`) until the role commits arrive, sync kept unread (`Ctx::Unread`).
     pub(crate) fn keyed(&self, y: &Tid) -> bool {
-        self.has_own_secrets(y)
-            || self.ix.secrets.get(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held_established().next().is_some()) || (e.role(Role::Sync).holds_any() && !e.role(Role::Read).holds_any() && !self.opens_plain(y)))
+        self.has_own_secrets(y) || self.ix.secrets.get(y).is_some_and(|e| Role::ALL.iter().any(|r| e.role(*r).held_established().next().is_some()))
     }
 
     /// Whether the node holds an established read secret of `y`'s own (not one derived from its
@@ -816,11 +837,19 @@ fn given_by(core: &Core, v: Vx, y: Tid, closed: bool) -> BTreeSet<Vx> {
     if keyed && Ctx::Read(y) != c && let Some(e) = core.enter(&y, closed) {
         out.insert((e, y));
     }
-    // no own keys here, a ticket's secret held: fetched under the ticket's sync IDs
-    // (spec/sync-inbox.md §5 Ticket sync IDs), none of its data held for it
-    let ticketed = !core.ix.closure.ticket_ids(&y).is_empty() && core.ix.secrets.get(&y).is_some_and(|e| e.role(Role::Read).holds_any() || (e.role(Role::Sync).holds_any() && !closed));
-    if !keyed && ticketed {
-        out.insert((Ctx::Ticket(y), y));
+    // no own keys here: entered on a ticket's word at the role its tickets enter at
+    // (`tickets::entry_role`, read again here so a role change judges the edge again), by a
+    // secret of that role held: read fetches under the tickets' sync IDs (spec/sync-inbox.md §5
+    // Ticket sync IDs), none of its data held for it; sync keeps them unread, which a close ends
+    if !keyed {
+        let best = core.ix.closure.ticket_ids(&y).into_iter().map(|(_, r)| r).max();
+        let role = best.min(super::tickets::entry_role(core, &y, Role::Read));
+        let holds = |r: Role| core.ix.secrets.get(&y).is_some_and(|e| e.role(r).holds_any());
+        if role == Some(Role::Read) && holds(Role::Read) {
+            out.insert((Ctx::Ticket(y), y));
+        } else if role.is_some() && holds(Role::Sync) && !closed {
+            out.insert((Ctx::Unread(y), y));
+        }
     }
     out
 }
@@ -924,6 +953,7 @@ fn want_edges(tx: &mut Tx<'_>, f: &mut Follow, v: Vx) -> Result<()> {
 fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>> {
     if matches!(v.0, Ctx::Unread(_) | Ctx::Ticket(_)) || !strong_to(tx, &v.1, &y)? {
         f.fx.unwant(&(v, y));
+        set_accepted(tx, y, v, false);
         return Ok(BTreeSet::new());
     }
     f.fx.want((v, y));
@@ -931,11 +961,15 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
     // here: each held ticket for it the node can open has its secret taken now the strong reaches
     // it, and its sync ID noted (spec/sync-set.md §2, spec/sync-inbox.md §5 Nothing before the
     // strong): O(its tickets)
-    if !tx.core.is_key_actor(&y) && !tx.core.reads_established(&y) && !tx.core.keys_open_from(v.0, &y) {
+    let ticketed = !tx.core.is_key_actor(&y) && !tx.core.reads_established(&y) && !tx.core.keys_open_from(v.0, &y);
+    let mut any = false;
+    if ticketed {
         let taken = super::tickets::take_in(tx, &y)?;
         tx.core.ix.closure.set_ticket_ids(y, taken.ids);
         tx.core.ix.closure.set_openers(y, taken.openers);
+        any = taken.opened;
     }
+    set_accepted(tx, y, v, any);
     let closed = closed_kept(tx, &y)?;
     let core = &*tx.core;
     let mut got = BTreeSet::new();
@@ -944,6 +978,14 @@ fn judge(tx: &mut Tx<'_>, f: &mut Follow, v: Vx, y: Tid) -> Result<BTreeSet<Vx>>
         got.clone()
     });
     Ok(got)
+}
+
+/// Notes whether `v`'s strong to `y` counts for `Closure::accepted`; `y` losing its last is
+/// judged for what it still needs (`retention::needed`).
+fn set_accepted(tx: &mut Tx<'_>, y: Tid, v: Vx, on: bool) {
+    if tx.core.ix.closure.set_accepted(y, v, on) {
+        tx.core.needs_due.insert(y);
+    }
 }
 
 /// Sets what held vertex `v`'s edge to `y` gives to `now`, moving the tree.
@@ -972,6 +1014,7 @@ fn apply(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx, v: Vx, y: Tid, now: BTreeSet<V
                 if !matches!(x.0, Ctx::Unread(_) | Ctx::Ticket(_)) {
                     for y in strongs_from(tx, &x.1)? {
                         f.fx.unwant(&(x, y));
+                        set_accepted(tx, y, x, false);
                     }
                 }
             }
@@ -1160,7 +1203,6 @@ impl Engine {
     /// §2).
     pub(crate) fn kept_unread(&self, t: &Tid) -> bool {
         let c = self.core.ix.closure.contexts(t);
-        let reads = self.core.epochs(t).is_some_and(|e| e.role(Role::Read).holds_any());
-        (c.contains(&Ctx::Unread(*t)) || (c.contains(&Ctx::Ticket(*t)) && !reads)) && !c.contains(&Ctx::Read(*t))
+        c.contains(&Ctx::Unread(*t)) && !c.contains(&Ctx::Read(*t))
     }
 }

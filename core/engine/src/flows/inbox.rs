@@ -135,17 +135,27 @@ impl Engine {
     pub fn take_removal_notice(&mut self, fire: &CommitId) -> Result<()> {
         let id = *fire;
         let Some(v) = self.read(|tx| fire_value(tx, &id, REMOVAL_FIRE))? else { return Ok(()) };
-        self.take_role_parts(&v, &["roles.0"], true)
+        self.take_role_parts(&v, &["roles.0"], true)?;
+        // a thing a strong reaches by a ticket alone takes it at its strong (`tickets::take_in`)
+        self.run(|tx| {
+            if let Some(b) = fire_commit(tx, &id)? {
+                for a in &b.header.aspects {
+                    tx.core.ix.closure.rejudge(a.tid);
+                }
+            }
+            Ok(())
+        })
     }
 
-    /// Takes the role parts a ticket fire held here carries (`Fire::Ticket`), once the walk took
-    /// its ticket at a strong (spec/sync-inbox.md §5 Nothing before the strong): its records, its
-    /// chain and then its commit, each only where judged valid (`ingest_valid`).
-    pub(crate) fn take_ticket_fire(&mut self, fire: &CommitId) -> Result<()> {
+    /// Takes the role parts fire `fire` held here carries (`Fire::Ticket`'s, a removal notice's),
+    /// once the walk met a ticket for its thing at a strong (spec/sync-inbox.md §5 Nothing before
+    /// the strong, spec/sync-set.md §2): its records, its chain and then its commit, each only
+    /// where judged valid (`ingest_valid`).
+    pub(crate) fn take_fire(&mut self, fire: &CommitId) -> Result<()> {
         let id = *fire;
-        let Some(Value::Map(m)) = self.read(|tx| fire_value(tx, &id, TICKET_FIRE))? else { return Ok(()) };
-        let Some(v) = m.get(&Value::Int(2)).cloned() else { return Ok(()) };
-        self.take_role_parts(&v, &["roles.0", "keys.0", "secrets.0"], false)
+        let Some(v) = self.read(|tx| fire_parts(tx, &id))? else { return Ok(()) };
+        let aks: &[&str] = if self.read(|tx| fire_value(tx, &id, TICKET_FIRE))?.is_some() { &["roles.0", "keys.0", "secrets.0"] } else { &["roles.0"] };
+        self.take_role_parts(&v, aks, false)
     }
 
     /// Takes role commit parts `v` (`role_parts_value`): every part of one of `aks`; `read` the
@@ -613,6 +623,55 @@ impl Engine {
         let t = *t;
         self.run(|tx| write_account_ticket(tx, &t))
     }
+}
+
+/// The role parts value (`role_parts_value`) fire commit `c` carries: a ticket fire's `grant`, a
+/// removal notice's whole value.
+fn fire_parts(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<Value>> {
+    if let Some(Value::Map(m)) = fire_value(tx, c, TICKET_FIRE)? {
+        return Ok(m.get(&Value::Int(2)).cloned());
+    }
+    fire_value(tx, c, REMOVAL_FIRE)
+}
+
+/// The removal notices on this node's account's inbox whose role parts are on `t` and not held
+/// whole here (`fire_untaken`). O(the notices the inbox keeps, `INBOX_LIFETIME`): a notice names
+/// its thing only inside its commit.
+pub(crate) fn removals_untaken(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<CommitId>> {
+    let Some(a) = tx.core.member() else { return Ok(Vec::new()) };
+    let Some(inbox) = inbox_in(tx, &a)? else { return Ok(Vec::new()) };
+    let fires: Vec<CommitId> = tx.core.ix.by_aspect.get(&(inbox, super::ak(REMOVAL_FIRE)?)).into_iter().flatten().map(|x| x.1).collect();
+    let mut out = Vec::new();
+    for c in fires {
+        if let Some(blob) = fire_commit(tx, &c)?
+            && blob.header.aspects.iter().any(|x| x.tid == *t)
+            && !held_whole(tx, &blob)
+        {
+            out.push(c);
+        }
+    }
+    Ok(out)
+}
+
+/// The commit whose role parts fire `c` carries (`fire_parts`).
+fn fire_commit(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<osis_commit::CommitBlob>> {
+    let Some(Value::Map(m)) = fire_parts(tx, c)? else { return Ok(None) };
+    let Some(Value::Bytes(b)) = m.get(&Value::Int(0)) else { return Ok(None) };
+    Ok(osis_commit::CommitBlob::decode(b).ok())
+}
+
+/// Whether every part of `blob` is held here.
+fn held_whole(tx: &Tx<'_>, blob: &osis_commit::CommitBlob) -> bool {
+    tx.core.ix.commits.get(&blob.id()).is_some_and(|m| blob.parts.iter().all(|p| m.holds(p.ai)))
+}
+
+/// Whether fire `c` on signal `ak` carries role parts (`fire_parts`) of a commit not held whole
+/// here: what `Engine::take_fire` would take.
+pub(crate) fn fire_untaken(tx: &mut Tx<'_>, c: &CommitId, ak: &str) -> Result<bool> {
+    if ak != TICKET_FIRE && ak != REMOVAL_FIRE {
+        return Ok(false);
+    }
+    Ok(fire_commit(tx, c)?.is_some_and(|b| !held_whole(tx, &b)))
 }
 
 /// The value fire commit `c` holds on open signal `ak`, as held here.
