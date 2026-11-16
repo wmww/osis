@@ -35,8 +35,6 @@ PROPTEST_RNG_SEED  third-party: proptest
 WAYLAND_DISPLAY  third-party: Wayland
 isdir  third-party: Python os.path
 run_in_background  third-party: Claude Code's Bash tool
-prune_incremental  third-party: the wt tool (reasonable-rust-builds plugin)
-prune_target  third-party: the wt tool (reasonable-rust-builds plugin)
 
 do_x  placeholder
 do_y  placeholder
