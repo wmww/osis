@@ -1393,7 +1393,7 @@ type Shown = BTreeMap<(String, String), Shows>;
 
 /// One thing a node shows: a read, compared as a value and printed only for a message (printing
 /// every read was a fifth of `held_set_decides_exhaustive`), or an error or roster as printed.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Hash)]
 enum Shows {
     Read(Option<Value>),
     Printed(String),
@@ -1709,7 +1709,7 @@ fn withhold(mut played: Played, seed: u64, cfg: Cfg) -> Played {
 /// A move of a delivery: pack `i` ingested whole, or (`Some(ai)`) with its parts on its `ai`th
 /// aspect only, the rest of the commit arriving late (spec/commits.md §4: a late delta joins on
 /// arrival); or the delivery's end (`finish`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Move {
     Ingest(usize, Option<usize>),
     Finish { late: bool },
@@ -1783,21 +1783,21 @@ fn ingest(played: &Played, p: &mut Peer, m: Move) {
 /// dispute it detected (`disputes::walk_sides`), so its trust set is empty wherever it is judged
 /// (spec/permissions.md §5.1), and runs sync's covered drops (`drop_covered`; `drops` first notes
 /// the parts it holds other than whole, `held::Drops::before`, so held-model judges each drop by
-/// the part as it was just before). Checks that the wakes miss nothing a full scan of the pending
-/// commits would apply.
+/// the part as it was just before).
 fn settle(played: &Played, p: &mut Peer, drops: Option<&std::cell::RefCell<crate::held::Drops>>) {
     crate::disputes::walk_sides(p);
     if let Some(d) = drops {
         d.borrow_mut().before(&p.engine);
     }
     drop_covered(played, p);
-    let lost = p.engine.lost_wakes().unwrap();
-    assert!(lost.is_empty(), "applied by a full scan, missed by the wakes: {lost:?}");
 }
 
 /// A delivery's end (`each` after each step): a late-parts delivery reexamines, then what is due
 /// runs, as a node runs it before every read (a purge request's floor passing judges its
-/// purge-on-replace bodies again, spec/commits.md §5).
+/// purge-on-replace bodies again, spec/commits.md §5). Then the wakes have missed nothing a full
+/// scan of the pending commits would apply: checked once a delivery, at its end, where a wake lost
+/// on the way shows unless a later wake made it up (a scan after every ingest cost a quarter of
+/// `held_set_decides_plain`).
 fn finish(p: &mut Peer, late: bool, each: &mut dyn FnMut(&mut Peer)) {
     each(p);
     if late {
@@ -1806,6 +1806,8 @@ fn finish(p: &mut Peer, late: bool, each: &mut dyn FnMut(&mut Peer)) {
     }
     p.tick().unwrap();
     each(p);
+    let lost = p.engine.lost_wakes().unwrap();
+    assert!(lost.is_empty(), "applied by a full scan, missed by the wakes: {lost:?}");
 }
 
 /// A fresh node given `packs` in `order`.
@@ -1905,6 +1907,17 @@ enum End {
 type Key = (usize, u8, usize);
 
 impl End {
+    /// What its check is a function of besides the node: the check (an order's, with its reopen;
+    /// the other ends' `node_checks`) and the oracle judging it.
+    fn class(self) -> (u8, usize) {
+        match self {
+            End::Order(h, _) => (0, h),
+            End::Late(h, _) => (1, h),
+            End::Rest(..) => (1, 0),
+            End::Reference(h) => (5, h),
+        }
+    }
+
     fn key(self) -> Key {
         match self {
             End::Order(h, k) => (h, 0, k),
@@ -1922,6 +1935,8 @@ impl End {
 struct Tree {
     kids: BTreeMap<Move, Tree>,
     ends: Vec<End>,
+    /// `Tree::shape`, once asked.
+    shape: std::sync::OnceLock<u64>,
 }
 
 impl Tree {
@@ -1931,6 +1946,27 @@ impl Tree {
             t = t.kids.entry(m).or_default();
         }
         t.ends.push(end);
+    }
+
+    /// A digest of its moves and its ends' classes (`End::class`), every way down: from equal nodes,
+    /// two trees of one shape reach equal nodes judged alike.
+    fn shape(&self) -> u64 {
+        *self.shape.get_or_init(|| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut ends: Vec<(u8, usize)> = self.ends.iter().map(|e| e.class()).collect();
+            ends.sort();
+            ends.hash(&mut h);
+            for (m, kid) in &self.kids {
+                (m, kid.shape()).hash(&mut h);
+            }
+            h.finish()
+        })
+    }
+
+    /// How many ends it has, every way down.
+    fn count(&self) -> u64 {
+        self.ends.len() as u64 + self.kids.values().map(Tree::count).sum::<u64>()
     }
 
     /// Its first end by rank (`End::key`).
@@ -1973,15 +2009,28 @@ fn take_move(played: &Played, p: &mut Peer, m: Move) {
 type Job<'j> = (Key, Box<dyn Fn() -> Result<Seen, String> + Sync + 'j>);
 
 /// Every delivery of `tree` from a fresh node (`judged_node`), each judged at its end by `end`,
-/// and `jobs`, on up to `threads` threads (`pool`): every result, by key.
-fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], end: &(dyn Fn(End, Peer) -> Result<Seen, String> + Sync)) -> Vec<(Key, Result<Seen, String>)> {
+/// and `jobs`, on up to `threads` threads (`pool`): every result, by key. With `alike`, the walk is
+/// over the tree's nodes up to equality (`node_key`; every move and check is a function of the node
+/// it starts from): an end is judged once per class and node, and a branch walked once per shape
+/// and node (`Tree::shape`); what goes unwalked counts in `Seen::alike`.
+fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], alike: bool, end: &(dyn Fn(End, Peer) -> Result<Seen, String> + Sync)) -> Vec<(Key, Result<Seen, String>)> {
     let out = std::sync::Mutex::new(Vec::new());
+    let met = std::sync::Mutex::new(std::collections::HashSet::new());
+    // whether node `p` is the first met of `what` (an end's class or a branch's shape)
+    let first = |what: (u8, u64), p: &mut Peer| !alike || met.lock().unwrap().insert((what, node_key(played, p)));
+    let judge = |e: End, mut p: Peer| -> Result<Seen, String> {
+        let (c, h) = e.class();
+        match first((c, h as u64), &mut p) {
+            true => end(e, p),
+            false => Ok(Seen { alike: 1, ..Seen::default() }),
+        }
+    };
     let root = std::sync::Arc::new(std::sync::Mutex::new(judged_node(played)));
     let tasks: Vec<Task> = (0..jobs.len()).map(Task::Job).chain([Task::Down(tree, None, root)]).collect();
     pool(tasks, threads, |task, add| {
         let r = match task {
             Task::Job(j) => (jobs[j].0, caught(&jobs[j].1)),
-            Task::End(e, at) => (e.key(), caught(|| end(e, take_node(played, at)))),
+            Task::End(e, at) => (e.key(), caught(|| judge(e, take_node(played, at)))),
             Task::Down(below, m, at) => {
                 // down to the next branch or end; a failure on the way is every end's below, ranked
                 // as the first of them
@@ -2007,8 +2056,13 @@ fn walk(played: &Played, tree: &Tree, threads: usize, jobs: &[Job], end: &(dyn F
                 };
                 if t.kids.is_empty() && t.ends.len() == 1 {
                     let e = t.ends[0];
-                    (e.key(), caught(|| end(e, p)))
+                    (e.key(), caught(|| judge(e, p)))
                 } else {
+                    let mut p = p;
+                    if !first((6, t.shape()), &mut p) {
+                        out.lock().unwrap_or_else(|e| e.into_inner()).push((t.first().key(), Ok(Seen { alike: t.count(), ..Seen::default() })));
+                        return;
+                    }
                     let at = std::sync::Arc::new(std::sync::Mutex::new(p));
                     for &e in &t.ends {
                         add(Task::End(e, at.clone()));
@@ -2401,6 +2455,8 @@ struct Seen {
     /// The deliveries' work: ingests and nodes copied (`Played::ingests`).
     ingests: u64,
     copies: u64,
+    /// Tree ends judged as an alike end (`walk`).
+    alike: u64,
 }
 
 impl Seen {
@@ -2426,6 +2482,7 @@ impl Seen {
         self.settled += o.settled;
         self.ingests += o.ingests;
         self.copies += o.copies;
+        self.alike += o.alike;
         self.model.add(&o.model);
         for (k, v) in &o.pending {
             *self.pending.entry(k.clone()).or_default() += v;
@@ -2687,7 +2744,7 @@ fn check_orders(threads: usize, seed: u64, steps: &[Step], cfg: Cfg) -> Result<S
     if cfg.away {
         jobs.push(((sets.len(), 0, 0), Box::new(away)));
     }
-    for (_, r) in walk(played, &tree, threads, &jobs, &end) {
+    for (_, r) in walk(played, &tree, threads, &jobs, true, &end) {
         seen.add(&r?);
     }
     seen.withheld = played.withheld;
@@ -3123,7 +3180,7 @@ fn held_set_decides_at(sizes: Vec<Size>) {
         }
         let failed: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
         // always shown: the counts are what a passing run is read for
-        osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones ({} with late parts; {} ingests, {} nodes copied), {} failing, {:.1} s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, here.orders, here.twins.2, here.ingests, here.copies, failed.len(), t0.elapsed().as_secs_f64(), here.model.compared, here.model.nodes));
+        osis_base::testenv::visible(true, &format!("order::held_set_decides ({}): {} seeds from {}, {} steps, {} orders in the passing ones ({} with late parts; {} ingests, {} nodes copied, {} ends judged as an alike one), {} failing, {:.1} s; held-model compared {} aspects over {} nodes", size.name, size.seeds.len(), size.seeds.first().copied().unwrap_or(0), size.len, here.orders, here.twins.2, here.ingests, here.copies, here.alike, failed.len(), t0.elapsed().as_secs_f64(), here.model.compared, here.model.nodes));
         seen.add(&here);
         fails.extend(failed);
     }
@@ -3159,7 +3216,7 @@ fn tree_failure_on_the_way_is_its_first_ends() {
     for k in [2, 1] {
         lacking.kids.entry(Move::Finish { late: false }).or_default().ends.push(End::Order(0, k));
     }
-    let r = walk(played, &tree, 2, &[], &|_, _| Ok(Seen::default()));
+    let r = walk(played, &tree, 2, &[], false, &|_, _| Ok(Seen::default()));
     assert_eq!(r.len(), 2, "{r:?}");
     assert!(r[0].0 == (0, 0, 0) && r[0].1.is_ok(), "{r:?}");
     assert!(r[1].0 == (0, 0, 1) && r[1].1.as_ref().is_err_and(|d| d.contains("on the way to Order(0, 1)") && d.contains("index out of bounds")), "{r:?}");
@@ -3179,6 +3236,20 @@ fn node_state(played: &Played, p: &mut Peer) -> Vec<(&'static str, String)> {
         ("thrown out", format!("{:?}", (discarded, p.discards, p.redelivered))),
         ("clock", format!("{:?}", p.engine.now())),
     ]
+}
+
+/// A digest of `node_state` but the stores' bytes (which differ by the order rows were written
+/// in): two nodes with one key hold the same rows, indexes, pending and thrown-out commits and
+/// clock, and show the same, so each move and check of `check_orders` takes them alike (`walk`).
+/// Hashed, not printed: printing a store's rows costs as much as judging the node.
+fn node_key(played: &Played, p: &mut Peer) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    p.engine.store_dump().unwrap().hash(&mut h);
+    format!("{:?}", (p.engine.index_digest(), p.engine.pending(), p.engine.now())).hash(&mut h);
+    shown(p, &played.things).hash(&mut h);
+    (p.discarded.iter().map(|d| d.commit).collect::<Vec<_>>(), p.discards, p.redelivered).hash(&mut h);
+    h.finish()
 }
 
 // The delivery tree (`walk`) is exact: each delivery's end, reached from nodes copied where
@@ -3223,7 +3294,7 @@ fn tree_ends_are_fresh_deliveries() {
                 None => Ok(Seen::default()),
             }
         };
-        for (_, r) in walk(played, &tree, 4, &[], &end) {
+        for (_, r) in walk(played, &tree, 4, &[], false, &end) {
             r.unwrap();
         }
         copies.fetch_add(played.copies.load(Relaxed), Relaxed);

@@ -696,6 +696,11 @@ impl Engine {
     /// by its commit or not (spec/sync-set.md §2 closure). Complete when nothing is `missing`.
     pub fn body_links(&mut self, plaintext: &[u8]) -> Result<Trees> {
         let Ok(cb) = osis_commit::CommitBlob::decode(plaintext) else { return Ok(Trees::default()) };
+        self.body_links_of(&cb)
+    }
+
+    /// `body_links` of a decoded body.
+    pub(crate) fn body_links_of(&mut self, cb: &osis_commit::CommitBlob) -> Result<Trees> {
         let Some(h) = self.header(&cb.id()) else { return Ok(Trees::default()) };
         self.read(|tx| {
             let mut out = Trees::default();

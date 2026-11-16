@@ -186,8 +186,6 @@ fn judge_replaced_at(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Re
         return Ok(None);
     }
     let mut dead = deaths(tx, c, ai, &tid, &ak)?;
-    #[cfg(test)]
-    assert_eq!(dead, oracle::deaths(tx, c, ai, &tid, &ak)?, "deaths at the part's positions vs the whole state");
     if dead.is_empty() {
         return Ok(None);
     }
@@ -334,6 +332,14 @@ fn deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak) -> Resul
     st.join(f);
     let joined = winners_of(tx, &st);
     Ok(mine.minus(&joined))
+}
+
+/// `deaths` of `c`'s part on `(tid, ak)`, and the oracle's (`oracle::deaths`: the part joined
+/// into the whole state), for `tests_paged`.
+#[cfg(test)]
+pub(crate) fn deaths_and_whole(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<(BTreeSet<Won>, BTreeSet<Won>)>> {
+    let Some(ai) = held_part(tx.core, c, tid, ak) else { return Ok(None) };
+    Ok(Some((deaths(tx, c, ai, tid, ak)?, oracle::deaths(tx, c, ai, tid, ak)?)))
 }
 
 /// The aspect index of `(tid, ak)` in `c` if that part is held with values (a bare leftover has

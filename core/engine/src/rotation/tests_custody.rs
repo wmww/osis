@@ -187,6 +187,8 @@ struct Run {
     switched_at: [bool; N],
     /// Deliveries share one millisecond (a hand test's receipts held at once).
     same_ms: bool,
+    /// Each seed's signing key (`held_lines`, every compare): derived once.
+    seed_keys: std::cell::RefCell<BTreeMap<[u8; 32], [u8; 32]>>,
 }
 
 impl Run {
@@ -240,6 +242,7 @@ impl Run {
             taken: Default::default(),
             switched_at: [false; N],
             same_ms: false,
+            seed_keys: Default::default(),
         }
     }
 
@@ -614,7 +617,9 @@ impl Run {
 
     /// The lines of the seeds node k holds (setup's: the first epoch).
     fn held_lines(&self, k: usize) -> BTreeSet<Line> {
-        self.lp.peers[k].engine.held_seeds(&self.ids.p).iter().filter_map(|s| self.key_line.get(&AccountEpochKeys::from_seed(s).signing.verifying_key().to_bytes()).cloned()).collect()
+        let mut keys = self.seed_keys.borrow_mut();
+        let mut key = |s: &Secret32| *keys.entry(*s.expose()).or_insert_with(|| AccountEpochKeys::from_seed(s).signing.verifying_key().to_bytes());
+        self.lp.peers[k].engine.held_seeds(&self.ids.p).iter().filter_map(|s| self.key_line.get(&key(s)).cloned()).collect()
     }
 
     /// The model's act of node n on a copy of the mirror.

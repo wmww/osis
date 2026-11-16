@@ -284,10 +284,13 @@ fn mread(m: &Option<MFrag>) -> Option<osis_base::Value> {
 /// What the crdt answers that the model has no counterpart for, on state `x` before joining
 /// delta `y` (spec/commits.md §5): the piece at `y`'s positions joins into `x` unchanged, so
 /// `contains` is sound (exact for a sequence); an honest holder of `y`'s writes holds them with
-/// `y`'s payloads (covering copies).
+/// `y`'s payloads (covering copies); `y`'s writes the piece supersedes are those the whole state
+/// does (the engine dates a body's deaths at its positions, `retention::bounds::deaths`).
 fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
     let part = x.part_at(y);
     assert_eq!(&joined(x, &part), x, "a piece joins in unchanged");
+    let mine = y.winners();
+    assert_eq!(mine.minus(&joined(&part, y).winners()), mine.minus(&joined(x, y).winners()), "a piece supersedes what the whole does");
     let unchanged = &joined(x, y) == x;
     assert!(!crate::testutil::contains(x, y) || unchanged, "contains only what joins in unchanged");
     if matches!(x, Fragment::Seq(_)) {

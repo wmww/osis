@@ -1,8 +1,9 @@
 //! The readers of held parts before they streamed (issues/durable-decode-bound.md step 4), each
 //! part decoded whole, kept as the oracle of the streamed ones: in this crate's tests every
-//! `covered` and `delta_live` is checked against them, and `bounds::deaths` (the part joined
-//! into the state's pages at its positions) against the part joined into the whole state
-//! (`tests_paged` runs random paged histories through them).
+//! `covered` and `delta_live` is checked against them. `bounds::deaths` (the part joined into the
+//! state's pages at its positions) is checked against the part joined into the whole state by
+//! `tests_paged`'s random paged histories; that a piece at a part's positions supersedes what the
+//! whole state does is a crdt law (osis-crdt `tests_model`, `piece_laws`).
 
 use crate::engine::Tx;
 use crate::error::Result;

@@ -287,8 +287,19 @@ impl Engine {
     /// A held commit with every blob it references that this node holds (pages, chunks and
     /// tree nodes its deltas link, header-list trees), for relaying.
     pub fn package(&mut self, id: &CommitId) -> Result<Option<Package>> {
-        let Some(bytes) = self.commit_bytes(id)? else { return Ok(None) };
-        let mut ids: BTreeSet<BlobId> = self.body_links(&bytes)?.blobs;
+        // a held record decoded once (the record cache), not encoded and decoded again
+        let held = {
+            let id = *id;
+            self.read(|tx| match tx.get_commit(&id)? {
+                Some(b) => Ok(Some((b.encode(), Some(b)))),
+                None => Ok(tx.txn.get_pending(&id)?.map(|p| (p.bytes, None))),
+            })?
+        };
+        let Some((bytes, record)) = held else { return Ok(None) };
+        let mut ids: BTreeSet<BlobId> = match record {
+            Some(b) => self.body_links_of(&b)?.blobs,
+            None => self.body_links(&bytes)?.blobs,
+        };
         ids.extend(self.header_list_blobs(id)?);
         let mut blobs = Vec::new();
         for b in ids {

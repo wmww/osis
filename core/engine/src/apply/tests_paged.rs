@@ -277,8 +277,8 @@ impl World {
     }
 
     /// What must agree: per node, every aspect's state and read, what pends, and the indexes,
-    /// and with `judged` when each held commit was replaced there (each judgment also checks
-    /// the streamed deaths against the whole state's, `oracle::deaths`); states pretty-printed
+    /// and with `judged` when each held commit was replaced there, each held part's deaths at its
+    /// positions checked against the whole state's (`oracle::deaths`); states pretty-printed
     /// if `pretty` (`first_diff`). `stored`: also each state loaded afresh must equal the cached
     /// one (a reload of every page). Judged on the final held sets only.
     fn seen(&mut self, stored: bool, judged: bool, pretty: bool) -> Vec<String> {
@@ -305,6 +305,8 @@ impl World {
                 if judged {
                     for c in p.engine.commit_ids() {
                         out.push(format!("{i} {a} {c:?} replaced {:?}", p.engine.replaced_at(&c, &t, &a).map_err(|e| e.to_string())));
+                        let (at, whole) = p.engine.read(|tx| crate::retention::bounds::deaths_and_whole(tx, &c, &t, &a)).unwrap().unwrap_or_default();
+                        assert_eq!(at, whole, "node {i} {a} {c:?}: deaths at the part's positions vs the whole state");
                     }
                 }
             }
