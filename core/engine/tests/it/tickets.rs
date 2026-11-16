@@ -1,7 +1,9 @@
 //! Tickets and the account's tickets (spec/data-model.md §8 Tickets, spec/sync-set.md §1, §2,
 //! spec/sync-inbox.md §5).
 
+use crate::common::REG;
 use crate::flows::{edge_of, people};
+use std::collections::BTreeSet;
 use osis_base::{Role, Value};
 use osis_crdt::{Op, PathOp};
 use osis_engine::Mutation;
@@ -109,4 +111,48 @@ fn a_ticket_lookup_reads_the_targets_tickets_alone_at_n_and_10n() {
     let (small, large) = (last_arrival_work(4), last_arrival_work(40));
     assert!(small > 0, "the arrival looked its target's tickets up");
     assert_eq!(small, large, "the lookup reads the target's tickets alone");
+}
+
+// spec/data-model.md §8 Tickets, spec/sync-set.md §2 (refgraph T1): a ticket lets its holder sync
+// the target from a strong on. Placed by hand in a thing account 1 holds (no inbox), before any
+// of T's commits: a read ticket's sync ID is synced at once and, given T's commits sealed, T
+// reads; a sync ticket's is synced and T stays unread; one sealed to account 2 syncs nothing.
+#[test]
+fn a_ticket_enters_its_target_at_a_strong_spec_sync_set_2() {
+    for arm in ["read", "sync", "sealed to another"] {
+        let (mut lp, ps) = people(3);
+        let before: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
+        let e0 = &mut lp.peers[0].engine;
+        let (d0, p0) = (e0.account_root().unwrap(), e0.me());
+        let mut m = Mutation::new();
+        let t = e0.new_thing(&mut m, p0);
+        m.set(t, &REG, &Value::Str("v".into())).unwrap();
+        e0.commit(m).unwrap();
+        let _ = d0;
+        let role = if arm == "sync" { Role::Sync } else { Role::Read };
+        let holder = if arm == "read" || arm == "sync" { ps[1] } else { ps[2] };
+        e0.grant(&t, &holder, &edge_of(role)).unwrap();
+        let k = e0.ticket_of(&t, role, &holder).unwrap().expect("a ticket");
+        let e1 = &mut lp.peers[1].engine;
+        let d1 = e1.account_root().unwrap();
+        let mut m = Mutation::new();
+        let h = e1.new_thing(&mut m, d1);
+        m.set(h, &osis_base::Ak::new("x:k.0").unwrap(), &Value::Ticket(Box::new(k))).unwrap();
+        m.op(d1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+        e1.commit(m).unwrap();
+        // on the ticket's word: its sync ID synced, none of T's data held for it yet
+        assert_eq!(e1.in_sync_things(&t).unwrap(), arm != "sealed to another", "{arm}: entered at the strong");
+        // sealed as sync IDs carry them: a reader opens what its secrets open
+        let ids: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+        let pks = lp.sealed(0, &ids).unwrap();
+        lp.deliver_sealed(1, &pks).unwrap();
+        let e1 = &mut lp.peers[1].engine;
+        e1.check_closure();
+        let read = e1.get(&t, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap();
+        match arm {
+            "read" => assert_eq!(read, Some(Value::Str("v".into())), "{arm}"),
+            "sync" => assert!(read.is_none() && e1.in_sync_things(&t).unwrap(), "{arm}: kept unread"),
+            _ => assert!(read.is_none() && !e1.closure_holds(&t) && !e1.in_sync_things(&t).unwrap(), "{arm}"),
+        }
+    }
 }

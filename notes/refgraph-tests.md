@@ -1,5 +1,5 @@
 # Reference graph tests
-> Summary: The test plan for issues/reference-graph.md (Execution step 6): 38 properties in what users observe, the cheapest test of each with its crate and lane, the new sync differential and sim set against held-model `closure`, the surviving tests the set replaces, the order to write them in, and the count/CPU budget against the 3,493-test, 2,372 CPU-s baseline.
+> Summary: The test plan for issues/reference-graph.md (Execution step 6): 38 properties, which are written (Written) and which wait for part 2, in what users observe, the cheapest test of each with its crate and lane, the new sync differential and sim set against held-model `closure`, the surviving tests the set replaces, the order to write them in, and the count/CPU budget against the 3,493-test, 2,372 CPU-s baseline.
 
 ## Budget
 Costs per test at baseline (`~/osis-refgraph-baseline/pertest`): engine `it` facade test about 0.1 CPU-s, osis `it` 0.3-1, a sync `it` world test 1-7, a differential seed about 9, a sim seed about 6. So each rule is tested at the lowest layer that shows it: engine facade or plain-value first, a sync world only where crossing nodes is the point.
@@ -75,6 +75,22 @@ Lane: (a) refs, tickets as values, schema, API, index; (b) node root, walk, sync
 | # | property | test | crate | lane |
 |---|---|---|---|---|
 | S1 | releasing everything returns a node to its node root, account root, profile, inbox and node things, plus the bounded rows of the plan's Storage list: nothing grows with history | one count test: from a fresh contacts world, n rounds of make, write, grant, revoke, fire, redeem, accept, decline and release; release all and advance past `INBOX_LIFETIME`, `ROLE_KEEP` and `TOMBSTONE_LIFETIME`; `disk_use(i)` rows equal at n and 10n (2 and 20 rounds) and equal a fresh world's plus the peer records | sync (growth module) | b, c |
+
+## Written
+Part 1 (engine, one node or LocalPeer worlds; sealed delivery where reads matter: plain `LocalPeer` packages carry bodies a reader's keys need not open):
+- R1: core/test/vectors/cbor/values.vec (tags 1620-1622, 1616 and bad tickets rejected). I1: base `ids::tests::ak_rules`.
+- R2: engine `refs::known_references_are_a_scan_of_held_values_spec_data_model_8` (each position keeps one shape until `refs::a_value_of_another_shape_leaves_no_references_spec_data_model_8`, ignored, is fixed: issues/reference-graph.md Status).
+- R3: engine `refs::core_aspects_hold_nothing_spec_data_model_8`.
+- U1, U2: engine `closure::sync_units_are_the_models_spec_sync_set_2` (against held-model `closure::unit` and `closure`).
+- U3: engine `closure::a_thing_is_made_only_where_it_is_held_spec_sync_set_2` (engine, not osis: osis maps `NotHeld` to `Invalid` like any local refusal).
+- U5: engine `closure::nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2`.
+- H2: engine `closure::the_roots_kept_strongs_stay_spec_sync_set_1`.
+- H4: engine `closure::removal_costs_what_it_held_spec_sync_set_2`, `closure::adding_costs_what_it_adds_and_a_cycle_goes_whole_spec_sync_set_2`.
+- L1, L3, L10 (the drop): engine `closure::a_released_thing_goes_with_its_writes_spec_sync_set_3`.
+- L9: engine `closure::lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3`.
+- T1: engine `tickets::a_ticket_enters_its_target_at_a_strong_spec_sync_set_2` (a thing entered on a ticket's word alone is synced, `in_sync_things`, and not held, `closure_holds`, until its own keys are known here).
+
+Part 2 (waiting on ticket sync and redeem over real sync): H1 (the random two-account property), T5, T6, T7 (LocalPeer's sealed delivery opens nothing for a lowered or removed holder, so the role commits never show it the change: a world test), I2's promotion table, L10's fetch again, S1, and every sync-crate row (R4, U4, H3, L2, L4-L8, T2-T4, I2-I7), the differential, the sims, then the Old tests' deletion.
 
 ## Differential and sim set
 Replaces `convergence::` (8 tests, 389 CPU-s) and `sims::` (9 tests, 360 CPU-s).

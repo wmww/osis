@@ -2412,13 +2412,10 @@ mod tests {
             things.push(t);
         }
         let (x, y) = (things[0], things[1]);
-        let mut m = Mutation::new();
-        let e = ct::Edge { role: Role::Write, until: None, invite: None, floor: None };
-        m.op(x, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(a1))], op: Op::Set(e.to_value()) }).unwrap();
-        lp.peers[0].commit(m).unwrap();
+        // peer 1 writes in x, which it holds: it opens it
+        lp.peers[0].engine.grant(&x, &a1, &ct::Edge { role: Role::Write, until: None, invite: None, floor: None }).unwrap();
         lp.sync_all().unwrap();
         let p1 = &mut lp.peers[1];
-        // the tree lives in x, which peer 1 holds
         p1.engine.hold(osis_base::Strong(x)).unwrap();
         let mut m = Mutation::new();
         let a = p1.engine.new_thing(&mut m, x);

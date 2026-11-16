@@ -3101,8 +3101,10 @@ fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
 #[test]
 fn padded_durable_created_refused_spec_commits_2() {
     use osis_crdt::{Op, PathOp};
-    let (mut lp, d, _, _) = setup();
-    // Bob makes things in d: his node holds it
+    let (mut lp, d, b, _) = setup();
+    // Bob makes things in d: granted by the flow (its keys), his node holds it
+    lp.peers[0].engine.grant(&d, &b, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
     lp.peers[1].engine.hold(osis_base::Strong(d)).unwrap();
     let mut m = Mutation::new();
     let x = lp.peers[1].engine.new_thing(&mut m, d);

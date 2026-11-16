@@ -143,24 +143,28 @@ fn a_thing_leaving_two_units_at_once_notes_both_spec_sync_set_3() {
     assert_eq!(e.left_closure().get(&x), Some(&[d, a].into()));
 }
 
-// spec/sync-set.md §1: a local write that would leave the node root without its strong to the
-// account root is refused, however it is written: a removal, a whole-aspect removal, a purge.
+// spec/sync-set.md §1 (refgraph H2): a local write that would take away a strong the roots keep
+// is refused, however it is written (a removal, a whole-aspect removal): the node root's to the
+// account root, and the account root's to the profile and the inbox.
 #[test]
-fn the_node_roots_strong_to_the_account_root_stays_spec_sync_set_1() {
-    let (mut lp, _) = people(1);
+fn the_roots_kept_strongs_stay_spec_sync_set_1() {
+    let (mut lp, ps) = people(1);
     let e = &mut lp.peers[0].engine;
     let (root, d) = (e.node_root().unwrap(), e.account_root().unwrap());
-    let removal = |m: &mut Mutation| {
-        m.op(root, &ct::HOLDS, PathOp { path: vec![], op: Op::Remove(Value::Strong(d)) }).unwrap();
-    };
-    let whole = |m: &mut Mutation| {
-        m.remove_aspect(root, &ct::HOLDS).unwrap();
-    };
-    for (name, w) in [("removal", &removal as &dyn Fn(&mut Mutation)), ("whole aspect", &whole)] {
-        let mut m = Mutation::new();
-        w(&mut m);
-        assert!(e.commit(m).is_err(), "{name}");
-        assert!(e.closure_holds(&d), "{name}");
+    let (profile, inbox) = (e.profile_of(&ps[0]).unwrap(), e.inbox_thing(&ps[0]).unwrap());
+    for (from, to) in [(root, d), (d, profile), (d, inbox)] {
+        let removal = |m: &mut Mutation| {
+            m.op(from, &ct::HOLDS, PathOp { path: vec![], op: Op::Remove(Value::Strong(to)) }).unwrap();
+        };
+        let whole = |m: &mut Mutation| {
+            m.remove_aspect(from, &ct::HOLDS).unwrap();
+        };
+        for (name, w) in [("removal", &removal as &dyn Fn(&mut Mutation)), ("whole aspect", &whole)] {
+            let mut m = Mutation::new();
+            w(&mut m);
+            assert!(e.commit(m).is_err(), "{name} of {to:?}");
+            assert!(e.closure_holds(&to), "{name} of {to:?}");
+        }
     }
 }
 
@@ -348,4 +352,173 @@ fn sync_units_are_the_models_spec_sync_set_2() {
             assert_eq!(got, want, "seed {seed} step {step}: not carried");
         }
     }
+}
+
+/// `make` refused or not: a thing under `admin`, strongly referenced from `from` (none: from
+/// nothing) in the same commit.
+fn try_make(e: &mut Engine, admin: Tid, from: Option<Tid>) -> osis_engine::Result<Tid> {
+    let rec = e.thing_record(admin);
+    let mut m = Mutation::new();
+    let t = m.create(rec);
+    if let Some(f) = from {
+        m.op(f, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+    }
+    e.commit(m).map(|_| t)
+}
+
+// spec/sync-set.md §2 Making a thing (refgraph U3): the commits of one storage transaction must
+// leave every thing they make, but a key actor, in the node closure at its end, or nothing
+// applies. X and U have own keys: a plain thing under X referenced by X is made; one nothing
+// references, or one from U referenced only by X (X's keys do not open it), is refused and
+// leaves no commit; a thing made in one commit and held by the next of its transaction is made,
+// and refused with that commit holding nothing; a link (its key actor held by nothing, its seed
+// thing under the account root with its strong) is made; the account's creation was.
+#[test]
+fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
+    let (mut lp, ps) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let (d, p) = (e.account_root().unwrap(), e.me());
+    for t in [d, e.profile_of(&ps[0]).unwrap(), e.inbox_thing(&ps[0]).unwrap()] {
+        assert!(e.closure_holds(&t), "the account's creation: {t:?}");
+    }
+    let (x, u) = (make(e, p, d), make(e, p, d));
+    let made = try_make(e, x, Some(x)).unwrap();
+    assert!(e.closure_holds(&made));
+    let before = e.commit_ids().len();
+    for (name, admin, from) in [("held by nothing", x, None), ("plain from U, referenced by X", u, Some(x))] {
+        let r = try_make(e, admin, from);
+        assert!(matches!(r, Err(osis_engine::Error::NotHeld(_))), "{name}: {r:?}");
+        assert_eq!(e.commit_ids().len(), before, "{name}: nothing applies");
+    }
+    let hold = |a: Tid| {
+        let mut m = Mutation::new();
+        m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(a)) }).unwrap();
+        Ok(m)
+    };
+    let (a, _) = e.mint_actor(&p, hold).unwrap();
+    assert!(e.closure_holds(&a), "held by the transaction's next commit");
+    let r = e.mint_actor(&p, |_| Ok(Mutation::new()));
+    assert!(matches!(r, Err(osis_engine::Error::NotHeld(_))), "{r:?}");
+    let spec = osis_engine::flows::LinkSpec { target: x, role: osis_base::Role::Read, until: None, peers: vec![], single_use: false };
+    e.create_link(&p, &spec).unwrap();
+}
+
+// spec/sync-set.md §2 (refgraph U5): nested sharing. X and Y have own keys, X is granted read on Y,
+// and X -> Y -> B with B plain from Y. A reader of X (account 1, holding X by a strong) holds Y and
+// B, with no ticket for Y, in X's sync unit, and has Y's sync ID in its sync set.
+#[test]
+fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
+    let (mut lp, ps) = people(2);
+    let e = &mut lp.peers[0].engine;
+    let (d, p) = (e.account_root().unwrap(), e.me());
+    let x = make(e, p, d);
+    let y = make(e, p, x);
+    let b = make(e, y, y);
+    e.grant(&y, &x, &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    e.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.held_tickets(&y).unwrap().is_empty(), "no ticket for Y");
+    let d1 = e1.account_root().unwrap();
+    strong(e1, d1, x, true);
+    for t in [x, y, b] {
+        assert!(e1.closure_holds(&t) && e1.sync_unit(&x).contains(&t), "{t:?}");
+    }
+    assert!(e1.in_sync_things(&y).unwrap(), "Y's sync ID synced");
+}
+
+// spec/sync-set.md §2 Cost (refgraph H4): adding a thing costs the same whatever else the account
+// root holds (n and 10n things beside it), and a cycle cut off from the node closure is released
+// whole.
+#[test]
+fn adding_costs_what_it_adds_and_a_cycle_goes_whole_spec_sync_set_2() {
+    let add = |n: usize| {
+        let (mut lp, _) = people(1);
+        let e = &mut lp.peers[0].engine;
+        let d = e.account_root().unwrap();
+        for _ in 0..n {
+            make(e, d, d);
+        }
+        osis_base::costs::take();
+        make(e, d, d);
+        osis_base::costs::take().into_iter().filter(|(k, _, _)| k.starts_with("closure:")).map(|(_, _, c)| c).sum::<u64>()
+    };
+    assert_eq!(add(6), add(60));
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let d = e.account_root().unwrap();
+    let c1 = make(e, d, d);
+    let c2 = make(e, d, c1);
+    strong(e, c2, c1, true);
+    strong(e, d, c1, false);
+    assert!(!e.closure_holds(&c1) && !e.closure_holds(&c2));
+    assert_eq!(e.left_closure().keys().copied().collect::<BTreeSet<_>>(), [c1, c2].into());
+}
+
+// spec/sync-set.md §3 Release (refgraph L1, L10, L3): a thing that left the node closure and is
+// released is dropped with its writes, durable and ephemeral, and reads as not held; one back in
+// the node closure before its release is kept as it was, and its release drops nothing.
+#[test]
+fn a_released_thing_goes_with_its_writes_spec_sync_set_3() {
+    let (mut lp, _) = people(1);
+    let e = &mut lp.peers[0].engine;
+    let d = e.account_root().unwrap();
+    let reg = crate::common::REG;
+    let log = crate::common::LOG;
+    let (x, y) = (make(e, d, d), make(e, d, d));
+    for t in [x, y] {
+        let mut m = Mutation::new();
+        m.set(t, &reg, &Value::Str("v".into())).unwrap();
+        e.commit(m).unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &log, &Value::List(vec![Value::Str("e".into())])).unwrap();
+        e.write(m).unwrap();
+        strong(e, d, t, false);
+    }
+    strong(e, d, y, true);
+    let left: BTreeSet<Tid> = e.left_closure().keys().copied().collect();
+    assert_eq!(left, [x].into(), "back before its release: not leaving");
+    e.released(&[x, y].into()).unwrap();
+    assert!(!e.closure_holds(&x) && e.left_closure().is_empty());
+    assert_eq!((e.get(&x, &crate::common::ak("t:reg.0")).unwrap(), e.get(&x, &crate::common::ak("t:log+.0")).unwrap()), (None, None), "released with its writes");
+    assert_eq!(e.get(&y, &crate::common::ak("t:reg.0")).unwrap(), Some(Value::Str("v".into())), "kept as it was");
+    assert!(e.get(&y, &crate::common::ak("t:log+.0")).unwrap().is_some(), "its ephemeral state too");
+}
+
+// spec/sync-set.md §3 (refgraph L9): lowering a reader to sync is no release: account 1, holding X
+// read, is lowered to sync; X stays in its node closure, kept unread (its sync ID in the sync
+// set, nothing noted as left), and what is written after, sealed as sync IDs carry it, opens
+// nothing there.
+#[test]
+fn lowered_to_sync_a_thing_is_kept_unread_spec_sync_set_3() {
+    let (mut lp, ps) = people(2);
+    let e = &mut lp.peers[0].engine;
+    let (d, p) = (e.account_root().unwrap(), e.me());
+    let x = make(e, p, d);
+    let reg = crate::common::REG;
+    let put = |e: &mut Engine, v: &str| {
+        let mut m = Mutation::new();
+        m.set(x, &reg, &Value::Str(v.into())).unwrap();
+        e.commit(m).unwrap();
+    };
+    put(e, "before");
+    e.grant(&x, &ps[1], &crate::flows::edge_of(osis_base::Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    let d1 = e1.account_root().unwrap();
+    strong(e1, d1, x, true);
+    let read = |lp: &mut osis_engine::local_peer::LocalPeer| lp.peers[1].engine.get(&x, &crate::common::ak("t:reg.0")).unwrap();
+    assert_eq!(read(&mut lp), Some(Value::Str("before".into())));
+    let seen: BTreeSet<osis_base::CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    let e = &mut lp.peers[0].engine;
+    e.demote(&x, &osis_engine::flows::Demotion { holder: ps[1], new: Some(crate::flows::edge_of(osis_base::Role::Sync)), retain: None }).unwrap();
+    put(e, "after");
+    let ids: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !seen.contains(c)).collect();
+    let pks = lp.sealed(0, &ids).unwrap();
+    lp.deliver_sealed(1, &pks).unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    e1.check_closure();
+    assert!(e1.closure_holds(&x) && !e1.left_closure().contains_key(&x), "kept");
+    assert!(e1.in_sync_things(&x).unwrap(), "its sync ID kept");
+    assert_ne!(read(&mut lp), Some(Value::Str("after".into())), "unread");
 }

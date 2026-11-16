@@ -105,6 +105,14 @@ impl Engine {
         }
     }
 
+    /// Tests: a ticket for `target` of `role` boxed to `holder` from the secrets held here, as a
+    /// grant fires one (spec/data-model.md §8 Tickets), to place by hand.
+    #[doc(hidden)]
+    pub fn ticket_of(&mut self, target: &Tid, role: osis_base::Role, holder: &Tid) -> Result<Option<osis_base::Ticket>> {
+        let (t, h) = (*target, *holder);
+        self.run(|tx| crate::flows::inbox::make_ticket(tx, t, role, h))
+    }
+
     /// Commits `m` past the writer's rules, as a hostile node would: its role check, commit
     /// shape rules and refusal to emit a delta it judges invalid. A receiver's judgment of what
     /// no writer makes can be tested so.
