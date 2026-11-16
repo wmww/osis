@@ -352,7 +352,27 @@ impl<K: Clone + 'static> Feed<K> {
         changes
             .into_iter()
             .filter_map(|c| match c {
-                Logged::Key { added: Some(k), .. } => k.downcast_ref::<K>().cloned(),
+                Logged::Key { present: true, added: Some(k), .. } => k.downcast_ref::<K>().cloned(),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// One reader's cursor over the keys a container removed (`Stamps::wrote_removed`) since the
+/// reader's mark, as `Feed` is over those added. A rollback restoring a key leaves it given: the
+/// reader finds it present.
+#[derive(Clone, Debug)]
+pub struct Removals<K>(pub(super) Feed<K>);
+
+impl<K: Clone + 'static> Removals<K> {
+    /// The keys removed since the last call (or the cursor's start), in the order removed.
+    pub fn removed(&mut self) -> Vec<K> {
+        let changes = lock(&self.0.table).read_log(&mut self.0.at);
+        changes
+            .into_iter()
+            .filter_map(|c| match c {
+                Logged::Key { present: false, added: Some(k), .. } => k.downcast_ref::<K>().cloned(),
                 _ => None,
             })
             .collect()

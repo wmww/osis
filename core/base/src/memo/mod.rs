@@ -29,7 +29,7 @@ mod effects;
 mod spread;
 pub use cutoff::Cutoff;
 pub use spread::Spread;
-pub use effects::{Effects, Feed};
+pub use effects::{Effects, Feed, Removals};
 
 /// Absent keys share a stamp per bucket of their hash (`Table::absent`). Performance switch: at 1
 /// every removal moves what read any absent or unstamped key; at infinity every removed key keeps a
@@ -71,7 +71,7 @@ struct Table {
 #[derive(Clone)]
 enum Logged {
     /// A key written or removed (`present`), by hash; the key itself when it was added through
-    /// `Stamps::wrote_added` (`Feed`).
+    /// `Stamps::wrote_added` (`Feed`) or removed through `Stamps::wrote_removed` (`Removals`).
     Key { h: u64, present: bool, added: Option<Arc<dyn std::any::Any + Send + Sync>> },
     /// The container changed but no key's value (`Stamps::moved`).
     Whole,
@@ -276,9 +276,21 @@ impl Stamps {
         t.wrote(hash(k), present, key);
     }
 
+    /// Key `k` removed, kept in the log for a `Removals` reader.
+    pub fn wrote_removed<Q: Hash + Clone + Send + Sync + 'static>(&self, k: &Q) {
+        let mut t = lock(&self.0);
+        let key = (!t.marks.is_empty()).then(|| Arc::new(k.clone()) as Arc<dyn std::any::Any + Send + Sync>);
+        t.wrote(hash(k), false, key);
+    }
+
     /// A reader's cursor over the keys this container adds from now on (`wrote_added`).
     pub fn feed<K: Clone + 'static>(&self) -> Feed<K> {
         Feed::new(self.0.clone())
+    }
+
+    /// A reader's cursor over the keys this container removes from now on (`wrote_removed`).
+    pub fn removals<K: Clone + 'static>(&self) -> Removals<K> {
+        Removals(Feed::new(self.0.clone()))
     }
 
     /// The container changed, but no key's value: moves only what read it whole.

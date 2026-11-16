@@ -645,10 +645,6 @@ impl Closure {
             self.unlink(x, y);
         }
         self.members.remove(&x.0, &x.1);
-        if !self.tree.held.contains_key(&x.1) {
-            self.set_ticket_ids(x.1, BTreeSet::new());
-            self.set_openers(x.1, BTreeSet::new());
-        }
     }
 
     /// The node closure's tree edge into `w` went (`Tree::detach`); the vertices dropped.
@@ -919,6 +915,12 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
             // from in this transaction: the sync units that carried it when it left
             let cl = &mut tx.core.ix.closure;
             for (t, cs) in std::mem::take(&mut f.gone) {
+                // its ticket step's inputs go with its last vertex, judged at the settle's end: a
+                // thing moving between contexts is dropped from one before it is held in the next
+                if !cl.tree.held.contains_key(&t) {
+                    cl.set_ticket_ids(t, BTreeSet::new());
+                    cl.set_openers(t, BTreeSet::new());
+                }
                 if !cl.holds(&t) {
                     let mut was = cl.left.get(&t).cloned().unwrap_or_default();
                     was.extend(cs);

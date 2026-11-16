@@ -125,7 +125,7 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> JMap<K, V> {
     pub fn remove(&mut self, k: &K) -> Option<V> {
         if self.map.contains_key(k) {
             self.note(k, |m| m.get(k).cloned());
-            self.stamps.wrote(k, false);
+            self.stamps.wrote_removed(k);
             self.wrote_also(k, true);
         }
         self.map.remove(k)
@@ -134,6 +134,11 @@ impl<K: Ord + Clone + Hash + Send + Sync + 'static, V: Clone> JMap<K, V> {
     /// included; one added and then undone is given too (the reader finds it absent).
     pub fn feed(&self) -> osis_base::memo::Feed<K> {
         self.stamps.feed()
+    }
+    /// A reader's cursor over the keys removed from now on (`memo::Removals`); one removed and
+    /// then undone is given too (the reader finds it present).
+    pub fn removals(&self) -> osis_base::memo::Removals<K> {
+        self.stamps.removals()
     }
     /// What the running transaction changed, each key with its value before it.
     pub fn before(&self) -> BTreeMap<&K, Option<&V>> {

@@ -7,7 +7,7 @@
 use super::Store;
 use crate::set::SyncsFollow;
 use crate::types::{Holding, Result};
-use osis_base::memo::{Effects, Feed};
+use osis_base::memo::{Effects, Feed, Removals};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_engine::Engine;
 use osis_engine::sync::{Caps, Opened, Path};
@@ -27,6 +27,9 @@ pub struct Follow {
     /// store's entry feed and at S's start.
     parked: Parked,
     entries: Option<Feed<(SyncId, BlobId)>>,
+    /// Commits the engine stops holding: their entries under a read S wait for what they did not
+    /// before (`awaits`), with no entry of the store moving.
+    unheld: Option<Removals<CommitId>>,
     read: BTreeMap<SyncId, BTreeSet<Tid>>,
     carriers: Carriers,
 }
@@ -238,7 +241,7 @@ impl Default for Follow {
     fn default() -> Follow {
         let mut caps = Effects::new("store: caps");
         caps.want(());
-        Follow { set: SyncsFollow::default(), caps, paths: Effects::new("store: paths"), creds: Effects::new("store: read secrets"), parked: Parked::default(), entries: None, read: BTreeMap::new(), carriers: Carriers::default() }
+        Follow { set: SyncsFollow::default(), caps, paths: Effects::new("store: paths"), creds: Effects::new("store: read secrets"), parked: Parked::default(), entries: None, unheld: None, read: BTreeMap::new(), carriers: Carriers::default() }
     }
 }
 
@@ -264,6 +267,22 @@ impl Follow {
                 }
             }
             None => self.entries = Some(store.entry_feed()),
+        }
+        // a commit forgotten (lost access) leaves its own entries waiting for it to open again
+        match self.unheld.as_mut() {
+            Some(f) => {
+                for c in f.removed() {
+                    for b in engine.commit_blobs(&c)?.iter() {
+                        for s in store.naming(b)? {
+                            if self.read.contains_key(&s) {
+                                let e = store.entry(&s, b)?;
+                                park(engine, &mut self.parked, &mut self.creds, s, *b, e.as_ref())?;
+                            }
+                        }
+                    }
+                }
+            }
+            None => self.unheld = Some(engine.unheld_feed()),
         }
         let moved = self.set.settle(store);
         let mut acted = !moved.is_empty();
@@ -350,6 +369,17 @@ impl Follow {
             for (s, b) in f.added() {
                 if self.read.contains_key(&s) {
                     park(engine, &mut parked, &mut creds, s, b, store.entry(&s, &b)?.as_ref())?;
+                }
+            }
+        }
+        if let Some(mut f) = self.unheld.clone() {
+            for c in f.removed() {
+                for b in engine.commit_blobs(&c)?.iter() {
+                    for s in store.naming(b)? {
+                        if self.read.contains_key(&s) {
+                            park(engine, &mut parked, &mut creds, s, *b, store.entry(&s, b)?.as_ref())?;
+                        }
+                    }
                 }
             }
         }

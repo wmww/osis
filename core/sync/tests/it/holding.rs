@@ -464,12 +464,11 @@ fn the_last_reader_lowered_to_sync_keeps_the_store_for_a_later_reader_spec_sync_
 }
 
 // spec/permissions.md §3 (Lost access): Alice makes T1 under T0, grants Bob sync on it, writes,
-// then removes T0's record edge on T1, her only path to T1. Right after that write her read sync
-// IDs hold entries waiting for a read secret that are not parked (store::Follow::lost_parks), so
-// no later secret would open them (issues/reference-graph.md Status).
+// then removes T0's record edge on T1, her only path to T1. The removal's own entries under T0's
+// and D's sync IDs, read still, name a commit she forgets with T1: each is parked again
+// (store::Follow::lost_parks), so the access returning opens it.
 #[test]
-#[ignore = "issues/reference-graph.md"]
-fn repro_removing_the_makers_only_path_leaves_entries_unparked_spec_permissions_3() {
+fn removing_the_makers_only_path_parks_its_entries_spec_permissions_3() {
     let mut w = contacts();
     w.parks = true;
     let t0 = make(&mut w, 0, None, "v1");
@@ -489,4 +488,27 @@ fn repro_removing_the_makers_only_path_leaves_entries_unparked_spec_permissions_
     w.run();
     w.check_parks();
     assert_eq!(value(&mut w, 0, &t1), None, "Alice lost T1");
+}
+
+
+// spec/sync-inbox.md §5 (Ticket sync IDs), spec/sync-set.md §2 (What a held ticket does): Alice
+// grants Bob read on T, lowers him to sync and grants read again, each a ticket on his inbox;
+// Bob's sibling accepts T. T, entered on the tickets' word, moves to read once its role commits
+// make it keyed, while no `sync.0` of it is held: the tickets' sync ID stays synced through the
+// move, the one way that `sync.0` arrives, and both of Bob's nodes read T.
+#[test]
+fn a_thing_entered_on_a_ticket_keeps_its_sync_id_as_it_gains_own_keys_spec_sync_inbox_5() {
+    let mut w = contacts();
+    let t = make(&mut w, 0, None, "v1");
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    w.pair(1);
+    w.run();
+    w.write(0, |e| e.demote(&t, &osis_engine::flows::Demotion { holder: bob, new: Some(edge(Role::Sync)), retain: None })).unwrap();
+    w.write(0, |e| e.grant(&t, &bob, &edge(Role::Read))).unwrap();
+    strong(&mut w, 2, None, t, true);
+    w.run();
+    for i in [1, 2] {
+        assert_eq!(value(&mut w, i, &t), Some(Value::Str("v1".into())), "node {i} reads T");
+    }
 }

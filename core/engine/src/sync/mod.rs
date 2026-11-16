@@ -501,6 +501,12 @@ impl Engine {
         self.core.ix.commits.feed()
     }
 
+    /// A cursor over the commits this node stops holding from now on (`memo::Removals`):
+    /// forgotten whole, or unindexed to be held again.
+    pub fn unheld_feed(&self) -> osis_base::memo::Removals<CommitId> {
+        self.core.ix.commits.removals()
+    }
+
     /// A cursor over the blobs this node comes to open or seal from now on (`blob_commit` names
     /// their commit; `memo::Feed`, a blob noted again included).
     pub fn blob_feed(&self) -> osis_base::memo::Feed<BlobId> {
