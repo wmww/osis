@@ -452,6 +452,41 @@ fn nothing_to_hold_is_held() {
     assert!(t.st.held(&cid(1)));
 }
 
+// spec/sync-status.md §2 (By a source's report: recorded whatever it judges the commit must hold
+// now): a may-hold or must-not-hold own commit counts held for status at once, but its entry is
+// recorded held elsewhere, which a leave and a loss by an `until` read, by the same evidence as a
+// must-hold one: a store's position, a report below where the log first held it and one past an
+// ending member's `until` record nothing; a reader's report at or past it, or a stream showing
+// it, does.
+#[test]
+fn may_hold_commit_recorded_only_by_a_source_holding_it_spec_sync_status_2() {
+    for v in [Verdict::May, Verdict::MustNot(osis_sync::read::Why::OutsideRequired)] {
+        let mut t = T::new(&[(S, Holding::Read)]);
+        t.join(S, A, reader(RA, 1));
+        t.join(S, B, store(RB));
+        t.caught(A, S, 0);
+        t.caught(B, S, 0);
+        t.g.until.insert((A, S), 6);
+        t.own(S, cid(1), blob(1), 5);
+        t.own(S, cid(2), blob(2), 7);
+        for c in [1, 2] {
+            t.g.verdicts.insert((S, cid(c)), v.clone());
+        }
+        t.g.reported.insert((A, S), 4);
+        t.g.reported.insert((B, S), 9);
+        t.settle();
+        assert!(t.st.held(&cid(1)) && t.st.held(&cid(2)), "{v:?}: nothing S must hold");
+        assert!(t.g.elsewhere.is_empty(), "{v:?}: recorded with no source holding it");
+        t.g.reported.insert((A, S), 9);
+        t.settle();
+        assert!(t.g.elsewhere.contains(&(S, blob(1))), "{v:?}: a reader reported past it");
+        assert!(!t.g.elsewhere.contains(&(S, blob(2))), "{v:?}: logged past the ending member's until");
+        t.g.knows.insert((Source::Record(RB), S, blob(2)));
+        t.settle();
+        assert!(t.g.elsewhere.contains(&(S, blob(2))), "{v:?}: a stream shows it");
+    }
+}
+
 /// The engine wants a pass of S begun at or after ms `since` (after place `since - 1`: what it
 /// waits on arrived before a pass begun in that ms).
 fn want(t: &mut T, s: SyncId, since: u64) {
