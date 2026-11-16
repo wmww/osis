@@ -92,6 +92,11 @@ fn setup() -> (LocalPeer, Ids) {
     })
 }
 
+/// The epoch answer `q` names: a plain rotation's line, a certificate's merge.
+fn answered(w: &cm::World, q: u32) -> Line {
+    if matches!(w.item(q).kind, MK::Cert { .. }) { w.mints(q) } else { w.line(q) }
+}
+
 /// A commit an engine made beside the mirror's items, and whom it reaches.
 #[derive(Clone)]
 struct Side {
@@ -120,7 +125,8 @@ pub(super) struct Reached {
 /// What the model's `act` made, read off the mirror copy.
 #[derive(Debug, Default)]
 struct Policy {
-    plain: Option<(Line, BTreeSet<usize>, BTreeSet<u32>, BTreeSet<u32>, BTreeSet<usize>)>,
+    /// Signed at, removes, takes, answers (each a line: a merge's for a certificate), boxed.
+    plain: Option<(Line, BTreeSet<usize>, BTreeSet<u32>, BTreeSet<Line>, BTreeSet<usize>)>,
     cert: Option<(Line, BTreeSet<usize>)>,
     reseals: BTreeSet<(Line, usize)>,
     trot: bool,
@@ -609,7 +615,7 @@ impl Run {
             let i = wc.item(id).clone();
             let bx: BTreeSet<usize> = (0..N).filter(|m| i.boxed[*m] && *m != n).collect();
             match &i.kind {
-                MK::Plain { at, removes, takes, answers, .. } => p.plain = Some((at.clone(), removes.iter().copied().collect(), takes.iter().copied().collect(), answers.iter().copied().collect(), bx)),
+                MK::Plain { at, removes, takes, answers, .. } => p.plain = Some((at.clone(), removes.iter().copied().collect(), takes.iter().copied().collect(), answers.iter().map(|q| answered(&wc, *q)).collect(), bx)),
                 MK::Cert { .. } => p.cert = Some((wc.mints(id), bx)),
                 MK::Reseal { e } => {
                     for d in bx {
@@ -761,10 +767,10 @@ impl Run {
 
     /// Plain rotation item `id` as the policy compares it: signed at, removes, takes, answers,
     /// boxed (but its maker).
-    fn plain_of(&self, id: u32) -> (Line, BTreeSet<usize>, BTreeSet<u32>, BTreeSet<u32>, BTreeSet<usize>) {
+    fn plain_of(&self, id: u32) -> (Line, BTreeSet<usize>, BTreeSet<u32>, BTreeSet<Line>, BTreeSet<usize>) {
         let i = self.w.item(id);
         let MK::Plain { at, removes, takes, answers, .. } = &i.kind else { unreachable!() };
-        (at.clone(), removes.iter().copied().collect(), takes.iter().copied().collect(), answers.iter().copied().collect(), (0..N).filter(|m| i.boxed[*m] && *m != i.author).collect())
+        (at.clone(), removes.iter().copied().collect(), takes.iter().copied().collect(), answers.iter().map(|q| answered(&self.w, *q)).collect(), (0..N).filter(|m| i.boxed[*m] && *m != i.author).collect())
     }
 
     /// Engine plain rotation `c` made by k (honest), mirrored.
@@ -778,7 +784,11 @@ impl Run {
         let removes = to_parties(v.removes(c));
         let adds = to_parties(v.devices.as_ref().and_then(|d| d.adds.get(c)).cloned().unwrap_or_default());
         let takes: Vec<u32> = r.takes.iter().map(|x| self.m(x)).collect();
-        let answers: Vec<u32> = r.supersedes.iter().filter(|s| **s != at_e).map(|s| if self.merge_line.contains_key(s) { self.fail(&format!("{} answers merge {s:?}", cm::NAMES[k])) } else { self.m(s) }).collect();
+        // a merge answered is named by a certificate of it
+        let answers: Vec<u32> = r.supersedes.iter().filter(|s| **s != at_e).map(|s| match self.merge_line.get(s) {
+            Some(l) => self.w.items.iter().find(|i| matches!(i.kind, MK::Cert { .. }) && self.w.mints(i.id) == *l).map(|i| i.id).unwrap_or_else(|| self.fail("an answer to a merge no certificate mirrors")),
+            None => self.m(s),
+        }).collect();
         let seed = self.keys_at(k, c).unwrap_or_else(|| self.fail("a rotation's maker lacks its seed")).seed().clone();
         let boxed = self.boxed_by(&seed, &r.seeds);
         let reach = self.reach_of(k, c);

@@ -2266,10 +2266,16 @@ impl Core {
     }
 
     /// `me`, for what only an account may do.
-    /// A node removed from its account writes nothing as it (`member`).
+    /// A node removed from its account writes nothing as it (`member`), nor one D's roster does
+    /// not hold (one whose taken revocations remove it: spec/permissions.md §5.5, it signs
+    /// nothing for P while it may still be a node of P).
     pub(crate) fn writer(&self) -> Result<Tid> {
         let p = self.account.get().ok_or(Error::Misuse("this node has joined no account"))?;
-        self.member().ok_or(Error::Misuse("this node was removed from its account")).map(|_| p)
+        self.member().ok_or(Error::Misuse("this node was removed from its account"))?;
+        if !self.account_view(&p).is_some_and(|v| v.roster().contains(&self.id.tid())) {
+            return Err(Error::Misuse("this node is off its account's roster: it signs nothing as it"));
+        }
+        Ok(p)
     }
 
     fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session, store_rows: memo::Changes) -> Core {
@@ -3928,6 +3934,7 @@ impl Engine {
         {
             fresh.check_ingest = self.core.check_ingest;
             fresh.whole_apply = self.core.whole_apply;
+            fresh.stale_shut = self.core.stale_shut;
         }
         fresh
     }

@@ -2164,6 +2164,41 @@ fn a_node_switching_sides_answers_the_line_it_rotated_on_spec_permissions_5_5() 
     assert!(h.supersedes.contains(&rx.commits[0]) && h.supersedes.contains(&rb), "both answered: {:?}", h.supersedes);
 }
 
+// spec/permissions.md §5.4 (a merge stands iff some certificate of it was made by a node of its
+// line), §5.5 (a node makes the merge of its heads unless it holds a certificate of it that
+// stands): nodes 0 and 2 rotate apart; node 2 certifies their merge, its inner signature sealed
+// as a key actor no node of P. Node 1 holds both rotations and that certificate, which stands
+// with nothing: its heads stay two, and it makes the merge itself
+#[test]
+fn a_certificate_standing_with_nothing_does_not_stop_a_merge_spec_permissions_5_5() {
+    let (mut lp, a, _) = world(4, 3);
+    let r0 = lp.peers[0].engine.rotate_account(&a.account).unwrap().unwrap();
+    let r2 = lp.peers[2].engine.rotate_account(&a.account).unwrap().unwrap();
+    send(&mut lp, 0, 2, &[r0]);
+    let m = lp.peers[2].engine.signing_due().unwrap().commits[0];
+    let (at, more) = {
+        let e = &lp.peers[2].engine;
+        let held = e.core.accounts.get(&a.account).unwrap().clone();
+        let v = e.core.account_view(&a.account).unwrap();
+        let h = e.header(&m).unwrap().rotation.clone().unwrap();
+        assert!(h.is_merge());
+        let at = v.keys_of(&h.supersedes[0], &held).unwrap();
+        let more: Vec<osis_crypto::Secret32> = h.names.iter().map(|n| v.keys_of(n, &held).unwrap().inner.clone()).chain([held.keys.get(&h.signing_key).unwrap().inner.clone()]).collect();
+        (at, more)
+    };
+    let z = lp.peers[3].engine.core.id.clone();
+    let pk = inner_as(&mut lp, 2, &m, &at, &more.iter().collect::<Vec<_>>(), &z);
+    send(&mut lp, 0, 1, &[r0]);
+    send(&mut lp, 2, 1, &[r2]);
+    lp.advance(1);
+    lp.deliver(1, &pk).unwrap();
+    assert_eq!(lp.peers[1].engine.core.account_view(&a.account).unwrap().heads().len(), 2, "the certificate stands with nothing");
+    let due = lp.peers[1].engine.signing_due().unwrap().commits;
+    let h = lp.peers[1].engine.header(&due[0]).unwrap().rotation.clone().unwrap();
+    assert_eq!(h.mints(&due[0]), lp.peers[2].engine.header(&m).unwrap().rotation.clone().unwrap().mints(&m), "a certificate of the same merge");
+    assert_eq!(lp.peers[1].engine.core.account_view(&a.account).unwrap().heads().len(), 1, "one head");
+}
+
 // spec/crypto.md §9 (Custody: a node leaves only when no held line keeps it a node): node 2
 // rotates plainly from the setup's head boxing its seed to no one. Node 1 follows that rotation
 // (minted by a node, removing no one), whose seed it does not hold: its line keeps node 1 a node,

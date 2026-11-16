@@ -320,8 +320,8 @@ pub struct View {
     /// At P's nodes: whom it boxes.
     pub roster: BTreeSet<usize>,
     pub warning: bool,
-    /// Held line elements a counting rotation rejects.
-    pub rejected: BTreeSet<u32>,
+    /// Held epochs a counting rotation rejects (a plain rotation's line or a merge's).
+    pub rejected: BTreeSet<Line>,
     pub valid: BTreeSet<u32>,
     /// Held items whose seed boxes count here (a counting rotation's, a certificate standing,
     /// a re-seal at an open or unrevoked epoch): what a node sees another holding by.
@@ -470,20 +470,20 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
             _ => None,
         }
     };
-    let mut rejs: Vec<(Line, Line, u32)> = vec![];
+    let mut rejs: Vec<(Line, Line, Line)> = vec![];
     for id in held.iter().copied() {
         let Some(rejector) = placed(id) else { continue };
         let e = &w.item(id).epoch;
-        for q in w.answers(id).iter().copied().filter(|q| j.chain.contains(q)) {
-            let lq = w.line(q);
+        // what it answers: a plain rotation's line, or a merge's (named by a certificate of it)
+        for lq in w.answers(id).iter().copied().filter_map(|q| placed(q)) {
             // a certificate is signed at every epoch it joins (each one's merge signature)
             let signed_at_e = |s: u32| match &w.item(s).kind {
                 Kind::Cert { joined, .. } => joined.contains(e),
                 _ => w.item(s).epoch == *e,
             };
-            let through = held.iter().filter(|s| signed_at_e(**s)).filter_map(|s| placed(*s)).any(|ls| ls.is_subset(&lq) || ls.contains(&q));
+            let through = held.iter().filter(|s| signed_at_e(**s)).filter_map(|s| placed(*s)).any(|ls| ls.is_subset(&lq) || lq.is_subset(&ls));
             if !through {
-                rejs.push((rejector.clone(), e.clone(), q));
+                rejs.push((rejector.clone(), e.clone(), lq));
             }
         }
     }
@@ -505,7 +505,7 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
             if !fol.is_subset(&p) {
                 continue;
             }
-            let rejected = rejs.iter().any(|(r, _, q)| r.is_subset(&p) && fol.contains(q) || r.is_subset(&fol) && p.contains(q));
+            let rejected = rejs.iter().any(|(r, _, q)| r.is_subset(&p) && q.is_subset(&fol) || r.is_subset(&fol) && q.is_subset(&p));
             if !rejected {
                 fol = p;
             }
@@ -535,9 +535,8 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
         j.roster = roster(w, &j, &j.preferred.clone());
     }
     // the warning: a rejection between a counting rotation and one not counting
-    let fol_elem = |q: u32| j.counting.contains(&w.line(q));
-    j.rejected = rejs.iter().filter(|(r, _, _)| j.counting.contains(r)).map(|(_, _, q)| *q).collect();
-    j.warning = rejs.iter().any(|(r, _, q)| j.counting.contains(r) != fol_elem(*q));
+    j.rejected = rejs.iter().filter(|(r, _, _)| j.counting.contains(r)).map(|(_, _, q)| q.clone()).collect();
+    j.warning = rejs.iter().any(|(r, _, q)| j.counting.contains(r) != j.counting.contains(q));
     // t epochs and writes: custody first, then validity (a least fixpoint; under `StaleShut` the
     // t epochs open only at open P epochs or by a counting commit, one fixpoint with validity)
     // the epoch rule (spec/permissions.md §5.5): at an open epoch, at a held one no counting
@@ -724,12 +723,19 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
     }
     let h = j.preferred.clone();
     let rule = Rule { w, sig: &j.signers };
-    // answers due: held rotations that do not stand or stand with a revocation not taken, on no
-    // line a counting rotation answered, not answered by this node before
-    let answered_by_me: BTreeSet<u32> = j.held.iter().filter(|i| w.item(**i).author == n).flat_map(|i| w.answers(*i).to_vec()).collect();
-    let answers: Vec<u32> = j.chain.iter().copied().filter(|q| {
-        !j.followed.contains(q) && (!rule.stands(&w.line(*q), &j.taken) || !rule.with(*q).iter().all(|r| j.taken.contains(r))) && !w.line(*q).iter().any(|x| j.rejected.contains(x)) && !answered_by_me.contains(q)
+    // answers due: held rotations that do not stand or stand with a revocation not taken (a
+    // merge: one not counting, named by a certificate of it), on no line a counting rotation
+    // answered, not answered by this node before
+    let target = |q: u32| if matches!(w.item(q).kind, Kind::Cert { .. }) { w.mints(q) } else { w.line(q) };
+    let answered_by_me: BTreeSet<Line> = j.held.iter().filter(|i| w.item(**i).author == n).flat_map(|i| w.answers(*i).iter().map(|q| target(*q)).collect::<Vec<_>>()).collect();
+    let on_rejected = |l: &Line| j.rejected.iter().any(|r| r.is_subset(l));
+    let mut answers: Vec<u32> = j.chain.iter().copied().filter(|q| {
+        !j.followed.contains(q) && (!rule.stands(&w.line(*q), &j.taken) || !rule.with(*q).iter().all(|r| j.taken.contains(r))) && !on_rejected(&w.line(*q)) && !answered_by_me.contains(&w.line(*q))
     }).collect();
+    // (a merge whose tips all count joins the followed lines: certifying it makes it stand)
+    for e in j.merges.iter().filter(|e| !j.counting.contains(*e) && !e.iter().all(|x| j.followed.contains(x)) && !on_rejected(e) && !answered_by_me.contains(*e)) {
+        answers.extend(j.held.iter().copied().find(|c| matches!(w.item(*c).kind, Kind::Cert { .. }) && w.mints(*c) == *e));
+    }
     let union: Line = j.heads.iter().flatten().copied().collect();
     let mergeable = j.heads.len() > 1 && j.keys.holds(w, &union) || w.control == Control::MergeRandom && j.heads.len() > 1 && j.heads.iter().all(|e| j.keys.holds(w, e));
     let takes: Vec<u32> = j.taken.iter().copied().filter(|r| !j.carries(w, &h, *r)).collect();

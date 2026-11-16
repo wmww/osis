@@ -127,14 +127,16 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
 /// changes; it boxes the seed to the roster devices this node does not see holding every tip's
 /// seed (with every seed it holds, as to a newcomer). Signed at its lowest tip, each other tip
 /// signing the epoch's ID. `None`: one head, a tip's seed not held here, or a certificate of
-/// that epoch held already.
+/// that epoch standing here held already (one that stands with nothing, by a certifier no node
+/// of its line or hit by a taken removal, makes nothing: another node's certificate would
+/// otherwise block the merge for good).
 pub(crate) fn merge_heads(tx: &mut Tx<'_>, p: Tid) -> Result<Option<CommitId>> {
     let held = tx.core.accounts.get(&p).cloned().ok_or(Error::Misuse("not an account held here"))?;
     let v = tx.core.account_view(&p).ok_or(Error::Misuse("no signing chain for the account"))?;
     let heads = v.heads();
     let Some((tips, keys)) = merge_of(&v, &held, &heads) else { return Ok(None) };
     let epoch = osis_commit::merge_epoch(&keys.signing.verifying_key(), &tips);
-    if v.epoch_of(&epoch).is_some() {
+    if v.minting(&epoch).iter().any(|c| v.rotation_counts(c)) {
         return Ok(None);
     }
     let tip_keys: Vec<Arc<AccountEpochKeys>> = tips.iter().filter_map(|t| v.keys_of(t, &held)).collect();
@@ -549,11 +551,11 @@ fn ends(v: &super::account::AccountView, departures: Option<&Departures>, e: &Co
 /// answers once (its own answer may be so contested too). One answer per line: a reader following
 /// it holds that rejection already, so two sides never answer each other's answers; a rotation
 /// signed at the answer's epoch that puts the rejected one on a line through it ends that
-/// rejection, and is answered in turn. A merge is never answered itself: it is on every line its
-/// tips are, so one whose tips all count is on the followed line, and one with a tip disregarded
-/// is answered by that tip's answer.
+/// rejection, and is answered in turn. A merge is owed an answer only where it joins a line not
+/// followed: one whose tips all count joins the followed lines, and this node's certificate of
+/// it makes it stand.
 fn unanswered(v: &super::account::AccountView, me: &Tid) -> Vec<CommitId> {
-    v.rotation_ids().into_iter().filter(|r| !v.is_merge(r) && v.disregarded(r) && !v.answered_by(r, me) && !v.line(r).into_iter().flatten().any(|q| v.rejected(&q))).collect()
+    v.rotation_ids().into_iter().filter(|r| !v.is_merge(r) || v.tips_of(r).iter().any(|t| !v.rotation_counts(t))).filter(|r| v.disregarded(r) && !v.answered_by(r, me) && !v.line(r).into_iter().flatten().any(|q| v.rejected(&q))).collect()
 }
 
 /// What a node of the account owes its signing chain (spec/permissions.md §5.5), made now. Any
