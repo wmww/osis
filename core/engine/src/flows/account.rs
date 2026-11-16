@@ -235,11 +235,12 @@ impl AccountView {
         self.devices.as_ref().and_then(|d| d.removes.get(r)).cloned().unwrap_or_default()
     }
 
-    /// Whether a held rotation minted by `node` (by its inner signature) supersedes held rotation
-    /// `r`'s epoch (this node's account only).
-    pub(crate) fn superseded_by(&self, r: &CommitId, node: &Tid) -> bool {
+    /// Whether a held plain rotation minted by `node` (by its inner signature) answers held
+    /// rotation `r`: supersedes it besides the epoch it is signed at (this node's account only).
+    /// One signed at `r` answers nothing of it: `r` is on its line.
+    pub(crate) fn answered_by(&self, r: &CommitId, node: &Tid) -> bool {
         let Some(d) = &self.devices else { return false };
-        self.rotations.iter().any(|x| x.supersedes.contains(r) && d.minter.get(&x.id) == Some(node))
+        self.rotations.iter().any(|x| !x.is_merge() && x.at != *r && x.supersedes.contains(r) && d.minter.get(&x.id) == Some(node))
     }
 
     /// The node that minted counting rotation `r` (a merge: a certifier; this node's account

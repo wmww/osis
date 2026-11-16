@@ -766,6 +766,16 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
         let id = w.add(Kind::Cert { joined, takes: tk, answers: an }, n, n, j2.preferred.clone(), None, now, bx);
         made.push(id);
         head = w.mints(id);
+        // a device it boxes (one that cannot derive the seed) gets besides every seed it holds of
+        // the line it makes, as a newcomer to the line does (none of a line beside it)
+        if bx.iter().enumerate().any(|(m, b)| *b && m != n) && w.control != Control::MergeRandom {
+            let mut nb = bx;
+            nb[n] = false;
+            let line_seeds: Vec<Line> = secrets(w, &j2).0.into_iter().filter(|f| !f.is_empty() && *f != e && f.is_subset(&e) && w.single(f)).collect();
+            for f in line_seeds {
+                made.push(w.add(Kind::Reseal { e: f }, n, n, e.clone(), None, now, nb));
+            }
+        }
     }
     // re-seals: its heads' tip seeds to roster devices it sees without them
     let j3 = if made.is_empty() { j2 } else { judge(w, n, now) };

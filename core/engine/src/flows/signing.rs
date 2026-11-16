@@ -106,7 +106,8 @@ pub(crate) fn rotate_with(tx: &mut Tx<'_>, p: Tid, also: &[CommitId], members: &
     roster.retain(|x| !members.removes.contains(x));
     roster.extend(members.adds.iter().copied());
     let newcomers: BTreeSet<Tid> = roster.iter().filter(|x| !base.contains(*x)).copied().collect();
-    let seeds = super::custody::seed_boxes(tx, &p, &seed, &roster, &newcomers)?;
+    let line = v.line(&at).unwrap_or_default();
+    let seeds = super::custody::seed_boxes(tx, &p, &seed, &roster, &newcomers, &line)?;
     let (mut adds, mut removes) = (members.adds.clone(), members.removes.clone());
     adds.sort();
     removes.sort();
@@ -144,7 +145,8 @@ pub(crate) fn merge_heads(tx: &mut Tx<'_>, p: Tid) -> Result<Option<CommitId>> {
     let lacking: BTreeSet<Tid> = roster.iter().filter(|m| **m != me && !derive.contains(*m)).copied().collect();
     // at least one box (spec/wire.md §4): its maker's own when every device derives it
     let boxed: BTreeSet<Tid> = if lacking.is_empty() { [me].into() } else { lacking.clone() };
-    let seeds = super::custody::seed_boxes(tx, &p, keys.seed(), &boxed, &lacking)?;
+    let line: BTreeSet<CommitId> = tips.iter().filter_map(|t| v.line(t)).flatten().collect();
+    let seeds = super::custody::seed_boxes(tx, &p, keys.seed(), &boxed, &lacking, &line)?;
     let rng = &mut *tx.rng;
     let (root, _) = list_tree(&[], || {
         let mut b = [0u8; 32];
@@ -540,7 +542,8 @@ fn ends(v: &super::account::AccountView, departures: Option<&Departures>, e: &Co
 /// The held rotations of this node's account this node disregards (placed in conflict with the
 /// line it follows: a removed node's fork, one no node of the account minted, another side's)
 /// with no rotation on their line a counting one rejects, that no rotation of this node's
-/// supersedes: superseded unnamed by its next rotation, so every reader that followed one is told
+/// answers (supersedes besides the epoch it is signed at: one signed at it, made while this node
+/// followed it, answers nothing): superseded unnamed by its next rotation, so every reader that followed one is told
 /// (spec/permissions.md §5.4, Warning). Another node's rotation superseding it may reject nothing
 /// (signed at its epoch: contested from below), so only a rejection answers it, and each node
 /// answers once (its own answer may be so contested too). One answer per line: a reader following
@@ -550,7 +553,7 @@ fn ends(v: &super::account::AccountView, departures: Option<&Departures>, e: &Co
 /// tips are, so one whose tips all count is on the followed line, and one with a tip disregarded
 /// is answered by that tip's answer.
 fn unanswered(v: &super::account::AccountView, me: &Tid) -> Vec<CommitId> {
-    v.rotation_ids().into_iter().filter(|r| !v.is_merge(r) && v.disregarded(r) && !v.superseded_by(r, me) && !v.line(r).into_iter().flatten().any(|q| v.rejected(&q))).collect()
+    v.rotation_ids().into_iter().filter(|r| !v.is_merge(r) && v.disregarded(r) && !v.answered_by(r, me) && !v.line(r).into_iter().flatten().any(|q| v.rejected(&q))).collect()
 }
 
 /// What a node of the account owes its signing chain (spec/permissions.md §5.5), made now. Any

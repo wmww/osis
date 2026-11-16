@@ -105,11 +105,15 @@ pub(crate) fn roster(core: &Core, d: &Tid) -> Vec<Tid> {
 /// The seed boxes of a rotation of account `p` minting the epoch with seed `seed`: one to each
 /// device on its roster (`devices`: D's roster on its line after its membership changes),
 /// carrying the new seed, and to each device not on the roster of the epoch it is signed at
-/// (`newcomers`: one it adds, one a fork it joins added) also every seed this node holds, so it
-/// reads who minted each rotation on the line (spec/crypto.md §9, Custody). Ascending by tag.
-pub(crate) fn seed_boxes(tx: &mut Tx<'_>, p: &Tid, seed: &Secret32, devices: &BTreeSet<Tid>, newcomers: &BTreeSet<Tid>) -> Result<Vec<SeedBox>> {
+/// (`newcomers`: one it adds, one a fork it joins added) also the seeds this node holds of the
+/// epochs on the line it makes (`line`), so it reads who minted each rotation there (spec/crypto.md
+/// §9, Custody); no seed of a line beside it. Ascending by tag.
+pub(crate) fn seed_boxes(tx: &mut Tx<'_>, p: &Tid, seed: &Secret32, devices: &BTreeSet<Tid>, newcomers: &BTreeSet<Tid>, line: &BTreeSet<osis_base::CommitId>) -> Result<Vec<SeedBox>> {
     let epoch = AccountEpochKeys::from_seed(seed).signing.verifying_key();
-    let held: Vec<Secret32> = tx.core.accounts.get(p).map(|a| a.keys.values().map(|k| k.seed().clone()).collect()).unwrap_or_default();
+    let held: Vec<Secret32> = match (tx.core.account_view(p), tx.core.accounts.get(p)) {
+        (Some(v), Some(a)) => line.iter().chain([&osis_commit::FIRST_EPOCH]).filter_map(|e| v.keys_of(e, a)).map(|k| k.seed().clone()).collect(),
+        _ => Vec::new(),
+    };
     let mut out = Vec::new();
     for m in devices {
         let mut payload: Vec<&Secret32> = vec![seed];

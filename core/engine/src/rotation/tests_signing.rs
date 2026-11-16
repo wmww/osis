@@ -2145,6 +2145,25 @@ fn a_removal_by_a_node_removed_first_removes_no_one_spec_permissions_3() {
     assert!(e.core.accounts.contains_key(&a.account), "it stays");
 }
 
+// spec/permissions.md §5.5 (Honest nodes of P: a rotation it disregards that no rotation of
+// its own answers): node 2 removes node 0 and node 0 removes node 2. Node 1 takes node 2's first
+// and rotates plainly on it, then its user switches to node 0's removal. Node 1's own rotation,
+// signed at node 2's removal, answered nothing: node 1 now answers both
+#[test]
+fn a_node_switching_sides_answers_the_line_it_rotated_on_spec_permissions_5_5() {
+    let (mut lp, a, _) = world(3, 3);
+    let rx = remove(&mut lp, 2, a.devices, 0);
+    let ra = remove(&mut lp, 0, a.devices, 2);
+    send(&mut lp, 2, 1, &rx.commits);
+    let rb = lp.peers[1].engine.rotate_account(&a.account).unwrap().unwrap();
+    assert_eq!(lp.peers[1].engine.header(&rb).unwrap().epoch, Some(rx.commits[0]), "signed at node 2's removal");
+    send(&mut lp, 0, 1, &ra.commits);
+    lp.peers[1].engine.choose_line(a.account, ra.commits[0]).unwrap();
+    let due = lp.peers[1].engine.signing_due().unwrap().commits;
+    let h = lp.peers[1].engine.header(&due[0]).unwrap().rotation.clone().unwrap();
+    assert!(h.supersedes.contains(&rx.commits[0]) && h.supersedes.contains(&rb), "both answered: {:?}", h.supersedes);
+}
+
 // spec/crypto.md §9 (Custody: a node leaves only when no held line keeps it a node): node 2
 // rotates plainly from the setup's head boxing its seed to no one. Node 1 follows that rotation
 // (minted by a node, removing no one), whose seed it does not hold: its line keeps node 1 a node,

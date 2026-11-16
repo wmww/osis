@@ -674,6 +674,12 @@ impl Run {
                 let id = if r.is_merge() { self.add_cert(n, &c) } else { self.add_plain(n, &c, false) };
                 if r.is_merge() {
                     cert = Some(id);
+                    // the seeds its boxes carry besides the merge's (`add_cert`)
+                    for x in self.w.items[id as usize..].iter().filter(|x| self.eid[x.id as usize - 1] == c) {
+                        if let MK::Reseal { e } = &x.kind {
+                            reseals.extend((0..N).filter(|d| x.boxed[*d]).map(|d| (e.clone(), d)));
+                        }
+                    }
                 } else {
                     plain = Some(id);
                 }
@@ -808,14 +814,15 @@ impl Run {
         let pk = self.lp.peers[k].engine.package(c).unwrap();
         let at = tips[0].clone();
         let id = self.add(MK::Cert { joined: tips, takes: vec![], answers: vec![] }, k, k, at.clone(), None, *c, pk, boxed, reach);
+        // the seeds riding along count as the certificate does: items at its own epoch
         let newcomers: Vec<usize> = (0..N).filter(|m| boxed[*m] && *m != k).collect();
         if !newcomers.is_empty() {
             let bx: [bool; N] = std::array::from_fn(|m| newcomers.contains(&m));
-            for e in self.held_lines(k).into_iter().filter(|e| *e != line && !e.is_empty()) {
-                self.add(MK::Reseal { e }, k, k, at.clone(), None, *c, None, bx, reach);
+            let extra: Vec<Line> = self.held_lines(k).into_iter().filter(|e| *e != line && !e.is_empty() && e.is_subset(&line) && self.w.single(e)).collect();
+            for e in extra {
+                self.add(MK::Reseal { e }, k, k, line.clone(), None, *c, None, bx, reach);
             }
         }
-        let _ = line;
         self.reached.certs = true;
         id
     }
