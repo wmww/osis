@@ -37,6 +37,40 @@ fn ctx() -> DeltaCtx {
     DeltaCtx { ts: Ts::default(), own: Source::commit(CommitId([0; 32])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
 
+/// A reference unit's tag (`[BODY, commit ID]`); a paged unit's is `pages::TAG`.
+const BODY: i64 = 2;
+
+/// What an aspect unit's state bytes hold: nothing, a whole state (`encode`), a paged state's
+/// skeleton and sets (`pages::open`), or the state as the one held body equal to it (`Body`:
+/// its commit's part on the aspect, read from the record by `Tx::load_lazy`, the one reader).
+pub enum Stored<'a> {
+    Empty,
+    Whole(&'a [u8]),
+    Paged(&'a [u8]),
+    Body(CommitId),
+}
+
+/// The form of unit state bytes `b` (by the first element: bytes, `pages::TAG` or `BODY`).
+pub fn stored(b: &[u8]) -> Result<Stored<'_>> {
+    match b.get(1).copied() {
+        None => Ok(Stored::Empty),
+        Some(x) if i64::from(x) == crate::engine::pages::TAG => Ok(Stored::Paged(b)),
+        Some(x) if i64::from(x) == BODY => {
+            let lim = osis_base::Limits { max_depth: 2, max_bytes: b.len() };
+            let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("state"))?;
+            let Value::List(items) = v else { return Err(Error::Corrupt("state")) };
+            let [Value::Int(BODY), Value::Bytes(c)] = items.as_slice() else { return Err(Error::Corrupt("state")) };
+            Ok(Stored::Body(CommitId(c.as_slice().try_into().map_err(|_| Error::Corrupt("state"))?)))
+        }
+        Some(_) => Ok(Stored::Whole(b)),
+    }
+}
+
+/// Unit state bytes naming commit `c`'s part as the state (`Stored::Body`).
+pub fn body(c: &CommitId) -> Vec<u8> {
+    osis_base::encode(&Value::List(vec![Value::Int(BODY), Value::Bytes(c.0.to_vec())]))
+}
+
 /// `[snapshot bytes, [page*]]`.
 pub fn encode(f: &Fragment) -> Result<Vec<u8>> {
     let mut pages = LocalPages::default();

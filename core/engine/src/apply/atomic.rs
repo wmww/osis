@@ -1069,7 +1069,8 @@ pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Res
             let bound = tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == c)).map(|x| x.4.clone());
             debug_assert!(bound.is_some_and(|b| b.holds(&held)), "held snapshot {c:?} on {tid:?} {ak:?}: its carried bounds miss a write it holds");
         }
-        let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
+        // the state as stored, through the one reader (`Tx::load_lazy`), not the cache
+        let cached = (tx.core.states.remove(&k), tx.core.pages.remove(&k));
         let (want, got) = osis_base::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, None)?, tx.state(&tid, &ak)?.cloned())) })?;
         // and the reference index, derived from it (a signal's from its held fires)
         osis_base::costs::paused(|| if ak.signal() { crate::engine::refs::check_fires(tx, &tid, &ak) } else { crate::engine::refs::check(tx, &tid, &ak, got.as_ref()) })?;

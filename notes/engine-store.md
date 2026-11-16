@@ -28,7 +28,7 @@ Layouts in `engine/records.rs` (and the module named); all are `*_local` store r
 | `sy/`, `ow/`, `iw/`, `ih/`, `cp/`, `ra/`, `hw/`, `fm/`, `bp/` | the tables the engine keeps for sync (notes/sync-facade.md) |
 
 Other store kinds (osis-store's catalog):
-- **Aspect units**: the state (snapshot grammar with its pages inline, or for a paged state `[1, skeleton, [[set ID, path, encoding]*]]`: paged collections reduced to their reset and `W`).
+- **Aspect units**: the state (`state::Stored`): snapshot grammar with its pages inline; for a paged state `[1, skeleton, [[set ID, path, encoding]*]]` (paged collections reduced to their reset and `W`); or `[2, commit ID]`, the state as that commit's part in its record (notes/thing-cost.md, States stored as their body).
 - **Aspect tables** (`engine/pages.rs`, notes/engine-paged.md): table 0 state pages (key = set ID ‖ order-preserving bytes of the page's first dot, the first page the set ID alone; value `[first dot, next page's first dot, page]`); table 1 paged maps by key and paged sets by value (set ID ‖ keyed BLAKE3 of the key or value, links by content hash (`pages::ident`, key `Core::key_salt` from the node seed) ‖ entry or element dot; a superset, rebuilt with the layout); table 2 a paged sequence's placement (layout: the comment above `Place` in `pages.rs`). Tables 1 and 2 are rebuildable: written with the layout, the unit tag naming their rules.
 - Counters (memory overlay rows only, notes/engine-apply.md Counters), pending and parked commits, blob ciphertexts (pages, chunks, header-list trees).
 

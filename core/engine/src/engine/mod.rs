@@ -2810,23 +2810,84 @@ impl Tx<'_> {
     }
 
     /// Loads the state of `(tid, ak)` into the cache: a paged state lazily (its skeleton; pages
-    /// as `ensure_*` and `load` need them).
+    /// as `ensure_*` and `load` need them), a state stored as its body from that body's part in
+    /// its commit record. The one reader of stored states.
     pub fn load_lazy(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
         let k = (*tid, ak.clone());
         self.txn.noted_aspect(tid, ak);
         if self.core.states.contains_key(&k) {
             return Ok(());
         }
-        let f = match self.txn.get_aspect(tid, ak)? {
-            Some(u) if pages::is_paged(&u.state) => {
-                let (f, idx) = pages::open(&u.state, &self.core.key_salt)?;
+        let b = self.txn.get_aspect(tid, ak)?.map(|u| u.state).unwrap_or_default();
+        let f = match state::stored(&b)? {
+            state::Stored::Empty => None,
+            state::Stored::Whole(b) => Some(state::decode(b)?),
+            state::Stored::Paged(b) => {
+                let (f, idx) = pages::open(b, &self.core.key_salt)?;
                 self.core.pages.insert(k.clone(), idx);
                 Some(f)
             }
-            Some(u) if !u.state.is_empty() => Some(state::decode(&u.state)?),
-            _ => None,
+            state::Stored::Body(c) => {
+                let ai = self.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak)).ok_or(Error::Corrupt("state body"))?;
+                Some(crate::apply::stored_fragment(self, &c, ai)?.ok_or(Error::Corrupt("state body"))?)
+            }
         };
         self.core.states.insert(k, f);
+        Ok(())
+    }
+
+    /// Before parts `ais` of commit `id` leave its record: each state stored as one of them
+    /// (`state::Stored::Body`) is read into the cache and noted written, so this transaction reads
+    /// it as it was and `settle_states` stores it again (by then it is rewritten: a valid body's
+    /// drop rebuilds its state, shredded).
+    pub(crate) fn pin_states(&mut self, id: &CommitId, ais: &[usize]) -> Result<()> {
+        let Some(h) = self.core.ix.commits.get(id).map(|m| m.view.clone()) else { return Ok(()) };
+        for ai in ais {
+            let Some(a) = h.aspects.get(*ai) else { continue };
+            let k = (a.tid, a.ak.clone());
+            let b = self.txn.get_aspect(&a.tid, &a.ak)?.map(|u| u.state).unwrap_or_default();
+            if matches!(state::stored(&b)?, state::Stored::Body(c) if c == *id) {
+                self.load_lazy(&a.tid, &a.ak)?;
+                self.core.wrote(k);
+            }
+        }
+        Ok(())
+    }
+
+    /// Transaction end: each unpaged state written here is stored as a body equal to it, held
+    /// whole and valid (`state::Stored::Body`): the one it names already, else the aspect's
+    /// newest; else whole. One rule for every writer (joins, rebuilds, drops, purges); equality
+    /// makes the reference exact whatever normalised the state.
+    pub(crate) fn settle_states(&mut self) -> Result<()> {
+        let mut seen = BTreeSet::new();
+        for k in self.core.written.clone() {
+            if !seen.insert(k.clone()) || self.core.pages.contains_key(&k) {
+                continue;
+            }
+            let Some(Some(st)) = self.core.states.get(&k) else { continue };
+            let (tid, ak) = (&k.0, &k.1);
+            let st = st.clone();
+            let b = self.txn.get_aspect(tid, ak)?.map(|u| u.state).unwrap_or_default();
+            let now = match state::stored(&b)? {
+                state::Stored::Body(c) => Some(c),
+                _ => None,
+            };
+            // the body it names already, then the newest held one
+            let newest = self.core.ix.by_aspect.get(&k).and_then(|s| s.iter().next_back()).map(|x| x.1);
+            let mut same = None;
+            for c in now.into_iter().chain(newest.filter(|c| Some(*c) != now)) {
+                let Some(ai) = self.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak).filter(|ai| m.valid_at(*ai) && m.holds(*ai) && !m.stripped(*ai))) else { continue };
+                if crate::apply::stored_fragment(self, &c, ai)?.is_some_and(|f| f == st) {
+                    same = Some(c);
+                    break;
+                }
+            }
+            match same {
+                Some(c) if now != Some(c) => self.txn.put_aspect(tid, ak, &AspectUnit { state: state::body(&c) }, Shred::No)?,
+                None if now.is_some() => self.write_state(tid, ak, Some(st), Shred::No)?,
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -3080,7 +3141,8 @@ impl Tx<'_> {
         self.core.touch();
         self.core.wrote((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
-        let (bytes, idx) = pages::write_full(&mut self.txn, tid, ak, f.as_ref(), pages::is_paged(&unit.state), &self.core.key_salt)?;
+        let paged = matches!(state::stored(&unit.state)?, state::Stored::Paged(_));
+        let (bytes, idx) = pages::write_full(&mut self.txn, tid, ak, f.as_ref(), paged, &self.core.key_salt)?;
         unit.state = bytes;
         match idx {
             Some(idx) => self.core.pages.insert((*tid, ak.clone()), idx),
@@ -3146,15 +3208,13 @@ impl Tx<'_> {
         self.write_state(tid, ak, f, shred)
     }
 
-
-    pub fn unit(&mut self, tid: &Tid, ak: &Ak) -> Result<AspectUnit> {
-        Ok(self.txn.get_aspect(tid, ak)?.unwrap_or_default())
-    }
-
     /// Writes a commit record (`index::record_head`: received, origin, dropped parts and what
     /// they keep; then its blob), and for a role commit its `node/edges` row (`edges`: what the caller already
     /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
+        // the bodies leaving the record: held whole as the index has it, absent from `blob`
+        let leaving: Vec<usize> = self.core.ix.commits.get(id).map(|m| (0..m.view.aspects.len()).filter(|ai| m.holds(*ai) && !m.stripped(*ai) && blob.part(*ai).is_none()).collect()).unwrap_or_default();
+        self.pin_states(id, &leaving)?;
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         crate::sync_ids::opened::prune(self, id, meta)?;
@@ -3828,6 +3888,10 @@ impl Engine {
                     r = r.and_then(|v| crate::sync::units::settle(&mut tx).and_then(|()| crate::sync::units::check_written(&mut tx)).map(|_| v));
                 }
                 tx.core.wrote_on.clear();
+                // every state written above stored in its form (`Tx::settle_states`)
+                if r.is_ok() {
+                    r = r.and_then(|v| tx.settle_states().map(|_| v));
+                }
                 if r.is_ok() {
                     r = r.and_then(|v| Core::commit_changes(&mut tx).map(|_| v));
                 }

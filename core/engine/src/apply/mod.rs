@@ -2218,6 +2218,16 @@ pub(crate) fn held_fragment(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result
     Ok(held_part(tx, id, ai)?.map(Decoded::into_fragment))
 }
 
+/// The fragment of the part of commit `id` on aspect `ai` its record holds (never a leftover):
+/// what a state stored as that body reads (`engine::state::Stored::Body`).
+pub(crate) fn stored_fragment(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Option<osis_crdt::Fragment>> {
+    let Some(stored) = tx.get_commit(id)? else { return Ok(None) };
+    let Some(p) = stored.part(ai) else { return Ok(None) };
+    let Some(header) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(None) };
+    let at = tx.commit_stamp(id);
+    Ok(Some((*decoded_part(tx, &header, id, at, p)?).clone().into_fragment()))
+}
+
 /// Streams the held part of commit `id` on aspect `ai` a piece at a time (`atomic::stream_stored`:
 /// the skeleton, then its pages; joining the pieces is joining the part): what reads a part
 /// element by element holds about one page of it. `None` when no part is held, else a snapshot's

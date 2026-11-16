@@ -33,8 +33,8 @@ const STATE_TABLE: u8 = 0;
 const KEY_TABLE: u8 = 1;
 /// The aspect table holding the placement of its paged sequences (`write_placement`).
 const PLACE_TABLE: u8 = 2;
-/// The unit state tag of a paged state (an unpaged state starts with bytes).
-const TAG: i64 = 1;
+/// The unit state tag of a paged state (`state::stored`).
+pub const TAG: i64 = 1;
 
 /// A path with the keys of its entry steps (to rebuild an entry's key from a page alone).
 type KeyedPath = Vec<(Step, Option<Value>, Option<osis_crdt::Stamp>)>;
@@ -131,12 +131,6 @@ pub type Touch = Option<PagedTouch>;
 /// What joining `delta` can change in a state with page index `idx`.
 pub fn touch_of(delta: &Fragment, idx: Option<&StatePages>) -> Touch {
     delta.touched_paths(&idx?.paths)
-}
-
-/// Whether a unit's state field says the state lives in the aspect's page table: its first
-/// item is an integer, not the snapshot bytes.
-pub fn is_paged(b: &[u8]) -> bool {
-    b.get(1).is_some_and(|x| *x < 0x18)
 }
 
 // ---- encodings
