@@ -5,7 +5,7 @@ Design principles every agent follows: notes/principles.md. Build and test mecha
 
 ## Job mix (Tess)
 About four agents at once, in four kinds of job:
-- **Primary workstream** (one design project, e.g. the reference graph) is the priority: always at least one agent on it, two when they won't collide.
+- **Primary workstream** (the top item of notes/priorities.md, which says how to use and keep it) is the priority: always at least one agent on it, two when they won't collide.
 - **Workflow**: about one running at all times, cycling through kinds and keeping what proves useful: watchdog, test optimizer, a tool that would speed agents up, sorting piled-up branches, hunting slowdowns nobody has noticed yet. If nothing big is left to gain, do other work, but never go long without one.
 - **Cleanup**: about one running: simplify notes, rewrite or delete redundant tests, dedupe and refactor code. osis should ship with less code than it has; a cleanup may carry a bug fix or feature, always framed as making things simpler and more consistent.
 - **Bug fixes**: few. Worth it when a bug threatens the design (pull that thread early), slows or masks tests, or goes away with a complication a cleanup removes. Otherwise wait for the primary workstream to finish.
