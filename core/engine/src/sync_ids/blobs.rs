@@ -118,7 +118,7 @@ pub struct BodyCtx {
 }
 
 impl BodyCtx {
-    /// Whether a commit (its `View`) may have bodies under the group's sync IDs.
+    /// Whether a commit (its `View`) may have bodies under the sync IDs of this sync unit's thing.
     pub(crate) fn touches(&self, v: &crate::engine::View) -> bool {
         v.aspects.iter().any(|a| self.closure.contains(&a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "sync.0" | "created.0"))
     }
@@ -159,7 +159,7 @@ impl std::fmt::Debug for HeadKeys {
     }
 }
 
-/// The held epoch of `l`'s group role whose role key is `pk`, with that key and
+/// The held epoch of role key `l`'s role whose key is `pk`, with that key and
 /// whether that secret may be encrypted under (not reading-only, spec/crypto.md §4).
 fn matching(e: &ActorEpochs, l: RoleKey, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, SigningSecret, bool)> {
     let (ep, k) = osis_keys::registered_key(e, l, pk)?;
@@ -443,10 +443,10 @@ impl Engine {
         Ok(c.encode())
     }
 
-    /// The bodies a group's sync ID must hold from its closure (spec/sync-judgement.md §1): held commits
-    /// touching the closure with a part the group's actor may read. A home sync ID (an actor
-    /// synced as a group of itself) also carries the `sync.0` and `created.0` writes of the
-    /// groups with a sync ID it is the nearest record-chain actor with a sync ID of (spec/sync-ids.md §2).
+    /// The bodies a sync ID must hold from its thing's sync unit (spec/sync-judgement.md §1): held
+    /// commits touching the sync unit with a part its reader actor may read. A home sync ID also
+    /// carries the `sync.0` and `created.0` writes of the things with a sync ID it is the nearest
+    /// record-chain actor with a sync ID of (spec/sync-ids.md §2).
     /// Without plaintexts (`body_plaintext`), from a memo per commit (`Core::bodies`): a pass after a
     /// change looks at only the commits it changed. The commits are found through `on_thing` and
     /// `by_aspect` (O(the closure's commits), no header decoded when the memo holds them), in ID
@@ -473,7 +473,7 @@ impl Engine {
     /// What `commit_bodies_under` needs of a sync unit's root: the unit, actor and the things its home
     /// sync ID publishes.
     pub fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
-        BodyCtx { closure: self.sync_unit(g), actor: self.group_actor(g), published: self.published_view(g) }
+        BodyCtx { closure: self.sync_unit(g), actor: self.core.reader_of(g), published: self.published_view(g) }
     }
 
     /// The parts of commit `id` (its held parts, or `parts`) the actor of `ctx` may read
@@ -485,9 +485,9 @@ impl Engine {
     }
 
     /// The parts of copy `c`, opened under a sync ID of `g`, that the sync ID carries no more
-    /// (spec/sync-judgement.md §1: a sync ID carries the parts its group's actor may read, and
-    /// certificate copies of role-class parts on any thing): content (`is_content`) on a thing
-    /// under an actor with secrets of its own that the group's actor may not read now, left by a
+    /// (spec/sync-judgement.md §1: a sync ID carries the parts its thing's reader actor may read,
+    /// and certificate copies of role-class parts on any thing): content (`is_content`) on a thing
+    /// under an actor with secrets of its own that `g`'s reader actor may not read now, left by a
     /// revocation since the per-sync-ID copy was placed (spec/permissions.md §3). With any,
     /// `open_entry` takes none of the copy (`Opened::NotOpen`): those parts come from a body under
     /// their own thing's sync ID, which read fetches as missing once this node may hold it.
@@ -497,7 +497,7 @@ impl Engine {
     /// `may_learn`, `account.0` seeds only under a devices epoch held for use
     /// (`signing::usable_seeds`); `roles.0`, `keys.0` and `listing.0` are certificate material.
     pub fn copy_stale(&self, g: &Tid, c: &CommitBlob) -> BTreeSet<usize> {
-        let actor = self.group_actor(g);
+        let actor = self.core.reader_of(g);
         let h = &c.header;
         let stale = |a: &osis_commit::AspectEntry| osis_schema::core_types::is_content(a.ak.as_str()) && self.core.secret_actor(&a.tid).is_some_and(|x| self.core.ix.own_keys.contains(&x)) && !self.actor_reads(&actor, &a.tid);
         c.parts.iter().map(|p| p.ai).filter(|ai| h.aspects.get(*ai).is_some_and(stale)).collect()
@@ -509,9 +509,9 @@ impl Engine {
         self.actor_reads(&ctx.actor, t)
     }
 
-    /// Whether the actor of group `g` may read `t` (`reads`).
+    /// Whether the reader actor of sync unit `g`'s thing may read `t` (`reads`).
     pub fn reads_in(&self, g: &Tid, t: &Tid) -> bool {
-        let actor = self.group_actor(g);
+        let actor = self.core.reader_of(g);
         self.actor_reads(&actor, t)
     }
 
@@ -519,26 +519,26 @@ impl Engine {
         self.core.may_read(actor, &self.core.reader_of(t))
     }
 
-    /// Whether the actor of group `g` reads `t` as every node judges it, for placing chain
+    /// Whether the reader actor of sync unit `g`'s thing reads `t` as every node judges it, for placing chain
     /// certificates alone (spec/sync-judgement.md §1: a devices actor reads as its account,
     /// whichever node judges it): any account's devices actor reads what its account reads, so
     /// the chains placed under a sync ID are the same at every node. Never an access, sealing,
     /// boxing or opening decision: there `reads_in`.
     pub(crate) fn cert_reads_in(&self, g: &Tid, t: &Tid) -> bool {
-        let actor = self.group_actor(g);
+        let actor = self.core.reader_of(g);
         let reader = self.core.devices_of(&actor).unwrap_or(actor);
         self.core.may_read(&reader, &self.core.reader_of(t))
     }
 
-    /// The parts of `h` a sync ID of `ctx`'s group carries in its bodies (spec/sync-judgement.md §1): those on
-    /// things of its closure its actor may read. A chain certificate's part on any other thing goes
+    /// The parts of `h` a sync ID of `ctx`'s sync unit carries in its bodies (spec/sync-judgement.md
+    /// §1): those on things of the sync unit its reader actor may read. A chain certificate's part on any other thing goes
     /// there as a certificate copy (spec/permissions.md §4).
     pub fn body_carried(&self, ctx: &BodyCtx, h: &osis_commit::Header) -> std::collections::BTreeSet<usize> {
         h.aspects.iter().enumerate().filter(|(_, a)| ctx.closure.contains(&a.tid) && self.reads(ctx, &a.tid)).map(|(i, _)| i).collect()
     }
 
-    /// The body of commit `id` a sync ID of the group of `ctx` must hold (`sync_id_bodies_meta`):
-    /// with the parts its actor may read among those inside the closure (or published there),
+    /// The body of commit `id` a sync ID of `ctx`'s sync unit must hold (`sync_id_bodies_meta`):
+    /// with the parts its reader actor may read among those inside the sync unit (or published there),
     /// when there are any; else, for a lasting commit, its header alone.
     pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
         self.bodies_under(ctx, id, false)
@@ -709,7 +709,7 @@ impl Engine {
         })
     }
 
-    /// Held read secrets of a group, newest first; then those derived from its first admin's (a
+    /// Held read secrets of a thing with own keys, newest first; then those derived from its first admin's (a
     /// thing that got secrets of its own, or one under a key actor this node holds: the rotation
     /// that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
     /// Each epoch's roles secret follows its secret (spec/crypto.md §4, Roles secrets), and one

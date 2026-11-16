@@ -61,7 +61,7 @@ enum Fate {
 #[derive(Default)]
 pub struct Forgotten {
     pub things: BTreeSet<Tid>,
-    /// Sync IDs of forgotten groups.
+    /// Sync IDs of forgotten things with own keys.
     pub sync_ids: BTreeSet<SyncId>,
     /// Commits deleted whole.
     pub commits: BTreeSet<CommitId>,
@@ -326,13 +326,13 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         let (c, t) = (CommitId(r.arr()?), r.tid()?);
         Ok(out.commits.contains(&c) || out.things.contains(&t))
     })?;
-    // sync IDs of forgotten groups, from their `sync.0` (kept), but those a kept group owns
+    // sync IDs of forgotten things, from their `sync.0` (kept), but those a kept thing owns
     // (`sync_ids::actors::owns`; the forgotten ones' secrets are gone, so judged from the owner's
-    // side): another's sync ID a forgotten group's admin named takes nothing of its owner's here
+    // side): another's sync ID a forgotten thing's admin named takes nothing of its owner's here
     for g in out.things.clone() {
         out.sync_ids.extend(crate::flows::sync_ids::recorded_in(tx, &g)?);
     }
-    // (each found by the groups recording it, `Indexes::sync_recorders`)
+    // (each found by the things recording it, `Indexes::sync_recorders`)
     let kept: BTreeSet<Tid> = out.sync_ids.iter().flat_map(|l| tx.core.ix.sync_recorders.get(l).into_iter().flatten().copied()).filter(|g| !out.things.contains(g)).collect();
     for g in kept {
         for l in crate::flows::sync_ids::owned_in(tx, &g)?.keys() {

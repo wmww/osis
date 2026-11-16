@@ -160,7 +160,7 @@ fn check_entry_keys(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
 /// A core-aspect delta must fit the core schema's type (`Fragment::fits`: encodings, values,
 /// enum cases; a link only where the type takes one, spec/data-model.md §6): every node judges it
 /// alike from the delta and its build's core schema, so a reader of the aspect never meets a
-/// value its type does not take (one bad element would make a whole `group.0` unreadable).
+/// value its type does not take (one bad element would make a whole `holds.0` unreadable).
 fn check_types(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
     match osis_schema::core_schema().view(ak) {
         Some(v) if !f.fits(&v) => Err(Error::Malformed("a value the core type does not take")),

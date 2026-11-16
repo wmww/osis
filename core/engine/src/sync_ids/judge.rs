@@ -38,7 +38,7 @@ impl Core {
     }
 
     /// J over `actors`: the actors a connection proved by their own key or, for an account, by
-    /// its key at an epoch open here (`Proven`); never one read from group data.
+    /// its key at an epoch open here (`Proven`); never one read from a thing's data.
     pub fn judge(&self, actors: impl IntoIterator<Item = Tid>) -> Judge<'_> {
         Judge { core: self, actors: actors.into_iter().collect(), ever: BTreeMap::new() }
     }

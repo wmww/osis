@@ -589,7 +589,7 @@ impl Engine {
             }
         };
         let id = opened.commit.id();
-        // spec/permissions.md §3 (Lost access): a copy carrying content of a thing S's group actor
+        // spec/permissions.md §3 (Lost access): a copy carrying content of a thing the reader actor of S's thing
         // may not read now (left by a revocation since it was placed) gives nothing: none of it is
         // taken (its parts come from a body under their own thing's sync ID)
         if opened.copy && !self.copy_stale(&t, &opened.commit).is_empty() {
@@ -667,7 +667,7 @@ impl Engine {
         let ctx = self.body_ctx(&t);
         let Some(b) = self.commit_bodies_under(&ctx, c)?.into_iter().next() else { return Ok(Promote::Never) };
         let Some(h) = self.header(c) else { return Ok(Promote::NotYet) };
-        let actor = self.group_actor(&t);
+        let actor = self.core.reader_of(&t);
         // a fire of an open signal is promoted whatever its author's role (spec/sync-inbox.md §4)
         let open = b.parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.open()));
         if !open && crate::engine::write::role_of(&self.core, &h.author, &actor, h.ts) < Some(Role::Write) || !self.judged_valid(c, &b.parts) {

@@ -12,7 +12,7 @@ fn s(x: &str) -> Value {
 
 // spec/crypto.md §7 (Header list): a writer lists the thing's delete keys, notes/api.md Rights: a role whose
 // delete keys are not here yet (no inbox hint, the thing's `keys.0` in a later batch: another node
-// of the grantee's account, a group's grant learned from its certificate copy) reads as `Read`
+// of the grantee's account, a holder's grant learned from its certificate copy) reads as `Read`
 // and a content write on it is `Permission`, until the keys come; then both say the role. An
 // admin's calls are `Permission { needs: Admin }` meanwhile alike, by the same rule.
 #[test]

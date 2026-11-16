@@ -23,7 +23,7 @@ fn edge_role(tl: &Timeline, holder: Tid, t: Tid) -> Option<Role> {
 }
 
 /// n0 is G's first admin; A1..A3 admins, M writer.
-fn group() -> (World, Vec<Tid>, Tid) {
+fn admins_of_g() -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();
     let n = w.nodes(5);
     let g = w.thing(n[0]);
@@ -37,7 +37,7 @@ fn group() -> (World, Vec<Tid>, Tid) {
 /// §5.1: mutual removal resolves to the earlier timestamp.
 #[test]
 fn mutual_removal_earlier_wins() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     w.set(n[1], g, n[2], None, 2, &[]);
     w.set(n[2], g, n[1], None, 3, &[]);
     let tl = eval(&w);
@@ -49,7 +49,7 @@ fn mutual_removal_earlier_wins() {
 #[test]
 fn stolen_node_backdated_removals() {
     for remover_saw in [false, true] {
-        let (mut w, n, g) = group();
+        let (mut w, n, g) = admins_of_g();
         let recv: Vec<(Tid, u64)> = if remover_saw { vec![(n[3], 5), (n[0], 6)] } else { vec![(n[3], 5)] };
         w.set(n[1], g, n[2], None, 2, &recv);
         w.set(n[1], g, n[4], None, 3, &recv);
@@ -67,7 +67,7 @@ fn stolen_node_backdated_removals() {
 /// back, n0 being an ordinary admin.
 #[test]
 fn further_backdated_revoke_cancels() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     w.set(n[1], g, n[2], None, 5, &[(n[0], 6)]);
     w.set(n[0], g, n[1], None, 4, &[]);
     let tl = eval(&w);
@@ -82,7 +82,7 @@ fn further_backdated_revoke_cancels() {
 /// beneficiary falls with its author.
 #[test]
 fn self_witnessed_grant_falls() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let z = w.nodes_salted(1, 99)[0];
     w.set(n[1], g, z, edge(Admin), 2, &[(z, 2)]);
     w.set(n[0], g, n[1], None, 5, &[]);
@@ -163,7 +163,7 @@ fn transitive_record_edge_audit() {
 /// leave, so the leave stands) audits as if the holder were admin.
 #[test]
 fn self_removal_finalized_by_explicit_removal() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let z = w.nodes_salted(1, 99)[0];
     w.set(n[1], g, n[1], None, 5, &[(n[0], 5)]);
     let forged = w.set(n[1], g, z, edge(Admin), 4, &[]);
@@ -180,7 +180,7 @@ fn self_removal_finalized_by_explicit_removal() {
 /// not covered by n1's frontier: it drops and n1 keeps its role.
 #[test]
 fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let r = w.set(n[1], g, n[2], None, 8, &[]);
     let forged = w.set(n[2], g, n[1], edge_inv(Admin, None, Some(9)), 6, &[]);
     let tl = eval(&w);
@@ -214,7 +214,7 @@ fn grantor_cannot_backdate_removers_edge_spec_permissions_5_1() {
 /// admin removes the admin that last set its own edge and keeps what that write gave it.
 #[test]
 fn received_chain_write_covered_spec_permissions_5_1() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let set = w.set(n[2], g, n[1], edge_inv(Admin, Some(Write), None), 3, &[(n[1], 3)]);
     let r = w.set(n[1], g, n[2], None, 8, &[]);
     let tl = eval(&w);
@@ -398,7 +398,7 @@ fn sticky_drop_outlives_its_cause() {
 /// §5.1 step 5: the result is a function of the held set, not of its order.
 #[test]
 fn held_order_irrelevant() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     w.set(n[1], g, n[2], None, 2, &[]);
     w.set(n[2], g, n[1], None, 2, &[]);
     w.set(n[3], g, n[4], None, 3, &[(n[0], 3)]);
@@ -410,12 +410,12 @@ fn held_order_irrelevant() {
     assert_eq!(tl.dropped(), tr.dropped());
 }
 
-/// §2 self-removal / §5.1: A is the first admin of group G and doc T; X admin of G, G admin of
+/// §2 self-removal / §5.1: A is the first admin of G and doc T; X admin of G, G admin of
 /// T; X grants Y admin on T unseen by A. A removes G from T: with admin on T by T's record
 /// edge this is an explicit demotion, not a self-removal, so Y's grant is dropped. When G's
 /// first admin is someone else, the same.
 #[test]
-fn group_removal_by_first_admin_of_both() {
+fn holder_removal_by_first_admin_of_both() {
     for a_first_of_g in [true, false] {
         let mut w = World::new();
         let n = w.nodes(4);
@@ -440,7 +440,7 @@ fn group_removal_by_first_admin_of_both() {
 // spec/permissions.md §1 (first admin removable)
 #[test]
 fn first_admin_removable_by_admins() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let tl = eval(&w);
     assert_eq!(edge_role(&tl, n[0], g), Some(Admin), "the record edge is in the roster");
     w.set(n[1], g, n[0], None, 2, &[]);
@@ -461,7 +461,7 @@ fn first_admin_removable_by_admins() {
 // spec/permissions.md §1 (first admin removable), §2 (self-removal)
 #[test]
 fn first_admin_leaves_by_self_removal() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let leave = w.set(n[0], g, n[0], None, 2, &[]);
     let tl = eval(&w);
     assert!(tl.is_applied(&WriteId(leave, 0)));
@@ -474,7 +474,7 @@ fn first_admin_leaves_by_self_removal() {
 // spec/permissions.md §1 (role-class by admins)
 #[test]
 fn writer_cannot_write_edges() {
-    let (mut w0, n, g) = group();
+    let (mut w0, n, g) = admins_of_g();
     let z = w0.nodes_salted(1, 9)[0];
     for (x, e) in [(z, edge(Read)), (n[4], edge(Admin)), (n[1], None), (n[2], edge(Read))] {
         let mut w = w0.clone();
@@ -664,7 +664,7 @@ fn end_of(tl: &osis_perm::Timeline, g: &Tid, m: &Tid) -> EdgeEnd {
 // edge has no end.
 #[test]
 fn ended_gives_the_last_applied_word_spec_permissions_3() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let z = w.nodes_salted(4, 77);
     // a removal saying retain
     w.set(n[0], g, z[0], edge(Read), 2, &[]);
@@ -691,7 +691,7 @@ fn ended_gives_the_last_applied_word_spec_permissions_3() {
 // saying retain none of its own: a way retains only from read up, so a sync grant ended is none.
 #[test]
 fn ended_gives_the_role_before_the_end_spec_permissions_3() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let z = w.nodes_salted(3, 80);
     w.set(n[0], g, z[0], edge(Role::Sync), 2, &[]);
     w.set(n[0], g, z[0], says_retain(), 3, &[]);
@@ -710,7 +710,7 @@ fn ended_gives_the_role_before_the_end_spec_permissions_3() {
 // the target needed; a stranger's removal of it decides nothing.
 #[test]
 fn self_removal_says_its_own_keep_spec_permissions_2() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let z = w.nodes_salted(1, 78);
     w.set(z[0], g, n[4], None, 4, &[]);
     assert!(eval(&w).roster(&g, At::END).contains_key(&n[4]), "a stranger's removal");
@@ -724,7 +724,7 @@ fn self_removal_says_its_own_keep_spec_permissions_2() {
 // an invite holder cannot make a copy stay.
 #[test]
 fn an_invite_does_not_say_keep_spec_permissions_2() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let z = w.nodes_salted(3, 79);
     w.set(n[0], g, z[0], Some(Edge { invite: Some(Read), ..Edge::new(Read) }), 2, &[]);
     w.set(z[0], g, z[1], says_retain(), 3, &[]);
@@ -833,7 +833,7 @@ fn self_grant_below_is_a_seed_spec_permissions_5_1() {
 /// and the void one is rejected, not disputed.
 #[test]
 fn trust_set_limits_spec_permissions_5_1() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let rm = w.set(n[0], g, n[2], None, 2, &n.iter().map(|x| (*x, 2)).collect::<Vec<_>>());
     let leave = w.set(n[3], g, n[3], None, 3, &[]);
     let fin = w.fresh_id();
@@ -847,7 +847,7 @@ fn trust_set_limits_spec_permissions_5_1() {
         assert_eq!(side.trusted_active().iter().copied().collect::<Vec<_>>(), if t.ops.contains(&WriteId(rm, 0)) { vec![WriteId(rm, 0)] } else { vec![] });
         assert!(side.disputes().is_empty());
     }
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     let early = w.set(n[1], g, n[2], None, 2, &[]);
     let late = w.set(n[2], g, n[1], None, 3, &[]);
     let tl = eval(&w);
@@ -864,7 +864,7 @@ fn trust_set_limits_spec_permissions_5_1() {
 /// with the trust set.
 #[test]
 fn trusted_component_evaluates_from_scratch_spec_permissions_5_1() {
-    let (mut w, n, g) = group();
+    let (mut w, n, g) = admins_of_g();
     w.set(n[2], g, n[1], None, 3, &[]);
     let r = w.set(n[1], g, n[2], None, 4, &[]);
     let held = w.held();

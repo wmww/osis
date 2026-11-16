@@ -15,7 +15,7 @@
 //! ones too.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{commit_ids, edge, group, held_by, newest_read, openable, synced};
+use super::tests::{commit_ids, edge, with_own_keys, held_by, newest_read, openable, synced};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -59,7 +59,7 @@ fn shape(d: usize) -> Shape {
     let (lp, (g, xs)) = LocalPeer::cached(&format!("rotation::tests_carried::shape/{d}"), || {
         let mut lp = synced(4);
         let (w, r) = (lp.peers[W].engine.me(), lp.peers[R].engine.me());
-        let mut xs: Vec<Tid> = (0..d).map(|_| group(&mut lp, B)).collect();
+        let mut xs: Vec<Tid> = (0..d).map(|_| with_own_keys(&mut lp, B)).collect();
         lp.sync_all().unwrap();
         let xd = *xs.last().unwrap();
         lp.peers[B].engine.grant(&xd, &w, &edge(Role::Write)).unwrap();
@@ -68,7 +68,7 @@ fn shape(d: usize) -> Shape {
             lp.peers[B].engine.grant(&xs[i], &xs[i + 1], &edge(Role::Write)).unwrap();
         }
         lp.sync_all().unwrap();
-        let g = group(&mut lp, A);
+        let g = with_own_keys(&mut lp, A);
         lp.peers[A].engine.grant(&g, &xs[0], &edge(Role::Write)).unwrap();
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[W].engine.core.role_now(&w, &g), Some(Role::Write));
@@ -429,11 +429,11 @@ fn reader_removal_stays_below_spec_crypto_4() {
 fn route_shape() -> (LocalPeer, Tid, Tid, Tid) {
     let (lp, (a, m, s)) = LocalPeer::cached("rotation::tests_carried::route_shape", || {
         let mut lp = synced(3);
-        let s = group(&mut lp, 2);
-        let m = group(&mut lp, 1);
+        let s = with_own_keys(&mut lp, 2);
+        let m = with_own_keys(&mut lp, 1);
         lp.sync_all().unwrap();
         lp.peers[1].engine.grant(&m, &s, &edge(Role::Write)).unwrap();
-        let a = group(&mut lp, 0);
+        let a = with_own_keys(&mut lp, 0);
         lp.sync_all().unwrap();
         lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();

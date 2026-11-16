@@ -260,8 +260,4 @@ pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Resu
     w.commit().unwrap().unwrap()
 }
 
-/// `Osis::members` split by how each is in the group.
-pub trait MembersOf {
-    fn items(&self, g: osis::Tid) -> osis::Result<Vec<osis::Tid>>;
-}
 

@@ -1,5 +1,5 @@
 //! Certificate blobs (spec/permissions.md §4; spec/sync-judgement.md §1): this node's chain certificates
-//! for a group and its node card as (commit, parts) to place, partial bodies of a commit and the
+//! for a thing with own keys and its node card as (commit, parts) to place, partial bodies of a commit and the
 //! blobs its parts link.
 //! Sync IDs come with secrets of their own (`rotation::own_secrets`), steps by sync once their rotations are logged (`Engine::due_step`, `issue_due_step`).
 
@@ -239,8 +239,8 @@ impl Engine {
     /// spec/sync-judgement.md §2): the union of `g`'s pieces (`Piece`): `g`'s own
     /// (`own_piece`); the author's chain of each held commit on a thing of `g`'s closure its actor
     /// may read, which goes with the commit (`certificate_chains`, `chain_piece`). Nothing else:
-    /// a chain into an item of the closure that no write there needs (a private group's roster
-    /// holding a role on an item under S) is none of S's readers'. Parts the closure's bodies carry
+    /// a chain into an item of the closure that no write there needs (the roster of a holder
+    /// private to others holding a role on an item under S) is none of S's readers'. Parts the closure's bodies carry
     /// are `sync_bodies`' to leave out. Derived whole, O(all of it): what sync reads is
     /// `sync::certified`, kept per piece; this is what it is checked against.
     #[cfg(test)]

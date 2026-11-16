@@ -1511,7 +1511,7 @@ fn write_link_rotates_as_signer_spec_perm_3() {
 }
 
 // spec/crypto.md §4, spec/sync-ids.md §6: signing a step and sealing its entry boxes encrypt under
-// the group's epochs: after a node left the account that administers the team, no step is issued
+// the team's epochs: after a node left the account that administers the team, no step is issued
 // until the team rotates (its roles blocked meanwhile); then its step is, at the new epochs.
 #[test]
 fn issue_step_after_inside_removal_spec_sync_5() {
@@ -1695,7 +1695,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
 }
 
 // spec/permissions.md §5.1 Frontier (commit IDs only, never counters): a demoter lists C's held
-// edit by its commit ID, whatever group it is under.
+// edit by its commit ID, whatever thing it is under.
 #[test]
 fn frontier_lists_commit_ids_spec_perm_5_1() {
     let (mut lp, ps) = people(3);

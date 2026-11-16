@@ -3,19 +3,19 @@
 //! asks for writes only what differs.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{edge, granted, group, synced};
+use super::tests::{edge, granted, with_own_keys, synced};
 use super::Reseal;
 use crate::local_peer::LocalPeer;
 use osis_base::{CommitId, Role, Tid};
 use std::collections::BTreeSet;
 
-/// Peer 2's team T holds read on peer 0's group G; everyone synced. (lp, G, T)
+/// Peer 2's team T holds read on G, a thing of peer 0's with own keys; everyone synced. (lp, G, T)
 fn team_on_g() -> (LocalPeer, Tid, Tid) {
     let (lp, (g, t)) = LocalPeer::cached("rotation::tests_stranded::team_on_g", || {
         let mut lp = synced(3);
-        let t = group(&mut lp, 2);
+        let t = with_own_keys(&mut lp, 2);
         lp.sync_all().unwrap();
-        let g = group(&mut lp, 0);
+        let g = with_own_keys(&mut lp, 0);
         lp.peers[0].engine.grant(&g, &t, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         (lp, (g, t))
@@ -47,12 +47,12 @@ fn holder_keys_bring_the_holders_new_keyset_spec_permissions_4() {
 
 // spec/permissions.md §4 (stranded): nothing off the holder's authority chain is taken (peer
 // input never causes unbounded storage, spec/requirements.md). A report naming T that
-// carries the role commits and record of X, a group of peer 2's peer 0 never saw, leaves peer 0
+// carries the role commits and record of X, a thing of peer 2's with own keys peer 0 never saw, leaves peer 0
 // none of them; X's keys named under X itself are taken only as a holder's (X holds nothing).
 #[test]
 fn holder_keys_take_nothing_off_the_chain_spec_permissions_4() {
     let (mut lp, _, t) = team_on_g();
-    let x = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 2);
     let keys = lp.peers[2].engine.holder_keys(&x).unwrap();
     let mut ids = ids_of(&keys);
     ids.retain(|c| lp.peers[0].engine.header(c).is_none());
@@ -77,12 +77,12 @@ fn an_asked_reseal_writes_only_what_differs_spec_permissions_3() {
 }
 
 // spec/permissions.md §4 (stranded): no edge write of anything off the chain. Peer 0 knows X, a
-// group of peer 2's on no path to T; a report naming T that carries a later grant on X leaves
+// thing of peer 2's with own keys on no path to T; a report naming T that carries a later grant on X leaves
 // peer 0 without it.
 #[test]
 fn holder_keys_take_no_edge_write_off_the_chain_spec_permissions_4() {
     let (mut lp, _, t) = team_on_g();
-    let x = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     let p1 = lp.peers[1].engine.me();
     let c = lp.peers[2].engine.grant(&x, &p1, &edge(Role::Read)).unwrap().commits[0];
@@ -110,7 +110,7 @@ fn report_and_pass(lp: &mut LocalPeer, g: Tid, m: Tid) {
 #[test]
 fn an_ended_holders_ask_goes_with_its_finalize_spec_permissions_4() {
     let (mut lp, tids) = synced_tids(2);
-    let g = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
     let until = lp.peers[0].engine.now().0 + 1_000;
     lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::WallMs(until)), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();
@@ -146,7 +146,7 @@ fn synced_tids(n: usize) -> (LocalPeer, Vec<Tid>) {
 #[test]
 fn whether_a_body_wraps_moves_at_a_grants_until_spec_crypto_4() {
     let (mut lp, tids) = synced_tids(2);
-    let g = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
     let until = lp.peers[0].engine.now().0 + 1_000;
     lp.peers[0].engine.grant(&g, &tids[1], &osis_schema::core_types::Edge { until: Some(osis_base::WallMs(until)), ..edge(Role::Read) }).unwrap();
     lp.sync_all().unwrap();

@@ -738,8 +738,8 @@ impl Engine {
     /// it is a holder the copy hangs on, or an app of the account, holding a role on the account
     /// that is its first admin, with a role now on such a holder (through a holder that is itself
     /// kept, too).
-    /// Invariant: a copy is the account's: a role on a holder alone, as a member of a group the
-    /// account is in, reads nothing of it, nor does any other client; no write right follows.
+    /// Invariant: a copy is the account's: a role on a holder alone, as one of the holders
+    /// the account holds a role through, reads nothing of it, nor does any other client; no write right follows.
     pub fn copy_readable_by(&self, actor: &Tid, t: &Tid) -> bool {
         let core = &self.core;
         let Some(a) = crate::retention::forget::copy_of(core, t) else { return false };

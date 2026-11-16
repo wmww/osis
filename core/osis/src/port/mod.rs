@@ -2,7 +2,7 @@
 //! notes/client-port.md): the `osis` API over a sync connection. `serve`: a node answers the
 //! requests its connections carry, as itself for a main session or as a client actor;
 //! `client`: a process uses a node it is a client of (a thin client, `Osis::connect`, or a
-//! node's group source, `Osis::connect_node`); `codec`: the values both sides exchange.
+//! node's sync unit source, `Osis::connect_node`); `codec`: the values both sides exchange.
 
 pub(crate) mod client;
 pub(crate) mod codec;

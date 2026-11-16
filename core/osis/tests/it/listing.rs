@@ -1,6 +1,6 @@
 //! Commit listings and their listeners (notes/api.md Commits): which parts a commit shows (in the
 //! read, kept by history until its bound, a purge tombstone, this node's own invalid write), at an
-//! aspect, a thing and a group, typed and untyped; pages, `complete`, memory commits; delete for
+//! aspect, a thing and the things it holds, typed and untyped; pages, `complete`, memory commits; delete for
 //! everyone and purge by author.
 
 use crate::common::TestWrites as _;

@@ -1,5 +1,5 @@
 //! The client port end to end (spec/wire.md §11.2 kinds 24-29, spec/sync-transport.md §6,
-//! spec/sync-set.md §5): thin clients (`Osis::connect`, `connect_socket`) and group sources
+//! spec/sync-set.md §5): thin clients (`Osis::connect`, `connect_socket`) and sync unit sources
 //! (`connect_node`, `unit_source`) against nodes on one in-process test network
 //! (`internals::ManualNet`), one manual clock. A call on the test network runs it until quiet.
 
@@ -452,13 +452,13 @@ fn a_lost_connection_comes_back_spec_sync_transport_6() {
     assert_eq!(got, vec![Ok(Some(Value::Int(5))), Ok(Some(Value::Int(6)))]);
 }
 
-// ---- group sources ----
+// ---- sync unit sources ----
 
 fn login(w: &World) -> NodeLogin {
     NodeLogin { addr: w.addr.clone(), secret: w.secret.clone() }
 }
 
-// spec/sync-set.md §5: a group sourced at another node is read and written there as this
+// spec/sync-set.md §5: a sync unit sourced at another node is read and written there as this
 // node's client actor; this node's own identity and process-wide calls stay its own; a read
 // this port does not carry is `Unsupported`; moved home, it reads this node's copy again.
 #[test]
@@ -489,8 +489,8 @@ fn a_group_read_at_another_node_spec_sync_set_5() {
     assert!(!b.disconnect_node(&w.addr).unwrap());
 }
 
-// notes/client-port.md, Moving: group sources outlive the process; until the node is
-// connected again, the group's calls fail `Network`, never this node's copy.
+// notes/client-port.md, Moving: sync unit sources outlive the process; until the node is
+// connected again, the sync unit's calls fail `Network`, never this node's copy.
 #[test]
 fn unit_sources_are_kept_notes_client_port() {
     let w = world(Some(Role::Write));

@@ -1808,8 +1808,8 @@ fn a_stale_certificate_blob_is_stamped_once_a_reader_can_pull() {
     assert_eq!(w.g.restamped, vec![(S, cid(9), rb)]);
 }
 
-// spec/sync-judgement.md §2 (outside the required set): while a group of the closure holds part
-// of its `group.0` only as a header, a body outside the closure is not judged, so nothing of it
+// spec/sync-judgement.md §2 (outside the required set): while a thing of the sync unit holds part
+// of its `holds.0` only as a header, a body outside the sync unit is not judged, so nothing of it
 // is deleted at K; nor is anything judged under a sync ID this node does not read.
 #[test]
 fn nothing_judged_outside_an_unsettled_closure_or_an_unread_sync_id() {
@@ -2255,7 +2255,7 @@ fn a_freed_link_is_dropped_deleted_at_stores_then_done_spec_sync_compaction_1() 
 
 /// The bodies and judgements read settles (`read: bodies`, `read: judged`) and the engine's settles of what is published and certified
 /// (`sync_ids::published`, `sync::certified`) node 0 makes for one more thing published under an
-/// actor G of its account (a thing with a sync ID whose first admin is G, in no group: its `sync.0` and
+/// actor G of its account (a thing with a sync ID whose first admin is G, in no other sync unit: its `sync.0` and
 /// `created.0` commits go under G's sync IDs as published), after `n` such things, run to quiet.
 fn judged_per_publish(n: usize) -> u64 {
     let mut w = crate::harness::history::world(0, 1);

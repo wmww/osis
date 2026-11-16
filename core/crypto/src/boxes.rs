@@ -102,9 +102,9 @@ impl BoxForm<'_> {
 pub enum BoxSlot {
     /// A `secrets.0` box of `actor` to `holder` for (role, epoch).
     Secrets { actor: Tid, holder: Tid, role: Role, epoch: Epoch },
-    /// An entry box of a sync ID step; `group`, the sync ID's group thing, is the actor whose epoch
+    /// An entry box of a sync ID step; `actor`, the sync ID's thing, is the actor whose epoch
     /// the payload names (not in the AD).
-    Entry { sync_id: SyncId, step_key: [u8; 32], group: Tid },
+    Entry { sync_id: SyncId, step_key: [u8; 32], actor: Tid },
 }
 
 impl BoxSlot {
@@ -112,7 +112,7 @@ impl BoxSlot {
     pub fn actor(&self) -> &Tid {
         match self {
             BoxSlot::Secrets { actor, .. } => actor,
-            BoxSlot::Entry { group, .. } => group,
+            BoxSlot::Entry { actor, .. } => actor,
         }
     }
 
@@ -170,11 +170,11 @@ pub struct EntryItem {
 
 /// An entry box at `slot`: payload `[role, n, secret, earlier, sync]`, `earlier` `[n, secret]` or
 /// `[]`, `sync` `[n, secret]` (spec/wire.md §7). Each secret must name its epoch of the slot's
-/// group.
+/// actor.
 pub fn seal_entry(recipient: &KemPublicKey, slot: &BoxSlot, item: &EntryItem, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
-    let group = slot.actor();
-    let named = |e: &Epoch, s: &Secret32| e.names(group, Role::Read, s);
-    if slot.key().is_some() || !named(&item.epoch, &item.secret) || item.earlier.as_ref().is_some_and(|(e, s)| !named(e, s)) || !item.sync.0.names(group, Role::Sync, &item.sync.1) {
+    let actor = slot.actor();
+    let named = |e: &Epoch, s: &Secret32| e.names(actor, Role::Read, s);
+    if slot.key().is_some() || !named(&item.epoch, &item.secret) || item.earlier.as_ref().is_some_and(|(e, s)| !named(e, s)) || !item.sync.0.names(actor, Role::Sync, &item.sync.1) {
         return Err(Error::Malformed("entry box item"));
     }
     let ad = slot.ad(BoxForm::Sealed { keyset: None, suite: u64::from(SUITE_1) })?;
@@ -186,7 +186,7 @@ pub fn seal_entry(recipient: &KemPublicKey, slot: &BoxSlot, item: &EntryItem, rn
     seal(recipient, &ad, &payload, rng)
 }
 
-/// Opens an entry box at `slot`. Each epoch is the one its secret names under the slot's group.
+/// Opens an entry box at `slot`. Each epoch is the one its secret names under the slot's actor.
 pub fn open_entry(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8]) -> Result<EntryItem, Error> {
     if slot.key().is_some() {
         return Err(Error::Malformed("not an entry box slot"));
@@ -203,7 +203,7 @@ pub fn open_entry(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8])
     out
 }
 
-fn parse_entry_item(v: &Value, group: &Tid) -> Result<EntryItem, Error> {
+fn parse_entry_item(v: &Value, actor: &Tid) -> Result<EntryItem, Error> {
     let Value::List(f) = v else { return Err(Error::Malformed("box payload")) };
     let [role, n, secret, Value::List(earlier), Value::List(sync)] = f.as_slice() else { return Err(Error::Malformed("box payload")) };
     if get_role(role)? != Role::Read {
@@ -211,7 +211,7 @@ fn parse_entry_item(v: &Value, group: &Tid) -> Result<EntryItem, Error> {
     }
     let at = |r: Role, n: &Value, s: &Value| -> Result<(Epoch, Secret32), Error> {
         let s = Secret32::from_bytes(get_array(s)?);
-        Ok((Epoch::derive(group, r, get_uint(n)?, &s)?, s))
+        Ok((Epoch::derive(actor, r, get_uint(n)?, &s)?, s))
     };
     let (epoch, secret) = at(Role::Read, n, secret)?;
     let earlier = match earlier.as_slice() {
@@ -579,13 +579,13 @@ mod tests {
         assert_eq!(open_box(&kem, &at, BoxForm::Sealed { keyset: None, suite: 1 }, &b), Err(Error::Malformed("box item does not name its key's epoch")));
     }
 
-    // spec/wire.md §7, spec/sync-ids.md §3: an entry box names epochs of the group, with or without the earlier secret; a box of the wrong payload or slot, a write secret, or a secret its epoch does not name, stays shut
+    // spec/wire.md §7, spec/sync-ids.md §3: an entry box names epochs of the sync ID's thing, with or without the earlier secret; a box of the wrong payload or slot, a write secret, or a secret its epoch does not name, stays shut
     #[test]
     fn entry_box_round_trip() {
         let mut rng = SeededRng::from_u64(0);
         let kem = KemSecret::derive(&sec(0x31));
         let g = actor(5);
-        let entry = BoxSlot::Entry { sync_id: SyncId([3; 16]), step_key: [5; 32], group: g };
+        let entry = BoxSlot::Entry { sync_id: SyncId([3; 16]), step_key: [5; 32], actor: g };
         let form = BoxForm::Sealed { keyset: None, suite: 1 };
         let read = |n, s: u8| Epoch::derive(&g, Role::Read, n, &sec(s)).unwrap();
         let sync = (Epoch::derive(&g, Role::Sync, 4, &sec(6)).unwrap(), sec(6));
@@ -623,7 +623,7 @@ mod tests {
         expect.extend([4; 32]);
         expect.extend([0x83, 0x00, 0x80, 0x01]);
         assert_eq!(ad, expect);
-        let entry = BoxSlot::Entry { sync_id: SyncId([3; 16]), step_key: [5; 32], group: actor(9) };
+        let entry = BoxSlot::Entry { sync_id: SyncId([3; 16]), step_key: [5; 32], actor: actor(9) };
         let sym = entry.ad(BoxForm::Symmetric { epoch_s: Epoch::new(1, [1; 32]).unwrap() }).unwrap();
         assert_eq!(sym[..2], [0x83, 0x50]);
         assert_eq!(sym[sym.len() - 38..sym.len() - 33], [0x82, 0x01, 0x82, 0x01, 0x58]);

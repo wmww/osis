@@ -3355,9 +3355,9 @@ fn stranger_card_makes_no_node_spec_perm_4() {
     }
 }
 
-// spec/sync-ids.md §4 (owner): a group's sync IDs are its `sync.0` state: a stranger's header-only commit
+// spec/sync-ids.md §4 (owner): a thing's sync IDs are its `sync.0` state: a stranger's header-only commit
 // listing `sync.0` on a thing (it applies, its part invalid) gives the thing no sync ID here:
-// it is not a group with a sync ID, nor published under its first admin's home sync ID.
+// it is not a thing with a sync ID, nor published under its first admin's home sync ID.
 #[test]
 fn stranger_sync_id_listing_sync_ids_nothing_spec_sync_2() {
     let mut lp = net_bare(2, 0);

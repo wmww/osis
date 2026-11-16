@@ -1,6 +1,6 @@
 //! Actors, entitlement and closure (spec/sync-ids.md §2, spec/sync-judgement.md §1, spec/sync-set.md §2): a thing's reader actor (the thing if it
-//! has secrets of its own, else its first admin), who may read it, a group's closure and its
-//! sync IDs (`sync.0`).
+//! has secrets of its own, else its first admin), who may read it, and the sync IDs of a thing with
+//! own keys (`sync.0`).
 
 use osis_base::memo::{Memo, Stamped};
 use crate::engine::{Core, Engine};
@@ -140,12 +140,6 @@ impl Core {
 }
 
 impl Engine {
-    /// A group's actor (spec/sync-judgement.md §1): the group if it has secrets of its own, else its base
-    /// actor.
-    pub fn group_actor(&self, g: &Tid) -> Tid {
-        self.core.reader_of(g)
-    }
-
     /// Whether actor `x` may read thing `t` (entitlement, spec/sync-judgement.md §1).
     pub fn may_read(&self, x: &Tid, t: &Tid) -> bool {
         self.core.may_read(x, t)

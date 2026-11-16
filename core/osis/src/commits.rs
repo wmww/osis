@@ -102,7 +102,7 @@ pub enum CommitEvent {
     /// did not fit, or the store found a write reported failed had landed after all. Read the
     /// pages shown again; the subscription goes on.
     Reread,
-    /// The subscription is over (its group's source moved, or the node ended it): subscribe again.
+    /// The subscription is over (its sync unit's source moved, or the node ended it): subscribe again.
     Ended(Error),
 }
 

@@ -152,7 +152,7 @@ fn a_self_removal_done_drops_its_own_loss_alone_spec_perm_3() {
 }
 
 // spec/permissions.md §3 (Lost access): a self-removal sync is done with leaves no wait behind:
-// peer 1 leaves a thing it still reads through a group, then is removed from the group; the
+// peer 1 leaves a thing it still reads through a holder, then is removed from the holder; the
 // lost-access trigger drops the thing.
 #[test]
 fn a_loss_behind_a_done_self_removal_drops_at_the_trigger_spec_perm_3() {
@@ -167,7 +167,7 @@ fn a_loss_behind_a_done_self_removal_drops_at_the_trigger_spec_perm_3() {
     let c = e.demote(&t, &Demotion { holder: ps[1], new: None, retain: None }).unwrap().commits[0];
     e.removal_done(&c).unwrap();
     assert!(e.waiting_removals().is_empty());
-    assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "read through the group");
+    assert!(e.epochs(&t).is_some_and(|x| x.read.holds_any()), "read through the holder");
     spread(&mut lp);
     lp.peers[0].engine.demote(&g, &Demotion { holder: ps[1], new: None, retain: None }).unwrap();
     spread(&mut lp);
@@ -215,7 +215,7 @@ fn only_an_own_self_removal_waits_and_done_drops_only_the_lost_spec_perm_3() {
     for i in [0, 1] {
         assert!(lp.peers[i].engine.waiting_removals().contains(&own), "node {i} waits on the own removal");
         all_done(&mut lp, i);
-        assert!(reads(&lp, i, &t), "node {i} still reads through the group: nothing dropped");
+        assert!(reads(&lp, i, &t), "node {i} still reads through the holder: nothing dropped");
     }
 }
 

@@ -41,7 +41,7 @@ pub struct StepKeys {
 }
 
 impl StepKeys {
-    /// Role public keys from the group's role secrets, deposit key from the actor's
+    /// Role public keys from the role secrets of the sync ID's thing, deposit key from the actor's
     /// deposit seed (spec/sync-ids.md §2).
     pub fn derive(sync: &Secret32, write: &Secret32, admin: &Secret32, deposit_seed: &Secret32, sync_id: &SyncId) -> StepKeys {
         StepKeys {
@@ -328,7 +328,7 @@ pub enum Parent<'a> {
 /// Issues a step with a fresh step key, its claim set and entry boxes (spec/sync-ids.md §3): one
 /// claim key per DH reader (a non-contributory result omits it), one static entry and entry box
 /// per key actor, padded with random public keys to a power of two, shuffled. `read` is the
-/// sync ID's group thing, the registered read epoch and its secret; `sync` the sync epoch and
+/// sync ID's thing, the registered read epoch and its secret; `sync` the sync epoch and
 /// secret its sync key derives from. The step private key is dropped (zeroized) on return.
 /// A step without rotation passes the parent's keys. Randomness in draw order: the step key
 /// (32 bytes), per sealed entry box the seal's ephemeral key and ML-KEM randomness (32 + 32), 32
@@ -356,7 +356,7 @@ pub fn register_with(parent: Parent, keys: StepKeys, readers: &[Reader], read: (
     };
     let step_secret = X25519Secret::random(rng);
     let step_key = step_secret.public();
-    let slot = BoxSlot::Entry { sync_id, step_key, group: *read.0 };
+    let slot = BoxSlot::Entry { sync_id, step_key, actor: *read.0 };
     let item = EntryItem { epoch: read.1, secret: read.2.clone(), earlier: earlier.map(|(e, s)| (e, s.clone())), sync: (sync.0, sync.1.clone()) };
     let mut claims = Vec::new();
     let mut entries = BTreeMap::new();
@@ -406,10 +406,10 @@ fn seal_entry_box(slot: &BoxSlot, kem: &KemPublicKey, item: &EntryItem, rng: &mu
     Ok(SecretBox::Sealed(SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: Sealed::X25519MlKem768(sealed) }))
 }
 
-/// Opens an entry box of `step` of `group`'s sync ID with the key actor's KEM key: the read
-/// secrets it carries, with the epochs of `group` they name (spec/sync-ids.md §3).
-pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, group: &Tid) -> Result<EntryItem, Error> {
-    let slot = BoxSlot::Entry { sync_id: step.sync_id, step_key: step.step_key, group: *group };
+/// Opens an entry box of `step` of `t`'s sync ID with the key actor's KEM key: the read
+/// secrets it carries, with the epochs of `t` they name (spec/sync-ids.md §3).
+pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, t: &Tid) -> Result<EntryItem, Error> {
+    let slot = BoxSlot::Entry { sync_id: step.sync_id, step_key: step.step_key, actor: *t };
     let SecretBox::Sealed(sb) = b else { return Err(Error::Malformed("entry box form")) };
     let keyset = sb.keyset.as_ref().map(|e| Epoch::new(e.n, e.nonce)).transpose()?;
     let Sealed::X25519MlKem768(sealed) = &sb.sealed;
@@ -438,7 +438,7 @@ pub(crate) mod tests {
         pub fn keys(&self) -> StepKeys {
             StepKeys::derive(&self.sync, &self.write, &self.admin, &self.deposit, &genesis_sync_id(&self.admin))
         }
-        /// The sync epoch (n 0) of the test group thing and its secret.
+        /// The sync epoch (n 0) of the test sync IDs' thing and its secret.
         pub fn sync_at(&self) -> (Epoch, &Secret32) {
             (Epoch::derive(&TG, osis_base::Role::Sync, 0, &self.sync).unwrap_or(Epoch::ZERO), &self.sync)
         }
@@ -447,7 +447,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// The group thing of test sync IDs.
+    /// The thing of test sync IDs.
     pub(crate) const TG: Tid = Tid::from_bytes([0x47; 15]);
 
     fn epoch(n: u64) -> Epoch {
@@ -547,7 +547,7 @@ pub(crate) mod tests {
         let b = c0.entry_box(&s0.sync_id, &card.signing.verifying_key()).unwrap();
         let want = EntryItem { epoch: e3, secret: g.read.clone(), earlier: None, sync: (g.sync_at().0, g.sync.clone()) };
         assert_eq!(open_entry_box(b, &s0, &card.kem, &TG).unwrap(), want);
-        // read as another group's, the secret names that group's epoch (spec/crypto.md §4)
+        // read as another thing's, the secret names that thing's epoch (spec/crypto.md §4)
         let other = Tid::from_bytes([1; 15]);
         assert_ne!(open_entry_box(b, &s0, &card.kem, &other).unwrap().epoch, e3);
         // a registrar naming an epoch the secret does not name boxes nothing

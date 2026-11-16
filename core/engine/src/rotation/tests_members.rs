@@ -5,7 +5,7 @@
 //! (core/test/tla/rotation/Depth0.tla).
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Rng, all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, group, held_by, leaked, newest_read, openable, rotate_leaving_out, rotate_unchecked, send_skipping, settle, synced};
+use super::tests::{Rng, all_boxed, blocked_at, commit_ids, deliver_without_secrets, edge, with_own_keys, held_by, leaked, newest_read, openable, rotate_leaving_out, rotate_unchecked, send_skipping, settle, synced};
 use crate::Mutation;
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -92,7 +92,7 @@ fn removal(lp: &mut LocalPeer, i: usize, t: Tid, d: Tid) -> Vec<osis_base::Commi
 fn removal_twelve_deep_rotates_every_level_spec_crypto_4() {
     let mut lp = synced(2);
     let d = lp.peers[1].engine.me();
-    let gs: Vec<Tid> = (0..12).map(|_| group(&mut lp, 0)).collect();
+    let gs: Vec<Tid> = (0..12).map(|_| with_own_keys(&mut lp, 0)).collect();
     for w in gs.windows(2) {
         lp.peers[0].engine.grant(&w[0], &w[1], &edge(Role::Write)).unwrap();
     }
@@ -123,7 +123,7 @@ fn removal_twelve_deep_rotates_every_level_spec_crypto_4() {
 fn diamond_and_lattice_rotate_once_spec_crypto_4() {
     let mut lp = synced(2);
     let d = lp.peers[1].engine.me();
-    let [a, x, y, z] = [0; 4].map(|_| group(&mut lp, 0));
+    let [a, x, y, z] = [0; 4].map(|_| with_own_keys(&mut lp, 0));
     for (t, m) in [(a, x), (a, y), (x, z), (y, z)] {
         lp.peers[0].engine.grant(&t, &m, &edge(Role::Write)).unwrap();
     }
@@ -133,10 +133,10 @@ fn diamond_and_lattice_rotate_once_spec_crypto_4() {
     assert!(still.is_empty(), "{still:?}");
     assert_eq!(done.commits.len(), 3, "X, Y, then A");
     assert!(lp.peers[0].engine.ensure_rotated(&a).unwrap().0.commits.is_empty());
-    let top = group(&mut lp, 0);
+    let top = with_own_keys(&mut lp, 0);
     let mut layer = vec![top];
     for _ in 0..9 {
-        let next: Vec<Tid> = (0..4).map(|_| group(&mut lp, 0)).collect();
+        let next: Vec<Tid> = (0..4).map(|_| with_own_keys(&mut lp, 0)).collect();
         for t in &layer {
             for m in &next {
                 lp.peers[0].engine.grant(t, m, &edge(Role::Write)).unwrap();
@@ -156,7 +156,7 @@ fn diamond_and_lattice_rotate_once_spec_crypto_4() {
 /// `cyc[len - 1]`, which reads the whole cycle.
 fn cycle(lp: &mut LocalPeer, len: usize) -> Vec<Tid> {
     let (d, n) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let cyc: Vec<Tid> = (0..len).map(|_| group(lp, 0)).collect();
+    let cyc: Vec<Tid> = (0..len).map(|_| with_own_keys(lp, 0)).collect();
     for i in 0..len {
         lp.peers[0].clock.advance(1);
         lp.peers[0].engine.grant(&cyc[i], &cyc[(i + 1) % len], &edge(Role::Read)).unwrap();
@@ -204,7 +204,7 @@ fn removal_in_cycle_spec_crypto_4() {
 fn keyless_holder_never_resealed_spec_crypto_4() {
     let mut lp = synced(2);
     let d = lp.peers[1].engine.me();
-    let [b, p, q] = [0; 3].map(|_| group(&mut lp, 0));
+    let [b, p, q] = [0; 3].map(|_| with_own_keys(&mut lp, 0));
     for (t, m) in [(b, p), (p, q), (q, p)] {
         lp.peers[0].clock.advance(1);
         lp.peers[0].engine.grant(&t, &m, &edge(Role::Write)).unwrap();
@@ -228,7 +228,7 @@ fn keyless_holder_never_resealed_spec_crypto_4() {
 fn grant_on_first_admin_keyless_until_record_edge_goes_spec_crypto_4() {
     let mut lp = synced(2);
     let d = lp.peers[1].engine.me();
-    let x = group(&mut lp, 0);
+    let x = with_own_keys(&mut lp, 0);
     let t = {
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, x);
@@ -264,7 +264,7 @@ fn grant_on_first_admin_keyless_until_record_edge_goes_spec_crypto_4() {
 fn departure_below_cycle_spec_crypto_4() {
     let mut lp = synced(2);
     let d = lp.peers[1].engine.me();
-    let [x, y, z] = [0; 3].map(|_| group(&mut lp, 0));
+    let [x, y, z] = [0; 3].map(|_| with_own_keys(&mut lp, 0));
     for (t, m) in [(y, x), (x, y), (x, z)] {
         lp.peers[0].clock.advance(1);
         lp.peers[0].engine.grant(&t, &m, &edge(Role::Read)).unwrap();
@@ -293,8 +293,8 @@ fn departure_below_cycle_spec_crypto_4() {
 fn cycle_with_disjoint_admins_converges_spec_permissions_3() {
     let mut lp = synced(3);
     let d = lp.peers[1].engine.me();
-    let x = group(&mut lp, 0);
-    let y = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 0);
+    let y = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&x, &y, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -331,8 +331,8 @@ fn cycle_concurrent_departures_spec_crypto_4() {
     let mut lp = synced(5);
     let [d, e, n] = [1, 3, 4].map(|i| lp.peers[i].engine.me());
     let m = n;
-    let x = group(&mut lp, 0);
-    let y = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 0);
+    let y = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&x, &y, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&x, &d, &edge(Role::Read)).unwrap();
@@ -365,8 +365,8 @@ fn two_admin_holder() -> (LocalPeer, Tid, Tid) {
     let (lp, (m, a)) = LocalPeer::cached("rotation::tests_members::two_admin_holder", || {
         let mut lp = synced(5);
         let (d, m2, a2) = (lp.peers[1].engine.me(), lp.peers[2].engine.me(), lp.peers[4].engine.me());
-        let m = group(&mut lp, 0);
-        let a = group(&mut lp, 3);
+        let m = with_own_keys(&mut lp, 0);
+        let a = with_own_keys(&mut lp, 3);
         lp.peers[0].engine.grant(&m, &m2, &edge(Role::Admin)).unwrap();
         lp.peers[0].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
         lp.peers[3].engine.grant(&a, &a2, &edge(Role::Admin)).unwrap();
@@ -384,15 +384,15 @@ fn co_writer_world() -> (LocalPeer, Tid, Tid, Tid) {
     let (lp, (m, a, g)) = LocalPeer::cached("rotation::tests_members::co_writer_world", || {
         let mut lp = synced(5);
         let [r, _, _, e, w] = std::array::from_fn(|i| lp.peers[i].engine.me());
-        let m = group(&mut lp, 2);
+        let m = with_own_keys(&mut lp, 2);
         for h in [r, e] {
             lp.peers[2].engine.grant(&m, &h, &edge(Role::Read)).unwrap();
         }
         lp.sync_all().unwrap();
-        let a = group(&mut lp, 1);
+        let a = with_own_keys(&mut lp, 1);
         lp.peers[1].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
-        let g = group(&mut lp, 0);
+        let g = with_own_keys(&mut lp, 0);
         lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
         lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
@@ -409,10 +409,10 @@ fn member_world(d_role: Role) -> MemberWorld {
     let (lp, (a, m, c_m, k0, kk, start)) = LocalPeer::cached(&format!("rotation::tests_members::member_world/{d_role:?}"), || {
         let mut lp = synced(5);
         let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.me()).collect();
-        let m = group(&mut lp, 1);
+        let m = with_own_keys(&mut lp, 1);
         lp.peers[1].engine.grant(&m, &tids[2], &edge(d_role)).unwrap();
         lp.peers[1].engine.grant(&m, &tids[3], &edge(Role::Admin)).unwrap();
-        let a = group(&mut lp, 0);
+        let a = with_own_keys(&mut lp, 0);
         lp.peers[0].engine.grant(&a, &tids[4], &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
         lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
@@ -628,7 +628,7 @@ fn keyset_in_joint_box_reached_alone_blocks_spec_crypto_4() {
     send_skipping(&mut lp, 0, 3, &none);
     lp.peers[3].engine.ensure_rotated(&a).unwrap();
     assert_eq!(sealed_keysets(&mut lp, 3, a, m).len(), 2, "M sealed jointly");
-    let n = group(&mut lp, 2);
+    let n = with_own_keys(&mut lp, 2);
     lp.peers[2].engine.grant(&n, &a1, &edge(Role::Read)).unwrap();
     send_skipping(&mut lp, 2, 3, &none);
     lp.peers[3].engine.grant(&a, &n, &edge(Role::Read)).unwrap();
@@ -649,8 +649,8 @@ fn each_fork_missing_a_different_removal_leaves_holder_out_spec_crypto_4() {
     let none = BTreeSet::new();
     let mut lp = synced(6);
     let [_, d1, m2, a1, a2, d2] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let m = group(&mut lp, 0);
-    let a = group(&mut lp, 3);
+    let m = with_own_keys(&mut lp, 0);
+    let a = with_own_keys(&mut lp, 3);
     lp.peers[0].engine.grant(&m, &m2, &edge(Role::Admin)).unwrap();
     for h in [d1, d2, a1] {
         lp.peers[0].engine.grant(&m, &h, &edge(Role::Read)).unwrap();
@@ -793,10 +793,10 @@ fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
             let mut lp = synced(4);
             let d = lp.peers[1].engine.me();
             let p0 = lp.peers[0].engine.me();
-            let m = group(&mut lp, 2);
+            let m = with_own_keys(&mut lp, 2);
             lp.peers[2].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
             lp.peers[2].engine.grant(&m, &p0, &edge(Role::Read)).unwrap();
-            let t = group(&mut lp, first);
+            let t = with_own_keys(&mut lp, first);
             if first != g {
                 lp.peers[first].engine.grant(&t, &p0, &ct::Edge { invite: Some(Role::Write), ..edge(Role::Write) }).unwrap();
             }
@@ -839,8 +839,8 @@ fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
 fn hidden_grant_tainted_keyset_spec_crypto_4() {
     let mut lp = synced(3);
     let d = lp.peers[1].engine.me();
-    let x = group(&mut lp, 0);
-    let y = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 0);
+    let y = with_own_keys(&mut lp, 2);
     lp.peers[0].engine.grant(&x, &d, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let before = commit_ids(&mut lp, 0);
@@ -882,8 +882,8 @@ fn hidden_grant_tainted_keyset_spec_crypto_4() {
 #[test]
 fn knowing_rekey_after_hidden_grant_spec_crypto_4() {
     let mut lp = synced(3);
-    let x = group(&mut lp, 0);
-    let y = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 0);
+    let y = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&x, &y, &edge(Role::Read)).unwrap();
     lp.peers[2].clock.advance(1_000);
@@ -907,8 +907,8 @@ fn knowing_rekey_after_hidden_grant_spec_crypto_4() {
 fn invalid_grant_box_judges_nothing_spec_crypto_4() {
     let mut lp = synced(3);
     let (d, p2) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let y = group(&mut lp, 0);
-    let x = group(&mut lp, 0);
+    let y = with_own_keys(&mut lp, 0);
+    let x = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&y, &p2, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&x, &d, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -934,8 +934,8 @@ fn invalid_grant_box_judges_nothing_spec_crypto_4() {
 fn access_regained_through_a_holder_actor_reads_what_the_departure_rotated_spec_crypto_4() {
     let mut lp = synced(2);
     let d = lp.peers[1].engine.me();
-    let g = group(&mut lp, 0);
-    let m = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
+    let m = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
@@ -968,7 +968,7 @@ fn access_regained_through_a_holder_actor_reads_what_the_departure_rotated_spec_
 fn invalid_regrant_hands_on_only_what_its_author_held_spec_crypto_4() {
     let mut lp = synced(3);
     let (a, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let g = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
     lp.sync_all().unwrap();
@@ -1006,8 +1006,8 @@ fn invalid_regrant_hands_on_only_what_its_author_held_spec_crypto_4() {
 fn invalid_grant_on_a_holder_actor_hands_on_what_its_keyset_opens_spec_crypto_4() {
     let mut lp = synced(3);
     let (a, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let g = group(&mut lp, 0);
-    let m = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
+    let m = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&m, &a, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&g, &d, &edge(Role::Admin)).unwrap();
@@ -1046,7 +1046,7 @@ fn invalid_grant_on_a_holder_actor_hands_on_what_its_keyset_opens_spec_crypto_4(
 fn reader_junk_boxes_force_no_rotation_spec_crypto_4() {
     let mut lp = synced(3);
     let (r, p) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let g = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &r, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     let e0 = newest_read(&lp, 0, g).unwrap();
@@ -1088,8 +1088,8 @@ fn second_admin_ignorant_fork_in_cycle_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
     let mut lp = synced(4);
     let [d, y2] = [1, 3].map(|i| lp.peers[i].engine.me());
-    let x = group(&mut lp, 0);
-    let y = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 0);
+    let y = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&x, &y, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -1130,8 +1130,8 @@ fn second_admin_ignorant_fork_in_cycle_spec_crypto_4() {
 fn rotator_lacking_read_rotates_read_too_spec_permissions_3() {
     let mut lp = synced(5);
     let [p, e] = [1, 4].map(|i| lp.peers[i].engine.me());
-    let a = group(&mut lp, 0);
-    let m = group(&mut lp, 2);
+    let a = with_own_keys(&mut lp, 0);
+    let m = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[2].engine.grant(&m, &p, &edge(Role::Write)).unwrap();
     lp.sync_all().unwrap();
@@ -1168,8 +1168,8 @@ fn lacking_write() -> (LocalPeer, Tid, Tid) {
     let (lp, (a, m)) = LocalPeer::cached("rotation::tests_members::lacking_write", || {
         let mut lp = synced(6);
         let [p, f] = [1, 5].map(|i| lp.peers[i].engine.me());
-        let a = group(&mut lp, 0);
-        let m = group(&mut lp, 2);
+        let a = with_own_keys(&mut lp, 0);
+        let m = with_own_keys(&mut lp, 2);
         lp.sync_all().unwrap();
         lp.peers[2].engine.grant(&m, &p, &edge(Role::Admin)).unwrap();
         lp.sync_all().unwrap();
@@ -1235,8 +1235,8 @@ fn removal_lacking_rotated_secret_rotates_spec_permissions_3() {
 fn removal_through_a_holder_it_cannot_open_rotates_spec_crypto_4() {
     let mut lp = synced(6);
     let [p, f] = [1, 5].map(|i| lp.peers[i].engine.me());
-    let a = group(&mut lp, 0);
-    let m = group(&mut lp, 2);
+    let a = with_own_keys(&mut lp, 0);
+    let m = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[2].engine.grant(&m, &p, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
@@ -1277,12 +1277,12 @@ fn deliver_edges_only(lp: &mut LocalPeer, from: usize, to: usize, x: Tid, ids: &
 fn own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4() {
     let mut lp = synced(4);
     let [_, b, c, e] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let t = group(&mut lp, 0);
+    let t = with_own_keys(&mut lp, 0);
     for h in [b, c] {
         lp.peers[0].engine.grant(&t, &h, &edge(Role::Read)).unwrap();
     }
     lp.sync_all().unwrap();
-    let x = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[2].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
     lp.peers[2].engine.grant(&x, &e, &edge(Role::Read)).unwrap();
@@ -1320,9 +1320,9 @@ fn own_removal_from_holder_actor_keeps_sealing_it_spec_crypto_4() {
 fn departure_from_an_unread_holder_is_judged_by_order_spec_crypto_4() {
     let mut lp = synced(3);
     let e = lp.peers[2].engine.me();
-    let m = group(&mut lp, 1);
+    let m = with_own_keys(&mut lp, 1);
     lp.peers[1].engine.grant(&m, &e, &edge(Role::Read)).unwrap();
-    let a = group(&mut lp, 0);
+    let a = with_own_keys(&mut lp, 0);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -1351,9 +1351,9 @@ fn departure_from_an_unread_holder_is_judged_by_order_spec_crypto_4() {
 fn box_walk_passes_actors_the_node_may_not_rotate_spec_crypto_4() {
     let mut lp = synced(4);
     let [r, _, _, e] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let g = group(&mut lp, 0);
-    let a = group(&mut lp, 1);
-    let m = group(&mut lp, 2);
+    let g = with_own_keys(&mut lp, 0);
+    let a = with_own_keys(&mut lp, 1);
+    let m = with_own_keys(&mut lp, 2);
     for h in [r, e] {
         lp.peers[2].engine.grant(&m, &h, &edge(Role::Read)).unwrap();
     }
@@ -1389,8 +1389,8 @@ fn box_walk_passes_actors_the_node_may_not_rotate_spec_crypto_4() {
 fn maker_through_keyless_grant_opens_nothing_new_spec_crypto_4() {
     let mut lp = synced(2);
     let p = lp.peers[1].engine.me();
-    let a = group(&mut lp, 0);
-    let m = group(&mut lp, 0);
+    let a = with_own_keys(&mut lp, 0);
+    let m = with_own_keys(&mut lp, 0);
     for (t, h) in [(a, m), (m, a), (a, p)] {
         lp.peers[0].clock.advance(1);
         lp.peers[0].engine.grant(&t, &h, &edge(Role::Write)).unwrap();
@@ -1427,7 +1427,7 @@ fn maker_through_keyless_grant_opens_nothing_new_spec_crypto_4() {
 fn lowered_holder_adds_no_history_above_its_role_spec_crypto_4() {
     let mut lp = synced(2);
     let [x, w] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let g = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &w, &edge(Role::Write)).unwrap();
     lp.sync_all().unwrap();
     // W's write epoch leaves X out; X supersedes it lacking its secret, so its history lists it not
@@ -1452,8 +1452,8 @@ fn lowered_holder_adds_no_history_above_its_role_spec_crypto_4() {
 fn lowered_maker_rotates_once_spec_crypto_4() {
     let mut lp = synced(2);
     let p = lp.peers[1].engine.me();
-    let t = group(&mut lp, 0);
-    let m = group(&mut lp, 0);
+    let t = with_own_keys(&mut lp, 0);
+    let m = with_own_keys(&mut lp, 0);
     for (x, h) in [(m, t), (t, p)] {
         lp.peers[0].clock.advance(1);
         lp.peers[0].engine.grant(&x, &h, &edge(Role::Write)).unwrap();
@@ -1488,9 +1488,9 @@ fn lowered_maker_rotates_once_spec_crypto_4() {
 fn holder_rotation_rotates_above_at_once_spec_crypto_4() {
     let mut lp = synced(4);
     let [_, b, c, d] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let g = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &d, &edge(Role::Read)).unwrap();
-    let t = group(&mut lp, 0);
+    let t = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&t, &g, &edge(Role::Read)).unwrap();
     for h in [b, c] {
         lp.peers[0].engine.grant(&t, &h, &edge(Role::Admin)).unwrap();
@@ -1641,9 +1641,9 @@ fn removal_alone_left_out_stays_out_at_co_writer_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
     let mut lp = synced(3);
     let [_, w, e] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let a = group(&mut lp, 0);
+    let a = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&a, &e, &edge(Role::Read)).unwrap();
-    let g = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
@@ -1678,7 +1678,7 @@ fn removal_alone_left_out_stays_out_at_co_writer_spec_crypto_4() {
 fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
     let mut lp = synced(3);
     let [_, x, y] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let (g, m, h) = (group(&mut lp, 0), group(&mut lp, 0), group(&mut lp, 0));
+    let (g, m, h) = (with_own_keys(&mut lp, 0), with_own_keys(&mut lp, 0), with_own_keys(&mut lp, 0));
     lp.peers[0].engine.grant(&h, &x, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&m, &h, &edge(Role::Write)).unwrap();
     let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
@@ -1709,7 +1709,7 @@ fn reseal_candidates_follow_the_finalize_before_them_spec_permissions_3() {
 #[test]
 fn reseal_candidates_follow_the_clock_spec_permissions_2() {
     let mut lp = synced(1);
-    let (g, m) = (group(&mut lp, 0), group(&mut lp, 0));
+    let (g, m) = (with_own_keys(&mut lp, 0), with_own_keys(&mut lp, 0));
     let until = WallMs(lp.peers[0].engine.core.now().0 + 1_000);
     lp.peers[0].engine.grant(&g, &m, &ct::Edge { until: Some(until), ..edge(Role::Read) }).unwrap();
     rotate_skipping(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[m]);
@@ -1730,8 +1730,8 @@ fn reseal_candidates_follow_the_clock_spec_permissions_2() {
 fn rotation_through_a_keyless_grant_is_valid_spec_crypto_4() {
     let mut lp = synced(2);
     let p = lp.peers[1].engine.me();
-    let a = group(&mut lp, 0);
-    let m = group(&mut lp, 1);
+    let a = with_own_keys(&mut lp, 0);
+    let m = with_own_keys(&mut lp, 1);
     lp.sync_all().unwrap();
     lp.peers[1].engine.grant(&m, &a, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -1755,7 +1755,7 @@ fn rotation_through_a_keyless_grant_is_valid_spec_crypto_4() {
 fn keyless_route_is_no_rotator_spec_crypto_4() {
     let mut lp = synced(3);
     let (o, x, w) = (lp.peers[0].engine.me(), lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let (g, m, h) = (group(&mut lp, 0), group(&mut lp, 0), group(&mut lp, 0));
+    let (g, m, h) = (with_own_keys(&mut lp, 0), with_own_keys(&mut lp, 0), with_own_keys(&mut lp, 0));
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&m, &h, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&h, &g, &edge(Role::Admin)).unwrap();
@@ -1793,8 +1793,8 @@ fn build_destroyed_world() -> (LocalPeer, Tid, Tid, Tid) {
     m.expires_all(WallMs(T0.0 + 50_000));
     lp.peers[0].commit(m).unwrap();
     lp.peers[0].engine.give_own_secrets(&t).unwrap();
-    let x = group(&mut lp, 0);
-    let g = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&t, &g, &edge(Role::Read)).unwrap();
@@ -1881,7 +1881,7 @@ fn frozen_holder_through_a_keyless_grant_is_boxed_nothing_spec_crypto_4() {
     m.expires_all(WallMs(T0.0 + 50_000));
     lp.peers[0].commit(m).unwrap();
     lp.peers[0].engine.give_own_secrets(&t).unwrap();
-    let (x, g) = (group(&mut lp, 0), group(&mut lp, 1));
+    let (x, g) = (with_own_keys(&mut lp, 0), with_own_keys(&mut lp, 1));
     lp.sync_all().unwrap();
     lp.peers[1].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -1916,7 +1916,7 @@ fn frozen_holder_keyed_at_the_role_of_its_keyed_paths_spec_crypto_4() {
     for x in [t, t2, u] {
         lp.peers[0].engine.give_own_secrets(&x).unwrap();
     }
-    let (x, mm) = (group(&mut lp, 0), group(&mut lp, 1));
+    let (x, mm) = (with_own_keys(&mut lp, 0), with_own_keys(&mut lp, 1));
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&x, &t2, &edge(Role::Admin)).unwrap();
@@ -1969,15 +1969,15 @@ fn unrecorded(lp: &mut LocalPeer, boxer: usize, other: usize, a: Tid) -> Vec<(Ti
 fn every_box_recorded(seed: u64) -> Vec<String> {
     let mut lp = synced(5);
     let [_, _, p, q, w] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let teams: Vec<Tid> = (0..2).map(|_| group(&mut lp, 1)).collect();
+    let teams: Vec<Tid> = (0..2).map(|_| with_own_keys(&mut lp, 1)).collect();
     for t in &teams {
         for h in [p, q] {
             lp.peers[1].engine.grant(t, &h, &edge(Role::Read)).unwrap();
         }
     }
     lp.sync_all().unwrap();
-    let a = group(&mut lp, 0);
-    let g = group(&mut lp, 0);
+    let a = with_own_keys(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &w, &edge(Role::Admin)).unwrap();
     lp.sync_all().unwrap();
@@ -2037,10 +2037,10 @@ fn every_box_is_recorded_beside_it_spec_crypto_4() {
 fn a_false_record_hides_no_honest_one_spec_crypto_4() {
     let mut lp = synced(4);
     let [_, _, w, d] = std::array::from_fn(|i| lp.peers[i].engine.me());
-    let team = group(&mut lp, 1);
+    let team = with_own_keys(&mut lp, 1);
     lp.peers[1].engine.grant(&team, &d, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
-    let a = group(&mut lp, 0);
+    let a = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&a, &w, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&a, &team, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -2076,12 +2076,12 @@ fn a_false_record_hides_no_honest_one_spec_crypto_4() {
 fn a_grants_records_do_not_grow_with_the_actor_spec_crypto_4() {
     let records = |n: usize| {
         let mut lp = synced(1);
-        let a = group(&mut lp, 0);
+        let a = with_own_keys(&mut lp, 0);
         for _ in 0..n {
-            let t = group(&mut lp, 0);
+            let t = with_own_keys(&mut lp, 0);
             lp.peers[0].engine.grant(&a, &t, &edge(Role::Read)).unwrap();
         }
-        let t = group(&mut lp, 0);
+        let t = with_own_keys(&mut lp, 0);
         let c = *lp.peers[0].engine.grant(&a, &t, &edge(Role::Read)).unwrap().commits.last().unwrap();
         let core = &lp.peers[0].engine.core;
         core.sealed_noted(&a).filter(|x| x.2.by.contains(&c)).count()
@@ -2099,12 +2099,12 @@ fn a_grants_records_do_not_grow_with_the_actor_spec_crypto_4() {
 #[test]
 fn a_keysets_records_travel_with_it_spec_crypto_4() {
     let mut lp = synced(2);
-    let m = group(&mut lp, 1);
+    let m = with_own_keys(&mut lp, 1);
     lp.sync_all().unwrap();
-    let a = group(&mut lp, 0);
+    let a = with_own_keys(&mut lp, 0);
     let c = *lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap().commits.last().unwrap();
     assert!(lp.peers[0].engine.core.sealed_noted(&a).any(|x| x.2.by.contains(&c)), "M's grant records its box");
-    let g = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
     let done = lp.peers[0].engine.grant(&g, &a, &edge(Role::Read)).unwrap();
     let with: BTreeSet<CommitId> = done.commits.iter().flat_map(|x| lp.peers[0].engine.logged_with(x).unwrap().iter().copied().collect::<Vec<_>>()).collect();
     assert!(with.contains(&c), "M's record logged with G's grant of A, beside A's keyset: {with:?}");
@@ -2116,9 +2116,9 @@ fn a_keysets_records_travel_with_it_spec_crypto_4() {
 #[test]
 fn box_records_do_not_displace_the_newest_card_spec_permissions_4() {
     let mut lp = synced(2);
-    let m = group(&mut lp, 1);
+    let m = with_own_keys(&mut lp, 1);
     lp.sync_all().unwrap();
-    let a = group(&mut lp, 0);
+    let a = with_own_keys(&mut lp, 0);
     let seed = *lp.peers[0].engine.refresh_deposit_seed(&a).unwrap().commits.last().unwrap();
     lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
     let keys = lp.peers[0].engine.current_keys(&a);
@@ -2188,8 +2188,8 @@ fn the_driver_rotates_past_a_stale_box_below_spec_crypto_4() {
 fn the_removers_duties_rotate_above_its_own_removal_spec_crypto_4() {
     let mut lp = synced(2);
     let r = lp.peers[1].engine.me();
-    let m = group(&mut lp, 0);
-    let a = group(&mut lp, 0);
+    let m = with_own_keys(&mut lp, 0);
+    let a = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&m, &r, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();

@@ -11,7 +11,7 @@
 //! forks, departures, forgeries, cycles); every feature stays on its own draws.
 
 #![allow(clippy::unwrap_used)]
-use super::tests::{Key, Rng, Via, edge, group, openable, opens_by, opens_in};
+use super::tests::{Key, Rng, Via, edge, with_own_keys, openable, opens_by, opens_in};
 use super::tests_departs::{Forge, leave};
 use crate::flows::Demotion;
 use crate::local_peer::LocalPeer;
@@ -374,13 +374,13 @@ fn rotation_history(seed: u64) -> Reached {
     let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.me()).collect();
     // actors: G (peer 0's); with holder actors, one or two more, some of peer 2's, granted
     // roles on each other around a cycle
-    let mut actors = vec![(group(&mut lp, 0), 0)];
+    let mut actors = vec![(with_own_keys(&mut lp, 0), 0)];
     let cycle = emphasis == 3 || rng.next(6) == 0;
     if cycle {
         let two = rng.next(2) == 0;
         for _ in 0..1 + rng.next(2) {
             let o = if two && rng.next(2) == 0 { 2 } else { 0 };
-            actors.push((group(&mut lp, o), o));
+            actors.push((with_own_keys(&mut lp, o), o));
         }
     }
     lp.sync_all().unwrap();
@@ -953,8 +953,8 @@ fn handed_keyset_opens_boxes_its_author_never_received_spec_crypto_4() {
     let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (a, d) = (lp.peers[1].engine.me(), lp.peers[2].engine.me());
-    let g = group(&mut lp, 0);
-    let m = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
+    let m = with_own_keys(&mut lp, 0);
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&m, &a, &edge(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&g, &d, &edge(Role::Admin)).unwrap();
@@ -997,8 +997,8 @@ fn a_removal_boxes_none_it_removes_spec_permissions_3() {
     let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (d, a) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
-    let g = group(&mut lp, 0);
-    let m = group(&mut lp, 1);
+    let g = with_own_keys(&mut lp, 0);
+    let m = with_own_keys(&mut lp, 1);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Sync)).unwrap();
     lp.peers[1].engine.grant(&m, &d, &edge(Role::Sync)).unwrap();
@@ -1044,9 +1044,9 @@ fn a_removal_boxes_none_it_removes_through_the_upward_cascade_spec_permissions_3
     let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (x, m) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
-    let g = group(&mut lp, 0);
-    let h = group(&mut lp, 0);
-    let y = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
+    let h = with_own_keys(&mut lp, 0);
+    let y = with_own_keys(&mut lp, 0);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&h, &x, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &h, &edge(Role::Read)).unwrap();
@@ -1085,7 +1085,7 @@ fn a_removal_boxes_none_it_removes_through_a_finalize_first_spec_permissions_3()
     let mut lp = LocalPeer::new(N, 1, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (e, m) = (lp.peers[2].engine.me(), lp.peers[3].engine.me());
-    let g = group(&mut lp, 0);
+    let g = with_own_keys(&mut lp, 0);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &e, &edge(Role::Read)).unwrap();
     lp.peers[0].engine.grant(&g, &m, &edge(Role::Read)).unwrap();

@@ -1001,8 +1001,8 @@ fn late_writes_across_kept_states_spec_permissions_5_1() {
     }
 }
 
-/// §5.1: a holder new to the group (a key actor whose `created.0` alone is held, or no record
-/// at all) granted late joins the group's walk by `Timelines::append` (a node no earlier write
+/// §5.1: a holder new to G (a key actor whose `created.0` alone is held, or no record
+/// at all) granted late joins G's walk by `Timelines::append` (a node no earlier write
 /// names reaches nothing before it), not by an evaluation from scratch, as does one whose
 /// `created.0` arrives with the grant; then writes of its own. Each equals an evaluation from
 /// scratch.
@@ -1599,7 +1599,7 @@ fn long_rest_both_paths_equal_spec_permissions_5_1() {
 }
 
 /// Random histories of admins removed and given back by the key actor (directly and through a
-/// team), with rare writes of their own on the group, a doc under it and the team: a late write
+/// team), with rare writes of their own on G, a doc under it and the team: a late write
 /// is often its author's first on its target, and the class falls between it and the old first
 /// write are recorded only with it (spec/permissions.md §5.1 step 4); frontiers cover some of
 /// them, so some of those falls drop it. Ties in ts. Equal to an evaluation from scratch after
@@ -1819,7 +1819,7 @@ fn creation_histories(rng: &mut Rng, at: &str, seen: &mut Seen) {
     let n = w.nodes(4);
     let k = n[0];
     let late_node = w.nodes_salted(1, 0x79)[0];
-    // held from the start: two groups and a team
+    // held from the start: two things and a team
     let base = [w.thing(k), w.thing(k), w.thing(n[1])];
     w.set(k, base[0], n[1], edge(Admin), 1, &[]);
     w.set(n[1], base[2], n[2], edge(Admin), 1, &[]);

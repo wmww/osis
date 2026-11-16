@@ -328,4 +328,4 @@ fn importing_a_card_gives_the_account_spec_sync_inbox_5() {
 
 // ---- leaving (spec/sync-set.md §3) ----
 
-// ---- group sources: the hand-off (spec/sync-set.md §5) ----
+// ---- sync unit sources: the hand-off (spec/sync-set.md §5) ----

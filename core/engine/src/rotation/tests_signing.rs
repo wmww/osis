@@ -633,13 +633,13 @@ fn read_box_at(lp: &mut LocalPeer, i: usize, a: Tid, m: Tid) -> Option<osis_cryp
 // L opens nothing of it; once T's admin moves T onto P's new epoch, she seals T again.
 #[test]
 fn lost_node_opens_nothing_through_a_team_its_account_reads_spec_crypto_4() {
-    use super::tests::{all_boxed, group, held_by, leaked, newest_read, openable, settle};
+    use super::tests::{all_boxed, with_own_keys, held_by, leaked, newest_read, openable, settle};
     let (mut lp, a, _) = world(3, 2);
     let p = a.account;
-    let t = group(&mut lp, 2);
+    let t = with_own_keys(&mut lp, 2);
     lp.peers[2].engine.grant(&t, &p, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
-    let x = group(&mut lp, 0);
+    let x = with_own_keys(&mut lp, 0);
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -665,10 +665,10 @@ fn lost_node_opens_nothing_through_a_team_its_account_reads_spec_crypto_4() {
 // out of X until that rotation arrives.
 #[test]
 fn node_knowing_a_removal_seals_its_account_at_no_epoch_before_its_rotation_spec_crypto_4() {
-    use super::tests::{group, newest_read, openable};
+    use super::tests::{with_own_keys, newest_read, openable};
     let (mut lp, a, _) = world(3, 3);
     let p = a.account;
-    let x = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     let l = lp.peers[1].engine.tid();
     let p1 = read_box_at(&mut lp, 2, x, p).unwrap();
@@ -691,13 +691,13 @@ fn node_knowing_a_removal_seals_its_account_at_no_epoch_before_its_rotation_spec
 // rotates X leaving T out, and L opens nothing N3 writes under X.
 #[test]
 fn an_ignorant_fork_ordered_after_a_removal_covers_nothing_spec_crypto_4() {
-    use super::tests::{group, held_by, newest_read, openable};
+    use super::tests::{with_own_keys, held_by, newest_read, openable};
     let (mut lp, a, _) = world(6, 5);
     let p = a.account;
-    let t = group(&mut lp, 5);
+    let t = with_own_keys(&mut lp, 5);
     lp.peers[5].engine.grant(&t, &p, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
-    let x = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[2].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -731,13 +731,13 @@ fn an_ignorant_fork_ordered_after_a_removal_covers_nothing_spec_crypto_4() {
 // leaving T out, and L opens nothing N3 writes under X.
 #[test]
 fn a_keyset_boxing_the_account_at_an_epoch_not_held_is_not_sealed_to_spec_crypto_4() {
-    use super::tests::{group, held_by, newest_read, openable};
+    use super::tests::{with_own_keys, held_by, newest_read, openable};
     let (mut lp, a, _) = world(6, 5);
     let p = a.account;
-    let t = group(&mut lp, 5);
+    let t = with_own_keys(&mut lp, 5);
     lp.peers[5].engine.grant(&t, &p, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
-    let x = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 2);
     lp.sync_all().unwrap();
     lp.peers[2].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
@@ -768,7 +768,7 @@ fn a_keyset_boxing_the_account_at_an_epoch_not_held_is_not_sealed_to_spec_crypto
 // N2 seals P at it.
 #[test]
 fn a_removal_by_a_node_removed_later_stands_spec_permissions_5_4() {
-    use super::tests::group;
+    use super::tests::with_own_keys;
     let (mut lp, a, _) = world(3, 3);
     let p = a.account;
     let r1 = remove(&mut lp, 0, a.devices, 1);
@@ -779,9 +779,9 @@ fn a_removal_by_a_node_removed_later_stands_spec_permissions_5_4() {
     let roster = lp.peers[2].engine.roster(&a.devices);
     assert!(!roster.contains_key(&l) && !roster.contains_key(&n1), "both removals hold");
     assert!(lp.peers[2].engine.signing_due().unwrap().commits.is_empty(), "nothing more is due");
-    let x = group(&mut lp, 2);
+    let x = with_own_keys(&mut lp, 2);
     let _ = lp.peers[2].engine.ensure_rotated(&x).unwrap();
-    assert!(read_box_at(&mut lp, 2, x, p).is_some(), "N2 seals P into its own group");
+    assert!(read_box_at(&mut lp, 2, x, p).is_some(), "N2 seals P into its own thing");
 }
 
 // spec/permissions.md §5.4 (Following, at a node of P: the membership changes each rotation

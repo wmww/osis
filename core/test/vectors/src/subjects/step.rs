@@ -36,9 +36,9 @@ pub fn steps() -> VecFile {
     let (read, write, admin, deposit, sync) = (s32(0x0a), s32(0x0b), s32(0x09), s32(0x0c), s32(0x0d));
     let sync_id = genesis_sync_id(&admin);
     let keys = StepKeys::derive(&sync, &write, &admin, &deposit, &sync_id);
-    let group = osis_base::Tid::from_bytes([0x07; 15]);
-    let epoch = Epoch::derive(&group, osis_base::Role::Read, 0, &read).unwrap();
-    let sync_epoch = Epoch::derive(&group, osis_base::Role::Sync, 0, &sync).unwrap();
+    let actor = osis_base::Tid::from_bytes([0x07; 15]);
+    let epoch = Epoch::derive(&actor, osis_base::Role::Read, 0, &read).unwrap();
+    let sync_epoch = Epoch::derive(&actor, osis_base::Role::Sync, 0, &sync).unwrap();
     let (m1, m2, card) = (KeyActorKeys::from_seed(&s32(0x05)), KeyActorKeys::from_seed(&s32(0x06)), KeyActorKeys::from_seed(&s32(0x04)));
     let readers = [
         Reader::Dh(m1.kem.public().x25519()),
@@ -48,7 +48,7 @@ pub fn steps() -> VecFile {
     let (sk, eph, m, pad, shuf) = ([0x31u8; 32], [0x32u8; 32], [0x33u8; 32], [0x34u8; 32], [0x35u8; 24]);
     let delete0 = role_key(RoleKey::Delete, &admin);
     let mut rng = FixedRng::new(&[&sk, &eph, &m, &pad, &shuf]);
-    let (s0, c0) = register(Parent::Genesis(&delete0), keys, &readers, (&group, epoch, &read), (sync_epoch, &sync), &mut rng).unwrap();
+    let (s0, c0) = register(Parent::Genesis(&delete0), keys, &readers, (&actor, epoch, &read), (sync_epoch, &sync), &mut rng).unwrap();
     drop(rng);
     s0.verify_genesis().unwrap();
     assert_eq!(s0.step_key, X25519Secret::from_secret(&osis_crypto::Secret32::from_bytes(sk)).public());
@@ -57,7 +57,7 @@ pub fn steps() -> VecFile {
     let entry = static_entry(&s0.sync_id, &card.signing.verifying_key());
     assert!(c0.contains(&k1) && c0.contains(&k2) && c0.contains(&entry));
     let b = c0.entries.get(&entry).unwrap();
-    assert_eq!(open_entry_box(b, &s0, &card.kem, &group).unwrap(), osis_crypto::EntryItem { epoch, secret: read.clone(), earlier: None, sync: (sync_epoch, sync.clone()) });
+    assert_eq!(open_entry_box(b, &s0, &card.kem, &actor).unwrap(), osis_crypto::EntryItem { epoch, secret: read.clone(), earlier: None, sync: (sync_epoch, sync.clone()) });
     let mut cases = vec![step_fields(
         case("genesis step with two DH readers and one static entry", SPEC)
             .with("read-secret", hex(read.expose()))
@@ -65,7 +65,7 @@ pub fn steps() -> VecFile {
             .with("write-secret", hex(write.expose()))
             .with("admin-secret", hex(admin.expose()))
             .with("deposit-seed", hex(deposit.expose()))
-            .with("group", hex(group.as_bytes()))
+            .with("actor", hex(actor.as_bytes()))
             .with("read-epoch-n", "0")
             .with("read-epoch-nonce", hex(epoch.nonce()))
             .with("reader-1-seed", hex(&[0x05; 32]))
@@ -90,7 +90,7 @@ pub fn steps() -> VecFile {
     let keys1 = StepKeys::derive(&y1, &w1, &a1, &deposit, &sync_id);
     let sk1 = [0x41u8; 32];
     let mut rng = FixedRng::new(&[&sk1]);
-    let (s1, c1) = register(Parent::Child { step: &s0, delete: &delete0 }, keys1, &[Reader::Dh(m1.kem.public().x25519())], (&group, Epoch::new(1, [0x0e; 32]).unwrap(), &r1), (Epoch::new(1, [0x0f; 32]).unwrap(), &y1), &mut rng).unwrap();
+    let (s1, c1) = register(Parent::Child { step: &s0, delete: &delete0 }, keys1, &[Reader::Dh(m1.kem.public().x25519())], (&actor, Epoch::new(1, [0x0e; 32]).unwrap(), &r1), (Epoch::new(1, [0x0f; 32]).unwrap(), &y1), &mut rng).unwrap();
     drop(rng);
     s1.verify_child(&s0).unwrap();
     cases.push(step_fields(

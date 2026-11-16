@@ -109,7 +109,7 @@ Every stored row hangs off something the node closure holds, a store entry of a 
 - role changes carried under a former grantee's sync ID, for `ROLE_KEEP` after replaced (a removal: after its `ts`, spec/sync-judgement.md §2);
 - tombstones for `TOMBSTONE_LIFETIME`, peer records within `RECORD_BUDGET`.
 
-The audit of today's exceptions: issues/storage-follows-groups.md.
+The audit of today's exceptions: issues/storage-owners.md.
 
 ## Execution
 Main may be broken for as long as this takes: nobody runs it. No small steps that keep things working, no long-lived branch.

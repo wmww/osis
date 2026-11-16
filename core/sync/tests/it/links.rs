@@ -63,7 +63,7 @@ fn a_static_grant_is_verified_before_it_is_learned_spec_sync_opens_5() {
     let real = path.last().unwrap().1.as_ref().unwrap().entries.get(&entry).unwrap().clone();
     let (x, y) = (Secret32::from_bytes([9; 32]), Secret32::from_bytes([8; 32]));
     let item = EntryItem { epoch: Epoch::derive(&link.k, Role::Read, 1, &x).unwrap(), secret: x, earlier: None, sync: (Epoch::derive(&link.k, Role::Sync, 1, &y).unwrap(), y) };
-    let slot = BoxSlot::Entry { sync_id: s, step_key: head.step_key, group: link.k };
+    let slot = BoxSlot::Entry { sync_id: s, step_key: head.step_key, actor: link.k };
     let sealed = osis_crypto::seal_entry(lkeys.kem.public(), &slot, &item, &mut SeededRng::from_u64(1)).unwrap();
     let osis_schema::core_types::SecretBox::Sealed(mut sb) = real.clone() else { panic!("a sealed entry box") };
     sb.sealed = osis_schema::core_types::Sealed::X25519MlKem768(sealed);

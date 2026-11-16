@@ -1,5 +1,5 @@
-//! Keeping S unread end to end, in a world of product nodes: a grant of sync on a group kept
-//! unread, a write logged there, pulled and held, then the removal's step registered and the copy
+//! Keeping S unread end to end, in a world of product nodes: a grant of sync on a thing with own
+//! keys kept unread, a write logged there, pulled and held, then the removal's step registered and the copy
 //! dropped, through the engine facade and the modules wherever they are built; and the inbox
 //! module's deliveries in a node (re-sent only at expiry, not at a restart).
 

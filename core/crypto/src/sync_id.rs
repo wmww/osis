@@ -5,7 +5,7 @@ use crate::kdf::{self, SYNC_ID, STATIC_CLAIM, kdf};
 use crate::{Domain, Error, Secret32, Signature, SigningSecret, VerifyingKey, X25519Secret};
 use osis_base::{SyncId, Role, Value, encode};
 
-/// A role key and the group role secret it derives from (`role`).
+/// A role key and the role secret of the sync ID's thing it derives from (`role`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RoleKey {
     /// From the sync secret.
@@ -19,7 +19,7 @@ pub enum RoleKey {
 impl RoleKey {
     pub const ALL: [RoleKey; 3] = [RoleKey::Sync, RoleKey::Write, RoleKey::Delete];
 
-    /// The group role whose secret derives the key.
+    /// The role whose secret derives the key.
     pub fn role(self) -> Role {
         match self {
             RoleKey::Sync => Role::Sync,

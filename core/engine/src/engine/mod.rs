@@ -719,8 +719,8 @@ indexes! {
     pub commits: JMap<CommitId, Meta>,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`).
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
-    /// Held commits with a part not held (`Hold::Missing`), per aspect, AK first: the groups whose
-    /// the commits a removal of a reference there must cover (`write::seeing`).
+    /// Held commits with a part not held (`Hold::Missing`), per aspect, AK first: among
+    /// them the commits a removal of a reference there must cover (`write::seeing`).
     pub missing: JSetMap<(Ak, Tid), CommitId>,
     /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
     /// and whether its body is held. Invariant (also for `by_thing`): it finds
@@ -1057,7 +1057,7 @@ pub struct Core {
     /// join (`apply::atomic`, `Memo::amend`). A pass reads it many times and it grows with the
     /// roster.
     pub(crate) secrets_read: memo::Memo<Tid, Arc<osis_schema::core_types::Secrets>>,
-    /// `Engine::head_keys` per (group, step) (`memo`): deriving them is some curve work.
+    /// `Engine::head_keys` per (thing with own keys, step) (`memo`): deriving them is some curve work.
     pub(crate) head_keys: memo::Memo<(Tid, osis_blob::StepId), crate::sync_ids::HeadKeys>,
     /// `Engine::read_credentials` per sync ID (`memo`): sync reads them at each entry it judges,
     /// and they derive a key per held sync secret.
@@ -3016,7 +3016,7 @@ impl Tx<'_> {
     }
 
     /// Whether `(tid, ak)` has a state: a valid write on it applied here. What a thing has is
-    /// read here (or from an index derived from states: `Indexes::sync_recorded`, `groups`),
+    /// read here (or from an index derived from states: `Indexes::sync_recorded`),
     /// never from `Indexes::by_aspect`, which any signer's header adds to.
     pub fn has_state(&mut self, tid: &Tid, ak: &Ak) -> Result<bool> {
         self.load_lazy(tid, ak)?;

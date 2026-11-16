@@ -118,7 +118,7 @@ impl Engine {
         moved
     }
 
-    /// Groups with a sync ID whose nearest record-chain actor with a sync ID is `g` (its home sync ID publishes
+    /// Things with a sync ID whose nearest record-chain actor with a sync ID is `g` (its home sync ID publishes
     /// their `sync.0`, spec/sync-ids.md §4). Empty unless `g` is an actor with secrets of its
     /// own. A read of `g`'s whole set.
     pub fn published_under(&mut self, g: &Tid) -> Arc<BTreeSet<Tid>> {

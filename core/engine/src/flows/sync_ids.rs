@@ -16,7 +16,7 @@ use osis_blob::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_sync_i
 use osis_schema::core_types::{self as ct, KemKey};
 use osis_schema::{RawKey, Codec};
 
-/// A reader of a group's read epoch as the registrar lists it.
+/// A reader of a thing's read epoch as the registrar lists it.
 #[derive(Clone)]
 pub(crate) enum ReaderKey {
     /// A node or an actor: the X25519 half of its (read-role) KEM key.
@@ -30,15 +30,15 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
     Ok(KemPublicKey::from_slice(b)?)
 }
 
-/// The readers of `group`'s read epoch `e` (spec/sync-ids.md §3): holders of read boxes at `e`, its
+/// The readers of `t`'s read epoch `e` (spec/sync-ids.md §3): holders of read boxes at `e`, its
 /// first admin included while its record edge stands; a node by its KEM key, another key actor
 /// by static entry, an actor by its newest read keyset.
-pub(crate) fn readers(tx: &mut Tx<'_>, group: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
+pub(crate) fn readers(tx: &mut Tx<'_>, t: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
     let mut holders: Vec<Tid> = Vec::new();
-    if let Some(o) = tx.core.first_admin(group).filter(|a| tx.core.key_holders(group).iter().any(|(m, _)| m == a)) {
+    if let Some(o) = tx.core.first_admin(t).filter(|a| tx.core.key_holders(t).iter().any(|(m, _)| m == a)) {
         holders.push(o);
     }
-    let secrets = super::secrets_in(tx, group)?;
+    let secrets = super::secrets_in(tx, t)?;
     for k in secrets.boxes.keys() {
         if k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|ke| ke == *e) {
             holders.push(k.holder.0);
@@ -78,13 +78,13 @@ pub(crate) fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> 
     })
 }
 
-/// The deposit seed `group`'s sync IDs derive from (spec/sync-ids.md §2): its secret actor's
+/// The deposit seed `t`'s sync IDs derive from (spec/sync-ids.md §2): its secret actor's
 /// `keys.0`. The one derivation (`Engine::deposit_seed`,
 /// `step_due`). None while a valid part of that `keys.0` is still to fetch (a rotation taken
 /// header-only): lacking it is waiting, so no step is issued from an older seed, which a node
 /// holding the newer one would step past again, and so on.
-pub(crate) fn deposit_seed_of(tx: &mut Tx<'_>, group: &Tid) -> Result<Option<Secret32>> {
-    let actor = tx.core.reader_of(group);
+pub(crate) fn deposit_seed_of(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Secret32>> {
+    let actor = tx.core.reader_of(t);
     let keys = ak("keys.0")?;
     let lacking = tx.core.ix.by_aspect.get(&(actor, keys.clone())).into_iter().flatten().any(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&actor, &keys).is_some_and(|ai| m.valid_at(ai) && m.missing(ai))));
     if lacking {
@@ -94,10 +94,10 @@ pub(crate) fn deposit_seed_of(tx: &mut Tx<'_>, group: &Tid) -> Result<Option<Sec
 }
 
 
-/// Issues a step of `group` at the newest established epochs: a genesis step of a new sync ID
+/// Issues a step of `t` at the newest established epochs: a genesis step of a new sync ID
 /// when `parent` is none, else a child of the parent step (signed by the parent's delete key,
 /// from the admin secret of the epoch it registers).
-pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32) -> Result<(Step, ClaimSet)> {
+pub(crate) fn issue(tx: &mut Tx<'_>, t: &Tid, epochs: &ActorEpochs, parent: Option<(&Step, &Secret32)>, readers: &[ReaderKey], deposit: &Secret32) -> Result<(Step, ClaimSet)> {
     let [(se, ss), (re, rs), (_, ws), (_, adm)] = registration_epochs(epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
     let sync_id = parent.map_or_else(|| genesis_sync_id(adm), |(p, _)| p.sync_id);
     let keys = StepKeys::derive(ss, ws, adm, deposit, &sync_id);
@@ -113,31 +113,31 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, parent: 
         None => Parent::Genesis(&del),
         Some((step, _)) => Parent::Child { step, delete: &del },
     };
-    Ok(register_with(p, keys, &rk, (group, re, rs), (se, ss), epochs.read.wrapped_under([&re], |s| epochs.read.secret(s).is_some()).and_then(|s| epochs.read.secret(&s).map(|x| (s, x))), &mut *tx.rng)?)
+    Ok(register_with(p, keys, &rk, (t, re, rs), (se, ss), epochs.read.wrapped_under([&re], |s| epochs.read.secret(s).is_some()).and_then(|s| epochs.read.secret(&s).map(|x| (s, x))), &mut *tx.rng)?)
 }
 
-/// `sync.0` write: a new sync ID of `group` with its genesis step (`genesis`), or a step added.
-pub(crate) fn put_step(m: &mut Mutation, group: Tid, sync_id: SyncId, step: &Step, set: &ClaimSet, genesis: bool) -> Result<()> {
+/// `sync.0` write: a new sync ID of `t` with its genesis step (`genesis`), or a step added.
+pub(crate) fn put_step(m: &mut Mutation, t: Tid, sync_id: SyncId, step: &Step, set: &ClaimSet, genesis: bool) -> Result<()> {
     match genesis {
         true => {
             let l = ct::SyncEntry { steps: [(step.id().0, step_record(step, Some(set)))].into_iter().collect() };
-            m.op(group, &ct::SYNC, PathOp { path: vec![PathSeg::Key(sync_id.to_value())], op: Op::Set(l.to_value()) })?;
+            m.op(t, &ct::SYNC, PathOp { path: vec![PathSeg::Key(sync_id.to_value())], op: Op::Set(l.to_value()) })?;
         }
         false => {
             let path = vec![PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(step.id().0.to_vec()))];
-            m.op(group, &ct::SYNC, PathOp { path, op: Op::Set(step_record(step, Some(set)).to_value()) })?;
+            m.op(t, &ct::SYNC, PathOp { path, op: Op::Set(step_record(step, Some(set)).to_value()) })?;
         }
     }
     Ok(())
 }
 
-/// Drops, in `m`, the claim sets (with their entry boxes) of `group`'s steps superseded for
+/// Drops, in `m`, the claim sets (with their entry boxes) of `t`'s steps superseded for
 /// `ROLE_KEEP` (spec/sync-ids.md §4: an admin may): a step is superseded when the record of its
 /// first child was written, by that write's stamp. Folded into every `sync.0` write an admin
-/// makes, so a group's records hold the sets of its recent steps only.
-pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> Result<()> {
+/// makes, so a thing's records hold the sets of its recent steps only.
+pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid) -> Result<()> {
     let now = tx.core.now().0;
-    let Some(state) = tx.state(&group, &ak("sync.0")?)?.cloned() else { return Ok(()) };
+    let Some(state) = tx.state(&t, &ak("sync.0")?)?.cloned() else { return Ok(()) };
     let ids = state.read().and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
     for (sync_id, rec) in &ids {
         let Ok(steps) = sync_steps(rec) else { continue };
@@ -151,30 +151,30 @@ pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> 
                 continue;
             }
             let superseded = steps.iter().filter(|(_, (c, _))| c.prev == Some(*id)).filter_map(|(c, _)| written(c)).min();
-            if superseded.is_some_and(|t| t.saturating_add(osis_base::format::ROLE_KEEP_MS) <= now) {
+            if superseded.is_some_and(|w| w.saturating_add(osis_base::format::ROLE_KEEP_MS) <= now) {
                 let path = vec![PathSeg::Key(sync_id.to_value()), PathSeg::Field(0), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(1)];
-                m.op(group, &ct::SYNC, PathOp { path, op: Op::Replace(None::<Vec<u8>>.to_value()) })?;
+                m.op(t, &ct::SYNC, PathOp { path, op: Op::Replace(None::<Vec<u8>>.to_value()) })?;
             }
         }
     }
     Ok(())
 }
 
-/// The home sync ID of actor `group` (spec/sync-ids.md §2): genesis step at its newest epochs,
+/// The home sync ID of `t`, a thing with own keys (spec/sync-ids.md §2): genesis step at its newest epochs,
 /// written to `sync.0` in `m`. Returns the sync ID.
-pub(crate) fn new_sync_id(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32) -> Result<SyncId> {
-    let (step, set) = issue(tx, &group, epochs, None, readers, deposit)?;
-    put_step(m, group, step.sync_id, &step, &set, true)?;
+pub(crate) fn new_sync_id(tx: &mut Tx<'_>, m: &mut Mutation, t: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32) -> Result<SyncId> {
+    let (step, set) = issue(tx, &t, epochs, None, readers, deposit)?;
+    put_step(m, t, step.sync_id, &step, &set, true)?;
     // named in its `keys.0` too: the public key record a sender fires by (spec/crypto.md §3)
-    m.op(group, &ct::KEYS, PathOp { path: vec![PathSeg::Field(9)], op: Op::Set(Some(step.sync_id).to_value()) })?;
-    drop_old_claims(tx, m, group)?;
+    m.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(9)], op: Op::Set(Some(step.sync_id).to_value()) })?;
+    drop_old_claims(tx, m, t)?;
     Ok(step.sync_id)
 }
 
-/// The sync IDs `group`'s `sync.0` records that it owns (`sync_ids::actors::owns`).
-pub(crate) fn owned_in(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::SyncIds> {
-    let mut sync_ids = tx.state(group, &ak("sync.0")?)?.and_then(Fragment::read).and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
-    sync_ids.retain(|id, l| sync_steps(l).is_ok_and(|s| tx.core.owns_sync_id(group, id, &s)));
+/// The sync IDs `t`'s `sync.0` records that it owns (`sync_ids::actors::owns`).
+pub(crate) fn owned_in(tx: &mut Tx<'_>, t: &Tid) -> Result<ct::SyncIds> {
+    let mut sync_ids = tx.state(t, &ak("sync.0")?)?.and_then(Fragment::read).and_then(|v| ct::SYNC.decode(&v).ok()).unwrap_or_default();
+    sync_ids.retain(|id, l| sync_steps(l).is_ok_and(|s| tx.core.owns_sync_id(t, id, &s)));
     Ok(sync_ids)
 }
 
@@ -247,13 +247,13 @@ impl Engine {
         Ok(done)
     }
 
-    /// Issues the step of `group`'s sync ID `sync_id` (spec/sync-ids.md §6 Steps): the step due
+    /// Issues the step of `t`'s sync ID `sync_id` (spec/sync-ids.md §6 Steps): the step due
     /// (`step_due`), or with `fresh` one without a rotation (a MAY: to list readers granted since
     /// its parent). `None` when none is due or a role is blocked here (the step comes with the
     /// rotation that is made). Sync calls it once the rotations it registers are logged
     /// (`Engine::due_step`).
-    pub fn issue_step(&mut self, group: &Tid, sync_id: &SyncId, fresh: bool) -> Result<Option<(Step, ClaimSet)>> {
-        let (g, l) = (*group, *sync_id);
+    pub fn issue_step(&mut self, t: &Tid, sync_id: &SyncId, fresh: bool) -> Result<Option<(Step, ClaimSet)>> {
+        let (g, l) = (*t, *sync_id);
         self.run(|tx| {
             let Ok(me) = tx.core.writer() else { return Ok(None) };
             if !rotation::blocked_roles(tx, &me, &g)?.is_empty() {
@@ -267,15 +267,15 @@ impl Engine {
         })
     }
 
-    /// `drop_old_claims` into `m`, a `sync.0` write of `group` by this admin.
-    pub fn drop_old_claims(&mut self, m: &mut Mutation, group: &Tid) -> Result<()> {
-        let g = *group;
+    /// `drop_old_claims` into `m`, a `sync.0` write of `t` by this admin.
+    pub fn drop_old_claims(&mut self, m: &mut Mutation, t: &Tid) -> Result<()> {
+        let g = *t;
         self.run(|tx| drop_old_claims(tx, m, g))
     }
 
-    /// The home sync ID of `group` (`home_sync_id`).
-    pub fn home_sync_id(&mut self, group: &Tid) -> Result<Option<SyncId>> {
-        let g = *group;
+    /// The home sync ID of `t` (`home_sync_id`).
+    pub fn home_sync_id(&mut self, t: &Tid) -> Result<Option<SyncId>> {
+        let g = *t;
         self.read(|tx| home_sync_id(tx, &g))
     }
 }

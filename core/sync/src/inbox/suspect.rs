@@ -31,7 +31,7 @@
 //! waiting per (connection, S), only aspects this node may snapshot (gone at `Left`, close or the
 //! first sync's end); a followed key per S listed or with entries waiting (gone with the last of
 //! them, `let_go`); a row per (reporter account, aspect) repaired, replaced by a later state,
-//! dropped when an entry shows it stale; a row of a thing gone stays until then (issues/storage-follows-groups.md,
+//! dropped when an entry shows it stale; a row of a thing gone stays until then (issues/storage-owners.md,
 //! item 10). A flood of lists repairs at most once per state per reporter,
 //! and an entry judged again costs a lookup (`Engine::state_digest` is a memo per aspect).
 

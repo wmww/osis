@@ -159,7 +159,7 @@ fn set_by_value_is_flat() {
     }
 }
 
-/// A set of n tids: a removal of a member (spec/crdt.md §5.5, what `delete` writes in a group) and
+/// A set of n tids: a removal of a member (spec/crdt.md §5.5, what `delete` writes in a `holds.0`) and
 /// an add back, each in a new session: pages loaded and written, and the commit's bytes.
 fn tid_removals(n: usize) -> Vec<(u64, u64, u64)> {
     let mut lp = net(1, 0);

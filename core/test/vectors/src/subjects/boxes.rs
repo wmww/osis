@@ -123,15 +123,15 @@ pub fn boxes() -> VecFile {
     // Entry box.
     let sync_id = SyncId([0x0a; 16]);
     let step_key = X25519Secret::from_secret(&s32(0x06)).public();
-    let group = Tid::from_bytes([0x07; 15]);
-    let slot = BoxSlot::Entry { sync_id, step_key, group };
+    let actor = Tid::from_bytes([0x07; 15]);
+    let slot = BoxSlot::Entry { sync_id, step_key, actor };
     let form = BoxForm::Sealed { keyset: None, suite: 1 };
     let ad = slot.ad(form).unwrap();
-    let item = EntryItem { epoch: named(&group, Role::Read, 2, &s32(0x08)), secret: s32(0x08), earlier: Some((named(&group, Role::Read, 1, &s32(0x0b)), s32(0x0b))), sync: (named(&group, Role::Sync, 2, &s32(0x0d)), s32(0x0d)) };
+    let item = EntryItem { epoch: named(&actor, Role::Read, 2, &s32(0x08)), secret: s32(0x08), earlier: Some((named(&actor, Role::Read, 1, &s32(0x0b)), s32(0x0b))), sync: (named(&actor, Role::Sync, 2, &s32(0x0d)), s32(0x0d)) };
     let b = seal_entry(recipient.public(), &slot, &item, &mut FixedRng::new(&[&EPH, &M])).unwrap();
     assert_eq!(open_entry(&recipient, &slot, form, &b).unwrap(), item);
     let entry_payload = encode(&Value::List(vec![Value::Int(role_int(Role::Read)), Value::Int(2), Value::Bytes(item.secret.expose().to_vec()), Value::List(vec![Value::Int(1), Value::Bytes(s32(0x0b).expose().to_vec())]), Value::List(vec![Value::Int(2), Value::Bytes(s32(0x0d).expose().to_vec())])]));
-    let r = case("entry box", "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())).with("sync-id", hex(&sync_id.0)).with("step-key", hex(&step_key)).with("group", hex(group.as_bytes()));
+    let r = case("entry box", "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())).with("sync-id", hex(&sync_id.0)).with("step-key", hex(&step_key)).with("actor", hex(actor.as_bytes()));
     cases.push(randomness(r.with("keyset", "none").with("suite", "1").with("ad", hex(&ad))).with("payload", hex(&entry_payload)).with("sealed", hex(&b)));
 
     // History box.

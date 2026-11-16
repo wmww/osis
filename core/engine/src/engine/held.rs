@@ -975,7 +975,7 @@ mod tests {
     // with what it can see: a thing's edges (`on`) and the roles on it with the edges into what
     // reaches it, the writes held on a thing with them, the keyless grants with their value; a memo of each keeps the answer a fresh read
     // gives through grants, a write applying nothing, removals, records, a cycle of actor grants
-    // and an undo, and a grant on one group reads nothing of another again.
+    // and an undo, and a grant on one actor reads nothing of another again.
     #[test]
     fn timeline_reads_move_with_what_they_read() {
         use osis_base::memo::Memo;

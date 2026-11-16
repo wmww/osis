@@ -148,9 +148,9 @@ pub(crate) struct Locked {
     /// The nodes this process is a client of (`Osis::connect`, `connect_node`), in the order
     /// connected.
     pub remotes: Vec<crate::port::client::Remote>,
-    /// Groups read and written at another node (`unit_source`), by its address.
+    /// Sync units read and written at another node (`unit_source`), by its address.
     pub unit_sources: std::collections::BTreeMap<Tid, Address>,
-    /// Of `unit_sources`, the groups moving home (`unit_source`): they sync here while they
+    /// Of `unit_sources`, the sync units moving home (`unit_source`): they sync here while they
     /// catch up, still read at their node.
     pub homing: std::collections::BTreeSet<Tid>,
 }
@@ -197,7 +197,7 @@ pub(crate) struct Inner {
     /// A thin client (`Osis::connect`, `connect_socket`): its node's answers to who it is. Its
     /// own engine is a scratch one no call reads.
     pub thin: std::sync::OnceLock<crate::port::client::Thin>,
-    /// Some node is connected or some group sourced elsewhere: only then is a source looked up
+    /// Some node is connected or some sync unit sourced elsewhere: only then is a source looked up
     /// (no cost on a local call).
     pub has_sources: std::sync::atomic::AtomicBool,
     /// User handles and whether the store closed (the last field: it drops after `eng`).
