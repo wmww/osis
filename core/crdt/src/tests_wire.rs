@@ -4,7 +4,7 @@
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::{Elem, Fragment, Meta, RegWrite, Register, Set};
 use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
-use crate::testutil::{frag, history_with, sess, sess_value, sink_no_seq, source, ts};
+use crate::testutil::{frag, sess, sess_value, source, ts};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
@@ -29,23 +29,6 @@ proptest! {
         let _ = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None);
     }
 
-    /// §3.3 rule 7: mutated valid deltas are rejected or decode, never panic.
-    #[test]
-    fn mutated_delta_never_panics_spec_3_3(seed in any::<u64>(), pos in any::<usize>(), byte in any::<u8>()) {
-        let mut r = crate::testutil::rng(seed | 1);
-        let commits = history_with(&mut r, &[sink_no_seq()], vec![MSource::session(1, 0)], 2);
-        for c in &commits {
-            let cx = writer_cx(&c.w);
-            let mut bytes = encode_delta(&Delta { nonce: [1; 16], fragment: frag(&c.delta) }, &cx, None).unwrap();
-            let p = pos % bytes.len();
-            bytes[p] = byte;
-            if let Ok(d) = decode_delta(&bytes, &cx, &mut Interner::new(), None) {
-                let mut s = crate::Fragment::default();
-                s.join(d.fragment);
-                let _ = s.read();
-            }
-        }
-    }
 }
 
 // ---- negative tests (§2.3, §3.3 rule 7)

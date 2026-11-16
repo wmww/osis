@@ -82,60 +82,6 @@ impl Frontiers {
     }
 }
 
-/// Applied counter ranges per `Session` source for one aspect: what a snapshot's
-/// frontiers are built from (§8).
-/// Parked commits are not added until joined.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Received(BTreeMap<Source, Vec<(u64, u64)>>);
-
-impl Received {
-    pub fn new() -> Received {
-        Received::default()
-    }
-    /// Records counters `range` of `src` (a `Session` source) as applied.
-    pub fn add(&mut self, src: &Source, range: CounterRange) {
-        if range.is_empty() || !matches!(src.kind(), SourceKind::Session(_)) {
-            return;
-        }
-        let v = self.0.entry(src.clone()).or_default();
-        v.push((range.lo, range.hi));
-        v.sort_unstable();
-        let mut out: Vec<(u64, u64)> = Vec::with_capacity(v.len());
-        for (a, b) in v.drain(..) {
-            match out.last_mut() {
-                Some(l) if a <= l.1 => l.1 = l.1.max(b),
-                _ => out.push((a, b)),
-            }
-        }
-        *v = out;
-    }
-    /// The largest `ctr` with `[1, ctr]` applied; 0 if none.
-    pub fn frontier(&self, src: &Source) -> u64 {
-        match self.0.get(src).and_then(|v| v.first()) {
-            Some((1, hi)) => hi.saturating_sub(1),
-            _ => 0,
-        }
-    }
-    /// The frontiers a snapshot of this state carries (sources with counter 1 applied).
-    pub fn frontiers(&self) -> Frontiers {
-        let mut fr = Frontiers::default();
-        for s in self.0.keys() {
-            let c = self.frontier(s);
-            if c > 0 {
-                fr.insert(s, c);
-            }
-        }
-        fr
-    }
-    /// A received snapshot closes `[1, ctr]` per frontier (tests).
-    #[cfg(test)]
-    pub(crate) fn add_frontiers(&mut self, fr: &Frontiers) {
-        for (s, c) in fr.sources() {
-            self.add(&s, CounterRange { lo: 1, hi: c.saturating_add(1) });
-        }
-    }
-}
-
 /// `[nonce, Sources, Commits, Fragment]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delta {

@@ -100,23 +100,6 @@ proptest! {
         prop_assert_eq!(j, full);
     }
 
-    /// §3.3 rule 7: mutated sequence deltas are rejected or decode, never panic.
-    #[test]
-    fn mutated_seq_delta_never_panics_spec_3_3(seed in any::<u64>(), pos in any::<usize>(), byte in any::<u8>()) {
-        let mut r = crate::testutil::rng(seed | 1);
-        let commits = history_with(&mut r, &[Ty::Text, Ty::List(Box::new(inner()))], vec![MSource::session(1, 0), MSource::session(2, 0)], 3);
-        let mut state = Fragment::default();
-        for c in &commits {
-            let cx = writer_cx(&c.w);
-            let mut bytes = encode_delta(&Delta { nonce: [1; 16], fragment: frag(&c.delta) }, &cx, None).unwrap();
-            let p = pos % bytes.len();
-            bytes[p] = byte;
-            if let Ok(d) = decode_delta(&bytes, &cx, &mut Interner::new(), None) {
-                state.join(d.fragment);
-                let _ = state.read();
-            }
-        }
-    }
 }
 
 /// §6.2: cycle breaking is linear. Adversarial graph: a chain of 20,000 plus 20,000 mutual-`cur`
@@ -287,23 +270,6 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
         }
     }
     f
-}
-
-proptest! {
-    /// §5.7, §6 (a deterministic function of state), `seq_lin`: a text bootstrapped from a snapshot takes inserts anchored at every
-    /// kind of element, undeletes of parts of deleted runs, deletes and moves like the model, and
-    /// the cached placement follows writes that split a range record.
-    #[test]
-    fn snapshot_text_edits_match_model_spec_6(seed in any::<u64>()) {
-        snapshot_then_edit(crate::testutil::rng(seed | 1), false, 30);
-    }
-
-    /// §6.1, §7 (embedding), `seq_lin`: the same over a text upgraded from a string (embedded characters,
-    /// `Derived` dots and anchors at them, held or virtual).
-    #[test]
-    fn snapshot_slots_edits_match_model_spec_7(seed in any::<u64>()) {
-        snapshot_then_edit(crate::testutil::rng(seed | 1), true, 30);
-    }
 }
 
 /// §6 (a deterministic function of state), `seq_lin`: writes splitting a range record of a snapshot-bootstrapped text, or anchoring
@@ -1170,7 +1136,7 @@ pub(crate) fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_mod
         x
     };
     let unchanged = joined(st, d) == *st;
-    assert_eq!(st.contains(d), unchanged, "the part judges as the whole");
+    assert_eq!(crate::testutil::contains(st, d), unchanged, "the part judges as the whole");
     let part = st.part_at(d);
     assert_eq!(enc(&joined(&part, d)) == enc(&part), enc(&joined(st, d)) == enc(st), "the part's bytes judge as the whole's");
     if let Fragment::Seq(s) = st {
@@ -1195,31 +1161,6 @@ pub(crate) fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_mod
         d.winners().minus(&g.winners())
     };
     assert_eq!(kills(st.part_at(d)), kills(st.clone()), "a source's part kills as the source");
-}
-
-proptest! {
-    /// spec/commits.md §5: `part_judges_as_whole` on honest histories (moves, deletes, undeletes,
-    /// an element's fields), at the root or as struct fields, the state a join of some bodies.
-    /// The case's seed picks the type, so each takes about a third of the cases.
-    #[test]
-    fn part_judges_as_whole_of_histories_spec_commits_5(seed in any::<u64>()) {
-        let text_and_list = Ty::Struct([(1, Ty::Text), (2, Ty::List(Box::new(inner()))), (3, Ty::Text)].into_iter().collect());
-        let mut tys = vec![Ty::Text, Ty::List(Box::new(inner())), text_and_list];
-        {
-            let ty = tys.swap_remove((seed % 3) as usize);
-            let mut r = crate::testutil::rng(seed | 1);
-            let bodies: Vec<Fragment> = history(&mut r, std::slice::from_ref(&ty), 3, 6).iter().map(|c| frag(&c.delta)).collect();
-            for _ in 0..4 {
-                let mut st = Fragment::default();
-                for b in bodies.iter().filter(|_| r.chance(1, 2)) {
-                    st.join(b.clone());
-                }
-                for b in &bodies {
-                    part_judges_as_whole(&st, b, &mut r);
-                }
-            }
-        }
-    }
 }
 
 
@@ -1299,7 +1240,7 @@ fn part_at_a_sequence_is_the_deltas_records() {
     let (whole, delta) = (Fragment::Seq(Seq::new(true, Meta::default(), whole)), Fragment::Seq(Seq::new(true, Meta::default(), delta)));
     let Fragment::Seq(part) = whole.part_at(&delta) else { panic!("a sequence's part is one") };
     assert_eq!(part.elems().keys().cloned().collect::<Vec<_>>(), vec![dot(1000), dot(1002)]);
-    assert!(whole.contains(&delta));
+    assert!(crate::testutil::contains(&whole, &delta));
 }
 
 // §6.1, §4.6: a sequence's order is computed from valid writes only. The read of the bodies

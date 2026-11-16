@@ -144,8 +144,14 @@ fn unmodeled_tag(f: &crate::fragment::Fragment) -> bool {
 }
 
 /// Accept/reject agreement on one writer delta.
-fn same_delta(bytes: &[u8], c: &MCommit) -> Result<(), String> {
+fn same_delta(bytes: &[u8], c: &MCommit, state: &crate::Fragment) -> Result<(), String> {
     let imp = decode_delta(bytes, &writer_cx(&c.w), &mut Interner::new(), None);
+    // what is accepted joins into the state so far and reads (no panic)
+    if let Ok(d) = &imp {
+        let mut st = state.clone();
+        st.join(d.fragment.clone());
+        let _ = st.read();
+    }
     let model = m_decode_delta(bytes, &mut Ctx::writer(c.w.ts, c.w.source.clone(), c.w.lo, c.w.hi()));
     match (imp, model) {
         (Ok(d), Ok(f)) if d.fragment == frag(&f) => Ok(()),
@@ -176,14 +182,15 @@ fn differential(seed: u64, types: &[Ty], per: usize) -> Result<(), String> {
     let commits = history_with(&mut r, types, (1..=3).map(|n| MSource::session(n, 0)).collect(), 3);
     let mut state = None;
     for c in &commits {
+        let held = crate::testutil::ostate(&state);
         let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: frag(&c.delta) }, &writer_cx(&c.w), None).map_err(|e| e.to_string())?;
-        same_delta(&bytes, c)?;
+        same_delta(&bytes, c, &held)?;
         for _ in 0..per {
             let mut b = bytes.clone();
             mutate(&mut r, &mut b);
-            same_delta(&b, c)?;
+            same_delta(&b, c, &held)?;
             if let Some(b) = mutate_tree(&mut r, &bytes) {
-                same_delta(&b, c)?;
+                same_delta(&b, c, &held)?;
             }
         }
         mapply(&mut state, c.delta.clone());

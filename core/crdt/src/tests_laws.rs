@@ -31,15 +31,15 @@ fn laws(s: &[Fragment]) {
         for y in [a, b, c, &ab] {
             // its soundness rests on this: the piece is below the whole
             assert_eq!(&join(x, &x.part_at(y)), x, "a piece joins in unchanged");
-            if x.contains(y) {
+            if crate::testutil::contains(x, y) {
                 assert_eq!(&join(x, y), x, "contains only what joins in unchanged");
             }
             // a sequence joins record by record, so its piece decides exactly
             if matches!(x, Fragment::Seq(_)) {
-                assert_eq!(x.contains(y), &join(x, y) == x, "a sequence's piece judges as the whole");
+                assert_eq!(crate::testutil::contains(x, y), &join(x, y) == x, "a sequence's piece judges as the whole");
             }
         }
-        assert!(ab.contains(x) || x == c, "a join contains its parts");
+        assert!(crate::testutil::contains(&ab, x) || x == c, "a join contains its parts");
     }
     // §4.3: the short-circuit presence equals the presence stamp's
     for x in [a, b, c, &join(a, b)] {

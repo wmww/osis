@@ -17,9 +17,6 @@ Format: `file:line test | action | why safe | confidence`.
 - `apply/tests_paged.rs first_diff_names_the_entry` | delete | tests a test helper's failure message | medium
 - perm `queries.rs:375-376` `PurgeBy::from_id` asserts | delete | a constant restated | low
 
-**crdt**
-- `stamp.rs:338 counter_range_spec_2_3` | delete | `rejects_own_counters_out_of_range_spec_2_3` and `run_past_counter_range_rejected_spec_2_3` cover the boundaries | medium
-
 **base**
 - `hash.rs blake3_known_answer` | delete | only the blake3 crate; vectors (`kdf_purposes`, `commit_headers`) pin outputs | medium
 - `time.rs manual_clock` | delete | `ts_layout` keeps crdt §2.2 cited | medium
@@ -73,9 +70,6 @@ Format: `file:line test | action | why safe | confidence`.
 **perm**
 - `incremental.rs:280 created_late_every_order` | delete | `record_edge_cut_late_record_every_order` (:315) has the same structure in all 720 orders | medium-high
 
-**crdt**
-- crdt-model convergence twins | one proptest per type, the parameter picked by seed | medium
-
 **held-model**
 - `props.rs:201, :225, :280` | share one reference per seed | medium
 - `spec_fetch.rs:171` | merge into the `settled_reads_like_creation_first` loop | low-medium
@@ -98,22 +92,14 @@ Helpers are listed in (c). Per-test items:
 - engine `tests_addenda.rs:150` inlines `forge_addendum` | high
 
 ### Category 5: regressions a property now covers
-- crdt `tests_seq_ops.rs` `:143, :161, :224, :261, :286, :363` (single-writer, batch, converge, undo text and list) | delete | covered by `fuzz_seq::random_scripts_replay_spec_5_7`; update notes/crdt.md's "Beside it" list | medium
-- crdt `tests_seq.rs:296`, `:303 snapshot_*_edits_match_model` (10.7 s) | delete or make them the ignored `_large` size | the follow-count tests call the same `snapshot_then_edit` | medium
-- crdt `tests_seq.rs:1227 part_judges_as_whole_of_histories` (13.4 s) | one type per case, or run it in every mode of `crdt_equals_model` and delete | medium
 - crdt `tests_life.rs:59 expiry_laws`, `:65 unmerge` (+ `seq_` twins) | fold their unique checks into `crdt_equals_model`, then delete | low-medium
-- crdt `tests_seq.rs:105`, `tests_wire.rs:34` (mutated deltas never panic) | delete once `tests_decoder::same_delta` also joins and reads what it accepts | medium
 - crdt `tests_laws.rs:129 forged_edge_copy_cached_placement` (a pinned seed) | hand-written reproducer or delete | low-medium
 - held-model `spec_thing_history.rs:161`, `:188` plus ~50 lines of test-only src (`Eager`, `Body`, `history`, `replaced_at`) | delete | the `ev_*` twins run the same properties on the real `evaluate` | medium-high
 - osis `text.rs:230` | delete | `text_edit_random_against_reference` checks single-merge cases exactly | medium
 - roles-model `single.rs` (14 tests, used by nothing outside the model, mostly rejected rule variants) | Tess's call: it is a design record | low
 
 Width (issues/tests-4x.md, Patterns), no coverage loss:
-- `tests_ops decoded_bound_holds_random_values`: 300 → ~50 seeds | low
-- crdt-model `props.rs:280–325`: one type per case | medium
-- `large_text_batch_is_net_effect`: one seed | low
 
-Width, open: crdt `tests_winners` (`seq_winners_from_scratch`, `winners_from_scratch`) run 8 and 2 variants per proptest case. One variant per case would cut 5.6 s to under 1 s.
 
 ## Helpers to add or unify
 

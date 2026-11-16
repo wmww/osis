@@ -82,6 +82,15 @@ pub fn value(v: &crdt_model::value::Value) -> Value {
     }
 }
 
+/// Whether joining `y` into `x`'s part at `y`'s positions (`part_at`) changes nothing: how the
+/// engine judges a delta against a part of a state (spec/commits.md §5).
+pub fn contains(x: &Fragment, y: &Fragment) -> bool {
+    let part = x.part_at(y);
+    let mut j = part.clone();
+    j.join(y.clone());
+    j == part
+}
+
 /// A writer source for tests: session of node `t` with a zero nonce.
 pub fn sess(t: Tid) -> Source {
     Source::session(crate::Session { node: t, nonce: [0; crate::SESSION_NONCE_LEN] })

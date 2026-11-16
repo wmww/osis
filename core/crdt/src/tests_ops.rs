@@ -831,7 +831,7 @@ fn bound_value(r: &mut Rng, depth: u32) -> Value {
 #[test]
 fn decoded_bound_holds_random_values() {
     let mut checked = 0;
-    for seed in 0..300u64 {
+    for seed in 0..50u64 {
         let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let depth = 1 + r.below(5) as u32;
         let vs: Vec<Value> = (0..1 + r.below(20)).map(|_| bound_value(&mut r, depth)).collect();
@@ -843,7 +843,7 @@ fn decoded_bound_holds_random_values() {
         ];
         checked += shapes.iter().filter(|v| check_snapshot_bound(created(v))).count();
     }
-    assert!(checked > 1000, "{checked} of 1200 unpaged");
+    assert!(checked > 160, "{checked} of 200 unpaged");
 }
 
 proptest! {

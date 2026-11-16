@@ -5,7 +5,7 @@ use crate::fragment::Fragment;
 use crate::page::{MemoryPages, PageParams, PageSink};
 use crate::stamp::{CounterRange, Dot, Interner, Source};
 use crate::testutil::{TyView, frag, history, mapply, ostate, sess, sink_no_seq, source, ts};
-use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Received, Snapshot};
+use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
 use crate::DeltaBuilder;
 use crate::ops::{Op, PathOp};
 use crdt_model::r#gen::random_op;
@@ -202,27 +202,22 @@ pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
     let mut r = crate::testutil::rng(seed | 1);
     let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
     let mut a = Fragment::default();
-    let mut received = Received::new();
+    let mut received = crdt_model::received::Received::default();
     for c in &commits {
         a.join(frag(&c.delta));
-        received.add(&source(&c.w.source), CounterRange { lo: c.w.lo, hi: c.w.hi() });
-    }
-    for c in &commits {
-        assert!(received.frontier(&source(&c.w.source)) >= c.w.hi() - 1);
+        received.add(&c.w.source, c.w.lo, c.w.hi());
     }
     let snap = |f: &Fragment, fr: Frontiers| encode_snapshot(&Snapshot { absorbed: Default::default(), facts: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: fr }, &scx(), None).unwrap();
     // frontiers of the sources left in the state only (§8)
-    let traced = |f: &Fragment, mut fr: Frontiers| {
-        fr.retain(&crate::sources_of(f, &scx()).unwrap());
-        fr
-    };
-    let bytes = snap(&a, traced(&a, received.frontiers()));
-    let got = decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap();
+    let mut fr = Frontiers::default();
+    for (s, c) in received.frontiers() {
+        fr.insert(&source(&s), c);
+    }
+    fr.retain(&crate::sources_of(&a, &scx()).unwrap());
+    let got = decode_snapshot(&snap(&a, fr.clone()), &scx(), &mut Interner::new(), None).unwrap();
     let mut b = Fragment::default();
     b.join(got.fragment);
-    let mut rb = Received::new();
-    rb.add_frontiers(&got.frontiers);
-    assert_eq!(rb.frontiers(), traced(&a, received.frontiers()));
+    assert_eq!(got.frontiers.without_zeros(), fr);
     assert_eq!(b.read(), a.read());
     // b edits; a edits concurrently; both exchange
     let view = TyView(ty.clone());

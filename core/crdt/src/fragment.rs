@@ -482,18 +482,6 @@ impl Fragment {
         }
     }
 
-    /// Whether joining `x` into this fragment changes nothing, judged on the part of it at
-    /// `x`'s positions (`part_at`), so it costs about what `x` and those positions hold rather
-    /// than the whole fragment. That part is a piece of `self` (joining it into `self` changes
-    /// nothing), so `x` joining into it unchanged joins into `self` unchanged: never true when
-    /// the join would change `self`.
-    pub fn contains(&self, x: &Fragment) -> bool {
-        let part = self.part_at(x);
-        let mut j = part.clone();
-        j.join(x.clone());
-        j == part
-    }
-
     /// The piece of this fragment at `x`'s positions: of a struct the fields `x` holds (each
     /// narrowed the same way), of a map every record of the dots `x` holds records of, of a set
     /// or bag the elements `x` holds, of a sequence the records holding a dot of `x`'s, each with

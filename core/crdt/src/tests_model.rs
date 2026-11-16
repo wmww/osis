@@ -289,9 +289,9 @@ fn piece_laws(x: &Fragment, y: &Fragment, honest: bool) {
     let part = x.part_at(y);
     assert_eq!(&joined(x, &part), x, "a piece joins in unchanged");
     let unchanged = &joined(x, y) == x;
-    assert!(!x.contains(y) || unchanged, "contains only what joins in unchanged");
+    assert!(!crate::testutil::contains(x, y) || unchanged, "contains only what joins in unchanged");
     if matches!(x, Fragment::Seq(_)) {
-        assert_eq!(x.contains(y), unchanged, "a sequence's piece judges as the whole");
+        assert_eq!(crate::testutil::contains(x, y), unchanged, "a sequence's piece judges as the whole");
     }
     if honest && unchanged {
         let mut vl = BTreeSet::new();
@@ -346,10 +346,10 @@ fn joins(r: &mut Rng, c: &Case) -> Option<MFrag> {
                     {
                         let _ = crate::testutil::partial_follow(st, ds, 1 + r.below(4));
                     }
-                    crate::tests_seq::part_judges_as_whole(&ours, &fd, r);
                 } else {
                     piece_laws(&ours, &fd, c.honest);
                 }
+                crate::tests_seq::part_judges_as_whole(&ours, &fd, r);
                 mapply(&mut model, d.clone());
                 let before = ours.clone();
                 ours.join(fd.clone());
@@ -358,7 +358,7 @@ fn joins(r: &mut Rng, c: &Case) -> Option<MFrag> {
                 assert_eq!(ours, ostate(&model), "state after joining delta {k}");
                 assert_eq!(ours.read(), mread(&model), "read after delta {k}");
                 read_at_is_read_then_walk(&ours);
-                assert!(ours.contains(&fd), "a join contains its parts");
+                assert!(crate::testutil::contains(&ours, &fd), "a join contains its parts");
             }
         }
         assert_eq!(ours, ostate(&reference), "converged to the reference");

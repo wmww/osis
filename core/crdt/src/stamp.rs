@@ -334,10 +334,4 @@ mod tests {
         assert_eq!(Source::derived(Dot::new(a.clone(), 4)).unwrap().author(), &a);
     }
 
-    #[test]
-    fn counter_range_spec_2_3() {
-        let r = CounterRange { lo: 3, hi: 5 };
-        assert!(!r.contains(2) && r.contains(3) && r.contains(4) && !r.contains(5));
-        assert!(CounterRange::EMPTY.is_empty());
-    }
 }

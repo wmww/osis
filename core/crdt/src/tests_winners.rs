@@ -273,19 +273,20 @@ proptest! {
     /// §4.8: `winners` against the pairwise definition, maps, structs, registers and bags.
     #[test]
     fn winners_from_scratch_spec_4_8(seed in any::<u64>()) {
-        winners_check(seed, &[sink_no_seq()], false);
-        winners_check(seed, &[sink_no_seq()], true);
+        winners_check(seed, &[sink_no_seq()], seed % 2 == 0);
     }
 
     /// §4.8, §5.6, §5.7, §7: sequences at any depth, and positions written in several encodings.
+    /// The seed picks the type and honesty, so each takes an eighth of the cases.
     #[test]
     fn seq_winners_from_scratch_spec_4_8(seed in any::<u64>()) {
-        for honest in [false, true] {
-            winners_check(seed, &[Ty::Text], honest);
-            winners_check(seed, &[Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect())))], honest);
-            winners_check(seed, &[Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text))], honest);
-            winners_check(seed, &[Ty::Text, Ty::Register, sink_no_seq()], honest);
-        }
+        let types = [
+            vec![Ty::Text],
+            vec![Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect())))],
+            vec![Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text))],
+            vec![Ty::Text, Ty::Register, sink_no_seq()],
+        ];
+        winners_check(seed, &types[(seed / 2 % 4) as usize], seed % 2 == 0);
     }
 }
 

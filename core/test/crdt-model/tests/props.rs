@@ -278,16 +278,14 @@ proptest! {
 
     #[test]
     fn pruned_commit_leaves_nothing_spec_4_2(seed in any::<u64>()) {
-        pruned_commit_leaves_nothing(seed, &Ty::Text);
-        pruned_commit_leaves_nothing(seed, &Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect()))));
-        pruned_commit_leaves_nothing(seed, &Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
-        pruned_commit_leaves_nothing(seed, &kitchen_sink());
+        let tys = [Ty::Text, Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect()))), Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)), kitchen_sink()];
+        pruned_commit_leaves_nothing(seed, &tys[(seed % 4) as usize]);
     }
 
     /// The dot rule's statement (`crdt_model::writes`) is sound: a fragment is the join of its writes.
     #[test]
     fn fragment_is_join_of_its_writes_spec_4_1(seed in any::<u64>()) {
-        for ty in [kitchen_sink(), Ty::Text] {
+        for ty in [if seed % 2 == 0 { kitchen_sink() } else { Ty::Text }] {
             if let Some(f) = converge(seed, &ty, 3, 6, true, true) {
                 let mut j = crdt_model::writes::join_all(crdt_model::writes::writes(&f).into_iter().map(|w| w.1)).unwrap_or_else(|| Frag::empty(f.enc()));
                 j.prune(None);
@@ -299,7 +297,7 @@ proptest! {
     /// spec/commits.md §5 (live write; covered): a state holds each of its writes and covers each alone.
     #[test]
     fn state_holds_and_covers_its_writes_spec_commits_5(seed in any::<u64>()) {
-        for ty in [kitchen_sink(), Ty::Text] {
+        for ty in [if seed % 2 == 0 { kitchen_sink() } else { Ty::Text }] {
             if let Some(f) = converge(seed, &ty, 3, 6, true, true) {
                 let held = death::keys(&f);
                 for (n, w) in crdt_model::writes::writes(&f) {
@@ -313,7 +311,7 @@ proptest! {
     /// §4.7: with nothing expired, a state holds no value-less write (removals and deleted chars are none).
     #[test]
     fn no_valueless_write_without_expiry_spec_4_7(seed in any::<u64>()) {
-        for ty in [kitchen_sink(), Ty::Text] {
+        for ty in [if seed % 2 == 0 { kitchen_sink() } else { Ty::Text }] {
             if let Some(f) = converge(seed, &ty, 3, 6, true, false) {
                 prop_assert!(death::valueless(&f).is_empty(), "{:?}", death::valueless(&f));
             }
@@ -323,7 +321,7 @@ proptest! {
     /// §4.8: death is monotone in the join: a write another supersedes alone is dead in a join holding both.
     #[test]
     fn superseded_write_is_dead_in_the_join_spec_4_8(seed in any::<u64>()) {
-        for ty in [kitchen_sink(), Ty::Text] {
+        for ty in [if seed % 2 == 0 { kitchen_sink() } else { Ty::Text }] {
             // two parts of one history: its writes split by a seeded coin
             let Some(f) = converge(seed, &ty, 3, 4, true, true) else { continue };
             let mut r = Rng(seed | 1);
@@ -343,30 +341,19 @@ proptest! {
         }
     }
 
+    /// Convergence (`converge`): the seed picks the type, whether replicas miss commits and whether commits expire.
     #[test]
-    fn convergence_kitchen_sink(seed in any::<u64>()) {
-        converge(seed, &kitchen_sink(), 3, 6, true, false);
-    }
-
-    #[test]
-    fn convergence_with_expiry(seed in any::<u64>()) {
-        converge(seed, &kitchen_sink(), 3, 6, true, true);
-    }
-
-    #[test]
-    fn convergence_text_with_expiry(seed in any::<u64>()) {
-        converge(seed, &Ty::Text, 3, 10, true, true);
-    }
-
-    #[test]
-    fn convergence_text(seed in any::<u64>()) {
-        converge(seed, &Ty::Text, 3, 12, true, false);
-    }
-
-    #[test]
-    fn convergence_list(seed in any::<u64>()) {
-        let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect())));
-        converge(seed, &ty, 3, 8, false, true);
+    fn convergence(seed in any::<u64>()) {
+        let list = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect())));
+        let (ty, rounds, partial, expiry) = match seed % 6 {
+            0 => (kitchen_sink(), 6, true, false),
+            1 => (kitchen_sink(), 6, true, true),
+            2 => (Ty::Text, 10, true, true),
+            3 => (Ty::Text, 12, true, false),
+            4 => (list, 8, false, true),
+            _ => (list, 8, true, false),
+        };
+        converge(seed, &ty, 3, rounds, partial, expiry);
     }
 
     #[test]
@@ -1009,26 +996,15 @@ fn converge_bootstrap(seed: u64, ty: &Ty, rounds: usize) {
 proptest! {
     #![proptest_config(ProptestConfig { cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(64), .. ProptestConfig::default() })]
 
+    /// Bootstrap convergence (`converge_bootstrap`): the seed picks the type.
     #[test]
-    fn bootstrap_convergence_list(seed in any::<u64>()) {
-        let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text), (3, Ty::Set(Box::new(Ty::Register)))].into_iter().collect())));
-        converge_bootstrap(seed, &ty, 8);
-    }
-
-    #[test]
-    fn bootstrap_convergence_kitchen_sink(seed in any::<u64>()) {
-        converge_bootstrap(seed, &kitchen_sink(), 6);
-    }
-
-    #[test]
-    fn bootstrap_convergence_text(seed in any::<u64>()) {
-        converge_bootstrap(seed, &Ty::Text, 10);
-    }
-
-    #[test]
-    fn convergence_list_partial(seed in any::<u64>()) {
-        let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect())));
-        converge(seed, &ty, 3, 8, true, false);
+    fn bootstrap_convergence(seed in any::<u64>()) {
+        let list = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text), (3, Ty::Set(Box::new(Ty::Register)))].into_iter().collect())));
+        match seed % 3 {
+            0 => converge_bootstrap(seed, &list, 8),
+            1 => converge_bootstrap(seed, &kitchen_sink(), 6),
+            _ => converge_bootstrap(seed, &Ty::Text, 10),
+        }
     }
 }
 

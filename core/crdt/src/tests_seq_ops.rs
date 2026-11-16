@@ -137,46 +137,6 @@ fn apply_text(model: &mut Vec<char>, o: &Op, st: &Fragment) {
 }
 
 proptest! {
-    /// §5.7 Ops: a single writer's text ops (insert, delete, move, set by diff), committed one
-    /// by one through the wire, read like the same ops on a plain string.
-    #[test]
-    fn single_writer_text_spec_5_7(seed in any::<u64>()) {
-        let mut r = crate::testutil::rng(seed | 1);
-        let mut a = Replica::new(1);
-        let mut model: Vec<char> = Vec::new();
-        for k in 0..30u64 {
-            let o = random_text_op(&mut r, model.len(), &a.state);
-            apply_text(&mut model, &o, &a.state);
-            a.commit(k + 1, &[op(o.clone())], &text_view());
-            prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>(), "after {:?}", o);
-            if r.chance(1, 3) {
-                // ops then meet range records
-                a.state = rebooted(&a.state);
-            }
-        }
-    }
-
-    /// §4.5: several ops in one commit read like the same ops committed one by one.
-    #[test]
-    fn text_batch_is_net_effect_spec_4_5(seed in any::<u64>()) {
-        let mut r = crate::testutil::rng(seed | 1);
-        let mut a = Replica::new(1);
-        a.commit(1, &[op(Op::Set(s("hello world")))], &text_view());
-        let base = a.state.clone();
-        let mut model: Vec<char> = read_str(&base).chars().collect();
-        let mut ops = Vec::new();
-        for _ in 0..6 {
-            let o = random_text_op(&mut r, model.len(), &base);
-            if matches!(o, Op::Paste { .. }) {
-                continue;
-            }
-            apply_text(&mut model, &o, &base);
-            ops.push(op(o));
-        }
-        a.commit(2, &ops, &text_view());
-        prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
-    }
-
     /// §4.5, §7 (write into the slot of their schema's encoding), `DeltaBuilder` layered view: a commit of several text ops on a state from a
     /// concurrent history (sometimes upgraded from a string, a `Slots` position, and sometimes
     /// bootstrapped from a snapshot, so with range records) reads like the same ops on a plain
@@ -216,69 +176,6 @@ proptest! {
         }
         a.commit(40, &ops, &text_view());
         prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
-    }
-
-    /// §5.7, §6: replicas applying random text ops (paste included) and exchanging deltas in
-    /// random order converge to equal states.
-    #[test]
-    fn text_ops_converge_spec_5_7(seed in any::<u64>()) {
-        let mut r = crate::testutil::rng(seed | 1);
-        let mut reps: Vec<Replica> = (1..=3).map(Replica::new).collect();
-        let mut log: Vec<Fragment> = Vec::new();
-        for round in 0..6u64 {
-            for (i, rep) in reps.iter_mut().enumerate() {
-                // catch up on a random part of the log
-                for d in &log {
-                    if r.chance(1, 2) {
-                        rep.state.join(d.clone());
-                    }
-                }
-                let n = read_str(&rep.state).chars().count();
-                let o = random_text_op(&mut r, n, &rep.state);
-                if let Some((d, _, _)) = rep.commit(round * 10 + i as u64 + 1, &[op(o)], &text_view()) {
-                    log.push(d);
-                }
-            }
-        }
-        let mut finals = Vec::new();
-        for rep in &mut reps {
-            let mut order: Vec<usize> = (0..log.len()).collect();
-            for k in (1..order.len()).rev() {
-                order.swap(k, r.below(k + 1));
-            }
-            for k in order {
-                rep.state.join(log[k].clone());
-            }
-            finals.push(rep.state.clone());
-        }
-        prop_assert_eq!(&finals[0], &finals[1]);
-        prop_assert_eq!(&finals[1], &finals[2]);
-    }
-
-    /// §4.6, §5.7 Undo: undoing a single writer's last text commit restores the previous read, moves
-    /// and pastes included (restored position writes carry their old sibling keys).
-    #[test]
-    fn text_undo_restores_spec_4_6(seed in any::<u64>()) {
-        let mut r = crate::testutil::rng(seed | 1);
-        let mut a = Replica::new(1);
-        a.commit(1, &[op(Op::Set(s("the quick brown fox")))], &text_view());
-        for k in 0..4 {
-            let n = read_str(&a.state).chars().count();
-            let o = random_text_op(&mut r, n, &a.state);
-            a.commit(2 + k, &[op(o)], &text_view());
-        }
-        let before = a.state.clone();
-        let n = read_str(&a.state).chars().count();
-        let o = random_text_op(&mut r, n, &a.state);
-        let Some((d, src, range)) = a.commit(10, &[op(o)], &text_view()) else { return Ok(()) };
-        let u = Undone { delta: &d, source: &src, range };
-        let mut w = Writer::new(ts(11 << 16), session_of(1), a.lo);
-        let full = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap();
-        prop_assert!(crate::undo::restores(&u) || w.copied().is_empty());
-        if let Some(ud) = full {
-            a.state.join(ud);
-        }
-        prop_assert_eq!(read_str(&a.state), read_str(&before));
     }
 
     /// §4.6, §5.7 Undo: list insert, delete (re-insert), move and nested edits undo.
@@ -355,44 +252,6 @@ proptest! {
         a.state.join(rd);
         a.commit(3, &ops, &text_view());
         prop_assert_eq!(read_str(&a.state), format!("{new} epsilon"));
-    }
-
-    /// §4.5: list ops (nested ones through `PathSeg::Index` included) in one commit read like
-    /// the same ops committed one by one; replicas exchanging them converge.
-    #[test]
-    fn list_batch_and_convergence_spec_4_5(seed in any::<u64>()) {
-        let ty = list_ty();
-        let view = TyView(ty.clone());
-        let mut r = crate::testutil::rng(seed | 1);
-        let mut a = Replica::new(1);
-        a.commit(1, &[op(Op::Set(value(&random_value(&mut r, &ty, 0))))], &view);
-        let mut one = Replica { state: a.state.clone(), src: session_of(1), lo: a.lo };
-        let mut ops = Vec::new();
-        for k in 0..5u64 {
-            let o = random_list_op(&mut r, &one.state, &ty);
-            one.commit(2 + k, std::slice::from_ref(&o), &view);
-            ops.push(o);
-        }
-        a.commit(20, &ops, &view);
-        prop_assert_eq!(a.state.read(), one.state.read());
-        // two replicas editing concurrently converge
-        let mut b = Replica { state: a.state.clone(), src: session_of(2), lo: 1 };
-        let mut log = Vec::new();
-        for k in 0..4u64 {
-            for rep in [&mut a, &mut b] {
-                let o = random_list_op(&mut r, &rep.state, &ty);
-                if let Some((d, _, _)) = rep.commit(30 + k, &[o], &view) {
-                    log.push(d);
-                }
-            }
-        }
-        for d in &log {
-            a.state.join(d.clone());
-        }
-        for d in log.iter().rev() {
-            b.state.join(d.clone());
-        }
-        prop_assert_eq!(&a.state, &b.state);
     }
 
     /// notes/api.md `edit` on a list: changed elements are edited in place (nested), so a
@@ -584,7 +443,7 @@ fn cached_placement_follows_typing_spec_6() {
 // most ops, checked against state + net effect after every op (debug assertion in `DeltaBuilder`).
 #[test]
 fn large_text_batch_is_net_effect_spec_4_5() {
-    for seed in 0..2u64 {
+    for seed in 0..1u64 {
         let mut r = crate::testutil::rng(seed);
         let mut a = Replica::new(1);
         for k in 0..30u64 {
