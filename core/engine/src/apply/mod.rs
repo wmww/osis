@@ -1976,19 +1976,26 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
         drop(_s);
     } else {
-        // applied commits, each record decoded once (kept as `Tx::get_commit` reads it)
+        // applied commits, each record decoded once per write of it (`Core::decoded`, kept as
+        // `Tx::get_commit` reads it)
         let mut recs = Vec::new();
         tx.scan(records::COMMIT, |k, v| {
-            let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
-            let (head, blob) = decode_commit_record(&v)?;
-            recs.push((id, head, Arc::new(blob), v.to_vec()));
+            recs.push((CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?), v.to_vec()));
             Ok(())
         })?;
         let mut bodies = Vec::new();
         let mut snaps = Vec::new();
-        for (id, head, stored, bytes) in recs {
+        for (id, bytes) in recs {
             let at = tx.commit_stamp(&id);
-            tx.core.decoded.keep_record(id, at, stored.clone(), &bytes);
+            let (head, stored) = match tx.core.decoded.record_read(&id, at, &bytes) {
+                Some(b) => (crate::engine::index::parse_head(&bytes)?.0, b),
+                None => {
+                    let (head, b) = decode_commit_record(&bytes)?;
+                    let b = Arc::new(b);
+                    tx.core.decoded.keep_record(id, at, b.clone(), &bytes);
+                    (head, b)
+                }
+            };
             let blob = Arc::unwrap_or_clone(stored);
             if blob.id() != id {
                 return Err(Error::Corrupt("commit record key"));
@@ -2054,7 +2061,11 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         bodies.sort_by_key(|b| b.header.ts);
         for b in bodies {
             let id = b.id();
-            let parts = examine_stored(tx, &b.header, &b.parts, &id)?;
+            let at = tx.commit_stamp(&id);
+            let mut parts = Vec::new();
+            for p in &b.parts {
+                parts.push((p.ai, (*decoded_part(tx, &b.header, &id, at, p)?).clone()));
+            }
             let read = PartsRead::of(&b.header, &parts);
             atomic::note_role_sigs(tx.core, &b.header, &id, &b.sigs);
             validity::note_required(tx.core, &b.header, &id, &read);

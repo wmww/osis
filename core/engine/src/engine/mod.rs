@@ -4070,6 +4070,9 @@ impl Engine {
         let clock = self.clock.clone();
         for rebuild in [false, true] {
             let mut fresh = self.blank_core_on(clock.clone());
+            // the store's records decoded as this node keeps them: a decode is a function of
+            // the record's bytes, compared at each hit (`decoded`), so judging is all redone
+            fresh.decoded = std::mem::take(&mut self.core.decoded);
             fresh.key_actors = self.core.key_actors.clone();
             fresh.accounts = self.core.accounts.clone();
             let mut rng = SeededRng::from_u64(0);
@@ -4096,6 +4099,9 @@ impl Engine {
             };
             // its work is not the measured code's (scale checks count work)
             let r = osis_base::costs::paused(|| osis_perm::uncounted(load));
+            // what it decoded is the store's as well (the load's transaction is dropped: a
+            // record it wrote moved its stamp, so nothing it kept matches)
+            self.core.decoded = std::mem::take(&mut fresh.decoded);
             let at = if rebuild { "rebuilt from the commit records" } else { "opened from the persisted index" };
             if let Err(e @ Error::Store(_)) = r {
                 return Err(e);

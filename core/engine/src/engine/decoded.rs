@@ -102,6 +102,15 @@ impl DecodedCommits {
         Ok(Some(k.blob.clone()))
     }
 
+    /// `record`, the record's stored bytes `stored` in hand (a scan of the records): debug builds
+    /// compare them at every hit.
+    pub(crate) fn record_read(&self, id: &CommitId, at: u64, _stored: &[u8]) -> Option<Arc<CommitBlob>> {
+        let k = self.at(id, at).and_then(|k| k.record.as_ref())?;
+        #[cfg(debug_assertions)]
+        assert!(k.stored == _stored, "decoded record of {id:?} went stale");
+        Some(k.blob.clone())
+    }
+
     /// The kept decode of `p`, a part of the record of `id` as read now (at stamp `at`). Debug
     /// builds: it must have been decoded from `p`.
     pub(crate) fn part(&self, id: &CommitId, at: u64, p: &Part) -> Option<Arc<Decoded>> {
