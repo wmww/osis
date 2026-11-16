@@ -86,3 +86,34 @@ fn ticket_after_strong(forge: bool) {
     assert!(e1.held_tickets(&t).unwrap().iter().any(|x| x.epoch == (honest.n(), *honest.nonce())), "the honest ticket is held");
     assert!(e1.epochs(&t).is_some_and(|x| x.read.secret(&honest).is_some()), "the honest secret is taken (forged first: {forge})");
 }
+
+// spec/sync-set.md §2 (own keys by the role commits held or an established secret; a ticket's
+// secret establishes nothing): a forged ticket for a plain thing P of another account, with a
+// strong to P from a thing whose keys do not open it, gives P no own keys here: the forged
+// secret is taken but P is not entered read, so the node closure does not hold it (nor writes
+// D's ticket for it), and with the strong gone nothing of it is left.
+#[test]
+fn a_forged_ticket_keeps_no_plain_thing_held_spec_sync_set_2() {
+    let (mut lp, [_, bob]) = two();
+    let e0 = &mut lp.peers[0].engine;
+    let d0 = e0.account_root().unwrap();
+    let mut m = Mutation::new();
+    let p = e0.new_thing(&mut m, d0);
+    m.op(d0, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(p)) }).unwrap();
+    e0.commit(m).unwrap();
+    let k = forged(&mut lp, 1, p, bob);
+    let e1 = &mut lp.peers[1].engine;
+    let d1 = e1.account_root().unwrap();
+    let profile = e1.profile_of(&bob).unwrap();
+    let mut m = Mutation::new();
+    m.op(d1, &ct::TICKETS, PathOp { path: vec![], op: Op::Add(Value::Ticket(Box::new(k))) }).unwrap();
+    m.op(profile, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(p)) }).unwrap();
+    e1.commit(m).unwrap();
+    assert!(e1.core.ix.secrets.get(&p).is_some_and(|e| e.holds_any()), "the forged secret is taken at the strong");
+    assert!(!e1.closure_holds(&p), "P has no own keys here: not held");
+    assert_eq!(e1.account_ticket_due(&p).unwrap(), None, "no ticket of D's owed for it");
+    let mut m = Mutation::new();
+    m.op(profile, &ct::HOLDS, PathOp { path: vec![], op: Op::Remove(Value::Strong(p)) }).unwrap();
+    e1.commit(m).unwrap();
+    assert!(!e1.closure_holds(&p) && !e1.sync_things().unwrap().contains(&p), "nothing of P left");
+}

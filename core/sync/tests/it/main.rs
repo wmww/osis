@@ -9,6 +9,7 @@ mod inbox;
 mod keep;
 mod leave;
 mod links;
+mod tickets;
 mod session;
 mod read;
 mod retention;

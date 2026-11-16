@@ -326,10 +326,14 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
         m.set(k, &ct::RETENTION, &ct::RetentionSetting { retain: true, ..Default::default() })?;
         done.add(Engine::commit_tx(tx, m)?);
     }
-    // K on the target
+    // K on the target, which K holds by a strong: K's sync unit carries the target, and so K's
+    // grant on it, to a redeemer (spec/permissions.md §7 Redeem step 3)
     let target_edge = Edge { role: spec.role, until: None, invite: None, floor: None };
     // K is new: the grant demotes nobody, so it carries no frontier
     done.extend(grant_in(tx, None, spec.target, k, &target_edge, false, None)?);
+    let mut m = Mutation::new();
+    m.op(k, &ct::HOLDS, PathOp { path: Vec::new(), op: Op::Add(Value::Strong(spec.target)) })?;
+    done.add(Engine::commit_tx(tx, m)?);
     // the seed on a thing made under the account root, which holds it and K by strongs: every
     // node of the account holds the seed, may finalize and serves K's sync ID to redeemers
     // (spec/permissions.md §7)

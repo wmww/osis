@@ -119,7 +119,7 @@ fn a_destroyed_things_sync_id_empties_but_its_request_past_its_window_spec_sync_
 // which keeps S unread, takes t out of node 1's node closure while node 1 holds the ticket naming
 // S, read from the path its store keeps; a restart judges it so again.
 #[test]
-#[ignore = "issues/ticket-sync-ids.md: the harness's card redeem"]
+#[ignore = "issues/link-redeem-over-a-shared-connection.md: the harness's card redeem"]
 fn a_closing_head_takes_a_kept_thing_out_spec_sync_judgement_6() {
     let (mut w, t, s) = three();
     assert!(w.engine(1).closure_holds(&t), "node 1 keeps t");

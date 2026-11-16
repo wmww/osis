@@ -20,6 +20,10 @@ use std::collections::BTreeMap;
 pub(crate) const TO: &[u8] = b"node/refs to";
 /// Rows by source: source ‖ AK length (u16) ‖ AK ‖ target ‖ kind, the count (u64).
 pub(crate) const FROM: &[u8] = b"node/refs from";
+/// Ticket rows by target, a signal's per fire: target ‖ source ‖ AK ‖ 0 ‖ the fire's commit ID
+/// (none for a state), the count (u64). Finding a target's tickets reads its rows alone
+/// (`tickets_to`), never the source's other references or a signal's other fires.
+pub(crate) const TICKETS: &[u8] = b"node/refs tickets";
 
 /// Whether `ak` is indexed: every aspect with a state, and every durable signal by its held
 /// valid fires (an ephemeral signal's fires are held by none).
@@ -27,30 +31,123 @@ pub fn indexed(ak: &Ak) -> bool {
     !(ak.signal() && ak.ephemeral())
 }
 
-/// What the held valid fires of signal `(tid, ak)` hold: each fire read (a rebuild's cost, as a
+/// What each held valid fire of signal `(tid, ak)` holds: each fire read (a rebuild's cost, as a
 /// state aspect's rebuild reads its held bodies).
-fn fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Delta> {
-    let mut d = Delta::default();
+fn fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<(CommitId, Delta)>> {
+    let mut out = Vec::new();
     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for c in held {
         let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak).filter(|ai| m.holds(*ai) && m.valid_at(*ai))) else { continue };
+        let mut d = Delta::default();
         crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
             d.add(&f, 1);
             Ok(())
         })?;
+        out.push((c, d));
     }
-    Ok(d)
+    Ok(out)
 }
 
 /// Sets the rows of signal `(tid, ak)` to what its held valid fires hold (`apply::rebuild`: a
-/// fire dropped, forgotten or judged again).
+/// fire dropped, forgotten or judged again): its ticket rows per fire afresh.
 pub(crate) fn resync_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if !indexed(ak) {
         return Ok(());
     }
-    let mut d = fires(tx, tid, ak)?;
-    d.sub(&stored(tx, tid, ak)?);
-    note(tx, tid, ak, d)
+    let per = fires(tx, tid, ak)?;
+    let old = stored(tx, tid, ak)?;
+    // the ticket rows it had, per fire, go; each fire's are written again
+    for (t, _) in old.keys().filter(|(_, k)| *k == RefKind::Ticket) {
+        for (fire, n) in ticket_rows(tx, t, tid, ak)? {
+            let mut d = Delta::default();
+            d.0.insert((*t, RefKind::Ticket), -(n as i64));
+            note_tickets(tx, tid, ak, fire.as_ref(), &d)?;
+        }
+    }
+    let mut d = Delta::default();
+    for (c, f) in &per {
+        note_tickets(tx, tid, ak, Some(c), f)?;
+        for (k, n) in &f.0 {
+            *d.0.entry(*k).or_default() += n;
+        }
+    }
+    d.sub(&old);
+    note_rows(tx, tid, ak, d)
+}
+
+/// The ticket rows of `(source, ak)` naming `target`, by fire (none: a state's), with counts.
+fn ticket_rows(tx: &mut Tx<'_>, target: &Tid, source: &Tid, ak: &Ak) -> Result<Vec<(Option<CommitId>, u64)>> {
+    let tk = tx.txn.index(TICKETS)?;
+    let pre = ticket_key(target, source, ak, None);
+    let end = [pre.as_slice(), &[0xff; 33]].concat();
+    let mut out = Vec::new();
+    scan_table(&mut tx.txn, tk, &pre, Some(&end), |k, v| {
+        let fire = k.get(pre.len()..).filter(|b| !b.is_empty()).map(|b| <[u8; 32]>::try_from(b).map(CommitId)).transpose().map_err(|_| Error::Corrupt("ticket row"))?;
+        out.push((fire, count_of(&v)?));
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+fn ticket_key(target: &Tid, source: &Tid, ak: &Ak, fire: Option<&CommitId>) -> Vec<u8> {
+    [target.as_bytes().as_slice(), source.as_bytes(), ak.as_str().as_bytes(), &[0], fire.map(|c| c.0.as_slice()).unwrap_or_default()].concat()
+}
+
+/// One ticket row (`tickets_to`): `source`'s state on `ak`, or its fire `fire` there, holds a
+/// ticket for the target.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TicketRow {
+    pub source: Tid,
+    pub ak: Ak,
+    pub fire: Option<CommitId>,
+}
+
+/// The ticket rows naming `target`: O(its tickets).
+pub(crate) fn tickets_to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<TicketRow>> {
+    let tk = tx.txn.index(TICKETS)?;
+    let pre = target.as_bytes().to_vec();
+    let end = [pre.as_slice(), &[0xff; 16]].concat();
+    let mut out = Vec::new();
+    scan_table(&mut tx.txn, tk, &pre, Some(&end), |k, _| {
+        osis_base::costs::count("tickets: rows read", 1);
+        let bad = || Error::Corrupt("ticket row");
+        let rest = k.get(pre.len()..).ok_or_else(bad)?;
+        let (s, a) = rest.split_at_checked(osis_base::format::TID_LEN).ok_or_else(bad)?;
+        let source = Tid::from_bytes(s.try_into().map_err(|_| bad())?);
+        let z = a.iter().position(|b| *b == 0).ok_or_else(bad)?;
+        let (a, fire) = (a.get(..z).ok_or_else(bad)?, a.get(z + 1..).ok_or_else(bad)?);
+        let ak = std::str::from_utf8(a).ok().and_then(|a| Ak::new(a).ok()).ok_or_else(bad)?;
+        let fire = (!fire.is_empty()).then(|| <[u8; 32]>::try_from(fire).map(CommitId)).transpose().map_err(|_| bad())?;
+        out.push(TicketRow { source, ak, fire });
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Applies the ticket count changes of `d` to the ticket rows of `(source, ak)` (fire `fire`
+/// of a signal), telling the node closure of a row appearing or going (`Closure::note_ticket`).
+fn note_tickets(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitId>, d: &Delta) -> Result<()> {
+    let ts: Vec<(Tid, i64)> = d.0.iter().filter(|((_, k), n)| *k == RefKind::Ticket && **n != 0).map(|((t, _), n)| (*t, *n)).collect();
+    if ts.is_empty() {
+        return Ok(());
+    }
+    tx.in_class(ak.ephemeral(), |tx| {
+        let tk = tx.txn.index(TICKETS)?;
+        for (target, n) in ts {
+            let key = ticket_key(&target, source, ak, fire);
+            let old = tx.txn.table_get(tk, &key)?.map(|v| count_of(&v)).transpose()?.unwrap_or(0);
+            let new = u64::try_from(old as i64 + n).map_err(|_| Error::Corrupt("ticket count below zero"))?;
+            if new == 0 {
+                tx.txn.table_remove(tk, &key, Shred::Yes)?;
+            } else {
+                tx.txn.table_put(tk, &key, new.to_be_bytes().to_vec(), Shred::No)?;
+            }
+            if (old == 0) != (new == 0) {
+                tx.core.ix.closure.rejudge(target);
+            }
+        }
+        Ok(())
+    })
 }
 
 /// One row: `source` holds a `kind` reference to `target` `count` times in its values on `ak`.
@@ -162,11 +259,18 @@ fn count_of(v: &[u8]) -> Result<u64> {
     Ok(u64::from_be_bytes(v.try_into().map_err(|_| Error::Corrupt("reference count"))?))
 }
 
-/// Applies the count changes `d` to the rows of `(source, ak)`.
-pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<()> {
+/// Applies the count changes `d` to the rows of `(source, ak)`, `fire` the signal fire they come
+/// from (none: a state's).
+pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitId>, d: Delta) -> Result<()> {
     if !indexed(ak) {
         return Ok(());
     }
+    note_tickets(tx, source, ak, fire, &d)?;
+    note_rows(tx, source, ak, d)
+}
+
+/// `note` of the rows by target and by source.
+fn note_rows(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<()> {
     if d.0.values().all(|n| *n == 0) {
         return Ok(());
     }
@@ -194,12 +298,9 @@ pub(crate) fn note(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, d: Delta) -> Result<(
                 if old == 0 {
                     tx.txn.table_put(to, &tk, Vec::new(), Shred::No)?;
                     moved.push((target, ak.clone()));
-                    // the node closure follows a strong appearing or going (`sync::units`), and
-                    // a ticket appearing for what a strong reaches
-                    match kind {
-                        RefKind::Strong => tx.core.ix.closure.note_row(*source, target),
-                        RefKind::Ticket => tx.core.ix.closure.rejudge(target),
-                        RefKind::Weak => {}
+                    // the node closure follows a strong appearing or going (`sync::units`)
+                    if kind == RefKind::Strong {
+                        tx.core.ix.closure.note_row(*source, target);
                     }
                 }
             }
@@ -235,7 +336,7 @@ pub(crate) fn resync(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, f: Option<&Fragment
     }
     let mut d = Delta::of(f);
     d.sub(&stored(tx, source, ak)?);
-    note(tx, source, ak, d)
+    note(tx, source, ak, None, d)
 }
 
 /// Removes every row of `(source, ak)` (its state is dropped).
@@ -371,7 +472,13 @@ pub(crate) fn check_fires(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if !indexed(ak) {
         return Ok(());
     }
-    let want: BTreeMap<(Tid, RefKind), u64> = fires(tx, tid, ak)?.0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
+    let mut all = Delta::default();
+    for (_, d) in fires(tx, tid, ak)? {
+        for (k, n) in d.0 {
+            *all.0.entry(k).or_default() += n;
+        }
+    }
+    let want: BTreeMap<(Tid, RefKind), u64> = all.0.into_iter().filter(|x| x.1 != 0).map(|(t, n)| (t, n as u64)).collect();
     let got = stored(tx, tid, ak)?;
     debug_assert_eq!(got, want, "reference rows of signal {tid:?} {ak:?} differ from its held fires");
     Ok(())

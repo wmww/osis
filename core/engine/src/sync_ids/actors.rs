@@ -160,15 +160,13 @@ impl Engine {
             return Ok(kept.clone());
         }
         if self.core.created(g).is_none() {
-            return Ok(followed(self, g).map(|h| Arc::new(vec![h])).unwrap_or_default());
+            return Ok(Arc::new(followed(self, g).map(|h| vec![h]).unwrap_or_else(|| ticket_hints(self, g))));
         }
         Memo::get_in(self, |e| &e.core.sync_ids, g, |e| {
             let m = e.get_typed(g, &ct::SYNC)?.unwrap_or_default();
             let mut out = owned_in(&e.core, g, &m);
-            if out.is_empty()
-                && let Some(h) = followed(e, g)
-            {
-                out.push(h);
+            if out.is_empty() {
+                out = followed(e, g).map(|h| vec![h]).unwrap_or_else(|| ticket_hints(e, g));
             }
             Ok::<_, crate::error::Error>(Arc::new(out))
         })
@@ -276,6 +274,19 @@ fn followed(e: &Engine, k: &Tid) -> Option<OwnedSyncId> {
         || ix.destroyed_sync_ids.values().any(|v| v.iter().any(|o| o.id == s))
         || e.core.followed_links.naming(&s).iter().any(|t| t != k);
     (followable(e, k) && !elsewhere).then(|| OwnedSyncId { id: s, path: Arc::new(crate::sync::Path::default()), hint: true })
+}
+
+/// The sync IDs the held tickets for `g` name (spec/sync-inbox.md §5 Ticket sync IDs: its
+/// issuer's word until a held `sync.0` records `g`'s), as hints with no recorded path. Each is
+/// untrusted: one another thing owns here (an applied `sync.0` records it, a destroyed thing
+/// keeps it, a followed link names it) is not `g`'s, so a forged one cuts nothing off.
+fn ticket_hints(e: &Engine, g: &Tid) -> Vec<OwnedSyncId> {
+    let ix = &e.core.ix;
+    let theirs = |s: &SyncId| {
+        ix.sync_recorders.get(s).is_some_and(|x| x.iter().any(|t| t != g)) || ix.destroyed_sync_ids.values().any(|v| v.iter().any(|o| o.id == *s)) || !e.core.followed_links.naming(s).is_empty()
+    };
+    let ids: BTreeSet<SyncId> = ix.closure.ticket_ids(g).into_iter().map(|(s, _)| s).filter(|s| !theirs(s)).collect();
+    ids.into_iter().map(|id| OwnedSyncId { id, path: Arc::new(crate::sync::Path::default()), hint: true }).collect()
 }
 
 /// Whether followed link `k` may be a link's K here: a thing this node holds only as a link's K

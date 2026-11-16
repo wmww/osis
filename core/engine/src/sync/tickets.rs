@@ -4,7 +4,8 @@
 
 use crate::engine::{Core, Engine, Tx};
 use crate::error::Result;
-use osis_base::{Ak, RefKind, Role, SyncId, Tid, Ticket, Value};
+use std::collections::BTreeSet;
+use osis_base::{Role, SyncId, Tid, Ticket, Value};
 use osis_crypto::{Epoch, Secret32};
 use osis_keys::{Opened, Opener};
 use osis_schema::Codec;
@@ -51,20 +52,14 @@ impl Core {
     }
 }
 
-/// The tickets for `t` among the known references (spec/data-model.md §8), as held now.
+/// The tickets for `t` among the known references (spec/data-model.md §8), as held now: O(its
+/// ticket rows), a signal's read in the fires naming `t` alone.
 pub(crate) fn held_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Ticket>> {
-    let rows = crate::engine::refs::to(tx, t)?;
     let mut out = Vec::new();
-    let mut seen: Vec<(Tid, Ak)> = Vec::new();
-    for r in rows.into_iter().filter(|r| r.kind == RefKind::Ticket) {
-        if seen.contains(&(r.source, r.ak.clone())) {
-            continue;
-        }
-        seen.push((r.source, r.ak.clone()));
-        // a signal's references are its held valid fires' (spec/data-model.md §8 Known references)
-        if r.ak.signal() {
-            let held: Vec<osis_base::CommitId> = tx.core.ix.by_aspect.get(&(r.source, r.ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-            for c in held {
+    for r in crate::engine::refs::tickets_to(tx, t)? {
+        match r.fire {
+            // a signal's references are its held valid fires' (spec/data-model.md §8 Known references)
+            Some(c) => {
                 let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&r.source, &r.ak).filter(|ai| m.holds(*ai) && m.valid_at(*ai))) else { continue };
                 crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
                     if let Some(v) = f.read() {
@@ -73,8 +68,11 @@ pub(crate) fn held_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<Ticket>> {
                     Ok(())
                 })?;
             }
-        } else if let Some(v) = tx.state(&r.source, &r.ak)?.and_then(osis_crdt::Fragment::read) {
-            tickets_in(&v, t, &mut out);
+            None => {
+                if let Some(v) = tx.state(&r.source, &r.ak)?.and_then(osis_crdt::Fragment::read) {
+                    tickets_in(&v, t, &mut out);
+                }
+            }
         }
     }
     out.sort();
@@ -87,17 +85,53 @@ fn opened_in(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Ticket, Opened)>> {
     Ok(held_in(tx, t)?.into_iter().filter_map(|k| tx.core.open_ticket(&k).map(|o| (k, o))).collect())
 }
 
-/// `Engine::take_ticket` in a transaction: the walk's, at a strong to `t` it cannot enter by
-/// the secrets held (spec/sync-set.md §2).
-pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
-    let mut learned = false;
-    for (k, o) in opened_in(tx, t)? {
-        learned |= crate::apply::keys::learn_secret_in(tx, &k.target, o.role, o.epoch, o.secret)?;
+/// The walk's ticket taking, at a strong to `t` whose read secret is
+/// not established (spec/sync-set.md §2): each held ticket's secret taken, and the sync IDs and
+/// roles of the tickets the node can open.
+pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<(SyncId, Role)>> {
+    let mut ids = BTreeSet::new();
+    // the role commits held of `t` decide (spec/sync-set.md §2: a ticket whose holder holds no
+    // role on `t` enters nothing); with none held, the ticket's word
+    if tx.core.timelines.get(t).is_some() && !crate::rotation::may_take(tx.core, t) {
+        return Ok(ids);
     }
-    Ok(learned)
+    for (k, o) in opened_in(tx, t)? {
+        crate::apply::keys::learn_secret_in(tx, &k.target, o.role, o.epoch, o.secret)?;
+        ids.insert((k.sync_id, o.role.min(k.role)));
+    }
+    // the role commits a read ticket's fire carries are taken now the strong reaches `t`, while
+    // it has no own keys here (`Engine::take_ticket_fires`); a node keeping `t` unread holds no
+    // role commit of it (spec/sync.md §3)
+    if ids.iter().any(|(_, r)| *r >= Role::Read) && !tx.core.keyed(t) {
+        for r in crate::engine::refs::tickets_to(tx, t)? {
+            if let Some(c) = r.fire.filter(|_| r.ak.as_str() == crate::flows::inbox::TICKET_FIRE) {
+                tx.core.ix.closure.fires_due.insert(c);
+            }
+        }
+    }
+    Ok(ids)
 }
 
 impl Engine {
+    /// Takes the role parts of each ticket fire whose ticket the walk took
+    /// (`Engine::take_ticket_fire`); whether any was due.
+    pub fn take_ticket_fires(&mut self) -> Result<bool> {
+        let due: Vec<osis_base::CommitId> = self.core.ix.closure.fires_due.iter().copied().collect();
+        if due.is_empty() {
+            return Ok(false);
+        }
+        self.run(|tx| {
+            for c in &due {
+                tx.core.ix.closure.fires_due.remove(c);
+            }
+            Ok(())
+        })?;
+        for c in &due {
+            self.take_ticket_fire(c)?;
+        }
+        Ok(true)
+    }
+
     /// See `held_in`.
     pub fn held_tickets(&mut self, t: &Tid) -> Result<Vec<Ticket>> {
         let t = *t;
@@ -117,14 +151,6 @@ impl Engine {
         let mut all = self.opened_tickets(t)?;
         all.sort_by_key(|(k, _)| (k.role == Role::Read, k.epoch.0));
         Ok(all.pop().map(|(k, _)| k))
-    }
-
-    /// Takes the secret of the held ticket for `t` (`ticket_for`) as its epoch's
-    /// (`Engine::learn_secret`: only where the node's roles on `t` allow it, spec/permissions.md
-    /// §3 No secret taken back). Whether one was learned.
-    pub fn take_ticket(&mut self, t: &Tid) -> Result<bool> {
-        let t = *t;
-        self.run(|tx| take_in(tx, &t))
     }
 
     /// The sync secrets of kept-unread `s`'s thing that the tickets held here give, by epoch

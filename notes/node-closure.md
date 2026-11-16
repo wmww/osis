@@ -31,6 +31,5 @@ Spec: spec/sync-set.md. Model: notes/closure-model.md (held-model `closure`). Co
 ## Not carried
 - The write path's warning reads the strongs the write's ops name (`osis_engine::strongs_in`, `Engine::not_carried_among`): O(the write), never the written thing's other strongs. `Engine::not_carried` lists the whole node closure's, O(its strongs).
 
-## Left for others
-- Tickets entering a thing (`Engine::ticket_for`, lane (c)): `enter` reads held secrets only until then.
-- D's `tickets.0` (spec/sync-set.md §1 The account's tickets): lane (c).
+## On a ticket's word
+- A context `Ticket(T)` (root alone, like kept unread) for a thing without own keys here whose ticket the walk took (notes/inbox.md One rule for own keys): in both trees, so `sync_things` and `in_sync_things` see it; `Closure::holds` skips it, so a thing held so alone has left and releases. Its tickets' sync IDs and roles are kept per thing (`Closure::ticket_ids`, by sync ID `naming_ticket_id`), set at each judgement that takes tickets and cleared with the thing's last vertex.

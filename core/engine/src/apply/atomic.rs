@@ -185,7 +185,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     let st = tx.kept(tid, ak, st)?;
     if ch.is_changed() {
         tx.set_state_touched(tid, ak, st, &touch, Shred::No)?;
-        crate::engine::refs::note(tx, tid, ak, refs.unwrap_or_default())?;
+        crate::engine::refs::note(tx, tid, ak, None, refs.unwrap_or_default())?;
     } else {
         tx.core.states.insert(k, st);
     }
@@ -353,7 +353,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
                 d.add(&f, 1);
                 Ok(())
             })?;
-            crate::engine::refs::note(tx, &tid, &ak, d)?;
+            crate::engine::refs::note(tx, &tid, &ak, Some(id), d)?;
         }
         return Ok(());
     }
@@ -1201,7 +1201,7 @@ pub(crate) fn strip_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, at: &Fragment, ow
     let after = crate::retention::compact::roots(ak, &st, at);
     let st = tx.kept(tid, ak, st)?;
     tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
-    crate::engine::refs::note(tx, tid, ak, refs.unwrap_or_default())?;
+    crate::engine::refs::note(tx, tid, ak, None, refs.unwrap_or_default())?;
     crate::retention::compact::Trigger::unlinked(tx, tid, ak, &roots, &after)?;
     Ok(())
 }

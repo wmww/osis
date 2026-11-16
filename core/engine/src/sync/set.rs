@@ -105,11 +105,13 @@ impl Engine {
         if let Some(kept) = self.core.ix.destroyed_sync_ids.get(t) {
             return Ok(ThingSync::Read(kept.iter().map(|o| o.id).collect()));
         }
-        if self.core.has_own_secrets(t)
+        // read: by its own keys, or on a ticket's word (its sync ID the ticket's until a held
+        // `sync.0` records one, spec/sync-inbox.md §5 Ticket sync IDs)
+        if (self.core.has_own_secrets(t) || self.core.ix.closure.on_ticket(t))
             && self.holds_read(t)
             && let Some(home) = home_of(&self.owned_sync_ids(t)?)
         {
-            return Ok(ThingSync::Read(vec![home]));
+            return Ok(ThingSync::Read(synced(&self.owned_sync_ids(t)?, home)));
         }
         // a link being redeemed: its sync ID read while followed, whatever is held of K yet, while
         // it is K's (`followable`; from the link text until K's own `sync.0` records it)
@@ -123,7 +125,7 @@ impl Engine {
         if self.kept_unread(t)
             && let Some(home) = home_of(&self.owned_sync_ids(t)?)
         {
-            return Ok(ThingSync::Unread(vec![home]));
+            return Ok(ThingSync::Unread(synced(&self.owned_sync_ids(t)?, home)));
         }
         Ok(if self.core.has_own_secrets(t) { ThingSync::Unsyncable } else { ThingSync::Plain })
     }
@@ -135,7 +137,12 @@ impl Engine {
         osis_base::costs::count("sync: set folded", things.len() as u64);
         for t in things.iter() {
             match self.thing_sync(t)? {
-                ThingSync::Read(ids) => set.ids.extend(ids.into_iter().map(|s| (s, (*t, Holding::Read)))),
+                // a sync ID two things claim (tickets naming it): the first keeps it
+                ThingSync::Read(ids) => {
+                    for s in ids {
+                        set.ids.entry(s).or_insert((*t, Holding::Read));
+                    }
+                }
                 // a sync ID synced for several things (`kept_things`): the first keeps it
                 ThingSync::Unread(ids) => {
                     for s in ids {
@@ -273,6 +280,8 @@ impl Engine {
         // a destroyed thing's kept own sync IDs (`owned_sync_ids`)
         things.extend(self.core.ix.destroyed_sync_ids.iter().filter(|(_, v)| v.iter().any(|o| o.id == *s)).map(|(t, _)| *t));
         things.extend(self.core.followed_links.naming(s));
+        // a thing whose held tickets name it (`ticket_hints`)
+        things.extend(self.core.ix.closure.naming_ticket_id(s));
         for t in things {
             if self.owned_sync_ids(&t)?.iter().any(|o| o.id == *s) {
                 return Ok(Some(t));
@@ -287,6 +296,16 @@ impl Engine {
         let Some(root) = self.core.node_root else { return Ok(Arc::default()) };
         let c = self.get_typed(&root, &ct::CAPS)?.unwrap_or_default();
         Ok(Arc::new(Caps { policy: c.policy, things: c.things.into_iter().map(|(t, x)| (t.0, ThingCaps { entries: x.entries, bytes: x.bytes })).collect() }))
+    }
+}
+
+/// The sync IDs synced for a thing owning `ids`: its home (`home_of`), or, while no held
+/// `sync.0` records one, each its tickets name (their issuers' word, spec/sync-inbox.md §5 Ticket
+/// sync IDs): a forged one beside the genuine keeps the genuine one fetched.
+fn synced(ids: &[OwnedSyncId], home: SyncId) -> Vec<SyncId> {
+    match ids.iter().all(|o| o.hint && o.path.steps.is_empty()) {
+        true => ids.iter().map(|o| o.id).collect(),
+        false => vec![home],
     }
 }
 

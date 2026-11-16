@@ -2973,7 +2973,7 @@ impl Tx<'_> {
                 u.state = unit;
                 self.txn.put_aspect(tid, ak, &u, Shred::No)?;
                 self.core.states.insert(k, Some(skeleton));
-                refs::note(self, tid, ak, moved)?;
+                refs::note(self, tid, ak, None, moved)?;
                 Ok(Some(changes))
             }
             pages::Reset::Laid { state, changes } => {

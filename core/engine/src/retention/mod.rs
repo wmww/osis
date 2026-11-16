@@ -320,7 +320,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // An invalid part gave nothing (`apply::rebuilt`): its drop leaves the state as it is
     // unless it uncovered a part.
     if a.ak.signal() {
-        return crate::engine::refs::note(tx, &a.tid, &a.ak, fire_refs);
+        return crate::engine::refs::note(tx, &a.tid, &a.ak, Some(c), fire_refs);
     }
     if why == DropFor::Destroyed || (invalid && !uncovered) {
         return Ok(());

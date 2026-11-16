@@ -449,7 +449,7 @@ impl Engine {
     /// so a burst of n transactions between two sync steps would cost n walks, not one
     /// (notes/engine.md).
     pub fn follow(&mut self) -> Result<bool> {
-        let moved = self.follow_published();
+        let moved = self.take_ticket_fires()? | self.follow_published();
         self.follow_rows()?;
         let moved = osis_base::memo::Cutoff::refresh_in(self, |e| &e.core.pass_wanted, |e, s| e.pass_wanted_fresh(s))? | moved;
         self.follow_own()?;
