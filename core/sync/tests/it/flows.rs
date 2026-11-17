@@ -120,3 +120,66 @@ fn holds_as_sibling(w: &mut World, n: usize, sib: usize) {
         }
     }
 }
+
+// spec/crypto.md §4 (State at a cut), §5 (Passing on: floors), notes/history-less-grant.md (From
+// now means current state): node 0 writes t twice, then grants node 1's account read without
+// history; node 1 accepts. Through sync alone it reads t's current value, holds no body carrying
+// an earlier write of it, and reads what node 0 writes next.
+#[test]
+fn a_from_now_grantee_reads_the_current_state_and_no_earlier_write_spec_crypto_4() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{value_ak, world};
+    let mut w = world(0, 2);
+    let _ = crate::harness::play(&mut w, &[New(0), Write(0, 0), Run], String::new());
+    let t = w.history.things[0].0;
+    let before: Vec<(String, osis_base::CommitId)> = w.history.values.clone().into_iter().collect();
+    assert_eq!(before.len(), 2, "two writes before the grant");
+    let now = w.engine(0).get(&t, &value_ak()).unwrap().expect("a current value");
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None)).unwrap();
+    w.run();
+    let _ = crate::harness::play(&mut w, &[Strong(1, None, 0), Run], String::new());
+    assert_eq!(w.engine(1).get(&t, &value_ak()).unwrap(), Some(now), "the current state");
+    for (v, c) in &before {
+        let e = w.engine(1);
+        let parts = e.body(c).unwrap().map(|b| b.parts).unwrap_or_default();
+        let held = e.header(c).is_some_and(|h| parts.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid == t && a.ak == value_ak())));
+        assert!(!held, "node 1 holds the write of {v:?} from before its grant");
+    }
+    let c = w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str("after".into())).unwrap();
+        e.commit(m)
+    });
+    assert!(c.unwrap().is_some());
+    w.run();
+    assert_eq!(w.engine(1).get(&t, &value_ak()).unwrap(), Some(Value::Str("after".into())), "what follows the grant");
+}
+
+// spec/crypto.md §4 (State at a cut: the snapshot's writer logs the records of the things its
+// snapshots are on), spec/sync-ids.md §1: a plain thing p under t (carried under t's sync ID,
+// as a chat's messages are) written before node 1's grant without history on t: node 1 reads
+// p's current value through t's sync ID, and no earlier write of it. Fails: node 1 holds p's
+// snapshot but not p's record, which rides only in p's minting commit, from before the cut.
+#[test]
+#[ignore = "issues/history-less-grant.md"]
+fn a_from_now_grantee_reads_a_plain_thing_under_it_spec_crypto_4() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{value_ak, world};
+    let mut w = world(0, 2);
+    let _ = crate::harness::play(&mut w, &[New(0), NewIn(0, 0), Write(0, 1), Run], String::new());
+    let (t, p) = (w.history.things[0].0, w.history.things[1].0);
+    assert!(w.engine(0).sync_id_of(&p).unwrap().is_none(), "p is plain");
+    let before: Vec<osis_base::CommitId> = w.history.values.values().copied().collect();
+    let now = w.engine(0).get(&p, &value_ak()).unwrap().expect("a current value");
+    let a1 = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant_with(&t, &a1, &edge(Role::Read), osis_engine::flows::edges::History::None)).unwrap();
+    w.run();
+    let _ = crate::harness::play(&mut w, &[Strong(1, None, 0), Run], String::new());
+    assert_eq!(w.engine(1).get(&p, &value_ak()).unwrap(), Some(now), "p's current state");
+    for c in &before {
+        let e = w.engine(1);
+        let parts = e.body(c).unwrap().map(|b| b.parts).unwrap_or_default();
+        assert!(!e.header(c).is_some_and(|h| parts.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak == value_ak()))), "node 1 holds a write from before its grant");
+    }
+}

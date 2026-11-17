@@ -877,6 +877,12 @@ mod tests {
         e.commit_in_memory(m).unwrap().unwrap()
     }
 
+    /// `e` takes memory-class commit `b` as a sync entry brings it (`Engine::note_delivered`).
+    fn take(e: &mut Engine, b: &[u8]) {
+        e.note_delivered(b);
+        e.ingest_memory(b, u64::MAX).unwrap();
+    }
+
     fn gap_load(e: &mut Engine) -> Load {
         e.compaction_load().unwrap().into_iter().find(|l| l.ak.as_str() == "x:m+.0").unwrap()
     }
@@ -929,7 +935,7 @@ mod tests {
         let e = &mut lp.peers[0].engine;
         let mut weighed = 0;
         for (i, b) in bodies.iter().enumerate() {
-            e.ingest_memory(b, u64::MAX).unwrap();
+            take(e, b);
             let (w, s) = step(e);
             assert_eq!(s, 0, "no frontier passes the gap");
             // the first two weigh (one body is nothing to compact; then the gap is found)
@@ -939,7 +945,7 @@ mod tests {
         }
         assert_eq!(weighed, 0, "bodies behind a known gap weigh nothing");
         assert_eq!(gap_load(e).bodies, 0, "nothing counts behind the gap");
-        e.ingest_memory(&snap.unwrap(), u64::MAX).unwrap();
+        take(e, &snap.unwrap());
         let l = gap_load(e);
         assert!(l.bodies == 8 && l.held > FACTOR * l.snapshot + l.largest, "the eight count now: {l:?}");
         assert_eq!(step(e), (1, 1), "weighed and compacted at the next step");
@@ -956,22 +962,22 @@ mod tests {
         let (mut lp, _, bodies) = restarted(3, false, None);
         let e = &mut lp.peers[0].engine;
         for b in &bodies[1..] {
-            e.ingest_memory(b, u64::MAX).unwrap();
+            take(e, b);
             e.compactions().unwrap();
         }
         assert_eq!(gap_load(e).bodies, 0, "behind the gap");
-        e.ingest_memory(&bodies[0], u64::MAX).unwrap();
+        take(e, &bodies[0]);
         assert_eq!(step(e), (1, 1), "the gap filled: weighed and compacted at the next step");
         for n in [10, 100] {
             let (mut lp, _, bodies) = restarted(2 * n, false, None);
             let e = &mut lp.peers[0].engine;
             for b in bodies.iter().skip(1).step_by(2) {
-                e.ingest_memory(b, u64::MAX).unwrap();
+                take(e, b);
                 e.compactions().unwrap();
             }
             let (mut weighed, mut written) = (0, 0);
             for b in bodies.iter().step_by(2) {
-                e.ingest_memory(b, u64::MAX).unwrap();
+                take(e, b);
                 let (w, s) = step(e);
                 (weighed, written) = (weighed + w, written + s);
             }
@@ -987,14 +993,14 @@ mod tests {
     fn out_of_history_bodies_behind_a_gap_count_once_it_fills_spec_sync_7() {
         let (mut lp, _, bodies) = restarted(12, false, Some(osis_schema::History::Keep { until: None, after: Some(2_000) }));
         for b in &bodies[1..] {
-            lp.peers[0].engine.ingest_memory(b, u64::MAX).unwrap();
+            take(&mut lp.peers[0].engine, b);
         }
         lp.advance(3_000);
         lp.peers[0].tick().unwrap();
         let e = &mut lp.peers[0].engine;
         e.compactions().unwrap();
         assert_eq!(gap_load(e).bodies, 0, "behind the gap");
-        e.ingest_memory(&bodies[0], u64::MAX).unwrap();
+        take(e, &bodies[0]);
         assert_eq!(step(e), (1, 1), "the replaced bodies count once the gap fills");
     }
 
@@ -1034,7 +1040,7 @@ mod tests {
                 }
                 for (n, p) in lp.peers[..2].iter_mut().enumerate() {
                     for bytes in std::mem::take(&mut out[1 - n]).iter().chain(&xs) {
-                        p.engine.ingest_memory(bytes, u64::MAX).unwrap();
+                        take(&mut p.engine, bytes);
                     }
                 }
                 for (p, o) in lp.peers[..2].iter_mut().zip(&mut out) {
@@ -1083,11 +1089,11 @@ mod tests {
         // b holds the first and the third: a gap at the second
         for c in [w[0], w[2]] {
             let bytes = lp.peers[0].engine.package(&c).unwrap().unwrap().bytes;
-            lp.peers[1].engine.ingest_memory(&bytes, u64::MAX).unwrap();
+            take(&mut lp.peers[1].engine, &bytes);
         }
         let s = lp.peers[1].engine.snapshot(&t, &ak).unwrap().unwrap();
         let bytes = lp.peers[1].engine.package(&s).unwrap().unwrap().bytes;
-        lp.peers[0].engine.ingest_memory(&bytes, u64::MAX).unwrap();
+        take(&mut lp.peers[0].engine, &bytes);
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.covered(&s, &w[2], &t, &ak).unwrap(), Some(true), "its writes are in the snapshot");
         assert_eq!(e.covered(&s, &w[1], &t, &ak).unwrap(), Some(false), "the gap's are not");

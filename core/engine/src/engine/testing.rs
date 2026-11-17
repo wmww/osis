@@ -206,6 +206,24 @@ impl Engine {
         self.run(|tx| crate::flows::inbox::fire(tx, t, ak, value, std::collections::BTreeSet::new()))
     }
 
+    /// Tests only: what `LocalPeer`'s plaintext delivery stands for. A package stands for an
+    /// entry sealed under the newest read epoch of each of its things whose secret is held here,
+    /// established or not (its writer sealed under its newest; a newer one here is only
+    /// stricter): each part is noted opened under it (`sync_ids::opened`), as `open_commit` notes
+    /// a section's. Nothing is noted for a thing with no read secret held.
+    #[doc(hidden)]
+    pub fn note_delivered(&mut self, bytes: &[u8]) {
+        let Ok(b) = osis_commit::CommitBlob::decode(bytes) else { return };
+        let mut by: std::collections::BTreeMap<Tid, Vec<&osis_commit::Part>> = std::collections::BTreeMap::new();
+        for p in &b.parts {
+            if let Some(a) = b.header.aspects.get(p.ai) {
+                by.entry(a.tid).or_default().push(p);
+            }
+        }
+        let under: Vec<_> = by.into_iter().filter_map(|(t, ps)| Some((t, self.epochs(&t)?.read.held_newest_first().first()?.0, ps))).collect();
+        self.note_opened(&b.header, &under);
+    }
+
     /// Flags an aspect suspect (tests: what a suspect node does, however it became one).
     #[doc(hidden)]
     pub fn flag_suspect(&mut self, t: &Tid, a: &Ak, why: crate::retention::suspect::Why, bodies: &[(CommitId, usize)]) -> Result<()> {

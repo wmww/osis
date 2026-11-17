@@ -1,6 +1,6 @@
 ------------------------------ MODULE Reseal ------------------------------
 (* Under which epoch a node may encrypt again content another wrote        *)
-(* (spec/crypto.md §5 Section; issues/reseal-under-own-epoch-leaks.md).     *)
+(* (spec/crypto.md §5 Passing on).                                         *)
 (* a2 removes reader M (W). R, holding W, rotates read (Rot: e_R, naming W, *)
 (* boxing V and not M) and writes w under e_R. V holds e_R's secret by its  *)
 (* box; its own current epoch before e_R is e_V, which M holds. A host may  *)
@@ -23,10 +23,10 @@
 (*   "atopen"    ... established when it opened (negative control);        *)
 (*   "never"     no fresh encryption of another's content (a snapshot      *)
 (*               cannot copy a section verbatim).                           *)
-(* Unsectioned: w may also reach V in no section (an inbox payload, a     *)
-(* direct connection: read under no epoch). Restarts: V may lose the      *)
-(* openings not yet written, once. Exempt: "chosen" also takes a w V holds *)
-(* with no opening recorded as V's own (negative control).                *)
+(* Unsectioned: w may also reach V with no opening noted (a read path    *)
+(* that notes none). Restarts: V may lose the openings not yet written,   *)
+(* once. Exempt: "chosen" also takes a w V holds with no opening recorded *)
+(* as V's own (the rejected exemption: negative control).                 *)
 (* NoLeak: M never holds a ciphertext of w while W applies in the world's   *)
 (* commits. Live (world plain, W delivered): V encrypts w again.           *)
 EXTENDS FiniteSets

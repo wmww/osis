@@ -40,7 +40,12 @@ fn reads(lp: &mut LocalPeer, i: usize, g: Tid, k: &str) -> bool {
 /// applies nowhere D is held. Returns the peers, g, W's commits, e_R, w and R's sealed entry
 /// of w (the encryption it logs).
 fn shape(demoted: bool) -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, CommitId, Vec<SealedPackage>) {
-    let (mut lp, g, tids) = granted(5, &[(A2, Role::Admin), (M, Role::Read), (R, Role::Admin), (V, Role::Admin)]);
+    shape_of(5, demoted)
+}
+
+/// `shape` among `n` peers (those past V granted nothing).
+fn shape_of(n: usize, demoted: bool) -> (LocalPeer, Tid, BTreeSet<CommitId>, osis_crypto::Epoch, CommitId, Vec<SealedPackage>) {
+    let (mut lp, g, tids) = granted(n, &[(A2, Role::Admin), (M, Role::Read), (R, Role::Admin), (V, Role::Admin)]);
     if demoted {
         lp.peers[A].engine.demote(&g, &Demotion { holder: tids[A2], new: Some(edge(Role::Write)), retain: None }).unwrap();
     }
@@ -102,6 +107,45 @@ fn reseal_without_the_removal_leaks_nothing_spec_crypto_5() {
     let (sealed, leak) = v_reseals_to_m(&mut lp, g, w);
     assert!(sealed, "V seals w once e_R is established");
     assert!(!leak, "M reads R's write once V holds W");
+}
+
+// spec/crypto.md §5 (Passing on: a sealed fire's delta came under the keyset it is sealed to),
+// spec/sync-inbox.md §2, §4: S holds g's public key record (R's keyset e_R) and no secret of
+// g, so it fires `x:f@~0` on g sealed to e_R; V, lacking W, opens it under e_R. V encrypts the
+// fire under no epoch of its choosing (M's) until W arrives; then it does, and M opens nothing.
+#[test]
+fn sealed_fire_passes_on_only_once_its_keyset_is_established_spec_crypto_5() {
+    const S: usize = 5;
+    let (mut lp, g, w_commits, e_r, w, _) = shape_of(6, false);
+    let skip: BTreeSet<CommitId> = w_commits.iter().copied().chain([w]).collect();
+    let f = Ak::new("x:f@~0").unwrap();
+    let mut m = Mutation::new();
+    m.set(g, &osis_schema::core_types::RETENTION, &osis_schema::core_types::RetentionSetting::of(f.clone(), osis_schema::History::FOREVER)).unwrap();
+    lp.peers[A].commit(m).unwrap().unwrap();
+    lp.hold_at(S, g);
+    for from in [A, R] {
+        send_skipping(&mut lp, from, S, &skip);
+        send_skipping(&mut lp, from, V, &skip);
+    }
+    let s = &mut lp.peers[S].engine;
+    assert!(!s.epochs(&g).is_some_and(|e| e.read.holds_any()), "S reads nothing of g");
+    s.fire_open(&g, f.as_str(), Value::Int(5)).unwrap();
+    let id = *s.fires_owed().first().expect("a sealed fire owed");
+    assert_eq!(s.fire_epoch(&id).unwrap(), Some(e_r), "sealed to e_R");
+    let out = s.sealed_fire(&id).unwrap().unwrap();
+    let v = &mut lp.peers[V].engine;
+    let fire = match v.open_entry(&out.sync_id, &osis_blob::blob_id(&out.blob), &[0; 57], &out.blob, u64::MAX).unwrap() {
+        crate::sync::Opened::Commit(c, _) => c,
+        o => panic!("V takes the fire: {o:?}"),
+    };
+    assert!(!v.epochs(&g).unwrap().read.is_established(&e_r));
+    let pks = lp.sealed(V, &[fire]).unwrap();
+    assert!(lp.deliver_sealed(M, &pks).unwrap().contains(&fire) || pks.is_empty(), "M opens V's encryption of S's fire");
+    assert!(pks.is_empty(), "V encrypts the fire with e_R not established");
+    w_arrives(&mut lp, g, &w_commits, &e_r);
+    let pks = lp.sealed(V, &[fire]).unwrap();
+    assert!(!pks.is_empty(), "V encrypts the fire once e_R is established");
+    assert_eq!(lp.deliver_sealed(M, &pks).unwrap(), vec![fire], "M opens nothing of it");
 }
 
 // spec/crypto.md §5 (Passing on), spec/sync-compaction.md §1: V's snapshot of the aspect holding
@@ -300,8 +344,8 @@ fn wrap_of_others_write_withheld_spec_crypto_5() {
     assert!(!m_opens(&mut lp, g, w, &fresh, &body.parts) && !m_opens(&mut lp, g, w, &copy, &body.parts));
 }
 
-// spec/crypto.md §5 (Passing on): R's write reaches V first in no section (the plaintext
-// `ingest`, as an inbox payload carries a commit), then V opens R's entry of it under e_R, not
+// spec/crypto.md §5 (Passing on): R's write reaches V first by the harness's plain delivery
+// (noted under e_R, the newest epoch V holds), then V opens R's entry of it under e_R, not
 // established at V. The opening of a commit already held counts: V neither seals the write
 // under its own (M's) epoch nor wraps a copy of it so. Once W arrives it does, also after a
 // restart (the openings were written with the entry's ingest).
@@ -309,7 +353,7 @@ fn wrap_of_others_write_withheld_spec_crypto_5() {
 fn opened_after_plain_arrival_counts_spec_crypto_5() {
     let (mut lp, g, w_commits, e_r, w, entry) = shape(false);
     send_skipping(&mut lp, R, V, &w_commits);
-    assert!(reads(&mut lp, V, g, "w"), "V holds w, read in no section");
+    assert!(reads(&mut lp, V, g, "w"), "V holds w, plainly delivered");
     lp.deliver_sealed(V, &entry).unwrap();
     assert!(!lp.peers[V].engine.epochs(&g).unwrap().read.is_established(&e_r));
     let body = lp.peers[V].engine.body(&w).unwrap().unwrap();

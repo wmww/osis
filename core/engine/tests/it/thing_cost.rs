@@ -121,8 +121,8 @@ fn what_a_thing_costs() {
     let e = &mut lp.peers[0].engine;
     assert!(e.sync_id_of(&pt).unwrap().is_none() && e.sync_id_of(&kt).unwrap().is_some());
     assert_eq!((plain.commits, keyed.commits), (1, 2), "its rotation carrying its record, then what the plain one writes");
-    assert!(plain.maker_rows < 1_700 && plain.reader_rows < 1_600 && plain.download < 800, "{plain:?}");
-    assert!(keyed.maker_rows < 15_000 && keyed.reader_rows < 15_000 && keyed.download < 9_500, "{keyed:?}");
+    assert!(plain.maker_rows < 1_700 && plain.reader_rows < 1_700 && plain.download < 800, "{plain:?}");
+    assert!(keyed.maker_rows < 15_000 && keyed.reader_rows < 15_300 && keyed.download < 9_500, "{keyed:?}");
     assert_eq!(keyed.maker_ops.get("kem: keygen"), Some(&4), "a KEM key per role");
     assert!(!keyed.reader_ops.keys().any(|k| k.starts_with("kem")), "the account's node opens symmetric boxes");
 }

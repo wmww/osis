@@ -20,12 +20,11 @@
 //! know. Establishment is judged at use, not at the opening: an epoch's names may stop being
 //! met (a demotion voiding the removal it names).
 //!
-//! A part read in no section (an inbox payload, a direct connection, the plaintext `ingest`)
-//! came under no epoch and passes on as this node's own: delivering it needs its plaintext,
-//! which only parties reading its epoch hold (they could hand it to anyone), and node-sync
-//! carries no other's content so. Openings are never lost in between: they are written in the
-//! ingest that keeps the commit (held or pending), and one that keeps nothing is fetched and
-//! opened again.
+//! Every path that reads another's content notes the epoch it came under: a section's, a copy's
+//! (its entry's wrap), a sealed fire's (the keyset it is sealed to, `open_sealed_fire`). A part
+//! of another's with no opening held passes on nowhere (fail closed). Openings are never lost
+//! in between: they are written in the ingest that keeps the commit (held or pending), and one
+//! that keeps nothing is fetched and opened again.
 //!
 //! A header is read by whoever unwraps an entry of the commit's blob, so the epoch an entry's wrap
 //! opened under (`note_unwrapped`, per thing of the sync ID) is an opening of the header: a
@@ -377,27 +376,26 @@ fn established_genuine(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, mut un
 /// Whether this node may encrypt part `ai` (on aspect `ak` of thing `t`) of held commit `c`
 /// under an epoch of its own choosing of floor `floor` (`None`: a snapshot, which carries state:
 /// the floor clause binds it not): not content, or one of whose content nothing is held
-/// (value-less, or dropped); else, where `floor` is above 0, only by an opening (its own write's
-/// record, `note_own`) under an epoch of at least that floor; and its own write, or one read in
-/// no section, or one it opened a genuine section of under an epoch established here now (the
-/// module's invariant).
+/// (`holds_no_content`); else, where `floor` is above 0, only by an opening (its own write's
+/// record, `note_own`) under an epoch of at least that floor; and its own write, or one it
+/// opened a genuine section of under an epoch established here now (the module's invariant).
 pub(crate) fn passes_on(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid, ak: &str, floor: Option<u64>) -> Result<bool> {
     if !is_content(ak) {
         return Ok(true);
     }
-    let m = tx.core.ix.commits.get(c);
-    if m.is_some_and(|m| matches!(m.hold.get(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_)))) {
+    if holds_no_content(tx, c, ai) {
         return Ok(true);
     }
-    let own = m.is_some_and(|m| m.origin == Origin::Local);
+    let own = tx.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local);
     let under = openings(tx, c, Some(ai))?;
     let Some(under) = above_floor(tx, t, under, floor) else { return Ok(false) };
-    // read in no section: it came to this node directly, under no epoch (an inbox payload, a
-    // direct connection; neither carries another's content in node-sync)
-    if own || under.is_empty() {
-        return Ok(true);
-    }
-    established_genuine(tx, c, ai, t, under)
+    Ok(own || established_genuine(tx, c, ai, t, under)?)
+}
+
+/// Whether held commit `c` holds no content of part `ai`: dropped, held value-less, or missing
+/// (nothing of it to pass on).
+fn holds_no_content(tx: &Tx<'_>, c: &CommitId, ai: usize) -> bool {
+    tx.core.ix.commits.get(c).is_some_and(|m| matches!(m.hold.get(ai), Some(Hold::Leftover { valued: false, .. } | Hold::Dropped(_) | Hold::Missing(_))))
 }
 
 /// The floor clause: of `under` (a part's openings), those under an epoch of thing `t` whose
@@ -431,8 +429,8 @@ fn opened_under_wrap(tx: &mut Tx<'_>, c: &CommitId, ai: usize, w: &Wrapping) -> 
 }
 
 /// Whether this node may wrap a blob of commit `c` (its header) under an epoch of its own
-/// choosing (`w`): one with no content part, or one each of whose content parts it opened (its
-/// own: any) has a genuine opening under an epoch established here now, of the part's thing or
+/// choosing (`w`): one with no content part, or one each of whose content parts it holds content
+/// of (its own: any) has a genuine opening under an epoch established here now, of the part's thing or
 /// of the wrap's (`opened_under_wrap`; a part dropped or held value-less keeps none); if an
 /// entry's wrap of it opened here, one such wrap's epoch is established here now
 /// (`note_unwrapped`: kept whatever is dropped); and every content part on a thing whose secrets
@@ -458,7 +456,7 @@ fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header, w: &Wra
         let f = (tx.core.secret_actor(&t) == Some(w.actor)).then_some(w.floor);
         let passes = match above_floor(tx, &t, under, f) {
             None => false,
-            Some(under) => own || under.is_empty() || established_genuine(tx, c, ai, &t, under)?,
+            Some(under) => own || holds_no_content(tx, c, ai) || established_genuine(tx, c, ai, &t, under)?,
         };
         if !passes && !opened_under_wrap(tx, c, ai, w)? {
             return Ok(false);
@@ -470,7 +468,7 @@ fn header_passes(tx: &mut Tx<'_>, c: &CommitId, h: &osis_commit::Header, w: &Wra
 /// The floor of part `ai` (on thing `t`) of held commit `c` (spec/crypto.md §4 Floors): the
 /// greatest floor of an epoch of `t` it was opened (or, this node's own, made) under, an opening
 /// under another thing's (a copy's) counting 0; this node's own with no record has 0
-/// (`note_own`), another's read in no section none known.
+/// (`note_own`), another's opened under no epoch none known.
 pub(crate) fn part_floor(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid) -> Result<Option<u64>> {
     let under = openings(tx, c, Some(ai))?;
     let own = tx.core.ix.commits.get(c).is_some_and(|m| m.origin == Origin::Local);

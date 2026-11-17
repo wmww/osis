@@ -13,7 +13,7 @@ Engine, the maker and its account's second node (`account_two_nodes`), each kind
 | commits | 1 (content: record, content, the root's `holds.0`) | 2 (rotation: `created.0` 88 B, `keys.0` 6288 B, `secrets.0` 1409 B, `sync.0` 451 B; content) |
 | downloaded by the second node | 703 B (header 357 B) | 9402 B (8820 + 582) |
 | stored, maker | 1627 B | 14.9 KB |
-| stored, second node | 1522 B | about the same as the maker |
+| stored, second node | 1650 B (128 B of it the epochs its two content parts opened under, `ou/`, what passing them on needs) | about the same as the maker |
 | maker work | 2 signs | 4 ML-KEM keygens, 5 signs |
 | second node work | 1 commit verify | 2 commit verifies, no KEM |
 

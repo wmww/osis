@@ -562,11 +562,11 @@ impl Engine {
         let mut found = None;
         for (e, secret) in self.read_epochs(t, &[]).into_iter().rev() {
             if let Ok(x) = osis_blob::open_fire(bytes, t, &e, &osis_crypto::role_kem(&secret)) {
-                found = Some(x);
+                found = Some((e, x));
                 break;
             }
         }
-        let Some((prefix, fire)) = found else { return Ok(Opened::NotOpen) };
+        let Some((under, (prefix, fire))) = found else { return Ok(Opened::NotOpen) };
         let Ok(commit) = osis_commit::CommitBlob::decode(&osis_base::encode(&fire.commit)) else { return Ok(Opened::Bad) };
         let h = &commit.header;
         let one = matches!(commit.parts.as_slice(), [p] if h.aspects.get(p.ai).is_some_and(|a| a.tid == *t && a.ak.open()));
@@ -595,6 +595,9 @@ impl Engine {
         // (spec/sync-judgement.md §2, a grant naming a holder travels under the holder's sync
         // ID): taken with the fire, whatever keeps the fire itself
         let grant = self.holder_grant(t, &commit);
+        // its delta came under the keyset it is sealed to: an opening under that epoch, as a
+        // section's (spec/crypto.md §5 Passing on)
+        self.note_opened(&commit.header, &[(*t, under, commit.parts.iter().collect())]);
         let Some(ingested) = self.ingest_sealed_fire(records, &chain, commit)? else { return Ok(Opened::Bad) };
         if let Some(g) = grant {
             self.take_role_parts(&g, GRANT_PARTS)?;

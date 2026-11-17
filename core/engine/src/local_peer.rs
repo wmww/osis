@@ -1,7 +1,8 @@
 //! `LocalPeer`: engines exchanging commits directly, with no sync IDs or peers (the simulator's
 //! seed, notes/test-sim.md). Each engine has its own `MemoryBackend`, `ManualClock` and
-//! seeded rng; delivery is explicit and order is the caller's. `Package` is plaintext (a direct
-//! connection: pairing, or a test of what arrives regardless of keys); `SealedPackage` is what a
+//! seeded rng; delivery is explicit and order is the caller's. `Package` is plaintext (a test of
+//! what arrives regardless of keys), its parts noted opened under the receiver's newest current
+//! read epoch of their thing as if sealed so (`Engine::note_delivered`); `SealedPackage` is what a
 //! sync ID carries: each body sealed and wrapped under its reader actor's read secret as node-sync
 //! places it, opened only with the read secrets the receiver holds.
 
@@ -130,6 +131,7 @@ impl Peer {
 
     /// `receive` with the list blobs that came with it (`Engine::ingest_with_lists`).
     pub fn receive_with(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, lists: &[Vec<u8>]) -> Result<Ingested> {
+        self.engine.note_delivered(bytes);
         let r = self.engine.ingest_with_lists(bytes, blobs.clone(), None, lists);
         if let Err(e) = &r
             && e.class() == osis_base::ErrorClass::BadInput
@@ -213,6 +215,7 @@ impl Peer {
             let ingested: Vec<CommitId> = now.iter().map(|d| d.commit).collect();
             for d in now {
                 self.redelivered += u64::from(d.carries);
+                self.engine.note_delivered(&d.bytes);
                 let r = self.engine.ingest(&d.bytes, d.blobs.clone());
                 if matches!(&r, Err(e) if e.class() == osis_base::ErrorClass::BadInput) {
                     self.engine.forget_awaiting(&d.commit)?;

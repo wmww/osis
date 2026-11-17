@@ -9,7 +9,8 @@ real LAN (`real_lan_tests`), a test peer ticks through its wake (`peer_ticks`), 
 test-only (`test_copies`), only the engine's `apply::checked` vouches for checked delta bytes
 (`checked_bytes`), signature verdicts are read back only where kept (`kept_verdicts`), sync keeps
 no hashed collection (`sync_hashed`), sync's tests pin no harness seed (`pinned_seeds`),
-tools/known_failures.txt names existing issues, tests and valid patterns (`known_failures`),
+tools/known_failures.txt names existing issues, tests and valid patterns (`known_failures`), an
+`#[ignore = "..."]` naming an issue names an existing issues/ file (`ignore_issues`),
 union-merged lists have no duplicate and a stale-line check (`union_lists`), no destruction named
 "ended" (`ended_names`) and no deprecated term (`old_words`) in code, store row keys and sync's
 record tags are distinct and never literals (`row_prefixes`, `record_tags`), every pointer into
@@ -494,8 +495,31 @@ def record_tags():
         if rel.startswith("core/sync/src/") and rel.endswith(".rs") and RECORD_CALL.search(code_of(path)):
             yield f"{rel}: a record row written with a literal tag (name it in {RECORD_TAGS}'s `tag`)"
 
+# An ignored test waits on an issue: its reason names the issue's file, which must exist, so deleting
+# the issue fails until the test runs again or names what it now waits on. A reason naming an issue
+# only by word ("issue", a bare slug, `issues/x` without `.md`) names no file to check.
+IGNORE = re.compile(r'#\[ignore\s*=\s*"([^"]*)"\]')
+ISSUE_FILE = re.compile(r"issues/([A-Za-z0-9_-]+)\.md")
+
+def ignore_issues():
+    for path, rel in walk(CODE_TOPS, ".rs"):
+        text = read(path)
+        if "#[ignore" not in text:
+            continue
+        for n, line in enumerate(text.split("\n"), 1):
+            m = IGNORE.search(line)
+            if not m or not re.search(r"\bissues?\b", m[1]):
+                continue
+            files = ISSUE_FILE.findall(m[1])
+            if not files:
+                yield f"{rel}:{n}: #[ignore = \"{m[1]}\"] names an issue but no issues/<name>.md file"
+            for f in files:
+                if not os.path.isfile(os.path.join(ROOT, "issues", f + ".md")):
+                    yield f"{rel}:{n}: #[ignore] names issues/{f}.md, which does not exist (run the test, or name what it waits on)"
+
+
 # the slowest first, so the pool balances
-CHECKS = [doc_refs.check, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, union_lists, test_copies, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
+CHECKS = [doc_refs.check, code_refs.check, row_prefixes, record_tags, ended_names, old_words, known_failures, union_lists, test_copies, ignore_issues, checked_bytes, kept_verdicts, sync_hashed, pinned_seeds, real_lan_tests, peer_ticks, env_vars, dispute_types]
 
 
 def run(check):

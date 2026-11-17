@@ -340,13 +340,16 @@ fn a_card_goes_with_its_nodes_grant_spec_sync_judgement_2() {
 // spec/sync-judgement.md §2 required set (the certificate blobs of spec/permissions.md §4): the
 // other node's `reach.0` card is in D's sync ID's required set, so read never judges it
 // outside it (must-not-hold, deleted at a node keeping the sync ID unread by a delete-key
-// holder); sealed as a copy, it opens at the card's own node.
+// holder); taken as its node's copy under D's sync ID and sealed again as one, it opens at the
+// card's own node.
 #[test]
 fn another_nodes_card_is_in_the_required_set_spec_sync_judgement_2() {
     let (mut lp, d) = crate::flows::account_two_nodes();
     let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
     let r = reach(&mut lp, 1, 1);
     spread(&mut lp);
+    let (own, wrap) = lp.peers[1].engine.seal_body(&ds, &r, &[], &mut SeededRng::from_u64(2)).unwrap().expect("its node seals its card");
+    lp.peers[0].engine.open_entry(&ds, &own.id, &wrap, &own.blob, u64::MAX).unwrap();
     let e = &mut lp.peers[0].engine;
     let b = e.sync_bodies(&r).unwrap();
     assert!(b.get(&ds).is_some_and(|m| m.certificate && m.copy && !m.parts.is_empty()), "the card's certificate body under D's sync ID: {b:?}");
