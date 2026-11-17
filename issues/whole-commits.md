@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: engine, sync, security, spec
 
-Built: one blob per commit, one expiry, apply never waits for a part; the strip per blob for parts gone for good and for parts dropped as covered by a snapshot reaching them, a part never received counting covered under such a snapshot (spec/sync-judgement.md §2 Per blob, spec/commits.md §5 Covered, notes/whole-commits.md Strip).
+Built: one blob per commit, one expiry, apply never waits for a part; the strip per blob for parts gone for good and for parts dropped as covered under purge on replace by a snapshot reaching them, a part never received counting covered under such a snapshot (spec/sync-judgement.md §2 Per blob, spec/commits.md §5 Covered, notes/whole-commits.md Strip).
 
 ## Sealed sections
 Whether a node opens sections only of things it syncs: opening sections of things it merely has the secret for lets a purged part be read for good from a sync ID where no request arrives; not judgeable at open time (a commit creating a thing and the strong to it carries the thing's record in a section whose thing the receiver does not sync until that strong applies), so it needs held blobs reopened as the sync set grows.

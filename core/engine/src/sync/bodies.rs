@@ -106,13 +106,16 @@ pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
 /// Part `ai` of `c` (meta `m`) leaves every blob of its commit (spec/sync-judgement.md §2 Per
 /// blob; `Engine::blob_gone`): its body is gone here other than while invalid (no right deletes
 /// that one, and its blobs are its refetch source, spec/permissions.md §6). One dropped as covered
-/// only while a held valid snapshot of its aspect reaches it by its tables (`reachers`): a node
-/// that never held it then counts it covered too, not missing (spec/commits.md §5 Covered); one
-/// dropped under own replaces alone goes only with its whole commit.
+/// only on an aspect a held setting puts under purge on replace (`Kept::purges`), while a held
+/// valid snapshot of its aspect reaches it by its tables (`reachers`): a node that never held it
+/// then counts it covered too, not missing (spec/commits.md §5 Covered). Elsewhere its blobs keep
+/// it: a new reader joins it and judges the cover itself, as a snapshot covering the reacher may
+/// name no session left without a write (spec/crdt.md §8 Absence), so tables prove nothing for
+/// good. One dropped under own replaces alone goes only with its whole commit.
 pub(crate) fn strips(core: &crate::engine::Core, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> bool {
     match m.dropped(ai) {
         Some(d) if d.why == DropFor::Invalid => false,
-        Some(d) if d.as_cover() => !reachers(core, c, m, ai).is_empty(),
+        Some(d) if d.as_cover() => m.view.aspects.get(ai).is_some_and(|a| crate::retention::history::of(core, &a.tid, &a.ak).purges()) && !reachers(core, c, m, ai).is_empty(),
         _ => m.body_gone(ai),
     }
 }
@@ -436,7 +439,7 @@ impl Engine {
     }
 
     /// Whether held blob `b` carries a part of its commit that strips (`strips`: its body gone
-    /// here, purged, past its bounds, destroyed, or dropped as covered by a snapshot reaching it;
+    /// here, purged, past its bounds, destroyed, or dropped as covered under purge on replace by a snapshot reaching it;
     /// spec/sync-judgement.md §2 per blob: must-not-hold, whatever sync ID it is under). `false`
     /// for a blob not opened or sealed here.
     pub fn blob_gone(&self, b: &BlobId) -> bool {

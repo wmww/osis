@@ -7,7 +7,8 @@ use crate::harness::Step::*;
 use crate::harness::history::{Gives, value_ak, world};
 use crate::harness::{World, fixture_with, play};
 use osis_base::format::MAX_DRIFT_MS;
-use osis_base::{Ak, BlobId, CommitId, PurgeBy, SyncId, Tid, Value};
+use osis_base::{Ak, BlobId, CommitId, PurgeBy, Role, SyncId, Tid, Value};
+use osis_schema::core_types::Edge;
 use osis_engine::Mutation;
 use osis_schema::core_types as ct;
 
@@ -384,4 +385,51 @@ fn a_new_reader_of_a_cover_stripped_commit_misses_nothing_spec_commits_5() {
     assert!(!w.engine(n).read_facts(&s, &c).unwrap().missing, "no part of it counts missing");
     assert_eq!(w.engine(n).get(&t, &value_ak()).unwrap(), Some(Value::Str("final".into())));
     assert_eq!(w.engine(n).get(&t, &Ak::new("u:n.0").unwrap()).unwrap(), Some(Value::Str("kept".into())));
+}
+
+/// Node `i` sets thing `t`'s value to `v`.
+fn set_value(w: &mut World, i: usize, t: Tid, v: &str) {
+    w.write(i, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str(v.into())).unwrap();
+        e.commit(m).unwrap()
+    });
+}
+
+// spec/sync-judgement.md §2 (Per blob: a delta dropped as covered strips only where its aspect
+// may be under purge on replace), spec/commits.md §5 (Covered): node 1 makes a thing with a value
+// (the making commit also holds its record and the strong from its account root), replaces the
+// value, and with its sibling node 2 replaces it again at once, after node 2 grants node 0's
+// account read; node 0 accepts. The making commit's value part is dropped as covered, its cover
+// covered in turn by a snapshot whose tables no longer name the part's session (no write of it
+// is left). A blob stripped of it would leave node 0 counting it never received with no source
+// for it; unstripped, node 0 receives the making commit whole (the harness checks every must-hold
+// body reached at quiet). Fails if a part dropped as covered strips under no purge on replace.
+#[test]
+fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2() {
+    let mut w = crate::harness::siblings();
+    let a0 = w.node(0).account.unwrap();
+    let (t, c) = w.write(1, |e| {
+        let d = e.account_root().unwrap();
+        let mut m = Mutation::new();
+        let t = m.create(e.thing_record(d));
+        m.set(t, &value_ak(), &Value::Str("v0".into())).unwrap();
+        m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
+        (t, e.commit(m).unwrap().unwrap())
+    });
+    set_value(&mut w, 1, t, "v1");
+    w.run();
+    w.write(2, |e| e.grant(&t, &a0, &Edge { role: Role::Read, until: None, invite: None, floor: None })).unwrap();
+    set_value(&mut w, 2, t, "v2");
+    set_value(&mut w, 1, t, "v3");
+    w.write(0, |e| {
+        let d = e.account_root().unwrap();
+        let mut m = Mutation::new();
+        m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
+        e.commit(m).unwrap()
+    });
+    w.run();
+    let s = w.engine(1).home_sync_id(&t).unwrap().unwrap();
+    assert!(w.engine(0).holds_commit(&c), "the reader holds the making commit");
+    assert!(!w.engine(0).read_facts(&s, &c).unwrap().missing, "no part of it counts missing");
 }
