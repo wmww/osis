@@ -153,7 +153,7 @@ fn what_a_thing_costs_as_the_app_makes_it() {
     let plain = per(false, "plain (under home)");
     let keyed = per(true, "keyed (under the account, held by home)");
     let sum = |all: &[Cost], f: &dyn Fn(&Cost) -> i64| all.iter().map(f).sum::<i64>();
-    assert!(plain.iter().all(|c| c.commits >= 1) && keyed.iter().all(|c| c.commits >= 4), "a keyed thing held outside the root's unit: the root's ticket for it too");
-    assert!(sum(&plain, &|c| c.maker_rows) < 2_000 * n as i64 && sum(&plain, &|c| c.download as i64) < 1_400 * n as i64);
-    assert!(sum(&keyed, &|c| c.maker_rows) < 17_500 * n as i64 && sum(&keyed, &|c| c.download as i64) < 11_800 * n as i64);
+    assert!(plain.iter().all(|c| c.commits >= 1) && keyed.iter().all(|c| c.commits >= 3), "a keyed thing held outside the root's unit: its rotation carrying its record, the strong holding it, the root's ticket for it");
+    assert!(sum(&plain, &|c| c.maker_rows) < 2_000 * n as i64 && sum(&plain, &|c| c.download as i64) < 1_300 * n as i64);
+    assert!(sum(&keyed, &|c| c.maker_rows) < 17_000 * n as i64 && sum(&keyed, &|c| c.download as i64) < 11_200 * n as i64);
 }

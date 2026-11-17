@@ -131,7 +131,8 @@ fn seal_cert_blob(w: &osis_crypto::Secret32, plain: &[u8], rng: &mut dyn NodeRng
 impl Engine {
     /// The records sync ID `s` carries as certificates (spec/permissions.md §4): those its
     /// certificates name (`certified_records`) whose `created.0` no closure body there carries
-    /// (a thing of the closure its actor reads), held here.
+    /// (a thing of the closure its actor reads, minted by no commit giving it epochs:
+    /// `minted_plainly`), held here.
     pub fn certificate_records(&mut self, s: &SyncId) -> Result<Arc<BTreeSet<Tid>>> {
         let mut out = BTreeSet::new();
         for t in self.read_things_of(s)? {
@@ -144,7 +145,16 @@ impl Engine {
     fn records_of(&mut self, t: &Tid) -> Result<BTreeSet<Tid>> {
         let records = self.certified_records(t)?;
         let ctx = self.body_ctx(t);
-        Ok(records.iter().filter(|x| !(ctx.holds(&self.core, x) && self.reads(&ctx, x)) && self.core.created(x).is_some()).copied().collect())
+        Ok(records.iter().filter(|x| !(ctx.holds(&self.core, x) && self.reads(&ctx, x) && self.minted_plainly(x)) && self.core.created(x).is_some()).copied().collect())
+    }
+
+    /// Whether no held minting of `x` gives it epochs: its own-keys rotation carrying its record
+    /// (spec/permissions.md §3) is wrapped under the derived epoch it supersedes (spec/crypto.md
+    /// §5), so it carries the record to that epoch's holders alone and counts as no carrier
+    /// (spec/permissions.md §4 Logging certificates).
+    fn minted_plainly(&self, x: &Tid) -> bool {
+        let Ok(secrets) = osis_base::Ak::new("secrets.0") else { return true };
+        !self.core.mintings(x).any(|(c, _)| self.core.ix.commits.get(&c).is_some_and(|m| m.aspect(x, &secrets).is_some()))
     }
 
     /// Whether a record blob can be sealed under `s` now (a current read epoch of its thing to

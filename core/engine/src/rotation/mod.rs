@@ -35,7 +35,7 @@ pub use lost::{Dropped, Leaving, LostScope, TimedLoss, LOST_HEARD_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
 pub(crate) use departures::{departures, key_role, own_self_removal};
 pub(crate) use members::{Boxing, Sealed, grant_keyless, sealed};
-pub(crate) use lost::{boxes_kept, load_lost, may_learn, may_take, role_here, touch_held};
+pub(crate) use lost::{boxes_kept, load_lost, may_learn, may_take_role, role_here, touch_held};
 
 /// How far `blocked_epoch` follows boxes to holder actors (spec/crypto.md §4, Encrypting under).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -749,16 +749,38 @@ pub(crate) fn own_keys_due(tx: &mut Tx<'_>) -> Result<()> {
 /// `own_secrets`, its genesis step listing `also` besides the holders it boxes (a link's key,
 /// granted next).
 pub(crate) fn own_secrets_listing(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<()> {
-    if let Some((c, rot, to)) = own_secrets_rot(tx, t, also, done)? {
+    if let Some((c, rot, to)) = own_secrets_rot(tx, t, None, also, done)? {
         recorded(tx, t, c, &rot, &to, done)?;
     }
     Ok(())
 }
 
+/// Makes the thing of `rec` with secrets of its own (`own_secrets_listing`): its record goes in
+/// the rotation commit (spec/permissions.md §3), held here ahead of it so the rotation is built
+/// as for a held plain thing. Its tid.
+pub(crate) fn own_secrets_new(tx: &mut Tx<'_>, rec: osis_base::CreationRecord, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<Tid> {
+    let t = rec.tid();
+    if tx.core.created(&t).is_some() {
+        return Err(Error::Misuse("thing already exists"));
+    }
+    // as its commit would judge the creation, before anything is held of it
+    let creates = BTreeMap::from([(t, rec.clone())]);
+    crate::engine::write::check_authority(tx.core, tx.core.writer()?, &creates, &t, osis_commit::retention::CREATED, tx.core.hlc.peek())?;
+    let Some((c, rot, to)) = own_secrets_rot(tx, t, Some(rec), also, done)? else { return Err(Error::Misuse("a new thing takes secrets of its own")) };
+    recorded(tx, t, c, &rot, &to, done)?;
+    Ok(t)
+}
+
 /// `own_secrets` up to its commit, not yet recorded: the commit, the rotation, and the
 /// holders it boxes that held no box at a current read epoch before it (`unreached`).
 type OwnRot = (Option<osis_base::CommitId>, Rotation, Vec<Tid>);
-fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<Option<OwnRot>> {
+/// `rec`: the record of a new `t`, held from here and carried by the rotation commit
+/// (`own_secrets_new`).
+fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, rec: Option<osis_base::CreationRecord>, also: &[crate::flows::sync_ids::ReaderKey], done: &mut Done) -> Result<Option<OwnRot>> {
+    if let Some(r) = &rec {
+        crate::apply::atomic::learn_record(tx, r.clone())?;
+        tx.core.update_timelines();
+    }
     if tx.core.has_own_secrets(&t) || tx.core.is_key_actor(&t) {
         return Ok(None);
     }
@@ -783,6 +805,9 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, also: &[crate::flows::sync_ids::Read
     let ended: Vec<(Tid, Option<Role>)> = ended_holders(tx.core, &who, &t).into_iter().map(|m| (m, None)).collect();
     let holders = recipients(tx, &who, &t, &ended)?;
     let mut m = Mutation::new();
+    if let Some(r) = rec {
+        m.create(r);
+    }
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, Departs::No)?;
     let deposit = fresh_deposit_seed(tx, &mut m, t)?;
     // the rule (spec/sync-ids.md §2): role secrets of its own and its one sync ID, in this one
@@ -830,7 +855,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
 /// first under the sync IDs above the thing (its new `keys.0`).
 fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     let mut done = Done::default();
-    let Some((c, rot, to)) = own_secrets_rot(tx, t, &[], &mut done)? else { return Ok(done) };
+    let Some((c, rot, to)) = own_secrets_rot(tx, t, None, &[], &mut done)? else { return Ok(done) };
     recorded(tx, t, c, &rot, &to, &mut done)?;
     Ok(done)
 }

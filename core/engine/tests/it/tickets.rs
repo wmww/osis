@@ -146,6 +146,10 @@ fn a_ticket_enters_its_target_at_a_strong_spec_sync_set_2() {
         let ids: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
         let pks = lp.sealed(0, &ids).unwrap();
         lp.deliver_sealed(1, &pks).unwrap();
+        // T's record rides in its rotation, wrapped under the derived epoch it supersedes, which
+        // the ticket does not open: it comes as the record blob sync logs (spec/permissions.md §4)
+        let rec = lp.peers[0].engine.core.created(&t).cloned().unwrap();
+        lp.peers[1].engine.learn_records(vec![rec]).unwrap();
         let e1 = &mut lp.peers[1].engine;
         e1.check_closure();
         let read = e1.get(&t, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap();

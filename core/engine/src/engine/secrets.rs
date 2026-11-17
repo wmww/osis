@@ -249,8 +249,8 @@ impl Core {
     /// `alts`: the live entries of history keys holding several (each tried).
     pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> bool {
         let (epochs, untaken) = self.ingest_view(actor, secrets, read, alts);
-        if untaken {
-            self.waits.untaken(*actor);
+        if !untaken.is_empty() {
+            self.waits.untaken(*actor, untaken);
         }
         let Some(epochs) = epochs else { return false };
         self.ix.secrets.insert(*actor, epochs);
@@ -271,9 +271,9 @@ impl Core {
         ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && e.holds_any()
     }
 
-    /// What `ingest_secrets` would make of `actor`'s epochs, when it changes them, and whether an
-    /// applied box gave secrets `rotation::may_take` kept out.
-    pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> (Option<ActorEpochs>, bool) {
+    /// What `ingest_secrets` would make of `actor`'s epochs, when it changes them, and the roles
+    /// whose secrets an applied box gave that `rotation::may_take_role` kept out.
+    pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> (Option<ActorEpochs>, std::collections::BTreeSet<Role>) {
         let before = self.ix.secrets.get(actor).cloned();
         let unchecked = match read {
             SecretsRead::Pending(u) => Some(u),
@@ -281,7 +281,7 @@ impl Core {
         };
         // a bounded number of actors held through reading-only secrets alone
         if unchecked.is_some() && self.reading_full(actor) {
-            return (None, false);
+            return (None, Default::default());
         }
         let mut epochs = before.clone().unwrap_or_default();
         // an epoch whose history key the read stands for names and lists only what its live
@@ -317,21 +317,24 @@ impl Core {
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Account { holder: *t, keys: &keys }, &mut epochs, unchecked);
         }
         // a node holds no secret of an actor it cannot read (spec/permissions.md §3): an applied
-        // box gives a role's secrets only where the node's roles give them now (`may_take`),
-        // whatever the box (a forgotten part rejoining, a late rotation, a holder actor's chain);
-        // a pending one's are a grant's still to be judged, read until it is
-        // (`keys::forget_unchecked`). What it keeps out is opened again once the node's roles
-        // give it (`flows::retake`): a box may apply before the grant that makes it ours.
-        let mut untaken = false;
-        if unchecked.is_none() && !crate::rotation::may_take(self, actor) {
-            for r in ROLES {
+        // box gives a role's secrets only where the node's roles give them now
+        // (`may_take_role`: reading, every role's; sync alone, the sync secret), whatever the box
+        // (a forgotten part rejoining, a late rotation, a holder actor's chain); a pending one's
+        // are a grant's still to be judged, read until it is (`keys::forget_unchecked`). What it
+        // keeps out is opened again once the node's roles give it (`flows::retake`): a box may
+        // apply before the grant that makes it ours, or after the lowering to sync it survives.
+        let mut untaken = std::collections::BTreeSet::new();
+        if unchecked.is_none() {
+            for r in ROLES.into_iter().filter(|r| !crate::rotation::may_take_role(self, actor, *r)) {
                 let was = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
                 // listed only for a held secret kept out (epochs observed without one are no
                 // access, and listing them would list every actor the node cannot read); one a
                 // pending read gave for reading only is not held, and goes once that commit is
                 // judged, so it counts as absent
                 let new = epochs.role(r);
-                untaken |= new.epochs().any(|(e, _)| new.secret(e).is_some() && was.secret(e).is_none());
+                if new.epochs().any(|(e, _)| new.secret(e).is_some() && was.secret(e).is_none()) {
+                    untaken.insert(r);
+                }
                 *epochs.role_mut(r) = was;
             }
         }

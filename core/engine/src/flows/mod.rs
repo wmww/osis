@@ -363,19 +363,19 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
     Ok(())
 }
 
-/// Re-opens the `secrets.0` of every actor whose applied boxes gave secrets `rotation::may_take`
+/// Re-opens the `secrets.0` of every actor whose applied boxes gave secrets `rotation::may_take_role`
 /// kept out (`Waits::untaken`) where the node's roles now give them: a box applied before the
 /// grant that makes it the node's (a rotation by another admin, a re-seal) is taken once the grant
 /// applies. Called wherever roles may have grown (`apply::rejudged`, a bearer kept).
 /// Invariant: nothing opens here that `ingest_view` would not take now (each box is judged by
-/// `may_take` again as it opens; the list only says which actors to try), and the work is one
-/// `may_take` per listed actor and role, never per held actor (`retake: judged`).
+/// `may_take_role` again as it opens; the list only says which actors to try), and the work is one
+/// `may_take_role` per listed actor and role kept out, never per held actor (`retake: judged`).
 pub(crate) fn retake(tx: &mut Tx<'_>) -> Result<()> {
     let core = &*tx.core;
     osis_base::costs::count("retake: calls", 1);
-    let due = core.waits.untaken_due(|a| {
+    let due = core.waits.untaken_due(|a, r| {
         osis_base::costs::count("retake: judged", 1);
-        crate::rotation::may_take(core, a)
+        crate::rotation::may_take_role(core, a, r)
     });
     for a in due {
         tx.core.waits.retaken(&a);

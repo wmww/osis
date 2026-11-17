@@ -389,6 +389,33 @@ fn box_applied_before_its_grant_is_taken_after_a_pending_read_spec_permissions_3
     }
 }
 
+// spec/permissions.md §3 No secret taken back: a node whose roles on an actor give sync alone
+// takes the sync secret from a box, whichever came first, the box or the lowering. Peer 0 grants
+// peer 1 read on `g`, then lowers it to sync; peer 1 receives the two in order, or the lowering
+// first: either way it holds `g`'s sync secret (kept unread) and no read secret. Fails with every
+// role kept out below read (the lowering first left peer 1 nothing, for good).
+#[test]
+fn a_sync_holder_takes_the_sync_secret_in_any_order_spec_permissions_3() {
+    for lowering_first in [false, true] {
+        let mut lp = synced(2);
+        let b = lp.peers[1].engine.me();
+        let g = with_own_keys(&mut lp, 0);
+        lp.sync(0, 1).unwrap();
+        let grant = lp.peers[0].engine.grant(&g, &b, &edge(Role::Read)).unwrap().commits;
+        let lower = lp.peers[0].engine.demote(&g, &Demotion { holder: b, new: Some(edge(Role::Sync)), retain: None }).unwrap().commits;
+        let order = if lowering_first { [lower, grant] } else { [grant, lower] };
+        for c in order.iter().flatten() {
+            let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+            lp.deliver(1, &pk).unwrap();
+        }
+        lp.peers[1].engine.drop_lost_secrets().unwrap();
+        assert_eq!(lp.peers[1].engine.core.role_now(&b, &g), Some(Role::Sync), "lowering first {lowering_first}");
+        let e = lp.peers[1].engine.epochs(&g);
+        let held = e.as_ref().map(|e| (e.role(Role::Sync).holds_any(), e.role(Role::Read).holds_any()));
+        assert_eq!(held, Some((true, false)), "lowering first {lowering_first}: (sync, read) held");
+    }
+}
+
 // spec/permissions.md §3 (No secret taken back: a node holds the secrets its roles give it, and
 // no others, whatever order commits arrive in): admins A (0) and B (1) and writer M (2) grant and remove reader N (3),
 // rotate, remove M and write, syncing among themselves at random, then settle; N and O (4, never

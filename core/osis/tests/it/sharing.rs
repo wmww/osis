@@ -27,7 +27,8 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         let t = w.create_held().unwrap();
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("one")).unwrap();
         w.commit().unwrap();
-        // the first holder gives `t` secrets of its own: its `keys.0` goes in that commit
+        // made under the account, `t` has secrets of its own from its creation: its keysets go in
+        // that commit
         alice.grant(t, carol.me(), Role::Read, Default::default()).unwrap();
         alice.grant(t, bob.me(), role, Default::default()).unwrap();
         // (a grant's `keys.0` part records its boxes: the keyset is the rotation's)
@@ -37,6 +38,16 @@ fn role_before_delete_keys_reads_as_read_spec_crypto_7() {
         assert_eq!(later.len(), 1, "one commit carries t's keysets");
         for (_, pk) in &now {
             bob.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
+        }
+        // t's record and minting ride in the commit carrying its keysets, held back: they come as
+        // sync logs them, a record blob and the minting's header-only copy (spec/permissions.md §4,
+        // spec/commits.md §5 A thing's mintings travel with its record)
+        let rec = alice.engine(|e| e.core.created(&t).cloned()).unwrap();
+        bob.engine(|e| e.learn_records(vec![rec]).unwrap());
+        for (_, pk) in &later {
+            let mut header = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+            header.parts.clear();
+            bob.engine(|e| e.ingest(&header.encode(), Vec::new()).unwrap());
         }
         // bob holds what he writes
         bob.hold(t).unwrap();

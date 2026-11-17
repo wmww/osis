@@ -4,7 +4,7 @@
 
 use super::Reason;
 use crate::engine::Core;
-use osis_base::{BlobId, CommitId, CreationRecord, Tid};
+use osis_base::{BlobId, CommitId, CreationRecord, Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What a pending commit awaits: its one parking place, keyed by the missing thing
@@ -321,12 +321,13 @@ pub(crate) struct Waits {
     /// Tests: the next `wake` examines every pending commit, as a full scan (`Engine::lost_wakes`).
     pub every_due: bool,
     /// Actors whose applied boxes gave secrets the node's roles did not give then
-    /// (`rotation::may_take`): taken again once they do (`flows::retake`). In memory: the open's
-    /// `reopen_all` (`take_account`) refuses and lists them again.
-    untaken: BTreeSet<Tid>,
+    /// (`rotation::may_take_role`), with the roles kept out: taken again once they do
+    /// (`flows::retake`). In memory: the open's `reopen_all` (`take_account`) refuses and lists
+    /// them again.
+    untaken: BTreeMap<Tid, BTreeSet<Role>>,
     /// Entries `retaken` took off `untaken` in the transaction running: a rollback lists them
     /// again (`Core::rollback_to`; the secrets they gave are rolled back), a commit forgets them.
-    retaking: Vec<Tid>,
+    retaking: Vec<(Tid, BTreeSet<Role>)>,
 }
 
 impl Waits {
@@ -411,20 +412,20 @@ impl Waits {
     }
 
 
-    /// An applied box of `actor` gave secrets the node's roles did not give.
-    pub fn untaken(&mut self, actor: Tid) {
-        self.untaken.insert(actor);
+    /// An applied box of `actor` gave secrets of `roles` the node's roles did not give.
+    pub fn untaken(&mut self, actor: Tid, roles: BTreeSet<Role>) {
+        self.untaken.entry(actor).or_default().extend(roles);
     }
 
-    /// The untaken actors `may` allows.
-    pub fn untaken_due(&self, may: impl Fn(&Tid) -> bool) -> Vec<Tid> {
-        self.untaken.iter().filter(|a| may(a)).copied().collect()
+    /// The untaken actors where `may` allows a role kept out.
+    pub fn untaken_due(&self, may: impl Fn(&Tid, Role) -> bool) -> Vec<Tid> {
+        self.untaken.iter().filter(|(a, rs)| rs.iter().any(|r| may(a, *r))).map(|(a, _)| *a).collect()
     }
 
     /// `actor`, taken off the untaken list (opened again).
     pub fn retaken(&mut self, actor: &Tid) {
-        if self.untaken.remove(actor) {
-            self.retaking.push(*actor);
+        if let Some(rs) = self.untaken.remove(actor) {
+            self.retaking.push((*actor, rs));
         }
     }
 
@@ -436,7 +437,9 @@ impl Waits {
     /// The transaction (or a step of it) rolled back: what `retaken` took is listed again (a
     /// superset is harmless: `flows::retake` judges each entry again).
     pub fn retake_rolled_back(&mut self) {
-        self.untaken.extend(self.retaking.drain(..));
+        for (a, rs) in self.retaking.drain(..) {
+            self.untaken.entry(a).or_default().extend(rs);
+        }
     }
 
 

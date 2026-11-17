@@ -121,6 +121,13 @@ pub(crate) fn may_take(core: &Core, a: &Tid) -> bool {
     }
 }
 
+/// Whether a box may give this node `a`'s secret of role `r` (spec/permissions.md §3 No secret
+/// taken back): every role's where it may take (`may_take`), the sync secret where its roles
+/// give sync alone.
+pub(crate) fn may_take_role(core: &Core, a: &Tid, r: Role) -> bool {
+    may_take(core, a) || r == Role::Sync && holds_at(core, a, Role::Sync)
+}
+
 /// Whether an entry box may give this node secrets of `a` (spec/sync-ids.md §3): as a box
 /// may (`may_take`), or while nothing held says the node lost `a`: no ended edge on it of the node,
 /// a held key actor or an actor it reads (a link's redeemer opens the sync ID before it holds the
