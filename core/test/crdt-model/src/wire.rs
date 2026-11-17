@@ -1305,7 +1305,7 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
             // one per commit entry: a class, with an actor where not the author (not modeled)
-            let class = |x: &Item| x.uint().is_ok_and(|c| c <= 3);
+            let class = |x: &Item| x.uint().is_ok_and(|c| (1..=3).contains(&c)); // spec/wire.md §1
             let fact = |x: &Item| match x {
                 Item::Array(v) => matches!(v.as_slice(), [c, Item::Bytes(b)] if class(c) && b.len() == 15),
                 x => class(x),
