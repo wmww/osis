@@ -406,8 +406,6 @@ fn scope(e: &mut Engine, hist: &History, held: &[(CommitId, Arc<Header>, bool)])
             Some("ephemeral")
         } else if !applied && !matches!(pending.get(id), Some(R::Drift)) {
             Some("waits for a reason outside the model")
-        } else if h.frontier.as_ref().is_some_and(|f| ct::Frontier::from_value(f).is_err()) {
-            Some("frontier not inline")
         } else if h.kind.is_role() && h.undoes.is_some() {
             Some("role undo")
         } else {
@@ -548,7 +546,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             Kind::ContentSnapshot => hm::CommitKind::Snapshot,
             _ => hm::CommitKind::Content,
         };
-        let frontier = h.frontier.as_ref().and_then(|f| ct::Frontier::from_value(f).ok()).map(|f| f.commits.iter().map(|c| cv.commit(c)).collect());
+        let frontier = h.frontier.as_ref().map(|f| f.iter().map(|c| cv.commit(c)).collect());
         let purge = h
             .purge
             .iter()

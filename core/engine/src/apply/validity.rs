@@ -31,15 +31,9 @@ pub(crate) fn edge_of(v: &Value) -> Option<Edge> {
     Some(Edge { role: e.role, until: e.until, invite: e.invite, retain: e.retain, floor: e.floor })
 }
 
-fn frontier_of(f: ct::Frontier) -> Frontier {
-    Frontier { commits: f.commits }
-}
-
-/// The header's frontier (inline, or resolved from its link).
+/// The header's frontier (inline, or resolved from its link), sharing its IDs.
 pub(crate) fn header_frontier(h: &Header) -> Option<Arc<Frontier>> {
-    let v = h.frontier.as_ref()?;
-    let f = ct::Frontier::from_value(&typed(v, "frontier")?).ok()?;
-    Some(Arc::new(frontier_of(f)))
+    h.frontier.clone().map(|ids| Arc::new(Frontier::of_sorted(ids)))
 }
 
 /// Whether `ak` holds edge writes (`roles.0`): perm reads them.

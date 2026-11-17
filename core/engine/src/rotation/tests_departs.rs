@@ -302,7 +302,7 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
             let mut m_ = Mutation::new();
             m_.ts = Some(tx.core.hlc.next());
             crate::flows::put_edge(&mut m_, a, m, &edge(Role::Write))?;
-            m_.frontier(osis_schema::Codec::to_value(&ct::Frontier::default()));
+            m_.frontier(osis_perm::Frontier::default());
             let holders = super::recipients(tx, &me, &a, &[(m, Some(Role::Write))])?;
             let rot = super::rotation_into(tx, &mut m_, a, &[Role::Read, Role::Admin].into(), &held, &holders, crate::rotation::Departs::Holder)?;
             assert!(rot.names.departs.is_some());

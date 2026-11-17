@@ -98,7 +98,9 @@ impl Config {
 /// client's config (`Osis::connect`, `connect_socket`), and `Config::app` of a node.
 #[derive(Clone)]
 pub struct AppConfig {
-    /// Reads of values larger than this many bytes fail `TooLarge` (read those by stream or path).
+    /// The most a read holds, in bytes: of the value's canonical bytes, of what its links decode
+    /// to, and of the aspect's state as held in memory (about 100 times its value for maps of small
+    /// entries); past it the read fails `TooLarge` (read by stream or path).
     pub read_limit: usize,
     /// A text session commits after this much inactivity.
     pub idle_commit: Duration,

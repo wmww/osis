@@ -101,6 +101,8 @@ impl PageSet {
 pub struct StatePages {
     sets: BTreeMap<Vec<Step>, PageSet>,
     paths: Paths,
+    /// What the running read may still load of the state (`Tx::bound`, set by `Tx::with_pages`).
+    pub(crate) bound: Bound,
 }
 
 impl StatePages {
@@ -124,6 +126,26 @@ impl StatePages {
     pub fn sets(&self) -> usize {
         self.sets.len()
     }
+}
+
+/// What a bounded read may still hold of the states it loads, in bytes (`Tx::bound`); `None`:
+/// unbounded (every write and join: what they load is bounded by the commits they apply).
+pub type Bound = Option<usize>;
+
+/// Decodes a stored piece of a state (a unit, a body, a page) of `stored` bytes under `bound`:
+/// refused before decoding when its bytes exceed what is left, then charged the greater of its
+/// bytes and its decode (`Fragment::approx_bytes`, as a link is, notes/decode-bounds.md), so a
+/// read holds at most its bound plus one piece. Past the bound: `TooLarge` (local).
+pub fn charge(bound: &mut Bound, stored: usize, decode: impl FnOnce() -> Result<Fragment>) -> Result<Fragment> {
+    let too_large = || Error::Data(osis_commit::Error::TooLarge("state above the read bound"));
+    if bound.is_some_and(|b| stored > b) {
+        return Err(too_large());
+    }
+    let f = decode()?;
+    if let Some(b) = bound {
+        *b = b.checked_sub(stored.max(f.approx_bytes())).ok_or_else(too_large)?;
+    }
+    Ok(f)
 }
 
 /// What joining a delta can change in a paged state (`None`: write whole).
@@ -274,7 +296,7 @@ pub fn open(unit_state: &[u8], salt: &[u8; 32]) -> Result<(Fragment, StatePages)
         return Err(bad());
     }
     let f = decode(skel)?;
-    let mut idx = StatePages { sets: BTreeMap::new(), paths: Paths::default() };
+    let mut idx = StatePages { sets: BTreeMap::new(), paths: Paths::default(), bound: None };
     for x in list {
         let Value::List(x) = x else { return Err(bad()) };
         let [Value::Int(id), p, Value::Int(enc)] = x.as_slice() else { return Err(bad()) };
@@ -292,13 +314,18 @@ fn table(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak) -> Result<Table> {
 }
 
 /// Joins one page row into `f` and notes it loaded.
-fn join_row(f: &mut Fragment, set: &mut PageSet, key: Vec<u8>, row: &[u8]) -> Result<()> {
+fn join_row(f: &mut Fragment, set: &mut PageSet, bound: &mut Bound, key: Vec<u8>, row: &[u8]) -> Result<()> {
     if set.loaded.contains_key(&key) {
         return Ok(());
     }
     // counted: scale tests read the number of pages loaded
     let _s = osis_base::costs::span("state page load");
-    let (range, p) = parse_page_row(row)?;
+    let mut range = (None, None);
+    let p = charge(bound, row.len(), || {
+        let (r, p) = parse_page_row(row)?;
+        range = r;
+        Ok(p)
+    })?;
     if set.row_key(range.0.as_ref()) != key {
         return Err(Error::Corrupt("state page key"));
     }
@@ -330,13 +357,13 @@ pub fn load_all(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePa
     }
     let t = table(txn, tid, ak)?;
     for set in idx.sets.values_mut() {
-        ensure_set(txn, tid, ak, t, set, f)?;
+        ensure_set(txn, tid, ak, t, set, &mut idx.bound, f)?;
     }
     Ok(())
 }
 
 /// Loads the page of `set` holding `d` (the last row at or below it).
-fn ensure_dot(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, f: &mut Fragment, d: &Dot) -> Result<()> {
+fn ensure_dot(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, d: &Dot) -> Result<()> {
     if set.whole || set.loaded_page(d).is_some() {
         return Ok(());
     }
@@ -344,7 +371,7 @@ fn ensure_dot(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, f: &mut Fr
     if !k.starts_with(&set.prefix()) {
         return Err(Error::Corrupt("state page missing"));
     }
-    join_row(f, set, k, &v)
+    join_row(f, set, bound, k, &v)
 }
 
 /// The last row of `t` below `key`.
@@ -354,34 +381,34 @@ fn row_below(txn: &mut Transaction<'_>, t: Table, key: &[u8]) -> Result<(Vec<u8>
 }
 
 /// Loads the pages of `set` holding the elements from `a` to `b` (dot order).
-fn ensure_span(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, f: &mut Fragment, a: &Dot, b: &Dot) -> Result<()> {
-    ensure_dot(txn, t, set, f, a)?;
+fn ensure_span(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, a: &Dot, b: &Dot) -> Result<()> {
+    ensure_dot(txn, t, set, bound, f, a)?;
     if set.whole || b <= a {
         return Ok(());
     }
     let from = [set.row_key(Some(a)), vec![0]].concat();
     let end = [set.row_key(Some(b)), vec![0]].concat();
-    scan_table(txn, t, &from, Some(&end), |k, v| join_row(f, set, k, &v))
+    scan_table(txn, t, &from, Some(&end), |k, v| join_row(f, set, bound, k, &v))
 }
 
 /// Loads the first page of `set` (it holds records as long as the collection is paged:
 /// records are never dropped but by a whole rewrite, which lays the pages out again).
-fn ensure_first(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, f: &mut Fragment) -> Result<()> {
+fn ensure_first(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment) -> Result<()> {
     let k = set.prefix();
     if set.whole || set.loaded.contains_key(&k) {
         return Ok(());
     }
     let v = txn.table_get(t, &k)?.ok_or(Error::Corrupt("first state page missing"))?;
-    join_row(f, set, k, &v)
+    join_row(f, set, bound, k, &v)
 }
 
 /// Loads every page of `set`.
-fn ensure_set(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, f: &mut Fragment) -> Result<()> {
+fn ensure_set(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment) -> Result<()> {
     if set.whole {
         return Ok(());
     }
     let (start, end) = (set.prefix(), set.id.saturating_add(1).to_be_bytes());
-    scan_table(txn, t, &start, Some(&end), |k, v| join_row(f, set, k, &v))?;
+    scan_table(txn, t, &start, Some(&end), |k, v| join_row(f, set, bound, k, &v))?;
     if !set.loaded.contains_key(&start) {
         return Err(Error::Corrupt("first state page missing"));
     }
@@ -407,21 +434,21 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Sta
             }
             for pair in dots.chunks(2) {
                 if let (Some(a), Some(b)) = (pair.first(), pair.last()) {
-                    ensure_span(txn, t, set, f, a, b)?;
+                    ensure_span(txn, t, set, &mut idx.bound, f, a, b)?;
                 }
             }
         } else {
             for d in dots {
-                ensure_dot(txn, t, set, f, d)?;
+                ensure_dot(txn, t, set, &mut idx.bound, f, d)?;
             }
         }
         // a page joins the set's keyed path into `f`, which `write_touched` takes again: a
         // delta reaching the set without elements (a `W`) would otherwise drop its creations
         if set.loaded.is_empty() {
-            ensure_first(txn, t, set, f)?;
+            ensure_first(txn, t, set, &mut idx.bound, f)?;
         }
         if let Some(d) = touch.seqs.get(p) {
-            prefetch(txn, tid, ak, t, set, f, d)?;
+            prefetch(txn, tid, ak, t, set, &mut idx.bound, f, d)?;
         }
     }
     // every record of the values whose read the join may move (`PagedTouch::values`), through
@@ -438,7 +465,7 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Sta
         }
         for v in &vs {
             for d in key_dots(txn, tid, ak, set, v)? {
-                ensure_dot(txn, t, set, f, &d)?;
+                ensure_dot(txn, t, set, &mut idx.bound, f, &d)?;
             }
         }
     }
@@ -447,7 +474,8 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Sta
 
 /// Loads what following the join of `d` into the paged sequence `set` needs into its stored
 /// placement and the pages, and attaches the placement (none if missing).
-fn prefetch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, f: &mut Fragment, d: &Fragment) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn prefetch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, d: &Fragment) -> Result<()> {
     let Some(mut pl) = held(txn, tid, ak, set)? else { return Ok(()) };
     let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return Ok(()) };
     let _s = osis_base::costs::span("placement prefetch");
@@ -464,7 +492,7 @@ fn prefetch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut P
         if !m.any() || work > budget {
             break;
         }
-        if !absorb_into(txn, t, pt, set, f, &mut pl, &m)? {
+        if !absorb_into(txn, t, pt, set, bound, f, &mut pl, &m)? {
             break;
         }
     }
@@ -501,7 +529,7 @@ pub fn ensure_path(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Stat
         let below: Vec<Vec<Step>> = idx.sets.keys().filter(|k| k.starts_with(&p)).cloned().collect();
         for q in below {
             if let Some(set) = idx.sets.get_mut(&q) {
-                ensure_set(txn, tid, ak, t, set, f)?;
+                ensure_set(txn, tid, ak, t, set, &mut idx.bound, f)?;
             }
         }
     }
@@ -517,27 +545,37 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut State
     for seg in path {
         let mut next = Vec::new();
         for p in at {
+            // a field step into a map reads its integer key (`Fragment::read_at`)
+            let map = idx.sets.get(&p).map_or(matches!(f.at_steps(&p), Some(Fragment::Map(_))), |s| s.enc == Encoding::Map);
+            let key;
+            let seg = match seg {
+                PathSeg::Field(id) if map && let Ok(i) = i64::try_from(*id) => {
+                    key = PathSeg::Key(Value::Int(i));
+                    &key
+                }
+                seg => seg,
+            };
             let paged = idx.sets.contains_key(&p);
             if paged {
                 let Some(set) = idx.sets.get_mut(&p) else { continue };
                 // the first page restores the entries leading here (the skeleton reduced them
                 // away) even when the key has none: a write then finds the collection
-                ensure_first(txn, t, set, f)?;
+                ensure_first(txn, t, set, &mut idx.bound, f)?;
                 match seg {
                     // a key of a map; a value of a set (`op_paths` of an op by value)
                     PathSeg::Key(k) if is_keyed(set) => {
                         let ds = key_dots(txn, tid, ak, set, k)?;
                         for d in &ds {
-                            ensure_dot(txn, t, set, f, d)?;
+                            ensure_dot(txn, t, set, &mut idx.bound, f, d)?;
                         }
                     }
                     // an element of a sequence: through its stored placement
                     PathSeg::Index(i) if is_seq(set) && !set.whole => {
-                        if !step_index(txn, tid, ak, t, set, f, &p, *i)? {
-                            ensure_set(txn, tid, ak, t, set, f)?;
+                        if !step_index(txn, tid, ak, t, set, &mut idx.bound, f, &p, *i)? {
+                            ensure_set(txn, tid, ak, t, set, &mut idx.bound, f)?;
                         }
                     }
-                    _ => ensure_set(txn, tid, ak, t, set, f)?,
+                    _ => ensure_set(txn, tid, ak, t, set, &mut idx.bound, f)?,
                 }
             }
             match seg {
@@ -949,12 +987,13 @@ fn attach(f: &mut Fragment, set: &PageSet, p: Option<SeqPlace>) {
 
 /// Loads what `p` missed (blocks, chunks, the pages of records); `Ok(false)`: give up (a row
 /// damaged, or every record looked at).
-fn absorb_into(txn: &mut Transaction<'_>, t: Table, pt: Table, set: &mut PageSet, f: &mut Fragment, p: &mut SeqPlace, m: &PlaceMisses) -> Result<bool> {
+#[allow(clippy::too_many_arguments)]
+fn absorb_into(txn: &mut Transaction<'_>, t: Table, pt: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, p: &mut SeqPlace, m: &PlaceMisses) -> Result<bool> {
     if m.all || !fill_place(txn, pt, set, p, &m.blocks, &m.chunks)? {
         return Ok(false);
     }
     for (a, b) in &m.recs {
-        ensure_span(txn, t, set, f, a, b)?;
+        ensure_span(txn, t, set, bound, f, a, b)?;
     }
     Ok(true)
 }
@@ -1093,7 +1132,7 @@ pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
         let Some(set) = idx.sets.get_mut(p).filter(|s| is_seq(s) && !s.whole) else { return Ok(false) };
         if let Some(PathSeg::Index(i)) = k.and_then(|k| op.path.get(k)) {
             // the element loaded up front: a large value's lookup (`chunk_ops`) finds it held
-            if !step_index(txn, tid, ak, t, set, f, p, *i)? {
+            if !step_index(txn, tid, ak, t, set, &mut idx.bound, f, p, *i)? {
                 return Ok(false);
             }
             continue;
@@ -1101,7 +1140,7 @@ pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
         let Some(pl) = held(txn, tid, ak, set)? else { return Ok(false) };
         // the skeleton holds no sequence without a reset or `W`: its first page restores it
         if f.at_steps(p).is_none() {
-            ensure_first(txn, t, set, f)?;
+            ensure_first(txn, t, set, &mut idx.bound, f)?;
         }
         match (&op.op, edits.get(n).and_then(Option::as_ref)) {
             (Op::Edit { new: Value::Str(_), .. }, _) => {}
@@ -1109,7 +1148,7 @@ pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mu
             (Op::Edit { new: Value::List(_), .. }, Some(e)) => {
                 // the elements at its window, whose links it takes; else the whole list's
                 let Some(w) = e.win else { return Ok(false) };
-                if pl.shown() != e.base_len() || load_range(txn, tid, ak, t, set, f, pl, w.lo..w.hi)?.is_none() {
+                if pl.shown() != e.base_len() || load_range(txn, tid, ak, t, set, &mut idx.bound, f, pl, w.lo..w.hi)?.is_none() {
                     return Ok(false);
                 }
                 let Place::Held(pl) = &set.place else { return Ok(false) };
@@ -1148,7 +1187,7 @@ pub fn absorb(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePage
             return Ok(None);
         }
         let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return Ok(None) };
-        if !absorb_into(txn, t, pt, set, f, &mut p, &m)? {
+        if !absorb_into(txn, t, pt, set, &mut idx.bound, f, &mut p, &m)? {
             return Ok(None);
         }
         hold(f, set, p);
@@ -1178,7 +1217,7 @@ pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StateP
     let Some(set) = idx.sets.get_mut(p).filter(|s| is_seq(s)) else { return Ok(Ranged::Unpaged) };
     let Some(pl) = held(txn, tid, ak, set)? else { return Ok(Ranged::Damaged) };
     let total = pl.shown();
-    match load_range(txn, tid, ak, t, set, f, pl, r)? {
+    match load_range(txn, tid, ak, t, set, &mut idx.bound, f, pl, r)? {
         Some(dots) => Ok(Ranged::Read(p.clone(), dots, total)),
         None => Ok(Ranged::Damaged),
     }
@@ -1188,7 +1227,7 @@ pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StateP
 /// placement `pl`: loads the blocks holding them and the pages holding their records; `None`
 /// if a row is missing or damaged (then noted missing).
 #[allow(clippy::too_many_arguments)]
-fn load_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, f: &mut Fragment, mut pl: SeqPlace, r: Span<usize>) -> Result<Option<Vec<Dot>>> {
+fn load_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, mut pl: SeqPlace, r: Span<usize>) -> Result<Option<Vec<Dot>>> {
     let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return Ok(None) };
     let total = pl.shown();
     // a reversed range is empty
@@ -1212,7 +1251,7 @@ fn load_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
     }
     set.place = Place::Held(pl);
     for d in &dots {
-        ensure_dot(txn, t, set, f, d)?;
+        ensure_dot(txn, t, set, bound, f, d)?;
     }
     Ok(Some(dots))
 }
@@ -1222,13 +1261,13 @@ fn load_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut
 /// inside the element resolves on the pages loaded. `false`: no placement (load the sequence
 /// whole).
 #[allow(clippy::too_many_arguments)]
-fn step_index(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, f: &mut Fragment, p: &[Step], i: usize) -> Result<bool> {
+fn step_index(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, bound: &mut Bound, f: &mut Fragment, p: &[Step], i: usize) -> Result<bool> {
     let Some(pl) = held(txn, tid, ak, set)? else { return Ok(false) };
-    if load_range(txn, tid, ak, t, set, f, pl, i..i.saturating_add(1))?.is_none() {
+    if load_range(txn, tid, ak, t, set, bound, f, pl, i..i.saturating_add(1))?.is_none() {
         return Ok(false);
     }
     if f.at_steps(p).is_none() {
-        ensure_first(txn, t, set, f)?;
+        ensure_first(txn, t, set, bound, f)?;
     }
     let pl = match &set.place {
         Place::Held(x) => x.clone(),
@@ -1257,7 +1296,7 @@ pub fn unplaced(idx: &StatePages) -> Vec<Vec<Step>> {
 pub fn rebuild_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut StatePages, f: &mut Fragment, p: &[Step]) -> Result<()> {
     let t = table(txn, tid, ak)?;
     let Some(set) = idx.sets.get_mut(p) else { return Ok(()) };
-    ensure_set(txn, tid, ak, t, set, f)?;
+    ensure_set(txn, tid, ak, t, set, &mut idx.bound, f)?;
     set.relay = false;
     match f.at_steps(p) {
         Some(c @ Fragment::Seq(_)) => write_placement(txn, tid, ak, set, c, Shred::No),
@@ -1374,7 +1413,7 @@ pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Frag
     }
     let t = txn.create_table(tid, ak, STATE_TABLE)?;
     let kt = txn.create_table(tid, ak, KEY_TABLE)?;
-    let mut idx = StatePages { sets: BTreeMap::new(), paths: Paths::default() };
+    let mut idx = StatePages { sets: BTreeMap::new(), paths: Paths::default(), bound: None };
     for p in &paged {
         idx.paths.insert(p);
     }

@@ -266,7 +266,7 @@ fn more_accepted() -> Vec<Record> {
     let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, core_delta("roles.0", Form::Commit, Kind::Role, at, 1, grant(0x41, 0), 9));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
-    b.frontier = Some(Value::Map([(Value::Int(0), Value::Map(Default::default())), (Value::Int(1), Value::Set(Default::default()))].into_iter().collect()));
+    b.frontier = Some(std::sync::Arc::from([CommitId([0x51; 32]), CommitId([0x52; 32])]));
     out.push(record("role demotion with a frontier", "spec/wire.md §4; spec/permissions.md §5", &built(b)));
     // a linked aspect list (above CHUNK_THRESHOLD)
     let at = ts(1_700_000_007_000);
@@ -313,7 +313,7 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut x = m.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:title.0").unwrap() });
     out.push(reject("purge request on a role commit", "spec/commits.md §2, §5", &x, "purge-role-class"));
-    let frontier = Some(Value::Map(Default::default()));
+    let frontier = Some(std::sync::Arc::from([]));
     let mut x = m.clone();
     x.kind = Kind::RoleSnapshot;
     x.aspects[0].ak = Ak::new("secrets.0").unwrap();

@@ -204,15 +204,17 @@ impl Value {
     }
 
     #[doc(hidden)]
-    /// `self.depth() > max`, recursing at most `max` levels (safe on untrusted nesting).
+    /// Whether the value nests deeper than `max` as read (spec/data-model.md §5): `self.depth() >
+    /// max` but for a link, which counts as the value it reads as: a leaf here, its content
+    /// checked against the room left where it is read (`osis_blob::read_value`). Recurses at most
+    /// `max` levels (safe on untrusted nesting).
     pub fn deeper_than(&self, max: usize) -> bool {
         let below = |v: &Value, by: usize| max.checked_sub(by).is_none_or(|m| v.deeper_than(m));
         match self {
-            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Bytes(_) => false,
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Bytes(_) | Value::Link(_) => false,
             Value::Strong(_) | Value::Weak(_) => max < 1,
             Value::Ticket(t) => max < 1 || t.to_value().deeper_than(max - 1),
             Value::Enum(_, None) => max < 2,
-            Value::Link(l) => max < 3 + usize::from(!l.del.is_empty()),
             Value::Enum(_, Some(p)) => below(p, 2),
             Value::List(l) => max < 1 || l.iter().any(|v| below(v, 1)),
             Value::Map(m) => max < 1 || m.iter().any(|(k, v)| below(k, 1) || below(v, 1)),

@@ -43,9 +43,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
     };
     let frontier = |rng: &mut Rng| -> Option<Arc<Frontier>> {
         (rng.below(2) == 0).then(|| {
-            let mut f = Frontier::default();
-            f.commits.insert(cid(rng.below(40) as u32));
-            Arc::new(f)
+            Arc::new(Frontier::new([cid(rng.below(40) as u32)]))
         })
     };
     for i in 0..(2 + rng.below(12)) {

@@ -168,10 +168,7 @@ impl ReadOnly {
     /// The stored value at `path` of an aspect, links unmaterialized.
     fn raw_at<K: AspectKey>(&self, tid: Tid, key: &K, path: &Path) -> Result<Option<(Tid, Value)>> {
         let ak = ak_of(key)?;
-        self.read_local(|r| {
-            let (tid, Some(v)) = r.raw(tid, &ak)? else { return Ok(None) };
-            Ok(osis_schema::value_at(&v, path).cloned().map(|x| (tid, x)))
-        })
+        self.read_local(|r| Ok(r.raw_at(tid, &ak, path)?.map(|x| (tid, x))))
     }
 }
 
@@ -184,7 +181,7 @@ impl<K: ValueKey, H: std::borrow::Borrow<ReadOnly>> PathRef<'_, '_, K, H> {
             // the link, not the bytes: a change of the value is a new link
             let (ak, at) = (ak_of(key)?, path.clone());
             let ak2 = ak.clone();
-            db.read_value(tid, &ak, format!("raw {}", crate::read::value_key(tid, &ak, path)), crate::watch::ReadAt::new(move |r| Ok(r.raw(tid, &ak2)?.1.and_then(|v| osis_schema::value_at(&v, &at).cloned()))))?;
+            db.read_value(tid, &ak, format!("raw {}", crate::read::value_key(tid, &ak, path)), crate::watch::ReadAt::new(move |r| r.raw_at(tid, &ak2, &at)))?;
         }
         match db.raw_at(tid, key, path)? {
             Some((tid, v)) => Ok(Some(ValueStream::open(db, tid, v)?)),

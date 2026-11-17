@@ -75,7 +75,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - RFC 8949 §4.2.1 core deterministic rules: shortest integer and length heads, definite lengths only, sorted map keys, no duplicate keys. Deviation: floats are always 8 bytes, so a float's bytes are its bit pattern.
 - A set with two elements, or a map with two keys, that are equal under §4 and §6 (distinct bytes, links of one content hash) is rejected.
 - No `null`, `undefined` or simple values other than true and false.
-- Depth: a value nests at most 64 arrays, maps and tags deep; writers refuse deeper values, decoders reject them. Decoder limits for every other object: spec/wire.md §12.
+- Depth: a value nests at most 64 arrays, maps and tags deep as read; writers refuse deeper values, decoders reject them. A link (§6) counts as the value it reads as: a decoder counts it as a leaf, and a read of it at a position `d` levels deep reads it within `64 − d` levels (deeper: a link it cannot read, §6). Decoder limits for every other object: spec/wire.md §12.
 - Floats: value identity is the IEEE 754 bit pattern. NaN is normalized at construction to the positive quiet NaN with zero payload; a decoder rejects any other NaN. -0.0 and 0.0 are distinct.
 - Unknown tags are not errors: the value keeps the tag and its content as raw canonical bytes, merges as an opaque register value and fails only a typed read. New osis types are added as new tags (spec/versioning.md).
 - Names never go on the wire; struct fields and enum cases are integer IDs. A struct and a `map<int, T>` share an encoding; the schema decides.
@@ -91,7 +91,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
   - Small types can never exceed `CHUNK_THRESHOLD`: `bool`, `int`, `float`, `strong`, `weak`, `ref`, `ticket`, counter, max, min, and an enum whose cases carry no payload.
   - A link anywhere else is a type mismatch (spec/versioning.md §5): a typed read reports it without fetching the link.
   - In a core aspect (§9) it is bad input (spec/crdt.md §3.3 rule 7).
-- A read that materializes a link it cannot read (a blob of its tree not held, which includes a blob ID nothing holds, or failing to decrypt or verify under the thing's dedup secret, spec/crypto.md §6) MUST fail only that position: the link reads as absent (its list or set element, its map entry or struct field, and an enum whose payload it is, read as absent; at the aspect root the aspect reads absent), the rest of the value reads, and the node reports a diagnostic.
+- A read that materializes a link it cannot read (a blob of its tree not held, which includes a blob ID nothing holds, failing to decrypt or verify under the thing's dedup secret, spec/crypto.md §6, or a value nesting deeper than its position leaves room for, §5) MUST fail only that position: the link reads as absent (its list or set element, its map entry or struct field, and an enum whose payload it is, read as absent; at the aspect root the aspect reads absent), the rest of the value reads, and the node reports a diagnostic.
   - Every read of the value (typed, untyped, per path, watches) applies this rule alike.
   - A read of one commit's body (a listed part) holding such a link reads that body whole as not fetched.
   - When a blob such a read lacked arrives, the node delivers the aspect, or that commit, to its watches again.

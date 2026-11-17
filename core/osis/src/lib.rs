@@ -430,8 +430,8 @@
 //! ```
 //!
 //! # Large values and text
-//! A read fails `TooLarge` above `AppConfig::read_limit` rather than run out of memory: read a large
-//! string or blob by `stream`, a large collection by path. Text a user types goes through a session,
+//! A read fails `TooLarge` when it would hold more than `AppConfig::read_limit` rather than run out
+//! of memory: read a large string or blob by `stream`, a large collection by path. Text a user types goes through a session,
 //! which commits once per pause rather than per keystroke.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, p};

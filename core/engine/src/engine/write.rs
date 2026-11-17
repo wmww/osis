@@ -51,7 +51,7 @@ pub struct Mutation {
     /// Purge items by commit ID, named by their stamp at commit (`Core::purge_item`).
     pub(crate) purge_named: Vec<(CommitId, Tid, Ak)>,
     pub(crate) undoes: Option<CommitId>,
-    pub(crate) frontier: Option<Value>,
+    pub(crate) frontier: Option<osis_perm::Frontier>,
     /// Role flows judge their own authority (invite grants, self-removals).
     pub(crate) unchecked: bool,
     /// A held key actor that signs instead of the node (commit form).
@@ -221,8 +221,8 @@ impl Mutation {
     }
 
     /// The frontier of an explicit demotion (role flows).
-    pub fn frontier(&mut self, v: Value) -> &mut Self {
-        self.frontier = Some(v);
+    pub fn frontier(&mut self, f: osis_perm::Frontier) -> &mut Self {
+        self.frontier = Some(f);
         self
     }
 
@@ -445,7 +445,7 @@ pub(crate) struct CommitPlan {
     pub creates: Creates,
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
-    pub frontier: Option<Value>,
+    pub frontier: Option<osis_perm::Frontier>,
     /// The signing key actor: the node, or a key actor it holds.
     pub signer: Tid,
     /// The header's blind (spec/crypto.md §7: the commit blob's; chunks and pages carry their
@@ -673,7 +673,7 @@ fn build(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<osi
     b.aspects = writes;
     b.purge = plan.purge;
     b.undoes = plan.undoes;
-    b.frontier = plan.frontier;
+    b.frontier = plan.frontier.map(|f| f.ids());
     b.blind = Some(plan.blind);
     b.rotation = plan.rotation.as_ref().map(|r| (r.header.clone(), r.merge_keys.clone()));
     b.own_cover = plan.own_cover;
@@ -1049,6 +1049,16 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
             None => Vec::new(),
         };
         let attached = tx.load_for_ops(&tid, &ak, paths, &am.ops, &edits)?;
+        // depth counts a value as read (spec/data-model.md §5): checked before large values
+        // become links, which count as leaves after
+        let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
+        let deep = |op: &PathOp| match &view {
+            Some(v) => osis_crdt::out_of_profile(op, v),
+            None => osis_crdt::out_of_profile(op, &AnyView),
+        };
+        if am.ops.iter().any(deep) {
+            return Err(osis_crdt::Error::Mismatch("value nested deeper than MAX_VALUE_DEPTH or enum case above i64::MAX").into());
+        }
         // large atomic values become chunk trees before the ops resolve, a memory commit's held
         // in memory (spec/data-model.md §6)
         let mut chunks = Vec::new();
@@ -1065,7 +1075,6 @@ fn commit_or_build(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<(CommitId,
             Form::Session(n) => tx.txn.counter(&tid, &ak, &n)?,
         };
         let empty = Fragment::default();
-        let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
         // map removals carry their key only where keys are public ids (spec/crdt.md §5.6)
         let keyed = osis_schema::core_types::is_role_class(ak.as_str());
         // a hostile writer (tests) mints a held record again: as over no state

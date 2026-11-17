@@ -122,7 +122,7 @@ fn validate_role_commit() {
     x.aspects[0].retention.by = PurgeBy::Writer;
     assert!(matches!(invalid(&x), Error::Malformed(_) | Error::Invalid(_)));
     let mut x = h.clone();
-    x.frontier = Some(Value::Map(Default::default()));
+    x.frontier = Some(std::sync::Arc::from([]));
     x.validate().unwrap();
     let mut c = sample_header();
     c.frontier = x.frontier.clone();

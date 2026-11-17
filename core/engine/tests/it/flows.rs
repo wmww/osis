@@ -655,8 +655,7 @@ fn ids(lp: &LocalPeer, i: usize) -> BTreeSet<CommitId> {
 /// The frontier commit IDs of role commit `c`.
 fn frontier_ids(lp: &mut LocalPeer, i: usize, c: &CommitId) -> BTreeSet<CommitId> {
     let h = lp.peers[i].engine.header(c).unwrap();
-    let v = h.frontier.clone().expect("an inline frontier");
-    <ct::Frontier as osis_schema::Codec>::from_value(&v).unwrap().commits
+    h.frontier.as_deref().expect("a frontier").iter().copied().collect()
 }
 
 // spec/permissions.md §5.1 Frontier (chain-write forgery): C granted Bob admin; Bob removes C
@@ -1617,7 +1616,8 @@ fn link_key_writes_commit_form_spec_commits_3() {
 
 // spec/permissions.md §5.1; spec/data-model.md §6: a demotion's frontier above `CHUNK_THRESHOLD`
 // goes by link; a node holding the demotion waits for the frontier's blobs, then judges the
-// demoted writer's covered writes by it (valid, not dropped as by an empty frontier).
+// demoted writer's covered writes by it (valid, not dropped as by an empty frontier), holding
+// one copy of its IDs.
 #[test]
 fn linked_frontier_spec_perm_5_1() {
     let mut lp = net(3, 0);
@@ -1634,8 +1634,8 @@ fn linked_frontier_spec_perm_5_1() {
         let b = i.to_be_bytes();
         commits.insert(osis_base::CommitId([b[0], b[1], b[2], b[3], 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]));
     }
-    let frontier = osis_schema::Codec::to_value(&ct::Frontier { commits });
-    assert!(osis_base::encode(&frontier).len() > osis_base::format::CHUNK_THRESHOLD);
+    let frontier = ct::Frontier { commits };
+    assert!(osis_base::encode(&osis_schema::Codec::to_value(&frontier)).len() > osis_base::format::CHUNK_THRESHOLD);
     let demotion = set_edge(&mut lp.peers[0].engine, t, x, None, Some(frontier));
     assert!(lp.peers[0].engine.header(&demotion).unwrap().links.frontier.is_some(), "the header frontier goes by link");
     // peer 2: everything but the demotion; then the demotion without its blobs
@@ -1656,6 +1656,11 @@ fn linked_frontier_spec_perm_5_1() {
     assert!(lp.peers[2].engine.pending().is_empty());
     assert_eq!(lp.peers[2].engine.roster(&t), lp.peers[0].engine.roster(&t));
     assert_eq!(tags(&mut lp, 2, t), BTreeSet::from(["by x".to_string()]), "x's covered write stands");
+    // notes/decode-bounds.md: the frontier is read straight into its IDs and held once, the
+    // header's shared with what judges it (32 B an ID against 34 sent)
+    let ids = lp.peers[2].engine.header(&demotion).unwrap().frontier.clone().unwrap();
+    let judged = lp.peers[2].engine.core.ix.commits.get(&demotion).unwrap().view.frontier.clone().unwrap();
+    assert!(ids.len() == 4001 && std::sync::Arc::ptr_eq(&ids, &judged.ids()), "one copy of the frontier");
 }
 
 /// A role commit by a made-up node (its chain unknown everywhere, so held pending forever)
@@ -1880,8 +1885,7 @@ fn writer_rotating_to_itself_recovered_spec_perm_3() {
     assert!(sealed_write(&mut lp, 1, d, "vandal").is_empty(), "nobody reads the vandal's epoch");
     let e1 = recovered(&mut lp, d, ps[1]);
     let c = lp.peers[0].engine.commit_ids().into_iter().last().unwrap();
-    let f: ct::Frontier = osis_schema::Codec::from_value(lp.peers[0].engine.header(&c).unwrap().frontier.as_ref().unwrap()).unwrap();
-    assert!(f.commits.contains(&rv[0]), "the frontier lists the rotation");
+    assert!(lp.peers[0].engine.header(&c).unwrap().frontier.as_ref().unwrap().contains(&rv[0]), "the frontier lists the rotation");
     assert_eq!(e1.n(), ev.n() + 1, "rotated above the vandal's epoch");
     assert!(e1.n() == e0.n() + 2);
     spread_sealed(&mut lp);

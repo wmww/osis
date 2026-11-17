@@ -29,7 +29,7 @@ fn try_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Option<Role>) {
     // an explicit removal (with no frontier, a finalize) or a write that audits carries one
     // (spec/permissions.md §2, §5.1)
     if e.needs_frontier(&thing, &holder, role.map(edge).as_ref()) {
-        m.frontier(ct::Frontier::default().to_value());
+        m.frontier(osis_perm::Frontier::default());
     }
     let _ = e.commit(m);
 }

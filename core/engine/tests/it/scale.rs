@@ -592,7 +592,7 @@ fn validity_flip(n: usize) -> [Work; 2] {
     let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
     let mut m = Mutation::new();
     m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(b)) }).unwrap();
-    m.frontier(f.to_value());
+    m.frontier(osis_perm::Frontier::new(f.commits));
     let rv = lp.peers[2].commit(m).unwrap().unwrap();
     let late = add(&mut lp, 1, t, &TAGS, "late".into());
     let rv = lp.packages(2).unwrap().into_iter().find(|p| p.id == rv).unwrap();

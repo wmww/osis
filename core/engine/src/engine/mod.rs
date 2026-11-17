@@ -2765,6 +2765,9 @@ pub struct Tx<'a> {
     pub blobs: blobs::Cipher<'a>,
     pub core: &'a mut Core,
     pub rng: &'a mut dyn CryptoRngCore,
+    /// What a bounded read may still hold of the states it loads (`Engine::get_within`,
+    /// `pages::charge`); `None` otherwise.
+    pub(crate) bound: pages::Bound,
 }
 
 impl Tx<'_> {
@@ -2880,19 +2883,27 @@ impl Tx<'_> {
             return Ok(());
         }
         let b = self.txn.get_aspect(tid, ak)?.map(|u| u.state).unwrap_or_default();
+        let mut bound = self.bound.take();
         let f = match state::stored(&b)? {
             state::Stored::Empty => None,
-            state::Stored::Whole(b) => Some(state::decode(b)?),
+            state::Stored::Whole(b) => Some(pages::charge(&mut bound, b.len(), || state::decode(b))?),
             state::Stored::Paged(b) => {
-                let (f, idx) = pages::open(b, &self.core.key_salt)?;
-                self.core.pages.insert(k.clone(), idx);
+                let mut idx = None;
+                let f = pages::charge(&mut bound, b.len(), || {
+                    let (f, i) = pages::open(b, &self.core.key_salt)?;
+                    idx = Some(i);
+                    Ok(f)
+                })?;
+                self.core.pages.extend(idx.map(|i| (k.clone(), i)));
                 Some(f)
             }
             state::Stored::Body(c) => {
                 let ai = self.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak)).ok_or(Error::Corrupt("state body"))?;
-                Some(crate::apply::stored_fragment(self, &c, ai)?.ok_or(Error::Corrupt("state body"))?)
+                let len = self.get_commit(&c)?.and_then(|r| r.part(ai).map(|p| p.delta.len())).unwrap_or(0);
+                Some(pages::charge(&mut bound, len, || crate::apply::stored_fragment(self, &c, ai)?.ok_or(Error::Corrupt("state body")))?)
             }
         };
+        self.bound = bound;
         self.core.states.insert(k, f);
         Ok(())
     }
@@ -2979,9 +2990,31 @@ impl Tx<'_> {
         let k = (*tid, ak.clone());
         let Some(idx) = self.core.pages.get_mut(&k) else { return Ok(None) };
         let Some(mut f) = self.core.states.get_mut(&k).and_then(Option::take) else { return Ok(None) };
+        idx.bound = self.bound.take();
         let r = g(&mut self.txn, idx, &mut f);
+        self.bound = idx.bound.take();
         self.core.states.insert(k, Some(f));
         r.map(Some)
+    }
+
+    /// Runs read `f` of `(tid, ak)` holding at most `max` bytes of the state as it loads it
+    /// (`pages::charge`), then leaves the cache about as it found it: a state it loaded goes (as at
+    /// a restart), one held in part before loses its loaded pages (`pages::evict`, which keeps a
+    /// paged sequence's). So a read holds what it loads only while it runs.
+    pub(crate) fn reading<T>(&mut self, tid: &Tid, ak: &Ak, max: Option<usize>, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let k = (*tid, ak.clone());
+        let cached = self.core.states.contains_key(&k);
+        let whole = !self.held_in_part(tid, ak);
+        self.bound = max;
+        let r = f(self);
+        self.bound = None;
+        if !cached {
+            self.core.states.remove(&k);
+            self.core.pages.remove(&k);
+        } else if !whole {
+            self.evict_pages(tid, ak);
+        }
+        r
     }
 
     /// Loads the whole state of `(tid, ak)` into the cache.
@@ -3828,7 +3861,7 @@ impl Engine {
         self.core.time.set(now);
         let start = self.core.mark();
         let txn = self.store.transaction(&mut self.store_rng)?;
-        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
+        let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, bound: None };
         let r = f(&mut tx);
         // a read that changed something would have its change undone, and every cache dropped, at
         // every call
@@ -3891,7 +3924,7 @@ impl Engine {
         let mut changed = false;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, bound: None };
                 // the persisted index follows the in-memory indexes in the same transaction
                 let mut r = f(&mut tx);
                 _after = memo::Unrecorded::start();
@@ -4125,7 +4158,7 @@ impl Engine {
         self.core = fresh;
         let r = {
             let txn = self.store.transaction(&mut self.store_rng)?;
-            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng };
+            let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, self.blob_seq), core: &mut self.core, rng: &mut *self.rng, bound: None };
             crate::apply::load(&mut tx, rebuild)
         };
         crate::apply::load_waits(&mut self.core);
@@ -4207,7 +4240,7 @@ impl Engine {
             let mut store_rng = SeededRng::from_u64(0);
             let load = || -> Result<Option<u64>> {
                 let txn = self.store.transaction(&mut store_rng)?;
-                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, 0), core: &mut fresh, rng: &mut rng };
+                let mut tx = Tx { txn, blobs: blobs::Cipher::new(&*self.blobs, &self.blob_stamps, 0), core: &mut fresh, rng: &mut rng, bound: None };
                 // a transaction that left the index stale (`index::invalidate`: commit records
                 // changed outside the in-memory indexes) is followed by a reload
                 if !index::current(&mut tx)? {

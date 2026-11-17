@@ -1531,7 +1531,6 @@ mod tests {
     use crate::local_peer::LocalPeer;
     use osis_base::{Ak, CommitId, Role, Value, WallMs};
     use osis_crdt::{Op, PathOp, PathSeg};
-    use osis_schema::Codec;
     use osis_schema::core_types as ct;
 
     // spec/commits.md §5 (replaced), scale: a reset killing every write of a filled map judges
@@ -1739,7 +1738,7 @@ mod tests {
         let f = lp.peers[0].engine.frontier(&scope, WallMs(1_700_000_000_000)).unwrap();
         let mut m = Mutation::new();
         m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(r)) }).unwrap();
-        m.frontier(f.to_value());
+        m.frontier(osis_perm::Frontier::new(f.commits));
         lp.advance(10);
         let demote = lp.peers[0].commit(m).unwrap().unwrap();
         let demote = lp.peers[0].engine.package(&demote).unwrap().unwrap();

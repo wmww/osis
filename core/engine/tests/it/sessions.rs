@@ -410,7 +410,7 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     lp.peers[1].engine.drop_body(&c1, &t, &asp).unwrap();
     lp.advance(1_000);
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
-    let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::Codec::to_value(&f)));
+    let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(f.clone()));
     // only the demotion: a full sync would give peer 1 the dropped body again
     let fp = packages(&mut lp, 0).into_iter().find(|p| p.id == fall).unwrap();
     lp.deliver(1, &fp).unwrap();
@@ -430,7 +430,7 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     assert!(!flagged(&mut lp), "a valid later snapshot settles the flag");
     // its author removed, listing none of its commits: it gives nothing, the flag shows again
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
-    let gone = set_edge(&mut lp.peers[0].engine, t, y, None, Some(osis_schema::Codec::to_value(&f)));
+    let gone = set_edge(&mut lp.peers[0].engine, t, y, None, Some(f.clone()));
     let gp = packages(&mut lp, 0).into_iter().find(|p| p.id == gone).unwrap();
     lp.deliver(1, &gp).unwrap();
     assert!(flagged(&mut lp), "the snapshot that settled it turned invalid");
@@ -526,7 +526,7 @@ fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
     assert_eq!(e.covered(&z1, &z2, &t, &tags).unwrap(), Some(false), "a lagging later snapshot is not covered");
     // Y removed, its snapshot listed by nothing: invalid, and still not covered
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
-    let gone = set_edge(&mut lp.peers[0].engine, t, y, None, Some(osis_schema::Codec::to_value(&f)));
+    let gone = set_edge(&mut lp.peers[0].engine, t, y, None, Some(f.clone()));
     let gp = packages(&mut lp, 0).into_iter().find(|p| p.id == gone).unwrap();
     lp.deliver(1, &gp).unwrap();
     let e = &mut lp.peers[1].engine;
@@ -544,7 +544,7 @@ fn flip_flag_on(lp: &mut LocalPeer, t: Tid, asp: &Ak, body: &CommitId) {
     lp.peers[1].engine.drop_body(body, &t, asp).unwrap();
     lp.advance(1_000);
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
-    let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::Codec::to_value(&f)));
+    let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(f.clone()));
     for p in packages(lp, 0).into_iter().filter(|p| p.id == fall) {
         lp.deliver(1, &p).unwrap();
     }

@@ -98,6 +98,6 @@ impl Timeline {
     /// A frontier listing every edge write held here (`demotion_scope` as if the demoter had
     /// received them all).
     pub fn all_held(&self) -> Frontier {
-        Frontier { commits: self.input.commits.keys().copied().collect() }
+        Frontier::new(self.input.commits.keys().copied())
     }
 }

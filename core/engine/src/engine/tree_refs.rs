@@ -17,7 +17,7 @@
 
 use super::Tx;
 use super::blobs::TxBlobs;
-use super::large::{Trees, below, links_in, tree_blobs};
+use super::large::{Opens, Trees, below, links_in, opens, tree_blobs};
 use osis_base::memo::Memo;
 use super::records;
 use crate::error::{Error, Result};
@@ -90,26 +90,18 @@ enum Read {
     /// Not read: every link to it counted is a chunk's (a level-1 node's child).
     #[default]
     No,
-    /// The links it holds, with whether they are chunks (none for a chunk, or bytes that are not
-    /// the node or page its link names).
-    Kids(Vec<(Link, bool)>),
+    /// What opens the links it holds, with whether they are chunks (none for a chunk, or bytes
+    /// that are not the node or page its link names).
+    Kids(Vec<(Opens, bool)>),
     /// Not held.
     Missing,
 }
 
-/// What a read of a link depends on: its blob, its content hash and its key. Two links to one
-/// blob that differ in these are counted apart (one may open what the other cannot).
-type Opens = (BlobId, [u8; 32], [u8; 32]);
-
-fn opens(l: &Link) -> Opens {
-    (l.blob, l.hash, l.key)
-}
-
-/// One counted link.
+/// One counted link, keyed by what opens it (`large::Opens`): two links to one blob that differ
+/// there are counted apart (one may open what the other cannot). It keeps no `Link`: what opens
+/// it is all a read needs, so a chunk (never read) costs its key and counts alone.
 #[derive(Clone, Debug)]
 struct Counted {
-    /// What it is read with.
-    link: Link,
     /// Times counted.
     refs: u64,
     /// Those not as a chunk: it is read while one is.
@@ -142,11 +134,11 @@ impl Reach {
     fn update(&mut self, tx: &mut Tx<'_>, t: &Tid, dedup: Option<&Secret32>, now: BTreeSet<Source>) -> Result<()> {
         // a thing with no dedup secret has no trees here (`trees_of`)
         let now = if dedup.is_some() { now } else { BTreeSet::new() };
-        let mut moved: Vec<(Link, bool, i64)> = Vec::new();
+        let mut moved: Vec<(Opens, bool, i64)> = Vec::new();
         let gone: Vec<Source> = self.roots.keys().filter(|s| !now.contains(s)).cloned().collect();
         for s in gone {
             if let Some(old) = self.roots.remove(&s) {
-                moved.extend(old.iter().map(|l| (*l, false, -1)));
+                moved.extend(old.iter().map(|l| (opens(l), false, -1)));
             }
         }
         for s in now {
@@ -156,9 +148,9 @@ impl Reach {
                 if Arc::ptr_eq(old, &new) {
                     continue;
                 }
-                moved.extend(old.iter().map(|l| (*l, false, -1)));
+                moved.extend(old.iter().map(|l| (opens(l), false, -1)));
             }
-            moved.extend(new.iter().map(|l| (*l, false, 1)));
+            moved.extend(new.iter().map(|l| (opens(l), false, 1)));
             self.roots.insert(k.1, new);
         }
         if let Some(d) = dedup {
@@ -170,7 +162,7 @@ impl Reach {
                     continue;
                 }
                 let Some(c) = self.links.get_mut(&o) else { continue };
-                c.read = read(tx, d, &c.link)?;
+                c.read = read(tx, d, &o)?;
                 if let Read::Kids(k) = &c.read {
                     kids.extend(k.iter().map(|(k, chunk)| (*k, *chunk, 1)));
                     self.missing.remove(&o);
@@ -188,27 +180,27 @@ impl Reach {
     /// changes, a level at a time: a link first counted as no chunk is read and its links counted
     /// up, one no longer counted so has them counted down. A level's changes are summed per link
     /// first, so the links a new node shares with the one it replaced move no count.
-    fn count(&mut self, tx: &mut Tx<'_>, dedup: &Secret32, links: Vec<(Link, bool, i64)>) -> Result<()> {
+    fn count(&mut self, tx: &mut Tx<'_>, dedup: &Secret32, links: Vec<(Opens, bool, i64)>) -> Result<()> {
         let mut level = links;
         while !level.is_empty() {
-            // per link: (link, times counted, those not as a chunk)
-            let mut sums: BTreeMap<Opens, (Link, i64, i64)> = BTreeMap::new();
-            for (l, chunk, n) in level.drain(..) {
-                let x = sums.entry(opens(&l)).or_insert((l, 0, 0));
-                x.1 += n;
-                x.2 += if chunk { 0 } else { n };
+            // per link: (times counted, those not as a chunk)
+            let mut sums: BTreeMap<Opens, (i64, i64)> = BTreeMap::new();
+            for (o, chunk, n) in level.drain(..) {
+                let x = sums.entry(o).or_default();
+                x.0 += n;
+                x.1 += if chunk { 0 } else { n };
             }
-            for (o, (l, refs, inner)) in sums {
+            for (o, (refs, inner)) in sums {
                 if refs == 0 && inner == 0 {
                     continue;
                 }
                 osis_base::costs::count("tree refs: links counted", 1);
-                let c = self.links.entry(o).or_insert_with(|| Counted { link: l, refs: 0, inner: 0, read: Read::No });
+                let c = self.links.entry(o).or_insert_with(|| Counted { refs: 0, inner: 0, read: Read::No });
                 let was = c.inner;
                 let moved = |x: u64, n: i64| x.checked_add_signed(n).ok_or(Error::Corrupt("tree refs: a link counted down below zero"));
                 (c.refs, c.inner) = (moved(c.refs, refs)?, moved(c.inner, inner)?);
                 if was == 0 && c.inner > 0 {
-                    c.read = read(tx, dedup, &c.link)?;
+                    c.read = read(tx, dedup, &o)?;
                     match &c.read {
                         Read::Kids(k) => level.extend(k.iter().map(|(k, chunk)| (*k, *chunk, 1))),
                         Read::Missing => {
@@ -241,14 +233,33 @@ impl Reach {
     fn is_empty(&self) -> bool {
         self.roots.is_empty() && self.links.is_empty()
     }
+
+    /// About the heap it holds (tests): per counted link its key and entry and, for a node read,
+    /// what opens its links; per source its roots. Tree nodes and box headers not counted.
+    #[cfg(test)]
+    fn approx_bytes(&self) -> usize {
+        use std::mem::size_of;
+        let kids = |c: &Counted| if let Read::Kids(k) = &c.read { k.capacity() * size_of::<(Opens, bool)>() } else { 0 };
+        let links: usize = self.links.values().map(|c| size_of::<Opens>() + size_of::<Counted>() + kids(c)).sum();
+        let roots: usize = self.roots.values().map(|r| size_of::<Source>() + r.capacity() * size_of::<Link>()).sum();
+        links + roots + self.missing.len() * size_of::<Opens>()
+    }
 }
 
-/// The blob of `link`, read one step down (`large::below`).
-fn read(tx: &mut Tx<'_>, dedup: &Secret32, link: &Link) -> Result<Read> {
+impl ThingReach {
+    /// The links counted in both reaches, and about the heap they hold (`Reach::approx_bytes`).
+    #[cfg(test)]
+    pub(crate) fn approx_bytes(&self) -> (usize, usize) {
+        (self.states.links.len() + self.bodies.links.len(), self.states.approx_bytes() + self.bodies.approx_bytes())
+    }
+}
+
+/// The blob of the link `o` opens, read one step down (`large::below`).
+fn read(tx: &mut Tx<'_>, dedup: &Secret32, o: &Opens) -> Result<Read> {
     osis_base::costs::count("tree refs: blobs read", 1);
     let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
-    match below(&mut blobs, dedup, link) {
-        Ok(Some((chunks, kids))) => Ok(Read::Kids(kids.into_iter().map(|k| (k, chunks)).collect())),
+    match below(&mut blobs, dedup, o) {
+        Ok(Some((chunks, kids))) => Ok(Read::Kids(kids.iter().map(|k| (opens(k), chunks)).collect())),
         Ok(None) => Ok(Read::Kids(Vec::new())),
         Err(Error::Data(osis_commit::Error::Missing)) => Ok(Read::Missing),
         Err(e) => Err(e),

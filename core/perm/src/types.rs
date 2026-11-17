@@ -83,17 +83,38 @@ pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
     }
 }
 
-/// What a demoter had received (spec/permissions.md §5.1; spec/data-model.md §9 `frontier`).
+/// What a demoter had received (spec/permissions.md §5.1; spec/data-model.md §9 `frontier`):
+/// commit IDs of the demoted nodes' commits the demoter received, and of its chain writes,
+/// ascending and distinct (shared with the header that carried them: 32 B an ID).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
-pub struct Frontier {
-    /// Commit IDs of the demoted nodes' commits the demoter received, and of its chain writes.
-    pub commits: BTreeSet<CommitId>,
-}
+pub struct Frontier(Arc<[CommitId]>);
 
 impl Frontier {
+    /// The frontier of `ids`, in any order.
+    pub fn new(ids: impl IntoIterator<Item = CommitId>) -> Frontier {
+        let ids: BTreeSet<CommitId> = ids.into_iter().collect();
+        Frontier(ids.into_iter().collect())
+    }
+
+    /// The frontier of `ids`, ascending and distinct already (a header's).
+    pub fn of_sorted(ids: Arc<[CommitId]>) -> Frontier {
+        debug_assert!(ids.is_sorted_by(|a, b| a < b), "frontier IDs ascending and distinct");
+        Frontier(ids)
+    }
+
+    /// Its commit IDs, ascending.
+    pub fn commits(&self) -> &[CommitId] {
+        &self.0
+    }
+
+    /// Its commit IDs, shared (what a header carries).
+    pub fn ids(&self) -> Arc<[CommitId]> {
+        self.0.clone()
+    }
+
     /// Whether the frontier covers the writes of `commit`: it lists the commit's ID.
     pub fn covers(&self, commit: &CommitId) -> bool {
-        self.commits.contains(commit)
+        self.0.binary_search(commit).is_ok()
     }
 }
 
@@ -137,7 +158,7 @@ impl RoleCommit {
 fn same_frontier(a: &Option<Arc<Frontier>>, b: &Option<Arc<Frontier>>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a.commits.len() == b.commits.len(),
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a.commits().len() == b.commits().len(),
         _ => false,
     }
 }

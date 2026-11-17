@@ -4,7 +4,7 @@ use crate::tests::{SESSION, dkey, t, ts};
 use crate::tests::build::{key, rng};
 use crate::tests::verify::{TestSecrets, register_delta};
 use crate::*;
-use osis_base::{Ak, BlobId, CommitId, Link, Tid, Value};
+use osis_base::{Ak, BlobId, CommitId, Link, Tid};
 use osis_schema::{PurgeBy, Retention};
 use osis_crypto::Secret32;
 use proptest::prelude::*;
@@ -34,7 +34,7 @@ prop_compose! {
         undoes in proptest::option::of(any::<[u8; 32]>()),
         blind in any::<[u8; 16]>(),
         keys in proptest::collection::vec((1u8..4, any::<u8>()), 0..4),
-        frontier in proptest::option::of(any::<i64>()),
+        frontier in proptest::option::of(0u8..4),
         links in proptest::collection::vec(proptest::option::of(link()), 4),
     ) -> Header {
         let mut l = Links::default();
@@ -53,7 +53,7 @@ prop_compose! {
             }).collect(),
             undoes: undoes.map(CommitId), blind,
             keys: keys.into_iter().map(|(level, b)| dkey(level, b)).collect(),
-            frontier: frontier.map(|n| Value::Map([(Value::Int(0), Value::Int(n))].into_iter().collect())),
+            frontier: frontier.map(|n| (0..n).map(|i| CommitId([i; 32])).collect()),
             links: l,
             ephemeral: None,
             epoch: None,
@@ -148,9 +148,11 @@ proptest! {
     // edits of them.
     #[test]
     fn reader_accepts_only_what_decode_does(h in header(), ids in proptest::collection::btree_set(any::<[u8; 32]>(), 0..4), kids in proptest::collection::vec((link(), 0u64..1 << 20), 1..4), seed in 1u64..) {
-        let frontier = Value::Map([(Value::Int(0), Value::Set(ids.iter().map(|i| Value::bytes(i)).collect()))].into_iter().collect());
+        let ids: Vec<CommitId> = ids.into_iter().map(CommitId).collect();
+        let mut frontier = Vec::new();
+        crate::put_frontier(&mut frontier, &ids);
         let lists: Vec<(ListField, Vec<u8>)> = ListField::ALL.into_iter().map(|f| {
-            let b = if f == ListField::Frontier { osis_base::encode(&frontier) } else { h.list_bytes(f).unwrap() };
+            let b = if f == ListField::Frontier { frontier.clone() } else { h.list_bytes(f).unwrap() };
             (f, b)
         }).collect();
         let node = tree::node_plaintext(3, &kids).unwrap();

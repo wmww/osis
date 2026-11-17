@@ -551,11 +551,6 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let signed = check_signature(tx, blob, id, &vk, *known)?;
     *known = Some(signed);
     h.validate()?;
-    // a frontier that does not decode is bad input, never a demotion without one (spec/wire.md
-    // §4 field 12)
-    if h.frontier.is_some() && validity::header_frontier(&h).is_none() {
-        return Err(Error::BadInput("a frontier that is not a frontier"));
-    }
     if let Some(r) = unjudgeable {
         return Ok(pend_unjudgeable(tx, id, &unjudged, r));
     }

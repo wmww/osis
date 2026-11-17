@@ -3,9 +3,10 @@
 
 use crate::Error;
 use crate::cbor::item;
-use osis_base::cbor::{Item, encode_into, put_array, put_bytes, put_link, put_text, put_uint};
+use osis_base::cbor::{Item, MAJOR_TAG, encode_into, head, put_array, put_bytes, put_link, put_map, put_text, put_uint};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
 use osis_base::{Ak, CommitId, Limits, Link, Reader, Tid, Ts, Value};
+use std::sync::Arc;
 use osis_crdt::DeltaKind;
 use osis_base::SIGNING_KEY_ED25519;
 use osis_crypto::{Domain, KemPublicKey, Secret32, Signature, VerifyingKey};
@@ -271,8 +272,10 @@ pub struct Header {
     /// 16 random bytes blinding the commitments of every blob of the commit (spec/crypto.md §7).
     pub blind: [u8; 16],
     pub keys: Vec<DeleteKey>,
-    /// The frontier value (spec/data-model.md §9), typed by osis-perm.
-    pub frontier: Option<Value>,
+    /// The frontier's commit IDs, ascending and distinct (spec/data-model.md §9 `frontier`,
+    /// exactly `{0: set<32-byte ID>}` on the wire, inline or linked): read straight from its
+    /// bytes, shared with what judges it (osis-perm's `Frontier`).
+    pub frontier: Option<Arc<[CommitId]>>,
     pub links: Links,
     /// Set on an ephemeral commit (kept in memory by every node, never stored).
     pub ephemeral: Option<EphClass>,
@@ -543,7 +546,7 @@ impl Header {
                 self.keys.iter().for_each(|k| put_key(out, k));
             }
             ListField::Frontier => match &self.frontier {
-                Some(v) => encode_into(v, out),
+                Some(ids) => put_frontier(out, ids),
                 None => return false,
             },
         }
@@ -563,7 +566,7 @@ impl Header {
                 put_array(out, 1);
                 put_link(out, l);
             }
-            (ListField::Frontier, None) => put_opt(out, self.frontier.as_ref(), |out, v| encode_into(v, out)),
+            (ListField::Frontier, None) => put_opt(out, self.frontier.as_deref(), put_frontier),
             (_, Some(l)) => put_link(out, l),
             (_, None) => {
                 self.put_list(out, f);
@@ -811,16 +814,29 @@ fn read_purge(r: &mut Reader<'_>) -> Result<PurgeItem, Error> {
     }
 }
 
-/// The value of a linked frontier's bytes: exactly `{0: set<32-byte ID>}` (spec/wire.md §4).
-fn frontier_value(bytes: &[u8]) -> Result<Value, Error> {
+/// The commit IDs of a frontier's bytes: exactly `{0: set<32-byte ID>}` (spec/wire.md §4), read
+/// as they come (32 B an ID held, against 34 sent).
+pub fn frontier_ids(bytes: &[u8]) -> Result<Arc<[CommitId]>, Error> {
     let mut r = Reader::new(bytes);
     if r.map()? != 1 || r.uint()? != 0 {
-        return Err(Error::Malformed("linked frontier"));
+        return Err(Error::Malformed("frontier"));
     }
     r.tag(TAG_SET)?;
-    let ids = read_items(&mut r, MIN_ID, |r| Ok(Value::bytes(&r.fixed::<32>()?)))?;
+    let ids = read_items(&mut r, MIN_ID, |r| Ok(CommitId(r.fixed::<32>()?)))?;
     r.end()?;
-    Ok(Value::Map([(Value::Int(0), Value::Set(ids.into_iter().collect()))].into_iter().collect()))
+    Ok(ids.into())
+}
+
+/// Appends the frontier of `ids` (ascending, distinct): `{0: set<32-byte ID>}`, canonical.
+pub fn put_frontier(out: &mut Vec<u8>, ids: &[CommitId]) {
+    debug_assert!(ids.is_sorted_by(|a, b| a < b), "frontier IDs ascending and distinct");
+    put_map(out, 1);
+    put_uint(out, 0);
+    head(out, MAJOR_TAG, TAG_SET);
+    put_array(out, ids.len());
+    for c in ids {
+        put_bytes(out, &c.0);
+    }
 }
 
 impl Header {
@@ -828,7 +844,7 @@ impl Header {
     /// header, checked when it arrived).
     pub(crate) fn read_list(&mut self, f: ListField, bytes: &[u8], check: bool) -> Result<(), Error> {
         if f == ListField::Frontier {
-            self.frontier = Some(frontier_value(bytes)?);
+            self.frontier = Some(frontier_ids(bytes)?);
             return Ok(());
         }
         let r = &mut Reader::new(bytes);
@@ -857,11 +873,6 @@ impl Header {
         let bytes = inner.bytes();
         if !stored && bytes.len() > CHUNK_THRESHOLD {
             return Err(Error::Malformed("inline list above CHUNK_THRESHOLD"));
-        }
-        // an inline frontier is judged whole, by its type (`validity::header_frontier`)
-        if f == ListField::Frontier {
-            self.frontier = Some(inner.to_value()?);
-            return Ok(());
         }
         self.read_list(f, bytes, !stored)
     }

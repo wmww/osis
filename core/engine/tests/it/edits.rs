@@ -8,7 +8,7 @@ use osis_engine::engine::listing::{CommitFrom, PartBody};
 use osis_engine::local_peer::LocalPeer;
 use osis_engine::{Event, Mutation};
 use osis_schema::core_types::{self as ct};
-use osis_schema::{Codec, History, Retention};
+use osis_schema::{History, Retention};
 use std::collections::{BTreeMap, BTreeSet};
 
 const HOUR: u64 = 3_600_000;
@@ -166,7 +166,7 @@ fn an_edit_after_a_kick_is_not_honored_spec_commits_5() {
     let v = edit(&mut lp, bob, d, r, "edited", o);
     // kick bob, keeping only the original (its frontier names it, not the edit)
     let f = ct::Frontier { commits: BTreeSet::from([o]) };
-    set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.to_value()));
+    set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.clone()));
     lp.sync_all().unwrap();
     assert_eq!(list(&mut lp, 0, d), vec![(o, None, body("mine"))], "the edit fell");
     // at its writer, its own invalid part is marked and reads as itself, at its own place
@@ -214,8 +214,8 @@ fn versions_return_folded_with_their_original_spec_commits_5() {
     let o = fire(&mut lp, bob, d, r, "one");
     let v = edit(&mut lp, bob, d, r, "two", o);
     // carol kicks bob before receiving them, and alice removes carol before receiving her kick
-    set_edge(&mut lp.peers[carol].engine, d, ids[bob], None, Some(ct::Frontier::default().to_value()));
-    set_edge(&mut lp.peers[0].engine, d, ids[carol], None, Some(ct::Frontier::default().to_value()));
+    set_edge(&mut lp.peers[carol].engine, d, ids[bob], None, Some(ct::Frontier::default()));
+    set_edge(&mut lp.peers[0].engine, d, ids[carol], None, Some(ct::Frontier::default()));
     for c in [o, v] {
         let b = lp.peers[bob].engine.commit_bytes(&c).unwrap().unwrap();
         lp.peers[carol].receive(&b, Vec::new()).unwrap();
@@ -618,7 +618,7 @@ fn incremental_equals_rebuilt_and_every_order_reads_alike_spec_commits_5() {
                     if bob_in {
                         // a hand-built frontier keeps some of his writes: the rest fall
                         let keep: BTreeSet<CommitId> = fires.iter().filter(|_| g.below(2) == 0).copied().collect();
-                        set_edge(&mut lp.peers[alice].engine, d, ids[bob], None, Some(ct::Frontier { commits: keep }.to_value()));
+                        set_edge(&mut lp.peers[alice].engine, d, ids[bob], None, Some(ct::Frontier { commits: keep }));
                     } else {
                         set_edge(&mut lp.peers[alice].engine, d, ids[bob], Some(edge(Role::Write)), None);
                     }

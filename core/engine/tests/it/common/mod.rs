@@ -245,7 +245,7 @@ pub fn edge(role: Role) -> ct::Edge {
 /// Writes `holder`'s edge on `thing`: a grant by the flow (`Engine::grant`: the holder's secrets
 /// with it, so a holder holding the thing keeps it) when the write needs no frontier and is given
 /// none, else `edge_write`. Its edge commit.
-pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
+pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<ct::Frontier>) -> CommitId {
     match &edge {
         Some(x) if frontier.is_none() && !e.needs_frontier(&thing, &holder, edge.as_ref()) => *e.grant(&thing, &holder, x).unwrap().commits.last().unwrap(),
         _ => edge_write(e, thing, holder, edge, frontier),
@@ -258,7 +258,7 @@ pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>,
 /// finalize, or a write that audits, spec/permissions.md §2, §5.1). A hand-built frontier says
 /// exactly what this node lists: it answers the write with no addendum of its own
 /// (`Engine::write_addenda`), which would list the rest.
-pub fn edge_write(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
+pub fn edge_write(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<ct::Frontier>) -> CommitId {
     if frontier.is_some() || e.needs_frontier(&thing, &holder, edge.as_ref()) {
         e.write_addenda(false);
     }
@@ -269,8 +269,8 @@ pub fn edge_write(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge
     if let Some(x) = edge {
         m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Weak(holder))], op: Op::Set(x.to_value()) }).unwrap();
     }
-    if let Some(f) = frontier.or_else(|| needs.then(|| ct::Frontier::default().to_value())) {
-        m.frontier(f);
+    if let Some(f) = frontier.or_else(|| needs.then(ct::Frontier::default)) {
+        m.frontier(osis_perm::Frontier::new(f.commits));
     }
     e.commit(m).unwrap().unwrap()
 }

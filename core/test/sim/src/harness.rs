@@ -10,7 +10,6 @@ use osis_crdt::{Op, PathOp};
 use osis_crypto::SeededRng;
 use osis_engine::local_peer::{Package, Peer};
 use osis_engine::{Engine, Ingested, Mutation};
-use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -342,7 +341,7 @@ impl Sim {
         let mut m = Mutation::new();
         m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(holder)) }).map_err(|e| self.fail(e.to_string()))?;
         // an explicit removal: with no frontier it would be a finalize (spec/permissions.md §2)
-        m.frontier(ct::Frontier::default().to_value());
+        m.frontier(osis_engine::Frontier::default());
         let id = self.commit(i, m)?;
         id.ok_or_else(|| self.fail("removal changed nothing"))
     }

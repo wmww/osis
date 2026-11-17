@@ -471,7 +471,7 @@ fn freed_under(tx: &mut Tx<'_>, tid: &Tid, c: &CommitId, ai: usize, pages: &BTre
                 continue;
             }
             if let Some(b) = tx.blobs.get(&l.blob)?
-                && let Some((chunks, kids)) = crate::engine::large::kids_of(Some(&dedup), &l, &b)
+                && let Some((chunks, kids)) = crate::engine::large::kids_of(Some(&dedup), &crate::engine::large::opens(&l), &b)
             {
                 next.extend(kids.into_iter().map(|k| (k, chunks)));
             }

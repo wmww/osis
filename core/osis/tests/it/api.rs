@@ -189,6 +189,74 @@ fn materialization_bound_spec_data_model_6() {
     assert!(matches!(db.at(t, osis::DynamicAspectKey::untyped(k.clone())).path(p![osis::FieldId(2)]).get::<osis::Value>(), Err(Error::TooLarge { .. })));
 }
 
+// notes/decode-bounds.md (a read holds at most its bound), spec/wire.md §12: a whole read of an
+// aspect whose state is far above the read limit is refused having loaded about the limit of the
+// state, at any size of it, and leaves none of it loaded; a path read into it still works.
+#[test]
+fn a_whole_read_loads_at_most_its_bound_spec_wire_12() {
+    let limit = 256 * 1024;
+    let pages_read = |n: i64| -> u64 {
+        let c = clock();
+        let store = MemStore::new();
+        let k = osis::DynamicAspectKey::untyped(ak("t:big.0"));
+        let db = osis::internals::create(cfg(0, store.clone(), &c)).unwrap();
+        let t = db.commit_with(|w| {
+            let t = w.create_held()?;
+            w.at(t, k.clone()).set(&Value::Map((0..n).map(|i| (Value::Int(i), Value::Int(i))).collect()))?;
+            Ok(t)
+        })
+        .unwrap();
+        drop(db);
+        // reopened: nothing of the state loaded yet
+        let mut cf = cfg(0, store, &c);
+        cf.app.read_limit = limit;
+        let db = osis::internals::open(cf).unwrap();
+        osis::internals::costs::take();
+        let got = db.at(t, k.clone()).get();
+        assert!(got == Err(Error::TooLarge { limit }), "n={n}: {:?}", got.map(|v| v.map(|v| osis::internals::schema::osis_base::cbor::encoded_len(&v))));
+        let read = osis::internals::costs::take().into_iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
+        assert!(db.engine(|e| e.core.states.values().flatten().all(|f| f.approx_bytes() < limit)), "n={n}: the read left none of it loaded");
+        assert_eq!(db.at(t, k.clone()).path(p![osis::Step::Key(Value::Int(7))]).get::<Value>().unwrap(), Some(Value::Int(7)));
+        read
+    };
+    let (small, big) = (pages_read(2_000), pages_read(8_000));
+    assert!(small == big && big <= 8, "pages loaded before the refusal: {small} at 2000 keys, {big} at 8000");
+}
+
+// spec/data-model.md §5 (depth counts a value as read), §6: a large value near the depth limit
+// is written and read back, a link counting as the value it reads as (no levels for a string or
+// blob); a large map key that would read too deep is refused, though its link alone would fit.
+#[test]
+fn depth_counts_a_large_value_as_read_spec_data_model_5() {
+    use osis::internals::schema::osis_base::format::{CHUNK_THRESHOLD, MAX_VALUE_DEPTH};
+    let nest = |mut v: Value, n: usize| {
+        for _ in 0..n {
+            v = Value::List(vec![v]);
+        }
+        v
+    };
+    let db = db(0);
+    let k = osis::DynamicAspectKey::untyped(ak("t:deep.0"));
+    let big = Value::Bytes(vec![7u8; CHUNK_THRESHOLD + 1000]);
+    for v in [nest(big.clone(), MAX_VALUE_DEPTH), nest(Value::List(vec![big.clone(), s("x")]), MAX_VALUE_DEPTH - 1)] {
+        let t = db.commit_with(|w| {
+            let t = w.create_held()?;
+            w.at(t, k.clone()).set(&v)?;
+            Ok(t)
+        })
+        .unwrap();
+        assert!(db.at(t, k.clone()).get().unwrap() == Some(v), "read back whole");
+    }
+    // a map key reading 30 deep, at depth 40: 70 levels as read, 44 as stored
+    let key = nest(Value::List((0..2000).map(|i| s(&format!("{i:0>100}"))).collect()), 29);
+    let deep = nest(Value::Map([(key, Value::Int(1))].into_iter().collect()), 39);
+    assert!(deep.deeper_than(MAX_VALUE_DEPTH));
+    let mut w = db.write();
+    let t = w.create_held().unwrap();
+    let set = w.at(t, k.clone()).set(&deep);
+    assert!(set.is_err() || w.commit().is_err(), "refused as read");
+}
+
 // spec/data-model.md §6: a chunked large value reads back whole within the bound.
 #[test]
 fn large_value_round_trip_spec_data_model_6() {

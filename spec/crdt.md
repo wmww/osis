@@ -223,7 +223,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
      - an enum case write naming an undeclared case.
    - **Depth**: a fragment that, with every write it carries live, would read deeper than `MAX_VALUE_DEPTH` (spec/data-model.md §5) from the aspect root:
      - a struct, map or list adds one level, an enum or set two;
-     - a register adds its value's depth, a map key its depth below its map;
+     - a register adds its value's depth, a map key its depth below its map (a link as a leaf, spec/data-model.md §5);
      - a `Slots` position adds its deepest slot;
      - pages are counted in place.
    - **Prune**: a fragment whose prune (§4.2) would drop a write it carries, or a copy of one (a register's reset below its write, §5.1, included; the records of one map dot prune each other across pages, so a write held in two of them is one copy too many, §5.6).

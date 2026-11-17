@@ -16,8 +16,9 @@ use std::collections::BTreeMap;
 /// case above `i64::MAX` (spec/data-model.md §5; the reader's rule, spec/crdt.md §3.3 rule 7)?
 /// A field, key or index step adds one level, a case step two (tag and array); a map key sits
 /// one below its map, a set element two, a list item one. Checked before resolving, which
-/// recurses per level.
-fn out_of_profile<V: View>(op: &PathOp, view: &V) -> bool {
+/// recurses per level, and by a writer before its large values become links (a link counts as
+/// the value it reads as, `Value::deeper_than`).
+pub fn out_of_profile<V: View>(op: &PathOp, view: &V) -> bool {
     use crate::ops::Op;
     use osis_base::format::MAX_VALUE_DEPTH;
     // `v` read at depth `at`

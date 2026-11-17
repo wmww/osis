@@ -128,15 +128,16 @@ fn list_over_the_bound_refused_at_the_author() {
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     let mut sink = MemoryBlobs::default();
-    // the bound's bytes as one value, and one past it
-    let of = |n: usize| Value::Bytes(vec![0; n]);
-    let room = MAX_LIST_BYTES + MAX_LIST_BYTES - osis_base::encode(&of(MAX_LIST_BYTES)).len();
+    // the most IDs that fit the bound, and one more
+    let of = |n: usize| -> std::sync::Arc<[CommitId]> { (0..n as u32).map(|i| { let mut b = [0u8; 32]; b[..4].copy_from_slice(&i.to_be_bytes()); CommitId(b) }).collect() };
+    let len = |ids: &[CommitId]| { let mut out = Vec::new(); crate::put_frontier(&mut out, ids); out.len() };
+    let room = (MAX_LIST_BYTES - len(&of(0)) - 4) / 34;
     let mut fits = b.clone();
     fits.frontier = Some(of(room));
-    assert_eq!(osis_base::encode(fits.frontier.as_ref().unwrap()).len(), MAX_LIST_BYTES);
+    assert!(len(fits.frontier.as_ref().unwrap()) <= MAX_LIST_BYTES && len(&of(room + 1)) > MAX_LIST_BYTES);
     let built = build(fits, &mut sink).unwrap();
     let link = built.commit.header.links.frontier.expect("linked");
-    assert_eq!(read_list(&link, &built.commit.header.list_secret(&sec(0xd0, &t(1))), &mut sink, MAX_LIST_BYTES).unwrap().len(), MAX_LIST_BYTES);
+    assert_eq!(read_list(&link, &built.commit.header.list_secret(&sec(0xd0, &t(1))), &mut sink, MAX_LIST_BYTES).unwrap().len(), len(&of(room)));
     let mut over = b;
     over.frontier = Some(of(room + 1));
     assert!(matches!(build(over, &mut sink), Err(Error::TooLarge("header list"))));
@@ -145,7 +146,9 @@ fn list_over_the_bound_refused_at_the_author() {
     let mut prefix = || crate::keys::Prefix { salt: [7; 16], thing: osis_base::Tid::from_bytes([0; 15]), expiry: None, keys: Vec::new() };
     let mut h = built.commit.header.clone();
     h.frontier = None;
-    let big = write_list(&osis_base::encode(&of(room + 1)), &h.list_secret(&d), &mut sink, &mut prefix).unwrap();
+    let mut bytes = Vec::new();
+    crate::put_frontier(&mut bytes, &of(room + 1));
+    let big = write_list(&bytes, &h.list_secret(&d), &mut sink, &mut prefix).unwrap();
     h.links.frontier = Some(big);
     let e = h.resolve(&mut sink, &d).unwrap_err();
     assert!(matches!(e, Error::Invalid(_)), "{e:?}");
@@ -162,8 +165,8 @@ fn a_linked_list_serves_its_own_commit_only_spec_wire_4() {
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
-    let ids = (0..20_000u32).map(|i| Value::bytes(&osis_base::hash::hash(&i.to_le_bytes()))).collect();
-    b.frontier = Some(Value::Map([(Value::Int(0), Value::Set(ids))].into_iter().collect()));
+    let ids: std::collections::BTreeSet<CommitId> = (0..20_000u32).map(|i| CommitId(osis_base::hash::hash(&i.to_le_bytes()))).collect();
+    b.frontier = Some(ids.into_iter().collect());
     let mut sink = MemoryBlobs::default();
     let built = build(b, &mut sink).unwrap();
     let d = sec(0xd0, &t(1));
@@ -491,8 +494,8 @@ fn header_list_link_del_is_the_level_2_key() {
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     // several chunks under one node
-    let ids = (0..20_000u32).map(|i| Value::bytes(&osis_base::hash::hash(&i.to_le_bytes()))).collect();
-    b.frontier = Some(Value::Map([(Value::Int(0), Value::Set(ids))].into_iter().collect()));
+    let ids: std::collections::BTreeSet<CommitId> = (0..20_000u32).map(|i| CommitId(osis_base::hash::hash(&i.to_le_bytes()))).collect();
+    b.frontier = Some(ids.into_iter().collect());
     let mut sink = MemoryBlobs::default();
     let built = build(b, &mut sink).unwrap();
     let d = sec(0xd0, &t(1));

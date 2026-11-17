@@ -251,7 +251,7 @@ fn judge(tx: &mut Tx<'_>, fs: Vec<Freed>) -> Result<Judgment> {
                                 continue;
                             }
                             if !f.leaf
-                                && let Some((leaf, links)) = crate::engine::large::kids_of(dedup.as_ref(), &f.link, &bytes)
+                                && let Some((leaf, links)) = crate::engine::large::kids_of(dedup.as_ref(), &crate::engine::large::opens(&f.link), &bytes)
                             {
                                 kids.extend(links.into_iter().map(|link| Freed::new(t, link, f.author, leaf, f.memory)));
                             }
@@ -360,7 +360,7 @@ pub(crate) fn lost(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, roots: BTreeMap<Tid,
                 if !osis_blob::Prefix::parse(&bytes).is_ok_and(|p| osis_blob::tree::bears(&p, &l.del, &blind)) {
                     continue;
                 }
-                if let Some((_, kids)) = crate::engine::large::kids_of(dedup.as_ref(), &l, &bytes) {
+                if let Some((_, kids)) = crate::engine::large::kids_of(dedup.as_ref(), &crate::engine::large::opens(&l), &bytes) {
                     next.extend(kids);
                 }
                 out.insert(l.blob);
@@ -541,6 +541,28 @@ mod tests {
         // a snapshot is a source by its links too (its frontiers are no values)
         let s1 = e.snapshot(&t, &a).unwrap().unwrap();
         assert_eq!(e.run(|tx| part_links(tx, &s1, 0)).unwrap().len(), 1, "a snapshot links its value's root");
+    }
+
+    // notes/decode-bounds.md (what a node holds is a small multiple of what it was sent): the
+    // counted reach of a thing's trees keeps, per counted link, what opens it and its counts, and
+    // per node read what opens its links: no `Link` (about 210 B) per entry, at any value size
+    // (about 360 B per counted link here, 800 with a `Link` in each).
+    #[test]
+    fn a_counted_reach_holds_little_per_chunk_spec_sync_7() {
+        let per_chunk = |n: usize| {
+            let (mut lp, t, _, cs) = replaces_of(n);
+            let e = &mut lp.peers[0].engine;
+            e.core.tree_reach.clear();
+            let chunks = tree(e, &t, &cs[2]).len();
+            e.tree_refs(&t, &BTreeSet::new()).unwrap();
+            let (links, bytes) = e.core.tree_reach[&t].approx_bytes();
+            assert!(links >= chunks, "every chunk counted");
+            bytes / links
+        };
+        for n in [4 << 20, 8 << 20] {
+            let b = per_chunk(n);
+            assert!(b <= 400, "{b} B per counted link at {n} value bytes");
+        }
     }
 
     // spec/sync-compaction.md §1 freed links (a judgment needs every node blob of the held sources'

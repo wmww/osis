@@ -27,7 +27,7 @@ fn reg() -> Ak {
     Ak::new("t:reg.0").unwrap()
 }
 
-fn edge(lp: &mut LocalPeer, by: usize, t: Tid, m: Tid, role: Option<Role>, frontier: Option<Value>) -> CommitId {
+fn edge(lp: &mut LocalPeer, by: usize, t: Tid, m: Tid, role: Option<Role>, frontier: Option<osis_perm::Frontier>) -> CommitId {
     let mut mu = Mutation::new();
     let op = match role {
         Some(role) => PathOp { path: vec![PathSeg::Key(Value::Weak(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, retain: false, floor: None }.to_value()) },
@@ -158,7 +158,7 @@ fn sample(shape: Shape) -> usize {
     let as_of = marks[shape.at.min(shape.writes)];
     let scope = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([g]))]), content: BTreeMap::from([(b, BTreeSet::from([g, item, item2, sub]))]) };
     let f = lp.peers[by].engine.frontier(&scope, as_of).unwrap();
-    let rm = edge(&mut lp, by, g, b, None, Some(f.to_value()));
+    let rm = edge(&mut lp, by, g, b, None, Some(osis_perm::Frontier::new(f.commits)));
     if shape.tie {
         let ts = |p: &Peer, id: &CommitId| p.engine.header(id).unwrap().ts;
         let last = *lp.peers[1].engine.commit_ids().iter().max_by_key(|id| ts(&lp.peers[1], id)).unwrap();

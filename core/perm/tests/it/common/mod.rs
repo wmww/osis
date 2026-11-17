@@ -129,13 +129,7 @@ impl World {
     }
     /// Frontier of a demoter `node` at `t`: every commit it received before `t`.
     pub fn frontier(&self, node: Tid, t: u64) -> Frontier {
-        let mut f = Frontier::default();
-        for c in &self.commits {
-            if c.recv.get(&node).copied().unwrap_or(LATE) < t {
-                f.commits.insert(c.id);
-            }
-        }
-        f
+        Frontier::new(self.commits.iter().filter(|c| c.recv.get(&node).copied().unwrap_or(LATE) < t).map(|c| c.id))
     }
 
     /// The held set, every commit carrying the frontier its receipts imply.

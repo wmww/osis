@@ -1,5 +1,5 @@
 # Durable deltas decode with no memory bound
-> Summary: Tess's decision B (per-blob item cap `MAX_PAGE_ITEMS`, then verify and join page by page) is built through step 5: a 10^6-key map's commit or snapshot applies in 0.23-0.35 GB. Left: a reader loads an aspect's state whole before its read limit refuses it, the writer holds the delta whole (2.2 GB, the op API), its snapshot loads, clones and copy-indexes the whole state (2.3 GB), `covered` holds the body and the snapshot's part at it (3.5 GB at a 10^6-key body), and step 6 (root tables paged, a format change).
+> Summary: Tess's decision B (per-blob item cap `MAX_PAGE_ITEMS`, then verify and join page by page) is built through step 5: a 10^6-key map's commit or snapshot applies in 0.23-0.35 GB. Left: the writer holds the delta whole (2.2 GB, the op API), its snapshot loads, clones and copy-indexes the whole state (2.3 GB), `covered` holds the body and the snapshot's part at it (3.5 GB at a 10^6-key body), listing a thing's aspects loads each state whole, and step 6 (root tables paged, a format change).
 > Priority: low
 > Tags: security, crdt, engine
 
@@ -20,6 +20,6 @@ Commit / snapshot with pages 21 / 22 MB. Write 2.2 GB, 135 s (snapshot 2.3 GB, 2
 - **Snapshot root tables**: they do not always fit. Measured per absorbed commit with surviving stamps: session form 8 B and 4 items (`Commits` entry), so about 10^6 commits fill `MAX_BLOB`; commit form (role commits, multi-node key actors) 107 B (`Sources` 33, `Absorbed` 54, `Commits` 6) and 12 items, about 78 000 commits. An aspect past that cannot be snapshotted (the builder refuses a delta over `MAX_BLOB`). `MAX_PAGE_ITEMS` does not count these tables (bounded by `MAX_BLOB`, decoded into small records).
 
 ## Left whole at a reader
-- A read of an aspect (`Reader::raw`, `Engine::get`) loads its state whole before the read limit refuses it (osis `materialize` checks the size after): a 10^6-key map costs about 1.9 GB to be told `TooLarge`. Linked values inside it are bounded by the limit (notes/decode-bounds.md); the state itself needs a size known before loading (the page index's lengths) or a paged read.
+- Value reads are bounded (notes/decode-bounds.md, State reads). Left: `Engine::aspects` (`aspects.0`, also `Reader::aspects`) loads each aspect's state whole to ask whether it is present, and `tree_refs::roots_of` loads a state whole to find its links; both are unbounded by any read limit. Presence needs no page past the first that holds a live element; the roots need each page once, a piece at a time (as `Tx::state_at`).
 
 Store transaction memory is bounded already (the pager spills past `StoreConfig::spill_bytes`, 16 MiB).

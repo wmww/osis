@@ -14,7 +14,7 @@ use crate::Mutation;
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
-use osis_schema::{Codec, PurgeBy, Retention};
+use osis_schema::{PurgeBy, Retention};
 use std::collections::BTreeMap;
 
 const T0: WallMs = WallMs(1_700_000_000_000);
@@ -181,7 +181,7 @@ fn demote_peer(w: &mut World, who: usize) -> CommitId {
     let f = w.lp.peers[0].engine.frontier(&scope, T0).unwrap();
     let mut m = Mutation::new();
     m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Weak(x)) }).unwrap();
-    m.frontier(f.to_value());
+    m.frontier(osis_perm::Frontier::new(f.commits));
     w.lp.peers[0].commit(m).unwrap().unwrap()
 }
 

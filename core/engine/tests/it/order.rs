@@ -543,7 +543,7 @@ fn edge_write(by: &osis_engine::Engine, t: Tid, holder: Tid, e: Option<osis_sche
     // an explicit removal, or a write that audits, carries a frontier: an empty one unless the
     // caller sets its own (with none a removal is a finalize, spec/permissions.md §2, §5.1)
     if by.needs_frontier(&t, &holder, e.as_ref()) {
-        m.frontier(osis_schema::core_types::Frontier::default().to_value());
+        m.frontier(osis_perm::Frontier::default());
     }
     m
 }
@@ -951,7 +951,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                 no = why(&f);
                 if let Ok(f) = f {
                     let mut m = edge_write(&lp.peers[by].engine, t, ids[holder], to_read.then_some(edge(Role::Read)));
-                    m.frontier(f.to_value());
+                    m.frontier(osis_perm::Frontier::new(f.commits));
                     no = why(&lp.peers[by].commit(m));
                 }
                 Some(by)
@@ -1183,7 +1183,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                         f.commits.insert(CommitId(c));
                     }
                     let mut m = edge_write(&lp.peers[by].engine, t, ids[holder], None);
-                    m.frontier(f.to_value());
+                    m.frontier(osis_perm::Frontier::new(f.commits));
                     no = why(&lp.peers[by].commit(m));
                 }
                 Some(by)
@@ -1441,7 +1441,7 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
                     }
                 }
                 let mut m = edge_write(&lp.peers[by].engine, t, ids[holder], None);
-                m.frontier(f.to_value());
+                m.frontier(osis_perm::Frontier::new(f.commits));
                 let id = lp.peers[by].commit(m).unwrap().expect("a removal");
                 assert!(lp.peers[by].engine.header(&id).unwrap().links.frontier.is_some(), "the frontier goes by link");
                 Some(by)
@@ -3878,7 +3878,7 @@ fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
     let before = WallMs(lp.peers[2].engine.header(&w).unwrap().ts.wall_ms().0 - 1);
     let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
     let mut m = edge_write(&lp.peers[0].engine, g, ids[2], None);
-    m.frontier(f.to_value());
+    m.frontier(osis_perm::Frontier::new(f.commits));
     lp.peers[0].commit(m).unwrap().unwrap();
     let demote = take(&mut lp, 0);
     lp.advance(10);
@@ -3952,7 +3952,7 @@ fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     let before = WallMs(lp.peers[2].engine.header(&snap).unwrap().ts.wall_ms().0 - 1);
     let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
     let mut m = edge_write(&lp.peers[0].engine, g, ids[2], None);
-    m.frontier(f.to_value());
+    m.frontier(osis_perm::Frontier::new(f.commits));
     let demote = lp.peers[0].commit(m).unwrap().unwrap();
     let pks = lp.packages(0).unwrap();
     let by = |id: CommitId| pks.iter().find(|p| p.id == id).unwrap().clone();

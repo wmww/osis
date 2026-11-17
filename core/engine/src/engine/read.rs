@@ -68,6 +68,12 @@ impl Engine {
 
     /// The value of `(tid, ak)` as this node reads it; `None` if absent.
     pub fn get(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
+        self.get_within(tid, ak, None)
+    }
+
+    /// `get` holding at most `max` bytes of the state as it loads it (`pages::charge`): past
+    /// that it fails `TooLarge` without loading the rest.
+    pub fn get_within(&mut self, tid: &Tid, ak: &Ak, max: Option<usize>) -> Result<Option<Value>> {
         let (tid, ak) = (*tid, ak.clone());
         if !self.core.exists(&tid) {
             return Ok(None);
@@ -78,7 +84,7 @@ impl Engine {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Weak(*m), edge_value(e))).collect()))
             }
-            _ => self.read(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
+            _ => self.read(|tx| tx.reading(&tid, &ak, max, |tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read))))?,
         };
         Ok(v)
     }
@@ -101,8 +107,13 @@ impl Engine {
     /// `None` if absent. Reads only that position: a key of a large map costs O(log n) and the
     /// value there, not a read of the whole aspect.
     pub fn get_at(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg]) -> Result<Option<Value>> {
+        self.get_at_within(tid, ak, path, None)
+    }
+
+    /// `get_at` holding at most `max` bytes of the state as it loads it (`get_within`).
+    pub fn get_at_within(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg], max: Option<usize>) -> Result<Option<Value>> {
         if path.is_empty() || synthetic_ak(ak.as_str()) {
-            return Ok(self.get(tid, ak)?.and_then(|v| osis_crdt::value_at(&v, path).cloned()));
+            return Ok(self.get_within(tid, ak, max)?.and_then(|v| osis_crdt::value_at(&v, path).cloned()));
         }
         if !self.core.exists(tid) {
             return Ok(None);
@@ -110,8 +121,10 @@ impl Engine {
         let path = self.lookup_path(tid, path)?;
         // a paged state loads only the pages on the path
         let v = self.read(|tx| {
-            tx.ensure_paths(tid, ak, std::slice::from_ref(&path))?;
-            Ok(tx.cached(tid, ak).and_then(|f| f.read_at(&path)))
+            tx.reading(tid, ak, max, |tx| {
+                tx.ensure_paths(tid, ak, std::slice::from_ref(&path))?;
+                Ok(tx.cached(tid, ak).and_then(|f| f.read_at(&path)))
+            })
         })?;
         Ok(v)
     }
@@ -127,7 +140,7 @@ impl Engine {
             return Ok(None);
         }
         let path = self.lookup_path(tid, path)?;
-        let v = self.read(|tx| tx.read_range(tid, ak, &path, r))?;
+        let v = self.read(|tx| tx.reading(tid, ak, None, |tx| tx.read_range(tid, ak, &path, r)))?;
         Ok(v)
     }
 

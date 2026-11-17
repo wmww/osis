@@ -5,7 +5,7 @@ use crate::tests::build::{content, key, rng};
 use crate::tests::validate::role_header;
 use crate::tests::verify::{TestSecrets, register_delta, sec};
 use crate::*;
-use osis_base::{Ak, Link};
+use osis_base::{Ak, CommitId, Link};
 use std::mem::size_of;
 use osis_crypto::{link_hash, link_tree_hash};
 use osis_schema::{AspectDefaults, PurgeBy, Retention};
@@ -282,10 +282,28 @@ fn list_items_ascend_and_frontier_shape() {
     let good = frontier(n, &|i| i, &[]);
     let mut h = linked_as(ListField::Frontier, &good, &d, &mut m);
     h.resolve(&mut m, &d).unwrap();
-    assert_eq!(osis_base::encode(h.frontier.as_ref().unwrap()), good);
+    assert_eq!(h.list_bytes(ListField::Frontier).unwrap(), good);
     for bad in [frontier(n, &|i| i.min(n - 2), &[]), frontier(n, &|i| n - i, &[]), frontier(n, &|i| i, &[1, 0])] {
         let mut h = linked_as(ListField::Frontier, &bad, &d, &mut m);
         assert!(h.resolve(&mut m, &d).is_err());
+    }
+}
+
+// spec/wire.md §4 field 12: an inline frontier is exactly `{0: set<32-byte ID>}` too; any other
+// value there is bad input (never a demotion without a frontier).
+#[test]
+fn an_inline_frontier_is_exact_spec_wire_4() {
+    let mut h = role_header("roles.0");
+    h.frontier = Some(std::sync::Arc::from([CommitId([3; 32])]));
+    let good = h.encode();
+    assert_eq!(Header::decode(&good).unwrap().frontier, h.frontier);
+    let mut inline = Vec::new();
+    put_frontier(&mut inline, &[CommitId([3; 32])]);
+    let at = good.windows(inline.len()).position(|w| w == inline.as_slice()).unwrap();
+    for other in [vec![0x05], vec![0xa1, 0x00, 0x80], vec![0xa1, 0x01, 0xd9, 0x01, 0x02, 0x80]] {
+        let bad = [&good[..at], &other[..], &good[at + inline.len()..]].concat();
+        let e = Header::decode(&bad).unwrap_err();
+        assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput, "{e}");
     }
 }
 

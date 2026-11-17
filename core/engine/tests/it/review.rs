@@ -9,7 +9,6 @@ use osis_crdt::{Op, PathOp, PathSeg};
 use osis_engine::local_peer::Package;
 use osis_engine::{Ingested, Mutation};
 use osis_perm::DemotionScope;
-use osis_schema::Codec;
 
 fn set(lp: &mut osis_engine::local_peer::LocalPeer, i: usize, t: osis_base::Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
@@ -46,7 +45,7 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     lp.advance(10);
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
-    set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.to_value()));
+    set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.clone()));
     // node 0: c's write first, then the revoke is held, then b's commit
     sync(&mut lp, 2, 0);
     let bpk = lp.peers[1].engine.package(&bid).unwrap().unwrap();
@@ -237,7 +236,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     lp.advance(10);
     set(&mut lp, 1, t, &REG, "b's");
     lp.advance(10);
-    set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.to_value()));
+    set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.clone()));
     sync(&mut lp, 1, 0);
     let bs = lp.peers[0].engine.commit_ids().into_iter().find(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:reg.0"))).unwrap();
     let now = lp.peers[0].engine.now();

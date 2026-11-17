@@ -504,8 +504,7 @@ fn addenda_world(w: &addenda::World) -> (JointWorld, osis_perm::MemoryHeldSet, B
         for c in v.iter_mut() {
             let Some(f) = &c.frontier else { continue };
             let Some(i) = jw.ids.iter().position(|id| *id == c.id) else { continue };
-            let mut nf = (**f).clone();
-            nf.commits.extend(w.frontier.get(&w.roles.writes[i].id).into_iter().flatten().map(|id| cid(*id)));
+            let nf = osis_perm::Frontier::new(f.commits().iter().copied().chain(w.frontier.get(&w.roles.writes[i].id).into_iter().flatten().map(|id| cid(*id))));
             *c = std::sync::Arc::new(osis_perm::RoleCommit { frontier: Some(std::sync::Arc::new(nf)), ..(**c).clone() });
         }
     }

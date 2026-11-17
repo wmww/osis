@@ -426,25 +426,34 @@ pub(crate) fn links_in(v: &Value, out: &mut Vec<Link>) {
 /// What a link reaches one step down: a tree node's children (with whether they are chunks),
 /// or the links inside a page or link page; `Ok(None)` for anything else (a chunk);
 /// `Err(Missing)` when the blob is not held.
-pub(crate) fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<Option<(bool, Vec<Link>)>> {
-    let blob = blobs.fetch(&link.blob)?;
-    Ok(kids_of(Some(dedup), link, &blob))
+pub(crate) fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, o: &Opens) -> Result<Option<(bool, Vec<Link>)>> {
+    let blob = blobs.fetch(&o.0)?;
+    Ok(kids_of(Some(dedup), o, &blob))
 }
 
-/// `below` of the held bytes `blob` of `link`: `None` for a chunk, or bytes that are not the
-/// node or page the link names (its content hash under `dedup`, unchecked without one: a thing
-/// forgotten here, whose pieces are only deleted).
-pub(crate) fn kids_of(dedup: Option<&Secret32>, link: &Link, blob: &[u8]) -> Option<(bool, Vec<Link>)> {
-    if osis_blob::blob_id(blob) != link.blob {
+/// What a read of a link one step down depends on: its blob, its content hash and its key (not
+/// its delete keys or salt).
+pub(crate) type Opens = (BlobId, [u8; 32], [u8; 32]);
+
+pub(crate) fn opens(l: &Link) -> Opens {
+    (l.blob, l.hash, l.key)
+}
+
+/// `below` of the held bytes `blob` of the link `o` opens: `None` for a chunk, or bytes that are
+/// not the node or page the link names (its content hash under `dedup`, unchecked without one: a
+/// thing forgotten here, whose pieces are only deleted).
+pub(crate) fn kids_of(dedup: Option<&Secret32>, o: &Opens, blob: &[u8]) -> Option<(bool, Vec<Link>)> {
+    let (id, hash, key) = o;
+    if osis_blob::blob_id(blob) != *id {
         return None;
     }
-    let (_, pt) = osis_blob::open(blob, &Secret32::from_bytes(link.key)).ok()?;
+    let (_, pt) = osis_blob::open(blob, &Secret32::from_bytes(*key)).ok()?;
     if let Ok((level, kids)) = osis_blob::tree::parse_node(&pt)
-        && dedup.is_none_or(|d| osis_blob::tree::node_hash(d, level, &kids) == link.hash)
+        && dedup.is_none_or(|d| osis_blob::tree::node_hash(d, level, &kids) == *hash)
     {
         return Some((level <= 1, kids.into_iter().map(|(l, _)| l).collect()));
     }
-    if dedup.is_some_and(|d| osis_crypto::link_hash(d, &pt) != link.hash) {
+    if dedup.is_some_and(|d| osis_crypto::link_hash(d, &pt) != *hash) {
         return None;
     }
     let v = osis_base::decode(&pt, &osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, pt.len())).ok()?;
@@ -481,7 +490,7 @@ pub(crate) fn walk_trees(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out:
         if leaf {
             continue;
         }
-        match below(&mut blobs, dedup, &l) {
+        match below(&mut blobs, dedup, &opens(&l)) {
             // children of a level-1 node are chunks: not fetched
             Ok(Some((chunks, kids))) => stack.extend(kids.into_iter().map(|k| (k, chunks))),
             Ok(None) => {}
@@ -518,7 +527,7 @@ fn tree_hits(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], blobs: &BTreeSet
 impl Engine {
     /// Reads a chunked large value of thing `tid` back whole.
     pub fn read_large(&mut self, tid: &Tid, link: &Link) -> Result<Value> {
-        Ok(self.read_large_max(tid, link, MAX_READ)?.0)
+        Ok(self.read_large_max(tid, link, MAX_READ, osis_base::format::MAX_VALUE_DEPTH)?.0)
     }
 
     /// The chunk trees the live states of `tid`'s aspects link. Complete when no node blob is
@@ -709,15 +718,16 @@ impl Engine {
     }
 
     /// `read_large` failing with `osis_commit::Error::TooLarge` past `max_len` canonical bytes or
-    /// bytes decoded (the API's materialization bound), with the bytes decoded
+    /// bytes decoded (the API's materialization bound), with the bytes decoded; a value nesting
+    /// deeper than `room` (the levels left where the link sits) is bad input
     /// (`osis_blob::read_value`).
-    pub fn read_large_max(&mut self, tid: &Tid, link: &Link, max_len: usize) -> Result<(Value, usize)> {
+    pub fn read_large_max(&mut self, tid: &Tid, link: &Link, max_len: usize, room: usize) -> Result<(Value, usize)> {
         let (tid, link) = (*tid, *link);
         self.read(|tx| {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
             let mut blobs = TxBlobs::new(&mut tx.blobs, tx.txn.is_memory());
             let mut r = BlobReader::new(&dedup, &mut blobs);
-            Ok(osis_blob::read_value(link, &dedup, &mut r, LargeParams::FORMAT, max_len)?)
+            Ok(osis_blob::read_value(link, &dedup, &mut r, LargeParams::FORMAT, max_len, room)?)
         })
     }
 
@@ -737,16 +747,17 @@ impl Engine {
     /// `get` with every link materialized (large values read whole).
     pub fn get_full(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
         let Some(v) = self.get(tid, ak)? else { return Ok(None) };
-        Ok(Some(self.materialize(tid, v)?))
+        Ok(Some(self.materialize(tid, v, 0)?))
     }
 
-    fn materialize(&mut self, tid: &Tid, v: Value) -> Result<Value> {
+    /// `v`, read at depth `at`, with its links replaced (each within the levels left there).
+    fn materialize(&mut self, tid: &Tid, v: Value, at: usize) -> Result<Value> {
         Ok(match v {
-            Value::Link(l) => self.read_large(tid, &l)?,
-            Value::List(l) => Value::List(l.into_iter().map(|x| self.materialize(tid, x)).collect::<Result<_>>()?),
-            Value::Set(s) => Value::Set(s.into_iter().map(|x| self.materialize(tid, x)).collect::<Result<_>>()?),
-            Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| Ok((self.materialize(tid, k)?, self.materialize(tid, x)?))).collect::<Result<_>>()?),
-            Value::Enum(c, Some(p)) => Value::Enum(c, Some(Box::new(self.materialize(tid, *p)?))),
+            Value::Link(l) => self.read_large_max(tid, &l, MAX_READ, osis_base::format::MAX_VALUE_DEPTH.saturating_sub(at))?.0,
+            Value::List(l) => Value::List(l.into_iter().map(|x| self.materialize(tid, x, at + 1)).collect::<Result<_>>()?),
+            Value::Set(s) => Value::Set(s.into_iter().map(|x| self.materialize(tid, x, at + 2)).collect::<Result<_>>()?),
+            Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| Ok((self.materialize(tid, k, at + 1)?, self.materialize(tid, x, at + 1)?))).collect::<Result<_>>()?),
+            Value::Enum(c, Some(p)) => Value::Enum(c, Some(Box::new(self.materialize(tid, *p, at + 2)?))),
             v => v,
         })
     }

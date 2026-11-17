@@ -69,7 +69,7 @@ impl Engine {
             let Some(bytes) = tx.blobs.get(&p.link.blob)? else { return Ok(Some(Arc::default())) };
             osis_base::costs::count("pieces: nodes decoded", 1);
             let dedup = p.thing.and_then(|t| tx.core.dedup(&t));
-            let kids = match crate::engine::large::kids_of(dedup.as_ref(), &p.link, &bytes) {
+            let kids = match crate::engine::large::kids_of(dedup.as_ref(), &crate::engine::large::opens(&p.link), &bytes) {
                 Some((leaf, kids)) => kids.into_iter().map(|k| PieceLink::new(k, p.thing, leaf)).collect(),
                 None => Vec::new(),
             };

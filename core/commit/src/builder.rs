@@ -7,7 +7,7 @@ use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
 use crate::Error;
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_AUTHOR, MAX_BLOB, MAX_LIST_BYTES};
-use osis_base::{Ak, BlobId, CommitId, Tid, Ts, Value};
+use osis_base::{Ak, BlobId, CommitId, Tid, Ts};
 use osis_crypto::{CryptoRngCore, Domain, Secret32, SigningSecret, delta_hash, seal_inner};
 use osis_schema::Retention;
 use std::collections::BTreeSet;
@@ -54,8 +54,8 @@ pub struct CommitBuilder {
     pub aspects: Vec<AspectWrite>,
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
-    /// The frontier value of an explicit demotion (spec/permissions.md §5).
-    pub frontier: Option<Value>,
+    /// The frontier of an explicit demotion, its commit IDs ascending and distinct (spec/permissions.md §5).
+    pub frontier: Option<std::sync::Arc<[CommitId]>>,
     /// The header's blind (spec/crypto.md §7): given when taken before the build (a rotation's
     /// departs mark names it), else drawn at build.
     pub blind: Option<[u8; 16]>,

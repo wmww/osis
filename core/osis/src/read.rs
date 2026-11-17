@@ -99,10 +99,10 @@ pub(crate) fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 /// tree is not held (not fetched yet, or named by no blob) or fails verification (another
 /// thing's dedup secret, bad bytes, an unknown format). The bound and local storage failures
 /// stay errors.
-fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budget: &mut usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
+fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, at: usize, limit: usize, budget: &mut usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
     use osis_base::{Classified, ErrorClass};
     let too_large = Error::TooLarge { limit };
-    let (x, decoded) = match e.read_large_max(tid, l, *budget) {
+    let (x, decoded) = match e.read_large_max(tid, l, *budget, osis_base::format::MAX_VALUE_DEPTH.saturating_sub(at)) {
         Ok(x) => x,
         Err(osis_engine::Error::Data(osis_blob::Error::TooLarge(_))) => return Err(too_large),
         Err(osis_engine::Error::Data(err)) if err == osis_blob::Error::Missing || err.class() != ErrorClass::Local => {
@@ -117,28 +117,29 @@ fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budge
     Ok(Some(x))
 }
 
-/// `v` with its links replaced; `None` when `v` itself is gone. An unreadable link (`read_link`)
-/// is gone, and with it the list or set element, map entry (struct field) or enum it is in or
-/// is; the rest stays.
-fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mut usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
+/// `v`, read at depth `at`, with its links replaced; `None` when `v` itself is gone. An
+/// unreadable link (`read_link`: also one whose value would read deeper than the levels left
+/// where it sits, spec/data-model.md §5) is gone, and with it the list or set element, map entry
+/// (struct field) or enum it is in or is; the rest stays.
+fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, at: usize, limit: usize, budget: &mut usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
     if let Value::Link(l) = v {
-        return read_link(e, tid, &l, limit, budget, bad);
+        return read_link(e, tid, &l, at, limit, budget, bad);
     }
-    let mut m = |x: Value| materialize_in(e, tid, x, limit, budget, bad);
+    let mut m = |x: Value, by: usize| materialize_in(e, tid, x, at + by, limit, budget, bad);
     Ok(Some(match v {
-        Value::List(l) => Value::List(l.into_iter().filter_map(|x| m(x).transpose()).collect::<Result<_>>()?),
-        Value::Set(s) => Value::Set(s.into_iter().filter_map(|x| m(x).transpose()).collect::<Result<_>>()?),
+        Value::List(l) => Value::List(l.into_iter().filter_map(|x| m(x, 1).transpose()).collect::<Result<_>>()?),
+        Value::Set(s) => Value::Set(s.into_iter().filter_map(|x| m(x, 2).transpose()).collect::<Result<_>>()?),
         Value::Map(map) => {
             // `collect`: a link's content sorts elsewhere than the link, so an insert per key is O(n)
             let mut out = Vec::with_capacity(map.len());
             for (k, x) in map {
-                if let (Some(k), Some(x)) = (m(k)?, m(x)?) {
+                if let (Some(k), Some(x)) = (m(k, 1)?, m(x, 1)?) {
                     out.push((k, x));
                 }
             }
             Value::Map(out.into_iter().collect())
         }
-        Value::Enum(c, Some(p)) => match m(*p)? {
+        Value::Enum(c, Some(p)) => match m(*p, 2)? {
             Some(p) => Value::Enum(c, Some(Box::new(p))),
             None => return Ok(None),
         },
@@ -146,15 +147,23 @@ fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mu
     }))
 }
 
-/// Replaces every link by its value, dropping unreadable ones into `bad` (`materialize_in`);
-/// fails `TooLarge` past `limit` canonical bytes, or bytes its links decode to.
-fn materialize(e: &mut Engine, tid: &Tid, v: Value, limit: usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
+/// Replaces every link of `v` (read at depth `at`) by its value, dropping unreadable ones into
+/// `bad` (`materialize_in`); fails `TooLarge` past `limit` canonical bytes, or bytes its links
+/// decode to.
+fn materialize(e: &mut Engine, tid: &Tid, v: Value, at: usize, limit: usize, bad: &mut Vec<osis_blob::Error>) -> Result<Option<Value>> {
     let mut budget = limit;
-    let v = materialize_in(e, tid, v, limit, &mut budget, bad)?;
+    let v = materialize_in(e, tid, v, at, limit, &mut budget, bad)?;
     if v.as_ref().is_some_and(|v| osis_base::cbor::encoded_len(v) > limit) {
         return Err(Error::TooLarge { limit });
     }
     Ok(v)
+}
+
+/// The levels a value at `path` sits below its aspect's root as read (spec/data-model.md §5): a
+/// field, key or index step one (the array or map it reads in), a case or set element step two
+/// (the tag and its array).
+fn read_depth(path: &Path) -> usize {
+    path.0.iter().map(|s| if matches!(s, Step::Case(_) | Step::Elem(_)) { 2 } else { 1 }).sum()
 }
 
 /// The diagnostic for a stored value of `tid`'s `ak` that a typed read could not decode.
@@ -194,16 +203,25 @@ impl Reader<'_> {
         if self.hidden(tid) {
             return Ok((tid, None));
         }
-        Ok((tid, self.e.get(&tid, ak)?))
+        let v = self.e.get_within(&tid, ak, Some(self.limit));
+        Ok((tid, self.bounded(v)?))
+    }
+
+    /// An engine read under the bound (`Engine::get_within`): past it `TooLarge`.
+    fn bounded(&self, v: osis_engine::Result<Option<Value>>) -> Result<Option<Value>> {
+        match v {
+            Err(osis_engine::Error::Data(osis_blob::Error::TooLarge(_))) => Err(Error::TooLarge { limit: self.limit }),
+            v => Ok(v?),
+        }
     }
 
     /// `v` (of `tid`'s `ak`) materialized up to the bound; an unreadable link reads as absent at
     /// its position with an `Unreadable` diagnostic (spec/data-model.md §6), `None` when it is
     /// `v` itself or the enum `v` is. A blob not held is noted: its arrival re-delivers the aspect
     /// to watches (`Engine::missed_blob`).
-    fn materialize(&mut self, tid: &Tid, ak: &Ak, v: Value) -> Result<Option<Value>> {
+    fn materialize(&mut self, tid: &Tid, ak: &Ak, v: Value, path: &Path) -> Result<Option<Value>> {
         let mut bad = Vec::new();
-        let v = materialize(self.e, tid, v, self.limit, &mut bad)?;
+        let v = materialize(self.e, tid, v, read_depth(path), self.limit, &mut bad)?;
         if bad.contains(&osis_blob::Error::Missing) {
             self.e.missed_blob(*tid, ak.clone(), None);
         }
@@ -220,7 +238,7 @@ impl Reader<'_> {
     /// commit to its listeners again (`Engine::missed_blob`).
     pub(crate) fn materialized(&mut self, tid: &Tid, ak: &Ak, id: osis_base::CommitId, v: Value, limit: usize) -> Result<Value> {
         let mut bad = Vec::new();
-        let v = materialize(self.e, tid, v, limit, &mut bad)?;
+        let v = materialize(self.e, tid, v, 0, limit, &mut bad)?;
         if bad.contains(&osis_blob::Error::Missing) {
             self.e.missed_blob(*tid, ak.clone(), Some(id));
         }
@@ -234,7 +252,7 @@ impl Reader<'_> {
     pub fn value(&mut self, tid: Tid, ak: &Ak) -> Result<Option<Value>> {
         let (tid, v) = self.raw(tid, ak)?;
         Ok(match v {
-            Some(v) => self.materialize(&tid, ak, v)?,
+            Some(v) => self.materialize(&tid, ak, v, &Path::root())?,
             None => None,
         })
     }
@@ -249,7 +267,7 @@ impl Reader<'_> {
                 Some(v) => v,
                 None => return Ok(None),
             },
-            _ => match self.materialize(&t, &ak, raw)? {
+            _ => match self.materialize(&t, &ak, raw, &Path::root())? {
                 Some(v) => v,
                 None => return Ok(None),
             },
@@ -267,12 +285,12 @@ impl Reader<'_> {
             self.e.report(mismatch(tid, ak, &PathError::new(path.clone(), PathErrorKind::Mismatch { expected: "no link here" })));
             return Ok(None);
         }
-        self.materialize(&tid, ak, v)
+        self.materialize(&tid, ak, v, path)
     }
 
     /// The stored value at `path` inside `tid`'s `ak`, large values still links: only that
     /// position is read (a set element's step reads the set it is in).
-    fn raw_at(&mut self, tid: Tid, ak: &Ak, path: &Path) -> Result<Option<Value>> {
+    pub(crate) fn raw_at(&mut self, tid: Tid, ak: &Ak, path: &Path) -> Result<Option<Value>> {
         let cut = path.0.iter().position(|s| matches!(s, Step::Elem(_))).unwrap_or(path.0.len());
         let (to, rest) = path.0.split_at(cut);
         let rest = Path(rest.to_vec());
@@ -283,7 +301,8 @@ impl Reader<'_> {
         if self.hidden(tid) {
             return Ok(None);
         }
-        let v = self.e.get_at(&tid, ak, &crate::write::segs(&Path(to.to_vec()))?)?;
+        let v = self.e.get_at_within(&tid, ak, &crate::write::segs(&Path(to.to_vec()))?, Some(self.limit));
+        let v = self.bounded(v)?;
         Ok(v.and_then(|v| value_at(&v, &rest).cloned()))
     }
 
@@ -295,7 +314,7 @@ impl Reader<'_> {
         let ak = ak_of(key)?;
         let (Some(s), Some(ty)) = (key.schema(), key.ty()) else {
             let Some(sub) = self.raw_at(tid, &ak, path)? else { return Ok(None) };
-            return self.materialize(&tid, &ak, sub);
+            return self.materialize(&tid, &ak, sub, path);
         };
         let (t, atomic) = type_at(s, ty, path)?;
         if let Some(sub) = self.raw_at(tid, &ak, path)? {

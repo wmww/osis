@@ -1504,7 +1504,7 @@ fn holder_rotation_rotates_above_at_once_spec_crypto_4() {
             let mut m = Mutation::new();
             m.ts = Some(tx.core.hlc.next());
             crate::flows::edges::removal(tx, &mut m, g, d)?;
-            m.frontier(osis_schema::Codec::to_value(&ct::Frontier::default()));
+            m.frontier(osis_perm::Frontier::default());
             crate::engine::Engine::commit_tx(tx, m).map(|_| ())
         })
         .unwrap();
@@ -1587,7 +1587,7 @@ fn removal_alone(lp: &mut LocalPeer, i: usize, t: Tid, d: Tid) {
             let mut m = Mutation::new();
             m.ts = Some(tx.core.hlc.next());
             crate::flows::edges::removal(tx, &mut m, t, d)?;
-            m.frontier(osis_schema::Codec::to_value(&ct::Frontier::default()));
+            m.frontier(osis_perm::Frontier::default());
             crate::engine::Engine::commit_tx(tx, m).map(|_| ())
         })
         .unwrap();

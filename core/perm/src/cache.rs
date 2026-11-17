@@ -165,7 +165,7 @@ impl W {
     /// A frontier as the tag covers it: its size (hashing its content would cost O(frontier)
     /// per save and restore).
     fn frontier_shape(&mut self, f: &Frontier) {
-        self.len(f.commits.len());
+        self.len(f.commits().len());
     }
 }
 

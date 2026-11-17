@@ -646,7 +646,7 @@ fn vouched_copy_dates_at_its_write_spec_crdt_4_8() {
     let b = lp.peers[0].engine.snapshot(&d, &ak(A)).unwrap().unwrap();
     lp.advance(1_000);
     let bob = lp.peers[1].engine.me();
-    set_edge(&mut lp.peers[0].engine, d, bob, None, Some(ct::Frontier::default().to_value()));
+    set_edge(&mut lp.peers[0].engine, d, bob, None, Some(ct::Frontier::default()));
     lp.advance(1_000);
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&d, &ak(A)).unwrap(), Some(s("two")), "X vouched by B");
@@ -724,7 +724,7 @@ fn covered_drops_history(seed: u64) -> usize {
                 lp.peers[0].engine.snapshot(&d, &ak([A, B][below(2) as usize])).unwrap();
             }
             8 | 9 if !removed && i >= 6 => {
-                set_edge(&mut lp.peers[0].engine, d, bob, None, Some(ct::Frontier::default().to_value()));
+                set_edge(&mut lp.peers[0].engine, d, bob, None, Some(ct::Frontier::default()));
                 removed = true;
             }
             _ => {}

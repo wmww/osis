@@ -9,7 +9,7 @@ use osis_engine::engine::listing::{CommitFrom, CommitPos, HeldPart, PartBody};
 use osis_engine::local_peer::{LocalPeer, Package, Peer};
 use osis_engine::{Event, Mutation};
 use osis_schema::core_types::{self as ct};
-use osis_schema::{Codec, Retention};
+use osis_schema::Retention;
 use std::collections::BTreeSet;
 
 const MAX: usize = usize::MAX;
@@ -169,7 +169,7 @@ fn invalid_body_reads_marked() {
     assert!(held(&mut lp.peers[1], d, &c).valid);
     lp.sync_all().unwrap();
     let f = ct::Frontier { commits: BTreeSet::new() };
-    set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.to_value()));
+    set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.clone()));
     let r = held(&mut lp.peers[0], d, &c);
     assert!(!r.valid);
     assert_eq!(r.body, PartBody::Dropped);
@@ -342,7 +342,7 @@ fn events_per_commit_exact() {
     let f = ct::Frontier { commits: BTreeSet::new() };
     lp.sync_all().unwrap();
     lp.peers[1].drain_events();
-    let dm = set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.to_value()));
+    let dm = set_edge(&mut lp.peers[0].engine, d, ids[1], None, Some(f.clone()));
     let pd = pack(&mut lp, 0, &dm);
     // Dan received Bob's writes: he would vouch for them (spec/permissions.md §5.2); this counts
     // what turns invalid under a removal listing none
@@ -449,7 +449,7 @@ fn purge_by_author_any_order_spec_perm_6() {
             let prq = pack(&mut lp, who, &rq);
             // an honest demotion: it lists the delta and the request (spec/permissions.md §5.1)
             let f = ct::Frontier { commits: [c, rq].into_iter().collect() };
-            let dm = set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Read)), Some(f.to_value()));
+            let dm = set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Read)), Some(f.clone()));
             let pd = pack(&mut lp, 0, &dm);
             let items = [&pc, &setting, &pd, &prq];
             // a fresh node holding `base`, copied for each order

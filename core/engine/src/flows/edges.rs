@@ -48,7 +48,7 @@ fn perm_edge(e: &Edge) -> PermEdge {
 /// `who`'s effective invite allows it and the holder has no current edge. `leave`: the signer's
 /// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
 /// `frontier`: the one a grant that audits carries (`Engine::grant_signed`).
-pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_base::Value>) -> Result<Done> {
+pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_perm::Frontier>) -> Result<Done> {
     grant_history(tx, signer, target, holder, edge, leave, frontier, History::All)
 }
 
@@ -64,7 +64,7 @@ pub enum History {
 
 /// `grant_in`, handing `history`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_base::Value>, history: History) -> Result<Done> {
+pub(crate) fn grant_history(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool, frontier: Option<osis_perm::Frontier>, history: History) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.writer()?);
     if edge.invite.is_some_and(|i| i > edge.role) {
         return Err(Error::Misuse("invite above the edge's role"));
@@ -267,7 +267,7 @@ fn leaves_no_admin(core: &crate::engine::Core, target: &Tid, lowered: &[(Tid, Op
 /// holders' edges too, under the same frontier and one rotation (spec/commits.md §2). Then the
 /// inbox copy to each holder, logged before any other entry under every sync ID the removed
 /// parties could read.
-pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_base::Value>) -> Result<Done> {
+pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_perm::Frontier>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.writer()?);
     let holder = d.holder;
     let ts = now_ts(tx.core);
@@ -562,7 +562,7 @@ impl Engine {
     /// no longer holds the ID of (`own_cover`; the scope settled first: content moves no edge
     /// write). Returns the frontier and the own covers, which the caller's `Done` carries before
     /// the demotion. `None`: an unknown target.
-    fn demotion_frontier(&mut self, who: Tid, target: Tid, ops: Vec<osis_perm::EdgeOp>) -> Result<(Option<osis_base::Value>, Vec<CommitId>)> {
+    fn demotion_frontier(&mut self, who: Tid, target: Tid, ops: Vec<osis_perm::EdgeOp>) -> Result<(Option<osis_perm::Frontier>, Vec<CommitId>)> {
         let as_of = self.now();
         let Some(tl) = self.core.timelines.get(&target) else { return Ok((None, Vec::new())) };
         let own = tl.certificates(&who, &target).commits;
@@ -570,7 +570,7 @@ impl Engine {
         let mut keep: BTreeSet<CommitId> = own.iter().copied().collect();
         let mut f = loop {
             let f = self.frontier_fitted(&scope, as_of, &keep)?;
-            let probe = self.demotion_probe(who, ops.clone(), osis_perm::Frontier { commits: f.commits.clone() });
+            let probe = self.demotion_probe(who, ops.clone(), osis_perm::Frontier::new(f.commits.iter().copied()));
             let s = self.core.timelines.get(&target).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();
             if scope.covers(&s) {
                 break f;
@@ -582,7 +582,7 @@ impl Engine {
             keep.extend(named.iter().copied());
             f = self.frontier_fitted(&scope, as_of, &keep)?;
         }
-        Ok((Some(osis_schema::Codec::to_value(&f)), named.into_iter().collect()))
+        Ok((Some(osis_perm::Frontier::new(f.commits)), named.into_iter().collect()))
     }
 
     /// A demotion by `who` with edge writes `ops` and frontier `f`, as `Timeline::demotion_scope`
