@@ -776,6 +776,32 @@ fn entry_holding_a_purged_part_leaves_spec_sync_judgement_1() {
     assert_eq!(now.len(), 1, "the rest of the body logged again");
 }
 
+// spec/sync-judgement.md §2 (Per blob, a strip; spec/sync-compaction.md §1 Carriers): an entry
+// stripping here is deleted at K only once each part of it held here has another entry there not
+// stripped carrying it, each part it strips as covered has a snapshot reaching it there, and
+// `MAX_DRIFT` passed its keep bound. Each step lacks one of the three.
+#[test]
+fn a_strip_deletes_at_k_once_k_carries_the_rest_spec_sync_judgement_2() {
+    let mut w = W::new();
+    w.pulls = false;
+    w.hold(cid(1), &[S], uncovered());
+    let (b, carrier, other, cover) = (BlobId([31; 32]), BlobId([32; 32]), BlobId([33; 32]), BlobId([34; 32]));
+    w.g.blobs.insert(b, Some(BlobInfo { parts: [0, 1].into(), sealed: Default::default(), copy: false }));
+    w.g.blobs.insert(other, Some(BlobInfo { parts: [2].into(), sealed: Default::default(), copy: false }));
+    w.g.gone.insert(b, Strip { live: [0].into(), covers: vec![[cid(9)].into()], from: 5_000 });
+    let k = |w: &mut W, at: &[(BlobId, CommitId)]| {
+        w.g.k.held = at.iter().map(|(x, c)| ((S, *x), *c)).collect();
+        w.stream();
+        w.settle();
+        w.deletes()
+    };
+    assert_eq!(k(&mut w, &[(b, cid(1)), (carrier, cid(1)), (cover, cid(9))]), 0, "deleted before its keep bound's drift passed");
+    w.g.now = 5_000;
+    assert_eq!(k(&mut w, &[(b, cid(1)), (other, cid(1)), (cover, cid(9))]), 0, "deleted with no entry there carrying its live part");
+    assert_eq!(k(&mut w, &[(b, cid(1)), (carrier, cid(1))]), 0, "deleted with no snapshot there covering its stripped part");
+    assert_eq!(k(&mut w, &[(b, cid(1)), (carrier, cid(1)), (cover, cid(9))]), 1);
+}
+
 // spec/sync-judgement.md §3 (own store) (aged-covers): an entry covered and dropped leaves the own
 // store with no delete key, and a body its author keeps as local data under another writer's
 // cover leaves the log too, so K does not pull it back once its tombstone expires (HN_ownlog).

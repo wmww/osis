@@ -29,7 +29,8 @@ fn make(e: &mut Engine, admin: Tid, from: Tid) -> Tid {
 }
 
 // spec/sync-set.md §1, §2: a new account's node holds its node root, the account root, the
-// profile and the inbox; the node thing is a key actor, never entered. A plain thing under the
+// profile and the inbox; a key actor (the node thing, the account) is never entered, by a strong
+// from the node root or the account root alike. A plain thing under the
 // account root referenced from it is held in its sync unit; removing the strong takes it out and
 // notes it as left with the sync unit it was in.
 #[test]
@@ -43,6 +44,11 @@ fn the_node_closure_follows_strongs_spec_sync_set_2() {
         assert!(e.closure_holds(&t), "{t:?}");
     }
     assert!(!e.closure_holds(&e.tid()), "a key actor is never entered");
+    let (me, account) = (e.tid(), e.me());
+    for (from, k) in [(d, me), (d, account), (root, me), (root, account)] {
+        strong(e, from, k, true);
+        assert!(!e.closure_holds(&k), "a strong to key actor {k:?} enters it");
+    }
     let x = make(e, d, d);
     assert!(e.closure_holds(&x));
     assert!(e.sync_unit(&d).contains(&x) && e.units_holding(&x).contains(&d));
@@ -923,6 +929,30 @@ fn an_ephemeral_strong_going_lets_its_target_go_spec_commits_5() {
     e0.write(m).unwrap();
     e0.settle_needs().unwrap();
     assert!(e0.core.created(&q).is_none(), "nothing held needs Q's chain");
+}
+
+// spec/commits.md §5 What a held thing needs, spec/data-model.md §8 Held history: a strong in
+// held history needs its target as a current one does. Peer 0's T keeps history holding its
+// targets; its strong to account Q (peer 1, never entered) removed, Q's chain stays while the
+// adding body is held.
+#[test]
+fn a_strong_in_held_history_needs_its_target_spec_commits_5() {
+    let mut lp = osis_engine::local_peer::LocalPeer::new_apart(2, 0, crate::common::T0).unwrap();
+    let q = lp.peers[1].engine.me();
+    let theirs: Vec<_> = lp.peers[1].engine.commit_ids();
+    crate::flows::send(&mut lp, 1, 0, &theirs);
+    let e0 = &mut lp.peers[0].engine;
+    let d0 = e0.account_root().unwrap();
+    let t = make(e0, d0, d0);
+    let keep = osis_schema::History::Keep { until: None, after: Some(10 * 60_000) };
+    let mut m = Mutation::new();
+    m.set(t, &ct::RETENTION, &ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(keep), ..Default::default() }), history_holds_targets: true, ..Default::default() }).unwrap();
+    e0.commit(m).unwrap();
+    strong(e0, t, q, true);
+    strong(e0, t, q, false);
+    e0.settle_needs().unwrap();
+    e0.settle_needs().unwrap();
+    assert!(e0.core.created(&q).is_some(), "the strong in T's history keeps Q's chain");
 }
 
 // spec/sync-set.md §3 Release, spec/commits.md §5 (any other commit keeps its header: a held leftover is a part): one

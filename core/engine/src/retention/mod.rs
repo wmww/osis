@@ -1461,7 +1461,8 @@ impl Engine {
         }
         let keeps = self.part_keeps(c)?;
         let reached = |e: &Engine, t: u64| e.core.time.until(Some(t)) >= t;
-        // held parts a cover may drop: past their keep bound, a leftover only past its expiry
+        // held or missing parts a cover may drop: past their keep bound, a value-less leftover
+        // (never a missing part) only past its expiry
         let mut parts = Vec::new();
         let mut held = 0;
         for (ai, a) in m.header.aspects.iter().enumerate() {
@@ -1470,7 +1471,7 @@ impl Engine {
                 continue;
             }
             held += usize::from(!missing);
-            let leftover_due = missing || !m.bare(ai) || m.header.expires.is_some_and(|t| reached(self, t));
+            let leftover_due = !m.bare(ai) || m.header.expires.is_some_and(|t| reached(self, t));
             let keep = keeps.get(ai).copied().unwrap_or(osis_commit::FOREVER);
             if compact::compactable(&a.ak) && leftover_due && keep < osis_commit::FOREVER && reached(self, keep) {
                 parts.push((a.tid, a.ak.clone(), missing));

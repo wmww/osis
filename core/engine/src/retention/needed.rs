@@ -7,9 +7,9 @@
 //! whose held edge write names it holder (`Held::named_on`), an account root whose account's held
 //! chain names it a device (D bears no edge write), one a held or pending commit it
 //! authored or acted in is on (body held or not; a pending one by the things it writes on,
-//! `Indexes::pend_by`), one a pending commit awaiting its record writes on (`Wake::Record`), one in
-//! the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a part the
-//! node fetches again), one in the node closure an edge write on it names holder (not by its
+//! `Indexes::pend_by`), one a pending commit first awaiting its record writes on (`pend_by` too),
+//! one in the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a
+//! part the node fetches again), one in the node closure an edge write on it names holder (not by its
 //! record: the holder's sync ID carries the grant with its chain, spec/sync-judgement.md §2 A
 //! grant naming a holder). A thing is rooted, kept for itself (`Root`): held (in the node closure
 //! or leaving it), a retained copy, or a thing an own self-removal still waits to seal under.
@@ -136,7 +136,7 @@ pub(crate) enum Need {
     Holder,
     /// A held commit `t` authored or acted in has an aspect on `x`.
     Signed(osis_base::CommitId),
-    /// A pending commit `t` signed, or one awaiting `t`'s record, writes on `x`.
+    /// A pending commit `t` signed, or one awaiting `t`'s record first, writes on `x`.
     Pending(osis_base::CommitId),
     /// `x` is in the node closure and a held commit on `t` has a part missing on it.
     Missing(osis_base::CommitId),
@@ -166,9 +166,10 @@ pub(crate) fn rooted(core: &Core, t: &Tid) -> Option<Root> {
 /// (`refs::to`; an account's `keys.0` naming its inbox too), those a held commit
 /// it authored (an account's: `Indexes::by_epoch`) or acted in (`Indexes::by_actor`) has an
 /// aspect on, its parts held or not (a header alone is judged by its author's chain), those a
-/// pending commit it signed (`Indexes::pend_by`) or awaiting its record (`Wake::Record`) writes
-/// on, and, in the node closure, those a held commit on it has a part missing on and those an
-/// edge write on it names holder. The rule (`needed`) and the explainer (`Engine::why_kept`)
+/// pending commit it signed or whose first awaited record it is (`Indexes::pend_by`) writes on
+/// (a record only another part awaits is due once the commit pends on it), and, in the node
+/// closure, those a held commit on it has a part missing on and those an edge write on it names
+/// holder. The rule (`needed`) and the explainer (`Engine::why_kept`)
 /// both read it.
 pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     let core = &*tx.core;
@@ -176,10 +177,9 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     let authored = core.ix.by_epoch.range((*t, lo)..).take_while(|((a, _), _)| a == t).flat_map(|(_, cs)| cs.iter());
     let acted = core.ix.by_actor.range((*t, Tid::from_bytes([0; 15]))..).take_while(|((a, _), _)| a == t).flat_map(|(_, cs)| cs.iter());
     let signed = authored.chain(acted).flat_map(|c| core.ix.commits.get(c).into_iter().flat_map(move |m| m.view.aspects.iter().map(move |a| (a.tid, Need::Signed(*c)))));
-    // a pending commit it signed or whose record it awaits (`Wake::Record`), on the things it
+    // a pending commit it signed or whose record it awaits first (`pend_by`), on the things it
     // writes on (`Wake::Thing`), as if held
-    let awaiting = core.ix.pend_on.get(&crate::apply::Wake::Record(*t)).into_iter().flatten();
-    let pending = core.ix.pend_by.get(t).into_iter().flatten().chain(awaiting).flat_map(|c| core.ix.pend_keys.get(c).into_iter().flat_map(|ws| ws.iter()).filter_map(move |w| if let crate::apply::Wake::Thing(x) = w { Some((*x, Need::Pending(*c))) } else { None }));
+    let pending = core.ix.pend_by.get(t).into_iter().flatten().flat_map(|c| core.ix.pend_keys.get(c).into_iter().flat_map(|ws| ws.iter()).filter_map(move |w| if let crate::apply::Wake::Thing(x) = w { Some((*x, Need::Pending(*c))) } else { None }));
     // a held commit on it still waiting for a part (counted missing), by the things the node
     // closure holds those parts are on (spec/commits.md §5: one the node fetches again): what
     // arrives there may reference it, and the commit stays whole for it

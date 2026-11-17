@@ -208,3 +208,80 @@ fn a_blob_opened_before_its_lists_resolve_is_checked_once_they_do_spec_commits_4
         }
     }
 }
+
+// spec/sync-judgement.md §2 (Per blob), spec/sync-compaction.md §1 (Duplicates): how one held
+// blob of a commit loses to another, by what each carries as this node opened it. The same
+// sections: the higher blob ID loses, or either where it may not stand. Unopened sections the
+// other lacks: spare, unless the other lacks a part this one holds. A part only a blob carries
+// that the other adds: needed, and not once that part is overwritten.
+#[test]
+fn a_blob_loses_to_another_by_what_each_carries_spec_sync_judgement_2() {
+    use super::Loss::{Needed, Spare};
+    let (mut lp, d) = two_nodes();
+    let (t, c) = wide_commit(&mut lp, d, 2);
+    let e = &mut lp.peers[0].engine;
+    let s = e.sync_id_of(&d).unwrap().unwrap();
+    let copy = e.sync_body_now(&s, &c).unwrap().expect("a body under S").copy;
+    let h = e.header(&c).unwrap();
+    let on = |k: &str| h.aspects.iter().position(|a| a.tid == t && a.ak.as_str() == k).unwrap();
+    let (p0, p1) = (on("x:a0.0"), on("x:a1.0"));
+    let mut noted = |b: u8, parts: &[usize], sealed: &[u8]| {
+        let (id, ps) = (BlobId([b; 32]), parts.iter().copied().collect::<PartSet>());
+        let sealed = sealed.iter().map(|k| [*k; 32]).collect();
+        e.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps.clone(), sealed, copy, unchecked: false, salt: [0; 16], ais: ps })).unwrap();
+        id
+    };
+    let (b1, b2, b3, b4, b5, b6, b7, b8) = (noted(1, &[p0], &[]), noted(2, &[p0], &[]), noted(3, &[p0], &[9]), noted(4, &[p0], &[]), noted(5, &[p0, p1], &[9]), noted(6, &[p0], &[]), noted(7, &[p0], &[]), noted(8, &[p0, p1], &[]));
+    let mut loses = |b: &BlobId, o: &BlobId, stands| lp.peers[0].engine.blob_loses(&s, b, o, stands).unwrap();
+    assert_eq!(loses(&b2, &b1, (true, true)), Some(Spare), "the same sections: the higher ID loses");
+    assert_eq!(loses(&b1, &b2, (true, true)), None);
+    assert_eq!(loses(&b1, &b2, (false, true)), Some(Spare), "the lower ID loses where it may not stand");
+    assert_eq!(loses(&b3, &b4, (true, true)), Some(Spare), "an unopened section the other lacks");
+    assert_eq!(loses(&b5, &b6, (true, true)), None, "the other lacks a part held here");
+    assert_eq!(loses(&b7, &b8, (true, true)), Some(Needed), "the other adds a part only a blob carries");
+    let mut m = Mutation::new();
+    m.set(t, &ak("x:a1.0"), &Value::Int(2)).unwrap();
+    lp.peers[0].engine.commit(m).unwrap();
+    assert_eq!(lp.peers[0].engine.blob_loses(&s, &b7, &b8, (true, true)).unwrap(), None, "the part it adds overwritten: no blob alone carries it");
+}
+
+// spec/sync-judgement.md §2 (Per blob: a strip), spec/sync-compaction.md §1 (Carriers): a blob
+// stripping here is deleted at a peer only once each part of it held here (`live`) has another
+// carrier there, and each part it strips as covered has a snapshot reaching it there (`covers`).
+// A purged part strips with no cover; a part replaced under purge on replace strips covered.
+#[test]
+fn a_strip_names_its_live_parts_and_covers_spec_sync_judgement_2() {
+    let (mut lp, d) = two_nodes();
+    let (t, c) = wide_commit(&mut lp, d, 2);
+    let e = &mut lp.peers[0].engine;
+    let noted = |e: &mut crate::Engine, b: u8, c: CommitId, t: Tid| {
+        let ps: PartSet = e.header(&c).unwrap().aspects.iter().enumerate().filter(|(_, a)| a.tid == t).map(|(i, _)| i).collect();
+        let id = BlobId([b; 32]);
+        e.run(|tx| note_blob(tx, &id, super::BlobOf { commit: c, parts: ps.clone(), sealed: Default::default(), copy: false, unchecked: false, salt: [0; 16], ais: ps })).unwrap();
+        id
+    };
+    let part = |e: &crate::Engine, c: &CommitId, t: Tid, k: &str| e.header(c).unwrap().aspects.iter().position(|a| a.tid == t && a.ak.as_str() == k).unwrap();
+    let b = noted(e, 1, c, t);
+    let mut m = Mutation::new();
+    m.purge_commit(c, t, ak("x:a1.0"));
+    m.set(t, &ak("x:a1.0"), &Value::Int(3)).unwrap();
+    e.commit(m).unwrap();
+    let st = e.strip_of(&b).expect("a purged part strips");
+    assert_eq!((st.live, st.covers.len()), ([part(e, &c, t, "x:a0.0")].into(), 0), "purged: the rest live, no cover");
+    let mut m = Mutation::new();
+    let u = e.new_thing(&mut m, d);
+    let x: ct::RetentionSetting = [(ak("x:v.0"), ct::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() })].into_iter().collect();
+    m.set(u, &ct::RETENTION, &x).unwrap();
+    e.commit(m).unwrap();
+    let mut m = Mutation::new();
+    m.set(u, &ak("x:v.0"), &Value::Int(1)).unwrap();
+    m.set(u, &ak("x:w.0"), &Value::Int(1)).unwrap();
+    let c1 = e.commit(m).unwrap().unwrap();
+    let b1 = noted(e, 2, c1, u);
+    let mut m = Mutation::new();
+    m.set(u, &ak("x:v.0"), &Value::Int(2)).unwrap();
+    e.commit(m).unwrap();
+    let st = e.strip_of(&b1).expect("a part replaced under purge on replace strips");
+    assert_eq!(st.live, [part(e, &c1, u, "x:w.0")].into(), "replaced: the rest live");
+    assert!(st.covers.len() == 1 && !st.covers[0].is_empty(), "replaced: covered by what reaches it: {:?}", st.covers);
+}

@@ -1,5 +1,5 @@
 # Test harnesses
-> Summary: How to run and replay seeded tests (env vars through `osis_base::testenv`, seed runners, replay lines, the property list), copied worlds and cached setups, the debug rebuild, index and verdict checks every test runs, why a thing is kept and row dumps, sealed `LocalPeer` delivery, loop guards, the store-contents differential, measuring old against new (icount, cpuprof, callgrind), the default-test cost (what is in place, per-test profiles), and harness footguns.
+> Summary: How to run and replay seeded tests (env vars through `osis_base::testenv`, seed runners, replay lines, the property list), copied worlds and cached setups, the debug rebuild, index and verdict checks every test runs, why a thing is kept and row dumps, sealed `LocalPeer` delivery, loop guards, the store-contents differential, measuring old against new (icount, cpuprof, callgrind), the default-test cost (what is in place, per-test profiles), the reference-graph mutation audit, and harness footguns.
 
 ## Env vars and seeds
 - Harness env vars (`OSIS_*_START`/`_SEEDS`, `OSIS_PERM_SEED`, ...) are read through `osis_base::testenv`, which panics on an unparsable value, zero seeds, or any set `OSIS_*` variable not in core/base/testenv-known.txt (policy.py keeps that list equal to what the sources name: add a new variable there; read at run time, so adding one rebuilds nothing). A throwaway probe variable is `OSIS_PROBE_*`, exempt from the list and refused by policy.py while left in.
@@ -77,6 +77,20 @@ Compare by instruction counts (Measuring); totals come from `tools/pertest.py to
   - `LocalPeer` delivery does no repeat work: `sync_all` stops after a round of duplicates; `sync` offers a package the receiver dropped at a pass end (things outside its node closure) again only once which of its things the receiver needs (`retention::needed::needs`) moved (else every pass delivered other accounts' roots again, to drop them at its end: 94% of `deep_departure_holds`' applies); it repeats no delivery that came back a duplicate and moved nothing, nor sends again one that came back a duplicate while the receiver holds every body of it (`Engine::holds_whole`: a copy can bring it nothing). A planted error on a third of duplicate ingests failed 17 engine lib tests with these skips, 20 without (the 3 rotation naming tests whose oracles read no duplicate).
   - The forensic attack's last-byte key test (notes/test-security.md).
 - `tools/pertest.py run OUT` builds the default tests, copies their binaries aside, then (under `tools/heavy`, taken after the build, so editing while it waits changes nothing measured) runs each listed default test as its own process `--exact <name> --test-threads=1` from its package dir under `tools/icount`, writing name, instructions, CPU-s and exit code per line. `top OUT` lists per-binary totals and the costliest tests; `compare OLD NEW` the moves by test (crdt-model's and osis-keys' proptests draw fresh seeds per run and move 7-8% between identical runs: noise; a test failing only at pertest's load may be a KNOWN flake, tools/known_failures.txt). A compare against the last profile is also a cheap check for a storm that landed passing (a test 20x its old count). Against an older revision: `run` in a second worktree (`wt claim <name> <rev>`), `compare` here. The `test` limit alone (10 CPU-s or 15 s wall): `tools/limits.py tests`.
+
+## Mutation audit
+Reference-graph rules (tickets, retention needs and roots, the closure walk, `accepted`, strips and blob losses, covers of missing parts, lost access, carried commits, snapshot carrying, opens' departed rules): 75 plants over the engine lib and `it`, osis-sync `it` and osis default tests; 29 caught by no test, 14 by one (each a focused test, none a differential or sim alone). Run as `MUTATE_HEAVY=1 MUTATE_PER_HOLD=2 python3 tools/mutate.py ...` (one build, two plants per hold of the lock). The rows that changed something:
+
+| Rule | Plant | Tests failing |
+|---|---|---|
+| sync read: a strip deletes at K once each live part has another carrier there, each covered part a snapshot shown there, `MAX_DRIFT` past its keep bound | each of the three dropped | 0 each; `read::a_strip_deletes_at_k_once_k_carries_the_rest_*` |
+| `Engine::strip_of`: its live parts, its covers | none of either | 0 each; `sync::tests_facts::a_strip_names_its_live_parts_and_covers_*` |
+| `blob_loses`: needed only for an only-blob part, spare by an unopened section or where it may not stand, never to a blob lacking a held part | each dropped | 0 each; `sync::tests_facts::a_blob_loses_to_another_by_what_each_carries_*` |
+| needs: a strong in held history (`refs::kept`) | dropped | 0; `closure::a_strong_in_held_history_needs_its_target_*` |
+| closure walk: no key actor entered | guard removed | 0; `closure::the_node_closure_follows_strongs_*` (a strong from the node root enters the node thing) |
+| needs: a record another part of a pending commit awaits (`Wake::Record`) | dropped | 0: deleted (`pend_by` holds the first awaited record; the next is due once the commit pends on it) |
+| cover drops: a missing part counted leftover-due | dropped | 0: deleted (a missing part is never a bare leftover) |
+| opens: a peer no longer departed ends at `until` | dropped | 0, reached by no default test: its one scenario fails on main (issues/regranted-store-refills-from-no-reader.md) |
 
 ## Harness footguns
 - A role commit past `grant`'s refusal needs `m.unchecked` plus `skip_writer_rules`.
