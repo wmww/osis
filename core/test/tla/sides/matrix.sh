@@ -21,29 +21,25 @@ scen=(
   "Q0 Q K_SideY {\"t\"} OneAspect {}"
   "S S K_SideX {\"s1\"} OneAspect {}"
 )
-# mode gate reup fork coverown bridge hostbranch lift conc cwin
+# mode gate reup fork coverown bridge lift conc cwin
 modes=(
-  "none none FALSE FALSE FALSE FALSE FALSE FALSE none X"
-  "a-direct direct FALSE FALSE FALSE FALSE FALSE FALSE none X"
-  "a-neutral neutral FALSE FALSE FALSE FALSE FALSE FALSE none X"
-  "a-touch touch FALSE FALSE FALSE FALSE FALSE FALSE none X"
-  "a-exact exact FALSE FALSE FALSE FALSE FALSE FALSE none X"
-  "a-aspect aspect FALSE FALSE FALSE FALSE FALSE FALSE none X"
-  "b none TRUE FALSE FALSE FALSE FALSE FALSE none X"
-  "c none FALSE TRUE FALSE FALSE FALSE FALSE none X"
-  "c+a-touch touch FALSE TRUE FALSE FALSE FALSE FALSE none X"
-  "c+a-touch+bridge touch FALSE TRUE FALSE TRUE FALSE FALSE none X"
-  "d+a-touch touch FALSE FALSE TRUE FALSE FALSE FALSE none X"
-  "a-need need FALSE FALSE FALSE FALSE FALSE FALSE none X"
-  "br none FALSE TRUE FALSE FALSE TRUE FALSE none X"
-  "br+a-touch touch FALSE TRUE FALSE FALSE TRUE FALSE none X"
-  "br+a-touch+lift touch FALSE TRUE FALSE FALSE TRUE TRUE none X"
-  "br+a-touch+lift+bridge touch FALSE TRUE FALSE TRUE TRUE TRUE none X"
-  "c+a-touch+lift touch FALSE TRUE FALSE FALSE FALSE TRUE none X"
-  "a-touch+concX touch FALSE FALSE FALSE FALSE FALSE FALSE c X"
-  "a-touch+concY touch FALSE FALSE FALSE FALSE FALSE FALSE c Y"
-  "br+a-touch+lift+concX touch FALSE TRUE FALSE FALSE TRUE TRUE c X"
-  "br+a-touch+lift+concY touch FALSE TRUE FALSE FALSE TRUE TRUE c Y"
+  "none none FALSE FALSE FALSE FALSE FALSE none X"
+  "a-direct direct FALSE FALSE FALSE FALSE FALSE none X"
+  "a-neutral neutral FALSE FALSE FALSE FALSE FALSE none X"
+  "a-touch touch FALSE FALSE FALSE FALSE FALSE none X"
+  "a-exact exact FALSE FALSE FALSE FALSE FALSE none X"
+  "a-aspect aspect FALSE FALSE FALSE FALSE FALSE none X"
+  "b none TRUE FALSE FALSE FALSE FALSE none X"
+  "d+a-touch touch FALSE FALSE TRUE FALSE FALSE none X"
+  "a-need need FALSE FALSE FALSE FALSE FALSE none X"
+  "br none FALSE TRUE FALSE FALSE FALSE none X"
+  "br+a-touch touch FALSE TRUE FALSE FALSE FALSE none X"
+  "br+a-touch+lift touch FALSE TRUE FALSE FALSE TRUE none X"
+  "br+a-touch+lift+bridge touch FALSE TRUE FALSE TRUE TRUE none X"
+  "a-touch+concX touch FALSE FALSE FALSE FALSE FALSE c X"
+  "a-touch+concY touch FALSE FALSE FALSE FALSE FALSE c Y"
+  "br+a-touch+lift+concX touch FALSE TRUE FALSE FALSE TRUE c X"
+  "br+a-touch+lift+concY touch FALSE TRUE FALSE FALSE TRUE c Y"
 )
 props=${PROPS:-"NoLoss Quiesce Served Alike PurgePrompt Tidy"}
 
@@ -51,7 +47,7 @@ for s in "${scen[@]}"; do
   read -r S pre side hostset aspect rolec <<<"$s"
   [ -n "${1:-}" ] && [[ "$S" != $1 ]] && continue
   for m in "${modes[@]}"; do
-    read -r M gate reup fork cov bridge branch lift conc cwin <<<"$m"
+    read -r M gate reup fork cov bridge lift conc cwin <<<"$m"
     [ -n "${2:-}" ] && [[ "$M" != $2 ]] && continue
     for p in $props; do
       if [ "$p" = NoLoss ]; then chk="INVARIANTS TypeOK NoLoss"; else chk="INVARIANT TypeOK
@@ -75,7 +71,6 @@ CONSTANTS
   Fork = $fork
   CoverOwn = $cov
   Bridge = $bridge
-  HostBranch = $branch
   Lift = $lift
   Conc = $( [ "$conc" = none ] && echo '"none"' || echo "\"$conc\"" )
   CWin = "$cwin"

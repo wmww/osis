@@ -3,8 +3,8 @@
 (* Admins X and Y of actor A removed each other; each node takes a side and   *)
 (* runs the ordinary sync rules (spec/sync-judgement.md §2) over its side's          *)
 (* validity. One host, one label L (a label where both sides act with the     *)
-(* same keys), or with Fork a step race at L and a replacement label R for    *)
-(* the side that lost it (with HostBranch: the host's branch of L for it).    *)
+(* same keys), or with Fork a step race at L, the host keeping the loser's   *)
+(* step as a branch R of L (spec/sync-ids.md §2: the steps form a tree).     *)
 (* Bodies are whole commits; crypto is access.                                *)
 (* Design exploration forked from ../sync, not an independent spec check.     *)
 EXTENDS Naturals, FiniteSets
@@ -29,13 +29,12 @@ CONSTANTS
   Gate,             \* "none" | "direct" | "neutral" | "touch" | "exact" | "aspect"
                     \*   | "need"
   ReupOnce,         \* candidate (b): re-upload a deleted body once, then keep it local
-  Fork,             \* candidate (c): the loser of the step race replaces L by R
+  Fork,             \* the parties' steps race at L; the host keeps the loser's
+                    \*   step as a branch of L (R), which starts with L's entries
+                    \*   stamped before the first one-sided step
   CoverOwn,         \* candidate (d): covers judged on the own side alone, ungated
   Bridge,           \* with Fork: a member also uploads and deletes clean bodies
                     \*   at the label it reads but does not act at
-  HostBranch,       \* with Fork: the host keeps the loser's step as a branch of
-                    \*   L (R), which starts with L's entries stamped before the
-                    \*   first one-sided step, instead of a replacement label
   Lift,             \* the gate lifts at a label with one side only: R, and L
                     \*   once it has branched
   Conc,             \* "none", or a body: a party's concession, a write listing
@@ -91,7 +90,7 @@ Gated(n, b, k) ==
 
 \* Where a node acts (uploads, deletes): without Fork, at L. With Fork, at L
 \* while its head is the pre-dispute step or its own side's, else at R once
-\* its side made R. A node uses no key from a commit invalid on its side.
+\* its side's step branched there. A node uses no key from a commit invalid on its side.
 \* A member holding a concession acts as side CWin (it holds both sides'
 \* boxes); a party keeps its own side.
 ESide(n) == IF Conc \in applied[n] /\ n \notin Parties THEN CWin ELSE side[n]
@@ -116,7 +115,7 @@ Clean(n, b) == LET D == DdOf(applied[n]) IN
 ActsOn(n, l, b) == Acts(n, l) \/ (Bridge /\ n \notin Parties /\ Reads(n, l) /\ Clean(n, b))
 \* Is the gate on at label l? Lift: off at R (one side acts there) and at L
 \* once the host has branched it (each branch has one side).
-GateOn(l) == ~Lift \/ (l = "L" /\ ~(HostBranch /\ rside # "none"))
+GateOn(l) == ~Lift \/ (l = "L" /\ rside = "none")
 \* May n delete b at l for a reason of kind k?
 MayDel(n, l, b, k) ==
   IF GateOn(l) THEN Gated(n, b, k)
@@ -197,32 +196,30 @@ Switch(n) ==
   /\ sw' = sw + 1
   /\ UNCHANGED <<held, applied, host, ever, head, rside, compacted, reup, pre>>
 
-\* (c): the parties' rotations race for L's next step; the first wins.
+\* The parties' rotations race for L's next step; the first wins.
 Register(p) ==
   /\ Fork /\ p \in Parties /\ head = "pre"
   /\ head' = side[p]
   /\ UNCHANGED <<side, held, applied, host, ever, rside, compacted, reup, sw, pre>>
-\* The loser replaces L by R (spec/sync-ids.md §2, keys from its side's secrets).
-\* It deletes nothing at L: it does not control L's head there. HostBranch:
-\* the host takes its step as a child of the pre-dispute step instead, a
-\* branch starting with the entries stamped under the shared steps.
-Replace(p) ==
+\* The host takes the loser's step as a child of the pre-dispute step: a
+\* branch R starting with the entries stamped under the shared steps.
+Branch(p) ==
   /\ Fork /\ p \in Parties /\ head \notin {"pre", side[p]} /\ rside = "none"
   /\ rside' = side[p]
-  /\ host' = IF HostBranch THEN [host EXCEPT !["R"] = host["L"] \cap pre] ELSE host
-  /\ ever' = IF HostBranch THEN [ever EXCEPT !["R"] = host["L"] \cap pre] ELSE ever
+  /\ host' = [host EXCEPT !["R"] = host["L"] \cap pre]
+  /\ ever' = [ever EXCEPT !["R"] = host["L"] \cap pre]
   /\ UNCHANGED <<side, held, applied, head, compacted, reup, sw, pre>>
 
 Next ==
   \/ \E n \in Nodes :
-       \/ Switch(n) \/ Register(n) \/ Replace(n)
+       \/ Switch(n) \/ Register(n) \/ Branch(n)
        \/ \E b \in Bodies : Drop(n, b)
        \/ \E l \in Labels, b \in Bodies :
             Recv(n, l, b) \/ Upload(n, l, b) \/ Delete(n, l, b) \/ Compact(n, l, b)
 
 Fairness ==
   \A n \in Nodes :
-    /\ WF_vars(Register(n)) /\ WF_vars(Replace(n))
+    /\ WF_vars(Register(n)) /\ WF_vars(Branch(n))
     /\ \A b \in Bodies :
          /\ WF_vars(Drop(n, b))
          /\ WF_vars(\E l \in Labels : Recv(n, l, b))
