@@ -1,6 +1,6 @@
 # Data that lives while its keepers are connected
-> Summary: Tess's model for ephemeral data, designed in reference-graph terms and modelled (held-model `connlived`): a thing naming keeper accounts is in a node's closure only while the node's connected set holds a keeper, so release is the ordinary release. It replaces keep-alive, superseded parts and `+` aspects. Not built: it changes three requirements lines (proposal below) and leaves four questions for Tess: nodes keeping S unread cannot read keepers, the connected set leaks presence and costs n² at a hub, and any connected node can keep a departed keeper's data alive.
-> Priority: normal
+> Summary: Parked by Tess until she works through a design (open: whether keeper lifetime is orthogonal to memory/disk storage; four questions below). Tess's model for ephemeral data, designed in reference-graph terms and modelled (held-model `connlived`): a thing naming keeper accounts is in a node's closure only while the node's connected set holds a keeper, so release is the ordinary release. It replaces keep-alive, superseded parts and `+` aspects. Not built: it changes three requirements lines (proposal below) and leaves four questions for Tess: nodes keeping S unread cannot read keepers, the connected set leaks presence and costs n² at a hub, and any connected node can keep a departed keeper's data alive.
+> Priority: low
 > Tags: sync, ephemeral, engine, net, spec, tess-call
 
 ## Tess's model
