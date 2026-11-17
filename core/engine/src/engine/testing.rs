@@ -323,7 +323,8 @@ impl Engine {
         self.core.addenda_on = on;
     }
 
-    /// What a demotion's frontier is fit to in place of `MAX_LIST_BYTES` (tests: `receipt::fit` end to end).
+    /// The list bound in place of `MAX_LIST_BYTES` (tests: frontiers, thing lists and listings
+    /// fit end to end).
     #[doc(hidden)]
     pub fn list_bound(&mut self, bytes: usize) {
         self.core.list_bound = bytes;

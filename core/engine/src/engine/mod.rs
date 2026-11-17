@@ -1276,7 +1276,9 @@ pub struct Core {
     pub signing_due: bool,
     /// No purge-on-replace cover or drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
-    /// What `receipt::fit` fits a frontier to: `MAX_LIST_BYTES` (tests: `Engine::list_bound`).
+    /// The list bound, `MAX_LIST_BYTES` (tests: `Engine::list_bound`): what `receipt::fit` fits a
+    /// frontier to and each listing is cut to; a thing list, written inline only, fits the smaller
+    /// of it and `CHUNK_THRESHOLD`.
     pub list_bound: usize,
     /// Value-less lists changed in this transaction, written at its end (`retention::persist_valueless`).
     pub valueless_dirty: BTreeSet<(Tid, Ak)>,

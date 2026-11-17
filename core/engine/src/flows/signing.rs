@@ -275,7 +275,7 @@ fn thing_lists(tx: &mut Tx<'_>, p: &Tid, v: &super::account::AccountView, closes
         plain.sort();
         let plain: Vec<CommitId> = plain.into_iter().map(|x| x.1).collect();
         // inline lists only (linked thing lists are not written yet: issues/linked-thing-lists.md)
-        let (ids, _) = fit_list(&special, &plain, CHUNK_THRESHOLD).ok_or(Error::Misuse("the account's role and purge changes since its last rotation pass the list bound on a thing"))?;
+        let (ids, _) = fit_list(&special, &plain, CHUNK_THRESHOLD.min(tx.core.list_bound)).ok_or(Error::Misuse("the account's role and purge changes since its last rotation pass the list bound on a thing"))?;
         let index = loop {
             let i = u64::from(tx.rng.next_u32());
             if used.insert(i) {
@@ -546,14 +546,20 @@ fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
     }
 }
 
-/// Account `p`'s listing on thing `t` against rotation `r`, naming `ids`.
+/// Account `p`'s listings on thing `t` against rotation `r`, naming `ids`: as many as it takes
+/// for each to name what fits the list bound (spec/permissions.md §5.5, Listings, Bound);
+/// listings compose by union.
 fn write_listing(tx: &mut Tx<'_>, p: Tid, r: &CommitId, t: Tid, ids: &BTreeSet<CommitId>) -> Result<()> {
-    let mut m = Mutation::new();
-    m.sign_as(p);
-    m.unchecked();
-    let set = Value::Set(ids.iter().map(|c| Value::bytes(&c.0)).collect());
-    m.op(t, &ct::LISTING, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(set) })?;
-    Engine::commit_tx(tx, m)?;
+    let room = (1..=ids.len()).take_while(|n| osis_perm::epochs::list_bytes(*n) <= tx.core.list_bound).last().unwrap_or(1);
+    let ids: Vec<&CommitId> = ids.iter().collect();
+    for part in ids.chunks(room) {
+        let mut m = Mutation::new();
+        m.sign_as(p);
+        m.unchecked();
+        let set = Value::Set(part.iter().map(|c| Value::bytes(&c.0)).collect());
+        m.op(t, &ct::LISTING, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(set) })?;
+        Engine::commit_tx(tx, m)?;
+    }
     Ok(())
 }
 

@@ -2,7 +2,7 @@
 //! parts); an expired one is held as its
 //! leftover like a durable one (spec/crdt.md §4.7) and drops once covered (`drop_covered`). A
 //! memory commit no part of which is held any more is forgotten, header included
-//! (`apply::unindex_commit`; issues/session-sources.md rule 8, memory half). Invariant: a memory
+//! (`apply::unindex_commit`, spec/commits.md §5 Forgetting). Invariant: a memory
 //! aspect's state is the join of the valid parts held of it, so two nodes holding the same
 //! memory commits read alike whatever was superseded when.
 

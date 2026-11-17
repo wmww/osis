@@ -2715,3 +2715,39 @@ fn a_removals_lists_cost_a_path_per_thing_and_an_id_per_edit_spec_permissions_5_
     assert!(per >= path + 2 * 34 && per <= path + 2 * 34 + 160, "per thing: {per} B ({k} B at 2 things, {one} B at 20)");
     assert_eq!((more - one) / 20 / 3, 34, "an ID per edit: {one} {more}");
 }
+
+// spec/permissions.md §5.5 (Bound; Listings): node 1's twelve writes on
+// t, each on its own aspect, reach node 0 only; node 0's list bound holds four IDs. Node 0 removes
+// node 1: the rotation's thing list on t names what fits, its later listings name the rest (the
+// rotator's overflow), each within the bound, and the outsider writer (peer 2), receiving the
+// writes only after the rotation (so its addenda name none), reads all twelve. Fails with one
+// listing naming the whole overflow.
+#[test]
+fn a_rotations_overflow_goes_into_listings_within_the_bound_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(3, 2);
+    let ak = |i: usize| Ak::new(format!("x:e{i}.0")).unwrap();
+    let ws: Vec<CommitId> = (0..12).map(|i| {
+        let mut m = crate::Mutation::new();
+        m.set(t, &ak(i), &Value::Int(i as i64)).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap()
+    }).collect();
+    send(&mut lp, 1, 0, &ws);
+    let bound = osis_perm::epochs::list_bytes(4);
+    lp.peers[0].engine.list_bound(bound);
+    lp.advance(1);
+    let done = remove(&mut lp, 0, a.root, 1);
+    let r = *done.commits.iter().find(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.rotation.is_some())).unwrap();
+    let on_list = listed(&mut lp, 0, &r).into_iter().filter(|c| ws.contains(c)).count();
+    assert!(on_list > 0 && on_list < ws.len(), "the thing list names what fits: {on_list}");
+    let e = &mut lp.peers[0].engine;
+    let listings: Vec<CommitId> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.ak.as_str() == "listing.0" && x.tid == t))).collect();
+    let names: Vec<Vec<CommitId>> = listings.iter().map(|l| e.read(|tx| crate::flows::lists::named_by(tx, l)).unwrap().into_iter().map(|x| x.0).collect()).collect();
+    assert!(names.iter().all(|n| osis_perm::epochs::list_bytes(n.len()) <= bound), "each listing within the bound: {names:?}");
+    let in_listings: std::collections::BTreeSet<CommitId> = names.into_iter().flatten().filter(|c| ws.contains(c)).collect();
+    assert_eq!(on_list + in_listings.len(), ws.len(), "the listings name the overflow");
+    lp.sync_all().unwrap();
+    send(&mut lp, 0, 2, &ws);
+    for i in 0..ws.len() {
+        assert_eq!(lp.peers[2].engine.get(&t, &ak(i)).unwrap(), Some(Value::Int(i as i64)), "write {i} at the outsider");
+    }
+}

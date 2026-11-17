@@ -190,7 +190,7 @@ mod tests {
         Ak::new(s).unwrap()
     }
 
-    // issues/session-sources.md rule 8 (memory half): memory commits on a durable thing that
+    // Memory commits on a durable thing that
     // are superseded, or whose last part vanishes, are forgotten: every journaled index (and perm's view) as if they had never applied, the
     // state too, but for the newest forgotten `ts` per aspect. spec: none (internal)
     #[test]
