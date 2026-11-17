@@ -350,7 +350,7 @@ fn sync_id_claim_set_above_the_threshold_stays_inline_spec_dm_6() {
     assert!(lp.peers[1].engine.get(&t, &ak("sync.0")).unwrap().is_some(), "held by the reader");
 }
 
-// notes/engine-paged.md (what derives from a state reads it whole): a `sync.0` state of a few fat
+// spec: none (index derivation). notes/engine-paged.md (what derives from a state reads it whole): a `sync.0` state of a few fat
 // entries pages, and a write by pages (a covered body's shred, the state held in part) still
 // records every sync ID the whole state names: a node opened afresh derives the same index.
 #[test]
