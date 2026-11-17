@@ -50,7 +50,7 @@ use entries::Removal;
 use memory::Memory;
 use osis_base::format::{MAX_BLOB, TOMBSTONE_LIFETIME_MS};
 use osis_base::memo::{Clock, Effects};
-use osis_base::{BlobId, SyncId, WallMs};
+use osis_base::{BlobId, Mono, SyncId, WallMs};
 use osis_engine::sync::{Caps, Held, Holding, Path, SyncSet};
 use osis_blob::{Class, ClaimSet, DeleteItem, Prefix, Step, StepId};
 use osis_proto::{Code, DepositItem};
@@ -243,7 +243,7 @@ pub(crate) struct Inner {
     mem: Memory,
     total: Option<Total>,
     /// When each sync ID last took a child step past its caps (spec/sync-ids.md §6).
-    past_cap: BTreeMap<SyncId, WallMs>,
+    past_cap: BTreeMap<SyncId, Mono>,
     /// The sync IDs kept unread at a head whose sync key this node holds no box for
     /// (spec/sync-judgement.md §6): they take no entry, as with no head (`unread` sets them).
     unheld: BTreeSet<SyncId>,
@@ -1358,20 +1358,20 @@ impl Store {
     /// another sync ID or a claim set not hashing to the step's; into an empty path 1 for a
     /// genesis that does not verify, 13 for a child; 0 for the head again; 9: not a child of the
     /// head; 12: past the caps (a genesis; a child past them even without its set, more than once
-    /// per interval).
-    pub fn take_register(&mut self, s: &SyncId, step: &Step, claims: Option<&ClaimSet>) -> Result<Code> {
+    /// per interval, on the monotonic clock: `mono` is its reading now).
+    pub fn take_register(&mut self, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, mono: Mono) -> Result<Code> {
         let mut g = self.lock();
         let last = g.past_cap.get(s).copied();
         let policy = g.policy.clone();
-        let (code, past, moved) = g.write(|t, env| path::register(t, env, &policy, s, step, claims, last))?;
+        let due = last.is_none_or(|at| mono >= at.after(policy.register_every_ms));
+        let (code, past, moved) = g.write(|t, env| path::register(t, env, s, step, claims, due))?;
         // refusals told under the old head are shown again (`anew_feed`), a record's marked durably
         // (`path::register`)
         if moved {
             g.mem.anew.wrote_added(s, true, true);
         }
         if past {
-            let now = g.now;
-            g.past_cap.insert(*s, now);
+            g.past_cap.insert(*s, mono);
         }
         Ok(code)
     }

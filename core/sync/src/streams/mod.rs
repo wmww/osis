@@ -46,7 +46,7 @@ use crate::session::{Incoming, Sessions, To};
 use crate::store::{Source, Store};
 use crate::types::{ConnId, Cx, Entry, Error, Position, RecordId, Result};
 use osis_base::memo::{Stamped, StampedSet};
-use osis_base::{BlobId, SyncId, WallMs};
+use osis_base::{BlobId, Mono, SyncId, WallMs};
 use osis_engine::Engine;
 use osis_engine::sync::Opened;
 use osis_proto::{Id, Msg, Wrap};
@@ -163,7 +163,10 @@ pub struct Ctx<'a> {
     pub ground: &'a mut dyn Ground,
     pub wire: &'a mut dyn Wire,
     pub shared: &'a dyn Shared,
+    /// The wall clock: a relay's expiry and `ts` are judged by it.
     pub now: WallMs,
+    /// The monotonic clock streams' waits run on.
+    pub mono: Mono,
     /// Reported positions for opens (`Opens::reported`).
     pub reported: &'a mut Vec<Reported>,
 }
@@ -191,7 +194,7 @@ pub struct Streams {
     anew: osis_base::memo::Feed<SyncId>,
     known: Known,
     /// Blobs asked from some source, and when (one source at a time).
-    asked: BTreeMap<BlobId, (ConnId, WallMs)>,
+    asked: BTreeMap<BlobId, (ConnId, Mono)>,
     /// The connections each sync ID is a member on (its sources).
     holders: BTreeMap<SyncId, BTreeSet<ConnId>>,
     /// The connections whose stream is caught up both ways (this side applied the peer's to its
@@ -265,8 +268,8 @@ impl Streams {
         product(cx, sessions, opens, reported, |ctx| self.refetch(ctx, conn, s, b));
     }
 
-    pub fn next_wake(&self) -> Option<WallMs> {
-        let asked = self.asked.values().map(|(_, at)| WallMs(at.0.saturating_add(ASKED_MS))).min();
+    pub fn next_wake(&self) -> Option<Mono> {
+        let asked = self.asked.values().map(|(_, at)| at.after(ASKED_MS)).min();
         self.pull.values().filter_map(pull::Pulling::wake).chain(asked).min()
     }
 
@@ -480,9 +483,9 @@ impl Streams {
 
 /// Runs `f` over the product's `Ctx`.
 fn product(cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, reported: &mut Vec<Reported>, f: impl FnOnce(&mut Ctx)) {
-    let now = cx.now;
+    let (now, mono) = (cx.now, cx.mono);
     let mut ground = EngineGround { engine: cx.engine, store: cx.store.clone(), rng: &mut *cx.rng };
-    let mut ctx = Ctx { store: cx.store, ground: &mut ground, wire: sessions, shared: opens, now, reported };
+    let mut ctx = Ctx { store: cx.store, ground: &mut ground, wire: sessions, shared: opens, now, mono, reported };
     f(&mut ctx);
 }
 

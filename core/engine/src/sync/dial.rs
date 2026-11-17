@@ -251,8 +251,7 @@ fn drop_due(tx: &mut Tx<'_>, fx: &mut osis_base::memo::Effects<(), Departed>) ->
     if let Err(e) = wrote {
         // due again at the next transaction's end
         fx.unwant(&());
-        let now = tx.now();
-        tx.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteFailed, tids: vec![profile], commit: None, peer: None, detail: e.to_string() }, now);
+        tx.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteFailed, tids: vec![profile], commit: None, peer: None, detail: e.to_string() }, tx.core.hlc.mono());
     }
     Ok(())
 }

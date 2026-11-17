@@ -2,7 +2,7 @@
 //! `logical` incremented on equal `wall_ms`. A writer that exhausts the
 //! 16 logical bits within one millisecond moves to the next millisecond instead of waiting.
 
-use osis_base::{Clock, Ts, WallMs};
+use osis_base::{Clock, Mono, Ts, WallMs};
 use std::sync::Arc;
 
 pub struct Hlc {
@@ -18,6 +18,11 @@ impl Hlc {
     /// The wall clock.
     pub fn wall(&self) -> WallMs {
         self.clock.now_wall_ms()
+    }
+
+    /// The monotonic clock: what in-memory waits run on, never a `ts`.
+    pub fn mono(&self) -> Mono {
+        self.clock.mono()
     }
 
     pub fn last(&self) -> Ts {

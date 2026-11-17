@@ -5,7 +5,7 @@
 //! build with real keys and real crypto (`Adv`). Until the session and the engine's sync facade
 //! are built, this is where opens' rules run end to end.
 
-use osis_base::{SyncId, Tid, WallMs};
+use osis_base::{SyncId, Tid};
 use osis_crypto::kdf::{beacon, sync_proof};
 use osis_crypto::{Epoch, RoleKey, NodeRng, Secret32, SeededRng, SigningSecret, role_key, role_key_seed, static_entry};
 use osis_engine::sync::J;
@@ -268,19 +268,19 @@ pub struct Side {
     pub table: Table,
     pub pipe: Pipe,
     pub moved: Vec<Moved>,
-    pub now: WallMs,
+    pub mono: osis_base::Mono,
 }
 
 impl Side {
     pub fn new(seed: u64) -> Side {
         let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let store = Store::open(Box::new(backend.clone()), Box::new(root.clone()), Box::new(SeededRng::from_u64(seed))).unwrap();
-        Side { opens: Opens::default(), store, device: (backend, root), table: Table::new(seed), pipe: Pipe::default(), moved: Vec::new(), now: WallMs(1_000) }
+        Side { opens: Opens::default(), store, device: (backend, root), table: Table::new(seed), pipe: Pipe::default(), moved: Vec::new(), mono: osis_base::Mono(1_000) }
     }
 
     /// Settles (the driver's settle round for opens).
     pub fn settle(&mut self) {
-        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, mono: self.mono };
         self.opens.tick(&mut ctx, &mut self.moved);
         self.flush();
     }
@@ -306,7 +306,7 @@ impl Side {
     /// that step are not written (what the store took in the step stays), nothing it sent goes,
     /// and it restarts.
     pub fn crash_taking(&mut self, conn: ConnId, m: Incoming) {
-        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, mono: self.mono };
         self.opens.message(&mut ctx, conn, m, &mut self.moved);
         self.opens.tick(&mut ctx, &mut self.moved);
         self.restart();
@@ -314,21 +314,21 @@ impl Side {
 
     /// Takes one message, then settles.
     pub fn take(&mut self, conn: ConnId, m: Incoming) {
-        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, mono: self.mono };
         self.opens.message(&mut ctx, conn, m, &mut self.moved);
         self.settle();
     }
 
     /// The peer reported position `pos` for S (streams' word).
     pub fn reported(&mut self, conn: ConnId, s: SyncId, pos: Position) {
-        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, mono: self.mono };
         self.opens.reported(&mut ctx, Reported::Member(conn, s, Some((pos, pos.to_be_bytes().to_vec()))), &mut self.moved);
         self.settle();
     }
 
     /// The peer's stream stands at `pos` (an Applied): every member at the stream stands there.
     pub fn reported_stream(&mut self, conn: ConnId, pos: Position) {
-        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, now: self.now };
+        let mut ctx = Ctx { holds: &mut self.table, wire: &mut self.pipe, store: &mut self.store, mono: self.mono };
         self.opens.reported(&mut ctx, Reported::Stream(conn, pos, pos.to_be_bytes().to_vec()), &mut self.moved);
         self.settle();
     }

@@ -142,19 +142,21 @@ fn faults_replay_from_the_seed_and_script() {
     assert_eq!(a, trace());
 }
 
-// spec: none (test harness): a node's clock runs by its skew: it is ticked in its own time at the
-// wake it asked in its own time, which the world reaches that much earlier or later.
+// spec/sync-streams.md §1 (Waits): a node's wall clock runs by its skew, its monotonic clock does
+// not: a wake asked 5 s ahead comes 5 s of the world's time later, whatever the skew.
 #[test]
-fn a_skewed_node_ticks_in_its_own_time() {
+fn a_skewed_node_ticks_on_its_monotonic_clock_spec_sync_streams_1() {
     for skew in [90_000i64, -90_000] {
         let mut w = two_nodes();
         w.skew(1, skew);
         assert_eq!(w.node_now(1).0 as i64, w.now().0 as i64 + skew);
-        let at = WallMs(w.node_now(1).0 + 5_000);
+        let at = osis_base::Mono(osis_base::Clock::mono(&*w.clock).0 + 5_000);
         let start = w.now();
         w.trace = true;
         w.apply_as(1, vec![Out::Wake(at)]);
-        w.advance(5_000);
+        w.advance(4_999);
+        assert!(!w.seen.iter().any(|s| matches!(s, Seen::Tick { node: 1, .. })), "skew {skew}: not yet");
+        w.advance(1);
         assert!(w.seen.contains(&Seen::Tick { node: 1, at }), "skew {skew}: {:?}", w.seen);
         assert_eq!(w.now(), WallMs(start.0 + 5_000));
     }

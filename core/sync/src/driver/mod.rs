@@ -32,7 +32,7 @@ use dials::{Dials, NodePeers, Why};
 use crate::unread::Unread;
 use crate::leave::Leave;
 use crate::life::Life;
-use osis_base::{SyncId, Tid, WallMs};
+use osis_base::{Mono, SyncId, Tid, WallMs};
 use osis_crypto::NodeRng;
 use osis_engine::Engine;
 use osis_blob::Address;
@@ -46,8 +46,8 @@ pub trait Links {
     fn dial(&mut self, conn: ConnId, to: &Address);
     fn send(&mut self, conn: ConnId, bytes: &[u8]);
     fn close(&mut self, conn: ConnId);
-    /// The node's one wake: replaces any earlier one.
-    fn wake(&mut self, at: WallMs);
+    /// The node's one wake, on its monotonic clock (`Engine::mono`): replaces any earlier one.
+    fn wake(&mut self, at: Mono);
 }
 
 /// Carries out `out`, the one place outputs are: sends and dials in the order made, then
@@ -56,7 +56,7 @@ pub trait Links {
 /// the node).
 pub fn apply(out: Vec<Out>, links: &mut impl Links) {
     let mut closes = Vec::new();
-    let mut wake: Option<WallMs> = None;
+    let mut wake: Option<Mono> = None;
     for o in out {
         match o {
             Out::Send(c, bytes) => links.send(c, &bytes),
@@ -144,7 +144,7 @@ struct Stretch {
     /// stretch.
     committed: u64,
     /// No wake before this; and the wait after the next failure.
-    retry_at: WallMs,
+    retry_at: Mono,
     wait: u64,
 }
 
@@ -154,7 +154,11 @@ pub struct Node {
     store: Store,
     rng: Box<dyn NodeRng>,
     cfg: SyncConfig,
+    /// The wall clock, for stamps and what judges them: the latest reading, so it never goes
+    /// back for the node (spec/sync-streams.md §1 Waits).
     now: WallMs,
+    /// The monotonic clock every wait kept in memory runs on.
+    mono: Mono,
     /// Settle rounds of the last step (tests: `rounds`).
     rounds: u64,
     driver: Driver,
@@ -208,7 +212,7 @@ impl std::fmt::Debug for Acts {
 /// The `Cx` over a node's fields, borrowed apart from its modules.
 macro_rules! cx {
     ($n:expr, $out:expr) => {
-        Cx { engine: &mut $n.engine, store: &mut $n.store, now: $n.now, rng: &mut *$n.rng, out: $out, policy: &$n.cfg.policy }
+        Cx { engine: &mut $n.engine, store: &mut $n.store, now: $n.now, mono: $n.mono, rng: &mut *$n.rng, out: $out, policy: &$n.cfg.policy }
     };
 }
 
@@ -216,19 +220,18 @@ impl Node {
     /// A node over `engine`, whose ciphertext door is `store` (`Store::cipher`). Its first
     /// `handle` settles every module.
     pub fn open(engine: Engine, store: Store, cfg: SyncConfig, rng: Box<dyn NodeRng>) -> Result<Node> {
-        let now = engine.now();
+        let (now, mono) = (engine.now(), engine.mono());
         let store_handle = store.clone();
         let mut driver = Driver { engine_loads: engine.loads(), ..Driver::default() };
         driver.dials.set_node(cfg.key.map(|k| k.0), &cfg.policy);
-        Ok(Node { engine, store, rng, cfg, now, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default(), leave: Leave::default(), life: Life::default() })
+        Ok(Node { engine, store, rng, cfg, now, mono, rounds: 0, driver, opens: Opens::default(), read: Read::default(), unread: Unread::default(), streams: Streams::new(store_handle), inbox: Inbox::default(), status: Status::default(), leave: Leave::default(), life: Life::default() })
     }
 
     /// One step: `input` taken, every module settled. The outputs must all reach `apply`.
     #[must_use = "every output must reach `apply`"]
     pub fn handle(&mut self, input: Input) -> Vec<Out> {
         let mut out = std::mem::take(&mut self.driver.pending);
-        self.now = self.now.max(self.engine.now());
-        self.driver.sessions.set_now(self.now);
+        self.read_clocks();
         self.rounds = 0;
         self.engine_reloaded(&mut out);
         // the compaction trigger runs at each step (spec/sync-compaction.md §1): what its snapshots
@@ -366,7 +369,7 @@ impl Node {
         self.driver.next_client += 1;
         let conn = ConnId(ConnId::CLIENT | self.driver.next_client);
         self.driver.clients.insert(conn);
-        self.driver.sessions.set_now(self.now.max(self.engine.now()));
+        self.read_clocks();
         self.driver.sessions.dialing(conn);
         let mut out = vec![Out::Dial(conn, to)];
         self.wake(&mut out);
@@ -393,7 +396,7 @@ impl Node {
         if !self.driver.clients.contains(&conn) {
             return None;
         }
-        self.driver.sessions.set_now(self.now.max(self.engine.now()));
+        self.read_clocks();
         let id = self.driver.sessions.get_mut(conn)?.request(To::Port, m);
         let mut out = Vec::new();
         self.driver.sessions.take_sends(&mut out);
@@ -428,7 +431,7 @@ impl Node {
     /// elsewhere. `Done` once the join is written.
     pub fn redeem(&mut self, link: &osis_blob::ShareLink) -> Waiting {
         // its follow time runs from now (`Policy::follow_link_ms`)
-        self.now = self.now.max(self.engine.now());
+        self.read_clocks();
         let mut out = Vec::new();
         let w = self.inbox.redeem(&mut cx!(self, &mut out), link);
         self.driver.pending.extend(out);
@@ -502,20 +505,19 @@ impl Node {
             Input::Bytes { conn, bytes } => self.bytes(conn, &bytes, out),
             Input::Closed { conn } => self.closed(conn, "ended", out),
             Input::Down { conn, error } => self.closed(conn, &error, out),
-            Input::Tick { now } => {
-                self.now = self.now.max(now);
+            Input::Tick => {
                 self.engine.set_now(self.now);
                 self.engine.tick()?;
-                for (conn, why) in self.driver.sessions.tick(self.now) {
+                for (conn, why) in self.driver.sessions.tick(self.mono) {
                     out.push(Out::Close(conn));
                     self.closed(conn, why.0, out);
                 }
             }
             Input::Wrote => {
-                self.driver.dials.configure(&self.cfg.dial, self.now);
+                self.driver.dials.configure(&self.cfg.dial, self.mono);
                 self.proving(out)?;
             }
-            Input::Discovered { addr } => self.driver.dials.offer(Why::Discovered, addr, self.now),
+            Input::Discovered { addr } => self.driver.dials.offer(Why::Discovered, addr, self.mono),
         }
         Ok(())
     }
@@ -546,7 +548,7 @@ impl Node {
     /// The dials the node makes now (spec/sync-opens.md §1): the dial peers that moved, a change
     /// that could make a peer share something, the pauses ended, within `max_peers`.
     fn dial(&mut self, out: &mut Vec<Out>) {
-        let now = self.now;
+        let now = self.mono;
         let d = &mut self.driver;
         d.dials.settle_peers(&mut NodePeers { engine: &mut self.engine, store: &self.store, fx: &mut d.fx }, now);
         let inbox = &self.inbox;
@@ -588,7 +590,7 @@ impl Node {
             }
         }
         for c in close {
-            self.driver.dials.closed_quiet(c, self.now);
+            self.driver.dials.closed_quiet(c, self.mono);
             out.push(Out::Close(c));
             self.closed(c, "shares nothing", out);
         }
@@ -686,7 +688,7 @@ impl Node {
             self.report_conn(detail);
         }
         let s = self.driver.sessions.remove(conn);
-        self.driver.dials.ended(conn, lost, self.now);
+        self.driver.dials.ended(conn, lost, self.mono);
         if self.driver.clients.remove(&conn) && s.is_none() {
             self.driver.port.push(PortEvent::Closed(conn));
         }
@@ -807,10 +809,10 @@ impl Node {
         self.close_all(out);
         if let Some(f) = &mut self.driver.failing {
             f.wait = f.wait.saturating_mul(2).min(RETRY_MAX_MS);
-            f.retry_at = WallMs(self.now.0.saturating_add(f.wait));
+            f.retry_at = self.mono.after(f.wait);
             return;
         }
-        self.driver.failing = Some(Stretch { committed: self.committed(), retry_at: WallMs(self.now.0.saturating_add(RETRY_FIRST_MS)), wait: RETRY_FIRST_MS });
+        self.driver.failing = Some(Stretch { committed: self.committed(), retry_at: self.mono.after(RETRY_FIRST_MS), wait: RETRY_FIRST_MS });
         self.driver.restarts += 1;
         self.restart_modules(out);
     }
@@ -869,10 +871,23 @@ impl Node {
     }
 
     /// The earliest wake any module, the store or the engine needs.
-    fn next_wake(&mut self) -> Option<WallMs> {
+    /// The node's next wake, on its monotonic clock: the earliest of every wait (kept on it) and
+    /// every time a stamped value is judged by (on the wall clock, as far ahead of the wall
+    /// clock's reading now: a wall clock moved before it comes is followed at the next step).
+    fn next_wake(&mut self) -> Option<Mono> {
         let engine = self.engine.next_timer().ok().flatten().map(WallMs);
         let clock = self.engine.clock_next();
-        [self.driver.sessions.next_wake(), self.driver.dials.next_wake(), self.store.next_wake(), self.opens.next_wake(), self.read.next_wake(), self.unread.next_wake(), self.streams.next_wake(), self.inbox.next_wake(), self.status.next_wake(), engine, clock].into_iter().flatten().min()
+        let wall = [self.store.next_wake(), self.read.next_wake(), engine, clock].into_iter().flatten().min();
+        let (wall_now, mono) = (self.engine.now(), self.engine.mono());
+        let wall = wall.map(|t| mono.after(t.0.saturating_sub(wall_now.0)));
+        [self.driver.sessions.next_wake(), self.driver.dials.next_wake(), self.opens.next_wake(), self.streams.next_wake(), self.inbox.next_wake(), self.status.next_wake(), wall].into_iter().flatten().min()
+    }
+
+    /// Reads the clocks into the node's step (`now` and `mono` never go back).
+    fn read_clocks(&mut self) {
+        self.now = self.now.max(self.engine.now());
+        self.mono = self.mono.max(self.engine.mono());
+        self.driver.sessions.set_now(self.now, self.mono);
     }
 
     /// Tests only: a copy of this node inside a world copy (`osis_base::copying`), its clock
@@ -889,6 +904,7 @@ impl Node {
                 rng: self.rng.test_copy(),
                 cfg: self.cfg.clone(),
                 now: self.now,
+                mono: self.mono,
                 rounds: self.rounds,
                 driver: self.driver.clone(),
                 opens: self.opens.clone(),

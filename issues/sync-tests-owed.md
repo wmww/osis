@@ -25,6 +25,10 @@ Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry
 - no-server-audit: its 37-row feature table again, with only nodes that sometimes reach each other (no relay, no internet, no node at a fixed address).
 - Client port: tracking reads of `role_on`, `holders`, `backlinks`, `profile_of` and `stream` follow a thing at a connected node (tracked-read-port).
 
+## Built, untested end to end
+- HN_fallany (a snapshot arriving invalid moves the fall mark as one held valid falling does): the engine's `fall_mark`.
+- `Live::fresh` (held blobs handed to `Engine::seal_body`): no World test; a mutation passing none fails no osis-sync test (the engine's `rotation::tests_reseal::facade_*` cover the contract). Cheapest found: a purge of one thing's part of a commit spanning two things, the other thing's section then logged again verbatim.
+
 ## API behaviours the rebuild's deletion left untested
 Names from `git show 28641727e`; each goes through the facade.
 - libs/chat across synced nodes (libs/chat/tests/it has create, edits, purge sets, cursors on hand-carried commits, a chat made, joined by link and relayed over sync; a kick's validity flip: core/osis/tests/it/backlinks.rs): deletes and tombstones reaching a new node.

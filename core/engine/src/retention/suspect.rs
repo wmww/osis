@@ -264,8 +264,7 @@ impl Engine {
             Repaired::Already => (None, "a snapshot from this state was written for this reporter"),
             _ => (None, "same state"),
         };
-        let now = self.now();
-        self.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::Repair, tids: vec![*reporter, *tid], commit, peer: Some(*reporter), detail: detail.into() }, now);
+        self.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::Repair, tids: vec![*reporter, *tid], commit, peer: Some(*reporter), detail: detail.into() }, self.core.hlc.mono());
         Ok(done)
     }
 

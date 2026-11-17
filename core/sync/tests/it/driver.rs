@@ -5,7 +5,7 @@
 //! run on `Dials` with a table of dial peers.
 
 use crate::harness::{Seen, World, contacts, siblings, two_nodes};
-use osis_base::{BlobId, SyncId, WallMs};
+use osis_base::{BlobId, Mono, SyncId, WallMs};
 use osis_blob::{Address, Class, Prefix};
 use osis_store::Fault;
 use osis_sync::driver::dials::{DISCOVERED_KEEP, Dials, Peers, State, Why};
@@ -101,8 +101,7 @@ fn a_silent_dial_times_out_and_redials_spec_sync_opens_1() {
 // is the node's to keep whatever its wall clock does: with both nodes' clocks gone back an hour
 // while each waits to redial the other, they connect within a pause of the heal, not an hour on.
 #[test]
-#[ignore = "issues/clock-back-stalls-timers.md"]
-fn repro_a_clock_gone_back_delays_no_redial_spec_sync_opens_1() {
+fn a_clock_gone_back_delays_no_redial_spec_sync_opens_1() {
     let mut w = contacts();
     w.partition(0, 1);
     w.advance(REDIAL_MS + 5_000);
@@ -113,6 +112,90 @@ fn repro_a_clock_gone_back_delays_no_redial_spec_sync_opens_1() {
     w.heal();
     w.advance(2 * REDIAL_MS);
     assert!(connected(&w, 0, 1), "connected within a pause of the heal");
+}
+
+/// A wall clock jump of an hour.
+const JUMP: i64 = 3_600_000;
+
+/// spec/sync-streams.md §1 (Waits), spec/sync-opens.md §1 (dial timeout): with node 0's wall
+/// clock moved by `jump` while its dial waits, the silent dial times out on time.
+fn dial_times_out_on_time(jump: i64) {
+    let mut w = two_nodes();
+    w.net.hang.insert(1);
+    let mut w = configured(w);
+    w.flush();
+    w.skew(0, jump);
+    w.advance(DIAL_TIMEOUT_MS - 1);
+    assert_eq!(dials_to(&w, 0, 1), 1, "still waiting");
+    w.advance(1);
+    assert_eq!(dials_to(&w, 0, 1), 2, "timed out on time, dialed again");
+}
+
+/// spec/sync-streams.md §1 (Waits), spec/sync-opens.md §1 (redial): with node 0's wall clock moved
+/// by `jump` while it waits to redial, it dials again on time.
+fn redials_on_time(jump: i64) {
+    let mut w = two_nodes();
+    w.power_off(1);
+    let mut w = configured(w);
+    w.flush();
+    w.skew(0, jump);
+    w.advance(REDIAL_MS - 1);
+    assert_eq!(dials_to(&w, 0, 1), 1, "within the pause");
+    w.advance(1);
+    assert_eq!(dials_to(&w, 0, 1), 2, "dialed again on time");
+}
+
+/// spec/sync-streams.md §1 (Waits): a time a stamped value is judged by (an entry's expiry) is the
+/// wall clock's: with node 0's gone back the entry expires that much later; gone forward past the
+/// expiry, at its next step.
+fn expires_by_the_wall_clock(jump: i64) {
+    let mut w = two_nodes();
+    w.run();
+    let at = w.node_now(0).0 + 60_000;
+    let mut st = w.node(0).store.clone();
+    let (b, bytes) = blob(80, Class::Durable, at);
+    assert_eq!(st.log(&SID, own(b, Class::Durable, at), Some(bytes), None).unwrap(), osis_proto::Code::OK);
+    w.write(0, |_| ());
+    w.skew(0, jump);
+    if jump < 0 {
+        w.advance(60_000);
+        assert!(st.entry(&SID, &b).unwrap().is_some(), "not yet by the wall clock");
+        w.advance(jump.unsigned_abs());
+        assert!(st.entry(&SID, &b).unwrap().is_none(), "expired once the wall clock reached it");
+    } else {
+        w.write(0, |_| ());
+        assert!(st.entry(&SID, &b).unwrap().is_none(), "expired at the next step");
+    }
+}
+
+#[test]
+fn a_dial_times_out_on_time_after_the_clock_jumps_forward_spec_sync_streams_1() {
+    dial_times_out_on_time(JUMP);
+}
+
+#[test]
+fn a_dial_times_out_on_time_after_the_clock_goes_back_spec_sync_streams_1() {
+    dial_times_out_on_time(-JUMP);
+}
+
+#[test]
+fn a_redial_comes_on_time_after_the_clock_jumps_forward_spec_sync_streams_1() {
+    redials_on_time(JUMP);
+}
+
+#[test]
+fn a_redial_comes_on_time_after_the_clock_goes_back_spec_sync_streams_1() {
+    redials_on_time(-JUMP);
+}
+
+#[test]
+fn an_expiry_comes_at_the_next_step_after_the_clock_jumps_past_it_spec_sync_streams_1() {
+    expires_by_the_wall_clock(JUMP);
+}
+
+#[test]
+fn an_expiry_comes_later_after_the_clock_goes_back_spec_sync_streams_1() {
+    expires_by_the_wall_clock(-JUMP);
 }
 
 // spec/sync-opens.md §1 (redial): a failed dial is dialed again `REDIAL_MS` after it, not sooner
@@ -389,7 +472,7 @@ fn addr(n: u32) -> Address {
     Address { url: format!("peer://10.0.0.1:{}", n % 60_000 + 1), key }
 }
 
-const T0: WallMs = WallMs(1_000_000);
+const T0: Mono = Mono(1_000_000);
 
 // spec/sync-opens.md §1 (where to dial): addresses are priorities: the dial peers of a sync ID it
 // syncs first, then configured, then discovered; a reason withdrawn forgets the candidate.
@@ -433,7 +516,7 @@ fn max_peers_counts_sharing_connections_spec_sync_opens_1() {
 // once per `REDIAL_MS`.
 #[test]
 fn a_quiet_candidate_waits_for_a_change_spec_sync_opens_1() {
-    let at = |ms: u64| WallMs(T0.0 + ms);
+    let at = |ms: u64| Mono(T0.0 + ms);
     let mut d = Dials::default();
     d.configure(&[addr(1), addr(2)], T0);
     let cs: Vec<ConnId> = d.dial(T0, MAX_PEERS).into_iter().map(|(c, _)| c).collect();
@@ -472,7 +555,7 @@ fn due_dials_take_turns_spec_sync_opens_1() {
     for _ in 0..3 {
         let (c, a) = d.dial(now, 1).remove(0);
         seen.push(a.key);
-        now = WallMs(now.0 + DIAL_TIMEOUT_MS);
+        now = Mono(now.0 + DIAL_TIMEOUT_MS);
         d.ended(c, None, now);
         d.tick(now);
     }
@@ -491,11 +574,11 @@ fn a_lost_dial_waits_for_the_winner_spec_sync_opens_1() {
     let winner = ConnId(ConnId::ACCEPTED | 5);
     d.ended(c, Some(winner), T0);
     assert_eq!(d.state(&addr(1).key), Some(State::Held(winner)));
-    d.changed(WallMs(T0.0 + 20));
-    d.tick(WallMs(T0.0 + 10 * REDIAL_MS));
-    assert!(d.dial(WallMs(T0.0 + 10 * REDIAL_MS), MAX_PEERS).is_empty());
-    d.ended(winner, None, WallMs(T0.0 + 10 * REDIAL_MS));
-    assert_eq!(d.dial(WallMs(T0.0 + 10 * REDIAL_MS), MAX_PEERS).len(), 1);
+    d.changed(Mono(T0.0 + 20));
+    d.tick(Mono(T0.0 + 10 * REDIAL_MS));
+    assert!(d.dial(Mono(T0.0 + 10 * REDIAL_MS), MAX_PEERS).is_empty());
+    d.ended(winner, None, Mono(T0.0 + 10 * REDIAL_MS));
+    assert_eq!(d.dial(Mono(T0.0 + 10 * REDIAL_MS), MAX_PEERS).len(), 1);
 }
 
 // spec/sync-transport.md §4 (dialing): what a node remembers of its discoveries is bounded: past
@@ -531,7 +614,7 @@ fn work_at(n: u32) -> (u64, u64) {
     }
     let w0 = d.work().touched;
     for s in 1..100u64 {
-        let now = WallMs(T0.0 + s);
+        let now = Mono(T0.0 + s);
         d.settle_peers(&mut t, now);
         d.tick(now);
         assert!(d.dial(now, usize::MAX).is_empty());
@@ -539,7 +622,7 @@ fn work_at(n: u32) -> (u64, u64) {
     let idle = d.work().touched - w0;
     let w1 = d.work().touched;
     t.set(sid(0), vec![addr(n + 1)]);
-    d.settle_peers(&mut t, WallMs(T0.0 + 100));
+    d.settle_peers(&mut t, Mono(T0.0 + 100));
     (idle, d.work().touched - w1)
 }
 
@@ -736,7 +819,7 @@ fn a_failed_address_gives_way_to_the_next_spec_sync_opens_1() {
     d.up(second[0].0);
     d.ended(second[0].0, None, T0);
     assert!(d.dial(T0, MAX_PEERS).is_empty(), "a connection that ended waits a pause");
-    let later = WallMs(T0.0 + REDIAL_MS);
+    let later = Mono(T0.0 + REDIAL_MS);
     d.tick(later);
     assert_eq!(urls(d.dial(later, MAX_PEERS)).iter().map(|(_, u)| u.as_str()).collect::<Vec<_>>(), [configured.url.as_str()], "an address that came up stays");
 }
@@ -767,10 +850,10 @@ fn dead_addresses_take_turns_at_the_redial_pace_spec_sync_opens_1() {
             turn.push(a.url);
             d.ended(conn, None, now);
         }
-        let quiet = WallMs(now.0 + REDIAL_MS - 1);
+        let quiet = Mono(now.0 + REDIAL_MS - 1);
         d.tick(quiet);
         assert!(d.dial(quiet, MAX_PEERS).is_empty(), "no dial before the pause ends");
-        now = WallMs(now.0 + REDIAL_MS);
+        now = Mono(now.0 + REDIAL_MS);
         d.tick(now);
         turns.push(turn);
     }

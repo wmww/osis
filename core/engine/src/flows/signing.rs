@@ -326,8 +326,7 @@ pub(crate) fn answer_rotations(tx: &mut Tx<'_>) -> Result<()> {
             Ok(())
         });
         if let Err(e) = answered {
-            let now = tx.now();
-            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: Vec::new(), commit: Some(r), peer: None, detail: e.to_string() }, now);
+            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: Vec::new(), commit: Some(r), peer: None, detail: e.to_string() }, tx.core.hlc.mono());
         }
     }
     Ok(())

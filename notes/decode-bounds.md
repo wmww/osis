@@ -22,5 +22,5 @@
 
 ## Left
 - Transient peaks of one examination: a frontier at `MAX_LIST_BYTES` peaks near 1 GB (header clone, typed copy, `Frontier`), once per examination; the author delivered 64 MiB for it.
-- Total over connections: per-connection state grows with peers, the requirements' stated limit; the node-wide bound is issues/sync-unbuilt.md.
+- Total over connections: per-connection state grows with peers, the requirements' stated limit; the node-wide bound is issues/sync-unbuilt.md (Security).
 - A read of an aspect's state loads it whole before the read limit refuses it: issues/durable-decode-bound.md.

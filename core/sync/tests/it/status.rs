@@ -107,8 +107,8 @@ impl Net for Fake {
 }
 
 impl Ground for Fake {
-    fn now(&self) -> WallMs {
-        WallMs(self.now)
+    fn mono(&self) -> osis_base::Mono {
+        osis_base::Mono(self.now)
     }
     fn syncs(&mut self) -> Arc<SyncSet> {
         self.set.get(&()).cloned().unwrap_or_default()
@@ -599,7 +599,7 @@ fn complete_pass_gives_up_on_away_peer() {
     t.at(10);
     want(&mut t, S, 10);
     assert!(t.g.passes.is_empty());
-    assert_eq!(t.st.next_wake(), Some(WallMs(10 + PASS_WAIT_MS)));
+    assert_eq!(t.st.next_wake(), Some(osis_base::Mono(10 + PASS_WAIT_MS)));
     t.at(10 + PASS_WAIT_MS - 1);
     assert!(t.g.passes.is_empty());
     t.at(10 + PASS_WAIT_MS);

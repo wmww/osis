@@ -3,7 +3,7 @@
 //! commits from them. Diagnostics are structured, deduped and rate-limited per peer (local
 //! ones per kind).
 
-use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
+use osis_base::{Ak, CommitId, Mono, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -250,8 +250,9 @@ impl Events {
     }
 
     /// A diagnostic, deduped (the same report again: kind, commit, things and detail) and
-    /// rate-limited per peer (local ones per kind); sent immediately (no durability).
-    pub fn diagnostic(&mut self, d: Diagnostic, now: WallMs) {
+    /// rate-limited per peer (local ones per kind); sent immediately (no durability). `now`: the
+    /// monotonic clock (the rate window is a wait, spec/sync-streams.md §1 Waits).
+    pub fn diagnostic(&mut self, d: Diagnostic, now: Mono) {
         let key = (d.kind, d.commit, d.tids.clone(), d.detail.clone());
         if self.seen.contains(&key) {
             return;
@@ -288,7 +289,7 @@ mod tests {
     fn local_rate_limit_per_kind_spec_versioning_5() {
         let mut ev = Events::default();
         let rx = ev.subscribe();
-        let now = WallMs(1);
+        let now = Mono(1);
         for n in 0..=PER_PEER as u8 {
             ev.diagnostic(diag(DiagnosticKind::Mismatch, n, None), now);
         }
@@ -302,7 +303,7 @@ mod tests {
         }
         ev.diagnostic(diag(DiagnosticKind::Pending, 0, peer), now);
         assert!(!rx.try_iter().any(|e| matches!(e, Event::Diagnostic(d) if d.kind == DiagnosticKind::Pending)), "a peer has one bucket");
-        ev.diagnostic(diag(DiagnosticKind::Pending, 0, peer), WallMs(1 + WINDOW_MS));
+        ev.diagnostic(diag(DiagnosticKind::Pending, 0, peer), Mono(1 + WINDOW_MS));
         assert!(rx.try_iter().any(|e| matches!(e, Event::Diagnostic(d) if d.kind == DiagnosticKind::Pending)), "the next window");
     }
 }

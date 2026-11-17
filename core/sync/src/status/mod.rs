@@ -40,7 +40,7 @@ use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Holding, Position, RecordId, Result, Scope, SourceClass, Waiting};
 use crate::unread::Unread;
 use osis_base::memo::{Clock, Effects, Stamped, StampedSet};
-use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, CommitId, Mono, SyncId, Tid};
 use osis_engine::sync::{Stranding, SyncSet};
 use osis_proto::limits::PASS_WAIT_MS;
 use std::collections::{BTreeMap, BTreeSet};
@@ -150,7 +150,8 @@ pub trait Net {
 /// What status reads and does at a settle besides `Net` (the product's is `Live`; a test's a
 /// fake). Reads are stamped.
 pub trait Ground: Net {
-    fn now(&self) -> WallMs;
+    /// The monotonic clock (a pass's `PASS_WAIT_MS` runs on it).
+    fn mono(&self) -> Mono;
     /// The sync IDs this node syncs (`Store::syncs`: the sync set, and each leaving one while it
     /// waits), whole.
     fn syncs(&mut self) -> Arc<SyncSet>;
@@ -221,8 +222,8 @@ pub trait Ground: Net {
 /// A complete pass of S under way (§1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Pass {
-    /// When it began, on the node's clock: its `PASS_WAIT_MS` deadline runs from it.
-    began: WallMs,
+    /// When it began, on the node's monotonic clock: its `PASS_WAIT_MS` deadline runs from it.
+    began: Mono,
     /// Its pass place (`Ground::begin_pass`): what the engine is told, and what the engine's
     /// and leave's wants are compared with.
     noted: u64,
@@ -397,7 +398,7 @@ impl Status {
     /// One settle over `g`: whether anything another module reads changed. `pulls`: the
     /// connections a pass wants a fresh Pull on.
     pub fn settle_on(&mut self, g: &mut impl Ground, pulls: &mut Vec<ConnId>) -> Result<bool> {
-        self.clock.set(g.now().0);
+        self.clock.set(g.mono().0);
         let mut acted = false;
         self.sync_set(g);
         self.count_lacking(g)?;
@@ -684,7 +685,7 @@ impl Status {
 
     /// Begins a pass of S now: a fresh Pull at each source, the recorded peers to wait for.
     fn begin(&mut self, g: &mut impl Ground, s: SyncId, pulls: &mut Vec<ConnId>) -> Result<()> {
-        let (began, noted) = (g.now(), g.begin_pass());
+        let (began, noted) = (g.mono(), g.begin_pass());
         let waits = g.records_holding(&s)?;
         pulls.extend(self.sources.get(&s).into_iter().flat_map(|x| x.keys().copied()));
         self.passes.insert(s, Pass { began, noted, waits, pulled: g.pull_seq() });
@@ -787,8 +788,8 @@ impl Status {
     }
 
     /// When the earliest pass waiting on a recorded peer gives up (`PASS_WAIT_MS`).
-    pub fn next_wake(&self) -> Option<WallMs> {
-        self.clock.next().map(WallMs)
+    pub fn next_wake(&self) -> Option<Mono> {
+        self.clock.next().map(Mono)
     }
 
     /// Tests only: the work counted so far.
@@ -878,7 +879,7 @@ fn pass_now(g: &mut impl Ground, clock: &Clock, work: &mut Work, s: &SyncId, p: 
             fresh_all = false;
         }
     }
-    let deadline = p.began.0.saturating_add(PASS_WAIT_MS);
+    let deadline = p.began.after(PASS_WAIT_MS).0;
     let timed_out = clock.until(Some(deadline)) >= deadline;
     // a record that no longer holds S has nothing of S left to read (closed: a Lost, or
     // its peer judged this node departed)

@@ -6,7 +6,7 @@
 use crate::session::STALL_TIMEOUT_MS;
 use crate::types::{ConnId, Input, NodeKey};
 use crate::Links;
-use osis_base::{Clock, WallMs};
+use osis_base::{Clock, Mono};
 use osis_blob::Address;
 use osis_transport::link::{self, Link, LinkTx};
 use osis_transport::lan::Found;
@@ -85,7 +85,7 @@ pub struct TransportLinks<T: Transport> {
     /// Each listener set's listeners, each serving in its task.
     listeners: BTreeMap<Listening, Vec<Served<T::Listener>>>,
     discovery: Vec<JoinHandle<()>>,
-    wake: Option<WallMs>,
+    wake: Option<Mono>,
     accepted: u64,
 }
 
@@ -208,13 +208,12 @@ impl<T: Transport> TransportLinks<T> {
         loop {
             let ev = match self.wake {
                 Some(at) => {
-                    let now = self.clock.now_wall_ms();
-                    let wait = Duration::from_millis(at.0.saturating_sub(now.0));
+                    let wait = Duration::from_millis(at.0.saturating_sub(self.clock.mono().0));
                     tokio::select! {
                         ev = self.rx.recv() => ev,
                         () = tokio::time::sleep(wait) => {
                             self.wake = None;
-                            return Input::Tick { now: self.clock.now_wall_ms() };
+                            return Input::Tick;
                         }
                     }
                 }
@@ -307,7 +306,7 @@ impl<T: Transport> Links for TransportLinks<T> {
         }
     }
 
-    fn wake(&mut self, at: WallMs) {
+    fn wake(&mut self, at: Mono) {
         self.wake = Some(at);
     }
 }

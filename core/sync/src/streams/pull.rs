@@ -11,7 +11,7 @@ use crate::store::{Source, Store};
 use crate::types::{ConnId, Cursor, Entry, RESYNC_MS, RecordId, SourceClass};
 use osis_store::Transaction;
 use osis_base::memo::{Stamped, StampedSet};
-use osis_base::{BlobId, SyncId, WallMs};
+use osis_base::{BlobId, Mono, SyncId};
 use osis_engine::sync::Holding;
 use osis_blob::{Class, Prefix, StepId};
 use osis_proto::limits::{MAX_FETCH_IDS, REPLY_BUDGET};
@@ -217,8 +217,8 @@ pub(super) struct Pulling {
     /// Of those, the ones that opened to what no entry keeps (`Opening::Taken`): what the
     /// source shows of them is kept as of an entry held (`concerns`).
     taken: BTreeSet<(SyncId, BlobId)>,
-    retry_at: Option<WallMs>,
-    rejoin_at: BTreeMap<SyncId, WallMs>,
+    retry_at: Option<Mono>,
+    rejoin_at: BTreeMap<SyncId, Mono>,
     inline: u64,
     pub(super) inline_check: bool,
     /// A whole listing from the start (trimmed or not) under way: what it listed so far.
@@ -285,7 +285,7 @@ impl Pulling {
         self.pending.len() + self.queue.len() + self.failed.len() + self.settled.len() + self.taken.len() + self.tell.len()
     }
 
-    pub(super) fn wake(&self) -> Option<WallMs> {
+    pub(super) fn wake(&self) -> Option<Mono> {
         self.retry_at.into_iter().chain(self.rejoin_at.values().copied()).min()
     }
 
@@ -563,13 +563,13 @@ impl Streams {
         // owe it stays bounded
         // an Applied goes before the next Pull: the server reads a reported position as covering
         // only what came before the Pull (a join merging there is not yet stored)
-        if p.out.is_some() || p.pending.len() >= PENDING_CAP || !p.tell.is_empty() || p.applied_owed.is_some() || members.is_empty() || p.retry_at.is_some_and(|t| t > ctx.now) {
+        if p.out.is_some() || p.pending.len() >= PENDING_CAP || !p.tell.is_empty() || p.applied_owed.is_some() || members.is_empty() || p.retry_at.is_some_and(|t| t > ctx.mono) {
             return;
         }
         p.retry_at = None;
         // a join refused while S stays a member is joined again `resync_ms` later
-        let due: Vec<SyncId> = p.rejoin_at.iter().filter(|(s, t)| **t <= ctx.now && members.contains_key(*s)).map(|(s, _)| *s).collect();
-        p.rejoin_at.retain(|s, t| *t > ctx.now && members.contains_key(s));
+        let due: Vec<SyncId> = p.rejoin_at.iter().filter(|(s, t)| **t <= ctx.mono && members.contains_key(*s)).map(|(s, _)| *s).collect();
+        p.rejoin_at.retain(|s, t| *t > ctx.mono && members.contains_key(s));
         for s in due {
             let c = self.places.get(&p.src).and_then(|pl| pl.joining.get(&s).cloned()).flatten();
             p.join(s, c);
@@ -617,7 +617,7 @@ impl Streams {
         let (_, asked) = p.out.take().unwrap_or_default();
         match m {
             Msg::PullReply(r) => self.on_pull_reply(ctx, conn, *r, asked),
-            _ => p.retry_at = Some(WallMs(ctx.now.0.saturating_add(RESYNC_MS))),
+            _ => p.retry_at = Some(ctx.mono.after(RESYNC_MS)),
         }
     }
 
@@ -674,7 +674,7 @@ impl Streams {
                     if ours {
                         p.joins.remove(s);
                         if members.contains_key(s) {
-                            p.rejoin_at.insert(*s, WallMs(ctx.now.0.saturating_add(RESYNC_MS)));
+                            p.rejoin_at.insert(*s, ctx.mono.after(RESYNC_MS));
                         }
                     }
                 }
@@ -1112,7 +1112,7 @@ impl Streams {
                     drop.push(*k);
                     continue;
                 }
-                if self.asked.get(b).is_some_and(|(c, at)| *c != conn && at.0.saturating_add(ASKED_MS) > ctx.now.0) {
+                if self.asked.get(b).is_some_and(|(c, at)| *c != conn && at.after(ASKED_MS) > ctx.mono) {
                     continue;
                 }
                 match pick {
@@ -1139,7 +1139,7 @@ impl Streams {
             let Some(id) = ctx.wire.request(conn, Msg::Fetch { id: 0, sync_id: s, max_reply: REPLY_BUDGET as u64, ids: blobs.clone() }) else { return };
             for (k, b) in &ids {
                 p.queue.remove(k);
-                self.asked.insert(*b, (conn, ctx.now));
+                self.asked.insert(*b, (conn, ctx.mono));
             }
             p.fetches.insert(id, (s, blobs, c));
         }
@@ -1160,7 +1160,7 @@ impl Streams {
             && let Some(again) = ctx.wire.request(conn, Msg::Fetch { id: 0, sync_id: s, max_reply: REPLY_BUDGET as u64, ids: rest.clone() })
         {
             for b in &rest {
-                self.asked.insert(*b, (conn, ctx.now));
+                self.asked.insert(*b, (conn, ctx.mono));
             }
             p.fetches.insert(again, (s, rest, c));
         }

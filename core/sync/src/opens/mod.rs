@@ -35,7 +35,7 @@ use cred::{Bind, Shown, Tested, beacon_of};
 use holds::{Creds, Holds, NodeHolds};
 pub use holds::{Who, awaited, counted};
 use osis_store::Named;
-use osis_base::{SyncId, WallMs};
+use osis_base::{Mono, SyncId};
 use osis_crypto::NodeRng;
 use osis_crypto::kdf::{members_digest, pair_key, resume_tag, resumed_tag};
 use osis_engine::sync::J;
@@ -144,7 +144,8 @@ pub struct Ctx<'a> {
     pub wire: &'a mut dyn Wire,
     /// Where records and `changed_at` live.
     pub store: &'a mut Store,
-    pub now: WallMs,
+    /// The monotonic clock its waits (resync, retries) run on.
+    pub mono: Mono,
 }
 
 /// Work done, counted (tests: scaling by counting work, notes/principles.md).
@@ -302,7 +303,7 @@ struct Conn {
     peer_digest: bool,
     reqs: BTreeMap<Id, Req>,
     gen_out: Option<GenOut>,
-    resync_at: Option<WallMs>,
+    resync_at: Option<Mono>,
     whole_next: bool,
     /// The first generation of this connection is not sent yet.
     first: bool,
@@ -323,7 +324,7 @@ struct Conn {
     walks: BTreeMap<SyncId, WalkState>,
     /// Walks whose Behind was refused for now (4), by when they ask again (spec/sync-ids.md §6
     /// Behind: asked again after a back-off); due ones join the next test.
-    retries: BTreeSet<(WallMs, SyncId)>,
+    retries: BTreeSet<(Mono, SyncId)>,
     /// It lost its record to this connection (spec/sync-opens.md §1 One connection per pair):
     /// it closes, and acts on nothing meanwhile.
     lost_to: Option<ConnId>,
@@ -510,11 +511,11 @@ impl Opens {
     /// `Proved` (Resume or NoRecord, then Digest); Resume, Resumed, Digest, Members, Beacons,
     /// Offer, Shared, Lost.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, conn: ConnId, m: Incoming, moved: &mut Vec<Moved>) {
-        let now = cx.now;
+        let mono = cx.mono;
         let mut fx = std::mem::take(&mut self.fx);
         let mut store = cx.store.clone();
         let mut holds = NodeHolds { cx, unread, fx: &mut fx };
-        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, now };
+        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, mono };
         self.message(&mut ctx, conn, m, moved);
         self.fx = fx;
     }
@@ -599,11 +600,11 @@ impl Opens {
         if reported.is_empty() {
             return;
         }
-        let now = cx.now;
+        let mono = cx.mono;
         let mut fx = std::mem::take(&mut self.fx);
         let mut store = cx.store.clone();
         let mut holds = NodeHolds { cx, unread, fx: &mut fx };
-        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, now };
+        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, mono };
         for r in reported.drain(..) {
             self.reported(&mut ctx, r, moved);
         }
@@ -612,11 +613,11 @@ impl Opens {
 
     /// Whether anything acted (a member that moved is in `moved`).
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, unread: &Unread, moved: &mut Vec<Moved>) -> Result<bool> {
-        let now = cx.now;
+        let mono = cx.mono;
         let mut fx = std::mem::take(&mut self.fx);
         let mut store = cx.store.clone();
         let mut holds = NodeHolds { cx, unread, fx: &mut fx };
-        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, now };
+        let mut ctx = Ctx { holds: &mut holds, wire: sessions, store: &mut store, mono };
         let acted = self.tick(&mut ctx, moved);
         self.fx = fx;
         if let Some(e) = self.fault.take() {
@@ -834,7 +835,7 @@ impl Opens {
         }
     }
 
-    pub fn next_wake(&self) -> Option<WallMs> {
+    pub fn next_wake(&self) -> Option<Mono> {
         self.conns.values().flat_map(|c| c.resync_at.into_iter().chain(c.retries.first().map(|(t, _)| *t))).min()
     }
 
@@ -1061,7 +1062,7 @@ impl Opens {
         let conns: Vec<ConnId> = self.conns.keys().copied().collect();
         for c in conns {
             if let Some(k) = self.conns.get_mut(&c)
-                && k.resync_at.is_some_and(|t| t <= ctx.now)
+                && k.resync_at.is_some_and(|t| t <= ctx.mono)
             {
                 k.resync_at = None;
                 k.whole_next = true;
@@ -1069,7 +1070,7 @@ impl Opens {
             // a back-off over leaves `retries` here, so no wake past stays (whatever the test
             // then finds, or however long it waits on an Offer out): S joins the next test
             if let Some(k) = self.conns.get_mut(&c) {
-                while let Some((_, s)) = k.retries.first().copied().filter(|(t, _)| *t <= ctx.now) {
+                while let Some((_, s)) = k.retries.first().copied().filter(|(t, _)| *t <= ctx.mono) {
                     k.retries.pop_first();
                     k.walks.entry(s).or_default().retry = true;
                     k.test_due = true;
@@ -1678,7 +1679,7 @@ impl Opens {
         let Some(r) = c.rec.and_then(|r| self.records.get_mut(&r)) else { return };
         if g.refused {
             // A refused generation is followed, after `resync_ms`, by a whole one.
-            c.resync_at = Some(WallMs(ctx.now.0.saturating_add(crate::types::RESYNC_MS)));
+            c.resync_at = Some(ctx.mono.after(crate::types::RESYNC_MS));
         } else if g.base_missing {
             c.whole_next = true;
         } else {
@@ -2018,7 +2019,7 @@ impl Opens {
                     let w = c.walks.entry(s).or_default();
                     w.asked = false;
                     if a.code == Code::RATE_LIMITED {
-                        c.retries.insert((WallMs(ctx.now.0.saturating_add(crate::inbox::backoff_ms(w.backoffs))), s));
+                        c.retries.insert((ctx.mono.after(crate::inbox::backoff_ms(w.backoffs)), s));
                         w.backoffs = w.backoffs.saturating_add(1);
                     } else {
                         w.backoffs = 0;

@@ -135,10 +135,6 @@ impl Held {
         }
         Ok(acted)
     }
-
-    pub(super) fn next_wake(&self) -> Option<WallMs> {
-        None
-    }
 }
 
 /// spec/sync-inbox.md §4 Clearing deposits: of the deposits a holder of S's delete key can do

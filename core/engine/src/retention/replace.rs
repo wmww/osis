@@ -152,8 +152,7 @@ pub(crate) fn settle_none(tx: &mut Tx<'_>) -> Result<()> {
             // on): a cover that fails leaves nothing and the body to the writers that may, and is
             // reported, never failing the transaction
             if let Err(e) = tx.step(Step::Cover, |tx| tx.in_class(memory, |tx| super::snapshot::write_snapshot(tx, &tid, &ak, memory))) {
-                let now = tx.now();
-                tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: vec![tid], commit: None, peer: None, detail: e.to_string() }, now);
+                tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: vec![tid], commit: None, peer: None, detail: e.to_string() }, tx.core.hlc.mono());
             }
         }
         for (c, ai) in held {

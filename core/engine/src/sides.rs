@@ -172,9 +172,8 @@ pub(crate) fn after_update(core: &mut Core) {
         feed(core);
     }
     if det.unexamined + det.kept.len() > 0 {
-        let now = core.now();
         let detail = format!("beyond what one update examines: {} role writes that stopped applying kept their side, {} newly held ones took the walk's", det.kept.len(), det.unexamined);
-        core.events.diagnostic(Diagnostic { kind: DiagnosticKind::DisputesUnexamined, tids: Vec::new(), commit: None, peer: None, detail }, now);
+        core.events.diagnostic(Diagnostic { kind: DiagnosticKind::DisputesUnexamined, tids: Vec::new(), commit: None, peer: None, detail }, core.hlc.mono());
     }
 }
 

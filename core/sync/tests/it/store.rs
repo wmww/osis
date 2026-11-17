@@ -107,7 +107,7 @@ fn unread(dev: &Dev, s: &Sid) -> Store {
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(s, Holding::Unread)])).unwrap();
     let (g, c) = &s.steps[0];
-    assert_eq!(st.take_register(&s.id, g, Some(c)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, g, Some(c), osis_base::Mono(0)).unwrap(), Code::OK);
     st
 }
 
@@ -152,26 +152,26 @@ fn register_takes_genesis_then_children_of_the_head_spec_sync_ids_6() {
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     let (c1, cs1) = s.rotate(60);
-    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1)).unwrap(), Code::UNKNOWN_SYNC_ID, "a child into an empty path");
+    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1), osis_base::Mono(0)).unwrap(), Code::UNKNOWN_SYNC_ID, "a child into an empty path");
     let mut forged = s.steps[0].0.clone();
     forged.sig = c1.sig;
-    assert_eq!(st.take_register(&s.id, &forged, None).unwrap(), Code::REFUSED, "a genesis that does not verify");
+    assert_eq!(st.take_register(&s.id, &forged, None, osis_base::Mono(0)).unwrap(), Code::REFUSED, "a genesis that does not verify");
     // a genesis naming S, signed by a delete key that does not hash to S (a squat)
     let squat = Sid::new(80);
     let mut sq = squat.steps[0].0.clone();
     sq.sync_id = s.id;
     sq.sig = squat.delete().sign(osis_crypto::Domain::SyncStep, &sq.digest());
-    assert_eq!(st.take_register(&s.id, &sq, None).unwrap(), Code::REFUSED, "a genesis whose delete key is not S's");
+    assert_eq!(st.take_register(&s.id, &sq, None, osis_base::Mono(0)).unwrap(), Code::REFUSED, "a genesis whose delete key is not S's");
     let (g, gc) = s.steps[0].clone();
-    assert_eq!(st.take_register(&s.id, &g, Some(&gc)).unwrap(), Code::OK);
-    assert_eq!(st.take_register(&s.id, &g, None).unwrap(), Code::OK, "the head again");
+    assert_eq!(st.take_register(&s.id, &g, Some(&gc), osis_base::Mono(0)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &g, None, osis_base::Mono(0)).unwrap(), Code::OK, "the head again");
     let other = Sid::new(40);
-    assert_eq!(st.take_register(&s.id, &other.steps[0].0, None).unwrap(), Code::MALFORMED, "another sync ID's step");
+    assert_eq!(st.take_register(&s.id, &other.steps[0].0, None, osis_base::Mono(0)).unwrap(), Code::MALFORMED, "another sync ID's step");
     let (c2, cs2) = s.rotate(70);
-    assert_eq!(st.take_register(&s.id, &c2, Some(&cs2)).unwrap(), Code::NOT_HEAD_KEY, "a step whose prev is not the head");
-    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1)).unwrap(), Code::OK);
-    assert_eq!(st.take_register(&s.id, &g, None).unwrap(), Code::NOT_HEAD_KEY, "a genesis past the empty path");
-    assert_eq!(st.take_register(&s.id, &c2, Some(&cs2)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &c2, Some(&cs2), osis_base::Mono(0)).unwrap(), Code::NOT_HEAD_KEY, "a step whose prev is not the head");
+    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1), osis_base::Mono(0)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &g, None, osis_base::Mono(0)).unwrap(), Code::NOT_HEAD_KEY, "a genesis past the empty path");
+    assert_eq!(st.take_register(&s.id, &c2, Some(&cs2), osis_base::Mono(0)).unwrap(), Code::OK);
     assert_eq!(st.head(&s.id).unwrap().as_ref(), Some(&c2));
     assert_eq!(st.path(&s.id).unwrap().unwrap().steps.len(), 3);
     assert_eq!(events_of(&st, &s.id), [NodeEvent::Head(s.id)], "one head event, the latest");
@@ -186,7 +186,7 @@ fn register_refuses_a_claim_set_of_another_hash_spec_sync_ids_6() {
     let mut st = unread(&dev, &s);
     let (c1, _) = s.rotate(60);
     let (_, wrong) = s.rotate(70);
-    assert_eq!(st.take_register(&s.id, &c1, Some(&wrong)).unwrap(), Code::MALFORMED);
+    assert_eq!(st.take_register(&s.id, &c1, Some(&wrong), osis_base::Mono(0)).unwrap(), Code::MALFORMED);
     assert_eq!(st.head(&s.id).unwrap().as_ref(), Some(&s.steps[0].0));
 }
 
@@ -197,9 +197,9 @@ fn register_only_where_kept_unread_spec_sync_ids_6() {
     let dev = Dev::new();
     let s = Sid::new(10);
     let mut st = dev.open();
-    assert_eq!(st.take_register(&s.id, &s.steps[0].0, None).unwrap(), Code::DECLINED, "not synced");
+    assert_eq!(st.take_register(&s.id, &s.steps[0].0, None, osis_base::Mono(0)).unwrap(), Code::DECLINED, "not synced");
     st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
-    assert_eq!(st.take_register(&s.id, &s.steps[0].0, None).unwrap(), Code::DECLINED, "read");
+    assert_eq!(st.take_register(&s.id, &s.steps[0].0, None, osis_base::Mono(0)).unwrap(), Code::DECLINED, "read");
     assert!(st.head(&s.id).unwrap().is_none());
 }
 
@@ -213,21 +213,21 @@ fn register_past_the_caps_spec_sync_ids_6() {
     st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     let tiny = |bytes: u64| Caps { policy: BTreeMap::from([("bytes".to_string(), bytes), ("register_every_ms".to_string(), 1000)]), ..Caps::default() };
     st.set_caps(&tiny(10));
-    assert_eq!(st.take_register(&s.id, &s.steps[0].0, Some(&s.steps[0].1)).unwrap(), Code::STORAGE_CAP);
+    assert_eq!(st.take_register(&s.id, &s.steps[0].0, Some(&s.steps[0].1), osis_base::Mono(0)).unwrap(), Code::STORAGE_CAP);
     st.set_caps(&tiny(u64::MAX));
-    assert_eq!(st.take_register(&s.id, &s.steps[0].0, None).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &s.steps[0].0, None, osis_base::Mono(0)).unwrap(), Code::OK);
     // room for one more step (a child is a little longer), not for its claim set too
     let step = st.usage(&s.id).unwrap().0.bytes;
     st.set_caps(&tiny(2 * step + 64));
     let (c1, cs1) = s.rotate(60);
-    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1), osis_base::Mono(0)).unwrap(), Code::OK);
     assert!(st.path(&s.id).unwrap().unwrap().steps[1].1.is_none(), "taken without its claim set");
     let (c2, _) = s.rotate(70);
     let (c3, _) = s.rotate(80);
-    assert_eq!(st.take_register(&s.id, &c2, None).unwrap(), Code::OK, "past even without it: once");
-    assert_eq!(st.take_register(&s.id, &c3, None).unwrap(), Code::STORAGE_CAP, "twice in an interval");
-    st.settle_at(WallMs(1000)).unwrap();
-    assert_eq!(st.take_register(&s.id, &c3, None).unwrap(), Code::OK, "the next interval");
+    assert_eq!(st.take_register(&s.id, &c2, None, osis_base::Mono(0)).unwrap(), Code::OK, "past even without it: once");
+    assert_eq!(st.take_register(&s.id, &c3, None, osis_base::Mono(0)).unwrap(), Code::STORAGE_CAP, "twice in an interval");
+    assert_eq!(st.take_register(&s.id, &c3, None, osis_base::Mono(999)).unwrap(), Code::STORAGE_CAP, "within the interval");
+    assert_eq!(st.take_register(&s.id, &c3, None, osis_base::Mono(1000)).unwrap(), Code::OK, "the next interval");
 }
 
 // spec/sync-ids.md §6 (behind): named a step on its path other than its head by a credential of
@@ -246,7 +246,7 @@ fn behind_answers_up_to_the_next_sync_key_spec_sync_ids_6() {
     let (c2, cs2) = s.rotate(60);
     let (c3, cs3) = s.rotate(70);
     for (c, cs) in [(&same.0, &same.1), (&c2, &cs2), (&c3, &cs3)] {
-        assert_eq!(st.take_register(&s.id, c, Some(cs)).unwrap(), Code::OK);
+        assert_eq!(st.take_register(&s.id, c, Some(cs), osis_base::Mono(0)).unwrap(), Code::OK);
     }
     let g = s.steps[0].0.id();
     let (code, grant) = st.behind(&s.id, Some(&g), &Cred::Sync(k0), 100).unwrap();
@@ -273,7 +273,7 @@ fn a_behind_refused_is_13_only_where_s_is_not_kept_spec_sync_ids_6() {
     st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::UNKNOWN_SYNC_ID, "kept unread, no step");
     let (g, c) = &s.steps[0];
-    assert_eq!(st.take_register(&s.id, g, Some(c)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, g, Some(c), osis_base::Mono(0)).unwrap(), Code::OK);
     assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::DECLINED, "kept unread with a step");
     st.set_sync_set(&holding(&[(&s, Holding::Read)])).unwrap();
     assert_eq!(st.behind_refusal(&s.id).unwrap(), Code::DECLINED, "read here");
@@ -291,7 +291,7 @@ fn behind_by_a_static_entry_grants_the_path_spec_sync_ids_6() {
     let kem = KemSecret::derive(&Secret32::from_bytes([78; 32]));
     let (c1, cs1) = s.issue(&[Reader::Static { signing: link.verifying_key(), kem: kem.public() }]);
     s.steps.push((c1.clone(), cs1.clone()));
-    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1), osis_base::Mono(0)).unwrap(), Code::OK);
     let (code, grant) = st.behind(&s.id, None, &Cred::Signing(link.verifying_key()), 100).unwrap();
     let grant = grant.unwrap();
     assert_eq!(code, Code::OK);
@@ -313,7 +313,7 @@ fn stamped_entries_refused_and_taken_spec_sync_ids_6() {
     let (b, bytes) = blob(100, Class::Durable, None, &[]);
     let old = stamped(&s, b, false);
     let (c1, cs1) = s.rotate(60);
-    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &c1, Some(&cs1), osis_base::Mono(0)).unwrap(), Code::OK);
     assert_eq!(st.take_stamped(&s.id, &old, bytes.clone(), &[]).unwrap(), Code::NOT_HEAD_KEY, "superseded write key");
     let mut bad = stamped(&s, b, false);
     bad.wrap = wrap(9);
@@ -494,7 +494,7 @@ fn a_total_counts_give_way_as_room_spec_sync_streams_4() {
     let mut st = unread(&dev, &s);
     st.set_sync_set(&holding(&[(&s, Holding::Unread), (&o, Holding::Unread)])).unwrap();
     let (g, c) = &o.steps[0];
-    assert_eq!(st.take_register(&o.id, g, Some(c)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&o.id, g, Some(c), osis_base::Mono(0)).unwrap(), Code::OK);
     for n in 0..3 {
         let (b, x) = blob(200 + n, Class::Durable, None, &[]);
         assert_eq!(st.take_stamped(&s.id, &stamped(&s, b, false), x, &[]).unwrap(), Code::OK);
@@ -659,7 +659,7 @@ fn deposit_answers_spec_sync_inbox_3() {
     st.set_sync_set(&holding(&[(&s, Holding::Unread)])).unwrap();
     assert_eq!(st.take_deposit(&deposit(&s, &bytes, false), None).unwrap(), Code::RATE_LIMITED, "no head yet");
     let (g, c) = &s.steps[0];
-    st.take_register(&s.id, g, Some(c)).unwrap();
+    st.take_register(&s.id, g, Some(c), osis_base::Mono(0)).unwrap();
     let mut forged = deposit(&s, &bytes, false);
     forged.wrap = wrap(7);
     assert_eq!(st.take_deposit(&forged, None).unwrap(), Code::DECLINED, "bad signature");
@@ -950,11 +950,11 @@ fn deletes_by_levels_reach_only_the_signers_right_spec_sync_ids_6() {
     s.write = Secret32::from_bytes([60; 32]);
     let st1 = s.issue(&[]);
     s.steps.push(st1.clone());
-    assert_eq!(st.take_register(&s.id, &st1.0, Some(&st1.1)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &st1.0, Some(&st1.1), osis_base::Mono(0)).unwrap(), Code::OK);
     refused(&mut st, by(writers, &old_write, &[(3, &w3)]), Code::NOT_HEAD_KEY, "the demoted writer's level-3 key under its old write key");
     // X removed: write and sync rotate
     let (c2, cs2) = s.rotate(70);
-    assert_eq!(st.take_register(&s.id, &c2, Some(&cs2)).unwrap(), Code::OK);
+    assert_eq!(st.take_register(&s.id, &c2, Some(&cs2), osis_base::Mono(0)).unwrap(), Code::OK);
     refused(&mut st, by(authors, &old_sync, &[(2, &x)]), Code::NOT_HEAD_KEY, "the removed author's level-2 key under its old sync key");
     // under the current head the same keys delete
     assert_eq!(st.take_delete(&s.id, &[by(authors, &s.sync_key(), &[(2, &x)])], true).unwrap(), [Code::OK]);
@@ -1067,7 +1067,7 @@ fn caps_govern_unread_and_the_largest_gives_way_spec_sync_ids_6() {
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread), (&r, Holding::Read)])).unwrap();
     for s in [&s1, &s2] {
-        st.take_register(&s.id, &s.steps[0].0, None).unwrap();
+        st.take_register(&s.id, &s.steps[0].0, None, osis_base::Mono(0)).unwrap();
     }
     st.set_caps(&Caps { policy: BTreeMap::from([("total_bytes".to_string(), 12_000), ("memory_bytes".to_string(), 1500)]), ..Caps::default() });
     let mut first = None;
@@ -1130,8 +1130,8 @@ fn log_reads_by_member_and_until_spec_sync_streams_3() {
     let (s1, s2) = (Sid::new(10), Sid::new(40));
     let mut st = dev.open();
     st.set_sync_set(&holding(&[(&s1, Holding::Unread), (&s2, Holding::Unread)])).unwrap();
-    st.take_register(&s1.id, &s1.steps[0].0, None).unwrap();
-    st.take_register(&s2.id, &s2.steps[0].0, None).unwrap();
+    st.take_register(&s1.id, &s1.steps[0].0, None, osis_base::Mono(0)).unwrap();
+    st.take_register(&s2.id, &s2.steps[0].0, None, osis_base::Mono(0)).unwrap();
     let mut bs = Vec::new();
     for i in 0..3 {
         let (b, x) = blob(100 + i, Class::Durable, None, &[]);
@@ -1165,7 +1165,7 @@ fn claim_sets_go_after_role_keep_spec_sync_ids_5() {
     let mut st = unread(&dev, &s);
     st.settle_at(WallMs(100)).unwrap();
     let (c1, cs1) = s.rotate(60);
-    st.take_register(&s.id, &c1, Some(&cs1)).unwrap();
+    st.take_register(&s.id, &c1, Some(&cs1), osis_base::Mono(0)).unwrap();
     st.settle_at(WallMs(100 + ROLE_KEEP_MS - 1)).unwrap();
     assert!(st.path(&s.id).unwrap().unwrap().steps[0].1.is_some());
     st.settle_at(WallMs(100 + ROLE_KEEP_MS)).unwrap();
@@ -1268,7 +1268,7 @@ fn ops(st: &mut Store, s: &Sid, rec: RecordId, child: &(Step, ClaimSet), step: u
             st.set_caps(&Caps::default());
             code_of(acted)
         }
-        11 => st.take_register(&s.id, &child.0, Some(&child.1)).unwrap(),
+        11 => st.take_register(&s.id, &child.0, Some(&child.1), osis_base::Mono(0)).unwrap(),
         12 => code_of(st.settle_at(WallMs(TOMBSTONE_LIFETIME_MS + 2_000)).unwrap()),
         _ => code_of(st.shred(&s.id).is_ok()),
     };
@@ -1371,7 +1371,7 @@ fn filled(n: usize, k: usize) -> (Store, Sid, Option<Vec<u8>>) {
     set.push((&s, Holding::Unread));
     st.set_sync_set(&holding(&set)).unwrap();
     for x in others.iter().chain([&s]) {
-        st.take_register(&x.id, &x.steps[0].0, None).unwrap();
+        st.take_register(&x.id, &x.steps[0].0, None, osis_base::Mono(0)).unwrap();
     }
     for (j, o) in others.iter().enumerate() {
         for i in 0..n {
@@ -1458,12 +1458,12 @@ fn store_values_are_due_when_their_rows_move() {
     settle(&mut heads, &mut lists, &st);
     let other = Sid::new(40);
     st.set_sync_set(&holding(&[(&s, Holding::Unread), (&other, Holding::Unread)])).unwrap();
-    st.take_register(&other.id, &other.steps[0].0, None).unwrap();
+    st.take_register(&other.id, &other.steps[0].0, None, osis_base::Mono(0)).unwrap();
     let (o, ox) = blob(102, Class::Durable, None, &[]);
     st.take_stamped(&other.id, &stamped(&other, o, false), ox, &[]).unwrap();
     assert!(heads.due().is_empty() && lists.due().is_empty(), "writes under another sync ID");
     let (c1, cs1) = s.rotate(60);
-    st.take_register(&s.id, &c1, Some(&cs1)).unwrap();
+    st.take_register(&s.id, &c1, Some(&cs1), osis_base::Mono(0)).unwrap();
     assert_eq!(heads.due(), [s.id], "a Register moved the head");
 }
 

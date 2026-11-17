@@ -1067,9 +1067,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     if fresh {
         tx.core.fresh_session();
     }
-    let at = tx.now();
     for (id, tids) in own_fell {
-        tx.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteInvalid, tids, commit: Some(id), peer: None, detail: "a write of this node turned invalid".into() }, at);
+        tx.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteInvalid, tids, commit: Some(id), peer: None, detail: "a write of this node turned invalid".into() }, tx.core.hlc.mono());
     }
     // what was not re-judged has not changed (debug builds: decodes every header)
     #[cfg(debug_assertions)]

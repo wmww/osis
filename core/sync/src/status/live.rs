@@ -7,7 +7,7 @@ use crate::store::Source;
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Position, RecordId, Result};
 use crate::unread::Unread;
-use osis_base::{BlobId, CommitId, SyncId, WallMs};
+use osis_base::{BlobId, CommitId, SyncId};
 use osis_engine::sync::SyncSet;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -71,8 +71,8 @@ impl Net for Live<'_, '_> {
 }
 
 impl Ground for Live<'_, '_> {
-    fn now(&self) -> WallMs {
-        self.cx.now
+    fn mono(&self) -> osis_base::Mono {
+        self.cx.mono
     }
     fn syncs(&mut self) -> Arc<SyncSet> {
         Arc::new(SyncSet { ids: self.cx.store.syncs(), ..SyncSet::default() })

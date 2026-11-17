@@ -3707,8 +3707,7 @@ impl Engine {
 
     /// Reports a diagnostic of the API layer (deduped and rate-limited like the engine's).
     pub fn report(&mut self, d: crate::events::Diagnostic) {
-        let now = self.now();
-        self.core.events.diagnostic(d, now);
+        self.core.events.diagnostic(d, self.core.hlc.mono());
     }
 
     /// The first admin of `tid` (`None`: a key actor or an unknown thing).
@@ -3752,6 +3751,11 @@ impl Engine {
     /// The wall clock.
     pub fn now(&self) -> WallMs {
         self.core.now()
+    }
+
+    /// The monotonic clock (`osis_base::Mono`): what a driver's waits run on.
+    pub fn mono(&self) -> osis_base::Mono {
+        self.clock.mono()
     }
 
     /// A channel of engine events, sent after durability.

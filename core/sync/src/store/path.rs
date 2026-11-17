@@ -5,7 +5,7 @@
 
 use super::entries::add_usage;
 use super::rows::{self, R, StepRow, W};
-use super::{Env, Policy};
+use super::Env;
 use crate::types::Result;
 use osis_base::format::ROLE_KEEP_MS;
 use osis_base::{SyncId, WallMs};
@@ -177,7 +177,7 @@ pub(crate) fn drop_claims(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId
 /// (`rows::ANEW_SOME`) unless a mark stands: refusals told under the old head are shown again
 /// (spec/sync-streams.md §4 Refused; a connection's are in memory, `Store::take_register`). Answers
 /// the code, whether past the caps, and whether the head moved.
-pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Policy, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, last_past_cap: Option<WallMs>) -> Result<(Code, bool, bool)> {
+pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, s: &SyncId, step: &Step, claims: Option<&ClaimSet>, past_cap_due: bool) -> Result<(Code, bool, bool)> {
     if step.sync_id != *s || claims.is_some_and(|c| c.hash() != step.claims_hash) {
         return Ok((Code::MALFORMED, false, false));
     }
@@ -200,7 +200,7 @@ pub(crate) fn register(t: &mut Transaction<'_>, env: &mut Env<'_>, policy: &Poli
         return Ok((Code::STORAGE_CAP, false, false));
     } else if fits(t, env, step_bytes(step, None))? {
         (None, false)
-    } else if last_past_cap.is_none_or(|at| env.now.0 >= at.0.saturating_add(policy.register_every_ms)) {
+    } else if past_cap_due {
         (None, true)
     } else {
         return Ok((Code::STORAGE_CAP, false, false));

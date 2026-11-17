@@ -413,8 +413,7 @@ fn retry_pending(tx: &mut Tx<'_>, id: CommitId, b: CommitBlob) -> Result<Option<
             keys::forget_unchecked(tx, &id)?;
             // secrets read from its boxes go unless something else reads them
             crate::rotation::touch_held(tx, things);
-            let now = tx.now();
-            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(id), peer: None, detail: e.to_string() }, now);
+            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(id), peer: None, detail: e.to_string() }, tx.core.hlc.mono());
             Ok(None)
         }
         Err(e) => Err(e),
@@ -536,8 +535,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
         blob.parts.retain(|p| !junk.contains(&p.ai));
         unjudged.retain(|ai, _| !junk.contains(ai));
-        let now = tx.now();
-        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail: "delta hash".into() }, now);
+        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail: "delta hash".into() }, tx.core.hlc.mono());
     }
     if only_junk {
         return Err(Error::BadInput("delta hash"));
@@ -572,8 +570,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         if let Some(held) = tx.core.created(t)
             && held != rec
         {
-            let now = tx.now();
-            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.author), detail: String::new() }, now);
+            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.author), detail: String::new() }, tx.core.hlc.mono());
         }
     }
     let mut out = Parts { signed, whole: Vec::new(), streamed: Vec::new(), waiting: None, bad: None, stripped: Vec::new() };
@@ -629,8 +626,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
         blob.parts.retain(|p| !bad.contains(&p.ai));
         let detail = out.bad.as_ref().map(|e| e.to_string()).unwrap_or_default();
-        let now = tx.now();
-        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail }, now);
+        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail }, tx.core.hlc.mono());
     }
     // nothing else held and a part cannot be judged: unjudgeable
     if out.ais().is_empty() && aside.keys.is_empty() && let Some(r) = unjudged.values().next().cloned() {
@@ -904,8 +900,7 @@ fn tell_parked(tx: &mut Tx<'_>, id: &CommitId, things: Vec<Tid>, peer: Option<Ti
     if tx.core.ix.pending.get(id) == Some(&Reason::Parked) {
         return;
     }
-    let now = tx.now();
-    tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::Parked, tids: things, commit: Some(*id), peer, detail: "from a newer format".into() }, now);
+    tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::Parked, tids: things, commit: Some(*id), peer, detail: "from a newer format".into() }, tx.core.hlc.mono());
 }
 
 /// Keeps the parts of applied commit `id` that wait alone pending under its ID, parked under
@@ -1584,8 +1579,7 @@ impl Engine {
         }
         match &r {
             Err(e) if e.class() == ErrorClass::BadInput => {
-                let now = self.now();
-                self.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: raw_id(bytes).ok(), peer, detail: e.to_string() }, now);
+                self.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: raw_id(bytes).ok(), peer, detail: e.to_string() }, self.core.hlc.mono());
             }
             Ok(Ingested::Applied(_)) => self.reexamine()?,
             // it awaits a record kept loose: learned now (`promote_loose`)

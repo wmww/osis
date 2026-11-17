@@ -47,7 +47,7 @@ use crate::session::{Incoming, RequestId, Sessions, To};
 use crate::store::{Source, Store};
 use crate::streams::Streams;
 use crate::types::{ConnId, Cx, Result, Waiting};
-use osis_base::{BlobId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, Mono, SyncId, Tid, WallMs};
 use osis_engine::Engine;
 use osis_blob::{DialHint, ShareLink, StepId};
 use osis_proto::Msg;
@@ -144,15 +144,18 @@ pub(crate) struct Here<'a> {
     pub engine: &'a mut Engine,
     pub status: Option<&'a crate::status::Status>,
     pub store: &'a mut Store,
+    /// The wall clock (a link's follow time is dated by it: it outlives a restart).
     pub now: WallMs,
+    /// The monotonic clock the back-offs run on.
+    pub mono: Mono,
     pub policy: &'a crate::types::Policy,
 }
 
 impl Inbox {
     /// Whether anything acted.
     pub fn settle(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, status: &crate::status::Status) -> Result<bool> {
-        let Cx { engine, store, now, policy, .. } = cx;
-        let mut here = Here { engine, status: Some(status), store, now: *now, policy };
+        let Cx { engine, store, now, mono, policy, .. } = cx;
+        let mut here = Here { engine, status: Some(status), store, now: *now, mono: *mono, policy };
         let mut net = Links { sessions, opens, streams };
         self.step(&mut here, &mut net)
     }
@@ -161,8 +164,8 @@ impl Inbox {
     /// followed again from the store, before any module reads the sync set (`leave` judges what
     /// left it by the set as it stands). Whether it started now.
     pub fn start(&mut self, cx: &mut Cx) -> Result<bool> {
-        let Cx { engine, store, now, policy, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, policy };
+        let Cx { engine, store, now, mono, policy, .. } = cx;
+        let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
         self.begin(&mut here)
     }
 
@@ -189,14 +192,14 @@ impl Inbox {
         acted |= self.register.settle(h, net)?;
         acted |= self.reports.settle(h, net)?;
         acted |= self.suspects.settle(h, net)?;
-        acted |= self.offers.settle(h.now, h.store, net, &mut *h.engine)?;
+        acted |= self.offers.settle(h.mono, h.store, net, &mut *h.engine)?;
         Ok(acted)
     }
 
     /// Register, Delete, Stranded and Suspect requests; Deposit, Stranded and Register answers.
     pub fn on_message(&mut self, cx: &mut Cx, sessions: &mut Sessions, opens: &Opens, streams: &Streams, conn: ConnId, m: Incoming) {
-        let Cx { engine, store, now, policy, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, policy };
+        let Cx { engine, store, now, mono, policy, .. } = cx;
+        let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
         let mut net = Links { sessions, opens, streams };
         self.receive(&mut here, &mut net, conn, m);
     }
@@ -211,8 +214,8 @@ impl Inbox {
             }
             Incoming::Request(id, m) => serve::request(h, net, conn, id, m),
             Incoming::Reply(_, id, m) => {
-                if !self.offers.answered(h.now, conn, id, &m) && !self.reports.answered(conn, id, &m) {
-                    self.register.answered(h.now, conn, id, &m);
+                if !self.offers.answered(h.mono, conn, id, &m) && !self.reports.answered(conn, id, &m) {
+                    self.register.answered(h.mono, conn, id, &m);
                 }
             }
             Incoming::Proved | Incoming::Push(_) => {}
@@ -252,8 +255,8 @@ impl Inbox {
     /// First contact through a link (spec/sync-inbox.md §6): durable until the join is held
     /// elsewhere. `Done` once the join is written.
     pub fn redeem(&mut self, cx: &mut Cx, link: &ShareLink) -> Waiting {
-        let Cx { engine, store, now, policy, .. } = cx;
-        let mut here = Here { engine, status: None, store, now: *now, policy };
+        let Cx { engine, store, now, mono, policy, .. } = cx;
+        let mut here = Here { engine, status: None, store, now: *now, mono: *mono, policy };
         self.redeem_on(&mut here, link)
     }
 
@@ -282,7 +285,7 @@ impl Inbox {
         self.offers.may_land(conn)
     }
 
-    pub fn next_wake(&self) -> Option<WallMs> {
-        [self.offers.next_wake(), self.register.next_wake(), self.held.next_wake()].into_iter().flatten().min()
+    pub fn next_wake(&self) -> Option<Mono> {
+        [self.offers.next_wake(), self.register.next_wake()].into_iter().flatten().min()
     }
 }

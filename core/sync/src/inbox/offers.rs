@@ -33,7 +33,7 @@ use super::Net;
 use crate::store::Store;
 use crate::session::RequestId;
 use crate::types::{ConnId, Result, SourceClass};
-use osis_base::{BlobId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, Mono, SyncId, Tid};
 use osis_base::memo::Effects;
 use osis_crypto::{Signature, SigningSecret, VerifyingKey};
 use osis_proto::{Code, DepositItem, Msg, OfferItem};
@@ -89,7 +89,7 @@ struct Conn {
     out: Option<(RequestId, Key, Signature)>,
     ready: BTreeSet<Key>,
     /// Refused for now: until when, and how many times in a row.
-    backoff: BTreeMap<Key, (WallMs, u32)>,
+    backoff: BTreeMap<Key, (Mono, u32)>,
     /// Refused (14) with this signature; the filter generation it waits past, once known.
     parked: BTreeMap<Key, (Signature, Option<u64>)>,
 }
@@ -111,7 +111,7 @@ pub struct Offers {
     /// Connections with an offer ready and none out.
     active: BTreeSet<ConnId>,
     /// Back-offs by when they end.
-    wakes: BTreeSet<(WallMs, ConnId, Key)>,
+    wakes: BTreeSet<(Mono, ConnId, Key)>,
     /// Connections with a refusal waiting for the next filter.
     parked: BTreeSet<ConnId>,
 }
@@ -227,7 +227,7 @@ impl Offers {
 
     /// Sends one Deposit item on each connection with one ready and none out, after judging again
     /// who each connection whose counted actors may have moved counts as.
-    pub fn settle(&mut self, now: WallMs, store: &Store, net: &mut impl Net, judge: &mut dyn Judge) -> Result<bool> {
+    pub fn settle(&mut self, now: Mono, store: &Store, net: &mut impl Net, judge: &mut dyn Judge) -> Result<bool> {
         let mut acted = false;
         for conn in self.who.due() {
             let Some(c) = self.conns.get_mut(&conn) else {
@@ -350,7 +350,7 @@ impl Offers {
     }
 
     /// A Shared (or Error) answering a Deposit item of ours: whether it was one.
-    pub fn answered(&mut self, now: WallMs, conn: ConnId, id: RequestId, m: &Msg) -> bool {
+    pub fn answered(&mut self, now: Mono, conn: ConnId, id: RequestId, m: &Msg) -> bool {
         let Some(c) = self.conns.get_mut(&conn) else { return false };
         let Some((out, k, sig)) = c.out else { return false };
         if out != id {
@@ -378,7 +378,7 @@ impl Offers {
                 }
                 Code::RATE_LIMITED | Code::DEPOSIT_BUDGET_FULL | Code::STORAGE_CAP => {
                     let n = c.backoff.get(&k).map_or(0, |(_, n)| n.saturating_add(1));
-                    let at = WallMs(now.0.saturating_add(backoff_ms(n)));
+                    let at = now.after(backoff_ms(n));
                     c.backoff.insert(k, (at, n));
                     self.wakes.insert((at, conn, k));
                 }
@@ -393,7 +393,7 @@ impl Offers {
         true
     }
 
-    pub fn next_wake(&self) -> Option<WallMs> {
+    pub fn next_wake(&self) -> Option<Mono> {
         self.wakes.first().map(|(t, _, _)| *t)
     }
 }
@@ -416,7 +416,7 @@ impl Target {
 /// Whether offer `k` waits out a back-off on `conn`: its wake is still to come. One whose wake
 /// came waits for nothing, though the peer could not take it then (the count stays, for the
 /// next refusal's back-off).
-fn backed_off(wakes: &BTreeSet<(WallMs, ConnId, Key)>, conn: ConnId, c: &Conn, k: &Key) -> bool {
+fn backed_off(wakes: &BTreeSet<(Mono, ConnId, Key)>, conn: ConnId, c: &Conn, k: &Key) -> bool {
     c.backoff.get(k).is_some_and(|(at, _)| wakes.contains(&(*at, conn, *k)))
 }
 

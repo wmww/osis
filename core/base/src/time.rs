@@ -1,6 +1,8 @@
 //! Time types and the `Clock` plug (spec/crdt.md §2.2). The HLC itself lives in the node.
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 /// A moment: milliseconds since the Unix epoch, UTC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -12,6 +14,19 @@ pub use self::Time as WallMs;
 impl Time {
     pub fn saturating_add(self, ms: u64) -> Time {
         Time(self.0.saturating_add(ms))
+    }
+}
+
+/// A reading of a node's monotonic clock: ms from an origin of its own, never going back and
+/// running as time passes whatever the wall clock does (spec/sync-streams.md §1 Waits). Every wait
+/// a node keeps in memory runs on it; it is never stamped, stored or compared with a wall time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Mono(pub u64);
+
+impl Mono {
+    /// `ms` later.
+    pub fn after(self, ms: u64) -> Mono {
+        Mono(self.0.saturating_add(ms))
     }
 }
 
@@ -42,40 +57,54 @@ impl Ts {
     }
 }
 
-/// Wall-clock source, injected so tests and the simulator control time.
+/// Clock source, injected so tests and the simulator control time: the wall clock, which may
+/// jump either way, and a monotonic one (`Mono`).
 pub trait Clock: Send + Sync {
     fn now_wall_ms(&self) -> WallMs;
+    fn mono(&self) -> Mono;
 }
 
-/// Test clock: returns what it was set to.
+/// Test clock: its wall clock reads what it was set to; its monotonic clock starts at the same
+/// reading and moves with every move forward (`set` back leaves it).
 #[derive(Debug, Default)]
-pub struct ManualClock(AtomicU64);
+pub struct ManualClock {
+    wall: AtomicU64,
+    mono: AtomicU64,
+}
 
 impl ManualClock {
     pub fn new(start: WallMs) -> ManualClock {
-        ManualClock(AtomicU64::new(start.0))
+        ManualClock { wall: AtomicU64::new(start.0), mono: AtomicU64::new(start.0) }
     }
     pub fn set(&self, t: WallMs) {
-        self.0.store(t.0, Ordering::SeqCst);
+        let was = self.wall.swap(t.0, Ordering::SeqCst);
+        add(&self.mono, t.0.saturating_sub(was));
     }
     pub fn advance(&self, ms: u64) {
-        // Saturating add by CAS loop (`fetch_update` is deprecated past the MSRV's replacement).
-        let mut cur = self.0.load(Ordering::SeqCst);
-        while let Err(seen) =
-            self.0.compare_exchange_weak(cur, cur.saturating_add(ms), Ordering::SeqCst, Ordering::SeqCst)
-        {
-            cur = seen;
-        }
+        add(&self.wall, ms);
+        add(&self.mono, ms);
+    }
+}
+
+/// Saturating add by CAS loop (`fetch_update` is deprecated past the MSRV's replacement).
+fn add(x: &AtomicU64, ms: u64) {
+    let mut cur = x.load(Ordering::SeqCst);
+    while let Err(seen) = x.compare_exchange_weak(cur, cur.saturating_add(ms), Ordering::SeqCst, Ordering::SeqCst) {
+        cur = seen;
     }
 }
 
 impl Clock for ManualClock {
     fn now_wall_ms(&self) -> WallMs {
-        WallMs(self.0.load(Ordering::SeqCst))
+        WallMs(self.wall.load(Ordering::SeqCst))
+    }
+    fn mono(&self) -> Mono {
+        Mono(self.mono.load(Ordering::SeqCst))
     }
 }
 
-/// The system clock (drivers only; libraries take a `&dyn Clock`).
+/// The system clock (drivers only; libraries take a `&dyn Clock`). Its monotonic clock is
+/// `Instant`'s, from the first reading in the process.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemClock;
 
@@ -83,6 +112,10 @@ impl Clock for SystemClock {
     fn now_wall_ms(&self) -> WallMs {
         let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         WallMs(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+    }
+    fn mono(&self) -> Mono {
+        static ORIGIN: OnceLock<Instant> = OnceLock::new();
+        Mono(u64::try_from(ORIGIN.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX))
     }
 }
 
@@ -108,10 +141,14 @@ mod tests {
         let c = ManualClock::new(WallMs(10));
         c.advance(5);
         assert_eq!(c.now_wall_ms(), WallMs(15));
+        assert_eq!(c.mono(), Mono(15));
         c.set(WallMs(3));
-        assert_eq!(c.now_wall_ms(), WallMs(3));
+        assert_eq!((c.now_wall_ms(), c.mono()), (WallMs(3), Mono(15)), "set back: the monotonic clock stays");
+        c.set(WallMs(8));
+        assert_eq!(c.mono(), Mono(20));
         c.advance(u64::MAX);
-        assert_eq!(c.now_wall_ms(), WallMs(u64::MAX));
+        assert_eq!((c.now_wall_ms(), c.mono()), (WallMs(u64::MAX), Mono(u64::MAX)));
         assert!(SystemClock.now_wall_ms() > WallMs(1_600_000_000_000));
+        assert!(SystemClock.mono() <= SystemClock.mono());
     }
 }

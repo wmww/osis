@@ -40,8 +40,7 @@ pub(crate) fn answer_removals(tx: &mut Tx<'_>) -> Result<()> {
     let Some(me) = tx.core.member() else { return Ok(()) };
     for r in due {
         if let Err(e) = tx.step(Step::Answer, |tx| answer_removal(tx, &r, me)) {
-            let now = tx.now();
-            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: Vec::new(), commit: Some(r), peer: None, detail: e.to_string() }, now);
+            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::OwnWriteFailed, tids: Vec::new(), commit: Some(r), peer: None, detail: e.to_string() }, tx.core.hlc.mono());
         }
     }
     Ok(())

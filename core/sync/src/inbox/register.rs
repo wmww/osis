@@ -25,7 +25,7 @@ use super::{Here, Net};
 use crate::session::RequestId;
 use crate::types::{ConnId, Result, SourceClass};
 use osis_base::memo::{Effects, Stamped};
-use osis_base::{SyncId, WallMs};
+use osis_base::{Mono, SyncId};
 use osis_engine::Engine;
 use osis_engine::sync::Path;
 use osis_blob::{ClaimSet, Step, StepId};
@@ -49,7 +49,7 @@ pub struct Progress {
     pub at: Option<StepId>,
     pub out: bool,
     /// Refused for now: until when, how many times in a row.
-    pub backoff: Option<(WallMs, u32)>,
+    pub backoff: Option<(Mono, u32)>,
     /// Refused while the source stood at this step: nothing more until it moves.
     pub stuck: Option<Option<StepId>>,
 }
@@ -60,7 +60,7 @@ pub(super) struct Register {
     progress: Stamped<Key, Progress>,
     /// Register requests out: their sync ID, step and the source's step when sent.
     out: BTreeMap<(ConnId, RequestId), (SyncId, StepId, Option<StepId>)>,
-    wakes: BTreeSet<(WallMs, Key)>,
+    wakes: BTreeSet<(Mono, Key)>,
 }
 
 impl Default for Register {
@@ -94,7 +94,7 @@ impl Register {
     pub(super) fn settle(&mut self, h: &mut Here<'_>, net: &mut impl Net) -> Result<bool> {
         let mut acted = false;
         while let Some(&(t, k)) = self.wakes.first() {
-            if t > h.now {
+            if t > h.mono {
                 break;
             }
             self.wakes.remove(&(t, k));
@@ -123,7 +123,7 @@ impl Register {
     }
 
     /// A Register's answer: whether it was one of ours.
-    pub(super) fn answered(&mut self, now: WallMs, conn: ConnId, id: RequestId, m: &Msg) -> bool {
+    pub(super) fn answered(&mut self, now: Mono, conn: ConnId, id: RequestId, m: &Msg) -> bool {
         let Some((s, step, source)) = self.out.remove(&(conn, id)) else { return false };
         let k = (conn, s);
         let Some(mut p) = self.progress.get(&k).copied() else { return true };
@@ -136,7 +136,7 @@ impl Register {
             }
             Msg::Error { code: Code::RATE_LIMITED | Code::STORAGE_CAP, .. } => {
                 let n = p.backoff.map_or(0, |(_, n)| n.saturating_add(1));
-                let at = WallMs(now.0.saturating_add(backoff_ms(n)));
+                let at = now.after(backoff_ms(n));
                 p.backoff = Some((at, n));
                 self.wakes.insert((at, k));
             }
@@ -146,7 +146,7 @@ impl Register {
         true
     }
 
-    pub(super) fn next_wake(&self) -> Option<WallMs> {
+    pub(super) fn next_wake(&self) -> Option<Mono> {
         self.wakes.first().map(|(t, _)| *t)
     }
 }

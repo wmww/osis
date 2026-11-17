@@ -13,12 +13,12 @@
 //! `own_node`, `key_open`, `account_tid`, `prove_rotations`, `take_rotations`).
 
 use crate::types::{ConnId, Cx, NodeKey, Out};
-use osis_base::{CreationRecord, Tid, WallMs};
+use osis_base::{CreationRecord, Mono, Tid, WallMs};
 use osis_proto::frame::MAX_HELLO_BODY;
 use osis_proto::limits::{MAX_ID, MAX_MESSAGE, MAX_PROOFS, MAX_ROTATIONS, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT, WINDOW};
 use osis_proto::msg::{Flow, answers, peek_head};
 use osis_proto::prove::verified;
-use osis_proto::{ActorProof, ClockSamples, Code, FrameDecoder, Hello, Msg, OffsetSample, PROTOCOL_VERSION, Prover, encode_frame, negotiate};
+use osis_proto::{ActorProof, ClockSamples, Code, FrameDecoder, Hello, Msg, OFFSET_DIAGNOSTIC_MS, OffsetSample, PROTOCOL_VERSION, Prover, encode_frame, negotiate};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// A request's id on its connection (spec/wire.md §11.2).
@@ -191,8 +191,10 @@ pub struct Session {
     proofs: Proofs,
     proven: Proven,
     acted_for: Option<Vec<(Tid, [u8; 32])>>,
+    /// The wall clock (Hello, Ping and Pong carry it) and the monotonic one (the stall clock).
     now: WallMs,
-    up_at: WallMs,
+    mono: Mono,
+    up_at: Mono,
     next_low: RequestId,
     next_top: RequestId,
     reqs: BTreeMap<RequestId, Req>,
@@ -206,7 +208,7 @@ pub struct Session {
     in_flight: u64,
     /// When the oldest request out last moved, and other bytes received since it last moved by
     /// its own events.
-    moved: WallMs,
+    moved: Mono,
     other: u64,
     /// The peer's requests not answered yet, with their costs.
     unanswered: BTreeMap<RequestId, u64>,
@@ -253,7 +255,8 @@ impl Session {
             proven: Proven::default(),
             acted_for: None,
             now: cx.now,
-            up_at: cx.now,
+            mono: cx.mono,
+            up_at: cx.mono,
             next_low: 0,
             next_top: TOP_BIT,
             reqs: BTreeMap::new(),
@@ -262,7 +265,7 @@ impl Session {
             ordered: VecDeque::new(),
             seq: 0,
             in_flight: 0,
-            moved: cx.now,
+            moved: cx.mono,
             other: 0,
             unanswered: BTreeMap::new(),
             unanswered_bytes: 0,
@@ -294,7 +297,7 @@ impl Session {
     /// Takes bytes received; proofs run here. `Err`: the connection closes (with the Error frame
     /// queued that a broken frame is answered by).
     pub fn receive(&mut self, bytes: &[u8], cx: &mut Cx) -> Result<Vec<Incoming>, Close> {
-        self.now = cx.now;
+        (self.now, self.mono) = (cx.now, cx.mono);
         self.frames.push(bytes);
         let mut ins = Vec::new();
         let (mut own, mut other) = (false, 0u64);
@@ -327,7 +330,7 @@ impl Session {
         } else if other > 0 {
             self.other = self.other.saturating_add(other);
             if self.other <= OTHER_BYTES {
-                self.moved = self.now;
+                self.moved = self.mono;
             }
         }
         if self.unwritten() > CLOSING + self.in_flight {
@@ -417,8 +420,8 @@ impl Session {
 
     /// The transport took `total` bytes of this connection's so far (`Input::Taken`, through
     /// `Sessions`).
-    pub fn taken(&mut self, total: u64, now: WallMs) {
-        self.now = self.now.max(now);
+    pub fn taken(&mut self, total: u64, mono: Mono) {
+        self.mono = self.mono.max(mono);
         self.taken = self.taken.max(total.min(self.written));
         let Some(oldest) = self.oldest() else { return };
         let taken = self.taken;
@@ -430,7 +433,7 @@ impl Session {
 
     /// When this connection closes unless it moves: waiting for the peer's Hello, or for the
     /// oldest request out.
-    pub fn deadline(&self) -> Option<WallMs> {
+    pub fn deadline(&self) -> Option<Mono> {
         let from = if self.binding.is_none() {
             self.up_at
         } else if !self.order.is_empty() {
@@ -438,7 +441,7 @@ impl Session {
         } else {
             return None;
         };
-        Some(WallMs(from.0.saturating_add(STALL_TIMEOUT_MS)))
+        Some(from.after(STALL_TIMEOUT_MS))
     }
 
     fn unwritten(&self) -> u64 {
@@ -451,7 +454,7 @@ impl Session {
 
     /// The oldest request out moved by its own events.
     fn moved(&mut self) {
-        self.moved = self.now;
+        self.moved = self.mono;
         self.other = 0;
     }
 
@@ -714,7 +717,15 @@ impl Session {
             (2, Msg::Pong { wall_ms, .. }) => {
                 if let Some((_, sent)) = self.ping.take() {
                     self.pings += 1;
+                    let far = |o: Option<i64>| o.is_some_and(|o| o.unsigned_abs() > OFFSET_DIAGNOSTIC_MS);
+                    let was = far(self.offset);
                     self.offset = self.clock.pong(OffsetSample { sent: sent.0, peer: wall_ms, received: self.now.0 }).or(self.offset);
+                    // reported once a connection, when the estimate first goes past it
+                    if let Some(o) = self.offset.filter(|_| far(self.offset) && !was) {
+                        let key: String = self.peer.0[..8].iter().map(|b| format!("{b:02x}")).collect();
+                        let detail = format!("the peer at key {key}.. runs {o:+} ms from this node's clock");
+                        cx.engine.report(osis_engine::Diagnostic { kind: osis_engine::DiagnosticKind::ClockSkew, tids: Vec::new(), commit: None, peer: None, detail });
+                    }
                 }
                 self.next_ping();
             }
@@ -801,10 +812,11 @@ fn rotations(cx: &mut Cx, mut room: usize) -> Result<Vec<osis_base::Value>, Clos
 pub struct Sessions {
     conns: BTreeMap<ConnId, Session>,
     now: WallMs,
+    mono: Mono,
     /// Sessions this step reached: their bytes and deadlines are taken at its end.
     touched: BTreeSet<ConnId>,
-    deadlines: BTreeSet<(WallMs, ConnId)>,
-    deadline: BTreeMap<ConnId, WallMs>,
+    deadlines: BTreeSet<(Mono, ConnId)>,
+    deadline: BTreeMap<ConnId, Mono>,
     /// Dials not up yet (their deadline is in `deadlines`).
     dials: BTreeSet<ConnId>,
 }
@@ -815,10 +827,10 @@ impl Sessions {
     }
 
     pub fn get_mut(&mut self, conn: ConnId) -> Option<&mut Session> {
-        let now = self.now;
+        let (now, mono) = (self.now, self.mono);
         let s = self.conns.get_mut(&conn)?;
         self.touched.insert(conn);
-        s.now = s.now.max(now);
+        (s.now, s.mono) = (s.now.max(now), s.mono.max(mono));
         Some(s)
     }
 
@@ -826,16 +838,16 @@ impl Sessions {
         self.conns.keys().copied()
     }
 
-    /// The driver's: the step's time.
-    pub fn set_now(&mut self, now: WallMs) {
-        self.now = self.now.max(now);
+    /// The driver's: the step's clocks.
+    pub fn set_now(&mut self, now: WallMs, mono: Mono) {
+        (self.now, self.mono) = (self.now.max(now), self.mono.max(mono));
     }
 
     /// The driver's: a dial started now (`Out::Dial`): it closes as failed unless up within
     /// `DIAL_TIMEOUT_MS`.
     pub fn dialing(&mut self, conn: ConnId) {
         self.dials.insert(conn);
-        self.track(conn, Some(WallMs(self.now.0.saturating_add(DIAL_TIMEOUT_MS))));
+        self.track(conn, Some(self.mono.after(DIAL_TIMEOUT_MS)));
     }
 
     /// The driver's: a connection up.
@@ -858,13 +870,13 @@ impl Sessions {
     /// The driver's: the transport took `total` bytes of `conn`'s so far.
     pub(crate) fn taken(&mut self, conn: ConnId, total: u64) {
         if let Some(s) = self.get_mut(conn) {
-            s.taken(total, s.now);
+            s.taken(total, s.mono);
         }
     }
 
     /// The driver's: the connections and dials whose deadline passed by `now`, each to close.
-    pub fn tick(&mut self, now: WallMs) -> Vec<(ConnId, Close)> {
-        self.set_now(now);
+    pub fn tick(&mut self, now: Mono) -> Vec<(ConnId, Close)> {
+        self.mono = self.mono.max(now);
         let mut out = Vec::new();
         while let Some((at, conn)) = self.deadlines.first().copied().filter(|(at, _)| *at <= now) {
             self.deadlines.remove(&(at, conn));
@@ -890,7 +902,7 @@ impl Sessions {
     }
 
     /// The earliest deadline.
-    pub fn next_wake(&self) -> Option<WallMs> {
+    pub fn next_wake(&self) -> Option<Mono> {
         self.deadlines.first().map(|(at, _)| *at)
     }
 
@@ -914,7 +926,7 @@ impl Sessions {
         }
     }
 
-    fn track(&mut self, conn: ConnId, at: Option<WallMs>) {
+    fn track(&mut self, conn: ConnId, at: Option<Mono>) {
         if let Some(old) = self.deadline.remove(&conn) {
             self.deadlines.remove(&(old, conn));
         }

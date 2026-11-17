@@ -125,8 +125,8 @@ pub(crate) struct Locked {
     pub offers: Vec<([u8; 32], u64)>,
     /// What sync steps under this hold gave, for `Net::carry`.
     pub out: Vec<osis_sync::Out>,
-    /// With no network: the node's wake, run at the next call due.
-    pub wake: Option<osis_base::WallMs>,
+    /// With no network: the node's wake (its monotonic clock), run at the next call due.
+    pub wake: Option<osis_base::Mono>,
     /// Sync stepped under this hold.
     pub stepped: bool,
     /// This node's dialable secret (`rotate_peer_address` replaces it).
@@ -763,9 +763,9 @@ impl ReadOnly {
         *lock(holder) = Some(std::thread::current().id());
         g.stepped = false;
         // with no network nothing else ticks the node: a wake due runs now
-        if let Some(at) = g.wake.filter(|at| *at <= self.inner.clock.now_wall_ms()) {
+        if g.wake.is_some_and(|at| at <= self.inner.clock.mono()) {
             g.wake = None;
-            g.handle(osis_sync::Input::Tick { now: at.max(self.inner.clock.now_wall_ms()) });
+            g.handle(osis_sync::Input::Tick);
         }
         // an expiry's commit is a write sync hears of, as any other
         let before = g.engine().store_writes().committed;

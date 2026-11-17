@@ -10,7 +10,7 @@ pub(super) fn request(h: &mut Here<'_>, net: &mut impl Net, conn: ConnId, id: Re
     let reply = match m {
         Msg::Register { sync_id, step, claim_set, .. } => {
             // a store failure answers refused: the node reopens from its store
-            let code = h.store.take_register(&sync_id, &step, claim_set.as_ref()).unwrap_or(Code::REFUSED);
+            let code = h.store.take_register(&sync_id, &step, claim_set.as_ref(), h.mono).unwrap_or(Code::REFUSED);
             if code == Code::OK { Msg::Ok { id } } else { Msg::Error { id, code } }
         }
         Msg::Delete { sync_id, items, .. } => {

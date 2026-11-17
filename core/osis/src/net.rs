@@ -7,7 +7,7 @@
 use crate::error::{Error, Result};
 use crate::handle::{Locked, WeakOsis};
 use crate::watch::lock;
-use osis_base::{Clock, ManualClock, WallMs};
+use osis_base::{Clock, ManualClock, Mono, WallMs};
 use osis_sync::{ConnId, Input, Links, Listening, NodeKey, Out, TransportLinks, apply};
 use osis_transport::{StaticSecret, Transport};
 use std::collections::{BTreeMap, VecDeque};
@@ -419,7 +419,7 @@ struct Fabric {
     clock: Arc<ManualClock>,
     nodes: Vec<(Option<WeakOsis>, Option<[u8; 32]>)>,
     queue: VecDeque<(usize, Input)>,
-    wakes: BTreeMap<usize, WallMs>,
+    wakes: BTreeMap<usize, Mono>,
     /// Each live connection end: (node, conn) -> the other end.
     links: BTreeMap<(usize, ConnId), (usize, ConnId)>,
     /// Bytes each end sent so far (what the transport took).
@@ -546,13 +546,14 @@ impl ManualNet {
                 if let Some(x) = f.queue.pop_front() {
                     Some(x)
                 } else {
-                    let w = f.wakes.iter().filter(|(n, at)| **at <= to && !f.offline.contains(n)).min_by_key(|(n, at)| (**at, **n)).map(|(n, at)| (*n, *at));
+                    // wakes are on the monotonic clock: `to` read on it, as far ahead as on the wall
+                    let (wall, mono) = (f.clock.now_wall_ms(), f.clock.mono());
+                    let until = mono.after(to.0.saturating_sub(wall.0));
+                    let w = f.wakes.iter().filter(|(n, at)| **at <= until && !f.offline.contains(n)).min_by_key(|(n, at)| (**at, **n)).map(|(n, at)| (*n, *at));
                     w.map(|(n, at)| {
                         f.wakes.remove(&n);
-                        if at > f.clock.now_wall_ms() {
-                            f.clock.set(at);
-                        }
-                        (n, Input::Tick { now: f.clock.now_wall_ms() })
+                        f.clock.advance(at.0.saturating_sub(mono.0));
+                        (n, Input::Tick)
                     })
                 }
             };
@@ -649,7 +650,7 @@ impl Links for FabricLinks<'_> {
         }
     }
 
-    fn wake(&mut self, at: WallMs) {
+    fn wake(&mut self, at: Mono) {
         self.f.wakes.insert(self.node, at);
     }
 }

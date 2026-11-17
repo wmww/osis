@@ -1,7 +1,6 @@
 //! The harness itself: worlds run to quiet, and every output a node makes reaches the network.
 
 use crate::harness::{Seen, World, two_nodes};
-use osis_base::WallMs;
 use osis_blob::Address;
 use osis_sync::{ConnId, Links, Out, apply};
 
@@ -44,7 +43,7 @@ fn every_output_reaches_the_network() {
     assert_eq!(w.seen, want);
     w.run();
     w.seen.clear();
-    let at = WallMs(w.now().0 + 5_000);
+    let at = osis_base::Mono(w.now().0 + 5_000);
     w.apply_as(0, vec![Out::Wake(at)]);
     w.run();
     assert_eq!(w.seen, [Seen::Tick { node: 0, at }]);
@@ -63,7 +62,7 @@ impl Links for Record {
     fn close(&mut self, conn: ConnId) {
         self.0.push(format!("close {}", conn.0));
     }
-    fn wake(&mut self, at: WallMs) {
+    fn wake(&mut self, at: osis_base::Mono) {
         self.0.push(format!("wake {}", at.0));
     }
 }
@@ -74,7 +73,7 @@ impl Links for Record {
 fn apply_orders_closes_and_the_wake_last() {
     let a = Address { url: String::new(), key: [0; 32] };
     let mut r = Record::default();
-    apply(vec![Out::Wake(WallMs(9)), Out::Close(ConnId(1)), Out::Send(ConnId(2), vec![]), Out::Wake(WallMs(4)), Out::Dial(ConnId(3), a), Out::Send(ConnId(1), vec![])], &mut r);
+    apply(vec![Out::Wake(osis_base::Mono(9)), Out::Close(ConnId(1)), Out::Send(ConnId(2), vec![]), Out::Wake(osis_base::Mono(4)), Out::Dial(ConnId(3), a), Out::Send(ConnId(1), vec![])], &mut r);
     assert_eq!(r.0, ["send 2", "dial 3", "send 1", "close 1", "wake 4"]);
 }
 

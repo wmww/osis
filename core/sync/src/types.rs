@@ -3,7 +3,7 @@
 //! the driver makes them, every module's work ends in them.
 
 use crate::store::Store;
-use osis_base::{BlobId, SyncId, Tid, WallMs};
+use osis_base::{BlobId, Mono, SyncId, Tid, WallMs};
 use osis_crypto::{Epoch, NodeRng, Signature};
 use osis_engine::Engine;
 use osis_blob::{Address, Class};
@@ -116,8 +116,8 @@ pub enum Input {
     Closed { conn: ConnId },
     /// A dial failed: the connection never came up (`error`: why, as the transport said).
     Down { conn: ConnId, error: String },
-    /// The time is `now` (a `Wake` came due, or any time the driver likes).
-    Tick { now: WallMs },
+    /// A `Wake` came due (or any time the driver likes): the node reads its clocks.
+    Tick,
     /// The node's owner wrote through the engine (or changed `SyncConfig`): what the write moved
     /// reaches sync through the memos it moved.
     Wrote,
@@ -131,8 +131,9 @@ pub enum Out {
     Send(ConnId, Vec<u8>),
     Dial(ConnId, Address),
     Close(ConnId),
-    /// Tick the node at `at`: replaces any earlier wake (each step gives at most one, last).
-    Wake(WallMs),
+    /// Tick the node at `at` on its monotonic clock: replaces any earlier wake (each step gives
+    /// at most one, last).
+    Wake(Mono),
 }
 
 /// What a scope of `Node::wait` covers (the osis API's `SyncScope`).
@@ -159,7 +160,10 @@ pub enum Waiting {
 pub struct Cx<'a> {
     pub engine: &'a mut Engine,
     pub store: &'a mut Store,
+    /// The wall clock: for stamps and judging stamped values only.
     pub now: WallMs,
+    /// The monotonic clock: every wait kept in memory.
+    pub mono: Mono,
     pub rng: &'a mut dyn NodeRng,
     pub out: &'a mut Vec<Out>,
     pub policy: &'a Policy,

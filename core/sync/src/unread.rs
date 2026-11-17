@@ -18,7 +18,7 @@
 
 use crate::types::{Cx, Result};
 use osis_base::memo::{Effects, Stamped};
-use osis_base::{SyncId, WallMs};
+use osis_base::SyncId;
 use osis_crypto::kdf::sync_proof;
 use osis_crypto::{RoleKey, Secret32, SigningSecret, VerifyingKey, role_key, role_key_seed};
 use osis_engine::sync::Holding;
@@ -176,10 +176,6 @@ impl Unread {
             self.kept.insert(s, k);
         }
         Ok(acted)
-    }
-
-    pub fn next_wake(&self) -> Option<WallMs> {
-        None
     }
 }
 

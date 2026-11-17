@@ -577,10 +577,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
             tx.core.stale_commits.insert(*c);
             tx.txn.put_local(&[records::VOID, &c.0[..]].concat(), &[], Shred::No)?;
         }
-        let now = tx.now();
         tx.core.events.diagnostic(
             crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OverlappingCounters, tids: vec![h.author], commit: Some(id), peer: Some(h.author), detail: String::new() },
-            now,
+            tx.core.hlc.mono(),
         );
     }
     index_commit(tx.core, &id, &view);

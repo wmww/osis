@@ -28,7 +28,7 @@
 
 use crate::types::ConnId;
 use osis_base::memo::Effects;
-use osis_base::{SyncId, WallMs};
+use osis_base::{Mono, SyncId};
 use osis_engine::Engine;
 use osis_blob::Address;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -93,7 +93,7 @@ struct Cand {
     addrs: BTreeMap<Address, usize>,
     state: State,
     /// Its last dial.
-    last: Option<WallMs>,
+    last: Option<Mono>,
     /// Its connection closed sharing nothing: due only after a change.
     quiet: bool,
     /// Its dials that failed: its next dial goes to its address of that turn (`address`).
@@ -108,7 +108,7 @@ type Place = (u8, u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Wait {
     Due(Place),
-    At(WallMs),
+    At(Mono),
 }
 
 impl Cand {
@@ -256,7 +256,7 @@ pub struct Work {
 pub struct Dials {
     cands: BTreeMap<[u8; 32], Cand>,
     due: BTreeSet<(Place, [u8; 32])>,
-    timer: BTreeSet<(WallMs, [u8; 32])>,
+    timer: BTreeSet<(Mono, [u8; 32])>,
     /// Connections this node dialed, to their candidate.
     conns: BTreeMap<ConnId, [u8; 32]>,
     in_flight: BTreeSet<ConnId>,
@@ -293,7 +293,7 @@ impl Dials {
     }
 
     /// `to` is a candidate for `why`; a new candidate or a new address for it is a change for it.
-    pub fn offer(&mut self, why: Why, to: Address, now: WallMs) {
+    pub fn offer(&mut self, why: Why, to: Address, now: Mono) {
         if Some(to.key) == self.own || !self.policy.dial(&to) {
             return;
         }
@@ -340,7 +340,7 @@ impl Dials {
         } else if c.state == State::Idle {
             // its priority may have moved
             self.unwait(key);
-            self.schedule(*key, WallMs(0));
+            self.schedule(*key, Mono(0));
         }
     }
 
@@ -357,7 +357,7 @@ impl Dials {
     }
 
     /// The configured addresses are now `addrs`.
-    pub fn configure(&mut self, addrs: &[Address], now: WallMs) {
+    pub fn configure(&mut self, addrs: &[Address], now: Mono) {
         if self.configured == addrs {
             return;
         }
@@ -371,7 +371,7 @@ impl Dials {
     }
 
     /// The inbox's dial hints are now `addrs`.
-    pub fn hint(&mut self, addrs: &[Address], now: WallMs) {
+    pub fn hint(&mut self, addrs: &[Address], now: Mono) {
         if self.hinted == addrs {
             return;
         }
@@ -385,7 +385,7 @@ impl Dials {
     }
 
     /// Applies the sync IDs whose dial peers moved.
-    pub fn settle_peers(&mut self, src: &mut impl Peers, now: WallMs) {
+    pub fn settle_peers(&mut self, src: &mut impl Peers, now: Mono) {
         for s in src.due() {
             let new = src.peers(&s);
             let old = if new.is_empty() { self.by_sync.remove(&s) } else { self.by_sync.insert(s, new.clone()) }.unwrap_or_default();
@@ -400,7 +400,7 @@ impl Dials {
 
     /// A change this node knows of that could make a peer share something: every quiet
     /// candidate is due again, `REDIAL_MS` after its last dial at the soonest.
-    pub fn changed(&mut self, now: WallMs) {
+    pub fn changed(&mut self, now: Mono) {
         for key in std::mem::take(&mut self.quiet) {
             if let Some(c) = self.cands.get_mut(&key) {
                 c.quiet = false;
@@ -410,7 +410,7 @@ impl Dials {
     }
 
     /// The time is `now`: candidates whose pause ended are due.
-    pub fn tick(&mut self, now: WallMs) {
+    pub fn tick(&mut self, now: Mono) {
         while let Some((at, key)) = self.timer.first().copied().filter(|(at, _)| *at <= now) {
             self.timer.remove(&(at, key));
             self.work.touched += 1;
@@ -425,7 +425,7 @@ impl Dials {
     /// The dials to make now, best first, while fewer than `max_peers` connections share
     /// something or are being dialed: each is numbered here and is `Dialing` until it is up or
     /// ends.
-    pub fn dial(&mut self, now: WallMs, max_peers: usize) -> Vec<(ConnId, Address)> {
+    pub fn dial(&mut self, now: Mono, max_peers: usize) -> Vec<(ConnId, Address)> {
         let mut out = Vec::new();
         while self.room(max_peers) > 0 {
             let Some((_, key)) = self.due.pop_first() else { break };
@@ -462,17 +462,17 @@ impl Dials {
     /// A connection ended (or a dial failed): its candidate is idle again, due by the redial
     /// rule; one whose dial lost its pair to the live connection `lost_to` is held by it. The
     /// candidates it held are idle again.
-    pub fn ended(&mut self, conn: ConnId, lost_to: Option<ConnId>, now: WallMs) {
+    pub fn ended(&mut self, conn: ConnId, lost_to: Option<ConnId>, now: Mono) {
         self.end(conn, lost_to, false, now);
     }
 
     /// A connection this node dialed closed sharing nothing (keep or close, spec/sync-opens.md
     /// §1): its candidate is quiet, dialed again after a change.
-    pub fn closed_quiet(&mut self, conn: ConnId, now: WallMs) {
+    pub fn closed_quiet(&mut self, conn: ConnId, now: Mono) {
         self.end(conn, None, true, now);
     }
 
-    fn end(&mut self, conn: ConnId, lost_to: Option<ConnId>, quiet: bool, now: WallMs) {
+    fn end(&mut self, conn: ConnId, lost_to: Option<ConnId>, quiet: bool, now: Mono) {
         self.in_flight.remove(&conn);
         self.sharing.remove(&conn);
         for key in self.held.remove(&conn).unwrap_or_default() {
@@ -508,7 +508,7 @@ impl Dials {
         }
     }
 
-    fn idle(&mut self, key: [u8; 32], now: WallMs) {
+    fn idle(&mut self, key: [u8; 32], now: Mono) {
         let Some(c) = self.cands.get_mut(&key) else { return };
         c.state = State::Idle;
         if c.why.is_empty() {
@@ -521,7 +521,7 @@ impl Dials {
 
     /// An idle candidate waits for its next dial: a quiet one for a change; else at once if never
     /// dialed, else `REDIAL_MS` after its last dial.
-    fn schedule(&mut self, key: [u8; 32], now: WallMs) {
+    fn schedule(&mut self, key: [u8; 32], now: Mono) {
         let Some(c) = self.cands.get_mut(&key) else { return };
         if c.state != State::Idle {
             return;
@@ -532,7 +532,7 @@ impl Dials {
             }
             return self.unwait(&key);
         }
-        let at = c.last.map_or(WallMs(0), |t| WallMs(t.0.saturating_add(REDIAL_MS)));
+        let at = c.last.map_or(Mono(0), |t| t.after(REDIAL_MS));
         let wait = if at <= now { Wait::Due(c.place()) } else { Wait::At(at) };
         if c.wait == Some(wait) {
             return;
@@ -577,7 +577,7 @@ impl Dials {
     }
 
     /// When a waiting candidate is next due.
-    pub fn next_wake(&self) -> Option<WallMs> {
+    pub fn next_wake(&self) -> Option<Mono> {
         self.timer.first().map(|(at, _)| *at)
     }
 

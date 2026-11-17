@@ -1,6 +1,6 @@
 //! The one sync test harness (notes/sync-test-harness.md): a deterministic world of product
 //! nodes (engine, store, `osis_sync::Node`) in one process, one manual clock that jumps to the
-//! next wake (each node reading it through its own skew), a seeded rng, and a network of real
+//! next wake (each node reading its wall clock through its own skew), a seeded rng, and a network of real
 //! encoded frames routed by the reachability model (`reach`). Every node output goes through
 //! `osis_sync::apply` into the network (`Net`, the test `Links`), and every node input through
 //! `World::deliver`, the one place a node is stepped: a test can reach a node's engine and status
@@ -68,6 +68,10 @@ impl Clock for NodeClock {
     fn now_wall_ms(&self) -> WallMs {
         WallMs(self.world.now_wall_ms().0.saturating_add_signed(self.skew.load(Ordering::SeqCst)))
     }
+    /// The world's: a skew moves the wall clock alone.
+    fn mono(&self) -> osis_base::Mono {
+        self.world.mono()
+    }
 }
 
 /// A node's durable state (engine and store, each a backend and its root record) on one device
@@ -123,20 +127,21 @@ pub enum Seen {
     Taken { node: usize, conn: ConnId, bytes: u64 },
     Closed { node: usize, conn: ConnId },
     Down { node: usize, conn: ConnId },
-    Tick { node: usize, at: WallMs },
+    /// `at`: the node's monotonic clock then.
+    Tick { node: usize, at: osis_base::Mono },
     Wrote { node: usize },
     Discovered { node: usize, key: [u8; 32] },
 }
 
 impl Seen {
-    fn of(node: usize, input: &Input) -> Seen {
+    fn of(node: usize, input: &Input, mono: osis_base::Mono) -> Seen {
         match input {
             Input::Up { conn, rank, dialed, .. } => Seen::Up { node, conn: *conn, dialed: *dialed, rank: *rank },
             Input::Bytes { conn, bytes } => Seen::Bytes { node, conn: *conn, len: bytes.len(), digest: osis_base::hash::hash(bytes)[..8].try_into().unwrap() },
             Input::Taken { conn, bytes } => Seen::Taken { node, conn: *conn, bytes: *bytes },
             Input::Closed { conn } => Seen::Closed { node, conn: *conn },
             Input::Down { conn, .. } => Seen::Down { node, conn: *conn },
-            Input::Tick { now } => Seen::Tick { node, at: *now },
+            Input::Tick => Seen::Tick { node, at: mono },
             Input::Wrote => Seen::Wrote { node },
             Input::Discovered { addr } => Seen::Discovered { node, key: addr.key },
         }
@@ -204,10 +209,9 @@ pub struct Net {
     held: u64,
     /// The world's time, as the network last saw it.
     now: WallMs,
-    /// Each node's one wake (`Links::wake` replaces it), in world time.
+    /// Each node's one wake (`Links::wake` replaces it), in world time: a node's waits run on its
+    /// monotonic clock, which no skew moves.
     wakes: BTreeMap<usize, WallMs>,
-    /// Each node's clock skew (`World::skew`): its wakes come in its own time.
-    skew: BTreeMap<usize, i64>,
     /// Node pairs a partition separates (lower index first).
     cut_off: BTreeSet<(usize, usize)>,
     online: Vec<bool>,
@@ -414,10 +418,9 @@ impl Links for NodeLinks<'_> {
         self.net.close(self.node, conn);
     }
 
-    fn wake(&mut self, at: WallMs) {
-        // the node's own time to the world's
-        let skew = self.net.skew.get(&self.node).copied().unwrap_or(0);
-        self.net.wakes.insert(self.node, WallMs(at.0.saturating_add_signed(-skew)));
+    fn wake(&mut self, at: osis_base::Mono) {
+        // the world's clock never goes back: its monotonic clock reads as its time
+        self.net.wakes.insert(self.node, WallMs(at.0));
     }
 }
 
@@ -706,8 +709,7 @@ impl World {
     }
 
     fn tick(&mut self, i: usize) {
-        let now = self.node_now(i);
-        self.deliver(i, Input::Tick { now });
+        self.deliver(i, Input::Tick);
     }
 
     /// Steps node `i` with `input` and carries out every output: the one place a node is stepped.
@@ -718,14 +720,14 @@ impl World {
             std::panic::panic_any(Capped);
         }
         if self.deliveries > self.cap {
-            let flowing: Vec<Seen> = self.net.queue.iter().take(8).map(|(n, x)| Seen::of(*n, x)).collect();
+            let flowing: Vec<Seen> = self.net.queue.iter().take(8).map(|(n, x)| Seen::of(*n, x, self.clock.mono())).collect();
             let off: Vec<usize> = (0..self.net.online.len()).filter(|n| !self.online(*n)).collect();
             panic!(
                 "storm: past the cap of {} deliveries over this world's whole run (not one `run`: a long test or the dial ticks toward a partitioned or powered-off peer add up; `World::cap` raises it, `flush()` delivers without firing wakes); partitioned {:?}, powered off {off:?}; still flowing (first 8 of {}): {flowing:?}; wakes {:?}",
                 self.cap, self.net.cut_off, self.net.queue.len(), self.net.wakes
             );
         }
-        let seen = Seen::of(i, &input);
+        let seen = Seen::of(i, &input, self.clock.mono());
         if self.trace {
             self.seen.push(seen.clone());
         }
@@ -1045,14 +1047,10 @@ impl World {
         self.net.cut_off.remove(&(a.min(b), a.max(b)));
     }
 
-    /// Node `i`'s clock runs `ms` ahead of the world's (behind when negative) from now on.
+    /// Node `i`'s wall clock runs `ms` ahead of the world's (behind when negative) from now on;
+    /// its monotonic clock stays the world's.
     pub fn skew(&mut self, i: usize, ms: i64) {
-        let old = self.net.skew.insert(i, ms).unwrap_or(0);
         self.node(i).clock.skew.store(ms, Ordering::SeqCst);
-        // its wake stays at the same time of its own
-        if let Some(w) = self.net.wakes.get_mut(&i) {
-            *w = WallMs(w.0.saturating_add_signed(old - ms));
-        }
     }
 
     /// Node `i`'s device does `f` at its `n`-th durable write from now (0: the next).

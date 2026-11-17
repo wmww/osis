@@ -4,12 +4,12 @@
 
 use crate::harness::{World, fixture};
 use osis_base::copying::{cached, copying};
-use osis_base::{Clock, ManualClock, Tid, WallMs};
+use osis_base::{Clock, ManualClock, Mono, Tid, WallMs};
 use osis_crypto::{SeededRng, Secret32, SigningSecret};
 use osis_engine::Engine;
 use osis_proto::limits::{MAX_MESSAGE, NO_RECORD_ID, REPLY_BUDGET, SMALL_REPLY, TOP_BIT};
 use osis_proto::prove::ActorProof;
-use osis_proto::{Code, FrameDecoder, Hello, Msg, Prover, Pull, PullReply, encode_frame};
+use osis_proto::{Code, FrameDecoder, Hello, Msg, OFFSET_DIAGNOSTIC_MS, Prover, Pull, PullReply, encode_frame};
 use osis_store::{MemoryBackend, MemoryRoot};
 use osis_sync::session::{Close, Incoming, PINGS, STALL_TIMEOUT_MS, DIAL_TIMEOUT_MS, Session, Sessions, To};
 use osis_sync::types::Cx;
@@ -33,7 +33,7 @@ struct End {
 
 impl End {
     fn cx(&mut self) -> Cx<'_> {
-        Cx { engine: &mut self.engine, store: &mut self.store, now: self.now, rng: &mut self.rng, out: &mut self.out, policy: &osis_sync::Policy {} }
+        Cx { engine: &mut self.engine, store: &mut self.store, now: self.now, mono: Mono(self.now.0), rng: &mut self.rng, out: &mut self.out, policy: &osis_sync::Policy {} }
     }
 
     fn account(&self) -> Option<Tid> {
@@ -102,8 +102,8 @@ impl Pair {
             let ins = self.ds.receive(&lb, &mut self.d.cx()).expect("dialer keeps the connection");
             self.d_in.extend(ins);
             // the transport takes everything sent (the session clamps to what it wrote)
-            self.ds.taken(u64::MAX, self.d.now);
-            self.ls.taken(u64::MAX, self.l.now);
+            self.ds.taken(u64::MAX, Mono(self.d.now.0));
+            self.ls.taken(u64::MAX, Mono(self.l.now.0));
         }
     }
 }
@@ -455,7 +455,7 @@ fn pushes_wait_for_room_spec_sync_streams_2() {
     assert!(!p.ds.push(big.clone()), "past REPLY_BUDGET unwritten");
     p.ds.take_bytes();
     assert!(!p.ds.push(big.clone()), "handed out is not taken");
-    p.ds.taken(u64::MAX, p.d.now);
+    p.ds.taken(u64::MAX, Mono(p.d.now.0));
     assert!(p.ds.push(big.clone()) && p.ds.push(digest), "taken: room again");
 }
 
@@ -466,7 +466,7 @@ fn pushes_wait_for_room_spec_sync_streams_2() {
 #[test]
 fn stall_clock_spec_sync_streams_1() {
     let mut p = quiet_pair();
-    let stall = |at: u64| Some(WallMs(T0.0 + at + STALL_TIMEOUT_MS));
+    let stall = |at: u64| Some(Mono(T0.0 + at + STALL_TIMEOUT_MS));
     let a = p.ds.request(To::Streams, pull(SMALL_REPLY as u64));
     let b = p.ds.request(To::Inbox, Msg::Ping { id: 0, wall_ms: 0 });
     assert_eq!(p.ds.deadline(), stall(0), "sent with none other out");
@@ -474,9 +474,9 @@ fn stall_clock_spec_sync_streams_1() {
     let ins = p.ds.receive(&frame(&Msg::Pong { id: b, wall_ms: 0 }), &mut p.d.cx()).expect("kept");
     assert_eq!(ins.len(), 1);
     assert_eq!(p.ds.deadline(), stall(0), "a reply to another request moves nothing");
-    p.ds.taken(u64::MAX, WallMs(T0.0 + 20));
+    p.ds.taken(u64::MAX, Mono(T0.0 + 20));
     assert_eq!(p.ds.deadline(), stall(20), "the transport took its frame");
-    p.ds.taken(u64::MAX, WallMs(T0.0 + 25));
+    p.ds.taken(u64::MAX, Mono(T0.0 + 25));
     assert_eq!(p.ds.deadline(), stall(20), "once");
     p.d.now = WallMs(T0.0 + 30);
     let reply = frame(&pull_reply(a));
@@ -495,7 +495,7 @@ fn other_bytes_move_the_stall_clock_spec_sync_streams_1() {
     p.ds.take_bytes();
     p.d.now = WallMs(T0.0 + 1000);
     p.ds.receive(&frame(&Msg::Digest { digest: [0; 32] }), &mut p.d.cx()).expect("kept");
-    assert_eq!(p.ds.deadline(), Some(WallMs(T0.0 + 1000 + STALL_TIMEOUT_MS)), "a push moved it");
+    assert_eq!(p.ds.deadline(), Some(Mono(T0.0 + 1000 + STALL_TIMEOUT_MS)), "a push moved it");
 }
 
 // spec/sync-transport.md §1, spec/sync-opens.md §1 (Dial timeout): a connection whose peer
@@ -504,40 +504,46 @@ fn other_bytes_move_the_stall_clock_spec_sync_streams_1() {
 #[test]
 fn hello_and_dial_deadlines_spec_sync_opens_1() {
     let mut s = Sessions::default();
-    s.set_now(T0);
+    s.set_now(T0, Mono(T0.0));
     s.dialing(ConnId(5));
-    assert_eq!(s.next_wake(), Some(WallMs(T0.0 + DIAL_TIMEOUT_MS)));
-    assert!(s.tick(WallMs(T0.0 + DIAL_TIMEOUT_MS - 1)).is_empty());
-    assert_eq!(s.tick(WallMs(T0.0 + DIAL_TIMEOUT_MS)), [(ConnId(5), Close("dial timed out"))]);
+    assert_eq!(s.next_wake(), Some(Mono(T0.0 + DIAL_TIMEOUT_MS)));
+    assert!(s.tick(Mono(T0.0 + DIAL_TIMEOUT_MS - 1)).is_empty());
+    assert_eq!(s.tick(Mono(T0.0 + DIAL_TIMEOUT_MS)), [(ConnId(5), Close("dial timed out"))]);
     assert_eq!(s.next_wake(), None);
     let (_, mut l) = ends();
     let ls = Session::new(ConnId(ConnId::ACCEPTED | 1), EPH, false, 1, LISTEN, &mut l.cx());
-    assert_eq!(ls.deadline(), Some(WallMs(T0.0 + STALL_TIMEOUT_MS)), "waiting for the peer's Hello");
+    assert_eq!(ls.deadline(), Some(Mono(T0.0 + STALL_TIMEOUT_MS)), "waiting for the peer's Hello");
 }
 
 // spec/sync-streams.md §1 (clock): the dialer pings, one at a time, `PINGS` times, and estimates the
-// peer's clock offset from the round trips; the listener pings nothing.
+// peer's clock offset from the round trips; the listener pings nothing. An offset past
+// `OFFSET_DIAGNOSTIC_MS` is reported once, as a clock skew diagnostic; one within it is not.
 #[test]
 fn clock_offset_from_pings_spec_sync_streams_1() {
-    let mut p = Pair::new();
-    p.l.now = WallMs(T0.0 + 7_000);
-    let mut pings = 0;
-    loop {
-        let db = p.ds.take_bytes();
-        let lb = p.ls.take_bytes();
-        if db.is_empty() && lb.is_empty() {
-            break;
+    for (ahead, reported) in [(7_000u64, 1), (OFFSET_DIAGNOSTIC_MS, 0)] {
+        let mut p = Pair::new();
+        let events = p.d.engine.subscribe();
+        p.l.now = WallMs(T0.0 + ahead);
+        let mut pings = 0;
+        loop {
+            let db = p.ds.take_bytes();
+            let lb = p.ls.take_bytes();
+            if db.is_empty() && lb.is_empty() {
+                break;
+            }
+            let pinged = frames_after_hello(&db).iter().filter(|m| matches!(m, Msg::Ping { .. })).count();
+            assert!(pinged <= 1, "one Ping at a time");
+            pings += pinged;
+            p.l_in.extend(p.ls.receive(&db, &mut p.l.cx()).expect("kept"));
+            p.d_in.extend(p.ds.receive(&lb, &mut p.d.cx()).expect("kept"));
+            assert!(!frames_after_hello(&lb).iter().any(|m| matches!(m, Msg::Ping { .. })));
         }
-        let pinged = frames_after_hello(&db).iter().filter(|m| matches!(m, Msg::Ping { .. })).count();
-        assert!(pinged <= 1, "one Ping at a time");
-        pings += pinged;
-        p.l_in.extend(p.ls.receive(&db, &mut p.l.cx()).expect("kept"));
-        p.d_in.extend(p.ds.receive(&lb, &mut p.d.cx()).expect("kept"));
-        assert!(!frames_after_hello(&lb).iter().any(|m| matches!(m, Msg::Ping { .. })));
+        assert_eq!(pings, PINGS as usize);
+        assert_eq!(p.ds.clock_offset(), Some(ahead as i64));
+        assert_eq!(p.ls.clock_offset(), None);
+        let skews = events.try_iter().filter(|e| matches!(e, osis_engine::Event::Diagnostic(d) if d.kind == osis_engine::DiagnosticKind::ClockSkew)).count();
+        assert_eq!(skews, reported, "offset {ahead}");
     }
-    assert_eq!(pings, PINGS as usize);
-    assert_eq!(p.ds.clock_offset(), Some(7_000));
-    assert_eq!(p.ls.clock_offset(), None);
 }
 
 /// Messages in `bytes`, skipping a leading Hello.
@@ -608,7 +614,7 @@ fn peer_that_reads_nothing_closes_spec_sync_streams_1() {
 #[test]
 fn trickled_and_other_bytes_spec_sync_streams_1() {
     let mut p = quiet_pair();
-    let stall = |at: u64| Some(WallMs(T0.0 + at + STALL_TIMEOUT_MS));
+    let stall = |at: u64| Some(Mono(T0.0 + at + STALL_TIMEOUT_MS));
     let a = p.ds.request(To::Streams, pull(SMALL_REPLY as u64));
     let b = p.ds.request(To::Inbox, Msg::Ping { id: 0, wall_ms: 0 });
     p.ds.take_bytes();

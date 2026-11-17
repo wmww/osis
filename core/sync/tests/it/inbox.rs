@@ -143,7 +143,7 @@ impl T {
     fn settle(&mut self) {
         let mut judge = FakeJudge { keys: &self.keys, uncounted: &self.uncounted };
         for _ in 0..100 {
-            if !self.offers.settle(WallMs(self.now), &self.store, &mut self.net, &mut judge).unwrap() {
+            if !self.offers.settle(osis_base::Mono(self.now), &self.store, &mut self.net, &mut judge).unwrap() {
                 return;
             }
         }
@@ -173,7 +173,7 @@ impl T {
     }
 
     fn reply(&mut self, c: ConnId, id: RequestId, m: Msg) {
-        self.offers.answered(WallMs(self.now), c, id, &m);
+        self.offers.answered(osis_base::Mono(self.now), c, id, &m);
         self.settle();
     }
 
@@ -531,7 +531,7 @@ fn register_refusals_spec_sync_ids_6() {
     let all = [st.id(0), st.id(1), st.id(2)];
     let at0 = Some(st.id(0));
     assert_eq!(plan_at(&st, at0, Progress { out: true, ..Progress::default() }, &all), Plan::Wait);
-    assert_eq!(plan_at(&st, at0, Progress { backoff: Some((WallMs(T0), 0)), ..Progress::default() }, &all), Plan::Wait);
+    assert_eq!(plan_at(&st, at0, Progress { backoff: Some((osis_base::Mono(T0), 0)), ..Progress::default() }, &all), Plan::Wait);
     let stuck = Progress { stuck: Some(at0), ..Progress::default() };
     assert_eq!(plan_at(&st, at0, stuck, &all), Plan::Wait, "refused: waits");
     assert_eq!(sends(&plan_at(&st, Some(st.id(1)), stuck, &all)), Some(st.id(2)), "the head event moved it");
