@@ -17,8 +17,8 @@
 //!   additions minus the removals its rotations carry; a removal of y carried by r hits every
 //!   rotation (and certificate) minted by y not on r's line, unless it descends from a re-add of y
 //!   after r by a rotation not hit. A rotation stands under removals R iff every rotation on its
-//!   line is minted by a node of the line before it and none is hit (R plus the removals on the
-//!   line). D's roster at a node: the nodes of its preferred head's line under its taken
+//!   line is minted by a node of the line before it, none is hit (R plus the removals on the
+//!   line), and every merge it is signed at has a certificate by a node of its line none hits. D's roster at a node: the nodes of its preferred head's line under its taken
 //!   revocations. No removal exists apart from its rotation.
 //! - **Merges.** A merge carries nothing but the join: its epoch is the union of the joined
 //!   lines, its seed derives from its tips' seeds (the plain rotations maximal on it), so only a
@@ -357,6 +357,8 @@ pub struct View {
     pub standing: BTreeSet<u32>,
     /// Inner signatures as read here (`None`: does not open).
     pub signers: BTreeMap<u32, Option<usize>>,
+    /// Held certificates of merge epochs, by the epoch they certify.
+    pub certs: BTreeMap<Line, Vec<u32>>,
 }
 
 impl View {
@@ -523,6 +525,7 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
         }
     }
     if own {
+        j.certs = certs.clone();
         judge_own(w, &mut j, &certs, &order, &depth);
     } else {
         // one line, grown in the order held: a rotation or merge epoch is followed iff it
@@ -672,6 +675,7 @@ fn judge_with(w: &World, v: usize, now: u32, held: &BTreeSet<u32>, keys: Keys) -
 struct Rule<'a> {
     w: &'a World,
     sig: &'a BTreeMap<u32, Option<usize>>,
+    certs: &'a BTreeMap<Line, Vec<u32>>,
 }
 
 impl Rule<'_> {
@@ -705,11 +709,15 @@ impl Rule<'_> {
         l.iter().copied().filter(|q| !self.w.removes(*q).is_empty()).collect()
     }
     /// Every element on `l` minted by a node of the line before it, none hit by `rs` or the
-    /// removals on `l`.
+    /// removals on `l`, and every merge on it certified by a node of its line none hits.
     fn stands(&self, l: &Line, rs: &[u32]) -> bool {
         let mut all: Vec<u32> = rs.to_vec();
         all.extend(self.revs(l));
-        l.iter().all(|q| self.sig(*q).is_some_and(|m| self.nodes(&self.w.base(*q), &all).contains(&m)) && !self.hit(*q, &all))
+        let certified = |e: &Line| self.certs.get(e).is_some_and(|cs| cs.iter().any(|c| self.sig(*c).is_some_and(|m| self.nodes(e, &all).contains(&m)) && !self.cert_hit(*c, e, &all)));
+        l.iter().all(|q| {
+            let at = self.w.base(*q);
+            self.sig(*q).is_some_and(|m| self.nodes(&at, &all).contains(&m)) && !self.hit(*q, &all) && (!matches!(self.w.item(*q).kind, Kind::Plain { .. }) || self.w.single(&at) || certified(&at))
+        })
     }
     /// The revocations element x stands with: on its line, and taken by an element on it.
     fn with(&self, x: u32) -> BTreeSet<u32> {
@@ -718,7 +726,7 @@ impl Rule<'_> {
 }
 
 fn judge_own(w: &World, j: &mut View, certs: &BTreeMap<Line, Vec<u32>>, order: &[u32], depth: &BTreeMap<u32, usize>) {
-    let rule = Rule { w, sig: &j.signers };
+    let rule = Rule { w, sig: &j.signers, certs: &j.certs };
     // revocations taken in the order held: each while its line and every taken one's stand
     let mut taken: Vec<u32> = vec![];
     for &r in order.iter().filter(|r| !w.removes(**r).is_empty()) {
@@ -758,7 +766,7 @@ fn judge_own(w: &World, j: &mut View, certs: &BTreeMap<Line, Vec<u32>>, order: &
 /// off `l` holds unless `l` re-adds after it). Control `RosterBare`: also less every node a held
 /// revocation by a node of `l` removes, its rotation held with its chain or not.
 fn roster(w: &World, j: &View, l: &Line) -> BTreeSet<usize> {
-    let rule = Rule { w, sig: &j.signers };
+    let rule = Rule { w, sig: &j.signers, certs: &j.certs };
     let mut nodes = rule.nodes(l, &j.taken);
     for r in &j.taken {
         for y in w.removes(*r) {
@@ -872,7 +880,7 @@ pub fn act(w: &mut World, n: usize, now: u32, removes: Option<usize>, write: boo
         return made;
     }
     let h = j.preferred.clone();
-    let rule = Rule { w, sig: &j.signers };
+    let rule = Rule { w, sig: &j.signers, certs: &j.certs };
     // answers due: held rotations that do not stand or stand with a revocation not taken (a
     // merge: one not counting, named by a certificate of it), on no line a counting rotation
     // answered, not answered by this node before
@@ -1577,7 +1585,7 @@ pub fn check(w0: &World, st: &mut Stats) {
             }
             // a switch takes
             if let Some(c) = j.chosen {
-                let rule = Rule { w, sig: &j.signers };
+                let rule = Rule { w, sig: &j.signers, certs: &j.certs };
                 let node = v >= OWN || rule.nodes(&w.line(c), &[]).contains(&v);
                 if node {
                     if v < OWN && c == w.removal {
@@ -2092,6 +2100,29 @@ mod tests {
         assert!(j.roster.contains(&A));
         let made = act(&mut w, B, 2, Some(T), false);
         assert!(w.item(made[0]).boxed[A]);
+    }
+
+    /// X merges A's rotation and its own (both at the first epoch), certifying the merge as a
+    /// made-up key actor, and rotates at the merge removing B: the merge stands by no node's
+    /// certificate, so the revocation on its line stands by none and is taken nowhere, at X's own
+    /// view too (spec/permissions.md §5.4: a merge stands iff a node of its line certified it).
+    #[test]
+    fn a_revocation_through_a_merge_no_node_certified_is_taken_nowhere() {
+        let mut w = World::default();
+        let a = plain(&mut w, A, A, &Line::new(), &[], &[], &PS, 1);
+        let f = plain(&mut w, X, X, &Line::new(), &[], &[], &PS, 1);
+        let bx: [bool; N] = std::array::from_fn(|m| PS.contains(&m));
+        let joined = vec![w.line(a), w.line(f)];
+        let lf = w.line(f);
+        let m = w.add(Kind::Cert { joined, takes: vec![], answers: vec![] }, X, Z, lf, None, 1, bx);
+        let lm = w.mints(m);
+        let rx = plain(&mut w, X, X, &lm, &[B], &[], &PS, 1);
+        w.removal = rx;
+        to(&mut w, &[a, f, m, rx], &[A, B, X], 2);
+        for v in [A, B, X] {
+            let j = judge(&w, v, 2);
+            assert!(j.chain.contains(&rx) && !j.taken.contains(&rx), "{}: {:?}", NAMES[v], j.taken);
+        }
     }
 
     /// Unaware B and C rotate boxing X; A, having removed X, merges all three heads: the merge's

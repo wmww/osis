@@ -288,6 +288,12 @@ impl AccountView {
         self.epochs.get(e).is_some_and(|x| self.revoked(&x.signing.to_bytes()))
     }
 
+    /// Whether head `e` is revoked as soon as it closes: a counting rotation closing it carries a
+    /// removal (a head beside a removal, spec/permissions.md §5.5 Carrying).
+    pub(crate) fn head_revoked(&self, e: &CommitId) -> bool {
+        self.is_open(e) && self.closers(e).iter().any(|r| self.carrying.contains(r))
+    }
+
     /// The held rotations.
     pub(crate) fn rotation_ids(&self) -> Vec<CommitId> {
         self.rotations.iter().map(|r| r.id).collect()
@@ -1065,6 +1071,10 @@ pub(crate) fn refresh_epochs(tx: &mut Tx<'_>) -> Result<bool> {
                 let counts = m.view.epoch.is_some_and(|e| judged.standing(&c, &e) == EpochStanding::Counts);
                 moved_roles |= tx.core.ix.held.edge_commit(&c).is_some();
                 tx.core.ix.held.set_counted(c, counts);
+            }
+            // a snapshot waiting for what it would carry to last (`signing::lasts`) is weighed again
+            for t in things_of(&m.view) {
+                crate::retention::replace::standing_moved(tx.core, &t);
             }
             tx.core.stale_commits.insert(c);
         }

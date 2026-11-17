@@ -41,6 +41,10 @@
 //!   snapshots, signed at the epoch the rotation is signed at and marked as its own cover, each
 //!   thing where a write stamped since that epoch opened shows only through a cover; the
 //!   rotation's list names it.
+//! - **Carrying** (spec/permissions.md §5.5): an honest node writes a snapshot (an own cover
+//!   among them) only where every write showing on the thing lasts there: shows with an open
+//!   epoch counting only for what a word or its cutoff names (`judge_as`), as once the head
+//!   closes; else it waits. So a cover carries nothing that counts only at an open head.
 //!
 //! Parties: custody's (A, B, C, X, T of P; R1 and R2 outside, each maybe a writer of one thing).
 //! Things sit in one or both of two sync IDs; every node opens one or both and receives what is
@@ -63,7 +67,8 @@
 //!   write but X's after its removal that showed at the rotator as it rotated only through a cover
 //!   (stamped since the epoch it rotates opened) shows.
 //! Safety and liveness read "shows": counts, saved by an addendum, or carried by a standing cover
-//! (one carrying X's write after its removal only by a limit: `allowed`).
+//! (one carrying X's write after its removal only by a limit: `allowed`; the open-head limit
+//! holds only while the head is open, so a cover carries nothing by it).
 //!
 //! Negative controls (`Control`), each expected to fail.
 
@@ -86,6 +91,8 @@ pub enum Control {
     NoOwnCover,
     /// A commit at an epoch that does not count never counts, named or not.
     VoidUncounted,
+    /// Honest snapshots carry what counts only at an open head (no Carrying).
+    OpenCarried,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -276,6 +283,12 @@ pub struct Verdict {
 
 /// The epoch rule at a node whose chain is `j`, holding `held`.
 pub fn judge(w: &World, j: &cu::View, held: &[bool]) -> Verdict {
+    judge_as(w, j, held, None)
+}
+
+/// `judge`, or (`lasting` the node's ID) what lasts there: an open epoch counts only for what its
+/// cutoff names or a word names, as once that head closes (Carrying).
+fn judge_as(w: &World, j: &cu::View, held: &[bool], lasting: Option<usize>) -> Verdict {
     let ep = Epoch { w: &w.c, j };
     let n = w.items.len();
     let mut named: BTreeSet<(u32, Thing)> = BTreeSet::new();
@@ -288,7 +301,7 @@ pub fn judge(w: &World, j: &cu::View, held: &[bool]) -> Verdict {
     }
     let counts_now = |named: &BTreeSet<(u32, Thing)>, i: &Item| -> bool {
         let e = &i.epoch;
-        held[i.id as usize - 1] && i.kind.is_commit() && ep.held(e) && (w.control != Control::VoidUncounted || j.counting.contains(e)) && (ep.open(e) || !ep.revoked(e) || named.contains(&(i.id, i.kind.thing())))
+        held[i.id as usize - 1] && i.kind.is_commit() && ep.held(e) && (w.control != Control::VoidUncounted || j.counting.contains(e)) && (ep.open(e) && lasting.is_none_or(|n| nameable(w, n, j, i.id, w.control, 0)) || !ep.revoked(e) || named.contains(&(i.id, i.kind.thing())))
     };
     loop {
         let more: Vec<(u32, Thing)> = w.items.iter().filter(|i| counts_now(&named, i)).filter_map(|i| match &i.kind {
@@ -354,23 +367,38 @@ fn word_limit(w: &World, c: u32) -> bool {
 /// (an unaware sibling's boxed to X, until a merge closes it), or a cover carrying it so (`legit`;
 /// an X cover counting so itself).
 fn allowed(w: &World, j: &cu::View, held: &[bool], vd: &Verdict, t: u32, c: u32) -> bool {
-    let open = |k: u32| j.heads.contains(&w.item(k).epoch) && vd.counts[k as usize - 1];
+    allowed_as(w, j, held, vd, t, c, true)
+}
+
+/// `allowed`, with the open-head limit (`open`) or without it: a cover carries a write by a
+/// limit only where it would hold once every head closes.
+fn allowed_as(w: &World, j: &cu::View, held: &[bool], vd: &Verdict, t: u32, c: u32, open: bool) -> bool {
+    let open = |k: u32| open && j.heads.contains(&w.item(k).epoch) && vd.counts[k as usize - 1];
     vd.saved[c as usize - 1] && (word_limit(w, c) || open(c)) || covers_of(w, held, vd, t, c).any(|k| matches!(&k.kind, Kind::Cover { legit, .. } if legit.contains(&c)) || k.author == X && (word_limit(w, k.id) || open(k.id)))
 }
 
 /// `n`'s snapshot of `thing` at `t` signed at `epoch` (`p`: as P): it carries every write showing
 /// there; of X's after its removal, those it carries by the unaware-reader limit go in `legit`.
-fn cover(w: &mut World, n: usize, thing: Thing, epoch: Line, t: u32, p: bool, own: bool) -> u32 {
+/// An honest node writes one only where every write showing there lasts (`judge_as`, Carrying):
+/// else it waits (`None`), as the engine's snapshot does.
+fn cover(w: &mut World, n: usize, thing: Thing, epoch: Line, t: u32, p: bool, own: bool) -> Option<u32> {
     let removal = w.c.line(w.c.removal);
     let j = w.view(n, t).clone();
     let held = w.held(n, t);
     let vd = judge(w, &j, &held);
     let sh = shows(w, &held, &vd, t);
-    let carries: Vec<u32> = w.items.iter().filter(|i| matches!(i.kind, Kind::Content { .. }) && i.kind.thing() == thing && sh[i.id as usize - 1]).map(|i| i.id).collect();
+    let on = |i: &Item| matches!(i.kind, Kind::Content { .. }) && i.kind.thing() == thing;
+    if n != X && w.control != Control::OpenCarried {
+        let lasts = shows(w, &held, &judge_as(w, &j, &held, Some(n)), t);
+        if w.items.iter().any(|i| on(i) && sh[i.id as usize - 1] && !lasts[i.id as usize - 1]) {
+            return None;
+        }
+    }
+    let carries: Vec<u32> = w.items.iter().filter(|i| on(i) && sh[i.id as usize - 1]).map(|i| i.id).collect();
     let legit = carries.iter().copied().filter(|c| {
-        n != X && w.hostile(*c) && (!j.honest_side(&w.c, n) || held[*c as usize - 1] && w.dt(n, *c) < w.held_dt(n, &removal) || allowed(w, &j, &held, &vd, t, *c))
+        n != X && w.hostile(*c) && (!j.honest_side(&w.c, n) || held[*c as usize - 1] && w.dt(n, *c) < w.held_dt(n, &removal) || allowed_as(w, &j, &held, &vd, t, *c, false))
     }).collect();
-    w.add(Kind::Cover { thing, carries, p, own, legit }, n, epoch, t)
+    Some(w.add(Kind::Cover { thing, carries, p, own, legit }, n, epoch, t))
 }
 
 /// Forgetting at `t` (spec/commits.md §5): each node drops a write of another a standing cover it
@@ -451,7 +479,7 @@ fn lists(w: &mut World, n: usize, r: u32, t: u32) -> Vec<u32> {
             let owed: Vec<(u32, usize, u32)> = only.iter().filter(|c| !w.hostile(**c)).map(|c| (r, n, *c)).collect();
             w.obliged.extend(owed);
             if w.control != Control::NoOwnCover {
-                own.push(cover(w, n, thing, at.clone(), t, true, true));
+                own.extend(cover(w, n, thing, at.clone(), t, true, true));
             }
         }
     }
@@ -519,7 +547,7 @@ fn act(w: &mut World, rng: &mut Rng, n: usize, t: u32) -> Vec<u32> {
         }
         made.extend(out.into_iter().map(|(against, names)| w.add(Kind::Addendum { against, thing, names }, n, Line::new(), t)));
         if w.snapshots && t < SETTLE && rng.below(3) == 0 {
-            made.push(cover(w, n, thing, Line::new(), t, false, false));
+            made.extend(cover(w, n, thing, Line::new(), t, false, false));
         }
         return made;
     }
@@ -540,7 +568,7 @@ fn act(w: &mut World, rng: &mut Rng, n: usize, t: u32) -> Vec<u32> {
             made.push(w.add(Kind::Listing { thing, names: vec![c] }, X, e.clone(), t));
         }
         if w.snapshots && rng.below(2) == 0 {
-            made.push(cover(w, X, thing, e, t, true, false));
+            made.extend(cover(w, X, thing, e, t, true, false));
         }
         return made;
     }
@@ -554,7 +582,7 @@ fn act(w: &mut World, rng: &mut Rng, n: usize, t: u32) -> Vec<u32> {
     }
     if w.p_snapshots && n != T && t < SETTLE && rng.below(10) == 0 {
         let thing = things[rng.below(things.len())];
-        made.push(cover(w, n, thing, h.clone(), t, true, false));
+        made.extend(cover(w, n, thing, h.clone(), t, true, false));
     }
     for thing in things {
         let names = owed(w, n, t, thing);
@@ -976,7 +1004,7 @@ mod tests {
         let mut w = hand(c, end, control);
         (w.covers, w.fall[R1]) = (true, 2);
         let id = write(&mut w, X, 0, &[(A, 0), (R1, 0)]);
-        let k = cover(&mut w, R1, 0, Line::new(), 0, false, false);
+        let k = cover(&mut w, R1, 0, Line::new(), 0, false, false).unwrap();
         w.items[k as usize - 1].recv = std::array::from_fn(|m| if m == Z { NEVER } else { 0 });
         play(&mut w, 0);
         (w, id)
@@ -1032,6 +1060,62 @@ mod tests {
         let mut st = Stats::default();
         check(&w, &mut st);
         assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
+    }
+
+    /// B rotates at the first epoch unaware of A's removal of X (both at 1, delivered at 2); A
+    /// merges the two heads at 5. X writes at B's head at 2, after its removal, reaching every
+    /// node at 3: it counts at P's nodes only while B's head is open. C snapshots the thing at 3:
+    /// it waits (Carrying), as the write lasts at C by nothing (C's cutoff does not name it, no
+    /// word does), so once the merge closes B's head the write shows nowhere on the honest side.
+    /// With honest snapshots carrying it (`OpenCarried`), C's snapshot (at an epoch no removal
+    /// revokes, or named as C's own) carries it on after the merge.
+    fn open_head(control: Control) -> (World, Option<u32>, u32) {
+        let (mut c, _) = removal_world();
+        let bx: [bool; N] = std::array::from_fn(|m| [A, B, C, X, T].contains(&m));
+        let b = c.add(cu::Kind::Plain { at: Line::new(), removes: vec![], adds: vec![], takes: vec![], answers: vec![] }, B, B, Line::new(), None, 1, bx);
+        for m in (0..N).filter(|m| *m != B && *m != Z) {
+            c.items[b as usize - 1].recv[m] = 2;
+        }
+        let made = cu::act(&mut c, A, 5, None, false);
+        assert!(!made.is_empty());
+        for id in &made {
+            for m in (0..N).filter(|m| *m != A && *m != Z) {
+                c.items[*id as usize - 1].recv[m] = 6;
+            }
+        }
+        let mut w = hand(c, 7, control);
+        let lb = w.c.line(b);
+        let x = w.add(Kind::Content { thing: 0, plain: true }, X, lb.clone(), 2);
+        for m in (0..N).filter(|m| *m != X && *m != Z) {
+            w.items[x as usize - 1].recv[m] = 3;
+        }
+        let j = w.view(C, 3).clone();
+        assert!(j.heads.contains(&lb) && judge(&w, &j, &w.held(C, 3)).counts[x as usize - 1], "X's write counts at C at B's open head");
+        let k = cover(&mut w, C, 0, j.preferred.clone(), 3, true, false);
+        if let Some(k) = k {
+            w.items[k as usize - 1].recv = std::array::from_fn(|m| if m == Z { NEVER } else { 4 });
+        }
+        play(&mut w, 1);
+        (w, k, x)
+    }
+
+    #[test]
+    fn an_open_heads_write_lasts_in_no_snapshot() {
+        let (w, k, x) = open_head(Control::None);
+        assert!(k.is_none(), "C's snapshot waits");
+        let mut st = Stats::default();
+        check(&w, &mut st);
+        assert_eq!(st.failures, 0, "{:?}", st.fail.first().map(|f| &f.0));
+        for v in [A, B, C, R1] {
+            let (j, held) = (w.view(v, fin(&w)), w.held(v, fin(&w)));
+            assert_eq!(j.heads.len(), 1, "{}", cu::NAMES[v]);
+            assert!(!shows(&w, &held, &judge(&w, j, &held), fin(&w))[x as usize - 1], "{}", cu::NAMES[v]);
+        }
+        let (w, k, _) = open_head(Control::OpenCarried);
+        assert!(k.is_some());
+        let mut st = Stats::default();
+        check(&w, &mut st);
+        assert!(st.kinds.contains_key("safety"), "open-carried: C's snapshot carries X's write past the merge: {:?}", st.kinds);
     }
 
     fn assert_holds(st: &Stats, what: &str) {

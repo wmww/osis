@@ -2651,6 +2651,42 @@ fn a_rotation_names_its_own_cover_of_what_it_forgot_spec_permissions_5_5() {
     lp.peers[4].engine.check_index();
 }
 
+// spec/permissions.md §5.5 (Carrying): node 1 rotates unaware (its head boxed to node 2), node 0
+// removes node 2 and then holds node 1's rotation, so it has two heads. Node 2 writes at node 1's
+// head; at node 0 the write counts only while that head is open (node 0's cutoff does not name
+// it: received after the removal). Node 0's snapshot of the aspect waits, so once node 0 merges
+// the heads the write shows nowhere: not at node 1, not at the outsider (peer 3), not at node 0.
+// The snapshot is written once the merge closes the head.
+#[test]
+fn a_snapshot_carries_no_write_only_an_open_head_counts_spec_permissions_5_5() {
+    let (mut lp, a, t) = world(4, 3);
+    let rb = lp.peers[1].engine.run(|tx| crate::flows::signing::rotate_in(tx, a.account, &[], &mut Done::default())).unwrap().unwrap();
+    send(&mut lp, 1, 2, &[rb]);
+    let removal = remove(&mut lp, 0, a.root, 2).commits;
+    send(&mut lp, 1, 0, &[rb]);
+    let w = write(&mut lp, 2, t, "removed's");
+    assert_eq!(lp.peers[2].engine.header(&w).unwrap().epoch, Some(rb), "node 2 writes at node 1's head");
+    send(&mut lp, 2, 0, &[w]);
+    let v = lp.peers[0].engine.core.account_view(&a.account).unwrap();
+    assert!(v.is_open(&rb) && v.heads().len() == 2, "node 0 holds two heads");
+    assert_eq!(read(&mut lp, 0, t), Some(Value::Str("removed's".into())), "the write counts at node 1's open head");
+    // waiting, it is refused as one this node may write only later
+    let s = lp.peers[0].engine.snapshot(&t, &x()).ok().flatten();
+    send(&mut lp, 0, 1, &removal);
+    send(&mut lp, 0, 3, &removal);
+    send(&mut lp, 1, 3, &[rb]);
+    merge(&mut lp, &[0, 1], &[0, 1, 3]);
+    for _ in 0..2 {
+        lp.sync_all().unwrap();
+    }
+    for k in [0, 1, 3] {
+        assert_ne!(read(&mut lp, k, t), Some(Value::Str("removed's".into())), "peer {k}: the removed node's write");
+    }
+    assert_eq!(s, None, "node 0's snapshot waited");
+    assert!(lp.peers[0].engine.snapshot(&t, &x()).unwrap().is_some(), "written once the head closed");
+    lp.peers[3].engine.check_index();
+}
+
 // spec/requirements.md Cost, spec/wire.md §4 (`epoch`, the sealed inner signature): signing as
 // an account grows a one-field commit over the same commit by a key actor by the inner
 // signature and the epoch's ID with their heads, nothing else (131 B: more than the 100 B

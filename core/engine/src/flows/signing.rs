@@ -414,6 +414,24 @@ impl Cutoff {
     }
 }
 
+/// Whether held commit `c` stands here as it will once every head closes (spec/permissions.md
+/// §5.5 Carrying): a commit of an account at an open revoked epoch (a head beside a removal, as
+/// an unaware sibling's boxed to the removed node) counts only while the head is open, unless a
+/// counting word names it or this node's cutoff does (`Cutoff`, as for a list). A word that
+/// carries others' writes (a snapshot) carries only what lasts so; the rest it waits for.
+pub(crate) fn lasts(tx: &mut Tx<'_>, c: &CommitId) -> Result<bool> {
+    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(true) };
+    let Some(e) = m.view.epoch else { return Ok(true) };
+    let p = m.view.author;
+    let Some(v) = tx.core.account_view(&p) else { return Ok(true) };
+    if !v.head_revoked(&e) || named_by_a_word(tx, &v, c, &m.view)? {
+        return Ok(true);
+    }
+    let own = tx.core.accounts.contains_key(&p);
+    let mut cut = Cutoff { me: tx.core.id.tid(), departures: own.then(|| departures(&v)), earliest: BTreeMap::new(), judged: BTreeMap::new() };
+    cut.names(tx, &v, c, &m)
+}
+
 /// Whether a counting word held here names account commit `c` (`view`, its view): a counting
 /// rotation's thing list or a counting listing, on a thing `c` has a delta on or acts for
 /// (spec/permissions.md §5.5, Epoch rule).

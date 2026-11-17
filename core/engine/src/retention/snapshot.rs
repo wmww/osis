@@ -766,7 +766,7 @@ pub(crate) fn carried_only(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, of: &dyn Fn(&Tid
 /// (`replace::settle_none`).
 pub(crate) fn may_snapshot(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, ts: Ts) -> Result<MayWrite> {
     let Ok(node) = tx.core.writer_for(tid) else { return Ok(MayWrite::No) };
-    if is_content(ak.as_str()) && !carried_passes_on(tx, tid, ak)? {
+    if is_content(ak.as_str()) && !carried_passes_on(tx, tid, ak)? || !carried_lasts(tx, tid, ak)? {
         return Ok(MayWrite::Later);
     }
     let skip = tx.core.skip_writer_rules;
@@ -795,6 +795,25 @@ pub(crate) fn carried_passes_on(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<b
     }).collect();
     for (c, ai) in held {
         if !crate::sync_ids::opened::passes_on(tx, &c, ai, tid, ak.as_str(), None)? && super::bounds::live(tx, &c, ai)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether every held body of `(tid, ak)` whose writes live in the state stands as it will once
+/// every head of its account closes (`signing::lasts`, spec/permissions.md §5.5 Carrying): a
+/// snapshot carries nothing that counts only at an open head, so it never lends a write a
+/// standing the write lacks. Woken when a standing moves (`replace::standing_moved`).
+pub(crate) fn carried_lasts(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<bool> {
+    let held: Vec<(CommitId, usize)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
+        let m = tx.core.ix.commits.get(c)?;
+        m.view.epoch?;
+        let ai = m.aspect(tid, ak)?;
+        matches!(m.hold.get(ai), Some(crate::engine::Hold::Body { .. } | crate::engine::Hold::Leftover { .. })).then_some((*c, ai))
+    }).collect();
+    for (c, ai) in held {
+        if !crate::flows::signing::lasts(tx, &c)? && super::bounds::live(tx, &c, ai)? {
             return Ok(false);
         }
     }

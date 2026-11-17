@@ -226,6 +226,19 @@ fn end_wait(core: &mut Core, t: &Tid) {
     }
 }
 
+/// The standing of a held commit on `t` moved (`account::refresh_epochs`): a snapshot of `t` that
+/// waited for what it carries to last (`snapshot::may_snapshot`) is judged again, as when `t`
+/// comes to be writable (`wake_covers`).
+pub(crate) fn standing_moved(core: &mut Core, t: &Tid) {
+    core.compaction.wake(t);
+    let on: Vec<Ak> = core.ix.by_aspect.range((*t, Ak::MIN)..).take_while(|((x, _), _)| x == t).map(|((_, a), _)| a.clone()).collect();
+    for ak in on {
+        if super::history::of(core, t, &ak).purges() {
+            core.none_due.insert((*t, ak));
+        }
+    }
+}
+
 /// The things waiting in `Indexes::cover_waits` that this transaction may have made writable here:
 /// those with a thing on their record chain whose `created.0`, `keys.0` or `secrets.0` commits,
 /// opened epochs or own keys changed (the journals of what it changed: O(what
