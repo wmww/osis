@@ -12,6 +12,7 @@ pub mod freed;
 pub mod gen;
 pub mod model;
 pub mod roles;
+pub mod strip;
 pub mod thing_history;
 pub mod types;
 pub mod undo;
