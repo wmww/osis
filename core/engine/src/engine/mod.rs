@@ -3166,7 +3166,8 @@ impl Tx<'_> {
     /// does not fit (join whole, nothing noted in `dead`). The state is noted written.
     pub(crate) fn join_reset(&mut self, tid: &Tid, ak: &Ak, delta: &osis_crdt::Fragment, dead: Option<&mut crate::retention::Killed>) -> Result<Option<osis_crdt::Changes>> {
         let k = (*tid, ak.clone());
-        if !self.core.pages.contains_key(&k) {
+        // an index derives from the whole state (`derive`): joined whole
+        if !self.core.pages.contains_key(&k) || derives(ak) {
             return Ok(None);
         }
         // noted first: a failure midway evicts what it changed
@@ -3275,7 +3276,7 @@ impl Tx<'_> {
     /// Keeps the index derived from states at the state `f` of `(tid, ak)`, whatever wrote it:
     /// `Indexes::sync_recorded`.
     fn derive(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
-        if ak.as_str() == "sync.0" {
+        if derives(ak) {
             let before = self.core.ix.sync_recorded_ids.get(tid).cloned().unwrap_or_default();
             let after = f.map(crate::sync::recorded_ids).unwrap_or_default();
             match after.is_empty() {
@@ -3301,6 +3302,13 @@ impl Tx<'_> {
     /// state as written (`Core::written`).
     pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &pages::Touch, shred: Shred) -> Result<()> {
         let k = (*tid, ak.clone());
+        let mut f = f;
+        // an index derives from the whole state (`derive`), never the pages loaded
+        if derives(ak)
+            && let (Some(st), Some(idx)) = (&mut f, self.core.pages.get_mut(&k))
+        {
+            pages::load_all(&mut self.txn, tid, ak, idx, st)?;
+        }
         if let (Some(st), Some(idx), Some(touch)) = (&f, self.core.pages.get_mut(&k), touch)
             && let Some(unit_state) = pages::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?
         {
@@ -3313,7 +3321,6 @@ impl Tx<'_> {
             self.core.states.insert(k, f);
             return Ok(());
         }
-        let mut f = f;
         if let (Some(st), Some(idx)) = (&mut f, self.core.pages.get_mut(&k)) {
             pages::load_all(&mut self.txn, tid, ak, idx, st)?;
         }
@@ -4372,6 +4379,12 @@ impl Drop for Engine {
     }
 }
 
+/// Whether an index derives from the state of aspect `ak` (`Tx::derive`): `sync.0`'s recorded
+/// sync IDs, read from the whole state.
+fn derives(ak: &Ak) -> bool {
+    ak.as_str() == "sync.0"
+}
+
 #[cfg(test)]
 mod tests {
     use super::journal::Journaled;
@@ -4626,4 +4639,3 @@ mod tests {
         assert_eq!(rev(&p).map(|r| r.0), Some(3), "registered again after a failed transaction");
     }
 }
-

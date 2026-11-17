@@ -349,3 +349,31 @@ fn sync_id_claim_set_above_the_threshold_stays_inline_spec_dm_6() {
     sync(&mut lp, 0, 1);
     assert!(lp.peers[1].engine.get(&t, &ak("sync.0")).unwrap().is_some(), "held by the reader");
 }
+
+// notes/engine-paged.md (what derives from a state reads it whole): a `sync.0` state of a few fat
+// entries pages, and a write by pages (a covered body's shred, the state held in part) still
+// records every sync ID the whole state names: a node opened afresh derives the same index.
+#[test]
+fn a_paged_sync_state_records_its_sync_ids_whole_spec_dm_6() {
+    let mut lp = net(1, 0);
+    let t = new_thing(&mut lp, 0);
+    let a = ak("sync.0");
+    for i in 1..=4u8 {
+        let l = ct::SyncEntry { steps: [([i; 32], ct::StepRecord { step: vec![i; 2000], claims: None })].into_iter().collect() };
+        let mut m = Mutation::new();
+        m.op(t, &ct::SYNC, PathOp { path: vec![PathSeg::Key(Value::Bytes(vec![i; 16]))], op: Op::Set(osis_schema::Codec::to_value(&l)) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
+    let e = &mut lp.peers[0].engine;
+    let s = e.snapshot(&t, &a).unwrap().unwrap();
+    assert!(e.core.pages.contains_key(&(t, a.clone())), "paged");
+    lp.peers[0].restart(0).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let held: Vec<osis_base::CommitId> = e.core.ix.by_aspect.get(&(t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|c| *c != s).collect();
+    for c in held {
+        if e.covered(&s, &c, &t, &a).unwrap() == Some(true) {
+            e.drop_body(&c, &t, &a).unwrap();
+        }
+    }
+    e.check_index();
+}
