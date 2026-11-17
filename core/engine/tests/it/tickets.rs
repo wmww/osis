@@ -209,7 +209,7 @@ fn two_things_one_sync_id(forged_on: usize, a_first: bool) {
         m.op(d1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
     }
     e1.commit(m).unwrap();
-    e1.take_ticket_fires().unwrap();
+    e1.take_carried().unwrap();
     assert_eq!(e1.sync_held(&sb).unwrap(), Some(([a, b].into(), Holding::Read)), "{arm}: B's sync ID is both things'");
     assert_eq!(e1.sync_held(&sa).unwrap(), Some(([a].into(), Holding::Read)), "{arm}: A's own is A's");
     // every new commit on A or B as node 0 logs it under its thing's sync ID

@@ -93,9 +93,9 @@ pub(crate) struct Taken {
 /// (spec/sync-set.md §2): each held ticket the node can open supplies its sync ID and, where the
 /// node's role (`role_on`) is the ticket's own role or above, its secret; and its openers, the holders every held ticket for
 /// `t` is boxed to, which the step is judged again by as they can open more
-/// (`Closure::opener_moved`). The role commits a read ticket's fires carry, and the removal
-/// notices on `t`, are noted for taking where not held (`Engine::take_ticket_fires`): what they
-/// show is what `role_on` judges by next. O(its tickets).
+/// (`Closure::opener_moved`). With a read ticket opening, the commits fires carry on `t` are due
+/// (its ticket fires' `grant`, `flows::inbox::removals_due`): what they show is what `role_on`
+/// judges by next. O(its tickets).
 pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid, v: crate::sync::units::Vx) -> Result<Taken> {
     let held = held_in(tx, t)?;
     let openers = held.iter().map(|k| k.holder).collect();
@@ -120,22 +120,21 @@ pub(crate) fn take_in(tx: &mut Tx<'_>, t: &Tid, v: crate::sync::units::Vx) -> Re
     // by its word reads no role commit of it (spec/sync.md §3)
     if reads {
         for r in crate::engine::refs::tickets_to(tx, t)? {
-            let Some(c) = r.fire else { continue };
-            if crate::flows::inbox::fire_untaken(tx, &c, r.ak.as_str())? {
+            if let Some(c) = r.fire
+                && crate::flows::inbox::fire_untaken(tx, &c, r.ak.as_str())?
+            {
                 tx.core.ix.closure.fires_due.insert(c);
             }
         }
-        for c in crate::flows::inbox::removals_untaken(tx, t)? {
-            tx.core.ix.closure.fires_due.insert(c);
-        }
+        crate::flows::inbox::removals_due(tx, t)?;
     }
     Ok(Taken { ids, openers, opened: any })
 }
 
 impl Engine {
-    /// Takes the role parts of each fire `take_in` noted (`Engine::take_fire`); whether any was
+    /// Takes the commit each due fire carries (`Closure::fires_due`, `Engine::take_fire`); whether any was
     /// due.
-    pub fn take_ticket_fires(&mut self) -> Result<bool> {
+    pub fn take_carried(&mut self) -> Result<bool> {
         let due: Vec<osis_base::CommitId> = self.core.ix.closure.fires_due.iter().copied().collect();
         if due.is_empty() {
             return Ok(false);

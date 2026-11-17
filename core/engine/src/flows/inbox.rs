@@ -137,9 +137,8 @@ fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Resul
 /// disregarded), not a self-removal or finalize, within `ROLE_KEEP` of its `ts` (as long as it
 /// travels, spec/permissions.md §4 Role changes travel), fires its notice on the holder's inbox.
 /// Judged again only when a role commit writing that edge arrives, so a duplicate costs one
-/// fire, which the holder takes once. The same arrivals on this node's account's own edge on a
-/// thing T take the notices it holds naming T, not taken whole yet (`removals_untaken`): a notice
-/// that came before T's roster is acted on once a role commit of T's naming it is held.
+/// fire, which the holder takes once. A role commit on this node's account's own edge on a thing
+/// holds that thing's roster here, so the notices naming it are due (`removals_due`).
 pub(crate) fn owe_removal_notices(tx: &mut Tx<'_>) -> Result<()> {
     if tx.core.notices_due.is_empty() {
         return Ok(());
@@ -147,9 +146,7 @@ pub(crate) fn owe_removal_notices(tx: &mut Tx<'_>) -> Result<()> {
     let due = std::mem::take(&mut tx.core.notices_due);
     let me = tx.core.member();
     for (_, t) in due.iter().filter(|(x, _)| Some(*x) == me) {
-        for c in removals_untaken(tx, t)? {
-            tx.core.ix.closure.fires_due.insert(c);
-        }
+        removals_due(tx, t)?;
     }
     let now = tx.now().0;
     let mut owed = Vec::new();
@@ -199,41 +196,37 @@ impl Engine {
         self.core.has_own_secrets(a).then_some(*a)
     }
 
-    /// Acts on removal notice `fire` held here (spec/sync-inbox.md §5): once this node holds its
-    /// thing T's roster (as the notice arrives, or as a role commit on its holder's edge on T
-    /// arrives: `owe_removal_notices`), it learns the notice's records and takes its chain and
-    /// then its role commit, each only where judged valid (`ingest_valid`): an edit write taking
-    /// this node below read then applies like any, and lost access releases T or keeps the
-    /// retained copy it says (spec/permissions.md §3). Any other notice changes nothing.
-    pub fn take_removal_notice(&mut self, fire: &CommitId) -> Result<()> {
+    /// Removal notice `fire` arriving here (spec/sync-inbox.md §5 Carried commits): due now where
+    /// its thing's roster is held here; each strong to the thing is judged again, so one reaching
+    /// it takes it at the strong (`tickets::take_in`).
+    fn notice_arrives(&mut self, fire: &CommitId) -> Result<()> {
         let id = *fire;
-        let Some(v) = self.read(|tx| fire_value(tx, &id, REMOVAL_FIRE))? else { return Ok(()) };
-        self.take_role_parts(&v, &["roles.0"], true)?;
-        // a thing a strong reaches by a ticket alone takes it at its strong (`tickets::take_in`)
         self.run(|tx| {
-            if let Some(b) = fire_commit(tx, &id)? {
-                for a in &b.header.aspects {
-                    tx.core.ix.closure.rejudge(a.tid);
+            let Some(b) = fire_commit(tx, &id)? else { return Ok(()) };
+            for a in &b.header.aspects {
+                if tx.core.timelines.get(&a.tid).is_some() && !held_whole(tx, &b) {
+                    tx.core.ix.closure.fires_due.insert(id);
                 }
+                tx.core.ix.closure.rejudge(a.tid);
             }
             Ok(())
         })
     }
 
-    /// Takes the role parts fire `fire` held here carries (`Fire::Ticket`'s, a removal notice's),
-    /// once the walk met a ticket for its thing at a strong (spec/sync-inbox.md §5 Nothing before
-    /// the strong, spec/sync-set.md §2): its records, its chain and then its commit, each only
-    /// where judged valid (`ingest_valid`).
+    /// Takes the role commit fire `fire` held here carries (`fire_parts`) as an arriving commit,
+    /// once due (`Closure::fires_due`): its records, its chain and then its commit, each only where
+    /// judged valid (`ingest_valid`), pending on what it lacks. An edge write taking this node
+    /// below read then applies like any, and lost access releases its thing or keeps the retained
+    /// copy it says (spec/permissions.md §3).
     pub(crate) fn take_fire(&mut self, fire: &CommitId) -> Result<()> {
         let id = *fire;
         let Some(v) = self.read(|tx| fire_parts(tx, &id))? else { return Ok(()) };
         let aks: &[&str] = if self.read(|tx| fire_value(tx, &id, TICKET_FIRE))?.is_some() { GRANT_PARTS } else { &["roles.0"] };
-        self.take_role_parts(&v, aks, false)
+        self.take_role_parts(&v, aks)
     }
 
-    /// Takes role commit parts `v` (`role_parts_value`): every part of one of `aks`; `roster`
-    /// the things they are on with their roster held here.
-    fn take_role_parts(&mut self, v: &Value, aks: &[&str], roster: bool) -> Result<()> {
+    /// Takes role commit parts `v` (`role_parts_value`), every part one of `aks`.
+    fn take_role_parts(&mut self, v: &Value, aks: &[&str]) -> Result<()> {
         let Value::Map(m) = v else { return Ok(()) };
         let bytes = |k: i64| match m.get(&Value::Int(k)) {
             Some(Value::Bytes(b)) => vec![b.clone()],
@@ -242,8 +235,7 @@ impl Engine {
         };
         let Some(commit) = bytes(0).into_iter().next() else { return Ok(()) };
         let Ok(blob) = osis_commit::CommitBlob::decode(&commit) else { return Ok(()) };
-        let things: BTreeSet<Tid> = blob.parts.iter().filter_map(|p| blob.header.aspects.get(p.ai)).map(|a| a.tid).collect();
-        if blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| !aks.contains(&a.ak.as_str()))) || things.is_empty() || (roster && !things.iter().all(|t| self.core.timelines.get(t).is_some())) {
+        if blob.parts.is_empty() || blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| !aks.contains(&a.ak.as_str()))) {
             return Ok(());
         }
         let limits = osis_base::Limits::new(osis_base::format::MAX_OBJECT_DEPTH, osis_base::format::MAX_BLOB);
@@ -609,11 +601,10 @@ impl Engine {
         let grant = self.holder_grant(t, &commit);
         let Some(ingested) = self.ingest_sealed_fire(records, &chain, commit)? else { return Ok(Opened::Bad) };
         if let Some(g) = grant {
-            self.take_role_parts(&g, GRANT_PARTS, false)?;
+            self.take_role_parts(&g, GRANT_PARTS)?;
         }
-        // a removal notice is acted on as it is taken
         if parts.iter().any(|ai| removal.get(*ai) == Some(&true)) {
-            self.take_removal_notice(&id)?;
+            self.notice_arrives(&id)?;
         }
         let row = crate::sync::BlobOf { commit: id, parts: parts.into_iter().collect(), sealed: Default::default(), copy: false, unchecked: false, salt: *prefix.salt(), ais: ais.into_iter().collect() };
         let b = *b;
@@ -753,23 +744,24 @@ fn fire_parts(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<Value>> {
     fire_value(tx, c, REMOVAL_FIRE)
 }
 
-/// The removal notices on this node's account's inbox whose role parts are on `t` and not held
-/// whole here (`fire_untaken`). O(the notices the inbox keeps, `INBOX_LIFETIME`): a notice names
-/// its thing only inside its commit.
-pub(crate) fn removals_untaken(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<CommitId>> {
-    let Some(a) = tx.core.member() else { return Ok(Vec::new()) };
-    let Some(inbox) = inbox_in(tx, &a)? else { return Ok(Vec::new()) };
+/// Notes for taking (`Closure::fires_due`, `Engine::take_fire`) the removal notices on this
+/// node's account's inbox naming `t` whose commit is not held whole (spec/sync-inbox.md §5
+/// Carried commits): at a strong to `t` (`tickets::take_in`) and as `t`'s roster comes
+/// (`owe_removal_notices`). O(the notices the inbox keeps, `INBOX_LIFETIME`): a notice names its
+/// thing only inside its commit.
+pub(crate) fn removals_due(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    let Some(a) = tx.core.member() else { return Ok(()) };
+    let Some(inbox) = inbox_in(tx, &a)? else { return Ok(()) };
     let fires: Vec<CommitId> = tx.core.ix.by_aspect.get(&(inbox, super::ak(REMOVAL_FIRE)?)).into_iter().flatten().map(|x| x.1).collect();
-    let mut out = Vec::new();
     for c in fires {
         if let Some(blob) = fire_commit(tx, &c)?
             && blob.header.aspects.iter().any(|x| x.tid == *t)
             && !held_whole(tx, &blob)
         {
-            out.push(c);
+            tx.core.ix.closure.fires_due.insert(c);
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// The commit whose role parts fire `c` carries (`fire_parts`).

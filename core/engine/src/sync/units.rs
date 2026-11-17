@@ -142,8 +142,8 @@ pub struct Closure {
     /// commits that judge those tickets stay while any does (`retention::needed`), whether or not
     /// they enter it.
     accepted: JSetMap<Tid, Vx>,
-    /// Fires whose role parts the walk's ticket step would take, not taken yet
-    /// (`tickets::take_in`, `Engine::take_ticket_fires`).
+    /// Fires whose carried commit is due for taking, not taken yet (`tickets::take_in`, `flows::inbox`,
+    /// `Engine::take_carried`).
     pub(crate) fires_due: JSet<osis_base::CommitId>,
     /// Per context, its things: a read context's are its root's sync unit.
     members: JSetMap<Ctx, Tid>,
