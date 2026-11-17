@@ -116,3 +116,50 @@ fn a_forged_ticket_keeps_no_plain_thing_held_spec_sync_set_2() {
     e1.commit(m).unwrap();
     assert!(!e1.closure_holds(&p) && !e1.sync_things().unwrap().contains(&p), "nothing of P left");
 }
+
+// spec/permissions.md §3 Lost access (drop those role secrets and every local unit it can no
+// longer read), spec/sync-set.md §2 (a read secret a ticket gives establishes nothing): Bob holds
+// T's read secret from his ticket and reads T's value, while T counts as plain here (he holds no
+// keyset commit of it); his timed grant ends and its secrets go: so does what they read.
+#[test]
+fn a_tickets_secret_takes_what_it_read_when_it_goes_spec_permissions_3() {
+    let (mut lp, [_, bob]) = two();
+    let ak = osis_base::Ak::new("x:v.0").unwrap();
+    let e0 = &mut lp.peers[0].engine;
+    let d0 = e0.account_root().unwrap();
+    let mut m = Mutation::new();
+    let t = e0.new_thing(&mut m, d0);
+    m.set(t, &ak, &Value::Str("v".into())).unwrap();
+    m.op(d0, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+    let made = e0.commit(m).unwrap().unwrap();
+    let before: BTreeSet<_> = e0.commit_ids().into_iter().collect();
+    let e1 = &mut lp.peers[1].engine;
+    let d1 = e1.account_root().unwrap();
+    let mut m = Mutation::new();
+    m.op(d1, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(t)) }).unwrap();
+    e1.commit(m).unwrap();
+    // Alice grants Bob read for an hour: her ticket reaches him as a sealed fire
+    let e0 = &mut lp.peers[0].engine;
+    let hour = 3_600_000;
+    e0.grant(&t, &bob, &ct::Edge { role: Role::Read, until: Some(WallMs(T0.0 + hour)), invite: None, retain: false, floor: None }).unwrap();
+    let fire = e0.sealed_fire(&e0.fires_owed()[0]).unwrap().unwrap();
+    let keysets: BTreeSet<_> = e0.core.ix.keyset_parts.get(&t).into_iter().flatten().copied().collect();
+    let grant: Vec<_> = e0.commit_ids().into_iter().filter(|c| !before.contains(c) && !keysets.contains(c)).collect();
+    let e1 = &mut lp.peers[1].engine;
+    e1.open_entry(&fire.sync_id, &osis_blob::blob_id(&fire.blob), &[0; 57], &fire.blob, u64::MAX).unwrap();
+    // Bob gets T's value and the grant, none of T's keysets
+    let pks = lp.sealed(0, &[made]).unwrap();
+    lp.deliver_sealed(1, &pks).unwrap();
+    for c in &grant {
+        let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+    }
+    let e1 = &mut lp.peers[1].engine;
+    assert!(!e1.core.has_own_secrets(&t), "T counts as plain here");
+    assert_eq!(e1.get(&t, &ak).unwrap(), Some(Value::Str("v".into())), "Bob reads T by his ticket's secret");
+    lp.advance(hour + crate::rotation::LOST_HEARD_WAIT_MS + 1);
+    let e1 = &mut lp.peers[1].engine;
+    e1.tick().unwrap();
+    assert!(e1.forget_lost(crate::rotation::LostScope::All).unwrap().actors.contains(&t), "T's secrets go");
+    assert_eq!(e1.get(&t, &ak).unwrap(), None, "what they read goes with them");
+}

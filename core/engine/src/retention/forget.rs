@@ -88,11 +88,20 @@ fn fate(core: &Core, scope: Scope<'_>, t: &Tid) -> Fate {
         Scope::Local(ts) => return if ts.contains(t) { Fate::Local } else { Fate::Stays },
         Scope::Whole(ts) => return if ts.contains(t) { Fate::Whole } else { Fate::Stays },
     };
-    let Some(a) = core.secret_actor(t) else { return Fate::Stays };
-    if !lost.contains(&a) || read_path(core, t) {
+    let Some(a) = lost_reader(core, lost, t) else { return Fate::Stays };
+    if read_path(core, t) {
         return Fate::Stays;
     }
     if core.ix.kept.contains_key(&a) { Fate::Kept } else { Fate::Erased }
+}
+
+/// The lost actor whose secrets read `t`: `t` itself, its own secrets dropped (held of a thing
+/// counting as plain here, a ticket's among them), or the actor its secrets derive from.
+fn lost_reader(core: &Core, lost: &BTreeSet<Tid>, t: &Tid) -> Option<Tid> {
+    if lost.contains(t) {
+        return Some(*t);
+    }
+    core.secret_actor(t).filter(|a| lost.contains(a))
 }
 
 fn forgotten_ak(fate: Fate, ak: &Ak) -> bool {
@@ -141,8 +150,7 @@ pub(crate) fn under(core: &Core, actors: &BTreeSet<Tid>) -> BTreeSet<Tid> {
     let mut out = BTreeSet::new();
     let mut todo: Vec<Tid> = actors.iter().copied().collect();
     while let Some(t) = todo.pop() {
-        let Some(a) = core.secret_actor(&t) else { continue };
-        if !actors.contains(&a) || !out.insert(t) {
+        if lost_reader(core, actors, &t).is_none() || !out.insert(t) {
             continue;
         }
         todo.extend(core.ix.held.first_admin_of(&t).copied());

@@ -429,6 +429,7 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
             let copy = kept.get(a).map_or(String::new(), |v| format!(", read-only copy kept via {}", v.iter().map(Tid::to_string).collect::<Vec<_>>().join(",")));
             format!("lost access {a}: secrets dropped {went}{}{copy}", if sync.is_some() { ", sync kept (unread)" } else { "" })
         });
+        let kept_role = sync.is_some().then_some(Role::Sync);
         match sync {
             Some(r) => {
                 let mut kept = ActorEpochs::default();
@@ -439,6 +440,8 @@ fn drop_actors(tx: &mut Tx<'_>, mut lost: Vec<Tid>, dropped: &[Tid], rejudge: bo
                 tx.core.ix.secrets.remove(a);
             }
         }
+        // D's tickets for it follow: none above the role kept (spec/sync-set.md §1)
+        crate::flows::inbox::drop_account_tickets_above(tx, &BTreeSet::from([*a]), kept_role)?;
         crate::sync::stranded::drop_asks(tx, a, |_| false)?;
         crate::sync::held::forget_actor(tx, a)?;
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: if kept.contains_key(a) { "lost read access: secrets dropped, a read-only copy kept" } else { "lost read access: secrets and what only they read dropped" }.into() }, tx.core.hlc.mono());

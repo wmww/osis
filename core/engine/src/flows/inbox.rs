@@ -696,13 +696,20 @@ pub(crate) fn write_account_ticket(tx: &mut Tx<'_>, t: &Tid) -> Result<Option<Co
 
 /// In the transaction releasing `ts`: D's tickets for each go (spec/sync-set.md §1, §3).
 pub(crate) fn drop_account_tickets(tx: &mut Tx<'_>, ts: &BTreeSet<Tid>) -> Result<()> {
+    drop_account_tickets_above(tx, ts, None)
+}
+
+/// D's tickets for each of `ts` of a role above `kept` go (all of them with `None`): the account's
+/// tickets follow what the node holds (spec/sync-set.md §1), so a release takes them all and a
+/// lost access keeping sync takes those of read (spec/permissions.md §3 Lost access).
+pub(crate) fn drop_account_tickets_above(tx: &mut Tx<'_>, ts: &BTreeSet<Tid>, kept: Option<Role>) -> Result<()> {
     let Some((_, d)) = tx.core.account_and_root() else { return Ok(()) };
     if ts.contains(&d) {
         return Ok(());
     }
     let mut gone: Vec<Ticket> = Vec::new();
     for t in ts {
-        gone.extend(account_tickets(tx, &d, t)?);
+        gone.extend(account_tickets(tx, &d, t)?.into_iter().filter(|k| Some(k.role) > kept));
     }
     if gone.is_empty() {
         return Ok(());

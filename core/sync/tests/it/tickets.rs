@@ -378,3 +378,26 @@ fn ds_ticket_for_a_thing_kept_unread_boxes_the_newest_established_secret_spec_sy
         assert_eq!(d_tickets(&mut w, 1, &t), vec![(s, genuine.epoch.0 + 1)], "the rotation's secret replaces the grant's in D (forged first: {forged_first})");
     }
 }
+
+// spec/sync-set.md §1 (The account's tickets; D's tickets follow what the node holds), spec/permissions.md
+// §3 Lost access: Bob keeps T unread by a sync grant, is given read, then removed. His node,
+// losing read and keeping T unread by the sync ticket's word, takes D's read ticket for T out
+// with the read secrets, so a node of his paired after enters T by sync alone and reads nothing.
+#[test]
+fn a_lost_read_takes_ds_read_ticket_with_it_spec_sync_set_1() {
+    let (mut w, t) = accepted(Role::Sync);
+    let bob = w.node(1).account.unwrap();
+    let d_roles = |w: &mut World, i: usize| -> Vec<Role> {
+        let d = w.engine(i).account_root().unwrap();
+        w.engine(i).get_typed(&d, &ct::TICKETS).unwrap().unwrap_or_default().iter().filter(|k| k.target == t).map(|k| k.role).collect()
+    };
+    w.write(0, |e| e.grant(&t, &bob, &ct::Edge { role: Role::Read, until: None, invite: None, retain: false, floor: None })).unwrap();
+    w.run();
+    assert!(d_roles(&mut w, 1).contains(&Role::Read), "Bob reads T: D holds his read ticket");
+    w.write(0, |e| e.demote(&t, &osis_engine::flows::edges::Demotion { holder: bob, new: None, retain: None })).unwrap();
+    w.run();
+    assert_eq!(d_roles(&mut w, 1), vec![Role::Sync], "D's read ticket went with the read");
+    let n = w.pair(1);
+    w.run();
+    assert_eq!(w.engine(n).get(&t, &ak()).unwrap(), None, "a node paired after reads nothing of T");
+}
