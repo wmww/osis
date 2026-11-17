@@ -293,14 +293,20 @@ impl Read {
                 continue;
             }
             // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
-            let Some((_, now)) = self.cert_blobs.try_settle(&(s, r), || cert_blobs_missing(g, &s, r).map(Arc::new))? else { continue };
-            // one carrying nothing S carries now leaves the own store, no tombstone (none covers
-            // it: spec/sync-judgement.md §3 Own store), and what the engine kept of it with it
+            let Some((was, now)) = self.cert_blobs.try_settle(&(s, r), || cert_blobs_missing(g, &s, r).map(Arc::new))? else { continue };
+            // one S needs no more leaves the own store, no tombstone (spec/sync-judgement.md §3
+            // Own store); what the engine kept of it goes once no source shows it either
             for b in &now.unneeded {
                 g.unlog(&s, b)?;
+                acted = true;
             }
-            if !now.gone.is_empty() || !now.unneeded.is_empty() {
-                g.forget_cert_blobs(&s, r, &now.gone.union(&now.unneeded).copied().collect())?;
+            if !now.gone.is_empty() {
+                g.forget_cert_blobs(&s, r, &now.gone)?;
+                acted = true;
+            }
+            let before = was.map(|w| w.deletes.clone()).unwrap_or_default();
+            for (at, conn, head, blob) in now.deletes.difference(&before).copied().collect::<Vec<_>>() {
+                self.act(g, &s, None, Act::Delete { at, conn, head, blob })?;
                 acted = true;
             }
             for b in &now.stale {

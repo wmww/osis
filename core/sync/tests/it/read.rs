@@ -213,10 +213,10 @@ impl Ground for Fake {
     fn piece(&mut self, s: &SyncId, b: &BlobId) -> Result<PieceAt> {
         Ok(self.piece_at.get(&(*s, *b)).copied().unwrap_or(PieceAt::Absent))
     }
-    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> bool {
+    fn blob_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> bool {
         self.piece_seen.get(&(*at, *s, *b)).is_some_and(|x| x.0)
     }
-    fn piece_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
+    fn blob_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
         Ok(self.piece_seen.get(&(*at, *s, *b)).is_some_and(|x| x.1))
     }
     fn log_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {

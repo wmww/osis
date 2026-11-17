@@ -516,7 +516,7 @@ pub(crate) fn piece(g: &mut impl Ground, s: &SyncId, p: &PieceLink) -> Result<Pi
             return Ok(j);
         }
         for (at, conn) in g.reached(s) {
-            if g.piece_shown(&at, s, &b) {
+            if g.blob_shown(&at, s, &b) {
                 j.acts.insert(Act::Fetch { at, conn, blob: b });
             }
         }
@@ -531,12 +531,12 @@ pub(crate) fn piece(g: &mut impl Ground, s: &SyncId, p: &PieceLink) -> Result<Pi
     // S each can open applied); deletes read only once no source shows it
     let sources = g.reached(s);
     for (at, _) in &sources {
-        if g.piece_shown(at, s, &b) {
+        if g.blob_shown(at, s, &b) {
             return Ok(j);
         }
     }
     for (at, _) in &sources {
-        if g.piece_deleted(at, s, &b)? {
+        if g.blob_deleted(at, s, &b)? {
             if g.heard_out(s)? {
                 j.acts.insert(Act::Repair(b));
             }
@@ -570,7 +570,7 @@ pub(crate) fn freed(g: &mut impl Ground, b: &BlobId, t: &Tid) -> Result<Freed> {
         }
         for src in g.sources(&s).iter() {
             // a reader judges its own entries: only a store's count
-            if !src.store || !g.piece_shown(&src.at, &s, b) {
+            if !src.store || !g.blob_shown(&src.at, &s, b) {
                 continue;
             }
             known = true;

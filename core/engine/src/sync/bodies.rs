@@ -786,9 +786,14 @@ impl Engine {
                 // thing lists
                 // thing lists, each kept as a certificate blob of the own store under `s`
                 // (`certblobs`): one any node logged counts as this node's own
+                // its prefix a certificate blob's (`CertBlob::of`), else bad input
                 let Ok((_, pt)) = osis_blob::open(bytes, &key) else { return Ok(Opened::Bad) };
+                if super::certblobs::CertBlob::of(bytes, &key, BTreeSet::new()).is_none() {
+                    return Ok(Opened::Bad);
+                }
                 if let Some(tids) = self.take_record_blob(blob, &pt)? {
-                    self.note_cert_blob(s, None, blob, tids.clone())?;
+                    let Some(c) = super::certblobs::CertBlob::of(bytes, &key, tids.clone()) else { return Ok(Opened::Bad) };
+                    self.note_cert_blob(s, None, blob, c)?;
                     return Ok(Opened::Records(tids));
                 }
                 return Ok(match self.take_list_blob(blob, &pt)? {
@@ -796,7 +801,8 @@ impl Engine {
                         // lists kept loose count once their rotation holds them (opened again)
                         if !self.carries_loose(blob) {
                             let things = osis_commit::thing_list::decode_list_blob(&pt).unwrap_or_default().iter().map(|c| c.list.thing).collect();
-                            self.note_cert_blob(s, Some(r), blob, things)?;
+                            let Some(c) = super::certblobs::CertBlob::of(bytes, &key, things) else { return Ok(Opened::Bad) };
+                            self.note_cert_blob(s, Some(r), blob, c)?;
                         }
                         Opened::Lists(r)
                     }

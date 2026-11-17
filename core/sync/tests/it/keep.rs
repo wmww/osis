@@ -204,7 +204,7 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
     let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Reads), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
     let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
-    let records: std::collections::BTreeSet<osis_base::Tid> = w.engine(0).cert_blobs(&s, None).values().flatten().copied().collect();
+    let records: std::collections::BTreeSet<osis_base::Tid> = w.engine(0).cert_blobs(&s, None).values().flat_map(|c| c.tids.iter()).copied().collect();
     assert!(!records.is_empty(), "S carries records");
     let held = |w: &mut World, i: usize| -> Vec<osis_base::BlobId> {
         let noted = w.engine(i).cert_blobs(&s, None);
@@ -227,6 +227,6 @@ fn readers_logging_the_same_records_settle_on_one_record_blob_spec_permissions_4
         assert_eq!(held(&mut w, i), one, "node {i} holds the same one record blob");
         let noted = w.engine(i).cert_blobs(&s, None);
         assert_eq!(noted.keys().copied().collect::<Vec<_>>(), one, "node {i} notes only it");
-        assert!(noted.values().all(|x| x.is_superset(&records)), "it carries every record");
+        assert!(noted.values().all(|x| x.tids.is_superset(&records)), "it carries every record");
     }
 }

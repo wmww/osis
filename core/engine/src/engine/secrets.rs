@@ -645,6 +645,16 @@ pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Cre
     osis_commit::Secrets::admin_key(&s, tid).is_some() && osis_commit::Secrets::write_key(&s, tid).is_some()
 }
 
+/// The level-3 delete key a certificate blob of `t`'s sync ID commits to (spec/crypto.md §7):
+/// what a header lists at that level for `t`, the newest held write secret's, else the one
+/// published in `keys.0`.
+pub(crate) fn writer_delete_key_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<Option<VerifyingKey>> {
+    let created = Default::default();
+    let published = published_keys(tx, &created, [*t])?;
+    let s = CommitSecrets { core: tx.core, actor: tx.core.me().unwrap_or(tx.core.id.tid()), created: &created, published: &published, keys: &KeyCache::default() };
+    Ok(osis_commit::Secrets::write_key(&s, t))
+}
+
 /// Whether this node holds the delete keys every write on `t` lists (`framing_for`'s check), in
 /// `tx`: what answers and covers wait for, and what [`usable_role`] asks.
 pub(crate) fn holds_delete_keys_in(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<bool> {

@@ -19,7 +19,7 @@ pub use rows::Held;
 pub(crate) mod pieces;
 pub use pieces::PieceLink;
 pub(crate) mod certblobs;
-pub use certblobs::{CertBlobs, CertKind};
+pub use certblobs::{CertBlob, CertBlobs, CertKind};
 pub(crate) use certblobs::with_chains;
 mod relay;
 pub use relay::{Relay, RelayOpened};

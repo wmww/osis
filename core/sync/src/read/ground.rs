@@ -282,14 +282,15 @@ pub trait Ground {
         let _ = (s, b);
         Ok(PieceAt::Absent)
     }
-    /// The source's stream shows piece `b` under S present.
-    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> bool {
+    /// The source's stream shows blob `b` under S present (a piece, a freed link, a certificate
+    /// blob).
+    fn blob_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> bool {
         let _ = (at, s, b);
         false
     }
-    /// The source's stream showed piece `b` under S deleted (a Deleted event, or a refusal as
+    /// The source's stream showed blob `b` under S deleted (a Deleted event, or a refusal as
     /// tombstoned).
-    fn piece_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
+    fn blob_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
         let _ = (at, s, b);
         Ok(false)
     }
@@ -423,16 +424,20 @@ pub enum PieceAt {
 /// `Ground::cert_blobs_missing`, of one kind under one S.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CertBlobsMissing {
-    /// Records, or things whose lists of the rotation, S carries that no certificate blob of
-    /// the kind in the own store carries: one blob of them is logged.
+    /// Records, or things whose lists of the rotation, S carries, when no certificate blob of
+    /// the kind in the own store carries all of them: one blob of all of them is logged.
     pub missing: BTreeSet<osis_base::Tid>,
-    /// Certificate blobs of the kind noted under S that the own store holds no more.
+    /// Certificate blobs of the kind noted under S that neither the own store holds nor any
+    /// source's stream shows: their rows go.
     pub gone: BTreeSet<osis_base::BlobId>,
     /// Certificate blobs of the kind the own store holds under S that are not stamped under S's
     /// head write key where this node holds it (`Ground::stands`): stamped in place.
     pub stale: BTreeSet<osis_base::BlobId>,
     /// Certificate blobs of the kind the own store holds under S that carry nothing S carries
-    /// now, or lose to another there (all it carries of S's, and more or under a lower ID): they
-    /// leave it (`Ground::unlog`).
+    /// now, or lose to another there (all it carries of S's, and more, or the same with fewer
+    /// others, or the same under a lower ID): they leave it (`Ground::unlog`).
     pub unneeded: BTreeSet<osis_base::BlobId>,
+    /// Deletes owed at sources keeping S unread, once S's sources are heard out: each blob there
+    /// losing to another blob there (spec/sync-ids.md §6 Delete).
+    pub deletes: BTreeSet<(Source, ConnId, StepId, osis_base::BlobId)>,
 }

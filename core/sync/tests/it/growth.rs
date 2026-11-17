@@ -263,7 +263,9 @@ fn a_lowered_writers_invalid_writes_leave_nothing_and_return_on_regrant_spec_com
 // forgets the write while node 3 shows it and nothing brings it back.
 #[test]
 fn a_write_valid_again_before_its_author_hears_comes_from_a_store_spec_permissions_6() {
+    eprintln!("start {:?}", std::time::Instant::now());
     let mut w = world(0, 4);
+    eprintln!("world {:?}", std::time::Instant::now());
     w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Reads), Grant(0, 0, 3, Gives::Syncs), Run], String::new());
     let t = w.history.things[0].0;
@@ -395,7 +397,9 @@ fn a_request_given_force_again_reaches_a_node_that_forgot_it_spec_perm_6() {
 // and node 2 (a reader, no writer), each way, after n entries and again after 10n.
 #[test]
 fn a_head_move_relists_nothing_between_a_reader_and_a_store_at_n_and_10n() {
+    eprintln!("start {:?}", std::time::Instant::now());
     let mut w = world(0, 4);
+    eprintln!("world {:?}", std::time::Instant::now());
     w.cap = 200_000;
     let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Syncs), Grant(0, 0, 2, Gives::Reads), Run], String::new());
     let t = w.history.things[0].0;
@@ -838,3 +842,50 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
 }
 
 
+
+/// Nodes 0, 1 and 2 write thing 0, node 3 keeps its sync ID S unread; S and the records it
+/// carries.
+fn record_world() -> (World, osis_base::SyncId, std::collections::BTreeSet<Tid>) {
+    let mut w = world(0, 4);
+    w.cap = 200_000;
+    let _ = play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Grant(0, 0, 2, Gives::Writes), Grant(0, 0, 3, Gives::Syncs), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).sync_id_of(&t).unwrap().unwrap();
+    let records: std::collections::BTreeSet<Tid> = w.engine(0).certificate_records(&s).unwrap().iter().copied().collect();
+    assert!(!records.is_empty(), "S carries records");
+    (w, s, records)
+}
+
+/// `rounds` rounds of nodes 0, 1 and 2, the writers of thing 0, each sealing a record blob of
+/// S's records at once, its own store holding no other (as each logs one before it holds
+/// another's); then node 3's entries under S, which it keeps unread.
+fn record_rounds(rounds: usize) -> usize {
+    let (mut w, s, records) = record_world();
+    for round in 0..rounds {
+        for i in 0..3 {
+            let noted = w.engine(i).cert_blobs(&s, None);
+            for b in noted.keys() {
+                w.store(i).clone().unlog_entry(&s, b).unwrap();
+            }
+            let mut rng = osis_crypto::SeededRng::from_u64((round * 3 + i) as u64);
+            let (blob, bytes, wrap) = w.engine(i).seal_records(&s, &records, &mut rng).unwrap().expect("sealed");
+            let e = osis_sync::types::Entry { blob, wrap, stamp: None, deposited: false, own: true, role: false, class: osis_blob::Class::Durable, expires: None };
+            w.store(i).clone().log(&s, e, Some(bytes), None).unwrap();
+        }
+        for i in 0..3 {
+            w.deliver(i, osis_sync::Input::Tick);
+        }
+        w.run();
+    }
+    w.store(3).entries(&s).unwrap().len()
+}
+
+// spec/sync-ids.md §6 (Delete: a record or list blob losing to another there is deleted at a
+// store once it shows the winner), spec/permissions.md §4 (Logging certificates): writers each
+// logging a record blob of the same records every round leave a store keeping S unread holding
+// as many entries at n rounds as at 10n.
+#[test]
+fn record_blobs_at_a_store_stay_flat_spec_sync_ids_6() {
+    let (n, ten_n) = (record_rounds(1), record_rounds(10));
+    assert_eq!(n, ten_n, "store entries at 1 and 10 rounds");
+}

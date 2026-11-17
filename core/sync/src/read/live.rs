@@ -485,7 +485,11 @@ impl Ground for Live<'_, '_> {
         if keys.delete.is_some() {
             return Ok(delete_item(&keys, s, *b, true, None));
         }
-        Ok(delete_item(&keys, s, *b, false, self.cx.engine.blob_delete_basis(b).as_ref()))
+        let basis = match self.cx.engine.blob_delete_basis(b) {
+            Some(x) => Some(x),
+            None => self.cx.engine.cert_delete_basis(s, b)?,
+        };
+        Ok(delete_item(&keys, s, *b, false, basis.as_ref()))
     }
     fn delete(&mut self, at: &SrcView, s: &SyncId, head: &StepId, b: &BlobId) -> Result<()> {
         let Some(item) = self.delete_item(s, head, b)? else { return Ok(()) };
@@ -518,40 +522,60 @@ impl Ground for Live<'_, '_> {
         self.cx.store.set_stand(*at, s, &c.0, Some(stand))
     }
     fn cert_blobs_missing(&mut self, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
-        // nothing can be sealed under S yet (a rotation owed before encrypting): what is missing
-        // is told once it can, so the effect acts then
         let carried = match r {
             None => (*self.cx.engine.certificate_records(s)?).clone(),
             Some(r) => (*self.cx.engine.certificate_lists(s, &r)?).clone(),
         };
-        let missing = if self.cx.engine.cert_wrap(s, r.as_ref())? { carried.clone() } else { BTreeSet::new() };
-        let mut out = CertBlobsMissing { missing, ..CertBlobsMissing::default() };
-        // every certificate blob of the kind in the own store counts, whoever sealed it
-        let mut held: BTreeMap<BlobId, (Entry, BTreeSet<Tid>)> = BTreeMap::new();
-        for (b, tids) in self.cx.engine.cert_blobs(s, r).iter() {
-            let Some(e) = self.cx.store.entry(s, b)? else {
-                out.gone.insert(*b);
-                continue;
-            };
-            let tids: BTreeSet<Tid> = tids.intersection(&carried).copied().collect();
-            if tids.is_empty() {
-                out.unneeded.insert(*b);
-                continue;
+        let mut out = CertBlobsMissing::default();
+        // every certificate blob of the kind noted counts, whoever sealed it, by what it carries
+        // of S's; one loses to another carrying all it carries of S's, and more, or the same
+        // with fewer others, or the same under a lower ID (spec/permissions.md §4 Logging
+        // certificates)
+        let rows = self.cx.engine.cert_blobs(s, r);
+        let of: BTreeMap<BlobId, BTreeSet<Tid>> = rows.iter().map(|(b, c)| (*b, c.tids.intersection(&carried).copied().collect())).collect();
+        let none = BTreeSet::new();
+        let at = |b: &BlobId| of.get(b).unwrap_or(&none);
+        let all = |b: &BlobId| rows.get(b).map_or(0, |c| c.tids.len());
+        let beats = |o: &BlobId, b: &BlobId| o != b && at(o).is_superset(at(b)) && (at(o).len(), std::cmp::Reverse(all(o)), std::cmp::Reverse(*o)) > (at(b).len(), std::cmp::Reverse(all(b)), std::cmp::Reverse(*b));
+        let stores: Vec<SrcView> = self.sources(s).iter().filter(|x| x.store).cloned().collect();
+        let mut held: BTreeMap<BlobId, Entry> = BTreeMap::new();
+        for b in rows.keys() {
+            match self.cx.store.entry(s, b)? {
+                Some(e) => drop(held.insert(*b, e)),
+                None if !self.streams.known().present(s, b) => drop(out.gone.insert(*b)),
+                None => {}
             }
-            held.insert(*b, (e, tids));
         }
-        // one losing to another leaves: the other carries all it carries of S's, and more, or
-        // the same under a lower ID (spec/permissions.md §4 Logging certificates)
-        for (b, (e, tids)) in &held {
-            let loses = held.iter().any(|(o, (_, x))| o != b && x.is_superset(tids) && (x.len() > tids.len() || o < b));
-            if loses {
+        // the own store: one carrying all S carries and nothing else, and none beside it
+        let mut whole = false;
+        for (b, e) in &held {
+            let beaten = held.keys().any(|o| beats(o, b));
+            if at(b).is_empty() || beaten {
                 out.unneeded.insert(*b);
                 continue;
             }
             if !self.under_head(s, e)? {
                 out.stale.insert(*b);
             }
-            out.missing.retain(|t| !tids.contains(t));
+            whole |= rows.get(b).is_some_and(|c| c.tids == carried);
+        }
+        // nothing can be sealed under S yet (a rotation owed before encrypting): what is missing
+        // is told once it can, so the effect acts then
+        if !whole && self.cx.engine.cert_wrap(s, r.as_ref())? {
+            out.missing = carried;
+        }
+        // at a store, each blob shown there losing to another shown there, once this node's
+        // view is S's sources' (spec/sync-ids.md §6 Delete)
+        if self.heard_out(s)? {
+            for src in &stores {
+                let Some(head) = src.head else { continue };
+                let shown: Vec<BlobId> = rows.keys().copied().filter(|b| self.blob_shown(&src.at, s, b)).collect();
+                for b in &shown {
+                    if shown.iter().any(|o| beats(o, b)) {
+                        out.deletes.insert((src.at, src.conn, head, *b));
+                    }
+                }
+            }
         }
         Ok(out)
     }
@@ -622,10 +646,10 @@ impl Ground for Live<'_, '_> {
             None => PieceAt::Absent,
         })
     }
-    fn piece_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> bool {
+    fn blob_shown(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> bool {
         self.streams.known().knows(*at, s, b)
     }
-    fn piece_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
+    fn blob_deleted(&mut self, at: &Source, s: &SyncId, b: &BlobId) -> Result<bool> {
         self.cx.store.seen_deleted(*at, s, b)
     }
     fn log_piece(&mut self, s: &SyncId, b: &BlobId) -> Result<()> {
@@ -727,7 +751,7 @@ impl Ground for Live<'_, '_> {
 /// head's delete key where held and `by_key` (it deletes every entry there), else by levels over
 /// `basis` with the role key they need (`osis_blob::cover_levels`; the sync key only of an
 /// established epoch). One rule for every blob a node deletes at a source keeping S unread:
-/// commit blobs and freed links alike.
+/// commit blobs, freed links and certificate blobs alike.
 fn delete_item(keys: &osis_engine::sync_ids::HeadKeys, s: &SyncId, b: BlobId, by_key: bool, basis: Option<&osis_engine::sync::DeleteBasis>) -> Option<DeleteItem> {
     if by_key && let Some(d) = &keys.delete {
         return Some(DeleteItem::sign(d, s, b));

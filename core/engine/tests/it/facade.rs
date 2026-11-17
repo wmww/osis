@@ -463,14 +463,39 @@ fn a_rotation_logs_with_it_the_commits_it_names_spec_crypto_4() {
 /// A record blob of `records` under `t`'s current read epoch at peer `i` (spec/wire.md §3), as
 /// any reader of the sync ID could frame one: its ID, bytes and wrap.
 fn record_blob_by_hand(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_base::CreationRecord]) -> (osis_base::BlobId, Vec<u8>, osis_engine::sync::Wrap) {
+    let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([9; 32])).verifying_key();
+    record_blob_framed(lp, i, t, records, &[vec![(osis_base::format::DELETE_WRITER, dk)]])
+}
+
+/// `record_blob_by_hand` with commitment groups `groups`.
+fn record_blob_framed(lp: &mut LocalPeer, i: usize, t: &Tid, records: &[osis_base::CreationRecord], groups: &[Vec<(u8, osis_crypto::VerifyingKey)>]) -> (osis_base::BlobId, Vec<u8>, osis_engine::sync::Wrap) {
     let mut rng = SeededRng::from_u64(17);
     let plain = osis_commit::record_blob::encode_record_blob(records);
-    let prefix = osis_blob::Prefix::for_groups(osis_blob::Prefix::random_salt(&mut rng), &[7; 16], None, &[]).unwrap().with_class(osis_blob::Class::Durable);
-    let (key, blob) = osis_blob::frame(&prefix, &plain, &mut rng).unwrap();
+    let (salt, key, blind) = osis_blob::linked_prefix_inputs(&mut rng);
+    let prefix = osis_blob::Prefix::for_groups(salt, &blind, None, groups).unwrap().with_class(osis_blob::Class::Durable);
+    let (key, blob) = osis_blob::frame_under(key, &prefix, &plain).unwrap();
     let id = osis_blob::blob_id(&blob);
     let w = lp.peers[i].engine.wrap_secret(t, None).unwrap().expect("a read epoch");
     let wrap = osis_crypto::wrap(&w, &id, &key, 0).unwrap();
     (id, blob, wrap)
+}
+
+// spec/wire.md §3 (Record blob), spec/crypto.md §7 (Certificate blobs): a record blob whose prefix
+// is not one group of one level-3 commitment is bad input, whatever it carries.
+#[test]
+fn a_record_blob_of_another_prefix_is_bad_spec_crypto_7() {
+    let (mut lp, d) = crate::flows::account_two_nodes();
+    let ds = lp.peers[0].engine.sync_id_of(&d).unwrap().unwrap();
+    let a = lp.peers[0].engine.account().unwrap().unwrap().0;
+    let u = thing_of(&mut lp, 0, a);
+    let real = lp.peers[0].engine.core.created(&u).cloned().unwrap();
+    let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([9; 32])).verifying_key();
+    for groups in [vec![], vec![vec![(osis_base::format::DELETE_ADMIN, dk)]], vec![vec![(osis_base::format::DELETE_WRITER, dk)], vec![(osis_base::format::DELETE_WRITER, dk)]]] {
+        let (id, blob, wrap) = record_blob_framed(&mut lp, 0, &d, std::slice::from_ref(&real), &groups);
+        assert!(matches!(lp.peers[1].engine.open_entry(&ds, &id, &wrap, &blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Bad), "{groups:?}");
+    }
+    let (id, blob, wrap) = record_blob_by_hand(&mut lp, 0, &d, std::slice::from_ref(&real));
+    assert!(matches!(lp.peers[1].engine.open_entry(&ds, &id, &wrap, &blob, u64::MAX).unwrap(), osis_engine::sync::Opened::Records(_)));
 }
 
 // spec/wire.md §3 (creation record; Record blob), spec/permissions.md §4 (Chain certificates),
