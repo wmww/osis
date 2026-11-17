@@ -532,6 +532,13 @@ impl Engine {
         self.core.ix.pending.removals()
     }
 
+    /// A cursor over the blobs this node stops noting from now on (`memo::Removals`):
+    /// `blob_commit` names nothing for one (its commit forgotten other than with lost access,
+    /// or the blob opened again bad).
+    pub fn unnoted_feed(&self) -> osis_base::memo::Removals<BlobId> {
+        self.core.ix.blob_parts.removals()
+    }
+
     /// A cursor over the blobs this node comes to open or seal from now on (`blob_commit` names
     /// their commit; `memo::Feed`, a blob noted again included).
     pub fn blob_feed(&self) -> osis_base::memo::Feed<BlobId> {

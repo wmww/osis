@@ -27,14 +27,14 @@ impl Engine {
         osis_base::memo::Memo::get_in(self, |e| &e.core.sync_things, &(), |e| {
             let mut out: BTreeSet<Tid> = e.core.ix.closure.synced_things().copied().collect();
             osis_base::costs::count("sync: things walked", out.len() as u64);
-            out.extend(e.core.followed_links.all().keys().filter(|k| crate::sync_ids::actors::followable(e, k)).copied());
+            out.extend(e.core.followed_links.all().keys().filter(|k| crate::sync_ids::actors::followable(&e.core, k)).copied());
             Ok(Arc::new(out))
         })
     }
 
     /// `sync_things`'s answer for `t` alone: reads only `t`'s rows.
     pub fn in_sync_things(&mut self, t: &Tid) -> Result<bool> {
-        Ok(crate::sync_ids::actors::followable(self, t) || self.core.ix.closure.synced(t))
+        Ok(crate::sync_ids::actors::followable(&self.core, t) || self.core.ix.closure.synced(t))
     }
 
     /// The things that may have entered `sync_things` since `f`'s last read (its first: every
@@ -109,7 +109,7 @@ impl Engine {
         // a link being redeemed: its sync ID read while followed, whatever is held of K yet, while
         // it is K's (`followable`; from the link text until K's own `sync.0` records it)
         if let Some((s, _)) = self.core.followed_links.get(t)
-            && crate::sync_ids::actors::followable(self, t)
+            && crate::sync_ids::actors::followable(&self.core, t)
             && self.owned_sync_ids(t)?.iter().any(|o| o.id == s)
         {
             return Ok(ThingSync::Read(vec![s]));

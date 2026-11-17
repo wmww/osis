@@ -27,16 +27,41 @@ pub struct Follow {
     /// store's entry feed and at S's start.
     parked: Parked,
     entries: Option<Feed<(SyncId, BlobId)>>,
-    /// Commits the engine stops holding, and commits it stops pending: their entries under a
-    /// read S wait for what they did not before (`awaits`: a commit neither held nor pending
-    /// waits for S), with no entry of the store moving.
-    unheld: Option<(Removals<CommitId>, Removals<CommitId>)>,
+    /// What `awaits` reads of an entry moving with no entry of the store moving: its commit
+    /// held or pending no more, or its blob noted no more (`awaits`: a commit neither held nor
+    /// pending, or a peer entry of a blob naming no commit, waits for S).
+    unheld: Option<Unheld>,
     /// The sync IDs pulled anew (`Store::anew_feed`): a pull anew fetches what is not held, so
     /// what is held and parked opens again here (spec/sync-judgement.md §3 Dropped bodies: it
     /// opens again each entry its store still holds).
     anew: Option<Feed<SyncId>>,
     read: BTreeMap<SyncId, BTreeSet<Tid>>,
     carriers: Carriers,
+}
+
+/// The engine's cursors over what `awaits` reads (`Follow::unheld`).
+#[derive(Clone)]
+struct Unheld {
+    commits: Removals<CommitId>,
+    pending: Removals<CommitId>,
+    blobs: Removals<BlobId>,
+}
+
+impl Unheld {
+    fn new(engine: &Engine) -> Unheld {
+        Unheld { commits: engine.unheld_feed(), pending: engine.unpending_feed(), blobs: engine.unnoted_feed() }
+    }
+
+    /// The blobs whose entries are judged again: those of each commit held or pending no more
+    /// (forgotten with lost access, its blobs still noted), and each blob noted no more (its
+    /// commit forgotten whole: a peer entry of it stays under a read S, and waits for S).
+    fn moved(&mut self, engine: &mut Engine) -> Result<BTreeSet<BlobId>> {
+        let mut out: BTreeSet<BlobId> = self.blobs.removed().into_iter().collect();
+        for c in self.commits.removed().into_iter().chain(self.pending.removed()) {
+            out.extend(engine.commit_blobs(&c)?.iter().copied());
+        }
+        Ok(out)
+    }
 }
 
 /// The entries carrying a commit that pends here (spec/commits.md §4 Pending storage): the
@@ -288,27 +313,25 @@ impl Follow {
             }
             None => self.entries = Some(store.entry_feed()),
         }
-        // a commit forgotten (lost access) leaves its own entries waiting for it to open again;
-        // a blob of it no entry names keeps no note (`Engine::unnamed_blob`)
+        // a commit forgotten (lost access) leaves its own entries waiting for it to open again,
+        // one forgotten whole its peer entries; a blob of it no entry names keeps no note
+        // (`Engine::unnamed_blob`)
         match self.unheld.as_mut() {
-            Some((f, p)) => {
-                let gone: Vec<CommitId> = f.removed().into_iter().chain(p.removed()).collect();
-                for c in gone {
-                    for b in engine.commit_blobs(&c)?.iter() {
-                        let naming = store.naming(b)?;
-                        if naming.is_empty() {
-                            engine.unnamed_blob(b)?;
-                        }
-                        for s in naming {
-                            if self.read.contains_key(&s) {
-                                let e = store.entry(&s, b)?;
-                                park(engine, &mut self.parked, &mut self.creds, s, *b, e.as_ref())?;
-                            }
+            Some(u) => {
+                for b in u.moved(engine)? {
+                    let naming = store.naming(&b)?;
+                    if naming.is_empty() {
+                        engine.unnamed_blob(&b)?;
+                    }
+                    for s in naming {
+                        if self.read.contains_key(&s) {
+                            let e = store.entry(&s, &b)?;
+                            park(engine, &mut self.parked, &mut self.creds, s, b, e.as_ref())?;
                         }
                     }
                 }
             }
-            None => self.unheld = Some((engine.unheld_feed(), engine.unpending_feed())),
+            None => self.unheld = Some(Unheld::new(engine)),
         }
         let moved = self.set.settle(store);
         let mut acted = !moved.is_empty();
@@ -412,14 +435,11 @@ impl Follow {
                 }
             }
         }
-        if let Some((mut f, mut p)) = self.unheld.clone() {
-            let gone: Vec<CommitId> = f.removed().into_iter().chain(p.removed()).collect();
-            for c in gone {
-                for b in engine.commit_blobs(&c)?.iter() {
-                    for s in store.naming(b)? {
-                        if self.read.contains_key(&s) {
-                            park(engine, &mut parked, &mut creds, s, *b, store.entry(&s, b)?.as_ref())?;
-                        }
+        if let Some(mut u) = self.unheld.clone() {
+            for b in u.moved(engine)? {
+                for s in store.naming(&b)? {
+                    if self.read.contains_key(&s) {
+                        park(engine, &mut parked, &mut creds, s, b, store.entry(&s, &b)?.as_ref())?;
                     }
                 }
             }

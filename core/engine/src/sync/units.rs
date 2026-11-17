@@ -1048,9 +1048,9 @@ fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, ticketed: bool) -> Result<()> {
     for b in minting {
         tx.blobs.unreceived(&b);
     }
-    for s in crate::flows::sync_ids::owned_in(tx, &t)?.keys() {
+    for s in crate::flows::sync_ids::held_in(tx, &t)? {
         osis_base::costs::count("closure: refetch", 1);
-        tx.blobs.refetch(s);
+        tx.blobs.refetch(&s);
     }
     Ok(())
 }

@@ -775,6 +775,31 @@ fn a_released_thing_reached_again_is_fetched_again_spec_sync_judgement_3() {
     }
 }
 
+// spec/sync-judgement.md §3 (Dropped bodies: a pull anew opens again each entry its store still
+// holds), notes/sync-store.md (Parked entries): Bob's T0 holds X and Y, made under it; Alice reads
+// T0. Her engine forgets X's minting whole while its entry stays in her store under T0's sync ID
+// (in a history: a release forgets a holder's keying commit that T0's readers keep must-hold).
+// Its blob noted no more, the entry waits for T0's sync ID, so when Y -> X reaches her and T0's
+// sync ID is pulled anew, it opens again.
+#[test]
+fn an_entry_of_a_commit_forgotten_whole_opens_again_at_a_pull_anew_spec_sync_judgement_3() {
+    let mut w = siblings();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    let x = make_in(&mut w, 1, t0, "x");
+    let y = make_in(&mut w, 1, t0, "y");
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t0, true);
+    w.run();
+    let minting: Vec<_> = w.engine(0).commit_ids().into_iter().filter(|c| w.engine(0).header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == x))).collect();
+    w.write(0, |e| e.forget_commits(&minting)).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 0, &x), None, "X forgotten at Alice");
+    strong(&mut w, 1, Some(y), x, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x".into())), "Alice reads X again");
+}
+
 // spec/sync-judgement.md §2 (A grant naming a holder travels under the holder's sync ID),
 // spec/permissions.md §3 (a commit of which it holds the header alone was read by no secret and
 // stays): Alice's node 2 makes T0 and T1 and grants Bob read on T0 while her node 0 grants T0
