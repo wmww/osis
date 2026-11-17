@@ -311,12 +311,11 @@ impl Engine {
 
     /// What read thing `t`'s readers need of `x` an edge write names `t` holder on (spec/sync-judgement.md
     /// §2 role commits naming an actor): `t`'s chain to `x` (`chain_piece`), the `secrets.0` parts
-    /// on `x` boxing a secret to `t`, `x`'s current `keys.0` and its sync record (its `sync.0`
-    /// parts), so a reader of `t` holds the grant, `x`'s own keys and its sync ID with no ticket.
+    /// on `x` boxing a secret to `t`, and `x`'s sync record (its `sync.0` parts), so a reader of
+    /// `t` holds the grant and `x`'s sync ID with no ticket (the chain carries `x`'s keys).
     /// Each valid part held, O(`x`'s held `secrets.0` and `sync.0` commits).
     pub(crate) fn holder_piece(&mut self, t: &Tid, x: &Tid) -> Certs {
         let mut out = self.chain_piece(t, x);
-        self.current_keys_into(x, &mut out);
         let on = BTreeSet::from([*x]);
         for ak in ["secrets.0", "sync.0"] {
             let Ok(k) = Ak::new(ak) else { continue };
