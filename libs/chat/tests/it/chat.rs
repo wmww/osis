@@ -35,10 +35,10 @@ fn shown(db: &Osis, c: Tid, id: CommitId) -> (String, bool) {
 }
 
 // notes/chat.md Create, spec/commits.md §6 (a write is one commit), spec/commits.md §5 (The
-// setting), spec/permissions.md §3, spec/sync-set.md §1: a chat is its own keys carrying its record, then
-// one commit holding its settings and its `retention^.0` (messages kept for good, the
-// disappearing expiry, replacements refused when editing is off, the retain default), and the
-// account root's ticket for it, this account its admin; a purge set chat cannot keep is
+// setting), spec/permissions.md §3: a chat is one commit holding its record, its settings, its
+// `retention^.0` (messages kept for good, the disappearing expiry, replacements refused when
+// editing is off, the retain default) and its holder's strong; plain under its holder until its
+// first grant gives it keys of its own; this account its admin; a purge set chat cannot keep is
 // `Invalid`, nothing written.
 #[test]
 fn create_is_one_whole_commit_spec_commits_2() {
@@ -46,9 +46,9 @@ fn create_is_one_whole_commit_spec_commits_2() {
     let day = std::time::Duration::from_secs(86_400);
     let n = commits(&db);
     let c = create(&db, &Options { name: "room".into(), purge: PurgeBy::Admin, edit: None, disappear: Some(day), retain_copies: false }, db.account_root()).unwrap();
-    assert_eq!(commits(&db), n + 3, "its rotation carrying its record, its settings, the account's ticket for it");
-    let tickets = db.at(db.account_root(), osis::internals::core_types::TICKETS).get().unwrap().unwrap_or_default();
-    assert!(tickets.iter().any(|k| k.target == c), "the account root's ticket for it (spec/sync-set.md §1)");
+    assert_eq!(commits(&db), n + 1, "one commit");
+    let keys = |db: &Osis, c: Tid| db.engine(|e| e.get_typed(&c, &osis::internals::core_types::KEYS).unwrap().is_some());
+    assert!(!keys(&db, c), "plain until shared");
     assert_eq!(db.role_on(c).unwrap(), Some(Role::Admin));
     let s = db.at(c, SETTINGS).get().unwrap().unwrap();
     assert_eq!((s.name.as_str(), s.purge), ("room", Some(Deletes::Admins)));
@@ -60,6 +60,10 @@ fn create_is_one_whole_commit_spec_commits_2() {
     let e = &r.rules[&MSG.name()];
     assert_eq!((e.expires, e.refuse_replace, r.retain_copies), (None, false, true), "the defaults");
     assert_eq!(db.at(d, SETTINGS).get().unwrap().unwrap().purge, None, "author or admin");
+    let other = node(2, &clock());
+    deliver(&other, &db);
+    db.grant(c, other.me(), Role::Read, Default::default()).unwrap();
+    assert!(keys(&db, c), "its first grant gives it keys of its own");
     let n = commits(&db);
     assert!(matches!(create(&db, &Options { purge: PurgeBy::Nobody, ..Options::default() }, db.account_root()), Err(Error::Invalid(_))));
     assert_eq!(commits(&db), n, "nothing written");

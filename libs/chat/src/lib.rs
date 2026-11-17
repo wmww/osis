@@ -51,13 +51,13 @@ impl Default for Options {
     }
 }
 
-/// A new chat, a root made under this account (its first admin), its settings written before
-/// anyone is granted: every message kept for good (expiry ends a disappearing one), replacements
-/// refused when editing is off, who may delete a message. One commit makes it whole (record,
-/// `retention^.0`, settings) and writes a strong to it in `holder`'s `holds.0` (the app's home,
-/// the account root), as an accept would (spec/sync-set.md §4). Changing a setting later writes
-/// `retention^.0` whole; a participant who has not seen it writes as before (its messages keep
-/// the expiry they were written with).
+/// A new chat, made under `holder` (its first admin: the app's home, the account root) and held by
+/// it, its settings written before anyone is granted: every message kept for good (expiry ends a
+/// disappearing one), replacements refused when editing is off, who may delete a message. One
+/// commit makes it whole (record, `retention^.0`, settings, the strong in `holder`'s `holds.0`).
+/// Until its first grant or link it is plain, read by whoever reads `holder`; that first share
+/// gives it keys of its own. Changing a setting later writes `retention^.0` whole; a participant
+/// who has not seen it writes as before (its messages keep the expiry they were written with).
 pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
     let purge = match o.purge {
         PurgeBy::AuthorOrAdmin => None,
@@ -68,7 +68,7 @@ pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
     let msg = RetentionEntry { history: Some(History::FOREVER), expires: o.disappear, refuse_replace: o.edit.is_none() };
     let setting = RetentionSetting { rules: BTreeMap::from([(MSG.name(), msg)]), default: None, retain_copies: o.retain_copies, history_holds_targets: false };
     let mut w = db.write();
-    let c = w.create(db.me())?;
+    let c = w.create(holder)?;
     w.at(c, RETENTION).set(&setting)?;
     w.at(c, SETTINGS).set(&schema::Settings { name: o.name.clone(), edit: o.edit.clone().unwrap_or(EditMode::Purge), purge })?;
     w.hold(holder, c)?;
