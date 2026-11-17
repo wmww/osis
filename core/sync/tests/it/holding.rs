@@ -622,3 +622,28 @@ fn a_released_thing_reached_again_is_fetched_again_spec_sync_judgement_3() {
         assert_eq!(value(&mut w, i, &x), Some(Value::Str("x".into())), "node {i} reads X again");
     }
 }
+
+// spec/sync-judgement.md §2 (A grant naming a holder travels under the holder's sync ID with the
+// target's sync record): Alice's node 2 makes T0 and T1 and grants Bob read on T0 while her node
+// 0 grants T0 sync on T1, so both key T0 (two sync IDs). Bob, reading T0, must hold what T0's
+// sync IDs need of T1 (its record, its sync record, its boxes to T0). Fails: Bob takes their
+// entries under T0's higher sync ID but holds none of those commits, so they stay parked, and
+// T1's record is not kept (issues/reference-graph.md Full size, seed 64). With one keying of T0
+// (node 2 granting both) it passes.
+#[test]
+#[ignore = "issues/reference-graph.md Full size: must-hold bodies a caught-up reader lacks"]
+fn a_reader_of_a_holder_holds_its_targets_sync_record_spec_sync_judgement_2() {
+    let mut w = contacts();
+    w.pair(0);
+    w.run();
+    let bob = w.node(1).account.unwrap();
+    let t0 = make(&mut w, 2, None, "t0");
+    let t1 = make(&mut w, 2, None, "t1");
+    w.run();
+    w.write(2, |e| e.grant(&t0, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&t1, &t0, &edge(Role::Sync))).unwrap();
+    w.run();
+    strong(&mut w, 1, None, t0, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &t0), Some(Value::Str("t0".into())));
+}
