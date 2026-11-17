@@ -37,6 +37,9 @@ impl Engine {
             crate::flows::inbox::drop_account_tickets(tx, &out)?;
             // what stays of them (records, role-class state) only while a held thing needs it
             tx.core.needs_due.extend(things.iter().copied());
+            // and what each was named holder on: needed by it only while it was in the closure
+            let named: Vec<Tid> = out.iter().flat_map(|t| tx.core.ix.held.named_on(t).copied().collect::<Vec<_>>()).collect();
+            tx.core.needs_due.extend(named);
             crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new())?;
             Ok(())
         })

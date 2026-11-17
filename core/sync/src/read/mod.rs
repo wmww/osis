@@ -293,8 +293,13 @@ impl Read {
             }
             // pullable read inside: a sync ID a reader cannot pull yet is due again once it can
             let Some((_, now)) = self.cert_blobs.try_settle(&(s, r), || cert_blobs_missing(g, &s, r).map(Arc::new))? else { continue };
-            if !now.gone.is_empty() {
-                g.forget_cert_blobs(&s, r, &now.gone)?;
+            // one carrying nothing S carries now leaves the own store, no tombstone (none covers
+            // it: spec/sync-judgement.md §3 Own store), and what the engine kept of it with it
+            for b in &now.unneeded {
+                g.unlog(&s, b)?;
+            }
+            if !now.gone.is_empty() || !now.unneeded.is_empty() {
+                g.forget_cert_blobs(&s, r, &now.gone.union(&now.unneeded).copied().collect())?;
                 acted = true;
             }
             for b in &now.stale {

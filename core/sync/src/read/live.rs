@@ -520,17 +520,21 @@ impl Ground for Live<'_, '_> {
     fn cert_blobs_missing(&mut self, s: &SyncId, r: CertKind) -> Result<CertBlobsMissing> {
         // nothing can be sealed under S yet (a rotation owed before encrypting): what is missing
         // is told once it can, so the effect acts then
-        let missing = match (self.cx.engine.cert_wrap(s, r.as_ref())?, r) {
-            (false, _) => BTreeSet::new(),
-            (true, None) => (*self.cx.engine.certificate_records(s)?).clone(),
-            (true, Some(r)) => (*self.cx.engine.certificate_lists(s, &r)?).clone(),
+        let carried = match r {
+            None => (*self.cx.engine.certificate_records(s)?).clone(),
+            Some(r) => (*self.cx.engine.certificate_lists(s, &r)?).clone(),
         };
+        let missing = if self.cx.engine.cert_wrap(s, r.as_ref())? { carried.clone() } else { BTreeSet::new() };
         let mut out = CertBlobsMissing { missing, ..CertBlobsMissing::default() };
         for (b, tids) in self.cx.engine.cert_blobs(s, r).iter() {
             let Some(e) = self.cx.store.entry(s, b)?.filter(|e| e.own) else {
                 out.gone.insert(*b);
                 continue;
             };
+            if tids.is_disjoint(&carried) {
+                out.unneeded.insert(*b);
+                continue;
+            }
             if !self.under_head(s, &e)? {
                 out.stale.insert(*b);
             }

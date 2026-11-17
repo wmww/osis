@@ -183,6 +183,9 @@ impl Carriers {
             Some(f) => {
                 for b in f.added() {
                     engine.forget_carrier(&b);
+                    if !store.named(&b)? {
+                        engine.unnamed_blob(&b)?;
+                    }
                     if let Some(c) = engine.blob_commit(&b) {
                         release(engine, store, &c)?;
                     }
@@ -272,12 +275,17 @@ impl Follow {
             }
             None => self.entries = Some(store.entry_feed()),
         }
-        // a commit forgotten (lost access) leaves its own entries waiting for it to open again
+        // a commit forgotten (lost access) leaves its own entries waiting for it to open again;
+        // a blob of it no entry names keeps no note (`Engine::unnamed_blob`)
         match self.unheld.as_mut() {
             Some(f) => {
                 for c in f.removed() {
                     for b in engine.commit_blobs(&c)?.iter() {
-                        for s in store.naming(b)? {
+                        let naming = store.naming(b)?;
+                        if naming.is_empty() {
+                            engine.unnamed_blob(b)?;
+                        }
+                        for s in naming {
                             if self.read.contains_key(&s) {
                                 let e = store.entry(&s, b)?;
                                 park(engine, &mut self.parked, &mut self.creds, s, *b, e.as_ref())?;

@@ -164,4 +164,7 @@ impl Ground for Live<'_, '_> {
         self.cx.engine.settle_needs()?;
         Ok(())
     }
+    fn settle_lost(&mut self) -> Result<()> {
+        Ok(self.cx.engine.settle_lost()?)
+    }
 }

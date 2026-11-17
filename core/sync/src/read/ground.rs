@@ -417,4 +417,7 @@ pub struct CertBlobsMissing {
     /// not stamped under S's head write key where this node holds it
     /// (`Ground::stands`): stamped in place.
     pub stale: BTreeSet<osis_base::BlobId>,
+    /// Certificate blobs of the kind sealed here under S that the own store holds and that carry
+    /// nothing S carries now: they leave it (`Ground::unlog`).
+    pub unneeded: BTreeSet<osis_base::BlobId>,
 }

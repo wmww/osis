@@ -145,7 +145,7 @@ pub(crate) fn set_pending(core: &mut Core, id: &CommitId, r: Option<(Reason, Opt
 pub(crate) fn pending_left(core: &mut Core, id: &CommitId) {
     let signers = core.ix.pend_needs.get(id).cloned().unwrap_or_default();
     for k in signers.iter() {
-        core.note_pass_due(*k);
+        core.note_lost(*k);
     }
 }
 

@@ -1861,6 +1861,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     crate::sync::falls::load(tx)?;
     crate::sync::bodies::load(tx)?;
     crate::sync::certblobs::load(tx)?;
+    crate::sync_ids::opened::load(tx)?;
     crate::flows::lists::load(tx)?;
     let addenda_due = tx.scan_keys(records::ADDENDA_DUE, "addenda due", CommitId)?;
     tx.core.ix.addenda_due.extend(addenda_due);

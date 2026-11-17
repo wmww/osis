@@ -6,8 +6,11 @@
 //! nothing), an account by its `keys.0` (its inbox), one whose record names it first admin, one
 //! whose held edge write names it holder (`Held::named_on`), one a held or pending commit it
 //! authored or acted in is on (body held or not; a pending one by the things it writes on,
-//! `Indexes::pend_by`), one a pending commit awaiting its record writes on (`Wake::Record`), one a
-//! held commit on it has a part missing on (`Meta::missing_parts`). A thing is rooted, kept for
+//! `Indexes::pend_by`), one a pending commit awaiting its record writes on (`Wake::Record`), one in
+//! the node closure a held commit on it has a part missing on (`Meta::missing_parts`: a part the
+//! node fetches again), one in the node closure an edge write on it names holder (not by its
+//! record: the holder's sync ID carries the grant with its chain, spec/sync-judgement.md §2 A
+//! grant naming a holder). A thing is rooted, kept for
 //! itself: in the node closure or leaving it, reached by a held strong with a ticket for it held
 //! (`Closure::accepted`: what judges the ticket stays, spec/sync-set.md §2), a key actor that is
 //! no account (a node, a link key), the K of a followed link, one a key actor held here is named
@@ -18,13 +21,16 @@
 //! that applied what pairing sent, before any pass ends. Everything else goes whole, as never
 //! received, when the pass that brought it ends or its last need went (`settle`).
 //!
-//! Judged once the pass in flight ends (`Engine::settle_needs`): a thing arrived (a record
-//! learned, `apply::atomic::learn_record`, or awaited by a commit that pends, `apply::set_pending`)
-//! or lost a need (a strong row or an account's `keys.0` row gone, `refs::note`; a signer's commit dropping a part or
-//! forgotten, `Core::note_signed`, `Core::take_meta`, or leaving pending; a commit's part no longer missing,
-//! `Core::note_on`; a holder unnamed,
-//! `Held::take_unnamed`) is noted in `Core::pass_due` until then, so a parent's record arriving
-//! before what needs it stays. A release judges what it released in its own transaction
+//! An arrival is judged once the pass in flight ends (`Engine::settle_needs`): a thing whose
+//! record was learned (`apply::atomic::learn_record`) or that a commit that pends awaits
+//! (`apply::set_pending`) is noted in `Core::pass_due` until then, so a parent's record arriving
+//! before what needs it stays. A lost need waits for nothing but a pass in flight: a thing that
+//! lost one (a strong row or an account's `keys.0` row gone, `refs::note`; a signer's commit
+//! dropping a part or forgotten, `Core::note_signed`, `Core::take_meta`, or leaving pending; a
+//! commit's part no longer missing, `Core::note_on`; a holder unnamed, `Held::take_unnamed`; an
+//! accepted ticket's strong gone) is noted in `Core::lost_due`, judged at a pass's end or, with
+//! none in flight, at once (`Engine::settle_lost`). A release judges what it released, and what
+//! each was named holder on, in its own transaction
 //! (`Engine::released`). Either way at the end of a transaction (`Engine::run`, in turn with
 //! destructions, on the node closure settled). The judgement walks the needs up from the thing
 //! (`needed`) and stops at the first rooted one, so it costs O(1) while the thing is needed and
@@ -39,20 +45,52 @@ use std::collections::{BTreeMap, BTreeSet};
 
 impl Engine {
     /// A pass ended (sync: every connected peer's pass in flight; a test: a delivery batch): what
-    /// arrived outside the node closure since the last call and nothing held needs goes
-    /// (spec/commits.md §5 What a held thing needs), as at a release. The first call after an
+    /// arrived outside the node closure or lost a need since the last call and nothing held needs
+    /// goes (spec/commits.md §5 What a held thing needs), as at a release. The first call after an
     /// open judges every held record and every record a pending commit awaits, as an open keeps
     /// no list of what arrived. O(what arrived).
     pub fn settle_needs(&mut self) -> Result<()> {
-        let due: BTreeSet<Tid> = match self.core.pass_due.replace(BTreeSet::new()) {
+        let mut due: BTreeSet<Tid> = match self.core.pass_due.replace(BTreeSet::new()) {
             Some(a) => a,
             None => {
                 let awaited = self.core.ix.pend_on.keys().filter_map(|w| if let crate::apply::Wake::Record(t) = w { Some(*t) } else { None });
                 self.core.ix.held.things().copied().chain(awaited).collect()
             }
         };
+        due.append(&mut self.core.lost_due);
+        let r = self.settle_due(&due);
+        // judged again at the next pass's end
+        if r.is_err() {
+            for t in due {
+                self.core.note_pass_due(t);
+            }
+        }
+        r
+    }
+
+    /// No pass is in flight (sync: none begun and not ended): what lost a need since the last
+    /// judgement and nothing held needs goes, as at a pass end. A lost need waits for nothing;
+    /// an arrival waits for the pass that brought it (a parent's record before what needs it),
+    /// so one also arrived since (`Core::pass_due`; every held record after an open) waits for
+    /// that pass. O(what lost a need).
+    pub fn settle_lost(&mut self) -> Result<()> {
+        let Some(arrived) = &self.core.pass_due else { return Ok(()) };
+        let due: BTreeSet<Tid> = self.core.lost_due.difference(arrived).copied().collect();
+        if due.is_empty() {
+            return Ok(());
+        }
+        self.core.lost_due.retain(|t| !due.contains(t));
+        let r = self.settle_due(&due);
+        if r.is_err() {
+            self.core.lost_due.extend(due);
+        }
+        r
+    }
+
+    /// `due` judged: those outside the node closure nothing held needs go.
+    fn settle_due(&mut self, due: &BTreeSet<Tid>) -> Result<()> {
         let cl = &self.core.ix.closure;
-        let due: Vec<Tid> = due.into_iter().filter(|t| !cl.holds(t)).collect();
+        let due: Vec<Tid> = due.iter().filter(|t| !cl.holds(t)).copied().collect();
         if due.is_empty() {
             return Ok(());
         }
@@ -68,17 +106,10 @@ impl Engine {
         if !goes {
             return Ok(());
         }
-        let r = self.run(|tx| {
+        self.run(|tx| {
             tx.core.needs_due.extend(due.iter().copied());
             Ok(())
-        });
-        // judged again at the next pass's end
-        if r.is_err() {
-            for t in due {
-                self.core.note_pass_due(t);
-            }
-        }
-        r
+        })
     }
 }
 
@@ -105,8 +136,9 @@ fn rooted(core: &Core, t: &Tid) -> bool {
 /// naming its inbox too), those a held commit it
 /// authored (an account's: `Indexes::by_epoch`) or acted in (`Indexes::by_actor`) has an aspect
 /// on, its parts held or not (a header alone is judged by its author's chain), those a pending
-/// commit it signed (`Indexes::pend_by`) or awaiting its record (`Wake::Record`) writes on, and
-/// those a held commit on it has a part missing on.
+/// commit it signed (`Indexes::pend_by`) or awaiting its record (`Wake::Record`) writes on, and,
+/// in the node closure, those a held commit on it has a part missing on and those an edge write
+/// on it names holder.
 fn needers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Tid>> {
     let core = &*tx.core;
     let lo = osis_base::CommitId([0; 32]);
@@ -117,10 +149,15 @@ fn needers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeSet<Tid>> {
     // writes on (`Wake::Thing`), as if held
     let awaiting = core.ix.pend_on.get(&crate::apply::Wake::Record(*t)).into_iter().flatten();
     let pending = core.ix.pend_by.get(t).into_iter().flatten().chain(awaiting).flat_map(|c| core.ix.pend_keys.get(c).into_iter().flat_map(|ws| ws.iter()).filter_map(|w| if let crate::apply::Wake::Thing(x) = w { Some(*x) } else { None }));
-    // a held commit on it still waiting for a part (counted missing), by the things those parts
-    // are on: what arrives there may reference it, and the commit stays whole for it
-    let waiting = core.on_thing(t).flat_map(|c| core.ix.commits.get(&c).into_iter().flat_map(|m| m.missing_parts().filter_map(|ai| m.view.aspects.get(ai).map(|a| a.tid))));
-    let mut out: BTreeSet<Tid> = core.ix.held.named_on(t).copied().chain(signed).chain(pending).chain(waiting).collect();
+    // a held commit on it still waiting for a part (counted missing), by the things the node
+    // closure holds those parts are on (spec/commits.md §5: one the node fetches again): what
+    // arrives there may reference it, and the commit stays whole for it
+    let waiting = core.on_thing(t).flat_map(|c| core.ix.commits.get(&c).into_iter().flat_map(|m| m.missing_parts().filter_map(|ai| m.view.aspects.get(ai).map(|a| a.tid)))).filter(|x| core.ix.closure.holds(x));
+    // a thing in the node closure an edge write on it names holder (not by its record): the
+    // holder's sync ID carries the grant with its chain (spec/sync-judgement.md §2 A grant naming
+    // a holder), so its readers read it through the holder
+    let holding = core.ix.held.holders_of(t).filter(|h| core.ix.closure.holds(h) && core.first_admin(t) != Some(**h)).copied();
+    let mut out: BTreeSet<Tid> = core.ix.held.named_on(t).copied().chain(signed).chain(pending).chain(waiting).chain(holding).collect();
     // a strong from a thing the node closure holds (a weak or ticket only points; one kept only
     // as a certificate needs nothing by what its state names), and an account's reference from
     // its `keys.0` (its inbox, part of its chain)
@@ -222,6 +259,7 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
         crate::engine::index::put_edges(tx, &id, &parts, Shred::Yes)?;
     }
     for t in &gone {
+        crate::sync_ids::opened::forget_thing(tx, t)?;
         if tx.core.ix.secrets.remove(t).is_some() {
             tx.txn.remove_local(&[crate::engine::records::SECRETS, t.as_bytes()].concat(), Shred::Yes)?;
         }
@@ -238,4 +276,3 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
     crate::apply::rejudged(tx, true)?;
     Ok(true)
 }
-

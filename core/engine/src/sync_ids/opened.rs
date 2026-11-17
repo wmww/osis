@@ -33,11 +33,14 @@
 //! its own (`header_passes`), whether it came header-only or its parts were dropped since.
 //!
 //! Storage: an opening rides in memory (`Core::openings`) from `Engine::open_commit` to the
-//! commit's next ingest, which writes it where the commit is then held or pending
-//! (`persist`) and lets go of it whatever the outcome; rows go with the commit's record
-//! (`Tx::remove_commit`) or its pending copy thrown out unapplied (`drop_pending`). Memory is
-//! bounded by the commits opened and not yet ingested, plus held and pending commits opened
-//! again whose rows were not yet written.
+//! commit's next ingest, which writes it where the commit is then held or pending and the
+//! epoch's thing's record is held (`persist`) and lets go of it whatever the outcome; rows go
+//! with the commit's record (`Tx::remove_commit`) or its pending copy thrown out unapplied
+//! (`drop_pending`), and those under an epoch of a thing with the thing (`forget_thing`: an epoch
+//! of a thing whose record is not held is established nowhere, so its openings are as never
+//! made). Rows are indexed by thing (`Indexes::opened_under`). Memory is bounded by the commits
+//! opened and not yet ingested, plus held and pending commits opened again whose rows were not
+//! yet written.
 
 use crate::engine::{Core, Engine, Hold, Tx, records};
 use crate::error::{Error, Result};
@@ -57,6 +60,63 @@ pub type Rows = Vec<(Vec<u8>, Vec<u8>)>;
 /// keyset may name another thing's epoch), so the thing is part of the opening.
 fn key(c: &CommitId, ai: u32, t: &Tid, e: &Epoch) -> Vec<u8> {
     [records::OPENED_UNDER, c.0.as_slice(), &ai.to_be_bytes(), t.as_bytes(), &e.n().to_be_bytes(), e.nonce()].concat()
+}
+
+/// The thing an `OPENED_UNDER` key (past the prefix) names.
+fn key_thing(k: &[u8]) -> Option<Tid> {
+    k.get(36..51).and_then(|b| <[u8; 15]>::try_from(b).ok()).map(Tid::from_bytes)
+}
+
+/// Writes row (`k`, `v`) of commit `c`, indexed by its thing.
+fn put(tx: &mut Tx<'_>, c: &CommitId, k: &[u8], v: &[u8]) -> Result<()> {
+    tx.txn.put_local(k, v, Shred::No)?;
+    if let Some(t) = k.get(records::OPENED_UNDER.len()..).and_then(key_thing) {
+        tx.core.ix.opened_under.insert(t, *c);
+    }
+    Ok(())
+}
+
+/// Removes commit `c`'s rows `gone` (whole keys), and the index of each thing no row of `c`
+/// stays under.
+fn remove(tx: &mut Tx<'_>, c: &CommitId, gone: Vec<Vec<u8>>) -> Result<()> {
+    if gone.is_empty() {
+        return Ok(());
+    }
+    let prefix = [records::OPENED_UNDER, c.0.as_slice()].concat();
+    let gone: std::collections::BTreeSet<Vec<u8>> = gone.into_iter().collect();
+    let mut things = std::collections::BTreeSet::new();
+    let mut left = std::collections::BTreeSet::new();
+    tx.scan(&prefix, |k, _| {
+        let t = k.get(4..19).and_then(|b| <[u8; 15]>::try_from(b).ok()).map(Tid::from_bytes);
+        match gone.contains(&[prefix.as_slice(), k].concat()) {
+            true => things.extend(t),
+            false => left.extend(t),
+        }
+        Ok(())
+    })?;
+    for k in &gone {
+        tx.txn.remove_local(k, Shred::Yes)?;
+    }
+    for t in things.difference(&left) {
+        tx.core.ix.opened_under.remove(t, c);
+    }
+    Ok(())
+}
+
+/// Loads `Indexes::opened_under` (an open or reload).
+pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
+    let mut rows = Vec::new();
+    tx.scan(records::OPENED_UNDER, |k, _| {
+        let c = k.get(..32).and_then(|b| <[u8; 32]>::try_from(b).ok()).map(CommitId);
+        if let (Some(c), Some(t)) = (c, key_thing(k)) {
+            rows.push((t, c));
+        }
+        Ok(())
+    })?;
+    for (t, c) in rows {
+        tx.core.ix.opened_under.insert(t, c);
+    }
+    Ok(())
 }
 
 fn part_index(ai: usize) -> u32 {
@@ -197,7 +257,7 @@ pub(crate) fn note_own(tx: &mut Tx<'_>, c: &osis_commit::CommitBlob) -> Result<(
         let Some(a) = c.header.aspects.get(p.ai).filter(|a| is_content(a.ak.as_str())) else { continue };
         let Some((e, f)) = tx.core.seal_epoch(&a.tid) else { continue };
         if f > 0 {
-            tx.txn.put_local(&key(&id, part_index(p.ai), &a.tid, &e), &value(true, &p.delta), Shred::No)?;
+            put(tx, &id, &key(&id, part_index(p.ai), &a.tid, &e), &value(true, &p.delta))?;
         }
     }
     Ok(())
@@ -210,8 +270,9 @@ pub(crate) fn persist(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
         return Ok(());
     }
     for (k, v) in tx.core.openings.get(c).cloned().into_iter().flatten() {
-        if tx.txn.get_local(&k)?.is_none() {
-            tx.txn.put_local(&k, &v, Shred::No)?;
+        let held = k.get(records::OPENED_UNDER.len()..).and_then(key_thing).is_some_and(|t| tx.core.created(&t).is_some());
+        if held && tx.txn.get_local(&k)?.is_none() {
+            put(tx, c, &k, &v)?;
         }
     }
     Ok(())
@@ -234,10 +295,7 @@ pub(crate) fn prune(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta) -> R
         }
         Ok(())
     })?;
-    for k in gone {
-        tx.txn.remove_local(&k, Shred::Yes)?;
-    }
-    Ok(())
+    remove(tx, c, gone)
 }
 
 /// One opening of a part: the part, the thing its epoch is of, the epoch, whether its delta was
@@ -422,22 +480,20 @@ pub(crate) fn part_floor(tx: &mut Tx<'_>, c: &CommitId, ai: usize, t: &Tid) -> R
     })
 }
 
-/// Removes the openings of held commit `c` under things whose record is not held: a copy's,
-/// under its released sync ID's thing (`Engine::shredding`), are as at a node that never opened
-/// it.
-pub(crate) fn forget_unheld(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
-    let prefix = [records::OPENED_UNDER, c.0.as_slice()].concat();
-    let mut rows = Vec::new();
-    tx.scan(&prefix, |k, _| {
-        if let Some(t) = k.get(4..19).and_then(|b| <[u8; 15]>::try_from(b).ok()) {
-            rows.push(([prefix.as_slice(), k].concat(), Tid::from_bytes(t)));
-        }
-        Ok(())
-    })?;
-    for (k, t) in rows {
-        if tx.core.created(&t).is_none() {
-            tx.txn.remove_local(&k, Shred::Yes)?;
-        }
+/// Removes every opening under an epoch of thing `t`, whose record goes (`retention::needed`):
+/// those of the commits that stay are as at a node that never opened them.
+pub(crate) fn forget_thing(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
+    let commits: Vec<CommitId> = tx.core.ix.opened_under.get(t).into_iter().flatten().copied().collect();
+    for c in commits {
+        let prefix = [records::OPENED_UNDER, c.0.as_slice()].concat();
+        let mut gone = Vec::new();
+        tx.scan(&prefix, |k, _| {
+            if k.get(4..19) == Some(t.as_bytes().as_slice()) {
+                gone.push([prefix.as_slice(), k].concat());
+            }
+            Ok(())
+        })?;
+        remove(tx, &c, gone)?;
     }
     Ok(())
 }
@@ -450,10 +506,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
         gone.push([prefix.as_slice(), k].concat());
         Ok(())
     })?;
-    for k in gone {
-        tx.txn.remove_local(&k, Shred::Yes)?;
-    }
-    Ok(())
+    remove(tx, c, gone)
 }
 
 impl Engine {

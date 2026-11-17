@@ -557,6 +557,12 @@ fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_i
     w.run();
     assert_eq!(value(&mut w, 1, &t0), Some(Value::Str("t0".into())), "Bob reads T0 through T1");
     assert_eq!(holding(&mut w, 1, &t0), Some(Holding::Read));
+    // T3's chain was needed by T4 alone (spec/commits.md §5 What a held thing needs): released
+    // with it
+    assert!(w.engine(0).first_admin(&t3).is_some(), "Alice holds T3's record while T4 is held");
+    strong(&mut w, 0, None, t4, false);
+    w.run();
+    assert_eq!(w.engine(0).first_admin(&t3), None, "T3's record goes with T4");
 }
 
 // spec/sync-inbox.md §5 (Nothing before the strong), spec/sync-set.md §2 (What a held ticket

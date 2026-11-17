@@ -1000,7 +1000,7 @@ fn refetch(tx: &mut Tx<'_>, v: Vx, y: Tid, ticketed: bool) -> Result<()> {
 /// judged for what it still needs (`retention::needed`).
 fn set_accepted(tx: &mut Tx<'_>, y: Tid, v: Vx, on: bool) {
     if tx.core.ix.closure.set_accepted(y, v, on) {
-        tx.core.note_pass_due(y);
+        tx.core.note_lost(y);
     }
 }
 

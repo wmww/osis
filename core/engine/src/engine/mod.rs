@@ -853,6 +853,9 @@ indexes! {
     pub falls: JMap<(Tid, Ak), u64>,
     /// Self-removals waiting to be held elsewhere (`sync::held`).
     pub held_wait: JSet<CommitId>,
+    /// Per thing, the commits with an opening written under an epoch of it (`sync_ids::opened`,
+    /// `records::OPENED_UNDER`): what goes with the thing.
+    pub opened_under: JSetMap<Tid, CommitId>,
     /// Per sync ID, the place (`Core::place`) the last complete pass sync noted of it began at
     /// (`sync::held`): an event, not derived from the commits held, so no rebuild compares it.
     pub passes: JMap<SyncId, u64>,
@@ -1291,10 +1294,13 @@ pub struct Core {
     /// (`retention::needed`): a release, `pass_due` at a pass end.
     pub needs_due: BTreeSet<Tid>,
     /// Things judged once the pass in flight ends (`Engine::settle_needs`, `retention::needed`):
-    /// one arrived (a record learned or awaited) or lost a need (a reference to it gone, a commit
-    /// it signed moved or left pending, a holder unnamed, an accepted ticket's strong gone). `None`
-    /// after an open: every held record and awaited record is judged then.
+    /// one arrived (a record learned or awaited). `None` after an open: every held record and
+    /// awaited record is judged then.
     pub pass_due: Option<BTreeSet<Tid>>,
+    /// Things that lost a need (a reference to it gone, a commit it signed moved or left pending,
+    /// a holder unnamed, an accepted ticket's strong gone): judged once the pass in flight ends,
+    /// or at once with none in flight (`Engine::settle_lost`).
+    pub lost_due: BTreeSet<Tid>,
     /// While `Some` (a tick round's expiries): the rebuilds asked, one per aspect, run once
     /// when it ends (`apply::run_batched`).
     pub batched: Option<BTreeMap<(Tid, Ak), Batched>>,
@@ -1556,6 +1562,7 @@ impl Core {
             valueless_dirty: self.valueless_dirty.clone(),
             needs_due: self.needs_due.clone(),
             pass_due: self.pass_due.clone(),
+            lost_due: self.lost_due.clone(),
             batched: self.batched.clone(),
             touches: self.touches.clone(),
             held_writes: self.held_writes.clone(),
@@ -2098,6 +2105,7 @@ impl Core {
             valueless_dirty: _,
             needs_due: _,
             pass_due: _,
+            lost_due: _,
             wakes: _,
             resnapshots_due: _,
             openings: _,
@@ -2379,6 +2387,7 @@ impl Core {
             needs_due: BTreeSet::new(),
             // what arrived before the open but was not judged yet: all judged at the first settle
             pass_due: None,
+            lost_due: BTreeSet::new(),
             batched: None,
             touches: Default::default(),
             held_writes: memo::Memo::new("held writes"),
@@ -2556,19 +2565,24 @@ impl Core {
         self.ix.commits.insert(id, m);
     }
 
-    /// `t` arrived or lost a need: judged at the next `Engine::settle_needs`.
+    /// `t` arrived: judged at the next `Engine::settle_needs`.
     pub(crate) fn note_pass_due(&mut self, t: Tid) {
         if let Some(a) = &mut self.pass_due {
             a.insert(t);
         }
     }
 
+    /// `t` lost a need: judged at the next `Engine::settle_needs` or `Engine::settle_lost`.
+    pub(crate) fn note_lost(&mut self, t: Tid) {
+        self.lost_due.insert(t);
+    }
+
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         // its signers' chains may be needed by nothing more (`retention::needed`)
-        self.note_pass_due(m.view.author);
-        self.note_pass_due(m.view.actor);
+        self.note_lost(m.view.author);
+        self.note_lost(m.view.actor);
         let had = missing_of(&m);
         if !had.is_empty() {
             self.note_on(&m);
@@ -2586,7 +2600,7 @@ impl Core {
     /// Notes every thing `m` is on for the pass's need judgement (`retention::needed`).
     fn note_on(&mut self, m: &Meta) {
         for a in &m.view.aspects {
-            self.note_pass_due(a.tid);
+            self.note_lost(a.tid);
         }
     }
 
@@ -2631,10 +2645,10 @@ impl Core {
             match self.ix.signed.get(k).copied().unwrap_or(0) {
                 0 | 1 => {
                     self.ix.signed.remove(k);
-                    self.note_pass_due(*k);
+                    self.note_lost(*k);
                 }
                 n => {
-                    self.note_pass_due(*k);
+                    self.note_lost(*k);
                     self.ix.signed.insert(*k, n - 1);
                 }
             }

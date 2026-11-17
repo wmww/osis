@@ -215,7 +215,7 @@ pub(crate) fn apply_destructions(tx: &mut Tx<'_>) -> Result<()> {
 /// judged for whether anything held still needs it (`retention::needed`).
 fn unnamed(core: &mut Core) {
     for t in core.ix.held.take_unnamed() {
-        core.note_pass_due(t);
+        core.note_lost(t);
     }
 }
 

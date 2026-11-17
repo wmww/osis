@@ -568,34 +568,55 @@ fn grant_rounds(rounds: usize, accept: bool) -> Vec<Held> {
     settled(&mut w)
 }
 
-/// `grant_rounds` at 2 and 20 rounds: the maker as a fresh world's node 0 (`as_fresh`), each
-/// round's set removals at most `removals`; the grantee the same at 20 rounds as at 2, but for
-/// the removals' tombstones (as a fresh world's: issues/storage-owners.md 15, 16) and, accepted,
-/// one header opening (`ou/`) per released thing (issues/storage-owners.md 17).
+/// The engine families of one creation record held as a certificate: the record (`t/`), its
+/// `keys.0` aspect (`a/`) and keyset commit (`g/`).
+const ROOT_RECORD: [&str; 3] = ["t/", "a/", "g/"];
+
+/// `h` with one row of each `ROOT_RECORD` family taken, where it holds exactly one more than
+/// `fresh`, and `c/` at `fresh`'s bytes (the commits on the thing store their states once its
+/// record is held). Interim (issues/storage-owners.md 19): the grantee keeps the maker's account
+/// root's record, needed by the maker's account, once a thing under it brought it; the caller
+/// checks the grantee flat besides.
+fn but_root_record(h: &Held, fresh: &Held) -> Held {
+    let mut h = h.clone();
+    for k in ROOT_RECORD {
+        let f = fresh.0.get(k).copied().unwrap_or_default();
+        if h.0.get(k).is_some_and(|x| x.0 == f.0 + 1) {
+            h.0.insert(k.to_owned(), f);
+        }
+    }
+    if let (Some(x), Some(f)) = (h.0.get_mut("c/"), fresh.0.get("c/")) {
+        x.1 = x.1.min(f.1);
+    }
+    h
+}
+
+/// `grant_rounds` at 2 and 20 rounds: each node as a fresh world's (`as_fresh`), each round's
+/// set removals at most `removals` a node; an accepting grantee but the maker's account root's
+/// record (`but_root_record`), and as at 2 rounds at 20.
 fn grants_as_fresh(accept: bool, removals: usize) {
     let fresh = grant_rounds(0, accept);
     let (a, b) = (grant_rounds(2, accept), grant_rounds(20, accept));
-    as_fresh(&a[0], &fresh[0], 2 * removals, "the maker, 2 rounds");
-    as_fresh(&b[0], &fresh[0], 20 * removals, "the maker, 20 rounds");
-    let openings = |h: &Held| {
-        let mut h = h.clone();
-        (h.0.remove("ou/").map_or(0, |x| x.0), h)
-    };
-    let ((x, a1), (y, b1)) = (openings(&a[1]), openings(&b[1]));
-    as_fresh(&b1, &a1, 18 * removals, "the grantee, 20 rounds against 2");
-    assert!(y <= x + if accept { 18 } else { 0 }, "the grantee: ou/ {x} rows at 2 rounds, {y} at 20");
-    for (i, (x, y)) in a.iter().zip(&b).enumerate() {
-        assert_eq!(x.0.get("cv/"), y.0.get("cv/"), "node {i}: cv/ flat");
+    for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
+        let (x, y) = match accept && i == 1 {
+            true => {
+                as_fresh(&b[i], &a[i], 18 * removals, &format!("{who}, 20 rounds against 2"));
+                (but_root_record(&a[i], &fresh[i]), but_root_record(&b[i], &fresh[i]))
+            }
+            false => (a[i].clone(), b[i].clone()),
+        };
+        as_fresh(&x, &fresh[i], 2 * removals, &format!("{who}, 2 rounds"));
+        as_fresh(&y, &fresh[i], 20 * removals, &format!("{who}, 20 rounds"));
+        assert_eq!(a[i].0.get("cv/"), b[i].0.get("cv/"), "{who}: cv/ flat");
     }
 }
 
 // S1, its grant, fire, accept and revoke arm (notes/refgraph-tests.md; issues/reference-graph.md
 // Storage), spec/sync-set.md §3: a thing granted to another account, its fire accepted, written,
-// the grantee removed and both sides letting it go, leaves the maker as a fresh world's and the
-// grantee flat once the inbox lifetime, the role keep and tombstones have passed, at 2 and 20
-// rounds.
+// the grantee removed and both sides letting it go, leaves each node as a fresh world's (the
+// grantee but issues/storage-owners.md 19) once the inbox lifetime, the role keep and tombstones
+// have passed, at 2 and 20 rounds.
 #[test]
-#[ignore = "issues/storage-owners.md 18: the grantee keeps every thing it was granted and removed from"]
 fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(true, 4);
 }

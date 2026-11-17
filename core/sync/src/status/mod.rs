@@ -193,6 +193,10 @@ pub trait Ground: Net {
     /// A complete pass of S begun at place `began` ended (the engine drops S from
     /// `pass_wanted` once `began` is above its place).
     fn note_complete_pass(&mut self, s: &SyncId, began: u64) -> Result<()>;
+    /// No pass is in flight: what lost a need goes now (`Engine::settle_lost`).
+    fn settle_lost(&mut self) -> Result<()> {
+        Ok(())
+    }
     /// Whether this node holds no current read secret of read S's thing though one is known
     /// (`Engine::stranded`), with what its report names.
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<Stranding>>>;
@@ -400,6 +404,10 @@ impl Status {
         acted |= self.held_elsewhere(g)?;
         self.leaving.clear();
         acted |= self.passes(g, pulls)?;
+        // a lost need waits for no pass (spec/commits.md §5 What a held thing needs)
+        if self.passes.is_empty() {
+            g.settle_lost()?;
+        }
         self.judge_strandings(g)?;
         Ok(acted)
     }
