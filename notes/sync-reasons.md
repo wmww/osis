@@ -1,5 +1,5 @@
 # Sync: design reasons
-> Summary: Why spec/sync*.md is shaped as it is at its core: one kind of node (Tess), one blob per commit, sync IDs per thing and their role keys, entitlement, sections, certificate blobs, self-certifying sync IDs, the blob prefix, stamps and first-stamped-wins, delete keys and their levels, retention on the wire; rejected designs at that level, policy defaults, open items. Not here: sync-key gating, claims and re-seal (notes/sync-access.md), deletion and convergence (notes/sync-convergence.md), inbox and deposits (notes/inbox.md), what a node keeping S unread learns (notes/unreadable-data.md), the code (notes/sync.md and the module notes it lists).
+> Summary: Why spec/sync*.md is shaped as it is at its core: one kind of node (Tess), one blob per commit, sync IDs per thing and their role keys, entitlement, sections, certificate blobs, self-certifying sync IDs, the blob prefix, stamps and first-stamped-wins, delete keys and their levels, retention on the wire; rejected designs at that level, policy defaults, open items. Not here: sync-key gating, claims and re-seal (notes/sync-access.md), deletion and convergence (notes/sync-convergence.md), inbox and deposits (notes/sync-inbox.md), what a node keeping S unread learns (notes/unreadable-data.md), the code (notes/sync.md and the module notes it lists).
 
 The requirements behind sync: spec/requirements.md, Data a node cannot read and Deletion. The rules: spec/sync.md and the files it maps. Byte layouts: spec/wire.md.
 
@@ -25,7 +25,7 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 
 ## Stamps and deposits
 - **Stamps** (reading must not give writing): the author's signature sits inside the ciphertext, so S's write key is the only writer proof a node keeping S unread can check. Signing (sync ID, blob ID, wrap) and storing the signature beside the wrap lets any node relay a writer-vouched entry (LAN, node to node) while readers originate nothing; covering the wrap means a relaying reader can spoil nothing. A stamp is checked against the head's write key when taken, so a removed writer's new stamps are refused once the step its removal requires is registered.
-- **Deposits** carry what a non-writer legitimately needs under S: an unstamped entry within a per-sync-ID budget, readable at once by co-readers, promoted when a writer stamps it, which frees the budget (notes/inbox.md). Rejected: per-holder deposit keys (linkable).
+- **Deposits** carry what a non-writer legitimately needs under S: an unstamped entry within a per-sync-ID budget, readable at once by co-readers, promoted when a writer stamps it, which frees the budget (notes/sync-inbox.md). Rejected: per-holder deposit keys (linkable).
 - **A stamped entry never changes while it lives** (spec/sync-ids.md §6). Every writer shares one write key and a node keeping S unread cannot read a wrap, so it can tell nothing about a second stamped copy: last-wrap-wins let one member hide any message from every node not holding its key (reproduced). No honest node re-wraps a held stamped entry, so first-stamped-wins costs nothing and needs no replacement rate limit: one wrap per entry, no number to pick. A stamped entry over a deposit still replaces it, or any reader could keep a writer's wrap out.
   - Residual race: only the first stamped copy at a node can put a useless wrap there, so the attacker must hold the blob from elsewhere or promote a deposit first. It loses at a reader to any other source's wrap, and the entry counts as lacking at that source, which gets a fresh encryption (spec/sync-ids.md §6 Wraps): a new blob ID, first there by construction, so the race cannot repeat there.
   - An honest wrap under an epoch the node lacks (two writers logging one blob across a rotation) looks like garbage when heard; every holder of the new epoch holds the older by history boxes. No hold-off: garbage and an unknown epoch look the same, and a time limit would be a guess.
@@ -43,11 +43,11 @@ The requirements behind sync: spec/requirements.md, Data a node cannot read and 
 - State Merkle trees over aspects or the reference graph: they expose shape and must follow a cyclic graph.
 - Holding everything below an actor by record chain (a complete backup by default): every thing would sit under its first admin's sync ID beside any shared one. Tess chose explicit strongs (spec/requirements.md, Offline and network; spec/sync-set.md §2).
 - Unverifiable per-entry expiry and commitment metadata (first or latest copy wins): the prefix fixes them by blob ID instead.
-- Elsewhere: rejected deletion designs in notes/sync-convergence.md, rejected access designs in notes/sync-access.md, plain grants under a shared sync ID in notes/inbox.md.
+- Elsewhere: rejected deletion designs in notes/sync-convergence.md, rejected access designs in notes/sync-access.md.
 
 ## Policy defaults (non-normative, tune freely)
 - Compaction: every writer runs the trigger each step (notes/engine-retention-trigger.md); a thing whose admins want its current parts kept says so in its setting (spec/commits.md §5 Kept while live).
-- Deposit budget and order: notes/inbox.md. Recommended constants (`TOMBSTONE_LIFETIME`, the deposit budget, `PASS_WAIT_MS`): spec/wire.md §2.
+- Deposit budget and order: notes/sync-inbox.md. Recommended constants (`TOMBSTONE_LIFETIME`, the deposit budget, `PASS_WAIT_MS`): spec/wire.md §2.
 - Diagnostics: a clock offset of more than a few seconds against a peer (`ClockSkew`, the only use of the estimate: nothing a peer sends moves a node's clock); ephemeral data not synced or not applied for a cap.
 
 ## Open

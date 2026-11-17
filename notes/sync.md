@@ -54,7 +54,7 @@ A failed read is no wait: `Effects::try_settle` records nothing and leaves the k
 - notes/sync-session.md, sync-opens.md, sync-store.md, sync-read.md, sync-unread.md, sync-leave.md, sync-streams.md, sync-inbox.md, sync-status.md, sync-driver.md: one per module (what it owns, its implementation choices, bounds, reasons, what is not built).
 - notes/sync-facade.md: the engine's facade, the memo and `Effects` mechanism, the engine tables kept for sync.
 - notes/sync-test-harness.md: the one harness (worlds of `Node`s, scripted peers, histories, faults).
-- Design reasons: notes/sync-reasons.md (core: blobs, sync IDs, stamps, delete keys, nodes), notes/sync-access.md (steps, claims, re-seal, static entries), notes/sync-convergence.md (judgement and deletion), notes/inbox.md (deposits, inbox), notes/unreadable-data.md (what a node keeping S unread learns), notes/sync-protocol.md (wire, osis-proto, osis-blob), notes/networking.md (transports, reachability, first contact), notes/growth.md (permanent growth).
+- Design reasons: notes/sync-reasons.md (core: blobs, sync IDs, stamps, delete keys, nodes), notes/sync-access.md (steps, claims, re-seal, static entries), notes/sync-convergence.md (judgement and deletion), notes/sync-inbox.md (deposits, fires), notes/unreadable-data.md (what a node keeping S unread learns), notes/sync-protocol.md (wire, osis-proto, osis-blob), notes/networking.md (transports, reachability, first contact), notes/growth.md (permanent growth).
 - Open: issues/sync-unbuilt.md (every stub, per module), issues/sync-tests-owed.md (missing tests), issues/sync-tess-calls.md (reversible choices waiting on Tess), and the `sync`-tagged issues.
 
 ## The osis API over sync
