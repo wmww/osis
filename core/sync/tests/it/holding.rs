@@ -1,5 +1,4 @@
-//! Holding across nodes (spec/sync-set.md §1-§4, notes/refgraph-tests.md R4, H3, L5, L9, T2,
-//! T4, T6, T7): what a strong, a ticket and a role each do once sync carries them. Each on a
+//! Holding across nodes (spec/sync-set.md §1-§4): what a strong, a ticket and a role each do once sync carries them. Each on a
 //! fixture copy; the closure's own rules are engine `closure::`, the whole by the differential.
 
 use crate::harness::{World, contacts, siblings};
@@ -60,7 +59,7 @@ fn d_tickets(w: &mut World, i: usize, t: &Tid) -> usize {
     w.engine(i).get_typed(&d, &ct::TICKETS).unwrap().unwrap_or_default().iter().filter(|k| k.target == *t).count()
 }
 
-// spec/sync-set.md §2, spec/permissions.md §3: refgraph R4. A strong grants nothing; removing a
+// spec/sync-set.md §2, spec/permissions.md §3: a strong grants nothing; removing a
 // reference revokes nothing. Bob writes a strong to Alice's T he has no role on: nothing of
 // T reaches him, the strong is NotCarried. Alice grants Bob read, Bob accepts, then Alice writes
 // and drops her own strong: Bob's roster entry and his reads stay.
@@ -89,7 +88,7 @@ fn a_strong_grants_nothing_and_its_removal_revokes_nothing_spec_sync_set_2() {
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("after".into())), "Bob still reads");
 }
 
-// spec/sync-set.md §3: refgraph H3. A strong to a thing no node holds reads as not held. A
+// spec/sync-set.md §3: a strong to a thing no node holds reads as not held. A
 // strong to a tid no node ever made, and one to a thing whose only holder released it, hold
 // nothing and read absent, with no marker: the referrer's own sync set and store are as before.
 #[test]
@@ -112,8 +111,8 @@ fn a_strong_to_a_thing_never_fetched_holds_nothing_spec_sync_set_3() {
     assert_eq!(w.engine(1).sync_set().unwrap().ids, before, "nothing synced for either");
 }
 
-// spec/sync-inbox.md §5 (Nothing before the strong), spec/sync-set.md §4 (Accepting) (refgraph
-// T2): a grant's ticket reaches Bob; until he accepts, nothing of T is fetched or synced (his
+// spec/sync-inbox.md §5 (Nothing before the strong), spec/sync-set.md §4 (Accepting):
+// a grant's ticket reaches Bob; until he accepts, nothing of T is fetched or synced (his
 // sync set and store hold nothing of it); declining is never accepting; accepting is the strong.
 #[test]
 fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
@@ -132,7 +131,7 @@ fn nothing_is_fetched_before_the_strong_spec_sync_inbox_5() {
     assert_eq!(value(&mut w, 1, &t), Some(Value::Str("hi".into())), "accepted: read");
 }
 
-// spec/sync-set.md §1 (The account's tickets) (refgraph T4): node 1 accepts a grant; D gets a
+// spec/sync-set.md §1 (The account's tickets): node 1 accepts a grant; D gets a
 // ticket for it, so its sibling and a node paired later hold it without the inbox; node 1
 // releasing it removes D's ticket, and every node of the account lets it go.
 #[test]
@@ -174,7 +173,7 @@ fn accepted_after_a_change(lowered: bool) -> (World, Tid) {
     (w, t)
 }
 
-// spec/sync-set.md §2: refgraph T7. A ticket supplies up to the lower of its own role and the
+// spec/sync-set.md §2: a ticket supplies up to the lower of its own role and the
 // holder's; a read ticket whose holder holds sync alone on T keeps T unread, one whose holder
 // holds no role enters nothing. Alice grants Bob read and, before he accepts, lowers him to sync
 // or removes him; his accept takes the removal notice on his inbox with the ticket's fire, so T
@@ -188,7 +187,7 @@ fn a_ticket_enters_at_the_lower_of_its_role_and_the_holders_spec_sync_set_2() {
     }
 }
 
-// spec/sync-set.md §1, §2: refgraph T6, its rotation arm. A key change keeps sync-only holders.
+// spec/sync-set.md §1, §2: a key change keeps sync-only holders.
 // Bob keeps T unread by a sync ticket; Alice rotates T's keys
 // and writes: Bob still keeps it unread and his store takes the write.
 #[test]
@@ -213,7 +212,7 @@ fn a_key_change_keeps_a_sync_only_holder_spec_sync_set_2() {
     assert!(w.store(1).entries(&s).unwrap().len() > before, "the store takes what came after");
 }
 
-// spec/sync-set.md §3: refgraph L5. A thing goes when its last reference goes, waiting for no
+// spec/sync-set.md §3: a thing goes when its last reference goes, waiting for no
 // absent peer. Alice's T, read by Bob through his strong: Alice dropping hers leaves T held by
 // Bob's; once Bob drops his too, T is gone at both.
 #[test]
@@ -294,7 +293,7 @@ fn a_grant_beside_a_siblings_keying_reaches_the_grantee_spec_permissions_3() {
 }
 
 // spec/sync-set.md §3 (lowering from read to sync is no release: S becomes kept unread with its
-// store) (refgraph L9 across nodes): Bob reads T; Alice lowers him to sync: he reads nothing and
+// store): Bob reads T; Alice lowers him to sync: he reads nothing and
 // keeps T unread.
 #[test]
 fn a_reader_lowered_to_sync_keeps_the_thing_unread_spec_sync_set_3() {

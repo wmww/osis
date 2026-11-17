@@ -1,6 +1,6 @@
 //! The inbox thing and its open signals (spec/sync-inbox.md §1, §2, §5): `ticket@~0`,
 //! `removal@~0` and `stranded@~0`, fired sealed by anyone holding the inbox's public key record,
-//! promoted by a writer. Filled by lane (c) of issues/reference-graph.md.
+//! promoted by a writer.
 
 use super::Done;
 use crate::engine::{Engine, Tx};

@@ -129,7 +129,7 @@ fn a_paired_node_enters_the_profile_by_ds_ticket_spec_sync_set_1() {
     }
 }
 
-// spec/sync-inbox.md §5 Ticket sync IDs (refgraph T5), spec/sync-hostile.md: Alice grants Bob
+// spec/sync-inbox.md §5 Ticket sync IDs, spec/sync-hostile.md: Alice grants Bob
 // read on A and B; Bob accepts both at once, holding beside their tickets one for the lower tid
 // naming the other's sync ID (a writer of something Bob holds can have him accept one). That sync
 // ID is synced once for both, so each thing still fetches its own and Bob reads both. What
@@ -235,14 +235,11 @@ fn a_card_made_after_pairing_carries_the_inbox_spec_sync_inbox_5() {
 }
 
 // spec/sync-set.md §2, spec/sync-ids.md §5: a ticket it can open enters the thing at a
-// strong, and the store is the truth after a crash. Bob's node loses power at the second durable write of
-// its accept of a granted thing (the write's outcome unknown) and restarts in place. Its strong
-// and the ticket stand, so
-// it enters the thing and reads it; it neither holds it nor syncs its sync ID
-// (issues/reference-graph.md Status).
+// strong, and the store is the truth after a crash. Bob's node loses power at the second durable
+// write of its accept of a granted thing (the write's outcome unknown) and restarts in place. Its
+// strong and the ticket stand, so it enters the thing and reads it.
 #[test]
-#[ignore = "issues/reference-graph.md"]
-fn repro_a_crash_after_accepting_keeps_the_thing_entered_spec_sync_set_2() {
+fn a_crash_after_accepting_keeps_the_thing_entered_spec_sync_set_2() {
     let (mut w, t) = granted();
     w.disk_fault(1, 2, crate::harness::DiskFault::Crash);
     let r = w.write(1, |e| {

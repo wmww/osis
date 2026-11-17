@@ -1,5 +1,5 @@
 # Share links and tickets are one idea in two formats
-> Summary: Follow-up to the reference graph plan (issues/reference-graph.md), not part of it (Tess). A ticket (planned there: a weak carrying a thing's sync ID and a key sealed to a named actor) and a share link (spec/permissions.md §7: text carrying a thing's ID, sync ID, a bearer secret and peers to dial) both say "here is how to sync this". To study: one format, sealed to an actor (ticket) or open (bearer link), with the link text as that value written out.
+> Summary: Follow-up to the reference graph (Tess). A ticket (spec/data-model.md §8: a weak carrying a thing's sync ID and a key sealed to a named actor) and a share link (spec/permissions.md §7: text carrying a thing's ID, sync ID, a bearer secret and peers to dial) both say "here is how to sync this". To study: one format, sealed to an actor (ticket) or open (bearer link), with the link text as that value written out.
 > Priority: low
 > Tags: sync, permissions, data-model
 

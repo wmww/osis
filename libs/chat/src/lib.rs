@@ -80,7 +80,6 @@ pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
 /// §7), each skipped where `account` holds a role already. `account` keeps them unread once it
 /// holds a strong to each (accepting the grant's ticket); a link made later needs `relay` again.
 /// Returns the things granted.
-// refgraph: (c) the grant fires its ticket on `account`'s inbox (`fire_ticket`)
 pub fn relay(db: &Osis, c: Tid, account: Tid) -> Result<Vec<Tid>> {
     let ks = db.links()?.into_iter().filter(|l| l.target == c).map(|l| l.id.actor());
     let mut granted = Vec::new();

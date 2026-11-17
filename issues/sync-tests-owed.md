@@ -1,9 +1,22 @@
 # Sync tests still owed
-> Summary: The rebuilt sync's tests still missing beyond the reference graph's planned set (notes/refgraph-tests.md), from the old sync's issues, the API tests the rebuild dropped, the simulation set and the scale checks; drop a line when its test lands. Also the dead public items left unused by the rebuild.
+> Summary: The rebuilt sync's tests still missing: the reference graph's properties with no sync world test, from the old sync's issues, the API tests the rebuild dropped, the simulation set and the scale checks; drop a line when its test lands. Also the dead public items left unused by the rebuild.
 > Priority: normal
 > Tags: sync, tests
 
 Test conventions: notes/sync-test-harness.md (one harness, one fast test per spec rule cited per tools/spec_map.py, the differential, simulations, scale by counting work at n and 10n; long runs are release checks).
+
+## Reference graph properties with no sync world test
+Each needs a sync world (three nodes, contacts or siblings, inbox delivery); none is an engine-level rule.
+- A thing leaving a sync unit leaves its stores: each holder drops by its own view, a delete-key holder deletes, a node whose view still holds it logs it again, all settling (spec/sync-set.md §3 A thing leaving a sync unit).
+- Role changes travel: revoking Z's read on T reaches a node syncing only Z and drops a thing plain from T there for good, and the chain form (spec/permissions.md §4; notes/closure-model.md Hole).
+- An ephemeral strong holds while a connected peer holds the value; with nobody connected a restart drops it; once every holder restarted it is released everywhere (engine `an_ephemeral_strong_going_lets_its_target_go_*` has the one-node arm).
+- Promotion of sealed fires: a writer promotes one in place; a sealed commit with any other delta is not promoted (a plain-value table beside the deposit tests).
+- A fire's delivery stays pending through a restart, is sealed again on a key change, and ends when a peer takes it.
+- A removal notice's three arms: release, retained copy, and a forged notice that checks against no roster changing nothing.
+- A stranded node with no writer connected fires `stranded@~0`; a writer acts on it later.
+- D's deposit seed is fresh after a device removal: the removed node's deposit to the inbox is refused.
+- Releasing everything after redeem rounds returns storage to a fresh world's (the growth tests' arms cover grant, accept, decline, expiry and history; issues/storage-owners.md).
+- A thing released by a sibling's strong from the shared D and accepted again (the single-node arm needs none: release forgets all of the thing, so accepting again is the first accept's path).
 
 ## Scenarios from the old sync's issues
 Each readable with `git show e1bafb8ca^:issues/<name>.md` (`refused-memory-entry-holds-label-unsettled` for the one named by sync ID).

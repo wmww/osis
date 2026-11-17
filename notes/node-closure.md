@@ -5,6 +5,21 @@ Spec: spec/sync-set.md, spec/sync-inbox.md §5 (tickets). Model: notes/closure-m
 
 **Principle:** a node holds exactly what its node root reaches by strongs, sync unit by sync unit; the structure is kept by edits, each costing what it changed.
 
+## Design rules (Tess)
+- **A strong grants nothing.** It says the target belongs to this closure; anyone knowing a tid may write one. Permission is a separate act by someone who may grant, and removing a reference revokes nothing.
+- **A thing goes when its last reference goes** (spec/sync-set.md §3). That is the intended result, never a risk to design around: nothing is kept because a release might be a mistake.
+- **Core holds only what cannot be built correctly on top of it.** Home, which invitations to accept, contact lists and "what is on my other nodes" are the app's.
+- **Lean on osis for storing data.** Node and account state are ordinary things and aspects. No aspect is exempt from sync; what is local is local by where it sits.
+- **A weak keeps nothing.** What a node keeps outside its closure is only what held things need (spec/commits.md §5 What a held thing needs). A contact is a strong to its profile.
+- **One mechanism.** A ticket is the one way to say "here is how to sync this", wherever it is stored; core never copies one.
+- **Nothing grows only.** No set of everything ever seen, accepted or granted. Storage: issues/storage-owners.md.
+
+Why a sync unit stops where its root has no read access: a closure granted read on a large thing carries just what it references of it, so one row of a table syncs without the table and without keys per cell (spec/requirements.md, no unit synced whole). So Alice's A, admin of T, references T; Bob, a reader of A, adds a strong to T from his B; Alice removes hers: B never carried T (Bob reads T, B does not), so T is gone for both, unless Alice shared T with Bob or with B (sync `holding::the_last_reference_gone_the_thing_is_gone_for_everyone_*`).
+
+Limits: an edit of a thing carried under two sync IDs reaches a node syncing only one of them through a node that syncs both (notes/closure-model.md (d)); in an admin dispute the sides differ on what is valid, and so on what belongs.
+
+Kept, each following from a rule above (don't simplify them away): the refused removals of the node root's and D's strongs (Roots); D's tickets only for what is entered outside the local part; release's one wait (an own self-removal); the retained copy (an option keeping its property); an actor as its own inbox; nothing before the strong, so a grant counts only at a strong; a grant naming a holder in the holder's required set, needs and fire (one fact in three places); fetching again at a new strong (rare-path brute force); a stranded notice acted on whatever the history setting.
+
 ## Roots
 - The node root is made at the node's first start (`Engine::make_node_root`, local record `records::NODE_ROOT`), first admin the node; the node writes it and every thing made under it as itself (`Core::nodes_own`: the record chain reaches the node; `made_nodes_own` for things a commit makes): no account holds a role there.
 - The account's creation writes D's strongs to the profile and the inbox, and the node root's to D, in its transaction; pairing writes the node root's strong to D (`Engine::paired`). No strong reaches a node thing: the walk enters no key actor, and retention keeps every device the account's chain names, a removed one too, as the minter of rotations it follows (`retention::needed`, `AccountView::named_device`).

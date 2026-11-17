@@ -1,4 +1,4 @@
-//! The reference graph plan (issues/reference-graph.md), held_model::closure: each test names the
+//! The reference graph (spec/sync-set.md), held_model::closure: each test names the
 //! property (P1-P6 of notes/closure-model.md) it checks. Where the plan's rule fails a property the
 //! test asserts the minimal counterexample, so the finding stays visible and checked.
 use held_model::closure::*;

@@ -1,4 +1,4 @@
-//! The simulation set (notes/refgraph-tests.md, Differential and sim set): short scripted
+//! The simulation set (notes/test-properties.md, Reference-graph differential and sims): short scripted
 //! scenarios with fault schedules over three nodes of three accounts, each over a seed per
 //! variant it draws by seed at small size (at least an even and an odd one), 40 under `OSIS_FULL=1` (the seed draws the world's IDs, keys and the network's faults),
 //! checked at quiet by the differential's oracle (`history::check`: every node holds its node

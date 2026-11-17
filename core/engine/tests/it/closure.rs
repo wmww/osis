@@ -282,7 +282,7 @@ fn a_sourced_thing_costs_what_is_below_it_spec_sync_set_5() {
     assert!(things.contains(&a) && things.contains(&y));
 }
 
-// spec/sync-set.md §2 Sync units, Not carried (refgraph U1, U2): T's sync unit is T and what it
+// spec/sync-set.md §2 Sync units, Not carried: T's sync unit is T and what it
 // reaches by strongs through things T's keys open, chains of grants giving the lowest role and the
 // best chain counting; NotCarried names exactly the strongs in the node closure to a thing it does
 // not hold. A random walk of edits (strongs added and removed, grants made, lowered and revoked
@@ -382,7 +382,7 @@ fn try_make(e: &mut Engine, admin: Tid, from: Option<Tid>) -> osis_engine::Resul
     e.commit(m).map(|_| t)
 }
 
-// spec/sync-set.md §2 Making a thing (refgraph U3): the commits of one storage transaction must
+// spec/sync-set.md §2 Making a thing: the commits of one storage transaction must
 // leave every thing they make, but a key actor, in the node closure at its end, or nothing
 // applies. X and U have own keys: a plain thing under X referenced by X is made; one nothing
 // references, or one from U referenced only by X (X's keys do not open it), is refused and
@@ -444,7 +444,7 @@ fn nested_sharing_holds_what_the_shared_thing_reads_spec_sync_set_2() {
     assert!(e1.in_sync_things(&y).unwrap(), "Y's sync ID synced");
 }
 
-// spec/sync-set.md §2 Cost (refgraph H4): adding a thing costs the same whatever else the account
+// spec/sync-set.md §2 Cost: adding a thing costs the same whatever else the account
 // root holds (n and 10n things beside it), and a cycle cut off from the node closure is released
 // whole.
 #[test]
@@ -472,7 +472,7 @@ fn adding_costs_what_it_adds_and_a_cycle_goes_whole_spec_sync_set_2() {
     assert_eq!(e.left_closure().keys().copied().collect::<BTreeSet<_>>(), [c1, c2].into());
 }
 
-// spec/sync-set.md §3 Release (refgraph L1, L10, L3): a thing that left the node closure and is
+// spec/sync-set.md §3 Release: a thing that left the node closure and is
 // released is dropped with its writes, durable and ephemeral, and reads as not held; one back in
 // the node closure before its release is kept as it was, and its release drops nothing.
 #[test]

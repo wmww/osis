@@ -754,7 +754,6 @@ impl Data {
         let got = rt.block_on(async { tokio::time::timeout(JOIN_WAIT, self.db.redeem(&l)).await }).unwrap_or_else(|_| Err(osis::Error::Network("could not confirm this link yet; trying again is safe".into())))?;
         // accepting is a strong to the target; the account's ticket for it, which brings it to
         // the account's other nodes, is core's
-        // refgraph: (c) the redeem's ticket in the account root's `tickets.0` (`redeem_in`)
         if !self.things()?.contains(&got) {
             let g = self.home()?;
             let mut w = self.db.write();

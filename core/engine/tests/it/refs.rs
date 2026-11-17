@@ -159,7 +159,7 @@ fn r2_world() -> (LocalPeer, Vec<Tid>) {
     })
 }
 
-// spec/data-model.md §8 Known references, Held history (refgraph R2): after every step, at every
+// spec/data-model.md §8 Known references, Held history: after every step, at every
 // node, the known references with kind equal a scan of the current values of every held aspect
 // and of the held valid fires, and the strongs held history holds equal a scan of the held valid
 // bodies where the setting says so. Three authors (an admin, two writers) on two things:
@@ -355,7 +355,7 @@ fn known_references_are_a_scan_of_held_values_spec_data_model_8() {
     }
 }
 
-// spec/data-model.md §8 What counts (refgraph R3): core aspects name things by weaks, so none of
+// spec/data-model.md §8 What counts: core aspects name things by weaks, so none of
 // them holds anything. Y is made under X and both are held by the account root; G, a thing with
 // own keys nothing holds, is granted read on X. Every reference a core aspect holds is a weak, and
 // removing the strong to X takes X out of the node closure though Y's `created.0` names it, and G

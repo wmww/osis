@@ -1,7 +1,7 @@
 # Closure model
-> Summary: What the model of the reference graph plan (held_model::closure, tests in held-model's `spec_closure`) checks, P1-P6 with each test, the P5 work counts, and the hole it finds in issues/reference-graph.md: a revocation never reaches a node syncing only the grantee when the target is plain or the grant is a chain, and with a delete key two honest nodes then undo each other for good; carrying role commits under the actor they name fixes it, and the spec states that rule (spec/permissions.md §4 Role changes travel, spec/sync-judgement.md §2).
+> Summary: What the model of the reference graph (held_model::closure, tests in held-model's `spec_closure`) checks, P1-P6 with each test, the P5 work counts, and the hole it found in the design: a revocation never reaches a node syncing only the grantee when the target is plain or the grant is a chain, and with a delete key two honest nodes then undo each other for good; carrying role commits under the actor they name fixes it, and the spec states that rule (spec/permissions.md §4 Role changes travel, spec/sync-judgement.md §2).
 
-The model is an oracle written from the plan's rules (References, Sync units, Holding and release), not from code: plain data, pure functions, 24 tests in about 0.8 s (debug, parallel). Its module doc lists what it leaves out (validity, disputes, key rotation, the wire, sealing, `@` signals, purge, storage rows).
+The model is an oracle written from the design's rules (spec/data-model.md §8, spec/sync-set.md), not from code: plain data, pure functions, 24 tests in about 0.8 s (debug, parallel). Its module doc lists what it leaves out (validity, disputes, key rotation, the wire, sealing, `@` signals, purge, storage rows).
 
 How it reads the plan:
 - Strongs are an OR-set of edges per source thing: an add is a commit, a remove names the adds its writer saw.
@@ -98,8 +98,8 @@ Work is edges examined plus parent-chain steps, at n = 50 / 500. `ancestor_step`
 
 ## Questions for the design
 1. The Hole: stated as the model's rule (spec/permissions.md §4 Role changes travel).
-2. That rule keeps a revoked entry of a role record carried under the former grantee. How long? "Nothing grows only" asks for an end, and the model has none (the plan's To settle).
+2. That rule keeps a revoked entry of a role record carried under the former grantee. How long? Settled: `ROLE_KEEP` after replaced, a removal after its `ts` (spec/sync-judgement.md §2); the model keeps it for good.
 3. A direct revocation on a keyed Y reaches X's holders through Y's own sync ID. That needs them to keep fetching under Y after the removal and the key change, until they hold the removal. Spec/sync-opens.md must allow it.
 4. Where a chain's middle record travels. The model carries the role records of every actor among a sync ID's keys as certificates, W included though it is not in X's sync unit; the spec says so (spec/permissions.md §4 Role changes travel).
-5. What a read of a strong that holds nothing returns (P4): "destroyed" and "not held" read alike today (the plan's To settle).
+5. What a read of a strong that holds nothing returns (P4): "destroyed", "released" and "not held" read alike, with no marker (spec/sync-set.md §2).
 6. A node-root strong to a plain thing in no sync unit the node syncs holds it only where the node made it: nothing carries it there otherwise. This is the P4 rule again, not a new case.

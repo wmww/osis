@@ -584,8 +584,7 @@ fn leaked(_: &mut World, _: usize, _: &mut World, _: usize, _: &[String]) -> Str
     String::new()
 }
 
-// S1, its own-things arm (notes/refgraph-tests.md; issues/reference-graph.md Storage),
-// spec/sync-set.md §3 (Nothing of R stays): what a node makes under its account root, its account
+// Releasing everything, its own-things arm (issues/storage-owners.md), spec/sync-set.md §3 (Nothing of R stays): what a node makes under its account root, its account
 // and its node root, written and then released, leaves its rows and blobs as a fresh node's of the
 // same account once tombstones have aged out, at 2 and 20 rounds: but the roots' set tombstones,
 // a few bytes per removal (three strongs and the keyed thing's ticket a round), and `cv/` (flat).
@@ -711,7 +710,7 @@ fn history_rounds(w: &mut World, rounds: usize) -> Held {
     held(w, 0)
 }
 
-// S1, its history arm (notes/refgraph-tests.md), spec/data-model.md §8 What counts, spec/sync-set.md
+// Releasing everything, its history arm, spec/data-model.md §8 What counts, spec/sync-set.md
 // §3: a thing whose history holds its strongs' targets, released with what only its history
 // held, leaves its rows and blobs as a fresh node's, at 2 and 20 rounds: but the root's set
 // tombstones (one removal a round).
@@ -778,8 +777,8 @@ fn grants_as_fresh(accept: bool, removals: usize) {
     }
 }
 
-// S1, its grant, fire, accept and revoke arm (notes/refgraph-tests.md; issues/reference-graph.md
-// Storage), spec/sync-set.md §3: a thing granted to another account, its fire accepted, written,
+// Releasing everything, its grant, fire, accept and revoke arm (issues/storage-owners.md),
+// spec/sync-set.md §3: a thing granted to another account, its fire accepted, written,
 // the grantee removed and both sides letting it go, leaves each node as a fresh world's once the
 // inbox lifetime, the role keep and tombstones have passed, at 2 and 20 rounds.
 #[test]

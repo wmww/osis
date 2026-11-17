@@ -1,7 +1,7 @@
-//! The reference-graph differential (harness::history, notes/refgraph-tests.md): random
+//! The reference-graph differential (harness::history, notes/test-properties.md): random
 //! histories over a few nodes of fewer accounts; at quiet every node holds what held-model
 //! `closure` says its node closure is, built from the history alone. Fresh worlds per seed;
-//! `OSIS_SYNC_SEED`/`OSIS_SYNC_SEEDS` pick the seeds (`history::size`: 10 at small size, 100
+//! `OSIS_SYNC_SEED`/`OSIS_SYNC_SEEDS` pick the seeds (`history::size`: 6 at small size, 100
 //! under `OSIS_FULL=1`); a failure prints the history as a script, `OSIS_SYNC_SHRINK=1` shrinks
 //! it. A failure is a finding: its reproducer is a new hand-written test, never the seed.
 

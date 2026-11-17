@@ -1,5 +1,5 @@
-//! Greenfield model of the reference graph plan (issues/reference-graph.md: References, Sync units,
-//! Holding and release), written from its rules before any code exists: sync units, carrying under
+//! Greenfield model of the reference graph (spec/data-model.md §8, spec/sync-set.md), written
+//! from its rules before any code existed: sync units, carrying under
 //! sync IDs with per-sync-ID stores, the node closure, release at a pass's end, and the
 //! spanning-tree structure for removing a strong. Plain data and pure functions; properties in
 //! tests/it/spec_closure.rs, findings in notes/closure-model.md.

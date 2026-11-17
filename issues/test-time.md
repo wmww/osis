@@ -3,7 +3,7 @@
 > Priority: normal
 > Tags: tests, performance, sync, engine
 
-The reference graph rebuild (issues/reference-graph.md) requires fewer and faster default tests than its baseline (5b4faadfa: 3,493 default tests, 7,030 G instructions, 2,372 CPU-s; `~/osis-refgraph-baseline/pertest`). Now 3,060 tests, about 6,980 G, 2,100 CPU-s (notes/test-harnesses.md, Default-test cost): under it by under 1% of instructions, so each new default test needs a cut beside it. The figures below predate the rebuild where they name the old differential.
+The reference graph rebuild required fewer and faster default tests than its baseline (5b4faadfa: 3,493 default tests, 7,030 G instructions, 2,372 CPU-s; `~/osis-refgraph-baseline/pertest`). Now 3,060 tests, about 6,980 G, 2,100 CPU-s (notes/test-harnesses.md, Default-test cost): under it by under 1% of instructions, so each new default test needs a cut beside it. The figures below predate the rebuild where they name the old differential.
 
 ## Where it goes now (pertest, per test process)
 - Engine `it` 2,010 G: `order::held_set_decides` 261 G (its default covering set: each emphasis once), `tree_ends_are_fresh_deliveries` 36, `judgment_vectors` 61, the paged write tests 38-44 each (a restart per step, each an engine drop's index check over a 20,000-char history). Order tests grew 3-5x since the baseline (`reopens_alike` about 40% of a small one: a reload after every ingest).

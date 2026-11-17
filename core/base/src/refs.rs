@@ -1,7 +1,7 @@
 //! References (spec/data-model.md §8): a strong makes its target part of the closure of the thing
 //! holding it, a weak only points, a ticket is a weak that also carries what syncing its target
 //! needs. Each is a value of its own (spec/data-model.md §5: tags STRONG, WEAK, TICKET); none is
-//! a bare tid. Filled by lane (a) of issues/reference-graph.md.
+//! a bare tid.
 
 use crate::{Role, SyncId, Tid, Value};
 

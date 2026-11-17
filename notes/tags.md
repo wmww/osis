@@ -22,7 +22,7 @@
 - Internal containers (buckets, app indexes) have no `tag.0`; generic tools list only tags.
 
 ## Sharing a tag
-- Sharing a tag shares its sync unit, never what it only references: to share a tag of notes made under home, the app grants the tag a role on each note (when the tag is shared, and for each note added later); `NotCarried` names each one missed (issues/reference-graph.md, Sync units). A call doing that sweep is the API's to consider (notes/api-design.md).
+- Sharing a tag shares its sync unit, never what it only references: to share a tag of notes made under home, the app grants the tag a role on each note (when the tag is shared, and for each note added later); `NotCarried` names each one missed (spec/sync-set.md §2 Not carried). A call doing that sweep is the API's to consider (notes/api-design.md).
 - The tag becomes an actor (secrets of its own, a sync ID, a roster). Rights chain through role grants (spec/permissions.md §1): a holder on T reaches an item of sub-tag U by the path T → U → item, role = the minimum along it.
 - Rosters nest: U's roster lists T as one holder actor. Removing Bob from T rotates T, then lazily each sub-tag and item below it once (the cascade of spec/permissions.md §3), whatever the graph shape.
 - **Only what you may share**: granting T a grant on a sub-tag or item needs admin on it (or `may_grant`). A tag or thing someone shared with me read-only, added to my tag T, is not shared on when I share T; the client shows the tag's reach and what is excluded. This is the honest property the grant model gives over inherited folder ACLs; keep it.
@@ -35,6 +35,6 @@ Adding a thing or a tag to a shared tag has significant privacy implications and
 A thing made of parts (a presentation of slides) is first admin of its parts and references them strongly; sharing it is one grant on the whole. Users never see this as a container. Apps must not depend on sharing parts individually.
 
 ## Other conventions settled
-- Shared roots (a shared tag, a chat) get their own keys at creation and are held by ticket (issues/reference-graph.md, Sync units).
+- Shared roots (a shared tag, a chat) get their own keys at creation and are held by ticket (spec/sync-set.md §2).
 - Timestamps come from commits (`Osis::created`, commit `ts`), never from aspects.
 - Files: `blob` plus a mime string on a file thing.

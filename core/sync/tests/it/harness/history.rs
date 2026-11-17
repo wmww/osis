@@ -1,4 +1,4 @@
-//! The reference-graph differential (notes/refgraph-tests.md, Differential and sim set): random
+//! The reference-graph differential (notes/test-properties.md): random
 //! histories of making, strongs added and removed, grants to accounts and to things (so chains
 //! occur), lowering, revoking, rotating, accepting, pairing and faults over a few nodes; at quiet
 //! each node holds what held-model `closure` says its node closure is, built from the history

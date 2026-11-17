@@ -4,7 +4,7 @@
 > Tags: api, app, kit, spec
 
 ## Direction (Tess)
-Per-node settings (`caps^.0`, `clients^.0` included) sync by default: the node data thing is referenced both from the account's shared data (D) and from the local node root, so a node finds its own settings locally and its siblings find them through D. Today `caps^.0`/`clients^.0` sit on the local node root (issues/reference-graph.md, Settled); building settings moves them.
+Per-node settings (`caps^.0`, `clients^.0` included) sync by default: the node data thing is referenced both from the account's shared data (D) and from the local node root, so a node finds its own settings locally and its siblings find them through D. Today `caps^.0`/`clients^.0` sit on the local node root (spec/sync-set.md §1: simpler, and reversible); building settings moves them.
 
 ## Principle
 A setting is an aspect on a thing only the account's nodes read. Privacy and sync come from where the thing sits; there is no settings protocol, store or merge rule. Everything the account keeps about one node is reached through that node's `node.0`, and nothing else is keyed by node ID.
@@ -49,7 +49,7 @@ node root (local, holds.0)
 `remove_node` removes D's strong to the node's data thing, which releases it everywhere. The node's windows were only ever on that device. A removed node reads built-in defaults.
 
 ## What moves
-- `caps^.0` and `clients^.0`: the plan wanted them on the node data thing (a sibling changes an offline node's caps); spec/sync-set.md §1 puts them on the local node root. Settle first (issues/reference-graph.md, To settle).
+- `caps^.0` and `clients^.0`: the plan wanted them on the node data thing (a sibling changes an offline node's caps); spec/sync-set.md §1 puts them on the local node root.
 - Windows: `ui:windows.0` and `ui:internal.0` go; windows are node-root things (`libs/kit/src/store.rs`, `window` and `window_opt`).
 - `ui:theme.0`, `ui:mode.0`: to the account settings thing, removing their first-set-wins handling.
 - Stay: favorites, arrangements and `viewed_as` (the user's data, not settings); `Config` and `AppConfig` fields that describe one running process.

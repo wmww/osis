@@ -161,7 +161,7 @@ fn a_ticket_enters_its_target_at_a_strong_spec_sync_set_2() {
     }
 }
 
-// spec/sync-inbox.md §5 Ticket sync IDs (refgraph T5): a sync ID the tickets of several things
+// spec/sync-inbox.md §5 Ticket sync IDs: a sync ID the tickets of several things
 // name is synced once and what arrives under it is judged for each of them, until the genuine
 // thing's own `sync.0` arrives and the sync ID is its alone. Account 1 takes A's and B's grants'
 // tickets from its inbox and holds one for A naming B's sync ID (what anyone holding its public

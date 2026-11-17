@@ -1,5 +1,5 @@
 # Apps' own data: find or create, and duplicates
-> Summary: An app's own data (favorites, arrangements, its built-in things) lives in a thing the app finds or creates among what the user's nodes hold (home is the app's, issues/reference-graph.md). Each app must find or create it correctly and merge the duplicates two nodes make when they start offline, per datum. Ask: a helper in the `osis` crate that does both.
+> Summary: An app's own data (favorites, arrangements, its built-in things) lives in a thing the app finds or creates among what the user's nodes hold (home is the app's, notes/node-closure.md Design rules). Each app must find or create it correctly and merge the duplicates two nodes make when they start offline, per datum. Ask: a helper in the `osis` crate that does both.
 > Priority: low
 > Tags: core-ask, api
 
