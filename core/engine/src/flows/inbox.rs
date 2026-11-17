@@ -748,8 +748,8 @@ fn fire_parts(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<Value>> {
 /// inside its commit.
 fn removals_due(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let cl = &tx.core.ix.closure;
-    let read_ticket = cl.accepted(t) && cl.ticket_words(t).iter().any(|(_, r)| *r == Role::Read);
-    if tx.core.timelines.get(t).is_none() && !read_ticket {
+    let read_ticket = || cl.accepted(t) && cl.ticket_words(t).iter().any(|(_, r)| *r == Role::Read);
+    if tx.core.timelines.get(t).is_none() && !read_ticket() {
         return Ok(());
     }
     let Some(a) = tx.core.member() else { return Ok(()) };

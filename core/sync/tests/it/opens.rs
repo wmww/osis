@@ -2047,9 +2047,9 @@ fn an_answer_after_the_testers_class_moved_opens_nothing_at_the_old_class_spec_s
     }
 }
 
-// spec/sync-opens.md §6 (a member at a store source whose peer J judges departed is ended and
-// closes only on the peer's Lost; judged not departed again, it is an ended member like any
-// other): a reader judges its store peer departed, then a sync holder again (granted anew). Its
+// spec/sync-opens.md §6 (whose peer J judges departed is ended too; closes only on the peer's Lost)
+// and (Judged holder or not departed again, it is an ended member like any other): a reader
+// judges its store peer departed, then a sync holder again (granted anew). Its
 // stream already past `until`, the member closes with a Lost naming `until` without waiting for
 // the peer's: the store, served nothing past `until` and moved by no Register while the reader
 // waits for it to hold the step's role commits, would otherwise never send one.
