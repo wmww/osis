@@ -330,23 +330,38 @@ pub(crate) fn may_write(tx: &mut Tx<'_>, node: Tid, tid: &Tid, ak: &str, need: O
 /// next stamp): `None` while one of them may be written on only later, so a write this node owes
 /// across things (an answer) waits whole.
 pub(crate) fn writable_now<V>(tx: &mut Tx<'_>, node: Tid, by_thing: BTreeMap<Tid, V>, ak: &str, need: Option<Role>) -> Result<Option<BTreeMap<Tid, V>>> {
+    let w = writable_split(tx, node, by_thing, ak, need)?;
+    Ok((!w.later && w.unheld.is_empty()).then_some(w.now))
+}
+
+/// `by_thing` split by when `node` may write `ak` on each (`may_write`, at the next stamp); the
+/// things it may never write on are left out.
+pub(crate) struct Writable<V> {
+    /// Held: written now.
+    pub(crate) now: BTreeMap<Tid, V>,
+    /// Outside the node closure (a node writes only what it holds, spec/sync-set.md §2 Writing),
+    /// writable there otherwise.
+    pub(crate) unheld: BTreeMap<Tid, V>,
+    /// One may be written on only once its minting or keys arrive.
+    pub(crate) later: bool,
+}
+
+pub(crate) fn writable_split<V>(tx: &mut Tx<'_>, node: Tid, by_thing: BTreeMap<Tid, V>, ak: &str, need: Option<Role>) -> Result<Writable<V>> {
     let ts = tx.core.hlc.peek();
-    let mut out = BTreeMap::new();
+    let mut w = Writable { now: BTreeMap::new(), unheld: BTreeMap::new(), later: false };
     for (t, v) in by_thing {
-        // a node writes only what it holds (spec/sync-set.md §2 Writing): a write owed on a thing
-        // outside its node closure waits as one owed before the keys to write it arrive
-        if !tx.core.ix.closure.holds(&t) {
-            return Ok(None);
-        }
         match may_write(tx, node, &t, ak, need, ts)? {
-            MayWrite::Yes => {
-                out.insert(t, v);
+            MayWrite::Yes if tx.core.ix.closure.holds(&t) => {
+                w.now.insert(t, v);
             }
-            MayWrite::Later => return Ok(None),
+            MayWrite::Yes => {
+                w.unheld.insert(t, v);
+            }
+            MayWrite::Later => w.later = true,
             MayWrite::No => {}
         }
     }
-    Ok(Some(out))
+    Ok(w)
 }
 
 /// `may_write` but for the role: whether the thing takes writes here (`Core::writable`) and this

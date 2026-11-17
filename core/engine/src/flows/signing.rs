@@ -8,7 +8,7 @@
 
 use super::account::things_of;
 use super::Done;
-use crate::engine::write::writable_now;
+use crate::engine::write::{writable_now, writable_split};
 use crate::engine::{Engine, Step, Tx, records};
 use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind};
@@ -437,7 +437,15 @@ fn answer_rotation(tx: &mut Tx<'_>, r: &CommitId) -> Result<bool> {
 /// others' by the cutoff (spec/permissions.md §5.5, Listings), one commit per thing: a commit
 /// goes whole under the sync IDs of every thing it touches, so one over every thing would ship
 /// each thing's listing wherever any other thing goes. A listing needs no role on a thing; one
-/// it may write on only later waits whole, one that is gone here is left out.
+/// that is gone here is left out, one it may write on only later waits while the others go (what
+/// a held listing names is not named again, `nameable`), the rotation owed until none waits.
+///
+/// A node writes only what it holds as the transaction leaves it (spec/sync-set.md §2 Writing),
+/// and `r` may be what took a thing out of the node closure: its keys or its holding strong were
+/// made at an epoch `r` closes, and count again once named. So a listing on a thing outside the
+/// node closure goes where the node closure holds that thing once it is written, else it waits:
+/// first those another listing written brings back, then each alone, in a step undone if its
+/// thing stays out.
 fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitId) -> Result<bool> {
     if tx.core.accounts.get(&p).is_none_or(|a| !tx.core.on_root_roster(&a.root)) {
         return Ok(true);
@@ -445,27 +453,60 @@ fn listing(tx: &mut Tx<'_>, p: Tid, v: &super::account::AccountView, r: &CommitI
     if tx.core.account_signing(&p).ok().flatten().is_none() {
         return Ok(false);
     }
-    let mut names: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
     // an open epoch's commits count unnamed: they are named once a rotation closes it
     let closed: Vec<CommitId> = v.closed_by(r).into_iter().filter(|e| !v.is_open(e)).collect();
-    for (c, m) in nameable(tx, &p, v, &closed, true)? {
-        for t in things_of(&m.view) {
-            names.entry(t).or_default().insert(c);
+    let mut written: BTreeSet<Tid> = BTreeSet::new();
+    loop {
+        let mut names: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
+        for (c, m) in nameable(tx, &p, v, &closed, true)? {
+            for t in things_of(&m.view).into_iter().filter(|t| !written.contains(t)) {
+                names.entry(t).or_default().insert(c);
+            }
+        }
+        let w = writable_split(tx, p, names, "listing.0", None)?;
+        let wrote = !w.now.is_empty();
+        for (t, ids) in w.now {
+            write_listing(tx, p, r, t, &ids)?;
+            written.insert(t);
+        }
+        if w.unheld.is_empty() {
+            return Ok(!w.later);
+        }
+        if wrote {
+            crate::sync::units::settle(tx)?;
+            continue;
+        }
+        let mut kept = false;
+        for (t, ids) in w.unheld {
+            let tried = tx.step(Step::Rotation, |tx| {
+                write_listing(tx, p, r, t, &ids)?;
+                crate::sync::units::settle(tx)?;
+                if tx.core.ix.closure.holds(&t) { Ok(()) } else { Err(Error::NotHeld(t)) }
+            });
+            match tried {
+                Ok(()) => {
+                    written.insert(t);
+                    kept = true;
+                }
+                Err(Error::NotHeld(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        if !kept {
+            return Ok(false);
         }
     }
-    let Some(on) = writable_now(tx, p, names, "listing.0", None)? else { return Ok(false) };
-    if on.is_empty() {
-        return Ok(true);
-    }
-    for (t, ids) in on {
-        let mut m = Mutation::new();
-        m.sign_as(p);
-        m.unchecked();
-        let set = Value::Set(ids.iter().map(|c| Value::bytes(&c.0)).collect());
-        m.op(t, &ct::LISTING, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(set) })?;
-        Engine::commit_tx(tx, m)?;
-    }
-    Ok(true)
+}
+
+/// Account `p`'s listing on thing `t` against rotation `r`, naming `ids`.
+fn write_listing(tx: &mut Tx<'_>, p: Tid, r: &CommitId, t: Tid, ids: &BTreeSet<CommitId>) -> Result<()> {
+    let mut m = Mutation::new();
+    m.sign_as(p);
+    m.unchecked();
+    let set = Value::Set(ids.iter().map(|c| Value::bytes(&c.0)).collect());
+    m.op(t, &ct::LISTING, PathOp { path: vec![PathSeg::Key(Value::bytes(&r.0))], op: Op::Put(set) })?;
+    Engine::commit_tx(tx, m)?;
+    Ok(())
 }
 
 /// A writer of a thing answers another account's rotation `r` with an addendum on each thing it

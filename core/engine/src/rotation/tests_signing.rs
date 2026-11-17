@@ -305,6 +305,58 @@ fn an_offline_siblings_write_counts_by_its_listing_spec_permissions_5_5() {
     assert_eq!(read(&mut lp, 3, t), Some(Value::Str("offline".into())), "named by its author's listing");
 }
 
+// spec/permissions.md §5.5 (Listings), spec/sync-set.md §2 Writing: node 2 makes thing u under the
+// account (held through D's strong, its own keys made at the setup epoch) and writes it; the
+// rotator never received any of it. The rotation closes that epoch, so at node 2 u's keys and D's
+// strong to it count only once named, and u is out of the node closure until node 2's listings on
+// D and on u name them: the listings go (each leaves its thing held), and node 2 reads its write.
+// Fails with the listing waiting while a thing is outside the node closure.
+#[test]
+fn a_listing_brings_back_the_thing_its_epoch_held_spec_permissions_5_5() {
+    let (mut lp, a, _) = world(3, 3);
+    let mut m = crate::Mutation::new();
+    let u = lp.peers[2].engine.new_thing(&mut m, a.account);
+    m.set(u, &x(), &Value::Str("made".into())).unwrap();
+    lp.peers[2].commit(m).unwrap();
+    write(&mut lp, 2, u, "mine");
+    assert!(lp.peers[2].engine.closure_holds(&u), "held through D's strong");
+    lp.advance(10);
+    let done = remove(&mut lp, 0, a.root, 1);
+    send(&mut lp, 0, 2, &done.commits);
+    assert!(lp.peers[2].engine.closure_holds(&u), "held again once named");
+    assert_eq!(read(&mut lp, 2, u), Some(Value::Str("mine".into())), "its own write counts by its listing");
+    // what it names holds for a sibling too: node 1, removed, is no reader; node 0 takes node 2's
+    // commits and reads u by them
+    let ids = lp.peers[2].engine.commit_ids();
+    send(&mut lp, 2, 0, &ids);
+    lp.hold_at(0, u);
+    assert_eq!(read(&mut lp, 0, u), Some(Value::Str("mine".into())), "the rotator reads it by node 2's listing");
+}
+
+// spec/sync-set.md §2 Writing, notes/engine.md (Atomic steps): as above, node 2's answer to the
+// rotation fails after it ran in full, its listing on u (outside the node closure as written)
+// undone with it: the receive applies, owing no holding of u, and the next transaction answers.
+// Fails with a step's rollback keeping the things it wrote as owed holdings (`NotHeld`).
+#[test]
+fn an_answer_undone_owes_no_holding_of_what_it_wrote_spec_sync_set_2() {
+    let (mut lp, a, _) = world(3, 3);
+    let mut m = crate::Mutation::new();
+    let u = lp.peers[2].engine.new_thing(&mut m, a.account);
+    m.set(u, &x(), &Value::Str("made".into())).unwrap();
+    lp.peers[2].commit(m).unwrap();
+    write(&mut lp, 2, u, "mine");
+    lp.advance(10);
+    let done = remove(&mut lp, 0, a.root, 1);
+    lp.peers[2].engine.core.step_fault = Some(crate::engine::StepFault { site: crate::engine::Step::Rotation, after: true, skip: 0 });
+    send(&mut lp, 0, 2, &done.commits);
+    let e = &mut lp.peers[2].engine;
+    assert!(!e.core.ix.rotations_due.is_empty(), "the answer is still due");
+    e.core.step_fault = None;
+    e.run(|_| Ok(())).unwrap();
+    assert!(lp.peers[2].engine.core.ix.rotations_due.is_empty(), "answered");
+    assert_eq!(read(&mut lp, 2, u), Some(Value::Str("mine".into())));
+}
+
 // spec/permissions.md §5.5 (Listings), spec/crypto.md §7: a node of the account whose listing goes
 // on a thing whose delete keys are not here yet takes the rotation in (its own answer never fails
 // the receive) and writes the listing once the keys come
@@ -1281,7 +1333,6 @@ fn a_rotation_waiting_for_a_head_names_nothing_until_held_spec_permissions_5_5()
 // thing, so neither listing goes under the other thing's sync IDs. Fails with one listing over
 // every thing.
 #[test]
-#[ignore = "issues/writes-on-unheld-things-tests.md"]
 fn a_listing_is_one_commit_per_thing_spec_permissions_5_5() {
     let (mut lp, a, t) = world(4, 3);
     let mut m = crate::Mutation::new();

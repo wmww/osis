@@ -1032,6 +1032,8 @@ pub(crate) struct CoreMark {
     listed_before: usize,
     killed: usize,
     to_date: usize,
+    /// `wrote_on`'s length: a write undone owes no holding.
+    wrote_on: usize,
     stale: (BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<Tid>, BTreeSet<CommitId>, bool),
     batched: Option<BTreeMap<(Tid, Ak), Batched>>,
     memory_tx: bool,
@@ -1885,6 +1887,7 @@ impl Core {
             listed_before: self.listed_before.len(),
             killed: self.killed.len(),
             to_date: self.to_date.len(),
+            wrote_on: self.wrote_on.len(),
             stale: (self.stale_things.clone(), self.stale_authors.clone(), self.stale_under.clone(), self.stale_commits.clone(), self.stale_all),
             batched: self.batched.clone(),
             memory_tx: self.memory_tx,
@@ -1915,6 +1918,7 @@ impl Core {
             ("listed_before", self.listed_before.len() != m.listed_before),
             ("killed", self.killed.len() != m.killed),
             ("to_date", self.to_date.len() != m.to_date),
+            ("wrote_on", self.wrote_on.len() != m.wrote_on),
             ("stale", stale != (&m.stale.0, &m.stale.1, &m.stale.2, &m.stale.3, m.stale.4)),
             ("batched", self.batched != m.batched),
             ("memory_tx", self.memory_tx != m.memory_tx),
@@ -1968,6 +1972,7 @@ impl Core {
         self.listed_before.truncate(m.listed_before);
         self.killed.truncate(m.killed);
         self.to_date.truncate(m.to_date);
+        self.wrote_on.truncate(m.wrote_on);
         self.batched = m.batched;
         self.memory_tx = m.memory_tx;
     }
@@ -1988,6 +1993,7 @@ impl Core {
             listed_before: _,
             killed: _,
             to_date: _,
+            wrote_on: _,
             written: _,
             compaction: _,
             stale_things: _,
@@ -2054,7 +2060,6 @@ impl Core {
             unit_of: _,
             closure_follow: _,
             node_root: _,
-            wrote_on: _,
             held_writes: _,
             replaced_dates: _,
             waiting_carries: _,
