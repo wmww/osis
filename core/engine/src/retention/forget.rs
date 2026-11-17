@@ -81,7 +81,8 @@ pub(crate) fn read_path(core: &Core, t: &Tid) -> bool {
 }
 
 /// `t` when the secrets of `lost` are dropped: forgotten when its secrets derive from a lost
-/// actor's and no held path reads it.
+/// actor's and no held path reads it; one counting as plain here whose own secrets went (a
+/// ticket's) loses what they read, its content, and keeps what a plain thing keeps.
 fn fate(core: &Core, scope: Scope<'_>, t: &Tid) -> Fate {
     let lost = match scope {
         Scope::Lost(l) => l,
@@ -92,7 +93,10 @@ fn fate(core: &Core, scope: Scope<'_>, t: &Tid) -> Fate {
     if read_path(core, t) {
         return Fate::Stays;
     }
-    if core.ix.kept.contains_key(&a) { Fate::Kept } else { Fate::Erased }
+    if core.ix.kept.contains_key(&a) {
+        return Fate::Kept;
+    }
+    if a == *t && core.secret_actor(t) != Some(a) { Fate::Local } else { Fate::Erased }
 }
 
 /// The lost actor whose secrets read `t`: `t` itself, its own secrets dropped (held of a thing
