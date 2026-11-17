@@ -97,6 +97,10 @@ pub struct Creds {
     /// The sync key of this node's step (its step kept unread, its newest recorded step read)
     /// and its epoch: what answers a Hit on a sync key, claim or static entry.
     pub step: Option<(osis_crypto::SigningSecret, Option<Epoch>)>,
+    /// At a reader, the sync proofs of its recorded steps but the newest: shown to no one, they
+    /// answer a departed store's Hit on its step (spec/sync-opens.md §6), which this side's filter
+    /// showed while that step was the newest.
+    pub walk: Vec<Shown>,
 }
 
 impl Creds {
@@ -267,6 +271,7 @@ fn node_creds(cx: &mut Cx, unread: &Unread, s: &SyncId) -> Option<Arc<Creds>> {
                 {
                     c.shows.push((Shown::Proof(*p), None));
                 }
+                c.walk = rc.proofs.iter().filter(|(id, _)| rc.head.as_ref().is_none_or(|h| h.id() != *id)).map(|(_, p)| Shown::Proof(*p)).collect();
                 let path = path_of(cx, s).unwrap_or_default();
                 c.tests.extend(walk_tests(&rc, &path, &mut |id| cx.engine.claim_key(s, id).ok().flatten()));
                 if let Some(head) = &rc.head {

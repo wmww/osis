@@ -496,6 +496,11 @@ struct Adm {
     own: SourceClass,
     shows: Vec<Shown>,
     tests: Vec<Tested>,
+    /// Where J is departed: the walk credentials the Departed rule keeps out of `shows` (the
+    /// sync proofs of this side's recorded steps, `Creds::walk`), taken from a store only: an
+    /// open by one is ended at once, so this side registers past the store's keys
+    /// (spec/sync-opens.md §6), whether or not S was open there at the removal.
+    walk: Vec<Shown>,
     step: Option<osis_crypto::SigningSecret>,
 }
 
@@ -1569,7 +1574,7 @@ impl Opens {
         let Some(adm) = self.admissible(ctx, conn, s) else { return };
         let Some(c) = self.conns.get_mut(&conn) else { return };
         let Some(r) = c.rec.and_then(|r| self.records.get(&r)) else { return };
-        for sh in adm.shows {
+        for sh in adm.shows.into_iter().chain(adm.walk) {
             let b = beacon_of(sh.matched(), s, &r.r);
             self.work.beacons += 1;
             c.shown.insert(c.bind.peer_hit(sh.matched(), s, &b), (*s, sh, b));
@@ -1795,11 +1800,16 @@ impl Opens {
         creds.holding?;
         self.conns.get(&conn)?;
         let mut ok = |e: &Option<osis_crypto::Epoch>| j != J::Departed || e.as_ref().is_some_and(|e| ctx.holds.covers_departures(s, e));
-        let shows = creds.shows.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
+        let (shows, rest): (Vec<_>, Vec<_>) = creds.shows.iter().partition(|(_, e)| ok(e));
+        let shows = shows.into_iter().map(|(x, _)| x.clone()).collect();
+        let walk = match j {
+            J::Departed => rest.into_iter().map(|(x, _)| x).filter(|x| matches!(x, Shown::Proof(_))).chain(creds.walk.iter()).cloned().collect(),
+            _ => Vec::new(),
+        };
         let tests = creds.tests.iter().filter(|(_, e)| ok(e)).map(|(x, _)| x.clone()).collect();
         let step = creds.step.as_ref().filter(|(_, e)| ok(e)).map(|(k, _)| k.clone());
         let own = SourceClass::declared(creds.holding == Some(crate::types::Holding::Unread));
-        Some(Adm { j, own, shows, tests, step })
+        Some(Adm { j, own, shows, tests, walk, step })
     }
 
     /// Tests the pending sync IDs against the peer's latest filter and sends one Offer
@@ -2113,7 +2123,9 @@ impl Opens {
         let (bind, proven) = (c.bind, c.proven.clone());
         // Judged on what this side holds now: a credential no longer shown proves nothing.
         let Some(adm) = self.admissible(ctx, conn, &s) else { return refuse };
-        if !adm.shows.contains(&shown) {
+        // a departed store's Hit on its step: opened only to be moved past its keys
+        let walk = class == SourceClass::Store && adm.walk.contains(&shown);
+        if !adm.shows.contains(&shown) && !walk {
             return refuse;
         }
         let proved = match (&shown, signing) {
@@ -2151,6 +2163,9 @@ impl Opens {
         if self.member(conn, &s).is_none() {
             let by = shown.credential();
             self.open(ctx, conn, s, Member { class, own: adm.own, by, until: None, departed: false }, Some(beacon), moved);
+            if walk {
+                self.rejudge(ctx, conn, s, moved);
+            }
         }
         SharedItem { code: Code::OK, tag: Some(bind.tag(shown.matched(), &s, &beacon)), grant, sig: answer_sig, unread: adm.own.unread() }
     }

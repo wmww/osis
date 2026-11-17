@@ -121,3 +121,22 @@ fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
     let _ = crate::harness::play(&mut w, &[Revoke(0, 0, Holder::Node(1)), Run], String::new());
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
 }
+
+// spec/sync-opens.md §6 (a reader moves a removed store past its keys, whether or not S was open
+// there at the removal): node 0 lowers node 1 from write to sync and removes it at once, so node
+// 0 judges node 1 departed while still a reader source there and closes S at once; node 1 then
+// keeps S unread at the lowering's step and cannot read the removal. Its Hit on that step's sync
+// proof, which node 0's filter showed while it was the newest, opens S ended at node 0, which
+// registers past node 1's keys, and node 1 drops its copy.
+#[test]
+fn a_reader_moves_a_store_departed_before_it_kept_s_unread_spec_sync_opens_6() {
+    use crate::harness::Step::*;
+    use crate::harness::history::{Gives, Holder, world};
+    let mut w = world(0, 2);
+    w.cap = 20_000;
+    let _ = crate::harness::play(&mut w, &[New(0), Grant(0, 0, 1, Gives::Writes), Run], String::new());
+    let t = w.history.things[0].0;
+    let s = w.engine(0).home_sync_id(&t).unwrap().unwrap();
+    let _ = crate::harness::play(&mut w, &[Lower(0, 0, Holder::Node(1), Gives::Syncs), Revoke(0, 0, Holder::Node(1)), Run], String::new());
+    assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
+}
