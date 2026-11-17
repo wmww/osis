@@ -2769,3 +2769,20 @@ fn a_held_grant_again_after_a_self_removal_serves_the_state_held_spec_perm_3() {
     let (kept, fresh) = served_secrets(&mut lp, g);
     assert_eq!(*kept, fresh, "served after a restart");
 }
+
+// spec/permissions.md §3 (No secret taken back), spec/crypto.md §4 (an epoch's history is what
+// the live entries of its history box say): admin A removes admin W, and W, unaware, rotates G.
+// A's removal arrives: it strips W's rotation's entries and keeps W's view of G as it was (W's
+// roles give it nothing). A grants W read again: W's view of G is then what its store loaded
+// afresh gives (its own epoch with no history: `check_index`). Fails when a role kept out is
+// read again only for a secret it kept out (W's history from its own rotation stays).
+#[test]
+fn a_role_kept_out_is_read_again_once_given_spec_permissions_3() {
+    let (mut lp, g, tids) = granted(2, &[(1, Role::Admin)]);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, retain: None }).unwrap();
+    rotate_leaving_out(&mut lp, 1, g, &BTreeSet::from([Role::Read]), &[]);
+    lp.sync(0, 1).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[1], &edge(Role::Read)).unwrap();
+    lp.sync(0, 1).unwrap();
+    lp.peers[1].engine.check_index();
+}

@@ -412,7 +412,8 @@ impl Waits {
     }
 
 
-    /// An applied box of `actor` gave secrets of `roles` the node's roles did not give.
+    /// Reading `actor`'s `secrets.0` gave `roles` otherwise than the node holds them, which its
+    /// roles kept as they were (`Core::ingest_view`).
     pub fn untaken(&mut self, actor: Tid, roles: BTreeSet<Role>) {
         self.untaken.entry(actor).or_default().extend(roles);
     }

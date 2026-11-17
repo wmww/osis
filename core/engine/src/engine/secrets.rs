@@ -272,7 +272,7 @@ impl Core {
     }
 
     /// What `ingest_secrets` would make of `actor`'s epochs, when it changes them, and the roles
-    /// whose secrets an applied box gave that `rotation::may_take_role` kept out.
+    /// `rotation::may_take_role` kept as they were where the state says otherwise.
     pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, read: SecretsRead<'_>, alts: &HistoryAlts) -> (Option<ActorEpochs>, std::collections::BTreeSet<Role>) {
         let before = self.ix.secrets.get(actor).cloned();
         let unchecked = match read {
@@ -320,19 +320,21 @@ impl Core {
         // box gives a role's secrets only where the node's roles give them now
         // (`may_take_role`: reading, every role's; sync alone, the sync secret), whatever the box
         // (a forgotten part rejoining, a late rotation, a holder actor's chain); a pending one's
-        // are a grant's still to be judged, read until it is (`keys::forget_unchecked`). What it
-        // keeps out is opened again once the node's roles give it (`flows::retake`): a box may
-        // apply before the grant that makes it ours, or after the lowering to sync it survives.
+        // are a grant's still to be judged, read until it is (`keys::forget_unchecked`). The role
+        // is kept as it was, and read again once the node's roles give it (`flows::retake`)
+        // wherever the state says otherwise: a box may apply before the grant that makes it ours,
+        // or after the lowering to sync it survives, and a held epoch's history may change
+        // meanwhile (an entry stripped, another opened).
         let mut untaken = std::collections::BTreeSet::new();
         if unchecked.is_none() {
             for r in ROLES.into_iter().filter(|r| !crate::rotation::may_take_role(self, actor, *r)) {
                 let was = before.as_ref().map(|b| b.role(r).clone()).unwrap_or_default();
-                // listed only for a held secret kept out (epochs observed without one are no
-                // access, and listing them would list every actor the node cannot read); one a
-                // pending read gave for reading only is not held, and goes once that commit is
-                // judged, so it counts as absent
+                // listed only where an epoch whose secret either holds differs (epochs observed
+                // without one are no access, and listing them would list every actor the node
+                // cannot read); a secret a pending read gave for reading only is not held, and
+                // goes once that commit is judged, so it counts as absent
                 let new = epochs.role(r);
-                if new.epochs().any(|(e, _)| new.secret(e).is_some() && was.secret(e).is_none()) {
+                if new.epochs().chain(was.epochs()).any(|(e, _)| (new.secret(e).is_some() || was.secret(e).is_some()) && new.get(e) != was.get(e)) {
                     untaken.insert(r);
                 }
                 *epochs.role_mut(r) = was;
