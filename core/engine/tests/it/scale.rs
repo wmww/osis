@@ -1330,7 +1330,7 @@ fn open_role_reads(n: usize) -> u64 {
     cs.iter().filter(|c| c.0 == "commit read").map(|c| c.2).sum()
 }
 
-// notes/engine-store.md `c/` (an open decodes no commit record): the role commits' signatures
+// spec: none (store layout, notes/engine-store.md `c/`: an open decodes no commit record): the role commits' signatures
 // (`Indexes::role_sigs`) come with the header bytes an open reads, at n and 10n role commits.
 #[test]
 fn an_open_decodes_no_role_commit_record() {

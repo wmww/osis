@@ -144,7 +144,7 @@ fn settled() -> (Fake, Leave) {
     (g, l)
 }
 
-// spec/sync-set.md §3 (Release, Stopping): a sync ID whose thing left the node closure stays
+// spec/sync-set.md §3 (Release; Stopping): a sync ID whose thing left the node closure stays
 // synced until a complete pass begun after it left ends; then its thing is released and its store
 // shredded, read or kept unread (nothing to release). With no source it stops at once.
 #[test]
@@ -189,7 +189,7 @@ fn a_thing_is_released_after_the_pass_in_flight_spec_sync_set_3() {
     assert!(l.passes_wanted().is_empty());
 }
 
-// spec/sync-set.md §3 (synced again before then, S is kept as it was): a leaving sync ID listed
+// spec/sync-set.md §3 (R back in the node closure before then is kept as it was): a leaving sync ID listed
 // again is neither forgotten nor shredded.
 #[test]
 fn synced_again_before_it_stops_keeps_it_spec_sync_set_3() {
@@ -207,7 +207,7 @@ fn synced_again_before_it_stops_keeps_it_spec_sync_set_3() {
     assert_eq!(l.judged(), 1, "judged once while it left, not after");
 }
 
-// spec/sync-set.md §3 (stops at once; lowering from read to sync is no leaving): a node removed
+// spec/sync-set.md §3 (Stopping; lowering from read to sync is no release): a node removed
 // by another holds no secret of the thing: a read sync ID that left with no secret of its thing
 // held is shredded at once, nothing forgotten; lowered to kept unread it is not shredded.
 #[test]
@@ -243,7 +243,7 @@ fn a_start_finds_what_left_while_down_spec_sync_set_3() {
     assert_eq!(g.shredded, vec![sid(1), sid(8)]);
 }
 
-// spec/sync-set.md §3 (its list may still come): a read sync ID whose holder went because a
+// spec/sync-set.md §3 (Stopping), and a wait it does not state (issues/sourced-pass-for-lists.md): a read sync ID whose holder went because a
 // role commit on its thing is uncounted for want of its lists (a revocation taken before them)
 // is not judged lost by the pass that saw it go: it waits for one more complete pass, begun at
 // that judgement, that ends only with a source (`pass_sourced`); the lists arriving give S back,
@@ -287,9 +287,9 @@ fn a_loss_waiting_for_lists_waits_for_a_pass_with_a_source_spec_sync_set_3() {
     assert_eq!(g.shredded, vec![sid(1)], "nothing uncounted: lost after the first pass");
 }
 
-// spec/sync-set.md §3 (its list may still come): a sync
-// ID waiting for a pass with a source whose thing leaves the closure (the user removes its strong) stops
-// at once, no pass with a source needed; one already out of the closure waits for none.
+// spec/sync-set.md §3 (Stopping), issues/sourced-pass-for-lists.md: a sync ID waiting for a pass
+// with a source whose thing leaves the closure (the user removes its strong) stops at once, no
+// pass with a source needed; one already out of the closure waits for none.
 #[test]
 fn leaving_the_closure_ends_a_wait_for_lists_spec_sync_set_3() {
     for out_first in [false, true] {

@@ -113,7 +113,7 @@ fn a_ticket_lookup_reads_the_targets_tickets_alone_at_n_and_10n() {
     assert_eq!(small, large, "the lookup reads the target's tickets alone");
 }
 
-// spec/data-model.md §8 Tickets, spec/sync-set.md §2 (refgraph T1): a ticket lets its holder sync
+// spec/data-model.md §8 Tickets, spec/sync-set.md §2 (What a held ticket does): a ticket lets its holder sync
 // the target from a strong on. Placed by hand in a thing account 1 holds (no inbox), before any
 // of T's commits: a read ticket's sync ID is synced at once and, given T's commits sealed, T
 // reads; a sync ticket's is synced and T stays unread; one sealed to account 2 syncs nothing.

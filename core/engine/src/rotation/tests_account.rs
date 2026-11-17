@@ -300,7 +300,7 @@ fn a_box_at_an_account_epoch_carries_its_rotation_spec_crypto_4() {
     assert_eq!(crate::rotation::members::carried(&e.core, &w, None), vec![id], "the box's epoch travels with it");
 }
 
-// spec/sync-inbox.md §2 (invite request): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there
+// spec/wire.md §4 (the epoch an account author signs at): the request gate reads an author's signature at the header's epoch: a commit signed at the first epoch verifies only there
 #[test]
 fn request_gate_reads_the_header_epoch_spec_sync_3() {
     let mut lp = peers(2);

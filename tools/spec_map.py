@@ -159,7 +159,7 @@ RULES = [
     ("spec/permissions.md", "7", "removed node's links", "MUST tell the one removing a node"),
     ("spec/permissions.md", "7", "link finalized", "MUST write it once L's edge expired or was self-removed"),
     ("spec/permissions.md", "7", "joiner's leave", "A node of the account MUST write it once it holds that history"),
-    ("spec/sync-ids.md", "2", "home sync id", "MUST also create its sync ID"),
+    ("spec/sync-ids.md", "2", "one sync id per actor", "MUST also create its sync ID"),
     ("spec/sync-opens.md", "4", "departed", "MUST NOT open S toward a peer J judges departed"),
     ("spec/sync-ids.md", "6", "behind", "through the first whose sync key is not the named step's"),
     ("spec/sync-ids.md", "6", "behind static", "the head's entry box for that entry and the path from genesis"),

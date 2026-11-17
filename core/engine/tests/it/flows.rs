@@ -1938,7 +1938,9 @@ fn two_writer_lockout_recovered_spec_perm_3() {
     }
 }
 
-// spec/crypto.md §4 (rotating needs only the right to rotate; an epoch whose secret a node lacks, ordered before a departure, cannot cover it): the vandal rotates to itself, then leaves. Its leaving carries no rotation; the
+// spec/crypto.md §4 (rotating needs only the right to rotate; a current epoch whose secret a node
+// lacks, ordered before a departure it knows of, cannot cover it),
+// §4 (encrypt under covering epoch): the vandal rotates to itself, then leaves. Its leaving carries no rotation; the
 // admin, lacking every current secret, finds its departure uncovered and rotates before its
 // next write, superseding the vandal's epoch unread. Nobody else need act.
 #[test]

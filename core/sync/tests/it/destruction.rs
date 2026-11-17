@@ -53,7 +53,8 @@ fn gone(w: &mut World, i: usize, t: Tid) {
 }
 
 // spec/commits.md §5 (Destruction: a thing whose every held minting is purged by a request
-// holding the right is destroyed; in the same transaction the node drops every part on it), spec/sync-judgement.md §2:
+// holding the right is destroyed; in the same transaction the node drops its states and every
+// part on it), spec/sync-judgement.md §2:
 // node 0's purge of t's creation reaches node 2, which reads t absent, also after a restart.
 #[test]
 fn a_purged_creation_destroys_the_thing_at_every_node_spec_commits_5() {
@@ -93,8 +94,8 @@ fn a_write_after_the_destruction_counts_nowhere_spec_commits_5() {
     assert!(!w.engine(0).commit_ids().contains(&late), "node 0 applied a write after the destruction");
 }
 
-// spec/commits.md §5 (Destruction: what a destroyed thing keeps is held by the ordinary rules;
-// the request is kept as any purge request, lasting), spec/sync-judgement.md §5: past the purge's
+// spec/commits.md §5 (Destruction: what stays is held by the ordinary rules alone; a request
+// destroying it is a commit carrying a purge request, kept and logged as any), spec/sync-judgement.md §5: past the purge's
 // floor (`ROLE_KEEP`; the purge has no expiry) node 1, which keeps S unread and still holds t,
 // keeps the request under S, and node 2, away for all of it, learns the destruction from S once
 // back.

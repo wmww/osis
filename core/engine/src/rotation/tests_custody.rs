@@ -1776,7 +1776,7 @@ fn a_seed_reseal_is_made_with_its_key_in_account_already_spec_crypto_9() {
     assert!(r.w.items.iter().any(|i| matches!(i.kind, MK::Reseal { .. }) && i.author == C && i.boxed[T]), "C re-seals X's epoch's seed to T");
 }
 
-// spec/crypto.md §9 (Custody, Seed re-seal): X's forks x0 (boxed to B alone of the honest
+// spec/crypto.md §9 (Custody; Seed re-seal): X's forks x0 (boxed to B alone of the honest
 // nodes) and x1 (to C alone) both count at C, x0 its preferred head: C signs nowhere, so it
 // re-seals x1's seed to no one (a re-seal is signed at the preferred head) and acts not at all.
 #[test]
@@ -1824,7 +1824,7 @@ fn a_taken_revocation_is_carried_once_whatever_the_preferred_head_spec_permissio
     assert!(!made.iter().any(|id| matches!(r.w.item(*id).kind, MK::Plain { .. })), "B takes X's revocation once");
 }
 
-// spec/permissions.md §5.4 (Placing, Following outside P): honest lines only. A removes X at its
+// spec/permissions.md §5.4 (Placing; Following, outside P): honest lines only. A removes X at its
 // own rotation's epoch; C, unaware of both, removes T; B certifies the merge of A's rotation and
 // C's removal and rotates on it; C and A certify the merge of A's removal and C's. R2 holds C's
 // removal first, then A's rotation and removal, B's certificate and rotation and C's certificate
@@ -1875,8 +1875,8 @@ fn an_outsider_places_one_milliseconds_rotations_by_id_before_depth_spec_permiss
     panic!("no start delay sorts the IDs so");
 }
 
-// spec/permissions.md §5.5 (Honest nodes of P), spec/crypto.md §9 (a merge is on the lines
-// descending from it): X forks x at the first epoch and certifies its merge m with B's plain
+// spec/permissions.md §5.5 (Honest nodes of P), spec/crypto.md §9 (a merge is on the line of
+// each epoch descending from it): X forks x at the first epoch and certifies its merge m with B's plain
 // rotation b1; A removes X. B takes the removal, answers x and merges; m comes later and B
 // answers it from its merge epoch, which rejects m (nothing signed there is on a line with m).
 // C, holding it all, answers x alone: m itself is rejected, so owed no answer again.
@@ -1908,7 +1908,7 @@ fn a_rejected_merge_is_answered_once_spec_permissions_5_5() {
     assert_eq!(r.w.answers(c1), [x]);
 }
 
-// spec/permissions.md §5.5 (Rotation's list, Listings), spec/crypto.md §4 (Encrypting under): C
+// spec/permissions.md §5.5 (Rotation's list; Listings), spec/crypto.md §4 (Encrypting under): C
 // removes T and re-keys t at its rotation's epoch, then takes X's revocation of B beside it and
 // re-keys t again (its t epoch is boxed to P at an epoch not carrying the revocation). It then
 // answers B's rotation, closing its own epoch, which the revocation revokes: its rotation's list

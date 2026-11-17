@@ -211,7 +211,7 @@ mod tests {
         assert!(written >= 1 && written <= hs.nodes.len() && reused as u64 >= hs.chunks, "{written} written, {reused} reused");
     }
 
-    // spec/wire.md §12 (notes/decode-bounds.md): a whole read of a writer's value holds no more
+    // spec/wire.md §12, notes/decode-bounds.md: a whole read of a writer's value holds no more
     // than its bound, whatever the shape: a list of one-byte unknown tags (the shape costing a
     // decode most per byte) fits the byte bound four times over but would decode to about 36
     // times its bytes, so it is too large; an honest blob of the same bytes reads within it

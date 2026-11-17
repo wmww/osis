@@ -27,3 +27,15 @@ fn siblings_role_commits_at_one_ts_have_distinct_departs_marks_spec_crypto_4() {
     assert_eq!((x.0, x.1), (y.0, y.1), "one ts, one author");
     assert_ne!(x.2, y.2, "distinct blinds");
 }
+
+// spec/permissions.md §7 (removed node's links): removing a node returns the account's links that
+// still work, whichever node made them, so the caller can end them; the removed node keeps their keys.
+#[test]
+fn removing_a_node_names_the_links_still_working_spec_permissions_7() {
+    let (a, b, _) = paired();
+    let t = a.commit_with(|w| w.create_held()).unwrap();
+    a.make_link(t, Role::Read, Default::default()).unwrap();
+    let open = a.remove_node(b.node(), SetRoleOpts::default()).unwrap();
+    assert_eq!(open.iter().filter(|l| l.target == t).count(), 1, "the link to t still works: {open:?}");
+    assert_eq!(open, a.links().unwrap(), "every link still working");
+}

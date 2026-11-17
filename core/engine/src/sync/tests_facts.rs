@@ -170,7 +170,7 @@ fn framed_entry(lp: &mut LocalPeer, d: Tid, c: &CommitId, junk: bool) -> (BlobId
     (id, osis_crypto::wrap(&w, &id, &key, body.order).unwrap(), bytes)
 }
 
-// spec/commits.md §4 (a commit blob whose prefix disagrees with its header is bad input),
+// spec/commits.md §4 (a node holding a blob it opened before the header's lists resolved opens it again once they do),
 // spec/sync-ids.md §1: a blob opened before its header lists resolve is checked once they do.
 // A framer's blob of a genuine commit under commitments to a key of its own (so the thing's
 // delete-key holders cannot delete it at a node keeping S unread) is opened again as the lists

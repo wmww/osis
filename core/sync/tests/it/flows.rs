@@ -90,8 +90,8 @@ fn a_node_pairs_another_after_removing_its_pairer_spec_sync_inbox_1() {
     holds_as_sibling(&mut w, n, 2);
 }
 
-// spec/sync-judgement.md §2 (a grant naming a holder travels under the holder's sync ID with the
-// target's sync record; an account's under its account root): a node paired once the inbox's
+// spec/sync-judgement.md §2 (a grant naming a holder travels under the holder's sync ID; for an
+// account A, its account root's sync ID stands for A's own): a node paired once the inbox's
 // fires are gone holds every thing its sibling holds with its current secrets. The commits giving
 // the contact's card link K its epochs are wrapped under epochs the account took only by its
 // inbox's ticket fire, and D's ticket gives K's current read secret alone: without K's boxes to

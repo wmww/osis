@@ -325,9 +325,9 @@ impl Engine {
 
     /// What holder `t`'s readers need of `x` an edge write names `t` holder on (spec/sync-judgement.md
     /// §2 role commits naming an actor): `t`'s chain to `x` (`chain_piece`), the `secrets.0` parts
-    /// on `x` boxing a secret to `t`, and `x`'s sync record (its `sync.0` parts), so a reader of
+    /// on `x` boxing a secret to `t`, and `x`'s `sync.0` parts, so a reader of
     /// `t` holds the grant and `x`'s sync ID with no ticket (the chain carries `x`'s keys). An
-    /// account's, under its root, is the boxes and sync record alone: its nodes read `x`'s chain
+    /// account's, under its root, is the boxes and `sync.0` alone: its nodes read `x`'s chain
     /// under `x`'s own sync ID once the boxes' history opens it, and a chain named under the root
     /// only while the thing is held left its copies there carrying more than the root names after.
     /// Each valid part held, O(`x`'s held `secrets.0` and `sync.0` commits).

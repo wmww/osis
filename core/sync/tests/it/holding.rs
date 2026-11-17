@@ -313,8 +313,8 @@ fn a_reader_lowered_to_sync_keeps_the_thing_unread_spec_sync_set_3() {
 }
 
 
-// spec/permissions.md §3 (Lost access: what was read goes), spec/crypto.md §4 (an epoch's history
-// is what its live entries say): Bob reads T across Carol's removal from it (a rotation whose
+// spec/permissions.md §3 (Lost access: what was read goes), spec/crypto.md §4 (a reader tries each
+// live entry of a history key): Bob reads T across Carol's removal from it (a rotation whose
 // history box lists what the new epoch supersedes and who departed); Alice lowers him to sync.
 // He keeps T's sync secrets, and what he holds of their history is what a fresh load of his
 // store reads.
@@ -336,7 +336,7 @@ fn a_reader_lowered_to_sync_keeps_its_sync_epochs_as_a_load_reads_them_spec_perm
     w.engine(1).check_index();
 }
 
-// spec/sync-set.md §1, §2 (refgraph U4): a node's local part. A node of an account makes a plain
+// spec/sync-set.md §1, §2 (local part): a node's local part. A node of an account makes a plain
 // thing under its node root, held from there: the node writes it as itself, holds and reads it,
 // and no sync ID carries it, so its sibling never holds it.
 #[test]
@@ -377,7 +377,7 @@ fn shared_through_a_thing(under: bool) -> (World, Tid, Tid) {
     (w, t0, t1)
 }
 
-// spec/sync-set.md §2 (refgraph U5 across nodes), spec/sync-judgement.md §1 Per-sync-ID copies:
+// spec/sync-set.md §2 (T's keys open), spec/sync-judgement.md §1 Per-sync-ID copies:
 // T1 granted read on T0 (T0's first grant) and T1 -> T0: Bob, a reader of T1, reads T0 and what
 // was written on it before it had own keys. T0's role commits reach him under T1's sync ID as
 // per-sync-ID copies, logged though a certificate copy of fewer parts was logged there first.
@@ -512,7 +512,8 @@ fn a_removal_notice_taken_before_its_roster_acts_once_the_roster_comes_spec_sync
     }
 }
 
-// spec/sync-judgement.md §3 (an entry waits for what opens its commit again), notes/sync.md
+// spec/commits.md §4 (Pending storage), spec/sync-judgement.md §3 (it opens again each entry of
+// it its store still holds), notes/sync.md
 // Arriving early: Bob accepts T ahead and drops it again just as Alice grants him read, so his
 // node receives her grant under his account root's sync ID after the release and it pends,
 // needing T's record. Its pending copy then goes while the entry stays (in a history: the commit
@@ -613,7 +614,7 @@ fn a_removal_its_writer_made_blind_reaches_the_removed_reader_spec_sync_inbox_5(
     assert_eq!(value(&mut w, 0, &t), None, "Alice reads T no more");
 }
 
-// spec/permissions.md §3 (Lost access, No secret taken back): Bob makes T1 under T0 and grants
+// spec/permissions.md §3 (Lost access; No secret taken back): Bob makes T1 under T0 and grants
 // Alice read on T0, so she reads T1 by the chain. Cut off from his sibling, one of Bob's nodes
 // removes her from T0 while the other grants her sync on T1, still boxing her T1's read secret;
 // Alice accepts T1. Her role there shows sync alone, so she keeps T1 unread and reads none of it.
@@ -658,10 +659,10 @@ fn a_thing_entered_on_a_ticket_keeps_its_sync_id_as_it_gains_own_keys_spec_sync_
     }
 }
 
-// spec/sync-judgement.md §2 (A grant naming a holder travels under the holder's sync ID with the
-// target's sync record), spec/sync-set.md §2: Alice grants H read on T; Bob reads H and holds T
-// from his account root, not from H. His keys open T by the chain through H; the grant travels
-// under H's sync ID with T's sync record, so he learns T's sync ID and reads T, though no one
+// spec/sync-judgement.md §2 (A grant naming a holder travels under the holder's sync ID),
+// spec/sync-set.md §2: Alice grants H read on T; Bob reads H and holds T from his account root,
+// not from H. His keys open T by the chain through H; the grant travels under H's sync ID with
+// T's boxes to H and T's `sync.0`, so he learns T's sync ID and reads T, though no one
 // writes him a ticket and he may not write H.
 #[test]
 fn a_reader_by_a_chain_through_a_holder_thing_reads_spec_sync_judgement_2() {
@@ -774,14 +775,14 @@ fn a_released_thing_reached_again_is_fetched_again_spec_sync_judgement_3() {
     }
 }
 
-// spec/sync-judgement.md §2 (A grant naming a holder travels under the holder's sync ID with the
-// target's sync record), spec/permissions.md §3 (Lost access forgets what only the lost secrets
-// read): Alice's node 2 makes T0 and T1 and grants Bob read on T0 while her node 0 grants T0 sync
-// on T1. Bob, reading T0, takes T0's certificates of T1 (its minting as a header alone, its sync
-// record, its boxes to T0), so he holds T1's sync secrets and no read: he loses access to T1,
+// spec/sync-judgement.md §2 (A grant naming a holder travels under the holder's sync ID),
+// spec/permissions.md §3 (a commit of which it holds the header alone was read by no secret and
+// stays): Alice's node 2 makes T0 and T1 and grants Bob read on T0 while her node 0 grants T0
+// sync on T1. Bob, reading T0, takes T0's certificates of T1 (its minting as a header alone, its
+// `sync.0`, its boxes to T0), so he holds T1's sync secrets and no read: he loses access to T1,
 // which must not forget the minting's header, read by no secret of T1.
 #[test]
-fn a_reader_of_a_holder_holds_its_targets_sync_record_spec_sync_judgement_2() {
+fn a_reader_of_a_holder_holds_its_targets_boxes_to_it_spec_sync_judgement_2() {
     let mut w = contacts();
     w.pair(0);
     w.run();

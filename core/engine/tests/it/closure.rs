@@ -143,7 +143,7 @@ fn a_thing_leaving_two_units_at_once_notes_both_spec_sync_set_3() {
     assert_eq!(e.left_closure().get(&x), Some(&[d, a].into()));
 }
 
-// spec/sync-set.md §1 (refgraph H2): a local write that would take away a strong the roots keep
+// spec/sync-set.md §1 (a write removing it; a write removing D's strong to P's profile or inbox): a local write that would take away a strong the roots keep
 // is refused, however it is written (a removal, a whole-aspect removal): the node root's to the
 // account root, and the account root's to the profile and the inbox.
 #[test]
@@ -413,7 +413,7 @@ fn a_thing_is_made_only_where_it_is_held_spec_sync_set_2() {
     e.create_link(&p, &spec).unwrap();
 }
 
-// spec/sync-set.md §2 (refgraph U5): nested sharing. X and Y have own keys, X is granted read on Y,
+// spec/sync-set.md §2 (Sync unit; T's keys open): nested sharing. X and Y have own keys, X is granted read on Y,
 // and X -> Y -> B with B plain from Y. A reader of X (account 1, holding X by a strong) holds Y and
 // B, with no ticket for Y, in X's sync unit, and has Y's sync ID in its sync set.
 #[test]
@@ -496,7 +496,7 @@ fn a_released_thing_goes_with_its_writes_spec_sync_set_3() {
     assert!(e.get(&y, &crate::common::ak("t:log+.0")).unwrap().is_some(), "its ephemeral state too");
 }
 
-// spec/sync-set.md §3 (refgraph L9): lowering a reader to sync is no release: account 1, holding X
+// spec/sync-set.md §3 (lowering from read to sync is no release): lowering a reader to sync is no release: account 1, holding X
 // read, is lowered to sync; X stays in its node closure, kept unread (its sync ID in the sync
 // set, nothing noted as left), and what is written after, sealed as sync IDs carry it, opens
 // nothing there.

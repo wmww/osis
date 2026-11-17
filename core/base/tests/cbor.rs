@@ -845,7 +845,7 @@ fn array_of(n: usize, bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-// spec/wire.md §12 (notes/decode-bounds.md): a decode allocates no more than its `max_alloc`,
+// spec/wire.md §12, notes/decode-bounds.md: a decode allocates no more than its `max_alloc`,
 // refused before allocating past it, whatever the shape; the cheapest shapes per byte (one-byte
 // unknown tags, one-byte items, empty containers, enums, links) and honest ones alike. `check`
 // refuses exactly where `decode` does.

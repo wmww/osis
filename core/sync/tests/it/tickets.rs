@@ -60,7 +60,7 @@ fn forged(w: &mut World, t: &Tid, s: SyncId) -> Ticket {
     Ticket { sync_id: s, ..k }
 }
 
-// spec/sync-inbox.md §5 (Delivery of a grant, Ticket sync IDs), spec/sync-set.md §4 (Accepting):
+// spec/sync-inbox.md §5 (Delivery of a grant; Ticket sync IDs), spec/sync-set.md §4 (Accepting):
 // Alice grants Bob read on T; her ticket reaches Bob's inbox; Bob accepts by a strong in his
 // account root, syncs the ticket's sync ID over real connections and reads T, then holds it by
 // its own `sync.0`.
@@ -174,7 +174,8 @@ fn quiet_deliveries(w: &mut World) -> u64 {
     w.deliveries - d
 }
 
-// spec/sync-hostile.md, spec/sync-inbox.md §5 (refgraph T5's other forged cases): beside the
+// spec/sync-hostile.md, spec/sync-inbox.md §5 (S's things: a forged claim only adds a thing whose
+// secrets open nothing there): beside the
 // grant's ticket for T, Bob accepts a ticket for T at an epoch not T's (stale), or one for a
 // thing its issuer does not hold, naming T's sync ID. Each opens nothing (Bob reads T by the
 // genuine one; the other thing is not held) and nothing is retried: the quiet spell after costs

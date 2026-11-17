@@ -279,7 +279,7 @@ fn boxed_to(ticket: &Value, thing: &Tid) -> Option<Tid> {
 }
 
 /// The parts a ticket fire's `grant` carries: the role commit's parts on the ticket's thing that
-/// give the holder its epochs and the thing's sync record (spec/sync-inbox.md §5 Delivery of a
+/// give the holder its epochs and the thing's `sync.0` (spec/sync-inbox.md §5 Delivery of a
 /// grant).
 const GRANT_PARTS: &[&str] = &["roles.0", "keys.0", "secrets.0", "sync.0"];
 
@@ -534,7 +534,7 @@ impl Engine {
     /// certificates for them (each projected to its chain deltas, no `keys.0` but the author's
     /// own), and their creation records. With `holder` (a grant fired on the holder actor itself,
     /// its own inbox), what the holder's own sync ID carries of `target` too (`holder_piece`:
-    /// spec/sync-judgement.md §2, a grant naming a holder travels with the target's sync record).
+    /// spec/sync-judgement.md §2, a grant naming a holder travels under the holder's sync ID).
     /// `None` while `c` is not applied here.
     fn role_parts_value(&mut self, c: &CommitId, target: &Tid, aks: &[&str], holder: Option<Tid>) -> Result<Option<Value>> {
         let id = *c;

@@ -1,4 +1,4 @@
-//! What one thing costs (notes/thing-cost.md): a plain thing made under the account root and a
+//! What one thing costs (notes/thing-cost.md; spec/requirements.md Cost, spec/sync-set.md §2 Cost): a plain thing made under the account root and a
 //! thing with its own keys made under the account, for the maker and for the account's second
 //! node: commits, store rows by family, bytes a peer downloads, KEM and signature operations.
 

@@ -202,6 +202,32 @@ fn large_value_round_trip_spec_data_model_6() {
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), Some(big));
 }
 
+// spec/data-model.md §6 (unreadable link): a node holding a commit but not the blobs of its link
+// reads that position absent, the rest of the value as written, and reports `Unreadable`.
+#[test]
+fn an_unreadable_link_fails_only_its_position_spec_data_model_6() {
+    let (a, b, _) = paired();
+    let k = osis::DynamicAspectKey::untyped(ak("t:doc.0"));
+    let big = Value::Bytes(vec![7u8; osis::internals::schema::osis_base::format::CHUNK_THRESHOLD + 1000]);
+    let t = a.commit_with(|w| {
+        let t = w.create_held()?;
+        w.at(t, k.clone()).set(&Value::Map(osis_base::ValueMap::from([(Value::Int(0), big), (Value::Int(1), s("small"))])))?;
+        Ok(t)
+    })
+    .unwrap();
+    // the commits alone, none of their blobs
+    let pks = a.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
+    for pk in pks {
+        b.engine(|e| e.ingest(&pk.bytes, Vec::new()).unwrap());
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _d = b.on_diagnostic(move |_, d| tx.send(d).unwrap()).unwrap();
+    assert_eq!(b.at(t, k.clone()).get().unwrap(), Some(Value::Map(osis_base::ValueMap::from([(Value::Int(1), s("small"))]))));
+    assert_eq!(b.at(t, k.clone()).path(p![osis::FieldId(1)]).get::<String>().unwrap().as_deref(), Some("small"));
+    b.settle();
+    assert!(rx.try_iter().any(|d| matches!(d, osis::Diagnostic::Unreadable { thing, .. } if thing == t)), "an unreadable link told");
+}
+
 // spec/permissions.md §1, notes/api.md Writes: rights are checked locally before signing:
 // a node without write on a thing gets Permission; an unknown thing UnknownThing; nothing is
 // committed.

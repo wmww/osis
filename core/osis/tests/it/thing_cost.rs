@@ -1,4 +1,5 @@
-//! What one thing costs through the API (notes/thing-cost.md), made as the app makes them: a
+//! What one thing costs through the API (notes/thing-cost.md; spec/requirements.md Cost,
+//! spec/sync-set.md §2 Cost), made as the app makes them: a
 //! plain thing under the app's home (made under it, held by it, kept a day), and a thing with
 //! its own keys made under the account and held by home (as `osis-chat`'s `create` makes a
 //! chat). The maker and the account's second node: commits, store rows by family, the sync

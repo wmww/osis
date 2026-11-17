@@ -131,7 +131,7 @@ pub(crate) enum Piece {
     /// holds, and whose actor reads, a thing with a held commit of `a` writing `x` or acting for
     /// it (`Indexes::chains_on`): one piece per chain, however many things need it.
     Chain(Tid, Tid),
-    /// Holder `t`'s chain to `x` with `x`'s boxes to `t` and sync record
+    /// Holder `t`'s chain to `x` with `x`'s boxes to `t` and `sync.0`
     /// (`Engine::holder_piece`), under `t`'s home for each `x` an edge write names it holder on
     /// (`Engine::holder_home_on`: role changes travel): `t` itself when read, an account's root
     /// for a thing the root reaches by strongs. Under each other read thing whose keys open `t`
@@ -453,7 +453,7 @@ impl Engine {
     /// edge write names `t` holder on `x`, its own things aside (a first admin's edge is its
     /// record's, which no edge write lowers): spec/permissions.md §4 Role changes travel, a role
     /// commit with an edge write naming holder `t` goes under `t`'s own sync ID with `x`'s boxes
-    /// to `t` and sync record, the piece holding every edge write on its paths, a removal
+    /// to `t` and `sync.0`, the piece holding every edge write on its paths, a removal
     /// included, which the target's bodies no longer carry there once `t` reads it no more. `t`'s
     /// home is `t` when read here; for this node's account, its root read here, for an `x` the
     /// root reaches by strongs (the account root reads as its account: a node paired later holds
@@ -632,7 +632,7 @@ impl Engine {
             }
         }
         // the role changes naming each holder with a home or openers (`holder_places`), per pair:
-        // its chain to the target, with the target's boxes to it and sync record, under its home,
+        // its chain to the target, with the target's boxes to it and `sync.0`, under its home,
         // its chain alone under its openers; a pair placed nowhere is followed again once named
         // again (the feed) or once its holder has openers
         for (t, x) in f.held_on.due() {

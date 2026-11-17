@@ -1870,7 +1870,7 @@ fn a_reader_paired_into_the_account_judges_its_chain_as_a_node_spec_permissions_
     lp.peers[2].engine.check_index();
 }
 
-// spec/permissions.md §1 (pairing), §3 (a node holds the secrets of what it reads): a node paired
+// spec/permissions.md §1 (a node pairs another into P), spec/crypto.md §9 (Custody): a node paired
 // into an account opens what is boxed to the account (its inbox's own secrets) as it becomes a
 // node of it, so its secrets are what a rebuild from its commit records opens
 #[test]
@@ -2542,7 +2542,7 @@ fn a_box_at_a_revoked_account_epoch_is_read_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (Encrypting under; History box), §9 (Account keysets): a node encrypts a thing
+// spec/crypto.md §4 (Encrypting under; History box; Account keysets): a node encrypts a thing
 // only while each current epoch of it is boxed to its account at an epoch that counts there, and a
 // rotation's history carries the established epochs its rotator holds. Node 2 removes node 0 and
 // node 0 removes node 2; node 1 takes node 2's removal first and re-keys t (held by an outsider,
@@ -2687,7 +2687,7 @@ fn a_snapshot_carries_no_write_only_an_open_head_counts_spec_permissions_5_5() {
     lp.peers[3].engine.check_index();
 }
 
-// spec/requirements.md Cost, spec/wire.md §4 (`epoch`, the sealed inner signature): signing as
+// spec/requirements.md Cost, spec/wire.md §4 (`epoch`; inner signature): signing as
 // an account grows a one-field commit over the same commit by a key actor by the inner
 // signature and the epoch's ID with their heads, nothing else (131 B: more than the 100 B
 // issues/account-signing.md aimed at, which the inner signature's 95 B alone nearly fills)

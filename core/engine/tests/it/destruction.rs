@@ -52,8 +52,8 @@ fn under_d(lp: &mut LocalPeer) -> Tid {
     t
 }
 
-// spec/commits.md §5 (Destruction: what a destroyed thing keeps is held by the ordinary rules,
-// never by a window of its own; the request is kept as any purge request), spec/sync-set.md §3:
+// spec/commits.md §5 (Destruction: what stays is held by the ordinary rules alone; a request
+// destroying it is a commit carrying a purge request, kept and logged as any), spec/sync-set.md §3:
 // t, held from D, destroyed, keeps its record and the request past the purge's floor while held;
 // its strong removed and released beside a live thing x, it keeps what x keeps.
 #[test]

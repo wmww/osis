@@ -213,7 +213,7 @@ fn a_source_coming_back_judges_only_what_is_owed_there() {
     assert_eq!(few, many, "toward judged {few} with 2 entries shown, {many} with 6");
 }
 
-// spec/sync-set.md §2 (the sync set is the node closure's walk over what is held): node 1 keeps
+// spec/sync-set.md §2 (Sync set; kept unread): node 1 keeps
 // S unread by the ticket the grant fired on its inbox; a restart, which takes the account up
 // after the open's walk (the ticket opens to the account), enters it again, so S stays in its
 // sync set.
@@ -319,7 +319,7 @@ fn replaced_beside_a_kept_part() -> (World, Tid, CommitId, String) {
     (w, t, c, marker)
 }
 
-// spec/commits.md §5 (Dropping a body destroys every local copy; Purge on replace),
+// spec/commits.md §5 (Dropping a body; Purge on replace),
 // spec/requirements.md (Deletion: one edit of one aspect, forward secure),
 // spec/sync-judgement.md §2 (Per blob): a part of a two-part commit purged, and one replaced under
 // purge on replace beside a part that stays (dropped as covered by the writer's snapshot, it
@@ -424,7 +424,7 @@ fn a_reader_receives_a_part_whose_cover_was_covered_whole_spec_sync_judgement_2(
     assert!(!w.engine(0).read_facts(&s, &c).unwrap().missing, "no part of it counts missing");
 }
 
-// spec/crdt.md §8 (a snapshot lists the commits its writer holds on the aspect), spec/commits.md
+// spec/crdt.md §8 (or that the writer holds with a delta on the aspect), spec/commits.md
 // §5 (Covered), spec/sync-judgement.md §2 (Per blob): as above with the value under purge on
 // replace, so the making commit's value part strips once dropped as covered. Its cover is covered
 // in turn by a snapshot no write of the making commit is left in; that snapshot still lists the

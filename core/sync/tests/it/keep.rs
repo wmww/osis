@@ -101,8 +101,8 @@ fn a_head_move_restamps_own_entries_and_readers_deposit_nothing_spec_sync_judgem
     }
 }
 
-// spec/sync-opens.md §6 (a store source whose peer J judges departed is ended, and this side
-// registers there past its keys), spec/sync-judgement.md §6 (Stops): node 1 keeps t's sync ID S
+// spec/sync-opens.md §6 (whose peer J judges departed is ended too; this side registers there
+// the recorded steps after the source's step), spec/sync-judgement.md §6 (Stops): node 1 keeps t's sync ID S
 // unread and node 2 reads it. Node 0 removes node 1's account while cut off from node 1, so only
 // node 2, learning the removal from node 0, can tell node 1: it registers the removal's step
 // there, and node 1 drops its copy.
@@ -122,7 +122,7 @@ fn a_reader_moves_a_removed_store_past_its_keys_spec_sync_opens_6() {
     assert!(w.store(1).entries(&s).unwrap().is_empty(), "node 1 stopped: {} entries kept", w.store(1).entries(&s).unwrap().len());
 }
 
-// spec/sync-opens.md §6 (a reader moves a removed store past its keys, whether or not S was open
+// spec/sync-opens.md §6 (A reader moves a removed store past its keys; whether or not S was open
 // there at the removal): node 0 lowers node 1 from write to sync and removes it at once, so node
 // 0 judges node 1 departed while still a reader source there and closes S at once; node 1 then
 // keeps S unread at the lowering's step and cannot read the removal. Its Hit on that step's sync

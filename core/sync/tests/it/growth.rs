@@ -737,7 +737,7 @@ fn a_granted_and_revoked_thing_returns_storage_to_a_fresh_worlds_spec_sync_set_3
     grants_as_fresh(true, 4);
 }
 
-// S1, its decline arm: as the grant arm, the fire never accepted.
+// S1, its decline arm (spec/sync-set.md §4 (Declining)): as the grant arm, the fire never accepted.
 #[test]
 fn a_declined_grant_returns_storage_to_a_fresh_worlds_spec_sync_set_3() {
     grants_as_fresh(false, 4);
