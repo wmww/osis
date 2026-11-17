@@ -5,3 +5,4 @@
 # (tools/gate_failures.py).
 held-model/props::settled_histories_keep_their_laws_large_spec_commits_5 OSIS_HELD_START=387315248891 issues/held-model-until-no-deadline.md seed \d+: output changed before its first deadline
 osis-engine/validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6 - issues/osis-tests-depend-on-store-rng.md one rebuild per flipped aspect\s+left: 7\s+right: 5
+osis-engine/rotation::tests_custody::engine_agrees_with_custody_model_large_spec_permissions_5_4 OSIS_CUSTODY_START=708581931364 issues/device-record-dropped-before-named.md signing: misuse: the holder has no secrets of its own

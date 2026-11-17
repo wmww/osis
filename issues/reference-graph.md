@@ -5,12 +5,22 @@
 
 ## Status
 - On main: this plan, the spec (it describes the rebuilt design, not the code), the requirements wording (Tess approved), the model (notes/closure-model.md, held-model `closure`).
-- Execution steps 3 (demolition) and 4 (foundation, Lanes below) are done; the lanes are next; the spec's account parts are in the account forks terms (notes/engine-validity-epochs.md: seeds boxed to device keys, the chain is D's roster, merges only join).
+- Execution steps 1-7 have run (End gate below); left: issues/device-record-dropped-before-named.md (the one failure the end gate found, from the roots change) and a notes pass. The spec's account parts are in the account forks terms (notes/engine-validity-epochs.md: seeds boxed to device keys, the chain is D's roster, merges only join).
 - Lane (b) built (notes/node-closure.md), the making rule (spec/sync-set.md §2 Making a thing) enforced.
 - Step 6 part 2's differential and sims (osis-sync `differential::`, `sims::`, KNOWN in tools/known_failures.txt until these go) found, each with its hand-built repro in osis-sync `tickets::` (ignored):
   - At `OSIS_FULL=1` (4 nodes, 3 accounts, 100 seeds) the differential passes every seed; the classes it found and their fixes: Full size below.
   - Untested: a thing released by a sibling's strong from the shared D and accepted again. The single-node arm needs no test of its own: the release forgets all of the thing (secrets, record, role commits), so accepting again is the first accept's path.
 - Lane (c) built (notes/sync-inbox.md Sealed fires, notes/node-closure.md Tickets): sealed fires out and in, tickets entering at a strong, the account's tickets, removal and stranded notices. Not built: a grant's `profile` ticket to a stranger (spec/sync-inbox.md §5 Delivery of a grant: the fire carries none, so a stranger cannot dial the granter by it); what strangers' fires leave behind: issues/stranger-fire-bounds.md.
+
+## End gate
+`tools/gate.sh --all` on 3352d9da5, once: exit 1 (1 NEW, 1 KNOWN). Instant checks (policy, spec_map gaps, clippy core and GUI) clean. Stage times on ostrich at load 21-24 (other agents' runs beside it), wall/CPU against limit:
+- default tests 238/115 s, 1843/1610 CPU-s; properties 213/78 s, 3115/1219 CPU-s; sims 8/46 s, 111/943 CPU-s; GUI tests 42/5 s, 109/23 CPU-s; the heavy hold 459/241 s, 5069/3795 CPU-s and the whole gate 767/299 s, 6030/4094 CPU-s, both over their caps. The build alone took 183 s wall.
+- NEW: engine `rotation::tests_custody::engine_agrees_with_custody_model_large_spec_permissions_5_4`, 4 seeds, one class: a device record dropped before the chain names it leaves signing failing. Replays on main; first fails at 54c2fda4e. Filed as issues/device-record-dropped-before-named.md, KNOWN in tools/known_failures.txt.
+- KNOWN: engine `validity::unmerge_paged_matches_fresh_large_spec_crdt_4_6` (issues/osis-tests-depend-on-store-rng.md). Listed but passed: held-model `props::settled_histories_keep_their_laws_large_spec_commits_5`.
+
+Against the step 2 baseline (5b4faadfa):
+- `tools/loc.py`: 139,242 impl and 114,257 test lines (141,662 and 123,333): 2,420 impl and 9,076 test lines fewer.
+- Default tests (`tools/pertest.py`): 3,101 tests, 7,329 G instructions, 2,000 CPU-s (3,493, 7,030 G, 2,372 CPU-s): count and CPU lower, as the plan requires; instructions 4% higher. The 2,840 tests in both cost 39% more (osis-engine it +82%, osis-engine lib +58%, osis it +121%).
 
 ## Full size
 `OSIS_FULL=1` runs of `differential::histories_hold_their_closure` in holds of 50 seeds (`OSIS_SYNC_SEED`/`SEEDS`, `OSIS_SEED_TIMEOUT_SECS=400`, under `tools/heavy`, about 120-210 s each): 100 of 100 pass.
