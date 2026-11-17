@@ -86,4 +86,16 @@ fn a_node_pairs_another_after_removing_its_pairer_spec_sync_inbox_1() {
     let n = w.pair(2);
     w.run();
     assert!(w.engine(n).account_root().is_some());
+    // the new node holds every thing with a sync ID its sibling holds, with its current sync and
+    // read secrets (the contact's card link K included, held through D)
+    let has = w.engine(n).things_with_sync_ids();
+    for t in w.engine(2).things_with_sync_ids() {
+        assert!(has.contains(&t), "{t:?} lacks a `sync.0` at the new node");
+        let (a, b) = (w.engine(2).epochs(&t).unwrap(), w.engine(n).epochs(&t).unwrap());
+        for r in [osis_base::Role::Sync, osis_base::Role::Read] {
+            for e in a.role(r).current() {
+                assert!(b.role(r).secret(&e).is_some(), "{t:?} {r:?} {} lacks its secret at the new node", e.n());
+            }
+        }
+    }
 }
