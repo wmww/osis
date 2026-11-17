@@ -224,7 +224,10 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
     // as a certificate needs nothing by what its state names), and an account's reference from
     // its `keys.0` (its inbox, part of its chain)
     let refs = crate::engine::refs::to(tx, t)?;
+    // a strong in a held body of a thing whose history holds its targets (`refs::kept`)
+    let kept = crate::engine::refs::kept::to(tx, t)?;
     let core = &*tx.core;
+    out.extend(kept.into_iter().filter(|(s, _)| core.ix.closure.holds(s)).map(|(s, ak)| (s, Need::Strong(ak))));
     for r in refs {
         if r.kind == osis_base::RefKind::Strong && core.ix.closure.holds(&r.source) {
             out.push((r.source, Need::Strong(r.ak)));

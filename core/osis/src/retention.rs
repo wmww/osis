@@ -131,16 +131,20 @@ pub struct RetentionSetting {
     /// A holder removed from the thing retains a read-only copy, unless its remover says otherwise
     /// (`SetRoleOpts::retain_copy`).
     pub retain_copies: bool,
+    /// A strong reference in a version this thing still holds in its history keeps its target
+    /// held, as one in a current value does, so restoring the version finds what it names. Its
+    /// writers can keep a target held for as long as the history keeps the version.
+    pub history_holds_targets: bool,
 }
 
 impl Codec for RetentionSetting {
     fn to_value(&self) -> Value {
         let rules = self.rules.iter().map(|(k, r)| (k.clone(), (*r).into())).collect();
-        osis_schema::core_types::RetentionSetting { rules, retain: self.retain_copies, default: self.default.map(Into::into) }.to_value()
+        osis_schema::core_types::RetentionSetting { rules, retain: self.retain_copies, default: self.default.map(Into::into), history_holds_targets: self.history_holds_targets }.to_value()
     }
     fn from_value(v: &Value) -> Result<RetentionSetting, PathError> {
         let r = osis_schema::core_types::RetentionSetting::from_value(v)?;
         let rules = r.rules.iter().map(|(k, x)| (k.clone(), x.into())).collect();
-        Ok(RetentionSetting { rules, default: r.default.as_ref().map(Into::into), retain_copies: r.retain })
+        Ok(RetentionSetting { rules, default: r.default.as_ref().map(Into::into), retain_copies: r.retain, history_holds_targets: r.history_holds_targets })
     }
 }

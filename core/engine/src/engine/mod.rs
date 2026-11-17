@@ -1351,6 +1351,12 @@ pub struct Core {
     /// Commits with a part judged invalid this transaction (`Core::index_validity`): dropped at
     /// its end where held (`retention::drop_invalid`).
     pub drop_due: BTreeSet<CommitId>,
+    /// Parts on counted aspects whose hold, validity or body moved (`Core::note_kept`): their
+    /// history's strongs judged at the next closure settle (`refs::kept::settle`).
+    pub kept_due: BTreeSet<(Tid, Ak, CommitId, usize)>,
+    /// Things whose settings moved: whether their history holds targets is judged at the next
+    /// closure settle (`refs::kept::settle`).
+    pub kept_things_due: BTreeSet<Tid>,
     /// Things this transaction's own commits made under an account and gave no own keys yet:
     /// given them before a content write on them (`write::keyed_first`), else at its end
     /// (`rotation::own_keys_due`).
@@ -1584,6 +1590,8 @@ impl Core {
             setting_waits_due: self.setting_waits_due.clone(),
             setting_waits_judging: self.setting_waits_judging,
             drop_due: self.drop_due.clone(),
+            kept_due: self.kept_due.clone(),
+            kept_things_due: self.kept_things_due.clone(),
             own_keys_due: self.own_keys_due.clone(),
             freed_due: self.freed_due.clone(),
             forgotten_names_due: self.forgotten_names_due.clone(),
@@ -2097,6 +2105,8 @@ impl Core {
             // work lists and hints a superset of which is harmless (the consumer re-checks each
             // entry against the restored state), and what a step only moves forward
             drop_due: _,
+            kept_due: _,
+            kept_things_due: _,
             own_keys_due: _,
             freed_due: _,
             forgotten_names_due: _,
@@ -2409,6 +2419,8 @@ impl Core {
             setting_waits_due: BTreeSet::new(),
             setting_waits_judging: false,
             drop_due: BTreeSet::new(),
+            kept_due: BTreeSet::new(),
+            kept_things_due: BTreeSet::new(),
             own_keys_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
             forgotten_names_due: BTreeSet::new(),
@@ -2541,6 +2553,7 @@ impl Core {
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
     /// the indexes derived from it stay exact.
     pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
+        self.note_kept(&id, &m);
         // scale checks: each call walks every part of the commit
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
         let had = self.ix.commits.get(&id).map(missing_of).unwrap_or_default();
@@ -2577,6 +2590,24 @@ impl Core {
         }
     }
 
+    /// The parts of `id` (meta `m`) whose history may hold its strongs' targets: judged at the
+    /// next closure settle (`refs::kept`).
+    pub(crate) fn note_kept(&mut self, id: &CommitId, m: &Meta) {
+        let due = self.kept_parts(id, m);
+        self.kept_due.extend(due);
+    }
+
+    /// `note_kept` of part `ai` of `c` alone, on `(tid, ak)` (its leftover written).
+    pub(crate) fn note_kept_part(&mut self, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) {
+        if refs::kept::counted(ak) && refs::kept::holds_history(self, tid) {
+            self.kept_due.insert((*tid, ak.clone(), *c, ai));
+        }
+    }
+
+    fn kept_parts(&self, id: &CommitId, m: &Meta) -> Vec<(Tid, Ak, CommitId, usize)> {
+        m.view.aspects.iter().enumerate().filter(|(_, a)| refs::kept::counted(&a.ak) && refs::kept::holds_history(self, &a.tid)).map(|(ai, a)| (a.tid, a.ak.clone(), *id, ai)).collect()
+    }
+
     /// `t` lost a need: judged at the next `Engine::settle_needs` or `Engine::settle_lost`.
     pub(crate) fn note_lost(&mut self, t: Tid) {
         self.lost_due.insert(t);
@@ -2585,6 +2616,7 @@ impl Core {
     pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
         osis_base::costs::count("meta: parts indexed", m.view.aspects.len() as u64);
+        self.note_kept(id, &m);
         // its signers' chains may be needed by nothing more (`retention::needed`)
         self.note_lost(m.view.author);
         self.note_lost(m.view.actor);
@@ -2701,6 +2733,8 @@ impl Core {
 
     /// Re-indexes which parts of commit `id` are invalid here (call after setting `Meta::valid`).
     pub fn index_validity(&mut self, id: &CommitId) {
+        let due = self.ix.commits.get(id).map(|m| self.kept_parts(id, m)).unwrap_or_default();
+        self.kept_due.extend(due);
         let Some(m) = self.ix.commits.get(id) else { return };
         for (ai, a) in m.view.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
@@ -2715,6 +2749,7 @@ impl Core {
             // a flip of a setting moves its thing's timeline (`retention::settings_changed`)
             if a.ak.as_str() == osis_commit::retention::RETENTION {
                 self.settings_due.insert(a.tid);
+                self.kept_things_due.insert(a.tid);
             }
             // a flip may make a held purge-on-replace body replaced or covered
             if !self.none_due.contains(&k) && crate::retention::history::of(self, &a.tid, &a.ak).purges() {
@@ -3237,6 +3272,7 @@ impl Tx<'_> {
     /// read of `blob` with `edge_parts_of`, else decoded here).
     pub(crate) fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
         // the bodies leaving the record: held whole as the index has it, absent from `blob`
+        self.core.note_kept(id, meta);
         let leaving: Vec<usize> = self.core.ix.commits.get(id).map(|m| (0..m.view.aspects.len()).filter(|ai| m.holds(*ai) && !m.stripped(*ai) && blob.part(*ai).is_none()).collect()).unwrap_or_default();
         self.pin_states(id, &leaving)?;
         let v = [index::record_head(meta), blob.encode()].concat();

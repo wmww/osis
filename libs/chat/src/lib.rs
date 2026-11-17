@@ -66,7 +66,7 @@ pub fn create(db: &Osis, o: &Options, holder: Tid) -> Result<Tid> {
         _ => return Err(Error::Invalid("a chat's messages are purgeable by the author or admins, admins, or any writer".into())),
     };
     let msg = RetentionEntry { history: Some(History::FOREVER), expires: o.disappear, refuse_replace: o.edit.is_none() };
-    let setting = RetentionSetting { rules: BTreeMap::from([(MSG.name(), msg)]), default: None, retain_copies: o.retain_copies };
+    let setting = RetentionSetting { rules: BTreeMap::from([(MSG.name(), msg)]), default: None, retain_copies: o.retain_copies, history_holds_targets: false };
     let mut w = db.write();
     let c = w.create()?;
     w.at(c, RETENTION).set(&setting)?;

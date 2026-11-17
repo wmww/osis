@@ -1074,6 +1074,8 @@ pub(crate) fn check_states(tx: &mut Tx<'_>, aspects: BTreeSet<(Tid, Ak)>) -> Res
         let (want, got) = osis_base::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, None)?, tx.state(&tid, &ak)?.cloned())) })?;
         // and the reference index, derived from it (a signal's from its held fires)
         osis_base::costs::paused(|| if ak.signal() { crate::engine::refs::check_fires(tx, &tid, &ak) } else { crate::engine::refs::check(tx, &tid, &ak, got.as_ref()) })?;
+        // and the strongs its held bodies hold where its history holds them (`refs::kept`)
+        osis_base::costs::paused(|| crate::engine::refs::kept::check(tx, &tid, &ak))?;
         match cached.0 {
             Some(s) => tx.core.states.insert(k.clone(), s),
             None => tx.core.states.remove(&k),

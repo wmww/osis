@@ -360,17 +360,18 @@ fn settings_are_one_aspect_under_both_keys() {
         rules: [(ak("app:a.0"), rule(Some(osis::History::FOREVER), None)), (ak("app:b.0"), rule(None, Some(Duration::from_secs(60))))].into(),
         default: Some(rule(None, Some(Duration::from_secs(1)))),
         retain_copies: true,
+        history_holds_targets: true,
     };
     db.commit_with(|w| w.at(t, osis::core::RETENTION).set(&rules)).unwrap();
     assert_eq!(db.at(t, osis::core::RETENTION).get().unwrap(), Some(rules.clone()));
     let engine = db.at(t, ct::RETENTION).get().unwrap().unwrap();
-    assert!(engine.retain);
+    assert!(engine.retain && engine.history_holds_targets);
     assert_eq!(engine.rules[&ak("app:b.0")].expires, Some(60_000));
     assert_eq!(engine.rules[&ak("app:a.0")].history, Some(osis::internals::schema::History::FOREVER));
     assert_eq!(engine.default.and_then(|d| d.expires), Some(1_000));
     db.commit_set(t, ct::RETENTION, &ct::RetentionSetting { retain: false, ..engine }).unwrap();
     assert!(!db.at(t, osis::core::RETENTION).get().unwrap().unwrap().retain_copies);
-    let too_long = |d| osis::core::RetentionSetting { rules: [(ak("app:c.0"), d)].into(), default: None, retain_copies: false };
+    let too_long = |d| osis::core::RetentionSetting { rules: [(ak("app:c.0"), d)].into(), default: None, retain_copies: false, history_holds_targets: false };
     let held = db.at(t, osis::core::RETENTION).get().unwrap();
     for bad in [rule(None, Some(Duration::MAX)), rule(Some(osis::History::Keep { until: osis::Time(0), after_replaced: Duration::MAX }), None)] {
         let mut w = db.write();

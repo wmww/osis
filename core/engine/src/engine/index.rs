@@ -969,6 +969,7 @@ pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
         tx.txn.index(name)?;
     }
     super::refs::write_all(tx)?;
+    super::refs::kept::write_all(tx)?;
     write_edges_all(tx)?;
     write_addenda_all(tx)?;
     write(tx, true)?;

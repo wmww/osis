@@ -283,9 +283,10 @@ codec_struct! {
     /// A thing's `retention^.0` setting: an entry by AK, `default` for every AK with no entry but
     /// an open signal's;
     /// `retain`: a removal from the thing retains a read-only copy unless its remover says
-    /// otherwise.
+    /// otherwise; `history_holds_targets`: a strong in a held body of the thing's history holds
+    /// its target, as a current one does.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct RetentionSetting { 0 rules: BTreeMap<Ak, RetentionEntry>, 1 retain: bool, 2 default: Option<RetentionEntry> }
+    pub struct RetentionSetting { 0 rules: BTreeMap<Ak, RetentionEntry>, 1 retain: bool, 2 default: Option<RetentionEntry>, 3 history_holds_targets: bool }
 }
 
 impl RetentionSetting {

@@ -601,6 +601,80 @@ fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
     assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
 }
 
+/// Node 0 makes A under its account root, keeping 10 minutes of history whose strongs hold
+/// their targets (`history_holds_targets`), and B, held by A alone: A's strong to B is removed
+/// (B held by A's history), then the root's to A. `rounds` times; then as `own_rounds` ends.
+fn history_rounds(w: &mut World, rounds: usize) -> Held {
+    use osis_schema::core_types::{self as ct, HOLDS, TICKETS};
+    let (root, d) = (w.engine(0).node_root().unwrap(), w.engine(0).account_root().unwrap());
+    let strong = |m: &mut Mutation, from: Tid, to: Tid, on: bool| {
+        let v = Value::Strong(to);
+        let op = if on { osis_crdt::Op::Add(v) } else { osis_crdt::Op::Remove(v) };
+        m.op(from, &HOLDS, osis_crdt::PathOp { path: vec![], op }).unwrap();
+    };
+    let keep = osis_schema::History::Keep { until: None, after: Some(10 * 60_000) };
+    let setting = ct::RetentionSetting { default: Some(ct::RetentionEntry { history: Some(keep), ..Default::default() }), history_holds_targets: true, ..Default::default() };
+    for _ in 0..rounds {
+        let (a, b) = w.write(0, |e| {
+            let mut m = Mutation::new();
+            let a = m.create(e.thing_record(d));
+            strong(&mut m, d, a, true);
+            e.commit(m).unwrap();
+            let mut m = Mutation::new();
+            m.set(a, &ct::RETENTION, &setting).unwrap();
+            e.commit(m).unwrap();
+            let mut m = Mutation::new();
+            let b = m.create(e.thing_record(d));
+            strong(&mut m, a, b, true);
+            e.commit(m).unwrap();
+            let mut m = Mutation::new();
+            m.set(b, &value_ak(), &Value::Str("new".into())).unwrap();
+            e.commit(m).unwrap();
+            let mut m = Mutation::new();
+            strong(&mut m, a, b, false);
+            e.commit(m).unwrap();
+            (a, b)
+        });
+        w.run();
+        assert!(w.engine(0).closure_holds(&b), "B held by A's history");
+        w.write(0, |e| {
+            let mut m = Mutation::new();
+            strong(&mut m, d, a, false);
+            e.commit(m).unwrap();
+        });
+        w.run();
+        for t in [a, b] {
+            if w.engine(0).core.created(&t).is_some() {
+                panic!("released: {t:?} keeps its record\n{}", why_kept(w, 0, &t));
+            }
+        }
+        w.advance(1_000);
+    }
+    w.write(0, |e| {
+        for (t, ak) in [(d, HOLDS.name()), (d, TICKETS.name()), (root, HOLDS.name())] {
+            e.snapshot(&t, &ak).unwrap();
+        }
+    });
+    w.run();
+    w.advance(TOMBSTONE_LIFETIME_MS + 2 * DAY_MS);
+    w.run();
+    held(w, 0)
+}
+
+// S1, its history arm (notes/refgraph-tests.md), spec/data-model.md §8 What counts, spec/sync-set.md
+// §3: a thing whose history holds its strongs' targets, released with what only its history
+// held, leaves its rows and blobs as a fresh node's, at 2 and 20 rounds: but the root's set
+// tombstones (one removal a round).
+#[test]
+fn releasing_held_history_returns_storage_to_a_fresh_nodes_spec_data_model_8() {
+    let (mut wf, mut wa, mut wb) = (world(0, 1), world(0, 1), world(0, 1));
+    let fresh = own_rounds(&mut wf, 0);
+    let (a, b) = (history_rounds(&mut wa, 2), history_rounds(&mut wb, 20));
+    as_fresh(&a, &fresh, 2, "2 rounds", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
+    as_fresh(&b, &fresh, 20, "20 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
+    assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
+}
+
 /// Each node's roots snapshotted (`own_rounds`), then the inbox lifetime, the role keep and the
 /// tombstone lifetime and two days: what each node holds.
 fn settled(w: &mut World) -> Vec<Held> {

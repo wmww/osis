@@ -7,6 +7,8 @@
 //! An ephemeral aspect's rows are memory rows, as its state is. A row appearing or going is told
 //! as `Event::References` once someone listens (`Engine::watch_references`).
 
+pub(crate) mod kept;
+
 use super::{Tx, records, scan_table};
 use crate::error::{Error, Result};
 use crate::events::Event;

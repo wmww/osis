@@ -807,14 +807,18 @@ impl Core {
     }
 }
 
-/// The targets of `x`'s strongs, `x` aside.
+/// The targets of `x`'s strongs, `x` aside: its current values' and its held history's
+/// (`refs::kept`).
 fn strongs_from(tx: &mut Tx<'_>, x: &Tid) -> Result<BTreeSet<Tid>> {
-    Ok(crate::engine::refs::from(tx, x)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong).map(|r| r.target).filter(|t| t != x).collect())
+    let mut out: BTreeSet<Tid> = crate::engine::refs::from(tx, x)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong).map(|r| r.target).collect();
+    out.extend(crate::engine::refs::kept::from(tx, x)?.into_iter().map(|r| r.0));
+    out.remove(x);
+    Ok(out)
 }
 
-/// Whether `x` holds a strong to `y` now.
+/// Whether `x` holds a strong to `y` now, in a current value or its held history.
 fn strong_to(tx: &mut Tx<'_>, x: &Tid, y: &Tid) -> Result<bool> {
-    Ok(x != y && crate::engine::refs::strong_from(tx, x, y)?)
+    Ok(x != y && (crate::engine::refs::strong_from(tx, x, y)? || crate::engine::refs::kept::strong_from(tx, x, y)?))
 }
 
 /// What the walk takes from vertex `v` by a strong of its thing to `y` (module doc).
@@ -857,6 +861,8 @@ fn given_by(core: &Core, v: Vx, y: Tid) -> BTreeSet<Vx> {
 /// Brings the node closure up to date with what moved since the last settle (module doc): at
 /// each transaction's end, and after an open.
 pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<()> {
+    // the strongs held history holds, as its bodies moved (`refs::kept`)
+    crate::engine::refs::kept::settle(tx)?;
     let Some(root) = tx.core.node_root else { return Ok(()) };
     let rv = (Ctx::Local, root);
     let mut f = std::mem::take(&mut tx.core.closure_follow);
@@ -901,7 +907,12 @@ fn settle_with(tx: &mut Tx<'_>, f: &mut Follow, rv: Vx) -> Result<()> {
             if tx.core.reads_established(&y) {
                 continue;
             }
-            let from: Vec<Tid> = crate::engine::refs::to(tx, &y)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong).map(|r| r.source).collect();
+            let mut from: Vec<Tid> = crate::engine::refs::to(tx, &y)?.into_iter().filter(|r| r.kind == osis_base::RefKind::Strong).map(|r| r.source).collect();
+            for (x, _) in crate::engine::refs::kept::to(tx, &y)? {
+                if !from.contains(&x) {
+                    from.push(x);
+                }
+            }
             for x in from {
                 for c in tx.core.ix.closure.contexts(&x) {
                     let v = (c, x);

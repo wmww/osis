@@ -515,6 +515,7 @@ pub(crate) fn note_settings(core: &mut Core, h: &Header, id: &CommitId, parts: &
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == osis_commit::retention::RETENTION) else { continue };
         core.settings_due.insert(a.tid);
+        core.kept_things_due.insert(a.tid);
         let Some(setting) = d.fragment().read().and_then(|v| ct::retention_setting(&v)) else { continue };
         let p = Point { ts: h.ts, node: h.author, commit: *id };
         let put = |l: &mut Vec<(Point, Arc<ct::RetentionSetting>)>| {
@@ -541,6 +542,7 @@ pub(crate) fn forget_setting(core: &mut Core, t: &Tid, id: &CommitId) {
         core.ix.retention.insert(*t, settings);
     }
     core.settings_due.insert(*t);
+    core.kept_things_due.insert(*t);
 }
 
 /// Re-derives the edge writes of commits whose removed keys were unknown.

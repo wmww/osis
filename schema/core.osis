@@ -314,6 +314,9 @@ type retention_setting = struct {
     retain 1: bool,
     /// For every AK not in `rules`.
     default 2: option<retention_entry>,
+    /// A strong in a held body of this thing's history holds its target, as a current one does
+    /// (spec/data-model.md §8 What counts).
+    history_holds_targets 3: bool,
 };
 
 /// What this thing keeps of replaced content.
