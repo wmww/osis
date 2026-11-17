@@ -657,7 +657,7 @@ fn a_destroyed_thing_owes_no_role_commit_spec_commits_5() {
     assert!(!lp.peers[0].engine.role_duty_due(&t).unwrap(), "past the floor: nothing owed on t");
 }
 
-// spec/permissions.md §3 (next-step triggers: a deposit-only step waits while an unapplied
+// spec/permissions.md §3 (deposit-only: a deposit-only step waits while an unapplied
 // `keys.0` write of the actor signed by a current admin is held): admin A refreshes T's seed
 // twice, the second time after a party departed and with its clock ahead, so co-admin B holds the
 // first refresh applied and the second pending. B's seed then derives a deposit key other than

@@ -2567,7 +2567,7 @@ fn a_copy_holding_no_named_delta_leaves_for_a_header_copy_spec_sync_judgement_2(
     assert!(!w.sent().any(|m| *m == Sent::Delete(KC, new)), "the header-only copy deleted at K");
 }
 
-// spec/permissions.md §3 (next-step triggers): a step due by a newer role is issued at once; a
+// spec/permissions.md §3 (deposit-only): a step due by a newer role is issued at once; a
 // deposit-only one only past a complete pass of S begun after it came due (status runs it), so a
 // co-admin's newer seed logged under S is opened first and the node never steps back to a key a
 // departed party knows. Its seed refreshed again while it waits (a co-admin refreshing at will)
