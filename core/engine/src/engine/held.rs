@@ -774,6 +774,21 @@ impl Timelines {
         (roles.get(node).copied(), until)
     }
 
+    /// Every actor's effective role on `thing` on the current edges at `ts`, and the earliest
+    /// `until` before which they hold (`role_now` for every holder), read as it is and by the
+    /// edges into `thing`.
+    pub fn roles_now(&self, thing: &Tid, ts: osis_base::Ts) -> (Arc<BTreeMap<Tid, Role>>, Option<osis_base::WallMs>) {
+        let Some(tl) = self.of.get(thing) else {
+            self.stamps.read(&Read::Things);
+            return (Arc::default(), None);
+        };
+        let (roles, until) = tl.roles_on_now(thing, ts);
+        for t in roles.keys().chain([thing]) {
+            self.stamps.read(&Read::Into(*t));
+        }
+        (roles, until)
+    }
+
     /// `node`'s effective role on `thing` at `at` (`roles_on`).
     pub fn role(&self, node: &Tid, thing: &Tid, at: osis_perm::At) -> Option<Role> {
         self.roles_on(thing, at, &BTreeSet::new()).get(node).copied()

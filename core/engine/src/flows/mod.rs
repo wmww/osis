@@ -175,6 +175,16 @@ impl Core {
         role
     }
 
+    /// Every actor's effective role on `tid` now, read on the memo clock as `role_now` is.
+    pub(crate) fn roles_now(&self, tid: &Tid) -> Arc<BTreeMap<Tid, Role>> {
+        if let Some(h) = self.root_holders(tid) {
+            return Arc::new(h);
+        }
+        let (roles, until) = self.timelines.roles_now(tid, now_ts(self));
+        self.time.until(until.map(|u| u.0));
+        roles
+    }
+
     /// The first admin of `tid` (spec/permissions.md §1): the next actor up its record chain,
     /// whose secrets a plain `tid` derives from (spec/crypto.md §3). None for a key actor or an
     /// unknown thing.

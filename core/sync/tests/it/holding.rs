@@ -821,3 +821,29 @@ fn a_sync_ticket_beside_a_removed_holders_role_commits_keeps_the_thing_unread_sp
     w.run();
     assert_eq!(holding(&mut w, 1, &t2), Some(Holding::Unread), "Bob keeps T2 unread");
 }
+
+// spec/permissions.md §4 (Role changes travel: under the sync ID of each thing whose keys open
+// the holder), spec/sync-judgement.md §2: Bob reads T1, granted read on H, granted read on X;
+// T1 -> X, so Bob reads X through T1 and H, syncing no H. Alice removes H from X: X leaves T1's
+// sync unit with the removal, which reaches Bob under T1's sync ID as H's chain to X, so his
+// role commits show him no role on X.
+#[test]
+fn a_removal_reaches_a_reader_opening_the_holder_through_a_second_thing_spec_permissions_4() {
+    let mut w = contacts();
+    let bob = w.node(1).account.unwrap();
+    let t1 = make(&mut w, 0, None, "t1");
+    let h = make(&mut w, 0, None, "h");
+    let x = make(&mut w, 0, None, "x");
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&h, &t1, &edge(Role::Read))).unwrap();
+    w.write(0, |e| e.grant(&x, &h, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, Some(t1), x, true);
+    strong(&mut w, 1, None, t1, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &x), Some(Value::Str("x".into())), "Bob reads X through T1 and H");
+    assert_eq!(holding(&mut w, 1, &h), None, "Bob syncs no H");
+    w.write(0, |e| e.demote(&x, &osis_engine::flows::Demotion { holder: h, new: None, retain: None })).unwrap();
+    w.run();
+    assert!(!w.engine(1).roster(&x).contains_key(&h), "Bob holds H's removal");
+    assert_eq!(w.engine(1).role_on(&x), None, "his role commits show him no role on X");
+}

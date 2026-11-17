@@ -134,7 +134,8 @@ pub(crate) enum Piece {
     /// Holder `t`'s chain to `x` with `x`'s boxes to `t` and sync record
     /// (`Engine::holder_piece`), under `t`'s home for each `x` an edge write names it holder on
     /// (`Engine::holder_home_on`: role changes travel): `t` itself when read, an account's root
-    /// for a thing the root reaches by strongs.
+    /// for a thing the root reaches by strongs. Under each other read thing whose keys open `t`
+    /// (`Engine::openers`), `Chain(t, x)` goes instead: the role changes alone.
     Holder(Tid, Tid),
     /// Account `p`'s signing chain (`Engine::account_piece`), under each read thing one of whose
     /// pieces names `p` (`Certs::accounts`): a rotation re-derives this piece alone, not every
@@ -144,6 +145,17 @@ pub(crate) enum Piece {
 
 /// `Followers::pieces`.
 type Pieces = Effects<Piece, Option<Arc<Certs>>>;
+
+/// What places a chain piece under a read thing (`Certified::chain_by`): a thing with authors
+/// (`Authored`), or the holder pair the piece is of (`Engine::holder_places`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum By {
+    Authored(Tid),
+    Holder,
+}
+
+/// Where a holder pair's pieces go (`Engine::holder_places`): each (piece, read thing).
+type Places = Arc<BTreeSet<(Piece, Tid)>>;
 
 /// What a thing with authors gives (`Followers::authored`): the chains of its commits' authors
 /// that are no node (`Indexes::chains_on`), and the read things whose closure holds it and whose
@@ -164,10 +176,13 @@ struct Followers {
     read_feed: Option<Feed<Tid>>,
     /// Per thing with authors (`Indexes::chains_on`), what it gives.
     authored: Effects<Tid, Arc<Authored>>,
-    /// Per (holder, thing), the read thing its piece goes under while an edge write names the
-    /// holder on the thing (`holder_home_on`), followed for each pair named while the holder has
-    /// a home.
-    held_on: Effects<(Tid, Tid), Option<Tid>>,
+    /// Per (holder, thing), where its pieces go while an edge write names the holder on the
+    /// thing (`holder_places`), followed for each pair named while the holder has a home or an
+    /// opener.
+    held_on: Effects<(Tid, Tid), Places>,
+    /// Per holder named on anything, the read things other than its home whose keys open it
+    /// (`openers`), written to `Certified::opened_by`.
+    opens: Effects<Tid, Arc<BTreeSet<Tid>>>,
     /// The (holder, thing) pairs named since the last follow (`Held::pairs_feed`); `None` until
     /// the first follow.
     pairs_feed: Option<Feed<(Tid, Tid)>>,
@@ -181,7 +196,7 @@ struct Followers {
 
 impl Default for Followers {
     fn default() -> Self {
-        Followers { read: Effects::new("sync: certified things"), read_feed: None, authored: Effects::new("sync: certified authored"), held_on: Effects::new("sync: certified held on"), pairs_feed: None, pieces: Effects::new("sync: certified pieces"), feeds: None, quiet: Quiet::default() }
+        Followers { read: Effects::new("sync: certified things"), read_feed: None, authored: Effects::new("sync: certified authored"), held_on: Effects::new("sync: certified held on"), opens: Effects::new("sync: certified opens"), pairs_feed: None, pieces: Effects::new("sync: certified pieces"), feeds: None, quiet: Quiet::default() }
     }
 }
 
@@ -203,11 +218,12 @@ pub(crate) struct Certified {
     pub(crate) read: StampedSet<Tid>,
     /// Each followed thing with authors, as placed.
     authored: BTreeMap<Tid, Arc<Authored>>,
-    /// Per holder, the things it is named holder on, as placed (`holder_home_on`).
-    held_on: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Per (chain piece, read thing), the things with authors that place it there: it goes under
-    /// the read thing while any does.
-    chain_by: BTreeMap<(Piece, Tid), BTreeSet<Tid>>,
+    /// Per holder, the read things other than its home whose keys open it (`openers`), read per
+    /// holder by its pairs' places.
+    opened_by: Stamped<Tid, Arc<BTreeSet<Tid>>>,
+    /// Per (chain piece, read thing), what places it there (`By`): it goes under the read thing
+    /// while any does.
+    chain_by: BTreeMap<(Piece, Tid), BTreeSet<By>>,
     placed: BTreeMap<Piece, Placed>,
     /// Per (commit, read thing), what the pieces under the thing name of the commit, counted.
     named: BTreeMap<(CommitId, Tid), Counted>,
@@ -243,16 +259,16 @@ impl Certified {
         }
     }
 
-    /// Thing `x` places chain piece `p` under `t`.
-    fn place_chain(&mut self, p: Piece, t: Tid, x: Tid, pieces: &mut Pieces) {
+    /// `x` places chain piece `p` under `t`.
+    fn place_chain(&mut self, p: Piece, t: Tid, x: By, pieces: &mut Pieces) {
         let by = self.chain_by.entry((p, t)).or_default();
         if by.insert(x) && by.len() == 1 {
             self.place(p, t, pieces);
         }
     }
 
-    /// Thing `x` places chain piece `p` under `t` no more.
-    fn unplace_chain(&mut self, p: Piece, t: Tid, x: Tid, pieces: &mut Pieces) {
+    /// `x` places chain piece `p` under `t` no more.
+    fn unplace_chain(&mut self, p: Piece, t: Tid, x: By, pieces: &mut Pieces) {
         let k = (p, t);
         let Some(by) = self.chain_by.get_mut(&k) else { return };
         if by.remove(&x) && by.is_empty() {
@@ -444,10 +460,53 @@ impl Engine {
     /// `x`'s boxes to the account from it, as its siblings do from the fires). A read of the pair
     /// and the home alone.
     fn holder_home_on(&self, t: &Tid, x: &Tid) -> Option<Tid> {
-        osis_base::costs::count("certified: held on examined", 1);
         let home = self.holder_home(t)?;
+        (home == *t || self.core.ix.closure.reaches_from(&home, x)).then_some(home)
+    }
+
+    /// Where the role changes naming holder `t` on `x` go (spec/permissions.md §4 Role changes
+    /// travel), while an edge write names `t` holder on `x`, its own things aside: under its home
+    /// (`holder_home_on`) as `Piece::Holder`, and under each read thing whose keys open `t`
+    /// (`Certified::opened_by`) as `t`'s chain to `x`, an account root only for an `x` it reaches
+    /// by strongs. A read of the pair, the home and `t`'s openers alone.
+    fn holder_places(&self, t: &Tid, x: &Tid) -> Places {
+        osis_base::costs::count("certified: held on examined", 1);
         let named = x != t && self.core.ix.held.is_named(t, x) && self.core.first_admin(x) != Some(*t);
-        (named && (home == *t || self.core.ix.closure.reaches_from(&home, x))).then_some(home)
+        if !named {
+            return Places::default();
+        }
+        let mut out: BTreeSet<(Piece, Tid)> = self.holder_home_on(t, x).map(|h| (Piece::Holder(*t, *x), h)).into_iter().collect();
+        for o in self.core.certified.opened_by.get(t).into_iter().flat_map(|o| o.iter()) {
+            osis_base::costs::count("certified: held on openers", 1);
+            if self.core.account_of_root(o).is_none() || self.core.ix.closure.reaches_from(o, x) {
+                out.insert((Piece::Chain(*t, *x), *o));
+            }
+        }
+        Arc::new(out)
+    }
+
+    /// The read things other than holder `t`'s home (`holder_home`) whose keys open `t`
+    /// (spec/sync-set.md §2 T's keys open): of the actors on the record chain of the actor `t`'s
+    /// secrets derive from and those holding a role on it, each read thing whose keys open `t`,
+    /// an account counting by its root (the root reads as its account). A read of that actor's
+    /// roles and record chain, O(the actors holding a role on it).
+    pub(crate) fn openers(&self, t: &Tid) -> BTreeSet<Tid> {
+        let Some(a) = self.core.secret_actor(t) else { return BTreeSet::new() };
+        let home = self.holder_home(t);
+        let mut actors: BTreeSet<Tid> = self.core.roles_now(&a).keys().copied().collect();
+        actors.extend(self.core.record_chain(&a).filter_map(|s| s.thing()));
+        let read = &self.core.certified.read;
+        let mut out = BTreeSet::new();
+        for c in actors {
+            osis_base::costs::count("certified: openers examined", 1);
+            let root = self.core.accounts.get(&c).map(|h| h.root).filter(|d| self.core.account_of_root(d) == Some(c));
+            for o in std::iter::once(c).chain(root) {
+                if o != *t && Some(o) != home && read.contains(&o) && self.core.keys_open(&c, t) {
+                    out.insert(o);
+                }
+            }
+        }
+        out
     }
 
     /// Where holder `t`'s pieces go (`holder_home_on`): `t` when read here, else the account
@@ -492,7 +551,7 @@ impl Engine {
     /// included: a follow would do nothing.
     pub(crate) fn certificates_quiet(&self) -> bool {
         let f = &self.core.certified.followers;
-        f.quiet.holds(f.read.idle() && f.authored.idle() && f.held_on.idle() && f.pieces.idle()) && self.rows_quiet()
+        f.quiet.holds(f.read.idle() && f.authored.idle() && f.held_on.idle() && f.opens.idle() && f.pieces.idle()) && self.rows_quiet()
     }
 
     fn follow_with(&mut self, f: &mut Followers) -> Result<bool> {
@@ -504,11 +563,16 @@ impl Engine {
                 f.authored.want(x);
             }
         }
-        // the pairs named from here on; the read things' pairs before, as each comes to be read
+        // the pairs named from here on; the read things' pairs before, as each comes to be read,
+        // and every holder's openers
         let named = match f.pairs_feed.as_mut() {
             Some(feed) => feed.added(),
             None => {
                 f.pairs_feed = Some(self.core.ix.held.pairs_feed());
+                let holders: Vec<Tid> = self.core.ix.held.holders().copied().collect();
+                for t in holders {
+                    f.opens.want(t);
+                }
                 Vec::new()
             }
         };
@@ -544,31 +608,44 @@ impl Engine {
                 self.core.certified.unplace(Piece::Own(t), t, &mut f.pieces);
             }
         }
+        for (t, _) in &named {
+            f.opens.want(*t);
+        }
+        // the read things whose keys open each holder, per holder; one coming to have openers
+        // has each of its pairs followed, and one named on nothing is followed again once named
+        for t in f.opens.due() {
+            let Some((was, now)) = f.opens.settle(&t, || Arc::new(self.openers(&t))) else { continue };
+            if now.is_empty() && self.core.ix.held.named_on(&t).next().is_none() {
+                f.opens.unwant(&t);
+            }
+            if was.as_ref().is_none_or(|w| w.is_empty()) && !now.is_empty() {
+                let pairs: Vec<Tid> = self.core.ix.held.named_on(&t).copied().collect();
+                for x in pairs {
+                    f.held_on.want((t, x));
+                }
+            }
+            self.core.certified.opened_by.update(t, |_| (!now.is_empty()).then_some(now));
+        }
         for (t, x) in named {
-            if self.holder_home(&t).is_some() {
+            if self.holder_home(&t).is_some() || self.core.certified.opened_by.contains_key(&t) {
                 f.held_on.want((t, x));
             }
         }
-        // the role changes naming each holder with a home (`holder_home_on`), per pair: its chain
-        // to the target, with the target's boxes to it and sync record, under its home; a pair
-        // that holds no more is followed again once named again (the feed)
+        // the role changes naming each holder with a home or openers (`holder_places`), per pair:
+        // its chain to the target, with the target's boxes to it and sync record, under its home,
+        // its chain alone under its openers; a pair placed nowhere is followed again once named
+        // again (the feed) or once its holder has openers
         for (t, x) in f.held_on.due() {
-            let Some((was, now)) = f.held_on.settle(&(t, x), || self.holder_home_on(&t, &x)) else { continue };
-            if now.is_none() {
+            let Some((was, now)) = f.held_on.settle(&(t, x), || self.holder_places(&t, &x)) else { continue };
+            if now.is_empty() {
                 f.held_on.unwant(&(t, x));
             }
-            let on = self.core.certified.held_on.entry(t).or_default();
-            if let Some(h) = was.flatten() {
-                on.remove(&x);
-                self.core.certified.unplace_chain(Piece::Holder(t, x), h, h, &mut f.pieces);
+            let was = was.unwrap_or_default();
+            for (p, h) in was.difference(&now) {
+                self.core.certified.unplace_chain(*p, *h, By::Holder, &mut f.pieces);
             }
-            let on = self.core.certified.held_on.entry(t).or_default();
-            if let Some(h) = now {
-                on.insert(x);
-                self.core.certified.place_chain(Piece::Holder(t, x), h, h, &mut f.pieces);
-            }
-            if self.core.certified.held_on.get(&t).is_some_and(|on| on.is_empty()) {
-                self.core.certified.held_on.remove(&t);
+            for (p, h) in now.difference(&was) {
+                self.core.certified.place_chain(*p, *h, By::Holder, &mut f.pieces);
             }
         }
         let authors = f.feeds.as_mut().map(|a| a.added()).unwrap_or_default();
@@ -592,10 +669,10 @@ impl Engine {
             let pairs = |a: &Authored| -> BTreeSet<(Piece, Tid)> { a.chains.iter().flat_map(|(au, to)| a.under.iter().map(move |t| (Piece::Chain(*au, *to), *t))).collect() };
             let (old, new) = (pairs(&had), pairs(&now));
             for (p, t) in old.difference(&new) {
-                self.core.certified.unplace_chain(*p, *t, x, &mut f.pieces);
+                self.core.certified.unplace_chain(*p, *t, By::Authored(x), &mut f.pieces);
             }
             for (p, t) in new.difference(&old) {
-                self.core.certified.place_chain(*p, *t, x, &mut f.pieces);
+                self.core.certified.place_chain(*p, *t, By::Authored(x), &mut f.pieces);
             }
         }
         // a piece settling may place account pieces (`Certs::accounts`): a second round settles
@@ -878,12 +955,57 @@ mod tests {
                     costs.1 = c;
                 }
             }
-            assert_eq!(e.core.certified.held_on.get(&x).cloned().unwrap_or_default(), ts.iter().copied().collect::<BTreeSet<Tid>>(), "X's chains as placed");
+            let placed: BTreeSet<Tid> = e.core.certified.placed.iter().filter_map(|(p, at)| match p {
+                Piece::Holder(h, t) if *h == x && at.under.contains(&x) => Some(*t),
+                _ => None,
+            }).collect();
+            assert_eq!(placed, ts.iter().copied().collect::<BTreeSet<Tid>>(), "X's chains as placed");
             check(e, "granted");
             costs
         };
         let (small, large) = (work(4), work(40));
         eprintln!("held-on work over n grants and of the last, at n and 10n: {small:?} {large:?}");
         assert_eq!(small.1, large.1, "the last grant's work");
+    }
+
+    // spec/permissions.md §4 (Role changes travel: under the sync ID of each thing whose keys open
+    // the holder), spec/sync-set.md §2 Cost: read thing T holds read on actor H; granting H on one
+    // more thing places H's chain to it under T too, and the work of the last of n grants (the
+    // pair's places and H's openers examined) is the same at n and 10n.
+    #[test]
+    fn a_grant_to_an_actor_a_read_thing_opens_places_its_chain_there_spec_permissions_4() {
+        let work = |n: usize| {
+            let mut lp = LocalPeer::fresh(1, WallMs(1_700_000_000_000));
+            let a = lp.peers[0].engine.create_account().unwrap().0.account;
+            let e = &mut lp.peers[0].engine;
+            let edge = ct::Edge { role: Role::Read, until: None, invite: None, floor: None };
+            let new = |e: &mut Engine| {
+                let mut m = Mutation::new();
+                let t = e.new_thing(&mut m, a);
+                m.set(t, &acting_ak(), &Value::Int(0)).unwrap();
+                e.commit(m).unwrap();
+                t
+            };
+            let (t, h) = (new(e), new(e));
+            e.grant(&h, &t, &edge).unwrap();
+            e.follow_certificates().unwrap();
+            let ts: Vec<Tid> = (0..n).map(|_| new(e)).collect();
+            let mut last = 0;
+            for x in &ts {
+                osis_base::costs::take();
+                e.grant(x, &h, &edge).unwrap();
+                e.follow_certificates().unwrap();
+                last = osis_base::costs::take().into_iter().filter(|(k, _, _)| k.starts_with("certified: held on") || k.starts_with("certified: openers")).map(|(_, _, c)| c).sum();
+            }
+            assert!(e.read_things().unwrap().contains(&t), "T read");
+            for x in &ts {
+                assert!(chain_under(e, h, *x).iter().any(|u| u.contains(&t)), "H's chain to each thing under T");
+            }
+            check(e, "granted");
+            last
+        };
+        let (small, large) = (work(4), work(40));
+        eprintln!("work of the last grant at n and 10n: {small} {large}");
+        assert_eq!(small, large, "the last grant's work");
     }
 }

@@ -240,7 +240,8 @@ impl Engine {
     /// (`own_piece`); the author's chain of each held commit on a thing of `g`'s closure its actor
     /// may read, which goes with the commit (`certificate_chains`, `chain_piece`); `g`'s own chain
     /// to each thing an edge write names it holder on, with that thing's boxes to `g` and sync
-    /// record (`holder_piece`: role changes travel). Nothing else:
+    /// record (`holder_piece`: role changes travel); the chain of each holder `g`'s keys open to
+    /// each thing it is named holder on (`openers`). Nothing else:
     /// a chain into an item of the closure that no write there needs (the roster of a holder
     /// private to others holding a role on an item under S) is none of S's readers'. Parts the closure's bodies carry
     /// are `sync_bodies`' to leave out. Derived whole, O(all of it): what sync reads is
@@ -258,6 +259,15 @@ impl Engine {
         }
         for (t, x) in held_on {
             out.extend(self.holder_piece(&t, &x));
+        }
+        // the chain to each thing a holder `g`'s keys open is named on, an account root's to the
+        // things it reaches by strongs
+        let holders: Vec<Tid> = self.core.ix.held.holders().copied().filter(|t| self.openers(t).contains(g)).collect();
+        for t in holders {
+            let on: Vec<Tid> = self.core.ix.held.named_on(&t).copied().filter(|x| *x != t && self.core.first_admin(x) != Some(t) && (self.core.account_of_root(g).is_none() || self.core.ix.closure.reaches_from(g, x))).collect();
+            for x in on {
+                out.extend(self.chain_piece(&t, &x));
+            }
         }
         self.expand_accounts(&mut out);
         out
