@@ -70,10 +70,6 @@ pub struct Forgotten {
     pub sync_ids: BTreeSet<SyncId>,
     /// Commits deleted whole.
     pub commits: BTreeSet<CommitId>,
-    /// A release (`Scope::Local`): the blobs noted for `commits`, whose rows go with them (sync
-    /// unlogs its own entries of them; an entry of one opens to nothing held). Losing access keeps
-    /// the rows: an own entry naming one waits for the access to return.
-    pub blobs: BTreeSet<osis_base::BlobId>,
     /// The forgotten aspect indices of each commit with a forgotten part (those of `commits`
     /// too): node sync drops the blobs holding one .
     pub parts: BTreeMap<CommitId, BTreeSet<usize>>,
@@ -260,8 +256,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         let rest = blob.as_ref().map(|b| osis_commit::rewrite(b, |ai| ais.contains(&ai)));
         if rest.as_ref().is_some_and(|r| r.parts.is_empty()) {
             crate::apply::unindex_unreceived(tx, &id)?;
+            // a release's blobs go with it, the store's own entries of them too (`bodies::forget`);
+            // losing access keeps them: an own entry naming one waits for the access to return
             if matches!(scope, Scope::Local(_) | Scope::Whole(_)) {
-                out.blobs.extend(tx.core.ix.commit_blobs.get(&id).into_iter().flatten().copied());
                 crate::sync::bodies::forget(tx, &id)?;
             }
             out.commits.insert(id);

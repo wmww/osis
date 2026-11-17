@@ -36,9 +36,9 @@ pub struct Note {
     pub holds: Vec<BlobId>,
     /// Durable blobs it released.
     pub releases: Vec<BlobId>,
-    /// Removals of the store's own rows its holder made in it (`CipherTx::finish` applies each):
-    /// applied after the engine's store commits, as releases are.
-    pub removals: Vec<Vec<u8>>,
+    /// Blobs of the commits it forgot (`CipherTx::forgot` applies each): applied after the
+    /// engine's store commits, as releases are.
+    pub forgot: Vec<BlobId>,
 }
 
 /// One engine transaction's view of the ciphertext store. Blobs the engine holds stay until it
@@ -56,8 +56,9 @@ pub trait CipherTx {
     /// The engine holds `id` no more: its bytes go once nothing else keeps them. `memory`: the
     /// transaction works on memory data, so a durable blob stays.
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error>;
-    /// Applies removal `op` of the store's own rows (`Note::removals`).
-    fn finish(&mut self, op: &[u8]) -> Result<(), Error>;
+    /// The engine forgot blob `id` with its commit (`Note::forgot`): what the store logged of it
+    /// as the engine's own goes.
+    fn forgot(&mut self, id: &BlobId) -> Result<(), Error>;
     /// Records, in this transaction, an engine transaction's note (`settle` reads it back after
     /// a crash).
     fn note(&mut self, note: &Note) -> Result<(), Error>;
@@ -89,11 +90,10 @@ pub trait CipherHost: Send + Any {
     fn len(&mut self, id: &BlobId) -> Result<Option<u64>, Error>;
     fn hold(&mut self, id: &BlobId, blob: Vec<u8>, memory: bool) -> Result<bool, Error>;
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error>;
-    /// Applies a removal of the store's own rows its holder deferred (`CipherTx::finish`): none
-    /// in a store of blobs only.
-    fn finish(&mut self, op: &[u8]) -> Result<(), Error> {
-        let _ = op;
-        Err(Error::Corrupt("a removal in a store of blobs only"))
+    /// `CipherTx::forgot`: a store of blobs only logs nothing.
+    fn forgot(&mut self, id: &BlobId) -> Result<(), Error> {
+        let _ = id;
+        Ok(())
     }
     /// Runs `f` in the store's open transaction (the engine's notes live in its local records).
     fn local(&mut self, f: &mut dyn FnMut(&mut crate::Transaction<'_>) -> Result<(), Error>) -> Result<(), Error>;
@@ -117,15 +117,12 @@ pub trait CipherHost: Send + Any {
 /// Local record prefix of the engine transactions' notes (`CipherTx::note`).
 const NOTE: &[u8] = b"cipher/note/";
 
-/// A note's row value: hold and release counts, their IDs, then each removal length-prefixed.
+/// A note's row value: hold and release counts, their IDs, then the forgotten blobs' IDs.
 fn encode_note(n: &Note) -> Vec<u8> {
     let mut w = W::new();
     w.u64(n.holds.len() as u64).u64(n.releases.len() as u64);
-    for id in n.holds.iter().chain(&n.releases) {
+    for id in n.holds.iter().chain(&n.releases).chain(&n.forgot) {
         w.raw(&id.0);
-    }
-    for op in &n.removals {
-        w.bytes(op);
     }
     w.take()
 }
@@ -136,11 +133,11 @@ fn decode_note(k: &[u8], v: &[u8]) -> Result<Note, Error> {
     let (h, n) = (r.u64()?, r.u64()?);
     let ids = |r: &mut R, n: u64| (0..n).map(|_| r.array().map(BlobId)).collect::<Result<Vec<_>, Error>>();
     let (holds, releases) = (ids(&mut r, h)?, ids(&mut r, n)?);
-    let mut removals = Vec::new();
+    let mut forgot = Vec::new();
     while !r.is_empty() {
-        removals.push(r.bytes()?.to_vec());
+        forgot.push(BlobId(r.array()?));
     }
-    Ok(Note { seq: u64::from_be_bytes(tail(k)?), holds, releases, removals })
+    Ok(Note { seq: u64::from_be_bytes(tail(k)?), holds, releases, forgot })
 }
 
 /// Tests only: `store`'s copy inside a world copy (`osis_base::copying::remap`), so every holder
@@ -188,8 +185,8 @@ impl<T: CipherHost> CipherTx for HostTx<'_, T> {
     fn release(&mut self, id: &BlobId, memory: bool) -> Result<(), Error> {
         self.g.release(id, memory)
     }
-    fn finish(&mut self, op: &[u8]) -> Result<(), Error> {
-        self.g.finish(op)
+    fn forgot(&mut self, id: &BlobId) -> Result<(), Error> {
+        self.g.forgot(id)
     }
     fn note(&mut self, n: &Note) -> Result<(), Error> {
         let (k, v) = ([NOTE, &n.seq.to_be_bytes()].concat(), encode_note(n));
@@ -338,12 +335,12 @@ impl CipherHost for BlobArea {
 mod tests {
     use super::*;
 
-    /// A note's row is the bytes the hand-written encoder gave (counts, IDs, u32-prefixed
-    /// removals), and decodes back. spec: none (a local record).
+    /// A note's row is the bytes the hand-written encoder gave (counts, held, released and
+    /// forgotten IDs), and decodes back. spec: none (a local record).
     #[test]
     fn note_row_bytes() {
-        let n = Note { seq: 7, holds: vec![BlobId([1; 32])], releases: vec![BlobId([2; 32]), BlobId([3; 32])], removals: vec![b"ab".to_vec(), Vec::new()] };
-        let want = [&1u64.to_be_bytes()[..], &2u64.to_be_bytes(), &[1; 32], &[2; 32], &[3; 32], &[0, 0, 0, 2], b"ab", &[0, 0, 0, 0]].concat();
+        let n = Note { seq: 7, holds: vec![BlobId([1; 32])], releases: vec![BlobId([2; 32]), BlobId([3; 32])], forgot: vec![BlobId([4; 32])] };
+        let want = [&1u64.to_be_bytes()[..], &2u64.to_be_bytes(), &[1; 32], &[2; 32], &[3; 32], &[4; 32]].concat();
         let v = encode_note(&n);
         assert_eq!(v, want);
         let k = [NOTE, &7u64.to_be_bytes()].concat();

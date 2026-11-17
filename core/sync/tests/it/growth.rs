@@ -492,7 +492,7 @@ fn own_rounds(w: &mut World, rounds: usize) -> Held {
 // same account once tombstones have aged out, at 2 and 20 rounds, but for the schemas it learned
 // (`d/`, the node's own).
 #[test]
-#[ignore = "issues/storage-owners.md 12, 13: the roots' holds.0 and tickets.0 snapshots keep a set tombstone per removal (a Tess call), entries of forgotten commits under D's sync ID"]
+#[ignore = "issues/storage-owners.md 2: a bp/ row per round (a certificate copy whose sync ID went); c/ and cv/ one row over, flat; then accept 12's tombstone bytes in c/"]
 fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
     let fresh = own_rounds(&mut world(0, 1), 0);
     let learned = |mut h: Held| {
@@ -513,5 +513,50 @@ fn releasing_own_things_leaves_no_forgotten_names_spec_commits_5() {
     let fresh = names(own_rounds(&mut world(0, 1), 0));
     for n in [2, 20] {
         assert_eq!(names(own_rounds(&mut world(0, 1), n)), fresh, "{n} rounds");
+    }
+}
+
+// spec/sync-judgement.md §3 (Restart and forgetting: an own entry logs a commit held here),
+// spec/sync-set.md §3 (Nothing of R stays): node 0 makes a thing with own keys under its
+// account, held from D, and releases it; no own entry of a commit forgotten then stays under any
+// sync ID, D's included (its creation commit's and role commit's certificate copies there, which
+// go once nothing held needs the thing).
+#[test]
+fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3() {
+    use osis_schema::core_types::HOLDS;
+    let mut w = world(0, 1);
+    let d = w.engine(0).account_root().unwrap();
+    let p = w.engine(0).account().unwrap().unwrap().0;
+    let t = w.write(0, |e| {
+        let t = e.create_with_admin(&p).unwrap().0;
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str("new".into())).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    w.run();
+    let ds = w.engine(0).home_sync_id(&d).unwrap().unwrap();
+    // the own entries of commits with a part on t, under every sync ID
+    let mut logged = Vec::new();
+    for (s, _) in w.store(0).syncs() {
+        for e in w.store(0).entries(&s).unwrap() {
+            let on_t = w.engine(0).blob_of(&e.blob).and_then(|x| w.engine(0).header(&x.commit)).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t));
+            if e.own && on_t {
+                logged.push((s, e.blob));
+            }
+        }
+    }
+    assert!(logged.iter().any(|(s, _)| *s == ds), "a commit on the thing is logged under D's sync ID");
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.op(d, &HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(Value::Strong(t)) }).unwrap();
+        e.commit(m).unwrap();
+    });
+    w.run();
+    assert!(w.engine(0).core.created(&t).is_none(), "released");
+    let forgotten: Vec<_> = logged.iter().filter(|(_, b)| w.engine(0).blob_of(b).is_none()).collect();
+    assert!(forgotten.iter().any(|(s, _)| *s == ds), "a commit logged under D's sync ID is forgotten");
+    for (s, b) in forgotten {
+        assert!(w.store(0).entry(s, b).unwrap().is_none(), "an own entry of a forgotten commit under {s:?}");
     }
 }

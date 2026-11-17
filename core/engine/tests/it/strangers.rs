@@ -88,9 +88,11 @@ fn only_an_entry_naming_an_open_signal_keeps_its_fires_spec_commits_5() {
     assert!(!listed(&mut lp, &note, inbox, NOTE), "out of history past its entry");
 }
 
-/// Peer 0's rows by family (`Engine::local_census`) changed from `before` to `after`.
+/// Peer 0's rows by family (`Engine::local_census`) changed from `before` to `after`, but the
+/// node's one blob sequence row (`blo`: written once its first transaction notes a blob, kept for
+/// the node's life, owned by no fire).
 fn changed(before: &Census, after: &Census) -> Vec<(String, Option<Rows>, Option<Rows>)> {
-    let keys: std::collections::BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+    let keys: std::collections::BTreeSet<&String> = before.keys().chain(after.keys()).filter(|k| k.as_str() != "blo").collect();
     keys.into_iter().filter(|k| before.get(*k) != after.get(*k)).map(|k| (k.clone(), before.get(k).copied(), after.get(k).copied())).collect()
 }
 

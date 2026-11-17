@@ -5,7 +5,7 @@
 
 use crate::engine::Engine;
 use crate::error::Result;
-use osis_base::{BlobId, Tid};
+use osis_base::Tid;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl Engine {
@@ -19,26 +19,26 @@ impl Engine {
 
     /// Drops what `ts` left behind here, those still outside the node closure (spec/sync-set.md
     /// §3): the content of each and of each thing whose secrets are one of theirs, but those the
-    /// node closure holds; what arrives again counts as never received. The blobs of the commits
-    /// it deleted whole.
-    pub fn released(&mut self, ts: &BTreeSet<Tid>) -> Result<BTreeSet<BlobId>> {
+    /// node closure holds; what arrives again counts as never received, and the store's own
+    /// entries of the commits it deleted whole go (`sync::bodies::forget`).
+    pub fn released(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
         let out: BTreeSet<Tid> = ts.iter().filter(|t| !self.core.ix.closure.holds(t)).copied().collect();
         if out.is_empty() {
-            return Ok(BTreeSet::new());
+            return Ok(());
         }
         let mut things = crate::retention::forget::under(&self.core, &out);
         things.extend(out.iter().copied());
         let cl = &self.core.ix.closure;
         things.retain(|x| !cl.holds(x));
-        let f = self.run(|tx| {
+        self.run(|tx| {
             for t in &out {
                 tx.core.ix.closure.released(t);
             }
             crate::flows::inbox::drop_account_tickets(tx, &out)?;
             // what stays of them (records, role-class state) only while a held thing needs it
             tx.core.needs_due.extend(things.iter().copied());
-            crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new())
-        })?;
-        Ok(f.blobs)
+            crate::retention::forget::forget(tx, crate::retention::forget::Scope::Local(&things), &BTreeMap::new())?;
+            Ok(())
+        })
     }
 }

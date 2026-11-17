@@ -11,6 +11,9 @@ Every operation is one transaction of the underlying store, so a crash keeps all
 ## The engine's ciphertext door
 `Store` is a cheap `Clone` handle over one locked store and implements `osis_store::CipherHost` (`store/cipher.rs`): the engine holds and releases blob bytes through it, inside the engine's own transactions; sync locks it only between engine calls, so one step never holds both. A blob's bytes stay while the engine or any entry of any sync ID holds them.
 
+## Own entries
+An own entry logs a commit held here. A commit the engine forgets other than by lost access (released, needed by nothing held, covered, invalid: `sync::bodies::forget`) hands each of its blobs to the door (`CipherHost::forgot`) after the engine's store commits, noted with the releases so a crash finishes it at the next open; `forgot` drops the node's own entries of the blob under every sync ID, untombed. Lost access keeps the engine's blob rows, so its own entries stay, parked (below), and open again when access returns. Peer entries are left to read's judgement.
+
 ## Rows other modules keep
 A peer's record holds other modules' rows (osis-store `record_put_row(id, tag, sync_id, key, value)`, or `record_put_wide_row` for a row about the record as a whole), one tag per owning module (`store::rows::tag`): store `b` charges, `s` stands, `d` deletes seen; opens and streams theirs (notes/sync-opens.md, notes/sync-streams.md). They go with the record, a sync ID's also with the sync ID. `with_tx` gives other modules a transaction for their own rows.
 

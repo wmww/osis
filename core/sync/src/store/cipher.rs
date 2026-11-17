@@ -97,6 +97,27 @@ impl osis_store::CipherHost for Inner {
         })
     }
 
+    /// The engine forgot blob `id` with its commit: its own entries go under every sync ID, with
+    /// no tombstone (an own entry logs a commit held here; held again, it is logged again).
+    fn forgot(&mut self, id: &BlobId) -> Res<()> {
+        let now = self.now;
+        let ss: Vec<osis_base::SyncId> = self.mem.by_blob.get(id).into_iter().flatten().copied().collect();
+        for s in ss {
+            if self.mem.read(&s, id).is_some_and(|r| r.own) {
+                self.mem.remove(&s, id, now, false, false);
+            }
+        }
+        self.engine_tx(|t, env| {
+            let ss: Vec<osis_base::SyncId> = t.scan_local(&[rows::BY_BLOB, &id.0].concat(), b"", usize::MAX)?.into_iter().filter_map(|(k, _)| k.get(k.len().saturating_sub(16)..).and_then(|x| x.try_into().ok()).map(osis_base::SyncId)).collect();
+            for s in ss {
+                if super::entries::get(t, &s, id)?.is_some_and(|r| r.own) {
+                    super::entries::remove(t, env, &s, id, super::entries::Removal::Untombed)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
     fn local(&mut self, f: &mut dyn FnMut(&mut Transaction<'_>) -> Res<()>) -> Res<()> {
         self.engine_tx(|t, _| Ok(f(t)?))
     }

@@ -34,8 +34,9 @@ pub struct Cipher<'a> {
     /// Changes to `releases`, undone by `rollback_to`: a release added (`None`) or one taken
     /// back by a hold (`Some(memory)`).
     journal: Vec<(BlobId, Option<bool>)>,
-    /// Removals of the store's own rows applied with the releases (`CipherTx::finish`).
-    removals: Vec<Vec<u8>>,
+    /// Blobs of the commits it forgot, with whether in memory: the store's own logs of them go
+    /// with the releases (`CipherTx::forgot`).
+    forgot: Vec<(BlobId, bool)>,
     /// A write to the ciphertext store failed: what it held so far may be gone.
     failed: bool,
     done: bool,
@@ -49,7 +50,7 @@ pub struct CipherMark(usize, usize, usize);
 
 impl<'a> Cipher<'a> {
     pub fn new(src: &'a dyn Ciphertext, stamps: &'a Stamps, seq: u64) -> Cipher<'a> {
-        Cipher { src, stamps, tx: None, seq, held: Vec::new(), releases: BTreeMap::new(), journal: Vec::new(), removals: Vec::new(), failed: false, done: false, reads: 0 }
+        Cipher { src, stamps, tx: None, seq, held: Vec::new(), releases: BTreeMap::new(), journal: Vec::new(), forgot: Vec::new(), failed: false, done: false, reads: 0 }
     }
 
     fn tx(&mut self) -> &mut (dyn CipherTx + 'a) {
@@ -124,20 +125,20 @@ impl<'a> Cipher<'a> {
         Ok(())
     }
 
-    /// Removal `op` of the store's own rows (`CipherTx::finish`), applied once the engine's
-    /// store committed.
-    pub fn defer(&mut self, op: Vec<u8>) {
-        self.removals.push(op);
+    /// Blob `id` of a commit forgotten (`memory`: a memory commit's): the store's own logs of
+    /// it go once the engine's store committed (`CipherTx::forgot`).
+    pub fn forgot(&mut self, id: &BlobId, memory: bool) {
+        self.forgot.push((*id, memory));
     }
 
-    /// Whether this transaction held, released or deferred anything (`Engine::read`'s check).
+    /// Whether this transaction held, released or forgot anything (`Engine::read`'s check).
     pub fn changed(&self) -> bool {
-        !self.held.is_empty() || !self.journal.is_empty() || !self.removals.is_empty()
+        !self.held.is_empty() || !self.journal.is_empty() || !self.forgot.is_empty()
     }
 
     /// A point `rollback_to` goes back to.
     pub fn mark(&self) -> CipherMark {
-        CipherMark(self.held.len(), self.journal.len(), self.removals.len())
+        CipherMark(self.held.len(), self.journal.len(), self.forgot.len())
     }
 
     /// Releases what was newly held since `m` and undoes the releases made since.
@@ -149,7 +150,7 @@ impl<'a> Cipher<'a> {
                 Some(memory) => drop(self.releases.insert(id, memory)),
             }
         }
-        self.removals.truncate(m.2);
+        self.forgot.truncate(m.2);
         let undo: Vec<_> = self.held.drain(m.0.min(self.held.len())..).rev().collect();
         if let Some(t) = self.tx.as_mut() {
             for (id, memory) in undo {
@@ -160,10 +161,10 @@ impl<'a> Cipher<'a> {
         }
     }
 
-    /// Whether this transaction holds or releases a durable blob or removes a row (its sequence
-    /// is recorded).
+    /// Whether this transaction holds, releases or forgets a durable blob (its sequence is
+    /// recorded).
     pub fn noted(&self) -> bool {
-        !self.removals.is_empty() || self.held.iter().any(|(_, memory)| !memory) || self.releases.values().any(|memory| !memory)
+        self.forgot.iter().any(|(_, memory)| !memory) || self.held.iter().any(|(_, memory)| !memory) || self.releases.values().any(|memory| !memory)
     }
 
     /// Notes the durable holds and releases and commits the ciphertext store's writes (the
@@ -175,7 +176,8 @@ impl<'a> Cipher<'a> {
         if self.noted() {
             let holds: Vec<BlobId> = self.held.iter().filter(|(_, m)| !m).map(|(id, _)| *id).collect();
             let releases: Vec<BlobId> = self.releases.iter().filter(|(_, m)| !**m).map(|(id, _)| *id).collect();
-            let note = osis_store::Note { seq: self.seq, holds, releases, removals: self.removals.clone() };
+            let forgot: Vec<BlobId> = self.forgot.iter().filter(|(_, m)| !m).map(|(id, _)| *id).collect();
+            let note = osis_store::Note { seq: self.seq, holds, releases, forgot };
             self.tx().note(&note)?;
         }
         self.done = true;
@@ -187,16 +189,16 @@ impl<'a> Cipher<'a> {
 
     /// After the engine's store committed: the releases, and the note cleared.
     pub fn after(&mut self) -> crate::error::Result<()> {
-        if self.releases.is_empty() && !self.noted() {
+        if self.releases.is_empty() && self.forgot.is_empty() {
             return Ok(());
         }
         let (noted, seq) = (self.noted(), self.seq);
         let releases = std::mem::take(&mut self.releases);
-        let removals = std::mem::take(&mut self.removals);
+        let forgot = std::mem::take(&mut self.forgot);
         let t = self.tx();
-        // rows first: a blob goes once no row references it
-        for op in &removals {
-            t.finish(op)?;
+        // logs first: a blob goes once nothing names it
+        for (id, _) in &forgot {
+            t.forgot(id)?;
         }
         for (id, memory) in &releases {
             t.release(id, *memory)?;

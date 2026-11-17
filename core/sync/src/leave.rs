@@ -380,23 +380,13 @@ impl Ground for Live<'_, '_> {
         })
     }
     fn release(&mut self, ts: &BTreeSet<Tid>) -> Result<()> {
-        release(self.cx.engine, self.cx.store, ts)
+        release(self.cx.engine, ts)
     }
 }
 
-/// `Ground::release` (`Engine::released`, then each own entry naming a blob of a commit that went
-/// whole is unlogged).
-pub(crate) fn release(engine: &mut osis_engine::Engine, store: &mut crate::store::Store, ts: &BTreeSet<Tid>) -> Result<()> {
-    let gone = engine.released(ts)?;
-    for b in &gone {
-        for s in store.naming(b)? {
-            if store.entry(&s, b)?.is_some_and(|e| e.own) {
-                osis_base::costs::count("leave: own entries unlogged", 1);
-                store.unlog_entry(&s, b)?;
-            }
-        }
-    }
-    Ok(())
+/// `Ground::release` (`Engine::released`: the store's own entries of what it forgets go with it).
+pub(crate) fn release(engine: &mut osis_engine::Engine, ts: &BTreeSet<Tid>) -> Result<()> {
+    Ok(engine.released(ts)?)
 }
 
 /// Each of this node's own commits with an entry under read S is held elsewhere: one of its

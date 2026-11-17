@@ -3557,7 +3557,7 @@ impl Engine {
     }
 
     /// The ciphertext store's notes against this store (`blobs::Cipher`): a transaction this
-    /// store committed (its sequence at most the one recorded) gets its removals and releases, one it did not
+    /// store committed (its sequence at most the one recorded) gets its forgotten blobs and releases, one it did not
     /// gets its holds released. Then the next sequence follows every one seen. At open, and after
     /// a commit whose outcome is unknown.
     fn settle_blobs(&mut self) -> Result<()> {
@@ -3571,8 +3571,8 @@ impl Engine {
         let mut last = committed;
         for n in &notes {
             if n.seq <= committed {
-                for op in &n.removals {
-                    t.finish(op)?;
+                for id in &n.forgot {
+                    t.forgot(id)?;
                 }
             }
             let undo = if n.seq <= committed { &n.releases } else { &n.holds };
