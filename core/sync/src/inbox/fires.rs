@@ -69,7 +69,7 @@ impl Fires {
             let b = osis_blob::blob_id(&out.blob);
             osis_base::costs::count("inbox: fire sealed", 1);
             let wrap = osis_crypto::filler_wrap(&mut osis_crypto::SeededRng::from_seed(osis_base::hash::hash(&out.blob)));
-            offers.add_fire(out.sync_id, b, Arc::new(out.blob), wrap, Target::Fire { thing: out.thing, to: out.to });
+            offers.add_fire(out.sync_id, b, Arc::new(out.blob), wrap, Target::Fire { thing: out.thing, to: Arc::new(out.to) });
             self.sent.insert(id, (out.sync_id, b));
             self.by_blob.insert((out.sync_id, b), id);
         }

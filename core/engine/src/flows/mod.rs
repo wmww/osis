@@ -139,6 +139,26 @@ pub(crate) fn now_ts(core: &Core) -> osis_base::Ts {
 }
 
 impl Core {
+    /// The accounts holding a role on actor `start`, directly or through the actors holding it.
+    pub(crate) fn holder_accounts_of(&self, start: Tid) -> BTreeSet<Tid> {
+        let mut seen = BTreeSet::from([start]);
+        let mut todo = vec![start];
+        let mut out = BTreeSet::new();
+        while let Some(x) = todo.pop() {
+            for (m, _) in self.key_holders(&x) {
+                if !seen.insert(m) {
+                    continue;
+                }
+                if self.is_account(&m) {
+                    out.insert(m);
+                } else if !self.is_key_actor(&m) {
+                    todo.push(m);
+                }
+            }
+        }
+        out
+    }
+
     /// The typed state of `keys.0` of `tid`.
     pub(crate) fn keys_in(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<Keys>> {
         Ok(tx.state(tid, &ak("keys.0")?)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()))

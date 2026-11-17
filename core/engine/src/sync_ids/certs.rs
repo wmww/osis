@@ -239,7 +239,8 @@ impl Engine {
     /// spec/sync-judgement.md §2): the union of `g`'s pieces (`Piece`): `g`'s own
     /// (`own_piece`); the author's chain of each held commit on a thing of `g`'s closure its actor
     /// may read, which goes with the commit (`certificate_chains`, `chain_piece`); `g`'s own chain
-    /// to each thing an edge write names it holder on (`holds_on`: role changes travel). Nothing else:
+    /// to each thing an edge write names it holder on, with that thing's boxes to `g` and sync
+    /// record (`holder_piece`: role changes travel). Nothing else:
     /// a chain into an item of the closure that no write there needs (the roster of a holder
     /// private to others holding a role on an item under S) is none of S's readers'. Parts the closure's bodies carry
     /// are `sync_bodies`' to leave out. Derived whole, O(all of it): what sync reads is
@@ -248,8 +249,11 @@ impl Engine {
     pub(crate) fn sync_certificates(&mut self, g: &Tid) -> Certs {
         let mut out = self.own_piece(g);
         let held_on: Vec<(Tid, Tid)> = self.core.ix.held.named_on(g).filter(|x| *x != g && self.core.first_admin(x) != Some(*g)).map(|x| (*g, *x)).collect();
-        for (a, x) in self.certificate_chains(g).into_iter().chain(held_on) {
+        for (a, x) in self.certificate_chains(g) {
             out.extend(self.chain_piece(&a, &x));
+        }
+        for (t, x) in held_on {
+            out.extend(self.holder_piece(&t, &x));
         }
         self.expand_accounts(&mut out);
         out
@@ -302,6 +306,29 @@ impl Engine {
         let mut out = Certs::deferring();
         let found = self.core.timelines.certificates(a, x);
         self.cert_parts(&found, &mut out);
+        out
+    }
+
+    /// What read thing `t`'s readers need of `x` an edge write names `t` holder on (spec/sync-judgement.md
+    /// §2 role commits naming an actor): `t`'s chain to `x` (`chain_piece`), the `secrets.0` parts
+    /// on `x` boxing a secret to `t`, `x`'s current `keys.0` and its sync record (its `sync.0`
+    /// parts), so a reader of `t` holds the grant, `x`'s own keys and its sync ID with no ticket.
+    /// Each valid part held, O(`x`'s held `secrets.0` and `sync.0` commits).
+    pub(crate) fn holder_piece(&mut self, t: &Tid, x: &Tid) -> Certs {
+        let mut out = self.chain_piece(t, x);
+        self.current_keys_into(x, &mut out);
+        let on = BTreeSet::from([*x]);
+        for ak in ["secrets.0", "sync.0"] {
+            let Ok(k) = Ak::new(ak) else { continue };
+            let held: Vec<CommitId> = self.core.ix.by_aspect.get(&(*x, k.clone())).into_iter().flatten().map(|v| v.1).collect();
+            for c in held {
+                let Some(ai) = self.core.ix.commits.get(&c).filter(|_| !self.core.ix.pending.contains_key(&c)).and_then(|m| m.aspect(x, &k).filter(|ai| m.valid_at(*ai))) else { continue };
+                if ak == "secrets.0" && !self.holders_named(&c).get(&ai).is_some_and(|h| h.contains(t)) {
+                    continue;
+                }
+                out.add(c, self.parts_of(&c, &on, &[ak]));
+            }
+        }
         out
     }
 

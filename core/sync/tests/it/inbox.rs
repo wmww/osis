@@ -39,7 +39,7 @@ fn sync_id(i: u32) -> SyncId {
 
 /// A sealed fire on `THING` offered where `to` is proven.
 fn fire(to: Tid) -> Target {
-    Target::Fire { thing: THING, to: Some(to) }
+    Target::Fire { thing: THING, to: Arc::new(std::collections::BTreeSet::from([to])) }
 }
 
 fn conn(i: u64) -> ConnId {

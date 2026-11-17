@@ -70,13 +70,14 @@ impl Judge for osis_engine::Engine {
 }
 
 /// Who may take an offer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     /// Sources of S keeping S unread.
     Stores,
-    /// A sealed fire on `thing`: a peer where S is open, where `to` is proven, or whose filter
-    /// shows S's deposit key.
-    Fire { thing: Tid, to: Option<Tid> },
+    /// A sealed fire on `thing`: a peer where S is open, where one of `to` (the accounts holding
+    /// a role on the thing, as the sender judged them) is proven, or whose filter shows S's
+    /// deposit key.
+    Fire { thing: Tid, to: Arc<BTreeSet<Tid>> },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -159,10 +160,12 @@ impl Offers {
             Some(t) if *t == target => return,
             _ => {}
         }
-        self.items.insert(k, target);
-        if let Target::Fire { to: Some(r), .. } = target {
-            self.to.entry(r).or_default().insert(k);
+        if let Target::Fire { to, .. } = &target {
+            for r in to.iter() {
+                self.to.entry(*r).or_default().insert(k);
+            }
         }
+        self.items.insert(k, target);
         osis_base::costs::count("inbox: offer placed", self.conns.len() as u64);
         // eligibility needs `Net`: placed at the next settle on every connection
         for (c, conn) in &mut self.conns {
@@ -247,7 +250,7 @@ impl Offers {
             }
         }
         for k in self.keys.due() {
-            let Some(target) = self.items.get(&k).copied() else {
+            let Some(target) = self.items.get(&k).cloned() else {
                 self.keys.unwant(&k);
                 continue;
             };
@@ -328,7 +331,7 @@ impl Offers {
                     drop_item(&mut self.items, &mut self.to, &k);
                     continue;
                 };
-                if !may_take(net, conn, &c.actors, &k.0, *target, &key.verifying_key().to_bytes()) {
+                if !may_take(net, conn, &c.actors, &k.0, target, &key.verifying_key().to_bytes()) {
                     continue;
                 }
                 let Some(item) = item(store, &self.loose, judge, &k, target)? else {
@@ -402,9 +405,9 @@ pub fn backoff_ms(n: u32) -> u64 {
 
 impl Target {
     /// The thing whose `keys.0` names the deposit seed.
-    pub fn actor(self) -> Option<Tid> {
+    pub fn actor(&self) -> Option<Tid> {
         match self {
-            Target::Fire { thing, .. } => Some(thing),
+            Target::Fire { thing, .. } => Some(*thing),
             Target::Stores => None,
         }
     }
@@ -420,12 +423,14 @@ fn backed_off(wakes: &BTreeSet<(WallMs, ConnId, Key)>, conn: ConnId, c: &Conn, k
 /// Drops offer `k` and its index entry; whether it was held.
 fn drop_item(items: &mut BTreeMap<Key, Target>, to: &mut BTreeMap<Tid, BTreeSet<Key>>, k: &Key) -> bool {
     let Some(target) = items.remove(k) else { return false };
-    if let Target::Fire { to: Some(r), .. } = target
-        && let Some(ks) = to.get_mut(&r)
-    {
-        ks.remove(k);
-        if ks.is_empty() {
-            to.remove(&r);
+    if let Target::Fire { to: rs, .. } = target {
+        for r in rs.iter() {
+            if let Some(ks) = to.get_mut(r) {
+                ks.remove(k);
+                if ks.is_empty() {
+                    to.remove(r);
+                }
+            }
         }
     }
     true
@@ -433,11 +438,11 @@ fn drop_item(items: &mut BTreeMap<Key, Target>, to: &mut BTreeMap<Tid, BTreeSet<
 
 /// Whether the peer on `conn` may take a deposit of S signed by `key` (spec/sync-inbox.md §3
 /// Sending).
-fn may_take(net: &impl Net, conn: ConnId, actors: &[Tid], s: &SyncId, target: Target, key: &[u8; 32]) -> bool {
+fn may_take(net: &impl Net, conn: ConnId, actors: &[Tid], s: &SyncId, target: &Target, key: &[u8; 32]) -> bool {
     let member = net.member(conn, s);
     match target {
         Target::Stores => member.is_some_and(|m| m.class == SourceClass::Store),
-        Target::Fire { to, .. } => member.is_some() || to.is_some_and(|r| actors.contains(&r)) || net.shows_deposit_key(conn, s, key),
+        Target::Fire { to, .. } => member.is_some() || actors.iter().any(|a| to.contains(a)) || net.shows_deposit_key(conn, s, key),
     }
 }
 

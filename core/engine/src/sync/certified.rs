@@ -129,10 +129,12 @@ pub(crate) enum Piece {
     Own(Tid),
     /// Author `a`'s chain to `x` (`Engine::chain_piece`), under each read thing whose closure
     /// holds, and whose actor reads, a thing with a held commit of `a` writing `x` or acting for
-    /// it (`Indexes::chains_on`), and under read thing `a` itself for each `x` an edge write names
-    /// it holder on (`Engine::holds_on`: role changes travel): one piece per chain, however many
-    /// things need it.
+    /// it (`Indexes::chains_on`): one piece per chain, however many things need it.
     Chain(Tid, Tid),
+    /// Read thing `t`'s chain to `x` with `x`'s boxes to `t` and sync record
+    /// (`Engine::holder_piece`), under `t` for each `x` an edge write names it holder on
+    /// (`Engine::holds_on`: role changes travel).
+    Holder(Tid, Tid),
     /// Account `p`'s signing chain (`Engine::account_piece`), under each read thing one of whose
     /// pieces names `p` (`Certs::accounts`): a rotation re-derives this piece alone, not every
     /// piece naming the account.
@@ -432,8 +434,8 @@ impl Engine {
     /// Whether read thing `t` is named holder on `x` by an edge write, its own things aside (a
     /// first admin's edge is its record's, which no edge write lowers): spec/permissions.md §4
     /// Role changes travel, a role commit with an edge write naming holder `t` goes under `t`'s
-    /// own sync ID, as `t`'s chain to its target (`Piece::Chain(t, x)`) holds every edge write on
-    /// its paths, a removal included, which the target's bodies no longer carry there once `t`
+    /// own sync ID, as `t`'s piece for its target (`Piece::Holder(t, x)`) holds every edge write
+    /// on its paths, a removal included, which the target's bodies no longer carry there once `t`
     /// reads it no more. A read of the pair alone.
     fn holds_on(&self, t: &Tid, x: &Tid) -> bool {
         osis_base::costs::count("certified: held on examined", 1);
@@ -445,6 +447,7 @@ impl Engine {
         Some(Arc::new(match p {
             Piece::Own(t) => self.own_piece(t),
             Piece::Chain(a, x) => self.chain_piece(a, x),
+            Piece::Holder(t, x) => self.holder_piece(t, x),
             Piece::Account(p) => self.account_piece(p),
         }))
     }
@@ -525,13 +528,13 @@ impl Engine {
             }
         }
         // the role changes naming each read thing holder (`holds_on`), per pair: its chain to the
-        // target; a pair that holds no more is followed again once named again (the feed)
+        // target, with the target's boxes to it and sync record; a pair that holds no more is followed again once named again (the feed)
         for (t, x) in f.held_on.due() {
             let Some((_, now)) = f.held_on.settle(&(t, x), || self.holds_on(&t, &x)) else { continue };
             let on = self.core.certified.held_on.entry(t).or_default();
             if now {
                 if on.insert(x) {
-                    self.core.certified.place_chain(Piece::Chain(t, x), t, t, &mut f.pieces);
+                    self.core.certified.place_chain(Piece::Holder(t, x), t, t, &mut f.pieces);
                 }
                 continue;
             }
@@ -541,7 +544,7 @@ impl Engine {
                 self.core.certified.held_on.remove(&t);
             }
             if had {
-                self.core.certified.unplace_chain(Piece::Chain(t, x), t, t, &mut f.pieces);
+                self.core.certified.unplace_chain(Piece::Holder(t, x), t, t, &mut f.pieces);
             }
         }
         let authors = f.feeds.as_mut().map(|a| a.added()).unwrap_or_default();

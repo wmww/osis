@@ -512,3 +512,72 @@ fn a_thing_entered_on_a_ticket_keeps_its_sync_id_as_it_gains_own_keys_spec_sync_
         assert_eq!(value(&mut w, i, &t), Some(Value::Str("v1".into())), "node {i} reads T");
     }
 }
+
+// spec/sync-judgement.md §2 (A grant naming a holder travels under the holder's sync ID with the
+// target's sync record), spec/sync-set.md §2: Alice grants H read on T; Bob reads H and holds T
+// from his account root, not from H. His keys open T by the chain through H; the grant travels
+// under H's sync ID with T's sync record, so he learns T's sync ID and reads T, though no one
+// writes him a ticket and he may not write H.
+#[test]
+fn a_reader_by_a_chain_through_a_holder_thing_reads_spec_sync_judgement_2() {
+    let mut w = contacts();
+    let h = make(&mut w, 0, None, "h");
+    let t = make(&mut w, 0, None, "t");
+    let bob = w.node(1).account.unwrap();
+    w.write(0, |e| e.grant(&h, &bob, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, h, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &h), Some(Value::Str("h".into())), "Bob reads H");
+    w.write(0, |e| e.grant(&t, &h, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, t, true);
+    w.run();
+    assert_eq!(value(&mut w, 1, &t), Some(Value::Str("t".into())), "Bob reads T through H");
+    assert_eq!(holding(&mut w, 1, &t), Some(Holding::Read));
+}
+
+// spec/sync-inbox.md §5 (Delivery of a grant), spec/sync-judgement.md §2 (A grant naming a
+// holder): Bob's T1 holds T0 by a strong; Alice, who knows T1's public key record but neither
+// reads nor syncs T1 (she reads T4, holder on T3 made under T1), grants T1 read on T0. Bob, T1's
+// reader, then reads T0 through T1.
+#[test]
+fn a_grant_to_a_holder_its_granter_does_not_sync_reaches_its_readers_spec_sync_inbox_5() {
+    let mut w = contacts();
+    let alice = w.node(0).account.unwrap();
+    let t1 = make(&mut w, 1, None, "t1");
+    let t3 = make(&mut w, 1, Some(t1), "t3");
+    let t4 = make(&mut w, 1, None, "t4");
+    w.write(1, |e| e.grant(&t4, &alice, &edge(Role::Read))).unwrap();
+    w.write(1, |e| e.grant(&t3, &t4, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t4, true);
+    w.run();
+    assert_eq!(value(&mut w, 0, &t4), Some(Value::Str("t4".into())), "Alice reads T4");
+    let t0 = make(&mut w, 0, None, "t0");
+    strong(&mut w, 1, Some(t1), t0, true);
+    w.write(0, |e| e.grant(&t0, &t1, &edge(Role::Read))).unwrap();
+    w.run();
+    assert_eq!(value(&mut w, 1, &t0), Some(Value::Str("t0".into())), "Bob reads T0 through T1");
+    assert_eq!(holding(&mut w, 1, &t0), Some(Holding::Read));
+}
+
+// spec/sync-set.md §2 (What a held ticket does): Bob held T1 by a read ticket, then lost his own
+// grant; T1 is granted sync to T0 and Bob sync on T0, which he never accepts. His role on T1 is
+// sync through T0, so he keeps T1 unread by the sync secret the role commits give. Fails: T0's
+// grant to Bob waits in his inbox fire for a strong to T0 (spec/sync-inbox.md §5 Nothing before
+// the strong), so he holds no role on T0 (issues/reference-graph.md Full size, seeds 64, 68).
+#[test]
+#[ignore = "issues/reference-graph.md Full size: a grant naming an account, before its strong"]
+fn a_sync_role_by_chain_through_an_unaccepted_thing_keeps_unread_spec_sync_set_2() {
+    let mut w = contacts();
+    let bob = w.node(1).account.unwrap();
+    let t0 = make(&mut w, 0, None, "t0");
+    let t1 = make(&mut w, 0, None, "t1");
+    w.write(0, |e| e.grant(&t1, &bob, &edge(Role::Read))).unwrap();
+    strong(&mut w, 1, None, t1, true);
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Read));
+    w.write(0, |e| e.grant(&t1, &t0, &edge(Role::Sync))).unwrap();
+    w.write(0, |e| e.demote(&t1, &osis_engine::flows::Demotion { holder: bob, new: None, retain: None })).unwrap();
+    w.write(0, |e| e.grant(&t0, &bob, &edge(Role::Sync))).unwrap();
+    w.run();
+    assert_eq!(holding(&mut w, 1, &t1), Some(Holding::Unread), "kept unread by the chain through T0");
+}

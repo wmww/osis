@@ -1,0 +1,4 @@
+# keel-diff-full2
+- A full-size seed with `OSIS_SEED_TIMEOUT_SECS` run alone (`OSIS_SYNC_SEEDS=1`, one thread) never times out: seed 81 ran 1,300 s past a 900 s limit and was reported hung only at the end. Under 16 threads at load 18 the 100-seed run took 1,185 s wall against the heavy limit of 598 s.
+- The "hang" (seed 81) was a storm with no repeated message: three nodes rotating one thing over and over, each rotation a new step. The trace shows only frames; a per-node probe of the commits each node makes (`commit_in`) and of `rotation_due`'s reason found it, where counting deletes and fetches pointed at a duplicate-entry loop that was only a symptom.
+- An own-store dedup change made seed 81 pass by accident and broke two sync tests and seeds 23 and 93; bisecting seeds across copied binaries (one per change) found it fast. Keep a binary per change.

@@ -41,19 +41,23 @@ pub(crate) fn make_inbox(tx: &mut Tx<'_>, i: Tid, done: &mut Done) -> Result<()>
 /// holds read or above there, else of the sync secret. A sealed fire also carries `c`'s role parts
 /// on the thing with their author's chain (`Fire::Ticket`): the commit giving the holder its
 /// epochs is wrapped under one it supersedes, which the holder lacks (spec/crypto.md §5 Who
-/// wraps under what), so it takes it from the fire. A holder with no inbox here (a key actor
-/// other than an account: a node or a link key) is fired nothing.
+/// wraps under what), so it takes it from the fire; one on a holder actor that is its own inbox
+/// also carries what the holder's own sync ID carries of the thing (`role_parts_value`), which
+/// the holder's readers take with the fire (`open_sealed_fire`). A holder with no inbox here (a
+/// key actor other than an account: a node or a link key) is fired nothing.
 pub(crate) fn fire_ticket(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<()> {
     let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
-    let to = tx.core.is_account(&holder).then_some(holder);
+    let to = fire_to(tx, &holder);
     for t in things {
         let role = if tx.core.reads_now(&holder, t) { Role::Read } else { Role::Sync };
         let Some(ticket) = make_ticket(tx, *t, role, holder)? else { continue };
         let v = Value::Ticket(Box::new(ticket));
-        if tx.core.epochs(&inbox).is_some_and(|e| e.role(Role::Read).holds_any()) {
-            fire(tx, inbox, TICKET_FIRE, osis_schema::codec::rt::struct_value(vec![(0, v)]), to)?;
+        // fired as a write where the node holds and reads the inbox (`fire`), else sealed with
+        // the grant
+        if tx.core.ix.closure.holds(&inbox) && tx.core.epochs(&inbox).is_some_and(|e| e.role(Role::Read).holds_any()) {
+            fire(tx, inbox, TICKET_FIRE, osis_schema::codec::rt::struct_value(vec![(0, v)]), to.clone())?;
         } else {
-            save(tx, OwedFire { thing: inbox, ak: super::ak(TICKET_FIRE)?, what: Fire::Ticket { ticket: v, commit: c, target: *t }, to, commit: None })?;
+            save(tx, OwedFire { thing: inbox, ak: super::ak(TICKET_FIRE)?, what: Fire::Ticket { ticket: v, commit: c, target: *t }, to: to.clone(), commit: None })?;
         }
     }
     Ok(())
@@ -117,8 +121,18 @@ fn held_by(tx: &mut Tx<'_>, epochs: &osis_keys::ActorEpochs, r: Role, s: &osis_b
 /// their author's chain, is made when the fire is first sealed, `c` applied by then.
 pub(crate) fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
     let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
-    let to = tx.core.is_account(&holder).then_some(holder);
+    let to = fire_to(tx, &holder);
     save(tx, OwedFire { thing: inbox, ak: super::ak(REMOVAL_FIRE)?, what: Fire::Removal { commit: c, target }, to, commit: None })
+}
+
+/// Whom a fire on `holder`'s inbox is offered to where proven (spec/sync-inbox.md §3 Sending):
+/// the account itself, or, for an actor that is its own inbox, the accounts holding a role on it
+/// as this node judges them.
+fn fire_to(tx: &mut Tx<'_>, holder: &Tid) -> BTreeSet<Tid> {
+    match tx.core.is_account(holder) {
+        true => BTreeSet::from([*holder]),
+        false => tx.core.holder_accounts_of(*holder),
+    }
 }
 
 /// `Engine::inbox_thing` in a transaction.
@@ -166,7 +180,7 @@ impl Engine {
     pub(crate) fn take_fire(&mut self, fire: &CommitId) -> Result<()> {
         let id = *fire;
         let Some(v) = self.read(|tx| fire_parts(tx, &id))? else { return Ok(()) };
-        let aks: &[&str] = if self.read(|tx| fire_value(tx, &id, TICKET_FIRE))?.is_some() { &["roles.0", "keys.0", "secrets.0"] } else { &["roles.0"] };
+        let aks: &[&str] = if self.read(|tx| fire_value(tx, &id, TICKET_FIRE))?.is_some() { GRANT_PARTS } else { &["roles.0"] };
         self.take_role_parts(&v, aks, false)
     }
 
@@ -208,9 +222,20 @@ impl Engine {
         let v = osis_schema::codec::rt::struct_value(vec![(0, Value::Bytes(s.0.to_vec())), (1, Value::Weak(*holder)), (2, blobs(&keys.commits)), (3, records)]);
         let expires = self.now().0.saturating_add(INBOX_LIFETIME_MS);
         let ak = super::ak(STRANDED_FIRE)?;
-        self.run(|tx| save(tx, OwedFire { thing: t, ak, what: Fire::Expiring(v, expires), to: None, commit: None }))
+        self.run(|tx| save(tx, OwedFire { thing: t, ak, what: Fire::Expiring(v, expires), to: BTreeSet::new(), commit: None }))
     }
 }
+
+/// The holder ticket value `ticket` is boxed to, when it is `thing` itself (a grant fired on its
+/// holder actor, its own inbox).
+fn boxed_to(ticket: &Value, thing: &Tid) -> Option<Tid> {
+    matches!(ticket, Value::Ticket(k) if k.holder == *thing).then_some(*thing)
+}
+
+/// The parts a ticket fire's `grant` carries: the role commit's parts on the ticket's thing that
+/// give the holder its epochs and the thing's sync record (spec/sync-inbox.md §5 Delivery of a
+/// grant).
+const GRANT_PARTS: &[&str] = &["roles.0", "keys.0", "secrets.0", "sync.0"];
 
 /// A sealed fire's ID: BLAKE3 of `[thing, ak, value]`, so the same fire is owed once.
 pub type FireId = [u8; 32];
@@ -227,7 +252,7 @@ pub struct OwedFire {
     pub thing: Tid,
     pub ak: Ak,
     pub what: Fire,
-    pub to: Option<Tid>,
+    pub to: BTreeSet<Tid>,
     pub commit: Option<Arc<Vec<u8>>>,
 }
 
@@ -272,7 +297,7 @@ impl OwedFire {
     }
     fn encode(&self) -> Vec<u8> {
         let opt = |b: Option<Vec<u8>>| Value::List(b.into_iter().map(Value::Bytes).collect());
-        osis_base::encode(&Value::List(vec![Value::Bytes(self.thing.as_bytes().to_vec()), Value::Str(self.ak.as_str().into()), self.what.to_value(), opt(self.to.map(|t| t.as_bytes().to_vec())), opt(self.commit.as_ref().map(|c| c.to_vec()))]))
+        osis_base::encode(&Value::List(vec![Value::Bytes(self.thing.as_bytes().to_vec()), Value::Str(self.ak.as_str().into()), self.what.to_value(), Value::List(self.to.iter().map(|t| Value::Bytes(t.as_bytes().to_vec())).collect()), opt(self.commit.as_ref().map(|c| c.to_vec()))]))
     }
     fn decode(b: &[u8]) -> Result<OwedFire> {
         let bad = || Error::Corrupt("owed fire");
@@ -281,11 +306,10 @@ impl OwedFire {
         let [Value::Bytes(t), Value::Str(ak), what, Value::List(to), Value::List(c)] = f.as_slice() else { return Err(bad()) };
         let what = Fire::from_value(what).ok_or_else(bad)?;
         let tid = |b: &[u8]| -> Result<Tid> { Ok(Tid::from_bytes(b.try_into().map_err(|_| bad())?)) };
-        let to = match to.as_slice() {
-            [] => None,
-            [Value::Bytes(b)] => Some(tid(b)?),
-            _ => return Err(bad()),
-        };
+        let to = to.iter().map(|v| match v {
+            Value::Bytes(b) => tid(b),
+            _ => Err(bad()),
+        }).collect::<Result<BTreeSet<Tid>>>()?;
         let commit = match c.as_slice() {
             [] => None,
             [Value::Bytes(b)] => Some(Arc::new(b.clone())),
@@ -325,7 +349,7 @@ fn save(tx: &mut Tx<'_>, o: OwedFire) -> Result<()> {
 /// Fires open signal `ak` on `thing` with `value` (spec/sync-inbox.md §2): a node reading the
 /// thing fires as it writes (a non-writer's commit is deposited as any); any other owes a sealed
 /// fire, offered to peers where `to` is proven, kept until one takes it.
-pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: Option<Tid>) -> Result<()> {
+pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: BTreeSet<Tid>) -> Result<()> {
     let ak = super::ak(ak)?;
     // fired as a write where the node holds and reads the thing; at anything else it fires sealed
     // (a node writes only what it holds, spec/sync-set.md §2 Writing)
@@ -350,7 +374,7 @@ pub(crate) fn fire(tx: &mut Tx<'_>, thing: Tid, ak: &str, value: Value, to: Opti
 pub struct SealedFireOut {
     pub sync_id: osis_base::SyncId,
     pub thing: Tid,
-    pub to: Option<Tid>,
+    pub to: BTreeSet<Tid>,
     pub blob: Vec<u8>,
 }
 
@@ -401,11 +425,11 @@ impl Engine {
                 let (value, expires) = match &o.what {
                     Fire::Value(v) => (v.clone(), None),
                     Fire::Expiring(v, t) => (v.clone(), Some(osis_base::WallMs(*t))),
-                    Fire::Removal { commit, target } => match self.role_parts_value(commit, target, &["roles.0"])? {
+                    Fire::Removal { commit, target } => match self.role_parts_value(commit, target, &["roles.0"], None)? {
                         Some(v) => (v, None),
                         None => return Ok(None),
                     },
-                    Fire::Ticket { ticket, commit, target } => match self.role_parts_value(commit, target, &["roles.0", "keys.0", "secrets.0"])? {
+                    Fire::Ticket { ticket, commit, target } => match self.role_parts_value(commit, target, GRANT_PARTS, boxed_to(ticket, &o.thing))? {
                         Some(v) => (osis_schema::codec::rt::struct_value(vec![(0, ticket.clone()), (2, v)]), None),
                         None => return Ok(None),
                     },
@@ -450,7 +474,7 @@ impl Engine {
         let commit = osis_base::decode(&blob.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB }).map_err(|_| Error::Corrupt("commit blob"))?;
         let fire = osis_blob::SealedFire { commit, chain, records };
         let sealed = osis_blob::seal_fire(&prefix, &o.thing, &epoch, &kem, &fire, &mut rng)?;
-        Ok(Some(SealedFireOut { sync_id, thing: o.thing, to: o.to, blob: sealed }))
+        Ok(Some(SealedFireOut { sync_id, thing: o.thing, to: o.to.clone(), blob: sealed }))
     }
 
     /// A peer took fire `id` (answer 0, spec/sync-inbox.md §3): its delivery ends.
@@ -462,8 +486,11 @@ impl Engine {
     /// Role commit `c` as a removal notice or a ticket fire carries it (spec/sync-inbox.md §5,
     /// spec/data-model.md §9): `c` projected to its parts on `target` of `aks`, its author's chain
     /// certificates for them (each projected to its chain deltas, no `keys.0` but the author's
-    /// own), and their creation records. `None` while `c` is not applied here.
-    fn role_parts_value(&mut self, c: &CommitId, target: &Tid, aks: &[&str]) -> Result<Option<Value>> {
+    /// own), and their creation records. With `holder` (a grant fired on the holder actor itself,
+    /// its own inbox), what the holder's own sync ID carries of `target` too (`holder_piece`:
+    /// spec/sync-judgement.md §2, a grant naming a holder travels with the target's sync record).
+    /// `None` while `c` is not applied here.
+    fn role_parts_value(&mut self, c: &CommitId, target: &Tid, aks: &[&str], holder: Option<Tid>) -> Result<Option<Value>> {
         let id = *c;
         let Some(full) = self.read(|tx| tx.get_commit(&id))? else { return Ok(None) };
         let parts: crate::sync_ids::Parts = full.header.aspects.iter().enumerate().filter(|(_, a)| a.tid == *target && aks.contains(&a.ak.as_str())).map(|(i, _)| i).collect();
@@ -473,6 +500,14 @@ impl Engine {
             ps.retain(|i| hx.aspects.get(*i).is_some_and(|a| a.ak.as_str() != "keys.0" || a.tid == hx.author));
         }
         chain.commits.retain(|_, p| !p.is_empty());
+        if let Some(h) = holder {
+            let mut held = self.holder_piece(&h, target);
+            if let Some(p) = held.commits.get_mut(c) {
+                p.retain(|x| !parts.contains(x));
+            }
+            held.commits.retain(|_, p| !p.is_empty());
+            chain.extend(held);
+        }
         let (chain, records) = self.certs_values(&chain)?;
         let commit = osis_commit::rewrite(&full, |ai| !parts.contains(&ai));
         let blobs = |v: Vec<Value>| Value::List(v.iter().map(|x| Value::Bytes(osis_base::encode(x))).collect());
@@ -521,7 +556,15 @@ impl Engine {
         let chain: Vec<Vec<u8>> = fire.chain.iter().map(osis_base::encode).collect();
         let id = commit.id();
         let parts: Vec<usize> = commit.parts.iter().map(|p| p.ai).collect();
+        // a ticket fire on actor `t` holding a ticket boxed to `t` itself (its own inbox): the
+        // grant names `t` holder, so its role parts are in `t`'s own sync ID's required set
+        // (spec/sync-judgement.md §2, a grant naming a holder travels under the holder's sync
+        // ID): taken with the fire, whatever keeps the fire itself
+        let grant = self.holder_grant(t, &commit);
         let Some(ingested) = self.ingest_sealed_fire(records, &chain, commit)? else { return Ok(Opened::Bad) };
+        if let Some(g) = grant {
+            self.take_role_parts(&g, GRANT_PARTS, false)?;
+        }
         // a removal notice is acted on as it is taken
         if parts.iter().any(|ai| removal.get(*ai) == Some(&true)) {
             self.take_removal_notice(&id)?;
@@ -530,6 +573,18 @@ impl Engine {
         let b = *b;
         self.run(|tx| crate::sync::bodies::note_blob(tx, &b, row))?;
         Ok(Opened::Commit(id, ingested))
+    }
+
+    /// The role parts sealed fire `fire` on `t` carries (`Fire::Ticket`'s `grant`) when its ticket
+    /// is boxed to `t` itself: a grant naming `t` holder fired on `t`, its own inbox.
+    fn holder_grant(&self, t: &Tid, fire: &osis_commit::CommitBlob) -> Option<Value> {
+        let h = &fire.header;
+        let p = fire.parts.first().filter(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == TICKET_FIRE))?;
+        let dedup = self.core.dedup(t)?;
+        let mut interner = osis_crdt::Interner::new();
+        let v = osis_commit::verify_part(h, &fire.id(), p, &dedup, &mut interner, None).ok()?.into_fragment().read()?;
+        let Value::Map(m) = v else { return None };
+        boxed_to(m.get(&Value::Int(0))?, t).and_then(|_| m.get(&Value::Int(2)).cloned())
     }
 }
 

@@ -124,28 +124,9 @@ impl Engine {
     /// The accounts holding a role on `t`'s reader actor, directly or through the actors holding
     /// it (every role is sync or above), by the rosters held here.
     fn holder_accounts(&self, t: &Tid) -> BTreeSet<Tid> {
-        self.holders_from(self.core.reader_of(t))
+        self.core.holder_accounts_of(self.core.reader_of(t))
     }
 
-    /// The accounts holding a role on actor `start`, directly or through the actors holding it.
-    fn holders_from(&self, start: Tid) -> BTreeSet<Tid> {
-        let mut seen = BTreeSet::from([start]);
-        let mut todo = vec![start];
-        let mut out = BTreeSet::new();
-        while let Some(x) = todo.pop() {
-            for (m, _) in self.core.key_holders(&x) {
-                if !seen.insert(m) {
-                    continue;
-                }
-                if self.core.is_account(&m) {
-                    out.insert(m);
-                } else if !self.core.is_key_actor(&m) {
-                    todo.push(m);
-                }
-            }
-        }
-        out
-    }
 
     /// See `Core::profile_of`.
     pub fn profile_of(&mut self, a: &Tid) -> Option<Tid> {

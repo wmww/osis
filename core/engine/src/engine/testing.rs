@@ -194,7 +194,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn fire_open(&mut self, thing: &Tid, ak: &str, value: osis_base::Value) -> Result<()> {
         let t = *thing;
-        self.run(|tx| crate::flows::inbox::fire(tx, t, ak, value, None))
+        self.run(|tx| crate::flows::inbox::fire(tx, t, ak, value, std::collections::BTreeSet::new()))
     }
 
     /// Flags an aspect suspect (tests: what a suspect node does, however it became one).
