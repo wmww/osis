@@ -1531,12 +1531,15 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         for a in [ak("x:m.0"), ak("t:reg.0"), ak("t:text.0")] {
             out.push(format!("{:?}\n{:?}", e.get(&d, &a).unwrap(), e.state(&d, &a).unwrap()));
         }
-        // the invalid index and Bob's and Carol's commits (each node has its own identity)
+        // the invalid index on D and U (another's root is judged by whoever holds it) and Bob's
+        // and Carol's commits (each node has its own identity)
+        let invalid: Vec<_> = e.core.ix.invalid.iter().filter(|((t, _), _)| [d, u].contains(t)).collect();
         let ix = index_of(e);
-        out.push(format!("{}\n{:?}\n{:?}", ix.tables["invalid"], ix.commits.get(&c), ix.commits.get(&n)));
+        out.push(format!("{invalid:?}\n{:?}\n{:?}", ix.commits.get(&c), ix.commits.get(&n)));
         out
     };
     let want = look(&mut lp, 4);
+    assert!(!want[3].starts_with("[]"), "Bob's parts on D invalid at Eve");
     // the read, not the state: Carol's write stays under "late"
     let shown = |x: &str| x.lines().next().unwrap().contains("late");
     assert!(!shown(&want[0]), "Eve: {}", want[0]);

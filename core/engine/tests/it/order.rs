@@ -829,9 +829,12 @@ pub(crate) fn play_with(seed: u64, steps: &[Step], addenda: bool) -> Played {
     let collect = |lp: &mut LocalPeer, i: usize, seen: &mut BTreeSet<CommitId>, packs: &mut Vec<Package>, authors: &mut Vec<usize>, own: &mut Vec<Vec<CommitId>>| {
         for id in lp.peers[i].engine.commit_ids() {
             if seen.insert(id) {
-                packs.push(lp.peers[i].engine.package(&id).unwrap().unwrap());
                 let by = lp.peers[i].engine.header(&id).map(|h| h.author);
-                authors.push(ids.iter().position(|x| Some(*x) == by).unwrap_or(3));
+                let author = ids.iter().position(|x| Some(*x) == by);
+                // from its author's node, which holds it whole: another may have dropped its parts
+                // on what it needs nothing of (another account's root)
+                packs.push(lp.peers[author.unwrap_or(i)].engine.package(&id).unwrap().unwrap());
+                authors.push(author.unwrap_or(3));
                 if by == Some(ids[i]) {
                     own[i].push(id);
                 }
@@ -1623,8 +1626,9 @@ fn later_than(played: &Played) -> WallMs {
 
 /// The sync exchange, as a node's sync makes it: every held
 /// commit the node itself counts a part of missing is fetched again from the peer (the history's
-/// packs, which a peer holding the sync ID keeps), until none is or a round changes nothing. Only
-/// the node's own count decides: a node that fails to count a body missing never gets it back.
+/// packs, which a peer holding the sync ID keeps), until none is or a round changes nothing; then
+/// the pass ends (`Engine::settle_needs`: a copy may bring back what nothing held needs). Only the
+/// node's own count decides: a node that fails to count a body missing never gets it back.
 fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
     let missing = |p: &Peer| -> BTreeSet<CommitId> { p.engine.commit_parts_missing().into_iter().filter(|(_, m)| !m.is_empty()).map(|(c, _)| c).collect() };
     let mut was = missing(p);
@@ -1640,6 +1644,8 @@ fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
         }
         was = now;
     }
+    // the exchange is a pass: what it brought that nothing held needs goes
+    p.engine.settle_needs().unwrap();
 }
 
 /// P3: no value of a delta past its expiry, or that a held purge request drops, is left in

@@ -90,9 +90,10 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// Role commit `c`, applied from elsewhere in this transaction (or late parts of it), arrived:
-/// each actor whose `roles.0`, `secrets.0` or `keys.0` it writes takes the next pass place.
+/// each actor whose `roles.0`, `secrets.0` or `keys.0` it writes, its record held, takes the next
+/// pass place (a part on a thing whose record is not held is on nothing here).
 pub(crate) fn note_arrival(tx: &mut Tx<'_>, h: &osis_commit::Header) -> Result<()> {
-    let actors: BTreeSet<Tid> = h.aspects.iter().filter(|a| ROLE_ASPECTS.contains(&a.ak.as_str())).map(|a| a.tid).collect();
+    let actors: BTreeSet<Tid> = h.aspects.iter().filter(|a| ROLE_ASPECTS.contains(&a.ak.as_str()) && tx.core.created(&a.tid).is_some()).map(|a| a.tid).collect();
     if actors.is_empty() {
         return Ok(());
     }

@@ -218,7 +218,12 @@ fn list_before_rotation(valid_only: bool) {
     assert!(lp.peers[2].engine.carries_loose(&carrier), "kept loose until its rotation");
     match valid_only {
         false => drop(lp.peers[2].receive(&pk.bytes, pk.blobs.clone()).unwrap()),
-        true => assert!(matches!(lp.peers[2].engine.ingest_valid(&pk.bytes).unwrap(), Some(crate::Ingested::Applied(_))), "taken"),
+        // projected off D's parts, as holder keys carry it (spec/wire.md §9 Holder keys)
+        true => {
+            let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+            b.parts.retain(|p| b.header.aspects.get(p.ai).is_some_and(|x| x.tid != a.root));
+            assert!(matches!(lp.peers[2].engine.ingest_valid(&b.encode()).unwrap(), Some(crate::Ingested::Applied(_))), "taken");
+        }
     }
     assert!(!lp.peers[2].engine.carries_loose(&carrier), "held with its rotation");
     assert!(!lp.peers[2].engine.carries_loose(&junk), "the forged list goes as its rotation arrives");

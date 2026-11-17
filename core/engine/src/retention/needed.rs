@@ -153,8 +153,6 @@ pub(crate) enum Need {
     Strong(osis_base::Ak),
     /// Account `x`'s `keys.0` names `t` (its inbox).
     Inbox,
-    /// `t` is account `x`'s root.
-    AccountRoot,
     /// `t` is account `x`'s profile.
     Profile,
 }
@@ -235,9 +233,7 @@ pub(crate) fn needs(tx: &mut Tx<'_>, t: &Tid) -> Result<Vec<(Tid, Need)>> {
             out.push((r.source, Need::Inbox));
         }
     }
-    // an account root and an account's profile: needed by the account (its chain is the root's
-    // roster)
-    out.extend(core.account_of_root(t).map(|a| (a, Need::AccountRoot)));
+    // an account's profile: needed by the account
     if let Some(a) = core.first_admin(t).filter(|a| core.is_account(a)) {
         let inbox = crate::flows::inbox::inbox_in(tx, &a)?;
         if tx.core.profile_of(&a, inbox) == Some(*t) {
@@ -342,6 +338,13 @@ pub(crate) fn settle(tx: &mut Tx<'_>) -> Result<bool> {
     }
     for t in &gone {
         crate::sync_ids::opened::forget_thing(tx, t)?;
+        // its keyset notes go with it, though a held commit keeps its other parts
+        let keyed: Vec<osis_base::CommitId> = tx.core.ix.keyset_parts.get(t).into_iter().flatten().copied().collect();
+        for id in keyed {
+            tx.core.ix.keyset_parts.remove(t, &id);
+            tx.txn.remove_local(&crate::engine::records::own_keys_key(t, &id), Shred::Yes)?;
+        }
+        tx.core.ix.own_keys.remove(t);
         if tx.core.ix.secrets.remove(t).is_some() {
             tx.txn.remove_local(&[crate::engine::records::SECRETS, t.as_bytes()].concat(), Shred::Yes)?;
         }

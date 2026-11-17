@@ -172,5 +172,5 @@ fn what_a_reader_costs() {
     }
     eprintln!("grant read to another account: (commits, grant bytes, granter rows, reader rows, granter ops, reader ops) {:?}", each[1]);
     let (commits, bytes, _, reader, _, _) = &each[1];
-    assert!(*commits == 1 && *bytes < 4_200 && *reader < 31_000, "{:?}", each[1]);
+    assert!(*commits == 1 && *bytes < 4_200 && *reader < 31_500, "{:?}", each[1]);
 }

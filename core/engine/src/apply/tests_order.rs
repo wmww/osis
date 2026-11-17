@@ -47,12 +47,14 @@ fn write(p: &mut Peer, t: Tid, v: &str) -> CommitId {
     p.commit(m).unwrap().unwrap()
 }
 
-/// What a node judged and reads: every listed commit's per-delta verdict (`None`: not applied),
-/// what pends, and the register of every listed thing.
+/// What a node judged and reads: every listed commit's per-delta verdict on the listed things
+/// (`None`: not applied; a part on another's root, unknown to a node that does not hold it, is
+/// none of its judgement), what pends, and the register of every listed thing.
 type Seen = (Vec<Option<Vec<bool>>>, usize, Vec<Option<Value>>);
 
 fn seen(p: &mut Peer, ids: &[CommitId], things: &[Tid]) -> Seen {
-    let v = ids.iter().map(|id| p.engine.core.ix.commits.get(id).map(|m| m.valid.clone())).collect();
+    let on = |m: &crate::engine::Meta| m.view.aspects.iter().zip(&m.valid).filter(|(a, _)| things.contains(&a.tid)).map(|(_, v)| *v).collect();
+    let v = ids.iter().map(|id| p.engine.core.ix.commits.get(id).map(on)).collect();
     let r = things.iter().map(|t| p.engine.get(t, &reg()).unwrap()).collect();
     (v, p.engine.pending().len(), r)
 }
@@ -113,7 +115,8 @@ fn sample(shape: Shape) -> usize {
             lp.peers[0].engine.grant(&g, &h, &ct::Edge { role, until: None, invite: None, floor: None }).unwrap();
         }
         lp.sync_all().unwrap();
-        let base: Vec<CommitId> = lp.peers[0].engine.commit_ids();
+        // every peer's: each holds its own root's and of the others only what it needs
+        let base: Vec<CommitId> = lp.peers.iter_mut().flat_map(|p| p.engine.commit_ids()).collect::<BTreeSet<_>>().into_iter().collect();
         (lp, (g, base))
     });
     // a node apart from A, B and C, a reader of G holding it, as of the base

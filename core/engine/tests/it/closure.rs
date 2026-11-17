@@ -716,6 +716,50 @@ fn a_commit_waiting_for_a_part_keeps_what_it_is_on_spec_commits_5() {
     assert!(r.engine.core.created(&u).is_some(), "U's record");
 }
 
+/// Peer 1 reads and holds X, made by peer 0 under its account root D (outside peer 1's node
+/// closure, needed as X's first admin), once a pass brought what peer 0 holds: the world and D.
+fn held_under_d() -> (osis_engine::local_peer::LocalPeer, Tid) {
+    let mut lp = crate::common::net(2, 0);
+    let d = lp.peers[0].engine.account_root().unwrap();
+    let x = crate::common::new_shared(&mut lp, 0);
+    lp.sync(0, 1).unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.closure_holds(&x) && !e1.closure_holds(&d) && e1.core.created(&d).is_some(), "D held as X's first admin, outside the node closure");
+    (lp, d)
+}
+
+// spec/commits.md §5 What a held thing needs: a strong needs its target only from a thing in the
+// node closure. D, kept at peer 1 for X alone, holds a strong to B; at the pass's end B goes, as
+// would everything D holds.
+#[test]
+fn a_strong_from_outside_the_node_closure_needs_nothing_spec_commits_5() {
+    let (mut lp, d) = held_under_d();
+    let b = make(&mut lp.peers[0].engine, d, d);
+    lp.sync(0, 1).unwrap();
+    let e1 = &mut lp.peers[1].engine;
+    assert!(e1.core.created(&b).is_none(), "{}", e1.why_kept(&b));
+}
+
+// spec/commits.md §5 What a held thing needs: a part missing keeps what its commit is on only on a
+// thing in the node closure (one the node fetches again). Peer 0 makes T under D with D's strong to
+// it in one commit; peer 1, holding D outside its node closure, gets the commit without its part
+// on D: at the pass's end T goes.
+#[test]
+fn a_part_missing_outside_the_node_closure_keeps_nothing_spec_commits_5() {
+    let (mut lp, d) = held_under_d();
+    let t = make(&mut lp.peers[0].engine, d, d);
+    let c = *lp.peers[0].engine.commit_ids().last().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let on_d = b.header.aspects.iter().position(|a| a.tid == d).expect("the commit writes D's strong");
+    b.parts.retain(|p| p.ai != on_d);
+    let r = &mut lp.peers[1];
+    r.receive(&b.encode(), pk.blobs.clone()).unwrap();
+    assert!(r.engine.commit_parts_missing().get(&c).is_some_and(|m| m.contains(&on_d)), "its part on D counts missing");
+    r.engine.settle_needs().unwrap();
+    assert!(r.engine.core.created(&t).is_none(), "{}", r.engine.why_kept(&t));
+}
+
 // spec/sync-set.md §2 (Writing): a node writes only what it holds. Bob, granted write on Alice's
 // T and holding its commits, writes it unaccepted: refused, nothing applies. Accepting T and
 // writing it in one commit passes: what it writes is held at the transaction's end.

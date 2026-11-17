@@ -70,6 +70,7 @@ fn pending_setup() -> (LocalPeer, (CommitId, CommitId)) {
     m.set(t, &ak("x:a.0"), &Value::Int(1)).unwrap();
     let c1 = lp.peers[0].commit(m).unwrap().unwrap();
     lp.hold(t);
+    lp.send_chain(0, 1, &t).unwrap();
     lp.peers[0].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
     let mut m = Mutation::new();
     m.set(t, &ak("x:a.0"), &Value::Int(2)).unwrap();

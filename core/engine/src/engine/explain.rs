@@ -98,7 +98,6 @@ fn need(core: &Core, x: &Tid, n: &Need) -> String {
         Need::Holding => format!("an edge write on it names {x} holder"),
         Need::Strong(ak) => format!("{x}'s {ak} holds a strong to it"),
         Need::Inbox => format!("account {x}'s keys.0 names it (its inbox)"),
-        Need::AccountRoot => format!("it is account {x}'s root"),
         Need::Profile => format!("it is account {x}'s profile"),
     }
 }

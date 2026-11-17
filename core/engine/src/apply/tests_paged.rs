@@ -233,12 +233,14 @@ impl World {
         self.log.push(format!("commit by {by}: {c:?}"));
     }
 
-    /// Delivers the commits one node holds that another lacks, in a random order, some first
-    /// without their pages.
+    /// Delivers the commits on T one node holds that another lacks, in a random order, some
+    /// first without their pages (what else each holds, its own root's, draws nothing).
     fn send(&mut self, r: &mut Rng) {
         let from = r.below(NODES as u64) as usize;
         let to = (from + 1 + r.below(NODES as u64 - 1) as usize) % NODES;
+        let t = self.t;
         let mut pks: Vec<Package> = self.lp.packages(from).unwrap();
+        pks.retain(|p| osis_commit::CommitBlob::decode(&p.bytes).is_ok_and(|b| b.header.aspects.iter().any(|a| a.tid == t)));
         // a commit applied as its header with parts waiting is still sent
         let held: Vec<CommitId> = self.lp.peers[to].engine.commit_ids();
         let waiting: Vec<CommitId> = self.lp.peers[to].engine.pending().into_iter().map(|x| x.0).collect();
