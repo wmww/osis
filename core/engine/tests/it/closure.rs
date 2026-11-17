@@ -924,3 +924,29 @@ fn an_ephemeral_strong_going_lets_its_target_go_spec_commits_5() {
     e0.settle_needs().unwrap();
     assert!(e0.core.created(&q).is_none(), "nothing held needs Q's chain");
 }
+
+// spec/sync-set.md §3 Release, spec/commits.md §5 (an expired part is held as its leftover): one
+// commit writes X's register and puts an element on held T's list, expiring; past its expiry
+// both parts are leftovers (T's list keeps the element's record, value-less). X leaves the node
+// closure and is released: the commit loses X's part only, so T reads as its held bodies give
+// (the debug rebuild check of the release's transaction). Fails when a commit whose blob keeps
+// no part is forgotten whole (a leftover is held outside the blob's parts).
+#[test]
+fn a_release_keeps_the_leftover_of_a_commit_on_a_thing_still_held_spec_sync_set_3() {
+    let (mut lp, _) = people(1);
+    let d = lp.peers[0].engine.account_root().unwrap();
+    let (x, t) = (make(&mut lp.peers[0].engine, d, d), make(&mut lp.peers[0].engine, d, d));
+    let now = lp.peers[0].engine.now().0;
+    let mut m = Mutation::new();
+    m.set(x, &crate::common::REG, &Value::Str("v".into())).unwrap();
+    m.set(t, &crate::common::LIST, &Value::List(vec![Value::Str("e".into())])).unwrap();
+    m.expires_all(osis_base::WallMs(now + 1_000));
+    lp.peers[0].engine.commit(m).unwrap();
+    lp.advance(2_000);
+    lp.peers[0].tick().unwrap();
+    let e = &mut lp.peers[0].engine;
+    strong(e, d, x, false);
+    e.released(&[x].into()).unwrap();
+    assert!(!e.closure_holds(&x));
+    e.check_index();
+}

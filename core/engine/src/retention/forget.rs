@@ -261,7 +261,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
         }
         let blob = tx.get_commit(&id)?;
         let rest = blob.as_ref().map(|b| osis_commit::rewrite(b, |ai| ais.contains(&ai)));
-        if rest.as_ref().is_some_and(|r| r.parts.is_empty()) {
+        // whole when no part it keeps stays: a leftover is held outside the blob's parts
+        let keeps = (0..m.view.aspects.len()).any(|ai| !ais.contains(&ai) && m.holds(ai));
+        if rest.is_some() && !keeps {
             crate::apply::unindex_unreceived(tx, &id)?;
             // a release's blobs go with it, the store's own entries of them too (`bodies::forget`);
             // losing access keeps them: an own entry naming one waits for the access to return

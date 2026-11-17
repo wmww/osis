@@ -1592,7 +1592,7 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
         }
     }
     p.tick().unwrap();
-    p.engine.settle_needs().unwrap();
+    pass_end(&mut p);
     crate::disputes::walk_sides(&mut p);
     // a purge drops at this node too: what one that fell left missing comes back as anywhere
     fetch_missing(&mut p, played, held);
@@ -1645,6 +1645,17 @@ fn fetch_missing(p: &mut Peer, played: &Played, held: &[usize]) {
         was = now;
     }
     // the exchange is a pass: what it brought that nothing held needs goes
+    pass_end(p);
+}
+
+/// A pass ends, as at a node's sync with no source in flight (spec/sync-set.md §3 Release: at
+/// once): every thing that left the node closure is released, then what the pass brought that
+/// nothing held needs goes (`Engine::settle_needs`). Without the release a thing a strong held
+/// for a while (until a removal arrived invalidating it) stays, one never held goes: what a node
+/// holds would follow arrival order.
+fn pass_end(p: &mut Peer) {
+    let left: BTreeSet<Tid> = p.engine.left_closure().into_keys().collect();
+    p.engine.released(&left).unwrap();
     p.engine.settle_needs().unwrap();
 }
 
@@ -1934,8 +1945,9 @@ fn finish(p: &mut Peer, late: bool, each: &mut dyn FnMut(&mut Peer)) {
         each(p);
     }
     p.tick().unwrap();
-    // the pass ended: what it brought that nothing held needs goes
-    p.engine.settle_needs().unwrap();
+    // the pass ended: what left the node closure is released, what it brought that nothing
+    // held needs goes
+    pass_end(p);
     each(p);
     let lost = p.engine.lost_wakes().unwrap();
     assert!(lost.is_empty(), "applied by a full scan, missed by the wakes: {lost:?}");
@@ -2937,8 +2949,10 @@ fn reference(played: &Played, held: &[usize], whole: bool, p: &mut Peer) -> Seen
 /// Drops steps while the history still fails, pass after pass until a whole pass drops none (a
 /// removal redraws the seed's orders and held sets, so a step one pass kept may go in the next):
 /// a failing history no single step can leave. A `settled` history keeps its settling tail
-/// whole: one cut short settles nothing.
+/// whole: one cut short settles nothing. With `OSIS_SHRINK_MATCH` set, a candidate fails only
+/// when its failure contains that text (a seed failing two ways keeps the one studied).
 fn shrink(threads: usize, seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
+    let pattern = std::env::var("OSIS_SHRINK_MATCH").ok();
     let mut err = check_on(threads, seed, &steps, cfg).unwrap_err();
     let tail = if cfg.settled { settled(Vec::new()).len() } else { 0 };
     loop {
@@ -2948,11 +2962,11 @@ fn shrink(threads: usize, seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Ste
             let mut fewer = steps.clone();
             fewer.remove(i);
             match check_on(threads, seed, &fewer, cfg) {
-                Err(e) => {
+                Err(e) if pattern.as_ref().is_none_or(|p| e.contains(p.as_str())) => {
                     steps = fewer;
                     err = e;
                 }
-                Ok(_) => i += 1,
+                _ => i += 1,
             }
         }
         eprintln!("seed {seed}: shrink pass {before} -> {} steps", steps.len());
@@ -4545,4 +4559,19 @@ fn a_creation_pruned_under_a_later_delete_is_replaced_spec_commits_5() {
     let a = |s| Aim(Box::new(s));
     let h = vec![a(Typed { by: 2, t: 1, op: 11, k: 1, v: 0 }), a(Undo { by: 2, back: 1 }), a(Undo { by: 2, back: 1 }), Advance { who: None, ms: 5500918 }, a(Compact { by: 0, t: 0, op: 23 })];
     check(1117, &h, Cfg { model: true, clock: 2, away: true, ..NAMED }).unwrap();
+}
+
+
+// spec/sync-set.md §3 Release, spec/commits.md §5 (What a held thing needs: what a node holds
+// outside its node closure is a function of what it holds): admin 2 makes a thing under G,
+// holding it from G's `holds.0` in the same commit; admin 0 removes 2 with no frontier, so that
+// write is invalid. A node given the creation first holds the thing for a while, one given the
+// removal first never does: once the pass ends, each has released what left its node closure,
+// so both read alike (the thing not held). Fails when a pass's end keeps what left the node
+// closure (the harness's nodes then read as their arrival order went).
+#[test]
+fn a_thing_held_for_a_while_reads_as_one_never_held_once_the_pass_ends_spec_sync_set_3() {
+    use Step::*;
+    let h = vec![New { by: 2, parent: 0, write: true }, Edge { by: 0, t: 0, holder: 2, role: None }];
+    check(0, &h, NAMED).unwrap();
 }
