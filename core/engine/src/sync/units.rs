@@ -523,6 +523,23 @@ impl Closure {
         }
     }
 
+    /// Tests and debugging (`Engine::why_kept`): the node closure's tree path to `t`, from the
+    /// node root, by one context holding it (not on a ticket's word alone, if any).
+    #[cfg(debug_assertions)]
+    pub(crate) fn path(&self, t: &Tid) -> Option<Vec<Vx>> {
+        let cs = self.tree.held.get(t)?;
+        let c = cs.iter().find(|c| !matches!(c, Ctx::Ticket(_))).or_else(|| cs.iter().next())?;
+        let mut path = vec![(*c, *t)];
+        while let Some(p) = self.tree.parent.get(path.last()?) {
+            if path.contains(p) {
+                break;
+            }
+            path.push(*p);
+        }
+        path.reverse();
+        Some(path)
+    }
+
     /// The contexts holding `t`.
     pub(crate) fn contexts(&self, t: &Tid) -> BTreeSet<Ctx> {
         self.tree.held.get(t).cloned().unwrap_or_default()

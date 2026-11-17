@@ -17,6 +17,13 @@ pub struct HeldBody {
     pub value: Option<osis_base::Value>,
 }
 
+/// The family of local key `k`: up to its first `/`, else 3 bytes (`Engine::local_census`,
+/// `Engine::rows`).
+pub(crate) fn family(k: &[u8]) -> &[u8] {
+    let end = k.iter().position(|b| *b == b'/').map_or(3.min(k.len()), |p| (p + 1).min(k.len()));
+    k.get(..end).unwrap_or(k)
+}
+
 impl Engine {
     /// Tests only: rotates `roles` of `a` boxing every holder this node would but `skip`, as a
     /// rotation that left them out (a holder left out of a rotation, spec/permissions.md §4
@@ -211,8 +218,7 @@ impl Engine {
         let rows = self.read(|tx| Ok(tx.txn.scan_local(b"", b"", usize::MAX)?))?;
         let mut out = std::collections::BTreeMap::<String, (usize, usize)>::new();
         for (k, v) in rows {
-            let end = k.iter().position(|b| *b == b'/').map_or(3.min(k.len()), |p| (p + 1).min(k.len()));
-            let e = out.entry(String::from_utf8_lossy(k.get(..end).unwrap_or(&k)).into_owned()).or_default();
+            let e = out.entry(String::from_utf8_lossy(family(&k)).into_owned()).or_default();
             e.0 += 1;
             e.1 += k.len() + v.len();
         }

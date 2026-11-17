@@ -652,6 +652,25 @@ impl World {
         })
     }
 
+    /// Debug builds: why node `i` still holds `t` (`Engine::why_kept`; notes/test-harnesses.md,
+    /// Why kept and row dumps).
+    #[cfg(debug_assertions)]
+    pub fn why_kept(&mut self, i: usize, t: &Tid) -> String {
+        self.engine(i).why_kept(t)
+    }
+
+    /// Debug builds: node `i`'s local rows, its engine's (`"engine"`) and its sync store's
+    /// (`"store"`), described by its engine (`Engine::describe_rows`), where the family starts
+    /// with `prefix` and, with `tid`, the row names it.
+    #[cfg(debug_assertions)]
+    pub fn rows(&mut self, i: usize, prefix: &str, tid: Option<&Tid>) -> Vec<(&'static str, osis_engine::engine::Row)> {
+        let store = self.store(i).with_read(|t| t.scan_local(b"", b"", usize::MAX)).expect("scan").into_iter().map(|kv| (kv.0, kv.1)).collect();
+        let e = self.engine(i);
+        let mut out: Vec<_> = e.rows(prefix.as_bytes(), tid).expect("rows").into_iter().map(|r| ("engine", r)).collect();
+        out.extend(e.describe_rows(store, prefix.as_bytes(), tid).into_iter().map(|r| ("store", r)));
+        out
+    }
+
     /// Node `i`'s store, for reads.
     pub fn store(&self, i: usize) -> &Store {
         self.node(i).node.store()

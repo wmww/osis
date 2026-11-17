@@ -24,10 +24,15 @@ pub(crate) mod secrets;
 pub(crate) mod state;
 pub(crate) mod tree_refs;
 mod testing;
+#[cfg(debug_assertions)]
+mod explain;
 pub mod write;
 
 #[doc(hidden)]
 pub use testing::{CommitDigest, IndexDigest, IndexField};
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub use explain::Row;
 pub use large::Trees;
 pub use write::Mutation;
 

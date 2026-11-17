@@ -467,7 +467,9 @@ fn own_rounds(w: &mut World, rounds: usize) -> Held {
         });
         w.run();
         for (t, _) in &ts {
-            assert!(w.engine(0).core.created(t).is_none(), "released: {t:?} keeps its record");
+            if w.engine(0).core.created(t).is_some() {
+                panic!("released: {t:?} keeps its record\n{}", why_kept(w, 0, t));
+            }
         }
         w.advance(1_000);
     }
@@ -492,9 +494,10 @@ const TOMBSTONE_BYTES: usize = 32;
 /// own) and `cv/` (`handed`), the same count of blobs, and no more bytes than the removals'
 /// tombstones add to the snapshot records (`c/`) and blobs. `cv/` holds at most one row per
 /// held commit (one per held part dropped as covered whose coverer went: the trigger's
-/// snapshots a fresh node never took); the caller checks it flat.
+/// snapshots a fresh node never took); the caller checks it flat. On a mismatch the message
+/// adds `explain` of the families that differ (`leaked`).
 #[track_caller]
-fn as_fresh(h: &Held, fresh: &Held, removals: usize, what: &str) {
+fn as_fresh(h: &Held, fresh: &Held, removals: usize, what: &str, explain: &mut dyn FnMut(&[String]) -> String) {
     let rest = |c: &Census| {
         let mut c = c.clone();
         c.remove("d/");
@@ -506,12 +509,79 @@ fn as_fresh(h: &Held, fresh: &Held, removals: usize, what: &str) {
     };
     let snap = |c: &Census| c.get("c/").copied().unwrap_or_default();
     let tombs = removals * TOMBSTONE_BYTES;
-    assert_eq!((rest(&h.0), &h.1), (rest(&fresh.0), &fresh.1), "{what}: rows by family");
-    assert!(snap(&h.0).0 == snap(&fresh.0).0 && snap(&h.0).1 <= snap(&fresh.0).1 + tombs, "{what}: c/ {:?}, a fresh node's {:?}, {removals} removals", snap(&h.0), snap(&fresh.0));
-    assert!(h.0.get("cv/").map_or(0, |x| x.0) <= snap(&fresh.0).0, "{what}: cv/ {:?}", h.0.get("cv/"));
-    for (d, (a, b)) in ["engine", "store"].iter().zip(h.2.iter().zip(&fresh.2)) {
-        assert!(a.0 == b.0 && a.1 <= b.1 + tombs as u64, "{what}: {d} blobs (count, bytes) {a:?}, a fresh node's {b:?}");
+    let differ = |side: &str, a: &Census, b: &Census| -> Vec<String> { a.keys().chain(b.keys()).filter(|k| a.get(*k) != b.get(*k)).map(|k| format!("{side} {k}")).collect() };
+    if (rest(&h.0), &h.1) != (rest(&fresh.0), &fresh.1) {
+        let fams: Vec<String> = differ("engine", &rest(&h.0), &rest(&fresh.0)).into_iter().chain(differ("store", &h.1, &fresh.1)).collect();
+        assert_eq!((rest(&h.0), &h.1), (rest(&fresh.0), &fresh.1), "{what}: rows by family{}", explain(&fams));
     }
+    if !(snap(&h.0).0 == snap(&fresh.0).0 && snap(&h.0).1 <= snap(&fresh.0).1 + tombs) {
+        panic!("{what}: c/ {:?}, a fresh node's {:?}, {removals} removals{}", snap(&h.0), snap(&fresh.0), explain(&["engine c/".into()]));
+    }
+    if h.0.get("cv/").map_or(0, |x| x.0) > snap(&fresh.0).0 {
+        panic!("{what}: cv/ {:?}{}", h.0.get("cv/"), explain(&["engine cv/".into()]));
+    }
+    for (d, (a, b)) in ["engine", "store"].iter().zip(h.2.iter().zip(&fresh.2)) {
+        if !(a.0 == b.0 && a.1 <= b.1 + tombs as u64) {
+            panic!("{what}: {d} blobs (count, bytes) {a:?}, a fresh node's {b:?}{}", explain(&["engine c/".into(), "engine bp/".into()]));
+        }
+    }
+}
+
+/// Debug builds: the rows of `families` (`"engine c/"`, `"store E/"`) node `i` of `w` holds and
+/// node `j` of `base` (a fresh world's, same seed: the same roots) does not, each with its
+/// decoded key, then why node `i` keeps each thing those rows name that no row of `base` names
+/// (`World::rows`, `World::why_kept`; notes/test-harnesses.md, Why kept and row dumps).
+#[cfg(debug_assertions)]
+fn leaked(w: &mut World, i: usize, base: &mut World, j: usize, families: &[String]) -> String {
+    use std::fmt::Write;
+    let base_rows = base.rows(j, "", None);
+    let keys: std::collections::BTreeSet<(&str, &[u8])> = base_rows.iter().map(|(d, r)| (*d, r.raw.as_slice())).collect();
+    let base_tids: std::collections::BTreeSet<Tid> = base_rows.iter().flat_map(|(_, r)| r.tids.iter().copied()).collect();
+    // rows of the families that differ and no row of `base` has, those naming a thing `base`
+    // has no row naming first (commit IDs differ between the worlds: a row of a root's commit
+    // has its own key at each)
+    let (mut fresh_named, mut other) = (Vec::new(), Vec::new());
+    for (d, r) in w.rows(i, "", None) {
+        if families.contains(&format!("{d} {}", r.family)) && !keys.contains(&(d, r.raw.as_slice())) {
+            match r.tids.iter().any(|t| !base_tids.contains(t)) {
+                true => fresh_named.push((d, r)),
+                false => other.push((d, r)),
+            }
+        }
+    }
+    let shown = if fresh_named.is_empty() { &other } else { &fresh_named };
+    let mut out = format!("\nrows a fresh node lacks ({} naming a thing it has no row of, {} others):", fresh_named.len(), other.len());
+    for (d, r) in shown.iter().take(60) {
+        let names: Vec<String> = r.tids.iter().map(|t| t.to_string()).collect();
+        let _ = write!(out, "\n  {d} {}{} ({} bytes), names [{}]", r.family, r.key, r.bytes, names.join(" "));
+    }
+    if shown.len() > 60 {
+        let _ = write!(out, "\n  ... {} more", shown.len() - 60);
+    }
+    let tids: std::collections::BTreeSet<Tid> = shown.iter().flat_map(|(_, r)| r.tids.iter()).filter(|t| !base_tids.contains(t)).copied().collect();
+    let _ = write!(out, "\nwhy kept:");
+    for t in tids.iter().take(20) {
+        let _ = write!(out, "\n{}", why_kept(w, i, t));
+    }
+    out
+}
+
+/// Debug builds: why node `i` keeps `t` (`World::why_kept`).
+fn why_kept(w: &mut World, i: usize, t: &Tid) -> String {
+    #[cfg(debug_assertions)]
+    {
+        w.why_kept(i, t)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (w, i, t);
+        String::new()
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn leaked(_: &mut World, _: usize, _: &mut World, _: usize, _: &[String]) -> String {
+    String::new()
 }
 
 // S1, its own-things arm (notes/refgraph-tests.md; issues/reference-graph.md Storage),
@@ -519,12 +589,15 @@ fn as_fresh(h: &Held, fresh: &Held, removals: usize, what: &str) {
 // and its node root, written and then released, leaves its rows and blobs as a fresh node's of the
 // same account once tombstones have aged out, at 2 and 20 rounds: but the roots' set tombstones,
 // a few bytes per removal (three strongs and the keyed thing's ticket a round), and `cv/` (flat).
+// A mismatch prints the rows a fresh node lacks and why each thing they name is kept (`leaked`:
+// notes/test-harnesses.md, Why kept and row dumps).
 #[test]
 fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
-    let fresh = own_rounds(&mut world(0, 1), 0);
-    let (a, b) = (own_rounds(&mut world(0, 1), 2), own_rounds(&mut world(0, 1), 20));
-    as_fresh(&a, &fresh, 2 * 4, "2 rounds");
-    as_fresh(&b, &fresh, 20 * 4, "20 rounds");
+    let (mut wf, mut wa, mut wb) = (world(0, 1), world(0, 1), world(0, 1));
+    let fresh = own_rounds(&mut wf, 0);
+    let (a, b) = (own_rounds(&mut wa, 2), own_rounds(&mut wb, 20));
+    as_fresh(&a, &fresh, 2 * 4, "2 rounds", &mut |f| leaked(&mut wa, 0, &mut wf, 0, f));
+    as_fresh(&b, &fresh, 20 * 4, "20 rounds", &mut |f| leaked(&mut wb, 0, &mut wf, 0, f));
     assert_eq!(a.0.get("cv/"), b.0.get("cv/"), "cv/ flat");
 }
 
@@ -551,7 +624,7 @@ fn settled(w: &mut World) -> Vec<Held> {
 /// it: node 1 accepts (`accept`, a strong from its account root) or declines (no accept, the
 /// fire left in its inbox); node 0 writes again, removes node 1's account, and both let the thing
 /// go (node 0 its strong, node 1 its accept). `rounds` times; then `settled`.
-fn grant_rounds(rounds: usize, accept: bool) -> Vec<Held> {
+fn grant_rounds(rounds: usize, accept: bool) -> (World, Vec<Held>) {
     use crate::harness::history::Holder;
     let mut w = world(0, 2);
     w.cap = 2_000_000;
@@ -565,7 +638,8 @@ fn grant_rounds(rounds: usize, accept: bool) -> Vec<Held> {
         let _ = play(&mut w, &steps, String::new());
         w.advance(1_000);
     }
-    settled(&mut w)
+    let held = settled(&mut w);
+    (w, held)
 }
 
 /// The engine families of one creation record held as a certificate: the record (`t/`), its
@@ -595,18 +669,18 @@ fn but_root_record(h: &Held, fresh: &Held) -> Held {
 /// set removals at most `removals` a node; an accepting grantee but the maker's account root's
 /// record (`but_root_record`), and as at 2 rounds at 20.
 fn grants_as_fresh(accept: bool, removals: usize) {
-    let fresh = grant_rounds(0, accept);
-    let (a, b) = (grant_rounds(2, accept), grant_rounds(20, accept));
+    let (mut wf, fresh) = grant_rounds(0, accept);
+    let ((mut wa, a), (mut wb, b)) = (grant_rounds(2, accept), grant_rounds(20, accept));
     for (i, who) in ["the maker", "the grantee"].iter().enumerate() {
         let (x, y) = match accept && i == 1 {
             true => {
-                as_fresh(&b[i], &a[i], 18 * removals, &format!("{who}, 20 rounds against 2"));
+                as_fresh(&b[i], &a[i], 18 * removals, &format!("{who}, 20 rounds against 2"), &mut |f| leaked(&mut wb, i, &mut wa, i, f));
                 (but_root_record(&a[i], &fresh[i]), but_root_record(&b[i], &fresh[i]))
             }
             false => (a[i].clone(), b[i].clone()),
         };
-        as_fresh(&x, &fresh[i], 2 * removals, &format!("{who}, 2 rounds"));
-        as_fresh(&y, &fresh[i], 20 * removals, &format!("{who}, 20 rounds"));
+        as_fresh(&x, &fresh[i], 2 * removals, &format!("{who}, 2 rounds"), &mut |f| leaked(&mut wa, i, &mut wf, i, f));
+        as_fresh(&y, &fresh[i], 20 * removals, &format!("{who}, 20 rounds"), &mut |f| leaked(&mut wb, i, &mut wf, i, f));
         assert_eq!(a[i].0.get("cv/"), b[i].0.get("cv/"), "{who}: cv/ flat");
     }
 }
@@ -671,4 +745,5 @@ fn a_released_things_forgotten_commits_leave_no_own_entry_spec_sync_judgement_3(
         assert!(w.store(0).entry(s, b).unwrap().is_none(), "an own entry of a forgotten commit under {s:?}");
     }
 }
+
 
