@@ -401,8 +401,8 @@ fn p3_worked_case() {
 }
 
 /// (a) Nested sharing: Y with own keys, X granted read on Y, X -> Y. Y and its plain things are
-/// in X's sync unit: every reader of X holds and reads them with no ticket for Y, a node storing X
-/// unread stores them, and by sync a node reading X only gets Y's commits under X and syncs Y.
+/// in X's sync unit: every reader of X holds and reads them with no ticket for Y, a node keeping X
+/// unread holds X alone (it reads none of X's strongs; Y's commits go under X's sync ID), and by sync a node reading X only gets Y's commits under X and syncs Y.
 /// Without the grant only a holder of Y's ticket holds Y.
 #[test]
 fn p3_nested_sharing() {
@@ -416,7 +416,8 @@ fn p3_nested_sharing() {
     let c = closure(&w, &e, &reader, Walk::Units);
     assert_eq!((c.held, c.read), (set(&[0, 1, 2]), set(&[0, 1])));
     let c = closure(&w, &e, &store, Walk::Units);
-    assert_eq!((c.held, c.stored, c.read), (set(&[0, 1, 2]), set(&[0, 1]), set(&[])));
+    // kept unread, X's strongs go unread: it holds X alone (spec/sync-set.md §2)
+    assert_eq!((c.held, c.stored, c.read), (set(&[0]), set(&[0]), set(&[])));
     let ungranted = world(&[K, K, p(1)], &[]);
     assert_eq!(unit(&ungranted, 0, &e), set(&[0]));
     assert_eq!(closure(&ungranted, &e, &reader, Walk::Units).held, set(&[0]));

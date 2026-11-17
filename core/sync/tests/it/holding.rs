@@ -630,14 +630,12 @@ fn a_released_thing_reached_again_is_fetched_again_spec_sync_judgement_3() {
 }
 
 // spec/sync-judgement.md §2 (A grant naming a holder travels under the holder's sync ID with the
-// target's sync record): Alice's node 2 makes T0 and T1 and grants Bob read on T0 while her node
-// 0 grants T0 sync on T1, so both key T0 (two sync IDs). Bob, reading T0, must hold what T0's
-// sync IDs need of T1 (its record, its sync record, its boxes to T0). Fails: Bob takes their
-// entries under T0's higher sync ID but holds none of those commits, so they stay parked, and
-// T1's record is not kept (issues/reference-graph.md Full size, seed 64). With one keying of T0
-// (node 2 granting both) it passes.
+// target's sync record), spec/permissions.md §3 (Lost access forgets what only the lost secrets
+// read): Alice's node 2 makes T0 and T1 and grants Bob read on T0 while her node 0 grants T0 sync
+// on T1. Bob, reading T0, takes T0's certificates of T1 (its minting as a header alone, its sync
+// record, its boxes to T0), so he holds T1's sync secrets and no read: he loses access to T1,
+// which must not forget the minting's header, read by no secret of T1.
 #[test]
-#[ignore = "issues/reference-graph.md Full size: must-hold bodies a caught-up reader lacks"]
 fn a_reader_of_a_holder_holds_its_targets_sync_record_spec_sync_judgement_2() {
     let mut w = contacts();
     w.pair(0);
@@ -653,3 +651,4 @@ fn a_reader_of_a_holder_holds_its_targets_sync_record_spec_sync_judgement_2() {
     w.run();
     assert_eq!(value(&mut w, 1, &t0), Some(Value::Str("t0".into())));
 }
+

@@ -9,7 +9,7 @@ How it reads the plan:
 - A sync unit (`sync unit`) walks from T by strongs; a thing T's keys open is in it and followed, any other stops the walk and is not in it (no leaves). Keyed things T's keys open are in it.
 - `Sync`: nodes exchange per sync ID and log to a store per sync ID. A node syncs each keyed thing it holds a ticket or keys for, and every keyed thing those sync units hold. It holds only what some sync ID it syncs carries by its own view and drops the rest. A delete-key holder deletes store entries its view does not carry; any node logs what its view carries. Under a sync ID go the commits on its sync unit's things and, as certificates, the role commits on things among its keys.
   - `certify_revokes` also carries a role commit naming an actor among its keys (itself included). That is the fix for the hole below, which the spec states (spec/permissions.md §4 Role changes travel); "by the plan's words" below is the mode without it.
-- `closure` walks the node closure sync unit by sync unit. The node's keys and sync secrets are the least sets the keyed things it reads yield (a fixpoint over the walk): an open ticket gives its keys only where the walk enters its thing (spec/sync-set.md §4 Declining is doing nothing), and a keyed thing reached that the node's keys hold sync on (no read) is kept unread as by a sync-only ticket. `Walk::Literal` follows every strong the node can open: a mutation kept for contrast.
+- `closure` walks the node closure sync unit by sync unit. The node's keys and sync secrets are the least sets the keyed things it reads yield (a fixpoint over the walk): an open ticket gives its keys only where the walk enters its thing (spec/sync-set.md §4 Declining is doing nothing), and a keyed thing reached that the node's keys hold sync on (no read) is kept unread as by a sync-only ticket. Kept unread, the walk stops at it: the node holds it alone (spec/sync-set.md §2). `Walk::Literal` follows every strong the node can open: a mutation kept for contrast.
 - `Net` is release: a pass of a node with its connected peers. `Tree` is the spanning-tree structure for removing a strong.
 
 ## Properties and tests
@@ -55,7 +55,7 @@ Each rule the passing tests rely on was removed once and failed tests:
 
 ## New checks
 - **(a) Nested sharing**, `p3_nested_sharing`. Setup: Y has own keys, X is granted read on Y, X -> Y -> B.
-  - Y and B are in X's sync unit. A reader of X holds and reads them with no ticket for Y, and a node storing X unread stores them.
+  - Y and B are in X's sync unit. A reader of X holds and reads them with no ticket for Y; a node keeping X unread holds X alone (it reads none of X's strongs), their commits carried under X's sync ID.
   - In `Sync`, a node reading only X gets Y's commits under X and syncs Y.
   - Without the grant only a holder of Y's ticket holds Y. PASS.
 - **(b) Taking Y out again**, `p3_unlinking_takes_it_out_for_every_reader`. Removing X -> Y, or Z -> A for a plain A in two sync units, takes the thing out for every reader. Each reader drops it, the delete-key holder deletes its entries, nothing logs them again, and everything settles. PASS under both rules: the removal is a commit on the referrer, which stays in the sync unit.

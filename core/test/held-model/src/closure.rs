@@ -414,8 +414,8 @@ pub struct NodeView {
 pub struct Closure {
     /// Keyed things read: entered by keys or an open ticket, or in a sync unit entered so.
     pub read: Set,
-    /// Keyed things stored unread: in a sync unit entered by a sync secret (a sync-only ticket or
-    /// the node's keys), and not read.
+    /// Keyed things kept unread: entered by a sync secret (a sync-only ticket or the node's keys),
+    /// and not read; each holds its sync unit unread and the walk stops at it.
     pub stored: Set,
     /// Every thing the node holds.
     pub held: Set,
@@ -491,16 +491,18 @@ fn walk_with(w: &World, e: &Edges, n: &NodeView, walk: Walk, ring: &Set, sync: &
                     continue;
                 }
                 let p = unit(w, k, e);
-                let inner = p.iter().copied().filter(|&x| w.keyed(x));
                 if open {
-                    c.read.extend(inner);
+                    c.read.extend(p.iter().copied().filter(|&x| w.keyed(x)));
                     for &m in &p {
                         keyed.extend(targets(e, m).filter(|&y| w.keyed(y) && !p.contains(&y)));
                     }
+                    c.held.extend(&p);
                 } else {
-                    c.stored.extend(inner);
+                    // kept unread: its strongs unread, so the walk stops at it and holds it alone
+                    // (spec/sync-set.md §2), its sync unit carried under its sync ID
+                    c.stored.insert(k);
+                    c.held.insert(k);
                 }
-                c.held.extend(&p);
                 c.carried.extend(p);
             }
             c.stored.retain(|x| !c.read.contains(x));
@@ -516,7 +518,7 @@ fn walk_with(w: &World, e: &Edges, n: &NodeView, walk: Walk, ring: &Set, sync: &
                         true
                     } else if synced(&x) {
                         c.stored.insert(x);
-                        c.held.extend(unit(w, x, e));
+                        c.held.insert(x);
                         false
                     } else {
                         false

@@ -248,7 +248,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, scope: Scope<'_>, held: &BTreeMap<Tid, u64
     for id in ids {
         let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
         let ais = lost_aspects(tx.core, scope, m.view.aspects.iter().map(|a| (&a.tid, &a.ak)), &mut memo);
-        if ais.is_empty() {
+        // lost access forgets what was read: a commit holding no part it forgets (a header alone,
+        // judged by its author's chain) keeps as it is
+        if ais.is_empty() || (matches!(scope, Scope::Lost(_)) && !ais.iter().any(|ai| m.holds(*ai))) {
             continue;
         }
         for ai in ais.iter().copied().filter(|ai| m.holds(*ai)) {

@@ -186,8 +186,8 @@ pub fn ran(w: &mut World) {
 }
 
 /// At a quiet run with every node on and connected on a clean network, every node holds its
-/// node closure: a thing made that no account's model closure holds is held by no node, so it
-/// is gone (`Made::gone`). Judged from the history alone (a reference of what was handed).
+/// node closure: a thing made that no account's model closure holds or carries is held by no
+/// node, so it is gone (`Made::gone`). Judged from the history alone (a reference of what was handed).
 fn note_gone(w: &mut World) {
     if !w.history.harvest || w.history.things.is_empty() || !w.net.cut_off.is_empty() || (0..w.len()).any(|i| !w.online(i)) {
         return;
@@ -218,9 +218,10 @@ fn note_gone(w: &mut World) {
     peer.clock.set(now);
     let _ = peer.tick();
     let m = Model::of(w, peer);
+    // held, or carried unread under a sync ID some node keeps: a later reader fetches it there
     let mut held = hc::Set::new();
     for a in 0..m.accounts.len() {
-        held.extend(m.closure(&w.history, a).0.held);
+        held.extend(m.closure(&w.history, a).0.carried);
     }
     for k in 0..w.history.things.len() {
         if !held.contains(&m.thing(k)) {
@@ -654,20 +655,20 @@ impl Model {
         Model { accounts, world: hc::World { kinds, grants, keyless }, edges }
     }
 
-    /// Account `a`'s node closure, the keys it reads with and the things it keeps unread: its
-    /// root entered by keys, and a ticket for each thing given the account directly, open where
+    /// Account `a`'s node closure and the keys it reads with: its root entered by keys, and a ticket for each thing given the account directly, open where
     /// its role there at the end (by any chain) is read or above, sync-only where it is sync,
     /// none where it has none (a ticket supplies up to the lower of its role and its holder's,
     /// spec/sync-set.md §2); a ticket gives its keys only where the walk enters its thing (§4).
-    fn closure(&self, h: &Made, a: usize) -> (hc::Closure, hc::Set, hc::Set) {
+    fn closure(&self, h: &Made, a: usize) -> (hc::Closure, hc::Set) {
         // the account's grants count on what its node closure reaches by strongs alone (a grant
         // naming it is taken at a strong to its thing, spec/sync-inbox.md §5 Nothing before the
-        // strong), so nothing counts through a thing it never accepted: the least fixpoint
+        // strong), so nothing counts through a thing it never accepted, nor through one it keeps
+        // unread, whose strongs it cannot read (spec/sync-set.md §2): the least fixpoint
         let na = self.accounts.len();
         let mut reached: hc::Set = hc::targets(&self.edges, na + a).collect();
         loop {
             let c = self.closure_reaching(h, a, &reached);
-            let now: hc::Set = c.0.held.iter().chain([na + a].iter()).flat_map(|x| hc::targets(&self.edges, *x)).chain(reached.iter().copied()).collect();
+            let now: hc::Set = c.0.held.iter().filter(|x| !c.0.stored.contains(x)).chain([na + a].iter()).flat_map(|x| hc::targets(&self.edges, *x)).chain(reached.iter().copied()).collect();
             if now == reached {
                 return c;
             }
@@ -676,7 +677,7 @@ impl Model {
     }
 
     /// `closure` with the account's grants counting on `reached` alone.
-    fn closure_reaching(&self, h: &Made, a: usize, reached: &hc::Set) -> (hc::Closure, hc::Set, hc::Set) {
+    fn closure_reaching(&self, h: &Made, a: usize, reached: &hc::Set) -> (hc::Closure, hc::Set) {
         let roles = self.world.roles_from_reached(a, reached);
         let na = self.accounts.len();
         let mut tickets = BTreeMap::from([(na + a, hc::Ticket::Open)]);
@@ -698,13 +699,7 @@ impl Model {
         let view = hc::NodeView { roots: [na + a].into(), tickets };
         let c = hc::closure(&self.world, &self.edges, &view, hc::Walk::Units);
         let keys = c.keys.clone();
-        // kept unread is the unit's root alone, entered by its sync secret (a sync-only ticket or
-        // the node's keys) at a strong from what the node reads (spec/sync-set.md §2: the walk
-        // stops at it); a thing with own keys
-        // inside that unit is carried under the root's sync ID, never its own
-        let reads = |y: &usize| if self.world.keyed(*y) { c.read.contains(y) } else { c.held.contains(y) && self.world.opens(&keys, *y) };
-        let unread: hc::Set = c.stored.iter().copied().filter(|x| (view.tickets.get(x) == Some(&hc::Ticket::SyncOnly) || c.synced.contains(x)) && self.edges.iter().any(|(y, z)| z == x && reads(y))).collect();
-        (c, keys, unread)
+        (c, keys)
     }
 
     /// Whether account `a` (model index) holds write or above on history thing `k` at the end.
@@ -757,12 +752,12 @@ fn at_check(w: &mut World, r: &mut Peer, m: &Model) -> String {
     let brief = |x: &Reads| format!("{} ({} roles)", x.value.as_ref().map_or("none".to_string(), |v| format!("{v:?}")), x.roles.len());
     let mut out = String::from("at the check:");
     let on: Vec<usize> = (0..w.len()).filter(|i| w.online(*i)).collect();
-    let views: Vec<Option<(hc::Closure, hc::Set, hc::Set)>> = (0..w.len()).map(|i| w.node(i).account.and_then(|a| m.account(&a)).map(|a| m.closure(&w.history, a))).collect();
+    let views: Vec<Option<(hc::Closure, hc::Set)>> = (0..w.len()).map(|i| w.node(i).account.and_then(|a| m.account(&a)).map(|a| m.closure(&w.history, a))).collect();
     for (k, (t, maker)) in w.history.things.clone().iter().enumerate() {
         let x = m.thing(k);
         out.push_str(&format!("\n  thing {k} (made by node {maker}, {:?}): reference {}", m.world.kinds[x], brief(&reads(&mut r.engine, t))));
         for &i in &on {
-            let said = views[i].as_ref().map_or("-", |(c, keys, _)| if c.read.contains(&x) || (c.held.contains(&x) && m.world.opens(keys, x)) { "read" } else if c.stored.contains(&x) || c.held.contains(&x) { "held unread" } else { "not held" });
+            let said = views[i].as_ref().map_or("-", |(c, keys)| if c.read.contains(&x) || (c.held.contains(&x) && m.world.opens(keys, x)) { "read" } else if c.stored.contains(&x) || c.held.contains(&x) { "held unread" } else { "not held" });
             out.push_str(&format!("; node {i} {} (model: {said})", brief(&reads(w.engine(i), t))));
         }
     }
@@ -786,7 +781,7 @@ fn closure_clauses(w: &mut World, r: &mut Peer, m: &Model) {
     for i in on {
         let Some(acct) = w.node(i).account else { continue };
         let a = m.account(&acct).expect("an account");
-        let (c, keys, unread) = m.closure(&w.history, a);
+        let (c, keys) = m.closure(&w.history, a);
         let set = w.engine(i).sync_set().expect("sync set");
         for (k, (t, _)) in things.iter().enumerate() {
             let x = m.thing(k);
@@ -801,7 +796,7 @@ fn closure_clauses(w: &mut World, r: &mut Peer, m: &Model) {
                 }
             }
             if keyed {
-                let want = if c.read.contains(&x) { Some(Holding::Read) } else if unread.contains(&x) { Some(Holding::Unread) } else { None };
+                let want = if c.read.contains(&x) { Some(Holding::Read) } else if c.stored.contains(&x) { Some(Holding::Unread) } else { None };
                 let held: Vec<Holding> = set.ids.values().filter(|(ts, _)| ts.contains(t)).map(|(_, h)| *h).collect();
                 let held = held.iter().copied().max_by_key(|h| matches!(h, Holding::Read));
                 // a node keeping a thing unread cannot read its removal: it stops at the step its
@@ -842,10 +837,10 @@ pub fn held_somewhere(w: &mut World, t: &Tid, v: &str, ids: &BTreeSet<CommitId>)
 /// as ciphertext kept unread, which shows no value: a later reader fetches it there).
 fn body_clauses(w: &mut World, r: &mut Peer, m: &Model) {
     let things = w.history.things.clone();
-    let views: Vec<(hc::Closure, hc::Set, hc::Set)> = (0..m.accounts.len()).map(|a| m.closure(&w.history, a)).collect();
+    let views: Vec<(hc::Closure, hc::Set)> = (0..m.accounts.len()).map(|a| m.closure(&w.history, a)).collect();
     for (k, (t, _)) in things.iter().enumerate() {
         let x = m.thing(k);
-        let read = views.iter().any(|(c, keys, _)| if m.world.keyed(x) { c.read.contains(&x) } else { c.held.contains(&x) && m.world.opens(keys, x) });
+        let read = views.iter().any(|(c, keys)| if m.world.keyed(x) { c.read.contains(&x) } else { c.held.contains(&x) && m.world.opens(keys, x) });
         if !read || !(0..w.len()).any(|i| w.engine(i).closure_holds(t)) {
             continue;
         }
