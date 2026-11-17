@@ -461,3 +461,82 @@ fn a_reader_counts_a_stripped_part_covered_by_its_covers_cover_spec_crdt_8() {
     assert!(!w.engine(0).read_facts(&s, &c).unwrap().missing, "no part of it counts missing");
     assert!(w.engine(0).get(&t, &value_ak()).unwrap().is_some(), "the reader reads the value");
 }
+
+/// A thing node 0 makes under its account root, held there.
+fn make_held(w: &mut World) -> Tid {
+    w.write(0, |e| {
+        let d = e.account_root().unwrap();
+        let mut m = Mutation::new();
+        let t = m.create(e.thing_record(d, None));
+        m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
+        e.commit(m).unwrap();
+        t
+    })
+}
+
+// spec/sync-judgement.md §1 (One blob per commit: a section a node cannot open goes into its
+// fresh encryption only where every held blob of the commit carries it), §2 (Per blob):
+// `Engine::held_sections`. Node 0's commit writes A, B and C, each under secrets of its own;
+// node 1 writes A and C, node 2 B and C, node 3 C alone, each cut off from the others. Node 1
+// purges A's part and node 2 B's: each rewrites the blob without its own, the other's section
+// copied as it came. Node 3, opening neither, opens both rewrites, then holds the bytes of the
+// first blob and node 2's rewrite alone: its fresh encryption leaves out both purged sections,
+// as a blob it opened lacks each, its bytes held or not. Fails if only the held blobs' lists
+// count (two strips of different parts never meet at a node opening neither).
+#[test]
+fn strips_of_two_parts_by_nodes_apart_meet_at_a_node_reading_neither_spec_sync_judgement_1() {
+    let mut w = world(0, 4);
+    w.cap = 20_000;
+    let [a, b, c] = [0; 3].map(|_| make_held(&mut w));
+    for (i, ts) in [(1, vec![a, c]), (2, vec![b, c]), (3, vec![c])] {
+        let to = w.node(i).account.unwrap();
+        for t in ts {
+            w.write(0, |e| e.grant(&t, &to, &Edge { role: Role::Write, until: None, invite: None, retain: false, floor: None })).unwrap();
+            w.write(i, |e| {
+                let d = e.account_root().unwrap();
+                let mut m = Mutation::new();
+                m.op(d, &ct::HOLDS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(Value::Strong(t)) }).unwrap();
+                e.commit(m).unwrap();
+            });
+        }
+    }
+    w.run();
+    let by = osis_schema::Retention { by: PurgeBy::Writer };
+    let x = w.write(0, |e| {
+        let mut m = Mutation::new();
+        for t in [a, b, c] {
+            m.set(t, &value_ak(), &Value::Str("v".into())).unwrap().retention(t, &value_ak(), by).unwrap();
+        }
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    let s = w.engine(3).sync_id_of(&c).unwrap().unwrap();
+    for i in 0..4 {
+        for j in i + 1..4 {
+            w.partition(i, j);
+        }
+    }
+    // node i's entry of the commit, its own where `own`
+    let entry = |w: &mut World, i: usize, own: bool| {
+        let e = w.store(i).entries(&s).unwrap().into_iter().find(|e| (e.own || !own) && w.engine(i).blob_commit(&e.blob) == Some(x)).expect("a blob of the commit");
+        let bytes = w.store(i).bytes(&e.blob).unwrap().unwrap();
+        (e.blob, osis_engine::sync::HeldBlob { sync_id: s, wrap: e.wrap, bytes })
+    };
+    let (_, first) = entry(&mut w, 3, false);
+    w.advance(10);
+    purge(&mut w, 1, a, x);
+    purge(&mut w, 2, b, x);
+    w.run();
+    let (ra, by_1) = entry(&mut w, 1, true);
+    let (rb, by_2) = entry(&mut w, 2, true);
+    let h = w.engine(0).header(&x).unwrap();
+    let ai = |t: Tid| h.aspects.iter().position(|e| e.tid == t && e.ak == value_ak()).unwrap();
+    for (id, r) in [(ra, &by_1), (rb, &by_2)] {
+        w.engine(3).open_entry(&s, &id, &r.wrap, &r.bytes, u64::MAX).unwrap();
+        assert!(w.engine(3).blob_of(&id).is_some(), "node 3 opened a rewrite");
+    }
+    let rng = &mut osis_crypto::SeededRng::from_u64(1);
+    let (sealed, _) = w.engine(3).seal_body(&s, &x, &[first, by_2], rng).unwrap().expect("node 3 encrypts the commit");
+    assert!(!sealed.ais.contains(&ai(a)) && !sealed.ais.contains(&ai(b)), "node 3's fresh encryption keeps a purged section: {:?}", sealed.ais);
+    assert!(sealed.ais.contains(&ai(c)), "it carries C's part");
+}

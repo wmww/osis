@@ -20,8 +20,9 @@ pub struct Follow {
     caps: Effects<(), Arc<Caps>>,
     /// Per sync ID read here, its thing and its recorded path.
     paths: Effects<(SyncId, Tid), Option<Arc<Path>>>,
-    /// Per awaited value, the read secrets it names, current or not: what opens a parked entry.
-    creds: Effects<Awaits, Vec<osis_crypto::Secret32>>,
+    /// Per awaited value, the read secrets it names, current or not, and whether they open its
+    /// sections whole: what opens a parked entry.
+    creds: Effects<Awaits, Keys>,
     /// The entries of the sync IDs read here that wait for a read secret, each parked under what
     /// it awaits (notes/sync.md Arriving early) and opened again only as that moves. Found by the
     /// store's entry feed and at S's start.
@@ -64,16 +65,15 @@ impl Unheld {
     }
 }
 
-/// The entries carrying a commit that pends here (spec/commits.md §4 Pending storage): the
-/// engine keeps its pending copy only while an entry of it is in the store, an unstamped one
-/// charged to the peer that brought it (spec/sync-ids.md §5 Peer budget), so what one peer makes
-/// pend is bounded by its own budget. A blob no entry names any more lets its commit's pending
-/// copy go once no blob of it is named (`release`); a commit held here and pending no more (an
-/// applied one's waiting parts joined too) takes its entries off their peers' budgets. Nothing kept but the feeds' cursors: a start sweeps every pending commit
-/// once.
+/// What an awaited value opens with: its read secrets, and whether they open whole (a thing's
+/// sections open whole only while this node holds it, `Engine::section_keys`; S's always).
+type Keys = (bool, Vec<osis_crypto::Secret32>);
+
 /// A read secret an entry waits for: one of S's (`Engine::opening_secrets`: its wrap opened
-/// to nothing held or pending here), or one of a thing's (`Engine::read_secrets`: a section of
-/// its held commit's blob holding a missing part on that thing did not open).
+/// to nothing held or pending here), or one of a thing's (`Engine::section_keys`: a section of
+/// its held commit's blob holding a missing part on that thing did not open, for want of a
+/// secret or because this node does not hold the thing, spec/sync-judgement.md §1 Sealed
+/// sections).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum Awaits {
     Sync(SyncId),
@@ -90,7 +90,7 @@ struct Parked {
 
 impl Parked {
     /// Parks entry `b` of S under `now`, unparked from whatever else it awaited.
-    fn set(&mut self, creds: &mut Effects<Awaits, Vec<osis_crypto::Secret32>>, s: SyncId, b: BlobId, now: BTreeSet<Awaits>) {
+    fn set(&mut self, creds: &mut Effects<Awaits, Keys>, s: SyncId, b: BlobId, now: BTreeSet<Awaits>) {
         let was = match now.is_empty() {
             true => self.of.remove(&(s, b)).unwrap_or_default(),
             false => self.of.insert((s, b), now.clone()).unwrap_or_default(),
@@ -115,7 +115,7 @@ impl Parked {
     }
 
     /// Every entry of S unparked (S read no more).
-    fn forget(&mut self, creds: &mut Effects<Awaits, Vec<osis_crypto::Secret32>>, s: SyncId) {
+    fn forget(&mut self, creds: &mut Effects<Awaits, Keys>, s: SyncId) {
         let lo = (s, BlobId([0; 32]));
         let keys: Vec<(SyncId, BlobId)> = self.of.range(lo..).take_while(|(k, _)| k.0 == s).map(|(k, _)| *k).collect();
         for (s, b) in keys {
@@ -124,6 +124,13 @@ impl Parked {
     }
 }
 
+/// The entries carrying a commit that pends here (spec/commits.md §4 Pending storage): the
+/// engine keeps its pending copy only while an entry of it is in the store, an unstamped one
+/// charged to the peer that brought it (spec/sync-ids.md §5 Peer budget), so what one peer makes
+/// pend is bounded by its own budget. A blob no entry names any more lets its commit's pending
+/// copy go once no blob of it is named (`release`); a commit held here and pending no more (an
+/// applied one's waiting parts joined too) takes its entries off their peers' budgets. Nothing kept but the feeds' cursors: a start sweeps every pending commit
+/// once.
 #[derive(Clone, Default)]
 struct Carriers {
     unnamed: Option<Feed<BlobId>>,
@@ -384,7 +391,7 @@ impl Follow {
             Some(f) => {
                 for s in f.added() {
                     if self.read.contains_key(&s) {
-                        acted |= open_parked(engine, store, &mut self.parked, &mut self.creds, &Awaits::Sync(s))?;
+                        acted |= open_parked_of(engine, store, &mut self.parked, &mut self.creds, s)?;
                     }
                 }
             }
@@ -398,15 +405,17 @@ impl Follow {
         // S's first settle tries each once; a thing's, once it names a secret)
         for a in self.creds.due() {
             let r = self.creds.try_settle(&a, || match a {
-                Awaits::Sync(s) => engine.opening_secrets(&s),
-                Awaits::Thing(t) => Ok(engine.read_secrets(&t)),
+                Awaits::Sync(s) => engine.opening_secrets(&s).map(|v| (true, v)),
+                Awaits::Thing(t) => Ok(engine.section_keys(&t)),
             })?;
             let Some((was, now)) = r else { continue };
             let was = match (was, a) {
-                (None, Awaits::Thing(_)) => Some(Vec::new()),
+                (None, Awaits::Thing(_)) => Some((false, Vec::new())),
                 (w, _) => w,
             };
-            if was.is_some_and(|w| now.iter().all(|e| w.contains(e))) {
+            // opened again by a secret it did not have, or as its thing comes to be held
+            let (whole, keys) = &now;
+            if was.is_some_and(|(ww, w)| (ww || !whole || keys.is_empty()) && keys.iter().all(|e| w.contains(e))) {
                 continue;
             }
             acted |= open_parked(engine, store, &mut self.parked, &mut self.creds, &a)?;
@@ -521,7 +530,7 @@ fn awaits(engine: &mut Engine, s: &SyncId, e: &crate::types::Entry) -> Result<BT
 
 /// Parks entry `b` of S (`e`: held now) under what it waits for, else unparks it (gone, or
 /// taken).
-fn park(engine: &mut Engine, parked: &mut Parked, creds: &mut Effects<Awaits, Vec<osis_crypto::Secret32>>, s: SyncId, b: BlobId, e: Option<&crate::types::Entry>) -> Result<()> {
+fn park(engine: &mut Engine, parked: &mut Parked, creds: &mut Effects<Awaits, Keys>, s: SyncId, b: BlobId, e: Option<&crate::types::Entry>) -> Result<()> {
     let now = match e {
         Some(e) => awaits(engine, &s, e)?,
         None => BTreeSet::new(),
@@ -533,9 +542,22 @@ fn park(engine: &mut Engine, parked: &mut Parked, creds: &mut Effects<Awaits, Ve
 /// Opens the entries parked under `a`, the only ones its read secrets may open; one that gives
 /// something held is off its peer budget (spec/sync-ids.md §5); each is parked again under what
 /// it still waits for. Whether one opened. O(the entries parked under `a`), never S's entries.
-fn open_parked(engine: &mut Engine, store: &mut Store, parked: &mut Parked, creds: &mut Effects<Awaits, Vec<osis_crypto::Secret32>>, a: &Awaits) -> Result<bool> {
-    let mut opened = false;
+fn open_parked(engine: &mut Engine, store: &mut Store, parked: &mut Parked, creds: &mut Effects<Awaits, Keys>, a: &Awaits) -> Result<bool> {
     let xs: Vec<(SyncId, BlobId)> = parked.under.get(a).map(|x| x.iter().copied().collect()).unwrap_or_default();
+    open_these(engine, store, parked, creds, xs)
+}
+
+/// Opens again every parked entry of S, whatever it awaits (S pulled anew, spec/sync-judgement.md
+/// §3 Dropped bodies: a strong newly reaching a thing whose record is not held, so a held blob's
+/// section of it may give the record now, §1 Sealed sections).
+fn open_parked_of(engine: &mut Engine, store: &mut Store, parked: &mut Parked, creds: &mut Effects<Awaits, Keys>, s: SyncId) -> Result<bool> {
+    let lo = (s, BlobId([0; 32]));
+    let xs: Vec<(SyncId, BlobId)> = parked.of.range(lo..).take_while(|(k, _)| k.0 == s).map(|(k, _)| *k).collect();
+    open_these(engine, store, parked, creds, xs)
+}
+
+fn open_these(engine: &mut Engine, store: &mut Store, parked: &mut Parked, creds: &mut Effects<Awaits, Keys>, xs: Vec<(SyncId, BlobId)>) -> Result<bool> {
+    let mut opened = false;
     osis_base::costs::count("store: parked examined", xs.len() as u64);
     for (s, b) in xs {
         let Some(e) = store.entry(&s, &b)? else {

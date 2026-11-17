@@ -876,3 +876,91 @@ fn a_removal_reaches_a_reader_opening_the_holder_through_a_second_thing_spec_per
     w.run();
     assert_eq!(value(&mut w, 1, &x), None, "Bob reads X no more");
 }
+
+/// A thing node 1 makes under `admin`, held from its account root alone, value `v`, beside
+/// `also` written on `x` in the same commit: the thing and the commit.
+fn make_beside(w: &mut World, admin: Tid, v: &str, x: Tid, by: osis_base::PurgeBy) -> (Tid, osis_base::CommitId) {
+    let v = v.to_owned();
+    w.write(1, |e| {
+        let d = e.account_root().unwrap();
+        let mut m = Mutation::new();
+        let y = m.create(e.thing_record(admin, None));
+        m.set(y, &ak(), &Value::Str(v)).unwrap().retention(y, &ak(), osis_schema::Retention { by }).unwrap();
+        m.op(d, &ct::HOLDS, PathOp { path: vec![], op: Op::Add(Value::Strong(y)) }).unwrap();
+        m.set(x, &ak(), &Value::Str("x2".into())).unwrap();
+        (y, e.commit(m).unwrap().unwrap())
+    })
+}
+
+// spec/sync-judgement.md §1 (Sealed sections), spec/commits.md §5 (Purge): Bob's commit makes Y
+// under T0, held from his account root alone, with a value beside a write to X, which Alice
+// holds through T0. She can derive Y's read secret but does not hold Y, so Y's purge request
+// never reaches her: she takes Y's record alone, never its value, and no disk of hers ever holds
+// it, before the purge or after; she reads X. Fails if a node opens the sections of a thing it
+// merely has the secret for.
+#[test]
+fn a_section_of_a_thing_not_held_stays_sealed_spec_sync_judgement_1() {
+    let mut w = World::new(0);
+    w.record = true;
+    w.add_node();
+    w.add_node();
+    crate::harness::history::introduce(&mut w);
+    w.run();
+    let alice = w.node(0).account.unwrap();
+    let t0 = make(&mut w, 1, None, "t0");
+    let x = make_in(&mut w, 1, t0, "x");
+    w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+    strong(&mut w, 0, None, t0, true);
+    w.run();
+    let marker = format!("SEALED-MARK-9c41{}", "x".repeat(200));
+    let (y, c) = make_beside(&mut w, t0, &marker, x, osis_base::PurgeBy::Writer);
+    w.run();
+    let found = |w: &mut World| w.forensic(0).iter().any(|r| r.plain.windows(16).any(|b| b == &marker.as_bytes()[..16]));
+    assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x2".into())), "Alice reads X");
+    assert!(!w.engine(0).closure_holds(&y), "Alice does not hold Y");
+    assert!(!found(&mut w), "Alice holds Y's value");
+    w.advance(10);
+    w.write(1, |e| {
+        let mut m = Mutation::new();
+        let now = e.now();
+        m.set(y, &ct::PURGE, &now).unwrap();
+        m.purge_commit(c, y, ak());
+        e.commit(m).unwrap().unwrap();
+    });
+    w.run();
+    w.advance(osis_proto::limits::PASS_WAIT_MS + 1);
+    w.run();
+    assert!(!found(&mut w), "Alice holds Y's purged value");
+    assert_eq!(value(&mut w, 0, &x), Some(Value::Str("x2".into())), "Alice still reads X");
+}
+
+// spec/sync-judgement.md §1 (Sealed sections): a commit making a thing and the strong to it
+// carries the thing's record in a section of a thing the receiver does not hold yet. Bob's
+// commit makes Y under T0 with T0's strong to it, reaching Alice before or after she accepts T0;
+// and Bob's commit making Z, held from his account root, before he adds T0's strong to it,
+// after which the minting reaches her under T0's sync ID. Each time she takes the record, the
+// strong brings the thing in, and the section opens again: she reads both.
+#[test]
+fn a_thing_made_beside_its_strong_opens_once_held_spec_sync_judgement_1() {
+    for accepted_first in [true, false] {
+        let mut w = contacts();
+        let alice = w.node(0).account.unwrap();
+        let t0 = make(&mut w, 1, None, "t0");
+        w.write(1, |e| e.grant(&t0, &alice, &edge(Role::Read))).unwrap();
+        if accepted_first {
+            strong(&mut w, 0, None, t0, true);
+            w.run();
+        }
+        let y = make_in(&mut w, 1, t0, "y");
+        let (z, _) = make_beside(&mut w, t0, "z", y, osis_base::PurgeBy::Admin);
+        if !accepted_first {
+            strong(&mut w, 0, None, t0, true);
+        }
+        w.run();
+        assert_eq!(value(&mut w, 0, &y), Some(Value::Str("x2".into())), "accepted first {accepted_first}: Alice reads Y");
+        assert_eq!(value(&mut w, 0, &z), None, "accepted first {accepted_first}: Z is not held");
+        strong(&mut w, 1, Some(t0), z, true);
+        w.run();
+        assert_eq!(value(&mut w, 0, &z), Some(Value::Str("z".into())), "accepted first {accepted_first}: Alice reads Z");
+    }
+}

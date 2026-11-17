@@ -68,12 +68,25 @@ pub struct OpenedBlob {
     /// Its prefix salt.
     pub salt: [u8; 16],
     pub sealed: Vec<Section>,
+    /// The creation records minted in sections left sealed for a thing this node does not hold
+    /// and has no record of (`Engine::section_opens`): learned alone, the rest of those sections
+    /// unread.
+    pub records: Vec<osis_base::CreationRecord>,
     /// Every section as it came, opened or not: what a fresh encryption of the commit copies
     /// verbatim (`Engine::seal`'s `extra`, spec/crypto.md §5 Passing on).
     pub sections: Vec<Section>,
     /// A section opened under the blob key: a copy (`seal_to`), never copied into another
     /// encryption.
     pub copy: bool,
+}
+
+/// How a section opens here (`Engine::section_opens`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SectionOpens {
+    Whole,
+    /// Only the creation record minted there is taken.
+    Record,
+    Sealed,
 }
 
 impl OpenedBlob {
@@ -406,6 +419,7 @@ impl Engine {
             }
         }
         let thing_of = |sec: &Section| header.as_ref().and_then(|h| sec.ais.first().and_then(|ai| h.aspects.get(*ai)).map(|a| a.tid));
+        let opens = |sec: &Section| header.as_ref().map_or(SectionOpens::Whole, |h| self.section_opens(h, sec));
         let last = std::cell::RefCell::new(None);
         let own = |sec: &Section| -> Vec<Secret32> {
             let t = thing_of(sec);
@@ -416,8 +430,25 @@ impl Engine {
             v
         };
         let copy = env.sections.iter().any(|sec| osis_crypto::unwrap_section(key, &id, &sec.wrap).is_ok());
+        // a section of a thing not held here opens under the blob key alone (a copy's, whose
+        // parts the sync ID's own readers judge); the record of one whose record is not held is
+        // taken alone (spec/sync-judgement.md §1 Sealed sections)
+        let mut records = Vec::new();
         let opened = env.open(|sec| {
-            let mut v = own(sec);
+            let mut v = match opens(sec) {
+                SectionOpens::Whole => own(sec),
+                SectionOpens::Record => {
+                    if let Some(h) = &header
+                        && let Ok(Some(parts)) = sec.open(&id, &own(sec))
+                    {
+                        let parts = parts.into_iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::CREATED)).collect();
+                        let c = CommitBlob { header: (**h).clone(), sigs: env.sigs.clone(), parts };
+                        records.extend(crate::apply::carried_records(h, &c, &id).into_values());
+                    }
+                    Vec::new()
+                }
+                SectionOpens::Sealed => Vec::new(),
+            };
             v.push(key.clone());
             v
         })?;
@@ -434,7 +465,41 @@ impl Engine {
             }
             self.note_opened(h, &under);
         }
-        Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, salt: *prefix.salt(), sealed: opened.sealed, sections: env.sections, copy })
+        Ok(OpenedBlob { plaintext: opened.commit.encode(), commit: opened.commit, ais, salt: *prefix.salt(), sealed: opened.sealed, records, sections: env.sections, copy })
+    }
+
+    /// How a section of a commit blob of header `h` opens here (spec/sync-judgement.md §1
+    /// Sealed sections): a role section, or one of a thing this node holds (in its node closure,
+    /// a ticket's word included) or of a key actor (never in a closure: its sections are certificate material), whole; one of
+    /// a thing it does not hold stays sealed, but for the record minted there of a thing whose
+    /// record it lacks (not destroyed here), which it needs to judge whether a held strong
+    /// brings the thing in. Opening content only of held things keeps a purged part from being
+    /// read from a sync ID its purge request never reaches; a held blob opens again as its
+    /// thing enters (`section_keys`).
+    pub(crate) fn section_opens(&self, h: &osis_commit::Header, sec: &Section) -> SectionOpens {
+        let Some(a) = sec.ais.first().and_then(|ai| h.aspects.get(*ai)) else { return SectionOpens::Whole };
+        if osis_keys::under_roles(a.ak.as_str()) || self.holds_sections(&a.tid) {
+            return SectionOpens::Whole;
+        }
+        if self.core.created(&a.tid).is_none() && !self.core.destroyed(&a.tid) {
+            return SectionOpens::Record;
+        }
+        SectionOpens::Sealed
+    }
+
+    /// Whether this node opens thing `t`'s sections whole (`section_opens`): `t` is in its node
+    /// closure (on a ticket's word too: it syncs `t`'s sync IDs) or a key actor.
+    fn holds_sections(&self, t: &Tid) -> bool {
+        self.core.ix.closure.reaches(t) || self.core.is_key_actor(t)
+    }
+
+    /// What a held blob's sealed section of thing `t` awaits to open again (store `Follow`):
+    /// whether this node opens `t`'s sections whole (`section_opens`), and `t`'s read secrets
+    /// while it opens them at all (whole, or for a record it lacks).
+    pub fn section_keys(&self, t: &Tid) -> (bool, Vec<Secret32>) {
+        let whole = self.holds_sections(t);
+        let opens = whole || self.core.created(t).is_none() && !self.core.destroyed(t);
+        (whole, if opens { self.read_secrets(t) } else { Vec::new() })
     }
 
     /// The plaintext of a body (`sync_id_bodies_meta` leaves it out): the opened form of every

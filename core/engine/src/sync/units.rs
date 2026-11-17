@@ -459,6 +459,12 @@ impl Closure {
         self.tree.held.get(t).is_some_and(|cs| cs.iter().any(|c| !matches!(c, Ctx::Ticket(_))))
     }
 
+    /// Whether `t` is in the node closure in any context, on a ticket's word included: the node
+    /// syncs its sync IDs, so it takes its role commits and purge requests.
+    pub(crate) fn reaches(&self, t: &Tid) -> bool {
+        self.tree.held.get(t).is_some_and(|cs| !cs.is_empty())
+    }
+
     /// Whether `t` is entered on a ticket's word (`Ctx::Ticket`).
     pub(crate) fn on_ticket(&self, t: &Tid) -> bool {
         self.tree.held.get(t).is_some_and(|cs| cs.contains(&Ctx::Ticket(*t)))

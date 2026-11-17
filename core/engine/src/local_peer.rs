@@ -410,16 +410,26 @@ impl Engine {
     /// `unwrap_any`, `open_commit`, as node-sync opens a sync ID entry) and ingests what opened;
     /// the results, empty when nothing opened (no wrap opened, or no section).
     pub fn open_package(&mut self, pk: &SealedPackage) -> Result<Vec<Ingested>> {
+        Ok(self.open_package_counted(pk)?.0)
+    }
+
+    /// `open_package`, with the records taken from sections of things not held here
+    /// (`OpenedBlob::records`, learned before the ingest as `open_entry` does) that were new.
+    fn open_package_counted(&mut self, pk: &SealedPackage) -> Result<(Vec<Ingested>, usize)> {
         let mut out = Vec::new();
+        let mut learned = 0;
         for e in &pk.entries {
             let Some(key) = e.wraps.iter().find_map(|(a, w)| osis_blob::unwrap_any(self.read_secrets(a).iter(), &e.id, w).map(|x| x.1)) else { continue };
             let o = self.open_commit(&e.blob, &key)?;
+            if !o.records.is_empty() {
+                learned += self.learn_records(o.records.clone())?;
+            }
             if o.commit.parts.is_empty() {
                 continue;
             }
             out.push(self.ingest(&o.plaintext, pk.blobs.clone())?);
         }
-        Ok(out)
+        Ok((out, learned))
     }
 
     /// The blobs of linked list `root` of header `h` this node holds (keyed by `h`'s
@@ -634,22 +644,24 @@ impl LocalPeer {
         Ok(out)
     }
 
-    /// Delivers sealed packages to `to`, again while any opens (a secret one carries opens
-    /// another); the IDs of those none of whose bodies opened.
+    /// Delivers sealed packages to `to`, all again while a pass applies or learns anything (a
+    /// secret one carries opens another; a thing one brings in opens its sections in another, as
+    /// the sync store opens a parked entry again, spec/sync-judgement.md §1 Sealed sections); the
+    /// IDs of those none of whose bodies opened.
     pub fn deliver_sealed(&mut self, to: usize, pks: &[SealedPackage]) -> Result<Vec<CommitId>> {
         let Some(p) = self.peers.get_mut(to) else { return Ok(pks.iter().map(|x| x.id).collect()) };
-        let mut left: Vec<&SealedPackage> = pks.iter().collect();
         loop {
-            let n = left.len();
-            let mut next = Vec::new();
-            for pk in left {
-                if p.engine.open_package(pk)?.is_empty() {
-                    next.push(pk);
+            let mut moved = false;
+            let mut left = Vec::new();
+            for pk in pks {
+                let (got, learned) = p.engine.open_package_counted(pk)?;
+                moved |= learned > 0 || got.iter().any(|i| matches!(i, Ingested::Applied(_)));
+                if got.is_empty() {
+                    left.push(pk.id);
                 }
             }
-            left = next;
-            if left.len() == n {
-                return Ok(left.iter().map(|x| x.id).collect());
+            if !moved {
+                return Ok(left);
             }
         }
     }
