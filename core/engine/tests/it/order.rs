@@ -190,7 +190,7 @@ pub(crate) enum Step {
 }
 
 const OPS: u8 = 37;
-/// The ops random histories draw: `list_expiry_history` alone draws the rest.
+/// The ops random histories draw; the rest only hand-written histories use.
 const DRAWN: u8 = 32;
 
 fn aspect_of(op: u8) -> Ak {
@@ -2420,7 +2420,7 @@ struct Cfg {
     /// The history's peers answer removals with addenda (`play_with`).
     addenda: bool,
     /// Parts away: fresh nodes sync things and hold half the multi-part commits in part for good
-    /// (`with_syncs`), and the whole set is also given without what its snapshots cover
+    /// (`withhold`), and the whole set is also given without what its snapshots cover
     /// (`covered_away`).
     away: bool,
 }
@@ -3067,7 +3067,7 @@ fn generate(seed: u64, len: usize) -> (Emphasis, Vec<Step>) {
             h.extend([Old(Box::new(Typed { by: 0, t: 0, op: 32, k: 0, v })), Typed { by: 1, t: 0, op: 33, k: 0, v: v + 1 }]);
         }
         // a record-only thing (thing 1), another admin, and its first admin's record edge removed
-        // two two-part commits by G's first admin (`with_syncs` holds one in part), every peer
+        // two two-part commits by G's first admin (`withhold` holds one in part), every peer
         // given them, then its snapshots of both aspects covering them (`covered_away` leaves
         // those parts out)
         Emphasis::PartsAway => {

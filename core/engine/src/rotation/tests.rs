@@ -164,7 +164,7 @@ pub(super) fn with_own_keys(lp: &mut LocalPeer, i: usize) -> Tid {
     g
 }
 
-pub(super) fn edge(role: Role) -> ct::Edge {
+pub(crate) fn edge(role: Role) -> ct::Edge {
     ct::Edge { role, until: None, invite: None, retain: false, floor: None }
 }
 
@@ -2119,8 +2119,7 @@ fn withdrawn_epoch_compacts_judged_alike_spec_crypto_4() {
     assert!(dropped > 0, "no compactor dropped a covered body");
 }
 
-/// Node-sync's covered drop (`CoverPass`, as `SyncEngine::compact_now` runs it, role snapshots
-/// included) over `t`'s `keys.0` and `secrets.0` at peer `i`: each held body (not a snapshot) that
+/// Node-sync's covered drop (`CoverPass`, role snapshots included) over `t`'s `keys.0` and `secrets.0` at peer `i`: each held body (not a snapshot) that
 /// a held valid snapshot covers drops once past its keep bound (`Engine::drop_from`). Returns how
 /// many dropped.
 pub(super) fn drop_covered(lp: &mut LocalPeer, i: usize, t: Tid) -> usize {

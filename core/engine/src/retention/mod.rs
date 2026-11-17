@@ -838,7 +838,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
     match at {
         // an expiry: the state stripped in place, the delta's body and leftover saying where
         Some(at) => crate::apply::strip_state(tx, &a.tid, &a.ak, &at, o)?,
-        // the one path (item 1): the state from the held bodies, the leftover among them,
+        // the one path: the state from the held bodies, the leftover among them,
         // stripped by the list, shredded (every local copy of the values goes)
         None => crate::apply::rebuild(tx, &a.tid, &a.ak)?,
     }

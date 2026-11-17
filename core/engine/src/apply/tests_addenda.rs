@@ -6,15 +6,12 @@ use crate::local_peer::LocalPeer;
 use crate::Mutation;
 use osis_base::{Ak, Clock, CommitId, Role, Tid, Value};
 use osis_schema::core_types as ct;
+use crate::rotation::tests::edge;
 
 const T0: osis_base::WallMs = osis_base::WallMs(1_700_000_000_000);
 
 fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
-}
-
-fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, retain: false, floor: None }
 }
 
 /// `n` peers; peer 0 makes thing `t` and grants peers 1.. `roles`; everyone synced.

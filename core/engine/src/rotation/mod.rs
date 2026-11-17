@@ -958,7 +958,7 @@ pub(crate) fn reseal_one_into(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTre
     // rotate first where due; then re-seal, blocked roles included: a box carrying a secret is
     // encrypted under its recipient's key (`members::sealed` leaves out a blocked keyset of a
     // holder actor), not under the epoch it carries (spec/crypto.md §4, Encrypting under), so
-    // nobody new reads under a blocked epoch (`tests::grant_while_blocked_boxes_grantee_only_*`)
+    // nobody new reads under a blocked epoch
     let me = tx.core.writer()?;
     let before = done.commits.len();
     ensure_rotated(tx, me, a, done)?;
@@ -1363,7 +1363,7 @@ impl Engine {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 mod tests_members;
 #[cfg(test)]

@@ -197,7 +197,7 @@ pub struct Judgment {
 
 /// The rows added this transaction, and the waiting rows of their things (a source dropped may
 /// be what they waited for), judged at its end: a judged one keeps no key. What it freed is
-/// handed to node-sync (`Core::freed_new`), waiting rows judged freed again included: no pass
+/// handed to node-sync (`Engine::freed_feed`), waiting rows judged freed again included: no pass
 /// may have them in scope.
 pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
     let mut due = std::mem::take(&mut tx.core.freed_due);

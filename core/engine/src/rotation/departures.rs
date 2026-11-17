@@ -141,7 +141,7 @@ pub(crate) fn carried(core: &Core, a: &Tid) -> BTreeSet<osis_base::CommitId> {
 /// it had; a box or maker departure that role alone (an epoch of another role it neither made
 /// nor holds a box at is no concern of it: counted, a link maker that left kept the link's
 /// admin epoch, which nobody may rotate, uncovered, and so every role of the link and of what it
-/// holds, for good: osis `sharing::leave_of_a_links_maker_gives_up_the_link`).
+/// holds, for good).
 fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     let current: BTreeMap<Tid, Role> = tx.core.key_holders(a).into_iter().collect();
     let mut out = BTreeSet::new();

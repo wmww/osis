@@ -72,7 +72,7 @@ fn plain_commit(h: &Header) -> bool {
 pub(crate) struct AddendaParts(pub Vec<(Tid, Vec<AddendumEntry>)>);
 
 impl AddendaParts {
-    /// The parts of commit `id` as the index holds them (`addenda_of`).
+    /// The parts of commit `id` as the index holds them.
     pub(crate) fn from_index(core: &Core, id: &CommitId, aspects: &[crate::engine::AspectView]) -> AddendaParts {
         let mut out = Vec::new();
         for a in aspects.iter().filter(|a| ct::is_addenda(a.ak.as_str())) {
@@ -244,7 +244,7 @@ fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -
 /// spec/crdt.md §5.6; an edge change is remove + put, spec/permissions.md §2). With whether the
 /// delta is resolved here: a removal (no edge left for keys: none, or `until` 0) names the writes
 /// it ends by the entries it resets, so each such reset's creation must be held; if not, the
-/// commit applies nothing yet (`add_role_commit_in`). A reset beside a put of a live edge for its
+/// commit applies nothing yet (`add_role_commit`). A reset beside a put of a live edge for its
 /// key decides nothing: the put sets the edge whatever it replaces.
 fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Vec<EdgeOp>, bool) {
     let mut per: BTreeMap<Tid, Option<Edge>> = BTreeMap::new();

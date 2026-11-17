@@ -151,23 +151,6 @@ fn unmerge_restores_register_spec_crdt_4_6() {
     assert_eq!(lp.peers[2].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("alice")));
 }
 
-/// Secrets for hand-built commits: dedup, and made-up delete keys (peers' business).
-struct Dedup(osis_base::CreationRecord);
-impl osis_commit::Secrets for Dedup {
-    fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
-        Some(osis_crypto::dedup_secret(self.0.nonce()))
-    }
-    fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
-    }
-    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
-    }
-    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
-        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
-    }
-}
-
 // spec/commits.md §4: two commits of one session with overlapping ranges on one aspect
 // are both invalid.
 // spec/permissions.md §5.2 (dot reuse)
@@ -193,7 +176,7 @@ fn overlapping_counters_spec_commits_4() {
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
-    let built = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
+    let built = cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     sync(&mut lp, 1, 0);
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), Some(s("first")));
     lp.peers[0].receive(&built.commit.encode(), Vec::new()).unwrap();
@@ -217,7 +200,7 @@ fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_b
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
-    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
+    cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
 /// Bob's demotion scope on `d`.
@@ -397,7 +380,7 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     // a session-form role commit is refused when built and when received (spec/commits.md §4)
     let forge_key = lp.peers[0].engine.sign_forged(&mut cb);
-    let e = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap_err();
+    let e = cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap_err();
     assert!(e.to_string().contains("session form outside a content commit"), "{e}");
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
 }
@@ -425,7 +408,7 @@ fn malformed_frontier_is_bad_input_spec_wire_4() {
     cb.frontier = Some(Value::Int(5));
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[0].engine.sign_forged(&mut cb);
-    let built = cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
+    let built = cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap();
     let e = lp.peers[1].receive(&built.commit.encode(), Vec::new()).unwrap_err();
     assert_eq!(e.class(), osis_base::ErrorClass::BadInput, "{e}");
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
@@ -518,7 +501,7 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
-    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
+    cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
 // spec/permissions.md §5.2 (acting): Bob, a writer of D, signs a write naming
@@ -603,7 +586,7 @@ pub(crate) fn forge_by(by: &osis_engine::Engine, rec: osis_base::CreationRecord,
     let mut cb = CommitBuilder::new(kind, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     let forge_key = by.sign_forged(&mut cb);
-    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
+    cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit.encode()
 }
 
 // spec/permissions.md §3 (lost access): only an unfinalized single-use link race defers a
@@ -3177,7 +3160,7 @@ fn forge_minting(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord,
     cb.aspects.push(aw);
     cb.expires = expires;
     let forge_key = lp.peers[by].engine.sign_forged(&mut cb);
-    Ok(cb.build(&forge_key, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).map_err(|e| format!("{e:?}"))?.commit.encode())
+    Ok(cb.build(&forge_key, &Keys(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).map_err(|e| format!("{e:?}"))?.commit.encode())
 }
 
 /// Bob's minting of `rec` at peer 1, stamped `k` ms from now: one write setting the record,
@@ -3509,7 +3492,7 @@ fn forge_on(lp: &mut LocalPeer, k: Tid, a: &str) -> osis_commit::CommitBlob {
     cb.aspects.push(w);
     let rec = lp.peers[0].engine.get_typed(&k, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let forge_key = lp.peers[1].engine.sign_forged(&mut cb);
-    cb.build(&forge_key, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
+    cb.build(&forge_key, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(0)).unwrap().commit
 }
 
 // spec/permissions.md §4 (holder card), §5.2: whether a key

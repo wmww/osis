@@ -874,7 +874,7 @@ indexes! {
     /// (`Tx::derive`).
     pub sync_recorded: JSet<Tid>,
     /// The things whose `sync.0` state records each sync ID, owned there or not (`Tx::derive`):
-    /// a sync ID finds its owner without a walk (`Engine::sync_owner`).
+    /// a sync ID finds its owner without a walk.
     pub sync_recorders: JSetMap<SyncId, Tid>,
     /// Per thing with a `sync.0` state, the sync IDs it records (`sync_recorders` inverted).
     pub sync_recorded_ids: JMap<Tid, BTreeSet<SyncId>>,
@@ -939,7 +939,7 @@ indexes! {
     /// not write on yet (`MayWrite::Later`: their minting or delete keys are not here), under
     /// every thing on their record chain: what may move them
     /// (`retention::replace::wake_covers`). Not persisted: an open judges every held
-    /// purge-on-replace aspect again (`Core::index_none`), owes the trigger's weighings again
+    /// purge-on-replace aspect again, owes the trigger's weighings again
     /// (`Engine::owe_unwritable_held`) and makes every owed re-snapshot due (`purge::load_owed`).
     pub cover_waits: JSetMap<Tid, Tid>,
     /// Aspects this node owes a re-snapshot after purge requests dropped something here, with the
@@ -1257,7 +1257,7 @@ pub struct Core {
     /// (spec/sync-set.md §2). In memory only: sync holds the link durably and follows it again
     /// at a start.
     pub(crate) followed_links: crate::sync_ids::actors::FollowedLinks,
-    /// The account this node belongs to (`Engine::join_account`): the author of its commits and
+    /// The account this node belongs to: the author of its commits and
     /// the holder of its roles. `None` before it joins one.
     pub account: memo::Tracked<Option<Tid>>,
     /// The wall clock as memos read it (`memo::Clock`, wall ms): set at each transaction and by
@@ -1306,7 +1306,7 @@ pub struct Core {
     /// (`retention::bounds::dated_replaced_at`, `memo`).
     pub(crate) replaced_dates: memo::Memo<(CommitId, usize), Option<osis_base::Ts>>,
     /// Whether a waiting snapshot part, per (commit, aspect index), carries a copy of a value its
-    /// aspect's value-less list names (`retention::pending::carries_listed`, `memo`): judged again
+    /// aspect's value-less list names (`retention::pending`, `memo`): judged again
     /// only when that list changes.
     pub(crate) waiting_carries: memo::Memo<(CommitId, usize), bool>,
     /// `Engine::part_keeps` per commit but for the clock (`retention::bounds::commit_bounds`,
@@ -1323,7 +1323,7 @@ pub struct Core {
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
     /// Aspects whose purge-on-replace bodies `retention::settle_none` judges at the end of the
-    /// transaction (`Core::index_none`).
+    /// transaction.
     pub none_due: BTreeSet<(Tid, Ak)>,
     /// Things whose `retention^.0` deltas arrived, flipped or dropped this transaction: what their
     /// timeline judges is judged again at its end (`retention::settings_changed`).
@@ -4363,7 +4363,6 @@ mod tests {
     use crate::local_peer::{LocalPeer, Peer};
     use crate::Mutation;
     use osis_base::{Ak, Role, Tid, Value, WallMs};
-    use osis_schema::core_types as ct;
     use std::collections::BTreeSet;
 
     // spec/commits.md §5 (Dropping a body): what each part state answers. One state per part, so
@@ -4427,9 +4426,7 @@ mod tests {
         }
     }
 
-    fn edge(role: Role) -> ct::Edge {
-        ct::Edge { role, until: None, invite: None, retain: false, floor: None }
-    }
+    use crate::rotation::tests::edge;
 
     fn write(m: &mut Mutation, t: Tid, v: &str) {
         m.set(t, &Ak::new("t:reg.0").unwrap(), &Value::Str(v.into())).unwrap();

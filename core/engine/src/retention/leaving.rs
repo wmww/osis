@@ -459,7 +459,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// `forget_things` of the aspects `keys` (those without a cursor are skipped).
+/// Forgets the leaving rows of the aspects `keys` (those without a cursor are skipped).
 pub(crate) fn forget_aspects(tx: &mut Tx<'_>, keys: impl IntoIterator<Item = (Tid, Ak)>) -> Result<()> {
     for (tid, ak) in keys {
         if !tx.core.ix.leave_from.contains_key(&(tid, ak.clone())) {

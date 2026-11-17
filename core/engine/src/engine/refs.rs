@@ -158,8 +158,7 @@ pub(crate) fn tickets_to(tx: &mut Tx<'_>, target: &Tid) -> Result<Vec<TicketRow>
 }
 
 /// Applies the ticket changes of `d` (`Delta`'s tickets) to the ticket rows of `(source, ak)`
-/// (fire `fire` of a signal), telling the node closure of a row appearing or going
-/// (`Closure::note_ticket`).
+/// (fire `fire` of a signal), telling the node closure of a row appearing or going.
 fn note_tickets(tx: &mut Tx<'_>, source: &Tid, ak: &Ak, fire: Option<&CommitId>, d: &Delta) -> Result<()> {
     let mut by_target: BTreeMap<Tid, Vec<(&Ticket, i64)>> = BTreeMap::new();
     for (k, n) in d.1.iter().filter(|x| *x.1 != 0) {

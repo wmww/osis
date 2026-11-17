@@ -518,7 +518,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
         let actor = p.actor;
         edit_epochs(tx, actor, |e| {
             let _ = w.rotated(e, p.id, &p.keys);
-        })?;
+        });
     }
     if h.kind == Kind::RoleSnapshot {
         for (ai, d) in parts {
@@ -530,7 +530,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]
             let Some(sv) = s.fragment.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { continue };
             edit_epochs(tx, a.tid, |e| {
                 let _ = osis_keys::snapshot_keyed(&sv, h.id(), e);
-            })?;
+            });
         }
     }
     Ok(())
@@ -647,9 +647,10 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
         Some(Decoded::Snapshot(s)) => {
             let Some(sv) = s.fragment.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { return Ok(()) };
             tx.core.touch();
-            return edit_epochs(tx, a.tid, |e| {
+            edit_epochs(tx, a.tid, |e| {
                 let _ = osis_keys::snapshot_keyed(&sv, *c, e);
             });
+            return Ok(());
         }
         None => {}
     }
@@ -662,19 +663,19 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     tx.core.touch();
     edit_epochs(tx, a.tid, |e| {
         let _ = secrets.rotated(e, *c, &keys);
-    })
+    });
+    Ok(())
 }
 
 /// Edits `actor`'s epochs. An edit that learns nothing leaves no entry: the
 /// index holds what is on disk.
-fn edit_epochs(tx: &mut Tx<'_>, actor: Tid, f: impl FnOnce(&mut osis_keys::ActorEpochs)) -> Result<()> {
+fn edit_epochs(tx: &mut Tx<'_>, actor: Tid, f: impl FnOnce(&mut osis_keys::ActorEpochs)) {
     let before = tx.core.ix.secrets.get(&actor).cloned().unwrap_or_default();
     let mut e = before.clone();
     f(&mut e);
     if e != before {
         tx.core.ix.secrets.insert(actor, e);
     }
-    Ok(())
 }
 
 /// (pending commit, actor) whose boxes the lost-access forgetting kept (`rotation::boxes_kept`):

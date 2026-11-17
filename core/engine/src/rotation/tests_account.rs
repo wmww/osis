@@ -12,6 +12,7 @@ use osis_crypto::{AccountEpochKeys, Secret32};
 use osis_keys::{account_epoch, stale};
 use osis_schema::Codec;
 use std::collections::BTreeSet;
+use super::tests::edge;
 
 /// `n` fresh peers (`LocalPeer::new`, seed 0), not synced: built once per test process, each
 /// caller handed a copy.
@@ -188,10 +189,6 @@ fn forked_account_reads_the_head_held_first_spec_permissions_5_4() {
     assert!(stale(&name(&first, 0), &ks, &none) && !stale(&name(keys, 1), &ks, &none) && stale(&name(other, 1), &ks, &none));
     assert_eq!(e.core.account_delete_key(&a.account).unwrap(), keys.signing.verifying_key());
     assert!(e.account_disputes().is_empty(), "a fork nothing rejects tells nothing");
-}
-
-fn edge(r: Role) -> osis_schema::core_types::Edge {
-    osis_schema::core_types::Edge { role: r, until: None, invite: None, retain: false, floor: None }
 }
 
 /// An actor of peer 1 with secrets of its own.

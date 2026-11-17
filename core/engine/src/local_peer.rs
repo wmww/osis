@@ -190,7 +190,7 @@ impl Peer {
             let core = &self.engine.core;
             // a carrier whose commit pends no more and is not named to deliver again is a copy of
             // a part the applied commit misses, or goes (node-sync keeps the entry, fetched again
-            // when the commit is woken: `reopen_undropped`)
+            // when the commit is woken)
             self.discarded.retain_mut(|d| {
                 if !d.carries || core.ix.pending.contains_key(&d.commit) || again.contains(&d.commit) {
                     return true;
@@ -376,8 +376,7 @@ impl Engine {
     /// A held commit sealed as sync IDs carry it (`SealedPackage`): its blob framed with a fresh
     /// key (`seal`, one section per reader actor) and wrapped under `wrap_secret` of each reader
     /// actor, as node-sync places it; no wrap for a reader whose read role a known departure
-    /// leaves uncovered (node-sync's `read_ok`: `LocalPeer::sealed` rotates first, as its
-    /// `uncovered` does). `None`: not held, or a reader's current secret not held.
+    /// leaves uncovered (`LocalPeer::sealed` rotates first, as node-sync's `uncovered` does). `None`: not held, or a reader's current secret not held.
     pub fn seal_package(&mut self, id: &CommitId, rng: &mut dyn osis_crypto::CryptoRngCore) -> Result<Option<SealedPackage>> {
         let Some(pk) = self.package(id)? else { return Ok(None) };
         let Some(b) = self.body(id)? else { return Ok(None) };

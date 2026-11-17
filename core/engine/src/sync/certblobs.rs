@@ -280,7 +280,7 @@ impl Engine {
     pub fn cert_wrap(&mut self, s: &SyncId, r: Option<&CommitId>) -> Result<bool> {
         for t in self.read_things_of(s)? {
             let ok = match r {
-                Some(r) => self.list_wrap_secret(&t, r)?.is_some(),
+                Some(r) => self.list_wrap_secret(&t, r).is_some(),
                 None => self.wrap_secret(&t, None)?.is_some(),
             };
             if ok {
@@ -332,7 +332,7 @@ impl Engine {
         }
         let plain = osis_commit::thing_list::encode_list_blob(&certs);
         // as the rotation wraps (`list_wrap_secret`)
-        let Some(w) = self.list_wrap_secret(&t, &r)? else { return Ok(None) };
+        let Some(w) = self.list_wrap_secret(&t, &r) else { return Ok(None) };
         let (id, blob, wrap) = seal_cert_blob(&w, &plain, rng)?;
         let tids: BTreeSet<Tid> = certs.iter().map(|c| c.list.thing).collect();
         let s = *s;

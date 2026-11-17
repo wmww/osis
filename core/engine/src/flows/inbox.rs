@@ -22,7 +22,7 @@ pub const REMOVAL_FIRE: &str = Ak::check("removal@~0", true);
 pub const STRANDED_FIRE: &str = Ak::check("stranded@~0", true);
 
 /// Gives the account's new inbox `i` own keys and its history setting: each of its three signals
-/// kept `INBOX_LIFETIME` (spec/sync-inbox.md §1), in the account's creation.
+/// kept its lifetime (spec/sync-inbox.md §1), in the account's creation.
 pub(crate) fn make_inbox(tx: &mut Tx<'_>, i: Tid, done: &mut Done) -> Result<()> {
     crate::rotation::own_secrets(tx, i, done)?;
     let keep = RetentionEntry { history: Some(osis_schema::History::Keep { until: None, after: Some(INBOX_LIFETIME_MS) }), ..RetentionEntry::default() };
@@ -746,7 +746,7 @@ fn fire_parts(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<Value>> {
 /// where a read ticket for it opens. Judged at a transaction's end (`owe_removal_notices`) for
 /// each thing a notice arriving names (`Engine::notice_arrives`), whose tickets were taken at a
 /// strong (`tickets::take_in`) or whose roster a role commit on this node's account's edge on it
-/// brings. O(the notices the inbox keeps, `INBOX_LIFETIME`): a notice names its thing only
+/// brings. O(the notices the inbox keeps over its lifetime): a notice names its thing only
 /// inside its commit.
 fn removals_due(tx: &mut Tx<'_>, t: &Tid) -> Result<()> {
     let cl = &tx.core.ix.closure;

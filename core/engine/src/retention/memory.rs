@@ -142,7 +142,7 @@ fn drop_superseded_of(tx: &mut Tx<'_>, cands: BTreeSet<CommitId>, keep: Option<&
 /// What follows from memory): a cover drops live bodies, and a snapshot its compactor's demotion
 /// does not list falls (spec/permissions.md §5.2), so what it covered would be gone at every
 /// holder; each author then still holds its own writes and logs them again once the fall is
-/// seen (`take_fallen`).
+/// seen.
 pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep: Option<&CommitId>, new: Option<&CommitId>) -> Result<BTreeSet<CommitId>> {
     let mut dropped = BTreeSet::new();
     let me = tx.core.me();

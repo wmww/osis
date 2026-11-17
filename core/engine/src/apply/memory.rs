@@ -38,7 +38,7 @@ pub(crate) fn part_weight(bytes: usize) -> usize {
 
 /// An upper bound on `part_charge` of part `p` once decoded, from its bytes alone
 /// (`osis_crdt::decoded_bound`): a part of tiny map entries decodes to about 200 times its size.
-/// Its pages are not counted (`pages_bound`).
+/// Its pages are not counted.
 pub(crate) fn part_bound(p: &osis_commit::Part) -> Result<u64> {
     let heap = osis_crdt::decoded_bound(&p.delta).map_err(|_| Error::BadInput("ephemeral part not one CBOR value"))?;
     Ok(part_charge(heap, p.delta.len()))

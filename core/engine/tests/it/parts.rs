@@ -74,7 +74,7 @@ fn v(x: &str) -> Option<Value> {
     Some(Value::Str(x.into()))
 }
 
-// spec/commits.md §4: a part whose chain is away waits alone and the rest applies; a chain arriving later ends in-order's state (`split_delivery_*` compares every order to it).
+// spec/commits.md §4: a part whose chain is away waits alone and the rest applies; a chain arriving later ends in-order's state.
 // Three things: only the chainless part waits.
 #[test]
 fn chainless_part_waits_alone_spec_commits_4() {

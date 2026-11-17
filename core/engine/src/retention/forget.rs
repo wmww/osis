@@ -15,7 +15,7 @@
 //! sync IDs of forgotten things and the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
 //!
-//! Forgetting a local copy (spec/sync-set.md §3, `Engine::forget_local`) goes the same
+//! Forgetting a local copy (spec/sync-set.md §3) goes the same
 //! way for the things named, whose secrets stay: `secrets.0` stays with the role-class aspects,
 //! so the thing reads again once synced, and what arrives again counts as never received.
 //!

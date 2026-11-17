@@ -1036,8 +1036,7 @@ impl Engine {
         self.begin_pass_now()
     }
 
-    /// What sync's role duties follow per thing (`osis_sync::life`: `joined_link_ended`,
-    /// `untie_due`): a cursor over the (holder, thing) pairs named from now on, and every thing
+    /// What sync's role duties follow per thing (`osis_sync::life`: `joined_link_ended`): a cursor over the (holder, thing) pairs named from now on, and every thing
     /// a holder is named on now.
     pub fn role_things(&self) -> (osis_base::memo::Feed<(Tid, Tid)>, BTreeSet<Tid>) {
         let held = &self.core.ix.held;

@@ -322,7 +322,7 @@ mod tests {
         assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.stripped_parts().count() == 1), "held as its leftover");
     }
 
-    // eph-unify-a review (item 216): a memory aspect's state written by a durable transaction
+    // a memory aspect's state written by a durable transaction
     // lists the aspect in memory (`records::ASPECTS` routed by the key's marker), so nothing
     // durable names a memory aspect. spec: none (internal)
     #[test]

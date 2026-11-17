@@ -16,8 +16,7 @@
 //! snapshot holds tells whether they repaired it (a listing snapshot may carry nothing of the part;
 //! a write key-erased at expiry, spec/crdt.md §4.7, lands outside the entry record the part wrote; writes
 //! of one delta share a dot). The lists' digests say whether nodes agree; such an entry goes
-//! only with its thing (`forget`), yields to any flag raised after it (`suspects_under`: most
-//! recent first).
+//! only with its thing (`forget`), yields to any flag raised after it (most recent first).
 //!
 //! The flags are rows `q/` mirrored in `Indexes::suspects`, so a reader of one aspect's flag
 //! (`Engine::suspect`) reads that key and the aspect's held snapshots alone: sync follows each

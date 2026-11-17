@@ -9,10 +9,7 @@ use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_schema::core_types as ct;
 use osis_schema::Codec as _;
 use std::collections::BTreeMap;
-
-fn edge(r: Role) -> ct::Edge {
-    ct::Edge { role: r, until: None, invite: None, retain: false, floor: None }
-}
+use super::tests::edge;
 
 /// Delivers `ids` a millisecond on: what a node received earlier it received in an earlier
 /// millisecond (the signing chain places rotations by receipt, one millisecond's by ID).
@@ -256,7 +253,7 @@ fn a_party_removed_before_the_rotation_cannot_open_its_list_spec_crypto_5() {
     lp.advance(10);
     let done = remove(&mut lp, 0, a.root, 1);
     let r = done.commits[0];
-    let w = lp.peers[0].engine.list_wrap_secret(&t, &r).unwrap().expect("a wrap for r's list of t");
+    let w = lp.peers[0].engine.list_wrap_secret(&t, &r).expect("a wrap for r's list of t");
     assert!(!held(&lp, 2).contains(w.expose()), "the removed outsider holds the list's epoch");
 }
 

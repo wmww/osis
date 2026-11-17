@@ -604,7 +604,7 @@ impl Engine {
             }
             f.read.unwant(&t);
             if was == Some(true) {
-                // its pairs move with it (`holds_on` reads it) and go below
+                // its pairs move with it and go below
                 self.core.certified.read.remove(&t);
                 self.core.certified.unplace(Piece::Own(t), t, &mut f.pieces);
             }

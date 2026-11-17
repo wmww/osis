@@ -719,7 +719,7 @@ impl Engine {
     }
 
     /// The actors whose read-only copy this node keeps (spec/permissions.md §3, Retain): no secret, no
-    /// sync, no write; `get` and the rest still read what it held. `drop_kept`-able.
+    /// sync, no write; `get` and the rest still read what it held.
     pub fn kept_copies(&self) -> Vec<Tid> {
         self.core.ix.kept.keys().copied().collect()
     }

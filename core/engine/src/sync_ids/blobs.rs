@@ -18,7 +18,7 @@ use std::sync::Arc;
 pub struct Body {
     pub commit: CommitId,
     /// Aspect indices, sorted: the parts a judgment reads. From `commit_bodies_under` those the
-    /// sync ID's actor may read; from `body` every held part; from `part_bodies` the copied ones.
+    /// sync ID's actor may read; from `body` every held part; from `part_body` the copied ones.
     pub parts: Vec<usize>,
     pub expires: Option<u64>,
     /// The header's blind (spec/crypto.md §7).
@@ -569,7 +569,7 @@ impl Engine {
     /// Content is left out here; a role-class part is taken because each is judged as it is used:
     /// `secrets.0` boxes by `rotation::may_take` as they open, `sync.0` entry boxes by
     /// `may_learn`, `account.0` seeds only under a devices epoch held for use
-    /// (`signing::usable_seeds`); `roles.0`, `keys.0` and `listing.0` are certificate material.
+    /// (custody); `roles.0`, `keys.0` and `listing.0` are certificate material.
     pub fn copy_stale(&self, g: &Tid, c: &CommitBlob) -> BTreeSet<usize> {
         let actor = self.core.reader_of(g);
         let h = &c.header;
@@ -835,12 +835,7 @@ impl Engine {
     /// rotation's own wrap, it is not subject to `wrap_blocked` (an account's rotation re-keys its
     /// account root in the same commit, so its lists there go as that rotation's do). `None`: `r`
     /// or no such epoch is held.
-    pub(crate) fn list_wrap_secret(&mut self, g: &Tid, r: &CommitId) -> Result<Option<Secret32>> {
-        Ok(self.list_wrap_under(g, r))
-    }
-
-    /// `list_wrap_secret`.
-    fn list_wrap_under(&mut self, g: &Tid, r: &CommitId) -> Option<Secret32> {
+    pub(crate) fn list_wrap_secret(&mut self, g: &Tid, r: &CommitId) -> Option<Secret32> {
         let a = self.core.secret_actor(g)?;
         let h = self.header(r)?;
         let at = (h.ts, h.author, *r);

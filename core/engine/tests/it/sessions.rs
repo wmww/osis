@@ -99,7 +99,7 @@ fn snapshot_lists_the_held_commits_sessions_spec_crdt_8() {
 // snapshot passes the hole (spec/crdt.md §8: the later register write replaces the aspect whole, so
 // every earlier write of A's session there is applied, dead). When the earlier writes come, the
 // dead register write is covered (holders must not keep logging it for a right holder to delete,
-// `snapshot_rights`), and the live tag is not.
+// `purge::snapshot_right`), and the live tag is not.
 #[test]
 fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
     let mut lp = net(2, 0);
