@@ -237,3 +237,124 @@ fn a_sync_id_kept_unread_outlives_its_inbox_ticket_spec_sync_set_1() {
     let unread = Some((std::collections::BTreeSet::from([t]), osis_engine::sync::Holding::Unread));
     assert_eq!(w.engine(1).sync_holder(&s).unwrap(), unread, "kept unread past the inbox's lifetime");
 }
+
+
+/// Node 2 writes `value_ak` (marked) and `u:n.0` in one commit, both purgeable by any writer.
+fn two_parts(w: &mut World, t: Tid, marker: &str) -> CommitId {
+    let other = Ak::new("u:n.0").unwrap();
+    w.write(2, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str(marker.into())).unwrap().retention(t, &value_ak(), osis_schema::Retention { by: PurgeBy::Writer }).unwrap();
+        m.set(t, &other, &Value::Str("kept".into())).unwrap().retention(t, &other, osis_schema::Retention { by: PurgeBy::Writer }).unwrap();
+        e.commit(m).unwrap().unwrap()
+    })
+}
+
+// spec/sync-judgement.md §2 (per blob), spec/commits.md §5 (Purge: one delta of a commit): a
+// purge of one part of a two-part commit leaves the commit's old blob in no store: every reader
+// logs the rewrite without it (one entry each, the same one), and the writer's delete takes the
+// old blob from the node keeping S unread once the rewrite is there; the other part still reads.
+#[test]
+fn a_purge_of_one_part_rewrites_the_blob_everywhere_spec_sync_judgement_2() {
+    let (mut w, t, s) = setup();
+    let c = two_parts(&mut w, t, "a");
+    w.run();
+    let old = at_unread(&mut w, 2, &s, &c);
+    assert_eq!(old.len(), 1, "node 1 holds the commit's blob");
+    w.advance(10);
+    purge(&mut w, 2, t, c);
+    w.run();
+    let now = at_unread(&mut w, 2, &s, &c);
+    assert!(!now.contains(&old[0]), "the old blob left node 1");
+    assert!(!now.is_empty(), "node 1 holds the rewrite");
+    let mut logged = std::collections::BTreeSet::new();
+    for i in [0, 2, 3] {
+        let es: Vec<BlobId> = w.store(i).entries(&s).unwrap().into_iter().map(|e| e.blob).filter(|b| w.engine(2).blob_commit(b) == Some(c)).collect();
+        assert_eq!(es.len(), 1, "node {i} logs one blob of the commit");
+        assert_eq!(w.engine(i).blob_parts(&es[0]).map(|p| p.len()), Some(1), "node {i}: the rewrite holds the other part alone");
+        logged.extend(es);
+        assert_eq!(w.engine(i).get(&t, &Ak::new("u:n.0").unwrap()).unwrap(), Some(Value::Str("kept".into())), "node {i} reads the other part");
+        assert_eq!(w.engine(i).get(&t, &value_ak()).unwrap(), None, "node {i} reads the purge");
+    }
+    assert_eq!(logged.len(), 1, "the readers settle on one rewrite");
+}
+
+// spec/commits.md §5 (Dropping a body destroys every local copy), spec/requirements.md
+// (Deletion: one edit of one aspect, forward secure): after a purge of one part of a two-part
+// commit, an attacker holding either node's device recovers nothing of it, sync stores included.
+#[test]
+fn a_purged_part_of_a_commit_is_unrecoverable_from_the_sync_store_spec_commits_5() {
+    let mut w = World::new(0);
+    w.record = true;
+    w.add_node();
+    w.pair(0);
+    w.run();
+    let a = w.node(0).account.unwrap();
+    let t = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a);
+        e.commit(m).unwrap();
+        t
+    });
+    w.run();
+    let marker = format!("PURGED-MARK-5e1f{}", "x".repeat(300));
+    let c = w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str(marker.clone())).unwrap();
+        m.set(t, &Ak::new("u:n.0").unwrap(), &Value::Str("kept".into())).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    let found = |w: &mut World, i: usize| w.forensic(i).iter().any(|r| r.plain.windows(16).any(|x| x == &marker.as_bytes()[..16]));
+    assert!(found(&mut w, 1), "the attack finds live content");
+    w.advance(10);
+    purge(&mut w, 0, t, c);
+    w.run();
+    for i in 0..2 {
+        assert!(!found(&mut w, i), "node {i}: the purged part recovered");
+        assert_eq!(w.engine(i).get(&t, &Ak::new("u:n.0").unwrap()).unwrap(), Some(Value::Str("kept".into())), "node {i} reads the other part");
+    }
+}
+
+// spec/commits.md §5 (Purge on replace) and spec/requirements.md (Deletion: one edit of one
+// aspect): a part replaced under purge on replace beside a part that stays leaves no copy in the
+// sync store. Open: a cover drops one part of a commit locally only (issues/whole-commits.md,
+// Cover strips), so the shared blob keeps the replaced part's section.
+#[test]
+#[ignore]
+fn a_part_purged_on_replace_is_unrecoverable_from_the_sync_store_spec_commits_5() {
+    let mut w = World::new(0);
+    w.record = true;
+    w.add_node();
+    w.pair(0);
+    w.run();
+    let a = w.node(0).account.unwrap();
+    let t = w.write(0, |e| {
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, a);
+        let x: ct::RetentionSetting = [(value_ak(), ct::RetentionEntry { history: Some(osis_schema::History::PurgeOnReplace), ..Default::default() })].into_iter().collect();
+        m.set(t, &ct::RETENTION, &x).unwrap();
+        e.commit(m).unwrap();
+        t
+    });
+    w.run();
+    let marker = format!("PORMARK-77e3a1b2{}", "x".repeat(300));
+    let by = osis_schema::Retention { by: PurgeBy::Writer };
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str(marker.clone())).unwrap().retention(t, &value_ak(), by).unwrap();
+        m.set(t, &Ak::new("u:n.0").unwrap(), &Value::Str("kept".into())).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    w.advance(10);
+    w.write(0, |e| {
+        let mut m = Mutation::new();
+        m.set(t, &value_ak(), &Value::Str("final".into())).unwrap().retention(t, &value_ak(), by).unwrap();
+        e.commit(m).unwrap().unwrap()
+    });
+    w.run();
+    for i in 0..2 {
+        assert!(!w.forensic(i).iter().any(|r| r.plain.windows(16).any(|x| x == &marker.as_bytes()[..16])), "node {i}: the replaced part recovered");
+    }
+}

@@ -12,7 +12,7 @@ use osis_base::{BlobId, CommitId, SyncId, WallMs};
 use osis_crypto::{RoleKey, Secret32, Signature, SigningSecret, role_key};
 use osis_engine::sync_ids::HeadKeys;
 use osis_engine::retention::{End, Minting, Standing};
-use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, ReadCredentials};
+use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, ReadCredentials, Strip};
 use osis_blob::{Class, Step, StepId, StepKeys};
 use osis_sync::read::{BlobInfo, Facts, Ground, PieceAt, Read, CertBlobsMissing, Seen, SrcView, Verdict, Why};
 use osis_engine::sync::PieceLink;
@@ -155,7 +155,7 @@ struct Fake {
     /// Blobs held with other parts than `{0}`, as a copy, or without bytes (`None`).
     blobs: Stamped<BlobId, Option<BlobInfo>>,
     /// Blobs holding a part dropped here for good (a purge).
-    dropped: Stamped<BlobId, ()>,
+    gone: Stamped<BlobId, Strip>,
     /// Whether each logging was a fresh encryption.
     fresh: Vec<bool>,
     all: Stamped<(Source, SyncId), BTreeSet<BlobId>>,
@@ -379,8 +379,11 @@ impl Ground for Fake {
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>> {
         Ok(self.blobs.get(b).cloned().unwrap_or(Some(BlobInfo { parts: [0].into(), sealed: Default::default(), copy: false })))
     }
-    fn dropped(&mut self, b: &BlobId) -> bool {
-        self.dropped.contains_key(b)
+    fn gone(&mut self, b: &BlobId) -> Option<Strip> {
+        self.gone.get(b).cloned()
+    }
+    fn spare(&mut self, _b: &BlobId, _held: &BTreeSet<BlobId>) -> bool {
+        false
     }
     // every entry of a commit carries its whole body here: none is a strict subset, any held
     // one carries it (the engine's own judgement: core/engine/src/sync/tests_facts.rs)
@@ -432,7 +435,7 @@ impl Ground for Fake {
     fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>> {
         Ok(self.stands.get(&(*at, *s, *c)).cloned())
     }
-    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool) -> Result<Option<BlobId>> {
+    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool, _skip: &[BlobId]) -> Result<Option<BlobId>> {
         self.fresh.push(fresh);
         self.next += 1;
         let mut b = [0u8; 32];
@@ -757,7 +760,7 @@ fn entry_holding_a_purged_part_leaves_spec_sync_judgement_1() {
     w.exchange();
     let old = w.own_blobs(S, cid(1));
     assert_eq!(old.len(), 1);
-    w.g.dropped.insert(old[0], ());
+    w.g.gone.insert(old[0], Strip { live: Default::default() });
     w.settle();
     assert_eq!(w.read.verdict(&S, &cid(1)), Some(Verdict::Must), "the body S needs now stays must-hold");
     let now = w.own_blobs(S, cid(1));

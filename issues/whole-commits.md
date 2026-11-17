@@ -1,15 +1,15 @@
-# Whole commits: steps 4, 5
-> Summary: The rest of notes/whole-commits.md (steps 2a, 2b, 3 built): step 4 (per-part strip, must-hold per blob) and 5 (cleanup, the sealed-sections rule), with the spec text each lands. The spec describes only what is built; each step moves its lines below into spec/ and deletes them here.
+# Whole commits: cover strips and the sealed-sections call
+> Summary: What is left of notes/whole-commits.md (Left to build): parts dropped as covered do not strip, because a new reader cannot tell a part missing from its rewrite from one still to arrive; so a purge-on-replace part beside a live one stays in every sync store (a Deletion requirement leak), and a mixed commit's covered part keeps costing storage. Needs the "covered by a held snapshot's tables" rule first. Also open: whether a node opens sections only of things it syncs.
 > Priority: normal
-> Tags: engine, sync, spec
+> Tags: engine, sync, security, spec
 
-Built: 2a (one expiry per commit), 2b (one blob per commit, sections per thing), 3 (apply never waits for a part); the spec carries them (spec/wire.md §4, §5, §11.2; spec/commits.md §4-§6; spec/sync-ids.md §1, spec/sync-judgement.md §1, spec/sync-ids.md §6), design in notes/whole-commits.md.
+Built: one blob per commit, one expiry, apply never waits for a part; the strip for parts gone for good (purged, past bounds, destroyed), judged per blob (spec/sync-judgement.md §2 Per blob, notes/whole-commits.md Strip).
 
-Not built from step 3: "sealed sections of things not synced stay unopened": a receiver cannot tell from the blob whether a section's thing is synced before the commit's own strong reaching it applies (a commit creating a thing under a referencing thing would leave the thing's record sealed), so it needs held blobs reopened as the sync set grows.
+## Cover strips
+- **Leak**: a part replaced under purge on replace beside a part that stays (one commit, two aspects) is dropped locally, but the shared blob keeps its section at every node holding the commit, readers' and unread stores alike, recoverable from the device (`deletes::a_part_purged_on_replace_is_unrecoverable_from_the_sync_store_spec_commits_5`, ignored until this lands). spec/requirements.md Deletion: granularity is one edit of one aspect, purge on replace is prompt.
+- **Why not built**: stripping a covered part leaves new readers with a header listing it and no body anywhere; they count it missing and fetch it for good (tried: every pairing test then failed its "must-hold a caught-up reader lacks" check on node roots' `holds.0`/`tickets.0`).
+- **Rule to add** (spec/commits.md §5 Covered): a part not held that a held valid snapshot of its aspect reaches by its tables (spec/crdt.md §8; `retention::snapshot::reaches`) counts as covered by it, not missing and never fetched; missing again once no such snapshot is held. Then `Engine::blob_gone` counts parts dropped as covered too, a strip waits for a coverer under the sync ID (own store) or shown at the source (deletes), and for `MAX_DRIFT` past the keep bound (`Dropped::hosts_from`).
+- Then fold the strict-subset clause (spec/sync-judgement.md §2) into Per blob: a blob lacking a part this node still needs loses.
 
-Left:
-- **4, per-part strip** (notes/whole-commits.md Left to build).
-  - spec/commits.md §5: a part whose body must go (applied purge request, covering compaction, invalidity) is stripped: dropped locally and, by a right holder, placed again as the commit's blob without that part (other sections verbatim), the old entry deleted at each source once it shows the rewrite. One mechanism for compaction and purge.
-  - spec/sync-judgement.md §2: must-hold per blob, judged on the parts the node reads: must-hold if a readable part is must-hold and no other held blob of the commit under the sync ID carries it; must-not-hold if a readable part must not be held; else may-hold. "Strict subset" becomes "fewer parts of the same commit wins while nothing the node reads is missing from it". A node never logs or deletes on the strength of sections it cannot open.
-  - spec/sync-ids.md §6, spec/sync-compaction.md §1: a node keeping S unread deletes unattended only at the commit's expiry; a rewrite stripping a dead part carries the live ones.
-- **5, cleanup**: the leftovers listed in notes/whole-commits.md Left to build; decide the sealed-sections rule (above).
+## Sealed sections
+Whether a node opens sections only of things it syncs: opening sections of things it merely has the secret for lets a purged part be read for good from a sync ID where no request arrives; not judgeable at open time (a commit creating a thing and the strong to it carries the thing's record in a section whose thing the receiver does not sync until that strong applies), so it needs held blobs reopened as the sync set grows.

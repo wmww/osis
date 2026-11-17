@@ -8,7 +8,7 @@ use crate::store::{Source, Stand};
 use crate::types::{ConnId, Entry, Result};
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_engine::retention::Minting;
-use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, PartSet, PieceLink, ReadCredentials, SealedSet};
+use osis_engine::sync::{BodyFacts, BodyMeta, CertKind, PartSet, PieceLink, ReadCredentials, SealedSet, Strip};
 use osis_blob::StepId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -163,9 +163,14 @@ pub trait Ground {
     /// This node's own tombstones of `c`'s entries under S.
     fn own_tombstones(&mut self, s: &SyncId, c: &CommitId) -> Result<Vec<BlobId>>;
     fn blob(&mut self, b: &BlobId) -> Result<Option<BlobInfo>>;
-    /// Held blob `b` holds a part this node dropped for good (purged, past its bounds, expired,
-    /// destroyed): must-not-hold wherever it is logged (spec/sync-judgement.md §1).
-    fn dropped(&mut self, b: &BlobId) -> bool;
+    /// Held blob `b` carries a part whose body is gone here (purged, dropped as covered, past its
+    /// bounds, destroyed; `Engine::strip_of`): must-not-hold wherever it is logged
+    /// (spec/sync-judgement.md §2 per blob), with what a delete of it at a peer waits for.
+    fn gone(&mut self, b: &BlobId) -> Option<Strip>;
+    /// Own entry `b` loses to another of `held`, the own entries of its commit under S
+    /// (`Engine::blob_beaten_by`: fewer sections, or the same under a lower ID): it leaves the
+    /// own log, never deleted at a peer for it.
+    fn spare(&mut self, b: &BlobId, held: &BTreeSet<BlobId>) -> bool;
     /// Held blob `b` is a strict subset of another of `held`, the blobs of its commit held under S
     /// (`Engine::strict_subset`, spec/sync-judgement.md §2): must-not-hold.
     fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool>;
@@ -213,7 +218,8 @@ pub trait Ground {
     /// fresh encryption. `fresh` (logged again once, §4): always a fresh encryption. A fresh
     /// encryption is `Engine::seal_body`'s alone, given every held blob of the commit
     /// (spec/crypto.md §5 Passing on: refused while it may not be made).
-    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool) -> Result<Option<BlobId>>;
+    /// `skip`: entries it replaces, never logged verbatim.
+    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool, skip: &[BlobId]) -> Result<Option<BlobId>>;
     /// The entry leaves the own log, its tombstone noting `c`.
     fn drop_own(&mut self, s: &SyncId, b: &BlobId, c: &CommitId) -> Result<()>;
     fn lift(&mut self, s: &SyncId, b: &BlobId) -> Result<()>;

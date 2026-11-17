@@ -16,7 +16,7 @@ use crate::types::{ConnId, Cx, Entry, Result};
 use osis_base::memo::Feed;
 use osis_base::{BlobId, CommitId, SyncId, Tid, WallMs};
 use osis_crypto::SigningSecret;
-use osis_engine::sync::{BodyMeta, CertKind, HeldBlob, MustNot, ReadCredentials};
+use osis_engine::sync::{BodyMeta, CertKind, HeldBlob, MustNot, ReadCredentials, Strip};
 use osis_blob::{Class, DeleteItem};
 use osis_proto::Msg;
 use std::collections::{BTreeMap, BTreeSet};
@@ -361,8 +361,11 @@ impl Ground for Live<'_, '_> {
         let Some(x) = self.cx.engine.blob_of(b) else { return Ok(None) };
         Ok(Some(BlobInfo { parts: x.parts.clone(), sealed: x.sealed.clone(), copy: x.copy }))
     }
-    fn dropped(&mut self, b: &BlobId) -> bool {
-        self.cx.engine.blob_dropped(b)
+    fn gone(&mut self, b: &BlobId) -> Option<Strip> {
+        self.cx.engine.strip_of(b)
+    }
+    fn spare(&mut self, b: &BlobId, held: &BTreeSet<BlobId>) -> bool {
+        self.cx.engine.blob_beaten_by(b).iter().any(|o| held.contains(o))
     }
     fn strict_subset(&mut self, s: &SyncId, b: &BlobId, held: &BTreeSet<BlobId>) -> Result<bool> {
         Ok(self.cx.engine.strict_subset(s, b, held)?)
@@ -445,12 +448,12 @@ impl Ground for Live<'_, '_> {
     fn stand(&mut self, at: &Source, s: &SyncId, c: &CommitId) -> Result<Option<Stand>> {
         self.cx.store.stand(*at, s, &c.0)
     }
-    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool) -> Result<Option<BlobId>> {
+    fn log_own(&mut self, s: &SyncId, c: &CommitId, fresh: bool, skip: &[BlobId]) -> Result<Option<BlobId>> {
         let class = if self.cx.engine.sync_body(s, c)?.is_some() { Class::Durable } else { return Ok(None) };
         if !fresh {
             // a held blob of the commit not tombstoned under S, verbatim under a wrap for S
             for b in self.cx.engine.commit_blobs(c)?.iter() {
-                if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() || self.cx.engine.blob_dropped(b) {
+                if self.cx.store.tombstone(s, b)?.is_some() || self.cx.store.blob_len(b)?.is_none() || self.cx.engine.blob_gone(b) || skip.contains(b) {
                     continue;
                 }
                 for from in &self.homes_naming(b, c)? {

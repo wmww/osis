@@ -5,7 +5,7 @@
 //! a deposit. The must-hold / may-hold / must-not-hold rule itself is `read`'s; these are its
 //! inputs.
 
-use super::{BlobOf, BodyFacts, BodyMeta, HeldBlob, Opened, PartSet, Promote, SealedSet, ThingSync, Wrap};
+use super::{BlobOf, BodyFacts, BodyMeta, HeldBlob, Opened, PartSet, Promote, SealedSet, Strip, ThingSync, Wrap};
 use crate::engine::{DropFor, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{BlobId, CommitId, Role, SyncId, Tid, WallMs};
@@ -101,6 +101,12 @@ pub(crate) fn forget(tx: &mut Tx<'_>, c: &CommitId) -> Result<()> {
         tx.blobs.forgot(&b, memory);
     }
     Ok(())
+}
+
+/// Part `ai` of `m` has no body to log anywhere (`Engine::blob_gone`): held as its leftover or
+/// dropped other than as covered or invalid.
+pub(crate) fn gone_for_good(m: &crate::engine::Meta, ai: usize) -> bool {
+    m.body_gone(ai) && !m.dropped(ai).is_some_and(|d| d.as_cover() || d.why == DropFor::Invalid)
 }
 
 impl Engine {
@@ -377,15 +383,49 @@ impl Engine {
         self.core.ix.blob_parts.get(b).map(|x| x.parts.clone())
     }
 
-    /// Whether held blob `b` holds a part of its commit this node dropped for good (spec/sync-
-    /// judgement.md §1: a delta it holds that the node dropped makes the blob must-not-hold,
-    /// whatever sync ID it is under): purged, past its bounds, expired, destroyed. A part dropped
-    /// as covered (it leaves by the carriers rule, spec/sync-compaction.md §1) or while invalid
-    /// (no right deletes it) does not count. `false` for a blob not opened or sealed here.
-    pub fn blob_dropped(&self, b: &BlobId) -> bool {
+    /// Whether held blob `b` carries a part of its commit whose body is gone here for good
+    /// (spec/sync-judgement.md §2 per blob: must-not-hold, whatever sync ID it is under): held as
+    /// its leftover (purged), dropped past its bounds or destroyed. Not a part dropped as covered:
+    /// a node that never held it could not tell it from one still to arrive (issues/whole-
+    /// commits.md); nor one dropped while invalid: no right deletes it, and its blobs are the
+    /// refetch source once it turns valid (spec/permissions.md §6). `false` for a blob not opened
+    /// or sealed here.
+    pub fn blob_gone(&self, b: &BlobId) -> bool {
         let Some(x) = self.core.ix.blob_parts.get(b) else { return false };
         let Some(m) = self.core.ix.commits.get(&x.commit) else { return false };
-        x.parts.iter().any(|ai| m.dropped(*ai).is_some_and(|d| matches!(d.why, crate::engine::DropFor::Other | crate::engine::DropFor::Destroyed)))
+        x.parts.iter().any(|ai| gone_for_good(m, *ai))
+    }
+
+    /// Held blob `b` as a strip leaves it (`blob_gone`), to be deleted at a peer once each part
+    /// of it held here has another blob of the commit there as its carrier
+    /// (spec/sync-compaction.md §1 Carriers). `None` unless it is gone here.
+    pub fn strip_of(&self, b: &BlobId) -> Option<Strip> {
+        let x = self.core.ix.blob_parts.get(b)?;
+        let m = self.core.ix.commits.get(&x.commit)?;
+        if !self.blob_gone(b) {
+            return None;
+        }
+        Some(Strip { live: x.parts.iter().copied().filter(|ai| m.holds(*ai) && !m.body_gone(*ai)).collect() })
+    }
+
+    /// The held blobs of `b`'s commit that beat it in the own log (spec/sync-judgement.md §2:
+    /// of the blobs of one commit, fewer sections wins while nothing this node reads is missing
+    /// from it): of its kind, not gone here, carrying every part `b` carries that this node
+    /// holds, and lacking a section of `b` this node did not open, or carrying the same sections
+    /// under a lower blob ID (readers logging one rewrite at once). `b` leaves the own log for
+    /// such an own entry; it is never deleted at a peer for a section this node cannot open.
+    pub fn blob_beaten_by(&self, b: &BlobId) -> Vec<BlobId> {
+        let Some(x) = self.core.ix.blob_parts.get(b) else { return Vec::new() };
+        let Some(m) = self.core.ix.commits.get(&x.commit) else { return Vec::new() };
+        if self.blob_gone(b) {
+            return Vec::new();
+        }
+        let held: PartSet = x.parts.iter().copied().filter(|ai| m.holds(*ai) && !gone_for_good(m, *ai)).collect();
+        let beats = |o: &BlobId, y: &BlobOf| {
+            let same = y.parts == x.parts && y.sealed == x.sealed && y.ais == x.ais;
+            y.of_kind(x.copy) && held.is_subset(&y.parts) && (!x.sealed.is_subset(&y.sealed) || (same && o < b)) && !self.blob_gone(o)
+        };
+        self.core.ix.commit_blobs.get(&x.commit).into_iter().flatten().filter(|o| *o != b).filter(|o| self.core.ix.blob_parts.get(o).is_some_and(|y| beats(o, y))).copied().collect()
     }
 
     /// Whether blob `b`, as opened or sealed here, is a per-sync-ID copy.
@@ -404,7 +444,13 @@ impl Engine {
     /// A held blob not tombstoned under `s` is the store's to log verbatim (`rewrap`).
     pub fn seal_body(&mut self, s: &SyncId, c: &CommitId, held: &[HeldBlob], rng: &mut dyn NodeRng) -> Result<Option<(crate::sync_ids::Sealed, Wrap)>> {
         let Some(t) = self.body_thing(s, c)? else { return Ok(None) };
-        let meta = self.sync_body_now(s, c)?;
+        // what a strip leaves of the body: its parts whose bodies are not gone here
+        let meta = self.sync_body_now(s, c)?.map(|mut m| {
+            if let Some(cm) = self.core.ix.commits.get(c) {
+                m.parts.retain(|ai| !gone_for_good(cm, *ai));
+            }
+            m
+        });
         if let Some(meta) = meta.as_ref().filter(|m| m.certificate) {
             return self.seal_certificate(&t, c, meta, rng);
         }
@@ -461,13 +507,17 @@ impl Engine {
             Some(m) => m.hold.iter().enumerate().filter(|(_, x)| matches!(x, crate::engine::Hold::Body { .. })).map(|(ai, _)| ai).collect(),
             None => return Ok(false),
         };
-        let body: Vec<usize> = meta.parts.iter().copied().collect();
+        // the body's parts whose bodies are not gone here: a strip logs the rest
+        let body: Vec<usize> = match self.core.ix.commits.get(c) {
+            Some(m) => meta.parts.iter().copied().filter(|ai| !gone_for_good(m, *ai)).collect(),
+            None => return Ok(false),
+        };
         // verbatim: a held genuine blob (a certificate copy of exactly the body's parts for a
         // certificate), never for a per-sync-ID copy's body
         let mut carried = BTreeSet::new();
         for b in held_blobs {
             let Some(row) = self.core.ix.blob_parts.get(b).filter(|x| x.commit == *c).cloned() else { continue };
-            if self.blob_dropped(b) {
+            if self.blob_gone(b) || self.blob_beaten_by(b).iter().any(|o| held_blobs.contains(o)) {
                 continue;
             }
             if !row.copy {
@@ -519,10 +569,15 @@ impl Engine {
     /// spec/sync-judgement.md §1). Opened or not; one per aspect set, those this node opened
     /// first (a forger's section it could not open never stands in for a genuine one it did),
     /// then largest first, none sharing an aspect with one taken (a commit's sections never
-    /// overlap). With the digests of those taken that it did not open (`BlobOf::sealed`).
+    /// overlap). A section it did not open goes only where every such blob lists its aspects:
+    /// one a strip left out was left out by a node that opened it, and of the blobs of a commit
+    /// the one with fewer sections wins (spec/sync-judgement.md §2), so rewrites stripping
+    /// different parts this node cannot open meet in one blob. With the digests of those taken
+    /// that it did not open (`BlobOf::sealed`).
     fn held_sections(&mut self, c: &CommitId, held: &[HeldBlob]) -> (Vec<osis_commit::Section>, SealedSet) {
         let mut all = Vec::new();
         let mut opened = SealedSet::new();
+        let mut listed: Vec<PartSet> = Vec::new();
         for h in held {
             let b = osis_blob::blob_id(&h.bytes);
             let Some(row) = self.core.ix.blob_parts.get(&b).filter(|x| x.commit == *c && !x.copy).cloned() else { continue };
@@ -533,6 +588,7 @@ impl Engine {
             if env.id() != *c {
                 continue;
             }
+            listed.push(row.ais.clone());
             for sec in env.sections.into_iter().filter(|sec| osis_crypto::unwrap_section(&key, c, &sec.wrap).is_err()) {
                 let d = sec.digest();
                 if !row.sealed.contains(&d) {
@@ -541,6 +597,7 @@ impl Engine {
                 all.push((d, sec));
             }
         }
+        all.retain(|(d, sec)| opened.contains(d) || listed.iter().all(|ais| sec.ais.iter().all(|ai| ais.contains(ai))));
         all.sort_by_key(|(d, sec)| (!opened.contains(d), std::cmp::Reverse(sec.ais.len())));
         let mut seen = BTreeSet::new();
         all.retain(|(_, sec)| sec.ais.iter().all(|ai| !seen.contains(ai)) && {

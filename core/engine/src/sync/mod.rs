@@ -193,6 +193,13 @@ pub enum MustNot {
     CardEnded,
 }
 
+/// A held blob as a strip leaves it (`Engine::strip_of`): what a delete of it at a peer waits for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Strip {
+    /// Its parts held here: each carried there by another blob of the commit.
+    pub live: PartSet,
+}
+
 /// What forgetting and covers make of a held commit (`Engine::held_fate`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HeldFate {

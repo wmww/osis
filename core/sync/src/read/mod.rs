@@ -568,7 +568,13 @@ impl Read {
         osis_base::costs::count("read: acts", 1);
         match (a, c) {
             (Act::Log, Some(c)) => {
-                g.log_own(s, c, false)?;
+                g.log_own(s, c, false, &[])?;
+            }
+            (Act::Rewrite(old), Some(c)) => {
+                g.log_own(s, c, false, &old)?;
+                for b in old {
+                    g.drop_own(s, &b, c)?;
+                }
             }
             (Act::Restamp(b), _) => g.restamp(s, &b)?,
             (Act::DropOwn(b), Some(c)) => g.drop_own(s, &b, c)?,
@@ -591,7 +597,7 @@ impl Read {
             }
             (Act::Again { at, head, fall, old, .. }, Some(c)) => {
                 // a fresh encryption under this sync ID alone; its stand first, durably
-                if let Some(logged) = g.log_own(s, c, true)? {
+                if let Some(logged) = g.log_own(s, c, true, &[])? {
                     g.set_stand(&at, s, c, &Stand { at: g.now(), logged, head, fall })?;
                     for b in old {
                         g.drop_own(s, &b, c)?;

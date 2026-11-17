@@ -217,16 +217,18 @@ impl Engine {
     /// spec/sync-judgement.md §1 Per-sync-ID copies).
     fn carried_by(&self, c: &CommitId, copy: bool, x: &BlobId) -> Option<Arc<BlobOf>> {
         let p = self.core.ix.blob_parts.get(x)?;
-        (p.commit == *c && p.of_kind(copy) && !self.blob_dropped(x)).then(|| p.clone())
+        (p.commit == *c && p.of_kind(copy) && !self.blob_gone(x)).then(|| p.clone())
     }
 
     /// Whether blob `b` holds S's body of its commit (spec/sync-judgement.md §1): a blob of the
-    /// body's kind (a per-sync-ID copy or the shared blob) carrying each of its parts. A blob not
+    /// body's kind (a per-sync-ID copy or the shared blob) carrying each of its parts whose body
+    /// is not gone here (a strip's rewrite holds the body). A blob not
     /// opened or sealed here holds none.
     pub fn holds_body(&mut self, s: &SyncId, b: &BlobId) -> Result<bool> {
         let Some(row) = self.core.ix.blob_parts.get(b).cloned() else { return Ok(false) };
         let Some(meta) = self.sync_body_now(s, &row.commit)? else { return Ok(false) };
-        Ok(row.of_kind(meta.copy) && meta.parts.iter().all(|ai| row.parts.contains(ai)))
+        let gone = |ai: &usize| self.core.ix.commits.get(&row.commit).is_some_and(|m| super::bodies::gone_for_good(m, *ai));
+        Ok(row.of_kind(meta.copy) && meta.parts.iter().filter(|ai| !gone(ai)).all(|ai| row.parts.contains(ai)))
     }
 
     /// spec/sync-judgement.md §2 must-not-hold: blob `b` of commit C, whose delta set is a strict

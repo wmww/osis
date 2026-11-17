@@ -21,6 +21,9 @@ use std::sync::Arc;
 pub(crate) enum Act {
     /// The body into the own store (§3 Own store).
     Log,
+    /// The body into the own store as a strip's rewrite (§2 per blob), then these entries, which
+    /// it replaces, leave the own log.
+    Rewrite(Vec<BlobId>),
     /// Entry `b` of the body in the own store stamped in place under S's head write key (same
     /// blob and wrap; §3 Own store), its own from then on.
     Restamp(BlobId),
@@ -308,12 +311,22 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
         return Ok(j);
     }
     let own = g.own(s, c)?;
-    // an entry whose blob holds a part dropped here for good is must-not-hold itself, whatever
-    // the body's verdict (spec/sync-judgement.md §1): it leaves, and the body counts as unlogged
-    let mut stale = Vec::new();
-    for e in &own {
-        if g.dropped(&e.blob) {
-            stale.push(e.blob);
+    // per blob (spec/sync-judgement.md §2): an entry carrying a part whose body is gone here is
+    // must-not-hold, whatever the body's verdict, and one losing to another held blob of it
+    // (fewer sections this node did not open, or the same under a lower ID): either leaves, and the body counts as unlogged until the rest is logged as the strip's rewrite
+    let mut stale: Vec<BlobId> = own.iter().map(|e| e.blob).filter(|b| g.gone(b).is_some()).collect();
+    // only an entry that may stand as the body's log beats another: one holding the body, not a
+    // peer's deposit awaiting promotion
+    let kept: BTreeSet<BlobId> = own.iter().filter(|e| !stale.contains(&e.blob)).map(|e| e.blob).collect();
+    let mut winners = BTreeSet::new();
+    for e in own.iter().filter(|e| kept.contains(&e.blob) && (e.own || !e.deposited)) {
+        if g.holds_body(s, &e.blob)? {
+            winners.insert(e.blob);
+        }
+    }
+    for b in &kept {
+        if g.spare(b, &winners) {
+            stale.push(*b);
         }
     }
     // a strict subset of another entry of it held here leaves too (§2); the larger one stays
@@ -449,6 +462,14 @@ pub(crate) fn body(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId) -
             j.acts.extend(restamp.into_iter().map(Act::Restamp));
         }
     }
+    // a strip's rewrite is one act: the rest logged, then the entries it replaces leave (a log
+    // already called for before the entries went stale is no new act)
+    if !stale.is_empty() && j.acts.remove(&Act::Log) {
+        for b in &stale {
+            j.acts.remove(&Act::DropOwn(*b));
+        }
+        j.acts.insert(Act::Rewrite(stale.clone()));
+    }
     if verdict == Verdict::Must {
         // the body's parts as its meta gives them (read's `bodies` effect), not `sync_bodies`
         // again: that reads every sync ID's body of `c`
@@ -564,8 +585,9 @@ pub(crate) fn toward(g: &mut impl Ground, mine: &Mine, s: &SyncId, c: &CommitId,
     let writer = keys.as_ref().is_some_and(|k| k.write.is_some());
     let quiet = seen.present.is_empty() && seen.deleted.is_empty();
     t.idle = quiet && (writer || verdict != Verdict::Must);
-    // unjudged calls for nothing yet
-    if verdict == Verdict::Unjudged {
+    // unjudged calls for nothing yet but a strip's deletes: an entry gone here goes whatever the
+    // body is judged (spec/sync-judgement.md §2 per blob)
+    if verdict == Verdict::Unjudged && !seen.present.iter().any(|b| g.gone(b).is_some()) {
         return Ok(t);
     }
     let (Some(head), Some(creds)) = (head, creds.as_deref()) else { return Ok(t) };
@@ -645,10 +667,11 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
         seen.present.iter().copied().collect()
     } else {
         let copy = mine.meta(s, c).is_some_and(|m| m.copy);
-        let mut out = duplicates(g, seen, copy)?;
+        let judged = *verdict != Verdict::Unjudged;
+        let mut out = if judged { duplicates(g, seen, copy)? } else { Vec::new() };
         // a copy holding none of what S names of it (§2), once final, and only beside another
         // entry of it there: the source never holds neither the old copy nor its replacement
-        let (unnamed, gone, _) = unnamed_copies(g, mine, s, c, &seen.present)?;
+        let (unnamed, gone, _) = if judged { unnamed_copies(g, mine, s, c, &seen.present)? } else { (Vec::new(), false, None) };
         let mut present = seen.present.clone();
         present.retain(|b| !gone || !unnamed.contains(b));
         if gone && !present.is_empty() {
@@ -659,8 +682,30 @@ fn deletes(g: &mut impl Ground, mine: &Mine, t: &mut Toward, src: &SrcView, seen
             }
         }
         // a strict subset of another entry of it there (§2), which carries it there
-        for b in &present {
+        for b in present.iter().filter(|_| judged) {
             if !out.contains(b) && g.strict_subset(s, b, &present)? {
+                out.push(*b);
+            }
+        }
+        // a strip (§2 per blob): an entry carrying a part whose body is gone here, once each part
+        // of it held here has another entry there not gone carrying it
+        for b in &present {
+            if out.contains(b) {
+                continue;
+            }
+            let Some(st) = g.gone(b) else { continue };
+            let mut carried = true;
+            for ai in &st.live {
+                let mut any = src.full;
+                for x in present.iter().filter(|x| *x != b) {
+                    if any {
+                        break;
+                    }
+                    any = g.gone(x).is_none() && g.blob(x)?.is_some_and(|i| i.parts.contains(ai));
+                }
+                carried &= any;
+            }
+            if carried {
                 out.push(*b);
             }
         }
