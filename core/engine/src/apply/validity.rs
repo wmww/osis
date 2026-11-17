@@ -361,6 +361,15 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
     }
 }
 
+/// Notes the edges role commit `id` writes as held (`Core::notices_due`): a commit applied or
+/// joined here, or a write turning resolved, may make a write on one of them take a holder of
+/// read below read in this node's timeline, a removal notice it owes (spec/sync-inbox.md §5).
+pub(crate) fn note_notices(core: &mut Core, id: &CommitId) {
+    let Some(c) = core.ix.held.edge_commit(id) else { return };
+    let edges: Vec<(Tid, Tid)> = c.ops.iter().map(|o| (o.holder, o.target)).collect();
+    core.notices_due.extend(edges);
+}
+
 /// Does a path of held grants and record links lead from `author` to a thing on `chain`
 /// (spec/commits.md §4 Unjudgeable)? A path climbs role grants and record links, as perm's
 /// effective role counts them (spec/permissions.md §1): a removal names a holder but leads
@@ -575,6 +584,7 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
         let parts = super::edge_parts(tx, &id)?;
         let before = tx.core.ix.held.edge_commit(&id).map(|c| c.ops.clone());
         add_role_commit(tx.core, &v, &id, &parts);
+        note_notices(tx.core, &id);
         any |= tx.core.ix.held.edge_commit(&id).map(|c| &c.ops) != before.as_ref();
     }
     Ok(any)

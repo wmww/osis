@@ -561,6 +561,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &read);
         validity::add_role_commit(tx.core, &view, &id, read.edges());
+        validity::note_notices(tx.core, &id);
         held_changed = true;
     }
     if held_changed {
@@ -775,6 +776,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if edges && let Some(all) = edge_parts {
         tx.core.ix.held.remove(id);
         validity::add_role_commit(tx.core, &meta.view, id, all);
+        validity::note_notices(tx.core, id);
         held_changed = true;
     }
     if held_changed {

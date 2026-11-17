@@ -1365,6 +1365,10 @@ pub struct Core {
     /// given them before a content write on them (`write::keyed_first`), else at its end
     /// (`rotation::own_keys_due`).
     pub own_keys_due: BTreeSet<Tid>,
+    /// Edges (holder, target) a role commit this transaction applied or joined writes: the
+    /// removal notices their applied writes owe are judged at its end
+    /// (`flows::inbox::owe_removal_notices`).
+    pub notices_due: BTreeSet<(Tid, Tid)>,
     /// Freed rows (thing, blob) added this transaction: judged at its end, once their states are
     /// rebuilt (`retention::freed::settle_due`).
     pub freed_due: BTreeSet<(Tid, osis_base::BlobId)>,
@@ -1597,6 +1601,7 @@ impl Core {
             kept_due: self.kept_due.clone(),
             kept_things_due: self.kept_things_due.clone(),
             own_keys_due: self.own_keys_due.clone(),
+            notices_due: self.notices_due.clone(),
             freed_due: self.freed_due.clone(),
             forgotten_names_due: self.forgotten_names_due.clone(),
             handed_due: self.handed_due.clone(),
@@ -2112,6 +2117,7 @@ impl Core {
             kept_due: _,
             kept_things_due: _,
             own_keys_due: _,
+            notices_due: _,
             freed_due: _,
             forgotten_names_due: _,
             handed_due: _,
@@ -2426,6 +2432,7 @@ impl Core {
             kept_due: BTreeSet::new(),
             kept_things_due: BTreeSet::new(),
             own_keys_due: BTreeSet::new(),
+            notices_due: BTreeSet::new(),
             freed_due: BTreeSet::new(),
             forgotten_names_due: BTreeSet::new(),
             handed_due: BTreeSet::new(),
@@ -3864,11 +3871,12 @@ impl Engine {
                 }
                 if r.is_ok()
                     && !tx.txn.is_memory()
-                    && let Err(e) = crate::flows::addenda::answer_removals(&mut tx).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
+                    && let Err(e) = crate::flows::inbox::owe_removal_notices(&mut tx).and_then(|()| crate::flows::addenda::answer_removals(&mut tx)).and_then(|()| crate::flows::signing::leave_if_removed(&mut tx)).and_then(|()| crate::flows::signing::answer_rotations(&mut tx))
                         .and_then(|()| crate::sync::dial::drop_departed(&mut tx))
                 {
                     r = Err(e);
                 }
+                tx.core.notices_due.clear();
                 if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
                     r = Err(Error::Corrupt("commit record header"));
                 }

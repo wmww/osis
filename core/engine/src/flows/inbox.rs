@@ -119,10 +119,48 @@ fn held_by(tx: &mut Tx<'_>, epochs: &osis_keys::ActorEpochs, r: Role, s: &osis_b
 /// Fires on `holder`'s inbox the removal notice of role commit `c` lowering its edge on `target`
 /// below read (spec/sync-inbox.md §5): its value, the commit's `roles.0` parts on `target` with
 /// their author's chain, is made when the fire is first sealed, `c` applied by then.
-pub(crate) fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
+/// One already owed stays as it is.
+fn fire_removal(tx: &mut Tx<'_>, holder: Tid, c: CommitId, target: Tid) -> Result<()> {
     let Some(inbox) = inbox_in(tx, &holder)? else { return Ok(()) };
     let to = fire_to(tx, &holder);
-    save(tx, OwedFire { thing: inbox, ak: super::ak(REMOVAL_FIRE)?, what: Fire::Removal { commit: c, target }, to, commit: None })
+    let o = OwedFire { thing: inbox, ak: super::ak(REMOVAL_FIRE)?, what: Fire::Removal { commit: c, target }, to, commit: None };
+    if tx.core.ix.fires.contains_key(&o.id()) {
+        return Ok(());
+    }
+    save(tx, o)
+}
+
+/// The removal notices the edges role commits wrote this transaction owe (`Core::notices_due`,
+/// spec/sync-inbox.md §5): a removal's notice is owed by every node that applies it and holds
+/// what it removes, its writer or not. Each applied edge write on such an edge that takes its
+/// holder from read or above to below read in this node's timeline (`key_role`: `until`
+/// disregarded), not a self-removal or finalize, within `ROLE_KEEP` of its `ts` (as long as it
+/// travels, spec/permissions.md §4 Role changes travel), fires its notice on the holder's inbox.
+/// Judged again only when a role commit writing that edge arrives, so a duplicate costs one
+/// fire, which the holder takes once.
+pub(crate) fn owe_removal_notices(tx: &mut Tx<'_>) -> Result<()> {
+    if tx.core.notices_due.is_empty() {
+        return Ok(());
+    }
+    let due = std::mem::take(&mut tx.core.notices_due);
+    let now = tx.now().0;
+    let mut owed = Vec::new();
+    for (x, t) in due {
+        let Some(tl) = tx.core.timelines.get(&t) else { continue };
+        for (w, c, op) in tl.held_on(&t) {
+            if op.holder != x || c.ts.wall_ms().0.saturating_add(osis_base::format::ROLE_KEEP_MS) < now || !tl.applied().get(&w).is_some_and(|a| matches!(a.attr, osis_perm::Attr::By(_))) {
+                continue;
+            }
+            let old = crate::rotation::key_role(tl.edges_at(Some(c.point())).get(&x, &t));
+            if old >= Some(Role::Read) && crate::rotation::key_role(op.edge.as_ref()) < Some(Role::Read) {
+                owed.push((x, c.id, t));
+            }
+        }
+    }
+    for (x, c, t) in owed {
+        fire_removal(tx, x, c, t)?;
+    }
+    Ok(())
 }
 
 /// Whom a fire on `holder`'s inbox is offered to where proven (spec/sync-inbox.md §3 Sending):

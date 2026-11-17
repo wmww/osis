@@ -373,9 +373,10 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         rotation::record(tx, target, r)?;
     }
     done.add(c);
+    // its removal notices are owed as it applies (`inbox::owe_removal_notices`), as at every node
+    // applying it
     if let Some(c) = c {
-        let told: Vec<Tid> = std::iter::once((holder, old.map(|e| e.role))).chain(gone.iter().map(|(x, e)| (*x, Some(e.role)))).filter(|(_, r)| *r > Some(Role::Sync)).map(|(x, _)| x).collect();
-        lowered_deliveries(tx, target, c, &unreached, &told)?;
+        rotation::deliver_rotation(tx, target, Some(c), &unreached)?;
     }
     // a node's removal from its account root: the account's epoch rotates next, in
     // this transaction (spec/permissions.md §3)
@@ -388,15 +389,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         done.add(Some(r));
     }
     Ok(done)
-}
-
-/// What role commit `c` lowering edges on `target` fires (spec/permissions.md §2, §3): a removal
-/// notice to each holder in `lowered`, the rotation's tickets to `unreached`.
-fn lowered_deliveries(tx: &mut Tx<'_>, target: Tid, c: CommitId, unreached: &[Tid], lowered: &[Tid]) -> Result<()> {
-    for x in lowered {
-        super::inbox::fire_removal(tx, *x, c, target)?;
-    }
-    rotation::deliver_rotation(tx, target, Some(c), unreached)
 }
 
 /// The edges on `target` that `who` (this node, or a key actor it signs as) may finalize now
@@ -476,8 +468,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     }
     done.add(c);
     if let Some(c) = c {
-        let removed: Vec<Tid> = ended.iter().filter(|x| x.1.role > Role::Sync).map(|x| x.0).collect();
-        lowered_deliveries(tx, target, c, &unreached, &removed)?;
+        rotation::deliver_rotation(tx, target, Some(c), &unreached)?;
     }
     Ok(())
 }
