@@ -82,8 +82,6 @@ struct Fake {
     strandings: Stamped<SyncId, Arc<Stranding>>,
     /// Opens' walk stops per S.
     stops: Stamped<SyncId, osis_sync::opens::Stop>,
-    /// Leave's sync IDs whose pass ends only with a source.
-    sourced: StampedSet<SyncId>,
 }
 
 impl Net for Fake {
@@ -169,9 +167,6 @@ impl Ground for Fake {
     }
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<Stranding>>> {
         Ok(self.strandings.get(s).cloned())
-    }
-    fn pass_sourced(&self, s: &SyncId) -> bool {
-        self.sourced.contains(s)
     }
     fn walk_stop(&self, s: &SyncId) -> Option<osis_sync::opens::Stop> {
         self.stops.get(s).copied()
@@ -553,41 +548,6 @@ fn complete_pass_with_no_source_waits_for_a_peer_to_be_waited_for() {
     want(&mut t, S, 30);
     t.at(30 + PASS_WAIT_MS);
     assert_eq!(t.g.passes, vec![(S, 7), (S, 20), (S, 30)], "PASS_WAIT_MS");
-}
-
-// spec/sync-set.md §3 (Stopping), issues/sourced-pass-for-lists.md: a pass leave wants with a source
-// (`pass_sourced`) ends neither at once with nobody nor by PASS_WAIT_MS with no source; it ends
-// once a source joins and catches up from a Pull since it began, past PASS_WAIT_MS alike.
-#[test]
-fn a_sourced_pass_ends_only_with_a_caught_up_source() {
-    let mut t = T::new(&[(S, Holding::Read)]);
-    t.g.sourced.insert(S);
-    t.at(7);
-    want(&mut t, S, 7);
-    assert!(t.g.passes.is_empty(), "no source: not at once");
-    t.at(8 + PASS_WAIT_MS);
-    assert!(t.g.passes.is_empty(), "no source: not by PASS_WAIT_MS");
-    t.join(S, A, reader(RA, 1));
-    t.settle();
-    assert!(t.g.passes.is_empty(), "a source not caught up");
-    t.caught(A, S, 9 + PASS_WAIT_MS);
-    assert_eq!(t.g.passes, vec![(S, 7)]);
-}
-
-// spec/sync-set.md §3 (Stopping), issues/sourced-pass-for-lists.md: one source caught up is what a sourced pass
-// needs; another, silent, holds it no longer than PASS_WAIT_MS, as any pass.
-#[test]
-fn a_silent_source_holds_a_sourced_pass_no_past_pass_wait_ms() {
-    let mut t = T::new(&[(S, Holding::Read)]);
-    t.g.sourced.insert(S);
-    t.at(7);
-    t.join(S, A, reader(RA, 1));
-    t.join(S, B, reader(RB, 2));
-    want(&mut t, S, 7);
-    t.caught(A, S, 8);
-    assert!(t.g.passes.is_empty(), "B not caught up yet");
-    t.at(8 + PASS_WAIT_MS);
-    assert_eq!(t.g.passes, vec![(S, 7)], "B silent past PASS_WAIT_MS");
 }
 
 // spec/sync-status.md §1 (PASS_WAIT_MS): a recorded peer away holds a pass no longer than

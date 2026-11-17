@@ -136,9 +136,6 @@ impl Ground for Live<'_, '_> {
         }
         Arc::new(out)
     }
-    fn pass_sourced(&self, s: &SyncId) -> bool {
-        self.leave.pass_sourced(s)
-    }
     fn stranding(&mut self, s: &SyncId) -> Result<Option<Arc<osis_engine::sync::Stranding>>> {
         Ok(self.cx.engine.stranded(s)?.map(Arc::new))
     }
