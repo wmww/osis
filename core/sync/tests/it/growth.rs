@@ -492,7 +492,7 @@ fn own_rounds(w: &mut World, rounds: usize) -> Held {
 // same account once tombstones have aged out, at 2 and 20 rounds, but for the schemas it learned
 // (`d/`, the node's own).
 #[test]
-#[ignore = "issues/storage-owners.md 12, 13: set tombstones in the roots' holds.0 and tickets.0, entries of forgotten commits under D's sync ID"]
+#[ignore = "issues/storage-owners.md 12, 13: the roots' holds.0 and tickets.0 snapshots keep a set tombstone per removal (a Tess call), entries of forgotten commits under D's sync ID"]
 fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
     let fresh = own_rounds(&mut world(0, 1), 0);
     let learned = |mut h: Held| {
@@ -501,5 +501,17 @@ fn releasing_own_things_returns_storage_to_a_fresh_nodes_spec_sync_set_3() {
     };
     for n in [2, 20] {
         assert_eq!(learned(own_rounds(&mut world(0, 1), n)), fresh, "{n} rounds");
+    }
+}
+
+// S1's forgotten names (spec/commits.md §5 Forgetting): the roots' snapshots carry a tombstone per
+// strong or ticket removed (spec/crdt.md §5.5), a reset no purge acts on, so it keeps no removal's
+// name: `fn/` stays a fresh node's at 2 and 20 rounds. The rest of S1 is the ignored test above.
+#[test]
+fn releasing_own_things_leaves_no_forgotten_names_spec_commits_5() {
+    let names = |h: Held| h.0.get("fn/").copied();
+    let fresh = names(own_rounds(&mut world(0, 1), 0));
+    for n in [2, 20] {
+        assert_eq!(names(own_rounds(&mut world(0, 1), n)), fresh, "{n} rounds");
     }
 }

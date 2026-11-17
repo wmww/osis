@@ -220,6 +220,37 @@ fn purge_by_id_reaches_a_forgotten_write_spec_commits_5() {
     }
 }
 
+// spec/commits.md §5 Forgetting, spec/crdt.md §5.5: a removal from a set leaves a tombstone, a
+// reset carrying no value, so no purge can act on it and its commit keeps no name; the adding
+// commit keeps one while its other element lives, and none once that is removed too.
+#[test]
+fn a_set_removal_keeps_no_name_spec_commits_5() {
+    let (mut lp, t) = world();
+    let set = Ak::new("x:s.0").unwrap();
+    let op = |m: &mut Mutation, v: i64, add: bool| {
+        let v = Value::Int(v);
+        let op = if add { osis_crdt::Op::Add(v) } else { osis_crdt::Op::Remove(v) };
+        m.op(t, &set, osis_crdt::PathOp { path: vec![], op }).unwrap();
+    };
+    let mut m = Mutation::new();
+    op(&mut m, 1, true);
+    op(&mut m, 2, true);
+    lp.peers[1].commit(m).unwrap();
+    lp.advance(1_000);
+    for (v, left) in [(1, 1), (2, 0)] {
+        let mut m = Mutation::new();
+        op(&mut m, v, false);
+        lp.peers[1].commit(m).unwrap();
+        lp.advance(1_000);
+        lp.peers[1].engine.snapshot(&t, &set).unwrap().unwrap();
+        lp.advance(1_000);
+        compact_forget(&mut lp, 1, t, &set);
+        assert_eq!(names_on(&lp, 1, t, &set), left, "{v} removed");
+        let rows = lp.peers[1].engine.local_census().unwrap().get("fn/").map_or(0, |x| x.0);
+        assert_eq!(rows, left, "{v} removed: rows");
+    }
+}
+
 // spec/commits.md §5 Forgetting, notes/growth.md: a name lives while a held snapshot carries a
 // write of it: overwritten and compacted again it goes, so a register overwritten n times holds
 // at most one name, in the index and in the store, the same after a restart.

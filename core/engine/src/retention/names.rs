@@ -4,9 +4,10 @@
 //! naming its stamp is judged by its own facts, as by its header (`purge::rejudge_carried`,
 //! `check_request`). It goes once no held snapshot of the aspect carries a write stamped with it:
 //! a held snapshot leaving (`atomic::forget_snapshot`) or the commit held again marks the aspect
-//! (`Core::forgotten_names_due`), judged at the transaction's end (`settle_due`). So names are
-//! bounded by the live writes held snapshots carry; a dead write's goes with the last snapshot
-//! holding it. Durable rows `records::FORGOTTEN_NAMES`; an ephemeral aspect's in memory, as its
+//! (`Core::forgotten_names_due`), judged at the transaction's end (`settle_due`). Only a
+//! value-carrying write keeps one: a purge acts on values alone, so a removal's tombstone keeps
+//! none. So names are bounded by the live values held snapshots carry; a dead write's goes with
+//! the last snapshot holding it. Durable rows `records::FORGOTTEN_NAMES`; an ephemeral aspect's in memory, as its
 //! data.
 //!
 //! Only the header binds an ID to a stamp: a node that never held it (a late joiner) has no name
@@ -120,8 +121,10 @@ pub(crate) fn held_again(core: &mut Core, id: &CommitId, aspects: &[crate::engin
     }
 }
 
-/// The stamps `(ts, origin source)` of every write the held snapshots of `(tid, ak)` carry,
-/// value-less ones included, valid or not: one body read each.
+/// The stamps `(ts, origin source)` of every value-carrying write (spec/crdt.md §4.7) the held
+/// snapshots of `(tid, ak)` carry, value-less ones included, valid or not: one body read each. A
+/// purge acts only on values, so a reset, flag, position write or value removal (a set
+/// element's tombstone among them) needs no name.
 fn carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<(Ts, Source)>> {
     let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     let mut out = BTreeSet::new();
@@ -130,7 +133,10 @@ fn carried(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<(Ts, Source)>
         let memory = tx.is_memory_commit(&s);
         tx.in_class(memory, |tx| {
             crate::apply::each_held_piece(tx, &s, sai, &mut |_, f| {
-                out.extend(f.writes().into_iter().filter_map(|(d, ts)| Some((ts?, osis_crdt::fact_source(&d.src)))));
+                let mut valued = BTreeSet::new();
+                f.valueless_dots(&mut valued);
+                f.each_valued(&mut |d| _ = valued.insert(d.clone()));
+                out.extend(f.writes().into_iter().filter(|(d, _)| valued.contains(d)).filter_map(|(d, ts)| Some((ts?, osis_crdt::fact_source(&d.src)))));
                 Ok(())
             })
         })?;
